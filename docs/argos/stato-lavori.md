@@ -405,6 +405,44 @@ Nessun test lo copriva perche' la logica era **inline dentro `main()`**, dove un
 
 E' il secondo errore della serie dello stesso tipo — dopo la banda del turno pieno, dove alzare il tetto aveva alzato anche il pavimento. Entrambi nascono dal toccare un'espressione senza rieseguire il pezzo che la contiene.
 
+## Il giro AQ2: il miglior piano VALIDO della serie
+
+| giro | vetture | turni | violazioni | auto (picco/tetto) |
+|---|---|---|---|---|
+| AL | 19 | 42 | **2** | 5/5 |
+| AO | 22 | 42 | 0 | 5/5 |
+| AP | 26 | 43 | **3** | 5/5 |
+| **AQ2** | **21** | 43 | **0** | **4/5** |
+
+Scenario `366e03ad-7f1e-4a3e-bfa7-c853397fffd3`. **Zero violazioni BDS**, zero supplementi, tetti percentuali rispettati senza rilassamento, autovetture con margine (picco 4 su 5, zero conflitti, nessun turno scoperto), vettura incustodita 15′. 31 interi, 6 semiunici, 6 spezzati; nastro medio 374′; 29 cambi in linea e 5 in deposito.
+
+E' il **miglior piano a zero violazioni** finora: batte AO (22 vetture) sulle vetture a parita' di pulizia. AL resta piu' basso sulle vetture (19) ma ha 2 violazioni: col principio nuovo non e' un piano migliore, e' un piano non valido.
+
+**Onesta' sulla verifica.** La selezione lessicografica **non e' stata messa alla prova**: il round scelto (il 4) aveva insieme zero violazioni E il punteggio migliore, quindi avrebbe vinto anche con la regola vecchia. La correzione non ha rotto niente e il risultato e' buono, ma il caso che avrebbe dimostrato la differenza — un round sporco con punteggio migliore — qui non si e' presentato.
+
+## Le coincidenze riconosciute non sono quelle attese, ed e' un'informazione
+
+Quattro relazioni, tutte con 10-12 occorrenze — sistematiche, non rumore:
+
+| nodo | da | a | occorrenze |
+|---|---|---|---|
+| OSPEDALE REGIONALE | 31 | 30 | 12 |
+| PIAZZA CAVOUR | 7 | 2/6 | 12 |
+| PIAZZA U.BASSI | 31 | 42 | 12 |
+| PIAZZA U.BASSI | 31 | 24 | 10 |
+
+La calibratura e' giusta: quattro, non decine. Ma **nessuna delle tre nominate dall'operatore** (2/6 ↔ 21/33 alla Madonnetta, 3 ↔ 21/33 a Posatora, 44/43/1/4 a Tavernelle) e' fra queste.
+
+Guardando i dati del progetto se ne capisce il perche': la **21/33 fa Posatora ↔ Montesicuro** e non tocca affatto la Madonnetta, mentre la 2/6 fa Cavour ↔ Madonnetta. Le due linee non condividono quel nodo *in questo orario*. E' coerente con quello che l'operatore ha detto: le corse del progetto sono diverse da quelle del servizio reale. Le coincidenze che descrive esistono nel suo servizio, non necessariamente in questi dati — motivo in piu' per riconoscerle dall'orario invece di dichiararle.
+
+## Il vincolo morde troppo, e si vede
+
+**14 candidati scartati su 15**, e la sonda non ha accettato niente. Le motivazioni sono tutte legittime — attese che scendono a −13′ e −8′ (il mezzo parte prima che arrivi chi deve salirci) o salgono a 18-20′ (coincidenza persa) — ma l'effetto e' che la sonda e' di fatto ferma.
+
+La causa e' strutturale: **le corse al confine dei pezzi di turno sono proprio quelle che portano le coincidenze**, perche' i cambi avvengono ai nodi dove le linee si incontrano. La strategia della sonda e il vincolo si scontrano per costruzione.
+
+**Il pezzo successivo e' la propagazione**: quando uno spostamento romperebbe una coincidenza, provare a spostare **anche la corsa in coincidenza** dello stesso delta, invece di scartare. E' lo stesso principio del giro rigido — muovere insieme le cose che sono legate — applicato al legame fra linee invece che fra andata e ritorno.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
