@@ -94,6 +94,13 @@ def build_round_trip_pairs(trips: list[dict], max_gap: int = ROUND_TRIP_MAX_GAP)
 # Attesa massima di un passeggero in coincidenza: oltre, la coincidenza e'
 # persa. Valore dato dall'operatore.
 COINCIDENCE_MAX_WAIT = 5
+# Attesa MINIMA perche' il cambio sia fattibile: il passeggero deve scendere da
+# un mezzo e salire sull'altro. Il giro AU ha mostrato dove serve: alla
+# Madonnetta il 21/33 transita alle 12:34 e la 2/6 parte alle 12:34 — stesso
+# minuto — e il vincolo difendeva quel cambio scartando spostamenti per
+# proteggere una coincidenza che nessuno puo' prendere. Delle undici relazioni
+# riconosciute era l'unica sotto i due minuti.
+COINCIDENCE_MIN_WAIT = 2
 # Sotto questo numero di occorrenze nella giornata due linee che si sfiorano
 # sono un incontro casuale, non una coincidenza da difendere.
 COINCIDENCE_MIN_OCCURRENCES = 3
@@ -139,11 +146,14 @@ def _stop_events(t: dict) -> list[tuple[str, str, int, bool]]:
 
 
 def detect_coincidences(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
-                        min_occurrences: int = COINCIDENCE_MIN_OCCURRENCES) -> list[dict]:
+                        min_occurrences: int = COINCIDENCE_MIN_OCCURRENCES,
+                        min_wait: int = COINCIDENCE_MIN_WAIT) -> list[dict]:
     """Le coincidenze fra linee, RICONOSCIUTE dall'orario invece che dichiarate.
 
     A un nodo, se l'arrivo della linea A e' seguito dalla partenza della linea B
-    entro max_wait minuti, il passeggero fa il cambio. Se succede almeno
+    fra min_wait e max_wait minuti, il passeggero fa il cambio. Sotto min_wait
+    non fa in tempo a scendere e salire: quella non e' una coincidenza da
+    difendere, e difenderla costa spostamenti. Se succede almeno
     min_occurrences volte nella giornata non e' un incontro casuale: e' una
     coincidenza, e uno spostamento non deve romperla.
 
@@ -174,12 +184,12 @@ def detect_coincidences(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
                     continue
                 if not cap_a and not cap_b:
                     continue          # transito contro transito: non e' un nodo
-                if 0 <= dep - arr <= max_wait:
+                if min_wait <= dep - arr <= max_wait:
                     rel.setdefault((nodo, str(ra), str(rb)), []).append(
                         (ta["tripId"], tb["tripId"], arr, dep))
 
     out = [{"node": nodo, "fromRoute": ra, "toRoute": rb,
-            "occurrences": len(coppie), "maxWaitMin": max_wait,
+            "occurrences": len(coppie), "maxWaitMin": max_wait, "minWaitMin": min_wait,
             "pairs": list(coppie),
             # Gli ORARI che la realizzano, in chiaro: senza questi una relazione
             # inattesa non si puo' controllare a mano sul quadro orario.
@@ -200,7 +210,8 @@ def coincidence_pairs(coincidences: list[dict]) -> list[tuple[str, str, int, int
 
 def coincidences_broken(shifts: dict[str, int], trips_by_id: dict[str, dict],
                         pairs: list[tuple[str, str, int, int]],
-                        max_wait: int = COINCIDENCE_MAX_WAIT) -> list[dict]:
+                        max_wait: int = COINCIDENCE_MAX_WAIT,
+                        min_wait: int = COINCIDENCE_MIN_WAIT) -> list[dict]:
     """Le coincidenze che questo spostamento romperebbe.
 
     Gli orari sono quelli che REALIZZANO la coincidenza (l'arrivo al capolinea
@@ -218,7 +229,7 @@ def coincidences_broken(shifts: dict[str, int], trips_by_id: dict[str, dict],
         if not shifts.get(a) and not shifts.get(b):
             continue                     # nessuna delle due si muove
         attesa = (int(dep) + shifts.get(b, 0)) - (int(arr) + shifts.get(a, 0))
-        if not (0 <= attesa <= max_wait):
+        if not (min_wait <= attesa <= max_wait):
             rotte.append({"fromTrip": a, "toTrip": b, "attesaMin": attesa,
                           "fromRoute": ta.get("routeName"), "toRoute": tb.get("routeName")})
     return rotte
@@ -260,6 +271,7 @@ def propagate_for_coincidences(
     rt_pairs: dict[str, str], coinc_pairs: list[tuple[str, str, int, int]],
     max_wait: int = COINCIDENCE_MAX_WAIT,
     max_trips: int = COINCIDENCE_PROPAGATION_MAX_TRIPS,
+    min_wait: int = COINCIDENCE_MIN_WAIT,
 ) -> tuple[dict[str, int] | None, str]:
     """Invece di scartare uno spostamento che rompe una coincidenza, porta con
     se' anche la corsa in coincidenza.
@@ -277,7 +289,7 @@ def propagate_for_coincidences(
     """
     out = dict(shifts)
     for _ in range(max_trips):
-        rotte = coincidences_broken(out, trips_by_id, coinc_pairs, max_wait)
+        rotte = coincidences_broken(out, trips_by_id, coinc_pairs, max_wait, min_wait)
         if not rotte:
             return out, "ok"
         for r in rotte:

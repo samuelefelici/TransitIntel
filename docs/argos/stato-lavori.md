@@ -603,7 +603,7 @@ Avevo sbagliato due volte. Primo: avevo assunto che il 21/33 transitasse alla Ma
 
 Quelle tre coppie hanno **attesa 0**: il 21/33 passa alle 12:34 e la 2/6 parte alle 12:34, nello stesso minuto. Nessun passeggero fa quel cambio, eppure il vincolo lo difende e per proteggerlo scarta gli spostamenti.
 
-Nel campione delle undici relazioni e' **l'unica** sotto i due minuti; le altre stanno fra 2 e 5. La soglia minima esiste gia' in `coincidence_analysis` (`COINCIDENCE_MIN_WAIT = 2`) ma NON nel vincolo del VCSP: portarla anche li' cambia le coincidenze da difendere, ed e' una decisione dell'operatore.
+Nel campione delle undici relazioni e' **l'unica** sotto i due minuti; le altre stanno fra 2 e 5. **Deciso dall'operatore: la soglia vale ora anche nel vincolo** (`COINCIDENCE_MIN_WAIT = 2` in `vcsp_probe`, da cui `coincidence_analysis` la importa — analisi e motore devono riconoscere le stesse coincidenze, o l'una proporrebbe cio' che l'altro rifiuta). Un cambio sotto i due minuti non si difende piu', e uno spostamento che porta l'attesa sotto la soglia adesso ROMPE la coincidenza invece di sembrare innocuo.
 
 ### La mappa ha lavorato
 
