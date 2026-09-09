@@ -3025,6 +3025,12 @@ function compactAgentResult(payload: any): any {
           // Perché la sonda guidata dai turni non propone nulla: bi-riprese
           // esaminate, quante non possono diventare interi e il δ che servirebbe.
           crewStats: v.probe.crewStats ?? null,
+          // Coincidenze fra linee riconosciute dall'orario (nodo, A→B,
+          // occorrenze) e quanti candidati sono stati scartati per non
+          // romperle. Senza questi due numeri non si sa se il vincolo morde
+          // troppo poco o troppo, e si giudica la sonda alla cieca.
+          coincidences: Array.isArray(v.probe.coincidences) ? v.probe.coincidences : null,
+          rejectedForCoincidence: v.probe.rejectedForCoincidence ?? null,
           shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
           accepted: (Array.isArray(v.probe.accepted) ? v.probe.accepted : []).map((a: any) => {
             const { shifts, ...rest } = a ?? {};

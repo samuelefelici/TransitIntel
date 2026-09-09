@@ -317,6 +317,15 @@ def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
     }
 
 
+def _round_rank(kpi: dict) -> tuple[int, float]:
+    """Ordine fra round: prima le regole, poi i soldi.
+
+    Le violazioni non hanno un prezzo perche' non sono in vendita. Fra due
+    round che ne rompono lo stesso numero decide il punteggio."""
+    return (int(kpi.get("bdsViolations") or 0),
+            float(kpi.get("selectionScoreEur") or 0.0))
+
+
 def main() -> None:
     t0 = time.time()
     data = load_input()
@@ -420,10 +429,19 @@ def main() -> None:
             },
         })
 
-        # Selezione e early-stop sul PUNTEGGIO (costo + ombre turni/violazioni),
-        # non sul costo secco: un round con meno turni e meno violazioni deve
-        # vincere anche se costa qualche euro in più.
-        if best is None or kpi["selectionScoreEur"] < _round_kpi(best[2], best[0], best[1])["selectionScoreEur"]:
+        # Selezione LESSICOGRAFICA: prima chi rompe MENO REGOLE, poi il
+        # punteggio. Le violazioni contate qui — BDS, tetto autovetture,
+        # vettura lasciata senza conducente — non sono costi: sono regole. Il
+        # tetto delle autovetture l'operatore lo ha definito «inviolabile», e
+        # la normativa sui turni e' legge, non una voce di spesa.
+        #
+        # Prezzarle e basta le rendeva ACQUISTABILI, e il motore le comprava:
+        # nel giro AP ha scartato un piano da 20 vetture e ZERO violazioni per
+        # uno da 26 vetture e TRE violazioni, perche' le tre gli costavano 300
+        # EUR mentre le sei vetture in piu' gliene facevano risparmiare 526.
+        # Un piano che rompe una regola non e' un piano peggiore: non e' un
+        # piano. Il punteggio decide solo FRA PARI violazioni.
+        if best is None or _round_rank(kpi) < _round_rank(_round_kpi(best[2], best[0], best[1])):
             best = (vsp_out, crew_out, r)
 
         if r < rounds:
@@ -432,7 +450,9 @@ def main() -> None:
             # giunti precisi, e sciogliere un giunto costa prima di rendere.
             # Fermarsi al primo passo falso (com'era) buttava via il round che
             # sarebbe venuto dopo.
-            if len(rounds_kpi) >= 2 and rounds_kpi[-1]["selectionScoreEur"] >= rounds_kpi[-2]["selectionScoreEur"] - 0.01:
+            _prev, _cur = _round_rank(rounds_kpi[-2]), _round_rank(rounds_kpi[-1])
+            if len(rounds_kpi) >= 2 and (_cur[0] > _prev[0]
+                                         or (_cur[0] == _prev[0] and _cur[1] >= _prev[1] - 0.01)):
                 no_gain += 1
                 if no_gain >= EARLY_STOP_PATIENCE:
                     log(f"[VCSP] round {r}: {no_gain} round senza miglioramento, early-stop")
@@ -485,25 +505,36 @@ def main() -> None:
         probe_section = probe_res["probe"]
         if probe_section.get("accepted"):
             # Lo scenario sonda diventa un round aggiuntivo selezionabile e
-            # salvabile come gli altri; è per costruzione il nuovo best.
-            best_vsp, best_crew = probe_res["vsp"], probe_res["crew"]
-            best_r = len(rounds_kpi) + 1
+            # salvabile come gli altri. Batte il best sul punteggio per
+            # costruzione — la sonda accetta solo cio' che lo abbassa — ma il
+            # punteggio non compra le regole: se lo spostamento ha introdotto
+            # una violazione che prima non c'era, il round resta consultabile
+            # e NON diventa il migliore.
+            probe_vsp, probe_crew = probe_res["vsp"], probe_res["crew"]
+            probe_r = len(rounds_kpi) + 1
             kpi = dict(probe_res["kpi"])
-            kpi["round"] = best_r
+            kpi["round"] = probe_r
             kpi["probe"] = True
             rounds_kpi.append(kpi)
             round_results.append({
-                "round": best_r,
+                "round": probe_r,
                 "probe": True,
-                "vehicleShifts": best_vsp.get("vehicleShifts", []),
+                "vehicleShifts": probe_vsp.get("vehicleShifts", []),
                 "crew": {
-                    "summary": best_crew.get("summary"),
-                    "metrics": best_crew.get("metrics"),
-                    "driverShifts": best_crew.get("driverShifts"),
-                    "handovers": best_crew.get("handovers"),
-                    "clusters": best_crew.get("clusters"),
+                    "summary": probe_crew.get("summary"),
+                    "metrics": probe_crew.get("metrics"),
+                    "driverShifts": probe_crew.get("driverShifts"),
+                    "handovers": probe_crew.get("handovers"),
+                    "clusters": probe_crew.get("clusters"),
                 },
             })
+            if _round_rank(kpi) < _round_rank(_round_kpi(best_r, best_vsp, best_crew)):
+                best_vsp, best_crew, best_r = probe_vsp, probe_crew, probe_r
+            else:
+                log(f"[VCSP] sonda: lo scenario spostato abbassa il punteggio ma rompe "
+                    f"{kpi.get('bdsViolations')} regole contro "
+                    f"{_round_kpi(best_r, best_vsp, best_crew).get('bdsViolations')} del round "
+                    f"{best_r} — resta fra i round consultabili, non diventa il migliore")
 
     elapsed = time.time() - t0
     log(f"=== VCSP DONE in {elapsed:.0f}s — best round {best_r}/{len(rounds_kpi)}: "

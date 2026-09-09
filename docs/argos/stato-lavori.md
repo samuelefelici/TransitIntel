@@ -359,6 +359,39 @@ La flessibilita' non manca: il motore riporta `flexTrips: 365`, cioe' tutte le c
 
 **La sonda del turno povero** e' il pezzo che segue: parte dai turni con piu' margine, e per ogni loro corsa chiede quale spostamento permetterebbe a un turno vicino di assorbirla. Se tutte le corse di un turno trovano casa, quel turno si cancella — ed e' un turno intero risparmiato, non un ritocco. E' il quarto passo del metodo dell'operatore, quello che il motore oggi non fa.
 
+## Il giro AP: i mattoni si muovono, e sotto c'era un difetto piu' grosso
+
+**I due meccanismi nuovi funzionano**, e si vedono nel rendiconto della sonda:
+
+- *giro rigido*: fra i candidati provati ce n'e' uno che sposta la linea 3 variante **3A di +10′** (13:50) e la **3R di +10′** (14:17) — andata e ritorno, stesso delta, insieme. Prima ne avrebbe mossa una sola;
+- *coincidenze*: un candidato scartato con la motivazione «rompe una coincidenza: **7 → 2/6, attesa −13′**», cioe' la 2/6 sarebbe partita tredici minuti prima che arrivasse la 7. Scartato **prima** del re-solve. E non e' una delle tre nominate dall'operatore: e' una dei cluster principali, trovata da sola;
+- lo spostamento accettato (C.S. +15′) e' una corsa singola, ed e' corretto: la Circolare parte e torna a Piazza Cavour, non ha un capolinea periferico dove la sosta conti.
+
+**Il piano pero' peggiora AL**: 26 vetture, 43 turni, 3 violazioni BDS. Ottavo giro senza migliorare il riferimento.
+
+### Ma i round dicono perche'
+
+| round | vetture | turni | violazioni BDS | punteggio |
+|---|---|---|---|---|
+| 2 | **20** | 43 | **0** | 30.142,67 |
+| 6 | 26 | 43 | 3 | **29.931,57** ← scelto |
+
+Il motore ha **scartato un piano da 20 vetture e zero violazioni** per uno da 26 vetture e tre violazioni, per 211 € di punteggio. Il conto: le tre violazioni gli costano **300 €** (`VIOLATION_SHADOW_EUR = 100` l'una), le sei vetture in piu' gliene fanno **risparmiare 526**.
+
+Non e' che il solver non trovi il piano buono: **lo trova e poi lo butta.**
+
+E' un errore di principio, non di taratura. Il tetto delle autovetture l'operatore lo ha definito «inviolabile», la normativa sui turni e' legge: prezzarle le rendeva **acquistabili**. Un piano che rompe una regola non e' un piano peggiore — non e' un piano.
+
+**Corretto: la selezione fra round e' ora lessicografica** (`_round_rank`): prima chi rompe meno regole, poi il punteggio. Vale anche per l'early-stop e per lo scenario della sonda, che prima diventava il migliore «per costruzione» e ora resta consultabile senza vincere se ha introdotto una violazione.
+
+### Il declassamento, ridimensionato
+
+Il sospetto che il modello premiasse le vetture piccole e' **confermato ma marginale**. Declassare da 12 a 10 metri fa risparmiare 0,20 €/km, e la penalita' in morbida (0,05 €/min) equivale a circa 0,165 €/km: declassare rende, ma solo del ~20%. In punta la penalita' e' cinque volte il risparmio e regge.
+
+Solo che l'operatore ha detto «intorno al 28% ci siamo», e i giri stanno al 30-34%: siamo **poco sopra la sua tolleranza**, non fuori strada. Il problema vero non e' la percentuale complessiva ma **i pollicini**, 4-5 contro un massimo di 3 — e quello e' un tetto rigido, come le autovetture, quindi va imposto e non prezzato. Serve il parametro `flotta`, che il cruscotto MCP ancora non espone.
+
+I due campi della sonda (`coincidences`, `rejectedForCoincidence`) non uscivano dall'api-server: esposti, stesso problema di `totalDepotChanges`.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
