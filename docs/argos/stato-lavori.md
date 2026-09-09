@@ -468,6 +468,45 @@ La 3 ha cadenza 30′ e la 21/33 cade sistematicamente a meta' dell'intervallo. 
 
 Nel rendiconto della sonda c'e' ora `propagatedForCoincidence` accanto a `rejectedForCoincidence`: quanti candidati si sono portati dietro il vicino invece di morire.
 
+## Il giro AR: le coincidenze si vedono, il piano no
+
+Scenario `7a46cc61-18fd-4ade-b2bf-4356e1bd9397`, stessi parametri di AQ2, 45 minuti.
+
+**Le coincidenze riconosciute passano da 4 a 11.** Ci sono le due che l'operatore aveva nominato, e nessuna delle due si vedeva prima:
+
+| nodo | da → a | occorrenze | perche' era invisibile |
+|---|---|---|---|
+| MADONNETTA | 2/6 → 21/33 | 4 | la 21/33 **transita**, non si ferma |
+| MADONNETTA | 21/33 → 2/6 | 3 | idem (**da verificare**, vedi sotto) |
+| POSATORA | 31 → 3 | 12 | la **31 transita** a Posatora |
+| POSATORA | 3 → 31 | 11 | idem |
+| PIAZZA CAVOUR | 11 → 2/6, 11 → 1/4, 2/6 → 11 | 4, 3, 3 | la 11 transita |
+
+A Posatora la coincidenza **c'e'**, ma non e' quella cercata: la fa la **31**, non la 21/33. La lettura di ieri (attese di 12-20 minuti fra 3 e 21/33) resta vera per quella coppia, ma il nodo non era vuoto — era la linea sbagliata.
+
+**Un numero da verificare.** Il verso MADONNETTA 21/33 → 2/6 (×3) non torna col conto a mano: il 21/33 transita alla Madonnetta al ritorno alle 09:25, 13:54, 18:24, 20:54 e la 2/6R parte ai minuti :04 e :34, quindi le attese sarebbero 39, 10, 10, 10 — tutte oltre i 5 minuti. O i dati materializzati differiscono dal quadro letto con `ti_line_timetable`, o c'e' un rumore nel riconoscimento. Il verso opposto (2/6 → 21/33, ×4) corrisponde invece al minuto.
+
+**La propagazione ha lavorato**: 6 candidati scartati per coincidenza, **2 salvati** portandosi dietro il vicino (`propagatedForCoincidence`). In AQ2 erano 14 scartati su 15 e nessuno salvato. Ma i 2 salvati sono poi stati bocciati dal punteggio: la sonda ha accettato **zero** spostamenti anche stavolta.
+
+**Il piano pero' e' peggiore, e non per colpa del codice nuovo.**
+
+| giro | vetture | turni | violazioni |
+|---|---|---|---|
+| AQ2 | **21** | 43 | **0** |
+| AR | 29 | 43 | 2 |
+
+La sonda non ha cambiato una sola corsa (`shiftedTrips: 0`), quindi il piano e' il prodotto di VSP+CSP esattamente come prima della modifica. La differenza fra 21 e 29 vetture a parametri identici e' **varianza del solver**, e va guardata in faccia: se due giri uguali danno 21 e 29 vetture, il confronto fra due giri singoli non dimostra niente. E' la prima volta che la serie mostra uno scarto di questa taglia.
+
+**La selezione lessicografica e' stata messa alla prova per la prima volta.** In AQ2 il round vincente aveva insieme zero violazioni e il punteggio migliore, quindi la regola non serviva. Qui no:
+
+| round | vetture | violazioni | punteggio |
+|---|---|---|---|
+| 1 | 25 | 4 | 29.769 |
+| **2 (scelto)** | **29** | **2** | 30.305 |
+| 3 | 24 | 5 | 30.475 |
+
+Ha scelto il round 2, con **il punteggio peggiore** del round 1 ma meta' delle violazioni. Col metro vecchio avrebbe vinto il round 1, con 4 violazioni. La regola funziona.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
