@@ -17,7 +17,7 @@ import {
   serviceProgramScenarios, driverShiftScenarios, depots,
 } from "@workspace/db/schema";
 import { randomUUID } from "node:crypto";
-import { eq, sql, and, desc } from "drizzle-orm";
+import { eq, sql, and, desc, inArray } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
 import { buildDeadheadKmMatrix, dhKey, type DHNode } from "../lib/deadhead-matrix";
 import {
@@ -1580,6 +1580,75 @@ function buildPyTrips(tripBlocks: TripBlock[]) {
   }));
 }
 
+/**
+ * I PASSAGGI IN TRANSITO sui capolinea ALTRUI, per corsa.
+ *
+ * La coincidenza fra due linee non si fa solo al capolinea. Alla Madonnetta la
+ * 2/6 arriva al suo capolinea e la 21/33 ci transita cinque minuti dopo, senza
+ * fermarsi: per il passeggero e' una coincidenza, e nel quadro festivo di
+ * Ancona e' costruita a mano sulle quattro corse della giornata. Guardando solo
+ * la prima e l'ultima fermata di ogni corsa quella coincidenza e' invisibile, e
+ * la sonda di spostamento del VCSP puo' romperla senza accorgersene.
+ *
+ * Si portano SOLO i passaggi su fermate che sono capolinea di qualche corsa: e'
+ * li' che una linea di passaggio incontra chi si ferma. Gli altri transiti sono
+ * il corridoio che due linee percorrono insieme — decine di incontri, nessuna
+ * coincidenza da difendere.
+ */
+async function loadTerminalTransits(
+  feedId: string,
+  blocks: TripBlock[],
+  logger?: { info: (...a: any[]) => void },
+): Promise<Record<string, Array<{ stopName: string; arrivalMin: number; departureMin: number }>>> {
+  const out: Record<string, Array<{ stopName: string; arrivalMin: number; departureMin: number }>> = {};
+  if (blocks.length === 0) return out;
+
+  const terminals = new Set<string>();
+  const own = new Map<string, [string, string]>();
+  for (const b of blocks) {
+    if (b.firstStopId) terminals.add(b.firstStopId);
+    if (b.lastStopId) terminals.add(b.lastStopId);
+    own.set(b.tripId, [b.firstStopId, b.lastStopId]);
+  }
+  if (terminals.size === 0) return out;
+
+  const stopRows = await db.select({ stopId: gtfsStops.stopId, stopName: gtfsStops.stopName })
+    .from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
+  const nameOf = new Map<string, string>();
+  for (const s of stopRows) nameOf.set(s.stopId, s.stopName || s.stopId);
+
+  const ids = blocks.map(b => b.tripId);
+  const BATCH = 500;
+  let n = 0;
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const rows = await db.select({
+      tripId: gtfsStopTimes.tripId,
+      stopId: gtfsStopTimes.stopId,
+      arrivalTime: gtfsStopTimes.arrivalTime,
+      departureTime: gtfsStopTimes.departureTime,
+    }).from(gtfsStopTimes)
+      .where(and(eq(gtfsStopTimes.feedId, feedId), inArray(gtfsStopTimes.tripId, ids.slice(i, i + BATCH))));
+
+    for (const r of rows) {
+      if (!terminals.has(r.stopId)) continue;
+      const o = own.get(r.tripId);
+      if (!o || r.stopId === o[0] || r.stopId === o[1]) continue;  // il proprio capolinea non è un transito
+      const a = r.arrivalTime || r.departureTime;
+      const d = r.departureTime || r.arrivalTime;
+      if (!a || !d) continue;
+      (out[r.tripId] ??= []).push({
+        stopName: nameOf.get(r.stopId) || r.stopId,
+        arrivalMin: timeToMinutes(a),
+        departureMin: timeToMinutes(d),
+      });
+      n++;
+    }
+  }
+  for (const v of Object.values(out)) v.sort((x, y) => x.arrivalMin - y.arrivalMin);
+  logger?.info(`loadTerminalTransits: ${n} passaggi su ${terminals.size} capolinea, ${Object.keys(out).length}/${ids.length} corse`);
+  return out;
+}
+
 /** Spawn generico di uno script Python (JSON stdin → JSON stdout). */
 function spawnPythonJson(
   scriptName: string,
@@ -2492,9 +2561,19 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         companyCars: crewCompanyCars,
         restPoints: crewRestPoints,
       };
+      // Passaggi sui capolinea altrui: senza questi la sonda vede solo le
+      // coincidenze fatte da fermo e puo' rompere quelle fatte in transito.
+      const pyTrips = buildPyTrips(solverBlocks);
+      try {
+        const transits = await loadTerminalTransits(feedId, solverBlocks, req.log);
+        for (const t of pyTrips as any[]) {
+          const tr = transits[t.tripId];
+          if (tr && tr.length > 0) t.terminalTransits = tr;
+        }
+      } catch (e: any) { req.log.info(`loadTerminalTransits saltato: ${e?.message ?? e}`); }
       cpResult = await runVcspOrchestrator(req.log, {
         vsp: {
-          trips: buildPyTrips(solverBlocks),
+          trips: pyTrips,
           config: { timeLimit: timeLimitSec, ...vspExtraConfig },
           routeDetails: routeDetailsForPy,
           psClusters: psClustersForPy,
@@ -3031,6 +3110,9 @@ function compactAgentResult(payload: any): any {
           // troppo poco o troppo, e si giudica la sonda alla cieca.
           coincidences: Array.isArray(v.probe.coincidences) ? v.probe.coincidences : null,
           rejectedForCoincidence: v.probe.rejectedForCoincidence ?? null,
+          // Quanti candidati, invece di essere scartati, si sono portati dietro
+          // la corsa in coincidenza: e' la misura del mattone spostato.
+          propagatedForCoincidence: v.probe.propagatedForCoincidence ?? null,
           shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
           accepted: (Array.isArray(v.probe.accepted) ? v.probe.accepted : []).map((a: any) => {
             const { shifts, ...rest } = a ?? {};
