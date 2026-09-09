@@ -1227,6 +1227,118 @@ router.get("/service-program/trips", async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
+ *  GET /api/service-program/coincidences — la mappa delle coincidenze
+ *
+ *  Le relazioni fra linee che l'orario realizza, quelle che perde per poco e
+ *  quanto costerebbe prenderle traslando una linea intera. Non lancia nessun
+ *  solver: è una lettura del quadro orario, risponde in secondi, e serve PRIMA
+ *  di toccare le corse — non dopo, quando il piano è già fatto.
+ * ═══════════════════════════════════════════════════════════════ */
+
+router.get("/service-program/coincidences", async (req, res) => {
+  try {
+    const feedId = await getLatestFeedId(req);
+    if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+
+    const dateRaw = String(req.query.date || "");
+    const dateYMD = dateRaw.replace(/-/g, "");
+    if (!/^\d{8}$/.test(dateYMD)) {
+      res.status(400).json({ error: "Parametro 'date' obbligatorio (YYYY-MM-DD): serve un giorno con servizio attivo del giorno-tipo da analizzare" });
+      return;
+    }
+    const routeFilter = String(req.query.routeIds || "").split(",").map(s => s.trim()).filter(Boolean);
+
+    const activeServices = await getActiveServiceIds(feedId, dateYMD);
+    if (activeServices.size === 0) { res.json({ corse: 0, esistenti: [], mancatePerPoco: [], opportunita: [], nota: "Nessun servizio attivo per la data" }); return; }
+
+    const allTrips = await db.select({
+      tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId, serviceId: gtfsTrips.serviceId,
+      directionId: gtfsTrips.directionId,
+    }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
+    const trips = allTrips.filter(t => activeServices.has(t.serviceId)
+      && (routeFilter.length === 0 || routeFilter.includes(t.routeId)));
+    if (trips.length === 0) { res.json({ corse: 0, esistenti: [], mancatePerPoco: [], opportunita: [], nota: "Nessuna corsa attiva per le linee/data indicate" }); return; }
+
+    const tripIds = new Set(trips.map(t => t.tripId));
+    const stRows = await db.select({
+      tripId: gtfsStopTimes.tripId, stopId: gtfsStopTimes.stopId,
+      stopSequence: gtfsStopTimes.stopSequence,
+      arrivalTime: gtfsStopTimes.arrivalTime, departureTime: gtfsStopTimes.departureTime,
+    }).from(gtfsStopTimes).where(eq(gtfsStopTimes.feedId, feedId));
+    const stByTrip = new Map<string, typeof stRows>();
+    for (const st of stRows) {
+      if (!tripIds.has(st.tripId)) continue;
+      let arr = stByTrip.get(st.tripId);
+      if (!arr) { arr = []; stByTrip.set(st.tripId, arr); }
+      arr.push(st);
+    }
+
+    const routeRows = await db.select({
+      routeId: gtfsRoutes.routeId, shortName: gtfsRoutes.routeShortName, longName: gtfsRoutes.routeLongName,
+    }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
+    const routeName = new Map(routeRows.map(r => [r.routeId, r.shortName || r.longName || r.routeId]));
+    const stopRows = await db.select({ stopId: gtfsStops.stopId, name: gtfsStops.stopName })
+      .from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
+    const stopName = new Map(stopRows.map(s => [s.stopId, s.name || s.stopId]));
+
+    // Flessibilità DICHIARATA in Planning: per linea (default) e per corsa
+    // (override), come la legge il VSP. Nel feed materializzato route_id e
+    // trip_id GTFS sono gli uuid del progetto, quindi il lookup è diretto.
+    const psProj = String(req.query.psProjectId || "");
+    const flexByRoute = new Map<string, number>();
+    const flexByTrip = new Map<string, number>();
+    if (/^[0-9a-f-]{36}$/i.test(psProj)) {
+      try {
+        const fr = await db.execute<any>(sql`
+          SELECT id, (attributes->>'flexMin')::int AS flex FROM ps_routes
+           WHERE project_id = ${psProj}::uuid AND attributes ? 'flexMin'`);
+        for (const r of fr.rows ?? []) if (Number(r.flex) > 0) flexByRoute.set(String(r.id), Math.min(30, Number(r.flex)));
+        const ft = await db.execute<any>(sql`
+          SELECT id, (attributes->>'flexMin')::int AS flex FROM ps_trips
+           WHERE project_id = ${psProj}::uuid AND attributes ? 'flexMin'`);
+        for (const r of ft.rows ?? []) flexByTrip.set(String(r.id), Math.max(0, Math.min(30, Number(r.flex) || 0)));
+      } catch { /* progetto senza flessibilità dichiarata: corse inchiodate */ }
+    }
+
+    const blocks = trips.map(t => {
+      const sts = (stByTrip.get(t.tripId) || []).sort((a, b) => a.stopSequence - b.stopSequence);
+      if (sts.length === 0) return null;
+      const first = sts[0], last = sts[sts.length - 1];
+      return {
+        tripId: t.tripId, routeId: t.routeId,
+        routeName: routeName.get(t.routeId) || t.routeId,
+        directionId: t.directionId ?? 0,
+        departureMin: timeToMinutes(first.departureTime || first.arrivalTime || "00:00:00"),
+        arrivalMin: timeToMinutes(last.arrivalTime || last.departureTime || "00:00:00"),
+        firstStopId: first.stopId, lastStopId: last.stopId,
+        firstStopName: stopName.get(first.stopId) || first.stopId,
+        lastStopName: stopName.get(last.stopId) || last.stopId,
+        flexMin: flexByTrip.get(t.tripId) ?? flexByRoute.get(t.routeId) ?? 0,
+      };
+    }).filter(Boolean) as any[];
+
+    const transits = await loadTerminalTransits(feedId, blocks, req.log).catch(() => ({} as Record<string, any[]>));
+    for (const b of blocks) {
+      const tr = transits[b.tripId];
+      if (tr && tr.length > 0) b.terminalTransits = tr;
+    }
+
+    const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
+    const out = await spawnPythonJson("coincidence_analysis.py", [], {
+      trips: blocks,
+      maxWait: num(req.query.maxWait, 5),
+      minWait: num(req.query.minWait, 2),
+      nearMissWindow: num(req.query.nearMissWindow, 30),
+      shiftRange: num(req.query.shiftRange, 30),
+      minOccurrences: num(req.query.minOccurrences, 3),
+    }, req.log, "coincidences");
+    res.json(out);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message ?? String(err) });
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════
  *  POST /api/service-program — Run optimizer
  * ═══════════════════════════════════════════════════════════════ */
 
@@ -1597,7 +1709,7 @@ function buildPyTrips(tripBlocks: TripBlock[]) {
  */
 async function loadTerminalTransits(
   feedId: string,
-  blocks: TripBlock[],
+  blocks: Array<Pick<TripBlock, "tripId" | "firstStopId" | "lastStopId">>,
   logger?: { info: (...a: any[]) => void },
 ): Promise<Record<string, Array<{ stopName: string; arrivalMin: number; departureMin: number }>>> {
   const out: Record<string, Array<{ stopName: string; arrivalMin: number; departureMin: number }>> = {};
