@@ -151,8 +151,8 @@ def test_la_coincidenza_si_porta_dietro_invece_di_scartare():
     partenza = {"a21_0": +10, "r21_0": +10}
     assert probe.coincidences_broken(partenza, by_id, coinc)   # da sola romperebbe
 
-    out = probe.propagate_for_coincidences(partenza, by_id, rt, coinc)
-    assert out is not None
+    out, perche = probe.propagate_for_coincidences(partenza, by_id, rt, coinc)
+    assert out is not None and perche == "ok"
     assert out["a26_0"] == 10, "la corsa in coincidenza slitta dello stesso delta"
     assert out["r26_0"] == 10, "e si porta dietro il suo ritorno"
     assert probe.coincidences_broken(out, by_id, coinc) == [], "niente e' rotto"
@@ -162,23 +162,25 @@ def test_se_la_corsa_da_trascinare_non_regge_si_scarta():
     """Le regole non si comprano: se la 2/6 e' inchiodata, lo spostamento cade."""
     trips = _rete_con_giri(flex_26=0)
     by_id, rt, coinc = _ctx(trips)
-    assert probe.propagate_for_coincidences({"a21_0": +10, "r21_0": +10},
-                                            by_id, rt, coinc) is None
+    out, perche = probe.propagate_for_coincidences({"a21_0": +10, "r21_0": +10},
+                                                   by_id, rt, coinc)
+    assert out is None and perche == "flessibilitaInsufficiente"
 
 
 def test_la_catena_ha_un_tetto():
     """Oltre il tetto non si sposta un mattone, si riscrive il quadro."""
     trips = _rete_con_giri()
     by_id, rt, coinc = _ctx(trips)
-    assert probe.propagate_for_coincidences({"a21_0": +10, "r21_0": +10},
-                                            by_id, rt, coinc, max_trips=3) is None
+    out, perche = probe.propagate_for_coincidences({"a21_0": +10, "r21_0": +10},
+                                                   by_id, rt, coinc, max_trips=3)
+    assert out is None and perche == "catenaTroppoLunga"
 
 
 def test_uno_spostamento_che_non_rompe_niente_resta_com_e():
     trips = _rete_con_giri()
     by_id, rt, coinc = _ctx(trips)
     dentro = {"a21_0": -3, "r21_0": -3}
-    assert probe.propagate_for_coincidences(dentro, by_id, rt, coinc) == dentro
+    assert probe.propagate_for_coincidences(dentro, by_id, rt, coinc) == (dentro, "ok")
 
 
 def test_gli_orari_delle_coppie_seguono_le_corse():
@@ -190,3 +192,12 @@ def test_gli_orari_delle_coppie_seguono_le_corse():
         p_arr, p_dep = prima[(a, b)]
         assert arr == p_arr + (10 if a == "a26_0" else 0)
         assert dep == p_dep + (10 if b == "a21_0" else 0)
+
+
+def test_la_coincidenza_dichiara_gli_orari_che_la_realizzano():
+    """Una relazione inattesa dev'essere controllabile a mano sul quadro."""
+    c = probe.detect_coincidences(_madonnetta())[0]
+    s = c["sample"][0]
+    assert s["arrivo"] == "08:00" and s["partenza"] == "08:05" and s["attesaMin"] == 5
+    assert s["fromTrip"] == "c26_0" and s["toTrip"] == "c2133_0"
+    assert len(c["sample"]) == 3, "un campione, non l'elenco intero"

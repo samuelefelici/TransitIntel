@@ -3113,6 +3113,9 @@ function compactAgentResult(payload: any): any {
           // Quanti candidati, invece di essere scartati, si sono portati dietro
           // la corsa in coincidenza: e' la misura del mattone spostato.
           propagatedForCoincidence: v.probe.propagatedForCoincidence ?? null,
+          // Perché la catena non si è chiusa (flessibilità, delta in conflitto,
+          // tetto): senza il motivo non si sa dove allargare.
+          propagationFailures: v.probe.propagationFailures ?? null,
           shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
           accepted: (Array.isArray(v.probe.accepted) ? v.probe.accepted : []).map((a: any) => {
             const { shifts, ...rest } = a ?? {};
