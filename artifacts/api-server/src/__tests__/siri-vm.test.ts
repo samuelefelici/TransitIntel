@@ -12,6 +12,7 @@ import {
   buildVehicleMonitoringRequest, buildCheckStatusRequest,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
   lineCodeCandidates, normalizeStopName, routeRefLineCandidates, matchRouteByLongName,
+  buildTripStartIndex, matchTripBySchedule, localHHMM, scheduleKeys,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -672,5 +673,83 @@ describe("capabilities", () => {
     expect(cap.hasPreviousCalls).toBe(true);
     expect(cap.defaultDetailLevel).toBe("normal");
     expect(cap.defaultPreviewIntervalSec).toBe(1800);
+  });
+});
+
+/* ── Aggancio della corsa per orario ─────────────────────────────────────
+ * È l'ultimo anello: gli id dei due sistemi non si parlano ("469179" contro
+ * "684_CodUdp:D1690_363283"), ma linea + ora di partenza individuano la corsa. */
+describe("aggancio della corsa per linea e ora di partenza", () => {
+  const idx = buildTripStartIndex([
+    { tripId: "T-0715-A", routeId: "3", firstDeparture: "07:15:00", headsign: "Piazza Cavour" },
+    { tripId: "T-0730-A", routeId: "3", firstDeparture: "07:30:00", headsign: "Piazza Cavour" },
+    // stessa linea e ora, capolinea diversi: disambiguabili dalla destinazione
+    { tripId: "T-0800-AND", routeId: "3", firstDeparture: "08:00:00", headsign: "Posatora Capolinea" },
+    { tripId: "T-0800-RIT", routeId: "3", firstDeparture: "08:00:00", headsign: "Piazza Cavour" },
+    // corsa a cavallo della mezzanotte, scritta come il GTFS impone
+    { tripId: "T-NOTTE", routeId: "3", firstDeparture: "25:10:00", headsign: "Deposito" },
+  ]);
+  const rome = "Europe/Rome";
+  const at = (iso: string) => new Date(iso);
+
+  it("aggancia la corsa con la partenza esatta", () => {
+    const m = matchTripBySchedule("3", at("2026-09-10T05:15:00Z"), idx, rome); // 07:15 a Roma
+    expect(m.tripId).toBe("T-0715-A");
+    expect(m.ambiguous).toBe(false);
+    expect(m.toleranceUsed).toBe(0);
+  });
+
+  it("tollera un minuto di scarto fra AVM e orario", () => {
+    const m = matchTripBySchedule("3", at("2026-09-10T05:31:00Z"), idx, rome); // 07:31
+    expect(m.tripId).toBe("T-0730-A");
+    expect(m.toleranceUsed).toBe(1);
+  });
+
+  it("non aggancia se lo scarto è troppo grande", () => {
+    const m = matchTripBySchedule("3", at("2026-09-10T05:40:00Z"), idx, rome); // 07:40
+    expect(m.tripId).toBeNull();
+  });
+
+  it("usa il capolinea per scegliere fra due corse alla stessa ora", () => {
+    const m = matchTripBySchedule("3", at("2026-09-10T06:00:00Z"), idx, rome, "POSATORA CAPOLINEA");
+    expect(m.tripId).toBe("T-0800-AND");
+    expect(m.ambiguous).toBe(false);
+  });
+
+  it("senza capolinea sceglie in modo deterministico ma lo DICHIARA", () => {
+    const m = matchTripBySchedule("3", at("2026-09-10T06:00:00Z"), idx, rome);
+    expect(m.tripId).toBe("T-0800-AND"); // ordinamento stabile
+    expect(m.ambiguous).toBe(true);      // e l'ambiguità non si nasconde
+  });
+
+  it("trova le corse notturne scritte oltre le 24 ore", () => {
+    // 01:10 di notte: nel GTFS è la corsa "25:10" del giorno prima
+    const m = matchTripBySchedule("3", at("2026-09-10T23:10:00Z"), idx, rome); // 01:10 dell'11
+    expect(m.tripId).toBe("T-NOTTE");
+  });
+
+  it("non confonde le linee", () => {
+    expect(matchTripBySchedule("94", at("2026-09-10T05:15:00Z"), idx, rome).tripId).toBeNull();
+  });
+});
+
+describe("orario locale e chiavi di ricerca", () => {
+  it("converte nell'ora dell'azienda, non in quella del server", () => {
+    // ora legale italiana: UTC+2
+    expect(localHHMM(new Date("2026-09-10T12:39:00Z"), "Europe/Rome")).toBe("14:39");
+    // mezzanotte deve essere 00, non 24
+    expect(localHHMM(new Date("2026-09-10T22:00:00Z"), "Europe/Rome")).toBe("00:00");
+  });
+
+  it("prova l'ora esatta per prima, poi gli scarti", () => {
+    const k = scheduleKeys("07:15");
+    expect(k[0]).toBe("07:15");
+    expect(k).toContain("07:14");
+    expect(k).toContain("07:16");
+  });
+
+  it("per le ore piccole propone anche la forma oltre le 24", () => {
+    expect(scheduleKeys("01:10")).toContain("25:10");
+    expect(scheduleKeys("14:39")).not.toContain("38:39");
   });
 });
