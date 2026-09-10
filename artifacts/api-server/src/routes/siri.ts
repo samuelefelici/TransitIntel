@@ -430,6 +430,10 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
     transitiInseriti: ingest.transitsInserted,
     mezziNonSalvati: ingest.vehiclesFailed || undefined,
     primoErrore: ingest.firstError ?? undefined,
+    /* Dove si interrompe la catena che porta a un transito. Prima, quando non
+     * arrivava niente, si poteva solo tirare a indovinare quale anello avesse
+     * ceduto: adesso lo si legge. */
+    acquisizioneTransiti: { ...ingest.funnel, diagnosi: ingest.funnelNota },
     intervalloPollSec: poll.effettivo,
     avviso: poll.ridotto
       ? `SIRI_POLL_SECONDS=${poll.richiesto}: oltre i ${MAX_GAP_SEC} s il cambio di fermata `

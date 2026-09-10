@@ -1308,6 +1308,111 @@ export function effectivePollSeconds(requested: number): number {
   return requested > MAX_GAP_SEC ? POLL_CONSIGLIATO_SEC : Math.max(10, requested);
 }
 
+/* ── Il passaggio riconosciuto dalla POSIZIONE ────────────────────────────
+ *
+ * Il rilevamento qui sotto (detectTransit) dipende da un filo sottile: che
+ * l'AVM mandi MonitoredCall, che quel riferimento di fermata si agganci al
+ * feed, e che CAMBI fra due letture consecutive. Se uno solo dei tre anelli
+ * salta — e su questo produttore saltano spesso — non viene acquisito nulla,
+ * in silenzio, pur avendo la posizione del mezzo a ogni giro.
+ *
+ * La posizione però basta da sola: conoscendo le fermate della corsa e le
+ * loro coordinate, un mezzo che passa entro pochi metri dalla fermata K della
+ * PROPRIA corsa ha transitato da K. Non serve che l'AVM dichiari nulla, e si
+ * riconoscono tutte le fermate toccate, non una per coppia di letture.
+ */
+
+/* L'acquisizione dei transiti è una catena di condizioni, e finora quando non
+ * arrivava niente non si sapeva QUALE anello cedesse: si poteva solo tirare a
+ * indovinare, una ipotesi per volta. Questi contatori misurano ogni passaggio
+ * della catena su ogni giro, così la risposta si legge invece di dedurla. */
+export interface TransitFunnel {
+  inEsercizio: number;
+  conMatricola: number;
+  conCorsaAgganciata: number;
+  conPosizione: number;
+  /** corse agganciate di cui conosciamo le fermate con coordinate */
+  conGeometriaFermate: number;
+  /** ── via posizione ── */
+  vicinoAFermata: number;
+  transitiDaPosizione: number;
+  /** ── via cambio di fermata dichiarata dall'AVM ── */
+  conFermataAvm: number;
+  conLetturaPrecedente: number;
+  fermataCambiata: number;
+  transitiDaCambioFermata: number;
+  /** ── dichiarati dall'AVM con orario effettivo ── */
+  transitiDichiarati: number;
+  /** ── esito ── */
+  inseriti: number;
+  giaPresenti: number;
+}
+
+export function emptyFunnel(): TransitFunnel {
+  return {
+    inEsercizio: 0, conMatricola: 0, conCorsaAgganciata: 0, conPosizione: 0,
+    conGeometriaFermate: 0, vicinoAFermata: 0, transitiDaPosizione: 0,
+    conFermataAvm: 0, conLetturaPrecedente: 0, fermataCambiata: 0,
+    transitiDaCambioFermata: 0, transitiDichiarati: 0, inseriti: 0, giaPresenti: 0,
+  };
+}
+
+/** Dove si è interrotta la catena, in una frase. */
+export function explainFunnel(f: TransitFunnel): string {
+  if (f.inEsercizio === 0) return "Nessun mezzo in esercizio: l'AVM non sta mandando vetture in servizio.";
+  if (f.conCorsaAgganciata === 0) return "Nessun mezzo è agganciato a una corsa dell'orario: senza corsa il transito non è attribuibile a nulla.";
+  if (f.conPosizione === 0) return "Nessuna posizione: senza coordinate il passaggio non è riconoscibile.";
+  if (f.conGeometriaFermate === 0) return "Delle corse agganciate non si conoscono le fermate con coordinate: controlla che gtfs_stops abbia stop_lat/stop_lon per questo feed.";
+  if (f.inseriti === 0 && f.giaPresenti > 0) return "I passaggi vengono riconosciuti ma risultano già registrati: nessuna novità, non è un guasto.";
+  if (f.vicinoAFermata === 0) return "Nessun mezzo si trova entro il raggio di una fermata della propria corsa: o le coordinate del feed non combaciano con quelle dell'AVM, o le corse agganciate sono quelle sbagliate.";
+  if (f.inseriti === 0) return "Mezzi riconosciuti alle fermate ma nessuna scrittura riuscita: guarda primoErrore.";
+  return `${f.inseriti} passaggi registrati in questo giro.`;
+}
+
+/** Distanza in metri fra due punti (formula dell'emisenoverso). */
+export function distanceMeters(
+  lat1: number, lon1: number, lat2: number, lon2: number,
+): number {
+  const R = 6_371_000, toRad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toRad;
+  const dLon = (lon2 - lon1) * toRad;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * toRad) * Math.cos(lat2 * toRad) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/** Una fermata della corsa, con dove sta e a che ora è prevista. */
+export interface TripStop {
+  stopId: string;
+  seq: number;
+  lat: number;
+  lon: number;
+  /** orario programmato "HH:MM:SS", se il feed ce l'ha */
+  scheduled: string | null;
+}
+
+/**
+ * Raggio di prossimità. Sotto i ~30 m si perdono i passaggi per l'imprecisione
+ * del GPS urbano; sopra i ~80 m si agganciano fermate della carreggiata
+ * opposta o dell'incrocio accanto. 60 m è il compromesso abituale per il TPL.
+ */
+export const STOP_RADIUS_M = 60;
+
+/**
+ * Le fermate della corsa da cui il mezzo sta passando adesso, la più vicina
+ * per prima. Elenco vuoto se è in mezzo a una tratta.
+ */
+export function stopsAtPosition(
+  lat: number, lon: number, stops: TripStop[], radiusM = STOP_RADIUS_M,
+): Array<TripStop & { distanceM: number }> {
+  const near: Array<TripStop & { distanceM: number }> = [];
+  for (const s of stops) {
+    const d = distanceMeters(lat, lon, s.lat, s.lon);
+    if (d <= radiusM) near.push({ ...s, distanceM: Math.round(d) });
+  }
+  return near.sort((a, b) => a.distanceM - b.distanceM);
+}
+
 export function detectTransit(
   prev: VehicleProgress | null | undefined, cur: VehicleProgress,
 ): TransitEvent | null {

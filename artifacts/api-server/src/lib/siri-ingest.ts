@@ -23,6 +23,8 @@ import { getLatestFeedId } from "../routes/gtfs-helpers";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
+  stopsAtPosition, emptyFunnel, explainFunnel,
+  type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress,
 } from "./siri-vm";
@@ -206,45 +208,64 @@ export async function loadTripStartIndex(feedId: string): Promise<TripStartIndex
  * corse entrate in servizio dopo il primo giro, cioè quasi tutte.
  *
  * Ora si accumula: si interroga il database solo per le corse mai caricate. */
-let cachedStopTimes: {
+/* Si caricano anche le COORDINATE, non solo gli orari: sono ciò che permette
+ * di riconoscere il passaggio dalla posizione del mezzo, senza dipendere da
+ * quello che l'AVM dichiara. */
+interface StopTimeCache {
   feedId: string;
   day: string;
+  /** "corsa|fermata" → orario programmato e progressivo */
   map: Map<string, { scheduled: string; seq: number }>;
-  /** corse per cui l'interrogazione è già stata fatta, anche se senza orari */
+  /** corsa → fermate con coordinate, in ordine di percorso */
+  tripStops: Map<string, TripStop[]>;
+  /** corse per cui l'interrogazione è già stata fatta, anche se a vuoto */
   loadedTrips: Set<string>;
   at: number;
-} | null = null;
+}
+let cachedStopTimes: StopTimeCache | null = null;
 
 async function loadStopTimeIndex(
   feedId: string, tripIds: string[], day: string,
-): Promise<Map<string, { scheduled: string; seq: number }>> {
+): Promise<StopTimeCache> {
   const fresh = cachedStopTimes
     && cachedStopTimes.feedId === feedId
     && cachedStopTimes.day === day
     && Date.now() - cachedStopTimes.at < TRIP_TTL_MS;
   if (!fresh) {
     cachedStopTimes = {
-      feedId, day, map: new Map(), loadedTrips: new Set(), at: Date.now(),
+      feedId, day, map: new Map(), tripStops: new Map(),
+      loadedTrips: new Set(), at: Date.now(),
     };
   }
   const cache = cachedStopTimes!;
 
   /* Solo le corse non ancora caricate: le altre sono già nella mappa. */
   const missing = tripIds.filter(t => !cache.loadedTrips.has(t));
-  if (missing.length === 0) return cache.map;
+  if (missing.length === 0) return cache;
 
   try {
     const r = await db.execute<any>(sql`
-      SELECT trip_id, stop_id, stop_sequence,
-             COALESCE(departure_time, arrival_time) AS t
-        FROM gtfs_stop_times
-       WHERE feed_id = ${feedId}::uuid
-         AND trip_id = ANY(${`{${missing.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])`);
+      SELECT st.trip_id, st.stop_id, st.stop_sequence,
+             COALESCE(st.departure_time, st.arrival_time) AS t,
+             s.stop_lat, s.stop_lon
+        FROM gtfs_stop_times st
+        LEFT JOIN gtfs_stops s
+               ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id
+       WHERE st.feed_id = ${feedId}::uuid
+         AND st.trip_id = ANY(${`{${missing.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])
+       ORDER BY st.trip_id, st.stop_sequence`);
     for (const x of ((r as any).rows ?? [])) {
-      if (!x.t) continue;
-      cache.map.set(`${x.trip_id}|${x.stop_id}`, {
-        scheduled: String(x.t), seq: Number(x.stop_sequence ?? 0),
-      });
+      const tripId = String(x.trip_id);
+      const stopId = String(x.stop_id);
+      const seq = Number(x.stop_sequence ?? 0);
+      const scheduled = x.t ? String(x.t) : null;
+      if (scheduled) cache.map.set(`${tripId}|${stopId}`, { scheduled, seq });
+      /* Senza coordinate la fermata non è riconoscibile dalla posizione, ma
+       * può ancora servire come termine di confronto: si scarta solo qui. */
+      if (x.stop_lat == null || x.stop_lon == null) continue;
+      const list = cache.tripStops.get(tripId) ?? [];
+      list.push({ stopId, seq, lat: Number(x.stop_lat), lon: Number(x.stop_lon), scheduled });
+      cache.tripStops.set(tripId, list);
     }
     /* Segnate come caricate anche quelle senza orari: senza questo si
      * riproverebbe a ogni giro su corse che nel feed non ne hanno. */
@@ -252,7 +273,7 @@ async function loadStopTimeIndex(
   } catch (e: any) {
     console.warn("[siri] orari per fermata non disponibili:", e?.message ?? e);
   }
-  return cache.map;
+  return cache;
 }
 
 /* ── Velocità stimata ─────────────────────────────────────────────────────── */
@@ -293,6 +314,10 @@ export interface IngestResult {
   /** il primo errore incontrato, per capire perché senza leggere i log */
   firstError: string | null;
   report: MappingReport;
+  /** dove si interrompe la catena che porta a un transito */
+  funnel: TransitFunnel;
+  /** la stessa cosa, in una frase */
+  funnelNota: string;
 }
 
 export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> {
@@ -306,6 +331,9 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
       vehiclesFailed: 0, vehiclesParked: split.ferme.length, firstError: null,
+      funnel: { ...emptyFunnel(), inEsercizio: vehicles.length },
+      funnelNota: "Nessun feed GTFS attivo: senza orario non c'è nulla a cui "
+        + "attribuire i passaggi.",
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
         tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
@@ -331,6 +359,8 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
   let positionsInserted = 0, tripsOpened = 0, tripsClosed = 0, transitsInserted = 0;
   let vehiclesFailed = 0;
   let firstError: string | null = null;
+  const funnel = emptyFunnel();
+  funnel.inEsercizio = mapped.length;
 
   for (const m of mapped) {
    /* Un mezzo che non si riesce a salvare non deve costare gli altri 367.
@@ -341,6 +371,11 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     const v = m.siri;
     const vehicleId = v.vehicleRef ?? null;
     const ts = v.recordedAt ?? new Date();
+
+    if (vehicleId) funnel.conMatricola++;
+    if (m.tripId) funnel.conCorsaAgganciata++;
+    if (v.lat != null && v.lon != null) funnel.conPosizione++;
+    if (m.nearestStopId) funnel.conFermataAvm++;
 
     /* 1. Posizione. Dedup su (mezzo, istante): il poller gira più spesso di
      *    quanto l'AVM aggiorni, e senza questo la tabella si riempirebbe di
@@ -380,61 +415,110 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       tripsOpened += (opened as any).rowCount ?? 0;
     }
 
-    /* 3a. TRANSITO OSSERVATO. Le PreviousCalls di questo produttore arrivano
-     *     senza orari, quindi il passaggio si riconosce dal cambio di fermata
-     *     corrente: se il mezzo puntava ad A e ora punta a B, ha superato A
-     *     nel frattempo. È l'unica misura disponibile, e non dipende da come
-     *     l'AVM calcola il ritardo. */
+    /* Scrive un passaggio. Il ritardo dichiarato dall'AVM ha la precedenza —
+     * è la sua misura ufficiale — ma quando manca lo si calcola dal
+     * programmato, altrimenti la colonna Δ resta vuota avendo in mano
+     * entrambi i termini del confronto. */
+    const scriviTransito = async (
+      stopId: string, seq: number | null, scheduled: string | null,
+      at: Date, delayDichiarato: number | null, capolineaDiPartenza = false,
+    ): Promise<void> => {
+      const tz = index.timeZone ?? "Europe/Rome";
+      const delay = delayDichiarato ?? delayFromSchedule(scheduled, at, tz);
+      const r = await db.execute<any>(sql`
+        INSERT INTO caronte.stop_transits
+               (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
+                scheduled, actual_ts, delay_seconds, lat, lon)
+        SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
+               ${stopId}, ${seq}, ${scheduled},
+               ${at.toISOString()}::timestamptz, ${delay}, ${v.lat}, ${v.lon}
+         WHERE NOT EXISTS (
+           SELECT 1 FROM caronte.stop_transits s
+            WHERE s.trip_id = ${m.tripId} AND s.stop_id = ${stopId}
+              AND s.actual_ts > now() - interval '18 hours')`);
+      const n = (r as any).rowCount ?? 0;
+      if (n > 0) { transitsInserted += n; funnel.inseriti += n; return; }
+      funnel.giaPresenti++;
+
+      /* Alla PRIMA fermata l'evento che conta è la partenza, non l'arrivo.
+       * Il riconoscimento dalla posizione scatta appena il mezzo entra nel
+       * raggio: un autobus che si mette in sosta al capolinea venti minuti
+       * prima registrerebbe venti minuti di anticipo, falsando la puntualità
+       * di ogni corsa. Finché è ancora lì si aggiorna l'orario, così alla
+       * fine resta memorizzato l'istante in cui se n'è andato. */
+      if (!capolineaDiPartenza) return;
+      await db.execute<any>(sql`
+        UPDATE caronte.stop_transits
+           SET actual_ts = ${at.toISOString()}::timestamptz,
+               delay_seconds = ${delay}
+         WHERE trip_id = ${m.tripId} AND stop_id = ${stopId}
+           AND actual_ts > now() - interval '18 hours'
+           AND actual_ts < ${at.toISOString()}::timestamptz`);
+    };
+
+    /* 3a. TRANSITO RICONOSCIUTO DALLA POSIZIONE — il canale principale.
+     *
+     *     Non dipende da niente che l'AVM debba dichiarare: bastano le
+     *     coordinate del mezzo e quelle delle fermate della sua corsa. Se il
+     *     mezzo si trova entro il raggio di una fermata del proprio percorso,
+     *     da lì sta passando. Riconosce OGNI fermata toccata, non una per
+     *     coppia di letture, e continua a funzionare quando MonitoredCall
+     *     manca o non si aggancia — che è il caso in cui prima non veniva
+     *     acquisito nulla, in silenzio. */
+    const fermateCorsa: TripStop[] = m.tripId
+      ? (stopTimes.tripStops.get(m.tripId) ?? [])
+      : [];
+    if (fermateCorsa.length > 0) funnel.conGeometriaFermate++;
+
+    if (vehicleId && m.tripId && v.lat != null && v.lon != null && fermateCorsa.length > 0) {
+      const vicine = stopsAtPosition(v.lat, v.lon, fermateCorsa);
+      if (vicine.length > 0) funnel.vicinoAFermata++;
+      /* Solo la più vicina: a un incrocio due fermate della stessa corsa
+       * possono cadere entrambe nel raggio, e scriverle tutt'e due
+       * inventerebbe un passaggio mai avvenuto. */
+      const f = vicine[0];
+      if (f) {
+        funnel.transitiDaPosizione++;
+        const primaSeq = Math.min(...fermateCorsa.map(s => s.seq));
+        await scriviTransito(
+          f.stopId, f.seq, f.scheduled, ts, v.delaySeconds, f.seq === primaSeq,
+        );
+      }
+    }
+
+    /* 3b. TRANSITO DAL CAMBIO DI FERMATA DICHIARATA — secondo canale.
+     *
+     *     Resta utile dove il feed non ha le coordinate della fermata: il
+     *     mezzo puntava ad A e ora punta a B, quindi ha superato A. Il
+     *     deduplicatore impedisce che i due canali contino due volte lo
+     *     stesso passaggio. */
     if (vehicleId && m.tripId && m.nearestStopId) {
       const cur: VehicleProgress = {
         tripId: m.tripId, stopId: m.nearestStopId,
         delaySeconds: v.delaySeconds, at: ts,
       };
-      const ev = detectTransit(lastProgress.get(vehicleId), cur);
+      const precedente = lastProgress.get(vehicleId);
+      if (precedente) funnel.conLetturaPrecedente++;
+      if (precedente && precedente.tripId === cur.tripId
+          && precedente.stopId !== cur.stopId) funnel.fermataCambiata++;
+      const ev = detectTransit(precedente, cur);
       lastProgress.set(vehicleId, cur);
       if (ev) {
-        const st = stopTimes.get(`${ev.tripId}|${ev.stopId}`);
-        /* Il ritardo dichiarato dall'AVM ha la precedenza — è la sua misura
-         * ufficiale — ma quando manca lo si calcola: programmato e osservato
-         * ci sono entrambi, e senza questo la colonna Δ restava vuota. */
-        const delay = ev.delaySeconds
-          ?? delayFromSchedule(st?.scheduled, ev.observedAt, index.timeZone ?? "Europe/Rome");
-        const r = await db.execute<any>(sql`
-          INSERT INTO caronte.stop_transits
-                 (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
-                  scheduled, actual_ts, delay_seconds, lat, lon)
-          SELECT ${ev.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
-                 ${ev.stopId}, ${st?.seq ?? null}, ${st?.scheduled ?? null},
-                 ${ev.observedAt.toISOString()}::timestamptz, ${delay},
-                 ${v.lat}, ${v.lon}
-           WHERE NOT EXISTS (
-             SELECT 1 FROM caronte.stop_transits s
-              WHERE s.trip_id = ${ev.tripId} AND s.stop_id = ${ev.stopId}
-                AND s.actual_ts > now() - interval '18 hours')`);
-        transitsInserted += (r as any).rowCount ?? 0;
+        funnel.transitiDaCambioFermata++;
+        const st = stopTimes.map.get(`${ev.tripId}|${ev.stopId}`);
+        await scriviTransito(
+          ev.stopId, st?.seq ?? null, st?.scheduled ?? null,
+          ev.observedAt, ev.delaySeconds,
+        );
       }
     }
 
-    /* 3b. Transiti DICHIARATI dal produttore, quando li manda con gli orari:
-     *     hanno la precedenza su quelli osservati perché sono precisi. */
+    /* 3c. Transiti DICHIARATI dal produttore con l'orario effettivo: quando
+     *     ci sono sono i più precisi, perché li ha misurati lui. */
     if (m.tripId) {
       for (const t of m.transits) {
-        const delay = t.delaySeconds
-          ?? delayFromSchedule(t.scheduled, t.actualTs, index.timeZone ?? "Europe/Rome");
-        const r = await db.execute<any>(sql`
-          INSERT INTO caronte.stop_transits
-                 (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
-                  scheduled, actual_ts, delay_seconds, lat, lon)
-          SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
-                 ${t.stopId}, ${t.stopSeq}, ${t.scheduled},
-                 ${t.actualTs.toISOString()}::timestamptz, ${delay},
-                 ${v.lat}, ${v.lon}
-           WHERE NOT EXISTS (
-             SELECT 1 FROM caronte.stop_transits s
-              WHERE s.trip_id = ${m.tripId} AND s.stop_id = ${t.stopId}
-                AND s.stop_seq IS NOT DISTINCT FROM ${t.stopSeq}
-                AND s.actual_ts > now() - interval '18 hours')`);
-        transitsInserted += (r as any).rowCount ?? 0;
+        funnel.transitiDichiarati++;
+        await scriviTransito(t.stopId, t.stopSeq, t.scheduled, t.actualTs, t.delaySeconds);
       }
     }
    } catch (e: any) {
@@ -450,6 +534,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
     vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
+    funnel, funnelNota: explainFunnel(funnel),
   };
 }
 
