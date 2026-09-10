@@ -43,7 +43,7 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
     db.execute<any>(sql`
       SELECT stop_id, stop_name FROM gtfs_stops WHERE feed_id = ${feedId}::uuid`),
     db.execute<any>(sql`
-      SELECT route_id, route_short_name FROM gtfs_routes WHERE feed_id = ${feedId}::uuid`),
+      SELECT route_id, route_short_name, route_long_name FROM gtfs_routes WHERE feed_id = ${feedId}::uuid`),
   ]);
   const trips = new Set<string>();
   const routes = new Set<string>();
@@ -57,11 +57,15 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   /* Il numero di linea può stare nell'id o nel nome breve, a seconda di come
    * il feed è stato costruito: si indicizzano entrambi, normalizzati. */
   const routeByCode = new Map<string, string>();
+  const routeLongNames: Array<{ norm: string; routeId: string }> = [];
   for (const r of ((routesR as any).rows ?? [])) {
     const id = String(r.route_id);
     routes.add(id);
     routeByCode.set(normalizeLineCode(id), id);
     if (r.route_short_name) routeByCode.set(normalizeLineCode(String(r.route_short_name)), id);
+    if (r.route_long_name) {
+      routeLongNames.push({ norm: normalizeStopName(String(r.route_long_name)), routeId: id });
+    }
   }
   for (const id of routes) if (!routeByCode.has(normalizeLineCode(id))) routeByCode.set(normalizeLineCode(id), id);
 
@@ -80,7 +84,7 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   }
 
   cachedIndex = {
-    feedId, trips, routes, stops, tripRoute, routeByCode, stopNames, stopByName,
+    feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName,
     loadedAt: Date.now(),
   };
   return cachedIndex;
@@ -125,7 +129,8 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0, routeMatched: 0,
         stopMatched: 0, transitsFound: 0, transitsMatched: 0,
-        routeMatchedByPublishedName: 0, routeMatchedByRouteRef: 0, routeMatchedByRef: 0,
+        routeMatchedByPublishedName: 0, routeMatchedByRouteRef: 0,
+        routeMatchedByLongName: 0, routeMatchedByRef: 0,
         stopMatchedById: 0, stopMatchedByName: 0, stopIdNameConflicts: [],
         unmatchedTripRefs: [], unmatchedLineRefs: [], unmatchedLines: [],
         unmatchedStopRefs: [],
