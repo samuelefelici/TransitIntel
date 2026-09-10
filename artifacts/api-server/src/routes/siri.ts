@@ -27,6 +27,7 @@ import {
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
+import { ensureCaronteSchema, missingColumns } from "../lib/caronte-schema";
 
 const router: IRouter = Router();
 
@@ -105,6 +106,21 @@ router.get("/siri/status", async (req, res): Promise<void> => {
   } catch (e: any) {
     out.capabilities = { error: e?.message ?? "non disponibili" };
   }
+
+  /* Lo stato dell'esercizio va detto qui: è la prima pagina che si guarda. */
+  const schema = await ensureCaronteSchema();
+  const mancanti = await missingColumns();
+  out.schemaCaronte = {
+    pronto: schema.ready,
+    allineatoOra: schema.applied.length > 0 ? schema.applied : undefined,
+    mancanti: mancanti.length > 0 ? mancanti : undefined,
+    errore: schema.error ?? undefined,
+    nota: schema.ready
+      ? undefined
+      : "Le tabelle dell'esercizio non sono allineate: le scritture del connettore "
+        + "falliscono e Sala Operativa risponde 500. Serve applicare le migrazioni "
+        + "in migrations/, oppure dare al ruolo del database il permesso di CREATE/ALTER.",
+  };
 
   const index = await loadGtfsIndex();
   out.feedGtfs = index
@@ -270,6 +286,19 @@ router.post("/siri/sync", async (_req, res): Promise<void> => {
 export async function runSiriIngest(): Promise<Record<string, unknown>> {
   const cfg = siriConfig();
   if (!cfg) return { skipped: "SIRI_VM_URL non impostata" };
+
+  /* Prima di scrivere: le tabelle dell'esercizio devono avere tutte le
+   * colonne. Se una migrazione non è stata applicata, ogni INSERT fallirebbe
+   * in silenzio nel log del poller e non si accumulerebbe alcun dato. */
+  const schema = await ensureCaronteSchema();
+  if (!schema.ready) {
+    return {
+      failed: true,
+      errorText: "Schema caronte non allineato: " + (schema.error ?? "colonne mancanti")
+        + ". Mancano: " + ((await missingColumns()).join(", ") || "n/d"),
+      mezzi: 0,
+    };
+  }
 
   const result = await fetchVehicleMonitoring(cfg, { detailLevel: siriDetailLevel() });
   if (result.failed) {
