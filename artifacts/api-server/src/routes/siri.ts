@@ -210,6 +210,14 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
       completezza,
       diagnosi: diagnose(completezza, mapping?.report),
       corrispondenze: mapping?.report ?? { nota: "nessun feed GTFS attivo" },
+      /* Gli id VERI del feed, accanto ai riferimenti orfani dell'AVM: senza
+       * vedere le due codifiche affiancate non si può disegnare la
+       * corrispondenza (numeri di linea? codici interni? uuid?). */
+      esempiFeed: index ? {
+        linee: [...index.routes].slice(0, 10),
+        fermate: [...index.stops].slice(0, 10),
+        corse: [...index.trips].slice(0, 5),
+      } : undefined,
       campione,
       /* ?raw=1 ritaglia UNA VehicleActivity dal grezzo: è l'unico modo di
        * vedere i nomi veri degli elementi quando manca ciò che ci si aspetta. */
