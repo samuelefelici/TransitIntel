@@ -21,7 +21,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
 import {
-  mapVehicles, resolveCancelledTrip,
+  mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   type GtfsIndex, type MappingReport, type SiriVehicle,
 } from "./siri-vm";
 
@@ -37,11 +37,13 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
       && Date.now() - cachedIndex.loadedAt < INDEX_TTL_MS) {
     return cachedIndex;
   }
-  const [tripsR, stopsR] = await Promise.all([
+  const [tripsR, stopsR, routesR] = await Promise.all([
     db.execute<any>(sql`
       SELECT trip_id, route_id FROM gtfs_trips WHERE feed_id = ${feedId}::uuid`),
     db.execute<any>(sql`
-      SELECT stop_id FROM gtfs_stops WHERE feed_id = ${feedId}::uuid`),
+      SELECT stop_id, stop_name FROM gtfs_stops WHERE feed_id = ${feedId}::uuid`),
+    db.execute<any>(sql`
+      SELECT route_id, route_short_name FROM gtfs_routes WHERE feed_id = ${feedId}::uuid`),
   ]);
   const trips = new Set<string>();
   const routes = new Set<string>();
@@ -51,10 +53,36 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
     trips.add(t);
     if (r.route_id != null) { routes.add(String(r.route_id)); tripRoute.set(t, String(r.route_id)); }
   }
-  const stops = new Set<string>();
-  for (const r of ((stopsR as any).rows ?? [])) stops.add(String(r.stop_id));
 
-  cachedIndex = { feedId, trips, routes, stops, tripRoute, loadedAt: Date.now() };
+  /* Il numero di linea può stare nell'id o nel nome breve, a seconda di come
+   * il feed è stato costruito: si indicizzano entrambi, normalizzati. */
+  const routeByCode = new Map<string, string>();
+  for (const r of ((routesR as any).rows ?? [])) {
+    const id = String(r.route_id);
+    routes.add(id);
+    routeByCode.set(normalizeLineCode(id), id);
+    if (r.route_short_name) routeByCode.set(normalizeLineCode(String(r.route_short_name)), id);
+  }
+  for (const id of routes) if (!routeByCode.has(normalizeLineCode(id))) routeByCode.set(normalizeLineCode(id), id);
+
+  const stops = new Set<string>();
+  const stopNames = new Map<string, string>();
+  const stopByName = new Map<string, string>();
+  for (const r of ((stopsR as any).rows ?? [])) {
+    const id = String(r.stop_id);
+    stops.add(id);
+    if (r.stop_name) {
+      stopNames.set(id, String(r.stop_name));
+      // primo vincitore: i capolinea omonimi non devono sovrascrivere la banchina
+      const k = normalizeStopName(String(r.stop_name));
+      if (k && !stopByName.has(k)) stopByName.set(k, id);
+    }
+  }
+
+  cachedIndex = {
+    feedId, trips, routes, stops, tripRoute, routeByCode, stopNames, stopByName,
+    loadedAt: Date.now(),
+  };
   return cachedIndex;
 }
 
@@ -97,6 +125,8 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0, routeMatched: 0,
         stopMatched: 0, transitsFound: 0, transitsMatched: 0,
+        routeMatchedByPublishedName: 0, routeMatchedByRef: 0,
+        stopMatchedById: 0, stopMatchedByName: 0, stopIdNameConflicts: [],
         unmatchedTripRefs: [], unmatchedLineRefs: [], unmatchedStopRefs: [],
       },
     };

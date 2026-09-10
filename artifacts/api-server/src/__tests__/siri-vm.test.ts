@@ -11,6 +11,7 @@ import {
   refCandidates, parseVehicleMonitoringResponse, parseCapabilities,
   buildVehicleMonitoringRequest, buildCheckStatusRequest,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
+  lineCodeCandidates, normalizeStopName,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -248,6 +249,9 @@ describe("corrispondenza con gli id del feed GTFS", () => {
     routes: new Set(["22", "44"]),
     stops: new Set(["STOP-1", "STOP-2", "STOP-3", "STOP-4"]),
     tripRoute: new Map([["TRIP-A", "22"], ["TRIP-B", "44"]]),
+    routeByCode: new Map([["22", "22"], ["44", "44"]]),
+    stopNames: new Map(),
+    stopByName: new Map(),
     loadedAt: Date.now(),
   };
   const { mapped, report } = mapVehicles(
@@ -300,7 +304,8 @@ describe("completezza del flusso", () => {
   it("distingue una flotta in deposito da un flusso vuoto", () => {
     const parcheggiate = Array.from({ length: 20 }, (_, i) => ({
       ...vehicles[0],
-      vehicleRef: `P-${i}`, lineRef: null, datedVehicleJourneyRef: null,
+      vehicleRef: `P-${i}`, lineRef: null, publishedLineName: null,
+      datedVehicleJourneyRef: null, courseOfJourneyRef: null, journeyRef: null,
       delaySeconds: null, blockRef: null,
       previousCalls: [], onwardCalls: [], monitoredCall: null,
     }));
@@ -313,8 +318,9 @@ describe("completezza del flusso", () => {
 
   it("il campione pesca i mezzi in servizio, non i primi dell'elenco", () => {
     const parcheggiata = {
-      ...vehicles[0], vehicleRef: "FERMO", lineRef: null,
-      datedVehicleJourneyRef: null, previousCalls: [], onwardCalls: [], monitoredCall: null,
+      ...vehicles[0], vehicleRef: "FERMO", lineRef: null, publishedLineName: null,
+      datedVehicleJourneyRef: null, courseOfJourneyRef: null, journeyRef: null,
+      previousCalls: [], onwardCalls: [], monitoredCall: null,
     };
     const scelti = mostInformative([parcheggiata, parcheggiata, vehicles[0]], 1);
     expect(scelti[0].vehicleRef).toBe("BUS-01");
@@ -336,6 +342,127 @@ describe("ritaglio del grezzo per la diagnosi", () => {
 
   it("non esplode su un documento senza attività", () => {
     expect(extractSampleActivity("<Envelope/>", "LineRef")).toBeNull();
+  });
+});
+
+/* ── Il caso Conerobus/MIZ, ricostruito dal grezzo osservato in produzione ──
+ * Tre trappole vere, tutte presenti in una sola VehicleActivity:
+ *  1. la corsa sta in CourseOfJourneyRef, non in FramedVehicleJourneyRef;
+ *  2. LineRef è un id INTERNO ("16" = Linea 3): confrontarlo con gli id del
+ *     feed non dà zero corrispondenze, ne dà di SBAGLIATE;
+ *  3. le PreviousCalls arrivano senza alcun orario. */
+const MIZ_RESPONSE = `<Envelope><Body><Answer><VehicleMonitoringDelivery>
+ <ResponseTimestamp>2026-09-10T14:32:47+02:00</ResponseTimestamp>
+ <ShortestPossibleCycle>PT60S</ShortestPossibleCycle>
+ <VehicleActivity>
+  <RecordedAtTime>2026-09-10T14:31:53+02:00</RecordedAtTime>
+  <ProgressBetweenStops><LinkDistance>194</LinkDistance><Percentage>99.487</Percentage></ProgressBetweenStops>
+  <MonitoredVehicleJourney>
+   <LineRef>16</LineRef>
+   <DirectionRef>back</DirectionRef>
+   <RouteRef>03A1</RouteRef>
+   <PublishedLineName>Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi</PublishedLineName>
+   <OriginRef>4796</OriginRef><OriginName>POSATORA CAPOLINEA</OriginName>
+   <DestinationRef>189</DestinationRef><DestinationName>Piazza CAVOUR</DestinationName>
+   <OriginAimedDepartureTime>2026-09-10T14:39:00+02:00</OriginAimedDepartureTime>
+   <DestinationAimedArrivalTime>2026-09-10T14:59:00+02:00</DestinationAimedArrivalTime>
+   <Monitored>true</Monitored>
+   <VehicleLocation><Longitude>13.48981</Longitude><Latitude>43.5989</Latitude></VehicleLocation>
+   <Delay>PT0S</Delay><ProgressStatus/>
+   <CourseOfJourneyRef>469173</CourseOfJourneyRef>
+   <VehicleRef>278</VehicleRef>
+   <PreviousCalls><PreviousCall>
+     <StopPointRef>4746</StopPointRef><VisitNumber>1</VisitNumber><Order>1</Order>
+     <StopPointName>VIA M.VETTORE</StopPointName>
+   </PreviousCall></PreviousCalls>
+   <MonitoredCall><StopPointRef>4796</StopPointRef><VisitNumber>1</VisitNumber>
+     <StopPointName>POSATORA CAPOLINEA</StopPointName></MonitoredCall>
+  </MonitoredVehicleJourney>
+ </VehicleActivity>
+</VehicleMonitoringDelivery></Answer></Body></Envelope>`;
+
+describe("numero di linea dal nome pubblicato", () => {
+  it("estrae il codice e ne offre le varianti con trattino e barra", () => {
+    expect(lineCodeCandidates("Linea 3  P.zza Cavour - Galleria")).toEqual(["3"]);
+    expect(lineCodeCandidates("Linea 1-4  P.zza IV Novembre - Stazione FS"))
+      .toEqual(["1-4", "1/4"]);
+    expect(lineCodeCandidates("Linea 94  Ancona - Portonovo")).toEqual(["94"]);
+  });
+
+  it("non inventa un codice dove non c'è", () => {
+    expect(lineCodeCandidates("Navetta Terminal Biglietterie - Imbarchi")).toEqual([]);
+    expect(lineCodeCandidates(null)).toEqual([]);
+  });
+
+  it("i nomi di fermata si confrontano senza accenti né punteggiatura", () => {
+    expect(normalizeStopName("P.zza Cavour")).toBe(normalizeStopName("PIAZZA CAVOUR".replace("PIAZZA", "P zza")));
+    expect(normalizeStopName("Città Alta")).toBe("CITTA ALTA");
+  });
+});
+
+describe("caso Conerobus/MIZ", () => {
+  const r = parseVehicleMonitoringResponse(MIZ_RESPONSE);
+  const v = r.vehicles[0];
+
+  it("legge la corsa da CourseOfJourneyRef quando manca il framed", () => {
+    expect(v.datedVehicleJourneyRef).toBeNull();
+    expect(v.courseOfJourneyRef).toBe("469173");
+    expect(v.journeyRef).toBe("469173");          // è questo che conta
+    expect(describeCompleteness([v]).conCorsa).toBe(1);
+  });
+
+  it("porta gli orari programmati del viaggio, utili per riconoscere la corsa", () => {
+    expect(v.originAimedDeparture?.toISOString()).toBe("2026-09-10T12:39:00.000Z");
+    expect(v.destinationAimedArrival?.toISOString()).toBe("2026-09-10T12:59:00.000Z");
+    expect(v.routeRef).toBe("03A1");
+    expect(v.originName).toBe("POSATORA CAPOLINEA");
+  });
+
+  it("le PreviousCalls senza orari non diventano transiti", () => {
+    expect(v.previousCalls).toHaveLength(1);
+    expect(v.previousCalls[0].actualArrival).toBeNull();
+    expect(describeCompleteness([v]).conOrarioEffettivo).toBe(0);
+  });
+
+  /* Il punto che rendeva sbagliata la mappa: la linea. */
+  it("aggancia la linea dal numero pubblicato, non dall'id interno", () => {
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(["3", "16"]),
+      stops: new Set(), tripRoute: new Map(),
+      routeByCode: new Map([["3", "3"], ["16", "16"]]),
+      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+    };
+    const { mapped, report } = mapVehicles([v], index);
+    expect(mapped[0].routeId).toBe("3");            // Linea 3, non la linea "16"
+    expect(report.routeMatchedByPublishedName).toBe(1);
+    expect(report.routeMatchedByRef).toBe(0);
+  });
+
+  it("un id di fermata che combacia ma con altro nome è una corrispondenza falsa", () => {
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(), stops: new Set(["4796"]),
+      tripRoute: new Map(), routeByCode: new Map(),
+      stopNames: new Map([["4796", "Via Giordano Bruno"]]),   // NON è Posatora
+      stopByName: new Map([["POSATORA CAPOLINEA", "981"]]),
+      loadedAt: Date.now(),
+    };
+    const { mapped, report } = mapVehicles([v], index);
+    expect(mapped[0].nearestStopId).toBe("981");     // ripiegato sul nome
+    expect(report.stopIdNameConflicts[0]).toContain("4796");
+  });
+
+  it("con id e nome coerenti aggancia per id", () => {
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(), stops: new Set(["4796"]),
+      tripRoute: new Map(), routeByCode: new Map(),
+      stopNames: new Map([["4796", "Posatora Capolinea"]]),
+      stopByName: new Map([["POSATORA CAPOLINEA", "4796"]]),
+      loadedAt: Date.now(),
+    };
+    const { mapped, report } = mapVehicles([v], index);
+    expect(mapped[0].nearestStopId).toBe("4796");
+    expect(report.stopMatchedById).toBe(1);
+    expect(report.stopIdNameConflicts).toHaveLength(0);
   });
 });
 
