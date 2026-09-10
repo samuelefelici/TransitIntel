@@ -13,6 +13,7 @@ import {
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
   lineCodeCandidates, normalizeStopName, routeRefLineCandidates, matchRouteByLongName,
   buildTripStartIndex, matchTripBySchedule, localHHMM, scheduleKeys, detectTransit,
+  splitInService,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -325,6 +326,67 @@ describe("completezza del flusso", () => {
     };
     const scelti = mostInformative([parcheggiata, parcheggiata, vehicles[0]], 1);
     expect(scelti[0].vehicleRef).toBe("BUS-01");
+  });
+});
+
+/* ── Esercizio contro parco fermo ─────────────────────────────────────────
+ * Su Conerobus l'AVM trasmette 368 vetture e ne dichiara monitorate 72: il
+ * resto è deposito. Registrarle tutte riempiva la mappa di autobus anonimi
+ * ("??") e la tabella di righe che non sono esercizio. */
+describe("ripartizione fra mezzi in esercizio e parco fermo", () => {
+  const base = parseVehicleMonitoringResponse(VM_RESPONSE).vehicles[0];
+  const ferma = {
+    ...base, vehicleRef: "FERMO", monitored: false,
+    lineRef: null, publishedLineName: null, routeRef: null,
+    datedVehicleJourneyRef: null, courseOfJourneyRef: null, journeyRef: null,
+    delaySeconds: null, blockRef: null,
+    previousCalls: [], onwardCalls: [], monitoredCall: null,
+  };
+
+  it("scarta le vetture che l'AVM non segue e che non dichiarano nulla", () => {
+    const s = splitInService([base, ferma, { ...ferma, vehicleRef: "FERMO-2" }]);
+    expect(s.inServizio.map(v => v.vehicleRef)).toEqual(["BUS-01"]);
+    expect(s.ferme).toHaveLength(2);
+    expect(s.nonDistinguibile).toBe(false);
+  });
+
+  /* La distinzione che conta per l'operatore: il turno macchina non impostato
+   * NON è un mezzo fermo. L'AVM lo segue, quindi è in giro, e va mostrato. */
+  it("tiene i mezzi monitorati anche senza corsa né linea", () => {
+    const senzaTurno = { ...ferma, vehicleRef: "SENZA-TURNO", monitored: true };
+    const s = splitInService([ferma, senzaTurno]);
+    expect(s.inServizio.map(v => v.vehicleRef)).toEqual(["SENZA-TURNO"]);
+    expect(s.ferme.map(v => v.vehicleRef)).toEqual(["FERMO"]);
+  });
+
+  it("tiene chi dichiara una corsa anche se non risulta monitorato", () => {
+    const conCorsa = { ...ferma, vehicleRef: "CON-CORSA", journeyRef: "TRIP-A" };
+    expect(splitInService([conCorsa]).inServizio).toHaveLength(1);
+  });
+
+  /* Un mezzo in trasferimento dichiara la linea ma è FUORI LINEA: la linea da
+   * sola non basta a chiamarlo esercizio. */
+  it("non promuove a esercizio un fuori linea non monitorato", () => {
+    const trasferimento = {
+      ...ferma, vehicleRef: "TRASFER", lineRef: "16", outOfService: true,
+    };
+    const s = splitInService([base, trasferimento]);
+    expect(s.ferme.map(v => v.vehicleRef)).toEqual(["TRASFER"]);
+  });
+
+  /* Se il produttore non compila nessuno dei tre campi, filtrare vorrebbe
+   * dire spegnere la mappa: si preferisce mostrare tutto e dirlo. */
+  it("non filtra nulla quando il produttore non distingue", () => {
+    const s = splitInService([ferma, { ...ferma, vehicleRef: "FERMO-2" }]);
+    expect(s.inServizio).toHaveLength(2);
+    expect(s.ferme).toHaveLength(0);
+    expect(s.nonDistinguibile).toBe(true);
+  });
+
+  it("su elenco vuoto non inventa mezzi", () => {
+    const s = splitInService([]);
+    expect(s.inServizio).toHaveLength(0);
+    expect(s.nonDistinguibile).toBe(true);
   });
 });
 

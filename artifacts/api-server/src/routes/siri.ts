@@ -20,10 +20,13 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter } from "express";
+import { db } from "@workspace/db";
+import { sql } from "drizzle-orm";
 import {
   buildCheckStatusRequest, buildGetCapabilitiesRequest, postSoap,
   parseCapabilities, parseXml, textOf, findFirst, fetchVehicleMonitoring,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
+  splitInService,
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
@@ -122,6 +125,37 @@ router.get("/siri/status", async (req, res): Promise<void> => {
         + "in migrations/, oppure dare al ruolo del database il permesso di CREATE/ALTER.",
   };
 
+  /* "Sta registrando?" è la domanda che si fa guardando la mappa, e finora
+   * l'unico modo di rispondere era contare i puntini. Questi sono i numeri
+   * veri delle tabelle di esercizio, in sola lettura. */
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT (SELECT count(*)::int FROM caronte.vehicle_positions
+               WHERE ts > now() - interval '1 hour')                       AS pos_ora,
+             (SELECT max(ts) FROM caronte.vehicle_positions)               AS ultima_posizione,
+             (SELECT count(*)::int FROM caronte.active_trips
+               WHERE ended_at IS NULL)                                     AS corse_aperte,
+             (SELECT count(*)::int FROM caronte.stop_transits
+               WHERE actual_ts >= date_trunc('day', now()))                AS transiti_oggi,
+             (SELECT max(actual_ts) FROM caronte.stop_transits)            AS ultimo_transito`);
+    const x = (r as any).rows?.[0] ?? {};
+    out.esercizio = {
+      posizioniUltimaOra: Number(x.pos_ora ?? 0),
+      ultimaPosizione: x.ultima_posizione ?? null,
+      corseAperte: Number(x.corse_aperte ?? 0),
+      transitiOggi: Number(x.transiti_oggi ?? 0),
+      ultimoTransito: x.ultimo_transito ?? null,
+      nota: Number(x.pos_ora ?? 0) === 0
+        ? "Nessuna posizione nell'ultima ora: il poller non sta scrivendo. Guarda 'schemaCaronte' e i log."
+        : Number(x.transiti_oggi ?? 0) === 0
+          ? "Posizioni sì, transiti no: i transiti nascono dal CAMBIO di fermata fra due letture, "
+            + "quindi servono un intervallo di polling breve e corse agganciate all'orario."
+          : undefined,
+    };
+  } catch (e: any) {
+    out.esercizio = { errore: e?.message ?? "non leggibile" };
+  }
+
   const index = await loadGtfsIndex();
   out.feedGtfs = index
     ? { feedId: index.feedId, corse: index.trips.size, linee: index.routes.size, fermate: index.stops.size }
@@ -179,6 +213,31 @@ function diagnose(c: VehicleCompleteness, m?: MappingReport): string[] {
   if (c.conRitardo > 0) out.push(`Ritardo dichiarato dall'AVM su ${c.conRitardo} mezzi.`);
   if (c.conTurnoVettura > 0) out.push(`Turno vettura (BlockRef) su ${c.conTurnoVettura} mezzi.`);
 
+  /* Perché in Sala Operativa compaiono autobus senza numero di linea. Non è
+   * un difetto del collegamento: l'AVM manda tutto il parco, e distingue da
+   * sé che cosa sta seguendo. Le tre classi vanno lette insieme, altrimenti
+   * un mezzo fermo in deposito e uno in servizio senza turno impostato
+   * sembrano lo stesso guasto. */
+  const fermi = c.totale - c.monitorati;
+  const senzaTurno = Math.max(0, c.monitorati - c.conCorsa);
+  if (c.monitorati < c.totale) {
+    out.push(`Parco: ${c.totale} vetture trasmesse, ${c.monitorati} monitorate dall'AVM. `
+      + `Le altre ${fermi} non sono in esercizio (deposito, rientro) e NON vengono `
+      + "registrate: portarle in Sala Operativa vorrebbe dire riempire la mappa di "
+      + "autobus anonimi.");
+  }
+  if (senzaTurno > 0) {
+    out.push(`Mezzi seguiti dall'AVM ma SENZA corsa dichiarata: ${senzaTurno}. `
+      + "Sono le vetture che in mappa restano senza numero di linea: l'AVM le "
+      + "localizza, ma nessun turno macchina è stato impostato a bordo, quindi non "
+      + "c'è una corsa a cui attribuire orari e ritardo. È un dato di esercizio "
+      + "(turni non avviati), non un difetto del collegamento.");
+  }
+  if (c.fuoriLinea > 0) {
+    out.push(`${c.fuoriLinea} mezzi dichiarati FUORI LINEA: si spostano senza servizio, `
+      + "quindi non vengono cercati nell'orario.");
+  }
+
   return out;
 }
 
@@ -196,7 +255,11 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
     });
 
     const index = await loadGtfsIndex();
-    const mapping = index ? mapVehicles(result.vehicles, index) : null;
+    /* L'anteprima ragiona sugli stessi mezzi che l'ingestione scriverebbe:
+     * misurare gli agganci sull'intero parco farebbe sembrare disastroso un
+     * risultato che sui mezzi in servizio è buono. */
+    const split = splitInService(result.vehicles);
+    const mapping = index ? mapVehicles(split.inServizio, index) : null;
     const completezza = describeCompleteness(result.vehicles);
 
     /* Il campione va preso sui mezzi IN SERVIZIO: prendendo i primi si
@@ -232,6 +295,16 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
       shortestPossibleCycleSec: result.shortestPossibleCycleSec,
       mezzi: result.vehicles.length,
       corseAnnullate: result.cancellations.length,
+      /* La ripartizione che spiega la mappa: si registra solo l'esercizio. */
+      parco: {
+        trasmessi: result.vehicles.length,
+        inEsercizio: split.inServizio.length,
+        fermiNonRegistrati: split.ferme.length,
+        nota: split.nonDistinguibile
+          ? "Il produttore non dichiara nulla di monitorato: non è possibile "
+            + "distinguere il deposito, quindi si registra tutto."
+          : undefined,
+      },
       /* Che cosa il produttore riempie davvero, campo per campo. */
       completezza,
       diagnosi: diagnose(completezza, mapping?.report),
@@ -270,6 +343,22 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
 });
 
 /* ── Ingestione su richiesta ──────────────────────────────────────────────── */
+
+/* Un'ingestione SCRIVE, quindi resta un POST: una GET che modifica i dati
+ * verrebbe eseguita da qualunque prefetch del browser. Ma aprire l'indirizzo
+ * nella barra è la prima cosa che si prova, e "Cannot GET" non aiuta nessuno:
+ * qui si risponde spiegando come lanciarla, e indicando che di norma non
+ * serve perché il poller gira da solo. */
+router.get("/siri/sync", (_req, res): void => {
+  res.status(405).json({
+    error: "Questa è un'operazione di scrittura: si lancia in POST, non aprendo l'indirizzo.",
+    diNormaNonServe: "Il poller esegue l'ingestione da solo ogni SIRI_POLL_SECONDS. "
+      + "Il sync a mano serve solo per vedere subito i contatori di un giro.",
+    comeLanciarla: "Dalla console del browser, mentre sei su una pagina di Cerbero: "
+      + "await (await fetch('/api/siri/sync', { method: 'POST', credentials: 'include' })).json()",
+    perVedereSoloLoStato: "GET /api/siri/status  ·  GET /api/siri/preview",
+  });
+});
 
 router.post("/siri/sync", async (_req, res): Promise<void> => {
   const cfg = siriConfig();
@@ -317,6 +406,8 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
 
   return {
     mezzi: result.vehicles.length,
+    mezziInEsercizio: result.vehicles.length - ingest.vehiclesParked,
+    mezziFermiScartati: ingest.vehiclesParked || undefined,
     posizioniInserite: ingest.positionsInserted,
     corseAperte: ingest.tripsOpened,
     corseChiuse: ingest.tripsClosed + cancelled,

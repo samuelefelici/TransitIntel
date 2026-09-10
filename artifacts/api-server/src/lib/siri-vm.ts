@@ -569,6 +569,48 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
   return c;
 }
 
+/* ── Mezzi in servizio e parco fermo ──────────────────────────────────────
+ * L'AVM manda l'INTERO parco, deposito compreso: su 368 vetture ne dichiara
+ * monitorate 72. Una vettura non monitorata, senza corsa e senza linea non è
+ * esercizio: portarla in Sala Operativa riempie la mappa di autobus anonimi
+ * fra cui i mezzi veri non si trovano più — ed è anche cinque volte il volume
+ * di scrittura, tutto rumore.
+ *
+ * La distinzione da NON perdere è fra "fermo in deposito" e "in servizio ma
+ * senza turno macchina". Il secondo è un mezzo che l'AVM segue davvero
+ * (Monitored=true) e che quindi va mostrato anche se il conducente non ha
+ * impostato il turno e la linea resta ignota: che quel turno manchi è un
+ * dato di esercizio, non un difetto del collegamento.
+ */
+export interface ServiceSplit {
+  /** in esercizio: monitorati dall'AVM, o con una corsa/linea dichiarata */
+  inServizio: SiriVehicle[];
+  /** parco fermo: nessuno dei tre segnali */
+  ferme: SiriVehicle[];
+  /** true quando il produttore non distingue nulla (nessun mezzo monitorato
+   *  né con corsa): allora non si filtra — meglio troppi mezzi che nessuno. */
+  nonDistinguibile: boolean;
+}
+
+/** Un mezzo è in esercizio se l'AVM lo segue, o dichiara corsa o linea. */
+function inService(v: SiriVehicle): boolean {
+  return v.monitored || !!v.journeyRef || (!!v.lineRef && !v.outOfService);
+}
+
+export function splitInService(vehicles: SiriVehicle[]): ServiceSplit {
+  const inServizio = vehicles.filter(inService);
+  /* Nessun segnale su nessun mezzo: il produttore non compila quei campi.
+   * Filtrare qui vorrebbe dire spegnere la mappa, quindi non si filtra. */
+  if (inServizio.length === 0) {
+    return { inServizio: vehicles, ferme: [], nonDistinguibile: true };
+  }
+  return {
+    inServizio,
+    ferme: vehicles.filter(v => !inService(v)),
+    nonDistinguibile: false,
+  };
+}
+
 /** Quanto è "informativo" un mezzo: serve a campionare quelli in servizio. */
 function richness(v: SiriVehicle): number {
   return (v.journeyRef ? 8 : 0) + (v.previousCalls.length > 0 ? 8 : 0)

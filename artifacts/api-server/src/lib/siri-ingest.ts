@@ -22,7 +22,7 @@ import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
-  buildTripStartIndex, detectTransit,
+  buildTripStartIndex, detectTransit, splitInService,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress,
 } from "./siri-vm";
@@ -260,17 +260,24 @@ export interface IngestResult {
   transitsInserted: number;
   /** mezzi il cui salvataggio è fallito: il giro prosegue lo stesso */
   vehiclesFailed: number;
+  /** vetture del parco fermo, scartate prima di scrivere */
+  vehiclesParked: number;
   /** il primo errore incontrato, per capire perché senza leggere i log */
   firstError: string | null;
   report: MappingReport;
 }
 
-export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestResult> {
+export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> {
+  /* Il deposito non è esercizio: si scarta PRIMA di scrivere, altrimenti la
+   * mappa si riempie di mezzi anonimi e la tabella di righe inutili. */
+  const split = splitInService(all);
+  const vehicles = split.inServizio;
+
   const index = await loadGtfsIndex();
   if (!index) {
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
-      vehiclesFailed: 0, firstError: null,
+      vehiclesFailed: 0, vehiclesParked: split.ferme.length, firstError: null,
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
         tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
@@ -407,7 +414,7 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
 
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
-    vehiclesFailed, firstError, report,
+    vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
   };
 }
 

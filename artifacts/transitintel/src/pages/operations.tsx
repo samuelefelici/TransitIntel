@@ -12,7 +12,7 @@ import { useMemo, useRef, useState, type ReactNode } from "react";
 import Map, { Marker, Popup, Source, Layer, type MapRef } from "react-map-gl/mapbox";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Activity, AlertTriangle, Bus, Clock, Crosshair, Gauge, ListOrdered,
+  Activity, AlertTriangle, Bus, Clock, Crosshair, Gauge, HelpCircle, ListOrdered,
   MapPin, Navigation2, Radio, SatelliteDish, TimerOff, TrendingUp, X,
 } from "lucide-react";
 import {
@@ -136,12 +136,29 @@ function vehicleKey(v: LiveVehicle): string {
   return v.vehicleId ?? v.tripId ?? `${v.lat},${v.lon}`;
 }
 
+/**
+ * Un mezzo è "in corsa" quando è attribuito a una corsa dell'orario: solo
+ * allora hanno senso linea, ritardo e progressione alle fermate.
+ *
+ * Gli altri NON sono un errore. L'AVM li localizza — sono in giro — ma a
+ * bordo non è stato impostato alcun turno macchina, quindi non c'è una corsa
+ * a cui riferirli. Mostrarli con un "?" al posto del numero di linea, in
+ * mezzo agli altri, li fa sembrare mezzi rotti: vanno tenuti separati e
+ * chiamati per quello che sono.
+ */
+function inCorsa(v: LiveVehicle): boolean {
+  return !!v.tripId || !!v.routeId;
+}
+
 // ── Pagina ───────────────────────────────────────────────────────────────────
 
 export default function OperationsPage() {
   const mapRef = useRef<MapRef | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showPunctuality, setShowPunctuality] = useState(false);
+  /* I mezzi senza turno macchina restano fuori dalla mappa per default: sono
+   * quelli che comparivano come "?" e rendevano illeggibile la flotta. */
+  const [showUnassigned, setShowUnassigned] = useState(false);
 
   const liveQ = useQuery({
     queryKey: ["operations", "live"],
@@ -163,6 +180,14 @@ export default function OperationsPage() {
     () => vehicles.find((v) => vehicleKey(v) === selectedKey) ?? null,
     [vehicles, selectedKey],
   );
+
+  /* Due insiemi distinti: la mappa mostra l'esercizio, i mezzi senza turno
+   * restano contati e consultabili ma non affollano la vista. */
+  const { conCorsa, senzaCorsa } = useMemo(() => ({
+    conCorsa: vehicles.filter(inCorsa),
+    senzaCorsa: vehicles.filter((v) => !inCorsa(v)),
+  }), [vehicles]);
+  const visibili = showUnassigned ? vehicles : conCorsa;
 
   const transitsQ = useQuery({
     queryKey: ["operations", "transits", selected?.tripId],
@@ -195,10 +220,10 @@ export default function OperationsPage() {
   };
 
   const fitFleet = () => {
-    if (vehicles.length === 0) return;
-    if (vehicles.length === 1) { flyTo(vehicles[0]); return; }
-    const lons = vehicles.map((v) => v.lon);
-    const lats = vehicles.map((v) => v.lat);
+    if (visibili.length === 0) return;
+    if (visibili.length === 1) { flyTo(visibili[0]); return; }
+    const lons = visibili.map((v) => v.lon);
+    const lats = visibili.map((v) => v.lat);
     mapRef.current?.fitBounds(
       [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
       { padding: 120, duration: 800, maxZoom: 14 },
@@ -235,11 +260,12 @@ export default function OperationsPage() {
         )}
 
         {/* Marker mezzi */}
-        {vehicles.map((v) => {
+        {visibili.map((v) => {
           const key = vehicleKey(v);
           const st = delayStatus(v.delaySeconds);
           const isSel = key === selectedKey;
           const stale = ageSeconds(v.ts) > 120;
+          const noTurno = !inCorsa(v);
           return (
             <Marker
               key={key}
@@ -254,8 +280,10 @@ export default function OperationsPage() {
             >
               <div
                 className="relative cursor-pointer group"
-                title={`${v.routeShortName ?? "?"} · ${v.vehicleId ?? v.tripId ?? ""}`}
-                style={{ opacity: stale ? 0.55 : 1 }}
+                title={noTurno
+                  ? `${v.vehicleId ?? "mezzo"} — tracciato, ma senza turno macchina impostato a bordo`
+                  : `${v.routeShortName ?? v.routeId ?? "linea n/d"} · ${v.vehicleId ?? v.tripId ?? ""}`}
+                style={{ opacity: stale ? 0.55 : noTurno ? 0.7 : 1 }}
               >
                 {isSel && (
                   <span
@@ -264,24 +292,28 @@ export default function OperationsPage() {
                   />
                 )}
                 <div
-                  className="w-8 h-8 rounded-full border-2 border-white/80 shadow-lg flex items-center justify-center"
-                  style={{ backgroundColor: STATUS_COLOR[st] }}
+                  className={`rounded-full border-2 shadow-lg flex items-center justify-center ${
+                    noTurno ? "w-6 h-6 border-white/40 border-dashed" : "w-8 h-8 border-white/80"
+                  }`}
+                  style={{ backgroundColor: noTurno ? "#475569" : STATUS_COLOR[st] }}
                 >
                   {v.heading != null ? (
                     <Navigation2
-                      className="w-4 h-4 text-white"
+                      className={noTurno ? "w-3 h-3 text-white/80" : "w-4 h-4 text-white"}
                       style={{ transform: `rotate(${v.heading}deg)` }}
                     />
                   ) : (
-                    <Bus className="w-4 h-4 text-white" />
+                    <Bus className={noTurno ? "w-3 h-3 text-white/80" : "w-4 h-4 text-white"} />
                   )}
                 </div>
-                <div
-                  className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 px-1 rounded text-[9px] font-bold text-white shadow"
-                  style={{ backgroundColor: v.routeColor ? `#${v.routeColor.replace(/^#/, "")}` : "#0f172a" }}
-                >
-                  {v.routeShortName ?? "?"}
-                </div>
+                {!noTurno && (
+                  <div
+                    className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 px-1 rounded text-[9px] font-bold text-white shadow"
+                    style={{ backgroundColor: v.routeColor ? `#${v.routeColor.replace(/^#/, "")}` : "#0f172a" }}
+                  >
+                    {v.routeShortName ?? v.routeId ?? "n/d"}
+                  </div>
+                )}
               </div>
             </Marker>
           );
@@ -302,12 +334,22 @@ export default function OperationsPage() {
               <div className="flex items-center gap-2 font-semibold text-sm">
                 <span
                   className="px-1.5 py-0.5 rounded text-white text-[11px]"
-                  style={{ backgroundColor: selected.routeColor ? `#${selected.routeColor.replace(/^#/, "")}` : "#0f172a" }}
+                  style={{ backgroundColor: !inCorsa(selected) ? "#475569" : selected.routeColor ? `#${selected.routeColor.replace(/^#/, "")}` : "#0f172a" }}
                 >
-                  {selected.routeShortName ?? "?"}
+                  {inCorsa(selected) ? (selected.routeShortName ?? selected.routeId ?? "n/d") : "—"}
                 </span>
-                <span className="truncate">{selected.headsign ?? selected.routeLongName ?? selected.tripId ?? "—"}</span>
+                <span className="truncate">
+                  {inCorsa(selected)
+                    ? (selected.headsign ?? selected.routeLongName ?? selected.tripId ?? "—")
+                    : "Senza turno macchina"}
+                </span>
               </div>
+              {!inCorsa(selected) && (
+                <p className="text-[10px] text-muted-foreground leading-snug">
+                  L'AVM segue il mezzo, ma a bordo non è stato impostato alcun turno:
+                  senza corsa non ci sono orario di riferimento né ritardo.
+                </p>
+              )}
               <div className="flex items-center gap-1.5 text-muted-foreground">
                 <Bus className="w-3 h-3" /> {selected.vehicleId ?? "matricola n/d"}
                 {selected.speed != null && <span className="ml-auto font-mono">{Math.round(selected.speed)} km/h</span>}
@@ -352,6 +394,19 @@ export default function OperationsPage() {
           accent={STATUS_COLOR[delayStatus(kpis?.avgDelaySeconds)]}
         />
         <KpiChip icon={<TrendingUp className="w-3.5 h-3.5" />} label="Transiti oggi" value={String(kpis?.transitsToday ?? "—")} accent="#94a3b8" />
+        {senzaCorsa.length > 0 && (
+          <KpiChip
+            icon={<HelpCircle className="w-3.5 h-3.5" />}
+            label="Senza turno"
+            value={String(senzaCorsa.length)}
+            accent="#94a3b8"
+            active={showUnassigned}
+            onClick={() => setShowUnassigned((s) => !s)}
+            title={`${senzaCorsa.length} mezzi tracciati dall'AVM senza turno macchina impostato a bordo: `
+              + "nessuna corsa a cui riferirli, quindi né linea né ritardo. "
+              + (showUnassigned ? "Clicca per toglierli dalla mappa." : "Clicca per mostrarli in mappa.")}
+          />
+        )}
       </div>
 
       {/* ── Pannello flotta a sinistra ── */}
@@ -402,7 +457,7 @@ export default function OperationsPage() {
               </div>
             )}
 
-            {vehicles.map((v) => {
+            {conCorsa.map((v) => {
               const key = vehicleKey(v);
               const st = delayStatus(v.delaySeconds);
               const isSel = key === selectedKey;
@@ -418,7 +473,7 @@ export default function OperationsPage() {
                     className="shrink-0 w-9 h-6 rounded flex items-center justify-center text-[11px] font-bold text-white"
                     style={{ backgroundColor: v.routeColor ? `#${v.routeColor.replace(/^#/, "")}` : "#334155" }}
                   >
-                    {v.routeShortName ?? "?"}
+                    {v.routeShortName ?? v.routeId ?? "n/d"}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block text-xs font-medium truncate">
@@ -437,6 +492,58 @@ export default function OperationsPage() {
                 </button>
               );
             })}
+
+            {/* Tracciati ma senza corsa: contati e consultabili, mai mescolati
+                ai mezzi in servizio — è la differenza fra "non so che linea è"
+                e "il turno macchina non è stato impostato". */}
+            {senzaCorsa.length > 0 && (
+              <>
+                <div className="px-2 pt-2 pb-1 flex items-center gap-1.5">
+                  <HelpCircle className="w-3 h-3 text-slate-400" />
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">
+                    Senza turno macchina · {senzaCorsa.length}
+                  </span>
+                  <button
+                    onClick={() => setShowUnassigned((s) => !s)}
+                    className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-white/5 hover:bg-white/10 text-muted-foreground"
+                  >
+                    {showUnassigned ? "nascondi in mappa" : "mostra in mappa"}
+                  </button>
+                </div>
+                <p className="px-2 pb-1 text-[10px] text-muted-foreground leading-snug">
+                  L'AVM li localizza, ma a bordo non è stata avviata alcuna corsa:
+                  senza turno non c'è orario di riferimento, quindi né linea né ritardo.
+                </p>
+                {senzaCorsa.map((v) => {
+                  const key = vehicleKey(v);
+                  const isSel = key === selectedKey;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => { setShowUnassigned(true); setSelectedKey(key); flyTo(v); }}
+                      className={`w-full text-left px-2.5 py-1.5 rounded-lg transition-all flex items-center gap-2.5 ${
+                        isSel ? "bg-sky-500/15 ring-1 ring-sky-500/40" : "hover:bg-white/5"
+                      }`}
+                    >
+                      <span className="shrink-0 w-9 h-6 rounded flex items-center justify-center bg-slate-700/60 border border-dashed border-white/20">
+                        <Bus className="w-3 h-3 text-slate-300" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs truncate text-muted-foreground">
+                          {v.vehicleId ?? "mezzo"}
+                        </span>
+                        <span className="block text-[10px] text-muted-foreground/70 truncate">
+                          {v.nearestStopName ?? "posizione GPS"}
+                        </span>
+                      </span>
+                      <span className="shrink-0 text-[10px] font-mono text-muted-foreground/70">
+                        {fmtTime(v.ts)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
 
             {(liveQ.data?.tripsWithoutGps?.length ?? 0) > 0 && (
               <>
@@ -632,17 +739,25 @@ export default function OperationsPage() {
 
 // ── KPI chip ─────────────────────────────────────────────────────────────────
 
-function KpiChip({ icon, label, value, accent, pulse }: {
+function KpiChip({ icon, label, value, accent, pulse, onClick, title, active }: {
   icon: ReactNode; label: string; value: string; accent: string; pulse?: boolean;
+  onClick?: () => void; title?: string; active?: boolean;
 }) {
+  const Tag = onClick ? "button" : "div";
   return (
-    <div className="pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background/85 backdrop-blur-xl border border-border/60 shadow-lg">
+    <Tag
+      onClick={onClick}
+      title={title}
+      className={`pointer-events-auto flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background/85 backdrop-blur-xl border shadow-lg text-left ${
+        onClick ? "hover:bg-background transition-colors cursor-pointer" : ""
+      } ${active ? "border-sky-500/60 ring-1 ring-sky-500/30" : "border-border/60"}`}
+    >
       <span className="relative flex items-center justify-center" style={{ color: accent }}>
         {pulse && <span className="absolute inline-flex h-full w-full rounded-full opacity-40 animate-ping" style={{ backgroundColor: accent }} />}
         {icon}
       </span>
       <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
       <span className="text-sm font-bold font-mono" style={{ color: accent }}>{value}</span>
-    </div>
+    </Tag>
   );
 }
