@@ -98,9 +98,16 @@ interface TripTransits {
     seq: number | null; stopId: string | null; stopName: string | null;
     lat: number | null; lon: number | null; scheduled: string | null;
     actualTs: string | null; delaySeconds: number | null;
-    /** "avm" = ritardo dichiarato dal produttore, "calcolato" = misurato da noi */
-    delayOrigin: "avm" | "calcolato" | null;
+    /** "avm" = dichiarato dal produttore, "calcolato" = da noi, "ricostruito" = dedotto */
+    delayOrigin: "avm" | "calcolato" | "ricostruito" | null;
+    /** come si è ottenuto l'orario: visto passare, oppure dedotto */
+    origine: "osservato" | "interpolato" | "estrapolato" | null;
   }>;
+  /** quanto del profilo è misurato e quanto dedotto */
+  completamento?: {
+    osservate: number; interpolate: number; estrapolate: number;
+    scoperte: number; coperturaOsservata: number; nota?: string;
+  };
 }
 
 interface VehicleTrack {
@@ -727,13 +734,28 @@ export default function OperationsPage() {
                   {transitsQ.data.stops.map((s, i) => {
                     const st = delayStatus(s.delaySeconds);
                     const transited = s.actualTs != null;
+                    const dedotto = s.origine === "interpolato" || s.origine === "estrapolato";
                     return (
                       <tr key={`${s.stopId}-${i}`} className={`border-t border-border/30 ${transited ? "" : "opacity-50"}`}>
                         <td className="px-1.5 py-1 truncate max-w-[120px]" title={s.stopName ?? s.stopId ?? ""}>
+                          {/* Un orario dedotto non deve somigliare a uno misurato:
+                              il pallino vuoto lo dice prima di leggere i numeri. */}
+                          <span
+                            className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ${
+                              s.origine === "osservato" ? "bg-emerald-400"
+                                : s.origine ? "border border-slate-400" : "bg-transparent"
+                            }`}
+                            title={s.origine === "osservato" ? "passaggio osservato"
+                              : s.origine === "interpolato" ? "ricostruito fra due passaggi osservati"
+                              : s.origine === "estrapolato" ? "stimato al capolinea, scarto costante"
+                              : "nessun orario"}
+                          />
                           {s.stopName ?? s.stopId ?? "—"}
                         </td>
                         <td className="px-1.5 py-1 text-right font-mono">{s.scheduled?.slice(0, 5) ?? "—"}</td>
-                        <td className="px-1.5 py-1 text-right font-mono">{transited ? fmtTime(s.actualTs).slice(0, 5) : "—"}</td>
+                        <td className={`px-1.5 py-1 text-right font-mono ${dedotto ? "italic text-muted-foreground" : ""}`}>
+                          {transited ? fmtTime(s.actualTs).slice(0, 5) : "—"}
+                        </td>
                         <td
                           className="px-1.5 py-1 text-right font-mono font-semibold"
                           style={{ color: transited ? STATUS_COLOR[st] : undefined }}
@@ -759,6 +781,34 @@ export default function OperationsPage() {
                 * Δ calcolato dal confronto fra transito reale e orario programmato:
                 questo AVM non dichiara il ritardo.
               </p>
+            )}
+
+            {/* Quanto di questo profilo è stato misurato e quanto dedotto. Chi
+                guarda i tempi di tratta deve saperlo PRIMA di usarli, non dopo:
+                il passaggio si rileva solo dove il mezzo si trova entro il
+                raggio di una fermata nell'istante della lettura, e a 60 secondi
+                ne salta due o tre per volta. */}
+            {transitsQ.data?.completamento && transitsQ.data.completamento.osservate > 0 && (
+              <div className="px-1.5 pt-2 space-y-1">
+                <div className="flex items-center gap-2 text-[10px]">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  <span className="text-muted-foreground">
+                    {transitsQ.data.completamento.osservate} osservate
+                  </span>
+                  <span className="inline-block w-1.5 h-1.5 rounded-full border border-slate-400 ml-1" />
+                  <span className="text-muted-foreground">
+                    {transitsQ.data.completamento.interpolate + transitsQ.data.completamento.estrapolate} ricostruite
+                  </span>
+                  <span className="ml-auto font-mono text-muted-foreground">
+                    {Math.round(transitsQ.data.completamento.coperturaOsservata * 100)}% misurato
+                  </span>
+                </div>
+                {transitsQ.data.completamento.nota && (
+                  <p className="text-[10px] text-muted-foreground leading-snug">
+                    {transitsQ.data.completamento.nota}
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </div>
