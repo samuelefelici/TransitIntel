@@ -258,6 +258,10 @@ export interface IngestResult {
   tripsOpened: number;
   tripsClosed: number;
   transitsInserted: number;
+  /** mezzi il cui salvataggio è fallito: il giro prosegue lo stesso */
+  vehiclesFailed: number;
+  /** il primo errore incontrato, per capire perché senza leggere i log */
+  firstError: string | null;
   report: MappingReport;
 }
 
@@ -266,6 +270,7 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
   if (!index) {
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
+      vehiclesFailed: 0, firstError: null,
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
         tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
@@ -289,8 +294,15 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
   );
 
   let positionsInserted = 0, tripsOpened = 0, tripsClosed = 0, transitsInserted = 0;
+  let vehiclesFailed = 0;
+  let firstError: string | null = null;
 
   for (const m of mapped) {
+   /* Un mezzo che non si riesce a salvare non deve costare gli altri 367.
+    * Senza questo isolamento un solo record difettoso interrompeva il ciclo
+    * e sulla mappa comparivano soltanto i mezzi elaborati prima dell'errore
+    * — un guasto che si presenta come "pochi autobus", non come un errore. */
+   try {
     const v = m.siri;
     const vehicleId = v.vehicleRef ?? null;
     const ts = v.recordedAt ?? new Date();
@@ -383,9 +395,20 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
         transitsInserted += (r as any).rowCount ?? 0;
       }
     }
+   } catch (e: any) {
+     vehiclesFailed++;
+     if (!firstError) firstError = `mezzo ${m.siri.vehicleRef ?? "?"}: ${e?.message ?? e}`;
+   }
   }
 
-  return { positionsInserted, tripsOpened, tripsClosed, transitsInserted, report };
+  if (vehiclesFailed > 0) {
+    console.warn(`[siri] ${vehiclesFailed} mezzi non salvati su ${mapped.length}. Primo errore: ${firstError}`);
+  }
+
+  return {
+    positionsInserted, tripsOpened, tripsClosed, transitsInserted,
+    vehiclesFailed, firstError, report,
+  };
 }
 
 /** Chiude le corse annullate dall'AVM (VehicleActivityCancellation). */

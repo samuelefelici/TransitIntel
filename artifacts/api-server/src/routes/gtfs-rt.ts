@@ -28,6 +28,8 @@ import {
   type RtPositionRow, type RtDelayRow,
 } from "../lib/gtfs-rt-builders";
 
+import { schemaState } from "../lib/caronte-schema";
+
 const router: IRouter = Router();
 const { FeedMessage } = GtfsRealtimeBindings.transit_realtime;
 
@@ -60,11 +62,22 @@ let caronteCheck: { ok: boolean; at: number } | null = null;
 async function caronteAvailable(): Promise<boolean> {
   if (caronteCheck && Date.now() - caronteCheck.at < 60_000) return caronteCheck.ok;
   try {
+    /* Stesso controllo della Sala Operativa: le tabelle possono esistere ma
+     * mancare una colonna, e questo è un feed PUBBLICO — un 500 andrebbe agli
+     * aggregatori esterni invece del feed vuoto previsto dal design. Il
+     * controllo copre anche active_trips, che le query qui usano in LATERAL
+     * e che la vecchia versione non verificava affatto. */
+    const st0 = await schemaState();
+    if (!st0.unknown) {
+      caronteCheck = { ok: st0.ready, at: Date.now() };
+      return st0.ready;
+    }
     const r = await db.execute<any>(sql`
       SELECT to_regclass('caronte.vehicle_positions') AS vp,
+             to_regclass('caronte.active_trips')      AS at,
              to_regclass('caronte.stop_transits')     AS st
     `);
-    const ok = !!(r.rows[0]?.vp && r.rows[0]?.st);
+    const ok = !!(r.rows[0]?.vp && r.rows[0]?.at && r.rows[0]?.st);
     caronteCheck = { ok, at: Date.now() };
     return ok;
   } catch {

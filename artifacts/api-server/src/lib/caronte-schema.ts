@@ -1,178 +1,224 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * Schema `caronte` — allineamento idempotente
+ * Schema `caronte` — rilevazione e riparazione
  * ───────────────────────────────────────────────────────────────────────────
- * Le tabelle dell'esercizio (posizioni mezzi, corse attive, transiti alle
- * fermate) nascono da file di migrazione lanciati a mano, e una di esse —
- * `stop_transits` — può preesistere perché creata dal sistema AVM esterno.
- * Basta quindi che una migrazione non venga applicata perché la tabella ci
- * sia ma le manchi una colonna.
+ * Le tabelle dell'esercizio nascono da migrazioni lanciate a mano, e alcune
+ * possono preesistere perché create dal sistema AVM esterno. Basta quindi che
+ * una migrazione non venga applicata perché la tabella ci sia ma le manchi una
+ * colonna: `to_regclass` la trova, il software conclude che l'esercizio sia
+ * disponibile, e la prima query muore con "column does not exist".
  *
- * È una combinazione che inganna: `to_regclass` trova la tabella e il
- * software conclude che l'esercizio sia disponibile, poi la prima query
- * muore con "column does not exist" e la Sala Operativa risponde 500 con la
- * mappa vuota. Nel frattempo anche le SCRITTURE falliscono per la stessa
- * ragione, quindi non si accumulano dati: due sintomi, una causa sola.
+ * Due funzioni distinte, e la distinzione è il punto:
  *
- * Qui le colonne mancanti si aggiungono da sole, come già fanno la matrice
- * di validità di Planner Studio e il materializzatore GTFS. Tutto è
- * `IF NOT EXISTS`: su un database già allineato non cambia nulla, e i dati
- * esistenti non vengono toccati.
+ *   schemaState()  — SOLA LETTURA. Dice che cosa manca. Si può chiamare da
+ *                    qualunque percorso, comprese le repliche di lettura.
+ *   repairSchema() — esegue DDL, ma SOLO se manca davvero qualcosa.
+ *
+ * Perché la separazione conta. Su un database dove le tabelle appartengono al
+ * ruolo dell'AVM, `CREATE SCHEMA IF NOT EXISTS` fallisce con "permission
+ * denied" ANCHE SE lo schema esiste già: il controllo dei permessi precede lo
+ * skip. Eseguire DDL "tanto è idempotente" romperebbe quindi installazioni
+ * che funzionano. E `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` prende un lock
+ * ACCESS EXCLUSIVE PRIMA di valutare la condizione: un no-op costa quanto la
+ * modifica vera e può restare in attesa dietro un lettore, bloccando insieme
+ * le scritture dell'AVM e la Sala Operativa.
+ *
+ * Perciò: se non manca nulla non si tocca il database; se manca qualcosa si
+ * altera solo quello, una istruzione per transazione, con un lock_timeout.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 
-let ensured: Promise<CaronteSchemaState> | null = null;
+/** Colonne attese, tabella per tabella. */
+const EXPECTED: Record<string, Array<[column: string, type: string]>> = {
+  vehicle_positions: [
+    ["vehicle_id", "text"], ["trip_id", "text"], ["ts", "timestamptz"],
+    ["lat", "double precision"], ["lon", "double precision"],
+    ["nearest_stop_id", "text"], ["speed", "double precision"],
+    ["heading", "double precision"],
+  ],
+  active_trips: [
+    ["trip_id", "text"], ["route_id", "text"], ["vehicle_id", "text"],
+    ["device_id", "text"], ["started_at", "timestamptz"], ["ended_at", "timestamptz"],
+  ],
+  stop_transits: [
+    ["trip_id", "text"], ["route_id", "text"], ["vehicle_id", "text"],
+    ["device_id", "text"], ["stop_id", "text"], ["stop_seq", "integer"],
+    ["scheduled", "text"], ["actual_ts", "timestamptz"],
+    ["delay_seconds", "integer"], ["lat", "double precision"], ["lon", "double precision"],
+  ],
+};
 
 export interface CaronteSchemaState {
   /** true = le tre tabelle esistono con tutte le colonne attese */
   ready: boolean;
-  /** colonne/tabelle create adesso: se non è vuoto, il database era indietro */
-  applied: string[];
-  /** perché non è stato possibile allineare (di norma: permessi mancanti) */
+  /** tabelle assenti del tutto */
+  missingTables: string[];
+  /** colonne assenti, in forma "tabella.colonna" */
+  missingColumns: string[];
+  /** true se la rilevazione stessa non è riuscita: lo stato è IGNOTO, non "a posto" */
+  unknown: boolean;
   error: string | null;
 }
 
 /**
- * Allinea lo schema una sola volta per processo.
- * NON rilancia: un ruolo senza permessi di CREATE/ALTER non deve impedire
- * l'avvio del server né far fallire una richiesta di sola lettura — si
- * riporta l'errore e chi legge decide cosa dire all'utente.
+ * Che cosa c'è davvero, letto da pg_catalog.
+ *
+ * NON da information_schema: quella vista è filtrata dai privilegi, e un ruolo
+ * con GRANT su un sottoinsieme di colonne non vede le altre. Si concluderebbe
+ * "colonna mancante" su una colonna esistente, e la Sala Operativa verrebbe
+ * dichiarata non disponibile su un database perfettamente sano.
  */
-export function ensureCaronteSchema(): Promise<CaronteSchemaState> {
-  if (!ensured) ensured = run();
-  return ensured;
-}
-
-/** Solo per i test e per un riallineamento esplicito dopo una migrazione. */
-export function resetCaronteSchemaCache(): void {
-  ensured = null;
-}
-
-async function run(): Promise<CaronteSchemaState> {
-  const applied: string[] = [];
-  try {
-    const before = await missingColumns();
-
-    await db.execute(sql`CREATE SCHEMA IF NOT EXISTS caronte`);
-
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.vehicle_positions (
-        id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        vehicle_id      text,
-        trip_id         text,
-        ts              timestamptz NOT NULL DEFAULT now(),
-        lat             double precision NOT NULL,
-        lon             double precision NOT NULL,
-        nearest_stop_id text,
-        speed           double precision,
-        heading         double precision
-      )`);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.active_trips (
-        id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        trip_id    text,
-        route_id   text,
-        vehicle_id text,
-        device_id  text,
-        started_at timestamptz NOT NULL DEFAULT now(),
-        ended_at   timestamptz
-      )`);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.stop_transits (
-        id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        trip_id       text,
-        route_id      text,
-        vehicle_id    text,
-        device_id     text,
-        stop_id       text NOT NULL,
-        stop_seq      integer,
-        scheduled     text,
-        actual_ts     timestamptz NOT NULL DEFAULT now(),
-        delay_seconds integer,
-        lat           double precision,
-        lon           double precision
-      )`);
-
-    /* Il caso che rompe davvero: tabella preesistente a cui manca una colonna
-     * aggiunta da una migrazione successiva. `CREATE TABLE IF NOT EXISTS` non
-     * la aggiunge — serve un ALTER esplicito per ciascuna. */
-    for (const [table, column, type] of COLUMNS) {
-      await db.execute(sql`
-        ALTER TABLE ${sql.raw(`caronte.${table}`)}
-        ADD COLUMN IF NOT EXISTS ${sql.raw(column)} ${sql.raw(type)}`);
-    }
-
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_caronte_vpos_vehicle_ts
-        ON caronte.vehicle_positions(vehicle_id, ts DESC)`);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_caronte_vpos_ts
-        ON caronte.vehicle_positions(ts)`);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_caronte_transit_trip
-        ON caronte.stop_transits(trip_id)`);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_caronte_transit_ts
-        ON caronte.stop_transits(actual_ts)`);
-
-    /* Si dichiara solo ciò che MANCAVA prima: così il log dice se il database
-     * era indietro, invece di ripetere a ogni avvio l'elenco delle colonne. */
-    applied.push(...before);
-    if (applied.length > 0) {
-      console.warn(
-        `[caronte] schema allineato: mancavano ${applied.join(", ")} `
-        + "(migrazione non applicata). Sala Operativa e transiti erano fermi per questo.",
-      );
-    }
-    return { ready: (await missingColumns()).length === 0, applied, error: null };
-  } catch (e: any) {
-    const msg = e?.message ?? String(e);
-    console.error("[caronte] impossibile allineare lo schema:", msg);
-    return { ready: false, applied, error: msg };
-  }
-}
-
-/** Colonne che una migrazione successiva ha aggiunto a tabelle già esistenti. */
-const COLUMNS: Array<[table: string, column: string, type: string]> = [
-  ["vehicle_positions", "heading", "double precision"],
-  ["vehicle_positions", "speed", "double precision"],
-  ["vehicle_positions", "nearest_stop_id", "text"],
-  ["stop_transits", "stop_seq", "integer"],
-  ["stop_transits", "scheduled", "text"],
-  ["stop_transits", "delay_seconds", "integer"],
-  ["stop_transits", "route_id", "text"],
-  ["stop_transits", "vehicle_id", "text"],
-  ["stop_transits", "device_id", "text"],
-  ["stop_transits", "lat", "double precision"],
-  ["stop_transits", "lon", "double precision"],
-  ["active_trips", "device_id", "text"],
-  ["active_trips", "route_id", "text"],
-];
-
-/** Che cosa manca ADESSO, tabella per tabella: è la diagnosi in chiaro. */
-export async function missingColumns(): Promise<string[]> {
+export async function schemaState(): Promise<CaronteSchemaState> {
   try {
     const r = await db.execute<any>(sql`
-      SELECT table_name, column_name
-        FROM information_schema.columns
-       WHERE table_schema = 'caronte'`);
-    const have = new Set<string>();
-    const tables = new Set<string>();
+      SELECT c.relname AS tbl, a.attname AS col
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_attribute a
+               ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+       WHERE n.nspname = 'caronte'
+         AND c.relkind IN ('r', 'p', 'v', 'm', 'f')`);
+
+    const present = new Map<string, Set<string>>();
     for (const x of ((r as any).rows ?? [])) {
-      have.add(`${x.table_name}.${x.column_name}`);
-      tables.add(String(x.table_name));
+      const t = String(x.tbl);
+      if (!present.has(t)) present.set(t, new Set());
+      if (x.col) present.get(t)!.add(String(x.col));
     }
-    const missing: string[] = [];
-    for (const t of ["vehicle_positions", "active_trips", "stop_transits"]) {
-      if (!tables.has(t)) { missing.push(`caronte.${t} (tabella)`); continue; }
-      for (const [table, column] of COLUMNS) {
-        if (table === t && !have.has(`${t}.${column}`)) missing.push(`caronte.${t}.${column}`);
+
+    const missingTables: string[] = [];
+    const missingColumns: string[] = [];
+    for (const [table, cols] of Object.entries(EXPECTED)) {
+      const have = present.get(table);
+      if (!have) { missingTables.push(`caronte.${table}`); continue; }
+      for (const [col] of cols) {
+        if (!have.has(col)) missingColumns.push(`${table}.${col}`);
       }
     }
-    return missing;
-  } catch {
-    return [];
+    return {
+      ready: missingTables.length === 0 && missingColumns.length === 0,
+      missingTables, missingColumns, unknown: false, error: null,
+    };
+  } catch (e: any) {
+    /* Stato IGNOTO. Non si dichiara "a posto" (nasconderebbe il guasto) né
+     * "mancante" (spegnerebbe una pagina sana): chi chiama decide. */
+    return {
+      ready: false, missingTables: [], missingColumns: [],
+      unknown: true, error: e?.message ?? String(e),
+    };
   }
+}
+
+/** Una istruzione DDL isolata: un fallimento non trascina le altre. */
+async function ddl(statement: ReturnType<typeof sql>, applied: string[], label: string): Promise<void> {
+  try {
+    await db.transaction(async (tx: any) => {
+      // Un DDL che aspetta dietro un lettore blocca a catena anche l'AVM.
+      await tx.execute(sql`SET LOCAL lock_timeout = '3s'`);
+      await tx.execute(statement);
+    });
+    applied.push(label);
+  } catch (e: any) {
+    console.warn(`[caronte] non riparabile (${label}): ${e?.message ?? e}`);
+  }
+}
+
+export interface RepairResult extends CaronteSchemaState {
+  /** che cosa è stato effettivamente creato o aggiunto adesso */
+  applied: string[];
+  /** true se non c'era nulla da fare: nessun DDL è stato eseguito */
+  noop: boolean;
+}
+
+/**
+ * Ripara ciò che manca. Se non manca nulla NON tocca il database — è il caso
+ * normale, ed è ciò che rende sicuro chiamarla anche a ogni avvio.
+ */
+export async function repairSchema(): Promise<RepairResult> {
+  const before = await schemaState();
+  if (before.unknown) {
+    return { ...before, applied: [], noop: true };
+  }
+  if (before.ready) {
+    return { ...before, applied: [], noop: true };
+  }
+
+  const applied: string[] = [];
+
+  if (before.missingTables.length > 0) {
+    await ddl(sql`CREATE SCHEMA IF NOT EXISTS caronte`, applied, "schema caronte");
+  }
+  if (before.missingTables.includes("caronte.vehicle_positions")) {
+    await ddl(sql`
+      CREATE TABLE IF NOT EXISTS caronte.vehicle_positions (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), vehicle_id text, trip_id text,
+        ts timestamptz NOT NULL DEFAULT now(),
+        lat double precision NOT NULL, lon double precision NOT NULL,
+        nearest_stop_id text, speed double precision, heading double precision)`,
+      applied, "caronte.vehicle_positions");
+  }
+  if (before.missingTables.includes("caronte.active_trips")) {
+    await ddl(sql`
+      CREATE TABLE IF NOT EXISTS caronte.active_trips (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), trip_id text, route_id text,
+        vehicle_id text, device_id text,
+        started_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz)`,
+      applied, "caronte.active_trips");
+  }
+  if (before.missingTables.includes("caronte.stop_transits")) {
+    await ddl(sql`
+      CREATE TABLE IF NOT EXISTS caronte.stop_transits (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), trip_id text, route_id text,
+        vehicle_id text, device_id text, stop_id text NOT NULL, stop_seq integer,
+        scheduled text, actual_ts timestamptz NOT NULL DEFAULT now(),
+        delay_seconds integer, lat double precision, lon double precision)`,
+      applied, "caronte.stop_transits");
+  }
+
+  /* Solo le colonne davvero assenti: un ALTER no-op costa un lock esclusivo
+   * quanto uno vero, quindi non se ne emette nemmeno uno di troppo. */
+  for (const miss of before.missingColumns) {
+    const [table, column] = miss.split(".");
+    const type = (EXPECTED[table] ?? []).find(([c]) => c === column)?.[1];
+    if (!type) continue;
+    await ddl(
+      sql`ALTER TABLE ${sql.raw(`caronte.${table}`)}
+          ADD COLUMN IF NOT EXISTS ${sql.raw(column)} ${sql.raw(type)}`,
+      applied, `caronte.${miss}`);
+  }
+
+  const after = await schemaState();
+  if (applied.length > 0) {
+    console.warn(
+      `[caronte] schema allineato: ${applied.join(", ")} — mancavano perché una `
+      + "migrazione non è stata applicata. Sala Operativa e transiti erano fermi per questo.",
+    );
+  }
+  return { ...after, applied, noop: applied.length === 0 };
+}
+
+/* ── Riparazione una volta per processo, sul percorso di SCRITTURA ──────────
+ * Un fallimento NON viene memorizzato per sempre: un errore transitorio
+ * all'avvio (contesa sul DDL, database non ancora pronto) disabiliterebbe il
+ * connettore per tutta la vita del processo. Si ritenta al giro successivo. */
+let repaired: Promise<RepairResult> | null = null;
+
+export function ensureCaronteSchema(): Promise<RepairResult> {
+  if (!repaired) {
+    repaired = repairSchema().then(r => {
+      if (!r.ready) repaired = null; // non allineato: si riproverà
+      return r;
+    }).catch(e => {
+      repaired = null;
+      throw e;
+    });
+  }
+  return repaired;
+}
+
+/** Per i test e per un riallineamento esplicito dopo una migrazione. */
+export function resetCaronteSchemaCache(): void {
+  repaired = null;
 }
