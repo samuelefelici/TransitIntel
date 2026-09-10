@@ -623,6 +623,10 @@ export interface GtfsIndex {
   /** nome esteso normalizzato → route_id: le linee extraurbane non hanno un
    *  numero nel nome, si chiamano "OSIMO - ASPIO - ANCONA" da entrambe le parti */
   routeLongNames: Array<{ norm: string; routeId: string }>;
+  /** corse indicizzate per linea+partenza: l'aggancio quando gli id non parlano */
+  tripStarts?: TripStartIndex;
+  /** fuso dell'azienda: il server gira in UTC, l'orario del servizio no */
+  timeZone?: string;
   /** stop_id → nome, per verificare che un id che combacia sia la STESSA fermata */
   stopNames: Map<string, string>;
   /** nome normalizzato → stop_id */
@@ -706,6 +710,12 @@ export interface MappingReport {
   vehicles: number;
   withPosition: number;
   tripMatched: number;
+  /** agganciate perché l'identificativo di corsa esiste nel feed */
+  tripMatchedById: number;
+  /** agganciate da linea + ora di partenza, quando gli id non parlano */
+  tripMatchedBySchedule: number;
+  /** più corse partono a quell'ora su quella linea: scelta arbitraria */
+  tripAmbiguous: number;
   routeMatched: number;
   stopMatched: number;
   transitsFound: number;
@@ -840,13 +850,13 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
   let transitsFound = 0, transitsMatched = 0;
 
   let byPublished = 0, byRouteRef = 0, byLongName = 0, byRef = 0, stopById = 0, stopByName = 0;
+  let byJourneyId = 0, bySchedule = 0, ambiguous = 0;
   const conflicts = new Set<string>();
   const unmatchedLineDetail = new Map<string, { lineRef: string | null; published: string | null; codiciProvati: string[] }>();
 
   const mapped: MappedVehicle[] = vehicles.map(v => {
-    const tripId = resolveRef(v.journeyRef, index.trips);
-    if (tripId) tripMatched++;
-    else if (v.journeyRef) unmatchedTrip.add(v.journeyRef);
+    let tripId = resolveRef(v.journeyRef, index.trips);
+    let byId = !!tripId;
 
     // La linea: numero pubblicato, poi id interno, poi quella della corsa agganciata
     const r = resolveRoute(v, index);
@@ -870,6 +880,24 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
         });
       }
     }
+
+    /* Se l'id non aggancia — il caso normale con due sistemi diversi — si
+     * riconosce la corsa da linea + ora di partenza. Serve la linea, quindi
+     * va fatto DOPO averla risolta. */
+    let scheduleMatch: TripMatch | null = null;
+    if (!tripId && routeId && v.originAimedDeparture && !v.outOfService && index.tripStarts) {
+      scheduleMatch = matchTripBySchedule(
+        routeId, v.originAimedDeparture, index.tripStarts,
+        index.timeZone ?? "Europe/Rome", v.destinationName,
+      );
+      if (scheduleMatch.tripId) {
+        tripId = scheduleMatch.tripId;
+        bySchedule++;
+        if (scheduleMatch.ambiguous) ambiguous++;
+      }
+    }
+    if (tripId) { tripMatched++; if (byId) byJourneyId++; }
+    else if (v.journeyRef && !v.outOfService) unmatchedTrip.add(v.journeyRef);
 
     const mc = v.monitoredCall;
     const s = resolveStop(mc?.stopPointRef ?? null, mc?.stopPointName ?? null, index);
@@ -909,7 +937,9 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
   return {
     mapped,
     report: {
-      vehicles: vehicles.length, withPosition, tripMatched, routeMatched, stopMatched,
+      vehicles: vehicles.length, withPosition, tripMatched,
+      tripMatchedById: byJourneyId, tripMatchedBySchedule: bySchedule, tripAmbiguous: ambiguous,
+      routeMatched, stopMatched,
       transitsFound, transitsMatched,
       routeMatchedByPublishedName: byPublished, routeMatchedByRouteRef: byRouteRef,
       routeMatchedByLongName: byLongName, routeMatchedByRef: byRef,
@@ -980,4 +1010,125 @@ export async function fetchVehicleMonitoring(
   }
   const parsed = parseVehicleMonitoringResponse(xml);
   return { ...parsed, httpStatus: status, rawXml: xml };
+}
+
+/* ── Aggancio della CORSA per orario ──────────────────────────────────────
+ * Gli identificativi di corsa dei due sistemi non hanno nulla in comune
+ * ("469179" contro "684_CodUdp:D1690_363283"): nessuna regola di stringa li
+ * unirà mai. Ma l'AVM dichiara linea e ORA DI PARTENZA dal capolinea, e nel
+ * feed la coppia (linea, partenza) individua una corsa. È l'aggancio che
+ * sblocca tutto il resto, perché senza corsa un transito non è attribuibile.
+ */
+
+/** Una corsa del feed, ridotta a ciò che serve per riconoscerla. */
+export interface TripStart {
+  tripId: string;
+  routeId: string;
+  /** orario di partenza dalla prima fermata, HH:MM:SS (può superare le 24) */
+  firstDeparture: string;
+  headsign: string | null;
+}
+
+export interface TripStartIndex {
+  /** "routeId|HH:MM" → corse che partono a quell'ora su quella linea */
+  byRouteAndStart: Map<string, string[]>;
+  headsign: Map<string, string | null>;
+  trips: number;
+}
+
+export function buildTripStartIndex(rows: TripStart[]): TripStartIndex {
+  const byRouteAndStart = new Map<string, string[]>();
+  const headsign = new Map<string, string | null>();
+  for (const r of rows) {
+    if (!r.firstDeparture) continue;
+    const key = `${r.routeId}|${r.firstDeparture.slice(0, 5)}`;
+    const arr = byRouteAndStart.get(key);
+    if (arr) arr.push(r.tripId); else byRouteAndStart.set(key, [r.tripId]);
+    headsign.set(r.tripId, r.headsign);
+  }
+  for (const arr of byRouteAndStart.values()) arr.sort();
+  return { byRouteAndStart, headsign, trips: rows.length };
+}
+
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Ora locale dell'azienda: il server può girare in UTC, l'orario no. */
+export function localHHMM(d: Date, timeZone: string): string {
+  const p = new Intl.DateTimeFormat("it-IT", {
+    timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(d);
+  const h = p.find(x => x.type === "hour")?.value ?? "00";
+  const m = p.find(x => x.type === "minute")?.value ?? "00";
+  return `${h}:${m}`;
+}
+
+/**
+ * Chiavi orarie da provare, in ordine di preferenza: l'esatta, poi ±1 e ±2
+ * minuti (AVM e orario possono arrotondare diversamente). Per le ore piccole
+ * si prova anche la forma GTFS oltre le 24 ("01:10" → "25:10"), con cui i
+ * feed esprimono le corse a cavallo della mezzanotte.
+ */
+function scheduleCandidates(hhmm: string): Array<{ key: string; delta: number }> {
+  const [h, m] = hhmm.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return [];
+  const out: Array<{ key: string; delta: number }> = [];
+  const seen = new Set<string>();
+  const push = (key: string, delta: number) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ key, delta });
+  };
+  for (const delta of [0, -1, 1, -2, 2]) {
+    const norm = (((h * 60 + m + delta) % 1440) + 1440) % 1440;
+    const hh = Math.floor(norm / 60), mm = norm % 60;
+    push(`${pad2(hh)}:${pad2(mm)}`, delta);
+    if (hh < 6) push(`${pad2(hh + 24)}:${pad2(mm)}`, delta);
+  }
+  return out;
+}
+export function scheduleKeys(hhmm: string): string[] {
+  return scheduleCandidates(hhmm).map(c => c.key);
+}
+
+export interface TripMatch {
+  tripId: string | null;
+  /** più corse partono a quell'ora su quella linea: la scelta è arbitraria */
+  ambiguous: boolean;
+  /** scarto in minuti fra l'orario dell'AVM e quello del feed */
+  toleranceUsed: number | null;
+}
+
+/**
+ * Riconosce la corsa da linea + partenza programmata.
+ * Con più candidati si preferisce quello con lo stesso capolinea; se restano
+ * ambigui si sceglie in modo deterministico ma lo si DICHIARA: corse identiche
+ * per linea e orario differiscono di norma solo per validità, e per leggere
+ * gli orari programmati sono equivalenti — ma va detto, non nascosto.
+ */
+export function matchTripBySchedule(
+  routeId: string, departure: Date, idx: TripStartIndex,
+  timeZone: string, destinationName?: string | null,
+): TripMatch {
+  for (const cand of scheduleCandidates(localHHMM(departure, timeZone))) {
+    const found = idx.byRouteAndStart.get(`${routeId}|${cand.key}`);
+    if (!found || found.length === 0) continue;
+    const tolerance = cand.delta;
+    if (found.length === 1) {
+      return { tripId: found[0], ambiguous: false, toleranceUsed: Math.abs(tolerance) };
+    }
+    if (destinationName) {
+      const want = normalizeStopName(destinationName);
+      const sameEnd = found.filter(t => {
+        const h = idx.headsign.get(t);
+        if (!h) return false;
+        const n = normalizeStopName(h);
+        return n === want || n.startsWith(want) || want.startsWith(n);
+      });
+      if (sameEnd.length === 1) {
+        return { tripId: sameEnd[0], ambiguous: false, toleranceUsed: Math.abs(tolerance) };
+      }
+    }
+    return { tripId: found[0], ambiguous: true, toleranceUsed: Math.abs(tolerance) };
+  }
+  return { tripId: null, ambiguous: false, toleranceUsed: null };
 }

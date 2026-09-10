@@ -22,7 +22,8 @@ import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
-  type GtfsIndex, type MappingReport, type SiriVehicle,
+  buildTripStartIndex,
+  type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
 } from "./siri-vm";
 
 /* ── Indice degli identificativi del feed attivo ──────────────────────────── */
@@ -85,9 +86,48 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
 
   cachedIndex = {
     feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName,
+    tripStarts: (await loadTripStartIndex(feedId)) ?? undefined,
+    timeZone: process.env.SIRI_TIMEZONE || "Europe/Rome",
     loadedAt: Date.now(),
   };
   return cachedIndex;
+}
+
+/* ── Corse per linea e ora di partenza ────────────────────────────────────
+ * Aggregazione pesante (una riga per corsa su ~400k passaggi), quindi tenuta
+ * SEPARATA dall'indice leggero e con una scadenza più lunga: serve solo
+ * all'aggancio delle corse, e l'orario di un feed non cambia durante il
+ * giorno. Un errore qui non deve fermare l'ingestione: si degrada a "corse
+ * non agganciate", che è lo stato precedente. */
+let cachedTripStarts: { feedId: string; idx: TripStartIndex; at: number } | null = null;
+const TRIP_TTL_MS = 30 * 60 * 1000;
+
+export async function loadTripStartIndex(feedId: string): Promise<TripStartIndex | null> {
+  if (cachedTripStarts && cachedTripStarts.feedId === feedId
+      && Date.now() - cachedTripStarts.at < TRIP_TTL_MS) {
+    return cachedTripStarts.idx;
+  }
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT t.trip_id, t.route_id, t.trip_headsign,
+             MIN(st.departure_time) AS first_dep
+        FROM gtfs_trips t
+        JOIN gtfs_stop_times st
+          ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+       WHERE t.feed_id = ${feedId}::uuid
+       GROUP BY t.trip_id, t.route_id, t.trip_headsign`);
+    const idx = buildTripStartIndex(((r as any).rows ?? []).map((x: any) => ({
+      tripId: String(x.trip_id),
+      routeId: String(x.route_id ?? ""),
+      firstDeparture: String(x.first_dep ?? ""),
+      headsign: x.trip_headsign ?? null,
+    })));
+    cachedTripStarts = { feedId, idx, at: Date.now() };
+    return idx;
+  } catch (e: any) {
+    console.warn("[siri] indice orari corse non disponibile:", e?.message ?? e);
+    return null;
+  }
 }
 
 /* ── Velocità stimata ─────────────────────────────────────────────────────── */
@@ -127,7 +167,8 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
       report: {
-        vehicles: vehicles.length, withPosition: 0, tripMatched: 0, routeMatched: 0,
+        vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
+        tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0, routeMatched: 0,
         stopMatched: 0, transitsFound: 0, transitsMatched: 0,
         routeMatchedByPublishedName: 0, routeMatchedByRouteRef: 0,
         routeMatchedByLongName: 0, routeMatchedByRef: 0,

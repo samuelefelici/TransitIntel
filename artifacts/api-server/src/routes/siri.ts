@@ -133,10 +133,16 @@ function diagnose(c: VehicleCompleteness, m?: MappingReport): string[] {
       + "le corse in servizio non sono ricostruibili e i transiti non sono attribuibili a una corsa. "
       + "È il blocco principale.");
   } else if (m && m.tripMatched === 0) {
-    out.push(`Riferimenti di corsa presenti su ${c.conCorsa} mezzi ma NESSUNO aggancia il feed: `
-      + "codifica diversa, serve una corrispondenza.");
+    out.push(`Riferimenti di corsa presenti su ${c.conCorsa} mezzi ma NESSUNO aggancia il feed, `
+      + "né per identificativo né per linea+ora di partenza: senza corsa i transiti non "
+      + "sono attribuibili.");
   } else if (m) {
-    out.push(`Corse agganciate al feed: ${m.tripMatched} su ${c.conCorsa} con riferimento.`);
+    const modi: string[] = [];
+    if (m.tripMatchedById) modi.push(`${m.tripMatchedById} per identificativo`);
+    if (m.tripMatchedBySchedule) modi.push(`${m.tripMatchedBySchedule} per linea+ora di partenza`);
+    out.push(`Corse agganciate: ${m.tripMatched} su ${c.conCorsa}`
+      + (modi.length ? ` (${modi.join(", ")})` : "")
+      + (m.tripAmbiguous ? ` — ${m.tripAmbiguous} ambigue: più corse partono a quell'ora sulla stessa linea.` : "."));
   }
 
   if (c.conOrarioEffettivo === 0) {
