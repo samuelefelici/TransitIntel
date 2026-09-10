@@ -23,6 +23,8 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
 
+import { ensureCaronteSchema, missingColumns } from "../lib/caronte-schema";
+
 const router: IRouter = Router();
 
 // Soglie di puntualità (standard TPL: in orario = da 1' di anticipo a 5' di ritardo)
@@ -34,19 +36,38 @@ let caronteCheck: { ok: boolean; at: number } | null = null;
 async function caronteAvailable(): Promise<boolean> {
   if (caronteCheck && Date.now() - caronteCheck.at < 60_000) return caronteCheck.ok;
   try {
+    /* Le tabelle possono esistere ma essere INDIETRO di una colonna: una
+     * migrazione non applicata su una tabella creata dal sistema AVM. Con il
+     * solo to_regclass il software concludeva "esercizio disponibile" e poi
+     * moriva sulla prima query. Si allinea lo schema (idempotente) e si
+     * verifica che non manchi nulla, non solo che le tabelle ci siano. */
+    await ensureCaronteSchema();
     const r = await db.execute<any>(sql`
       SELECT to_regclass('caronte.vehicle_positions') AS vp,
              to_regclass('caronte.active_trips')      AS at,
              to_regclass('caronte.stop_transits')     AS st
     `);
     const row = r.rows[0];
-    const ok = !!(row?.vp && row?.at && row?.st);
+    const ok = !!(row?.vp && row?.at && row?.st) && (await missingColumns()).length === 0;
     caronteCheck = { ok, at: Date.now() };
     return ok;
   } catch {
     caronteCheck = { ok: false, at: Date.now() };
     return false;
   }
+}
+
+/** L'errore vero del database, non l'involucro del query builder.
+ *  Senza questo un 500 mostra l'intera query e nasconde la causa. */
+function dbError(e: any): { error: string; dbCode?: string; dbDetail?: string } {
+  const cause = e?.cause ?? e;
+  const code = cause?.code ?? e?.code;
+  const detail = cause?.message && cause.message !== e?.message ? cause.message : undefined;
+  return {
+    error: detail ?? e?.message ?? "errore interno",
+    dbCode: typeof code === "string" ? code : undefined,
+    dbDetail: detail ? e?.message?.slice(0, 400) : undefined,
+  };
 }
 
 // Feed GTFS per i join (stessa logica di caronte.ts: env override, poi feed attivo)
@@ -220,7 +241,7 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       },
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -314,7 +335,7 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
       })),
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -352,7 +373,7 @@ router.get("/operations/trend", async (req, res): Promise<void> => {
       })),
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -450,7 +471,7 @@ router.get("/operations/runtimes", async (req, res): Promise<void> => {
       }),
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -555,7 +576,7 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
       }),
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -638,7 +659,7 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       })),
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -912,7 +933,7 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       missing,
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -1179,7 +1200,7 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
       routes,
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
@@ -1210,7 +1231,7 @@ router.get("/operations/vehicles/:vehicleId/track", async (req, res): Promise<vo
       })),
     });
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json(dbError(e));
   }
 });
 
