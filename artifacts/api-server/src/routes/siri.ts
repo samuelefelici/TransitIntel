@@ -23,7 +23,8 @@ import { Router, type IRouter } from "express";
 import {
   buildCheckStatusRequest, buildGetCapabilitiesRequest, postSoap,
   parseCapabilities, parseXml, textOf, findFirst, fetchVehicleMonitoring,
-  mapVehicles, type SiriEndpointConfig,
+  mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
+  type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
 
@@ -58,7 +59,7 @@ const NOT_CONFIGURED = {
 
 /* ── Stato del collegamento ───────────────────────────────────────────────── */
 
-router.get("/siri/status", async (_req, res): Promise<void> => {
+router.get("/siri/status", async (req, res): Promise<void> => {
   const cfg = siriConfig();
   if (!cfg) { res.json(NOT_CONFIGURED); return; }
 
@@ -89,10 +90,18 @@ router.get("/siri/status", async (_req, res): Promise<void> => {
     const cap = await postSoap(cfg, "GetCapabilities", buildGetCapabilitiesRequest(cfg.requestorRef));
     out.capabilities = parseCapabilities(cap.xml);
     /* Il dettaglio "calls" è ciò che porta i transiti alle fermate: senza,
-     * si possono alimentare solo posizioni e corse attive. */
-    out.capabilities.notaTransiti = out.capabilities.hasPreviousCalls === false
-      ? "Il produttore dichiara di NON fornire le fermate già transitate: puntualità e tempi di percorrenza resteranno senza dati."
-      : "Fermate transitate disponibili: puntualità e tempi di percorrenza alimentabili.";
+     * si possono alimentare solo posizioni e corse attive. Attenzione a non
+     * scambiare "non dichiarato" per "disponibile": se il produttore non
+     * risponde a GetCapabilities restano tutti null, e l'unica prova di che
+     * cosa manda davvero è il conteggio nell'anteprima. */
+    const known = Object.values(out.capabilities).some(v => v !== null && v !== undefined);
+    out.capabilities.notaTransiti = !known
+      ? "Il produttore non ha risposto a GetCapabilities (o in una forma non riconosciuta): "
+        + "non dichiara nulla. Guarda 'completezza' in /api/siri/preview per sapere che cosa manda davvero."
+      : out.capabilities.hasPreviousCalls === false
+        ? "Il produttore dichiara di NON fornire le fermate già transitate: puntualità e tempi di percorrenza resteranno senza dati."
+        : "Fermate transitate dichiarate disponibili.";
+    if (req.query.raw === "1") out.capabilities.xmlGrezzo = cap.xml.slice(0, 4000);
   } catch (e: any) {
     out.capabilities = { error: e?.message ?? "non disponibili" };
   }
@@ -104,6 +113,52 @@ router.get("/siri/status", async (_req, res): Promise<void> => {
 
   res.json(out);
 });
+
+/* ── Lettura in chiaro di che cosa è alimentabile ─────────────────────────
+ * Tre livelli distinti, perché falliscono per ragioni diverse: la mappa live
+ * vuole solo la posizione; le corse attive vogliono il riferimento di corsa;
+ * puntualità e tempi di percorrenza vogliono gli orari EFFETTIVI alle
+ * fermate. Un flusso può bastare al primo e non al terzo. */
+function diagnose(c: VehicleCompleteness, m?: MappingReport): string[] {
+  const out: string[] = [];
+
+  if (c.conPosizione === 0) {
+    out.push("Nessun mezzo con posizione: non è alimentabile nemmeno la mappa live.");
+  } else {
+    out.push(`Mappa live alimentabile: ${c.conPosizione} mezzi su ${c.totale} con posizione.`);
+  }
+
+  if (c.conCorsa === 0) {
+    out.push("L'AVM NON manda il riferimento di corsa (DatedVehicleJourneyRef) per nessun mezzo: "
+      + "le corse in servizio non sono ricostruibili e i transiti non sono attribuibili a una corsa. "
+      + "È il blocco principale.");
+  } else if (m && m.tripMatched === 0) {
+    out.push(`Riferimenti di corsa presenti su ${c.conCorsa} mezzi ma NESSUNO aggancia il feed: `
+      + "codifica diversa, serve una corrispondenza.");
+  } else if (m) {
+    out.push(`Corse agganciate al feed: ${m.tripMatched} su ${c.conCorsa} con riferimento.`);
+  }
+
+  if (c.conOrarioEffettivo === 0) {
+    out.push("Nessun orario EFFETTIVO alle fermate (né PreviousCalls né ActualArrival/Departure): "
+      + "puntualità e tempi di percorrenza restano senza dati. "
+      + (c.conFermataCorrente > 0
+        ? "La fermata corrente però arriva: il produttore manda la posizione nel percorso, non la storia dei transiti."
+        : "Non arriva nemmeno la fermata corrente."));
+  } else {
+    out.push(`Transiti reali disponibili su ${c.conOrarioEffettivo} mezzi: `
+      + "puntualità e tempi di percorrenza alimentabili.");
+  }
+
+  if (c.conLinea > 0 && m && m.routeMatched < c.conLinea) {
+    out.push(`Linee: ${m.routeMatched} agganciate su ${c.conLinea} dichiarate `
+      + "— il resto usa una numerazione diversa da quella del feed.");
+  }
+  if (c.conRitardo > 0) out.push(`Ritardo dichiarato dall'AVM su ${c.conRitardo} mezzi.`);
+  if (c.conTurnoVettura > 0) out.push(`Turno vettura (BlockRef) su ${c.conTurnoVettura} mezzi.`);
+
+  return out;
+}
 
 /* ── Anteprima: legge, non scrive ─────────────────────────────────────────── */
 
@@ -120,6 +175,27 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
 
     const index = await loadGtfsIndex();
     const mapping = index ? mapVehicles(result.vehicles, index) : null;
+    const completezza = describeCompleteness(result.vehicles);
+
+    /* Il campione va preso sui mezzi IN SERVIZIO: prendendo i primi si
+     * finisce sulle vetture in deposito, che non hanno corsa né fermate, e
+     * si conclude erroneamente che l'AVM non mandi nulla. */
+    const campione = mostInformative(result.vehicles, 5).map(v => ({
+      mezzo: v.vehicleRef,
+      linea: v.lineRef,
+      lineaPubblicata: v.publishedLineName,
+      corsa: v.datedVehicleJourneyRef,
+      dataServizio: v.dataFrameRef,
+      destinazione: v.destinationName,
+      posizione: v.lat != null ? [v.lat, v.lon] : null,
+      ritardoSec: v.delaySeconds,
+      turnoVettura: v.blockRef,
+      inCoda: v.inCongestion,
+      occupazione: v.occupancy,
+      fermataCorrente: v.monitoredCall?.stopPointRef ?? null,
+      fermateTransitate: v.previousCalls.length,
+      fermateFuture: v.onwardCalls.length,
+    }));
 
     res.json({
       configured: true,
@@ -130,24 +206,24 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
       shortestPossibleCycleSec: result.shortestPossibleCycleSec,
       mezzi: result.vehicles.length,
       corseAnnullate: result.cancellations.length,
+      /* Che cosa il produttore riempie davvero, campo per campo. */
+      completezza,
+      diagnosi: diagnose(completezza, mapping?.report),
       corrispondenze: mapping?.report ?? { nota: "nessun feed GTFS attivo" },
-      /* Un campione leggibile: serve a riconoscere la codifica a occhio. */
-      campione: result.vehicles.slice(0, 5).map(v => ({
-        mezzo: v.vehicleRef,
-        linea: v.lineRef,
-        lineaPubblicata: v.publishedLineName,
-        corsa: v.datedVehicleJourneyRef,
-        dataServizio: v.dataFrameRef,
-        posizione: v.lat != null ? [v.lat, v.lon] : null,
-        ritardoSec: v.delaySeconds,
-        turnoVettura: v.blockRef,
-        inCoda: v.inCongestion,
-        occupazione: v.occupancy,
-        fermataCorrente: v.monitoredCall?.stopPointRef ?? null,
-        fermateTransitate: v.previousCalls.length,
-        fermateFuture: v.onwardCalls.length,
-      })),
-      xmlTroncato: (req.query.raw === "1") ? result.rawSample : undefined,
+      /* Gli id VERI del feed, accanto ai riferimenti orfani dell'AVM: senza
+       * vedere le due codifiche affiancate non si può disegnare la
+       * corrispondenza (numeri di linea? codici interni? uuid?). */
+      esempiFeed: index ? {
+        linee: [...index.routes].slice(0, 10),
+        fermate: [...index.stops].slice(0, 10),
+        corse: [...index.trips].slice(0, 5),
+      } : undefined,
+      campione,
+      /* ?raw=1 ritaglia UNA VehicleActivity dal grezzo: è l'unico modo di
+       * vedere i nomi veri degli elementi quando manca ciò che ci si aspetta. */
+      xmlEsempio: (req.query.raw === "1")
+        ? extractSampleActivity(result.rawXml, String(req.query.marker ?? "LineRef"))
+        : undefined,
     });
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
