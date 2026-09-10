@@ -218,7 +218,9 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
        * vedere le due codifiche affiancate non si può disegnare la
        * corrispondenza (numeri di linea? codici interni? uuid?). */
       esempiFeed: index ? {
-        linee: [...index.routes].slice(0, 10),
+        /* Tutte le linee del feed: con 19 linee orfane serve poter cercare
+         * a occhio se quel numero nel feed esiste o no. */
+        linee: [...index.routes].sort(),
         fermate: [...index.stops].slice(0, 10),
         corse: [...index.trips].slice(0, 5),
       } : undefined,

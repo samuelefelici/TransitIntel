@@ -230,6 +230,10 @@ export interface SiriVehicle {
   journeyRef: string | null;
   /** Codice del PERCORSO (variante), distinto dalla linea */
   routeRef: string | null;
+  /** Il mezzo si sta spostando SENZA servizio (trasferimento, rientro).
+   *  Flashnet lo dichiara mettendo "FUORI LINEA" al posto del percorso: una
+   *  corsa così non va cercata nell'orario, perché nell'orario non c'è. */
+  outOfService: boolean;
   originRef: string | null;
   originName: string | null;
   destinationRef: string | null;
@@ -318,6 +322,7 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
    * senza corse — usa l'altro. */
   const framedJourney = directText(framed, "DatedVehicleJourneyRef");
   const course = directText(mvj, "CourseOfJourneyRef");
+  const routeRefRaw = directText(mvj, "RouteRef");
 
   return {
     recordedAt: parseDate(directText(va, "RecordedAtTime")),
@@ -328,7 +333,8 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
     datedVehicleJourneyRef: framedJourney,
     courseOfJourneyRef: course,
     journeyRef: framedJourney ?? course,
-    routeRef: directText(mvj, "RouteRef"),
+    routeRef: routeRefRaw,
+    outOfService: /fuori\s*linea|out\s*of\s*service|deadhead/i.test(routeRefRaw ?? ""),
     originRef: directText(mvj, "OriginRef"),
     originName: directText(mvj, "OriginName"),
     destinationRef: directText(mvj, "DestinationRef"),
@@ -533,6 +539,8 @@ export interface VehicleCompleteness {
   conRitardo: number;
   conTurnoVettura: number;
   monitorati: number;
+  /** mezzi in trasferimento, non in servizio: non sono corse dell'orario */
+  fuoriLinea: number;
 }
 
 export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompleteness {
@@ -540,6 +548,7 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
     totale: vehicles.length, conPosizione: 0, conLinea: 0, conCorsa: 0,
     conFermataCorrente: 0, conFermateTransitate: 0, conOrarioEffettivo: 0,
     conFermateFuture: 0, conRitardo: 0, conTurnoVettura: 0, monitorati: 0,
+    fuoriLinea: 0,
   };
   for (const v of vehicles) {
     if (v.lat != null && v.lon != null) c.conPosizione++;
@@ -551,6 +560,7 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
     if (v.delaySeconds != null) c.conRitardo++;
     if (v.blockRef) c.conTurnoVettura++;
     if (v.monitored) c.monitorati++;
+    if (v.outOfService) c.fuoriLinea++;
     const hasActual = v.previousCalls.some(x => x.actualArrival || x.actualDeparture)
       || !!(v.monitoredCall && (v.monitoredCall.actualArrival || v.monitoredCall.actualDeparture));
     if (hasActual) c.conOrarioEffettivo++;
@@ -681,6 +691,10 @@ export interface MappingReport {
   /** riferimenti orfani: servono a capire la codifica dell'AVM */
   unmatchedTripRefs: string[];
   unmatchedLineRefs: string[];
+  /** linee orfane con il nome pubblicato e i codici tentati: senza questi,
+   *  "19 linee non agganciate" non dice se il problema è la regola di
+   *  estrazione o il fatto che quelle linee nel feed non ci sono proprio. */
+  unmatchedLines: Array<{ lineRef: string | null; published: string | null; codiciProvati: string[] }>;
   unmatchedStopRefs: string[];
 }
 
@@ -761,6 +775,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
 
   let byPublished = 0, byRef = 0, stopById = 0, stopByName = 0;
   const conflicts = new Set<string>();
+  const unmatchedLineDetail = new Map<string, { lineRef: string | null; published: string | null; codiciProvati: string[] }>();
 
   const mapped: MappedVehicle[] = vehicles.map(v => {
     const tripId = resolveRef(v.journeyRef, index.trips);
@@ -773,7 +788,16 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     if (r.how === "published") byPublished++; else if (r.how === "ref") byRef++;
     if (!routeId && tripId) routeId = index.tripRoute.get(tripId) ?? null;
     if (routeId) routeMatched++;
-    else if (v.lineRef || v.publishedLineName) unmatchedLine.add(v.lineRef ?? v.publishedLineName!);
+    else if (v.lineRef || v.publishedLineName) {
+      unmatchedLine.add(v.lineRef ?? v.publishedLineName!);
+      const key = `${v.lineRef ?? ""}|${v.publishedLineName ?? ""}`;
+      if (!unmatchedLineDetail.has(key)) {
+        unmatchedLineDetail.set(key, {
+          lineRef: v.lineRef, published: v.publishedLineName,
+          codiciProvati: lineCodeCandidates(v.publishedLineName),
+        });
+      }
+    }
 
     const mc = v.monitoredCall;
     const s = resolveStop(mc?.stopPointRef ?? null, mc?.stopPointName ?? null, index);
@@ -820,6 +844,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
       stopIdNameConflicts: [...conflicts].slice(0, 10),
       unmatchedTripRefs: [...unmatchedTrip].slice(0, 10),
       unmatchedLineRefs: [...unmatchedLine].slice(0, 10),
+      unmatchedLines: [...unmatchedLineDetail.values()].slice(0, 25),
       unmatchedStopRefs: [...unmatchedStop].slice(0, 10),
     },
   };

@@ -466,6 +466,56 @@ describe("caso Conerobus/MIZ", () => {
   });
 });
 
+describe("mezzi fuori servizio e linee orfane", () => {
+  /* Osservato in produzione: il mezzo 415 ha percorso "FUORI LINEA", cioè
+   * si sta trasferendo. Cercarne la corsa nell'orario non ha senso. */
+  const FUORI_LINEA = MIZ_RESPONSE
+    .replace("<RouteRef>03A1</RouteRef>", "<RouteRef>FUORI LINEA</RouteRef>");
+
+  it("riconosce il trasferimento dichiarato al posto del percorso", () => {
+    const v = parseVehicleMonitoringResponse(FUORI_LINEA).vehicles[0];
+    expect(v.outOfService).toBe(true);
+    expect(describeCompleteness([v]).fuoriLinea).toBe(1);
+  });
+
+  it("un percorso normale non è un trasferimento", () => {
+    const v = parseVehicleMonitoringResponse(MIZ_RESPONSE).vehicles[0];
+    expect(v.outOfService).toBe(false);
+  });
+
+  it("le linee orfane riportano nome pubblicato e codici tentati", () => {
+    const v = parseVehicleMonitoringResponse(MIZ_RESPONSE).vehicles[0];
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(["44"]), stops: new Set(),
+      tripRoute: new Map(), routeByCode: new Map([["44", "44"]]),
+      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+    };
+    const { report } = mapVehicles([v], index);
+    expect(report.routeMatched).toBe(0);
+    // il perché dev'essere leggibile: "Linea 3" cercata come "3", assente nel feed
+    expect(report.unmatchedLines[0]).toEqual({
+      lineRef: "16",
+      published: "Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi",
+      codiciProvati: ["3"],
+    });
+  });
+
+  it("una linea senza numero nel nome lo dichiara apertamente", () => {
+    const navetta = parseVehicleMonitoringResponse(
+      MIZ_RESPONSE.replace(
+        "<PublishedLineName>Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi</PublishedLineName>",
+        "<PublishedLineName>Navetta Terminal Biglietterie - Terminal Imbarchi</PublishedLineName>"),
+    ).vehicles[0];
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(), stops: new Set(),
+      tripRoute: new Map(), routeByCode: new Map(),
+      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+    };
+    const { report } = mapVehicles([navetta], index);
+    expect(report.unmatchedLines[0].codiciProvati).toEqual([]);
+  });
+});
+
 describe("richieste SOAP", () => {
   it("GetVehicleMonitoring chiede il dettaglio 'calls' (senza, niente transiti)", () => {
     const xml = buildVehicleMonitoringRequest({ requestorRef: "TI", detailLevel: "calls" });
