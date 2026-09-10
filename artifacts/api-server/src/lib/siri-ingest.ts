@@ -22,7 +22,7 @@ import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
-  buildTripStartIndex, detectTransit,
+  buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress,
 } from "./siri-vm";
@@ -260,17 +260,24 @@ export interface IngestResult {
   transitsInserted: number;
   /** mezzi il cui salvataggio è fallito: il giro prosegue lo stesso */
   vehiclesFailed: number;
+  /** vetture del parco fermo, scartate prima di scrivere */
+  vehiclesParked: number;
   /** il primo errore incontrato, per capire perché senza leggere i log */
   firstError: string | null;
   report: MappingReport;
 }
 
-export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestResult> {
+export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> {
+  /* Il deposito non è esercizio: si scarta PRIMA di scrivere, altrimenti la
+   * mappa si riempie di mezzi anonimi e la tabella di righe inutili. */
+  const split = splitInService(all);
+  const vehicles = split.inServizio;
+
   const index = await loadGtfsIndex();
   if (!index) {
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
-      vehiclesFailed: 0, firstError: null,
+      vehiclesFailed: 0, vehiclesParked: split.ferme.length, firstError: null,
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
         tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
@@ -359,13 +366,18 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
       lastProgress.set(vehicleId, cur);
       if (ev) {
         const st = stopTimes.get(`${ev.tripId}|${ev.stopId}`);
+        /* Il ritardo dichiarato dall'AVM ha la precedenza — è la sua misura
+         * ufficiale — ma quando manca lo si calcola: programmato e osservato
+         * ci sono entrambi, e senza questo la colonna Δ restava vuota. */
+        const delay = ev.delaySeconds
+          ?? delayFromSchedule(st?.scheduled, ev.observedAt, index.timeZone ?? "Europe/Rome");
         const r = await db.execute<any>(sql`
           INSERT INTO caronte.stop_transits
                  (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
                   scheduled, actual_ts, delay_seconds, lat, lon)
           SELECT ${ev.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
                  ${ev.stopId}, ${st?.seq ?? null}, ${st?.scheduled ?? null},
-                 ${ev.observedAt.toISOString()}::timestamptz, ${ev.delaySeconds},
+                 ${ev.observedAt.toISOString()}::timestamptz, ${delay},
                  ${v.lat}, ${v.lon}
            WHERE NOT EXISTS (
              SELECT 1 FROM caronte.stop_transits s
@@ -379,13 +391,15 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
      *     hanno la precedenza su quelli osservati perché sono precisi. */
     if (m.tripId) {
       for (const t of m.transits) {
+        const delay = t.delaySeconds
+          ?? delayFromSchedule(t.scheduled, t.actualTs, index.timeZone ?? "Europe/Rome");
         const r = await db.execute<any>(sql`
           INSERT INTO caronte.stop_transits
                  (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
                   scheduled, actual_ts, delay_seconds, lat, lon)
           SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
                  ${t.stopId}, ${t.stopSeq}, ${t.scheduled},
-                 ${t.actualTs.toISOString()}::timestamptz, ${t.delaySeconds},
+                 ${t.actualTs.toISOString()}::timestamptz, ${delay},
                  ${v.lat}, ${v.lon}
            WHERE NOT EXISTS (
              SELECT 1 FROM caronte.stop_transits s
@@ -407,7 +421,7 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
 
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
-    vehiclesFailed, firstError, report,
+    vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
   };
 }
 

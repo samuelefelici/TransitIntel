@@ -1,6 +1,7 @@
 import app from "./app";
 import { logger } from "./lib/logger";
 import { syncTrafficFromTomTom } from "./routes/cron";
+import { MAX_GAP_SEC as SIRI_MAX_POLL_SECONDS, effectivePollSeconds } from "./lib/siri-vm";
 
 const rawPort = process.env["PORT"];
 
@@ -75,7 +76,30 @@ const server = app.listen(port, () => {
   // Alimenta lo schema `caronte` (posizioni, corse attive, transiti alle
   // fermate) da cui dipendono Sala Operativa, Tempi di percorrenza e GTFS-RT.
   if (process.env.SIRI_VM_URL) {
-    const SIRI_INTERVAL_MS = Math.max(10, Number(process.env.SIRI_POLL_SECONDS) || 30) * 1000;
+    /* Il transito alla fermata si riconosce dal CAMBIO di fermata fra due
+     * letture consecutive: oltre i 300 s il cambio non è più attribuibile a
+     * una fermata sola e non si registra NULLA. Un intervallo più lungo non
+     * rende il connettore lento: lo rende muto, in silenzio, e la pagina
+     * Tempi di percorrenza resta vuota senza che niente lo spieghi.
+     *
+     * Perciò l'intervallo viene riportato a un valore utile invece di essere
+     * obbedito alla lettera: una configurazione che disattiva la funzione
+     * principale del modulo è una contraddizione, non una scelta. La regola
+     * sta in siriPoll(), una sola volta, perché il poller e /api/siri/status
+     * non possano raccontare due cose diverse. Se il taglio scatta lo si dice
+     * qui nei log e si vede nello stato. */
+    const RICHIESTO = Number(process.env.SIRI_POLL_SECONDS) || 30;
+    const EFFETTIVO = effectivePollSeconds(RICHIESTO);
+    const SIRI_INTERVAL_MS = EFFETTIVO * 1000;
+    if (EFFETTIVO !== RICHIESTO) {
+      logger.warn(
+        { richiesto: RICHIESTO, effettivo: EFFETTIVO, limite: SIRI_MAX_POLL_SECONDS },
+        `SIRI_POLL_SECONDS=${RICHIESTO} impedirebbe di rilevare i transiti alle `
+        + `fermate (oltre ${SIRI_MAX_POLL_SECONDS}s il cambio di fermata non è più `
+        + `attribuibile): intervallo portato a ${EFFETTIVO}s. `
+        + `Imposta SIRI_POLL_SECONDS=${EFFETTIVO} per togliere questo avviso.`,
+      );
+    }
     let siriRunning = false; // un giro lento non deve accavallarsi col successivo
 
     const tick = async (phase: string) => {

@@ -569,6 +569,48 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
   return c;
 }
 
+/* ── Mezzi in servizio e parco fermo ──────────────────────────────────────
+ * L'AVM manda l'INTERO parco, deposito compreso: su 368 vetture ne dichiara
+ * monitorate 72. Una vettura non monitorata, senza corsa e senza linea non è
+ * esercizio: portarla in Sala Operativa riempie la mappa di autobus anonimi
+ * fra cui i mezzi veri non si trovano più — ed è anche cinque volte il volume
+ * di scrittura, tutto rumore.
+ *
+ * La distinzione da NON perdere è fra "fermo in deposito" e "in servizio ma
+ * senza turno macchina". Il secondo è un mezzo che l'AVM segue davvero
+ * (Monitored=true) e che quindi va mostrato anche se il conducente non ha
+ * impostato il turno e la linea resta ignota: che quel turno manchi è un
+ * dato di esercizio, non un difetto del collegamento.
+ */
+export interface ServiceSplit {
+  /** in esercizio: monitorati dall'AVM, o con una corsa/linea dichiarata */
+  inServizio: SiriVehicle[];
+  /** parco fermo: nessuno dei tre segnali */
+  ferme: SiriVehicle[];
+  /** true quando il produttore non distingue nulla (nessun mezzo monitorato
+   *  né con corsa): allora non si filtra — meglio troppi mezzi che nessuno. */
+  nonDistinguibile: boolean;
+}
+
+/** Un mezzo è in esercizio se l'AVM lo segue, o dichiara corsa o linea. */
+function inService(v: SiriVehicle): boolean {
+  return v.monitored || !!v.journeyRef || (!!v.lineRef && !v.outOfService);
+}
+
+export function splitInService(vehicles: SiriVehicle[]): ServiceSplit {
+  const inServizio = vehicles.filter(inService);
+  /* Nessun segnale su nessun mezzo: il produttore non compila quei campi.
+   * Filtrare qui vorrebbe dire spegnere la mappa, quindi non si filtra. */
+  if (inServizio.length === 0) {
+    return { inServizio: vehicles, ferme: [], nonDistinguibile: true };
+  }
+  return {
+    inServizio,
+    ferme: vehicles.filter(v => !inService(v)),
+    nonDistinguibile: false,
+  };
+}
+
 /** Quanto è "informativo" un mezzo: serve a campionare quelli in servizio. */
 function richness(v: SiriVehicle): number {
   return (v.journeyRef ? 8 : 0) + (v.previousCalls.length > 0 ? 8 : 0)
@@ -1111,6 +1153,60 @@ export function scheduleKeys(hhmm: string): string[] {
   return scheduleCandidates(hhmm).map(c => c.key);
 }
 
+/* ── Il ritardo alla fermata, calcolato in casa ────────────────────────────
+ * Finora il ritardo era SOLO quello dichiarato dall'AVM: se il produttore non
+ * lo manda — e questo non lo manda quasi mai — la colonna Δ restava vuota
+ * anche quando si conoscevano sia l'orario programmato sia il transito
+ * osservato. Sono i due termini del confronto: il delta si calcola.
+ *
+ * Due trappole nel GTFS, entrambe reali:
+ *  · l'orario programmato può superare le 24 ("25:10:00" = 01:10 del giorno
+ *    dopo, stessa giornata di servizio);
+ *  · il transito osservato cade dopo la mezzanotte civile mentre il
+ *    programmato è ancora "prima".
+ * In tutti e due i casi la sottrazione grezza sbaglia di 24 ore. Si riporta
+ * quindi lo scarto nella finestra ±12 h, che è l'unica interpretazione
+ * sensata: nessuna corsa è in ritardo di mezza giornata.
+ */
+const DAY_SEC = 86_400;
+
+/** "HH:MM[:SS]" → secondi dalla mezzanotte, anche oltre le 24. */
+export function scheduledSeconds(scheduled: string | null | undefined): number | null {
+  if (!scheduled) return null;
+  const m = /^(\d{1,3}):(\d{2})(?::(\d{2}))?$/.exec(scheduled.trim());
+  if (!m) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3] ?? 0);
+}
+
+/** Secondi dalla mezzanotte locale, nel fuso dell'azienda. */
+function localSeconds(d: Date, timeZone: string): number {
+  const p = new Intl.DateTimeFormat("it-IT", {
+    timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(d);
+  const get = (t: string) => Number(p.find(x => x.type === t)?.value ?? "0");
+  return get("hour") * 3600 + get("minute") * 60 + get("second");
+}
+
+/**
+ * Scarto fra transito osservato e orario programmato, in secondi.
+ * Positivo = ritardo, negativo = anticipo. null se manca un termine.
+ */
+export function delayFromSchedule(
+  scheduled: string | null | undefined,
+  observedAt: Date | string | null | undefined,
+  timeZone = "Europe/Rome",
+): number | null {
+  const sched = scheduledSeconds(scheduled);
+  if (sched == null || !observedAt) return null;
+  const at = observedAt instanceof Date ? observedAt : new Date(observedAt);
+  if (Number.isNaN(at.getTime())) return null;
+
+  const raw = localSeconds(at, timeZone) - (sched % DAY_SEC);
+  /* Nella finestra ±12 h. Il modulo di JS tiene il segno del dividendo,
+   * quindi il +DAY_SEC prima del secondo modulo non è ridondante. */
+  return (((raw + DAY_SEC / 2) % DAY_SEC) + DAY_SEC) % DAY_SEC - DAY_SEC / 2;
+}
+
 export interface TripMatch {
   tripId: string | null;
   /** più corse partono a quell'ora su quella linea: la scelta è arbitraria */
@@ -1189,8 +1285,28 @@ export interface TransitEvent {
   uncertaintySec: number;
 }
 
-/** Oltre questo intervallo il punto medio non significa più nulla. */
-const MAX_GAP_SEC = 300;
+/**
+ * Oltre questo intervallo il punto medio non significa più nulla — ed è
+ * anche il tetto oltre il quale non ha senso far girare il poller: se due
+ * letture distano di più, nessun transito verrà mai registrato.
+ */
+export const MAX_GAP_SEC = 300;
+
+/** Intervallo a cui si scende quando quello configurato è inutilizzabile. */
+export const POLL_CONSIGLIATO_SEC = 60;
+
+/**
+ * L'intervallo di poll davvero applicabile, dato quello configurato.
+ *
+ * Il taglio NON si ferma a MAX_GAP_SEC, che è la soglia di rifiuto: un giro
+ * da 300 s che ne impiega 300,4 verrebbe scartato lo stesso e il taglio non
+ * servirebbe a nulla. Si scende a un intervallo più corto del tempo fra due
+ * fermate, che è la condizione perché un transito si possa riconoscere.
+ */
+export function effectivePollSeconds(requested: number): number {
+  if (!Number.isFinite(requested) || requested <= 0) return 30;
+  return requested > MAX_GAP_SEC ? POLL_CONSIGLIATO_SEC : Math.max(10, requested);
+}
 
 export function detectTransit(
   prev: VehicleProgress | null | undefined, cur: VehicleProgress,
