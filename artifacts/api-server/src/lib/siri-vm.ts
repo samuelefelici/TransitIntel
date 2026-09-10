@@ -223,6 +223,18 @@ export interface SiriVehicle {
   directionRef: string | null;
   /** identificativo della corsa del giorno + data di servizio */
   datedVehicleJourneyRef: string | null;
+  /** Identificativo di corsa alternativo: alcuni produttori (MIZ/Flashnet)
+   *  usano SOLO questo, senza FramedVehicleJourneyRef. */
+  courseOfJourneyRef: string | null;
+  /** L'identificativo di corsa da usare: il framed se c'è, altrimenti il course. */
+  journeyRef: string | null;
+  /** Codice del PERCORSO (variante), distinto dalla linea */
+  routeRef: string | null;
+  originRef: string | null;
+  originName: string | null;
+  destinationRef: string | null;
+  /** Arrivo programmato al capolinea: con la partenza, identifica la corsa */
+  destinationAimedArrival: Date | null;
   dataFrameRef: string | null;
   journeyPatternRef: string | null;
   publishedLineName: string | null;
@@ -301,6 +313,11 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
   const monitoredCallNode = mvj ? findFirst(mvj, "MonitoredCall") : null;
   const prevWrap = mvj ? findFirst(mvj, "PreviousCalls") : null;
   const onwardWrap = mvj ? findFirst(mvj, "OnwardCalls") : null;
+  /* Due modi di dire la stessa cosa: lo standard prevede entrambi, e un
+   * produttore che non manda FramedVehicleJourneyRef non è un produttore
+   * senza corse — usa l'altro. */
+  const framedJourney = directText(framed, "DatedVehicleJourneyRef");
+  const course = directText(mvj, "CourseOfJourneyRef");
 
   return {
     recordedAt: parseDate(directText(va, "RecordedAtTime")),
@@ -308,7 +325,14 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
     vehicleRef: directText(mvj, "VehicleRef"),
     lineRef: directText(mvj, "LineRef"),
     directionRef: directText(mvj, "DirectionRef"),
-    datedVehicleJourneyRef: directText(framed, "DatedVehicleJourneyRef"),
+    datedVehicleJourneyRef: framedJourney,
+    courseOfJourneyRef: course,
+    journeyRef: framedJourney ?? course,
+    routeRef: directText(mvj, "RouteRef"),
+    originRef: directText(mvj, "OriginRef"),
+    originName: directText(mvj, "OriginName"),
+    destinationRef: directText(mvj, "DestinationRef"),
+    destinationAimedArrival: parseDate(directText(mvj, "DestinationAimedArrivalTime")),
     dataFrameRef: directText(framed, "DataFrameRef"),
     journeyPatternRef: directText(mvj, "JourneyPatternRef"),
     publishedLineName: directText(mvj, "PublishedLineName"),
@@ -520,7 +544,7 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
   for (const v of vehicles) {
     if (v.lat != null && v.lon != null) c.conPosizione++;
     if (v.lineRef) c.conLinea++;
-    if (v.datedVehicleJourneyRef) c.conCorsa++;
+    if (v.journeyRef) c.conCorsa++;
     if (v.monitoredCall?.stopPointRef) c.conFermataCorrente++;
     if (v.previousCalls.length > 0) c.conFermateTransitate++;
     if (v.onwardCalls.length > 0) c.conFermateFuture++;
@@ -536,7 +560,7 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
 
 /** Quanto è "informativo" un mezzo: serve a campionare quelli in servizio. */
 function richness(v: SiriVehicle): number {
-  return (v.datedVehicleJourneyRef ? 8 : 0) + (v.previousCalls.length > 0 ? 8 : 0)
+  return (v.journeyRef ? 8 : 0) + (v.previousCalls.length > 0 ? 8 : 0)
     + (v.onwardCalls.length > 0 ? 4 : 0) + (v.monitoredCall?.stopPointRef ? 3 : 0)
     + (v.lineRef ? 2 : 0) + (v.delaySeconds != null ? 2 : 0) + (v.blockRef ? 1 : 0);
 }
@@ -583,7 +607,46 @@ export interface GtfsIndex {
   stops: Set<string>;
   /** trip_id → route_id, per completare le corse che l'AVM non associa */
   tripRoute: Map<string, string>;
+  /** codice di linea normalizzato → route_id (da route_id e short_name) */
+  routeByCode: Map<string, string>;
+  /** stop_id → nome, per verificare che un id che combacia sia la STESSA fermata */
+  stopNames: Map<string, string>;
+  /** nome normalizzato → stop_id */
+  stopByName: Map<string, string>;
   loadedAt: number;
+}
+
+/* ── Codice di linea: l'id interno dell'AVM non è il numero della linea ──
+ * Osservato su Flashnet/MIZ: LineRef "16" è l'id interno della **Linea 3**,
+ * "11" è la navetta del porto. Confrontare LineRef con gli id del feed non
+ * produce assenza di corrispondenza — produce corrispondenze SBAGLIATE, che
+ * mettono un mezzo sulla linea di un altro. Il numero pubblico sta invece in
+ * PublishedLineName ("Linea 3 P.zza Cavour - …"), ed è quello che l'utenza
+ * e il feed chiamano "linea". */
+export function normalizeLineCode(v: string): string {
+  return v.trim().toUpperCase().replace(/\s+/g, "");
+}
+
+/** Da "Linea 1-4  P.zza IV Novembre - …" ricava i codici plausibili: 1-4, 1/4. */
+export function lineCodeCandidates(publishedLineName: string | null): string[] {
+  if (!publishedLineName) return [];
+  const m = /^\s*(?:linea|line|linee|bus)\s+([0-9]+(?:\s*[-/]\s*[0-9A-Z]+)*[A-Z]?)/i
+    .exec(publishedLineName);
+  if (!m) return [];
+  const raw = normalizeLineCode(m[1]);
+  const out = [raw];
+  // Le reti italiane scrivono le linee accoppiate ora con "-" ora con "/"
+  const slashed = raw.replace(/-/g, "/");
+  if (slashed !== raw) out.push(slashed);
+  const dashed = raw.replace(/\//g, "-");
+  if (dashed !== raw && !out.includes(dashed)) out.push(dashed);
+  return out;
+}
+
+/** Nome di fermata comparabile: senza accenti, punteggiatura e maiuscole. */
+export function normalizeStopName(v: string): string {
+  return v.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
 }
 
 export interface MappedVehicle {
@@ -607,10 +670,72 @@ export interface MappingReport {
   stopMatched: number;
   transitsFound: number;
   transitsMatched: number;
+  /** come si è agganciata la linea: dal numero pubblicato o dall'id interno */
+  routeMatchedByPublishedName: number;
+  routeMatchedByRef: number;
+  /** fermate agganciate per id, e per nome quando l'id non esiste nel feed */
+  stopMatchedById: number;
+  stopMatchedByName: number;
+  /** id che combaciano ma con nomi diversi: sono corrispondenze FALSE */
+  stopIdNameConflicts: string[];
   /** riferimenti orfani: servono a capire la codifica dell'AVM */
   unmatchedTripRefs: string[];
   unmatchedLineRefs: string[];
   unmatchedStopRefs: string[];
+}
+
+/** Un id combacia ma i nomi sono incompatibili → non è la stessa fermata. */
+function namesCompatible(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return true; // senza nomi non si può smentire: si accetta l'id
+  const na = normalizeStopName(a), nb = normalizeStopName(b);
+  if (!na || !nb) return true;
+  return na === nb || na.includes(nb) || nb.includes(na);
+}
+
+/**
+ * Aggancia la fermata dell'AVM a quella del feed.
+ * Prima per id, ma VERIFICANDO il nome: due numerazioni diverse che si
+ * sovrappongono per caso producono corrispondenze false, ed è peggio di
+ * nessuna corrispondenza. Poi, in subordine, per nome.
+ */
+function resolveStop(
+  ref: string | null, name: string | null, index: GtfsIndex,
+): { stopId: string | null; how: "id" | "name" | null; conflict: string | null } {
+  for (const c of refCandidates(ref)) {
+    if (!index.stops.has(c)) continue;
+    const feedName = index.stopNames.get(c) ?? null;
+    if (namesCompatible(name, feedName)) return { stopId: c, how: "id", conflict: null };
+    // id uguale, fermata diversa: si annota e si prova col nome
+    const conflict = `${c}: AVM "${name}" ≠ feed "${feedName}"`;
+    const byName = name ? index.stopByName.get(normalizeStopName(name)) : undefined;
+    return byName
+      ? { stopId: byName, how: "name", conflict }
+      : { stopId: null, how: null, conflict };
+  }
+  const byName = name ? index.stopByName.get(normalizeStopName(name)) : undefined;
+  return byName ? { stopId: byName, how: "name", conflict: null } : { stopId: null, how: null, conflict: null };
+}
+
+/**
+ * Aggancia la linea. Il numero PUBBLICATO ha la precedenza sull'id interno:
+ * su Flashnet LineRef "16" è la Linea 3 e "11" la navetta del porto, quindi
+ * confrontare LineRef con gli id del feed metteva i mezzi su linee altrui.
+ * L'id interno resta un ripiego per i produttori che non pubblicano il nome.
+ */
+function resolveRoute(
+  v: SiriVehicle, index: GtfsIndex,
+): { routeId: string | null; how: "published" | "ref" | null } {
+  for (const code of lineCodeCandidates(v.publishedLineName)) {
+    const byCode = index.routeByCode.get(code);
+    if (byCode) return { routeId: byCode, how: "published" };
+  }
+  if (!v.publishedLineName) {
+    for (const c of refCandidates(v.lineRef)) {
+      const byRef = index.routeByCode.get(normalizeLineCode(c)) ?? (index.routes.has(c) ? c : undefined);
+      if (byRef) return { routeId: byRef, how: "ref" };
+    }
+  }
+  return { routeId: null, how: null };
 }
 
 /** Primo candidato presente nell'insieme (esatto, poi ultimo segmento). */
@@ -634,20 +759,28 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
   let withPosition = 0, tripMatched = 0, routeMatched = 0, stopMatched = 0;
   let transitsFound = 0, transitsMatched = 0;
 
-  const mapped: MappedVehicle[] = vehicles.map(v => {
-    const tripId = resolveRef(v.datedVehicleJourneyRef, index.trips);
-    if (tripId) tripMatched++;
-    else if (v.datedVehicleJourneyRef) unmatchedTrip.add(v.datedVehicleJourneyRef);
+  let byPublished = 0, byRef = 0, stopById = 0, stopByName = 0;
+  const conflicts = new Set<string>();
 
-    // La linea: quella dichiarata dall'AVM, altrimenti quella della corsa agganciata
-    let routeId = resolveRef(v.lineRef, index.routes);
+  const mapped: MappedVehicle[] = vehicles.map(v => {
+    const tripId = resolveRef(v.journeyRef, index.trips);
+    if (tripId) tripMatched++;
+    else if (v.journeyRef) unmatchedTrip.add(v.journeyRef);
+
+    // La linea: numero pubblicato, poi id interno, poi quella della corsa agganciata
+    const r = resolveRoute(v, index);
+    let routeId = r.routeId;
+    if (r.how === "published") byPublished++; else if (r.how === "ref") byRef++;
     if (!routeId && tripId) routeId = index.tripRoute.get(tripId) ?? null;
     if (routeId) routeMatched++;
-    else if (v.lineRef) unmatchedLine.add(v.lineRef);
+    else if (v.lineRef || v.publishedLineName) unmatchedLine.add(v.lineRef ?? v.publishedLineName!);
 
-    const nearestStopId = resolveRef(v.monitoredCall?.stopPointRef ?? null, index.stops);
-    if (nearestStopId) stopMatched++;
-    else if (v.monitoredCall?.stopPointRef) unmatchedStop.add(v.monitoredCall.stopPointRef);
+    const mc = v.monitoredCall;
+    const s = resolveStop(mc?.stopPointRef ?? null, mc?.stopPointName ?? null, index);
+    const nearestStopId = s.stopId;
+    if (s.conflict) conflicts.add(s.conflict);
+    if (nearestStopId) { stopMatched++; if (s.how === "id") stopById++; else stopByName++; }
+    else if (mc?.stopPointRef) unmatchedStop.add(mc.stopPointRef);
 
     if (v.lat != null && v.lon != null) withPosition++;
 
@@ -663,7 +796,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
       const actualTs = c.actualDeparture ?? c.actualArrival;
       if (!actualTs) continue;
       transitsFound++;
-      const stopId = resolveRef(c.stopPointRef, index.stops);
+      const stopId = resolveStop(c.stopPointRef, c.stopPointName, index).stopId;
       if (!stopId) { if (c.stopPointRef) unmatchedStop.add(c.stopPointRef); continue; }
       transitsMatched++;
       transits.push({
@@ -682,6 +815,9 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     report: {
       vehicles: vehicles.length, withPosition, tripMatched, routeMatched, stopMatched,
       transitsFound, transitsMatched,
+      routeMatchedByPublishedName: byPublished, routeMatchedByRef: byRef,
+      stopMatchedById: stopById, stopMatchedByName: stopByName,
+      stopIdNameConflicts: [...conflicts].slice(0, 10),
       unmatchedTripRefs: [...unmatchedTrip].slice(0, 10),
       unmatchedLineRefs: [...unmatchedLine].slice(0, 10),
       unmatchedStopRefs: [...unmatchedStop].slice(0, 10),
