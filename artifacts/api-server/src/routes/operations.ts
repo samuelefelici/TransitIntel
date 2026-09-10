@@ -25,6 +25,7 @@ import { getLatestFeedId } from "./gtfs-helpers";
 
 import { schemaState, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { delayFromSchedule } from "../lib/siri-vm";
+import { completeTransits } from "../lib/transit-completion";
 
 const router: IRouter = Router();
 
@@ -814,9 +815,48 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
               : undefined,
     };
 
+    /* ── Completamento ──────────────────────────────────────────────────
+     * Il passaggio si rileva solo dove il mezzo si trova entro il raggio di
+     * una fermata NELL'ISTANTE della lettura: a 60 secondi ne salta due o
+     * tre per volta, e la corsa esce coi buchi. Per il confronto con il
+     * programmato serve invece il tempo a OGNI fermata.
+     *
+     * Si completa IN LETTURA: nel database restano solo i passaggi davvero
+     * osservati, così l'algoritmo può migliorare senza riscrivere il passato
+     * e non si perde mai la distinzione fra visto e dedotto. */
+    const completato = completeTransits(
+      stops.map((s: any) => ({
+        seq: Number(s.seq ?? 0),
+        stopId: String(s.stop_id ?? ""),
+        stopName: s.stop_name ?? null,
+        scheduled: s.scheduled ?? null,
+      })),
+      stops
+        .filter((s: any) => s.actual_ts)
+        .map((s: any) => ({
+          stopId: String(s.stop_id ?? ""),
+          actualTs: new Date(s.actual_ts),
+          delaySeconds: s.delay_seconds ?? null,
+        })),
+      OPERATOR_TZ,
+    );
+    /* Le coordinate non passano dall'algoritmo (non gli servono) ma alla UI
+     * sì: si riagganciano per fermata. */
+    const coord = new Map(stops.map((s: any) => [String(s.stop_id ?? ""), s]));
+
     res.json({
       caronteAvailable: true,
       diagnosi,
+      /* Quanto di questo profilo è misurato e quanto dedotto. Chi ritara un
+       * orario deve saperlo prima di guardare i numeri, non dopo. */
+      completamento: {
+        osservate: completato.osservate,
+        interpolate: completato.interpolate,
+        estrapolate: completato.estrapolate,
+        scoperte: completato.scoperte,
+        coperturaOsservata: completato.coperturaOsservata,
+        nota: completato.nota ?? undefined,
+      },
       trip: tripInfo && {
         tripId: tripInfo.trip_id,
         routeId: tripInfo.route_id,
@@ -828,26 +868,28 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
         routeLongName: tripInfo.route_long_name,
         routeColor: tripInfo.route_color,
       },
-      stops: stops.map((s: any) => ({
-        seq: s.seq,
-        stopId: s.stop_id,
-        stopName: s.stop_name,
-        lat: s.stop_lat,
-        lon: s.stop_lon,
-        scheduled: s.scheduled,
-        actualTs: s.actual_ts,
-        /* Se l'AVM non ha dichiarato il ritardo lo si calcola: programmato e
-         * transito osservato ci sono entrambi. Vale anche per le righe già
-         * registrate prima che l'ingestione imparasse a farlo. */
-        delaySeconds: s.delay_seconds
-          ?? delayFromSchedule(s.scheduled, s.actual_ts, OPERATOR_TZ),
-        /* Da dove viene il numero: dichiarato dall'AVM o calcolato da noi.
-         * Confonderli significherebbe attribuire al produttore una misura
-         * che è nostra. */
-        delayOrigin: s.delay_seconds != null
-          ? "avm"
-          : (s.scheduled && s.actual_ts ? "calcolato" : null),
-      })),
+      stops: completato.fermate.map(f => {
+        const c: any = coord.get(f.stopId) ?? {};
+        return {
+          seq: f.seq,
+          stopId: f.stopId,
+          stopName: f.stopName,
+          lat: c.stop_lat ?? null,
+          lon: c.stop_lon ?? null,
+          scheduled: f.scheduled,
+          actualTs: f.actualTs ? f.actualTs.toISOString() : null,
+          delaySeconds: f.delaySeconds,
+          /* "osservato" = il mezzo è stato visto passare; "interpolato" e
+           * "estrapolato" = ricostruito da noi. Un orario dedotto presentato
+           * come misurato renderebbe inattendibile proprio l'analisi per cui
+           * il dato viene raccolto. */
+          origine: f.origine,
+          /* Da dove viene il ritardo, quando la fermata è osservata. */
+          delayOrigin: f.origine !== "osservato"
+            ? "ricostruito"
+            : (c.delay_seconds != null ? "avm" : "calcolato"),
+        };
+      }),
     });
   } catch (e: any) {
     res.status(500).json(dbError(e));
