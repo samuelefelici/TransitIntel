@@ -24,8 +24,12 @@ import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
 
 import { schemaState } from "../lib/caronte-schema";
+import { delayFromSchedule } from "../lib/siri-vm";
 
 const router: IRouter = Router();
+
+/** Fuso dell'azienda: il confronto programmato/reale si fa nell'ora locale. */
+const OPERATOR_TZ = process.env.SIRI_TIMEZONE || "Europe/Rome";
 
 // Soglie di puntualità (standard TPL: in orario = da 1' di anticipo a 5' di ritardo)
 const EARLY_S = -60;
@@ -122,11 +126,17 @@ router.get("/operations/live", async (req, res): Promise<void> => {
              COALESCE(a.trip_id, l.trip_id)    AS trip_id,
              COALESCE(a.route_id, t.route_id)  AS route_id,
              a.started_at, a.device_id,
-             t.trip_headsign,
+             t.trip_headsign, t.direction_id, t.shape_id,
+             /* Il codice percorso può mancare su installazioni dove la
+              * migrazione non è stata applicata: letto dalla riga come JSON,
+              * una colonna assente vale NULL invece di far fallire la query
+              * e spegnere l'intera Sala Operativa. */
+             to_jsonb(t) ->> 'variant_code'  AS variant_code,
              r.route_short_name, r.route_long_name, r.route_color,
              s.stop_name AS nearest_stop_name,
              d.delay_seconds AS last_delay_seconds,
              d.actual_ts     AS last_transit_ts,
+             d.scheduled     AS last_scheduled,
              d.stop_seq      AS last_stop_seq,
              tot.n_stops     AS total_stops
       FROM latest l
@@ -149,7 +159,7 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         ON ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid
        AND s.stop_id = l.nearest_stop_id
       LEFT JOIN LATERAL (
-        SELECT st.delay_seconds, st.actual_ts, st.stop_seq
+        SELECT st.delay_seconds, st.actual_ts, st.stop_seq, st.scheduled
         FROM caronte.stop_transits st
         WHERE st.trip_id = COALESCE(a.trip_id, l.trip_id)
           AND st.actual_ts > now() - interval '6 hours'
@@ -212,6 +222,12 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       routeLongName: v.route_long_name,
       routeColor: v.route_color,
       headsign: v.trip_headsign,
+      /* Identità della corsa: senza questi in Sala Operativa non si sa su
+       * quale percorso il mezzo è instradato, né quale corsa dell'orario
+       * sta facendo — e quindi non si può risalire al quadro orario. */
+      variantCode: v.variant_code ?? null,
+      directionId: v.direction_id ?? null,
+      shapeId: v.shape_id ?? null,
       deviceId: v.device_id,
       startedAt: v.started_at,
       lat: v.lat,
@@ -221,8 +237,10 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       ts: v.ts,
       nearestStopId: v.nearest_stop_id,
       nearestStopName: v.nearest_stop_name,
-      delaySeconds: v.last_delay_seconds,
+      delaySeconds: v.last_delay_seconds
+        ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ),
       lastTransitTs: v.last_transit_ts,
+      lastScheduled: v.last_scheduled ?? null,
       lastStopSeq: v.last_stop_seq,
       totalStops: v.total_stops,
     }));
@@ -608,7 +626,8 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
     let stops: any[] = [];
     if (feedId) {
       const tQ = await db.execute<any>(sql`
-        SELECT t.trip_id, t.route_id, t.trip_headsign,
+        SELECT t.trip_id, t.route_id, t.trip_headsign, t.direction_id, t.shape_id,
+               to_jsonb(t) ->> 'variant_code' AS variant_code,
                r.route_short_name, r.route_long_name, r.route_color
         FROM gtfs_trips t
         LEFT JOIN gtfs_routes r ON r.feed_id = t.feed_id AND r.route_id = t.route_id
@@ -657,6 +676,9 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
         tripId: tripInfo.trip_id,
         routeId: tripInfo.route_id,
         headsign: tripInfo.trip_headsign,
+        variantCode: tripInfo.variant_code ?? null,
+        directionId: tripInfo.direction_id ?? null,
+        shapeId: tripInfo.shape_id ?? null,
         routeShortName: tripInfo.route_short_name,
         routeLongName: tripInfo.route_long_name,
         routeColor: tripInfo.route_color,
@@ -669,7 +691,17 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
         lon: s.stop_lon,
         scheduled: s.scheduled,
         actualTs: s.actual_ts,
-        delaySeconds: s.delay_seconds,
+        /* Se l'AVM non ha dichiarato il ritardo lo si calcola: programmato e
+         * transito osservato ci sono entrambi. Vale anche per le righe già
+         * registrate prima che l'ingestione imparasse a farlo. */
+        delaySeconds: s.delay_seconds
+          ?? delayFromSchedule(s.scheduled, s.actual_ts, OPERATOR_TZ),
+        /* Da dove viene il numero: dichiarato dall'AVM o calcolato da noi.
+         * Confonderli significherebbe attribuire al produttore una misura
+         * che è nostra. */
+        delayOrigin: s.delay_seconds != null
+          ? "avm"
+          : (s.scheduled && s.actual_ts ? "calcolato" : null),
       })),
     });
   } catch (e: any) {

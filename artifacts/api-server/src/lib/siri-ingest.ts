@@ -22,7 +22,7 @@ import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
-  buildTripStartIndex, detectTransit, splitInService,
+  buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress,
 } from "./siri-vm";
@@ -366,13 +366,18 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       lastProgress.set(vehicleId, cur);
       if (ev) {
         const st = stopTimes.get(`${ev.tripId}|${ev.stopId}`);
+        /* Il ritardo dichiarato dall'AVM ha la precedenza — è la sua misura
+         * ufficiale — ma quando manca lo si calcola: programmato e osservato
+         * ci sono entrambi, e senza questo la colonna Δ restava vuota. */
+        const delay = ev.delaySeconds
+          ?? delayFromSchedule(st?.scheduled, ev.observedAt, index.timeZone ?? "Europe/Rome");
         const r = await db.execute<any>(sql`
           INSERT INTO caronte.stop_transits
                  (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
                   scheduled, actual_ts, delay_seconds, lat, lon)
           SELECT ${ev.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
                  ${ev.stopId}, ${st?.seq ?? null}, ${st?.scheduled ?? null},
-                 ${ev.observedAt.toISOString()}::timestamptz, ${ev.delaySeconds},
+                 ${ev.observedAt.toISOString()}::timestamptz, ${delay},
                  ${v.lat}, ${v.lon}
            WHERE NOT EXISTS (
              SELECT 1 FROM caronte.stop_transits s
@@ -386,13 +391,15 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
      *     hanno la precedenza su quelli osservati perché sono precisi. */
     if (m.tripId) {
       for (const t of m.transits) {
+        const delay = t.delaySeconds
+          ?? delayFromSchedule(t.scheduled, t.actualTs, index.timeZone ?? "Europe/Rome");
         const r = await db.execute<any>(sql`
           INSERT INTO caronte.stop_transits
                  (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
                   scheduled, actual_ts, delay_seconds, lat, lon)
           SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
                  ${t.stopId}, ${t.stopSeq}, ${t.scheduled},
-                 ${t.actualTs.toISOString()}::timestamptz, ${t.delaySeconds},
+                 ${t.actualTs.toISOString()}::timestamptz, ${delay},
                  ${v.lat}, ${v.lon}
            WHERE NOT EXISTS (
              SELECT 1 FROM caronte.stop_transits s

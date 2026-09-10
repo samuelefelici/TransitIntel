@@ -26,7 +26,7 @@ import {
   buildCheckStatusRequest, buildGetCapabilitiesRequest, postSoap,
   parseCapabilities, parseXml, textOf, findFirst, fetchVehicleMonitoring,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
-  splitInService,
+  splitInService, MAX_GAP_SEC, effectivePollSeconds,
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
@@ -47,6 +47,20 @@ export function siriConfig(): SiriEndpointConfig | null {
     timeoutMs: Number(process.env.SIRI_TIMEOUT_MS) || 20_000,
   };
 }
+/**
+ * L'intervallo di poll richiesto e quello davvero applicato.
+ *
+ * Sopra MAX_GAP_SEC il rilevamento dei transiti è impossibile per costruzione:
+ * il connettore non diventa lento, diventa muto. Il valore viene quindi
+ * riportato entro un limite utile: la regola sta in effectivePollSeconds(),
+ * dove si collauda senza avviare il server.
+ */
+export function siriPoll(): { richiesto: number; effettivo: number; ridotto: boolean } {
+  const richiesto = Number(process.env.SIRI_POLL_SECONDS) || 30;
+  const effettivo = effectivePollSeconds(richiesto);
+  return { richiesto, effettivo, ridotto: effettivo !== richiesto };
+}
+
 export function siriDetailLevel(): "minimum" | "basic" | "normal" | "calls" | "full" {
   const v = (process.env.SIRI_DETAIL_LEVEL || "calls").toLowerCase();
   return (["minimum", "basic", "normal", "calls", "full"] as const).includes(v as any)
@@ -73,7 +87,13 @@ router.get("/siri/status", async (req, res): Promise<void> => {
     requestorRef: cfg.requestorRef,
     authentication: cfg.username ? "basic" : "nessuna",
     detailLevel: siriDetailLevel(),
-    pollSeconds: Number(process.env.SIRI_POLL_SECONDS) || 30,
+    pollSeconds: siriPoll().effettivo,
+    pollNota: siriPoll().ridotto
+      ? `SIRI_POLL_SECONDS=${siriPoll().richiesto} renderebbe impossibile rilevare i `
+        + `transiti alle fermate (servono al massimo ${MAX_GAP_SEC}s fra due letture): `
+        + `l'intervallo è stato riportato a ${siriPoll().effettivo}s. Imposta `
+        + "SIRI_POLL_SECONDS=60 per togliere questo avviso."
+      : undefined,
   };
 
   try {
@@ -398,11 +418,7 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
   }
   const ingest = await ingestVehicles(result.vehicles);
   const cancelled = await closeCancelled(result.cancellations);
-  /* Un transito si riconosce dal CAMBIO di fermata fra due letture: se il
-   * polling è più lento della soglia, non se ne registrerà mai nessuno, e
-   * la pagina Tempi di percorrenza resterà vuota senza che nulla lo dica. */
-  const poll = Number(process.env.SIRI_POLL_SECONDS) || 30;
-  const transitiImpossibili = poll > 300;
+  const poll = siriPoll();
 
   return {
     mezzi: result.vehicles.length,
@@ -414,10 +430,12 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
     transitiInseriti: ingest.transitsInserted,
     mezziNonSalvati: ingest.vehiclesFailed || undefined,
     primoErrore: ingest.firstError ?? undefined,
-    avviso: transitiImpossibili
-      ? `SIRI_POLL_SECONDS=${poll}: oltre i 300 s il cambio di fermata non è più `
-        + "attribuibile e NESSUN transito viene registrato. Porta l'intervallo a 60 s "
-        + "(il minimo dichiarato dal produttore) perché puntualità e tempi di percorrenza si popolino."
+    intervalloPollSec: poll.effettivo,
+    avviso: poll.ridotto
+      ? `SIRI_POLL_SECONDS=${poll.richiesto}: oltre i ${MAX_GAP_SEC} s il cambio di fermata `
+        + "non è più attribuibile e nessun transito sarebbe registrato. L'intervallo è "
+        + `stato riportato a ${poll.effettivo} s perché puntualità e tempi di percorrenza `
+        + "si popolino comunque. Imposta SIRI_POLL_SECONDS=60 per togliere l'avviso."
       : undefined,
     corrispondenze: ingest.report,
   };

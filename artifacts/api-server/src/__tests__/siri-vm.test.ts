@@ -13,7 +13,8 @@ import {
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
   lineCodeCandidates, normalizeStopName, routeRefLineCandidates, matchRouteByLongName,
   buildTripStartIndex, matchTripBySchedule, localHHMM, scheduleKeys, detectTransit,
-  splitInService,
+  splitInService, delayFromSchedule, scheduledSeconds,
+  effectivePollSeconds, MAX_GAP_SEC, POLL_CONSIGLIATO_SEC,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -387,6 +388,96 @@ describe("ripartizione fra mezzi in esercizio e parco fermo", () => {
     const s = splitInService([]);
     expect(s.inServizio).toHaveLength(0);
     expect(s.nonDistinguibile).toBe(true);
+  });
+});
+
+/* ── Il Δ alla fermata ────────────────────────────────────────────────────
+ * Questo AVM non dichiara quasi mai il ritardo: finché lo si aspettava da
+ * lui la colonna Δ restava vuota anche avendo in mano sia il programmato sia
+ * il transito osservato. Sono i due termini del confronto. */
+describe("ritardo calcolato da programmato e transito osservato", () => {
+  const TZ = "Europe/Rome";
+  // 2026-09-10 è ora legale a Roma: UTC+2.
+  const at = (hhmmss: string) => new Date(`2026-09-10T${hhmmss}+02:00`);
+
+  it("legge gli orari GTFS, anche oltre le 24", () => {
+    expect(scheduledSeconds("08:30:00")).toBe(30_600);
+    expect(scheduledSeconds("25:10:00")).toBe(90_600);
+    expect(scheduledSeconds("8:30")).toBe(30_600);
+    expect(scheduledSeconds("pippo")).toBeNull();
+    expect(scheduledSeconds(null)).toBeNull();
+  });
+
+  it("un transito in ritardo dà un delta positivo", () => {
+    expect(delayFromSchedule("08:30:00", at("08:33:20"), TZ)).toBe(200);
+  });
+
+  it("un transito in anticipo dà un delta negativo", () => {
+    expect(delayFromSchedule("08:30:00", at("08:28:30"), TZ)).toBe(-90);
+  });
+
+  it("in perfetto orario dà zero", () => {
+    expect(delayFromSchedule("08:30:00", at("08:30:00"), TZ)).toBe(0);
+  });
+
+  /* Prima trappola: il GTFS scrive "25:10" per l'01:10 del giorno dopo,
+   * stessa giornata di servizio. La sottrazione grezza sbaglierebbe di 24h. */
+  it("gestisce l'orario programmato oltre la mezzanotte", () => {
+    const transito = new Date("2026-09-11T01:12:00+02:00");
+    expect(delayFromSchedule("25:10:00", transito, TZ)).toBe(120);
+  });
+
+  /* Seconda trappola: programmato appena prima di mezzanotte, transito
+   * appena dopo. È un ritardo di 2 minuti, non un anticipo di 23h58'. */
+  it("gestisce il transito che scavalca la mezzanotte civile", () => {
+    const transito = new Date("2026-09-11T00:01:00+02:00");
+    expect(delayFromSchedule("23:59:00", transito, TZ)).toBe(120);
+  });
+
+  it("calcola nell'ora locale dell'azienda, non in UTC", () => {
+    // 06:30 UTC = 08:30 a Roma: in orario, non due ore di anticipo.
+    expect(delayFromSchedule("08:30:00", new Date("2026-09-10T06:30:00Z"), TZ)).toBe(0);
+  });
+
+  it("senza uno dei due termini non inventa un numero", () => {
+    expect(delayFromSchedule(null, at("08:30:00"), TZ)).toBeNull();
+    expect(delayFromSchedule("08:30:00", null, TZ)).toBeNull();
+    expect(delayFromSchedule("08:30:00", "non-una-data", TZ)).toBeNull();
+  });
+
+  it("accetta il transito anche come stringa ISO, com'esce dal database", () => {
+    expect(delayFromSchedule("08:30:00", "2026-09-10T06:35:00Z", TZ)).toBe(300);
+  });
+});
+
+/* ── L'intervallo di poll ──────────────────────────────────────────────────
+ * Il caso vero: SIRI_POLL_SECONDS=3600 in produzione. Il connettore girava,
+ * i log erano puliti, e non veniva registrato un solo transito — perché con
+ * un'ora fra due letture il cambio di fermata non è attribuibile. */
+describe("intervallo di poll applicabile", () => {
+  it("rispetta un intervallo già utilizzabile", () => {
+    expect(effectivePollSeconds(30)).toBe(30);
+    expect(effectivePollSeconds(60)).toBe(60);
+    expect(effectivePollSeconds(120)).toBe(120);
+  });
+
+  it("riporta a un valore utile un intervallo che spegnerebbe i transiti", () => {
+    expect(effectivePollSeconds(3600)).toBe(POLL_CONSIGLIATO_SEC);
+    expect(effectivePollSeconds(900)).toBe(POLL_CONSIGLIATO_SEC);
+  });
+
+  /* Fermarsi a MAX_GAP_SEC sarebbe un taglio inutile: è la soglia di RIFIUTO,
+   * quindi un giro appena più lungo del previsto verrebbe scartato lo stesso
+   * e non si registrerebbe nulla comunque. */
+  it("non si ferma sulla soglia di rifiuto, che non lascerebbe margine", () => {
+    expect(effectivePollSeconds(3600)).toBeLessThan(MAX_GAP_SEC);
+  });
+
+  it("non scende sotto un minimo che martellerebbe il produttore", () => {
+    expect(effectivePollSeconds(1)).toBe(10);
+    expect(effectivePollSeconds(0)).toBe(30);   // non impostato
+    expect(effectivePollSeconds(NaN)).toBe(30);
+    expect(effectivePollSeconds(-5)).toBe(30);
   });
 });
 
