@@ -11,7 +11,7 @@ import {
   refCandidates, parseVehicleMonitoringResponse, parseCapabilities,
   buildVehicleMonitoringRequest, buildCheckStatusRequest,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
-  lineCodeCandidates, normalizeStopName,
+  lineCodeCandidates, normalizeStopName, routeRefLineCandidates,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -466,6 +466,68 @@ describe("caso Conerobus/MIZ", () => {
   });
 });
 
+describe("numero di linea dal codice di percorso", () => {
+  it("estrae la linea dal percorso, con e senza zero iniziale", () => {
+    expect(routeRefLineCandidates("03R1")).toContain("3");
+    expect(routeRefLineCandidates("03R1")).toContain("03");
+    expect(routeRefLineCandidates("31R2")).toContain("31");
+    expect(routeRefLineCandidates("94R1")).toContain("94");
+    expect(routeRefLineCandidates("20P")).toContain("20");
+  });
+
+  it("non ricava un numero da un percorso che non ne ha", () => {
+    expect(routeRefLineCandidates("FUORI LINEA")).toEqual([]);
+    expect(routeRefLineCandidates(null)).toEqual([]);
+  });
+
+  /* Il caso che il nome pubblicato non copre: la navetta del porto non ha
+   * un numero nel nome, ma il suo percorso "20P" dice che è la linea 20. */
+  it("aggancia la navetta, che dal nome non sarebbe agganciabile", () => {
+    const navetta = parseVehicleMonitoringResponse(
+      MIZ_RESPONSE
+        .replace("<PublishedLineName>Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi</PublishedLineName>",
+          "<PublishedLineName>Navetta Terminal Biglietterie - Terminal Imbarchi</PublishedLineName>")
+        .replace("<RouteRef>03A1</RouteRef>", "<RouteRef>20P</RouteRef>"),
+    ).vehicles[0];
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(["20"]), stops: new Set(),
+      tripRoute: new Map(), routeByCode: new Map([["20", "20"]]),
+      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+    };
+    const { mapped, report } = mapVehicles([navetta], index);
+    expect(mapped[0].routeId).toBe("20");
+    expect(report.routeMatchedByRouteRef).toBe(1);
+    expect(report.routeMatchedByPublishedName).toBe(0);
+  });
+
+  it("il nome pubblicato ha comunque la precedenza sul percorso", () => {
+    const v = parseVehicleMonitoringResponse(MIZ_RESPONSE).vehicles[0]; // Linea 3, percorso 03A1
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(["3"]), stops: new Set(),
+      tripRoute: new Map(), routeByCode: new Map([["3", "3"]]),
+      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+    };
+    const { report } = mapVehicles([v], index);
+    expect(report.routeMatchedByPublishedName).toBe(1);
+    expect(report.routeMatchedByRouteRef).toBe(0);
+  });
+
+  it("un mezzo in trasferimento non viene agganciato a una linea dal percorso", () => {
+    const fuori = parseVehicleMonitoringResponse(
+      MIZ_RESPONSE
+        .replace("<PublishedLineName>Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi</PublishedLineName>",
+          "<PublishedLineName>Rientro deposito</PublishedLineName>")
+        .replace("<RouteRef>03A1</RouteRef>", "<RouteRef>FUORI LINEA</RouteRef>"),
+    ).vehicles[0];
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(["3"]), stops: new Set(),
+      tripRoute: new Map(), routeByCode: new Map([["3", "3"]]),
+      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+    };
+    expect(mapVehicles([fuori], index).mapped[0].routeId).toBeNull();
+  });
+});
+
 describe("mezzi fuori servizio e linee orfane", () => {
   /* Osservato in produzione: il mezzo 415 ha percorso "FUORI LINEA", cioè
    * si sta trasferendo. Cercarne la corsa nell'orario non ha senso. */
@@ -492,19 +554,20 @@ describe("mezzi fuori servizio e linee orfane", () => {
     };
     const { report } = mapVehicles([v], index);
     expect(report.routeMatched).toBe(0);
-    // il perché dev'essere leggibile: "Linea 3" cercata come "3", assente nel feed
-    expect(report.unmatchedLines[0]).toEqual({
-      lineRef: "16",
-      published: "Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi",
-      codiciProvati: ["3"],
-    });
+    // il perché dev'essere leggibile: "Linea 3" cercata come "3" (dal nome) e
+    // come "03"/"3" (dal percorso 03A1), tutte assenti nel feed
+    expect(report.unmatchedLines[0].lineRef).toBe("16");
+    expect(report.unmatchedLines[0].published)
+      .toBe("Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi");
+    expect(report.unmatchedLines[0].codiciProvati).toContain("3");
   });
 
-  it("una linea senza numero nel nome lo dichiara apertamente", () => {
+  it("quando né il nome né il percorso portano un numero, lo dichiara", () => {
     const navetta = parseVehicleMonitoringResponse(
-      MIZ_RESPONSE.replace(
-        "<PublishedLineName>Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi</PublishedLineName>",
-        "<PublishedLineName>Navetta Terminal Biglietterie - Terminal Imbarchi</PublishedLineName>"),
+      MIZ_RESPONSE
+        .replace("<PublishedLineName>Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi</PublishedLineName>",
+          "<PublishedLineName>Navetta Terminal Biglietterie - Terminal Imbarchi</PublishedLineName>")
+        .replace("<RouteRef>03A1</RouteRef>", "<RouteRef>NAV</RouteRef>"),
     ).vehicles[0];
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(), stops: new Set(),

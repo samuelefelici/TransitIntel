@@ -653,6 +653,28 @@ export function lineCodeCandidates(publishedLineName: string | null): string[] {
   return out;
 }
 
+/**
+ * Il codice di PERCORSO porta il numero di linea in testa: "03R1" = linea 3
+ * andata/ritorno variante 1, "20P" = linea 20. Vale dove il nome pubblicato
+ * non ha un numero — la navetta del porto è "Navetta Terminal Biglietterie"
+ * ma il suo percorso è "20P", e la linea 20 nel feed c'è.
+ */
+export function routeRefLineCandidates(routeRef: string | null): string[] {
+  if (!routeRef) return [];
+  const m = /^\s*([0-9]+(?:\s*[-/]\s*[0-9]+)*)/.exec(routeRef);
+  if (!m) return [];
+  const raw = normalizeLineCode(m[1]);
+  const out = new Set<string>([raw]);
+  // "03" e "3" sono la stessa linea scritta con o senza zero iniziale
+  const unpadded = raw.replace(/(^|[-/])0+(?=[0-9])/g, "$1");
+  out.add(unpadded);
+  for (const v of [...out]) {
+    out.add(v.replace(/-/g, "/"));
+    out.add(v.replace(/\//g, "-"));
+  }
+  return [...out].filter(Boolean);
+}
+
 /** Nome di fermata comparabile: senza accenti, punteggiatura e maiuscole. */
 export function normalizeStopName(v: string): string {
   return v.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -682,6 +704,8 @@ export interface MappingReport {
   transitsMatched: number;
   /** come si è agganciata la linea: dal numero pubblicato o dall'id interno */
   routeMatchedByPublishedName: number;
+  /** agganciate dal codice di percorso ("03R1" → linea 3) */
+  routeMatchedByRouteRef: number;
   routeMatchedByRef: number;
   /** fermate agganciate per id, e per nome quando l'id non esiste nel feed */
   stopMatchedById: number;
@@ -738,10 +762,17 @@ function resolveStop(
  */
 function resolveRoute(
   v: SiriVehicle, index: GtfsIndex,
-): { routeId: string | null; how: "published" | "ref" | null } {
+): { routeId: string | null; how: "published" | "routeRef" | "ref" | null } {
   for (const code of lineCodeCandidates(v.publishedLineName)) {
     const byCode = index.routeByCode.get(code);
     if (byCode) return { routeId: byCode, how: "published" };
+  }
+  /* Il percorso porta il numero di linea anche quando il nome non lo dice. */
+  if (!v.outOfService) {
+    for (const code of routeRefLineCandidates(v.routeRef)) {
+      const byRoute = index.routeByCode.get(code);
+      if (byRoute) return { routeId: byRoute, how: "routeRef" };
+    }
   }
   if (!v.publishedLineName) {
     for (const c of refCandidates(v.lineRef)) {
@@ -773,7 +804,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
   let withPosition = 0, tripMatched = 0, routeMatched = 0, stopMatched = 0;
   let transitsFound = 0, transitsMatched = 0;
 
-  let byPublished = 0, byRef = 0, stopById = 0, stopByName = 0;
+  let byPublished = 0, byRouteRef = 0, byRef = 0, stopById = 0, stopByName = 0;
   const conflicts = new Set<string>();
   const unmatchedLineDetail = new Map<string, { lineRef: string | null; published: string | null; codiciProvati: string[] }>();
 
@@ -785,7 +816,9 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     // La linea: numero pubblicato, poi id interno, poi quella della corsa agganciata
     const r = resolveRoute(v, index);
     let routeId = r.routeId;
-    if (r.how === "published") byPublished++; else if (r.how === "ref") byRef++;
+    if (r.how === "published") byPublished++;
+    else if (r.how === "routeRef") byRouteRef++;
+    else if (r.how === "ref") byRef++;
     if (!routeId && tripId) routeId = index.tripRoute.get(tripId) ?? null;
     if (routeId) routeMatched++;
     else if (v.lineRef || v.publishedLineName) {
@@ -794,7 +827,10 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
       if (!unmatchedLineDetail.has(key)) {
         unmatchedLineDetail.set(key, {
           lineRef: v.lineRef, published: v.publishedLineName,
-          codiciProvati: lineCodeCandidates(v.publishedLineName),
+          codiciProvati: [...new Set([
+            ...lineCodeCandidates(v.publishedLineName),
+            ...routeRefLineCandidates(v.routeRef),
+          ])],
         });
       }
     }
@@ -839,7 +875,8 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     report: {
       vehicles: vehicles.length, withPosition, tripMatched, routeMatched, stopMatched,
       transitsFound, transitsMatched,
-      routeMatchedByPublishedName: byPublished, routeMatchedByRef: byRef,
+      routeMatchedByPublishedName: byPublished, routeMatchedByRouteRef: byRouteRef,
+      routeMatchedByRef: byRef,
       stopMatchedById: stopById, stopMatchedByName: stopByName,
       stopIdNameConflicts: [...conflicts].slice(0, 10),
       unmatchedTripRefs: [...unmatchedTrip].slice(0, 10),
