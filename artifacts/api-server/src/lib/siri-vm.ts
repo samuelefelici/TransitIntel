@@ -490,6 +490,83 @@ export function parseCapabilities(xml: string): {
   };
 }
 
+/* ── Che cosa l'AVM sta effettivamente mandando ───────────────────────────
+ * Un conteggio per campo, non un campione: con centinaia di mezzi il campione
+ * cade quasi sempre sulle vetture ferme in deposito — che non hanno corsa né
+ * fermate — e fa sembrare vuoto un flusso che invece porta dati sui mezzi in
+ * servizio. Questi numeri dicono quale PARTE del contratto SIRI il produttore
+ * sta davvero riempiendo. */
+export interface VehicleCompleteness {
+  totale: number;
+  conPosizione: number;
+  conLinea: number;
+  conCorsa: number;
+  conFermataCorrente: number;
+  conFermateTransitate: number;
+  /** fermate transitate con orario EFFETTIVO: è ciò che alimenta i transiti */
+  conOrarioEffettivo: number;
+  conFermateFuture: number;
+  conRitardo: number;
+  conTurnoVettura: number;
+  monitorati: number;
+}
+
+export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompleteness {
+  const c: VehicleCompleteness = {
+    totale: vehicles.length, conPosizione: 0, conLinea: 0, conCorsa: 0,
+    conFermataCorrente: 0, conFermateTransitate: 0, conOrarioEffettivo: 0,
+    conFermateFuture: 0, conRitardo: 0, conTurnoVettura: 0, monitorati: 0,
+  };
+  for (const v of vehicles) {
+    if (v.lat != null && v.lon != null) c.conPosizione++;
+    if (v.lineRef) c.conLinea++;
+    if (v.datedVehicleJourneyRef) c.conCorsa++;
+    if (v.monitoredCall?.stopPointRef) c.conFermataCorrente++;
+    if (v.previousCalls.length > 0) c.conFermateTransitate++;
+    if (v.onwardCalls.length > 0) c.conFermateFuture++;
+    if (v.delaySeconds != null) c.conRitardo++;
+    if (v.blockRef) c.conTurnoVettura++;
+    if (v.monitored) c.monitorati++;
+    const hasActual = v.previousCalls.some(x => x.actualArrival || x.actualDeparture)
+      || !!(v.monitoredCall && (v.monitoredCall.actualArrival || v.monitoredCall.actualDeparture));
+    if (hasActual) c.conOrarioEffettivo++;
+  }
+  return c;
+}
+
+/** Quanto è "informativo" un mezzo: serve a campionare quelli in servizio. */
+function richness(v: SiriVehicle): number {
+  return (v.datedVehicleJourneyRef ? 8 : 0) + (v.previousCalls.length > 0 ? 8 : 0)
+    + (v.onwardCalls.length > 0 ? 4 : 0) + (v.monitoredCall?.stopPointRef ? 3 : 0)
+    + (v.lineRef ? 2 : 0) + (v.delaySeconds != null ? 2 : 0) + (v.blockRef ? 1 : 0);
+}
+
+/** I mezzi che portano più informazione, in testa. */
+export function mostInformative(vehicles: SiriVehicle[], n: number): SiriVehicle[] {
+  return [...vehicles].sort((a, b) => richness(b) - richness(a)).slice(0, n);
+}
+
+/**
+ * Ritaglia dal grezzo UNA VehicleActivity, preferendo quella che contiene il
+ * marcatore cercato (es. "LineRef"). Serve a leggere i nomi veri degli
+ * elementi quando il parser non trova ciò che il WSDL prometteva.
+ */
+export function extractSampleActivity(xml: string, marker = "LineRef", maxChars = 4000): string | null {
+  const re = /<([A-Za-z0-9_.-]+:)?VehicleActivity[\s>]/g;
+  let best: string | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml)) !== null) {
+    const start = m.index;
+    const prefix = m[1] ?? "";
+    const closeTag = `</${prefix}VehicleActivity>`;
+    const end = xml.indexOf(closeTag, start);
+    const block = end === -1 ? xml.slice(start, start + maxChars) : xml.slice(start, end + closeTag.length);
+    if (!best) best = block.slice(0, maxChars);
+    if (block.includes(marker)) return block.slice(0, maxChars);
+  }
+  return best;
+}
+
 /* ── Corrispondenza SIRI ↔ GTFS ───────────────────────────────────────────
  * L'AVM identifica linee, corse e fermate con i SUOI riferimenti, che possono
  * non coincidere con gli id del feed GTFS attivo. Si prova la corrispondenza
@@ -653,19 +730,20 @@ export async function postSoap(
   }
 }
 
-/** Un giro completo: richiesta, risposta, normalizzazione. */
+/** Un giro completo: richiesta, risposta, normalizzazione.
+ *  `rawXml` è il grezzo INTERO: la diagnostica ne ritaglia ciò che serve. */
 export async function fetchVehicleMonitoring(
   cfg: SiriEndpointConfig, opts: Omit<SiriRequestOptions, "requestorRef"> = {},
-): Promise<SiriVmResult & { httpStatus: number; rawSample: string }> {
+): Promise<SiriVmResult & { httpStatus: number; rawXml: string }> {
   const body = buildVehicleMonitoringRequest({ ...opts, requestorRef: cfg.requestorRef });
   const { ok, status, xml } = await postSoap(cfg, "GetVehicleMonitoring", body);
   if (!ok && !xml.includes("Envelope")) {
     return {
       failed: true, errorText: `HTTP ${status}`, responseTimestamp: null,
       shortestPossibleCycleSec: null, vehicles: [], cancellations: [],
-      httpStatus: status, rawSample: xml.slice(0, 2000),
+      httpStatus: status, rawXml: xml,
     };
   }
   const parsed = parseVehicleMonitoringResponse(xml);
-  return { ...parsed, httpStatus: status, rawSample: xml.slice(0, 2000) };
+  return { ...parsed, httpStatus: status, rawXml: xml };
 }

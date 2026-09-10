@@ -10,7 +10,8 @@ import {
   parseXml, findAll, findFirst, textOf, directText, parseIsoDuration,
   refCandidates, parseVehicleMonitoringResponse, parseCapabilities,
   buildVehicleMonitoringRequest, buildCheckStatusRequest,
-  mapVehicles, type GtfsIndex,
+  mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
+  type GtfsIndex,
 } from "../lib/siri-vm";
 
 /* Risposta d'esempio: due mezzi, uno agganciato al GTFS con transiti reali,
@@ -276,6 +277,65 @@ describe("corrispondenza con gli id del feed GTFS", () => {
 
   it("l'orario programmato esce come HH:MM:SS", () => {
     expect(mapped[0].transits[0].scheduled).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+  });
+});
+
+describe("completezza del flusso", () => {
+  const vehicles = parseVehicleMonitoringResponse(VM_RESPONSE).vehicles;
+
+  it("conta che cosa il produttore riempie davvero", () => {
+    const c = describeCompleteness(vehicles);
+    expect(c.totale).toBe(2);
+    expect(c.conPosizione).toBe(2);
+    expect(c.conCorsa).toBe(2);
+    expect(c.conFermateTransitate).toBe(1);  // solo BUS-01
+    expect(c.conOrarioEffettivo).toBe(1);
+    expect(c.conTurnoVettura).toBe(1);
+    expect(c.conRitardo).toBe(2);
+  });
+
+  /* Il caso osservato su Conerobus: centinaia di vetture in deposito, che
+   * hanno solo la posizione. Prendere i primi mezzi dell'elenco faceva
+   * concludere che l'AVM non mandasse nulla. */
+  it("distingue una flotta in deposito da un flusso vuoto", () => {
+    const parcheggiate = Array.from({ length: 20 }, (_, i) => ({
+      ...vehicles[0],
+      vehicleRef: `P-${i}`, lineRef: null, datedVehicleJourneyRef: null,
+      delaySeconds: null, blockRef: null,
+      previousCalls: [], onwardCalls: [], monitoredCall: null,
+    }));
+    const c = describeCompleteness([...parcheggiate, vehicles[0]]);
+    expect(c.totale).toBe(21);
+    expect(c.conPosizione).toBe(21);   // tutte hanno il GPS
+    expect(c.conCorsa).toBe(1);        // una sola è in servizio
+    expect(c.conOrarioEffettivo).toBe(1);
+  });
+
+  it("il campione pesca i mezzi in servizio, non i primi dell'elenco", () => {
+    const parcheggiata = {
+      ...vehicles[0], vehicleRef: "FERMO", lineRef: null,
+      datedVehicleJourneyRef: null, previousCalls: [], onwardCalls: [], monitoredCall: null,
+    };
+    const scelti = mostInformative([parcheggiata, parcheggiata, vehicles[0]], 1);
+    expect(scelti[0].vehicleRef).toBe("BUS-01");
+  });
+});
+
+describe("ritaglio del grezzo per la diagnosi", () => {
+  it("estrae la VehicleActivity che contiene il marcatore cercato", () => {
+    const block = extractSampleActivity(VM_RESPONSE, "BlockRef");
+    expect(block).toContain("BUS-01");
+    expect(block).toContain("TURNO-7");
+    expect(block).not.toContain("BUS-02"); // un solo blocco, non l'intera risposta
+  });
+
+  it("ripiega sulla prima attività se il marcatore non c'è", () => {
+    const block = extractSampleActivity(VM_RESPONSE, "NonEsiste");
+    expect(block).toContain("VehicleActivity");
+  });
+
+  it("non esplode su un documento senza attività", () => {
+    expect(extractSampleActivity("<Envelope/>", "LineRef")).toBeNull();
   });
 });
 
