@@ -48,15 +48,41 @@ interface TripRuntime {
   headsign: string | null;
   shapeId: string | null;
   startTime: string | null;
-  runs: number;
-  avgObsStops: number | null;
-  totalStops: number | null;
+  /** classe di giornata: le corse non si mediano fra tipi di giorno diversi */
+  classe: string;
+  classeLabel: string;
+  /** giornate osservate in QUESTA classe */
+  giornate: number;
   schedSeconds: number | null;
   obsMedianSeconds: number | null;
+  /** durata che l'85% delle corse non supera: è quella su cui si tara */
+  obsP85Seconds: number | null;
+  obsMinSeconds: number | null;
+  obsMaxSeconds: number | null;
   deltaSeconds: number | null;
+  deltaP85Seconds: number | null;
   deltaPct: number | null;
+  /** il tempo concesso dall'orario regge o no */
+  verdetto: "stretto" | "largo" | "adeguato" | "insufficiente";
+  correzioneSuggeritaMin: number | null;
+  motivo: string;
+  fermate: {
+    fermateProgrammate: number;
+    fermateRilevateMedia: number;
+    quota: number;
+    nota: string;
+  };
 }
-interface ByTripResp { caronteAvailable: boolean; trips: TripRuntime[] }
+interface ByTripResp {
+  caronteAvailable: boolean;
+  corse: TripRuntime[];
+  validita?: {
+    psProjectId?: string;
+    profiloCaricato: boolean;
+    nota: string;
+    classiOsservate: string[];
+  };
+}
 
 interface DetailStop {
   seq: number;
@@ -103,6 +129,15 @@ function fmtSec(s: number | null): string {
   const m = Math.floor(s / 60);
   return `${m}'${String(s % 60).padStart(2, "0")}"`;
 }
+/* Il verdetto è la risposta alla domanda vera — "il tempo che l'orario
+ * concede a questa corsa è quello giusto" — e va letto prima dei numeri. */
+const VERDETTO_STILE: Record<string, { label: string; color: string; bg: string }> = {
+  stretto:       { label: "stretto",  color: "#f87171", bg: "rgba(248,113,113,0.12)" },
+  largo:         { label: "largo",    color: "#fbbf24", bg: "rgba(251,191,36,0.12)" },
+  adeguato:      { label: "adeguato", color: "#34d399", bg: "rgba(52,211,153,0.10)" },
+  insufficiente: { label: "pochi dati", color: "#94a3b8", bg: "rgba(148,163,184,0.10)" },
+};
+
 function deltaColor(pct: number | null): string {
   if (pct == null) return "#64748b";
   if (pct > 20) return "#ef4444";   // molto più lento del programmato
@@ -172,7 +207,7 @@ export default function RuntimesPage() {
 
   /* Gerarchia Linea → Percorso (direzione+destinazione/shape) → Corse */
   const tree = useMemo(() => {
-    const trips = byTripQ.data?.trips ?? [];
+    const trips = byTripQ.data?.corse ?? [];
     const routes = new Map<string, {
       key: string; shortName: string | null; longName: string | null; color: string | null;
       variants: Map<string, { key: string; label: string; trips: TripRuntime[] }>;
@@ -243,8 +278,8 @@ export default function RuntimesPage() {
         <div className="flex-1 min-w-52">
           <h1 className="text-xl font-bold">Tempi di Percorrenza</h1>
           <p className="text-xs text-muted-foreground">
-            Programmato vs osservato dai transiti AVM · clicca una corsa per il dettaglio fermata×fermata,
-            archi, fermate effettivamente fatte e analisi in tempo reale
+            Programmato vs osservato dai transiti SIRI · aggregato per classe di giornata,
+            perché mediare un feriale scolastico con una domenica non descrive nessuno dei due
           </p>
         </div>
         <RuntimesReportExport
@@ -287,6 +322,24 @@ export default function RuntimesPage() {
           ))}
         </div>
       </div>
+
+      {/* Su che base sono state separate le giornate. Senza calendario aziendale
+          restano Lu-Ve / Sa / Do / festivi, ma scuole aperte e chiuse no — e
+          fra settembre e agosto la differenza sui tempi è tutta lì. */}
+      {byTripQ.data?.validita && (
+        <div className="text-[11px] text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className={byTripQ.data.validita.profiloCaricato ? "text-emerald-400" : "text-amber-400"}>
+            {byTripQ.data.validita.profiloCaricato ? "Calendario aziendale" : "Calendario civile"}
+          </span>
+          <span>·</span>
+          <span>{byTripQ.data.validita.nota}</span>
+          {byTripQ.data.validita.classiOsservate.length > 0 && (
+            <span className="w-full text-[10px] text-muted-foreground/70">
+              Classi osservate: {byTripQ.data.validita.classiOsservate.join(" · ")}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Selettore vista: classificazione per corsa (Linea→Percorso→Corsa) o per tratta */}
       <div className="flex rounded-lg overflow-hidden border border-border/60 w-fit">
@@ -368,13 +421,31 @@ export default function RuntimesPage() {
                               <span className={`inline-block mr-1.5 text-[9px] transition-transform ${isOpen ? "rotate-90" : ""}`}>▸</span>
                               {t.startTime ? t.startTime.slice(0, 5) : "—"}
                             </td>
-                            <td className="px-2 py-1 text-right font-mono">{t.runs}</td>
-                            <td className="px-2 py-1 text-right font-mono text-muted-foreground">
-                              {t.avgObsStops != null && t.totalStops ? `${t.avgObsStops}/${t.totalStops}` : "—"}
+                            <td className="px-2 py-1 text-right font-mono">{t.giornate}</td>
+                            <td
+                              className="px-2 py-1 text-right font-mono text-muted-foreground"
+                              title={t.fermate?.nota}
+                            >
+                              {t.fermate?.fermateProgrammate
+                                ? `${t.fermate.fermateRilevateMedia}/${t.fermate.fermateProgrammate}`
+                                : "—"}
                             </td>
                             <td className="px-2 py-1 text-right font-mono">{fmtSec(t.schedSeconds)}</td>
                             <td className="px-2 py-1 text-right font-mono font-semibold">{fmtSec(t.obsMedianSeconds)}</td>
                             <td className="px-4 py-1 text-right font-mono font-bold" style={{ color: deltaColor(t.deltaPct) }}>
+                              <span
+                                className="mr-2 px-1.5 py-0.5 rounded text-[9px] font-semibold align-middle"
+                                style={{
+                                  color: VERDETTO_STILE[t.verdetto]?.color,
+                                  backgroundColor: VERDETTO_STILE[t.verdetto]?.bg,
+                                }}
+                                title={t.motivo}
+                              >
+                                {VERDETTO_STILE[t.verdetto]?.label ?? t.verdetto}
+                                {t.correzioneSuggeritaMin
+                                  ? ` ${t.correzioneSuggeritaMin > 0 ? "+" : ""}${t.correzioneSuggeritaMin}′`
+                                  : ""}
+                              </span>
                               {t.deltaPct != null ? `${t.deltaPct > 0 ? "+" : ""}${t.deltaPct}%` : "—"}
                             </td>
                           </tr>
