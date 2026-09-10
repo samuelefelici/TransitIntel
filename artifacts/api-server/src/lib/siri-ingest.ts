@@ -20,7 +20,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
-import { SOURCE_SIRI } from "./caronte-schema";
+import { SOURCE_SIRI, idNeedsValue } from "./caronte-schema";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
@@ -392,6 +392,9 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
   let erroreCorse: string | null = null;
   const funnel = emptyFunnel();
   funnel.inEsercizio = mapped.length;
+  /* Letto una volta per giro, non per mezzo: la struttura non cambia fra
+   * una vettura e l'altra. */
+  const idEsplicito = await idNeedsValue("active_trips");
 
   for (const m of mapped) {
    /* Un mezzo che non si riesce a salvare non deve costare gli altri 367.
@@ -454,15 +457,30 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
              AND trip_id IS DISTINCT FROM ${m.tripId}`);
         tripsClosed += (closed as any).rowCount ?? 0;
 
-        const opened = await db.execute<any>(sql`
-          INSERT INTO caronte.active_trips
-                 (trip_id, route_id, vehicle_id, device_id, started_at, source)
-          SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${SOURCE_SIRI},
-                 ${(v.originAimedDeparture ?? ts).toISOString()}::timestamptz, ${SOURCE_SIRI}
-           WHERE NOT EXISTS (
-             SELECT 1 FROM caronte.active_trips a
-              WHERE a.vehicle_id = ${vehicleId} AND a.trip_id = ${m.tripId}
-                AND a.ended_at IS NULL)`);
+        /* `active_trips.id` è uuid NOT NULL SENZA predefinito — al contrario
+         * delle altre due tabelle, che hanno gen_random_uuid(). L'AVM se lo
+         * calcola da sé; il nostro INSERT no, e per giorni ogni apertura di
+         * corsa è stata rifiutata con 23502. Lo si genera solo dove serve
+         * davvero, letto dalla struttura invece che presunto. */
+        const opened = idEsplicito
+          ? await db.execute<any>(sql`
+            INSERT INTO caronte.active_trips
+                   (id, trip_id, route_id, vehicle_id, device_id, started_at, source)
+            SELECT gen_random_uuid(), ${m.tripId}, ${m.routeId}, ${vehicleId}, ${SOURCE_SIRI},
+                   ${(v.originAimedDeparture ?? ts).toISOString()}::timestamptz, ${SOURCE_SIRI}
+             WHERE NOT EXISTS (
+               SELECT 1 FROM caronte.active_trips a
+                WHERE a.vehicle_id = ${vehicleId} AND a.trip_id = ${m.tripId}
+                  AND a.ended_at IS NULL)`)
+          : await db.execute<any>(sql`
+            INSERT INTO caronte.active_trips
+                   (trip_id, route_id, vehicle_id, device_id, started_at, source)
+            SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${SOURCE_SIRI},
+                   ${(v.originAimedDeparture ?? ts).toISOString()}::timestamptz, ${SOURCE_SIRI}
+             WHERE NOT EXISTS (
+               SELECT 1 FROM caronte.active_trips a
+                WHERE a.vehicle_id = ${vehicleId} AND a.trip_id = ${m.tripId}
+                  AND a.ended_at IS NULL)`);
         tripsOpened += (opened as any).rowCount ?? 0;
       } catch (e: any) {
         corseFallite++;

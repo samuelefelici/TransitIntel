@@ -174,6 +174,29 @@ export async function tableShape(table: string): Promise<Array<{
   }
 }
 
+/* ── La chiave primaria che non si genera da sola ─────────────────────────
+ * `caronte.active_trips.id` è uuid NOT NULL SENZA valore predefinito, mentre
+ * le altre due tabelle hanno `gen_random_uuid()`. Un INSERT che non elenca
+ * `id` — cioè il nostro — riceve NULL e viene rifiutato con 23502. La tabella
+ * è nata così dal sistema AVM, che l'id se lo calcola da sé.
+ *
+ * Si legge la struttura invece di presumerla: dove il valore predefinito c'è,
+ * o dove `id` non è un uuid, non si tocca niente. */
+const idCheck = new Map<string, { ok: boolean; at: number }>();
+
+export async function idNeedsValue(table: string): Promise<boolean> {
+  const c = idCheck.get(table);
+  if (c && Date.now() - c.at < 60_000) return c.ok;
+  const cols = await tableShape(table);
+  const id = cols.find(x => x.colonna === "id");
+  /* Struttura non leggibile: si dice di NO, così il comportamento resta
+   * quello di prima invece di introdurre una colonna che potrebbe non
+   * accettare un uuid. */
+  const ok = !!id && id.obbligatoria && id.predefinito === null && id.tipo === "uuid";
+  idCheck.set(table, { ok, at: Date.now() });
+  return ok;
+}
+
 /** Una istruzione DDL isolata: un fallimento non trascina le altre. */
 async function ddl(statement: ReturnType<typeof sql>, applied: string[], label: string): Promise<void> {
   try {
@@ -252,6 +275,19 @@ export async function repairSchema(): Promise<RepairResult> {
       applied, `caronte.${miss}`);
   }
 
+  /* Una chiave primaria uuid NOT NULL senza predefinito rifiuta ogni INSERT
+   * che non la elenchi. È il caso di caronte.active_trips, nata così dal
+   * sistema AVM che l'id se lo calcola da sé. Il connettore se lo genera
+   * comunque (idNeedsValue), ma qui si sistema la tabella per chiunque altro
+   * ci scriva — best effort: se il ruolo non può alterare, non cambia nulla. */
+  for (const table of Object.keys(EXPECTED)) {
+    if (!(await idNeedsValue(table))) continue;
+    await ddl(
+      sql`ALTER TABLE ${sql.raw(`caronte.${table}`)}
+          ALTER COLUMN id SET DEFAULT gen_random_uuid()`,
+      applied, `caronte.${table}.id (predefinito mancante)`);
+  }
+
   const after = await schemaState();
   if (applied.length > 0) {
     console.warn(
@@ -285,4 +321,5 @@ export function ensureCaronteSchema(): Promise<RepairResult> {
 export function resetCaronteSchemaCache(): void {
   repaired = null;
   sourceCheck = null;
+  idCheck.clear();
 }
