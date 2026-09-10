@@ -70,6 +70,37 @@ const server = app.listen(port, () => {
   } else {
     logger.warn("TOMTOM_API_KEY not set — traffic auto-sync disabled");
   }
+
+  // ─── Auto-poller: AVM esterno via SIRI Vehicle Monitoring ────────
+  // Alimenta lo schema `caronte` (posizioni, corse attive, transiti alle
+  // fermate) da cui dipendono Sala Operativa, Tempi di percorrenza e GTFS-RT.
+  if (process.env.SIRI_VM_URL) {
+    const SIRI_INTERVAL_MS = Math.max(10, Number(process.env.SIRI_POLL_SECONDS) || 30) * 1000;
+    let siriRunning = false; // un giro lento non deve accavallarsi col successivo
+
+    const tick = async (phase: string) => {
+      if (siriRunning) { logger.warn("SIRI poll: giro precedente ancora in corso, salto"); return; }
+      siriRunning = true;
+      try {
+        const { runSiriIngest } = await import("./routes/siri");
+        const result = await runSiriIngest();
+        logger.info(result, `SIRI poll (${phase})`);
+      } catch (err) {
+        logger.error(err, `SIRI poll (${phase}): failed`);
+      } finally {
+        siriRunning = false;
+      }
+    };
+
+    setTimeout(() => void tick("startup"), 15_000);
+    setInterval(() => void tick("scheduled"), SIRI_INTERVAL_MS);
+    logger.info(
+      { url: process.env.SIRI_VM_URL, everySeconds: SIRI_INTERVAL_MS / 1000 },
+      "SIRI auto-poll enabled",
+    );
+  } else {
+    logger.warn("SIRI_VM_URL not set — connettore AVM SIRI disattivato");
+  }
 });
 
 // ─── Timeout estesi per CP-SAT (vehicle/crew scheduler fino a 20 min) ──
