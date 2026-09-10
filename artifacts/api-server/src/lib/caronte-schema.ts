@@ -36,19 +36,47 @@ const EXPECTED: Record<string, Array<[column: string, type: string]>> = {
     ["vehicle_id", "text"], ["trip_id", "text"], ["ts", "timestamptz"],
     ["lat", "double precision"], ["lon", "double precision"],
     ["nearest_stop_id", "text"], ["speed", "double precision"],
-    ["heading", "double precision"],
+    ["heading", "double precision"], ["source", "text"],
   ],
   active_trips: [
     ["trip_id", "text"], ["route_id", "text"], ["vehicle_id", "text"],
     ["device_id", "text"], ["started_at", "timestamptz"], ["ended_at", "timestamptz"],
+    ["source", "text"],
   ],
   stop_transits: [
     ["trip_id", "text"], ["route_id", "text"], ["vehicle_id", "text"],
     ["device_id", "text"], ["stop_id", "text"], ["stop_seq", "integer"],
     ["scheduled", "text"], ["actual_ts", "timestamptz"],
     ["delay_seconds", "integer"], ["lat", "double precision"], ["lon", "double precision"],
+    ["source", "text"],
   ],
 };
+
+/* ── Chi ha scritto la riga ───────────────────────────────────────────────
+ * Le tre tabelle sono CONDIVISE: ci scrivono il connettore SIRI e il sistema
+ * AVM Caronte. Finché le righe erano indistinguibili, "194 transiti oggi"
+ * sembrava dire che il collegamento SIRI funzionasse mentre non aveva mai
+ * scritto niente — un guasto nascosto dietro un numero sano.
+ *
+ * `source` marca l'origine. Il connettore la compila sempre; le righe scritte
+ * direttamente dall'AVM restano a NULL, e NULL vale "non SIRI": è il default
+ * corretto, perché l'unico a dichiararsi è chi conosce questa convenzione. */
+export const SOURCE_SIRI = "siri";
+
+/** Il filtro sull'origine esiste solo se la colonna c'è. */
+let sourceCheck: { ok: boolean; at: number } | null = null;
+
+export async function hasSourceColumn(): Promise<boolean> {
+  if (sourceCheck && Date.now() - sourceCheck.at < 60_000) return sourceCheck.ok;
+  const st = await schemaState();
+  /* Stato ignoto: si dice di NO, così i lettori non filtrano e mostrano tutto.
+   * Meglio una pagina con dati di troppo che una pagina vuota. */
+  const ok = !st.unknown
+    && !st.missingColumns.some(c => c.endsWith(".source"))
+    && st.missingTables.length === 0;
+  sourceCheck = { ok, at: Date.now() };
+  return ok;
+}
 
 export interface CaronteSchemaState {
   /** true = le tre tabelle esistono con tutte le colonne attese */
@@ -221,4 +249,5 @@ export function ensureCaronteSchema(): Promise<RepairResult> {
 /** Per i test e per un riallineamento esplicito dopo una migrazione. */
 export function resetCaronteSchemaCache(): void {
   repaired = null;
+  sourceCheck = null;
 }

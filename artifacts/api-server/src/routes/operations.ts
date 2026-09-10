@@ -23,13 +23,31 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
 
-import { schemaState } from "../lib/caronte-schema";
+import { schemaState, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { delayFromSchedule } from "../lib/siri-vm";
 
 const router: IRouter = Router();
 
 /** Fuso dell'azienda: il confronto programmato/reale si fa nell'ora locale. */
 const OPERATOR_TZ = process.env.SIRI_TIMEZONE || "Europe/Rome";
+
+/* ── Sala Operativa = esercizio da SIRI ───────────────────────────────────
+ * Le tabelle `caronte` sono condivise con il sistema AVM, che ci scrive le
+ * proprie righe. Mescolarle qui rendeva la pagina illeggibile e, peggio,
+ * faceva sembrare vivo un collegamento che non lo era: i transiti mostrati
+ * erano dell'AVM mentre SIRI non ne aveva scritto nemmeno uno.
+ *
+ * Il filtro si applica SOLO se la colonna esiste. Su un database dove la
+ * migrazione non è ancora passata filtrare vorrebbe dire non mostrare nulla:
+ * meglio una pagina con dati di troppo, dichiarati tali, che una pagina
+ * vuota senza spiegazione. */
+async function soloSiri(alias: string): Promise<{ filtro: any; attivo: boolean }> {
+  if (!(await hasSourceColumn())) return { filtro: sql`TRUE`, attivo: false };
+  return {
+    filtro: sql`${sql.raw(alias)}.source = ${SOURCE_SIRI}`,
+    attivo: true,
+  };
+}
 
 // Soglie di puntualità (standard TPL: in orario = da 1' di anticipo a 5' di ritardo)
 const EARLY_S = -60;
@@ -109,6 +127,9 @@ router.get("/operations/live", async (req, res): Promise<void> => {
     }
     const windowMinutes = Math.min(Math.max(Number(req.query.windowMinutes) || 15, 1), 240);
     const feedId = await resolveFeedId(req);
+    const vp = await soloSiri("vp");
+    const at = await soloSiri("a");
+    const st = await soloSiri("st");
 
     // Ultima posizione per mezzo (chiave: vehicle_id, fallback trip_id) nella
     // finestra, arricchita con corsa attiva, linea, fermata e ultimo ritardo.
@@ -120,6 +141,7 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         FROM caronte.vehicle_positions vp
         WHERE vp.ts > now() - (${windowMinutes} * interval '1 minute')
           AND (vp.vehicle_id IS NOT NULL OR vp.trip_id IS NOT NULL)
+          AND ${vp.filtro}
         ORDER BY COALESCE(vp.vehicle_id, vp.trip_id), vp.ts DESC
       )
       SELECT l.vehicle_id, l.ts, l.lat, l.lon, l.speed, l.heading, l.nearest_stop_id,
@@ -144,6 +166,7 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         SELECT a.trip_id, a.route_id, a.started_at, a.device_id
         FROM caronte.active_trips a
         WHERE a.ended_at IS NULL
+          AND ${at.filtro}
           AND ((l.vehicle_id IS NOT NULL AND a.vehicle_id = l.vehicle_id)
             OR (l.vehicle_id IS NULL AND a.trip_id = l.trip_id))
         ORDER BY a.started_at DESC
@@ -163,6 +186,7 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         FROM caronte.stop_transits st
         WHERE st.trip_id = COALESCE(a.trip_id, l.trip_id)
           AND st.actual_ts > now() - interval '6 hours'
+          AND ${st.filtro}
         ORDER BY st.actual_ts DESC
         LIMIT 1
       ) d ON true
@@ -187,12 +211,14 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         ON ${feedId}::text IS NOT NULL AND t.feed_id = ${feedId}::uuid AND t.trip_id = a.trip_id
       LEFT JOIN LATERAL (
         SELECT vp.ts FROM caronte.vehicle_positions vp
-        WHERE vp.trip_id = a.trip_id
-           OR (a.vehicle_id IS NOT NULL AND vp.vehicle_id = a.vehicle_id)
+        WHERE ${vp.filtro}
+          AND (vp.trip_id = a.trip_id
+            OR (a.vehicle_id IS NOT NULL AND vp.vehicle_id = a.vehicle_id))
         ORDER BY vp.ts DESC
         LIMIT 1
       ) p ON true
       WHERE a.ended_at IS NULL
+        AND ${at.filtro}
         AND a.started_at > now() - interval '12 hours'
         AND (p.ts IS NULL OR p.ts <= now() - (${windowMinutes} * interval '1 minute'))
       ORDER BY a.started_at DESC
@@ -206,9 +232,10 @@ router.get("/operations/live", async (req, res): Promise<void> => {
              COUNT(*) FILTER (WHERE delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S})::int AS on_time,
              AVG(delay_seconds)::float AS avg_delay,
              percentile_cont(0.5) WITHIN GROUP (ORDER BY delay_seconds)::float AS median_delay
-      FROM caronte.stop_transits
+      FROM caronte.stop_transits st
       WHERE actual_ts >= date_trunc('day', now())
         AND delay_seconds IS NOT NULL
+        AND ${st.filtro}
     `);
     const k = kpiQ.rows[0] ?? {};
     const transits = Number(k.transits ?? 0);
@@ -249,6 +276,18 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       caronteAvailable: true,
       generatedAt: new Date().toISOString(),
       windowMinutes,
+      /* Che cosa si sta guardando. Se il filtro non è attivo la pagina mostra
+       * anche le righe dell'AVM, e va detto: un dato di provenienza mista
+       * presentato come se fosse solo SIRI è ciò che ci ha fatto perdere
+       * mezza giornata. */
+      sorgente: {
+        soloSiri: vp.attivo,
+        nota: vp.attivo
+          ? undefined
+          : "La colonna 'source' non è ancora presente sulle tabelle di esercizio: "
+            + "questa pagina sta mostrando anche le righe scritte dall'AVM. Si allinea "
+            + "da sé al primo giro del connettore SIRI.",
+      },
       vehicles,
       tripsWithoutGps: noGpsQ.rows.map((a: any) => ({
         tripId: a.trip_id,
@@ -287,6 +326,7 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
     const dateStr = String(req.query.date ?? "");
     const date = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : new Date().toISOString().slice(0, 10);
     const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
 
     const byRouteQ = await db.execute<any>(sql`
       SELECT st.route_id,
@@ -300,7 +340,8 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
       FROM caronte.stop_transits st
       LEFT JOIN gtfs_routes r
         ON ${feedId}::text IS NOT NULL AND r.feed_id = ${feedId}::uuid AND r.route_id = st.route_id
-      WHERE st.actual_ts >= ${date}::date
+      WHERE ${fSt}
+        AND st.actual_ts >= ${date}::date
         AND st.actual_ts < ${date}::date + interval '1 day'
         AND st.delay_seconds IS NOT NULL
       GROUP BY st.route_id, r.route_short_name, r.route_long_name, r.route_color
@@ -314,7 +355,8 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
              (COUNT(*) FILTER (WHERE st.delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S}))::float
                / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
       FROM caronte.stop_transits st
-      WHERE st.actual_ts >= ${date}::date
+      WHERE ${fSt}
+        AND st.actual_ts >= ${date}::date
         AND st.actual_ts < ${date}::date + interval '1 day'
         AND st.delay_seconds IS NOT NULL
       GROUP BY 1
@@ -329,7 +371,8 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
       FROM caronte.stop_transits st
       LEFT JOIN gtfs_stops s
         ON ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid AND s.stop_id = st.stop_id
-      WHERE st.actual_ts >= ${date}::date
+      WHERE ${fSt}
+        AND st.actual_ts >= ${date}::date
         AND st.actual_ts < ${date}::date + interval '1 day'
         AND st.delay_seconds IS NOT NULL
       GROUP BY st.stop_id, s.stop_name
@@ -387,8 +430,9 @@ router.get("/operations/trend", async (req, res): Promise<void> => {
              AVG(delay_seconds)::float AS avg_delay,
              (COUNT(*) FILTER (WHERE delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S}))::float
                / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
-      FROM caronte.stop_transits
-      WHERE actual_ts >= date_trunc('day', now()) - (${days} * interval '1 day')
+      FROM caronte.stop_transits st
+      WHERE ${(await soloSiri("st")).filtro}
+        AND actual_ts >= date_trunc('day', now()) - (${days} * interval '1 day')
         AND delay_seconds IS NOT NULL
       GROUP BY 1
       ORDER BY 1
@@ -421,6 +465,7 @@ router.get("/operations/runtimes", async (req, res): Promise<void> => {
     }
     const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
     const routeId = String(req.query.routeId ?? "") || null;
+    const fSt = (await soloSiri("st")).filtro;
     const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
     const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
     const feedId = await resolveFeedId(req);
@@ -432,8 +477,9 @@ router.get("/operations/runtimes", async (req, res): Promise<void> => {
                LAG(actual_ts) OVER w AS prev_ts,
                LAG(scheduled) OVER w AS prev_sched,
                LAG(stop_seq)  OVER w AS prev_seq
-        FROM caronte.stop_transits
-        WHERE actual_ts > now() - (${days} * interval '1 day')
+        FROM caronte.stop_transits st
+        WHERE ${fSt}
+          AND actual_ts > now() - (${days} * interval '1 day')
           AND stop_seq IS NOT NULL
           AND (${routeId}::text IS NULL OR route_id = ${routeId})
         WINDOW w AS (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq)
@@ -519,6 +565,7 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
     }
     const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
     const routeId = String(req.query.routeId ?? "") || null;
+    const fSt = (await soloSiri("st")).filtro;
     const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
     const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
     const feedId = await resolveFeedId(req);
@@ -529,8 +576,9 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
                ROW_NUMBER() OVER (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq ASC)  AS rn_a,
                ROW_NUMBER() OVER (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq DESC) AS rn_d,
                COUNT(*)    OVER (PARTITION BY trip_id, actual_ts::date) AS n_obs
-        FROM caronte.stop_transits
-        WHERE actual_ts > now() - (${days} * interval '1 day')
+        FROM caronte.stop_transits st
+        WHERE ${fSt}
+          AND actual_ts > now() - (${days} * interval '1 day')
           AND stop_seq IS NOT NULL
           AND (${routeId}::text IS NULL OR route_id = ${routeId})
       ),
@@ -655,7 +703,8 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
         LEFT JOIN LATERAL (
           SELECT actual_ts, delay_seconds
           FROM caronte.stop_transits tr
-          WHERE tr.trip_id = ${tripId} AND tr.stop_id = stt.stop_id
+          WHERE ${(await soloSiri("tr")).filtro}
+            AND tr.trip_id = ${tripId} AND tr.stop_id = stt.stop_id
             AND tr.actual_ts >= date_trunc('day', now())
           ORDER BY tr.actual_ts DESC
           LIMIT 1
@@ -671,8 +720,9 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       const rawQ = await db.execute<any>(sql`
         SELECT stop_seq AS seq, scheduled, stop_id, NULL AS stop_name,
                lat AS stop_lat, lon AS stop_lon, actual_ts, delay_seconds
-        FROM caronte.stop_transits
-        WHERE trip_id = ${tripId} AND actual_ts >= date_trunc('day', now())
+        FROM caronte.stop_transits st
+        WHERE ${(await soloSiri("st")).filtro}
+          AND trip_id = ${tripId} AND actual_ts >= date_trunc('day', now())
         ORDER BY stop_seq NULLS LAST, actual_ts
       `);
       stops = rawQ.rows;
@@ -777,12 +827,15 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 20, 8), 250); // metri
     const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 8, 3), 600); // secondi
     const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+    const fVp = (await soloSiri("vp")).filtro;
 
     // Giornate con transiti registrati per la corsa (per lo switch nella UI)
     const daysQ = await db.execute<any>(sql`
       SELECT actual_ts::date AS day, COUNT(*)::int AS transits
-      FROM caronte.stop_transits
-      WHERE trip_id = ${tripId}
+      FROM caronte.stop_transits st
+      WHERE ${fSt}
+        AND trip_id = ${tripId}
         AND actual_ts > now() - (${days} * interval '1 day')
       GROUP BY 1 ORDER BY 1 DESC
     `);
@@ -825,8 +878,9 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     const obsRows = day
       ? (await db.execute<any>(sql`
           SELECT stop_id, stop_seq, actual_ts, delay_seconds, scheduled, lat, lon
-          FROM caronte.stop_transits
-          WHERE trip_id = ${tripId} AND actual_ts::date = ${day}::date
+          FROM caronte.stop_transits st
+          WHERE ${fSt}
+            AND trip_id = ${tripId} AND actual_ts::date = ${day}::date
           ORDER BY stop_seq NULLS LAST, actual_ts
         `)).rows
       : [];
@@ -835,8 +889,9 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     const posRows = day
       ? (await db.execute<any>(sql`
           SELECT ts, lat, lon, speed
-          FROM caronte.vehicle_positions
-          WHERE trip_id = ${tripId} AND ts::date = ${day}::date
+          FROM caronte.vehicle_positions vp
+          WHERE ${fVp}
+            AND trip_id = ${tripId} AND ts::date = ${day}::date
             AND lat IS NOT NULL AND lon IS NOT NULL
           ORDER BY ts
           LIMIT 30000
@@ -1034,6 +1089,8 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     const dwellRadius = Math.min(Math.max(Number(req.query.dwellRadius) || 20, 8), 250); // metri
     const dwellSeconds = Math.min(Math.max(Number(req.query.dwellSeconds) || 8, 3), 600); // secondi
     const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+    const fVp = (await soloSiri("vp")).filtro;
 
     // Aggregati osservati per (corsa, fermata): offset traslato dalla partenza
     // effettiva (actual_ts − primo transito del giorno) e ritardo, mediani.
@@ -1042,8 +1099,9 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
         SELECT trip_id, route_id, stop_id, stop_seq, delay_seconds, actual_ts,
                actual_ts::date AS day,
                MIN(actual_ts) OVER (PARTITION BY trip_id, actual_ts::date) AS run_start
-        FROM caronte.stop_transits
-        WHERE actual_ts > now() - (${days} * interval '1 day')
+        FROM caronte.stop_transits st
+        WHERE ${fSt}
+          AND actual_ts > now() - (${days} * interval '1 day')
           AND stop_seq IS NOT NULL
           AND (${routeId}::text IS NULL OR route_id = ${routeId})
           AND (${hourFrom}::int IS NULL OR EXTRACT(HOUR FROM actual_ts) >= ${hourFrom})
@@ -1108,7 +1166,8 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
         SELECT st.trip_id, st.seq, vp.ts::date AS day, vp.ts, vp.speed
         FROM stops st
         JOIN caronte.vehicle_positions vp
-          ON vp.trip_id = st.trip_id
+          ON ${fVp}
+         AND vp.trip_id = st.trip_id
          AND vp.ts > now() - (${days} * interval '1 day')
          AND vp.lat IS NOT NULL AND vp.lon IS NOT NULL
          AND vp.lat BETWEEN st.lat - (${dwellRadius}::float / 111320.0)
@@ -1149,8 +1208,9 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     // percentuale di fermate fatte (analisi su più rilevazioni).
     const gpsDaysQ = await db.execute<any>(sql`
       SELECT trip_id, COUNT(DISTINCT ts::date)::int AS gps_days
-      FROM caronte.vehicle_positions
-      WHERE ts > now() - (${days} * interval '1 day')
+      FROM caronte.vehicle_positions vp
+      WHERE ${fVp}
+        AND ts > now() - (${days} * interval '1 day')
         AND trip_id = ANY(string_to_array(${idsCsv}, chr(31)))
       GROUP BY trip_id
     `);
@@ -1296,8 +1356,9 @@ router.get("/operations/vehicles/:vehicleId/track", async (req, res): Promise<vo
     // vengono tracciati per trip_id (stessa convenzione di /operations/live).
     const q = await db.execute<any>(sql`
       SELECT ts, lat, lon, speed, heading, trip_id
-      FROM caronte.vehicle_positions
-      WHERE (vehicle_id = ${vehicleId} OR (vehicle_id IS NULL AND trip_id = ${vehicleId}))
+      FROM caronte.vehicle_positions vp
+      WHERE ${(await soloSiri("vp")).filtro}
+        AND (vehicle_id = ${vehicleId} OR (vehicle_id IS NULL AND trip_id = ${vehicleId}))
         AND ts > now() - (${minutes} * interval '1 minute')
       ORDER BY ts ASC
       LIMIT 5000
