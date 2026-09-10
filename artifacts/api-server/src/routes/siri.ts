@@ -28,6 +28,7 @@ import {
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
   splitInService, MAX_GAP_SEC, effectivePollSeconds,
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
+  type TransitFunnel,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
 import { ensureCaronteSchema, schemaState } from "../lib/caronte-schema";
@@ -66,6 +67,10 @@ export function siriDetailLevel(): "minimum" | "basic" | "normal" | "calls" | "f
   return (["minimum", "basic", "normal", "calls", "full"] as const).includes(v as any)
     ? (v as any) : "calls";
 }
+
+/* Esito dell'ultimo giro di ingestione, per poterlo leggere da /siri/status
+ * senza che una GET scriva nulla. */
+let ultimoGiro: { funnel: TransitFunnel; nota: string; at: string } | null = null;
 
 const NOT_CONFIGURED = {
   configured: false,
@@ -149,32 +154,68 @@ router.get("/siri/status", async (req, res): Promise<void> => {
    * l'unico modo di rispondere era contare i puntini. Questi sono i numeri
    * veri delle tabelle di esercizio, in sola lettura. */
   try {
+    /* Le righe del connettore vanno contate SEPARATAMENTE da quelle scritte
+     * dall'AVM, che usa le stesse tabelle. Un totale unico è ingannevole nel
+     * modo peggiore: "194 transiti oggi" sembrava dire che il collegamento
+     * funzionava, mentre erano tutte righe dell'AVM e SIRI non ne aveva mai
+     * scritta una. `device_id = 'siri'` è ciò che marca le nostre. */
     const r = await db.execute<any>(sql`
       SELECT (SELECT count(*)::int FROM caronte.vehicle_positions
                WHERE ts > now() - interval '1 hour')                       AS pos_ora,
              (SELECT max(ts) FROM caronte.vehicle_positions)               AS ultima_posizione,
              (SELECT count(*)::int FROM caronte.active_trips
                WHERE ended_at IS NULL)                                     AS corse_aperte,
+             (SELECT count(*)::int FROM caronte.active_trips
+               WHERE ended_at IS NULL AND device_id = 'siri')              AS corse_aperte_siri,
+             (SELECT max(started_at) FROM caronte.active_trips
+               WHERE device_id = 'siri')                                   AS ultima_corsa_siri,
              (SELECT count(*)::int FROM caronte.stop_transits
                WHERE actual_ts >= date_trunc('day', now()))                AS transiti_oggi,
-             (SELECT max(actual_ts) FROM caronte.stop_transits)            AS ultimo_transito`);
+             (SELECT count(*)::int FROM caronte.stop_transits
+               WHERE actual_ts >= date_trunc('day', now())
+                 AND device_id = 'siri')                                   AS transiti_oggi_siri,
+             (SELECT max(actual_ts) FROM caronte.stop_transits)            AS ultimo_transito,
+             (SELECT max(actual_ts) FROM caronte.stop_transits
+               WHERE device_id = 'siri')                                   AS ultimo_transito_siri`);
     const x = (r as any).rows?.[0] ?? {};
+    const posOra = Number(x.pos_ora ?? 0);
+    const transitiSiri = Number(x.transiti_oggi_siri ?? 0);
+    const transitiTot = Number(x.transiti_oggi ?? 0);
     out.esercizio = {
-      posizioniUltimaOra: Number(x.pos_ora ?? 0),
+      posizioniUltimaOra: posOra,
       ultimaPosizione: x.ultima_posizione ?? null,
       corseAperte: Number(x.corse_aperte ?? 0),
-      transitiOggi: Number(x.transiti_oggi ?? 0),
+      corseAperteDaSiri: Number(x.corse_aperte_siri ?? 0),
+      ultimaCorsaApertaDaSiri: x.ultima_corsa_siri ?? null,
+      transitiOggi: transitiTot,
+      transitiOggiDaSiri: transitiSiri,
       ultimoTransito: x.ultimo_transito ?? null,
-      nota: Number(x.pos_ora ?? 0) === 0
+      ultimoTransitoDaSiri: x.ultimo_transito_siri ?? null,
+      nota: posOra === 0
         ? "Nessuna posizione nell'ultima ora: il poller non sta scrivendo. Guarda 'schemaCaronte' e i log."
-        : Number(x.transiti_oggi ?? 0) === 0
-          ? "Posizioni sì, transiti no: i transiti nascono dal CAMBIO di fermata fra due letture, "
-            + "quindi servono un intervallo di polling breve e corse agganciate all'orario."
+        : transitiSiri === 0
+          ? (transitiTot > 0
+            ? `Attenzione: i ${transitiTot} transiti di oggi NON sono del connettore SIRI `
+              + "(nessuno con device_id='siri'): li ha scritti l'AVM sulle stesse tabelle. "
+              + "Il connettore non ne ha ancora registrato nessuno — guarda 'acquisizioneTransiti'."
+            : "Posizioni sì, transiti no: guarda 'acquisizioneTransiti', dice a quale "
+              + "anello della catena si è interrotta l'acquisizione.")
           : undefined,
     };
   } catch (e: any) {
     out.esercizio = { errore: e?.message ?? "non leggibile" };
   }
+
+  /* L'imbuto è calcolato durante l'ingestione, che SCRIVE e quindi vive su
+   * un POST. Ma la domanda "perché non arrivano transiti?" si fa aprendo lo
+   * stato in un browser: tenendo da parte l'esito dell'ultimo giro la si può
+   * rispondere qui, senza far scrivere una GET. */
+  out.acquisizioneTransiti = ultimoGiro
+    ? { ...ultimoGiro.funnel, diagnosi: ultimoGiro.nota, alle: ultimoGiro.at }
+    : {
+      diagnosi: "Il poller non ha ancora completato un giro da quando il "
+        + "servizio è stato riavviato: riprova fra un intervallo di polling.",
+    };
 
   const index = await loadGtfsIndex();
   out.feedGtfs = index
@@ -418,6 +459,11 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
   }
   const ingest = await ingestVehicles(result.vehicles);
   const cancelled = await closeCancelled(result.cancellations);
+  ultimoGiro = {
+    funnel: ingest.funnel,
+    nota: ingest.funnelNota,
+    at: new Date().toISOString(),
+  };
   const poll = siriPoll();
 
   return {
