@@ -196,35 +196,63 @@ export async function loadTripStartIndex(feedId: string): Promise<TripStartIndex
  * Serve a dare al transito osservato il suo termine di confronto. Si carica
  * solo per le corse che circolano oggi (poche migliaia), non per l'intero
  * feed. */
-let cachedStopTimes: { feedId: string; day: string; map: Map<string, { scheduled: string; seq: number }>; at: number } | null = null;
+/* La cache va tenuta PER CORSA, non per giornata.
+ *
+ * Prima la chiave era (feed, giorno) mentre il contenuto dipendeva dalle corse
+ * chieste in quel giro: il primo giro caricava gli orari delle poche corse
+ * allora agganciate e per la mezz'ora successiva ogni corsa nuova trovava la
+ * cache "valida" e vuota. Il transito veniva scritto lo stesso, ma senza
+ * `scheduled` e quindi senza Δ — un buco silenzioso che si apriva solo per le
+ * corse entrate in servizio dopo il primo giro, cioè quasi tutte.
+ *
+ * Ora si accumula: si interroga il database solo per le corse mai caricate. */
+let cachedStopTimes: {
+  feedId: string;
+  day: string;
+  map: Map<string, { scheduled: string; seq: number }>;
+  /** corse per cui l'interrogazione è già stata fatta, anche se senza orari */
+  loadedTrips: Set<string>;
+  at: number;
+} | null = null;
 
 async function loadStopTimeIndex(
   feedId: string, tripIds: string[], day: string,
 ): Promise<Map<string, { scheduled: string; seq: number }>> {
-  if (cachedStopTimes && cachedStopTimes.feedId === feedId && cachedStopTimes.day === day
-      && Date.now() - cachedStopTimes.at < TRIP_TTL_MS) {
-    return cachedStopTimes.map;
+  const fresh = cachedStopTimes
+    && cachedStopTimes.feedId === feedId
+    && cachedStopTimes.day === day
+    && Date.now() - cachedStopTimes.at < TRIP_TTL_MS;
+  if (!fresh) {
+    cachedStopTimes = {
+      feedId, day, map: new Map(), loadedTrips: new Set(), at: Date.now(),
+    };
   }
-  const map = new Map<string, { scheduled: string; seq: number }>();
-  if (tripIds.length === 0) return map;
+  const cache = cachedStopTimes!;
+
+  /* Solo le corse non ancora caricate: le altre sono già nella mappa. */
+  const missing = tripIds.filter(t => !cache.loadedTrips.has(t));
+  if (missing.length === 0) return cache.map;
+
   try {
     const r = await db.execute<any>(sql`
       SELECT trip_id, stop_id, stop_sequence,
              COALESCE(departure_time, arrival_time) AS t
         FROM gtfs_stop_times
        WHERE feed_id = ${feedId}::uuid
-         AND trip_id = ANY(${`{${tripIds.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])`);
+         AND trip_id = ANY(${`{${missing.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])`);
     for (const x of ((r as any).rows ?? [])) {
       if (!x.t) continue;
-      map.set(`${x.trip_id}|${x.stop_id}`, {
+      cache.map.set(`${x.trip_id}|${x.stop_id}`, {
         scheduled: String(x.t), seq: Number(x.stop_sequence ?? 0),
       });
     }
-    cachedStopTimes = { feedId, day, map, at: Date.now() };
+    /* Segnate come caricate anche quelle senza orari: senza questo si
+     * riproverebbe a ogni giro su corse che nel feed non ne hanno. */
+    for (const t of missing) cache.loadedTrips.add(t);
   } catch (e: any) {
     console.warn("[siri] orari per fermata non disponibili:", e?.message ?? e);
   }
-  return map;
+  return cache.map;
 }
 
 /* ── Velocità stimata ─────────────────────────────────────────────────────── */

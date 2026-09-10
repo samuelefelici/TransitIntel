@@ -636,9 +636,17 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       `);
       tripInfo = tQ.rows[0] ?? null;
 
-      // Tutte le fermate programmate della corsa + (eventuale) transito reale di oggi
+      /* Tutte le fermate programmate della corsa + (eventuale) transito di oggi.
+       *
+       * L'orario si legge da arrival_time CON RIPIEGO su departure_time: nelle
+       * fermate intermedie di un orario costruito in Planner Studio è compilato
+       * solo il secondo, e leggendo il solo arrivo la colonna "Progr." restava
+       * vuota — quindi niente termine di confronto e nessun Δ, su una corsa che
+       * in realtà l'orario ce l'ha. È la stessa COALESCE già usata dagli altri
+       * due endpoint di questo file e dall'ingestione: qui era l'eccezione. */
       const sQ = await db.execute<any>(sql`
-        SELECT stt.stop_sequence AS seq, stt.arrival_time AS scheduled,
+        SELECT stt.stop_sequence AS seq,
+               COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
                s.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
                tr.actual_ts, tr.delay_seconds
         FROM gtfs_stop_times stt
@@ -670,8 +678,33 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       stops = rawQ.rows;
     }
 
+    /* Perché una colonna è vuota. Senza questo il confronto programmato/reale
+     * che non compare è indistinguibile da un guasto: la corsa non è nel feed,
+     * l'orario non c'è, oppure il passaggio non è ancora stato osservato —
+     * tre cause diverse che chiedono tre azioni diverse. */
+    const conOrario = stops.filter((s: any) => s.scheduled).length;
+    const conTransito = stops.filter((s: any) => s.actual_ts).length;
+    const diagnosi = {
+      fermate: stops.length,
+      conOrarioProgrammato: conOrario,
+      conTransitoRilevato: conTransito,
+      nota:
+        stops.length === 0
+          ? (tripInfo
+            ? "La corsa esiste nel feed ma non ha fermate con orario: non c'è nulla da confrontare."
+            : "Corsa non trovata nel feed GTFS attivo: il mezzo è agganciato a un identificativo che il feed non contiene.")
+          : conOrario === 0
+            ? "Nessuna fermata di questa corsa ha un orario programmato nel feed: "
+              + "il confronto non è possibile finché l'orario non viene materializzato."
+            : conTransito === 0
+              ? "Orario programmato presente, nessun passaggio ancora rilevato: il transito "
+                + "nasce quando il mezzo cambia fermata fra due letture consecutive."
+              : undefined,
+    };
+
     res.json({
       caronteAvailable: true,
+      diagnosi,
       trip: tripInfo && {
         tripId: tripInfo.trip_id,
         routeId: tripInfo.route_id,
