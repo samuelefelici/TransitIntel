@@ -99,30 +99,91 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
  * all'aggancio delle corse, e l'orario di un feed non cambia durante il
  * giorno. Un errore qui non deve fermare l'ingestione: si degrada a "corse
  * non agganciate", che è lo stato precedente. */
-let cachedTripStarts: { feedId: string; idx: TripStartIndex; at: number } | null = null;
+let cachedTripStarts: { feedId: string; day: string; idx: TripStartIndex; at: number } | null = null;
 const TRIP_TTL_MS = 30 * 60 * 1000;
 
+/** Data di servizio e giorno della settimana NELL'ORA DELL'AZIENDA. */
+function serviceDay(timeZone: string): { ymd: string; isoDow: number } {
+  const now = new Date();
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(now).replace(/-/g, "");
+  const wd = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short" }).format(now);
+  const isoDow = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 }[wd] ?? 1;
+  return { ymd, isoDow };
+}
+
 export async function loadTripStartIndex(feedId: string): Promise<TripStartIndex | null> {
-  if (cachedTripStarts && cachedTripStarts.feedId === feedId
+  const timeZone = process.env.SIRI_TIMEZONE || "Europe/Rome";
+  const { ymd, isoDow } = serviceDay(timeZone);
+  if (cachedTripStarts && cachedTripStarts.feedId === feedId && cachedTripStarts.day === ymd
       && Date.now() - cachedTripStarts.at < TRIP_TTL_MS) {
     return cachedTripStarts.idx;
   }
   try {
-    const r = await db.execute<any>(sql`
+    /* SOLO le corse che circolano OGGI. Senza questo filtro l'indice contiene
+     * la stessa corsa ripetuta in ogni validità (feriale, sabato, estivo,
+     * scolastico…): linea e ora di partenza coincidono, e ogni aggancio
+     * risulta ambiguo. È la regola GTFS standard: pattern settimanale nel
+     * range di validità, meno le rimozioni, più le aggiunte esplicite. */
+    const withCalendar = await db.execute<any>(sql`
+      WITH removed AS (
+        SELECT service_id FROM gtfs_calendar_dates
+         WHERE feed_id = ${feedId}::uuid AND date = ${ymd} AND exception_type = 2
+      ), added AS (
+        SELECT service_id FROM gtfs_calendar_dates
+         WHERE feed_id = ${feedId}::uuid AND date = ${ymd} AND exception_type = 1
+      ), weekly AS (
+        SELECT c.service_id FROM gtfs_calendar c
+         WHERE c.feed_id = ${feedId}::uuid
+           AND c.start_date <= ${ymd} AND c.end_date >= ${ymd}
+           AND CASE ${isoDow}::int
+                 WHEN 1 THEN c.monday   WHEN 2 THEN c.tuesday WHEN 3 THEN c.wednesday
+                 WHEN 4 THEN c.thursday WHEN 5 THEN c.friday  WHEN 6 THEN c.saturday
+                 ELSE c.sunday END = 1
+      ), active AS (
+        SELECT service_id FROM weekly
+         WHERE service_id NOT IN (SELECT service_id FROM removed)
+        UNION
+        SELECT service_id FROM added
+      )
       SELECT t.trip_id, t.route_id, t.trip_headsign,
              MIN(st.departure_time) AS first_dep
         FROM gtfs_trips t
+        JOIN active a ON a.service_id = t.service_id
         JOIN gtfs_stop_times st
           ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
        WHERE t.feed_id = ${feedId}::uuid
        GROUP BY t.trip_id, t.route_id, t.trip_headsign`);
-    const idx = buildTripStartIndex(((r as any).rows ?? []).map((x: any) => ({
+
+    let rows = (withCalendar as any).rows ?? [];
+    let filtered = true;
+    /* Un feed senza calendario utilizzabile darebbe zero corse, cioè zero
+     * agganci: meglio l'indice completo (ambiguo) che nessun indice. */
+    if (rows.length === 0) {
+      const all = await db.execute<any>(sql`
+        SELECT t.trip_id, t.route_id, t.trip_headsign,
+               MIN(st.departure_time) AS first_dep
+          FROM gtfs_trips t
+          JOIN gtfs_stop_times st
+            ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+         WHERE t.feed_id = ${feedId}::uuid
+         GROUP BY t.trip_id, t.route_id, t.trip_headsign`);
+      rows = (all as any).rows ?? [];
+      filtered = false;
+      console.warn("[siri] nessuna corsa circolante oggi secondo il calendario: "
+        + "indice costruito su TUTTE le validità, gli agganci saranno ambigui");
+    }
+
+    const idx = buildTripStartIndex(rows.map((x: any) => ({
       tripId: String(x.trip_id),
       routeId: String(x.route_id ?? ""),
       firstDeparture: String(x.first_dep ?? ""),
       headsign: x.trip_headsign ?? null,
     })));
-    cachedTripStarts = { feedId, idx, at: Date.now() };
+    idx.serviceDay = ymd;
+    idx.calendarFiltered = filtered;
+    cachedTripStarts = { feedId, day: ymd, idx, at: Date.now() };
     return idx;
   } catch (e: any) {
     console.warn("[siri] indice orari corse non disponibile:", e?.message ?? e);
@@ -168,7 +229,8 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
-        tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0, routeMatched: 0,
+        tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
+        tripAmbiguousExamples: [], routeMatched: 0,
         stopMatched: 0, transitsFound: 0, transitsMatched: 0,
         routeMatchedByPublishedName: 0, routeMatchedByRouteRef: 0,
         routeMatchedByLongName: 0, routeMatchedByRef: 0,
