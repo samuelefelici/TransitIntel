@@ -15,6 +15,8 @@ import {
   buildTripStartIndex, matchTripBySchedule, localHHMM, scheduleKeys, detectTransit,
   splitInService, delayFromSchedule, scheduledSeconds,
   effectivePollSeconds, MAX_GAP_SEC, POLL_CONSIGLIATO_SEC,
+  distanceMeters, stopsAtPosition, STOP_RADIUS_M, emptyFunnel, explainFunnel,
+  type TripStop,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -478,6 +480,102 @@ describe("intervallo di poll applicabile", () => {
     expect(effectivePollSeconds(0)).toBe(30);   // non impostato
     expect(effectivePollSeconds(NaN)).toBe(30);
     expect(effectivePollSeconds(-5)).toBe(30);
+  });
+});
+
+/* ── Il passaggio riconosciuto dalla posizione ────────────────────────────
+ * È il canale che non dipende da nulla che l'AVM debba dichiarare: quando
+ * MonitoredCall manca o non si aggancia, prima non veniva acquisito niente
+ * in silenzio pur avendo le coordinate del mezzo a ogni giro. */
+describe("riconoscimento del passaggio dalla posizione", () => {
+  // Ancona, ~43.6°N: a questa latitudine 0,001° di longitudine ≈ 80 m.
+  const fermata = (id: string, seq: number, lat: number, lon: number): TripStop =>
+    ({ stopId: id, seq, lat, lon, scheduled: "08:00:00" });
+
+  const corsa: TripStop[] = [
+    fermata("S1", 1, 43.6000, 13.5000),
+    fermata("S2", 2, 43.6100, 13.5000),
+    fermata("S3", 3, 43.6200, 13.5000),
+  ];
+
+  it("misura la distanza in metri", () => {
+    // un grado di latitudine ≈ 111 km
+    expect(distanceMeters(43.6, 13.5, 43.6, 13.5)).toBe(0);
+    expect(Math.round(distanceMeters(43.6, 13.5, 43.601, 13.5))).toBeGreaterThan(100);
+    expect(Math.round(distanceMeters(43.6, 13.5, 43.601, 13.5))).toBeLessThan(120);
+  });
+
+  it("riconosce la fermata sotto cui si trova il mezzo", () => {
+    const near = stopsAtPosition(43.6100, 13.5000, corsa);
+    expect(near.map(s => s.stopId)).toEqual(["S2"]);
+    expect(near[0].distanceM).toBe(0);
+  });
+
+  it("tollera l'imprecisione del GPS entro il raggio", () => {
+    // ~33 m più a nord della fermata S2
+    const near = stopsAtPosition(43.6103, 13.5000, corsa);
+    expect(near.map(s => s.stopId)).toEqual(["S2"]);
+    expect(near[0].distanceM).toBeLessThan(STOP_RADIUS_M);
+  });
+
+  /* In mezzo a una tratta non si deve inventare nessun passaggio. */
+  it("non aggancia nulla a metà tratta", () => {
+    expect(stopsAtPosition(43.6050, 13.5000, corsa)).toHaveLength(0);
+  });
+
+  /* All'incrocio due fermate della stessa corsa possono cadere entrambe nel
+   * raggio: l'ordine per distanza è ciò che permette di scriverne una sola. */
+  it("mette per prima la più vicina quando due cadono nel raggio", () => {
+    const vicine: TripStop[] = [
+      fermata("A", 1, 43.6000, 13.5000),
+      fermata("B", 2, 43.6004, 13.5000),   // ~44 m più a nord
+    ];
+    const near = stopsAtPosition(43.6001, 13.5000, vicine, 100);
+    expect(near.map(s => s.stopId)).toEqual(["A", "B"]);
+    expect(near[0].distanceM).toBeLessThan(near[1].distanceM);
+  });
+
+  it("porta con sé orario programmato e progressivo della fermata", () => {
+    const near = stopsAtPosition(43.6200, 13.5000, corsa);
+    expect(near[0]).toMatchObject({ stopId: "S3", seq: 3, scheduled: "08:00:00" });
+  });
+
+  it("su una corsa senza fermate non esplode", () => {
+    expect(stopsAtPosition(43.6, 13.5, [])).toEqual([]);
+  });
+});
+
+describe("diagnosi dell'acquisizione", () => {
+  it("indica l'anello che ha ceduto, non un generico fallimento", () => {
+    const f = emptyFunnel();
+    expect(explainFunnel(f)).toMatch(/nessun mezzo in esercizio/i);
+
+    f.inEsercizio = 50;
+    expect(explainFunnel(f)).toMatch(/agganciato a una corsa/i);
+
+    f.conCorsaAgganciata = 20;
+    expect(explainFunnel(f)).toMatch(/nessuna posizione/i);
+
+    f.conPosizione = 20;
+    expect(explainFunnel(f)).toMatch(/fermate con coordinate/i);
+
+    f.conGeometriaFermate = 20;
+    expect(explainFunnel(f)).toMatch(/raggio di una fermata/i);
+
+    f.vicinoAFermata = 5;
+    f.inseriti = 5;
+    expect(explainFunnel(f)).toMatch(/5 passaggi registrati/i);
+  });
+
+  /* "Già registrati" NON è un guasto: senza distinguerlo si andrebbe a
+   * cercare un problema che non c'è. */
+  it("distingue il nulla di fatto dal già acquisito", () => {
+    const f = emptyFunnel();
+    Object.assign(f, {
+      inEsercizio: 50, conCorsaAgganciata: 20, conPosizione: 20,
+      conGeometriaFermate: 20, vicinoAFermata: 8, inseriti: 0, giaPresenti: 8,
+    });
+    expect(explainFunnel(f)).toMatch(/già registrati/i);
   });
 });
 
