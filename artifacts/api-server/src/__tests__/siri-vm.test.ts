@@ -12,7 +12,7 @@ import {
   buildVehicleMonitoringRequest, buildCheckStatusRequest,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
   lineCodeCandidates, normalizeStopName, routeRefLineCandidates, matchRouteByLongName,
-  buildTripStartIndex, matchTripBySchedule, localHHMM, scheduleKeys,
+  buildTripStartIndex, matchTripBySchedule, localHHMM, scheduleKeys, detectTransit,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -751,5 +751,65 @@ describe("orario locale e chiavi di ricerca", () => {
   it("per le ore piccole propone anche la forma oltre le 24", () => {
     expect(scheduleKeys("01:10")).toContain("25:10");
     expect(scheduleKeys("14:39")).not.toContain("38:39");
+  });
+});
+
+/* ── Transiti osservati ──────────────────────────────────────────────────
+ * MIZ manda le fermate transitate senza orari: il passaggio si riconosce dal
+ * cambio di fermata corrente fra due letture. */
+describe("riconoscimento del transito dal cambio di fermata", () => {
+  const p = (stopId: string, at: string, tripId = "T1", delaySeconds: number | null = 60) =>
+    ({ tripId, stopId, delaySeconds, at: new Date(at) });
+
+  it("riconosce il passaggio e lo colloca a metà intervallo", () => {
+    const ev = detectTransit(
+      p("A", "2026-09-10T10:00:00Z"),
+      p("B", "2026-09-10T10:01:00Z"),
+    );
+    expect(ev).not.toBeNull();
+    expect(ev!.stopId).toBe("A");                              // ha superato A, non B
+    expect(ev!.observedAt.toISOString()).toBe("2026-09-10T10:00:30.000Z");
+    expect(ev!.uncertaintySec).toBe(60);                       // l'incertezza è dichiarata
+  });
+
+  it("usa il ritardo del momento in cui era ancora ad A", () => {
+    const ev = detectTransit(
+      p("A", "2026-09-10T10:00:00Z", "T1", 45),
+      p("B", "2026-09-10T10:01:00Z", "T1", 90),
+    );
+    expect(ev!.delaySeconds).toBe(45);
+  });
+
+  it("non inventa un transito alla prima lettura di un mezzo", () => {
+    expect(detectTransit(null, p("A", "2026-09-10T10:00:00Z"))).toBeNull();
+  });
+
+  it("non emette nulla finché il mezzo è sulla stessa tratta", () => {
+    expect(detectTransit(
+      p("A", "2026-09-10T10:00:00Z"),
+      p("A", "2026-09-10T10:01:00Z"),
+    )).toBeNull();
+  });
+
+  it("al cambio di corsa non attribuisce il passaggio", () => {
+    // il mezzo ha iniziato un'altra corsa: non si sa quando ha lasciato A
+    expect(detectTransit(
+      p("A", "2026-09-10T10:00:00Z", "T1"),
+      p("B", "2026-09-10T10:01:00Z", "T2"),
+    )).toBeNull();
+  });
+
+  it("scarta gli intervalli troppo lunghi, dove il punto medio non dice nulla", () => {
+    expect(detectTransit(
+      p("A", "2026-09-10T10:00:00Z"),
+      p("B", "2026-09-10T10:10:00Z"),   // dieci minuti dopo
+    )).toBeNull();
+  });
+
+  it("ignora letture arrivate fuori ordine", () => {
+    expect(detectTransit(
+      p("A", "2026-09-10T10:01:00Z"),
+      p("B", "2026-09-10T10:00:00Z"),
+    )).toBeNull();
   });
 });
