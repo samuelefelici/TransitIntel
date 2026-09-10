@@ -328,6 +328,32 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
     const feedId = await resolveFeedId(req);
     const fSt = (await soloSiri("st")).filtro;
 
+    /* Due domande diverse sugli stessi transiti, e servono entrambe:
+     *  · Sala Operativa chiede "com'è andata OGGI" → un giorno solo;
+     *  · Tempi di Percorrenza chiede "come va di solito" → un periodo, per
+     *    linea e fascia oraria, perché è su quello che si ritara un orario.
+     * Un solo giorno di osservazioni non basta a spostare un orario: il
+     * periodo non è un vezzo, è la condizione perché il dato sia usabile. */
+    const days = req.query.days != null
+      ? Math.min(Math.max(Number(req.query.days) || 14, 1), 90)
+      : null;
+    const routeId = String(req.query.routeId ?? "") || null;
+    const hourFrom = req.query.hourFrom != null ? Math.min(Math.max(Number(req.query.hourFrom), 0), 23) : null;
+    const hourTo = req.query.hourTo != null ? Math.min(Math.max(Number(req.query.hourTo), 1), 24) : null;
+
+    const periodo = days != null
+      ? sql`st.actual_ts > now() - (${days} * interval '1 day')`
+      : sql`st.actual_ts >= ${date}::date AND st.actual_ts < ${date}::date + interval '1 day'`;
+    const fLinea = routeId
+      ? sql`AND st.route_id = ${routeId}`
+      : sql``;
+    const fOra = (hourFrom != null && hourTo != null)
+      ? sql`AND EXTRACT(HOUR FROM st.actual_ts) >= ${hourFrom}
+            AND EXTRACT(HOUR FROM st.actual_ts) <  ${hourTo}`
+      : sql``;
+    /** Il filtro completo, identico per ogni aggregazione. */
+    const dove = sql`${fSt} AND ${periodo} AND st.delay_seconds IS NOT NULL ${fLinea} ${fOra}`;
+
     const byRouteQ = await db.execute<any>(sql`
       SELECT st.route_id,
              r.route_short_name, r.route_long_name, r.route_color,
@@ -340,10 +366,7 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
       FROM caronte.stop_transits st
       LEFT JOIN gtfs_routes r
         ON ${feedId}::text IS NOT NULL AND r.feed_id = ${feedId}::uuid AND r.route_id = st.route_id
-      WHERE ${fSt}
-        AND st.actual_ts >= ${date}::date
-        AND st.actual_ts < ${date}::date + interval '1 day'
-        AND st.delay_seconds IS NOT NULL
+      WHERE ${dove}
       GROUP BY st.route_id, r.route_short_name, r.route_long_name, r.route_color
       ORDER BY transits DESC
     `);
@@ -355,10 +378,7 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
              (COUNT(*) FILTER (WHERE st.delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S}))::float
                / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
       FROM caronte.stop_transits st
-      WHERE ${fSt}
-        AND st.actual_ts >= ${date}::date
-        AND st.actual_ts < ${date}::date + interval '1 day'
-        AND st.delay_seconds IS NOT NULL
+      WHERE ${dove}
       GROUP BY 1
       ORDER BY 1
     `);
@@ -371,19 +391,61 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
       FROM caronte.stop_transits st
       LEFT JOIN gtfs_stops s
         ON ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid AND s.stop_id = st.stop_id
-      WHERE ${fSt}
-        AND st.actual_ts >= ${date}::date
-        AND st.actual_ts < ${date}::date + interval '1 day'
-        AND st.delay_seconds IS NOT NULL
+      WHERE ${dove}
       GROUP BY st.stop_id, s.stop_name
       HAVING COUNT(*) >= 3
       ORDER BY AVG(st.delay_seconds) DESC
       LIMIT 10
     `);
 
+    /* Puntualità PER CORSA. È il taglio che serve a ritarare un orario: dice
+     * quale corsa arriva sistematicamente lunga, non quale linea in media —
+     * su una linea con venti corse la media nasconde proprio quelle da
+     * correggere. Le corse osservate una volta sola sono rumore, quindi
+     * servono almeno due giornate. */
+    const byTripQ = days != null
+      ? await db.execute<any>(sql`
+        SELECT st.trip_id, st.route_id,
+               r.route_short_name, r.route_color, t.trip_headsign,
+               COUNT(*)::int AS transits,
+               COUNT(DISTINCT st.actual_ts::date)::int AS days_seen,
+               AVG(st.delay_seconds)::float AS avg_delay,
+               MAX(st.delay_seconds)::int AS max_delay,
+               MIN(st.delay_seconds)::int AS min_delay,
+               (COUNT(*) FILTER (WHERE st.delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S}))::float
+                 / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
+          FROM caronte.stop_transits st
+          LEFT JOIN gtfs_routes r
+            ON ${feedId}::text IS NOT NULL AND r.feed_id = ${feedId}::uuid AND r.route_id = st.route_id
+          LEFT JOIN gtfs_trips t
+            ON ${feedId}::text IS NOT NULL AND t.feed_id = ${feedId}::uuid AND t.trip_id = st.trip_id
+         WHERE ${dove}
+         GROUP BY st.trip_id, st.route_id, r.route_short_name, r.route_color, t.trip_headsign
+        HAVING COUNT(DISTINCT st.actual_ts::date) >= 2
+         ORDER BY AVG(st.delay_seconds) DESC
+         LIMIT 200`)
+      : null;
+
     res.json({
       caronteAvailable: true,
-      date,
+      date: days == null ? date : undefined,
+      giorni: days ?? undefined,
+      /* Da dove vengono questi numeri. Dopo aver scoperto che i transiti
+       * mostrati erano dell'AVM e non del connettore, l'origine va detta. */
+      sorgente: "siri",
+      byTrip: (byTripQ?.rows ?? []).map((t: any) => ({
+        tripId: t.trip_id,
+        routeId: t.route_id,
+        routeShortName: t.route_short_name,
+        routeColor: t.route_color,
+        headsign: t.trip_headsign,
+        transits: t.transits,
+        daysSeen: t.days_seen,
+        avgDelaySeconds: t.avg_delay != null ? Math.round(Number(t.avg_delay)) : null,
+        maxDelaySeconds: t.max_delay,
+        minDelaySeconds: t.min_delay,
+        onTimePct: t.on_time_pct != null ? Math.round(Number(t.on_time_pct) * 10) / 10 : null,
+      })),
       byRoute: byRouteQ.rows.map((r: any) => ({
         routeId: r.route_id,
         routeShortName: r.route_short_name,

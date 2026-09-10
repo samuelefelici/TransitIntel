@@ -569,6 +569,76 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
   return c;
 }
 
+/* ── Che cosa manda DAVVERO il produttore ─────────────────────────────────
+ * Ogni normalizzazione in questo file parte da un'ipotesi su quali elementi
+ * arrivino. Finché l'ipotesi non è verificata sul flusso vero si costruisce
+ * sulla sabbia: si aggiunge un campo, non compare, si ipotizza il motivo, si
+ * riprova. L'inventario toglie l'ipotesi di mezzo — elenca OGNI elemento
+ * presente nella risposta, quante volte compare, quante volte è valorizzato
+ * e con quali valori. Da lì in poi le tabelle si disegnano sul dato reale.
+ */
+export interface FieldStat {
+  /** percorso completo, es. "MonitoredVehicleJourney/FramedVehicleJourneyRef/DataFrameRef" */
+  path: string;
+  /** quante volte l'elemento compare nel documento */
+  occorrenze: number;
+  /** ...di cui con testo non vuoto: la differenza sono gli elementi vuoti */
+  valorizzati: number;
+  /** valori distinti osservati, per capire il formato senza aprire il grezzo */
+  esempi: string[];
+}
+
+/**
+ * Inventario di tutti gli elementi del documento.
+ *
+ * `da` permette di partire da un sottoalbero (es. "VehicleActivity") invece
+ * che dall'intera busta SOAP: i percorsi restano leggibili e il conteggio
+ * diventa "per mezzo" invece che "per documento".
+ */
+export function inventoryFields(
+  xml: string, da?: string, maxEsempi = 5,
+): { radici: number; campi: FieldStat[] } {
+  const doc = parseXml(xml);
+  const radici = da ? findAll(doc, da) : [doc];
+  const acc = new Map<string, { occorrenze: number; valorizzati: number; esempi: Set<string> }>();
+
+  const visita = (nodo: XmlNode, prefisso: string): void => {
+    for (const figlio of nodo.children) {
+      const path = prefisso ? `${prefisso}/${figlio.name}` : figlio.name;
+      let s = acc.get(path);
+      if (!s) { s = { occorrenze: 0, valorizzati: 0, esempi: new Set() }; acc.set(path, s); }
+      s.occorrenze++;
+      /* Solo il testo DIRETTO: quello dei figli appartiene ai loro percorsi,
+       * e sommarlo qui farebbe sembrare valorizzato ogni contenitore. */
+      const t = figlio.text.trim();
+      if (t) {
+        s.valorizzati++;
+        if (s.esempi.size < maxEsempi) s.esempi.add(t.slice(0, 120));
+      }
+      /* Gli attributi contano come campi: alcuni produttori ci mettono dentro
+       * informazione vera (unità di misura, riferimenti, versioni). */
+      for (const [k, v] of Object.entries(figlio.attrs)) {
+        const ap = `${path}@${k}`;
+        let a = acc.get(ap);
+        if (!a) { a = { occorrenze: 0, valorizzati: 0, esempi: new Set() }; acc.set(ap, a); }
+        a.occorrenze++;
+        if (v.trim()) { a.valorizzati++; if (a.esempi.size < maxEsempi) a.esempi.add(v.slice(0, 120)); }
+      }
+      visita(figlio, path);
+    }
+  };
+  for (const r of radici) visita(r, "");
+
+  return {
+    radici: radici.length,
+    campi: [...acc.entries()]
+      .map(([path, s]) => ({
+        path, occorrenze: s.occorrenze, valorizzati: s.valorizzati, esempi: [...s.esempi],
+      }))
+      .sort((a, b) => a.path.localeCompare(b.path)),
+  };
+}
+
 /* ── Mezzi in servizio e parco fermo ──────────────────────────────────────
  * L'AVM manda l'INTERO parco, deposito compreso: su 368 vetture ne dichiara
  * monitorate 72. Una vettura non monitorata, senza corsa e senza linea non è
@@ -1057,18 +1127,21 @@ export async function postSoap(
  *  `rawXml` è il grezzo INTERO: la diagnostica ne ritaglia ciò che serve. */
 export async function fetchVehicleMonitoring(
   cfg: SiriEndpointConfig, opts: Omit<SiriRequestOptions, "requestorRef"> = {},
-): Promise<SiriVmResult & { httpStatus: number; rawXml: string }> {
+): Promise<SiriVmResult & { httpStatus: number; rawXml: string; requestXml: string }> {
   const body = buildVehicleMonitoringRequest({ ...opts, requestorRef: cfg.requestorRef });
   const { ok, status, xml } = await postSoap(cfg, "GetVehicleMonitoring", body);
   if (!ok && !xml.includes("Envelope")) {
     return {
       failed: true, errorText: `HTTP ${status}`, responseTimestamp: null,
       shortestPossibleCycleSec: null, vehicles: [], cancellations: [],
-      httpStatus: status, rawXml: xml,
+      httpStatus: status, rawXml: xml, requestXml: body,
     };
   }
   const parsed = parseVehicleMonitoringResponse(xml);
-  return { ...parsed, httpStatus: status, rawXml: xml };
+  /* La richiesta esce insieme alla risposta: per capire perché manca un campo
+   * la prima domanda è sempre "che cosa abbiamo chiesto", e finora bisognava
+   * andarla a leggere nel codice. */
+  return { ...parsed, httpStatus: status, rawXml: xml, requestXml: body };
 }
 
 /* ── Aggancio della CORSA per orario ──────────────────────────────────────
