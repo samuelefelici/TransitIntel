@@ -403,6 +403,11 @@ def main() -> None:
     penalties_by_round: dict[int, dict[str, float]] = {}   # penalità USATE nel round r
     rounds_kpi: list[dict] = []
     no_gain = 0
+    # Il giro finito prima dei round chiesti non e' un dettaglio: il piano che
+    # esce e' il migliore fra QUELLI PROVATI, e se sono tre invece di cinque
+    # il confronto con un altro giro non e' alla pari. Va detto nel rendiconto,
+    # non dedotto da roundsExecuted.
+    early_stop: dict | None = None
     escalation = 1.0
     feedback_diag: list[dict] = []
     round_results: list[dict] = []               # per-round: shifts TM + crew (scelta operatore)
@@ -485,6 +490,9 @@ def main() -> None:
                 no_gain += 1
                 if no_gain >= EARLY_STOP_PATIENCE:
                     log(f"[VCSP] round {r}: {no_gain} round senza miglioramento, early-stop")
+                    early_stop = {"round": r, "roundsRichiesti": rounds,
+                                  "roundSenzaMiglioramento": no_gain,
+                                  "pazienza": EARLY_STOP_PATIENCE}
                     break
                 log(f"[VCSP] round {r}: nessun miglioramento ({no_gain}/{EARLY_STOP_PATIENCE}), continuo")
             else:
@@ -577,6 +585,7 @@ def main() -> None:
         "rounds": rounds_kpi,
         "bestRound": best_r,
         "roundsExecuted": len(rounds_kpi),
+        "earlyStop": early_stop,
         "elapsedSec": round(elapsed, 1),
         "feedback": feedback_diag,
         "crew": {

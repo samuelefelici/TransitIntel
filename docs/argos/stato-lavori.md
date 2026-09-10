@@ -609,6 +609,32 @@ Nel campione delle undici relazioni e' **l'unica** sotto i due minuti; le altre 
 
 La sonda ha generato **sei candidati «coincidenza»** — traslazioni di linea nate dal quadro e non dal piano, la cosa che prima non sapeva fare. Tutti e sei bloccati dal vincolo, e ora si sa perche': `flessibilitaInsufficiente` 8 volte, `catenaTroppoLunga` 6. I freni sono quelli: la flessibilita' dichiarata sulle corse da trascinare e il tetto di dodici corse per catena.
 
+## Il giro AV: la soglia fa il suo lavoro, l'early-stop taglia il giro
+
+Scenario `d1151448-f83d-4a6a-80c4-a90fc69cbdb8`, stessi parametri di AU. 19 minuti.
+
+**La soglia ha fatto esattamente cio' che doveva.** Le coincidenze riconosciute passano da 11 a **10**: e' sparita solo `MADONNETTA 21/33 → 2/6`, quella con attesa zero. Le altre dieci sono intatte, e il rendiconto porta ora `minWaitMin: 2` accanto a `maxWaitMin: 5`.
+
+**E per la prima volta due traslazioni di linea sono arrivate al re-solve**, invece di morire nel guard:
+
+| candidato | corse spostate | esito |
+|---|---|---|
+| C.S. δ +14′ | **12** (tutta la linea, 09:04→20:04) | bocciato dal VSP |
+| 21/33 δ −2′ | **8** (andata e ritorno) | bocciato dal punteggio (+330 €) |
+
+E' la catena completa che funziona: la mappa trova l'occasione, la sonda la prova col solver in mano, il costo decide. Nessuna delle due conveniva — ma ora si sa, invece di non chiederselo.
+
+**Il piano finale pero' e' peggiore di AU** (25 vetture e 4 violazioni contro 21 e 1), **e non per colpa della soglia**: il giro si e' fermato a **3 round su 5** per early-stop, e ha scelto il migliore fra quei tre. In AU i round buoni erano il terzo (21 vetture, 2 violazioni) e il sesto della sonda; qui il terzo aveva 6 violazioni e il giro e' finito li'.
+
+| giro | round eseguiti | best | vetture | violazioni |
+|---|---|---|---|---|
+| AU | 6 (5 + sonda) | 6 | 21 | 1 |
+| AV | **3** (early-stop) | 1 | 25 | 4 |
+
+**Due giri con un numero di round diverso non sono confrontabili** — la lezione di ieri, applicata a me stesso. Il rendiconto porta ora `earlyStop` con round raggiunto, round chiesti e pazienza: prima bisognava dedurlo dal confronto fra `roundsExecuted` e i round chiesti.
+
+**La domanda aperta e' la pazienza dell'early-stop** (`EARLY_STOP_PATIENCE = 2`). I round del VCSP oscillano per costruzione — i costi-ombra spostano il problema a ogni giro — quindi due peggioramenti di fila non vogliono dire convergenza: in AU il quarto e il quinto round sono stati peggiori del terzo, ma il giro e' arrivato in fondo perche' un reset era caduto in mezzo. Alzare la pazienza a 3 e' una manopola da tarare con i dati, non da indovinare: serve un giro con la stessa base e pazienza diversa.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
