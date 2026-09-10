@@ -220,6 +220,17 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
       completezza,
       diagnosi: diagnose(completezza, mapping?.report),
       corrispondenze: mapping?.report ?? { nota: "nessun feed GTFS attivo" },
+      /* Se l'indice non è filtrato per il giorno, OGNI aggancio risulta
+       * ambiguo: la stessa corsa esiste in ogni validità. */
+      indiceCorse: index?.tripStarts ? {
+        corseCircolantiOggi: index.tripStarts.trips,
+        giornoDiServizio: index.tripStarts.serviceDay ?? null,
+        filtratoPerCalendario: index.tripStarts.calendarFiltered ?? null,
+        nota: index.tripStarts.calendarFiltered === false
+          ? "Il calendario del feed non dice quali corse circolano oggi: l'indice contiene TUTTE "
+            + "le validità, quindi linea+ora individuano più corse e ogni aggancio è ambiguo."
+          : undefined,
+      } : undefined,
       /* Gli id VERI del feed, accanto ai riferimenti orfani dell'AVM: senza
        * vedere le due codifiche affiancate non si può disegnare la
        * corrispondenza (numeri di linea? codici interni? uuid?). */

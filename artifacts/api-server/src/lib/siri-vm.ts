@@ -716,6 +716,11 @@ export interface MappingReport {
   tripMatchedBySchedule: number;
   /** più corse partono a quell'ora su quella linea: scelta arbitraria */
   tripAmbiguous: number;
+  /** chi collide davvero: senza vederlo, "ambiguo" non è azionabile */
+  tripAmbiguousExamples: Array<{
+    linea: string; partenza: string | null; destinazioneAvm: string | null;
+    candidati: Array<{ tripId: string; headsign: string | null }>;
+  }>;
   routeMatched: number;
   stopMatched: number;
   transitsFound: number;
@@ -851,6 +856,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
 
   let byPublished = 0, byRouteRef = 0, byLongName = 0, byRef = 0, stopById = 0, stopByName = 0;
   let byJourneyId = 0, bySchedule = 0, ambiguous = 0;
+  const ambiguousExamples: MappingReport["tripAmbiguousExamples"] = [];
   const conflicts = new Set<string>();
   const unmatchedLineDetail = new Map<string, { lineRef: string | null; published: string | null; codiciProvati: string[] }>();
 
@@ -893,7 +899,17 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
       if (scheduleMatch.tripId) {
         tripId = scheduleMatch.tripId;
         bySchedule++;
-        if (scheduleMatch.ambiguous) ambiguous++;
+        if (scheduleMatch.ambiguous) {
+          ambiguous++;
+          if (ambiguousExamples.length < 5) {
+            ambiguousExamples.push({
+              linea: routeId,
+              partenza: v.originAimedDeparture.toISOString(),
+              destinazioneAvm: v.destinationName,
+              candidati: scheduleMatch.candidates ?? [],
+            });
+          }
+        }
       }
     }
     if (tripId) { tripMatched++; if (byId) byJourneyId++; }
@@ -939,6 +955,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     report: {
       vehicles: vehicles.length, withPosition, tripMatched,
       tripMatchedById: byJourneyId, tripMatchedBySchedule: bySchedule, tripAmbiguous: ambiguous,
+      tripAmbiguousExamples: ambiguousExamples,
       routeMatched, stopMatched,
       transitsFound, transitsMatched,
       routeMatchedByPublishedName: byPublished, routeMatchedByRouteRef: byRouteRef,
@@ -1034,6 +1051,10 @@ export interface TripStartIndex {
   byRouteAndStart: Map<string, string[]>;
   headsign: Map<string, string | null>;
   trips: number;
+  /** giorno di servizio su cui è costruito l'indice (YYYYMMDD) */
+  serviceDay?: string;
+  /** false = calendario non utilizzabile, indice su TUTTE le validità */
+  calendarFiltered?: boolean;
 }
 
 export function buildTripStartIndex(rows: TripStart[]): TripStartIndex {
@@ -1096,6 +1117,8 @@ export interface TripMatch {
   ambiguous: boolean;
   /** scarto in minuti fra l'orario dell'AVM e quello del feed */
   toleranceUsed: number | null;
+  /** quando è ambiguo: CHI stava collidendo, per poterlo guardare */
+  candidates?: Array<{ tripId: string; headsign: string | null }>;
 }
 
 /**
@@ -1128,7 +1151,10 @@ export function matchTripBySchedule(
         return { tripId: sameEnd[0], ambiguous: false, toleranceUsed: Math.abs(tolerance) };
       }
     }
-    return { tripId: found[0], ambiguous: true, toleranceUsed: Math.abs(tolerance) };
+    return {
+      tripId: found[0], ambiguous: true, toleranceUsed: Math.abs(tolerance),
+      candidates: found.slice(0, 6).map(t => ({ tripId: t, headsign: idx.headsign.get(t) ?? null })),
+    };
   }
   return { tripId: null, ambiguous: false, toleranceUsed: null };
 }
