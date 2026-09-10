@@ -20,6 +20,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
+import { SOURCE_SIRI } from "./caronte-schema";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
@@ -384,9 +385,9 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       const sp = vehicleId ? speedKmh(vehicleId, v.lat, v.lon, ts.getTime()) : null;
       const r = await db.execute<any>(sql`
         INSERT INTO caronte.vehicle_positions
-               (vehicle_id, trip_id, ts, lat, lon, nearest_stop_id, speed, heading)
+               (vehicle_id, trip_id, ts, lat, lon, nearest_stop_id, speed, heading, source)
         SELECT ${vehicleId}, ${m.tripId}, ${ts.toISOString()}::timestamptz,
-               ${v.lat}, ${v.lon}, ${m.nearestStopId}, ${sp}, ${v.bearing}
+               ${v.lat}, ${v.lon}, ${m.nearestStopId}, ${sp}, ${v.bearing}, ${SOURCE_SIRI}
          WHERE NOT EXISTS (
            SELECT 1 FROM caronte.vehicle_positions p
             WHERE p.vehicle_id IS NOT DISTINCT FROM ${vehicleId}
@@ -405,9 +406,10 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       tripsClosed += (closed as any).rowCount ?? 0;
 
       const opened = await db.execute<any>(sql`
-        INSERT INTO caronte.active_trips (trip_id, route_id, vehicle_id, device_id, started_at)
-        SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
-               ${(v.originAimedDeparture ?? ts).toISOString()}::timestamptz
+        INSERT INTO caronte.active_trips
+               (trip_id, route_id, vehicle_id, device_id, started_at, source)
+        SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${SOURCE_SIRI},
+               ${(v.originAimedDeparture ?? ts).toISOString()}::timestamptz, ${SOURCE_SIRI}
          WHERE NOT EXISTS (
            SELECT 1 FROM caronte.active_trips a
             WHERE a.vehicle_id = ${vehicleId} AND a.trip_id = ${m.tripId}
@@ -428,10 +430,10 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       const r = await db.execute<any>(sql`
         INSERT INTO caronte.stop_transits
                (trip_id, route_id, vehicle_id, device_id, stop_id, stop_seq,
-                scheduled, actual_ts, delay_seconds, lat, lon)
-        SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${"siri"},
+                scheduled, actual_ts, delay_seconds, lat, lon, source)
+        SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${SOURCE_SIRI},
                ${stopId}, ${seq}, ${scheduled},
-               ${at.toISOString()}::timestamptz, ${delay}, ${v.lat}, ${v.lon}
+               ${at.toISOString()}::timestamptz, ${delay}, ${v.lat}, ${v.lon}, ${SOURCE_SIRI}
          WHERE NOT EXISTS (
            SELECT 1 FROM caronte.stop_transits s
             WHERE s.trip_id = ${m.tripId} AND s.stop_id = ${stopId}
