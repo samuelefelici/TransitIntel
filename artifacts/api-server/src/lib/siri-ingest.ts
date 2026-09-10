@@ -125,9 +125,10 @@ export async function ingestVehicles(vehicles: SiriVehicle[]): Promise<IngestRes
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0, routeMatched: 0,
         stopMatched: 0, transitsFound: 0, transitsMatched: 0,
-        routeMatchedByPublishedName: 0, routeMatchedByRef: 0,
+        routeMatchedByPublishedName: 0, routeMatchedByRouteRef: 0, routeMatchedByRef: 0,
         stopMatchedById: 0, stopMatchedByName: 0, stopIdNameConflicts: [],
-        unmatchedTripRefs: [], unmatchedLineRefs: [], unmatchedStopRefs: [],
+        unmatchedTripRefs: [], unmatchedLineRefs: [], unmatchedLines: [],
+        unmatchedStopRefs: [],
       },
     };
   }

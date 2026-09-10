@@ -230,6 +230,10 @@ export interface SiriVehicle {
   journeyRef: string | null;
   /** Codice del PERCORSO (variante), distinto dalla linea */
   routeRef: string | null;
+  /** Il mezzo si sta spostando SENZA servizio (trasferimento, rientro).
+   *  Flashnet lo dichiara mettendo "FUORI LINEA" al posto del percorso: una
+   *  corsa così non va cercata nell'orario, perché nell'orario non c'è. */
+  outOfService: boolean;
   originRef: string | null;
   originName: string | null;
   destinationRef: string | null;
@@ -318,6 +322,7 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
    * senza corse — usa l'altro. */
   const framedJourney = directText(framed, "DatedVehicleJourneyRef");
   const course = directText(mvj, "CourseOfJourneyRef");
+  const routeRefRaw = directText(mvj, "RouteRef");
 
   return {
     recordedAt: parseDate(directText(va, "RecordedAtTime")),
@@ -328,7 +333,8 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
     datedVehicleJourneyRef: framedJourney,
     courseOfJourneyRef: course,
     journeyRef: framedJourney ?? course,
-    routeRef: directText(mvj, "RouteRef"),
+    routeRef: routeRefRaw,
+    outOfService: /fuori\s*linea|out\s*of\s*service|deadhead/i.test(routeRefRaw ?? ""),
     originRef: directText(mvj, "OriginRef"),
     originName: directText(mvj, "OriginName"),
     destinationRef: directText(mvj, "DestinationRef"),
@@ -533,6 +539,8 @@ export interface VehicleCompleteness {
   conRitardo: number;
   conTurnoVettura: number;
   monitorati: number;
+  /** mezzi in trasferimento, non in servizio: non sono corse dell'orario */
+  fuoriLinea: number;
 }
 
 export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompleteness {
@@ -540,6 +548,7 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
     totale: vehicles.length, conPosizione: 0, conLinea: 0, conCorsa: 0,
     conFermataCorrente: 0, conFermateTransitate: 0, conOrarioEffettivo: 0,
     conFermateFuture: 0, conRitardo: 0, conTurnoVettura: 0, monitorati: 0,
+    fuoriLinea: 0,
   };
   for (const v of vehicles) {
     if (v.lat != null && v.lon != null) c.conPosizione++;
@@ -551,6 +560,7 @@ export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompletene
     if (v.delaySeconds != null) c.conRitardo++;
     if (v.blockRef) c.conTurnoVettura++;
     if (v.monitored) c.monitorati++;
+    if (v.outOfService) c.fuoriLinea++;
     const hasActual = v.previousCalls.some(x => x.actualArrival || x.actualDeparture)
       || !!(v.monitoredCall && (v.monitoredCall.actualArrival || v.monitoredCall.actualDeparture));
     if (hasActual) c.conOrarioEffettivo++;
@@ -643,6 +653,28 @@ export function lineCodeCandidates(publishedLineName: string | null): string[] {
   return out;
 }
 
+/**
+ * Il codice di PERCORSO porta il numero di linea in testa: "03R1" = linea 3
+ * andata/ritorno variante 1, "20P" = linea 20. Vale dove il nome pubblicato
+ * non ha un numero — la navetta del porto è "Navetta Terminal Biglietterie"
+ * ma il suo percorso è "20P", e la linea 20 nel feed c'è.
+ */
+export function routeRefLineCandidates(routeRef: string | null): string[] {
+  if (!routeRef) return [];
+  const m = /^\s*([0-9]+(?:\s*[-/]\s*[0-9]+)*)/.exec(routeRef);
+  if (!m) return [];
+  const raw = normalizeLineCode(m[1]);
+  const out = new Set<string>([raw]);
+  // "03" e "3" sono la stessa linea scritta con o senza zero iniziale
+  const unpadded = raw.replace(/(^|[-/])0+(?=[0-9])/g, "$1");
+  out.add(unpadded);
+  for (const v of [...out]) {
+    out.add(v.replace(/-/g, "/"));
+    out.add(v.replace(/\//g, "-"));
+  }
+  return [...out].filter(Boolean);
+}
+
 /** Nome di fermata comparabile: senza accenti, punteggiatura e maiuscole. */
 export function normalizeStopName(v: string): string {
   return v.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -672,6 +704,8 @@ export interface MappingReport {
   transitsMatched: number;
   /** come si è agganciata la linea: dal numero pubblicato o dall'id interno */
   routeMatchedByPublishedName: number;
+  /** agganciate dal codice di percorso ("03R1" → linea 3) */
+  routeMatchedByRouteRef: number;
   routeMatchedByRef: number;
   /** fermate agganciate per id, e per nome quando l'id non esiste nel feed */
   stopMatchedById: number;
@@ -681,6 +715,10 @@ export interface MappingReport {
   /** riferimenti orfani: servono a capire la codifica dell'AVM */
   unmatchedTripRefs: string[];
   unmatchedLineRefs: string[];
+  /** linee orfane con il nome pubblicato e i codici tentati: senza questi,
+   *  "19 linee non agganciate" non dice se il problema è la regola di
+   *  estrazione o il fatto che quelle linee nel feed non ci sono proprio. */
+  unmatchedLines: Array<{ lineRef: string | null; published: string | null; codiciProvati: string[] }>;
   unmatchedStopRefs: string[];
 }
 
@@ -724,10 +762,17 @@ function resolveStop(
  */
 function resolveRoute(
   v: SiriVehicle, index: GtfsIndex,
-): { routeId: string | null; how: "published" | "ref" | null } {
+): { routeId: string | null; how: "published" | "routeRef" | "ref" | null } {
   for (const code of lineCodeCandidates(v.publishedLineName)) {
     const byCode = index.routeByCode.get(code);
     if (byCode) return { routeId: byCode, how: "published" };
+  }
+  /* Il percorso porta il numero di linea anche quando il nome non lo dice. */
+  if (!v.outOfService) {
+    for (const code of routeRefLineCandidates(v.routeRef)) {
+      const byRoute = index.routeByCode.get(code);
+      if (byRoute) return { routeId: byRoute, how: "routeRef" };
+    }
   }
   if (!v.publishedLineName) {
     for (const c of refCandidates(v.lineRef)) {
@@ -759,8 +804,9 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
   let withPosition = 0, tripMatched = 0, routeMatched = 0, stopMatched = 0;
   let transitsFound = 0, transitsMatched = 0;
 
-  let byPublished = 0, byRef = 0, stopById = 0, stopByName = 0;
+  let byPublished = 0, byRouteRef = 0, byRef = 0, stopById = 0, stopByName = 0;
   const conflicts = new Set<string>();
+  const unmatchedLineDetail = new Map<string, { lineRef: string | null; published: string | null; codiciProvati: string[] }>();
 
   const mapped: MappedVehicle[] = vehicles.map(v => {
     const tripId = resolveRef(v.journeyRef, index.trips);
@@ -770,10 +816,24 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     // La linea: numero pubblicato, poi id interno, poi quella della corsa agganciata
     const r = resolveRoute(v, index);
     let routeId = r.routeId;
-    if (r.how === "published") byPublished++; else if (r.how === "ref") byRef++;
+    if (r.how === "published") byPublished++;
+    else if (r.how === "routeRef") byRouteRef++;
+    else if (r.how === "ref") byRef++;
     if (!routeId && tripId) routeId = index.tripRoute.get(tripId) ?? null;
     if (routeId) routeMatched++;
-    else if (v.lineRef || v.publishedLineName) unmatchedLine.add(v.lineRef ?? v.publishedLineName!);
+    else if (v.lineRef || v.publishedLineName) {
+      unmatchedLine.add(v.lineRef ?? v.publishedLineName!);
+      const key = `${v.lineRef ?? ""}|${v.publishedLineName ?? ""}`;
+      if (!unmatchedLineDetail.has(key)) {
+        unmatchedLineDetail.set(key, {
+          lineRef: v.lineRef, published: v.publishedLineName,
+          codiciProvati: [...new Set([
+            ...lineCodeCandidates(v.publishedLineName),
+            ...routeRefLineCandidates(v.routeRef),
+          ])],
+        });
+      }
+    }
 
     const mc = v.monitoredCall;
     const s = resolveStop(mc?.stopPointRef ?? null, mc?.stopPointName ?? null, index);
@@ -815,11 +875,13 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     report: {
       vehicles: vehicles.length, withPosition, tripMatched, routeMatched, stopMatched,
       transitsFound, transitsMatched,
-      routeMatchedByPublishedName: byPublished, routeMatchedByRef: byRef,
+      routeMatchedByPublishedName: byPublished, routeMatchedByRouteRef: byRouteRef,
+      routeMatchedByRef: byRef,
       stopMatchedById: stopById, stopMatchedByName: stopByName,
       stopIdNameConflicts: [...conflicts].slice(0, 10),
       unmatchedTripRefs: [...unmatchedTrip].slice(0, 10),
       unmatchedLineRefs: [...unmatchedLine].slice(0, 10),
+      unmatchedLines: [...unmatchedLineDetail.values()].slice(0, 25),
       unmatchedStopRefs: [...unmatchedStop].slice(0, 10),
     },
   };
