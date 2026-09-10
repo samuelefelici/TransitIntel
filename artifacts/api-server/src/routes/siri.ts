@@ -70,7 +70,17 @@ export function siriDetailLevel(): "minimum" | "basic" | "normal" | "calls" | "f
 
 /* Esito dell'ultimo giro di ingestione, per poterlo leggere da /siri/status
  * senza che una GET scriva nulla. */
-let ultimoGiro: { funnel: TransitFunnel; nota: string; at: string } | null = null;
+let ultimoGiro: {
+  funnel: TransitFunnel;
+  nota: string;
+  at: string;
+  /* Se le scritture falliscono l'imbuto da solo non basta: mostrerebbe una
+   * catena sana fino all'ultimo anello senza dire che l'INSERT è morto. */
+  mezziNonSalvati: number;
+  primoErrore: string | null;
+  posizioniInserite: number;
+  corseAperte: number;
+} | null = null;
 
 const NOT_CONFIGURED = {
   configured: false,
@@ -211,7 +221,22 @@ router.get("/siri/status", async (req, res): Promise<void> => {
    * stato in un browser: tenendo da parte l'esito dell'ultimo giro la si può
    * rispondere qui, senza far scrivere una GET. */
   out.acquisizioneTransiti = ultimoGiro
-    ? { ...ultimoGiro.funnel, diagnosi: ultimoGiro.nota, alle: ultimoGiro.at }
+    ? {
+      ...ultimoGiro.funnel,
+      diagnosi: ultimoGiro.mezziNonSalvati > 0
+        /* Un errore di scrittura ha la precedenza su qualunque altra lettura
+         * dell'imbuto: i contatori a valle sarebbero conseguenza sua. */
+        ? `${ultimoGiro.mezziNonSalvati} mezzi non salvati nell'ultimo giro. `
+          + `Primo errore: ${ultimoGiro.primoErrore ?? "n/d"}`
+        : ultimoGiro.nota,
+      alle: ultimoGiro.at,
+      ultimoGiro: {
+        mezziNonSalvati: ultimoGiro.mezziNonSalvati,
+        primoErrore: ultimoGiro.primoErrore ?? undefined,
+        posizioniInserite: ultimoGiro.posizioniInserite,
+        corseAperte: ultimoGiro.corseAperte,
+      },
+    }
     : {
       diagnosi: "Il poller non ha ancora completato un giro da quando il "
         + "servizio è stato riavviato: riprova fra un intervallo di polling.",
@@ -463,6 +488,10 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
     funnel: ingest.funnel,
     nota: ingest.funnelNota,
     at: new Date().toISOString(),
+    mezziNonSalvati: ingest.vehiclesFailed,
+    primoErrore: ingest.firstError,
+    posizioniInserite: ingest.positionsInserted,
+    corseAperte: ingest.tripsOpened,
   };
   const poll = siriPoll();
 
