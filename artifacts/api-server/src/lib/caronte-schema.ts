@@ -139,6 +139,41 @@ export async function schemaState(): Promise<CaronteSchemaState> {
   }
 }
 
+/**
+ * La struttura VERA di una tabella dell'esercizio.
+ *
+ * `schemaState()` dice solo se mancano le colonne che ci aspettiamo. Ma una
+ * tabella creata dal sistema AVM può avere colonne IN PIÙ, dichiarate NOT NULL
+ * e senza valore predefinito: il nostro INSERT, che non le elenca, viene
+ * rifiutato: e senza vedere la struttura la causa resta invisibile.
+ */
+export async function tableShape(table: string): Promise<Array<{
+  colonna: string; tipo: string; obbligatoria: boolean; predefinito: string | null;
+}>> {
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT a.attname AS colonna,
+             format_type(a.atttypid, a.atttypmod) AS tipo,
+             a.attnotnull AS obbligatoria,
+             pg_get_expr(d.adbin, d.adrelid) AS predefinito
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+       WHERE n.nspname = 'caronte' AND c.relname = ${table}
+         AND a.attnum > 0 AND NOT a.attisdropped
+       ORDER BY a.attnum`);
+    return ((r as any).rows ?? []).map((x: any) => ({
+      colonna: String(x.colonna),
+      tipo: String(x.tipo),
+      obbligatoria: x.obbligatoria === true,
+      predefinito: x.predefinito ?? null,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 /** Una istruzione DDL isolata: un fallimento non trascina le altre. */
 async function ddl(statement: ReturnType<typeof sql>, applied: string[], label: string): Promise<void> {
   try {

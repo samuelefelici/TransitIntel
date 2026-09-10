@@ -31,7 +31,7 @@ import {
   type TransitFunnel,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
-import { ensureCaronteSchema, schemaState } from "../lib/caronte-schema";
+import { ensureCaronteSchema, schemaState, tableShape } from "../lib/caronte-schema";
 
 const router: IRouter = Router();
 
@@ -78,6 +78,8 @@ let ultimoGiro: {
    * catena sana fino all'ultimo anello senza dire che l'INSERT è morto. */
   mezziNonSalvati: number;
   primoErrore: string | null;
+  corseFallite: number;
+  erroreCorse: string | null;
   posizioniInserite: number;
   corseAperte: number;
 } | null = null;
@@ -160,6 +162,21 @@ router.get("/siri/status", async (req, res): Promise<void> => {
         + "in migrations/, oppure dare al ruolo del database il permesso di CREATE/ALTER.",
   };
 
+  /* La struttura VERA delle tabelle, su richiesta. `schemaCaronte.pronto` dice
+   * solo che non manca nulla di ciò che ci aspettiamo — ma una tabella creata
+   * dal sistema AVM può avere colonne IN PIÙ, obbligatorie e senza valore
+   * predefinito: il nostro INSERT, che non le elenca, viene rifiutato mentre
+   * lo schema risulta "a posto". Senza vederla, quella causa resta invisibile. */
+  if (req.query.tabelle === "1") {
+    out.strutturaTabelle = {
+      vehicle_positions: await tableShape("vehicle_positions"),
+      active_trips: await tableShape("active_trips"),
+      stop_transits: await tableShape("stop_transits"),
+      nota: "Una colonna con obbligatoria=true e predefinito=null, che il "
+        + "connettore non scrive, fa rifiutare ogni INSERT.",
+    };
+  }
+
   /* "Sta registrando?" è la domanda che si fa guardando la mappa, e finora
    * l'unico modo di rispondere era contare i puntini. Questi sono i numeri
    * veri delle tabelle di esercizio, in sola lettura. */
@@ -233,6 +250,8 @@ router.get("/siri/status", async (req, res): Promise<void> => {
       ultimoGiro: {
         mezziNonSalvati: ultimoGiro.mezziNonSalvati,
         primoErrore: ultimoGiro.primoErrore ?? undefined,
+        corseNonAperte: ultimoGiro.corseFallite || undefined,
+        erroreCorse: ultimoGiro.erroreCorse ?? undefined,
         posizioniInserite: ultimoGiro.posizioniInserite,
         corseAperte: ultimoGiro.corseAperte,
       },
@@ -562,6 +581,8 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
     at: new Date().toISOString(),
     mezziNonSalvati: ingest.vehiclesFailed,
     primoErrore: ingest.firstError,
+    corseFallite: ingest.corseFallite,
+    erroreCorse: ingest.erroreCorse,
     posizioniInserite: ingest.positionsInserted,
     corseAperte: ingest.tripsOpened,
   };

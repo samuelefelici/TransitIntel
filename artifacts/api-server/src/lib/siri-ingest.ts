@@ -303,6 +303,28 @@ function speedKmh(vehicleId: string, lat: number, lon: number, t: number): numbe
 
 /* ── Scrittura ────────────────────────────────────────────────────────────── */
 
+/**
+ * L'errore VERO del database, non l'involucro del query builder.
+ *
+ * Drizzle avvolge l'errore di Postgres in un "Failed query: <SQL> params: …"
+ * e mette la causa in `cause`. Il risultato è che la diagnosi mostrava la
+ * query — che sapevamo già — e nascondeva la sola cosa che serve: perché il
+ * database l'ha rifiutata. Qui si tira fuori SQLSTATE, messaggio, colonna e
+ * vincolo, che insieme dicono la causa senza doverla indovinare.
+ */
+function erroreVero(e: any): string {
+  const c = e?.cause ?? e;
+  const parti = [
+    c?.code ? `[${c.code}]` : null,
+    c?.message ?? e?.message ?? String(e),
+    c?.detail ? `— ${c.detail}` : null,
+    c?.column ? `(colonna ${c.column})` : null,
+    c?.constraint ? `(vincolo ${c.constraint})` : null,
+    c?.hint ? `Suggerimento: ${c.hint}` : null,
+  ].filter(Boolean);
+  return parti.join(" ");
+}
+
 export interface IngestResult {
   positionsInserted: number;
   tripsOpened: number;
@@ -312,6 +334,9 @@ export interface IngestResult {
   vehiclesFailed: number;
   /** vetture del parco fermo, scartate prima di scrivere */
   vehiclesParked: number;
+  /** aperture di corsa rifiutate dal database: non impediscono i transiti */
+  corseFallite: number;
+  erroreCorse: string | null;
   /** il primo errore incontrato, per capire perché senza leggere i log */
   firstError: string | null;
   report: MappingReport;
@@ -332,6 +357,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
       vehiclesFailed: 0, vehiclesParked: split.ferme.length, firstError: null,
+      corseFallite: 0, erroreCorse: null,
       funnel: { ...emptyFunnel(), inEsercizio: vehicles.length },
       funnelNota: "Nessun feed GTFS attivo: senza orario non c'è nulla a cui "
         + "attribuire i passaggi.",
@@ -360,6 +386,10 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
   let positionsInserted = 0, tripsOpened = 0, tripsClosed = 0, transitsInserted = 0;
   let vehiclesFailed = 0;
   let firstError: string | null = null;
+  /* Contati a parte: un rifiuto sulle corse attive non è un mezzo perso, ed
+   * era proprio confonderli che nascondeva la causa. */
+  let corseFallite = 0;
+  let erroreCorse: string | null = null;
   const funnel = emptyFunnel();
   funnel.inEsercizio = mapped.length;
 
@@ -406,25 +436,38 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     }
 
     /* 2. Corsa in servizio. Una sola aperta per mezzo: se l'AVM dichiara una
-     *    corsa diversa da quella aperta, la precedente si chiude. */
+     *    corsa diversa da quella aperta, la precedente si chiude.
+     *
+     *    ISOLATA dal resto. Il transito NON dipende dalla corsa aperta: sono
+     *    due scritture indipendenti su due tabelle diverse. Finché stavano
+     *    nello stesso try, un rifiuto qui faceva saltare tutto il blocco a
+     *    valle — e infatti l'imbuto mostrava zero geometria, zero letture
+     *    precedenti e zero transiti, che sembravano tre guasti distinti
+     *    mentre erano un solo INSERT rifiutato. Un errore su una tabella non
+     *    deve spegnere le altre due. */
     if (vehicleId && m.tripId) {
-      const closed = await db.execute<any>(sql`
-        UPDATE caronte.active_trips
-           SET ended_at = ${ts.toISOString()}::timestamptz
-         WHERE vehicle_id = ${vehicleId} AND ended_at IS NULL
-           AND trip_id IS DISTINCT FROM ${m.tripId}`);
-      tripsClosed += (closed as any).rowCount ?? 0;
+      try {
+        const closed = await db.execute<any>(sql`
+          UPDATE caronte.active_trips
+             SET ended_at = ${ts.toISOString()}::timestamptz
+           WHERE vehicle_id = ${vehicleId} AND ended_at IS NULL
+             AND trip_id IS DISTINCT FROM ${m.tripId}`);
+        tripsClosed += (closed as any).rowCount ?? 0;
 
-      const opened = await db.execute<any>(sql`
-        INSERT INTO caronte.active_trips
-               (trip_id, route_id, vehicle_id, device_id, started_at, source)
-        SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${SOURCE_SIRI},
-               ${(v.originAimedDeparture ?? ts).toISOString()}::timestamptz, ${SOURCE_SIRI}
-         WHERE NOT EXISTS (
-           SELECT 1 FROM caronte.active_trips a
-            WHERE a.vehicle_id = ${vehicleId} AND a.trip_id = ${m.tripId}
-              AND a.ended_at IS NULL)`);
-      tripsOpened += (opened as any).rowCount ?? 0;
+        const opened = await db.execute<any>(sql`
+          INSERT INTO caronte.active_trips
+                 (trip_id, route_id, vehicle_id, device_id, started_at, source)
+          SELECT ${m.tripId}, ${m.routeId}, ${vehicleId}, ${SOURCE_SIRI},
+                 ${(v.originAimedDeparture ?? ts).toISOString()}::timestamptz, ${SOURCE_SIRI}
+           WHERE NOT EXISTS (
+             SELECT 1 FROM caronte.active_trips a
+              WHERE a.vehicle_id = ${vehicleId} AND a.trip_id = ${m.tripId}
+                AND a.ended_at IS NULL)`);
+        tripsOpened += (opened as any).rowCount ?? 0;
+      } catch (e: any) {
+        corseFallite++;
+        if (!erroreCorse) erroreCorse = `mezzo ${vehicleId}: ${erroreVero(e)}`;
+      }
     }
 
     /* Scrive un passaggio. Il ritardo dichiarato dall'AVM ha la precedenza —
@@ -536,7 +579,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     }
    } catch (e: any) {
      vehiclesFailed++;
-     if (!firstError) firstError = `mezzo ${m.siri.vehicleRef ?? "?"}: ${e?.message ?? e}`;
+     if (!firstError) firstError = `mezzo ${m.siri.vehicleRef ?? "?"}: ${erroreVero(e)}`;
    }
   }
 
@@ -544,9 +587,14 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     console.warn(`[siri] ${vehiclesFailed} mezzi non salvati su ${mapped.length}. Primo errore: ${firstError}`);
   }
 
+  if (corseFallite > 0) {
+    console.warn(`[siri] ${corseFallite} aperture corsa rifiutate. Primo errore: ${erroreCorse}`);
+  }
+
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
     vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
+    corseFallite, erroreCorse,
     funnel, funnelNota: explainFunnel(funnel),
   };
 }
