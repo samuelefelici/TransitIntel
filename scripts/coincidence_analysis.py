@@ -22,21 +22,16 @@ from __future__ import annotations
 
 from vcsp_probe import (
     COINCIDENCE_MAX_WAIT, COINCIDENCE_MIN_OCCURRENCES,
-    _node_key, _stop_events, _flex_of, detect_coincidences,
+    _node_key, _stop_events, _flex_of, detect_coincidences, COINCIDENCE_MIN_WAIT,
     build_round_trip_pairs, flex_of_round_trip, min_to_time,
 )
 
 # Finestra entro cui due linee si considerano «vicine»: oltre, non e' una
 # coincidenza mancata per poco, e' un altro orario.
 NEAR_MISS_WINDOW = 30
-# Attesa MINIMA perche' il cambio sia fattibile: a zero minuti i due mezzi sono
-# contemporanei e il passeggero non fa in tempo a scendere e salire. Il valore
-# lo decide l'operatore — due minuti e' il tempo di scendere da un mezzo e
-# salire sull'altro fermi allo stesso capolinea — e serve a non spacciare per
-# opportunita' un orario che nella realta' non si prende. Vale SOLO qui: il
-# vincolo del VCSP continua ad accettare da zero minuti in su, per non cambiare
-# le coincidenze da difendere senza che l'operatore l'abbia deciso.
-COINCIDENCE_MIN_WAIT = 2
+# L'attesa minima e' quella del vincolo (vcsp_probe): analisi e motore devono
+# riconoscere le stesse coincidenze, o l'una proporrebbe cio' che l'altro
+# rifiuta.
 # Traslazioni esaminate per ogni linea (minuti).
 SHIFT_RANGE = 30
 

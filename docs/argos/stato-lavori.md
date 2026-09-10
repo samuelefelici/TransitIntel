@@ -565,6 +565,50 @@ La PR #470 e' stata mergiata al commit `573101b`, lasciando fuori la mappa delle
 
 **Regola**: dopo ogni merge, verificare con `git merge-base --is-ancestor <ultimo commit> origin/main` che ci sia dentro tutto, non solo che il branch sia allineato.
 
+## Il giro AU: la sonda muove per la prima volta, e il dubbio della Madonnetta era mio
+
+Scenario `29f79738-e8d6-483e-a2f5-74dc66e11013`, parametri veri di AQ2 (5 round, 6 sonde, CSP 240s) col codice nuovo. 42 minuti.
+
+| round | vetture | turni | suppl | violazioni | punteggio |
+|---|---|---|---|---|---|
+| 1 | 25 | 43 | 0 | 4 | 31.769 |
+| 3 | 21 | 43 | 0 | 2 | 31.997 |
+| 4 | 24 | 44 | 1 | 2 | 32.402 |
+| 5 | 22 | 43 | 3 | 9 | 33.019 |
+| **6 — LA SONDA (scelto)** | **21** | **43** | **0** | **1** | **31.932** |
+
+**Il round vincente e' quello della sonda.** Ha preso il round 3 (21 vetture, 2 violazioni), ha spostato **una corsa** — la 30R delle 21:46 alle 21:31 — e ha tolto una violazione BDS. E' il **primo spostamento accettato di tutta la serie**: da AL in poi la sonda non aveva mai mosso niente.
+
+E le ombre nuove si vedono nel confronto a parita' di parametri:
+
+| giro | vetture | turni | suppl | violazioni |
+|---|---|---|---|---|
+| AT (prima delle ombre) | 30 | 43 | **8** | 1 |
+| **AU (dopo)** | **21** | 43 | **0** | 1 |
+
+Nove autobus e otto supplementi in meno, come il test prometteva.
+
+### Il dubbio della Madonnetta: nessun difetto, l'errore era mio
+
+Il campione degli orari — messo apposta per questo — l'ha chiuso in un colpo:
+
+```
+MADONNETTA  2/6 → 21/33   arrivo 12:30 → transito 12:34   attesa 4'
+MADONNETTA  21/33 → 2/6   transito 12:34 → partenza 12:34  attesa 0'
+```
+
+Avevo sbagliato due volte. Primo: avevo assunto che il 21/33 transitasse alla Madonnetta a «partenza + 3» per tutte le corse, verificandolo su una sola — il profilo varia, e alle 12:32 il transito e' alle **12:34**, non alle 12:35. Secondo: cercavo il verso 21/33 → 2/6 negli arrivi del RITORNO (09:28, 13:57...), mentre lo realizza l'**andata** che transita alle 12:34, 17:04, 19:34, contro le partenze della 2/6R ai minuti :04 e :34.
+
+### Ma ha scoperto una cosa vera: si difendono coincidenze da zero minuti
+
+Quelle tre coppie hanno **attesa 0**: il 21/33 passa alle 12:34 e la 2/6 parte alle 12:34, nello stesso minuto. Nessun passeggero fa quel cambio, eppure il vincolo lo difende e per proteggerlo scarta gli spostamenti.
+
+Nel campione delle undici relazioni e' **l'unica** sotto i due minuti; le altre stanno fra 2 e 5. **Deciso dall'operatore: la soglia vale ora anche nel vincolo** (`COINCIDENCE_MIN_WAIT = 2` in `vcsp_probe`, da cui `coincidence_analysis` la importa — analisi e motore devono riconoscere le stesse coincidenze, o l'una proporrebbe cio' che l'altro rifiuta). Un cambio sotto i due minuti non si difende piu', e uno spostamento che porta l'attesa sotto la soglia adesso ROMPE la coincidenza invece di sembrare innocuo.
+
+### La mappa ha lavorato
+
+La sonda ha generato **sei candidati «coincidenza»** — traslazioni di linea nate dal quadro e non dal piano, la cosa che prima non sapeva fare. Tutti e sei bloccati dal vincolo, e ora si sa perche': `flessibilitaInsufficiente` 8 volte, `catenaTroppoLunga` 6. I freni sono quelli: la flessibilita' dichiarata sulle corse da trascinare e il tetto di dodici corse per catena.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.

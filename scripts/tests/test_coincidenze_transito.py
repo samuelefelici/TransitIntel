@@ -201,3 +201,39 @@ def test_la_coincidenza_dichiara_gli_orari_che_la_realizzano():
     assert s["arrivo"] == "08:00" and s["partenza"] == "08:05" and s["attesaMin"] == 5
     assert s["fromTrip"] == "c26_0" and s["toTrip"] == "c2133_0"
     assert len(c["sample"]) == 3, "un campione, non l'elenco intero"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  L'attesa minima: un cambio che nessuno puo' fare non si difende
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _incrocio_al_minuto():
+    """Il caso vero del giro AU: alla Madonnetta il 21/33 transita alle 12:34 e
+    la 2/6 parte alle 12:34. Stesso minuto: il passeggero non scende e risale."""
+    trips = []
+    for k, ora in enumerate((754, 1024, 1174, 1294)):
+        trips.append(_t("t21_%d" % k, "21/33", ora - 2, ora + 28, "POSATORA", "MONTESICURO",
+                        [("MADONNETTA  CAPOLINEA", ora, ora)]))
+        trips.append(_t("r26_%d" % k, "2/6", ora, ora + 30,
+                        "MADONNETTA  CAPOLINEA", "CAVOUR", direction=1))
+    return trips
+
+
+def test_un_cambio_a_zero_minuti_non_e_una_coincidenza():
+    trips = _incrocio_al_minuto()
+    assert probe.detect_coincidences(trips) == [], "due minuti e' il minimo per scendere e salire"
+    # con la soglia a zero tornerebbe a vedersi: e' la soglia a decidere, non un caso
+    c = probe.detect_coincidences(trips, min_wait=0)
+    assert len(c) == 1 and c[0]["occurrences"] == 4
+
+
+def test_uno_spostamento_che_scende_sotto_la_soglia_rompe_la_coincidenza():
+    """Non basta restare sopra lo zero: sotto i due minuti il cambio si perde."""
+    trips = _madonnetta()
+    by_id = {t["tripId"]: t for t in trips}
+    pairs = probe.coincidence_pairs(probe.detect_coincidences(trips))
+    # l'attesa e' 5': anticipare di 4 la porta a 1, che non basta piu'
+    rotte = probe.coincidences_broken({"c2133_0": -4}, by_id, pairs)
+    assert len(rotte) == 1 and rotte[0]["attesaMin"] == 1
+    # anticiparla di 3 la lascia a 2: il minimo, ma regge
+    assert probe.coincidences_broken({"c2133_0": -3}, by_id, pairs) == []
