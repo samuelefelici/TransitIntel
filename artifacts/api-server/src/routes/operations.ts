@@ -26,11 +26,17 @@ import { getLatestFeedId } from "./gtfs-helpers";
 import { schemaState, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { delayFromSchedule } from "../lib/siri-vm";
 import { completeTransits } from "../lib/transit-completion";
+import { analizzaPercorrenze, coperturaFermate, type CorsaOsservata } from "../lib/runtime-analysis";
+import { classifyDate, type CalendarProfile } from "../lib/day-classifier";
+import { loadCalendarProfile } from "../lib/planning-studio-calendar";
 
 const router: IRouter = Router();
 
 /** Fuso dell'azienda: il confronto programmato/reale si fa nell'ora locale. */
 const OPERATOR_TZ = process.env.SIRI_TIMEZONE || "Europe/Rome";
+
+/** Un id di progetto malformato non deve arrivare al database come uuid. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /* ── Sala Operativa = esercizio da SIRI ───────────────────────────────────
  * Le tabelle `caronte` sono condivise con il sistema AVM, che ci scrive le
@@ -663,12 +669,8 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
         JOIN t l ON l.trip_id = f.trip_id AND l.day = f.day
         WHERE f.rn_a = 1 AND l.rn_d = 1 AND f.stop_seq < l.stop_seq
       )
-      SELECT r.trip_id, r.route_id,
-             COUNT(*)::int AS runs,
-             MIN(r.start_sched) AS start_sched,
-             AVG(r.n_obs)::float AS avg_obs_stops,
-             percentile_cont(0.5) WITHIN GROUP (ORDER BY r.obs_s) AS obs_median_s,
-             AVG(r.sched_s) FILTER (WHERE r.sched_s IS NOT NULL AND r.sched_s > 0) AS sched_s,
+      SELECT r.trip_id, r.route_id, r.day, r.n_obs, r.start_sched,
+             r.obs_s, r.sched_s,
              gt.direction_id, gt.trip_headsign, gt.shape_id,
              gr.route_short_name, gr.route_color, gr.route_long_name,
              stt.n_stops AS total_stops
@@ -685,36 +687,106 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
       WHERE r.obs_s BETWEEN 60 AND 4 * 3600
         AND (${hourFrom}::int IS NULL OR r.start_hour >= ${hourFrom})
         AND (${hourTo}::int IS NULL OR r.start_hour < ${hourTo})
-      GROUP BY r.trip_id, r.route_id, gt.direction_id, gt.trip_headsign, gt.shape_id,
-               gr.route_short_name, gr.route_color, gr.route_long_name, stt.n_stops
-      ORDER BY gr.route_short_name NULLS LAST, MIN(r.start_sched)
-      LIMIT 3000
+      ORDER BY gr.route_short_name NULLS LAST, r.start_sched, r.day
+      LIMIT 60000
     `);
+
+    /* ── Classe di giornata ──────────────────────────────────────────────
+     * Mediare un lunedì scolastico con una domenica d'agosto produce un
+     * numero che non descrive nessuno dei due giorni. Le corse si aggregano
+     * per classe — scuole aperte/chiuse, feriale/sabato, domeniche e rossi —
+     * e ogni classe porta il proprio verdetto.
+     *
+     * Il calendario aziendale sta in un progetto di Planner Studio: se non è
+     * indicato si classifica comunque per giorno della settimana e festività
+     * nazionali, e si dichiara che scuole aperte/chiuse non è distinguibile.
+     * Meglio tre classi corrette che una sola sbagliata. */
+    const psProjectId = String(req.query.psProjectId ?? "") || null;
+    let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
+    let profiloCaricato = false;
+    if (psProjectId && UUID_RE.test(psProjectId)) {
+      try { profilo = await loadCalendarProfile(psProjectId); profiloCaricato = true; }
+      catch { /* profilo non leggibile: si resta sul calendario civile */ }
+    }
+    /* La classificazione è pura e costosa quanto basta: una data ricorre su
+     * centinaia di corse, quindi si calcola una volta sola. */
+    const cacheClassi = new Map<string, { key: string; label: string }>();
+    const classifica = (day: string) => {
+      let c = cacheClassi.get(day);
+      if (!c) {
+        const d = classifyDate(day, profilo);
+        c = { key: d.key, label: d.label };
+        cacheClassi.set(day, c);
+      }
+      return c;
+    };
+
+    /** Anagrafica della corsa: uguale su tutte le sue giornate. */
+    const anagrafica = new Map<string, any>();
+    const osservate: CorsaOsservata[] = [];
+    for (const r of q.rows as any[]) {
+      const tripId = String(r.trip_id);
+      if (!anagrafica.has(tripId)) anagrafica.set(tripId, r);
+      osservate.push({
+        tripId,
+        day: typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10),
+        durataOsservataSec: Math.round(Number(r.obs_s)),
+        durataProgrammataSec: r.sched_s != null ? Math.round(Number(r.sched_s)) : null,
+        fermateOsservate: Number(r.n_obs ?? 0),
+      });
+    }
+
+    const gruppi = analizzaPercorrenze(osservate, classifica);
+    const pollSec = Number(process.env.SIRI_POLL_SECONDS) || 30;
 
     res.json({
       caronteAvailable: true,
       days, routeId, hourFrom, hourTo,
-      trips: q.rows.map((r: any) => {
-        const obs = r.obs_median_s != null ? Math.round(Number(r.obs_median_s)) : null;
-        const sched = r.sched_s != null ? Math.round(Number(r.sched_s)) : null;
+      validita: {
+        psProjectId: psProjectId ?? undefined,
+        profiloCaricato,
+        nota: profiloCaricato
+          ? "Classi dal calendario aziendale del progetto indicato."
+          : "Nessun calendario aziendale indicato: le giornate sono classificate "
+            + "per giorno della settimana e festività nazionali, ma scuole aperte "
+            + "e scuole chiuse non sono distinguibili. Passa ?psProjectId=… per "
+            + "ottenere le classi complete.",
+        classiOsservate: [...new Set(gruppi.map(g => g.classeLabel))].sort(),
+      },
+      /* Una riga per (corsa, classe di giornata): è il taglio su cui si
+       * decide se allargare o stringere un orario. */
+      corse: gruppi.map(g => {
+        const a = anagrafica.get(g.tripId) ?? {};
+        const totali = a.total_stops != null ? Number(a.total_stops) : 0;
         return {
-          tripId: r.trip_id,
-          routeId: r.route_id,
-          routeShortName: r.route_short_name,
-          routeLongName: r.route_long_name,
-          routeColor: r.route_color,
-          directionId: r.direction_id,
-          headsign: r.trip_headsign,
-          shapeId: r.shape_id,
-          startTime: r.start_sched,            // partenza programmata (primo transito)
-          runs: r.runs,                        // giornate osservate
-          avgObsStops: r.avg_obs_stops != null ? Math.round(Number(r.avg_obs_stops)) : null,
-          totalStops: r.total_stops,
-          schedSeconds: sched,
-          obsMedianSeconds: obs,
-          deltaSeconds: obs != null && sched != null ? obs - sched : null,
-          deltaPct: obs != null && sched != null && sched > 0
-            ? Math.round(((obs - sched) / sched) * 1000) / 10 : null,
+          tripId: g.tripId,
+          routeId: a.route_id ?? null,
+          routeShortName: a.route_short_name ?? null,
+          routeLongName: a.route_long_name ?? null,
+          routeColor: a.route_color ?? null,
+          directionId: a.direction_id ?? null,
+          headsign: a.trip_headsign ?? null,
+          shapeId: a.shape_id ?? null,
+          startTime: a.start_sched ?? null,
+          classe: g.classe,
+          classeLabel: g.classeLabel,
+          giornate: g.giornate,
+          schedSeconds: g.durataProgrammataSec,
+          obsMedianSeconds: g.medianaSec,
+          obsP85Seconds: g.p85Sec,
+          obsMinSeconds: g.minSec,
+          obsMaxSeconds: g.maxSec,
+          deltaSeconds: g.scartoMedianaSec,
+          deltaP85Seconds: g.scartoP85Sec,
+          deltaPct: g.scartoMedianaSec != null && g.durataProgrammataSec
+            ? Math.round((g.scartoMedianaSec / g.durataProgrammataSec) * 1000) / 10
+            : null,
+          verdetto: g.verdetto,
+          correzioneSuggeritaMin: g.correzioneSuggeritaMin,
+          motivo: g.motivo,
+          /* Quante fermate la corsa tocca davvero, per capire quanto serve.
+           * Attenzione a non confondere "non rilevata" con "non servita". */
+          fermate: coperturaFermate(totali, g.fermateOsservateMedia, pollSec),
         };
       }),
     });
