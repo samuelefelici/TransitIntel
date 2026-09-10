@@ -33,6 +33,7 @@ import faresPolimetricheRouter from "./fares-polimetriche";
 import caronteRouter from "./caronte";
 import gtfsRtRouter from "./gtfs-rt";
 import operationsRouter from "./operations";
+import siriRouter from "./siri";
 import timetablesRouter from "./timetables";
 import networkShareRouter from "./network-share";
 import timetableMapShareRouter from "./timetable-map-share";
@@ -108,6 +109,7 @@ router.use(argosContextRouter);
 router.use(argosInsightsRouter);
 router.use(argosTerritoryRouter);
 router.use(argosWatchRouter);
+router.use(siriRouter); // connettore AVM esterno (SIRI-VM): diagnostica + ingestione
 router.use(optimizerRouteRouter);
 router.use(optimizerScheduleRouter);
 router.use(serviceProgramRouter);
