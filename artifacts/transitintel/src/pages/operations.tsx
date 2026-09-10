@@ -82,6 +82,13 @@ interface PunctualityData {
 
 interface TripTransits {
   caronteAvailable: boolean;
+  /** perché una colonna è vuota: assenza di corsa, di orario o di passaggi */
+  diagnosi?: {
+    fermate: number;
+    conOrarioProgrammato: number;
+    conTransitoRilevato: number;
+    nota?: string;
+  };
   trip: {
     tripId: string; routeId: string | null; headsign: string | null;
     variantCode: string | null; directionId: number | null; shapeId: string | null;
@@ -688,23 +695,22 @@ export default function OperationsPage() {
             {selected.tripId && transitsQ.isLoading && (
               <div className="text-xs text-muted-foreground p-2">Caricamento transiti…</div>
             )}
-            {selected.tripId && transitsQ.data && transitsQ.data.stops.length === 0 && (
-              <div className="text-xs p-2 space-y-2">
-                <div className="flex items-center gap-2 text-foreground font-medium">
-                  <TimerOff className="w-4 h-4 shrink-0" /> Nessuna fermata da confrontare
+            {/* La diagnosi arriva dall'API e nomina la causa vera: corsa non nel
+                feed, orario non materializzato, oppure passaggio non ancora
+                osservato. Sono tre situazioni diverse con tre rimedi diversi. */}
+            {selected.tripId && transitsQ.data?.diagnosi?.nota && (
+              <div className="text-xs p-2 mb-1 space-y-1.5 rounded-lg bg-amber-500/5 border border-amber-500/20">
+                <div className="flex items-center gap-2 text-amber-300 font-medium">
+                  <TimerOff className="w-4 h-4 shrink-0" /> Confronto non disponibile
                 </div>
                 <p className="text-muted-foreground leading-relaxed">
-                  La corsa <span className="font-mono">{selected.tripId}</span> non ha
-                  orari programmati nel feed GTFS attivo, quindi non c'è nulla con cui
-                  confrontare i passaggi reali.
+                  {transitsQ.data.diagnosi.nota}
                 </p>
-              </div>
-            )}
-            {transitsQ.data && transitsQ.data.stops.length > 0 && transitati === 0 && (
-              <div className="text-[11px] px-2 pb-2 text-muted-foreground leading-relaxed">
-                Nessun passaggio ancora rilevato su questa corsa: il transito si
-                riconosce quando il mezzo cambia fermata fra due letture consecutive.
-                Il primo compare dopo il secondo rilevamento utile.
+                <p className="text-[10px] font-mono text-muted-foreground/70">
+                  {transitsQ.data.diagnosi.fermate} fermate ·{" "}
+                  {transitsQ.data.diagnosi.conOrarioProgrammato} con orario ·{" "}
+                  {transitsQ.data.diagnosi.conTransitoRilevato} con passaggio
+                </p>
               </div>
             )}
             {transitsQ.data && transitsQ.data.stops.length > 0 && (
