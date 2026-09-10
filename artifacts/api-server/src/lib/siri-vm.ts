@@ -334,7 +334,8 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
     courseOfJourneyRef: course,
     journeyRef: framedJourney ?? course,
     routeRef: routeRefRaw,
-    outOfService: /fuori\s*linea|out\s*of\s*service|deadhead/i.test(routeRefRaw ?? ""),
+    outOfService: /fuori\s*(linea|servizio)|out\s*of\s*service|deadhead/i
+      .test(`${routeRefRaw ?? ""} ${directText(mvj, "PublishedLineName") ?? ""}`),
     originRef: directText(mvj, "OriginRef"),
     originName: directText(mvj, "OriginName"),
     destinationRef: directText(mvj, "DestinationRef"),
@@ -619,6 +620,9 @@ export interface GtfsIndex {
   tripRoute: Map<string, string>;
   /** codice di linea normalizzato → route_id (da route_id e short_name) */
   routeByCode: Map<string, string>;
+  /** nome esteso normalizzato → route_id: le linee extraurbane non hanno un
+   *  numero nel nome, si chiamano "OSIMO - ASPIO - ANCONA" da entrambe le parti */
+  routeLongNames: Array<{ norm: string; routeId: string }>;
   /** stop_id → nome, per verificare che un id che combacia sia la STESSA fermata */
   stopNames: Map<string, string>;
   /** nome normalizzato → stop_id */
@@ -640,9 +644,13 @@ export function normalizeLineCode(v: string): string {
 /** Da "Linea 1-4  P.zza IV Novembre - …" ricava i codici plausibili: 1-4, 1/4. */
 export function lineCodeCandidates(publishedLineName: string | null): string[] {
   if (!publishedLineName) return [];
-  const m = /^\s*(?:linea|line|linee|bus)\s+([0-9]+(?:\s*[-/]\s*[0-9A-Z]+)*[A-Z]?)/i
+  /* Il codice non è sempre numerico: il feed di Conerobus usa anche VI1,
+   * UJ2A, BR3, JECN. Si accettano quindi codici alfanumerici, ma CORTI:
+   * oltre i sei caratteri si starebbe catturando una parola del percorso
+   * ("Linea Ancona - Jesi") invece di un codice. */
+  const m = /^\s*(?:linea|line|linee|bus)\s+([0-9A-Z]+(?:\s*[-/]\s*[0-9A-Z]+)*)/i
     .exec(publishedLineName);
-  if (!m) return [];
+  if (!m || normalizeLineCode(m[1]).length > 6) return [];
   const raw = normalizeLineCode(m[1]);
   const out = [raw];
   // Le reti italiane scrivono le linee accoppiate ora con "-" ora con "/"
@@ -706,6 +714,8 @@ export interface MappingReport {
   routeMatchedByPublishedName: number;
   /** agganciate dal codice di percorso ("03R1" → linea 3) */
   routeMatchedByRouteRef: number;
+  /** agganciate confrontando il nome esteso (linee extraurbane) */
+  routeMatchedByLongName: number;
   routeMatchedByRef: number;
   /** fermate agganciate per id, e per nome quando l'id non esiste nel feed */
   stopMatchedById: number;
@@ -755,6 +765,28 @@ function resolveStop(
 }
 
 /**
+ * Le linee extraurbane non hanno un numero nel nome: si chiamano
+ * "OSIMO - ASPIO - ANCONA" sia nell'AVM sia nel feed. Si confrontano quindi i
+ * NOMI, tenendo conto che l'AVM tronca a 50 caratteri ("JESI - CHIARAVALLE -
+ * ROCCA PRIORA - FALCONARA  ANC"): il nome dell'AVM è un PREFISSO di quello
+ * del feed. Si accetta solo se il prefisso individua UNA sola linea — con due
+ * candidati non si indovina, si lascia orfana.
+ */
+export function matchRouteByLongName(
+  published: string | null, longNames: Array<{ norm: string; routeId: string }>,
+): string | null {
+  if (!published) return null;
+  const q = normalizeStopName(published);
+  if (q.length < 10) return null; // troppo corto per essere distintivo
+  const hits = new Set<string>();
+  for (const r of longNames) {
+    if (!r.norm) continue;
+    if (r.norm === q || r.norm.startsWith(q) || q.startsWith(r.norm)) hits.add(r.routeId);
+  }
+  return hits.size === 1 ? [...hits][0] : null;
+}
+
+/**
  * Aggancia la linea. Il numero PUBBLICATO ha la precedenza sull'id interno:
  * su Flashnet LineRef "16" è la Linea 3 e "11" la navetta del porto, quindi
  * confrontare LineRef con gli id del feed metteva i mezzi su linee altrui.
@@ -762,7 +794,7 @@ function resolveStop(
  */
 function resolveRoute(
   v: SiriVehicle, index: GtfsIndex,
-): { routeId: string | null; how: "published" | "routeRef" | "ref" | null } {
+): { routeId: string | null; how: "published" | "routeRef" | "longName" | "ref" | null } {
   for (const code of lineCodeCandidates(v.publishedLineName)) {
     const byCode = index.routeByCode.get(code);
     if (byCode) return { routeId: byCode, how: "published" };
@@ -773,6 +805,9 @@ function resolveRoute(
       const byRoute = index.routeByCode.get(code);
       if (byRoute) return { routeId: byRoute, how: "routeRef" };
     }
+    // Extraurbane: nessun codice, ma il nome esteso è lo stesso da entrambe le parti
+    const byLong = matchRouteByLongName(v.publishedLineName, index.routeLongNames);
+    if (byLong) return { routeId: byLong, how: "longName" };
   }
   if (!v.publishedLineName) {
     for (const c of refCandidates(v.lineRef)) {
@@ -804,7 +839,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
   let withPosition = 0, tripMatched = 0, routeMatched = 0, stopMatched = 0;
   let transitsFound = 0, transitsMatched = 0;
 
-  let byPublished = 0, byRouteRef = 0, byRef = 0, stopById = 0, stopByName = 0;
+  let byPublished = 0, byRouteRef = 0, byLongName = 0, byRef = 0, stopById = 0, stopByName = 0;
   const conflicts = new Set<string>();
   const unmatchedLineDetail = new Map<string, { lineRef: string | null; published: string | null; codiciProvati: string[] }>();
 
@@ -818,6 +853,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     let routeId = r.routeId;
     if (r.how === "published") byPublished++;
     else if (r.how === "routeRef") byRouteRef++;
+    else if (r.how === "longName") byLongName++;
     else if (r.how === "ref") byRef++;
     if (!routeId && tripId) routeId = index.tripRoute.get(tripId) ?? null;
     if (routeId) routeMatched++;
@@ -876,7 +912,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
       vehicles: vehicles.length, withPosition, tripMatched, routeMatched, stopMatched,
       transitsFound, transitsMatched,
       routeMatchedByPublishedName: byPublished, routeMatchedByRouteRef: byRouteRef,
-      routeMatchedByRef: byRef,
+      routeMatchedByLongName: byLongName, routeMatchedByRef: byRef,
       stopMatchedById: stopById, stopMatchedByName: stopByName,
       stopIdNameConflicts: [...conflicts].slice(0, 10),
       unmatchedTripRefs: [...unmatchedTrip].slice(0, 10),

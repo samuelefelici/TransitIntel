@@ -11,7 +11,7 @@ import {
   refCandidates, parseVehicleMonitoringResponse, parseCapabilities,
   buildVehicleMonitoringRequest, buildCheckStatusRequest,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
-  lineCodeCandidates, normalizeStopName, routeRefLineCandidates,
+  lineCodeCandidates, normalizeStopName, routeRefLineCandidates, matchRouteByLongName,
   type GtfsIndex,
 } from "../lib/siri-vm";
 
@@ -250,7 +250,7 @@ describe("corrispondenza con gli id del feed GTFS", () => {
     stops: new Set(["STOP-1", "STOP-2", "STOP-3", "STOP-4"]),
     tripRoute: new Map([["TRIP-A", "22"], ["TRIP-B", "44"]]),
     routeByCode: new Map([["22", "22"], ["44", "44"]]),
-    stopNames: new Map(),
+    routeLongNames: [], stopNames: new Map(),
     stopByName: new Map(),
     loadedAt: Date.now(),
   };
@@ -430,7 +430,7 @@ describe("caso Conerobus/MIZ", () => {
       feedId: "f", trips: new Set(), routes: new Set(["3", "16"]),
       stops: new Set(), tripRoute: new Map(),
       routeByCode: new Map([["3", "3"], ["16", "16"]]),
-      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
     };
     const { mapped, report } = mapVehicles([v], index);
     expect(mapped[0].routeId).toBe("3");            // Linea 3, non la linea "16"
@@ -442,7 +442,7 @@ describe("caso Conerobus/MIZ", () => {
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(), stops: new Set(["4796"]),
       tripRoute: new Map(), routeByCode: new Map(),
-      stopNames: new Map([["4796", "Via Giordano Bruno"]]),   // NON è Posatora
+      routeLongNames: [], stopNames: new Map([["4796", "Via Giordano Bruno"]]),   // NON è Posatora
       stopByName: new Map([["POSATORA CAPOLINEA", "981"]]),
       loadedAt: Date.now(),
     };
@@ -455,7 +455,7 @@ describe("caso Conerobus/MIZ", () => {
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(), stops: new Set(["4796"]),
       tripRoute: new Map(), routeByCode: new Map(),
-      stopNames: new Map([["4796", "Posatora Capolinea"]]),
+      routeLongNames: [], stopNames: new Map([["4796", "Posatora Capolinea"]]),
       stopByName: new Map([["POSATORA CAPOLINEA", "4796"]]),
       loadedAt: Date.now(),
     };
@@ -492,7 +492,7 @@ describe("numero di linea dal codice di percorso", () => {
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(["20"]), stops: new Set(),
       tripRoute: new Map(), routeByCode: new Map([["20", "20"]]),
-      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
     };
     const { mapped, report } = mapVehicles([navetta], index);
     expect(mapped[0].routeId).toBe("20");
@@ -505,7 +505,7 @@ describe("numero di linea dal codice di percorso", () => {
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(["3"]), stops: new Set(),
       tripRoute: new Map(), routeByCode: new Map([["3", "3"]]),
-      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
     };
     const { report } = mapVehicles([v], index);
     expect(report.routeMatchedByPublishedName).toBe(1);
@@ -522,13 +522,67 @@ describe("numero di linea dal codice di percorso", () => {
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(["3"]), stops: new Set(),
       tripRoute: new Map(), routeByCode: new Map([["3", "3"]]),
-      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
     };
     expect(mapVehicles([fuori], index).mapped[0].routeId).toBeNull();
   });
 });
 
+/* Le linee EXTRAURBANE osservate in produzione non hanno un numero nel nome:
+ * si chiamano "OSIMO - ASPIO - ANCONA" da entrambe le parti. E l'AVM tronca a
+ * 50 caratteri, quindi il suo nome è un PREFISSO di quello del feed. */
+describe("linee extraurbane, agganciate per nome esteso", () => {
+  const feedLongNames = [
+    { norm: normalizeStopName("OSIMO - ASPIO - ANCONA"), routeId: "UJ2A" },
+    { norm: normalizeStopName("OSIMO - OFFAGNA - ANCONA"), routeId: "UJ3" },
+    { norm: normalizeStopName("JESI - CHIARAVALLE - ROCCA PRIORA - FALCONARA  ANCONA"), routeId: "JECN" },
+    { norm: normalizeStopName("RECANATI - ANCONA"), routeId: "RE1" },
+  ];
+
+  it("aggancia un nome identico", () => {
+    expect(matchRouteByLongName("OSIMO - ASPIO - ANCONA", feedLongNames)).toBe("UJ2A");
+  });
+
+  it("aggancia anche quando l'AVM ha troncato a 50 caratteri", () => {
+    // esattamente ciò che arriva: "…FALCONARA  ANC"
+    expect(matchRouteByLongName("JESI - CHIARAVALLE - ROCCA PRIORA - FALCONARA  ANC", feedLongNames))
+      .toBe("JECN");
+  });
+
+  it("non sceglie a caso quando il prefisso è ambiguo", () => {
+    // "OSIMO - " è prefisso sia di ASPIO sia di OFFAGNA: due candidati, nessuna scelta
+    expect(matchRouteByLongName("OSIMO - ", feedLongNames)).toBeNull();
+  });
+
+  it("ignora nomi troppo corti per essere distintivi", () => {
+    expect(matchRouteByLongName("ANCONA", feedLongNames)).toBeNull();
+    expect(matchRouteByLongName(null, feedLongNames)).toBeNull();
+  });
+});
+
+describe("codici di linea non numerici", () => {
+  it("legge i codici alfanumerici che il feed usa davvero", () => {
+    // osservato: "Linea VI1 PERGOLA - SASSOFERRATO - FABRIANO", e VI1 è nel feed
+    expect(lineCodeCandidates("Linea VI1 PERGOLA - SASSOFERRATO - FABRIANO")).toContain("VI1");
+    expect(lineCodeCandidates("Linea 3  P.zza Cavour")).toContain("3");
+  });
+
+  it("non scambia una parola del percorso per un codice", () => {
+    expect(lineCodeCandidates("Linea Ancona - Jesi - Fabriano")).toEqual([]);
+  });
+});
+
 describe("mezzi fuori servizio e linee orfane", () => {
+  it("riconosce il fuori servizio dichiarato nel nome della linea", () => {
+    // il mezzo con LineRef 100 pubblica "Fuori servizio" al posto della linea
+    const v = parseVehicleMonitoringResponse(
+      MIZ_RESPONSE.replace(
+        "<PublishedLineName>Linea 3  P.zza Cavour - Galleria - P.zza Ugo Bassi</PublishedLineName>",
+        "<PublishedLineName>Fuori servizio</PublishedLineName>"),
+    ).vehicles[0];
+    expect(v.outOfService).toBe(true);
+  });
+
   /* Osservato in produzione: il mezzo 415 ha percorso "FUORI LINEA", cioè
    * si sta trasferendo. Cercarne la corsa nell'orario non ha senso. */
   const FUORI_LINEA = MIZ_RESPONSE
@@ -550,7 +604,7 @@ describe("mezzi fuori servizio e linee orfane", () => {
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(["44"]), stops: new Set(),
       tripRoute: new Map(), routeByCode: new Map([["44", "44"]]),
-      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
     };
     const { report } = mapVehicles([v], index);
     expect(report.routeMatched).toBe(0);
@@ -572,7 +626,7 @@ describe("mezzi fuori servizio e linee orfane", () => {
     const index: GtfsIndex = {
       feedId: "f", trips: new Set(), routes: new Set(), stops: new Set(),
       tripRoute: new Map(), routeByCode: new Map(),
-      stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: Date.now(),
     };
     const { report } = mapVehicles([navetta], index);
     expect(report.unmatchedLines[0].codiciProvati).toEqual([]);
