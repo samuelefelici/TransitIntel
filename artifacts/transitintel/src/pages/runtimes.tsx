@@ -14,6 +14,7 @@ import {
   MapPin, Radio, Timer, XCircle,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import MareyChart from "./runtimes/MareyChart";
 import { RuntimesReportExport } from "@/components/RuntimesReportExport";
 
 interface RuntimeSegment {
@@ -554,7 +555,7 @@ export default function RuntimesPage() {
 function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
   const [date, setDate] = useState<string>("");   // "" = ultima giornata osservata
   const [live, setLive] = useState(false);
-  const [detailView, setDetailView] = useState<"tabella" | "grafico">("grafico");
+  const [detailView, setDetailView] = useState<"marey" | "tabella" | "percorso">("marey");
 
   const qs = new URLSearchParams({ days: String(days) });
   if (date) qs.set("date", date);
@@ -599,12 +600,21 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
                 live ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300" : "bg-white/5 border-border/60 text-muted-foreground hover:bg-white/10"}`}>
               <Radio className={`w-3 h-3 ${live ? "animate-pulse" : ""}`} /> {live ? "Tempo reale (15s)" : "Aggiorna in tempo reale"}
             </button>
+            {/* Tre viste, tre domande diverse: dove si perde tempo · quali
+                fermate sono state fatte · i numeri esatti. */}
             <div className="flex rounded overflow-hidden border border-border/60 ml-auto">
-              <button onClick={() => setDetailView("grafico")}
-                className={`px-2.5 py-1 transition-colors ${detailView === "grafico" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
-                Grafico
+              <button onClick={() => setDetailView("marey")}
+                title="Dove la corsa perde o guadagna tempo lungo il percorso"
+                className={`px-2.5 py-1 transition-colors ${detailView === "marey" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
+                Orario · percorso
+              </button>
+              <button onClick={() => setDetailView("percorso")}
+                title="Quali fermate sono state effettivamente fatte"
+                className={`px-2.5 py-1 transition-colors ${detailView === "percorso" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
+                Fermate
               </button>
               <button onClick={() => setDetailView("tabella")}
+                title="I numeri fermata per fermata"
                 className={`px-2.5 py-1 transition-colors ${detailView === "tabella" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
                 Tabella
               </button>
@@ -638,8 +648,13 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
             </span>
           </div>
 
-          {/* Vista grafica della linea */}
-          {detailView === "grafico" && <LineDiagram stops={d.stops} />}
+          {/* Il diagramma orario-percorso: la distanza fra le due linee è il
+              tempo perso o guadagnato, e si legge DOVE si accumula. */}
+          {detailView === "marey" && <MareyChart stops={d.stops} />}
+
+          {/* La linea con i nodi risponde a un'altra domanda: quali fermate
+              sono state effettivamente servite. */}
+          {detailView === "percorso" && <LineDiagram stops={d.stops} />}
 
           {/* Tabella fermata × fermata */}
           {detailView === "tabella" && (

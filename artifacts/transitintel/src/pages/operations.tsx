@@ -20,6 +20,7 @@ import {
 } from "recharts";
 import { apiFetch } from "@/lib/api";
 import { MAPBOX_TOKEN, MAP_STYLES } from "./dashboard/constants";
+import AvanzamentoCorse from "./operations/AvanzamentoCorse";
 
 // ── Tipi (allineati a /api/operations/*) ─────────────────────────────────────
 
@@ -178,6 +179,8 @@ export default function OperationsPage() {
   const mapRef = useRef<MapRef | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showPunctuality, setShowPunctuality] = useState(false);
+  /* La mappa dice dove sono i mezzi; questo dice chi guardare per primo. */
+  const [showAvanzamento, setShowAvanzamento] = useState(false);
   /* I mezzi senza turno macchina restano fuori dalla mappa per default: sono
    * quelli che comparivano come "?" e rendevano illeggibile la flotta. */
   const [showUnassigned, setShowUnassigned] = useState(false);
@@ -613,13 +616,26 @@ export default function OperationsPage() {
             )}
           </div>
 
-          <button
-            onClick={() => setShowPunctuality((s) => !s)}
-            className="m-1.5 px-3 py-2 rounded-lg text-xs font-medium bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center gap-2"
-          >
-            <Gauge className="w-3.5 h-3.5" />
-            {showPunctuality ? "Nascondi puntualità" : "Analisi puntualità di oggi"}
-          </button>
+          <div className="m-1.5 flex gap-1.5">
+            <button
+              onClick={() => { setShowAvanzamento((s) => !s); setShowPunctuality(false); }}
+              className={`flex-1 px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
+                showAvanzamento ? "bg-sky-500/15 text-sky-300" : "bg-white/5 hover:bg-white/10"
+              }`}
+            >
+              <ListOrdered className="w-3.5 h-3.5" />
+              Avanzamento
+            </button>
+            <button
+              onClick={() => { setShowPunctuality((s) => !s); setShowAvanzamento(false); }}
+              className={`flex-1 px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
+                showPunctuality ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 hover:bg-white/10"
+              }`}
+            >
+              <Gauge className="w-3.5 h-3.5" />
+              Puntualità
+            </button>
+          </div>
         </div>
       </div>
 
@@ -811,6 +827,30 @@ export default function OperationsPage() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ── Avanzamento corse: chi guardare per primo ── */}
+      {showAvanzamento && (
+        <div className="absolute left-3 right-3 md:left-80 md:right-6 bottom-3 max-h-[45%] pointer-events-auto bg-background/90 backdrop-blur-xl border border-border/60 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-border/50 flex items-center gap-2">
+            <ListOrdered className="w-4 h-4 text-sky-400" />
+            <span className="text-sm font-semibold">Avanzamento corse</span>
+            <span className="text-[10px] text-muted-foreground">
+              in ordine di ritardo — la mappa dice dove sono, questo dice chi guardare
+            </span>
+            <button onClick={() => setShowAvanzamento(false)} className="ml-auto p-1 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <AvanzamentoCorse
+            corse={conCorsa}
+            selectedKey={selectedKey}
+            onSelect={(c) => {
+              const v = vehicles.find(x => vehicleKey(x) === (c.vehicleId ?? c.tripId));
+              if (v) { setSelectedKey(vehicleKey(v)); flyTo(v); }
+            }}
+          />
         </div>
       )}
 
