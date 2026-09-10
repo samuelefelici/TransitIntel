@@ -23,7 +23,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
 
-import { ensureCaronteSchema, missingColumns } from "../lib/caronte-schema";
+import { schemaState } from "../lib/caronte-schema";
 
 const router: IRouter = Router();
 
@@ -39,16 +39,30 @@ async function caronteAvailable(): Promise<boolean> {
     /* Le tabelle possono esistere ma essere INDIETRO di una colonna: una
      * migrazione non applicata su una tabella creata dal sistema AVM. Con il
      * solo to_regclass il software concludeva "esercizio disponibile" e poi
-     * moriva sulla prima query. Si allinea lo schema (idempotente) e si
-     * verifica che non manchi nulla, non solo che le tabelle ci siano. */
-    await ensureCaronteSchema();
+     * moriva sulla prima query.
+     *
+     * Qui si LEGGE soltanto: nessun DDL sul percorso di lettura, che gira
+     * anche su repliche di sola lettura e su ruoli non proprietari delle
+     * tabelle. La riparazione sta sul percorso di scrittura del connettore.
+     *
+     * Se la rilevazione non riesce (stato ignoto) si ricade sul vecchio
+     * controllo delle sole tabelle: mai peggio di prima. */
+    const st = await schemaState();
+    if (!st.unknown) {
+      if (!st.ready) {
+        console.warn("[operations] esercizio non disponibile — mancano: "
+          + [...st.missingTables, ...st.missingColumns].join(", "));
+      }
+      caronteCheck = { ok: st.ready, at: Date.now() };
+      return st.ready;
+    }
     const r = await db.execute<any>(sql`
       SELECT to_regclass('caronte.vehicle_positions') AS vp,
              to_regclass('caronte.active_trips')      AS at,
              to_regclass('caronte.stop_transits')     AS st
     `);
     const row = r.rows[0];
-    const ok = !!(row?.vp && row?.at && row?.st) && (await missingColumns()).length === 0;
+    const ok = !!(row?.vp && row?.at && row?.st);
     caronteCheck = { ok, at: Date.now() };
     return ok;
   } catch {

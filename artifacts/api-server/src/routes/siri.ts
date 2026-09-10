@@ -27,7 +27,7 @@ import {
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
-import { ensureCaronteSchema, missingColumns } from "../lib/caronte-schema";
+import { ensureCaronteSchema, schemaState } from "../lib/caronte-schema";
 
 const router: IRouter = Router();
 
@@ -108,11 +108,11 @@ router.get("/siri/status", async (req, res): Promise<void> => {
   }
 
   /* Lo stato dell'esercizio va detto qui: è la prima pagina che si guarda. */
-  const schema = await ensureCaronteSchema();
-  const mancanti = await missingColumns();
+  const schema = await schemaState();
+  const mancanti = [...schema.missingTables, ...schema.missingColumns];
   out.schemaCaronte = {
     pronto: schema.ready,
-    allineatoOra: schema.applied.length > 0 ? schema.applied : undefined,
+    statoIgnoto: schema.unknown || undefined,
     mancanti: mancanti.length > 0 ? mancanti : undefined,
     errore: schema.error ?? undefined,
     nota: schema.ready
@@ -294,8 +294,8 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
   if (!schema.ready) {
     return {
       failed: true,
-      errorText: "Schema caronte non allineato: " + (schema.error ?? "colonne mancanti")
-        + ". Mancano: " + ((await missingColumns()).join(", ") || "n/d"),
+      errorText: "Schema caronte non allineato — le scritture fallirebbero. Mancano: "
+        + ([...schema.missingTables, ...schema.missingColumns].join(", ") || schema.error || "n/d"),
       mezzi: 0,
     };
   }
@@ -309,12 +309,25 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
   }
   const ingest = await ingestVehicles(result.vehicles);
   const cancelled = await closeCancelled(result.cancellations);
+  /* Un transito si riconosce dal CAMBIO di fermata fra due letture: se il
+   * polling è più lento della soglia, non se ne registrerà mai nessuno, e
+   * la pagina Tempi di percorrenza resterà vuota senza che nulla lo dica. */
+  const poll = Number(process.env.SIRI_POLL_SECONDS) || 30;
+  const transitiImpossibili = poll > 300;
+
   return {
     mezzi: result.vehicles.length,
     posizioniInserite: ingest.positionsInserted,
     corseAperte: ingest.tripsOpened,
     corseChiuse: ingest.tripsClosed + cancelled,
     transitiInseriti: ingest.transitsInserted,
+    mezziNonSalvati: ingest.vehiclesFailed || undefined,
+    primoErrore: ingest.firstError ?? undefined,
+    avviso: transitiImpossibili
+      ? `SIRI_POLL_SECONDS=${poll}: oltre i 300 s il cambio di fermata non è più `
+        + "attribuibile e NESSUN transito viene registrato. Porta l'intervallo a 60 s "
+        + "(il minimo dichiarato dal produttore) perché puntualità e tempi di percorrenza si popolino."
+      : undefined,
     corrispondenze: ingest.report,
   };
 }
