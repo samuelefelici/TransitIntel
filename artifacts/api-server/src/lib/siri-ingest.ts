@@ -24,7 +24,7 @@ import { SOURCE_SIRI } from "./caronte-schema";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
-  stopsAtPosition, emptyFunnel, explainFunnel,
+  stopsAtPosition, emptyFunnel, explainFunnel, positionUsable, fixAgeSeconds,
   type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress,
@@ -373,15 +373,25 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     const vehicleId = v.vehicleRef ?? null;
     const ts = v.recordedAt ?? new Date();
 
+    /* La posizione c'è quasi sempre, ma non è quasi mai UTILIZZABILE: su 368
+     * vetture 298 hanno un errore di monitoraggio (GPRS = niente rete, GPS =
+     * niente fix) e la localizzazione risulta scaduta. Le coordinate restano
+     * nella risposta, vecchie di ore, e usarle sposta il mezzo dove non è più
+     * — con il riconoscimento geometrico, gli fa "attraversare" fermate che
+     * non ha mai toccato. */
+    const posizioneBuona = positionUsable(v);
+    const etaFix = fixAgeSeconds(v);
+
     if (vehicleId) funnel.conMatricola++;
     if (m.tripId) funnel.conCorsaAgganciata++;
-    if (v.lat != null && v.lon != null) funnel.conPosizione++;
+    if (posizioneBuona) funnel.conPosizione++;
+    else if (v.lat != null) funnel.posizioneScaduta++;
     if (m.nearestStopId) funnel.conFermataAvm++;
 
     /* 1. Posizione. Dedup su (mezzo, istante): il poller gira più spesso di
      *    quanto l'AVM aggiorni, e senza questo la tabella si riempirebbe di
      *    copie dello stesso rilevamento. */
-    if (v.lat != null && v.lon != null) {
+    if (posizioneBuona && v.lat != null && v.lon != null) {
       const sp = vehicleId ? speedKmh(vehicleId, v.lat, v.lon, ts.getTime()) : null;
       const r = await db.execute<any>(sql`
         INSERT INTO caronte.vehicle_positions
@@ -472,7 +482,8 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       : [];
     if (fermateCorsa.length > 0) funnel.conGeometriaFermate++;
 
-    if (vehicleId && m.tripId && v.lat != null && v.lon != null && fermateCorsa.length > 0) {
+    if (vehicleId && m.tripId && posizioneBuona && v.lat != null && v.lon != null
+        && fermateCorsa.length > 0) {
       const vicine = stopsAtPosition(v.lat, v.lon, fermateCorsa);
       if (vicine.length > 0) funnel.vicinoAFermata++;
       /* Solo la più vicina: a un incrocio due fermate della stessa corsa

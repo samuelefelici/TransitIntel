@@ -264,6 +264,27 @@ export interface SiriVehicle {
   monitoredCall: SiriCall | null;
   /** fermate successive, con previsioni */
   onwardCalls: SiriCall[];
+
+  /* ── Campi che questo produttore riempie DAVVERO, e che finora ignoravamo.
+   * Ricavati dall'inventario del flusso reale (GET /api/siri/campi), non dal
+   * WSDL: erano il segnale più affidabile che avevamo e non lo leggevamo. */
+
+  /** Stato dichiarato dall'AVM, valori composti separati da "/":
+   *  "InDepot/ExpiredLocalization/WithoutService/WithoutTarget". Presente su
+   *  357 mezzi su 368 — è il campo più valorizzato dopo la matricola. */
+  progressStatus: string | null;
+  /** in rimessa */
+  inDepot: boolean;
+  /** la localizzazione è SCADUTA: la posizione c'è ma è vecchia */
+  expiredLocalization: boolean;
+  /** nessun servizio in corso */
+  withoutService: boolean;
+  /** nessun turno/destinazione impostati a bordo */
+  withoutTarget: boolean;
+  /** perché il mezzo non è affidabile: "GPRS" (niente rete), "GPS" (niente fix) */
+  monitoringError: string | null;
+  /** metri percorsi sull'arco fra la fermata precedente e quella corrente */
+  linkDistance: number | null;
 }
 
 export interface SiriVmResult {
@@ -324,6 +345,13 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
   const course = directText(mvj, "CourseOfJourneyRef");
   const routeRefRaw = directText(mvj, "RouteRef");
 
+  /* ProgressStatus arriva come elenco separato da "/", non come valore
+   * singolo: "InDepot/ExpiredLocalization/WithoutService/WithoutTarget".
+   * Confrontarlo per uguaglianza non troverebbe quasi mai niente. */
+  const statusRaw = directText(mvj, "ProgressStatus");
+  const stati = (statusRaw ?? "").split("/").map(s => s.trim().toLowerCase());
+  const ha = (s: string) => stati.includes(s);
+
   return {
     recordedAt: parseDate(directText(va, "RecordedAtTime")),
     itemIdentifier: directText(va, "ItemIdentifier"),
@@ -359,6 +387,14 @@ function parseVehicleActivity(va: XmlNode): SiriVehicle {
     previousCalls: prevWrap ? findAll(prevWrap, "PreviousCall").map(parseCall) : [],
     monitoredCall: monitoredCallNode ? parseCall(monitoredCallNode) : null,
     onwardCalls: onwardWrap ? findAll(onwardWrap, "OnwardCall").map(parseCall) : [],
+
+    progressStatus: statusRaw,
+    inDepot: ha("indepot"),
+    expiredLocalization: ha("expiredlocalization"),
+    withoutService: ha("withoutservice"),
+    withoutTarget: ha("withouttarget"),
+    monitoringError: directText(mvj, "MonitoringError"),
+    linkDistance: parseNum(directText(progress, "LinkDistance")),
   };
 }
 
@@ -662,9 +698,48 @@ export interface ServiceSplit {
   nonDistinguibile: boolean;
 }
 
-/** Un mezzo è in esercizio se l'AVM lo segue, o dichiara corsa o linea. */
+/**
+ * Un mezzo è in esercizio se sta facendo una corsa.
+ *
+ * NON si guarda `Monitored`, che sembrava il campo giusto e non lo è:
+ * l'inventario del flusso vero mostra la vettura 434 con `Monitored=true` e
+ * `ProgressStatus=InDepot` — ferma in rimessa e "monitorata". Monitored dice
+ * se l'AVM sta seguendo il mezzo, non se il mezzo è in servizio.
+ *
+ * Il campo che lo dice davvero è ProgressStatus, valorizzato su 357 mezzi su
+ * 368: `InDepot` e `WithoutService` escludono, e senza un riferimento di
+ * corsa non c'è niente a cui attribuire un passaggio. Sui numeri reali questo
+ * porta i mezzi in esercizio da 83 (stima sbagliata) a 15-17 (quelli veri).
+ */
 function inService(v: SiriVehicle): boolean {
-  return v.monitored || !!v.journeyRef || (!!v.lineRef && !v.outOfService);
+  if (v.inDepot || v.withoutService) return false;
+  if (v.outOfService) return false;             // RouteRef "FUORI LINEA"
+  return !!v.journeyRef;
+}
+
+/**
+ * La posizione è utilizzabile?
+ *
+ * `ExpiredLocalization` e `MonitoringError` (GPRS = niente rete, GPS = niente
+ * fix) dicono che le coordinate ci sono ma sono VECCHIE — su 368 mezzi 298
+ * hanno un errore di monitoraggio. Scriverle come se fossero attuali sposta i
+ * puntini sulla mappa dove il mezzo non è più e, peggio, fa nascere transiti
+ * inventati: il mezzo "passa" da una fermata perché il dato è di tre ore fa.
+ */
+export function positionUsable(v: SiriVehicle): boolean {
+  if (v.lat == null || v.lon == null) return false;
+  return !v.expiredLocalization && !v.monitoringError;
+}
+
+/**
+ * Quanto è vecchio il rilevamento, in secondi. `RecordedAtTime` è l'ultima
+ * volta che l'AVM ha SENTITO il mezzo, non l'istante della risposta: nel
+ * flusso vero si trovano valori di mesi prima ("2024-09-19T16:50:05") sulle
+ * vetture ferme. Usarlo come "adesso" avvelena tutto ciò che sta a valle.
+ */
+export function fixAgeSeconds(v: SiriVehicle, now = Date.now()): number | null {
+  if (!v.recordedAt) return null;
+  return Math.round((now - v.recordedAt.getTime()) / 1000);
 }
 
 export function splitInService(vehicles: SiriVehicle[]): ServiceSplit {
@@ -1403,7 +1478,10 @@ export interface TransitFunnel {
   inEsercizio: number;
   conMatricola: number;
   conCorsaAgganciata: number;
+  /** con posizione UTILIZZABILE (non scaduta, senza errore di monitoraggio) */
   conPosizione: number;
+  /** hanno coordinate, ma vecchie: l'AVM non sente il mezzo da un pezzo */
+  posizioneScaduta: number;
   /** corse agganciate di cui conosciamo le fermate con coordinate */
   conGeometriaFermate: number;
   /** ── via posizione ── */
@@ -1424,6 +1502,7 @@ export interface TransitFunnel {
 export function emptyFunnel(): TransitFunnel {
   return {
     inEsercizio: 0, conMatricola: 0, conCorsaAgganciata: 0, conPosizione: 0,
+    posizioneScaduta: 0,
     conGeometriaFermate: 0, vicinoAFermata: 0, transitiDaPosizione: 0,
     conFermataAvm: 0, conLetturaPrecedente: 0, fermataCambiata: 0,
     transitiDaCambioFermata: 0, transitiDichiarati: 0, inseriti: 0, giaPresenti: 0,
@@ -1434,7 +1513,13 @@ export function emptyFunnel(): TransitFunnel {
 export function explainFunnel(f: TransitFunnel): string {
   if (f.inEsercizio === 0) return "Nessun mezzo in esercizio: l'AVM non sta mandando vetture in servizio.";
   if (f.conCorsaAgganciata === 0) return "Nessun mezzo è agganciato a una corsa dell'orario: senza corsa il transito non è attribuibile a nulla.";
-  if (f.conPosizione === 0) return "Nessuna posizione: senza coordinate il passaggio non è riconoscibile.";
+  if (f.conPosizione === 0) {
+    return f.posizioneScaduta > 0
+      ? `Nessuna posizione UTILIZZABILE: ${f.posizioneScaduta} mezzi hanno coordinate `
+        + "ma la localizzazione è scaduta o il monitoraggio è in errore (GPRS/GPS). "
+        + "Sono dati vecchi: usarli farebbe nascere passaggi mai avvenuti."
+      : "Nessuna posizione: senza coordinate il passaggio non è riconoscibile.";
+  }
   if (f.conGeometriaFermate === 0) return "Delle corse agganciate non si conoscono le fermate con coordinate: controlla che gtfs_stops abbia stop_lat/stop_lon per questo feed.";
   if (f.inseriti === 0 && f.giaPresenti > 0) return "I passaggi vengono riconosciuti ma risultano già registrati: nessuna novità, non è un guasto.";
   if (f.vicinoAFermata === 0) return "Nessun mezzo si trova entro il raggio di una fermata della propria corsa: o le coordinate del feed non combaciano con quelle dell'AVM, o le corse agganciate sono quelle sbagliate.";

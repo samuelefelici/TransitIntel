@@ -16,7 +16,7 @@ import {
   splitInService, delayFromSchedule, scheduledSeconds,
   effectivePollSeconds, MAX_GAP_SEC, POLL_CONSIGLIATO_SEC,
   distanceMeters, stopsAtPosition, STOP_RADIUS_M, emptyFunnel, explainFunnel,
-  inventoryFields,
+  inventoryFields, positionUsable, fixAgeSeconds,
   type TripStop,
   type GtfsIndex,
 } from "../lib/siri-vm";
@@ -334,9 +334,14 @@ describe("completezza del flusso", () => {
 });
 
 /* ── Esercizio contro parco fermo ─────────────────────────────────────────
- * Su Conerobus l'AVM trasmette 368 vetture e ne dichiara monitorate 72: il
- * resto è deposito. Registrarle tutte riempiva la mappa di autobus anonimi
- * ("??") e la tabella di righe che non sono esercizio. */
+ * Su Conerobus l'AVM trasmette 368 vetture. Registrarle tutte riempiva la
+ * mappa di autobus anonimi e la tabella di righe che non sono esercizio.
+ *
+ * La prima versione di questa ripartizione si fidava di `Monitored`, e
+ * sbagliava: l'inventario del flusso vero (GET /api/siri/campi) mostra la
+ * vettura 434 con Monitored=true e ProgressStatus=InDepot — ferma in rimessa
+ * e "monitorata". Monitored dice se l'AVM sta SEGUENDO il mezzo, non se il
+ * mezzo è in servizio. Il campo che lo dice è ProgressStatus. */
 describe("ripartizione fra mezzi in esercizio e parco fermo", () => {
   const base = parseVehicleMonitoringResponse(VM_RESPONSE).vehicles[0];
   const ferma = {
@@ -347,20 +352,38 @@ describe("ripartizione fra mezzi in esercizio e parco fermo", () => {
     previousCalls: [], onwardCalls: [], monitoredCall: null,
   };
 
-  it("scarta le vetture che l'AVM non segue e che non dichiarano nulla", () => {
+  it("scarta le vetture che non dichiarano alcuna corsa", () => {
     const s = splitInService([base, ferma, { ...ferma, vehicleRef: "FERMO-2" }]);
     expect(s.inServizio.map(v => v.vehicleRef)).toEqual(["BUS-01"]);
     expect(s.ferme).toHaveLength(2);
     expect(s.nonDistinguibile).toBe(false);
   });
 
-  /* La distinzione che conta per l'operatore: il turno macchina non impostato
-   * NON è un mezzo fermo. L'AVM lo segue, quindi è in giro, e va mostrato. */
-  it("tiene i mezzi monitorati anche senza corsa né linea", () => {
-    const senzaTurno = { ...ferma, vehicleRef: "SENZA-TURNO", monitored: true };
-    const s = splitInService([ferma, senzaTurno]);
-    expect(s.inServizio.map(v => v.vehicleRef)).toEqual(["SENZA-TURNO"]);
-    expect(s.ferme.map(v => v.vehicleRef)).toEqual(["FERMO"]);
+  /* Il caso vero che ha smentito la versione precedente: vettura 434,
+   * Monitored=true, ProgressStatus=InDepot, con tanto di CourseOfJourneyRef.
+   * "Monitorata" non vuol dire "in servizio". */
+  it("esclude chi è in rimessa anche se risulta monitorato e ha una corsa", () => {
+    const inRimessa = {
+      ...ferma, vehicleRef: "434", monitored: true,
+      journeyRef: "FRSRV1176", inDepot: true,
+    };
+    const s = splitInService([base, inRimessa]);
+    expect(s.ferme.map(v => v.vehicleRef)).toEqual(["434"]);
+  });
+
+  it("esclude chi l'AVM dichiara senza servizio", () => {
+    const senzaServizio = {
+      ...ferma, vehicleRef: "SENZA-SERV", journeyRef: "X1", withoutService: true,
+    };
+    const s = splitInService([base, senzaServizio]);
+    expect(s.ferme.map(v => v.vehicleRef)).toEqual(["SENZA-SERV"]);
+  });
+
+  /* Senza riferimento di corsa non c'è niente a cui attribuire un passaggio,
+   * per quanto l'AVM stia seguendo il mezzo. */
+  it("esclude chi non ha una corsa, monitorato o no", () => {
+    const s = splitInService([base, { ...ferma, vehicleRef: "NO-CORSA", monitored: true }]);
+    expect(s.ferme.map(v => v.vehicleRef)).toEqual(["NO-CORSA"]);
   });
 
   it("tiene chi dichiara una corsa anche se non risulta monitorato", () => {
@@ -577,6 +600,102 @@ describe("diagnosi dell'acquisizione", () => {
       conGeometriaFermate: 20, vicinoAFermata: 8, inseriti: 0, giaPresenti: 8,
     });
     expect(explainFunnel(f)).toMatch(/già registrati/i);
+  });
+});
+
+/* ── Il contratto vero di Flashnet/MIZ ────────────────────────────────────
+ * Ricostruito dall'inventario del flusso di produzione, non dal WSDL. Questa
+ * VehicleActivity è copiata dal grezzo reale, e i tre campi che porta —
+ * ProgressStatus, MonitoringError, LinkDistance — sono quelli su cui il
+ * software si regge davvero, e che per giorni non abbiamo nemmeno letto. */
+const VA_REALE = `<Envelope><VehicleMonitoringDelivery>
+<VehicleActivity>
+  <RecordedAtTime>2026-09-10T19:15:46+02:00</RecordedAtTime>
+  <ProgressBetweenStops><LinkDistance>81</LinkDistance><Percentage>3.10</Percentage></ProgressBetweenStops>
+  <MonitoredVehicleJourney>
+    <LineRef>4</LineRef><DirectionRef>back</DirectionRef><VehicleMode>bus</VehicleMode>
+    <RouteRef>01/4R1</RouteRef>
+    <PublishedLineName>Linea 1-4  P.zza IV Novembre - Stazione FS - Taver</PublishedLineName>
+    <OriginRef>4767</OriginRef><OriginName>TAVERNELLE CAPOLINEA</OriginName>
+    <OriginAimedDepartureTime>2026-09-10T19:18:00+02:00</OriginAimedDepartureTime>
+    <Monitored>false</Monitored>
+    <MonitoringError>GPRS</MonitoringError>
+    <VehicleLocation><Longitude>13.51773</Longitude><Latitude>43.59022</Latitude></VehicleLocation>
+    <Delay>PT0S</Delay>
+    <ProgressStatus>InDepot/ExpiredLocalization/WithoutService/WithoutTarget</ProgressStatus>
+    <CourseOfJourneyRef>472661</CourseOfJourneyRef>
+    <VehicleRef>268</VehicleRef>
+    <PreviousCalls><PreviousCall>
+      <StopPointRef>4767</StopPointRef><VisitNumber>1</VisitNumber><Order>1</Order>
+      <StopPointName>TAVERNELLE CAPOLINEA</StopPointName>
+    </PreviousCall></PreviousCalls>
+    <MonitoredCall>
+      <StopPointRef>4817</StopPointRef><VisitNumber>1</VisitNumber>
+      <StopPointName>1^ TAVERNELLE</StopPointName>
+    </MonitoredCall>
+  </MonitoredVehicleJourney>
+</VehicleActivity></VehicleMonitoringDelivery></Envelope>`;
+
+describe("contratto reale del produttore", () => {
+  const v = parseVehicleMonitoringResponse(VA_REALE).vehicles[0];
+
+  /* ProgressStatus arriva come ELENCO separato da "/", non come valore
+   * singolo: confrontarlo per uguaglianza non troverebbe quasi mai niente. */
+  it("scompone ProgressStatus, che è un elenco e non un valore", () => {
+    expect(v.progressStatus).toBe("InDepot/ExpiredLocalization/WithoutService/WithoutTarget");
+    expect(v.inDepot).toBe(true);
+    expect(v.expiredLocalization).toBe(true);
+    expect(v.withoutService).toBe(true);
+    expect(v.withoutTarget).toBe(true);
+  });
+
+  it("legge il motivo per cui il mezzo non è affidabile", () => {
+    expect(v.monitoringError).toBe("GPRS");
+  });
+
+  it("legge i metri percorsi sull'arco", () => {
+    expect(v.linkDistance).toBe(81);
+  });
+
+  /* Questo mezzo ha coordinate valide, ma la localizzazione è scaduta e la
+   * rete è caduta: usarle sposterebbe il puntino dove il mezzo non è più e
+   * farebbe nascere transiti mai avvenuti. */
+  it("non considera utilizzabile una posizione scaduta", () => {
+    expect(v.lat).not.toBeNull();
+    expect(positionUsable(v)).toBe(false);
+  });
+
+  it("considera utilizzabile una posizione fresca e senza errori", () => {
+    const sano = { ...v, expiredLocalization: false, monitoringError: null };
+    expect(positionUsable(sano)).toBe(true);
+  });
+
+  /* RecordedAtTime è l'ultima volta che l'AVM ha SENTITO il mezzo, non
+   * l'istante della risposta: nel flusso vero ci sono valori di mesi prima. */
+  it("misura quanto è vecchio il rilevamento", () => {
+    const now = new Date("2026-09-10T17:20:46Z").getTime();  // 19:20:46 a Roma
+    expect(fixAgeSeconds(v, now)).toBe(300);
+    expect(fixAgeSeconds({ ...v, recordedAt: null }, now)).toBeNull();
+  });
+
+  /* I campi che il WSDL promette e questo AVM non manda MAI: inseguirli è
+   * stato il grosso del tempo perso. Il test li fissa come assenti, così se
+   * un domani arrivassero ce ne accorgiamo invece di continuare a ignorarli. */
+  it("registra i campi che questo produttore non manda mai", () => {
+    expect(v.datedVehicleJourneyRef).toBeNull();   // solo CourseOfJourneyRef
+    expect(v.blockRef).toBeNull();                 // nessun turno vettura
+    expect(v.onwardCalls).toEqual([]);             // nessuna previsione
+    expect(v.bearing).toBeNull();                  // nessuna direzione bussola
+    expect(v.occupancy).toBeNull();                // nessun carico
+    // e soprattutto: nessun orario EFFETTIVO alle fermate
+    expect(v.previousCalls[0].actualArrival).toBeNull();
+    expect(v.previousCalls[0].actualDeparture).toBeNull();
+    expect(v.monitoredCall!.aimedArrival).toBeNull();
+  });
+
+  it("la corsa arriva da CourseOfJourneyRef, l'unico riferimento disponibile", () => {
+    expect(v.courseOfJourneyRef).toBe("472661");
+    expect(v.journeyRef).toBe("472661");
   });
 });
 
