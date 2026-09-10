@@ -26,7 +26,7 @@ import {
   buildCheckStatusRequest, buildGetCapabilitiesRequest, postSoap,
   parseCapabilities, parseXml, textOf, findFirst, fetchVehicleMonitoring,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
-  splitInService, MAX_GAP_SEC, effectivePollSeconds,
+  splitInService, MAX_GAP_SEC, effectivePollSeconds, inventoryFields,
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
   type TransitFunnel,
 } from "../lib/siri-vm";
@@ -421,6 +421,78 @@ router.get("/siri/preview", async (req, res): Promise<void> => {
        * vedere i nomi veri degli elementi quando manca ciò che ci si aspetta. */
       xmlEsempio: (req.query.raw === "1")
         ? extractSampleActivity(result.rawXml, String(req.query.marker ?? "LineRef"))
+        : undefined,
+    });
+  } catch (e: any) {
+    res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
+  }
+});
+
+/* ── Che cosa ci manda l'AVM, per intero ──────────────────────────────────
+ * Ogni tabella costruita finora è partita da un'ipotesi su quali campi
+ * arrivassero. Questo endpoint toglie l'ipotesi di mezzo: mostra la richiesta
+ * che spediamo, l'inventario di OGNI elemento della risposta con quante volte
+ * è valorizzato e con che valori, e i blocchi grezzi interi.
+ *
+ *   GET /api/siri/campi              — inventario per mezzo (VehicleActivity)
+ *   GET /api/siri/campi?tutto=1      — inventario dell'intera busta SOAP
+ *   GET /api/siri/campi?grezzo=3     — allega 3 VehicleActivity complete
+ *   GET /api/siri/campi?lineRef=03   — solo una linea
+ */
+router.get("/siri/campi", async (req, res): Promise<void> => {
+  const cfg = siriConfig();
+  if (!cfg) { res.json(NOT_CONFIGURED); return; }
+
+  try {
+    const lineRef = (req.query.lineRef as string | undefined)?.trim() || null;
+    const result = await fetchVehicleMonitoring(cfg, {
+      detailLevel: siriDetailLevel(), lineRef,
+      maximumVehicles: Number(req.query.max) || null,
+    });
+
+    const perMezzo = req.query.tutto === "1" ? undefined : "VehicleActivity";
+    const inv = inventoryFields(result.rawXml, perMezzo);
+
+    /* Quanti blocchi grezzi allegare. Uno solo può capitare su una vettura
+     * povera di dati e far concludere che l'AVM non mandi nulla: se ne
+     * prendono di più, scelti fra i più informativi. */
+    const nGrezzi = Math.min(Math.max(Number(req.query.grezzo) || 0, 0), 5);
+
+    res.json({
+      configured: true,
+      httpStatus: result.httpStatus,
+      failed: result.failed,
+      errorText: result.errorText,
+      responseTimestamp: result.responseTimestamp,
+
+      /* 1. LA DOMANDA: che cosa spediamo, testualmente. */
+      richiestaSpedita: {
+        url: cfg.url,
+        soapAction: cfg.soapAction ?? "(predefinita)",
+        detailLevel: siriDetailLevel(),
+        requestorRef: cfg.requestorRef,
+        filtroLinea: lineRef ?? "(nessuno: tutte)",
+        xml: result.requestXml,
+      },
+
+      /* 2. LA RISPOSTA, campo per campo. `valorizzati` è la colonna che
+       *    conta: un campo presente ma sempre vuoto non è utilizzabile, e
+       *    finora questa differenza non si vedeva da nessuna parte. */
+      inventario: {
+        ambito: perMezzo ?? "(intera busta SOAP)",
+        mezziEsaminati: inv.radici,
+        legenda: "occorrenze = quante volte l'elemento compare · valorizzati = "
+          + "...di cui con contenuto · esempi = valori distinti osservati",
+        campi: inv.campi,
+      },
+
+      /* 3. Il grezzo intero, per i casi in cui l'inventario non basta. */
+      grezzo: nGrezzi > 0
+        ? mostInformative(result.vehicles, nGrezzi).map(v =>
+          extractSampleActivity(result.rawXml, v.vehicleRef ?? "VehicleRef", 6000))
+        : undefined,
+      notaGrezzo: nGrezzi === 0
+        ? "Aggiungi ?grezzo=3 per allegare 3 VehicleActivity complete."
         : undefined,
     });
   } catch (e: any) {

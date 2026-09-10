@@ -16,6 +16,7 @@ import {
   splitInService, delayFromSchedule, scheduledSeconds,
   effectivePollSeconds, MAX_GAP_SEC, POLL_CONSIGLIATO_SEC,
   distanceMeters, stopsAtPosition, STOP_RADIUS_M, emptyFunnel, explainFunnel,
+  inventoryFields,
   type TripStop,
   type GtfsIndex,
 } from "../lib/siri-vm";
@@ -576,6 +577,73 @@ describe("diagnosi dell'acquisizione", () => {
       conGeometriaFermate: 20, vicinoAFermata: 8, inseriti: 0, giaPresenti: 8,
     });
     expect(explainFunnel(f)).toMatch(/già registrati/i);
+  });
+});
+
+/* ── Inventario del flusso ─────────────────────────────────────────────────
+ * Ogni normalizzazione parte da un'ipotesi su quali elementi arrivino, e
+ * finché l'ipotesi non è verificata sul flusso vero si costruisce sulla
+ * sabbia. Questo elenca ciò che C'È, senza presupporre nulla. */
+describe("inventario dei campi che il produttore manda", () => {
+  it("elenca ogni elemento con quante volte compare", () => {
+    const inv = inventoryFields(VM_RESPONSE, "VehicleActivity");
+    expect(inv.radici).toBe(2);                       // due mezzi nel campione
+    const paths = inv.campi.map(c => c.path);
+    expect(paths).toContain("MonitoredVehicleJourney/VehicleRef");
+    expect(paths).toContain("RecordedAtTime");
+    // ordinato per percorso: si legge come un indice
+    expect([...paths].sort()).toEqual(paths);
+  });
+
+  /* La colonna che conta davvero: un campo PRESENTE ma sempre vuoto non è
+   * utilizzabile, e prima questa differenza non si vedeva da nessuna parte. */
+  it("distingue un campo presente da un campo valorizzato", () => {
+    const xml = `<Root>
+      <VehicleActivity><A>x</A><B></B></VehicleActivity>
+      <VehicleActivity><A></A><B></B></VehicleActivity>
+    </Root>`;
+    const inv = inventoryFields(xml, "VehicleActivity");
+    const a = inv.campi.find(c => c.path === "A")!;
+    const b = inv.campi.find(c => c.path === "B")!;
+    expect(a).toMatchObject({ occorrenze: 2, valorizzati: 1, esempi: ["x"] });
+    expect(b).toMatchObject({ occorrenze: 2, valorizzati: 0, esempi: [] });
+  });
+
+  it("porta i valori distinti osservati, per capire il formato", () => {
+    const inv = inventoryFields(VM_RESPONSE, "VehicleActivity");
+    const vr = inv.campi.find(c => c.path === "MonitoredVehicleJourney/VehicleRef")!;
+    expect(vr.esempi).toContain("BUS-01");
+    expect(vr.esempi).toContain("BUS-02");
+  });
+
+  /* Il testo di un contenitore appartiene ai figli: sommarlo qui farebbe
+   * sembrare valorizzato ogni nodo intermedio. */
+  it("non attribuisce al contenitore il testo dei figli", () => {
+    const inv = inventoryFields(
+      "<Root><VehicleActivity><Padre><Figlio>v</Figlio></Padre></VehicleActivity></Root>",
+      "VehicleActivity");
+    expect(inv.campi.find(c => c.path === "Padre")!.valorizzati).toBe(0);
+    expect(inv.campi.find(c => c.path === "Padre/Figlio")!.valorizzati).toBe(1);
+  });
+
+  it("conta anche gli attributi, dove certi produttori mettono il dato", () => {
+    const inv = inventoryFields(
+      `<Root><VehicleActivity><Pos unit="deg">1</Pos></VehicleActivity></Root>`,
+      "VehicleActivity");
+    expect(inv.campi.find(c => c.path === "Pos@unit")).toMatchObject({
+      occorrenze: 1, valorizzati: 1, esempi: ["deg"],
+    });
+  });
+
+  it("senza sottoalbero indicato inventaria l'intera busta", () => {
+    const inv = inventoryFields(VM_RESPONSE);
+    expect(inv.radici).toBe(1);
+    expect(inv.campi.length).toBeGreaterThan(5);
+  });
+
+  it("su un documento vuoto non esplode", () => {
+    expect(inventoryFields("<Envelope/>", "VehicleActivity"))
+      .toEqual({ radici: 0, campi: [] });
   });
 });
 
