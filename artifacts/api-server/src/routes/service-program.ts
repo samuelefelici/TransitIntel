@@ -3114,6 +3114,9 @@ function compactAgentResult(payload: any): any {
     ...(v ? {
       vcsp: {
         bestRound: v.bestRound ?? null,
+      // Il giro fermato prima dei round chiesti: il piano è il migliore fra
+      // QUELLI PROVATI, e due giri con round diversi non sono alla pari.
+      earlyStop: v.earlyStop ?? null,
         roundsExecuted: v.roundsExecuted ?? null,
         elapsedSec: v.elapsedSec ?? null,
         rounds: (Array.isArray(v.rounds) ? v.rounds : []).map((r: any) => ({
