@@ -1158,3 +1158,53 @@ export function matchTripBySchedule(
   }
   return { tripId: null, ambiguous: false, toleranceUsed: null };
 }
+
+/* ── Dal passaggio alla fermata al TRANSITO ───────────────────────────────
+ * MIZ manda le fermate transitate ma senza orari, quindi i transiti vanno
+ * OSSERVATI: quando la fermata corrente di un mezzo cambia da A a B, quel
+ * mezzo ha superato A nell'intervallo fra le due interrogazioni.
+ *
+ * Si registra l'osservazione, non una derivazione: `actual_ts` è il momento
+ * stimato del passaggio (il punto medio dell'intervallo), `delay_seconds` è
+ * il ritardo dichiarato dall'AVM, `scheduled` è l'orario del feed. Tre fatti
+ * indipendenti. La tentazione era calcolare actual = programmato + ritardo,
+ * che sembra più preciso: ma se l'AVM aggiorna il ritardo a livello di corsa
+ * e non di fermata, i tempi di percorrenza "osservati" verrebbero identici a
+ * quelli programmati per costruzione — un dato che si conferma da solo e non
+ * dice niente. Meglio una misura rumorosa che una tautologia.
+ */
+export interface VehicleProgress {
+  tripId: string;
+  stopId: string;
+  delaySeconds: number | null;
+  at: Date;
+}
+export interface TransitEvent {
+  tripId: string;
+  stopId: string;
+  delaySeconds: number | null;
+  /** istante stimato del passaggio: metà dell'intervallo fra le due letture */
+  observedAt: Date;
+  /** ampiezza dell'intervallo, in secondi: è l'incertezza della misura */
+  uncertaintySec: number;
+}
+
+/** Oltre questo intervallo il punto medio non significa più nulla. */
+const MAX_GAP_SEC = 300;
+
+export function detectTransit(
+  prev: VehicleProgress | null | undefined, cur: VehicleProgress,
+): TransitEvent | null {
+  if (!prev) return null;                       // prima lettura: non si sa da dove venga
+  if (prev.tripId !== cur.tripId) return null;  // cambio corsa: il passaggio non è attribuibile
+  if (prev.stopId === cur.stopId) return null;  // ancora sulla stessa tratta
+  const gapMs = cur.at.getTime() - prev.at.getTime();
+  if (gapMs <= 0 || gapMs > MAX_GAP_SEC * 1000) return null;
+  return {
+    tripId: prev.tripId,
+    stopId: prev.stopId,
+    delaySeconds: prev.delaySeconds ?? cur.delaySeconds,
+    observedAt: new Date(prev.at.getTime() + gapMs / 2),
+    uncertaintySec: Math.round(gapMs / 1000),
+  };
+}
