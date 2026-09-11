@@ -44,8 +44,18 @@ export type TipoAnomalia =
   /** corsa programmata di cui non risulta alcun passaggio */
   | "corsa_non_effettuata";
 
-/** Quanto è solida la rilevazione: il testo non deve promettere di più. */
-export type Confidenza = "certa" | "probabile";
+/**
+ * Quanto è solida la rilevazione: il testo non deve promettere di più.
+ *
+ *   certa      — il dato lo dice, non c'è interpretazione (un anticipo si
+ *                misura sull'orologio).
+ *   probabile  — la misura è buona, la causa no: "fuori percorso" è un fatto,
+ *                ma può essere un cantiere quanto un errore.
+ *   possibile  — anche la MISURA è approssimata, perché manca il riferimento
+ *                giusto. Non è un grado di sfumatura in più: è il caso in cui
+ *                bisogna guardare prima di parlarne con qualcuno.
+ */
+export type Confidenza = "certa" | "probabile" | "possibile";
 
 export interface Anomalia {
   tipo: TipoAnomalia;
@@ -83,6 +93,73 @@ const FUORI_PERCORSO_M = 300;
  *  salto del GPS, e su un dato che mette in discussione un conducente non si
  *  parte da una lettura sola. */
 const FUORI_PERCORSO_LETTURE = 3;
+/**
+ * Quando il percorso vero non c'è e si misura dalla spezzata fra le fermate,
+ * la soglia cresce con la distanza fra una fermata e l'altra.
+ *
+ * La spezzata TAGLIA LE CURVE: fra due fermate lontane, la corda che le unisce
+ * può passare a centinaia di metri dalla strada che il mezzo percorre
+ * davvero. In città, con fermate ogni trecento metri, lo scarto è trascurabile
+ * e la soglia resta quella; su un'extraurbana con fermate a tre chilometri una
+ * curva ampia sposta la strada di quattrocento metri dalla corda, e un mezzo
+ * perfettamente in linea risulterebbe "fuori percorso" per tutta la curva.
+ *
+ * Per un arco di cerchio la freccia vale circa c²/8R: con corda e raggio dello
+ * stesso ordine si sta attorno a un ottavo della corda. Un quarto tiene anche
+ * i tornanti, e resta ben sotto la scala di una deviazione vera — che non è
+ * una curva più larga, è un'altra strada.
+ */
+const FUORI_PERCORSO_QUOTA_TRATTA = 0.25;
+
+/** Distanza tipica fra due fermate consecutive con coordinate, in metri. */
+function passoFermate(fermate: Array<{ lat: number | null; lon: number | null }>): number | null {
+  const p = fermate.filter(f => f.lat != null && f.lon != null);
+  if (p.length < 2) return null;
+  const d: number[] = [];
+  for (let i = 1; i < p.length; i++) {
+    d.push(distanceMeters(p[i - 1].lat!, p[i - 1].lon!, p[i].lat!, p[i].lon!));
+  }
+  /* La MEDIANA, non la media: un capolinea staccato dal resto della linea
+   * sposterebbe la media e allargherebbe la soglia su tutto il percorso. */
+  d.sort((a, b) => a - b);
+  return d[Math.floor(d.length / 2)] ?? null;
+}
+
+/**
+ * La distanza oltre la quale dire che il mezzo non è sul suo percorso, e il
+ * riferimento su cui la si misura. Con il tracciato del feed è la soglia
+ * nominale; senza, si allarga in proporzione al passo fra le fermate.
+ */
+export function sogliaFuoriPercorso(corsa: {
+  fermate: Array<{ lat: number | null; lon: number | null }>;
+  tracciato?: Array<{ lat: number; lon: number }>;
+}): {
+  sogliaM: number;
+  riferimento: "tracciato" | "fermate";
+  /** la soglia è stata allargata: resta un margine di approssimazione */
+  allargata: boolean;
+  punti: Array<{ lat: number | null; lon: number | null }>;
+} {
+  if (corsa.tracciato && corsa.tracciato.length >= 2) {
+    return {
+      sogliaM: FUORI_PERCORSO_M, riferimento: "tracciato",
+      allargata: false, punti: corsa.tracciato,
+    };
+  }
+  const passo = passoFermate(corsa.fermate);
+  const sogliaM = Math.max(
+    FUORI_PERCORSO_M, Math.round((passo ?? 0) * FUORI_PERCORSO_QUOTA_TRATTA));
+  return {
+    sogliaM, riferimento: "fermate",
+    /* Con fermate vicine la spezzata segue la strada da vicino e la soglia
+     * nominale basta: lì la misura è buona quanto con il tracciato, e
+     * declassarla sarebbe cautela finta. Il dubbio nasce solo dove la soglia
+     * ha dovuto allargarsi — cioè dove le fermate sono lontane e un quarto
+     * della corda è una stima, non una garanzia. */
+    allargata: sogliaM > FUORI_PERCORSO_M,
+    punti: corsa.fermate,
+  };
+}
 
 export interface FermataCorsa {
   seq: number;
@@ -112,6 +189,10 @@ export interface CorsaDaEsaminare {
   fermate: FermataCorsa[];
   /** traccia GPS della giornata, se disponibile */
   posizioni?: PosizioneMezzo[];
+  /* Il percorso REALE della corsa (gtfs_shapes), quando il feed ce l'ha.
+   * Senza, il confronto si fa sulla spezzata fra le fermate, che taglia le
+   * curve: vedi `sogliaFuoriPercorso`. */
+  tracciato?: Array<{ lat: number; lon: number }>;
 }
 
 /* ── Geometria ────────────────────────────────────────────────────────────── */
@@ -332,10 +413,13 @@ export function rilevaAnomalie(
     let inizio: PosizioneMezzo | null = null;
     let distMax = 0;
     let peggiore: PosizioneMezzo | null = null;
+    /* Il riferimento decide quanto ci si può fidare: il tracciato del feed è
+     * la strada vera, la spezzata fra le fermate ne è solo un'ombra. */
+    const rif = sogliaFuoriPercorso(corsa);
 
     for (const p of corsa.posizioni) {
-      const d = distanzaDalPercorso(p.lat, p.lon, corsa.fermate);
-      if (d != null && d > FUORI_PERCORSO_M) {
+      const d = distanzaDalPercorso(p.lat, p.lon, rif.punti);
+      if (d != null && d > rif.sogliaM) {
         if (consecutive === 0) inizio = p;
         consecutive++;
         if (d > distMax) { distMax = d; peggiore = p; }
@@ -347,16 +431,27 @@ export function rilevaAnomalie(
           ...base,
           tipo: "fuori_percorso",
           gravita: Math.min(95, 55 + Math.round(distMax / 200)),
-          confidenza: "probabile",
+          /* Col tracciato del feed la misura è sulla strada vera; senza, è su
+           * una spezzata che taglia le curve, e va detto. */
+          confidenza: rif.allargata ? "possibile" : "probabile",
           quando: inizio?.ts ?? p.ts,
           dove: null,
           titolo: `Fuori percorso, fino a ${Math.round(distMax)} m dal tracciato`,
           dettaglio: "Il mezzo si è allontanato dal percorso della sua corsa per "
             + `almeno ${FUORI_PERCORSO_LETTURE} rilevazioni consecutive. Può essere `
             + "una deviazione per cantiere o un percorso diverso da quello previsto; "
-            + "il dato dice che è successo, non perché.",
+            + "il dato dice che è successo, non perché."
+            + (rif.allargata
+              ? " Attenzione: il feed non ha il percorso di questa corsa, quindi la "
+                + "distanza è misurata dalla spezzata fra le fermate, che taglia le "
+                + `curve. Qui le fermate sono lontane, e la soglia è stata portata a `
+                + `${rif.sogliaM} m invece di ${FUORI_PERCORSO_M}: resta comunque una `
+                + "stima. Guarda la mappa prima di parlarne con qualcuno."
+              : ""),
           misure: {
             distanzaMassimaM: Math.round(distMax),
+            sogliaM: rif.sogliaM,
+            riferimento: rif.riferimento,
             lat: peggiore?.lat ?? null,
             lon: peggiore?.lon ?? null,
           },

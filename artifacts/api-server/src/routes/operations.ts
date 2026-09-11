@@ -31,6 +31,7 @@ import { storicoCorsa } from "../lib/segment-history";
 import { classifyDate, type CalendarProfile } from "../lib/day-classifier";
 import {
   rilevaAnomalie, riepiloga, ETICHETTE,
+  sogliaFuoriPercorso, distanzaDalPercorso,
   type CorsaDaEsaminare, type PosizioneMezzo,
 } from "../lib/anomaly-detection";
 import { loadCalendarProfile } from "../lib/planning-studio-calendar";
@@ -539,7 +540,7 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
              s.stop_name, s.stop_lat, s.stop_lon,
              COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
              tr.actual_ts, tr.vehicle_id,
-             r.route_short_name
+             r.route_short_name, t.shape_id
         FROM osservate o
         JOIN gtfs_stop_times stt
           ON stt.feed_id = ${feedId}::uuid AND stt.trip_id = o.trip_id
@@ -580,6 +581,14 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
       posPerCorsa.set(k, l);
     }
 
+    /* Il percorso VERO delle corse coinvolte. Senza, la distanza si misura
+     * dalla spezzata fra le fermate, che taglia le curve: su un'extraurbana
+     * con fermate lontane un mezzo perfettamente in linea risulta fuori. */
+    const tracciati = await caricaTracciati(
+      feedId,
+      [...new Set((corseQ.rows as any[]).map(r => r.shape_id).filter(Boolean).map(String))],
+    );
+
     /* Raggruppa le righe in corse. */
     const corse = new Map<string, CorsaDaEsaminare>();
     for (const r of corseQ.rows as any[]) {
@@ -591,6 +600,7 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
           tripId: String(r.trip_id), vehicleId: null,
           routeShortName: r.route_short_name ?? null,
           day, fermate: [], posizioni: posPerCorsa.get(k),
+          tracciato: r.shape_id ? tracciati.get(String(r.shape_id)) : undefined,
         };
         corse.set(k, c);
       }
@@ -1407,6 +1417,179 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       },
       stops,
       missing,
+    });
+  } catch (e: any) {
+    res.status(500).json(dbError(e));
+  }
+});
+
+/* ── Percorso reale della corsa ───────────────────────────────────────────
+ * `gtfs_shapes.geojson` è la strada che la corsa dovrebbe fare. Serve in due
+ * punti che devono dire la stessa cosa: il rilevamento del fuori percorso e
+ * la mappa su cui lo si verifica. Se fossero due letture diverse, la mappa
+ * potrebbe assolvere ciò che il registro accusa. */
+
+/** Le coordinate di una geometria GeoJSON, comunque il feed l'abbia scritta. */
+export function coordinateDaGeojson(g: any): Array<{ lat: number; lon: number }> | null {
+  const geom = g?.type === "Feature" ? g.geometry : g;
+  if (!geom) return null;
+  const pezzi: number[][][] =
+    geom.type === "LineString" && Array.isArray(geom.coordinates) ? [geom.coordinates]
+    : geom.type === "MultiLineString" && Array.isArray(geom.coordinates) ? geom.coordinates
+    : [];
+  /* GeoJSON scrive [lon, lat]: invertirli manda il percorso in Somalia, e il
+   * confronto con le posizioni non se ne accorgerebbe — direbbe solo che ogni
+   * mezzo è fuori percorso. */
+  const punti = pezzi.flat()
+    .filter(c => Array.isArray(c) && c.length >= 2
+      && Number.isFinite(Number(c[0])) && Number.isFinite(Number(c[1])))
+    .map(c => ({ lat: Number(c[1]), lon: Number(c[0]) }));
+  return punti.length >= 2 ? punti : null;
+}
+
+async function caricaTracciati(
+  feedId: string | null, shapeIds: string[],
+): Promise<Map<string, Array<{ lat: number; lon: number }>>> {
+  const out = new Map<string, Array<{ lat: number; lon: number }>>();
+  if (!feedId || shapeIds.length === 0) return out;
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT shape_id, geojson FROM gtfs_shapes
+       WHERE feed_id = ${feedId}::uuid
+         AND shape_id = ANY(${`{${shapeIds.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])`);
+    for (const x of ((r as any).rows ?? [])) {
+      const punti = coordinateDaGeojson(x.geojson);
+      if (punti) out.set(String(x.shape_id), punti);
+    }
+  } catch (e: any) {
+    /* Un feed senza gtfs_shapes non deve spegnere il registro anomalie: si
+     * ricade sulla spezzata fra le fermate, che è ciò che si faceva prima. */
+    console.warn("[operations] percorsi non disponibili:", e?.message ?? e);
+  }
+  return out;
+}
+
+// ── GET /operations/trips/:tripId/percorso?date= — la prova del fuori percorso
+/* Il registro dice "fuori percorso, fino a 840 m dal tracciato". È un'accusa
+ * al lavoro di qualcuno, e finora chi la leggeva non aveva modo di
+ * controllarla: cantiere, deviazione decisa, o salto del GPS si somigliano
+ * tutti in un numero. Qui ci sono le due linee da sovrapporre — dove il mezzo
+ * è passato davvero e dove sarebbe dovuto passare — e si decide guardando.
+ *
+ * Dichiara sempre SU COSA la distanza è stata misurata: una spezzata fra
+ * fermate lontane taglia le curve, e chi guarda la mappa deve sapere che la
+ * linea grigia non è la strada ma la sua corda. */
+router.get("/operations/trips/:tripId/percorso", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, percorso: null });
+      return;
+    }
+    const tripId = String(req.params.tripId);
+    const reqDate = String(req.query.date ?? "");
+    const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+    const fVp = (await soloSiri("vp")).filtro;
+
+    const giorniQ = await db.execute<any>(sql`
+      SELECT ts::date AS day, COUNT(*)::int AS punti
+        FROM caronte.vehicle_positions vp
+       WHERE ${fVp} AND trip_id = ${tripId}
+         AND ts > now() - interval '60 days'
+         AND lat IS NOT NULL AND lon IS NOT NULL
+       GROUP BY 1 ORDER BY 1 DESC LIMIT 60`);
+    const giorniDisponibili = (giorniQ.rows as any[]).map(r => ({
+      day: typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10),
+      punti: Number(r.punti),
+    }));
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(reqDate)
+      ? reqDate : (giorniDisponibili[0]?.day ?? null);
+
+    const infoQ = feedId
+      ? await db.execute<any>(sql`
+          SELECT t.shape_id, t.trip_headsign, r.route_short_name, r.route_color
+            FROM gtfs_trips t
+            LEFT JOIN gtfs_routes r ON r.feed_id = t.feed_id AND r.route_id = t.route_id
+           WHERE t.feed_id = ${feedId}::uuid AND t.trip_id = ${tripId} LIMIT 1`)
+      : null;
+    const info = (infoQ as any)?.rows?.[0] ?? null;
+
+    const fermateQ = feedId
+      ? await db.execute<any>(sql`
+          SELECT stt.stop_sequence AS seq, stt.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
+                 COALESCE(stt.arrival_time, stt.departure_time) AS scheduled
+            FROM gtfs_stop_times stt
+            LEFT JOIN gtfs_stops s ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
+           WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
+           ORDER BY stt.stop_sequence`)
+      : null;
+    const fermate = ((fermateQ as any)?.rows ?? []).map((r: any) => ({
+      seq: Number(r.seq), stopId: String(r.stop_id), stopName: r.stop_name ?? null,
+      lat: r.stop_lat != null ? Number(r.stop_lat) : null,
+      lon: r.stop_lon != null ? Number(r.stop_lon) : null,
+      scheduled: r.scheduled ?? null,
+    }));
+
+    const tracciati = await caricaTracciati(feedId, info?.shape_id ? [String(info.shape_id)] : []);
+    const tracciato = info?.shape_id ? tracciati.get(String(info.shape_id)) ?? null : null;
+
+    const posQ = day
+      ? await db.execute<any>(sql`
+          SELECT ts, lat, lon, speed FROM caronte.vehicle_positions vp
+           WHERE ${fVp} AND trip_id = ${tripId} AND ts::date = ${day}::date
+             AND lat IS NOT NULL AND lon IS NOT NULL
+           ORDER BY ts LIMIT 5000`)
+      : null;
+    const traccia = ((posQ as any)?.rows ?? []).map((r: any) => ({
+      ts: new Date(r.ts).toISOString(), lat: Number(r.lat), lon: Number(r.lon),
+      speed: r.speed != null ? Number(r.speed) : null,
+    }));
+
+    const transitiQ = day
+      ? await db.execute<any>(sql`
+          SELECT stop_id, actual_ts FROM caronte.stop_transits st
+           WHERE ${fSt} AND trip_id = ${tripId} AND actual_ts::date = ${day}::date`)
+      : null;
+    const osservate = new Set(((transitiQ as any)?.rows ?? []).map((r: any) => String(r.stop_id)));
+
+    /* La stessa regola del registro, non una seconda: se la mappa misurasse
+     * diversamente potrebbe assolvere ciò che il registro accusa. */
+    const rif = sogliaFuoriPercorso({ fermate, tracciato: tracciato ?? undefined });
+    const scostamenti = traccia.map((p: any) => ({
+      ...p,
+      distanzaM: (() => {
+        const d = distanzaDalPercorso(p.lat, p.lon, rif.punti);
+        return d == null ? null : Math.round(d);
+      })(),
+    }));
+    const fuori = scostamenti.filter((p: any) => p.distanzaM != null && p.distanzaM > rif.sogliaM);
+
+    res.json({
+      caronteAvailable: true, tripId, day, giorniDisponibili,
+      linea: info?.route_short_name ?? null,
+      colore: info?.route_color ?? null,
+      capolinea: info?.trip_headsign ?? null,
+      riferimento: {
+        tipo: rif.riferimento,
+        sogliaM: rif.sogliaM,
+        allargata: rif.allargata,
+        nota: rif.riferimento === "tracciato"
+          ? "La linea grigia è il percorso del feed: la strada vera. La distanza "
+            + `è misurata da lì, oltre ${rif.sogliaM} m il mezzo è fuori.`
+          : "Il feed non ha il percorso di questa corsa: la linea grigia unisce le "
+            + "fermate in linea retta e TAGLIA LE CURVE, quindi non è la strada. "
+            + (rif.allargata
+              ? `Qui le fermate sono lontane e la soglia è stata portata a ${rif.sogliaM} m, `
+                + "ma resta una stima: guarda prima di trarne conclusioni."
+              : `Le fermate sono abbastanza vicine perché l'approssimazione regga: soglia ${rif.sogliaM} m.`),
+      },
+      percorso: tracciato,
+      fermate: fermate.map((f: any) => ({ ...f, osservata: osservate.has(f.stopId) })),
+      traccia: scostamenti,
+      fuoriPercorso: {
+        punti: fuori.length,
+        distanzaMassimaM: fuori.length ? Math.max(...fuori.map((p: any) => p.distanzaM)) : 0,
+      },
     });
   } catch (e: any) {
     res.status(500).json(dbError(e));
