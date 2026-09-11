@@ -611,10 +611,10 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
 /* ── Il parco nel tempo ───────────────────────────────────────────────────
  * L'elenco degli apparati dice chi è guasto OGGI; questo dice che cosa è
  * CAMBIATO. Sono due domande diverse e la seconda, adesso, pesa di più: la
- * misura della copertura dice che a trenta secondi non è l'intervallo di
- * lettura a limitarci ma quante vetture vengono seguite, e quindi ogni mezzo
- * che torna a trasmettere vale più di qualunque cosa possiamo chiedere al
- * fornitore.
+ * misura sul flusso vero dice che sull'intervallo di lettura siamo già al
+ * limite (~40 s, 37,5% di passaggi riconosciuti contro il 36% consentito)
+ * mentre sui mezzi no: 9 in servizio su 368 trasmessi. I due fattori si
+ * moltiplicano, e questo è quello su cui possiamo agire da soli.
  *
  * Si legge dalle posizioni già scritte: non serve una tabella nuova, e i
  * giorni passati ci sono già. */
