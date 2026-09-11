@@ -31,7 +31,7 @@ import {
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
   type TransitFunnel,
 } from "../lib/siri-vm";
-import { loadGtfsIndex, ingestVehicles, closeCancelled } from "../lib/siri-ingest";
+import { loadGtfsIndex, ingestVehicles, closeCancelled, auditAgganci } from "../lib/siri-ingest";
 import { ensureCaronteSchema, schemaState, tableShape } from "../lib/caronte-schema";
 
 const router: IRouter = Router();
@@ -604,6 +604,80 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
   }
 });
 
+/* ── Verifica dell'aggancio corsa ─────────────────────────────────────────
+ * Ogni numero di Tempi di percorrenza poggia sull'attribuzione di un passaggio
+ * a una corsa. Questo indirizzo mostra quell'attribuzione messa alla prova
+ * contro quello che l'AVM dichiara per conto suo — e, soprattutto, dice su
+ * quante corse quella prova non si può nemmeno fare. */
+router.get("/siri/aggancio", async (req, res): Promise<void> => {
+  const cfg = siriConfig();
+  if (!cfg) { res.json(NOT_CONFIGURED); return; }
+
+  try {
+    const result = await fetchVehicleMonitoring(cfg, { detailLevel: siriDetailLevel() });
+    if (result.failed) {
+      res.status(502).json({
+        configured: true, failed: true, errorText: result.errorText,
+        httpStatus: result.httpStatus,
+      });
+      return;
+    }
+
+    const { esiti, riepilogo, feedMancante } = await auditAgganci(result.vehicles);
+    if (feedMancante) {
+      res.json({
+        configured: true, feedMancante: true,
+        nota: "Nessun feed GTFS attivo: senza orario non c'è nessuna corsa a cui "
+          + "confrontare quello che dichiara l'AVM.",
+      });
+      return;
+    }
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const testata = ["matricola", "corsa", "id_avm", "agganciato_come", "verdetto",
+        "motivo", "riscontri_indipendenti", "linea", "partenza", "arrivo", "capolinea", "posizione"];
+      const perCampo = (e: typeof esiti[number], campo: string) => {
+        const r = e.riscontri.find(x => x.campo === campo);
+        if (!r) return "";
+        if (r.esito === "non_verificabile") return "—";
+        const scarto = r.scostamento != null ? ` (${r.scostamento})` : "";
+        return `${r.esito}${r.tautologico ? " [tautologico]" : ""}${scarto}`;
+      };
+      const righe = esiti.map(e => [
+        e.vehicleRef ?? "", e.tripId, e.journeyRef ?? "", e.agganciatoCome,
+        e.verdetto, e.motivo, e.indipendenti,
+        perCampo(e, "linea"), perCampo(e, "partenza"), perCampo(e, "arrivo"),
+        perCampo(e, "capolinea"), perCampo(e, "posizione"),
+      ]);
+      const csv = [testata, ...righe]
+        .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"))
+        .join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="agganci-${new Date().toISOString().slice(0, 10)}.csv"`);
+      res.send("﻿" + csv);
+      return;
+    }
+
+    /* In testa le corse su cui qualcosa non torna: sono quelle per cui
+     * qualcuno deve fare qualcosa. Il resto è contesto. */
+    const peso = { incoerente: 0, sospetto: 1, verificato: 2, non_verificabile: 3 };
+    const ordinati = [...esiti].sort((a, b) => peso[a.verdetto] - peso[b.verdetto]);
+
+    res.json({
+      configured: true,
+      rilevatoAlle: result.responseTimestamp ?? new Date().toISOString(),
+      riepilogo,
+      /* Le corse smentite per intero, con i riscontri: senza vedere COSA non
+       * torna il verdetto è solo un'altra cosa da credere sulla fiducia. */
+      daGuardare: ordinati.filter(e => e.verdetto === "incoerente" || e.verdetto === "sospetto"),
+      tutti: req.query.tutti === "1" ? ordinati : undefined,
+    });
+  } catch (e: any) {
+    res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
+  }
+});
+
 /* ── Ingestione su richiesta ──────────────────────────────────────────────── */
 
 /* Un'ingestione SCRIVE, quindi resta un POST: una GET che modifica i dati
@@ -687,6 +761,11 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
      * arrivava niente, si poteva solo tirare a indovinare quale anello avesse
      * ceduto: adesso lo si legge. */
     acquisizioneTransiti: { ...ingest.funnel, diagnosi: ingest.funnelNota },
+    /* Quante corse agganciate reggono al confronto con quello che l'AVM
+     * dichiara per conto suo. Sta accanto all'imbuto perché risponde alla
+     * domanda successiva: non "quanti dati entrano", ma "di quanti ci si
+     * può fidare". Il dettaglio è in GET /api/siri/aggancio. */
+    verificaAgganci: ingest.riepilogoAgganci,
     intervalloPollSec: poll.effettivo,
     avviso: poll.ridotto
       ? `SIRI_POLL_SECONDS=${poll.richiesto}: oltre i ${MAX_GAP_SEC} s il cambio di fermata `

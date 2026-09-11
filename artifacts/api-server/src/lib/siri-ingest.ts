@@ -27,8 +27,12 @@ import {
   stopsAtPosition, emptyFunnel, explainFunnel, positionUsable, fixAgeSeconds,
   type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
-  type VehicleProgress,
+  type VehicleProgress, type MappedVehicle,
 } from "./siri-vm";
+import {
+  verificaAggancio, riepilogaAgganci,
+  type EsitoAggancio, type RiepilogoAgganci, type SchedaCorsa,
+} from "./trip-match-audit";
 
 /* ── Indice degli identificativi del feed attivo ──────────────────────────── */
 
@@ -219,6 +223,11 @@ interface StopTimeCache {
   map: Map<string, { scheduled: string; seq: number }>;
   /** corsa → fermate con coordinate, in ordine di percorso */
   tripStops: Map<string, TripStop[]>;
+  /* Partenza e arrivo programmati vanno presi su TUTTE le fermate, comprese
+   * quelle senza coordinate che `tripStops` scarta: se è proprio il capolinea
+   * a non averle, la campata oraria risulterebbe più corta della corsa. */
+  /** corsa → primo e ultimo orario programmato, "HH:MM:SS" */
+  tripSpan: Map<string, { partenza: string | null; arrivo: string | null }>;
   /** corse per cui l'interrogazione è già stata fatta, anche se a vuoto */
   loadedTrips: Set<string>;
   at: number;
@@ -234,7 +243,7 @@ async function loadStopTimeIndex(
     && Date.now() - cachedStopTimes.at < TRIP_TTL_MS;
   if (!fresh) {
     cachedStopTimes = {
-      feedId, day, map: new Map(), tripStops: new Map(),
+      feedId, day, map: new Map(), tripStops: new Map(), tripSpan: new Map(),
       loadedTrips: new Set(), at: Date.now(),
     };
   }
@@ -260,7 +269,14 @@ async function loadStopTimeIndex(
       const stopId = String(x.stop_id);
       const seq = Number(x.stop_sequence ?? 0);
       const scheduled = x.t ? String(x.t) : null;
-      if (scheduled) cache.map.set(`${tripId}|${stopId}`, { scheduled, seq });
+      if (scheduled) {
+        cache.map.set(`${tripId}|${stopId}`, { scheduled, seq });
+        /* Le righe arrivano ordinate per progressivo: la prima che si vede è
+         * la partenza, l'ultima resta l'arrivo. */
+        const span = cache.tripSpan.get(tripId);
+        if (!span) cache.tripSpan.set(tripId, { partenza: scheduled, arrivo: scheduled });
+        else span.arrivo = scheduled;
+      }
       /* Senza coordinate la fermata non è riconoscibile dalla posizione, ma
        * può ancora servire come termine di confronto: si scarta solo qui. */
       if (x.stop_lat == null || x.stop_lon == null) continue;
@@ -340,6 +356,9 @@ export interface IngestResult {
   /** il primo errore incontrato, per capire perché senza leggere i log */
   firstError: string | null;
   report: MappingReport;
+  /** esito del confronto fra quello che l'AVM dichiara e la corsa agganciata */
+  agganci: EsitoAggancio[];
+  riepilogoAgganci: RiepilogoAgganci;
   /** dove si interrompe la catena che porta a un transito */
   funnel: TransitFunnel;
   /** la stessa cosa, in una frase */
@@ -358,6 +377,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
       vehiclesFailed: 0, vehiclesParked: split.ferme.length, firstError: null,
       corseFallite: 0, erroreCorse: null,
+      agganci: [], riepilogoAgganci: riepilogaAgganci([]),
       funnel: { ...emptyFunnel(), inEsercizio: vehicles.length },
       funnelNota: "Nessun feed GTFS attivo: senza orario non c'è nulla a cui "
         + "attribuire i passaggi.",
@@ -382,6 +402,28 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
   const stopTimes = await loadStopTimeIndex(
     index.feedId, matchedTrips, index.tripStarts?.serviceDay ?? "",
   );
+
+  /* ── Verifica dell'aggancio ────────────────────────────────────────────
+   * La corsa è già scelta; qui si controlla la scelta contro quello che l'AVM
+   * dichiara per conto suo — linea, capolinea, partenza e arrivo PROGRAMMATI.
+   * Va fatto adesso, dopo aver caricato gli orari e prima di scrivere: una
+   * corsa smentita non deve arrivare a `stop_transits`, perché una lacuna si
+   * riempie domani e uno storico falso no. */
+  const agganci = verificaAgganciDelGiro(mapped, index, stopTimes);
+  const riepilogo = riepilogaAgganci(agganci);
+
+  const daNonScrivere = new Set<string>();
+  for (const e of agganci) {
+    if (e.verdetto !== "incoerente" || !e.vehicleRef) continue;
+    daNonScrivere.add(`${e.vehicleRef}|${e.tripId}`);
+    console.warn(`[siri] aggancio scartato — vettura ${e.vehicleRef}, `
+      + `corsa ${e.tripId}: ${e.motivo}`);
+  }
+
+  /** true = i passaggi di questa vettura su questa corsa non vanno scritti. */
+  const aggancioSmentito = (m: MappedVehicle) =>
+    !!m.siri.vehicleRef && !!m.tripId
+    && daNonScrivere.has(`${m.siri.vehicleRef}|${m.tripId}`);
 
   let positionsInserted = 0, tripsOpened = 0, tripsClosed = 0, transitsInserted = 0;
   let vehiclesFailed = 0;
@@ -415,6 +457,14 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     const posizioneBuona = positionUsable(v);
     const etaFix = fixAgeSeconds(v);
 
+    /* L'AVM smentisce sé stesso su questa corsa: la POSIZIONE resta un fatto
+     * — il mezzo è dove dice di essere — ma l'ATTRIBUZIONE no. Si scrive dove
+     * si trova senza dirgli quale corsa sta facendo, e non si apre né la
+     * corsa né alcun passaggio. */
+    const smentito = aggancioSmentito(m);
+    const corsaAttribuibile = smentito ? null : m.tripId;
+    if (smentito) funnel.agganciIncoerenti++;
+
     if (vehicleId) funnel.conMatricola++;
     if (m.tripId) funnel.conCorsaAgganciata++;
     if (posizioneBuona) funnel.conPosizione++;
@@ -429,7 +479,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       const r = await db.execute<any>(sql`
         INSERT INTO caronte.vehicle_positions
                (vehicle_id, trip_id, ts, lat, lon, nearest_stop_id, speed, heading, source)
-        SELECT ${vehicleId}, ${m.tripId}, ${ts.toISOString()}::timestamptz,
+        SELECT ${vehicleId}, ${corsaAttribuibile}, ${ts.toISOString()}::timestamptz,
                ${v.lat}, ${v.lon}, ${m.nearestStopId}, ${sp}, ${v.bearing}, ${SOURCE_SIRI}
          WHERE NOT EXISTS (
            SELECT 1 FROM caronte.vehicle_positions p
@@ -448,7 +498,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
      *    precedenti e zero transiti, che sembravano tre guasti distinti
      *    mentre erano un solo INSERT rifiutato. Un errore su una tabella non
      *    deve spegnere le altre due. */
-    if (vehicleId && m.tripId) {
+    if (vehicleId && corsaAttribuibile) {
       try {
         const closed = await db.execute<any>(sql`
           UPDATE caronte.active_trips
@@ -496,6 +546,10 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       stopId: string, seq: number | null, scheduled: string | null,
       at: Date, delayDichiarato: number | null, capolineaDiPartenza = false,
     ): Promise<void> => {
+      /* Il cancello sta QUI e non ai tre punti di chiamata: i canali di
+       * riconoscimento sono tre e cambiano nel tempo, e un controllo
+       * ripetuto tre volte è un controllo che prima o poi ne dimentica uno. */
+      if (smentito) return;
       const tz = index.timeZone ?? "Europe/Rome";
       const delay = delayDichiarato ?? delayFromSchedule(scheduled, at, tz);
       const r = await db.execute<any>(sql`
@@ -613,8 +667,66 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
     vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
     corseFallite, erroreCorse,
+    agganci, riepilogoAgganci: riepilogo,
     funnel, funnelNota: explainFunnel(funnel),
   };
+}
+
+/* ── Verifica dell'aggancio ───────────────────────────────────────────────
+ * Separata dalla scrittura perché serve a due mestieri diversi: all'ingestione
+ * per non sporcare lo storico, e a chi guarda la diagnostica per capire di
+ * quali dati ci si può fidare. Non tocca il database. */
+
+/** Confronta ogni corsa agganciata con quello che l'AVM dichiara per conto suo. */
+export function verificaAgganciDelGiro(
+  mapped: MappedVehicle[], index: GtfsIndex, stopTimes: StopTimeCache,
+): EsitoAggancio[] {
+  const esiti: EsitoAggancio[] = [];
+  for (const m of mapped) {
+    if (!m.tripId || !m.agganciatoCome) continue;
+    const span = stopTimes.tripSpan.get(m.tripId);
+    const scheda: SchedaCorsa = {
+      tripId: m.tripId,
+      routeId: index.tripRoute.get(m.tripId) ?? null,
+      partenza: span?.partenza ?? null,
+      arrivo: span?.arrivo ?? null,
+      capolinea: index.tripStarts?.headsign.get(m.tripId) ?? null,
+      fermate: stopTimes.tripStops.get(m.tripId) ?? [],
+    };
+    esiti.push(verificaAggancio(
+      {
+        vehicleRef: m.siri.vehicleRef,
+        journeyRef: m.siri.journeyRef,
+        /* Se la linea l'abbiamo dedotta dalla corsa, non è una dichiarazione
+         * dell'AVM e non può confermare nulla. */
+        routeIdDichiarato: m.lineaDichiarata ? m.routeId : null,
+        destinationName: m.siri.destinationName,
+        originAimedDeparture: m.siri.originAimedDeparture,
+        destinationAimedArrival: m.siri.destinationAimedArrival,
+        lat: m.siri.lat, lon: m.siri.lon,
+      },
+      scheda, m.agganciatoCome, index.timeZone ?? "Europe/Rome",
+    ));
+  }
+  return esiti;
+}
+
+/** Lo stesso controllo, su richiesta e senza scrivere niente. */
+export async function auditAgganci(all: SiriVehicle[]): Promise<{
+  esiti: EsitoAggancio[]; riepilogo: RiepilogoAgganci; feedMancante: boolean;
+}> {
+  const vehicles = splitInService(all).inServizio;
+  const index = await loadGtfsIndex();
+  if (!index) {
+    return { esiti: [], riepilogo: riepilogaAgganci([]), feedMancante: true };
+  }
+  const { mapped } = mapVehicles(vehicles, index);
+  const trips = [...new Set(mapped.map(x => x.tripId).filter((x): x is string => !!x))];
+  const stopTimes = await loadStopTimeIndex(
+    index.feedId, trips, index.tripStarts?.serviceDay ?? "",
+  );
+  const esiti = verificaAgganciDelGiro(mapped, index, stopTimes);
+  return { esiti, riepilogo: riepilogaAgganci(esiti), feedMancante: false };
 }
 
 /** Chiude le corse annullate dall'AVM (VehicleActivityCancellation). */
