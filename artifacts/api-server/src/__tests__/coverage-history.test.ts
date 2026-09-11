@@ -114,10 +114,15 @@ describe("quadro della copertura", () => {
     expect(q.nota).toMatch(/soste/i);
   });
 
-  /* Il caso VERO di oggi, e la conclusione che ne discende: con 34 fermate
-   * rilevate su 100 e letture ogni 30 s, siamo SOTTO quello che l'intervallo
-   * consentirebbe. Non è il refresh a limitarci — sono le vetture seguite.
-   * Confondere le due cose farebbe chiedere al fornitore la cosa sbagliata. */
+  /* Il caso in cui il limite NON è l'intervallo: rilevando meno di quanto la
+   * geometria consentirebbe, il collo di bottiglia è altrove — quante vetture
+   * vengono seguite. Confondere le due cose farebbe chiedere al fornitore la
+   * cosa sbagliata.
+   *
+   * Non è la situazione attuale: sul flusso vero rileviamo il 77% delle
+   * fermate contro il 31% consentito a 47 s, cioè quarantasei punti SOPRA.
+   * Resta collaudato perché è la condizione verso cui si va man mano che le
+   * vetture seguite aumentano. */
   it("sotto la soglia geometrica dice che il limite non è l'intervallo", () => {
     const q = quadroCopertura(settimana, 30);   // 34% rilevate, 48% possibile
     expect(q.margineDaSoste).toBeLessThan(0);
@@ -167,7 +172,30 @@ describe("casi in cui non si può rispondere", () => {
       [giorno("2026-09-01", { corseProgrammate: null })], 30);
     expect(q.giorni[0].quotaCorse).toBeNull();
     expect(q.quotaCorseMediana).toBeNull();
-    expect(q.nota).toMatch(/non si sa quante corse/i);
+    expect(q.nota).toMatch(/non si sa/i);
+    expect(q.nota).toMatch(/problema del feed/i);
+  });
+
+  /* Le due coperture si perdono separatamente. Uscire alla prima che manca
+   * buttava via la seconda — che è anche la più informativa, perché
+   * confrontata con la geometria dice se il limite è l'intervallo. */
+  it("se mancano le corse programmate riporta comunque le fermate rilevate", () => {
+    const q = quadroCopertura(
+      [giorno("2026-09-01", { corseProgrammate: null, transiti: 770 })], 30);
+    expect(q.quotaFermateMediana).toBe(0.77);
+    expect(q.nota).toMatch(/77% delle fermate/);
+  });
+
+  it("se mancano entrambe non finge una copertura", () => {
+    const q = quadroCopertura(
+      [giorno("2026-09-01", { corseProgrammate: null, fermateProgrammate: 0, transiti: 0 })], 30);
+    expect(q.nota).toMatch(/nulla su cui misurare/i);
+  });
+
+  /* Una frase generata non deve leggersi come un refuso. */
+  it("non minuscolizza le frasi dopo il punto", () => {
+    const q = quadroCopertura([giorno("2026-09-01")], 30);
+    expect(q.nota).not.toMatch(/\. [a-z\u00e0è\u00e9\u00ec\u00f2ù]/);
   });
 
   it("una giornata senza fermate programmate non produce una quota finta", () => {
