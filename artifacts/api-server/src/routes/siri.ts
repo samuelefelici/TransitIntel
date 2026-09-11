@@ -27,6 +27,7 @@ import {
   parseCapabilities, parseXml, textOf, findFirst, fetchVehicleMonitoring,
   mapVehicles, describeCompleteness, mostInformative, extractSampleActivity,
   splitInService, MAX_GAP_SEC, effectivePollSeconds, inventoryFields,
+  statoParco, diagnosiVettura, type StatoVettura,
   type SiriEndpointConfig, type VehicleCompleteness, type MappingReport,
   type TransitFunnel,
 } from "../lib/siri-vm";
@@ -83,6 +84,17 @@ let ultimoGiro: {
   posizioniInserite: number;
   corseAperte: number;
 } | null = null;
+
+/* I nomi che legge chi apre la pagina: "senza_rete" è una chiave, non una
+ * parola. E le due cause vanno nominate per il reparto che le ripara. */
+const ETICHETTE_STATO: Record<StatoVettura, string> = {
+  in_servizio: "In servizio",
+  pronta: "Pronta, nessuna corsa avviata",
+  in_rimessa: "In rimessa",
+  senza_rete: "Non comunica — SIM o copertura",
+  senza_gps: "Senza posizione — antenna GPS",
+  muta: "Nessun segnale da oltre un giorno",
+};
 
 const NOT_CONFIGURED = {
   configured: false,
@@ -512,6 +524,79 @@ router.get("/siri/campi", async (req, res): Promise<void> => {
         : undefined,
       notaGrezzo: nGrezzi === 0
         ? "Aggiungi ?grezzo=3 per allegare 3 VehicleActivity complete."
+        : undefined,
+    });
+  } catch (e: any) {
+    res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
+  }
+});
+
+/* ── Stato del parco: quali apparati di bordo funzionano ──────────────────
+ * L'unica informazione di questo flusso che riguarda il MEZZO e non il
+ * servizio, e l'unica che nessun altro sistema aziendale produce. Su 368
+ * vetture, 298 riportano un errore di monitoraggio e alcune un ultimo
+ * contatto di mesi prima: finora serviva solo a scartare le posizioni vecchie.
+ *
+ * Si legge in diretta dal flusso, senza passare dal database: lo stato di un
+ * apparato è quello di adesso, e conservarne la storia sarebbe un'altra cosa.
+ *
+ *   GET /api/siri/parco              — quadro e vetture da verificare
+ *   GET /api/siri/parco?tutte=1      — l'intero parco, vettura per vettura
+ *   GET /api/siri/parco?formato=csv  — per l'officina
+ */
+router.get("/siri/parco", async (req, res): Promise<void> => {
+  const cfg = siriConfig();
+  if (!cfg) { res.json(NOT_CONFIGURED); return; }
+
+  try {
+    const result = await fetchVehicleMonitoring(cfg, { detailLevel: siriDetailLevel() });
+    if (result.failed) {
+      res.status(502).json({
+        configured: true, failed: true, errorText: result.errorText,
+        httpStatus: result.httpStatus,
+      });
+      return;
+    }
+
+    const stato = statoParco(result.vehicles);
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const elenco = req.query.tutte === "1"
+        ? result.vehicles.map(v => diagnosiVettura(v))
+        : stato.daVerificare;
+      const testata = ["matricola", "stato", "errore", "ultimo_contatto",
+        "fermo_da_ore", "progress_status", "linea", "posizione"];
+      const righe = elenco.map(d => [
+        d.vehicleRef, ETICHETTE_STATO[d.stato], d.errore ?? "",
+        d.ultimoContatto ?? "",
+        d.etaContattoSec != null ? (d.etaContattoSec / 3600).toFixed(1) : "",
+        d.progressStatus ?? "", d.linea ?? "", d.haPosizione ? "sì" : "no",
+      ]);
+      const csv = [testata, ...righe]
+        .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"))
+        .join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="parco-avm-${new Date().toISOString().slice(0, 10)}.csv"`);
+      /* BOM: senza, Excel in italiano sbaglia gli accenti. */
+      res.send("\uFEFF" + csv);
+      return;
+    }
+
+    res.json({
+      configured: true,
+      rilevatoAlle: result.responseTimestamp ?? new Date().toISOString(),
+      totale: stato.totale,
+      quotaUtilizzabile: stato.quotaUtilizzabile,
+      nota: stato.nota,
+      perStato: stato.perStato.map(x => ({
+        stato: x.stato, etichetta: ETICHETTE_STATO[x.stato], conteggio: x.conteggio,
+      })),
+      daVerificare: stato.daVerificare,
+      /* L'intero parco solo su richiesta: 368 righe non servono a chi cerca i
+       * mezzi da riparare, e allungano ogni risposta. */
+      tutte: req.query.tutte === "1"
+        ? result.vehicles.map(v => diagnosiVettura(v))
         : undefined,
     });
   } catch (e: any) {
