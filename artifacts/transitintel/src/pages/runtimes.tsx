@@ -81,6 +81,8 @@ interface ByTripResp {
   corse: TripRuntime[];
   validita?: {
     psProjectId?: string;
+    /** come ci si è arrivati: indicato nell'indirizzo, riconosciuto, o assente */
+    scelto?: "indicato" | "riconosciuto" | "assente";
     profiloCaricato: boolean;
     nota: string;
     classiOsservate: string[];
@@ -337,6 +339,9 @@ export default function RuntimesPage() {
         <div className="text-[11px] text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className={byTripQ.data.validita.profiloCaricato ? "text-emerald-400" : "text-amber-400"}>
             {byTripQ.data.validita.profiloCaricato ? "Calendario aziendale" : "Calendario civile"}
+            {/* Un calendario scelto dal sistema va detto: chi legge deve sapere
+                che può cambiarlo, non crederlo l'unico possibile. */}
+            {byTripQ.data.validita.scelto === "riconosciuto" && " (riconosciuto)"}
           </span>
           <span>·</span>
           <span>{byTripQ.data.validita.nota}</span>

@@ -74,6 +74,92 @@ export async function loadCalendarProfile(projectId: string): Promise<CalendarPr
   return loadProfile(projectId);
 }
 
+/* ── Quale calendario usa l'esercizio ─────────────────────────────────────
+ * Sala Operativa e Tempi di Percorrenza classificano le giornate in scuole
+ * aperte/chiuse, e per farlo serve un calendario aziendale. Finora andava
+ * passato a mano nell'indirizzo: in pratica non lo passava nessuno, e ogni
+ * verdetto usciva classificato sul solo calendario civile — cioè con agosto
+ * trattato come un feriale scolastico qualunque.
+ *
+ * Non si indovina e non si cabla un id nel codice: si guarda quali progetti
+ * hanno un calendario COMPILATO. Se è uno solo, è quello. Se sono più d'uno
+ * non si sceglie: classificare l'esercizio col calendario sbagliato è peggio
+ * che dichiarare di non saperlo, perché il risultato è plausibile.
+ */
+export interface CalendarioPredefinito {
+  projectId: string | null;
+  /** quanti progetti hanno un calendario compilato */
+  candidati: number;
+  nota: string;
+}
+
+/**
+ * La scelta, separata dalla query perché è la parte che può sbagliare in modo
+ * silenzioso: un progetto scelto a caso non dà errore, dà verdetti plausibili.
+ */
+export function decidiCalendario(
+  righe: Array<{ id: string; name?: string | null }>,
+): CalendarioPredefinito {
+  if (righe.length === 1) {
+    return {
+      projectId: String(righe[0].id), candidati: 1,
+      nota: `Calendario aziendale dal progetto «${righe[0].name ?? righe[0].id}»: `
+        + "è l'unico con i periodi scolastici compilati.",
+    };
+  }
+  if (righe.length === 0) {
+    return {
+      projectId: null, candidati: 0,
+      nota: "Nessun progetto ha i periodi scolastici compilati: le classi si "
+        + "basano su giorno della settimana e festività nazionali, e scuole "
+        + "aperte o chiuse non sono distinguibili.",
+    };
+  }
+  /* Con più candidati NON si sceglie. Classificare l'esercizio col calendario
+   * sbagliato è peggio che dichiarare di non saperlo: il risultato è
+   * plausibile, e nessuno va a ricontrollarlo. */
+  return {
+    projectId: null, candidati: righe.length,
+    nota: `${righe.length} progetti hanno un calendario compilato `
+      + `(${righe.slice(0, 3).map(x => `«${x.name ?? x.id}»`).join(", ")}`
+      + `${righe.length > 3 ? ", …" : ""}): indica quale usare con psProjectId. `
+      + "Sceglierne uno a caso darebbe verdetti plausibili e sbagliati.",
+  };
+}
+
+let cachedPredefinito: { v: CalendarioPredefinito; at: number } | null = null;
+const PREDEFINITO_TTL_MS = 10 * 60 * 1000;
+
+export async function calendarioPredefinito(): Promise<CalendarioPredefinito> {
+  if (cachedPredefinito && Date.now() - cachedPredefinito.at < PREDEFINITO_TTL_MS) {
+    return cachedPredefinito.v;
+  }
+  let v: CalendarioPredefinito;
+  try {
+    await ensureTable();
+    /* "Compilato" vuol dire che qualcuno ha davvero detto quando le scuole
+     * sono chiuse o quando è estate: una riga vuota equivale a non averla. */
+    const r = await db.execute<any>(sql`
+      SELECT cp.project_id::text AS id, p.name
+        FROM ps_calendar_profiles cp
+        LEFT JOIN ps_projects p ON p.id = cp.project_id
+       WHERE jsonb_array_length(COALESCE(cp.closed_periods, '[]'::jsonb)) > 0
+          OR cp.summer_period IS NOT NULL
+       ORDER BY cp.updated_at DESC`);
+    v = decidiCalendario((r as any).rows ?? []);
+  } catch (e: any) {
+    /* Planning Studio non installato o tabella assente: non è un guasto
+     * dell'esercizio, si resta sul calendario civile. */
+    v = {
+      projectId: null, candidati: 0,
+      nota: "Calendario aziendale non leggibile: classi basate su giorno della "
+        + "settimana e festività nazionali.",
+    };
+  }
+  cachedPredefinito = { v, at: Date.now() };
+  return v;
+}
+
 async function loadProfile(projectId: string): Promise<CalendarProfile> {
   const r = await db.execute<any>(sql`
     SELECT closed_periods, summer_period, extra_holidays

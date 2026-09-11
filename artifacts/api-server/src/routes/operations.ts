@@ -35,7 +35,7 @@ import {
   sogliaFuoriPercorso, distanzaDalPercorso,
   type CorsaDaEsaminare, type PosizioneMezzo,
 } from "../lib/anomaly-detection";
-import { loadCalendarProfile } from "../lib/planning-studio-calendar";
+import { loadCalendarProfile, calendarioPredefinito } from "../lib/planning-studio-calendar";
 
 const router: IRouter = Router();
 
@@ -878,7 +878,13 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
      * indicato si classifica comunque per giorno della settimana e festività
      * nazionali, e si dichiara che scuole aperte/chiuse non è distinguibile.
      * Meglio tre classi corrette che una sola sbagliata. */
-    const psProjectId = String(req.query.psProjectId ?? "") || null;
+    /* Se l'indirizzo non porta un progetto, si cerca l'unico che abbia un
+     * calendario compilato: passarlo a mano era possibile e non lo faceva
+     * nessuno, e ogni verdetto usciva classificato col solo calendario
+     * civile — agosto trattato come un feriale scolastico qualunque. */
+    const richiesto = String(req.query.psProjectId ?? "") || null;
+    const scoperto = richiesto ? null : await calendarioPredefinito();
+    const psProjectId = richiesto ?? scoperto?.projectId ?? null;
     let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
     let profiloCaricato = false;
     if (psProjectId && UUID_RE.test(psProjectId)) {
@@ -922,12 +928,19 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
       validita: {
         psProjectId: psProjectId ?? undefined,
         profiloCaricato,
+        /* Da dove viene il calendario, e come ci si è arrivati: un verdetto
+         * classificato col calendario sbagliato è plausibile, e per questo
+         * pericoloso. Chi legge deve poter controllare la scelta. */
+        scelto: richiesto ? "indicato" : (scoperto?.projectId ? "riconosciuto" : "assente"),
         nota: profiloCaricato
-          ? "Classi dal calendario aziendale del progetto indicato."
-          : "Nessun calendario aziendale indicato: le giornate sono classificate "
-            + "per giorno della settimana e festività nazionali, ma scuole aperte "
-            + "e scuole chiuse non sono distinguibili. Passa ?psProjectId=… per "
-            + "ottenere le classi complete.",
+          ? (richiesto
+            ? "Classi dal calendario aziendale del progetto indicato."
+            : scoperto?.nota ?? "Classi dal calendario aziendale riconosciuto.")
+          : (scoperto?.nota
+            ?? "Nessun calendario aziendale: le giornate sono classificate per "
+             + "giorno della settimana e festività nazionali, ma scuole aperte e "
+             + "scuole chiuse non sono distinguibili. Passa ?psProjectId=… per "
+             + "ottenere le classi complete."),
         classiOsservate: [...new Set(gruppi.map(g => g.classeLabel))].sort(),
       },
       /* Una riga per (corsa, classe di giornata): è il taglio su cui si
@@ -1805,7 +1818,13 @@ router.get("/operations/trips/:tripId/runtime-history", async (req, res): Promis
 
     /* Stesso calendario del verdetto di corsa: due risposte diverse sulla
      * stessa domanda sarebbero peggio di nessuna risposta. */
-    const psProjectId = String(req.query.psProjectId ?? "") || null;
+    /* Se l'indirizzo non porta un progetto, si cerca l'unico che abbia un
+     * calendario compilato: passarlo a mano era possibile e non lo faceva
+     * nessuno, e ogni verdetto usciva classificato col solo calendario
+     * civile — agosto trattato come un feriale scolastico qualunque. */
+    const richiesto = String(req.query.psProjectId ?? "") || null;
+    const scoperto = richiesto ? null : await calendarioPredefinito();
+    const psProjectId = richiesto ?? scoperto?.projectId ?? null;
     let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
     let profiloCaricato = false;
     if (psProjectId && UUID_RE.test(psProjectId)) {
@@ -1877,11 +1896,15 @@ router.get("/operations/trips/:tripId/runtime-history", async (req, res): Promis
       validita: {
         psProjectId: psProjectId ?? undefined,
         profiloCaricato,
+        scelto: richiesto ? "indicato" : (scoperto?.projectId ? "riconosciuto" : "assente"),
         nota: profiloCaricato
-          ? "Classi di giornata dal calendario aziendale del progetto indicato."
-          : "Senza progetto Planner Studio le classi si basano su giorno della "
-            + "settimana e festività nazionali: scuole aperte e chiuse non sono "
-            + "distinguibili.",
+          ? (richiesto
+            ? "Classi di giornata dal calendario aziendale del progetto indicato."
+            : scoperto?.nota ?? "Classi di giornata dal calendario riconosciuto.")
+          : (scoperto?.nota
+            ?? "Senza progetto Planner Studio le classi si basano su giorno della "
+             + "settimana e festività nazionali: scuole aperte e chiuse non sono "
+             + "distinguibili."),
       },
       classiDisponibili: [...altreClassi.values()]
         .map(a => ({ classe: a.classe, label: a.label, giornate: a.giornate.size }))

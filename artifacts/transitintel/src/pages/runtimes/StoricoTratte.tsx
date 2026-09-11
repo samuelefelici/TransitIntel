@@ -67,7 +67,12 @@ interface Risposta {
   tripId?: string;
   days?: number;
   nota?: string;
-  validita?: { psProjectId?: string; profiloCaricato: boolean; nota: string };
+  validita?: {
+    psProjectId?: string;
+    scelto?: "indicato" | "riconosciuto" | "assente";
+    profiloCaricato: boolean;
+    nota: string;
+  };
   classiDisponibili?: Array<{ classe: string; label: string; giornate: number }>;
   storico: Storico | null;
 }
@@ -165,8 +170,16 @@ export default function StoricoTratte({ tripId, days }: { tripId: string; days: 
         {st.nota}
       </div>
 
-      {!d.validita?.profiloCaricato && (
-        <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-200/90 leading-relaxed">
+      {/* Ambra quando le scuole NON sono distinguibili: lì i numeri mescolano
+          settembre e agosto. Neutro quando il calendario c'è ma l'ha scelto il
+          sistema: è un'informazione, non un allarme — però va detta, perché
+          chi legge deve sapere che può indicarne un altro. */}
+      {(!d.validita?.profiloCaricato || d.validita?.scelto === "riconosciuto") && (
+        <div className={`px-3 py-2 rounded-lg text-[10px] leading-relaxed border ${
+          d.validita?.profiloCaricato
+            ? "bg-white/5 border-border/50 text-muted-foreground"
+            : "bg-amber-500/10 border-amber-500/30 text-amber-200/90"
+        }`}>
           {d.validita?.nota}
         </div>
       )}
