@@ -1002,6 +1002,11 @@ export interface MappedVehicle {
   siri: SiriVehicle;
   tripId: string | null;
   routeId: string | null;
+  /** come si è arrivati alla corsa: serve a sapere quali controlli successivi
+   *  sarebbero solo la ripetizione del criterio di scelta */
+  agganciatoCome: "id" | "orario" | null;
+  /** la linea l'ha detta l'AVM (true) o l'abbiamo dedotta dalla corsa (false) */
+  lineaDichiarata: boolean;
   /** fermata corrente (MonitoredCall) agganciata al GTFS */
   nearestStopId: string | null;
   /** transiti GIÀ AVVENUTI, con fermata agganciata */
@@ -1172,6 +1177,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     // La linea: numero pubblicato, poi id interno, poi quella della corsa agganciata
     const r = resolveRoute(v, index);
     let routeId = r.routeId;
+    const lineaDichiarata = !!r.routeId;
     if (r.how === "published") byPublished++;
     else if (r.how === "routeRef") byRouteRef++;
     else if (r.how === "longName") byLongName++;
@@ -1252,7 +1258,10 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
         delaySeconds: c.delaySeconds,
       });
     }
-    return { siri: v, tripId, routeId, nearestStopId, transits };
+    return {
+      siri: v, tripId, routeId, nearestStopId, transits, lineaDichiarata,
+      agganciatoCome: tripId ? (byId ? "id" : "orario") : null,
+    };
   });
 
   return {
@@ -1612,6 +1621,9 @@ export interface TransitFunnel {
   transitiDaCambioFermata: number;
   /** ── dichiarati dall'AVM con orario effettivo ── */
   transitiDichiarati: number;
+  /** corse agganciate che l'AVM smentisce: i loro passaggi NON vengono
+   *  scritti, perché uno storico sbagliato resta */
+  agganciIncoerenti: number;
   /** ── esito ── */
   inseriti: number;
   giaPresenti: number;
@@ -1623,7 +1635,8 @@ export function emptyFunnel(): TransitFunnel {
     posizioneScaduta: 0,
     conGeometriaFermate: 0, vicinoAFermata: 0, transitiDaPosizione: 0,
     conFermataAvm: 0, conLetturaPrecedente: 0, fermataCambiata: 0,
-    transitiDaCambioFermata: 0, transitiDichiarati: 0, inseriti: 0, giaPresenti: 0,
+    transitiDaCambioFermata: 0, transitiDichiarati: 0, agganciIncoerenti: 0,
+    inseriti: 0, giaPresenti: 0,
   };
 }
 
@@ -1640,6 +1653,13 @@ export function explainFunnel(f: TransitFunnel): string {
   }
   if (f.conGeometriaFermate === 0) return "Delle corse agganciate non si conoscono le fermate con coordinate: controlla che gtfs_stops abbia stop_lat/stop_lon per questo feed.";
   if (f.inseriti === 0 && f.giaPresenti > 0) return "I passaggi vengono riconosciuti ma risultano già registrati: nessuna novità, non è un guasto.";
+  /* Prima di dare la colpa alle coordinate: se le corse agganciate sono
+   * smentite dall'AVM stesso, i passaggi non sono stati scritti apposta. */
+  if (f.inseriti === 0 && f.agganciIncoerenti > 0) {
+    return `${f.agganciIncoerenti} corse agganciate sono smentite dall'AVM stesso: i `
+      + "loro passaggi non vengono scritti. Guarda /api/siri/aggancio per "
+      + "vedere che cosa non torna.";
+  }
   if (f.vicinoAFermata === 0) return "Nessun mezzo si trova entro il raggio di una fermata della propria corsa: o le coordinate del feed non combaciano con quelle dell'AVM, o le corse agganciate sono quelle sbagliate.";
   if (f.inseriti === 0) return "Mezzi riconosciuti alle fermate ma nessuna scrittura riuscita: guarda primoErrore.";
   return `${f.inseriti} passaggi registrati in questo giro.`;

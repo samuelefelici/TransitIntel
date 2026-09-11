@@ -149,9 +149,11 @@ export function distanzaDaSegmento(
   return Math.hypot(px - cx, py - cy);
 }
 
-/** Distanza dal percorso: il minimo fra tutte le tratte della corsa. */
+/** Distanza dal percorso: il minimo fra tutte le tratte della corsa.
+ *  Chiede solo le coordinate perché serve anche a chi ha in mano le fermate
+ *  del feed (`TripStop`) e non una corsa già ricostruita. */
 export function distanzaDalPercorso(
-  lat: number, lon: number, fermate: FermataCorsa[],
+  lat: number, lon: number, fermate: Array<{ lat: number | null; lon: number | null }>,
 ): number | null {
   const punti = fermate.filter(f => f.lat != null && f.lon != null);
   if (punti.length < 2) return null;
