@@ -580,6 +580,124 @@ export interface VehicleCompleteness {
   fuoriLinea: number;
 }
 
+/* ── Stato del parco: quali apparati di bordo funzionano ──────────────────
+ * L'AVM dichiara per ogni vettura se la sta seguendo, da quando non la sente e
+ * perché. Su 368 mezzi, 298 riportano un errore di monitoraggio e alcuni un
+ * ultimo contatto di mesi prima. Finora quel dato serviva solo a scartare le
+ * posizioni vecchie, e finiva lì.
+ *
+ * Letto per vettura invece che come filtro, è un elenco di apparati da
+ * verificare — l'unica informazione di questo flusso che riguarda il mezzo e
+ * non il servizio, e l'unica che nessun altro sistema aziendale produce.
+ *
+ * Le due cause NON sono la stessa cosa e non si riparano allo stesso modo:
+ * "GPRS" è la SIM o la copertura — l'apparato può funzionare benissimo e non
+ * riuscire a parlare; "GPS" è l'antenna o la sua posizione — il mezzo
+ * comunica, ma non sa dove si trova.
+ */
+export type StatoVettura =
+  /** sta facendo una corsa */
+  | "in_servizio"
+  /** l'AVM la segue, posizione fresca, nessuna corsa avviata a bordo */
+  | "pronta"
+  /** dichiarata in rimessa */
+  | "in_rimessa"
+  /** l'apparato non riesce a comunicare: SIM o copertura */
+  | "senza_rete"
+  /** comunica ma non aggancia la posizione: antenna */
+  | "senza_gps"
+  /** nessun contatto utile da giorni: apparato spento o guasto */
+  | "muta";
+
+export interface VetturaDiagnostica {
+  vehicleRef: string;
+  stato: StatoVettura;
+  /** da quanti secondi l'AVM non riceve un aggiornamento */
+  etaContattoSec: number | null;
+  ultimoContatto: string | null;
+  errore: string | null;
+  progressStatus: string | null;
+  linea: string | null;
+  haPosizione: boolean;
+}
+
+/** Oltre un giorno senza contatto non è un disservizio momentaneo. */
+const MUTA_SEC = 24 * 3600;
+
+export function diagnosiVettura(v: SiriVehicle, now = Date.now()): VetturaDiagnostica {
+  const eta = fixAgeSeconds(v, now);
+  const base = {
+    vehicleRef: v.vehicleRef ?? "(senza matricola)",
+    etaContattoSec: eta,
+    ultimoContatto: v.recordedAt ? v.recordedAt.toISOString() : null,
+    errore: v.monitoringError,
+    progressStatus: v.progressStatus,
+    linea: v.publishedLineName ?? v.lineRef,
+    haPosizione: v.lat != null && v.lon != null,
+  };
+
+  /* L'ordine conta: un mezzo in corsa resta "in servizio" anche se l'ultimo
+   * contatto è vecchio di un minuto, mentre uno muto da un giorno è un
+   * problema di apparato qualunque cosa dichiari il resto. */
+  if (eta != null && eta > MUTA_SEC) return { ...base, stato: "muta" };
+  if (v.journeyRef && !v.inDepot && !v.withoutService) {
+    return { ...base, stato: "in_servizio" };
+  }
+  if (v.monitoringError === "GPRS") return { ...base, stato: "senza_rete" };
+  if (v.monitoringError === "GPS") return { ...base, stato: "senza_gps" };
+  if (v.inDepot) return { ...base, stato: "in_rimessa" };
+  return { ...base, stato: "pronta" };
+}
+
+export interface StatoParco {
+  totale: number;
+  perStato: Array<{ stato: StatoVettura; conteggio: number }>;
+  /** vetture che meritano un intervento, dalla più ferma */
+  daVerificare: VetturaDiagnostica[];
+  /** quota del parco che l'AVM sta seguendo in modo utilizzabile */
+  quotaUtilizzabile: number;
+  nota: string;
+}
+
+/** Quanto è grave, per ordinare il lavoro di officina. */
+const PESO: Record<StatoVettura, number> = {
+  muta: 0, senza_gps: 1, senza_rete: 2, in_rimessa: 3, pronta: 4, in_servizio: 5,
+};
+
+export function statoParco(vehicles: SiriVehicle[], now = Date.now()): StatoParco {
+  const diag = vehicles.map(v => diagnosiVettura(v, now));
+  const conta = new Map<StatoVettura, number>();
+  for (const d of diag) conta.set(d.stato, (conta.get(d.stato) ?? 0) + 1);
+
+  /* In cima le mute da più tempo: è l'ordine in cui si apre un'officina. */
+  const daVerificare = diag
+    .filter(d => d.stato === "muta" || d.stato === "senza_gps" || d.stato === "senza_rete")
+    .sort((a, b) => {
+      const p = PESO[a.stato] - PESO[b.stato];
+      return p !== 0 ? p : (b.etaContattoSec ?? 0) - (a.etaContattoSec ?? 0);
+    });
+
+  const utilizzabili = diag.filter(
+    d => d.stato === "in_servizio" || d.stato === "pronta").length;
+  const mute = conta.get("muta") ?? 0;
+
+  return {
+    totale: diag.length,
+    perStato: [...conta.entries()]
+      .map(([stato, conteggio]) => ({ stato, conteggio }))
+      .sort((a, b) => PESO[a.stato] - PESO[b.stato]),
+    daVerificare,
+    quotaUtilizzabile: diag.length ? Math.round((utilizzabili / diag.length) * 1000) / 1000 : 0,
+    nota: diag.length === 0
+      ? "Nessuna vettura trasmessa."
+      : mute > 0
+        ? `${mute} vetture non danno segno da oltre un giorno: sono apparati da `
+          + "verificare, non mezzi fermi."
+        : `${utilizzabili} vetture su ${diag.length} sono seguite dall'AVM in modo `
+          + "utilizzabile.",
+  };
+}
+
 export function describeCompleteness(vehicles: SiriVehicle[]): VehicleCompleteness {
   const c: VehicleCompleteness = {
     totale: vehicles.length, conPosizione: 0, conLinea: 0, conCorsa: 0,

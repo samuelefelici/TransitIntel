@@ -13,7 +13,7 @@ import Map, { Marker, Popup, Source, Layer, type MapRef } from "react-map-gl/map
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity, AlertTriangle, Bus, Clock, Crosshair, Gauge, ListOrdered,
-  MapPin, Navigation2, Radio, Route, SatelliteDish, TimerOff, TrendingUp, UserX, X,
+  MapPin, Navigation2, Radio, Route, SatelliteDish, TimerOff, TrendingUp, UserX, Wrench, X,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip as ReTooltip, ResponsiveContainer, Cell,
@@ -22,6 +22,7 @@ import { apiFetch } from "@/lib/api";
 import { MAPBOX_TOKEN, MAP_STYLES } from "./dashboard/constants";
 import AvanzamentoCorse from "./operations/AvanzamentoCorse";
 import RegistroAnomalie, { type RegistroResp } from "./operations/RegistroAnomalie";
+import StatoParco, { type ParcoResp } from "./operations/StatoParco";
 
 // ── Tipi (allineati a /api/operations/*) ─────────────────────────────────────
 
@@ -184,6 +185,8 @@ export default function OperationsPage() {
   const [showAvanzamento, setShowAvanzamento] = useState(false);
   /* Che cosa è andato storto, non di quanto: è una domanda diversa. */
   const [showAnomalie, setShowAnomalie] = useState(false);
+  /* Lo stato degli apparati di bordo: riguarda il mezzo, non il servizio. */
+  const [showParco, setShowParco] = useState(false);
   /* I mezzi senza turno macchina restano fuori dalla mappa per default: sono
    * quelli che comparivano come "?" e rendevano illeggibile la flotta. */
   const [showUnassigned, setShowUnassigned] = useState(false);
@@ -201,6 +204,15 @@ export default function OperationsPage() {
     queryFn: () => apiFetch<RegistroResp>("/api/operations/anomalie"),
     enabled: showAnomalie,
     refetchInterval: 120_000,
+  });
+
+  const parcoQ = useQuery({
+    queryKey: ["siri", "parco"],
+    queryFn: () => apiFetch<ParcoResp>("/api/siri/parco"),
+    enabled: showParco,
+    /* Interroga l'AVM in diretta: si aggiorna di rado, uno stato di apparato
+       non cambia di minuto in minuto. */
+    refetchInterval: 300_000,
   });
 
   const punctualityQ = useQuery({
@@ -626,9 +638,9 @@ export default function OperationsPage() {
             )}
           </div>
 
-          <div className="m-1.5 grid grid-cols-3 gap-1.5">
+          <div className="m-1.5 grid grid-cols-2 gap-1.5">
             <button
-              onClick={() => { setShowAnomalie((s) => !s); setShowAvanzamento(false); setShowPunctuality(false); }}
+              onClick={() => { setShowAnomalie((s) => !s); setShowAvanzamento(false); setShowPunctuality(false); setShowParco(false); }}
               className={`px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
                 showAnomalie ? "bg-amber-500/15 text-amber-300" : "bg-white/5 hover:bg-white/10"
               }`}
@@ -637,7 +649,7 @@ export default function OperationsPage() {
               Anomalie
             </button>
             <button
-              onClick={() => { setShowAvanzamento((s) => !s); setShowPunctuality(false); setShowAnomalie(false); }}
+              onClick={() => { setShowAvanzamento((s) => !s); setShowPunctuality(false); setShowAnomalie(false); setShowParco(false); }}
               className={`px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
                 showAvanzamento ? "bg-sky-500/15 text-sky-300" : "bg-white/5 hover:bg-white/10"
               }`}
@@ -646,7 +658,16 @@ export default function OperationsPage() {
               Avanzamento
             </button>
             <button
-              onClick={() => { setShowPunctuality((s) => !s); setShowAvanzamento(false); setShowAnomalie(false); }}
+              onClick={() => { setShowParco((s) => !s); setShowAnomalie(false); setShowAvanzamento(false); setShowPunctuality(false); }}
+              className={`px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
+                showParco ? "bg-rose-500/15 text-rose-300" : "bg-white/5 hover:bg-white/10"
+              }`}
+            >
+              <Wrench className="w-3.5 h-3.5" />
+              Parco
+            </button>
+            <button
+              onClick={() => { setShowPunctuality((s) => !s); setShowAvanzamento(false); setShowAnomalie(false); setShowParco(false); }}
               className={`px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
                 showPunctuality ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 hover:bg-white/10"
               }`}
@@ -846,6 +867,23 @@ export default function OperationsPage() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ── Stato del parco: quali apparati funzionano ── */}
+      {showParco && (
+        <div className="absolute left-3 right-3 md:left-80 md:right-6 bottom-3 max-h-[55%] pointer-events-auto bg-background/90 backdrop-blur-xl border border-border/60 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-border/50 flex items-center gap-2">
+            <Wrench className="w-4 h-4 text-rose-400" />
+            <span className="text-sm font-semibold">Stato del parco</span>
+            <span className="text-[10px] text-muted-foreground">
+              gli apparati di bordo — riguarda il mezzo, non il servizio
+            </span>
+            <button onClick={() => setShowParco(false)} className="ml-auto p-1 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <StatoParco dati={parcoQ.data} urlCsv="/api/siri/parco?formato=csv" />
         </div>
       )}
 
