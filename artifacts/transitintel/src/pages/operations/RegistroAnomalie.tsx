@@ -19,9 +19,10 @@
  */
 import { useMemo, useState } from "react";
 import {
-  AlertTriangle, ArrowLeftRight, Clock, Download, MapPinOff,
+  AlertTriangle, ArrowLeftRight, Clock, Download, Map, MapPinOff,
   Rabbit, SkipForward, CircleSlash,
 } from "lucide-react";
+import ProvaPercorso from "./ProvaPercorso";
 
 export type TipoAnomalia =
   | "anticipo_partenza" | "anticipo_percorso" | "ritardo_accumulato"
@@ -30,7 +31,7 @@ export type TipoAnomalia =
 export interface Anomalia {
   tipo: TipoAnomalia;
   gravita: number;
-  confidenza: "certa" | "probabile";
+  confidenza: "certa" | "probabile" | "possibile";
   tripId: string;
   vehicleId: string | null;
   routeShortName: string | null;
@@ -87,6 +88,9 @@ export default function RegistroAnomalie({
   onApriCorsa?: (tripId: string) => void;
 }) {
   const [filtro, setFiltro] = useState<TipoAnomalia | null>(null);
+  /* Una mappa per volta: aperte tutte insieme sono una pagina che non si
+     scorre più, e ognuna è una richiesta al server. */
+  const [mappaAperta, setMappaAperta] = useState<string | null>(null);
 
   const visibili = useMemo(
     () => (dati?.anomalie ?? []).filter(a => !filtro || a.tipo === filtro),
@@ -167,9 +171,16 @@ export default function RegistroAnomalie({
         {visibili.map((a, i) => {
           const seg = SEGNO[a.tipo];
           const Ico = seg.icona;
+          const chiave = `${a.tripId}-${a.day}-${a.tipo}-${i}`;
+          /* Il fuori percorso è l'unica anomalia che afferma qualcosa sul
+             modo di guidare di una persona. La prova deve stare sotto
+             l'accusa, a un clic: mandarla in un'altra pagina significa che
+             quasi nessuno la guarderà. */
+          const verificabile = a.tipo === "fuori_percorso";
+          const aperta = mappaAperta === chiave;
           return (
+            <div key={chiave}>
             <button
-              key={`${a.tripId}-${a.day}-${a.tipo}-${i}`}
               onClick={() => onApriCorsa?.(a.tripId)}
               className="w-full text-left px-4 py-2.5 flex gap-3 hover:bg-white/[0.03] transition-colors"
             >
@@ -187,12 +198,24 @@ export default function RegistroAnomalie({
                   <span className="text-xs font-semibold" style={{ color: seg.colore }}>
                     {a.titolo}
                   </span>
+                  {/* Due gradi diversi di cautela, e non vanno confusi: nel
+                      primo la misura è buona e ambigua è la causa; nel secondo
+                      è la misura stessa a essere approssimata. Chi legge deve
+                      sapere quale delle due, perché cambia cosa può dire. */}
                   {a.confidenza === "probabile" && (
                     <span
                       className="px-1.5 py-px rounded text-[9px] font-medium border border-border/60 text-muted-foreground"
                       title="Il dato è compatibile con più spiegazioni: da guardare prima di trarne conclusioni"
                     >
                       da verificare
+                    </span>
+                  )}
+                  {a.confidenza === "possibile" && (
+                    <span
+                      className="px-1.5 py-px rounded text-[9px] font-medium border border-amber-500/40 bg-amber-500/10 text-amber-300"
+                      title="Manca il riferimento giusto per misurarlo con precisione: guarda prima di parlarne con qualcuno"
+                    >
+                      misura approssimata
                     </span>
                   )}
                   <span className="ml-auto text-[10px] font-mono text-muted-foreground">
@@ -215,6 +238,23 @@ export default function RegistroAnomalie({
                 </span>
               </span>
             </button>
+
+            {verificabile && (
+              <div className="px-4 pb-2.5 -mt-1">
+                <button
+                  onClick={() => setMappaAperta(aperta ? null : chiave)}
+                  className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-[10px] bg-white/5 hover:bg-white/10 border border-border/60 transition-colors">
+                  <Map className="w-3 h-3" />
+                  {aperta ? "Chiudi la mappa" : "Vedi dove è passato"}
+                </button>
+                {aperta && (
+                  <div className="mt-2">
+                    <ProvaPercorso tripId={a.tripId} giorno={a.day} />
+                  </div>
+                )}
+              </div>
+            )}
+            </div>
           );
         })}
 

@@ -11,6 +11,7 @@
 import { describe, it, expect } from "vitest";
 import {
   rilevaAnomalie, riepiloga, distanzaDaSegmento, distanzaDalPercorso,
+  sogliaFuoriPercorso,
   type CorsaDaEsaminare, type FermataCorsa,
 } from "../lib/anomaly-detection";
 
@@ -241,5 +242,106 @@ describe("sintesi della giornata", () => {
       ...rilevaAnomalie(conTransito(corsa({ tripId: "X" }), 1, at("07:55:00"))),
     ];
     expect(riepiloga(due).corseCoinvolte).toBe(1);
+  });
+});
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * FUORI PERCORSO: da cosa si misura la distanza
+ * ───────────────────────────────────────────────────────────────────────────
+ * Questa anomalia mette in discussione il lavoro di un conducente. Misurarla
+ * dalla spezzata fra le fermate, che taglia le curve, significa accusare chi
+ * sta semplicemente percorrendo una strada che curva — ed è quello che
+ * facevamo su ogni extraurbana.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+describe("fuori percorso: da cosa si misura la distanza", () => {
+  /* Una extraurbana: due fermate a ~4 km, e in mezzo la strada fa un'ansa
+   * larga. È la geometria delle valli marchigiane, non un caso di scuola. */
+  const A = { lat: 43.6000, lon: 13.3000 };
+  const B = { lat: 43.6000, lon: 13.3500 };
+  /* Il mezzo segue l'ansa: ~600 m a nord della corda, perfettamente in linea. */
+  const ANSA = [
+    { lat: 43.6020, lon: 13.3100 },
+    { lat: 43.6055, lon: 13.3250 },
+    { lat: 43.6020, lon: 13.3400 },
+  ];
+
+  /** Le fermate sono OSSERVATE: senza, `rilevaAnomalie` esce subito come
+   *  "corsa non effettuata" e ogni verifica sul fuori percorso passerebbe a
+   *  vuoto senza aver mai eseguito il controllo. */
+  function extraurbana(over: Partial<CorsaDaEsaminare> = {}): CorsaDaEsaminare {
+    return {
+      tripId: "E1", vehicleId: "448", routeShortName: "44", day: GIORNO,
+      fermate: [
+        { seq: 1, stopId: "A", stopName: "A", lat: A.lat, lon: A.lon,
+          scheduledSec: sec(7, 0), actualTs: at("07:00:00"), osservato: true },
+        { seq: 2, stopId: "B", stopName: "B", lat: B.lat, lon: B.lon,
+          scheduledSec: sec(7, 10), actualTs: at("07:10:00"), osservato: true },
+      ],
+      ...over,
+    };
+  }
+
+  const traccia = (punti: Array<{ lat: number; lon: number }>) =>
+    punti.map((p, i) => ({ ts: at(`07:0${i + 1}:00`), ...p }));
+
+  it("senza il percorso del feed, un mezzo che segue una curva non viene accusato", () => {
+    const c = extraurbana({ posizioni: traccia(ANSA) });
+    /* Il controllo viene eseguito davvero: la corsa risulta effettuata. */
+    expect(rilevaAnomalie(c).some(a => a.tipo === "corsa_non_effettuata")).toBe(false);
+    expect(rilevaAnomalie(c).some(a => a.tipo === "fuori_percorso")).toBe(false);
+  });
+
+  it("la soglia si allarga in proporzione alla distanza fra le fermate", () => {
+    const s = sogliaFuoriPercorso(extraurbana());
+    expect(s.riferimento).toBe("fermate");
+    expect(s.allargata).toBe(true);
+    expect(s.sogliaM).toBeGreaterThan(900);   // ~4 km × 0,25
+  });
+
+  /* In città la spezzata segue la strada da vicino: allargare lì sarebbe
+   * perdere le deviazioni vere. */
+  it("con fermate vicine la soglia resta quella nominale e la misura è buona", () => {
+    const s = sogliaFuoriPercorso(corsa());
+    expect(s.sogliaM).toBe(300);
+    expect(s.allargata).toBe(false);
+  });
+
+  it("col percorso del feed riconosce la deviazione vera, misurata sulla strada", () => {
+    const c = extraurbana({
+      tracciato: [A, ...ANSA, B],
+      posizioni: traccia([
+        { lat: 43.6300, lon: 13.3100 },
+        { lat: 43.6320, lon: 13.3250 },
+        { lat: 43.6300, lon: 13.3400 },
+      ]),
+    });
+    const a = rilevaAnomalie(c).find(x => x.tipo === "fuori_percorso")!;
+    expect(a).toBeDefined();
+    expect(a.confidenza).toBe("probabile");
+    expect(a.misure.riferimento).toBe("tracciato");
+    expect(a.misure.sogliaM).toBe(300);
+  });
+
+  /* Col tracciato, un mezzo SULL'ansa è dove deve essere: la stessa traccia
+   * che senza tracciato era solo "sotto soglia" qui è esattamente in linea. */
+  it("col percorso del feed il mezzo in curva risulta esattamente in linea", () => {
+    const c = extraurbana({ tracciato: [A, ...ANSA, B], posizioni: traccia(ANSA) });
+    expect(rilevaAnomalie(c).some(x => x.tipo === "fuori_percorso")).toBe(false);
+  });
+
+  it("senza tracciato una deviazione vera si vede lo stesso, dichiarata approssimata", () => {
+    const c = extraurbana({
+      posizioni: traccia([
+        { lat: 43.6600, lon: 13.3100 },
+        { lat: 43.6620, lon: 13.3250 },
+        { lat: 43.6600, lon: 13.3400 },
+      ]),
+    });
+    const a = rilevaAnomalie(c).find(x => x.tipo === "fuori_percorso")!;
+    expect(a).toBeDefined();
+    expect(a.confidenza).toBe("possibile");
+    expect(a.dettaglio).toMatch(/spezzata fra le fermate/);
+    expect(a.dettaglio).toMatch(/Guarda la mappa/);
   });
 });

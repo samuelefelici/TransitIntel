@@ -15,6 +15,8 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import MareyChart from "./runtimes/MareyChart";
+import StoricoTratte from "./runtimes/StoricoTratte";
+import CoperturaBanner from "./runtimes/CoperturaBanner";
 import { RuntimesReportExport } from "@/components/RuntimesReportExport";
 
 interface RuntimeSegment {
@@ -79,6 +81,8 @@ interface ByTripResp {
   corse: TripRuntime[];
   validita?: {
     psProjectId?: string;
+    /** come ci si è arrivati: indicato nell'indirizzo, riconosciuto, o assente */
+    scelto?: "indicato" | "riconosciuto" | "assente";
     profiloCaricato: boolean;
     nota: string;
     classiOsservate: string[];
@@ -299,6 +303,10 @@ export default function RuntimesPage() {
         </button>
       </div>
 
+      {/* Prima dei numeri, su quanti se ne stia parlando: una puntualità
+          calcolata su una corsa su dieci non è quella dell'azienda. */}
+      <CoperturaBanner days={days} />
+
       {/* Filtri */}
       <div className="flex flex-wrap items-center gap-2">
         <select value={routeId} onChange={(e) => setRouteId(e.target.value)}
@@ -331,6 +339,9 @@ export default function RuntimesPage() {
         <div className="text-[11px] text-muted-foreground flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className={byTripQ.data.validita.profiloCaricato ? "text-emerald-400" : "text-amber-400"}>
             {byTripQ.data.validita.profiloCaricato ? "Calendario aziendale" : "Calendario civile"}
+            {/* Un calendario scelto dal sistema va detto: chi legge deve sapere
+                che può cambiarlo, non crederlo l'unico possibile. */}
+            {byTripQ.data.validita.scelto === "riconosciuto" && " (riconosciuto)"}
           </span>
           <span>·</span>
           <span>{byTripQ.data.validita.nota}</span>
@@ -555,7 +566,11 @@ export default function RuntimesPage() {
 function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
   const [date, setDate] = useState<string>("");   // "" = ultima giornata osservata
   const [live, setLive] = useState(false);
-  const [detailView, setDetailView] = useState<"marey" | "tabella" | "percorso">("marey");
+  const [detailView, setDetailView] = useState<"marey" | "tabella" | "percorso" | "storico">("marey");
+  /* Le prime tre viste raccontano UNA giornata, la quarta lo storico: tenere
+   * il selettore del giorno visibile sopra i numeri storici farebbe credere
+   * che siano di quel giorno. */
+  const suUnGiorno = detailView !== "storico";
 
   const qs = new URLSearchParams({ days: String(days) });
   if (date) qs.set("date", date);
@@ -583,25 +598,30 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
         <>
           {/* Barra controlli: giornata + aggiornamento live */}
           <div className="flex flex-wrap items-center gap-2 text-[11px]">
-            <span className="text-muted-foreground">Giornata analizzata:</span>
-            <select
-              value={date || (d.day ?? "")}
-              onChange={(e) => setDate(e.target.value)}
-              className="px-2 py-1 rounded bg-card border border-border/60 text-[11px] font-mono">
-              {d.availableDays.map((a) => (
-                <option key={a.day} value={a.day}>
-                  {new Date(a.day).toLocaleDateString("it-IT")} · {a.transits} transiti
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={() => setLive((v) => !v)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded border transition-colors ${
-                live ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300" : "bg-white/5 border-border/60 text-muted-foreground hover:bg-white/10"}`}>
-              <Radio className={`w-3 h-3 ${live ? "animate-pulse" : ""}`} /> {live ? "Tempo reale (15s)" : "Aggiorna in tempo reale"}
-            </button>
-            {/* Tre viste, tre domande diverse: dove si perde tempo · quali
-                fermate sono state fatte · i numeri esatti. */}
+            {suUnGiorno && (
+              <>
+                <span className="text-muted-foreground">Giornata analizzata:</span>
+                <select
+                  value={date || (d.day ?? "")}
+                  onChange={(e) => setDate(e.target.value)}
+                  className="px-2 py-1 rounded bg-card border border-border/60 text-[11px] font-mono">
+                  {d.availableDays.map((a) => (
+                    <option key={a.day} value={a.day}>
+                      {new Date(a.day).toLocaleDateString("it-IT")} · {a.transits} transiti
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setLive((v) => !v)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded border transition-colors ${
+                    live ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300" : "bg-white/5 border-border/60 text-muted-foreground hover:bg-white/10"}`}>
+                  <Radio className={`w-3 h-3 ${live ? "animate-pulse" : ""}`} /> {live ? "Tempo reale (15s)" : "Aggiorna in tempo reale"}
+                </button>
+              </>
+            )}
+            {/* Quattro viste, quattro domande diverse: dove si perde tempo oggi ·
+                quali fermate sono state fatte · i numeri esatti · e su cosa si
+                fonda il verdetto, che è l'unica che guarda oltre la giornata. */}
             <div className="flex rounded overflow-hidden border border-border/60 ml-auto">
               <button onClick={() => setDetailView("marey")}
                 title="Dove la corsa perde o guadagna tempo lungo il percorso"
@@ -618,13 +638,22 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
                 className={`px-2.5 py-1 transition-colors ${detailView === "tabella" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
                 Tabella
               </button>
+              <button onClick={() => setDetailView("storico")}
+                title="Su quale tratta il verdetto si fonda, su tutte le giornate della stessa classe"
+                className={`px-2.5 py-1 transition-colors ${detailView === "storico" ? "bg-rose-500/20 text-rose-300 font-semibold" : "hover:bg-white/5 text-muted-foreground"}`}>
+                Storico tratte
+              </button>
             </div>
-            <span className="text-muted-foreground">
-              sosta ≥ {d.dwellSeconds}s entro {d.dwellRadius}m · {t?.gpsPoints ?? 0} punti GPS
-            </span>
+            {suUnGiorno && (
+              <span className="text-muted-foreground">
+                sosta ≥ {d.dwellSeconds}s entro {d.dwellRadius}m · {t?.gpsPoints ?? 0} punti GPS
+              </span>
+            )}
           </div>
 
-          {/* Chip riepilogo */}
+          {/* Chip riepilogo — della GIORNATA: nella vista storica descriverebbero
+              un giorno solo accanto a numeri che ne riassumono decine. */}
+          {suUnGiorno && (
           <div className="flex flex-wrap gap-2 text-[11px]">
             <span className="px-2.5 py-1 rounded-lg bg-white/5 border border-border/50 flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
@@ -647,10 +676,15 @@ function TripRuntimeDetail({ tripId, days }: { tripId: string; days: number }) {
               )}
             </span>
           </div>
+          )}
 
           {/* Il diagramma orario-percorso: la distanza fra le due linee è il
               tempo perso o guadagnato, e si legge DOVE si accumula. */}
           {detailView === "marey" && <MareyChart stops={d.stops} />}
+
+          {/* Lo storico su cui il verdetto della corsa è stato dato: la sola
+              vista che guarda oltre la giornata scelta. */}
+          {detailView === "storico" && <StoricoTratte tripId={tripId} days={days} />}
 
           {/* La linea con i nodi risponde a un'altra domanda: quali fermate
               sono state effettivamente servite. */}

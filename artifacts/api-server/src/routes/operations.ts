@@ -27,12 +27,15 @@ import { schemaState, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema
 import { delayFromSchedule, scheduledSeconds } from "../lib/siri-vm";
 import { completeTransits } from "../lib/transit-completion";
 import { analizzaPercorrenze, coperturaFermate, type CorsaOsservata } from "../lib/runtime-analysis";
+import { storicoCorsa } from "../lib/segment-history";
+import { quadroCopertura, scalaIntervalli } from "../lib/coverage-history";
 import { classifyDate, type CalendarProfile } from "../lib/day-classifier";
 import {
   rilevaAnomalie, riepiloga, ETICHETTE,
+  sogliaFuoriPercorso, distanzaDalPercorso,
   type CorsaDaEsaminare, type PosizioneMezzo,
 } from "../lib/anomaly-detection";
-import { loadCalendarProfile } from "../lib/planning-studio-calendar";
+import { loadCalendarProfile, calendarioPredefinito } from "../lib/planning-studio-calendar";
 
 const router: IRouter = Router();
 
@@ -538,7 +541,7 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
              s.stop_name, s.stop_lat, s.stop_lon,
              COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
              tr.actual_ts, tr.vehicle_id,
-             r.route_short_name
+             r.route_short_name, t.shape_id
         FROM osservate o
         JOIN gtfs_stop_times stt
           ON stt.feed_id = ${feedId}::uuid AND stt.trip_id = o.trip_id
@@ -579,6 +582,14 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
       posPerCorsa.set(k, l);
     }
 
+    /* Il percorso VERO delle corse coinvolte. Senza, la distanza si misura
+     * dalla spezzata fra le fermate, che taglia le curve: su un'extraurbana
+     * con fermate lontane un mezzo perfettamente in linea risulta fuori. */
+    const tracciati = await caricaTracciati(
+      feedId,
+      [...new Set((corseQ.rows as any[]).map(r => r.shape_id).filter(Boolean).map(String))],
+    );
+
     /* Raggruppa le righe in corse. */
     const corse = new Map<string, CorsaDaEsaminare>();
     for (const r of corseQ.rows as any[]) {
@@ -590,6 +601,7 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
           tripId: String(r.trip_id), vehicleId: null,
           routeShortName: r.route_short_name ?? null,
           day, fermate: [], posizioni: posPerCorsa.get(k),
+          tracciato: r.shape_id ? tracciati.get(String(r.shape_id)) : undefined,
         };
         corse.set(k, c);
       }
@@ -866,7 +878,13 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
      * indicato si classifica comunque per giorno della settimana e festività
      * nazionali, e si dichiara che scuole aperte/chiuse non è distinguibile.
      * Meglio tre classi corrette che una sola sbagliata. */
-    const psProjectId = String(req.query.psProjectId ?? "") || null;
+    /* Se l'indirizzo non porta un progetto, si cerca l'unico che abbia un
+     * calendario compilato: passarlo a mano era possibile e non lo faceva
+     * nessuno, e ogni verdetto usciva classificato col solo calendario
+     * civile — agosto trattato come un feriale scolastico qualunque. */
+    const richiesto = String(req.query.psProjectId ?? "") || null;
+    const scoperto = richiesto ? null : await calendarioPredefinito();
+    const psProjectId = richiesto ?? scoperto?.projectId ?? null;
     let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
     let profiloCaricato = false;
     if (psProjectId && UUID_RE.test(psProjectId)) {
@@ -910,12 +928,19 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
       validita: {
         psProjectId: psProjectId ?? undefined,
         profiloCaricato,
+        /* Da dove viene il calendario, e come ci si è arrivati: un verdetto
+         * classificato col calendario sbagliato è plausibile, e per questo
+         * pericoloso. Chi legge deve poter controllare la scelta. */
+        scelto: richiesto ? "indicato" : (scoperto?.projectId ? "riconosciuto" : "assente"),
         nota: profiloCaricato
-          ? "Classi dal calendario aziendale del progetto indicato."
-          : "Nessun calendario aziendale indicato: le giornate sono classificate "
-            + "per giorno della settimana e festività nazionali, ma scuole aperte "
-            + "e scuole chiuse non sono distinguibili. Passa ?psProjectId=… per "
-            + "ottenere le classi complete.",
+          ? (richiesto
+            ? "Classi dal calendario aziendale del progetto indicato."
+            : scoperto?.nota ?? "Classi dal calendario aziendale riconosciuto.")
+          : (scoperto?.nota
+            ?? "Nessun calendario aziendale: le giornate sono classificate per "
+             + "giorno della settimana e festività nazionali, ma scuole aperte e "
+             + "scuole chiuse non sono distinguibili. Passa ?psProjectId=… per "
+             + "ottenere le classi complete."),
         classiOsservate: [...new Set(gruppi.map(g => g.classeLabel))].sort(),
       },
       /* Una riga per (corsa, classe di giornata): è il taglio su cui si
@@ -1406,6 +1431,485 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       },
       stops,
       missing,
+    });
+  } catch (e: any) {
+    res.status(500).json(dbError(e));
+  }
+});
+
+/* ── Percorso reale della corsa ───────────────────────────────────────────
+ * `gtfs_shapes.geojson` è la strada che la corsa dovrebbe fare. Serve in due
+ * punti che devono dire la stessa cosa: il rilevamento del fuori percorso e
+ * la mappa su cui lo si verifica. Se fossero due letture diverse, la mappa
+ * potrebbe assolvere ciò che il registro accusa. */
+
+/** Le coordinate di una geometria GeoJSON, comunque il feed l'abbia scritta. */
+export function coordinateDaGeojson(g: any): Array<{ lat: number; lon: number }> | null {
+  const geom = g?.type === "Feature" ? g.geometry : g;
+  if (!geom) return null;
+  const pezzi: number[][][] =
+    geom.type === "LineString" && Array.isArray(geom.coordinates) ? [geom.coordinates]
+    : geom.type === "MultiLineString" && Array.isArray(geom.coordinates) ? geom.coordinates
+    : [];
+  /* GeoJSON scrive [lon, lat]: invertirli manda il percorso in Somalia, e il
+   * confronto con le posizioni non se ne accorgerebbe — direbbe solo che ogni
+   * mezzo è fuori percorso. */
+  const punti = pezzi.flat()
+    .filter(c => Array.isArray(c) && c.length >= 2
+      && Number.isFinite(Number(c[0])) && Number.isFinite(Number(c[1])))
+    .map(c => ({ lat: Number(c[1]), lon: Number(c[0]) }));
+  return punti.length >= 2 ? punti : null;
+}
+
+async function caricaTracciati(
+  feedId: string | null, shapeIds: string[],
+): Promise<Map<string, Array<{ lat: number; lon: number }>>> {
+  const out = new Map<string, Array<{ lat: number; lon: number }>>();
+  if (!feedId || shapeIds.length === 0) return out;
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT shape_id, geojson FROM gtfs_shapes
+       WHERE feed_id = ${feedId}::uuid
+         AND shape_id = ANY(${`{${shapeIds.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])`);
+    for (const x of ((r as any).rows ?? [])) {
+      const punti = coordinateDaGeojson(x.geojson);
+      if (punti) out.set(String(x.shape_id), punti);
+    }
+  } catch (e: any) {
+    /* Un feed senza gtfs_shapes non deve spegnere il registro anomalie: si
+     * ricade sulla spezzata fra le fermate, che è ciò che si faceva prima. */
+    console.warn("[operations] percorsi non disponibili:", e?.message ?? e);
+  }
+  return out;
+}
+
+// ── GET /operations/copertura?days= — quanto del servizio riusciamo a vedere
+/* Sta sotto ogni altro numero del prodotto: una puntualità calcolata sul 9%
+ * delle corse non è la puntualità dell'azienda, è quella di un campione che
+ * nessuno ha scelto. E serve a dire al fornitore che cosa cambierebbe alzando
+ * la frequenza — con un conto, non con un desiderio. */
+router.get("/operations/copertura", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, quadro: null });
+      return;
+    }
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 180);
+    const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+    const fVp = (await soloSiri("vp")).filtro;
+
+    /* Vetture e passo delle letture, dal flusso delle posizioni. Il passo si
+     * misura PER MEZZO: la mediana degli intervalli fra letture consecutive
+     * dello stesso veicolo, che è la cadenza con cui lo vediamo muoversi. */
+    const posQ = await db.execute<any>(sql`
+      WITH letture AS (
+        SELECT vehicle_id, ts::date AS day, ts,
+               ts - LAG(ts) OVER (PARTITION BY vehicle_id, ts::date ORDER BY ts) AS salto
+          FROM caronte.vehicle_positions vp
+         WHERE ${fVp}
+           AND ts > now() - (${days} * interval '1 day')
+           AND lat IS NOT NULL AND lon IS NOT NULL
+      )
+      SELECT day::text AS day,
+             COUNT(DISTINCT vehicle_id)::int AS vetture_con_posizione,
+             /* I salti enormi sono pause di servizio, non cadenza: oltre dieci
+              * minuti si sta misurando quando il mezzo è rientrato, non ogni
+              * quanto trasmette. */
+             percentile_cont(0.5) WITHIN GROUP (
+               ORDER BY EXTRACT(EPOCH FROM salto)
+             ) FILTER (WHERE salto IS NOT NULL
+                         AND EXTRACT(EPOCH FROM salto) BETWEEN 1 AND 600) AS passo_sec
+        FROM letture
+       GROUP BY 1`);
+
+    const transitiQ = await db.execute<any>(sql`
+      SELECT actual_ts::date::text AS day,
+             COUNT(*)::int AS transiti,
+             COUNT(DISTINCT trip_id)::int AS corse_con_transito,
+             COUNT(DISTINCT vehicle_id)::int AS vetture
+        FROM caronte.stop_transits st
+       WHERE ${fSt} AND actual_ts > now() - (${days} * interval '1 day')
+       GROUP BY 1`);
+
+    /* Le fermate programmate SULLE CORSE SEGUITE: il denominatore giusto per
+     * "quante fermate rileviamo". Sul totale del feed misurerebbe soprattutto
+     * quante corse non seguiamo, che è l'altra domanda. */
+    const fermateQ = feedId
+      ? await db.execute<any>(sql`
+          WITH viste AS (
+            SELECT DISTINCT trip_id, actual_ts::date AS day
+              FROM caronte.stop_transits st
+             WHERE ${fSt} AND actual_ts > now() - (${days} * interval '1 day')
+          )
+          SELECT v.day::text AS day, COUNT(*)::int AS fermate_programmate
+            FROM viste v
+            JOIN gtfs_stop_times stt
+              ON stt.feed_id = ${feedId}::uuid AND stt.trip_id = v.trip_id
+           GROUP BY 1`)
+      : null;
+
+    /* Quante corse circolavano quel giorno. Senza calendario non si sa, e la
+     * copertura non è calcolabile: meglio dirlo che dividere per il totale del
+     * feed, che comprende validità non in vigore. */
+    const programmateQ = feedId
+      ? await db.execute<any>(sql`
+          SELECT d::date::text AS day, (
+            SELECT COUNT(*)::int FROM gtfs_trips t
+             WHERE t.feed_id = ${feedId}::uuid
+               AND t.service_id IN (
+                 SELECT c.service_id FROM gtfs_calendar c
+                  WHERE c.feed_id = ${feedId}::uuid
+                    AND c.start_date <= to_char(d, 'YYYYMMDD')
+                    AND c.end_date   >= to_char(d, 'YYYYMMDD')
+                    AND CASE EXTRACT(ISODOW FROM d)::int
+                          WHEN 1 THEN c.monday    WHEN 2 THEN c.tuesday
+                          WHEN 3 THEN c.wednesday WHEN 4 THEN c.thursday
+                          WHEN 5 THEN c.friday    WHEN 6 THEN c.saturday
+                          ELSE c.sunday END = 1
+               )) AS corse_programmate
+            FROM generate_series(
+              (now() - (${days} * interval '1 day'))::date, now()::date, interval '1 day') d`)
+      : null;
+
+    const per = <T,>(rows: any[], f: (r: any) => T) => {
+      const m = new Map<string, T>();
+      for (const r of rows) m.set(String(r.day), f(r));
+      return m;
+    };
+    const pos = per(posQ.rows as any[], r => ({
+      vetture: Number(r.vetture_con_posizione ?? 0),
+      passo: r.passo_sec != null ? Math.round(Number(r.passo_sec)) : null,
+    }));
+    const tra = per(transitiQ.rows as any[], r => ({
+      transiti: Number(r.transiti ?? 0),
+      corse: Number(r.corse_con_transito ?? 0),
+      vetture: Number(r.vetture ?? 0),
+    }));
+    const fer = per(((fermateQ as any)?.rows ?? []), r => Number(r.fermate_programmate ?? 0));
+    const prog = per(((programmateQ as any)?.rows ?? []), r => {
+      const n = Number(r.corse_programmate ?? 0);
+      return n > 0 ? n : null;
+    });
+
+    const giornate = [...new Set([...pos.keys(), ...tra.keys()])].map(day => ({
+      day,
+      vetture: Math.max(tra.get(day)?.vetture ?? 0, pos.get(day)?.vetture ?? 0),
+      vettureConPosizione: pos.get(day)?.vetture ?? 0,
+      corseProgrammate: prog.get(day) ?? null,
+      corseConTransito: tra.get(day)?.corse ?? 0,
+      transiti: tra.get(day)?.transiti ?? 0,
+      fermateProgrammate: fer.get(day) ?? 0,
+      passoLettureSec: pos.get(day)?.passo ?? null,
+    }));
+
+    const configurato = Number(process.env.SIRI_POLL_SECONDS) || null;
+    const quadro = quadroCopertura(giornate, configurato);
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const testata = ["giorno", "vetture", "vetture_con_posizione", "corse_programmate",
+        "corse_con_transito", "quota_corse", "transiti", "fermate_programmate",
+        "quota_fermate", "passo_letture_sec"];
+      const righe = quadro.giorni.map(g => [
+        g.day, g.vetture, g.vettureConPosizione, g.corseProgrammate ?? "",
+        g.corseConTransito, g.quotaCorse ?? "", g.transiti, g.fermateProgrammate,
+        g.quotaFermate ?? "", g.passoLettureSec ?? "",
+      ]);
+      const csv = [testata, ...righe]
+        .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="copertura-${new Date().toISOString().slice(0, 10)}.csv"`);
+      res.send("﻿" + csv);
+      return;
+    }
+
+    res.json({
+      caronteAvailable: true, days,
+      intervalloConfiguratoSec: configurato,
+      quadro,
+      /* La tabella da mettere in una richiesta al fornitore: non "vorremmo un
+       * refresh più frequente", ma che cosa cambia a ciascun intervallo. */
+      scalaIntervalli: scalaIntervalli(),
+    });
+  } catch (e: any) {
+    res.status(500).json(dbError(e));
+  }
+});
+
+// ── GET /operations/trips/:tripId/percorso?date= — la prova del fuori percorso
+/* Il registro dice "fuori percorso, fino a 840 m dal tracciato". È un'accusa
+ * al lavoro di qualcuno, e finora chi la leggeva non aveva modo di
+ * controllarla: cantiere, deviazione decisa, o salto del GPS si somigliano
+ * tutti in un numero. Qui ci sono le due linee da sovrapporre — dove il mezzo
+ * è passato davvero e dove sarebbe dovuto passare — e si decide guardando.
+ *
+ * Dichiara sempre SU COSA la distanza è stata misurata: una spezzata fra
+ * fermate lontane taglia le curve, e chi guarda la mappa deve sapere che la
+ * linea grigia non è la strada ma la sua corda. */
+router.get("/operations/trips/:tripId/percorso", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, percorso: null });
+      return;
+    }
+    const tripId = String(req.params.tripId);
+    const reqDate = String(req.query.date ?? "");
+    const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+    const fVp = (await soloSiri("vp")).filtro;
+
+    const giorniQ = await db.execute<any>(sql`
+      SELECT ts::date AS day, COUNT(*)::int AS punti
+        FROM caronte.vehicle_positions vp
+       WHERE ${fVp} AND trip_id = ${tripId}
+         AND ts > now() - interval '60 days'
+         AND lat IS NOT NULL AND lon IS NOT NULL
+       GROUP BY 1 ORDER BY 1 DESC LIMIT 60`);
+    const giorniDisponibili = (giorniQ.rows as any[]).map(r => ({
+      day: typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10),
+      punti: Number(r.punti),
+    }));
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(reqDate)
+      ? reqDate : (giorniDisponibili[0]?.day ?? null);
+
+    const infoQ = feedId
+      ? await db.execute<any>(sql`
+          SELECT t.shape_id, t.trip_headsign, r.route_short_name, r.route_color
+            FROM gtfs_trips t
+            LEFT JOIN gtfs_routes r ON r.feed_id = t.feed_id AND r.route_id = t.route_id
+           WHERE t.feed_id = ${feedId}::uuid AND t.trip_id = ${tripId} LIMIT 1`)
+      : null;
+    const info = (infoQ as any)?.rows?.[0] ?? null;
+
+    const fermateQ = feedId
+      ? await db.execute<any>(sql`
+          SELECT stt.stop_sequence AS seq, stt.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
+                 COALESCE(stt.arrival_time, stt.departure_time) AS scheduled
+            FROM gtfs_stop_times stt
+            LEFT JOIN gtfs_stops s ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
+           WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
+           ORDER BY stt.stop_sequence`)
+      : null;
+    const fermate = ((fermateQ as any)?.rows ?? []).map((r: any) => ({
+      seq: Number(r.seq), stopId: String(r.stop_id), stopName: r.stop_name ?? null,
+      lat: r.stop_lat != null ? Number(r.stop_lat) : null,
+      lon: r.stop_lon != null ? Number(r.stop_lon) : null,
+      scheduled: r.scheduled ?? null,
+    }));
+
+    const tracciati = await caricaTracciati(feedId, info?.shape_id ? [String(info.shape_id)] : []);
+    const tracciato = info?.shape_id ? tracciati.get(String(info.shape_id)) ?? null : null;
+
+    const posQ = day
+      ? await db.execute<any>(sql`
+          SELECT ts, lat, lon, speed FROM caronte.vehicle_positions vp
+           WHERE ${fVp} AND trip_id = ${tripId} AND ts::date = ${day}::date
+             AND lat IS NOT NULL AND lon IS NOT NULL
+           ORDER BY ts LIMIT 5000`)
+      : null;
+    const traccia = ((posQ as any)?.rows ?? []).map((r: any) => ({
+      ts: new Date(r.ts).toISOString(), lat: Number(r.lat), lon: Number(r.lon),
+      speed: r.speed != null ? Number(r.speed) : null,
+    }));
+
+    const transitiQ = day
+      ? await db.execute<any>(sql`
+          SELECT stop_id, actual_ts FROM caronte.stop_transits st
+           WHERE ${fSt} AND trip_id = ${tripId} AND actual_ts::date = ${day}::date`)
+      : null;
+    const osservate = new Set(((transitiQ as any)?.rows ?? []).map((r: any) => String(r.stop_id)));
+
+    /* La stessa regola del registro, non una seconda: se la mappa misurasse
+     * diversamente potrebbe assolvere ciò che il registro accusa. */
+    const rif = sogliaFuoriPercorso({ fermate, tracciato: tracciato ?? undefined });
+    const scostamenti = traccia.map((p: any) => ({
+      ...p,
+      distanzaM: (() => {
+        const d = distanzaDalPercorso(p.lat, p.lon, rif.punti);
+        return d == null ? null : Math.round(d);
+      })(),
+    }));
+    const fuori = scostamenti.filter((p: any) => p.distanzaM != null && p.distanzaM > rif.sogliaM);
+
+    res.json({
+      caronteAvailable: true, tripId, day, giorniDisponibili,
+      linea: info?.route_short_name ?? null,
+      colore: info?.route_color ?? null,
+      capolinea: info?.trip_headsign ?? null,
+      riferimento: {
+        tipo: rif.riferimento,
+        sogliaM: rif.sogliaM,
+        allargata: rif.allargata,
+        nota: rif.riferimento === "tracciato"
+          ? "La linea grigia è il percorso del feed: la strada vera. La distanza "
+            + `è misurata da lì, oltre ${rif.sogliaM} m il mezzo è fuori.`
+          : "Il feed non ha il percorso di questa corsa: la linea grigia unisce le "
+            + "fermate in linea retta e TAGLIA LE CURVE, quindi non è la strada. "
+            + (rif.allargata
+              ? `Qui le fermate sono lontane e la soglia è stata portata a ${rif.sogliaM} m, `
+                + "ma resta una stima: guarda prima di trarne conclusioni."
+              : `Le fermate sono abbastanza vicine perché l'approssimazione regga: soglia ${rif.sogliaM} m.`),
+      },
+      percorso: tracciato,
+      fermate: fermate.map((f: any) => ({ ...f, osservata: osservate.has(f.stopId) })),
+      traccia: scostamenti,
+      fuoriPercorso: {
+        punti: fuori.length,
+        distanzaMassimaM: fuori.length ? Math.max(...fuori.map((p: any) => p.distanzaM)) : 0,
+      },
+    });
+  } catch (e: any) {
+    res.status(500).json(dbError(e));
+  }
+});
+
+// ── GET /operations/trips/:tripId/runtime-history — lo storico dietro il verdetto
+/* `runtime-detail` mostra UNA giornata: serve a capire cosa è successo ieri.
+ * Questo mostra lo STORICO su una classe di giornata — che è ciò su cui il
+ * verdetto "troppo stretto / troppo largo" è stato dato, e finora non si
+ * poteva guardare. Senza, il verdetto è una cosa da credere sulla fiducia;
+ * con, è una tratta con un nome e un numero di minuti.
+ *
+ * Entrano SOLO i transiti osservati: le fermate ricostruite per interpolazione
+ * hanno, per costruzione, il tempo che l'orario concede loro, e mediarle
+ * direbbe sempre che l'orario è perfetto. */
+router.get("/operations/trips/:tripId/runtime-history", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, storico: null });
+      return;
+    }
+    const tripId = String(req.params.tripId);
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 180);
+    const classe = String(req.query.classe ?? "") || null;
+    const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+
+    const fermateRows = feedId
+      ? (await db.execute<any>(sql`
+          SELECT stt.stop_sequence AS seq, stt.stop_id,
+                 COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
+                 s.stop_name
+            FROM gtfs_stop_times stt
+            LEFT JOIN gtfs_stops s
+                   ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
+           WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
+           ORDER BY stt.stop_sequence`)).rows
+      : [];
+
+    if (fermateRows.length === 0) {
+      res.json({
+        caronteAvailable: true, tripId, storico: null,
+        nota: "Questa corsa non ha fermate nel feed attivo: non c'è un percorso "
+          + "su cui riportare lo storico.",
+      });
+      return;
+    }
+
+    const transitiRows = (await db.execute<any>(sql`
+      SELECT actual_ts::date AS day, stop_id, stop_seq, actual_ts
+        FROM caronte.stop_transits st
+       WHERE ${fSt}
+         AND trip_id = ${tripId}
+         AND actual_ts > now() - (${days} * interval '1 day')
+       ORDER BY actual_ts
+       LIMIT 20000`)).rows;
+
+    /* Stesso calendario del verdetto di corsa: due risposte diverse sulla
+     * stessa domanda sarebbero peggio di nessuna risposta. */
+    /* Se l'indirizzo non porta un progetto, si cerca l'unico che abbia un
+     * calendario compilato: passarlo a mano era possibile e non lo faceva
+     * nessuno, e ogni verdetto usciva classificato col solo calendario
+     * civile — agosto trattato come un feriale scolastico qualunque. */
+    const richiesto = String(req.query.psProjectId ?? "") || null;
+    const scoperto = richiesto ? null : await calendarioPredefinito();
+    const psProjectId = richiesto ?? scoperto?.projectId ?? null;
+    let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
+    let profiloCaricato = false;
+    if (psProjectId && UUID_RE.test(psProjectId)) {
+      try { profilo = await loadCalendarProfile(psProjectId); profiloCaricato = true; }
+      catch { /* profilo non leggibile: si resta sul calendario civile */ }
+    }
+    const cacheClassi = new Map<string, { key: string; label: string }>();
+    const classifica = (day: string) => {
+      let c = cacheClassi.get(day);
+      if (!c) {
+        const d = classifyDate(day, profilo);
+        c = { key: d.key, label: d.label };
+        cacheClassi.set(day, c);
+      }
+      return c;
+    };
+
+    const giorno = (v: any) =>
+      typeof v === "string" ? v.slice(0, 10) : new Date(v).toISOString().slice(0, 10);
+
+    const storico = storicoCorsa(
+      fermateRows.map((r: any) => ({
+        seq: Number(r.seq),
+        stopId: String(r.stop_id),
+        stopName: r.stop_name ?? null,
+        scheduled: r.scheduled ?? null,
+      })),
+      transitiRows.map((r: any) => ({
+        day: giorno(r.day),
+        stopId: String(r.stop_id),
+        seq: r.stop_seq != null ? Number(r.stop_seq) : null,
+        actualTs: new Date(r.actual_ts),
+      })),
+      classifica, classe, OPERATOR_TZ,
+    );
+
+    /* Le altre classi si elencano comunque: sapere che esistono è il modo di
+     * accorgersi che il verdetto che si sta guardando non è l'unico. */
+    const altreClassi = new Map<string, { classe: string; label: string; giornate: Set<string> }>();
+    for (const r of transitiRows as any[]) {
+      const d = giorno(r.day);
+      const c = classifica(d);
+      let a = altreClassi.get(c.key);
+      if (!a) { a = { classe: c.key, label: c.label, giornate: new Set() }; altreClassi.set(c.key, a); }
+      a.giornate.add(d);
+    }
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const testata = ["da_seq", "da_fermata", "a_seq", "a_fermata", "fermate_scavalcate",
+        "programmato_sec", "giorni", "mediana_sec", "p85_sec", "min_sec", "max_sec",
+        "scarto_mediana_sec", "scarto_p85_sec", "verdetto"];
+      const righe = storico.tratte.map(t => [
+        t.daSeq, t.daNome ?? t.daStopId, t.aSeq, t.aNome ?? t.aStopId, t.fermateScavalcate,
+        t.programmatoSec ?? "", t.giorni, t.medianaSec, t.p85Sec, t.minSec, t.maxSec,
+        t.scartoMedianaSec ?? "", t.scartoP85Sec ?? "", t.verdetto,
+      ]);
+      const csv = [testata, ...righe]
+        .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"))
+        .join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="tratte-${tripId.replace(/[^\w.-]+/g, "_")}.csv"`);
+      res.send("﻿" + csv);
+      return;
+    }
+
+    res.json({
+      caronteAvailable: true, tripId, days,
+      validita: {
+        psProjectId: psProjectId ?? undefined,
+        profiloCaricato,
+        scelto: richiesto ? "indicato" : (scoperto?.projectId ? "riconosciuto" : "assente"),
+        nota: profiloCaricato
+          ? (richiesto
+            ? "Classi di giornata dal calendario aziendale del progetto indicato."
+            : scoperto?.nota ?? "Classi di giornata dal calendario riconosciuto.")
+          : (scoperto?.nota
+            ?? "Senza progetto Planner Studio le classi si basano su giorno della "
+             + "settimana e festività nazionali: scuole aperte e chiuse non sono "
+             + "distinguibili."),
+      },
+      classiDisponibili: [...altreClassi.values()]
+        .map(a => ({ classe: a.classe, label: a.label, giornate: a.giornate.size }))
+        .sort((a, b) => b.giornate - a.giornate),
+      storico,
     });
   } catch (e: any) {
     res.status(500).json(dbError(e));
