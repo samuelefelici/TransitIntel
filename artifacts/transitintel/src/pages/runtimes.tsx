@@ -16,6 +16,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import MareyChart from "./runtimes/MareyChart";
 import StoricoTratte from "./runtimes/StoricoTratte";
+import CoperturaBanner from "./runtimes/CoperturaBanner";
 import { RuntimesReportExport } from "@/components/RuntimesReportExport";
 
 interface RuntimeSegment {
@@ -299,6 +300,10 @@ export default function RuntimesPage() {
           <Download className="w-3.5 h-3.5" /> CSV tratte
         </button>
       </div>
+
+      {/* Prima dei numeri, su quanti se ne stia parlando: una puntualità
+          calcolata su una corsa su dieci non è quella dell'azienda. */}
+      <CoperturaBanner days={days} />
 
       {/* Filtri */}
       <div className="flex flex-wrap items-center gap-2">

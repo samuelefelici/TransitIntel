@@ -28,6 +28,7 @@ import { delayFromSchedule, scheduledSeconds } from "../lib/siri-vm";
 import { completeTransits } from "../lib/transit-completion";
 import { analizzaPercorrenze, coperturaFermate, type CorsaOsservata } from "../lib/runtime-analysis";
 import { storicoCorsa } from "../lib/segment-history";
+import { quadroCopertura, scalaIntervalli } from "../lib/coverage-history";
 import { classifyDate, type CalendarProfile } from "../lib/day-classifier";
 import {
   rilevaAnomalie, riepiloga, ETICHETTE,
@@ -1468,6 +1469,160 @@ async function caricaTracciati(
   }
   return out;
 }
+
+// ── GET /operations/copertura?days= — quanto del servizio riusciamo a vedere
+/* Sta sotto ogni altro numero del prodotto: una puntualità calcolata sul 9%
+ * delle corse non è la puntualità dell'azienda, è quella di un campione che
+ * nessuno ha scelto. E serve a dire al fornitore che cosa cambierebbe alzando
+ * la frequenza — con un conto, non con un desiderio. */
+router.get("/operations/copertura", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, quadro: null });
+      return;
+    }
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 180);
+    const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+    const fVp = (await soloSiri("vp")).filtro;
+
+    /* Vetture e passo delle letture, dal flusso delle posizioni. Il passo si
+     * misura PER MEZZO: la mediana degli intervalli fra letture consecutive
+     * dello stesso veicolo, che è la cadenza con cui lo vediamo muoversi. */
+    const posQ = await db.execute<any>(sql`
+      WITH letture AS (
+        SELECT vehicle_id, ts::date AS day, ts,
+               ts - LAG(ts) OVER (PARTITION BY vehicle_id, ts::date ORDER BY ts) AS salto
+          FROM caronte.vehicle_positions vp
+         WHERE ${fVp}
+           AND ts > now() - (${days} * interval '1 day')
+           AND lat IS NOT NULL AND lon IS NOT NULL
+      )
+      SELECT day::text AS day,
+             COUNT(DISTINCT vehicle_id)::int AS vetture_con_posizione,
+             /* I salti enormi sono pause di servizio, non cadenza: oltre dieci
+              * minuti si sta misurando quando il mezzo è rientrato, non ogni
+              * quanto trasmette. */
+             percentile_cont(0.5) WITHIN GROUP (
+               ORDER BY EXTRACT(EPOCH FROM salto)
+             ) FILTER (WHERE salto IS NOT NULL
+                         AND EXTRACT(EPOCH FROM salto) BETWEEN 1 AND 600) AS passo_sec
+        FROM letture
+       GROUP BY 1`);
+
+    const transitiQ = await db.execute<any>(sql`
+      SELECT actual_ts::date::text AS day,
+             COUNT(*)::int AS transiti,
+             COUNT(DISTINCT trip_id)::int AS corse_con_transito,
+             COUNT(DISTINCT vehicle_id)::int AS vetture
+        FROM caronte.stop_transits st
+       WHERE ${fSt} AND actual_ts > now() - (${days} * interval '1 day')
+       GROUP BY 1`);
+
+    /* Le fermate programmate SULLE CORSE SEGUITE: il denominatore giusto per
+     * "quante fermate rileviamo". Sul totale del feed misurerebbe soprattutto
+     * quante corse non seguiamo, che è l'altra domanda. */
+    const fermateQ = feedId
+      ? await db.execute<any>(sql`
+          WITH viste AS (
+            SELECT DISTINCT trip_id, actual_ts::date AS day
+              FROM caronte.stop_transits st
+             WHERE ${fSt} AND actual_ts > now() - (${days} * interval '1 day')
+          )
+          SELECT v.day::text AS day, COUNT(*)::int AS fermate_programmate
+            FROM viste v
+            JOIN gtfs_stop_times stt
+              ON stt.feed_id = ${feedId}::uuid AND stt.trip_id = v.trip_id
+           GROUP BY 1`)
+      : null;
+
+    /* Quante corse circolavano quel giorno. Senza calendario non si sa, e la
+     * copertura non è calcolabile: meglio dirlo che dividere per il totale del
+     * feed, che comprende validità non in vigore. */
+    const programmateQ = feedId
+      ? await db.execute<any>(sql`
+          SELECT d::date::text AS day, (
+            SELECT COUNT(*)::int FROM gtfs_trips t
+             WHERE t.feed_id = ${feedId}::uuid
+               AND t.service_id IN (
+                 SELECT c.service_id FROM gtfs_calendar c
+                  WHERE c.feed_id = ${feedId}::uuid
+                    AND c.start_date <= to_char(d, 'YYYYMMDD')
+                    AND c.end_date   >= to_char(d, 'YYYYMMDD')
+                    AND CASE EXTRACT(ISODOW FROM d)::int
+                          WHEN 1 THEN c.monday    WHEN 2 THEN c.tuesday
+                          WHEN 3 THEN c.wednesday WHEN 4 THEN c.thursday
+                          WHEN 5 THEN c.friday    WHEN 6 THEN c.saturday
+                          ELSE c.sunday END = 1
+               )) AS corse_programmate
+            FROM generate_series(
+              (now() - (${days} * interval '1 day'))::date, now()::date, interval '1 day') d`)
+      : null;
+
+    const per = <T,>(rows: any[], f: (r: any) => T) => {
+      const m = new Map<string, T>();
+      for (const r of rows) m.set(String(r.day), f(r));
+      return m;
+    };
+    const pos = per(posQ.rows as any[], r => ({
+      vetture: Number(r.vetture_con_posizione ?? 0),
+      passo: r.passo_sec != null ? Math.round(Number(r.passo_sec)) : null,
+    }));
+    const tra = per(transitiQ.rows as any[], r => ({
+      transiti: Number(r.transiti ?? 0),
+      corse: Number(r.corse_con_transito ?? 0),
+      vetture: Number(r.vetture ?? 0),
+    }));
+    const fer = per(((fermateQ as any)?.rows ?? []), r => Number(r.fermate_programmate ?? 0));
+    const prog = per(((programmateQ as any)?.rows ?? []), r => {
+      const n = Number(r.corse_programmate ?? 0);
+      return n > 0 ? n : null;
+    });
+
+    const giornate = [...new Set([...pos.keys(), ...tra.keys()])].map(day => ({
+      day,
+      vetture: Math.max(tra.get(day)?.vetture ?? 0, pos.get(day)?.vetture ?? 0),
+      vettureConPosizione: pos.get(day)?.vetture ?? 0,
+      corseProgrammate: prog.get(day) ?? null,
+      corseConTransito: tra.get(day)?.corse ?? 0,
+      transiti: tra.get(day)?.transiti ?? 0,
+      fermateProgrammate: fer.get(day) ?? 0,
+      passoLettureSec: pos.get(day)?.passo ?? null,
+    }));
+
+    const configurato = Number(process.env.SIRI_POLL_SECONDS) || null;
+    const quadro = quadroCopertura(giornate, configurato);
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const testata = ["giorno", "vetture", "vetture_con_posizione", "corse_programmate",
+        "corse_con_transito", "quota_corse", "transiti", "fermate_programmate",
+        "quota_fermate", "passo_letture_sec"];
+      const righe = quadro.giorni.map(g => [
+        g.day, g.vetture, g.vettureConPosizione, g.corseProgrammate ?? "",
+        g.corseConTransito, g.quotaCorse ?? "", g.transiti, g.fermateProgrammate,
+        g.quotaFermate ?? "", g.passoLettureSec ?? "",
+      ]);
+      const csv = [testata, ...righe]
+        .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="copertura-${new Date().toISOString().slice(0, 10)}.csv"`);
+      res.send("﻿" + csv);
+      return;
+    }
+
+    res.json({
+      caronteAvailable: true, days,
+      intervalloConfiguratoSec: configurato,
+      quadro,
+      /* La tabella da mettere in una richiesta al fornitore: non "vorremmo un
+       * refresh più frequente", ma che cosa cambia a ciascun intervallo. */
+      scalaIntervalli: scalaIntervalli(),
+    });
+  } catch (e: any) {
+    res.status(500).json(dbError(e));
+  }
+});
 
 // ── GET /operations/trips/:tripId/percorso?date= — la prova del fuori percorso
 /* Il registro dice "fuori percorso, fino a 840 m dal tracciato". È un'accusa
