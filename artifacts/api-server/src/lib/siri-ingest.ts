@@ -20,7 +20,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "../routes/gtfs-helpers";
-import { SOURCE_SIRI, idNeedsValue } from "./caronte-schema";
+import { SOURCE_SIRI, idNeedsValue, hasSourceColumn } from "./caronte-schema";
 import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
@@ -352,6 +352,8 @@ export interface IngestResult {
   vehiclesParked: number;
   /** aperture di corsa rifiutate dal database: non impediscono i transiti */
   corseFallite: number;
+  /** corse rimaste aperte da mezzi che hanno smesso di trasmettere, ora chiuse */
+  corseAbbandonate: number;
   erroreCorse: string | null;
   /** il primo errore incontrato, per capire perché senza leggere i log */
   firstError: string | null;
@@ -376,7 +378,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
       vehiclesFailed: 0, vehiclesParked: split.ferme.length, firstError: null,
-      corseFallite: 0, erroreCorse: null,
+      corseFallite: 0, erroreCorse: null, corseAbbandonate: 0,
       agganci: [], riepilogoAgganci: riepilogaAgganci([]),
       funnel: { ...emptyFunnel(), inEsercizio: vehicles.length },
       funnelNota: "Nessun feed GTFS attivo: senza orario non c'è nulla a cui "
@@ -663,10 +665,18 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     console.warn(`[siri] ${corseFallite} aperture corsa rifiutate. Primo errore: ${erroreCorse}`);
   }
 
+  /* Dopo aver scritto, non prima: una corsa appena aperta in questo giro non
+   * deve essere chiusa dalla stessa passata. */
+  const corseAbbandonate = await chiudiCorseAbbandonate();
+  if (corseAbbandonate > 0) {
+    console.warn(`[siri] ${corseAbbandonate} corse chiuse perché il mezzo `
+      + `non trasmette da oltre ${ABBANDONO_MIN} minuti.`);
+  }
+
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
     vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
-    corseFallite, erroreCorse,
+    corseFallite, erroreCorse, corseAbbandonate,
     agganci, riepilogoAgganci: riepilogo,
     funnel, funnelNota: explainFunnel(funnel),
   };
@@ -746,4 +756,56 @@ export async function closeCancelled(
     n += (r as any).rowCount ?? 0;
   }
   return n;
+}
+
+/* ── Corse rimaste aperte ─────────────────────────────────────────────────
+ * Una corsa si chiudeva solo in due casi: lo stesso mezzo ne dichiarava
+ * un'altra, oppure l'AVM la annullava. Manca il caso più comune di tutti —
+ * il mezzo finisce l'ultima corsa della giornata e rientra. Non dichiara
+ * niente, smette semplicemente di essere in servizio, e la sua corsa resta
+ * aperta per sempre.
+ *
+ * Si vedeva nei numeri: 28 corse aperte con 9 mezzi in servizio.
+ *
+ * La mappa live non ne soffriva, perché parte dalle posizioni recenti e quelle
+ * righe non ne hanno. Ma restavano a gonfiare la diagnostica, e soprattutto a
+ * falsare la durata: quando quel mezzo fosse tornato con un'altra corsa, la
+ * vecchia sarebbe stata chiusa con l'ora di ALLORA, producendo una corsa di
+ * quindici ore.
+ */
+
+/** Oltre questo silenzio la corsa non è più in svolgimento: è finita e basta.
+ *  Mezz'ora copre una sosta al capolinea e un buco di copertura, senza
+ *  chiudere una corsa che sta ancora andando. */
+const ABBANDONO_MIN = 30;
+
+export async function chiudiCorseAbbandonate(): Promise<number> {
+  try {
+    const filtro = (await hasSourceColumn())
+      ? sql`AND a.source = ${SOURCE_SIRI}`
+      : sql``;
+    /* `ended_at` prende l'ULTIMA posizione nota, non adesso: la corsa è finita
+     * quando il mezzo ha smesso di farsi sentire, non quando ce ne siamo
+     * accorti. Scrivere `now()` regalerebbe alla corsa tutte le ore di
+     * disattenzione. */
+    const r = await db.execute<any>(sql`
+      UPDATE caronte.active_trips a
+         SET ended_at = COALESCE(
+               (SELECT max(vp.ts) FROM caronte.vehicle_positions vp
+                 WHERE vp.vehicle_id = a.vehicle_id
+                   AND vp.trip_id = a.trip_id),
+               a.started_at, now())
+       WHERE a.ended_at IS NULL
+         ${filtro}
+         AND NOT EXISTS (
+           SELECT 1 FROM caronte.vehicle_positions vp
+            WHERE vp.vehicle_id IS NOT DISTINCT FROM a.vehicle_id
+              AND vp.ts > now() - (${ABBANDONO_MIN} * interval '1 minute'))`);
+    return (r as any).rowCount ?? 0;
+  } catch (e: any) {
+    /* Non deve costare l'ingestione: una corsa di troppo aperta è un fastidio,
+     * un giro perso è un buco nei dati. */
+    console.warn("[siri] chiusura corse abbandonate non riuscita:", e?.message ?? e);
+    return 0;
+  }
 }

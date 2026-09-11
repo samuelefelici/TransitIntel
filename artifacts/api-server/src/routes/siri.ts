@@ -84,6 +84,9 @@ let ultimoGiro: {
   erroreCorse: string | null;
   posizioniInserite: number;
   corseAperte: number;
+  /* Chiuse perché il mezzo ha smesso di trasmettere: senza questo numero, un
+   * calo improvviso delle corse aperte sembrerebbe un guasto. */
+  corseAbbandonate: number;
 } | null = null;
 
 /* I nomi che legge chi apre la pagina: "senza_rete" è una chiave, non una
@@ -813,6 +816,7 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
     primoErrore: ingest.firstError,
     corseFallite: ingest.corseFallite,
     erroreCorse: ingest.erroreCorse,
+    corseAbbandonate: ingest.corseAbbandonate,
     posizioniInserite: ingest.positionsInserted,
     corseAperte: ingest.tripsOpened,
   };
@@ -825,6 +829,9 @@ export async function runSiriIngest(): Promise<Record<string, unknown>> {
     posizioniInserite: ingest.positionsInserted,
     corseAperte: ingest.tripsOpened,
     corseChiuse: ingest.tripsClosed + cancelled,
+    /* Chiuse perché il mezzo ha smesso di trasmettere, non perché ne ha
+     * dichiarata un'altra: erano il grosso delle corse aperte in eccesso. */
+    corseAbbandonate: ingest.corseAbbandonate || undefined,
     transitiInseriti: ingest.transitsInserted,
     mezziNonSalvati: ingest.vehiclesFailed || undefined,
     primoErrore: ingest.firstError ?? undefined,
