@@ -27,6 +27,7 @@ import { schemaState, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema
 import { delayFromSchedule, scheduledSeconds } from "../lib/siri-vm";
 import { completeTransits } from "../lib/transit-completion";
 import { analizzaPercorrenze, coperturaFermate, type CorsaOsservata } from "../lib/runtime-analysis";
+import { storicoCorsa } from "../lib/segment-history";
 import { classifyDate, type CalendarProfile } from "../lib/day-classifier";
 import {
   rilevaAnomalie, riepiloga, ETICHETTE,
@@ -1406,6 +1407,148 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       },
       stops,
       missing,
+    });
+  } catch (e: any) {
+    res.status(500).json(dbError(e));
+  }
+});
+
+// ── GET /operations/trips/:tripId/runtime-history — lo storico dietro il verdetto
+/* `runtime-detail` mostra UNA giornata: serve a capire cosa è successo ieri.
+ * Questo mostra lo STORICO su una classe di giornata — che è ciò su cui il
+ * verdetto "troppo stretto / troppo largo" è stato dato, e finora non si
+ * poteva guardare. Senza, il verdetto è una cosa da credere sulla fiducia;
+ * con, è una tratta con un nome e un numero di minuti.
+ *
+ * Entrano SOLO i transiti osservati: le fermate ricostruite per interpolazione
+ * hanno, per costruzione, il tempo che l'orario concede loro, e mediarle
+ * direbbe sempre che l'orario è perfetto. */
+router.get("/operations/trips/:tripId/runtime-history", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, storico: null });
+      return;
+    }
+    const tripId = String(req.params.tripId);
+    const days = Math.min(Math.max(Number(req.query.days) || 30, 1), 180);
+    const classe = String(req.query.classe ?? "") || null;
+    const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+
+    const fermateRows = feedId
+      ? (await db.execute<any>(sql`
+          SELECT stt.stop_sequence AS seq, stt.stop_id,
+                 COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
+                 s.stop_name
+            FROM gtfs_stop_times stt
+            LEFT JOIN gtfs_stops s
+                   ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
+           WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
+           ORDER BY stt.stop_sequence`)).rows
+      : [];
+
+    if (fermateRows.length === 0) {
+      res.json({
+        caronteAvailable: true, tripId, storico: null,
+        nota: "Questa corsa non ha fermate nel feed attivo: non c'è un percorso "
+          + "su cui riportare lo storico.",
+      });
+      return;
+    }
+
+    const transitiRows = (await db.execute<any>(sql`
+      SELECT actual_ts::date AS day, stop_id, stop_seq, actual_ts
+        FROM caronte.stop_transits st
+       WHERE ${fSt}
+         AND trip_id = ${tripId}
+         AND actual_ts > now() - (${days} * interval '1 day')
+       ORDER BY actual_ts
+       LIMIT 20000`)).rows;
+
+    /* Stesso calendario del verdetto di corsa: due risposte diverse sulla
+     * stessa domanda sarebbero peggio di nessuna risposta. */
+    const psProjectId = String(req.query.psProjectId ?? "") || null;
+    let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
+    let profiloCaricato = false;
+    if (psProjectId && UUID_RE.test(psProjectId)) {
+      try { profilo = await loadCalendarProfile(psProjectId); profiloCaricato = true; }
+      catch { /* profilo non leggibile: si resta sul calendario civile */ }
+    }
+    const cacheClassi = new Map<string, { key: string; label: string }>();
+    const classifica = (day: string) => {
+      let c = cacheClassi.get(day);
+      if (!c) {
+        const d = classifyDate(day, profilo);
+        c = { key: d.key, label: d.label };
+        cacheClassi.set(day, c);
+      }
+      return c;
+    };
+
+    const giorno = (v: any) =>
+      typeof v === "string" ? v.slice(0, 10) : new Date(v).toISOString().slice(0, 10);
+
+    const storico = storicoCorsa(
+      fermateRows.map((r: any) => ({
+        seq: Number(r.seq),
+        stopId: String(r.stop_id),
+        stopName: r.stop_name ?? null,
+        scheduled: r.scheduled ?? null,
+      })),
+      transitiRows.map((r: any) => ({
+        day: giorno(r.day),
+        stopId: String(r.stop_id),
+        seq: r.stop_seq != null ? Number(r.stop_seq) : null,
+        actualTs: new Date(r.actual_ts),
+      })),
+      classifica, classe, OPERATOR_TZ,
+    );
+
+    /* Le altre classi si elencano comunque: sapere che esistono è il modo di
+     * accorgersi che il verdetto che si sta guardando non è l'unico. */
+    const altreClassi = new Map<string, { classe: string; label: string; giornate: Set<string> }>();
+    for (const r of transitiRows as any[]) {
+      const d = giorno(r.day);
+      const c = classifica(d);
+      let a = altreClassi.get(c.key);
+      if (!a) { a = { classe: c.key, label: c.label, giornate: new Set() }; altreClassi.set(c.key, a); }
+      a.giornate.add(d);
+    }
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const testata = ["da_seq", "da_fermata", "a_seq", "a_fermata", "fermate_scavalcate",
+        "programmato_sec", "giorni", "mediana_sec", "p85_sec", "min_sec", "max_sec",
+        "scarto_mediana_sec", "scarto_p85_sec", "verdetto"];
+      const righe = storico.tratte.map(t => [
+        t.daSeq, t.daNome ?? t.daStopId, t.aSeq, t.aNome ?? t.aStopId, t.fermateScavalcate,
+        t.programmatoSec ?? "", t.giorni, t.medianaSec, t.p85Sec, t.minSec, t.maxSec,
+        t.scartoMedianaSec ?? "", t.scartoP85Sec ?? "", t.verdetto,
+      ]);
+      const csv = [testata, ...righe]
+        .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"))
+        .join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="tratte-${tripId.replace(/[^\w.-]+/g, "_")}.csv"`);
+      res.send("﻿" + csv);
+      return;
+    }
+
+    res.json({
+      caronteAvailable: true, tripId, days,
+      validita: {
+        psProjectId: psProjectId ?? undefined,
+        profiloCaricato,
+        nota: profiloCaricato
+          ? "Classi di giornata dal calendario aziendale del progetto indicato."
+          : "Senza progetto Planner Studio le classi si basano su giorno della "
+            + "settimana e festività nazionali: scuole aperte e chiuse non sono "
+            + "distinguibili.",
+      },
+      classiDisponibili: [...altreClassi.values()]
+        .map(a => ({ classe: a.classe, label: a.label, giornate: a.giornate.size }))
+        .sort((a, b) => b.giornate - a.giornate),
+      storico,
     });
   } catch (e: any) {
     res.status(500).json(dbError(e));
