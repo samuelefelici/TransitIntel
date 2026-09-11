@@ -21,6 +21,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { MAPBOX_TOKEN, MAP_STYLES } from "./dashboard/constants";
 import AvanzamentoCorse from "./operations/AvanzamentoCorse";
+import RegistroAnomalie, { type RegistroResp } from "./operations/RegistroAnomalie";
 
 // ── Tipi (allineati a /api/operations/*) ─────────────────────────────────────
 
@@ -181,6 +182,8 @@ export default function OperationsPage() {
   const [showPunctuality, setShowPunctuality] = useState(false);
   /* La mappa dice dove sono i mezzi; questo dice chi guardare per primo. */
   const [showAvanzamento, setShowAvanzamento] = useState(false);
+  /* Che cosa è andato storto, non di quanto: è una domanda diversa. */
+  const [showAnomalie, setShowAnomalie] = useState(false);
   /* I mezzi senza turno macchina restano fuori dalla mappa per default: sono
    * quelli che comparivano come "?" e rendevano illeggibile la flotta. */
   const [showUnassigned, setShowUnassigned] = useState(false);
@@ -191,6 +194,13 @@ export default function OperationsPage() {
     refetchInterval: 10_000,
     refetchOnWindowFocus: true,
     staleTime: 5_000,
+  });
+
+  const anomalieQ = useQuery({
+    queryKey: ["operations", "anomalie"],
+    queryFn: () => apiFetch<RegistroResp>("/api/operations/anomalie"),
+    enabled: showAnomalie,
+    refetchInterval: 120_000,
   });
 
   const punctualityQ = useQuery({
@@ -616,10 +626,19 @@ export default function OperationsPage() {
             )}
           </div>
 
-          <div className="m-1.5 flex gap-1.5">
+          <div className="m-1.5 grid grid-cols-3 gap-1.5">
             <button
-              onClick={() => { setShowAvanzamento((s) => !s); setShowPunctuality(false); }}
-              className={`flex-1 px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
+              onClick={() => { setShowAnomalie((s) => !s); setShowAvanzamento(false); setShowPunctuality(false); }}
+              className={`px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
+                showAnomalie ? "bg-amber-500/15 text-amber-300" : "bg-white/5 hover:bg-white/10"
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              Anomalie
+            </button>
+            <button
+              onClick={() => { setShowAvanzamento((s) => !s); setShowPunctuality(false); setShowAnomalie(false); }}
+              className={`px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
                 showAvanzamento ? "bg-sky-500/15 text-sky-300" : "bg-white/5 hover:bg-white/10"
               }`}
             >
@@ -627,8 +646,8 @@ export default function OperationsPage() {
               Avanzamento
             </button>
             <button
-              onClick={() => { setShowPunctuality((s) => !s); setShowAvanzamento(false); }}
-              className={`flex-1 px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
+              onClick={() => { setShowPunctuality((s) => !s); setShowAvanzamento(false); setShowAnomalie(false); }}
+              className={`px-2 py-2 rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-1.5 ${
                 showPunctuality ? "bg-emerald-500/15 text-emerald-300" : "bg-white/5 hover:bg-white/10"
               }`}
             >
@@ -827,6 +846,30 @@ export default function OperationsPage() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ── Registro anomalie: che cosa è andato storto ── */}
+      {showAnomalie && (
+        <div className="absolute left-3 right-3 md:left-80 md:right-6 bottom-3 max-h-[55%] pointer-events-auto bg-background/90 backdrop-blur-xl border border-border/60 rounded-xl shadow-2xl flex flex-col overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-border/50 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+            <span className="text-sm font-semibold">Registro anomalie</span>
+            <span className="text-[10px] text-muted-foreground">
+              che cosa è andato storto — in ordine di gravità, non di orario
+            </span>
+            <button onClick={() => setShowAnomalie(false)} className="ml-auto p-1 rounded hover:bg-white/10 text-muted-foreground hover:text-foreground">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <RegistroAnomalie
+            dati={anomalieQ.data}
+            urlCsv="/api/operations/anomalie?formato=csv"
+            onApriCorsa={(tripId) => {
+              const v = vehicles.find(x => x.tripId === tripId);
+              if (v) { setSelectedKey(vehicleKey(v)); flyTo(v); setShowAnomalie(false); }
+            }}
+          />
         </div>
       )}
 

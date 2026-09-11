@@ -24,10 +24,14 @@ import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
 
 import { schemaState, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
-import { delayFromSchedule } from "../lib/siri-vm";
+import { delayFromSchedule, scheduledSeconds } from "../lib/siri-vm";
 import { completeTransits } from "../lib/transit-completion";
 import { analizzaPercorrenze, coperturaFermate, type CorsaOsservata } from "../lib/runtime-analysis";
 import { classifyDate, type CalendarProfile } from "../lib/day-classifier";
+import {
+  rilevaAnomalie, riepiloga, ETICHETTE,
+  type CorsaDaEsaminare, type PosizioneMezzo,
+} from "../lib/anomaly-detection";
 import { loadCalendarProfile } from "../lib/planning-studio-calendar";
 
 const router: IRouter = Router();
@@ -477,6 +481,167 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
         avgDelaySeconds: s.avg_delay != null ? Math.round(Number(s.avg_delay)) : null,
         maxDelaySeconds: s.max_delay,
       })),
+    });
+  } catch (e: any) {
+    res.status(500).json(dbError(e));
+  }
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * GET /operations/anomalie?date=&days=&routeId=&formato=csv
+ * ───────────────────────────────────────────────────────────────────────
+ * Che cosa è andato storto, non di quanto. Il resto della pagina misura gli
+ * scostamenti; qui si nominano i FATTI: una partenza in anticipo, un mezzo
+ * uscito dal percorso, un tratto percorso troppo in fretta.
+ *
+ * La distinzione conta perché porta ad azioni diverse. Un ritardo si corregge
+ * sull'orario, in ufficio. Un anticipo alla partenza o una deviazione si
+ * correggono parlando con chi guida — e finché restano dentro una media di
+ * puntualità nessuno se ne accorge.
+ * ═══════════════════════════════════════════════════════════════════════ */
+router.get("/operations/anomalie", async (req, res): Promise<void> => {
+  try {
+    if (!(await caronteAvailable())) {
+      res.json({ caronteAvailable: false, anomalie: [], sintesi: null });
+      return;
+    }
+    const dateStr = String(req.query.date ?? "");
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : new Date().toISOString().slice(0, 10);
+    const giorni = Math.min(Math.max(Number(req.query.days) || 1, 1), 14);
+    const routeId = String(req.query.routeId ?? "") || null;
+    const feedId = await resolveFeedId(req);
+    const fSt = (await soloSiri("st")).filtro;
+    const fVp = (await soloSiri("vp")).filtro;
+
+    if (!feedId) {
+      res.json({
+        caronteAvailable: true, anomalie: [], sintesi: null,
+        nota: "Nessun feed GTFS attivo: senza orario e senza coordinate delle "
+          + "fermate non c'è niente con cui confrontare l'esercizio.",
+      });
+      return;
+    }
+
+    /* Le corse osservate nel periodo, con la sequenza programmata COMPLETA:
+     * per dire che una fermata è stata saltata bisogna sapere che c'era. */
+    const corseQ = await db.execute<any>(sql`
+      WITH osservate AS (
+        SELECT DISTINCT st.trip_id, st.actual_ts::date AS day
+          FROM caronte.stop_transits st
+         WHERE ${fSt}
+           AND st.actual_ts >= ${date}::date - (${giorni - 1} * interval '1 day')
+           AND st.actual_ts <  ${date}::date + interval '1 day'
+           AND (${routeId}::text IS NULL OR st.route_id = ${routeId})
+      )
+      SELECT o.trip_id, o.day::text AS day,
+             stt.stop_sequence AS seq, stt.stop_id,
+             s.stop_name, s.stop_lat, s.stop_lon,
+             COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+             tr.actual_ts, tr.vehicle_id,
+             r.route_short_name
+        FROM osservate o
+        JOIN gtfs_stop_times stt
+          ON stt.feed_id = ${feedId}::uuid AND stt.trip_id = o.trip_id
+        LEFT JOIN gtfs_stops s
+          ON s.feed_id = ${feedId}::uuid AND s.stop_id = stt.stop_id
+        LEFT JOIN gtfs_trips t
+          ON t.feed_id = ${feedId}::uuid AND t.trip_id = o.trip_id
+        LEFT JOIN gtfs_routes r
+          ON r.feed_id = ${feedId}::uuid AND r.route_id = t.route_id
+        LEFT JOIN LATERAL (
+          SELECT st.actual_ts, st.vehicle_id
+            FROM caronte.stop_transits st
+           WHERE ${fSt} AND st.trip_id = o.trip_id AND st.stop_id = stt.stop_id
+             AND st.actual_ts::date = o.day
+           ORDER BY st.actual_ts LIMIT 1
+        ) tr ON true
+       ORDER BY o.trip_id, o.day, stt.stop_sequence
+       LIMIT 200000`);
+
+    /* Le tracce GPS servono solo al fuori percorso: si caricano una volta e
+     * si distribuiscono, invece di interrogare il database per ogni corsa. */
+    const posQ = await db.execute<any>(sql`
+      SELECT vp.trip_id, vp.ts::date AS day, vp.ts, vp.lat, vp.lon
+        FROM caronte.vehicle_positions vp
+       WHERE ${fVp}
+         AND vp.trip_id IS NOT NULL
+         AND vp.ts >= ${date}::date - (${giorni - 1} * interval '1 day')
+         AND vp.ts <  ${date}::date + interval '1 day'
+         AND vp.lat IS NOT NULL AND vp.lon IS NOT NULL
+       ORDER BY vp.trip_id, vp.ts
+       LIMIT 200000`);
+
+    const posPerCorsa = new Map<string, PosizioneMezzo[]>();
+    for (const p of posQ.rows as any[]) {
+      const k = `${p.trip_id}|${typeof p.day === "string" ? p.day : new Date(p.day).toISOString().slice(0, 10)}`;
+      const l = posPerCorsa.get(k) ?? [];
+      l.push({ ts: new Date(p.ts).toISOString(), lat: Number(p.lat), lon: Number(p.lon) });
+      posPerCorsa.set(k, l);
+    }
+
+    /* Raggruppa le righe in corse. */
+    const corse = new Map<string, CorsaDaEsaminare>();
+    for (const r of corseQ.rows as any[]) {
+      const day = typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10);
+      const k = `${r.trip_id}|${day}`;
+      let c = corse.get(k);
+      if (!c) {
+        c = {
+          tripId: String(r.trip_id), vehicleId: null,
+          routeShortName: r.route_short_name ?? null,
+          day, fermate: [], posizioni: posPerCorsa.get(k),
+        };
+        corse.set(k, c);
+      }
+      if (r.vehicle_id && !c.vehicleId) c.vehicleId = String(r.vehicle_id);
+      c.fermate.push({
+        seq: Number(r.seq ?? 0),
+        stopId: String(r.stop_id ?? ""),
+        stopName: r.stop_name ?? null,
+        lat: r.stop_lat != null ? Number(r.stop_lat) : null,
+        lon: r.stop_lon != null ? Number(r.stop_lon) : null,
+        scheduledSec: scheduledSeconds(r.scheduled),
+        actualTs: r.actual_ts ? new Date(r.actual_ts).toISOString() : null,
+        osservato: !!r.actual_ts,
+      });
+    }
+
+    const anomalie = [...corse.values()]
+      .flatMap(c => rilevaAnomalie(c, OPERATOR_TZ))
+      .sort((a, b) => b.gravita - a.gravita);
+    const sintesi = riepiloga(anomalie);
+
+    /* Export: un elenco di anomalie serve anche fuori dalla pagina — in una
+     * riunione, in una mail a chi coordina i turni. */
+    if (String(req.query.formato ?? "") === "csv") {
+      const intestazione = [
+        "giorno", "linea", "corsa", "mezzo", "tipo", "gravita", "confidenza",
+        "quando", "dove", "titolo", "dettaglio", "misure",
+      ];
+      const righe = anomalie.map(a => [
+        a.day, a.routeShortName ?? "", a.tripId, a.vehicleId ?? "",
+        ETICHETTE[a.tipo], String(a.gravita), a.confidenza,
+        a.quando ?? "", a.dove ?? "", a.titolo, a.dettaglio,
+        JSON.stringify(a.misure),
+      ]);
+      const csv = [intestazione, ...righe]
+        .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"))
+        .join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="anomalie-${date}.csv"`);
+      /* BOM: senza, Excel in italiano apre gli accenti sbagliati. */
+      res.send("\uFEFF" + csv);
+      return;
+    }
+
+    res.json({
+      caronteAvailable: true,
+      date, giorni, routeId,
+      corseEsaminate: corse.size,
+      sintesi,
+      anomalie: anomalie.slice(0, 500),
+      troncato: anomalie.length > 500 ? anomalie.length : undefined,
     });
   } catch (e: any) {
     res.status(500).json(dbError(e));
