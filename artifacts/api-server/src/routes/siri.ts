@@ -32,7 +32,8 @@ import {
   type TransitFunnel,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled, auditAgganci } from "../lib/siri-ingest";
-import { ensureCaronteSchema, schemaState, tableShape } from "../lib/caronte-schema";
+import { ensureCaronteSchema, schemaState, tableShape, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
+import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
 
 const router: IRouter = Router();
 
@@ -601,6 +602,76 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
     });
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
+  }
+});
+
+/* ── Il parco nel tempo ───────────────────────────────────────────────────
+ * L'elenco degli apparati dice chi è guasto OGGI; questo dice che cosa è
+ * CAMBIATO. Sono due domande diverse e la seconda, adesso, pesa di più: la
+ * misura della copertura dice che a trenta secondi non è l'intervallo di
+ * lettura a limitarci ma quante vetture vengono seguite, e quindi ogni mezzo
+ * che torna a trasmettere vale più di qualunque cosa possiamo chiedere al
+ * fornitore.
+ *
+ * Si legge dalle posizioni già scritte: non serve una tabella nuova, e i
+ * giorni passati ci sono già. */
+router.get("/siri/parco/andamento", async (req, res): Promise<void> => {
+  const days = Math.min(Math.max(Number(req.query.days) || 30, 4), 180);
+  try {
+    const filtro = (await hasSourceColumn())
+      ? sql`vp.source = ${SOURCE_SIRI}`
+      : sql`TRUE`;
+
+    const r = await db.execute<any>(sql`
+      SELECT vehicle_id, ts::date::text AS day
+        FROM caronte.vehicle_positions vp
+       WHERE ${filtro}
+         AND vehicle_id IS NOT NULL
+         AND ts > now() - (${days} * interval '1 day')
+       GROUP BY 1, 2
+       ORDER BY 1, 2
+       LIMIT 200000`);
+
+    const perVettura = new Map<string, string[]>();
+    for (const x of ((r as any).rows ?? [])) {
+      const v = String(x.vehicle_id);
+      const l = perVettura.get(v) ?? [];
+      l.push(String(x.day));
+      perVettura.set(v, l);
+    }
+
+    /* Le giornate del periodo si generano, non si deducono dai dati: se le
+     * prendessimo dalle righe, un fine settimana in cui nessuno trasmette
+     * accorcerebbe il periodo e sposterebbe la metà. */
+    const oggi = new Date();
+    const inizio = new Date(oggi.getTime() - (days - 1) * 86_400_000);
+    const giornate = giornateDelPeriodo(
+      inizio.toISOString().slice(0, 10), oggi.toISOString().slice(0, 10));
+
+    const andamento = andamentoParco(
+      [...perVettura.entries()].map(([vehicleRef, giorni]) => ({ vehicleRef, giorni })),
+      giornate,
+    );
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const testata = ["matricola", "stato", "primo_giorno", "ultimo_giorno",
+        "giorni_di_silenzio", "giornate_prima_meta", "giornate_seconda_meta"];
+      const righe = [...andamento.perse, ...andamento.riprese].map(v => [
+        v.vehicleRef, v.stato, v.primoGiorno, v.ultimoGiorno,
+        v.giorniDiSilenzio, v.primaMeta, v.secondaMeta,
+      ]);
+      const csv = [testata, ...righe]
+        .map(x => x.map(c => `"${String(c).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="parco-andamento-${new Date().toISOString().slice(0, 10)}.csv"`);
+      res.send("﻿" + csv);
+      return;
+    }
+
+    res.json({ configured: true, days, andamento });
+  } catch (e: any) {
+    res.status(500).json({ configured: true, error: e?.message ?? "lettura fallita" });
   }
 });
 
