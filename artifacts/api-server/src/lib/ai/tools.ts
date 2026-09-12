@@ -19,6 +19,7 @@ import {
   trafficSnapshots,
 } from "@workspace/db/schema";
 import { sql, ilike, eq } from "drizzle-orm";
+import { inizioGiornata } from "../service-day";
 
 // ─────────────────────────────────────────────────────────────
 // Internal HTTP helper — chiama gli endpoint sul nostro stesso server
@@ -421,7 +422,7 @@ export async function executeTool(
                  (COUNT(*) FILTER (WHERE delay_seconds BETWEEN -60 AND 300))::float
                    / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
           FROM caronte.stop_transits
-          WHERE actual_ts >= date_trunc('day', now()) AND delay_seconds IS NOT NULL
+          WHERE actual_ts >= ${inizioGiornata()} AND delay_seconds IS NOT NULL
         `)).rows as any;
         const lateNow = (await db.execute(sql`
           SELECT DISTINCT ON (st.trip_id)

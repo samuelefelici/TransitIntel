@@ -38,11 +38,13 @@ import {
 import { loadCalendarProfile, calendarioPredefinito } from "../lib/planning-studio-calendar";
 import { tintaRitardo, legendaRitardo } from "../lib/delay-scale";
 import { spezzaPerFermate } from "../lib/shape-segments";
+import { inizioGiornata as inizioGiornataSql } from "../lib/service-day";
 
 const router: IRouter = Router();
 
 /** Fuso dell'azienda: il confronto programmato/reale si fa nell'ora locale. */
 const OPERATOR_TZ = process.env.SIRI_TIMEZONE || "Europe/Rome";
+
 
 /** Un id di progetto malformato non deve arrivare al database come uuid. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -202,6 +204,13 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         FROM caronte.stop_transits st
         WHERE st.trip_id = COALESCE(a.trip_id, l.trip_id)
           AND st.actual_ts > now() - interval '6 hours'
+          /* Anche la VETTURA, non solo la corsa. L'aggancio per linea + ora di
+           * partenza può mettere due mezzi sulla stessa corsa quando due corse
+           * partono allo stesso minuto — è il caso che contiamo come ambiguo:
+           * senza questo filtro il ritardo di uno finiva sul marcatore
+           * dell'altro, e nessuno dei due era sbagliato in modo visibile. */
+          AND (st.vehicle_id = l.vehicle_id
+               OR st.vehicle_id IS NULL OR l.vehicle_id IS NULL)
           AND ${st.filtro}
         ORDER BY st.actual_ts DESC
         LIMIT 1
@@ -249,13 +258,27 @@ router.get("/operations/live", async (req, res): Promise<void> => {
              AVG(delay_seconds)::float AS avg_delay,
              percentile_cont(0.5) WITHIN GROUP (ORDER BY delay_seconds)::float AS median_delay
       FROM caronte.stop_transits st
-      WHERE actual_ts >= date_trunc('day', now())
+      WHERE actual_ts >= ${inizioGiornataSql()}
         AND delay_seconds IS NOT NULL
         AND ${st.filtro}
     `);
     const k = kpiQ.rows[0] ?? {};
     const transits = Number(k.transits ?? 0);
     const pct = (n: number) => (transits > 0 ? Math.round((n / transits) * 1000) / 10 : null);
+
+    /* ── L'età del ritardo ──────────────────────────────────────────────
+     * Il Δ mostrato su un mezzo è quello dell'ULTIMA fermata di cui abbiamo
+     * visto il passaggio. Con un passo di lettura di una cinquantina di
+     * secondi e fermate riconosciute quattro volte su cinque, quell'ultima
+     * fermata può essere di venti minuti fa: nel frattempo il mezzo può aver
+     * recuperato o accumulato ancora. Presentarlo come "il ritardo adesso"
+     * è la cosa più fuorviante che ci sia in questa pagina, ed era ciò che
+     * faceva — senza dire da quando.
+     *
+     * Non si inventa un ritardo aggiornato: si dice quanto è vecchio quello
+     * che si ha, e chi guarda decide se fidarsene. */
+    const etaRitardo = (ts: any): number | null =>
+      ts ? Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 1000)) : null;
 
     const vehicles = vehiclesQ.rows.map((v: any) => ({
       vehicleId: v.vehicle_id,
@@ -287,6 +310,8 @@ router.get("/operations/live", async (req, res): Promise<void> => {
        * pannello accanto. */
       tinta: tintaRitardo(v.last_delay_seconds
         ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ)),
+      /* Da quanti secondi quel Δ è fermo lì. Null = non c'è nessun Δ. */
+      ritardoEtaSec: etaRitardo(v.last_transit_ts),
       lastTransitTs: v.last_transit_ts,
       lastScheduled: v.last_scheduled ?? null,
       lastStopSeq: v.last_stop_seq,
@@ -326,8 +351,21 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         lastPositionTs: a.last_position_ts,
       })),
       kpis: {
-        vehiclesActive: vehicles.length,
-        tripsActive: vehicles.filter((v) => v.tripId).length + noGpsQ.rows.length,
+        /* "Mezzi in linea" contava TUTTI i mezzi della finestra, compresi
+         * quelli senza turno macchina impostato a bordo — che la pagina
+         * mostra a parte proprio perché non sono in servizio. Il numero
+         * grande diceva quindi una cosa che il pannello sotto smentiva. */
+        vehiclesActive: vehicles.filter(v => v.tripId || v.routeId).length,
+        /* E questi sono i mezzi localizzati in tutto, turno o no. */
+        vehiclesTracked: vehicles.length,
+        /* Le corse sono CORSE, non mezzi: due vetture sulla stessa corsa —
+         * un cambio, oppure un aggancio ambiguo fra due corse che partono
+         * allo stesso minuto — la contavano due volte, e una corsa presente
+         * sia fra i localizzati sia fra quelli senza GPS pure. */
+        tripsActive: new Set([
+          ...vehicles.map(v => v.tripId).filter(Boolean),
+          ...noGpsQ.rows.map((a: any) => a.trip_id).filter(Boolean),
+        ]).size,
         transitsToday: transits,
         onTimePct: pct(Number(k.on_time ?? 0)),
         latePct: pct(Number(k.late ?? 0)),
@@ -691,7 +729,7 @@ router.get("/operations/trend", async (req, res): Promise<void> => {
                / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
       FROM caronte.stop_transits st
       WHERE ${(await soloSiri("st")).filtro}
-        AND actual_ts >= date_trunc('day', now()) - (${days} * interval '1 day')
+        AND actual_ts >= ${inizioGiornataSql()} - (${days} * interval '1 day')
         AND delay_seconds IS NOT NULL
       GROUP BY 1
       ORDER BY 1
@@ -1043,7 +1081,7 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
           FROM caronte.stop_transits tr
           WHERE ${(await soloSiri("tr")).filtro}
             AND tr.trip_id = ${tripId} AND tr.stop_id = stt.stop_id
-            AND tr.actual_ts >= date_trunc('day', now())
+            AND tr.actual_ts >= ${inizioGiornataSql()}
           ORDER BY tr.actual_ts DESC
           LIMIT 1
         ) tr ON true
@@ -1060,7 +1098,7 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
                lat AS stop_lat, lon AS stop_lon, actual_ts, delay_seconds
         FROM caronte.stop_transits st
         WHERE ${(await soloSiri("st")).filtro}
-          AND trip_id = ${tripId} AND actual_ts >= date_trunc('day', now())
+          AND trip_id = ${tripId} AND actual_ts >= ${inizioGiornataSql()}
         ORDER BY stop_seq NULLS LAST, actual_ts
       `);
       stops = rawQ.rows;

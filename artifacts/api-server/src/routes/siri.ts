@@ -38,6 +38,7 @@ import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
 import { studiaCodici } from "../lib/journey-code-study";
+import { inizioGiornata } from "../lib/service-day";
 
 const router: IRouter = Router();
 
@@ -217,9 +218,9 @@ router.get("/siri/status", async (req, res): Promise<void> => {
              (SELECT max(started_at) FROM caronte.active_trips
                WHERE device_id = 'siri')                                   AS ultima_corsa_siri,
              (SELECT count(*)::int FROM caronte.stop_transits
-               WHERE actual_ts >= date_trunc('day', now()))                AS transiti_oggi,
+               WHERE actual_ts >= ${inizioGiornata()})                      AS transiti_oggi,
              (SELECT count(*)::int FROM caronte.stop_transits
-               WHERE actual_ts >= date_trunc('day', now())
+               WHERE actual_ts >= ${inizioGiornata()}
                  AND device_id = 'siri')                                   AS transiti_oggi_siri,
              (SELECT max(actual_ts) FROM caronte.stop_transits)            AS ultimo_transito,
              (SELECT max(actual_ts) FROM caronte.stop_transits

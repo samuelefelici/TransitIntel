@@ -53,6 +53,8 @@ interface LiveVehicle {
   nearestStopName: string | null;
   delaySeconds: number | null;
   tinta?: Tinta;
+  /** da quanti secondi quel Δ è fermo: è il ritardo dell'ultima fermata VISTA */
+  ritardoEtaSec?: number | null;
   lastTransitTs: string | null;
   lastScheduled: string | null;
   lastStopSeq: number | null;
@@ -71,7 +73,7 @@ interface LiveSnapshot {
     deviceId: string | null; startedAt: string | null; lastPositionTs: string | null;
   }>;
   kpis: {
-    vehiclesActive: number; tripsActive: number; transitsToday: number;
+    vehiclesActive: number; vehiclesTracked?: number; tripsActive: number; transitsToday: number;
     onTimePct: number | null; latePct: number | null; earlyPct: number | null;
     avgDelaySeconds: number | null; medianDelaySeconds: number | null;
     tintaRitardoMedio?: Tinta;
@@ -137,6 +139,18 @@ interface VehicleTrack {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/* Oltre dieci minuti, il Δ non descrive più "adesso": il mezzo può aver
+ * recuperato o accumulato ancora, e nessuno può saperlo finché non lo si vede
+ * passare da un'altra fermata. */
+const RITARDO_VECCHIO_S = 600;
+
+/** "18′ fa" — da quanto è fermo lì il Δ che si sta guardando. */
+function fmtEta(sec: number | null | undefined): string | null {
+  if (sec == null) return null;
+  const m = Math.round(sec / 60);
+  return m < 1 ? "ora" : `${m}′ fa`;
+}
 
 function ageSeconds(ts: string): number {
   return Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 1000));
@@ -526,6 +540,11 @@ export default function OperationsPage() {
                 <span style={{ color: colore(selected.tinta) }} className="font-semibold">
                   {selected.tinta?.etichetta ?? "Scarto non noto"}
                 </span>
+                {(selected.ritardoEtaSec ?? 0) > RITARDO_VECCHIO_S && selected.delaySeconds != null && (
+                  <span className="ml-auto text-[10px] text-amber-200/80 whitespace-nowrap">
+                    all'ultima fermata vista, {fmtEta(selected.ritardoEtaSec)}
+                  </span>
+                )}
               </div>
               {selected.lastStopSeq != null && selected.totalStops != null && selected.totalStops > 0 && (
                 <div className="flex items-center gap-1.5 text-muted-foreground">
@@ -541,8 +560,24 @@ export default function OperationsPage() {
 
       {/* ── KPI bar in alto ── */}
       <div className="absolute top-3 left-3 right-3 md:right-auto flex flex-wrap gap-2 pointer-events-none">
-        <KpiChip icon={<Radio className="w-3.5 h-3.5" />} label="Mezzi in linea" value={String(kpis?.vehiclesActive ?? "—")} accent="#38bdf8" pulse={!!kpis && kpis.vehiclesActive > 0} />
-        <KpiChip icon={<Activity className="w-3.5 h-3.5" />} label="Corse attive" value={String(kpis?.tripsActive ?? "—")} accent="#a78bfa" />
+        <KpiChip
+          icon={<Radio className="w-3.5 h-3.5" />}
+          label="Mezzi in linea"
+          value={String(kpis?.vehiclesActive ?? "—")}
+          accent="#38bdf8"
+          pulse={!!kpis && kpis.vehiclesActive > 0}
+          title={kpis?.vehiclesTracked != null
+            ? `${kpis.vehiclesActive} mezzi attribuiti a una corsa, su ${kpis.vehiclesTracked} localizzati. `
+              + "Gli altri l'AVM li vede, ma a bordo non è stato avviato alcun turno macchina."
+            : undefined}
+        />
+        <KpiChip
+          icon={<Activity className="w-3.5 h-3.5" />}
+          label="Corse attive"
+          value={String(kpis?.tripsActive ?? "—")}
+          accent="#a78bfa"
+          title="Corse distinte, non mezzi: due vetture sulla stessa corsa contano una volta sola."
+        />
         <KpiChip
           icon={<Gauge className="w-3.5 h-3.5" />}
           label="Puntualità oggi"
@@ -622,6 +657,7 @@ export default function OperationsPage() {
             {conCorsa.map((v) => {
               const key = vehicleKey(v);
               const tinta = v.tinta;
+              const vecchio = (v.ritardoEtaSec ?? 0) > RITARDO_VECCHIO_S && v.delaySeconds != null;
               const isSel = key === selectedKey;
               return (
                 <button
@@ -646,10 +682,23 @@ export default function OperationsPage() {
                     </span>
                   </span>
                   <span
-                    className="shrink-0 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded"
+                    className="shrink-0 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded text-right leading-tight"
                     style={{ color: colore(tinta), backgroundColor: `${colore(tinta)}1a` }}
+                    title={vecchio
+                      ? `Δ dell'ultima fermata vista passare, ${fmtEta(v.ritardoEtaSec)}: `
+                        + "da allora il mezzo può aver recuperato o accumulato ancora."
+                      : tinta?.etichetta}
                   >
                     {v.delaySeconds != null ? fmtDelay(v.delaySeconds) : "GPS"}
+                    {/* Un Δ di venti minuti fa non è il ritardo di adesso, e
+                        presentarlo com'era — un numero solo, identico a uno
+                        appena misurato — è la cosa più fuorviante di questa
+                        pagina. Si dice da quando. */}
+                    {vecchio && (
+                      <span className="block text-[8px] font-normal opacity-70">
+                        {fmtEta(v.ritardoEtaSec)}
+                      </span>
+                    )}
                   </span>
                 </button>
               );
