@@ -223,6 +223,12 @@ export function quadroCopertura(
   };
 }
 
+/** Solo la PRIMA lettera: toLowerCase() sull'intera frase minuscolizza anche
+ *  dopo il punto, e il risultato si legge come un refuso. */
+function minuscolaIniziale(t: string): string {
+  return t.length > 0 ? t[0].toLowerCase() + t.slice(1) : t;
+}
+
 function riassumi(
   giorni: GiornataCopertura[],
   quotaCorse: number | null,
@@ -233,24 +239,38 @@ function riassumi(
   if (giorni.length === 0) {
     return "Nessuna giornata con dati di esercizio nel periodo richiesto.";
   }
-  if (quotaCorse == null) {
-    return `${giorni.length} giornate con dati, ma non si sa quante corse fossero `
-      + "programmate: senza il calendario del feed la copertura non è calcolabile.";
+  /* Le due coperture rispondono a domande diverse e si perdono separatamente:
+   * quante CORSE vediamo dipende dal calendario del feed, quante FERMATE di
+   * quelle corse no. Uscire alla prima che manca buttava via la seconda —
+   * che è anche la più informativa, perché confrontata con la geometria dice
+   * se il limite è l'intervallo di lettura. */
+  const pezzi: string[] = [];
+  if (quotaCorse != null) {
+    pezzi.push(`Di norma vediamo almeno un passaggio sul ${Math.round(quotaCorse * 100)}% `
+      + "delle corse programmate");
   }
-
-  const pezzi = [
-    `Di norma vediamo almeno un passaggio sul ${Math.round(quotaCorse * 100)}% `
-    + "delle corse programmate",
-  ];
   if (quotaFermate != null) {
-    pezzi.push(`e ${Math.round(quotaFermate * 100)}% delle fermate di quelle corse`);
+    pezzi.push(pezzi.length > 0
+      ? `e ${Math.round(quotaFermate * 100)}% delle fermate di quelle corse`
+      : `Delle corse che riusciamo a seguire rileviamo il ${Math.round(quotaFermate * 100)}% `
+        + "delle fermate");
+  }
+  if (pezzi.length === 0) {
+    return `${giorni.length} giornate con dati, ma né le corse programmate né le `
+      + "fermate sono note: non c'è nulla su cui misurare una copertura.";
   }
 
   let testo = pezzi.join(" ") + ".";
 
+  if (quotaCorse == null) {
+    testo += " Quante corse fossero programmate in quelle giornate non si sa: "
+      + "senza il calendario del feed quella parte della copertura non è "
+      + "calcolabile, ed è un problema del feed, non della misura.";
+  }
+
   if (capacita) {
     testo += ` Con letture ogni ${capacita.intervalloSec} s il mezzo percorre `
-      + `${capacita.passoMetri} m fra una e l'altra: ${capacita.cosaComporta.toLowerCase()}`;
+      + `${capacita.passoMetri} m fra una e l'altra: ${minuscolaIniziale(capacita.cosaComporta)}`;
   }
 
   /* Il margine è l'unico indizio quantitativo sulle soste: va spiegato, non

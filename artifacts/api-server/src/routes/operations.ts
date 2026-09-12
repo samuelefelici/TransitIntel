@@ -1606,6 +1606,36 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
     const configurato = Number(process.env.SIRI_POLL_SECONDS) || null;
     const quadro = quadroCopertura(giornate, configurato);
 
+    /* Se nessuna giornata sa quante corse fossero programmate, il colpevole è
+     * il calendario del feed. "Non calcolabile" da solo manda a cercare un
+     * guasto nel posto sbagliato: si dice QUALE periodo il calendario copre,
+     * così si vede subito che non comprende oggi. È lo stesso calendario su
+     * cui poggia l'aggancio delle corse, che senza ripiega su TUTTE le
+     * validità e diventa ambiguo. */
+    let calendario: any = undefined;
+    if (feedId && quadro.giorni.every(g => g.corseProgrammate == null)) {
+      try {
+        const c = await db.execute<any>(sql`
+          SELECT COUNT(*)::int AS righe,
+                 MIN(start_date) AS dal, MAX(end_date) AS al
+            FROM gtfs_calendar WHERE feed_id = ${feedId}::uuid`);
+        const x = (c as any).rows?.[0] ?? {};
+        const righe = Number(x.righe ?? 0);
+        calendario = {
+          righe, dal: x.dal ?? null, al: x.al ?? null,
+          nota: righe === 0
+            ? "Il feed attivo non ha alcuna riga di calendario: non si sa quali "
+              + "corse circolino in nessuna data. Anche l'aggancio delle corse ne "
+              + "risente, perché ripiega su tutte le validità insieme."
+            : `Il calendario del feed copre dal ${x.dal} al ${x.al}, e non `
+              + "comprende le giornate osservate. Va rimaterializzato il feed dal "
+              + "progetto Planner Studio con le validità in vigore: finché non "
+              + "succede, l'aggancio delle corse lavora su tutte le validità "
+              + "insieme e la copertura non è calcolabile.",
+        };
+      } catch { /* niente Planning Studio: si resta senza diagnosi */ }
+    }
+
     if (String(req.query.formato ?? "") === "csv") {
       const testata = ["giorno", "vetture", "vetture_con_posizione", "corse_programmate",
         "corse_con_transito", "quota_corse", "transiti", "fermate_programmate",
@@ -1628,6 +1658,7 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
       caronteAvailable: true, days,
       intervalloConfiguratoSec: configurato,
       quadro,
+      calendarioFeed: calendario,
       /* La tabella da mettere in una richiesta al fornitore: non "vorremmo un
        * refresh più frequente", ma che cosa cambia a ciascun intervallo. */
       scalaIntervalli: scalaIntervalli(),

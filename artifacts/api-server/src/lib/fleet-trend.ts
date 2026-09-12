@@ -8,10 +8,15 @@
  * trasmettere ieri — resta in fondo all'elenco, ordinata per tempo di fermo,
  * dietro a quelle mute da mesi.
  *
- * Eppure è la differenza che conta di più, adesso. La misura della copertura
- * dice che a trenta secondi non è l'intervallo di lettura a limitarci, ma
- * QUANTE VETTURE vengono seguite: ogni mezzo che torna a trasmettere vale più
- * di qualunque cosa possiamo chiedere al fornitore.
+ * Eppure è la differenza che conta, ed è il primo dei due fattori che
+ * decidono quanto vediamo. Sul flusso vero: 9 mezzi in servizio su 368
+ * trasmessi, con letture ogni ~40 s che consentono di riconoscere circa il 36%
+ * dei passaggi — e ne riconosciamo il 37,5%, cioè esattamente quanto
+ * l'intervallo permette.
+ *
+ * I due fattori si MOLTIPLICANO, non si escludono: sull'intervallo siamo già
+ * al limite e serve il fornitore, sui mezzi no e serve l'officina. Chi torna a
+ * trasmettere aggiunge corse intere, non frazioni di passaggio.
  *
  * ── Quello che questo modulo NON dice ──
  *
