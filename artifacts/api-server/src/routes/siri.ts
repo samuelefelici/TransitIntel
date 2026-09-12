@@ -32,6 +32,7 @@ import {
   type TransitFunnel,
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled, auditAgganci } from "../lib/siri-ingest";
+import { getLatestFeedId } from "./gtfs-helpers";
 import { ensureCaronteSchema, schemaState, tableShape, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
 
@@ -279,11 +280,134 @@ router.get("/siri/status", async (req, res): Promise<void> => {
 
   const index = await loadGtfsIndex();
   out.feedGtfs = index
-    ? { feedId: index.feedId, corse: index.trips.size, linee: index.routes.size, fermate: index.stops.size }
-    : { error: "nessun feed GTFS attivo: senza, i riferimenti dell'AVM non sono agganciabili" };
+    ? {
+        feedId: index.feedId,
+        corse: index.trips.size, linee: index.routes.size, fermate: index.stops.size,
+        /* Da dove viene questo feed: un id da solo non distingue "scelto
+         * apposta" da "capitato", e sono due situazioni molto diverse. */
+        scelta: await feedScelto(index.feedId, req),
+      }
+    : {
+        error: "nessun feed GTFS attivo: senza, i riferimenti dell'AVM non sono agganciabili",
+        scelta: await feedScelto(null, req),
+      };
 
   res.json(out);
 });
+
+/* ── Quale orario stiamo usando, e perché quello ─────────────────────────
+ * Il connettore NON riceve il feed: se lo sceglie. Con `GTFS_FEED_ID`
+ * impostata usa quello e basta; senza, prende il feed attivo caricato più di
+ * recente. Vuol dire che un caricamento fatto da chiunque, o la
+ * materializzazione di un altro progetto, può spostare il confronto sotto i
+ * piedi all'esercizio — al massimo dieci minuti dopo, quando l'indice scade.
+ *
+ * Lo stato mostrava l'id del feed ma non COME ci fosse arrivato: un id da solo
+ * non distingue "questo è quello giusto, fissato apposta" da "è capitato".
+ */
+async function feedScelto(feedId: string | null, req?: any): Promise<any> {
+  const fissato = !!process.env.GTFS_FEED_ID;
+  if (!feedId) {
+    return {
+      origine: fissato ? "fissato" : "automatico",
+      nota: "Nessun feed GTFS raggiungibile: senza orario i riferimenti "
+        + "dell'AVM non sono agganciabili a nulla.",
+    };
+  }
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT filename, agency_name, uploaded_at, feed_start_date, feed_end_date,
+             to_jsonb(f) ->> 'is_active'   AS is_active,
+             to_jsonb(f) ->> 'archived_at' AS archived_at
+        FROM gtfs_feeds f WHERE id = ${feedId}::uuid LIMIT 1`);
+    const f = (r as any).rows?.[0] ?? {};
+
+    /* Quanti altri potrebbero essere scelti al posto suo: se sono più d'uno e
+     * nessuno è fissato, la scelta di domani non è garantita uguale a oggi. */
+    let candidati: number | null = null;
+    /* IL RISCHIO PEGGIORE, e non si vedeva da nessuna parte. L'ingestione
+     * risolve il feed SENZA utente (è un processo di fondo, non ha una
+     * sessione); le pagine lo risolvono CON l'utente, e il filtro per tenant
+     * può portarle su un feed diverso. Quando succede, il connettore scrive
+     * i passaggi con gli identificativi di corsa del feed A mentre la pagina
+     * li cerca nel feed B: le tabelle si riempiono e le pagine restano vuote,
+     * senza un solo errore da nessuna parte.
+     *
+     * Con GTFS_FEED_ID impostata entrambi i percorsi la usano e il problema
+     * non esiste. Senza, va almeno detto. */
+    let feedDellePagine: string | null = null;
+    if (!fissato) {
+      try {
+        const c = await db.execute<any>(sql`
+          SELECT COUNT(*)::int AS n FROM gtfs_feeds
+           WHERE to_jsonb(gtfs_feeds) ->> 'archived_at' IS NULL`);
+        candidati = Number((c as any).rows?.[0]?.n ?? 0);
+      } catch { /* colonna assente su database vecchi */ }
+      try { feedDellePagine = await getLatestFeedId(req); } catch { /* ignoto */ }
+    }
+
+    /* Il calendario del feed copre oggi? È la stessa verifica che blocca il
+     * calcolo della copertura, e qui arriva prima: un feed il cui calendario
+     * è scaduto aggancia le corse su TUTTE le validità insieme. */
+    let calendario: any = null;
+    try {
+      const cal = await db.execute<any>(sql`
+        SELECT COUNT(*)::int AS righe, MIN(start_date) AS dal, MAX(end_date) AS al,
+               COUNT(*) FILTER (
+                 WHERE start_date <= to_char(now(), 'YYYYMMDD')
+                   AND end_date   >= to_char(now(), 'YYYYMMDD'))::int AS oggi
+          FROM gtfs_calendar WHERE feed_id = ${feedId}::uuid`);
+      const x = (cal as any).rows?.[0] ?? {};
+      calendario = {
+        righe: Number(x.righe ?? 0), dal: x.dal ?? null, al: x.al ?? null,
+        copreOggi: Number(x.oggi ?? 0) > 0,
+      };
+    } catch { /* Planning Studio non installato */ }
+
+    const pezzi: string[] = [
+      fissato
+        ? "Feed FISSATO da GTFS_FEED_ID: non cambia finché non cambi la variabile."
+        : "Feed scelto automaticamente: il più recente fra quelli attivi."
+          + (candidati != null && candidati > 1
+            ? ` Ce ne sono ${candidati} non archiviati, quindi un caricamento nuovo `
+              + "o la materializzazione di un altro progetto lo sposterebbero da soli. "
+              + "Per bloccarlo, imposta GTFS_FEED_ID."
+            : ""),
+    ];
+    if (feedDellePagine && feedDellePagine !== feedId) {
+      pezzi.push("ATTENZIONE GRAVE: le pagine di esercizio risolvono un feed "
+        + `DIVERSO (${feedDellePagine}). Il connettore scrive i passaggi con gli `
+        + "identificativi di corsa di questo feed, ma le pagine li cercano "
+        + "nell'altro: le tabelle si riempiono e le pagine restano vuote. "
+        + "Imposta GTFS_FEED_ID per far usare lo stesso feed a entrambi.");
+    }
+    if (calendario && !calendario.copreOggi) {
+      pezzi.push(calendario.righe === 0
+        ? "ATTENZIONE: questo feed non ha calendario, quindi l'aggancio delle corse "
+          + "lavora su tutte le validità insieme ed è ambiguo."
+        : `ATTENZIONE: il calendario copre dal ${calendario.dal} al ${calendario.al} `
+          + "e NON comprende oggi. L'aggancio delle corse ripiega su tutte le "
+          + "validità insieme, e la copertura non è calcolabile.");
+    }
+
+    return {
+      origine: fissato ? "fissato" : "automatico",
+      nome: f.filename ?? null,
+      azienda: f.agency_name ?? null,
+      caricatoIl: f.uploaded_at ?? null,
+      validoDal: f.feed_start_date ?? null,
+      validoAl: f.feed_end_date ?? null,
+      attivo: f.is_active === "true" ? true : f.is_active === "false" ? false : null,
+      archiviato: f.archived_at != null,
+      candidati,
+      calendario,
+      nota: pezzi.join(" "),
+    };
+  } catch (e: any) {
+    return { origine: fissato ? "fissato" : "automatico",
+             nota: `Dati del feed non leggibili: ${e?.message ?? e}` };
+  }
+}
 
 /* ── Lettura in chiaro di che cosa è alimentabile ─────────────────────────
  * Tre livelli distinti, perché falliscono per ragioni diverse: la mappa live
