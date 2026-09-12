@@ -19,6 +19,7 @@ import { clearCache } from "../middlewares/cache";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { tenantWhere, assertFeedAccess, ensureTenantColumns, feedAccessibleWhere } from "../lib/tenant";
 import { causaDb, spiegaCausa } from "../lib/db-error";
+import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -364,8 +365,19 @@ router.get("/gtfs/feeds", async (req, res) => {
        WHERE ${where} AND f.archived_at IS NULL
        ORDER BY f.uploaded_at DESC
     `);
-    const rows: any = (feeds as any).rows ?? feeds;
-    res.json({ data: rows });
+    /* Lo stato della validità è calcolato qui e non in SQL perché distingue
+     * FUTURO da SCADUTO, e la regola — con il suo effetto sull'aggancio delle
+     * corse — si collauda senza database. */
+    const oggi = oggiYmd();
+    const rows: any[] = ((feeds as any).rows ?? feeds) as any[];
+    res.json({
+      data: rows.map(r => ({
+        ...r,
+        validita: validitaFeed(
+          Number(r.calendarioRighe ?? 0), r.validoDal ?? null, r.validoAl ?? null,
+          oggi, !!r.isActive),
+      })),
+    });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS feeds");
     res.status(500).json({ error: "Internal server error" });
