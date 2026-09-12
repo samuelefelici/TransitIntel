@@ -32,6 +32,12 @@ interface GtfsFeed {
      corse. È anche l'unica che risponde alla domanda pratica — copreOggi. */
   validoDal?: string | null; validoAl?: string | null;
   calendarioRighe?: number | null; copreOggi?: boolean;
+  /* Tre stati, non un booleano: un orario caricato in anticipo è buona
+     pratica, uno scaduto è un problema, e "non comprende oggi" li confondeva. */
+  validita?: {
+    stato: "futuro" | "corrente" | "scaduto" | "assente";
+    dal: string | null; al: string | null; fraGiorni: number | null; nota: string;
+  };
   stopsCount: number; routesCount: number; tripsCount: number;
   shapesCount: number; uploadedAt: string;
   isActive?: boolean;
@@ -614,20 +620,30 @@ function FeedCard({
                       )}
                     </p>
                   )}
-                  {/* La domanda pratica: questo feed vale OGGI? Un feed scaduto
-                      non dà errore — fa agganciare le corse su tutte le
-                      validità insieme, e l'aggancio diventa ambiguo. */}
-                  {feed.calendarioRighe === 0 ? (
-                    <p className="text-xs text-amber-500 flex items-center gap-1">
-                      <AlertCircle className="w-3 h-3 shrink-0" />
-                      Nessun calendario: non si sa quali corse circolino
+                  {/* Tre casi, tre toni. Un orario che deve ancora entrare in
+                      vigore è un'informazione, non un allarme: caricarlo in
+                      anticipo è il modo giusto di lavorare, e colorarlo di
+                      ambra manderebbe a rifare una cosa già fatta bene. */}
+                  {feed.validita && feed.validita.stato !== "corrente" && (
+                    <p className={`text-xs flex items-start gap-1 ${
+                      feed.validita.stato === "futuro"
+                        ? "text-sky-400" : "text-amber-500"
+                    }`}>
+                      {feed.validita.stato === "futuro"
+                        ? <Clock className="w-3 h-3 shrink-0 mt-0.5" />
+                        : <AlertCircle className="w-3 h-3 shrink-0 mt-0.5" />}
+                      <span>
+                        <strong>
+                          {feed.validita.stato === "futuro"
+                            ? `Entra in vigore fra ${feed.validita.fraGiorni} giorn${feed.validita.fraGiorni === 1 ? "o" : "i"}`
+                            : feed.validita.stato === "scaduto" ? "Scaduto"
+                            : "Nessun calendario"}
+                        </strong>
+                        {" — "}
+                        {feed.validita.nota.replace(/^[^.]*\.\s*/, "")}
+                      </span>
                     </p>
-                  ) : feed.copreOggi === false ? (
-                    <p className="text-xs text-amber-500 flex items-center gap-1">
-                      <AlertCircle className="w-3 h-3 shrink-0" />
-                      Il calendario non comprende oggi
-                    </p>
-                  ) : null}
+                  )}
                 </div>
               );
             })()}

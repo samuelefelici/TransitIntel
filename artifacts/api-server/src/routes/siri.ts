@@ -35,6 +35,7 @@ import { loadGtfsIndex, ingestVehicles, closeCancelled, auditAgganci } from "../
 import { getLatestFeedId } from "./gtfs-helpers";
 import { ensureCaronteSchema, schemaState, tableShape, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
+import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 
 const router: IRouter = Router();
 
@@ -381,13 +382,15 @@ async function feedScelto(feedId: string | null, req?: any): Promise<any> {
         + "nell'altro: le tabelle si riempiono e le pagine restano vuote. "
         + "Imposta GTFS_FEED_ID per far usare lo stesso feed a entrambi.");
     }
-    if (calendario && !calendario.copreOggi) {
-      pezzi.push(calendario.righe === 0
-        ? "ATTENZIONE: questo feed non ha calendario, quindi l'aggancio delle corse "
-          + "lavora su tutte le validità insieme ed è ambiguo."
-        : `ATTENZIONE: il calendario copre dal ${calendario.dal} al ${calendario.al} `
-          + "e NON comprende oggi. L'aggancio delle corse ripiega su tutte le "
-          + "validità insieme, e la copertura non è calcolabile.");
+    /* FUTURO e SCADUTO non sono la stessa cosa: il primo è un orario caricato
+     * in anticipo, cioè buona pratica, e dirgli di rimaterializzare sarebbe
+     * mandarlo a rifare una cosa giusta. */
+    if (calendario) {
+      const v = validitaFeed(calendario.righe, calendario.dal, calendario.al,
+        oggiYmd(), f.is_active === "true");
+      calendario.stato = v.stato;
+      calendario.fraGiorni = v.fraGiorni;
+      if (v.stato !== "corrente") pezzi.push(v.nota);
     }
 
     return {
