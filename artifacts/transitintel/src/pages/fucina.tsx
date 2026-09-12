@@ -421,7 +421,11 @@ export default function FucinaPage() {
             const data = await r.json();
             const feeds: any[] = Array.isArray(data?.data) ? data.data : [];
             const f = feeds.find(x => x.id === feedIdToUse);
+            /* Prima di ripiegare su OGGI — che non è una data del feed ma una
+               del calendario di chi guarda — si usa la validità ricavata dal
+               calendario, che c'è anche senza feed_info.txt. */
             const date = (f?.feedStartDate || "").replace(/-/g, "").slice(0, 8)
+              || (f?.validoDal || "").replace(/-/g, "").slice(0, 8)
               || new Date().toISOString().slice(0, 10).replace(/-/g, "");
             return { source: "existing", date, label, tempFeedId: feedIdToUse };
           } catch {

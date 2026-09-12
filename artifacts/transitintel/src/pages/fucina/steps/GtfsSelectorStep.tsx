@@ -20,6 +20,9 @@ interface GtfsFeed {
   agencyName: string | null;
   feedStartDate: string | null;
   feedEndDate: string | null;
+  /* Ricavata dal calendario: c'è anche quando feed_info.txt manca, e quel
+     file è facoltativo — molti produttori non lo esportano. */
+  validoDal?: string | null;
   stopsCount: number;
   routesCount: number;
   tripsCount: number;
@@ -64,7 +67,12 @@ export default function GtfsSelectorStep({ onComplete }: Props) {
     if (!found) return;
     onComplete({
       source: "existing",
-      date: found.feedStartDate || found.uploadedAt.slice(0, 10).replace(/-/g, ""),
+      /* La data del feed è quella in cui il servizio COMINCIA, non quella in
+         cui qualcuno ha caricato lo zip. Senza feed_info.txt si ripiegava sul
+         caricamento: per un orario esportato il 4 che parte il 5, Fucina si
+         portava dietro il 4. Il calendario lo sa, e non è facoltativo. */
+      date: found.feedStartDate || found.validoDal
+        || found.uploadedAt.slice(0, 10).replace(/-/g, ""),
       label: (found.agencyName || found.filename) + ` · ${found.routesCount} linee`,
       tempFeedId: found.id,
     });
