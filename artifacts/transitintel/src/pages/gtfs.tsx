@@ -5,7 +5,7 @@ import {
   CheckCircle2, AlertCircle, Loader2, ChevronDown, ChevronRight,
   BarChart3, Calendar, Building2, Shapes, Star, TrendingUp,
   TrendingDown, Users, AlertTriangle, ShieldCheck, Clock, Zap,
-  Power, PowerOff
+  Power, PowerOff, Copy
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -17,9 +17,21 @@ import { Badge } from "@/components/ui/badge";
 import { getApiBase } from "@/lib/api";
 import PlanningAnalysisTab from "@/components/planning/PlanningAnalysisTab";
 
+/** "20260802" → "02/08/2026": il formato GTFS non si legge a colpo d'occhio. */
+function fmtGiorno(d: string | null | undefined): string {
+  if (!d) return "—";
+  const m = /^(\d{4})(\d{2})(\d{2})$/.exec(d.trim());
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : d;
+}
+
 interface GtfsFeed {
   id: string; filename: string; agencyName: string | null;
+  /* Dichiarate in feed_info.txt, che è facoltativo: spesso mancano. */
   feedStartDate: string | null; feedEndDate: string | null;
+  /* Ricavate dal calendario: la validità VERA, quella in cui il feed ha
+     corse. È anche l'unica che risponde alla domanda pratica — copreOggi. */
+  validoDal?: string | null; validoAl?: string | null;
+  calendarioRighe?: number | null; copreOggi?: boolean;
   stopsCount: number; routesCount: number; tripsCount: number;
   shapesCount: number; uploadedAt: string;
   isActive?: boolean;
@@ -580,12 +592,60 @@ function FeedCard({
                 <Bus className="w-3 h-3" /> {feed.tripsCount.toLocaleString()} corse
               </Badge>
             </div>
-            {(feed.feedStartDate || feed.feedEndDate) && (
-              <p className="text-xs text-muted-foreground flex items-center gap-1 mt-2">
-                <Calendar className="w-3 h-3" />
-                {feed.feedStartDate} → {feed.feedEndDate}
-              </p>
-            )}
+            {/* La validità. Quella dichiarata in feed_info.txt spesso manca,
+                perché quel file è facoltativo: si mostra allora quella ricavata
+                dal CALENDARIO, che è la validità vera — le giornate in cui il
+                feed ha davvero corse. */}
+            {(() => {
+              const dal = feed.feedStartDate ?? feed.validoDal;
+              const al  = feed.feedEndDate   ?? feed.validoAl;
+              const daCalendario = !feed.feedStartDate && !!feed.validoDal;
+              if (!dal && !al && feed.calendarioRighe == null) return null;
+              return (
+                <div className="mt-2 space-y-1">
+                  {(dal || al) && (
+                    <p className="text-xs text-muted-foreground flex items-center gap-1 flex-wrap">
+                      <Calendar className="w-3 h-3 shrink-0" />
+                      {fmtGiorno(dal)} → {fmtGiorno(al)}
+                      {daCalendario && (
+                        <span className="text-[10px] text-muted-foreground/70">
+                          (dal calendario)
+                        </span>
+                      )}
+                    </p>
+                  )}
+                  {/* La domanda pratica: questo feed vale OGGI? Un feed scaduto
+                      non dà errore — fa agganciare le corse su tutte le
+                      validità insieme, e l'aggancio diventa ambiguo. */}
+                  {feed.calendarioRighe === 0 ? (
+                    <p className="text-xs text-amber-500 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 shrink-0" />
+                      Nessun calendario: non si sa quali corse circolino
+                    </p>
+                  ) : feed.copreOggi === false ? (
+                    <p className="text-xs text-amber-500 flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3 shrink-0" />
+                      Il calendario non comprende oggi
+                    </p>
+                  ) : null}
+                </div>
+              );
+            })()}
+
+            {/* Il codice del feed. Serve per davvero: è il valore da mettere in
+                GTFS_FEED_ID per fissare quale orario usa l'esercizio, invece di
+                lasciarlo scegliere al più recente caricato. */}
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
+              <span className="shrink-0">Codice feed</span>
+              <code className="font-mono truncate">{feed.id}</code>
+              <Button
+                variant="ghost" size="icon" className="h-6 w-6 shrink-0"
+                title="Copia il codice"
+                onClick={() => { void navigator.clipboard?.writeText(feed.id); }}
+              >
+                <Copy className="w-3 h-3" />
+              </Button>
+            </div>
             <Button
               variant="ghost" size="sm"
               className="mt-2 h-7 px-2 text-xs text-muted-foreground hover:text-foreground gap-1"
@@ -651,6 +711,10 @@ export default function GtfsPage() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [deleteError, setDeleteError] = useState<{
+    feedId: string; titolo: string; motivi?: string[];
+    forzabile?: boolean; dettaglio?: string;
+  } | null>(null);
   const [selectedFeed, setSelectedFeed] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"upload" | "analysis" | "planning">("upload");
   const [dragOver, setDragOver] = useState(false);
@@ -722,12 +786,33 @@ export default function GtfsPage() {
     }
   };
 
-  const handleDelete = async (feedId: string) => {
+  /* Prima: console.error e un return muto. La riga non spariva e basta, e per
+     sapere perché bisognava aprire la console del browser — cioè mai. Ora il
+     motivo arriva in pagina, e quando il feed è in uso si può decidere. */
+  const handleDelete = async (feedId: string, forza = false) => {
+    setDeleteError(null);
     try {
-      const resp = await fetch(`${getApiBase()}/api/gtfs/feeds/${feedId}`, { method: "DELETE" });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const resp = await fetch(
+        `${getApiBase()}/api/gtfs/feeds/${feedId}${forza ? "?forza=1" : ""}`,
+        { method: "DELETE" });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({} as any));
+        setDeleteError({
+          feedId,
+          titolo: d.error ?? `Errore HTTP ${resp.status}`,
+          motivi: Array.isArray(d.motivi) ? d.motivi : undefined,
+          /* 409 = in uso: si può forzare. Un 500 no: forzare non aiuterebbe. */
+          forzabile: resp.status === 409,
+          dettaglio: d.dettaglio ?? undefined,
+        });
+        return;
+      }
     } catch (err) {
-      console.error("[GTFS] delete failed:", err);
+      setDeleteError({
+        feedId,
+        titolo: "Il server non ha risposto",
+        dettaglio: err instanceof Error ? err.message : String(err),
+      });
       return;
     }
     const next = feeds.filter(f => f.id !== feedId);
@@ -885,6 +970,46 @@ export default function GtfsPage() {
               </AnimatePresence>
             </CardContent>
           </Card>
+
+          {/* Perché una cancellazione non è riuscita. Sta sopra l'elenco e non
+              accanto al bottone: è un fatto sul sistema, non sulla riga, e
+              spesso nomina un ALTRO oggetto — un progetto, una variabile. */}
+          {deleteError && (
+            <div className="mb-4 p-4 rounded-xl border bg-destructive/10 border-destructive/30">
+              <div className="flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-destructive" />
+                <div className="min-w-0 flex-1 space-y-2">
+                  <p className="text-sm font-medium text-destructive">{deleteError.titolo}</p>
+                  {deleteError.motivi && (
+                    <ul className="text-sm text-muted-foreground space-y-1 list-disc pl-4">
+                      {deleteError.motivi.map((m, i) => <li key={i}>{m}</li>)}
+                    </ul>
+                  )}
+                  {deleteError.dettaglio && (
+                    <p className="text-xs font-mono text-muted-foreground break-all">
+                      {deleteError.dettaglio}
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {deleteError.forzabile && (
+                      <Button
+                        variant="destructive" size="sm" className="h-7 text-xs"
+                        onClick={() => handleDelete(deleteError.feedId, true)}
+                      >
+                        Cancella comunque
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost" size="sm" className="h-7 text-xs"
+                      onClick={() => setDeleteError(null)}
+                    >
+                      Chiudi
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Feed list */}
           <div>

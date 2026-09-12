@@ -18,6 +18,7 @@ import { parseCsv, buildShapeGeojson } from "./gtfs-helpers";
 import { clearCache } from "../middlewares/cache";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { tenantWhere, assertFeedAccess, ensureTenantColumns, feedAccessibleWhere } from "../lib/tenant";
+import { causaDb, spiegaCausa } from "../lib/db-error";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -330,17 +331,38 @@ router.get("/gtfs/feeds", async (req, res) => {
   try {
     await ensureFeedActiveColumn();
     const where = feedAccessibleWhere(req);
+    /* Le date da feed_info.txt sono spesso assenti, perché quel file è
+     * facoltativo e molti produttori non lo includono: la riga della validità
+     * semplicemente non compariva. La validità VERA sta nel calendario, ed è
+     * anche quella che conta davvero — dice in quali giornate il feed ha
+     * corse, non che cosa dichiara di coprire.
+     *
+     * `copreOggi` è la domanda pratica: un feed il cui calendario non
+     * comprende oggi fa agganciare le corse su tutte le validità insieme, e
+     * l'aggancio diventa ambiguo senza che nulla lo segnali. */
     const feeds = await db.execute(sql`
-      SELECT id, filename, agency_name AS "agencyName",
-             feed_start_date AS "feedStartDate", feed_end_date AS "feedEndDate",
-             stops_count AS "stopsCount", routes_count AS "routesCount",
-             trips_count AS "tripsCount", shapes_count AS "shapesCount",
-             uploaded_at AS "uploadedAt",
-             COALESCE(is_active, false) AS "isActive",
-             owner_user_id AS "ownerUserId"
-        FROM gtfs_feeds
-       WHERE ${where} AND archived_at IS NULL
-       ORDER BY uploaded_at DESC
+      SELECT f.id, f.filename, f.agency_name AS "agencyName",
+             f.feed_start_date AS "feedStartDate", f.feed_end_date AS "feedEndDate",
+             f.stops_count AS "stopsCount", f.routes_count AS "routesCount",
+             f.trips_count AS "tripsCount", f.shapes_count AS "shapesCount",
+             f.uploaded_at AS "uploadedAt",
+             COALESCE(f.is_active, false) AS "isActive",
+             f.owner_user_id AS "ownerUserId",
+             cal.righe   AS "calendarioRighe",
+             cal.dal     AS "validoDal",
+             cal.al      AS "validoAl",
+             COALESCE(cal.oggi, 0) > 0 AS "copreOggi"
+        FROM gtfs_feeds f
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*)::int AS righe,
+                 MIN(start_date) AS dal, MAX(end_date) AS al,
+                 COUNT(*) FILTER (
+                   WHERE start_date <= to_char(now(), 'YYYYMMDD')
+                     AND end_date   >= to_char(now(), 'YYYYMMDD'))::int AS oggi
+            FROM gtfs_calendar c WHERE c.feed_id = f.id
+        ) cal ON true
+       WHERE ${where} AND f.archived_at IS NULL
+       ORDER BY f.uploaded_at DESC
     `);
     const rows: any = (feeds as any).rows ?? feeds;
     res.json({ data: rows });
@@ -350,19 +372,146 @@ router.get("/gtfs/feeds", async (req, res) => {
   }
 });
 
+/* ── Cancellazione di un feed ─────────────────────────────────────────────
+ * Era una riga sola: DELETE dalla tabella dei feed, con la speranza che i
+ * vincoli in cascata portassero via tutto il resto. Quando qualcosa andava
+ * storto, il catch scriveva "Internal server error" e buttava via la causa —
+ * un 500 che non dice niente, e per capirlo bisognava riprodurre il caso.
+ *
+ * Tre cose ora sono diverse:
+ *
+ * 1. Prima di cancellare si guarda CHI lo sta usando. Portare via il feed su
+ *    cui gira l'esercizio spegne il confronto con l'orario senza che nessuno
+ *    lo veda: da fuori sembra che l'AVM abbia smesso di funzionare.
+ *
+ * 2. Le tabelle figlie si svuotano in ordine esplicito, dentro una
+ *    transazione. Non tutte hanno il vincolo in cascata — alcune sono nate
+ *    fuori dallo schema principale — e affidarsi alla cascata significa
+ *    funzionare o fallire a seconda di quale tabella è stata creata come.
+ *
+ * 3. Se Postgres rifiuta, il rifiuto arriva a chi legge tradotto, con il
+ *    codice e la tabella che l'hanno causato.
+ */
+
+/** Le tabelle del feed, dalle foglie alla radice. L'ordine conta. */
+const TABELLE_FEED = [
+  "gtfs_stop_times", "gtfs_frequencies", "gtfs_transfers", "gtfs_shapes",
+  "gtfs_trips", "gtfs_calendar_dates", "gtfs_calendar", "gtfs_routes",
+  "gtfs_stops", "gtfs_fare_rules", "gtfs_fare_attributes",
+  "gtfs_fare_leg_rules", "gtfs_fare_products", "gtfs_agency", "gtfs_feed_info",
+];
+
+/** Chi sta ancora usando questo feed, e quindi perché non si può portarlo via. */
+async function feedInUso(id: string): Promise<string[]> {
+  const motivi: string[] = [];
+
+  if (process.env.GTFS_FEED_ID === id) {
+    motivi.push("è il feed fissato in GTFS_FEED_ID: il connettore SIRI lo usa "
+      + "per agganciare ogni corsa. Cambia la variabile prima di cancellarlo");
+  }
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT COALESCE(is_active, false) AS attivo FROM gtfs_feeds
+       WHERE id = ${id}::uuid LIMIT 1`);
+    if ((r as any).rows?.[0]?.attivo) {
+      motivi.push("è il feed ATTIVO: tutte le pagine di esercizio e di analisi "
+        + "lo stanno usando. Attivane un altro prima di cancellarlo");
+    }
+  } catch { /* colonna assente: non è un impedimento */ }
+
+  /* I progetti puntano al feed senza vincolo di chiave esterna: il database
+   * lascerebbe cancellare, e il progetto resterebbe a indicare il vuoto. */
+  for (const [tab, col, nome] of [
+    ["ps_projects", "materialized_feed_id", "progetti Planner Studio"],
+    ["scheduling_projects", "feed_id", "progetti di turnazione"],
+  ] as const) {
+    try {
+      const r = await db.execute<any>(sql`
+        SELECT COUNT(*)::int AS n, MIN(name) AS primo
+          FROM ${sql.raw(tab)} WHERE ${sql.raw(col)} = ${id}::uuid`);
+      const n = Number((r as any).rows?.[0]?.n ?? 0);
+      if (n > 0) {
+        const primo = (r as any).rows?.[0]?.primo;
+        motivi.push(`${n} ${nome} lo usano`
+          + (primo ? ` (fra cui «${primo}»)` : "")
+          + ": resterebbero a puntare nel vuoto");
+      }
+    } catch { /* tabella non presente su questa installazione */ }
+  }
+  return motivi;
+}
+
 // DELETE /api/gtfs/feeds/:id
 router.delete("/gtfs/feeds/:id", async (req, res) => {
+  const id = req.params.id;
   try {
-    if (!(await assertFeedAccess(req.params.id, req, res))) return;
-    await db.delete(gtfsFeeds).where(eq(gtfsFeeds.id, req.params.id));
+    if (!/^[0-9a-f-]{36}$/i.test(id)) {
+      res.status(400).json({ error: "ID feed non valido" });
+      return;
+    }
+    if (!(await assertFeedAccess(id, req, res))) return;
+
+    /* `?forza=1` per cancellare comunque: la scelta resta di chi legge, ma
+     * deve essere una scelta e non una sorpresa. */
+    const forza = req.query.forza === "1" || req.query.force === "1";
+    const motivi = await feedInUso(id);
+    if (motivi.length > 0 && !forza) {
+      res.status(409).json({
+        error: "Questo feed è in uso",
+        motivi,
+        comeProcedere: "Risolvi i punti sopra, oppure ripeti la richiesta con "
+          + "?forza=1 se sai quello che stai facendo.",
+      });
+      return;
+    }
+
+    /* Quali di quelle tabelle esistono davvero su QUESTA installazione, e la
+     * verifica va fatta PRIMA di aprire la transazione.
+     *
+     * Tentarle dentro, catturando il "relazione inesistente", non funziona:
+     * in Postgres quell'errore ABORTA l'intera transazione, e catturarlo in
+     * JavaScript non la ripristina — ogni istruzione successiva fallisce con
+     * 25P02 e il feed resta a metà. Lo ha mostrato la prova su un database
+     * vero; leggendo il codice sembrava corretto. */
+    const esistenti: string[] = [];
+    for (const t of TABELLE_FEED) {
+      const r = await db.execute<any>(
+        sql`SELECT to_regclass(${t}) IS NOT NULL AS presente`);
+      if ((r as any).rows?.[0]?.presente) esistenti.push(t);
+    }
+
+    /* In transazione: un feed cancellato a metà è peggio di uno non
+     * cancellato, perché le pagine continuerebbero a trovarne i pezzi. */
+    const svuotate: Record<string, number> = {};
+    await db.transaction(async (tx) => {
+      for (const t of esistenti) {
+        const r = await tx.execute<any>(
+          sql`DELETE FROM ${sql.raw(t)} WHERE feed_id = ${id}::uuid`);
+        const n = (r as any).rowCount ?? 0;
+        if (n > 0) svuotate[t] = n;
+      }
+      await tx.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${id}::uuid`);
+    });
+
     clearCache("/api/gtfs/");
     clearCache("/api/analysis/");
-    res.json({ success: true });
-  } catch (err) {
+    res.json({
+      success: true,
+      forzato: forza && motivi.length > 0 ? motivi : undefined,
+      righeRimosse: svuotate,
+    });
+  } catch (err: any) {
     req.log.error(err, "Error deleting GTFS feed");
-    res.status(500).json({ error: "Internal server error" });
+    const c = causaDb(err);
+    res.status(500).json({
+      error: spiegaCausa(c) ?? "Il database ha rifiutato la cancellazione.",
+      dettaglio: c.messaggio,
+      sqlstate: c.code,
+      tabella: c.tabella,
+    });
   }
 });
+
 
 // ─── Feed attivo (lazy column bootstrap) ───────────────────────
 let feedActiveColumnEnsured = false;
