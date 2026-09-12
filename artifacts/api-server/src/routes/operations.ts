@@ -36,6 +36,8 @@ import {
   type CorsaDaEsaminare, type PosizioneMezzo,
 } from "../lib/anomaly-detection";
 import { loadCalendarProfile, calendarioPredefinito } from "../lib/planning-studio-calendar";
+import { tintaRitardo, legendaRitardo } from "../lib/delay-scale";
+import { spezzaPerFermate } from "../lib/shape-segments";
 
 const router: IRouter = Router();
 
@@ -280,6 +282,11 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       nearestStopName: v.nearest_stop_name,
       delaySeconds: v.last_delay_seconds
         ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ),
+      /* Il colore lo decide il server con la stessa scala dell'arco e della
+       * tabella: un mezzo non deve essere rosso sulla mappa e in orario nel
+       * pannello accanto. */
+      tinta: tintaRitardo(v.last_delay_seconds
+        ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ)),
       lastTransitTs: v.last_transit_ts,
       lastScheduled: v.last_scheduled ?? null,
       lastStopSeq: v.last_stop_seq,
@@ -290,6 +297,10 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       caronteAvailable: true,
       generatedAt: new Date().toISOString(),
       windowMinutes,
+      /* La legenda dei colori viaggia con i dati che colora: se la pagina se
+       * la disegnasse da sé, basterebbe cambiare una soglia qui perché la
+       * legenda continuasse a raccontare quella vecchia. */
+      legenda: legendaRitardo(),
       /* Che cosa si sta guardando. Se il filtro non è attivo la pagina mostra
        * anche le righe dell'AVM, e va detto: un dato di provenienza mista
        * presentato come se fosse solo SIRI è ciò che ci ha fatto perdere
@@ -323,6 +334,8 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         earlyPct: pct(Number(k.early ?? 0)),
         avgDelaySeconds: k.avg_delay != null ? Math.round(Number(k.avg_delay)) : null,
         medianDelaySeconds: k.median_delay != null ? Math.round(Number(k.median_delay)) : null,
+        tintaRitardoMedio: tintaRitardo(
+          k.avg_delay != null ? Math.round(Number(k.avg_delay)) : null),
       },
     });
   } catch (e: any) {
@@ -1106,9 +1119,67 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
      * sì: si riagganciano per fermata. */
     const coord = new Map(stops.map((s: any) => [String(s.stop_id ?? ""), s]));
 
+    /* ── L'arco della corsa, colorato dal ritardo ───────────────────────
+     * Il ritardo è un numero per fermata; sulla mappa deve diventare un
+     * colore per TRATTO, perché è fra due fermate che il ritardo si prende.
+     * Ogni tratto porta il colore del ritardo con cui il mezzo è ARRIVATO
+     * alla sua fermata di valle. */
+    const fermateGeo = completato.fermate.map(f => {
+      const c: any = coord.get(f.stopId) ?? {};
+      return {
+        lat: c.stop_lat != null ? Number(c.stop_lat) : null,
+        lon: c.stop_lon != null ? Number(c.stop_lon) : null,
+      };
+    });
+    const tracciato = await tracciatoDiCorsa(feedId, tripInfo?.shape_id ?? null);
+    const tratti = spezzaPerFermate(
+      tracciato ? tracciato.map(p => [p.lon, p.lat] as [number, number]) : [],
+      fermateGeo,
+    );
+
+    /* Dove è arrivato davvero il mezzo: oltre l'ultima fermata OSSERVATA il
+     * tratto non è stato percorso, e colorarlo con un orario ricostruito
+     * mostrerebbe un ritardo su una strada che il mezzo non ha ancora fatto. */
+    const ultimaOsservata = completato.fermate
+      .filter(f => f.origine === "osservato")
+      .reduce((m, f) => Math.max(m, f.seq), -Infinity);
+
+    const archi = tratti.map((t, i) => {
+      const da = completato.fermate[i], a = completato.fermate[i + 1];
+      const percorso = a.seq <= ultimaOsservata;
+      const ritardo = percorso ? a.delaySeconds : null;
+      return {
+        daSeq: da.seq, aSeq: a.seq,
+        daStopId: da.stopId, aStopId: a.stopId,
+        daNome: da.stopName, aNome: a.stopName,
+        ritardoSec: ritardo,
+        tinta: tintaRitardo(ritardo),
+        /* Il ritardo che colora questo tratto è stato MISURATO, o ricostruito
+         * fra due misure? Un tratto dedotto non deve somigliare a uno visto. */
+        misurato: percorso && a.origine === "osservato",
+        stato: percorso ? "percorso" : "da_percorrere",
+        /* false = non è la strada, è la congiungente fra le due fermate, che
+         * taglia le curve. Va disegnata diversamente o si crede una strada. */
+        percorsoReale: t.attendibile,
+        metri: Math.round(t.metri),
+        coordinate: t.punti,
+      };
+    });
+
     res.json({
       caronteAvailable: true,
       diagnosi,
+      /* Il tracciato intero, per disegnarlo sotto come sfondo grigio: fa
+       * vedere il resto della corsa anche dove il mezzo non è ancora
+       * arrivato. */
+      percorso: tracciato
+        ? { type: "LineString" as const, coordinates: tracciato.map(p => [p.lon, p.lat]) }
+        : null,
+      riferimento: tracciato ? "tracciato" : "fermate",
+      archi,
+      /* La legenda esce da qui insieme ai colori che spiega: disegnata dalla
+       * pagina per conto suo, basterebbe ritoccare un caposaldo perché menta. */
+      legenda: legendaRitardo(),
       /* Quanto di questo profilo è misurato e quanto dedotto. Chi ritara un
        * orario deve saperlo prima di guardare i numeri, non dopo. */
       completamento: {
@@ -1132,7 +1203,14 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       },
       stops: completato.fermate.map(f => {
         const c: any = coord.get(f.stopId) ?? {};
+        /* Oltre l'ultima fermata OSSERVATA il mezzo non è ancora arrivato:
+         * l'orario che compare lì è una previsione, ottenuta prolungando lo
+         * scarto. Colorarla come le altre direbbe "è in ritardo là", di una
+         * fermata che deve ancora raggiungere — una previsione col colore di
+         * una misura. Il numero resta, il colore no. */
+        const raggiunta = f.seq <= ultimaOsservata;
         return {
+          raggiunta,
           seq: f.seq,
           stopId: f.stopId,
           stopName: f.stopName,
@@ -1141,6 +1219,11 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
           scheduled: f.scheduled,
           actualTs: f.actualTs ? f.actualTs.toISOString() : null,
           delaySeconds: f.delaySeconds,
+          /* Il colore lo decide il server, una volta sola: la mappa, questa
+           * tabella e i marcatori devono dire la stessa cosa dello stesso
+           * scarto, e tre scale che si assomigliano divergono al primo
+           * ritocco. */
+          tinta: tintaRitardo(raggiunta && f.actualTs ? f.delaySeconds : null),
           /* "osservato" = il mezzo è stato visto passare; "interpolato" e
            * "estrapolato" = ricostruito da noi. Un orario dedotto presentato
            * come misurato renderebbe inattendibile proprio l'analisi per cui
@@ -1481,6 +1564,36 @@ async function caricaTracciati(
     console.warn("[operations] percorsi non disponibili:", e?.message ?? e);
   }
   return out;
+}
+
+/* ── Il tracciato di UNA corsa, tenuto in memoria ──────────────────────────
+ * La Sala Operativa richiede il dettaglio della corsa selezionata ogni venti
+ * secondi. Gli orari e i passaggi cambiano; il tracciato no — dentro un feed
+ * una shape è immutabile. Rileggerlo a ogni giro sarebbe una query su una
+ * tabella grande per ottenere sempre lo stesso risultato.
+ *
+ * Cache piccola e a scadenza: un feed nuovo ha id diverso, quindi la chiave
+ * cambia da sé e non esiste il caso "tracciato vecchio di un feed sostituito". */
+const tracciatiInMemoria = new Map<string, { punti: Array<{ lat: number; lon: number }> | null; at: number }>();
+const TRACCIATO_TTL_MS = 30 * 60 * 1000;
+const TRACCIATI_MAX = 200;
+
+async function tracciatoDiCorsa(
+  feedId: string | null, shapeId: string | null,
+): Promise<Array<{ lat: number; lon: number }> | null> {
+  if (!feedId || !shapeId) return null;
+  const chiave = `${feedId}|${shapeId}`;
+  const c = tracciatiInMemoria.get(chiave);
+  if (c && Date.now() - c.at < TRACCIATO_TTL_MS) return c.punti;
+
+  const punti = (await caricaTracciati(feedId, [shapeId])).get(shapeId) ?? null;
+  /* Si memorizza ANCHE l'assenza: un feed senza gtfs_shapes farebbe altrimenti
+   * una query inutile ogni venti secondi, per ogni corsa aperta. */
+  if (tracciatiInMemoria.size >= TRACCIATI_MAX) {
+    tracciatiInMemoria.delete(tracciatiInMemoria.keys().next().value as string);
+  }
+  tracciatiInMemoria.set(chiave, { punti, at: Date.now() });
+  return punti;
 }
 
 // ── GET /operations/copertura?days= — quanto del servizio riusciamo a vedere

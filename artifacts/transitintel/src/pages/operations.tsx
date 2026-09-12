@@ -23,6 +23,10 @@ import { MAPBOX_TOKEN, MAP_STYLES } from "./dashboard/constants";
 import AvanzamentoCorse from "./operations/AvanzamentoCorse";
 import RegistroAnomalie, { type RegistroResp } from "./operations/RegistroAnomalie";
 import StatoParco, { type ParcoResp } from "./operations/StatoParco";
+import {
+  LegendaRitardo, TabellaFermate, colore, fmtDelay, fmtTime,
+  type Tinta, type Legenda, type FermataCorsa,
+} from "./operations/DettaglioCorsa";
 
 // ── Tipi (allineati a /api/operations/*) ─────────────────────────────────────
 
@@ -48,6 +52,7 @@ interface LiveVehicle {
   nearestStopId: string | null;
   nearestStopName: string | null;
   delaySeconds: number | null;
+  tinta?: Tinta;
   lastTransitTs: string | null;
   lastScheduled: string | null;
   lastStopSeq: number | null;
@@ -58,6 +63,7 @@ interface LiveSnapshot {
   caronteAvailable: boolean;
   generatedAt?: string;
   windowMinutes?: number;
+  legenda?: Legenda;
   vehicles: LiveVehicle[];
   tripsWithoutGps: Array<{
     tripId: string | null; routeId: string | null; routeShortName: string | null;
@@ -68,6 +74,7 @@ interface LiveSnapshot {
     vehiclesActive: number; tripsActive: number; transitsToday: number;
     onTimePct: number | null; latePct: number | null; earlyPct: number | null;
     avgDelaySeconds: number | null; medianDelaySeconds: number | null;
+    tintaRitardoMedio?: Tinta;
   };
 }
 
@@ -97,15 +104,26 @@ interface TripTransits {
     variantCode: string | null; directionId: number | null; shapeId: string | null;
     routeShortName: string | null; routeLongName: string | null; routeColor: string | null;
   } | null;
-  stops: Array<{
-    seq: number | null; stopId: string | null; stopName: string | null;
-    lat: number | null; lon: number | null; scheduled: string | null;
-    actualTs: string | null; delaySeconds: number | null;
-    /** "avm" = dichiarato dal produttore, "calcolato" = da noi, "ricostruito" = dedotto */
-    delayOrigin: "avm" | "calcolato" | "ricostruito" | null;
-    /** come si è ottenuto l'orario: visto passare, oppure dedotto */
-    origine: "osservato" | "interpolato" | "estrapolato" | null;
+  stops: FermataCorsa[];
+  /** il tracciato intero della corsa, per lo sfondo */
+  percorso: { type: "LineString"; coordinates: Array<[number, number]> } | null;
+  riferimento?: "tracciato" | "fermate";
+  /** un tratto per ogni coppia di fermate consecutive, colorato dal ritardo */
+  archi?: Array<{
+    daSeq: number; aSeq: number;
+    daStopId: string; aStopId: string;
+    daNome: string | null; aNome: string | null;
+    ritardoSec: number | null;
+    tinta: Tinta;
+    /** il ritardo che colora è misurato, non ricostruito fra due misure */
+    misurato: boolean;
+    stato: "percorso" | "da_percorrere";
+    /** false = è la congiungente fra le fermate, non la strada */
+    percorsoReale: boolean;
+    metri: number;
+    coordinate: Array<[number, number]>;
   }>;
+  legenda?: Legenda;
   /** quanto del profilo è misurato e quanto dedotto */
   completamento?: {
     osservate: number; interpolate: number; estrapolate: number;
@@ -119,39 +137,6 @@ interface VehicleTrack {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-// Stato puntualità: in orario tra 1' di anticipo e 5' di ritardo (standard TPL)
-type DelayStatus = "onTime" | "late" | "early" | "unknown";
-function delayStatus(s: number | null | undefined): DelayStatus {
-  if (s == null) return "unknown";
-  if (s > 300) return "late";
-  if (s < -60) return "early";
-  return "onTime";
-}
-const STATUS_COLOR: Record<DelayStatus, string> = {
-  onTime: "#10b981",  // emerald
-  late: "#ef4444",    // red
-  early: "#f59e0b",   // amber
-  unknown: "#64748b", // slate
-};
-const STATUS_LABEL: Record<DelayStatus, string> = {
-  onTime: "In orario", late: "In ritardo", early: "In anticipo", unknown: "Senza dati",
-};
-
-function fmtDelay(s: number | null | undefined): string {
-  if (s == null) return "—";
-  const sign = s < 0 ? "-" : "+";
-  const abs = Math.abs(s);
-  const m = Math.floor(abs / 60);
-  const ss = abs % 60;
-  return `${sign}${m}'${String(ss).padStart(2, "0")}"`;
-}
-
-function fmtTime(ts: string | null | undefined): string {
-  if (!ts) return "—";
-  try { return new Date(ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
-  catch { return "—"; }
-}
 
 function ageSeconds(ts: string): number {
   return Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 1000));
@@ -260,6 +245,56 @@ export default function OperationsPage() {
     };
   }, [trackQ.data]);
 
+  /* ── L'arco della corsa ────────────────────────────────────────────────
+   * Un tratto per ogni coppia di fermate, col colore del ritardo con cui il
+   * mezzo è arrivato in fondo. I tratti non ancora percorsi restano fuori:
+   * non hanno un ritardo, e disegnarli grigi in mezzo agli altri li farebbe
+   * sembrare tratti senza dati. Vanno nel livello dello sfondo. */
+  const archiGeojson = useMemo(() => {
+    const archi = (transitsQ.data?.archi ?? []).filter(
+      (a) => a.stato === "percorso" && a.coordinate.length >= 2,
+    );
+    if (archi.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: archi.map((a) => ({
+        type: "Feature" as const,
+        properties: {
+          colore: a.tinta.colore,
+          /* Un tratto ricostruito fra due passaggi osservati non deve
+             somigliare a uno misurato: stessa tinta, meno corpo. */
+          opacita: a.misurato ? 0.95 : 0.5,
+          spessore: a.misurato ? 6 : 4,
+        },
+        geometry: { type: "LineString" as const, coordinates: a.coordinate },
+      })),
+    };
+  }, [transitsQ.data]);
+
+  /* Le fermate della corsa, con lo stesso colore del ritardo. Sono il punto
+     in cui il ritardo si misura: senza, l'arco cambia colore nel nulla. */
+  const fermateGeojson = useMemo(() => {
+    const fermate = (transitsQ.data?.stops ?? []).filter(
+      (s) => s.lat != null && s.lon != null,
+    );
+    if (fermate.length === 0) return null;
+    return {
+      type: "FeatureCollection" as const,
+      features: fermate.map((s) => ({
+        type: "Feature" as const,
+        properties: {
+          colore: s.raggiunta !== false && s.actualTs ? s.tinta.colore : "#1e293b",
+          bordo: s.origine === "osservato" ? "#ffffff" : "#94a3b8",
+          raggio: s.origine === "osservato" ? 5 : 3.5,
+          nome: s.stopName ?? s.stopId ?? "",
+        },
+        geometry: { type: "Point" as const, coordinates: [s.lon!, s.lat!] },
+      })),
+    };
+  }, [transitsQ.data]);
+
+  const legenda = transitsQ.data?.legenda ?? liveQ.data?.legenda ?? null;
+
   const kpis = liveQ.data?.kpis;
   const trip = transitsQ.data?.trip ?? null;
   const transitati = transitsQ.data?.stops.filter((s) => s.actualTs != null).length ?? 0;
@@ -296,14 +331,73 @@ export default function OperationsPage() {
         mapboxAccessToken={MAPBOX_TOKEN}
         attributionControl={false}
       >
-        {/* Traccia GPS del mezzo selezionato */}
+        {/* Il percorso intero della corsa, sotto a tutto: fa vedere dove il
+            mezzo deve ancora andare. Grigio, perché lì un ritardo non c'è. */}
+        {transitsQ.data?.percorso && (
+          <Source id="trip-shape" type="geojson" data={{
+            type: "Feature", properties: {}, geometry: transitsQ.data.percorso,
+          }}>
+            <Layer
+              id="trip-shape-line"
+              type="line"
+              paint={{ "line-color": "#475569", "line-width": 3, "line-opacity": 0.55 }}
+              layout={{ "line-cap": "round", "line-join": "round" }}
+            />
+          </Source>
+        )}
+
+        {/* Traccia GPS del mezzo selezionato: dove è passato davvero, che non
+            è sempre dove l'orario dice. Sottile, per non coprire l'arco. */}
         {trackGeojson && (
           <Source id="vehicle-track" type="geojson" data={trackGeojson}>
             <Layer
               id="vehicle-track-line"
               type="line"
-              paint={{ "line-color": "#38bdf8", "line-width": 3, "line-opacity": 0.55 }}
+              paint={{
+                "line-color": "#38bdf8", "line-width": 1.5, "line-opacity": 0.45,
+                "line-dasharray": [2, 2],
+              }}
               layout={{ "line-cap": "round", "line-join": "round" }}
+            />
+          </Source>
+        )}
+
+        {/* L'arco percorso, colorato dal ritardo fermata per fermata. */}
+        {archiGeojson && (
+          <Source id="trip-archi" type="geojson" data={archiGeojson}>
+            {/* Un alone scuro sotto: sul fondo scuro della mappa un verde e un
+                ciano sottili si confondono con lo sfondo e con le strade. */}
+            <Layer
+              id="trip-archi-alone"
+              type="line"
+              paint={{ "line-color": "#0f172a", "line-width": 10, "line-opacity": 0.7 }}
+              layout={{ "line-cap": "round", "line-join": "round" }}
+            />
+            <Layer
+              id="trip-archi-line"
+              type="line"
+              paint={{
+                "line-color": ["get", "colore"],
+                "line-width": ["get", "spessore"],
+                "line-opacity": ["get", "opacita"],
+              }}
+              layout={{ "line-cap": "round", "line-join": "round" }}
+            />
+          </Source>
+        )}
+
+        {/* Le fermate: è lì che il ritardo si misura e che l'arco cambia colore. */}
+        {fermateGeojson && (
+          <Source id="trip-fermate" type="geojson" data={fermateGeojson}>
+            <Layer
+              id="trip-fermate-punti"
+              type="circle"
+              paint={{
+                "circle-radius": ["get", "raggio"],
+                "circle-color": ["get", "colore"],
+                "circle-stroke-width": 1.5,
+                "circle-stroke-color": ["get", "bordo"],
+              }}
             />
           </Source>
         )}
@@ -311,7 +405,7 @@ export default function OperationsPage() {
         {/* Marker mezzi */}
         {visibili.map((v) => {
           const key = vehicleKey(v);
-          const st = delayStatus(v.delaySeconds);
+          const tinta = v.tinta;
           const isSel = key === selectedKey;
           const stale = ageSeconds(v.ts) > 120;
           const noTurno = !inCorsa(v);
@@ -337,14 +431,14 @@ export default function OperationsPage() {
                 {isSel && (
                   <span
                     className="absolute -inset-2 rounded-full animate-ping"
-                    style={{ backgroundColor: `${STATUS_COLOR[st]}55` }}
+                    style={{ backgroundColor: `${colore(tinta)}55` }}
                   />
                 )}
                 <div
                   className={`rounded-full border-2 shadow-lg flex items-center justify-center ${
                     noTurno ? "w-7 h-7 border-dashed border-amber-300/70" : "w-8 h-8 border-white/80"
                   }`}
-                  style={{ backgroundColor: noTurno ? "#3f3f46" : STATUS_COLOR[st] }}
+                  style={{ backgroundColor: noTurno ? "#3f3f46" : colore(tinta) }}
                 >
                   {noTurno ? (
                     <UserX className="w-3.5 h-3.5 text-amber-300" />
@@ -429,8 +523,8 @@ export default function OperationsPage() {
               )}
               <div className="flex items-center gap-1.5">
                 <Clock className="w-3 h-3" />
-                <span style={{ color: STATUS_COLOR[delayStatus(selected.delaySeconds)] }} className="font-semibold">
-                  {STATUS_LABEL[delayStatus(selected.delaySeconds)]} {selected.delaySeconds != null && `(${fmtDelay(selected.delaySeconds)})`}
+                <span style={{ color: colore(selected.tinta) }} className="font-semibold">
+                  {selected.tinta?.etichetta ?? "Scarto non noto"}
                 </span>
               </div>
               {selected.lastStopSeq != null && selected.totalStops != null && selected.totalStops > 0 && (
@@ -459,7 +553,7 @@ export default function OperationsPage() {
           icon={<Clock className="w-3.5 h-3.5" />}
           label="Ritardo medio"
           value={kpis?.avgDelaySeconds != null ? fmtDelay(kpis.avgDelaySeconds) : "—"}
-          accent={STATUS_COLOR[delayStatus(kpis?.avgDelaySeconds)]}
+          accent={colore(kpis?.tintaRitardoMedio)}
         />
         <KpiChip icon={<TrendingUp className="w-3.5 h-3.5" />} label="Transiti oggi" value={String(kpis?.transitsToday ?? "—")} accent="#94a3b8" />
         {senzaCorsa.length > 0 && (
@@ -527,7 +621,7 @@ export default function OperationsPage() {
 
             {conCorsa.map((v) => {
               const key = vehicleKey(v);
-              const st = delayStatus(v.delaySeconds);
+              const tinta = v.tinta;
               const isSel = key === selectedKey;
               return (
                 <button
@@ -553,7 +647,7 @@ export default function OperationsPage() {
                   </span>
                   <span
                     className="shrink-0 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded"
-                    style={{ color: STATUS_COLOR[st], backgroundColor: `${STATUS_COLOR[st]}1a` }}
+                    style={{ color: colore(tinta), backgroundColor: `${colore(tinta)}1a` }}
                   >
                     {v.delaySeconds != null ? fmtDelay(v.delaySeconds) : "GPS"}
                   </span>
@@ -738,6 +832,19 @@ export default function OperationsPage() {
             </div>
           )}
 
+          {inCorsa(selected) && legenda && <LegendaRitardo l={legenda} />}
+
+          {/* Il percorso del feed non c'è: l'arco unisce le fermate in linea
+              retta e TAGLIA LE CURVE. I colori restano veri, la strada no —
+              e va detto prima che qualcuno misuri una distanza su quella linea. */}
+          {inCorsa(selected) && transitsQ.data?.riferimento === "fermate"
+            && (transitsQ.data.archi?.length ?? 0) > 0 && (
+            <p className="px-3 py-1.5 text-[10px] text-amber-200/80 leading-snug border-b border-border/40">
+              Il feed non ha il tracciato di questa corsa: l'arco unisce le fermate in
+              linea retta e taglia le curve. I ritardi sono veri, il percorso disegnato no.
+            </p>
+          )}
+
           <div className="flex-1 overflow-y-auto p-2">
             {!selected.tripId && (
               <div className="text-xs p-2 space-y-2">
@@ -776,61 +883,8 @@ export default function OperationsPage() {
                 </p>
               </div>
             )}
-            {transitsQ.data && transitsQ.data.stops.length > 0 && (
-              <table className="w-full text-[11px]">
-                <thead>
-                  <tr className="text-muted-foreground text-left">
-                    <th className="px-1.5 py-1 font-medium">Fermata</th>
-                    <th className="px-1.5 py-1 font-medium text-right">Progr.</th>
-                    <th className="px-1.5 py-1 font-medium text-right">Reale</th>
-                    <th className="px-1.5 py-1 font-medium text-right">Δ</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {transitsQ.data.stops.map((s, i) => {
-                    const st = delayStatus(s.delaySeconds);
-                    const transited = s.actualTs != null;
-                    const dedotto = s.origine === "interpolato" || s.origine === "estrapolato";
-                    return (
-                      <tr key={`${s.stopId}-${i}`} className={`border-t border-border/30 ${transited ? "" : "opacity-50"}`}>
-                        <td className="px-1.5 py-1 truncate max-w-[120px]" title={s.stopName ?? s.stopId ?? ""}>
-                          {/* Un orario dedotto non deve somigliare a uno misurato:
-                              il pallino vuoto lo dice prima di leggere i numeri. */}
-                          <span
-                            className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ${
-                              s.origine === "osservato" ? "bg-emerald-400"
-                                : s.origine ? "border border-slate-400" : "bg-transparent"
-                            }`}
-                            title={s.origine === "osservato" ? "passaggio osservato"
-                              : s.origine === "interpolato" ? "ricostruito fra due passaggi osservati"
-                              : s.origine === "estrapolato" ? "stimato al capolinea, scarto costante"
-                              : "nessun orario"}
-                          />
-                          {s.stopName ?? s.stopId ?? "—"}
-                        </td>
-                        <td className="px-1.5 py-1 text-right font-mono">{s.scheduled?.slice(0, 5) ?? "—"}</td>
-                        <td className={`px-1.5 py-1 text-right font-mono ${dedotto ? "italic text-muted-foreground" : ""}`}>
-                          {transited ? fmtTime(s.actualTs).slice(0, 5) : "—"}
-                        </td>
-                        <td
-                          className="px-1.5 py-1 text-right font-mono font-semibold"
-                          style={{ color: transited ? STATUS_COLOR[st] : undefined }}
-                          title={s.delayOrigin === "avm"
-                            ? "ritardo dichiarato dall'AVM"
-                            : s.delayOrigin === "calcolato"
-                              ? "calcolato: transito reale meno orario programmato"
-                              : undefined}
-                        >
-                          {transited && s.delaySeconds != null ? fmtDelay(s.delaySeconds) : ""}
-                          {transited && s.delayOrigin === "calcolato" && (
-                            <span className="text-muted-foreground font-normal">*</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            {transitsQ.data && (
+              <TabellaFermate fermate={transitsQ.data.stops} />
             )}
             {transitsQ.data?.stops.some((s) => s.delayOrigin === "calcolato") && (
               <p className="px-1.5 pt-2 text-[10px] text-muted-foreground leading-snug">
