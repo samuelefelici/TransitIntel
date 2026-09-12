@@ -36,6 +36,9 @@ import { getLatestFeedId } from "./gtfs-helpers";
 import { ensureCaronteSchema, schemaState, tableShape, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
+import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
+import { studiaCodici } from "../lib/journey-code-study";
+import { inizioGiornata } from "../lib/service-day";
 
 const router: IRouter = Router();
 
@@ -215,9 +218,9 @@ router.get("/siri/status", async (req, res): Promise<void> => {
              (SELECT max(started_at) FROM caronte.active_trips
                WHERE device_id = 'siri')                                   AS ultima_corsa_siri,
              (SELECT count(*)::int FROM caronte.stop_transits
-               WHERE actual_ts >= date_trunc('day', now()))                AS transiti_oggi,
+               WHERE actual_ts >= ${inizioGiornata()})                      AS transiti_oggi,
              (SELECT count(*)::int FROM caronte.stop_transits
-               WHERE actual_ts >= date_trunc('day', now())
+               WHERE actual_ts >= ${inizioGiornata()}
                  AND device_id = 'siri')                                   AS transiti_oggi_siri,
              (SELECT max(actual_ts) FROM caronte.stop_transits)            AS ultimo_transito,
              (SELECT max(actual_ts) FROM caronte.stop_transits
@@ -877,6 +880,94 @@ router.get("/siri/aggancio", async (req, res): Promise<void> => {
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
   }
+});
+
+/* ── I due codici corsa ───────────────────────────────────────────────────
+ * L'AVM dichiara un identificativo di corsa; il feed ne ha un altro. I due
+ * non combaciano, quindi l'aggancio ripiega su linea + ora di partenza: due
+ * corse che partono allo stesso minuto sulla stessa linea restano
+ * indistinguibili, e nessuna verifica potrà mai separarle.
+ *
+ * Questo NON risolve il disallineamento: mostra le coppie che l'aggancio per
+ * orario produce ogni giorno e misura quali regole le spiegano. La differenza
+ * fra una regola misurata e una indovinata è tutta qui — e finché c'è un
+ * giorno solo di raccolta, la risposta onesta è "non si sa ancora".
+ */
+router.get("/siri/codici", async (req, res): Promise<void> => {
+  const giorni = Math.min(Math.max(Number(req.query.giorni) || 30, 1), 180);
+  const { righe, giornate, disponibile } = await leggiCodici(giorni);
+
+  if (!disponibile) {
+    res.json({
+      disponibile: false,
+      errore: erroreRaccolta(),
+      nota: "La raccolta delle coppie di codici non è attiva: la tabella "
+        + "caronte.journey_codes non esiste e non è stato possibile crearla. "
+        + "Si crea da sé al primo giro del connettore SIRI, oppure con "
+        + "migrations/2026-09_journey_codes.sql.",
+    });
+    return;
+  }
+
+  const studio = studiaCodici(righe.map(r => ({
+    giorno: r.giorno, journeyRef: r.journeyRef, tripId: r.tripId,
+    agganciatoCome: r.agganciatoCome, osservazioni: r.osservazioni,
+  })));
+
+  if (String(req.query.formato ?? "") === "csv") {
+    const testata = ["giorno", "codice_avm", "trip_id_gtfs", "agganciato_come",
+      "matricola", "line_ref", "linea_pubblicata", "route_ref", "turno",
+      "partenza_avm", "capolinea_avm", "route_id", "partenza_gtfs", "capolinea_gtfs",
+      "osservazioni", "prima_volta", "ultima_volta"];
+    const dati = righe.map(r => [
+      r.giorno, r.journeyRef, r.tripId ?? "", r.agganciatoCome ?? "",
+      r.vehicleRef ?? "", r.lineRef ?? "", r.publishedLineName ?? "", r.routeRef ?? "",
+      r.blockRef ?? "", r.partenzaAvm ?? "", r.destinazioneAvm ?? "",
+      r.routeId ?? "", r.partenzaGtfs ?? "", r.capolineaGtfs ?? "",
+      r.osservazioni, r.vistoLaPrimaVolta, r.vistoLUltimaVolta,
+    ]);
+    const csv = [testata, ...dati]
+      .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition",
+      `attachment; filename="codici-corsa-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send("﻿" + csv);
+    return;
+  }
+
+  /* Il denominatore, che è la prima cosa da sapere: se l'AVM il codice lo
+   * manda su 17 mezzi su 368, nessuna regola potrà mai agganciarne di più, e
+   * il problema da porre al produttore non è quale sia la codifica ma perché
+   * il campo resti vuoto. */
+  const ultima = giornate[0] ?? null;
+  const copertura = ultima && ultima.mezziPerGiro > 0
+    ? {
+      mezziPerGiro: ultima.mezziPerGiro,
+      conCodicePerGiro: ultima.conCodicePerGiro,
+      quota: Math.round(ultima.quotaConCodice * 1000) / 1000,
+      nota: ultima.quotaConCodice < 0.5
+        ? `Solo ${ultima.conCodicePerGiro} mezzi su ${ultima.mezziPerGiro} dichiarano un `
+          + "identificativo di corsa. Anche con la regola perfetta, l'aggancio per codice "
+          + "arriverebbe al massimo a questa quota: il resto resterà comunque da riconoscere "
+          + "per linea e ora di partenza. Prima della codifica, al produttore va chiesto "
+          + "perché il campo sia vuoto sugli altri."
+        : "L'AVM dichiara l'identificativo di corsa sulla maggior parte dei mezzi: "
+          + "se una regola regge, l'aggancio può diventare un'identificazione.",
+    }
+    : null;
+
+  res.json({
+    disponibile: true,
+    giorniRichiesti: giorni,
+    copertura,
+    giornate,
+    studio,
+    /* Le coppie vere: senza vederle il verdetto è una cosa da credere sulla
+     * fiducia. Le prime 200, oppure tutte con ?tutte=1, oppure il CSV. */
+    coppie: req.query.tutte === "1" ? righe : righe.slice(0, 200),
+    coppieTotali: righe.length,
+    csv: "/api/siri/codici?formato=csv",
+  });
 });
 
 /* ── Ingestione su richiesta ──────────────────────────────────────────────── */

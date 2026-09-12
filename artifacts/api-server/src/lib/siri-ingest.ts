@@ -25,6 +25,7 @@ import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
   stopsAtPosition, emptyFunnel, explainFunnel, positionUsable, fixAgeSeconds,
+  localHHMM,
   type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress, type MappedVehicle,
@@ -33,6 +34,7 @@ import {
   verificaAggancio, riepilogaAgganci,
   type EsitoAggancio, type RiepilogoAgganci, type SchedaCorsa,
 } from "./trip-match-audit";
+import { registraCodici, type OsservazioneCodice } from "./journey-codes-store";
 
 /* ── Indice degli identificativi del feed attivo ──────────────────────────── */
 
@@ -341,6 +343,58 @@ function erroreVero(e: any): string {
   return parti.join(" ");
 }
 
+/* ── Le coppie di codici ──────────────────────────────────────────────────
+ * Il codice corsa dell'AVM e il trip_id del feed non combaciano: l'aggancio
+ * ripiega su linea + ora di partenza. Funziona, ma è un riconoscimento, non
+ * un'identificazione — e la coppia che produce, che sarebbe la chiave per
+ * risolvere il disallineamento una volta per tutte, finora si perdeva.
+ *
+ * Si raccoglie tutto quello che i due mondi dicono della stessa corsa, così
+ * che lo studio possa poi confrontarli senza tornare a interrogare l'AVM.
+ * Anche le letture SENZA aggancio: un codice che non porta a nessuna corsa
+ * dice quanto una che ci porta, e sono quelle che spiegano perché. */
+async function raccogliCodici(
+  mapped: MappedVehicle[], index: GtfsIndex, stopTimes: StopTimeCache,
+): Promise<number> {
+  const tz = index.timeZone ?? "Europe/Rome";
+  const ymd = index.tripStarts?.serviceDay ?? serviceDay(tz).ymd;
+  const giorno = `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
+
+  const osservazioni: OsservazioneCodice[] = [];
+  let conCodice = 0, agganciati = 0, perId = 0;
+
+  for (const m of mapped) {
+    const v = m.siri;
+    if (m.tripId) agganciati++;
+    if (m.agganciatoCome === "id") perId++;
+    if (!v.journeyRef) continue;
+    conCodice++;
+    osservazioni.push({
+      journeyRef: v.journeyRef,
+      tripId: m.tripId,
+      agganciatoCome: m.agganciatoCome,
+      vehicleRef: v.vehicleRef,
+      lineRef: v.lineRef,
+      publishedLineName: v.publishedLineName,
+      routeRef: v.routeRef,
+      courseRef: v.courseOfJourneyRef,
+      framedRef: v.datedVehicleJourneyRef,
+      dataFrameRef: v.dataFrameRef,
+      patternRef: v.journeyPatternRef,
+      blockRef: v.blockRef,
+      partenzaAvm: v.originAimedDeparture ? localHHMM(v.originAimedDeparture, tz) : null,
+      destinazioneAvm: v.destinationName,
+      routeId: m.routeId,
+      partenzaGtfs: m.tripId ? stopTimes.tripSpan.get(m.tripId)?.partenza ?? null : null,
+      capolineaGtfs: m.tripId ? index.tripStarts?.headsign.get(m.tripId) ?? null : null,
+    });
+  }
+
+  return registraCodici(giorno, osservazioni, {
+    mezzi: mapped.length, conCodice, agganciati, agganciatiPerId: perId,
+  });
+}
+
 export interface IngestResult {
   positionsInserted: number;
   tripsOpened: number;
@@ -354,6 +408,8 @@ export interface IngestResult {
   corseFallite: number;
   /** corse rimaste aperte da mezzi che hanno smesso di trasmettere, ora chiuse */
   corseAbbandonate: number;
+  /** coppie distinte «codice AVM ↔ corsa GTFS» registrate in questo giro */
+  coppieCodici: number;
   erroreCorse: string | null;
   /** il primo errore incontrato, per capire perché senza leggere i log */
   firstError: string | null;
@@ -378,7 +434,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     return {
       positionsInserted: 0, tripsOpened: 0, tripsClosed: 0, transitsInserted: 0,
       vehiclesFailed: 0, vehiclesParked: split.ferme.length, firstError: null,
-      corseFallite: 0, erroreCorse: null, corseAbbandonate: 0,
+      corseFallite: 0, erroreCorse: null, corseAbbandonate: 0, coppieCodici: 0,
       agganci: [], riepilogoAgganci: riepilogaAgganci([]),
       funnel: { ...emptyFunnel(), inEsercizio: vehicles.length },
       funnelNota: "Nessun feed GTFS attivo: senza orario non c'è nulla a cui "
@@ -413,6 +469,14 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
    * riempie domani e uno storico falso no. */
   const agganci = verificaAgganciDelGiro(mapped, index, stopTimes);
   const riepilogo = riepilogaAgganci(agganci);
+
+  /* ── Le coppie di codici ───────────────────────────────────────────────
+   * L'aggancio per linea + ora di partenza produce, senza volerlo, la sola
+   * cosa che permetta di risolvere il disallineamento fra il codice corsa
+   * dell'AVM e il trip_id del feed: la coppia dei due. Finora viveva il tempo
+   * di un giro. Qui si conserva, e nient'altro cambia — se la raccolta non
+   * riesce l'ingestione prosegue identica. */
+  const coppieCodici = await raccogliCodici(mapped, index, stopTimes);
 
   const daNonScrivere = new Set<string>();
   for (const e of agganci) {
@@ -676,7 +740,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
     vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
-    corseFallite, erroreCorse, corseAbbandonate,
+    corseFallite, erroreCorse, corseAbbandonate, coppieCodici,
     agganci, riepilogoAgganci: riepilogo,
     funnel, funnelNota: explainFunnel(funnel),
   };

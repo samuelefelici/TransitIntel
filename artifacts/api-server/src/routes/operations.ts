@@ -36,11 +36,15 @@ import {
   type CorsaDaEsaminare, type PosizioneMezzo,
 } from "../lib/anomaly-detection";
 import { loadCalendarProfile, calendarioPredefinito } from "../lib/planning-studio-calendar";
+import { tintaRitardo, legendaRitardo } from "../lib/delay-scale";
+import { spezzaPerFermate } from "../lib/shape-segments";
+import { inizioGiornata as inizioGiornataSql } from "../lib/service-day";
 
 const router: IRouter = Router();
 
 /** Fuso dell'azienda: il confronto programmato/reale si fa nell'ora locale. */
 const OPERATOR_TZ = process.env.SIRI_TIMEZONE || "Europe/Rome";
+
 
 /** Un id di progetto malformato non deve arrivare al database come uuid. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -200,6 +204,13 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         FROM caronte.stop_transits st
         WHERE st.trip_id = COALESCE(a.trip_id, l.trip_id)
           AND st.actual_ts > now() - interval '6 hours'
+          /* Anche la VETTURA, non solo la corsa. L'aggancio per linea + ora di
+           * partenza può mettere due mezzi sulla stessa corsa quando due corse
+           * partono allo stesso minuto — è il caso che contiamo come ambiguo:
+           * senza questo filtro il ritardo di uno finiva sul marcatore
+           * dell'altro, e nessuno dei due era sbagliato in modo visibile. */
+          AND (st.vehicle_id = l.vehicle_id
+               OR st.vehicle_id IS NULL OR l.vehicle_id IS NULL)
           AND ${st.filtro}
         ORDER BY st.actual_ts DESC
         LIMIT 1
@@ -247,13 +258,27 @@ router.get("/operations/live", async (req, res): Promise<void> => {
              AVG(delay_seconds)::float AS avg_delay,
              percentile_cont(0.5) WITHIN GROUP (ORDER BY delay_seconds)::float AS median_delay
       FROM caronte.stop_transits st
-      WHERE actual_ts >= date_trunc('day', now())
+      WHERE actual_ts >= ${inizioGiornataSql()}
         AND delay_seconds IS NOT NULL
         AND ${st.filtro}
     `);
     const k = kpiQ.rows[0] ?? {};
     const transits = Number(k.transits ?? 0);
     const pct = (n: number) => (transits > 0 ? Math.round((n / transits) * 1000) / 10 : null);
+
+    /* ── L'età del ritardo ──────────────────────────────────────────────
+     * Il Δ mostrato su un mezzo è quello dell'ULTIMA fermata di cui abbiamo
+     * visto il passaggio. Con un passo di lettura di una cinquantina di
+     * secondi e fermate riconosciute quattro volte su cinque, quell'ultima
+     * fermata può essere di venti minuti fa: nel frattempo il mezzo può aver
+     * recuperato o accumulato ancora. Presentarlo come "il ritardo adesso"
+     * è la cosa più fuorviante che ci sia in questa pagina, ed era ciò che
+     * faceva — senza dire da quando.
+     *
+     * Non si inventa un ritardo aggiornato: si dice quanto è vecchio quello
+     * che si ha, e chi guarda decide se fidarsene. */
+    const etaRitardo = (ts: any): number | null =>
+      ts ? Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 1000)) : null;
 
     const vehicles = vehiclesQ.rows.map((v: any) => ({
       vehicleId: v.vehicle_id,
@@ -280,6 +305,13 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       nearestStopName: v.nearest_stop_name,
       delaySeconds: v.last_delay_seconds
         ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ),
+      /* Il colore lo decide il server con la stessa scala dell'arco e della
+       * tabella: un mezzo non deve essere rosso sulla mappa e in orario nel
+       * pannello accanto. */
+      tinta: tintaRitardo(v.last_delay_seconds
+        ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ)),
+      /* Da quanti secondi quel Δ è fermo lì. Null = non c'è nessun Δ. */
+      ritardoEtaSec: etaRitardo(v.last_transit_ts),
       lastTransitTs: v.last_transit_ts,
       lastScheduled: v.last_scheduled ?? null,
       lastStopSeq: v.last_stop_seq,
@@ -290,6 +322,10 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       caronteAvailable: true,
       generatedAt: new Date().toISOString(),
       windowMinutes,
+      /* La legenda dei colori viaggia con i dati che colora: se la pagina se
+       * la disegnasse da sé, basterebbe cambiare una soglia qui perché la
+       * legenda continuasse a raccontare quella vecchia. */
+      legenda: legendaRitardo(),
       /* Che cosa si sta guardando. Se il filtro non è attivo la pagina mostra
        * anche le righe dell'AVM, e va detto: un dato di provenienza mista
        * presentato come se fosse solo SIRI è ciò che ci ha fatto perdere
@@ -315,14 +351,29 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         lastPositionTs: a.last_position_ts,
       })),
       kpis: {
-        vehiclesActive: vehicles.length,
-        tripsActive: vehicles.filter((v) => v.tripId).length + noGpsQ.rows.length,
+        /* "Mezzi in linea" contava TUTTI i mezzi della finestra, compresi
+         * quelli senza turno macchina impostato a bordo — che la pagina
+         * mostra a parte proprio perché non sono in servizio. Il numero
+         * grande diceva quindi una cosa che il pannello sotto smentiva. */
+        vehiclesActive: vehicles.filter(v => v.tripId || v.routeId).length,
+        /* E questi sono i mezzi localizzati in tutto, turno o no. */
+        vehiclesTracked: vehicles.length,
+        /* Le corse sono CORSE, non mezzi: due vetture sulla stessa corsa —
+         * un cambio, oppure un aggancio ambiguo fra due corse che partono
+         * allo stesso minuto — la contavano due volte, e una corsa presente
+         * sia fra i localizzati sia fra quelli senza GPS pure. */
+        tripsActive: new Set([
+          ...vehicles.map(v => v.tripId).filter(Boolean),
+          ...noGpsQ.rows.map((a: any) => a.trip_id).filter(Boolean),
+        ]).size,
         transitsToday: transits,
         onTimePct: pct(Number(k.on_time ?? 0)),
         latePct: pct(Number(k.late ?? 0)),
         earlyPct: pct(Number(k.early ?? 0)),
         avgDelaySeconds: k.avg_delay != null ? Math.round(Number(k.avg_delay)) : null,
         medianDelaySeconds: k.median_delay != null ? Math.round(Number(k.median_delay)) : null,
+        tintaRitardoMedio: tintaRitardo(
+          k.avg_delay != null ? Math.round(Number(k.avg_delay)) : null),
       },
     });
   } catch (e: any) {
@@ -678,7 +729,7 @@ router.get("/operations/trend", async (req, res): Promise<void> => {
                / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
       FROM caronte.stop_transits st
       WHERE ${(await soloSiri("st")).filtro}
-        AND actual_ts >= date_trunc('day', now()) - (${days} * interval '1 day')
+        AND actual_ts >= ${inizioGiornataSql()} - (${days} * interval '1 day')
         AND delay_seconds IS NOT NULL
       GROUP BY 1
       ORDER BY 1
@@ -1030,7 +1081,7 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
           FROM caronte.stop_transits tr
           WHERE ${(await soloSiri("tr")).filtro}
             AND tr.trip_id = ${tripId} AND tr.stop_id = stt.stop_id
-            AND tr.actual_ts >= date_trunc('day', now())
+            AND tr.actual_ts >= ${inizioGiornataSql()}
           ORDER BY tr.actual_ts DESC
           LIMIT 1
         ) tr ON true
@@ -1047,7 +1098,7 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
                lat AS stop_lat, lon AS stop_lon, actual_ts, delay_seconds
         FROM caronte.stop_transits st
         WHERE ${(await soloSiri("st")).filtro}
-          AND trip_id = ${tripId} AND actual_ts >= date_trunc('day', now())
+          AND trip_id = ${tripId} AND actual_ts >= ${inizioGiornataSql()}
         ORDER BY stop_seq NULLS LAST, actual_ts
       `);
       stops = rawQ.rows;
@@ -1106,9 +1157,67 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
      * sì: si riagganciano per fermata. */
     const coord = new Map(stops.map((s: any) => [String(s.stop_id ?? ""), s]));
 
+    /* ── L'arco della corsa, colorato dal ritardo ───────────────────────
+     * Il ritardo è un numero per fermata; sulla mappa deve diventare un
+     * colore per TRATTO, perché è fra due fermate che il ritardo si prende.
+     * Ogni tratto porta il colore del ritardo con cui il mezzo è ARRIVATO
+     * alla sua fermata di valle. */
+    const fermateGeo = completato.fermate.map(f => {
+      const c: any = coord.get(f.stopId) ?? {};
+      return {
+        lat: c.stop_lat != null ? Number(c.stop_lat) : null,
+        lon: c.stop_lon != null ? Number(c.stop_lon) : null,
+      };
+    });
+    const tracciato = await tracciatoDiCorsa(feedId, tripInfo?.shape_id ?? null);
+    const tratti = spezzaPerFermate(
+      tracciato ? tracciato.map(p => [p.lon, p.lat] as [number, number]) : [],
+      fermateGeo,
+    );
+
+    /* Dove è arrivato davvero il mezzo: oltre l'ultima fermata OSSERVATA il
+     * tratto non è stato percorso, e colorarlo con un orario ricostruito
+     * mostrerebbe un ritardo su una strada che il mezzo non ha ancora fatto. */
+    const ultimaOsservata = completato.fermate
+      .filter(f => f.origine === "osservato")
+      .reduce((m, f) => Math.max(m, f.seq), -Infinity);
+
+    const archi = tratti.map((t, i) => {
+      const da = completato.fermate[i], a = completato.fermate[i + 1];
+      const percorso = a.seq <= ultimaOsservata;
+      const ritardo = percorso ? a.delaySeconds : null;
+      return {
+        daSeq: da.seq, aSeq: a.seq,
+        daStopId: da.stopId, aStopId: a.stopId,
+        daNome: da.stopName, aNome: a.stopName,
+        ritardoSec: ritardo,
+        tinta: tintaRitardo(ritardo),
+        /* Il ritardo che colora questo tratto è stato MISURATO, o ricostruito
+         * fra due misure? Un tratto dedotto non deve somigliare a uno visto. */
+        misurato: percorso && a.origine === "osservato",
+        stato: percorso ? "percorso" : "da_percorrere",
+        /* false = non è la strada, è la congiungente fra le due fermate, che
+         * taglia le curve. Va disegnata diversamente o si crede una strada. */
+        percorsoReale: t.attendibile,
+        metri: Math.round(t.metri),
+        coordinate: t.punti,
+      };
+    });
+
     res.json({
       caronteAvailable: true,
       diagnosi,
+      /* Il tracciato intero, per disegnarlo sotto come sfondo grigio: fa
+       * vedere il resto della corsa anche dove il mezzo non è ancora
+       * arrivato. */
+      percorso: tracciato
+        ? { type: "LineString" as const, coordinates: tracciato.map(p => [p.lon, p.lat]) }
+        : null,
+      riferimento: tracciato ? "tracciato" : "fermate",
+      archi,
+      /* La legenda esce da qui insieme ai colori che spiega: disegnata dalla
+       * pagina per conto suo, basterebbe ritoccare un caposaldo perché menta. */
+      legenda: legendaRitardo(),
       /* Quanto di questo profilo è misurato e quanto dedotto. Chi ritara un
        * orario deve saperlo prima di guardare i numeri, non dopo. */
       completamento: {
@@ -1132,7 +1241,14 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       },
       stops: completato.fermate.map(f => {
         const c: any = coord.get(f.stopId) ?? {};
+        /* Oltre l'ultima fermata OSSERVATA il mezzo non è ancora arrivato:
+         * l'orario che compare lì è una previsione, ottenuta prolungando lo
+         * scarto. Colorarla come le altre direbbe "è in ritardo là", di una
+         * fermata che deve ancora raggiungere — una previsione col colore di
+         * una misura. Il numero resta, il colore no. */
+        const raggiunta = f.seq <= ultimaOsservata;
         return {
+          raggiunta,
           seq: f.seq,
           stopId: f.stopId,
           stopName: f.stopName,
@@ -1141,6 +1257,11 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
           scheduled: f.scheduled,
           actualTs: f.actualTs ? f.actualTs.toISOString() : null,
           delaySeconds: f.delaySeconds,
+          /* Il colore lo decide il server, una volta sola: la mappa, questa
+           * tabella e i marcatori devono dire la stessa cosa dello stesso
+           * scarto, e tre scale che si assomigliano divergono al primo
+           * ritocco. */
+          tinta: tintaRitardo(raggiunta && f.actualTs ? f.delaySeconds : null),
           /* "osservato" = il mezzo è stato visto passare; "interpolato" e
            * "estrapolato" = ricostruito da noi. Un orario dedotto presentato
            * come misurato renderebbe inattendibile proprio l'analisi per cui
@@ -1481,6 +1602,36 @@ async function caricaTracciati(
     console.warn("[operations] percorsi non disponibili:", e?.message ?? e);
   }
   return out;
+}
+
+/* ── Il tracciato di UNA corsa, tenuto in memoria ──────────────────────────
+ * La Sala Operativa richiede il dettaglio della corsa selezionata ogni venti
+ * secondi. Gli orari e i passaggi cambiano; il tracciato no — dentro un feed
+ * una shape è immutabile. Rileggerlo a ogni giro sarebbe una query su una
+ * tabella grande per ottenere sempre lo stesso risultato.
+ *
+ * Cache piccola e a scadenza: un feed nuovo ha id diverso, quindi la chiave
+ * cambia da sé e non esiste il caso "tracciato vecchio di un feed sostituito". */
+const tracciatiInMemoria = new Map<string, { punti: Array<{ lat: number; lon: number }> | null; at: number }>();
+const TRACCIATO_TTL_MS = 30 * 60 * 1000;
+const TRACCIATI_MAX = 200;
+
+async function tracciatoDiCorsa(
+  feedId: string | null, shapeId: string | null,
+): Promise<Array<{ lat: number; lon: number }> | null> {
+  if (!feedId || !shapeId) return null;
+  const chiave = `${feedId}|${shapeId}`;
+  const c = tracciatiInMemoria.get(chiave);
+  if (c && Date.now() - c.at < TRACCIATO_TTL_MS) return c.punti;
+
+  const punti = (await caricaTracciati(feedId, [shapeId])).get(shapeId) ?? null;
+  /* Si memorizza ANCHE l'assenza: un feed senza gtfs_shapes farebbe altrimenti
+   * una query inutile ogni venti secondi, per ogni corsa aperta. */
+  if (tracciatiInMemoria.size >= TRACCIATI_MAX) {
+    tracciatiInMemoria.delete(tracciatiInMemoria.keys().next().value as string);
+  }
+  tracciatiInMemoria.set(chiave, { punti, at: Date.now() });
+  return punti;
 }
 
 // ── GET /operations/copertura?days= — quanto del servizio riusciamo a vedere
