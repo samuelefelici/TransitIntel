@@ -92,7 +92,8 @@ interface AndamentoResp {
 
 export default function StatoParco({
   dati, urlCsv,
-}: { dati: ParcoResp | undefined; urlCsv: string }) {
+  errore,
+}: { dati: ParcoResp | undefined; urlCsv: string; errore?: string }) {
   const [filtro, setFiltro] = useState<StatoVettura | null>(null);
 
   /* L'elenco qui sotto dice chi è guasto ORA. Questo dice che cosa è
@@ -111,8 +112,28 @@ export default function StatoParco({
     [dati, filtro],
   );
 
+  /* La richiesta è fallita PRIMA di dare un corpo (rete, 502): senza questo
+     ramo il pannello restava su "Interrogo l'AVM…" per sempre, che è il modo
+     peggiore di dire che l'AVM non risponde. */
+  if (errore) {
+    return (
+      <div className="p-8 text-center text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+        L'AVM non ha risposto: {errore}
+      </div>
+    );
+  }
   if (!dati) {
     return <div className="p-8 text-center text-xs text-muted-foreground">Interrogo l'AVM…</div>;
+  }
+  /* Connettore non configurato: un elenco vuoto qui NON vuol dire "tutte le
+     vetture comunicano", vuol dire che non c'è nessuno a cui chiederlo. */
+  if (dati.configured === false) {
+    return (
+      <div className="p-8 text-center text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+        Il connettore SIRI non è configurato (SIRI_VM_URL): non c'è un AVM a cui
+        chiedere lo stato degli apparati.
+      </div>
+    );
   }
   if (dati.error || dati.failed) {
     return (

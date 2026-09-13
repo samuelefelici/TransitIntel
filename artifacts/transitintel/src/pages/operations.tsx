@@ -236,8 +236,13 @@ export default function OperationsPage() {
   const visibili = showUnassigned ? vehicles : conCorsa;
 
   const transitsQ = useQuery({
-    queryKey: ["operations", "transits", selected?.tripId],
-    queryFn: () => apiFetch<TripTransits>(`/api/operations/trips/${encodeURIComponent(selected!.tripId!)}/transits`),
+    queryKey: ["operations", "transits", selected?.tripId, selected?.vehicleId],
+    /* Con la vettura: due mezzi sulla stessa corsa non devono mescolare i
+       passaggi nel dettaglio di uno dei due. */
+    queryFn: () => apiFetch<TripTransits>(
+      `/api/operations/trips/${encodeURIComponent(selected!.tripId!)}/transits`
+      + (selected?.vehicleId ? `?vehicleId=${encodeURIComponent(selected.vehicleId)}` : ""),
+    ),
     enabled: !!selected?.tripId,
     refetchInterval: 20_000,
   });
@@ -986,7 +991,11 @@ export default function OperationsPage() {
               <X className="w-4 h-4" />
             </button>
           </div>
-          <StatoParco dati={parcoQ.data} urlCsv="/api/siri/parco?formato=csv" />
+          <StatoParco
+            dati={parcoQ.data}
+            urlCsv="/api/siri/parco?formato=csv"
+            errore={parcoQ.error ? String((parcoQ.error as any)?.message ?? parcoQ.error) : undefined}
+          />
         </div>
       )}
 

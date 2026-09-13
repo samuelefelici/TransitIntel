@@ -126,11 +126,19 @@ router.get("/siri/status", async (req, res): Promise<void> => {
     authentication: cfg.username ? "basic" : "nessuna",
     detailLevel: siriDetailLevel(),
     pollSeconds: siriPoll().effettivo,
+    /* Due tagli opposti, due spiegazioni: un intervallo troppo LUNGO perde i
+     * transiti, uno troppo CORTO martella il produttore. Prima il testo era
+     * uno solo e con SIRI_POLL_SECONDS=5 accusava l'intervallo di essere
+     * oltre i 300 secondi. */
     pollNota: siriPoll().ridotto
-      ? `SIRI_POLL_SECONDS=${siriPoll().richiesto} renderebbe impossibile rilevare i `
-        + `transiti alle fermate (servono al massimo ${MAX_GAP_SEC}s fra due letture): `
-        + `l'intervallo è stato riportato a ${siriPoll().effettivo}s. Imposta `
-        + "SIRI_POLL_SECONDS=60 per togliere questo avviso."
+      ? (siriPoll().richiesto > MAX_GAP_SEC
+        ? `SIRI_POLL_SECONDS=${siriPoll().richiesto} renderebbe impossibile rilevare i `
+          + `transiti alle fermate (servono al massimo ${MAX_GAP_SEC}s fra due letture): `
+          + `l'intervallo è stato riportato a ${siriPoll().effettivo}s. Imposta `
+          + "SIRI_POLL_SECONDS=60 per togliere questo avviso."
+        : `SIRI_POLL_SECONDS=${siriPoll().richiesto} è sotto il minimo: l'intervallo `
+          + `è stato alzato a ${siriPoll().effettivo}s. Imposta SIRI_POLL_SECONDS=`
+          + `${siriPoll().effettivo} per togliere questo avviso.`)
       : undefined,
   };
 
@@ -207,9 +215,15 @@ router.get("/siri/status", async (req, res): Promise<void> => {
      * modo peggiore: "194 transiti oggi" sembrava dire che il collegamento
      * funzionava, mentre erano tutte righe dell'AVM e SIRI non ne aveva mai
      * scritta una. `device_id = 'siri'` è ciò che marca le nostre. */
+    /* Le posizioni dell'ultima ora vanno contate SOLO fra quelle del
+     * connettore: se l'AVM esterno scrive le sue, il totale non è mai zero
+     * e la diagnosi "il poller non sta scrivendo" non scatta mai — proprio
+     * il guasto che questa pagina esiste per far vedere. */
+    const soloSiriPos = (await hasSourceColumn())
+      ? sql`AND source = ${SOURCE_SIRI}` : sql``;
     const r = await db.execute<any>(sql`
       SELECT (SELECT count(*)::int FROM caronte.vehicle_positions
-               WHERE ts > now() - interval '1 hour')                       AS pos_ora,
+               WHERE ts > now() - interval '1 hour' ${soloSiriPos})           AS pos_ora,
              (SELECT max(ts) FROM caronte.vehicle_positions)               AS ultima_posizione,
              (SELECT count(*)::int FROM caronte.active_trips
                WHERE ended_at IS NULL)                                     AS corse_aperte,
@@ -355,12 +369,23 @@ async function feedScelto(feedId: string | null, req?: any): Promise<any> {
      * è scaduto aggancia le corse su TUTTE le validità insieme. */
     let calendario: any = null;
     try {
+      /* Da calendar.txt E da calendar_dates.txt: un feed di sole date
+       * esplicite (exception_type = 1) è validissimo, l'ingestione lo usa,
+       * e qui risultava "senza calendario". E "oggi" è quello dell'azienda,
+       * non del database: fra la mezzanotte italiana e quella UTC un feed
+       * che inizia oggi risultava non coprirlo. */
+      const oggi = oggiYmd();
       const cal = await db.execute<any>(sql`
-        SELECT COUNT(*)::int AS righe, MIN(start_date) AS dal, MAX(end_date) AS al,
-               COUNT(*) FILTER (
-                 WHERE start_date <= to_char(now(), 'YYYYMMDD')
-                   AND end_date   >= to_char(now(), 'YYYYMMDD'))::int AS oggi
-          FROM gtfs_calendar WHERE feed_id = ${feedId}::uuid`);
+        SELECT COUNT(*)::int AS righe, MIN(v.dal) AS dal, MAX(v.al) AS al,
+               COUNT(*) FILTER (WHERE v.dal <= ${oggi} AND v.al >= ${oggi})::int AS oggi
+          FROM (
+            SELECT c.start_date AS dal, c.end_date AS al
+              FROM gtfs_calendar c WHERE c.feed_id = ${feedId}::uuid
+            UNION ALL
+            SELECT d.date, d.date
+              FROM gtfs_calendar_dates d
+             WHERE d.feed_id = ${feedId}::uuid AND d.exception_type = 1
+          ) v`);
       const x = (cal as any).rows?.[0] ?? {};
       calendario = {
         righe: Number(x.righe ?? 0), dal: x.dal ?? null, al: x.al ?? null,
@@ -685,7 +710,10 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
   try {
     const result = await fetchVehicleMonitoring(cfg, { detailLevel: siriDetailLevel() });
     if (result.failed) {
-      res.status(502).json({
+      /* 200 e non 502: la pagina legge `failed` e spiega; con un 502 il
+       * wrapper di rete lanciava prima che la risposta arrivasse al pannello,
+       * che restava su "Interrogo l'AVM…" per sempre. L'esito sta nel corpo. */
+      res.json({
         configured: true, failed: true, errorText: result.errorText,
         httpStatus: result.httpStatus,
       });
@@ -993,7 +1021,10 @@ router.post("/siri/sync", async (_req, res): Promise<void> => {
   if (!cfg) { res.status(400).json(NOT_CONFIGURED); return; }
   try {
     const result = await runSiriIngest();
-    res.json({ ok: true, ...result });
+    /* Un giro che riporta failed (AVM che non risponde, schema non allineato)
+     * non è un "ok": chi lo lancia dalla console guarda quel campo. */
+    const fallito = (result as any).failed === true;
+    res.status(fallito ? 502 : 200).json({ ok: !fallito, ...result });
   } catch (e: any) {
     res.status(502).json({ ok: false, error: e?.message ?? "sync fallita" });
   }

@@ -316,8 +316,12 @@ router.get("/gtfs/analysis", cache({ ttlSeconds: 60 }), async (req, res) => {
     const withTimes = stops.filter(s => (s as any).daily_trips !== undefined ? (s as any).daily_trips > 0 : (s.tripsCount ?? 0) > 0);
     const dailyTrips = stops.map(s => (s as any).daily_trips ?? s.tripsCount ?? 0);
     const avgDailyTrips = dailyTrips.reduce((a: number, b: number) => a + b, 0) / Math.max(dailyTrips.length, 1);
-    const morningTrips = stops.map(s => (s as any).morning_peak_trips ?? 0);
-    const eveningTrips = stops.map(s => (s as any).evening_peak_trips ?? 0);
+    /* Le righe di `db.select()` hanno le chiavi in camelCase (morningPeakTrips):
+     * si leggevano in snake_case e uscivano sempre 0 — la card "Corse mattina"
+     * e il grafico per fascia oraria mostravano zero su qualunque feed. Si
+     * accettano entrambe le forme, per le righe lette con SQL grezzo. */
+    const morningTrips = stops.map(s => (s as any).morningPeakTrips ?? (s as any).morning_peak_trips ?? 0);
+    const eveningTrips = stops.map(s => (s as any).eveningPeakTrips ?? (s as any).evening_peak_trips ?? 0);
     const avgMorning = morningTrips.reduce((a: number, b: number) => a + b, 0) / Math.max(morningTrips.length, 1);
     const avgEvening = eveningTrips.reduce((a: number, b: number) => a + b, 0) / Math.max(eveningTrips.length, 1);
 
