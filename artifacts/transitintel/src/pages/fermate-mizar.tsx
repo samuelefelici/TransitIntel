@@ -38,7 +38,8 @@ interface Riga {
   mizarRef: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null;
   stato: Stato; fonte: "file" | "manuale"; nota: string | null; utente: string | null;
   collisione: string | null; condivisaCon: number; vistaNelFlusso: boolean;
-  suggerimenti: Suggerimento[];
+  /** assente se l'API in esecuzione è più vecchia della pagina */
+  suggerimenti?: Suggerimento[];
 }
 interface Resp {
   file: string | null; errore: string | null; feed: string | null;
@@ -94,7 +95,10 @@ function Contatore({ n, etichetta, colore, fondo, attivo, onClick, icona: Icona 
 /* ── L'editor di una riga ─────────────────────────────────────────────────
  * Tre fonti di candidati e una decisione. La deduzione dai dati costa una
  * richiesta a Mizar: si chiede solo premendo il pulsante. */
-function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string; nomeMizar: string | null; stopId: null; suggerimenti: Suggerimento[]; fonte: "file"; nota: null }; onChiudi: () => void }) {
+function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string; nomeMizar: string | null; stopId: null; suggerimenti?: Suggerimento[]; fonte: "file"; nota: null }; onChiudi: () => void }) {
+  /* Un'API più vecchia della pagina non manda i suggerimenti: la lista
+     resta vuota, il resto dell'editor funziona. */
+  const suggerimenti = riga.suggerimenti ?? [];
   const qc = useQueryClient();
   const [scelta, setScelta] = useState<string | null>(riga.stopId);
   const [nessuna, setNessuna] = useState(false);
@@ -144,8 +148,8 @@ function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string
           <div className="space-y-1.5">
             <div className="font-medium flex items-center gap-1.5">Per nome
               <span className="text-muted-foreground font-normal">· un suggerimento</span></div>
-            {riga.suggerimenti.length === 0 && <div className="text-muted-foreground">Nessuna fermata del feed con un nome simile a «{riga.nomeMizar ?? "—"}».</div>}
-            {riga.suggerimenti.map(s => (
+            {suggerimenti.length === 0 && <div className="text-muted-foreground">Nessuna fermata del feed con un nome simile a «{riga.nomeMizar ?? "—"}».</div>}
+            {suggerimenti.map(s => (
               <Candidato key={s.stopId} stopId={s.stopId} nome={s.nome} dettaglio={s.motivo === "stesso_nome" ? "stesso nome" : "nome simile"} />
             ))}
           </div>
@@ -274,7 +278,7 @@ export default function FermateMizar() {
   const feedSenza = useMemo(() => {
     if (!d) return [];
     const t = cerca.trim().toUpperCase();
-    return d.feedSenzaCodice.filter(f => !t || f.stopId.toUpperCase().includes(t) || (f.nome ?? "").toUpperCase().includes(t));
+    return (d.feedSenzaCodice ?? []).filter(f => !t || f.stopId.toUpperCase().includes(t) || (f.nome ?? "").toUpperCase().includes(t));
   }, [d, cerca]);
 
   if (q.isError) {
@@ -293,6 +297,7 @@ export default function FermateMizar() {
   const MOSTRA = 400;
   const puoCorreggere = d.puoCorreggere;
   const manuali = d.righe.filter(x => x.fonte === "manuale").length;
+  const flussoNon = d.flussoNonTrascodificato ?? [];
 
   return (
     <div className="space-y-4">
@@ -360,11 +365,11 @@ export default function FermateMizar() {
         />
       </div>
 
-      {filtro === "flusso" && d.flussoNonTrascodificato.length > 0 && (
+      {filtro === "flusso" && flussoNon.length > 0 && (
         <div className="rounded-lg border border-border/40 p-3 text-[11px] space-y-2">
           <div className="font-medium">Codici usati dal flusso SIRI nell'ultimo giro che la tabella non conosce</div>
           <div className="flex flex-wrap gap-1.5">
-            {d.flussoNonTrascodificato.map(ref => (
+            {flussoNon.map(ref => (
               <button key={ref} type="button" disabled={!puoCorreggere} onClick={() => setInModifica(`nuovo:${ref}`)}
                 className="font-mono px-2 py-0.5 rounded border border-border/40 hover:bg-muted/40 disabled:opacity-60" title={puoCorreggere ? "Abbina questa palina a una fermata del feed" : "Solo un amministratore può correggere"}>
                 {ref}
@@ -445,7 +450,7 @@ export default function FermateMizar() {
                           x.collisione ? `nel feed lo stop_id ${x.collisione}` : null,
                           x.condivisaCon > 0 ? `stessa fermata di altre ${x.condivisaCon} paline` : null,
                           x.vistaNelFlusso ? "vista nel flusso SIRI" : null,
-                          x.stato !== "abbinata" && x.suggerimenti.length > 0 ? `${x.suggerimenti.length} ${x.suggerimenti.length === 1 ? "suggerimento" : "suggerimenti"} per nome` : null,
+                          x.stato !== "abbinata" && (x.suggerimenti?.length ?? 0) > 0 ? `${x.suggerimenti!.length} ${x.suggerimenti!.length === 1 ? "suggerimento" : "suggerimenti"} per nome` : null,
                         ].filter(Boolean).join(" · ")}
                       </td>
                       <td className="px-2 py-1 text-right whitespace-nowrap">
@@ -469,7 +474,7 @@ export default function FermateMizar() {
       )}
 
       <p className="text-[10px] text-muted-foreground">
-        Tabella: {d.file ?? "—"} · feed {d.feed ?? "nessuno"} · {d.correzioni} correzioni salvate. {d.nota ?? ""}
+        Tabella: {d.file ?? "—"} · feed {d.feed ?? "nessuno"} · {d.correzioni ?? 0} correzioni salvate. {d.nota ?? ""}
         {!puoCorreggere && " Le correzioni sono riservate agli amministratori."}
       </p>
     </div>
