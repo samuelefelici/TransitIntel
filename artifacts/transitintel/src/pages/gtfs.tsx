@@ -640,7 +640,13 @@ function FeedCard({
                             : "Nessun calendario"}
                         </strong>
                         {" — "}
-                        {feed.validita.nota.replace(/^[^.]*\.\s*/, "")}
+                        {/* Si toglie la prima frase solo se ce n'è un'altra
+                            dopo: la nota di "assente" è una frase sola, e
+                            la regola la cancellava per intero lasciando
+                            "Nessun calendario — " e poi niente. */}
+                        {/\.\s+\S/.test(feed.validita.nota)
+                          ? feed.validita.nota.replace(/^[^.]*\.\s*/, "")
+                          : feed.validita.nota}
                       </span>
                     </p>
                   )}

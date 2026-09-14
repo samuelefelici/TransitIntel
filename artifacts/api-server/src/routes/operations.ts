@@ -36,11 +36,18 @@ import {
   type CorsaDaEsaminare, type PosizioneMezzo,
 } from "../lib/anomaly-detection";
 import { loadCalendarProfile, calendarioPredefinito } from "../lib/planning-studio-calendar";
+import { tintaRitardo, legendaRitardo } from "../lib/delay-scale";
+import { spezzaPerFermate } from "../lib/shape-segments";
+import {
+  inizioGiornata as inizioGiornataSql, giornataDi, oraDi, nellaGiornata, inizioDi,
+  giornataOggi, comeGiorno, dataLocale,
+} from "../lib/service-day";
 
 const router: IRouter = Router();
 
 /** Fuso dell'azienda: il confronto programmato/reale si fa nell'ora locale. */
 const OPERATOR_TZ = process.env.SIRI_TIMEZONE || "Europe/Rome";
+
 
 /** Un id di progetto malformato non deve arrivare al database come uuid. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -200,6 +207,13 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         FROM caronte.stop_transits st
         WHERE st.trip_id = COALESCE(a.trip_id, l.trip_id)
           AND st.actual_ts > now() - interval '6 hours'
+          /* Anche la VETTURA, non solo la corsa. L'aggancio per linea + ora di
+           * partenza può mettere due mezzi sulla stessa corsa quando due corse
+           * partono allo stesso minuto — è il caso che contiamo come ambiguo:
+           * senza questo filtro il ritardo di uno finiva sul marcatore
+           * dell'altro, e nessuno dei due era sbagliato in modo visibile. */
+          AND (st.vehicle_id = l.vehicle_id
+               OR st.vehicle_id IS NULL OR l.vehicle_id IS NULL)
           AND ${st.filtro}
         ORDER BY st.actual_ts DESC
         LIMIT 1
@@ -241,19 +255,37 @@ router.get("/operations/live", async (req, res): Promise<void> => {
     // KPI puntualità della giornata (dai transiti reali alle fermate)
     const kpiQ = await db.execute<any>(sql`
       SELECT COUNT(*)::int AS transits,
+             /* Le quote si calcolano sui transiti che HANNO uno scarto; il
+              * totale conta anche gli altri, altrimenti "transiti oggi" qui e
+              * in /siri/status davano due numeri diversi per la stessa cosa. */
+             COUNT(delay_seconds)::int AS con_scarto,
              COUNT(*) FILTER (WHERE delay_seconds >  ${LATE_S})::int  AS late,
              COUNT(*) FILTER (WHERE delay_seconds <  ${EARLY_S})::int AS early,
              COUNT(*) FILTER (WHERE delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S})::int AS on_time,
              AVG(delay_seconds)::float AS avg_delay,
              percentile_cont(0.5) WITHIN GROUP (ORDER BY delay_seconds)::float AS median_delay
       FROM caronte.stop_transits st
-      WHERE actual_ts >= date_trunc('day', now())
-        AND delay_seconds IS NOT NULL
+      WHERE actual_ts >= ${inizioGiornataSql()}
         AND ${st.filtro}
     `);
     const k = kpiQ.rows[0] ?? {};
     const transits = Number(k.transits ?? 0);
-    const pct = (n: number) => (transits > 0 ? Math.round((n / transits) * 1000) / 10 : null);
+    const conScarto = Number(k.con_scarto ?? 0);
+    const pct = (n: number) => (conScarto > 0 ? Math.round((n / conScarto) * 1000) / 10 : null);
+
+    /* ── L'età del ritardo ──────────────────────────────────────────────
+     * Il Δ mostrato su un mezzo è quello dell'ULTIMA fermata di cui abbiamo
+     * visto il passaggio. Con un passo di lettura di una cinquantina di
+     * secondi e fermate riconosciute quattro volte su cinque, quell'ultima
+     * fermata può essere di venti minuti fa: nel frattempo il mezzo può aver
+     * recuperato o accumulato ancora. Presentarlo come "il ritardo adesso"
+     * è la cosa più fuorviante che ci sia in questa pagina, ed era ciò che
+     * faceva — senza dire da quando.
+     *
+     * Non si inventa un ritardo aggiornato: si dice quanto è vecchio quello
+     * che si ha, e chi guarda decide se fidarsene. */
+    const etaRitardo = (ts: any): number | null =>
+      ts ? Math.max(0, Math.round((Date.now() - new Date(ts).getTime()) / 1000)) : null;
 
     const vehicles = vehiclesQ.rows.map((v: any) => ({
       vehicleId: v.vehicle_id,
@@ -280,6 +312,13 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       nearestStopName: v.nearest_stop_name,
       delaySeconds: v.last_delay_seconds
         ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ),
+      /* Il colore lo decide il server con la stessa scala dell'arco e della
+       * tabella: un mezzo non deve essere rosso sulla mappa e in orario nel
+       * pannello accanto. */
+      tinta: tintaRitardo(v.last_delay_seconds
+        ?? delayFromSchedule(v.last_scheduled, v.last_transit_ts, OPERATOR_TZ)),
+      /* Da quanti secondi quel Δ è fermo lì. Null = non c'è nessun Δ. */
+      ritardoEtaSec: etaRitardo(v.last_transit_ts),
       lastTransitTs: v.last_transit_ts,
       lastScheduled: v.last_scheduled ?? null,
       lastStopSeq: v.last_stop_seq,
@@ -290,6 +329,10 @@ router.get("/operations/live", async (req, res): Promise<void> => {
       caronteAvailable: true,
       generatedAt: new Date().toISOString(),
       windowMinutes,
+      /* La legenda dei colori viaggia con i dati che colora: se la pagina se
+       * la disegnasse da sé, basterebbe cambiare una soglia qui perché la
+       * legenda continuasse a raccontare quella vecchia. */
+      legenda: legendaRitardo(),
       /* Che cosa si sta guardando. Se il filtro non è attivo la pagina mostra
        * anche le righe dell'AVM, e va detto: un dato di provenienza mista
        * presentato come se fosse solo SIRI è ciò che ci ha fatto perdere
@@ -315,14 +358,29 @@ router.get("/operations/live", async (req, res): Promise<void> => {
         lastPositionTs: a.last_position_ts,
       })),
       kpis: {
-        vehiclesActive: vehicles.length,
-        tripsActive: vehicles.filter((v) => v.tripId).length + noGpsQ.rows.length,
+        /* "Mezzi in linea" contava TUTTI i mezzi della finestra, compresi
+         * quelli senza turno macchina impostato a bordo — che la pagina
+         * mostra a parte proprio perché non sono in servizio. Il numero
+         * grande diceva quindi una cosa che il pannello sotto smentiva. */
+        vehiclesActive: vehicles.filter(v => v.tripId || v.routeId).length,
+        /* E questi sono i mezzi localizzati in tutto, turno o no. */
+        vehiclesTracked: vehicles.length,
+        /* Le corse sono CORSE, non mezzi: due vetture sulla stessa corsa —
+         * un cambio, oppure un aggancio ambiguo fra due corse che partono
+         * allo stesso minuto — la contavano due volte, e una corsa presente
+         * sia fra i localizzati sia fra quelli senza GPS pure. */
+        tripsActive: new Set([
+          ...vehicles.map(v => v.tripId).filter(Boolean),
+          ...noGpsQ.rows.map((a: any) => a.trip_id).filter(Boolean),
+        ]).size,
         transitsToday: transits,
         onTimePct: pct(Number(k.on_time ?? 0)),
         latePct: pct(Number(k.late ?? 0)),
         earlyPct: pct(Number(k.early ?? 0)),
         avgDelaySeconds: k.avg_delay != null ? Math.round(Number(k.avg_delay)) : null,
         medianDelaySeconds: k.median_delay != null ? Math.round(Number(k.median_delay)) : null,
+        tintaRitardoMedio: tintaRitardo(
+          k.avg_delay != null ? Math.round(Number(k.avg_delay)) : null),
       },
     });
   } catch (e: any) {
@@ -338,9 +396,10 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
       return;
     }
     const dateStr = String(req.query.date ?? "");
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : new Date().toISOString().slice(0, 10);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : giornataOggi();
     const feedId = await resolveFeedId(req);
-    const fSt = (await soloSiri("st")).filtro;
+    const stSiri = await soloSiri("st");
+    const fSt = stSiri.filtro;
 
     /* Due domande diverse sugli stessi transiti, e servono entrambe:
      *  · Sala Operativa chiede "com'è andata OGGI" → un giorno solo;
@@ -357,13 +416,13 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
 
     const periodo = days != null
       ? sql`st.actual_ts > now() - (${days} * interval '1 day')`
-      : sql`st.actual_ts >= ${date}::date AND st.actual_ts < ${date}::date + interval '1 day'`;
+      : nellaGiornata(sql`st.actual_ts`, date);
     const fLinea = routeId
       ? sql`AND st.route_id = ${routeId}`
       : sql``;
     const fOra = (hourFrom != null && hourTo != null)
-      ? sql`AND EXTRACT(HOUR FROM st.actual_ts) >= ${hourFrom}
-            AND EXTRACT(HOUR FROM st.actual_ts) <  ${hourTo}`
+      ? sql`AND ${oraDi(sql`st.actual_ts`)} >= ${hourFrom}
+            AND ${oraDi(sql`st.actual_ts`)} <  ${hourTo}`
       : sql``;
     /** Il filtro completo, identico per ogni aggregazione. */
     const dove = sql`${fSt} AND ${periodo} AND st.delay_seconds IS NOT NULL ${fLinea} ${fOra}`;
@@ -386,7 +445,7 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
     `);
 
     const byHourQ = await db.execute<any>(sql`
-      SELECT EXTRACT(HOUR FROM st.actual_ts)::int AS hour,
+      SELECT ${oraDi(sql`st.actual_ts`)}::int AS hour,
              COUNT(*)::int AS transits,
              AVG(st.delay_seconds)::float AS avg_delay,
              (COUNT(*) FILTER (WHERE st.delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S}))::float
@@ -422,7 +481,7 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
         SELECT st.trip_id, st.route_id,
                r.route_short_name, r.route_color, t.trip_headsign,
                COUNT(*)::int AS transits,
-               COUNT(DISTINCT st.actual_ts::date)::int AS days_seen,
+               COUNT(DISTINCT ${giornataDi(sql`st.actual_ts`)})::int AS days_seen,
                AVG(st.delay_seconds)::float AS avg_delay,
                MAX(st.delay_seconds)::int AS max_delay,
                MIN(st.delay_seconds)::int AS min_delay,
@@ -435,7 +494,7 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
             ON ${feedId}::text IS NOT NULL AND t.feed_id = ${feedId}::uuid AND t.trip_id = st.trip_id
          WHERE ${dove}
          GROUP BY st.trip_id, st.route_id, r.route_short_name, r.route_color, t.trip_headsign
-        HAVING COUNT(DISTINCT st.actual_ts::date) >= 2
+        HAVING COUNT(DISTINCT ${giornataDi(sql`st.actual_ts`)}) >= 2
          ORDER BY AVG(st.delay_seconds) DESC
          LIMIT 200`)
       : null;
@@ -445,8 +504,10 @@ router.get("/operations/punctuality", async (req, res): Promise<void> => {
       date: days == null ? date : undefined,
       giorni: days ?? undefined,
       /* Da dove vengono questi numeri. Dopo aver scoperto che i transiti
-       * mostrati erano dell'AVM e non del connettore, l'origine va detta. */
-      sorgente: "siri",
+       * mostrati erano dell'AVM e non del connettore, l'origine va detta —
+       * e detta VERA: senza la colonna `source` il filtro non c'è e i
+       * numeri sono di provenienza mista. */
+      sorgente: stSiri.attivo ? "siri" : "mista",
       byTrip: (byTripQ?.rows ?? []).map((t: any) => ({
         tripId: t.trip_id,
         routeId: t.route_id,
@@ -509,7 +570,7 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
       return;
     }
     const dateStr = String(req.query.date ?? "");
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : new Date().toISOString().slice(0, 10);
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : giornataOggi();
     const giorni = Math.min(Math.max(Number(req.query.days) || 1, 1), 14);
     const routeId = String(req.query.routeId ?? "") || null;
     const feedId = await resolveFeedId(req);
@@ -529,17 +590,17 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
      * per dire che una fermata è stata saltata bisogna sapere che c'era. */
     const corseQ = await db.execute<any>(sql`
       WITH osservate AS (
-        SELECT DISTINCT st.trip_id, st.actual_ts::date AS day
+        SELECT DISTINCT st.trip_id, ${giornataDi(sql`st.actual_ts`)} AS day
           FROM caronte.stop_transits st
          WHERE ${fSt}
-           AND st.actual_ts >= ${date}::date - (${giorni - 1} * interval '1 day')
-           AND st.actual_ts <  ${date}::date + interval '1 day'
+           AND st.actual_ts >= ${inizioDi(date)} - (${giorni - 1} * interval '1 day')
+           AND st.actual_ts <  ${inizioDi(date)} + interval '1 day'
            AND (${routeId}::text IS NULL OR st.route_id = ${routeId})
       )
       SELECT o.trip_id, o.day::text AS day,
              stt.stop_sequence AS seq, stt.stop_id,
              s.stop_name, s.stop_lat, s.stop_lon,
-             COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+             COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
              tr.actual_ts, tr.vehicle_id,
              r.route_short_name, t.shape_id
         FROM osservate o
@@ -551,12 +612,19 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
           ON t.feed_id = ${feedId}::uuid AND t.trip_id = o.trip_id
         LEFT JOIN gtfs_routes r
           ON r.feed_id = ${feedId}::uuid AND r.route_id = t.route_id
+        /* Per fermata E progressivo: su una linea circolare la stessa fermata
+         * è la partenza (seq 1) e l'arrivo (seq 30), e cercando per solo
+         * stop_id l'arrivo ereditava l'orario della partenza — cinquanta
+         * minuti di "anticipo lungo il percorso", dichiarati certi, su una
+         * corsa regolarissima. Il progressivo uguale ha la precedenza; un
+         * transito senza progressivo resta accettato. */
         LEFT JOIN LATERAL (
           SELECT st.actual_ts, st.vehicle_id
             FROM caronte.stop_transits st
            WHERE ${fSt} AND st.trip_id = o.trip_id AND st.stop_id = stt.stop_id
-             AND st.actual_ts::date = o.day
-           ORDER BY st.actual_ts LIMIT 1
+             AND (st.stop_seq IS NULL OR st.stop_seq = stt.stop_sequence)
+             AND ${giornataDi(sql`st.actual_ts`)} = o.day
+           ORDER BY (st.stop_seq = stt.stop_sequence) DESC NULLS LAST, st.actual_ts LIMIT 1
         ) tr ON true
        ORDER BY o.trip_id, o.day, stt.stop_sequence
        LIMIT 200000`);
@@ -564,19 +632,19 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
     /* Le tracce GPS servono solo al fuori percorso: si caricano una volta e
      * si distribuiscono, invece di interrogare il database per ogni corsa. */
     const posQ = await db.execute<any>(sql`
-      SELECT vp.trip_id, vp.ts::date AS day, vp.ts, vp.lat, vp.lon
+      SELECT vp.trip_id, ${giornataDi(sql`vp.ts`)} AS day, vp.ts, vp.lat, vp.lon
         FROM caronte.vehicle_positions vp
        WHERE ${fVp}
          AND vp.trip_id IS NOT NULL
-         AND vp.ts >= ${date}::date - (${giorni - 1} * interval '1 day')
-         AND vp.ts <  ${date}::date + interval '1 day'
+         AND vp.ts >= ${inizioDi(date)} - (${giorni - 1} * interval '1 day')
+         AND vp.ts <  ${inizioDi(date)} + interval '1 day'
          AND vp.lat IS NOT NULL AND vp.lon IS NOT NULL
        ORDER BY vp.trip_id, vp.ts
        LIMIT 200000`);
 
     const posPerCorsa = new Map<string, PosizioneMezzo[]>();
     for (const p of posQ.rows as any[]) {
-      const k = `${p.trip_id}|${typeof p.day === "string" ? p.day : new Date(p.day).toISOString().slice(0, 10)}`;
+      const k = `${p.trip_id}|${comeGiorno(p.day)}`;
       const l = posPerCorsa.get(k) ?? [];
       l.push({ ts: new Date(p.ts).toISOString(), lat: Number(p.lat), lon: Number(p.lon) });
       posPerCorsa.set(k, l);
@@ -593,7 +661,7 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
     /* Raggruppa le righe in corse. */
     const corse = new Map<string, CorsaDaEsaminare>();
     for (const r of corseQ.rows as any[]) {
-      const day = typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10);
+      const day = comeGiorno(r.day);
       const k = `${r.trip_id}|${day}`;
       let c = corse.get(k);
       if (!c) {
@@ -669,17 +737,18 @@ router.get("/operations/trend", async (req, res): Promise<void> => {
     }
     const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
     const q = await db.execute<any>(sql`
-      SELECT date_trunc('day', actual_ts)::date AS day,
+      SELECT ${giornataDi(sql`actual_ts`)} AS day,
              COUNT(*)::int AS transits,
              COUNT(DISTINCT trip_id)::int AS trips,
-             COUNT(DISTINCT COALESCE(vehicle_id, device_id))::int AS vehicles,
+             /* Solo la matricola: il connettore scrive device_id = 'siri' su
+              * ogni riga, e il ripiego contava quella costante come un mezzo. */
+             COUNT(DISTINCT vehicle_id)::int AS vehicles,
              AVG(delay_seconds)::float AS avg_delay,
              (COUNT(*) FILTER (WHERE delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S}))::float
-               / NULLIF(COUNT(*), 0) * 100 AS on_time_pct
+               / NULLIF(COUNT(delay_seconds), 0) * 100 AS on_time_pct
       FROM caronte.stop_transits st
       WHERE ${(await soloSiri("st")).filtro}
-        AND actual_ts >= date_trunc('day', now()) - (${days} * interval '1 day')
-        AND delay_seconds IS NOT NULL
+        AND actual_ts >= ${inizioGiornataSql()} - (${days} * interval '1 day')
       GROUP BY 1
       ORDER BY 1
     `);
@@ -717,18 +786,31 @@ router.get("/operations/runtimes", async (req, res): Promise<void> => {
     const feedId = await resolveFeedId(req);
 
     const q = await db.execute<any>(sql`
-      WITH seq AS (
-        SELECT trip_id, route_id, stop_id, stop_seq, actual_ts, scheduled,
-               LAG(stop_id)   OVER w AS prev_stop,
-               LAG(actual_ts) OVER w AS prev_ts,
-               LAG(scheduled) OVER w AS prev_sched,
-               LAG(stop_seq)  OVER w AS prev_seq
+      /* "Consecutive" secondo il FEED, non secondo il numero: la specifica
+       * GTFS ammette stop_sequence 10, 20, 30, e con quelli "seq = prev + 1"
+       * non era mai vero — la tabella per tratta restava vuota con migliaia
+       * di transiti. Si ranca la sequenza programmata e si confrontano i
+       * ranghi. */
+      WITH prog AS (
+        SELECT trip_id, stop_sequence,
+               DENSE_RANK() OVER (PARTITION BY trip_id ORDER BY stop_sequence) AS rango
+          FROM gtfs_stop_times
+         WHERE ${feedId}::text IS NOT NULL AND feed_id = ${feedId}::uuid
+      ),
+      seq AS (
+        SELECT st.trip_id, st.route_id, st.stop_id, st.stop_seq, st.actual_ts, st.scheduled,
+               COALESCE(p.rango, st.stop_seq) AS rango,
+               LAG(st.stop_id)   OVER w AS prev_stop,
+               LAG(st.actual_ts) OVER w AS prev_ts,
+               LAG(st.scheduled) OVER w AS prev_sched,
+               LAG(COALESCE(p.rango, st.stop_seq)) OVER w AS prev_rango
         FROM caronte.stop_transits st
+        LEFT JOIN prog p ON p.trip_id = st.trip_id AND p.stop_sequence = st.stop_seq
         WHERE ${fSt}
-          AND actual_ts > now() - (${days} * interval '1 day')
-          AND stop_seq IS NOT NULL
-          AND (${routeId}::text IS NULL OR route_id = ${routeId})
-        WINDOW w AS (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq)
+          AND st.actual_ts > now() - (${days} * interval '1 day')
+          AND st.stop_seq IS NOT NULL
+          AND (${routeId}::text IS NULL OR st.route_id = ${routeId})
+        WINDOW w AS (PARTITION BY st.trip_id, st.vehicle_id, ${giornataDi(sql`st.actual_ts`)} ORDER BY st.stop_seq)
       ),
       pairs AS (
         SELECT route_id, prev_stop AS from_stop, stop_id AS to_stop,
@@ -744,10 +826,10 @@ router.get("/operations/runtimes", async (req, res): Promise<void> => {
                END AS sched_s
         FROM seq
         WHERE prev_stop IS NOT NULL
-          AND stop_seq = prev_seq + 1
+          AND rango = prev_rango + 1
           AND EXTRACT(EPOCH FROM actual_ts - prev_ts) BETWEEN 5 AND 3600
-          AND (${hourFrom}::int IS NULL OR EXTRACT(HOUR FROM prev_ts) >= ${hourFrom})
-          AND (${hourTo}::int IS NULL OR EXTRACT(HOUR FROM prev_ts) < ${hourTo})
+          AND (${hourFrom}::int IS NULL OR ${oraDi(sql`prev_ts`)} >= ${hourFrom})
+          AND (${hourTo}::int IS NULL OR ${oraDi(sql`prev_ts`)} < ${hourTo})
       )
       SELECT p.route_id, p.from_stop, p.to_stop,
              COUNT(*)::int AS samples,
@@ -818,10 +900,13 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
 
     const q = await db.execute<any>(sql`
       WITH t AS (
-        SELECT trip_id, route_id, actual_ts::date AS day, stop_seq, actual_ts, scheduled,
-               ROW_NUMBER() OVER (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq ASC)  AS rn_a,
-               ROW_NUMBER() OVER (PARTITION BY trip_id, actual_ts::date ORDER BY stop_seq DESC) AS rn_d,
-               COUNT(*)    OVER (PARTITION BY trip_id, actual_ts::date) AS n_obs
+        /* Una corsa per (corsa, VETTURA, giornata di esercizio): due mezzi sulla
+         * stessa corsa lo stesso giorno sono due corse osservate, e la giornata
+         * non si spezza a mezzanotte. */
+        SELECT trip_id, route_id, vehicle_id, ${giornataDi(sql`actual_ts`)} AS day, stop_seq, actual_ts, scheduled,
+               ROW_NUMBER() OVER (PARTITION BY trip_id, vehicle_id, ${giornataDi(sql`actual_ts`)} ORDER BY stop_seq ASC)  AS rn_a,
+               ROW_NUMBER() OVER (PARTITION BY trip_id, vehicle_id, ${giornataDi(sql`actual_ts`)} ORDER BY stop_seq DESC) AS rn_d,
+               COUNT(*)    OVER (PARTITION BY trip_id, vehicle_id, ${giornataDi(sql`actual_ts`)}) AS n_obs
         FROM caronte.stop_transits st
         WHERE ${fSt}
           AND actual_ts > now() - (${days} * interval '1 day')
@@ -841,16 +926,17 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
                 + split_part(f.scheduled, ':', 2)::int * 60
                 + COALESCE(NULLIF(split_part(f.scheduled, ':', 3), ''), '0')::int)
                END AS sched_s,
-               EXTRACT(HOUR FROM f.actual_ts)::int AS start_hour
+               ${oraDi(sql`f.actual_ts`)}::int AS start_hour
         FROM t f
         JOIN t l ON l.trip_id = f.trip_id AND l.day = f.day
+                AND l.vehicle_id IS NOT DISTINCT FROM f.vehicle_id
         WHERE f.rn_a = 1 AND l.rn_d = 1 AND f.stop_seq < l.stop_seq
       )
       SELECT r.trip_id, r.route_id, r.day, r.n_obs, r.start_sched,
              r.obs_s, r.sched_s,
              gt.direction_id, gt.trip_headsign, gt.shape_id,
              gr.route_short_name, gr.route_color, gr.route_long_name,
-             stt.n_stops AS total_stops
+             stt.n_stops AS total_stops, stt.first_dep
       FROM runs r
       LEFT JOIN gtfs_trips gt
         ON ${feedId}::text IS NOT NULL AND gt.feed_id = ${feedId}::uuid AND gt.trip_id = r.trip_id
@@ -858,8 +944,13 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
         ON ${feedId}::text IS NOT NULL AND gr.feed_id = ${feedId}::uuid
        AND gr.route_id = COALESCE(gt.route_id, r.route_id)
       LEFT JOIN LATERAL (
-        SELECT COUNT(*)::int AS n_stops FROM gtfs_stop_times s
-        WHERE ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid AND s.trip_id = r.trip_id
+        SELECT COUNT(*)::int AS n_stops,
+               /* La partenza della corsa è quella del FEED: la prima fermata
+                * osservata può essere la terza, e "Partenza 07:04" per una
+                * corsa delle 07:00 la mandava in un'altra fascia oraria. */
+               MIN(COALESCE(s.departure_time, s.arrival_time)) AS first_dep
+          FROM gtfs_stop_times s
+         WHERE ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid AND s.trip_id = r.trip_id
       ) stt ON true
       WHERE r.obs_s BETWEEN 60 AND 4 * 3600
         AND (${hourFrom}::int IS NULL OR r.start_hour >= ${hourFrom})
@@ -912,7 +1003,7 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
       if (!anagrafica.has(tripId)) anagrafica.set(tripId, r);
       osservate.push({
         tripId,
-        day: typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10),
+        day: comeGiorno(r.day),
         durataOsservataSec: Math.round(Number(r.obs_s)),
         durataProgrammataSec: r.sched_s != null ? Math.round(Number(r.sched_s)) : null,
         fermateOsservate: Number(r.n_obs ?? 0),
@@ -957,7 +1048,7 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
           directionId: a.direction_id ?? null,
           headsign: a.trip_headsign ?? null,
           shapeId: a.shape_id ?? null,
-          startTime: a.start_sched ?? null,
+          startTime: a.first_dep ?? a.start_sched ?? null,
           classe: g.classe,
           classeLabel: g.classeLabel,
           giornate: g.giornate,
@@ -994,6 +1085,9 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
     }
     const tripId = String(req.params.tripId);
     const feedId = await resolveFeedId(req);
+    /* La vettura selezionata in pagina, se c'è: senza, due mezzi sulla stessa
+     * corsa mescolerebbero i passaggi. */
+    const mezzoScelto = String(req.query.vehicleId ?? "") || null;
 
     let tripInfo: any = null;
     let stops: any[] = [];
@@ -1019,7 +1113,7 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
        * due endpoint di questo file e dall'ingestione: qui era l'eccezione. */
       const sQ = await db.execute<any>(sql`
         SELECT stt.stop_sequence AS seq,
-               COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+               COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
                s.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
                tr.actual_ts, tr.delay_seconds
         FROM gtfs_stop_times stt
@@ -1030,8 +1124,16 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
           FROM caronte.stop_transits tr
           WHERE ${(await soloSiri("tr")).filtro}
             AND tr.trip_id = ${tripId} AND tr.stop_id = stt.stop_id
-            AND tr.actual_ts >= date_trunc('day', now())
-          ORDER BY tr.actual_ts DESC
+            /* E il progressivo: su una circolare la stessa fermata è partenza
+             * e arrivo, e per solo stop_id entrambe le righe prendevano il
+             * passaggio dell'arrivo — che diventava l'àncora da cui
+             * ricostruire tutte le fermate in mezzo con lo scarto sbagliato. */
+            AND (tr.stop_seq IS NULL OR tr.stop_seq = stt.stop_sequence)
+            AND tr.actual_ts >= ${inizioGiornataSql()}
+            /* La vettura selezionata, se la pagina la indica: due mezzi sulla
+             * stessa corsa non devono mescolare i passaggi. */
+            AND (${mezzoScelto}::text IS NULL OR tr.vehicle_id = ${mezzoScelto})
+          ORDER BY (tr.stop_seq = stt.stop_sequence) DESC NULLS LAST, tr.actual_ts DESC
           LIMIT 1
         ) tr ON true
         WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
@@ -1047,7 +1149,8 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
                lat AS stop_lat, lon AS stop_lon, actual_ts, delay_seconds
         FROM caronte.stop_transits st
         WHERE ${(await soloSiri("st")).filtro}
-          AND trip_id = ${tripId} AND actual_ts >= date_trunc('day', now())
+          AND trip_id = ${tripId} AND actual_ts >= ${inizioGiornataSql()}
+          AND (${mezzoScelto}::text IS NULL OR vehicle_id = ${mezzoScelto})
         ORDER BY stop_seq NULLS LAST, actual_ts
       `);
       stops = rawQ.rows;
@@ -1106,9 +1209,67 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
      * sì: si riagganciano per fermata. */
     const coord = new Map(stops.map((s: any) => [String(s.stop_id ?? ""), s]));
 
+    /* ── L'arco della corsa, colorato dal ritardo ───────────────────────
+     * Il ritardo è un numero per fermata; sulla mappa deve diventare un
+     * colore per TRATTO, perché è fra due fermate che il ritardo si prende.
+     * Ogni tratto porta il colore del ritardo con cui il mezzo è ARRIVATO
+     * alla sua fermata di valle. */
+    const fermateGeo = completato.fermate.map(f => {
+      const c: any = coord.get(f.stopId) ?? {};
+      return {
+        lat: c.stop_lat != null ? Number(c.stop_lat) : null,
+        lon: c.stop_lon != null ? Number(c.stop_lon) : null,
+      };
+    });
+    const tracciato = await tracciatoDiCorsa(feedId, tripInfo?.shape_id ?? null);
+    const tratti = spezzaPerFermate(
+      tracciato ? tracciato.map(p => [p.lon, p.lat] as [number, number]) : [],
+      fermateGeo,
+    );
+
+    /* Dove è arrivato davvero il mezzo: oltre l'ultima fermata OSSERVATA il
+     * tratto non è stato percorso, e colorarlo con un orario ricostruito
+     * mostrerebbe un ritardo su una strada che il mezzo non ha ancora fatto. */
+    const ultimaOsservata = completato.fermate
+      .filter(f => f.origine === "osservato")
+      .reduce((m, f) => Math.max(m, f.seq), -Infinity);
+
+    const archi = tratti.map((t, i) => {
+      const da = completato.fermate[i], a = completato.fermate[i + 1];
+      const percorso = a.seq <= ultimaOsservata;
+      const ritardo = percorso ? a.delaySeconds : null;
+      return {
+        daSeq: da.seq, aSeq: a.seq,
+        daStopId: da.stopId, aStopId: a.stopId,
+        daNome: da.stopName, aNome: a.stopName,
+        ritardoSec: ritardo,
+        tinta: tintaRitardo(ritardo),
+        /* Il ritardo che colora questo tratto è stato MISURATO, o ricostruito
+         * fra due misure? Un tratto dedotto non deve somigliare a uno visto. */
+        misurato: percorso && a.origine === "osservato",
+        stato: percorso ? "percorso" : "da_percorrere",
+        /* false = non è la strada, è la congiungente fra le due fermate, che
+         * taglia le curve. Va disegnata diversamente o si crede una strada. */
+        percorsoReale: t.attendibile,
+        metri: Math.round(t.metri),
+        coordinate: t.punti,
+      };
+    });
+
     res.json({
       caronteAvailable: true,
       diagnosi,
+      /* Il tracciato intero, per disegnarlo sotto come sfondo grigio: fa
+       * vedere il resto della corsa anche dove il mezzo non è ancora
+       * arrivato. */
+      percorso: tracciato
+        ? { type: "LineString" as const, coordinates: tracciato.map(p => [p.lon, p.lat]) }
+        : null,
+      riferimento: tracciato ? "tracciato" : "fermate",
+      archi,
+      /* La legenda esce da qui insieme ai colori che spiega: disegnata dalla
+       * pagina per conto suo, basterebbe ritoccare un caposaldo perché menta. */
+      legenda: legendaRitardo(),
       /* Quanto di questo profilo è misurato e quanto dedotto. Chi ritara un
        * orario deve saperlo prima di guardare i numeri, non dopo. */
       completamento: {
@@ -1132,7 +1293,14 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       },
       stops: completato.fermate.map(f => {
         const c: any = coord.get(f.stopId) ?? {};
+        /* Oltre l'ultima fermata OSSERVATA il mezzo non è ancora arrivato:
+         * l'orario che compare lì è una previsione, ottenuta prolungando lo
+         * scarto. Colorarla come le altre direbbe "è in ritardo là", di una
+         * fermata che deve ancora raggiungere — una previsione col colore di
+         * una misura. Il numero resta, il colore no. */
+        const raggiunta = f.seq <= ultimaOsservata;
         return {
+          raggiunta,
           seq: f.seq,
           stopId: f.stopId,
           stopName: f.stopName,
@@ -1141,6 +1309,11 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
           scheduled: f.scheduled,
           actualTs: f.actualTs ? f.actualTs.toISOString() : null,
           delaySeconds: f.delaySeconds,
+          /* Il colore lo decide il server, una volta sola: la mappa, questa
+           * tabella e i marcatori devono dire la stessa cosa dello stesso
+           * scarto, e tre scale che si assomigliano divergono al primo
+           * ritocco. */
+          tinta: tintaRitardo(raggiunta && f.actualTs ? f.delaySeconds : null),
           /* "osservato" = il mezzo è stato visto passare; "interpolato" e
            * "estrapolato" = ricostruito da noi. Un orario dedotto presentato
            * come misurato renderebbe inattendibile proprio l'analisi per cui
@@ -1149,7 +1322,10 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
           /* Da dove viene il ritardo, quando la fermata è osservata. */
           delayOrigin: f.origine !== "osservato"
             ? "ricostruito"
-            : (c.delay_seconds != null ? "avm" : "calcolato"),
+            /* Con un orario programmato lo scarto lo misuriamo noi (passaggio
+             * meno programmato): "avm" solo dove non c'era orario e il numero
+             * viene dal Delay dichiarato. */
+            : (c.scheduled ? "calcolato" : (c.delay_seconds != null ? "avm" : "calcolato")),
         };
       }),
     });
@@ -1198,7 +1374,7 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
 
     // Giornate con transiti registrati per la corsa (per lo switch nella UI)
     const daysQ = await db.execute<any>(sql`
-      SELECT actual_ts::date AS day, COUNT(*)::int AS transits
+      SELECT ${giornataDi(sql`actual_ts`)} AS day, COUNT(*)::int AS transits
       FROM caronte.stop_transits st
       WHERE ${fSt}
         AND trip_id = ${tripId}
@@ -1206,12 +1382,33 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       GROUP BY 1 ORDER BY 1 DESC
     `);
     const availableDays = daysQ.rows.map((r: any) => ({
-      day: typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10),
+      day: comeGiorno(r.day),
       transits: r.transits,
     }));
 
     const reqDate = String(req.query.date ?? "");
     const day = /^\d{4}-\d{2}-\d{2}$/.test(reqDate) ? reqDate : (availableDays[0]?.day ?? null);
+
+    /* ── Quale mezzo ──────────────────────────────────────────────────────
+     * Due vetture sulla stessa corsa lo stesso giorno — un cambio, oppure un
+     * aggancio ambiguo fra due corse che partono allo stesso minuto — sono
+     * DUE corse osservate. Mescolarle produceva un dettaglio in cui ogni
+     * fermata prendeva l'ultimo passaggio scritto, di chiunque fosse, e i
+     * totali confrontavano la partenza di una con l'arrivo dell'altra. Si
+     * sceglie una vettura — quella indicata, altrimenti quella con più
+     * passaggi — e si dice quali altre c'erano. */
+    const mezziQ = day
+      ? await db.execute<any>(sql`
+          SELECT vehicle_id, COUNT(*)::int AS n
+            FROM caronte.stop_transits st
+           WHERE ${fSt} AND trip_id = ${tripId} AND ${nellaGiornata(sql`actual_ts`, day)}
+           GROUP BY vehicle_id ORDER BY n DESC, vehicle_id`)
+      : null;
+    const mezzi = (((mezziQ as any)?.rows ?? []) as any[])
+      .map(r => ({ vehicleId: r.vehicle_id != null ? String(r.vehicle_id) : null, transiti: Number(r.n ?? 0) }));
+    const mezzoRichiesto = String(req.query.vehicleId ?? "") || null;
+    const mezzo = mezzoRichiesto ?? mezzi[0]?.vehicleId ?? null;
+    const fMezzo = mezzo ? sql`AND vehicle_id IS NOT DISTINCT FROM ${mezzo}` : sql``;
 
     // Info corsa
     let tripInfo: any = null;
@@ -1231,7 +1428,7 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     const schedRows = feedId
       ? (await db.execute<any>(sql`
           SELECT stt.stop_sequence AS seq, stt.stop_id,
-                 COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+                 COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
                  s.stop_name, s.stop_lat, s.stop_lon
           FROM gtfs_stop_times stt
           LEFT JOIN gtfs_stops s ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
@@ -1246,7 +1443,8 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
           SELECT stop_id, stop_seq, actual_ts, delay_seconds, scheduled, lat, lon
           FROM caronte.stop_transits st
           WHERE ${fSt}
-            AND trip_id = ${tripId} AND actual_ts::date = ${day}::date
+            AND trip_id = ${tripId} AND ${nellaGiornata(sql`actual_ts`, day)}
+            ${fMezzo}
           ORDER BY stop_seq NULLS LAST, actual_ts
         `)).rows
       : [];
@@ -1257,7 +1455,8 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
           SELECT ts, lat, lon, speed
           FROM caronte.vehicle_positions vp
           WHERE ${fVp}
-            AND trip_id = ${tripId} AND ts::date = ${day}::date
+            AND trip_id = ${tripId} AND ${nellaGiornata(sql`ts`, day)}
+            ${fMezzo}
             AND lat IS NOT NULL AND lon IS NOT NULL
           ORDER BY ts
           LIMIT 30000
@@ -1365,10 +1564,22 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       const arcDelta = arcObs != null && arcSched != null ? arcObs - arcSched : null;
 
       const dwell = dwellAt(b.lat, b.lon);
-      const served = recorded || imputed || (dwell != null && dwell >= dwellSeconds);
+      /* Una fermata STIMATA non è una fermata fatta: entra nella tabella
+       * col suo orario ipotetico, ma non conta fra quelle servite e il suo
+       * arco non è una misura — è, per costruzione, uguale al programmato,
+       * e presentarlo come "+0" verde diceva che l'ultimo tratto era
+       * perfetto ogni giorno. */
+      const served = recorded || (dwell != null && dwell >= dwellSeconds);
 
-      if (actualMs != null) prevActualMs = actualMs;
-      if (b.schedSec != null) prevSchedSec = b.schedSec;
+      /* Il programmato "precedente" è quello della fermata da cui parte
+       * l'arco osservato — la stessa fermata di prevActualMs. Aggiornarlo a
+       * ogni fermata con orario faceva sì che, dopo una fermata non
+       * rilevata, l'arco osservato coprisse due tratte e quello programmato
+       * una sola: scarto raddoppiato e rosso su una corsa in orario. */
+      if (actualMs != null && !imputed) {
+        prevActualMs = actualMs;
+        prevSchedSec = b.schedSec;
+      }
 
       return {
         seq: b.seq,
@@ -1382,8 +1593,8 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
         recorded,
         imputed,
         arcSchedSeconds: arcSched,
-        arcObsSeconds: arcObs,
-        arcDeltaSeconds: arcDelta,
+        arcObsSeconds: imputed ? null : arcObs,
+        arcDeltaSeconds: imputed ? null : arcDelta,
         dwellSeconds: dwell,
         served,
       };
@@ -1393,13 +1604,23 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     const servedCount = stops.filter((s) => s.served).length;
     const missing = stops.filter((s) => !s.served).map((s) => ({ seq: s.seq, stopId: s.stopId, stopName: s.stopName }));
 
-    // Totali: dal primo all'ultimo transito reale, e dal primo all'ultimo programmato
-    const recStops = stops.filter((s) => s.actualTs);
+    /* Totali FRA LE STESSE DUE FERMATE: il primo e l'ultimo passaggio
+     * osservati, e il programmato fra quelle due. Prima l'osservato andava
+     * dal primo transito visto, il programmato dalla prima fermata della
+     * corsa: se il capolinea non era stato rilevato, una corsa in perfetto
+     * orario risultava "più veloce di cinque minuti". Le fermate stimate
+     * restano fuori: non sono misure. */
+    const recStops = stops.filter((s) => s.actualTs && !s.imputed);
+    const primo = recStops[0], ultimo = recStops[recStops.length - 1];
     const obsTotal = recStops.length >= 2
-      ? Math.round((new Date(recStops[recStops.length - 1].actualTs!).getTime() - new Date(recStops[0].actualTs!).getTime()) / 1000)
+      ? Math.round((new Date(ultimo.actualTs!).getTime() - new Date(primo.actualTs!).getTime()) / 1000)
       : null;
+    const schedTotal = recStops.length >= 2 && primo.scheduledSec != null && ultimo.scheduledSec != null
+      ? ultimo.scheduledSec - primo.scheduledSec
+      : null;
+    /* E la corsa intera programmata, per dire quanto se ne è visto. */
     const schedStops = stops.filter((s) => s.scheduledSec != null);
-    const schedTotal = schedStops.length >= 2
+    const schedIntera = schedStops.length >= 2
       ? schedStops[schedStops.length - 1].scheduledSec! - schedStops[0].scheduledSec!
       : null;
 
@@ -1407,6 +1628,14 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
       caronteAvailable: true,
       day,
       availableDays,
+      /* Di quale vettura è questo dettaglio, e se ce n'erano altre sulla
+       * stessa corsa lo stesso giorno: senza, due corse osservate sembravano
+       * una sola, con i numeri di entrambe mescolati. */
+      mezzo: {
+        vehicleId: mezzo,
+        scelto: mezzoRichiesto ? "indicato" : (mezzi.length > 0 ? "con più passaggi" : "nessuno"),
+        altri: mezzi.filter(m => m.vehicleId !== mezzo),
+      },
       dwellRadius,
       dwellSeconds,
       trip: tripInfo && {
@@ -1427,6 +1656,10 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
         schedTotalSeconds: schedTotal,
         obsTotalSeconds: obsTotal,
         deltaSeconds: obsTotal != null && schedTotal != null ? obsTotal - schedTotal : null,
+        /* Fra quali fermate è misurato il totale, e quanto vale la corsa
+         * intera: il confronto è onesto solo se si sa che è parziale. */
+        tratto: recStops.length >= 2 ? { daSeq: primo.seq, aSeq: ultimo.seq } : null,
+        schedCorsaInteraSeconds: schedIntera,
         gpsPoints: posRows.length,
       },
       stops,
@@ -1483,6 +1716,36 @@ async function caricaTracciati(
   return out;
 }
 
+/* ── Il tracciato di UNA corsa, tenuto in memoria ──────────────────────────
+ * La Sala Operativa richiede il dettaglio della corsa selezionata ogni venti
+ * secondi. Gli orari e i passaggi cambiano; il tracciato no — dentro un feed
+ * una shape è immutabile. Rileggerlo a ogni giro sarebbe una query su una
+ * tabella grande per ottenere sempre lo stesso risultato.
+ *
+ * Cache piccola e a scadenza: un feed nuovo ha id diverso, quindi la chiave
+ * cambia da sé e non esiste il caso "tracciato vecchio di un feed sostituito". */
+const tracciatiInMemoria = new Map<string, { punti: Array<{ lat: number; lon: number }> | null; at: number }>();
+const TRACCIATO_TTL_MS = 30 * 60 * 1000;
+const TRACCIATI_MAX = 200;
+
+async function tracciatoDiCorsa(
+  feedId: string | null, shapeId: string | null,
+): Promise<Array<{ lat: number; lon: number }> | null> {
+  if (!feedId || !shapeId) return null;
+  const chiave = `${feedId}|${shapeId}`;
+  const c = tracciatiInMemoria.get(chiave);
+  if (c && Date.now() - c.at < TRACCIATO_TTL_MS) return c.punti;
+
+  const punti = (await caricaTracciati(feedId, [shapeId])).get(shapeId) ?? null;
+  /* Si memorizza ANCHE l'assenza: un feed senza gtfs_shapes farebbe altrimenti
+   * una query inutile ogni venti secondi, per ogni corsa aperta. */
+  if (tracciatiInMemoria.size >= TRACCIATI_MAX) {
+    tracciatiInMemoria.delete(tracciatiInMemoria.keys().next().value as string);
+  }
+  tracciatiInMemoria.set(chiave, { punti, at: Date.now() });
+  return punti;
+}
+
 // ── GET /operations/copertura?days= — quanto del servizio riusciamo a vedere
 /* Sta sotto ogni altro numero del prodotto: una puntualità calcolata sul 9%
  * delle corse non è la puntualità dell'azienda, è quella di un campione che
@@ -1504,8 +1767,8 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
      * dello stesso veicolo, che è la cadenza con cui lo vediamo muoversi. */
     const posQ = await db.execute<any>(sql`
       WITH letture AS (
-        SELECT vehicle_id, ts::date AS day, ts,
-               ts - LAG(ts) OVER (PARTITION BY vehicle_id, ts::date ORDER BY ts) AS salto
+        SELECT vehicle_id, ${giornataDi(sql`ts`)} AS day, ts,
+               ts - LAG(ts) OVER (PARTITION BY vehicle_id, ${giornataDi(sql`ts`)} ORDER BY ts) AS salto
           FROM caronte.vehicle_positions vp
          WHERE ${fVp}
            AND ts > now() - (${days} * interval '1 day')
@@ -1524,7 +1787,7 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
        GROUP BY 1`);
 
     const transitiQ = await db.execute<any>(sql`
-      SELECT actual_ts::date::text AS day,
+      SELECT ${giornataDi(sql`actual_ts`)}::text AS day,
              COUNT(*)::int AS transiti,
              COUNT(DISTINCT trip_id)::int AS corse_con_transito,
              COUNT(DISTINCT vehicle_id)::int AS vetture
@@ -1538,7 +1801,7 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
     const fermateQ = feedId
       ? await db.execute<any>(sql`
           WITH viste AS (
-            SELECT DISTINCT trip_id, actual_ts::date AS day
+            SELECT DISTINCT trip_id, ${giornataDi(sql`actual_ts`)} AS day
               FROM caronte.stop_transits st
              WHERE ${fSt} AND actual_ts > now() - (${days} * interval '1 day')
           )
@@ -1554,6 +1817,11 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
      * feed, che comprende validità non in vigore. */
     const programmateQ = feedId
       ? await db.execute<any>(sql`
+          /* La STESSA regola dell'aggancio (loadTripStartIndex): pattern
+           * settimanale nel periodo, meno le date tolte, più quelle aggiunte.
+           * Con il solo calendar.txt un festivo con eccezione contava le
+           * corse feriali come programmate, e un feed di sole calendar_dates
+           * ne contava zero. */
           SELECT d::date::text AS day, (
             SELECT COUNT(*)::int FROM gtfs_trips t
              WHERE t.feed_id = ${feedId}::uuid
@@ -1567,9 +1835,17 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
                           WHEN 3 THEN c.wednesday WHEN 4 THEN c.thursday
                           WHEN 5 THEN c.friday    WHEN 6 THEN c.saturday
                           ELSE c.sunday END = 1
+                    AND NOT EXISTS (
+                      SELECT 1 FROM gtfs_calendar_dates x
+                       WHERE x.feed_id = ${feedId}::uuid AND x.service_id = c.service_id
+                         AND x.date = to_char(d, 'YYYYMMDD') AND x.exception_type = 2)
+                 UNION
+                 SELECT a.service_id FROM gtfs_calendar_dates a
+                  WHERE a.feed_id = ${feedId}::uuid
+                    AND a.date = to_char(d, 'YYYYMMDD') AND a.exception_type = 1
                )) AS corse_programmate
             FROM generate_series(
-              (now() - (${days} * interval '1 day'))::date, now()::date, interval '1 day') d`)
+              ${giornataOggi()}::date - ${days}::int, ${giornataOggi()}::date, interval '1 day') d`)
       : null;
 
     const per = <T,>(rows: any[], f: (r: any) => T) => {
@@ -1649,7 +1925,7 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
         .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\r\n");
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
       res.setHeader("Content-Disposition",
-        `attachment; filename="copertura-${new Date().toISOString().slice(0, 10)}.csv"`);
+        `attachment; filename="copertura-${dataLocale(new Date())}.csv"`);
       res.send("﻿" + csv);
       return;
     }
@@ -1691,14 +1967,14 @@ router.get("/operations/trips/:tripId/percorso", async (req, res): Promise<void>
     const fVp = (await soloSiri("vp")).filtro;
 
     const giorniQ = await db.execute<any>(sql`
-      SELECT ts::date AS day, COUNT(*)::int AS punti
+      SELECT ${giornataDi(sql`ts`)} AS day, COUNT(*)::int AS punti
         FROM caronte.vehicle_positions vp
        WHERE ${fVp} AND trip_id = ${tripId}
          AND ts > now() - interval '60 days'
          AND lat IS NOT NULL AND lon IS NOT NULL
        GROUP BY 1 ORDER BY 1 DESC LIMIT 60`);
     const giorniDisponibili = (giorniQ.rows as any[]).map(r => ({
-      day: typeof r.day === "string" ? r.day : new Date(r.day).toISOString().slice(0, 10),
+      day: comeGiorno(r.day),
       punti: Number(r.punti),
     }));
     const day = /^\d{4}-\d{2}-\d{2}$/.test(reqDate)
@@ -1716,7 +1992,7 @@ router.get("/operations/trips/:tripId/percorso", async (req, res): Promise<void>
     const fermateQ = feedId
       ? await db.execute<any>(sql`
           SELECT stt.stop_sequence AS seq, stt.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
-                 COALESCE(stt.arrival_time, stt.departure_time) AS scheduled
+                 COALESCE(stt.departure_time, stt.arrival_time) AS scheduled
             FROM gtfs_stop_times stt
             LEFT JOIN gtfs_stops s ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
            WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
@@ -1735,7 +2011,7 @@ router.get("/operations/trips/:tripId/percorso", async (req, res): Promise<void>
     const posQ = day
       ? await db.execute<any>(sql`
           SELECT ts, lat, lon, speed FROM caronte.vehicle_positions vp
-           WHERE ${fVp} AND trip_id = ${tripId} AND ts::date = ${day}::date
+           WHERE ${fVp} AND trip_id = ${tripId} AND ${nellaGiornata(sql`ts`, day)}
              AND lat IS NOT NULL AND lon IS NOT NULL
            ORDER BY ts LIMIT 5000`)
       : null;
@@ -1747,7 +2023,7 @@ router.get("/operations/trips/:tripId/percorso", async (req, res): Promise<void>
     const transitiQ = day
       ? await db.execute<any>(sql`
           SELECT stop_id, actual_ts FROM caronte.stop_transits st
-           WHERE ${fSt} AND trip_id = ${tripId} AND actual_ts::date = ${day}::date`)
+           WHERE ${fSt} AND trip_id = ${tripId} AND ${nellaGiornata(sql`actual_ts`, day)}`)
       : null;
     const osservate = new Set(((transitiQ as any)?.rows ?? []).map((r: any) => String(r.stop_id)));
 
@@ -1839,7 +2115,7 @@ router.get("/operations/trips/:tripId/runtime-history", async (req, res): Promis
     }
 
     const transitiRows = (await db.execute<any>(sql`
-      SELECT actual_ts::date AS day, stop_id, stop_seq, actual_ts
+      SELECT ${giornataDi(sql`actual_ts`)} AS day, stop_id, stop_seq, actual_ts
         FROM caronte.stop_transits st
        WHERE ${fSt}
          AND trip_id = ${tripId}
@@ -1873,8 +2149,7 @@ router.get("/operations/trips/:tripId/runtime-history", async (req, res): Promis
       return c;
     };
 
-    const giorno = (v: any) =>
-      typeof v === "string" ? v.slice(0, 10) : new Date(v).toISOString().slice(0, 10);
+    const giorno = (v: any) => comeGiorno(v);
 
     const storico = storicoCorsa(
       fermateRows.map((r: any) => ({
@@ -1973,21 +2248,33 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     const obsQ = await db.execute<any>(sql`
       WITH tr AS (
         SELECT trip_id, route_id, stop_id, stop_seq, delay_seconds, actual_ts,
-               actual_ts::date AS day,
-               MIN(actual_ts) OVER (PARTITION BY trip_id, actual_ts::date) AS run_start
+               ${giornataDi(sql`actual_ts`)} AS day,
+               /* L'origine dell'offset è il passaggio al CAPOLINEA DI
+                * PARTENZA — la prima fermata programmata — non il primo
+                * transito visto quel giorno. Se il capolinea non è stato
+                * rilevato, quella giornata non ha un'origine e non entra
+                * negli offset: prima entrava con l'origine spostata in avanti
+                * e la corsa risultava "più veloce" di quanto fosse. */
+               MIN(actual_ts) FILTER (WHERE stop_seq = (
+                 SELECT MIN(s.stop_sequence) FROM gtfs_stop_times s
+                  WHERE ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid
+                    AND s.trip_id = st.trip_id))
+                 OVER (PARTITION BY trip_id, vehicle_id, ${giornataDi(sql`actual_ts`)}) AS run_start
         FROM caronte.stop_transits st
         WHERE ${fSt}
           AND actual_ts > now() - (${days} * interval '1 day')
           AND stop_seq IS NOT NULL
           AND (${routeId}::text IS NULL OR route_id = ${routeId})
-          AND (${hourFrom}::int IS NULL OR EXTRACT(HOUR FROM actual_ts) >= ${hourFrom})
-          AND (${hourTo}::int IS NULL OR EXTRACT(HOUR FROM actual_ts) < ${hourTo})
+          AND (${hourFrom}::int IS NULL OR ${oraDi(sql`actual_ts`)} >= ${hourFrom})
+          AND (${hourTo}::int IS NULL OR ${oraDi(sql`actual_ts`)} < ${hourTo})
       )
       SELECT trip_id, route_id, stop_seq,
              MAX(stop_id) AS stop_id,
              COUNT(*)::int AS samples,
              COUNT(DISTINCT day)::int AS runs,
-             percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM actual_ts - run_start)) AS obs_offset_s,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM actual_ts - run_start))
+               FILTER (WHERE run_start IS NOT NULL) AS obs_offset_s,
+             COUNT(DISTINCT day) FILTER (WHERE run_start IS NOT NULL)::int AS runs_con_origine,
              percentile_cont(0.5) WITHIN GROUP (ORDER BY delay_seconds) AS median_delay
       FROM tr
       GROUP BY trip_id, route_id, stop_seq
@@ -2012,7 +2299,7 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     const idsCsv = tripIds.join("");
     const schedQ = await db.execute<any>(sql`
       SELECT stt.trip_id, stt.stop_sequence AS seq, stt.stop_id,
-             COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+             COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
              s.stop_name,
              t.trip_headsign, t.direction_id, t.shape_id, t.route_id,
              r.route_short_name, r.route_long_name, r.route_color
@@ -2039,7 +2326,7 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
           AND s.stop_lat IS NOT NULL AND s.stop_lon IS NOT NULL
       ),
       hits AS (
-        SELECT st.trip_id, st.seq, vp.ts::date AS day, vp.ts, vp.speed
+        SELECT st.trip_id, st.seq, ${giornataDi(sql`vp.ts`)} AS day, vp.ts, vp.speed
         FROM stops st
         JOIN caronte.vehicle_positions vp
           ON ${fVp}
@@ -2083,7 +2370,7 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     // Numero di corse (giorni) con dati GPS per ogni trip → denominatore della
     // percentuale di fermate fatte (analisi su più rilevazioni).
     const gpsDaysQ = await db.execute<any>(sql`
-      SELECT trip_id, COUNT(DISTINCT ts::date)::int AS gps_days
+      SELECT trip_id, COUNT(DISTINCT ${giornataDi(sql`ts`)})::int AS gps_days
       FROM caronte.vehicle_positions vp
       WHERE ${fVp}
         AND ts > now() - (${days} * interval '1 day')
@@ -2158,7 +2445,13 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
       }
       const withObs = stops.filter((s) => s.obsOffsetSec != null);
       const totalObsSec = withObs.length ? withObs[withObs.length - 1].obsOffsetSec : null;
-      const totalSchedSec = stops.length ? stops[stops.length - 1].schedOffsetSec : null;
+      /* Il programmato fino alla STESSA fermata dell'osservato: il capolinea
+       * d'arrivo quasi mai viene rilevato, e confrontare l'osservato fino
+       * alla penultima col programmato fino all'ultima diceva "più veloce"
+       * di tutto l'ultimo arco. La corsa intera resta a parte. */
+      const ultimaOsservata = withObs.length ? withObs[withObs.length - 1] : null;
+      const totalSchedSec = ultimaOsservata ? ultimaOsservata.schedOffsetSec : null;
+      const schedCorsaInteraSec = stops.length ? stops[stops.length - 1].schedOffsetSec : null;
       // Analisi fermate fatte su più rilevazioni
       const servedStops = stops.filter((s) => s.stopped).length;
       const sumStoppedRuns = stops.reduce((a, s) => a + s.stoppedRuns, 0);
@@ -2182,6 +2475,9 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
         totalSchedSec,
         totalObsSec,
         totalDeltaSec: totalObsSec != null && totalSchedSec != null ? totalObsSec - totalSchedSec : null,
+        /* fino a quale fermata sono misurati i totali, e quanto vale la corsa intera */
+        totalFinoASeq: ultimaOsservata ? ultimaOsservata.seq : null,
+        schedCorsaInteraSec,
         stops,
       };
     }

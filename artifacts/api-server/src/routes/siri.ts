@@ -36,6 +36,9 @@ import { getLatestFeedId } from "./gtfs-helpers";
 import { ensureCaronteSchema, schemaState, tableShape, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
+import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
+import { studiaCodici } from "../lib/journey-code-study";
+import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 
 const router: IRouter = Router();
 
@@ -123,11 +126,19 @@ router.get("/siri/status", async (req, res): Promise<void> => {
     authentication: cfg.username ? "basic" : "nessuna",
     detailLevel: siriDetailLevel(),
     pollSeconds: siriPoll().effettivo,
+    /* Due tagli opposti, due spiegazioni: un intervallo troppo LUNGO perde i
+     * transiti, uno troppo CORTO martella il produttore. Prima il testo era
+     * uno solo e con SIRI_POLL_SECONDS=5 accusava l'intervallo di essere
+     * oltre i 300 secondi. */
     pollNota: siriPoll().ridotto
-      ? `SIRI_POLL_SECONDS=${siriPoll().richiesto} renderebbe impossibile rilevare i `
-        + `transiti alle fermate (servono al massimo ${MAX_GAP_SEC}s fra due letture): `
-        + `l'intervallo è stato riportato a ${siriPoll().effettivo}s. Imposta `
-        + "SIRI_POLL_SECONDS=60 per togliere questo avviso."
+      ? (siriPoll().richiesto > MAX_GAP_SEC
+        ? `SIRI_POLL_SECONDS=${siriPoll().richiesto} renderebbe impossibile rilevare i `
+          + `transiti alle fermate (servono al massimo ${MAX_GAP_SEC}s fra due letture): `
+          + `l'intervallo è stato riportato a ${siriPoll().effettivo}s. Imposta `
+          + "SIRI_POLL_SECONDS=60 per togliere questo avviso."
+        : `SIRI_POLL_SECONDS=${siriPoll().richiesto} è sotto il minimo: l'intervallo `
+          + `è stato alzato a ${siriPoll().effettivo}s. Imposta SIRI_POLL_SECONDS=`
+          + `${siriPoll().effettivo} per togliere questo avviso.`)
       : undefined,
   };
 
@@ -204,9 +215,15 @@ router.get("/siri/status", async (req, res): Promise<void> => {
      * modo peggiore: "194 transiti oggi" sembrava dire che il collegamento
      * funzionava, mentre erano tutte righe dell'AVM e SIRI non ne aveva mai
      * scritta una. `device_id = 'siri'` è ciò che marca le nostre. */
+    /* Le posizioni dell'ultima ora vanno contate SOLO fra quelle del
+     * connettore: se l'AVM esterno scrive le sue, il totale non è mai zero
+     * e la diagnosi "il poller non sta scrivendo" non scatta mai — proprio
+     * il guasto che questa pagina esiste per far vedere. */
+    const soloSiriPos = (await hasSourceColumn())
+      ? sql`AND source = ${SOURCE_SIRI}` : sql``;
     const r = await db.execute<any>(sql`
       SELECT (SELECT count(*)::int FROM caronte.vehicle_positions
-               WHERE ts > now() - interval '1 hour')                       AS pos_ora,
+               WHERE ts > now() - interval '1 hour' ${soloSiriPos})           AS pos_ora,
              (SELECT max(ts) FROM caronte.vehicle_positions)               AS ultima_posizione,
              (SELECT count(*)::int FROM caronte.active_trips
                WHERE ended_at IS NULL)                                     AS corse_aperte,
@@ -215,9 +232,9 @@ router.get("/siri/status", async (req, res): Promise<void> => {
              (SELECT max(started_at) FROM caronte.active_trips
                WHERE device_id = 'siri')                                   AS ultima_corsa_siri,
              (SELECT count(*)::int FROM caronte.stop_transits
-               WHERE actual_ts >= date_trunc('day', now()))                AS transiti_oggi,
+               WHERE actual_ts >= ${inizioGiornata()})                      AS transiti_oggi,
              (SELECT count(*)::int FROM caronte.stop_transits
-               WHERE actual_ts >= date_trunc('day', now())
+               WHERE actual_ts >= ${inizioGiornata()}
                  AND device_id = 'siri')                                   AS transiti_oggi_siri,
              (SELECT max(actual_ts) FROM caronte.stop_transits)            AS ultimo_transito,
              (SELECT max(actual_ts) FROM caronte.stop_transits
@@ -352,12 +369,23 @@ async function feedScelto(feedId: string | null, req?: any): Promise<any> {
      * è scaduto aggancia le corse su TUTTE le validità insieme. */
     let calendario: any = null;
     try {
+      /* Da calendar.txt E da calendar_dates.txt: un feed di sole date
+       * esplicite (exception_type = 1) è validissimo, l'ingestione lo usa,
+       * e qui risultava "senza calendario". E "oggi" è quello dell'azienda,
+       * non del database: fra la mezzanotte italiana e quella UTC un feed
+       * che inizia oggi risultava non coprirlo. */
+      const oggi = oggiYmd();
       const cal = await db.execute<any>(sql`
-        SELECT COUNT(*)::int AS righe, MIN(start_date) AS dal, MAX(end_date) AS al,
-               COUNT(*) FILTER (
-                 WHERE start_date <= to_char(now(), 'YYYYMMDD')
-                   AND end_date   >= to_char(now(), 'YYYYMMDD'))::int AS oggi
-          FROM gtfs_calendar WHERE feed_id = ${feedId}::uuid`);
+        SELECT COUNT(*)::int AS righe, MIN(v.dal) AS dal, MAX(v.al) AS al,
+               COUNT(*) FILTER (WHERE v.dal <= ${oggi} AND v.al >= ${oggi})::int AS oggi
+          FROM (
+            SELECT c.start_date AS dal, c.end_date AS al
+              FROM gtfs_calendar c WHERE c.feed_id = ${feedId}::uuid
+            UNION ALL
+            SELECT d.date, d.date
+              FROM gtfs_calendar_dates d
+             WHERE d.feed_id = ${feedId}::uuid AND d.exception_type = 1
+          ) v`);
       const x = (cal as any).rows?.[0] ?? {};
       calendario = {
         righe: Number(x.righe ?? 0), dal: x.dal ?? null, al: x.al ?? null,
@@ -682,7 +710,10 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
   try {
     const result = await fetchVehicleMonitoring(cfg, { detailLevel: siriDetailLevel() });
     if (result.failed) {
-      res.status(502).json({
+      /* 200 e non 502: la pagina legge `failed` e spiega; con un 502 il
+       * wrapper di rete lanciava prima che la risposta arrivasse al pannello,
+       * che restava su "Interrogo l'AVM…" per sempre. L'esito sta nel corpo. */
+      res.json({
         configured: true, failed: true, errorText: result.errorText,
         httpStatus: result.httpStatus,
       });
@@ -753,7 +784,7 @@ router.get("/siri/parco/andamento", async (req, res): Promise<void> => {
       : sql`TRUE`;
 
     const r = await db.execute<any>(sql`
-      SELECT vehicle_id, ts::date::text AS day
+      SELECT vehicle_id, ${giornataDi(sql`ts`)}::text AS day
         FROM caronte.vehicle_positions vp
        WHERE ${filtro}
          AND vehicle_id IS NOT NULL
@@ -773,10 +804,10 @@ router.get("/siri/parco/andamento", async (req, res): Promise<void> => {
     /* Le giornate del periodo si generano, non si deducono dai dati: se le
      * prendessimo dalle righe, un fine settimana in cui nessuno trasmette
      * accorcerebbe il periodo e sposterebbe la metà. */
+    /* Giornate di esercizio nel fuso dell'azienda, non date UTC. */
     const oggi = new Date();
     const inizio = new Date(oggi.getTime() - (days - 1) * 86_400_000);
-    const giornate = giornateDelPeriodo(
-      inizio.toISOString().slice(0, 10), oggi.toISOString().slice(0, 10));
+    const giornate = giornateDelPeriodo(giornataOggi(inizio), giornataOggi(oggi));
 
     const andamento = andamentoParco(
       [...perVettura.entries()].map(([vehicleRef, giorni]) => ({ vehicleRef, giorni })),
@@ -879,6 +910,94 @@ router.get("/siri/aggancio", async (req, res): Promise<void> => {
   }
 });
 
+/* ── I due codici corsa ───────────────────────────────────────────────────
+ * L'AVM dichiara un identificativo di corsa; il feed ne ha un altro. I due
+ * non combaciano, quindi l'aggancio ripiega su linea + ora di partenza: due
+ * corse che partono allo stesso minuto sulla stessa linea restano
+ * indistinguibili, e nessuna verifica potrà mai separarle.
+ *
+ * Questo NON risolve il disallineamento: mostra le coppie che l'aggancio per
+ * orario produce ogni giorno e misura quali regole le spiegano. La differenza
+ * fra una regola misurata e una indovinata è tutta qui — e finché c'è un
+ * giorno solo di raccolta, la risposta onesta è "non si sa ancora".
+ */
+router.get("/siri/codici", async (req, res): Promise<void> => {
+  const giorni = Math.min(Math.max(Number(req.query.giorni) || 30, 1), 180);
+  const { righe, giornate, disponibile } = await leggiCodici(giorni);
+
+  if (!disponibile) {
+    res.json({
+      disponibile: false,
+      errore: erroreRaccolta(),
+      nota: "La raccolta delle coppie di codici non è attiva: la tabella "
+        + "caronte.journey_codes non esiste e non è stato possibile crearla. "
+        + "Si crea da sé al primo giro del connettore SIRI, oppure con "
+        + "migrations/2026-09_journey_codes.sql.",
+    });
+    return;
+  }
+
+  const studio = studiaCodici(righe.map(r => ({
+    giorno: r.giorno, journeyRef: r.journeyRef, tripId: r.tripId,
+    agganciatoCome: r.agganciatoCome, osservazioni: r.osservazioni,
+  })));
+
+  if (String(req.query.formato ?? "") === "csv") {
+    const testata = ["giorno", "codice_avm", "trip_id_gtfs", "agganciato_come",
+      "matricola", "line_ref", "linea_pubblicata", "route_ref", "turno",
+      "partenza_avm", "capolinea_avm", "route_id", "partenza_gtfs", "capolinea_gtfs",
+      "osservazioni", "prima_volta", "ultima_volta"];
+    const dati = righe.map(r => [
+      r.giorno, r.journeyRef, r.tripId ?? "", r.agganciatoCome ?? "",
+      r.vehicleRef ?? "", r.lineRef ?? "", r.publishedLineName ?? "", r.routeRef ?? "",
+      r.blockRef ?? "", r.partenzaAvm ?? "", r.destinazioneAvm ?? "",
+      r.routeId ?? "", r.partenzaGtfs ?? "", r.capolineaGtfs ?? "",
+      r.osservazioni, r.vistoLaPrimaVolta, r.vistoLUltimaVolta,
+    ]);
+    const csv = [testata, ...dati]
+      .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\r\n");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition",
+      `attachment; filename="codici-corsa-${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send("﻿" + csv);
+    return;
+  }
+
+  /* Il denominatore, che è la prima cosa da sapere: se l'AVM il codice lo
+   * manda su 17 mezzi su 368, nessuna regola potrà mai agganciarne di più, e
+   * il problema da porre al produttore non è quale sia la codifica ma perché
+   * il campo resti vuoto. */
+  const ultima = giornate[0] ?? null;
+  const copertura = ultima && ultima.mezziPerGiro > 0
+    ? {
+      mezziPerGiro: ultima.mezziPerGiro,
+      conCodicePerGiro: ultima.conCodicePerGiro,
+      quota: Math.round(ultima.quotaConCodice * 1000) / 1000,
+      nota: ultima.quotaConCodice < 0.5
+        ? `Solo ${ultima.conCodicePerGiro} mezzi su ${ultima.mezziPerGiro} dichiarano un `
+          + "identificativo di corsa. Anche con la regola perfetta, l'aggancio per codice "
+          + "arriverebbe al massimo a questa quota: il resto resterà comunque da riconoscere "
+          + "per linea e ora di partenza. Prima della codifica, al produttore va chiesto "
+          + "perché il campo sia vuoto sugli altri."
+        : "L'AVM dichiara l'identificativo di corsa sulla maggior parte dei mezzi: "
+          + "se una regola regge, l'aggancio può diventare un'identificazione.",
+    }
+    : null;
+
+  res.json({
+    disponibile: true,
+    giorniRichiesti: giorni,
+    copertura,
+    giornate,
+    studio,
+    /* Le coppie vere: senza vederle il verdetto è una cosa da credere sulla
+     * fiducia. Le prime 200, oppure tutte con ?tutte=1, oppure il CSV. */
+    coppie: req.query.tutte === "1" ? righe : righe.slice(0, 200),
+    coppieTotali: righe.length,
+    csv: "/api/siri/codici?formato=csv",
+  });
+});
+
 /* ── Ingestione su richiesta ──────────────────────────────────────────────── */
 
 /* Un'ingestione SCRIVE, quindi resta un POST: una GET che modifica i dati
@@ -902,14 +1021,34 @@ router.post("/siri/sync", async (_req, res): Promise<void> => {
   if (!cfg) { res.status(400).json(NOT_CONFIGURED); return; }
   try {
     const result = await runSiriIngest();
-    res.json({ ok: true, ...result });
+    /* Un giro che riporta failed (AVM che non risponde, schema non allineato)
+     * non è un "ok": chi lo lancia dalla console guarda quel campo. */
+    const fallito = (result as any).failed === true;
+    if ((result as any).inCorso) {
+      res.status(409).json({ ok: false, ...result });
+      return;
+    }
+    res.status(fallito ? 502 : 200).json({ ok: !fallito, ...result });
   } catch (e: any) {
     res.status(502).json({ ok: false, error: e?.message ?? "sync fallita" });
   }
 });
 
 /** Un giro completo: interroga l'AVM e scrive nelle tabelle di esercizio. */
+/* Un giro alla volta. La guardia stava nel poller (index.ts), ma POST
+ * /siri/sync — suggerito dalla stessa GET — la aggirava: due ingestioni in
+ * parallelo sullo stesso stato in memoria e sulle stesse INSERT "se non
+ * esiste" (non atomiche) scrivevano corse e passaggi doppi. La mutua
+ * esclusione sta qui, dove passano entrambi. */
+let giroInCorso: Promise<Record<string, unknown>> | null = null;
+
 export async function runSiriIngest(): Promise<Record<string, unknown>> {
+  if (giroInCorso) return { skipped: "un giro è già in corso", inCorso: true };
+  giroInCorso = eseguiGiro().finally(() => { giroInCorso = null; });
+  return giroInCorso;
+}
+
+async function eseguiGiro(): Promise<Record<string, unknown>> {
   const cfg = siriConfig();
   if (!cfg) return { skipped: "SIRI_VM_URL non impostata" };
 

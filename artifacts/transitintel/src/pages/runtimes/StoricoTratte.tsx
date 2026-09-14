@@ -23,7 +23,7 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Download, Loader2, TrendingDown, TrendingUp, Minus, HelpCircle } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getApiBase } from "@/lib/api";
 
 type Verdetto = "stretto" | "largo" | "adeguato" | "insufficiente";
 
@@ -159,7 +159,7 @@ export default function StoricoTratte({ tripId, days }: { tripId: string; days: 
           {st.giornate} giornate osservate negli ultimi {d.days} giorni
         </span>
         <a
-          href={`/api/operations/trips/${encodeURIComponent(tripId)}/runtime-history?${qs.toString()}&formato=csv`}
+          href={`${getApiBase()}/api/operations/trips/${encodeURIComponent(tripId)}/runtime-history?${qs.toString()}&formato=csv`}
           className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-border/60 transition-colors">
           <Download className="w-3 h-3" /> CSV tratte
         </a>

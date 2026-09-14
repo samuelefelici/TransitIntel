@@ -8,12 +8,36 @@ import { eq, sql } from "drizzle-orm";
 import { haversineKm } from "../lib/geo-utils";
 
 // ── CSV / Shape helpers ───────────────────────────────────────
+/* `bom: true` è la riga che conta. Un file salvato da Excel o da un
+ * esportatore Windows comincia con U+FEFF: senza questa opzione la prima
+ * colonna si chiama "﻿stop_id", `r["stop_id"]` è undefined, ogni fermata
+ * viene scritta con id vuoto e ogni corsa scartata dal filtro sugli id —
+ * e l'importazione "riesce", senza un errore, con un feed vuoto. */
 export function parseCsv(content: string): Record<string, string>[] {
   try {
-    return parse(content, { columns: true, skip_empty_lines: true, trim: true, relax_column_count: true });
+    return parse(content, {
+      columns: true, skip_empty_lines: true, trim: true, relax_column_count: true, bom: true,
+    });
   } catch {
     return [];
   }
+}
+
+/**
+ * Un orario GTFS in forma canonica "HH:MM:SS".
+ *
+ * La specifica ammette l'ora a una cifra ("5:30:00") e le ore oltre le 24
+ * ("25:10:00", la corsa dopo mezzanotte). Salvato com'è, "5:30:00" rompe due
+ * cose a valle: la chiave dell'indice di partenza (`slice(0, 5)` → "5:30:"
+ * non combacia mai con "05:30") e MIN() su testo, che fra "9:55:00" e
+ * "10:02:00" sceglie "10:02:00" perché "1" < "9". Normalizzato una volta
+ * qui, tutto il resto può fidarsi della larghezza fissa.
+ */
+export function normalizzaOrarioGtfs(v: string | null | undefined): string | null {
+  if (v == null) return null;
+  const m = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(v);
+  if (!m) { const t = v.trim(); return t || null; }
+  return `${m[1].padStart(2, "0")}:${m[2]}:${m[3] ?? "00"}`;
 }
 
 export function buildShapeGeojson(shapePoints: Record<string, string>[]): { shapeId: string; geojson: object }[] {

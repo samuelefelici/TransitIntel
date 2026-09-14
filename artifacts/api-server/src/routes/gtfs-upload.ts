@@ -14,7 +14,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { timeToMinutes } from "../lib/geo-utils";
-import { parseCsv, buildShapeGeojson } from "./gtfs-helpers";
+import { parseCsv, buildShapeGeojson, normalizzaOrarioGtfs, getLatestFeedId } from "./gtfs-helpers";
 import { clearCache } from "../middlewares/cache";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { tenantWhere, assertFeedAccess, ensureTenantColumns, feedAccessibleWhere } from "../lib/tenant";
@@ -147,7 +147,9 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
       agencyId: r["agency_id"] || null,
       routeShortName: r["route_short_name"] || null,
       routeLongName: r["route_long_name"] || null,
-      routeType: parseInt(r["route_type"] || "3") || 3,
+      /* `parseInt(x) || 3` trasformava lo 0 del tram in 3 (bus): lo zero è un
+       * valore legale, non un'assenza. */
+      routeType: Number.isFinite(parseInt(r["route_type"] ?? "")) ? parseInt(r["route_type"]) : 3,
       routeUrl: r["route_url"] || null,
       routeColor: r["route_color"] ? `#${r["route_color"]}` : null,
       routeTextColor: r["route_text_color"] ? `#${r["route_text_color"]}` : null,
@@ -288,8 +290,10 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
           tripId: st["trip_id"] || "",
           stopId: st["stop_id"] || "",
           stopSequence: parseInt(st["stop_sequence"] || "0") || 0,
-          departureTime: st["departure_time"] || st["arrival_time"] || null,
-          arrivalTime: st["arrival_time"] || null,
+          /* In forma canonica "HH:MM:SS": l'aggancio delle corse e le
+           * percorrenze confrontano questi testi per larghezza fissa. */
+          departureTime: normalizzaOrarioGtfs(st["departure_time"] || st["arrival_time"] || null),
+          arrivalTime: normalizzaOrarioGtfs(st["arrival_time"] || null),
         })).filter(st => st.tripId && st.stopId);
         for (let i = 0; i < stRows.length; i += 3000) {
           await tx.insert(gtfsStopTimes).values(stRows.slice(i, i + 3000));
@@ -341,6 +345,7 @@ router.get("/gtfs/feeds", async (req, res) => {
      * `copreOggi` è la domanda pratica: un feed il cui calendario non
      * comprende oggi fa agganciare le corse su tutte le validità insieme, e
      * l'aggancio diventa ambiguo senza che nulla lo segnali. */
+    const oggi = oggiYmd();
     const feeds = await db.execute(sql`
       SELECT f.id, f.filename, f.agency_name AS "agencyName",
              f.feed_start_date AS "feedStartDate", f.feed_end_date AS "feedEndDate",
@@ -354,13 +359,24 @@ router.get("/gtfs/feeds", async (req, res) => {
              cal.al      AS "validoAl",
              COALESCE(cal.oggi, 0) > 0 AS "copreOggi"
         FROM gtfs_feeds f
+        /* La validità viene da calendar.txt E da calendar_dates.txt: un feed
+         * fatto di sole date esplicite (exception_type = 1, un giorno alla
+         * volta — comune nei feed italiani) è validissimo, l'ingestione lo
+         * usa, e qui risultava "senza calendario". E "oggi" è quello
+         * dell'azienda, non del database: fra mezzanotte e le due un feed
+         * che inizia oggi risultava non coprire oggi. */
         LEFT JOIN LATERAL (
           SELECT COUNT(*)::int AS righe,
-                 MIN(start_date) AS dal, MAX(end_date) AS al,
-                 COUNT(*) FILTER (
-                   WHERE start_date <= to_char(now(), 'YYYYMMDD')
-                     AND end_date   >= to_char(now(), 'YYYYMMDD'))::int AS oggi
-            FROM gtfs_calendar c WHERE c.feed_id = f.id
+                 MIN(v.dal) AS dal, MAX(v.al) AS al,
+                 COUNT(*) FILTER (WHERE v.dal <= ${oggi} AND v.al >= ${oggi})::int AS oggi
+            FROM (
+              SELECT c.start_date AS dal, c.end_date AS al
+                FROM gtfs_calendar c WHERE c.feed_id = f.id
+              UNION ALL
+              SELECT d.date, d.date
+                FROM gtfs_calendar_dates d
+               WHERE d.feed_id = f.id AND d.exception_type = 1
+            ) v
         ) cal ON true
        WHERE ${where} AND f.archived_at IS NULL
        ORDER BY f.uploaded_at DESC
@@ -368,7 +384,6 @@ router.get("/gtfs/feeds", async (req, res) => {
     /* Lo stato della validità è calcolato qui e non in SQL perché distingue
      * FUTURO da SCADUTO, e la regola — con il suo effetto sull'aggancio delle
      * corse — si collauda senza database. */
-    const oggi = oggiYmd();
     const rows: any[] = ((feeds as any).rows ?? feeds) as any[];
     res.json({
       data: rows.map(r => ({
@@ -430,6 +445,19 @@ async function feedInUso(id: string): Promise<string[]> {
         + "lo stanno usando. Attivane un altro prima di cancellarlo");
     }
   } catch { /* colonna assente: non è un impedimento */ }
+
+  /* Nessun feed attivo: il connettore SIRI e le pagine ripiegano sull'ultimo
+   * caricato, e lo dice anche la pagina. Cancellare QUELLO spegne l'aggancio
+   * delle corse esattamente come cancellare l'attivo — ma qui non risultava
+   * in uso, perché si guardava solo il flag. Si chiede allo stesso codice che
+   * usa il connettore quale feed sceglierebbe. */
+  try {
+    if (!motivi.some(m => m.startsWith("è il feed ATTIVO")) && (await getLatestFeedId()) === id) {
+      motivi.push("è il feed su cui gira il connettore SIRI in questo momento: non c'è "
+        + "un feed attivo e questo è l'ultimo caricato, quindi è quello usato per "
+        + "agganciare ogni corsa. Attivane un altro prima di cancellarlo");
+    }
+  } catch { /* non determinabile: non è un impedimento */ }
 
   /* I progetti puntano al feed senza vincolo di chiave esterna: il database
    * lascerebbe cancellare, e il progetto resterebbe a indicare il vuoto. */

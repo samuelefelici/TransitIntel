@@ -29,22 +29,23 @@ export interface CorsaInLinea {
   headsign: string | null;
   nearestStopName: string | null;
   delaySeconds: number | null;
+  /** il colore dello scarto, deciso dal server */
+  tinta?: { colore: string; etichetta: string };
   /** progressivo dell'ultima fermata transitata */
   lastStopSeq: number | null;
   totalStops: number | null;
   ts: string;
 }
 
-const C_TARDI = "#f87171";
-const C_ANTICIPO = "#38bdf8";
-const C_ORARIO = "#34d399";
+/* Il colore arriva dal server, con la stessa scala della mappa e della tabella
+ * delle fermate. Qui ne viveva una terza, simile ma non uguale: l'anticipo era
+ * azzurro invece che blu e le tre tinte erano scelte a occhio. Bastava
+ * ritoccare una soglia da una parte perché lo stesso mezzo risultasse in
+ * ritardo in questo elenco e in orario sulla mappa accanto. */
 const C_IGNOTO = "#64748b";
 
-function colore(sec: number | null | undefined): string {
-  if (sec == null) return C_IGNOTO;
-  if (sec > 300) return C_TARDI;
-  if (sec < -60) return C_ANTICIPO;
-  return C_ORARIO;
+function colore(t: { colore: string } | null | undefined): string {
+  return t?.colore ?? C_IGNOTO;
 }
 
 function fmtDelay(s: number | null): string {
@@ -88,7 +89,9 @@ export default function AvanzamentoCorse({
           {ordinate.length} corse in linea
         </span>
         {inRitardo > 0 && (
-          <span className="text-[11px] font-semibold" style={{ color: C_TARDI }}>
+          <span className="text-[11px] font-semibold" /* il colore di chi è in ritardo lo dà la prima corsa che lo è:
+               così l'intestazione non può usare un rosso diverso dalle righe */
+            style={{ color: colore(ordinate.find(c => (c.delaySeconds ?? 0) > 300)?.tinta) }}>
             {inRitardo} oltre i 5 minuti
           </span>
         )}
@@ -101,7 +104,7 @@ export default function AvanzamentoCorse({
         {ordinate.map((c) => {
           const key = c.vehicleId ?? c.tripId ?? c.ts;
           const sel = key === selectedKey;
-          const col = colore(c.delaySeconds);
+          const col = colore(c.tinta);
           /* La progressione è nota solo se il feed dice quante fermate ha la
            * corsa: senza denominatore non c'è frazione da disegnare. */
           const quota = c.lastStopSeq != null && c.totalStops

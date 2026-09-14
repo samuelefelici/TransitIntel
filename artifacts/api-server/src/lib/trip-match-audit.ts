@@ -190,7 +190,9 @@ function riscontroOrario(
   };
 }
 
-function riscontroLinea(scheda: SchedaCorsa, avm: DichiarazioneAvm): Riscontro {
+function riscontroLinea(
+  scheda: SchedaCorsa, avm: DichiarazioneAvm, tautologico = false,
+): Riscontro {
   /* Se la linea non l'ha detta l'AVM ma l'abbiamo dedotta dalla corsa, il
    * confronto sarebbe con noi stessi. */
   if (!avm.routeIdDichiarato) {
@@ -211,6 +213,11 @@ function riscontroLinea(scheda: SchedaCorsa, avm: DichiarazioneAvm): Riscontro {
   return {
     campo: "linea", esito: uguale ? "coerente" : "discorde",
     atteso: scheda.routeId, dichiarato: avm.routeIdDichiarato,
+    /* Per un aggancio fatto su (linea, partenza) la linea coincide PER
+     * COSTRUZIONE: la corsa è stata cercata fra quelle di quella linea.
+     * Contarla come conferma faceva uscire "verificato: confermato da linea"
+     * su corse che nessun dato indipendente aveva mai confermato. */
+    ...(tautologico ? { tautologico: true } : {}),
     ...(uguale ? {} : { nota: "la corsa agganciata è di un'altra linea" }),
   };
 }
@@ -282,7 +289,7 @@ export function verificaAggancio(
   const perOrario = agganciatoCome === "orario";
 
   const riscontri: Riscontro[] = [
-    riscontroLinea(scheda, avm),
+    riscontroLinea(scheda, avm, perOrario),
     riscontroOrario("partenza", scheda.partenza, avm.originAimedDeparture, timeZone, perOrario),
     riscontroOrario("arrivo", scheda.arrivo, avm.destinationAimedArrival, timeZone, false),
     riscontroCapolinea(scheda, avm, perOrario),

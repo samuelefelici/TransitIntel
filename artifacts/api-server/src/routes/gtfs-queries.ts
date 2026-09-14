@@ -316,8 +316,12 @@ router.get("/gtfs/analysis", cache({ ttlSeconds: 60 }), async (req, res) => {
     const withTimes = stops.filter(s => (s as any).daily_trips !== undefined ? (s as any).daily_trips > 0 : (s.tripsCount ?? 0) > 0);
     const dailyTrips = stops.map(s => (s as any).daily_trips ?? s.tripsCount ?? 0);
     const avgDailyTrips = dailyTrips.reduce((a: number, b: number) => a + b, 0) / Math.max(dailyTrips.length, 1);
-    const morningTrips = stops.map(s => (s as any).morning_peak_trips ?? 0);
-    const eveningTrips = stops.map(s => (s as any).evening_peak_trips ?? 0);
+    /* Le righe di `db.select()` hanno le chiavi in camelCase (morningPeakTrips):
+     * si leggevano in snake_case e uscivano sempre 0 — la card "Corse mattina"
+     * e il grafico per fascia oraria mostravano zero su qualunque feed. Si
+     * accettano entrambe le forme, per le righe lette con SQL grezzo. */
+    const morningTrips = stops.map(s => ((s as any).morningPeakTrips ?? (s as any).morning_peak_trips ?? 0));
+    const eveningTrips = stops.map(s => ((s as any).eveningPeakTrips ?? (s as any).evening_peak_trips ?? 0));
     const avgMorning = morningTrips.reduce((a: number, b: number) => a + b, 0) / Math.max(morningTrips.length, 1);
     const avgEvening = eveningTrips.reduce((a: number, b: number) => a + b, 0) / Math.max(eveningTrips.length, 1);
 
@@ -416,13 +420,13 @@ router.get("/gtfs/analysis", cache({ ttlSeconds: 60 }), async (req, res) => {
       ).length;
       const demandScore = nearbyPop / 1000 + nearbyPoiCount * 2;
       const daily = (s as any).daily_trips ?? s.tripsCount ?? 0;
-      const serviceScore = (s as any).service_score ?? 0;
+      const serviceScore = ((s as any).serviceScore ?? (s as any).service_score ?? 0);
       return {
         stopId: s.stopId, stopName: s.stopName,
         stopLat: s.stopLat, stopLon: s.stopLon,
         dailyTrips: daily,
-        morningPeak: (s as any).morning_peak_trips ?? 0,
-        eveningPeak: (s as any).evening_peak_trips ?? 0,
+        morningPeak: ((s as any).morningPeakTrips ?? (s as any).morning_peak_trips ?? 0),
+        eveningPeak: ((s as any).eveningPeakTrips ?? (s as any).evening_peak_trips ?? 0),
         serviceScore,
         nearbyPopulation: nearbyPop,
         nearbyPoiCount,
@@ -435,7 +439,7 @@ router.get("/gtfs/analysis", cache({ ttlSeconds: 60 }), async (req, res) => {
     const worstServed = stopsWithDemand.slice(0, 15).filter(s => s.demandScore > 0);
 
     // ── 7. Overall quality score ──
-    const avgServiceScore = stops.reduce((a, s) => a + ((s as any).service_score ?? 0), 0) / Math.max(stops.length, 1);
+    const avgServiceScore = stops.reduce((a, s) => a + (((s as any).serviceScore ?? (s as any).service_score ?? 0)), 0) / Math.max(stops.length, 1);
     const poiCoverageScore = pois.length > 0 ? (coveredPois.length / pois.length * 100) : 0;
     const peakScore = Math.min(avgMorning / 6, 1) * 50 + Math.min(avgEvening / 6, 1) * 50;
     const overallScore = Math.round(

@@ -168,10 +168,39 @@ export function parseIsoDuration(v: string | null | undefined): number | null {
   return sign === "-" ? -Math.round(secs) : Math.round(secs);
 }
 
-function parseDate(v: string | null): Date | null {
+/**
+ * Un dateTime SIRI. Con l'offset ("+02:00", "Z") è un istante e basta.
+ * SENZA offset — che xsd:dateTime ammette — è un'ora di parete, e l'unica
+ * parete sensata è quella dell'azienda: `new Date()` lo leggerebbe nel fuso
+ * del processo, cioè UTC sul server, spostando ogni orario di due ore.
+ */
+export function parseDate(
+  v: string | null, timeZone = process.env.SIRI_TIMEZONE || "Europe/Rome",
+): Date | null {
   if (!v) return null;
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? null : d;
+  const s = v.trim();
+  const senzaOffset = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(s);
+  if (!senzaOffset) {
+    const d = new Date(s);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  /* Ora di parete → istante: si parte leggendola come UTC, si misura di
+   * quanto quel fuso la sposterebbe, e si corregge. Un secondo giro sistema
+   * il caso del cambio d'ora, in cui lo scarto dipende dall'istante stesso. */
+  const parete = new Date(s + "Z");
+  if (Number.isNaN(parete.getTime())) return null;
+  const scarto = (d: Date) => {
+    const p = new Intl.DateTimeFormat("en-US", {
+      timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(d);
+    const n = (t: string) => Number(p.find(x => x.type === t)?.value ?? 0);
+    const comeUtc = Date.UTC(n("year"), n("month") - 1, n("day"), n("hour"), n("minute"), n("second"));
+    return comeUtc - d.getTime();
+  };
+  let istante = new Date(parete.getTime() - scarto(parete));
+  istante = new Date(parete.getTime() - scarto(istante));
+  return istante;
 }
 function parseNum(v: string | null): number | null {
   if (v == null) return null;
@@ -311,10 +340,18 @@ function parseCall(node: XmlNode): SiriCall {
    * il passeggero subisce), altrimenti sull'arrivo. Se manca l'effettivo si
    * usa il previsto: su una fermata futura resta una previsione, ma è il dato
    * che l'AVM sta dando. */
-  const actual = actualDeparture ?? actualArrival ?? expectedDeparture ?? expectedArrival;
-  const aimed = actualDeparture || expectedDeparture
-    ? (aimedDeparture ?? aimedArrival)
-    : (aimedArrival ?? aimedDeparture);
+  /* Ogni effettivo si confronta col SUO programmato: l'arrivo con l'arrivo,
+   * la partenza con la partenza. Prima, un ActualArrivalTime in presenza di
+   * un ExpectedDepartureTime veniva confrontato con la partenza programmata:
+   * a un capolinea con cinque minuti di sosta, un arrivo in orario risultava
+   * un anticipo di cinque minuti. */
+  const [actual, aimed] = actualDeparture
+    ? [actualDeparture, aimedDeparture ?? aimedArrival]
+    : actualArrival
+      ? [actualArrival, aimedArrival ?? aimedDeparture]
+      : expectedDeparture
+        ? [expectedDeparture, aimedDeparture ?? aimedArrival]
+        : [expectedArrival, aimedArrival ?? aimedDeparture];
   const delaySeconds = actual && aimed
     ? Math.round((actual.getTime() - aimed.getTime()) / 1000)
     : null;
@@ -640,7 +677,10 @@ export function diagnosiVettura(v: SiriVehicle, now = Date.now()): VetturaDiagno
    * contatto è vecchio di un minuto, mentre uno muto da un giorno è un
    * problema di apparato qualunque cosa dichiari il resto. */
   if (eta != null && eta > MUTA_SEC) return { ...base, stato: "muta" };
-  if (v.journeyRef && !v.inDepot && !v.withoutService) {
+  /* Stessa regola di inService(): un mezzo "FUORI LINEA" con un codice corsa
+   * residuo non è in servizio, e contarlo qui mentre la Sala Operativa lo
+   * esclude dava due parchi diversi nella stessa pagina. */
+  if (v.journeyRef && !v.inDepot && !v.withoutService && !v.outOfService) {
     return { ...base, stato: "in_servizio" };
   }
   if (v.monitoringError === "GPRS") return { ...base, stato: "senza_rete" };
@@ -860,11 +900,22 @@ export function fixAgeSeconds(v: SiriVehicle, now = Date.now()): number | null {
   return Math.round((now - v.recordedAt.getTime()) / 1000);
 }
 
+/** Il produttore ha detto QUALCOSA sullo stato di questo mezzo? */
+function statoDichiarato(v: SiriVehicle): boolean {
+  return !!v.progressStatus || v.inDepot || v.withoutService || v.outOfService || !!v.journeyRef;
+}
+
 export function splitInService(vehicles: SiriVehicle[]): ServiceSplit {
   const inServizio = vehicles.filter(inService);
-  /* Nessun segnale su nessun mezzo: il produttore non compila quei campi.
-   * Filtrare qui vorrebbe dire spegnere la mappa, quindi non si filtra. */
-  if (inServizio.length === 0) {
+  /* Nessun segnale su NESSUN mezzo: il produttore non compila quei campi.
+   * Filtrare qui vorrebbe dire spegnere la mappa, quindi non si filtra.
+   *
+   * Ma "nessuno in servizio" non è "nessun segnale": alle due di notte il
+   * produttore dichiara esplicitamente tutto il parco in rimessa, e prima il
+   * ripiego promuoveva le 368 vetture ferme a "in esercizio" — posizioni di
+   * deposito scritte come servizio, corse aperte su mezzi spenti. Il ripiego
+   * scatta solo quando i campi mancano davvero. */
+  if (inServizio.length === 0 && !vehicles.some(statoDichiarato)) {
     return { inServizio: vehicles, ferme: [], nonDistinguibile: true };
   }
   return {
@@ -957,7 +1008,12 @@ export function lineCodeCandidates(publishedLineName: string | null): string[] {
    * UJ2A, BR3, JECN. Si accettano quindi codici alfanumerici, ma CORTI:
    * oltre i sei caratteri si starebbe catturando una parola del percorso
    * ("Linea Ancona - Jesi") invece di un codice. */
-  const m = /^\s*(?:linea|line|linee|bus)\s+([0-9A-Z]+(?:\s*[-/]\s*[0-9A-Z]+)*)/i
+  /* Ogni pezzo del codice è corto (al più quattro caratteri, "UJ2A") e finisce
+   * a confine di parola: senza il limite, "Linea 4 - Tavernelle" catturava
+   * "4 - Tavernelle" — il trattino fra numero e percorso letto come linea
+   * accoppiata — e il codice usciva troppo lungo, quindi scartato: una linea
+   * col numero scritto in chiaro restava orfana. */
+  const m = /^\s*(?:linea|line|linee|bus)\s+([0-9A-Z]{1,4}\b(?:\s*[-/]\s*[0-9A-Z]{1,4}\b)*)/i
     .exec(publishedLineName);
   if (!m || normalizeLineCode(m[1]).length > 6) return [];
   const raw = normalizeLineCode(m[1]);
@@ -967,6 +1023,14 @@ export function lineCodeCandidates(publishedLineName: string | null): string[] {
   if (slashed !== raw) out.push(slashed);
   const dashed = raw.replace(/\//g, "-");
   if (dashed !== raw && !out.includes(dashed)) out.push(dashed);
+  /* Per ultimo il primo pezzo da solo: "Linea 4 - Jesi" produce "4-JESI",
+   * che non esiste, e senza questo il "4" non veniva mai tentato. Sta in
+   * coda, così una linea accoppiata vera ("1-4") vince prima. */
+  const [primo, ...resto] = raw.split(/[-/]/);
+  const restoConLettere = resto.some(p => /[A-Z]/.test(p));
+  /* Solo se il resto contiene lettere: "1-4" è una linea accoppiata vera e
+   * ridurla a "1" la metterebbe sulla linea sbagliata. */
+  if (restoConLettere && primo && !out.includes(primo)) out.push(primo);
   return out;
 }
 
@@ -1150,9 +1214,23 @@ function resolveRef(ref: string | null, pool: Set<string>): string | null {
 }
 
 /** Orario programmato come HH:MM:SS, la convenzione di stop_transits. */
-function hhmmss(d: Date | null): string | null {
+/**
+ * Orario programmato come "HH:MM:SS" NELL'ORA DELL'AZIENDA.
+ *
+ * Usava `toTimeString()`, che è l'ora del processo: sul server in UTC un
+ * AimedDepartureTime delle 08:00 diventava "06:00:00". La stessa colonna
+ * `stop_transits.scheduled` riceveva così due fusi — questo per i transiti
+ * dichiarati dall'AVM, quello del GTFS (locale) per i transiti riconosciuti
+ * dalla posizione — e una tratta fra i due risultava programmata in due ore
+ * e cinque minuti invece che in cinque.
+ */
+function hhmmss(d: Date | null, timeZone = process.env.SIRI_TIMEZONE || "Europe/Rome"): string | null {
   if (!d) return null;
-  return d.toTimeString().slice(0, 8);
+  const p = new Intl.DateTimeFormat("it-IT", {
+    timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(d);
+  const g = (t: string) => p.find(x => x.type === t)?.value ?? "00";
+  return `${g("hour")}:${g("minute")}:${g("second")}`;
 }
 
 export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
@@ -1379,7 +1457,11 @@ export function buildTripStartIndex(rows: TripStart[]): TripStartIndex {
   const headsign = new Map<string, string | null>();
   for (const r of rows) {
     if (!r.firstDeparture) continue;
-    const key = `${r.routeId}|${r.firstDeparture.slice(0, 5)}`;
+    /* La chiave è "HH:MM" a larghezza fissa. Un feed con l'ora a una cifra
+     * ("7:15:00", ammessa dalla specifica) dava "7:15:" e non combaciava mai
+     * con i candidati "07:15": nessuna corsa prima delle dieci si agganciava. */
+    const hm = /^(\d{1,2}):(\d{2})/.exec(r.firstDeparture);
+    const key = `${r.routeId}|${hm ? `${hm[1].padStart(2, "0")}:${hm[2]}` : r.firstDeparture.slice(0, 5)}`;
     const arr = byRouteAndStart.get(key);
     if (arr) arr.push(r.tripId); else byRouteAndStart.set(key, [r.tripId]);
     headsign.set(r.tripId, r.headsign);
