@@ -1246,19 +1246,24 @@ async function resolveProjectFeedForRead(psProjectId: string): Promise<{
   // il messaggio dava la colpa a un psProjectId mancante che invece c'era.
   const tentativi: string[] = [];
   try {
-    // Il progetto di scheduling si aggancia in DUE modi, come fa il giro: per
-    // planning_studio_project_id (colonna arrivata dopo, vuota sui progetti
-    // nati prima) oppure attraverso l'unità di validità del progetto.
+    // Il progetto di scheduling si aggancia ATTRAVERSO L'UNITÀ DI VALIDITÀ,
+    // esattamente come il giro e planning-compare: è l'unica via che non
+    // dipende da colonne arrivate dopo. LEFT JOIN sul feed: un feed_id che
+    // punta a un feed sparito deve diventare un motivo, non una riga persa.
     const sp = await db.execute<any>(sql`
-      SELECT sp.feed_id, f.uploaded_at
+      SELECT sp.feed_id, f.id AS feed_exists, f.uploaded_at
         FROM scheduling_projects sp
-        JOIN gtfs_feeds f ON f.id = sp.feed_id
+        LEFT JOIN gtfs_feeds f ON f.id = sp.feed_id
        WHERE sp.feed_id IS NOT NULL
-         AND (sp.planning_studio_project_id = ${psProjectId}::uuid
-              OR sp.validity_unit_id IN (SELECT id FROM ps_validity_units WHERE project_id = ${psProjectId}::uuid))
+         AND sp.validity_unit_id IN (SELECT id FROM ps_validity_units WHERE project_id = ${psProjectId}::uuid)
        ORDER BY sp.created_at DESC LIMIT 1`);
     const row = sp.rows?.[0];
-    if (!row?.feed_id) tentativi.push("udp: nessun progetto di scheduling con feed per questo progetto");
+    if (!row?.feed_id) {
+      tentativi.push("udp: nessun progetto di scheduling con feed per le unità di validità di questo progetto");
+    } else if (!row.feed_exists) {
+      tentativi.push(`udp: il progetto di scheduling punta al feed ${row.feed_id}, che non esiste più (il giro lo ri-materializza da solo; una lettura no)`);
+      row.feed_id = null;
+    }
     if (row?.feed_id) {
       let staleAfter: string | null = null;
       try {
