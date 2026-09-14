@@ -39,6 +39,7 @@ import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
 import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
+import { eseguiSonda, type RisultatoSonda } from "../lib/siri-sonda";
 
 const router: IRouter = Router();
 
@@ -690,6 +691,67 @@ router.get("/siri/campi", async (req, res): Promise<void> => {
     });
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
+  }
+});
+
+/* ── Sonda: che cosa espone il server oltre al VehicleMonitoring ──────────
+ * Sei domande allo stesso endpoint, con la stessa busta e lo stesso
+ * RequestorRef: WSDL, capacità di tutti i servizi, VehicleMonitoring "full"
+ * a confronto con "calls", EstimatedTimetable, StopMonitoring su una fermata,
+ * ProductionTimetable, SituationExchange. Solo letture.
+ *
+ *   GET /api/siri/sonda                     — riassunto e lettura
+ *   GET /api/siri/sonda?fermata=<StopRef>   — forza la fermata di StopMonitoring
+ *   GET /api/siri/sonda?grezzo=<operazione> — la risposta intera dell'ultima
+ *                                             sonda (text/xml), es. GetEstimatedTimetable
+ */
+let ultimaSonda: RisultatoSonda | null = null;
+
+router.get("/siri/sonda", async (req, res): Promise<void> => {
+  const cfg = siriConfig();
+  if (!cfg) { res.json(NOT_CONFIGURED); return; }
+
+  const grezzo = (req.query.grezzo as string | undefined)?.trim();
+  if (grezzo) {
+    if (!ultimaSonda) { res.status(404).json({ error: "nessuna sonda eseguita: apri prima /api/siri/sonda" }); return; }
+    const xml = ultimaSonda.grezzi[grezzo];
+    if (xml == null) {
+      res.status(404).json({ error: `operazione sconosciuta: ${grezzo}`, disponibili: Object.keys(ultimaSonda.grezzi) });
+      return;
+    }
+    res.type("text/xml").send(xml);
+    return;
+  }
+
+  try {
+    const fermata = (req.query.fermata as string | undefined)?.trim() || null;
+    const post = async (op: string, corpo: string) => {
+      const r = await postSoap(cfg, op, corpo);
+      return { status: r.status, xml: r.xml };
+    };
+    const get = async (url: string) => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs ?? 20_000);
+      try {
+        const headers: Record<string, string> = {};
+        if (cfg.username) {
+          headers["Authorization"] = `Basic ${Buffer.from(`${cfg.username}:${cfg.password ?? ""}`).toString("base64")}`;
+        }
+        const r = await fetch(url, { headers, signal: ctrl.signal });
+        return { status: r.status, xml: await r.text() };
+      } finally { clearTimeout(timer); }
+    };
+    ultimaSonda = await eseguiSonda(cfg, post, get, fermata);
+    const { grezzi, ...senzaGrezzi } = ultimaSonda;
+    res.json({
+      configured: true,
+      ...senzaGrezzi,
+      grezziDisponibili: Object.keys(grezzi),
+      nota: "Per la risposta intera di una prova: /api/siri/sonda?grezzo=<operazione>. "
+        + "Questo riassunto e i grezzi sono ciò che serve a Mizar per rispondere.",
+    });
+  } catch (e: any) {
+    res.status(502).json({ configured: true, error: e?.message ?? "sonda fallita" });
   }
 });
 
