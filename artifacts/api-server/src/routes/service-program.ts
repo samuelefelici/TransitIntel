@@ -2771,6 +2771,10 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
             ? { shiftPenaltyEur: Math.max(0, Number(vcspBody.shiftPenaltyEur)) } : {}),
           ...(vcspBody.crewShiftScope === "line" || vcspBody.crewShiftScope === "trip"
             ? { crewShiftScope: vcspBody.crewShiftScope } : {}),
+          // Pazienza dell'early-stop (round consecutivi senza miglioramento):
+          // i round oscillano per costruzione, e quanta ne serva si prova.
+          ...(vcspBody.earlyStopPatience != null && Number.isFinite(Number(vcspBody.earlyStopPatience))
+            ? { earlyStopPatience: Math.max(1, Math.min(10, Math.round(Number(vcspBody.earlyStopPatience)))) } : {}),
         },
         tripClusterStops,
       });

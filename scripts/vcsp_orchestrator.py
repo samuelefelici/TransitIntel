@@ -283,8 +283,24 @@ VEHICLE_SHADOW_EUR = 80.0
 # ricomprava. Questa ombra si SOMMA a quella del turno.
 SUPPLEMENT_SHADOW_EUR = 100.0
 
-# Round consecutivi senza miglioramento prima di fermarsi.
+# Round consecutivi senza miglioramento prima di fermarsi. E' il valore di
+# default: dal giro si cambia con vcsp.earlyStopPatience, perche' i round del
+# VCSP oscillano per costruzione (i costi-ombra spostano il problema a ogni
+# giro) e "due peggioramenti di fila" puo' non voler dire convergenza — nel
+# giro AV ha tagliato a tre round su cinque. Quanta pazienza serva e' una
+# manopola da tarare con un giro di prova, non da indovinare.
 EARLY_STOP_PATIENCE = 2
+EARLY_STOP_PATIENCE_MAX = 10
+
+
+def early_stop_patience(vcsp_cfg: dict) -> int:
+    """La pazienza dell'early-stop per questo giro: da configurazione, entro
+    1..EARLY_STOP_PATIENCE_MAX; illeggibile o assente = il default."""
+    try:
+        v = int((vcsp_cfg or {}).get("earlyStopPatience", EARLY_STOP_PATIENCE))
+    except (TypeError, ValueError):
+        return EARLY_STOP_PATIENCE
+    return max(1, min(EARLY_STOP_PATIENCE_MAX, v))
 
 
 # Chiave di configurazione → costante che sovrascrive. E' la strada con cui
@@ -406,13 +422,14 @@ def main() -> None:
     crew_shift_scope = str(vcsp_cfg.get("crewShiftScope") or "trip").strip().lower()
     if crew_shift_scope not in ("trip", "line"):
         crew_shift_scope = "trip"
+    patience = early_stop_patience(vcsp_cfg)
 
     # Costi-ombra della selezione (vedi commento su DUTY_SHADOW_EUR)
     ombre = apply_shadow_overrides(vcsp_cfg)
     if any(k in vcsp_cfg for k in SHADOW_CONFIG_KEYS):
         log("[VCSP] ombre da configurazione: " + ", ".join(f"{k}=€{v:g}" for k, v in ombre.items()))
 
-    log(f"=== VCSP Orchestrator === rounds≤{rounds}, crewTimeLimit={crew_tl}s, "
+    log(f"=== VCSP Orchestrator === rounds≤{rounds} (early-stop dopo {patience} senza miglioramento), crewTimeLimit={crew_tl}s, "
         f"probes={probes} (scope {crew_shift_scope}, disturbo €{shift_penalty_eur}/corsa·min), "
         f"trips={len(vsp_payload.get('trips') or [])}, "
         f"reliefTrips={len(trip_cluster_stops)}")
@@ -506,13 +523,13 @@ def main() -> None:
             # sarebbe venuto dopo.
             if _round_without_gain(rounds_kpi):
                 no_gain += 1
-                if no_gain >= EARLY_STOP_PATIENCE:
+                if no_gain >= patience:
                     log(f"[VCSP] round {r}: {no_gain} round senza miglioramento, early-stop")
                     early_stop = {"round": r, "roundsRichiesti": rounds,
                                   "roundSenzaMiglioramento": no_gain,
-                                  "pazienza": EARLY_STOP_PATIENCE}
+                                  "pazienza": patience}
                     break
-                log(f"[VCSP] round {r}: nessun miglioramento ({no_gain}/{EARLY_STOP_PATIENCE}), continuo")
+                log(f"[VCSP] round {r}: nessun miglioramento ({no_gain}/{patience}), continuo")
             else:
                 no_gain = 0
             # Finche' il round resta illegale sui cambi si alza il tiro: le
