@@ -1,0 +1,370 @@
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * Fermata vista da Mizar — StopMonitoring a confronto con il GTFS
+ * ───────────────────────────────────────────────────────────────────────────
+ * Il servizio StopMonitoring di Mizar (endpoint SMWS, scoperto dalla sonda il
+ * 14 settembre 2026) risponde, per UNA fermata, con i passaggi programmati
+ * delle ore successive: linea con il codice pubblico, numero di corsa MTRAM
+ * (lo stesso in coda al nostro trip_id), orario programmato alla fermata con
+ * i secondi, capolinea, e — per i mezzi che l'AVM segue — l'orario di
+ * partenza previsto con lo stato.
+ *
+ * È l'orario di Mizar, fermata per fermata, agganciabile al feed senza
+ * euristiche. Confrontarlo con le stop_times delle stesse corse dice tre cose
+ * in un colpo solo, e nessuna è tautologica:
+ *   - se i codici fermata di Mizar e del feed sono la stessa fermata;
+ *   - se il numero di corsa individua la corsa anche nel feed;
+ *   - di quanti secondi divergono i due orari alla fermata (e alla partenza).
+ *
+ * Logica pura: parsing e confronto vivono qui e si collaudano senza rete né
+ * database; la rotta fa solo le due letture e le mette insieme.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
+import {
+  parseXml, findAll, findFirst, directText, parseDate, parseIsoDuration,
+  resolveRef, resolveStop, normalizeLineCode,
+  type GtfsIndex,
+} from "./siri-vm";
+
+/* ── Modello ─────────────────────────────────────────────────────────────── */
+
+export interface VisitaFermata {
+  /** quando l'AVM ha registrato il dato; mezzanotte = orario statico */
+  recordedAt: Date | null;
+  /** true se il passaggio viene dall'orario e non da un mezzo seguito */
+  statico: boolean;
+  monitoringRef: string | null;
+  lineRef: string | null;
+  publishedLineName: string | null;
+  directionRef: string | null;
+  routeRef: string | null;
+  /** numero di corsa MTRAM: la chiave verso il trip_id */
+  courseOfJourneyRef: string | null;
+  vehicleRef: string | null;
+  originRef: string | null;
+  originName: string | null;
+  destinationRef: string | null;
+  destinationName: string | null;
+  originAimedDeparture: Date | null;
+  destinationAimedArrival: Date | null;
+  monitored: boolean;
+  stopPointRef: string | null;
+  stopPointName: string | null;
+  visitNumber: number | null;
+  destinationDisplay: string | null;
+  aimedArrival: Date | null;
+  aimedDeparture: Date | null;
+  expectedArrival: Date | null;
+  expectedDeparture: Date | null;
+  arrivalStatus: string | null;
+  departureStatus: string | null;
+}
+
+export interface StopMonitoringResult {
+  failed: boolean;
+  errorText: string | null;
+  responseTimestamp: Date | null;
+  validUntil: Date | null;
+  shortestPossibleCycleSec: number | null;
+  visite: VisitaFermata[];
+}
+
+/* ── Lettura della risposta ──────────────────────────────────────────────── */
+
+export function parseStopMonitoringResponse(xml: string): StopMonitoringResult {
+  const doc = parseXml(xml);
+  const delivery = findFirst(doc, "StopMonitoringDelivery");
+  const fault = findFirst(doc, "Fault");
+  const errorCondition = findFirst(doc, "ErrorCondition");
+  const status = delivery ? directText(delivery, "Status") : null;
+
+  const errorText = fault
+    ? (directText(fault, "faultstring") ?? findFirst(fault, "Text")?.text.trim() ?? "SOAP Fault")
+    : errorCondition
+      ? (findFirst(errorCondition, "Description")?.text.trim() ?? findFirst(errorCondition, "ErrorText")?.text.trim() ?? "ErrorCondition")
+      : null;
+  const failed = !!fault || !!errorCondition || status?.toLowerCase() === "false";
+
+  const visite: VisitaFermata[] = [];
+  if (delivery) {
+    for (const v of findAll(delivery, "MonitoredStopVisit")) {
+      const mvj = findFirst(v, "MonitoredVehicleJourney");
+      const call = mvj ? findFirst(mvj, "MonitoredCall") : null;
+      const recordedAt = parseDate(directText(v, "RecordedAtTime"));
+      visite.push({
+        recordedAt,
+        statico: /T00:00:00(?:\.0+)?$/.test(directText(v, "RecordedAtTime") ?? ""),
+        monitoringRef: directText(v, "MonitoringRef"),
+        lineRef: directText(mvj, "LineRef"),
+        publishedLineName: directText(mvj, "PublishedLineName"),
+        directionRef: directText(mvj, "DirectionRef"),
+        routeRef: directText(mvj, "RouteRef"),
+        courseOfJourneyRef: directText(mvj, "CourseOfJourneyRef"),
+        vehicleRef: directText(mvj, "VehicleRef"),
+        originRef: directText(mvj, "OriginRef"),
+        originName: directText(mvj, "OriginName"),
+        destinationRef: directText(mvj, "DestinationRef"),
+        destinationName: directText(mvj, "DestinationName"),
+        originAimedDeparture: parseDate(directText(mvj, "OriginAimedDepartureTime")),
+        destinationAimedArrival: parseDate(directText(mvj, "DestinationAimedArrivalTime")),
+        monitored: (directText(mvj, "Monitored") ?? "false").toLowerCase() === "true",
+        stopPointRef: directText(call, "StopPointRef"),
+        stopPointName: directText(call, "StopPointName"),
+        visitNumber: call && directText(call, "VisitNumber") != null ? Number(directText(call, "VisitNumber")) : null,
+        destinationDisplay: directText(call, "DestinationDisplay"),
+        aimedArrival: parseDate(directText(call, "AimedArrivalTime")),
+        aimedDeparture: parseDate(directText(call, "AimedDepartureTime")),
+        expectedArrival: parseDate(directText(call, "ExpectedArrivalTime")),
+        expectedDeparture: parseDate(directText(call, "ExpectedDepartureTime")),
+        arrivalStatus: directText(call, "ArrivalStatus"),
+        departureStatus: directText(call, "DepartureStatus"),
+      });
+    }
+  }
+
+  return {
+    failed, errorText,
+    responseTimestamp: parseDate(delivery ? directText(delivery, "ResponseTimestamp") : null),
+    validUntil: parseDate(delivery ? directText(delivery, "ValidUntil") : null),
+    shortestPossibleCycleSec: parseIsoDuration(delivery ? directText(delivery, "ShortestPossibleCycle") : null),
+    visite,
+  };
+}
+
+/* ── Orari: due convenzioni, un solo asse ────────────────────────────────── */
+
+/** Secondi dalla mezzanotte LOCALE di un istante. */
+export function secondiLocali(d: Date, timeZone = process.env.SIRI_TIMEZONE || "Europe/Rome"): number {
+  const p = new Intl.DateTimeFormat("it-IT", {
+    timeZone, hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).formatToParts(d);
+  const g = (t: string) => Number(p.find(x => x.type === t)?.value ?? "0");
+  return g("hour") * 3600 + g("minute") * 60 + g("second");
+}
+
+/** Secondi di un orario GTFS "HH:MM:SS", anche oltre le 24 ("25:10:00"). */
+export function secondiGtfs(v: string | null | undefined): number | null {
+  if (!v) return null;
+  const m = /^\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/.exec(v);
+  if (!m) return null;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3] ?? 0);
+}
+
+/** a − b sul giro delle 24 ore: la differenza più corta, in [-12h, +12h]. */
+export function scartoCircolare(a: number, b: number): number {
+  let d = (a - b) % 86400;
+  if (d > 43200) d -= 86400;
+  if (d < -43200) d += 86400;
+  return d;
+}
+
+/* ── Confronto con il feed ───────────────────────────────────────────────── */
+
+/** Una riga di stop_times, come serve qui. */
+export interface RigaOrario { stopId: string; seq: number; scheduled: string }
+
+export interface ConfrontoVisita {
+  /** come Mizar chiama le cose */
+  mizar: {
+    linea: string | null; nomeLinea: string | null; corsa: string | null; percorso: string | null;
+    partenza: string | null; capolineaPartenza: string | null; capolineaArrivo: string | null;
+    arrivoProgrammato: string | null; partenzaProgrammata: string | null;
+    partenzaPrevista: string | null; statoPartenza: string | null;
+    seguito: boolean; matricola: string | null;
+  };
+  /** come le chiama il feed, quando l'aggancio riesce */
+  gtfs: {
+    tripId: string | null; routeId: string | null; stopId: string | null;
+    fermataAgganciataCome: "id" | "name" | null;
+    /** l'orario alla fermata, nell'occorrenza più vicina a quella di Mizar */
+    orarioAllaFermata: string | null; progressivo: number | null;
+    partenza: string | null;
+  };
+  /** true se il trip_id esiste nel feed */
+  corsaNelFeed: boolean;
+  /** true se la corsa del feed passa da questa fermata */
+  fermataNellaCorsa: boolean;
+  /** true se la linea di Mizar e la route della corsa nel feed sono la stessa */
+  lineaCombacia: boolean | null;
+  /** Mizar − feed alla fermata, secondi (positivo: Mizar più tardi) */
+  scartoAllaFermataSec: number | null;
+  /** Mizar − feed alla partenza dal capolinea, secondi */
+  scartoAllaPartenzaSec: number | null;
+}
+
+export interface ConfrontoFermata {
+  fermata: {
+    ref: string; nomeMizar: string | null;
+    stopId: string | null; nomeFeed: string | null; agganciataCome: "id" | "name" | null; conflitto: string | null;
+  };
+  visite: ConfrontoVisita[];
+  riepilogo: {
+    visite: number;
+    seguite: number;
+    conPrevisione: number;
+    corseNelFeed: number;
+    fermataNellaCorsa: number;
+    lineeCombaciano: number;
+    lineeDiverse: number;
+    /** quante visite hanno lo stesso orario alla fermata, al secondo */
+    orariIdentici: number;
+    scartoMedianoSec: number | null;
+    scartoMassimoSec: number | null;
+    scartoPartenzaMedianoSec: number | null;
+    corseNonTrovate: string[];
+  };
+  lettura: string[];
+}
+
+function fmt(d: Date | null, timeZone?: string): string | null {
+  if (!d) return null;
+  const s = secondiLocali(d, timeZone);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+function mediana(xs: number[]): number | null {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+}
+
+/**
+ * Confronta i passaggi che Mizar dà per una fermata con le stop_times del
+ * feed. `orari` porta, per ogni trip_id agganciato, tutte le sue righe in
+ * ordine di progressivo: serve la partenza (prima riga) e l'occorrenza
+ * giusta della fermata (le circolari passano due volte dal capolinea).
+ */
+export function confrontaFermata(
+  ref: string, visite: VisitaFermata[], index: GtfsIndex,
+  orari: Map<string, RigaOrario[]>, timeZone = index.timeZone,
+): ConfrontoFermata {
+  const nomeMizar = visite.find(v => v.stopPointName)?.stopPointName ?? null;
+  const fermata = resolveStop(ref, nomeMizar, index);
+  const stopId = fermata.stopId;
+
+  const nonTrovate = new Set<string>();
+  const confronti: ConfrontoVisita[] = visite.map(v => {
+    const tripId = resolveRef(v.courseOfJourneyRef, index.trips, index.tripByCode);
+    if (!tripId && v.courseOfJourneyRef) nonTrovate.add(v.courseOfJourneyRef);
+    const righe = tripId ? (orari.get(tripId) ?? []) : [];
+    const routeId = tripId ? (index.tripRoute.get(tripId) ?? null) : null;
+
+    /* La linea: il codice pubblico di Mizar contro la route della corsa. */
+    let lineaCombacia: boolean | null = null;
+    if (routeId && v.lineRef) {
+      const attesa = index.routeByCode.get(normalizeLineCode(v.lineRef));
+      lineaCombacia = attesa != null ? attesa === routeId : null;
+    }
+
+    /* L'orario alla fermata: l'occorrenza più vicina a quella di Mizar. */
+    const mizarSec = v.aimedArrival ? secondiLocali(v.aimedArrival, timeZone)
+      : v.aimedDeparture ? secondiLocali(v.aimedDeparture, timeZone) : null;
+    const allaFermata = stopId ? righe.filter(r => r.stopId === stopId) : [];
+    let scelta: RigaOrario | null = null;
+    let scartoFermata: number | null = null;
+    for (const r of allaFermata) {
+      const s = secondiGtfs(r.scheduled);
+      if (s == null) continue;
+      const d = mizarSec != null ? scartoCircolare(mizarSec, s) : null;
+      if (!scelta || (d != null && scartoFermata != null && Math.abs(d) < Math.abs(scartoFermata))) {
+        scelta = r; scartoFermata = d;
+      }
+    }
+
+    /* La partenza dal capolinea: prima riga della corsa nel feed. */
+    const prima = righe.length ? righe.reduce((a, b) => (b.seq < a.seq ? b : a)) : null;
+    const primaSec = prima ? secondiGtfs(prima.scheduled) : null;
+    const scartoPartenza = v.originAimedDeparture && primaSec != null
+      ? scartoCircolare(secondiLocali(v.originAimedDeparture, timeZone), primaSec) : null;
+
+    return {
+      mizar: {
+        linea: v.lineRef, nomeLinea: v.publishedLineName, corsa: v.courseOfJourneyRef, percorso: v.destinationDisplay,
+        partenza: fmt(v.originAimedDeparture, timeZone), capolineaPartenza: v.originName, capolineaArrivo: v.destinationName,
+        arrivoProgrammato: fmt(v.aimedArrival, timeZone), partenzaProgrammata: fmt(v.aimedDeparture, timeZone),
+        partenzaPrevista: fmt(v.expectedDeparture ?? v.expectedArrival, timeZone),
+        statoPartenza: v.departureStatus ?? v.arrivalStatus,
+        seguito: v.monitored, matricola: v.vehicleRef,
+      },
+      gtfs: {
+        tripId, routeId, stopId,
+        fermataAgganciataCome: fermata.how,
+        orarioAllaFermata: scelta?.scheduled ?? null, progressivo: scelta?.seq ?? null,
+        partenza: prima?.scheduled ?? null,
+      },
+      corsaNelFeed: !!tripId,
+      fermataNellaCorsa: !!scelta,
+      lineaCombacia,
+      scartoAllaFermataSec: scartoFermata,
+      scartoAllaPartenzaSec: scartoPartenza,
+    };
+  });
+
+  const scarti = confronti.map(c => c.scartoAllaFermataSec).filter((x): x is number => x != null);
+  const scartiPartenza = confronti.map(c => c.scartoAllaPartenzaSec).filter((x): x is number => x != null);
+  const riepilogo: ConfrontoFermata["riepilogo"] = {
+    visite: confronti.length,
+    seguite: confronti.filter(c => c.mizar.seguito).length,
+    conPrevisione: confronti.filter(c => c.mizar.partenzaPrevista).length,
+    corseNelFeed: confronti.filter(c => c.corsaNelFeed).length,
+    fermataNellaCorsa: confronti.filter(c => c.fermataNellaCorsa).length,
+    lineeCombaciano: confronti.filter(c => c.lineaCombacia === true).length,
+    lineeDiverse: confronti.filter(c => c.lineaCombacia === false).length,
+    orariIdentici: scarti.filter(s => s === 0).length,
+    scartoMedianoSec: mediana(scarti.map(Math.abs)),
+    scartoMassimoSec: scarti.length ? Math.max(...scarti.map(Math.abs)) : null,
+    scartoPartenzaMedianoSec: mediana(scartiPartenza.map(Math.abs)),
+    corseNonTrovate: [...nonTrovate].sort(),
+  };
+
+  return {
+    fermata: {
+      ref, nomeMizar, stopId, nomeFeed: stopId ? (index.stopNames.get(stopId) ?? null) : null,
+      agganciataCome: fermata.how, conflitto: fermata.conflict,
+    },
+    visite: confronti,
+    riepilogo,
+    lettura: leggiConfronto(riepilogo, { ref, stopId, nomeMizar, nomeFeed: stopId ? (index.stopNames.get(stopId) ?? null) : null }),
+  };
+}
+
+/** La conclusione in parole: che cosa combacia e che cosa no. */
+export function leggiConfronto(
+  r: ConfrontoFermata["riepilogo"],
+  f: { ref: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null },
+): string[] {
+  const out: string[] = [];
+  if (!r.visite) { out.push(`Mizar non dà passaggi per la fermata ${f.ref} nell'intervallo chiesto.`); return out; }
+  if (!f.stopId) {
+    out.push(`La fermata ${f.ref} («${f.nomeMizar ?? "?"}») non esiste nel feed né per codice né per nome: i codici fermata di Mizar e del GTFS non sono gli stessi.`);
+  } else {
+    out.push(`Fermata ${f.ref}: Mizar la chiama «${f.nomeMizar ?? "?"}», il feed «${f.nomeFeed ?? "?"}» (stop_id ${f.stopId}).`);
+  }
+  if (r.corseNelFeed === r.visite) {
+    out.push(`Tutte le ${r.visite} corse hanno il loro trip_id nel feed: il numero di corsa di Mizar è la chiave giusta.`);
+  } else {
+    out.push(`${r.corseNelFeed} corse su ${r.visite} hanno il trip_id nel feed; mancano ${r.corseNonTrovate.length} numeri (${r.corseNonTrovate.slice(0, 5).join(", ")}${r.corseNonTrovate.length > 5 ? "…" : ""}): orario di Mizar e feed non sono la stessa versione, oppure sono corse fuori dall'esportazione.`);
+  }
+  if (r.corseNelFeed > 0) {
+    if (r.fermataNellaCorsa === r.corseNelFeed) {
+      out.push(`In tutte le corse agganciate il feed passa da questa fermata.`);
+    } else {
+      out.push(`In ${r.corseNelFeed - r.fermataNellaCorsa} corse agganciate il feed NON passa da questa fermata: percorso diverso o codice fermata diverso.`);
+    }
+  }
+  if (r.fermataNellaCorsa > 0) {
+    if (r.orariIdentici === r.fermataNellaCorsa) {
+      out.push(`Gli orari alla fermata sono identici al secondo in tutte le ${r.fermataNellaCorsa} corse confrontabili.`);
+    } else {
+      out.push(`Orari alla fermata: identici in ${r.orariIdentici} corse su ${r.fermataNellaCorsa}; scarto mediano ${r.scartoMedianoSec} s, massimo ${r.scartoMassimoSec} s.`);
+    }
+  }
+  if (r.lineeDiverse > 0) {
+    out.push(`${r.lineeDiverse} corse hanno nel feed una linea diversa da quella che dice Mizar.`);
+  }
+  out.push(r.seguite
+    ? `${r.seguite} passaggi su ${r.visite} vengono da mezzi seguiti dall'AVM, ${r.conPrevisione} con un orario previsto; gli altri sono orario puro.`
+    : `Nessun passaggio viene da un mezzo seguito: sono tutti orario puro, senza previsione.`);
+  return out;
+}

@@ -81,12 +81,14 @@ export function buildVehicleMonitoringLivello(requestorRef: string, livello: "ca
 export function buildEstimatedTimetableRequest(requestorRef: string, anteprima = "PT2H"): string {
   return servizio("GetEstimatedTimetable", requestorRef, `<siri:PreviewInterval>${anteprima}</siri:PreviewInterval>`);
 }
-export function buildStopMonitoringRequest(requestorRef: string, stopRef: string, anteprima = "PT2H"): string {
+export function buildStopMonitoringRequest(
+  requestorRef: string, stopRef: string, anteprima = "PT2H", maxVisite = 20,
+): string {
   return servizio("GetStopMonitoring", requestorRef,
-    `<siri:PreviewInterval>${anteprima}</siri:PreviewInterval>`
+    `<siri:PreviewInterval>${esc(anteprima)}</siri:PreviewInterval>`
     + `<siri:MonitoringRef>${esc(stopRef)}</siri:MonitoringRef>`
     + `<siri:StopMonitoringDetailLevel>calls</siri:StopMonitoringDetailLevel>`
-    + `<siri:MaximumStopVisits>20</siri:MaximumStopVisits>`);
+    + `<siri:MaximumStopVisits>${Math.max(1, Math.floor(maxVisite))}</siri:MaximumStopVisits>`);
 }
 export function buildProductionTimetableRequest(requestorRef: string): string {
   return servizio("GetProductionTimetable", requestorRef, "");

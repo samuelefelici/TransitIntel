@@ -39,7 +39,8 @@ import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
 import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
-import { eseguiSonda, type RisultatoSonda } from "../lib/siri-sonda";
+import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
+import { parseStopMonitoringResponse, confrontaFermata, type RigaOrario } from "../lib/siri-fermata";
 
 const router: IRouter = Router();
 
@@ -752,6 +753,93 @@ router.get("/siri/sonda", async (req, res): Promise<void> => {
     });
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "sonda fallita" });
+  }
+});
+
+/* ── Una fermata vista da Mizar, a confronto con il feed ─────────────────
+ * StopMonitoring (endpoint SMWS di Mizar) per UNA fermata: i passaggi
+ * programmati delle ore successive con il numero di corsa MTRAM, e per i
+ * mezzi seguiti la previsione. Ogni passaggio viene agganciato al feed per
+ * numero di corsa e confrontato con le stop_times alla stessa fermata.
+ *
+ *   GET /api/siri/fermata/1122                — prossime 2 ore, al più 50 passaggi
+ *   GET /api/siri/fermata/1122?ore=4&max=100
+ *   GET /api/siri/fermata/1122?grezzo=1       — la risposta SOAP intera
+ *
+ * L'indirizzo dello StopMonitoring: SIRI_SM_URL se impostata, altrimenti il
+ * gemello ricavato da SIRI_VM_URL (VMWS/VMService.svc → SMWS/SMService.svc).
+ */
+router.get("/siri/fermata/:ref", async (req, res): Promise<void> => {
+  const cfg = siriConfig();
+  if (!cfg) { res.json(NOT_CONFIGURED); return; }
+  const ref = String(req.params.ref ?? "").trim();
+  if (!ref) { res.status(400).json({ error: "codice fermata mancante" }); return; }
+
+  const smUrl = process.env.SIRI_SM_URL
+    || endpointGemelli(cfg.url).find(g => g.servizio === "StopMonitoring")?.url;
+  if (!smUrl) {
+    res.status(400).json({
+      error: "indirizzo dello StopMonitoring sconosciuto",
+      nota: "SIRI_VM_URL non segue lo schema <sigla>WS/<sigla>Service.svc: imposta SIRI_SM_URL.",
+    });
+    return;
+  }
+
+  const ore = Math.min(Math.max(Number(req.query.ore) || 2, 1), 24);
+  const max = Math.min(Math.max(Number(req.query.max) || 50, 1), 500);
+
+  try {
+    const corpo = buildStopMonitoringRequest(cfg.requestorRef, ref, `PT${ore}H`, max);
+    const r = await postSoap({ ...cfg, url: smUrl }, "GetStopMonitoring", corpo);
+    if (req.query.grezzo === "1") { res.type("text/xml").send(r.xml); return; }
+
+    const sm = parseStopMonitoringResponse(r.xml);
+    if (sm.failed || (!r.ok && !sm.visite.length)) {
+      res.status(502).json({
+        configured: true, endpoint: smUrl, httpStatus: r.status,
+        error: sm.errorText ?? `HTTP ${r.status}`, richiestaXml: corpo,
+      });
+      return;
+    }
+
+    const index = await loadGtfsIndex();
+    if (!index) {
+      res.json({ configured: true, endpoint: smUrl, feed: null, visite: sm.visite, nota: "nessun feed GTFS caricato: niente confronto" });
+      return;
+    }
+
+    /* Le stop_times delle sole corse che Mizar nomina, tutte le fermate:
+     * serve la partenza dal capolinea e l'occorrenza giusta della fermata. */
+    const tripIds = [...new Set(sm.visite
+      .map(v => v.courseOfJourneyRef && index.tripByCode?.get(v.courseOfJourneyRef.trim()))
+      .filter((t): t is string => !!t))];
+    const orari = new Map<string, RigaOrario[]>();
+    if (tripIds.length) {
+      const rows = await db.execute<any>(sql`
+        SELECT trip_id, stop_id, stop_sequence, COALESCE(departure_time, arrival_time) AS t
+          FROM gtfs_stop_times
+         WHERE feed_id = ${index.feedId}::uuid
+           AND trip_id = ANY(${`{${tripIds.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])
+         ORDER BY trip_id, stop_sequence`);
+      for (const x of ((rows as any).rows ?? [])) {
+        const t = String(x.trip_id);
+        const arr = orari.get(t) ?? [];
+        arr.push({ stopId: String(x.stop_id), seq: Number(x.stop_sequence ?? 0), scheduled: String(x.t ?? "") });
+        orari.set(t, arr);
+      }
+    }
+
+    const confronto = confrontaFermata(ref, sm.visite, index, orari);
+    res.json({
+      configured: true,
+      endpoint: smUrl,
+      feed: index.feedId,
+      finestra: { ore, max, validUntil: sm.validUntil, cicloMinimoSec: sm.shortestPossibleCycleSec },
+      ...confronto,
+      nota: "Scarti in secondi, Mizar meno feed: positivo = Mizar più tardi. ?grezzo=1 per la risposta SOAP intera.",
+    });
+  } catch (e: any) {
+    res.status(502).json({ configured: true, endpoint: smUrl, error: e?.message ?? "richiesta fallita" });
   }
 });
 
