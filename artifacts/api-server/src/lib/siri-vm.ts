@@ -1000,6 +1000,11 @@ export interface GtfsIndex {
   stopNames: Map<string, string>;
   /** nome normalizzato → stop_id */
   stopByName: Map<string, string>;
+  /** stop_code → stop_id. Mizar chiama la fermata col codice aziendale
+   *  ("1122"), il feed la identifica con uno stop_id proprio ("20045") e
+   *  porta il codice in stop_code: senza questo indice l'aggancio riusciva
+   *  solo per nome, e i nomi cambiano di maiuscole e parentesi. */
+  stopByCode?: Map<string, string>;
   loadedAt: number;
 }
 
@@ -1152,7 +1157,7 @@ function namesCompatible(a: string | null | undefined, b: string | null | undefi
  */
 export function resolveStop(
   ref: string | null, name: string | null, index: GtfsIndex,
-): { stopId: string | null; how: "id" | "name" | null; conflict: string | null } {
+): { stopId: string | null; how: "id" | "code" | "name" | null; conflict: string | null } {
   for (const c of refCandidates(ref)) {
     if (!index.stops.has(c)) continue;
     const feedName = index.stopNames.get(c) ?? null;
@@ -1163,6 +1168,14 @@ export function resolveStop(
     return byName
       ? { stopId: byName, how: "name", conflict }
       : { stopId: null, how: null, conflict };
+  }
+  /* Lo stop_code del feed: è il codice aziendale, quello che l'AVM usa. */
+  for (const c of refCandidates(ref)) {
+    const byCode = index.stopByCode?.get(c);
+    if (!byCode) continue;
+    const feedName = index.stopNames.get(byCode) ?? null;
+    if (namesCompatible(name, feedName)) return { stopId: byCode, how: "code", conflict: null };
+    return { stopId: null, how: null, conflict: `stop_code ${c}: AVM "${name}" ≠ feed "${feedName}"` };
   }
   const byName = name ? index.stopByName.get(normalizeStopName(name)) : undefined;
   return byName ? { stopId: byName, how: "name", conflict: null } : { stopId: null, how: null, conflict: null };
@@ -1364,7 +1377,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     const s = resolveStop(mc?.stopPointRef ?? null, mc?.stopPointName ?? null, index);
     const nearestStopId = s.stopId;
     if (s.conflict) conflicts.add(s.conflict);
-    if (nearestStopId) { stopMatched++; if (s.how === "id") stopById++; else stopByName++; }
+    if (nearestStopId) { stopMatched++; if (s.how === "id" || s.how === "code") stopById++; else stopByName++; }
     else if (mc?.stopPointRef) unmatchedStop.add(mc.stopPointRef);
 
     if (v.lat != null && v.lon != null) withPosition++;

@@ -13,7 +13,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseStopMonitoringResponse, confrontaFermata, secondiLocali, secondiGtfs, scartoCircolare, leggiConfronto,
-  type RigaOrario,
+  leggiDiagnosi, type RigaOrario,
 } from "../lib/siri-fermata";
 import type { GtfsIndex } from "../lib/siri-vm";
 
@@ -211,11 +211,55 @@ describe("confrontaFermata", () => {
     expect(c.lettura[0]).toMatch(/non esiste nel feed né per codice né per nome/);
   });
 
+  /* Il caso vero: Mizar dice 1122, il feed ha stop_id 20045 e porta 1122 in
+   * stop_code. Prima dell'indice sullo stop_code l'aggancio riusciva solo
+   * per nome. */
+  it("aggancia la fermata per stop_code quando lo stop_id del feed è un altro", () => {
+    const idx = indice();
+    idx.stops.delete("1122"); idx.stopNames.delete("1122");
+    idx.stops.add("20045"); idx.stopNames.set("20045", "ANCONA (VIA MARCONI GAS)");
+    idx.stopByCode = new Map([["1122", "20045"]]);
+    const o = orari();
+    for (const righe of o.values()) for (const r of righe) if (r.stopId === "1122") r.stopId = "20045";
+    const c = confrontaFermata("1122", visite, idx, o);
+    expect(c.fermata).toMatchObject({ stopId: "20045", agganciataCome: "code", conflitto: null });
+    expect(c.riepilogo.fermataNellaCorsa).toBe(3);
+    expect(c.lettura[0]).toMatch(/stop_id 20045, agganciata per stop_code 1122/);
+  });
+
+  it("uno stop_code che combacia ma con un nome incompatibile non viene accettato", () => {
+    const idx = indice();
+    idx.stops.delete("1122"); idx.stopNames.delete("1122");
+    idx.stops.add("20045"); idx.stopNames.set("20045", "OSIMO Stazione");
+    idx.stopByCode = new Map([["1122", "20045"]]);
+    const c = confrontaFermata("1122", visite, idx, orari());
+    expect(c.fermata.stopId).toBeNull();
+    expect(c.fermata.conflitto).toMatch(/stop_code 1122/);
+  });
+
   it("senza passaggi la lettura lo dice e basta", () => {
     expect(leggiConfronto(
       { visite: 0, seguite: 0, conPrevisione: 0, corseNelFeed: 0, fermataNellaCorsa: 0, lineeCombaciano: 0, lineeDiverse: 0,
         orariIdentici: 0, scartoMedianoSec: null, scartoMassimoSec: null, scartoPartenzaMedianoSec: null, corseNonTrovate: [] },
       { ref: "9999", stopId: null, nomeMizar: null, nomeFeed: null },
     )).toEqual(["Mizar non dà passaggi per la fermata 9999 nell'intervallo chiesto."]);
+  });
+});
+
+describe("leggiDiagnosi: dove sono finiti i numeri che non si trovano", () => {
+  it("numero presente altrove nel trip_id: la regola «ultimo segmento» non basta", () => {
+    const l = leggiDiagnosi({
+      trovateAltrove: { "369660": ["689_CodUdp:D1690_369660_1"], "455469": [] },
+      lineeNelFeed: { C: { routeId: "C", corse: 40 }, N: null },
+    }, ["369660", "455469"]);
+    expect(l[0]).toMatch(/1 dei 2 numeri mancanti stanno nel feed ma NON in coda al trip_id \(es\. 369660 in 689_CodUdp:D1690_369660_1\)/);
+    expect(l.join("\n")).toMatch(/Le linee N nel feed non esistono/);
+    expect(l.join("\n")).toMatch(/Le linee C \(40 corse\) nel feed ci sono, ma 1 numeri di corsa non compaiono/);
+  });
+  it("senza numeri mancanti non dice nulla", () => {
+    expect(leggiDiagnosi({ trovateAltrove: {}, lineeNelFeed: {} }, [])).toEqual([]);
+  });
+  it("numeri assenti e nessuna linea da confrontare", () => {
+    expect(leggiDiagnosi({ trovateAltrove: {}, lineeNelFeed: {} }, ["1", "2"])).toEqual(["2 numeri non compaiono in nessun trip_id del feed."]);
   });
 });

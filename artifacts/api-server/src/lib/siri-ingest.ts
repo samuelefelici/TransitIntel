@@ -53,7 +53,7 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
     db.execute<any>(sql`
       SELECT trip_id, route_id FROM gtfs_trips WHERE feed_id = ${feedId}::uuid`),
     db.execute<any>(sql`
-      SELECT stop_id, stop_name FROM gtfs_stops WHERE feed_id = ${feedId}::uuid`),
+      SELECT stop_id, stop_code, stop_name FROM gtfs_stops WHERE feed_id = ${feedId}::uuid`),
     db.execute<any>(sql`
       SELECT route_id, route_short_name, route_long_name FROM gtfs_routes WHERE feed_id = ${feedId}::uuid`),
   ]);
@@ -84,9 +84,15 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   const stops = new Set<string>();
   const stopNames = new Map<string, string>();
   const stopByName = new Map<string, string>();
+  const stopByCode = new Map<string, string>();
   for (const r of ((stopsR as any).rows ?? [])) {
     const id = String(r.stop_id);
     stops.add(id);
+    /* Il codice aziendale della fermata, quello che l'AVM usa (1122 ↔ stop_id
+     * 20045). Primo vincitore, come per i nomi: un codice ripetuto su due
+     * banchine non deve scegliere l'ultima letta. */
+    const code = r.stop_code != null ? String(r.stop_code).trim() : "";
+    if (code && !stopByCode.has(code)) stopByCode.set(code, id);
     if (r.stop_name) {
       stopNames.set(id, String(r.stop_name));
       // primo vincitore: i capolinea omonimi non devono sovrascrivere la banchina
@@ -97,7 +103,7 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
 
   const tripStarts = (await loadTripStartIndex(feedId)) ?? undefined;
   cachedIndex = {
-    feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName,
+    feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName, stopByCode,
     tripStarts,
     /* Il numero di corsa in coda al trip_id: la chiave con cui Mizar chiama
      * la corsa in CourseOfJourneyRef. Agganciare per numero, prima che per
