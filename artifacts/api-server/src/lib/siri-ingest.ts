@@ -530,6 +530,9 @@ export interface IngestResult {
   funnel: TransitFunnel;
   /** la stessa cosa, in una frase */
   funnelNota: string;
+  /** i mezzi seguiti con una corsa agganciata e non smentita: la platea del
+   *  ciclo StopMonitoring, che chiede le previsioni alle loro prossime fermate */
+  corseAttive: Array<{ vehicleRef: string; tripId: string; fermataCorrenteRef: string | null; fermataCorrenteId: string | null }>;
 }
 
 export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> {
@@ -548,6 +551,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       funnel: { ...emptyFunnel(), inEsercizio: vehicles.length },
       funnelNota: "Nessun feed GTFS attivo: senza orario non c'è nulla a cui "
         + "attribuire i passaggi.",
+      corseAttive: [],
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
         tripMatchedById: 0, tripMatchedByCode: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
@@ -922,12 +926,21 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       + `non trasmette da oltre ${ABBANDONO_MIN} minuti.`);
   }
 
+  const corseAttive = mapped
+    .filter(m => m.tripId && m.siri.vehicleRef && !aggancioSmentito(m))
+    .map(m => ({
+      vehicleRef: m.siri.vehicleRef!, tripId: m.tripId!,
+      fermataCorrenteRef: m.siri.monitoredCall?.stopPointRef ?? null,
+      fermataCorrenteId: m.nearestStopId ?? null,
+    }));
+
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
     vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
     corseFallite, erroreCorse, corseAbbandonate: corseAbbandonate + corseDeiFermi, coppieCodici,
     agganci, riepilogoAgganci: riepilogo,
     funnel, funnelNota: explainFunnel(funnel),
+    corseAttive,
   };
 }
 

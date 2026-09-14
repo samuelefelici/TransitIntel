@@ -38,6 +38,12 @@ import {
 import { loadCalendarProfile, calendarioPredefinito } from "../lib/planning-studio-calendar";
 import { tintaRitardo, legendaRitardo } from "../lib/delay-scale";
 import { spezzaPerFermate } from "../lib/shape-segments";
+import { leggiPrevisioniCorsa } from "../lib/stop-predictions-store";
+import { secondiLocali } from "../lib/siri-fermata";
+
+/** Secondi dalla mezzanotte locale nel fuso dell'azienda: l'asse su cui si
+ *  confrontano l'orario del feed e la previsione di Mizar. */
+const secondiLocaliDi = (d: Date) => secondiLocali(d, OPERATOR_TZ);
 import {
   inizioGiornata as inizioGiornataSql, giornataDi, oraDi, nellaGiornata, inizioDi,
   giornataOggi, comeGiorno, dataLocale,
@@ -1234,6 +1240,15 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
       .filter(f => f.origine === "osservato")
       .reduce((m, f) => Math.max(m, f.seq), -Infinity);
 
+    /* ── Le previsioni di Mizar ─────────────────────────────────────────
+     * Dallo StopMonitoring, raccolte dal ciclo d'ingestione per le prossime
+     * fermate dei mezzi seguiti. Stanno in una tabella loro e si affiancano
+     * alla nostra stima, senza sostituirla: due previsioni diverse per la
+     * stessa fermata sono un'informazione, una sola è un'opinione. Oltre
+     * l'ultima fermata osservata sono "fra quanto arriva"; prima, sono la
+     * storia di quanto la previsione ci aveva preso. */
+    const previsioni = await leggiPrevisioniCorsa(giornataOggi(new Date(), OPERATOR_TZ), tripId);
+
     const archi = tratti.map((t, i) => {
       const da = completato.fermate[i], a = completato.fermate[i + 1];
       const percorso = a.seq <= ultimaOsservata;
@@ -1280,6 +1295,15 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
         coperturaOsservata: completato.coperturaOsservata,
         nota: completato.nota ?? undefined,
       },
+      previsioniMizar: {
+        fonte: "StopMonitoring Mizar",
+        fermate: previsioni.size,
+        aggiornateAlle: [...previsioni.values()].reduce<string | null>(
+          (m, p) => (!m || p.aggiornataAlle > m ? p.aggiornataAlle : m), null),
+        nota: previsioni.size
+          ? "Orario previsto da Mizar alle prossime fermate del mezzo seguito; non è un passaggio osservato e non entra nei tempi di percorrenza."
+          : "Nessuna previsione di Mizar per questa corsa: il mezzo non è seguito dall'AVM, o il ciclo StopMonitoring non ha ancora girato.",
+      },
       trip: tripInfo && {
         tripId: tripInfo.trip_id,
         routeId: tripInfo.route_id,
@@ -1299,8 +1323,25 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
          * fermata che deve ancora raggiungere — una previsione col colore di
          * una misura. Il numero resta, il colore no. */
         const raggiunta = f.seq <= ultimaOsservata;
+        /* La previsione di Mizar per questa fermata, con lo scarto rispetto
+         * al programmato del feed e il colore della stessa scala. */
+        const pm = previsioni.get(f.stopId);
+        const schedSec = f.scheduled ? scheduledSeconds(f.scheduled) : null;
+        const pmSec = pm ? secondiLocaliDi(new Date(pm.expectedTs)) : null;
+        const scartoMizar = pm && schedSec != null && pmSec != null
+          ? (() => { let d = pmSec - schedSec; if (d > 43200) d -= 86400; if (d < -43200) d += 86400; return d; })()
+          : null;
+        const previsioneMizar = pm ? {
+          expectedTs: pm.expectedTs,
+          primaPrevisioneTs: pm.expectedFirstTs,
+          stato: pm.stato,
+          scartoSec: scartoMizar,
+          tinta: tintaRitardo(scartoMizar),
+          aggiornataAlle: pm.aggiornataAlle,
+        } : null;
         return {
           raggiunta,
+          previsioneMizar,
           seq: f.seq,
           stopId: f.stopId,
           stopName: f.stopName,

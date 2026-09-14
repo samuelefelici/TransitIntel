@@ -90,6 +90,24 @@ export function buildStopMonitoringRequest(
     + `<siri:StopMonitoringDetailLevel>calls</siri:StopMonitoringDetailLevel>`
     + `<siri:MaximumStopVisits>${Math.max(1, Math.floor(maxVisite))}</siri:MaximumStopVisits>`);
 }
+/**
+ * GetMultipleStopMonitoring: più fermate in una richiesta, un filtro per
+ * fermata. È l'operazione che il WSDL di SMService dichiara accanto a
+ * GetStopMonitoring.
+ */
+export function buildMultipleStopMonitoringRequest(
+  requestorRef: string, stopRefs: string[], anteprima = "PT1H", maxVisite = 30,
+): string {
+  const filtri = stopRefs.map(ref =>
+    `<siri:StopMonitoringFilter>`
+    + `<siri:PreviewInterval>${esc(anteprima)}</siri:PreviewInterval>`
+    + `<siri:MonitoringRef>${esc(ref)}</siri:MonitoringRef>`
+    + `<siri:StopMonitoringDetailLevel>calls</siri:StopMonitoringDetailLevel>`
+    + `<siri:MaximumStopVisits>${Math.max(1, Math.floor(maxVisite))}</siri:MaximumStopVisits>`
+    + `</siri:StopMonitoringFilter>`).join("");
+  return servizio("GetMultipleStopMonitoring", requestorRef, filtri);
+}
+
 export function buildProductionTimetableRequest(requestorRef: string): string {
   return servizio("GetProductionTimetable", requestorRef, "");
 }

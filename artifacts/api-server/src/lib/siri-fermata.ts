@@ -73,21 +73,25 @@ export interface StopMonitoringResult {
 
 export function parseStopMonitoringResponse(xml: string): StopMonitoringResult {
   const doc = parseXml(xml);
-  const delivery = findFirst(doc, "StopMonitoringDelivery");
+  /* Una risposta a GetMultipleStopMonitoring porta una delivery per fermata:
+   * si leggono tutte. Le visite hanno il loro MonitoringRef, quindi non si
+   * perde da quale fermata vengono. */
+  const deliveries = findAll(doc, "StopMonitoringDelivery");
+  const delivery = deliveries[0] ?? null;
   const fault = findFirst(doc, "Fault");
   const errorCondition = findFirst(doc, "ErrorCondition");
-  const status = delivery ? directText(delivery, "Status") : null;
+  const status = deliveries.map(d => directText(d, "Status")).filter(Boolean);
 
   const errorText = fault
     ? (directText(fault, "faultstring") ?? findFirst(fault, "Text")?.text.trim() ?? "SOAP Fault")
     : errorCondition
       ? (findFirst(errorCondition, "Description")?.text.trim() ?? findFirst(errorCondition, "ErrorText")?.text.trim() ?? "ErrorCondition")
       : null;
-  const failed = !!fault || !!errorCondition || status?.toLowerCase() === "false";
+  const failed = !!fault || !!errorCondition || (status.length > 0 && status.every(s => s!.toLowerCase() === "false"));
 
   const visite: VisitaFermata[] = [];
-  if (delivery) {
-    for (const v of findAll(delivery, "MonitoredStopVisit")) {
+  for (const d of deliveries) {
+    for (const v of findAll(d, "MonitoredStopVisit")) {
       const mvj = findFirst(v, "MonitoredVehicleJourney");
       const call = mvj ? findFirst(mvj, "MonitoredCall") : null;
       const recordedAt = parseDate(directText(v, "RecordedAtTime"));
