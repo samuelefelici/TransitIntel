@@ -26,7 +26,7 @@ import { sql } from "drizzle-orm";
 import { postSoap, type SiriEndpointConfig, type GtfsIndex } from "./siri-vm";
 import { buildMultipleStopMonitoringRequest, buildStopMonitoringRequest, endpointGemelli } from "./siri-sonda";
 import { parseStopMonitoringResponse, unisciVisite, secondiGtfs, secondiLocali, fermataVuota, type VisitaFermata } from "./siri-fermata";
-import { caricaTranscodifica } from "./stop-aliases";
+import { transcodificaEffettiva } from "./stop-aliases";
 import { registraPrevisioni, type PrevisioneFermata } from "./stop-predictions-store";
 
 /** Un mezzo seguito con una corsa agganciata, come esce dall'ingestione. */
@@ -174,7 +174,7 @@ export async function aggiornaPrevisioni(
   try {
     /* stop_id del feed → codice palina di Mizar: l'inverso della transcodifica. */
     const inverso = new Map<string, string>();
-    for (const r of caricaTranscodifica().righe) if (!inverso.has(r.stopId)) inverso.set(r.stopId, r.mizarRef);
+    for (const r of (await transcodificaEffettiva()).righe) if (!inverso.has(r.stopId)) inverso.set(r.stopId, r.mizarRef);
 
     const oraSec = secondiLocali(new Date(now), index.timeZone);
     const refs = new Set<string>();

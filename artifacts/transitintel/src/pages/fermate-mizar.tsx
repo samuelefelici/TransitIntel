@@ -10,24 +10,39 @@
  * fermate del feed che nessun codice raggiunge, e i codici che il flusso
  * SIRI usa e la tabella non ha.
  *
+ * Le correzioni si fanno qui, riga per riga, e restano tracciate: chi,
+ * quando, perché. Il file dell'azienda non si tocca; la tabella effettiva
+ * (file + correzioni) si esporta nello stesso formato, con la colonna che
+ * dice da dove viene ogni riga. Chi corregge ha tre aiuti, in ordine di
+ * forza: il nome (un suggerimento), i dati di Mizar (una dimostrazione:
+ * le corse che passano dalla palina passano da quello stop_id allo stesso
+ * orario), e la ricerca libera nel feed.
+ *
  * Gli stati sono pochi e distinti, con un colore ciascuno: «sospetta» non
  * è una sfumatura di «abbinata», è un abbinamento da guardare prima di
  * fidarsi.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Download, RefreshCw, Search, MapPin, AlertTriangle, CircleOff, HelpCircle, Check } from "lucide-react";
+import React, { useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  Download, RefreshCw, Search, MapPin, AlertTriangle, CircleOff, HelpCircle, Check,
+  Pencil, Undo2, Sparkles, X,
+} from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
 
 type Stato = "abbinata" | "sospetta" | "fermata_assente" | "senza_codice";
 
+interface Suggerimento { stopId: string; nome: string | null; motivo: "stesso_nome" | "nome_contenuto" }
 interface Riga {
   mizarRef: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null;
-  stato: Stato; collisione: string | null; condivisaCon: number; vistaNelFlusso: boolean;
+  stato: Stato; fonte: "file" | "manuale"; nota: string | null; utente: string | null;
+  collisione: string | null; condivisaCon: number; vistaNelFlusso: boolean;
+  suggerimenti: Suggerimento[];
 }
 interface Resp {
   file: string | null; errore: string | null; feed: string | null;
+  correzioni: number; erroreCorrezioni: string | null; puoCorreggere: boolean;
   ultimoGiro: { alle: string; nonAgganciate: string[]; conflitti: string[]; agganciate: number; perId: number; perNome: number } | null;
   righe: Riga[];
   feedSenzaCodice: Array<{ stopId: string; nome: string | null }>;
@@ -39,14 +54,24 @@ interface Resp {
   lettura: string[];
   nota?: string;
 }
+interface FermataFeed { stopId: string; stopCode: string | null; nome: string | null }
+interface Deduzione {
+  ref: string; passaggi: number; corseAgganciate: number;
+  deduzione: {
+    passaggiUtili: number;
+    candidati: Array<{ stopId: string; nome: string | null; prove: number; esempi: Array<{ corsa: string; orario: string }> }>;
+    suggerito: string | null; lettura: string;
+  } | null;
+  nota?: string;
+}
 
-type Filtro = Stato | "collisione" | "feed_senza_codice" | "flusso" | null;
+type Filtro = Stato | "collisione" | "feed_senza_codice" | "flusso" | "manuale" | null;
 
 const SEGNO: Record<Stato, { etichetta: string; icona: typeof Check; colore: string; fondo: string; spiegazione: string }> = {
   abbinata:        { etichetta: "Abbinata",        icona: Check,         colore: "#34d399", fondo: "rgba(52,211,153,0.12)",  spiegazione: "la fermata esiste nel feed e il nome combacia" },
   sospetta:        { etichetta: "Sospetta",        icona: AlertTriangle, colore: "#fbbf24", fondo: "rgba(251,191,36,0.12)",  spiegazione: "la fermata esiste nel feed, ma con un altro nome: da controllare" },
   fermata_assente: { etichetta: "Fermata assente", icona: CircleOff,     colore: "#f87171", fondo: "rgba(248,113,113,0.12)", spiegazione: "lo stop_id della tabella non esiste nel feed in uso" },
-  senza_codice:    { etichetta: "Senza codice",    icona: HelpCircle,    colore: "#94a3b8", fondo: "rgba(148,163,184,0.12)", spiegazione: "palina di Mizar non ancora codificata nel software aziendale" },
+  senza_codice:    { etichetta: "Senza codice",    icona: HelpCircle,    colore: "#94a3b8", fondo: "rgba(148,163,184,0.12)", spiegazione: "palina di Mizar senza una fermata nel feed" },
 };
 
 function Contatore({ n, etichetta, colore, fondo, attivo, onClick, icona: Icona }: {
@@ -66,9 +91,161 @@ function Contatore({ n, etichetta, colore, fondo, attivo, onClick, icona: Icona 
   );
 }
 
+/* ── L'editor di una riga ─────────────────────────────────────────────────
+ * Tre fonti di candidati e una decisione. La deduzione dai dati costa una
+ * richiesta a Mizar: si chiede solo premendo il pulsante. */
+function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string; nomeMizar: string | null; stopId: null; suggerimenti: Suggerimento[]; fonte: "file"; nota: null }; onChiudi: () => void }) {
+  const qc = useQueryClient();
+  const [scelta, setScelta] = useState<string | null>(riga.stopId);
+  const [nessuna, setNessuna] = useState(false);
+  const [nota, setNota] = useState(riga.nota ?? "");
+  const [cercaFeed, setCercaFeed] = useState("");
+
+  const ricerca = useQuery({
+    queryKey: ["fermate-cerca", cercaFeed],
+    queryFn: () => apiFetch<{ fermate: FermataFeed[] }>(`/api/siri/fermate/cerca?q=${encodeURIComponent(cercaFeed)}`),
+    enabled: cercaFeed.trim().length >= 2,
+    staleTime: 60_000,
+  });
+  const deduzione = useMutation({
+    mutationFn: () => apiFetch<Deduzione>(`/api/siri/fermate/suggerisci/${encodeURIComponent(riga.mizarRef)}`, { method: "POST" }),
+  });
+  const salva = useMutation({
+    mutationFn: () => apiFetch(`/api/siri/fermate/abbinamenti/${encodeURIComponent(riga.mizarRef)}`, {
+      method: "PUT",
+      body: JSON.stringify({ stopId: nessuna ? null : scelta, nota: nota.trim() || null, nome: riga.nomeMizar }),
+    }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["fermate-abbinamenti"] }); onChiudi(); },
+  });
+  const ripristina = useMutation({
+    mutationFn: () => apiFetch(`/api/siri/fermate/abbinamenti/${encodeURIComponent(riga.mizarRef)}`, { method: "DELETE" }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["fermate-abbinamenti"] }); onChiudi(); },
+  });
+
+  const Candidato = ({ stopId, nome, dettaglio, forte }: { stopId: string; nome: string | null; dettaglio: string; forte?: boolean }) => (
+    <button
+      type="button"
+      onClick={() => { setScelta(stopId); setNessuna(false); }}
+      className={`flex items-center gap-2 w-full text-left px-2 py-1 rounded border text-[11px] ${scelta === stopId && !nessuna ? "border-emerald-400/60 bg-emerald-400/10" : "border-border/40 hover:bg-muted/40"}`}
+    >
+      <span className="font-mono">{stopId}</span>
+      <span className="truncate">{nome ?? "—"}</span>
+      <span className={`ml-auto shrink-0 ${forte ? "text-emerald-300" : "text-muted-foreground"}`}>{dettaglio}</span>
+    </button>
+  );
+
+  const d = deduzione.data?.deduzione ?? null;
+  const cambiato = nessuna ? riga.stopId !== null : scelta !== riga.stopId;
+
+  return (
+    <tr className="border-b border-border/20 bg-muted/20">
+      <td colSpan={7} className="px-3 py-3">
+        <div className="grid gap-3 md:grid-cols-3 text-[11px]">
+          <div className="space-y-1.5">
+            <div className="font-medium flex items-center gap-1.5">Per nome
+              <span className="text-muted-foreground font-normal">· un suggerimento</span></div>
+            {riga.suggerimenti.length === 0 && <div className="text-muted-foreground">Nessuna fermata del feed con un nome simile a «{riga.nomeMizar ?? "—"}».</div>}
+            {riga.suggerimenti.map(s => (
+              <Candidato key={s.stopId} stopId={s.stopId} nome={s.nome} dettaglio={s.motivo === "stesso_nome" ? "stesso nome" : "nome simile"} />
+            ))}
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="font-medium flex items-center gap-1.5">Dai dati di Mizar
+              <span className="text-muted-foreground font-normal">· una dimostrazione</span></div>
+            <button
+              type="button"
+              onClick={() => deduzione.mutate()}
+              disabled={deduzione.isPending}
+              className="flex items-center gap-1.5 px-2 py-1 rounded border border-border/50 hover:bg-muted/40 disabled:opacity-50"
+              title="Chiede a Mizar i passaggi di questa palina e cerca nel feed la fermata che le corse servono allo stesso orario"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${deduzione.isPending ? "animate-pulse" : ""}`} />
+              {deduzione.isPending ? "Interrogo Mizar…" : "Verifica dai passaggi"}
+            </button>
+            {deduzione.isError && <div className="text-red-300">{String((deduzione.error as any)?.message ?? deduzione.error)}</div>}
+            {deduzione.data && (
+              <>
+                <div className="text-muted-foreground leading-snug">{d?.lettura ?? deduzione.data.nota ?? `${deduzione.data.passaggi} passaggi, ${deduzione.data.corseAgganciate} corse nel feed.`}</div>
+                {d?.candidati.slice(0, 4).map(c => (
+                  <Candidato key={c.stopId} stopId={c.stopId} nome={c.nome} forte={c.stopId === d.suggerito}
+                    dettaglio={`${c.prove} ${c.prove === 1 ? "prova" : "prove"}${c.stopId === d.suggerito ? " · suggerita" : ""}`} />
+                ))}
+              </>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <div className="font-medium">Cerca nel feed</div>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2 top-1.5 text-muted-foreground" />
+              <input
+                id={`cerca-feed-${riga.mizarRef}`}
+                value={cercaFeed}
+                onChange={e => setCercaFeed(e.target.value)}
+                placeholder="stop_id, stop_code o nome"
+                className="w-full pl-7 pr-2 py-1 rounded border border-border/50 bg-background text-[11px]"
+              />
+            </div>
+            <div className="max-h-40 overflow-y-auto space-y-1">
+              {(ricerca.data?.fermate ?? []).map(f => (
+                <Candidato key={f.stopId} stopId={f.stopId} nome={f.nome} dettaglio={f.stopCode && f.stopCode !== f.stopId ? `code ${f.stopCode}` : ""} />
+              ))}
+              {cercaFeed.trim().length >= 2 && ricerca.data && ricerca.data.fermate.length === 0 && <div className="text-muted-foreground">Nessuna fermata trovata.</div>}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px]">
+          <label className="flex items-center gap-1.5 cursor-pointer">
+            <input type="checkbox" id={`nessuna-${riga.mizarRef}`} checked={nessuna} onChange={e => setNessuna(e.target.checked)} />
+            Nessuna fermata nel feed per questa palina
+          </label>
+          <input
+            id={`nota-${riga.mizarRef}`}
+            value={nota}
+            onChange={e => setNota(e.target.value)}
+            placeholder="Perché (facoltativo): banchina spostata, palina dismessa…"
+            className="flex-1 min-w-[200px] px-2 py-1 rounded border border-border/50 bg-background text-[11px]"
+          />
+          <span className="text-muted-foreground">
+            Scelta: <span className="font-mono">{nessuna ? "nessuna" : (scelta ?? "—")}</span>
+          </span>
+          <button
+            type="button"
+            onClick={() => salva.mutate()}
+            disabled={salva.isPending || !cambiato}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-500/20 border border-emerald-400/40 text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-40"
+          >
+            <Check className="w-3.5 h-3.5" /> Salva correzione
+          </button>
+          {riga.fonte === "manuale" && (
+            <button
+              type="button"
+              onClick={() => ripristina.mutate()}
+              disabled={ripristina.isPending}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border/50 hover:bg-muted/40"
+              title="Toglie la correzione e torna alla riga del file"
+            >
+              <Undo2 className="w-3.5 h-3.5" /> Ripristina dal file
+            </button>
+          )}
+          <button type="button" onClick={onChiudi} className="flex items-center gap-1 px-2 py-1 rounded hover:bg-muted/40 text-muted-foreground">
+            <X className="w-3.5 h-3.5" /> Chiudi
+          </button>
+          {(salva.isError || ripristina.isError) && (
+            <span className="text-red-300">{String(((salva.error ?? ripristina.error) as any)?.message ?? "non salvata")}</span>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 export default function FermateMizar() {
   const [filtro, setFiltro] = useState<Filtro>(null);
   const [cerca, setCerca] = useState("");
+  const [inModifica, setInModifica] = useState<string | null>(null);
 
   const q = useQuery({
     queryKey: ["fermate-abbinamenti"],
@@ -86,6 +263,7 @@ export default function FermateMizar() {
     let base = d.righe;
     if (filtro === "collisione") base = base.filter(r => r.collisione);
     else if (filtro === "flusso") base = base.filter(r => r.vistaNelFlusso);
+    else if (filtro === "manuale") base = base.filter(r => r.fonte === "manuale");
     else if (filtro && filtro !== "feed_senza_codice") base = base.filter(r => r.stato === filtro);
     /* Prima ciò che va guardato: sospette, assenti, senza codice; le
        abbinate in fondo, in ordine di codice. */
@@ -113,6 +291,8 @@ export default function FermateMizar() {
 
   const r = d.riepilogo;
   const MOSTRA = 400;
+  const puoCorreggere = d.puoCorreggere;
+  const manuali = d.righe.filter(x => x.fonte === "manuale").length;
 
   return (
     <div className="space-y-4">
@@ -124,6 +304,7 @@ export default function FermateMizar() {
           </div>
           <p className="text-[11px] text-muted-foreground mt-1 max-w-2xl leading-relaxed">
             {d.lettura.join(" ")}
+            {manuali > 0 && ` ${manuali} ${manuali === 1 ? "riga corretta" : "righe corrette"} da qui.`}
           </p>
           {d.ultimoGiro && (
             <p className="text-[11px] text-muted-foreground mt-1">
@@ -132,13 +313,19 @@ export default function FermateMizar() {
               {" "}{d.ultimoGiro.nonAgganciate.length} non agganciate.
             </p>
           )}
+          {d.erroreCorrezioni && (
+            <p className="text-[11px] text-amber-300 mt-1">Le correzioni non sono disponibili: {d.erroreCorrezioni}</p>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => q.refetch()} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border/50 text-[11px] hover:bg-muted/40" title="Rileggi">
             <RefreshCw className={`w-3.5 h-3.5 ${q.isFetching ? "animate-spin" : ""}`} /> Aggiorna
           </button>
-          <a href={`${getApiBase()}/api/siri/fermate/abbinamenti?formato=csv`} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border/50 text-[11px] hover:bg-muted/40" title="Scarica tutto in CSV">
-            <Download className="w-3.5 h-3.5" /> CSV
+          <a href={`${getApiBase()}/api/siri/fermate/abbinamenti?formato=csv`} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border/50 text-[11px] hover:bg-muted/40" title="Tutte le righe con lo stato">
+            <Download className="w-3.5 h-3.5" /> Stati (CSV)
+          </a>
+          <a href={`${getApiBase()}/api/siri/fermate/transcodifica?formato=csv`} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-primary/40 text-[11px] hover:bg-muted/40" title="La transcodifica con le correzioni, nello stesso formato del file dell'azienda">
+            <Download className="w-3.5 h-3.5" /> Transcodifica corretta (CSV)
           </a>
         </div>
       </div>
@@ -158,6 +345,8 @@ export default function FermateMizar() {
           <Contatore n={r.flussoNonTrascodificato} etichetta="viste nel flusso, non in tabella" colore="#f87171" fondo="rgba(248,113,113,0.12)"
             attivo={filtro === "flusso"} onClick={() => setFiltro(filtro === "flusso" ? null : "flusso")} />
         )}
+        <Contatore n={manuali} etichetta="corrette da qui" colore="#7dd3fc" fondo="rgba(125,211,252,0.10)" icona={Pencil}
+          attivo={filtro === "manuale"} onClick={() => setFiltro(filtro === "manuale" ? null : "manuale")} />
       </div>
 
       <div className="relative max-w-sm">
@@ -172,9 +361,24 @@ export default function FermateMizar() {
       </div>
 
       {filtro === "flusso" && d.flussoNonTrascodificato.length > 0 && (
-        <div className="rounded-lg border border-border/40 p-3 text-[11px]">
-          <div className="font-medium mb-1">Codici usati dal flusso SIRI nell'ultimo giro che la tabella non conosce</div>
-          <div className="font-mono text-muted-foreground break-words">{d.flussoNonTrascodificato.join("  ")}</div>
+        <div className="rounded-lg border border-border/40 p-3 text-[11px] space-y-2">
+          <div className="font-medium">Codici usati dal flusso SIRI nell'ultimo giro che la tabella non conosce</div>
+          <div className="flex flex-wrap gap-1.5">
+            {d.flussoNonTrascodificato.map(ref => (
+              <button key={ref} type="button" disabled={!puoCorreggere} onClick={() => setInModifica(`nuovo:${ref}`)}
+                className="font-mono px-2 py-0.5 rounded border border-border/40 hover:bg-muted/40 disabled:opacity-60" title={puoCorreggere ? "Abbina questa palina a una fermata del feed" : "Solo un amministratore può correggere"}>
+                {ref}
+              </button>
+            ))}
+          </div>
+          {inModifica?.startsWith("nuovo:") && (
+            <table className="w-full"><tbody>
+              <EditorAbbinamento
+                riga={{ mizarRef: inModifica.slice(6), nomeMizar: null, stopId: null, suggerimenti: [], fonte: "file", nota: null }}
+                onChiudi={() => setInModifica(null)}
+              />
+            </tbody></table>
+          )}
         </div>
       )}
 
@@ -195,6 +399,9 @@ export default function FermateMizar() {
           </table>
           {feedSenza.length > MOSTRA && <div className="px-2 py-1.5 text-[11px] text-muted-foreground">Mostrate {MOSTRA} su {feedSenza.length}: restringi con la ricerca o scarica il CSV.</div>}
           {feedSenza.length === 0 && <div className="px-2 py-3 text-[11px] text-muted-foreground">Nessuna fermata del feed senza codice.</div>}
+          <p className="px-2 py-1.5 text-[10px] text-muted-foreground">
+            Una fermata del feed senza codice Mizar non si può abbinare da qui: il codice lo assegna Mizar. Quando comparirà nel flusso SIRI, la troverai fra le «viste nel flusso, non in tabella».
+          </p>
         </div>
       ) : (
         <div className="rounded-lg border border-border/40 overflow-x-auto">
@@ -207,31 +414,51 @@ export default function FermateMizar() {
                 <th className="px-2 py-1.5 font-medium">stop_id feed</th>
                 <th className="px-2 py-1.5 font-medium">Nome nel feed</th>
                 <th className="px-2 py-1.5 font-medium">Note</th>
+                <th className="px-2 py-1.5 font-medium"></th>
               </tr>
             </thead>
             <tbody>
               {righe.slice(0, MOSTRA).map(x => {
                 const s = SEGNO[x.stato];
                 const Icona = s.icona;
+                const aperta = inModifica === x.mizarRef;
                 return (
-                  <tr key={`${x.mizarRef}|${x.stopId ?? ""}`} className="border-b border-border/20 align-top">
-                    <td className="px-2 py-1 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded" style={{ background: s.fondo, color: s.colore }} title={s.spiegazione}>
-                        <Icona className="w-3 h-3" /> {s.etichetta}
-                      </span>
-                    </td>
-                    <td className="px-2 py-1 font-mono">{x.mizarRef}</td>
-                    <td className="px-2 py-1">{x.nomeMizar ?? "—"}</td>
-                    <td className="px-2 py-1 font-mono">{x.stopId ?? "—"}</td>
-                    <td className="px-2 py-1">{x.nomeFeed ?? <span className="text-muted-foreground">—</span>}</td>
-                    <td className="px-2 py-1 text-muted-foreground">
-                      {[
-                        x.collisione ? `nel feed lo stop_id ${x.collisione}` : null,
-                        x.condivisaCon > 0 ? `stessa fermata di altre ${x.condivisaCon} paline` : null,
-                        x.vistaNelFlusso ? "vista nel flusso SIRI" : null,
-                      ].filter(Boolean).join(" · ")}
-                    </td>
-                  </tr>
+                  <React.Fragment key={`${x.mizarRef}|${x.stopId ?? ""}`}>
+                    <tr className={`border-b border-border/20 align-top ${aperta ? "bg-muted/20" : ""}`}>
+                      <td className="px-2 py-1 whitespace-nowrap">
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded" style={{ background: s.fondo, color: s.colore }} title={s.spiegazione}>
+                          <Icona className="w-3 h-3" /> {s.etichetta}
+                        </span>
+                        {x.fonte === "manuale" && (
+                          <span className="ml-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-sky-300 bg-sky-400/10" title={`corretta da ${x.utente ?? "un operatore"}${x.nota ? `: ${x.nota}` : ""}`}>
+                            <Pencil className="w-3 h-3" /> corretta
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-2 py-1 font-mono">{x.mizarRef}</td>
+                      <td className="px-2 py-1">{x.nomeMizar ?? "—"}</td>
+                      <td className="px-2 py-1 font-mono">{x.stopId ?? "—"}</td>
+                      <td className="px-2 py-1">{x.nomeFeed ?? <span className="text-muted-foreground">—</span>}</td>
+                      <td className="px-2 py-1 text-muted-foreground">
+                        {[
+                          x.nota ? `«${x.nota}»` : null,
+                          x.collisione ? `nel feed lo stop_id ${x.collisione}` : null,
+                          x.condivisaCon > 0 ? `stessa fermata di altre ${x.condivisaCon} paline` : null,
+                          x.vistaNelFlusso ? "vista nel flusso SIRI" : null,
+                          x.stato !== "abbinata" && x.suggerimenti.length > 0 ? `${x.suggerimenti.length} ${x.suggerimenti.length === 1 ? "suggerimento" : "suggerimenti"} per nome` : null,
+                        ].filter(Boolean).join(" · ")}
+                      </td>
+                      <td className="px-2 py-1 text-right whitespace-nowrap">
+                        {puoCorreggere && (
+                          <button type="button" onClick={() => setInModifica(aperta ? null : x.mizarRef)}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-border/40 hover:bg-muted/40" title="Correggi l'abbinamento">
+                            <Pencil className="w-3 h-3" /> {aperta ? "chiudi" : "correggi"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {aperta && <EditorAbbinamento riga={x} onChiudi={() => setInModifica(null)} />}
+                  </React.Fragment>
                 );
               })}
             </tbody>
@@ -242,7 +469,8 @@ export default function FermateMizar() {
       )}
 
       <p className="text-[10px] text-muted-foreground">
-        Tabella: {d.file ?? "—"} · feed {d.feed ?? "nessuno"}. {d.nota ?? ""}
+        Tabella: {d.file ?? "—"} · feed {d.feed ?? "nessuno"} · {d.correzioni} correzioni salvate. {d.nota ?? ""}
+        {!puoCorreggere && " Le correzioni sono riservate agli amministratori."}
       </p>
     </div>
   );
