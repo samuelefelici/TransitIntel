@@ -126,3 +126,27 @@ def test_il_giro_spostato_rigidamente_non_rompe_niente():
     assert probe.coincidences_broken({"in0": +20, "out0": +20}, by_id, pairs) == []
     # e uno spostamento che non tocca nessuna delle due non viene nemmeno guardato
     assert probe.coincidences_broken({"z1": +25}, by_id, pairs) == []
+
+
+
+def test_un_ritorno_che_parte_prima_dell_arrivo_dell_andata_non_si_propone():
+    """Regola dell'operatore: al capolinea esterno il ritorno riparte sempre
+    dopo l'arrivo dell'andata, per dare la continuazione alla macchina."""
+    trips = _giro()                       # andata arriva 570, ritorno parte 576
+    by_id = {t["tripId"]: t for t in trips}
+    pairs = probe.build_round_trip_pairs(trips)
+
+    # il solo ritorno anticipato di 10': partirebbe alle 566, l'andata arriva alle 570
+    rotti = probe.round_trip_order_broken({"r": -10}, by_id, pairs)
+    assert len(rotti) == 1 and rotti[0]["ritorno"] == "r" and rotti[0]["partenzaRitorno"] == "09:26"
+
+    # la sola andata ritardata di 10': arriva alle 580, il ritorno parte alle 576
+    assert len(probe.round_trip_order_broken({"a": +10}, by_id, pairs)) == 1
+
+    # il giro rigido (tutte e due dello stesso delta) e' sempre in regola
+    assert probe.round_trip_order_broken({"a": +10, "r": +10}, by_id, pairs) == []
+    assert probe.round_trip_order_broken({"a": -25, "r": -25}, by_id, pairs) == []
+    # il ritorno ritardato da solo allunga la sosta ma la macchina c'e'
+    assert probe.round_trip_order_broken({"r": +10}, by_id, pairs) == []
+    # uno spostamento che non tocca il giro non viene nemmeno guardato
+    assert probe.round_trip_order_broken({"x": -30}, by_id, pairs) == []

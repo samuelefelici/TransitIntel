@@ -674,6 +674,16 @@ Prima lettura sul feed GIUSTO (`feedSource: udp`, 365 corse, sincronizzato dal l
 
 **Perche' la sonda non arriva a questi candidati**: in AV le sei sonde sono state consumate dai candidati guidati dai turni e dalle fusioni di blocchi, che vengono prima in coda; ai candidati di linea ne sono arrivate due. Lanciato **AX** (`1f51ec44`) con **dieci sonde**, stessi altri parametri di AU/AV, perche' la coda arrivi fino ai candidati di linea (7 −11, 2/6 −8, 42 +9, oltre a C.S. +14 e 21/33 −2). Pazienza ancora 2: la manopola aspetta il catalogo.
 
+## Cavour prima di Posatora: la decisione dell'operatore e cosa ne discende
+
+«Piazza Cavour e' la piazza principale del capoluogo di provincia, Posatora e' un colle del comune.» La mossa grossa — la 3 anticipata di 14′ — si persegue; Posatora si tiene solo se la 31 si lascia trascinare.
+
+**Flessibilita' alzata a 15′ su 3, 2/6 e 1/4** (`ti_set_flex`, col si' esplicito; erano a 10′). Verificato rileggendo la mappa: `flexDichiarataMin: 15` sulle tre, e la 3 a −14 e' ora `dentroLaFlessibilita: true`. Nessuna corsa si e' spostata: la flessibilita' dice solo entro quale finestra la sonda puo' PROPORRE.
+
+**La regola della macchina, resa esplicita.** Condizione posta dall'operatore insieme al si': «quando arriva al capolinea esterno riparta sempre dopo l'arrivo, per dare la continuazione alla macchina». Il giro rigido la garantiva solo quando andata e ritorno erano riconosciuti come coppia (sosta entro 30′); `round_trip_order_broken` la garantisce SEMPRE — un ritorno che partirebbe prima dell'arrivo della sua andata non si propone a nessun prezzo, ne' come candidato ne' dopo la propagazione (`rejectedForRoundTrip` nel rendiconto). Un ritorno senza la sua macchina il VSP l'avrebbe coperto con un bus a vuoto senza dirlo. L'orientamento della coppia si decide dall'orario originale: e' il ritorno chi parte dopo l'arrivo dell'altro — la mappa delle coppie e' simmetrica e la prima versione, nel verso rovesciato, confrontava l'arrivo del ritorno con la partenza dell'andata dello stesso giro.
+
+**La propagazione trascina la linea intera** quando il candidato e' una linea (`line_mode`): il tetto in corse (12) faceva morire subito qualunque trascinamento di linea — la sola 3 ha 54 corse — e in AV e' successo ogni volta. Ora il mattone trascinato e' la linea intera del partner, cadenza intatta, il tetto si conta in linee (3), e si fa un trascinamento per passo ricalcolando cosa e' ancora rotto: le rotture calcolate prima potevano riguardare corse appena sistemate, e leggerle come conflitto era falso.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.

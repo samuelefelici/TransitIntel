@@ -235,6 +235,49 @@ def coincidences_broken(shifts: dict[str, int], trips_by_id: dict[str, dict],
     return rotte
 
 
+def round_trip_order_broken(shifts: dict[str, int], trips_by_id: dict[str, dict],
+                            rt_pairs: dict[str, str]) -> list[dict]:
+    """I ritorni che, dopo lo spostamento, partirebbero PRIMA che l'andata arrivi.
+
+    Regola dell'operatore: al capolinea esterno il ritorno riparte sempre dopo
+    l'arrivo dell'andata, per dare la continuazione alla macchina. Il giro
+    rigido la garantisce quando andata e ritorno sono riconosciuti come coppia
+    e slittano insieme; questo controllo la garantisce SEMPRE — anche quando
+    un candidato tocca una sola delle due — perche' un ritorno senza la sua
+    macchina il VSP lo coprirebbe con un bus a vuoto, senza dirlo.
+    """
+    rotti: list[dict] = []
+    visti: set[tuple[str, str]] = set()
+    for a, r in rt_pairs.items():
+        ta, tr = trips_by_id.get(a), trips_by_id.get(r)
+        if not ta or not tr or (a, r) in visti:
+            continue
+        # la mappa e' simmetrica: (a, r) e' l'andata e il suo ritorno solo se
+        # r parte dal capolinea dove a arriva
+        stesso_capolinea = (
+            (ta.get("lastStopId") and ta.get("lastStopId") == tr.get("firstStopId"))
+            or (_node_key(ta.get("lastStopName") or "") and
+                _node_key(ta.get("lastStopName") or "") == _node_key(tr.get("firstStopName") or ""))
+        )
+        if not stesso_capolinea:
+            continue
+        # la mappa e' simmetrica e la stessa coppia arriva anche rovesciata:
+        # l'orientamento lo decide l'orario ORIGINALE — e' il ritorno chi parte
+        # dopo l'arrivo dell'altro, non chi parte prima
+        if int(tr["departureMin"]) < int(ta["arrivalMin"]):
+            continue
+        visti.add((a, r))
+        if not shifts.get(a) and not shifts.get(r):
+            continue
+        arrivo = int(ta["arrivalMin"]) + shifts.get(a, 0)
+        partenza = int(tr["departureMin"]) + shifts.get(r, 0)
+        if partenza < arrivo:
+            rotti.append({"andata": a, "ritorno": r, "routeName": ta.get("routeName"),
+                          "arrivoAndata": min_to_time(arrivo), "partenzaRitorno": min_to_time(partenza),
+                          "capolinea": ta.get("lastStopName")})
+    return rotti
+
+
 def expand_to_round_trips(shifts: dict[str, int], pairs: dict[str, str]) -> dict[str, int]:
     """Lo spostamento si applica al GIRO: se una corsa ha il suo ritorno
     accoppiato, anche quello slitta dello STESSO delta, cosi' la sosta al
@@ -844,7 +887,7 @@ def run_probe_phase(
         "crewScope": crew_scope,
         "coincidences": [{k: v for k, v in c.items() if k != "pairs"} for c in coincidenze],
         "rejectedForCoincidence": 0, "propagatedForCoincidence": 0,
-        "propagationFailures": {},
+        "propagationFailures": {}, "rejectedForRoundTrip": 0,
     }
     result = {"vsp": best_vsp, "crew": best_crew, "kpi": best_kpi, "probe": section}
     if flex_trips == 0:
@@ -893,6 +936,22 @@ def run_probe_phase(
                     if frozenset(c["shifts"].items()) not in tried])
         # Scartare qui costa nulla; scoprirlo dopo il re-solve costa un minuto
         # di solver per un candidato che l'operatore rifiuterebbe comunque.
+        # Prima la macchina: un ritorno che parte prima dell'arrivo dell'andata
+        # non si propone, a nessun prezzo.
+        tenuti = []
+        for c in cands:
+            senza_macchina = round_trip_order_broken(c["shifts"], trips_by_id, rt_pairs)
+            if senza_macchina:
+                section["rejectedForRoundTrip"] += 1
+                if len(section["rejected"]) < 20:
+                    section["rejected"].append({
+                        "kind": c["kind"], "deltaNeeded": c["deltaNeeded"],
+                        "why": "il ritorno partirebbe prima dell'arrivo dell'andata",
+                        "giri": senza_macchina[:3],
+                    })
+                continue
+            tenuti.append(c)
+        cands = tenuti
         if coinc_pairs:
             tenuti = []
             for c in cands:
@@ -915,6 +974,9 @@ def run_probe_phase(
                             })
                         continue
                     if frozenset(allargato.items()) in tried:
+                        continue
+                    if round_trip_order_broken(allargato, trips_by_id, rt_pairs):
+                        section["rejectedForRoundTrip"] += 1
                         continue
                     section["propagatedForCoincidence"] += 1
                     c = {**c, "shifts": allargato,
