@@ -125,6 +125,7 @@ Proposte non ancora approvate: 3R 20:47 (la 3A 20:20 arriva alle 20:42); 30A 21:
 3. Una sola lettura per giro, con la sezione `kpi`; `crew` solo se richiesto.
 4. Correzioni del quadro in un unico lotto con `ti_apply_plan_fixes`.
 5. Nuova sessione per ogni nuovo filone di lavoro, partendo da questa nota.
+- **Niente sorveglianza dei giri.** Un giro dura 30-40 minuti; ogni controllo periodico (timer, polling) rilegge tutta la conversazione e costa quanto un turno intero. Regola dell'operatore (14 settembre): «l'AI deve essere di supporto e controllo, unione di tutto; la vera ottimizzazione la fa l'algoritmo». Quindi: il giro si lancia (dalla fucina o su richiesta) e il turno si chiude; il rendiconto si legge quando l'operatore dice che e' finito, prima con `section=kpi` e `ti_vcsp_compare`, la sezione `probe` solo se serve.
 
 ## La catena completa del problema «autovetture» (diagnosi chiusa)
 
