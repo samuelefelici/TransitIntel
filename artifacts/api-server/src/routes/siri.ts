@@ -40,7 +40,7 @@ import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
 import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
-import { parseStopMonitoringResponse, confrontaFermata, type RigaOrario } from "../lib/siri-fermata";
+import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
 
 const router: IRouter = Router();
 
@@ -830,12 +830,53 @@ router.get("/siri/fermata/:ref", async (req, res): Promise<void> => {
     }
 
     const confronto = confrontaFermata(ref, sm.visite, index, orari);
+
+    /* I numeri che non si trovano: stanno altrove nel trip_id, o le corse
+     * non ci sono? Due letture sul feed, solo se serve. */
+    let diagnosi: DiagnosiCorse | null = null;
+    const mancanti = confronto.riepilogo.corseNonTrovate.filter(c => /^[0-9A-Za-z]+$/.test(c));
+    if (mancanti.length) {
+      const trovateAltrove: DiagnosiCorse["trovateAltrove"] = {};
+      const re = `(^|[^0-9])(${mancanti.join("|")})([^0-9]|$)`;
+      const alt = await db.execute<any>(sql`
+        SELECT trip_id FROM gtfs_trips
+         WHERE feed_id = ${index.feedId}::uuid AND trip_id ~ ${re}
+         LIMIT 500`);
+      for (const x of ((alt as any).rows ?? [])) {
+        const t = String(x.trip_id);
+        for (const c of mancanti) {
+          if (new RegExp(`(^|[^0-9])${c}([^0-9]|$)`).test(t)) (trovateAltrove[c] ??= []).push(t);
+        }
+      }
+      const lineeMizar = [...new Set(sm.visite.map(v => v.lineRef?.trim()).filter((x): x is string => !!x))];
+      const lineeNelFeed: DiagnosiCorse["lineeNelFeed"] = {};
+      if (lineeMizar.length) {
+        const cnt = await db.execute<any>(sql`
+          SELECT r.route_id, r.route_short_name, COUNT(t.trip_id)::int AS corse
+            FROM gtfs_routes r
+            LEFT JOIN gtfs_trips t ON t.feed_id = r.feed_id AND t.route_id = r.route_id
+           WHERE r.feed_id = ${index.feedId}::uuid
+             AND (UPPER(r.route_short_name) = ANY(${`{${lineeMizar.map(l => '"' + l.toUpperCase() + '"').join(",")}}`}::text[])
+                  OR UPPER(r.route_id) = ANY(${`{${lineeMizar.map(l => '"' + l.toUpperCase() + '"').join(",")}}`}::text[]))
+           GROUP BY r.route_id, r.route_short_name`);
+        for (const l of lineeMizar) lineeNelFeed[l] = null;
+        for (const x of ((cnt as any).rows ?? [])) {
+          const l = lineeMizar.find(k => k.toUpperCase() === String(x.route_short_name ?? "").toUpperCase()
+            || k.toUpperCase() === String(x.route_id).toUpperCase());
+          if (l) lineeNelFeed[l] = { routeId: String(x.route_id), corse: Number(x.corse) || 0 };
+        }
+      }
+      diagnosi = { trovateAltrove, lineeNelFeed };
+    }
+
     res.json({
       configured: true,
       endpoint: smUrl,
       feed: index.feedId,
       finestra: { ore, max, validUntil: sm.validUntil, cicloMinimoSec: sm.shortestPossibleCycleSec },
       ...confronto,
+      lettura: [...confronto.lettura, ...(diagnosi ? leggiDiagnosi(diagnosi, confronto.riepilogo.corseNonTrovate) : [])],
+      diagnosi,
       nota: "Scarti in secondi, Mizar meno feed: positivo = Mizar più tardi. ?grezzo=1 per la risposta SOAP intera.",
     });
   } catch (e: any) {

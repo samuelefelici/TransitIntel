@@ -175,7 +175,7 @@ export interface ConfrontoVisita {
   /** come le chiama il feed, quando l'aggancio riesce */
   gtfs: {
     tripId: string | null; routeId: string | null; stopId: string | null;
-    fermataAgganciataCome: "id" | "name" | null;
+    fermataAgganciataCome: "id" | "code" | "name" | null;
     /** l'orario alla fermata, nell'occorrenza più vicina a quella di Mizar */
     orarioAllaFermata: string | null; progressivo: number | null;
     partenza: string | null;
@@ -195,7 +195,7 @@ export interface ConfrontoVisita {
 export interface ConfrontoFermata {
   fermata: {
     ref: string; nomeMizar: string | null;
-    stopId: string | null; nomeFeed: string | null; agganciataCome: "id" | "name" | null; conflitto: string | null;
+    stopId: string | null; nomeFeed: string | null; agganciataCome: "id" | "code" | "name" | null; conflitto: string | null;
   };
   visite: ConfrontoVisita[];
   riepilogo: {
@@ -325,21 +325,55 @@ export function confrontaFermata(
     },
     visite: confronti,
     riepilogo,
-    lettura: leggiConfronto(riepilogo, { ref, stopId, nomeMizar, nomeFeed: stopId ? (index.stopNames.get(stopId) ?? null) : null }),
+    lettura: leggiConfronto(riepilogo, { ref, stopId, nomeMizar, nomeFeed: stopId ? (index.stopNames.get(stopId) ?? null) : null, come: fermata.how }),
   };
+}
+
+/* ── Quando i numeri di corsa non si trovano: dove sono finiti? ──────────
+ * "0 corse su 22 nel feed" ha due spiegazioni opposte — il numero sta nel
+ * trip_id ma in un'altra posizione, oppure quelle corse nel feed non ci
+ * sono proprio — e si distinguono solo guardando il feed. La rotta fa le
+ * due letture; qui si scrive la conclusione. */
+
+export interface DiagnosiCorse {
+  /** numero di Mizar → trip_id del feed che lo contengono in QUALUNQUE posizione */
+  trovateAltrove: Record<string, string[]>;
+  /** linea di Mizar → quante corse ha nel feed (null: linea non nel feed) */
+  lineeNelFeed: Record<string, { routeId: string; corse: number } | null>;
+}
+
+export function leggiDiagnosi(d: DiagnosiCorse, nonTrovate: string[]): string[] {
+  if (!nonTrovate.length) return [];
+  const out: string[] = [];
+  const altrove = nonTrovate.filter(c => (d.trovateAltrove[c] ?? []).length > 0);
+  if (altrove.length) {
+    const es = d.trovateAltrove[altrove[0]][0];
+    out.push(`${altrove.length} dei ${nonTrovate.length} numeri mancanti stanno nel feed ma NON in coda al trip_id (es. ${altrove[0]} in ${es}): la regola «ultimo segmento» non basta per queste corse.`);
+  }
+  const assenti = nonTrovate.filter(c => !(d.trovateAltrove[c] ?? []).length);
+  if (assenti.length) {
+    const linee = Object.entries(d.lineeNelFeed);
+    const senzaLinea = linee.filter(([, v]) => v == null).map(([k]) => k);
+    const conLinea = linee.filter(([, v]) => v != null).map(([k, v]) => `${k} (${v!.corse} corse)`);
+    if (senzaLinea.length) out.push(`Le linee ${senzaLinea.join(", ")} nel feed non esistono: le loro corse non sono nell'esportazione.`);
+    if (conLinea.length) out.push(`Le linee ${conLinea.join(", ")} nel feed ci sono, ma ${assenti.length} numeri di corsa non compaiono in nessun trip_id: l'orario di Mizar e il feed non sono la stessa versione per queste corse.`);
+    if (!linee.length) out.push(`${assenti.length} numeri non compaiono in nessun trip_id del feed.`);
+  }
+  return out;
 }
 
 /** La conclusione in parole: che cosa combacia e che cosa no. */
 export function leggiConfronto(
   r: ConfrontoFermata["riepilogo"],
-  f: { ref: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null },
+  f: { ref: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null; come?: "id" | "code" | "name" | null },
 ): string[] {
   const out: string[] = [];
   if (!r.visite) { out.push(`Mizar non dà passaggi per la fermata ${f.ref} nell'intervallo chiesto.`); return out; }
   if (!f.stopId) {
     out.push(`La fermata ${f.ref} («${f.nomeMizar ?? "?"}») non esiste nel feed né per codice né per nome: i codici fermata di Mizar e del GTFS non sono gli stessi.`);
   } else {
-    out.push(`Fermata ${f.ref}: Mizar la chiama «${f.nomeMizar ?? "?"}», il feed «${f.nomeFeed ?? "?"}» (stop_id ${f.stopId}).`);
+    const come = f.come === "id" ? "stesso stop_id" : f.come === "code" ? `stop_code ${f.ref}` : "solo per nome: il codice di Mizar non è né stop_id né stop_code del feed";
+    out.push(`Fermata ${f.ref}: Mizar la chiama «${f.nomeMizar ?? "?"}», il feed «${f.nomeFeed ?? "?"}» (stop_id ${f.stopId}, agganciata per ${come}).`);
   }
   if (r.corseNelFeed === r.visite) {
     out.push(`Tutte le ${r.visite} corse hanno il loro trip_id nel feed: il numero di corsa di Mizar è la chiave giusta.`);
