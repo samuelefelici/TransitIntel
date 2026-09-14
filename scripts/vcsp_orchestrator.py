@@ -287,6 +287,30 @@ SUPPLEMENT_SHADOW_EUR = 100.0
 EARLY_STOP_PATIENCE = 2
 
 
+# Chiave di configurazione → costante che sovrascrive. E' la strada con cui
+# l'operatore mette il SUO valore del mezzo o del supplemento senza toccare il
+# codice: se non funziona, gli 80 euro restano una stima dell'agente per sempre.
+SHADOW_CONFIG_KEYS = {
+    "dutyShadowEur": "DUTY_SHADOW_EUR",
+    "violationShadowEur": "VIOLATION_SHADOW_EUR",
+    "vehicleShadowEur": "VEHICLE_SHADOW_EUR",
+    "supplementShadowEur": "SUPPLEMENT_SHADOW_EUR",
+}
+
+
+def apply_shadow_overrides(vcsp_cfg: dict) -> dict[str, float]:
+    """Applica le ombre dalla configurazione del giro e ritorna i valori in
+    vigore. Un valore non numerico si ignora, uno negativo vale zero."""
+    for chiave, nome in SHADOW_CONFIG_KEYS.items():
+        if chiave not in (vcsp_cfg or {}):
+            continue
+        try:
+            globals()[nome] = max(0.0, float(vcsp_cfg[chiave]))
+        except (ValueError, TypeError):
+            pass
+    return {nome: float(globals()[nome]) for nome in SHADOW_CONFIG_KEYS.values()}
+
+
 def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
     vm = vsp_out.get("metrics", {}) or {}
     cs = crew_out.get("summary", {}) or {}
@@ -384,15 +408,9 @@ def main() -> None:
         crew_shift_scope = "trip"
 
     # Costi-ombra della selezione (vedi commento su DUTY_SHADOW_EUR)
-    global DUTY_SHADOW_EUR, VIOLATION_SHADOW_EUR, VEHICLE_SHADOW_EUR, SUPPLEMENT_SHADOW_EUR
-    for chiave, nome in (("dutyShadowEur", "DUTY_SHADOW_EUR"),
-                         ("violationShadowEur", "VIOLATION_SHADOW_EUR"),
-                         ("vehicleShadowEur", "VEHICLE_SHADOW_EUR"),
-                         ("supplementShadowEur", "SUPPLEMENT_SHADOW_EUR")):
-        try:
-            globals()[nome] = max(0.0, float(vcsp_cfg.get(chiave, globals()[nome])))
-        except (ValueError, TypeError):
-            pass
+    ombre = apply_shadow_overrides(vcsp_cfg)
+    if any(k in vcsp_cfg for k in SHADOW_CONFIG_KEYS):
+        log("[VCSP] ombre da configurazione: " + ", ".join(f"{k}=€{v:g}" for k, v in ombre.items()))
 
     log(f"=== VCSP Orchestrator === rounds≤{rounds}, crewTimeLimit={crew_tl}s, "
         f"probes={probes} (scope {crew_shift_scope}, disturbo €{shift_penalty_eur}/corsa·min), "
