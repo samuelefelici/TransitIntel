@@ -41,7 +41,11 @@ import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
 import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, leggiFermataFeed, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
-import { caricaTranscodifica, verificaTranscodifica, classificaAbbinamenti } from "../lib/stop-aliases";
+import { transcodificaEffettiva, verificaTranscodifica, classificaAbbinamenti, suggerimentiPerNome } from "../lib/stop-aliases";
+import { salvaOverride, rimuoviOverride, erroreOverrides } from "../lib/stop-alias-overrides";
+import { deduciFermata } from "../lib/stop-deduction";
+import { fermataVuota } from "../lib/siri-fermata";
+import { requireAdmin } from "../lib/auth";
 import { aggiornaPrevisioni, esitoPrevisioni, type EsitoPrevisioni } from "../lib/siri-sm-ingest";
 import { namesCompatible } from "../lib/siri-vm";
 
@@ -778,13 +782,31 @@ router.get("/siri/sonda", async (req, res): Promise<void> => {
  *   GET /api/siri/fermate/transcodifica?ricarica=1   — rilegge il file
  */
 router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
-  const t = caricaTranscodifica(req.query.ricarica === "1");
-  const index = await loadGtfsIndex(req.query.ricarica === "1").catch(() => null);
+  const ricarica = req.query.ricarica === "1";
+  const t = await transcodificaEffettiva(ricarica);
+  const index = await loadGtfsIndex(ricarica).catch(() => null);
+
+  /* La tabella effettiva nello stesso formato del file dell'azienda, più la
+   * colonna che dice da dove viene ogni riga: è il file da rimandare a chi
+   * tiene la transcodifica, con le correzioni fatte da qui. */
+  if (String(req.query.formato ?? "") === "csv") {
+    const q = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const righe = [
+      ...t.righe.map(r => [r.mizarRef, r.stopId, r.nome, r.fonte ?? "file", r.nota, r.utente].map(q).join(",")),
+      ...t.scartate.map(s => [s.mizarRef, s.stopIdGrezzo || "", s.nome, s.fonte ?? "file", s.nota, s.utente].map(q).join(",")),
+    ];
+    res.type("text/csv; charset=utf-8")
+      .setHeader("Content-Disposition", `attachment; filename="transcodifica-paline-mizar-${new Date().toISOString().slice(0, 10)}.csv"`)
+      .send("﻿" + ["mizar_ref,stop_id,nome,fonte,nota,utente", ...righe].join("\r\n"));
+    return;
+  }
+
   const verifica = index ? verificaTranscodifica(t.righe, index.stops) : null;
   res.json({
     file: t.percorso,
     errore: t.errore,
     righe: t.righe.length,
+    correzioni: t.correzioni,
     feed: index?.feedId ?? null,
     verifica: verifica && {
       ...verifica,
@@ -817,7 +839,7 @@ router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
  *   GET /api/siri/fermate/abbinamenti?formato=csv
  */
 router.get("/siri/fermate/abbinamenti", async (req, res): Promise<void> => {
-  const t = caricaTranscodifica();
+  const t = await transcodificaEffettiva();
   const index = await loadGtfsIndex().catch(() => null);
   const feed = index
     ? { stops: index.stops, stopNames: index.stopNames }
@@ -828,22 +850,148 @@ router.get("/siri/fermate/abbinamenti", async (req, res): Promise<void> => {
   const a = classificaAbbinamenti(t.righe, t.scartate, feed, flusso, namesCompatible);
 
   if (String(req.query.formato ?? "") === "csv") {
-    const testata = ["codice_mizar", "stop_id_feed", "nome_mizar", "nome_feed", "stato", "collisione", "condivisa_con", "vista_nel_flusso"];
+    const testata = ["codice_mizar", "stop_id_feed", "nome_mizar", "nome_feed", "stato", "fonte", "nota", "collisione", "condivisa_con", "vista_nel_flusso"];
     const q = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-    const righe = a.righe.map(r => [r.mizarRef, r.stopId, r.nomeMizar, r.nomeFeed, r.stato, r.collisione, r.condivisaCon, r.vistaNelFlusso ? "sì" : ""].map(q).join(","));
-    const senza = a.feedSenzaCodice.map(f => ["", f.stopId, "", f.nome, "feed_senza_codice", "", 0, ""].map(q).join(","));
+    const righe = a.righe.map(r => [r.mizarRef, r.stopId, r.nomeMizar, r.nomeFeed, r.stato, r.fonte, r.nota, r.collisione, r.condivisaCon, r.vistaNelFlusso ? "sì" : ""].map(q).join(","));
+    const senza = a.feedSenzaCodice.map(f => ["", f.stopId, "", f.nome, "feed_senza_codice", "", "", "", 0, ""].map(q).join(","));
     res.type("text/csv; charset=utf-8")
       .setHeader("Content-Disposition", `attachment; filename="paline-mizar-${new Date().toISOString().slice(0, 10)}.csv"`)
       .send("﻿" + [testata.join(","), ...righe, ...senza].join("\r\n"));
     return;
   }
 
+  /* I suggerimenti per nome sulle righe da guardare: un aiuto, non una
+   * decisione. Quelli dai dati si chiedono a parte, perché costano una
+   * richiesta a Mizar per fermata. */
+  const righe = a.righe.map(r => ({
+    ...r,
+    suggerimenti: r.stato === "abbinata" ? [] : suggerimentiPerNome(r.nomeMizar, feed, r.stopId),
+  }));
+
   res.json({
     file: t.percorso, errore: t.errore, feed: index?.feedId ?? null,
+    correzioni: t.correzioni,
+    erroreCorrezioni: erroreOverrides(),
+    puoCorreggere: req.user?.role === "admin",
     ultimoGiro: ultimoGiro ? { alle: ultimoGiro.at, ...ultimoGiro.fermate } : null,
     ...a,
+    righe,
     nota: index ? undefined : "nessun feed GTFS caricato: gli stati sono calcolati senza feed",
   });
+});
+
+/* ── Cercare una fermata del feed, per abbinarla a mano ──────────────────
+ *   GET /api/siri/fermate/cerca?q=cavour   — per stop_id, stop_code o nome */
+router.get("/siri/fermate/cerca", async (req, res): Promise<void> => {
+  const q = String(req.query.q ?? "").trim();
+  if (q.length < 2) { res.json({ fermate: [] }); return; }
+  const feedId = process.env.GTFS_FEED_ID || (await getLatestFeedId());
+  if (!feedId) { res.json({ fermate: [], nota: "nessun feed GTFS caricato" }); return; }
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT stop_id, stop_code, stop_name, stop_lat, stop_lon
+        FROM gtfs_stops
+       WHERE feed_id = ${feedId}::uuid
+         AND (stop_id = ${q} OR stop_code = ${q} OR stop_name ILIKE ${"%" + q + "%"})
+       ORDER BY (stop_id = ${q}) DESC, (stop_code = ${q}) DESC, stop_name
+       LIMIT 20`);
+    res.json({
+      fermate: ((r as any).rows ?? []).map((x: any) => ({
+        stopId: String(x.stop_id), stopCode: x.stop_code ?? null, nome: x.stop_name ?? null,
+        lat: x.stop_lat != null ? Number(x.stop_lat) : null, lon: x.stop_lon != null ? Number(x.stop_lon) : null,
+      })),
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? "ricerca fallita" });
+  }
+});
+
+/* ── Dedurre la fermata dai dati di Mizar ─────────────────────────────────
+ * Per una palina: si chiede lo StopMonitoring, si agganciano le corse al
+ * feed per numero e si cerca in ognuna la fermata con lo stesso orario. Il
+ * candidato che raccoglie le prove è la fermata, senza guardare nessun nome.
+ *
+ *   POST /api/siri/fermate/suggerisci/1122   — sola lettura verso Mizar */
+router.post("/siri/fermate/suggerisci/:ref", async (req, res): Promise<void> => {
+  const cfg = siriConfig();
+  if (!cfg) { res.json(NOT_CONFIGURED); return; }
+  const ref = String(req.params.ref ?? "").trim();
+  if (!ref) { res.status(400).json({ error: "codice palina mancante" }); return; }
+  const smUrl = process.env.SIRI_SM_URL || endpointGemelli(cfg.url).find(g => g.servizio === "StopMonitoring")?.url;
+  if (!smUrl) { res.status(400).json({ error: "indirizzo dello StopMonitoring sconosciuto (SIRI_SM_URL)" }); return; }
+  try {
+    const r = await postSoap({ ...cfg, url: smUrl }, "GetStopMonitoring", buildStopMonitoringRequest(cfg.requestorRef, ref, "PT3H", 80));
+    const sm = parseStopMonitoringResponse(r.xml);
+    if (sm.failed && !fermataVuota(sm.errorText)) {
+      res.status(502).json({ error: sm.errorText ?? `HTTP ${r.status}` });
+      return;
+    }
+    const index = await loadGtfsIndex();
+    if (!index) { res.json({ passaggi: sm.visite.length, deduzione: null, nota: "nessun feed GTFS caricato" }); return; }
+    const tripIds = [...new Set(sm.visite
+      .map(v => v.courseOfJourneyRef && index.tripByCode?.get(v.courseOfJourneyRef.trim()))
+      .filter((t): t is string => !!t))];
+    const orari = new Map<string, RigaOrario[]>();
+    if (tripIds.length) {
+      const rows = await db.execute<any>(sql`
+        SELECT trip_id, stop_id, stop_sequence, COALESCE(departure_time, arrival_time) AS t
+          FROM gtfs_stop_times
+         WHERE feed_id = ${index.feedId}::uuid
+           AND trip_id = ANY(${`{${tripIds.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`}::text[])
+         ORDER BY trip_id, stop_sequence`);
+      for (const x of ((rows as any).rows ?? [])) {
+        const t = String(x.trip_id);
+        const arr = orari.get(t) ?? [];
+        arr.push({ stopId: String(x.stop_id), seq: Number(x.stop_sequence ?? 0), scheduled: String(x.t ?? "") });
+        orari.set(t, arr);
+      }
+    }
+    const d = deduciFermata(sm.visite, index.tripByCode, orari, index.timeZone);
+    res.json({
+      ref, passaggi: sm.visite.length, corseAgganciate: tripIds.length,
+      deduzione: {
+        ...d,
+        candidati: d.candidati.map(c => ({ ...c, nome: index.stopNames.get(c.stopId) ?? null })),
+      },
+    });
+  } catch (e: any) {
+    res.status(502).json({ error: e?.message ?? "richiesta fallita" });
+  }
+});
+
+/* ── Correggere un abbinamento ────────────────────────────────────────────
+ * Solo amministratori. stopId null = «questa palina non ha una fermata nel
+ * feed». Dopo la scrittura l'indice del feed si ricarica: l'ingestione e il
+ * ciclo StopMonitoring usano la correzione dal giro successivo.
+ *
+ *   PUT    /api/siri/fermate/abbinamenti/1122   { stopId, nome?, nota? }
+ *   DELETE /api/siri/fermate/abbinamenti/1122   — torna alla riga del file */
+router.put("/siri/fermate/abbinamenti/:ref", requireAdmin, async (req, res): Promise<void> => {
+  const ref = String(req.params.ref ?? "").trim();
+  if (!ref) { res.status(400).json({ error: "codice palina mancante" }); return; }
+  const stopId = req.body?.stopId == null || String(req.body.stopId).trim() === "" ? null : String(req.body.stopId).trim();
+  const nota = req.body?.nota != null ? String(req.body.nota).trim().slice(0, 500) || null : null;
+  const nome = req.body?.nome != null ? String(req.body.nome).trim().slice(0, 200) || null : null;
+  if (stopId) {
+    const index = await loadGtfsIndex().catch(() => null);
+    if (index && !index.stops.has(stopId)) {
+      res.status(400).json({ error: `lo stop_id ${stopId} non esiste nel feed in uso` });
+      return;
+    }
+  }
+  const ok = await salvaOverride({ mizarRef: ref, stopId, nome, nota, utente: req.user?.email ?? null });
+  if (!ok) { res.status(500).json({ error: erroreOverrides() ?? "correzione non salvata" }); return; }
+  await loadGtfsIndex(true).catch(() => null);
+  res.json({ ok: true, mizarRef: ref, stopId, nota, utente: req.user?.email ?? null });
+});
+
+router.delete("/siri/fermate/abbinamenti/:ref", requireAdmin, async (req, res): Promise<void> => {
+  const ref = String(req.params.ref ?? "").trim();
+  if (!ref) { res.status(400).json({ error: "codice palina mancante" }); return; }
+  const ok = await rimuoviOverride(ref);
+  if (!ok) { res.status(500).json({ error: erroreOverrides() ?? "correzione non rimossa" }); return; }
+  await loadGtfsIndex(true).catch(() => null);
+  res.json({ ok: true, mizarRef: ref });
 });
 
 /* ── Una fermata vista da Mizar, a confronto con il feed ─────────────────

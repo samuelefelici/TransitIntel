@@ -27,11 +27,49 @@ export interface RigaTranscodifica {
   mizarRef: string;
   stopId: string;
   nome: string | null;
+  /** da dove viene la riga: il file dell'azienda o una correzione dell'operatore */
+  fonte?: "file" | "manuale";
+  nota?: string | null;
+  utente?: string | null;
 }
 
 /** Una palina del file senza un codice del feed ("new_CT"): esiste per
  *  Mizar, non ancora per l'esportazione. */
-export interface RigaScartata { mizarRef: string; nome: string | null; stopIdGrezzo: string }
+export interface RigaScartata { mizarRef: string; nome: string | null; stopIdGrezzo: string; fonte?: "file" | "manuale"; nota?: string | null; utente?: string | null }
+
+/**
+ * La tabella effettiva: il file più le correzioni dell'operatore. Una
+ * correzione sostituisce la riga del file con lo stesso codice, o ne aggiunge
+ * una nuova; una correzione con stop_id vuoto toglie l'abbinamento e sposta
+ * la palina fra quelle «senza fermata». Pura: si collauda senza database.
+ */
+export function applicaOverrides(
+  valide: RigaTranscodifica[], scartate: RigaScartata[],
+  overrides: Array<{ mizarRef: string; stopId: string | null; nome: string | null; nota: string | null; utente: string | null }>,
+): { valide: RigaTranscodifica[]; scartate: RigaScartata[] } {
+  if (!overrides.length) return { valide, scartate };
+  const per = new Map(overrides.map(o => [o.mizarRef, o]));
+  const outValide: RigaTranscodifica[] = [];
+  const outScartate: RigaScartata[] = [];
+  const viste = new Set<string>();
+  const applica = (mizarRef: string, nomeFile: string | null) => {
+    const o = per.get(mizarRef)!;
+    viste.add(mizarRef);
+    if (o.stopId) outValide.push({ mizarRef, stopId: o.stopId, nome: o.nome ?? nomeFile, fonte: "manuale", nota: o.nota, utente: o.utente });
+    else outScartate.push({ mizarRef, nome: o.nome ?? nomeFile, stopIdGrezzo: "", fonte: "manuale", nota: o.nota, utente: o.utente });
+  };
+  for (const r of valide) {
+    if (per.has(r.mizarRef)) applica(r.mizarRef, r.nome);
+    else outValide.push({ ...r, fonte: r.fonte ?? "file" });
+  }
+  for (const s of scartate) {
+    if (per.has(s.mizarRef)) applica(s.mizarRef, s.nome);
+    else outScartate.push({ ...s, fonte: s.fonte ?? "file" });
+  }
+  /* Correzioni su codici che il file non ha: paline nuove viste nel flusso. */
+  for (const o of overrides) if (!viste.has(o.mizarRef)) applica(o.mizarRef, null);
+  return { valide: outValide, scartate: outScartate };
+}
 
 /** Legge il CSV per intero: le righe valide e quelle senza codice, separate. */
 export function leggiTranscodificaCompleta(testo: string): { valide: RigaTranscodifica[]; scartate: RigaScartata[] } {
@@ -154,6 +192,10 @@ export interface Abbinamento {
   nomeMizar: string | null;
   nomeFeed: string | null;
   stato: StatoAbbinamento;
+  /** file dell'azienda, o correzione dell'operatore (con nota e autore) */
+  fonte: "file" | "manuale";
+  nota: string | null;
+  utente: string | null;
   /** il codice Mizar coincide con lo stop_id di un'ALTRA fermata del feed */
   collisione: string | null;
   /** quante altre paline Mizar puntano alla stessa fermata */
@@ -198,6 +240,7 @@ export function classificaAbbinamenti(
       ? `${r.mizarRef} = ${feed.stopNames.get(r.mizarRef) ?? "?"}` : null;
     return {
       mizarRef: r.mizarRef, stopId: r.stopId, nomeMizar: r.nome, nomeFeed, stato, collisione,
+      fonte: r.fonte ?? "file", nota: r.nota ?? null, utente: r.utente ?? null,
       condivisaCon: (perStop.get(r.stopId) ?? 1) - 1,
       vistaNelFlusso: visti.has(r.mizarRef),
     };
@@ -206,6 +249,7 @@ export function classificaAbbinamenti(
     out.push({
       mizarRef: s.mizarRef, stopId: null, nomeMizar: s.nome, nomeFeed: null, stato: "senza_codice",
       collisione: feed.stops.has(s.mizarRef) ? `${s.mizarRef} = ${feed.stopNames.get(s.mizarRef) ?? "?"}` : null,
+      fonte: s.fonte ?? "file", nota: s.nota ?? null, utente: s.utente ?? null,
       condivisaCon: 0, vistaNelFlusso: visti.has(s.mizarRef),
     });
   }
@@ -238,6 +282,46 @@ export function classificaAbbinamenti(
 
 /** Per i collaudi. */
 export function resetTranscodifica(): void { cache = null; }
+
+/**
+ * La tabella effettiva: file + correzioni dal database. È questa che
+ * l'indice del feed, il ciclo StopMonitoring e la scheda usano.
+ */
+export async function transcodificaEffettiva(force = false): Promise<Transcodifica & { correzioni: number }> {
+  const t = caricaTranscodifica(force);
+  const { leggiOverrides } = await import("./stop-alias-overrides");
+  const overrides = await leggiOverrides(force);
+  const { valide, scartate } = applicaOverrides(t.righe, t.scartate, overrides);
+  return { percorso: t.percorso, errore: t.errore, righe: valide, scartate, indice: indiceTranscodifica(valide), correzioni: overrides.length };
+}
+
+/**
+ * Candidati per nome nel feed, per una palina sospetta o senza fermata:
+ * stesso nome normalizzato, poi contenimento. Al più cinque, i migliori
+ * prima. Un suggerimento, non una decisione: la decide l'operatore.
+ */
+export function suggerimentiPerNome(
+  nome: string | null, feed: { stops: Set<string>; stopNames: Map<string, string> }, escludi: string | null = null, max = 5,
+): Array<{ stopId: string; nome: string | null; motivo: "stesso_nome" | "nome_contenuto" }> {
+  if (!nome) return [];
+  const norm = (v: string) => v.normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+  const q = norm(nome);
+  if (q.length < 4) return [];
+  const esatti: Array<{ stopId: string; nome: string | null; motivo: "stesso_nome" | "nome_contenuto" }> = [];
+  const parziali: typeof esatti = [];
+  for (const stopId of feed.stops) {
+    if (stopId === escludi) continue;
+    const n = feed.stopNames.get(stopId);
+    if (!n) continue;
+    const nn = norm(n);
+    if (!nn) continue;
+    if (nn === q) esatti.push({ stopId, nome: n, motivo: "stesso_nome" });
+    /* Contenimento in entrambi i versi, ma un nome del feed troppo corto
+     * ("OSIMO") starebbe dentro a mezza provincia: non è un suggerimento. */
+    else if (nn.includes(q) || (nn.length >= 8 && q.includes(nn))) parziali.push({ stopId, nome: n, motivo: "nome_contenuto" });
+  }
+  return [...esatti, ...parziali].slice(0, max);
+}
 
 /* ── Verifica contro il feed ─────────────────────────────────────────────── */
 

@@ -27,7 +27,7 @@ import {
   stopsAtPosition, emptyFunnel, explainFunnel, positionUsable, fixAgeSeconds,
   localHHMM, indiceCodiciCorsaDelGiorno,
 } from "./siri-vm";
-import { caricaTranscodifica } from "./stop-aliases";
+import { transcodificaEffettiva } from "./stop-aliases";
 import {
   type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
@@ -105,11 +105,13 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   }
 
   const tripStarts = (await loadTripStartIndex(feedId)) ?? undefined;
+  /* Il file dell'azienda più le correzioni dell'operatore. */
+  const transcodifica = await transcodificaEffettiva(force);
   cachedIndex = {
     feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName, stopByCode,
     /* Solo le coppie il cui stop_id esiste in QUESTO feed: una palina nuova
      * o un feed vecchio non devono produrre agganci verso il nulla. */
-    stopByAlias: new Map([...caricaTranscodifica().indice].filter(([, stopId]) => stops.has(stopId))),
+    stopByAlias: new Map([...transcodifica.indice].filter(([, stopId]) => stops.has(stopId))),
     tripStarts,
     /* Il numero di corsa in coda al trip_id: la chiave con cui Mizar chiama
      * la corsa in CourseOfJourneyRef. Agganciare per numero, prima che per
