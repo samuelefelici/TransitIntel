@@ -725,8 +725,8 @@ router.get("/siri/sonda", async (req, res): Promise<void> => {
 
   try {
     const fermata = (req.query.fermata as string | undefined)?.trim() || null;
-    const post = async (op: string, corpo: string) => {
-      const r = await postSoap(cfg, op, corpo);
+    const post = async (op: string, corpo: string, url: string) => {
+      const r = await postSoap({ ...cfg, url }, op, corpo);
       return { status: r.status, xml: r.xml };
     };
     const get = async (url: string) => {

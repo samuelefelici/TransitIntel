@@ -188,8 +188,12 @@ export function classificaRisposta(httpStatus: number, xml: string): Classificaz
 /* ── Esecuzione ──────────────────────────────────────────────────────────── */
 
 export interface RispostaGrezza { status: number; xml: string }
-/** POST SOAP: (operazione, corpo) → risposta. Iniettato per il collaudo. */
-export type Trasporto = (operazione: string, corpo: string) => Promise<RispostaGrezza>;
+/** POST SOAP: (operazione, corpo, indirizzo) → risposta. Iniettato per il collaudo.
+ *  L'indirizzo cambia per servizio: Mizar pubblica ogni servizio SIRI su un
+ *  endpoint proprio (VMWS, ETWS, SMWS…), e una richiesta EstimatedTimetable
+ *  mandata all'endpoint del VehicleMonitoring riceve un Fault "ContractFilter
+ *  mismatch" anche se il servizio esiste. */
+export type Trasporto = (operazione: string, corpo: string, url: string) => Promise<RispostaGrezza>;
 /** GET semplice (per il WSDL). */
 export type TrasportoGet = (url: string) => Promise<RispostaGrezza>;
 
@@ -197,6 +201,8 @@ export interface ProvaSonda {
   operazione: string;
   /** perché la facciamo, in una riga */
   scopo: string;
+  /** a quale indirizzo è stata mandata: quello del VehicleMonitoring o un gemello */
+  endpoint: string;
   httpStatus: number;
   byte: number;
   esito: EsitoSonda;
@@ -241,17 +247,18 @@ const CONTEGGI: Record<string, string[]> = {
 };
 
 async function prova(
-  post: Trasporto, operazione: string, azioneSoap: string, scopo: string, corpo: string, grezzi: Record<string, string>,
+  post: Trasporto, url: string, operazione: string, azioneSoap: string, scopo: string, corpo: string,
+  grezzi: Record<string, string>,
 ): Promise<ProvaSonda> {
   let r: RispostaGrezza;
-  try { r = await post(azioneSoap, corpo); }
+  try { r = await post(azioneSoap, corpo, url); }
   catch (e: any) { r = { status: 0, xml: "" }; grezzi[operazione] = `(nessuna risposta: ${e?.message ?? e})`; }
   if (!(operazione in grezzi)) grezzi[operazione] = r.xml;
   const c = classificaRisposta(r.status, r.xml);
   const conteggi: Record<string, number> = {};
   for (const nome of CONTEGGI[operazione] ?? []) conteggi[nome] = contaElementi(r.xml, nome);
   return {
-    operazione, scopo, httpStatus: r.status, byte: Buffer.byteLength(r.xml),
+    operazione, scopo, endpoint: url, httpStatus: r.status, byte: Buffer.byteLength(r.xml),
     esito: c.esito, dettaglio: c.dettaglio, conteggi,
     elementiDistinti: nomiElementi(r.xml).length, richiestaXml: corpo,
   };
@@ -300,8 +307,13 @@ export async function eseguiSonda(
     }
   }
 
+  /* Ogni servizio va interrogato sul SUO endpoint, se un gemello esiste;
+   * altrimenti su quello configurato, e il Fault dirà che non c'è. */
+  const urlPer = (servizio: string): string =>
+    gemelli.find(g => g.servizio === servizio && g.operazioni.length > 0)?.url ?? cfg.url;
+
   /* 1. Capacità di tutti i servizi. */
-  const cap = await prova(post, "GetCapabilities", "GetCapabilities",
+  const cap = await prova(post, cfg.url, "GetCapabilities", "GetCapabilities",
     "che cosa il server dichiara di sapere fare, servizio per servizio",
     buildCapabilitiesTutteRequest(cfg.requestorRef), grezzi);
   prove.push(cap);
@@ -312,9 +324,9 @@ export async function eseguiSonda(
   try { letto = cap.esito === "valida" ? parseCapabilities(capXml) : null; } catch { letto = null; }
 
   /* 2. VehicleMonitoring "calls" e "full", per differenza. */
-  const vmCalls = await prova(post, "GetVehicleMonitoring-calls", "GetVehicleMonitoring",
+  const vmCalls = await prova(post, cfg.url, "GetVehicleMonitoring-calls", "GetVehicleMonitoring",
     "la richiesta di oggi, come riferimento", buildVehicleMonitoringLivello(cfg.requestorRef, "calls"), grezzi);
-  const vmFull = await prova(post, "GetVehicleMonitoring-full", "GetVehicleMonitoring",
+  const vmFull = await prova(post, cfg.url, "GetVehicleMonitoring-full", "GetVehicleMonitoring",
     "la stessa richiesta col dettaglio massimo: arriva qualcosa in più?",
     buildVehicleMonitoringLivello(cfg.requestorRef, "full"), grezzi);
   prove.push(vmCalls, vmFull);
@@ -322,7 +334,7 @@ export async function eseguiSonda(
   const fullAggiunge = nomiElementi(grezzi["GetVehicleMonitoring-full"] ?? "").filter(n => !nomiCalls.has(n));
 
   /* 3. EstimatedTimetable. */
-  prove.push(await prova(post, "GetEstimatedTimetable", "GetEstimatedTimetable",
+  prove.push(await prova(post, urlPer("EstimatedTimetable"), "GetEstimatedTimetable", "GetEstimatedTimetable",
     "orari stimati corsa per corsa nelle prossime due ore: la fonte dei tempi di passaggio",
     buildEstimatedTimetableRequest(cfg.requestorRef), grezzi));
 
@@ -331,15 +343,15 @@ export async function eseguiSonda(
     ?? /<(?:[A-Za-z0-9_.-]+:)?StopPointRef[^>]*>([^<]+)</.exec(grezzi["GetVehicleMonitoring-calls"] ?? "")?.[1]?.trim()
     ?? null;
   if (fermata) {
-    prove.push(await prova(post, "GetStopMonitoring", "GetStopMonitoring",
+    prove.push(await prova(post, urlPer("StopMonitoring"), "GetStopMonitoring", "GetStopMonitoring",
       `arrivi previsti alla fermata ${fermata}`, buildStopMonitoringRequest(cfg.requestorRef, fermata), grezzi));
   }
 
   /* 5. ProductionTimetable, 6. SituationExchange. */
-  prove.push(await prova(post, "GetProductionTimetable", "GetProductionTimetable",
+  prove.push(await prova(post, urlPer("ProductionTimetable"), "GetProductionTimetable", "GetProductionTimetable",
     "il programma del giorno secondo l'AVM, da confrontare col GTFS",
     buildProductionTimetableRequest(cfg.requestorRef), grezzi));
-  prove.push(await prova(post, "GetSituationExchange", "GetSituationExchange",
+  prove.push(await prova(post, urlPer("SituationExchange"), "GetSituationExchange", "GetSituationExchange",
     "avvisi e deviazioni", buildSituationExchangeRequest(cfg.requestorRef), grezzi));
 
   return {
@@ -397,7 +409,7 @@ export function leggiSonda(r: {
 
   const trovati = (r.gemelli ?? []).filter(g => g.operazioni.length > 0);
   if (trovati.length) {
-    out.push(`Sullo stesso server esistono altri endpoint SIRI: ${trovati.map(g => `${g.servizio} (${g.url})`).join(", ")}. Vanno interrogati lì, non sull'indirizzo del VehicleMonitoring.`);
+    out.push(`Sullo stesso server esistono altri endpoint SIRI: ${trovati.map(g => `${g.servizio} (${g.url})`).join(", ")}. Le prove qui sopra li hanno interrogati al loro indirizzo.`);
   }
 
   const dichiarati = Object.entries(r.dichiarate).filter(([, v]) => v).map(([k]) => k);

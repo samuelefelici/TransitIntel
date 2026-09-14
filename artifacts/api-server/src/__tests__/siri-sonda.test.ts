@@ -135,10 +135,17 @@ describe("le richieste hanno la forma già accettata dal produttore", () => {
 });
 
 describe("eseguiSonda", () => {
-  const post: Trasporto = async (op, corpo) => {
+  const ET_PIENA = busta(
+    `<siri:GetEstimatedTimetableResponse><Answer><siri:EstimatedTimetableDelivery><siri:Status>true</siri:Status>`
+    + `<siri:EstimatedJourneyVersionFrame><siri:EstimatedVehicleJourney><siri:LineRef>CR1</siri:LineRef>`
+    + `<siri:EstimatedCalls><siri:EstimatedCall><siri:StopPointRef>1122</siri:StopPointRef><siri:ExpectedArrivalTime>2026-09-14T08:10:00</siri:ExpectedArrivalTime></siri:EstimatedCall></siri:EstimatedCalls>`
+    + `</siri:EstimatedVehicleJourney></siri:EstimatedJourneyVersionFrame></siri:EstimatedTimetableDelivery></Answer></siri:GetEstimatedTimetableResponse>`);
+  /* Come Mizar: la stessa richiesta EstimatedTimetable riceve un Fault
+   * sull'endpoint del VehicleMonitoring e i dati sul suo endpoint ETWS. */
+  const post: Trasporto = async (op, corpo, url) => {
     if (op === "GetCapabilities") return { status: 200, xml: CAP };
     if (op === "GetVehicleMonitoring") return { status: 200, xml: corpo.includes(">full<") ? VM_FULL : VM };
-    if (op === "GetEstimatedTimetable") return { status: 200, xml: ERRC };
+    if (op === "GetEstimatedTimetable") return url.includes("/ETWS/") ? { status: 200, xml: ET_PIENA } : { status: 200, xml: ERRC };
     if (op === "GetStopMonitoring") return { status: 500, xml: FAULT };
     if (op === "GetProductionTimetable") return { status: 200, xml: VUOTA_FALSE };
     throw new Error("timeout");
@@ -158,6 +165,7 @@ describe("eseguiSonda", () => {
     expect(r.fermataProvata).toBe("ANC001");
 
     const per = Object.fromEntries(r.prove.map(p => [p.operazione, p]));
+    expect(r.prove.every(p => p.endpoint === "http://avm/siri")).toBe(true);   // nessun gemello: tutto sull'indirizzo configurato
     expect(per["GetVehicleMonitoring-calls"].conteggi).toMatchObject({ VehicleActivity: 2, PreviousCall: 1, OnwardCall: 0 });
     expect(per["GetVehicleMonitoring-full"].conteggi).toMatchObject({ OnwardCall: 1, ExpectedArrivalTime: 1 });
     expect(per.GetEstimatedTimetable.esito).toBe("errore");
@@ -180,8 +188,8 @@ describe("eseguiSonda", () => {
   });
 
   it("senza fermata nel flusso e senza fermata a mano, StopMonitoring viene saltata", async () => {
-    const senzaFermate: Trasporto = async (op, corpo) =>
-      op === "GetVehicleMonitoring" ? { status: 200, xml: VM.replace(/<siri:PreviousCalls>.*<\/siri:PreviousCalls>/, "") } : post(op, corpo);
+    const senzaFermate: Trasporto = async (op, corpo, url) =>
+      op === "GetVehicleMonitoring" ? { status: 200, xml: VM.replace(/<siri:PreviousCalls>.*<\/siri:PreviousCalls>/, "") } : post(op, corpo, url);
     const r = await eseguiSonda({ url: "http://avm/siri", requestorRef: "R" }, senzaFermate, get);
     expect(r.fermataProvata).toBeNull();
     expect(r.prove.some(p => p.operazione === "GetStopMonitoring")).toBe(false);
@@ -203,6 +211,18 @@ describe("eseguiSonda", () => {
     expect(r.grezzi["wsdl-EstimatedTimetable"]).toContain("GetEstimatedTimetable");
     expect(r.lettura.join("\n")).toMatch(/esistono altri endpoint SIRI: EstimatedTimetable \(https:\/\/flashnetconerobus\.miz\.it\/SIRIService\/ETWS\/ETService\.svc\)/);
     expect(r.lettura.join("\n")).not.toMatch(/vanno chiesti a Mizar\.$/m);
+
+    /* La prova EstimatedTimetable è andata all'endpoint ETWS e ha ricevuto
+     * corse; StopMonitoring, senza gemello, è rimasta sull'indirizzo del
+     * VehicleMonitoring. */
+    const prove = Object.fromEntries(r.prove.map(p => [p.operazione, p]));
+    expect(prove.GetEstimatedTimetable).toMatchObject({
+      endpoint: "https://flashnetconerobus.miz.it/SIRIService/ETWS/ETService.svc", esito: "valida",
+      conteggi: { EstimatedVehicleJourney: 1, EstimatedCall: 1, ExpectedArrivalTime: 1 },
+    });
+    expect(prove.GetStopMonitoring.endpoint).toBe(VM_URL);
+    expect(prove["GetVehicleMonitoring-calls"].endpoint).toBe(VM_URL);
+    expect(r.lettura.join("\n")).toMatch(/EstimatedTimetable risponde con corse/);
   });
 
   it("la lettura dice che full aggiunge, che ET non è disponibile, e che il server dichiara solo VM", async () => {
@@ -215,7 +235,7 @@ describe("eseguiSonda", () => {
 
 describe("leggiSonda su risultati costruiti", () => {
   const prova = (operazione: string, esito: any, conteggi: Record<string, number>) => ({
-    operazione, scopo: "", httpStatus: 200, byte: 0, esito, dettaglio: "", conteggi, elementiDistinti: 0, richiestaXml: "",
+    operazione, scopo: "", endpoint: "u", httpStatus: 200, byte: 0, esito, dettaglio: "", conteggi, elementiDistinti: 0, richiestaXml: "",
   });
   it("quando EstimatedTimetable risponde con corse, lo dice come fonte da usare", () => {
     const l = leggiSonda({
