@@ -175,7 +175,7 @@ export interface ConfrontoVisita {
   /** come le chiama il feed, quando l'aggancio riesce */
   gtfs: {
     tripId: string | null; routeId: string | null; stopId: string | null;
-    fermataAgganciataCome: "id" | "code" | "name" | null;
+    fermataAgganciataCome: "alias" | "id" | "code" | "name" | null;
     /** l'orario alla fermata, nell'occorrenza più vicina a quella di Mizar */
     orarioAllaFermata: string | null; progressivo: number | null;
     partenza: string | null;
@@ -201,7 +201,7 @@ export interface ConfrontoVisita {
 export interface ConfrontoFermata {
   fermata: {
     ref: string; nomeMizar: string | null;
-    stopId: string | null; nomeFeed: string | null; agganciataCome: "id" | "code" | "name" | null; conflitto: string | null;
+    stopId: string | null; nomeFeed: string | null; agganciataCome: "alias" | "id" | "code" | "name" | null; conflitto: string | null;
   };
   visite: ConfrontoVisita[];
   riepilogo: {
@@ -411,7 +411,7 @@ export interface DiagnosiCorse {
 
 /** Che cosa dice il feed della fermata agganciata: il suo stop_code è quello di Mizar? */
 export function leggiFermataFeed(
-  ref: string, f: DiagnosiCorse["fermataNelFeed"], come: "id" | "code" | "name" | null,
+  ref: string, f: DiagnosiCorse["fermataNelFeed"], come: "alias" | "id" | "code" | "name" | null,
 ): string[] {
   if (!f || come !== "name") return [];
   return [f.stopCode
@@ -458,14 +458,16 @@ export function leggiDiagnosi(d: DiagnosiCorse, nonTrovate: string[]): string[] 
 /** La conclusione in parole: che cosa combacia e che cosa no. */
 export function leggiConfronto(
   r: ConfrontoFermata["riepilogo"],
-  f: { ref: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null; come?: "id" | "code" | "name" | null },
+  f: { ref: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null; come?: "alias" | "id" | "code" | "name" | null },
 ): string[] {
   const out: string[] = [];
   if (!r.visite) { out.push(`Mizar non dà passaggi per la fermata ${f.ref} nell'intervallo chiesto.`); return out; }
   if (!f.stopId) {
     out.push(`La fermata ${f.ref} («${f.nomeMizar ?? "?"}») non esiste nel feed né per codice né per nome: i codici fermata di Mizar e del GTFS non sono gli stessi.`);
   } else {
-    const come = f.come === "id" ? "stesso stop_id" : f.come === "code" ? `stop_code ${f.ref}` : "solo per nome: il codice di Mizar non è né stop_id né stop_code del feed";
+    const come = f.come === "alias" ? "transcodifica delle paline"
+      : f.come === "id" ? "stesso stop_id" : f.come === "code" ? `stop_code ${f.ref}`
+      : "solo per nome: il codice di Mizar non è né stop_id né stop_code del feed, e manca nella transcodifica";
     out.push(`Fermata ${f.ref}: Mizar la chiama «${f.nomeMizar ?? "?"}», il feed «${f.nomeFeed ?? "?"}» (stop_id ${f.stopId}, agganciata per ${come}).`);
   }
   if (r.visiteGrezze !== r.visite || r.fuoriServizio) {

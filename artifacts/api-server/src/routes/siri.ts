@@ -41,6 +41,7 @@ import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
 import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, leggiFermataFeed, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
+import { caricaTranscodifica, verificaTranscodifica } from "../lib/stop-aliases";
 
 const router: IRouter = Router();
 
@@ -754,6 +755,47 @@ router.get("/siri/sonda", async (req, res): Promise<void> => {
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "sonda fallita" });
   }
+});
+
+/* ── La transcodifica delle paline, verificata contro il feed ─────────────
+ * Il file dell'azienda (data/transcodifica-paline-mizar.csv) dice quale
+ * stop_id del feed corrisponde a ogni codice palina di Mizar. Qui si vede
+ * che cosa è stato caricato e quanto combacia con il feed in uso: paline
+ * senza fermata nel feed, fermate senza codice, e le collisioni — i codici
+ * Mizar uguali allo stop_id di un'ALTRA fermata, cioè gli agganci per
+ * numero che sarebbero stati sbagliati.
+ *
+ *   GET /api/siri/fermate/transcodifica
+ *   GET /api/siri/fermate/transcodifica?ricarica=1   — rilegge il file
+ */
+router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
+  const t = caricaTranscodifica(req.query.ricarica === "1");
+  const index = await loadGtfsIndex(req.query.ricarica === "1").catch(() => null);
+  const verifica = index ? verificaTranscodifica(t.righe, index.stops) : null;
+  res.json({
+    file: t.percorso,
+    errore: t.errore,
+    righe: t.righe.length,
+    feed: index?.feedId ?? null,
+    verifica: verifica && {
+      ...verifica,
+      nonNelFeed: verifica.nonNelFeed.slice(0, 50),
+      nonNelFeedTotale: verifica.nonNelFeed.length,
+    },
+    lettura: !t.righe.length
+      ? [`Nessuna transcodifica caricata: ${t.errore ?? "file vuoto"}. Le fermate di Mizar si agganciano solo per stop_id, stop_code o nome.`]
+      : !verifica
+        ? [`${t.righe.length} paline nella transcodifica; nessun feed caricato per la verifica.`]
+        : [
+          `${t.righe.length} paline nella transcodifica: ${verifica.nelFeed} hanno la loro fermata nel feed in uso, ${verifica.nonNelFeed.length} no.`,
+          `${verifica.feedSenzaCodice} fermate del feed non hanno nessun codice Mizar: da lì non arriverà mai un passaggio dichiarato.`,
+          verifica.collisioni.length
+            ? `${verifica.collisioni.length} codici Mizar coincidono con lo stop_id di un'altra fermata del feed: senza la transcodifica quegli agganci sarebbero fermate sbagliate.`
+            : `Nessun codice Mizar coincide con lo stop_id di un'altra fermata.`,
+          ...(verifica.stopConPiuCodici.length ? [`${verifica.stopConPiuCodici.length} fermate del feed sono raggiunte da più codici Mizar (banchine unite nel feed).`] : []),
+        ],
+    esempi: t.righe.slice(0, 5),
+  });
 });
 
 /* ── Una fermata vista da Mizar, a confronto con il feed ─────────────────
