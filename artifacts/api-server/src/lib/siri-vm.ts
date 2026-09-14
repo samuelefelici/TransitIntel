@@ -1005,6 +1005,11 @@ export interface GtfsIndex {
    *  porta il codice in stop_code: senza questo indice l'aggancio riusciva
    *  solo per nome, e i nomi cambiano di maiuscole e parentesi. */
   stopByCode?: Map<string, string>;
+  /** codice palina di Mizar → stop_id del feed, dalla tabella di
+   *  transcodifica dell'azienda (lib/stop-aliases.ts). Vince su tutto: le
+   *  due numerazioni si sovrappongono e un numero uguale è spesso un'altra
+   *  fermata. Contiene solo gli stop_id presenti nel feed. */
+  stopByAlias?: Map<string, string>;
   loadedAt: number;
 }
 
@@ -1157,7 +1162,13 @@ function namesCompatible(a: string | null | undefined, b: string | null | undefi
  */
 export function resolveStop(
   ref: string | null, name: string | null, index: GtfsIndex,
-): { stopId: string | null; how: "id" | "code" | "name" | null; conflict: string | null } {
+): { stopId: string | null; how: "alias" | "id" | "code" | "name" | null; conflict: string | null } {
+  /* La transcodifica dell'azienda, prima di ogni altra regola: è l'unica
+   * che sappia che la 200 di Mizar è la 20001 del feed e non la 200. */
+  for (const c of refCandidates(ref)) {
+    const byAlias = index.stopByAlias?.get(c);
+    if (byAlias) return { stopId: byAlias, how: "alias", conflict: null };
+  }
   for (const c of refCandidates(ref)) {
     if (!index.stops.has(c)) continue;
     const feedName = index.stopNames.get(c) ?? null;
@@ -1396,7 +1407,7 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     const s = resolveStop(mc?.stopPointRef ?? null, mc?.stopPointName ?? null, index);
     const nearestStopId = s.stopId;
     if (s.conflict) conflicts.add(s.conflict);
-    if (nearestStopId) { stopMatched++; if (s.how === "id" || s.how === "code") stopById++; else stopByName++; }
+    if (nearestStopId) { stopMatched++; if (s.how === "id" || s.how === "code" || s.how === "alias") stopById++; else stopByName++; }
     else if (mc?.stopPointRef) unmatchedStop.add(mc.stopPointRef);
 
     if (v.lat != null && v.lon != null) withPosition++;
