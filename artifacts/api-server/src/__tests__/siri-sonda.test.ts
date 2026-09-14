@@ -13,8 +13,9 @@ import { describe, it, expect } from "vitest";
 import {
   buildCapabilitiesTutteRequest, buildEstimatedTimetableRequest, buildStopMonitoringRequest,
   buildVehicleMonitoringLivello, classificaRisposta, contaElementi, nomiElementi, operazioniWsdl,
-  eseguiSonda, leggiSonda, type Trasporto, type TrasportoGet,
+  eseguiSonda, leggiSonda, endpointGemelli, type Trasporto, type TrasportoGet,
 } from "../lib/siri-sonda";
+import { buildGetCapabilitiesRequest } from "../lib/siri-vm";
 
 const NS = 'xmlns:siri="http://www.siri.org.uk/siri"';
 const busta = (corpo: string) =>
@@ -83,6 +84,27 @@ describe("conteggi ed elementi", () => {
   });
 });
 
+describe("endpointGemelli", () => {
+  /* L'indirizzo vero di Mizar porta la sigla del servizio nel percorso, due volte. */
+  it("dall'indirizzo del VehicleMonitoring ricava quelli degli altri servizi", () => {
+    const g = endpointGemelli("https://flashnetconerobus.miz.it/SIRIService/VMWS/VMService.svc");
+    expect(g.map(x => x.servizio)).toEqual([
+      "EstimatedTimetable", "StopMonitoring", "ProductionTimetable", "SituationExchange", "GeneralMessage", "ConnectionMonitoring",
+    ]);
+    expect(g[0].url).toBe("https://flashnetconerobus.miz.it/SIRIService/ETWS/ETService.svc");
+    expect(g[1].url).toBe("https://flashnetconerobus.miz.it/SIRIService/SMWS/SMService.svc");
+  });
+  it("conserva ciò che segue il .svc e non propone il servizio di partenza", () => {
+    const g = endpointGemelli("http://x/SIRIService/SMWS/SMService.svc/soap");
+    expect(g.some(x => x.servizio === "StopMonitoring")).toBe(false);
+    expect(g.find(x => x.servizio === "EstimatedTimetable")?.url).toBe("http://x/SIRIService/ETWS/ETService.svc/soap");
+  });
+  it("con un indirizzo che non segue lo schema non indovina nulla", () => {
+    expect(endpointGemelli("https://avm.example.org/siri")).toEqual([]);
+    expect(endpointGemelli("https://x/VMWS/OtherService.svc")).toEqual([]);
+  });
+});
+
 describe("le richieste hanno la forma già accettata dal produttore", () => {
   it("GetEstimatedTimetable: ServiceRequestInfo con RequestorRef, Request 1.4, PreviewInterval", () => {
     const x = buildEstimatedTimetableRequest("Conerobus");
@@ -96,11 +118,14 @@ describe("le richieste hanno la forma già accettata dal produttore", () => {
     const x = buildStopMonitoringRequest("R", `A&B<`);
     expect(x).toContain(`<siri:MonitoringRef>A&amp;B&lt;</siri:MonitoringRef>`);
   });
-  it("GetCapabilities chiede tutti e cinque i servizi", () => {
+  /* Il server Mizar rifiuta la richiesta di capacità senza `version` sul
+   * singolo servizio: "Required attribute 'version' is missing". */
+  it("GetCapabilities chiede tutti e cinque i servizi, ognuno con la versione", () => {
     const x = buildCapabilitiesTutteRequest("R");
     for (const s of ["VehicleMonitoring", "StopMonitoring", "EstimatedTimetable", "ProductionTimetable", "SituationExchange"]) {
-      expect(x).toContain(`<siri:${s}CapabilitiesRequest>`);
+      expect(x).toContain(`<siri:${s}CapabilitiesRequest version="1.4">`);
     }
+    expect(buildGetCapabilitiesRequest("R")).toContain(`<siri:VehicleMonitoringCapabilitiesRequest version="1.4">`);
   });
   it("VehicleMonitoring 'full' differisce da 'calls' solo nel livello", () => {
     const a = buildVehicleMonitoringLivello("R", "calls").replace(/TI-sonda-[^<]+|20\d\d-[^<]+Z/g, "");
@@ -110,10 +135,17 @@ describe("le richieste hanno la forma già accettata dal produttore", () => {
 });
 
 describe("eseguiSonda", () => {
-  const post: Trasporto = async (op, corpo) => {
+  const ET_PIENA = busta(
+    `<siri:GetEstimatedTimetableResponse><Answer><siri:EstimatedTimetableDelivery><siri:Status>true</siri:Status>`
+    + `<siri:EstimatedJourneyVersionFrame><siri:EstimatedVehicleJourney><siri:LineRef>CR1</siri:LineRef>`
+    + `<siri:EstimatedCalls><siri:EstimatedCall><siri:StopPointRef>1122</siri:StopPointRef><siri:ExpectedArrivalTime>2026-09-14T08:10:00</siri:ExpectedArrivalTime></siri:EstimatedCall></siri:EstimatedCalls>`
+    + `</siri:EstimatedVehicleJourney></siri:EstimatedJourneyVersionFrame></siri:EstimatedTimetableDelivery></Answer></siri:GetEstimatedTimetableResponse>`);
+  /* Come Mizar: la stessa richiesta EstimatedTimetable riceve un Fault
+   * sull'endpoint del VehicleMonitoring e i dati sul suo endpoint ETWS. */
+  const post: Trasporto = async (op, corpo, url) => {
     if (op === "GetCapabilities") return { status: 200, xml: CAP };
     if (op === "GetVehicleMonitoring") return { status: 200, xml: corpo.includes(">full<") ? VM_FULL : VM };
-    if (op === "GetEstimatedTimetable") return { status: 200, xml: ERRC };
+    if (op === "GetEstimatedTimetable") return url.includes("/ETWS/") ? { status: 200, xml: ET_PIENA } : { status: 200, xml: ERRC };
     if (op === "GetStopMonitoring") return { status: 500, xml: FAULT };
     if (op === "GetProductionTimetable") return { status: 200, xml: VUOTA_FALSE };
     throw new Error("timeout");
@@ -123,6 +155,7 @@ describe("eseguiSonda", () => {
   it("mette insieme WSDL, capacità, differenza full/calls, fermata, esiti e grezzi", async () => {
     const r = await eseguiSonda({ url: "http://avm/siri", requestorRef: "Conerobus" }, post, get);
     expect(r.wsdl).toMatchObject({ raggiunto: true, operazioni: ["CheckStatus", "GetEstimatedTimetable", "GetVehicleMonitoring"] });
+    expect(r.gemelli).toEqual([]);   // l'indirizzo non segue lo schema a sigle
     expect(r.capacita.dichiarate).toEqual({
       VehicleMonitoring: true, StopMonitoring: false, EstimatedTimetable: false, ProductionTimetable: false, SituationExchange: false,
     });
@@ -132,6 +165,7 @@ describe("eseguiSonda", () => {
     expect(r.fermataProvata).toBe("ANC001");
 
     const per = Object.fromEntries(r.prove.map(p => [p.operazione, p]));
+    expect(r.prove.every(p => p.endpoint === "http://avm/siri")).toBe(true);   // nessun gemello: tutto sull'indirizzo configurato
     expect(per["GetVehicleMonitoring-calls"].conteggi).toMatchObject({ VehicleActivity: 2, PreviousCall: 1, OnwardCall: 0 });
     expect(per["GetVehicleMonitoring-full"].conteggi).toMatchObject({ OnwardCall: 1, ExpectedArrivalTime: 1 });
     expect(per.GetEstimatedTimetable.esito).toBe("errore");
@@ -154,11 +188,41 @@ describe("eseguiSonda", () => {
   });
 
   it("senza fermata nel flusso e senza fermata a mano, StopMonitoring viene saltata", async () => {
-    const senzaFermate: Trasporto = async (op, corpo) =>
-      op === "GetVehicleMonitoring" ? { status: 200, xml: VM.replace(/<siri:PreviousCalls>.*<\/siri:PreviousCalls>/, "") } : post(op, corpo);
+    const senzaFermate: Trasporto = async (op, corpo, url) =>
+      op === "GetVehicleMonitoring" ? { status: 200, xml: VM.replace(/<siri:PreviousCalls>.*<\/siri:PreviousCalls>/, "") } : post(op, corpo, url);
     const r = await eseguiSonda({ url: "http://avm/siri", requestorRef: "R" }, senzaFermate, get);
     expect(r.fermataProvata).toBeNull();
     expect(r.prove.some(p => p.operazione === "GetStopMonitoring")).toBe(false);
+  });
+
+  it("prova gli indirizzi gemelli con una GET ?wsdl e riporta chi esiste", async () => {
+    const VM_URL = "https://flashnetconerobus.miz.it/SIRIService/VMWS/VMService.svc";
+    const getGemelli: TrasportoGet = async (url) => {
+      if (url.startsWith(VM_URL)) return { status: 200, xml: WSDL };
+      if (url.includes("/ETWS/")) return { status: 200, xml: WSDL.replace(/GetVehicleMonitoring/g, "GetEstimatedTimetable") };
+      if (url.includes("/SXWS/")) throw new Error("timeout");
+      return { status: 404, xml: "<html>Not Found</html>" };
+    };
+    const r = await eseguiSonda({ url: VM_URL, requestorRef: "R" }, post, getGemelli);
+    const per = Object.fromEntries(r.gemelli.map(g => [g.servizio, g]));
+    expect(per.EstimatedTimetable).toMatchObject({ httpStatus: 200, operazioni: ["CheckStatus", "GetEstimatedTimetable"], esito: "esiste: 2 operazioni" });
+    expect(per.StopMonitoring).toMatchObject({ httpStatus: 404, operazioni: [], esito: "non esiste (404)" });
+    expect(per.SituationExchange).toMatchObject({ httpStatus: 0, esito: "nessuna risposta: timeout" });
+    expect(r.grezzi["wsdl-EstimatedTimetable"]).toContain("GetEstimatedTimetable");
+    expect(r.lettura.join("\n")).toMatch(/esistono altri endpoint SIRI: EstimatedTimetable \(https:\/\/flashnetconerobus\.miz\.it\/SIRIService\/ETWS\/ETService\.svc\)/);
+    expect(r.lettura.join("\n")).not.toMatch(/vanno chiesti a Mizar\.$/m);
+
+    /* La prova EstimatedTimetable è andata all'endpoint ETWS e ha ricevuto
+     * corse; StopMonitoring, senza gemello, è rimasta sull'indirizzo del
+     * VehicleMonitoring. */
+    const prove = Object.fromEntries(r.prove.map(p => [p.operazione, p]));
+    expect(prove.GetEstimatedTimetable).toMatchObject({
+      endpoint: "https://flashnetconerobus.miz.it/SIRIService/ETWS/ETService.svc", esito: "valida",
+      conteggi: { EstimatedVehicleJourney: 1, EstimatedCall: 1, ExpectedArrivalTime: 1 },
+    });
+    expect(prove.GetStopMonitoring.endpoint).toBe(VM_URL);
+    expect(prove["GetVehicleMonitoring-calls"].endpoint).toBe(VM_URL);
+    expect(r.lettura.join("\n")).toMatch(/EstimatedTimetable risponde con corse/);
   });
 
   it("la lettura dice che full aggiunge, che ET non è disponibile, e che il server dichiara solo VM", async () => {
@@ -171,7 +235,7 @@ describe("eseguiSonda", () => {
 
 describe("leggiSonda su risultati costruiti", () => {
   const prova = (operazione: string, esito: any, conteggi: Record<string, number>) => ({
-    operazione, scopo: "", httpStatus: 200, byte: 0, esito, dettaglio: "", conteggi, elementiDistinti: 0, richiestaXml: "",
+    operazione, scopo: "", endpoint: "u", httpStatus: 200, byte: 0, esito, dettaglio: "", conteggi, elementiDistinti: 0, richiestaXml: "",
   });
   it("quando EstimatedTimetable risponde con corse, lo dice come fonte da usare", () => {
     const l = leggiSonda({
@@ -181,6 +245,16 @@ describe("leggiSonda su risultati costruiti", () => {
     expect(l.join("\n")).toMatch(/full" non aggiunge nulla/);
     expect(l.join("\n")).toMatch(/EstimatedTimetable risponde con corse/);
     expect(l.join("\n")).not.toMatch(/solo VehicleMonitoring/);
+  });
+  /* Il caso vero del 14 settembre: WSDL con Subscribe, nessun gemello. */
+  it("con Subscribe nel WSDL e nessun gemello, lo dice, e dice che il resto va chiesto a Mizar", () => {
+    const l = leggiSonda({
+      wsdl: { operazioni: ["CheckStatus", "DeleteSubscription", "GetCapabilities", "GetVehicleMonitoring", "Subscribe"] },
+      gemelli: [{ servizio: "EstimatedTimetable", url: "u", operazioni: [] }],
+      dichiarate: {}, fullAggiunge: [], prove: [],
+    });
+    expect(l.join("\n")).toMatch(/nessun indirizzo gemello risponde/);
+    expect(l.join("\n")).toMatch(/accetta sottoscrizioni/);
   });
   it("quando EstimatedTimetable esiste ma è vuoto, lo distingue dal non disponibile", () => {
     const l = leggiSonda({

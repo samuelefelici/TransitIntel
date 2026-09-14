@@ -64,8 +64,10 @@ export const SERVIZI_SIRI = [
 /** GetCapabilities per TUTTI i servizi, non solo VehicleMonitoring. */
 export function buildCapabilitiesTutteRequest(requestorRef: string): string {
   const ts = nowIso();
+  /* `version` su ogni richiesta di servizio: senza, il server Mizar risponde
+   * ErrorCondition "Required attribute 'version' is missing". */
   const richieste = SERVIZI_SIRI
-    .map(s => `<siri:${s}CapabilitiesRequest>${testa(ts)}</siri:${s}CapabilitiesRequest>`).join("");
+    .map(s => `<siri:${s}CapabilitiesRequest version="1.4">${testa(ts)}</siri:${s}CapabilitiesRequest>`).join("");
   return envelope(
     `<siri:GetCapabilities><Request version="1.4">${testa(ts)}`
     + `<siri:RequestorRef>${esc(requestorRef)}</siri:RequestorRef>${richieste}</Request>`
@@ -108,6 +110,31 @@ export function nomiElementi(xml: string): string[] {
   while ((m = re.exec(xml)) !== null) nomi.add(m[1]);
   return [...nomi].sort();
 }
+/**
+ * Gli endpoint "gemelli" che un server SIRI a servizi separati potrebbe
+ * esporre. Il server Mizar pubblica il VehicleMonitoring su
+ * `/SIRIService/VMWS/VMService.svc`: un percorso che porta nel nome la sigla
+ * del servizio. Se gli altri servizi esistono, con ogni probabilità stanno
+ * allo stesso indirizzo con la sigla cambiata. Restituisce vuoto se l'URL
+ * non segue lo schema: allora non c'è nulla da indovinare.
+ */
+export const SIGLE_SERVIZI: Array<{ sigla: string; servizio: string }> = [
+  { sigla: "ET", servizio: "EstimatedTimetable" },
+  { sigla: "SM", servizio: "StopMonitoring" },
+  { sigla: "PT", servizio: "ProductionTimetable" },
+  { sigla: "SX", servizio: "SituationExchange" },
+  { sigla: "GM", servizio: "GeneralMessage" },
+  { sigla: "CM", servizio: "ConnectionMonitoring" },
+];
+export function endpointGemelli(url: string): Array<{ servizio: string; url: string }> {
+  const m = /^(.*\/)([A-Z]{2})(WS\/)\2(Service\.svc)(.*)$/.exec(url);
+  if (!m) return [];
+  const [, prima, sigla, ws, svc, dopo] = m;
+  return SIGLE_SERVIZI
+    .filter(s => s.sigla !== sigla)
+    .map(s => ({ servizio: s.servizio, url: `${prima}${s.sigla}${ws}${s.sigla}${svc}${dopo}` }));
+}
+
 /** Le <operation name="..."> di un WSDL: ciò che il server dichiara di sapere fare. */
 export function operazioniWsdl(xml: string): string[] {
   const out = new Set<string>();
@@ -161,8 +188,12 @@ export function classificaRisposta(httpStatus: number, xml: string): Classificaz
 /* ── Esecuzione ──────────────────────────────────────────────────────────── */
 
 export interface RispostaGrezza { status: number; xml: string }
-/** POST SOAP: (operazione, corpo) → risposta. Iniettato per il collaudo. */
-export type Trasporto = (operazione: string, corpo: string) => Promise<RispostaGrezza>;
+/** POST SOAP: (operazione, corpo, indirizzo) → risposta. Iniettato per il collaudo.
+ *  L'indirizzo cambia per servizio: Mizar pubblica ogni servizio SIRI su un
+ *  endpoint proprio (VMWS, ETWS, SMWS…), e una richiesta EstimatedTimetable
+ *  mandata all'endpoint del VehicleMonitoring riceve un Fault "ContractFilter
+ *  mismatch" anche se il servizio esiste. */
+export type Trasporto = (operazione: string, corpo: string, url: string) => Promise<RispostaGrezza>;
 /** GET semplice (per il WSDL). */
 export type TrasportoGet = (url: string) => Promise<RispostaGrezza>;
 
@@ -170,6 +201,8 @@ export interface ProvaSonda {
   operazione: string;
   /** perché la facciamo, in una riga */
   scopo: string;
+  /** a quale indirizzo è stata mandata: quello del VehicleMonitoring o un gemello */
+  endpoint: string;
   httpStatus: number;
   byte: number;
   esito: EsitoSonda;
@@ -186,6 +219,8 @@ export interface RisultatoSonda {
   endpoint: string;
   requestorRef: string;
   wsdl: { raggiunto: boolean; operazioni: string[]; dettaglio: string };
+  /** gli indirizzi gemelli provati con una GET ?wsdl: esistono altri servizi sullo stesso server? */
+  gemelli: Array<{ servizio: string; url: string; httpStatus: number; operazioni: string[]; esito: string }>;
   capacita: {
     dichiarate: Record<string, boolean>;
     letto: ReturnType<typeof parseCapabilities> | null;
@@ -212,17 +247,18 @@ const CONTEGGI: Record<string, string[]> = {
 };
 
 async function prova(
-  post: Trasporto, operazione: string, azioneSoap: string, scopo: string, corpo: string, grezzi: Record<string, string>,
+  post: Trasporto, url: string, operazione: string, azioneSoap: string, scopo: string, corpo: string,
+  grezzi: Record<string, string>,
 ): Promise<ProvaSonda> {
   let r: RispostaGrezza;
-  try { r = await post(azioneSoap, corpo); }
+  try { r = await post(azioneSoap, corpo, url); }
   catch (e: any) { r = { status: 0, xml: "" }; grezzi[operazione] = `(nessuna risposta: ${e?.message ?? e})`; }
   if (!(operazione in grezzi)) grezzi[operazione] = r.xml;
   const c = classificaRisposta(r.status, r.xml);
   const conteggi: Record<string, number> = {};
   for (const nome of CONTEGGI[operazione] ?? []) conteggi[nome] = contaElementi(r.xml, nome);
   return {
-    operazione, scopo, httpStatus: r.status, byte: Buffer.byteLength(r.xml),
+    operazione, scopo, endpoint: url, httpStatus: r.status, byte: Buffer.byteLength(r.xml),
     esito: c.esito, dettaglio: c.dettaglio, conteggi,
     elementiDistinti: nomiElementi(r.xml).length, richiestaXml: corpo,
   };
@@ -254,8 +290,30 @@ export async function eseguiSonda(
     wsdl = { raggiunto: false, operazioni: [], dettaglio: `?wsdl non raggiungibile: ${e?.message ?? e}` };
   }
 
+  /* 0b. Gli indirizzi gemelli: una GET ?wsdl ciascuno. Un 404 dice "non
+   * c'è"; un WSDL con operazioni dice "c'è, e queste sono le sue". */
+  const gemelli: RisultatoSonda["gemelli"] = [];
+  for (const g of endpointGemelli(cfg.url)) {
+    try {
+      const r = await get(`${g.url}?wsdl`);
+      const operazioni = operazioniWsdl(r.xml);
+      grezzi[`wsdl-${g.servizio}`] = r.xml;
+      gemelli.push({
+        ...g, httpStatus: r.status, operazioni,
+        esito: operazioni.length ? `esiste: ${operazioni.length} operazioni` : r.status === 404 ? "non esiste (404)" : `HTTP ${r.status}, nessun WSDL`,
+      });
+    } catch (e: any) {
+      gemelli.push({ ...g, httpStatus: 0, operazioni: [], esito: `nessuna risposta: ${e?.message ?? e}` });
+    }
+  }
+
+  /* Ogni servizio va interrogato sul SUO endpoint, se un gemello esiste;
+   * altrimenti su quello configurato, e il Fault dirà che non c'è. */
+  const urlPer = (servizio: string): string =>
+    gemelli.find(g => g.servizio === servizio && g.operazioni.length > 0)?.url ?? cfg.url;
+
   /* 1. Capacità di tutti i servizi. */
-  const cap = await prova(post, "GetCapabilities", "GetCapabilities",
+  const cap = await prova(post, cfg.url, "GetCapabilities", "GetCapabilities",
     "che cosa il server dichiara di sapere fare, servizio per servizio",
     buildCapabilitiesTutteRequest(cfg.requestorRef), grezzi);
   prove.push(cap);
@@ -266,9 +324,9 @@ export async function eseguiSonda(
   try { letto = cap.esito === "valida" ? parseCapabilities(capXml) : null; } catch { letto = null; }
 
   /* 2. VehicleMonitoring "calls" e "full", per differenza. */
-  const vmCalls = await prova(post, "GetVehicleMonitoring-calls", "GetVehicleMonitoring",
+  const vmCalls = await prova(post, cfg.url, "GetVehicleMonitoring-calls", "GetVehicleMonitoring",
     "la richiesta di oggi, come riferimento", buildVehicleMonitoringLivello(cfg.requestorRef, "calls"), grezzi);
-  const vmFull = await prova(post, "GetVehicleMonitoring-full", "GetVehicleMonitoring",
+  const vmFull = await prova(post, cfg.url, "GetVehicleMonitoring-full", "GetVehicleMonitoring",
     "la stessa richiesta col dettaglio massimo: arriva qualcosa in più?",
     buildVehicleMonitoringLivello(cfg.requestorRef, "full"), grezzi);
   prove.push(vmCalls, vmFull);
@@ -276,7 +334,7 @@ export async function eseguiSonda(
   const fullAggiunge = nomiElementi(grezzi["GetVehicleMonitoring-full"] ?? "").filter(n => !nomiCalls.has(n));
 
   /* 3. EstimatedTimetable. */
-  prove.push(await prova(post, "GetEstimatedTimetable", "GetEstimatedTimetable",
+  prove.push(await prova(post, urlPer("EstimatedTimetable"), "GetEstimatedTimetable", "GetEstimatedTimetable",
     "orari stimati corsa per corsa nelle prossime due ore: la fonte dei tempi di passaggio",
     buildEstimatedTimetableRequest(cfg.requestorRef), grezzi));
 
@@ -285,27 +343,27 @@ export async function eseguiSonda(
     ?? /<(?:[A-Za-z0-9_.-]+:)?StopPointRef[^>]*>([^<]+)</.exec(grezzi["GetVehicleMonitoring-calls"] ?? "")?.[1]?.trim()
     ?? null;
   if (fermata) {
-    prove.push(await prova(post, "GetStopMonitoring", "GetStopMonitoring",
+    prove.push(await prova(post, urlPer("StopMonitoring"), "GetStopMonitoring", "GetStopMonitoring",
       `arrivi previsti alla fermata ${fermata}`, buildStopMonitoringRequest(cfg.requestorRef, fermata), grezzi));
   }
 
   /* 5. ProductionTimetable, 6. SituationExchange. */
-  prove.push(await prova(post, "GetProductionTimetable", "GetProductionTimetable",
+  prove.push(await prova(post, urlPer("ProductionTimetable"), "GetProductionTimetable", "GetProductionTimetable",
     "il programma del giorno secondo l'AVM, da confrontare col GTFS",
     buildProductionTimetableRequest(cfg.requestorRef), grezzi));
-  prove.push(await prova(post, "GetSituationExchange", "GetSituationExchange",
+  prove.push(await prova(post, urlPer("SituationExchange"), "GetSituationExchange", "GetSituationExchange",
     "avvisi e deviazioni", buildSituationExchangeRequest(cfg.requestorRef), grezzi));
 
   return {
     quando: new Date().toISOString(),
     endpoint: cfg.url, requestorRef: cfg.requestorRef,
-    wsdl,
+    wsdl, gemelli,
     capacita: {
       dichiarate, letto,
       shortestPossibleCycle: /<(?:[A-Za-z0-9_.-]+:)?ShortestPossibleCycle>([^<]+)</.exec(capXml)?.[1] ?? null,
     },
     fullAggiunge, fermataProvata: fermata, prove,
-    lettura: leggiSonda({ wsdl, dichiarate, fullAggiunge, prove }),
+    lettura: leggiSonda({ wsdl, gemelli, dichiarate, fullAggiunge, prove }),
     grezzi,
   };
 }
@@ -316,6 +374,7 @@ export async function eseguiSonda(
  */
 export function leggiSonda(r: {
   wsdl: { operazioni: string[] };
+  gemelli?: Array<{ servizio: string; url: string; operazioni: string[] }>;
   dichiarate: Record<string, boolean>;
   fullAggiunge: string[];
   prove: ProvaSonda[];
@@ -348,12 +407,22 @@ export function leggiSonda(r: {
     out.push("ProductionTimetable risponde con il programma del giorno: si può confrontare direttamente col GTFS, corsa per corsa.");
   }
 
+  const trovati = (r.gemelli ?? []).filter(g => g.operazioni.length > 0);
+  if (trovati.length) {
+    out.push(`Sullo stesso server esistono altri endpoint SIRI: ${trovati.map(g => `${g.servizio} (${g.url})`).join(", ")}. Le prove qui sopra li hanno interrogati al loro indirizzo.`);
+  }
+
   const dichiarati = Object.entries(r.dichiarate).filter(([, v]) => v).map(([k]) => k);
   const soloVm = dichiarati.length === 1 && dichiarati[0] === "VehicleMonitoring";
   const wsdlSoloVm = r.wsdl.operazioni.length > 0
     && !r.wsdl.operazioni.some(o => /EstimatedTimetable|StopMonitoring|ProductionTimetable/.test(o));
-  if (soloVm || wsdlSoloVm) {
-    out.push("Il server dichiara il solo VehicleMonitoring: gli altri servizi non sono un'opzione da configurare da parte nostra, vanno chiesti a Mizar.");
+  if ((soloVm || wsdlSoloVm) && !trovati.length) {
+    out.push(r.gemelli?.length
+      ? "Questo endpoint espone il solo VehicleMonitoring e nessun indirizzo gemello risponde: gli altri servizi vanno chiesti a Mizar."
+      : "Il server dichiara il solo VehicleMonitoring: gli altri servizi non sono un'opzione da configurare da parte nostra, vanno chiesti a Mizar.");
+  }
+  if (r.wsdl.operazioni.includes("Subscribe")) {
+    out.push("Il server accetta sottoscrizioni (Subscribe/DeleteSubscription): può spingerci gli aggiornamenti invece di rispondere a un poll ogni 30 secondi.");
   }
   return out;
 }
