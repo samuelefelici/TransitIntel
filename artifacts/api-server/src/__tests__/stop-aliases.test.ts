@@ -11,8 +11,8 @@
 import { describe, it, expect } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { parseTranscodifica, indiceTranscodifica, verificaTranscodifica, caricaTranscodifica, resetTranscodifica } from "../lib/stop-aliases";
-import { resolveStop, type GtfsIndex } from "../lib/siri-vm";
+import { parseTranscodifica, leggiTranscodificaCompleta, indiceTranscodifica, verificaTranscodifica, caricaTranscodifica, resetTranscodifica, classificaAbbinamenti } from "../lib/stop-aliases";
+import { resolveStop, namesCompatible, type GtfsIndex } from "../lib/siri-vm";
 
 const CSV = `﻿mizar_ref,stop_id,nome
 1122,20045,ANCONA (Via Marconi Gas)
@@ -86,5 +86,35 @@ describe("verificaTranscodifica", () => {
       stopConPiuCodici: [],
       collisioni: [{ mizarRef: "200", stopIdGiusto: "20001", stopIdOmonimo: "200" }],
     });
+  });
+});
+
+describe("classificaAbbinamenti: ogni palina con il suo stato", () => {
+  const { valide, scartate } = leggiTranscodificaCompleta(CSV);
+  const feed = {
+    stops: new Set(["20001", "200", "20045", "77"]),
+    stopNames: new Map([["20001", "PIAZZA CAVOUR (CONEROBUS LINEE NORD)"], ["200", "VIA DEL CONERO - CASACCIA"], ["20045", "OSIMO STAZIONE"], ["77", "Fermata orfana"]]),
+  };
+  it("distingue abbinata, sospetta, fermata assente e senza codice; segnala collisioni e orfane", () => {
+    const a = classificaAbbinamenti(valide, scartate, feed, { refs: ["1122", "9999"] }, namesCompatible);
+    const per = Object.fromEntries(a.righe.map(r => [r.mizarRef, r]));
+    expect(per["200"]).toMatchObject({ stato: "abbinata", stopId: "20001", collisione: "200 = VIA DEL CONERO - CASACCIA", vistaNelFlusso: false });
+    expect(per["1122"]).toMatchObject({ stato: "sospetta", nomeFeed: "OSIMO STAZIONE", vistaNelFlusso: true });   // nome incompatibile
+    expect(per["461"]).toMatchObject({ stato: "fermata_assente", stopId: "20928", nomeFeed: null });
+    expect(per["199"]).toMatchObject({ stato: "abbinata", stopId: "200", collisione: null });
+    expect(per["5102"]).toMatchObject({ stato: "senza_codice", stopId: null, nomeMizar: "FABRIANO (Via Dante, 39)" });
+    expect(a.feedSenzaCodice).toEqual([{ stopId: "77", nome: "Fermata orfana" }]);
+    expect(a.flussoNonTrascodificato).toEqual(["9999"]);
+    expect(a.riepilogo).toEqual({
+      paline: 5, abbinate: 2, sospette: 1, fermateAssenti: 1, senzaCodice: 1,
+      collisioni: 1, feedSenzaCodice: 1, flussoNonTrascodificato: 1,
+    });
+    expect(a.lettura.join("\n")).toMatch(/1 sospette/);
+    expect(a.lettura.join("\n")).toMatch(/1 codici Mizar coincidono con lo stop_id di un'altra fermata/);
+  });
+  it("senza feed tutto risulta assente, e lo dice", () => {
+    const a = classificaAbbinamenti(valide, [], { stops: new Set(), stopNames: new Map() });
+    expect(a.riepilogo.fermateAssenti).toBe(4);
+    expect(a.feedSenzaCodice).toEqual([]);
   });
 });

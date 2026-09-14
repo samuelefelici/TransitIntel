@@ -29,10 +29,15 @@ export interface RigaTranscodifica {
   nome: string | null;
 }
 
-/** Legge il CSV; tollera BOM, righe vuote e virgolette. */
-export function parseTranscodifica(testo: string): RigaTranscodifica[] {
+/** Una palina del file senza un codice del feed ("new_CT"): esiste per
+ *  Mizar, non ancora per l'esportazione. */
+export interface RigaScartata { mizarRef: string; nome: string | null; stopIdGrezzo: string }
+
+/** Legge il CSV per intero: le righe valide e quelle senza codice, separate. */
+export function leggiTranscodificaCompleta(testo: string): { valide: RigaTranscodifica[]; scartate: RigaScartata[] } {
   const righe = testo.replace(/^﻿/, "").split(/\r?\n/);
-  const out: RigaTranscodifica[] = [];
+  const valide: RigaTranscodifica[] = [];
+  const scartate: RigaScartata[] = [];
   let prima = true;
   for (const riga of righe) {
     if (!riga.trim()) continue;
@@ -43,11 +48,20 @@ export function parseTranscodifica(testo: string): RigaTranscodifica[] {
     }
     const mizarRef = (campi[0] ?? "").trim();
     const stopId = (campi[1] ?? "").trim();
-    if (!mizarRef || !stopId) continue;
-    if (!/^[0-9A-Za-z_.:-]+$/.test(stopId) || /^new_/i.test(stopId)) continue;
-    out.push({ mizarRef, stopId, nome: (campi[2] ?? "").trim() || null });
+    const nome = (campi[2] ?? "").trim() || null;
+    if (!mizarRef) continue;
+    if (!stopId || !/^[0-9A-Za-z_.:-]+$/.test(stopId) || /^new_/i.test(stopId)) {
+      scartate.push({ mizarRef, nome, stopIdGrezzo: stopId });
+      continue;
+    }
+    valide.push({ mizarRef, stopId, nome });
   }
-  return out;
+  return { valide, scartate };
+}
+
+/** Legge il CSV; tollera BOM, righe vuote e virgolette. Solo le righe valide. */
+export function parseTranscodifica(testo: string): RigaTranscodifica[] {
+  return leggiTranscodificaCompleta(testo).valide;
 }
 
 function spezzaCsv(riga: string): string[] {
@@ -94,24 +108,132 @@ export function percorsiCandidati(): string[] {
   return [...new Set(out)];
 }
 
-let cache: { percorso: string | null; righe: RigaTranscodifica[]; indice: Map<string, string>; errore: string | null } | null = null;
+interface Transcodifica {
+  percorso: string | null;
+  righe: RigaTranscodifica[];
+  scartate: RigaScartata[];
+  indice: Map<string, string>;
+  errore: string | null;
+}
+let cache: Transcodifica | null = null;
 
 /** La transcodifica caricata una volta per processo. Senza file: vuota, con il motivo. */
-export function caricaTranscodifica(force = false): { percorso: string | null; righe: RigaTranscodifica[]; indice: Map<string, string>; errore: string | null } {
+export function caricaTranscodifica(force = false): Transcodifica {
   if (cache && !force) return cache;
   for (const p of percorsiCandidati()) {
     try {
       if (!fs.existsSync(p)) continue;
-      const righe = parseTranscodifica(fs.readFileSync(p, "utf8"));
-      cache = { percorso: p, righe, indice: indiceTranscodifica(righe), errore: null };
+      const { valide, scartate } = leggiTranscodificaCompleta(fs.readFileSync(p, "utf8"));
+      cache = { percorso: p, righe: valide, scartate, indice: indiceTranscodifica(valide), errore: null };
       return cache;
     } catch (e: any) {
-      cache = { percorso: p, righe: [], indice: new Map(), errore: e?.message ?? String(e) };
+      cache = { percorso: p, righe: [], scartate: [], indice: new Map(), errore: e?.message ?? String(e) };
       return cache;
     }
   }
-  cache = { percorso: null, righe: [], indice: new Map(), errore: `file ${NOME_FILE} non trovato (SIRI_STOP_ALIAS_FILE per indicarlo)` };
+  cache = { percorso: null, righe: [], scartate: [], indice: new Map(), errore: `file ${NOME_FILE} non trovato (SIRI_STOP_ALIAS_FILE per indicarlo)` };
   return cache;
+}
+
+/* ── Gli abbinamenti, uno per uno ───────────────────────────────────────────
+ * La verifica qui sopra conta. Questa elenca: ogni palina con il suo stato,
+ * perché chi tiene la tabella possa correggerla riga per riga. Gli stati
+ * sono esclusivi; la collisione è un'informazione in più, perché un
+ * abbinamento giusto può comunque avere un numero che nel feed è un'altra
+ * fermata. */
+
+export type StatoAbbinamento =
+  | "abbinata"          // fermata nel feed, nomi compatibili
+  | "sospetta"          // fermata nel feed, ma il nome dice un'altra cosa
+  | "fermata_assente"   // lo stop_id della tabella non esiste nel feed in uso
+  | "senza_codice";     // palina di Mizar senza codice del feed ("new_CT")
+
+export interface Abbinamento {
+  mizarRef: string;
+  stopId: string | null;
+  nomeMizar: string | null;
+  nomeFeed: string | null;
+  stato: StatoAbbinamento;
+  /** il codice Mizar coincide con lo stop_id di un'ALTRA fermata del feed */
+  collisione: string | null;
+  /** quante altre paline Mizar puntano alla stessa fermata */
+  condivisaCon: number;
+  /** vista nel flusso SIRI dell'ultimo giro */
+  vistaNelFlusso: boolean;
+}
+
+export interface FermataSenzaCodice { stopId: string; nome: string | null }
+
+export interface Abbinamenti {
+  righe: Abbinamento[];
+  /** fermate del feed che nessun codice Mizar raggiunge */
+  feedSenzaCodice: FermataSenzaCodice[];
+  /** codici visti nel flusso SIRI che la tabella non ha */
+  flussoNonTrascodificato: string[];
+  riepilogo: {
+    paline: number;
+    abbinate: number; sospette: number; fermateAssenti: number; senzaCodice: number;
+    collisioni: number; feedSenzaCodice: number; flussoNonTrascodificato: number;
+  };
+  lettura: string[];
+}
+
+export function classificaAbbinamenti(
+  righe: RigaTranscodifica[], scartate: RigaScartata[],
+  feed: { stops: Set<string>; stopNames: Map<string, string> },
+  flusso: { refs: string[] } = { refs: [] },
+  nomiCompatibili: (a: string | null, b: string | null) => boolean = (a, b) => !a || !b || a.trim().toUpperCase() === b.trim().toUpperCase(),
+): Abbinamenti {
+  const perStop = new Map<string, number>();
+  for (const r of righe) perStop.set(r.stopId, (perStop.get(r.stopId) ?? 0) + 1);
+  const visti = new Set(flusso.refs.map(x => x.trim()));
+  const trascodificati = new Set(righe.map(r => r.mizarRef));
+
+  const out: Abbinamento[] = righe.map(r => {
+    const nelFeed = feed.stops.has(r.stopId);
+    const nomeFeed = nelFeed ? (feed.stopNames.get(r.stopId) ?? null) : null;
+    const stato: StatoAbbinamento = !nelFeed ? "fermata_assente"
+      : nomiCompatibili(r.nome, nomeFeed) ? "abbinata" : "sospetta";
+    const collisione = feed.stops.has(r.mizarRef) && r.mizarRef !== r.stopId
+      ? `${r.mizarRef} = ${feed.stopNames.get(r.mizarRef) ?? "?"}` : null;
+    return {
+      mizarRef: r.mizarRef, stopId: r.stopId, nomeMizar: r.nome, nomeFeed, stato, collisione,
+      condivisaCon: (perStop.get(r.stopId) ?? 1) - 1,
+      vistaNelFlusso: visti.has(r.mizarRef),
+    };
+  });
+  for (const s of scartate) {
+    out.push({
+      mizarRef: s.mizarRef, stopId: null, nomeMizar: s.nome, nomeFeed: null, stato: "senza_codice",
+      collisione: feed.stops.has(s.mizarRef) ? `${s.mizarRef} = ${feed.stopNames.get(s.mizarRef) ?? "?"}` : null,
+      condivisaCon: 0, vistaNelFlusso: visti.has(s.mizarRef),
+    });
+  }
+
+  const feedSenzaCodice: FermataSenzaCodice[] = [...feed.stops]
+    .filter(s => !perStop.has(s)).sort()
+    .map(s => ({ stopId: s, nome: feed.stopNames.get(s) ?? null }));
+  const flussoNonTrascodificato = [...visti].filter(x => x && !trascodificati.has(x)).sort();
+
+  const conta = (st: StatoAbbinamento) => out.filter(x => x.stato === st).length;
+  const riepilogo: Abbinamenti["riepilogo"] = {
+    paline: out.length,
+    abbinate: conta("abbinata"), sospette: conta("sospetta"),
+    fermateAssenti: conta("fermata_assente"), senzaCodice: conta("senza_codice"),
+    collisioni: out.filter(x => x.collisione).length,
+    feedSenzaCodice: feedSenzaCodice.length,
+    flussoNonTrascodificato: flussoNonTrascodificato.length,
+  };
+
+  const lettura: string[] = [];
+  lettura.push(`${riepilogo.paline} paline nella tabella: ${riepilogo.abbinate} abbinate a una fermata del feed con lo stesso nome.`);
+  if (riepilogo.sospette) lettura.push(`${riepilogo.sospette} sospette: la fermata esiste nel feed ma il nome è un altro; da controllare una per una.`);
+  if (riepilogo.fermateAssenti) lettura.push(`${riepilogo.fermateAssenti} puntano a uno stop_id che il feed in uso non ha: paline nuove, o feed vecchio.`);
+  if (riepilogo.senzaCodice) lettura.push(`${riepilogo.senzaCodice} paline senza codice del feed («new_CT»): da codificare nel software aziendale.`);
+  if (riepilogo.feedSenzaCodice) lettura.push(`${riepilogo.feedSenzaCodice} fermate del feed non hanno nessun codice Mizar: da lì non arriverà mai un passaggio dichiarato dall'AVM.`);
+  if (riepilogo.collisioni) lettura.push(`${riepilogo.collisioni} codici Mizar coincidono con lo stop_id di un'altra fermata: senza la tabella sarebbero fermate sbagliate.`);
+  if (riepilogo.flussoNonTrascodificato) lettura.push(`${riepilogo.flussoNonTrascodificato} codici visti nel flusso SIRI dell'ultimo giro mancano dalla tabella.`);
+  return { righe: out, feedSenzaCodice, flussoNonTrascodificato, riepilogo, lettura };
 }
 
 /** Per i collaudi. */

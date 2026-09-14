@@ -41,7 +41,8 @@ import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
 import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, leggiFermataFeed, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
-import { caricaTranscodifica, verificaTranscodifica } from "../lib/stop-aliases";
+import { caricaTranscodifica, verificaTranscodifica, classificaAbbinamenti } from "../lib/stop-aliases";
+import { namesCompatible } from "../lib/siri-vm";
 
 const router: IRouter = Router();
 
@@ -95,6 +96,10 @@ let ultimoGiro: {
   /* Chiuse perché il mezzo ha smesso di trasmettere: senza questo numero, un
    * calo improvviso delle corse aperte sembrerebbe un guasto. */
   corseAbbandonate: number;
+  /* Le fermate come le ha viste l'ultimo giro: i codici Mizar che non si
+   * sono agganciati e quelli agganciati, per confrontarli con la tabella di
+   * transcodifica. Prima vivevano il tempo del giro. */
+  fermate: { nonAgganciate: string[]; conflitti: string[]; agganciate: number; perId: number; perNome: number };
 } | null = null;
 
 /* I nomi che legge chi apre la pagina: "senza_rete" è una chiave, non una
@@ -798,6 +803,45 @@ router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
   });
 });
 
+/* ── Gli abbinamenti palina per palina ───────────────────────────────────
+ * La pagina «Paline Mizar» di Dati & GTFS. Ogni riga della tabella con il
+ * suo stato (abbinata, sospetta, fermata assente, senza codice), le
+ * fermate del feed che nessun codice raggiunge, e i codici visti nel
+ * flusso SIRI dell'ultimo giro che la tabella non ha.
+ *
+ *   GET /api/siri/fermate/abbinamenti
+ *   GET /api/siri/fermate/abbinamenti?formato=csv
+ */
+router.get("/siri/fermate/abbinamenti", async (req, res): Promise<void> => {
+  const t = caricaTranscodifica();
+  const index = await loadGtfsIndex().catch(() => null);
+  const feed = index
+    ? { stops: index.stops, stopNames: index.stopNames }
+    : { stops: new Set<string>(), stopNames: new Map<string, string>() };
+  const flusso = ultimoGiro?.fermate
+    ? { refs: [...ultimoGiro.fermate.nonAgganciate, ...ultimoGiro.fermate.conflitti.map(c => c.split(":")[0])] }
+    : { refs: [] };
+  const a = classificaAbbinamenti(t.righe, t.scartate, feed, flusso, namesCompatible);
+
+  if (String(req.query.formato ?? "") === "csv") {
+    const testata = ["codice_mizar", "stop_id_feed", "nome_mizar", "nome_feed", "stato", "collisione", "condivisa_con", "vista_nel_flusso"];
+    const q = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const righe = a.righe.map(r => [r.mizarRef, r.stopId, r.nomeMizar, r.nomeFeed, r.stato, r.collisione, r.condivisaCon, r.vistaNelFlusso ? "sì" : ""].map(q).join(","));
+    const senza = a.feedSenzaCodice.map(f => ["", f.stopId, "", f.nome, "feed_senza_codice", "", 0, ""].map(q).join(","));
+    res.type("text/csv; charset=utf-8")
+      .setHeader("Content-Disposition", `attachment; filename="paline-mizar-${new Date().toISOString().slice(0, 10)}.csv"`)
+      .send("﻿" + [testata.join(","), ...righe, ...senza].join("\r\n"));
+    return;
+  }
+
+  res.json({
+    file: t.percorso, errore: t.errore, feed: index?.feedId ?? null,
+    ultimoGiro: ultimoGiro ? { alle: ultimoGiro.at, ...ultimoGiro.fermate } : null,
+    ...a,
+    nota: index ? undefined : "nessun feed GTFS caricato: gli stati sono calcolati senza feed",
+  });
+});
+
 /* ── Una fermata vista da Mizar, a confronto con il feed ─────────────────
  * StopMonitoring (endpoint SMWS di Mizar) per UNA fermata: i passaggi
  * programmati delle ore successive con il numero di corsa MTRAM, e per i
@@ -1339,6 +1383,13 @@ async function eseguiGiro(): Promise<Record<string, unknown>> {
     corseAbbandonate: ingest.corseAbbandonate,
     posizioniInserite: ingest.positionsInserted,
     corseAperte: ingest.tripsOpened,
+    fermate: {
+      nonAgganciate: ingest.report.unmatchedStopRefs,
+      conflitti: ingest.report.stopIdNameConflicts,
+      agganciate: ingest.report.stopMatched,
+      perId: ingest.report.stopMatchedById,
+      perNome: ingest.report.stopMatchedByName,
+    },
   };
   const poll = siriPoll();
 
