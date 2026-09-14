@@ -301,16 +301,32 @@ export default function OperationsPage() {
     if (fermate.length === 0) return null;
     return {
       type: "FeatureCollection" as const,
-      features: fermate.map((s) => ({
-        type: "Feature" as const,
-        properties: {
-          colore: s.raggiunta !== false && s.actualTs ? s.tinta.colore : "#1e293b",
-          bordo: s.origine === "osservato" ? "#ffffff" : "#94a3b8",
-          raggio: s.origine === "osservato" ? 5 : 3.5,
-          nome: s.stopName ?? s.stopId ?? "",
-        },
-        geometry: { type: "Point" as const, coordinates: [s.lon!, s.lat!] },
-      })),
+      features: fermate.map((s) => {
+        /* L'ora prevista alle fermate da raggiungere, scritta accanto al
+           pallino: la previsione di Mizar se c'è, altrimenti la nostra stima
+           (che prolunga lo scarto corrente). Il segno davanti dice quale
+           delle due: «M» Mizar, «~» nostra. Alle fermate già passate niente
+           etichetta: il colore dice già tutto. */
+        const daVenire = s.raggiunta === false;
+        const pm = s.previsioneMizar;
+        const etichetta = !daVenire ? ""
+          : pm ? `M ${fmtTime(pm.expectedTs).slice(0, 5)}`
+          : s.actualTs ? `~ ${fmtTime(s.actualTs).slice(0, 5)}`
+          : "";
+        const coloreEtichetta = pm ? colore(pm.tinta) : s.actualTs ? colore(s.tinta) : "#94a3b8";
+        return {
+          type: "Feature" as const,
+          properties: {
+            colore: s.raggiunta !== false && s.actualTs ? s.tinta.colore : "#1e293b",
+            bordo: s.origine === "osservato" ? "#ffffff" : "#94a3b8",
+            raggio: s.origine === "osservato" ? 5 : 3.5,
+            nome: s.stopName ?? s.stopId ?? "",
+            etichetta,
+            coloreEtichetta,
+          },
+          geometry: { type: "Point" as const, coordinates: [s.lon!, s.lat!] },
+        };
+      }),
     };
   }, [transitsQ.data]);
 
@@ -420,6 +436,29 @@ export default function OperationsPage() {
                 "circle-color": ["get", "colore"],
                 "circle-stroke-width": 1.5,
                 "circle-stroke-color": ["get", "bordo"],
+              }}
+            />
+            {/* L'ora prevista di passaggio, solo alle fermate da raggiungere:
+                è la risposta alla domanda «quando arriva lì?», letta sulla
+                mappa senza aprire la tabella. Il colore è quello dello scarto
+                previsto, con la stessa scala delle misure. */}
+            <Layer
+              id="trip-fermate-previsioni"
+              type="symbol"
+              minzoom={11}
+              filter={["!=", ["get", "etichetta"], ""]}
+              layout={{
+                "text-field": ["get", "etichetta"],
+                "text-size": 11,
+                "text-offset": [0.8, 0],
+                "text-anchor": "left",
+                "text-allow-overlap": true,
+                "text-ignore-placement": true,
+              }}
+              paint={{
+                "text-color": ["get", "coloreEtichetta"],
+                "text-halo-color": "#0b1220",
+                "text-halo-width": 1.4,
               }}
             />
           </Source>
