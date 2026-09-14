@@ -706,13 +706,32 @@ AX (`1f51ec44`, scenario `f97e116d`, 1947 s): dieci sonde, il resto come AU. **R
 - **2/6 −8′** (tre volte) e **42 +9′**: `catenaTroppoLunga`, il tetto di 12 corse. Con line_mode il tetto si conta in linee.
 - Un `crew-both` da 60′ e un `tail-` sulla 91 (−13′) bocciati come sempre.
 
-I candidati bocciati si ripresentano identici a ogni round: la sonda non ha memoria dei rifiuti e spende tre sonde per round sugli stessi tentativi. Con line_mode alcuni passeranno; quelli che restano bocciati vanno ricordati fra un round e l'altro (in sospeso).
+**Correzione (rilettura del codice):** i candidati bocciati dal filtro (coincidenze, macchina) NON consumano sonde — il filtro costa zero e gira prima del solver; le quattro ripetizioni della 7 −11 sono le quattro passate del ciclo, registrate ogni volta. Il fatto vero e' un altro: **su dieci sonde chieste ne sono state usate tre**, perche' la coda si e' svuotata — zero candidati dai turni, uno dai blocchi, e dei quattro di linea (tetto della lista) tre morti nel filtro. La sonda non ha esaurito il budget: ha esaurito le idee, e il rendiconto non lo diceva.
 
 **Il round 5 e' il segnale piu' interessante e il piu' pericoloso**: 37 turni (sei in meno), 20 250 € (−1 300), ma 11 violazioni BDS e 26 vetture. La selezione lessicografica (violazioni prima del punteggio) lo scarta, com'e' giusto — ma dice che con sei turni in meno il costo cala di 1 300 € al giorno. Vanno lette le undici violazioni: se sono tutte «intero senza sosta ≥ 15′ al capolinea», e' il punto in cui la sosta al capolinea periferico (il cuscinetto del giro rigido) puo' fare la differenza.
 
 **Sagoma**: 129 corse declassate (35%), 60 in punta; superamenti su 30 (17% in punta), 31 (17%, 36% in punta), 42 (23%). Peggio di AU sulla 3 (39 declassate contro 29), meglio sulla 30 (2 contro 10). Fronte aperto, invariato.
 
 AX girava **senza** line_mode e senza il guardiano della macchina, e con la flex vecchia (10′ su 3, 2/6 e 1/4): le tre cose sono arrivate dopo (#523 e `ti_set_flex`). Il giro AY e' il primo con tutte e tre, e con davanti la 3 a −14 con la 31 al seguito.
+
+## La sonda impara: memoria dei rifiuti, alternative, lezioni fra i giri (14 settembre)
+
+Obiettivo dato dall'operatore al lancio di AY: «un sistema che impara dagli errori, che migliora ogni volta e che sappia lavorare completamente in simbiosi tra scheduling e programmazione: devono lavorare insieme come una squadra». Il primo pezzo e' la sonda, perche' e' il punto in cui il piano (i turni) parla all'orario (il programma) e viceversa.
+
+**Cosa c'era.** La sonda non aveva memoria di niente. Dentro il giro rivalutava e riscriveva lo stesso rifiuto a ogni passata del ciclo (AX: la 7 a −11 quattro volte); fra un giro e l'altro ripartiva da zero, e l'unica memoria era questo registro, scritto a mano. E quando la coda si svuotava non lo diceva: in AX tre sonde su dieci, e il rendiconto mostrava «probesRun: 3» senza spiegare perche'.
+
+**Cosa c'e' ora** (`vcsp_probe.py`, `vcsp_orchestrator.py`, rotta dell'agente, connettore):
+
+- **Una firma stabile per ogni candidato** (`linea:7:-11`, `tail-:a1b2c3d4-13`): e' la chiave della memoria, uguale dentro il giro e fra un giro e l'altro. Una linea intera si riconosce da linea e delta, non dagli id delle corse.
+- **Il rifiuto del filtro si registra una volta**, coi `tentativi` accanto; i contatori (`rejectedForCoincidence`, `propagationFailures`, `rejectedForRoundTrip`) contano candidati distinti, non passate. Il filtro continua a girare a ogni passata — dopo un'accettazione lo stato cambia e un candidato morto puo' passare — ma non inganna piu' sul costo: zero sonde.
+- **Il motivo del rifiuto indica la mossa dopo.** La lista dei candidati di linea porta, dopo la mossa migliore di ogni linea, le sue ALTERNATIVE: gli altri delta con saldo positivo dentro la flessibilita' (`alternativaDi` nel rendiconto), tetto 12 invece di 4. Se la 7 a −11 muore perche' la 2/6 non regge il trascinamento, si prova il delta dopo, non si abbandona la linea.
+- **La coda esaurita si dichiara**: `codaEsaurita` e `sondeNonUsate` nel rendiconto e nel log («3 sonde su 10 (coda esaurita)»).
+- **Lezioni in uscita** (`lezioni`: una voce per firma con esito, motivo, tentativi, effetto sul punteggio e vetture prima/dopo) **e in entrata**: il server allega al giro le lezioni degli ultimi cinque giri completati sullo stesso progetto e la stessa data (`loadProbeLessons`, dal registro persistente; `params.memoria` dice quante e da quanti giri). La sonda le usa per ORDINARE la coda — chi era stato accettato si riprova per primo, chi il solver aveva bocciato va in fondo, chi era morto nel filtro si ricontrolla perche' costa zero — **mai per vietare**: il piano cambia da un giro all'altro, e un candidato bocciato ieri puo' passare oggi. `memoria: false` in `ti_vcsp_run` spegne tutto per un giro da zero.
+- **Baco trovato per strada, e riparato**: la pazienza dell'early-stop (`earlyStopPatience`) arrivava dal connettore e moriva nella rotta dell'agente, che non la passava al motore. L'esperimento sulla pazienza sarebbe girato con 2 e nessuno se ne sarebbe accorto. Ora passa, finisce nei parametri del giro e `ti_vcsp_compare` la confronta.
+
+**Cosa NON fa ancora, per onesta'.** La memoria e' della sonda, non dei round (il VSP/CSP riparte da zero ogni giro). Le lezioni non portano le condizioni in cui sono state imparate: una lezione presa a flex 10 vale anche a flex 15, dove potrebbe essere superata — per questo ordina e non vieta. E non c'e' ancora un ritorno dall'operatore (accettato o rifiutato in Cerbero) verso la sonda: quella e' la lezione che vale di piu', ed e' il passo dopo.
+
+14 test nuovi (`test_sonda_memoria.py`): 270 verdi.
 
 ## Il prossimo intervento (superato dal precedente)
 
@@ -725,7 +744,7 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
-- La sonda ripropone a ogni round gli stessi candidati gia' bocciati (AX: 7 −11 quattro volte, 2/6 −8 tre volte): serve una memoria dei rifiuti fra un round e l'altro, cosi' le sonde vanno ai candidati successivi.
+- La sonda in AX ha usato tre sonde su dieci perche' la coda dei candidati si e' svuotata (lista di linea a quattro, tre morti nel filtro): la coda non deve svuotarsi finche' c'e' budget, e il motivo del rifiuto deve indicare la mossa successiva (delta alternativo della stessa linea).
 - Leggere le undici violazioni del round 5 di AX (37 turni): se sono soste al capolinea, e' il cuscinetto del giro rigido a decidere.
 - Esperimento sulla pazienza dell'early-stop (`earlyStopPatience: 3`) appena il catalogo MCP espone la manopola.
 - Ruotare la chiave di scrittura MCP (`MCP_WRITE_KEY`) a fine giornata: mai incollarla in chat.
