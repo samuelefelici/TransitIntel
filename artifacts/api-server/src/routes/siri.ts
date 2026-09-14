@@ -42,6 +42,7 @@ import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
 import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, leggiFermataFeed, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
 import { caricaTranscodifica, verificaTranscodifica, classificaAbbinamenti } from "../lib/stop-aliases";
+import { aggiornaPrevisioni, esitoPrevisioni, type EsitoPrevisioni } from "../lib/siri-sm-ingest";
 import { namesCompatible } from "../lib/siri-vm";
 
 const router: IRouter = Router();
@@ -100,6 +101,8 @@ let ultimoGiro: {
    * sono agganciati e quelli agganciati, per confrontarli con la tabella di
    * transcodifica. Prima vivevano il tempo del giro. */
   fermate: { nonAgganciate: string[]; conflitti: string[]; agganciate: number; perId: number; perNome: number };
+  /* L'ultimo ciclo StopMonitoring: quante fermate chieste, quante previsioni. */
+  previsioni: EsitoPrevisioni | null;
 } | null = null;
 
 /* I nomi che legge chi apre la pagina: "senza_rete" è una chiave, non una
@@ -298,6 +301,7 @@ router.get("/siri/status", async (req, res): Promise<void> => {
         posizioniInserite: ultimoGiro.posizioniInserite,
         corseAperte: ultimoGiro.corseAperte,
       },
+      previsioniFermate: ultimoGiro.previsioni,
     }
     : {
       diagnosi: "Il poller non ha ancora completato un giro da quando il "
@@ -1372,6 +1376,18 @@ async function eseguiGiro(): Promise<Record<string, unknown>> {
   }
   const ingest = await ingestVehicles(result.vehicles);
   const cancelled = await closeCancelled(result.cancellations);
+
+  /* Le previsioni alle prossime fermate dei mezzi seguiti, dallo
+   * StopMonitoring. Dopo l'ingestione, mai al posto: un errore qui non tocca
+   * posizioni, corse e transiti. Il ciclo si autolimita a un giro al minuto. */
+  let previsioni: EsitoPrevisioni | null = null;
+  try {
+    const index = await loadGtfsIndex();
+    if (index) previsioni = await aggiornaPrevisioni(cfg, index, ingest.corseAttive, giornataOggi(new Date()));
+  } catch (e: any) {
+    console.warn("[siri] previsioni alle fermate:", e?.message ?? e);
+  }
+
   ultimoGiro = {
     funnel: ingest.funnel,
     nota: ingest.funnelNota,
@@ -1390,6 +1406,7 @@ async function eseguiGiro(): Promise<Record<string, unknown>> {
       perId: ingest.report.stopMatchedById,
       perNome: ingest.report.stopMatchedByName,
     },
+    previsioni: previsioni ?? esitoPrevisioni(),
   };
   const poll = siriPoll();
 
@@ -1415,6 +1432,9 @@ async function eseguiGiro(): Promise<Record<string, unknown>> {
      * domanda successiva: non "quanti dati entrano", ma "di quanti ci si
      * può fidare". Il dettaglio è in GET /api/siri/aggancio. */
     verificaAgganci: ingest.riepilogoAgganci,
+    /* Le previsioni di Mizar alle prossime fermate dei mezzi seguiti: quante
+     * fermate chieste allo StopMonitoring e quante previsioni registrate. */
+    previsioniFermate: previsioni ?? undefined,
     intervalloPollSec: poll.effettivo,
     avviso: poll.ridotto
       ? `SIRI_POLL_SECONDS=${poll.richiesto}: oltre i ${MAX_GAP_SEC} s il cambio di fermata `

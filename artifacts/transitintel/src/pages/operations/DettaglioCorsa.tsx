@@ -53,6 +53,23 @@ export interface FermataCorsa {
   /** false = il mezzo non è ancora arrivato qui: l'orario è una previsione */
   raggiunta?: boolean;
   tinta: Tinta;
+  /** la previsione di Mizar (StopMonitoring) per questa fermata, se c'è:
+   *  una seconda opinione accanto alla nostra, mai una misura */
+  previsioneMizar?: {
+    expectedTs: string;
+    primaPrevisioneTs: string;
+    stato: string | null;
+    scartoSec: number | null;
+    tinta: Tinta;
+    aggiornataAlle: string;
+  } | null;
+}
+
+export interface PrevisioniMizarInfo {
+  fonte: string;
+  fermate: number;
+  aggiornateAlle: string | null;
+  nota: string;
 }
 
 /** Il grigio di "non si sa". Mai usato per uno scarto vero. */
@@ -134,8 +151,11 @@ export function LegendaRitardo({ l }: { l: Legenda }) {
 
 /* ── Le fermate ───────────────────────────────────────────────────────────── */
 
-export function TabellaFermate({ fermate }: { fermate: FermataCorsa[] }) {
+export function TabellaFermate({ fermate, previsioni }: { fermate: FermataCorsa[]; previsioni?: PrevisioniMizarInfo | null }) {
   if (fermate.length === 0) return null;
+  /* La colonna di Mizar compare solo se c'è almeno una previsione: una
+     colonna sempre vuota insegna a non guardarla. */
+  const conMizar = fermate.some(s => s.previsioneMizar);
   return (
     <table className="w-full text-[11px]">
       <thead>
@@ -144,6 +164,11 @@ export function TabellaFermate({ fermate }: { fermate: FermataCorsa[] }) {
           <th className="px-1.5 py-1 font-medium text-right">Progr.</th>
           <th className="px-1.5 py-1 font-medium text-right">Reale</th>
           <th className="px-1.5 py-1 font-medium text-right">Δ</th>
+          {conMizar && (
+            <th className="px-1.5 py-1 font-medium text-right" title={previsioni?.nota ?? "orario previsto da Mizar (StopMonitoring)"}>
+              Mizar
+            </th>
+          )}
         </tr>
       </thead>
       <tbody>
@@ -155,6 +180,7 @@ export function TabellaFermate({ fermate }: { fermate: FermataCorsa[] }) {
              fra quanto aspettare il mezzo — ma non deve avere il colore e il
              peso di una misura. */
           const daVenire = s.raggiunta === false;
+          const pm = s.previsioneMizar ?? null;
           return (
             <tr
               key={`${s.stopId}-${i}`}
@@ -203,6 +229,28 @@ export function TabellaFermate({ fermate }: { fermate: FermataCorsa[] }) {
                   <span className="text-muted-foreground font-normal">*</span>
                 )}
               </td>
+              {/* La previsione di Mizar: orario previsto e scarto rispetto al
+                  programmato, con la STESSA scala di colori delle misure ma
+                  senza il grassetto. A fermata già passata resta, smorzata:
+                  dice quanto la previsione ci aveva preso. */}
+              {conMizar && (
+                <td
+                  className={`px-1.5 py-1 text-right font-mono whitespace-nowrap ${daVenire || !transitato ? "" : "opacity-60"}`}
+                  title={pm
+                    ? `previsto da Mizar${pm.stato ? ` (${pm.stato})` : ""}, aggiornato alle ${fmtTime(pm.aggiornataAlle).slice(0, 5)}`
+                      + (pm.primaPrevisioneTs !== pm.expectedTs ? `; prima previsione ${fmtTime(pm.primaPrevisioneTs).slice(0, 5)}` : "")
+                    : "nessuna previsione di Mizar per questa fermata"}
+                >
+                  {pm ? (
+                    <>
+                      <span className="text-muted-foreground">{fmtTime(pm.expectedTs).slice(0, 5)}</span>
+                      {pm.scartoSec != null && (
+                        <span className="ml-1" style={{ color: colore(pm.tinta) }}>{fmtDelay(pm.scartoSec)}</span>
+                      )}
+                    </>
+                  ) : ""}
+                </td>
+              )}
             </tr>
           );
         })}

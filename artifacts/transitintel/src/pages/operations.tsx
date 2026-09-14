@@ -25,7 +25,7 @@ import RegistroAnomalie, { type RegistroResp } from "./operations/RegistroAnomal
 import StatoParco, { type ParcoResp } from "./operations/StatoParco";
 import {
   LegendaRitardo, TabellaFermate, colore, fmtDelay, fmtTime,
-  type Tinta, type Legenda, type FermataCorsa,
+  type Tinta, type Legenda, type FermataCorsa, type PrevisioniMizarInfo,
 } from "./operations/DettaglioCorsa";
 
 // ── Tipi (allineati a /api/operations/*) ─────────────────────────────────────
@@ -131,6 +131,8 @@ interface TripTransits {
     osservate: number; interpolate: number; estrapolate: number;
     scoperte: number; coperturaOsservata: number; nota?: string;
   };
+  /** le previsioni di Mizar (StopMonitoring) su questa corsa */
+  previsioniMizar?: PrevisioniMizarInfo | null;
 }
 
 interface VehicleTrack {
@@ -958,7 +960,17 @@ export default function OperationsPage() {
               </div>
             )}
             {transitsQ.data && (
-              <TabellaFermate fermate={transitsQ.data.stops} />
+              <TabellaFermate fermate={transitsQ.data.stops} previsioni={transitsQ.data.previsioniMizar} />
+            )}
+            {/* La colonna Mizar va spiegata dove compare: è una previsione
+                dell'AVM, non una misura, e non entra nei tempi di percorrenza. */}
+            {transitsQ.data?.previsioniMizar && transitsQ.data.previsioniMizar.fermate > 0 && (
+              <p className="px-1.5 pt-2 text-[10px] text-muted-foreground leading-snug">
+                Mizar: orario previsto dall'AVM alle prossime fermate
+                {transitsQ.data.previsioniMizar.aggiornateAlle
+                  ? `, aggiornato alle ${fmtTime(transitsQ.data.previsioniMizar.aggiornateAlle).slice(0, 5)}`
+                  : ""}. Non è un passaggio osservato e non entra nei tempi di percorrenza.
+              </p>
             )}
             {transitsQ.data?.stops.some((s) => s.delayOrigin === "calcolato") && (
               <p className="px-1.5 pt-2 text-[10px] text-muted-foreground leading-snug">
