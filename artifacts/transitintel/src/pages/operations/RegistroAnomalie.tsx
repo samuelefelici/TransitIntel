@@ -76,15 +76,16 @@ const SEGNO: Record<TipoAnomalia, {
 
 function fmtOra(ts: string | null): string {
   if (!ts) return "—";
-  try { return new Date(ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" }); }
+  try { return new Date(ts).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome" }); }
   catch { return "—"; }
 }
 
 export default function RegistroAnomalie({
-  dati, urlCsv, onApriCorsa,
+  dati, urlCsv, onApriCorsa, errore,
 }: {
   dati: RegistroResp | undefined;
   urlCsv: string;
+  errore?: string;
   onApriCorsa?: (tripId: string) => void;
 }) {
   const [filtro, setFiltro] = useState<TipoAnomalia | null>(null);
@@ -97,8 +98,24 @@ export default function RegistroAnomalie({
     [dati, filtro],
   );
 
+  /* L'analisi carica fino a 200 000 righe e può andare in timeout: senza
+     questo ramo restava "Analisi in corso…" per sempre. */
+  if (errore) {
+    return (
+      <div className="p-8 text-center text-xs text-amber-300 max-w-md mx-auto leading-relaxed">
+        Il registro non si carica: {errore}
+      </div>
+    );
+  }
   if (!dati) {
     return <div className="p-8 text-center text-xs text-muted-foreground">Analisi in corso…</div>;
+  }
+  if ((dati as any).caronteAvailable === false) {
+    return (
+      <div className="p-8 text-center text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
+        Le tabelle di esercizio non sono pronte: non ci sono dati da esaminare.
+      </div>
+    );
   }
   if (dati.nota) {
     return <div className="p-8 text-center text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">{dati.nota}</div>;
@@ -162,9 +179,9 @@ export default function RegistroAnomalie({
       <div className="flex-1 overflow-y-auto divide-y divide-border/30">
         {visibili.length === 0 && (
           <div className="p-8 text-center text-xs text-muted-foreground">
-            {s?.totale === 0
-              ? "Nessuna anomalia: le corse osservate rispettano percorso e orario."
-              : "Nessuna anomalia di questo tipo."}
+            {filtro
+              ? "Nessuna anomalia di questo tipo."
+              : "Nessuna anomalia: le corse osservate rispettano percorso e orario."}
           </div>
         )}
 

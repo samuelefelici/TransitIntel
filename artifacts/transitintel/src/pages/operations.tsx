@@ -316,7 +316,9 @@ export default function OperationsPage() {
 
   const kpis = liveQ.data?.kpis;
   const trip = transitsQ.data?.trip ?? null;
-  const transitati = transitsQ.data?.stops.filter((s) => s.actualTs != null).length ?? 0;
+  /* Registrati = VISTI passare. Le fermate ricostruite hanno un orario ma
+     non sono passaggi registrati: contarle diceva "30/30" a mezza corsa. */
+  const transitati = transitsQ.data?.stops.filter((s) => s.origine === "osservato").length ?? 0;
 
   const flyTo = (v: LiveVehicle) => {
     mapRef.current?.flyTo({ center: [v.lon, v.lat], zoom: Math.max(mapRef.current.getZoom(), 14), duration: 800 });
@@ -633,6 +635,19 @@ export default function OperationsPage() {
             {liveQ.isLoading && (
               <div className="text-xs text-muted-foreground p-3">Caricamento flotta…</div>
             )}
+            {/* Un errore del server non è "nessun mezzo": un elenco vuoto
+                senza spiegazione era il modo peggiore di dire che l'API
+                aveva risposto 500. */}
+            {liveQ.isError && (
+              <div className="text-xs p-3 space-y-1 text-amber-300">
+                <div className="flex items-center gap-2 font-semibold">
+                  <AlertTriangle className="w-4 h-4" /> La flotta non si carica
+                </div>
+                <p className="text-muted-foreground leading-relaxed">
+                  {String((liveQ.error as any)?.message ?? liveQ.error)}
+                </p>
+              </div>
+            )}
 
             {liveQ.data && !liveQ.data.caronteAvailable && (
               <div className="text-xs p-3 space-y-2">
@@ -919,6 +934,11 @@ export default function OperationsPage() {
             {selected.tripId && transitsQ.isLoading && (
               <div className="text-xs text-muted-foreground p-2">Caricamento transiti…</div>
             )}
+            {selected.tripId && transitsQ.isError && (
+              <div className="text-xs p-2 text-amber-300">
+                Dettaglio non disponibile: {String((transitsQ.error as any)?.message ?? transitsQ.error)}
+              </div>
+            )}
             {/* La diagnosi arriva dall'API e nomina la causa vera: corsa non nel
                 feed, orario non materializzato, oppure passaggio non ancora
                 osservato. Sono tre situazioni diverse con tre rimedi diversi. */}
@@ -1014,6 +1034,7 @@ export default function OperationsPage() {
           </div>
           <RegistroAnomalie
             dati={anomalieQ.data}
+            errore={anomalieQ.error ? String((anomalieQ.error as any)?.message ?? anomalieQ.error) : undefined}
             urlCsv="/api/operations/anomalie?formato=csv"
             onApriCorsa={(tripId) => {
               const v = vehicles.find(x => x.tripId === tripId);
@@ -1081,7 +1102,9 @@ export default function OperationsPage() {
                 </ResponsiveContainer>
               ) : (
                 <div className="text-xs text-muted-foreground py-8 text-center">
-                  {punctualityQ.isLoading ? "Caricamento…" : "Nessun transito registrato oggi."}
+                  {punctualityQ.isLoading ? "Caricamento…"
+                    : punctualityQ.isError ? `Errore: ${String((punctualityQ.error as any)?.message ?? punctualityQ.error)}`
+                    : "Nessun transito registrato oggi."}
                 </div>
               )}
             </div>
@@ -1124,7 +1147,9 @@ export default function OperationsPage() {
                 </table>
               ) : (
                 <div className="text-xs text-muted-foreground py-8 text-center">
-                  {punctualityQ.isLoading ? "Caricamento…" : "Nessun dato per linea."}
+                  {punctualityQ.isLoading ? "Caricamento…"
+                    : punctualityQ.isError ? "Errore nel caricamento."
+                    : "Nessun dato per linea."}
                 </div>
               )}
             </div>

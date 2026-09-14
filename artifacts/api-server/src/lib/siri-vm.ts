@@ -677,7 +677,10 @@ export function diagnosiVettura(v: SiriVehicle, now = Date.now()): VetturaDiagno
    * contatto è vecchio di un minuto, mentre uno muto da un giorno è un
    * problema di apparato qualunque cosa dichiari il resto. */
   if (eta != null && eta > MUTA_SEC) return { ...base, stato: "muta" };
-  if (v.journeyRef && !v.inDepot && !v.withoutService) {
+  /* Stessa regola di inService(): un mezzo "FUORI LINEA" con un codice corsa
+   * residuo non è in servizio, e contarlo qui mentre la Sala Operativa lo
+   * esclude dava due parchi diversi nella stessa pagina. */
+  if (v.journeyRef && !v.inDepot && !v.withoutService && !v.outOfService) {
     return { ...base, stato: "in_servizio" };
   }
   if (v.monitoringError === "GPRS") return { ...base, stato: "senza_rete" };
@@ -1020,6 +1023,14 @@ export function lineCodeCandidates(publishedLineName: string | null): string[] {
   if (slashed !== raw) out.push(slashed);
   const dashed = raw.replace(/\//g, "-");
   if (dashed !== raw && !out.includes(dashed)) out.push(dashed);
+  /* Per ultimo il primo pezzo da solo: "Linea 4 - Jesi" produce "4-JESI",
+   * che non esiste, e senza questo il "4" non veniva mai tentato. Sta in
+   * coda, così una linea accoppiata vera ("1-4") vince prima. */
+  const [primo, ...resto] = raw.split(/[-/]/);
+  const restoConLettere = resto.some(p => /[A-Z]/.test(p));
+  /* Solo se il resto contiene lettere: "1-4" è una linea accoppiata vera e
+   * ridurla a "1" la metterebbe sulla linea sbagliata. */
+  if (restoConLettere && primo && !out.includes(primo)) out.push(primo);
   return out;
 }
 

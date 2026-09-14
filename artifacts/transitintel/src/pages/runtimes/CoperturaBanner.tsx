@@ -17,7 +17,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Download, Eye, TrendingDown, TrendingUp, Minus } from "lucide-react";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getApiBase } from "@/lib/api";
 
 type Andamento = "in_miglioramento" | "stabile" | "in_peggioramento" | "indeterminato";
 
@@ -89,7 +89,9 @@ export default function CoperturaBanner({ days }: { days: number }) {
   /* Sotto un quarto delle corse, il campione non è un dettaglio tecnico: è la
      ragione per cui un numero di questa pagina può essere molto diverso dalla
      realtà dell'azienda. Il colore lo dice prima del testo. */
-  const scarso = (qd.quotaCorseMediana ?? 0) < 0.25;
+  /* "Scarso" solo quando la quota è NOTA: se non si sa quante corse fossero
+     programmate, non è un campione scarso, è un denominatore mancante. */
+  const scarso = qd.quotaCorseMediana != null && qd.quotaCorseMediana < 0.25;
 
   return (
     <div className={`rounded-lg border text-[11px] ${
@@ -164,7 +166,7 @@ export default function CoperturaBanner({ days }: { days: number }) {
           )}
 
           <a
-            href={`/api/operations/copertura?days=${days}&formato=csv`}
+            href={`${getApiBase()}/api/operations/copertura?days=${days}&formato=csv`}
             className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-border/60 transition-colors">
             <Download className="w-3 h-3" /> CSV giorno per giorno
           </a>

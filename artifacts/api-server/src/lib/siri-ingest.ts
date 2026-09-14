@@ -95,11 +95,15 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
     }
   }
 
+  const tripStarts = (await loadTripStartIndex(feedId)) ?? undefined;
   cachedIndex = {
     feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName,
-    tripStarts: (await loadTripStartIndex(feedId)) ?? undefined,
+    tripStarts,
     timeZone: process.env.SIRI_TIMEZONE || "Europe/Rome",
-    loadedAt: Date.now(),
+    /* Se l'indice delle partenze non si è costruito (query in timeout, lock
+     * durante un caricamento), NON si aspetta tutta la scadenza: si ritenta
+     * al giro dopo. Prima restava dieci minuti senza aggancio per orario. */
+    loadedAt: tripStarts ? Date.now() : Date.now() - INDEX_TTL_MS + 60_000,
   };
   return cachedIndex;
 }
@@ -230,8 +234,12 @@ export async function loadTripStartIndex(feedId: string): Promise<TripStartIndex
 interface StopTimeCache {
   feedId: string;
   day: string;
-  /** "corsa|fermata" → orario programmato e progressivo */
+  /** "corsa|fermata" → orario programmato e progressivo della PRIMA
+   *  occorrenza (su una circolare il capolinea compare due volte) */
   map: Map<string, { scheduled: string; seq: number }>;
+  /** "corsa|fermata" → TUTTE le occorrenze, per scegliere quella giusta
+   *  in base all'ora del passaggio */
+  occorrenze: Map<string, Array<{ scheduled: string; seq: number }>>;
   /** corsa → fermate con coordinate, in ordine di percorso */
   tripStops: Map<string, TripStop[]>;
   /* Partenza e arrivo programmati vanno presi su TUTTE le fermate, comprese
@@ -254,8 +262,8 @@ async function loadStopTimeIndex(
     && Date.now() - cachedStopTimes.at < TRIP_TTL_MS;
   if (!fresh) {
     cachedStopTimes = {
-      feedId, day, map: new Map(), tripStops: new Map(), tripSpan: new Map(),
-      loadedTrips: new Set(), at: Date.now(),
+      feedId, day, map: new Map(), occorrenze: new Map(), tripStops: new Map(),
+      tripSpan: new Map(), loadedTrips: new Set(), at: Date.now(),
     };
   }
   const cache = cachedStopTimes!;
@@ -281,7 +289,15 @@ async function loadStopTimeIndex(
       const seq = Number(x.stop_sequence ?? 0);
       const scheduled = x.t ? String(x.t) : null;
       if (scheduled) {
-        cache.map.set(`${tripId}|${stopId}`, { scheduled, seq });
+        /* La PRIMA occorrenza resta in `map`; le altre in `occorrenze`. Con
+         * il solo `set` restava l'ULTIMA: sulle circolari il capolinea di
+         * partenza prendeva orario e progressivo dell'arrivo, e la partenza
+         * usciva con quaranta minuti di anticipo. */
+        const k = `${tripId}|${stopId}`;
+        if (!cache.map.has(k)) cache.map.set(k, { scheduled, seq });
+        const occ = cache.occorrenze.get(k) ?? [];
+        occ.push({ scheduled, seq });
+        cache.occorrenze.set(k, occ);
         /* Le righe arrivano ordinate per progressivo: la prima che si vede è
          * la partenza, l'ultima resta l'arrivo. */
         const span = cache.tripSpan.get(tripId);
@@ -345,6 +361,30 @@ export function scegliFraVicine<T extends TripStop & { distanceM: number }>(
     return d;
   };
   return [...candidate].sort((a, b) => scarto(a) - scarto(b))[0];
+}
+
+/**
+ * L'occorrenza della fermata nella corsa più coerente con l'istante del
+ * passaggio: su una linea circolare il capolinea è seq 1 alle 08:00 e seq 30
+ * alle 08:40, e alle 08:41 il mezzo è all'arrivo.
+ */
+export function occorrenzaDelFeed(
+  cache: Pick<StopTimeCache, "map" | "occorrenze">, tripId: string, stopId: string,
+  quando: Date, timeZone: string,
+): { scheduled: string; seq: number } | null {
+  const k = `${tripId}|${stopId}`;
+  const tutte = cache.occorrenze.get(k);
+  if (!tutte || tutte.length === 0) return cache.map.get(k) ?? null;
+  if (tutte.length === 1) return tutte[0];
+  const ora = secondiLocali(quando, timeZone);
+  const scarto = (s: string) => {
+    const p = secondiGtfs(s);
+    if (p == null) return Infinity;
+    let d = Math.abs(((p - ora) % 86_400) + 86_400) % 86_400;
+    if (d > 43_200) d = 86_400 - d;
+    return d;
+  };
+  return [...tutte].sort((a, b) => scarto(a.scheduled) - scarto(b.scheduled))[0];
 }
 
 /* ── Velocità stimata ─────────────────────────────────────────────────────── */
@@ -624,9 +664,13 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
      * abbandonata, e la Sala Operativa teneva il mezzo sulla corsa che aveva
      * finito un'ora prima. Un journeyRef semplicemente ASSENTE invece non
      * chiude niente: può essere un vuoto di una lettura. */
+    /* "Codice non nel feed" vale solo se l'indice delle corse c'è: se la sua
+     * costruzione è fallita in questo giro, NESSUN codice aggancia, e senza
+     * questa guardia un guasto dell'indice chiuderebbe ogni corsa aperta
+     * per poi riaprirle tutte al giro dopo, come righe nuove. */
     const cambioDichiarato = !corsaAttribuibile
       && (smentito || v.outOfService || v.inDepot || v.withoutService
-          || (!!v.journeyRef && !m.tripId));
+          || (!!v.journeyRef && !m.tripId && !!index.tripStarts));
     if (vehicleId && (corsaAttribuibile || cambioDichiarato)) {
       try {
         const closed = await db.execute<any>(sql`
@@ -694,7 +738,12 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
        * mezzi in rimessa con localizzazione scaduta — un segnaposto, non un
        * valore. Preferirlo scriveva zero su ogni transito riconosciuto dalla
        * posizione. Resta il ripiego per le fermate senza orario. */
-      const delay = delayFromSchedule(scheduled, at, tz) ?? delayDichiarato;
+      /* Un Delay dichiarato di ZERO senza orario programmato non è una misura:
+       * su questo produttore "PT0S" è il valore di riempimento, presente
+       * anche sui mezzi in rimessa. Scriverlo faceva contare "in orario" un
+       * passaggio di cui non si sa niente. */
+      const delay = delayFromSchedule(scheduled, at, tz)
+        ?? (delayDichiarato === 0 && !scheduled ? null : delayDichiarato);
       /* Deduplicato per (corsa, fermata, PROGRESSIVO): su una linea circolare
        * capolinea di partenza e di arrivo sono la stessa fermata con due
        * progressivi, e col solo stop_id il rientro veniva preso per la
@@ -710,6 +759,10 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
            SELECT 1 FROM caronte.stop_transits s
             WHERE s.trip_id = ${m.tripId} AND s.stop_id = ${stopId}
               AND s.stop_seq IS NOT DISTINCT FROM ${seq}
+              /* E la VETTURA: due mezzi sulla stessa corsa sono due corse
+               * osservate, e le pagine ormai leggono per vettura. Senza,
+               * il secondo veniva scartato come duplicato del primo. */
+              AND s.vehicle_id IS NOT DISTINCT FROM ${vehicleId}
               AND s.actual_ts > now() - interval '18 hours')`);
       const n = (r as any).rowCount ?? 0;
       if (n > 0) { transitsInserted += n; funnel.inseriti += n; return; }
@@ -731,6 +784,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
                delay_seconds = ${delay}
          WHERE trip_id = ${m.tripId} AND stop_id = ${stopId}
            AND stop_seq IS NOT DISTINCT FROM ${seq}
+           AND vehicle_id IS NOT DISTINCT FROM ${vehicleId}
            AND actual_ts > ${at.toISOString()}::timestamptz - interval '30 minutes'
            AND actual_ts < ${at.toISOString()}::timestamptz`);
     };
@@ -790,7 +844,8 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
       lastProgress.set(vehicleId, cur);
       if (ev) {
         funnel.transitiDaCambioFermata++;
-        const st = stopTimes.map.get(`${ev.tripId}|${ev.stopId}`);
+        const st = occorrenzaDelFeed(stopTimes, ev.tripId, ev.stopId, ev.observedAt,
+          index.timeZone ?? "Europe/Rome");
         await scriviTransito(
           ev.stopId, st?.seq ?? null, st?.scheduled ?? null,
           ev.observedAt, ev.delaySeconds,
@@ -799,11 +854,24 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
     }
 
     /* 3c. Transiti DICHIARATI dal produttore con l'orario effettivo: quando
-     *     ci sono sono i più precisi, perché li ha misurati lui. */
+     *     ci sono sono i più precisi, perché li ha misurati lui.
+     *
+     *     Progressivo e orario programmato vengono dal FEED, come negli altri
+     *     due canali, e l'AVM resta il ripiego. Prima si scriveva l'`Order`
+     *     SIRI (che con un feed a progressivi 10, 20, 30 non combacia con
+     *     niente: stesso passaggio scritto due volte e riga non agganciabile
+     *     in lettura) e l'orario dichiarato riformattato come ora di parete
+     *     ("00:20:00" al posto del "24:20:00" del GTFS, e la percorrenza
+     *     notturna usciva negativa). */
     if (m.tripId) {
       for (const t of m.transits) {
         funnel.transitiDichiarati++;
-        await scriviTransito(t.stopId, t.stopSeq, t.scheduled, t.actualTs, t.delaySeconds);
+        const st = occorrenzaDelFeed(stopTimes, m.tripId, t.stopId, t.actualTs,
+          index.timeZone ?? "Europe/Rome");
+        await scriviTransito(
+          t.stopId, st?.seq ?? t.stopSeq, st?.scheduled ?? t.scheduled,
+          t.actualTs, t.delaySeconds,
+        );
       }
     }
    } catch (e: any) {
@@ -824,6 +892,14 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
    * deve essere chiusa dalla stessa passata. */
   const corseAbbandonate = await chiudiCorseAbbandonate(
     mapped.map(x => x.siri.vehicleRef).filter((x): x is string => !!x));
+
+  /* I mezzi che l'AVM dichiara FERMI (in rimessa, senza servizio, fuori
+   * linea) non entrano nel ciclo, quindi la chiusura "il mezzo ha cambiato
+   * corsa" non li tocca mai: la corsa finita alle 20:05 restava aperta
+   * finché non scattava l'abbandono, con il mezzo ancora in mappa. Si
+   * chiudono qui, esplicitamente. */
+  const rientrati = split.ferme.map(v => v.vehicleRef).filter((x): x is string => !!x);
+  const corseDeiFermi = await chiudiCorseDeiFermi(rientrati);
   if (corseAbbandonate > 0) {
     console.warn(`[siri] ${corseAbbandonate} corse chiuse perché il mezzo `
       + `non trasmette da oltre ${ABBANDONO_MIN} minuti.`);
@@ -832,7 +908,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
   return {
     positionsInserted, tripsOpened, tripsClosed, transitsInserted,
     vehiclesFailed, vehiclesParked: split.ferme.length, firstError, report,
-    corseFallite, erroreCorse, corseAbbandonate, coppieCodici,
+    corseFallite, erroreCorse, corseAbbandonate: corseAbbandonate + corseDeiFermi, coppieCodici,
     agganci, riepilogoAgganci: riepilogo,
     funnel, funnelNota: explainFunnel(funnel),
   };
@@ -869,7 +945,10 @@ export function verificaAgganciDelGiro(
         destinationName: m.siri.destinationName,
         originAimedDeparture: m.siri.originAimedDeparture,
         destinationAimedArrival: m.siri.destinationAimedArrival,
-        lat: m.siri.lat, lon: m.siri.lon,
+        /* Una localizzazione scaduta è quella del deposito di tre ore fa:
+         * non può concorrere a smentire un aggancio. */
+        lat: positionUsable(m.siri) ? m.siri.lat : null,
+        lon: positionUsable(m.siri) ? m.siri.lon : null,
       },
       scheda, m.agganciatoCome, index.timeZone ?? "Europe/Rome",
     ));
@@ -934,6 +1013,29 @@ export async function closeCancelled(
  *  Mezz'ora copre una sosta al capolinea e un buco di copertura, senza
  *  chiudere una corsa che sta ancora andando. */
 const ABBANDONO_MIN = 30;
+
+/** Chiude le corse aperte dei mezzi che l'AVM dichiara fermi in questo giro. */
+export async function chiudiCorseDeiFermi(matricole: string[]): Promise<number> {
+  if (matricole.length === 0) return 0;
+  try {
+    const filtro = (await hasSourceColumn())
+      ? sql`AND a.source = ${SOURCE_SIRI}`
+      : sql``;
+    const elenco = `{${matricole.map(x => '"' + x.replace(/"/g, '\\"') + '"').join(",")}}`;
+    const r = await db.execute<any>(sql`
+      UPDATE caronte.active_trips a
+         SET ended_at = COALESCE(
+               (SELECT max(vp.ts) FROM caronte.vehicle_positions vp
+                 WHERE vp.vehicle_id = a.vehicle_id AND vp.trip_id = a.trip_id),
+               now())
+       WHERE a.ended_at IS NULL ${filtro}
+         AND a.vehicle_id = ANY(${elenco}::text[])`);
+    return (r as any).rowCount ?? 0;
+  } catch (e: any) {
+    console.warn("[siri] chiusura corse dei mezzi fermi non riuscita:", e?.message ?? e);
+    return 0;
+  }
+}
 
 export async function chiudiCorseAbbandonate(vistiInQuestoGiro: string[] = []): Promise<number> {
   try {

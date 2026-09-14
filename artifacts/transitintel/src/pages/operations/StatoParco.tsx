@@ -306,7 +306,7 @@ export default function StatoParco({
       {dati.totale != null && (
         <div className="px-4 py-1.5 border-t border-border/40 text-[10px] text-muted-foreground">
           {dati.totale} vetture trasmesse · {daVerificare.length} da verificare
-          {dati.rilevatoAlle && ` · rilevato ${new Date(dati.rilevatoAlle).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}`}
+          {dati.rilevatoAlle && ` · rilevato ${new Date(dati.rilevatoAlle).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Rome" })}`}
         </div>
       )}
     </div>

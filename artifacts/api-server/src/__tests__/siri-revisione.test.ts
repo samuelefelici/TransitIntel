@@ -148,6 +148,15 @@ describe("il codice di linea dal nome pubblicato", () => {
     expect(lineCodeCandidates("Linea 1/4 Tavernelle")).toEqual(["1/4", "1-4"]);
   });
 
+  /* "Jesi" è corto e a confine di parola, quindi la regex lo prende: il
+   * codice da solo deve comunque essere tentato, per ultimo. Ma per una
+   * coppia numerica ("1-4") NON si tenta "1": sarebbe un'altra linea. */
+  it("con una parola dopo il trattino prova anche il numero da solo, per ultimo", () => {
+    const c = lineCodeCandidates("Linea 4 - Jesi");
+    expect(c[c.length - 1]).toBe("4");
+    expect(lineCodeCandidates("Linea 1-4 Stazione")).not.toContain("1");
+  });
+
   it("i codici alfanumerici corti del feed passano", () => {
     expect(lineCodeCandidates("Linea UJ2A Jesi")).toEqual(["UJ2A"]);
     expect(lineCodeCandidates("Linea JECN - Ancona")).toEqual(["JECN"]);

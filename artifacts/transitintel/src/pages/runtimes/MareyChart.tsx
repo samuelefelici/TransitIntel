@@ -69,9 +69,14 @@ export default function MareyChart({ stops }: { stops: MareyStop[] }) {
     const utili = stops.filter(s => s.scheduledSec != null);
     if (utili.length < 2) return null;
 
-    const sched0 = utili[0].scheduledSec!;
-    const primoReale = utili.find(s => s.actualTs)?.actualTs;
-    const reale0 = primoReale ? new Date(primoReale).getTime() : null;
+    /* Le due origini devono essere la STESSA fermata: la prima con un
+       transito. Prima il programmato partiva dalla prima fermata dell'orario
+       e il reale dalla prima rilevata — se il capolinea non era stato visto
+       (succede quasi sempre), tutta la linea reale usciva traslata e lo
+       scarto al capolinea era inventato. */
+    const origine = utili.find(s => s.actualTs) ?? utili[0];
+    const sched0 = origine.scheduledSec!;
+    const reale0 = origine.actualTs ? new Date(origine.actualTs).getTime() : null;
 
     const punti = utili.map(s => {
       const tProg = s.scheduledSec! - sched0;

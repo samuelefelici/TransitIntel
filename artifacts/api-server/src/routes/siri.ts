@@ -38,7 +38,7 @@ import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
 import { studiaCodici } from "../lib/journey-code-study";
-import { inizioGiornata } from "../lib/service-day";
+import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 
 const router: IRouter = Router();
 
@@ -784,7 +784,7 @@ router.get("/siri/parco/andamento", async (req, res): Promise<void> => {
       : sql`TRUE`;
 
     const r = await db.execute<any>(sql`
-      SELECT vehicle_id, ts::date::text AS day
+      SELECT vehicle_id, ${giornataDi(sql`ts`)}::text AS day
         FROM caronte.vehicle_positions vp
        WHERE ${filtro}
          AND vehicle_id IS NOT NULL
@@ -804,10 +804,10 @@ router.get("/siri/parco/andamento", async (req, res): Promise<void> => {
     /* Le giornate del periodo si generano, non si deducono dai dati: se le
      * prendessimo dalle righe, un fine settimana in cui nessuno trasmette
      * accorcerebbe il periodo e sposterebbe la metà. */
+    /* Giornate di esercizio nel fuso dell'azienda, non date UTC. */
     const oggi = new Date();
     const inizio = new Date(oggi.getTime() - (days - 1) * 86_400_000);
-    const giornate = giornateDelPeriodo(
-      inizio.toISOString().slice(0, 10), oggi.toISOString().slice(0, 10));
+    const giornate = giornateDelPeriodo(giornataOggi(inizio), giornataOggi(oggi));
 
     const andamento = andamentoParco(
       [...perVettura.entries()].map(([vehicleRef, giorni]) => ({ vehicleRef, giorni })),
@@ -1024,6 +1024,10 @@ router.post("/siri/sync", async (_req, res): Promise<void> => {
     /* Un giro che riporta failed (AVM che non risponde, schema non allineato)
      * non è un "ok": chi lo lancia dalla console guarda quel campo. */
     const fallito = (result as any).failed === true;
+    if ((result as any).inCorso) {
+      res.status(409).json({ ok: false, ...result });
+      return;
+    }
     res.status(fallito ? 502 : 200).json({ ok: !fallito, ...result });
   } catch (e: any) {
     res.status(502).json({ ok: false, error: e?.message ?? "sync fallita" });
@@ -1031,7 +1035,20 @@ router.post("/siri/sync", async (_req, res): Promise<void> => {
 });
 
 /** Un giro completo: interroga l'AVM e scrive nelle tabelle di esercizio. */
+/* Un giro alla volta. La guardia stava nel poller (index.ts), ma POST
+ * /siri/sync — suggerito dalla stessa GET — la aggirava: due ingestioni in
+ * parallelo sullo stesso stato in memoria e sulle stesse INSERT "se non
+ * esiste" (non atomiche) scrivevano corse e passaggi doppi. La mutua
+ * esclusione sta qui, dove passano entrambi. */
+let giroInCorso: Promise<Record<string, unknown>> | null = null;
+
 export async function runSiriIngest(): Promise<Record<string, unknown>> {
+  if (giroInCorso) return { skipped: "un giro è già in corso", inCorso: true };
+  giroInCorso = eseguiGiro().finally(() => { giroInCorso = null; });
+  return giroInCorso;
+}
+
+async function eseguiGiro(): Promise<Record<string, unknown>> {
   const cfg = siriConfig();
   if (!cfg) return { skipped: "SIRI_VM_URL non impostata" };
 

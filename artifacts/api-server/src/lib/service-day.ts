@@ -58,8 +58,11 @@ export function oraDiParete(col: SQL, timeZone: string = FUSO_ESERCIZIO): SQL {
  * il 12.
  */
 export function giornataDi(col: SQL, timeZone: string = FUSO_ESERCIZIO): SQL {
-  return sql`((${col} AT TIME ZONE ${timeZone})
-    - (${TAGLIO_GIORNATA_ORE}::int * interval '1 hour'))::date`;
+  /* Le tre ore si tolgono sull'ISTANTE, prima di passare all'ora di parete:
+   * è la stessa cosa che fa la versione JavaScript, e nelle notti di cambio
+   * d'ora — quando le due e mezza esistono due volte — le due strade non
+   * divergono. */
+  return sql`((${col} - (${TAGLIO_GIORNATA_ORE}::int * interval '1 hour')) AT TIME ZONE ${timeZone})::date`;
 }
 
 /** L'ora del giorno (0-23) nel fuso dell'azienda: per le fasce orarie. */
@@ -81,8 +84,12 @@ export function inizioDi(ymd: string | SQL, timeZone: string = FUSO_ESERCIZIO): 
 
 /** Vero se l'istante cade nella giornata di esercizio "YYYY-MM-DD". */
 export function nellaGiornata(col: SQL, ymd: string, timeZone: string = FUSO_ESERCIZIO): SQL {
+  /* La fine è l'INIZIO del giorno dopo, non "inizio + 24 ore": nella notte
+   * del cambio d'ora la giornata dura 23 o 25 ore, e con le 24 fisse un
+   * istante finiva attribuito a una giornata da giornataDi e a un'altra da
+   * qui. */
   return sql`(${col} >= ${inizioDi(ymd, timeZone)}
-    AND ${col} < ${inizioDi(ymd, timeZone)} + interval '1 day')`;
+    AND ${col} < ${inizioDi(sql`${ymd}::date + 1`, timeZone)})`;
 }
 
 /** L'istante in cui è cominciata la giornata di esercizio in corso. */

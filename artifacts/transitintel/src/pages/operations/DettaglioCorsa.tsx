@@ -78,8 +78,11 @@ export function fmtDelay(s: number | null | undefined): string {
 export function fmtTime(ts: string | null | undefined): string {
   if (!ts) return "—";
   try {
+    /* Nel fuso dell'AZIENDA, non del browser: "Progr." e Δ sono in ora di
+       Roma, e su un monitor di sala in UTC la colonna "Reale" usciva due ore
+       prima, accanto a un Δ verde. */
     return new Date(ts).toLocaleTimeString("it-IT",
-      { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Europe/Rome" });
   } catch { return "—"; }
 }
 

@@ -164,10 +164,17 @@ function fmtClock(sec: number | null): string {
   const m = Math.floor((sec % 3600) / 60);
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
+/* Nel fuso dell'azienda: gli orari GTFS accanto sono in ora di Roma, e con
+   getHours() un browser in UTC mostrava "Reale 06:04" contro "Programmato
+   08:05" e un Δ di un minuto. */
+const ORA_ROMA = new Intl.DateTimeFormat("it-IT", {
+  timeZone: "Europe/Rome", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+});
 function fmtTime(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}:${String(d.getSeconds()).padStart(2, "0")}`;
+  if (Number.isNaN(d.getTime())) return "—";
+  return ORA_ROMA.format(d);
 }
 // puntualità: in orario −60s..+300s = verde, ritardo = ambra/rosso, anticipo = blu
 function delayColor(s: number | null): string {
@@ -373,7 +380,12 @@ export default function RuntimesPage() {
               <Loader2 className="w-4 h-4 animate-spin" /> Analizzo le corse osservate…
             </div>
           )}
-          {!byTripQ.isLoading && tree.length === 0 && (
+          {byTripQ.isError && (
+            <div className="p-10 text-center text-sm text-amber-300 rounded-xl border border-amber-500/30 bg-amber-500/5">
+              Le corse non si caricano: {String((byTripQ.error as any)?.message ?? byTripQ.error)}
+            </div>
+          )}
+          {!byTripQ.isLoading && !byTripQ.isError && tree.length === 0 && (
             <div className="p-10 text-center text-sm text-muted-foreground rounded-xl border border-border/60 bg-card/60">
               Nessuna corsa osservata nel periodo: i dati si accumulano con l'uso di Caronte.
             </div>
@@ -423,15 +435,25 @@ export default function RuntimesPage() {
                       </thead>
                       <tbody>
                         {v.trips.map(t => {
-                          const isOpen = openTrip === t.tripId;
+                          /* Una riga per (corsa, CLASSE di giornata): la stessa
+                             corsa osservata in feriali e sabati arriva due
+                             volte, e con la sola tripId le chiavi erano
+                             duplicate e il dettaglio si apriva su entrambe. */
+                          const chiave = `${t.tripId}|${(t as any).classe ?? ""}`;
+                          const isOpen = openTrip === chiave;
                           return (
-                          <Fragment key={t.tripId}>
+                          <Fragment key={chiave}>
                           <tr
-                            onClick={() => setOpenTrip(isOpen ? null : t.tripId)}
+                            onClick={() => setOpenTrip(isOpen ? null : chiave)}
                             className={`cursor-pointer transition-colors ${isOpen ? "bg-rose-500/10" : "odd:bg-white/[0.02] hover:bg-white/[0.05]"}`}>
                             <td className="px-5 py-1 font-mono">
                               <span className={`inline-block mr-1.5 text-[9px] transition-transform ${isOpen ? "rotate-90" : ""}`}>▸</span>
                               {t.startTime ? t.startTime.slice(0, 5) : "—"}
+                              {(t as any).classeLabel && (
+                                <span className="ml-1.5 text-[9px] font-sans text-muted-foreground">
+                                  {(t as any).classeLabel}
+                                </span>
+                              )}
                             </td>
                             <td className="px-2 py-1 text-right font-mono">{t.giornate}</td>
                             <td
@@ -504,6 +526,10 @@ export default function RuntimesPage() {
         ) : dataQ.data && !dataQ.data.caronteAvailable ? (
           <div className="p-10 text-center text-sm text-muted-foreground">
             Schema caronte non inizializzato: i tempi arrivano dai transiti AVM.
+          </div>
+        ) : dataQ.isError ? (
+          <div className="p-10 text-center text-sm text-amber-300">
+            Le tratte non si caricano: {String((dataQ.error as any)?.message ?? dataQ.error)}
           </div>
         ) : segments.length === 0 ? (
           <div className="p-10 text-center text-sm text-muted-foreground">

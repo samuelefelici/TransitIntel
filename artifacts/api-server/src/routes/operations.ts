@@ -600,7 +600,7 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
       SELECT o.trip_id, o.day::text AS day,
              stt.stop_sequence AS seq, stt.stop_id,
              s.stop_name, s.stop_lat, s.stop_lon,
-             COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+             COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
              tr.actual_ts, tr.vehicle_id,
              r.route_short_name, t.shape_id
         FROM osservate o
@@ -936,7 +936,7 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
              r.obs_s, r.sched_s,
              gt.direction_id, gt.trip_headsign, gt.shape_id,
              gr.route_short_name, gr.route_color, gr.route_long_name,
-             stt.n_stops AS total_stops
+             stt.n_stops AS total_stops, stt.first_dep
       FROM runs r
       LEFT JOIN gtfs_trips gt
         ON ${feedId}::text IS NOT NULL AND gt.feed_id = ${feedId}::uuid AND gt.trip_id = r.trip_id
@@ -944,8 +944,13 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
         ON ${feedId}::text IS NOT NULL AND gr.feed_id = ${feedId}::uuid
        AND gr.route_id = COALESCE(gt.route_id, r.route_id)
       LEFT JOIN LATERAL (
-        SELECT COUNT(*)::int AS n_stops FROM gtfs_stop_times s
-        WHERE ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid AND s.trip_id = r.trip_id
+        SELECT COUNT(*)::int AS n_stops,
+               /* La partenza della corsa è quella del FEED: la prima fermata
+                * osservata può essere la terza, e "Partenza 07:04" per una
+                * corsa delle 07:00 la mandava in un'altra fascia oraria. */
+               MIN(COALESCE(s.departure_time, s.arrival_time)) AS first_dep
+          FROM gtfs_stop_times s
+         WHERE ${feedId}::text IS NOT NULL AND s.feed_id = ${feedId}::uuid AND s.trip_id = r.trip_id
       ) stt ON true
       WHERE r.obs_s BETWEEN 60 AND 4 * 3600
         AND (${hourFrom}::int IS NULL OR r.start_hour >= ${hourFrom})
@@ -1043,7 +1048,7 @@ router.get("/operations/runtimes/by-trip", async (req, res): Promise<void> => {
           directionId: a.direction_id ?? null,
           headsign: a.trip_headsign ?? null,
           shapeId: a.shape_id ?? null,
-          startTime: a.start_sched ?? null,
+          startTime: a.first_dep ?? a.start_sched ?? null,
           classe: g.classe,
           classeLabel: g.classeLabel,
           giornate: g.giornate,
@@ -1108,7 +1113,7 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
        * due endpoint di questo file e dall'ingestione: qui era l'eccezione. */
       const sQ = await db.execute<any>(sql`
         SELECT stt.stop_sequence AS seq,
-               COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+               COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
                s.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
                tr.actual_ts, tr.delay_seconds
         FROM gtfs_stop_times stt
@@ -1423,7 +1428,7 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
     const schedRows = feedId
       ? (await db.execute<any>(sql`
           SELECT stt.stop_sequence AS seq, stt.stop_id,
-                 COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+                 COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
                  s.stop_name, s.stop_lat, s.stop_lon
           FROM gtfs_stop_times stt
           LEFT JOIN gtfs_stops s ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
@@ -1566,8 +1571,15 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
        * perfetto ogni giorno. */
       const served = recorded || (dwell != null && dwell >= dwellSeconds);
 
-      if (actualMs != null && !imputed) prevActualMs = actualMs;
-      if (b.schedSec != null) prevSchedSec = b.schedSec;
+      /* Il programmato "precedente" è quello della fermata da cui parte
+       * l'arco osservato — la stessa fermata di prevActualMs. Aggiornarlo a
+       * ogni fermata con orario faceva sì che, dopo una fermata non
+       * rilevata, l'arco osservato coprisse due tratte e quello programmato
+       * una sola: scarto raddoppiato e rosso su una corsa in orario. */
+      if (actualMs != null && !imputed) {
+        prevActualMs = actualMs;
+        prevSchedSec = b.schedSec;
+      }
 
       return {
         seq: b.seq,
@@ -1805,6 +1817,11 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
      * feed, che comprende validità non in vigore. */
     const programmateQ = feedId
       ? await db.execute<any>(sql`
+          /* La STESSA regola dell'aggancio (loadTripStartIndex): pattern
+           * settimanale nel periodo, meno le date tolte, più quelle aggiunte.
+           * Con il solo calendar.txt un festivo con eccezione contava le
+           * corse feriali come programmate, e un feed di sole calendar_dates
+           * ne contava zero. */
           SELECT d::date::text AS day, (
             SELECT COUNT(*)::int FROM gtfs_trips t
              WHERE t.feed_id = ${feedId}::uuid
@@ -1818,6 +1835,14 @@ router.get("/operations/copertura", async (req, res): Promise<void> => {
                           WHEN 3 THEN c.wednesday WHEN 4 THEN c.thursday
                           WHEN 5 THEN c.friday    WHEN 6 THEN c.saturday
                           ELSE c.sunday END = 1
+                    AND NOT EXISTS (
+                      SELECT 1 FROM gtfs_calendar_dates x
+                       WHERE x.feed_id = ${feedId}::uuid AND x.service_id = c.service_id
+                         AND x.date = to_char(d, 'YYYYMMDD') AND x.exception_type = 2)
+                 UNION
+                 SELECT a.service_id FROM gtfs_calendar_dates a
+                  WHERE a.feed_id = ${feedId}::uuid
+                    AND a.date = to_char(d, 'YYYYMMDD') AND a.exception_type = 1
                )) AS corse_programmate
             FROM generate_series(
               ${giornataOggi()}::date - ${days}::int, ${giornataOggi()}::date, interval '1 day') d`)
@@ -1967,7 +1992,7 @@ router.get("/operations/trips/:tripId/percorso", async (req, res): Promise<void>
     const fermateQ = feedId
       ? await db.execute<any>(sql`
           SELECT stt.stop_sequence AS seq, stt.stop_id, s.stop_name, s.stop_lat, s.stop_lon,
-                 COALESCE(stt.arrival_time, stt.departure_time) AS scheduled
+                 COALESCE(stt.departure_time, stt.arrival_time) AS scheduled
             FROM gtfs_stop_times stt
             LEFT JOIN gtfs_stops s ON s.feed_id = stt.feed_id AND s.stop_id = stt.stop_id
            WHERE stt.feed_id = ${feedId}::uuid AND stt.trip_id = ${tripId}
@@ -2274,7 +2299,7 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
     const idsCsv = tripIds.join("");
     const schedQ = await db.execute<any>(sql`
       SELECT stt.trip_id, stt.stop_sequence AS seq, stt.stop_id,
-             COALESCE(stt.arrival_time, stt.departure_time) AS scheduled,
+             COALESCE(stt.departure_time, stt.arrival_time) AS scheduled,
              s.stop_name,
              t.trip_headsign, t.direction_id, t.shape_id, t.route_id,
              r.route_short_name, r.route_long_name, r.route_color
@@ -2420,7 +2445,13 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
       }
       const withObs = stops.filter((s) => s.obsOffsetSec != null);
       const totalObsSec = withObs.length ? withObs[withObs.length - 1].obsOffsetSec : null;
-      const totalSchedSec = stops.length ? stops[stops.length - 1].schedOffsetSec : null;
+      /* Il programmato fino alla STESSA fermata dell'osservato: il capolinea
+       * d'arrivo quasi mai viene rilevato, e confrontare l'osservato fino
+       * alla penultima col programmato fino all'ultima diceva "più veloce"
+       * di tutto l'ultimo arco. La corsa intera resta a parte. */
+      const ultimaOsservata = withObs.length ? withObs[withObs.length - 1] : null;
+      const totalSchedSec = ultimaOsservata ? ultimaOsservata.schedOffsetSec : null;
+      const schedCorsaInteraSec = stops.length ? stops[stops.length - 1].schedOffsetSec : null;
       // Analisi fermate fatte su più rilevazioni
       const servedStops = stops.filter((s) => s.stopped).length;
       const sumStoppedRuns = stops.reduce((a, s) => a + s.stoppedRuns, 0);
@@ -2444,6 +2475,9 @@ router.get("/operations/runtimes/export", async (req, res): Promise<void> => {
         totalSchedSec,
         totalObsSec,
         totalDeltaSec: totalObsSec != null && totalSchedSec != null ? totalObsSec - totalSchedSec : null,
+        /* fino a quale fermata sono misurati i totali, e quanto vale la corsa intera */
+        totalFinoASeq: ultimaOsservata ? ultimaOsservata.seq : null,
+        schedCorsaInteraSec,
         stops,
       };
     }
