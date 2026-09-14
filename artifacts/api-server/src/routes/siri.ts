@@ -464,7 +464,10 @@ function diagnose(c: VehicleCompleteness, m?: MappingReport): string[] {
       + "sono attribuibili.");
   } else if (m) {
     const modi: string[] = [];
-    if (m.tripMatchedById) modi.push(`${m.tripMatchedById} per identificativo`);
+    if (m.tripMatchedById) {
+      modi.push(`${m.tripMatchedById} per identificativo`
+        + (m.tripMatchedByCode ? ` (${m.tripMatchedByCode} dal numero di corsa in coda al trip_id)` : ""));
+    }
     if (m.tripMatchedBySchedule) modi.push(`${m.tripMatchedBySchedule} per linea+ora di partenza`);
     out.push(`Corse agganciate: ${m.tripMatched} su ${c.conCorsa}`
       + (modi.length ? ` (${modi.join(", ")})` : "")
