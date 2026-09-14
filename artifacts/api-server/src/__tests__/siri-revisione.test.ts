@@ -9,7 +9,8 @@
 import { describe, it, expect } from "vitest";
 import {
   parseDate, splitInService, lineCodeCandidates, buildTripStartIndex,
-  parseVehicleMonitoringResponse, type SiriVehicle,
+  parseVehicleMonitoringResponse, mapVehicles, codiceCorsaDi, indiceCodiciCorsa,
+  type SiriVehicle,
 } from "../lib/siri-vm";
 import { scegliFraVicine } from "../lib/siri-ingest";
 import { verificaAggancio } from "../lib/trip-match-audit";
@@ -164,6 +165,62 @@ describe("il codice di linea dal nome pubblicato", () => {
 
   it("un nome senza codice non ne inventa uno", () => {
     expect(lineCodeCandidates("Linea Ancona - Jesi")).toEqual([]);
+  });
+});
+
+describe("l'aggancio per numero di corsa", () => {
+  /* Il flusso vero del 14 settembre 2026: Mizar manda "362304", il feed ha
+   * "689_CodUdp:D1639_362304". Stesso database, stesso numero, in coda. */
+  it("ricava il numero di corsa dalla coda del trip_id", () => {
+    expect(codiceCorsaDi("689_CodUdp:D1639_362304")).toBe("362304");
+    expect(codiceCorsaDi("C1")).toBe("C1");
+  });
+
+  it("indicizza solo i numeri che individuano una corsa sola", () => {
+    const idx = indiceCodiciCorsa(["689_CodUdp:D1639_362304", "689_CodUdp:D1631_363138",
+      "689_CodUdp:D1639_999", "689_CodUdp:D1631_999"]);
+    expect(idx.get("362304")).toBe("689_CodUdp:D1639_362304");
+    expect(idx.get("363138")).toBe("689_CodUdp:D1631_363138");
+    expect(idx.has("999")).toBe(false); // due corse, nessuna scelta a caso
+  });
+
+  /* Il caso che l'aggancio per orario sbagliava: tre mezzi della RE1 in
+   * partenza alle 06:25, tre corse diverse. Col numero ognuno va sulla sua. */
+  it("con il numero di corsa tre mezzi allo stesso minuto vanno su tre corse diverse", () => {
+    const trips = ["689_CodUdp:D1639_367618", "689_CodUdp:D1639_370317", "689_CodUdp:D1639_376180"];
+    const index = {
+      feedId: "f", trips: new Set(trips), routes: new Set(["RE1"]), stops: new Set<string>(),
+      tripRoute: new Map(trips.map(t => [t, "RE1"])), routeByCode: new Map([["RE1", "RE1"]]),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: 0,
+      tripByCode: indiceCodiciCorsa(trips),
+      tripStarts: buildTripStartIndex(trips.map(t => ({ tripId: t, routeId: "RE1", firstDeparture: "06:25:00", headsign: null }))),
+      timeZone: TZ,
+    };
+    const partenza = new Date("2026-09-14T06:25:00+02:00");
+    const mezzi = [["13155", "367618"], ["13157", "370317"], ["13160", "376180"]].map(([v, j]) =>
+      vettura({ vehicleRef: v, journeyRef: j, publishedLineName: "Linea RE1", originAimedDeparture: partenza }));
+    const { mapped, report } = mapVehicles(mezzi, index);
+    expect(mapped.map(m => m.tripId)).toEqual(trips);
+    expect(mapped.every(m => m.agganciatoCome === "id")).toBe(true);
+    expect(report.tripMatchedById).toBe(3);
+    expect(report.tripMatchedByCode).toBe(3);
+    expect(report.tripAmbiguous).toBe(0);
+  });
+
+  it("senza il numero in feed si ripiega ancora su linea+orario", () => {
+    const trips = ["689_CodUdp:D1639_367618"];
+    const index = {
+      feedId: "f", trips: new Set(trips), routes: new Set(["RE1"]), stops: new Set<string>(),
+      tripRoute: new Map(trips.map(t => [t, "RE1"])), routeByCode: new Map([["RE1", "RE1"]]),
+      routeLongNames: [], stopNames: new Map(), stopByName: new Map(), loadedAt: 0,
+      tripByCode: indiceCodiciCorsa(trips),
+      tripStarts: buildTripStartIndex(trips.map(t => ({ tripId: t, routeId: "RE1", firstDeparture: "06:25:00", headsign: null }))),
+      timeZone: TZ,
+    };
+    const { mapped } = mapVehicles([vettura({ journeyRef: "999999", publishedLineName: "Linea RE1",
+      originAimedDeparture: new Date("2026-09-14T06:25:00+02:00") })], index);
+    expect(mapped[0].tripId).toBe(trips[0]);
+    expect(mapped[0].agganciatoCome).toBe("orario");
   });
 });
 

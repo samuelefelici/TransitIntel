@@ -974,6 +974,11 @@ export interface GtfsIndex {
   stops: Set<string>;
   /** trip_id → route_id, per completare le corse che l'AVM non associa */
   tripRoute: Map<string, string>;
+  /** numero di corsa (l'ultimo segmento del trip_id) → trip_id, solo dove è
+   *  univoco. È la chiave con cui l'AVM di Mizar chiama la corsa: il feed è
+   *  esportato dallo stesso database, e "689_CodUdp:D1639_362304" finisce
+   *  col numero che SIRI manda in CourseOfJourneyRef ("362304"). */
+  tripByCode?: Map<string, string>;
   /** codice di linea normalizzato → route_id (da route_id e short_name) */
   routeByCode: Map<string, string>;
   /** nome esteso normalizzato → route_id: le linee extraurbane non hanno un
@@ -1086,6 +1091,8 @@ export interface MappingReport {
   tripMatched: number;
   /** agganciate perché l'identificativo di corsa esiste nel feed */
   tripMatchedById: number;
+  /** di queste, agganciate dal NUMERO di corsa in coda al trip_id */
+  tripMatchedByCode: number;
   /** agganciate da linea + ora di partenza, quando gli id non parlano */
   tripMatchedBySchedule: number;
   /** più corse partono a quell'ora su quella linea: scelta arbitraria */
@@ -1208,9 +1215,49 @@ function resolveRoute(
 }
 
 /** Primo candidato presente nell'insieme (esatto, poi ultimo segmento). */
-function resolveRef(ref: string | null, pool: Set<string>): string | null {
+function resolveRef(
+  ref: string | null, pool: Set<string>, byCode?: Map<string, string>,
+): string | null {
   for (const c of refCandidates(ref)) if (pool.has(c)) return c;
+  /* Il numero di corsa da solo: è così che Mizar identifica la corsa, ed è
+   * l'ultimo segmento del nostro trip_id. Misurato sul flusso vero del 14
+   * settembre: 26 coppie su 32 combaciavano già, e le altre 6 erano casi in
+   * cui l'aggancio per linea+orario aveva scelto la corsa sbagliata fra due
+   * che partono allo stesso minuto — e l'AVM aveva ragione. */
+  if (byCode) {
+    for (const c of refCandidates(ref)) {
+      const t = byCode.get(c);
+      if (t) return t;
+    }
+  }
   return null;
+}
+
+/**
+ * Il numero di corsa in coda a un trip_id: "689_CodUdp:D1639_362304" →
+ * "362304". Se il trip_id non ha separatori resta com'è.
+ */
+export function codiceCorsaDi(tripId: string): string {
+  const parti = tripId.split(/[-_.:]/).filter(Boolean);
+  return parti.length > 0 ? parti[parti.length - 1] : tripId;
+}
+
+/**
+ * numero di corsa → trip_id, SOLO dove il numero individua una corsa sola.
+ * Due corse con lo stesso numero (feed che mescola versioni, o UDP diverse
+ * con la stessa numerazione) non si agganciano per numero: meglio ripiegare
+ * su linea+orario che scegliere a caso.
+ */
+export function indiceCodiciCorsa(tripIds: Iterable<string>): Map<string, string> {
+  const conteggio = new Map<string, string | null>();
+  for (const t of tripIds) {
+    const c = codiceCorsaDi(t);
+    if (!c || c === t) continue;
+    conteggio.set(c, conteggio.has(c) ? null : t);
+  }
+  const out = new Map<string, string>();
+  for (const [c, t] of conteggio) if (t) out.set(c, t);
+  return out;
 }
 
 /** Orario programmato come HH:MM:SS, la convenzione di stop_transits. */
@@ -1243,14 +1290,15 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
   let transitsFound = 0, transitsMatched = 0;
 
   let byPublished = 0, byRouteRef = 0, byLongName = 0, byRef = 0, stopById = 0, stopByName = 0;
-  let byJourneyId = 0, bySchedule = 0, ambiguous = 0;
+  let byJourneyId = 0, bySchedule = 0, ambiguous = 0, byCode = 0;
   const ambiguousExamples: MappingReport["tripAmbiguousExamples"] = [];
   const conflicts = new Set<string>();
   const unmatchedLineDetail = new Map<string, { lineRef: string | null; published: string | null; codiciProvati: string[] }>();
 
   const mapped: MappedVehicle[] = vehicles.map(v => {
-    let tripId = resolveRef(v.journeyRef, index.trips);
+    let tripId = resolveRef(v.journeyRef, index.trips, index.tripByCode);
     let byId = !!tripId;
+    if (byId && tripId && !index.trips.has(v.journeyRef?.trim() ?? "")) byCode++;
 
     // La linea: numero pubblicato, poi id interno, poi quella della corsa agganciata
     const r = resolveRoute(v, index);
@@ -1346,7 +1394,8 @@ export function mapVehicles(vehicles: SiriVehicle[], index: GtfsIndex): {
     mapped,
     report: {
       vehicles: vehicles.length, withPosition, tripMatched,
-      tripMatchedById: byJourneyId, tripMatchedBySchedule: bySchedule, tripAmbiguous: ambiguous,
+      tripMatchedById: byJourneyId, tripMatchedByCode: byCode,
+      tripMatchedBySchedule: bySchedule, tripAmbiguous: ambiguous,
       tripAmbiguousExamples: ambiguousExamples,
       routeMatched, stopMatched,
       transitsFound, transitsMatched,

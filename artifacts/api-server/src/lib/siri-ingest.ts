@@ -25,7 +25,7 @@ import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
   stopsAtPosition, emptyFunnel, explainFunnel, positionUsable, fixAgeSeconds,
-  localHHMM,
+  localHHMM, indiceCodiciCorsa,
   type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress, type MappedVehicle,
@@ -99,6 +99,11 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   cachedIndex = {
     feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName,
     tripStarts,
+    /* Il numero di corsa in coda al trip_id: la chiave con cui Mizar chiama
+     * la corsa in CourseOfJourneyRef. Agganciare per numero, prima che per
+     * linea+orario, toglie le ambiguità fra corse che partono allo stesso
+     * minuto — e rende non tautologica la verifica su linea e partenza. */
+    tripByCode: indiceCodiciCorsa(trips),
     timeZone: process.env.SIRI_TIMEZONE || "Europe/Rome",
     /* Se l'indice delle partenze non si è costruito (query in timeout, lock
      * durante un caricamento), NON si aspetta tutta la scadenza: si ritenta
@@ -533,7 +538,7 @@ export async function ingestVehicles(all: SiriVehicle[]): Promise<IngestResult> 
         + "attribuire i passaggi.",
       report: {
         vehicles: vehicles.length, withPosition: 0, tripMatched: 0,
-        tripMatchedById: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
+        tripMatchedById: 0, tripMatchedByCode: 0, tripMatchedBySchedule: 0, tripAmbiguous: 0,
         tripAmbiguousExamples: [], routeMatched: 0,
         stopMatched: 0, transitsFound: 0, transitsMatched: 0,
         routeMatchedByPublishedName: 0, routeMatchedByRouteRef: 0,
