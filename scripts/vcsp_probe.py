@@ -22,6 +22,7 @@ Gli spostamenti accettati NON toccano Planning Studio: escono come proposte
 """
 from __future__ import annotations
 
+import hashlib
 import time
 
 from optimizer_common import MIN_LAYOVER, MAX_DEADHEAD_KM, estimate_deadhead, min_to_time, log
@@ -447,8 +448,34 @@ def _intra_slack(prev: dict, nxt: dict) -> int:
     return int(nxt["departureMin"]) - int(prev["arrivalMin"]) - need
 
 
+def candidate_signature(cand: dict) -> str:
+    """Firma stabile di un candidato: la chiave della memoria, uguale dentro il
+    giro e fra un giro e l'altro.
+
+    Una linea intera si riconosce da linea e delta («linea:7:-11»): le corse
+    possono cambiare id fra due feed, la mossa no. Una mossa di corsa si
+    riconosce dalle corse spostate; oltre quattro corse si riassume in
+    conteggio e impronta, perche' la firma deve restare leggibile nel
+    rendiconto.
+    """
+    shifts = cand.get("shifts") or {}
+    if cand.get("kind") == "coincidenza" and cand.get("route"):
+        delta = next(iter(shifts.values()), 0)
+        return f"linea:{cand['route']}:{int(delta):+d}"
+    items = sorted((str(tid), int(d)) for tid, d in shifts.items())
+    if len(items) <= 4:
+        corpo = ",".join(f"{tid[:8]}{d:+d}" for tid, d in items)
+    else:
+        impronta = hashlib.sha1(";".join(f"{tid}{d:+d}" for tid, d in items).encode()).hexdigest()[:8]
+        corpo = f"{len(items)}corse:{impronta}"
+    return f"{cand.get('kind') or 'mossa'}:{corpo}"
+
+
+COINCIDENCE_CANDIDATES_MAX = 12
+
+
 def find_coincidence_probe_candidates(trips: list[dict],
-                                      max_candidates: int = 4) -> list[dict]:
+                                      max_candidates: int = COINCIDENCE_CANDIDATES_MAX) -> list[dict]:
     """Candidati generati dalle OCCASIONI DEL QUADRO, non dai turni.
 
     La sonda finora guardava solo due cose: i confini dei pezzi di turno e le
@@ -460,6 +487,13 @@ def find_coincidence_probe_candidates(trips: list[dict],
     guadagna piu' relazioni di quante ne rompe, con la cadenza intatta e dentro
     la flessibilita' dichiarata. Se poi convenga anche in vetture e turni lo
     dice il solver, come per ogni altro candidato.
+
+    Prima la mossa migliore di ogni linea, poi le ALTERNATIVE (gli altri delta
+    della stessa linea con saldo positivo, dentro la flessibilita'). Nel giro
+    AX la lista era di quattro mosse migliori e tre sono morte nel filtro delle
+    coincidenze: la coda si e' svuotata dopo tre sonde su dieci. Quando la
+    mossa migliore non si puo' fare, la risposta giusta non e' rinunciare alla
+    linea: e' provare il delta dopo.
     """
     # Import qui: coincidence_analysis usa questo modulo, e in testa sarebbe
     # un ciclo.
@@ -478,29 +512,43 @@ def find_coincidence_probe_candidates(trips: list[dict],
         if r:
             per_linea.setdefault(r, []).append(t)
 
-    out: list[dict] = []
-    for o in opportunita:
-        best = o.get("migliore") or {}
-        delta = int(best.get("deltaMin") or 0)
-        if not delta or not best.get("dentroLaFlessibilita"):
-            continue
-        corse = per_linea.get(o["route"]) or []
+    def _cand(route: str, mossa: dict, alternativa_di: int | None) -> dict | None:
+        delta = int(mossa.get("deltaMin") or 0)
+        if not delta or not mossa.get("dentroLaFlessibilita"):
+            return None
+        corse = per_linea.get(route) or []
         shifts = {t["tripId"]: delta for t in corse if t.get("tripId")}
         if not shifts:
-            continue
-        out.append({
+            return None
+        out = {
             "kind": "coincidenza",
             "deltaNeeded": abs(delta),
             "shifts": shifts,
-            "blockA": o["route"], "blockB": o["route"],
-            "route": o["route"],
-            "coincidenzeCreate": int(best.get("create") or 0),
-            "coincidenzeRotte": int(best.get("rotte") or 0),
-            "relazioniCreate": best.get("relazioniCreate") or [],
-        })
-        if len(out) >= max_candidates:
-            break
-    return out
+            "blockA": route, "blockB": route,
+            "route": route,
+            "coincidenzeCreate": int(mossa.get("create") or 0),
+            "coincidenzeRotte": int(mossa.get("rotte") or 0),
+            "relazioniCreate": mossa.get("relazioniCreate") or [],
+        }
+        if alternativa_di is not None:
+            out["alternativaDi"] = alternativa_di
+        return out
+
+    migliori: list[dict] = []
+    alternative: list[tuple[int, int, dict]] = []
+    for o in opportunita:
+        best = o.get("migliore") or {}
+        c = _cand(o["route"], best, None)
+        if c is not None:
+            migliori.append(c)
+        best_delta = int(best.get("deltaMin") or 0)
+        for alt in o.get("alternative") or []:
+            c = _cand(o["route"], alt, best_delta)
+            if c is not None:
+                alternative.append((-int(alt.get("netto") or 0), abs(int(alt.get("deltaMin") or 0)), c))
+    alternative.sort(key=lambda x: (x[0], x[1]))
+    out = migliori + [c for _, _, c in alternative]
+    return out[:max_candidates]
 
 
 def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
@@ -831,6 +879,91 @@ def _shift_details(shifts: dict[str, int], trips_by_id: dict[str, dict]) -> list
     return det
 
 
+def _signed_delta(cand: dict) -> int:
+    """Il delta con segno di un candidato: quello comune per una linea intera,
+    altrimenti il primo (per le mosse di corsa e' deltaNeeded col suo verso)."""
+    shifts = cand.get("shifts") or {}
+    if not shifts:
+        return 0
+    valori = list(shifts.values())
+    if cand.get("kind") == "coincidenza" or len(set(valori)) == 1:
+        return int(valori[0])
+    return int(max(valori, key=abs))
+
+
+MEMORY_SOLVER_REASONS = ("vsp", "crew")
+LESSONS_MAX = 40
+
+
+def build_probe_memory(entries: list[dict] | None) -> dict[str, dict]:
+    """Le lezioni dei giri precedenti indicizzate per firma. La piu' recente
+    vince (le liste arrivano dalla piu' recente alla piu' vecchia)."""
+    out: dict[str, dict] = {}
+    for e in entries or []:
+        if not isinstance(e, dict):
+            continue
+        firma = str(e.get("firma") or "").strip()
+        if not firma or firma in out:
+            continue
+        out[firma] = e
+    return out
+
+
+def order_by_memory(cands: list[dict], memoria: dict[str, dict]) -> tuple[list[dict], int, int]:
+    """Riordina la coda con la memoria: in testa chi era stato accettato, in
+    fondo chi il solver aveva bocciato, in mezzo gli altri nell'ordine di
+    prima. Nessuno viene tolto: la memoria ordina, non decide."""
+    if not memoria:
+        return cands, 0, 0
+    avanti, mezzo, dietro = [], [], []
+    for c in cands:
+        voce = memoria.get(candidate_signature(c))
+        if voce and voce.get("esito") == "accettato":
+            avanti.append(c)
+        elif voce and voce.get("esito") == "scartato" and voce.get("motivo") in MEMORY_SOLVER_REASONS:
+            dietro.append(c)
+        else:
+            mezzo.append(c)
+    return avanti + mezzo + dietro, len(avanti), len(dietro)
+
+
+def probe_lessons(section: dict) -> list[dict]:
+    """Cosa il giro ha imparato, in forma che il giro dopo possa rileggere:
+    una voce per firma, con esito, motivo, tentativi e l'effetto sul
+    punteggio quando il solver l'ha misurato. E' la memoria fra i giri:
+    finora stava solo nel registro scritto a mano."""
+    out: list[dict] = []
+    viste: dict[str, dict] = {}
+    for a in section.get("accepted") or []:
+        firma = a.get("firma")
+        if not firma or firma in viste:
+            continue
+        prima, dopo = a.get("before") or {}, a.get("after") or {}
+        voce = {"firma": firma, "kind": a.get("kind"), "route": a.get("route"),
+                "deltaMin": a.get("deltaMin"), "esito": "accettato", "motivo": None,
+                "tentativi": 1,
+                "scoreDeltaEur": round(float(dopo.get("scoreEur") or 0) - float(prima.get("scoreEur") or 0), 2),
+                "vetture": [prima.get("vehicles"), dopo.get("vehicles")]}
+        viste[firma] = voce
+        out.append(voce)
+    for r in section.get("rejected") or []:
+        firma = r.get("firma")
+        if not firma:
+            continue
+        if firma in viste:
+            viste[firma]["tentativi"] += int(r.get("tentativi") or 1)
+            continue
+        voce = {"firma": firma, "kind": r.get("kind"), "route": r.get("route"),
+                "deltaMin": r.get("deltaMin"), "esito": "scartato",
+                "motivo": r.get("motivo") or r.get("reason"),
+                "tentativi": int(r.get("tentativi") or 1)}
+        if r.get("scoreAfter") is not None and r.get("scoreBefore") is not None:
+            voce["scoreDeltaEur"] = round(float(r["scoreAfter"]) - float(r["scoreBefore"]), 2)
+        viste[firma] = voce
+        out.append(voce)
+    return out[:LESSONS_MAX]
+
+
 def run_probe_phase(
     vsp_payload: dict,
     best_vsp: dict,
@@ -849,6 +982,8 @@ def run_probe_phase(
     progress=None,
     shift_penalty_eur: float = SHIFT_PENALTY_EUR_PER_TRIP_MIN,
     crew_scope: str = "trip",
+    probe_memory: list[dict] | None = None,
+    probe_control: bool = True,
 ) -> dict:
     """Fase sonda: prova gli spostamenti candidati, tiene solo chi abbassa il
     PUNTEGGIO (costo + ombre turni/violazioni + disturbo all'orario). Ritorna
@@ -860,6 +995,19 @@ def run_probe_phase(
     di muovere mezza rete per un guadagno da pochi euro.
     crew_scope: "trip" (ritocco alla corsa di confine) o "line" (linea intera)
     per i candidati guidati dai turni.
+    probe_memory: le LEZIONI dei giri precedenti sullo stesso progetto e la
+    stessa data (vedi probe_lessons): firma, esito e motivo di ogni candidato
+    gia' provato. Non e' un veto — il piano cambia da un giro all'altro e un
+    candidato bocciato ieri puo' passare oggi — e' un ordine: chi era stato
+    accettato si riprova per primo, chi il solver aveva bocciato va in fondo
+    alla coda, chi era morto nel filtro si ricontrolla (costa zero).
+    probe_control: prima dei candidati, rifa' il solve del best round SENZA
+    spostamenti con la configurazione dei candidati (il CONTROLLO). Il valore
+    di un candidato e' (candidato − controllo), non (candidato − round): nel
+    giro AY il re-solve corto ha battuto il round lungo di sei vetture con le
+    stesse penalita', e la sonda l'aveva letto come merito di tre corse. Se il
+    controllo batte il best round e' un piano legittimo, senza disturbo, e
+    diventa il riferimento.
     """
     t0 = time.time()
     trips = list(vsp_payload.get("trips") or [])
@@ -888,7 +1036,18 @@ def run_probe_phase(
         "coincidences": [{k: v for k, v in c.items() if k != "pairs"} for c in coincidenze],
         "rejectedForCoincidence": 0, "propagatedForCoincidence": 0,
         "propagationFailures": {}, "rejectedForRoundTrip": 0,
+        # La coda si e' svuotata prima del budget? Quante sonde sono rimaste?
+        # Nel giro AX: tre sonde su dieci, e il rendiconto non lo diceva.
+        "codaEsaurita": False, "sondeNonUsate": 0,
+        "lezioni": [], "memoria": {"giriLetti": 0, "lezioniLette": 0,
+                                   "ripresi": 0, "rimandatiInCoda": 0},
+        "controllo": None,
     }
+    memoria = build_probe_memory(probe_memory)
+    if memoria:
+        section["memoria"]["giriLetti"] = len({v.get("giro") for v in memoria.values() if v.get("giro")})
+        section["memoria"]["lezioniLette"] = len(memoria)
+        log(f"[PROBE] memoria: {len(memoria)} lezioni da {section['memoria']['giriLetti']} giri precedenti")
     result = {"vsp": best_vsp, "crew": best_crew, "kpi": best_kpi, "probe": section}
     if flex_trips == 0:
         log("[PROBE] nessuna corsa con flessibilità dichiarata — sonda inattiva")
@@ -904,6 +1063,33 @@ def run_probe_phase(
     probe_cfg["vspAdvanced"] = adv
 
     tried: set[frozenset] = set()
+    # Rifiuti del filtro (macchina, coincidenze), registrati UNA volta per
+    # firma: il filtro gira a ogni passata del ciclo e lo stesso candidato
+    # finiva nel rendiconto quattro volte (AX: la 7 a −11), facendo credere
+    # che la sonda ci spendesse sonde. Non ne spende: costa zero. Si
+    # ricontrolla ogni passata — dopo un'accettazione lo stato cambia e puo'
+    # passare — ma si conta una volta, coi tentativi accanto.
+    filtro_visti: dict[str, dict] = {}
+
+    def _scarta_nel_filtro(c: dict, why: str, motivo: str, extra: dict) -> bool:
+        """Registra il rifiuto; True se e' la prima volta per questa firma."""
+        firma = candidate_signature(c)
+        voce = filtro_visti.get(firma)
+        if voce is not None:
+            voce["tentativi"] += 1
+            return False
+        voce = {"kind": c["kind"], "deltaNeeded": c["deltaNeeded"],
+                "deltaMin": _signed_delta(c), "firma": firma,
+                "why": why, "motivo": motivo, "tentativi": 1, **extra}
+        if c.get("route"):
+            voce["route"] = c["route"]
+        if c.get("alternativaDi") is not None:
+            voce["alternativaDi"] = c["alternativaDi"]
+        filtro_visti[firma] = voce
+        if len(section["rejected"]) < 20:
+            section["rejected"].append(voce)
+        return True
+
     probes_run = 0
     cur_trips = trips
     orig_by_id = {t.get("tripId"): t for t in trips}
@@ -920,6 +1106,70 @@ def run_probe_phase(
 
     # Punteggio del best SENZA disturbo (il disturbo si somma a parte, cumulato)
     cur_base_score = float(best_kpi.get("selectionScoreEur", best_kpi["totalCostEur"]))
+
+    def _con_relief_points(shifts_out: list) -> list:
+        """Il CSP vuole i punti di cambio (cluster) sulle corse dei blocchi."""
+        if trip_cluster_stops:
+            for s_ in shifts_out:
+                for t in s_.get("trips", []):
+                    if t.get("type") == "trip":
+                        cs_list = trip_cluster_stops.get(t.get("tripId"))
+                        if cs_list:
+                            t["clusterStops"] = cs_list
+        return shifts_out
+
+    def _payload_per(trips_: list[dict]) -> dict:
+        pl = dict(vsp_payload)
+        pl["trips"] = trips_
+        pl["config"] = probe_cfg
+        if arc_penalties:
+            pl["arcPenalties"] = arc_penalties
+        else:
+            pl.pop("arcPenalties", None)
+        return pl
+
+    # ── IL CONTROLLO ──
+    # Stesso input del best round, stessa configurazione dei candidati, nessuno
+    # spostamento. Senza, il rumore del solver passa per merito della mossa.
+    if probe_control:
+        if progress:
+            progress("Sonda: controllo (re-solve del best round senza spostamenti)…")
+        ctrl_vsp = vsp_run(_payload_per(cur_trips))
+        ctrl_shifts = ctrl_vsp.get("vehicleShifts", [])
+        cvm = ctrl_vsp.get("metrics", {}) or {}
+        bvm = result["vsp"].get("metrics", {}) or {}
+        v_round, v_ctrl = int(bvm.get("vehicles", 0) or 0), int(cvm.get("vehicles", 0) or 0)
+        c_round, c_ctrl = float(bvm.get("costEur") or 0), float(cvm.get("costEur") or 0)
+        controllo: dict = {
+            "eseguito": True, "riferimento": "round",
+            "vetture": {"round": v_round, "controllo": v_ctrl},
+            "costoVettureEur": {"round": round(c_round, 2), "controllo": round(c_ctrl, 2)},
+        }
+        if ctrl_shifts and (v_ctrl < v_round or (v_ctrl == v_round and c_ctrl < c_round - COST_EPS)):
+            ctrl_crew = csp_run({"vehicleShifts": _con_relief_points(ctrl_shifts), "config": crew_config},
+                                crew_time_limit)
+            ctrl_kpi = kpi_fn(ctrl_vsp, ctrl_crew)
+            ctrl_score = float(ctrl_kpi.get("selectionScoreEur", ctrl_kpi["totalCostEur"]))
+            viol_round = int(result["kpi"].get("bdsViolations", 0) or 0)
+            viol_ctrl = int(ctrl_kpi.get("bdsViolations", 0) or 0)
+            controllo["punteggio"] = {"round": round(cur_base_score, 2), "controllo": round(ctrl_score, 2)}
+            controllo["violazioni"] = {"round": viol_round, "controllo": viol_ctrl}
+            controllo["turni"] = {"round": result["kpi"].get("duties", 0), "controllo": ctrl_kpi.get("duties", 0)}
+            # Le regole non si comprano: il controllo diventa riferimento solo
+            # se non porta violazioni in piu' E abbassa il punteggio.
+            if viol_ctrl <= viol_round and ctrl_score < cur_base_score - COST_EPS:
+                controllo["riferimento"] = "controllo"
+                cur_base_score = ctrl_score
+                result = {"vsp": ctrl_vsp, "crew": ctrl_crew, "kpi": ctrl_kpi, "probe": section}
+                log(f"[PROBE] controllo: {v_ctrl} vetture contro {v_round} del round, punteggio "
+                    f"{ctrl_score:.2f} < {controllo['punteggio']['round']:.2f}: e' il solver, non "
+                    f"l'orario. Il controllo diventa il riferimento.")
+            else:
+                log(f"[PROBE] controllo: {v_ctrl} vetture contro {v_round}, ma punteggio "
+                    f"{ctrl_score:.2f} / violazioni {viol_ctrl} non battono il round: resta il round.")
+        else:
+            log(f"[PROBE] controllo: {v_ctrl} vetture contro {v_round} del round: il round resta il riferimento")
+        section["controllo"] = controllo
 
     while probes_run < max_probes:
         trips_by_id = {t.get("tripId"): t for t in cur_trips}
@@ -942,13 +1192,9 @@ def run_probe_phase(
         for c in cands:
             senza_macchina = round_trip_order_broken(c["shifts"], trips_by_id, rt_pairs)
             if senza_macchina:
-                section["rejectedForRoundTrip"] += 1
-                if len(section["rejected"]) < 20:
-                    section["rejected"].append({
-                        "kind": c["kind"], "deltaNeeded": c["deltaNeeded"],
-                        "why": "il ritorno partirebbe prima dell'arrivo dell'andata",
-                        "giri": senza_macchina[:3],
-                    })
+                if _scarta_nel_filtro(c, "il ritorno partirebbe prima dell'arrivo dell'andata",
+                                      "macchina", {"giri": senza_macchina[:3]}):
+                    section["rejectedForRoundTrip"] += 1
                 continue
             tenuti.append(c)
         cands = tenuti
@@ -962,31 +1208,36 @@ def run_probe_phase(
                         c["shifts"], trips_by_id, rt_pairs, coinc_pairs,
                         line_mode=(c.get("kind") == "coincidenza"))
                     if allargato is None:
-                        section["rejectedForCoincidence"] += 1
-                        section["propagationFailures"][perche] = (
-                            section["propagationFailures"].get(perche, 0) + 1)
-                        if len(section["rejected"]) < 20:
-                            section["rejected"].append({
-                                "kind": c["kind"], "deltaNeeded": c["deltaNeeded"],
-                                "why": "rompe una coincidenza",
-                                "propagationFailed": perche,
-                                "coincidenze": rotte[:3],
-                            })
+                        if _scarta_nel_filtro(c, "rompe una coincidenza", f"coincidenza:{perche}",
+                                              {"propagationFailed": perche, "coincidenze": rotte[:3]}):
+                            section["rejectedForCoincidence"] += 1
+                            section["propagationFailures"][perche] = (
+                                section["propagationFailures"].get(perche, 0) + 1)
                         continue
                     if frozenset(allargato.items()) in tried:
                         continue
                     if round_trip_order_broken(allargato, trips_by_id, rt_pairs):
-                        section["rejectedForRoundTrip"] += 1
+                        if _scarta_nel_filtro(c, "dopo la propagazione il ritorno partirebbe "
+                                              "prima dell'arrivo dell'andata", "macchina", {}):
+                            section["rejectedForRoundTrip"] += 1
                         continue
                     section["propagatedForCoincidence"] += 1
                     c = {**c, "shifts": allargato,
                          "propagatedTrips": len(allargato) - len(c["shifts"])}
                 tenuti.append(c)
             cands = tenuti
+        cands, ripresi, rimandati = order_by_memory(cands, memoria)
         if probes_run == 0:
             section["candidates"] = len(cands)
             section["crewStats"] = dict(LAST_CREW_STATS)
+            section["memoria"]["ripresi"] = ripresi
+            section["memoria"]["rimandatiInCoda"] = rimandati
+            if memoria and (ripresi or rimandati):
+                log(f"[PROBE] memoria: {ripresi} candidati ripresi in testa, "
+                    f"{rimandati} rimandati in coda")
         if not cands:
+            # Non e' finito il budget: sono finite le idee. Va detto.
+            section["codaEsaurita"] = True
             break
         cand = cands[0]
         tried.add(frozenset(cand["shifts"].items()))
@@ -1016,22 +1267,17 @@ def run_probe_phase(
                      f"±{cand['deltaNeeded']}′ → re-solve…")
 
         probe_trips = _apply_shifts(cur_trips, cand["shifts"])
-        probe_payload = dict(vsp_payload)
-        probe_payload["trips"] = probe_trips
-        probe_payload["config"] = probe_cfg
-        if arc_penalties:
-            probe_payload["arcPenalties"] = arc_penalties
-        else:
-            probe_payload.pop("arcPenalties", None)
-
-        vsp_out = vsp_run(probe_payload)
+        vsp_out = vsp_run(_payload_per(probe_trips))
         shifts_out = vsp_out.get("vehicleShifts", [])
         vm = vsp_out.get("metrics", {}) or {}
         best_vm = result["vsp"].get("metrics", {}) or {}
         rejected_entry = {
             "kind": cand["kind"], "deltaNeeded": cand["deltaNeeded"],
+            "deltaMin": _signed_delta(cand), "firma": candidate_signature(cand),
             "shifts": _shift_details(cand["shifts"], trips_by_id),
             "blocks": [cand["blockA"], cand["blockB"]],
+            **({"route": cand["route"]} if cand.get("route") else {}),
+            **({"alternativaDi": cand["alternativaDi"]} if cand.get("alternativaDi") is not None else {}),
         }
         vehicles_new = vm.get("vehicles", 0)
         vehicles_old = best_vm.get("vehicles", 0)
@@ -1042,20 +1288,14 @@ def run_probe_phase(
                 or (not _crew_cand and vehicles_new == vehicles_old
                     and cost_new >= cost_old - COST_EPS)):
             rejected_entry["reason"] = "vsp"   # i mezzi non migliorano: niente CSP
+            rejected_entry["motivo"] = "vsp"
             section["rejected"].append(rejected_entry)
             log(f"[PROBE]   scartato (VSP: {vehicles_new} vs {vehicles_old} mezzi, "
                 f"€{cost_new:.0f} vs €{cost_old:.0f})")
             continue
 
         # mezzi migliorati → verifica il lato guida (stessi relief points)
-        if trip_cluster_stops:
-            for s in shifts_out:
-                for t in s.get("trips", []):
-                    if t.get("type") == "trip":
-                        cs_list = trip_cluster_stops.get(t.get("tripId"))
-                        if cs_list:
-                            t["clusterStops"] = cs_list
-        crew_out = csp_run({"vehicleShifts": shifts_out, "config": crew_config},
+        crew_out = csp_run({"vehicleShifts": _con_relief_points(shifts_out), "config": crew_config},
                            crew_time_limit)
         kpi = kpi_fn(vsp_out, crew_out)
         # Stesso metro della selezione fra round: punteggio (costo + ombre
@@ -1084,7 +1324,9 @@ def run_probe_phase(
                 f"(disturbo €{_dis_old:.0f} → €{_dis_new:.0f})")
             section["accepted"].append({
                 "kind": cand["kind"], "deltaNeeded": cand["deltaNeeded"],
+                "deltaMin": _signed_delta(cand), "firma": candidate_signature(cand),
                 "route": cand.get("route"),
+                **({"alternativaDi": cand["alternativaDi"]} if cand.get("alternativaDi") is not None else {}),
                 "coincidenzeCreate": cand.get("coincidenzeCreate") or 0,
                 "coincidenzeRotte": cand.get("coincidenzeRotte") or 0,
                 "duty": cand.get("duty"), "gapMin": cand.get("gapMin"),
@@ -1114,6 +1356,7 @@ def run_probe_phase(
             result = {"vsp": vsp_out, "crew": crew_out, "kpi": kpi, "probe": section}
         else:
             rejected_entry["reason"] = "crew"  # la guida (o il disturbo) mangia il risparmio
+            rejected_entry["motivo"] = "crew"
             rejected_entry["scoreBefore"] = round(_score_old, 2)
             rejected_entry["scoreAfter"] = round(_score_new, 2)
             rejected_entry["disruptionEur"] = _dis_new
@@ -1129,7 +1372,11 @@ def run_probe_phase(
     section["shiftedTrips"] = len(accepted_total)
     section["shiftedTripMin"] = sum(abs(v) for v in accepted_total.values())
     section["disruptionEur"] = _disruption(accepted_total)
+    section["sondeNonUsate"] = max(0, int(max_probes) - probes_run)
+    section["lezioni"] = probe_lessons(section)
     section["elapsedSec"] = round(time.time() - t0, 1)
-    log(f"[PROBE] fine: {probes_run} sonde, {len(section['accepted'])} accettate, "
-        f"{len(section['rejected'])} scartate in {section['elapsedSec']}s")
+    log(f"[PROBE] fine: {probes_run} sonde su {max_probes}"
+        f"{' (coda esaurita)' if section['codaEsaurita'] else ''}, "
+        f"{len(section['accepted'])} accettate, {len(section['rejected'])} scartate, "
+        f"{len(section['lezioni'])} lezioni in {section['elapsedSec']}s")
     return result

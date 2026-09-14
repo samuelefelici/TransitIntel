@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from vcsp_probe import (
     COINCIDENCE_MAX_WAIT, COINCIDENCE_MIN_OCCURRENCES,
-    _node_key, _stop_events, _flex_of, detect_coincidences, COINCIDENCE_MIN_WAIT,
+    _stop_events, detect_coincidences, COINCIDENCE_MIN_WAIT,
     build_round_trip_pairs, flex_of_round_trip, min_to_time,
 )
 

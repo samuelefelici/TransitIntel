@@ -2801,6 +2801,12 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
           // i round oscillano per costruzione, e quanta ne serva si prova.
           ...(vcspBody.earlyStopPatience != null && Number.isFinite(Number(vcspBody.earlyStopPatience))
             ? { earlyStopPatience: Math.max(1, Math.min(10, Math.round(Number(vcspBody.earlyStopPatience)))) } : {}),
+          // Memoria della sonda (lezioni dei giri precedenti): ordina la coda.
+          ...(Array.isArray(vcspBody.probeMemory) && vcspBody.probeMemory.length > 0
+            ? { probeMemory: vcspBody.probeMemory.slice(0, 200) } : {}),
+          // Controllo della sonda (re-solve del best round senza spostamenti):
+          // acceso salvo un false esplicito.
+          ...(vcspBody.probeControl === false ? { probeControl: false } : {}),
         },
         tripClusterStops,
       });
@@ -3071,6 +3077,44 @@ async function loadAgentJobRows(where: { id?: string; userId?: string; isAdmin?:
   } catch { return []; }
 }
 
+/** Le lezioni della sonda dai giri precedenti dello stesso progetto e della
+ * stessa data: una voce per firma (esito, motivo, tentativi), dalla più
+ * recente alla più vecchia, con l'id del giro che l'ha imparata. Il Python le
+ * usa per ORDINARE la coda dei candidati — chi era stato accettato si riprova
+ * per primo, chi il solver aveva bocciato va in fondo — mai per vietare: il
+ * piano cambia da un giro all'altro. Finora questa memoria stava solo nel
+ * registro scritto a mano. */
+async function loadProbeLessons(psProjectId: string | null | undefined, date: string,
+                                maxJobs = 5, maxLessons = 120): Promise<{ lezioni: any[]; giri: number }> {
+  if (!psProjectId || !date) return { lezioni: [], giri: 0 };
+  try {
+    await ensureAgentJobsTable();
+    const r = await db.execute<any>(sql`
+      SELECT id, finished_at, result_compact->'vcsp'->'probe'->'lezioni' AS lezioni
+        FROM agent_optimize_jobs
+       WHERE ps_project_id = ${psProjectId}::uuid AND status = 'done' AND mode = 'vcsp'
+         AND params->>'date' = ${date}
+         AND jsonb_typeof(result_compact->'vcsp'->'probe'->'lezioni') = 'array'
+       ORDER BY finished_at DESC NULLS LAST LIMIT ${maxJobs}`);
+    const out: any[] = [];
+    const viste = new Set<string>();
+    let giri = 0;
+    for (const row of (r.rows ?? []) as any[]) {
+      const lez = Array.isArray(row.lezioni) ? row.lezioni : [];
+      if (lez.length === 0) continue;
+      giri++;
+      for (const l of lez) {
+        const firma = typeof l?.firma === "string" ? l.firma : null;
+        if (!firma || viste.has(firma)) continue;
+        viste.add(firma);
+        out.push({ ...l, giro: String(row.id).slice(0, 8) });
+        if (out.length >= maxLessons) return { lezioni: out, giri };
+      }
+    }
+    return { lezioni: out, giri };
+  } catch { return { lezioni: [], giri: 0 }; }
+}
+
 /** Vista API di una riga persistita: un giro «running» su DB ma assente dalla
  * memoria è stato interrotto da un riavvio: lo si dichiara, con la richiesta
  * originale per rilanciarlo con gli stessi parametri. */
@@ -3322,6 +3366,19 @@ function compactAgentResult(payload: any): any {
           // Perché la catena non si è chiusa (flessibilità, delta in conflitto,
           // tetto): senza il motivo non si sa dove allargare.
           propagationFailures: v.probe.propagationFailures ?? null,
+          // La coda si è svuotata prima del budget? Quante sonde sono rimaste?
+          // (AX: tre su dieci, e nessuno lo diceva.) E cosa ha imparato il
+          // giro — una voce per firma con esito, motivo e tentativi: è ciò
+          // che il giro dopo rilegge come memoria (vedi loadProbeLessons).
+          codaEsaurita: v.probe.codaEsaurita ?? null,
+          sondeNonUsate: v.probe.sondeNonUsate ?? null,
+          // Il controllo: re-solve del best round senza spostamenti, stessa
+          // configurazione dei candidati. Vetture e punteggio round/controllo
+          // e chi è rimasto riferimento: se è il controllo, il guadagno del
+          // round sonda è del solver, non dell'orario.
+          controllo: v.probe.controllo ?? null,
+          memoria: v.probe.memoria ?? null,
+          lezioni: Array.isArray(v.probe.lezioni) ? v.probe.lezioni.slice(0, 40) : [],
           shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
           // I candidati «coincidenza» spostano una linea intera: nel rendiconto
           // portano la linea e le relazioni comprate.
@@ -3617,6 +3674,10 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       : ({ fast: 60, normal: 180, deep: 420, extreme: 900 } as Record<string, number>)[intensity];
     const serviceType = b.serviceType === "extraurbano" || b.serviceType === "misto" ? b.serviceType : "urbano";
 
+    // Memoria della sonda: le lezioni dei giri precedenti su questo progetto
+    // e questa data (b.memoria === false la spegne, per un giro «da zero»).
+    const probeMemory = mode === "vcsp" && b.memoria !== false
+      ? await loadProbeLessons(psProjectId, rawDate) : { lezioni: [], giri: 0 };
     const runBody: Record<string, any> = {
       date: rawDate, feedId, psProjectId, serviceType, routes,
       timeLimit, solverIntensity: intensity,
@@ -3641,6 +3702,12 @@ router.post("/service-program/agent-optimize", async (req, res) => {
           ? { shiftPenaltyEur: Number(b.shiftPenaltyEur) } : {}),
         ...(b.crewShiftScope === "line" || b.crewShiftScope === "trip"
           ? { crewShiftScope: b.crewShiftScope } : {}),
+        // Pazienza dell'early-stop: arrivava dal connettore e moriva qui — il
+        // giro girava con la pazienza di default e il rendiconto non lo diceva.
+        ...(b.earlyStopPatience != null && Number.isFinite(Number(b.earlyStopPatience))
+          ? { earlyStopPatience: Math.max(1, Math.min(10, Math.round(Number(b.earlyStopPatience)))) } : {}),
+        ...(probeMemory.lezioni.length > 0 ? { probeMemory: probeMemory.lezioni } : {}),
+        ...(b.controllo === false ? { probeControl: false } : {}),
       };
       // Vincolo RIGIDO autovetture aziendali impostabile dall'agente: senza
       // companyCars nel body il giro ricade sull'impostazione DB (come la UI).
@@ -3666,7 +3733,14 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         date: rawDate, mode, intensity, timeLimit, serviceType,
         routes: routes.length, vehicleSource, feedSource, depots: depotsSel?.length ?? 0,
         ...(udpRefresh ? { udpRefresh } : {}),
-        ...(mode === "vcsp" ? { rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes, crewTimeLimit: runBody.vcsp.crewTimeLimit } : {}),
+        ...(mode === "vcsp" ? {
+          rounds: runBody.vcsp.rounds, probes: runBody.vcsp.probes, crewTimeLimit: runBody.vcsp.crewTimeLimit,
+          earlyStopPatience: runBody.vcsp.earlyStopPatience ?? null,
+          // Quante lezioni (e da quanti giri) la sonda ha letto in partenza:
+          // due giri con memoria diversa non partono dalla stessa coda.
+          memoria: { lezioni: probeMemory.lezioni.length, giri: probeMemory.giri },
+          controllo: b.controllo !== false,
+        } : {}),
       },
     };
     agentJobs.set(job.id, job);
