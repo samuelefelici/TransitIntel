@@ -13,9 +13,9 @@
 import { describe, it, expect } from "vitest";
 import {
   parseStopMonitoringResponse, confrontaFermata, secondiLocali, secondiGtfs, scartoCircolare, leggiConfronto,
-  leggiDiagnosi, type RigaOrario,
+  leggiDiagnosi, leggiFermataFeed, type RigaOrario,
 } from "../lib/siri-fermata";
-import type { GtfsIndex } from "../lib/siri-vm";
+import { indiceCodiciCorsaDelGiorno, type GtfsIndex } from "../lib/siri-vm";
 
 const visita = (o: {
   line: string; corsa: string; partenza: string; arrivoCapolinea: string; aimed: string;
@@ -252,14 +252,57 @@ describe("leggiDiagnosi: dove sono finiti i numeri che non si trovano", () => {
       trovateAltrove: { "369660": ["689_CodUdp:D1690_369660_1"], "455469": [] },
       lineeNelFeed: { C: { routeId: "C", corse: 40 }, N: null },
     }, ["369660", "455469"]);
-    expect(l[0]).toMatch(/1 dei 2 numeri mancanti stanno nel feed ma NON in coda al trip_id \(es\. 369660 in 689_CodUdp:D1690_369660_1\)/);
+    expect(l[0]).toMatch(/1 numeri stanno nel feed ma NON in coda al trip_id \(es\. 369660 in 689_CodUdp:D1690_369660_1\)/);
     expect(l.join("\n")).toMatch(/Le linee N nel feed non esistono/);
     expect(l.join("\n")).toMatch(/Le linee C \(40 corse\) nel feed ci sono, ma 1 numeri di corsa non compaiono/);
+  });
+  /* Il caso vero del 14 settembre: 25 numeri, tutti in coda, tutti su due o
+   * più unità di programmazione. */
+  it("numero in coda ma ripetuto su più unità di programmazione: serve il calendario del giorno", () => {
+    const l = leggiDiagnosi({
+      trovateAltrove: {
+        "366049": ["689_CodUdp:D1630_366049", "689_CodUdp:D1638_366049"],
+        "454462": ["689_CodUdp:D1627_454462", "689_CodUdp:D1628_454462", "689_CodUdp:D1630_454462"],
+        "999": ["689_CodUdp:D1630_999"],
+      },
+      lineeNelFeed: { B: { routeId: "B", corse: 410 } },
+    }, ["366049", "454462", "999"]);
+    expect(l[0]).toMatch(/2 dei 3 numeri mancanti stanno in coda al trip_id ma su più unità di programmazione \(es\. 366049 in D1630, D1638\)/);
+    expect(l[1]).toMatch(/1 numeri stanno in coda a un solo trip_id \(es\. 999 in 689_CodUdp:D1630_999\) eppure/);
+    expect(l).toHaveLength(2);   // nessun numero assente: niente riga sulle linee
   });
   it("senza numeri mancanti non dice nulla", () => {
     expect(leggiDiagnosi({ trovateAltrove: {}, lineeNelFeed: {} }, [])).toEqual([]);
   });
   it("numeri assenti e nessuna linea da confrontare", () => {
     expect(leggiDiagnosi({ trovateAltrove: {}, lineeNelFeed: {} }, ["1", "2"])).toEqual(["2 numeri non compaiono in nessun trip_id del feed."]);
+  });
+});
+
+describe("leggiFermataFeed", () => {
+  it("parla solo quando l'aggancio è riuscito per nome, e dice che stop_code ha il feed", () => {
+    expect(leggiFermataFeed("1122", { stopId: "20045", stopCode: "ANC045", stopName: "x" }, "name")[0])
+      .toMatch(/ha stop_code «ANC045», non 1122: i codici fermata di Mizar e del feed sono due numerazioni diverse/);
+    expect(leggiFermataFeed("1122", { stopId: "20045", stopCode: null, stopName: "x" }, "name")[0])
+      .toMatch(/non ha stop_code/);
+    expect(leggiFermataFeed("1122", { stopId: "20045", stopCode: "1122", stopName: "x" }, "code")).toEqual([]);
+    expect(leggiFermataFeed("1122", null, "name")).toEqual([]);
+  });
+});
+
+describe("indiceCodiciCorsaDelGiorno: il numero torna univoco fra le corse di oggi", () => {
+  const tutte = ["689_CodUdp:D1630_366049", "689_CodUdp:D1638_366049", "689_CodUdp:D1690_362304", "689_CodUdp:D1627_454462", "689_CodUdp:D1628_454462"];
+  it("sull'intero feed i numeri ripetuti restano fuori; con le corse di oggi entrano", () => {
+    const senza = indiceCodiciCorsaDelGiorno(tutte, null);
+    expect(senza.get("366049")).toBeUndefined();
+    expect(senza.get("362304")).toBe("689_CodUdp:D1690_362304");
+    const oggi = indiceCodiciCorsaDelGiorno(tutte, ["689_CodUdp:D1630_366049", "689_CodUdp:D1690_362304"]);
+    expect(oggi.get("366049")).toBe("689_CodUdp:D1630_366049");
+    expect(oggi.get("362304")).toBe("689_CodUdp:D1690_362304");
+    expect(oggi.get("454462")).toBeUndefined();   // oggi non circola in nessuna UDP: resta ambiguo
+  });
+  it("un numero ambiguo anche fra le corse di oggi resta fuori", () => {
+    const oggi = indiceCodiciCorsaDelGiorno(tutte, ["689_CodUdp:D1627_454462", "689_CodUdp:D1628_454462"]);
+    expect(oggi.get("454462")).toBeUndefined();
   });
 });

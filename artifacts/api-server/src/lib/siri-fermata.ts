@@ -22,7 +22,7 @@
  */
 import {
   parseXml, findAll, findFirst, directText, parseDate, parseIsoDuration,
-  resolveRef, resolveStop, normalizeLineCode,
+  resolveRef, resolveStop, normalizeLineCode, codiceCorsaDi,
   type GtfsIndex,
 } from "./siri-vm";
 
@@ -340,15 +340,43 @@ export interface DiagnosiCorse {
   trovateAltrove: Record<string, string[]>;
   /** linea di Mizar → quante corse ha nel feed (null: linea non nel feed) */
   lineeNelFeed: Record<string, { routeId: string; corse: number } | null>;
+  /** la fermata come sta nel feed, per vedere con che codice la chiama */
+  fermataNelFeed?: { stopId: string; stopCode: string | null; stopName: string | null } | null;
+}
+
+/** Che cosa dice il feed della fermata agganciata: il suo stop_code è quello di Mizar? */
+export function leggiFermataFeed(
+  ref: string, f: DiagnosiCorse["fermataNelFeed"], come: "id" | "code" | "name" | null,
+): string[] {
+  if (!f || come !== "name") return [];
+  return [f.stopCode
+    ? `Nel feed la fermata ${f.stopId} ha stop_code «${f.stopCode}», non ${ref}: i codici fermata di Mizar e del feed sono due numerazioni diverse, e l'aggancio per nome resta l'unico possibile.`
+    : `Nel feed la fermata ${f.stopId} non ha stop_code: il feed non porta il codice con cui Mizar chiama le fermate, e l'aggancio per nome resta l'unico possibile.`];
 }
 
 export function leggiDiagnosi(d: DiagnosiCorse, nonTrovate: string[]): string[] {
   if (!nonTrovate.length) return [];
   const out: string[] = [];
-  const altrove = nonTrovate.filter(c => (d.trovateAltrove[c] ?? []).length > 0);
+  /* Tre casi diversi per i numeri che stanno nel feed: in coda al trip_id
+   * ma ripetuti su più unità di programmazione (il numero non è univoco
+   * sull'intero feed: serve il calendario del giorno); in coda e unici (non
+   * dovrebbe succedere: allora è l'indice a non vederli); altrove. */
+  const presenti = nonTrovate.filter(c => (d.trovateAltrove[c] ?? []).length > 0);
+  const inCoda = presenti.filter(c => d.trovateAltrove[c].every(t => codiceCorsaDi(t) === c));
+  const ripetuti = inCoda.filter(c => d.trovateAltrove[c].length > 1);
+  const unici = inCoda.filter(c => d.trovateAltrove[c].length === 1);
+  const altrove = presenti.filter(c => !inCoda.includes(c));
+  if (ripetuti.length) {
+    const es = ripetuti[0];
+    const udp = d.trovateAltrove[es].map(t => /CodUdp:([^_]+)/.exec(t)?.[1] ?? t);
+    out.push(`${ripetuti.length} dei ${nonTrovate.length} numeri mancanti stanno in coda al trip_id ma su più unità di programmazione (es. ${es} in ${udp.join(", ")}): sull'intero feed il numero non è univoco, serve il calendario del giorno per scegliere la corsa.`);
+  }
+  if (unici.length) {
+    out.push(`${unici.length} numeri stanno in coda a un solo trip_id (es. ${unici[0]} in ${d.trovateAltrove[unici[0]][0]}) eppure l'indice non li ha agganciati: da verificare.`);
+  }
   if (altrove.length) {
     const es = d.trovateAltrove[altrove[0]][0];
-    out.push(`${altrove.length} dei ${nonTrovate.length} numeri mancanti stanno nel feed ma NON in coda al trip_id (es. ${altrove[0]} in ${es}): la regola «ultimo segmento» non basta per queste corse.`);
+    out.push(`${altrove.length} numeri stanno nel feed ma NON in coda al trip_id (es. ${altrove[0]} in ${es}): la regola «ultimo segmento» non basta per queste corse.`);
   }
   const assenti = nonTrovate.filter(c => !(d.trovateAltrove[c] ?? []).length);
   if (assenti.length) {

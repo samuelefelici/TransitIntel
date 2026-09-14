@@ -1281,6 +1281,25 @@ export function indiceCodiciCorsa(tripIds: Iterable<string>): Map<string, string
   return out;
 }
 
+/**
+ * numero di corsa → trip_id, giudicato sulle corse DI OGGI.
+ *
+ * Il feed ripete la stessa corsa in ogni unità di programmazione in cui
+ * vale — "689_CodUdp:D1630_366049" e "689_CodUdp:D1638_366049" sono la
+ * stessa corsa 366049 in due validità — e sull'intero feed il numero non è
+ * mai univoco: su 25 passaggi della fermata 1122, il 14 settembre 2026,
+ * nessuno si agganciava. Fra le corse che circolano oggi il numero torna
+ * univoco. Dove il calendario non decide, resta il giudizio sull'intero feed.
+ */
+export function indiceCodiciCorsaDelGiorno(
+  tutte: Iterable<string>, oggi: Iterable<string> | null | undefined,
+): Map<string, string> {
+  const out = indiceCodiciCorsa(tutte);
+  if (!oggi) return out;
+  for (const [c, t] of indiceCodiciCorsa(oggi)) out.set(c, t);
+  return out;
+}
+
 /** Orario programmato come HH:MM:SS, la convenzione di stop_transits. */
 /**
  * Orario programmato come "HH:MM:SS" NELL'ORA DELL'AZIENDA.
@@ -1516,6 +1535,9 @@ export interface TripStartIndex {
   byRouteAndStart: Map<string, string[]>;
   headsign: Map<string, string | null>;
   trips: number;
+  /** le corse che circolano nel giorno di servizio: la platea su cui il
+   *  numero di corsa torna univoco (v. indiceCodiciCorsaDelGiorno) */
+  tripIds: Set<string>;
   /** giorno di servizio su cui è costruito l'indice (YYYYMMDD) */
   serviceDay?: string;
   /** false = calendario non utilizzabile, indice su TUTTE le validità */
@@ -1537,7 +1559,7 @@ export function buildTripStartIndex(rows: TripStart[]): TripStartIndex {
     headsign.set(r.tripId, r.headsign);
   }
   for (const arr of byRouteAndStart.values()) arr.sort();
-  return { byRouteAndStart, headsign, trips: rows.length };
+  return { byRouteAndStart, headsign, trips: rows.length, tripIds: new Set(rows.map(r => r.tripId)) };
 }
 
 const pad2 = (n: number) => String(n).padStart(2, "0");

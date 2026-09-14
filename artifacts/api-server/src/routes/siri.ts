@@ -40,7 +40,7 @@ import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
 import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
-import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
+import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, leggiFermataFeed, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
 
 const router: IRouter = Router();
 
@@ -869,13 +869,31 @@ router.get("/siri/fermata/:ref", async (req, res): Promise<void> => {
       diagnosi = { trovateAltrove, lineeNelFeed };
     }
 
+    /* La fermata come sta nel feed: con che codice la chiama? */
+    let fermataNelFeed: DiagnosiCorse["fermataNelFeed"] = null;
+    if (confronto.fermata.stopId) {
+      const fs = await db.execute<any>(sql`
+        SELECT stop_id, stop_code, stop_name FROM gtfs_stops
+         WHERE feed_id = ${index.feedId}::uuid AND stop_id = ${confronto.fermata.stopId} LIMIT 1`);
+      const x = ((fs as any).rows ?? [])[0];
+      if (x) fermataNelFeed = { stopId: String(x.stop_id), stopCode: x.stop_code != null && String(x.stop_code).trim() ? String(x.stop_code).trim() : null, stopName: x.stop_name ?? null };
+    }
+    if (diagnosi) diagnosi.fermataNelFeed = fermataNelFeed;
+
     res.json({
       configured: true,
       endpoint: smUrl,
       feed: index.feedId,
       finestra: { ore, max, validUntil: sm.validUntil, cicloMinimoSec: sm.shortestPossibleCycleSec },
       ...confronto,
-      lettura: [...confronto.lettura, ...(diagnosi ? leggiDiagnosi(diagnosi, confronto.riepilogo.corseNonTrovate) : [])],
+      lettura: [
+        ...confronto.lettura,
+        ...leggiFermataFeed(ref, fermataNelFeed, confronto.fermata.agganciataCome),
+        ...(diagnosi ? leggiDiagnosi(diagnosi, confronto.riepilogo.corseNonTrovate) : []),
+      ],
+      giornoDiServizio: index.tripStarts?.serviceDay ?? null,
+      corseDelGiornoNellIndice: index.tripStarts?.calendarFiltered ? index.tripStarts.tripIds.size : null,
+      fermataNelFeed,
       diagnosi,
       nota: "Scarti in secondi, Mizar meno feed: positivo = Mizar più tardi. ?grezzo=1 per la risposta SOAP intera.",
     });

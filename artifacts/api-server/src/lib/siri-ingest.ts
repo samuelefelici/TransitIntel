@@ -25,7 +25,7 @@ import {
   mapVehicles, resolveCancelledTrip, normalizeLineCode, normalizeStopName,
   buildTripStartIndex, detectTransit, splitInService, delayFromSchedule,
   stopsAtPosition, emptyFunnel, explainFunnel, positionUsable, fixAgeSeconds,
-  localHHMM, indiceCodiciCorsa,
+  localHHMM, indiceCodiciCorsaDelGiorno,
   type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
   type VehicleProgress, type MappedVehicle,
@@ -109,7 +109,7 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
      * la corsa in CourseOfJourneyRef. Agganciare per numero, prima che per
      * linea+orario, toglie le ambiguità fra corse che partono allo stesso
      * minuto — e rende non tautologica la verifica su linea e partenza. */
-    tripByCode: indiceCodiciCorsa(trips),
+    tripByCode: indiceCodiciCorsaDelGiorno(trips, tripStarts?.calendarFiltered ? tripStarts.tripIds : null),
     timeZone: process.env.SIRI_TIMEZONE || "Europe/Rome",
     /* Se l'indice delle partenze non si è costruito (query in timeout, lock
      * durante un caricamento), NON si aspetta tutta la scadenza: si ritenta
