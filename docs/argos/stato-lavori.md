@@ -754,6 +754,8 @@ Cosa ne discende, e va fatto subito: **il controllo**. Prima di misurare i candi
 
 **Seconda scoperta: il grafo delle coincidenze del festivo e' fatto di due grappoli, e ogni mossa di linea sbatte contro il tetto.** Con line_mode la 3 a −14 e' arrivata al filtro: rompe Posatora (31→3, attesa −11: la 3 partirebbe undici minuti PRIMA che la 31 arrivi), la propagazione trascina la 31, ma la 31 e' un perno — 30 all'Ospedale, 42 e 24 a U.Bassi — e trascinarla ne trascina altre tre: **cinque linee, tetto a tre, `catenaTroppoLunga`** (22 volte, su tutti i candidati di linea: 1/4 +13 passa dalla 11 alla 2/6, la 7 −11 dalla 2/6 alla 21/33 e alla 11). Il festivo ha due grappoli: {3, 31, 30, 42, 24} attorno alla 31 e {2/6, 7, 11, 21/33, 1/4} attorno alla 2/6. «La 3 a −14» significa in realta' «il grappolo della 31 a −14 rispetto al grappolo della 2/6»: cinque linee, cadenza intatta, tutte le coincidenze interne conservate, e le relazioni fra i due grappoli — Cavour compresa — ridisegnate. La mappa oggi valuta solo la linea singola; il mattone dopo la linea e' il **grappolo**, e la mappa deve saperlo pesare (create e rotte fra i grappoli) prima che la sonda lo provi.
 
+**Il controllo e' fatto** (stesso branch della memoria, #524): prima dei candidati la sonda rifa' il solve del best round senza spostamenti, con la configurazione dei candidati; se ha meno vetture (o costo minore a pari vetture) passa dal CSP, e diventa il riferimento solo se non porta violazioni in piu' e abbassa il punteggio. Da li' in poi ogni candidato si misura contro il controllo. Se il controllo vince e nessun candidato passa, il round della sonda esce lo stesso, senza spostamenti: e' il piano migliore trovato, e va offerto. Nel rendiconto: `controllo` con vetture, costo, punteggio e violazioni round/controllo e `riferimento`. `probeControl: false` (`controllo: false` dal connettore) lo spegne. Cinque test.
+
 **La coda**: 6 candidati, 5 sonde su 10 — di nuovo esaurita (stavolta con quattro candidati dai turni, la prima volta). La memoria (#524) avrebbe messo in coda le alternative; il grappolo aggiungera' i candidati che contano.
 
 **Sagoma**: 101 declassate (28%, meglio di AX: 129), ma la 3 a 35/54 (65%, 13 in punta) e la 91 a 20/24 (83%): il fronte resta aperto e la 3 e' la linea piu' grossa del festivo.
@@ -769,7 +771,6 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
-- **Il controllo della sonda** (da AY): re-solve del best round senza spostamenti, stessa configurazione dei candidati; il candidato si misura contro il controllo; il controllo che batte il best round diventa riferimento.
 - **Il grappolo come mattone** (da AY): la mappa valuta la traslazione di un grappolo di linee legate da coincidenze (31: 3, 30, 42, 24; 2/6: 7, 11, 21/33, 1/4) e la sonda lo prova come candidato unico.
 - AY: cruscotto 0 violazioni, tabella round 1 sul round 6 — capire quale dei due mente.
 - La sonda in AX ha usato tre sonde su dieci perche' la coda dei candidati si e' svuotata (lista di linea a quattro, tre morti nel filtro): la coda non deve svuotarsi finche' c'e' budget, e il motivo del rifiuto deve indicare la mossa successiva (delta alternativo della stessa linea).

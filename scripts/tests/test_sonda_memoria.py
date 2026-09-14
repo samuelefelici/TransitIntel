@@ -46,15 +46,19 @@ def _rete():
     return trips
 
 
-def _solver_finti(accetta: set[int]):
+def _solver_finti(accetta: set[int], violazioni_controllo: int = 0):
     """VSP finto: riconosce lo spostamento della A dall'orario di A0 e risparmia
-    una vettura solo per i delta in `accetta`. CSP finto: nessun turno."""
+    una vettura solo per i delta in `accetta` (0 = il controllo, senza
+    spostamenti). CSP finto: nessun turno; le violazioni del controllo si
+    impongono da fuori."""
     visti: list[int] = []
+    stato = {"ultimo": None}
 
     def vsp_run(payload):
         a0 = next(t for t in payload["trips"] if t["tripId"] == "A0")
         d = int(a0["departureMin"]) - 440
         visti.append(d)
+        stato["ultimo"] = d
         vetture = 9 if d in accetta else 10
         return {"vehicleShifts": [{"vehicleId": "V1", "trips": []}],
                 "metrics": {"vehicles": vetture, "costEur": 100.0 * vetture}}
@@ -64,22 +68,27 @@ def _solver_finti(accetta: set[int]):
 
     def kpi_fn(v, c):
         vetture = int(v["metrics"]["vehicles"])
+        viol = violazioni_controllo if stato["ultimo"] == 0 else 0
         return {"totalCostEur": 1000.0 + 100.0 * vetture,
-                "selectionScoreEur": 1000.0 + 100.0 * vetture,
-                "duties": 5, "bdsViolations": 0}
+                "selectionScoreEur": 1000.0 + 100.0 * vetture + 100.0 * viol,
+                "duties": 5, "bdsViolations": viol}
 
     return vsp_run, csp_run, kpi_fn, visti
 
 
-def _giro(accetta={2}, max_probes=10, probe_memory=None):
-    vsp_run, csp_run, kpi_fn, visti = _solver_finti(set(accetta))
+def _giro(accetta={2}, max_probes=10, probe_memory=None, controllo=False,
+          violazioni_controllo=0):
+    vsp_run, csp_run, kpi_fn, visti = _solver_finti(set(accetta), violazioni_controllo)
     best_vsp = {"vehicleShifts": [{"vehicleId": "V1", "trips": []}],
                 "metrics": {"vehicles": 10, "costEur": 1000.0}}
     best_crew = {"driverShifts": [], "summary": {}}
+    best_kpi = {"totalCostEur": 2000.0, "selectionScoreEur": 2000.0, "duties": 5, "bdsViolations": 0}
     res = probe.run_probe_phase(
-        {"trips": _rete(), "config": {}}, best_vsp, best_crew, kpi_fn(best_vsp, best_crew),
+        {"trips": _rete(), "config": {}}, best_vsp, best_crew, best_kpi,
         vsp_run=vsp_run, csp_run=csp_run, crew_config={}, crew_time_limit=5,
-        kpi_fn=kpi_fn, max_probes=max_probes, probe_memory=probe_memory)
+        kpi_fn=kpi_fn, max_probes=max_probes, probe_memory=probe_memory,
+        probe_control=controllo)
+    _giro.ultimo = res
     return res["probe"], visti
 
 
@@ -220,3 +229,58 @@ def test_l_orchestratore_legge_la_memoria_dalla_configurazione():
     assert orch.probe_memory_from_cfg({"probeMemory": voci}) == [voci[0]]
     troppe = [{"firma": f"f{i}"} for i in range(orch.PROBE_MEMORY_MAX + 5)]
     assert len(orch.probe_memory_from_cfg({"probeMemory": troppe})) == orch.PROBE_MEMORY_MAX
+
+
+# ── il controllo ─────────────────────────────────────────────────────────
+
+def test_senza_controllo_non_si_spende_un_solve():
+    sez, visti = _giro(accetta={2}, controllo=False)
+    assert sez["controllo"] is None
+    assert visti[0] == 2
+
+
+def test_il_controllo_gira_per_primo_e_se_non_batte_il_round_resta_il_round():
+    sez, visti = _giro(accetta={2}, controllo=True)
+    assert visti[0] == 0, "il controllo e' il primo solve, senza spostamenti"
+    c = sez["controllo"]
+    assert c["eseguito"] is True and c["riferimento"] == "round"
+    assert c["vetture"] == {"round": 10, "controllo": 10}
+    assert "punteggio" not in c, "senza mezzi in meno non si spende il CSP"
+    assert sez["accepted"] and sez["accepted"][0]["firma"] == "linea:A:+2"
+    assert sez["accepted"][0]["before"]["vehicles"] == 10
+
+
+def test_il_controllo_che_batte_il_round_diventa_il_riferimento():
+    """Il giro AY: 22 vetture dal re-solve corto contro 28 del round, senza
+    spostare nulla. Il candidato che poi 'guadagna' le stesse 9 vetture non
+    ha merito: si misura contro il controllo e viene scartato."""
+    sez, visti = _giro(accetta={0, 2}, controllo=True)
+    c = sez["controllo"]
+    assert c["riferimento"] == "controllo"
+    assert c["vetture"] == {"round": 10, "controllo": 9}
+    assert c["punteggio"] == {"round": 2000.0, "controllo": 1900.0}
+    assert c["violazioni"] == {"round": 0, "controllo": 0}
+    assert sez["accepted"] == [], "9 vetture contro 9 del controllo: nessun merito"
+    scartato = next(r for r in sez["rejected"] if r.get("firma") == "linea:A:+2")
+    assert scartato["reason"] == "vsp"
+    assert _giro.ultimo["kpi"]["totalCostEur"] == 1900.0, "il piano del controllo esce come risultato"
+    assert _giro.ultimo["vsp"]["metrics"]["vehicles"] == 9
+
+
+def test_il_controllo_non_compra_violazioni():
+    sez, _ = _giro(accetta={0, 2}, controllo=True, violazioni_controllo=2)
+    c = sez["controllo"]
+    assert c["vetture"] == {"round": 10, "controllo": 9}
+    assert c["violazioni"] == {"round": 0, "controllo": 2}
+    assert c["riferimento"] == "round", "una vettura in meno non compra due violazioni"
+    assert sez["accepted"] and sez["accepted"][0]["firma"] == "linea:A:+2"
+
+
+def test_l_orchestratore_legge_il_controllo_dalla_configurazione():
+    import vcsp_orchestrator as orch
+    assert orch.probe_control_from_cfg({}) is True
+    assert orch.probe_control_from_cfg({"probeControl": False}) is False
+    assert orch.probe_control_from_cfg({"probeControl": 0}) is False
+    for parola in ("false", "0", "off", "no", " FALSE "):
+        assert orch.probe_control_from_cfg({"probeControl": parola}) is False, parola
+    assert orch.probe_control_from_cfg({"probeControl": "si"}) is True

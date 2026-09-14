@@ -983,6 +983,7 @@ def run_probe_phase(
     shift_penalty_eur: float = SHIFT_PENALTY_EUR_PER_TRIP_MIN,
     crew_scope: str = "trip",
     probe_memory: list[dict] | None = None,
+    probe_control: bool = True,
 ) -> dict:
     """Fase sonda: prova gli spostamenti candidati, tiene solo chi abbassa il
     PUNTEGGIO (costo + ombre turni/violazioni + disturbo all'orario). Ritorna
@@ -1000,6 +1001,13 @@ def run_probe_phase(
     candidato bocciato ieri puo' passare oggi — e' un ordine: chi era stato
     accettato si riprova per primo, chi il solver aveva bocciato va in fondo
     alla coda, chi era morto nel filtro si ricontrolla (costa zero).
+    probe_control: prima dei candidati, rifa' il solve del best round SENZA
+    spostamenti con la configurazione dei candidati (il CONTROLLO). Il valore
+    di un candidato e' (candidato − controllo), non (candidato − round): nel
+    giro AY il re-solve corto ha battuto il round lungo di sei vetture con le
+    stesse penalita', e la sonda l'aveva letto come merito di tre corse. Se il
+    controllo batte il best round e' un piano legittimo, senza disturbo, e
+    diventa il riferimento.
     """
     t0 = time.time()
     trips = list(vsp_payload.get("trips") or [])
@@ -1033,6 +1041,7 @@ def run_probe_phase(
         "codaEsaurita": False, "sondeNonUsate": 0,
         "lezioni": [], "memoria": {"giriLetti": 0, "lezioniLette": 0,
                                    "ripresi": 0, "rimandatiInCoda": 0},
+        "controllo": None,
     }
     memoria = build_probe_memory(probe_memory)
     if memoria:
@@ -1097,6 +1106,70 @@ def run_probe_phase(
 
     # Punteggio del best SENZA disturbo (il disturbo si somma a parte, cumulato)
     cur_base_score = float(best_kpi.get("selectionScoreEur", best_kpi["totalCostEur"]))
+
+    def _con_relief_points(shifts_out: list) -> list:
+        """Il CSP vuole i punti di cambio (cluster) sulle corse dei blocchi."""
+        if trip_cluster_stops:
+            for s_ in shifts_out:
+                for t in s_.get("trips", []):
+                    if t.get("type") == "trip":
+                        cs_list = trip_cluster_stops.get(t.get("tripId"))
+                        if cs_list:
+                            t["clusterStops"] = cs_list
+        return shifts_out
+
+    def _payload_per(trips_: list[dict]) -> dict:
+        pl = dict(vsp_payload)
+        pl["trips"] = trips_
+        pl["config"] = probe_cfg
+        if arc_penalties:
+            pl["arcPenalties"] = arc_penalties
+        else:
+            pl.pop("arcPenalties", None)
+        return pl
+
+    # ── IL CONTROLLO ──
+    # Stesso input del best round, stessa configurazione dei candidati, nessuno
+    # spostamento. Senza, il rumore del solver passa per merito della mossa.
+    if probe_control:
+        if progress:
+            progress("Sonda: controllo (re-solve del best round senza spostamenti)…")
+        ctrl_vsp = vsp_run(_payload_per(cur_trips))
+        ctrl_shifts = ctrl_vsp.get("vehicleShifts", [])
+        cvm = ctrl_vsp.get("metrics", {}) or {}
+        bvm = result["vsp"].get("metrics", {}) or {}
+        v_round, v_ctrl = int(bvm.get("vehicles", 0) or 0), int(cvm.get("vehicles", 0) or 0)
+        c_round, c_ctrl = float(bvm.get("costEur") or 0), float(cvm.get("costEur") or 0)
+        controllo: dict = {
+            "eseguito": True, "riferimento": "round",
+            "vetture": {"round": v_round, "controllo": v_ctrl},
+            "costoVettureEur": {"round": round(c_round, 2), "controllo": round(c_ctrl, 2)},
+        }
+        if ctrl_shifts and (v_ctrl < v_round or (v_ctrl == v_round and c_ctrl < c_round - COST_EPS)):
+            ctrl_crew = csp_run({"vehicleShifts": _con_relief_points(ctrl_shifts), "config": crew_config},
+                                crew_time_limit)
+            ctrl_kpi = kpi_fn(ctrl_vsp, ctrl_crew)
+            ctrl_score = float(ctrl_kpi.get("selectionScoreEur", ctrl_kpi["totalCostEur"]))
+            viol_round = int(result["kpi"].get("bdsViolations", 0) or 0)
+            viol_ctrl = int(ctrl_kpi.get("bdsViolations", 0) or 0)
+            controllo["punteggio"] = {"round": round(cur_base_score, 2), "controllo": round(ctrl_score, 2)}
+            controllo["violazioni"] = {"round": viol_round, "controllo": viol_ctrl}
+            controllo["turni"] = {"round": result["kpi"].get("duties", 0), "controllo": ctrl_kpi.get("duties", 0)}
+            # Le regole non si comprano: il controllo diventa riferimento solo
+            # se non porta violazioni in piu' E abbassa il punteggio.
+            if viol_ctrl <= viol_round and ctrl_score < cur_base_score - COST_EPS:
+                controllo["riferimento"] = "controllo"
+                cur_base_score = ctrl_score
+                result = {"vsp": ctrl_vsp, "crew": ctrl_crew, "kpi": ctrl_kpi, "probe": section}
+                log(f"[PROBE] controllo: {v_ctrl} vetture contro {v_round} del round, punteggio "
+                    f"{ctrl_score:.2f} < {controllo['punteggio']['round']:.2f}: e' il solver, non "
+                    f"l'orario. Il controllo diventa il riferimento.")
+            else:
+                log(f"[PROBE] controllo: {v_ctrl} vetture contro {v_round}, ma punteggio "
+                    f"{ctrl_score:.2f} / violazioni {viol_ctrl} non battono il round: resta il round.")
+        else:
+            log(f"[PROBE] controllo: {v_ctrl} vetture contro {v_round} del round: il round resta il riferimento")
+        section["controllo"] = controllo
 
     while probes_run < max_probes:
         trips_by_id = {t.get("tripId"): t for t in cur_trips}
@@ -1194,15 +1267,7 @@ def run_probe_phase(
                      f"±{cand['deltaNeeded']}′ → re-solve…")
 
         probe_trips = _apply_shifts(cur_trips, cand["shifts"])
-        probe_payload = dict(vsp_payload)
-        probe_payload["trips"] = probe_trips
-        probe_payload["config"] = probe_cfg
-        if arc_penalties:
-            probe_payload["arcPenalties"] = arc_penalties
-        else:
-            probe_payload.pop("arcPenalties", None)
-
-        vsp_out = vsp_run(probe_payload)
+        vsp_out = vsp_run(_payload_per(probe_trips))
         shifts_out = vsp_out.get("vehicleShifts", [])
         vm = vsp_out.get("metrics", {}) or {}
         best_vm = result["vsp"].get("metrics", {}) or {}
@@ -1230,14 +1295,7 @@ def run_probe_phase(
             continue
 
         # mezzi migliorati → verifica il lato guida (stessi relief points)
-        if trip_cluster_stops:
-            for s in shifts_out:
-                for t in s.get("trips", []):
-                    if t.get("type") == "trip":
-                        cs_list = trip_cluster_stops.get(t.get("tripId"))
-                        if cs_list:
-                            t["clusterStops"] = cs_list
-        crew_out = csp_run({"vehicleShifts": shifts_out, "config": crew_config},
+        crew_out = csp_run({"vehicleShifts": _con_relief_points(shifts_out), "config": crew_config},
                            crew_time_limit)
         kpi = kpi_fn(vsp_out, crew_out)
         # Stesso metro della selezione fra round: punteggio (costo + ombre

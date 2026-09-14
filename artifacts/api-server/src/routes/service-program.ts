@@ -2804,6 +2804,9 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
           // Memoria della sonda (lezioni dei giri precedenti): ordina la coda.
           ...(Array.isArray(vcspBody.probeMemory) && vcspBody.probeMemory.length > 0
             ? { probeMemory: vcspBody.probeMemory.slice(0, 200) } : {}),
+          // Controllo della sonda (re-solve del best round senza spostamenti):
+          // acceso salvo un false esplicito.
+          ...(vcspBody.probeControl === false ? { probeControl: false } : {}),
         },
         tripClusterStops,
       });
@@ -3369,6 +3372,11 @@ function compactAgentResult(payload: any): any {
           // che il giro dopo rilegge come memoria (vedi loadProbeLessons).
           codaEsaurita: v.probe.codaEsaurita ?? null,
           sondeNonUsate: v.probe.sondeNonUsate ?? null,
+          // Il controllo: re-solve del best round senza spostamenti, stessa
+          // configurazione dei candidati. Vetture e punteggio round/controllo
+          // e chi è rimasto riferimento: se è il controllo, il guadagno del
+          // round sonda è del solver, non dell'orario.
+          controllo: v.probe.controllo ?? null,
           memoria: v.probe.memoria ?? null,
           lezioni: Array.isArray(v.probe.lezioni) ? v.probe.lezioni.slice(0, 40) : [],
           shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
@@ -3699,6 +3707,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         ...(b.earlyStopPatience != null && Number.isFinite(Number(b.earlyStopPatience))
           ? { earlyStopPatience: Math.max(1, Math.min(10, Math.round(Number(b.earlyStopPatience)))) } : {}),
         ...(probeMemory.lezioni.length > 0 ? { probeMemory: probeMemory.lezioni } : {}),
+        ...(b.controllo === false ? { probeControl: false } : {}),
       };
       // Vincolo RIGIDO autovetture aziendali impostabile dall'agente: senza
       // companyCars nel body il giro ricade sull'impostazione DB (come la UI).
@@ -3730,6 +3739,7 @@ router.post("/service-program/agent-optimize", async (req, res) => {
           // Quante lezioni (e da quanti giri) la sonda ha letto in partenza:
           // due giri con memoria diversa non partono dalla stessa coda.
           memoria: { lezioni: probeMemory.lezioni.length, giri: probeMemory.giri },
+          controllo: b.controllo !== false,
         } : {}),
       },
     };

@@ -322,6 +322,15 @@ def probe_memory_from_cfg(vcsp_cfg: dict) -> list[dict]:
     return out
 
 
+def probe_control_from_cfg(vcsp_cfg: dict) -> bool:
+    """vcsp.probeControl: il controllo della sonda e' acceso salvo un False
+    esplicito (anche "false"/"0"/"off" da chi passa stringhe)."""
+    raw = (vcsp_cfg or {}).get("probeControl", True)
+    if isinstance(raw, str):
+        return raw.strip().lower() not in ("false", "0", "off", "no")
+    return bool(raw)
+
+
 # Chiave di configurazione → costante che sovrascrive. E' la strada con cui
 # l'operatore mette il SUO valore del mezzo o del supplemento senza toccare il
 # codice: se non funziona, gli 80 euro restano una stima dell'agente per sempre.
@@ -446,6 +455,9 @@ def main() -> None:
     # stessa data) che il server allega alla richiesta. Ordina la coda dei
     # candidati, non la decide.
     probe_memory = probe_memory_from_cfg(vcsp_cfg)
+    # Il controllo della sonda (re-solve del best round senza spostamenti,
+    # stessa configurazione dei candidati): acceso salvo richiesta contraria.
+    probe_control = probe_control_from_cfg(vcsp_cfg)
 
     # Costi-ombra della selezione (vedi commento su DUTY_SHADOW_EUR)
     ombre = apply_shadow_overrides(vcsp_cfg)
@@ -454,7 +466,7 @@ def main() -> None:
 
     log(f"=== VCSP Orchestrator === rounds≤{rounds} (early-stop dopo {patience} senza miglioramento), crewTimeLimit={crew_tl}s, "
         f"probes={probes} (scope {crew_shift_scope}, disturbo €{shift_penalty_eur}/corsa·min, "
-        f"memoria={len(probe_memory)} lezioni), "
+        f"memoria={len(probe_memory)} lezioni, controllo={'si' if probe_control else 'no'}), "
         f"trips={len(vsp_payload.get('trips') or [])}, "
         f"reliefTrips={len(trip_cluster_stops)}")
 
@@ -598,9 +610,14 @@ def main() -> None:
             progress=lambda msg: report_progress("VCSP", 94, msg),
             shift_penalty_eur=shift_penalty_eur, crew_scope=crew_shift_scope,
             probe_memory=probe_memory or None,
+            probe_control=probe_control,
         )
         probe_section = probe_res["probe"]
-        if probe_section.get("accepted"):
+        # Il round della sonda esiste se ha accettato spostamenti OPPURE se il
+        # controllo (re-solve senza spostamenti) ha battuto il best round: in
+        # quel caso e' un piano legittimo, senza disturbo, e va offerto.
+        _ctrl = probe_section.get("controllo") or {}
+        if probe_section.get("accepted") or _ctrl.get("riferimento") == "controllo":
             # Lo scenario sonda diventa un round aggiuntivo selezionabile e
             # salvabile come gli altri. Batte il best sul punteggio per
             # costruzione — la sonda accetta solo cio' che lo abbassa — ma il
