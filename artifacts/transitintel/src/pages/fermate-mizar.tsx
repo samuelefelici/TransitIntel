@@ -30,6 +30,7 @@ import {
   Pencil, Undo2, Sparkles, X,
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 
 type Stato = "abbinata" | "sospetta" | "fermata_assente" | "senza_codice";
 
@@ -43,7 +44,9 @@ interface Riga {
 }
 interface Resp {
   file: string | null; errore: string | null; feed: string | null;
-  correzioni: number; erroreCorrezioni: string | null; puoCorreggere: boolean;
+  correzioni?: number; erroreCorrezioni?: string | null;
+  /** assente se l'API in esecuzione è più vecchia della pagina */
+  puoCorreggere?: boolean;
   ultimoGiro: { alle: string; nonAgganciate: string[]; conflitti: string[]; agganciate: number; perId: number; perNome: number } | null;
   righe: Riga[];
   feedSenzaCodice: Array<{ stopId: string; nome: string | null }>;
@@ -247,6 +250,7 @@ function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string
 }
 
 export default function FermateMizar() {
+  const { user, isAdmin } = useAuth();
   const [filtro, setFiltro] = useState<Filtro>(null);
   const [cerca, setCerca] = useState("");
   const [inModifica, setInModifica] = useState<string | null>(null);
@@ -295,8 +299,15 @@ export default function FermateMizar() {
 
   const r = d.riepilogo;
   const MOSTRA = 400;
-  const puoCorreggere = d.puoCorreggere;
+  /* Il pulsante «correggi» compare se sei amministratore. Il ruolo lo sa la
+     pagina dal login; l'API lo conferma quando è aggiornata. Se manca, la
+     riga in fondo dice il perché: un'API vecchia, o un utente senza ruolo. */
+  const apiVecchia = d.puoCorreggere === undefined;
+  const puoCorreggere = d.puoCorreggere ?? isAdmin;
   const manuali = d.righe.filter(x => x.fonte === "manuale").length;
+  const perchéNoCorrezioni = puoCorreggere ? null
+    : apiVecchia ? "l'API in esecuzione è precedente alle correzioni: va ridispiegata"
+    : `l'utente ${user?.email ?? "corrente"} non ha il ruolo amministratore (ruolo: ${user?.role ?? "?"})`;
   const flussoNon = d.flussoNonTrascodificato ?? [];
 
   return (
@@ -320,6 +331,9 @@ export default function FermateMizar() {
           )}
           {d.erroreCorrezioni && (
             <p className="text-[11px] text-amber-300 mt-1">Le correzioni non sono disponibili: {d.erroreCorrezioni}</p>
+          )}
+          {perchéNoCorrezioni && (
+            <p className="text-[11px] text-amber-300 mt-1">Pulsante «correggi» non disponibile: {perchéNoCorrezioni}.</p>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -475,7 +489,8 @@ export default function FermateMizar() {
 
       <p className="text-[10px] text-muted-foreground">
         Tabella: {d.file ?? "—"} · feed {d.feed ?? "nessuno"} · {d.correzioni ?? 0} correzioni salvate. {d.nota ?? ""}
-        {!puoCorreggere && " Le correzioni sono riservate agli amministratori."}
+        {perchéNoCorrezioni && ` Correzioni non disponibili: ${perchéNoCorrezioni}.`}
+        {puoCorreggere && apiVecchia && " L'API in esecuzione è precedente alle correzioni: il pulsante «correggi» c'è, ma il salvataggio funzionerà solo dopo il redeploy dell'API."}
       </p>
     </div>
   );
