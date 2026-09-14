@@ -196,7 +196,11 @@ export function parseDate(
     }).formatToParts(d);
     const n = (t: string) => Number(p.find(x => x.type === t)?.value ?? 0);
     const comeUtc = Date.UTC(n("year"), n("month") - 1, n("day"), n("hour"), n("minute"), n("second"));
-    return comeUtc - d.getTime();
+    /* Il confronto va fatto al secondo intero: Intl non formatta i
+     * millisecondi, e sottrarre l'istante con la sua frazione faceva
+     * scivolare di quasi un secondo ogni ora di parete con i decimali
+     * ("10:01:25.7975277", come lo StopMonitoring scrive RecordedAtTime). */
+    return comeUtc - Math.floor(d.getTime() / 1000) * 1000;
   };
   let istante = new Date(parete.getTime() - scarto(parete));
   istante = new Date(parete.getTime() - scarto(istante));
@@ -1146,7 +1150,7 @@ function namesCompatible(a: string | null | undefined, b: string | null | undefi
  * sovrappongono per caso producono corrispondenze false, ed è peggio di
  * nessuna corrispondenza. Poi, in subordine, per nome.
  */
-function resolveStop(
+export function resolveStop(
   ref: string | null, name: string | null, index: GtfsIndex,
 ): { stopId: string | null; how: "id" | "name" | null; conflict: string | null } {
   for (const c of refCandidates(ref)) {
@@ -1219,7 +1223,7 @@ function resolveRoute(
 }
 
 /** Primo candidato presente nell'insieme (esatto, poi ultimo segmento). */
-function resolveRef(
+export function resolveRef(
   ref: string | null, pool: Set<string>, byCode?: Map<string, string>,
 ): string | null {
   for (const c of refCandidates(ref)) if (pool.has(c)) return c;
