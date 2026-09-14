@@ -25,7 +25,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { postSoap, type SiriEndpointConfig, type GtfsIndex } from "./siri-vm";
 import { buildMultipleStopMonitoringRequest, buildStopMonitoringRequest, endpointGemelli } from "./siri-sonda";
-import { parseStopMonitoringResponse, unisciVisite, secondiGtfs, secondiLocali, type VisitaFermata } from "./siri-fermata";
+import { parseStopMonitoringResponse, unisciVisite, secondiGtfs, secondiLocali, fermataVuota, type VisitaFermata } from "./siri-fermata";
 import { caricaTranscodifica } from "./stop-aliases";
 import { registraPrevisioni, type PrevisioneFermata } from "./stop-predictions-store";
 
@@ -200,7 +200,9 @@ export async function aggiornaPrevisioni(
         buildMultipleStopMonitoringRequest(cfg.requestorRef, daChiedere, "PT1H", 30));
       esito.richieste = 1;
       const parsed = parseStopMonitoringResponse(r.xml);
-      if (!parsed.failed && (parsed.visite.length > 0 || r.ok)) {
+      /* Tutte le fermate vuote ("No info found.") è una risposta buona:
+       * il server ha capito la richiesta e non aveva niente da dire. */
+      if (!parsed.failed || fermataVuota(parsed.errorText)) {
         esito.modalita = "multipla";
         visite = parsed.visite;
       } else {
@@ -218,7 +220,11 @@ export async function aggiornaPrevisioni(
             .then(r => parseStopMonitoringResponse(r.xml))
             .catch(e => ({ failed: true, errorText: String(e?.message ?? e), visite: [] as VisitaFermata[] }))));
         esito.richieste += gruppo.length;
-        for (const p of risposte) { if (!p.failed) visite.push(...p.visite); else esito.errore = esito.errore ?? (p as any).errorText ?? null; }
+        for (const p of risposte) {
+          if (!p.failed) visite.push(...p.visite);
+          /* Una fermata senza passaggi non è un errore del giro. */
+          else if (!fermataVuota((p as any).errorText)) esito.errore = esito.errore ?? (p as any).errorText ?? null;
+        }
       }
     }
     esito.visite = visite.length;
