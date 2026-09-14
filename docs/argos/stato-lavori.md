@@ -733,6 +733,31 @@ Obiettivo dato dall'operatore al lancio di AY: «un sistema che impara dagli err
 
 14 test nuovi (`test_sonda_memoria.py`): 270 verdi.
 
+## Il giro AY: due scoperte piu' grosse del risultato
+
+AY (`8743fc46`, scenario `496e6667`, 2309 s): stessi parametri di AX, ma con la flex a 15′ su 3, 2/6 e 1/4, la propagazione per linea e il guardiano della macchina (#523). Girava ancora SENZA la memoria della sonda (#524, non mergiata durante il giro).
+
+| round | vetture | turni | suppl. | violazioni | costo € | punteggio € |
+|---|---|---|---|---|---|---|
+| 1 | 25 | 43 | 0 | 5 | 20 734 | 31 834 |
+| 2 | **28** | 43 | 0 | 1 | 21 403 | 32 343 |
+| 3 | 25 | 45 | 2 | 7 | 21 674 | 33 574 |
+| 4 | 27 | 45 | 2 | 1 | 22 073 | 33 533 |
+| 5 | 27 | 44 | 1 | 4 | 21 730 | 33 190 |
+| **6 (sonda)** | **22** | 43 | 3 | 1 | 21 331 | **32 136** |
+
+Esito: 22 vetture, 43 turni (35 interi + 5 semiunici + 3 supplementi), auto 4/5, km a vuoto 207, 21 331 €. Contro AX (23 v, 0 suppl, 0 viol): una vettura in meno, tre supplementi in piu'. Il cruscotto dice 0 violazioni, la tabella dei round ne dice 1 sul round 6: un'incoerenza da chiarire (in sospeso).
+
+**Prima scoperta: la sonda ha «guadagnato» sei vetture spostando tre corse, e non e' possibile.** Il miglior round prima della sonda era il 2, con 28 vetture (i round senza violazioni non c'erano: 5, 1, 7, 1, 4). La sonda ha spostato tre corse di −15′ (2/6A 11:35, 2/6R 12:04, 7 11:13, candidato guidato dal turno A008, stacco 84′) e il re-solve ha dato **22 vetture**: sei in meno. Tre corse non valgono sei vetture. La differenza sta nel solver: il re-solve della sonda gira con 60 s e riduzione iterativa a 45 s, i round con 420 s e 180 s, e con le stesse penalita' d'arco il solve corto ha battuto quello lungo di sei vetture. I round oscillano 25-28 (AX: 24-26, AU: 21-29) con lo STESSO input: il rumore del solver e' piu' grande di qualunque mossa d'orario, e la sonda lo legge come merito della mossa. L'assunto scritto nel codice — «budget ridotto: un falso rifiuto e' possibile, un falso via libera no» — e' falso quando il solver e' cosi' rumoroso.
+
+Cosa ne discende, e va fatto subito: **il controllo**. Prima di misurare i candidati, la sonda deve rifare il solve del best round SENZA spostamenti, con la stessa configurazione dei candidati. Il valore vero di un candidato e' (candidato − controllo), non (candidato − round). E se il controllo batte il best round — qui: 22 contro 28, senza toccare una corsa — quello e' un piano legittimo e diventa il nuovo riferimento (un round in piu', senza disturbo). Le tre corse spostate in AY, con ogni probabilita', non valgono niente: 45 € di disturbo per un guadagno che era del solver.
+
+**Seconda scoperta: il grafo delle coincidenze del festivo e' fatto di due grappoli, e ogni mossa di linea sbatte contro il tetto.** Con line_mode la 3 a −14 e' arrivata al filtro: rompe Posatora (31→3, attesa −11: la 3 partirebbe undici minuti PRIMA che la 31 arrivi), la propagazione trascina la 31, ma la 31 e' un perno — 30 all'Ospedale, 42 e 24 a U.Bassi — e trascinarla ne trascina altre tre: **cinque linee, tetto a tre, `catenaTroppoLunga`** (22 volte, su tutti i candidati di linea: 1/4 +13 passa dalla 11 alla 2/6, la 7 −11 dalla 2/6 alla 21/33 e alla 11). Il festivo ha due grappoli: {3, 31, 30, 42, 24} attorno alla 31 e {2/6, 7, 11, 21/33, 1/4} attorno alla 2/6. «La 3 a −14» significa in realta' «il grappolo della 31 a −14 rispetto al grappolo della 2/6»: cinque linee, cadenza intatta, tutte le coincidenze interne conservate, e le relazioni fra i due grappoli — Cavour compresa — ridisegnate. La mappa oggi valuta solo la linea singola; il mattone dopo la linea e' il **grappolo**, e la mappa deve saperlo pesare (create e rotte fra i grappoli) prima che la sonda lo provi.
+
+**La coda**: 6 candidati, 5 sonde su 10 — di nuovo esaurita (stavolta con quattro candidati dai turni, la prima volta). La memoria (#524) avrebbe messo in coda le alternative; il grappolo aggiungera' i candidati che contano.
+
+**Sagoma**: 101 declassate (28%, meglio di AX: 129), ma la 3 a 35/54 (65%, 13 in punta) e la 91 a 20/24 (83%): il fronte resta aperto e la 3 e' la linea piu' grossa del festivo.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
@@ -744,6 +769,9 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
+- **Il controllo della sonda** (da AY): re-solve del best round senza spostamenti, stessa configurazione dei candidati; il candidato si misura contro il controllo; il controllo che batte il best round diventa riferimento.
+- **Il grappolo come mattone** (da AY): la mappa valuta la traslazione di un grappolo di linee legate da coincidenze (31: 3, 30, 42, 24; 2/6: 7, 11, 21/33, 1/4) e la sonda lo prova come candidato unico.
+- AY: cruscotto 0 violazioni, tabella round 1 sul round 6 — capire quale dei due mente.
 - La sonda in AX ha usato tre sonde su dieci perche' la coda dei candidati si e' svuotata (lista di linea a quattro, tre morti nel filtro): la coda non deve svuotarsi finche' c'e' budget, e il motivo del rifiuto deve indicare la mossa successiva (delta alternativo della stessa linea).
 - Leggere le undici violazioni del round 5 di AX (37 turni): se sono soste al capolinea, e' il cuscinetto del giro rigido a decidere.
 - Esperimento sulla pazienza dell'early-stop (`earlyStopPatience: 3`) appena il catalogo MCP espone la manopola.
