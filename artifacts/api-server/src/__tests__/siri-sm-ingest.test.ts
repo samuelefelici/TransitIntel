@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { prossimeFermate, previsioniDaVisite, type CorsaAttiva } from "../lib/siri-sm-ingest";
-import { parseStopMonitoringResponse } from "../lib/siri-fermata";
+import { parseStopMonitoringResponse, fermataVuota } from "../lib/siri-fermata";
 import { buildMultipleStopMonitoringRequest } from "../lib/siri-sonda";
 
 const SEQ = [
@@ -118,5 +118,36 @@ describe("buildMultipleStopMonitoringRequest", () => {
     expect(x).toContain("<siri:MonitoringRef>200</siri:MonitoringRef>");
     expect(x).toContain("<siri:MaximumStopVisits>30</siri:MaximumStopVisits>");
     expect(x).toContain("<RequestExtension/></siri:GetMultipleStopMonitoring>");
+  });
+});
+
+/* Il caso vero del primo giro in produzione (14/09, 12:41): su 18 fermate
+ * chieste una era vuota, e Mizar risponde a una fermata vuota con un
+ * ErrorCondition "No info found.". Non è un errore, e non deve buttare via
+ * le altre diciassette né la modalità multipla. */
+describe("fermate vuote: «No info found.» non è un errore", () => {
+  const vuota = (ref: string) => `<StopMonitoringDelivery xmlns="http://www.siri.org.uk/siri" version="1.4"><Status>false</Status>
+    <ErrorCondition><NoInfoForTopicError/><Description>No info found.</Description></ErrorCondition><MonitoringRef>${ref}</MonitoringRef></StopMonitoringDelivery>`;
+  const piena = (ref: string) => `<StopMonitoringDelivery xmlns="http://www.siri.org.uk/siri" version="1.4"><Status>true</Status>
+    <MonitoredStopVisit><RecordedAtTime>2026-09-14T00:00:00</RecordedAtTime><MonitoringRef>${ref}</MonitoringRef>
+     <MonitoredVehicleJourney><LineRef>C</LineRef><CourseOfJourneyRef>369660</CourseOfJourneyRef><Monitored>false</Monitored>
+      <MonitoredCall><StopPointRef>${ref}</StopPointRef><AimedDepartureTime>2026-09-14T10:12:00+02:00</AimedDepartureTime></MonitoredCall>
+     </MonitoredVehicleJourney></MonitoredStopVisit></StopMonitoringDelivery>`;
+  const busta = (corpo: string) => `<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>
+    <GetMultipleStopMonitoringResponse xmlns="http://www.siri.org.uk/siri"><Answer xmlns="">${corpo}</Answer></GetMultipleStopMonitoringResponse></s:Body></s:Envelope>`;
+
+  it("una fermata vuota fra due piene: risposta valida con le visite delle altre", () => {
+    const r = parseStopMonitoringResponse(busta(piena("1122") + vuota("4759") + piena("200")));
+    expect(r.failed).toBe(false);
+    expect(r.visite.map(v => v.monitoringRef)).toEqual(["1122", "200"]);
+    expect(fermataVuota(r.errorText)).toBe(true);   // il testo resta leggibile, ma non è un fallimento
+  });
+  it("tutte le fermate vuote: fallita per il parser, ma riconoscibile come vuota", () => {
+    const r = parseStopMonitoringResponse(busta(vuota("4759")));
+    expect(r.failed).toBe(true);
+    expect(r.errorText).toBe("No info found.");
+    expect(fermataVuota(r.errorText)).toBe(true);
+    expect(fermataVuota("ContractFilter mismatch")).toBe(false);
+    expect(fermataVuota(null)).toBe(false);
   });
 });

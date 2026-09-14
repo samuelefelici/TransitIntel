@@ -23,8 +23,14 @@
 import {
   parseXml, findAll, findFirst, directText, parseDate, parseIsoDuration,
   resolveRef, resolveStop, normalizeLineCode, codiceCorsaDi,
-  type GtfsIndex,
+  type GtfsIndex, type XmlNode,
 } from "./siri-vm";
+
+/** "No info found.": la risposta di Mizar per una fermata senza passaggi
+ *  nell'intervallo. Una fermata vuota, non un errore. */
+export function fermataVuota(errorText: string | null | undefined): boolean {
+  return !!errorText && /no info found/i.test(errorText);
+}
 
 /* ── Modello ─────────────────────────────────────────────────────────────── */
 
@@ -80,14 +86,24 @@ export function parseStopMonitoringResponse(xml: string): StopMonitoringResult {
   const delivery = deliveries[0] ?? null;
   const fault = findFirst(doc, "Fault");
   const errorCondition = findFirst(doc, "ErrorCondition");
-  const status = deliveries.map(d => directText(d, "Status")).filter(Boolean);
 
+  /* Una delivery è "vuota per errore" se dichiara Status=false o porta un
+   * ErrorCondition. Mizar risponde così — "No info found." — a una fermata
+   * senza passaggi nell'intervallo: non è un guasto, è una fermata vuota.
+   * La risposta intera fallisce solo se fallisce TUTTA: un Fault SOAP, un
+   * ErrorCondition senza nessuna delivery, oppure ogni delivery in errore.
+   * Prima bastava una fermata vuota su diciotto per buttare via le altre
+   * diciassette e la modalità multipla con loro. */
+  const inErrore = (d: XmlNode) =>
+    (directText(d, "Status") ?? "").toLowerCase() === "false" || !!findFirst(d, "ErrorCondition");
   const errorText = fault
     ? (directText(fault, "faultstring") ?? findFirst(fault, "Text")?.text.trim() ?? "SOAP Fault")
     : errorCondition
       ? (findFirst(errorCondition, "Description")?.text.trim() ?? findFirst(errorCondition, "ErrorText")?.text.trim() ?? "ErrorCondition")
       : null;
-  const failed = !!fault || !!errorCondition || (status.length > 0 && status.every(s => s!.toLowerCase() === "false"));
+  const failed = !!fault
+    || (deliveries.length === 0 && !!errorCondition)
+    || (deliveries.length > 0 && deliveries.every(inErrore));
 
   const visite: VisitaFermata[] = [];
   for (const d of deliveries) {
