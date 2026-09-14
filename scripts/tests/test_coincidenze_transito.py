@@ -237,3 +237,66 @@ def test_uno_spostamento_che_scende_sotto_la_soglia_rompe_la_coincidenza():
     assert len(rotte) == 1 and rotte[0]["attesaMin"] == 1
     # anticiparla di 3 la lascia a 2: il minimo, ma regge
     assert probe.coincidences_broken({"c2133_0": -3}, by_id, pairs) == []
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Propagazione per LINEA: il mattone trascinato e' la linea intera del partner
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cavour_e_posatora(flex_31=15, con_30=False):
+    """La 3 fa coincidenza con la 31 a Posatora (4 volte). Spostare tutta la
+    3 di -14 le rompe tutte: il partner da trascinare e' la 31 intera."""
+    trips = []
+    for k, ora in enumerate((540, 640, 740, 840)):
+        trips.append(_t("a3_%d" % k, "3", ora - 22, ora, "CAVOUR", "POSATORA CAPOLINEA", flex=15))
+        trips.append(_t("a31_%d" % k, "31", ora + 3, ora + 30, "POSATORA CAPOLINEA", "OSPEDALE",
+                        flex=flex_31))
+        if con_30:   # e la 31 fa coincidenza con la 30 all'Ospedale
+            trips.append(_t("a30_%d" % k, "30", ora + 34, ora + 60, "OSPEDALE", "U.BASSI", flex=15))
+    return trips
+
+
+def test_in_modalita_linea_si_trascina_la_linea_intera_del_partner():
+    trips = _cavour_e_posatora()
+    by_id = {t["tripId"]: t for t in trips}
+    rt = probe.build_round_trip_pairs(trips)
+    coinc = probe.coincidence_pairs(probe.detect_coincidences(trips))
+    assert len(coinc) == 4
+    tutta_la_3 = {t["tripId"]: -14 for t in trips if t["routeName"] == "3"}
+
+    # col tetto in corse (modalita' corsa) una linea intera muore subito: qui
+    # la 3 ha quattro corse e il tetto vero e' 12, nella rete vera ne ha 54 —
+    # il tetto si abbassa in proporzione per riprodurre il caso reale
+    out, perche = probe.propagate_for_coincidences(tutta_la_3, by_id, rt, coinc, max_trips=6)
+    assert out is None and perche == "catenaTroppoLunga"
+
+    out, perche = probe.propagate_for_coincidences(tutta_la_3, by_id, rt, coinc, line_mode=True)
+    assert perche == "ok" and out is not None
+    assert all(out.get("a31_%d" % k) == -14 for k in range(4)), "tutta la 31, stesso delta"
+    assert probe.coincidences_broken(out, by_id, coinc) == []
+
+
+def test_la_linea_trascinata_regge_solo_se_regge_la_sua_corsa_piu_rigida():
+    trips = _cavour_e_posatora(flex_31=10)
+    by_id = {t["tripId"]: t for t in trips}
+    rt = probe.build_round_trip_pairs(trips)
+    coinc = probe.coincidence_pairs(probe.detect_coincidences(trips))
+    tutta_la_3 = {t["tripId"]: -14 for t in trips if t["routeName"] == "3"}
+    out, perche = probe.propagate_for_coincidences(tutta_la_3, by_id, rt, coinc, line_mode=True)
+    assert out is None and perche == "flessibilitaInsufficiente"
+
+
+def test_il_tetto_in_modalita_linea_si_conta_in_linee():
+    """3 → 31 → 30: due linee trascinate. Con un tetto di una sola si scarta."""
+    trips = _cavour_e_posatora(con_30=True)
+    by_id = {t["tripId"]: t for t in trips}
+    rt = probe.build_round_trip_pairs(trips)
+    coinc = probe.coincidence_pairs(probe.detect_coincidences(trips))
+    assert len(coinc) == 8, "Posatora e Ospedale"
+    tutta_la_3 = {t["tripId"]: -14 for t in trips if t["routeName"] == "3"}
+    out, perche = probe.propagate_for_coincidences(tutta_la_3, by_id, rt, coinc, line_mode=True, max_lines=1)
+    assert out is None and perche == "catenaTroppoLunga"
+    out, perche = probe.propagate_for_coincidences(tutta_la_3, by_id, rt, coinc, line_mode=True, max_lines=2)
+    assert perche == "ok" and all(out.get("a30_%d" % k) == -14 for k in range(4))
+    assert probe.coincidences_broken(out, by_id, coinc) == []

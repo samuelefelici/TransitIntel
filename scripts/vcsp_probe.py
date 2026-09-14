@@ -263,7 +263,15 @@ def flex_of_round_trip(trip_dict: dict, pairs: dict[str, str],
 
 # Quante corse al massimo puo' coinvolgere una catena di propagazione: oltre,
 # non si sta piu' spostando un mattone, si sta riscrivendo il quadro orario.
+# Vale per i candidati che spostano UNA corsa (il confine di un turno, la
+# fusione di due blocchi).
 COINCIDENCE_PROPAGATION_MAX_TRIPS = 12
+# Per i candidati che spostano una LINEA INTERA il tetto in corse non ha senso
+# — la sola linea 3 ne ha 54, e ogni trascinamento moriva subito come
+# «catena troppo lunga»: e' successo in tutto il giro AV. Li' il mattone da
+# trascinare e' la linea intera del partner, cadenza intatta, e il tetto si
+# conta in linee trascinate oltre quella del candidato.
+COINCIDENCE_PROPAGATION_MAX_LINES = 3
 
 
 def propagate_for_coincidences(
@@ -272,9 +280,16 @@ def propagate_for_coincidences(
     max_wait: int = COINCIDENCE_MAX_WAIT,
     max_trips: int = COINCIDENCE_PROPAGATION_MAX_TRIPS,
     min_wait: int = COINCIDENCE_MIN_WAIT,
+    line_mode: bool = False,
+    max_lines: int = COINCIDENCE_PROPAGATION_MAX_LINES,
 ) -> tuple[dict[str, int] | None, str]:
     """Invece di scartare uno spostamento che rompe una coincidenza, porta con
     se' anche la corsa in coincidenza.
+
+    In line_mode (candidato che sposta una linea intera) si trascina la LINEA
+    INTERA del partner — la cadenza resta intatta, che e' il motivo per cui la
+    traslazione di linea e' difendibile — e regge se la piu' rigida delle sue
+    corse regge il delta; il tetto si conta in linee trascinate.
 
     Il CP-SAT con gli stessi mattoni non va oltre: per ottenere un risultato
     diverso qualche mattone va spostato. Una coincidenza si conserva se le DUE
@@ -288,28 +303,48 @@ def propagate_for_coincidences(
     muro: senza saperlo non si capisce dove allargare.
     """
     out = dict(shifts)
-    for _ in range(max_trips):
+    per_linea: dict[str, list[dict]] = {}
+    if line_mode:
+        for t in trips_by_id.values():
+            r = str(t.get("routeName") or t.get("routeId") or "")
+            if r:
+                per_linea.setdefault(r, []).append(t)
+    linee_trascinate: set[str] = set()
+    # Un trascinamento per passo, poi si ricalcola cosa e' ancora rotto: le
+    # rotture calcolate PRIMA del trascinamento possono riguardare corse che
+    # il trascinamento ha appena sistemato, e leggerle come conflitto e' falso.
+    for _ in range((max_lines + 1) if line_mode else max_trips):
         rotte = coincidences_broken(out, trips_by_id, coinc_pairs, max_wait, min_wait)
         if not rotte:
             return out, "ok"
-        for r in rotte:
-            a, b = r["fromTrip"], r["toTrip"]
-            if a in out and b in out:
-                return None, "deltaInConflitto"
-            fermo, mosso = (b, a) if a in out else (a, b)
-            delta = out[mosso]
-            t = trips_by_id.get(fermo)
-            if t is None:
-                return None, "corsaSconosciuta"
+        r = rotte[0]
+        a, b = r["fromTrip"], r["toTrip"]
+        if a in out and b in out:
+            return None, "deltaInConflitto"
+        fermo, mosso = (b, a) if a in out else (a, b)
+        delta = out[mosso]
+        t = trips_by_id.get(fermo)
+        if t is None:
+            return None, "corsaSconosciuta"
+        if line_mode:
+            linea = str(t.get("routeName") or t.get("routeId") or "")
+            corse = per_linea.get(linea) or [t]
+            if any(abs(delta) > flex_of_round_trip(c, rt_pairs, trips_by_id) for c in corse):
+                return None, "flessibilitaInsufficiente"
+            linee_trascinate.add(linea)
+            if len(linee_trascinate) > max_lines:
+                return None, "catenaTroppoLunga"
+            aggiunta = {c["tripId"]: delta for c in corse if c.get("tripId")}
+        else:
             if abs(delta) > flex_of_round_trip(t, rt_pairs, trips_by_id):
                 return None, "flessibilitaInsufficiente"
             aggiunta = expand_to_round_trips({fermo: delta}, rt_pairs)
-            for tid, d in aggiunta.items():
-                if out.get(tid, d) != d:
-                    return None, "deltaInConflitto"
-            out.update(aggiunta)
-            if len(out) > max_trips:
-                return None, "catenaTroppoLunga"
+        for tid, d in aggiunta.items():
+            if out.get(tid, d) != d:
+                return None, "deltaInConflitto"
+        out.update(aggiunta)
+        if not line_mode and len(out) > max_trips:
+            return None, "catenaTroppoLunga"
     return None, "catenaTroppoLunga"
 
 
@@ -865,7 +900,8 @@ def run_probe_phase(
                 if rotte:
                     # spostare il mattone accanto invece di rinunciare
                     allargato, perche = propagate_for_coincidences(
-                        c["shifts"], trips_by_id, rt_pairs, coinc_pairs)
+                        c["shifts"], trips_by_id, rt_pairs, coinc_pairs,
+                        line_mode=(c.get("kind") == "coincidenza"))
                     if allargato is None:
                         section["rejectedForCoincidence"] += 1
                         section["propagationFailures"][perche] = (
