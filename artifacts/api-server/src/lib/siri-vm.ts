@@ -1147,7 +1147,7 @@ export interface MappingReport {
 }
 
 /** Un id combacia ma i nomi sono incompatibili → non è la stessa fermata. */
-function namesCompatible(a: string | null | undefined, b: string | null | undefined): boolean {
+export function namesCompatible(a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a || !b) return true; // senza nomi non si può smentire: si accetta l'id
   const na = normalizeStopName(a), nb = normalizeStopName(b);
   if (!na || !nb) return true;
