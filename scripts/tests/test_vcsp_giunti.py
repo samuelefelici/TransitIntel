@@ -191,6 +191,18 @@ class TestSelezioneFraRound:
                 setattr(vo, nome, v)
 
 
+    def test_la_pazienza_dell_early_stop_si_imposta_dal_giro(self):
+        """Nel giro AV due peggioramenti di fila hanno tagliato a tre round su
+        cinque: quanta pazienza serva si prova con un giro, e per provarlo la
+        manopola deve arrivare dal giro."""
+        assert vo.early_stop_patience({}) == vo.EARLY_STOP_PATIENCE
+        assert vo.early_stop_patience({"earlyStopPatience": 3}) == 3
+        assert vo.early_stop_patience({"earlyStopPatience": "4"}) == 4
+        assert vo.early_stop_patience({"earlyStopPatience": 0}) == 1, "almeno un round di pazienza"
+        assert vo.early_stop_patience({"earlyStopPatience": 99}) == vo.EARLY_STOP_PATIENCE_MAX
+        assert vo.early_stop_patience({"earlyStopPatience": "boh"}) == vo.EARLY_STOP_PATIENCE
+
+
 class TestEscalation:
     """La penalità non è solo un costo, è una guida alla ricerca: finché il
     round resta illegale sui cambi si alza il tiro, e ci si ferma appena

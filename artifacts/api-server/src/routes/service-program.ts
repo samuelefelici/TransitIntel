@@ -1241,16 +1241,24 @@ router.get("/service-program/trips", async (req, res) => {
  */
 async function resolveProjectFeedForRead(psProjectId: string): Promise<{
   feedId: string; feedSource: "udp" | "esercizio"; syncedAt: string | null; staleAfter: string | null;
-} | null> {
+} | { feedId: null; tentativi: string[] }> {
+  // Ogni via fallita lascia una riga: la prima versione ingoiava gli errori e
+  // il messaggio dava la colpa a un psProjectId mancante che invece c'era.
+  const tentativi: string[] = [];
   try {
+    // Il progetto di scheduling si aggancia in DUE modi, come fa il giro: per
+    // planning_studio_project_id (colonna arrivata dopo, vuota sui progetti
+    // nati prima) oppure attraverso l'unità di validità del progetto.
     const sp = await db.execute<any>(sql`
       SELECT sp.feed_id, f.uploaded_at
         FROM scheduling_projects sp
         JOIN gtfs_feeds f ON f.id = sp.feed_id
-       WHERE sp.planning_studio_project_id = ${psProjectId}::uuid
-         AND sp.feed_id IS NOT NULL
+       WHERE sp.feed_id IS NOT NULL
+         AND (sp.planning_studio_project_id = ${psProjectId}::uuid
+              OR sp.validity_unit_id IN (SELECT id FROM ps_validity_units WHERE project_id = ${psProjectId}::uuid))
        ORDER BY sp.created_at DESC LIMIT 1`);
     const row = sp.rows?.[0];
+    if (!row?.feed_id) tentativi.push("udp: nessun progetto di scheduling con feed per questo progetto");
     if (row?.feed_id) {
       let staleAfter: string | null = null;
       try {
@@ -1267,14 +1275,16 @@ async function resolveProjectFeedForRead(psProjectId: string): Promise<{
       return { feedId: String(row.feed_id), feedSource: "udp",
                syncedAt: row.uploaded_at ? new Date(row.uploaded_at).toISOString() : null, staleAfter };
     }
-  } catch { /* nessuna UDP: si prova l'esercizio */ }
+  } catch (e: any) { tentativi.push(`udp: ${e?.message ?? e}`); }
   try {
     const fr = await db.execute<any>(sql`
       SELECT materialized_feed_id FROM ps_projects WHERE id = ${psProjectId}::uuid`);
+    if (!fr.rows?.length) tentativi.push("esercizio: progetto Planning Studio non trovato");
     const fid = fr.rows?.[0]?.materialized_feed_id;
     if (fid) return { feedId: String(fid), feedSource: "esercizio", syncedAt: null, staleAfter: null };
-  } catch { /* progetto senza feed */ }
-  return null;
+    if (fr.rows?.length) tentativi.push("esercizio: nessun feed materializzato (materialized_feed_id vuoto)");
+  } catch (e: any) { tentativi.push(`esercizio: ${e?.message ?? e}`); }
+  return { feedId: null, tentativi };
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -1291,15 +1301,26 @@ router.get("/service-program/coincidences", async (req, res) => {
     // Il feed DEL PROGETTO, come il giro: senza psProjectId si ricade
     // sull'ultimo feed caricato, che è quello aziendale intero.
     const psProjForFeed = String(req.query.psProjectId || "");
-    const projectFeed = /^[0-9a-f-]{36}$/i.test(psProjForFeed)
-      ? await resolveProjectFeedForRead(psProjForFeed) : null;
+    const psGiven = /^[0-9a-f-]{36}$/i.test(psProjForFeed);
+    const risolto = psGiven ? await resolveProjectFeedForRead(psProjForFeed) : null;
+    const projectFeed = risolto && risolto.feedId ? risolto : null;
+    // Il feed del progetto non trovato NON è un caso da coprire in silenzio con
+    // quello aziendale: la mappa direbbe cose vere di un'altra rete.
+    if (psGiven && !projectFeed) {
+      res.status(404).json({
+        error: "Nessun feed materializzato per questo progetto: lancia un giro (ti_vcsp_run) o sincronizza l'UDP, poi rileggi la mappa",
+        psProjectId: psProjForFeed,
+        tentativi: (risolto as any)?.tentativi ?? [],
+      });
+      return;
+    }
     const feedId = projectFeed?.feedId ?? await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
     const feedInfo = projectFeed
       ? { feedId, feedSource: projectFeed.feedSource, syncedAt: projectFeed.syncedAt,
           ...(projectFeed.staleAfter ? { attenzione: `il feed è più vecchio dell'ultima modifica in Planning (${projectFeed.staleAfter}): lancia un giro o sincronizza l'UDP per aggiornarlo` } : {}) }
       : { feedId, feedSource: "ultimoFeedCaricato" as const,
-          attenzione: "senza psProjectId la mappa legge l'ultimo feed caricato, non quello del progetto" };
+          attenzione: "psProjectId assente: la mappa legge l'ultimo feed caricato, cioè quello aziendale intero, non quello del progetto" };
 
     const dateRaw = String(req.query.date || "");
     const dateYMD = dateRaw.replace(/-/g, "");
@@ -2771,6 +2792,10 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
             ? { shiftPenaltyEur: Math.max(0, Number(vcspBody.shiftPenaltyEur)) } : {}),
           ...(vcspBody.crewShiftScope === "line" || vcspBody.crewShiftScope === "trip"
             ? { crewShiftScope: vcspBody.crewShiftScope } : {}),
+          // Pazienza dell'early-stop (round consecutivi senza miglioramento):
+          // i round oscillano per costruzione, e quanta ne serva si prova.
+          ...(vcspBody.earlyStopPatience != null && Number.isFinite(Number(vcspBody.earlyStopPatience))
+            ? { earlyStopPatience: Math.max(1, Math.min(10, Math.round(Number(vcspBody.earlyStopPatience)))) } : {}),
         },
         tripClusterStops,
       });
