@@ -635,6 +635,20 @@ E' la catena completa che funziona: la mappa trova l'occasione, la sonda la prov
 
 **La domanda aperta e' la pazienza dell'early-stop** (`EARLY_STOP_PATIENCE = 2`). I round del VCSP oscillano per costruzione — i costi-ombra spostano il problema a ogni giro — quindi due peggioramenti di fila non vogliono dire convergenza: in AU il quarto e il quinto round sono stati peggiori del terzo, ma il giro e' arrivato in fondo perche' un reset era caduto in mezzo. Alzare la pazienza a 3 e' una manopola da tarare con i dati, non da indovinare: serve un giro con la stessa base e pazienza diversa.
 
+## La ricontrollata del 14 settembre
+
+Quattro giorni fermi; nessuno ha toccato il pianificatore (solo Mizar/SIRI su `main`). Ripresa con una verifica di tutto cio' che era stato scritto nei due giorni precedenti e mai messo alla prova, e coi due strumenti nuovi finalmente esposti dal connettore.
+
+**`ti_coincidences` leggeva il feed sbagliato.** Prima lettura sull'intera rete: `corse: 753` invece di 365, con la 1/3, la 2, l'8 e la 22 (zero corse festive nel progetto) e perfino RAF, C, Y, RE1 e Falconara, che nel progetto non esistono; id delle corse `689_CodUdp:…` del feed aziendale, non gli uuid del progetto. L'endpoint risolveva il feed con `getLatestFeedId` e basta, mentre il giro usa i due canali del progetto (UDP `scheduling_projects.feed_id`, poi `ps_projects.materialized_feed_id`). Ora `resolveProjectFeedForRead` fa la stessa risoluzione **senza effetti collaterali** — niente progetti di scheduling creati, niente ri-materializzazione da uno strumento di lettura — e la risposta porta in testa il feed usato e un avviso se e' piu' vecchio dell'ultima modifica in Planning. Tutte le «opportunita'» di quella prima lettura sono da buttare.
+
+**E superava i 40k del canale**, troncato a meta' JSON. Il connettore affetta: `section='sintesi'` (default) sta nel canale, `esistenti`/`mancate`/`opportunita` portano una lista intera alla volta.
+
+**L'override delle ombre non aveva un test.** Pyflakes: i `global` erano dichiarati e mai assegnati — l'override con `globals()[nome]` funzionava, ma la dichiarazione era morta e nessun test provava che `vehicleShadowEur` da configurazione arrivi davvero a `_round_kpi`. E' la strada con cui l'operatore mette il SUO valore del mezzo: se non funziona, gli 80 € restano una stima dell'agente per sempre. Estratto in `apply_shadow_overrides`, con test.
+
+**`ti_vcsp_compare` funziona sui dati veri** (AV contro AU, parametri identici) e ha fatto vedere due cose che il registro non aveva: in AU le autovetture sono **al tetto** (picco 5 su 5, in AV 4) e la sagoma ha superamenti pesanti — linea 91: 20 corse su 24 col mezzo piu' piccolo (83%, tetto 10%), linea 3: 27 su 54. La regola dice «un gradino solo e il meno possibile»: l'83% non e' «il meno possibile». Fronte aperto.
+
+**Il codice della #473 (`earlyStop`) non e' mai stato eseguito da un giro**: verificato staticamente (scope dentro `main()`, pyflakes pulito). Il primo giro che lo esegue e' il prossimo.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.

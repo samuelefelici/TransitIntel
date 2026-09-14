@@ -165,6 +165,32 @@ class TestSelezioneFraRound:
         assert vo._round_rank(r5) < vo._round_rank(r4), "vince il piano da 21 vetture"
 
 
+    def test_le_ombre_da_configurazione_arrivano_al_punteggio(self):
+        """La strada con cui l'operatore mette il suo valore del mezzo: se non
+        arriva a _round_kpi, gli 80 euro restano una stima per sempre."""
+        prima = {k: getattr(vo, k) for k in vo.SHADOW_CONFIG_KEYS.values()}
+        try:
+            vsp = {"metrics": {"costEur": 100, "vehicles": 10}}
+            crew = {"summary": {"totalDailyCost": 100, "totalShifts": 5, "totalSupplementi": 2,
+                                "validation": {"totalViolations": 0},
+                                "companyCarsCap": 5, "companyCarsMaxSimultaneous": 5,
+                                "companyCarsConflicts": 0, "handoverModes": {"overLimit": []}}}
+            base = vo._round_kpi(1, vsp, crew)["selectionScoreEur"]
+            vigore = vo.apply_shadow_overrides({"vehicleShadowEur": 130, "supplementShadowEur": "non-un-numero",
+                                                "dutyShadowEur": -5})
+            assert vigore["VEHICLE_SHADOW_EUR"] == 130
+            assert vigore["SUPPLEMENT_SHADOW_EUR"] == prima["SUPPLEMENT_SHADOW_EUR"], "valore illeggibile: si ignora"
+            assert vigore["DUTY_SHADOW_EUR"] == 0.0, "negativo vale zero"
+            dopo = vo._round_kpi(1, vsp, crew)["selectionScoreEur"]
+            atteso = base + 10 * (130 - prima["VEHICLE_SHADOW_EUR"]) - 5 * prima["DUTY_SHADOW_EUR"]
+            assert abs(dopo - atteso) < 0.01
+        finally:
+            vo.apply_shadow_overrides({k: v for k, v in
+                                       zip(vo.SHADOW_CONFIG_KEYS.keys(), prima.values())})
+            for nome, v in prima.items():
+                setattr(vo, nome, v)
+
+
 class TestEscalation:
     """La penalità non è solo un costo, è una guida alla ricerca: finché il
     round resta illegale sui cambi si alza il tiro, e ci si ferma appena

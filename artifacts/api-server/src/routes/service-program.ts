@@ -1226,6 +1226,57 @@ router.get("/service-program/trips", async (req, res) => {
   }
 });
 
+/**
+ * Il feed materializzato di un progetto Planning Studio, per una LETTURA.
+ *
+ * Stessi due canali del giro (agent-optimize): prima l'UDP — il feed scopato
+ * sull'unità, `scheduling_projects.feed_id` — poi il feed d'esercizio,
+ * `ps_projects.materialized_feed_id`. A differenza del giro NON crea progetti
+ * di scheduling e NON ri-materializza: uno strumento che legge non deve
+ * cambiare lo stato del progetto, e se il feed è vecchio lo dice.
+ *
+ * Nasce da un errore: la mappa delle coincidenze prendeva «l'ultimo feed» del
+ * database, cioè quello aziendale con 753 corse e linee che nel progetto non
+ * esistono, mentre il giro lavorava sulle 365 corse del feed del progetto.
+ */
+async function resolveProjectFeedForRead(psProjectId: string): Promise<{
+  feedId: string; feedSource: "udp" | "esercizio"; syncedAt: string | null; staleAfter: string | null;
+} | null> {
+  try {
+    const sp = await db.execute<any>(sql`
+      SELECT sp.feed_id, f.uploaded_at
+        FROM scheduling_projects sp
+        JOIN gtfs_feeds f ON f.id = sp.feed_id
+       WHERE sp.planning_studio_project_id = ${psProjectId}::uuid
+         AND sp.feed_id IS NOT NULL
+       ORDER BY sp.created_at DESC LIMIT 1`);
+    const row = sp.rows?.[0];
+    if (row?.feed_id) {
+      let staleAfter: string | null = null;
+      try {
+        const st = await db.execute<any>(sql`
+          SELECT GREATEST(
+                   COALESCE((SELECT max(updated_at) FROM ps_trips     WHERE project_id = ${psProjectId}::uuid), 'epoch'),
+                   COALESCE((SELECT max(updated_at) FROM ps_calendars WHERE project_id = ${psProjectId}::uuid), 'epoch')
+                 ) AS changed`);
+        const changed = st.rows?.[0]?.changed;
+        if (changed && row.uploaded_at && new Date(changed).getTime() > new Date(row.uploaded_at).getTime()) {
+          staleAfter = new Date(changed).toISOString();
+        }
+      } catch { /* senza confronto: il feed vale */ }
+      return { feedId: String(row.feed_id), feedSource: "udp",
+               syncedAt: row.uploaded_at ? new Date(row.uploaded_at).toISOString() : null, staleAfter };
+    }
+  } catch { /* nessuna UDP: si prova l'esercizio */ }
+  try {
+    const fr = await db.execute<any>(sql`
+      SELECT materialized_feed_id FROM ps_projects WHERE id = ${psProjectId}::uuid`);
+    const fid = fr.rows?.[0]?.materialized_feed_id;
+    if (fid) return { feedId: String(fid), feedSource: "esercizio", syncedAt: null, staleAfter: null };
+  } catch { /* progetto senza feed */ }
+  return null;
+}
+
 /* ═══════════════════════════════════════════════════════════════
  *  GET /api/service-program/coincidences — la mappa delle coincidenze
  *
@@ -1237,8 +1288,18 @@ router.get("/service-program/trips", async (req, res) => {
 
 router.get("/service-program/coincidences", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId(req);
+    // Il feed DEL PROGETTO, come il giro: senza psProjectId si ricade
+    // sull'ultimo feed caricato, che è quello aziendale intero.
+    const psProjForFeed = String(req.query.psProjectId || "");
+    const projectFeed = /^[0-9a-f-]{36}$/i.test(psProjForFeed)
+      ? await resolveProjectFeedForRead(psProjForFeed) : null;
+    const feedId = projectFeed?.feedId ?? await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+    const feedInfo = projectFeed
+      ? { feedId, feedSource: projectFeed.feedSource, syncedAt: projectFeed.syncedAt,
+          ...(projectFeed.staleAfter ? { attenzione: `il feed è più vecchio dell'ultima modifica in Planning (${projectFeed.staleAfter}): lancia un giro o sincronizza l'UDP per aggiornarlo` } : {}) }
+      : { feedId, feedSource: "ultimoFeedCaricato" as const,
+          attenzione: "senza psProjectId la mappa legge l'ultimo feed caricato, non quello del progetto" };
 
     const dateRaw = String(req.query.date || "");
     const dateYMD = dateRaw.replace(/-/g, "");
@@ -1332,7 +1393,7 @@ router.get("/service-program/coincidences", async (req, res) => {
       shiftRange: num(req.query.shiftRange, 30),
       minOccurrences: num(req.query.minOccurrences, 3),
     }, req.log, "coincidences");
-    res.json(out);
+    res.json({ feed: feedInfo, ...(out && typeof out === "object" ? out : { out }) });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? String(err) });
   }
