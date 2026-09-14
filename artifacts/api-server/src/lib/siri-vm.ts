@@ -552,7 +552,11 @@ export function buildGetCapabilitiesRequest(requestorRef: string, version = "1.4
     + `<siri:RequestTimestamp>${ts}</siri:RequestTimestamp>`
     + `<siri:RequestorRef>${esc(requestorRef)}</siri:RequestorRef>`
     + `<siri:MessageIdentifier>${msgId()}</siri:MessageIdentifier>`
-    + `<siri:VehicleMonitoringCapabilitiesRequest>`
+    /* `version` anche sulla richiesta del singolo servizio: il server Mizar
+     * (WCF) rifiuta senza — "Required attribute 'version' is missing" —
+     * e lo si è scoperto solo con la sonda, perché /siri/status ingoiava
+     * l'ErrorCondition come "capacità non lette". */
+    + `<siri:VehicleMonitoringCapabilitiesRequest version="${esc(version)}">`
     + `<siri:RequestTimestamp>${ts}</siri:RequestTimestamp>`
     + `<siri:MessageIdentifier>${msgId()}</siri:MessageIdentifier>`
     + `</siri:VehicleMonitoringCapabilitiesRequest>`

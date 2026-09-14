@@ -64,8 +64,10 @@ export const SERVIZI_SIRI = [
 /** GetCapabilities per TUTTI i servizi, non solo VehicleMonitoring. */
 export function buildCapabilitiesTutteRequest(requestorRef: string): string {
   const ts = nowIso();
+  /* `version` su ogni richiesta di servizio: senza, il server Mizar risponde
+   * ErrorCondition "Required attribute 'version' is missing". */
   const richieste = SERVIZI_SIRI
-    .map(s => `<siri:${s}CapabilitiesRequest>${testa(ts)}</siri:${s}CapabilitiesRequest>`).join("");
+    .map(s => `<siri:${s}CapabilitiesRequest version="1.4">${testa(ts)}</siri:${s}CapabilitiesRequest>`).join("");
   return envelope(
     `<siri:GetCapabilities><Request version="1.4">${testa(ts)}`
     + `<siri:RequestorRef>${esc(requestorRef)}</siri:RequestorRef>${richieste}</Request>`
@@ -108,6 +110,31 @@ export function nomiElementi(xml: string): string[] {
   while ((m = re.exec(xml)) !== null) nomi.add(m[1]);
   return [...nomi].sort();
 }
+/**
+ * Gli endpoint "gemelli" che un server SIRI a servizi separati potrebbe
+ * esporre. Il server Mizar pubblica il VehicleMonitoring su
+ * `/SIRIService/VMWS/VMService.svc`: un percorso che porta nel nome la sigla
+ * del servizio. Se gli altri servizi esistono, con ogni probabilità stanno
+ * allo stesso indirizzo con la sigla cambiata. Restituisce vuoto se l'URL
+ * non segue lo schema: allora non c'è nulla da indovinare.
+ */
+export const SIGLE_SERVIZI: Array<{ sigla: string; servizio: string }> = [
+  { sigla: "ET", servizio: "EstimatedTimetable" },
+  { sigla: "SM", servizio: "StopMonitoring" },
+  { sigla: "PT", servizio: "ProductionTimetable" },
+  { sigla: "SX", servizio: "SituationExchange" },
+  { sigla: "GM", servizio: "GeneralMessage" },
+  { sigla: "CM", servizio: "ConnectionMonitoring" },
+];
+export function endpointGemelli(url: string): Array<{ servizio: string; url: string }> {
+  const m = /^(.*\/)([A-Z]{2})(WS\/)\2(Service\.svc)(.*)$/.exec(url);
+  if (!m) return [];
+  const [, prima, sigla, ws, svc, dopo] = m;
+  return SIGLE_SERVIZI
+    .filter(s => s.sigla !== sigla)
+    .map(s => ({ servizio: s.servizio, url: `${prima}${s.sigla}${ws}${s.sigla}${svc}${dopo}` }));
+}
+
 /** Le <operation name="..."> di un WSDL: ciò che il server dichiara di sapere fare. */
 export function operazioniWsdl(xml: string): string[] {
   const out = new Set<string>();
@@ -186,6 +213,8 @@ export interface RisultatoSonda {
   endpoint: string;
   requestorRef: string;
   wsdl: { raggiunto: boolean; operazioni: string[]; dettaglio: string };
+  /** gli indirizzi gemelli provati con una GET ?wsdl: esistono altri servizi sullo stesso server? */
+  gemelli: Array<{ servizio: string; url: string; httpStatus: number; operazioni: string[]; esito: string }>;
   capacita: {
     dichiarate: Record<string, boolean>;
     letto: ReturnType<typeof parseCapabilities> | null;
@@ -254,6 +283,23 @@ export async function eseguiSonda(
     wsdl = { raggiunto: false, operazioni: [], dettaglio: `?wsdl non raggiungibile: ${e?.message ?? e}` };
   }
 
+  /* 0b. Gli indirizzi gemelli: una GET ?wsdl ciascuno. Un 404 dice "non
+   * c'è"; un WSDL con operazioni dice "c'è, e queste sono le sue". */
+  const gemelli: RisultatoSonda["gemelli"] = [];
+  for (const g of endpointGemelli(cfg.url)) {
+    try {
+      const r = await get(`${g.url}?wsdl`);
+      const operazioni = operazioniWsdl(r.xml);
+      grezzi[`wsdl-${g.servizio}`] = r.xml;
+      gemelli.push({
+        ...g, httpStatus: r.status, operazioni,
+        esito: operazioni.length ? `esiste: ${operazioni.length} operazioni` : r.status === 404 ? "non esiste (404)" : `HTTP ${r.status}, nessun WSDL`,
+      });
+    } catch (e: any) {
+      gemelli.push({ ...g, httpStatus: 0, operazioni: [], esito: `nessuna risposta: ${e?.message ?? e}` });
+    }
+  }
+
   /* 1. Capacità di tutti i servizi. */
   const cap = await prova(post, "GetCapabilities", "GetCapabilities",
     "che cosa il server dichiara di sapere fare, servizio per servizio",
@@ -299,13 +345,13 @@ export async function eseguiSonda(
   return {
     quando: new Date().toISOString(),
     endpoint: cfg.url, requestorRef: cfg.requestorRef,
-    wsdl,
+    wsdl, gemelli,
     capacita: {
       dichiarate, letto,
       shortestPossibleCycle: /<(?:[A-Za-z0-9_.-]+:)?ShortestPossibleCycle>([^<]+)</.exec(capXml)?.[1] ?? null,
     },
     fullAggiunge, fermataProvata: fermata, prove,
-    lettura: leggiSonda({ wsdl, dichiarate, fullAggiunge, prove }),
+    lettura: leggiSonda({ wsdl, gemelli, dichiarate, fullAggiunge, prove }),
     grezzi,
   };
 }
@@ -316,6 +362,7 @@ export async function eseguiSonda(
  */
 export function leggiSonda(r: {
   wsdl: { operazioni: string[] };
+  gemelli?: Array<{ servizio: string; url: string; operazioni: string[] }>;
   dichiarate: Record<string, boolean>;
   fullAggiunge: string[];
   prove: ProvaSonda[];
@@ -348,12 +395,22 @@ export function leggiSonda(r: {
     out.push("ProductionTimetable risponde con il programma del giorno: si può confrontare direttamente col GTFS, corsa per corsa.");
   }
 
+  const trovati = (r.gemelli ?? []).filter(g => g.operazioni.length > 0);
+  if (trovati.length) {
+    out.push(`Sullo stesso server esistono altri endpoint SIRI: ${trovati.map(g => `${g.servizio} (${g.url})`).join(", ")}. Vanno interrogati lì, non sull'indirizzo del VehicleMonitoring.`);
+  }
+
   const dichiarati = Object.entries(r.dichiarate).filter(([, v]) => v).map(([k]) => k);
   const soloVm = dichiarati.length === 1 && dichiarati[0] === "VehicleMonitoring";
   const wsdlSoloVm = r.wsdl.operazioni.length > 0
     && !r.wsdl.operazioni.some(o => /EstimatedTimetable|StopMonitoring|ProductionTimetable/.test(o));
-  if (soloVm || wsdlSoloVm) {
-    out.push("Il server dichiara il solo VehicleMonitoring: gli altri servizi non sono un'opzione da configurare da parte nostra, vanno chiesti a Mizar.");
+  if ((soloVm || wsdlSoloVm) && !trovati.length) {
+    out.push(r.gemelli?.length
+      ? "Questo endpoint espone il solo VehicleMonitoring e nessun indirizzo gemello risponde: gli altri servizi vanno chiesti a Mizar."
+      : "Il server dichiara il solo VehicleMonitoring: gli altri servizi non sono un'opzione da configurare da parte nostra, vanno chiesti a Mizar.");
+  }
+  if (r.wsdl.operazioni.includes("Subscribe")) {
+    out.push("Il server accetta sottoscrizioni (Subscribe/DeleteSubscription): può spingerci gli aggiornamenti invece di rispondere a un poll ogni 30 secondi.");
   }
   return out;
 }
