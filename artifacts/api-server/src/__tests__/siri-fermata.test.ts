@@ -13,7 +13,7 @@
 import { describe, it, expect } from "vitest";
 import {
   parseStopMonitoringResponse, confrontaFermata, secondiLocali, secondiGtfs, scartoCircolare, leggiConfronto,
-  leggiDiagnosi, leggiFermataFeed, type RigaOrario,
+  leggiDiagnosi, leggiFermataFeed, unisciVisite, fuoriServizio, type RigaOrario,
 } from "../lib/siri-fermata";
 import { indiceCodiciCorsaDelGiorno, type GtfsIndex } from "../lib/siri-vm";
 
@@ -181,7 +181,8 @@ describe("confrontaFermata", () => {
       lineeCombaciano: 2, lineeDiverse: 1, orariIdentici: 2, scartoMedianoSec: 0, scartoMassimoSec: 120,
       scartoPartenzaMedianoSec: 0, corseNonTrovate: [],
     });
-    expect(c.lettura.join("\n")).toMatch(/Tutte le 3 corse hanno il loro trip_id/);
+    expect(c.riepilogo).toMatchObject({ visiteGrezze: 3, fuoriServizio: 0, sosteAlCapolinea: 0 });
+    expect(c.lettura.join("\n")).toMatch(/Tutte le 3 corse di linea hanno il loro trip_id/);
     expect(c.lettura.join("\n")).toMatch(/identici in 2 corse su 3; scarto mediano 0 s, massimo 120 s/);
     expect(c.lettura.join("\n")).toMatch(/1 corse hanno nel feed una linea diversa/);
     expect(c.lettura.join("\n")).toMatch(/1 passaggi su 3 vengono da mezzi seguiti/);
@@ -197,7 +198,7 @@ describe("confrontaFermata", () => {
     expect(vC).toMatchObject({ corsaNelFeed: true, fermataNellaCorsa: false, scartoAllaFermataSec: null, scartoAllaPartenzaSec: 0 });
     expect(vN).toMatchObject({ corsaNelFeed: false, fermataNellaCorsa: false, gtfs: { tripId: null } });
     expect(c.riepilogo).toMatchObject({ corseNelFeed: 2, fermataNellaCorsa: 1, corseNonTrovate: ["455469"] });
-    expect(c.lettura.join("\n")).toMatch(/2 corse su 3 hanno il trip_id nel feed; mancano 1 numeri \(455469\)/);
+    expect(c.lettura.join("\n")).toMatch(/2 corse di linea su 3 hanno il trip_id nel feed; mancano 1 numeri \(455469\)/);
     expect(c.lettura.join("\n")).toMatch(/In 1 corse agganciate il feed NON passa da questa fermata/);
   });
 
@@ -239,7 +240,8 @@ describe("confrontaFermata", () => {
 
   it("senza passaggi la lettura lo dice e basta", () => {
     expect(leggiConfronto(
-      { visite: 0, seguite: 0, conPrevisione: 0, corseNelFeed: 0, fermataNellaCorsa: 0, lineeCombaciano: 0, lineeDiverse: 0,
+      { visiteGrezze: 0, visite: 0, fuoriServizio: 0, sosteAlCapolinea: 0, seguite: 0, conPrevisione: 0, corseNelFeed: 0,
+        fermataNellaCorsa: 0, lineeCombaciano: 0, lineeDiverse: 0,
         orariIdentici: 0, scartoMedianoSec: null, scartoMassimoSec: null, scartoPartenzaMedianoSec: null, corseNonTrovate: [] },
       { ref: "9999", stopId: null, nomeMizar: null, nomeFeed: null },
     )).toEqual(["Mizar non dà passaggi per la fermata 9999 nell'intervallo chiesto."]);
@@ -304,5 +306,85 @@ describe("indiceCodiciCorsaDelGiorno: il numero torna univoco fra le corse di og
   it("un numero ambiguo anche fra le corse di oggi resta fuori", () => {
     const oggi = indiceCodiciCorsaDelGiorno(tutte, ["689_CodUdp:D1627_454462", "689_CodUdp:D1628_454462"]);
     expect(oggi.get("454462")).toBeUndefined();
+  });
+});
+
+/* Il caso vero dei capolinea (Piazza Cavour e Osimo, 14 settembre): due
+ * record per corsa, arrivo in sosta prima della partenza, e i movimenti
+ * fuori servizio in mezzo alle corse. */
+describe("capolinea: record doppi, sosta e fuori servizio", () => {
+  const capolinea = (o: { corsa: string; line?: string | null; arrivo: string | null; partenza: string; display?: string; nome?: string | null }) => `
+<MonitoredStopVisit>
+  <RecordedAtTime>2026-09-14T00:00:00</RecordedAtTime><MonitoringRef>200</MonitoringRef>
+  <MonitoredVehicleJourney>
+    ${o.line === null ? "" : `<LineRef>${o.line ?? "B"}</LineRef>`}<DirectionRef>go</DirectionRef>
+    <RouteRef>${o.corsa}</RouteRef>${o.nome === null ? "" : `<PublishedLineName>${o.nome ?? "LINEA B"}</PublishedLineName>`}
+    <OriginRef>200</OriginRef><OriginName>Piazza Cavour (Conerobus Linee Nord)</OriginName>
+    <DestinationRef>222</DestinationRef><DestinationName>MARINA (Capolinea)</DestinationName>
+    <OriginAimedDepartureTime>${o.partenza}</OriginAimedDepartureTime>
+    <Monitored>false</Monitored><CourseOfJourneyRef>${o.corsa}</CourseOfJourneyRef>
+    <MonitoredCall>
+      <StopPointRef>200</StopPointRef><VisitNumber>1</VisitNumber><StopPointName>Piazza Cavour (Conerobus Linee Nord)</StopPointName>
+      <DestinationDisplay>${o.display ?? "B4D"}</DestinationDisplay>
+      ${o.arrivo ? `<AimedArrivalTime>${o.arrivo}</AimedArrivalTime>` : ""}<AimedDepartureTime>${o.partenza}</AimedDepartureTime>
+    </MonitoredCall>
+  </MonitoredVehicleJourney>
+</MonitoredStopVisit>`;
+  const xml = risposta([
+    capolinea({ corsa: "369625", arrivo: "2026-09-14T11:08:00+02:00", partenza: "2026-09-14T11:15:00+02:00" }),   // arrivo in sosta
+    capolinea({ corsa: "369625", arrivo: "2026-09-14T11:15:00+02:00", partenza: "2026-09-14T11:15:00+02:00" }),   // partenza
+    capolinea({ corsa: "371370", arrivo: null, partenza: "2026-09-14T12:05:00+02:00", line: "A", display: "A7D" }),  // senza arrivo
+    capolinea({ corsa: "371370", arrivo: "2026-09-14T12:05:00+02:00", partenza: "2026-09-14T12:05:00+02:00", line: "A", display: "A7D" }),
+    capolinea({ corsa: "FRSRV2016", arrivo: "2026-09-14T12:50:00+02:00", partenza: "2026-09-14T13:00:00+02:00", line: null, nome: null, display: "FUORI LINEA" }),
+    capolinea({ corsa: "FRSRV2016", arrivo: "2026-09-14T13:00:00+02:00", partenza: "2026-09-14T13:00:00+02:00", line: "FSRV", nome: "Fuori servizio", display: "FUORI LINEA" }),
+  ].join(""), "");
+  const idx = (): GtfsIndex => ({
+    feedId: "f", trips: new Set(["689_CodUdp:D1638_369625", "689_CodUdp:D1638_371370"]), routes: new Set(["B", "A"]),
+    stops: new Set(["20001"]),
+    tripRoute: new Map([["689_CodUdp:D1638_369625", "B"], ["689_CodUdp:D1638_371370", "A"]]),
+    tripByCode: new Map([["369625", "689_CodUdp:D1638_369625"], ["371370", "689_CodUdp:D1638_371370"]]),
+    routeByCode: new Map([["B", "B"], ["A", "A"]]), routeLongNames: [],
+    stopNames: new Map([["20001", "PIAZZA CAVOUR (CONEROBUS LINEE NORD)"]]),
+    stopByName: new Map([["PIAZZA CAVOUR CONEROBUS LINEE NORD", "20001"]]),
+    timeZone: "Europe/Rome", loadedAt: 0,
+  });
+  const o = (): Map<string, RigaOrario[]> => new Map([
+    ["689_CodUdp:D1638_369625", [{ stopId: "20001", seq: 1, scheduled: "11:15:00" }, { stopId: "222", seq: 30, scheduled: "12:00:00" }]],
+    ["689_CodUdp:D1638_371370", [{ stopId: "20001", seq: 1, scheduled: "12:05:00" }, { stopId: "222", seq: 20, scheduled: "12:30:00" }]],
+  ]);
+
+  it("unisce arrivo e partenza, confronta la partenza, e non conta i fuori servizio come mancanti", () => {
+    const visite = parseStopMonitoringResponse(xml).visite;
+    expect(visite).toHaveLength(6);
+    const c = confrontaFermata("200", visite, idx(), o());
+    expect(c.riepilogo).toMatchObject({
+      visiteGrezze: 6, visite: 3, fuoriServizio: 1, sosteAlCapolinea: 2,
+      corseNelFeed: 2, fermataNellaCorsa: 2, orariIdentici: 2, scartoMedianoSec: 0, scartoMassimoSec: 0, corseNonTrovate: [],
+    });
+    const [b, a, fs] = c.visite;
+    expect(b).toMatchObject({ mizar: { corsa: "369625", arrivoProgrammato: "11:08:00", partenzaProgrammata: "11:15:00" }, sostaAlCapolineaSec: 420, scartoAllaFermataSec: 0, fuoriServizio: false });
+    expect(a).toMatchObject({ mizar: { corsa: "371370", arrivoProgrammato: "12:05:00" }, sostaAlCapolineaSec: null, scartoAllaFermataSec: 0 });
+    expect(fs).toMatchObject({ mizar: { corsa: "FRSRV2016" }, fuoriServizio: true, corsaNelFeed: false, sostaAlCapolineaSec: 600 });
+    const l = c.lettura.join("\n");
+    expect(l).toMatch(/6 record uniti in 3 passaggi/);
+    expect(l).toMatch(/1 movimenti fuori servizio/);
+    expect(l).toMatch(/Tutte le 2 corse di linea hanno il loro trip_id/);
+    expect(l).toMatch(/2 passaggi portano anche l'arrivo in sosta al capolinea/);
+    expect(l).not.toMatch(/versione/);
+  });
+
+  it("la stessa corsa con due partenze diverse (circolare) resta due passaggi", () => {
+    const xml2 = risposta([
+      capolinea({ corsa: "369625", arrivo: "2026-09-14T11:15:00+02:00", partenza: "2026-09-14T11:15:00+02:00" }),
+      capolinea({ corsa: "369625", arrivo: "2026-09-14T12:00:00+02:00", partenza: "2026-09-14T12:00:00+02:00" }),
+    ].join(""), "");
+    expect(unisciVisite(parseStopMonitoringResponse(xml2).visite)).toHaveLength(2);
+  });
+
+  it("riconosce i fuori servizio dalle tre forme in cui Mizar li manda", () => {
+    expect(fuoriServizio({ courseOfJourneyRef: "FRSRV3313", lineRef: "N", publishedLineName: "OSIMO - ASPIO", destinationDisplay: "RIENTRO DEPOSITO" })).toBe(true);
+    expect(fuoriServizio({ courseOfJourneyRef: "123", lineRef: "FSRV", publishedLineName: "Fuori servizio", destinationDisplay: "x" })).toBe(true);
+    expect(fuoriServizio({ courseOfJourneyRef: "123", lineRef: null, publishedLineName: null, destinationDisplay: "FUORI LINEA" })).toBe(true);
+    expect(fuoriServizio({ courseOfJourneyRef: "455475", lineRef: "N", publishedLineName: "OSIMO - ASPIO", destinationDisplay: "N1A1" })).toBe(false);
   });
 });

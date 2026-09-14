@@ -180,6 +180,12 @@ export interface ConfrontoVisita {
     orarioAllaFermata: string | null; progressivo: number | null;
     partenza: string | null;
   };
+  /** movimento fuori servizio (rientro in deposito, trasferimento): non è una
+   *  corsa del feed e non deve contare come mancante */
+  fuoriServizio: boolean;
+  /** secondi di sosta al capolinea dichiarati da Mizar (arrivo prima della
+   *  partenza): il feed ha solo la partenza, il confronto usa quella */
+  sostaAlCapolineaSec: number | null;
   /** true se il trip_id esiste nel feed */
   corsaNelFeed: boolean;
   /** true se la corsa del feed passa da questa fermata */
@@ -199,7 +205,11 @@ export interface ConfrontoFermata {
   };
   visite: ConfrontoVisita[];
   riepilogo: {
+    /** record ricevuti da Mizar, prima di unire arrivo e partenza al capolinea */
+    visiteGrezze: number;
     visite: number;
+    fuoriServizio: number;
+    sosteAlCapolinea: number;
     seguite: number;
     conPrevisione: number;
     corseNelFeed: number;
@@ -230,25 +240,75 @@ function mediana(xs: number[]): number | null {
 }
 
 /**
+ * Un movimento fuori servizio: rientro in deposito, trasferimento, "fuori
+ * linea". Mizar li elenca fra i passaggi come le corse (numero "FRSRV…",
+ * linea "FSRV" o nessuna linea): nel feed non ci sono per definizione.
+ */
+export function fuoriServizio(v: Pick<VisitaFermata, "courseOfJourneyRef" | "lineRef" | "publishedLineName" | "destinationDisplay">): boolean {
+  if (v.courseOfJourneyRef && /^FRSRV/i.test(v.courseOfJourneyRef.trim())) return true;
+  if (v.lineRef && v.lineRef.trim().toUpperCase() === "FSRV") return true;
+  if (v.destinationDisplay && /FUORI LINEA|RIENTRO DEPOSITO|DEPOSITO/i.test(v.destinationDisplay)) return true;
+  return !v.lineRef && !v.publishedLineName;
+}
+
+/**
+ * Ai capolinea Mizar manda DUE record per la stessa corsa: l'arrivo in
+ * sosta (AimedArrival 11:08, AimedDeparture 11:15) e la partenza
+ * (11:15/11:15), o uno dei due senza l'orario di arrivo. Sono lo stesso
+ * passaggio: si uniscono per (corsa, partenza programmata), tenendo
+ * l'arrivo più presto e la previsione di chi ce l'ha. Un passaggio vero
+ * ripetuto (circolare che torna al capolinea) ha una partenza diversa e
+ * resta distinto.
+ */
+export function unisciVisite(visite: VisitaFermata[]): VisitaFermata[] {
+  const out: VisitaFermata[] = [];
+  const posizione = new Map<string, number>();
+  for (const v of visite) {
+    const chiave = `${v.courseOfJourneyRef ?? ""}|${v.aimedDeparture?.getTime() ?? ""}`;
+    const i = posizione.get(chiave);
+    if (i == null || !v.courseOfJourneyRef) { posizione.set(chiave, out.length); out.push({ ...v }); continue; }
+    const u = out[i];
+    if (v.aimedArrival && (!u.aimedArrival || v.aimedArrival < u.aimedArrival)) u.aimedArrival = v.aimedArrival;
+    u.aimedDeparture = u.aimedDeparture ?? v.aimedDeparture;
+    u.expectedArrival = u.expectedArrival ?? v.expectedArrival;
+    u.expectedDeparture = u.expectedDeparture ?? v.expectedDeparture;
+    u.arrivalStatus = u.arrivalStatus ?? v.arrivalStatus;
+    u.departureStatus = u.departureStatus ?? v.departureStatus;
+    u.vehicleRef = u.vehicleRef ?? v.vehicleRef;
+    u.lineRef = u.lineRef ?? v.lineRef;
+    u.publishedLineName = u.publishedLineName ?? v.publishedLineName;
+    if (v.monitored) { u.monitored = true; u.statico = false; u.recordedAt = v.recordedAt ?? u.recordedAt; }
+  }
+  return out;
+}
+
+/**
  * Confronta i passaggi che Mizar dà per una fermata con le stop_times del
  * feed. `orari` porta, per ogni trip_id agganciato, tutte le sue righe in
  * ordine di progressivo: serve la partenza (prima riga) e l'occorrenza
  * giusta della fermata (le circolari passano due volte dal capolinea).
+ * Il confronto alla fermata usa la PARTENZA programmata: il feed ha un solo
+ * orario per fermata, ed è quello; l'arrivo in sosta al capolinea è un dato
+ * in più di Mizar, riportato a parte.
  */
 export function confrontaFermata(
-  ref: string, visite: VisitaFermata[], index: GtfsIndex,
+  ref: string, visiteGrezze: VisitaFermata[], index: GtfsIndex,
   orari: Map<string, RigaOrario[]>, timeZone = index.timeZone,
 ): ConfrontoFermata {
+  const visite = unisciVisite(visiteGrezze);
   const nomeMizar = visite.find(v => v.stopPointName)?.stopPointName ?? null;
   const fermata = resolveStop(ref, nomeMizar, index);
   const stopId = fermata.stopId;
 
   const nonTrovate = new Set<string>();
   const confronti: ConfrontoVisita[] = visite.map(v => {
-    const tripId = resolveRef(v.courseOfJourneyRef, index.trips, index.tripByCode);
-    if (!tripId && v.courseOfJourneyRef) nonTrovate.add(v.courseOfJourneyRef);
+    const fuori = fuoriServizio(v);
+    const tripId = fuori ? null : resolveRef(v.courseOfJourneyRef, index.trips, index.tripByCode);
+    if (!fuori && !tripId && v.courseOfJourneyRef) nonTrovate.add(v.courseOfJourneyRef);
     const righe = tripId ? (orari.get(tripId) ?? []) : [];
     const routeId = tripId ? (index.tripRoute.get(tripId) ?? null) : null;
+    const sosta = v.aimedArrival && v.aimedDeparture && v.aimedDeparture > v.aimedArrival
+      ? Math.round((v.aimedDeparture.getTime() - v.aimedArrival.getTime()) / 1000) : null;
 
     /* La linea: il codice pubblico di Mizar contro la route della corsa. */
     let lineaCombacia: boolean | null = null;
@@ -257,9 +317,9 @@ export function confrontaFermata(
       lineaCombacia = attesa != null ? attesa === routeId : null;
     }
 
-    /* L'orario alla fermata: l'occorrenza più vicina a quella di Mizar. */
-    const mizarSec = v.aimedArrival ? secondiLocali(v.aimedArrival, timeZone)
-      : v.aimedDeparture ? secondiLocali(v.aimedDeparture, timeZone) : null;
+    /* L'orario alla fermata: la partenza, e l'occorrenza più vicina. */
+    const mizarSec = v.aimedDeparture ? secondiLocali(v.aimedDeparture, timeZone)
+      : v.aimedArrival ? secondiLocali(v.aimedArrival, timeZone) : null;
     const allaFermata = stopId ? righe.filter(r => r.stopId === stopId) : [];
     let scelta: RigaOrario | null = null;
     let scartoFermata: number | null = null;
@@ -293,6 +353,8 @@ export function confrontaFermata(
         orarioAllaFermata: scelta?.scheduled ?? null, progressivo: scelta?.seq ?? null,
         partenza: prima?.scheduled ?? null,
       },
+      fuoriServizio: fuori,
+      sostaAlCapolineaSec: sosta,
       corsaNelFeed: !!tripId,
       fermataNellaCorsa: !!scelta,
       lineaCombacia,
@@ -304,7 +366,10 @@ export function confrontaFermata(
   const scarti = confronti.map(c => c.scartoAllaFermataSec).filter((x): x is number => x != null);
   const scartiPartenza = confronti.map(c => c.scartoAllaPartenzaSec).filter((x): x is number => x != null);
   const riepilogo: ConfrontoFermata["riepilogo"] = {
+    visiteGrezze: visiteGrezze.length,
     visite: confronti.length,
+    fuoriServizio: confronti.filter(c => c.fuoriServizio).length,
+    sosteAlCapolinea: confronti.filter(c => c.sostaAlCapolineaSec != null).length,
     seguite: confronti.filter(c => c.mizar.seguito).length,
     conPrevisione: confronti.filter(c => c.mizar.partenzaPrevista).length,
     corseNelFeed: confronti.filter(c => c.corsaNelFeed).length,
@@ -403,10 +468,20 @@ export function leggiConfronto(
     const come = f.come === "id" ? "stesso stop_id" : f.come === "code" ? `stop_code ${f.ref}` : "solo per nome: il codice di Mizar non è né stop_id né stop_code del feed";
     out.push(`Fermata ${f.ref}: Mizar la chiama «${f.nomeMizar ?? "?"}», il feed «${f.nomeFeed ?? "?"}» (stop_id ${f.stopId}, agganciata per ${come}).`);
   }
-  if (r.corseNelFeed === r.visite) {
-    out.push(`Tutte le ${r.visite} corse hanno il loro trip_id nel feed: il numero di corsa di Mizar è la chiave giusta.`);
-  } else {
-    out.push(`${r.corseNelFeed} corse su ${r.visite} hanno il trip_id nel feed; mancano ${r.corseNonTrovate.length} numeri (${r.corseNonTrovate.slice(0, 5).join(", ")}${r.corseNonTrovate.length > 5 ? "…" : ""}): orario di Mizar e feed non sono la stessa versione, oppure sono corse fuori dall'esportazione.`);
+  if (r.visiteGrezze !== r.visite || r.fuoriServizio) {
+    const pezzi: string[] = [];
+    if (r.visiteGrezze !== r.visite) pezzi.push(`${r.visiteGrezze} record uniti in ${r.visite} passaggi (arrivo e partenza al capolinea sono lo stesso passaggio)`);
+    if (r.fuoriServizio) pezzi.push(`${r.fuoriServizio} movimenti fuori servizio, che nel feed non esistono per definizione`);
+    out.push(pezzi.join("; ") + ".");
+  }
+  const diLinea = r.visite - r.fuoriServizio;
+  if (diLinea > 0 && r.corseNelFeed === diLinea) {
+    out.push(`Tutte le ${diLinea} corse di linea hanno il loro trip_id nel feed: il numero di corsa di Mizar è la chiave giusta.`);
+  } else if (diLinea > 0) {
+    out.push(`${r.corseNelFeed} corse di linea su ${diLinea} hanno il trip_id nel feed; mancano ${r.corseNonTrovate.length} numeri (${r.corseNonTrovate.slice(0, 5).join(", ")}${r.corseNonTrovate.length > 5 ? "…" : ""}): orario di Mizar e feed non sono la stessa versione, oppure sono corse fuori dall'esportazione.`);
+  }
+  if (r.sosteAlCapolinea) {
+    out.push(`${r.sosteAlCapolinea} passaggi portano anche l'arrivo in sosta al capolinea prima della partenza: il feed non lo ha, il confronto usa la partenza.`);
   }
   if (r.corseNelFeed > 0) {
     if (r.fermataNellaCorsa === r.corseNelFeed) {
