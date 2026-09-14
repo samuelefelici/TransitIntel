@@ -651,6 +651,29 @@ Quattro giorni fermi; nessuno ha toccato il pianificatore (solo Mizar/SIRI su `m
 
 **Il codice della #473 (`earlyStop`) non e' mai stato eseguito da un giro**: verificato staticamente (scope dentro `main()`, pyflakes pulito). Il primo giro che lo esegue e' il prossimo.
 
+## La mappa delle coincidenze sull'intera rete (14 settembre)
+
+Prima lettura sul feed GIUSTO (`feedSource: udp`, 365 corse, sincronizzato dal lancio di AW). Il giro AW (`207604c7`) e' morto per il riavvio del server — un deploy di TransitIntel durante il giro, come da regola — e comunque era partito **senza** `earlyStopPatience`: il catalogo MCP di questa sessione e' ancora quello vecchio e lo schema di `ti_vcsp_run` non ha la manopola. Errore mio: non l'ho controllato prima di lanciare.
+
+**Dieci coincidenze esistenti** (le stesse di AV), **36 mancate per poco**, **10 traslazioni di linea** con saldo positivo:
+
+| linea | corse | flex | δ | crea | rompe | dentro la flex |
+|---|---|---|---|---|---|---|
+| **3** | 54 | 10′ | −14′ | **6** (3→2/6 ×24, 2/6→3 ×22, 3→1/4 ×20, 3→C.S. ×12 …) | 2 (31→3 Posatora ×12, 3→31 ×11) | no |
+| 1/4 | 42 | 10′ | +13′ | 4 (3→1/4 ×20, 2/6→1/4 ×18, 1/4→7 ×11, 7→1/4 ×10) | 1 (11→1/4 ×3) | no |
+| **7** | 12 | 15′ | −11′ | 3 (7→C.S. ×11, 7→1/4 ×10, 2/6→7 ×9) | **0** | **si'** |
+| **C.S.** | 12 | 15′ | +14′ | 3 (3→C.S. ×12, 2/6→C.S. ×12, 7→C.S. ×11) | **0** | **si'** |
+| 2/6 | 52 | 10′ | −8′ | 3 (1/4→2/6 ×19, C.S.→2/6 ×12, 21/33→2/6 ×3) | 1 (7→2/6 ×12) | si' |
+| 42 | 26 | 15′ | +9′ | 2 (42→30 ×12, 24→42 ×10) | 1 (31→42 ×12) | si' |
+| 21/33 | 8 | 15′ | −2′ | 1 (21/33→2/6 Madonnetta ×3) | 0 | si' |
+| 44 / 24 / 30 | | 15′ | −16′ / −24′ / +24′ | 2 / 3 / 3 | 0 / 1 / 1 | no |
+
+**Il fatto grosso e' Piazza Cavour.** Le due linee piu' grandi del festivo, la **3** (54 corse) e la **2/6** (52), si mancano **sistematicamente**: 49 incontri in un verso e 44 nell'altro, con attese fra 16 e 29 minuti, mai una coincidenza. Con la 1/4 lo stesso (21+20 incontri a 19-25′). E' il nodo dove la rete perde piu' valore, e la mappa lo quantifica: la 3 anticipata di 14′ creerebbe sei relazioni (una settantina di corse in coincidenza) — ma e' fuori dalla flessibilita' dichiarata (10′) e romperebbe Posatora (31↔3, 23 corse), a meno di non trascinare anche la 31.
+
+**Due mosse gratis, dentro la flessibilita', che non rompono niente**: la **7 a −11′** e la **C.S. a +14′**, tre relazioni ciascuna. La C.S. +14 e' esattamente il candidato che la sonda ha provato in AV e che il VSP ha bocciato: mappa e sonda concordano sull'occasione, il solver dice che costa vetture. E' il punto in cui il criterio del servizio e quello del costo si guardano in faccia: ora almeno si vedono tutti e due.
+
+**Perche' la sonda non arriva a questi candidati**: in AV le sei sonde sono state consumate dai candidati guidati dai turni e dalle fusioni di blocchi, che vengono prima in coda; ai candidati di linea ne sono arrivate due. Lanciato **AX** (`1f51ec44`) con **dieci sonde**, stessi altri parametri di AU/AV, perche' la coda arrivi fino ai candidati di linea (7 −11, 2/6 −8, 42 +9, oltre a C.S. +14 e 21/33 −2). Pazienza ancora 2: la manopola aspetta il catalogo.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
