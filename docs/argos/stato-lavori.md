@@ -796,6 +796,28 @@ La sonda accettava sul punteggio, dove una violazione vale 100 € d'ombra e un 
 
 **Sagoma**: 140 declassate (38%), la 3 al 69%, la 91 all'83%. Peggio di AY.
 
+## Il giro BA: memoria e controllo lavorano, la sonda non trova niente, e il problema grosso e' il solver
+
+BA (`dedf811b`, scenario `90fd91d6`, 1917 s): primo giro con le lezioni di AZ in memoria e con la regola «la sonda non compra violazioni» (#525). Parametri di AY.
+
+| round | vetture | turni | suppl. | violazioni | costo € | punteggio € |
+|---|---|---|---|---|---|---|
+| 1 | 25 | 43 | 0 | 4 | 20 769 | 31 769 |
+| 2 | 25 | 43 | 3 | 1 | 21 438 | 32 438 |
+| 3 | 27 | 43 | 0 | 1 | 21 342 | 32 202 |
+| **4** | **21** | 43 | 3 | **1** | 21 067 | **31 747** |
+| 5 | **33** | 47 | 0 | 3 | 22 860 | 35 200 |
+
+Esito: round 4, **21 vetture** (il minimo della serie, pari ad AU), 43 turni, 3 supplementi, 1 violazione («stacco tra segmenti 2 min < 5», un tipo nuovo), 21 067 €. Sagoma 101 declassate (28%), la 3 al 44% e la 91 al 58%: meglio di AZ.
+
+**La memoria ha letto** 23 lezioni da un giro (AZ): un candidato ripreso in testa (la C.S. a −15, accettata in AZ) e due rimandati in coda (la C.S. a +14 e la 21/33 a −2, bocciate dal solver in AZ). **Il controllo**: 21 vetture contro 21, stesso costo, il round resta il riferimento. Tutti e due hanno fatto esattamente quello per cui sono nati.
+
+**La sonda non ha accettato nulla**: 4 candidati, 4 sonde, coda esaurita con 6 sonde inutilizzate. La C.S. a −15, che in AZ era passata su un piano peggiore, qui contro 21 vetture e' stata bocciata dal VSP; idem un crew-both da sei corse e la 21/33 a −2; la C.S. a +14 bocciata dal CSP (+93 €). Dieci candidati di linea morti nel grappolo, come sempre. E' un esito onesto: su un piano gia' a 21 vetture non c'e' una mossa d'orario da poche corse che ne tolga un'altra. La regola sulle violazioni non e' entrata in gioco (nessun candidato e' arrivato fin li').
+
+**Il problema grosso, adesso, e' scritto nella tabella dei round: da 21 a 33 vetture con lo STESSO input.** Il round 5 ne ha trovate 33, il round 4 ne aveva trovate 21 tre minuti prima. Il ciclo VSP↔CSP con le penalita' d'arco non converge: ogni round e' un solve da capo, e le penalita' del CSP lo spostano dove capita. Il miglior giro della serie e' il migliore perche' un round ha avuto fortuna, non perche' il ciclo ha imparato. Questo non e' un lavoro per la sonda ne' per l'AI: e' l'algoritmo. Le strade, in ordine di semplicita': (1) partenza a caldo — ogni round riparte dai blocchi del round migliore invece che da zero, cosi' le penalita' correggono un piano buono anziche' rifarne uno; (2) piu' semi per round tenendo il migliore; (3) penalita' d'arco meno brusche. Prima di qualunque altra cosa va misurato quanto e' rumore e quanto e' penalita': due giri identici a `probes 0` e `rounds 1` lo dicono con un solo parametro.
+
+**Il grappolo** resta il mattone dopo per le coincidenze: dieci candidati di linea morti contro il tetto anche in BA.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
@@ -807,6 +829,7 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
+- **La stabilita' del VSP fra i round** (da BA: 21→33 vetture con lo stesso input): misurare il rumore con due giri a `rounds 1, probes 0`; poi partenza a caldo dal round migliore.
 - **Il grappolo come mattone** (da AY): la mappa valuta la traslazione di un grappolo di linee legate da coincidenze (31: 3, 30, 42, 24; 2/6: 7, 11, 21/33, 1/4) e la sonda lo prova come candidato unico.
 - AY: cruscotto 0 violazioni, tabella round 1 sul round 6 — capire quale dei due mente.
 - La sonda in AX ha usato tre sonde su dieci perche' la coda dei candidati si e' svuotata (lista di linea a quattro, tre morti nel filtro): la coda non deve svuotarsi finche' c'e' budget, e il motivo del rifiuto deve indicare la mossa successiva (delta alternativo della stessa linea).
