@@ -2807,6 +2807,14 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
           // Controllo della sonda (re-solve del best round senza spostamenti):
           // acceso salvo un false esplicito.
           ...(vcspBody.probeControl === false ? { probeControl: false } : {}),
+          // Come il feedback passa da un round all'altro. penaltyStep=1 +
+          // penaltyAnchor="last" + seedFromBest=false riportano il ciclo a
+          // com'era prima della partenza a caldo, senza toccare il codice.
+          ...(Number.isFinite(Number(vcspBody.penaltyStep)) && vcspBody.penaltyStep != null
+            ? { penaltyStep: Math.min(1, Math.max(0.05, Number(vcspBody.penaltyStep))) } : {}),
+          ...(vcspBody.penaltyAnchor === "best" || vcspBody.penaltyAnchor === "last"
+            ? { penaltyAnchor: vcspBody.penaltyAnchor } : {}),
+          ...(vcspBody.seedFromBest === false ? { seedFromBest: false } : {}),
         },
         tripClusterStops,
       });
@@ -3261,7 +3269,35 @@ function compactAgentResult(payload: any): any {
           // Punteggio usato per scegliere il best round (costo + ombre
           // turni/violazioni): senza, "bestRound" sembra arbitrario dalla chat.
           selectionScoreEur: r.selectionScoreEur ?? null,
+          // Quanto del costo grezzo del VSP erano penalità d'arco, cioè soldi
+          // che l'orchestratore inventa per spingere il solver. Il costo qui
+          // sopra è già al netto; questo dice quanto mordeva il feedback.
+          shadowPenaltyEur: r.shadowPenaltyEur ?? null,
           ...(r.probe ? { shiftedTrips: r.shiftedTrips ?? 0, shiftPenaltyEur: r.shiftPenaltyEur ?? 0 } : {}),
+        })),
+        // IL TERMOMETRO DEL CICLO, un rigo per round: quanto pesano le
+        // penalità in vigore, quanto si sono spostate dal round prima, e su
+        // quale piano sono state calcolate. Se lo spostamento non cala, il
+        // VSP insegue un bersaglio che salta e nessun round può migliorare il
+        // precedente — è esattamente il 21→33 vetture del giro BA. Il
+        // dettaglio per blocco resta fuori: qui servono i numeri che si
+        // leggono in fila.
+        feedback: (Array.isArray(v.feedback) ? v.feedback : []).map((f: any) => ({
+          dopoRound: f.afterRound ?? null,
+          ancora: f.ancora?.round ?? null,
+          modo: f.ancora?.modo ?? null,
+          passo: f.passo ?? null,
+          blocchiPenalizzati: f.blocksPenalized ?? null,
+          // Attenzione ai nomi: "dalPiano" sono gli archi che il piano
+          // ancorato ha fatto penalizzare in QUESTA estrazione; "inVigore"
+          // sono quelli che il round successivo riceve davvero, cioè dopo
+          // che il passo li ha mescolati con quelli di prima. I due numeri
+          // divergono apposta: è la memoria del feedback che si vede.
+          archiDalPiano: f.arcsPenalized ?? null,
+          archiInVigore: f.archiInVigore ?? null,
+          massaPenalitaEur: f.massaPenalitaEur ?? null,
+          spostamentoEur: f.distanzaDalPrecedenteEur ?? null,
+          escalationGiunti: f.giunti?.escalation ?? null,
         })),
         crew: v.crew?.summary ? {
           duties: v.crew.summary.totalShifts ?? null,
@@ -3708,6 +3744,11 @@ router.post("/service-program/agent-optimize", async (req, res) => {
           ? { earlyStopPatience: Math.max(1, Math.min(10, Math.round(Number(b.earlyStopPatience)))) } : {}),
         ...(probeMemory.lezioni.length > 0 ? { probeMemory: probeMemory.lezioni } : {}),
         ...(b.controllo === false ? { probeControl: false } : {}),
+        ...(Number.isFinite(Number(b.penaltyStep)) && b.penaltyStep != null
+          ? { penaltyStep: Math.min(1, Math.max(0.05, Number(b.penaltyStep))) } : {}),
+        ...(b.penaltyAnchor === "best" || b.penaltyAnchor === "last"
+          ? { penaltyAnchor: b.penaltyAnchor } : {}),
+        ...(b.seedFromBest === false ? { seedFromBest: false } : {}),
       };
       // Vincolo RIGIDO autovetture aziendali impostabile dall'agente: senza
       // companyCars nel body il giro ricade sull'impostazione DB (come la UI).
@@ -3740,6 +3781,11 @@ router.post("/service-program/agent-optimize", async (req, res) => {
           // due giri con memoria diversa non partono dalla stessa coda.
           memoria: { lezioni: probeMemory.lezioni.length, giri: probeMemory.giri },
           controllo: b.controllo !== false,
+          // Due giri con un feedback diverso non sono confrontabili: il
+          // confronto lo deve poter dire.
+          penaltyStep: runBody.vcsp.penaltyStep ?? null,
+          penaltyAnchor: runBody.vcsp.penaltyAnchor ?? null,
+          seedFromBest: b.seedFromBest !== false,
         } : {}),
       },
     };

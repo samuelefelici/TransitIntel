@@ -818,6 +818,54 @@ Esito: round 4, **21 vetture** (il minimo della serie, pari ad AU), 43 turni, 3 
 
 **Il grappolo** resta il mattone dopo per le coincidenze: dieci candidati di linea morti contro il tetto anche in BA.
 
+## Perche' i round non miglioravano: quattro cause, non una (15 settembre)
+
+Dal giro BA: 25, 25, 27, 21, 33 vetture sullo stesso orario. AZ: 25, 31, 26, 25, 26. AY: 25, 28, 25, 27, 27. Quattro lettori sul motore e tre progetti indipendenti, giudicati in contraddittorio, hanno trovato **quattro cause distinte**, tutte nel modo in cui il feedback passa da un round all'altro. Nessuna era quella che pensavo.
+
+**Il dato che ha riorientato tutto, e non e' costato un giro**: il round 1 dei tre giri ha dato **25, 25, 25** vetture. Il round 1 e' l'unico senza penalita' d'arco, per costruzione. Quindi **a bersaglio fermo il motore e' gia' stabile al livello del conteggio vetture**: l'oscillazione non e' anzitutto rumore del solver, e' il feedback.
+
+### 1. La moneta era truccata
+
+Il costo con cui si confrontano i round arriva da `metrics.costEur` del VSP, che e' `costBreakdown.aggregated.total` e **include `vcsp_penalty`**: le penalita' d'arco realizzate dal piano. Sono soldi che l'orchestratore inventa per spingere il solver, e cambiano a ogni round — il round 1 non ne ha nessuna. I round finivano in classifica su scale diverse, e chi riceveva piu' segnale appariva piu' caro senza aver speso un centesimo in piu'. Ora si sottraggono (`_vcsp_penalty_of`), e il rendiconto porta `shadowPenaltyEur` per round: quanto mordeva il feedback.
+
+**Conseguenza da tenere a mente:** i giri di prima hanno il costo LORDO, quelli di adesso NETTO. Non sono confrontabili sul costo, e `ti_vcsp_compare` lo segnala da solo perche' i parametri del ciclo sono nuovi; il confronto mostra anche `shadowPenaltyEur`, che nei giri vecchi e' vuoto.
+
+### 2. Il feedback nasceva dall'ultimo arrivato
+
+`extract_arc_penalties` girava sul piano dell'ultimo round, qualunque fosse — anche il peggiore della serie — e quel piano dettava le penalita' di tutto il resto del giro. Ora l'ancora e' il **campione** (`penaltyAnchor`, default `best`).
+
+### 3. Le penalita' si cancellavano: il generatore del ciclo
+
+`arc_penalties` veniva **riassegnato**, non aggiornato. Un arco penalizzato al round r, se il round r+1 lo evitava, al round r+2 **tornava gratis** e il piano ci ricascava. E' il generatore classico del ciclo limite, e si vede a occhio nella serie di BA. Ora le penalita' nuove si mescolano a quelle in vigore (`penaltyStep`, default 0.5; a 1 e' la sostituzione secca di prima) e si dimenticano sotto l'euro.
+
+### 4. Non c'era il canale per ripartire dal piano migliore
+
+Il warm start esisteva gia' — dentro il singolo VSP, che fa un portafoglio di scenari con `model.add_hint` — ma **fra un round e l'altro no**: `vsp_in = dict(vsp_payload)` piu' la sola chiave `arcPenalties`, e il greedy rifaceva la baseline da capo. Ora `warmStartChains` porta i blocchi del round migliore, `chains_from_trip_ids` li traduce e li **ripara** (corse ignote, doppie, agganci caduti, corse scoperte: il ritorno e' sempre una soluzione ammissibile, qualunque cosa arrivi), e il portafoglio li usa come primo warm start — li' i tagli anti-ripetizione sono ancora vuoti, quindi il suggerimento non contraddice niente — e come baseline se battono il greedy.
+
+### 5. Il moltiplicatore misurato su un piano e applicato a un altro
+
+Questa l'ha trovata la revisione avversariale del mio stesso lavoro, e l'avevo introdotta io con l'ancora. L'escalation dei giunti si misurava sulla legalita' dell'**ultimo round** e moltiplicava le penalita' del **campione**. Il guaio non e' l'incoerenza in se': e' che **`round_is_legal` e' vera esattamente quando le penalita' sui giunti sono vuote**. Le due condizioni sono la stessa cosa scritta due volte — cambi senza auto, o bus lasciati soli oltre il limite. Quindi con un campione legale il moltiplicatore moltiplicava il vuoto, per qualunque valore raggiungesse: il log stampava «cambi fuori regola ×2,5», il rendiconto mostrava il numero, e non agiva su niente. Ed e' l'unico canale che punta il dito su quelle due regole rigide: nel costo-ombra per blocco pesano zero.
+
+Ora la legalita' si giudica sull'**ancora**, cioe' sullo stesso piano da cui nascono le penalita'. E si ferma da sola: un campione legale non puo' piu' essere spodestato da uno illegale, perche' la selezione mette le violazioni prima del punteggio — quindi l'escalation smette di crescere appena un piano legale prende la testa. Quattro test fissano l'equivalenza, che prima non era scritta da nessuna parte.
+
+### Cosa NON e' stato toccato, di proposito
+
+- **L'escalation non scende mai**, nemmeno quando il piano torna in regola. Farla scendere introdurrebbe un'oscillazione nuova al posto di quella che si sta togliendo. Va deciso con un giro, non a occhio.
+- **Il determinismo del solver** (`randomize_search=True`, 8-16 worker, tempo di parete): comprarlo costa un dodicesimo dello spazio esplorato, e il dato dei round 1 dice che non e' li' il problema principale. Semmai si misura in laboratorio con un worker solo, mai in produzione.
+- **Un difetto preesistente trovato per strada**: `forbidden_arc_sets` accumula l'insieme d'archi di OGNI scenario, campione compreso, e lo scenario dopo riceve `ws = best_chains` — cioe' si suggerisce al solver una soluzione che un suo stesso taglio vieta. Va guardato a parte: tocca ogni giro VSP, anche fuori dal VCSP.
+
+### La via di fuga
+
+`penaltyStep: 1`, `penaltyAnchor: "last"`, `seedFromBest: false` riportano il ciclo esattamente a com'era, **senza un deploy**: sono tre valori nella richiesta del giro.
+
+### Come e' stato controllato, senza spendere un giro
+
+Quattro lettori sul motore, tre progetti indipendenti e tre giudici in contraddittorio per capire la causa; poi cinque revisori sul mio stesso diff, ognuno con una lente diversa (correttezza, convergenza, compatibilita', numeri, test), e ogni rilievo passato da tre confutatori indipendenti che partivano dal presupposto che fosse sbagliato. Il rilievo sull'escalation e' l'unico passato all'unanimita' da tutti e tre, ed era vero. Quarantadue test nuovi fra i tre file, 308 in tutto, compreso il ciclo intero guidato con solver finti: fissa l'ordine (il seme viene dal campione dei round precedenti, il feedback arriva dopo) e la via di fuga.
+
+### Il termometro
+
+Il rendiconto porta, per ogni round: quanti archi sono in vigore, quanto pesano in tutto, **di quanto si sono spostati dal round precedente** e su quale piano sono stati calcolati. Se lo spostamento non cala, il VSP sta inseguendo un bersaglio che salta e nessun round puo' migliorare il precedente. E' il numero che dice se il giro ha funzionato, e prima non c'era.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
@@ -829,7 +877,8 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
-- **La stabilita' del VSP fra i round** (da BA: 21→33 vetture con lo stesso input): misurare il rumore con due giri a `rounds 1, probes 0`; poi partenza a caldo dal round migliore.
+- **L'escalation dei giunti non scende mai**, nemmeno quando il piano torna in regola. Da decidere con un giro.
+- **Il taglio che vieta il proprio suggerimento**: `forbidden_arc_sets` contiene anche l'insieme d'archi del campione, che poi viene suggerito come warm start agli scenari di intensificazione. Preesistente, tocca ogni giro VSP.
 - **Il grappolo come mattone** (da AY): la mappa valuta la traslazione di un grappolo di linee legate da coincidenze (31: 3, 30, 42, 24; 2/6: 7, 11, 21/33, 1/4) e la sonda lo prova come candidato unico.
 - AY: cruscotto 0 violazioni, tabella round 1 sul round 6 — capire quale dei due mente.
 - La sonda in AX ha usato tre sonde su dieci perche' la coda dei candidati si e' svuotata (lista di linea a quattro, tre morti nel filtro): la coda non deve svuotarsi finche' c'e' budget, e il motivo del rifiuto deve indicare la mossa successiva (delta alternativo della stessa linea).

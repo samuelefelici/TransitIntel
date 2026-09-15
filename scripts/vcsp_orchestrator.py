@@ -47,6 +47,109 @@ SUPPLEMENTO_PENALTY_EUR = 25.0  # per turno "supplemento" che tocca il blocco
 MAX_BLOCK_PENALTY_EUR = 400.0
 MAX_ROUNDS = 10
 
+# ── Come il feedback passa da un round all'altro ────────────────────────
+# Fino al giro BA le penalita' d'arco venivano RIASSEGNATE a ogni round e
+# calcolate sull'ultimo piano arrivato, qualunque fosse. Due conseguenze, e
+# tutte e due si vedono nei numeri (BA: 25, 25, 27, 21, 33 vetture con lo
+# stesso orario):
+#  - un arco penalizzato al round r, se il round r+1 lo evita, al round r+2
+#    torna gratis: il segnale sparisce e il piano ci ricasca. E' il
+#    generatore classico del ciclo limite;
+#  - un round sfortunato detta il feedback del round dopo, e si trascina
+#    dietro tutta la serie.
+# PENALTY_STEP smorza: le penalita' nuove si mescolano alle vecchie invece di
+# sostituirle (1.0 = com'era). PENALTY_ANCHOR dice su quale piano si calcola
+# il feedback: "best" = il campione (default), "last" = l'ultimo round.
+PENALTY_STEP = 0.5
+PENALTY_ANCHOR = "best"
+PENALTY_FLOOR_EUR = 1.0      # sotto questa soglia la penalita' si dimentica
+
+
+def _vcsp_penalty_of(vsp_out: dict) -> float:
+    """Le penalita' d'arco REALIZZATE dal piano, in euro.
+
+    Sono soldi finti: li inventa questo orchestratore per spingere il VSP
+    lontano dai pairing che il CSP non sa tagliare in turni legali. Il VSP
+    pero' le somma al costo del piano (optimizer_common: aggregated.total
+    include vcsp_penalty), e quel totale e' quello con cui si confrontano i
+    round. Il round 1 non ha penalita' per costruzione, i round dopo si', e
+    cosi' i round venivano messi in fila su scale diverse: chi evitava gli
+    archi penalizzati sembrava piu' caro di quanto fosse, e il confronto
+    premiava il round che aveva ricevuto meno segnale.
+    """
+    agg = ((vsp_out or {}).get("costBreakdown") or {}).get("aggregated") or {}
+    try:
+        return max(0.0, float(agg.get("vcspPenalty") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def penalty_step_from_cfg(vcsp_cfg: dict) -> float:
+    """vcsp.penaltyStep: quanto pesa il feedback nuovo rispetto a quello gia'
+    in vigore (0 < step <= 1; 1.0 = sostituzione secca, com'era)."""
+    raw = (vcsp_cfg or {}).get("penaltyStep")
+    if raw is None:
+        return PENALTY_STEP
+    try:
+        return min(1.0, max(0.05, float(raw)))
+    except (TypeError, ValueError):
+        return PENALTY_STEP
+
+
+def penalty_anchor_from_cfg(vcsp_cfg: dict) -> str:
+    """vcsp.penaltyAnchor: "best" (il campione) o "last" (l'ultimo round)."""
+    raw = str((vcsp_cfg or {}).get("penaltyAnchor") or PENALTY_ANCHOR).strip().lower()
+    return raw if raw in ("best", "last") else PENALTY_ANCHOR
+
+
+def seed_from_best_from_cfg(vcsp_cfg: dict) -> bool:
+    """vcsp.seedFromBest: il round riparte dal piano migliore invece che da
+    zero. Acceso salvo un false esplicito."""
+    raw = (vcsp_cfg or {}).get("seedFromBest", True)
+    if isinstance(raw, str):
+        return raw.strip().lower() not in ("false", "0", "off", "no")
+    return bool(raw)
+
+
+def _mix_penalties(vecchie: dict[str, float], nuove: dict[str, float],
+                   step: float) -> dict[str, float]:
+    """Il feedback nuovo si mescola a quello in vigore invece di cancellarlo.
+
+    Con step=1 e' la sostituzione secca di prima. Sotto 1 le penalita' hanno
+    memoria: un arco che ha dato problemi resta caro anche nel round in cui
+    nessuno lo usa, e smette di tornare gratis a giri alterni.
+    """
+    if step >= 1.0:
+        return dict(nuove)
+    out: dict[str, float] = {}
+    for k in set(vecchie) | set(nuove):
+        v = (1.0 - step) * float(vecchie.get(k, 0.0)) + step * float(nuove.get(k, 0.0))
+        if v > PENALTY_FLOOR_EUR:
+            out[k] = round(v, 2)
+    return out
+
+
+def _penalty_distance(a: dict[str, float], b: dict[str, float]) -> float:
+    """Quanto e' cambiato il bersaglio fra due round, in euro (distanza L1).
+
+    E' il termometro del ciclo: se resta alta a ogni round il VSP insegue un
+    obiettivo che salta, e nessun piano puo' migliorare quello di prima.
+    """
+    return round(sum(abs(float(a.get(k, 0.0)) - float(b.get(k, 0.0)))
+                     for k in set(a) | set(b)), 2)
+
+
+def seed_chains_from_shifts(shifts: list[dict]) -> list[list[str]]:
+    """I blocchi di un piano come liste di tripId, in ordine: la partenza a
+    caldo per il round successivo."""
+    catene = []
+    for s in shifts or []:
+        ids = [t.get("tripId") for t in (s.get("trips") or [])
+               if t.get("type") == "trip" and t.get("tripId")]
+        if ids:
+            catene.append(ids)
+    return catene
+
 
 def _crew_cost_by_vehicle(crew_out: dict) -> tuple[dict, dict, dict]:
     """Ripartisce costo/violazioni/supplementi dei turni guida sui blocchi veicolo."""
@@ -358,7 +461,11 @@ def apply_shadow_overrides(vcsp_cfg: dict) -> dict[str, float]:
 def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
     vm = vsp_out.get("metrics", {}) or {}
     cs = crew_out.get("summary", {}) or {}
-    vehicle_cost = float(vm.get("costEur") or 0)
+    # MONETA ONESTA: il costo del piano che arriva dal VSP porta dentro le
+    # penalita' d'arco, che sono soldi finti e cambiano a ogni round. Si
+    # tolgono, o i round si confrontano su scale diverse. Vedi _vcsp_penalty_of.
+    shadow_eur = _vcsp_penalty_of(vsp_out)
+    vehicle_cost = max(0.0, float(vm.get("costEur") or 0) - shadow_eur)
     crew_cost = float(cs.get("totalDailyCost") or 0)
     validation = cs.get("validation", {}) or {}
     duties = cs.get("totalShifts", 0)
@@ -380,6 +487,9 @@ def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
         "round": r,
         "vehicles": vm.get("vehicles", 0),
         "vehicleCostEur": round(vehicle_cost, 2),
+        # Quanto del costo grezzo erano penalita' inventate da noi: serve a
+        # leggere il giro, e a vedere se il feedback sta mordendo o no.
+        "shadowPenaltyEur": round(shadow_eur, 2),
         "duties": duties,
         "supplementi": cs.get("totalSupplementi", 0),
         "crewCostEur": round(crew_cost, 2),
@@ -458,6 +568,10 @@ def main() -> None:
     # Il controllo della sonda (re-solve del best round senza spostamenti,
     # stessa configurazione dei candidati): acceso salvo richiesta contraria.
     probe_control = probe_control_from_cfg(vcsp_cfg)
+    # Come il feedback passa da un round all'altro, e da dove riparte il VSP.
+    penalty_step = penalty_step_from_cfg(vcsp_cfg)
+    penalty_anchor = penalty_anchor_from_cfg(vcsp_cfg)
+    seed_from_best = seed_from_best_from_cfg(vcsp_cfg)
 
     # Costi-ombra della selezione (vedi commento su DUTY_SHADOW_EUR)
     ombre = apply_shadow_overrides(vcsp_cfg)
@@ -467,6 +581,8 @@ def main() -> None:
     log(f"=== VCSP Orchestrator === rounds≤{rounds} (early-stop dopo {patience} senza miglioramento), crewTimeLimit={crew_tl}s, "
         f"probes={probes} (scope {crew_shift_scope}, disturbo €{shift_penalty_eur}/corsa·min, "
         f"memoria={len(probe_memory)} lezioni, controllo={'si' if probe_control else 'no'}), "
+        f"feedback(passo {penalty_step:g}, ancora {penalty_anchor}, "
+        f"seme {'si' if seed_from_best else 'no'}), "
         f"trips={len(vsp_payload.get('trips') or [])}, "
         f"reliefTrips={len(trip_cluster_stops)}")
 
@@ -491,6 +607,17 @@ def main() -> None:
         penalties_by_round[r] = dict(arc_penalties)
         if arc_penalties:
             vsp_in["arcPenalties"] = arc_penalties
+        # PARTENZA A CALDO: il round riparte dal piano migliore trovato finora
+        # invece che dal greedy. Il canale non esisteva — ogni round era un
+        # solve da capo — ed e' il motivo per cui i round non miglioravano
+        # l'uno sull'altro. Non e' un vincolo: il VSP lo usa come suggerimento
+        # e resta libero di fare di meglio.
+        if seed_from_best and best is not None:
+            seme = seed_chains_from_shifts(best[0].get("vehicleShifts") or [])
+            if seme:
+                vsp_in["warmStartChains"] = seme
+                log(f"[VCSP] round {r}: partenza a caldo dal round {best[2]} "
+                    f"({len(seme)} blocchi)")
         vsp_out = vsp_engine.run(vsp_in)
         shifts = vsp_out.get("vehicleShifts", [])
         if not shifts:
@@ -568,20 +695,63 @@ def main() -> None:
                 log(f"[VCSP] round {r}: nessun miglioramento ({no_gain}/{patience}), continuo")
             else:
                 no_gain = 0
-            # Finche' il round resta illegale sui cambi si alza il tiro: le
+            # ANCORA: il feedback si calcola sul CAMPIONE, non sull'ultimo
+            # arrivato. Un round sfortunato dettava le penalita' del round
+            # dopo e si trascinava dietro tutta la serie.
+            if penalty_anchor == "best" and best is not None:
+                ancora_vsp, ancora_crew, ancora_r = best
+            else:
+                ancora_vsp, ancora_crew, ancora_r = vsp_out, crew_out, r
+            # Finche' il piano resta illegale sui cambi si alza il tiro: le
             # penalita' miti non trovano la regione dove le soluzioni legali
             # esistono, quelle forti ci arrivano ma gonfiano il piano. Salendo
             # solo quando serve si paga il minimo indispensabile.
-            if not round_is_legal(crew_out):
+            #
+            # La legalita' si giudica sull'ANCORA, cioe' sullo stesso piano da
+            # cui nascono le penalita'. Misurarla sull'ultimo round e applicare
+            # il moltiplicatore al campione era peggio che incoerente: le
+            # penalita' sui giunti esistono SOLO quando ci sono cambi senza
+            # auto o bus lasciati soli oltre il limite, che e' esattamente la
+            # condizione in cui round_is_legal e' falsa. Con un campione legale
+            # il dizionario dei giunti e' vuoto per qualunque moltiplicatore —
+            # l'escalation saliva a vuoto, il log diceva «cambi fuori regola»
+            # e il rendiconto mostrava un moltiplicatore che non moltiplicava
+            # niente. E' l'unico canale che punta il dito su quelle due regole
+            # rigide: nel costo-ombra per blocco pesano zero.
+            #
+            # Cosi' si ferma da sola: un campione legale non puo' piu' essere
+            # spodestato da uno illegale (la selezione mette le violazioni
+            # prima del punteggio), quindi l'escalation smette di crescere
+            # appena un piano legale prende la testa.
+            ancora_legale = round_is_legal(ancora_crew)
+            if not ancora_legale:
                 escalation = min(ESCALATION_MAX, escalation * ESCALATION_FACTOR)
-                log(f"[VCSP] round {r}: cambi ancora fuori regola → penalità dei giunti ×{escalation:g}")
+                log(f"[VCSP] round {r}: il piano di riferimento (round {ancora_r}) ha cambi "
+                    f"fuori regola → penalità dei giunti ×{escalation:g}")
             elif escalation > 1.0:
-                log(f"[VCSP] round {r}: cambi in regola, penalità dei giunti ferme a ×{escalation:g}")
-            arc_penalties, diag = extract_arc_penalties(vsp_out, crew_out, escalation)
+                log(f"[VCSP] round {r}: il piano di riferimento (round {ancora_r}) ha i cambi "
+                    f"in regola, penalità dei giunti ferme a ×{escalation:g}")
+            nuove, diag = extract_arc_penalties(ancora_vsp, ancora_crew, escalation)
+            # PASSO SMORZATO: le penalita' nuove si mescolano a quelle in
+            # vigore invece di cancellarle, cosi' il bersaglio smette di
+            # saltare e un arco caro resta caro anche quando nessuno lo usa.
+            precedenti = arc_penalties
+            arc_penalties = _mix_penalties(precedenti, nuove, penalty_step)
             diag["afterRound"] = r
+            diag["ancora"] = {"round": ancora_r, "modo": penalty_anchor,
+                              "cambiInRegola": ancora_legale}
+            diag["passo"] = penalty_step
+            # Il termometro del ciclo: quanto e' cambiato il bersaglio, e
+            # quanto pesa in tutto. Se la distanza non cala il VSP insegue.
+            diag["distanzaDalPrecedenteEur"] = _penalty_distance(precedenti, arc_penalties)
+            diag["massaPenalitaEur"] = round(sum(arc_penalties.values()), 2)
+            diag["archiInVigore"] = len(arc_penalties)
             feedback_diag.append(diag)
-            log(f"[VCSP] feedback: {diag['blocksPenalized']} blocchi penalizzati "
-                f"→ {diag['arcsPenalized']} archi (mediana €{diag['medianCrewRatePerHour']}/h)")
+            log(f"[VCSP] feedback (ancora: round {ancora_r}): "
+                f"{diag['blocksPenalized']} blocchi penalizzati → "
+                f"{diag['arcsPenalized']} archi nuovi, {len(arc_penalties)} in vigore "
+                f"(massa €{diag['massaPenalitaEur']}, "
+                f"spostamento €{diag['distanzaDalPrecedenteEur']})")
 
     if best is None:
         write_output({"vehicleShifts": [], "metrics": {"status": "NO_INPUT"},

@@ -1208,6 +1208,74 @@ def precompute_fixed_costs(
 
 # ─── WARM-START: greedy + perturbazioni diversificanti ──────────────────
 
+def chains_from_trip_ids(
+    seed_chains: list[list[str]] | None,
+    trips: list[Trip],
+    arcs_lookup: dict[tuple[int, int], Arc],
+) -> tuple[list[list[int]], dict]:
+    """Il piano di un round precedente (blocchi come liste di tripId) tradotto in
+    catene di indici valide per QUESTO modello — la partenza a caldo del VCSP.
+
+    Ogni round del VCSP ripartiva da zero: il greedy costruiva una baseline nuova
+    e le penalita' d'arco del CSP la spostavano dove capitava. Da li' i round che
+    oscillano (giro BA: 25, 25, 27, 21, 33 vetture con lo stesso orario) invece di
+    migliorare l'uno sull'altro. Ripartendo dal piano migliore trovato finora il
+    solver CORREGGE un piano buono invece di rifarne uno.
+
+    Una catena arrivata da fuori NON e' affidabile e qui si ripara, non si
+    rifiuta:
+      - una corsa che questo modello non conosce si salta (corse escluse,
+        categorie diverse, feed cambiato);
+      - una corsa ripetuta si tiene una volta sola: un mezzo non fa due volte la
+        stessa corsa;
+      - un aggancio che qui non esiste (arco assente: incompatibilita' di mezzo,
+        trasferimento impossibile) SPEZZA la catena in due invece di invalidarla:
+        due mezzi al posto di uno sono un piano peggiore, non un piano illegale;
+      - le corse rimaste scoperte diventano un blocco per una: la partenza a
+        caldo deve coprire TUTTO l'orario, o non e' una soluzione.
+    Cosi' il ritorno e' sempre una soluzione ammissibile, qualunque cosa arrivi.
+    """
+    diag = {"catenePassate": len(seed_chains or []), "catene": 0,
+            "corseRiconosciute": 0, "corseIgnote": 0, "corseDoppie": 0,
+            "aggancioMancante": 0, "corseAggiunte": 0}
+    if not seed_chains:
+        return [], diag
+
+    per_id = {t.trip_id: t.idx for t in trips}
+    assegnate: set[int] = set()
+    out: list[list[int]] = []
+
+    for catena in seed_chains:
+        if not isinstance(catena, (list, tuple)):
+            continue
+        corrente: list[int] = []
+        for tid in catena:
+            idx = per_id.get(str(tid))
+            if idx is None:
+                diag["corseIgnote"] += 1
+                continue
+            if idx in assegnate:
+                diag["corseDoppie"] += 1
+                continue
+            if corrente and (corrente[-1], idx) not in arcs_lookup:
+                out.append(corrente)
+                corrente = []
+                diag["aggancioMancante"] += 1
+            corrente.append(idx)
+            assegnate.add(idx)
+            diag["corseRiconosciute"] += 1
+        if corrente:
+            out.append(corrente)
+
+    for t in trips:
+        if t.idx not in assegnate:
+            out.append([t.idx])
+            diag["corseAggiunte"] += 1
+
+    diag["catene"] = len(out)
+    return out, diag
+
+
 def greedy_warmstart(
     trips: list[Trip], arcs: list[Arc], arcs_lookup: dict[tuple[int, int], Arc],
     rates: VehicleCostRates, rng: random.Random | None = None,
@@ -3329,6 +3397,7 @@ def optimize_vsp_multi_scenario(
     greedy_chains: list[list[int]],
     vsp_config: VSPConfig,
     new_vehicle_penalty_eur: float = 0.0,
+    seed_chains: list[list[int]] | None = None,
 ) -> tuple[list[list[int]], dict]:
     """Esegue N scenari CP-SAT con strategie + seed + warm-start diversificati,
     applica no-good cuts per forzare diversità, e ritorna il migliore.
@@ -3336,6 +3405,12 @@ def optimize_vsp_multi_scenario(
     FIX-1: warm-start split (prima metà diversificazione, seconda metà intensificazione)
     FIX-3: no-good cuts verso soluzioni già esplorate
     FIX-5: polish con strategia complementare al best
+    VCSP: `seed_chains` e' il piano del round migliore del giro in corso — la
+    partenza a caldo. Entra come PRIMO warm-start del portafoglio (li' i
+    no-good cut sono ancora vuoti, quindi il suggerimento non contraddice
+    nessun taglio) e, se sotto i costi di QUESTO round e' meglio del greedy,
+    come baseline da battere. Resta un suggerimento: il solver puo' fare di
+    meglio e spesso lo fa.
     """
     global LAST_VSP_SCENARIOS, LAST_VSP_ANALYSIS
 
@@ -3425,6 +3500,8 @@ def optimize_vsp_multi_scenario(
     )
     if not diverse_ws:
         diverse_ws = [greedy_chains]
+    if seed_chains:
+        diverse_ws = [seed_chains] + diverse_ws
 
     # FIX-3: accumula set di archi delle soluzioni già esplorate per no-good cuts
     forbidden_arc_sets: list[set[tuple[int, int]]] = []
@@ -3434,6 +3511,16 @@ def optimize_vsp_multi_scenario(
     best_label = "greedy"
     best_detailed_cost = sum(chain_cost_accept(c, trips, arcs_lookup, rates, use_detailed_ls)
                              for c in greedy_chains)
+    if seed_chains:
+        seme_cost = sum(chain_cost_fast(c, trips, arcs_lookup, rates) for c in seed_chains)
+        seme_detailed = sum(chain_cost_accept(c, trips, arcs_lookup, rates, use_detailed_ls)
+                            for c in seed_chains)
+        log(f"  [VSP-MULTI] partenza a caldo: {len(seed_chains)} blocchi, "
+            f"EUR{seme_cost:.2f} contro EUR{best_cost:.2f} del greedy "
+            f"({len(greedy_chains)} blocchi)")
+        if seme_detailed < best_detailed_cost:
+            best_chains, best_cost, best_detailed_cost = seed_chains, seme_cost, seme_detailed
+            best_label = "seme"
 
     for sc_idx, strat_key in enumerate(chosen):
         strat = VSP_STRATEGIES[strat_key]
@@ -3608,6 +3695,11 @@ def optimize_vsp_multi_scenario(
         "totalTimeBudgetSec": total_time_limit,
         "nogoodCutsEnabled": vsp_config.enable_no_good_cuts,
         "warmstartDiversePhase": n_diverse_ws,
+        # Chi ha vinto il portafoglio: se resta "seme" nessuno scenario ha
+        # battuto il piano ereditato dal round migliore, e il round non ha
+        # aggiunto niente se non stabilita'.
+        "bestWarmStartLabel": best_label,
+        "seedChainsGiven": len(seed_chains) if seed_chains else 0,
         "lsDetailedCost": use_detailed_ls,
         "minVehiclesPriority": vsp_config.min_vehicles_priority,
         "vehiclePriorityBonusEur": round(veh_prio_bonus / COST_SCALE, 2),
@@ -3874,11 +3966,29 @@ def run(data: dict) -> dict:
     log(f"  Greedy baseline: {len(greedy_chains)} vehicles, EUR{greedy_cost_total:.2f}")
     report_progress("VSP", 25, f"Greedy: {len(greedy_chains)} vehicles")
 
+    # ── VCSP: partenza a caldo dal round migliore ──
+    # Formato input: data.warmStartChains = [[tripIdA, tripIdB, ...], ...],
+    # cioe' i blocchi del piano migliore trovato finora nel giro. Senza questo
+    # canale ogni round del VCSP era un solve da capo: il greedy rifaceva una
+    # baseline nuova e il risultato dipendeva da dove le penalita' d'arco la
+    # spingevano, con round che oscillavano invece di migliorare (giro BA: 25,
+    # 25, 27, 21, 33 vetture sullo stesso orario).
+    seed_chains, seed_diag = chains_from_trip_ids(
+        data.get("warmStartChains"), trips, arcs_lookup)
+    if seed_chains:
+        log(f"  [VCSP] partenza a caldo: {seed_diag['catenePassate']} blocchi ricevuti → "
+            f"{seed_diag['catene']} usabili ({seed_diag['corseRiconosciute']} corse; "
+            f"{seed_diag['aggancioMancante']} agganci caduti, "
+            f"{seed_diag['corseIgnote']} corse ignote, "
+            f"{seed_diag['corseDoppie']} doppie, "
+            f"{seed_diag['corseAggiunte']} aggiunte da sole)")
+
     # CP-SAT MULTI-SCENARIO PORTFOLIO con fix 1/3/5
     report_progress("VSP", 30, "Avvio portfolio multi-scenario...")
     cpsat_chains, vsp_analysis = optimize_vsp_multi_scenario(
         trips, arcs, arcs_lookup, rates, time_limit, greedy_chains, vsp_config,
         new_vehicle_penalty_eur=new_vehicle_penalty_eur,
+        seed_chains=seed_chains or None,
     )
     report_progress("VSP", 70,
                     f"CP-SAT: {len(cpsat_chains)} vehicles · {vsp_analysis['scenariosRun']} scenari")
@@ -4118,6 +4228,11 @@ def run(data: dict) -> dict:
         "costEur": round(final_cost, 2),
         "greedyVehicles": len(greedy_chains),
         "greedyCostEur": round(greedy_total, 2),
+        # Partenza a caldo: quanti blocchi sono arrivati dal round migliore,
+        # quanti erano usabili e chi ha vinto fra seme e greedy come baseline.
+        "warmStart": ({**seed_diag, "usatoComeBaseline":
+                       vsp_analysis.get("bestWarmStartLabel") == "seme"}
+                      if seed_chains else None),
         "savingsEur": round(savings, 2),
         "savingsPct": round(savings_pct, 1),
         "intensity": intensity,
