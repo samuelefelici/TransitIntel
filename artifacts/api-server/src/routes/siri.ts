@@ -48,6 +48,10 @@ import { fermataVuota } from "../lib/siri-fermata";
 import { requireAdmin } from "../lib/auth";
 import { aggiornaPrevisioni, esitoPrevisioni, type EsitoPrevisioni } from "../lib/siri-sm-ingest";
 import { namesCompatible } from "../lib/siri-vm";
+import { letturaDa, registraCampione, leggiDiario, erroreDiario, campioniDiario } from "../lib/avm-diario-store";
+import {
+  analizzaDiario, ETICHETTE_ESITO, GIORNATE_MINIME, type DiarioSettimana,
+} from "../lib/avm-diario";
 
 const router: IRouter = Router();
 
@@ -107,6 +111,10 @@ let ultimoGiro: {
   fermate: { nonAgganciate: string[]; conflitti: string[]; agganciate: number; perId: number; perNome: number };
   /* L'ultimo ciclo StopMonitoring: quante fermate chieste, quante previsioni. */
   previsioni: EsitoPrevisioni | null;
+  /* Il campione scritto nel diario: se resta a zero per ore, l'analisi della
+   * settimana non si sta accumulando e conviene saperlo subito, non il
+   * settimo giorno. */
+  diario: { vettureNelCampione: number; campioniScritti: number; errore: string | null };
 } | null = null;
 
 /* I nomi che legge chi apre la pagina: "senza_rete" è una chiave, non una
@@ -306,6 +314,9 @@ router.get("/siri/status", async (req, res): Promise<void> => {
         corseAperte: ultimoGiro.corseAperte,
       },
       previsioniFermate: ultimoGiro.previsioni,
+      /* Se il diario non si riempie, l'analisi della settimana non esiste: va
+       * visto adesso, non il settimo giorno. */
+      diarioAvm: ultimoGiro.diario,
     }
     : {
       diagnosi: "Il poller non ha ancora completato un giro da quando il "
@@ -1286,6 +1297,100 @@ router.get("/siri/parco/andamento", async (req, res): Promise<void> => {
   }
 });
 
+/* ── Il diario: una settimana di osservazione ─────────────────────────────
+ * Lo stato del parco è un'istantanea, e su un'istantanea non si scrive una
+ * segnalazione: chi la riceve risponde che quel giorno il mezzo era in
+ * rimessa, e ha ragione. Qui si legge invece che cosa ha fatto ogni apparato
+ * GIORNO PER GIORNO, e si scende la catena dei quattro anelli — contatto,
+ * attivazione al centro, posizione, corsa — fermandosi al primo rotto: quello
+ * è il destinatario della segnalazione.
+ *
+ * Il diario si riempie da solo mentre il poller gira: questo indirizzo non
+ * interroga l'AVM, legge quello che è già stato raccolto. */
+router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
+  const giorni = Math.min(Math.max(Number(req.query.giorni) || 7, 1), 60);
+  try {
+    const oggi = giornataOggi(new Date());
+    const inizio = giornataOggi(new Date(Date.now() - (giorni - 1) * 86_400_000));
+    const righe = await leggiDiario(inizio);
+    const diario = analizzaDiario(righe, giornateDelPeriodo(inizio, oggi));
+
+    if (String(req.query.formato ?? "") === "csv") {
+      const testata = ["matricola", "esito", "destinatario", "giornate",
+        "giorni_con_contatto", "giorni_seguita_dal_centro", "giorni_con_posizione",
+        "giorni_con_corsa", "corse", "giorni_errore_gps", "giorni_errore_rete",
+        "giorni_di_silenzio", "intermittente", "linee", "ultimo_contatto",
+        "nota", "azione"];
+      const corpo = diario.vetture.map(v => [
+        v.vehicleRef, ETICHETTE_ESITO[v.esito], v.destinatario, v.giornate,
+        v.giorniConContatto, v.giorniMonitorata, v.giorniConPosizione,
+        v.giorniConCorsa, v.corse, v.giorniErroreGps, v.giorniErroreGprs,
+        v.giorniDiSilenzio, v.intermittente ? "sì" : "no", v.linee.join(" · "),
+        v.ultimoContatto ?? "", v.nota, v.azione,
+      ]);
+      const csv = [testata, ...corpo]
+        .map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";"))
+        .join("\r\n");
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="diario-avm-${inizio}_${oggi}.csv"`);
+      /* BOM: senza, Excel in italiano sbaglia gli accenti. */
+      res.send("﻿" + csv);
+      return;
+    }
+
+    res.json({
+      configured: siriConfig() != null,
+      giorni,
+      periodo: { da: inizio, a: oggi },
+      giornateMinime: GIORNATE_MINIME,
+      /* Il verdetto si dà solo con abbastanza giornate: sotto, la pagina lo
+       * dice invece di mostrare un elenco che sembra definitivo. */
+      maturo: diario.giornateOsservate >= GIORNATE_MINIME,
+      erroreRaccolta: erroreDiario(),
+      ...diario,
+      testoSegnalazioni: testoSegnalazioni(diario, inizio, oggi),
+    });
+  } catch (e: any) {
+    res.status(500).json({ configured: true, error: e?.message ?? "lettura fallita" });
+  }
+});
+
+/**
+ * Le segnalazioni già scritte, una per destinatario, da copiare in una mail.
+ *
+ * Non è un vezzo: fra "so quali vetture hanno un problema" e "ho mandato la
+ * segnalazione" c'è un'ora di lavoro di trascrizione, ed è l'ora in cui le
+ * analisi muoiono. Il testo porta con sé il periodo, il numero e le matricole,
+ * cioè esattamente le tre cose che chi risponde chiederebbe indietro.
+ */
+function testoSegnalazioni(d: DiarioSettimana, da: string, a: string): Array<{
+  destinatario: string; oggetto: string; testo: string; matricole: number;
+}> {
+  const periodo = `dal ${da.split("-").reverse().join("/")} al ${a.split("-").reverse().join("/")}`;
+  return d.segnalazioni.map(s => {
+    const elenco = s.matricole.join(", ");
+    const recenti = s.conContattoRecente.length
+      ? `\n\nDi queste, ${s.conContattoRecente.length} hanno avuto un contatto col centro `
+        + `nell'ultima giornata osservata e sono quindi le più rapide da sistemare: `
+        + `${s.conContattoRecente.join(", ")}.`
+      : "";
+    return {
+      destinatario: s.destinatario,
+      oggetto: `AVM Conerobus — ${ETICHETTE_ESITO[s.esito].toLowerCase()} `
+        + `(${s.matricole.length} vetture, ${periodo})`,
+      testo: `Osservazione continua del canale SIRI ${periodo}, `
+        + `${d.giornateOsservate} giornate di rilevamento.\n\n`
+        + `${s.matricole.length} vetture ricadono in questo caso: `
+        + `${ETICHETTE_ESITO[s.esito].toLowerCase()}.\n\n`
+        + `${s.azione}\n\nMatricole: ${elenco}.${recenti}\n\n`
+        + "Il dettaglio per vettura, con le giornate di contatto e di servizio, "
+        + "è nel foglio allegato.",
+      matricole: s.matricole.length,
+    };
+  });
+}
+
 /* ── Verifica dell'aggancio corsa ─────────────────────────────────────────
  * Ogni numero di Tempi di percorrenza poggia sull'attribuzione di un passaggio
  * a una corsa. Questo indirizzo mostra quell'attribuzione messa alla prova
@@ -1525,6 +1630,22 @@ async function eseguiGiro(): Promise<Record<string, unknown>> {
   const ingest = await ingestVehicles(result.vehicles);
   const cancelled = await closeCancelled(result.cancellations);
 
+  /* Il diario: un campione della giornata di ogni apparato, per poter dire fra
+   * una settimana quali funzionano e quali no. Sta qui e non altrove perché
+   * questa è l'unica risposta dell'AVM che contiene TUTTE le vetture, comprese
+   * quelle che l'ingestione scarta perché ferme — che sono poi quelle su cui
+   * si scrivono le segnalazioni. Non blocca il giro: se fallisce, si perde un
+   * campione, non una corsa. */
+  let campione = 0;
+  try {
+    const letture = result.vehicles
+      .map(v => letturaDa(v))
+      .filter((l): l is NonNullable<typeof l> => l !== null);
+    campione = await registraCampione(giornataOggi(new Date()), letture);
+  } catch (e: any) {
+    console.warn("[siri] diario dell'AVM:", e?.message ?? e);
+  }
+
   /* Le previsioni alle prossime fermate dei mezzi seguiti, dallo
    * StopMonitoring. Dopo l'ingestione, mai al posto: un errore qui non tocca
    * posizioni, corse e transiti. Il ciclo si autolimita a un giro al minuto. */
@@ -1555,6 +1676,11 @@ async function eseguiGiro(): Promise<Record<string, unknown>> {
       perNome: ingest.report.stopMatchedByName,
     },
     previsioni: previsioni ?? esitoPrevisioni(),
+    diario: {
+      vettureNelCampione: campione,
+      campioniScritti: campioniDiario(),
+      errore: erroreDiario(),
+    },
   };
   const poll = siriPoll();
 
