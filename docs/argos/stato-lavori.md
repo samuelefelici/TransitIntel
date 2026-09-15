@@ -916,6 +916,37 @@ Al round 3 l'ancora e' passata al round 3 (due violazioni contro quattro: la sel
 
 Il confronto fra giri mostrava `penaltyStep` e `penaltyAnchor` **vuoti** anche se erano in vigore (0,5 e «campione», visibili nel termometro): chi lancia un giro coi valori di default non li scrive nella richiesta, e i parametri del giro venivano dalla richiesta. Due giri con un ciclo diverso sarebbero sembrati identici — esattamente cio' che il confronto serve a impedire. Ora il motore dichiara nel rendiconto le manopole **effettivamente in vigore** (`ciclo`) e i parametri del giro le registrano da li'.
 
+## Le diciannove vetture non erano un tesoro: il conto, e cosa ne discende (15 settembre)
+
+Leggendo BB avevo scritto che le soluzioni con meno vetture «si trovano e si buttano», e proposto un secondo seme per non perderle. **Ho fatto il conto prima di costruirlo, ed era sbagliato.**
+
+Round 4 di BB (19 vetture, 11 violazioni) contro round 6 (21 vetture, zero violazioni), stesso giro e stesso orario:
+
+| | round 4 | round 6 | differenza |
+|---|---|---|---|
+| vetture | 19 | 21 | **−2** |
+| costo parco | 5 635,11 € | 5 874,91 € | **−239,80 €** |
+| costo guida | 15 214,74 € | 15 064,53 € | **+150,21 €** |
+| totale | 20 849,85 € | 20 939,44 € | **−89,59 €** |
+| violazioni | 11 | 0 | +11 |
+
+Le due vetture in meno valgono 240 € sul parco, **ma ne restituiscono 150 sul lato guida**: il saldo vero e' 90 € al giorno, pagati con undici violazioni e tre supplementi. Non e' un tesoro buttato via, e' un cattivo affare che la selezione lessicografica ha scartato per il motivo giusto. **Il secondo seme non si fa.**
+
+### Il conto che riordina le priorita'
+
+- La **guida e' il 71,9%** del costo di BB (15 065 € su 20 939).
+- La **vettura marginale** costa circa **120 € al giorno** (dalla coppia round 4 / round 6, stesso giro: l'unico confronto pulito che abbiamo).
+- Il **turno medio** costa **350 € al giorno**.
+- Quindi **un turno vale quasi tre vetture**.
+
+Per undici giri ho letto i giri mettendo le vetture in cima, e le vetture sono la voce piccola. AX round 5 lo diceva gia': 37 turni invece di 43, 1 300 € in meno, con tre vetture IN PIU'. Il numero che conta e' quello, e finora l'ho trattato come una curiosita'.
+
+E c'e' una ragione strutturale per cui le due cose tirano in direzioni opposte: **impacchettare le corse su meno vetture crea blocchi che il CSP non sa tagliare in turni legali**. E' la tensione del VCSP, e ora e' misurata sullo stesso giro invece che supposta.
+
+### Il tetto dei semiunici morde a ogni giro
+
+BB: 6 semiunici su 6 ammessi. AX: 6 su 6. AY: 5 su 5. **Il tetto e' sempre saturo.** E' una regola dell'operatore, non un difetto — ma e' il vincolo che decide quanti turni servono, e vale piu' di tutto quello su cui ho lavorato finora. Se quel tetto puo' salire, e di quanto, lo sa solo l'azienda.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
@@ -927,7 +958,7 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
-- **Le soluzioni con poche vetture si trovano e si buttano** (da BB: round 4 a 19 vetture con 11 violazioni). Il campione si sceglie prima sulle violazioni, e giustamente; ma quella struttura non diventa mai seme. Un secondo seme, «il piano con meno vetture visto finora», da provare accanto al campione.
+- **Chiedere all'operatore se il tetto dei semiunici puo' salire**: e' saturo in ogni giro (6/6 in BB e AX, 5/5 in AY) ed e' il vincolo che decide il numero di turni, cioe' il 72% del costo.
 - **L'escalation dei giunti non scende mai**, nemmeno quando il piano torna in regola. Da decidere con un giro.
 - **Il taglio che vieta il proprio suggerimento**: `forbidden_arc_sets` contiene anche l'insieme d'archi del campione, che poi viene suggerito come warm start agli scenari di intensificazione. Preesistente, tocca ogni giro VSP.
 - **Il grappolo come mattone** (da AY): la mappa valuta la traslazione di un grappolo di linee legate da coincidenze (31: 3, 30, 42, 24; 2/6: 7, 11, 21/33, 1/4) e la sonda lo prova come candidato unico.
