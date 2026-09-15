@@ -2010,10 +2010,75 @@ def _cut_piece_drives(cuts: list[CutCandidate]) -> list[int]:
     return [edges[k + 1] - edges[k] for k in range(len(edges) - 1)]
 
 
-def _best_three_cuts(b: VehicleBlock, clusters: list[Cluster], max_guida: int, min_piece_work: int) -> list[CutCandidate] | None:
-    """Con due tagli un blocco molto lungo lascia pezzi oltre il tetto di guida
-    per ripresa: cerca la terna di tagli (quattro pezzi) con ogni pezzo entro
-    il tetto e il punteggio migliore. None se nessuna terna ci riesce."""
+def rango_dei_tagli(worst_nastro: int, max_nastro: int, score: float) -> tuple:
+    """Come si sceglie fra due modi di tagliare un blocco.
+
+    Il nastro viene PRIMA del punteggio, non in sconto su di esso. Fino al
+    giro BB la regola era `score -= max(0, worst - max_nastro) * 2`: un taglio
+    che sforava di 6 minuti pagava 12 punti e vinceva lo stesso, e da li'
+    usciva il turno A001 con 441' contro un tetto di 435.
+
+    Ora il rango si legge in tre tempi, e il minore vince:
+      1. dentro il tetto (0) batte sempre fuori dal tetto (1);
+      2. fra quelli fuori, il meno fuori;
+      3. a parita', il punteggio migliore.
+    """
+    fuori = worst_nastro > max_nastro
+    return (1 if fuori else 0, worst_nastro if fuori else 0, -score)
+
+
+def _nastri_dei_pezzi(b: VehicleBlock, cuts: list[CutCandidate],
+                      clusters: list[Cluster]) -> list[int]:
+    """Il nastro di OGNI pezzo che questi tagli producono, bordi compresi.
+
+    Il nastro non e' il lavoro: comprende il pre-turno e i trasferimenti da e
+    per il deposito, che sono quelli a far sforare un pezzo che sulla carta
+    stava dentro. Serve un solo lettore perche' la scelta dei tagli e il
+    controllo finale guardino lo stesso numero: finche' erano due conti
+    diversi, un pezzo poteva passare la selezione e poi risultare fuori norma.
+    """
+    if not cuts:
+        return []
+    cuts = sorted(cuts, key=_cut_order_key)
+    nastri: list[int] = []
+
+    def _fine(c: CutCandidate) -> str:
+        return c.stop_name if c.cut_type == "intra" else b.trips[c.index].last_stop_name
+
+    def _inizio(c: CutCandidate) -> str:
+        if c.cut_type == "intra":
+            return c.stop_name
+        return b.trips[c.index + 1].first_stop_name if c.index + 1 < len(b.trips) else ""
+
+    # primo pezzo: dal deposito al primo taglio
+    t_out, t_back, extra = _block_edge_transfers(
+        b, b.trips[0].first_stop_name, _fine(cuts[0]), True, False, clusters)
+    nastri.append(cuts[0].left_work_min + extra + pre_turno_for(t_out) + t_out + t_back)
+
+    # pezzi interni: da taglio a taglio
+    for a_, b_ in zip(cuts, cuts[1:]):
+        p_start = a_.time_min if a_.cut_type == "intra" else piece_start_min(b, a_.index)
+        p_end = b_.time_min if b_.cut_type == "intra" else b.trips[b_.index].arrival_min
+        t_out, t_back, _ = _block_edge_transfers(
+            b, _inizio(a_), _fine(b_), False, False, clusters)
+        nastri.append(max(0, p_end - p_start) + pre_turno_for(t_out) + t_out + t_back)
+
+    # ultimo pezzo: dall'ultimo taglio al deposito
+    t_out, t_back, extra = _block_edge_transfers(
+        b, _inizio(cuts[-1]), b.trips[-1].last_stop_name, False, True, clusters)
+    nastri.append(cuts[-1].right_work_min + extra + pre_turno_for(t_out) + t_out + t_back)
+    return nastri
+
+
+def _best_three_cuts(b: VehicleBlock, clusters: list[Cluster], max_guida: int,
+                     min_piece_work: int, max_nastro: int | None = None) -> list[CutCandidate] | None:
+    """Con due tagli un blocco molto lungo lascia pezzi fuori norma: cerca la
+    terna di tagli (quattro pezzi) con OGNI pezzo entro i tetti e il punteggio
+    migliore. None se nessuna terna ci riesce.
+
+    `max_guida` limita la guida per ripresa (0 = spento, come nell'urbano);
+    `max_nastro` limita il nastro di ogni pezzo ed e' INVIOLABILE: una terna
+    che lo sfora viene scartata, non penalizzata."""
     cands = sorted(b.cut_candidates, key=_cut_order_key)
     best: list[CutCandidate] | None = None
     best_score = -1e9
@@ -2027,7 +2092,12 @@ def _best_three_cuts(b: VehicleBlock, clusters: list[Cluster], max_guida: int, m
                     continue
                 trio = [cands[i], cands[j], cands[k]]
                 drives = _cut_piece_drives(trio)
-                if any(d <= 0 or d > max_guida for d in drives):
+                if any(d <= 0 for d in drives):
+                    continue
+                if max_guida > 0 and any(d > max_guida for d in drives):
+                    continue
+                # Il nastro e' inviolabile: la terna che lo sfora non esiste.
+                if max_nastro and any(x > max_nastro for x in _nastri_dei_pezzi(b, trio, clusters)):
                     continue
                 # lavoro dei pezzi interni: dal taglio (fermata intermedia o
                 # presa in carico dopo la corsa) al taglio successivo
@@ -2040,9 +2110,10 @@ def _best_three_cuts(b: VehicleBlock, clusters: list[Cluster], max_guida: int, m
                     if work < min_piece_work:
                         ok = False
                         break
-                    t_out, t_back, _ = _block_edge_transfers(b, a_.stop_name, b_.stop_name, False, False, clusters)
-                    nastro = work + pre_turno_for(t_out) + t_out + t_back
-                    score -= max(0, nastro - SHIFT_RULES["intero"]["maxNastro"]) * 2
+                    if max_nastro is None:
+                        t_out, t_back, _ = _block_edge_transfers(b, a_.stop_name, b_.stop_name, False, False, clusters)
+                        nastro = work + pre_turno_for(t_out) + t_out + t_back
+                        score -= max(0, nastro - SHIFT_RULES["intero"]["maxNastro"]) * 2
                 if not ok:
                     continue
                 if score > best_score:
@@ -2132,7 +2203,7 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
         elif b.classification == "LUNGO":
             max_nastro = SHIFT_RULES["intero"]["maxNastro"]
             best_pair_cuts = None
-            best_pair_score = -999.0
+            best_pair_rank: tuple | None = None
 
             cands = b.cut_candidates
             for ci in range(len(cands)):
@@ -2174,29 +2245,36 @@ def build_initial_segments(blocks: list[VehicleBlock], clusters: list[Cluster]) 
                     mn = mid_work + pre_turno_for(mt) + mt + mb
                     rn = c2_raw.right_work_min + re_ + pre_turno_for(rt) + rt + rb
                     worst = max(ln, mn, rn)
-                    score = c1_raw.score + c2_raw.score - max(0, worst - max_nastro) * 2
+                    score = c1_raw.score + c2_raw.score
                     if MAX_GUIDA_RIPRESA > 0:
                         # i punteggi dei tagli penalizzano solo i pezzi ai bordi: qui il mezzo
                         mid_drive = c1_raw.right_driving_min - c2_raw.right_driving_min
                         if mid_drive > MAX_GUIDA_RIPRESA:
                             score -= (mid_drive - MAX_GUIDA_RIPRESA) * CUT_NASTRO_PENALTY_PER_MIN * 3
 
-                    if score > best_pair_score:
-                        best_pair_score = score
+                    rank = rango_dei_tagli(worst, max_nastro, score)
+                    if best_pair_rank is None or rank < best_pair_rank:
+                        best_pair_rank = rank
                         best_pair_cuts = (c1_raw, c2_raw) if c1_raw.index < c2_raw.index else (c2_raw, c1_raw)
 
             three_cuts: list[CutCandidate] | None = None
-            if best_pair_cuts and MAX_GUIDA_RIPRESA > 0:
+            if best_pair_cuts:
                 c1, c2 = sorted(best_pair_cuts, key=_cut_order_key)
                 drives2 = _cut_piece_drives([c1, c2])
-                if max(drives2) > MAX_GUIDA_RIPRESA:
-                    _min_piece = (BDS5_LUNG_PEZZI_MIN_EXTRA if b.category == "extraurbano" else BDS5_LUNG_PEZZI_MIN) or 90
-                    three_cuts = _best_three_cuts(b, clusters, MAX_GUIDA_RIPRESA, int(_min_piece))
+                nastri2 = _nastri_dei_pezzi(b, [c1, c2], clusters)
+                _min_piece = (BDS5_LUNG_PEZZI_MIN_EXTRA if b.category == "extraurbano" else BDS5_LUNG_PEZZI_MIN) or 90
+                guida_fuori = MAX_GUIDA_RIPRESA > 0 and max(drives2) > MAX_GUIDA_RIPRESA
+                nastro_fuori = max(nastri2) > max_nastro
+                if guida_fuori or nastro_fuori:
+                    three_cuts = _best_three_cuts(b, clusters, MAX_GUIDA_RIPRESA,
+                                                  int(_min_piece), max_nastro=max_nastro)
+                    perche = ("guida per pezzo {} > {}′".format(drives2, MAX_GUIDA_RIPRESA) if guida_fuori
+                              else "nastro per pezzo {} > {}′".format(nastri2, max_nastro))
                     if three_cuts is not None:
-                        log(f"[V4][TAGLI] {b.vehicle_id}: con 2 tagli guida per pezzo {drives2} > {MAX_GUIDA_RIPRESA}′ "
-                            f"→ 3 tagli, guida {_cut_piece_drives(three_cuts)}")
+                        log(f"[V4][TAGLI] {b.vehicle_id}: con 2 tagli {perche} → 3 tagli, "
+                            f"nastri {_nastri_dei_pezzi(b, three_cuts, clusters)}")
                     else:
-                        log(f"[V4][TAGLI] {b.vehicle_id}: guida per pezzo {drives2} > {MAX_GUIDA_RIPRESA}′ e nessuna terna di tagli la rispetta")
+                        log(f"[V4][TAGLI] {b.vehicle_id}: {perche} e nessuna terna di tagli rientra")
 
             if three_cuts is not None:
                 parts = _split_trips_for_cuts(b, three_cuts)
@@ -2430,27 +2508,11 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
         if nastro <= rules["spezzato"]["maxNastro"] and work <= max_lavoro_spez:
             return "spezzato"
 
-    # 5. Fallback con la STESSA tolleranza dei check nastro/lavoro (+15'
-    #    intero, +5' semiunico/spezzato): senza, un semiunico di 556-560'
-    #    passava i controlli ma il classificatore lo marcava "invalido" —
-    #    violazioni fantasma in ogni giro reale.
-    if n_segs == 1 and nastro <= rules["intero"]["maxNastro"] + 15:
-        return "intero"
-    if (n_segs >= 2 and interruzione < rules["semiunico"]["intMin"]
-            and nastro <= rules["intero"]["maxNastro"] + 15
-            and work <= max_lavoro_intero + 15):
-        return "intero"
-    if (n_segs >= 2
-            and rules["semiunico"]["intMin"] <= interruzione <= rules["semiunico"]["intMax"]
-            and nastro <= rules["semiunico"]["maxNastro"] + 5
-            and work <= max_lavoro_semi + 5):
-        return "semiunico"
-    if (n_segs >= 2 and interruzione >= rules["spezzato"]["intMin"]
-            and nastro <= rules["spezzato"]["maxNastro"] + 5
-            and work <= max_lavoro_spez + 5):
-        return "spezzato"
-
-    # 6. Invalido
+    # 5. Fuori da ogni tetto: INVALIDO.
+    #    Qui c'era un ripescaggio con la stessa franchigia della validazione
+    #    (+15' intero, +5' semiunico/spezzato), messo per far coincidere
+    #    classificatore e controllo. Ora coincidono perche' nessuno dei due
+    #    ammette franchigia: nastro e lavoro non si sforano.
     return "invalido"
 
 
@@ -2687,16 +2749,18 @@ def validate_duty_bds(
     # Nastro
     rules = SHIFT_RULES.get(duty.duty_type, {})
     max_nastro = rules.get("maxNastro", 999)
-    tolerance = 15 if duty.duty_type == "intero" else 5
-    if duty.nastro_min > max_nastro + tolerance:
+    # Nastro e lavoro sono INVIOLABILI: nessuna franchigia. Fino al giro BB
+    # c'erano 15' di tolleranza sugli interi e 5' sugli altri, e un turno da
+    # 441' di lavoro contro un tetto di 435 passava come regolare.
+    if duty.nastro_min > max_nastro:
         result.nastro_ok = False
-        result.violations.append(f"nastro {duty.nastro_min}min > max {max_nastro}+{tolerance}min")
+        result.violations.append(f"nastro {duty.nastro_min}min > max {max_nastro}min")
 
     # Lavoro effettivo (RD 131/1938)
     max_lavoro = rules.get("maxLavoro", 999)
-    if duty.work_min > max_lavoro + tolerance:
+    if duty.work_min > max_lavoro:
         result.lavoro_ok = False
-        result.violations.append(f"lavoro {duty.work_min}min > max {max_lavoro}+{tolerance}min")
+        result.violations.append(f"lavoro {duty.work_min}min > max {max_lavoro}min")
 
     # Interruzione
     if duty.duty_type in ("semiunico", "spezzato"):
@@ -2715,9 +2779,13 @@ def validate_duty_bds(
     result.violations.extend(rd_viol)
 
     # Sosta capolinea (turni intero)
+    # La sosta di 15' dentro l'intero si CERCA, non si impone: e' retribuita e
+    # il gestore la dichiara violabile. Va fra gli avvertimenti, come la pausa
+    # pasto, non fra le violazioni — quelle restano nastro, lavoro,
+    # interruzione e RD 131 sulla guida continuativa, che sono inviolabili.
     sosta_ok, sosta_viol = check_sosta_capolinea(duty)
     result.sosta_capolinea_ok = sosta_ok
-    result.violations.extend(sosta_viol)
+    result.warnings.extend(sosta_viol)
 
     # Intervallo pasto: severità configurabile per azienda. "avviso" (default)
     # NON invalida il turno — la pausa mancante è un avvertimento, non una
@@ -3096,14 +3164,12 @@ def _feasible_pair(s1: Segment, s2: Segment, rules: dict,
         same_vehicle = s1.vehicle_id == s2.vehicle_id
         same_node = bool(s1.last_cluster) and s1.last_cluster == s2.first_cluster
         if same_vehicle or same_node or interruption >= 30:
-            # RD 131: l'intero vuole almeno una sosta ≥ sostaMinCapolinea —
-            # dentro un pezzo o allo stacco del cambio vettura.
-            sosta_min = int(sr_int.get("sostaMinCapolinea", 15))
-            has_rest = interruption >= sosta_min or any(
-                seg.trips[i + 1].departure_min - seg.trips[i].arrival_min >= sosta_min
-                for seg in (s1, s2) for i in range(len(seg.trips) - 1)) or any(
-                int(getattr(seg, "lead_idle_min", 0) or 0) >= sosta_min for seg in (s1, s2))
-            if (has_rest and nastro <= sr_int["maxNastro"]
+            # La sosta di 15' si cerca ma non e' una condizione di esistenza:
+            # finche' lo era, un intero composto perfettamente in regola per
+            # nastro e lavoro veniva scartato solo perche' non trovava dove
+            # mettere il quarto d'ora. La guida continuativa resta coperta dal
+            # RD 131, che e' verificato a parte ed e' inviolabile.
+            if (nastro <= sr_int["maxNastro"]
                     and nastro <= sr_int.get("maxLavoro", 435)
                     and nastro >= 180):
                 return "intero"
