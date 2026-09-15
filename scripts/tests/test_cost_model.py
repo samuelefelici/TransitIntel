@@ -147,9 +147,38 @@ class TestComputeDutyCost:
 
         assert cost.total > 0
         assert cost.driving_cost > 0
-        assert cost.base_salary > 0
         assert cost.pre_turno_cost > 0
         assert cost.company_car_cost > 0  # 1 ripresa = 1 trasferimento
+
+    def test_il_tempo_pagato_si_paga_una_volta_sola(self):
+        """L'invariante che il doppio conteggio violava.
+
+        Guida, attese, pre-turno e trasferimento SONO il lavoro retribuito:
+        addebitarli come componenti e poi ri-addebitare il lavoro come
+        retribuzione base pagava gli stessi minuti due volte. Un turno da
+        7h15 tutto guida costava 391,50 € invece di 195,75 — 54 €/ora contro
+        i 27 dichiarati. Qui si verifica che l'aliquota effettiva sia quella
+        vera, e che la retribuzione base copra solo il residuo."""
+        duty = make_simple_duty(dep_min=420, arr_min=810)  # 6h30
+        rates = CostRates()
+        cost = compute_duty_cost(duty, rates)
+
+        tempo = (cost.driving_cost + cost.idle_at_terminal_cost
+                 + cost.pre_turno_cost + cost.transfer_depot_cost + cost.base_salary)
+        minuti_pagati = duty.work_min
+        assert minuti_pagati > 0
+        aliquota = tempo / minuti_pagati * 60
+        assert abs(aliquota - rates.hourly_rate) < 0.5, (
+            f"aliquota effettiva {aliquota:.2f} €/h contro {rates.hourly_rate} dichiarati")
+
+    def test_la_retribuzione_base_non_ripaga_le_componenti(self):
+        """La retribuzione base copre solo il tempo retribuito che nessuna
+        componente ha gia' addebitato: se le componenti coprono tutto, e' zero."""
+        duty = make_simple_duty(dep_min=420, arr_min=810)
+        cost = compute_duty_cost(duty, CostRates())
+        assert cost.base_salary >= 0
+        assert cost.base_salary <= cost.driving_cost, (
+            "la retribuzione base non puo' valere quanto la guida: sarebbe il doppio conteggio")
 
     def test_cost_proportional_to_work(self):
         """Turno più lungo → costo maggiore."""

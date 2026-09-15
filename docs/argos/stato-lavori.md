@@ -947,6 +947,28 @@ E c'e' una ragione strutturale per cui le due cose tirano in direzioni opposte: 
 
 BB: 6 semiunici su 6 ammessi. AX: 6 su 6. AY: 5 su 5. **Il tetto e' sempre saturo.** E' una regola dell'operatore, non un difetto — ma e' il vincolo che decide quanti turni servono, e vale piu' di tutto quello su cui ho lavorato finora. Se quel tetto puo' salire, e di quanto, lo sa solo l'azienda.
 
+## La relazione la fa il software, e ora e' completa (15 settembre)
+
+Richiesta dell'operatore: «il resoconto deve essere fatto dal software, non da te» e «il report deve essere completo in Cerbero, compreso di tutte le analisi fatte». Giusto: un resoconto scritto a mano non e' riproducibile e invecchia il giorno dopo.
+
+### Due difetti dei costi, corretti
+
+**Il tempo pagato era contato due volte.** In `compute_duty_cost_v4` (e nella versione storica in `cost_model.py`) il costo del turno addebitava guida, attese, pre-turno e trasferimenti COME COMPONENTI, e poi ri-addebitava il lavoro convenzionale come retribuzione base — che di quelle quattro voci e' la somma. Prova su un turno da 7h15 con 6h40 di guida: componenti 195,75 €, retribuzione 195,75 €, totale 391,50 €, cioe' **54,00 €/ora contro i 27,00 dichiarati, esattamente il doppio**. Ora la retribuzione base copre solo il residuo (le soste fra riprese pesate, che nessuna componente addebita) e l'aliquota effettiva torna esatta. Due test la inchiodano.
+
+Conseguenza da tenere a mente: **tutte le cifre assolute del lato guida dei giri precedenti sono circa il doppio del vero.** I confronti fra piani restano validi — la deformazione era uguale per tutti — ma il peso relativo cambia: la guida non e' il 72% del costo, e' circa il 56%, e un turno vale circa una vettura e mezza, non tre.
+
+**Il costo vetture della relazione era al lordo.** La moneta onesta era arrivata al confronto fra round ma non al documento: la relazione leggeva `metrics.costEur` dello scenario, che comprende le penalita' d'arco. Sul giro BB erano 185,35 € di denaro inventato spacciato per spesa. Ora il documento le toglie e le dichiara in una riga del capitolo costi.
+
+### Quattro analisi che il documento non raccontava
+
+La relazione aveva nove capitoli e si fermava al risultato: diceva quante vetture e quanti turni, non **come** erano stati decisi ne' **che servizio** producevano. Ora sono undici:
+
+- **5.9 Regola della sagoma** — che mezzo ha preso ogni blocco, corse declassate per linea, superamenti dei tetti, catene spezzate per rispettare la sagoma.
+- **7. Il ciclo integrato** — i giri del ciclo con vetture, turni, violazioni, costo e la colonna «di cui ombra»; il **termometro** del feedback (massa delle penalita', spostamento dal giro prima, ancora, pressione sui cambi); la **sonda** con il controllo, la memoria, gli spostamenti accettati e i motivi dei rifiuti tradotti in italiano corrente invece che in gergo.
+- **8. Coincidenze fra linee** — le relazioni che l'orario realizza davvero con gli orari di esempio, quelle mancate per poco, e per ogni linea la traslazione che ne guadagnerebbe di piu' col conto di quelle che romperebbe.
+
+Per l'ultima ho estratto `coincidenceMapFor` dalla rotta delle coincidenze, cosi' la relazione la calcola da se' sullo stesso feed e sulla stessa data del piano. Se non ci riesce il documento esce lo stesso dicendo perche', e due test coprono il caso con le analisi e quello senza.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
@@ -958,6 +980,7 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
+- **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
 - **Chiedere all'operatore se il tetto dei semiunici puo' salire**: e' saturo in ogni giro (6/6 in BB e AX, 5/5 in AY) ed e' il vincolo che decide il numero di turni, cioe' il 72% del costo.
 - **L'escalation dei giunti non scende mai**, nemmeno quando il piano torna in regola. Da decidere con un giro.
 - **Il taglio che vieta il proprio suggerimento**: `forbidden_arc_sets` contiene anche l'insieme d'archi del campione, che poi viene suggerito come warm start agli scenari di intensificazione. Preesistente, tocca ogni giro VSP.

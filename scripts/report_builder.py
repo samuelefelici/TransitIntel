@@ -68,6 +68,30 @@ def g(d: Any, *path, default=None):
     return cur
 
 
+def shadow_eur(d: dict) -> float:
+    """Le penalita' d'arco REALIZZATE dal piano, in euro.
+
+    Non sono spesa: le inventa l'orchestratore VCSP per spingere il solver dei
+    mezzi lontano dagli accostamenti che il lato guida non sa tagliare. Il VSP
+    pero' le somma nel proprio totale, e quel totale finiva nel documento come
+    «costo vetture». Un piano che ha ricevuto molto segnale sembrava piu' caro
+    di quanto fosse, e due relazioni non erano confrontabili fra loro."""
+    agg = g(d, "final", "vsp", "costBreakdown", "aggregated", default={}) or {}
+    try:
+        return max(0.0, float(agg.get("vcspPenalty") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def vehicle_cost_net(d: dict) -> float:
+    """Il costo vetture al netto delle penalita' inventate dal motore."""
+    vm = g(d, "final", "vsp", "metrics", default={}) or {}
+    try:
+        return max(0.0, float(vm.get("costEur") or 0) - shadow_eur(d))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def section(id_: str, title: str, first: bool = False) -> str:
     cls = ' class="first"' if first else ""
     return f'<h2 id="{id_}"{cls}>{esc(title)}</h2>'
@@ -254,8 +278,9 @@ def cars_timeline(driver_shifts: list[dict]) -> tuple[list[str], list[int]]:
 
 TOC = [("sintesi", "1. Sintesi per la direzione"), ("rete", "2. Rete e contesto"),
        ("pianificazione", "3. Pianificazione del servizio"), ("metodo", "4. Metodo e modelli matematici"),
-       ("macchina", "5. Turni macchina"), ("guida", "6. Turni guida"), ("costi", "7. Costi"),
-       ("scenari", "8. Scenari confrontati"), ("allegati", "9. Allegati")]
+       ("macchina", "5. Turni macchina"), ("guida", "6. Turni guida"),
+       ("ciclo", "7. Il ciclo integrato"), ("coincidenze", "8. Coincidenze fra linee"),
+       ("costi", "9. Costi"), ("scenari", "10. Scenari confrontati"), ("allegati", "11. Allegati")]
 
 
 def render_cover(d: dict) -> str:
@@ -285,7 +310,7 @@ def render_summary(d: dict) -> str:
     st = crew_stats(ds)
     n_duties = cs.get("totalDriverShifts") or len(ds)
     vehicles = vm.get("vehicles") or len(g(d, "final", "vsp", "vehicleShifts", default=[]) or [])
-    vcost = float(vm.get("costEur") or 0)
+    vcost = vehicle_cost_net(d)
     ccost = float(cs.get("totalDailyCost") or st["cost"] or 0)
     total = vcost + ccost
     cars = g(d, "final", "params", "companyCars", default=None)
@@ -549,6 +574,47 @@ def render_vehicles(d: dict) -> str:
             out.append(para(f'<span class="small">… e altri {len(dh_rows) - 80} movimenti (elenco completo nell\'allegato).</span>'))
     else:
         out.append(para("Nessun fuorilinea fra corse: le vetture rientrano solo a fine servizio."))
+    out.append(render_sagoma(d))
+    return "".join(out)
+
+
+def render_sagoma(d: dict) -> str:
+    """5.x — LA REGOLA DELLA SAGOMA: che mezzo ha preso ogni blocco.
+
+    Il tipo dichiarato su una linea non e' una preferenza, e' un tetto fisico:
+    sopra quella taglia la strada non passa. Si puo' scendere di un gradino,
+    mai di due, e il declassamento e' l'ultima spiaggia — una corsa isolata
+    fuori punta non fa danno, venti si'. Senza questo capitolo la relazione
+    dice quante vetture servono ma non se sono le vetture giuste."""
+    sg = g(d, "final", "vsp", "metrics", "sagoma", default=None)
+    if not isinstance(sg, dict) or not sg:
+        return ""
+    out = ["<h3>5.9 Regola della sagoma: il mezzo giusto su ogni corsa</h3>"]
+    tiles = [("Corse declassate", fmt_n(sg.get("corseDeclassate") or 0),
+              f'{fmt_n(sg.get("pctDeclassate") or 0, 1)} % del servizio'),
+             ("In punta", fmt_n(sg.get("declassateInPunta") or 0),
+              "fasce " + ", ".join(f'{a}-{b}' for a, b in (sg.get("fascePunta") or [])) if sg.get("fascePunta") else "fasce non dichiarate"),
+             ("Fuori sagoma", fmt_n(sg.get("fuoriSagoma") or 0), "mezzo piu' GRANDE del dichiarato: mai ammesso"),
+             ("Doppi declassamenti", fmt_n(sg.get("doppiDeclassamenti") or 0), "due gradini sotto: mai ammesso")]
+    out.append(rc.kpi_row(tiles))
+    blocchi = sg.get("blocchiPerTipo") or {}
+    if blocchi:
+        out.append(table(["Tipo di mezzo", "Blocchi"],
+                         [(k, fmt_n(v)) for k, v in sorted(blocchi.items(), key=lambda kv: -kv[1])], numeric_from=1))
+    per_linea = sg.get("lineeDeclassate") or {}
+    if per_linea:
+        items = [(str(k), float(v)) for k, v in sorted(per_linea.items(), key=lambda kv: -kv[1])]
+        out.append(rc.bar_h(items, "Corse declassate per linea", unit="corse",
+                            subtitle="Corse servite da un mezzo di una taglia sotto quello dichiarato dalla linea."))
+    sup = sg.get("superamenti") or []
+    if sup:
+        out.append(para('<span class="small">Superamenti dei tetti di riferimento (10% delle corse della linea, 5% in punta):</span>'))
+        out.append("<ul>" + "".join(f"<li>{esc(x)}</li>" for x in sup) + "</ul>")
+    else:
+        out.append(para("Nessun superamento dei tetti di declassamento."))
+    if sg.get("catenSpezzate"):
+        out.append(para(f'{fmt_n(sg.get("catenSpezzate"))} catene sono state spezzate per rispettare la sagoma: '
+                        "quando allungare un blocco avrebbe richiesto un mezzo non ammesso, il blocco e' stato chiuso."))
     return "".join(out)
 
 
@@ -701,22 +767,251 @@ def unit_cost_table(params: dict) -> list[dict]:
     return rows
 
 
+def segno_min(v) -> str:
+    """Uno spostamento d'orario col segno davanti: «+7′», «−14′», «0′»."""
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        return "–"
+    return f"{'+' if n > 0 else ('−' if n < 0 else '')}{abs(n)}′"
+
+
+MOTIVO_RIFIUTO = {
+    "vsp": "i mezzi non migliorano",
+    "crew": "il guadagno sui mezzi lo mangia il lato guida",
+    "violazioni": "porterebbe violazioni in più: non si compra a nessun prezzo",
+    "coincidenza:flessibilitaInsufficiente": "romperebbe una coincidenza e le corse vicine non hanno flessibilità per seguirlo",
+    "coincidenza:catenaTroppoLunga": "romperebbe una coincidenza e la catena da trascinare è troppo lunga",
+    "coincidenza:deltaInConflitto": "romperebbe una coincidenza e i due spostamenti si contraddicono",
+    "coincidenza:corsaSconosciuta": "romperebbe una coincidenza su una corsa non riconosciuta",
+    "macchina": "il ritorno partirebbe prima dell'arrivo dell'andata",
+}
+
+
+def render_ciclo(d: dict) -> str:
+    """7 — IL CICLO INTEGRATO: come turni macchina e turni guida sono stati
+    decisi INSIEME, e non uno dopo l'altro.
+
+    È il capitolo che spiega perché questo piano è quello che è: quanti giri
+    ha fatto il ciclo, come il dolore del lato guida è tornato indietro ai
+    mezzi, che cosa la sonda ha provato a spostare e che cosa ha imparato."""
+    v = g(d, "final", "vcsp", default=None)
+    out = [section("ciclo", "7. Il ciclo integrato")]
+    if not isinstance(v, dict) or not v:
+        out.append(para("<i>Piano prodotto senza il ciclo integrato: turni macchina e turni guida "
+                        "sono stati risolti in sequenza, senza retroazione.</i>"))
+        return "".join(out)
+
+    rounds = [r for r in (v.get("rounds") or []) if isinstance(r, dict)]
+    best = v.get("selectedRound") or v.get("bestRound")
+    out.append(para(
+        "Il ciclo risolve i turni macchina, taglia i turni guida su quei blocchi, misura dove il lato "
+        "guida ha sofferto e rimanda quel dolore indietro ai mezzi come un prezzo sui singoli "
+        "collegamenti fra corsa e corsa. Il giro dopo il solver evita di ricomporre gli accostamenti "
+        "che il lato guida non sa tagliare. Si ferma quando smette di migliorare."))
+
+    if rounds:
+        out.append("<h3>7.1 I giri del ciclo</h3>")
+        righe = []
+        for r in rounds:
+            marca = " ← scelto" if r.get("round") == best else (" · sonda" if r.get("probe") else "")
+            righe.append((f'{fmt_n(r.get("round"))}{marca}', fmt_n(r.get("vehicles")), fmt_n(r.get("duties")),
+                          fmt_n(r.get("supplementi") or 0), fmt_n(r.get("bdsViolations") or 0),
+                          fmt_eur(r.get("totalCostEur")), fmt_eur(r.get("shadowPenaltyEur") or 0),
+                          fmt_eur(r.get("selectionScoreEur"))))
+        out.append(table(["Giro", "Vetture", "Turni", "Suppl.", "Violazioni", "Costo", "di cui ombra", "Punteggio"],
+                         righe, numeric_from=1))
+        out.append(para('<span class="small">Il piano scelto non è il più economico: è il primo fra quelli che '
+                        'non rompono nessuna regola. Le violazioni vengono prima del punteggio, sempre — un piano '
+                        'che rompe una regola non è un piano peggiore, non è un piano. La colonna «di cui ombra» '
+                        'dice quanto del costo erano penalità inventate dal motore, già tolte dal costo.</span>'))
+        if len(rounds) > 1:
+            etichette = [str(r.get("round")) for r in rounds]
+            out.append(rc.lines(etichette,
+                                [("vetture", [float(r.get("vehicles") or 0) for r in rounds]),
+                                 ("turni guida", [float(r.get("duties") or 0) for r in rounds])],
+                                "Vetture e turni guida, giro per giro",
+                                subtitle="Lo stesso orario risolto più volte: ogni giro riceve il segnale del precedente."))
+
+    fb = [f for f in (v.get("feedback") or []) if isinstance(f, dict)]
+    if fb:
+        out.append("<h3>7.2 Come il segnale si è mosso</h3>")
+        out.append(para(
+            "Il termometro del ciclo. La «massa» è quanto pesano in tutto le penalità in vigore; lo "
+            "«spostamento» è di quanto sono cambiate rispetto al giro prima. Se lo spostamento non cala, "
+            "il solver dei mezzi sta inseguendo un bersaglio che salta, e nessun giro può migliorare il "
+            "precedente."))
+        righe = [(fmt_n(f.get("dopoRound")), fmt_n(f.get("ancora")), f.get("modo") or "",
+                  fmt_n(f.get("blocchiPenalizzati")), fmt_n(f.get("archiInVigore")),
+                  fmt_eur(f.get("massaPenalitaEur")), fmt_eur(f.get("spostamentoEur")),
+                  f'×{fmt_n(f.get("escalationGiunti") or 1, 2)}') for f in fb]
+        out.append(table(["Dopo il giro", "Calcolato sul giro", "Ancora", "Blocchi", "Archi in vigore",
+                          "Massa", "Spostamento", "Pressione sui cambi"], righe, numeric_from=1))
+
+    out.append(render_sonda(v))
+    return "".join(out)
+
+
+def render_sonda(v: dict) -> str:
+    """7.3 — LA SONDA: gli spostamenti di orario provati, e che cosa ha imparato."""
+    pr = v.get("probe") if isinstance(v.get("probe"), dict) else None
+    if not pr:
+        return ""
+    out = ["<h3>7.3 La sonda: spostare corse per salvare un turno</h3>"]
+    out.append(para(
+        "L'ultimo passo. Quando i mezzi e i turni non si incastrano, invece di rassegnarsi la sonda "
+        "prova a spostare qualche corsa di pochi minuti — solo dentro la flessibilità che l'azienda "
+        "ha dichiarato su quella linea — e verifica ogni proposta con un ricalcolo vero. Non propone "
+        "nulla che rompa una coincidenza riconosciuta."))
+    acc = [a for a in (pr.get("accepted") or []) if isinstance(a, dict)]
+    tiles = [("Corse spostate", fmt_n(pr.get("shiftedTrips") or 0), f'{fmt_n(pr.get("shiftedTripMin") or 0)} minuti in tutto'),
+             ("Proposte accettate", fmt_n(len(acc)), f'su {fmt_n(pr.get("probesRun") or 0)} verificate'),
+             ("Disturbo all'orario", fmt_eur(pr.get("disruptionEur") or 0),
+              f'{fmt_eur(pr.get("shiftPenaltyEurPerTripMin") or 1, 2)} per corsa·minuto')]
+    ctrl = pr.get("controllo") if isinstance(pr.get("controllo"), dict) else None
+    if ctrl and ctrl.get("vetture"):
+        vv = ctrl.get("vetture") or {}
+        tiles.append(("Controllo", f'{fmt_n(vv.get("controllo"))} contro {fmt_n(vv.get("round"))}',
+                      "stesso calcolo senza spostare niente"))
+    out.append(rc.kpi_row(tiles))
+    if ctrl:
+        out.append(para(
+            "<b>Il controllo.</b> Prima di misurare qualunque proposta la sonda rifà il calcolo <i>senza</i> "
+            "spostare niente, con le stesse impostazioni. Serve a non attribuire a una corsa spostata un "
+            "guadagno che era solo del solver: " +
+            ("il calcolo di riferimento resta quello del giro." if ctrl.get("riferimento") == "round"
+             else "il calcolo di controllo ha fatto meglio del giro, ed è diventato il riferimento.")))
+    if acc:
+        righe = []
+        for a in acc:
+            dove = ", ".join(f'{x.get("routeName")} {segno_min(x.get("deltaMin"))} ({fmt_n(x.get("trips"))} corse)'
+                             for x in (a.get("shiftsByRoute") or [])[:6])
+            pr_b, pr_a = a.get("before") or {}, a.get("after") or {}
+            righe.append((a.get("kind") or "", dove or "–",
+                          f'{fmt_n(pr_b.get("vehicles"))} → {fmt_n(pr_a.get("vehicles"))}',
+                          f'{fmt_n(pr_b.get("duties"))} → {fmt_n(pr_a.get("duties"))}',
+                          f'{fmt_n(pr_b.get("bdsViolations"))} → {fmt_n(pr_a.get("bdsViolations"))}',
+                          fmt_eur(a.get("disruptionEur") or 0)))
+        out.append(para("<b>Spostamenti accettati.</b> Ognuno è stato verificato con un ricalcolo completo:"))
+        out.append(table(["Tipo", "Corse spostate", "Vetture", "Turni", "Violazioni", "Disturbo"], righe, numeric_from=2))
+    else:
+        out.append(para("Nessuno spostamento è stato accettato: il piano regge senza toccare l'orario."))
+
+    lez = [l for l in (pr.get("lezioni") or []) if isinstance(l, dict)]
+    scartate = [l for l in lez if l.get("esito") == "scartato"]
+    if scartate:
+        from collections import Counter as _C
+        per_motivo = _C(l.get("motivo") or "?" for l in scartate)
+        out.append(para("<b>Perché le altre proposte non sono passate.</b>"))
+        out.append(table(["Motivo", "Proposte"],
+                         [(MOTIVO_RIFIUTO.get(k, k), fmt_n(n)) for k, n in per_motivo.most_common()],
+                         numeric_from=1))
+        linee = [l for l in scartate if l.get("route")]
+        if linee:
+            righe = [(str(l.get("route")), segno_min(l.get("deltaMin")),
+                      MOTIVO_RIFIUTO.get(l.get("motivo") or "", l.get("motivo") or ""),
+                      fmt_n(l.get("tentativi") or 1)) for l in linee[:14]]
+            out.append(para('<span class="small">Le traslazioni di linea intera che il servizio suggeriva, e perché sono state scartate:</span>'))
+            out.append(table(["Linea", "Spostamento", "Motivo", "Tentativi"], righe, numeric_from=1))
+
+    mem = pr.get("memoria") if isinstance(pr.get("memoria"), dict) else None
+    if mem and (mem.get("lezioniLette") or mem.get("giriLetti")):
+        out.append(para(
+            f'<b>La memoria.</b> Questo calcolo ha riletto {fmt_n(mem.get("lezioniLette"))} lezioni da '
+            f'{fmt_n(mem.get("giriLetti"))} calcoli precedenti sullo stesso progetto e sulla stessa data: '
+            f'{fmt_n(mem.get("ripresi"))} proposte che avevano funzionato sono state riprovate per prime, '
+            f'{fmt_n(mem.get("rimandatiInCoda"))} che erano state bocciate sono finite in fondo alla coda. '
+            "Mai per vietare: il piano cambia, e una proposta bocciata ieri può passare oggi."))
+    elif mem:
+        out.append(para('<span class="small">Nessuna lezione da calcoli precedenti: è il primo calcolo '
+                        'su questo progetto e questa data.</span>'))
+    return "".join(out)
+
+
+def render_coincidenze(d: dict) -> str:
+    """8 — LE COINCIDENZE: che servizio produce questo orario.
+
+    Un piano si giudica anche da quante relazioni fra linee l'orario realizza:
+    due linee che si incontrano a un nodo con un'attesa abbastanza corta da
+    cambiare mezzo, e abbastanza lunga da fare in tempo a scendere e salire."""
+    co = g(d, "analisi", "coincidenze", default=None)
+    out = [section("coincidenze", "8. Coincidenze fra linee")]
+    if not isinstance(co, dict) or co.get("errore"):
+        out.append(para(f'<i>Mappa delle coincidenze non disponibile: {esc((co or {}).get("errore") or "dato assente nel dossier")}.</i>'))
+        return "".join(out)
+    out.append(para(
+        "Una coincidenza è due linee che si incontrano a un nodo con un'attesa dentro una finestra utile: "
+        f'fra {fmt_n(co.get("attesaMinimaMin") or 2)} e {fmt_n(co.get("sogliaAttesaMin") or 5)} minuti — '
+        "abbastanza per scendere e salire, non tanta da rendere inutile il cambio. Non sono dichiarate a mano: "
+        "il sistema le riconosce dall'orario, e conta come relazione solo ciò che si ripete almeno "
+        f'{fmt_n(co.get("minOccorrenze") or 3)} volte al giorno. Il conto include anche i passaggi in transito: '
+        "una linea che passa a un capolinea altrui senza fermarsi fa coincidenza come una che ci parte."))
+    esistenti = [x for x in (co.get("esistenti") or []) if isinstance(x, dict)]
+    mancate = [x for x in (co.get("mancatePerPoco") or []) if isinstance(x, dict)]
+    opp = [x for x in (co.get("opportunita") or []) if isinstance(x, dict)]
+    out.append(rc.kpi_row([
+        ("Relazioni realizzate", fmt_n(len(esistenti)), "l'orario le produce davvero"),
+        ("Mancate per poco", fmt_n(len(mancate)), "attesa appena fuori finestra"),
+        ("Occasioni di traslazione", fmt_n(len(opp)), "saldo positivo fra create e rotte"),
+        ("Corse esaminate", fmt_n(co.get("corse") or 0), f'{fmt_n(co.get("corseConPassaggi") or 0)} con i passaggi intermedi'),
+    ]))
+    if esistenti:
+        out.append("<h3>8.1 Le relazioni che l'orario realizza</h3>")
+        righe = [(x.get("node") or "", f'{x.get("fromRoute")} → {x.get("toRoute")}', fmt_n(x.get("occurrences")),
+                  f'{fmt_n(x.get("minWaitMin"))}–{fmt_n(x.get("maxWaitMin"))}′',
+                  ", ".join(f'{s_.get("arrivo")}→{s_.get("partenza")}' for s_ in (x.get("sample") or [])[:3]))
+                 for x in esistenti]
+        out.append(table(["Nodo", "Da → a", "Volte al giorno", "Attesa", "Esempi di orario"], righe, numeric_from=2))
+        out.append(para('<span class="small">Nessuno spostamento proposto dal sistema ha il diritto di rompere '
+                        'queste relazioni: sono un vincolo del ciclo, non una preferenza.</span>'))
+    if mancate:
+        out.append("<h3>8.2 Le occasioni mancate per poco</h3>")
+        out.append(para("Due linee che si sfiorano a un nodo con un'attesa appena fuori dalla finestra utile. "
+                        "Sono il valore che la rete produrrebbe quasi gratis, e che nessuno contava."))
+        righe = [(x.get("node") or "", f'{x.get("fromRoute")} → {x.get("toRoute")}', fmt_n(x.get("occorrenze") or x.get("occurrences")),
+                  f'{fmt_n(x.get("attesaMinMin"))}–{fmt_n(x.get("attesaMaxMin"))}′',
+                  fmt_n(x.get("attesaMedianaMin")),
+                  "sì" if x.get("giaInCoincidenza") else "no") for x in mancate[:20]]
+        out.append(table(["Nodo", "Da → a", "Incontri", "Attesa", "Mediana", "Già in coincidenza"], righe, numeric_from=2))
+        if len(mancate) > 20:
+            out.append(para(f'<span class="small">… e altre {len(mancate) - 20} relazioni mancate per poco.</span>'))
+    if opp:
+        out.append("<h3>8.3 Che cosa si guadagnerebbe spostando una linea</h3>")
+        out.append(para("Per ogni linea, la traslazione dell'intera giornata che guadagna più relazioni di quante "
+                        "ne rompe: la cadenza resta identica e lo spostamento è difendibile davanti all'utenza. "
+                        "Il conto delle relazioni rotte è sempre esposto, perché un guadagno che costa altrove "
+                        "non è un guadagno. L'ultima colonna dice se le corse reggono quello spostamento secondo "
+                        "la flessibilità dichiarata in pianificazione."))
+        righe = []
+        for x in opp[:16]:
+            b = x.get("migliore") or {}
+            righe.append((str(x.get("route")), fmt_n(x.get("corse")), segno_min(b.get("deltaMin")),
+                          fmt_n(b.get("create")), fmt_n(b.get("rotte")),
+                          fmt_n(x.get("flexDichiarataMin") or 0) + "′",
+                          "sì" if b.get("dentroLaFlessibilita") else "no"))
+        out.append(table(["Linea", "Corse", "Spostamento", "Relazioni create", "Rotte", "Flessibilità", "Dentro la flessibilità"],
+                         righe, numeric_from=1))
+    if co.get("nota"):
+        out.append(para(f'<span class="small">{esc(co.get("nota"))}</span>'))
+    return "".join(out)
+
+
 def render_costs(d: dict) -> str:
     vm = g(d, "final", "vsp", "metrics", default={}) or {}
     ds = g(d, "final", "crew", "driverShifts", default=[]) or []
     cs = g(d, "final", "crew", "summary", default={}) or {}
     costs = d.get("costs") or {}
-    out = [section("costi", "7. Costi")]
+    out = [section("costi", "9. Costi")]
     unit = costs.get("unit") or unit_cost_table(g(d, "final", "params", default={}) or {})
     if unit:
-        out.append("<h3>7.1 Valori unitari in uso</h3>")
+        out.append("<h3>9.1 Valori unitari in uso</h3>")
         out.append(table(["Voce", "Valore", "Unità", "Fonte"], [(u.get("label"), u.get("value"), u.get("unit") or "", u.get("source") or "") for u in unit], numeric_from=1))
     for n in costs.get("notes") or []:
         out.append(f'<div class="callout">{esc(n)}</div>')
-    vcost = float(vm.get("costEur") or 0)
+    vcost = vehicle_cost_net(d)
     ccost = float(cs.get("totalDailyCost") or sum(float(x.get("costEuro") or 0) for x in ds) or 0)
     total = vcost + ccost
-    out.append("<h3>7.2 Ripartizione del costo giornaliero</h3>")
+    out.append("<h3>9.2 Ripartizione del costo giornaliero</h3>")
     out.append(rc.kpi_row([("Totale giornaliero", fmt_eur(total), "vetture + guida"), ("Vetture", fmt_eur(vcost), f'{fmt_n(100 * vcost / total, 1) if total else 0} %'),
                            ("Guida", fmt_eur(ccost), f'{fmt_n(100 * ccost / total, 1) if total else 0} %'),
                            ("Per corsa", fmt_eur(total / max(1, vm.get("totalTrips") or 1), 2), "costo medio"),
@@ -739,12 +1034,16 @@ def render_costs(d: dict) -> str:
         cnt[x.get("type")] += 1
     if by_type:
         rows = [(DUTY_TYPE_LABEL.get(k, k), cnt[k], fmt_eur(by_type[k]), fmt_eur(by_type[k] / cnt[k], 2)) for k in DUTY_TYPE_ORDER if cnt.get(k)]
-        out.append("<h3>7.3 Costo guida per tipo di turno</h3>")
+        out.append("<h3>9.3 Costo guida per tipo di turno</h3>")
         out.append(table(["Tipo", "Turni", "Costo", "Costo medio"], rows, numeric_from=1, total=("Totale", sum(cnt.values()), fmt_eur(sum(by_type.values())), fmt_eur(sum(by_type.values()) / max(1, sum(cnt.values())), 2))))
     if vm:
-        out.append("<h3>7.4 Costo vetture</h3>")
+        out.append("<h3>9.4 Costo vetture</h3>")
         rows = [("Vetture impiegate", fmt_n(vm.get("vehicles") or 0)), ("km di linea", fmt_n(vm.get("totalServiceKm") or 0, 1)), ("km fuorilinea", fmt_n(vm.get("totalDeadheadKm") or 0, 1)),
                 ("Minuti fuorilinea", fmt_n(vm.get("totalDeadheadMin") or 0)), ("Costo vetture", fmt_eur(vcost, 2))]
+        _ombra = shadow_eur(d)
+        if _ombra > 0.005:
+            rows.append(("di cui penalità d'arco tolte dal conto",
+                         f'{fmt_eur(_ombra, 2)} — non sono spesa: le inventa il motore per orientare la ricerca'))
         if vm.get("greedyCostEur"):
             rows.append(("Costo della soluzione di partenza (greedy)", fmt_eur(vm.get("greedyCostEur"), 2)))
             rows.append(("Risparmio dell'ottimizzazione", f'{fmt_eur(vm.get("savingsEur"), 2)} ({fmt_n(vm.get("savingsPct"), 1)} %)'))
@@ -756,7 +1055,7 @@ def render_costs(d: dict) -> str:
 
 def render_runs(d: dict) -> str:
     runs = d.get("runs") or []
-    out = [section("scenari", "8. Scenari confrontati")]
+    out = [section("scenari", "10. Scenari confrontati")]
     if not runs:
         out.append(para("<i>Nessuna campagna di scenari nel dossier.</i>"))
         return "".join(out)
@@ -782,7 +1081,7 @@ def render_runs(d: dict) -> str:
 def render_appendix(d: dict) -> str:
     vs = g(d, "final", "vsp", "vehicleShifts", default=[]) or []
     ds = g(d, "final", "crew", "driverShifts", default=[]) or []
-    out = [section("allegati", "9. Allegati")]
+    out = [section("allegati", "11. Allegati")]
     if vs:
         out.append("<h3>A. Turni macchina, corsa per corsa</h3>")
         for v in vs:
@@ -860,7 +1159,8 @@ def build(dossier: dict) -> str:
     m = dossier.get("meta") or {}
     title = m.get("title") or "Relazione del piano di esercizio"
     body = "".join([render_cover(dossier), render_summary(dossier), render_network(dossier), render_planning(dossier),
-                    render_method(dossier), render_vehicles(dossier), render_crew(dossier), render_costs(dossier),
+                    render_method(dossier), render_vehicles(dossier), render_crew(dossier),
+                    render_ciclo(dossier), render_coincidenze(dossier), render_costs(dossier),
                     render_runs(dossier), render_appendix(dossier)])
     return (f'<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{esc(title)}</title><style>{rc.CSS}</style></head><body><div class="page">{body}'
@@ -873,7 +1173,7 @@ def summary_of(dossier: dict) -> dict:
     ds = g(dossier, "final", "crew", "driverShifts", default=[]) or []
     cs = g(dossier, "final", "crew", "summary", default={}) or {}
     st = crew_stats(ds)
-    vcost = float(vm.get("costEur") or 0)
+    vcost = vehicle_cost_net(dossier)
     ccost = float(cs.get("totalDailyCost") or st["cost"] or 0)
     return {
         "trips": vm.get("totalTrips"), "vehicles": vm.get("vehicles"), "duties": cs.get("totalDriverShifts") or len(ds),
