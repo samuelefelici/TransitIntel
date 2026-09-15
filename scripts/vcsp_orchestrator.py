@@ -834,6 +834,14 @@ def main() -> None:
         "roundsExecuted": len(rounds_kpi),
         "earlyStop": early_stop,
         "elapsedSec": round(elapsed, 1),
+        # Le manopole del ciclo EFFETTIVAMENTE in vigore, non quelle chieste:
+        # chi lancia un giro coi default non le scrive nella richiesta, e nel
+        # confronto fra giri risultavano vuote — cioe' due giri con un ciclo
+        # diverso sembravano uguali, che e' proprio quello che il confronto
+        # serve a evitare.
+        "ciclo": {"passo": penalty_step, "ancora": penalty_anchor,
+                  "seme": seed_from_best, "pazienza": patience,
+                  "controllo": probe_control},
         "feedback": feedback_diag,
         "crew": {
             "summary": best_crew.get("summary"),

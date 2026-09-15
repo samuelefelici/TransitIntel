@@ -3260,6 +3260,10 @@ function compactAgentResult(payload: any): any {
       // Il giro fermato prima dei round chiesti: il piano è il migliore fra
       // QUELLI PROVATI, e due giri con round diversi non sono alla pari.
       earlyStop: v.earlyStop ?? null,
+      // Le manopole del ciclo EFFETTIVAMENTE in vigore (dal motore, non dalla
+      // richiesta): chi lancia coi default non le scrive, e il confronto fra
+      // giri le vedeva vuote.
+      ciclo: v.ciclo ?? null,
         roundsExecuted: v.roundsExecuted ?? null,
         elapsedSec: v.elapsedSec ?? null,
         rounds: (Array.isArray(v.rounds) ? v.rounds : []).map((r: any) => ({
@@ -3907,6 +3911,21 @@ router.post("/service-program/agent-optimize", async (req, res) => {
               jobLog.warn(`agent-optimize: salvataggio turni guida fallito (non-fatale): ${e?.message}`);
             }
           }
+        }
+        // I parametri del giro registrano il ciclo VERO, letto dal motore: se
+        // restassero quelli della richiesta, un giro lanciato coi default li
+        // avrebbe vuoti e il confronto non potrebbe dire che due giri hanno
+        // avuto un ciclo diverso.
+        const ciclo = (payload as any)?.vcsp?.ciclo;
+        if (ciclo && typeof ciclo === "object") {
+          job.params = {
+            ...job.params,
+            penaltyStep: ciclo.passo ?? null,
+            penaltyAnchor: ciclo.ancora ?? null,
+            seedFromBest: ciclo.seme ?? null,
+            earlyStopPatience: ciclo.pazienza ?? (job.params as any)?.earlyStopPatience ?? null,
+            controllo: ciclo.controllo ?? null,
+          };
         }
         job.status = "done";
       } catch (e: any) {
