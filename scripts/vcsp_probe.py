@@ -891,7 +891,7 @@ def _signed_delta(cand: dict) -> int:
     return int(max(valori, key=abs))
 
 
-MEMORY_SOLVER_REASONS = ("vsp", "crew")
+MEMORY_SOLVER_REASONS = ("vsp", "crew", "violazioni")
 LESSONS_MAX = 40
 
 
@@ -1312,8 +1312,18 @@ def run_probe_phase(
         # sa vedere, perche' in euro una coincidenza non compare. Non ha un
         # prezzo — non si compra un peggioramento — ma rompe il pareggio.
         _crea_coincidenze = int(cand.get("coincidenzeCreate") or 0) > int(cand.get("coincidenzeRotte") or 0)
-        _meglio = (_score_new < _score_old - COST_EPS
-                   or (_crea_coincidenze and _score_new <= _score_old + COST_EPS))
+        # Le regole non si comprano: un candidato che porta violazioni in piu'
+        # non passa a nessun prezzo. La selezione fra round mette le violazioni
+        # prima del punteggio e la sonda deve usare lo stesso metro: nel giro
+        # AZ ha accettato una linea intera per −157 € di punteggio comprando
+        # due violazioni, il round della sonda e' stato scartato dalla
+        # selezione, e lo stato precedente — 24 vetture, zero violazioni, il
+        # miglior piano del giro — non e' stato offerto a nessuno.
+        _viol_old = int(result["kpi"].get("bdsViolations", 0) or 0)
+        _viol_new = int(kpi.get("bdsViolations", 0) or 0)
+        _meglio = (_viol_new <= _viol_old
+                   and (_score_new < _score_old - COST_EPS
+                        or (_crea_coincidenze and _score_new <= _score_old + COST_EPS)))
         if _meglio:
             gain = result["kpi"]["totalCostEur"] - kpi["totalCostEur"]
             log(f"[PROBE]   ACCETTATO: €{result['kpi']['totalCostEur']} → "
@@ -1360,10 +1370,17 @@ def run_probe_phase(
             rejected_entry["scoreBefore"] = round(_score_old, 2)
             rejected_entry["scoreAfter"] = round(_score_new, 2)
             rejected_entry["disruptionEur"] = _dis_new
+            if _viol_new > _viol_old:
+                rejected_entry["motivo"] = "violazioni"
+                rejected_entry["violazioniInPiu"] = _viol_new - _viol_old
+                log(f"[PROBE]   scartato: {_viol_new - _viol_old} violazioni in piu' "
+                    f"({_viol_old} → {_viol_new}); il punteggio ({_score_new:.2f} vs "
+                    f"{_score_old:.2f}) non le compra")
+            else:
+                log(f"[PROBE]   scartato (punteggio {_score_new:.2f} ≥ {_score_old:.2f}: "
+                    f"costo €{kpi['totalCostEur']} vs €{result['kpi']['totalCostEur']}, "
+                    f"disturbo €{_dis_new:.0f})")
             section["rejected"].append(rejected_entry)
-            log(f"[PROBE]   scartato (punteggio {_score_new:.2f} ≥ {_score_old:.2f}: "
-                f"costo €{kpi['totalCostEur']} vs €{result['kpi']['totalCostEur']}, "
-                f"disturbo €{_dis_new:.0f})")
 
     section["timeShifts"] = accepted_total
     # Dettaglio leggibile (linea, variante, da→a) sugli orari ORIGINALI: è
