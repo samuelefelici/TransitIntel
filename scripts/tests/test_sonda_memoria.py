@@ -46,11 +46,12 @@ def _rete():
     return trips
 
 
-def _solver_finti(accetta: set[int], violazioni_controllo: int = 0):
+def _solver_finti(accetta: set[int], violazioni: dict[int, int] | None = None):
     """VSP finto: riconosce lo spostamento della A dall'orario di A0 e risparmia
     una vettura solo per i delta in `accetta` (0 = il controllo, senza
-    spostamenti). CSP finto: nessun turno; le violazioni del controllo si
-    impongono da fuori."""
+    spostamenti). CSP finto: nessun turno; le violazioni si impongono da fuori,
+    per delta."""
+    violazioni = violazioni or {}
     visti: list[int] = []
     stato = {"ultimo": None}
 
@@ -68,17 +69,19 @@ def _solver_finti(accetta: set[int], violazioni_controllo: int = 0):
 
     def kpi_fn(v, c):
         vetture = int(v["metrics"]["vehicles"])
-        viol = violazioni_controllo if stato["ultimo"] == 0 else 0
+        viol = int(violazioni.get(stato["ultimo"], 0))
         return {"totalCostEur": 1000.0 + 100.0 * vetture,
-                "selectionScoreEur": 1000.0 + 100.0 * vetture + 100.0 * viol,
+                # ombra bassa apposta: la violazione deve costare meno di una
+                # vettura, cosi' il punteggio da solo la comprerebbe
+                "selectionScoreEur": 1000.0 + 100.0 * vetture + 20.0 * viol,
                 "duties": 5, "bdsViolations": viol}
 
     return vsp_run, csp_run, kpi_fn, visti
 
 
 def _giro(accetta={2}, max_probes=10, probe_memory=None, controllo=False,
-          violazioni_controllo=0):
-    vsp_run, csp_run, kpi_fn, visti = _solver_finti(set(accetta), violazioni_controllo)
+          violazioni=None):
+    vsp_run, csp_run, kpi_fn, visti = _solver_finti(set(accetta), violazioni)
     best_vsp = {"vehicleShifts": [{"vehicleId": "V1", "trips": []}],
                 "metrics": {"vehicles": 10, "costEur": 1000.0}}
     best_crew = {"driverShifts": [], "summary": {}}
@@ -268,7 +271,7 @@ def test_il_controllo_che_batte_il_round_diventa_il_riferimento():
 
 
 def test_il_controllo_non_compra_violazioni():
-    sez, _ = _giro(accetta={0, 2}, controllo=True, violazioni_controllo=2)
+    sez, _ = _giro(accetta={0, 2}, controllo=True, violazioni={0: 2})
     c = sez["controllo"]
     assert c["vetture"] == {"round": 10, "controllo": 9}
     assert c["violazioni"] == {"round": 0, "controllo": 2}
@@ -284,3 +287,23 @@ def test_l_orchestratore_legge_il_controllo_dalla_configurazione():
     for parola in ("false", "0", "off", "no", " FALSE "):
         assert orch.probe_control_from_cfg({"probeControl": parola}) is False, parola
     assert orch.probe_control_from_cfg({"probeControl": "si"}) is True
+
+
+def test_la_sonda_non_compra_violazioni():
+    """Il giro AZ: la C.S. intera a −15 abbassava il punteggio di 157 € e
+    portava due violazioni; la sonda l'ha presa, la selezione fra round ha
+    scartato il round della sonda, e il piano a zero violazioni di prima e'
+    andato perso. Una vettura in meno non compra una violazione."""
+    sez, visti = _giro(accetta={2}, violazioni={2: 1})
+    assert 2 in visti
+    assert sez["accepted"] == []
+    scartato = next(r for r in sez["rejected"] if r.get("firma") == "linea:A:+2")
+    assert scartato["motivo"] == "violazioni" and scartato["violazioniInPiu"] == 1
+    assert scartato["scoreAfter"] < scartato["scoreBefore"], "il punteggio era migliore, e non basta"
+    lez = next(l for l in sez["lezioni"] if l["firma"] == "linea:A:+2")
+    assert lez["esito"] == "scartato" and lez["motivo"] == "violazioni"
+    # e la memoria lo rimanda in coda come ogni bocciatura del solver
+    memoria = probe.build_probe_memory([lez])
+    _, ripresi, rimandati = probe.order_by_memory(
+        [{"kind": "coincidenza", "route": "A", "shifts": {"A0": 2}}], memoria)
+    assert (ripresi, rimandati) == (0, 1)

@@ -761,6 +761,41 @@ Cosa ne discende, e va fatto subito: **il controllo**. Prima di misurare i candi
 
 **Sagoma**: 101 declassate (28%, meglio di AX: 129), ma la 3 a 35/54 (65%, 13 in punta) e la 91 a 20/24 (83%): il fronte resta aperto e la 3 e' la linea piu' grossa del festivo.
 
+## Il giro AZ: il controllo funziona, la memoria parte da zero, la sonda comprava violazioni
+
+AZ (`33351541`, scenario `93b7b349`, 2842 s): primo giro con controllo e memoria (#524), parametri di AY.
+
+| round | vetture | turni | suppl. | violazioni | costo € | punteggio € |
+|---|---|---|---|---|---|---|
+| 1 | 25 | 43 | 0 | 4 | 20 737 | 31 737 |
+| 2 | 31 | 45 | 2 | 2 | 22 399 | 34 279 |
+| 3 | 26 | 44 | 1 | 6 | 21 415 | 32 995 |
+| **4** | **25** | 45 | 2 | **1** | 22 150 | 33 450 |
+| 5 | 26 | 44 | 1 | 8 | 21 596 | 33 376 |
+| 6 (sonda) | 24 | 40 | 0 | 3 | 20 721 | 31 291 |
+
+Esito: round 4, 25 vetture, 45 turni, 2 supplementi, 1 violazione, 22 150 €. Peggio di AY (22/43/3/0) e di AX (23/43/0/0): i round oscillano fra 25 e 31 e nessuno e' a zero violazioni.
+
+**Il controllo ha fatto il suo lavoro.** 25 vetture contro 25, costo vetture 6 481 contro 6 488, punteggio 33 493 contro 33 450: non batte il round, il round resta il riferimento. Stavolta il solver non ha regalato niente, e adesso lo si sa.
+
+**La memoria ha letto zero lezioni**, ed e' giusto cosi': AX e AY erano girati col codice vecchio e non hanno `lezioni` nel rendiconto. AZ e' il primo giro che le scrive (23 voci); BA sara' il primo a leggerle.
+
+**La coda non si e' esaurita**: 5 candidati in partenza, 10 sonde su 10, grazie alle alternative. La C.S. a −15 e' l'alternativa del +14, che il VSP ha bocciato come in AX.
+
+**Tre accettazioni in fila, e la terza ha buttato via le prime due:**
+
+1. `split`: 1/4R 18:40 +15′ e 41A 18:24 −5′ → 25→24 vetture, 45→43 turni, **1→0 violazioni**, punteggio −910 €. **Il miglior piano del giro: 24 vetture, zero violazioni, 21 700 €.**
+2. crew-early per il turno A014 (stacco 89′): due corse a −15′ che la propagazione ha allargato a dieci (30, 31, 42, 3 e 24, andata e ritorno: il grappolo della 31, a livello di corsa) → 43→41 turni, 0→1 violazioni, −1 091 €.
+3. C.S. intera a −15′: tre relazioni create, 41→40 turni, **1→3 violazioni**, −157 €, disturbo cumulato 350 €.
+
+La sonda accettava sul punteggio, dove una violazione vale 100 € d'ombra e un turno 200: **comprava violazioni**. La selezione fra round mette le violazioni prima del punteggio, ha scartato il round della sonda (3 contro 1), e il piano del passo 1 — l'unico a zero violazioni di tutto il giro — non e' stato offerto a nessuno.
+
+**Corretto**: la sonda non compra violazioni. Un candidato che ne porta in piu' non passa a nessun prezzo (motivo `violazioni`, `violazioniInPiu` nel rendiconto; la memoria lo rimanda in coda come ogni bocciatura del solver). Con la regola, in AZ i passi 2 e 3 sarebbero stati bocciati e il piano a 24 vetture e zero violazioni sarebbe uscito come round della sonda, e come migliore del giro. Stesso metro del controllo: le regole non si comprano.
+
+**I grappoli, di nuovo**: 13 candidati di linea morti per `catenaTroppoLunga` — 3 a −13/−14/−15, 1/4 a +13/+14, 7 a −11/−12/−13, 2/6 a −8, 42 a +9/+10/+11, 21/33 a +8. Le alternative di una linea non aggirano il grappolo: il mattone dopo e' il grappolo, confermato.
+
+**Sagoma**: 140 declassate (38%), la 3 al 69%, la 91 all'83%. Peggio di AY.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
