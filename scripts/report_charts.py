@@ -41,17 +41,39 @@ def hm(m: float | int | None) -> str:
     return f"{m // 60}:{m % 60:02d}"
 
 
+def _numero(v) -> float | None:
+    """Il valore se e' un numero, altrimenti niente.
+
+    I formattatori ricevono quello che c'e' nel dossier, e il dossier cambia
+    forma nel tempo: un campo che ieri era un numero puo' diventare un oggetto
+    (e' successo con l'ancora del ciclo e con l'attesa delle coincidenze). Una
+    cella vuota e' un difetto da correggere; una relazione che non si genera
+    e' un documento che non esiste. Qui si sceglie la cella vuota."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.replace(",", "."))
+        except ValueError:
+            return None
+    return None
+
+
 def fmt_eur(v: float | None, dec: int = 0) -> str:
-    if v is None:
+    n = _numero(v)
+    if n is None:
         return "–"
-    s = f"{v:,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    s = f"{n:,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return f"€ {s}"
 
 
 def fmt_n(v: float | None, dec: int = 0) -> str:
-    if v is None:
+    n = _numero(v)
+    if n is None:
         return "–"
-    return f"{v:,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{n:,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def _nice_step(span: float, target: int = 5) -> float:

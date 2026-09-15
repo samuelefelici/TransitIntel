@@ -415,7 +415,11 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
              costBreakdown: result?.costBreakdown ?? null, vehicleShifts: shifts, advisories: result?.advisories ?? [] },
       crew: crew ? { summary: crew.summary ?? null, metrics: crew.metrics ?? null, driverShifts: crew.driverShifts ?? [], handovers: crew.handovers ?? [], clusters: crew.clusters ?? [] } : null,
       vcsp: result?.vcsp ? { rounds: result.vcsp.rounds ?? [], bestRound: result.vcsp.bestRound ?? null, selectedRound: result?.vcspSelectedRound ?? null,
-                             probe: result.vcsp.probe ?? null, feedback: result.vcsp.feedback ?? null } : null,
+                             probe: result.vcsp.probe ?? null, feedback: result.vcsp.feedback ?? null,
+                             // Le manopole con cui il ciclo ha davvero girato (passo, ancora,
+                             // seme, pazienza, controllo): senza queste il capitolo 7 racconta
+                             // che cosa e' successo ma non con quali regole d'ingaggio.
+                             ciclo: result.vcsp.ciclo ?? null } : null,
       params,
     },
     costs: { unit: [], notes: [] },

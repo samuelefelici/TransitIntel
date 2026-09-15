@@ -55,9 +55,13 @@ def _dossier():
                                           {"round": 2, "probe": True, "vehicles": 1, "duties": 2, "supplementi": 0,
                                            "bdsViolations": 0, "totalCostEur": 700.0, "shadowPenaltyEur": 12.0,
                                            "selectionScoreEur": 1200.0}],
-                               "feedback": [{"dopoRound": 1, "ancora": 1, "modo": "best", "passo": 0.5,
-                                             "blocchiPenalizzati": 2, "archiInVigore": 9, "massaPenalitaEur": 40.0,
-                                             "spostamentoEur": 40.0, "escalationGiunti": 1}],
+                               "ciclo": {"passo": 0.5, "ancora": "best", "seme": True,
+                                         "pazienza": 3, "controllo": True},
+                               "feedback": [{"afterRound": 1, "passo": 0.5,
+                                             "ancora": {"round": 1, "modo": "best", "cambiInRegola": True},
+                                             "blocksPenalized": 2, "arcsPenalized": 7, "archiInVigore": 9,
+                                             "massaPenalitaEur": 40.0, "distanzaDalPrecedenteEur": 40.0,
+                                             "giunti": {"escalation": 1.0}}],
                                "probe": {"shiftedTrips": 2, "shiftedTripMin": 20, "probesRun": 3, "disruptionEur": 20.0,
                                          "shiftPenaltyEurPerTripMin": 1,
                                          "controllo": {"eseguito": True, "riferimento": "round",
@@ -80,11 +84,11 @@ def _dossier():
             "analisi": {"coincidenze": {
                 "corse": 4, "corseConPassaggi": 2, "sogliaAttesaMin": 5, "attesaMinimaMin": 2, "minOccorrenze": 3,
                 "esistenti": [{"node": "CAVOUR", "fromRoute": "1/4", "toRoute": "3", "occurrences": 4,
-                               "minWaitMin": 2, "maxWaitMin": 5,
+                               "attesaMin": {"min": 2, "max": 5, "mediana": 3}, "giaInCoincidenza": 0,
                                "sample": [{"arrivo": "08:40", "partenza": "08:43", "attesaMin": 3}]}],
-                "mancatePerPoco": [{"node": "TAVERNELLE", "fromRoute": "3", "toRoute": "1/4", "occorrenze": 6,
-                                    "attesaMinMin": 8, "attesaMaxMin": 14, "attesaMedianaMin": 11,
-                                    "giaInCoincidenza": False}],
+                "mancatePerPoco": [{"node": "TAVERNELLE", "fromRoute": "3", "toRoute": "1/4", "occurrences": 6,
+                                    "attesaMin": {"min": 8, "max": 14, "mediana": 11},
+                                    "giaInCoincidenza": 0}],
                 "opportunita": [{"route": "3", "corse": 12, "flexDichiarataMin": 10,
                                  "migliore": {"deltaMin": -7, "create": 2, "rotte": 0, "dentroLaFlessibilita": True}}],
                 "nota": "nota di prova"}}}
@@ -189,3 +193,92 @@ def test_derivations():
     assert "trip" in kinds and "break" in kinds
     units = rb.unit_cost_table({"vcsp": {"shiftPenaltyEur": 2}})
     assert any(u["label"].startswith("Tariffa oraria") for u in units) and any(u["value"] == 2 for u in units)
+
+
+def test_il_termometro_si_legge_in_tutte_e_due_le_forme():
+    """Il bug che ha fatto morire la prima relazione col capitolo 7.
+
+    Il dossier porta il feedback GREZZO come esce dal motore: `ancora` e' un
+    oggetto {round, modo, cambiInRegola}, non un numero. Il cruscotto invece
+    lo appiattisce prima di mostrarlo. La relazione deve reggere entrambe le
+    forme e leggerne gli stessi numeri, o si spacca a seconda di chi gliel'ha
+    passata."""
+    grezzo = {"afterRound": 2, "ancora": {"round": 1, "modo": "best", "cambiInRegola": False},
+              "blocksPenalized": 4, "arcsPenalized": 11, "archiInVigore": 13,
+              "massaPenalitaEur": 205.67, "distanzaDalPrecedenteEur": 103.05,
+              "giunti": {"escalation": 1.5}}
+    appiattito = {"dopoRound": 2, "ancora": 1, "modo": "best", "blocchiPenalizzati": 4,
+                  "archiDalPiano": 11, "archiInVigore": 13, "massaPenalitaEur": 205.67,
+                  "spostamentoEur": 103.05, "escalationGiunti": 1.5}
+    a, b = rb._fb_termometro(grezzo), rb._fb_termometro(appiattito)
+    for campo in ("dopoRound", "ancoraRound", "modo", "blocchi", "archiInVigore",
+                  "massaEur", "spostamentoEur", "escalation"):
+        assert a[campo] == b[campo], f"{campo}: {a[campo]!r} != {b[campo]!r}"
+    assert a["ancoraRound"] == 1 and a["modo"] == "best" and a["massaEur"] == 205.67
+    assert a["cambiInRegola"] is False
+
+
+def test_il_capitolo_sette_dichiara_le_regole_dingaggio():
+    """Le manopole con cui il ciclo ha girato vanno dette, non lasciate intendere."""
+    d = _dossier()
+    html = rb.render_ciclo(d)
+    assert "regole d'ingaggio" in html
+    assert "50 %" in html                      # passo 0.5
+    assert "il giro migliore fin qui" in html  # ancora best
+    assert "catene del piano migliore" in html # seme acceso
+    assert "calcolo di controllo" in html      # controllo acceso
+
+
+def test_le_attese_delle_coincidenze_si_leggono_dalla_forma_vera():
+    """Il secondo bug della stessa famiglia.
+
+    L'analisi delle coincidenze scrive l'attesa come oggetto
+    {min, max, mediana}; la relazione la cercava in tre campi piatti che non
+    esistono, e le colonne «Attesa» sarebbero uscite vuote."""
+    oggetto = {"attesaMin": {"min": 8, "max": 14, "mediana": 11}}
+    piatta = {"attesaMinMin": 8, "attesaMaxMin": 14, "attesaMedianaMin": 11}
+    a, b = rb._attesa(oggetto), rb._attesa(piatta)
+    assert a["min"] == b["min"] == 8
+    assert a["max"] == b["max"] == 14
+    assert a["mediana"] == b["mediana"] == 11
+    assert rb._attesa({}) == {"min": None, "max": None, "mediana": None}
+
+
+def test_le_attese_finiscono_davvero_nelle_tabelle():
+    html = rb.render_coincidenze(_dossier())
+    assert "2–5′" in html, "l'attesa delle relazioni realizzate non e' stampata"
+    assert "8–14′" in html, "l'attesa delle relazioni mancate non e' stampata"
+
+
+def test_i_formattatori_non_uccidono_la_relazione():
+    """Un campo che cambia forma nel dossier deve costare una cella vuota,
+    non il documento intero. E' cosi' che la relazione col capitolo 7 e' morta
+    la prima volta: `ancora` da numero era diventato un oggetto, e
+    f"{dict:,.0f}" ha fermato la generazione a meta'."""
+    for strano in ({"round": 1, "modo": "best"}, [1, 2, 3], object(), "non un numero"):
+        assert rc.fmt_n(strano) == "–"
+        assert rc.fmt_eur(strano) == "–"
+    assert rc.fmt_n(None) == "–" and rc.fmt_eur(None) == "–"
+    # I numeri veri passano intatti, comunque siano scritti.
+    assert rc.fmt_n(1234.5, 1) == "1.234,5"
+    assert rc.fmt_n("1234.5", 1) == "1.234,5"
+    assert rc.fmt_eur(1234) == "€ 1.234"
+    # Il booleano non e' un numero: True non deve diventare 1.
+    assert rc.fmt_n(True) == "–"
+
+
+def test_un_capitolo_rotto_non_si_porta_via_la_relazione(monkeypatch, capsys):
+    """La regola imparata sul campo: meglio un capitolo mancante, dichiarato,
+    che un documento che non esiste. L'operatore deve avere comunque il resto,
+    e il guasto deve restare nei log per essere corretto."""
+    def esplode(_d):
+        raise TypeError("unsupported format string passed to dict.__format__")
+    monkeypatch.setattr(rb, "render_coincidenze", esplode)
+    html = rb.build(_dossier())
+    assert "non e' stato prodotto" in html.replace("'", "'")
+    assert "TypeError" in html
+    # Il resto c'e' tutto.
+    assert "7. Il ciclo integrato" in html and "Turni guida" in html
+    assert html.startswith("<!doctype html>") and html.rstrip().endswith("</html>")
+    # E il guasto e' finito nei log, non solo nel documento.
+    assert "coincidenze" in capsys.readouterr().err
