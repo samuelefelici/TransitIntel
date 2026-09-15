@@ -19,6 +19,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
 import { getVehicleScenarioAccess, requireVehicleScenarioRead, vehicleScenariosAccessibleWhere } from "../lib/scenario-access";
+import { coincidenceMapFor } from "./service-program";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -368,6 +369,26 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
   };
 
   const serviceDate = sc.date ? `${String(sc.date).slice(0, 4)}-${String(sc.date).slice(4, 6)}-${String(sc.date).slice(6, 8)}` : null;
+
+  // LA MAPPA DELLE COINCIDENZE sullo stesso feed e sulla stessa data del
+  // piano: quali relazioni fra linee l'orario realizza davvero, quali si
+  // manca per pochi minuti, e quali traslazioni le guadagnerebbero. È
+  // l'analisi che viene PRIMA di ogni spostamento di corsa, e senza di lei
+  // la relazione racconta il piano senza dire che servizio produce. Se non si
+  // riesce a calcolarla il documento esce lo stesso, dichiarando il motivo.
+  let coincidenze: any = null;
+  if (sc.feed_id && sc.date) {
+    try {
+      coincidenze = await coincidenceMapFor(String(sc.feed_id), {
+        date: serviceDate ?? "", psProjectId: ps?.id ? String(ps.id) : null,
+      }, { info: () => {}, warn: () => {} });
+    } catch (e: any) {
+      coincidenze = { errore: `mappa non calcolata: ${e?.message ?? e}` };
+    }
+  } else {
+    coincidenze = { errore: "lo scenario non porta il feed o la data: mappa non calcolabile" };
+  }
+
   return {
     meta: {
       title: extra.title ?? null, subtitle: extra.subtitle ?? null, author: extra.author ?? null, company: extra.company ?? null,
@@ -398,6 +419,8 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       params,
     },
     costs: { unit: [], notes: [] },
+    // Le analisi che accompagnano il piano ma non nascono dai solver.
+    analisi: { coincidenze },
   };
 }
 

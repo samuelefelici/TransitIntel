@@ -310,9 +310,15 @@ def compute_duty_cost(duty: Duty, rates: CostRates) -> DutyCostBreakdown:
                     if gap_at_cambio < 5:
                         c.cambio_cost += rates.cambio_risk_per_min_short * (5 - gap_at_cambio)
 
-    # ── 7. Retribuzione base (lavoro retribuito) ──
-    # Il conducente è pagato per work_min (guida + attese + pre-turno + trasferimento)
-    c.base_salary = duty.work_min * per_min
+    # ── 7. Retribuzione base (la parte NON gia' addebitata come componente) ──
+    # Il conducente e' pagato per work_min, che e' guida + attese + pre-turno +
+    # trasferimento: esattamente le quattro voci calcolate qui sopra. Sommare
+    # anche work_min pagava gli stessi minuti DUE VOLTE — un turno da 7h15
+    # tutto guida costava 391,50 € invece di 195,75, cioe' 54 €/ora contro i
+    # 27 dichiarati. Qui resta solo l'eventuale residuo: tempo retribuito che
+    # nessuna componente ha gia' addebitato.
+    _componenti_min = total_driving + total_idle + duty.pre_turno_min + duty.transfer_min
+    c.base_salary = max(0, duty.work_min - _componenti_min) * per_min
 
     # ── 8. Straordinario / sotto-orario ──
     # Le due soglie sono INDIPENDENTI. Il pavimento dice quando un turno e'

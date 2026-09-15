@@ -1301,42 +1301,31 @@ async function resolveProjectFeedForRead(psProjectId: string): Promise<{
  *  di toccare le corse — non dopo, quando il piano è già fatto.
  * ═══════════════════════════════════════════════════════════════ */
 
-router.get("/service-program/coincidences", async (req, res) => {
-  try {
-    // Il feed DEL PROGETTO, come il giro: senza psProjectId si ricade
-    // sull'ultimo feed caricato, che è quello aziendale intero.
-    const psProjForFeed = String(req.query.psProjectId || "");
-    const psGiven = /^[0-9a-f-]{36}$/i.test(psProjForFeed);
-    const risolto = psGiven ? await resolveProjectFeedForRead(psProjForFeed) : null;
-    const projectFeed = risolto && risolto.feedId ? risolto : null;
-    // Il feed del progetto non trovato NON è un caso da coprire in silenzio con
-    // quello aziendale: la mappa direbbe cose vere di un'altra rete.
-    if (psGiven && !projectFeed) {
-      res.status(404).json({
-        error: "Nessun feed materializzato per questo progetto: lancia un giro (ti_vcsp_run) o sincronizza l'UDP, poi rileggi la mappa",
-        psProjectId: psProjForFeed,
-        tentativi: (risolto as any)?.tentativi ?? [],
-      });
-      return;
-    }
-    const feedId = projectFeed?.feedId ?? await getLatestFeedId(req);
-    if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
-    const feedInfo = projectFeed
-      ? { feedId, feedSource: projectFeed.feedSource, syncedAt: projectFeed.syncedAt,
-          ...(projectFeed.staleAfter ? { attenzione: `il feed è più vecchio dell'ultima modifica in Planning (${projectFeed.staleAfter}): lancia un giro o sincronizza l'UDP per aggiornarlo` } : {}) }
-      : { feedId, feedSource: "ultimoFeedCaricato" as const,
-          attenzione: "psProjectId assente: la mappa legge l'ultimo feed caricato, cioè quello aziendale intero, non quello del progetto" };
-
-    const dateRaw = String(req.query.date || "");
+/** LA MAPPA DELLE COINCIDENZE su un feed e una data, senza HTTP attorno.
+ *
+ * Estratta dalla rotta perché serve anche alla RELAZIONE DI PROCESSO: un
+ * documento che racconta il piano senza dire quali relazioni fra linee
+ * l'orario realizza — e quali si manca per pochi minuti — lascia fuori
+ * l'analisi che viene PRIMA di ogni spostamento di corsa. */
+export async function coincidenceMapFor(
+  feedId: string,
+  opts: {
+    date: string; psProjectId?: string | null; routeIds?: string | null;
+    maxWait?: unknown; minWait?: unknown; nearMissWindow?: unknown;
+    shiftRange?: unknown; minOccurrences?: unknown;
+  },
+  logger: any,
+): Promise<any> {
+    const dateRaw = String(opts.date || "");
     const dateYMD = dateRaw.replace(/-/g, "");
     if (!/^\d{8}$/.test(dateYMD)) {
-      res.status(400).json({ error: "Parametro 'date' obbligatorio (YYYY-MM-DD): serve un giorno con servizio attivo del giorno-tipo da analizzare" });
-      return;
+      return { corse: 0, esistenti: [], mancatePerPoco: [], opportunita: [],
+               nota: "Data non valida: serve un giorno con servizio attivo del giorno-tipo da analizzare" };
     }
-    const routeFilter = String(req.query.routeIds || "").split(",").map(s => s.trim()).filter(Boolean);
+    const routeFilter = String(opts.routeIds || "").split(",").map(s => s.trim()).filter(Boolean);
 
     const activeServices = await getActiveServiceIds(feedId, dateYMD);
-    if (activeServices.size === 0) { res.json({ corse: 0, esistenti: [], mancatePerPoco: [], opportunita: [], nota: "Nessun servizio attivo per la data" }); return; }
+    if (activeServices.size === 0) return { corse: 0, esistenti: [], mancatePerPoco: [], opportunita: [], nota: "Nessun servizio attivo per la data" };
 
     const allTrips = await db.select({
       tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId, serviceId: gtfsTrips.serviceId,
@@ -1344,7 +1333,7 @@ router.get("/service-program/coincidences", async (req, res) => {
     }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
     const trips = allTrips.filter(t => activeServices.has(t.serviceId)
       && (routeFilter.length === 0 || routeFilter.includes(t.routeId)));
-    if (trips.length === 0) { res.json({ corse: 0, esistenti: [], mancatePerPoco: [], opportunita: [], nota: "Nessuna corsa attiva per le linee/data indicate" }); return; }
+    if (trips.length === 0) return { corse: 0, esistenti: [], mancatePerPoco: [], opportunita: [], nota: "Nessuna corsa attiva per le linee/data indicate" };
 
     const tripIds = new Set(trips.map(t => t.tripId));
     const stRows = await db.select({
@@ -1371,7 +1360,7 @@ router.get("/service-program/coincidences", async (req, res) => {
     // Flessibilità DICHIARATA in Planning: per linea (default) e per corsa
     // (override), come la legge il VSP. Nel feed materializzato route_id e
     // trip_id GTFS sono gli uuid del progetto, quindi il lookup è diretto.
-    const psProj = String(req.query.psProjectId || "");
+    const psProj = String(opts.psProjectId || "");
     const flexByRoute = new Map<string, number>();
     const flexByTrip = new Map<string, number>();
     if (/^[0-9a-f-]{36}$/i.test(psProj)) {
@@ -1404,7 +1393,7 @@ router.get("/service-program/coincidences", async (req, res) => {
       };
     }).filter(Boolean) as any[];
 
-    const transits = await loadTerminalTransits(feedId, blocks, req.log).catch(() => ({} as Record<string, any[]>));
+    const transits = await loadTerminalTransits(feedId, blocks, logger).catch(() => ({} as Record<string, any[]>));
     for (const b of blocks) {
       const tr = transits[b.tripId];
       if (tr && tr.length > 0) b.terminalTransits = tr;
@@ -1413,12 +1402,54 @@ router.get("/service-program/coincidences", async (req, res) => {
     const num = (v: unknown, d: number) => (Number.isFinite(Number(v)) ? Number(v) : d);
     const out = await spawnPythonJson("coincidence_analysis.py", [], {
       trips: blocks,
-      maxWait: num(req.query.maxWait, 5),
-      minWait: num(req.query.minWait, 2),
-      nearMissWindow: num(req.query.nearMissWindow, 30),
-      shiftRange: num(req.query.shiftRange, 30),
-      minOccurrences: num(req.query.minOccurrences, 3),
-    }, req.log, "coincidences");
+      maxWait: num(opts.maxWait, 5),
+      minWait: num(opts.minWait, 2),
+      nearMissWindow: num(opts.nearMissWindow, 30),
+      shiftRange: num(opts.shiftRange, 30),
+      minOccurrences: num(opts.minOccurrences, 3),
+    }, logger, "coincidences");
+    return (out && typeof out === "object") ? out : { out };
+}
+
+router.get("/service-program/coincidences", async (req, res) => {
+  try {
+    // Il feed DEL PROGETTO, come il giro: senza psProjectId si ricade
+    // sull'ultimo feed caricato, che è quello aziendale intero.
+    const psProjForFeed = String(req.query.psProjectId || "");
+    const psGiven = /^[0-9a-f-]{36}$/i.test(psProjForFeed);
+    const risolto = psGiven ? await resolveProjectFeedForRead(psProjForFeed) : null;
+    const projectFeed = risolto && risolto.feedId ? risolto : null;
+    // Il feed del progetto non trovato NON è un caso da coprire in silenzio con
+    // quello aziendale: la mappa direbbe cose vere di un'altra rete.
+    if (psGiven && !projectFeed) {
+      res.status(404).json({
+        error: "Nessun feed materializzato per questo progetto: lancia un giro (ti_vcsp_run) o sincronizza l'UDP, poi rileggi la mappa",
+        psProjectId: psProjForFeed,
+        tentativi: (risolto as any)?.tentativi ?? [],
+      });
+      return;
+    }
+    const feedId = projectFeed?.feedId ?? await getLatestFeedId(req);
+    if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+    const feedInfo = projectFeed
+      ? { feedId, feedSource: projectFeed.feedSource, syncedAt: projectFeed.syncedAt,
+          ...(projectFeed.staleAfter ? { attenzione: `il feed è più vecchio dell'ultima modifica in Planning (${projectFeed.staleAfter}): lancia un giro o sincronizza l'UDP per aggiornarlo` } : {}) }
+      : { feedId, feedSource: "ultimoFeedCaricato" as const,
+          attenzione: "psProjectId assente: la mappa legge l'ultimo feed caricato, cioè quello aziendale intero, non quello del progetto" };
+
+    const out = await coincidenceMapFor(feedId, {
+      date: String(req.query.date || ""),
+      psProjectId: String(req.query.psProjectId || ""),
+      routeIds: String(req.query.routeIds || ""),
+      maxWait: req.query.maxWait, minWait: req.query.minWait,
+      nearMissWindow: req.query.nearMissWindow, shiftRange: req.query.shiftRange,
+      minOccurrences: req.query.minOccurrences,
+    }, req.log);
+    if (out && typeof out === "object" && (out as any).nota && !(out as any).esistenti?.length
+        && String((out as any).nota).startsWith("Data non valida")) {
+      res.status(400).json({ error: (out as any).nota });
+      return;
+    }
     res.json({ feed: feedInfo, ...(out && typeof out === "object" ? out : { out }) });
   } catch (err: any) {
     res.status(500).json({ error: err?.message ?? String(err) });

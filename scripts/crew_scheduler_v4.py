@@ -2918,9 +2918,14 @@ def compute_duty_cost_v4(
     n_transfers = len(duty.segments)
     c.company_car_cost = n_transfers * rates.company_car_per_use
 
-    # 6. Retribuzione base (lavoro convenzionale BDS)
+    # 6. Retribuzione base: SOLO la parte che nessuna componente ha gia'
+    # addebitato. Il lavoro convenzionale e' lavoro netto (guida + attese +
+    # pre/post + trasferimenti, cioe' le voci 1-4 qui sopra) piu' le soste fra
+    # riprese pesate. Addebitarlo INTERO pagava gli stessi minuti due volte:
+    # un turno da 7h15 tutto guida costava 391,50 € invece di 195,75, cioe'
+    # 54 €/ora contro i 27 dichiarati. Restano le sole soste pesate.
     lavoro_retribuito = wc.lavoro_convenzionale
-    c.base_salary = lavoro_retribuito * per_min
+    c.base_salary = max(0, wc.lavoro_convenzionale - wc.lavoro_netto) * per_min
 
     # 7. Straordinario e sotto-orario: DUE SOGLIE INDIPENDENTI.
     # Il pavimento dice quando un turno e' troppo vuoto, il tetto quando

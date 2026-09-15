@@ -40,13 +40,54 @@ def _dossier():
                          "validities": [{"name": "U", "trips": 4, "dayTypes": ["Festivo"]}], "flex": [{"line": "1/4", "flexMin": 10}]},
             "runs": [{"name": "A", "at": "2026-09-01 11:00", "kpi": {"vehicles": 1, "duties": 3, "violations": 1, "byType": {"intero": 1, "semiunico": 1, "spezzato": 1}, "vehicleCostEur": 100, "crewCostEur": 900, "totalCostEur": 1000, "selectionScoreEur": 1700}},
                      {"name": "B", "at": "2026-09-01 12:00", "selected": True, "kpi": {"vehicles": 1, "duties": 2, "violations": 1, "byType": {"intero": 1, "spezzato": 1}, "vehicleCostEur": 100, "crewCostEur": 600, "totalCostEur": 700, "selectionScoreEur": 1200}}],
-            "final": {"vsp": {"metrics": {"vehicles": 1, "totalTrips": 4, "totalServiceKm": 40.0, "totalDeadheadKm": 3.2, "totalDeadheadMin": 15, "totalServiceMin": 360, "costEur": 100.0}, "vehicleShifts": shifts},
+            "final": {"vsp": {"metrics": {"vehicles": 1, "totalTrips": 4, "totalServiceKm": 40.0, "totalDeadheadKm": 3.2, "totalDeadheadMin": 15, "totalServiceMin": 360, "costEur": 100.0,
+                                          "sagoma": {"corseDeclassate": 2, "pctDeclassate": 50.0, "declassateInPunta": 1,
+                                                     "fuoriSagoma": 0, "doppiDeclassamenti": 0, "fascePunta": [[15, 20]],
+                                                     "blocchiPerTipo": {"12m": 1}, "lineeDeclassate": {"3": 2},
+                                                     "catenSpezzate": 1,
+                                                     "superamenti": ["linea 3: 2 corse su 4 con un mezzo piu' piccolo"]}},
+                                "costBreakdown": {"aggregated": {"total": 100.0, "vcspPenalty": 12.0}},
+                                "vehicleShifts": shifts},
                       "crew": {"summary": {"totalDriverShifts": 2, "totalDailyCost": 600.0, "companyCarsMaxSimultaneous": 1, "byType": {"intero": 1, "spezzato": 1}}, "driverShifts": duties, "metrics": {}},
+                      "vcsp": {"bestRound": 2, "selectedRound": 2,
+                               "rounds": [{"round": 1, "vehicles": 2, "duties": 3, "supplementi": 0, "bdsViolations": 2,
+                                           "totalCostEur": 900.0, "shadowPenaltyEur": 0.0, "selectionScoreEur": 1500.0},
+                                          {"round": 2, "probe": True, "vehicles": 1, "duties": 2, "supplementi": 0,
+                                           "bdsViolations": 0, "totalCostEur": 700.0, "shadowPenaltyEur": 12.0,
+                                           "selectionScoreEur": 1200.0}],
+                               "feedback": [{"dopoRound": 1, "ancora": 1, "modo": "best", "passo": 0.5,
+                                             "blocchiPenalizzati": 2, "archiInVigore": 9, "massaPenalitaEur": 40.0,
+                                             "spostamentoEur": 40.0, "escalationGiunti": 1}],
+                               "probe": {"shiftedTrips": 2, "shiftedTripMin": 20, "probesRun": 3, "disruptionEur": 20.0,
+                                         "shiftPenaltyEurPerTripMin": 1,
+                                         "controllo": {"eseguito": True, "riferimento": "round",
+                                                       "vetture": {"round": 2, "controllo": 2}},
+                                         "memoria": {"giriLetti": 1, "lezioniLette": 5, "ripresi": 1, "rimandatiInCoda": 2},
+                                         "accepted": [{"kind": "coincidenza", "disruptionEur": 20.0,
+                                                       "shiftsByRoute": [{"routeName": "3", "deltaMin": -10, "trips": 2}],
+                                                       "before": {"vehicles": 2, "duties": 3, "bdsViolations": 2},
+                                                       "after": {"vehicles": 1, "duties": 2, "bdsViolations": 0}}],
+                                         "lezioni": [{"firma": "linea:7:-11", "route": "7", "deltaMin": -11,
+                                                      "esito": "scartato", "motivo": "coincidenza:catenaTroppoLunga",
+                                                      "tentativi": 4},
+                                                     {"firma": "tail-:x", "esito": "scartato", "motivo": "vsp",
+                                                      "tentativi": 1}]}},
                       "params": {"vcsp": {"rounds": 2, "probes": 4}, "weights": {"preferIntero": 8}, "weightFactors": {"duty": 1.0, "spezz": 1.3}, "companyCars": 5,
                                  "shiftRules": {"intero": {"maxNastro": 435, "maxLavoro": 435, "intMin": 0, "intMax": 0, "maxPct": 100, "sostaMinCapolinea": 15},
                                                 "spezzato": {"maxNastro": 630, "maxLavoro": 450, "intMin": 180, "intMax": 999, "maxPct": 13}},
                                  "provenance": {"crewConfig": "scenario", "vehicleCosts": "default"}}},
-            "costs": {"notes": ["prova"]}}
+            "costs": {"notes": ["prova"]},
+            "analisi": {"coincidenze": {
+                "corse": 4, "corseConPassaggi": 2, "sogliaAttesaMin": 5, "attesaMinimaMin": 2, "minOccorrenze": 3,
+                "esistenti": [{"node": "CAVOUR", "fromRoute": "1/4", "toRoute": "3", "occurrences": 4,
+                               "minWaitMin": 2, "maxWaitMin": 5,
+                               "sample": [{"arrivo": "08:40", "partenza": "08:43", "attesaMin": 3}]}],
+                "mancatePerPoco": [{"node": "TAVERNELLE", "fromRoute": "3", "toRoute": "1/4", "occorrenze": 6,
+                                    "attesaMinMin": 8, "attesaMaxMin": 14, "attesaMedianaMin": 11,
+                                    "giaInCoincidenza": False}],
+                "opportunita": [{"route": "3", "corse": 12, "flexDichiarataMin": 10,
+                                 "migliore": {"deltaMin": -7, "create": 2, "rotte": 0, "dentroLaFlessibilita": True}}],
+                "nota": "nota di prova"}}}
 
 
 def test_charts_have_table_twin_and_legend_rules():
@@ -86,8 +127,41 @@ def test_builder_full_dossier_sections_and_summary():
         assert needle in html, needle
     assert "★ B" in html
     s = rb.summary_of(d)
-    assert s["duties"] == 2 and s["vehicles"] == 1 and s["violations"] == 1 and s["totalCostEur"] == 700.0 and s["isTest"] is True
+    assert s["duties"] == 2 and s["vehicles"] == 1 and s["violations"] == 1 and s["isTest"] is True
     assert set(s["byType"]) == {"intero", "spezzato"}
+    # moneta onesta: il costo vetture esce al NETTO delle penalita' inventate
+    assert s["vehicleCostEur"] == 88.0, s["vehicleCostEur"]
+    assert s["totalCostEur"] == 688.0, s["totalCostEur"]
+
+
+def test_le_analisi_fatte_finiscono_tutte_nel_documento():
+    """La relazione deve raccontare anche COME il piano e' stato prodotto e che
+    servizio produce, non solo il risultato: il ciclo integrato con i suoi
+    giri, il termometro del feedback, la sonda con le sue lezioni, la regola
+    della sagoma e la mappa delle coincidenze."""
+    html = rb.build(_dossier())
+    for needle in ("7. Il ciclo integrato", "I giri del ciclo", "Come il segnale si è mosso",
+                   "La sonda: spostare corse per salvare un turno", "Il controllo", "La memoria",
+                   "8. Coincidenze fra linee", "Le relazioni che l'orario realizza",
+                   "Le occasioni mancate per poco", "Che cosa si guadagnerebbe spostando una linea",
+                   "Regola della sagoma", "9. Costi", "10. Scenari confrontati", "11. Allegati"):
+        assert needle in html, needle
+    # i motivi dei rifiuti sono spiegati a parole, non in gergo
+    assert "la catena da trascinare è troppo lunga" in html
+    assert "coincidenza:catenaTroppoLunga" not in html
+    # le penalita' inventate sono dichiarate, non nascoste
+    assert "non sono spesa" in html
+
+
+def test_il_documento_regge_senza_le_analisi_nuove():
+    """Uno scenario prodotto senza ciclo integrato e senza mappa deve comunque
+    produrre il documento, dicendo che quelle analisi non ci sono."""
+    d = _dossier()
+    d["final"].pop("vcsp", None)
+    d.pop("analisi", None)
+    html = rb.build(d)
+    assert "7. Il ciclo integrato" in html and "senza retroazione" in html
+    assert "8. Coincidenze fra linee" in html and "non disponibile" in html
 
 
 def test_json_mode_roundtrip(tmp_path):
