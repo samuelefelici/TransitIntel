@@ -866,6 +866,56 @@ Quattro lettori sul motore, tre progetti indipendenti e tre giudici in contraddi
 
 Il rendiconto porta, per ogni round: quanti archi sono in vigore, quanto pesano in tutto, **di quanto si sono spostati dal round precedente** e su quale piano sono stati calcolati. Se lo spostamento non cala, il VSP sta inseguendo un bersaglio che salta e nessun round puo' migliorare il precedente. E' il numero che dice se il giro ha funzionato, e prima non c'era.
 
+## Il giro BB: il miglior piano della serie, e il controllo che lo dimostra
+
+BB (`ed715ed8`, scenario `6459cbd2`, 2951 s): primo giro col ciclo ricucito. Stessi parametri di BA.
+
+**Esito: 21 vetture, 43 turni (37 interi + 6 semiunici), ZERO supplementi, ZERO violazioni**, auto al picco 5 su 5, incustodito 15, km a vuoto 206, costo netto 20 939 €.
+
+E' il miglior piano di tutta la serie, ed e' il primo che sta insieme su tutto: AU aveva 21 vetture ma una violazione; AX zero violazioni ma 23 vetture; AY 22 vetture e tre supplementi; BA 21 vetture con una violazione e tre supplementi. BB **domina AU** (stessi numeri, una violazione in meno) e **domina BA** (tre supplementi e una violazione in meno). Unico peggioramento: le auto sono al tetto (5 su 5) invece di 4, e la sagoma torna a 141 declassate (39%) contro le 101 di BA.
+
+| round | vetture | turni | suppl. | violazioni | costo netto € | ombra € |
+|---|---|---|---|---|---|---|
+| 1 | 25 | 43 | 0 | 4 | 20 717 | 0 |
+| 2 | 24 | 45 | 2 | 5 | 21 247 | 119 |
+| 3 | 26 | 46 | 3 | 2 | 21 494 | 169 |
+| 4 | **19** | 43 | 3 | **11** | 20 850 | 208 |
+| 5 | 22 | 43 | 3 | 3 | 20 840 | 196 |
+| **6 (sonda)** | **21** | 43 | **0** | **0** | 20 939 | 185 |
+
+### Il controllo ha fatto la cosa per cui e' nato
+
+Il primo candidato della sonda ha portato il piano da **26 a 21 vetture** spostando **cinque corse di 12 minuti** (11, 2/6 andata e ritorno, 1/4 andata e ritorno, tutte fra le 16 e le 17). In AY una cosa cosi' l'avevo letta come rumore del solver, e avevo ragione: tre corse non valevano sei vetture. Qui il controllo dice il contrario, e lo dice con un numero: **re-solve dello stesso input senza spostamenti, 26 vetture** — le stesse del round, che girava con sette volte il tempo. Quindi le cinque vetture vengono dalle cinque corse, non dal solver. E' il primo guadagno della sonda che sappiamo spiegare.
+
+Gli altri due candidati accettati hanno lavorato sulle regole, non sulle vetture: `crew-late` (9 corse a +15′ su 24, 31, 30, 42 e 3, la mattina) ha tolto un turno e una violazione; `crew-both` (7 corse a ±15′) ha tolto **l'ultima violazione**. In tutto 21 corse spostate, 300 minuti, 300 € di disturbo.
+
+### Il termometro dice che l'ancora e lo smorzamento funzionano
+
+| dopo round | ancora | archi dal piano | archi in vigore | massa € | spostamento € | escalation |
+|---|---|---|---|---|---|---|
+| 1 | 1 | 177 | 83 | 205,67 | 205,67 | 1 |
+| 2 | 1 | 177 | 83 | 308,72 | **103,05** | 1 |
+| 3 | 3 | 200 | 142 | 374,62 | 310,66 | 2,5 |
+| 4 | 3 | 200 | 98 | 471,39 | 278,97 | 6,25 |
+
+Fra il round 1 e il round 2 **l'ancora non si e' mossa** (il round 2 era peggiore: cinque violazioni contro quattro) e lo spostamento si e' **esattamente dimezzato**, 205,67 → 103,05. E' la convergenza geometrica che il passo 0,5 deve produrre: stesso bersaglio, la penalita' in vigore ci si avvicina di meta' a ogni round. Il meccanismo si vede funzionare nei numeri.
+
+Al round 3 l'ancora e' passata al round 3 (due violazioni contro quattro: la selezione mette le violazioni prima di tutto) e il bersaglio si e' spostato di nuovo. **Non e' un difetto: e' il comportamento giusto.** Il campione e' migliorato, quindi il segnale deve cambiare. L'escalation e' salita a 2,5 e poi a 6,25 perche' il campione aveva cambi fuori regola — e con la correzione del moltiplicatore quella pressione ora agisce sui giunti del campione, non nel vuoto. Il piano finale ha zero violazioni e zero giunti fuori limite.
+
+### Cosa NON e' cambiato, e va detto
+
+**I round oscillano ancora**: 25, 24, 26, 19, 22. La forbice si e' stretta (7 vetture contro le 12 di BA, e nessun round catastrofico come il 33) ma i round non migliorano l'uno sull'altro in modo monotono. La partenza a caldo da' loro un punto di partenza buono, non li obbliga a restarci: l'obiettivo cambia a ogni round, quindi «meglio» cambia significato.
+
+**Il round 4 ha trovato 19 vetture**, il minimo mai visto, con undici violazioni. Non e' utilizzabile, ma dice che 19 e' raggiungibile. E siccome il campione si sceglie prima sulle violazioni, quella struttura non e' mai diventata seme: **le soluzioni con meno vetture vengono trovate e buttate**. E' il fronte piu' promettente che resta aperto.
+
+**Il muro del grappolo e' intatto**: 11 rifiuti, tutti `catenaTroppoLunga`, sulle stesse linee di sempre (3 a −13/−14/−15, 1/4 a +8/+13, 7 a −4/−11/−12/−13, 2/6 a −8, 42 a +9). La propagazione pero' lavora molto di piu': 26 candidati allargati con successo, contro 6 in AZ e 2 in BA.
+
+**La memoria** ha letto 25 lezioni da due giri (AZ e BA) e ha rimandato in coda tre candidati che il solver aveva gia' bocciato. Nessuno ripreso in testa: in BA la sonda non aveva accettato niente, quindi non c'erano successi da riprovare.
+
+### Un difetto del rendiconto, trovato leggendo BB
+
+Il confronto fra giri mostrava `penaltyStep` e `penaltyAnchor` **vuoti** anche se erano in vigore (0,5 e «campione», visibili nel termometro): chi lancia un giro coi valori di default non li scrive nella richiesta, e i parametri del giro venivano dalla richiesta. Due giri con un ciclo diverso sarebbero sembrati identici — esattamente cio' che il confronto serve a impedire. Ora il motore dichiara nel rendiconto le manopole **effettivamente in vigore** (`ciclo`) e i parametri del giro le registrano da li'.
+
 ## Il prossimo intervento (superato dal precedente)
 
 **Il prezzo dei km a vuoto nel VSP.** Vedi la catena qui sopra: la mossa del deposito e' gia' implementata e gratuita, ma non viene mai usata perche' il VSP evita i passaggi in deposito. Vanno prezzati al NETTO del corrispettivo (2,60 €/km incassati contro 0,75-1,20 di costo), tenendo come costo vero il tempo del conducente (27 €/ora), che e' l'unica cosa che si spende davvero. Attenzione a non ribaltare l'incentivo: se i km a vuoto diventano profitto il solver ne inventerebbe, e il freno deve restare il tempo pagato.
@@ -877,6 +927,7 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 
 ## In sospeso
 
+- **Le soluzioni con poche vetture si trovano e si buttano** (da BB: round 4 a 19 vetture con 11 violazioni). Il campione si sceglie prima sulle violazioni, e giustamente; ma quella struttura non diventa mai seme. Un secondo seme, «il piano con meno vetture visto finora», da provare accanto al campione.
 - **L'escalation dei giunti non scende mai**, nemmeno quando il piano torna in regola. Da decidere con un giro.
 - **Il taglio che vieta il proprio suggerimento**: `forbidden_arc_sets` contiene anche l'insieme d'archi del campione, che poi viene suggerito come warm start agli scenari di intensificazione. Preesistente, tocca ogni giro VSP.
 - **Il grappolo come mattone** (da AY): la mappa valuta la traslazione di un grappolo di linee legate da coincidenze (31: 3, 30, 42, 24; 2/6: 7, 11, 21/33, 1/4) e la sonda lo prova come candidato unico.

@@ -179,3 +179,28 @@ def test_il_termometro_esce_nel_rendiconto(monkeypatch):
     f = uscita["vcsp"]["feedback"][0]
     for chiave in ("massaPenalitaEur", "distanzaDalPrecedenteEur", "archiInVigore"):
         assert chiave in f, chiave
+
+
+def test_il_rendiconto_dice_quali_manopole_erano_in_vigore(monkeypatch):
+    """Nel giro BB il confronto fra giri mostrava penaltyStep e penaltyAnchor
+    vuoti anche se erano in vigore: chi lancia coi default non li scrive nella
+    richiesta, e i parametri del giro venivano dalla richiesta. Due giri con un
+    ciclo diverso sembravano cosi' identici — proprio quello che il confronto
+    serve a evitare."""
+    copione = [(3, 0.0, _blocchi(["t1"], ["t2"], ["t3"]))]
+    _, uscita = _giro(copione, {"rounds": 1}, monkeypatch)
+    ciclo = uscita["vcsp"]["ciclo"]
+    assert ciclo["passo"] == orch.PENALTY_STEP
+    assert ciclo["ancora"] == "best"
+    assert ciclo["seme"] is True
+    assert ciclo["controllo"] is True
+    assert ciclo["pazienza"] == orch.EARLY_STOP_PATIENCE
+
+
+def test_il_rendiconto_riporta_le_manopole_chieste_quando_ci_sono(monkeypatch):
+    copione = [(3, 0.0, _blocchi(["t1"], ["t2"], ["t3"]))]
+    _, uscita = _giro(copione, {"rounds": 1, "penaltyStep": 1.0,
+                                "penaltyAnchor": "last", "seedFromBest": False,
+                                "probeControl": False, "earlyStopPatience": 4}, monkeypatch)
+    assert uscita["vcsp"]["ciclo"] == {"passo": 1.0, "ancora": "last", "seme": False,
+                                       "pazienza": 4, "controllo": False}
