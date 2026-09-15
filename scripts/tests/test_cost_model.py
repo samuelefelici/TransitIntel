@@ -128,7 +128,7 @@ class TestDutyCostBreakdown:
             "baseSalary", "overtimeCost", "undertimeCost", "drivingCost",
             "idleAtTerminalCost", "preTurnoCost", "transferDepotCost",
             "interruptionCost", "companyCarCost", "taxiCost", "cambioCost",
-            "fragmentationPenalty", "workImbalancePenalty", "total",
+            "fragmentationPenalty", "workImbalancePenalty", "bds5Cost", "total",
             "idleSegments", "transferDetails",
         }
         assert set(d.keys()) == expected_keys

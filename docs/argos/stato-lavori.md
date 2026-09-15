@@ -978,6 +978,59 @@ Togliendo questa causa si possono togliere anche le due medicine messe nella not
 - la maggiorazione di scarsita' `company_car_scarcity_eur` (20 €, PR #454);
 - l'escalation delle penalita' sui giunti (×2,5 fino a ×8, PR #453).
 
+## La prima relazione col capitolo 7 e' morta a meta', e perche'
+
+Mergiata la #531, ho lanciato `ti_report` sul giro BB e la generazione si e' fermata con
+
+```
+TypeError: unsupported format string passed to dict.__format__
+```
+
+alla riga del termometro del ciclo. La causa e' semplice e istruttiva: **il dossier
+della relazione e il cruscotto ricevono lo stesso dato in due forme diverse.** Il motore
+scrive il feedback cosi'
+
+```python
+diag["afterRound"] = r
+diag["ancora"] = {"round": ancora_r, "modo": penalty_anchor, "cambiInRegola": ancora_legale}
+diag["distanzaDalPrecedenteEur"] = _penalty_distance(precedenti, arc_penalties)
+```
+
+e la rotta del cruscotto lo **appiattisce** prima di mostrarlo (`dopoRound`, `ancora` come
+numero, `spostamentoEur`). Io avevo scritto il capitolo 7 leggendo la forma appiattita —
+quella che si vede a schermo — mentre il dossier porta quella grezza. Il test passava
+perche' avevo costruito il campione sulla forma sbagliata: **un test scritto sullo stesso
+malinteso del codice non protegge da niente.**
+
+Cercando la stessa famiglia ho trovato il secondo caso prima che esplodesse: l'analisi
+delle coincidenze scrive l'attesa come oggetto (`attesaMin`: min, max, mediana) e il
+capitolo 8 la cercava in tre campi piatti inesistenti. Non avrebbe ucciso il documento,
+avrebbe solo svuotato le due colonne «Attesa» — un guasto peggiore, perche' silenzioso.
+
+Tre rimedi, in ordine di forza:
+
+1. **Due lettori che accettano entrambe le forme**, `_fb_termometro` e `_attesa`, con i
+   campioni dei test riscritti sulla forma VERA del dossier piu' un test che verifica che
+   le due forme diano gli stessi numeri.
+2. **I formattatori non uccidono piu' la relazione**: `fmt_n` e `fmt_eur` passano da
+   `_numero()`, che davanti a un oggetto, una lista o un booleano restituisce una cella
+   vuota invece di sollevare. Una cella vuota e' un difetto da correggere; un documento
+   che non esiste e' un'altra cosa.
+3. **Ogni capitolo e' isolato**: `build()` monta i dodici capitoli attraverso `_capitolo()`,
+   che cattura l'eccezione, scrive nel documento che quel capitolo non e' stato prodotto e
+   perche', e lascia la traccia completa nei log. La relazione esce sempre.
+
+Fuori strada ma trovato per via: `test_to_dict_keys` in `test_cost_model.py` era rosso
+gia' su `main` — elencava le chiavi del costo turno e non conosceva `bds5Cost`, aggiunta
+dopo. Corretto.
+
+Nel passaggio ho anche portato nel dossier le **manopole del ciclo** (`ciclo`: passo,
+ancora, seme, pazienza, controllo), che prima non ci arrivavano: il capitolo 7 ora apre
+dichiarando le regole d'ingaggio del giro invece di lasciarle intendere dai numeri.
+
+Lezione da tenere: **quando un dato passa da due strade diverse, il test va scritto sulla
+strada che il codice percorre davvero, non su quella che si ha sotto gli occhi.**
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

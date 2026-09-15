@@ -36,6 +36,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import sys
+import traceback
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -788,6 +789,33 @@ MOTIVO_RIFIUTO = {
 }
 
 
+def _fb_termometro(f: dict) -> dict:
+    """Legge una riga del termometro del ciclo da QUALUNQUE delle due forme.
+
+    Il dossier della relazione porta il feedback grezzo come esce dal motore
+    (`afterRound`, `ancora` come oggetto, `distanzaDalPrecedenteEur`); la
+    rotta del cruscotto lo appiattisce prima di mostrarlo (`dopoRound`,
+    `ancora` come numero, `spostamentoEur`). Qui si accettano entrambe: la
+    relazione non deve rompersi a seconda di chi gliel'ha passata."""
+    anc = f.get("ancora")
+    anc_dict = anc if isinstance(anc, dict) else {}
+    giunti = f.get("giunti") if isinstance(f.get("giunti"), dict) else {}
+    return {
+        "dopoRound": f.get("dopoRound") if f.get("dopoRound") is not None else f.get("afterRound"),
+        "ancoraRound": anc_dict.get("round") if anc_dict else (anc if not isinstance(anc, dict) else None),
+        "modo": f.get("modo") or anc_dict.get("modo") or "",
+        "cambiInRegola": anc_dict.get("cambiInRegola"),
+        "blocchi": (f.get("blocchiPenalizzati") if f.get("blocchiPenalizzati") is not None
+                    else f.get("blocksPenalized")),
+        "archiInVigore": f.get("archiInVigore"),
+        "massaEur": f.get("massaPenalitaEur"),
+        "spostamentoEur": (f.get("spostamentoEur") if f.get("spostamentoEur") is not None
+                           else f.get("distanzaDalPrecedenteEur")),
+        "escalation": (f.get("escalationGiunti") if f.get("escalationGiunti") is not None
+                       else giunti.get("escalation")),
+    }
+
+
 def render_ciclo(d: dict) -> str:
     """7 — IL CICLO INTEGRATO: come turni macchina e turni guida sono stati
     decisi INSIEME, e non uno dopo l'altro.
@@ -809,6 +837,21 @@ def render_ciclo(d: dict) -> str:
         "guida ha sofferto e rimanda quel dolore indietro ai mezzi come un prezzo sui singoli "
         "collegamenti fra corsa e corsa. Il giro dopo il solver evita di ricomporre gli accostamenti "
         "che il lato guida non sa tagliare. Si ferma quando smette di migliorare."))
+
+    cic = v.get("ciclo") if isinstance(v.get("ciclo"), dict) else None
+    if cic:
+        _anc = {"best": "il giro migliore fin qui", "last": "il giro appena fatto"}.get(
+            str(cic.get("ancora") or ""), str(cic.get("ancora") or "non dichiarata"))
+        voci = [f'il prezzo nuovo entra in vigore per <b>{fmt_n((cic.get("passo") or 0) * 100)} %</b>, '
+                f'il resto resta quello del giro prima']
+        voci.append(f'il dolore si misura su <b>{_anc}</b>')
+        voci.append("i mezzi ripartono dalle catene del piano migliore"
+                    if cic.get("seme") else "ogni giro riparte da zero")
+        if cic.get("pazienza"):
+            voci.append(f'ci si ferma dopo <b>{fmt_n(cic.get("pazienza"))}</b> giri senza progresso')
+        voci.append("ogni proposta della sonda è verificata con un calcolo di controllo"
+                    if cic.get("controllo") else "le proposte della sonda non sono state ricontrollate")
+        out.append(para("<b>Le regole d'ingaggio di questo ciclo.</b> " + "; ".join(voci) + "."))
 
     if rounds:
         out.append("<h3>7.1 I giri del ciclo</h3>")
@@ -841,10 +884,13 @@ def render_ciclo(d: dict) -> str:
             "«spostamento» è di quanto sono cambiate rispetto al giro prima. Se lo spostamento non cala, "
             "il solver dei mezzi sta inseguendo un bersaglio che salta, e nessun giro può migliorare il "
             "precedente."))
-        righe = [(fmt_n(f.get("dopoRound")), fmt_n(f.get("ancora")), f.get("modo") or "",
-                  fmt_n(f.get("blocchiPenalizzati")), fmt_n(f.get("archiInVigore")),
-                  fmt_eur(f.get("massaPenalitaEur")), fmt_eur(f.get("spostamentoEur")),
-                  f'×{fmt_n(f.get("escalationGiunti") or 1, 2)}') for f in fb]
+        righe = []
+        for f in fb:
+            t = _fb_termometro(f)
+            righe.append((fmt_n(t["dopoRound"]), fmt_n(t["ancoraRound"]), t["modo"],
+                          fmt_n(t["blocchi"]), fmt_n(t["archiInVigore"]),
+                          fmt_eur(t["massaEur"]), fmt_eur(t["spostamentoEur"]),
+                          f'×{fmt_n(t["escalation"] or 1, 2)}'))
         out.append(table(["Dopo il giro", "Calcolato sul giro", "Ancora", "Blocchi", "Archi in vigore",
                           "Massa", "Spostamento", "Pressione sui cambi"], righe, numeric_from=1))
 
@@ -928,6 +974,24 @@ def render_sonda(v: dict) -> str:
     return "".join(out)
 
 
+def _attesa(x: dict) -> dict:
+    """L'attesa di una relazione, comunque sia scritta.
+
+    L'analisi delle coincidenze la porta come oggetto (`attesaMin`: min, max,
+    mediana); qualche consumatore la vuole piatta. Si accettano entrambe, e
+    quando manca si restituisce un oggetto vuoto invece di far esplodere il
+    formattatore su una chiave assente."""
+    a = x.get("attesaMin")
+    if isinstance(a, dict):
+        return a
+    piatta = {"min": x.get("attesaMinMin", x.get("minWaitMin")),
+              "max": x.get("attesaMaxMin", x.get("maxWaitMin")),
+              "mediana": x.get("attesaMedianaMin", x.get("medianWaitMin"))}
+    if isinstance(a, (int, float)) and piatta["min"] is None:
+        piatta["min"] = a
+    return piatta
+
+
 def render_coincidenze(d: dict) -> str:
     """8 — LE COINCIDENZE: che servizio produce questo orario.
 
@@ -957,10 +1021,14 @@ def render_coincidenze(d: dict) -> str:
     ]))
     if esistenti:
         out.append("<h3>8.1 Le relazioni che l'orario realizza</h3>")
-        righe = [(x.get("node") or "", f'{x.get("fromRoute")} → {x.get("toRoute")}', fmt_n(x.get("occurrences")),
-                  f'{fmt_n(x.get("minWaitMin"))}–{fmt_n(x.get("maxWaitMin"))}′',
-                  ", ".join(f'{s_.get("arrivo")}→{s_.get("partenza")}' for s_ in (x.get("sample") or [])[:3]))
-                 for x in esistenti]
+        righe = []
+        for x in esistenti:
+            a = _attesa(x)
+            righe.append((x.get("node") or "", f'{x.get("fromRoute")} → {x.get("toRoute")}',
+                          fmt_n(x.get("occurrences")),
+                          f'{fmt_n(a.get("min"))}–{fmt_n(a.get("max"))}′',
+                          ", ".join(f'{s_.get("arrivo")}→{s_.get("partenza")}'
+                                    for s_ in (x.get("sample") or [])[:3])))
         out.append(table(["Nodo", "Da → a", "Volte al giorno", "Attesa", "Esempi di orario"], righe, numeric_from=2))
         out.append(para('<span class="small">Nessuno spostamento proposto dal sistema ha il diritto di rompere '
                         'queste relazioni: sono un vincolo del ciclo, non una preferenza.</span>'))
@@ -968,10 +1036,14 @@ def render_coincidenze(d: dict) -> str:
         out.append("<h3>8.2 Le occasioni mancate per poco</h3>")
         out.append(para("Due linee che si sfiorano a un nodo con un'attesa appena fuori dalla finestra utile. "
                         "Sono il valore che la rete produrrebbe quasi gratis, e che nessuno contava."))
-        righe = [(x.get("node") or "", f'{x.get("fromRoute")} → {x.get("toRoute")}', fmt_n(x.get("occorrenze") or x.get("occurrences")),
-                  f'{fmt_n(x.get("attesaMinMin"))}–{fmt_n(x.get("attesaMaxMin"))}′',
-                  fmt_n(x.get("attesaMedianaMin")),
-                  "sì" if x.get("giaInCoincidenza") else "no") for x in mancate[:20]]
+        righe = []
+        for x in mancate[:20]:
+            a = _attesa(x)
+            righe.append((x.get("node") or "", f'{x.get("fromRoute")} → {x.get("toRoute")}',
+                          fmt_n(x.get("occorrenze") or x.get("occurrences")),
+                          f'{fmt_n(a.get("min"))}–{fmt_n(a.get("max"))}′',
+                          fmt_n(a.get("mediana")),
+                          "sì" if x.get("giaInCoincidenza") else "no"))
         out.append(table(["Nodo", "Da → a", "Incontri", "Attesa", "Mediana", "Già in coincidenza"], righe, numeric_from=2))
         if len(mancate) > 20:
             out.append(para(f'<span class="small">… e altre {len(mancate) - 20} relazioni mancate per poco.</span>'))
@@ -1155,13 +1227,31 @@ def render_appendix(d: dict) -> str:
     return "".join(out)
 
 
+def _capitolo(render, dossier: dict, nome: str) -> str:
+    """Un capitolo che si rompe non deve portarsi via la relazione.
+
+    Il dossier arriva dal campo dove la forma dei dati cambia nel tempo: e'
+    gia' successo che un campo diventasse un oggetto e che il formattatore si
+    fermasse a meta' documento, lasciando l'operatore senza niente. Meglio un
+    capitolo mancante, dichiarato in chiaro nel documento e registrato nei
+    log, che nessun documento."""
+    try:
+        return render(dossier)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"[report] capitolo «{nome}» non prodotto: {type(e).__name__}: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        return para(f'<i>Il capitolo «{esc(nome)}» non e\u0027 stato prodotto: '
+                    f'{esc(type(e).__name__)}. Il resto della relazione e\u0027 completo.</i>')
+
+
 def build(dossier: dict) -> str:
     m = dossier.get("meta") or {}
     title = m.get("title") or "Relazione del piano di esercizio"
-    body = "".join([render_cover(dossier), render_summary(dossier), render_network(dossier), render_planning(dossier),
-                    render_method(dossier), render_vehicles(dossier), render_crew(dossier),
-                    render_ciclo(dossier), render_coincidenze(dossier), render_costs(dossier),
-                    render_runs(dossier), render_appendix(dossier)])
+    capitoli = [(render_cover, "copertina"), (render_summary, "sintesi"), (render_network, "rete"),
+                (render_planning, "pianificazione"), (render_method, "metodo"), (render_vehicles, "turni macchina"),
+                (render_crew, "turni guida"), (render_ciclo, "ciclo integrato"), (render_coincidenze, "coincidenze"),
+                (render_costs, "costi"), (render_runs, "scenari"), (render_appendix, "allegati")]
+    body = "".join(_capitolo(r, dossier, nome) for r, nome in capitoli)
     return (f'<!doctype html><html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{esc(title)}</title><style>{rc.CSS}</style></head><body><div class="page">{body}'
             f'<p class="meta">Relazione generata automaticamente da TransitIntel · {esc(m.get("generatedAt") or "")}</p></div></body></html>')
