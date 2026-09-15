@@ -1,18 +1,20 @@
 import React, { useState, lazy, Suspense } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Database, FileArchive, RefreshCw, MapPin } from "lucide-react";
+import { Database, FileArchive, RefreshCw, MapPin, Activity } from "lucide-react";
 
 // Lazy-load each sub-page to preserve code-splitting
 const GtfsContent = lazy(() => import("@/pages/gtfs"));
 const SyncContent = lazy(() => import("@/pages/sync"));
 const FermateMizar = lazy(() => import("@/pages/fermate-mizar"));
+const DiarioAvm = lazy(() => import("@/pages/diario-avm"));
 
-type Tab = "gtfs" | "sync" | "paline";
+type Tab = "gtfs" | "sync" | "paline" | "diario";
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "gtfs", label: "Importa GTFS", icon: <FileArchive className="w-3.5 h-3.5" /> },
   { id: "sync", label: "Sincronizza Dati", icon: <RefreshCw className="w-3.5 h-3.5" /> },
   { id: "paline", label: "Paline Mizar", icon: <MapPin className="w-3.5 h-3.5" /> },
+  { id: "diario", label: "Diario AVM", icon: <Activity className="w-3.5 h-3.5" /> },
 ];
 
 function TabLoader() {
@@ -86,6 +88,7 @@ export default function DataPage() {
             {tab === "gtfs" && <GtfsContent />}
             {tab === "sync" && <SyncContent />}
             {tab === "paline" && <FermateMizar />}
+            {tab === "diario" && <DiarioAvm />}
           </Suspense>
         </motion.div>
       </AnimatePresence>
