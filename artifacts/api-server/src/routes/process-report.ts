@@ -210,6 +210,8 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
   let stops: any[] = [];
   let flex: any[] = [];
   let stopsCount: number | null = null;
+  const percorsi: any[] = [];
+  let clusters: { name: string; stops: any[] }[] = [];
   if (psId) {
     const rr = rows(await db.execute(sql`
       SELECT id, short_name, long_name, attributes FROM ps_routes
@@ -254,6 +256,20 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
         const vs = byV.get(v.id) ?? [];
         if (points.length < 2) points = vs.map((s: any) => [Number(s.lat), Number(s.lon)]).filter((p: number[]) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
         if (points.length >= 2 && v.direction === 0) polylines.push({ name: routeName.get(v.route_id) ?? v.name, points });
+        // Ogni singolo percorso, andata e ritorno: il disegno della rete tiene
+        // una variante per linea per restare leggibile, ma la relazione deve
+        // poter mostrare anche il tracciato di ciascuna variante da solo.
+        if (points.length >= 2) {
+          percorsi.push({
+            line: routeName.get(v.route_id) ?? v.name,
+            variant: v.name ?? null,
+            direction: Number(v.direction ?? 0),
+            isDefault: !!v.is_default,
+            points,
+            stops: vs.map((s: any) => ({ name: s.name, lat: Number(s.lat), lon: Number(s.lon) }))
+                     .filter((x: any) => Number.isFinite(x.lat) && Number.isFinite(x.lon)),
+          });
+        }
         for (const s of vs) {
           if (!stopSeen.has(s.stop_id) && Number.isFinite(Number(s.lat)) && Number.isFinite(Number(s.lon))) {
             const up = String(s.name ?? "").toUpperCase();
@@ -267,6 +283,34 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       // se lo stesso nodo compare più volte (fermate omonime), tienine uno solo come nodo
       const nodeNames = new Set<string>();
       for (const s of stops) { if (s.node) { if (nodeNames.has(s.name)) s.node = false; else nodeNames.add(s.name); } }
+
+      // ── I nodi di interscambio che contano ──
+      // La configurazione aziendale elenca i cluster di TUTTA la rete: su un
+      // piano urbano di Ancona finivano in relazione anche Jesi, Osimo,
+      // Chiaravalle e Castelferretti, che nessuna di queste linee tocca, e lo
+      // stesso nodo compariva otto volte perché otto cluster portano quel nome.
+      // Qui si tiene solo ciò che le linee del piano attraversano davvero, e i
+      // cluster che raggruppano le stesse fermate diventano uno solo.
+      const normalizza = (x: string) => String(x ?? "").toUpperCase()
+        .replace(/[.'`]/g, "").replace(/\s+/g, " ").trim();
+      const perFirma = new Map<string, { name: string; stops: any[] }>();
+      for (const c of (Array.isArray(crew?.clusters) ? crew.clusters : [])) {
+        const cn = normalizza(c?.name);
+        if (!cn) continue;
+        const mie = stops.filter((s: any) => {
+          const sn = normalizza(s.name);
+          return sn === cn || sn.startsWith(cn) || cn.startsWith(sn);
+        });
+        if (mie.length === 0) continue;   // nessuna fermata di queste linee: fuori perimetro
+        const firma = mie.map((s: any) => s.name).sort().join("|");
+        const gia = perFirma.get(firma);
+        // a parità di fermate raggruppate tiene il nome più esteso, che è
+        // quello scritto per intero ("Stazione F.S." batte "Stazione Fs")
+        if (!gia || String(c.name).length > gia.name.length) {
+          perFirma.set(firma, { name: String(c.name), stops: mie });
+        }
+      }
+      clusters = [...perFirma.values()].sort((a, b) => b.stops.length - a.stops.length || a.name.localeCompare(b.name));
     }
   }
   const lines = (psRoutes.length > 0 ? psRoutes : [...perRoute.keys()].map(k => ({ id: k, short_name: perRoute.get(k)!.name, attributes: {} })))
@@ -401,7 +445,7 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       isTest: !!extra.isTest, testNote: extra.testNote ?? null,
       source: input?.source ?? null, mode: input?.mode ?? result?.solver ?? null,
     },
-    network: { lines, stopsCount, nodes: Array.isArray(crew?.clusters) ? crew.clusters.map((c: any) => c?.name).filter(Boolean) : [], polylines, stops },
+    network: { lines, stopsCount, nodes: clusters.map((c) => c.name), clusters, polylines, percorsi, stops },
     planning: {
       timeline, activityCounts,
       decisions: Array.isArray(extra.decisions) ? extra.decisions : [],

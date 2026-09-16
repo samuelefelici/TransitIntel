@@ -1144,6 +1144,66 @@ mette mezzi piu' piccoli su tre quarti della 91.
 
 **La sonda** ha accettato 2 spostamenti (30 minuti) contro i 21 (300 minuti) di BB.
 Con meno turni fuori norma da riparare, ha meno da comprare.
+## Il capitolo della rete, rivisto con l'operatore
+
+Rileggendo una relazione vera l'operatore ha indicato quattro cose. Le prime
+quattro sono fatte; le altre due richiedono dati che ci sono ma vanno collegati.
+
+**Il titolo.** «1. Sintesi per la direzione» diventa «1. Sintesi». Il capitolo
+resta, il nome si accorcia.
+
+**I nodi di interscambio erano sbagliati, non solo brutti.** Il dossier prendeva
+`crew.clusters`, cioe' i cluster di TUTTA la rete aziendale. Su un piano di sole
+linee urbane di Ancona la relazione elencava **73 nodi** fra cui Stazione Jesi,
+Osimo Stazione, Chiaravalle Capolinea e Castelferretti — che nessuna di queste
+linee tocca — e lo stesso posto tornava otto volte («Arco Clementino» ×8) o in
+grafie diverse («Madonetta»/«Madonnetta», «Stazione Fs»/«Stazione F.S.»/«Stazione
+FS»/«Stazione Ancna», «Piazza Ugo bassi»/«Pzz. U. Bassi»/«Ugo bassi»).
+
+Ora il dossier tiene solo i cluster con almeno una fermata delle linee del piano,
+e due cluster che raggruppano le stesse fermate diventano uno solo (a parita' si
+tiene il nome scritto per intero). Il filtro e' sulle fermate, non sul nome: e'
+per quello che regge anche dove la grafia diverge.
+
+**I nodi si vedono.** `cluster_map()` disegna ogni nodo come un'area colorata —
+il guscio convesso delle sue fermate — con dentro i punti delle fermate che
+raggruppa, piu' la tabella di quali sono. Un nodo di interscambio non e' una
+fermata: e' il gruppo di banchine fra cui un conducente passa a piedi per
+cambiare vettura, e finche' era una parola in un elenco non si capiva.
+
+**Ogni percorso ha la sua mappa.** Il disegno della rete tiene una variante per
+linea o diventa illeggibile; il dossier ora porta anche `percorsi`, cioe' TUTTE
+le varianti con verso, fermate e tracciato, e il capitolo 2.4 ne disegna una per
+una. Per non gonfiare il documento i tracciati passano da `alleggerisci()`, che
+tiene 160 vertici su migliaia mantenendo primo, ultimo e forma.
+
+Capitolo 2 ora: 2.1 le linee, 2.2 i nodi, 2.3 il disegno della rete, 2.4 i
+percorsi uno per uno.
+
+### Quello che manca, e i dati che ci sono gia'
+
+L'operatore ha chiesto anche la copertura pedonale per fermata con le isocrone,
+la popolazione per sezione censuaria ISTAT, e che la relazione tenga conto del
+traffico, di come si muove la popolazione e dei POI. Ho verificato: **i dati ci
+sono tutti**.
+
+- `census_sections` — codice ISTAT, centroide, **popolazione**, area, densita' e
+  **geometria GeoJSON** della sezione;
+- `points_of_interest` — provati sul campo: 49 POI veri entro 400 m da Piazza
+  Cavour, da mapbox/tilequery;
+- `istat_commuting_od` — la matrice dei pendolari del Censimento, comune→comune,
+  per motivo (lavoro/studio), mezzo e fascia oraria: e' «come si muove la
+  popolazione», ma a livello comunale, non di fermata;
+- `traffic_snapshots` — velocita', velocita' libera e livello di congestione per
+  segmento, con l'ora del rilievo;
+- `isochrones.ts` — isocrone pedonali vere con cache su DB e ricaduta sul raggio
+  in linea d'aria quando manca la chiave del provider.
+
+Il nodo da sciogliere e' la forma, non il dato: **le fermate sono 595**. Una
+mappa di isocrona per fermata vuol dire 595 mappe, che nessuno legge e che
+gonfiano il documento oltre ogni misura. La forma sensata e' l'isocrona disegnata
+per linea (tutte le fermate di quella linea sulla stessa mappa) piu' una riga per
+fermata con la popolazione raggiunta a 5, 10 e 15 minuti a piedi.
 
 ## In sospeso
 

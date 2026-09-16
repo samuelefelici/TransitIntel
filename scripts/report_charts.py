@@ -414,6 +414,101 @@ def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, su
     return figure(title, "".join(out), subtitle=subtitle, legend=legend, table=tbl, note=note)
 
 
+def alleggerisci(points: Sequence, massimo: int = 160) -> list:
+    """Meno punti, stessa forma.
+
+    Un tracciato di linea puo' avere migliaia di vertici: disegnati in una
+    mappa larga 900 pixel non si distinguono, ma pesano nel documento. Si
+    tiene un punto ogni N, primo e ultimo sempre."""
+    pts = list(points)
+    if len(pts) <= massimo:
+        return pts
+    passo = len(pts) / float(massimo)
+    fuori = [pts[int(i * passo)] for i in range(massimo)]
+    if fuori[-1] != pts[-1]:
+        fuori.append(pts[-1])
+    return fuori
+
+
+def _contorno(punti: Sequence[tuple]) -> list:
+    """Il guscio convesso di un gruppo di punti (Andrew monotone chain)."""
+    p = sorted(set(punti))
+    if len(p) <= 2:
+        return p
+
+    def croce(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    sotto: list = []
+    for q in p:
+        while len(sotto) >= 2 and croce(sotto[-2], sotto[-1], q) <= 0:
+            sotto.pop()
+        sotto.append(q)
+    sopra: list = []
+    for q in reversed(p):
+        while len(sopra) >= 2 and croce(sopra[-2], sopra[-1], q) <= 0:
+            sopra.pop()
+        sopra.append(q)
+    return sotto[:-1] + sopra[:-1]
+
+
+def cluster_map(clusters: Sequence[dict], title: str, subtitle: str = "",
+                width: int = 900, height: int = 620, note: str = "") -> str:
+    """clusters: [{name, stops: [{name, lat, lon}]}].
+
+    Ogni nodo di interscambio e' un'area colorata che racchiude le fermate che
+    raggruppa: e' cosi' che si vede che cosa vuol dire davvero «Piazza Cavour»
+    quando un turno ci cambia vettura."""
+    gruppi = [c for c in clusters if c.get("stops")]
+    pts = [(float(s["lat"]), float(s["lon"])) for c in gruppi for s in c["stops"]]
+    if not pts:
+        return ""
+    lat0, lat1 = min(p[0] for p in pts), max(p[0] for p in pts)
+    lon0, lon1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    pad = 30
+    kx = math.cos(math.radians((lat0 + lat1) / 2))
+    dx, dy = max(1e-6, (lon1 - lon0) * kx), max(1e-6, lat1 - lat0)
+    scale = min((width - 2 * pad) / dx, (height - 2 * pad) / dy)
+
+    def P(lat, lon):
+        return pad + (lon - lon0) * kx * scale, pad + (lat1 - lat) * scale
+
+    out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
+           f'role="img" aria-label="{esc(title)}">',
+           f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>']
+    names, cols = [], []
+    for i, c in enumerate(gruppi):
+        col = SERIES[i % len(SERIES)]
+        names.append(f'{c["name"]} ({len(c["stops"])})')
+        cols.append(col)
+        xy = [P(float(s["lat"]), float(s["lon"])) for s in c["stops"]]
+        guscio = _contorno([(round(x, 1), round(y, 1)) for x, y in xy])
+        if len(guscio) >= 3:
+            d = " ".join(f"{'M' if j == 0 else 'L'}{x:.1f},{y:.1f}" for j, (x, y) in enumerate(guscio)) + " Z"
+            out.append(f'<path d="{d}" fill="{col}" fill-opacity="0.16" stroke="{col}" '
+                       f'stroke-width="1.5" stroke-linejoin="round"><title>{esc(c["name"])}</title></path>')
+        else:
+            # una o due fermate: un'aureola invece di un poligono
+            for x, y in xy:
+                out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="13" fill="{col}" fill-opacity="0.16" '
+                           f'stroke="{col}" stroke-width="1.5"><title>{esc(c["name"])}</title></circle>')
+        for (x, y), s in zip(xy, c["stops"]):
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.6" fill="{col}">'
+                       f'<title>{esc(s.get("name", ""))}</title></circle>')
+        cx = sum(x for x, _ in xy) / len(xy)
+        cy = min(y for _, y in xy) - 7
+        out.append(f'<text x="{cx:.1f}" y="{cy:.1f}" font-size="11" font-weight="600" text-anchor="middle" '
+                   f'fill="{INK}" font-family=\'{FONT}\'>{esc(c["name"])}</text>')
+    out.append("</svg>")
+    tbl = _table(["Nodo", "Fermate raggruppate", "Quali"],
+                 [(c["name"], len(c["stops"]),
+                   ", ".join(s.get("name", "") for s in c["stops"][:6])
+                   + (f' … +{len(c["stops"]) - 6}' if len(c["stops"]) > 6 else ""))
+                  for c in gruppi],
+                 caption="Nodi di interscambio e fermate che raggruppano")
+    return figure(title, "".join(out), subtitle=subtitle, legend=_legend(names, cols), table=tbl, note=note)
+
+
 # ── Riquadri KPI (quando il dato è UN numero) ──
 def kpi_row(tiles: Sequence[tuple[str, str, str]]) -> str:
     """tiles: [(label, value, hint)]"""
