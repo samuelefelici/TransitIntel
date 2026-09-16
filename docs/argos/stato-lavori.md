@@ -1254,6 +1254,42 @@ e fascia oraria; il comune del piano si ricava dai primi sei caratteri del codic
 ISTAT delle sezioni censuarie vicine alle fermate. Mancano anche la popolazione
 per fermata, il traffico e i POI nel capitolo.
 
+## «Non ci siamo»: due difetti che lo sfondo non risolveva
+
+L'operatore ha mandato due schermate della relazione. Erano generate dal deploy
+che conteneva il primo giro di correzioni (nodi filtrati, una mappa per percorso)
+ma NON il secondo (sfondo, colori veri, cerchi), quindi in parte mostravano
+difetti gia' corretti e in attesa di merge. In parte no: due problemi restavano,
+e lo sfondo da solo non li avrebbe tolti.
+
+**La mappa d'insieme dei nodi non puo' mostrare le fermate.** Sette nodi sparsi
+su venti chilometri: ciascuno e' un cerchio di dieci pixel, e i nomi delle sue
+fermate — scritti accanto a punti che distano due pixel — si coprono a vicenda.
+Nella schermata si vedeva «Via Bocconi (2)» disegnato come due aureole separate e
+«Stazione F.S. (3)» come un trattino di sei pixel.
+
+La risposta non e' disegnare meglio la stessa mappa, e' **separare le domande**:
+
+- `cluster_map` risponde a «dove stanno i nodi»: sfondo, un cerchio per nodo con
+  raggio minimo visibile, solo il nome del nodo;
+- `nodo_map` risponde a «che cosa contiene questo nodo»: una mappa per ciascuno,
+  zoomata sulle sue fermate, ognuna col proprio nome, alternando destra e
+  sinistra perche' due banchine vicine non si coprano.
+
+Le mappe di dettaglio stanno affiancate in una griglia che si adatta alla
+larghezza. Il riquadro non scende sotto i **350 metri di lato**: sotto, lo sfondo
+diventa un dettaglio di marciapiede senza riferimenti riconoscibili.
+
+**Trentadue fermate non possono avere trentadue nomi.** La soglia che avevo messo
+(nomi fino a 22 fermate) era comunque troppo alta, e sopra la soglia le fermate
+restavano puntini anonimi. Ora sopra le dieci fermate il percorso le **numera**
+lungo il tracciato — un cerchietto bianco col numero — e sotto la mappa c'e'
+l'elenco ordinato. Il nome di ogni fermata resta leggibile, solo non e' piu'
+scritto sopra il disegno.
+
+Lezione: quando una figura deve rispondere a due domande a scale diverse, non e'
+il disegno a essere sbagliato, sono due figure.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

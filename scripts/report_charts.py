@@ -404,7 +404,8 @@ def _merc_lat(y: float) -> float:
     return math.degrees(2 * math.atan(math.exp(math.radians(y))) - math.pi / 2)
 
 
-def riquadro_mercatore(pts: Sequence[tuple], width: int, height: int, margine: float = 0.08):
+def riquadro_mercatore(pts: Sequence[tuple], width: int, height: int, margine: float = 0.08,
+                       lato_minimo_m: float = 0.0):
     """Il riquadro da chiedere allo sfondo, gia' nella forma del disegno.
 
     Mapbox adatta il riquadro all'immagine mantenendo le proporzioni: se
@@ -417,6 +418,15 @@ def riquadro_mercatore(pts: Sequence[tuple], width: int, height: int, margine: f
     dx, dy = max(1e-9, x1 - x0), max(1e-9, y1 - y0)
     x0 -= dx * margine; x1 += dx * margine
     y0 -= dy * margine; y1 += dy * margine
+    if lato_minimo_m > 0:
+        # un grado di longitudine a questa latitudine, in metri
+        lat_media = _merc_lat((y0 + y1) / 2)
+        m_per_grado = 111_320 * math.cos(math.radians(lat_media))
+        minimo = lato_minimo_m / max(1.0, m_per_grado)
+        if (x1 - x0) < minimo:
+            c = (x0 + x1) / 2; x0, x1 = c - minimo / 2, c + minimo / 2
+        if (y1 - y0) < minimo:
+            c = (y0 + y1) / 2; y0, y1 = c - minimo / 2, c + minimo / 2
     dx, dy = x1 - x0, y1 - y0
     if dx / dy > width / height:
         manca = dx * height / width - dy
@@ -427,10 +437,11 @@ def riquadro_mercatore(pts: Sequence[tuple], width: int, height: int, margine: f
     return x0, y0, x1, y1
 
 
-def proiettore(pts: Sequence[tuple], width: int, height: int, margine: float = 0.08):
+def proiettore(pts: Sequence[tuple], width: int, height: int, margine: float = 0.08,
+               lato_minimo_m: float = 0.0):
     """Da (lat, lon) a (x, y) nel disegno, in Mercatore. Restituisce anche il
     riquadro, che serve a chiedere lo sfondo della stessa area."""
-    x0, y0, x1, y1 = riquadro_mercatore(pts, width, height, margine)
+    x0, y0, x1, y1 = riquadro_mercatore(pts, width, height, margine, lato_minimo_m)
     sx = width / max(1e-9, x1 - x0)
     sy = height / max(1e-9, y1 - y0)
 
@@ -479,12 +490,14 @@ def _strato_sfondo(riquadro, width: int, height: int) -> str:
             f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}" opacity="0.26"/>')
 
 
-def _etichetta(x: float, y: float, testo: str, dim: int = 10, peso: str = "400") -> str:
+def _etichetta(x: float, y: float, testo: str, dim: int = 10, peso: str = "400",
+               ancora: str = "start") -> str:
     """Testo leggibile anche sopra una mappa: alone chiaro sotto le lettere."""
     if not testo:
         return ""
     t = esc(testo)
-    comune = f'x="{x:.1f}" y="{y:.1f}" font-size="{dim}" font-weight="{peso}" font-family=\'{FONT}\''
+    comune = (f'x="{x:.1f}" y="{y:.1f}" font-size="{dim}" font-weight="{peso}" '
+              f'text-anchor="{ancora}" font-family=\'{FONT}\'')
     return (f'<text {comune} stroke="#ffffff" stroke-width="3" stroke-linejoin="round" opacity="0.9">{t}</text>'
             f'<text {comune} fill="{INK}">{t}</text>')
 
@@ -522,7 +535,8 @@ def punti_di_geojson(geom: dict) -> list:
 
 def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, subtitle: str = "",
                 width: int = 900, height: int = 620, note: str = "", max_series: int = 8,
-                sfondo: bool = True, isocrone: Sequence[dict] = (), etichetta_fermate: bool = False) -> str:
+                sfondo: bool = True, isocrone: Sequence[dict] = (), etichetta_fermate: bool = False,
+                numera_fermate: bool = False) -> str:
     """polylines: [{name, points: [(lat, lon), ...], color?}]; stops: [{name, lat, lon, node?}].
 
     `isocrone`: [{minuti, geom}] disegnate SOTTO i tracciati, dalla piu' larga
@@ -574,7 +588,13 @@ def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, su
         else:
             out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.8" fill="#ffffff" stroke="{INK}" stroke-width="1.2">'
                        f'<title>{esc(s_.get("name", ""))}</title></circle>')
-            if etichetta_fermate:
+            if numera_fermate:
+                # con trenta fermate i nomi si coprono: si numerano lungo il
+                # percorso e l'elenco ordinato sta nella tabella sotto.
+                out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="#ffffff" '
+                           f'stroke="{INK}" stroke-width="1.2" opacity="0.92"/>')
+                out.append(_etichetta(x, y + 3, str(s_.get("n") or ""), 8, "700", "middle"))
+            elif etichetta_fermate:
                 out.append(_etichetta(x + 5, y + 3, s_.get("name", ""), 8))
     out.append("</svg>")
     if len(polylines) > max_series and not any(pl.get("color") for pl in polylines):
@@ -625,37 +645,38 @@ def _contorno(punti: Sequence[tuple]) -> list:
 
 
 def cluster_map(clusters: Sequence[dict], title: str, subtitle: str = "",
-                width: int = 900, height: int = 640, note: str = "") -> str:
-    """clusters: [{name, stops: [{name, lat, lon}]}].
+                width: int = 900, height: int = 560, note: str = "") -> str:
+    """Dove stanno i nodi, tutti insieme.
 
-    Ogni nodo e' un cerchio colorato che contiene le sue fermate, ciascuna col
-    proprio nome: e' cosi' che si vede che cosa vuol dire davvero «Piazza
-    Cavour» quando un turno ci cambia vettura — non un punto, un gruppo di
-    banchine fra cui il conducente passa a piedi."""
+    A questa scala — una citta' intera — i nomi delle singole fermate si
+    sovrappongono e non si leggono: qui c'e' solo il nome del nodo e un cerchio
+    abbastanza grande da vedersi. Le fermate coi loro nomi stanno nelle mappe
+    di dettaglio, una per nodo, che `nodo_map` disegna."""
     gruppi = [c for c in clusters if c.get("stops")]
     pts = [(float(s_["lat"]), float(s_["lon"])) for c in gruppi for s_ in c["stops"]]
     if not pts:
         return ""
-    P, riquadro = proiettore(pts, width, height, margine=0.12)
+    P, riquadro = proiettore(pts, width, height, margine=0.14)
     out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
            f'role="img" aria-label="{esc(title)}">',
            _strato_sfondo(riquadro, width, height)]
     names, cols = [], []
     for i_, c in enumerate(gruppi):
         col = SERIES[i_ % len(SERIES)]
-        names.append(f'{c["name"]} ({len(c["stops"])})'); cols.append(col)
+        names.append(f'{c["name"]} ({len(c["stops"])})')
+        cols.append(col)
         xy = [P(float(s_["lat"]), float(s_["lon"])) for s_ in c["stops"]]
         cx = sum(x for x, _ in xy) / len(xy)
         cy = sum(y for _, y in xy) / len(xy)
-        # il cerchio contiene tutte le fermate del nodo, con un po' d'aria
-        r = max(16.0, max(math.hypot(x - cx, y - cy) for x, y in xy) + 13)
-        out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{col}" fill-opacity="0.18" '
-                   f'stroke="{col}" stroke-width="2"><title>{esc(c["name"])}</title></circle>')
-        for (x, y), s_ in zip(xy, c["stops"]):
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3.2" fill="{col}" stroke="#ffffff" stroke-width="1">'
-                       f'<title>{esc(s_.get("name", ""))}</title></circle>')
-            out.append(_etichetta(x + 5, y + 3, s_.get("name", ""), 8))
-        out.append(_etichetta(cx - len(c["name"]) * 3.1, cy - r - 5, c["name"], 12, "700"))
+        # il cerchio deve VEDERSI anche quando le fermate sono a cinquanta metri
+        r = max(11.0, max(math.hypot(x - cx, y - cy) for x, y in xy) + 8)
+        out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{col}" fill-opacity="0.22" '
+                   f'stroke="{col}" stroke-width="2.2">'
+                   f'<title>{esc(c["name"])}: {len(c["stops"])} fermate</title></circle>')
+        for x, y in xy:
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.4" fill="{col}" '
+                       f'stroke="#ffffff" stroke-width="0.8"/>')
+        out.append(_etichetta(cx, cy - r - 6, c["name"], 12, "700", "middle"))
     out.append("</svg>")
     tbl = _table(["Nodo", "Fermate", "Quali"],
                  [(c["name"], len(c["stops"]), ", ".join(s_.get("name", "") for s_ in c["stops"]))
@@ -663,6 +684,39 @@ def cluster_map(clusters: Sequence[dict], title: str, subtitle: str = "",
                  caption="Nodi di interscambio e fermate che raggruppano")
     return figure(title, "".join(out), subtitle=subtitle, legend=_legend(names, cols), table=tbl,
                   note=note or NOTA_MAPPA)
+
+
+def nodo_map(cluster: dict, colore: str, width: int = 430, height: int = 300) -> str:
+    """Un nodo da vicino: le sue fermate, ciascuna col proprio nome.
+
+    Nella mappa d'insieme un nodo e' un puntino; qui si vede che cosa contiene
+    davvero, cioe' fra quali banchine il conducente passa a piedi. Il riquadro
+    non scende sotto i 350 metri di lato, o lo sfondo diventa un dettaglio di
+    marciapiede senza riferimenti."""
+    fermate = cluster.get("stops") or []
+    if not fermate:
+        return ""
+    pts = [(float(s_["lat"]), float(s_["lon"])) for s_ in fermate]
+    P, riquadro = proiettore(pts, width, height, margine=0.30, lato_minimo_m=350)
+    out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
+           f'role="img" aria-label="{esc(cluster.get("name", ""))}">',
+           _strato_sfondo(riquadro, width, height)]
+    xy = [P(float(s_["lat"]), float(s_["lon"])) for s_ in fermate]
+    cx = sum(x for x, _ in xy) / len(xy)
+    cy = sum(y for _, y in xy) / len(xy)
+    r = max(20.0, max(math.hypot(x - cx, y - cy) for x, y in xy) + 16)
+    out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{colore}" fill-opacity="0.15" '
+               f'stroke="{colore}" stroke-width="2" stroke-dasharray="5 3"/>')
+    # i nomi si alternano destra/sinistra e sopra/sotto: due fermate vicine
+    # altrimenti si coprono a vicenda
+    for k, ((x, y), s_) in enumerate(zip(xy, fermate)):
+        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="{colore}" stroke="#ffffff" '
+                   f'stroke-width="1.5"><title>{esc(s_.get("name", ""))}</title></circle>')
+        destra = k % 2 == 0
+        out.append(_etichetta(x + (8 if destra else -8), y + (4 if k % 4 < 2 else -8),
+                              s_.get("name", ""), 9, "500", "start" if destra else "end"))
+    out.append("</svg>")
+    return figure(cluster.get("name", ""), "".join(out), subtitle=f'{len(fermate)} fermate')
 
 
 # ── Riquadri KPI (quando il dato è UN numero) ──
@@ -699,6 +753,10 @@ tr.total td {{ font-weight: 600; border-top: 1px solid var(--axis); }}
 .tile-v {{ font-size:26px; font-weight:600; margin:2px 0; }}
 .tile-h {{ font-size:11px; color:var(--muted); }}
 figure.viz {{ margin: 18px 0 22px; padding: 12px 12px 6px; border: 1px solid var(--grid); border-radius: 8px; background: var(--surface); page-break-inside: avoid; }}
+/* le mappe di dettaglio dei nodi stanno affiancate finche' ci stanno */
+.griglia-mappe {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }}
+.griglia-mappe figure.viz {{ flex: 1 1 400px; max-width: 470px; margin: 6px 0; }}
+.griglia-mappe figure.viz svg {{ width: 100%; height: auto; }}
 figure.viz figcaption {{ margin-bottom: 6px; }}
 .fig-sub {{ margin: 2px 0 0; font-size: 12px; color: var(--ink2); }}
 .fig-note {{ margin: 4px 0 0; font-size: 11.5px; color: var(--muted); }}

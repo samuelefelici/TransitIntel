@@ -427,3 +427,44 @@ def test_i_nodi_sono_cerchi_con_i_nomi_delle_fermate():
     import re as _re
     raggi = [float(r) for r in _re.findall(r'<circle[^>]*r="([\d.]+)"[^>]*fill-opacity', html)]
     assert raggi and min(raggi) >= 16
+
+
+def test_ogni_nodo_ha_la_sua_mappa_da_vicino():
+    """Nella mappa d'insieme un nodo è un cerchio da undici pixel e i nomi
+    delle sue fermate non ci stanno: per quello serve il dettaglio."""
+    html = rb.render_network(_rete())
+    assert "Dove stanno i nodi" in html
+    assert "griglia-mappe" in html
+    # i nomi delle fermate compaiono nel dettaglio, non nell'insieme
+    assert "PIAZZA CAVOUR 2" in html and "PIAZZA CAVOUR 3" in html
+    assert "TAVERNELLE CAPOLINEA" in html
+
+
+def test_il_nodo_da_vicino_non_scende_sotto_i_350_metri():
+    """Due banchine a quaranta metri chiederebbero uno sfondo da marciapiede,
+    senza un riferimento riconoscibile."""
+    vicine = [(43.61580, 13.51890), (43.61604, 13.51920)]
+    _, riq = rc.proiettore(vicine, 430, 300, lato_minimo_m=350)
+    x0, y0, x1, y1 = riq
+    import math as _m
+    metri = (x1 - x0) * 111_320 * _m.cos(_m.radians(43.616))
+    assert metri >= 349, f"lato {metri:.0f} m"
+
+
+def test_le_fermate_numerose_si_numerano_invece_di_scriverle():
+    """Trentadue nomi accanto a trentadue puntini si coprono a vicenda: si
+    numerano lungo il percorso e l'elenco ordinato sta nella tabella sotto."""
+    d = _rete()
+    tante = [{"name": f"FERMATA {k}", "lat": 43.60 + k * 1e-3, "lon": 13.50 + k * 1e-3} for k in range(14)]
+    d["network"]["percorsi"] = [{"line": "3", "variant": "lunga", "direction": 0, "isDefault": True,
+                                 "points": [(43.60, 13.50), (43.62, 13.52)], "stops": tante}]
+    html = rb.render_network(d)
+    # i numeri ci sono, e c'è l'elenco
+    assert ">1<" in html and ">14<" in html
+    assert "FERMATA 13" in html
+    assert "N." in html and "Fermata" in html
+
+
+def test_le_fermate_poche_tengono_il_nome_sulla_mappa():
+    html = rb.render_network(_rete())      # due fermate per percorso
+    assert "PIAZZA CAVOUR 1" in html
