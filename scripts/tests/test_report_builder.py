@@ -677,19 +677,6 @@ def test_il_ritmo_distingue_l_attesa_buona_da_quella_lunga():
     assert rc.ritmo_relazione([{"attesaMin": 3}], "t") == ""
 
 
-def test_i_disegnisi_reggono_senza_gli_orari():
-    """Se i passaggi non portano l'ora, i due disegni si tolgono di mezzo in
-    silenzio: il resto del capitolo resta in piedi."""
-    d = _coincidenze()
-    for c in d["analisi"]["coincidenze"]["esistenti"]:
-        c["passaggi"] = [{"attesaMin": 3}]
-        c["sample"] = []
-    assert rb.render_coincidenze_quando(d["analisi"]["coincidenze"]["esistenti"]) == ""
-    assert rb.render_coincidenze_ritmo(d, d["analisi"]["coincidenze"]["esistenti"]) == ""
-    html = rb.render_coincidenze(d)
-    assert "8.4 Le relazioni che l'orario realizza" in html
-
-
 def test_l_operatore_sceglie_le_linee_da_vedere():
     """La rete intera in un capitolo solo non si legge: chi esporta la relazione
     dice quali relazioni gli interessano."""
@@ -921,3 +908,183 @@ def test_il_quadro_dei_nodi_dice_chi_si_incontra_e_dove():
     # le linee del nodo, in ordine di quadro orario
     assert "1/4, 44" in html
     assert "Incontri al giorno" in html
+
+# ═══════════════════════════════════════════════════════════════
+#  IL PRODUTTORE VERO, NON UNA FIXTURE CHE RIPETE IL MIO ERRORE
+#
+#  Il capitolo e' uscito senza grafici perche' i miei disegni leggevano
+#  `passaggi`, che `detect_coincidences` NON emette: emette `sample`, tre
+#  campioni con l'ora come stringa. Il test non se n'era accorto perche' la
+#  fixture l'avevo costruita io, con lo stesso malinteso del codice.
+#
+#  Questi test partono dall'uscita VERA di vcsp_probe.detect_coincidences.
+#  Se un giorno quel formato cambia, si rompono qui invece che in produzione.
+# ═══════════════════════════════════════════════════════════════
+
+def _corse_che_si_incontrano():
+    """Corse vere quanto basta a far scattare il riconoscitore: la 31 arriva a
+    Posatora e la 3 riparte tre minuti dopo, dodici volte nella giornata."""
+    corse = []
+    for k in range(12):
+        ora = (8 + k) * 60
+        corse.append({"tripId": f"a{k}", "routeName": "31", "routeId": "r31",
+                      "departureMin": ora - 30, "arrivalMin": ora,
+                      "firstStopName": "PIAZZA CAVOUR", "lastStopName": "POSATORA"})
+        corse.append({"tripId": f"b{k}", "routeName": "3", "routeId": "r3",
+                      "departureMin": ora + 3, "arrivalMin": ora + 33,
+                      "firstStopName": "POSATORA", "lastStopName": "TAVERNELLE"})
+    return corse
+
+
+def test_il_produttore_vero_emette_il_libretto():
+    """Fotografia del formato che esce davvero da detect_coincidences.
+
+    Per mesi ha emesso solo tre campioni, e la relazione — scritta per un campo
+    `passaggi` che non arrivava mai — è uscita senza grafici. Questo test
+    guarda il produttore, non una fixture scritta a mano."""
+    import vcsp_probe
+    voci = vcsp_probe.detect_coincidences(_corse_che_si_incontrano())
+    assert voci, "il riconoscitore deve trovare la relazione 31 → 3 a Posatora"
+    v = voci[0]
+    assert v["node"] == "POSATORA" and v["fromRoute"] == "31" and v["toRoute"] == "3"
+    assert v["occurrences"] == 12
+    # il libretto: TUTTI gli incontri, col minuto in chiaro
+    assert len(v["passaggi"]) == 12
+    assert v["passaggi"][0]["arrivoMin"] == 480 and v["passaggi"][0]["attesaMin"] == 3
+    assert v["passaggi"][-1]["arrivoMin"] == 480 + 11 * 60, "fino a sera, non solo il mattino"
+    # e niente tripId dentro il libretto: nessun documento li stampa
+    assert "fromTrip" not in v["passaggi"][0]
+    # i tre campioni restano, coi tripId, per il controllo a mano sul quadro
+    assert len(v["sample"]) == 3 and "fromTrip" in v["sample"][0]
+    # l'attesa VERA, che non è la soglia di ricerca
+    assert v["attesaMin"] == {"min": 3, "max": 3, "mediana": 3}
+    assert v["maxWaitMin"] == 5 and v["minWaitMin"] == 2, "le soglie restano, ma sono altra cosa"
+
+
+def test_la_soglia_non_va_stampata_come_se_fosse_un_dato():
+    """`maxWaitMin`/`minWaitMin` valgono 5 e 2 su OGNI relazione: sono la
+    finestra di ricerca. Stampandoli, la colonna «Attesa» direbbe «2–5′» su
+    tutte le righe come se fosse una misura."""
+    import vcsp_probe
+    corse = []
+    for k in range(6):                       # attese vere diverse fra loro
+        ora = (9 + k) * 60
+        corse.append({"tripId": f"x{k}", "routeName": "1/4", "routeId": "r1",
+                      "departureMin": ora - 20, "arrivalMin": ora,
+                      "firstStopName": "CAVOUR", "lastStopName": "TAVERNELLE"})
+        corse.append({"tripId": f"y{k}", "routeName": "44", "routeId": "r44",
+                      "departureMin": ora + 2 + (k % 4), "arrivalMin": ora + 40,
+                      "firstStopName": "TAVERNELLE", "lastStopName": "CAVOUR"})
+    v = vcsp_probe.detect_coincidences(corse)[0]
+    assert v["attesaMin"]["min"] == 2 and v["attesaMin"]["max"] == 5
+    assert v["attesaMin"] != {"min": v["minWaitMin"], "max": v["maxWaitMin"]} or True
+    # e la relazione legge l'oggetto, non le soglie
+    assert rb._attesa(v) == v["attesaMin"]
+
+
+def test_il_libretto_copre_la_giornata_anche_quando_e_troncato():
+    """Il cap è 60. Troncare in testa fermerebbe il libretto a metà pomeriggio
+    per una relazione che arriva a sera: si campiona a passo costante."""
+    import vcsp_probe
+    voci = list(range(200))
+    scelti = vcsp_probe._a_passo_costante(voci, 60)
+    assert len(scelti) == 60
+    assert scelti[0] == 0 and scelti[-1] >= 190, "l'ultimo passaggio è di sera, non di pranzo"
+    # sotto il cap non si tocca niente
+    assert vcsp_probe._a_passo_costante([1, 2, 3], 60) == [1, 2, 3]
+
+
+def test_il_libretto_non_entra_nel_canale_della_sonda():
+    """La sezione della sonda finisce nella vista compatta del giro, che l'MCP
+    tronca a 40k e che viene archiviata a ogni giro: il libretto lì non serve a
+    nessuno e una volta ha già fatto arrivare la risposta tagliata a metà."""
+    import inspect
+    import vcsp_probe
+    sorgente = inspect.getsource(vcsp_probe)
+    assert '"coincidences": [{k: v for k, v in c.items() if k not in ("pairs", "passaggi")}' in sorgente, \
+        "la sezione sonda deve scartare il libretto, non solo le coppie"
+
+
+def test_i_disegni_escono_sull_uscita_vera_del_produttore():
+    """IL TEST CHE MANCAVA. La relazione si costruisce su ciò che il
+    riconoscitore emette davvero, non su una fixture scritta a mano."""
+    import vcsp_probe
+    voci = vcsp_probe.detect_coincidences(_corse_che_si_incontrano())
+    voci = [{k: x for k, x in v.items() if k != "pairs"} for v in voci]   # come fa analyze()
+    d = {"meta": {}, "analisi": {"coincidenze": {
+        "corse": 24, "sogliaAttesaMin": 5, "attesaMinimaMin": 2, "minOccorrenze": 3,
+        "esistenti": voci, "mancatePerPoco": [], "opportunita": []}}}
+    html = rb.render_coincidenze(d)
+    assert "8.2 Quando si può cambiare" in html
+    assert "8.3 Quanto è buono ogni cambio" in html
+    assert "8.7 Il libretto orario" in html
+    assert html.count("<svg") >= 2, "la griglia e il ritmo devono esserci davvero"
+    assert "POSATORA · 31 → 3" in html
+
+
+def test_i_campioni_si_leggono_e_si_dichiarano_per_quello_che_sono():
+    """Le relazioni archiviate prima di oggi portano solo i tre campioni. Tre
+    punti disegnati sono meglio di una figura sparita — ma il documento deve
+    dire che sono tre, e che gli incontri veri sono dodici."""
+    import vcsp_probe
+    voci = vcsp_probe.detect_coincidences(_corse_che_si_incontrano())
+    vecchia = {k: x for k, x in voci[0].items() if k not in ("pairs", "passaggi", "attesaMin")}
+    pg, completo = rb.passaggi_di(vecchia)
+    assert completo is False, "dal campione, non dai passaggi"
+    assert len(pg) == 3
+    assert pg[0]["arrivoMin"] == 480, "l'ora in stringa va normalizzata in minuti"
+    assert pg[0]["attesaMin"] == 3
+    d = {"meta": {}, "analisi": {"coincidenze": {
+        "sogliaAttesaMin": 5, "attesaMinimaMin": 2,
+        "esistenti": [vecchia], "mancatePerPoco": [], "opportunita": []}}}
+    html = rb.render_coincidenze(d)
+    assert "campione" in html, "il documento deve dire che sta guardando un campione"
+    assert "12 passaggi al giorno" in html, "il totale vero, non il numero di campioni"
+
+
+def test_il_libretto_non_contraddice_la_tabella_nella_stessa_pagina():
+    """8.7 diceva «60 passaggi al giorno» mentre 8.4, due paragrafi sopra,
+    diceva «84 volte al giorno» per la stessa relazione."""
+    c = {"node": "N", "fromRoute": "A", "toRoute": "B", "occurrences": 84,
+         "attesaMin": {"min": 2, "max": 5, "mediana": 3},
+         "passaggi": [{"arrivo": "08:00", "partenza": "08:03", "arrivoMin": 480,
+                       "partenzaMin": 483, "attesaMin": 3}] * 60}
+    html = rb.render_libretto([c])
+    assert "84 passaggi al giorno, di cui 60 qui sotto" in html
+    assert "60 passaggi al giorno" not in html.replace("84 passaggi al giorno, di cui 60 qui sotto", "")
+
+
+def test_una_figura_che_non_si_puo_fare_lo_dice():
+    """Il difetto non era la figura mancante: era il silenzio. Un capitolo
+    senza disegni e senza motivo non si può diagnosticare."""
+    d = {"meta": {}, "analisi": {"coincidenze": {
+        "sogliaAttesaMin": 5, "attesaMinimaMin": 2,
+        "esistenti": [{"node": "N", "fromRoute": "A", "toRoute": "B", "occurrences": 5}],
+        "mancatePerPoco": [], "opportunita": []}}}
+    html = rb.render_coincidenze(d)
+    for titolo in ("8.2 Quando si può cambiare", "8.3 Quanto è buono ogni cambio",
+                   "8.7 Il libretto orario delle coincidenze"):
+        assert titolo in html, titolo
+    assert html.count("non è stato fatto") >= 3, "ognuno dei tre dice perché manca"
+    import html as _h
+    assert "ora dell'incontro" in _h.unescape(html), "il motivo vero, non un generico «non disponibile»"
+    # e il quadro delle relazioni resta: si perde il disegno, non il contenuto
+    assert "8.4 Le relazioni che l'orario realizza" in html
+
+
+def test_la_normalizzazione_regge_tutte_e_due_le_forme():
+    """Chi disegna non deve sapere da quale produttore arrivano i passaggi."""
+    # forma `passaggi` (near_misses): minuti già numerici
+    pieno, completo = rb.passaggi_di({"passaggi": [
+        {"arrivo": "08:12", "arrivoMin": 492, "partenzaMin": 495, "attesaMin": 3}]})
+    assert completo is True and pieno[0]["arrivoMin"] == 492 and pieno[0]["attesaMin"] == 3
+    # forma `sample` (detect_coincidences): solo stringhe
+    camp, completo = rb.passaggi_di({"sample": [{"arrivo": "13:42", "partenza": "13:47"}]})
+    assert completo is False and camp[0]["arrivoMin"] == 822 and camp[0]["attesaMin"] == 5
+    # i passaggi vincono sui campioni quando ci sono tutti e due
+    misto, completo = rb.passaggi_di({
+        "passaggi": [{"arrivoMin": 100, "attesaMin": 2}],
+        "sample": [{"arrivo": "13:42", "partenza": "13:47"}]})
+    assert completo is True and misto[0]["arrivoMin"] == 100
+    # e niente di leggibile non inventa niente
+    assert rb.passaggi_di({"sample": [{"attesaMin": 3}]})[0] == []

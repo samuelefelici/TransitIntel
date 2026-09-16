@@ -24,6 +24,7 @@ from vcsp_probe import (
     COINCIDENCE_MAX_WAIT, COINCIDENCE_MIN_OCCURRENCES,
     _stop_events, detect_coincidences, COINCIDENCE_MIN_WAIT,
     build_round_trip_pairs, flex_of_round_trip, min_to_time,
+    PASSAGGI_MAX, _a_passo_costante,
 )
 
 # Finestra entro cui due linee si considerano «vicine»: oltre, non e' una
@@ -34,8 +35,8 @@ NEAR_MISS_WINDOW = 30
 # rifiuta.
 # Traslazioni esaminate per ogni linea (minuti).
 SHIFT_RANGE = 30
-# Quanti passaggi tenere per il libretto orario di ogni coincidenza.
-PASSAGGI_MAX = 60
+# Il cap del libretto orario sta in vcsp_probe accanto a chi lo produce: due
+# definizioni dello stesso numero si scollano al primo che cambia.
 
 
 def candidate_pairs(trips: list[dict], window: int = NEAR_MISS_WINDOW,
@@ -116,7 +117,8 @@ def near_misses(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
                           "arrivoMin": p["arrMin"], "partenzaMin": p["depMin"],
                           "attesaMin": p["depMin"] - p["arrMin"],
                           "fromTrip": p["fromTrip"], "toTrip": p["toTrip"]}
-                         for p in sorted(occ, key=lambda x: x["arrMin"])[:PASSAGGI_MAX]],
+                         for p in _a_passo_costante(sorted(occ, key=lambda x: x["arrMin"]),
+                                                   PASSAGGI_MAX)],
         })
     out.sort(key=lambda c: (-c["occurrences"], c["attesaMin"]["mediana"]))
     return out

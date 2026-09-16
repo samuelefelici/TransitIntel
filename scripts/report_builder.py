@@ -1337,12 +1337,47 @@ def filtra_per_linee(voci: list, scelte: list) -> list:
     return fuori
 
 
+def passaggi_di(c: dict) -> tuple:
+    """I passaggi di una relazione, e da dove sono stati presi.
+
+    Due produttori, due forme. `near_misses` emette `passaggi`: tutti gli
+    incontri della giornata, col minuto in chiaro. `detect_coincidences` emette
+    `sample`: tre campioni con l'ora come stringa. Il primo fa un disegno, il
+    secondo fa tre punti — ma tre punti disegnati sono meglio di una figura che
+    sparisce, e il documento deve dire quale dei due sta guardando.
+
+    I passaggi escono normalizzati — `arrivoMin` e `attesaMin` sempre numerici —
+    perche' chi disegna non deve sapere da quale dei due produttori arrivano:
+    e' esattamente il malinteso che ha lasciato il capitolo senza figure.
+
+    Ritorna (passaggi, completo): `completo` e' False quando sono campioni.
+    """
+    def _norm(p: dict) -> dict | None:
+        m = _minuti_da_ora(p.get("arrivoMin"))
+        if m is None:
+            m = _minuti_da_ora(p.get("arrivo"))
+        if m is None:
+            return None
+        att = _numero(p.get("attesaMin"))
+        if att is None:
+            part = _minuti_da_ora(p.get("partenzaMin"))
+            if part is None:
+                part = _minuti_da_ora(p.get("partenza"))
+            att = (part - m) if part is not None else None
+        return dict(p, arrivoMin=m, **({"attesaMin": att} if att is not None else {}))
+
+    for chiave, completo in (("passaggi", True), ("sample", False)):
+        voci = [_norm(p) for p in (c.get(chiave) or []) if isinstance(p, dict)]
+        voci = [v for v in voci if v]
+        if voci:
+            return voci, completo
+    return [], True
+
+
 def _ore_dei_passaggi(c: dict) -> dict:
     """Quante coincidenze, ora per ora, in questa relazione."""
     ore: dict = {}
-    for p in (c.get("passaggi") or []):
-        if not isinstance(p, dict):
-            continue
+    for p in passaggi_di(c)[0]:
         m = _minuti_da_ora(p.get("arrivoMin"))
         if m is None:
             m = _minuti_da_ora(p.get("arrivo"))
@@ -1351,6 +1386,18 @@ def _ore_dei_passaggi(c: dict) -> dict:
         ora = int(m) // 60
         ore[ora] = ore.get(ora, 0) + 1
     return ore
+
+
+def _niente_disegno(titolo: str, quante: int, motivo: str) -> str:
+    """Una figura che non si puo' fare lo dice, e dice perche'.
+
+    E' gia' costato una volta: un capitolo senza disegni e nessun modo di
+    sapere se mancava il dato, la chiave o il codice. Il silenzio e' il difetto,
+    non la figura mancante."""
+    return (f"<h3>{titolo}</h3>"
+            + para(f'<i>Il disegno non è stato fatto: {esc(motivo)} '
+                   f'({fmt_n(quante)} relazioni esaminate). Le relazioni restano '
+                   f'nel quadro qui sotto, con i numeri e gli orari di campione.</i>'))
 
 
 def _etichetta_relazione(c: dict) -> str:
@@ -1369,19 +1416,28 @@ def render_coincidenze_quando(esistenti: list) -> str:
         ore = _ore_dei_passaggi(c)
         if not ore:
             continue
-        righe.append({"label": _etichetta_relazione(c), "ore": ore, "totale": sum(ore.values())})
+        # il totale e' quello dichiarato dalla relazione: coi soli campioni la
+        # somma delle caselle direbbe «tre» dove gli incontri sono dodici
+        totale = int(c.get("occurrences") or 0) or sum(ore.values())
+        righe.append({"label": _etichetta_relazione(c), "ore": ore, "totale": totale})
     if not righe:
-        return ""
+        return _niente_disegno("8.2 Quando si può cambiare", len(esistenti),
+                               "nessuna relazione porta l'ora dell'incontro")
     righe.sort(key=lambda r: -r["totale"])
     tagliate = len(righe) - GRIGLIA_RIGHE_MAX
+    su_campioni = sum(1 for c in esistenti if not passaggi_di(c)[1])
+    avviso = ("" if su_campioni == 0 else
+              f'Di {fmt_n(su_campioni)} relazioni il quadro porta solo il campione di tre '
+              f'passaggi: la loro riga è parziale, il totale vero è nella colonna a destra. ')
     dis = rc.griglia_coincidenze(
         righe[:GRIGLIA_RIGHE_MAX], "Quando si può cambiare, ora per ora",
         subtitle="Una riga per relazione, una colonna per ora del giorno; la casella è tanto più "
                  "scura quante sono le coincidenze. Le caselle vuote sono le ore senza cambio.",
-        note=(f'Le {fmt_n(GRIGLIA_RIGHE_MAX)} relazioni con più coincidenze; '
-              f'altre {fmt_n(tagliate)} restano nel libretto orario.' if tagliate > 0 else ""))
+        note=avviso + (f'Le {fmt_n(GRIGLIA_RIGHE_MAX)} relazioni con più coincidenze; '
+                       f'altre {fmt_n(tagliate)} restano nel libretto orario.' if tagliate > 0 else ""))
     if not dis:
-        return ""
+        return _niente_disegno("8.2 Quando si può cambiare", len(esistenti),
+                               "la griglia non ha prodotto nessuna casella")
     return ("<h3>8.2 Quando si può cambiare</h3>"
             + para("Il quadro precedente dice <i>dove</i> si cambia. Questo dice <i>quando</i>: "
                    "una relazione con trenta coincidenze distribuite su tutto il giorno vale un'altra cosa "
@@ -1400,26 +1456,33 @@ def render_coincidenze_ritmo(d: dict, esistenti: list) -> str:
     lo = _numero(co.get("attesaMinimaMin"))
     hi = _numero(co.get("sogliaAttesaMin"))
     finestra = (lo if lo is not None else 2, hi if hi is not None else 5)
-    con_orari = [c for c in esistenti if (c.get("passaggi") or [])]
+    con_orari = [c for c in esistenti if passaggi_di(c)[0]]
     con_orari.sort(key=lambda c: -int(c.get("occurrences") or 0))
-    pezzi = []
+    pezzi, su_campioni = [], 0
     for c in con_orari[:RITMI_MAX]:
         a = _attesa(c)
+        pg, completo = passaggi_di(c)
         dis = rc.ritmo_relazione(
-            c.get("passaggi") or [], _etichetta_relazione(c),
+            pg, _etichetta_relazione(c),
             subtitle=f'{fmt_n(c.get("occurrences"))} volte al giorno · attesa mediana '
-                     f'{fmt_n(a.get("mediana"))}′',
+                     f'{fmt_n(a.get("mediana"))}′'
+                     + ("" if completo else f' · disegnati {fmt_n(len(pg))} passaggi di campione'),
             finestra=finestra)
         if dis:
             pezzi.append(dis)
+            su_campioni += 0 if completo else 1
     if not pezzi:
-        return ""
+        return _niente_disegno("8.3 Quanto è buono ogni cambio", len(esistenti),
+                               "i passaggi non portano né l'ora dell'incontro né l'attesa")
     return ("<h3>8.3 Quanto è buono ogni cambio</h3>"
             + para(f'Per ogni relazione, un passaggio è un punto: in orizzontale l\'ora in cui si arriva, '
                    f'in verticale i minuti che si aspettano. La fascia chiara è la finestra utile '
                    f'({fmt_n(finestra[0])}–{fmt_n(finestra[1])} minuti). I punti sopra la fascia sono attese '
                    f'lunghe, quelli sotto sono cambi da prendere di corsa. Sono le '
-                   f'<b>{fmt_n(len(pezzi))} relazioni</b> con più coincidenze.')
+                   f'<b>{fmt_n(len(pezzi))} relazioni</b> con più coincidenze.'
+                   + ("" if su_campioni == 0 else
+                      f' Di {fmt_n(su_campioni)} il quadro porta solo il campione di tre '
+                      f'passaggi: il disegno mostra quelli, non la giornata intera.'))
             + f'<div class="griglia-mappe">{"".join(pezzi)}</div>')
 
 
@@ -1428,20 +1491,29 @@ def render_libretto(esistenti: list) -> str:
 
     Per ogni relazione, i passaggi uno per uno: chi arriva, chi riparte, quanto
     si aspetta. E' il documento che un capo movimento legge davvero."""
-    con_orari = [c for c in esistenti if (c.get("passaggi") or [])]
+    con_orari = [c for c in esistenti if passaggi_di(c)[0]]
     if not con_orari:
-        return ""
+        return _niente_disegno("8.7 Il libretto orario delle coincidenze", len(esistenti),
+                               "le relazioni non portano gli orari dei passaggi")
     out = ["<h3>8.7 Il libretto orario delle coincidenze</h3>"]
     out.append(para(
         "Per ogni relazione riconosciuta, i passaggi uno per uno: la corsa che arriva, quella che "
         "riparte, e i minuti di attesa fra le due. \u00c8 quello che serve al banco per verificare "
         "una coincidenza senza rifare i conti."))
     for c in con_orari:
-        pg = c.get("passaggi") or []
+        pg, completo = passaggi_di(c)
         a = _attesa(c)
         out.append(f'<h4>{esc(c.get("node") or "")} \u00b7 {esc(str(c.get("fromRoute")))} '
                    f'\u2192 {esc(str(c.get("toRoute")))}</h4>')
-        out.append(para(f'<span class="small">{fmt_n(len(pg))} passaggi al giorno, attesa da '
+        # Il numero vero e' `occurrences`: quando il libretto e' troncato dal
+        # cap, o e' il campione di tre, scrivere len(pg) farebbe dire «60» a
+        # 8.7 e «84» a 8.4 per la stessa relazione, nella stessa pagina.
+        n_veri = int(c.get("occurrences") or 0)
+        quanti = (f'{fmt_n(len(pg))} passaggi al giorno'
+                  if completo and n_veri <= len(pg) else
+                  f'{fmt_n(n_veri or len(pg))} passaggi al giorno, di cui '
+                  f'{fmt_n(len(pg))} qui sotto')
+        out.append(para(f'<span class="small">{quanti}, attesa da '
                         f'{fmt_n(a.get("min"))} a {fmt_n(a.get("max"))} minuti '
                         f'(mediana {fmt_n(a.get("mediana"))}).</span>'))
         out.append(table(["Arrivo", "Riparte", "Attesa"],
