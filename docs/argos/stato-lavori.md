@@ -1425,6 +1425,39 @@ Ogni famiglia ha **forma e colore**: croce, triangolo, quadrato, cerchio, rombo,
 esagono, stella, quadrato ruotato. Le forme sono distinte apposta, perche' la
 relazione si stampa e in bianco e nero il colore da solo non basta.
 
+## «Non si vede»: smettere di indovinare
+
+L'operatore ha mandato il link di una relazione e tre parole. Ho provato la
+richiesta a Mapbox da qui per riprodurre: il proxy di questo ambiente la blocca
+con un 403, quindi **non posso riprodurre il caso**. Invece di tirare a indovinare
+ho reso il sistema capace di dirlo da solo, e ho corretto i tre difetti che si
+vedono leggendo il codice.
+
+**Lo sfondo taceva.** `sfondo_mappa()` restituiva una stringa vuota sia quando la
+chiave manca, sia quando la rete fallisce, sia quando Mapbox rifiuta: il
+documento mostrava un rettangolo grigio identico in tutti i casi, e l'unico modo
+di sapere quale fosse era leggere i log del server. Ora restituisce `(uri,
+motivo)` e il motivo finisce **nella nota sotto la figura**: «Sfondo cartografico
+non disponibile (nessuna chiave Mapbox configurata sul server)». Una mappa senza
+strade e un errore di rete non si assomigliano piu'.
+
+**La chiave aveva due nomi.** Il codice del server legge `MAPBOX_ACCESS_TOKEN`,
+`DEPLOY.md` documenta `MAPBOX_TOKEN`. Accettarli entrambi costa una riga e toglie
+di mezzo un'intera classe di «non si vede».
+
+**Il documento pesava troppo.** Decine di mappe con lo sfondo a piena risoluzione
+fanno un HTML da parecchi megabyte: il browser arranca o rinuncia. Ora l'immagine
+si chiede a **meta' risoluzione** e la si lascia scalare all'SVG — un quarto del
+peso, differenza quasi invisibile — con un tetto di 60 sfondi per relazione. Il
+velo sopra l'immagine e' sceso dal 26% al 18%, perche' schiariva troppo.
+
+**`href` da solo non basta.** L'immagine ora porta anche `xlink:href`: i browser
+usano il primo, ma chi converte in PDF spesso si ferma a SVG 1.1 e vede solo il
+secondo. Senza, la mappa spariva proprio nella stampa.
+
+Resta da capire che cosa l'operatore non vedeva davvero: la prossima relazione lo
+dira' da sola.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
