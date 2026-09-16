@@ -285,22 +285,45 @@ TOC = [("sintesi", "1. Sintesi"), ("rete", "2. Rete e contesto"),
 
 
 def render_cover(d: dict) -> str:
+    """La copertina: un frontespizio, non un titolo e via.
+
+    Questo documento esce dall'azienda e finisce sul tavolo di qualcuno che non
+    era nella stanza. Deve dire subito di chi e', di che cosa parla, a quale
+    giorno si riferisce e quando e' stato prodotto — e deve reggere la stampa,
+    dove una copertina sciatta e' la prima cosa che si nota."""
     m = d.get("meta") or {}
-    title = m.get("title") or f'Relazione del piano di esercizio · {m.get("udpName") or m.get("projectName") or ""}'
+    title = m.get("title") or f'Relazione del piano di esercizio \u00b7 {m.get("udpName") or m.get("projectName") or ""}'
     sub = m.get("subtitle") or ""
     gen = m.get("generatedAt") or _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-    bits = [b for b in (m.get("company"), m.get("projectName"), m.get("udpName"),
-                        f'giorno di servizio {m.get("serviceDate")}' if m.get("serviceDate") else None,
-                        f'giorno-tipo {m.get("dayType")}' if m.get("dayType") else None,
-                        f'scenario «{m.get("scenarioName")}»' if m.get("scenarioName") else None,
-                        f'generata il {gen}') if b]
-    out = [f"<h1>{esc(title)}</h1>"]
+    azienda = m.get("company") or ""
+
+    out = ['<section class="copertina">']
+    out.append('<div class="marchio"><span class="bollo"></span>'
+               f'<span class="chi">{esc(azienda) if azienda else "Piano di esercizio"}</span>'
+               '<span class="prodotto">TransitIntel</span></div>')
+    out.append(f"<h1>{esc(title)}</h1>")
     if sub:
         out.append(f'<p class="lead">{esc(sub)}</p>')
-    out.append(f'<p class="meta">{esc(" · ".join(bits))}</p>')
+
+    voci = [("Progetto", m.get("projectName")),
+            ("Unit\u00e0 di validit\u00e0", m.get("udpName")),
+            ("Giorno di servizio", m.get("serviceDate")),
+            ("Giorno-tipo", m.get("dayType")),
+            ("Scenario", m.get("scenarioName")),
+            ("Redatta da", m.get("author")),
+            ("Prodotta il", gen)]
+    righe = "".join(f'<div class="voce"><dt>{esc(k)}</dt><dd>{esc(str(v))}</dd></div>'
+                    for k, v in voci if v)
+    out.append(f'<dl class="frontespizio">{righe}</dl>')
     if m.get("isTest"):
-        out.append(f'<div class="banner"><b>Versione di prova.</b> {esc(m.get("testNote") or "I costi unitari e i fuorilinea non sono ancora stati verificati: i valori economici sono indicativi.")}</div>')
-    out.append('<div class="toc">' + "".join(f'<div><a href="#{i}">{esc(t)}</a></div>' for i, t in TOC) + "</div>")
+        out.append('<div class="banner"><b>Versione di prova.</b> '
+                   + esc(m.get("testNote") or "I costi unitari e i fuorilinea non sono ancora stati "
+                                              "verificati: i valori economici sono indicativi.")
+                   + "</div>")
+    out.append('<nav class="toc"><div class="toc-t">Indice</div>'
+               + "".join(f'<div><a href="#{i_}">{esc(t)}</a></div>' for i_, t in TOC)
+               + "</nav>")
+    out.append("</section>")
     return "".join(out)
 
 
@@ -1227,6 +1250,49 @@ def _minuti_da_ora(x) -> int | None:
     return None
 
 
+def render_nodi_coincidenza(esistenti: list) -> str:
+    """8.1 — CHI SI INCONTRA, E DOVE.
+
+    Un elenco di relazioni riga per riga non fa vedere la struttura. Chi
+    conosce la rete la descrive per NODO — «la 1/4 e la 44 a Piazza Cavour e a
+    Tavernelle», «la 2/6 con la 21/33 al Pinocchio» — perche' il nodo e' il
+    posto dove uno cambia e le linee sono quello che ci trova. Questo quadro
+    e' organizzato cosi'."""
+    per_nodo: dict = {}
+    for c in esistenti:
+        nodo = str(c.get("node") or "").strip()
+        a, b = str(c.get("fromRoute") or ""), str(c.get("toRoute") or "")
+        if not nodo or not a or not b:
+            continue
+        v = per_nodo.setdefault(nodo, {"linee": set(), "relazioni": [], "incontri": 0})
+        v["linee"].update((a, b))
+        v["incontri"] += int(c.get("occurrences") or 0)
+        v["relazioni"].append((a, b, int(c.get("occurrences") or 0), _attesa(c).get("mediana")))
+    if not per_nodo:
+        return ""
+    out = ["<h3>8.1 Dove si cambia, e fra quali linee</h3>"]
+    out.append(para(
+        "Il nodo è il posto dove si cambia; le linee sono quello che ci si trova. Questo quadro "
+        "tiene insieme le due cose: per ogni nodo, quali linee vi si incontrano e quante volte "
+        "al giorno. È il modo in cui la rete si legge davvero — «la 1/4 e la 44 a Piazza Cavour», "
+        "non «relazione numero sette»."))
+    righe = []
+    for nodo, v in sorted(per_nodo.items(), key=lambda kv: -kv[1]["incontri"]):
+        linee = sorted(v["linee"], key=ordine_di_linea)
+        rel = sorted(v["relazioni"], key=lambda r: -r[2])
+        dett = ", ".join(f'{a}→{b} ({fmt_n(n)}×, attesa {fmt_n(m)}′)' for a, b, n, m in rel[:5])
+        if len(rel) > 5:
+            dett += f' … e altre {fmt_n(len(rel) - 5)}'
+        righe.append((nodo, ", ".join(linee), fmt_n(len(linee)), fmt_n(v["incontri"]), dett))
+    out.append(table(["Nodo", "Linee che si incontrano", "Quante", "Incontri al giorno", "Relazioni"],
+                     righe, numeric_from=2))
+    if len(per_nodo) > 1:
+        out.append(rc.bar_h([(n, v["incontri"]) for n, v in
+                             sorted(per_nodo.items(), key=lambda kv: -kv[1]["incontri"])[:14]],
+                            "Incontri al giorno, nodo per nodo", unit="incontri"))
+    return "".join(out)
+
+
 COPPIE_DIAGRAMMA_MAX = 10
 
 
@@ -1361,7 +1427,7 @@ def render_libretto(esistenti: list) -> str:
     con_orari = [c for c in esistenti if (c.get("passaggi") or [])]
     if not con_orari:
         return ""
-    out = ["<h3>8.4 Il libretto orario delle coincidenze</h3>"]
+    out = ["<h3>8.6 Il libretto orario delle coincidenze</h3>"]
     out.append(para(
         "Per ogni relazione riconosciuta, i passaggi uno per uno: la corsa che arriva, quella che "
         "riparte, e i minuti di attesa fra le due. \u00c8 quello che serve al banco per verificare "
@@ -1409,7 +1475,8 @@ def render_coincidenze(d: dict) -> str:
         ("Corse esaminate", fmt_n(co.get("corse") or 0), f'{fmt_n(co.get("corseConPassaggi") or 0)} con i passaggi intermedi'),
     ]))
     if esistenti:
-        out.append("<h3>8.1 Le relazioni che l'orario realizza</h3>")
+        out.append(render_nodi_coincidenza(esistenti))
+        out.append("<h3>8.2 Le relazioni che l'orario realizza</h3>")
         righe = []
         for x in esistenti:
             a = _attesa(x)
@@ -1424,7 +1491,7 @@ def render_coincidenze(d: dict) -> str:
         out.append(render_coincidenze_3d(d, esistenti))
         out.append(render_libretto(esistenti))
     if mancate:
-        out.append("<h3>8.2 Le occasioni mancate per poco</h3>")
+        out.append("<h3>8.3 Le occasioni mancate per poco</h3>")
         out.append(para("Due linee che si sfiorano a un nodo con un'attesa appena fuori dalla finestra utile. "
                         "Sono il valore che la rete produrrebbe quasi gratis, e che nessuno contava."))
         righe = []
@@ -1439,7 +1506,7 @@ def render_coincidenze(d: dict) -> str:
         if len(mancate) > 20:
             out.append(para(f'<span class="small">… e altre {len(mancate) - 20} relazioni mancate per poco.</span>'))
     if opp:
-        out.append("<h3>8.3 Che cosa si guadagnerebbe spostando una linea</h3>")
+        out.append("<h3>8.5 Che cosa si guadagnerebbe spostando una linea</h3>")
         out.append(para("Per ogni linea, la traslazione dell'intera giornata che guadagna più relazioni di quante "
                         "ne rompe: la cadenza resta identica e lo spostamento è difendibile davanti all'utenza. "
                         "Il conto delle relazioni rotte è sempre esposto, perché un guadagno che costa altrove "
@@ -1545,6 +1612,10 @@ def render_appendix(d: dict) -> str:
     vs = g(d, "final", "vsp", "vehicleShifts", default=[]) or []
     ds = g(d, "final", "crew", "driverShifts", default=[]) or []
     out = [section("allegati", "11. Allegati")]
+    if vs or ds:
+        out.append(para(
+            "Gli allegati sono fatti per essere <b>staccati e consegnati</b>: ogni turno sta "
+            "su un foglio suo, e in stampa non si spezza mai a met\u00e0 fra due pagine."))
     if vs:
         out.append("<h3>A. Turni macchina, corsa per corsa</h3>")
         for v in vs:
@@ -1552,12 +1623,16 @@ def render_appendix(d: dict) -> str:
             for t in v.get("trips", []):
                 rows.append((t.get("type"), t.get("routeName") or "–", t.get("departureTime") or hm(t.get("departureMin")), t.get("arrivalTime") or hm(t.get("arrivalMin")),
                              t.get("firstStopName") or "–", t.get("lastStopName") or "–", fmt_n(t.get("deadheadKm"), 1) if t.get("deadheadKm") else ""))
-            out.append(f'<h4>{esc(v.get("vehicleId"))} · {esc(v.get("vehicleType") or "")} · {hm(v.get("startMin"))}–{hm(v.get("endMin"))}</h4>')
+            out.append(f'<section class="foglio"><h4>{esc(v.get("vehicleId"))} · '
+                       f'{esc(v.get("vehicleType") or "")} · {hm(v.get("startMin"))}–'
+                       f'{hm(v.get("endMin"))}</h4>')
             out.append(table(["Tipo", "Linea", "Partenza", "Arrivo", "Da", "A", "km vuoto"], rows, numeric_from=6))
+            out.append("</section>")
     if ds:
         out.append("<h3>B. Turni guida, pezzo per pezzo</h3>")
         for x in ds:
-            out.append(f'<h4>{esc(x.get("driverId"))} · {esc(x.get("type"))} · nastro {hm(x.get("nastroMin"))} · lavoro {hm(x.get("workMin"))}</h4>')
+            out.append(f'<section class="foglio"><h4>{esc(x.get("driverId"))} · {esc(x.get("type"))} '
+                       f'· nastro {hm(x.get("nastroMin"))} · lavoro {hm(x.get("workMin"))}</h4>')
             rows = []
             used_h: set[int] = set()
             all_h = list(x.get("handovers") or [])
@@ -1615,6 +1690,7 @@ def render_appendix(d: dict) -> str:
             out.append(table(["Pezzo", "Vettura", "Linea / attività", "Partenza", "Arrivo", "Da", "A"], rows, numeric_from=99))
             for h in x.get("vehicleHandoverLabels") or []:
                 out.append(para(f'<span class="small">{esc(h)}</span>'))
+            out.append("</section>")
     return "".join(out)
 
 

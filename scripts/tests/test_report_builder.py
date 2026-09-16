@@ -584,7 +584,7 @@ def test_il_libretto_orario_elenca_i_passaggi_uno_per_uno():
     """Una tabella che dice «tre volte al giorno» non basta al banco: servono
     gli orari veri, arrivo, ripartenza e attesa."""
     html = rb.render_coincidenze(_coincidenze())
-    assert "8.4 Il libretto orario delle coincidenze" in html
+    assert "8.6 Il libretto orario delle coincidenze" in html
     assert "08:12" in html and "08:15" in html
     assert "13:42" in html and "18:14" in html
     assert "3 passaggi al giorno" in html
@@ -612,7 +612,7 @@ def test_il_diagramma_esce_anche_senza_le_posizioni_dei_nodi():
     assert "8. Coincidenze fra linee" in html
     assert "Le coincidenze nello spazio e nel tempo" in html, "il disegno deve esserci lo stesso"
     assert "disposti in cerchio" in html, "e il documento deve dire che la posizione e' di comodo"
-    assert "8.4 Il libretto orario" in html
+    assert "8.6 Il libretto orario" in html
 
 
 def test_il_diagramma_3d_vuole_nodi_e_incontri():
@@ -773,7 +773,7 @@ def test_il_diagramma_disegna_le_corse_non_solo_gli_incontri():
     html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
     assert "<svg" in html
     # ogni corsa e' una traiettoria, con la sua ombra sul pavimento
-    assert html.count('stroke-width="1.5"') >= 12, "mancano le traiettorie"
+    assert html.count('stroke-width="1.6"') >= 12, "mancano le traiettorie"
     assert html.count('opacity="0.30"') >= 12, "manca l'ombra dei percorsi"
     # e i colori sono quelli delle linee
     assert "#2fd4e8" in html and "#e8e02f" in html
@@ -844,3 +844,68 @@ def test_le_linee_si_ordinano_come_su_un_quadro_orario():
     orario è sbagliato."""
     assert sorted(["3", "24", "1/4"], key=rb.ordine_di_linea) == ["1/4", "3", "24"]
     assert sorted(["C.S.", "7"], key=rb.ordine_di_linea) == ["7", "C.S."]
+
+
+# ═══════════════════════════════════════════════════════════════
+#  IL DOCUMENTO CHE ESCE DALL'AZIENDA
+# ═══════════════════════════════════════════════════════════════
+
+def test_la_copertina_e_un_frontespizio():
+    """Il documento finisce sul tavolo di chi non era nella stanza: deve dire
+    di chi è, di che cosa parla, a quale giorno si riferisce e quando è stato
+    prodotto — prima di ogni numero."""
+    d = _dossier()
+    d["meta"].update({"company": "Conerobus", "author": "Ufficio Esercizio",
+                      "serviceDate": "2026-09-20", "dayType": "Festivo",
+                      "scenarioName": "Argos · giro BC"})
+    html = rb.render_cover(d)
+    assert 'class="copertina"' in html and 'class="marchio"' in html
+    assert "Conerobus" in html and "TransitIntel" in html
+    assert 'class="frontespizio"' in html
+    for etichetta in ("Giorno di servizio", "Giorno-tipo", "Scenario", "Redatta da", "Prodotta il"):
+        assert etichetta in html, etichetta
+    assert "2026-09-20" in html and "Ufficio Esercizio" in html
+    assert "Indice" in html
+
+
+def test_la_copertina_regge_un_dossier_spoglio():
+    html = rb.render_cover({"meta": {}})
+    assert 'class="copertina"' in html
+    assert "Piano di esercizio" in html      # senza azienda, l'intestazione generica
+    assert "Prodotta il" in html
+
+
+def test_ogni_turno_sta_su_un_foglio_suo():
+    """Gli allegati si staccano e si consegnano: un turno non si spezza mai a
+    metà fra due pagine."""
+    html = rb.render_appendix(_dossier())
+    assert "staccati e consegnati" in html
+    assert html.count('<section class="foglio">') >= 2, "un foglio per turno"
+    assert html.count("</section>") >= 2
+    # e lo stile lo impone in stampa
+    assert "break-before: page" in rc.CSS and "break-inside: avoid" in rc.CSS
+
+
+def test_il_diagramma_sta_sul_fondo_chiaro():
+    """Una figura scura stona nel documento e si stampa male."""
+    corse = [{"linea": "3", "colore": "#2a78d6",
+              "punti": [(43.61, 13.51, 480 + k), (43.59, 13.48, 500 + k)]} for k in range(0, 30, 10)]
+    html = rc.spazio_tempo(corse, "T")
+    assert rc.SURFACE in html
+    assert "#0e1622" not in html, "il fondo scuro non deve tornare"
+    assert rc.FONDO_SCURO == rc.SURFACE
+
+
+def test_il_quadro_dei_nodi_dice_chi_si_incontra_e_dove():
+    """«La 1/4 e la 44 a Piazza Cavour», non «relazione numero sette»."""
+    d = _con_corse()
+    d["analisi"]["coincidenze"]["esistenti"].append({
+        "node": "TAVERNELLE CAPOLINEA", "fromRoute": "44", "toRoute": "1/4", "occurrences": 5,
+        "attesaMin": {"min": 2, "max": 6, "mediana": 4}, "giaInCoincidenza": 0,
+        "sample": [], "passaggi": [{"arrivo": "09:10", "partenza": "09:14", "arrivoMin": 550, "attesaMin": 4}]})
+    html = rb.render_coincidenze(d)
+    assert "8.1 Dove si cambia, e fra quali linee" in html
+    assert "TAVERNELLE CAPOLINEA" in html and "PIAZZA CAVOUR" in html.upper()
+    # le linee del nodo, in ordine di quadro orario
+    assert "1/4, 44" in html
+    assert "Incontri al giorno" in html
