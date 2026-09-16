@@ -387,11 +387,15 @@ def test_senza_chiave_la_mappa_esce_lo_stesso(monkeypatch):
     """Il documento non deve dipendere da un servizio esterno: niente chiave,
     niente sfondo, ma la mappa si disegna."""
     monkeypatch.delenv("MAPBOX_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("MAPBOX_TOKEN", raising=False)
     rc._sfondi.clear()
-    assert rc.sfondo_mappa((13.4, 48.4, 13.6, 48.6), 100, 100) == ""
+    uri, motivo = rc.sfondo_mappa((13.4, 48.4, 13.6, 48.6), 100, 100)
+    assert uri == "" and "chiave" in motivo
     html = rc.network_map([{"name": "3", "points": [(43.61, 13.51), (43.59, 13.48)]}],
                           [{"name": "CAVOUR", "lat": 43.61, "lon": 13.51, "node": True}], "prova")
     assert "<svg" in html and "<image" not in html
+    # e il documento DICE perché manca, invece di mostrare un rettangolo muto
+    assert "Sfondo cartografico non disponibile" in html
 
 
 def test_il_percorso_prende_il_colore_della_linea():
@@ -669,3 +673,35 @@ def test_l_ora_si_legge_anche_dal_vecchio_campione():
         c.pop("passaggi")                      # resta solo il vecchio sample
     html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
     assert "<svg" in html, "col solo sample il diagramma deve uscire lo stesso"
+
+
+def test_lo_sfondo_dice_perche_manca(monkeypatch):
+    """Una mappa senza strade e un errore di rete si assomigliano troppo:
+    finché il motivo non era scritto, l'unico modo di distinguerli era
+    leggere i log del server."""
+    monkeypatch.setenv("MAPBOX_ACCESS_TOKEN", "")
+    monkeypatch.delenv("MAPBOX_TOKEN", raising=False)
+    rc._sfondi.clear()
+    for html in (rc.network_map([{"name": "3", "points": [(43.61, 13.51), (43.59, 13.48)]}], [], "p"),
+                 rc.cluster_map([{"name": "N", "stops": [{"name": "A", "lat": 43.61, "lon": 13.51},
+                                                         {"name": "B", "lat": 43.62, "lon": 13.52}]}], "n"),
+                 rc.nodo_map({"name": "N", "stops": [{"name": "A", "lat": 43.61, "lon": 13.51}]}, "#2a78d6")):
+        assert "Sfondo cartografico non disponibile" in html, html[:200]
+
+
+def test_la_chiave_si_accetta_con_tutti_e_due_i_nomi(monkeypatch):
+    """Il codice del server legge MAPBOX_ACCESS_TOKEN, la documentazione di
+    deploy parla di MAPBOX_TOKEN: accettarli entrambi costa una riga e toglie
+    di mezzo un'intera classe di «non si vede»."""
+    monkeypatch.delenv("MAPBOX_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("MAPBOX_TOKEN", "chiave-di-prova")
+    rc._sfondi.clear()
+    _, motivo = rc.sfondo_mappa((13.4, 48.4, 13.6, 48.6), 40, 40)
+    assert "chiave" not in motivo, "col nome alternativo la chiave deve essere trovata"
+
+
+def test_lo_sfondo_si_chiede_a_meta_risoluzione():
+    """Decine di mappe a piena risoluzione fanno un documento da megabyte che
+    il browser fatica ad aprire."""
+    assert 0 < rc.SFONDO_SCALA <= 0.6
+    assert rc.SFONDI_MAX <= 80

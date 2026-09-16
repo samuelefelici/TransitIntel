@@ -17,6 +17,8 @@ import html
 import math
 import os
 import sys
+import urllib.parse
+import urllib.request
 from typing import Iterable, Sequence
 
 # ── Tavolozza di riferimento (light: la relazione è un documento stampabile) ──
@@ -387,6 +389,10 @@ def gantt(rows: Sequence[dict], title: str, subtitle: str = "", width: int = 900
 
 MAPBOX_STYLE = "light-v11"
 SFONDO_TIMEOUT = 8
+# Meta' risoluzione: l'SVG la scala e il documento pesa un quarto.
+SFONDO_SCALA = 0.5
+# Quanti sfondi scaricare al massimo in una relazione.
+SFONDI_MAX = 60
 NOTA_MAPPA = "Sfondo cartografico \u00a9 Mapbox \u00a9 OpenStreetMap. Proiezione Mercatore."
 _sfondi: dict = {}
 
@@ -451,43 +457,64 @@ def proiettore(pts: Sequence[tuple], width: int, height: int, margine: float = 0
     return P, (x0, y0, x1, y1)
 
 
-def sfondo_mappa(riquadro, width: int, height: int) -> str:
-    """L'immagine di sfondo come data URI, o stringa vuota.
+def sfondo_mappa(riquadro, width: int, height: int) -> tuple:
+    """L'immagine di sfondo come data URI, e il motivo se non c'e'.
 
-    Nessuna chiave, nessuna rete, un errore qualsiasi: si torna al fondo
-    piatto. Una mappa senza strade e' meno bella; un documento che non si
-    genera non esiste."""
-    token = os.environ.get("MAPBOX_ACCESS_TOKEN", "")
+    Torna (uri, motivo): uno dei due e' sempre vuoto. Il motivo finisce SOTTO
+    la figura, perche' una mappa senza strade e un errore di rete si
+    assomigliano troppo — e finche' non lo scriveva, l'unico modo di capirlo
+    era leggere i log del server.
+
+    L'immagine si chiede a meta' risoluzione e si lascia scalare all'SVG: la
+    relazione ha decine di mappe, e a piena risoluzione il documento diventa
+    di parecchi megabyte e il browser arranca.
+    """
+    token = os.environ.get("MAPBOX_ACCESS_TOKEN") or os.environ.get("MAPBOX_TOKEN") or ""
     if not token:
-        return ""
+        return "", "nessuna chiave Mapbox configurata sul server"
     x0, y0, x1, y1 = riquadro
     chiave = (round(x0, 5), round(y0, 5), round(x1, 5), round(y1, 5), width, height)
     if chiave in _sfondi:
         return _sfondi[chiave]
+    if len(_sfondi) >= SFONDI_MAX:
+        return "", f"tetto di {SFONDI_MAX} sfondi per relazione raggiunto"
+    w = max(64, min(1280, int(width * SFONDO_SCALA)))
+    h = max(64, min(1280, int(height * SFONDO_SCALA)))
     bbox = f"[{x0:.6f},{_merc_lat(y0):.6f},{x1:.6f},{_merc_lat(y1):.6f}]"
-    url = (f"https://api.mapbox.com/styles/v1/mapbox/{MAPBOX_STYLE}/static/{bbox}/"
-           f"{width}x{height}?access_token={token}&attribution=false&logo=false")
+    url = (f"https://api.mapbox.com/styles/v1/mapbox/{MAPBOX_STYLE}/static/"
+           f"{urllib.parse.quote(bbox, safe=',')}/{w}x{h}"
+           f"?access_token={urllib.parse.quote(token, safe='')}&attribution=false&logo=false")
     try:
-        import urllib.request
         with urllib.request.urlopen(url, timeout=SFONDO_TIMEOUT) as r:   # noqa: S310
             if r.status != 200:
                 raise OSError(f"HTTP {r.status}")
             dati = r.read()
-        uri = "data:image/png;base64," + base64.b64encode(dati).decode("ascii")
+        esito = ("data:image/png;base64," + base64.b64encode(dati).decode("ascii"), "")
     except Exception as e:                                               # noqa: BLE001
-        print(f"[report] sfondo cartografico non disponibile: {type(e).__name__}: {e}", file=sys.stderr)
-        uri = ""
-    _sfondi[chiave] = uri
-    return uri
+        motivo = f"{type(e).__name__}: {e}"
+        print(f"[report] sfondo cartografico non disponibile: {motivo}", file=sys.stderr)
+        esito = ("", motivo)
+    _sfondi[chiave] = esito
+    return esito
 
 
-def _strato_sfondo(riquadro, width: int, height: int) -> str:
-    """Lo sfondo piu' un velo chiaro, cosi' cio' che sta sopra resta leggibile."""
-    uri = sfondo_mappa(riquadro, width, height)
+def _strato_sfondo(riquadro, width: int, height: int) -> tuple:
+    """Lo strato di fondo, e il motivo se e' rimasto piatto."""
+    uri, motivo = sfondo_mappa(riquadro, width, height)
     if not uri:
-        return f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>'
-    return (f'<image href="{uri}" x="0" y="0" width="{width}" height="{height}" preserveAspectRatio="none"/>'
-            f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}" opacity="0.26"/>')
+        return f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>', motivo
+    # href per i browser, xlink:href per chi converte in PDF e si ferma a SVG 1.1
+    return (f'<image href="{uri}" xlink:href="{uri}" x="0" y="0" width="{width}" height="{height}" '
+            f'preserveAspectRatio="none"/>'
+            f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}" opacity="0.18"/>', "")
+
+
+def _nota_con_sfondo(motivo: str, note: str = "") -> str:
+    """La nota della figura, col perche' lo sfondo manca quando manca."""
+    base = note or NOTA_MAPPA
+    if not motivo:
+        return base
+    return f"Sfondo cartografico non disponibile ({esc(motivo)}); la mappa resta leggibile senza. {base}"
 
 
 def _etichetta(x: float, y: float, testo: str, dim: int = 10, peso: str = "400",
@@ -551,8 +578,12 @@ def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, su
     P, riquadro = proiettore(pts, width, height)
     out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
            f'role="img" aria-label="{esc(title)}">',
-           _strato_sfondo(riquadro, width, height) if sfondo
-           else f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>']
+           "" ]
+    if sfondo:
+        strato, motivo_sfondo = _strato_sfondo(riquadro, width, height)
+    else:
+        strato, motivo_sfondo = f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>', ""
+    out[-1] = strato
 
     names, cols = [], []
     for k, iso in enumerate(sorted(isocrone, key=lambda x: -(x.get("minuti") or 0))):
@@ -601,7 +632,7 @@ def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, su
             continue
         visti.add((nome, col)); nn.append(nome); cc.append(col)
     return figure(title, "".join(out), subtitle=subtitle, legend=_legend(nn, cc), table=tbl,
-                  note=note or NOTA_MAPPA)
+                  note=_nota_con_sfondo(motivo_sfondo, note))
 
 
 def alleggerisci(points: Sequence, massimo: int = 160) -> list:
@@ -657,7 +688,9 @@ def cluster_map(clusters: Sequence[dict], title: str, subtitle: str = "",
     P, riquadro = proiettore(pts, width, height, margine=0.14)
     out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
            f'role="img" aria-label="{esc(title)}">',
-           _strato_sfondo(riquadro, width, height)]
+           ""]
+    strato, motivo_sfondo = _strato_sfondo(riquadro, width, height)
+    out[-1] = strato
     names, cols = [], []
     for i_, c in enumerate(gruppi):
         col = SERIES[i_ % len(SERIES)]
@@ -681,7 +714,7 @@ def cluster_map(clusters: Sequence[dict], title: str, subtitle: str = "",
                   for c in gruppi],
                  caption="Nodi di interscambio e fermate che raggruppano")
     return figure(title, "".join(out), subtitle=subtitle, legend=_legend(names, cols), table=tbl,
-                  note=note or NOTA_MAPPA)
+                  note=_nota_con_sfondo(motivo_sfondo, note))
 
 
 def nodo_map(cluster: dict, colore: str, width: int = 430, height: int = 300) -> str:
@@ -698,7 +731,9 @@ def nodo_map(cluster: dict, colore: str, width: int = 430, height: int = 300) ->
     P, riquadro = proiettore(pts, width, height, margine=0.30, lato_minimo_m=350)
     out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
            f'role="img" aria-label="{esc(cluster.get("name", ""))}">',
-           _strato_sfondo(riquadro, width, height)]
+           ""]
+    strato, motivo_sfondo = _strato_sfondo(riquadro, width, height)
+    out[-1] = strato
     xy = [P(float(s_["lat"]), float(s_["lon"])) for s_ in fermate]
     cx = sum(x for x, _ in xy) / len(xy)
     cy = sum(y for _, y in xy) / len(xy)
@@ -714,7 +749,8 @@ def nodo_map(cluster: dict, colore: str, width: int = 430, height: int = 300) ->
         out.append(_etichetta(x + (8 if destra else -8), y + (4 if k % 4 < 2 else -8),
                               s_.get("name", ""), 9, "500", "start" if destra else "end"))
     out.append("</svg>")
-    return figure(cluster.get("name", ""), "".join(out), subtitle=f'{len(fermate)} fermate')
+    return figure(cluster.get("name", ""), "".join(out), subtitle=f'{len(fermate)} fermate',
+                  note=_nota_con_sfondo(motivo_sfondo) if motivo_sfondo else "")
 
 
 def coincidenze_3d(nodi: Sequence[dict], incontri: Sequence[dict], title: str,
