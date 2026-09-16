@@ -1352,6 +1352,45 @@ corsa e quindi quante vetture servono.
 Entrambi sono in `analisi.territorio` e ognuno ha il suo try/catch: se il dato
 manca, il capitolo non compare e il resto della relazione esce lo stesso.
 
+## Quattro ritocchi, e le coincidenze diventano un documento
+
+**Mezza rete mancava.** Il disegno della rete prendeva solo `direction === 0`:
+mostrava le andate e non i ritorni, e i rami che esistono in un verso solo
+sparivano del tutto. Ora ci sono tutte le varianti; la legenda deduplica per
+(nome, colore), altrimenti ogni linea compariva due volte.
+
+**«10' a piedi» ripetuto in ogni legenda.** Il minutaggio della copertura
+pedonale si dice una volta nel cappello del capitolo — «vale per tutte le mappe
+che seguono» — e sparisce dalle legende. Resta nel tooltip dell'area.
+
+**Le categorie dei POI si vedono.** Un elenco di numeri non fa capire che una
+categoria pesa quanto tutte le altre messe insieme; le barre orizzontali si'. La
+tabella resta, dentro il riquadro richiudibile della figura.
+
+### Le coincidenze, in tre dimensioni e a libretto
+
+Dopo l'elenco delle linee la cosa che conta sono le coincidenze, e finora la
+relazione ne dava solo il conteggio. Due aggiunte.
+
+**Il libretto orario (8.4).** Per ogni relazione riconosciuta, i passaggi uno per
+uno: la corsa che arriva, quella che riparte, i minuti di attesa. Serviva
+cambiare `coincidence_analysis.py`, che teneva tre campioni e buttava il resto:
+ora c'e' `passaggi` con fino a 60 passaggi e i minuti in chiaro, perche' un
+diagramma possa collocarli nella giornata senza ri-analizzare le stringhe. E'
+il documento che un capo movimento legge davvero: «tre volte al giorno» non
+basta al banco, servono gli orari.
+
+**Il diagramma in assonometria.** Il piano e' la citta' vista dall'alto, l'asse
+verticale e' l'ora del giorno. Sopra ogni nodo si alza una colonna e ogni
+incontro fra due linee e' un anello all'altezza della sua ora, colorato per linea
+in arrivo. Si legge in un colpo solo **dove** la rete si connette e **quando**:
+una colonna fitta in alto e vuota in basso e' un nodo che funziona di sera e non
+la mattina; un nodo senza anelli e' un nodo che nessuno usa per cambiare.
+
+Le posizioni dei nodi si ricavano dalle fermate del piano per nome. Se non si
+ritrovano, il disegno non esce e il libretto resta: **il libretto non dipende
+dalla geografia**, e c'e' un test che lo verifica.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

@@ -406,8 +406,10 @@ def test_l_isocrona_si_disegna_sotto_il_tracciato():
     geom = {"type": "Polygon", "coordinates": [[[13.50, 43.60], [13.52, 43.60], [13.52, 43.62], [13.50, 43.62], [13.50, 43.60]]]}
     html = rc.network_map([{"name": "3", "points": [(43.61, 13.51), (43.59, 13.48)], "color": "#e2001a"}],
                           [], "p", isocrone=[{"minuti": 10, "geom": geom}, {"minuti": 5, "geom": geom}])
+    # il minutaggio sta nel tooltip dell'area, non ripetuto in ogni legenda:
+    # lo dice una volta l'intestazione del capitolo
     assert "minuti a piedi" in html
-    assert "10′ a piedi" in html and "5′ a piedi" in html
+    assert "10′ a piedi" not in html
     # dentro il disegno l'isocrona viene PRIMA del tracciato, cioè sotto
     import re as _re
     svg = _re.search(r"<svg.*?</svg>", html, _re.S).group(0)
@@ -550,3 +552,62 @@ def test_il_traffico_spiega_i_tempi_di_percorrenza():
 def test_senza_territorio_il_capitolo_non_compare():
     assert rb.render_territorio({}) == ""
     assert rb.render_territorio({"analisi": {"territorio": {"comune": {"nome": "Ancona"}}}}) == ""
+
+
+# ═══════════════════════════════════════════════════════════════
+#  LE COINCIDENZE: IN TRE DIMENSIONI E A LIBRETTO
+# ═══════════════════════════════════════════════════════════════
+
+def _coincidenze():
+    d = _rete()
+    d["analisi"] = {"coincidenze": {
+        "corse": 40, "corseConPassaggi": 20, "sogliaAttesaMin": 5, "attesaMinimaMin": 2, "minOccorrenze": 3,
+        "esistenti": [{
+            "node": "PIAZZA CAVOUR 1", "fromRoute": "3", "toRoute": "1/4", "occurrences": 3,
+            "attesaMin": {"min": 2, "max": 5, "mediana": 3}, "giaInCoincidenza": 0,
+            "sample": [{"arrivo": "08:12", "partenza": "08:15", "attesaMin": 3}],
+            "passaggi": [
+                {"arrivo": "08:12", "partenza": "08:15", "arrivoMin": 492, "partenzaMin": 495, "attesaMin": 3},
+                {"arrivo": "13:42", "partenza": "13:47", "arrivoMin": 822, "partenzaMin": 827, "attesaMin": 5},
+                {"arrivo": "18:12", "partenza": "18:14", "arrivoMin": 1092, "partenzaMin": 1094, "attesaMin": 2},
+            ]}],
+        "mancatePerPoco": [], "opportunita": [],
+    }}
+    return d
+
+
+def test_il_libretto_orario_elenca_i_passaggi_uno_per_uno():
+    """Una tabella che dice «tre volte al giorno» non basta al banco: servono
+    gli orari veri, arrivo, ripartenza e attesa."""
+    html = rb.render_coincidenze(_coincidenze())
+    assert "8.4 Il libretto orario delle coincidenze" in html
+    assert "08:12" in html and "08:15" in html
+    assert "13:42" in html and "18:14" in html
+    assert "3 passaggi al giorno" in html
+    assert "Arrivo" in html and "Riparte" in html and "Attesa" in html
+
+
+def test_le_coincidenze_si_vedono_nello_spazio_e_nel_tempo():
+    """Il diagramma in assonometria: il piano è la città, l'altezza è l'ora."""
+    html = rb.render_coincidenze(_coincidenze())
+    assert "Le coincidenze nello spazio e nel tempo" in html
+    assert "<svg" in html
+    assert "Assonometria" in html
+    # l'ora dell'incontro finisce nel tooltip
+    assert "08:12" in html
+
+
+def test_il_diagramma_regge_senza_le_posizioni_dei_nodi():
+    """Se il nodo non si ritrova fra le fermate, niente disegno: il resto del
+    capitolo esce lo stesso."""
+    d = _coincidenze()
+    d["network"]["stops"] = []
+    html = rb.render_coincidenze(d)
+    assert "8. Coincidenze fra linee" in html
+    assert "Le coincidenze nello spazio e nel tempo" not in html
+    assert "8.4 Il libretto orario" in html        # il libretto non dipende dalla geografia
+
+
+def test_il_diagramma_3d_vuole_nodi_e_incontri():
+    assert rc.coincidenze_3d([], [{"node": "x", "from": "1", "to": "2", "oraMin": 500}], "t") == ""
+    assert rc.coincidenze_3d([{"name": "x", "lat": 43.6, "lon": 13.5}], [], "t") == ""
