@@ -451,18 +451,30 @@ def test_il_nodo_da_vicino_non_scende_sotto_i_350_metri():
     assert metri >= 349, f"lato {metri:.0f} m"
 
 
-def test_le_fermate_numerose_si_numerano_invece_di_scriverle():
-    """Trentadue nomi accanto a trentadue puntini si coprono a vicenda: si
-    numerano lungo il percorso e l'elenco ordinato sta nella tabella sotto."""
+def test_sotto_la_mappa_c_e_la_copertura_non_l_elenco_delle_fermate():
+    """L'elenco delle fermate sotto la mappa non dice niente che la mappa non
+    mostri gia'. Quello che non si vede e' quanta gente il percorso ha a
+    portata di piedi, e che cosa le porta vicino."""
     d = _rete()
-    tante = [{"name": f"FERMATA {k}", "lat": 43.60 + k * 1e-3, "lon": 13.50 + k * 1e-3} for k in range(14)]
-    d["network"]["percorsi"] = [{"line": "3", "variant": "lunga", "direction": 0, "isDefault": True,
-                                 "points": [(43.60, 13.50), (43.62, 13.52)], "stops": tante}]
+    d["network"]["percorsi"][0]["copertura"] = {
+        "abitanti": 12450, "sezioni": 38, "poi": 214,
+        "categorie": [{"nome": "Pharmacy", "n": 12}, {"nome": "School", "n": 9},
+                      {"nome": "Supermarket", "n": 4}],
+    }
     html = rb.render_network(d)
-    # i numeri ci sono, e c'è l'elenco
-    assert ">1<" in html and ">14<" in html
-    assert "FERMATA 13" in html
-    assert "N." in html and "Fermata" in html
+    assert "Popolazione raggiunta" in html and "12.450" in html
+    assert "38" in html and "sezioni di censimento" in html
+    assert "Poli attrattori serviti" in html and "214" in html
+    assert "Pharmacy" in html and "School" in html and "Supermarket" in html
+    # l'elenco numerato delle fermate non c'e' piu'
+    assert "N." not in html
+
+
+def test_il_percorso_senza_copertura_non_si_rompe():
+    """Senza isocrone non c'e' copertura: il percorso esce con la sola mappa."""
+    html = rb.render_network(_rete())          # nessuna chiave "copertura"
+    assert "2.4 I percorsi" in html
+    assert "Popolazione raggiunta" not in html
 
 
 def test_le_fermate_poche_tengono_il_nome_sulla_mappa():

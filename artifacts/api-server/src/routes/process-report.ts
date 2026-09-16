@@ -20,7 +20,7 @@ import { sql } from "drizzle-orm";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
 import { getVehicleScenarioAccess, requireVehicleScenarioRead, vehicleScenariosAccessibleWhere } from "../lib/scenario-access";
 import { coincidenceMapFor } from "./service-program";
-import { hasIsochroneProvider, fetchIsochronesMulti } from "../lib/isochrones";
+import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "../lib/isochrones";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -101,6 +101,86 @@ async function isocroneDeiPercorsi(percorsi: any[], logger: { info: (...a: any[]
     if (sue.length > 0) p.isocrone = sue;
   }
   return geom.size;
+}
+
+/** Il rettangolo che contiene una geometria, per scartare in fretta i punti fuori. */
+function riquadroDi(geom: any): [number, number, number, number] | null {
+  const anelli: any[] = geom?.type === "Polygon" ? (geom.coordinates ?? [])
+    : geom?.type === "MultiPolygon" ? (geom.coordinates ?? []).flat() : [];
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const anello of anelli) {
+    for (const c of anello ?? []) {
+      if (!Array.isArray(c) || c.length < 2) continue;
+      const [x, y] = [Number(c[0]), Number(c[1])];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < x0) x0 = x; if (x > x1) x1 = x;
+      if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+  }
+  return Number.isFinite(x0) ? [x0, y0, x1, y1] : null;
+}
+
+/**
+ * Che cosa serve davvero ogni percorso: quanta popolazione ha a portata di
+ * piedi, e quali poli attrattori.
+ *
+ * Il conto si fa DENTRO le isocrone gia' calcolate — strade vere, non raggio in
+ * linea d'aria — e una sezione censuaria o un POI contano una volta sola per
+ * percorso, anche quando piu' fermate li raggiungono entrambe.
+ */
+async function coperturaDeiPercorsi(percorsi: any[], logger: { info: (...a: any[]) => void }): Promise<void> {
+  const conIso = percorsi.filter((p) => (p.isocrone ?? []).length > 0);
+  if (conIso.length === 0) return;
+
+  // il rettangolo di tutto, per non caricare il territorio intero
+  let X0 = Infinity, Y0 = Infinity, X1 = -Infinity, Y1 = -Infinity;
+  for (const p of conIso) {
+    for (const iso of p.isocrone) {
+      const r = riquadroDi(iso.geom);
+      if (!r) continue;
+      X0 = Math.min(X0, r[0]); Y0 = Math.min(Y0, r[1]);
+      X1 = Math.max(X1, r[2]); Y1 = Math.max(Y1, r[3]);
+    }
+  }
+  if (!Number.isFinite(X0)) return;
+
+  const sezioni = rows(await db.execute(sql`
+    SELECT istat_code, centroid_lng AS lng, centroid_lat AS lat, population
+      FROM census_sections
+     WHERE centroid_lng BETWEEN ${X0} AND ${X1} AND centroid_lat BETWEEN ${Y0} AND ${Y1}
+       AND population > 0
+  `));
+  const poi = rows(await db.execute(sql`
+    SELECT name, category, lng, lat FROM points_of_interest
+     WHERE lng BETWEEN ${X0} AND ${X1} AND lat BETWEEN ${Y0} AND ${Y1}
+  `));
+  logger.info(`copertura: ${sezioni.length} sezioni censuarie e ${poi.length} POI nell'area del piano`);
+
+  for (const p of conIso) {
+    const aree = (p.isocrone ?? []).map((iso: any) => ({ geom: iso.geom, bb: riquadroDi(iso.geom) }))
+      .filter((a: any) => a.bb);
+    const dentro = (lng: number, lat: number) => aree.some((a: any) =>
+      lng >= a.bb[0] && lng <= a.bb[2] && lat >= a.bb[1] && lat <= a.bb[3]
+      && pointInIsoGeometry(lng, lat, a.geom));
+
+    let abitanti = 0, sezioniDentro = 0;
+    for (const sz of sezioni) {
+      if (dentro(Number(sz.lng), Number(sz.lat))) { abitanti += Number(sz.population) || 0; sezioniDentro++; }
+    }
+    const perCategoria = new Map<string, number>();
+    let poiDentro = 0;
+    for (const q of poi) {
+      if (!dentro(Number(q.lng), Number(q.lat))) continue;
+      poiDentro++;
+      const c = String(q.category ?? "").trim() || "altro";
+      perCategoria.set(c, (perCategoria.get(c) ?? 0) + 1);
+    }
+    p.copertura = {
+      abitanti, sezioni: sezioniDentro, poi: poiDentro,
+      categorie: [...perCategoria.entries()].map(([nome, n]) => ({ nome, n }))
+                   .sort((a, b) => b.n - a.n || a.nome.localeCompare(b.nome)),
+    };
+  }
 }
 
 /** Un colore GTFS ("E2001A", "#e2001a", vuoto) in una tinta CSS, o null. */
@@ -378,6 +458,7 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
   let isocroneCalcolate = 0;
   try {
     isocroneCalcolate = await isocroneDeiPercorsi(percorsi, extra.logger ?? { info: () => {} });
+    await coperturaDeiPercorsi(percorsi, extra.logger ?? { info: () => {} });
   } catch (e: any) {
     (extra.logger ?? { info: () => {} }).info(`copertura pedonale non calcolata: ${e?.message ?? e}`);
   }

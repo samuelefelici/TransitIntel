@@ -1290,6 +1290,35 @@ scritto sopra il disegno.
 Lezione: quando una figura deve rispondere a due domande a scale diverse, non e'
 il disegno a essere sbagliato, sono due figure.
 
+## Sotto ogni percorso: la gente e i poli, non l'elenco delle fermate
+
+«Per ogni linea, sotto non mi serve l'elenco delle fermate, ma mi serve quanta
+popolazione potrebbe acchiappare e tutti i POI serviti, per categoria.»
+
+Ha ragione, e la ragione e' semplice: **l'elenco delle fermate non dice niente
+che la mappa non mostri gia'**. Quello che la mappa non puo' dire e' quanta gente
+quel percorso ha a portata di piedi e che cosa le porta vicino — cioe' il motivo
+per cui la linea esiste.
+
+`coperturaDeiPercorsi()` conta **dentro le isocrone gia' calcolate**, non entro un
+raggio in linea d'aria: per ogni percorso, le sezioni censuarie il cui centroide
+cade nell'area raggiungibile a piedi dalle sue fermate, e i POI che ci stanno
+dentro, raggruppati per categoria. Una sezione o un POI contano **una volta sola**
+per percorso, anche quando piu' fermate li raggiungono entrambe.
+
+Il conto e' su decine di percorsi per centinaia di sezioni e migliaia di POI, e il
+test punto-in-poligono non e' gratis: prima si scarta col rettangolo che contiene
+l'isocrona (`riquadroDi`), che costa quattro confronti, e solo chi passa quel
+filtro paga il test vero.
+
+Sotto ogni mappa ora ci sono due riquadri — popolazione raggiunta con quante
+sezioni, poli serviti con quante categorie — e la tabella dei POI per categoria.
+
+Tolta la numerazione delle fermate introdotta poco prima: senza l'elenco sotto la
+mappa un numero sul puntino non dice piu' niente, e il codice morto non si lascia
+in giro. I nomi restano nel tooltip, e sono scritti sulla mappa quando le fermate
+sono dieci o meno.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

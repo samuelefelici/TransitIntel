@@ -444,7 +444,7 @@ def render_percorsi(net: dict) -> str:
     out.append(para(
         f'Il disegno della rete qui sopra tiene una variante per linea, o diventa illeggibile. '
         f'Questi sono i <b>{fmt_n(len(perc))} percorsi</b> del piano presi uno per uno: per ciascuno '
-        f'il tracciato e le fermate servite.'))
+        f'il tracciato, la popolazione che ha a portata di piedi e i poli attrattori che serve.'))
     righe = []
     for p_ in perc:
         righe.append((p_.get("line") or "–", p_.get("variant") or "–",
@@ -476,11 +476,32 @@ def render_percorsi(net: dict) -> str:
             nome, subtitle=f'{fmt_n(len(fermate))} fermate servite',
             width=820, height=460,
             isocrone=[i for i in (p_.get("isocrone") or []) if isinstance(i, dict)],
-            etichetta_fermate=len(fermate) <= 10,
-            numera_fermate=len(fermate) > 10))
-        if len(fermate) > 10:
-            out.append(table(["N.", "Fermata"], [(f_.get("n"), f_.get("name") or "") for f_ in fermate],
-                             numeric_from=0))
+            etichetta_fermate=len(fermate) <= 10))
+        out.append(render_copertura(p_))
+    return "".join(out)
+
+
+def render_copertura(perc: dict) -> str:
+    """Che cosa serve davvero un percorso: gente e poli attrattori.
+
+    L'elenco delle fermate sotto la mappa non dice niente che la mappa non
+    mostri gia'. Quello che non si vede e' quanta gente quel percorso ha a
+    portata di piedi e che cosa le porta vicino: e' questo il motivo per cui
+    la linea esiste."""
+    cop = perc.get("copertura") if isinstance(perc.get("copertura"), dict) else None
+    if not cop:
+        return ""
+    cat = [c for c in (cop.get("categorie") or []) if isinstance(c, dict)]
+    out = [rc.kpi_row([
+        ("Popolazione raggiunta", fmt_n(cop.get("abitanti") or 0),
+         f'in {fmt_n(cop.get("sezioni") or 0)} sezioni di censimento'),
+        ("Poli attrattori serviti", fmt_n(cop.get("poi") or 0),
+         f'{fmt_n(len(cat))} categorie diverse'),
+    ])]
+    if cat:
+        out.append(table(["Categoria", "Quanti"], [(c.get("nome") or "", fmt_n(c.get("n") or 0)) for c in cat],
+                         numeric_from=1,
+                         total=("Totale", fmt_n(sum(int(c.get("n") or 0) for c in cat)))))
     return "".join(out)
 
 
