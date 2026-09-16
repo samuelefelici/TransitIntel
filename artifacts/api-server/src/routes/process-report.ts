@@ -103,6 +103,117 @@ async function isocroneDeiPercorsi(percorsi: any[], logger: { info: (...a: any[]
   return geom.size;
 }
 
+/**
+ * Il territorio intorno alla rete: chi ci abita, come si muove, quanto e'
+ * trafficato.
+ *
+ * I pendolari sono il Censimento ISTAT e stanno a livello COMUNALE: dicono chi
+ * entra e chi esce, per quale motivo, con quale mezzo e in quale fascia — non
+ * per fermata, e il documento lo dichiara invece di lasciarlo intendere.
+ * Il comune del piano si ricava dalle sezioni censuarie sotto le fermate: le
+ * prime sei cifre del codice ISTAT di una sezione sono il comune.
+ */
+async function contestoDelTerritorio(riquadro: [number, number, number, number],
+                                     logger: { info: (...a: any[]) => void }): Promise<any> {
+  const [X0, Y0, X1, Y1] = riquadro;
+  const fuori: any = { comune: null, pendolari: null, traffico: null };
+  try {
+    const cc = rows(await db.execute(sql`
+      SELECT substring(istat_code from 1 for 6) AS istat, SUM(population)::int AS pop
+        FROM census_sections
+       WHERE centroid_lng BETWEEN ${X0} AND ${X1} AND centroid_lat BETWEEN ${Y0} AND ${Y1}
+         AND istat_code IS NOT NULL
+       GROUP BY 1 ORDER BY pop DESC LIMIT 1
+    `));
+    const istat = cc[0]?.istat ? String(cc[0].istat) : null;
+    if (istat) {
+      const nome = rows(await db.execute(sql`
+        SELECT dest_name AS nome FROM istat_commuting_od WHERE dest_istat = ${istat} LIMIT 1
+      `));
+      fuori.comune = { istat, nome: nome[0]?.nome ?? null, abitanti: Number(cc[0]?.pop ?? 0) };
+
+      const verso = async (entrano: boolean) => rows(await db.execute(sql`
+        SELECT ${entrano ? sql`origin_name` : sql`dest_name`} AS controparte,
+               reason, mode, time_slot, SUM(flow)::int AS flusso
+          FROM istat_commuting_od
+         WHERE ${entrano ? sql`dest_istat = ${istat} AND origin_istat <> ${istat}`
+                         : sql`origin_istat = ${istat} AND dest_istat <> ${istat}`}
+         GROUP BY 1, 2, 3, 4
+      `));
+      const dentroIl = rows(await db.execute(sql`
+        SELECT mode, SUM(flow)::int AS flusso FROM istat_commuting_od
+         WHERE origin_istat = ${istat} AND dest_istat = ${istat} GROUP BY 1
+      `));
+
+      const riassumi = (righe: any[]) => {
+        const somma = (chiave: string) => {
+          const m = new Map<string, number>();
+          for (const r of righe) {
+            const k = String(r[chiave] ?? "").trim() || "non dichiarato";
+            m.set(k, (m.get(k) ?? 0) + Number(r.flusso ?? 0));
+          }
+          return [...m.entries()].map(([nome, n]) => ({ nome, n })).sort((a, b) => b.n - a.n);
+        };
+        return {
+          totale: righe.reduce((t, r) => t + Number(r.flusso ?? 0), 0),
+          comuni: somma("controparte").slice(0, 10),
+          motivi: somma("reason"), mezzi: somma("mode"), fasce: somma("time_slot"),
+        };
+      };
+      const entrano = await verso(true);
+      const escono = await verso(false);
+      if (entrano.length > 0 || escono.length > 0) {
+        fuori.pendolari = {
+          fonte: "Censimento ISTAT, matrice degli spostamenti pendolari",
+          livello: "comunale",
+          entrano: riassumi(entrano), escono: riassumi(escono),
+          interni: {
+            totale: dentroIl.reduce((t, r) => t + Number(r.flusso ?? 0), 0),
+            mezzi: dentroIl.map((r: any) => ({ nome: String(r.mode ?? "non dichiarato"), n: Number(r.flusso ?? 0) }))
+                     .sort((a: any, b: any) => b.n - a.n),
+          },
+        };
+      }
+    }
+  } catch (e: any) {
+    logger.info(`pendolari non disponibili: ${e?.message ?? e}`);
+  }
+
+  try {
+    const perOra = rows(await db.execute(sql`
+      SELECT EXTRACT(HOUR FROM captured_at AT TIME ZONE 'Europe/Rome')::int AS ora,
+             AVG(congestion_level)::float AS congestione,
+             AVG(speed)::float AS velocita, AVG(freeflow_speed)::float AS libera,
+             COUNT(*)::int AS rilievi
+        FROM traffic_snapshots
+       WHERE lng BETWEEN ${X0} AND ${X1} AND lat BETWEEN ${Y0} AND ${Y1}
+       GROUP BY 1 ORDER BY 1
+    `));
+    const peggiori = rows(await db.execute(sql`
+      SELECT segment_id, AVG(congestion_level)::float AS congestione,
+             AVG(speed)::float AS velocita, AVG(freeflow_speed)::float AS libera,
+             COUNT(*)::int AS rilievi
+        FROM traffic_snapshots
+       WHERE lng BETWEEN ${X0} AND ${X1} AND lat BETWEEN ${Y0} AND ${Y1}
+       GROUP BY 1 HAVING COUNT(*) >= 3 ORDER BY congestione DESC LIMIT 12
+    `));
+    if (perOra.length > 0) {
+      fuori.traffico = {
+        perOra: perOra.map((r: any) => ({ ora: Number(r.ora), congestione: Number(r.congestione),
+                                          velocita: Number(r.velocita), libera: Number(r.libera),
+                                          rilievi: Number(r.rilievi) })),
+        peggiori: peggiori.map((r: any) => ({ segmento: String(r.segment_id), congestione: Number(r.congestione),
+                                              velocita: Number(r.velocita), libera: Number(r.libera),
+                                              rilievi: Number(r.rilievi) })),
+        rilievi: perOra.reduce((t: number, r: any) => t + Number(r.rilievi ?? 0), 0),
+      };
+    }
+  } catch (e: any) {
+    logger.info(`traffico non disponibile: ${e?.message ?? e}`);
+  }
+  return fuori;
+}
+
 /** Il rettangolo che contiene una geometria, per scartare in fretta i punti fuori. */
 function riquadroDi(geom: any): [number, number, number, number] | null {
   const anelli: any[] = geom?.type === "Polygon" ? (geom.coordinates ?? [])
@@ -462,6 +573,19 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
   } catch (e: any) {
     (extra.logger ?? { info: () => {} }).info(`copertura pedonale non calcolata: ${e?.message ?? e}`);
   }
+  // Il territorio intorno alla rete: chi ci abita, come si muove, il traffico.
+  let territorio: any = null;
+  try {
+    if (stops.length > 0) {
+      const lons = stops.map((x: any) => Number(x.lon)), lats = stops.map((x: any) => Number(x.lat));
+      const m = 0.02;   // ~2 km di contorno, il territorio non finisce all'ultima fermata
+      territorio = await contestoDelTerritorio(
+        [Math.min(...lons) - m, Math.min(...lats) - m, Math.max(...lons) + m, Math.max(...lats) + m],
+        extra.logger ?? { info: () => {} });
+    }
+  } catch (e: any) {
+    (extra.logger ?? { info: () => {} }).info(`contesto del territorio non calcolato: ${e?.message ?? e}`);
+  }
   const lines = (psRoutes.length > 0 ? psRoutes : [...perRoute.keys()].map(k => ({ id: k, short_name: perRoute.get(k)!.name, attributes: {} })))
     .map((r: any) => {
       const pr = perRoute.get(r.id) ?? [...perRoute.values()].find(e => e.name === r.short_name);
@@ -620,7 +744,7 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
     },
     costs: { unit: [], notes: [] },
     // Le analisi che accompagnano il piano ma non nascono dai solver.
-    analisi: { coincidenze },
+    analisi: { coincidenze, territorio },
   };
 }
 

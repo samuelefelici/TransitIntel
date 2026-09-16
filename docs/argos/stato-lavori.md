@@ -1319,6 +1319,39 @@ mappa un numero sul puntino non dice piu' niente, e il codice morto non si lasci
 in giro. I nomi restano nel tooltip, e sono scritti sulla mappa quando le fermate
 sono dieci o meno.
 
+## Il territorio: chi si muove, e quanto sono trafficate le strade
+
+Ultimo pezzo del capitolo della rete: **2.5 Il territorio e come si muove**.
+
+**I pendolari.** `istat_commuting_od` e' la matrice del Censimento: per ogni
+coppia comune-origine → comune-destinazione, quante persone si spostano, per
+quale motivo, con quale mezzo, in quale fascia oraria. La relazione ora dice chi
+entra ad Ancona, da dove, come e a che ora; chi esce; e quanti si spostano dentro
+il comune.
+
+Il comune del piano non e' configurato da nessuna parte: si ricava dai dati. Le
+prime sei cifre del codice ISTAT di una sezione censuaria sono il comune, quindi
+si prende il comune piu' rappresentato fra le sezioni sotto le fermate.
+
+I codici del Censimento (`car_driver`, `before_715`, `bus_urban`) sono tradotti in
+italiano corrente, e c'e' un test che verifica che quelli grezzi **non** compaiano
+nel documento.
+
+La cosa che conta di piu' e' scritta nel capitolo, non lasciata intendere: il dato
+e' a livello **comunale**, dice chi si sposta fra comuni e non chi sale a una
+fermata. E' il **bacino potenziale, non la domanda servita** — la differenza fra
+una relazione onesta e una che millanta.
+
+**Il traffico.** `traffic_snapshots` porta velocita' reale, velocita' a strada
+libera e congestione per segmento, con l'ora del rilievo. Il capitolo mostra la
+velocita' ora per ora (reale contro strada libera) e i dodici segmenti peggiori.
+Serve a dire perche' i tempi di percorrenza del quadro orario sono quelli: la
+congestione non e' un dettaglio di contorno, e' cio' che decide quanto dura una
+corsa e quindi quante vetture servono.
+
+Entrambi sono in `analisi.territorio` e ognuno ha il suo try/catch: se il dato
+manca, il capitolo non compare e il resto della relazione esce lo stesso.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
