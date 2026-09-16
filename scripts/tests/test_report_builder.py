@@ -767,17 +767,48 @@ def _con_corse():
 
 def test_il_diagramma_disegna_le_corse_non_solo_gli_incontri():
     """Il primo disegno mostrava SOLO i punti di incontro — anelli infilati su
-    colonne verticali — che è come raccontare un viaggio elencando le
+    colonne verticali — che e' come raccontare un viaggio elencando le
     coincidenze e tacendo il percorso."""
-    html = rb.render_coincidenze_3d(_con_corse(), _con_corse()["analisi"]["coincidenze"]["esistenti"])
+    d = _con_corse()
+    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
     assert "<svg" in html
-    assert "Le corse nello spazio e nel tempo" in html
-    # ogni corsa è una traiettoria: dodici corse, dodici curve più dodici ombre
+    # ogni corsa e' una traiettoria, con la sua ombra sul pavimento
     assert html.count('stroke-width="1.5"') >= 12, "mancano le traiettorie"
-    assert html.count('opacity="0.30"') >= 12, "manca l'ombra dei percorsi sul pavimento"
-    assert "12 corse" in html
+    assert html.count('opacity="0.30"') >= 12, "manca l'ombra dei percorsi"
     # e i colori sono quelli delle linee
     assert "#2fd4e8" in html and "#e8e02f" in html
+
+
+def test_si_disegnano_due_linee_alla_volta():
+    """Diciassette linee tutte insieme sono un groviglio in cui non si
+    distingue niente: il disegno serve a far vedere UNA relazione."""
+    d = _con_corse()
+    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
+    assert "due linee alla volta" in html
+    assert "1/4 e 3: le corse e i loro incontri" in html
+    # una sola coppia nel campione: un solo diagramma
+    assert html.count("<svg") == 1
+    assert "1 relazioni" in html or "relazioni" in html
+
+
+def test_ogni_coppia_ha_il_suo_diagramma():
+    """Due relazioni diverse, due disegni distinti: quello della 3 con la 1/4
+    non deve portarsi dentro le corse della 24."""
+    d = _con_corse()
+    d["network"]["corse"] += [
+        {"linea": "24", "colore": "#9b59b6",
+         "punti": [(43.6158, 13.5189, 600 + k), (43.60, 13.50, 612 + k)]} for k in range(0, 40, 10)]
+    d["analisi"]["coincidenze"]["esistenti"].append({
+        "node": "PIAZZA CAVOUR 1", "fromRoute": "3", "toRoute": "24", "occurrences": 2,
+        "attesaMin": {"min": 3, "max": 4, "mediana": 3}, "giaInCoincidenza": 0, "sample": [],
+        "passaggi": [{"arrivo": "10:05", "partenza": "10:08", "arrivoMin": 605, "attesaMin": 3},
+                     {"arrivo": "10:25", "partenza": "10:28", "arrivoMin": 625, "attesaMin": 3}]})
+    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
+    assert html.count("<svg") == 2, "un diagramma per coppia"
+    assert "1/4 e 3" in html and "3 e 24" in html
+    # nel disegno della coppia 3+1/4 non c'e' il colore della 24
+    primo = html[html.index("1/4 e 3"):html.index("3 e 24")]
+    assert "#9b59b6" not in primo, "la terza linea non deve entrare nel disegno di una coppia"
 
 
 def test_il_diagramma_ha_il_fondo_scuro_e_i_piani_delle_ore():
@@ -799,10 +830,17 @@ def test_senza_le_corse_si_ricade_sui_punti_di_incontro():
 def test_le_coincidenze_sono_marcate_sulle_traiettorie():
     d = _con_corse()
     html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert "incontri riconosciuti" in html
+    assert "incontri al giorno" in html
     assert 'stroke="#ffffff"' in html, "i cerchi bianchi delle coincidenze"
 
 
 def test_il_diagramma_spazio_tempo_vuole_almeno_una_corsa():
     assert rc.spazio_tempo([], "t") == ""
     assert rc.spazio_tempo([{"linea": "3", "punti": [(43.6, 13.5, 480)]}], "t") == ""
+
+
+def test_le_linee_si_ordinano_come_su_un_quadro_orario():
+    """In ordine alfabetico «24» viene prima di «3»: per chi legge un quadro
+    orario è sbagliato."""
+    assert sorted(["3", "24", "1/4"], key=rb.ordine_di_linea) == ["1/4", "3", "24"]
+    assert sorted(["C.S.", "7"], key=rb.ordine_di_linea) == ["7", "C.S."]

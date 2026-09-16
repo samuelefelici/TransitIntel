@@ -1521,6 +1521,22 @@ i soli punti d'incontro che niente, e il documento dichiara che sono quelli.
 Lezione: quando una figura non assomiglia a quello che deve mostrare, prima di
 ritoccare gli angoli conviene chiedersi **se le si stanno dando i dati giusti**.
 
+## Due linee alla volta
+
+Il diagramma spazio-tempo con tutte e diciassette le linee insieme e' un
+groviglio: le curve si coprono e non si distingue piu' niente. Nelle immagini di
+riferimento, infatti, i colori sono **due**.
+
+Ora c'e' **un diagramma per ogni coppia di linee che si incontra**, con le sole
+corse di quelle due e i loro incontri. Le coppie si contano come relazioni non
+ordinate — 3→1/4 e 1/4→3 sono la stessa relazione vista nei due versi — e si
+disegnano le dieci con piu' incontri.
+
+Le linee nel titolo si ordinano col **numero, non con l'alfabeto**: altrimenti
+usciva «24 e 3» e «1/4» finiva prima di tutto. `ordine_di_linea()` prende il
+primo numero che compare nel nome e a parita' ordina per nome intero, cosi'
+l'ordine e' quello di un quadro orario.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
