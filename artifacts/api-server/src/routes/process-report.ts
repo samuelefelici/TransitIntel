@@ -20,6 +20,7 @@ import { sql } from "drizzle-orm";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
 import { getVehicleScenarioAccess, requireVehicleScenarioRead, vehicleScenariosAccessibleWhere } from "../lib/scenario-access";
 import { coincidenceMapFor } from "./service-program";
+import { hasIsochroneProvider, fetchIsochronesMulti } from "../lib/isochrones";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -57,6 +58,60 @@ function rows(r: any): any[] { return (r as any)?.rows ?? (Array.isArray(r) ? r 
 
 /** Array di uuid come parametro Postgres: il template `sql` espande un array JS
  *  in una tupla ($1, $2, …) e "(…)::uuid[]" non è SQL valido. */
+/**
+ * La copertura pedonale delle fermate di ogni percorso.
+ *
+ * Le isocrone vere costano una chiamata a testa: le fermate di un piano
+ * urbano sono centinaia, e la prima relazione le pagherebbe tutte. La cache
+ * su DB (isochrone_cache) le rende gratuite dalla seconda volta, quindi qui
+ * si mette solo un tetto alle richieste NUOVE per singola relazione: quelle
+ * oltre il tetto restano fuori e il documento lo dichiara, invece di far
+ * scadere la generazione.
+ */
+const ISOCRONA_MINUTI = 10;
+const ISOCRONE_NUOVE_MAX = 140;
+
+async function isocroneDeiPercorsi(percorsi: any[], logger: { info: (...a: any[]) => void }): Promise<number> {
+  if (!hasIsochroneProvider() || percorsi.length === 0) return 0;
+  // una fermata sola, anche se la servono piu' percorsi
+  const perChiave = new Map<string, { lat: number; lon: number }>();
+  for (const p of percorsi) {
+    for (const s of (p.stops ?? [])) {
+      perChiave.set(`${s.lat.toFixed(4)},${s.lon.toFixed(4)}`, { lat: s.lat, lon: s.lon });
+    }
+  }
+  const geom = new Map<string, any>();
+  let nuove = 0;
+  for (const [chiave, punto] of perChiave) {
+    if (nuove >= ISOCRONE_NUOVE_MAX) break;
+    try {
+      const out = await fetchIsochronesMulti(punto.lon, punto.lat, [ISOCRONA_MINUTI]);
+      const g = out?.[ISOCRONA_MINUTI];
+      if (g) { geom.set(chiave, g); nuove++; }
+    } catch (e: any) {
+      logger.info(`isocrona non calcolata per ${chiave}: ${e?.message ?? e}`);
+    }
+  }
+  for (const p of percorsi) {
+    const sue: any[] = [];
+    for (const s of (p.stops ?? [])) {
+      const g = geom.get(`${s.lat.toFixed(4)},${s.lon.toFixed(4)}`);
+      if (g) sue.push({ minuti: ISOCRONA_MINUTI, geom: g, fermata: s.name });
+    }
+    if (sue.length > 0) p.isocrone = sue;
+  }
+  return geom.size;
+}
+
+/** Un colore GTFS ("E2001A", "#e2001a", vuoto) in una tinta CSS, o null. */
+function normalizzaColore(c: unknown): string | null {
+  const t = String(c ?? "").trim().replace(/^#/, "");
+  if (!/^[0-9a-fA-F]{6}$/.test(t)) return null;
+  // il bianco su sfondo chiaro sparisce: meglio lasciare decidere alla tavolozza
+  if (t.toLowerCase() === "ffffff") return null;
+  return `#${t.toLowerCase()}`;
+}
+
 function uuidArray(ids: string[]) {
   return sql`ARRAY[${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)}]::uuid[]`;
 }
@@ -129,6 +184,7 @@ interface DossierExtra {
   isTest?: boolean; testNote?: string;
   decisions?: { kind?: string; content?: string }[];
   plans?: { id?: any; at?: string; goal?: string; summary?: string; status?: string }[];
+  logger?: { info: (...a: any[]) => void };
 }
 
 /** Costruisce il dossier di processo per uno scenario vetture (+ DSS). */
@@ -214,7 +270,7 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
   let clusters: { name: string; stops: any[] }[] = [];
   if (psId) {
     const rr = rows(await db.execute(sql`
-      SELECT id, short_name, long_name, attributes FROM ps_routes
+      SELECT id, short_name, long_name, color, attributes FROM ps_routes
        WHERE project_id = ${psId}::uuid ${routeIds.length > 0 ? sql`AND id = ANY(${uuidArray(routeIds)})` : sql``}
        ORDER BY sort_order, short_name
     `));
@@ -243,6 +299,9 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       const byV = new Map<string, any[]>();
       for (const s of vstops) { let a = byV.get(s.variant_id); if (!a) { a = []; byV.set(s.variant_id, a); } a.push(s); }
       const routeName = new Map(rr.map((r: any) => [r.id, r.short_name]));
+      // Il colore con cui l'azienda pubblica la linea: le mappe devono usare
+      // quello, non una tinta di comodo presa da una tavolozza.
+      const routeColor = new Map(rr.map((r: any) => [r.id, normalizzaColore(r.color)]));
       const clusterNames: string[] = Array.isArray(crew?.clusters) ? crew.clusters.map((c: any) => String(c?.name ?? "").toUpperCase()).filter(Boolean) : [];
       const stopSeen = new Map<string, any>();
       for (const v of chosen) {
@@ -255,13 +314,14 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
         }
         const vs = byV.get(v.id) ?? [];
         if (points.length < 2) points = vs.map((s: any) => [Number(s.lat), Number(s.lon)]).filter((p: number[]) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
-        if (points.length >= 2 && v.direction === 0) polylines.push({ name: routeName.get(v.route_id) ?? v.name, points });
+        if (points.length >= 2 && v.direction === 0) polylines.push({ name: routeName.get(v.route_id) ?? v.name, points, color: routeColor.get(v.route_id) ?? null });
         // Ogni singolo percorso, andata e ritorno: il disegno della rete tiene
         // una variante per linea per restare leggibile, ma la relazione deve
         // poter mostrare anche il tracciato di ciascuna variante da solo.
         if (points.length >= 2) {
           percorsi.push({
             line: routeName.get(v.route_id) ?? v.name,
+            color: routeColor.get(v.route_id) ?? null,
             variant: v.name ?? null,
             direction: Number(v.direction ?? 0),
             isDefault: !!v.is_default,
@@ -313,12 +373,21 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       clusters = [...perFirma.values()].sort((a, b) => b.stops.length - a.stops.length || a.name.localeCompare(b.name));
     }
   }
+  // La copertura pedonale di ogni percorso: un errore qui non deve costare la
+  // relazione, e senza provider il capitolo esce senza le aree.
+  let isocroneCalcolate = 0;
+  try {
+    isocroneCalcolate = await isocroneDeiPercorsi(percorsi, extra.logger ?? { info: () => {} });
+  } catch (e: any) {
+    (extra.logger ?? { info: () => {} }).info(`copertura pedonale non calcolata: ${e?.message ?? e}`);
+  }
   const lines = (psRoutes.length > 0 ? psRoutes : [...perRoute.keys()].map(k => ({ id: k, short_name: perRoute.get(k)!.name, attributes: {} })))
     .map((r: any) => {
       const pr = perRoute.get(r.id) ?? [...perRoute.values()].find(e => e.name === r.short_name);
       const rs = routeStats.find((x: any) => x.routeId === r.id || x.routeName === r.short_name);
       return {
         name: r.short_name, routeId: r.id, longName: r.long_name ?? null,
+        color: normalizzaColore(r.color),
         trips: pr?.trips ?? rs?.tripsCount ?? 0,
         firstDep: pr?.first != null ? `${String(Math.floor(pr.first / 60)).padStart(2, "0")}:${String(pr.first % 60).padStart(2, "0")}` : rs?.firstDeparture ?? null,
         lastDep: pr?.last != null ? `${String(Math.floor(pr.last / 60)).padStart(2, "0")}:${String(pr.last % 60).padStart(2, "0")}` : null,
@@ -445,7 +514,9 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       isTest: !!extra.isTest, testNote: extra.testNote ?? null,
       source: input?.source ?? null, mode: input?.mode ?? result?.solver ?? null,
     },
-    network: { lines, stopsCount, nodes: clusters.map((c) => c.name), clusters, polylines, percorsi, stops },
+    network: { lines, stopsCount, nodes: clusters.map((c) => c.name), clusters, polylines, percorsi, stops,
+               coperturaPedonale: { minuti: ISOCRONA_MINUTI, fermateCoperte: isocroneCalcolate,
+                                    tetto: ISOCRONE_NUOVE_MAX, disponibile: hasIsochroneProvider() } },
     planning: {
       timeline, activityCounts,
       decisions: Array.isArray(extra.decisions) ? extra.decisions : [],
@@ -499,6 +570,7 @@ router.post("/service-program/scenarios/:id/report", async (req: Request, res: R
       isTest: !!b.isTest, testNote: typeof b.testNote === "string" ? b.testNote.slice(0, 500) : undefined,
       decisions: Array.isArray(b.decisions) ? b.decisions.slice(0, 100) : undefined,
       plans: Array.isArray(b.plans) ? b.plans.slice(0, 100) : undefined,
+      logger: req.log,
     };
     const dossier = await buildProcessDossier(String(req.params.id), typeof b.dssId === "string" ? b.dssId : null, extra);
     const built = await runReportBuilder(dossier, req.log);

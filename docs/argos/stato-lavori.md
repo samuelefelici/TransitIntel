@@ -1205,6 +1205,55 @@ gonfiano il documento oltre ogni misura. La forma sensata e' l'isocrona disegnat
 per linea (tutte le fermate di quella linea sulla stessa mappa) piu' una riga per
 fermata con la popolazione raggiunta a 5, 10 e 15 minuti a piedi.
 
+## «Non si vede la mappa»: sfondo, colori veri, cerchi
+
+Seconda tornata di correzioni sul capitolo della rete. L'operatore ha detto tre
+cose, e due cominciavano con la stessa: **non si vede**.
+
+**Il problema era il fondo.** Le mappe erano disegni vettoriali su un rettangolo
+di colore piatto: un tracciato che attraversa il nulla non dice dove passa.
+Sotto ogni mappa ora c'e' una **immagine cartografica vera** (Mapbox statico,
+stile chiaro, con un velo del 26% sopra perche' i tracciati restino leggibili).
+
+Il punto delicato non e' scaricare l'immagine, e' **allinearla**. Le mappe a
+tasselli sono in Mercatore, il disegno era in equirettangolare: sovrapposti, i
+tracciati scivolano rispetto alle strade. Ho sostituito la proiezione con
+`proiettore()`, che lavora in Mercatore e restituisce ANCHE il riquadro da
+chiedere allo sfondo, gia' allargato nelle proporzioni del disegno — perche'
+Mapbox, se il riquadro ha proporzioni diverse dall'immagine, lo allarga per conto
+suo e l'allineamento salta comunque. Un test verifica che il centro del riquadro
+cada al centro del disegno.
+
+Senza chiave o senza rete `sfondo_mappa()` restituisce stringa vuota e le mappe
+tornano com'erano: **il documento non deve dipendere da un servizio esterno.**
+
+**I colori sono quelli veri.** `ps_routes.color` porta la tinta con cui l'azienda
+pubblica la linea: ora le mappe usano quella, non una presa dalla tavolozza. Il
+bianco viene scartato (su fondo chiaro sparisce) e senza colore si ricade sulla
+tavolozza come prima. Ogni tracciato ha un alone bianco sotto, che lo stacca
+dalla mappa.
+
+**I nodi sono cerchi, con i nomi dentro.** Erano gusci convessi senza etichette:
+un nodo da due fermate diventava un segmento e non si capiva cosa contenesse. Ora
+ogni nodo e' un cerchio colorato che racchiude le sue fermate, ciascuna col
+proprio nome scritto accanto, e il nome del nodo sopra. Le etichette hanno un
+alone chiaro, o sopra una mappa non si leggono.
+
+**La copertura pedonale c'e', percorso per percorso.** Su ogni mappa di percorso
+sono disegnate le isocrone a 10 minuti a piedi delle sue fermate — strade vere,
+non raggio in linea d'aria — sotto il tracciato. Le isocrone costano una chiamata
+a fermata: la cache su DB le rende gratuite dalla seconda relazione, e nel
+frattempo c'e' un tetto di 140 richieste nuove per relazione, dichiarato nel
+documento invece che nascosto. Senza provider il capitolo lo dice e va avanti.
+
+### Resta da fare
+
+I **pendolari**: l'operatore ha confermato che il livello comunale va bene, «chi
+entra in Ancona e chi esce». Il dato e' in `istat_commuting_od` con motivo, mezzo
+e fascia oraria; il comune del piano si ricava dai primi sei caratteri del codice
+ISTAT delle sezioni censuarie vicine alle fermate. Mancano anche la popolazione
+per fermata, il traffico e i POI nel capitolo.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

@@ -445,14 +445,32 @@ def render_percorsi(net: dict) -> str:
                       "andata" if int(p_.get("direction") or 0) == 0 else "ritorno",
                       fmt_n(len(p_.get("stops") or [])), "sì" if p_.get("isDefault") else "no"))
     out.append(table(["Linea", "Variante", "Verso", "Fermate", "Predefinita"], righe, numeric_from=3))
+    cop = net.get("coperturaPedonale") if isinstance(net.get("coperturaPedonale"), dict) else {}
+    con_iso = sum(1 for p_ in perc if p_.get("isocrone"))
+    if con_iso:
+        testo = (f'Su ogni percorso è disegnata anche la <b>copertura pedonale</b> delle sue fermate: '
+                 f'l\'area colorata è quanto si raggiunge a piedi in <b>{fmt_n(cop.get("minuti") or 10)} minuti</b>, '
+                 f'camminando sulle strade vere e non in linea d\'aria.')
+        coperte, tetto = cop.get("fermateCoperte") or 0, cop.get("tetto") or 0
+        if tetto and coperte >= tetto:
+            testo += (f' Il calcolo si ferma a {fmt_n(tetto)} fermate nuove per relazione: le altre '
+                      f'entreranno alla prossima generazione, quando queste saranno gi\u00e0 in archivio.')
+        out.append(para(testo))
+    elif cop and not cop.get("disponibile"):
+        out.append(para('<span class="small">La copertura pedonale non è disegnata: manca il servizio '
+                        'di calcolo delle isocrone.</span>'))
     for p_ in perc:
         verso = "andata" if int(p_.get("direction") or 0) == 0 else "ritorno"
         nome = f'{p_.get("line")} · {p_.get("variant") or verso} ({verso})'
+        fermate = p_.get("stops") or []
         out.append(rc.network_map(
-            [{"name": p_.get("line") or "", "points": rc.alleggerisci(p_.get("points") or [])}],
-            [{**s_, "node": False} for s_ in (p_.get("stops") or [])],
-            nome, subtitle=f'{fmt_n(len(p_.get("stops") or []))} fermate servite',
-            width=760, height=420))
+            [{"name": p_.get("line") or "", "color": p_.get("color"),
+              "points": rc.alleggerisci(p_.get("points") or [])}],
+            [{**s_, "node": False} for s_ in fermate],
+            nome, subtitle=f'{fmt_n(len(fermate))} fermate servite',
+            width=820, height=460,
+            isocrone=[i for i in (p_.get("isocrone") or []) if isinstance(i, dict)],
+            etichetta_fermate=len(fermate) <= 22))
     return "".join(out)
 
 
