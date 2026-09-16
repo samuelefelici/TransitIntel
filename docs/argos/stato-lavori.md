@@ -1606,6 +1606,46 @@ arrivo — come fa l'originale quando il caricatore non risponde.
 Un dettaglio che si vede solo stampando: gli orari del foglio sono a **due
 cifre** (`_hhmm`, 07:58 e non 7:58), altrimenti le colonne non si incolonnano.
 
+## Le coincidenze: il disegno era sbagliato in partenza
+
+L'operatore: «sulle coincidenze non sono affatto soddisfatto, in fase di
+esportazione della relazione fai decidere le linee che vuoi vedere le
+coincidenze e cambia metodo di visualizzazione, non si capisce niente».
+
+Il diagramma assonometrico era arrivato in fondo a una serie di correzioni —
+fondo scuro, poi chiaro; tutte le linee, poi due alla volta — e nessuna aveva
+toccato il difetto vero: **faceva vedere la geografia, che si sa gia', e
+nascondeva la domanda**. Un capo movimento non chiede «dove si incontrano le
+linee», chiede **a che ora** e **quanto si aspetta**. Nessuna proiezione
+assonometrica risponde a quelle due domande, per bene che la si disegni.
+
+Al suo posto due disegni piani, uno per domanda:
+
+- **8.2 Quando si puo' cambiare** — una riga per relazione, una colonna per ora
+  del giorno, la casella tanto piu' scura quante sono le coincidenze di
+  quell'ora. Il buco di meta' pomeriggio si vede a occhio, e il totale da solo
+  non lo distingue da una relazione distribuita su tutta la giornata.
+- **8.3 Quanto e' buono ogni cambio** — un disegno per relazione, affiancati: in
+  orizzontale l'ora, in verticale i minuti di attesa, la fascia chiara e' la
+  finestra utile letta dal dossier. Un punto sopra la fascia e' un'attesa
+  lunga, uno sotto e' un cambio da prendere di corsa.
+
+Via `spazio_tempo`, `coincidenze_3d` e `_asse_assonometrico`; via anche
+`corseNelTempo` e il campo `network.corse` nel dossier, che esistevano **solo**
+per alimentare quel disegno e pesavano in archivio 420 corse per relazione.
+
+**La scelta delle linee.** Il capitolo con diciassette linee dentro non si
+legge, e chi esporta sa gia' quali relazioni gli interessano. Un dialogo prima
+di generare (`ReportOptionsDialog`, montato nei due punti da cui la relazione
+nasce: area turni macchina e step VCSP), il campo `coincidenzeLinee` nella
+POST e nel tool `ti_report`. La regola e' una sola ed e' scritta anche nel
+documento: due o piu' linee scelte, le relazioni con **tutti e due** i capi
+dentro; una sola, tutte le sue; nessuna, tutta la rete.
+
+Il taglio e' **del documento, non del dato**: `lineeScelte` viaggia nel dossier
+accanto alla mappa delle coincidenze, che resta intera in archivio. Una
+relazione ristretta si puo' rigenerare larga; un dossier tagliato no.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

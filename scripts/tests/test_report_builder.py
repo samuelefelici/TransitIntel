@@ -584,45 +584,12 @@ def test_il_libretto_orario_elenca_i_passaggi_uno_per_uno():
     """Una tabella che dice «tre volte al giorno» non basta al banco: servono
     gli orari veri, arrivo, ripartenza e attesa."""
     html = rb.render_coincidenze(_coincidenze())
-    assert "8.6 Il libretto orario delle coincidenze" in html
+    assert "8.7 Il libretto orario delle coincidenze" in html
     assert "08:12" in html and "08:15" in html
     assert "13:42" in html and "18:14" in html
     assert "3 passaggi al giorno" in html
     assert "Arrivo" in html and "Riparte" in html and "Attesa" in html
 
-
-def test_le_coincidenze_si_vedono_nello_spazio_e_nel_tempo():
-    """Il diagramma in assonometria: il piano è la città, l'altezza è l'ora."""
-    html = rb.render_coincidenze(_coincidenze())
-    assert "Le coincidenze nello spazio e nel tempo" in html
-    assert "<svg" in html
-    assert "Assonometria" in html
-    # l'ora dell'incontro finisce nel tooltip
-    assert "08:12" in html
-
-
-def test_il_diagramma_esce_anche_senza_le_posizioni_dei_nodi():
-    """La geografia serve solo a DISPORRE le colonne: quali linee si
-    incontrano, dove e quando c'e' comunque. Prima, se i nodi non si
-    ritrovavano fra le fermate, il diagramma spariva del tutto — ed e' cosi'
-    che l'operatore si e' trovato il capitolo senza disegno."""
-    d = _coincidenze()
-    d["network"]["stops"] = []
-    html = rb.render_coincidenze(d)
-    assert "8. Coincidenze fra linee" in html
-    assert "Le coincidenze nello spazio e nel tempo" in html, "il disegno deve esserci lo stesso"
-    assert "disposti in cerchio" in html, "e il documento deve dire che la posizione e' di comodo"
-    assert "8.6 Il libretto orario" in html
-
-
-def test_il_diagramma_3d_vuole_nodi_e_incontri():
-    assert rc.coincidenze_3d([], [{"node": "x", "from": "1", "to": "2", "oraMin": 500}], "t") == ""
-    assert rc.coincidenze_3d([{"name": "x", "lat": 43.6, "lon": 13.5}], [], "t") == ""
-
-
-# ═══════════════════════════════════════════════════════════════
-#  I SIMBOLI DELLE CATEGORIE, E IL DIAGRAMMA CHE SI SPIEGA
-# ═══════════════════════════════════════════════════════════════
 
 def test_ogni_categoria_ha_un_simbolo_e_un_colore():
     """Le categorie arrivano dai dati, sono decine e in inglese: un simbolo
@@ -654,31 +621,103 @@ def test_le_categorie_si_disegnano_con_forme_distinte():
     assert rc.categorie_poi([], "vuoto") == ""
 
 
-def test_il_diagramma_mancante_dice_perche():
-    """Resta un solo caso in cui il disegno non si puo' fare: quando nei dati
-    non c'e' l'ora degli incontri. Allora il capitolo lo dichiara, invece di
-    lasciare un vuoto che non si distingue da un difetto."""
-    d = _coincidenze()
-    for c in d["analisi"]["coincidenze"]["esistenti"]:
-        c["passaggi"] = [{"attesaMin": 3}]      # nessun orario
-        c["sample"] = []
-    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert "non è disegnato" in html
-    assert "ora dell'incontro" in html
-
-
 def test_l_ora_si_legge_anche_dal_vecchio_campione():
     """Una relazione prodotta prima del campo `passaggi` ha solo `sample`, con
-    l'ora come stringa: leggerla è l'unico modo perché abbia il diagramma."""
+    l'ora come stringa: leggerla è l'unico modo perché i disegni escano."""
     assert rb._minuti_da_ora(492) == 492
     assert rb._minuti_da_ora("08:12") == 492
     assert rb._minuti_da_ora("08:12:00") == 492
     assert rb._minuti_da_ora("niente") is None and rb._minuti_da_ora(None) is None
+
+
+def test_la_griglia_dice_a_che_ora_si_puo_cambiare():
+    """Il totale non distingue trenta coincidenze sparse su tutto il giorno da
+    trenta tutte nel mattino: la griglia sì, e il buco si vede a occhio."""
+    d = _coincidenze()
+    html = rb.render_coincidenze_quando(d["analisi"]["coincidenze"]["esistenti"])
+    assert "8.2 Quando si può cambiare" in html
+    assert "<svg" in html
+    # le tre coincidenze del campione stanno alle 8, alle 13 e alle 18
+    assert ">08<" in html and ">13<" in html and ">18<" in html
+    assert "PIAZZA CAVOUR 1 · 3 → 1/4" in html
+
+
+def test_la_griglia_conta_le_coincidenze_ora_per_ora():
+    """Due passaggi nella stessa ora sono una casella da due, non due caselle."""
+    c = {"node": "N", "fromRoute": "A", "toRoute": "B",
+         "passaggi": [{"arrivoMin": 8 * 60 + 5}, {"arrivoMin": 8 * 60 + 40}, {"arrivoMin": 9 * 60 + 5}]}
+    assert rb._ore_dei_passaggi(c) == {8: 2, 9: 1}
+    # e l'ora si legge anche quando c'è solo la stringa
+    c2 = {"passaggi": [{"arrivo": "07:58"}, {"arrivo": "07:12"}]}
+    assert rb._ore_dei_passaggi(c2) == {7: 2}
+
+
+def test_il_ritmo_mostra_attesa_e_ora_insieme():
+    """Le due cose che contano — se il cambio c'è tutto il giorno e se l'attesa
+    tiene — devono stare nello stesso disegno."""
+    d = _coincidenze()
+    html = rb.render_coincidenze_ritmo(d, d["analisi"]["coincidenze"]["esistenti"])
+    assert "8.3 Quanto è buono ogni cambio" in html
+    assert "<svg" in html
+    assert "finestra utile 2–5 minuti" in html, "la fascia dichiara la finestra letta dal dossier"
+    assert "attesa 3 minuti" in html and "attesa 5 minuti" in html
+
+
+def test_il_ritmo_distingue_l_attesa_buona_da_quella_lunga():
+    """Un punto sopra la fascia è un'attesa lunga, uno sotto è un cambio da
+    prendere di corsa: due colori diversi, non uno solo."""
+    dentro = rc.ritmo_relazione([{"arrivoMin": 480, "attesaMin": 3}], "t", finestra=(2, 5))
+    sopra = rc.ritmo_relazione([{"arrivoMin": 480, "attesaMin": 20}], "t", finestra=(2, 5))
+    sotto = rc.ritmo_relazione([{"arrivoMin": 480, "attesaMin": 0}], "t", finestra=(2, 5))
+    assert rc.SERIES[0] in dentro
+    assert rc.STATUS["warning"] in sopra and rc.SERIES[0] not in sopra.split("<circle")[1]
+    assert rc.STATUS["critical"] in sotto
+    # e senza orari non si disegna niente, invece di disegnare il vuoto
+    assert rc.ritmo_relazione([], "t") == ""
+    assert rc.ritmo_relazione([{"attesaMin": 3}], "t") == ""
+
+
+def test_i_disegnisi_reggono_senza_gli_orari():
+    """Se i passaggi non portano l'ora, i due disegni si tolgono di mezzo in
+    silenzio: il resto del capitolo resta in piedi."""
     d = _coincidenze()
     for c in d["analisi"]["coincidenze"]["esistenti"]:
-        c.pop("passaggi")                      # resta solo il vecchio sample
-    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert "<svg" in html, "col solo sample il diagramma deve uscire lo stesso"
+        c["passaggi"] = [{"attesaMin": 3}]
+        c["sample"] = []
+    assert rb.render_coincidenze_quando(d["analisi"]["coincidenze"]["esistenti"]) == ""
+    assert rb.render_coincidenze_ritmo(d, d["analisi"]["coincidenze"]["esistenti"]) == ""
+    html = rb.render_coincidenze(d)
+    assert "8.4 Le relazioni che l'orario realizza" in html
+
+
+def test_l_operatore_sceglie_le_linee_da_vedere():
+    """La rete intera in un capitolo solo non si legge: chi esporta la relazione
+    dice quali relazioni gli interessano."""
+    d = _coincidenze()
+    esistenti = d["analisi"]["coincidenze"]["esistenti"]
+    esistenti.append({"node": "PINOCCHIO", "fromRoute": "2/6", "toRoute": "21/33", "occurrences": 4,
+                      "attesaMin": {"min": 2, "max": 4, "mediana": 3}, "sample": [],
+                      "passaggi": [{"arrivo": "09:10", "arrivoMin": 550, "attesaMin": 3}]})
+    d["analisi"]["coincidenze"]["lineeScelte"] = ["3", "1/4"]
+    html = rb.render_coincidenze(d)
+    assert "limitato alle linee scelte" in html
+    assert "1/4, 3" in html, "le linee scelte, in ordine di quadro orario"
+    assert "PIAZZA CAVOUR 1" in html
+    assert "PINOCCHIO" not in html, "la relazione fuori scelta non entra nel documento"
+    assert "Il dossier conserva comunque tutta la rete" in html
+
+
+def test_la_regola_della_scelta_e_una_sola_e_dichiarata():
+    """Due o più linee: le relazioni fra quelle linee. Una sola: tutte le sue,
+    altrimenti il capitolo resterebbe vuoto."""
+    voci = [{"fromRoute": "3", "toRoute": "1/4"}, {"fromRoute": "2/6", "toRoute": "21/33"},
+            {"fromRoute": "3", "toRoute": "44"}]
+    # nessuna scelta: non si filtra
+    assert len(rb.filtra_per_linee(voci, [])) == 3
+    # due scelte: tutti e due i capi dentro
+    assert rb.filtra_per_linee(voci, ["3", "1/4"]) == [voci[0]]
+    # una sola: tutte le relazioni che la toccano
+    assert rb.filtra_per_linee(voci, ["3"]) == [voci[0], voci[2]]
 
 
 def test_lo_sfondo_dice_perche_manca(monkeypatch):
@@ -711,132 +750,6 @@ def test_lo_sfondo_si_chiede_a_meta_risoluzione():
     il browser fatica ad aprire."""
     assert 0 < rc.SFONDO_SCALA <= 0.6
     assert rc.SFONDI_MAX <= 80
-
-
-def test_il_diagramma_esce_con_qualunque_forma_degli_orari():
-    """Tre forme possibili nei dati: passaggi col minuto, passaggi con la sola
-    stringa, o soltanto il vecchio sample. Il disegno deve uscire in tutte e
-    tre, perché una relazione non si spiega all'operatore con «dipende da come
-    è stato salvato il dossier»."""
-    base = _coincidenze()
-    esistenti = base["analisi"]["coincidenze"]["esistenti"]
-
-    # 1. passaggi col minuto numerico
-    assert "<svg" in rb.render_coincidenze_3d(base, esistenti)
-
-    # 2. passaggi con la sola ora come stringa
-    d2 = _coincidenze()
-    for c in d2["analisi"]["coincidenze"]["esistenti"]:
-        for pg in c["passaggi"]:
-            pg.pop("arrivoMin")
-    assert "<svg" in rb.render_coincidenze_3d(d2, d2["analisi"]["coincidenze"]["esistenti"])
-
-    # 3. solo il vecchio sample
-    d3 = _coincidenze()
-    for c in d3["analisi"]["coincidenze"]["esistenti"]:
-        c.pop("passaggi")
-    assert "<svg" in rb.render_coincidenze_3d(d3, d3["analisi"]["coincidenze"]["esistenti"])
-
-    # senza NESSUN orario il disegno non si può fare, e lo dice
-    d4 = _coincidenze()
-    for c in d4["analisi"]["coincidenze"]["esistenti"]:
-        c["passaggi"] = [{"attesaMin": 3}]
-        c["sample"] = []
-    html = rb.render_coincidenze_3d(d4, d4["analisi"]["coincidenze"]["esistenti"])
-    assert "non è disegnato" in html and "ora dell'incontro" in html
-
-
-# ═══════════════════════════════════════════════════════════════
-#  IL DIAGRAMMA SPAZIO-TEMPO: LE CORSE, NON SOLO GLI INCONTRI
-# ═══════════════════════════════════════════════════════════════
-
-def _con_corse():
-    """Un dossier con le corse e i loro orari, come lo produce la rotta."""
-    d = _coincidenze()
-    corse = []
-    for k in range(0, 60, 10):
-        corse.append({"linea": "3", "colore": "#2fd4e8",
-                      "punti": [(43.6158, 13.5189, 480 + k), (43.605, 13.503, 492 + k),
-                                (43.5902, 13.4780, 505 + k)]})
-        corse.append({"linea": "1/4", "colore": "#e8e02f",
-                      "punti": [(43.5902, 13.4780, 485 + k), (43.605, 13.505, 497 + k),
-                                (43.6158, 13.5189, 510 + k)]})
-    d["network"]["corse"] = corse
-    return d
-
-
-def test_il_diagramma_disegna_le_corse_non_solo_gli_incontri():
-    """Il primo disegno mostrava SOLO i punti di incontro — anelli infilati su
-    colonne verticali — che e' come raccontare un viaggio elencando le
-    coincidenze e tacendo il percorso."""
-    d = _con_corse()
-    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert "<svg" in html
-    # ogni corsa e' una traiettoria, con la sua ombra sul pavimento
-    assert html.count('stroke-width="1.6"') >= 12, "mancano le traiettorie"
-    assert html.count('opacity="0.30"') >= 12, "manca l'ombra dei percorsi"
-    # e i colori sono quelli delle linee
-    assert "#2fd4e8" in html and "#e8e02f" in html
-
-
-def test_si_disegnano_due_linee_alla_volta():
-    """Diciassette linee tutte insieme sono un groviglio in cui non si
-    distingue niente: il disegno serve a far vedere UNA relazione."""
-    d = _con_corse()
-    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert "due linee alla volta" in html
-    assert "1/4 e 3: le corse e i loro incontri" in html
-    # una sola coppia nel campione: un solo diagramma
-    assert html.count("<svg") == 1
-    assert "1 relazioni" in html or "relazioni" in html
-
-
-def test_ogni_coppia_ha_il_suo_diagramma():
-    """Due relazioni diverse, due disegni distinti: quello della 3 con la 1/4
-    non deve portarsi dentro le corse della 24."""
-    d = _con_corse()
-    d["network"]["corse"] += [
-        {"linea": "24", "colore": "#9b59b6",
-         "punti": [(43.6158, 13.5189, 600 + k), (43.60, 13.50, 612 + k)]} for k in range(0, 40, 10)]
-    d["analisi"]["coincidenze"]["esistenti"].append({
-        "node": "PIAZZA CAVOUR 1", "fromRoute": "3", "toRoute": "24", "occurrences": 2,
-        "attesaMin": {"min": 3, "max": 4, "mediana": 3}, "giaInCoincidenza": 0, "sample": [],
-        "passaggi": [{"arrivo": "10:05", "partenza": "10:08", "arrivoMin": 605, "attesaMin": 3},
-                     {"arrivo": "10:25", "partenza": "10:28", "arrivoMin": 625, "attesaMin": 3}]})
-    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert html.count("<svg") == 2, "un diagramma per coppia"
-    assert "1/4 e 3" in html and "3 e 24" in html
-    # nel disegno della coppia 3+1/4 non c'e' il colore della 24
-    primo = html[html.index("1/4 e 3"):html.index("3 e 24")]
-    assert "#9b59b6" not in primo, "la terza linea non deve entrare nel disegno di una coppia"
-
-
-def test_il_diagramma_ha_il_fondo_scuro_e_i_piani_delle_ore():
-    html = rc.spazio_tempo(_con_corse()["network"]["corse"], "T")
-    assert rc.FONDO_SCURO in html
-    assert "08:00" in html and ":00</text>" in html
-    assert "Assonometria" in html
-
-
-def test_senza_le_corse_si_ricade_sui_punti_di_incontro():
-    """Un dossier vecchio non ha le corse: meglio i soli punti d'incontro che
-    nessun disegno, e il documento dice che sono quelli."""
-    d = _coincidenze()          # senza network.corse
-    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert "<svg" in html
-    assert "Le corse col loro orario non sono nel dossier" in html
-
-
-def test_le_coincidenze_sono_marcate_sulle_traiettorie():
-    d = _con_corse()
-    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
-    assert "incontri al giorno" in html
-    assert 'stroke="#ffffff"' in html, "i cerchi bianchi delle coincidenze"
-
-
-def test_il_diagramma_spazio_tempo_vuole_almeno_una_corsa():
-    assert rc.spazio_tempo([], "t") == ""
-    assert rc.spazio_tempo([{"linea": "3", "punti": [(43.6, 13.5, 480)]}], "t") == ""
 
 
 def test_le_linee_si_ordinano_come_su_un_quadro_orario():
@@ -884,7 +797,6 @@ def test_ogni_turno_sta_su_un_foglio_suo():
     assert html.count("</section>") >= 2
     # e lo stile lo impone in stampa
     assert "break-before: page" in rc.CSS and "break-inside: avoid" in rc.CSS
-
 
 
 def test_il_foglio_turno_e_quello_della_fucina():
@@ -996,19 +908,9 @@ def test_i_cambi_di_vettura_non_finiscono_su_due_pezzi():
     assert sum(1 for r in righe if r["t"] == "cambio") == 1
 
 
-def test_il_diagramma_sta_sul_fondo_chiaro():
-    """Una figura scura stona nel documento e si stampa male."""
-    corse = [{"linea": "3", "colore": "#2a78d6",
-              "punti": [(43.61, 13.51, 480 + k), (43.59, 13.48, 500 + k)]} for k in range(0, 30, 10)]
-    html = rc.spazio_tempo(corse, "T")
-    assert rc.SURFACE in html
-    assert "#0e1622" not in html, "il fondo scuro non deve tornare"
-    assert rc.FONDO_SCURO == rc.SURFACE
-
-
 def test_il_quadro_dei_nodi_dice_chi_si_incontra_e_dove():
     """«La 1/4 e la 44 a Piazza Cavour», non «relazione numero sette»."""
-    d = _con_corse()
+    d = _coincidenze()
     d["analisi"]["coincidenze"]["esistenti"].append({
         "node": "TAVERNELLE CAPOLINEA", "fromRoute": "44", "toRoute": "1/4", "occurrences": 5,
         "attesaMin": {"min": 2, "max": 6, "mediana": 4}, "giaInCoincidenza": 0,

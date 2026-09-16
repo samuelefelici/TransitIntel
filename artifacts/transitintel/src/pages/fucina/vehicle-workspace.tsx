@@ -34,6 +34,7 @@ import { SaveScenarioDialog, LoadScenarioDialog } from "./ScenarioDialogs";
 import { exportScenarioToPrint } from "./VehicleShiftsPrintExport";
 import DeadheadEditorDialog, { type DeadheadChange } from "./DeadheadEditorDialog";
 import { AddVehicleShiftDialog, createEmptyVehicleShift, nextVehicleId } from "./AddVehicleShiftDialog";
+import { ReportOptionsDialog } from "./ReportOptionsDialog";
 import { useDeadheadOperations } from "./useDeadheadOperations";
 import { InlineDeadheadPopover } from "./InlineDeadheadPopover";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
@@ -574,12 +575,16 @@ export default function VehicleWorkspace({
   const [scenarioName, setScenarioName] = useState(initialName ?? "");
   const [savedId, setSavedId] = useState<number | string | null>(initialSavedId ?? null);
   const [reportBusy, setReportBusy] = useState(false);
-  const generateProcessReport = useCallback(async () => {
+  // Prima di generare si chiede che cosa metterci dentro: il capitolo delle
+  // coincidenze con tutte le linee insieme non si legge.
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const generateProcessReport = useCallback(async (opts: { coincidenzeLinee: string[] }) => {
     if (!savedId) return;
     setReportBusy(true);
     try {
       const resp = await fetch(`${getApiBase()}/api/service-program/scenarios/${savedId}/report`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ coincidenzeLinee: opts.coincidenzeLinee }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
@@ -589,6 +594,7 @@ export default function VehicleWorkspace({
       toast.error("Relazione non generata", { description: e?.message });
     } finally {
       setReportBusy(false);
+      setReportDialogOpen(false);
     }
   }, [savedId]);
   // Modifiche non ancora salvate: sostituisce il vecchio "azzera savedId a ogni
@@ -2343,7 +2349,7 @@ export default function VehicleWorkspace({
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void generateProcessReport()}
+              onClick={() => setReportDialogOpen(true)}
               disabled={!savedId || reportBusy}
               className="border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 h-8 text-[11px]"
               title={savedId ? "Genera la relazione completa (pianificazione → turni macchina → turni guida → costi)" : "Salva prima lo scenario"}
@@ -2789,6 +2795,17 @@ export default function VehicleWorkspace({
           existingVehicleIds={result.shifts.map(s => s.vehicleId)}
           onClose={() => setShowAddVehicleDialog(false)}
           onConfirm={handleAddVehicleShift}
+        />
+      )}
+
+      {/* ── Che cosa mettere nella relazione, prima di generarla ── */}
+      {reportDialogOpen && (
+        <ReportOptionsDialog
+          lines={[...new Set((result?.shifts ?? []).flatMap(s => (s.trips ?? [])
+            .map(t => String((t as any).routeName ?? "")).filter(Boolean)))]}
+          busy={reportBusy}
+          onClose={() => setReportDialogOpen(false)}
+          onConfirm={opts => void generateProcessReport(opts)}
         />
       )}
     </div>

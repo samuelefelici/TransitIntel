@@ -38,6 +38,7 @@ import InteractiveGantt, { type GanttBar, type GanttRow } from "@/components/Int
 import { driverShiftsToRows, driverShiftsToBars, driverShiftsBoundsHours } from "@/pages/driver-shifts/gantt-adapters";
 import { TYPE_LABELS as TG_TYPE_LABELS, TYPE_COLORS as TG_TYPE_COLORS } from "@/pages/driver-shifts/constants";
 import type { DriverShiftData } from "@/pages/driver-shifts/types";
+import { ReportOptionsDialog } from "@/pages/fucina/ReportOptionsDialog";
 
 /* Gantt read-only dei TURNI MACCHINA per l'anteprima VCSP (una riga = vettura). */
 const TM_PALETTE = ["#38bdf8", "#a78bfa", "#34d399", "#fb923c", "#f472b6", "#facc15", "#22d3ee", "#fca5a5", "#86efac", "#c4b5fd"];
@@ -743,13 +744,16 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
 
   // ── Relazione di processo: dossier + documento completo per gli stakeholder ──
   const [reportBusy, setReportBusy] = useState(false);
-  const generateReport = useCallback(async () => {
+  // Prima di generare si chiede che cosa metterci dentro: il capitolo delle
+  // coincidenze con tutte le linee insieme non si legge.
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const generateReport = useCallback(async (opts: { coincidenzeLinee: string[] }) => {
     if (!savedScenarioId) return;
     setReportBusy(true);
     try {
       const resp = await fetch(`${getApiBase()}/api/service-program/scenarios/${savedScenarioId}/report`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ dssId: savedDssId ?? undefined }),
+        body: JSON.stringify({ dssId: savedDssId ?? undefined, coincidenzeLinee: opts.coincidenzeLinee }),
       });
       const data = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
@@ -759,6 +763,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       toast.error("Relazione non generata", { description: e?.message });
     } finally {
       setReportBusy(false);
+      setReportDialogOpen(false);
     }
   }, [savedScenarioId, savedDssId]);
 
@@ -1966,7 +1971,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                         className="text-[11px] px-2.5 py-1 rounded-lg border border-purple-500/30 bg-purple-500/8 text-purple-300 hover:bg-purple-500/15 transition-all">
                         Apri Workspace Turni Guida
                       </a>
-                      <button onClick={() => void generateReport()} disabled={reportBusy}
+                      <button onClick={() => setReportDialogOpen(true)} disabled={reportBusy}
                         title="Dossier di processo + relazione completa (tecnica, matematica, grafici, costi) da consegnare"
                         className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/8 text-cyan-300 hover:bg-cyan-500/15 transition-all disabled:opacity-40">
                         {reportBusy && <Loader2 className="w-3 h-3 animate-spin" />} Genera relazione
@@ -2335,6 +2340,17 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         projectId={psProjectId}
         showProfiles={false}
       />
+
+      {/* Che cosa mettere nella relazione, prima di generarla */}
+      {reportDialogOpen && (
+        <ReportOptionsDialog
+          lines={[...new Set((result?.shifts ?? []).flatMap((s: any) => (s?.trips ?? [])
+            .map((t: any) => String(t?.routeName ?? "")).filter(Boolean)))]}
+          busy={reportBusy}
+          onClose={() => setReportDialogOpen(false)}
+          onConfirm={opts => void generateReport(opts)}
+        />
+      )}
     </div>
   );
 }
