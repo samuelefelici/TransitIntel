@@ -124,7 +124,7 @@ def test_builder_on_empty_and_partial_dossier():
 def test_builder_full_dossier_sections_and_summary():
     d = _dossier()
     html = rb.build(d)
-    for needle in ("1. Sintesi per la direzione", "Diagramma tempo-vettura", "Diagramma tempo-turno", "Distribuzione del nastro",
+    for needle in ("1. Sintesi", "Diagramma tempo-vettura", "Diagramma tempo-turno", "Distribuzione del nastro",
                    "Valori unitari in uso", "Scenari confrontati", "Turni macchina, corsa per corsa", "Turni guida, pezzo per pezzo",
                    "violazione di prova", "Tariffa oraria conducente", "Regole di struttura", "Sonda di spostamento", "Disegno della rete",
                    "cadenza 30′", "ps.trips.generate", "Paga base"):
@@ -282,3 +282,81 @@ def test_un_capitolo_rotto_non_si_porta_via_la_relazione(monkeypatch, capsys):
     assert html.startswith("<!doctype html>") and html.rstrip().endswith("</html>")
     # E il guasto e' finito nei log, non solo nel documento.
     assert "coincidenze" in capsys.readouterr().err
+
+
+# ═══════════════════════════════════════════════════════════════
+#  IL CAPITOLO DELLA RETE
+# ═══════════════════════════════════════════════════════════════
+
+def _rete():
+    """Una rete minima con due nodi e due percorsi."""
+    return {"network": {
+        "lines": [{"name": "3", "trips": 40, "km": 220.0}],
+        "stopsCount": 5,
+        "nodes": ["Piazza Cavour", "Tavernelle"],
+        "clusters": [
+            {"name": "Piazza Cavour", "stops": [
+                {"name": "PIAZZA CAVOUR 1", "lat": 43.6158, "lon": 13.5189},
+                {"name": "PIAZZA CAVOUR 2", "lat": 43.6162, "lon": 13.5192},
+                {"name": "PIAZZA CAVOUR 3", "lat": 43.6155, "lon": 13.5195}]},
+            {"name": "Tavernelle", "stops": [
+                {"name": "TAVERNELLE CAPOLINEA", "lat": 43.5902, "lon": 13.4780}]},
+        ],
+        "polylines": [{"name": "3", "points": [(43.6158, 13.5189), (43.5902, 13.4780)]}],
+        "percorsi": [
+            {"line": "3", "variant": "Cavour → Tavernelle", "direction": 0, "isDefault": True,
+             "points": [(43.6158, 13.5189), (43.6, 13.50), (43.5902, 13.4780)],
+             "stops": [{"name": "PIAZZA CAVOUR 1", "lat": 43.6158, "lon": 13.5189},
+                       {"name": "TAVERNELLE CAPOLINEA", "lat": 43.5902, "lon": 13.4780}]},
+            {"line": "3", "variant": "Tavernelle → Cavour", "direction": 1, "isDefault": False,
+             "points": [(43.5902, 13.4780), (43.6, 13.50), (43.6158, 13.5189)],
+             "stops": [{"name": "TAVERNELLE CAPOLINEA", "lat": 43.5902, "lon": 13.4780}]},
+        ],
+        "stops": [{"name": "PIAZZA CAVOUR 1", "lat": 43.6158, "lon": 13.5189, "node": True}],
+    }}
+
+
+def test_i_nodi_sono_solo_quelli_toccati_e_mostrano_le_fermate():
+    """Prima qui finivano i cluster di tutta la rete aziendale: su un piano
+    urbano di Ancona comparivano Jesi, Osimo e Chiaravalle, e lo stesso nodo
+    era ripetuto otto volte. Il dossier ora porta solo i nodi con le loro
+    fermate, e il capitolo le disegna."""
+    html = rb.render_network(_rete())
+    assert "2.2 I nodi di interscambio" in html
+    assert "Piazza Cavour" in html and "Tavernelle" in html
+    assert "PIAZZA CAVOUR 2" in html, "le fermate raggruppate devono comparire"
+    assert "non è una fermata" in html
+    # la mappa dei nodi c'e' ed e' un disegno, non solo una tabella
+    assert html.count("<svg") >= 2
+
+
+def test_ogni_percorso_ha_la_sua_mappa():
+    html = rb.render_network(_rete())
+    assert "2.4 I percorsi, linea per linea" in html
+    assert "Cavour → Tavernelle" in html and "Tavernelle → Cavour" in html
+    assert "andata" in html and "ritorno" in html
+    # una mappa per percorso, piu' rete e nodi
+    assert html.count("<svg") >= 4
+
+
+def test_il_capitolo_della_rete_regge_senza_i_dati_nuovi():
+    """Un dossier vecchio non ha né clusters né percorsi: il capitolo esce
+    comunque, con quello che ha."""
+    magro = {"network": {"lines": [{"name": "3", "trips": 40, "km": 220.0}],
+                         "nodes": ["Piazza Cavour"], "stopsCount": 5}}
+    html = rb.render_network(magro)
+    assert "2. Rete e contesto" in html and "2.1 Le linee" in html
+    assert "Piazza Cavour" in html
+    assert "2.4 I percorsi" not in html
+
+
+def test_i_tracciati_lunghi_si_alleggeriscono():
+    """Un tracciato da migliaia di vertici pesa nel documento e non si vede:
+    si tiene la forma con meno punti, primo e ultimo compresi."""
+    lungo = [(43.6 + i * 1e-5, 13.5 + i * 1e-5) for i in range(3000)]
+    magro = rc.alleggerisci(lungo)
+    assert len(magro) <= 161
+    assert magro[0] == lungo[0] and magro[-1] == lungo[-1]
+    # un tracciato gia' corto non si tocca
+    corto = lungo[:50]
+    assert rc.alleggerisci(corto) == corto

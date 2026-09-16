@@ -1094,6 +1094,117 @@ emergeranno come violazioni finche' i tagli non si adeguano, e il rilassamento d
 sosta apre combinazioni che prima erano vietate. Se il conto regge, il piano
 dovrebbe restare intorno ai 41-43 turni ma con zero sforamenti veri.
 
+## Giro BC: stesso piano, ma legale davvero
+
+Primo giro coi tetti rigidi, parametri identici a BB perche' la sola differenza
+misurata fossero quelli. Scenario `6fc385cc-2899-4b99-a80e-7e2d393b6227`.
+
+|                                | BB          | BC          |
+|--------------------------------|-------------|-------------|
+| vetture                        | 21          | 21          |
+| turni (interi/semi/spezzati)   | 43 (37/6/0) | 43 (37/6/0) |
+| violazioni DICHIARATE          | 0           | 0           |
+| **turni fuori norma VERI**     | **1**       | **0**       |
+| nastro massimo di un intero    | 441' (A001) | 427' (A013) |
+| auto aziendali simultanee      | 5 / 5       | **4 / 5**   |
+| cambi in linea                 | 24          | 27          |
+| cambi in deposito              | 6           | 3           |
+| costo vetture                  | 5 874,91 €  | 5 617,66 €  |
+| km a vuoto                     | 206         | 208,8       |
+| corse declassate               | 141 (38,6%) | 105 (28,8%) |
+
+Il costo guida NON e' confrontabile: BB ha girato prima del deploy che correggeva
+il doppio conteggio, e portava dentro il tempo pagato due volte.
+
+**Il taglio che e' cambiato.** Su U001 il primo pezzo andava da 05:50 a 13:11, cioe'
+441 minuti contro un tetto di 435. In BC lo stesso blocco e' tagliato a 11:11: tre
+pezzi da 321, 328 e 263 minuti. Il ranking rigido ha spostato il taglio di due ore
+per farlo rientrare, ed e' l'unica cosa che poteva farlo — la penalita' da 2 punti
+al minuto non bastava.
+
+**Verificati tutti e 43 i turni contro i tetti**, uno per uno: nessuno sfora nastro,
+lavoro o finestra di interruzione. Il massimo e' A013 a 427 su 435. I sei semiunici
+stanno larghi: nastro massimo 496 su 555, lavoro massimo 356 su 480.
+
+**L'auto che si e' liberata.** Era il vincolo che avevo indicato come l'unico saturo:
+5 su 5 in BB, con 46 movimenti concentrati fra le 12:24 e le 16:04. In BC i movimenti
+salgono a 52 ma il picco simultaneo scende a 4. Non l'ho cercato: viene dalla sosta
+rilassata, che permette interi composti con stacchi brevi (A013 a 52', A106 a 33',
+A014 a 15') dove prima serviva un semiunico o un turno in piu'.
+
+**Quello che NON e' migliorato.** I turni restano 43, due sopra il minimo strutturale
+di 41. Il conto della verifica regge: non era li' che c'era il margine.
+
+**Quello che e' peggiorato, e va guardato.** I declassamenti calano nel totale ma si
+concentrano: la 2/6 ha 24 corse su 52 con un mezzo piu' piccolo (46% contro un tetto
+del 10%) e la **91 ne ha 18 su 24, il 75%**, con tutte e dieci le corse di punta
+declassate. In BB i superamenti erano sulla 30 (19%) e sulla 42 (31%). E' un
+peggioramento di qualita' del servizio su due linee, non un dettaglio: il piano
+mette mezzi piu' piccoli su tre quarti della 91.
+
+**La sonda** ha accettato 2 spostamenti (30 minuti) contro i 21 (300 minuti) di BB.
+Con meno turni fuori norma da riparare, ha meno da comprare.
+## Il capitolo della rete, rivisto con l'operatore
+
+Rileggendo una relazione vera l'operatore ha indicato quattro cose. Le prime
+quattro sono fatte; le altre due richiedono dati che ci sono ma vanno collegati.
+
+**Il titolo.** «1. Sintesi per la direzione» diventa «1. Sintesi». Il capitolo
+resta, il nome si accorcia.
+
+**I nodi di interscambio erano sbagliati, non solo brutti.** Il dossier prendeva
+`crew.clusters`, cioe' i cluster di TUTTA la rete aziendale. Su un piano di sole
+linee urbane di Ancona la relazione elencava **73 nodi** fra cui Stazione Jesi,
+Osimo Stazione, Chiaravalle Capolinea e Castelferretti — che nessuna di queste
+linee tocca — e lo stesso posto tornava otto volte («Arco Clementino» ×8) o in
+grafie diverse («Madonetta»/«Madonnetta», «Stazione Fs»/«Stazione F.S.»/«Stazione
+FS»/«Stazione Ancna», «Piazza Ugo bassi»/«Pzz. U. Bassi»/«Ugo bassi»).
+
+Ora il dossier tiene solo i cluster con almeno una fermata delle linee del piano,
+e due cluster che raggruppano le stesse fermate diventano uno solo (a parita' si
+tiene il nome scritto per intero). Il filtro e' sulle fermate, non sul nome: e'
+per quello che regge anche dove la grafia diverge.
+
+**I nodi si vedono.** `cluster_map()` disegna ogni nodo come un'area colorata —
+il guscio convesso delle sue fermate — con dentro i punti delle fermate che
+raggruppa, piu' la tabella di quali sono. Un nodo di interscambio non e' una
+fermata: e' il gruppo di banchine fra cui un conducente passa a piedi per
+cambiare vettura, e finche' era una parola in un elenco non si capiva.
+
+**Ogni percorso ha la sua mappa.** Il disegno della rete tiene una variante per
+linea o diventa illeggibile; il dossier ora porta anche `percorsi`, cioe' TUTTE
+le varianti con verso, fermate e tracciato, e il capitolo 2.4 ne disegna una per
+una. Per non gonfiare il documento i tracciati passano da `alleggerisci()`, che
+tiene 160 vertici su migliaia mantenendo primo, ultimo e forma.
+
+Capitolo 2 ora: 2.1 le linee, 2.2 i nodi, 2.3 il disegno della rete, 2.4 i
+percorsi uno per uno.
+
+### Quello che manca, e i dati che ci sono gia'
+
+L'operatore ha chiesto anche la copertura pedonale per fermata con le isocrone,
+la popolazione per sezione censuaria ISTAT, e che la relazione tenga conto del
+traffico, di come si muove la popolazione e dei POI. Ho verificato: **i dati ci
+sono tutti**.
+
+- `census_sections` — codice ISTAT, centroide, **popolazione**, area, densita' e
+  **geometria GeoJSON** della sezione;
+- `points_of_interest` — provati sul campo: 49 POI veri entro 400 m da Piazza
+  Cavour, da mapbox/tilequery;
+- `istat_commuting_od` — la matrice dei pendolari del Censimento, comune→comune,
+  per motivo (lavoro/studio), mezzo e fascia oraria: e' «come si muove la
+  popolazione», ma a livello comunale, non di fermata;
+- `traffic_snapshots` — velocita', velocita' libera e livello di congestione per
+  segmento, con l'ora del rilievo;
+- `isochrones.ts` — isocrone pedonali vere con cache su DB e ricaduta sul raggio
+  in linea d'aria quando manca la chiave del provider.
+
+Il nodo da sciogliere e' la forma, non il dato: **le fermate sono 595**. Una
+mappa di isocrona per fermata vuol dire 595 mappe, che nessuno legge e che
+gonfiano il documento oltre ogni misura. La forma sensata e' l'isocrona disegnata
+per linea (tutte le fermate di quella linea sulla stessa mappa) piu' una riga per
+fermata con la popolazione raggiunta a 5, 10 e 15 minuti a piedi.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

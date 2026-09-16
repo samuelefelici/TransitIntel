@@ -277,7 +277,7 @@ def cars_timeline(driver_shifts: list[dict]) -> tuple[list[str], list[int]]:
 #  Sezioni
 # ═══════════════════════════════════════════════════════════════
 
-TOC = [("sintesi", "1. Sintesi per la direzione"), ("rete", "2. Rete e contesto"),
+TOC = [("sintesi", "1. Sintesi"), ("rete", "2. Rete e contesto"),
        ("pianificazione", "3. Pianificazione del servizio"), ("metodo", "4. Metodo e modelli matematici"),
        ("macchina", "5. Turni macchina"), ("guida", "6. Turni guida"),
        ("ciclo", "7. Il ciclo integrato"), ("coincidenze", "8. Coincidenze fra linee"),
@@ -326,7 +326,7 @@ def render_summary(d: dict) -> str:
         _conf = cs.get("companyCarsConflicts") or 0
         tiles.append(("Auto aziendali (picco)", f'{car_peak}{f" / {cars}" if cars is not None else ""}',
                       (f"{_mov} viaggi per i cambi" if _mov is not None else "cambi in linea") + (f" · {_conf} senza auto" if _conf else "")))
-    out = [section("sintesi", "1. Sintesi per la direzione", first=True), rc.kpi_row(tiles)]
+    out = [section("sintesi", "1. Sintesi", first=True), rc.kpi_row(tiles)]
     avg_work = sum(st["work"]) / len(st["work"]) if st["work"] else 0
     avg_nastro = sum(st["nastro"]) / len(st["nastro"]) if st["nastro"] else 0
     msgs = []
@@ -365,8 +365,11 @@ def render_network(d: dict) -> str:
     if not lines and not net.get("polylines"):
         out.append(para("<i>Dati di rete non disponibili nel dossier.</i>"))
         return "".join(out)
-    out.append(para(f'La rete del giorno-tipo comprende <b>{len(lines)} linee</b>' + (f' e {fmt_n(net["stopsCount"])} fermate' if net.get("stopsCount") else "") +
-                    (f'; nodi di interscambio: {esc(", ".join(net["nodes"]))}.' if net.get("nodes") else ".")))
+    nodi = net.get("nodes") or []
+    out.append(para(f'La rete del giorno-tipo comprende <b>{len(lines)} linee</b>'
+                    + (f' e {fmt_n(net["stopsCount"])} fermate' if net.get("stopsCount") else "")
+                    + (f', e tocca <b>{fmt_n(len(nodi))} nodi di interscambio</b>.' if nodi else ".")))
+    out.append("<h3>2.1 Le linee</h3>")
     rows = []
     for l in sorted(lines, key=lambda x: -(x.get("trips") or 0)):
         rows.append((l.get("name"), l.get("variants") or "–", fmt_n(l.get("trips") or 0), fmt_n(l.get("km") or 0, 1),
@@ -379,10 +382,77 @@ def render_network(d: dict) -> str:
     if lines:
         out.append(rc.bar_h([(l.get("name"), l.get("trips") or 0) for l in sorted(lines, key=lambda x: -(x.get("trips") or 0))],
                             "Corse per linea", unit="corse"))
+    out.append(render_nodi(net))
     if net.get("polylines"):
-        out.append(rc.network_map(net["polylines"], net.get("stops") or [], "Disegno della rete",
+        out.append("<h3>2.3 Il disegno della rete</h3>")
+        out.append(rc.network_map([{"name": pl.get("name"), "points": rc.alleggerisci(pl.get("points") or [])}
+                                   for pl in net["polylines"]],
+                                  net.get("stops") or [], "Disegno della rete",
                                   subtitle="Tracciati delle linee del giorno-tipo; i nodi di interscambio sono evidenziati.",
                                   note="Proiezione equirettangolare semplificata; le prime otto linee hanno una tinta propria, le altre sono in grigio."))
+    out.append(render_percorsi(net))
+    return "".join(out)
+
+
+def render_nodi(net: dict) -> str:
+    """2.2 — I NODI DI INTERSCAMBIO: quali sono, e che cosa raggruppano.
+
+    Qui finivano i cluster di tutta la rete aziendale: su un piano urbano di
+    Ancona comparivano Jesi, Osimo, Chiaravalle e Castelferretti, che nessuna
+    di queste linee tocca, e lo stesso nodo era ripetuto otto volte. Ora ci
+    sono solo i nodi attraversati davvero, ognuno con le fermate che tiene
+    insieme — perche' «Piazza Cavour» per un cambio vettura non e' un punto,
+    e' un gruppo di banchine."""
+    gruppi = [c for c in (net.get("clusters") or []) if isinstance(c, dict) and c.get("stops")]
+    if not gruppi:
+        nodi = net.get("nodes") or []
+        if not nodi:
+            return ""
+        return ("<h3>2.2 I nodi di interscambio</h3>"
+                + para("Nodi attraversati dalle linee del piano: " + esc(", ".join(nodi)) + ".")
+                + para('<span class="small">Il dettaglio delle fermate raggruppate non è disponibile '
+                       'in questo dossier.</span>'))
+    out = ["<h3>2.2 I nodi di interscambio</h3>"]
+    fermate = sum(len(c["stops"]) for c in gruppi)
+    out.append(para(
+        f'Un nodo di interscambio non è una fermata: è il gruppo di fermate fra le quali un conducente '
+        f'può passare a piedi per cambiare vettura. Il piano ne attraversa <b>{fmt_n(len(gruppi))}</b>, '
+        f'che tengono insieme <b>{fmt_n(fermate)} fermate</b>. Sono solo quelli toccati da queste linee: '
+        f'i nodi delle altre zone della rete aziendale non compaiono.'))
+    out.append(rc.cluster_map(gruppi, "I nodi di interscambio e le fermate che raggruppano",
+                              subtitle="Ogni area colorata è un nodo; i punti dentro sono le sue fermate.",
+                              note="Proiezione equirettangolare semplificata; l'area è il guscio convesso delle fermate del nodo."))
+    return "".join(out)
+
+
+def render_percorsi(net: dict) -> str:
+    """2.4 — I PERCORSI, uno per uno.
+
+    Il disegno della rete tiene una variante per linea per restare leggibile.
+    Qui invece ogni percorso ha la sua mappa, andata e ritorno separate, con le
+    fermate che serve."""
+    perc = [p for p in (net.get("percorsi") or []) if isinstance(p, dict) and p.get("points")]
+    if not perc:
+        return ""
+    out = ["<h3>2.4 I percorsi, linea per linea</h3>"]
+    out.append(para(
+        f'Il disegno della rete qui sopra tiene una variante per linea, o diventa illeggibile. '
+        f'Questi sono i <b>{fmt_n(len(perc))} percorsi</b> del piano presi uno per uno: per ciascuno '
+        f'il tracciato e le fermate servite.'))
+    righe = []
+    for p_ in perc:
+        righe.append((p_.get("line") or "–", p_.get("variant") or "–",
+                      "andata" if int(p_.get("direction") or 0) == 0 else "ritorno",
+                      fmt_n(len(p_.get("stops") or [])), "sì" if p_.get("isDefault") else "no"))
+    out.append(table(["Linea", "Variante", "Verso", "Fermate", "Predefinita"], righe, numeric_from=3))
+    for p_ in perc:
+        verso = "andata" if int(p_.get("direction") or 0) == 0 else "ritorno"
+        nome = f'{p_.get("line")} · {p_.get("variant") or verso} ({verso})'
+        out.append(rc.network_map(
+            [{"name": p_.get("line") or "", "points": rc.alleggerisci(p_.get("points") or [])}],
+            [{**s_, "node": False} for s_ in (p_.get("stops") or [])],
+            nome, subtitle=f'{fmt_n(len(p_.get("stops") or []))} fermate servite',
+            width=760, height=420))
     return "".join(out)
 
 
