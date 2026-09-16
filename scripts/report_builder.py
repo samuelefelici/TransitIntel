@@ -41,7 +41,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 import report_charts as rc
-from report_charts import esc, hm, fmt_eur, fmt_n
+from report_charts import esc, hm, fmt_eur, fmt_n, _numero
 
 DUTY_TYPE_ORDER = ["intero", "semiunico", "spezzato", "supplemento"]
 DUTY_TYPE_LABEL = {"intero": "Interi", "semiunico": "Semiunici", "spezzato": "Spezzati", "supplemento": "Supplementi"}
@@ -1293,7 +1293,8 @@ def render_nodi_coincidenza(esistenti: list) -> str:
     return "".join(out)
 
 
-COPPIE_DIAGRAMMA_MAX = 10
+GRIGLIA_RIGHE_MAX = 20
+RITMI_MAX = 12
 
 
 def ordine_di_linea(nome) -> tuple:
@@ -1308,115 +1309,118 @@ def ordine_di_linea(nome) -> tuple:
     return (int(m.group(0)) if m else 10 ** 6, t)
 
 
-def render_coincidenze_3d(d: dict, esistenti: list) -> str:
-    """Le corse nello spazio e nel tempo, DUE LINEE ALLA VOLTA.
+def linee_scelte(d: dict) -> list:
+    """Le linee che l'operatore ha chiesto di vedere, se le ha chieste."""
+    v = g(d, "analisi", "coincidenze", "lineeScelte", default=None)
+    if not isinstance(v, list):
+        return []
+    return [str(x).strip() for x in v if str(x or "").strip()]
 
-    Una corsa non e' un punto: e' una traiettoria che si muove sul territorio
-    mentre l'orologio avanza, e due linee si incontrano dove le traiettorie si
-    toccano. Ma diciassette linee tutte insieme sono un groviglio in cui non si
-    distingue niente: il disegno serve a far vedere UNA relazione, quindi si fa
-    un diagramma per ogni coppia di linee che si incontra, con le sole corse di
-    quelle due.
 
-    Senza le corse col loro orario si ricade sul disegno dei soli punti di
-    incontro, e la nota lo dichiara."""
-    corse = [c for c in (g(d, "network", "corse", default=None) or [])
-             if isinstance(c, dict) and len(c.get("punti") or []) >= 2]
+def filtra_per_linee(voci: list, scelte: list) -> list:
+    """Le relazioni che riguardano le linee scelte.
 
-    per_nome = {}
-    for s_ in (g(d, "network", "stops", default=None) or []):
-        if isinstance(s_, dict) and s_.get("name") and s_.get("lat") is not None:
-            per_nome.setdefault(str(s_["name"]).upper().strip(), s_)
+    La regola e' una sola e va detta in chiaro nel documento: con due o piu'
+    linee scelte si tengono le relazioni fra quelle linee — tutte e due i capi
+    dentro la scelta — perche' chi ne indica cinque vuole vedere come si
+    parlano fra loro, non le altre dodici. Con una linea sola si tengono tutte
+    le sue relazioni, altrimenti il capitolo resterebbe vuoto."""
+    if not scelte:
+        return list(voci)
+    s = {x for x in scelte}
+    uno = len(s) == 1
+    fuori = []
+    for v in voci:
+        a, b = str(v.get("fromRoute") or ""), str(v.get("toRoute") or "")
+        if (uno and (a in s or b in s)) or (not uno and a in s and b in s):
+            fuori.append(v)
+    return fuori
 
-    def dove(nodo: str):
-        up = str(nodo or "").upper().strip()
-        if not up:
-            return None
-        if up in per_nome:
-            return per_nome[up]
-        for nome, s_ in per_nome.items():
-            if len(nome) >= 4 and (nome.startswith(up) or up.startswith(nome)):
-                return s_
-        return None
 
-    # gli incontri, raggruppati per COPPIA di linee (non ordinata: 3→1/4 e
-    # 1/4→3 sono la stessa relazione vista nei due versi)
-    per_coppia: dict = {}
-    incontri_tutti, senza = [], []
-    for c in esistenti:
-        a, b = str(c.get("fromRoute") or ""), str(c.get("toRoute") or "")
-        if not a or not b:
+def _ore_dei_passaggi(c: dict) -> dict:
+    """Quante coincidenze, ora per ora, in questa relazione."""
+    ore: dict = {}
+    for p in (c.get("passaggi") or []):
+        if not isinstance(p, dict):
             continue
-        pos = dove(c.get("node"))
-        if not pos and c.get("node"):
-            senza.append(str(c.get("node")))
-        for pg in (c.get("passaggi") or c.get("sample") or []):
-            m = _minuti_da_ora(pg.get("arrivoMin"))
-            if m is None:
-                m = _minuti_da_ora(pg.get("arrivo"))
-            if m is None:
-                continue
-            voce = {"node": c.get("node"), "from": a, "to": b, "oraMin": m,
-                    "lat": pos.get("lat") if pos else None,
-                    "lon": pos.get("lon") if pos else None}
-            incontri_tutti.append(voce)
-            per_coppia.setdefault(tuple(sorted((a, b), key=ordine_di_linea)), []).append(voce)
+        m = _minuti_da_ora(p.get("arrivoMin"))
+        if m is None:
+            m = _minuti_da_ora(p.get("arrivo"))
+        if m is None:
+            continue
+        ora = int(m) // 60
+        ore[ora] = ore.get(ora, 0) + 1
+    return ore
 
-    if corse and per_coppia:
-        per_linea: dict = {}
-        for c in corse:
-            per_linea.setdefault(str(c.get("linea") or ""), []).append(c)
-        coppie = sorted(per_coppia.items(), key=lambda kv: -len(kv[1]))[:COPPIE_DIAGRAMMA_MAX]
-        pezzi = []
-        for (a, b), inc in coppie:
-            sue = per_linea.get(a, []) + per_linea.get(b, [])
-            if len(sue) < 2:
-                continue
-            marcati = [i for i in inc if i.get("lat") is not None]
-            dis = rc.spazio_tempo(
-                sue, f"{a} e {b}: le corse e i loro incontri",
-                subtitle=f'{fmt_n(len(sue))} corse delle due linee, '
-                         f'{fmt_n(len(inc))} incontri al giorno',
-                incontri=marcati)
-            if dis:
-                pezzi.append(dis)
-        if pezzi:
-            intro = para(
-                f'Ogni diagramma tiene <b>due linee alla volta</b>: tutte insieme sarebbero un groviglio. '
-                f'Il pavimento e\u0027 il territorio, l\u0027altezza e\u0027 l\u0027ora del giorno; ogni curva e\u0027 una corsa '
-                f'e la sua ombra e\u0027 il percorso visto dall\u0027alto. I cerchi bianchi sono le coincidenze '
-                f'riconosciute. Sono le <b>{fmt_n(len(pezzi))} relazioni</b> con piu\u0027 incontri.')
-            return intro + "".join(pezzi)
 
-    # ricaduta: senza le corse restano i soli punti di incontro
-    if not incontri_tutti:
-        return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato: '
-                    'i passaggi non portano l\u0027ora dell\u0027incontro.</i></span>')
-    posizioni = {}
-    for i in incontri_tutti:
-        if i.get("lat") is not None:
-            posizioni[i["node"]] = {"name": i["node"], "lat": i["lat"], "lon": i["lon"]}
-    senza = [n for n in dict.fromkeys(senza) if n not in posizioni]
-    nota = ""
-    if senza:
-        import math as _m
-        if posizioni:
-            lat0 = sum(float(v["lat"]) for v in posizioni.values()) / len(posizioni)
-            lon0 = sum(float(v["lon"]) for v in posizioni.values()) / len(posizioni)
-            raggio = 0.012
-        else:
-            lat0, lon0, raggio = 43.6, 13.5, 0.02
-        for k, n in enumerate(senza):
-            ang = 2 * _m.pi * k / max(1, len(senza))
-            posizioni[n] = {"name": n, "lat": lat0 + raggio * _m.cos(ang), "lon": lon0 + raggio * _m.sin(ang)}
-        nota = (f'<span class="small">Di {fmt_n(len(senza))} nodi non si conosce la posizione: '
-                f'nel disegno sono disposti in cerchio, gli orari e le linee restano quelli veri.</span>')
-    dis = rc.coincidenze_3d(list(posizioni.values()), incontri_tutti,
-                            "Le coincidenze nello spazio e nel tempo",
-                            subtitle="Le corse col loro orario non sono nel dossier: restano i punti d\u0027incontro.")
+def _etichetta_relazione(c: dict) -> str:
+    return f'{c.get("node") or "?"} · {c.get("fromRoute")} → {c.get("toRoute")}'
+
+
+def render_coincidenze_quando(esistenti: list) -> str:
+    """8.2 — QUANDO si può cambiare, e quando no.
+
+    La domanda di un capo movimento non e' «dove si incontrano le linee» ma «a
+    che ora». Una riga per relazione, una colonna per ora, la casella piena
+    quanto sono le coincidenze di quell'ora: il buco a meta' pomeriggio si vede
+    a occhio, e nessun elenco lo fa vedere."""
+    righe = []
+    for c in esistenti:
+        ore = _ore_dei_passaggi(c)
+        if not ore:
+            continue
+        righe.append({"label": _etichetta_relazione(c), "ore": ore, "totale": sum(ore.values())})
+    if not righe:
+        return ""
+    righe.sort(key=lambda r: -r["totale"])
+    tagliate = len(righe) - GRIGLIA_RIGHE_MAX
+    dis = rc.griglia_coincidenze(
+        righe[:GRIGLIA_RIGHE_MAX], "Quando si può cambiare, ora per ora",
+        subtitle="Una riga per relazione, una colonna per ora del giorno; la casella è tanto più "
+                 "scura quante sono le coincidenze. Le caselle vuote sono le ore senza cambio.",
+        note=(f'Le {fmt_n(GRIGLIA_RIGHE_MAX)} relazioni con più coincidenze; '
+              f'altre {fmt_n(tagliate)} restano nel libretto orario.' if tagliate > 0 else ""))
     if not dis:
-        return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato.</i></span>')
-    return dis + (para(nota) if nota else "")
+        return ""
+    return ("<h3>8.2 Quando si può cambiare</h3>"
+            + para("Il quadro precedente dice <i>dove</i> si cambia. Questo dice <i>quando</i>: "
+                   "una relazione con trenta coincidenze distribuite su tutto il giorno vale un'altra cosa "
+                   "rispetto a una che le ha tutte in due ore del mattino, e il totale da solo non "
+                   "distingue le due.")
+            + dis)
+
+
+def render_coincidenze_ritmo(d: dict, esistenti: list) -> str:
+    """8.3 — QUANTO è buono ogni cambio.
+
+    In orizzontale l'ora, in verticale i minuti di attesa, la fascia chiara e'
+    la finestra utile. Un disegno per relazione, affiancati: si confrontano a
+    colpo d'occhio senza rileggere i numeri."""
+    co = g(d, "analisi", "coincidenze", default={}) or {}
+    lo = _numero(co.get("attesaMinimaMin"))
+    hi = _numero(co.get("sogliaAttesaMin"))
+    finestra = (lo if lo is not None else 2, hi if hi is not None else 5)
+    con_orari = [c for c in esistenti if (c.get("passaggi") or [])]
+    con_orari.sort(key=lambda c: -int(c.get("occurrences") or 0))
+    pezzi = []
+    for c in con_orari[:RITMI_MAX]:
+        a = _attesa(c)
+        dis = rc.ritmo_relazione(
+            c.get("passaggi") or [], _etichetta_relazione(c),
+            subtitle=f'{fmt_n(c.get("occurrences"))} volte al giorno · attesa mediana '
+                     f'{fmt_n(a.get("mediana"))}′',
+            finestra=finestra)
+        if dis:
+            pezzi.append(dis)
+    if not pezzi:
+        return ""
+    return ("<h3>8.3 Quanto è buono ogni cambio</h3>"
+            + para(f'Per ogni relazione, un passaggio è un punto: in orizzontale l\'ora in cui si arriva, '
+                   f'in verticale i minuti che si aspettano. La fascia chiara è la finestra utile '
+                   f'({fmt_n(finestra[0])}–{fmt_n(finestra[1])} minuti). I punti sopra la fascia sono attese '
+                   f'lunghe, quelli sotto sono cambi da prendere di corsa. Sono le '
+                   f'<b>{fmt_n(len(pezzi))} relazioni</b> con più coincidenze.')
+            + f'<div class="griglia-mappe">{"".join(pezzi)}</div>')
 
 
 def render_libretto(esistenti: list) -> str:
@@ -1427,7 +1431,7 @@ def render_libretto(esistenti: list) -> str:
     con_orari = [c for c in esistenti if (c.get("passaggi") or [])]
     if not con_orari:
         return ""
-    out = ["<h3>8.6 Il libretto orario delle coincidenze</h3>"]
+    out = ["<h3>8.7 Il libretto orario delle coincidenze</h3>"]
     out.append(para(
         "Per ogni relazione riconosciuta, i passaggi uno per uno: la corsa che arriva, quella che "
         "riparte, e i minuti di attesa fra le due. \u00c8 quello che serve al banco per verificare "
@@ -1468,6 +1472,21 @@ def render_coincidenze(d: dict) -> str:
     esistenti = [x for x in (co.get("esistenti") or []) if isinstance(x, dict)]
     mancate = [x for x in (co.get("mancatePerPoco") or []) if isinstance(x, dict)]
     opp = [x for x in (co.get("opportunita") or []) if isinstance(x, dict)]
+    # Le linee scelte in fase di esportazione: la rete intera in un capitolo solo
+    # non si legge, e chi chiede la relazione sa quali relazioni gli interessano.
+    scelte = linee_scelte(d)
+    if scelte:
+        tutte_e, tutte_m = len(esistenti), len(mancate)
+        esistenti = filtra_per_linee(esistenti, scelte)
+        mancate = filtra_per_linee(mancate, scelte)
+        regola = ("tutte le relazioni che la toccano" if len(set(scelte)) == 1
+                  else "le relazioni con tutti e due i capi fra queste linee")
+        out.append(para(
+            f'<b>Questo capitolo è limitato alle linee scelte in fase di esportazione</b>: '
+            f'{esc(", ".join(sorted(set(scelte), key=ordine_di_linea)))}. Si tengono {regola} — '
+            f'{fmt_n(len(esistenti))} relazioni realizzate su {fmt_n(tutte_e)} e '
+            f'{fmt_n(len(mancate))} mancate per poco su {fmt_n(tutte_m)}. '
+            f'Il dossier conserva comunque tutta la rete: il taglio è del documento, non del dato.'))
     out.append(rc.kpi_row([
         ("Relazioni realizzate", fmt_n(len(esistenti)), "l'orario le produce davvero"),
         ("Mancate per poco", fmt_n(len(mancate)), "attesa appena fuori finestra"),
@@ -1476,7 +1495,9 @@ def render_coincidenze(d: dict) -> str:
     ]))
     if esistenti:
         out.append(render_nodi_coincidenza(esistenti))
-        out.append("<h3>8.2 Le relazioni che l'orario realizza</h3>")
+        out.append(render_coincidenze_quando(esistenti))
+        out.append(render_coincidenze_ritmo(d, esistenti))
+        out.append("<h3>8.4 Le relazioni che l'orario realizza</h3>")
         righe = []
         for x in esistenti:
             a = _attesa(x)
@@ -1488,10 +1509,9 @@ def render_coincidenze(d: dict) -> str:
         out.append(table(["Nodo", "Da → a", "Volte al giorno", "Attesa", "Esempi di orario"], righe, numeric_from=2))
         out.append(para('<span class="small">Nessuno spostamento proposto dal sistema ha il diritto di rompere '
                         'queste relazioni: sono un vincolo del ciclo, non una preferenza.</span>'))
-        out.append(render_coincidenze_3d(d, esistenti))
         out.append(render_libretto(esistenti))
     if mancate:
-        out.append("<h3>8.3 Le occasioni mancate per poco</h3>")
+        out.append("<h3>8.5 Le occasioni mancate per poco</h3>")
         out.append(para("Due linee che si sfiorano a un nodo con un'attesa appena fuori dalla finestra utile. "
                         "Sono il valore che la rete produrrebbe quasi gratis, e che nessuno contava."))
         righe = []
@@ -1506,7 +1526,7 @@ def render_coincidenze(d: dict) -> str:
         if len(mancate) > 20:
             out.append(para(f'<span class="small">… e altre {len(mancate) - 20} relazioni mancate per poco.</span>'))
     if opp:
-        out.append("<h3>8.5 Che cosa si guadagnerebbe spostando una linea</h3>")
+        out.append("<h3>8.6 Che cosa si guadagnerebbe spostando una linea</h3>")
         out.append(para("Per ogni linea, la traslazione dell'intera giornata che guadagna più relazioni di quante "
                         "ne rompe: la cadenza resta identica e lo spostamento è difendibile davanti all'utenza. "
                         "Il conto delle relazioni rotte è sempre esposto, perché un guadagno che costa altrove "

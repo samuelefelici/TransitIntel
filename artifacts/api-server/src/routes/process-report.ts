@@ -215,72 +215,6 @@ async function contestoDelTerritorio(riquadro: [number, number, number, number],
 }
 
 /**
- * Le corse nello spazio e nel tempo: per ciascuna, dove passa e a che ora.
- *
- * Serve al diagramma spazio-tempo: una corsa non e' un punto, e' una
- * traiettoria che si muove sul territorio mentre l'orologio avanza, e due
- * linee «si incontrano» dove le loro traiettorie si toccano. Senza gli orari
- * fermata per fermata si possono disegnare solo i punti di incontro, che e'
- * come raccontare un viaggio elencando le coincidenze perse.
- *
- * Si tengono al massimo CORSE_MAX corse e, di ciascuna, un punto ogni
- * PUNTI_PASSO fermate: il disegno e' assonometrico e a quella scala due
- * fermate vicine cadono sullo stesso pixel.
- */
-const CORSE_MAX = 420;
-const PUNTI_PASSO = 2;
-
-async function corseNelTempo(psId: string, routeIds: string[], serviceDate: string | null,
-                             logger: { info: (...a: any[]) => void }): Promise<any[]> {
-  if (!psId) return [];
-  try {
-    const righe = rows(await db.execute(sql`
-      SELECT t.id AS trip_id, t.route_id, r.short_name AS linea, r.color AS colore,
-             t.direction, st.stop_seq, s.lat, s.lon,
-             COALESCE(st.departure_time, st.arrival_time) AS ora
-        FROM ps_trips t
-        JOIN ps_routes r ON r.id = t.route_id
-        JOIN ps_stop_times st ON st.trip_id = t.id
-        JOIN ps_stops s ON s.id = st.stop_id
-       WHERE t.project_id = ${psId}::uuid
-         ${routeIds.length > 0 ? sql`AND t.route_id = ANY(${uuidArray(routeIds)})` : sql``}
-         AND s.lat IS NOT NULL AND s.lon IS NOT NULL
-       ORDER BY t.id, st.stop_seq
-    `));
-    const perCorsa = new Map<string, any>();
-    for (const r of righe) {
-      const k = String(r.trip_id);
-      let c = perCorsa.get(k);
-      if (!c) {
-        c = { linea: r.linea, colore: normalizzaColore(r.colore), direzione: Number(r.direction ?? 0), punti: [] };
-        perCorsa.set(k, c);
-      }
-      const m = minutiDaOrario(r.ora);
-      if (m == null) continue;
-      c.punti.push([Number(r.lat), Number(r.lon), m]);
-    }
-    const corse = [...perCorsa.values()]
-      .filter((c) => c.punti.length >= 2)
-      .map((c) => ({ ...c, punti: c.punti.filter((_: any, i: number) =>
-        i % PUNTI_PASSO === 0 || i === c.punti.length - 1) }))
-      .sort((a, b) => a.punti[0][2] - b.punti[0][2]);
-    if (corse.length > CORSE_MAX) {
-      // si diradano nel tempo, non si taglia la coda: il disegno deve
-      // coprire tutta la giornata, non solo il mattino
-      const passo = corse.length / CORSE_MAX;
-      const scelte = [];
-      for (let i = 0; i < CORSE_MAX; i++) scelte.push(corse[Math.floor(i * passo)]);
-      logger.info(`diagramma spazio-tempo: ${corse.length} corse diradate a ${scelte.length}`);
-      return scelte;
-    }
-    return corse;
-  } catch (e: any) {
-    logger.info(`corse nel tempo non disponibili: ${e?.message ?? e}`);
-    return [];
-  }
-}
-
-/**
  * I PASSAGGI ALLE FERMATE DI CONTROLLO delle corse che finiscono nei fogli
  * turno. Il foglio che il conducente si porta in servizio non elenca solo
  * partenza e arrivo: sotto la corsa ci sono i punti orari, che sono quelli su
@@ -504,6 +438,8 @@ interface DossierExtra {
   isTest?: boolean; testNote?: string;
   decisions?: { kind?: string; content?: string }[];
   plans?: { id?: any; at?: string; goal?: string; summary?: string; status?: string }[];
+  /** Le linee di cui l'operatore vuole vedere le coincidenze (vuoto = tutte). */
+  coincidenzeLinee?: string[];
   logger?: { info: (...a: any[]) => void };
 }
 
@@ -707,9 +643,6 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
     (extra.logger ?? { info: () => {} }).info(`copertura pedonale non calcolata: ${e?.message ?? e}`);
   }
   // Le corse nello spazio e nel tempo, per il diagramma del capitolo 8.
-  const corse = await corseNelTempo(psId ? String(psId) : "", routeIds,
-                                    null, extra.logger ?? { info: () => {} });
-
   // I punti orari delle corse che finiscono nei fogli turno in allegato.
   const passaggi = await passaggiDelleCorse(
     psId ? String(psId) : "",
@@ -851,6 +784,14 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
     coincidenze = { errore: "lo scenario non porta il feed o la data: mappa non calcolabile" };
   }
 
+  // La scelta dell'operatore viaggia col dossier, ma NON taglia il dato: la
+  // mappa delle coincidenze resta intera in archivio, si restringe il documento.
+  const lineeScelte = (extra.coincidenzeLinee ?? [])
+    .map((x) => String(x ?? "").trim()).filter(Boolean).slice(0, 60);
+  if (lineeScelte.length > 0 && coincidenze && typeof coincidenze === "object") {
+    (coincidenze as any).lineeScelte = lineeScelte;
+  }
+
   return {
     meta: {
       title: extra.title ?? null, subtitle: extra.subtitle ?? null, author: extra.author ?? null, company: extra.company ?? null,
@@ -864,7 +805,6 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
       source: input?.source ?? null, mode: input?.mode ?? result?.solver ?? null,
     },
     network: { lines, stopsCount, nodes: clusters.map((c) => c.name), clusters, polylines, percorsi, stops,
-               corse,
                coperturaPedonale: { minuti: ISOCRONA_MINUTI, fermateCoperte: isocroneCalcolate,
                                     tetto: ISOCRONE_NUOVE_MAX, disponibile: hasIsochroneProvider() } },
     planning: {
@@ -920,6 +860,8 @@ router.post("/service-program/scenarios/:id/report", async (req: Request, res: R
       isTest: !!b.isTest, testNote: typeof b.testNote === "string" ? b.testNote.slice(0, 500) : undefined,
       decisions: Array.isArray(b.decisions) ? b.decisions.slice(0, 100) : undefined,
       plans: Array.isArray(b.plans) ? b.plans.slice(0, 100) : undefined,
+      coincidenzeLinee: Array.isArray(b.coincidenzeLinee)
+        ? b.coincidenzeLinee.map((x: unknown) => String(x ?? "").slice(0, 40)) : undefined,
       logger: req.log,
     };
     const dossier = await buildProcessDossier(String(req.params.id), typeof b.dssId === "string" ? b.dssId : null, extra);
