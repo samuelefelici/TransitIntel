@@ -535,8 +535,8 @@ def punti_di_geojson(geom: dict) -> list:
 
 def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, subtitle: str = "",
                 width: int = 900, height: int = 620, note: str = "", max_series: int = 8,
-                sfondo: bool = True, isocrone: Sequence[dict] = (), etichetta_fermate: bool = False,
-                numera_fermate: bool = False) -> str:
+                sfondo: bool = True, isocrone: Sequence[dict] = (),
+                etichetta_fermate: bool = False) -> str:
     """polylines: [{name, points: [(lat, lon), ...], color?}]; stops: [{name, lat, lon, node?}].
 
     `isocrone`: [{minuti, geom}] disegnate SOTTO i tracciati, dalla piu' larga
@@ -588,13 +588,7 @@ def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, su
         else:
             out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.8" fill="#ffffff" stroke="{INK}" stroke-width="1.2">'
                        f'<title>{esc(s_.get("name", ""))}</title></circle>')
-            if numera_fermate:
-                # con trenta fermate i nomi si coprono: si numerano lungo il
-                # percorso e l'elenco ordinato sta nella tabella sotto.
-                out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="#ffffff" '
-                           f'stroke="{INK}" stroke-width="1.2" opacity="0.92"/>')
-                out.append(_etichetta(x, y + 3, str(s_.get("n") or ""), 8, "700", "middle"))
-            elif etichetta_fermate:
+            if etichetta_fermate:
                 out.append(_etichetta(x + 5, y + 3, s_.get("name", ""), 8))
     out.append("</svg>")
     if len(polylines) > max_series and not any(pl.get("color") for pl in polylines):

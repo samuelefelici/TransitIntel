@@ -1290,6 +1290,68 @@ scritto sopra il disegno.
 Lezione: quando una figura deve rispondere a due domande a scale diverse, non e'
 il disegno a essere sbagliato, sono due figure.
 
+## Sotto ogni percorso: la gente e i poli, non l'elenco delle fermate
+
+«Per ogni linea, sotto non mi serve l'elenco delle fermate, ma mi serve quanta
+popolazione potrebbe acchiappare e tutti i POI serviti, per categoria.»
+
+Ha ragione, e la ragione e' semplice: **l'elenco delle fermate non dice niente
+che la mappa non mostri gia'**. Quello che la mappa non puo' dire e' quanta gente
+quel percorso ha a portata di piedi e che cosa le porta vicino — cioe' il motivo
+per cui la linea esiste.
+
+`coperturaDeiPercorsi()` conta **dentro le isocrone gia' calcolate**, non entro un
+raggio in linea d'aria: per ogni percorso, le sezioni censuarie il cui centroide
+cade nell'area raggiungibile a piedi dalle sue fermate, e i POI che ci stanno
+dentro, raggruppati per categoria. Una sezione o un POI contano **una volta sola**
+per percorso, anche quando piu' fermate li raggiungono entrambe.
+
+Il conto e' su decine di percorsi per centinaia di sezioni e migliaia di POI, e il
+test punto-in-poligono non e' gratis: prima si scarta col rettangolo che contiene
+l'isocrona (`riquadroDi`), che costa quattro confronti, e solo chi passa quel
+filtro paga il test vero.
+
+Sotto ogni mappa ora ci sono due riquadri — popolazione raggiunta con quante
+sezioni, poli serviti con quante categorie — e la tabella dei POI per categoria.
+
+Tolta la numerazione delle fermate introdotta poco prima: senza l'elenco sotto la
+mappa un numero sul puntino non dice piu' niente, e il codice morto non si lascia
+in giro. I nomi restano nel tooltip, e sono scritti sulla mappa quando le fermate
+sono dieci o meno.
+
+## Il territorio: chi si muove, e quanto sono trafficate le strade
+
+Ultimo pezzo del capitolo della rete: **2.5 Il territorio e come si muove**.
+
+**I pendolari.** `istat_commuting_od` e' la matrice del Censimento: per ogni
+coppia comune-origine → comune-destinazione, quante persone si spostano, per
+quale motivo, con quale mezzo, in quale fascia oraria. La relazione ora dice chi
+entra ad Ancona, da dove, come e a che ora; chi esce; e quanti si spostano dentro
+il comune.
+
+Il comune del piano non e' configurato da nessuna parte: si ricava dai dati. Le
+prime sei cifre del codice ISTAT di una sezione censuaria sono il comune, quindi
+si prende il comune piu' rappresentato fra le sezioni sotto le fermate.
+
+I codici del Censimento (`car_driver`, `before_715`, `bus_urban`) sono tradotti in
+italiano corrente, e c'e' un test che verifica che quelli grezzi **non** compaiano
+nel documento.
+
+La cosa che conta di piu' e' scritta nel capitolo, non lasciata intendere: il dato
+e' a livello **comunale**, dice chi si sposta fra comuni e non chi sale a una
+fermata. E' il **bacino potenziale, non la domanda servita** — la differenza fra
+una relazione onesta e una che millanta.
+
+**Il traffico.** `traffic_snapshots` porta velocita' reale, velocita' a strada
+libera e congestione per segmento, con l'ora del rilievo. Il capitolo mostra la
+velocita' ora per ora (reale contro strada libera) e i dodici segmenti peggiori.
+Serve a dire perche' i tempi di percorrenza del quadro orario sono quelli: la
+congestione non e' un dettaglio di contorno, e' cio' che decide quanto dura una
+corsa e quindi quante vetture servono.
+
+Entrambi sono in `analisi.territorio` e ognuno ha il suo try/catch: se il dato
+manca, il capitolo non compare e il resto della relazione esce lo stesso.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

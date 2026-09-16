@@ -451,20 +451,102 @@ def test_il_nodo_da_vicino_non_scende_sotto_i_350_metri():
     assert metri >= 349, f"lato {metri:.0f} m"
 
 
-def test_le_fermate_numerose_si_numerano_invece_di_scriverle():
-    """Trentadue nomi accanto a trentadue puntini si coprono a vicenda: si
-    numerano lungo il percorso e l'elenco ordinato sta nella tabella sotto."""
+def test_sotto_la_mappa_c_e_la_copertura_non_l_elenco_delle_fermate():
+    """L'elenco delle fermate sotto la mappa non dice niente che la mappa non
+    mostri gia'. Quello che non si vede e' quanta gente il percorso ha a
+    portata di piedi, e che cosa le porta vicino."""
     d = _rete()
-    tante = [{"name": f"FERMATA {k}", "lat": 43.60 + k * 1e-3, "lon": 13.50 + k * 1e-3} for k in range(14)]
-    d["network"]["percorsi"] = [{"line": "3", "variant": "lunga", "direction": 0, "isDefault": True,
-                                 "points": [(43.60, 13.50), (43.62, 13.52)], "stops": tante}]
+    d["network"]["percorsi"][0]["copertura"] = {
+        "abitanti": 12450, "sezioni": 38, "poi": 214,
+        "categorie": [{"nome": "Pharmacy", "n": 12}, {"nome": "School", "n": 9},
+                      {"nome": "Supermarket", "n": 4}],
+    }
     html = rb.render_network(d)
-    # i numeri ci sono, e c'è l'elenco
-    assert ">1<" in html and ">14<" in html
-    assert "FERMATA 13" in html
-    assert "N." in html and "Fermata" in html
+    assert "Popolazione raggiunta" in html and "12.450" in html
+    assert "38" in html and "sezioni di censimento" in html
+    assert "Poli attrattori serviti" in html and "214" in html
+    assert "Pharmacy" in html and "School" in html and "Supermarket" in html
+    # l'elenco numerato delle fermate non c'e' piu'
+    assert "N." not in html
+
+
+def test_il_percorso_senza_copertura_non_si_rompe():
+    """Senza isocrone non c'e' copertura: il percorso esce con la sola mappa."""
+    html = rb.render_network(_rete())          # nessuna chiave "copertura"
+    assert "2.4 I percorsi" in html
+    assert "Popolazione raggiunta" not in html
 
 
 def test_le_fermate_poche_tengono_il_nome_sulla_mappa():
     html = rb.render_network(_rete())      # due fermate per percorso
     assert "PIAZZA CAVOUR 1" in html
+
+
+# ═══════════════════════════════════════════════════════════════
+#  IL TERRITORIO: PENDOLARI E TRAFFICO
+# ═══════════════════════════════════════════════════════════════
+
+def _territorio():
+    return {"analisi": {"territorio": {
+        "comune": {"istat": "042002", "nome": "Ancona", "abitanti": 98400},
+        "pendolari": {
+            "fonte": "Censimento ISTAT, matrice degli spostamenti pendolari",
+            "livello": "comunale",
+            "entrano": {"totale": 18400,
+                        "comuni": [{"nome": "Falconara Marittima", "n": 3100},
+                                   {"nome": "Osimo", "n": 2400}],
+                        "motivi": [{"nome": "work", "n": 14000}, {"nome": "study", "n": 4400}],
+                        "mezzi": [{"nome": "car_driver", "n": 12000}, {"nome": "bus_urban", "n": 3200},
+                                  {"nome": "train", "n": 3200}],
+                        "fasce": [{"nome": "715_815", "n": 9000}, {"nome": "before_715", "n": 5400},
+                                  {"nome": "815_915", "n": 4000}]},
+            "escono": {"totale": 7300, "comuni": [{"nome": "Jesi", "n": 900}],
+                       "motivi": [{"nome": "work", "n": 7300}],
+                       "mezzi": [{"nome": "car_driver", "n": 6000}],
+                       "fasce": [{"nome": "715_815", "n": 4000}]},
+            "interni": {"totale": 31200, "mezzi": [{"nome": "walk", "n": 9000},
+                                                   {"nome": "bus_urban", "n": 6100}]},
+        },
+        "traffico": {"rilievi": 4820,
+                     "perOra": [{"ora": 8, "congestione": 0.34, "velocita": 22.0, "libera": 33.0, "rilievi": 410},
+                                {"ora": 13, "congestione": 0.12, "velocita": 29.0, "libera": 33.0, "rilievi": 380}],
+                     "peggiori": [{"segmento": "SEG-12", "congestione": 0.61, "velocita": 13.0,
+                                   "libera": 33.0, "rilievi": 22}]},
+    }}}
+
+
+def test_i_pendolari_dicono_chi_entra_e_chi_esce():
+    html = rb.render_territorio(_territorio())
+    assert "2.5 Il territorio e come si muove" in html
+    assert "Ancona" in html
+    assert "In entrata" in html and "18.400" in html
+    assert "In uscita" in html and "7.300" in html
+    assert "Dentro il comune" in html and "31.200" in html
+    assert "Falconara Marittima" in html and "Jesi" in html
+    # i codici del censimento sono tradotti in italiano corrente
+    assert "auto, alla guida" in html and "bus urbano" in html
+    assert "7:15 – 8:15" in html
+    assert "lavoro" in html and "studio" in html
+    assert "car_driver" not in html and "before_715" not in html
+
+
+def test_il_livello_comunale_e_dichiarato_non_lasciato_intendere():
+    """Il dato dice chi si sposta fra comuni, non chi sale a una fermata:
+    scriverlo è la differenza fra una relazione onesta e una che millanta."""
+    html = rb.render_territorio(_territorio())
+    assert "comunale" in html
+    assert "non quante salgono a una fermata" in html
+    assert "bacino potenziale, non la domanda servita" in html
+
+
+def test_il_traffico_spiega_i_tempi_di_percorrenza():
+    html = rb.render_territorio(_territorio())
+    assert "Il traffico sulle strade della rete" in html
+    assert "34 %" in html and "22 km/h" in html      # congestione e velocità alle 8
+    assert "SEG-12" in html and "61 %" in html
+    assert "Velocità ora per ora" in html
+
+
+def test_senza_territorio_il_capitolo_non_compare():
+    assert rb.render_territorio({}) == ""
+    assert rb.render_territorio({"analisi": {"territorio": {"comune": {"nome": "Ancona"}}}}) == ""

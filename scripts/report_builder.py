@@ -391,6 +391,97 @@ def render_network(d: dict) -> str:
                                   subtitle="Tracciati delle linee del giorno-tipo; i nodi di interscambio sono evidenziati.",
                                   note="Proiezione equirettangolare semplificata; le prime otto linee hanno una tinta propria, le altre sono in grigio."))
     out.append(render_percorsi(net))
+    out.append(render_territorio(d))
+    return "".join(out)
+
+
+MEZZI_PENDOLARI = {'car_driver': 'auto, alla guida', 'car_passenger': 'auto, passeggero', 'bus_urban': 'bus urbano', 'bus_extraurban': 'bus extraurbano', 'train': 'treno', 'bike': 'bicicletta', 'walk': 'a piedi', 'other': 'altro'}
+
+FASCE_PENDOLARI = {'before_715': 'prima delle 7:15', '715_815': '7:15 – 8:15', '815_915': '8:15 – 9:15', 'after_915': 'dopo le 9:15'}
+
+MOTIVI_PENDOLARI = {'work': 'lavoro', 'study': 'studio'}
+
+
+def _voci(elenco, dizionario) -> list:
+    """Le voci di una ripartizione, tradotte e col peso in percentuale."""
+    righe = [v for v in (elenco or []) if isinstance(v, dict)]
+    tot = sum(int(v.get("n") or 0) for v in righe) or 1
+    return [(dizionario.get(v.get("nome"), v.get("nome") or ""), fmt_n(v.get("n") or 0),
+             f'{(int(v.get("n") or 0) / tot * 100):.0f} %') for v in righe]
+
+
+def render_territorio(d: dict) -> str:
+    """2.5 — IL TERRITORIO: chi ci abita, come si muove, quanto e' trafficato.
+
+    La rete non esiste nel vuoto. Qui ci sono i due dati di contesto che
+    spiegano la domanda e i tempi di percorrenza: gli spostamenti pendolari del
+    Censimento e i rilievi di traffico. I pendolari stanno a livello COMUNALE,
+    e va detto: dicono chi entra e chi esce da un comune, non chi sale a una
+    fermata."""
+    t = g(d, "analisi", "territorio", default=None)
+    if not isinstance(t, dict) or (not t.get("pendolari") and not t.get("traffico")):
+        return ""
+    out = ["<h3>2.5 Il territorio e come si muove</h3>"]
+    com = t.get("comune") if isinstance(t.get("comune"), dict) else {}
+    if com.get("nome"):
+        out.append(para(f'Il piano insiste sul comune di <b>{esc(com["nome"])}</b> '
+                        f'({fmt_n(com.get("abitanti") or 0)} abitanti nelle sezioni di censimento '
+                        f'sotto la rete).'))
+
+    p_ = t.get("pendolari") if isinstance(t.get("pendolari"), dict) else None
+    if p_:
+        ent = p_.get("entrano") or {}
+        esc_ = p_.get("escono") or {}
+        inte = p_.get("interni") or {}
+        out.append("<h4>Chi entra e chi esce</h4>")
+        out.append(para(
+            f'{esc(p_.get("fonte") or "Censimento ISTAT")}. Il dato è a livello '
+            f'<b>{esc(p_.get("livello") or "comunale")}</b>: dice quante persone si spostano da un '
+            f'comune all\'altro per lavoro o per studio, con quale mezzo e in quale fascia — '
+            f'non quante salgono a una fermata. È il bacino potenziale, non la domanda servita.'))
+        out.append(rc.kpi_row([
+            ("In entrata", fmt_n(ent.get("totale") or 0), "da altri comuni"),
+            ("In uscita", fmt_n(esc_.get("totale") or 0), "verso altri comuni"),
+            ("Dentro il comune", fmt_n(inte.get("totale") or 0), "spostamenti interni"),
+        ]))
+        for titolo, dati in (("Da dove arrivano", ent.get("comuni")), ("Dove vanno", esc_.get("comuni"))):
+            righe = [(v.get("nome") or "", fmt_n(v.get("n") or 0)) for v in (dati or []) if isinstance(v, dict)]
+            if righe:
+                out.append(table([titolo, "Persone"], righe, numeric_from=1))
+        for titolo, dati, diz in (("Con quale mezzo entrano", ent.get("mezzi"), MEZZI_PENDOLARI),
+                                  ("In quale fascia entrano", ent.get("fasce"), FASCE_PENDOLARI),
+                                  ("Per quale motivo entrano", ent.get("motivi"), MOTIVI_PENDOLARI)):
+            righe = _voci(dati, diz)
+            if righe:
+                out.append(table([titolo, "Persone", "Quota"], righe, numeric_from=1))
+        mezzi_int = _voci(inte.get("mezzi"), MEZZI_PENDOLARI)
+        if mezzi_int:
+            out.append(table(["Mezzo dentro il comune", "Persone", "Quota"], mezzi_int, numeric_from=1))
+
+    tr = t.get("traffico") if isinstance(t.get("traffico"), dict) else None
+    if tr and (tr.get("perOra") or tr.get("peggiori")):
+        ore = [x for x in (tr.get("perOra") or []) if isinstance(x, dict)]
+        out.append("<h4>Il traffico sulle strade della rete</h4>")
+        out.append(para(
+            f'Rilievi di velocità sui segmenti stradali dentro l\'area della rete '
+            f'({fmt_n(tr.get("rilievi") or 0)} misure). La <b>congestione</b> è quanto la velocità '
+            f'reale sta sotto quella a strada libera: è il motivo per cui i tempi di percorrenza '
+            f'del quadro orario sono quelli, e cambia con l\'ora.'))
+        if ore:
+            out.append(rc.lines([f'{int(x.get("ora") or 0):02d}' for x in ore],
+                                [("velocità reale", [float(x.get("velocita") or 0) for x in ore]),
+                                 ("a strada libera", [float(x.get("libera") or 0) for x in ore])],
+                                "Velocità ora per ora", subtitle="km/h medi sui segmenti dell'area"))
+            out.append(table(["Ora", "Congestione", "Velocità", "A strada libera", "Rilievi"],
+                             [(f'{int(x.get("ora") or 0):02d}:00', f'{float(x.get("congestione") or 0) * 100:.0f} %',
+                               f'{float(x.get("velocita") or 0):.0f} km/h', f'{float(x.get("libera") or 0):.0f} km/h',
+                               fmt_n(x.get("rilievi") or 0)) for x in ore], numeric_from=1))
+        peg = [x for x in (tr.get("peggiori") or []) if isinstance(x, dict)]
+        if peg:
+            out.append(table(["Segmento", "Congestione", "Velocità", "A strada libera", "Rilievi"],
+                             [(x.get("segmento") or "", f'{float(x.get("congestione") or 0) * 100:.0f} %',
+                               f'{float(x.get("velocita") or 0):.0f} km/h', f'{float(x.get("libera") or 0):.0f} km/h',
+                               fmt_n(x.get("rilievi") or 0)) for x in peg], numeric_from=1))
     return "".join(out)
 
 
@@ -444,7 +535,7 @@ def render_percorsi(net: dict) -> str:
     out.append(para(
         f'Il disegno della rete qui sopra tiene una variante per linea, o diventa illeggibile. '
         f'Questi sono i <b>{fmt_n(len(perc))} percorsi</b> del piano presi uno per uno: per ciascuno '
-        f'il tracciato e le fermate servite.'))
+        f'il tracciato, la popolazione che ha a portata di piedi e i poli attrattori che serve.'))
     righe = []
     for p_ in perc:
         righe.append((p_.get("line") or "–", p_.get("variant") or "–",
@@ -476,11 +567,32 @@ def render_percorsi(net: dict) -> str:
             nome, subtitle=f'{fmt_n(len(fermate))} fermate servite',
             width=820, height=460,
             isocrone=[i for i in (p_.get("isocrone") or []) if isinstance(i, dict)],
-            etichetta_fermate=len(fermate) <= 10,
-            numera_fermate=len(fermate) > 10))
-        if len(fermate) > 10:
-            out.append(table(["N.", "Fermata"], [(f_.get("n"), f_.get("name") or "") for f_ in fermate],
-                             numeric_from=0))
+            etichetta_fermate=len(fermate) <= 10))
+        out.append(render_copertura(p_))
+    return "".join(out)
+
+
+def render_copertura(perc: dict) -> str:
+    """Che cosa serve davvero un percorso: gente e poli attrattori.
+
+    L'elenco delle fermate sotto la mappa non dice niente che la mappa non
+    mostri gia'. Quello che non si vede e' quanta gente quel percorso ha a
+    portata di piedi e che cosa le porta vicino: e' questo il motivo per cui
+    la linea esiste."""
+    cop = perc.get("copertura") if isinstance(perc.get("copertura"), dict) else None
+    if not cop:
+        return ""
+    cat = [c for c in (cop.get("categorie") or []) if isinstance(c, dict)]
+    out = [rc.kpi_row([
+        ("Popolazione raggiunta", fmt_n(cop.get("abitanti") or 0),
+         f'in {fmt_n(cop.get("sezioni") or 0)} sezioni di censimento'),
+        ("Poli attrattori serviti", fmt_n(cop.get("poi") or 0),
+         f'{fmt_n(len(cat))} categorie diverse'),
+    ])]
+    if cat:
+        out.append(table(["Categoria", "Quanti"], [(c.get("nome") or "", fmt_n(c.get("n") or 0)) for c in cat],
+                         numeric_from=1,
+                         total=("Totale", fmt_n(sum(int(c.get("n") or 0) for c in cat)))))
     return "".join(out)
 
 
