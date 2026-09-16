@@ -505,7 +505,11 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
         }
         const vs = byV.get(v.id) ?? [];
         if (points.length < 2) points = vs.map((s: any) => [Number(s.lat), Number(s.lon)]).filter((p: number[]) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
-        if (points.length >= 2 && v.direction === 0) polylines.push({ name: routeName.get(v.route_id) ?? v.name, points, color: routeColor.get(v.route_id) ?? null });
+        // Andata E ritorno: con la sola direzione 0 il disegno della rete mostrava
+        // mezza rete, e i rami che esistono in un verso solo sparivano del tutto.
+        if (points.length >= 2) polylines.push({ name: routeName.get(v.route_id) ?? v.name, points,
+                                                 color: routeColor.get(v.route_id) ?? null,
+                                                 direction: Number(v.direction ?? 0) });
         // Ogni singolo percorso, andata e ritorno: il disegno della rete tiene
         // una variante per linea per restare leggibile, ma la relazione deve
         // poter mostrare anche il tracciato di ciascuna variante da solo.

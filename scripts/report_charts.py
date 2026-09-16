@@ -563,7 +563,6 @@ def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, su
         out.append(f'<path d="{d}" fill="{col}" fill-opacity="0.14" stroke="{col}" stroke-width="1.2" '
                    f'stroke-dasharray="4 3" fill-rule="evenodd">'
                    f'<title>{esc(str(iso.get("minuti") or ""))} minuti a piedi</title></path>')
-        names.append(f'{iso.get("minuti")}\u2032 a piedi'); cols.append(col)
 
     for i_, pl in enumerate(polylines):
         col = pl.get("color") or (SERIES[i_ % 8] if i_ < max_series else DEEMPH)
@@ -596,7 +595,12 @@ def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, su
     tbl = _table(["Linea", "Punti del tracciato"],
                  [(pl.get("name", ""), len(pl.get("points", []))) for pl in polylines],
                  caption="Tracciati disegnati")
-    return figure(title, "".join(out), subtitle=subtitle, legend=_legend(names, cols), table=tbl,
+    visti, nn, cc = set(), [], []
+    for nome, col in zip(names, cols):
+        if (nome, col) in visti:
+            continue
+        visti.add((nome, col)); nn.append(nome); cc.append(col)
+    return figure(title, "".join(out), subtitle=subtitle, legend=_legend(nn, cc), table=tbl,
                   note=note or NOTA_MAPPA)
 
 
@@ -711,6 +715,104 @@ def nodo_map(cluster: dict, colore: str, width: int = 430, height: int = 300) ->
                               s_.get("name", ""), 9, "500", "start" if destra else "end"))
     out.append("</svg>")
     return figure(cluster.get("name", ""), "".join(out), subtitle=f'{len(fermate)} fermate')
+
+
+def coincidenze_3d(nodi: Sequence[dict], incontri: Sequence[dict], title: str,
+                   subtitle: str = "", width: int = 900, height: int = 640) -> str:
+    """Le coincidenze nello spazio E nel tempo, in assonometria.
+
+    Il piano e' la citta' vista dall'alto; l'asse verticale e' l'ora del
+    giorno. Sopra ogni nodo si alza una colonna, e su quella colonna ogni
+    incontro fra due linee e' un anello all'altezza della sua ora. Cosi' si
+    legge in un colpo solo dove la rete si connette e quando: una colonna
+    fitta in alto e vuota in basso e' un nodo che funziona di sera e non la
+    mattina, e un nodo senza anelli e' un nodo che nessuno usa per cambiare.
+
+    nodi:     [{name, lat, lon}]
+    incontri: [{node, from, to, oraMin}]
+    """
+    nodi = [n for n in nodi if n.get("lat") is not None and n.get("lon") is not None]
+    inc = [i for i in incontri if i.get("oraMin") is not None]
+    if not nodi or not inc:
+        return ""
+    per_nodo: dict = {}
+    for i in inc:
+        per_nodo.setdefault(i.get("node"), []).append(i)
+    nodi = [n for n in nodi if n.get("name") in per_nodo]
+    if not nodi:
+        return ""
+
+    ore = [float(i["oraMin"]) for i in inc]
+    t0, t1 = min(ore), max(ore)
+    t0, t1 = math.floor(t0 / 60) * 60, math.ceil(t1 / 60) * 60
+    if t1 - t0 < 60:
+        t1 = t0 + 60
+
+    # assonometria: x a destra-giu', y a destra-su', z in alto
+    pad, altezza = 60, height * 0.52
+    lats = [float(n["lat"]) for n in nodi]; lons = [float(n["lon"]) for n in nodi]
+    la0, la1 = min(lats), max(lats); lo0, lo1 = min(lons), max(lons)
+    dl = max(1e-6, la1 - la0); dg = max(1e-6, lo1 - lo0)
+    base_w = width - 2 * pad
+
+    def piano(lat, lon):
+        u = (float(lon) - lo0) / dg          # 0..1 est
+        v = (float(lat) - la0) / dl          # 0..1 nord
+        x = pad + (u * 0.72 + v * 0.26) * base_w
+        y = height - pad - (v * 0.30 - u * 0.10) * base_w * 0.42 - altezza * 0.04
+        return x, y
+
+    def alza(y, minuti):
+        return y - (float(minuti) - t0) / max(1.0, t1 - t0) * altezza
+
+    out = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
+           f'role="img" aria-label="{esc(title)}">',
+           f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>']
+
+    # il pavimento: il quadrilatero della citta' vista dall'alto
+    ang = [piano(la0, lo0), piano(la0, lo1), piano(la1, lo1), piano(la1, lo0)]
+    out.append('<path d="' + " ".join(f"{'M' if k == 0 else 'L'}{x:.1f},{y:.1f}"
+                                      for k, (x, y) in enumerate(ang)) + ' Z" '
+               f'fill="{GRID}" fill-opacity="0.30" stroke="{GRID}" stroke-width="1"/>')
+
+    # le ore, come piani orizzontali appena accennati
+    passo = 60 if (t1 - t0) <= 60 * 8 else 120
+    for m in range(int(t0), int(t1) + 1, passo):
+        d = " ".join(f"{'M' if k == 0 else 'L'}{x:.1f},{alza(y, m):.1f}" for k, (x, y) in enumerate(ang)) + " Z"
+        out.append(f'<path d="{d}" fill="none" stroke="{GRID}" stroke-width="0.8" opacity="0.55"/>')
+        xq, yq = ang[3]
+        out.append(_etichetta(xq - 8, alza(yq, m) + 3, f"{int(m // 60) % 24:02d}:00", 9, "500", "end"))
+
+    # ogni nodo: la colonna e i suoi incontri
+    linee = sorted({str(i.get("from")) for i in inc} | {str(i.get("to")) for i in inc})
+    colore = {n: SERIES[k % len(SERIES)] for k, n in enumerate(linee)}
+    for n in sorted(nodi, key=lambda z: piano(float(z["lat"]), float(z["lon"]))[1]):
+        x, y = piano(float(n["lat"]), float(n["lon"]))
+        suoi = sorted(per_nodo.get(n["name"], []), key=lambda i: float(i["oraMin"]))
+        out.append(f'<line x1="{x:.1f}" y1="{y:.1f}" x2="{x:.1f}" y2="{alza(y, t1):.1f}" '
+                   f'stroke="{MUTED}" stroke-width="1" opacity="0.5"/>')
+        out.append(f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="5" ry="2.4" fill="{INK}" opacity="0.65"/>')
+        for i in suoi:
+            yy = alza(y, float(i["oraMin"]))
+            col = colore.get(str(i.get("from")), SERIES[0])
+            out.append(f'<ellipse cx="{x:.1f}" cy="{yy:.1f}" rx="6" ry="2.8" fill="none" stroke="{col}" '
+                       f'stroke-width="2"><title>{esc(n["name"])} \u00b7 {esc(str(i.get("from")))} \u2192 '
+                       f'{esc(str(i.get("to")))} \u00b7 {int(float(i["oraMin"]) // 60) % 24:02d}:'
+                       f'{int(float(i["oraMin"]) % 60):02d}</title></ellipse>')
+        out.append(_etichetta(x, y + 15, n["name"], 10, "700", "middle"))
+    out.append("</svg>")
+
+    tbl = _table(["Nodo", "Incontri", "Prima", "Ultima"],
+                 [(n["name"], len(per_nodo.get(n["name"], [])),
+                   f'{int(min(float(i["oraMin"]) for i in per_nodo[n["name"]]) // 60) % 24:02d}:'
+                   f'{int(min(float(i["oraMin"]) for i in per_nodo[n["name"]]) % 60):02d}',
+                   f'{int(max(float(i["oraMin"]) for i in per_nodo[n["name"]]) // 60) % 24:02d}:'
+                   f'{int(max(float(i["oraMin"]) for i in per_nodo[n["name"]]) % 60):02d}')
+                  for n in nodi], caption="Coincidenze per nodo")
+    return figure(title, "".join(out), subtitle=subtitle,
+                  legend=_legend(linee, [colore[n] for n in linee]), table=tbl,
+                  note="Assonometria: il piano e' la geografia dei nodi, l'altezza e' l'ora del giorno. "
+                       "Il colore e' la linea in arrivo.")
 
 
 # ── Riquadri KPI (quando il dato è UN numero) ──

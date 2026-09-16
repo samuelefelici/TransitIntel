@@ -34,6 +34,8 @@ NEAR_MISS_WINDOW = 30
 # rifiuta.
 # Traslazioni esaminate per ogni linea (minuti).
 SHIFT_RANGE = 30
+# Quanti passaggi tenere per il libretto orario di ogni coincidenza.
+PASSAGGI_MAX = 60
 
 
 def candidate_pairs(trips: list[dict], window: int = NEAR_MISS_WINDOW,
@@ -107,6 +109,14 @@ def near_misses(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
                         "toTrip": p["toTrip"], "partenza": min_to_time(p["depMin"]),
                         "attesaMin": p["depMin"] - p["arrMin"]}
                        for p in sorted(occ, key=lambda x: x["arrMin"])[:3]],
+            # Il libretto orario della relazione: TUTTI i passaggi, non tre
+            # campioni, e i minuti in chiaro perche' un diagramma possa
+            # collocarli nella giornata senza ri-analizzare le stringhe.
+            "passaggi": [{"arrivo": min_to_time(p["arrMin"]), "partenza": min_to_time(p["depMin"]),
+                          "arrivoMin": p["arrMin"], "partenzaMin": p["depMin"],
+                          "attesaMin": p["depMin"] - p["arrMin"],
+                          "fromTrip": p["fromTrip"], "toTrip": p["toTrip"]}
+                         for p in sorted(occ, key=lambda x: x["arrMin"])[:PASSAGGI_MAX]],
         })
     out.sort(key=lambda c: (-c["occurrences"], c["attesaMin"]["mediana"]))
     return out

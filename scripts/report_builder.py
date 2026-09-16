@@ -546,8 +546,10 @@ def render_percorsi(net: dict) -> str:
     con_iso = sum(1 for p_ in perc if p_.get("isocrone"))
     if con_iso:
         testo = (f'Su ogni percorso è disegnata anche la <b>copertura pedonale</b> delle sue fermate: '
-                 f'l\'area colorata è quanto si raggiunge a piedi in <b>{fmt_n(cop.get("minuti") or 10)} minuti</b>, '
-                 f'camminando sulle strade vere e non in linea d\'aria.')
+                 f'l\'area tratteggiata è quanto si raggiunge <b>a piedi in '
+                 f'{fmt_n(cop.get("minuti") or 10)} minuti</b> da ciascuna, '
+                 f'camminando sulle strade vere e non in linea d\'aria. '
+                 f'Vale per tutte le mappe che seguono.')
         coperte, tetto = cop.get("fermateCoperte") or 0, cop.get("tetto") or 0
         if tetto and coperte >= tetto:
             testo += (f' Il calcolo si ferma a {fmt_n(tetto)} fermate nuove per relazione: le altre '
@@ -590,9 +592,14 @@ def render_copertura(perc: dict) -> str:
          f'{fmt_n(len(cat))} categorie diverse'),
     ])]
     if cat:
-        out.append(table(["Categoria", "Quanti"], [(c.get("nome") or "", fmt_n(c.get("n") or 0)) for c in cat],
-                         numeric_from=1,
-                         total=("Totale", fmt_n(sum(int(c.get("n") or 0) for c in cat)))))
+        # un elenco di numeri non fa vedere che una categoria pesa quanto tutte
+        # le altre messe insieme: le barre lo fanno. La tabella resta sotto il
+        # disegno, dentro il riquadro richiudibile della figura.
+        out.append(rc.bar_h([(c.get("nome") or "", int(c.get("n") or 0)) for c in cat[:18]],
+                            "Poli attrattori serviti, per categoria", unit="poli"))
+        if len(cat) > 18:
+            out.append(para(f'<span class="small">... e altre {fmt_n(len(cat) - 18)} categorie '
+                            f'con pochi poli ciascuna.</span>'))
     return "".join(out)
 
 
@@ -1202,6 +1209,76 @@ def _attesa(x: dict) -> dict:
     return piatta
 
 
+def render_coincidenze_3d(d: dict, esistenti: list) -> str:
+    """Le coincidenze nello spazio e nel tempo.
+
+    Una tabella dice quante volte due linee si incontrano; non dice quando, ne'
+    dove si addensano. In assonometria il piano e' la citta' e l'altezza e'
+    l'ora: una colonna fitta in alto e vuota in basso e' un nodo che funziona
+    di sera e non la mattina."""
+    per_nome = {}
+    for s_ in (g(d, "network", "stops", default=None) or []):
+        if isinstance(s_, dict) and s_.get("name"):
+            per_nome.setdefault(str(s_["name"]).upper(), s_)
+    if not per_nome:
+        return ""
+
+    def dove(nodo: str):
+        up = str(nodo or "").upper()
+        if up in per_nome:
+            return per_nome[up]
+        for nome, s_ in per_nome.items():
+            if nome.startswith(up) or up.startswith(nome):
+                return s_
+        return None
+
+    nodi, incontri = {}, []
+    for c in esistenti:
+        pos = dove(c.get("node"))
+        if not pos:
+            continue
+        nodi[c.get("node")] = {"name": c.get("node"), "lat": pos.get("lat"), "lon": pos.get("lon")}
+        for pg in (c.get("passaggi") or c.get("sample") or []):
+            m = pg.get("arrivoMin")
+            if m is None:
+                continue
+            incontri.append({"node": c.get("node"), "from": c.get("fromRoute"),
+                             "to": c.get("toRoute"), "oraMin": m})
+    if not incontri:
+        return ""
+    return rc.coincidenze_3d(list(nodi.values()), incontri,
+                             "Le coincidenze nello spazio e nel tempo",
+                             subtitle="Ogni anello e' un incontro fra due linee, all'ora in cui avviene.")
+
+
+def render_libretto(esistenti: list) -> str:
+    """Il libretto orario delle linee in coincidenza.
+
+    Per ogni relazione, i passaggi uno per uno: chi arriva, chi riparte, quanto
+    si aspetta. E' il documento che un capo movimento legge davvero."""
+    con_orari = [c for c in esistenti if (c.get("passaggi") or [])]
+    if not con_orari:
+        return ""
+    out = ["<h3>8.4 Il libretto orario delle coincidenze</h3>"]
+    out.append(para(
+        "Per ogni relazione riconosciuta, i passaggi uno per uno: la corsa che arriva, quella che "
+        "riparte, e i minuti di attesa fra le due. \u00c8 quello che serve al banco per verificare "
+        "una coincidenza senza rifare i conti."))
+    for c in con_orari:
+        pg = c.get("passaggi") or []
+        a = _attesa(c)
+        out.append(f'<h4>{esc(c.get("node") or "")} \u00b7 {esc(str(c.get("fromRoute")))} '
+                   f'\u2192 {esc(str(c.get("toRoute")))}</h4>')
+        out.append(para(f'<span class="small">{fmt_n(len(pg))} passaggi al giorno, attesa da '
+                        f'{fmt_n(a.get("min"))} a {fmt_n(a.get("max"))} minuti '
+                        f'(mediana {fmt_n(a.get("mediana"))}).</span>'))
+        out.append(table(["Arrivo", "Riparte", "Attesa"],
+                         [(x.get("arrivo") or "", x.get("partenza") or "",
+                           f'{fmt_n(x.get("attesaMin"))}\u2032') for x in pg],
+                         numeric_from=2))
+    return "".join(out)
+
+
 def render_coincidenze(d: dict) -> str:
     """8 — LE COINCIDENZE: che servizio produce questo orario.
 
@@ -1242,6 +1319,8 @@ def render_coincidenze(d: dict) -> str:
         out.append(table(["Nodo", "Da → a", "Volte al giorno", "Attesa", "Esempi di orario"], righe, numeric_from=2))
         out.append(para('<span class="small">Nessuno spostamento proposto dal sistema ha il diritto di rompere '
                         'queste relazioni: sono un vincolo del ciclo, non una preferenza.</span>'))
+        out.append(render_coincidenze_3d(d, esistenti))
+        out.append(render_libretto(esistenti))
     if mancate:
         out.append("<h3>8.2 Le occasioni mancate per poco</h3>")
         out.append(para("Due linee che si sfiorano a un nodo con un'attesa appena fuori dalla finestra utile. "
