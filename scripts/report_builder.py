@@ -1228,15 +1228,20 @@ def _minuti_da_ora(x) -> int | None:
 
 
 def render_coincidenze_3d(d: dict, esistenti: list) -> str:
-    """Le coincidenze nello spazio e nel tempo.
+    """Le corse nello spazio e nel tempo, e dove si incontrano.
 
-    Una tabella dice quante volte due linee si incontrano; non dice quando, ne'
-    dove si addensano. In assonometria il piano e' la citta' e l'altezza e'
-    l'ora: una colonna fitta in alto e vuota in basso e' un nodo che funziona
-    di sera e non la mattina.
+    Una corsa non e' un punto: e' una traiettoria che si muove sul territorio
+    mentre l'orologio avanza, e due linee si incontrano dove le traiettorie si
+    toccano. Il primo disegno mostrava SOLO i punti di incontro — anelli
+    infilati su colonne verticali — che e' come raccontare un viaggio
+    elencando le coincidenze e tacendo il percorso.
 
-    Quando il disegno non si puo' fare lo dice, col motivo: un vuoto in mezzo
-    a un capitolo non si distingue da un difetto."""
+    Quando le corse col loro orario non ci sono si ricade sul disegno vecchio,
+    che almeno dice dove e quando, e la nota lo dichiara."""
+    corse = [c for c in (g(d, "network", "corse", default=None) or [])
+             if isinstance(c, dict) and len(c.get("punti") or []) >= 2]
+
+    # le posizioni dei nodi, per marcare le coincidenze sulle traiettorie
     per_nome = {}
     for s_ in (g(d, "network", "stops", default=None) or []):
         if isinstance(s_, dict) and s_.get("name") and s_.get("lat") is not None:
@@ -1249,39 +1254,68 @@ def render_coincidenze_3d(d: dict, esistenti: list) -> str:
         if up in per_nome:
             return per_nome[up]
         for nome, s_ in per_nome.items():
-            if nome.startswith(up) or up.startswith(nome):
+            if len(nome) >= 4 and (nome.startswith(up) or up.startswith(nome)):
                 return s_
         return None
 
-    nodi, incontri, senza_posizione = {}, [], set()
+    incontri, senza = [], []
     for c in esistenti:
-        pos = dove(c.get("node"))
-        if not pos:
-            senza_posizione.add(str(c.get("node") or "?"))
-            continue
-        nodi[c.get("node")] = {"name": c.get("node"), "lat": pos.get("lat"), "lon": pos.get("lon")}
+        nodo = c.get("node")
+        pos = dove(nodo)
         for pg in (c.get("passaggi") or c.get("sample") or []):
             m = _minuti_da_ora(pg.get("arrivoMin"))
             if m is None:
                 m = _minuti_da_ora(pg.get("arrivo"))
             if m is None:
                 continue
-            incontri.append({"node": c.get("node"), "from": c.get("fromRoute"),
-                             "to": c.get("toRoute"), "oraMin": m})
+            incontri.append({"node": nodo, "from": c.get("fromRoute"), "to": c.get("toRoute"),
+                             "oraMin": m,
+                             "lat": pos.get("lat") if pos else None,
+                             "lon": pos.get("lon") if pos else None})
+        if not pos and nodo:
+            senza.append(str(nodo))
+
+    if corse:
+        dis = rc.spazio_tempo(
+            corse, "Le corse nello spazio e nel tempo",
+            subtitle="Ogni curva e' una corsa: si muove sul territorio e sale con l'ora. "
+                     "I cerchi bianchi sono le coincidenze riconosciute.",
+            incontri=[i for i in incontri if i.get("lat") is not None])
+        if dis:
+            quante = fmt_n(len(corse))
+            return dis + para(f'<span class="small">Nel disegno ci sono <b>{quante} corse</b> '
+                              f'e <b>{fmt_n(len([i for i in incontri if i.get("lat") is not None]))}</b> '
+                              f'incontri riconosciuti.</span>')
+
+    # ricaduta: senza gli orari delle corse restano i soli punti di incontro
     if not incontri:
-        perche = ("nessuna delle fermate-nodo si ritrova fra quelle del piano"
-                  if senza_posizione and not nodi else "i passaggi non portano l'ora dell'incontro")
-        return para(f'<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato: '
-                    f'{perche}.</i></span>')
-    fuori = ""
-    if senza_posizione:
-        fuori = (f'<span class="small">{fmt_n(len(senza_posizione))} nodi non compaiono nel disegno '
-                 f'perch\u00e9 non se ne \u00e8 trovata la posizione fra le fermate del piano: '
-                 f'{esc(", ".join(sorted(senza_posizione)[:8]))}.</span>')
-    return rc.coincidenze_3d(list(nodi.values()), incontri,
-                             "Le coincidenze nello spazio e nel tempo",
-                             subtitle="Ogni anello e' un incontro fra due linee, all'ora in cui avviene."
-                             ) + (para(fuori) if fuori else "")
+        return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato: '
+                    'i passaggi non portano l\'ora dell\'incontro.</i></span>')
+    posizioni = {}
+    for i in incontri:
+        if i.get("lat") is not None:
+            posizioni[i["node"]] = {"name": i["node"], "lat": i["lat"], "lon": i["lon"]}
+    senza = [n for n in dict.fromkeys(senza) if n not in posizioni]
+    nota = ""
+    if senza:
+        import math as _m
+        if posizioni:
+            lat0 = sum(float(v["lat"]) for v in posizioni.values()) / len(posizioni)
+            lon0 = sum(float(v["lon"]) for v in posizioni.values()) / len(posizioni)
+            raggio = 0.012
+        else:
+            lat0, lon0, raggio = 43.6, 13.5, 0.02
+        for k, n in enumerate(senza):
+            a = 2 * _m.pi * k / max(1, len(senza))
+            posizioni[n] = {"name": n, "lat": lat0 + raggio * _m.cos(a), "lon": lon0 + raggio * _m.sin(a)}
+        nota = (f'<span class="small">Di {fmt_n(len(senza))} nodi non si conosce la posizione: '
+                f'nel disegno sono disposti in cerchio, gli orari e le linee restano quelli veri.</span>')
+    dis = rc.coincidenze_3d(list(posizioni.values()), incontri,
+                            "Le coincidenze nello spazio e nel tempo",
+                            subtitle="Le corse col loro orario non sono nel dossier: restano i punti d'incontro.")
+    if not dis:
+        return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato.</i></span>')
+    return dis + (para(nota) if nota else "")
 
 
 def render_libretto(esistenti: list) -> str:

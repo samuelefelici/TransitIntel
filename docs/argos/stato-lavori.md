@@ -1458,6 +1458,69 @@ secondo. Senza, la mappa spariva proprio nella stampa.
 Resta da capire che cosa l'operatore non vedeva davvero: la prossima relazione lo
 dira' da sola.
 
+L'operatore ha poi chiarito: **le mappe si vedono benissimo, manca solo il
+diagramma delle coincidenze.** Quindi lo sfondo funziona e i tre difetti qui
+sopra erano reali ma non erano *quel* problema.
+
+## Il diagramma dipendeva dalla geografia, e non doveva
+
+Il disegno cercava le coordinate di ogni nodo fra le fermate del piano, e se non
+le trovava **spariva del tutto**. Ma la geografia serve solo a DISPORRE le
+colonne: l'informazione vera — quali linee si incontrano, dove e quando — c'e'
+comunque. Far dipendere l'esistenza del disegno da un dettaglio della sua forma
+era l'errore.
+
+Ora i nodi di cui non si conosce la posizione **si dispongono in cerchio**, e la
+nota sotto la figura lo dichiara: «nel disegno sono disposti in cerchio, gli
+orari e le linee restano quelli veri». Il diagramma esce sempre.
+
+Resta un solo caso in cui non si puo' fare: quando nei dati non c'e' l'ora degli
+incontri. Li' il capitolo lo scrive.
+
+Il test `test_il_diagramma_esce_con_qualunque_forma_degli_orari` prova tutte e
+tre le forme che gli orari possono avere nel dossier (passaggi col minuto,
+passaggi con la sola stringa, vecchio `sample`), perche' **una relazione non si
+spiega all'operatore con «dipende da come e' stato salvato il dossier»**.
+
+Il matching dei nomi chiede ora almeno quattro caratteri prima di accettare un
+prefisso: con nomi cortissimi una fermata qualsiasi poteva rubare il nodo.
+
+
+## Il diagramma sbagliato: disegnavo le coincidenze, non le corse
+
+L'operatore ha mandato tre immagini di riferimento accanto alla mia. La
+differenza non era di stile.
+
+**Nel riferimento** ogni corsa e' una **traiettoria** che si muove sul territorio
+mentre l'orologio avanza: decine di curve parallele che salgono, ciascuna del
+colore della sua linea, con l'ombra del percorso sul pavimento. Si vede il
+servizio scorrere.
+
+**Nel mio** c'erano colonne verticali con degli anelli infilati: **solo i punti di
+incontro**. E' come raccontare un viaggio elencando le coincidenze e tacendo il
+percorso.
+
+L'errore non era il disegno, erano **i dati che gli davo**. Il dossier non portava
+gli orari delle corse, quindi l'unica cosa disegnabile erano gli incontri.
+
+`corseNelTempo()` estrae ora, per ogni corsa, dove passa e a che ora — da
+`ps_trips` + `ps_stop_times` + `ps_stops`. Si tengono al massimo 420 corse, e di
+ciascuna un punto ogni due fermate: a quella scala due fermate vicine cadono
+sullo stesso pixel. Quando le corse sono piu' del tetto **si diradano nel tempo
+invece di tagliare la coda**, o il disegno coprirebbe solo il mattino.
+
+`spazio_tempo()` le disegna: pavimento in assonometria col territorio, altezza
+per l'ora, i piani delle ore a dare profondita', ogni corsa una curva col colore
+della sua linea e la sua ombra sul pavimento. Le coincidenze riconosciute sono
+cerchi bianchi sulle traiettorie. Fondo scuro, come nel riferimento: e' l'unica
+figura della relazione che lo usa, e regge il confronto.
+
+Il disegno vecchio resta come **ricaduta**: se un dossier non ha le corse, meglio
+i soli punti d'incontro che niente, e il documento dichiara che sono quelli.
+
+Lezione: quando una figura non assomiglia a quello che deve mostrare, prima di
+ritoccare gli angoli conviene chiedersi **se le si stanno dando i dati giusti**.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
