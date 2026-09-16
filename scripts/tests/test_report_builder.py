@@ -360,3 +360,111 @@ def test_i_tracciati_lunghi_si_alleggeriscono():
     # un tracciato gia' corto non si tocca
     corto = lungo[:50]
     assert rc.alleggerisci(corto) == corto
+
+
+# ═══════════════════════════════════════════════════════════════
+#  LE MAPPE SI DEVONO VEDERE
+# ═══════════════════════════════════════════════════════════════
+
+def test_la_proiezione_combacia_con_lo_sfondo():
+    """Lo sfondo è un'immagine in Mercatore: se i punti si proiettano in
+    equirettangolare, i tracciati scivolano rispetto alle strade. Il centro
+    del riquadro deve cadere al centro del disegno, e il riquadro deve avere
+    le proporzioni del disegno, o Mapbox lo allarga per conto suo."""
+    pts = [(43.55, 13.45), (43.65, 13.55)]
+    P, riq = rc.proiettore(pts, 800, 400)
+    cx, cy = P(43.60, 13.50)
+    assert abs(cx - 400) < 1.5 and abs(cy - 200) < 1.5, f"centro a ({cx}, {cy})"
+    x0, y0, x1, y1 = riq
+    assert abs((x1 - x0) / (y1 - y0) - 800 / 400) < 1e-6, "proporzioni del riquadro"
+    # tutti i punti cadono dentro il disegno
+    for lat, lon in pts:
+        x, y = P(lat, lon)
+        assert 0 <= x <= 800 and 0 <= y <= 400
+
+
+def test_senza_chiave_la_mappa_esce_lo_stesso(monkeypatch):
+    """Il documento non deve dipendere da un servizio esterno: niente chiave,
+    niente sfondo, ma la mappa si disegna."""
+    monkeypatch.delenv("MAPBOX_ACCESS_TOKEN", raising=False)
+    rc._sfondi.clear()
+    assert rc.sfondo_mappa((13.4, 48.4, 13.6, 48.6), 100, 100) == ""
+    html = rc.network_map([{"name": "3", "points": [(43.61, 13.51), (43.59, 13.48)]}],
+                          [{"name": "CAVOUR", "lat": 43.61, "lon": 13.51, "node": True}], "prova")
+    assert "<svg" in html and "<image" not in html
+
+
+def test_il_percorso_prende_il_colore_della_linea():
+    """Il colore con cui l'azienda pubblica la linea vince sulla tavolozza."""
+    con = rc.network_map([{"name": "3", "points": [(43.61, 13.51), (43.59, 13.48)], "color": "#e2001a"}], [], "p")
+    assert "#e2001a" in con
+    senza = rc.network_map([{"name": "3", "points": [(43.61, 13.51), (43.59, 13.48)]}], [], "p")
+    assert rc.SERIES[0] in senza
+
+
+def test_l_isocrona_si_disegna_sotto_il_tracciato():
+    geom = {"type": "Polygon", "coordinates": [[[13.50, 43.60], [13.52, 43.60], [13.52, 43.62], [13.50, 43.62], [13.50, 43.60]]]}
+    html = rc.network_map([{"name": "3", "points": [(43.61, 13.51), (43.59, 13.48)], "color": "#e2001a"}],
+                          [], "p", isocrone=[{"minuti": 10, "geom": geom}, {"minuti": 5, "geom": geom}])
+    assert "minuti a piedi" in html
+    assert "10′ a piedi" in html and "5′ a piedi" in html
+    # dentro il disegno l'isocrona viene PRIMA del tracciato, cioè sotto
+    import re as _re
+    svg = _re.search(r"<svg.*?</svg>", html, _re.S).group(0)
+    assert svg.index("minuti a piedi") < svg.index("#e2001a")
+
+
+def test_i_nodi_sono_cerchi_con_i_nomi_delle_fermate():
+    """Erano gusci convessi senza etichette: un nodo con due fermate diventava
+    un segmento e non si leggeva che cosa contenesse."""
+    html = rc.cluster_map([{"name": "Piazza Cavour", "stops": [
+        {"name": "CAVOUR EST", "lat": 43.6158, "lon": 13.5189},
+        {"name": "CAVOUR OVEST", "lat": 43.6162, "lon": 13.5192}]}], "nodi")
+    assert "<circle" in html
+    assert "CAVOUR EST" in html and "CAVOUR OVEST" in html
+    assert "Piazza Cavour" in html
+    # il cerchio del nodo contiene le sue fermate: raggio non degenere
+    import re as _re
+    raggi = [float(r) for r in _re.findall(r'<circle[^>]*r="([\d.]+)"[^>]*fill-opacity', html)]
+    assert raggi and min(raggi) >= 16
+
+
+def test_ogni_nodo_ha_la_sua_mappa_da_vicino():
+    """Nella mappa d'insieme un nodo è un cerchio da undici pixel e i nomi
+    delle sue fermate non ci stanno: per quello serve il dettaglio."""
+    html = rb.render_network(_rete())
+    assert "Dove stanno i nodi" in html
+    assert "griglia-mappe" in html
+    # i nomi delle fermate compaiono nel dettaglio, non nell'insieme
+    assert "PIAZZA CAVOUR 2" in html and "PIAZZA CAVOUR 3" in html
+    assert "TAVERNELLE CAPOLINEA" in html
+
+
+def test_il_nodo_da_vicino_non_scende_sotto_i_350_metri():
+    """Due banchine a quaranta metri chiederebbero uno sfondo da marciapiede,
+    senza un riferimento riconoscibile."""
+    vicine = [(43.61580, 13.51890), (43.61604, 13.51920)]
+    _, riq = rc.proiettore(vicine, 430, 300, lato_minimo_m=350)
+    x0, y0, x1, y1 = riq
+    import math as _m
+    metri = (x1 - x0) * 111_320 * _m.cos(_m.radians(43.616))
+    assert metri >= 349, f"lato {metri:.0f} m"
+
+
+def test_le_fermate_numerose_si_numerano_invece_di_scriverle():
+    """Trentadue nomi accanto a trentadue puntini si coprono a vicenda: si
+    numerano lungo il percorso e l'elenco ordinato sta nella tabella sotto."""
+    d = _rete()
+    tante = [{"name": f"FERMATA {k}", "lat": 43.60 + k * 1e-3, "lon": 13.50 + k * 1e-3} for k in range(14)]
+    d["network"]["percorsi"] = [{"line": "3", "variant": "lunga", "direction": 0, "isDefault": True,
+                                 "points": [(43.60, 13.50), (43.62, 13.52)], "stops": tante}]
+    html = rb.render_network(d)
+    # i numeri ci sono, e c'è l'elenco
+    assert ">1<" in html and ">14<" in html
+    assert "FERMATA 13" in html
+    assert "N." in html and "Fermata" in html
+
+
+def test_le_fermate_poche_tengono_il_nome_sulla_mappa():
+    html = rb.render_network(_rete())      # due fermate per percorso
+    assert "PIAZZA CAVOUR 1" in html

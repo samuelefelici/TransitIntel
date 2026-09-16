@@ -1205,6 +1205,91 @@ gonfiano il documento oltre ogni misura. La forma sensata e' l'isocrona disegnat
 per linea (tutte le fermate di quella linea sulla stessa mappa) piu' una riga per
 fermata con la popolazione raggiunta a 5, 10 e 15 minuti a piedi.
 
+## «Non si vede la mappa»: sfondo, colori veri, cerchi
+
+Seconda tornata di correzioni sul capitolo della rete. L'operatore ha detto tre
+cose, e due cominciavano con la stessa: **non si vede**.
+
+**Il problema era il fondo.** Le mappe erano disegni vettoriali su un rettangolo
+di colore piatto: un tracciato che attraversa il nulla non dice dove passa.
+Sotto ogni mappa ora c'e' una **immagine cartografica vera** (Mapbox statico,
+stile chiaro, con un velo del 26% sopra perche' i tracciati restino leggibili).
+
+Il punto delicato non e' scaricare l'immagine, e' **allinearla**. Le mappe a
+tasselli sono in Mercatore, il disegno era in equirettangolare: sovrapposti, i
+tracciati scivolano rispetto alle strade. Ho sostituito la proiezione con
+`proiettore()`, che lavora in Mercatore e restituisce ANCHE il riquadro da
+chiedere allo sfondo, gia' allargato nelle proporzioni del disegno — perche'
+Mapbox, se il riquadro ha proporzioni diverse dall'immagine, lo allarga per conto
+suo e l'allineamento salta comunque. Un test verifica che il centro del riquadro
+cada al centro del disegno.
+
+Senza chiave o senza rete `sfondo_mappa()` restituisce stringa vuota e le mappe
+tornano com'erano: **il documento non deve dipendere da un servizio esterno.**
+
+**I colori sono quelli veri.** `ps_routes.color` porta la tinta con cui l'azienda
+pubblica la linea: ora le mappe usano quella, non una presa dalla tavolozza. Il
+bianco viene scartato (su fondo chiaro sparisce) e senza colore si ricade sulla
+tavolozza come prima. Ogni tracciato ha un alone bianco sotto, che lo stacca
+dalla mappa.
+
+**I nodi sono cerchi, con i nomi dentro.** Erano gusci convessi senza etichette:
+un nodo da due fermate diventava un segmento e non si capiva cosa contenesse. Ora
+ogni nodo e' un cerchio colorato che racchiude le sue fermate, ciascuna col
+proprio nome scritto accanto, e il nome del nodo sopra. Le etichette hanno un
+alone chiaro, o sopra una mappa non si leggono.
+
+**La copertura pedonale c'e', percorso per percorso.** Su ogni mappa di percorso
+sono disegnate le isocrone a 10 minuti a piedi delle sue fermate — strade vere,
+non raggio in linea d'aria — sotto il tracciato. Le isocrone costano una chiamata
+a fermata: la cache su DB le rende gratuite dalla seconda relazione, e nel
+frattempo c'e' un tetto di 140 richieste nuove per relazione, dichiarato nel
+documento invece che nascosto. Senza provider il capitolo lo dice e va avanti.
+
+### Resta da fare
+
+I **pendolari**: l'operatore ha confermato che il livello comunale va bene, «chi
+entra in Ancona e chi esce». Il dato e' in `istat_commuting_od` con motivo, mezzo
+e fascia oraria; il comune del piano si ricava dai primi sei caratteri del codice
+ISTAT delle sezioni censuarie vicine alle fermate. Mancano anche la popolazione
+per fermata, il traffico e i POI nel capitolo.
+
+## «Non ci siamo»: due difetti che lo sfondo non risolveva
+
+L'operatore ha mandato due schermate della relazione. Erano generate dal deploy
+che conteneva il primo giro di correzioni (nodi filtrati, una mappa per percorso)
+ma NON il secondo (sfondo, colori veri, cerchi), quindi in parte mostravano
+difetti gia' corretti e in attesa di merge. In parte no: due problemi restavano,
+e lo sfondo da solo non li avrebbe tolti.
+
+**La mappa d'insieme dei nodi non puo' mostrare le fermate.** Sette nodi sparsi
+su venti chilometri: ciascuno e' un cerchio di dieci pixel, e i nomi delle sue
+fermate — scritti accanto a punti che distano due pixel — si coprono a vicenda.
+Nella schermata si vedeva «Via Bocconi (2)» disegnato come due aureole separate e
+«Stazione F.S. (3)» come un trattino di sei pixel.
+
+La risposta non e' disegnare meglio la stessa mappa, e' **separare le domande**:
+
+- `cluster_map` risponde a «dove stanno i nodi»: sfondo, un cerchio per nodo con
+  raggio minimo visibile, solo il nome del nodo;
+- `nodo_map` risponde a «che cosa contiene questo nodo»: una mappa per ciascuno,
+  zoomata sulle sue fermate, ognuna col proprio nome, alternando destra e
+  sinistra perche' due banchine vicine non si coprano.
+
+Le mappe di dettaglio stanno affiancate in una griglia che si adatta alla
+larghezza. Il riquadro non scende sotto i **350 metri di lato**: sotto, lo sfondo
+diventa un dettaglio di marciapiede senza riferimenti riconoscibili.
+
+**Trentadue fermate non possono avere trentadue nomi.** La soglia che avevo messo
+(nomi fino a 22 fermate) era comunque troppo alta, e sopra la soglia le fermate
+restavano puntini anonimi. Ora sopra le dieci fermate il percorso le **numera**
+lungo il tracciato — un cerchietto bianco col numero — e sotto la mappa c'e'
+l'elenco ordinato. Il nome di ogni fermata resta leggibile, solo non e' piu'
+scritto sopra il disegno.
+
+Lezione: quando una figura deve rispondere a due domande a scale diverse, non e'
+il disegno a essere sbagliato, sono due figure.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

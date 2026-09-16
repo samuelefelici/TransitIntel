@@ -12,8 +12,11 @@ presente da 2 serie in su, tabella gemella per ogni grafico.
 """
 from __future__ import annotations
 
+import base64
 import html
 import math
+import os
+import sys
 from typing import Iterable, Sequence
 
 # ── Tavolozza di riferimento (light: la relazione è un documento stampabile) ──
@@ -375,43 +378,232 @@ def gantt(rows: Sequence[dict], title: str, subtitle: str = "", width: int = 900
 
 
 # ── Mappa di rete (proiezione equirettangolare, una tinta per linea in ordine fisso) ──
+# ═══════════════════════════════════════════════════════════════
+#  SFONDO CARTOGRAFICO
+#  Un tracciato su fondo bianco non dice dove passa. Lo sfondo e' una
+#  immagine statica Mapbox: se manca la chiave o la rete, le mappe restano
+#  come prima — il documento non deve dipendere da un servizio esterno.
+# ═══════════════════════════════════════════════════════════════
+
+MAPBOX_STYLE = "light-v11"
+SFONDO_TIMEOUT = 8
+NOTA_MAPPA = "Sfondo cartografico \u00a9 Mapbox \u00a9 OpenStreetMap. Proiezione Mercatore."
+_sfondi: dict = {}
+
+
+def _merc_y(lat: float) -> float:
+    """Mercatore sferica: e' la proiezione che usano le mappe a tasselli.
+
+    Serve proiettare i punti ESATTAMENTE come l'immagine di sfondo, o i
+    tracciati scivolano rispetto alle strade."""
+    lat = max(-85.05, min(85.05, lat))
+    return math.degrees(math.log(math.tan(math.pi / 4 + math.radians(lat) / 2)))
+
+
+def _merc_lat(y: float) -> float:
+    return math.degrees(2 * math.atan(math.exp(math.radians(y))) - math.pi / 2)
+
+
+def riquadro_mercatore(pts: Sequence[tuple], width: int, height: int, margine: float = 0.08,
+                       lato_minimo_m: float = 0.0):
+    """Il riquadro da chiedere allo sfondo, gia' nella forma del disegno.
+
+    Mapbox adatta il riquadro all'immagine mantenendo le proporzioni: se
+    glielo diamo con proporzioni diverse allarga per conto suo e
+    l'allineamento salta. Qui lo si allarga prima, nella proiezione giusta."""
+    xs = [p[1] for p in pts]
+    ys = [_merc_y(p[0]) for p in pts]
+    x0, x1 = min(xs), max(xs)
+    y0, y1 = min(ys), max(ys)
+    dx, dy = max(1e-9, x1 - x0), max(1e-9, y1 - y0)
+    x0 -= dx * margine; x1 += dx * margine
+    y0 -= dy * margine; y1 += dy * margine
+    if lato_minimo_m > 0:
+        # un grado di longitudine a questa latitudine, in metri
+        lat_media = _merc_lat((y0 + y1) / 2)
+        m_per_grado = 111_320 * math.cos(math.radians(lat_media))
+        minimo = lato_minimo_m / max(1.0, m_per_grado)
+        if (x1 - x0) < minimo:
+            c = (x0 + x1) / 2; x0, x1 = c - minimo / 2, c + minimo / 2
+        if (y1 - y0) < minimo:
+            c = (y0 + y1) / 2; y0, y1 = c - minimo / 2, c + minimo / 2
+    dx, dy = x1 - x0, y1 - y0
+    if dx / dy > width / height:
+        manca = dx * height / width - dy
+        y0 -= manca / 2; y1 += manca / 2
+    else:
+        manca = dy * width / height - dx
+        x0 -= manca / 2; x1 += manca / 2
+    return x0, y0, x1, y1
+
+
+def proiettore(pts: Sequence[tuple], width: int, height: int, margine: float = 0.08,
+               lato_minimo_m: float = 0.0):
+    """Da (lat, lon) a (x, y) nel disegno, in Mercatore. Restituisce anche il
+    riquadro, che serve a chiedere lo sfondo della stessa area."""
+    x0, y0, x1, y1 = riquadro_mercatore(pts, width, height, margine, lato_minimo_m)
+    sx = width / max(1e-9, x1 - x0)
+    sy = height / max(1e-9, y1 - y0)
+
+    def P(lat, lon):
+        return (lon - x0) * sx, (y1 - _merc_y(lat)) * sy
+
+    return P, (x0, y0, x1, y1)
+
+
+def sfondo_mappa(riquadro, width: int, height: int) -> str:
+    """L'immagine di sfondo come data URI, o stringa vuota.
+
+    Nessuna chiave, nessuna rete, un errore qualsiasi: si torna al fondo
+    piatto. Una mappa senza strade e' meno bella; un documento che non si
+    genera non esiste."""
+    token = os.environ.get("MAPBOX_ACCESS_TOKEN", "")
+    if not token:
+        return ""
+    x0, y0, x1, y1 = riquadro
+    chiave = (round(x0, 5), round(y0, 5), round(x1, 5), round(y1, 5), width, height)
+    if chiave in _sfondi:
+        return _sfondi[chiave]
+    bbox = f"[{x0:.6f},{_merc_lat(y0):.6f},{x1:.6f},{_merc_lat(y1):.6f}]"
+    url = (f"https://api.mapbox.com/styles/v1/mapbox/{MAPBOX_STYLE}/static/{bbox}/"
+           f"{width}x{height}?access_token={token}&attribution=false&logo=false")
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=SFONDO_TIMEOUT) as r:   # noqa: S310
+            if r.status != 200:
+                raise OSError(f"HTTP {r.status}")
+            dati = r.read()
+        uri = "data:image/png;base64," + base64.b64encode(dati).decode("ascii")
+    except Exception as e:                                               # noqa: BLE001
+        print(f"[report] sfondo cartografico non disponibile: {type(e).__name__}: {e}", file=sys.stderr)
+        uri = ""
+    _sfondi[chiave] = uri
+    return uri
+
+
+def _strato_sfondo(riquadro, width: int, height: int) -> str:
+    """Lo sfondo piu' un velo chiaro, cosi' cio' che sta sopra resta leggibile."""
+    uri = sfondo_mappa(riquadro, width, height)
+    if not uri:
+        return f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>'
+    return (f'<image href="{uri}" x="0" y="0" width="{width}" height="{height}" preserveAspectRatio="none"/>'
+            f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}" opacity="0.26"/>')
+
+
+def _etichetta(x: float, y: float, testo: str, dim: int = 10, peso: str = "400",
+               ancora: str = "start") -> str:
+    """Testo leggibile anche sopra una mappa: alone chiaro sotto le lettere."""
+    if not testo:
+        return ""
+    t = esc(testo)
+    comune = (f'x="{x:.1f}" y="{y:.1f}" font-size="{dim}" font-weight="{peso}" '
+              f'text-anchor="{ancora}" font-family=\'{FONT}\'')
+    return (f'<text {comune} stroke="#ffffff" stroke-width="3" stroke-linejoin="round" opacity="0.9">{t}</text>'
+            f'<text {comune} fill="{INK}">{t}</text>')
+
+
+def _path_geojson(geom: dict, P) -> str:
+    """Un Polygon/MultiPolygon GeoJSON come path SVG (coordinate lon, lat)."""
+    if not isinstance(geom, dict):
+        return ""
+    anelli = []
+    if geom.get("type") == "Polygon":
+        anelli = geom.get("coordinates") or []
+    elif geom.get("type") == "MultiPolygon":
+        for poly in (geom.get("coordinates") or []):
+            anelli.extend(poly)
+    d = []
+    for anello in anelli:
+        punti = [P(float(c[1]), float(c[0])) for c in anello if len(c) >= 2]
+        if len(punti) >= 3:
+            d.append(" ".join(f"{'M' if k == 0 else 'L'}{x:.1f},{y:.1f}" for k, (x, y) in enumerate(punti)) + " Z")
+    return " ".join(d)
+
+
+def punti_di_geojson(geom: dict) -> list:
+    """I vertici (lat, lon) di una geometria, per farci stare il riquadro."""
+    if not isinstance(geom, dict):
+        return []
+    anelli = []
+    if geom.get("type") == "Polygon":
+        anelli = geom.get("coordinates") or []
+    elif geom.get("type") == "MultiPolygon":
+        for poly in (geom.get("coordinates") or []):
+            anelli.extend(poly)
+    return [(float(c[1]), float(c[0])) for anello in anelli for c in anello if len(c) >= 2]
+
+
 def network_map(polylines: Sequence[dict], stops: Sequence[dict], title: str, subtitle: str = "",
-                width: int = 900, height: int = 620, note: str = "", max_series: int = 8) -> str:
-    """polylines: [{name, points: [(lat, lon), ...]}]; stops: [{name, lat, lon, node: bool}]."""
-    pts = [p for pl in polylines for p in pl.get("points", [])] + [(s["lat"], s["lon"]) for s in stops]
+                width: int = 900, height: int = 620, note: str = "", max_series: int = 8,
+                sfondo: bool = True, isocrone: Sequence[dict] = (), etichetta_fermate: bool = False,
+                numera_fermate: bool = False) -> str:
+    """polylines: [{name, points: [(lat, lon), ...], color?}]; stops: [{name, lat, lon, node?}].
+
+    `isocrone`: [{minuti, geom}] disegnate SOTTO i tracciati, dalla piu' larga
+    alla piu' stretta: e' la copertura a piedi di quel percorso.
+    `color` sulla polilinea e' il colore proprio della linea, quello con cui
+    l'azienda la pubblica: se c'e', vince sulla tavolozza."""
+    pts = [p for pl in polylines for p in pl.get("points", [])] + [(s_["lat"], s_["lon"]) for s_ in stops]
+    for iso in isocrone:
+        pts.extend(punti_di_geojson(iso.get("geom") or {}))
     if not pts:
         return ""
-    lat0, lat1 = min(p[0] for p in pts), max(p[0] for p in pts)
-    lon0, lon1 = min(p[1] for p in pts), max(p[1] for p in pts)
-    pad = 24
-    kx = math.cos(math.radians((lat0 + lat1) / 2))
-    dx, dy = max(1e-6, (lon1 - lon0) * kx), max(1e-6, lat1 - lat0)
-    scale = min((width - 2 * pad) / dx, (height - 2 * pad) / dy)
-    def P(lat, lon):
-        return pad + (lon - lon0) * kx * scale, pad + (lat1 - lat) * scale
-    out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" aria-label="{esc(title)}">',
-           f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>']
+    P, riquadro = proiettore(pts, width, height)
+    out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
+           f'role="img" aria-label="{esc(title)}">',
+           _strato_sfondo(riquadro, width, height) if sfondo
+           else f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>']
+
     names, cols = [], []
-    for i, pl in enumerate(polylines):
-        col = SERIES[i % 8] if i < max_series else DEEMPH
-        if i < max_series:
-            names.append(pl.get("name", f"linea {i + 1}")); cols.append(col)
-        d = " ".join(f"{'M' if j == 0 else 'L'}{P(*p)[0]:.1f},{P(*p)[1]:.1f}" for j, p in enumerate(pl.get("points", [])))
+    for k, iso in enumerate(sorted(isocrone, key=lambda x: -(x.get("minuti") or 0))):
+        d = _path_geojson(iso.get("geom") or {}, P)
+        if not d:
+            continue
+        col = SERIES[(k + 2) % len(SERIES)]
+        out.append(f'<path d="{d}" fill="{col}" fill-opacity="0.14" stroke="{col}" stroke-width="1.2" '
+                   f'stroke-dasharray="4 3" fill-rule="evenodd">'
+                   f'<title>{esc(str(iso.get("minuti") or ""))} minuti a piedi</title></path>')
+        names.append(f'{iso.get("minuti")}\u2032 a piedi'); cols.append(col)
+
+    for i_, pl in enumerate(polylines):
+        col = pl.get("color") or (SERIES[i_ % 8] if i_ < max_series else DEEMPH)
+        if i_ < max_series or pl.get("color"):
+            names.append(pl.get("name", f"linea {i_ + 1}")); cols.append(col)
+        d = " ".join(f"{'M' if j_ == 0 else 'L'}{P(*p)[0]:.1f},{P(*p)[1]:.1f}"
+                     for j_, p in enumerate(pl.get("points", [])))
         if d:
-            out.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.9"><title>{esc(pl.get("name", ""))}</title></path>')
-    for s in stops:
-        x, y = P(s["lat"], s["lon"])
-        if s.get("node"):
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6" fill="{SURFACE}"/><circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{INK}"><title>{esc(s.get("name", ""))}</title></circle>')
-            out.append(f'<text x="{x + 8:.1f}" y="{y + 4:.1f}" font-size="11" fill="{INK}" font-family=\'{FONT}\'>{esc(s.get("name", ""))}</text>')
+            # alone bianco sotto il tracciato: sopra la mappa serve a staccarlo
+            out.append(f'<path d="{d}" fill="none" stroke="#ffffff" stroke-width="5.5" '
+                       f'stroke-linejoin="round" stroke-linecap="round" opacity="0.75"/>')
+            out.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="2.8" stroke-linejoin="round" '
+                       f'stroke-linecap="round"><title>{esc(pl.get("name", ""))}</title></path>')
+
+    for s_ in stops:
+        x, y = P(s_["lat"], s_["lon"])
+        if s_.get("node"):
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="6.5" fill="#ffffff" stroke="{INK}" stroke-width="1.5"/>'
+                       f'<circle cx="{x:.1f}" cy="{y:.1f}" r="3" fill="{INK}">'
+                       f'<title>{esc(s_.get("name", ""))}</title></circle>')
+            out.append(_etichetta(x + 9, y + 4, s_.get("name", ""), 11, "600"))
         else:
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="1.6" fill="{MUTED}"><title>{esc(s.get("name", ""))}</title></circle>')
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.8" fill="#ffffff" stroke="{INK}" stroke-width="1.2">'
+                       f'<title>{esc(s_.get("name", ""))}</title></circle>')
+            if numera_fermate:
+                # con trenta fermate i nomi si coprono: si numerano lungo il
+                # percorso e l'elenco ordinato sta nella tabella sotto.
+                out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="7" fill="#ffffff" '
+                           f'stroke="{INK}" stroke-width="1.2" opacity="0.92"/>')
+                out.append(_etichetta(x, y + 3, str(s_.get("n") or ""), 8, "700", "middle"))
+            elif etichetta_fermate:
+                out.append(_etichetta(x + 5, y + 3, s_.get("name", ""), 8))
     out.append("</svg>")
-    if len(polylines) > max_series:
+    if len(polylines) > max_series and not any(pl.get("color") for pl in polylines):
         names.append("altre linee"); cols.append(DEEMPH)
-    legend = _legend(names, cols)
-    tbl = _table(["Linea", "Punti del tracciato"], [(pl.get("name", ""), len(pl.get("points", []))) for pl in polylines], caption="Tracciati disegnati")
-    return figure(title, "".join(out), subtitle=subtitle, legend=legend, table=tbl, note=note)
+    tbl = _table(["Linea", "Punti del tracciato"],
+                 [(pl.get("name", ""), len(pl.get("points", []))) for pl in polylines],
+                 caption="Tracciati disegnati")
+    return figure(title, "".join(out), subtitle=subtitle, legend=_legend(names, cols), table=tbl,
+                  note=note or NOTA_MAPPA)
 
 
 def alleggerisci(points: Sequence, massimo: int = 160) -> list:
@@ -453,60 +645,78 @@ def _contorno(punti: Sequence[tuple]) -> list:
 
 
 def cluster_map(clusters: Sequence[dict], title: str, subtitle: str = "",
-                width: int = 900, height: int = 620, note: str = "") -> str:
-    """clusters: [{name, stops: [{name, lat, lon}]}].
+                width: int = 900, height: int = 560, note: str = "") -> str:
+    """Dove stanno i nodi, tutti insieme.
 
-    Ogni nodo di interscambio e' un'area colorata che racchiude le fermate che
-    raggruppa: e' cosi' che si vede che cosa vuol dire davvero «Piazza Cavour»
-    quando un turno ci cambia vettura."""
+    A questa scala — una citta' intera — i nomi delle singole fermate si
+    sovrappongono e non si leggono: qui c'e' solo il nome del nodo e un cerchio
+    abbastanza grande da vedersi. Le fermate coi loro nomi stanno nelle mappe
+    di dettaglio, una per nodo, che `nodo_map` disegna."""
     gruppi = [c for c in clusters if c.get("stops")]
-    pts = [(float(s["lat"]), float(s["lon"])) for c in gruppi for s in c["stops"]]
+    pts = [(float(s_["lat"]), float(s_["lon"])) for c in gruppi for s_ in c["stops"]]
     if not pts:
         return ""
-    lat0, lat1 = min(p[0] for p in pts), max(p[0] for p in pts)
-    lon0, lon1 = min(p[1] for p in pts), max(p[1] for p in pts)
-    pad = 30
-    kx = math.cos(math.radians((lat0 + lat1) / 2))
-    dx, dy = max(1e-6, (lon1 - lon0) * kx), max(1e-6, lat1 - lat0)
-    scale = min((width - 2 * pad) / dx, (height - 2 * pad) / dy)
-
-    def P(lat, lon):
-        return pad + (lon - lon0) * kx * scale, pad + (lat1 - lat) * scale
-
+    P, riquadro = proiettore(pts, width, height, margine=0.14)
     out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
            f'role="img" aria-label="{esc(title)}">',
-           f'<rect x="0" y="0" width="{width}" height="{height}" fill="{SURFACE}"/>']
+           _strato_sfondo(riquadro, width, height)]
     names, cols = [], []
-    for i, c in enumerate(gruppi):
-        col = SERIES[i % len(SERIES)]
+    for i_, c in enumerate(gruppi):
+        col = SERIES[i_ % len(SERIES)]
         names.append(f'{c["name"]} ({len(c["stops"])})')
         cols.append(col)
-        xy = [P(float(s["lat"]), float(s["lon"])) for s in c["stops"]]
-        guscio = _contorno([(round(x, 1), round(y, 1)) for x, y in xy])
-        if len(guscio) >= 3:
-            d = " ".join(f"{'M' if j == 0 else 'L'}{x:.1f},{y:.1f}" for j, (x, y) in enumerate(guscio)) + " Z"
-            out.append(f'<path d="{d}" fill="{col}" fill-opacity="0.16" stroke="{col}" '
-                       f'stroke-width="1.5" stroke-linejoin="round"><title>{esc(c["name"])}</title></path>')
-        else:
-            # una o due fermate: un'aureola invece di un poligono
-            for x, y in xy:
-                out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="13" fill="{col}" fill-opacity="0.16" '
-                           f'stroke="{col}" stroke-width="1.5"><title>{esc(c["name"])}</title></circle>')
-        for (x, y), s in zip(xy, c["stops"]):
-            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.6" fill="{col}">'
-                       f'<title>{esc(s.get("name", ""))}</title></circle>')
+        xy = [P(float(s_["lat"]), float(s_["lon"])) for s_ in c["stops"]]
         cx = sum(x for x, _ in xy) / len(xy)
-        cy = min(y for _, y in xy) - 7
-        out.append(f'<text x="{cx:.1f}" y="{cy:.1f}" font-size="11" font-weight="600" text-anchor="middle" '
-                   f'fill="{INK}" font-family=\'{FONT}\'>{esc(c["name"])}</text>')
+        cy = sum(y for _, y in xy) / len(xy)
+        # il cerchio deve VEDERSI anche quando le fermate sono a cinquanta metri
+        r = max(11.0, max(math.hypot(x - cx, y - cy) for x, y in xy) + 8)
+        out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{col}" fill-opacity="0.22" '
+                   f'stroke="{col}" stroke-width="2.2">'
+                   f'<title>{esc(c["name"])}: {len(c["stops"])} fermate</title></circle>')
+        for x, y in xy:
+            out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.4" fill="{col}" '
+                       f'stroke="#ffffff" stroke-width="0.8"/>')
+        out.append(_etichetta(cx, cy - r - 6, c["name"], 12, "700", "middle"))
     out.append("</svg>")
-    tbl = _table(["Nodo", "Fermate raggruppate", "Quali"],
-                 [(c["name"], len(c["stops"]),
-                   ", ".join(s.get("name", "") for s in c["stops"][:6])
-                   + (f' … +{len(c["stops"]) - 6}' if len(c["stops"]) > 6 else ""))
+    tbl = _table(["Nodo", "Fermate", "Quali"],
+                 [(c["name"], len(c["stops"]), ", ".join(s_.get("name", "") for s_ in c["stops"]))
                   for c in gruppi],
                  caption="Nodi di interscambio e fermate che raggruppano")
-    return figure(title, "".join(out), subtitle=subtitle, legend=_legend(names, cols), table=tbl, note=note)
+    return figure(title, "".join(out), subtitle=subtitle, legend=_legend(names, cols), table=tbl,
+                  note=note or NOTA_MAPPA)
+
+
+def nodo_map(cluster: dict, colore: str, width: int = 430, height: int = 300) -> str:
+    """Un nodo da vicino: le sue fermate, ciascuna col proprio nome.
+
+    Nella mappa d'insieme un nodo e' un puntino; qui si vede che cosa contiene
+    davvero, cioe' fra quali banchine il conducente passa a piedi. Il riquadro
+    non scende sotto i 350 metri di lato, o lo sfondo diventa un dettaglio di
+    marciapiede senza riferimenti."""
+    fermate = cluster.get("stops") or []
+    if not fermate:
+        return ""
+    pts = [(float(s_["lat"]), float(s_["lon"])) for s_ in fermate]
+    P, riquadro = proiettore(pts, width, height, margine=0.30, lato_minimo_m=350)
+    out = [f'<svg class="chart map" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
+           f'role="img" aria-label="{esc(cluster.get("name", ""))}">',
+           _strato_sfondo(riquadro, width, height)]
+    xy = [P(float(s_["lat"]), float(s_["lon"])) for s_ in fermate]
+    cx = sum(x for x, _ in xy) / len(xy)
+    cy = sum(y for _, y in xy) / len(xy)
+    r = max(20.0, max(math.hypot(x - cx, y - cy) for x, y in xy) + 16)
+    out.append(f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="{colore}" fill-opacity="0.15" '
+               f'stroke="{colore}" stroke-width="2" stroke-dasharray="5 3"/>')
+    # i nomi si alternano destra/sinistra e sopra/sotto: due fermate vicine
+    # altrimenti si coprono a vicenda
+    for k, ((x, y), s_) in enumerate(zip(xy, fermate)):
+        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="{colore}" stroke="#ffffff" '
+                   f'stroke-width="1.5"><title>{esc(s_.get("name", ""))}</title></circle>')
+        destra = k % 2 == 0
+        out.append(_etichetta(x + (8 if destra else -8), y + (4 if k % 4 < 2 else -8),
+                              s_.get("name", ""), 9, "500", "start" if destra else "end"))
+    out.append("</svg>")
+    return figure(cluster.get("name", ""), "".join(out), subtitle=f'{len(fermate)} fermate')
 
 
 # ── Riquadri KPI (quando il dato è UN numero) ──
@@ -543,6 +753,10 @@ tr.total td {{ font-weight: 600; border-top: 1px solid var(--axis); }}
 .tile-v {{ font-size:26px; font-weight:600; margin:2px 0; }}
 .tile-h {{ font-size:11px; color:var(--muted); }}
 figure.viz {{ margin: 18px 0 22px; padding: 12px 12px 6px; border: 1px solid var(--grid); border-radius: 8px; background: var(--surface); page-break-inside: avoid; }}
+/* le mappe di dettaglio dei nodi stanno affiancate finche' ci stanno */
+.griglia-mappe {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; }}
+.griglia-mappe figure.viz {{ flex: 1 1 400px; max-width: 470px; margin: 6px 0; }}
+.griglia-mappe figure.viz svg {{ width: 100%; height: auto; }}
 figure.viz figcaption {{ margin-bottom: 6px; }}
 .fig-sub {{ margin: 2px 0 0; font-size: 12px; color: var(--ink2); }}
 .fig-note {{ margin: 4px 0 0; font-size: 11.5px; color: var(--muted); }}
