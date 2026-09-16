@@ -1569,6 +1569,43 @@ di servizio, giorno-tipo, scenario, chi l'ha redatta, quando — piu' l'indice.
 In stampa la copertina occupa la sua pagina e i margini sono quelli di un
 documento (16/14/18 mm).
 
+## Il foglio turno e' uno solo
+
+L'operatore: «i turni li devi formattare come la funzione fucina -> turni guida
+-> esporta -> Fogli turno (uno per pagina)». Non era una richiesta di stile: la
+relazione produceva **un secondo documento** per la stessa cosa. Chi guida
+riceve il foglio della Fucina; chi legge la relazione ne vedeva un'altra
+versione, con una tabella al posto della scheda. Due documenti per lo stesso
+turno sono un documento di troppo.
+
+Gli allegati ora sono **gli stessi fogli**, rifatti in Python leggendo
+`DriverShiftSheetExport.ts` riga per riga:
+
+- **intestazione**: matricola grande, deposito, tipo del turno, giorno-tipo; a
+  destra NASTRO, PRESENTAZIONE, CORSE;
+- **banda del programma** con lo scenario e «in vigore dal», data all'italiana;
+- **corpo**: le corse come schede — linea nel bollino verde, TM e tipo di mezzo
+  sotto, orari grandi ai due capi, durata sulla freccia, punti orari sotto —
+  con `SOSTA n'` fra una corsa e l'altra e `INTERRUZIONE hh:mm – hh:mm` fra un
+  pezzo e l'altro; pre-turno, trasferimenti, fuorilinea e cambi vettura come
+  righe;
+- **piede**: COMPETENZE / NASTRO / LAVORO / INTERRUZIONE, e le note con i
+  richiami (le violazioni BDS entrano qui, col richiamo `!`).
+
+I turni macchina prendono la stessa intestazione e lo stesso piede, ma il corpo
+resta una tabella: una vettura fa venticinque corse, e venticinque schede non
+stanno su un foglio.
+
+**Mancavano i dati, non il disegno** (di nuovo). Il foglio vero porta i passaggi
+ai punti orari, che il dossier non aveva: `passaggiDelleCorse()` in
+`process-report.ts` li legge per le sole corse dei turni guida, tiene i
+`timepoint` quando ci sono e ne conserva al massimo otto per corsa, perche' il
+dossier finisce in archivio. Senza, il foglio esce lo stesso con partenza e
+arrivo — come fa l'originale quando il caricatore non risponde.
+
+Un dettaglio che si vede solo stampando: gli orari del foglio sono a **due
+cifre** (`_hhmm`, 07:58 e non 7:58), altrimenti le colonne non si incolonnano.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

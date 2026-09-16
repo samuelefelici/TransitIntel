@@ -1608,89 +1608,292 @@ def render_runs(d: dict) -> str:
     return "".join(out)
 
 
+TIPO_TURNO = {"intero": "Intero", "semiunico": "Semiunico", "spezzato": "Spezzato",
+              "supplemento": "Supplemento", "invalido": "Invalido"}
+MEZZO_BREVE = {"autosnodato": "Snodato", "filobus": "Filobus", "12m": "12 m",
+               "10m": "10 m", "pollicino": "Pollicino"}
+SOSTA_FOGLIO_MIN = 15
+
+
+def _hhmm(m) -> str:
+    """L'ora a due cifre. Sul foglio del conducente 7:58 e 07:58 non sono la
+    stessa cosa: le colonne devono incolonnarsi."""
+    if m is None:
+        return "–"
+    m = int(round(m))
+    return f"{m // 60:02d}:{m % 60:02d}"
+
+
+def _orario(testo, minuti) -> str:
+    """L'orario scritto dal motore, altrimenti quello ricavato dai minuti."""
+    t = str(testo or "").strip()
+    return t[:5] if t else _hhmm(minuti)
+
+
+def _data_it(iso) -> str:
+    s = str(iso or "")
+    return f"{s[8:10]}/{s[5:7]}/{s[0:4]}" if len(s) >= 10 and s[4] == "-" and s[7] == "-" else s
+
+
+def _mezzo(vt) -> str:
+    return MEZZO_BREVE.get(str(vt or ""), str(vt or ""))
+
+
+def _cambi_del_pezzo(pc: dict, tutti: list, usati: set) -> list:
+    """I cambi di vettura che toccano questo pezzo: chi lo prende all'inizio,
+    chi lo lascia alla fine, i passaggi a metà. Uno stesso cambio non può
+    finire su due pezzi, per questo gli usati si segnano."""
+    s, e = piece_service_bounds(pc)
+    vids = set(pc.get("vehicleIds") or [])
+    presi = []
+    for i, h in enumerate(tutti):
+        if i in usati or (vids and h.get("vehicleId") not in vids):
+            continue
+        preso = int(h.get("takenMin") if h.get("takenMin") is not None else (h.get("atMin") or 0))
+        a = int(h.get("atMin") or 0)
+        if ((h.get("role") == "incoming" and abs(preso - s) <= 1)
+                or (h.get("role") == "outgoing" and abs(a - e) <= 1)
+                or (s <= a <= e)):
+            usati.add(i)
+            presi.append((h, a if h.get("role") == "outgoing" else preso))
+    return presi
+
+
+def righe_del_foglio(turno: dict, deposito: str, note: list,
+                     sosta_min: int = SOSTA_FOGLIO_MIN) -> list:
+    """Le righe di un foglio turno, in ordine di orologio: pre-turno,
+    trasferimenti, fuorilinea, corse, soste, cambi di vettura, interruzioni.
+
+    È la stessa scaletta del foglio che esce da «Fucina → turni guida →
+    esporta → Fogli turno»: chi guida deve trovare in relazione lo stesso
+    documento che si porta in servizio, non una seconda versione."""
+    righe: list[dict] = []
+    usati: set[int] = set()
+    tutti_h = list(turno.get("handovers") or [])
+    pezzi = list(turno.get("riprese") or [])
+
+    def richiamo(testo: str) -> str:
+        r = chr(65 + (len(note) % 26))
+        note.append((r, testo))
+        return r
+
+    for i, pc in enumerate(pezzi):
+        s, e = piece_service_bounds(pc)
+        pt = int(pc.get("preTurnoMin") or 0)
+        tr = int(pc.get("transferMin") or 0)
+        tb = int(pc.get("transferBackMin") or 0)
+        if i > 0:
+            prec = pezzi[i - 1]
+            fine_prec = piece_service_bounds(prec)[1] + int(prec.get("transferBackMin") or 0)
+            inizio = s - tr - pt
+            if inizio > fine_prec:
+                righe.append({"t": "interruzione", "da": fine_prec, "a": inizio, "ord": fine_prec, "p": 1})
+        vuoti = sorted((pc.get("deadheads") or []), key=lambda d: int(d.get("departureMin") or 0))
+        uscita = next((d for d in vuoti if d.get("kind") in ("pullout", "depot_out")), None)
+        in_auto = tr > 0
+        if pt > 0:
+            dove = (f"Deposito di {deposito}" if in_auto or not uscita
+                    else (uscita.get("fromStop") or f"Deposito di {deposito}"))
+            righe.append({"t": "riga", "lbl": "Pre-turno", "da": s - tr - pt, "a": s - tr,
+                          "dove": dove, "min": pt, "ord": s - tr - pt, "p": 1})
+        if in_auto:
+            righe.append({"t": "riga", "lbl": "Trasferimento", "da": s - tr, "a": s,
+                          "dove": f"Deposito di {deposito}",
+                          "verso": pc.get("transferToStop") or pc.get("transferToCluster") or "nodo",
+                          "min": tr, "ord": s - tr, "p": 1})
+        for d in vuoti:
+            dep, arr = int(d.get("departureMin") or 0), int(d.get("arrivalMin") or 0)
+            righe.append({"t": "riga", "lbl": d.get("label") or "Fuorilinea", "da": dep, "a": arr,
+                          "dove": d.get("fromStop") or "–", "verso": d.get("toStop") or "–",
+                          "min": int(d.get("minutes") or max(0, arr - dep)), "ord": dep, "p": 1})
+        for h, quando in _cambi_del_pezzo(pc, tutti_h, usati):
+            testo = str(h.get("description") or h.get("label") or "")
+            if testo[:6].count(":") == 1 and "·" in testo[:10]:
+                testo = testo.split("·", 1)[1].strip()
+            dett = f" {h.get('detail')}" if h.get("detail") else ""
+            righe.append({"t": "cambio", "quando": quando, "testo": testo,
+                          "rich": richiamo(f"{_hhmm(quando)} · {testo}{dett}"),
+                          "ord": quando, "p": 3 if "lascia" in testo.lower() else 0})
+        corse = sorted((pc.get("trips") or []), key=lambda t: int(t.get("departureMin") or 0))
+        for k, t in enumerate(corse):
+            if k > 0:
+                buco = int(t.get("departureMin") or 0) - int(corse[k - 1].get("arrivalMin") or 0)
+                if buco >= sosta_min:
+                    righe.append({"t": "sosta", "min": buco,
+                                  "ord": int(corse[k - 1].get("arrivalMin") or 0), "p": 1})
+            righe.append({"t": "corsa", "corsa": t, "ord": int(t.get("departureMin") or 0), "p": 2})
+        if tb > 0:
+            righe.append({"t": "riga", "lbl": "Rientro", "da": e, "a": e + tb,
+                          "dove": pc.get("lastStop") or "nodo", "verso": f"Deposito di {deposito}",
+                          "min": tb, "ord": e, "p": 1})
+    righe.sort(key=lambda r: (r["ord"], r["p"]))
+    return righe
+
+
+def _scheda_corsa(t: dict, passaggi: list, rich: str | None = None) -> str:
+    """Una corsa come la vede chi guida: la linea nel bollino, gli orari grandi
+    ai due capi, la durata nel mezzo, i punti orari sotto."""
+    dep, arr = int(t.get("departureMin") or 0), int(t.get("arrivalMin") or 0)
+    dur = max(0, arr - dep)
+    passi = "".join(
+        f'<span>{esc(p.get("fermata") or "")} <b>{esc(str(p.get("ora") or "")[:5])}</b></span>'
+        for p in (passaggi or []) if p.get("ora"))
+    mezzo = f' · {esc(_mezzo(t.get("vehicleType")))}' if t.get("vehicleType") else ""
+    coda = ""
+    if t.get("variantCode"):
+        coda += f'<span class="chip">{esc(t.get("variantCode"))}</span>'
+    if rich:
+        coda += f'<span class="richiamo">{esc(rich)}</span>'
+    return (
+        '<div class="corsa"><div class="corsa-testa">'
+        f'<div><span class="bollino">{esc(t.get("routeName") or "–")}</span>'
+        f'<div class="tm">TM {esc(t.get("vehicleId") or "–")}{mezzo}</div></div>'
+        f'<div class="part"><div class="big">{esc(_orario(t.get("departureTime"), dep))}</div>'
+        f'<div class="dove">{esc(t.get("firstStopName") or "–")}</div></div>'
+        '<div class="tratto"><span class="cerchio"></span><span class="filo"></span>'
+        f'<span class="dur">{dur}′</span><span class="filo"></span><span class="punta"></span></div>'
+        f'<div class="arrivo"><div class="big">{esc(_orario(t.get("arrivalTime"), arr))}</div>'
+        f'<div class="dove">{esc(t.get("lastStopName") or "–")}</div></div>'
+        f'<div class="coda">{coda}</div></div>'
+        + (f'<div class="passaggi">{passi}</div>' if passi else "")
+        + "</div>")
+
+
+def _riga_foglio(r: dict, passaggi_per_corsa: dict) -> str:
+    if r["t"] == "corsa":
+        t = r["corsa"]
+        return _scheda_corsa(t, (passaggi_per_corsa or {}).get(str(t.get("tripId") or "")))
+    if r["t"] == "sosta":
+        return f'<div class="stacco"><span>SOSTA {r["min"]}′</span></div>'
+    if r["t"] == "interruzione":
+        return (f'<div class="stacco forte"><span>INTERRUZIONE {_hhmm(r["da"])} – '
+                f'{_hhmm(r["a"])} ({r["a"] - r["da"]}′)</span></div>')
+    if r["t"] == "cambio":
+        rich = f'<span class="richiamo">{esc(r["rich"])}</span>' if r.get("rich") else ""
+        return ('<div class="riga cambio"><span class="lbl">Cambio</span>'
+                f'<span class="t">{_hhmm(r["quando"])}</span>'
+                f'<span class="txt">{esc(r["testo"])}</span>{rich}</div>')
+    verso = f' <span class="freccia">→</span> {esc(r["verso"])}' if r.get("verso") else ""
+    return ('<div class="riga"><span class="lbl">' + esc(r["lbl"]) + "</span>"
+            f'<span class="t">{_hhmm(r["da"])}</span>'
+            f'<span class="txt">{esc(r["dove"])}{verso}</span>'
+            f'<span class="chip">{r["min"]}′</span>'
+            f'<span class="t fine">{_hhmm(r["a"])}</span></div>')
+
+
+def foglio_turno_guida(turno: dict, m: dict, passaggi_per_corsa: dict,
+                       deposito_di_scorta: str = "") -> str:
+    """Un turno guida su un foglio solo, nel formato della Fucina."""
+    deposito = (str(turno.get("residenzaName") or deposito_di_scorta or "").strip() or "–")
+    note: list = []
+    righe = righe_del_foglio(turno, deposito, note)
+    n_corse = sum(len(p.get("trips") or []) for p in (turno.get("riprese") or []))
+    for v in (g(turno, "bdsValidation", "violations", default=[]) or []):
+        note.append(("!", str(v.get("message") or v) if isinstance(v, dict) else str(v)))
+    for h in (turno.get("vehicleHandoverLabels") or []):
+        note.append(("·", str(h)))
+    giorno = str(m.get("dayType") or "").split("(")[0].strip().upper()
+    tipo = TIPO_TURNO.get(str(turno.get("type") or ""), str(turno.get("type") or "")).upper()
+    programma = str(m.get("scenarioName") or "")
+    vigore = _data_it(m.get("serviceDate"))
+    interruzione = int(turno.get("interruptionMin") or 0)
+    corpo = "".join(_riga_foglio(r, passaggi_per_corsa) for r in righe)
+    note_html = ("".join(f'<div class="nota"><span class="richiamo">{esc(r)}</span>{esc(t)}</div>'
+                         for r, t in note)
+                 if note else '<div class="nota assenti">–</div>')
+    return (
+        '<section class="foglio">'
+        '<div class="testa"><div><div class="matricola">' + esc(turno.get("driverId") or "–") + "</div>"
+        f'<div class="sub"><span class="deposito">{esc(deposito.upper())}</span>'
+        f'<span class="chip vuota">{esc(tipo)}</span>'
+        + (f'<span class="chip verde">{esc(giorno)}</span>' if giorno else "")
+        + "</div></div>"
+        '<div class="destra">'
+        f'<div><span class="k">Nastro</span><b>{esc(turno.get("nastroStart") or _hhmm(turno.get("nastroStartMin")))} '
+        f'– {esc(turno.get("nastroEnd") or _hhmm(turno.get("nastroEndMin")))}</b></div>'
+        f'<div><span class="k">Presentazione</span><b>{esc(turno.get("nastroStart") or _hhmm(turno.get("nastroStartMin")))}</b></div>'
+        f'<div><span class="k">Corse</span><b>{n_corse}</b></div>'
+        "</div></div>"
+        f'<div class="programma"><span>{esc(programma)}</span>'
+        + (f"<span>in vigore dal <b>{esc(vigore)}</b></span>" if vigore else "")
+        + "</div>"
+        f'<div class="corpo">{corpo}</div>'
+        '<div class="piede"><div class="conti">'
+        f'<span class="k">Competenze</span><span class="k">Nastro</span><b>{_hhmm(turno.get("nastroMin"))}</b>'
+        f'<span class="k">Lavoro</span><b>{_hhmm(turno.get("workMin"))}</b>'
+        + (f'<span class="k">Interruzione</span><b>{_hhmm(interruzione)}</b>' if interruzione else "")
+        + "</div>"
+        f'<div class="note"><span class="k">Note</span>{note_html}</div>'
+        "</div></section>")
+
+
+def foglio_turno_macchina(v: dict, m: dict) -> str:
+    """Un turno macchina su un foglio solo: la stessa intestazione del foglio
+    guida, poi il programma della vettura riga per riga."""
+    corse = sorted((v.get("trips") or []), key=lambda t: int(t.get("departureMin") or 0))
+    righe = []
+    for t in corse:
+        tipo = str(t.get("type") or "trip")
+        leg = str(t.get("depotLeg") or "")
+        etichetta = ({"out": "Uscita deposito", "in": "Rientro deposito"}.get(leg, "Fuorilinea")
+                     if tipo != "trip" else (t.get("routeName") or "–"))
+        righe.append((etichetta,
+                      _orario(t.get("departureTime"), t.get("departureMin")),
+                      t.get("firstStopName") or t.get("fromStop") or "–",
+                      t.get("lastStopName") or t.get("toStop") or "–",
+                      _orario(t.get("arrivalTime"), t.get("arrivalMin")),
+                      fmt_n(t.get("deadheadKm"), 1) if t.get("deadheadKm") else ""))
+    giorno = str(m.get("dayType") or "").split("(")[0].strip().upper()
+    nastro = int(v.get("shiftDuration") or (int(v.get("endMin") or 0) - int(v.get("startMin") or 0)))
+    deposito = str(v.get("residenzaName") or "").strip()
+    return (
+        '<section class="foglio">'
+        '<div class="testa"><div><div class="matricola">' + esc(v.get("vehicleId") or "–") + "</div>"
+        '<div class="sub">'
+        + (f'<span class="deposito">{esc(deposito.upper())}</span>' if deposito else "")
+        + f'<span class="chip vuota">{esc(_mezzo(v.get("vehicleType")) or "–")}</span>'
+        + (f'<span class="chip verde">{esc(giorno)}</span>' if giorno else "")
+        + "</div></div>"
+        '<div class="destra">'
+        f'<div><span class="k">Nastro</span><b>{_hhmm(v.get("startMin"))} – {_hhmm(v.get("endMin"))}</b></div>'
+        f'<div><span class="k">Durata</span><b>{_hhmm(nastro)}</b></div>'
+        f'<div><span class="k">Corse</span><b>{len([t for t in corse if str(t.get("type") or "trip") == "trip"])}</b></div>'
+        "</div></div>"
+        f'<div class="programma"><span>{esc(str(m.get("scenarioName") or ""))}</span>'
+        f'<span>in vigore dal <b>{esc(_data_it(m.get("serviceDate")))}</b></span></div>'
+        + table(["Linea / attività", "Partenza", "Da", "A", "Arrivo", "km vuoto"], righe, numeric_from=5)
+        + '<div class="piede"><div class="conti">'
+        f'<span class="k">Servizio</span><b>{_hhmm(v.get("totalServiceMin"))}</b>'
+        f'<span class="k">km a vuoto</span><b>{fmt_n(v.get("totalDeadheadKm") or 0, 1)}</b>'
+        f'<span class="k">Rientri in deposito</span><b>{fmt_n(v.get("depotReturns") or 0)}</b>'
+        "</div></div></section>")
+
+
 def render_appendix(d: dict) -> str:
     vs = g(d, "final", "vsp", "vehicleShifts", default=[]) or []
     ds = g(d, "final", "crew", "driverShifts", default=[]) or []
+    passaggi = g(d, "final", "crew", "passaggi", default={}) or {}
+    m = d.get("meta") or {}
+    deposito = ""
+    for x in ds:
+        if x.get("residenzaName"):
+            deposito = str(x.get("residenzaName"))
+            break
     out = [section("allegati", "11. Allegati")]
     if vs or ds:
         out.append(para(
-            "Gli allegati sono fatti per essere <b>staccati e consegnati</b>: ogni turno sta "
-            "su un foglio suo, e in stampa non si spezza mai a met\u00e0 fra due pagine."))
-    if vs:
-        out.append("<h3>A. Turni macchina, corsa per corsa</h3>")
-        for v in vs:
-            rows = []
-            for t in v.get("trips", []):
-                rows.append((t.get("type"), t.get("routeName") or "–", t.get("departureTime") or hm(t.get("departureMin")), t.get("arrivalTime") or hm(t.get("arrivalMin")),
-                             t.get("firstStopName") or "–", t.get("lastStopName") or "–", fmt_n(t.get("deadheadKm"), 1) if t.get("deadheadKm") else ""))
-            out.append(f'<section class="foglio"><h4>{esc(v.get("vehicleId"))} · '
-                       f'{esc(v.get("vehicleType") or "")} · {hm(v.get("startMin"))}–'
-                       f'{hm(v.get("endMin"))}</h4>')
-            out.append(table(["Tipo", "Linea", "Partenza", "Arrivo", "Da", "A", "km vuoto"], rows, numeric_from=6))
-            out.append("</section>")
+            "Gli allegati sono i fogli turno veri e propri, nello stesso formato che esce "
+            "da <b>Fucina → turni guida → esporta → Fogli turno</b>: un turno per "
+            "pagina, con la linea nel bollino, gli orari ai due capi della corsa e le "
+            "competenze in fondo. Si staccano e si consegnano così come sono."))
     if ds:
-        out.append("<h3>B. Turni guida, pezzo per pezzo</h3>")
-        for x in ds:
-            out.append(f'<section class="foglio"><h4>{esc(x.get("driverId"))} · {esc(x.get("type"))} '
-                       f'· nastro {hm(x.get("nastroMin"))} · lavoro {hm(x.get("workMin"))}</h4>')
-            rows = []
-            used_h: set[int] = set()
-            all_h = list(x.get("handovers") or [])
-            for i, pc in enumerate(x.get("riprese") or [], 1):
-                veh = (pc.get("vehicleIds") or ["?"])[0]
-                svc_start, svc_end = piece_service_bounds(pc)
-                pt, tr, tb = int(pc.get("preTurnoMin") or 0), int(pc.get("transferMin") or 0), int(pc.get("transferBackMin") or 0)
-                # cambi di vettura di questo pezzo: chi monta all'inizio (prende), chi
-                # smonta alla fine (lascia), passaggi a metà pezzo
-                h_in, h_out, h_mid = [], [], []
-                for hi, h in enumerate(all_h):
-                    if hi in used_h:
-                        continue
-                    vids = pc.get("vehicleIds") or []
-                    if vids and h.get("vehicleId") not in vids:
-                        continue
-                    taken = int(h.get("takenMin") if h.get("takenMin") is not None else h.get("atMin") or 0)
-                    at = int(h.get("atMin") or 0)
-                    if h.get("role") == "incoming" and abs(taken - svc_start) <= 1:
-                        h_in.append(h); used_h.add(hi)
-                    elif h.get("role") == "outgoing" and abs(at - svc_end) <= 1:
-                        h_out.append(h); used_h.add(hi)
-                    elif svc_start < at < svc_end:
-                        h_mid.append(h); used_h.add(hi)
-                def _hrow(h):
-                    taken = int(h.get("takenMin") if h.get("takenMin") is not None else h.get("atMin") or 0)
-                    t = int(h.get("atMin") or 0) if h.get("role") == "outgoing" else taken
-                    txt = f'<span class="cambio">{esc(str(h.get("description") or ""))}</span>'
-                    if h.get("detail"):
-                        txt += f' <span class="small">({esc(str(h.get("detail")))})</span>'
-                    return (i, h.get("vehicleId") or veh, txt, hm(t), hm(t), h.get("clusterName") or h.get("atStop") or "–", "–")
-                for h in h_in:
-                    rows.append(_hrow(h))
-                # pre-turno e trasferimento in auto PRIMA della presa in carico del bus
-                if pt and svc_start is not None:
-                    kind = "presa bus in deposito (controlli)" if pc.get("preTurnoKind") == "bus" or tr == 0 else "auto aziendale"
-                    rows.append((i, veh, f"Pre-turno · {kind}", hm(svc_start - tr - pt), hm(svc_start - tr), "Deposito", "–"))
-                if tr and svc_start is not None:
-                    rows.append((i, veh, "Trasferimento auto", hm(svc_start - tr), hm(svc_start), "Deposito", pc.get("transferToStop") or "–"))
-                # corse e fuorilinea in ordine di tempo
-                events = [("trip", t) for t in (pc.get("trips") or [])] + [("dh", d) for d in (pc.get("deadheads") or [])]
-                events.sort(key=lambda e: int(e[1].get("departureMin") or 0))
-                for kind, e in events:
-                    if kind == "trip":
-                        rows.append((i, veh, e.get("routeName") or "–", hm(e.get("departureMin")), hm(e.get("arrivalMin")), e.get("firstStopName") or "–", e.get("lastStopName") or "–"))
-                    else:
-                        km = f' · {e.get("km")} km' if e.get("km") is not None else ""
-                        rows.append((i, veh, f'{e.get("label") or "Fuorilinea"}{km}', hm(e.get("departureMin")), hm(e.get("arrivalMin")), e.get("fromStop") or "–", e.get("toStop") or "–"))
-                for h in h_mid:
-                    rows.append(_hrow(h))
-                for h in h_out:
-                    rows.append(_hrow(h))
-                if tb and svc_end is not None:
-                    rows.append((i, veh, "Rientro auto", hm(svc_end), hm(svc_end + tb), pc.get("lastStop") or "–", "Deposito"))
-            out.append(table(["Pezzo", "Vettura", "Linea / attività", "Partenza", "Arrivo", "Da", "A"], rows, numeric_from=99))
-            for h in x.get("vehicleHandoverLabels") or []:
-                out.append(para(f'<span class="small">{esc(h)}</span>'))
-            out.append("</section>")
+        out.append("<h3>A. Fogli turno guida</h3>")
+        for x in sorted(ds, key=lambda t: (int(t.get("nastroStartMin") or 0), str(t.get("driverId") or ""))):
+            out.append(foglio_turno_guida(x, m, passaggi, deposito))
+    if vs:
+        out.append("<h3>B. Fogli turno macchina</h3>")
+        for v in sorted(vs, key=lambda x: (int(x.get("startMin") or 0), str(x.get("vehicleId") or ""))):
+            out.append(foglio_turno_macchina(v, m))
     return "".join(out)
 
 

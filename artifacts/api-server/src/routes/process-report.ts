@@ -280,6 +280,61 @@ async function corseNelTempo(psId: string, routeIds: string[], serviceDate: stri
   }
 }
 
+/**
+ * I PASSAGGI ALLE FERMATE DI CONTROLLO delle corse che finiscono nei fogli
+ * turno. Il foglio che il conducente si porta in servizio non elenca solo
+ * partenza e arrivo: sotto la corsa ci sono i punti orari, che sono quelli su
+ * cui si regola la marcia. Senza, il foglio in relazione sarebbe una versione
+ * piu' povera di quello vero, e l'operatore avrebbe due documenti diversi.
+ *
+ * Si tengono i timepoint quando ci sono (altrimenti tutte le intermedie), al
+ * massimo PASSAGGI_PER_CORSA_MAX per corsa: il dossier finisce in archivio e
+ * un quadro orario intero per ogni corsa lo farebbe pesare per niente.
+ */
+const PASSAGGI_CORSE_MAX = 1200;
+const PASSAGGI_PER_CORSA_MAX = 8;
+
+async function passaggiDelleCorse(psId: string, tripIds: string[],
+                                  logger: { info: (...a: any[]) => void }): Promise<Record<string, any[]>> {
+  const ids = [...new Set(tripIds.map((t) => String(t ?? "")).filter(Boolean))].slice(0, PASSAGGI_CORSE_MAX);
+  if (!psId || ids.length === 0) return {};
+  try {
+    const righe = rows(await db.execute(sql`
+      SELECT st.trip_id, st.stop_seq, st.timepoint, s.name AS fermata,
+             COALESCE(st.departure_time, st.arrival_time) AS ora
+        FROM ps_stop_times st
+        JOIN ps_stops s ON s.id = st.stop_id
+        JOIN ps_trips t ON t.id = st.trip_id
+       WHERE st.trip_id = ANY(${uuidArray(ids)})
+         AND t.project_id = ${psId}::uuid
+       ORDER BY st.trip_id, st.stop_seq
+    `));
+    const perCorsa = new Map<string, any[]>();
+    for (const r of righe) {
+      const k = String(r.trip_id);
+      if (!perCorsa.has(k)) perCorsa.set(k, []);
+      perCorsa.get(k)!.push({ fermata: String(r.fermata ?? ""),
+                              ora: String(r.ora ?? "").slice(0, 5),
+                              punto: Number(r.timepoint ?? 0) === 1 });
+    }
+    const out: Record<string, any[]> = {};
+    for (const [k, v] of perCorsa) {
+      // capolinea esclusi: partenza e arrivo stanno gia' ai due capi della scheda
+      const mezzo = v.slice(1, -1).filter((x) => x.ora);
+      const punti = mezzo.filter((x) => x.punto);
+      const scelti = punti.length > 0 ? punti : mezzo;
+      out[k] = scelti.length <= PASSAGGI_PER_CORSA_MAX ? scelti
+        : Array.from({ length: PASSAGGI_PER_CORSA_MAX },
+                     (_, i) => scelti[Math.floor((i * scelti.length) / PASSAGGI_PER_CORSA_MAX)]);
+    }
+    logger.info(`fogli turno: passaggi per ${Object.keys(out).length} corse su ${ids.length} richieste`);
+    return out;
+  } catch (e: any) {
+    logger.info(`passaggi delle corse non disponibili: ${e?.message ?? e}`);
+    return {};
+  }
+}
+
 /** "08:12:00" o "8:12" in minuti dalla mezzanotte; oltre le 24 resta oltre. */
 function minutiDaOrario(x: unknown): number | null {
   const t = String(x ?? "").trim();
@@ -655,6 +710,13 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
   const corse = await corseNelTempo(psId ? String(psId) : "", routeIds,
                                     null, extra.logger ?? { info: () => {} });
 
+  // I punti orari delle corse che finiscono nei fogli turno in allegato.
+  const passaggi = await passaggiDelleCorse(
+    psId ? String(psId) : "",
+    (crew?.driverShifts ?? []).flatMap((d: any) =>
+      (d?.riprese ?? []).flatMap((r: any) => (r?.trips ?? []).map((t: any) => t?.tripId))),
+    extra.logger ?? { info: () => {} });
+
   // Il territorio intorno alla rete: chi ci abita, come si muove, il traffico.
   let territorio: any = null;
   try {
@@ -816,7 +878,7 @@ export async function buildProcessDossier(scenarioId: string, dssIdReq: string |
     final: {
       vsp: { metrics: result?.solverMetrics ?? null, summary: result?.summary ?? null, costs: result?.costs ?? null,
              costBreakdown: result?.costBreakdown ?? null, vehicleShifts: shifts, advisories: result?.advisories ?? [] },
-      crew: crew ? { summary: crew.summary ?? null, metrics: crew.metrics ?? null, driverShifts: crew.driverShifts ?? [], handovers: crew.handovers ?? [], clusters: crew.clusters ?? [] } : null,
+      crew: crew ? { summary: crew.summary ?? null, metrics: crew.metrics ?? null, driverShifts: crew.driverShifts ?? [], handovers: crew.handovers ?? [], clusters: crew.clusters ?? [], passaggi } : null,
       vcsp: result?.vcsp ? { rounds: result.vcsp.rounds ?? [], bestRound: result.vcsp.bestRound ?? null, selectedRound: result?.vcspSelectedRound ?? null,
                              probe: result.vcsp.probe ?? null, feedback: result.vcsp.feedback ?? null,
                              // Le manopole con cui il ciclo ha davvero girato (passo, ancora,
