@@ -1646,6 +1646,54 @@ Il taglio e' **del documento, non del dato**: `lineeScelte` viaggia nel dossier
 accanto alla mappa delle coincidenze, che resta intera in archivio. Una
 relazione ristretta si puo' rigenerare larga; un dossier tagliato no.
 
+## «Non hai generato nessun grafico delle coincidenze»
+
+E aveva ragione. I due disegni nuovi leggevano `passaggi`, e sui dati veri quel
+campo **non arriva mai**: `esistenti` non lo produce `coincidence_analysis.py`,
+lo produce `vcsp_probe.detect_coincidences`, che emette tre campioni (`sample`)
+con l'ora in stringa. Il capitolo perdeva **tutti e tre** i pezzi — 8.2, 8.3 e
+il libretto 8.7 — e non lo diceva.
+
+**E' la terza volta che sbaglio nello stesso modo**, e stavolta va scritto
+chiaro perche' non succeda una quarta:
+
+> Quando una figura non esce, il primo sospetto non e' il disegno: sono i dati.
+> E quando scrivo il campione di prova **guardando il mio codice** invece che
+> l'uscita del produttore vero, il test passa e il difetto arriva in
+> produzione. Era gia' successo col termometro del ciclo (`ancora` oggetto vs
+> numero) e col diagramma spazio-tempo (`arrivoMin` assente). Il rimedio non e'
+> «stare piu' attento»: e' che il test parta da `detect_coincidences(corse)`,
+> non da un dizionario scritto a mano.
+
+Cosa e' stato fatto, dopo quattro accertamenti in parallelo ciascuno confutato
+da un revisore avverso (due verdetti su quattro sono stati ribaltati dalla
+confutazione, e avevano ragione i confutatori):
+
+1. **`detect_coincidences` emette il libretto.** `passaggi` con l'ora di ogni
+   incontro, cap `PASSAGGI_MAX = 60`, **campionato a passo costante** e non
+   troncato in testa — troncare fermava il libretto a meta' pomeriggio per una
+   relazione che arriva a sera. Senza `fromTrip`/`toTrip`: nessun documento li
+   stampa e due uuid per riga raddoppiavano il peso.
+2. **`attesaMin` oggetto, con l'attesa VERA.** `maxWaitMin`/`minWaitMin` sono
+   **le soglie della ricerca**, uguali per ogni relazione: la colonna «Attesa»
+   del capitolo 8.4 diceva «2–5′» su ogni riga come se fosse una misura.
+3. **Il libretto non entra nel canale della sonda** (`vcsp_probe.py`): quella
+   sezione finisce nella vista compatta del giro, che l'MCP tronca a 40k e che
+   viene archiviata a ogni giro — ed era gia' arrivata troncata una volta.
+4. **Niente piu' silenzio.** `passaggi_di()` normalizza le due forme in una
+   sola (minuti sempre numerici) e ricade sui campioni; `_niente_disegno()`
+   dichiara nel documento perche' una figura manca. Il test che sanciva il
+   silenzio come corretto e' stato **tolto**: era la regola sbagliata.
+5. **8.7 non contraddice piu' 8.4**: col libretto troncato diceva «60 passaggi
+   al giorno» mentre la tabella sopra diceva «84 volte al giorno».
+6. **Il canale MCP** (`argos`): `_a_misura` toglie `passaggi` come `analyze()`
+   toglie `pairs`, lasciando i campioni e il conteggio. Questo era un difetto
+   **preesistente**: sulla rete vera `section='mancate'` restituiva 8 voci su 36
+   e la nota diceva solo «mostrate 8 su 36». Ora 36/36 e 10/10.
+7. **Il guardiano non guardava**: `smoke_coincidences_section.py` costruiva gli
+   `esistenti` col solo `sample`, quindi restava verde mentre la rete vera si
+   accorciava. Ora il fixture porta il libretto.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

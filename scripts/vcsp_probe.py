@@ -189,18 +189,66 @@ def detect_coincidences(trips: list[dict], max_wait: int = COINCIDENCE_MAX_WAIT,
                     rel.setdefault((nodo, str(ra), str(rb)), []).append(
                         (ta["tripId"], tb["tripId"], arr, dep))
 
-    out = [{"node": nodo, "fromRoute": ra, "toRoute": rb,
-            "occurrences": len(coppie), "maxWaitMin": max_wait, "minWaitMin": min_wait,
-            "pairs": list(coppie),
-            # Gli ORARI che la realizzano, in chiaro: senza questi una relazione
-            # inattesa non si puo' controllare a mano sul quadro orario.
-            "sample": [{"fromTrip": a, "arrivo": min_to_time(arr),
-                        "toTrip": b, "partenza": min_to_time(dep),
-                        "attesaMin": dep - arr}
-                       for a, b, arr, dep in sorted(coppie, key=lambda c: c[2])[:3]]}
+    out = [_voce_relazione(nodo, ra, rb, coppie, max_wait, min_wait)
            for (nodo, ra, rb), coppie in rel.items() if len(coppie) >= min_occurrences]
     out.sort(key=lambda c: (-c["occurrences"], c["node"], c["fromRoute"]))
     return out
+
+
+# Quanti passaggi tenere nel libretto orario di una relazione. Sessanta
+# coprono una giornata intera anche a cadenza fitta; oltre, il documento
+# ripete e il canale si riempie.
+PASSAGGI_MAX = 60
+
+
+def _a_passo_costante(voci: list, massimo: int) -> list:
+    """Un campione che copre TUTTA la giornata, non solo il mattino.
+
+    Troncare in testa e' la cosa ovvia e la cosa sbagliata: le coppie sono
+    ordinate per ora, quindi `[:60]` di una relazione con ottanta incontri
+    ferma il libretto alle due del pomeriggio e fa sembrare che il servizio
+    finisca li'. Si prende un elemento ogni tot, come fa il dossier coi
+    passaggi delle corse."""
+    if len(voci) <= massimo:
+        return voci
+    return [voci[(i * len(voci)) // massimo] for i in range(massimo)]
+
+
+def _voce_relazione(nodo: str, ra: str, rb: str, coppie: list,
+                    max_wait: int, min_wait: int) -> dict:
+    """Una relazione riconosciuta, con dentro quello che serve a chi la legge.
+
+    `pairs` e' per il solver. `sample` sono i tre campioni storici, che
+    restano perche' portano i tripId e servono a controllare a mano sul quadro.
+    `passaggi` e' il libretto orario: l'ora di ogni incontro della giornata,
+    senza i tripId perche' nessun documento li stampa e due uuid per riga
+    raddoppierebbero il peso.
+
+    `attesaMin` e' l'attesa VERA — minimo, massimo e mediana osservati. Non va
+    confusa con `maxWaitMin`/`minWaitMin`, che sono le soglie della ricerca e
+    valgono uguali per ogni relazione: chi le stampasse come se fossero un
+    dato direbbe «2–5 minuti» su tutte le righe."""
+    in_ordine = sorted(coppie, key=lambda c: c[2])
+    attese = sorted(dep - arr for _, _, arr, dep in coppie)
+    return {
+        "node": nodo, "fromRoute": ra, "toRoute": rb,
+        "occurrences": len(coppie),
+        # le soglie con cui sono state cercate, non l'attesa osservata
+        "maxWaitMin": max_wait, "minWaitMin": min_wait,
+        "attesaMin": {"min": attese[0], "max": attese[-1],
+                      "mediana": attese[len(attese) // 2]},
+        "pairs": list(coppie),
+        # Gli ORARI che la realizzano, in chiaro: senza questi una relazione
+        # inattesa non si puo' controllare a mano sul quadro orario.
+        "sample": [{"fromTrip": a, "arrivo": min_to_time(arr),
+                    "toTrip": b, "partenza": min_to_time(dep),
+                    "attesaMin": dep - arr}
+                   for a, b, arr, dep in in_ordine[:3]],
+        # Il libretto orario: tutti gli incontri, non tre.
+        "passaggi": [{"arrivo": min_to_time(arr), "partenza": min_to_time(dep),
+                      "arrivoMin": arr, "partenzaMin": dep, "attesaMin": dep - arr}
+                     for _, _, arr, dep in _a_passo_costante(in_ordine, PASSAGGI_MAX)],
+    }
 
 
 def coincidence_pairs(coincidences: list[dict]) -> list[tuple[str, str, int, int]]:
@@ -1033,7 +1081,15 @@ def run_probe_phase(
         "timeShiftDetails": [], "shiftedTrips": 0, "shiftedTripMin": 0,
         "disruptionEur": 0.0, "shiftPenaltyEurPerTripMin": shift_penalty_eur,
         "crewScope": crew_scope,
-        "coincidences": [{k: v for k, v in c.items() if k != "pairs"} for c in coincidenze],
+        # Qui si scarta anche il LIBRETTO, non solo le coppie: questa sezione
+        # finisce nella vista compatta del giro, che l'MCP tronca a 40k e che
+        # viene anche archiviata a ogni giro. Del libretto alla sonda non serve
+        # niente — di queste voci usa nodo, linee e occorrenze — e una volta un
+        # compatto troppo grande e' gia' arrivato troncato all'agente. Il
+        # libretto passa dall'altra strada, quella di analyze() e della
+        # relazione, dove il tetto non c'e'.
+        "coincidences": [{k: v for k, v in c.items() if k not in ("pairs", "passaggi")}
+                         for c in coincidenze],
         "rejectedForCoincidence": 0, "propagatedForCoincidence": 0,
         "propagationFailures": {}, "rejectedForRoundTrip": 0,
         # La coda si e' svuotata prima del budget? Quante sonde sono rimaste?
