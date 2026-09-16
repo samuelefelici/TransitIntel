@@ -611,3 +611,61 @@ def test_il_diagramma_regge_senza_le_posizioni_dei_nodi():
 def test_il_diagramma_3d_vuole_nodi_e_incontri():
     assert rc.coincidenze_3d([], [{"node": "x", "from": "1", "to": "2", "oraMin": 500}], "t") == ""
     assert rc.coincidenze_3d([{"name": "x", "lat": 43.6, "lon": 13.5}], [], "t") == ""
+
+
+# ═══════════════════════════════════════════════════════════════
+#  I SIMBOLI DELLE CATEGORIE, E IL DIAGRAMMA CHE SI SPIEGA
+# ═══════════════════════════════════════════════════════════════
+
+def test_ogni_categoria_ha_un_simbolo_e_un_colore():
+    """Le categorie arrivano dai dati, sono decine e in inglese: un simbolo
+    dice di che cosa si tratta senza leggere la parola."""
+    assert rc.famiglia_poi("Pharmacy")[0] == "sanita"
+    assert rc.famiglia_poi("Istituto di Istruzione Superiore")[0] == "istruzione"
+    assert rc.famiglia_poi("Supermarket")[0] == "commercio"
+    assert rc.famiglia_poi("Restaurant")[0] == "ristorazione"
+    assert rc.famiglia_poi("Bus Station")[0] == "trasporti"
+    assert rc.famiglia_poi("Post Office")[0] == "servizi pubblici"
+    assert rc.famiglia_poi("Museum")[0] == "cultura e svago"
+    # ciò che non si riconosce non rompe niente: finisce in «altro»
+    assert rc.famiglia_poi("Qualcosa di mai visto")[0] == "altro"
+    assert rc.famiglia_poi(None)[0] == "altro"
+    # famiglie diverse, colori diversi
+    colori = {rc.famiglia_poi(x)[1] for x in ("Pharmacy", "School", "Supermarket", "Restaurant")}
+    assert len(colori) == 4
+
+
+def test_le_categorie_si_disegnano_con_forme_distinte():
+    """Le forme devono distinguersi anche stampate in bianco e nero, dove il
+    colore da solo non basta."""
+    html = rc.categorie_poi([("Pharmacy", 12), ("School", 9), ("Supermarket", 4)], "Poli")
+    assert "<svg" in html
+    assert "Pharmacy" in html and "School" in html
+    # croce (path), triangolo (path) e quadrato (rect): forme diverse
+    assert html.count("<path") >= 2 and "<rect" in html
+    assert "sanita" in html and "istruzione" in html      # la legenda delle famiglie
+    assert rc.categorie_poi([], "vuoto") == ""
+
+
+def test_il_diagramma_mancante_dice_perche():
+    """Un vuoto in mezzo a un capitolo non si distingue da un difetto: se il
+    disegno non si può fare, il documento lo dichiara."""
+    d = _coincidenze()
+    d["network"]["stops"] = []
+    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
+    assert "non è disegnato" in html
+    assert "fermate-nodo si ritrova fra quelle del piano" in html
+
+
+def test_l_ora_si_legge_anche_dal_vecchio_campione():
+    """Una relazione prodotta prima del campo `passaggi` ha solo `sample`, con
+    l'ora come stringa: leggerla è l'unico modo perché abbia il diagramma."""
+    assert rb._minuti_da_ora(492) == 492
+    assert rb._minuti_da_ora("08:12") == 492
+    assert rb._minuti_da_ora("08:12:00") == 492
+    assert rb._minuti_da_ora("niente") is None and rb._minuti_da_ora(None) is None
+    d = _coincidenze()
+    for c in d["analisi"]["coincidenze"]["esistenti"]:
+        c.pop("passaggi")                      # resta solo il vecchio sample
+    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
+    assert "<svg" in html, "col solo sample il diagramma deve uscire lo stesso"
