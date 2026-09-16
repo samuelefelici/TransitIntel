@@ -1031,6 +1031,69 @@ dichiarando le regole d'ingaggio del giro invece di lasciarle intendere dai nume
 Lezione da tenere: **quando un dato passa da due strade diverse, il test va scritto sulla
 strada che il codice percorre davvero, non su quella che si ha sotto gli occhi.**
 
+## I tetti erano morbidi in due punti, e i due difetti si coprivano a vicenda
+
+L'operatore ha guardato i turni del giro BB e ha detto che gli sembravano corti.
+La verifica ha detto altro, e per strada ha trovato un difetto peggiore.
+
+**Prima la verifica.** Lavoro medio 325' su 435: saturazione 74 %, monte lavoro
+233 ore, che al tetto pieno starebbero in 32 turni contro i 43 del piano. Sembrano
+undici turni di spreco. Ho provato a ricucirli: di **1 806 coppie una sola** e'
+componibile (A006+A103, semiunico da 423'). Delle altre, 1 544 si sovrappongono nel
+tempo — non sono buchi da riempire, sono lo stesso pezzo di giornata coperto da
+persone diverse — e le restanti sfondano i tetti.
+
+Il minimo vero non e' 32 ma **41**, e si legge vettura per vettura: ogni blocco e'
+continuo, U001 dura 986' e vuole ⌈986/435⌉ = 3 conducenti, U006 ne dura 464 e ne
+vuole 2 anche se ne basterebbe 1,07. **L'arrotondamento delle code costa 9,2 turni**,
+ed e' li' che sono finiti gli undici che sembravano spreco. Il piano e' a due turni
+dal minimo strutturale. Per scendere sotto servono piu' cambi in linea, e le auto
+aziendali sono a 5/5 con 46 movimenti tutti fra le 12:24 e le 16:04.
+
+**Poi il difetto.** A001 aveva 441' di lavoro contro un tetto di 435, e il giro
+dichiarava zero violazioni. Due cause che si nascondevano a vicenda:
+
+1. la scelta dei tagli **scontava** lo sforamento dal punteggio,
+   `score -= max(0, worst - max_nastro) * 2`: un taglio che sforava di 6 minuti
+   pagava 12 punti e vinceva lo stesso;
+2. la validazione ammetteva una **franchigia** di 15' sugli interi e 5' sugli altri,
+   cosi' il pezzo fuori norma che ne usciva risultava regolare. Il classificatore
+   aveva lo stesso ripescaggio, messo apposta per non divergere dalla validazione.
+
+Il gestore ha poi dettato le norme senza ambiguita': intero 435/435, semiunico
+555/480 con interruzione di almeno 1h15 non retribuita, spezzato 630/450 con almeno
+3 ore. **Nastri e lavoro non devono mai sforare.**
+
+Sei interventi:
+
+- `_nastri_dei_pezzi()`: un lettore unico del nastro di ogni pezzo, bordi compresi.
+  Finche' la scelta dei tagli e il controllo finale facevano due conti diversi, un
+  pezzo poteva passare la selezione e poi risultare fuori norma.
+- `rango_dei_tagli()`: il nastro viene **prima** del punteggio, in tre tempi —
+  dentro batte fuori, fra i fuori vince il meno fuori, a parita' il punteggio.
+  Nessun punteggio compra piu' un minuto di nastro.
+- `_best_three_cuts(..., max_nastro)`: **scarta** le terne fuori norma invece di
+  penalizzarle, e ora scatta anche per il nastro. Prima scattava solo quando il
+  tetto di guida per ripresa era acceso, e nell'urbano e' spento: non e' mai
+  entrata in funzione su questa rete.
+- Validazione: nessuna franchigia su nastro e lavoro.
+- Classificatore: fuori tetto vuol dire **invalido**, niente ripescaggio. I due
+  ora coincidono perche' nessuno dei due perdona, non perche' perdonano uguale.
+- La **sosta di 15'** dentro l'intero passa da violazione ad avvertimento, e smette
+  di essere una condizione di esistenza: un intero composto in regola per nastro e
+  lavoro veniva scartato solo perche' non trovava dove mettere il quarto d'ora. La
+  guida continuativa resta coperta dal RD 131, verificato a parte e inviolabile.
+
+Lezione gemella di quella del dossier: **un test scritto sullo stesso malinteso del
+codice non protegge da niente.** Il ripescaggio del classificatore esisteva per far
+coincidere due controlli che divergevano; nessuno si era chiesto se il numero giusto
+fosse quello morbido.
+
+Da verificare col prossimo giro: i turni fuori norma che prima erano nascosti
+emergeranno come violazioni finche' i tagli non si adeguano, e il rilassamento della
+sosta apre combinazioni che prima erano vietate. Se il conto regge, il piano
+dovrebbe restare intorno ai 41-43 turni ma con zero sforamenti veri.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
