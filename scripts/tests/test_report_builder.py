@@ -601,15 +601,18 @@ def test_le_coincidenze_si_vedono_nello_spazio_e_nel_tempo():
     assert "08:12" in html
 
 
-def test_il_diagramma_regge_senza_le_posizioni_dei_nodi():
-    """Se il nodo non si ritrova fra le fermate, niente disegno: il resto del
-    capitolo esce lo stesso."""
+def test_il_diagramma_esce_anche_senza_le_posizioni_dei_nodi():
+    """La geografia serve solo a DISPORRE le colonne: quali linee si
+    incontrano, dove e quando c'e' comunque. Prima, se i nodi non si
+    ritrovavano fra le fermate, il diagramma spariva del tutto — ed e' cosi'
+    che l'operatore si e' trovato il capitolo senza disegno."""
     d = _coincidenze()
     d["network"]["stops"] = []
     html = rb.render_coincidenze(d)
     assert "8. Coincidenze fra linee" in html
-    assert "Le coincidenze nello spazio e nel tempo" not in html
-    assert "8.4 Il libretto orario" in html        # il libretto non dipende dalla geografia
+    assert "Le coincidenze nello spazio e nel tempo" in html, "il disegno deve esserci lo stesso"
+    assert "disposti in cerchio" in html, "e il documento deve dire che la posizione e' di comodo"
+    assert "8.4 Il libretto orario" in html
 
 
 def test_il_diagramma_3d_vuole_nodi_e_incontri():
@@ -652,13 +655,16 @@ def test_le_categorie_si_disegnano_con_forme_distinte():
 
 
 def test_il_diagramma_mancante_dice_perche():
-    """Un vuoto in mezzo a un capitolo non si distingue da un difetto: se il
-    disegno non si può fare, il documento lo dichiara."""
+    """Resta un solo caso in cui il disegno non si puo' fare: quando nei dati
+    non c'e' l'ora degli incontri. Allora il capitolo lo dichiara, invece di
+    lasciare un vuoto che non si distingue da un difetto."""
     d = _coincidenze()
-    d["network"]["stops"] = []
+    for c in d["analisi"]["coincidenze"]["esistenti"]:
+        c["passaggi"] = [{"attesaMin": 3}]      # nessun orario
+        c["sample"] = []
     html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
     assert "non è disegnato" in html
-    assert "fermate-nodo si ritrova fra quelle del piano" in html
+    assert "ora dell'incontro" in html
 
 
 def test_l_ora_si_legge_anche_dal_vecchio_campione():
@@ -705,3 +711,36 @@ def test_lo_sfondo_si_chiede_a_meta_risoluzione():
     il browser fatica ad aprire."""
     assert 0 < rc.SFONDO_SCALA <= 0.6
     assert rc.SFONDI_MAX <= 80
+
+
+def test_il_diagramma_esce_con_qualunque_forma_degli_orari():
+    """Tre forme possibili nei dati: passaggi col minuto, passaggi con la sola
+    stringa, o soltanto il vecchio sample. Il disegno deve uscire in tutte e
+    tre, perché una relazione non si spiega all'operatore con «dipende da come
+    è stato salvato il dossier»."""
+    base = _coincidenze()
+    esistenti = base["analisi"]["coincidenze"]["esistenti"]
+
+    # 1. passaggi col minuto numerico
+    assert "<svg" in rb.render_coincidenze_3d(base, esistenti)
+
+    # 2. passaggi con la sola ora come stringa
+    d2 = _coincidenze()
+    for c in d2["analisi"]["coincidenze"]["esistenti"]:
+        for pg in c["passaggi"]:
+            pg.pop("arrivoMin")
+    assert "<svg" in rb.render_coincidenze_3d(d2, d2["analisi"]["coincidenze"]["esistenti"])
+
+    # 3. solo il vecchio sample
+    d3 = _coincidenze()
+    for c in d3["analisi"]["coincidenze"]["esistenti"]:
+        c.pop("passaggi")
+    assert "<svg" in rb.render_coincidenze_3d(d3, d3["analisi"]["coincidenze"]["esistenti"])
+
+    # senza NESSUN orario il disegno non si può fare, e lo dice
+    d4 = _coincidenze()
+    for c in d4["analisi"]["coincidenze"]["esistenti"]:
+        c["passaggi"] = [{"attesaMin": 3}]
+        c["sample"] = []
+    html = rb.render_coincidenze_3d(d4, d4["analisi"]["coincidenze"]["esistenti"])
+    assert "non è disegnato" in html and "ora dell'incontro" in html

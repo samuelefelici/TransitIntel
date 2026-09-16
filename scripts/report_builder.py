@@ -1235,8 +1235,11 @@ def render_coincidenze_3d(d: dict, esistenti: list) -> str:
     l'ora: una colonna fitta in alto e vuota in basso e' un nodo che funziona
     di sera e non la mattina.
 
-    Quando il disegno non si puo' fare lo dice, col motivo: un vuoto in mezzo
-    a un capitolo non si distingue da un difetto."""
+    Il disegno NON dipende dal ritrovare i nodi sulla carta. Prima si cercavano
+    le coordinate fra le fermate del piano e, se non si trovavano, il diagramma
+    spariva: ma la geografia serve solo a disporre le colonne, e l'informazione
+    vera — quali linee si incontrano, dove e quando — c'e' comunque. Quando le
+    coordinate mancano i nodi si dispongono in cerchio e la nota lo dichiara."""
     per_nome = {}
     for s_ in (g(d, "network", "stops", default=None) or []):
         if isinstance(s_, dict) and s_.get("name") and s_.get("lat") is not None:
@@ -1249,39 +1252,61 @@ def render_coincidenze_3d(d: dict, esistenti: list) -> str:
         if up in per_nome:
             return per_nome[up]
         for nome, s_ in per_nome.items():
-            if nome.startswith(up) or up.startswith(nome):
+            if len(nome) >= 4 and (nome.startswith(up) or up.startswith(nome)):
                 return s_
         return None
 
-    nodi, incontri, senza_posizione = {}, [], set()
+    posizioni, incontri, senza = {}, [], []
     for c in esistenti:
-        pos = dove(c.get("node"))
-        if not pos:
-            senza_posizione.add(str(c.get("node") or "?"))
+        nodo = c.get("node")
+        if not nodo:
             continue
-        nodi[c.get("node")] = {"name": c.get("node"), "lat": pos.get("lat"), "lon": pos.get("lon")}
+        orari = []
         for pg in (c.get("passaggi") or c.get("sample") or []):
             m = _minuti_da_ora(pg.get("arrivoMin"))
             if m is None:
                 m = _minuti_da_ora(pg.get("arrivo"))
-            if m is None:
-                continue
-            incontri.append({"node": c.get("node"), "from": c.get("fromRoute"),
-                             "to": c.get("toRoute"), "oraMin": m})
+            if m is not None:
+                orari.append(m)
+        if not orari:
+            continue
+        pos = dove(nodo)
+        if pos:
+            posizioni[nodo] = {"name": nodo, "lat": pos.get("lat"), "lon": pos.get("lon")}
+        elif nodo not in posizioni:
+            senza.append(nodo)
+        for m in orari:
+            incontri.append({"node": nodo, "from": c.get("fromRoute"), "to": c.get("toRoute"), "oraMin": m})
+
     if not incontri:
-        perche = ("nessuna delle fermate-nodo si ritrova fra quelle del piano"
-                  if senza_posizione and not nodi else "i passaggi non portano l'ora dell'incontro")
-        return para(f'<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato: '
-                    f'{perche}.</i></span>')
-    fuori = ""
-    if senza_posizione:
-        fuori = (f'<span class="small">{fmt_n(len(senza_posizione))} nodi non compaiono nel disegno '
-                 f'perch\u00e9 non se ne \u00e8 trovata la posizione fra le fermate del piano: '
-                 f'{esc(", ".join(sorted(senza_posizione)[:8]))}.</span>')
-    return rc.coincidenze_3d(list(nodi.values()), incontri,
-                             "Le coincidenze nello spazio e nel tempo",
-                             subtitle="Ogni anello e' un incontro fra due linee, all'ora in cui avviene."
-                             ) + (para(fuori) if fuori else "")
+        return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato: '
+                    'i passaggi non portano l\'ora dell\'incontro.</i></span>')
+
+    # I nodi senza coordinate non fanno sparire il disegno: si dispongono in
+    # cerchio attorno a quelli noti, o fra loro se non se ne conosce nessuno.
+    senza = [n for n in dict.fromkeys(senza) if n not in posizioni]
+    nota = ""
+    if senza:
+        import math as _m
+        if posizioni:
+            lat0 = sum(float(v["lat"]) for v in posizioni.values()) / len(posizioni)
+            lon0 = sum(float(v["lon"]) for v in posizioni.values()) / len(posizioni)
+            raggio = 0.012
+        else:
+            lat0, lon0, raggio = 43.6, 13.5, 0.02
+        for k, n in enumerate(senza):
+            a = 2 * _m.pi * k / max(1, len(senza))
+            posizioni[n] = {"name": n, "lat": lat0 + raggio * _m.cos(a), "lon": lon0 + raggio * _m.sin(a)}
+        nota = (f'<span class="small">Di {fmt_n(len(senza))} nodi non si conosce la posizione sulla carta '
+                f'({esc(", ".join(senza[:8]))}): nel disegno sono disposti in cerchio, gli orari e le linee '
+                f'restano quelli veri.</span>')
+
+    dis = rc.coincidenze_3d(list(posizioni.values()), incontri,
+                            "Le coincidenze nello spazio e nel tempo",
+                            subtitle="Ogni anello e' un incontro fra due linee, all'ora in cui avviene.")
+    if not dis:
+        return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato.</i></span>')
+    return dis + (para(nota) if nota else "")
 
 
 def render_libretto(esistenti: list) -> str:

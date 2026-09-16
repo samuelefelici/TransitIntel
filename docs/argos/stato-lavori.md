@@ -1458,6 +1458,34 @@ secondo. Senza, la mappa spariva proprio nella stampa.
 Resta da capire che cosa l'operatore non vedeva davvero: la prossima relazione lo
 dira' da sola.
 
+L'operatore ha poi chiarito: **le mappe si vedono benissimo, manca solo il
+diagramma delle coincidenze.** Quindi lo sfondo funziona e i tre difetti qui
+sopra erano reali ma non erano *quel* problema.
+
+## Il diagramma dipendeva dalla geografia, e non doveva
+
+Il disegno cercava le coordinate di ogni nodo fra le fermate del piano, e se non
+le trovava **spariva del tutto**. Ma la geografia serve solo a DISPORRE le
+colonne: l'informazione vera — quali linee si incontrano, dove e quando — c'e'
+comunque. Far dipendere l'esistenza del disegno da un dettaglio della sua forma
+era l'errore.
+
+Ora i nodi di cui non si conosce la posizione **si dispongono in cerchio**, e la
+nota sotto la figura lo dichiara: «nel disegno sono disposti in cerchio, gli
+orari e le linee restano quelli veri». Il diagramma esce sempre.
+
+Resta un solo caso in cui non si puo' fare: quando nei dati non c'e' l'ora degli
+incontri. Li' il capitolo lo scrive.
+
+Il test `test_il_diagramma_esce_con_qualunque_forma_degli_orari` prova tutte e
+tre le forme che gli orari possono avere nel dossier (passaggi col minuto,
+passaggi con la sola stringa, vecchio `sample`), perche' **una relazione non si
+spiega all'operatore con «dipende da come e' stato salvato il dossier»**.
+
+Il matching dei nomi chiede ora almeno quattro caratteri prima di accettare un
+prefisso: con nomi cortissimi una fermata qualsiasi poteva rubare il nodo.
+
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
