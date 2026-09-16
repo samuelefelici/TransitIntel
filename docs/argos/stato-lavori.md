@@ -1391,6 +1391,40 @@ Le posizioni dei nodi si ricavano dalle fermate del piano per nome. Se non si
 ritrovano, il disegno non esce e il libretto resta: **il libretto non dipende
 dalla geografia**, e c'e' un test che lo verifica.
 
+## Il diagramma che non si vedeva, e i simboli delle categorie
+
+**«Non vedo nessun diagramma sulle coincidenze».** Il codice era mergiato, quindi
+o la relazione era anteriore al deploy, o qualcosa lo faceva sparire in silenzio.
+Cercando il secondo caso l'ho trovato.
+
+Il diagramma prende gli orari da `passaggi`, il campo nuovo, e ricade su `sample`
+quando manca. Ma **`sample` non ha i minuti**: porta solo la stringa `"08:12"`.
+Il codice leggeva `pg.get("arrivoMin")`, trovava `None`, faceva `continue` — e
+con tutti i passaggi scartati non restava nessun incontro, quindi nessun disegno,
+**senza una riga che lo dicesse**. Una relazione prodotta prima del campo nuovo
+non poteva avere il diagramma, e non si capiva perche'.
+
+Due rimedi:
+
+- `_minuti_da_ora()` legge i minuti da un numero **o** da una stringa `"HH:MM"`,
+  cosi' anche il vecchio campione produce il disegno;
+- quando il diagramma davvero non si puo' fare, il capitolo **lo dichiara col
+  motivo** («nessuna delle fermate-nodo si ritrova fra quelle del piano», oppure
+  «i passaggi non portano l'ora dell'incontro»), e se solo alcuni nodi mancano li
+  elenca sotto la figura. Un vuoto in mezzo a un capitolo non si distingue da un
+  difetto: dichiararlo e' la differenza fra un documento diagnosticabile e uno da
+  indovinare.
+
+**I simboli delle categorie.** Le categorie dei POI arrivano dai dati, sono
+decine e in inglese: `famiglia_poi()` le raggruppa in otto famiglie riconoscibili
+(sanita', istruzione, commercio, ristorazione, trasporti, servizi pubblici,
+cultura e svago, lavoro e servizi) e cio' che non si riconosce finisce in
+«altro», che e' un'informazione anche quella.
+
+Ogni famiglia ha **forma e colore**: croce, triangolo, quadrato, cerchio, rombo,
+esagono, stella, quadrato ruotato. Le forme sono distinte apposta, perche' la
+relazione si stampa e in bianco e nero il colore da solo non basta.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

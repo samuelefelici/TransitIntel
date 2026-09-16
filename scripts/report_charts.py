@@ -815,6 +815,116 @@ def coincidenze_3d(nodi: Sequence[dict], incontri: Sequence[dict], title: str,
                        "Il colore e' la linea in arrivo.")
 
 
+# ═══════════════════════════════════════════════════════════════
+#  SIMBOLI DELLE CATEGORIE
+#  Un POI non e' un numero in una riga: un simbolo dice a colpo d'occhio
+#  se una linea serve scuole o negozi. Le categorie che arrivano dai dati
+#  sono decine e in inglese; si raggruppano in famiglie riconoscibili.
+# ═══════════════════════════════════════════════════════════════
+
+FAMIGLIE_POI = [
+    ("sanita",    "#c0392b", ("pharmac", "hospital", "doctor", "clinic", "dentist", "health", "medic",
+                              "veterinar", "farmac", "ospedal")),
+    ("istruzione", "#2a78d6", ("school", "universit", "college", "kindergarten", "librar", "educat",
+                               "scuol", "istitut", "plesso")),
+    ("commercio", "#e08d29", ("shop", "store", "supermarket", "market", "mall", "bakery", "butcher",
+                              "negozi", "supermerc")),
+    ("ristorazione", "#8e44ad", ("restaurant", "cafe", "bar", "fast food", "pub", "pizzer", "ristorant")),
+    ("trasporti", "#16a085", ("station", "bus", "parking", "airport", "port", "taxi", "stazion",
+                              "aeroport", "terminal")),
+    ("servizi pubblici", "#2c3e50", ("post", "government", "town hall", "police", "fire", "court",
+                                     "embassy", "comune", "municip", "poste")),
+    ("cultura e svago", "#d4a017", ("museum", "theatre", "theater", "cinema", "church", "park", "sport",
+                                    "gym", "monument", "memorial", "attraction", "chiesa", "teatro")),
+    ("lavoro e servizi", "#7f8c8d", ("office", "bank", "insurance", "agency", "real estate", "company",
+                                     "banca", "ufficio", "agenzia")),
+]
+FAMIGLIA_ALTRO = ("altro", "#95a5a6")
+
+
+def famiglia_poi(categoria: str) -> tuple:
+    """La famiglia di una categoria POI: (nome, colore). Mai un errore: cio'
+    che non si riconosce finisce in «altro», che e' un'informazione anche
+    quella."""
+    c = str(categoria or "").lower()
+    for nome, colore, chiavi in FAMIGLIE_POI:
+        if any(k in c for k in chiavi):
+            return nome, colore
+    return FAMIGLIA_ALTRO
+
+
+def _glifo(famiglia: str, x: float, y: float, r: float, colore: str) -> str:
+    """Il simbolo della famiglia: forme distinte, riconoscibili anche stampate
+    in bianco e nero, dove il colore da solo non basterebbe."""
+    c = f'fill="{colore}"'
+    if famiglia == "sanita":          # croce
+        b = r * 0.36
+        return (f'<path d="M{x-b:.1f},{y-r:.1f} h{2*b:.1f} v{r-b:.1f} h{r-b:.1f} v{2*b:.1f} '
+                f'h{-(r-b):.1f} v{r-b:.1f} h{-2*b:.1f} v{-(r-b):.1f} h{-(r-b):.1f} v{-2*b:.1f} '
+                f'h{r-b:.1f} Z" {c}/>')
+    if famiglia == "istruzione":      # triangolo (il tetto della scuola)
+        return f'<path d="M{x:.1f},{y-r:.1f} L{x+r:.1f},{y+r*0.75:.1f} L{x-r:.1f},{y+r*0.75:.1f} Z" {c}/>'
+    if famiglia == "commercio":       # quadrato
+        return f'<rect x="{x-r*0.85:.1f}" y="{y-r*0.85:.1f}" width="{r*1.7:.1f}" height="{r*1.7:.1f}" rx="1.5" {c}/>'
+    if famiglia == "ristorazione":    # cerchio pieno
+        return f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r*0.9:.1f}" {c}/>'
+    if famiglia == "trasporti":       # rombo
+        return (f'<path d="M{x:.1f},{y-r:.1f} L{x+r:.1f},{y:.1f} L{x:.1f},{y+r:.1f} '
+                f'L{x-r:.1f},{y:.1f} Z" {c}/>')
+    if famiglia == "servizi pubblici":  # esagono
+        pts = " ".join(f"{x + r * math.cos(math.radians(a)):.1f},{y + r * math.sin(math.radians(a)):.1f}"
+                       for a in range(-90, 270, 60))
+        return f'<polygon points="{pts}" {c}/>'
+    if famiglia == "cultura e svago":   # stella
+        pts = []
+        for k in range(10):
+            rr = r if k % 2 == 0 else r * 0.45
+            a = math.radians(-90 + k * 36)
+            pts.append(f"{x + rr * math.cos(a):.1f},{y + rr * math.sin(a):.1f}")
+        return f'<polygon points="{" ".join(pts)}" {c}/>'
+    if famiglia == "lavoro e servizi":  # quadrato ruotato piccolo
+        return (f'<rect x="{x-r*0.7:.1f}" y="{y-r*0.7:.1f}" width="{r*1.4:.1f}" height="{r*1.4:.1f}" '
+                f'transform="rotate(45 {x:.1f} {y:.1f})" {c}/>')
+    return f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r*0.6:.1f}" {c}/>'
+
+
+def categorie_poi(voci: Sequence[tuple], title: str, subtitle: str = "", width: int = 900) -> str:
+    """Le categorie dei POI, ciascuna col suo simbolo colorato.
+
+    voci: [(categoria, quanti)]. Le barre dicono il peso, il simbolo dice di
+    che cosa si tratta senza dover leggere la parola — che spesso e' in
+    inglese e viene dai dati di origine."""
+    righe = [(str(n), int(v)) for n, v in voci if int(v) > 0]
+    if not righe:
+        return ""
+    alt, gap = 22, 6
+    etichetta_w, num_w = 210, 70
+    barra_x = etichetta_w + 34
+    barra_w = width - barra_x - num_w - 16
+    height = len(righe) * (alt + gap) + 16
+    massimo = max(v for _, v in righe)
+    out = [f'<svg class="chart" viewBox="0 0 {width} {height}" width="{width}" height="{height}" '
+           f'role="img" aria-label="{esc(title)}">']
+    viste = {}
+    for k, (nome, v) in enumerate(righe):
+        y = 8 + k * (alt + gap)
+        fam, col = famiglia_poi(nome)
+        viste.setdefault(fam, col)
+        out.append(_glifo(fam, 13, y + alt / 2, 8, col))
+        out.append(f'<text x="30" y="{y + alt / 2 + 4:.1f}" font-size="11" font-family=\'{FONT}\' '
+                   f'fill="{INK}">{esc(nome)}</text>')
+        w = max(2.0, v / massimo * barra_w)
+        out.append(f'<rect x="{barra_x}" y="{y}" width="{w:.1f}" height="{alt}" rx="2" fill="{col}" '
+                   f'fill-opacity="0.85"><title>{esc(nome)}: {v}</title></rect>')
+        out.append(f'<text x="{barra_x + w + 7:.1f}" y="{y + alt / 2 + 4:.1f}" font-size="11" '
+                   f'font-family=\'{FONT}\' fill="{MUTED}">{v}</text>')
+    out.append("</svg>")
+    tbl = _table(["Categoria", "Famiglia", "Quanti"],
+                 [(n, famiglia_poi(n)[0], v) for n, v in righe], caption="Poli per categoria")
+    legenda = _legend(list(viste.keys()), list(viste.values()))
+    return figure(title, "".join(out), subtitle=subtitle, legend=legenda, table=tbl)
+
+
 # ── Riquadri KPI (quando il dato è UN numero) ──
 def kpi_row(tiles: Sequence[tuple[str, str, str]]) -> str:
     """tiles: [(label, value, hint)]"""

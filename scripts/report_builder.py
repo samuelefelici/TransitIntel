@@ -595,8 +595,9 @@ def render_copertura(perc: dict) -> str:
         # un elenco di numeri non fa vedere che una categoria pesa quanto tutte
         # le altre messe insieme: le barre lo fanno. La tabella resta sotto il
         # disegno, dentro il riquadro richiudibile della figura.
-        out.append(rc.bar_h([(c.get("nome") or "", int(c.get("n") or 0)) for c in cat[:18]],
-                            "Poli attrattori serviti, per categoria", unit="poli"))
+        out.append(rc.categorie_poi([(c.get("nome") or "", int(c.get("n") or 0)) for c in cat[:18]],
+                                   "Poli attrattori serviti, per categoria",
+                                   subtitle="Il simbolo dice di che cosa si tratta, la barra quanti sono."))
         if len(cat) > 18:
             out.append(para(f'<span class="small">... e altre {fmt_n(len(cat) - 18)} categorie '
                             f'con pochi poli ciascuna.</span>'))
@@ -1209,22 +1210,42 @@ def _attesa(x: dict) -> dict:
     return piatta
 
 
+def _minuti_da_ora(x) -> int | None:
+    """I minuti dalla mezzanotte, comunque sia scritta l'ora.
+
+    Il campo `passaggi` li porta gia' come numero; il vecchio `sample` aveva
+    solo la stringa "08:12", e leggerla era l'unico modo perche' una relazione
+    prodotta prima di questo cambiamento avesse comunque il suo diagramma."""
+    if isinstance(x, (int, float)):
+        return int(x)
+    if isinstance(x, str) and ":" in x:
+        try:
+            pezzi = [int(v) for v in x.split(":")[:2]]
+            return pezzi[0] * 60 + pezzi[1]
+        except ValueError:
+            return None
+    return None
+
+
 def render_coincidenze_3d(d: dict, esistenti: list) -> str:
     """Le coincidenze nello spazio e nel tempo.
 
     Una tabella dice quante volte due linee si incontrano; non dice quando, ne'
     dove si addensano. In assonometria il piano e' la citta' e l'altezza e'
     l'ora: una colonna fitta in alto e vuota in basso e' un nodo che funziona
-    di sera e non la mattina."""
+    di sera e non la mattina.
+
+    Quando il disegno non si puo' fare lo dice, col motivo: un vuoto in mezzo
+    a un capitolo non si distingue da un difetto."""
     per_nome = {}
     for s_ in (g(d, "network", "stops", default=None) or []):
-        if isinstance(s_, dict) and s_.get("name"):
-            per_nome.setdefault(str(s_["name"]).upper(), s_)
-    if not per_nome:
-        return ""
+        if isinstance(s_, dict) and s_.get("name") and s_.get("lat") is not None:
+            per_nome.setdefault(str(s_["name"]).upper().strip(), s_)
 
     def dove(nodo: str):
-        up = str(nodo or "").upper()
+        up = str(nodo or "").upper().strip()
+        if not up:
+            return None
         if up in per_nome:
             return per_nome[up]
         for nome, s_ in per_nome.items():
@@ -1232,23 +1253,35 @@ def render_coincidenze_3d(d: dict, esistenti: list) -> str:
                 return s_
         return None
 
-    nodi, incontri = {}, []
+    nodi, incontri, senza_posizione = {}, [], set()
     for c in esistenti:
         pos = dove(c.get("node"))
         if not pos:
+            senza_posizione.add(str(c.get("node") or "?"))
             continue
         nodi[c.get("node")] = {"name": c.get("node"), "lat": pos.get("lat"), "lon": pos.get("lon")}
         for pg in (c.get("passaggi") or c.get("sample") or []):
-            m = pg.get("arrivoMin")
+            m = _minuti_da_ora(pg.get("arrivoMin"))
+            if m is None:
+                m = _minuti_da_ora(pg.get("arrivo"))
             if m is None:
                 continue
             incontri.append({"node": c.get("node"), "from": c.get("fromRoute"),
                              "to": c.get("toRoute"), "oraMin": m})
     if not incontri:
-        return ""
+        perche = ("nessuna delle fermate-nodo si ritrova fra quelle del piano"
+                  if senza_posizione and not nodi else "i passaggi non portano l'ora dell'incontro")
+        return para(f'<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato: '
+                    f'{perche}.</i></span>')
+    fuori = ""
+    if senza_posizione:
+        fuori = (f'<span class="small">{fmt_n(len(senza_posizione))} nodi non compaiono nel disegno '
+                 f'perch\u00e9 non se ne \u00e8 trovata la posizione fra le fermate del piano: '
+                 f'{esc(", ".join(sorted(senza_posizione)[:8]))}.</span>')
     return rc.coincidenze_3d(list(nodi.values()), incontri,
                              "Le coincidenze nello spazio e nel tempo",
-                             subtitle="Ogni anello e' un incontro fra due linee, all'ora in cui avviene.")
+                             subtitle="Ogni anello e' un incontro fra due linee, all'ora in cui avviene."
+                             ) + (para(fuori) if fuori else "")
 
 
 def render_libretto(esistenti: list) -> str:
