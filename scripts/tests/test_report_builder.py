@@ -125,7 +125,7 @@ def test_builder_full_dossier_sections_and_summary():
     d = _dossier()
     html = rb.build(d)
     for needle in ("1. Sintesi", "Diagramma tempo-vettura", "Diagramma tempo-turno", "Distribuzione del nastro",
-                   "Valori unitari in uso", "Scenari confrontati", "Turni macchina, corsa per corsa", "Turni guida, pezzo per pezzo",
+                   "Valori unitari in uso", "Scenari confrontati", "Fogli turno macchina", "Fogli turno guida",
                    "violazione di prova", "Tariffa oraria conducente", "Regole di struttura", "Sonda di spostamento", "Disegno della rete",
                    "cadenza 30′", "ps.trips.generate", "Paga base"):
         assert needle in html, needle
@@ -879,11 +879,121 @@ def test_ogni_turno_sta_su_un_foglio_suo():
     """Gli allegati si staccano e si consegnano: un turno non si spezza mai a
     metà fra due pagine."""
     html = rb.render_appendix(_dossier())
-    assert "staccati e consegnati" in html
+    assert "staccano e si consegnano" in html
     assert html.count('<section class="foglio">') >= 2, "un foglio per turno"
     assert html.count("</section>") >= 2
     # e lo stile lo impone in stampa
     assert "break-before: page" in rc.CSS and "break-inside: avoid" in rc.CSS
+
+
+
+def test_il_foglio_turno_e_quello_della_fucina():
+    """L'allegato non è una seconda versione del turno: è lo stesso foglio che
+    esce da «Fucina → turni guida → esporta → Fogli turno». Chi guida deve
+    trovarsi in mano un documento solo."""
+    d = _dossier()
+    foglio = rb.foglio_turno_guida(d["final"]["crew"]["driverShifts"][0], d["meta"], {})
+    # l'intestazione: matricola grande, deposito, tipo, giorno-tipo
+    assert 'class="matricola">U1<' in foglio
+    assert 'class="chip vuota">INTERO<' in foglio
+    # le tre voci a destra, come sul foglio aziendale
+    for voce in ("Nastro", "Presentazione", "Corse"):
+        assert f'<span class="k">{voce}</span>' in foglio, voce
+    # la banda del programma e la data di entrata in vigore
+    assert 'class="programma"' in foglio and "in vigore dal" in foglio
+    assert "20/09/2026" in foglio, "la data va scritta come la legge un italiano"
+    # e le competenze in fondo
+    assert "Competenze" in foglio and "Lavoro" in foglio
+
+
+def test_la_corsa_sul_foglio_porta_linea_orari_e_durata():
+    """La scheda-corsa: la linea nel bollino, gli orari grandi ai due capi, la
+    durata nel mezzo. È così che si legge una corsa in un secondo."""
+    corsa = {"routeName": "1/4", "vehicleId": "V1", "vehicleType": "12m",
+             "departureMin": 440, "arrivalMin": 520, "departureTime": "07:20",
+             "arrivalTime": "08:40", "firstStopName": "Cavour", "lastStopName": "Tavernelle",
+             "variantCode": "46A"}
+    html = rb._scheda_corsa(corsa, [])
+    assert 'class="bollino">1/4<' in html
+    assert 'class="big">07:20<' in html and 'class="big">08:40<' in html
+    assert "Cavour" in html and "Tavernelle" in html
+    assert ">80′<" in html, "la durata sta sulla freccia, non va calcolata a mano"
+    assert "TM V1" in html and "12 m" in html, "chi guida deve sapere anche che mezzo è"
+    assert "46A" in html
+
+
+def test_gli_orari_del_foglio_sono_a_due_cifre():
+    """07:58 e 7:58 non sono la stessa cosa: le colonne devono incolonnarsi."""
+    assert rb._hhmm(478) == "07:58"
+    assert rb._hhmm(1350) == "22:30"
+    # e quando il motore l'orario lo ha già scritto, si usa il suo
+    assert rb._orario("07:20:00", 440) == "07:20"
+    assert rb._orario(None, 440) == "07:20"
+
+
+def test_i_punti_orari_finiscono_sotto_la_corsa():
+    """Il foglio vero porta i passaggi ai punti orari: senza, la relazione
+    darebbe un foglio più povero di quello che il conducente ha in mano."""
+    d = _dossier()
+    turno = d["final"]["crew"]["driverShifts"][0]
+    tid = turno["riprese"][0]["trips"][0]["tripId"]
+    passaggi = {tid: [{"fermata": "Stamira", "ora": "07:31"}, {"fermata": "Pinocchio", "ora": "07:48"}]}
+    foglio = rb.foglio_turno_guida(turno, d["meta"], passaggi)
+    assert 'class="passaggi"' in foglio
+    assert "Stamira" in foglio and "07:31" in foglio
+    assert "Pinocchio" in foglio and "07:48" in foglio
+    # e senza passaggi il foglio esce lo stesso, con partenza e arrivo
+    assert 'class="passaggi"' not in rb.foglio_turno_guida(turno, d["meta"], {})
+
+
+def test_la_sosta_e_l_interruzione_si_vedono_a_colpo_d_occhio():
+    """Fra una corsa e l'altra il foglio dice quanto si sta fermi; fra un pezzo
+    e l'altro dice che il nastro si interrompe. Sono due cose diverse."""
+    d = _dossier()
+    # U2 è uno spezzato: fra i due pezzi c'è un'interruzione vera
+    spezzato = d["final"]["crew"]["driverShifts"][1]
+    foglio = rb.foglio_turno_guida(spezzato, d["meta"], {})
+    assert "INTERRUZIONE" in foglio and 'class="stacco forte"' in foglio
+    assert "10:10 – 13:20" in foglio, "l'interruzione va con gli orari, non solo con i minuti"
+    # dieci minuti al capolinea non sono una sosta da segnalare, venticinque sì
+    stretto = _duty("U8", "intero", [_piece("V1", 440, 610, [("1/4", 440, 520), ("1/4", 530, 610)])], 180, 170)
+    assert not any(r["t"] == "sosta" for r in rb.righe_del_foglio(stretto, "Ancona", []))
+    largo = _duty("U7", "intero", [_piece("V1", 440, 625, [("1/4", 440, 520), ("1/4", 545, 625)])], 195, 185)
+    righe = rb.righe_del_foglio(largo, "Ancona", [])
+    assert [r["min"] for r in righe if r["t"] == "sosta"] == [25]
+    assert "SOSTA 25′" in rb.foglio_turno_guida(largo, d["meta"], {})
+
+
+def test_le_violazioni_finiscono_nelle_note_del_foglio():
+    """Un turno fuori norma non può uscire senza che il foglio lo dica."""
+    d = _dossier()
+    foglio = rb.foglio_turno_guida(d["final"]["crew"]["driverShifts"][0], d["meta"], {})
+    assert "violazione di prova" in foglio
+    assert 'class="richiamo">!<' in foglio
+
+
+def test_anche_le_vetture_hanno_il_loro_foglio():
+    """I turni macchina escono nello stesso formato: stessa intestazione, poi
+    il programma della vettura riga per riga."""
+    d = _dossier()
+    foglio = rb.foglio_turno_macchina(d["final"]["vsp"]["vehicleShifts"][0], d["meta"])
+    assert 'class="matricola">V1<' in foglio
+    assert "12 m" in foglio
+    assert "Uscita deposito" in foglio, "il fuorilinea di uscita non è una corsa"
+    assert "1/4" in foglio and "07:20" in foglio
+    assert "km a vuoto" in foglio and "Rientri in deposito" in foglio
+
+
+def test_i_cambi_di_vettura_non_finiscono_su_due_pezzi():
+    """Lo stesso cambio non può comparire due volte: chi legge il foglio
+    crederebbe di doverlo fare due volte."""
+    turno = _duty("U9", "spezzato",
+                  [_piece("V1", 440, 520, [("1/4", 440, 520)]),
+                   _piece("V1", 700, 780, [("3", 700, 780)])], 400, 300, 180)
+    turno["handovers"] = [{"role": "outgoing", "atMin": 520, "vehicleId": "V1",
+                           "description": "lascia la V1 a Tavernelle"}]
+    righe = rb.righe_del_foglio(turno, "Ancona", [])
+    assert sum(1 for r in righe if r["t"] == "cambio") == 1
 
 
 def test_il_diagramma_sta_sul_fondo_chiaro():

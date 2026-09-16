@@ -1185,17 +1185,84 @@ details.tv table {{ margin-top: 6px; }}
 .toc-t {{ font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
          color: var(--muted); margin-bottom: 8px; }}
 
-/* un turno per foglio: a schermo un riquadro, in stampa una pagina intera */
-.foglio {{ border: 1px solid var(--grid); border-radius: 8px; padding: 10px 14px 4px;
-          margin: 14px 0; background: var(--surface); break-inside: avoid; }}
+/* ── Fogli turno ─────────────────────────────────────────────────────
+   Gli allegati sono gli stessi fogli che escono da «Fucina → turni guida
+   → esporta → Fogli turno»: un turno per pagina, nel formato che il
+   conducente si trova in mano. Sta tutto sotto .foglio perche' la
+   relazione ha gia' un suo foglio di stile e i due non devono pestarsi. */
+.foglio {{ border: 1px solid var(--grid); border-radius: 8px; padding: 14px 16px 10px;
+          margin: 16px 0; background: #fff; break-inside: avoid; font-size: 12px; }}
 .foglio h4 {{ margin-top: 2px; }}
-
+.foglio .testa {{ display: flex; justify-content: space-between; align-items: flex-start;
+          border-bottom: 2px solid var(--accent); padding-bottom: 7px; }}
+.foglio .matricola {{ margin: 0; font-size: 34px; font-weight: 800; line-height: 1;
+          letter-spacing: -.02em; color: var(--ink); }}
+.foglio .testa .sub {{ display: flex; align-items: center; gap: 8px; margin-top: 7px; }}
+.foglio .deposito {{ font-weight: 700; color: var(--ink2); font-size: 14px; letter-spacing: .02em; }}
+.foglio .destra {{ text-align: right; color: var(--ink2); }}
+.foglio .destra div {{ margin-bottom: 3px; }}
+.foglio .destra b {{ font-size: 14px; color: var(--ink); font-variant-numeric: tabular-nums; }}
+.foglio .k {{ text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+          font-weight: 700; font-size: 9.5px; margin-right: 8px; }}
+.foglio .chip {{ display: inline-block; border: 1px solid var(--grid); border-radius: 999px;
+          padding: 1px 9px; font-size: 10px; font-weight: 600; color: var(--ink2);
+          background: #f6f6f3; white-space: nowrap; }}
+.foglio .chip.verde {{ background: #dcf0dc; border-color: #9ccb9c; color: #14532d; }}
+.foglio .chip.vuota {{ background: #fff; }}
+.foglio .programma {{ display: flex; justify-content: space-between; color: var(--muted);
+          font-size: 11px; padding: 5px 0 7px; }}
+.foglio .riga {{ display: grid; grid-template-columns: 96px 46px 1fr 46px 46px;
+          align-items: center; gap: 8px; padding: 4px 6px; }}
+.foglio .riga .lbl {{ font-style: italic; font-weight: 700; color: var(--ink2); }}
+.foglio .riga .t {{ font-weight: 700; font-variant-numeric: tabular-nums; }}
+.foglio .riga .t.fine {{ text-align: right; }}
+.foglio .riga .freccia {{ color: var(--muted); }}
+.foglio .riga .chip {{ justify-self: end; }}
+.foglio .riga.cambio {{ grid-template-columns: 96px 46px 1fr auto; background: #fdf6e3; border-radius: 4px; }}
+.foglio .corsa {{ border: 1px solid var(--grid); border-left: 4px solid var(--accent);
+          border-radius: 6px; padding: 7px 9px; margin: 5px 0; break-inside: avoid; }}
+.foglio .corsa-testa {{ display: grid; grid-template-columns: 68px 1fr 112px 1fr 54px;
+          align-items: center; gap: 8px; }}
+.foglio .bollino {{ display: block; padding: 4px 6px; border: 1px solid #9ccb9c; border-radius: 6px;
+          background: #dcf0dc; color: #14532d; font-weight: 800; font-size: 17px; text-align: center; }}
+.foglio .tm {{ font-size: 9.5px; color: var(--muted); margin-top: 3px; font-weight: 600; text-align: center; }}
+.foglio .part .big, .foglio .arrivo .big {{ font-size: 20px; font-weight: 800; line-height: 1.05;
+          color: var(--ink); font-variant-numeric: tabular-nums; }}
+.foglio .part .dove, .foglio .arrivo .dove {{ font-size: 12px; font-weight: 600; color: var(--ink2); }}
+.foglio .arrivo {{ text-align: right; }}
+.foglio .tratto {{ display: flex; align-items: center; gap: 4px; color: var(--accent); }}
+.foglio .tratto .filo {{ flex: 1; height: 0; border-top: 1px solid var(--accent); }}
+.foglio .tratto .cerchio {{ width: 6px; height: 6px; border: 1px solid var(--accent);
+          border-radius: 50%; background: #fff; }}
+.foglio .tratto .punta {{ width: 0; height: 0; border-top: 4px solid transparent;
+          border-bottom: 4px solid transparent; border-left: 6px solid var(--accent); }}
+.foglio .tratto .dur {{ font-size: 10px; color: var(--ink2); background: #f1f1ed;
+          border-radius: 999px; padding: 0 6px; }}
+.foglio .coda {{ display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }}
+.foglio .passaggi {{ margin-top: 6px; padding-top: 5px; border-top: 1px dashed var(--grid);
+          font-size: 10.5px; color: var(--ink2); display: flex; flex-wrap: wrap; gap: 2px 14px; }}
+.foglio .passaggi b {{ color: var(--ink); font-variant-numeric: tabular-nums; }}
+.foglio .stacco {{ display: flex; align-items: center; gap: 8px; color: var(--muted);
+          font-size: 10px; font-weight: 700; letter-spacing: .1em; margin: 5px 0; }}
+.foglio .stacco::before, .foglio .stacco::after {{ content: ""; flex: 1; border-top: 1px dashed var(--grid); }}
+.foglio .stacco.forte {{ color: #7a4b00; }}
+.foglio .stacco.forte::before, .foglio .stacco.forte::after {{ border-top: 2px solid {STATUS['warning']}; }}
+.foglio .richiamo {{ display: inline-block; min-width: 17px; height: 17px; line-height: 17px;
+          text-align: center; background: {STATUS['critical']}; color: #fff; border-radius: 4px;
+          font-size: 10px; font-weight: 800; }}
+.foglio .piede {{ border-top: 1px solid var(--axis); margin-top: 9px; padding-top: 7px; font-size: 11px; }}
+.foglio .piede .conti b {{ margin-right: 16px; font-variant-numeric: tabular-nums; }}
+.foglio .piede .note {{ margin-top: 6px; }}
+.foglio .piede .nota {{ display: flex; gap: 8px; align-items: flex-start; margin-top: 3px; }}
+.foglio .piede .nota.assenti {{ color: var(--muted); }}
+.foglio table {{ font-size: 11.5px; margin: 6px 0 8px; }}
 @media print {{
   @page {{ margin: 16mm 14mm 18mm; }}
   .copertina {{ break-after: page; page-break-after: always; }}
   .marchio {{ border-bottom-width: 1.5px; }}
   .foglio {{ break-before: page; page-break-before: always; break-inside: avoid;
             border: none; border-radius: 0; padding: 0; margin: 0; }}
+  .foglio .corsa {{ break-inside: avoid; page-break-inside: avoid; }}
   .foglio:first-of-type {{ break-before: auto; page-break-before: auto; }}
   body {{ background: #fff; }}
   .page {{ max-width: none; padding: 0; }}
