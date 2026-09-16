@@ -961,6 +961,143 @@ def categorie_poi(voci: Sequence[tuple], title: str, subtitle: str = "", width: 
     return figure(title, "".join(out), subtitle=subtitle, legend=legenda, table=tbl)
 
 
+# ═══════════════════════════════════════════════════════════════
+#  DIAGRAMMA SPAZIO-TEMPO
+#  Una corsa non e' un punto: e' una traiettoria che si muove sul
+#  territorio mentre l'orologio avanza. Due linee «si incontrano» dove le
+#  loro traiettorie si toccano — e questo un elenco di orari non lo mostra.
+# ═══════════════════════════════════════════════════════════════
+
+FONDO_SCURO = "#0e1622"
+GRIGLIA_SCURA = "#1e3048"
+TESTO_SCURO = "#c9d6e4"
+
+
+def _asse_assonometrico(pts, width: int, height: int, quota: float):
+    """La proiezione: piano in assonometria, tempo in verticale.
+
+    Restituisce (P, angoli, alza). `P` porta (lat, lon) sul pavimento,
+    `angoli` sono i quattro spigoli del pavimento, `alza` solleva un punto
+    all'altezza di un istante."""
+    lats = [p[0] for p in pts]
+    lons = [p[1] for p in pts]
+    la0, la1 = min(lats), max(lats)
+    lo0, lo1 = min(lons), max(lons)
+    dl = max(1e-6, la1 - la0)
+    dg = max(1e-6, lo1 - lo0)
+    pad = 54
+    base_w = width - 2 * pad
+    base_h = (height - quota) * 0.80
+
+    def P(lat, lon):
+        u = (float(lon) - lo0) / dg          # est
+        v = (float(lat) - la0) / dl          # nord
+        x = pad + (u * 0.70 + (1 - v) * 0.28) * base_w
+        y = height - pad * 0.7 - (v * 0.52 + u * 0.30) * base_h
+        return x, y
+
+    angoli = [P(la0, lo0), P(la0, lo1), P(la1, lo1), P(la1, lo0)]
+    return P, angoli
+
+
+def spazio_tempo(corse: Sequence[dict], title: str, subtitle: str = "",
+                 incontri: Sequence[dict] = (), width: int = 900, height: int = 700,
+                 note: str = "") -> str:
+    """corse: [{linea, colore?, punti: [(lat, lon, minuti), ...]}].
+
+    Ogni corsa e' una curva che parte dal pavimento e sale: piu' e' alta, piu'
+    e' tardi. La sua ombra sul pavimento e' il percorso visto dall'alto. Dove
+    due curve di linee diverse si avvicinano c'e' una coincidenza, e quelle
+    riconosciute sono marcate."""
+    valide = [c for c in corse if len(c.get("punti") or []) >= 2]
+    if not valide:
+        return ""
+    tutti = [(p[0], p[1]) for c in valide for p in c["punti"]]
+    ore = [p[2] for c in valide for p in c["punti"]]
+    t0 = math.floor(min(ore) / 60) * 60
+    t1 = math.ceil(max(ore) / 60) * 60
+    if t1 - t0 < 60:
+        t1 = t0 + 60
+    quota = height * 0.56
+    P, angoli = _asse_assonometrico(tutti, width, height, quota)
+
+    def alza(xy, minuti):
+        return xy[0], xy[1] - (float(minuti) - t0) / (t1 - t0) * quota
+
+    out = [f'<svg class="chart spazio-tempo" viewBox="0 0 {width} {height}" width="{width}" '
+           f'height="{height}" role="img" aria-label="{esc(title)}">',
+           f'<rect x="0" y="0" width="{width}" height="{height}" fill="{FONDO_SCURO}"/>']
+
+    # i piani delle ore, dal basso in alto: danno la profondita'
+    passo = 60 if (t1 - t0) <= 8 * 60 else 120
+    for m in range(int(t0), int(t1) + 1, passo):
+        d = " ".join(f"{'M' if k == 0 else 'L'}{alza(a, m)[0]:.1f},{alza(a, m)[1]:.1f}"
+                     for k, a in enumerate(angoli)) + " Z"
+        primo = m == int(t0)
+        out.append(f'<path d="{d}" fill="{"#152338" if primo else "none"}" '
+                   f'stroke="{GRIGLIA_SCURA}" stroke-width="{1.1 if primo else 0.7}" '
+                   f'opacity="{0.9 if primo else 0.5}"/>')
+        xq, yq = alza(angoli[0], m)
+        out.append(f'<text x="{xq - 8:.1f}" y="{yq + 3:.1f}" font-size="10" text-anchor="end" '
+                   f'fill="{TESTO_SCURO}" opacity="0.75" font-family=\'{FONT}\'>'
+                   f'{int(m // 60) % 24:02d}:00</text>')
+    # i montanti verticali agli spigoli
+    for a in angoli:
+        out.append(f'<line x1="{a[0]:.1f}" y1="{a[1]:.1f}" x2="{alza(a, t1)[0]:.1f}" '
+                   f'y2="{alza(a, t1)[1]:.1f}" stroke="{GRIGLIA_SCURA}" stroke-width="0.8" opacity="0.6"/>')
+
+    linee = sorted({str(c.get("linea") or "") for c in valide})
+    colore = {}
+    for k, n in enumerate(linee):
+        prop = next((c.get("colore") for c in valide if str(c.get("linea") or "") == n and c.get("colore")), None)
+        colore[n] = prop or SERIES[k % len(SERIES)]
+
+    # le ombre sul pavimento: il percorso visto dall'alto
+    for c in valide:
+        col = colore.get(str(c.get("linea") or ""), SERIES[0])
+        d = " ".join(f"{'M' if k == 0 else 'L'}{P(p[0], p[1])[0]:.1f},{P(p[0], p[1])[1]:.1f}"
+                     for k, p in enumerate(c["punti"]))
+        out.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="1" opacity="0.30"/>')
+
+    # le traiettorie: dal pavimento verso l'alto, una per corsa
+    for c in valide:
+        col = colore.get(str(c.get("linea") or ""), SERIES[0])
+        d = " ".join(f"{'M' if k == 0 else 'L'}{alza(P(p[0], p[1]), p[2])[0]:.1f},"
+                     f"{alza(P(p[0], p[1]), p[2])[1]:.1f}" for k, p in enumerate(c["punti"]))
+        out.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="1.5" '
+                   f'stroke-linejoin="round" stroke-linecap="round" opacity="0.92">'
+                   f'<title>{esc(str(c.get("linea") or ""))}</title></path>')
+
+    # le coincidenze riconosciute, dove ci sono
+    for i in incontri:
+        lat, lon, m = i.get("lat"), i.get("lon"), i.get("oraMin")
+        if lat is None or lon is None or m is None:
+            continue
+        x, y = alza(P(float(lat), float(lon)), float(m))
+        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="none" stroke="#ffffff" '
+                   f'stroke-width="1.6" opacity="0.95"><title>{esc(str(i.get("from")))} \u2192 '
+                   f'{esc(str(i.get("to")))} \u00b7 {int(float(m) // 60) % 24:02d}:'
+                   f'{int(float(m) % 60):02d} a {esc(str(i.get("node") or ""))}</title></circle>')
+    out.append("</svg>")
+
+    nomi = list(linee)
+    cols = [colore[n] for n in nomi]
+    if incontri:
+        nomi.append("coincidenza"); cols.append("#ffffff")
+    tbl = _table(["Linea", "Corse disegnate", "Prima", "Ultima"],
+                 [(n,
+                   sum(1 for c in valide if str(c.get("linea") or "") == n),
+                   f'{int(min(p[2] for c in valide if str(c.get("linea") or "") == n for p in c["punti"]) // 60) % 24:02d}:'
+                   f'{int(min(p[2] for c in valide if str(c.get("linea") or "") == n for p in c["punti"]) % 60):02d}',
+                   f'{int(max(p[2] for c in valide if str(c.get("linea") or "") == n for p in c["punti"]) // 60) % 24:02d}:'
+                   f'{int(max(p[2] for c in valide if str(c.get("linea") or "") == n for p in c["punti"]) % 60):02d}')
+                  for n in linee], caption="Corse nel diagramma")
+    return figure(title, "".join(out), subtitle=subtitle, legend=_legend(nomi, cols), table=tbl,
+                  note=note or ("Assonometria: il pavimento e' il territorio, l'altezza e' l'ora del giorno. "
+                                "Ogni curva e' una corsa, la sua ombra e' il percorso visto dall'alto; "
+                                "i cerchi bianchi sono le coincidenze riconosciute."))
+
+
 # ── Riquadri KPI (quando il dato è UN numero) ──
 def kpi_row(tiles: Sequence[tuple[str, str, str]]) -> str:
     """tiles: [(label, value, hint)]"""

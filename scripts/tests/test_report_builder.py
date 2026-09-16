@@ -744,3 +744,65 @@ def test_il_diagramma_esce_con_qualunque_forma_degli_orari():
         c["sample"] = []
     html = rb.render_coincidenze_3d(d4, d4["analisi"]["coincidenze"]["esistenti"])
     assert "non è disegnato" in html and "ora dell'incontro" in html
+
+
+# ═══════════════════════════════════════════════════════════════
+#  IL DIAGRAMMA SPAZIO-TEMPO: LE CORSE, NON SOLO GLI INCONTRI
+# ═══════════════════════════════════════════════════════════════
+
+def _con_corse():
+    """Un dossier con le corse e i loro orari, come lo produce la rotta."""
+    d = _coincidenze()
+    corse = []
+    for k in range(0, 60, 10):
+        corse.append({"linea": "3", "colore": "#2fd4e8",
+                      "punti": [(43.6158, 13.5189, 480 + k), (43.605, 13.503, 492 + k),
+                                (43.5902, 13.4780, 505 + k)]})
+        corse.append({"linea": "1/4", "colore": "#e8e02f",
+                      "punti": [(43.5902, 13.4780, 485 + k), (43.605, 13.505, 497 + k),
+                                (43.6158, 13.5189, 510 + k)]})
+    d["network"]["corse"] = corse
+    return d
+
+
+def test_il_diagramma_disegna_le_corse_non_solo_gli_incontri():
+    """Il primo disegno mostrava SOLO i punti di incontro — anelli infilati su
+    colonne verticali — che è come raccontare un viaggio elencando le
+    coincidenze e tacendo il percorso."""
+    html = rb.render_coincidenze_3d(_con_corse(), _con_corse()["analisi"]["coincidenze"]["esistenti"])
+    assert "<svg" in html
+    assert "Le corse nello spazio e nel tempo" in html
+    # ogni corsa è una traiettoria: dodici corse, dodici curve più dodici ombre
+    assert html.count('stroke-width="1.5"') >= 12, "mancano le traiettorie"
+    assert html.count('opacity="0.30"') >= 12, "manca l'ombra dei percorsi sul pavimento"
+    assert "12 corse" in html
+    # e i colori sono quelli delle linee
+    assert "#2fd4e8" in html and "#e8e02f" in html
+
+
+def test_il_diagramma_ha_il_fondo_scuro_e_i_piani_delle_ore():
+    html = rc.spazio_tempo(_con_corse()["network"]["corse"], "T")
+    assert rc.FONDO_SCURO in html
+    assert "08:00" in html and ":00</text>" in html
+    assert "Assonometria" in html
+
+
+def test_senza_le_corse_si_ricade_sui_punti_di_incontro():
+    """Un dossier vecchio non ha le corse: meglio i soli punti d'incontro che
+    nessun disegno, e il documento dice che sono quelli."""
+    d = _coincidenze()          # senza network.corse
+    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
+    assert "<svg" in html
+    assert "Le corse col loro orario non sono nel dossier" in html
+
+
+def test_le_coincidenze_sono_marcate_sulle_traiettorie():
+    d = _con_corse()
+    html = rb.render_coincidenze_3d(d, d["analisi"]["coincidenze"]["esistenti"])
+    assert "incontri riconosciuti" in html
+    assert 'stroke="#ffffff"' in html, "i cerchi bianchi delle coincidenze"
+
+
+def test_il_diagramma_spazio_tempo_vuole_almeno_una_corsa():
+    assert rc.spazio_tempo([], "t") == ""
+    assert rc.spazio_tempo([{"linea": "3", "punti": [(43.6, 13.5, 480)]}], "t") == ""

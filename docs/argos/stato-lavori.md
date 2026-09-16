@@ -1486,6 +1486,41 @@ Il matching dei nomi chiede ora almeno quattro caratteri prima di accettare un
 prefisso: con nomi cortissimi una fermata qualsiasi poteva rubare il nodo.
 
 
+## Il diagramma sbagliato: disegnavo le coincidenze, non le corse
+
+L'operatore ha mandato tre immagini di riferimento accanto alla mia. La
+differenza non era di stile.
+
+**Nel riferimento** ogni corsa e' una **traiettoria** che si muove sul territorio
+mentre l'orologio avanza: decine di curve parallele che salgono, ciascuna del
+colore della sua linea, con l'ombra del percorso sul pavimento. Si vede il
+servizio scorrere.
+
+**Nel mio** c'erano colonne verticali con degli anelli infilati: **solo i punti di
+incontro**. E' come raccontare un viaggio elencando le coincidenze e tacendo il
+percorso.
+
+L'errore non era il disegno, erano **i dati che gli davo**. Il dossier non portava
+gli orari delle corse, quindi l'unica cosa disegnabile erano gli incontri.
+
+`corseNelTempo()` estrae ora, per ogni corsa, dove passa e a che ora — da
+`ps_trips` + `ps_stop_times` + `ps_stops`. Si tengono al massimo 420 corse, e di
+ciascuna un punto ogni due fermate: a quella scala due fermate vicine cadono
+sullo stesso pixel. Quando le corse sono piu' del tetto **si diradano nel tempo
+invece di tagliare la coda**, o il disegno coprirebbe solo il mattino.
+
+`spazio_tempo()` le disegna: pavimento in assonometria col territorio, altezza
+per l'ora, i piani delle ore a dare profondita', ogni corsa una curva col colore
+della sua linea e la sua ombra sul pavimento. Le coincidenze riconosciute sono
+cerchi bianchi sulle traiettorie. Fondo scuro, come nel riferimento: e' l'unica
+figura della relazione che lo usa, e regge il confronto.
+
+Il disegno vecchio resta come **ricaduta**: se un dossier non ha le corse, meglio
+i soli punti d'incontro che niente, e il documento dichiara che sono quelli.
+
+Lezione: quando una figura non assomiglia a quello che deve mostrare, prima di
+ritoccare gli angoli conviene chiedersi **se le si stanno dando i dati giusti**.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
