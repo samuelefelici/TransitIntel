@@ -1227,21 +1227,36 @@ def _minuti_da_ora(x) -> int | None:
     return None
 
 
+COPPIE_DIAGRAMMA_MAX = 10
+
+
+def ordine_di_linea(nome) -> tuple:
+    """Come si ordinano i nomi delle linee.
+
+    In ordine alfabetico «24» viene prima di «3» e «1/4» prima di tutto: per
+    chi legge un quadro orario e' sbagliato. Si ordina per il primo numero che
+    compare nel nome, e a parita' per il nome intero."""
+    import re as _re
+    t = str(nome or "")
+    m = _re.search(r"\d+", t)
+    return (int(m.group(0)) if m else 10 ** 6, t)
+
+
 def render_coincidenze_3d(d: dict, esistenti: list) -> str:
-    """Le corse nello spazio e nel tempo, e dove si incontrano.
+    """Le corse nello spazio e nel tempo, DUE LINEE ALLA VOLTA.
 
     Una corsa non e' un punto: e' una traiettoria che si muove sul territorio
     mentre l'orologio avanza, e due linee si incontrano dove le traiettorie si
-    toccano. Il primo disegno mostrava SOLO i punti di incontro — anelli
-    infilati su colonne verticali — che e' come raccontare un viaggio
-    elencando le coincidenze e tacendo il percorso.
+    toccano. Ma diciassette linee tutte insieme sono un groviglio in cui non si
+    distingue niente: il disegno serve a far vedere UNA relazione, quindi si fa
+    un diagramma per ogni coppia di linee che si incontra, con le sole corse di
+    quelle due.
 
-    Quando le corse col loro orario non ci sono si ricade sul disegno vecchio,
-    che almeno dice dove e quando, e la nota lo dichiara."""
+    Senza le corse col loro orario si ricade sul disegno dei soli punti di
+    incontro, e la nota lo dichiara."""
     corse = [c for c in (g(d, "network", "corse", default=None) or [])
              if isinstance(c, dict) and len(c.get("punti") or []) >= 2]
 
-    # le posizioni dei nodi, per marcare le coincidenze sulle traiettorie
     per_nome = {}
     for s_ in (g(d, "network", "stops", default=None) or []):
         if isinstance(s_, dict) and s_.get("name") and s_.get("lat") is not None:
@@ -1258,41 +1273,61 @@ def render_coincidenze_3d(d: dict, esistenti: list) -> str:
                 return s_
         return None
 
-    incontri, senza = [], []
+    # gli incontri, raggruppati per COPPIA di linee (non ordinata: 3→1/4 e
+    # 1/4→3 sono la stessa relazione vista nei due versi)
+    per_coppia: dict = {}
+    incontri_tutti, senza = [], []
     for c in esistenti:
-        nodo = c.get("node")
-        pos = dove(nodo)
+        a, b = str(c.get("fromRoute") or ""), str(c.get("toRoute") or "")
+        if not a or not b:
+            continue
+        pos = dove(c.get("node"))
+        if not pos and c.get("node"):
+            senza.append(str(c.get("node")))
         for pg in (c.get("passaggi") or c.get("sample") or []):
             m = _minuti_da_ora(pg.get("arrivoMin"))
             if m is None:
                 m = _minuti_da_ora(pg.get("arrivo"))
             if m is None:
                 continue
-            incontri.append({"node": nodo, "from": c.get("fromRoute"), "to": c.get("toRoute"),
-                             "oraMin": m,
-                             "lat": pos.get("lat") if pos else None,
-                             "lon": pos.get("lon") if pos else None})
-        if not pos and nodo:
-            senza.append(str(nodo))
+            voce = {"node": c.get("node"), "from": a, "to": b, "oraMin": m,
+                    "lat": pos.get("lat") if pos else None,
+                    "lon": pos.get("lon") if pos else None}
+            incontri_tutti.append(voce)
+            per_coppia.setdefault(tuple(sorted((a, b), key=ordine_di_linea)), []).append(voce)
 
-    if corse:
-        dis = rc.spazio_tempo(
-            corse, "Le corse nello spazio e nel tempo",
-            subtitle="Ogni curva e' una corsa: si muove sul territorio e sale con l'ora. "
-                     "I cerchi bianchi sono le coincidenze riconosciute.",
-            incontri=[i for i in incontri if i.get("lat") is not None])
-        if dis:
-            quante = fmt_n(len(corse))
-            return dis + para(f'<span class="small">Nel disegno ci sono <b>{quante} corse</b> '
-                              f'e <b>{fmt_n(len([i for i in incontri if i.get("lat") is not None]))}</b> '
-                              f'incontri riconosciuti.</span>')
+    if corse and per_coppia:
+        per_linea: dict = {}
+        for c in corse:
+            per_linea.setdefault(str(c.get("linea") or ""), []).append(c)
+        coppie = sorted(per_coppia.items(), key=lambda kv: -len(kv[1]))[:COPPIE_DIAGRAMMA_MAX]
+        pezzi = []
+        for (a, b), inc in coppie:
+            sue = per_linea.get(a, []) + per_linea.get(b, [])
+            if len(sue) < 2:
+                continue
+            marcati = [i for i in inc if i.get("lat") is not None]
+            dis = rc.spazio_tempo(
+                sue, f"{a} e {b}: le corse e i loro incontri",
+                subtitle=f'{fmt_n(len(sue))} corse delle due linee, '
+                         f'{fmt_n(len(inc))} incontri al giorno',
+                incontri=marcati)
+            if dis:
+                pezzi.append(dis)
+        if pezzi:
+            intro = para(
+                f'Ogni diagramma tiene <b>due linee alla volta</b>: tutte insieme sarebbero un groviglio. '
+                f'Il pavimento e\u0027 il territorio, l\u0027altezza e\u0027 l\u0027ora del giorno; ogni curva e\u0027 una corsa '
+                f'e la sua ombra e\u0027 il percorso visto dall\u0027alto. I cerchi bianchi sono le coincidenze '
+                f'riconosciute. Sono le <b>{fmt_n(len(pezzi))} relazioni</b> con piu\u0027 incontri.')
+            return intro + "".join(pezzi)
 
-    # ricaduta: senza gli orari delle corse restano i soli punti di incontro
-    if not incontri:
+    # ricaduta: senza le corse restano i soli punti di incontro
+    if not incontri_tutti:
         return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato: '
-                    'i passaggi non portano l\'ora dell\'incontro.</i></span>')
+                    'i passaggi non portano l\u0027ora dell\u0027incontro.</i></span>')
     posizioni = {}
-    for i in incontri:
+    for i in incontri_tutti:
         if i.get("lat") is not None:
             posizioni[i["node"]] = {"name": i["node"], "lat": i["lat"], "lon": i["lon"]}
     senza = [n for n in dict.fromkeys(senza) if n not in posizioni]
@@ -1306,13 +1341,13 @@ def render_coincidenze_3d(d: dict, esistenti: list) -> str:
         else:
             lat0, lon0, raggio = 43.6, 13.5, 0.02
         for k, n in enumerate(senza):
-            a = 2 * _m.pi * k / max(1, len(senza))
-            posizioni[n] = {"name": n, "lat": lat0 + raggio * _m.cos(a), "lon": lon0 + raggio * _m.sin(a)}
+            ang = 2 * _m.pi * k / max(1, len(senza))
+            posizioni[n] = {"name": n, "lat": lat0 + raggio * _m.cos(ang), "lon": lon0 + raggio * _m.sin(ang)}
         nota = (f'<span class="small">Di {fmt_n(len(senza))} nodi non si conosce la posizione: '
                 f'nel disegno sono disposti in cerchio, gli orari e le linee restano quelli veri.</span>')
-    dis = rc.coincidenze_3d(list(posizioni.values()), incontri,
+    dis = rc.coincidenze_3d(list(posizioni.values()), incontri_tutti,
                             "Le coincidenze nello spazio e nel tempo",
-                            subtitle="Le corse col loro orario non sono nel dossier: restano i punti d'incontro.")
+                            subtitle="Le corse col loro orario non sono nel dossier: restano i punti d\u0027incontro.")
     if not dis:
         return para('<span class="small"><i>Il diagramma delle coincidenze non \u00e8 disegnato.</i></span>')
     return dis + (para(nota) if nota else "")
