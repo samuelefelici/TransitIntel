@@ -1537,6 +1537,38 @@ usciva «24 e 3» e «1/4» finiva prima di tutto. `ordine_di_linea()` prende il
 primo numero che compare nel nome e a parita' ordina per nome intero, cosi'
 l'ordine e' quello di un quadro orario.
 
+## Un documento che si consegna
+
+Quattro richieste dell'operatore, tutte sullo stesso tema: la relazione non e'
+una schermata, e' una cosa che esce dall'azienda.
+
+**Fondo chiaro anche per il diagramma spazio-tempo.** L'avevo fatto scuro come le
+immagini di riferimento, ma quelle erano schermate di un applicativo: dentro un
+documento una figura nera stona e si stampa male. Ora il fondo e' quello di tutte
+le altre, le traiettorie hanno un alone bianco per staccarsi e le coincidenze
+sono cerchi bianchi bordati di inchiostro invece che bianchi su nero.
+
+**Le coincidenze si leggono per NODO.** L'operatore le ha elencate cosi': «1/4 e
+44 in Piazza Cavour e Tavernelle», «2/6 con 21/33 al Pinocchio», «3 con 21/33 a
+Posatora». Sempre il posto, poi le linee — perche' il nodo e' dove uno cambia e
+le linee sono quello che ci trova. Il nuovo **8.1 «Dove si cambia, e fra quali
+linee»** e' organizzato in quel modo: per ogni nodo, le linee che vi si
+incontrano, quante volte al giorno e con che attesa, piu' le barre dei nodi per
+numero di incontri. Il capitolo si rinumera: 8.1 nodi, 8.2 relazioni, 8.3 mancate
+per poco, 8.5 traslazioni, 8.6 libretto orario.
+
+**Un turno per foglio.** Gli allegati sono fatti per essere staccati e
+consegnati: ogni turno macchina e ogni turno guida sta in un `section.foglio` che
+a schermo e' un riquadro e in stampa **comincia a pagina nuova e non si spezza
+mai a meta'**.
+
+**La pagina e' brandizzata.** La copertina era un titolo e una riga di metadati;
+ora e' un frontespizio: marchio con l'azienda a sinistra e il prodotto a destra,
+titolo, occhiello, e una griglia di voci — progetto, unita' di validita', giorno
+di servizio, giorno-tipo, scenario, chi l'ha redatta, quando — piu' l'indice.
+In stampa la copertina occupa la sua pagina e i margini sono quelli di un
+documento (16/14/18 mm).
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

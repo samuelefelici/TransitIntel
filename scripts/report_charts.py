@@ -968,9 +968,11 @@ def categorie_poi(voci: Sequence[tuple], title: str, subtitle: str = "", width: 
 #  loro traiettorie si toccano — e questo un elenco di orari non lo mostra.
 # ═══════════════════════════════════════════════════════════════
 
-FONDO_SCURO = "#0e1622"
-GRIGLIA_SCURA = "#1e3048"
-TESTO_SCURO = "#c9d6e4"
+# Il diagramma spazio-tempo sta sul fondo chiaro come tutto il resto: una
+# figura scura stona nel documento e si stampa male.
+FONDO_SCURO = SURFACE
+GRIGLIA_SCURA = GRID
+TESTO_SCURO = MUTED
 
 
 def _asse_assonometrico(pts, width: int, height: int, quota: float):
@@ -1034,7 +1036,7 @@ def spazio_tempo(corse: Sequence[dict], title: str, subtitle: str = "",
         d = " ".join(f"{'M' if k == 0 else 'L'}{alza(a, m)[0]:.1f},{alza(a, m)[1]:.1f}"
                      for k, a in enumerate(angoli)) + " Z"
         primo = m == int(t0)
-        out.append(f'<path d="{d}" fill="{"#152338" if primo else "none"}" '
+        out.append(f'<path d="{d}" fill="{"#eef2f6" if primo else "none"}" '
                    f'stroke="{GRIGLIA_SCURA}" stroke-width="{1.1 if primo else 0.7}" '
                    f'opacity="{0.9 if primo else 0.5}"/>')
         xq, yq = alza(angoli[0], m)
@@ -1064,8 +1066,10 @@ def spazio_tempo(corse: Sequence[dict], title: str, subtitle: str = "",
         col = colore.get(str(c.get("linea") or ""), SERIES[0])
         d = " ".join(f"{'M' if k == 0 else 'L'}{alza(P(p[0], p[1]), p[2])[0]:.1f},"
                      f"{alza(P(p[0], p[1]), p[2])[1]:.1f}" for k, p in enumerate(c["punti"]))
-        out.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="1.5" '
-                   f'stroke-linejoin="round" stroke-linecap="round" opacity="0.92">'
+        out.append(f'<path d="{d}" fill="none" stroke="#ffffff" stroke-width="3.4" '
+                   f'stroke-linejoin="round" stroke-linecap="round" opacity="0.8"/>')
+        out.append(f'<path d="{d}" fill="none" stroke="{col}" stroke-width="1.6" '
+                   f'stroke-linejoin="round" stroke-linecap="round" opacity="0.95">'
                    f'<title>{esc(str(c.get("linea") or ""))}</title></path>')
 
     # le coincidenze riconosciute, dove ci sono
@@ -1074,8 +1078,8 @@ def spazio_tempo(corse: Sequence[dict], title: str, subtitle: str = "",
         if lat is None or lon is None or m is None:
             continue
         x, y = alza(P(float(lat), float(lon)), float(m))
-        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4.5" fill="none" stroke="#ffffff" '
-                   f'stroke-width="1.6" opacity="0.95"><title>{esc(str(i.get("from")))} \u2192 '
+        out.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="5.5" fill="#ffffff" stroke="{INK}" '
+                   f'stroke-width="1.8" opacity="0.98"><title>{esc(str(i.get("from")))} \u2192 '
                    f'{esc(str(i.get("to")))} \u00b7 {int(float(m) // 60) % 24:02d}:'
                    f'{int(float(m) % 60):02d} a {esc(str(i.get("node") or ""))}</title></circle>')
     out.append("</svg>")
@@ -1083,7 +1087,7 @@ def spazio_tempo(corse: Sequence[dict], title: str, subtitle: str = "",
     nomi = list(linee)
     cols = [colore[n] for n in nomi]
     if incontri:
-        nomi.append("coincidenza"); cols.append("#ffffff")
+        nomi.append("coincidenza"); cols.append(INK)
     tbl = _table(["Linea", "Corse disegnate", "Prima", "Ultima"],
                  [(n,
                    sum(1 for c in valide if str(c.get("linea") or "") == n),
@@ -1159,7 +1163,40 @@ details.tv table {{ margin-top: 6px; }}
 .ok {{ color: #006300; }}
 .warn {{ color: #7a4b00; }}
 .bad {{ color: {STATUS['critical']}; }}
+/* ── Copertina e marchio ─────────────────────────────────────────────
+   Il documento esce dall'azienda: il frontespizio dice di chi e', di che
+   cosa parla e a quale giorno si riferisce, prima di ogni numero. */
+.copertina {{ padding: 6px 0 10px; }}
+.marchio {{ display: flex; align-items: center; gap: 9px; padding-bottom: 14px;
+           margin-bottom: 20px; border-bottom: 2px solid var(--ink); }}
+.marchio .bollo {{ width: 13px; height: 13px; border-radius: 3px; background: var(--ink);
+                  box-shadow: 5px 0 0 0 {SERIES[0]}, 10px 0 0 0 {SERIES[2]}; margin-right: 11px; }}
+.marchio .chi {{ font-weight: 700; letter-spacing: .04em; text-transform: uppercase; font-size: 12px; }}
+.marchio .prodotto {{ margin-left: auto; font-size: 11px; color: var(--muted);
+                     letter-spacing: .10em; text-transform: uppercase; }}
+.copertina h1 {{ font-size: 30px; line-height: 1.16; margin: 0 0 8px; letter-spacing: -.012em; }}
+.copertina .lead {{ font-size: 15px; color: var(--muted); margin: 0 0 22px; max-width: 62ch; }}
+.frontespizio {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+                gap: 0; margin: 0 0 26px; border-top: 1px solid var(--grid); }}
+.frontespizio .voce {{ padding: 9px 14px 9px 0; border-bottom: 1px solid var(--grid); }}
+.frontespizio dt {{ font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+                   color: var(--muted); margin-bottom: 3px; }}
+.frontespizio dd {{ margin: 0; font-size: 13.5px; font-weight: 600; }}
+.toc-t {{ font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+         color: var(--muted); margin-bottom: 8px; }}
+
+/* un turno per foglio: a schermo un riquadro, in stampa una pagina intera */
+.foglio {{ border: 1px solid var(--grid); border-radius: 8px; padding: 10px 14px 4px;
+          margin: 14px 0; background: var(--surface); break-inside: avoid; }}
+.foglio h4 {{ margin-top: 2px; }}
+
 @media print {{
+  @page {{ margin: 16mm 14mm 18mm; }}
+  .copertina {{ break-after: page; page-break-after: always; }}
+  .marchio {{ border-bottom-width: 1.5px; }}
+  .foglio {{ break-before: page; page-break-before: always; break-inside: avoid;
+            border: none; border-radius: 0; padding: 0; margin: 0; }}
+  .foglio:first-of-type {{ break-before: auto; page-break-before: auto; }}
   body {{ background: #fff; }}
   .page {{ max-width: none; padding: 0; }}
   h2 {{ page-break-before: always; border-top: none; }}
