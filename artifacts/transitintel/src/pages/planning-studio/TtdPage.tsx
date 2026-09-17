@@ -794,6 +794,77 @@ export default function PlanningStudioTtdPage() {
     const cur = hmsToSec(sts[0].departureTime);
     return shiftTripBy(tripId, Math.round((target - cur) / 60));
   }
+  /** La corsa VERA da cui discende un id, risalendo le copie locali.
+   *
+   * Il salvataggio manda `baseTripId` al server perché la copia erediti
+   * validità e categorie: un id locale (`copy-…`) lì non esiste. Duplicando
+   * una copia — cosa che col pulsante viene naturale, perché dopo il duplica
+   * la copia resta selezionata — il riferimento va risalito fino alla corsa
+   * reale. Vale anche per Ctrl+V, che aveva lo stesso buco.
+   *
+   * Se la catena non arriva a una corsa reale si torna `undefined`: meglio una
+   * copia senza validità ereditata che un id inventato mandato al server. */
+  function corsaVeraDi(tripId: string): string | undefined {
+    let id = tripId;
+    for (let giri = 0; id.startsWith("copy-") && giri < 100; giri++) {
+      const op = pendingOpsRef.current.find(o => o.kind === "copy" && o.tempId === id);
+      if (!op || op.kind !== "copy") return undefined;
+      id = op.baseTripId;
+    }
+    return id.startsWith("copy-") ? undefined : id;
+  }
+
+  /** DUPLICA una corsa: copia identica, sullo stesso percorso, spostata.
+   *
+   * È la stessa cosa che fa Ctrl+C / Ctrl+V, ma dal pulsante e senza dover
+   * mirare col mouse. La copia porta linea, percorso, fermate e orari
+   * dell'originale e, alla conferma, ne eredita anche validità e categorie:
+   * il salvataggio passa `baseTripId`, quindi i bollini restano quelli.
+   *
+   * Resta una modifica LOCALE come ogni altra del grafico — spostamento,
+   * eliminazione, incolla: si conferma con «Salva modifiche» e si disfa con
+   * Ctrl+Z. Scriverla subito sul server sarebbe l'unica cosa in questa pagina
+   * a non passare da lì.
+   *
+   * Dove la mette: a metà strada fra questa corsa e la successiva dello stesso
+   * percorso, che è la mossa vera quando si duplica — infittire fra due corse
+   * — e non finisce mai sopra una corsa che c'è già. Senza una corsa dopo, a
+   * un'ora di distanza, come fa Ctrl+V quando non sa dove puntare.
+   */
+  function duplicaCorsa(tripId: string): string | null {
+    const base = visibleTrips.find(t => t.id === tripId);
+    const sts = stsOfTrip(tripId);
+    if (!base || !sts?.length) return "Orari della corsa non caricati";
+    const dep = hmsToSec(sts[0].departureTime);
+    const partenzeDopo = visibleTrips
+      .filter(t => t.id !== tripId && (t as any).variantId === (base as any).variantId)
+      .map(t => {
+        const s = stsOfTrip(t.id);
+        return s?.length ? hmsToSec(s[0].departureTime) : null;
+      })
+      .filter((s): s is number => s != null && s > dep)
+      .sort((a, b) => a - b);
+    const deltaMin = partenzeDopo.length > 0
+      ? Math.max(1, Math.round((partenzeDopo[0] - dep) / 120))
+      : 60;
+    const tempId = `copy-${Date.now()}`;
+    setLocalCopies(prev => [...prev, { ...base, id: tempId } as PsTrip]);
+    setStMap(prev => ({
+      ...prev,
+      [tempId]: sts.map(st => ({
+        ...st, tripId: tempId,
+        arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
+        departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
+      })),
+    }));
+    setPendingOps(prev => [...prev, { kind: "copy", tempId, baseTripId: corsaVeraDi(tripId) ?? tripId }]);
+    setSelectedTripId(tempId);
+    setSelectedNode(null);
+    toast.success(`Corsa duplicata · partenza ${secToHm(dep + deltaMin * 60)}`, {
+      description: "Copia locale: scrivi la partenza qui sopra per spostarla, «Salva modifiche» per confermarla.",
+    });
+    return null;
+  }
   /** Porta il transito di un nodo all'orario scritto (HH:MM). */
   function setNodeTime(tripId: string, stIdx: number, hhmm: string): string | null {
     const target = hmToSec(hhmm);
@@ -1096,7 +1167,7 @@ export default function PlanningStudioTtdPage() {
           arrivalTime: secToHms(hmsToSec(st.arrivalTime) + deltaMin * 60),
           departureTime: secToHms(hmsToSec(st.departureTime) + deltaMin * 60),
         })) }));
-        setPendingOps(prev => [...prev, { kind: "copy", tempId, baseTripId: clipboardTripId }]);
+        setPendingOps(prev => [...prev, { kind: "copy", tempId, baseTripId: corsaVeraDi(clipboardTripId) ?? clipboardTripId }]);
         setSelectedTripId(tempId);
         toast.success(`Corsa incollata (${deltaMin > 0 ? "+" : ""}${deltaMin} min)`, { description: "Copia locale: Salva modifiche per confermarla." });
       }
@@ -2432,6 +2503,12 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                   </span>
                 )}
                 {isBase && <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla</span>}
+                {isBase && <button
+                  onClick={() => say(duplicaCorsa(selectedTripId))}
+                  title="Duplica la corsa: copia identica sullo stesso percorso, con la stessa validità, messa fra questa e la successiva. Resta locale finché non salvi."
+                  className="px-2 py-0.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10">
+                  ⧉ Duplica
+                </button>}
                 {isBase && <button
                   onClick={() => { setActiveTool("mult"); setMultBaseTripId(selectedTripId); }}
                   title="Copia questa corsa più volte (cadenzamento): scegli intervallo e fascia"

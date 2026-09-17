@@ -725,18 +725,33 @@ def test_le_relazioni_escluse_per_un_capo_vengono_dette():
     assert rb.escluse_per_un_capo(voci, ["2/6"]) == {}
 
 
-def test_una_linea_scelta_che_non_fa_coincidenze_viene_detta():
-    """Sparire dal capitolo e non fare coincidenze si assomigliano troppo:
-    senza scriverlo, l'operatore non può distinguerli."""
-    voci = [{"fromRoute": "3", "toRoute": "1/4"}]
-    assert rb.linee_senza_relazioni(voci, ["3", "1/4"]) == []
-    assert rb.linee_senza_relazioni(voci, ["3", "91", "44"]) == ["91", "44"]
+def test_ogni_linea_scelta_dice_che_fine_ha_fatto():
+    """«Ho selezionato 3 linee e ne vedo solo 2». Il filtro funzionava — quella
+    linea non incontra nessuna delle altre due — ma il documento non lo diceva,
+    e «funziona» e «si capisce» sono due cose diverse.
+
+    Il caso è quello vero: 3, 2/6, 21/33 sul festivo di Ancona, dove le uniche
+    coincidenze della 3 sono con la 31."""
+    voci = [{"node": "POSATORA", "fromRoute": "31", "toRoute": "3"},
+            {"node": "POSATORA", "fromRoute": "3", "toRoute": "31"},
+            {"node": "MADONNETTA", "fromRoute": "2/6", "toRoute": "21/33"},
+            {"node": "PIAZZA CAVOUR", "fromRoute": "11", "toRoute": "2/6"}]
+    esito = rb.esito_per_linea(voci, ["3", "2/6", "21/33"])
+    assert esito[0] == {"linea": "3", "mostrate": 0, "escluse": 2, "con": ["31"]}, \
+        "la 3 non compare, e il motivo è la 31"
+    assert esito[1]["mostrate"] == 1 and esito[1]["escluse"] == 1 and esito[1]["con"] == ["11"]
+    assert esito[2] == {"linea": "21/33", "mostrate": 1, "escluse": 0, "con": []}
+    # una linea che non fa coincidenze con nessuno: né mostrate né escluse
+    assert rb.esito_per_linea(voci, ["3", "91"])[1] == {
+        "linea": "91", "mostrate": 0, "escluse": 0, "con": []}
 
     d = _coincidenze()
     d["analisi"]["coincidenze"]["lineeScelte"] = ["3", "1/4", "91"]
     html = rb.render_coincidenze(d)
-    assert "Non compaiono affatto" in html and "91" in html
+    assert "Perché non compare" in html, "il quadro riga per riga"
+    assert "l&#x27;orario non le fa fare nessuna coincidenza" in html
     assert "solo le relazioni fra queste linee" in html, "la regola, scritta"
+    assert "ne compaiono" in html, "quante delle scelte si vedono davvero"
 
 
 def test_lo_sfondo_dice_perche_manca(monkeypatch):
