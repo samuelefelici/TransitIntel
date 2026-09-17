@@ -1694,6 +1694,29 @@ confutazione, e avevano ragione i confutatori):
    `esistenti` col solo `sample`, quindi restava verde mentre la rete vera si
    accorciava. Ora il fixture porta il libretto.
 
+## Nell'elenco delle linee c'erano i fuorilinea
+
+L'operatore, aprendo il dialogo della relazione: «ci sono voci che non servono.
+Toglile». Erano «Uscita Ancona (1.2 km)», «Rientro Ancona (1.1 km)», «Vuoto
+(2.1 km)»: il mio estrattore prendeva `routeName` da TUTTE le corse del turno
+macchina, e il motore da' un nome anche ai fuorilinea. Di una coincidenza fra
+due fuorilinea non esiste il concetto.
+
+Peggio: `ordineDiLinea` estrae il primo numero del nome, quindi «Rientro Ancona
+(1.1 km)» finiva ordinato accanto alla 1/4 e le linee vere sparivano sotto il
+bordo dell'elenco.
+
+La regola sta ora in **un posto solo** — `lineeDelPiano()` in
+`ReportOptionsDialog.tsx` — perche' i punti da cui la relazione nasce sono due e
+il terzo che qualcuno aggiungera' non deve ripetere l'errore. Due segnali, tutti
+e due autorevoli: il `type` dichiarato dal motore (`deadhead` e `depot` non sono
+corse) e il `routeId`, che sulle voci sintetiche e' sempre vuoto — cosi'
+l'elenco regge anche sugli scenari salvati prima che il `type` esistesse.
+
+Le etichette nascono in `vehicle_scheduler_cpsat.py:3313` e `:3327` (uscita e
+rientro deposito) e `:3052` (vuoto fra due corse), piu' «Rientro deposito» in
+`service-program.ts:909`.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

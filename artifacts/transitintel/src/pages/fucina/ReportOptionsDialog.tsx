@@ -37,6 +37,33 @@ export function ordinaLinee(linee: string[]): string[] {
   });
 }
 
+/**
+ * LE LINEE DEL PIANO, non tutto quello che ha un `routeName`.
+ *
+ * Il turno macchina porta anche i fuorilinea, e il motore dà anche a quelli un
+ * nome che sembra una linea: «Uscita Ancona (1.2 km)», «Rientro Ancona (1.1
+ * km)», «Vuoto (2.1 km)». Finivano tutti nell'elenco da spuntare, e di una
+ * coincidenza fra due fuorilinea non esiste il concetto.
+ *
+ * Due segnali, tutti e due autorevoli: il `type` dichiarato dal motore
+ * (`deadhead` e `depot` non sono corse) e il `routeId`, che sulle voci
+ * sintetiche è sempre vuoto — così l'elenco regge anche sugli scenari salvati
+ * prima che il `type` esistesse.
+ */
+export function lineeDelPiano(turni: unknown): string[] {
+  const fuori = new Set<string>();
+  for (const t of (Array.isArray(turni) ? turni : []) as any[]) {
+    for (const c of (Array.isArray(t?.trips) ? t.trips : []) as any[]) {
+      const tipo = String(c?.type ?? "trip");
+      if (tipo !== "trip") continue;                       // fuorilinea e rientri in deposito
+      if (!String(c?.routeId ?? "").trim()) continue;      // le voci sintetiche non hanno linea
+      const nome = String(c?.routeName ?? "").trim();
+      if (nome) fuori.add(nome);
+    }
+  }
+  return ordinaLinee([...fuori]);
+}
+
 export function ReportOptionsDialog({ lines, busy, onClose, onConfirm }: Props) {
   const tutte = useMemo(() => ordinaLinee([...new Set(lines.filter(Boolean))]), [lines]);
   const [scelte, setScelte] = useState<Set<string>>(new Set());
