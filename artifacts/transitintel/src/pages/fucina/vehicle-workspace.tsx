@@ -34,7 +34,7 @@ import { SaveScenarioDialog, LoadScenarioDialog } from "./ScenarioDialogs";
 import { exportScenarioToPrint } from "./VehicleShiftsPrintExport";
 import DeadheadEditorDialog, { type DeadheadChange } from "./DeadheadEditorDialog";
 import { AddVehicleShiftDialog, createEmptyVehicleShift, nextVehicleId } from "./AddVehicleShiftDialog";
-import { ReportOptionsDialog } from "./ReportOptionsDialog";
+import { ReportOptionsDialog, lineeDelPiano } from "./ReportOptionsDialog";
 import { useDeadheadOperations } from "./useDeadheadOperations";
 import { InlineDeadheadPopover } from "./InlineDeadheadPopover";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
@@ -2801,8 +2801,7 @@ export default function VehicleWorkspace({
       {/* ── Che cosa mettere nella relazione, prima di generarla ── */}
       {reportDialogOpen && (
         <ReportOptionsDialog
-          lines={[...new Set((result?.shifts ?? []).flatMap(s => (s.trips ?? [])
-            .map(t => String((t as any).routeName ?? "")).filter(Boolean)))]}
+          lines={lineeDelPiano(result?.shifts)}
           busy={reportBusy}
           onClose={() => setReportDialogOpen(false)}
           onConfirm={opts => void generateProcessReport(opts)}

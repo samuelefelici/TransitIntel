@@ -38,7 +38,7 @@ import InteractiveGantt, { type GanttBar, type GanttRow } from "@/components/Int
 import { driverShiftsToRows, driverShiftsToBars, driverShiftsBoundsHours } from "@/pages/driver-shifts/gantt-adapters";
 import { TYPE_LABELS as TG_TYPE_LABELS, TYPE_COLORS as TG_TYPE_COLORS } from "@/pages/driver-shifts/constants";
 import type { DriverShiftData } from "@/pages/driver-shifts/types";
-import { ReportOptionsDialog } from "@/pages/fucina/ReportOptionsDialog";
+import { ReportOptionsDialog, lineeDelPiano } from "@/pages/fucina/ReportOptionsDialog";
 
 /* Gantt read-only dei TURNI MACCHINA per l'anteprima VCSP (una riga = vettura). */
 const TM_PALETTE = ["#38bdf8", "#a78bfa", "#34d399", "#fb923c", "#f472b6", "#facc15", "#22d3ee", "#fca5a5", "#86efac", "#c4b5fd"];
@@ -2344,8 +2344,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       {/* Che cosa mettere nella relazione, prima di generarla */}
       {reportDialogOpen && (
         <ReportOptionsDialog
-          lines={[...new Set((result?.shifts ?? []).flatMap((s: any) => (s?.trips ?? [])
-            .map((t: any) => String(t?.routeName ?? "")).filter(Boolean)))]}
+          lines={lineeDelPiano(result?.shifts)}
           busy={reportBusy}
           onClose={() => setReportDialogOpen(false)}
           onConfirm={opts => void generateReport(opts)}
