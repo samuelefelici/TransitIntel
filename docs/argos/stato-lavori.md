@@ -1835,6 +1835,64 @@ selezionata e il secondo clic duplica lei. `corsaVeraDi()` risale la catena
 fino alla corsa reale, e la correzione vale anche per Ctrl+V, che aveva lo
 stesso buco da prima.
 
+## Eliminare le corse nel grafico, e un salvataggio che si perdeva tutto
+
+L'operatore: «devo avere la possibilita' di eliminare anche delle corse». Il
+tasto **🗑 Elimina** nella barra c'era gia' — ma cercando il motivo per cui non
+gli bastava e' saltato fuori un guasto vero nel salvataggio.
+
+**Il guasto.** `saveAllOps` faceva
+`for (const id of deletedTripIds) await deletePsTrip(projectId, id)` su TUTTI
+gli id, comprese le copie locali. Duplico una corsa, ci ripenso, la elimino,
+salvo: il server riceve `deletePsTrip("copy-1789…")`, risponde «non trovata»,
+l'eccezione finisce nel catch e **non si salva piu' niente** — nemmeno gli
+spostamenti buoni fatti prima. Tre clic per perdere il lavoro, e col pulsante
+Duplica appena aggiunto era banale arrivarci.
+
+Ora si cancellano solo le corse che sul server esistono davvero: una copia
+locale scartata non va cancellata, basta non crearla (il filtro che gia' c'era
+al punto 2). Anche il conteggio nel messaggio finale diceva il numero
+sbagliato.
+
+**Il resto.** `eliminaCorsa()` estratta, cosi' pulsante e tastiera fanno la
+stessa cosa; **Canc** elimina la corsa selezionata, perche' in un editor
+grafico e' li' che uno lo cerca e quella barra porta ormai una decina di cose;
+il messaggio distingue la corsa vera («Salva modifiche per confermare
+l'eliminazione») dalla copia mai salvata («Copia scartata: non era ancora stata
+salvata»), perche' mandare qualcuno a cercare sul server una corsa che non
+c'e' mai stata e' una bugia.
+
+## «Dimmi tu dove cazzo vedi il tasto elimina»
+
+Aveva ragione, e la risposta e' che il tasto stava in un posto irraggiungibile.
+
+**La selezione voleva il DOPPIO CLIC.** Un clic singolo su una corsa iniziava
+il trascinamento e, se non si trascinava, non faceva niente di visibile. Tutti
+i comandi della corsa — duplica, elimina, orario di partenza, orario del nodo —
+vivono nella barra fluttuante che compare **solo** con una corsa selezionata.
+Quindi: clicco, non succede niente, il tasto non esiste. Il promemoria in fondo
+allo schermo diceva «doppio clic = seleziona» in grigio su nero, otto pixel.
+
+Due correzioni:
+
+1. **Il clic seleziona.** Nel `onPointerUp`, quando il trascinamento finisce con
+   spostamento zero, la corsa si seleziona. Il trascinamento continua a
+   funzionare, e il doppio clic resta perche' in piu' seleziona il nodo.
+2. **Pannello «Corsa» nella barra STRUMENTI**, per primo, sopra Validita'.
+   Quella barra e' il posto dove uno guarda: ora ci sono Duplica, Copia piu'
+   volte ed Elimina, e quando non c'e' niente di selezionato il pannello dice
+   come selezionare invece di stare vuoto. Per le corse di un altro percorso
+   (sovrapposizioni) spiega che si modificano aprendo il loro percorso, invece
+   di mostrare pulsanti che non farebbero niente.
+
+Anche il promemoria della barra di stato ora dice il vero: «clic corsa =
+seleziona · drag corsa = trasla · doppio clic sul pallino = transito · Canc =
+elimina».
+
+**Lezione**: un comando che esiste solo dentro un pannello che compare a una
+condizione non ovvia, per chi lo usa **non esiste**. Prima di aggiungere un
+pulsante conviene chiedersi se quello che c'e' gia' e' raggiungibile.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.

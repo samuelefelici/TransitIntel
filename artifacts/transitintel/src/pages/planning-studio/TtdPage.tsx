@@ -27,6 +27,7 @@ import { useAuth } from "@/hooks/use-auth";
 import {
   ArrowLeft, Loader2, ZoomIn, ZoomOut, Maximize2, Minimize2, CopyPlus, Layers,
   X, Check, GitCommitHorizontal, CircleDot, Shuffle, CalendarRange, Table2, Activity, Boxes,
+  MousePointerClick, Trash2,
 } from "lucide-react";
 import SpaceTimeCube from "@/components/planning-studio/SpaceTimeCube";
 import {
@@ -373,7 +374,7 @@ export default function PlanningStudioTtdPage() {
 
   const [overlayData, setOverlayData] = useState<Record<string, { trips: PsTrip[]; st: Record<string, PsStopTime[]> }>>({});
   /* ─── Area di lavoro: strumento attivo nella barra laterale (un pannello alla volta) ─── */
-  const [activeTool, setActiveTool] = useState<null | "valid" | "layers" | "conn" | "sync" | "mult">(null);
+  const [activeTool, setActiveTool] = useState<null | "trip" | "valid" | "layers" | "conn" | "sync" | "mult">(null);
   /* ricerca nel pannello Linee (codice linea o codice percorso) */
   const [lineSearch, setLineSearch] = useState("");
   const toggleTool = (t: NonNullable<typeof activeTool>) => setActiveTool(cur => (cur === t ? null : t));
@@ -670,7 +671,8 @@ export default function PlanningStudioTtdPage() {
   const [tripDrag, setTripDrag] = useState<{ tripId: string; deltaSec: number } | null>(null);
   const tripDragRef = useRef(tripDrag);
   tripDragRef.current = tripDrag;
-  /* corsa selezionata col DOPPIO CLICK: evidenziata + azioni elimina/moltiplica */
+  /* corsa selezionata col CLIC: evidenziata, coi comandi nel pannello «Corsa»
+     della barra strumenti e nella barra sopra il grafico */
   const [selectedTripId, setSelectedTripId] = useState<string | null>(null);
   /* ── EDITING LOCALE: le modifiche (trasla corsa, sposta nodo, elimina,
    *    copia) restano in memoria; "Annulla" le ripercorre a ritroso e
@@ -865,6 +867,31 @@ export default function PlanningStudioTtdPage() {
     });
     return null;
   }
+  /** Mostra l'errore parlante che le operazioni locali restituiscono. */
+  const say = (err: string | null) => { if (err) toast.error(err); };
+
+  /** ELIMINA una corsa. Modifica locale come tutto il resto del grafico.
+   *
+   * Su una copia non ancora salvata l'eliminazione è solo un ripensamento: la
+   * copia sul server non è mai esistita, quindi non c'è niente da cancellare —
+   * basta non crearla. Il messaggio lo dice, perché «Salva modifiche per
+   * confermare l'eliminazione» davanti a una corsa che non esiste sarebbe una
+   * bugia, e chi la legge andrebbe a cercare sul server una cosa che non c'è.
+   */
+  function eliminaCorsa(tripId: string): string | null {
+    if (!visibleTrips.some(t => t.id === tripId)) return "Corsa non trovata";
+    const eraCopia = localCopies.some(c => c.id === tripId);
+    setDeletedTripIds(d => new Set(d).add(tripId));
+    setPendingOps(prev => [...prev, { kind: "delete", tripId }]);
+    setSelectedTripId(null);
+    setSelectedNode(null);
+    toast.info(eraCopia ? "Copia scartata" : "Corsa eliminata (in locale)", {
+      description: eraCopia
+        ? "Non era ancora stata salvata: Ctrl+Z per riaverla."
+        : "Ctrl+Z per ripristinarla · «Salva modifiche» per confermare l'eliminazione.",
+    });
+    return null;
+  }
   /** Porta il transito di un nodo all'orario scritto (HH:MM). */
   function setNodeTime(tripId: string, stIdx: number, hhmm: string): string | null {
     const target = hmToSec(hhmm);
@@ -949,8 +976,15 @@ export default function PlanningStudioTtdPage() {
     if (pendingOps.length === 0) return;
     setSavingOps(true);
     try {
-      // 1. eliminazioni
-      for (const id of deletedTripIds) await deletePsTrip(projectId, id);
+      // 1. eliminazioni — SOLO le corse che sul server esistono davvero.
+      //    Una copia locale eliminata prima di salvare non va cancellata: non
+      //    e' mai stata creata, basta non crearla (il filtro al punto 2). Fino
+      //    a ieri l'id temporaneo finiva in deletePsTrip, il server rispondeva
+      //    «non trovata» e falliva TUTTO il salvataggio, anche le modifiche
+      //    buone. Duplica → ci ripenso → elimino → salva: tre clic per perdere
+      //    il lavoro.
+      const daCancellare = [...deletedTripIds].filter(id => !localCopies.some(c => c.id === id));
+      for (const id of daCancellare) await deletePsTrip(projectId, id);
       // 2. copie → batch create con gli orari locali; baseTripId = corsa
       //    d'origine così la copia EREDITA validità (day-type + categorie)
       const baseByTemp = new Map<string, string>();
@@ -986,7 +1020,7 @@ export default function PlanningStudioTtdPage() {
       // categoria) e il filtro per categoria del TTD, non solo questa variante
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
       toast.success("Modifiche salvate", {
-        description: `${touched.size} corse aggiornate · ${copies.length} copie create · ${deletedTripIds.size} eliminate`,
+        description: `${touched.size} corse aggiornate · ${copies.length} copie create · ${daCancellare.length} eliminate`,
       });
     } catch (e: any) {
       toast.error("Errore nel salvataggio", { description: e?.message });
@@ -1094,7 +1128,17 @@ export default function PlanningStudioTtdPage() {
     if (d?.mode !== "trip") return;
     const preview = tripDragRef.current;
     const deltaMinutes = Math.round((preview?.deltaSec ?? 0) / 60);
-    if (!preview || deltaMinutes === 0) { setTripDrag(null); return; }
+    if (!preview || deltaMinutes === 0) {
+      // CLIC SENZA TRASCINAMENTO = SELEZIONA.
+      // Prima la selezione voleva il doppio clic, e il clic singolo non faceva
+      // niente di visibile: chi cliccava una corsa non vedeva comparire nulla
+      // e i comandi (duplica, elimina, orario) restavano irraggiungibili,
+      // perche' vivono nella barra che appare SOLO con una corsa selezionata.
+      // Il doppio clic resta, e in piu' seleziona il nodo.
+      setTripDrag(null);
+      setSelectedTripId(cur => (cur === d.tripId ? cur : d.tripId));
+      return;
+    }
     const sts = stsOfTrip(d.tripId) ?? [];
     const minSec = Math.min(...sts.map(s => hmsToSec(s.arrivalTime)));
     if (minSec + deltaMinutes * 60 < 0) {
@@ -1132,6 +1176,15 @@ export default function PlanningStudioTtdPage() {
       // FRECCE: spostamento al minuto della corsa (o del nodo) selezionata.
       // Shift = passo da 5 minuti. È la risoluzione fine che il trascinamento
       // col mouse non può dare a grafico largo.
+      // CANC: elimina la corsa selezionata. Il pulsante nella barra c'e' gia',
+      // ma quella barra porta ormai una decina di cose e il cestino non e' la
+      // prima che si trova; in un editor grafico Canc e' dove uno lo cerca.
+      if (!e.ctrlKey && !e.metaKey && (e.key === "Delete" || e.key === "Backspace") && selectedTripId) {
+        e.preventDefault();
+        const err = eliminaCorsa(selectedTripId);
+        if (err) toast.error(err);
+        return;
+      }
       if (!e.ctrlKey && !e.metaKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && selectedTripId) {
         e.preventDefault();
         const step = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 5 : 1);
@@ -2443,7 +2496,6 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
             const depNow = selSts?.length ? secToHm(hmsToSec(selSts[0].departureTime)) : "";
             const node = selectedNode?.tripId === selectedTripId ? selectedNode : null;
             const nodeSt = node && selSts ? selSts[node.stIdx] : null;
-            const say = (err: string | null) => { if (err) toast.error(err); };
             return (
               <div className="absolute top-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 rounded-lg border border-amber-500/50 bg-slate-900/95 px-3 py-1.5 text-xs shadow-xl flex-wrap max-w-[92%]">
                 <span className="text-amber-300 font-semibold">Corsa: {g?.label ?? selectedTripId.slice(0, 8)}</span>
@@ -2502,7 +2554,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                     {selTrip!.dayTypeCodes!.map(c => c === "festivo" ? "dom" : c.slice(0, 3)).join("·")}
                   </span>
                 )}
-                {isBase && <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla</span>}
+                {isBase && <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla · Canc elimina</span>}
                 {isBase && <button
                   onClick={() => say(duplicaCorsa(selectedTripId))}
                   title="Duplica la corsa: copia identica sullo stesso percorso, con la stessa validità, messa fra questa e la successiva. Resta locale finché non salvi."
@@ -2516,13 +2568,8 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                   ⧉ Copia più volte
                 </button>}
                 {isBase && <button
-                  onClick={() => {
-                    setDeletedTripIds(d => new Set(d).add(selectedTripId));
-                    setPendingOps(prev => [...prev, { kind: "delete", tripId: selectedTripId }]);
-                    setSelectedTripId(null);
-                    toast.info("Corsa eliminata (in locale)", { description: "Annulla per ripristinarla · Salva modifiche per confermare." });
-                  }}
-                  title="Elimina la corsa (modifica locale: si conferma con Salva modifiche)"
+                  onClick={() => say(eliminaCorsa(selectedTripId))}
+                  title="Elimina la corsa (anche col tasto Canc). Modifica locale: Ctrl+Z la ripristina, «Salva modifiche» la conferma."
                   className="px-2 py-0.5 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
                   🗑 Elimina
                 </button>}
@@ -2802,6 +2849,110 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
         </div>
 
         {/* ─── Pannello: VALIDITÀ (scelta multipla) + colorazione ─── */}
+        {/* ─── CORSA: i comandi della corsa selezionata, nella barra strumenti.
+             Esistevano solo nella barra fluttuante sopra il grafico, che compare
+             soltanto quando una corsa e' selezionata: chi cercava «elimina» non
+             lo trovava perche' non sapeva di dover prima selezionare, e la
+             barra strumenti e' il posto dove uno guarda. Qui ci sono sempre, e
+             quando non c'e' niente di selezionato il pannello dice come farlo. */}
+        {activeTool === "trip" && (
+          <div className="w-[320px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
+            <div className="p-3 border-b border-slate-800 flex items-center gap-2">
+              <MousePointerClick className="w-4 h-4 text-amber-400" />
+              <h3 className="font-semibold text-sm text-amber-300">Corsa</h3>
+              {selectedTripId && (
+                <button onClick={() => { setSelectedTripId(null); setSelectedNode(null); }}
+                  className="ml-auto text-[10px] text-slate-400 hover:text-slate-200 underline">
+                  deseleziona
+                </button>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+              {!selectedTripId ? (
+                <div className="space-y-2">
+                  <p className="text-slate-400">Nessuna corsa selezionata.</p>
+                  <p className="text-[11px] text-slate-500">
+                    <b className="text-slate-300">Clicca una corsa</b> nel grafico: la riga diventa
+                    gialla e qui compaiono i comandi. Trascinandola, invece, la sposti nel tempo.
+                  </p>
+                </div>
+              ) : (() => {
+                const gSel = baseGeoms.find(x => x.trip.id === selectedTripId)
+                  ?? overlayGeoms.find(x => x.trip.id === selectedTripId);
+                const suBase = baseGeoms.some(x => x.trip.id === selectedTripId);
+                const stsSel = stsOfTrip(selectedTripId);
+                const partenza = stsSel?.length ? secToHm(hmsToSec(stsSel[0].departureTime)) : "—";
+                const arrivo = stsSel?.length ? secToHm(hmsToSec(stsSel[stsSel.length - 1].arrivalTime)) : "—";
+                const eCopia = localCopies.some(c => c.id === selectedTripId);
+                return (
+                  <>
+                    <div className="rounded border border-amber-500/30 bg-amber-500/5 px-2.5 py-2">
+                      <div className="font-semibold text-amber-200">
+                        {gSel?.label ?? selectedTripId.slice(0, 8)}
+                      </div>
+                      <div className="text-[11px] text-slate-400 font-mono mt-0.5">
+                        {partenza} → {arrivo}
+                      </div>
+                      {eCopia && (
+                        <div className="text-[10px] text-cyan-300 mt-1">
+                          copia non ancora salvata
+                        </div>
+                      )}
+                    </div>
+
+                    {!suBase ? (
+                      <p className="text-[11px] text-slate-500">
+                        È una corsa di un <b>altro percorso</b>, mostrata qui come sovrapposizione:
+                        si modifica aprendo il suo percorso.
+                      </p>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => say(duplicaCorsa(selectedTripId))}
+                          className="w-full flex items-center gap-2 px-2.5 py-2 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10">
+                          <CopyPlus className="w-4 h-4" />
+                          <span className="text-left">
+                            <b>Duplica</b>
+                            <span className="block text-[10px] text-slate-500">
+                              copia identica fra questa e la successiva
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => { setActiveTool("mult"); setMultBaseTripId(selectedTripId); }}
+                          className="w-full flex items-center gap-2 px-2.5 py-2 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10">
+                          <Layers className="w-4 h-4" />
+                          <span className="text-left">
+                            <b>Copia più volte</b>
+                            <span className="block text-[10px] text-slate-500">
+                              cadenzamento su una fascia oraria
+                            </span>
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => say(eliminaCorsa(selectedTripId))}
+                          className="w-full flex items-center gap-2 px-2.5 py-2 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
+                          <Trash2 className="w-4 h-4" />
+                          <span className="text-left">
+                            <b>Elimina</b>
+                            <span className="block text-[10px] text-slate-500">
+                              anche col tasto Canc · Ctrl+Z ripristina
+                            </span>
+                          </span>
+                        </button>
+                        <p className="text-[10px] text-slate-500 border-t border-slate-800 pt-2">
+                          Duplica, elimina e spostamenti restano <b>locali</b> finché non premi
+                          «Salva modifiche»: Ctrl+Z annulla l'ultima.
+                        </p>
+                      </>
+                    )}
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
         {activeTool === "valid" && (
           <div className="w-[320px] border-l border-slate-800 bg-slate-900 flex flex-col shrink-0">
             <div className="p-3 border-b border-slate-800 flex items-center gap-2">
@@ -3313,6 +3464,13 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
         <div className="w-[68px] border-l border-slate-800 bg-slate-900 flex flex-col items-stretch py-2 px-1.5 gap-1.5 shrink-0">
           <span className="text-center text-[8px] uppercase tracking-widest text-slate-600 font-semibold pb-0.5">Strumenti</span>
           <RailButton
+            icon={<MousePointerClick className="w-4 h-4" />} label="Corsa"
+            active={activeTool === "trip"} disabled={!variantId}
+            badge={selectedTripId ? "1" : null}
+            activeCls="bg-amber-500/15 border-amber-500/50 text-amber-300"
+            onClick={() => toggleTool("trip")}
+            title="Comandi della corsa selezionata: duplica, copia più volte, elimina" />
+          <RailButton
             icon={<CalendarRange className="w-4 h-4" />} label="Validità"
             active={activeTool === "valid"} disabled={!variantId}
             badge={(catSel.size + daySel.size) > 0 ? String(catSel.size + daySel.size) : null}
@@ -3381,7 +3539,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               : `nodi ${nodeVis.drawn}`}
           </span>
         )}
-        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · cursore sul pallino = transito · drag corsa = trasla · doppio clic = seleziona · ←/→ = 1 min (Shift = 5) · Ctrl+Z annulla</span>
+        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · clic corsa = seleziona · drag corsa = trasla · doppio clic sul pallino = transito · Canc = elimina · ←/→ = 1 min (Shift = 5) · Ctrl+Z annulla</span>
       </div>
 
       {/* ─── Conferma variazione sync (dopo l'anteprima sul grafico) ─── */}
