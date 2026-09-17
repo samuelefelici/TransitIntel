@@ -1809,6 +1809,32 @@ funzione — allargata, ristretta, rispiegata — sono finiti tutti sullo stesso
 punto: il documento non diceva perche' mancava qualcosa. Ogni volta che un
 filtro toglie roba, deve dire che cosa ha tolto e come riaverla.
 
+## Duplica corsa nel grafico (orario grafico, Planner Studio)
+
+Richiesta dall'operatore mentre lavorava sul grafico: cliccando una corsa,
+nella barra degli strumenti serve il tasto **Duplica**.
+
+La cosa da capire prima di scrivere una riga e' che **il grafico lavora in
+locale**: spostamento, eliminazione e anche il Ctrl+C/Ctrl+V che gia' c'era
+sono modifiche pendenti, confermate con «Salva modifiche» e disfatte con
+Ctrl+Z. Un duplica che scrivesse subito sul server sarebbe l'unica cosa della
+pagina a non passare di li'. Quindi il pulsante crea una **copia locale**, che
+alla conferma eredita validita' e categorie dall'originale perche' il
+salvataggio manda `baseTripId`.
+
+**Dove mette la copia**: a meta' strada fra la corsa duplicata e la successiva
+dello stesso percorso. E' la mossa vera quando si duplica — infittire fra due
+corse — e non finisce mai sopra una corsa che c'e' gia'. Verificato sulle
+partenze vere della linea 3: a cadenza 30′ la copia cade sempre a +15. Senza
+una corsa dopo, +60, come fa gia' Ctrl+V quando non sa dove puntare.
+
+**Difetto preesistente trovato per strada**: duplicando una copia, `baseTripId`
+puntava a un id locale (`copy-…`) che sul server non esiste. Col pulsante
+diventa facile da innescare, perche' dopo il duplica la copia resta
+selezionata e il secondo clic duplica lei. `corsaVeraDi()` risale la catena
+fino alla corsa reale, e la correzione vale anche per Ctrl+V, che aveva lo
+stesso buco da prima.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
