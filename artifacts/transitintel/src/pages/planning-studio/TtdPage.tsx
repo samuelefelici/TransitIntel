@@ -870,6 +870,47 @@ export default function PlanningStudioTtdPage() {
   /** Mostra l'errore parlante che le operazioni locali restituiscono. */
   const say = (err: string | null) => { if (err) toast.error(err); };
 
+  /* ─── MENU DEL TASTO DESTRO sulla corsa ───
+   * Duplica ed elimina esistevano solo nella barra che compare a corsa
+   * selezionata, e chi cercava «elimina» non arrivava mai a vederla. Col tasto
+   * destro il comando sta dove uno clicca: nessuno stato da indovinare,
+   * nessuna barra da trovare. Il clic destro seleziona anche la corsa, cosi'
+   * dopo il menu si puo' continuare con gli altri comandi. */
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; tripId: string } | null>(null);
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const chiudi = () => setCtxMenu(null);
+    const suEsc = (e: KeyboardEvent) => { if (e.key === "Escape") setCtxMenu(null); };
+    // In RISALITA, non in cattura: in cattura il listener scatterebbe PRIMA
+    // del clic sul pulsante del menu, chiuderebbe il menu e il comando non
+    // partirebbe mai — un menu che si chiude senza fare niente. Cosi' invece
+    // il pulsante agisce, poi l'evento risale e chiude; e il clic dentro il
+    // menu non arriva fin qui, perche' il contenitore lo ferma.
+    window.addEventListener("click", chiudi);
+    window.addEventListener("wheel", chiudi, true);
+    window.addEventListener("keydown", suEsc);
+    return () => {
+      window.removeEventListener("click", chiudi);
+      window.removeEventListener("wheel", chiudi, true);
+      window.removeEventListener("keydown", suEsc);
+    };
+  }, [ctxMenu]);
+
+  function onContextMenu(e: React.MouseEvent) {
+    const el = (e.target as Element).closest?.("[data-trip]");
+    const id = el?.getAttribute("data-trip");
+    if (!id) { setCtxMenu(null); return; }      // sfondo: resta il menu del browser
+    e.preventDefault();
+    const rect = containerRef.current?.getBoundingClientRect();
+    setSelectedTripId(id);
+    setSelectedNode(null);
+    setCtxMenu({
+      x: e.clientX - (rect?.left ?? 0),
+      y: e.clientY - (rect?.top ?? 0),
+      tripId: id,
+    });
+  }
+
   /** ELIMINA una corsa. Modifica locale come tutto il resto del grafico.
    *
    * Su una copia non ancora salvata l'eliminazione è solo un ripensamento: la
@@ -2578,6 +2619,61 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               </div>
             );
           })()}
+          {/* ─── Menu del tasto destro sulla corsa ─── */}
+          {ctxMenu && (() => {
+            const gCtx = baseGeoms.find(x => x.trip.id === ctxMenu.tripId)
+              ?? overlayGeoms.find(x => x.trip.id === ctxMenu.tripId);
+            const suBase = baseGeoms.some(x => x.trip.id === ctxMenu.tripId);
+            const stsCtx = stsOfTrip(ctxMenu.tripId);
+            const partenzaCtx = stsCtx?.length ? secToHm(hmsToSec(stsCtx[0].departureTime)) : "—";
+            // il menu resta dentro il riquadro: aperto sul bordo destro o in
+            // fondo, altrimenti meta' finirebbe fuori e i comandi sarebbero di
+            // nuovo irraggiungibili
+            const LARG = 200, ALT = suBase ? 150 : 96;
+            const x = Math.min(ctxMenu.x, Math.max(0, size.w - LARG - 4));
+            const y = Math.min(ctxMenu.y, Math.max(0, size.h - ALT - 4));
+            return (
+              <div
+                className="absolute z-40 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl py-1 text-xs"
+                style={{ left: x, top: y, width: LARG }}
+                onClick={e => e.stopPropagation()}
+                onMouseDown={e => e.stopPropagation()}
+                onPointerDown={e => e.stopPropagation()}
+                onContextMenu={e => e.preventDefault()}>
+                <div className="px-3 py-1.5 border-b border-slate-800">
+                  <div className="text-amber-300 font-semibold truncate">
+                    {gCtx?.label ?? ctxMenu.tripId.slice(0, 8)}
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-mono">parte alle {partenzaCtx}</div>
+                </div>
+                {suBase ? (
+                  <>
+                    <button
+                      onClick={() => { setCtxMenu(null); say(duplicaCorsa(ctxMenu.tripId)); }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-cyan-300 hover:bg-cyan-500/10 text-left">
+                      <CopyPlus className="w-3.5 h-3.5 shrink-0" /> Duplica
+                    </button>
+                    <button
+                      onClick={() => { setCtxMenu(null); setActiveTool("mult"); setMultBaseTripId(ctxMenu.tripId); }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-emerald-300 hover:bg-emerald-500/10 text-left">
+                      <Layers className="w-3.5 h-3.5 shrink-0" /> Copia più volte
+                    </button>
+                    <div className="my-1 border-t border-slate-800" />
+                    <button
+                      onClick={() => { setCtxMenu(null); say(eliminaCorsa(ctxMenu.tripId)); }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-rose-300 hover:bg-rose-500/10 text-left">
+                      <Trash2 className="w-3.5 h-3.5 shrink-0" /> Elimina
+                    </button>
+                  </>
+                ) : (
+                  <div className="px-3 py-2 text-[11px] text-slate-500">
+                    Corsa di un altro percorso: si modifica aprendo il suo percorso.
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
           {/* NB: niente onDoubleClick nativo: col pointer capture l'evento
               arriva retargettato sull'svg (target senza data-trip) e
               annullava la selezione fatta dal rilevatore manuale in
@@ -2591,6 +2687,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
+              onContextMenu={onContextMenu}
               onPointerLeave={() => setHover(null)}
             >
               <defs>
@@ -2872,8 +2969,9 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                 <div className="space-y-2">
                   <p className="text-slate-400">Nessuna corsa selezionata.</p>
                   <p className="text-[11px] text-slate-500">
-                    <b className="text-slate-300">Clicca una corsa</b> nel grafico: la riga diventa
-                    gialla e qui compaiono i comandi. Trascinandola, invece, la sposti nel tempo.
+                    <b className="text-slate-300">Tasto destro su una corsa</b> nel grafico: duplica
+                    ed elimina compaiono dove hai cliccato. Col tasto sinistro la selezioni e i
+                    comandi compaiono qui; trascinandola, la sposti nel tempo.
                   </p>
                 </div>
               ) : (() => {
@@ -3539,7 +3637,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
               : `nodi ${nodeVis.drawn}`}
           </span>
         )}
-        <span className="text-slate-600">rotella = zoom · drag sfondo = pan · clic corsa = seleziona · drag corsa = trasla · doppio clic sul pallino = transito · Canc = elimina · ←/→ = 1 min (Shift = 5) · Ctrl+Z annulla</span>
+        <span className="text-slate-600">TASTO DESTRO sulla corsa = duplica / elimina · rotella = zoom · drag sfondo = pan · clic corsa = seleziona · drag corsa = trasla · doppio clic sul pallino = transito · Canc = elimina · ←/→ = 1 min (Shift = 5) · Ctrl+Z annulla</span>
       </div>
 
       {/* ─── Conferma variazione sync (dopo l'anteprima sul grafico) ─── */}

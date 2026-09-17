@@ -1893,6 +1893,35 @@ elimina».
 condizione non ovvia, per chi lo usa **non esiste**. Prima di aggiungere un
 pulsante conviene chiedersi se quello che c'e' gia' e' raggiungibile.
 
+## Il tasto destro, che e' dove uno lo cerca
+
+«NON C'E'! metti che clicco con il destro e compare il tasto elimina e
+duplica.» Aveva ragione due volte: la prima perche' i comandi stavano dietro
+una selezione che nessuno sapeva di dover fare, la seconda perche' la mia
+risposta — «adesso il clic seleziona, e c'e' un pannello nella barra» — era
+ancora una cosa da imparare invece di una cosa che funziona e basta.
+
+Ora il **tasto destro su una corsa** apre il menu li' dove si clicca: Duplica,
+Copia piu' volte, Elimina. Nessuno stato da indovinare, nessuna barra da
+trovare. Il clic destro seleziona anche la corsa, cosi' dopo si puo'
+proseguire con gli altri comandi.
+
+Dettagli che sarebbero diventati il prossimo «non funziona»:
+
+- il listener che chiude il menu e' in **risalita, non in cattura**: in cattura
+  scatterebbe PRIMA del clic sul pulsante, chiuderebbe il menu e il comando non
+  partirebbe mai — un menu che si chiude senza fare niente;
+- il menu si **riposiziona** per restare dentro il riquadro: aperto sul bordo
+  destro o in fondo, meta' finirebbe fuori e i comandi sarebbero di nuovo
+  irraggiungibili;
+- il tasto destro non fa partire il trascinamento (`e.button !== 0` era gia'
+  li'), e l'area di presa e' la fascia invisibile da 8 px che esisteva gia' per
+  l'hover: non serve centrare il tratto;
+- sullo **sfondo** il menu del browser resta quello di sempre: si intercetta
+  solo il clic su una corsa;
+- su una corsa di un altro percorso il menu lo dice invece di mostrare comandi
+  che non farebbero niente.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
