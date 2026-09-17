@@ -1359,6 +1359,38 @@ def escluse_per_un_capo(voci: list, scelte: list) -> dict:
     return fuori
 
 
+def esito_per_linea(voci: list, scelte: list) -> list:
+    """Che fine ha fatto OGNI linea scelta, una riga per una.
+
+    Nasce da un giro perso: l'operatore spunta tre linee, nel capitolo ne vede
+    due e il documento non dice niente della terza. Il filtro funzionava —
+    quella linea non incontra nessuna delle altre due — ma «funziona» e «si
+    capisce» sono due cose diverse, e la seconda e' quella che serve.
+
+    Per ogni linea scelta: quante relazioni entrano nel capitolo, quante
+    restano fuori e SU QUALI LINEE stanno i capi che le tengono fuori."""
+    s = set(scelte)
+    tenute = filtra_per_linee(voci, scelte)
+    id_tenute = {id(v) for v in tenute}
+    fuori = []
+    for linea in dict.fromkeys(scelte):
+        dentro, escluse, con = 0, 0, []
+        for v in voci:
+            a, b = str(v.get("fromRoute") or ""), str(v.get("toRoute") or "")
+            if linea not in (a, b):
+                continue
+            if id(v) in id_tenute:
+                dentro += 1
+            else:
+                escluse += 1
+                altra = b if a == linea else a
+                if altra and altra not in s and altra not in con:
+                    con.append(altra)
+        fuori.append({"linea": linea, "mostrate": dentro, "escluse": escluse,
+                      "con": sorted(con, key=ordine_di_linea)})
+    return fuori
+
+
 def linee_senza_relazioni(voci: list, scelte: list) -> list:
     """Le linee spuntate che non compaiono in nessuna relazione.
 
@@ -1609,30 +1641,35 @@ def render_coincidenze(d: dict) -> str:
     scelte = linee_scelte(d)
     if scelte:
         tutte_e, tutte_m = len(esistenti), len(mancate)
-        mute = linee_senza_relazioni(esistenti + mancate, scelte)
-        vicine = escluse_per_un_capo(esistenti, scelte)
+        esito = esito_per_linea(esistenti, scelte)
         esistenti = filtra_per_linee(esistenti, scelte)
         mancate = filtra_per_linee(mancate, scelte)
         una_sola = len(set(scelte)) == 1
         regola = ("tutte le relazioni che la toccano, perché una relazione ha due capi e con una "
                   "linea sola il quadro resterebbe vuoto" if una_sola else
                   "<b>solo le relazioni fra queste linee</b>: tutti e due i capi dentro la scelta")
-        avviso = (f'<b>Questo capitolo è limitato alle linee scelte in fase di esportazione</b>: '
-                  f'{esc(", ".join(sorted(set(scelte), key=ordine_di_linea)))}. Si tengono {regola}. '
-                  f'Restano {fmt_n(len(esistenti))} relazioni realizzate su {fmt_n(tutte_e)} e '
-                  f'{fmt_n(len(mancate))} mancate per poco su {fmt_n(tutte_m)}.')
-        if vicine:
-            elenco = ", ".join(f'{esc(l)} ({fmt_n(n)})' for l, n in
-                               sorted(vicine.items(), key=lambda kv: (-kv[1], ordine_di_linea(kv[0]))))
-            avviso += (f' <b>Restano fuori per un capo solo</b> — una linea scelta incontra una linea '
-                       f'che non hai spuntato: {elenco}. Se quelle relazioni ti servono, aggiungi '
-                       f'quelle linee alla scelta ed esporta di nuovo.')
-        if mute:
-            avviso += (f' <b>Non compaiono affatto</b>: {esc(", ".join(sorted(mute, key=ordine_di_linea)))} '
-                       f'— l\'orario non fa nessuna coincidenza con queste linee, né realizzata né '
-                       f'mancata per poco.')
-        avviso += (' Il dossier conserva comunque tutta la rete: il taglio è del documento, non del dato.')
-        out.append(para(avviso))
+        compaiono = sum(1 for e in esito if e["mostrate"] > 0)
+        out.append(para(
+            f'<b>Questo capitolo è limitato alle linee scelte in fase di esportazione.</b> '
+            f'Si tengono {regola}. Restano {fmt_n(len(esistenti))} relazioni realizzate su '
+            f'{fmt_n(tutte_e)} e {fmt_n(len(mancate))} mancate per poco su {fmt_n(tutte_m)}; '
+            f'delle {fmt_n(len(esito))} linee scelte ne compaiono <b>{fmt_n(compaiono)}</b>. '
+            f'Il quadro qui sotto dice riga per riga il perché — una linea sparisce quando le sue '
+            f'coincidenze sono tutte con linee che non hai spuntato.'))
+        righe_esito = []
+        for e in esito:
+            if e["mostrate"] > 0:
+                perche = "—"
+            elif e["escluse"] > 0:
+                perche = (f'le sue coincidenze sono solo con '
+                          f'{esc(", ".join(e["con"]))}: spunta anche quella e riesporta')
+            else:
+                perche = "l'orario non le fa fare nessuna coincidenza"
+            righe_esito.append((e["linea"], fmt_n(e["mostrate"]), fmt_n(e["escluse"]), perche))
+        out.append(table(["Linea scelta", "Relazioni nel capitolo", "Lasciate fuori",
+                          "Perché non compare"], righe_esito, numeric_from=1))
+        out.append(para('<span class="small">Il dossier conserva comunque tutta la rete: '
+                        'il taglio è del documento, non del dato.</span>'))
     out.append(rc.kpi_row([
         ("Relazioni realizzate", fmt_n(len(esistenti)), "l'orario le produce davvero"),
         ("Mancate per poco", fmt_n(len(mancate)), "attesa appena fuori finestra"),
