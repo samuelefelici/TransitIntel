@@ -884,11 +884,17 @@ def griglia_coincidenze(righe: Sequence[dict], title: str, subtitle: str = "",
                         width: int = 900, note: str = "", label_w: int = 250) -> str:
     """QUANDO si puo' cambiare: una riga per relazione, una colonna per ora.
 
-    righe: [{"label": str, "sub": str, "ore": {ora: quante}, "totale": int}]
+    righe: [{"label": str, "nodo": str, "colore": str, "ore": {ora: quante},
+             "totale": int}]
 
     Il buco si vede a occhio: una casella vuota in mezzo a caselle piene e'
     un'ora in cui il cambio non c'e'. Nessun altro disegno lo fa vedere in un
-    colpo solo, e per un capo movimento e' la prima cosa da sapere."""
+    colpo solo, e per un capo movimento e' la prima cosa da sapere.
+
+    Il colore e' il NODO, non il conteggio: con dieci relazioni su cinque nodi,
+    poterli distinguere a colpo d'occhio vale piu' che graduare una tinta sola.
+    L'intensita' resta il conteggio, e la legenda dice tutte e due le cose —
+    senza legenda un azzurro piu' scuro non significa niente."""
     righe = [r for r in righe if isinstance(r, dict) and (r.get("ore") or {})]
     if not righe:
         return ""
@@ -914,7 +920,11 @@ def griglia_coincidenze(righe: Sequence[dict], title: str, subtitle: str = "",
                    f'text-anchor="middle" font-family=\'{FONT}\'>{ora:02d}</text>')
     for i, r in enumerate(righe):
         y = top + i * (cell_h + gap)
-        out.append(f'<text x="{label_w - 10}" y="{y + cell_h - 4.5:.1f}" font-size="10.5" fill="{INK}" '
+        tinta = str(r.get("colore") or SERIES[0])
+        # il bollo del nodo accanto all'etichetta: lega la riga alla legenda
+        out.append(f'<rect x="{label_w - 7:.1f}" y="{y + 3:.1f}" width="4" height="{cell_h - 6:.1f}" '
+                   f'rx="1" fill="{tinta}"/>')
+        out.append(f'<text x="{label_w - 14}" y="{y + cell_h - 4.5:.1f}" font-size="10.5" fill="{INK}" '
                    f'text-anchor="end" font-family=\'{FONT}\'>{esc(r.get("label", ""))}</text>')
         for k in range(n_ore):
             ora = o0 + k
@@ -925,10 +935,13 @@ def griglia_coincidenze(righe: Sequence[dict], title: str, subtitle: str = "",
                            f'rx="2" fill="none" stroke="{GRID}" stroke-width="1"/>')
                 continue
             q = n / massimo
-            tinta = SEQ[100] if q <= 0.2 else SEQ[200] if q <= 0.4 else SEQ[300] if q <= 0.6 else SEQ[400] if q <= 0.8 else SEQ[500]
-            testo = "#ffffff" if q > 0.6 else INK
+            # l'intensita' e' il conteggio, la tinta e' il nodo
+            opacita = 0.30 + 0.70 * (0.2 if q <= 0.2 else 0.4 if q <= 0.4
+                                     else 0.65 if q <= 0.6 else 0.85 if q <= 0.8 else 1.0)
+            testo = "#ffffff" if q > 0.5 else INK
             out.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{cell_w - 2:.1f}" height="{cell_h:.1f}" rx="2" '
-                       f'fill="{tinta}"><title>{esc(r.get("label", ""))} · ore {ora:02d}: {n} coincidenze</title></rect>')
+                       f'fill="{tinta}" opacity="{opacita:.2f}">'
+                       f'<title>{esc(r.get("label", ""))} · ore {ora:02d}: {n} coincidenze</title></rect>')
             if cell_w >= 20:
                 out.append(f'<text x="{x + (cell_w - 2) / 2:.1f}" y="{y + cell_h - 4.5:.1f}" font-size="9.5" '
                            f'fill="{testo}" text-anchor="middle" font-family=\'{FONT}\'>{n}</text>')
@@ -942,18 +955,36 @@ def griglia_coincidenze(righe: Sequence[dict], title: str, subtitle: str = "",
               int(r.get("totale") or 0)) for r in righe]
     tbl = _table(["Relazione", "Coincidenze ora per ora", "Totale"], trows,
                  caption="La griglia in numeri", numeric_from=2)
-    return figure(title, "".join(out), subtitle=subtitle, table=tbl, note=note)
+    # La legenda dice le DUE cose che il disegno codifica: la tinta e' il nodo,
+    # l'intensita' e' quante coincidenze ci sono in quell'ora.
+    nodi: dict = {}
+    for r in righe:
+        n_ = str(r.get("nodo") or "").strip()
+        if n_ and n_ not in nodi:
+            nodi[n_] = str(r.get("colore") or SERIES[0])
+    legenda = _legend(list(nodi.keys()), list(nodi.values())) if nodi else ""
+    legenda += ('<div class="legend"><span><b>Intensità</b>: quante coincidenze in quell\'ora</span>'
+                + "".join(f'<span><i style="background:{INK};opacity:{op}"></i>{et}</span>'
+                          for op, et in ((0.44, "una"), (0.72, "qualcuna"), (1.0, "tante")))
+                + f'<span><i style="background:transparent;border:1px solid {GRID}"></i>'
+                  f'nessun cambio in quell\'ora</span></div>')
+    return figure(title, "".join(out), subtitle=subtitle, legend=legenda, table=tbl, note=note)
 
 
 def ritmo_relazione(passaggi: Sequence[dict], title: str, subtitle: str = "",
                     finestra: tuple = (2, 5), width: int = 430, height: int = 210,
-                    note: str = "") -> str:
+                    note: str = "", colore: str = "", legenda: bool = False) -> str:
     """QUANTO e' buono il cambio, passaggio per passaggio.
 
     In orizzontale l'ora del giorno, in verticale i minuti di attesa; la fascia
     chiara e' la finestra utile. Un punto sopra la fascia e' un'attesa lunga,
     uno sotto e' un cambio da prendere di corsa. Le due cose che contano si
-    vedono insieme: se il servizio copre tutta la giornata e se l'attesa tiene."""
+    vedono insieme: se il servizio copre tutta la giornata e se l'attesa tiene.
+
+    `colore` e' la tinta del NODO, la stessa della griglia di 8.2: serve a
+    ritrovare la stessa relazione nelle due figure. `legenda` la mette sotto —
+    una sola volta per gruppo di disegni, perche' ripeterla dodici volte
+    occuperebbe piu' spazio dei disegni."""
     punti = []
     for p in passaggi or []:
         if not isinstance(p, dict):
@@ -1000,13 +1031,23 @@ def ritmo_relazione(passaggi: Sequence[dict], title: str, subtitle: str = "",
     out.append(f'<line x1="{left}" y1="{top + ph}" x2="{left + pw}" y2="{top + ph}" stroke="{AXIS}" stroke-width="1"/>')
     out.append(f'<text x="{left - 6}" y="{top - 7}" font-size="9" fill="{MUTED}" text-anchor="end" '
                f'font-family=\'{FONT}\'>min</text>')
+    tinta = str(colore or SERIES[0])
     for m, a in sorted(punti):
         dentro = lo <= a <= hi
-        col = SERIES[0] if dentro else (STATUS["warning"] if a > hi else STATUS["critical"])
-        out.append(f'<circle cx="{X(m):.1f}" cy="{Y(a):.1f}" r="3" fill="{col}" stroke="#ffffff" '
-                   f'stroke-width="0.8"><title>{hm(m)} · attesa {fmt_n(a)} minuti</title></circle>')
+        col = tinta if dentro else (STATUS["warning"] if a > hi else STATUS["critical"])
+        out.append(f'<circle cx="{X(m):.1f}" cy="{Y(a):.1f}" r="3.4" fill="{col}" stroke="#ffffff" '
+                   f'stroke-width="0.9"><title>{hm(m)} · attesa {fmt_n(a)} minuti</title></circle>')
     out.append("</svg>")
-    return figure(title, "".join(out), subtitle=subtitle, note=note)
+    leg = ""
+    if legenda:
+        leg = ('<div class="legend">'
+               f'<span><i style="background:{SEQ[100]}"></i>fascia utile, '
+               f'{fmt_n(lo)}–{fmt_n(hi)} minuti</span>'
+               '<span><i style="background:' + tinta + '"></i>cambio dentro la finestra</span>'
+               f'<span><i style="background:{STATUS["warning"]}"></i>attesa lunga: si aspetta</span>'
+               f'<span><i style="background:{STATUS["critical"]}"></i>cambio stretto: non si fa in tempo</span>'
+               '</div>')
+    return figure(title, "".join(out), subtitle=subtitle, legend=leg, note=note)
 
 
 # ── Riquadri KPI (quando il dato è UN numero) ──

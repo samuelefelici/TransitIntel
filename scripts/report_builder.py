@@ -1318,23 +1318,37 @@ def linee_scelte(d: dict) -> list:
 
 
 def filtra_per_linee(voci: list, scelte: list) -> list:
-    """Le relazioni che riguardano le linee scelte.
+    """Le coincidenze DELLE linee scelte: basta che una le tocchi.
 
-    La regola e' una sola e va detta in chiaro nel documento: con due o piu'
-    linee scelte si tengono le relazioni fra quelle linee — tutte e due i capi
-    dentro la scelta — perche' chi ne indica cinque vuole vedere come si
-    parlano fra loro, non le altre dodici. Con una linea sola si tengono tutte
-    le sue relazioni, altrimenti il capitolo resterebbe vuoto."""
+    La prima versione teneva solo le relazioni con tutti e due i capi dentro la
+    scelta, e su una rete vera era una mannaia: delle dieci relazioni del
+    festivo di Ancona ne restava UNA, perche' le altre nove avevano un capo su
+    una linea che l'operatore non aveva spuntato — la 11, la 31, la 7. Ma chi
+    spunta la 2/6 sta chiedendo «le coincidenze della 2/6», e la 2/6 con la 11
+    e' una coincidenza della 2/6.
+
+    Chi vuole vedere solo il dialogo fra due linee spunta quelle due: le
+    relazioni con l'esterno sono poche e si riconoscono a colpo d'occhio,
+    mentre una relazione che manca non si riconosce affatto."""
     if not scelte:
         return list(voci)
     s = {x for x in scelte}
-    uno = len(s) == 1
-    fuori = []
+    return [v for v in voci
+            if str(v.get("fromRoute") or "") in s or str(v.get("toRoute") or "") in s]
+
+
+def linee_senza_relazioni(voci: list, scelte: list) -> list:
+    """Le linee spuntate che non compaiono in nessuna relazione.
+
+    Vanno dette: una linea scelta che sparisce dal capitolo puo' voler dire due
+    cose molto diverse — non fa coincidenze, oppure il suo nome nel quadro non
+    e' quello che il riconoscitore ha visto — e senza scriverlo l'operatore non
+    puo' distinguerle."""
+    presenti = set()
     for v in voci:
-        a, b = str(v.get("fromRoute") or ""), str(v.get("toRoute") or "")
-        if (uno and (a in s or b in s)) or (not uno and a in s and b in s):
-            fuori.append(v)
-    return fuori
+        presenti.add(str(v.get("fromRoute") or ""))
+        presenti.add(str(v.get("toRoute") or ""))
+    return [x for x in dict.fromkeys(scelte) if x not in presenti]
 
 
 def passaggi_di(c: dict) -> tuple:
@@ -1400,6 +1414,22 @@ def _niente_disegno(titolo: str, quante: int, motivo: str) -> str:
                    f'nel quadro qui sotto, con i numeri e gli orari di campione.</i>'))
 
 
+def tinte_dei_nodi(esistenti: list) -> dict:
+    """Una tinta per nodo, decisa una volta sola per tutto il capitolo.
+
+    Se la griglia di 8.2 e i disegni di 8.3 colorassero a modo loro, la stessa
+    relazione avrebbe due colori diversi nella stessa pagina e la legenda non
+    servirebbe a niente. I nodi con piu' incontri prendono le tinte per prime,
+    cosi' le piu' distinguibili vanno dove si guarda di piu'."""
+    peso: dict = {}
+    for c in esistenti:
+        nodo = str(c.get("node") or "").strip()
+        if nodo:
+            peso[nodo] = peso.get(nodo, 0) + int(c.get("occurrences") or 0)
+    ordinati = sorted(peso, key=lambda n: (-peso[n], n))
+    return {n: rc.SERIES[i % len(rc.SERIES)] for i, n in enumerate(ordinati)}
+
+
 def _etichetta_relazione(c: dict) -> str:
     return f'{c.get("node") or "?"} · {c.get("fromRoute")} → {c.get("toRoute")}'
 
@@ -1411,6 +1441,7 @@ def render_coincidenze_quando(esistenti: list) -> str:
     che ora». Una riga per relazione, una colonna per ora, la casella piena
     quanto sono le coincidenze di quell'ora: il buco a meta' pomeriggio si vede
     a occhio, e nessun elenco lo fa vedere."""
+    tinte = tinte_dei_nodi(esistenti)
     righe = []
     for c in esistenti:
         ore = _ore_dei_passaggi(c)
@@ -1419,7 +1450,9 @@ def render_coincidenze_quando(esistenti: list) -> str:
         # il totale e' quello dichiarato dalla relazione: coi soli campioni la
         # somma delle caselle direbbe «tre» dove gli incontri sono dodici
         totale = int(c.get("occurrences") or 0) or sum(ore.values())
-        righe.append({"label": _etichetta_relazione(c), "ore": ore, "totale": totale})
+        nodo = str(c.get("node") or "").strip()
+        righe.append({"label": _etichetta_relazione(c), "ore": ore, "totale": totale,
+                      "nodo": nodo, "colore": tinte.get(nodo, rc.SERIES[0])})
     if not righe:
         return _niente_disegno("8.2 Quando si può cambiare", len(esistenti),
                                "nessuna relazione porta l'ora dell'incontro")
@@ -1456,6 +1489,7 @@ def render_coincidenze_ritmo(d: dict, esistenti: list) -> str:
     lo = _numero(co.get("attesaMinimaMin"))
     hi = _numero(co.get("sogliaAttesaMin"))
     finestra = (lo if lo is not None else 2, hi if hi is not None else 5)
+    tinte = tinte_dei_nodi(esistenti)
     con_orari = [c for c in esistenti if passaggi_di(c)[0]]
     con_orari.sort(key=lambda c: -int(c.get("occurrences") or 0))
     pezzi, su_campioni = [], 0
@@ -1467,7 +1501,11 @@ def render_coincidenze_ritmo(d: dict, esistenti: list) -> str:
             subtitle=f'{fmt_n(c.get("occurrences"))} volte al giorno · attesa mediana '
                      f'{fmt_n(a.get("mediana"))}′'
                      + ("" if completo else f' · disegnati {fmt_n(len(pg))} passaggi di campione'),
-            finestra=finestra)
+            finestra=finestra,
+            colore=tinte.get(str(c.get("node") or "").strip(), rc.SERIES[0]),
+            # la legenda una volta sola: ripeterla dodici volte occuperebbe
+            # piu' spazio dei disegni
+            legenda=(len(pezzi) == 0))
         if dis:
             pezzi.append(dis)
             su_campioni += 0 if completo else 1
@@ -1549,16 +1587,22 @@ def render_coincidenze(d: dict) -> str:
     scelte = linee_scelte(d)
     if scelte:
         tutte_e, tutte_m = len(esistenti), len(mancate)
+        mute = linee_senza_relazioni(esistenti + mancate, scelte)
         esistenti = filtra_per_linee(esistenti, scelte)
         mancate = filtra_per_linee(mancate, scelte)
-        regola = ("tutte le relazioni che la toccano" if len(set(scelte)) == 1
-                  else "le relazioni con tutti e due i capi fra queste linee")
-        out.append(para(
-            f'<b>Questo capitolo è limitato alle linee scelte in fase di esportazione</b>: '
-            f'{esc(", ".join(sorted(set(scelte), key=ordine_di_linea)))}. Si tengono {regola} — '
-            f'{fmt_n(len(esistenti))} relazioni realizzate su {fmt_n(tutte_e)} e '
-            f'{fmt_n(len(mancate))} mancate per poco su {fmt_n(tutte_m)}. '
-            f'Il dossier conserva comunque tutta la rete: il taglio è del documento, non del dato.'))
+        avviso = (f'<b>Questo capitolo è limitato alle linee scelte in fase di esportazione</b>: '
+                  f'{esc(", ".join(sorted(set(scelte), key=ordine_di_linea)))}. Si tiene '
+                  f'<b>ogni relazione che tocca una di queste linee</b>, anche quando l\'altro capo '
+                  f'è una linea non scelta — la coincidenza fra la 2/6 e la 11 è una coincidenza '
+                  f'della 2/6 — perciò nei quadri compaiono anche linee che non hai spuntato. '
+                  f'Restano {fmt_n(len(esistenti))} relazioni realizzate su {fmt_n(tutte_e)} e '
+                  f'{fmt_n(len(mancate))} mancate per poco su {fmt_n(tutte_m)}.')
+        if mute:
+            avviso += (f' <b>Non compaiono affatto</b>: {esc(", ".join(sorted(mute, key=ordine_di_linea)))} '
+                       f'— l\'orario non fa nessuna coincidenza con queste linee, né realizzata né '
+                       f'mancata per poco.')
+        avviso += (' Il dossier conserva comunque tutta la rete: il taglio è del documento, non del dato.')
+        out.append(para(avviso))
     out.append(rc.kpi_row([
         ("Relazioni realizzate", fmt_n(len(esistenti)), "l'orario le produce davvero"),
         ("Mancate per poco", fmt_n(len(mancate)), "attesa appena fuori finestra"),

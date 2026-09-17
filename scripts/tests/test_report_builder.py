@@ -694,17 +694,42 @@ def test_l_operatore_sceglie_le_linee_da_vedere():
     assert "Il dossier conserva comunque tutta la rete" in html
 
 
-def test_la_regola_della_scelta_e_una_sola_e_dichiarata():
-    """Due o più linee: le relazioni fra quelle linee. Una sola: tutte le sue,
-    altrimenti il capitolo resterebbe vuoto."""
+def test_si_tengono_le_coincidenze_DELLE_linee_scelte():
+    """Basta che una linea scelta tocchi la relazione.
+
+    La prima versione voleva tutti e due i capi dentro la scelta, e sulla rete
+    vera era una mannaia: delle dieci relazioni del festivo di Ancona ne
+    restava UNA, perché le altre nove avevano un capo sulla 11, sulla 31 o
+    sulla 7, che l'operatore non aveva spuntato. Ma chi spunta la 2/6 chiede
+    «le coincidenze della 2/6», e la 2/6 con la 11 è una coincidenza della 2/6.
+    """
     voci = [{"fromRoute": "3", "toRoute": "1/4"}, {"fromRoute": "2/6", "toRoute": "21/33"},
-            {"fromRoute": "3", "toRoute": "44"}]
+            {"fromRoute": "3", "toRoute": "44"}, {"fromRoute": "11", "toRoute": "2/6"}]
     # nessuna scelta: non si filtra
-    assert len(rb.filtra_per_linee(voci, [])) == 3
-    # due scelte: tutti e due i capi dentro
-    assert rb.filtra_per_linee(voci, ["3", "1/4"]) == [voci[0]]
-    # una sola: tutte le relazioni che la toccano
-    assert rb.filtra_per_linee(voci, ["3"]) == [voci[0], voci[2]]
+    assert len(rb.filtra_per_linee(voci, [])) == 4
+    # una linea sola: tutte le relazioni che la toccano, nei due versi
+    assert rb.filtra_per_linee(voci, ["2/6"]) == [voci[1], voci[3]]
+    # più linee: l'unione, non l'intersezione
+    assert rb.filtra_per_linee(voci, ["3", "1/4"]) == [voci[0], voci[2]]
+    # e la controprova della vecchia regola: con «tutti e due i capi» qui
+    # resterebbe una voce sola invece di due
+    entrambi = [v for v in voci
+                if v["fromRoute"] in {"3", "1/4"} and v["toRoute"] in {"3", "1/4"}]
+    assert len(entrambi) == 1 < len(rb.filtra_per_linee(voci, ["3", "1/4"]))
+
+
+def test_una_linea_scelta_che_non_fa_coincidenze_viene_detta():
+    """Sparire dal capitolo e non fare coincidenze si assomigliano troppo:
+    senza scriverlo, l'operatore non può distinguerli."""
+    voci = [{"fromRoute": "3", "toRoute": "1/4"}]
+    assert rb.linee_senza_relazioni(voci, ["3", "1/4"]) == []
+    assert rb.linee_senza_relazioni(voci, ["3", "91", "44"]) == ["91", "44"]
+
+    d = _coincidenze()
+    d["analisi"]["coincidenze"]["lineeScelte"] = ["3", "1/4", "91"]
+    html = rb.render_coincidenze(d)
+    assert "Non compaiono affatto" in html and "91" in html
+    assert "ogni relazione che tocca una di queste linee" in html, "la regola, scritta"
 
 
 def test_lo_sfondo_dice_perche_manca(monkeypatch):
@@ -1088,3 +1113,60 @@ def test_la_normalizzazione_regge_tutte_e_due_le_forme():
     assert completo is True and misto[0]["arrivoMin"] == 100
     # e niente di leggibile non inventa niente
     assert rb.passaggi_di({"sample": [{"attesaMin": 3}]})[0] == []
+
+
+def test_i_colori_hanno_una_legenda_che_li_spiega():
+    """Un azzurro più scuro non significa niente finché la legenda non lo dice.
+    La griglia codifica DUE cose — la tinta è il nodo, l'intensità è quante
+    coincidenze — e tutte e due vanno scritte."""
+    html = rc.griglia_coincidenze([
+        {"label": "PIAZZA CAVOUR · 2/6 → 11", "nodo": "PIAZZA CAVOUR",
+         "colore": rc.SERIES[0], "ore": {8: 1, 12: 3}, "totale": 4},
+        {"label": "POSATORA · 3 → 31", "nodo": "POSATORA",
+         "colore": rc.SERIES[1], "ore": {9: 2}, "totale": 2},
+    ], "t")
+    assert 'class="legend"' in html
+    assert "PIAZZA CAVOUR" in html and "POSATORA" in html, "la legenda dei nodi"
+    assert rc.SERIES[0] in html and rc.SERIES[1] in html, "un nodo, una tinta"
+    assert "Intensità" in html and "nessun cambio in quell" in html, "la scala, spiegata"
+
+
+def test_il_ritmo_dice_che_cosa_vuol_dire_ogni_colore():
+    """I punti erano già di tre colori diversi e nessuno diceva perché."""
+    pg = [{"arrivoMin": 480, "attesaMin": 3}, {"arrivoMin": 600, "attesaMin": 20},
+          {"arrivoMin": 700, "attesaMin": 0}]
+    con = rc.ritmo_relazione(pg, "t", finestra=(2, 5), legenda=True, colore=rc.SERIES[2])
+    assert 'class="legend"' in con
+    assert "fascia utile, 2–5 minuti" in con
+    assert "dentro la finestra" in con and "attesa lunga" in con and "cambio stretto" in con
+    # e senza legenda il disegno resta identico, solo senza il blocco
+    senza = rc.ritmo_relazione(pg, "t", finestra=(2, 5), legenda=False, colore=rc.SERIES[2])
+    assert 'class="legend"' not in senza and "<svg" in senza
+
+
+def test_lo_stesso_nodo_ha_lo_stesso_colore_nelle_due_figure():
+    """Se 8.2 e 8.3 colorassero a modo loro, la stessa relazione avrebbe due
+    colori nella stessa pagina e la legenda non servirebbe a niente."""
+    esistenti = [
+        {"node": "PIAZZA CAVOUR", "fromRoute": "2/6", "toRoute": "11", "occurrences": 9,
+         "attesaMin": {"min": 2, "max": 5, "mediana": 3},
+         "passaggi": [{"arrivoMin": 480 + 60 * k, "attesaMin": 3} for k in range(9)]},
+        {"node": "POSATORA", "fromRoute": "3", "toRoute": "31", "occurrences": 4,
+         "attesaMin": {"min": 2, "max": 4, "mediana": 3},
+         "passaggi": [{"arrivoMin": 500 + 90 * k, "attesaMin": 3} for k in range(4)]},
+    ]
+    tinte = rb.tinte_dei_nodi(esistenti)
+    # il nodo con più incontri prende la prima tinta
+    assert tinte["PIAZZA CAVOUR"] == rc.SERIES[0]
+    assert tinte["POSATORA"] == rc.SERIES[1]
+    assert len(set(tinte.values())) == 2, "due nodi, due tinte"
+
+    d = {"meta": {}, "analisi": {"coincidenze": {
+        "sogliaAttesaMin": 5, "attesaMinimaMin": 2,
+        "esistenti": esistenti, "mancatePerPoco": [], "opportunita": []}}}
+    griglia = rb.render_coincidenze_quando(esistenti)
+    ritmo = rb.render_coincidenze_ritmo(d, esistenti)
+    for tinta in (rc.SERIES[0], rc.SERIES[1]):
+        assert tinta in griglia and tinta in ritmo, f"{tinta} deve stare in tutte e due"
+    # la legenda del ritmo compare una volta sola, non dodici
+    assert ritmo.count("cambio stretto") == 1
