@@ -1752,6 +1752,40 @@ la relazione fra le due figure, e portano la legenda dei tre colori dei punti
 — dentro la finestra, attesa lunga, cambio stretto — una volta sola sotto il
 primo, non dodici volte.
 
+## SOLO fra le linee scelte, e una legenda che non menta
+
+Due correzioni sopra le due di prima, e tutte e due sono colpa mia.
+
+**Il filtro: avevo letto male.** Al rilievo «non vedo tutte le coincidenze
+selezionate» avevo risposto allargando la regola a «basta che una linea scelta
+tocchi la relazione». Sbagliato: l'operatore ha poi dettato la regola in
+chiaro — «devo vedere coincidenze SOLO tra linee che seleziono». Spuntando 3,
+2/6 e 21/33 vedeva anche la 2/6 con la 11, la 3 con la 31 e la 2/6 con la 7.
+Si torna a **tutti e due i capi dentro la scelta** (con una linea sola si
+tengono le sue, altrimenti il quadro sarebbe sempre vuoto).
+
+Ma la regola da sola non basta, perche' il primo rilievo nasceva da li': con tre
+linee scelte resta UNA relazione e non si capisce se il quadro non ne fa altre o
+se il filtro le ha tolte. Ora il capitolo scrive **quale linea non spuntata
+tiene fuori quante relazioni** («31 (2), 11 (2), 7 (1) — se ti servono,
+aggiungile ed esporta di nuovo»). Il dubbio diventa una decisione.
+
+**La legenda mentiva, ed era un difetto vero.** Il colore «cambio dentro la
+finestra» lo prendevo dalla tinta del NODO, ma la legenda si stampa una volta
+sola sotto il primo disegno: diceva arancione mentre i punti di Posatora erano
+blu e quelli della Madonnetta verdi. Due sistemi di colore sovrapposti e uno
+solo spiegato.
+
+Ora i punti hanno un **colore fisso** che vuol dire sempre la stessa cosa in
+tutti i disegni; la tinta del nodo resta ma sul **titolo**, come fascetta, dove
+non compete con niente. Stesso difetto nella griglia: la scala dell'intensita'
+era mostrata con pastiglie NERE accanto a caselle arancioni e blu. Ora la scala
+si mostra nel colore di un nodo vero, dichiarando che vale per ogni tinta.
+
+Regola generale, da non dimenticare: **un colore in legenda deve voler dire
+sempre la stessa cosa in tutte le figure della pagina.** Se varia per figura,
+la legenda va sotto ogni figura o non ci va affatto.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
