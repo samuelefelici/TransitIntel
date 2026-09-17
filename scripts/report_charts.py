@@ -962,10 +962,21 @@ def griglia_coincidenze(righe: Sequence[dict], title: str, subtitle: str = "",
         n_ = str(r.get("nodo") or "").strip()
         if n_ and n_ not in nodi:
             nodi[n_] = str(r.get("colore") or SERIES[0])
-    legenda = _legend(list(nodi.keys()), list(nodi.values())) if nodi else ""
-    legenda += ('<div class="legend"><span><b>Intensità</b>: quante coincidenze in quell\'ora</span>'
-                + "".join(f'<span><i style="background:{INK};opacity:{op}"></i>{et}</span>'
-                          for op, et in ((0.44, "una"), (0.72, "qualcuna"), (1.0, "tante")))
+    legenda = ""
+    if nodi:
+        legenda = ('<div class="legend"><span><b>Il colore è il nodo</b></span>'
+                   + "".join(f'<span><i style="background:{c}"></i>{esc(n_)}</span>'
+                             for n_, c in nodi.items())
+                   + "</div>")
+    # La scala si mostra NEL COLORE DI UN NODO VERO, non in nero: pastiglie
+    # nere accanto a caselle arancioni e blu sono una legenda che non
+    # corrisponde a niente di quello che si vede nel disegno.
+    campione = next(iter(nodi.values()), SERIES[0])
+    legenda += ('<div class="legend">'
+                '<span><b>Quanto è piena</b>: le coincidenze di quell\'ora '
+                '(qui nel colore del primo nodo, ma vale per ogni tinta)</span>'
+                + "".join(f'<span><i style="background:{campione};opacity:{op:.2f}"></i>{et}</span>'
+                          for op, et in ((0.44, "una"), (0.76, "qualcuna"), (1.0, "tante")))
                 + f'<span><i style="background:transparent;border:1px solid {GRID}"></i>'
                   f'nessun cambio in quell\'ora</span></div>')
     return figure(title, "".join(out), subtitle=subtitle, legend=legenda, table=tbl, note=note)
@@ -1034,20 +1045,31 @@ def ritmo_relazione(passaggi: Sequence[dict], title: str, subtitle: str = "",
     tinta = str(colore or SERIES[0])
     for m, a in sorted(punti):
         dentro = lo <= a <= hi
-        col = tinta if dentro else (STATUS["warning"] if a > hi else STATUS["critical"])
+        # Colore FISSO, uguale in tutti i disegni: la legenda si scrive una
+        # volta sola e deve valere per tutti. La tinta del nodo sta sulla
+        # fascetta del titolo, non sui punti.
+        col = SERIES[0] if dentro else (STATUS["warning"] if a > hi else STATUS["critical"])
         out.append(f'<circle cx="{X(m):.1f}" cy="{Y(a):.1f}" r="3.4" fill="{col}" stroke="#ffffff" '
                    f'stroke-width="0.9"><title>{hm(m)} · attesa {fmt_n(a)} minuti</title></circle>')
     out.append("</svg>")
     leg = ""
     if legenda:
         leg = ('<div class="legend">'
-               f'<span><i style="background:{SEQ[100]}"></i>fascia utile, '
-               f'{fmt_n(lo)}–{fmt_n(hi)} minuti</span>'
-               '<span><i style="background:' + tinta + '"></i>cambio dentro la finestra</span>'
+               f'<span><b>Ogni punto è un passaggio</b></span>'
+               f'<span><i style="background:{SERIES[0]}"></i>attesa dentro la finestra: il cambio si fa</span>'
                f'<span><i style="background:{STATUS["warning"]}"></i>attesa lunga: si aspetta</span>'
                f'<span><i style="background:{STATUS["critical"]}"></i>cambio stretto: non si fa in tempo</span>'
+               f'<span><i style="background:{SEQ[100]}"></i>la fascia chiara è la finestra utile, '
+               f'{fmt_n(lo)}–{fmt_n(hi)} minuti</span>'
                '</div>')
-    return figure(title, "".join(out), subtitle=subtitle, legend=leg, note=note)
+    # La tinta del nodo resta, ma sul TITOLO: lega il disegno alla griglia di
+    # sopra senza entrare in conflitto coi colori dei punti.
+    fig = figure(title, "".join(out), subtitle=subtitle, legend=leg, note=note)
+    bollo = (f'<span style="display:inline-block;width:4px;height:12px;border-radius:1px;'
+             f'background:{tinta};margin-right:7px;vertical-align:-1px"></span>')
+    atteso = f'<figcaption><strong>{esc(title)}</strong>'
+    assert atteso in fig, "il frontespizio della figura e' cambiato: il bollo del nodo non si aggancia"
+    return fig.replace(atteso, f'<figcaption><strong>{bollo}{esc(title)}</strong>', 1)
 
 
 # ── Riquadri KPI (quando il dato è UN numero) ──

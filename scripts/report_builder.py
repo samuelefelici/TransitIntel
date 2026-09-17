@@ -1318,23 +1318,45 @@ def linee_scelte(d: dict) -> list:
 
 
 def filtra_per_linee(voci: list, scelte: list) -> list:
-    """Le coincidenze DELLE linee scelte: basta che una le tocchi.
+    """SOLO le coincidenze fra le linee scelte: tutti e due i capi dentro.
 
-    La prima versione teneva solo le relazioni con tutti e due i capi dentro la
-    scelta, e su una rete vera era una mannaia: delle dieci relazioni del
-    festivo di Ancona ne restava UNA, perche' le altre nove avevano un capo su
-    una linea che l'operatore non aveva spuntato — la 11, la 31, la 7. Ma chi
-    spunta la 2/6 sta chiedendo «le coincidenze della 2/6», e la 2/6 con la 11
-    e' una coincidenza della 2/6.
+    Dettato dall'operatore: «devo vedere coincidenze SOLO tra linee che
+    seleziono». Chi spunta 3, 2/6 e 21/33 vuole vedere come si parlano quelle
+    tre, non la 2/6 con la 11 e la 3 con la 31.
 
-    Chi vuole vedere solo il dialogo fra due linee spunta quelle due: le
-    relazioni con l'esterno sono poche e si riconoscono a colpo d'occhio,
-    mentre una relazione che manca non si riconosce affatto."""
+    Con UNA linea sola la regola darebbe sempre il vuoto — una relazione ha due
+    capi — quindi in quel caso si tengono tutte le sue. Il capitolo lo dice."""
     if not scelte:
         return list(voci)
     s = {x for x in scelte}
+    if len(s) == 1:
+        return [v for v in voci
+                if str(v.get("fromRoute") or "") in s or str(v.get("toRoute") or "") in s]
     return [v for v in voci
-            if str(v.get("fromRoute") or "") in s or str(v.get("toRoute") or "") in s]
+            if str(v.get("fromRoute") or "") in s and str(v.get("toRoute") or "") in s]
+
+
+def escluse_per_un_capo(voci: list, scelte: list) -> dict:
+    """Le relazioni lasciate fuori perche' UN capo e' su una linea non scelta,
+    contate per quella linea.
+
+    Serve a chiudere il cerchio che ha gia' fatto perdere un giro: l'operatore
+    spunta tre linee, vede una relazione sola e non sa se il quadro non ne fa
+    altre o se il filtro le ha tolte. Scrivere «altre cinque restano fuori: 7,
+    11, 31» trasforma un dubbio in una decisione — le aggiunge o no."""
+    if len(set(scelte)) < 2:
+        return {}
+    s = set(scelte)
+    fuori: dict = {}
+    for v in voci:
+        a, b = str(v.get("fromRoute") or ""), str(v.get("toRoute") or "")
+        dentro = [x for x in (a, b) if x in s]
+        if len(dentro) != 1:
+            continue                      # nessun capo dentro, o tutti e due
+        altra = b if a in s else a
+        if altra:
+            fuori[altra] = fuori.get(altra, 0) + 1
+    return fuori
 
 
 def linee_senza_relazioni(voci: list, scelte: list) -> list:
@@ -1588,15 +1610,23 @@ def render_coincidenze(d: dict) -> str:
     if scelte:
         tutte_e, tutte_m = len(esistenti), len(mancate)
         mute = linee_senza_relazioni(esistenti + mancate, scelte)
+        vicine = escluse_per_un_capo(esistenti, scelte)
         esistenti = filtra_per_linee(esistenti, scelte)
         mancate = filtra_per_linee(mancate, scelte)
+        una_sola = len(set(scelte)) == 1
+        regola = ("tutte le relazioni che la toccano, perché una relazione ha due capi e con una "
+                  "linea sola il quadro resterebbe vuoto" if una_sola else
+                  "<b>solo le relazioni fra queste linee</b>: tutti e due i capi dentro la scelta")
         avviso = (f'<b>Questo capitolo è limitato alle linee scelte in fase di esportazione</b>: '
-                  f'{esc(", ".join(sorted(set(scelte), key=ordine_di_linea)))}. Si tiene '
-                  f'<b>ogni relazione che tocca una di queste linee</b>, anche quando l\'altro capo '
-                  f'è una linea non scelta — la coincidenza fra la 2/6 e la 11 è una coincidenza '
-                  f'della 2/6 — perciò nei quadri compaiono anche linee che non hai spuntato. '
+                  f'{esc(", ".join(sorted(set(scelte), key=ordine_di_linea)))}. Si tengono {regola}. '
                   f'Restano {fmt_n(len(esistenti))} relazioni realizzate su {fmt_n(tutte_e)} e '
                   f'{fmt_n(len(mancate))} mancate per poco su {fmt_n(tutte_m)}.')
+        if vicine:
+            elenco = ", ".join(f'{esc(l)} ({fmt_n(n)})' for l, n in
+                               sorted(vicine.items(), key=lambda kv: (-kv[1], ordine_di_linea(kv[0]))))
+            avviso += (f' <b>Restano fuori per un capo solo</b> — una linea scelta incontra una linea '
+                       f'che non hai spuntato: {elenco}. Se quelle relazioni ti servono, aggiungi '
+                       f'quelle linee alla scelta ed esporta di nuovo.')
         if mute:
             avviso += (f' <b>Non compaiono affatto</b>: {esc(", ".join(sorted(mute, key=ordine_di_linea)))} '
                        f'— l\'orario non fa nessuna coincidenza con queste linee, né realizzata né '

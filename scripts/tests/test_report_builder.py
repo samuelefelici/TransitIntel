@@ -694,28 +694,35 @@ def test_l_operatore_sceglie_le_linee_da_vedere():
     assert "Il dossier conserva comunque tutta la rete" in html
 
 
-def test_si_tengono_le_coincidenze_DELLE_linee_scelte():
-    """Basta che una linea scelta tocchi la relazione.
-
-    La prima versione voleva tutti e due i capi dentro la scelta, e sulla rete
-    vera era una mannaia: delle dieci relazioni del festivo di Ancona ne
-    restava UNA, perché le altre nove avevano un capo sulla 11, sulla 31 o
-    sulla 7, che l'operatore non aveva spuntato. Ma chi spunta la 2/6 chiede
-    «le coincidenze della 2/6», e la 2/6 con la 11 è una coincidenza della 2/6.
-    """
+def test_si_tengono_SOLO_le_relazioni_fra_le_linee_scelte():
+    """Dettato dall'operatore: «devo vedere coincidenze SOLO tra linee che
+    seleziono». Chi spunta 3, 2/6 e 21/33 non vuole la 2/6 con la 11."""
     voci = [{"fromRoute": "3", "toRoute": "1/4"}, {"fromRoute": "2/6", "toRoute": "21/33"},
             {"fromRoute": "3", "toRoute": "44"}, {"fromRoute": "11", "toRoute": "2/6"}]
     # nessuna scelta: non si filtra
     assert len(rb.filtra_per_linee(voci, [])) == 4
-    # una linea sola: tutte le relazioni che la toccano, nei due versi
+    # più linee: tutti e due i capi dentro la scelta
+    assert rb.filtra_per_linee(voci, ["3", "1/4"]) == [voci[0]]
+    assert rb.filtra_per_linee(voci, ["2/6", "21/33"]) == [voci[1]]
+    # la 11 non è scelta: la sua relazione con la 2/6 resta fuori
+    assert rb.filtra_per_linee(voci, ["2/6", "21/33", "3"]) == [voci[1]]
+    # una linea sola: una relazione ha due capi, il quadro resterebbe vuoto
     assert rb.filtra_per_linee(voci, ["2/6"]) == [voci[1], voci[3]]
-    # più linee: l'unione, non l'intersezione
-    assert rb.filtra_per_linee(voci, ["3", "1/4"]) == [voci[0], voci[2]]
-    # e la controprova della vecchia regola: con «tutti e due i capi» qui
-    # resterebbe una voce sola invece di due
-    entrambi = [v for v in voci
-                if v["fromRoute"] in {"3", "1/4"} and v["toRoute"] in {"3", "1/4"}]
-    assert len(entrambi) == 1 < len(rb.filtra_per_linee(voci, ["3", "1/4"]))
+
+
+def test_le_relazioni_escluse_per_un_capo_vengono_dette():
+    """Vedere una relazione sola e non sapere se il quadro non ne fa altre o se
+    il filtro le ha tolte è già costato un giro. Il capitolo deve dire quale
+    linea non spuntata sta tenendo fuori quante relazioni."""
+    voci = [{"fromRoute": "2/6", "toRoute": "21/33"}, {"fromRoute": "11", "toRoute": "2/6"},
+            {"fromRoute": "2/6", "toRoute": "11"}, {"fromRoute": "31", "toRoute": "3"},
+            {"fromRoute": "1/4", "toRoute": "44"}]
+    fuori = rb.escluse_per_un_capo(voci, ["3", "2/6", "21/33"])
+    assert fuori == {"11": 2, "31": 1}, "la 11 ne tiene fuori due, la 31 una"
+    # la 1/4→44 non c'entra: nessuno dei due capi è scelto
+    assert "1/4" not in fuori and "44" not in fuori
+    # con una linea sola non si esclude niente per un capo: la regola è un'altra
+    assert rb.escluse_per_un_capo(voci, ["2/6"]) == {}
 
 
 def test_una_linea_scelta_che_non_fa_coincidenze_viene_detta():
@@ -729,7 +736,7 @@ def test_una_linea_scelta_che_non_fa_coincidenze_viene_detta():
     d["analisi"]["coincidenze"]["lineeScelte"] = ["3", "1/4", "91"]
     html = rb.render_coincidenze(d)
     assert "Non compaiono affatto" in html and "91" in html
-    assert "ogni relazione che tocca una di queste linee" in html, "la regola, scritta"
+    assert "solo le relazioni fra queste linee" in html, "la regola, scritta"
 
 
 def test_lo_sfondo_dice_perche_manca(monkeypatch):
@@ -1128,7 +1135,11 @@ def test_i_colori_hanno_una_legenda_che_li_spiega():
     assert 'class="legend"' in html
     assert "PIAZZA CAVOUR" in html and "POSATORA" in html, "la legenda dei nodi"
     assert rc.SERIES[0] in html and rc.SERIES[1] in html, "un nodo, una tinta"
-    assert "Intensità" in html and "nessun cambio in quell" in html, "la scala, spiegata"
+    assert "Quanto è piena" in html and "nessun cambio in quell" in html, "la scala, spiegata"
+    # la scala si mostra nel colore di un nodo VERO: pastiglie nere accanto a
+    # caselle arancioni sono una legenda che non corrisponde al disegno
+    assert f'background:{rc.INK};opacity' not in html
+    assert f'background:{rc.SERIES[0]};opacity' in html
 
 
 def test_il_ritmo_dice_che_cosa_vuol_dire_ogni_colore():
@@ -1137,7 +1148,7 @@ def test_il_ritmo_dice_che_cosa_vuol_dire_ogni_colore():
           {"arrivoMin": 700, "attesaMin": 0}]
     con = rc.ritmo_relazione(pg, "t", finestra=(2, 5), legenda=True, colore=rc.SERIES[2])
     assert 'class="legend"' in con
-    assert "fascia utile, 2–5 minuti" in con
+    assert "finestra utile, 2–5 minuti" in con
     assert "dentro la finestra" in con and "attesa lunga" in con and "cambio stretto" in con
     # e senza legenda il disegno resta identico, solo senza il blocco
     senza = rc.ritmo_relazione(pg, "t", finestra=(2, 5), legenda=False, colore=rc.SERIES[2])
