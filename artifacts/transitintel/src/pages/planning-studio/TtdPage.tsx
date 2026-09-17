@@ -865,6 +865,28 @@ export default function PlanningStudioTtdPage() {
     });
     return null;
   }
+  /** ELIMINA una corsa. Modifica locale come tutto il resto del grafico.
+   *
+   * Su una copia non ancora salvata l'eliminazione è solo un ripensamento: la
+   * copia sul server non è mai esistita, quindi non c'è niente da cancellare —
+   * basta non crearla. Il messaggio lo dice, perché «Salva modifiche per
+   * confermare l'eliminazione» davanti a una corsa che non esiste sarebbe una
+   * bugia, e chi la legge andrebbe a cercare sul server una cosa che non c'è.
+   */
+  function eliminaCorsa(tripId: string): string | null {
+    if (!visibleTrips.some(t => t.id === tripId)) return "Corsa non trovata";
+    const eraCopia = localCopies.some(c => c.id === tripId);
+    setDeletedTripIds(d => new Set(d).add(tripId));
+    setPendingOps(prev => [...prev, { kind: "delete", tripId }]);
+    setSelectedTripId(null);
+    setSelectedNode(null);
+    toast.info(eraCopia ? "Copia scartata" : "Corsa eliminata (in locale)", {
+      description: eraCopia
+        ? "Non era ancora stata salvata: Ctrl+Z per riaverla."
+        : "Ctrl+Z per ripristinarla · «Salva modifiche» per confermare l'eliminazione.",
+    });
+    return null;
+  }
   /** Porta il transito di un nodo all'orario scritto (HH:MM). */
   function setNodeTime(tripId: string, stIdx: number, hhmm: string): string | null {
     const target = hmToSec(hhmm);
@@ -949,8 +971,15 @@ export default function PlanningStudioTtdPage() {
     if (pendingOps.length === 0) return;
     setSavingOps(true);
     try {
-      // 1. eliminazioni
-      for (const id of deletedTripIds) await deletePsTrip(projectId, id);
+      // 1. eliminazioni — SOLO le corse che sul server esistono davvero.
+      //    Una copia locale eliminata prima di salvare non va cancellata: non
+      //    e' mai stata creata, basta non crearla (il filtro al punto 2). Fino
+      //    a ieri l'id temporaneo finiva in deletePsTrip, il server rispondeva
+      //    «non trovata» e falliva TUTTO il salvataggio, anche le modifiche
+      //    buone. Duplica → ci ripenso → elimino → salva: tre clic per perdere
+      //    il lavoro.
+      const daCancellare = [...deletedTripIds].filter(id => !localCopies.some(c => c.id === id));
+      for (const id of daCancellare) await deletePsTrip(projectId, id);
       // 2. copie → batch create con gli orari locali; baseTripId = corsa
       //    d'origine così la copia EREDITA validità (day-type + categorie)
       const baseByTemp = new Map<string, string>();
@@ -986,7 +1015,7 @@ export default function PlanningStudioTtdPage() {
       // categoria) e il filtro per categoria del TTD, non solo questa variante
       qc.invalidateQueries({ queryKey: ["ps", projectId, "trips"] });
       toast.success("Modifiche salvate", {
-        description: `${touched.size} corse aggiornate · ${copies.length} copie create · ${deletedTripIds.size} eliminate`,
+        description: `${touched.size} corse aggiornate · ${copies.length} copie create · ${daCancellare.length} eliminate`,
       });
     } catch (e: any) {
       toast.error("Errore nel salvataggio", { description: e?.message });
@@ -1132,6 +1161,15 @@ export default function PlanningStudioTtdPage() {
       // FRECCE: spostamento al minuto della corsa (o del nodo) selezionata.
       // Shift = passo da 5 minuti. È la risoluzione fine che il trascinamento
       // col mouse non può dare a grafico largo.
+      // CANC: elimina la corsa selezionata. Il pulsante nella barra c'e' gia',
+      // ma quella barra porta ormai una decina di cose e il cestino non e' la
+      // prima che si trova; in un editor grafico Canc e' dove uno lo cerca.
+      if (!e.ctrlKey && !e.metaKey && (e.key === "Delete" || e.key === "Backspace") && selectedTripId) {
+        e.preventDefault();
+        const err = eliminaCorsa(selectedTripId);
+        if (err) toast.error(err);
+        return;
+      }
       if (!e.ctrlKey && !e.metaKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && selectedTripId) {
         e.preventDefault();
         const step = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 5 : 1);
@@ -2502,7 +2540,7 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                     {selTrip!.dayTypeCodes!.map(c => c === "festivo" ? "dom" : c.slice(0, 3)).join("·")}
                   </span>
                 )}
-                {isBase && <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla</span>}
+                {isBase && <span className="text-[10px] text-slate-500">Ctrl+C copia · Ctrl+V incolla · Canc elimina</span>}
                 {isBase && <button
                   onClick={() => say(duplicaCorsa(selectedTripId))}
                   title="Duplica la corsa: copia identica sullo stesso percorso, con la stessa validità, messa fra questa e la successiva. Resta locale finché non salvi."
@@ -2516,13 +2554,8 @@ ${svgSnapshot ? `<h2>Orario grafico (snapshot al momento del report)</h2><div cl
                   ⧉ Copia più volte
                 </button>}
                 {isBase && <button
-                  onClick={() => {
-                    setDeletedTripIds(d => new Set(d).add(selectedTripId));
-                    setPendingOps(prev => [...prev, { kind: "delete", tripId: selectedTripId }]);
-                    setSelectedTripId(null);
-                    toast.info("Corsa eliminata (in locale)", { description: "Annulla per ripristinarla · Salva modifiche per confermare." });
-                  }}
-                  title="Elimina la corsa (modifica locale: si conferma con Salva modifiche)"
+                  onClick={() => say(eliminaCorsa(selectedTripId))}
+                  title="Elimina la corsa (anche col tasto Canc). Modifica locale: Ctrl+Z la ripristina, «Salva modifiche» la conferma."
                   className="px-2 py-0.5 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">
                   🗑 Elimina
                 </button>}

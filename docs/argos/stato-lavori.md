@@ -1835,6 +1835,33 @@ selezionata e il secondo clic duplica lei. `corsaVeraDi()` risale la catena
 fino alla corsa reale, e la correzione vale anche per Ctrl+V, che aveva lo
 stesso buco da prima.
 
+## Eliminare le corse nel grafico, e un salvataggio che si perdeva tutto
+
+L'operatore: «devo avere la possibilita' di eliminare anche delle corse». Il
+tasto **🗑 Elimina** nella barra c'era gia' — ma cercando il motivo per cui non
+gli bastava e' saltato fuori un guasto vero nel salvataggio.
+
+**Il guasto.** `saveAllOps` faceva
+`for (const id of deletedTripIds) await deletePsTrip(projectId, id)` su TUTTI
+gli id, comprese le copie locali. Duplico una corsa, ci ripenso, la elimino,
+salvo: il server riceve `deletePsTrip("copy-1789…")`, risponde «non trovata»,
+l'eccezione finisce nel catch e **non si salva piu' niente** — nemmeno gli
+spostamenti buoni fatti prima. Tre clic per perdere il lavoro, e col pulsante
+Duplica appena aggiunto era banale arrivarci.
+
+Ora si cancellano solo le corse che sul server esistono davvero: una copia
+locale scartata non va cancellata, basta non crearla (il filtro che gia' c'era
+al punto 2). Anche il conteggio nel messaggio finale diceva il numero
+sbagliato.
+
+**Il resto.** `eliminaCorsa()` estratta, cosi' pulsante e tastiera fanno la
+stessa cosa; **Canc** elimina la corsa selezionata, perche' in un editor
+grafico e' li' che uno lo cerca e quella barra porta ormai una decina di cose;
+il messaggio distingue la corsa vera («Salva modifiche per confermare
+l'eliminazione») dalla copia mai salvata («Copia scartata: non era ancora stata
+salvata»), perche' mandare qualcuno a cercare sul server una corsa che non
+c'e' mai stata e' una bugia.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
