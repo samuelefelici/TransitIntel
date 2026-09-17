@@ -1717,6 +1717,41 @@ Le etichette nascono in `vehicle_scheduler_cpsat.py:3313` e `:3327` (uscita e
 rientro deposito) e `:3052` (vuoto fra due corse), piu' «Rientro deposito» in
 `service-program.ts:909`.
 
+## La regola del filtro era una mannaia, e i colori non avevano legenda
+
+Due rilievi dell'operatore sulla relazione generata: «non vedo tutte le
+coincidenze selezionate» e «usa colori con legende per renderlo piu'
+comprensibile».
+
+**Il filtro.** La regola «tutti e due i capi dentro la scelta» l'avevo scelta io
+ragionando sul caso astratto, e sulla rete vera e' una mannaia. Delle dieci
+relazioni del festivo di Ancona, spuntando 1/4, 2/6, 3, 21/33, 44 e 43 ne
+restava **UNA** — la Madonnetta 2/6→21/33 — perche' le altre nove hanno un capo
+sulla 11, sulla 31 o sulla 7, che l'operatore non aveva spuntato. Ma chi spunta
+la 2/6 chiede «le coincidenze della 2/6», e la 2/6 con la 11 **e'** una
+coincidenza della 2/6. Ora basta che una linea scelta tocchi la relazione:
+1 su 10 → **7 su 10**.
+
+Il banner del capitolo dice la regola in chiaro («si tiene ogni relazione che
+tocca una di queste linee, anche quando l'altro capo e' una linea non scelta»)
+e nomina le linee scelte che non compaiono in **nessuna** relazione: sparire dal
+capitolo e non fare coincidenze si assomigliano troppo, e senza scriverlo
+l'operatore non puo' distinguerli — ne' puo' accorgersi di un nome che non
+combacia.
+
+Lezione, la stessa di sempre in una forma nuova: **una regola scelta sul caso
+astratto va misurata sul caso vero prima di spedirla**. «Tutti e due i capi» e'
+difendibile in astratto; su dieci relazioni vere taglia il 90%.
+
+**I colori.** La griglia era una scala di azzurri senza legenda: un azzurro piu'
+scuro non significa niente finche' qualcuno non lo dice. Ora codifica due cose
+dichiarate tutte e due: la **tinta e' il nodo** (una per nodo, assegnate per
+peso decrescente) e l'**intensita' e' quante coincidenze** ci sono in quell'ora.
+I disegni di 8.3 usano la **stessa tinta per lo stesso nodo**, cosi' si ritrova
+la relazione fra le due figure, e portano la legenda dei tre colori dei punti
+— dentro la finestra, attesa lunga, cambio stretto — una volta sola sotto il
+primo, non dodici volte.
+
 ## In sospeso
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
