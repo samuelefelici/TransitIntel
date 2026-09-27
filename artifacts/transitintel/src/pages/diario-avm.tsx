@@ -71,7 +71,7 @@ interface Resp {
   vetture: Vettura[];
   perGiorno: Array<{
     giorno: string; inServizio: number; traccia: number; collegata: number;
-    muta: number; monitorate: number; vetture: number; campioni?: number;
+    muta: number; monitorate: number; vetture: number; campioni?: number; parziale?: boolean;
   }>;
   avvisi?: Array<{ avviso: Avviso; matricole: string[]; titolo: string; perche: string }>;
   qualita?: { campioniAttesi: number; giornateParziali: string[]; nota: string };
@@ -320,7 +320,9 @@ export default function DiarioAvm() {
               <div key={g.giorno} className="flex-1 flex flex-col justify-end min-w-0" title={
                 `${giornoBreve(g.giorno)} — in servizio ${g.inServizio}, si localizzano ${g.traccia}, `
                 + `collegate ${g.collegata}, mute ${g.muta}`
-                + (g.campioni != null ? ` · ${g.campioni} campioni` : "")}>
+                + (g.campioni != null ? ` · ${g.campioni} campioni` : "")
+                + (g.parziale ? " · raccolta a metà: non conta nei verdetti" : "")}
+                style={{ opacity: g.parziale ? 0.35 : 1 }}>
                 {([["muta", g.muta], ["collegata", g.collegata], ["traccia", g.traccia],
                   ["in_servizio", g.inServizio]] as Array<[EsitoGiorno, number]>).map(([e, n]) => (
                   n > 0 ? (

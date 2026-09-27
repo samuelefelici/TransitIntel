@@ -173,6 +173,8 @@ export interface GiornataDiario {
   /** campioni scritti in quella giornata (il massimo fra le vetture): misura
    *  di quanto il connettore ha girato, non di quanto hanno parlato i mezzi */
   campioni: number;
+  /** sotto mezza raccolta: si vede nel grafico, non entra nei verdetti */
+  parziale: boolean;
 }
 
 export interface Segnalazione {
@@ -213,7 +215,8 @@ export interface DiarioSettimana {
   qualita: {
     /** campioni attesi in una giornata piena con un campione ogni due minuti */
     campioniAttesi: number;
-    /** giornate con meno di mezza raccolta, escluse la prima e l'ultima */
+    /** giornate con meno di mezza raccolta: escluse dai verdetti, dai giorni
+     *  di silenzio e dai cambiamenti, come le giornate senza dati */
     giornateParziali: string[];
     nota: string;
   };
@@ -289,6 +292,17 @@ export const GIORNI_SMESSA = 3;
 
 /** Un campione ogni due minuti: in una giornata piena sono 720. */
 export const CAMPIONI_GIORNATA = 720;
+
+/**
+ * Sotto mezza giornata di campioni, la giornata non conta. Misurato sui
+ * dodici giorni veri del 15–27 settembre: il connettore si è fermato il 24
+ * pomeriggio ed è ripartito il 27 alle 17; il 25 aveva 225 campioni e il 27,
+ * al momento della lettura, 26. Contarli come giornate osservate faceva
+ * risultare «smesse» quattordici vetture e «peggiorate» centodiciotto, quando
+ * a tacere era il connettore. Una giornata vale solo se l'abbiamo ascoltata
+ * almeno per metà; le altre stanno nel grafico, ma non nei verdetti.
+ */
+export const CAMPIONI_MINIMI_GIORNATA = CAMPIONI_GIORNATA / 2;
 
 export const ETICHETTE_AVVISO: Record<Avviso, { titolo: string; perche: string }> = {
   smessa: {
@@ -413,8 +427,12 @@ export function classificaVettura(
   if (giorniMonitorata > 0) pezzi.push(`${giorniMonitorata} seguita dal centro`);
   if (giorniConPosizione > 0) pezzi.push(`${giorniConPosizione} con posizione`);
   if (giorniConCorsa > 0) pezzi.push(`${giorniConCorsa} con corse (${corse.size} corse in tutto)`);
-  if (giorniErroreGps > 0) pezzi.push(`${giorniErroreGps} con errore GPS`);
-  if (giorniErroreGprs > 0) pezzi.push(`${giorniErroreGprs} con errore di rete`);
+  /* Gli errori dichiarati compaiono a tratti anche sulle vetture che
+   * funzionano (all'accensione, in rimessa): misurato sul vero, "errore di
+   * rete" era su 12 giornate su 12 per la 430 che ha fatto 89 corse. Vanno
+   * scritti solo dove spiegano qualcosa, cioè dove la posizione non c'è. */
+  if (giorniConPosizione === 0 && giorniErroreGps > 0) pezzi.push(`${giorniErroreGps} con errore GPS`);
+  if (giorniConPosizione === 0 && giorniErroreGprs > 0) pezzi.push(`${giorniErroreGprs} con errore di rete`);
   if (intermittente) pezzi.push("parla a sprazzi, non con continuità");
   if (esito !== "muta" && giorniDiSilenzio >= 2) pezzi.push(`tace da ${giorniDiSilenzio} giornate`);
   if (avviso === "smessa") pezzi.push(`ultima posizione il ${ultimoGiornoBuono}, poi niente per ${giorniDaBuono} giornate`);
@@ -443,15 +461,25 @@ export function classificaVettura(
  */
 export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioSettimana {
   const giorni = [...new Set(giornate)].sort();
-  const conDati = new Set(righe.map(r => r.giorno));
+  const campioniPerGiorno = new Map<string, number>();
+  for (const r of righe) {
+    campioniPerGiorno.set(r.giorno, Math.max(campioniPerGiorno.get(r.giorno) ?? 0, r.letture));
+  }
+  const conDati = new Set(campioniPerGiorno.keys());
   const giornateSenzaDati = giorni.filter(g => !conDati.has(g));
-  /* Le giornate su cui si giudica sono quelle in cui abbiamo davvero letto:
-   * includere i buchi del connettore abbasserebbe ogni percentuale e farebbe
-   * sembrare intermittenti vetture che non hanno saltato un giro. */
-  const osservate = giorni.filter(g => conDati.has(g));
+  /* Le giornate su cui si giudica sono quelle in cui abbiamo davvero
+   * ascoltato: un buco del connettore, intero o di mezza giornata, non deve
+   * diventare un giorno in cui le vetture tacevano. Chi giudica su una
+   * giornata a un quarto manda l'officina a cercare un guasto del server. */
+  const giornateParziali = giorni.filter(g =>
+    conDati.has(g) && (campioniPerGiorno.get(g) ?? 0) < CAMPIONI_MINIMI_GIORNATA);
+  const osservate = giorni.filter(g =>
+    conDati.has(g) && (campioniPerGiorno.get(g) ?? 0) >= CAMPIONI_MINIMI_GIORNATA);
+  const osservateSet = new Set(osservate);
+  const righeValide = righe.filter(r => osservateSet.has(r.giorno));
 
   const perVettura = new Map<string, RigaDiario[]>();
-  for (const r of righe) {
+  for (const r of righeValide) {
     const l = perVettura.get(r.vehicleRef) ?? [];
     l.push(r);
     perVettura.set(r.vehicleRef, l);
@@ -469,7 +497,7 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
       return a.vehicleRef.localeCompare(b.vehicleRef, undefined, { numeric: true });
     });
 
-  const perGiorno: GiornataDiario[] = osservate.map(g => {
+  const perGiorno: GiornataDiario[] = giorni.filter(g => conDati.has(g)).map(g => {
     const delGiorno = righe.filter(r => r.giorno === g);
     const conteggi = { inServizio: 0, traccia: 0, collegata: 0, muta: 0 };
     let monitorate = 0, campioni = 0;
@@ -482,27 +510,25 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
       else conteggi.muta++;
       if (r.lettureMonitorata > 0) monitorate++;
     }
-    return { giorno: g, ...conteggi, monitorate, vetture: delGiorno.length, campioni };
+    return {
+      giorno: g, ...conteggi, monitorate, vetture: delGiorno.length, campioni,
+      parziale: !osservateSet.has(g),
+    };
   });
 
-  /* La qualità della raccolta. Le giornate a metà nel MEZZO del periodo sono
-   * un connettore che si è fermato: vanno dette, perché una vettura che quel
-   * giorno risulta muta forse ha solo parlato mentre nessuno ascoltava. La
-   * prima e l'ultima giornata sono parziali per natura. */
-  const interne = perGiorno.slice(1, -1);
-  const giornateParziali = interne
-    .filter(g => g.campioni < CAMPIONI_GIORNATA / 2)
-    .map(g => g.giorno);
+  /* La qualità della raccolta, detta per intero: le giornate senza dati e
+   * quelle a metà sono un connettore fermo, non vetture mute, e chi legge i
+   * verdetti deve saperlo prima dei verdetti. */
   const qualita: DiarioSettimana["qualita"] = {
     campioniAttesi: CAMPIONI_GIORNATA,
     giornateParziali,
-    nota: perGiorno.length === 0
-      ? "Nessuna giornata raccolta."
+    nota: osservate.length === 0
+      ? "Nessuna giornata con raccolta sufficiente."
       : giornateParziali.length
         ? `${giornateParziali.length} giornate con meno di mezza raccolta (`
           + `${giornateParziali.join(", ")}): il connettore era fermo per ore. `
-          + "I silenzi di quei giorni non sono tutti delle vetture."
-        : `Raccolta regolare: ogni giornata interna ha almeno ${CAMPIONI_GIORNATA / 2} campioni.`,
+          + "Stanno nel grafico ma non nei verdetti, come le giornate senza dati."
+        : `Raccolta regolare: ogni giornata contata ha almeno ${CAMPIONI_MINIMI_GIORNATA} campioni.`,
   };
 
   /* Che cosa è cambiato: si confronta la prima giornata osservata con
