@@ -909,6 +909,10 @@ class VehicleShift:
     residenza_color: str | None = None
     depot_out: dict | None = None   # {id, name, color} deposito di uscita
     depot_in: dict | None = None    # {id, name, color} deposito di rientro
+    # ── Il lucchetto: turno deciso dall'operatore e ricevuto dal solver come
+    # vincolo duro (stesse corse, stesso ordine, stessa matricola). True solo
+    # quando il piano in uscita lo rispetta alla lettera.
+    locked: bool = False
 
 
 @dataclass
@@ -1421,6 +1425,8 @@ def vehicle_shift_to_dict(vs: VehicleShift) -> dict:
         d["residenzaColor"] = vs.residenza_color
         d["depotOut"] = vs.depot_out
         d["depotIn"] = vs.depot_in
+    if vs.locked:
+        d["locked"] = True
     return d
 
 

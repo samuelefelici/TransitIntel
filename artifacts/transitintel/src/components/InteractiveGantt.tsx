@@ -21,6 +21,7 @@ import {
   ZoomIn, ZoomOut, Undo2, Redo2, RotateCcw, GripVertical,
   Clock, ArrowRight, Navigation, MapPin, AlertTriangle,
   Pencil, Check, X, Sparkles, Move, Trash2, Maximize2, Minimize2,
+  Lock, LockOpen,
 } from "lucide-react";
 
 // ─── Shared types ────────────────────────────────────────────
@@ -55,6 +56,9 @@ export interface GanttRow {
   sublabel?: string;
   /** Small color dot before label */
   dotColor?: string;
+  /** Il lucchetto: riga decisa dall'operatore. Nessuna barra vi entra né ne
+   *  esce trascinando; il consumer decide cosa significhi per il solver. */
+  locked?: boolean;
 }
 
 export interface GanttChange {
@@ -86,6 +90,9 @@ export interface InteractiveGanttProps {
   editable?: boolean;
   /** Called when a row label is renamed inline */
   onRowRename?: (rowId: string, newLabel: string) => void;
+  /** Il lucchetto sulla riga: se passato, ogni riga mostra il bottone per
+   *  bloccare/sbloccare (icona sempre visibile quando bloccata). */
+  onRowLockToggle?: (rowId: string) => void;
   /** Compute suggestions of compatible rows where the given bar could be moved */
   getSuggestions?: (bar: GanttBar) => GanttSuggestion[];
   /** Called when ANY bar (locked or not) is clicked. Useful for opening editor dialogs on synthetic / locked bars (deadheads, depot returns, pull-out/pull-in). Riceve anche le coordinate viewport del click. */
@@ -160,6 +167,7 @@ export default function InteractiveGantt({
   editable = true,
   rowsDraggable = false,
   onRowRename,
+  onRowLockToggle,
   getSuggestions,
   onBarClick,
   onBarContextMenu,
@@ -467,7 +475,9 @@ export default function InteractiveGantt({
 
       setDragPreview({
         barId: ds.barId, startMin: newStart, endMin: newEnd, rowId: newRowId,
-        collision: detectCollision(bars, ds.barId, newRowId, newStart, newEnd),
+        // una riga bloccata (lucchetto) non riceve barre: il rilascio annulla
+        collision: detectCollision(bars, ds.barId, newRowId, newStart, newEnd)
+          || !!rows.find(r => r.id === newRowId)?.locked,
       });
     },
     [pxToMin, minHour, maxHour, snapMin, rowIndex, rows, rowHeight, bars, onBarDragStart],
@@ -856,7 +866,7 @@ export default function InteractiveGantt({
             return (
               <div
                 key={row.id}
-                className="flex group hover:bg-muted/20 transition-colors"
+                className={`flex group hover:bg-muted/20 transition-colors ${row.locked ? "bg-amber-500/[0.06]" : ""}`}
                 style={{ height: rowHeight, backgroundColor: highlightBg }}
               >
                 {/* Label */}
@@ -879,6 +889,19 @@ export default function InteractiveGantt({
                       className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
                       style={{ backgroundColor: row.dotColor }}
                     />
+                  )}
+                  {onRowLockToggle && (
+                    <button
+                      className={`shrink-0 transition-opacity ${row.locked
+                        ? "text-amber-400 hover:text-amber-300"
+                        : "text-muted-foreground opacity-0 group-hover:opacity-60 hover:!opacity-100"}`}
+                      title={row.locked
+                        ? "Turno bloccato: il solver lo mantiene com'è. Clic per sbloccare"
+                        : "Blocca il turno: nessuna modifica lo tocca e «Ri-ottimizza» lo mantiene com'è"}
+                      onClick={(e) => { e.stopPropagation(); onRowLockToggle(row.id); }}
+                    >
+                      {row.locked ? <Lock className="w-3 h-3" /> : <LockOpen className="w-3 h-3" />}
+                    </button>
                   )}
                   {editingRowId === row.id ? (
                     <input

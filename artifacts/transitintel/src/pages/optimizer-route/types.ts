@@ -78,6 +78,10 @@ export interface VehicleShift {
   lastIn: number;
   shiftDuration: number;
   downsizedTrips: number;
+  /** Il lucchetto: turno deciso dall'operatore. Nessuna modifica manuale lo
+   *  tocca e «Ri-ottimizza» lo passa al solver come vincolo duro (stesse
+   *  corse, stesso ordine, stessa matricola). Si salva con lo scenario. */
+  locked?: boolean;
 }
 
 export interface RouteStatItem {

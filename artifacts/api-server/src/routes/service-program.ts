@@ -305,6 +305,9 @@ interface VehicleShift {
   lastIn: number;         // last arrival (minutes from midnight)
   shiftDuration: number;  // total shift length in minutes
   downsizedTrips: number; // count of trips running on smaller-than-assigned vehicle
+  // Il lucchetto: turno deciso dall'operatore che il solver ha ricevuto come
+  // vincolo duro e restituito tale e quale (stesse corse, stessa matricola).
+  locked?: boolean;
   // Residenza di servizio (deposito) — assegnata geometricamente: uscita = deposito
   // più vicino alla prima fermata, rientro = più vicino all'ultima. Per il roster.
   depotOut?: { id: string; name: string; color: string } | null;
@@ -1935,6 +1938,7 @@ async function runCPSATVehicleScheduler(
   deadheadKm?: Record<string, number>,
   deadheadMin?: Record<string, number>,
   deadheadArchive?: Record<string, any>,
+  lockedChains?: { vehicleId?: string; tripIds: string[] }[],
 ): Promise<any> {
   return spawnPythonJson("vehicle_scheduler_cpsat.py", [String(timeLimitSec)], {
     trips: buildPyTrips(tripBlocks),
@@ -1952,6 +1956,8 @@ async function runCPSATVehicleScheduler(
     ...(deadheadMin && Object.keys(deadheadMin).length > 0 ? { deadheadMin } : {}),
     // Restrizione all'archivio «Archi fuorilinea» (traccia per log e relazione)
     ...(deadheadArchive ? { deadheadArchive } : {}),
+    // Il lucchetto: turni bloccati dall'operatore, vincoli duri per il solver
+    ...(lockedChains && lockedChains.length > 0 ? { lockedChains } : {}),
   }, logger, "VSP");
 }
 
@@ -2160,7 +2166,23 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
        * legacy `stop_clusters` indipendentemente da questo campo.
        */
       psProjectId?: string;
+      /**
+       * Il lucchetto (Fucina → Ri-ottimizza): turni macchina che l'operatore
+       * ha bloccato. Il solver li riceve come VINCOLI DURI — stesse corse,
+       * stesso ordine, stessa matricola — e ricalcola solo il resto. Se un
+       * turno bloccato non sta nel modello (corsa sparita, aggancio
+       * impossibile) il solver risponde con un errore parlante → 422.
+       */
+      lockedChains?: { vehicleId?: string; tripIds: string[] }[];
     };
+
+    const lockedChains = (Array.isArray(body.lockedChains) ? body.lockedChains : [])
+      .filter((c): c is { vehicleId?: string; tripIds: string[] } => !!c && Array.isArray(c.tripIds))
+      .map(c => ({
+        ...(typeof c.vehicleId === "string" && c.vehicleId.trim() ? { vehicleId: c.vehicleId.trim() } : {}),
+        tripIds: c.tripIds.map(t => String(t ?? "").trim()).filter(Boolean),
+      }))
+      .filter(c => c.tripIds.length > 0);
 
     const rawDate = body.date;
     if (!rawDate || typeof rawDate !== "string") {
@@ -2811,6 +2833,7 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
           ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
           ...(deadheadMin && Object.keys(deadheadMin).length > 0 ? { deadheadMin } : {}),
           ...(deadheadArchive ? { deadheadArchive } : {}),
+          ...(lockedChains.length > 0 ? { lockedChains } : {}),
         },
         crew: { config: crewConfig },
         vcsp: {
@@ -2859,7 +2882,16 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
         deadheadKm,
         deadheadMin,
         deadheadArchive,
+        lockedChains,
       );
+    }
+
+    // Il solver ha rifiutato un turno bloccato (corsa non in orario, aggancio
+    // impossibile): il messaggio è già scritto per l'operatore, passa com'è.
+    if (cpResult && typeof cpResult.error === "string" && cpResult.error) {
+      req.log.info(`Solver: ${cpResult.error}`);
+      res.status(422).json({ error: cpResult.error, errorKind: cpResult.errorKind ?? "solver" });
+      return;
     }
 
     // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)

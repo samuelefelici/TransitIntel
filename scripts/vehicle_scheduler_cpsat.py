@@ -326,7 +326,8 @@ def canonical_vehicle_type(size: int) -> str:
 
 
 def enforce_sagoma_chains(chains: list[list[int]],
-                          trips: list[Trip]) -> tuple[list[list[int]], int]:
+                          trips: list[Trip],
+                          locked: LockedPlan | None = None) -> tuple[list[list[int]], int]:
     """Spezza le catene che nessun mezzo reale puo' coprire.
 
     La compatibilita' fra due corse NON e' transitiva: una catena di taglie
@@ -339,6 +340,9 @@ def enforce_sagoma_chains(chains: list[list[int]],
     out: list[list[int]] = []
     splits = 0
     for chain in chains:
+        if locked and locked.is_locked_chain(chain):
+            out.append(list(chain))      # lucchetto: deciso dall'operatore, non si spezza
+            continue
         cur: list[int] = []
         cmin = cmax = None
         cforced: str | None = None
@@ -863,8 +867,13 @@ def build_compatible_arcs_fast(
     user_clusters: dict[str, int] | None = None,
     delay_buffers: dict[int, int] | None = None,
     depots: list[dict] | None = None,
+    keep_pairs: set[tuple[int, int]] | None = None,
 ) -> list[Arc]:
     """O(n x k) arc building with bisect temporal windowing.
+
+    LUCCHETTO: `keep_pairs` sono gli agganci dei turni bloccati; il pruning
+    anti-OOM non li scarta mai (un arco che esiste e non e' fra i K migliori
+    resterebbe fuori e il lucchetto fallirebbe per un motivo finto).
 
     FIX-VSP-1: la finestra per generare archi è separata dalla soglia depot_return.
     Permettiamo archi fino a max_idle_for_arc_min (default 10h), e marchiamo come
@@ -1077,6 +1086,8 @@ def build_compatible_arcs_fast(
         for lst in by_pred.values():
             lst.sort(key=_arc_rank)
             keep.update((a.i, a.j) for a in lst[:k_per_trip])
+        if keep_pairs:
+            keep.update(keep_pairs)
         before = len(arcs)
         arcs = [a for a in arcs if (a.i, a.j) in keep]
         log(f"  [VSP-PRUNE] archi {before} -> {len(arcs)} "
@@ -1276,11 +1287,226 @@ def chains_from_trip_ids(
     return out, diag
 
 
+# ═══════════════════════════════════════════════════════════════
+#  IL LUCCHETTO — turni macchina decisi dall'operatore
+# ═══════════════════════════════════════════════════════════════
+#
+# Un operatore che sposta tre corse a mano in Fucina e poi rilancia il solver
+# si vedeva buttare via il lavoro: il modello ripartiva da zero e la partenza
+# a caldo e' solo un suggerimento. Il lucchetto e' l'altra cosa: un turno
+# bloccato entra nel modello come VINCOLO DURO — stesse corse, stesso ordine,
+# nessuna corsa in piu' prima o dopo — e attraversa intatto ogni fase (CP-SAT,
+# greedy, ricerca locale, eliminazione veicoli, riduzione iterativa, post-pass
+# di normativa e sagoma). Se il modello non puo' rispettarlo lo dice con un
+# errore parlante, invece di aggiustarlo in silenzio come fa la partenza a caldo.
+#
+# Formato input (data.lockedChains), uno dei due:
+#   [{"vehicleId": "U007", "tripIds": ["t1", "t2", ...]}, ...]
+#   [["t1", "t2", ...], ...]
+
+class LockedChainError(ValueError):
+    """Un turno bloccato che QUESTO modello non puo' rispettare: dice quale
+    turno, quale corsa o quale aggancio, e perche'."""
+
+
+@dataclass
+class LockedPlan:
+    chains: list[list[int]]
+    vehicle_ids: list[str | None]
+    trips: set[int] = field(default_factory=set)
+    arcs: set[tuple[int, int]] = field(default_factory=set)
+    first: set[int] = field(default_factory=set)
+    last: set[int] = field(default_factory=set)
+    _forme: dict[tuple[int, ...], str | None] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        for c, vid in zip(self.chains, self.vehicle_ids):
+            self.trips.update(c)
+            self.first.add(c[0])
+            self.last.add(c[-1])
+            for k in range(len(c) - 1):
+                self.arcs.add((c[k], c[k + 1]))
+            self._forme[tuple(c)] = vid
+
+    def __bool__(self) -> bool:
+        return bool(self.chains)
+
+    def is_locked_chain(self, chain: list[int]) -> bool:
+        return tuple(chain) in self._forme
+
+    def vehicle_id_of(self, chain: list[int]) -> str | None:
+        return self._forme.get(tuple(chain))
+
+
+def _ora(m: int) -> str:
+    return min_to_time(int(m))[:5]
+
+
+def _corsa_parlante(t: Trip) -> str:
+    return (f"{t.route_name} delle {_ora(t.departure_min)} "
+            f"({t.first_stop_name or '?'} → {t.last_stop_name or '?'})")
+
+
+def _iter_locked_raw(raw: Any):
+    """Normalizza i due formati ammessi in (vehicleId|None, [tripId, ...])."""
+    if not isinstance(raw, (list, tuple)):
+        return
+    for voce in raw:
+        if isinstance(voce, dict):
+            vid, ids = voce.get("vehicleId"), voce.get("tripIds")
+        else:
+            vid, ids = None, voce
+        if not isinstance(ids, (list, tuple)):
+            continue
+        ids = [str(x) for x in ids if x is not None and str(x).strip()]
+        if not ids:
+            continue
+        yield (str(vid).strip() or None) if vid is not None else None, ids
+
+
+def locked_pairs_from_input(raw: Any, trips: list[Trip]) -> set[tuple[int, int]]:
+    """Solo gli agganci (coppie di indici) chiesti dai turni bloccati, PRIMA che
+    gli archi esistano: il pruning anti-OOM non deve scartarli. Nessun
+    controllo qui — lo fa locked_plan_from_input."""
+    per_id = {t.trip_id: t.idx for t in trips}
+    coppie: set[tuple[int, int]] = set()
+    for _vid, ids in _iter_locked_raw(raw):
+        idxs = [per_id[x] for x in ids if x in per_id]
+        coppie.update((idxs[k], idxs[k + 1]) for k in range(len(idxs) - 1))
+    return coppie
+
+
+def locked_plan_from_input(raw: Any, trips: list[Trip],
+                           arcs_lookup: dict[tuple[int, int], Arc]) -> LockedPlan | None:
+    """I turni bloccati tradotti in catene di indici per QUESTO modello.
+
+    A differenza della partenza a caldo (chains_from_trip_ids) qui NON si
+    ripara nulla: una corsa che non c'e', una corsa in due turni, un aggancio
+    che il modello non ammette sono errori parlanti. Il lucchetto e' una
+    decisione dell'operatore, e un vincolo che si aggiusta da solo non e' un
+    vincolo.
+    """
+    per_id = {t.trip_id: t.idx for t in trips}
+    chains: list[list[int]] = []
+    vids: list[str | None] = []
+    owner: dict[int, str] = {}
+    matricole: set[str] = set()
+    for n, (vid, ids) in enumerate(_iter_locked_raw(raw), start=1):
+        nome = vid or f"#{n}"
+        if vid:
+            if vid in matricole:
+                raise LockedChainError(
+                    f"Due turni bloccati portano la stessa matricola {vid}: rinominane uno.")
+            matricole.add(vid)
+        idxs: list[int] = []
+        for tid in ids:
+            idx = per_id.get(tid)
+            if idx is None:
+                raise LockedChainError(
+                    f"Turno bloccato {nome}: la corsa {tid} non è in questo orario "
+                    f"(linea esclusa dal calcolo o quadro cambiato). Sbloccalo o rimetti la linea.")
+            if idx in owner:
+                raise LockedChainError(
+                    f"La corsa {_corsa_parlante(trips[idx])} è in due turni bloccati "
+                    f"({owner[idx]} e {nome}): un mezzo solo può farla.")
+            owner[idx] = nome
+            idxs.append(idx)
+        for k in range(len(idxs) - 1):
+            a, b = idxs[k], idxs[k + 1]
+            if (a, b) in arcs_lookup:
+                continue
+            ta, tb = trips[a], trips[b]
+            if tb.departure_min < ta.arrival_min:
+                perche = (f"si sovrappongono — la prima arriva alle {_ora(ta.arrival_min)}, "
+                          f"la seconda parte alle {_ora(tb.departure_min)}")
+            elif not trips_vehicle_compatible(ta, tb):
+                perche = "mezzi o reti incompatibili (categoria di servizio, sagoma)"
+            else:
+                perche = (f"il trasferimento {ta.last_stop_name or '?'} → {tb.first_stop_name or '?'} "
+                          f"non ci sta nei {tb.departure_min - ta.arrival_min}′ disponibili, "
+                          f"oppure l'attesa supera il massimo ammesso")
+            raise LockedChainError(
+                f"Turno bloccato {nome}: l'aggancio {_corsa_parlante(ta)} → "
+                f"{_corsa_parlante(tb)} non è ammesso dal modello: {perche}.")
+        if not chain_servable_by_single_vehicle(idxs, trips):
+            raise LockedChainError(
+                f"Turno bloccato {nome}: nessun mezzo unico copre tutte le sue corse "
+                f"(taglie richieste troppo diverse).")
+        chains.append(idxs)
+        vids.append(vid)
+    if not chains:
+        return None
+    return LockedPlan(chains=chains, vehicle_ids=vids)
+
+
+def _pin_locked(model: Any, seq: dict[tuple[int, int], Any], first: list, last: list,
+                locked: LockedPlan | None) -> int:
+    """Il lucchetto nel modello ad archi: ogni aggancio del turno bloccato e'
+    acceso, la prima corsa apre un mezzo, l'ultima lo chiude. Cosi' il turno
+    non puo' perdere corse ne' riceverne. Ritorna quanti vincoli ha messo."""
+    if not locked:
+        return 0
+    n = 0
+    for key in locked.arcs:
+        var = seq.get(key)
+        if var is None:          # impossibile dopo locked_plan_from_input
+            raise LockedChainError(f"Aggancio bloccato {key} senza arco nel modello")
+        model.add(var == 1)
+        n += 1
+    for i in locked.first:
+        model.add(first[i] == 1)
+        n += 1
+    for i in locked.last:
+        model.add(last[i] == 1)
+        n += 1
+    return n
+
+
+def _nogood_vars(seq: dict[tuple[int, int], Any], forbidden: set[tuple[int, int]],
+                 locked: LockedPlan | None) -> list:
+    """Le variabili di un no-good cut. Gli agganci bloccati stanno in OGNI
+    soluzione e non possono contare come "archi da cambiare": restano fuori
+    dal taglio, altrimenti un lucchetto grande lo renderebbe insoddisfacibile."""
+    esclusi = locked.arcs if locked else ()
+    return [seq[k] for k in forbidden if k in seq and k not in esclusi]
+
+
+def _scorpora(chains: list[list[int]], locked: LockedPlan | None
+              ) -> tuple[list[list[int]], list[list[int]]]:
+    """(catene libere, catene bloccate). Le euristiche che rimaneggiano le
+    catene lavorano solo sulle prime; le seconde tornano intatte in coda."""
+    if not locked:
+        return [list(c) for c in chains], []
+    libere: list[list[int]] = []
+    bloccate: list[list[int]] = []
+    for c in chains:
+        (bloccate if locked.is_locked_chain(c) else libere).append(list(c))
+    return libere, bloccate
+
+
+def validate_locked(chains: list[list[int]], locked: LockedPlan | None,
+                    trips: list[Trip], where: str = "") -> list[str]:
+    """Ogni turno bloccato deve comparire nel piano tale e quale. Ritorna le
+    violazioni (vuoto = tutto a posto) e le logga."""
+    if not locked:
+        return []
+    forme = {tuple(c) for c in chains}
+    rotti: list[str] = []
+    for c, vid in zip(locked.chains, locked.vehicle_ids):
+        if tuple(c) not in forme:
+            rotti.append(f"{vid or '#'} ({len(c)} corse, prima {_corsa_parlante(trips[c[0]])})")
+    if rotti:
+        log(f"  [VSP-LOCK{(' ' + where) if where else ''}] LUCCHETTO ROTTO su {len(rotti)} turni: "
+            + "; ".join(rotti[:5]))
+    return rotti
+
+
 def greedy_warmstart(
     trips: list[Trip], arcs: list[Arc], arcs_lookup: dict[tuple[int, int], Arc],
     rates: VehicleCostRates, rng: random.Random | None = None,
     pref: str = "cost",
     new_vehicle_penalty_eur: float = 0.0,
+    locked: LockedPlan | None = None,
 ) -> list[list[int]]:
     """Greedy warmstart. `pref` controlla l'euristica di assegnazione:
        - 'cost'      : minimizza costo incrementale (default)
@@ -1314,6 +1540,11 @@ def greedy_warmstart(
     vehicle_max: list[int] = []
     vehicle_forced: list[str | None] = []
     assigned = [False] * n
+    # Il lucchetto: le corse dei turni bloccati non entrano nel greedy; i loro
+    # turni tornano in coda tali e quali.
+    if locked:
+        for idx in locked.trips:
+            assigned[idx] = True
 
     def _open_vehicle(idx: int, t: Trip) -> None:
         s = VEHICLE_SIZE.get(t.required_vehicle, 3)
@@ -1420,6 +1651,8 @@ def greedy_warmstart(
         else:
             _open_vehicle(idx, trip)
             assigned[idx] = True
+    if locked:
+        return [list(c) for c in locked.chains] + vehicles
     return vehicles
 
 
@@ -1427,6 +1660,7 @@ def generate_diverse_warmstarts(
     trips: list[Trip], arcs: list[Arc], arcs_lookup: dict[tuple[int, int], Arc],
     rates: VehicleCostRates, n_variants: int,
     new_vehicle_penalty_eur: float = 0.0,
+    locked: LockedPlan | None = None,
 ) -> list[list[list[int]]]:
     """FIX-1: genera N warm-start strutturalmente diversi per iniettare
     diversità nei primi scenari del portfolio.
@@ -1442,6 +1676,7 @@ def generate_diverse_warmstarts(
             chains = greedy_warmstart(
                 trips, arcs, arcs_lookup, rates, rng=rng, pref=pref,
                 new_vehicle_penalty_eur=new_vehicle_penalty_eur,
+                locked=locked,
             )
             if chains:
                 variants.append(chains)
@@ -1466,6 +1701,8 @@ def solve_vsp_cost_based(
     # REGOLA #1: bonus extra (in COST_SCALE units) aggiunto a ogni first[i]
     # per spingere il solver a minimizzare il numero di turni macchina.
     vehicle_priority_bonus: int = 0,
+    # LUCCHETTO: turni decisi dall'operatore, vincolo duro (vedi _pin_locked)
+    locked: LockedPlan | None = None,
 ) -> tuple[str, list[list[int]], dict]:
     n = len(trips)
     if n == 0:
@@ -1497,12 +1734,13 @@ def solve_vsp_cost_based(
 
     num_vehicles = model.new_int_var(0, n, "nv")
     model.add(num_vehicles == sum(first))
+    _pin_locked(model, seq, first, last, locked)
 
     # FIX-3: NO-GOOD CUTS - forza diversità strutturale rispetto a soluzioni già viste
     nogood_count = 0
     if forbidden_arc_sets:
         for forbidden in forbidden_arc_sets:
-            vars_in_forbidden = [seq[k] for k in forbidden if k in seq]
+            vars_in_forbidden = _nogood_vars(seq, forbidden, locked)
             if not vars_in_forbidden:
                 continue
             min_diff = max(min_arc_diff_abs, int(len(vars_in_forbidden) * min_arc_diff_pct))
@@ -1700,6 +1938,7 @@ def solve_vsp_lexicographic(
     forbidden_arc_sets: list[set[tuple[int, int]]] | None = None,
     min_arc_diff_pct: float = 0.12,
     min_arc_diff_abs: int = 5,
+    locked: LockedPlan | None = None,
 ) -> tuple[str, list[list[int]], dict]:
     """FIX-VSP-2: solve lessicografico vero a 2 fasi.
 
@@ -1738,10 +1977,11 @@ def solve_vsp_lexicographic(
 
     nv1 = model1.new_int_var(0, n, "nv1")
     model1.add(nv1 == sum(first1))
+    _pin_locked(model1, seq1, first1, last1, locked)
 
     if forbidden_arc_sets:
         for forbidden in forbidden_arc_sets:
-            vars_in_forbidden = [seq1[k] for k in forbidden if k in seq1]
+            vars_in_forbidden = _nogood_vars(seq1, forbidden, locked)
             if not vars_in_forbidden:
                 continue
             min_diff = max(min_arc_diff_abs, int(len(vars_in_forbidden) * min_arc_diff_pct))
@@ -1795,6 +2035,7 @@ def solve_vsp_lexicographic(
 
     nv2 = model2.new_int_var(0, n, "nv2")
     model2.add(nv2 == sum(first2))
+    _pin_locked(model2, seq2, first2, last2, locked)
     # ★ vincolo lessicografico ★
     # Se la fase 1 è OPTIMAL, best_nv È il minimo → blocca `==`. Se invece è solo
     # FEASIBLE (timeout), best_nv NON è dimostrato minimo: con `==` la fase 2
@@ -1808,7 +2049,7 @@ def solve_vsp_lexicographic(
 
     if forbidden_arc_sets:
         for forbidden in forbidden_arc_sets:
-            vars_in_forbidden = [seq2[k] for k in forbidden if k in seq2]
+            vars_in_forbidden = _nogood_vars(seq2, forbidden, locked)
             if not vars_in_forbidden:
                 continue
             min_diff = max(min_arc_diff_abs, int(len(vars_in_forbidden) * min_arc_diff_pct))
@@ -1894,6 +2135,7 @@ def solve_vsp_feasibility_with_bound(
     max_vehicles: int, time_limit: float,
     warmstart_chains: list[list[int]] | None = None,
     intensity: str = "deep", seed: int = 42, label: str = "feas",
+    locked: LockedPlan | None = None,
 ) -> tuple[str, list[list[int]] | None]:
     """Cerca QUALSIASI assegnazione con #veicoli ≤ max_vehicles.
 
@@ -1926,6 +2168,7 @@ def solve_vsp_feasibility_with_bound(
     nv = model.new_int_var(0, n, "nv_feas")
     model.add(nv == sum(first))
     model.add(nv <= max_vehicles)         # ★ HARD BOUND ★
+    _pin_locked(model, seq, first, last, locked)
 
     # Objective: minimize nv (con peso DOMINANTE) + costo variabile tie-breaker.
     # In questo modo se anche nv-1 è feasible, il solver ce lo dirà gratis.
@@ -1976,6 +2219,7 @@ def iterative_vehicle_reduction(
     arc_costs: dict[tuple[int, int], int], fixed_costs: list[int],
     time_budget_sec: float,
     intensity: str = "deep", seed: int = 4242,
+    locked: LockedPlan | None = None,
 ) -> tuple[list[list[int]], dict]:
     """Riduzione iterativa veicoli: dato N=len(chains), prova target N-1, N-2,...
     finché il solver dimostra infeasibility o si esaurisce il time budget.
@@ -2016,6 +2260,7 @@ def iterative_vehicle_reduction(
             warmstart_chains=best,
             intensity=intensity, seed=seed + attempts,
             label=f"target{target}",
+            locked=locked,
         )
         if found is None:
             # INFEASIBLE → abbiamo dimostrato il minimo... ma SOLO se il grafo
@@ -2443,6 +2688,29 @@ def advanced_local_search(
     use_detailed_cost: bool = True,
     no_improve_limit: int = 500,
     saturation_mode: bool = False,
+    locked: LockedPlan | None = None,
+) -> list[list[int]]:
+    """Ricerca locale sulle sole catene libere: i turni bloccati (lucchetto)
+    non si toccano e tornano in coda tali e quali. Il lavoro e' in
+    _advanced_local_search_libere."""
+    libere, bloccate = _scorpora(chains, locked)
+    if not bloccate:
+        libere = chains
+    mosse = _advanced_local_search_libere(
+        libere, trips, arcs_lookup, rates,
+        max_iter=max_iter, max_time_sec=max_time_sec,
+        use_detailed_cost=use_detailed_cost,
+        no_improve_limit=no_improve_limit, saturation_mode=saturation_mode)
+    return bloccate + mosse if bloccate else mosse
+
+
+def _advanced_local_search_libere(
+    chains: list[list[int]], trips: list[Trip],
+    arcs_lookup: dict[tuple[int, int], Arc], rates: VehicleCostRates,
+    max_iter: int = 3000, max_time_sec: float = 15.0,
+    use_detailed_cost: bool = True,
+    no_improve_limit: int = 500,
+    saturation_mode: bool = False,
 ) -> list[list[int]]:
     """FIX-4: use_detailed_cost=True usa chain_cost_detailed come funzione
     di accettazione - coerente con il costo reportato al cliente.
@@ -2555,6 +2823,27 @@ def advanced_local_search(
 # ─── POST-PASS: ELIMINAZIONE VEICOLI (regola #1 hard) ───────────────────
 
 def vehicle_elimination_pass(
+    chains: list[list[int]], trips: list[Trip],
+    arcs_lookup: dict[tuple[int, int], Arc], rates: VehicleCostRates,
+    max_passes: int = 5, time_budget_sec: float = 30.0,
+    locked: LockedPlan | None = None,
+) -> tuple[list[list[int]], dict]:
+    """Eliminazione veicoli sulle sole catene libere: un turno bloccato
+    (lucchetto) non e' ne' vittima ne' ricevente, e torna in coda tale e
+    quale. Il lavoro e' in _vehicle_elimination_pass_libere."""
+    libere, bloccate = _scorpora(chains, locked)
+    if not bloccate:
+        return _vehicle_elimination_pass_libere(
+            chains, trips, arcs_lookup, rates,
+            max_passes=max_passes, time_budget_sec=time_budget_sec)
+    mosse, stats = _vehicle_elimination_pass_libere(
+        libere, trips, arcs_lookup, rates,
+        max_passes=max_passes, time_budget_sec=time_budget_sec)
+    stats["lockedVehicles"] = len(bloccate)
+    return bloccate + mosse, stats
+
+
+def _vehicle_elimination_pass_libere(
     chains: list[list[int]], trips: list[Trip],
     arcs_lookup: dict[tuple[int, int], Arc], rates: VehicleCostRates,
     max_passes: int = 5, time_budget_sec: float = 30.0,
@@ -2981,12 +3270,18 @@ def chains_to_shifts(
     chains: list[list[int]], trips: list[Trip],
     arcs_lookup: dict[tuple[int, int], Arc], rates: VehicleCostRates,
     route_names: dict[str, str] | None = None,
+    locked: LockedPlan | None = None,
 ) -> list[VehicleShift]:
-    """Convert solver chains to VehicleShift objects matching TypeScript format."""
+    """Convert solver chains to VehicleShift objects matching TypeScript format.
+
+    LUCCHETTO: un turno bloccato tiene la matricola con cui l'operatore lo ha
+    bloccato (la numerazione automatica la salta) ed esce con `locked=True`.
+    """
     shifts: list[VehicleShift] = []
     # Numerazione separata per rete: U### = urbano, E### = extraurbano
     # (flotte distinte → codifiche distinte, richiesta operatore).
     cat_counters: dict[str, int] = {}
+    matricole_prese = {v for v in locked.vehicle_ids if v} if locked else set()
 
     for vi, chain in enumerate(chains):
         if not chain:
@@ -3002,13 +3297,22 @@ def chains_to_shifts(
             cat_count[trips[idx].category] = cat_count.get(trips[idx].category, 0) + 1
         category = max(cat_count, key=cat_count.get)
         prefix = "U" if category == "urbano" else "E"
-        cat_counters[category] = cat_counters.get(category, 0) + 1
-        vid = f"{prefix}{str(cat_counters[category]).zfill(3)}"
+        e_bloccata = bool(locked and locked.is_locked_chain(chain))
+        vid_lock = locked.vehicle_id_of(chain) if e_bloccata else None
+        if vid_lock:
+            vid = vid_lock
+        else:
+            cat_counters[category] = cat_counters.get(category, 0) + 1
+            vid = f"{prefix}{str(cat_counters[category]).zfill(3)}"
+            while vid in matricole_prese:
+                cat_counters[category] += 1
+                vid = f"{prefix}{str(cat_counters[category]).zfill(3)}"
 
         vs = VehicleShift(
             vehicle_id=vid,
             vehicle_type=vtype,
             category=category,
+            locked=e_bloccata,
         )
 
         for ci, trip_idx in enumerate(chain):
@@ -3110,6 +3414,7 @@ def chains_to_shifts(
 
 def enforce_normativa_split(
     chains: list[list[int]], trips: list[Trip], rates: VehicleCostRates,
+    locked: LockedPlan | None = None,
 ) -> tuple[list[list[int]], int]:
     """Garanzia HARD dei cap di normativa (max cambi linea, max corse/blocco).
 
@@ -3127,6 +3432,9 @@ def enforce_normativa_split(
     splits = 0
     for chain in chains:
         if not chain:
+            continue
+        if locked and locked.is_locked_chain(chain):
+            out.append(list(chain))      # lucchetto: deciso dall'operatore, non si spezza
             continue
         cur = [chain[0]]
         lc = 0
@@ -3398,6 +3706,7 @@ def optimize_vsp_multi_scenario(
     vsp_config: VSPConfig,
     new_vehicle_penalty_eur: float = 0.0,
     seed_chains: list[list[int]] | None = None,
+    locked: LockedPlan | None = None,
 ) -> tuple[list[list[int]], dict]:
     """Esegue N scenari CP-SAT con strategie + seed + warm-start diversificati,
     applica no-good cuts per forzare diversità, e ritorna il migliore.
@@ -3497,6 +3806,7 @@ def optimize_vsp_multi_scenario(
         trips, arcs, arcs_lookup, rates,
         n_variants=max(vsp_config.greedy_perturbations, n_diverse_ws),
         new_vehicle_penalty_eur=new_vehicle_penalty_eur,
+        locked=locked,
     )
     if not diverse_ws:
         diverse_ws = [greedy_chains]
@@ -3561,6 +3871,7 @@ def optimize_vsp_multi_scenario(
                 forbidden_arc_sets=nogood,
                 min_arc_diff_pct=vsp_config.min_arc_diff_pct,
                 min_arc_diff_abs=vsp_config.min_arc_diff_abs,
+                locked=locked,
             )
         else:
             status, chains, metrics = solve_vsp_cost_based(
@@ -3572,6 +3883,7 @@ def optimize_vsp_multi_scenario(
                 min_arc_diff_pct=vsp_config.min_arc_diff_pct,
                 min_arc_diff_abs=vsp_config.min_arc_diff_abs,
                 vehicle_priority_bonus=veh_prio_bonus,
+                locked=locked,
             )
         if not chains:
             log(f"    Scenario {sc_idx + 1} ({strat_key}) → no solution")
@@ -3640,6 +3952,7 @@ def optimize_vsp_multi_scenario(
                 time_limit=polish_time, warmstart_chains=best_chains,
                 intensity=intensity, seed=99991, label=f"polish-{polish_key}",
                 forbidden_arc_sets=None,
+                locked=locked,
             )
         else:
             p_status, p_chains, p_metrics = solve_vsp_cost_based(
@@ -3649,6 +3962,7 @@ def optimize_vsp_multi_scenario(
                 # Polish NON usa no-good cuts: deve poter raffinare il best
                 forbidden_arc_sets=None,
                 vehicle_priority_bonus=veh_prio_bonus,
+                locked=locked,
             )
         if p_chains:
             polish_cost = sum(chain_cost_accept(c, trips, arcs_lookup, rates, use_detailed_ls)
@@ -3901,9 +4215,11 @@ def run(data: dict) -> dict:
     _VIA_DEPOT_ARCS["count"] = 0
     _VIA_DEPOT_ARCS["forbiddenDirect"] = 0
     _VIA_DEPOT_ARCS["chosenOverDirect"] = 0
+    lock_pairs = locked_pairs_from_input(data.get("lockedChains"), trips)
     arcs = build_compatible_arcs_fast(trips, rates, user_clusters=user_clusters or None,
                                       delay_buffers=delay_buffers or None,
-                                      depots=depots_data or None)
+                                      depots=depots_data or None,
+                                      keep_pairs=lock_pairs or None)
     if _VIA_DEPOT_ARCS["forbiddenDirect"]:
         log(f"  [VSP-DH-ARCHIVE] {_VIA_DEPOT_ARCS['forbiddenDirect']} coppie con riposizionamento diretto vietato, "
             f"{_VIA_DEPOT_ARCS['count']} instradate via deposito")
@@ -3912,6 +4228,21 @@ def run(data: dict) -> dict:
             f"{rates.depot_alternative_min_gap}' in cui il rientro in deposito costa meno "
             f"che tenere il bus fermo al capolinea")
     arcs_lookup: dict[tuple[int, int], Arc] = {(a.i, a.j): a for a in arcs}
+
+    # ── IL LUCCHETTO: turni decisi dall'operatore, vincolo duro ──
+    # Se un turno bloccato non sta in questo modello l'errore e' parlante e
+    # torna com'e' al frontend (422), senza aggiustare nulla in silenzio.
+    try:
+        locked = locked_plan_from_input(data.get("lockedChains"), trips, arcs_lookup)
+    except LockedChainError as e:
+        log(f"  [VSP-LOCK] {e}")
+        return {"error": str(e), "errorKind": "lockedChains", "vehicleShifts": [],
+                "metrics": {**_empty_metrics(), "status": "LOCKED_CHAINS_INFEASIBLE"},
+                "costBreakdown": {"perShift": [], "aggregated": {}, "numVehicles": 0}}
+    if locked:
+        log(f"  [VSP-LOCK] {len(locked.chains)} turni bloccati ({len(locked.trips)} corse, "
+            f"{len(locked.arcs)} agganci) entrano come vincoli duri: "
+            + ", ".join(v or "#" for v in locked.vehicle_ids))
 
     # ── REGOLA DEL GIRO: capolinea del centro = nodi di interscambio PS ──
     center_stops: list[str] = []
@@ -3961,6 +4292,7 @@ def run(data: dict) -> dict:
     greedy_chains = greedy_warmstart(
         trips, arcs, arcs_lookup, rates,
         new_vehicle_penalty_eur=new_vehicle_penalty_eur,
+        locked=locked,
     )
     greedy_cost_total = sum(chain_cost_fast(c, trips, arcs_lookup, rates) for c in greedy_chains)
     log(f"  Greedy baseline: {len(greedy_chains)} vehicles, EUR{greedy_cost_total:.2f}")
@@ -3989,6 +4321,7 @@ def run(data: dict) -> dict:
         trips, arcs, arcs_lookup, rates, time_limit, greedy_chains, vsp_config,
         new_vehicle_penalty_eur=new_vehicle_penalty_eur,
         seed_chains=seed_chains or None,
+        locked=locked,
     )
     report_progress("VSP", 70,
                     f"CP-SAT: {len(cpsat_chains)} vehicles · {vsp_analysis['scenariosRun']} scenari")
@@ -4005,7 +4338,9 @@ def run(data: dict) -> dict:
         use_detailed_cost=vsp_config.ls_use_detailed_cost,
         no_improve_limit=vsp_config.ls_no_improve_limit,
         saturation_mode=saturation_mode,
+        locked=locked,
     )
+    validate_locked(improved_chains, locked, trips, where="post-LS")
     report_progress("VSP", 88, f"Post-LS: {len(improved_chains)} vehicles")
 
     # ── REGOLA #1 hard: post-pass eliminazione veicoli ──
@@ -4024,6 +4359,7 @@ def run(data: dict) -> dict:
             improved_chains, trips, arcs_lookup, rates,
             max_passes=vsp_config.vehicle_elimination_max_passes,
             time_budget_sec=elim_budget,
+            locked=locked,
         )
         validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-elim")
         # Ulteriore LS rapido per pulire archi sub-ottimali post-eliminazione
@@ -4036,6 +4372,7 @@ def run(data: dict) -> dict:
                 use_detailed_cost=vsp_config.ls_use_detailed_cost,
                 no_improve_limit=200,
                 saturation_mode=saturation_mode,
+                locked=locked,
             )
     report_progress("VSP", 93, f"Finale: {len(improved_chains)} vehicles")
 
@@ -4056,6 +4393,7 @@ def run(data: dict) -> dict:
             improved_chains, trips, arcs, ir_arc_costs, ir_fixed_costs,
             time_budget_sec=vsp_config.iterative_reduction_time_sec,
             intensity=intensity, seed=4242,
+            locked=locked,
         )
         validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-iter-red")
         if iter_red_stats.get("vehiclesEliminated", 0) > 0:
@@ -4067,13 +4405,15 @@ def run(data: dict) -> dict:
                 use_detailed_cost=vsp_config.ls_use_detailed_cost,
                 no_improve_limit=200,
                 saturation_mode=saturation_mode,
+                locked=locked,
             )
     report_progress("VSP", 97, f"Pipeline finale: {len(improved_chains)} vehicles")
 
     # ── NORMATIVA: garanzia HARD dei cap (split delle catene in violazione) ──
     normativa_splits = 0
     if normativa_active:
-        improved_chains, normativa_splits = enforce_normativa_split(improved_chains, trips, rates)
+        improved_chains, normativa_splits = enforce_normativa_split(
+            improved_chains, trips, rates, locked=locked)
         if normativa_splits:
             validate_solution(improved_chains, trips, arcs_lookup, len(trips), where="post-normativa")
             log(f"  [VSP-NORMATIVA] {normativa_splits} split applicati per rispettare "
@@ -4087,7 +4427,7 @@ def run(data: dict) -> dict:
     # il CP-SAT puo' aver prodotto catene a scala (es. autosnodato→12m→10m) che
     # nessun mezzo copre. Si tagliano PRIMA del vincolo di flotta, altrimenti il
     # conteggio dei veicoli sarebbe quello di una soluzione non realizzabile.
-    improved_chains, sagoma_splits = enforce_sagoma_chains(improved_chains, trips)
+    improved_chains, sagoma_splits = enforce_sagoma_chains(improved_chains, trips, locked=locked)
     if sagoma_splits:
         log(f"  [VSP-SAGOMA] {sagoma_splits} catene spezzate: nessun mezzo unico le copriva "
             f"(oltre {MAX_DOWNSIZE_LEVELS} gradino di declassamento) → {len(improved_chains)} veicoli")
@@ -4126,12 +4466,13 @@ def run(data: dict) -> dict:
             time_limit=min(90.0, max(20.0, time_limit / 3)),
             warmstart_chains=improved_chains, intensity=intensity,
             seed=7777, label="fleet-cap",
+            locked=locked,
         )
         if cap_chains:
             # Il solve vincolato ricostruisce le catene da zero sugli archi
             # pairwise: puo' quindi riproporre le scale che avevamo appena
             # tagliato, e senza questa riapplicazione tornerebbero nel piano.
-            cap_chains, cap_splits = enforce_sagoma_chains(cap_chains, trips)
+            cap_chains, cap_splits = enforce_sagoma_chains(cap_chains, trips, locked=locked)
             if cap_splits:
                 sagoma_splits += cap_splits
                 log(f"  [VSP-SAGOMA] altre {cap_splits} catene spezzate dopo il vincolo di flotta")
@@ -4152,11 +4493,19 @@ def run(data: dict) -> dict:
     # Convert to VehicleShift objects
     # Rete di sicurezza: qualunque fase a valle abbia rimaneggiato le catene,
     # nel piano finale non entra un blocco che nessun mezzo puo' coprire.
-    improved_chains, tardy_splits = enforce_sagoma_chains(improved_chains, trips)
+    improved_chains, tardy_splits = enforce_sagoma_chains(improved_chains, trips, locked=locked)
     if tardy_splits:
         sagoma_splits += tardy_splits
         log(f"  [VSP-SAGOMA] altre {tardy_splits} catene spezzate in chiusura")
-    shifts = chains_to_shifts(improved_chains, trips, arcs_lookup, rates, route_names)
+    # Il lucchetto, verifica finale: per costruzione ogni fase lo rispetta
+    # (vincolo nel CP-SAT, scorporo nelle euristiche). Se qui manca qualcosa
+    # e' un difetto del programma e va detto, non coperto con un turno che
+    # sembra bloccato e non lo e'.
+    rotti = validate_locked(improved_chains, locked, trips, where="finale")
+    if rotti:
+        raise RuntimeError("Lucchetto non rispettato nel piano finale: " + "; ".join(rotti))
+    shifts = chains_to_shifts(improved_chains, trips, arcs_lookup, rates, route_names,
+                              locked=locked)
 
     # ── MULTI-DEPOSITO: domiciliazione capacitata + fuorilinea deposito ──
     depot_assignment: dict | None = None
@@ -4233,6 +4582,10 @@ def run(data: dict) -> dict:
         "warmStart": ({**seed_diag, "usatoComeBaseline":
                        vsp_analysis.get("bestWarmStartLabel") == "seme"}
                       if seed_chains else None),
+        # Il lucchetto: quanti turni l'operatore ha bloccato e con che matricole.
+        "lockedChains": ({"turni": len(locked.chains), "corse": len(locked.trips),
+                          "vehicleIds": [v for v in locked.vehicle_ids if v]}
+                         if locked else None),
         "savingsEur": round(savings, 2),
         "savingsPct": round(savings_pct, 1),
         "intensity": intensity,

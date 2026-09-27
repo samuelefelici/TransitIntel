@@ -1922,7 +1922,77 @@ Dettagli che sarebbero diventati il prossimo «non funziona»:
 - su una corsa di un altro percorso il menu lo dice invece di mostrare comandi
   che non farebbero niente.
 
+## Il lucchetto: il lavoro fatto a mano non si butta piu'
+
+«Dobbiamo dare la possibilita' di farci lavorare un operatore direttamente
+sull'app, magari manualmente.» Il buco vero era uno: in Fucina si spostano tre
+corse a mano, si preme «Ri-ottimizza», e il solver riparte da zero. Lo diceva
+persino la finestra di conferma — «le modifiche manuali saranno sostituite» —
+come se fosse una proprieta' del sistema e non un difetto. La partenza a caldo
+non basta: e' un suggerimento (`add_hint`), e il solver lo scarta appena trova
+di meglio.
+
+Ora ogni riga del Gantt dei turni macchina ha un **lucchetto**. Un turno
+bloccato:
+
+- **non si tocca** — le sue corse non si trascinano, nessuna corsa vi si puo'
+  lasciare (il Gantt rifiuta il rilascio come una collisione), la Finestra di
+  lavoro non lo spacchetta, non ne estrae corse, non ci scambia niente; il
+  tasto destro sulle sue corse dice che e' bloccato invece di aprire il menu;
+- **attraversa il solver intatto**: «Ri-ottimizza» manda i turni bloccati come
+  `lockedChains` e il modello li riceve come **vincoli duri** — ogni aggancio
+  del turno acceso (`seq == 1`), la prima corsa apre un mezzo (`first == 1`),
+  l'ultima lo chiude (`last == 1`). Il vincolo sta in tutte e quattro le
+  costruzioni del modello (costi, lessicografico fase 1 e 2, tetto di
+  veicoli), e le euristiche che rimaneggiano le catene — greedy, ricerca
+  locale, eliminazione veicoli, riduzione iterativa, post-pass di normativa e
+  sagoma — lavorano sulle sole catene libere e rimettono in coda le bloccate
+  tali e quali;
+- **tiene la matricola** con cui e' stato bloccato (la numerazione automatica
+  la salta) e torna con `locked: true`, cosi' resta bloccato anche dopo il
+  ricalcolo; si salva con lo scenario;
+- la finestra di conferma dice adesso la verita': «2 turni bloccati (U007,
+  U012) saranno mantenuti cosi' come sono; gli altri ricalcolati».
+
+Se il modello **non puo'** rispettare un turno bloccato — corsa sparita
+dall'orario, aggancio che nessun mezzo puo' fare, due turni con la stessa
+corsa — non lo aggiusta in silenzio come fa la partenza a caldo: risponde con
+un **errore parlante** («Turno bloccato U009: l'aggancio 3 delle 08:00 (A → B)
+→ 3 delle 08:05 (A → B) non e' ammesso dal modello: si sovrappongono — la
+prima arriva alle 08:30, la seconda parte alle 08:05»), che arriva
+all'operatore com'e' (HTTP 422) sia dal CP-SAT puro sia dal VCSP.
+
+Tre dettagli che sarebbero diventati il prossimo «non funziona»:
+
+- il **pruning anti-OOM** tiene per ogni corsa i K agganci migliori: un aggancio
+  fatto a mano poteva non essere fra quelli, e il lucchetto sarebbe fallito per
+  un motivo finto. Gli agganci bloccati non si scartano mai (`keep_pairs`);
+- i **no-good cut** fra scenari chiedono di cambiare almeno N archi rispetto a
+  una soluzione vista: gli archi bloccati stanno in ogni soluzione e non
+  possono contare, altrimenti un lucchetto grande renderebbe il taglio
+  insoddisfacibile;
+- una **verifica finale** controlla che ogni turno bloccato compaia nel piano
+  tale e quale; se manca, e' un difetto del programma e si ferma li' invece di
+  restituire un turno che sembra bloccato e non lo e'.
+
+Verifica: 21 prove in `scripts/tests/test_lucchetto.py`, costruite con il
+produttore vero degli archi (`build_compatible_arcs_fast`), non con un lookup
+finto. La prova che conta e' `run()` intero su una catena che il solver da
+solo non farebbe mai (1→3→5, salta una corsa per fascia): con il lucchetto
+sopravvive a tutte le fasi con matricola e flag; il controllo senza lucchetto
+conferma che la catena strana non esce da sola. Suite Python: 411 passate.
+Frontend e API: `tsc --noEmit` puliti (il frontend non ha un runner di test).
+
+Fuori da questa consegna, dichiarato: il lucchetto e' sui **turni macchina**;
+i turni guida (driver-workspace) non lo hanno ancora, e la ri-ottimizzazione
+**intermodale** non passa i turni bloccati (cambia gli orari, un aggancio
+bloccato potrebbe non stare piu' in piedi: da decidere se deve fermarsi o
+sbloccare). Poi PR 2 (badge di disallineamento scenario ↔ quadro orario),
+PR 3 (le 18 rotte orfane) e PR 4 (traccia del lavoro manuale nella relazione).
+
 ## In sospeso
+
+- **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
 
 - **Rigenerare le relazioni gia' salvate**: quelle prodotte prima di oggi portano il costo guida doppio e il costo vetture al lordo.
 - **Chiedere all'operatore se il tetto dei semiunici puo' salire**: e' saturo in ogni giro (6/6 in BB e AX, 5/5 in AY) ed e' il vincolo che decide il numero di turni, cioe' il 72% del costo.
