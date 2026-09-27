@@ -57,6 +57,7 @@ function shiftsToRows(shifts: VehicleShift[], customLabels: Record<string, strin
         ? `${VEHICLE_SHORT[s.vehicleType] || s.vehicleType} · ${resName}`
         : (VEHICLE_SHORT[s.vehicleType] || s.vehicleType),
       dotColor: resColor || CATEGORY_COLORS[s.category] || "#6b7280",
+      locked: !!s.locked,
     };
   });
 }
@@ -109,8 +110,11 @@ function shiftsToBars(
         color = "#f59e0b"; // ambra — rientro intermedio in deposito ben visibile
         locked = true;
       }
+      // Il lucchetto: in un turno bloccato non si trascina niente, corse comprese.
+      if (shift.locked) locked = true;
 
       const tooltip: string[] = [];
+      if (shift.locked) tooltip.push("🔒 Turno bloccato: il solver lo mantiene com'è");
       if (entry.type === "trip" && (entry as any).variantCode) {
         tooltip.push(`Percorso ${(entry as any).variantCode}`);
       }
@@ -238,7 +242,8 @@ type ActionKind =
   | "reset"
   | "undo"
   | "redo"
-  | "deadhead";
+  | "deadhead"
+  | "lock";
 
 interface ActionEntry {
   id: number;                 // monotonic id
@@ -887,10 +892,56 @@ export default function VehicleWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wwOpen]);
 
+  /* ── Il lucchetto: il turno è deciso dall'operatore ──
+   * Da bloccato non si tocca (trascinamenti, area di lavoro, scambi) e
+   * «Ri-ottimizza» lo passa al solver come vincolo duro. Il flag vive sul
+   * turno e si salva con lo scenario. */
+  const lockedShiftIds = useMemo(
+    () => new Set((result?.shifts ?? []).filter(s => s.locked).map(s => s.vehicleId)),
+    [result],
+  );
+  const shiftOfTrip = useCallback((tripId: string): VehicleShift | undefined =>
+    result?.shifts.find(s => s.trips.some(t => t.type === "trip" && String(t.tripId) === String(tripId))),
+    [result]);
+  /** Il primo turno bloccato coinvolto (per matricola o per corsa), oppure null. */
+  const lockedInvolved = useCallback((shiftIds: (string | null | undefined)[], tripIds: string[] = []): string | null => {
+    for (const id of shiftIds) if (id && lockedShiftIds.has(id)) return id;
+    for (const tid of tripIds) {
+      const owner = shiftOfTrip(tid);
+      if (owner?.locked) return owner.vehicleId;
+    }
+    return null;
+  }, [lockedShiftIds, shiftOfTrip]);
+  const rifiutaPerLucchetto = useCallback((vehicleId: string) => {
+    toast.error(`Turno ${customLabelsRef.current[vehicleId] ?? vehicleId} bloccato`, {
+      description: "Sbloccalo dal lucchetto sulla riga per modificarne le corse.",
+    });
+  }, []);
+  const toggleShiftLock = useCallback((vehicleId: string) => {
+    if (!result) return;
+    const sh = result.shifts.find(s => s.vehicleId === vehicleId);
+    if (!sh) return;
+    const ora = !sh.locked;
+    const next: ServiceProgramResult = {
+      ...result,
+      shifts: result.shifts.map(s => s.vehicleId === vehicleId ? { ...s, locked: ora } : s),
+    };
+    setResult(next);
+    const nome = customLabels[vehicleId] ?? vehicleId;
+    const corse = sh.trips.filter(t => t.type === "trip").length;
+    pushHistory(next, "lock",
+      ora ? `Bloccato turno ${nome}` : `Sbloccato turno ${nome}`,
+      ora ? `${corse} corse: il solver lo manterrà com'è` : `${corse} corse di nuovo libere`);
+    if (ora) toast.success(`Turno ${nome} bloccato`, { description: "Ri-ottimizza lo manterrà com'è; nessuna modifica lo tocca." });
+    else toast.info(`Turno ${nome} sbloccato`);
+  }, [result, customLabels, pushHistory]);
+
   /* Spacchetta = DISSOLVE il turno: sparisce dal gantt, le sue corse diventano
    * card sciolte (scoperte finché non rimpacchettate → finiscono in unassigned). */
   const wwDissolve = useCallback((shiftIds: string[]) => {
     if (!result) return;
+    const bloccato = lockedInvolved(shiftIds);
+    if (bloccato) { rifiutaPerLucchetto(bloccato); return; }
     const ids = new Set(shiftIds);
     const freed: ShiftTripEntry[] = [];
     for (const s of result.shifts) {
@@ -907,7 +958,7 @@ export default function VehicleWorkspace({
     pushHistory(next, "deadhead", `Finestra di lavoro · spacchettati ${shiftIds.length} turni`, `${freed.length} corse ora scoperte`);
     setWwPool(prev => [...prev, ...freed.map(entry => ({ entry }))]);
     setWwShiftIds(prev => prev.filter(id => !ids.has(id)));
-  }, [result, pushHistory]);
+  }, [result, pushHistory, lockedInvolved, rifiutaPerLucchetto]);
 
   /* Import corse scoperte da UDP sorelle con la stessa validità */
   const wwImport = useCallback(async () => {
@@ -1057,6 +1108,8 @@ export default function VehicleWorkspace({
     const chosenPool = wwPool.filter(p => sel.has(String(p.entry.tripId)));
     for (const p of chosenPool) chosen.push({ ...p.entry });
     if (!chosen.length) return;
+    const bloccato = lockedInvolved([], chosen.map(t => String(t.tripId)));
+    if (bloccato) { rifiutaPerLucchetto(bloccato); return; }
     chosen.sort((a, b) => a.departureMin - b.departureMin);
     for (let i = 1; i < chosen.length; i++) {
       if (chosen[i].departureMin < chosen[i - 1].arrivalMin) {
@@ -1128,7 +1181,7 @@ export default function VehicleWorkspace({
     toast.success(`Turno macchina ${newId} chiuso (${VEHICLE_SHORT[reqType] || reqType})`, {
       description: `${chosen.length} corse · ${rg.added} fuorilinea rigenerati · resta nell'area come card compatta: trascinala sulla sidebar per consegnarla al gantt.`,
     });
-  }, [result, wwShiftIds, wwSelected, wwPool, wwBlockVehicleType, wwBlockChecks, pushHistory]);
+  }, [result, wwShiftIds, wwSelected, wwPool, wwBlockVehicleType, wwBlockChecks, pushHistory, lockedInvolved, rifiutaPerLucchetto]);
 
   /* Verifica LIVE della selezione (stile Bdsi, versione TM): tipologia mezzo
    * risultante + vincoli + costo ≈ € (ore servizio × costo orario scenario). */
@@ -1169,6 +1222,8 @@ export default function VehicleWorkspace({
    *    turno (→ scoperta) o fra due turni, con controllo tipologia mezzo. ── */
   const wwMoveTrips = useCallback((tripIds: string[], targetShiftId: string | null) => {
     if (!result || tripIds.length === 0) return;
+    const bloccato = lockedInvolved([targetShiftId], tripIds);
+    if (bloccato) { rifiutaPerLucchetto(bloccato); return; }
     const idSet = new Set(tripIds.map(String));
     const moved: ShiftTripEntry[] = [];
     const fromPoolIds = new Set<string>();
@@ -1222,7 +1277,7 @@ export default function VehicleWorkspace({
       setWwPool(prev => [...prev, ...freshOut.map(entry => ({ entry }))]);
       toast.info(`${moved.length} cors${moved.length === 1 ? "a" : "e"} estratt${moved.length === 1 ? "a" : "e"}: ora SCOPERTE`, { description: "Rimpacchettale in un turno per coprirle." });
     }
-  }, [result, wwPool, wwRebuildVehicleShift, wwBlockChecks, pushHistory]);
+  }, [result, wwPool, wwRebuildVehicleShift, wwBlockChecks, pushHistory, lockedInvolved, rifiutaPerLucchetto]);
 
   /* "Dove la metto?" (TM): prova la corsa scoperta in OGNI turno macchina —
    * accettano solo quelli senza conflitti di orario né di tipologia mezzo. */
@@ -1276,6 +1331,8 @@ export default function VehicleWorkspace({
     const ownerOf = (tid: string) => result.shifts.find(s => s.trips.some(t => t.type === "trip" && String(t.tripId) === tid));
     const shA = ownerOf(aId), shB = ownerOf(bId);
     if (!shA || !shB || shA.vehicleId === shB.vehicleId) { toast.error("Seleziona due corse in due turni diversi"); return; }
+    if (shA.locked) { rifiutaPerLucchetto(shA.vehicleId); return; }
+    if (shB.locked) { rifiutaPerLucchetto(shB.vehicleId); return; }
     const tripsOf = (s: VehicleShift) => s.trips.filter(t => t.type === "trip");
     const tripA = tripsOf(shA).find(t => String(t.tripId) === aId)!;
     const tripB = tripsOf(shB).find(t => String(t.tripId) === bId)!;
@@ -1298,7 +1355,7 @@ export default function VehicleWorkspace({
     setResult(next);
     pushHistory(next, "deadhead", `Area di lavoro · scambio corse ${shA.vehicleId} ⇄ ${shB.vehicleId}`, `${rg.added} fuorilinea rigenerati`);
     toast.success(`Scambio ${shA.vehicleId} ⇄ ${shB.vehicleId}`, { description: "Vuoti rigenerati e totali ricalcolati." });
-  }, [result, wwRebuildVehicleShift, wwBlockChecks, pushHistory]);
+  }, [result, wwRebuildVehicleShift, wwBlockChecks, pushHistory, rifiutaPerLucchetto]);
 
   const stopOptions = useMemo(() => {
     if (!result) return [] as string[];
@@ -1416,8 +1473,9 @@ export default function VehicleWorkspace({
 
   const handleBarContextMenu = useCallback((bar: GanttBar, anchor: { x: number; y: number; side?: "left" | "right" }) => {
     if ((bar.meta?.type as string | undefined) !== "trip") return;
+    if (lockedShiftIds.has(bar.rowId)) { rifiutaPerLucchetto(bar.rowId); return; }
     setTripContextMenu({ open: true, anchor, tripBar: bar });
-  }, []);
+  }, [lockedShiftIds, rifiutaPerLucchetto]);
 
   const openInlineInsertFromTrip = useCallback((
     tripBar: GanttBar,
@@ -1589,6 +1647,7 @@ export default function VehicleWorkspace({
 
     for (const shift of result.shifts) {
       if (shift.vehicleId === bar.rowId) continue;
+      if (shift.locked) continue;                    // il lucchetto: non riceve corse
       if (fromVehicleType && shift.vehicleType !== fromVehicleType) continue;
       const isEmptyShift = shift.trips.length === 0;
       const isFreshEmptyShift = isEmptyShift && freshShiftIds.has(shift.vehicleId);
@@ -1752,6 +1811,15 @@ export default function VehicleWorkspace({
    */
   const handleBarChange = useCallback((change: GanttChange, _allBars: GanttBar[]) => {
     if (change.fromRowId === change.toRowId && change.oldStartMin === change.newStartMin) return;
+    // Il lucchetto: il Gantt già rifiuta il rilascio su una riga bloccata e non
+    // fa trascinare le sue barre; qui la rete di sicurezza. Il result viene
+    // riemesso tale e quale così le barre del Gantt tornano dov'erano.
+    const bloccato = lockedInvolved([change.fromRowId, change.toRowId]);
+    if (bloccato) {
+      rifiutaPerLucchetto(bloccato);
+      setResult(prev => (prev ? { ...prev } : prev));
+      return;
+    }
 
     setModifications(prev => [
       ...prev,
@@ -1839,7 +1907,7 @@ export default function VehicleWorkspace({
 
       return prunedResult;
     });
-  }, [pushHistory]);
+  }, [pushHistory, lockedInvolved, rifiutaPerLucchetto]);
 
   /* ── Apply Intermodal scenario: ricalcola i turni con i nuovi orari ──
    * Flusso:
@@ -1999,11 +2067,25 @@ export default function VehicleWorkspace({
    * dei turni correnti come input (mantenendo i tipi veicolo richiesti). ── */
   const handleReoptimize = useCallback(async () => {
     if (!result) return;
-    if (!window.confirm(
-      "Rilanciare l'ottimizzatore sullo scenario corrente?\n\n" +
-      "I turni saranno ricalcolati da zero in base alle corse e ai vincoli attuali. " +
-      "Le modifiche manuali fatte ai turni macchina saranno sostituite dal nuovo risultato."
-    )) return;
+    // Il lucchetto: i turni bloccati partono come vincoli duri (stesse corse,
+    // stesso ordine, stessa matricola); il solver ricalcola solo il resto.
+    const bloccati = result.shifts.filter(s => s.locked);
+    const lockedChains = bloccati
+      .map(s => ({
+        vehicleId: s.vehicleId,
+        tripIds: s.trips.filter(t => t.type === "trip").map(t => String(t.tripId)),
+      }))
+      .filter(c => c.tripIds.length > 0);
+    const nomi = bloccati.map(s => customLabels[s.vehicleId] ?? s.vehicleId);
+    const avviso = lockedChains.length
+      ? `${lockedChains.length} turn${lockedChains.length === 1 ? "o bloccato" : "i bloccati"} ` +
+        `(${nomi.slice(0, 6).join(", ")}${nomi.length > 6 ? ", …" : ""}) ` +
+        `${lockedChains.length === 1 ? "sarà mantenuto" : "saranno mantenuti"} così com'è: stesse corse, stesso ordine. ` +
+        "Gli altri turni saranno ricalcolati da zero e le modifiche manuali non bloccate sostituite dal nuovo risultato."
+      : "I turni saranno ricalcolati da zero in base alle corse e ai vincoli attuali. " +
+        "Le modifiche manuali fatte ai turni macchina saranno sostituite dal nuovo risultato. " +
+        "Per conservarne qualcuna, prima blocca il turno col lucchetto sulla riga.";
+    if (!window.confirm(`Rilanciare l'ottimizzatore sullo scenario corrente?\n\n${avviso}`)) return;
     const previousResult = result;
     setReoptimizing(true);
     setReoptimizeError(null);
@@ -2018,15 +2100,27 @@ export default function VehicleWorkspace({
           timeLimit: 60,
           solverIntensity: "normal",
           ...(psProjectId ? { psProjectId } : {}),
+          ...(lockedChains.length ? { lockedChains } : {}),
         }),
       });
       if (!res.ok) {
+        // 422 = un turno bloccato che il modello non può rispettare: il
+        // messaggio del solver è già scritto per l'operatore, va mostrato com'è.
         const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status} ${txt.slice(0, 200)}`);
+        let parlante = "";
+        try { parlante = String(JSON.parse(txt)?.error ?? ""); } catch { /* non JSON */ }
+        throw new Error(parlante || `HTTP ${res.status} ${txt.slice(0, 200)}`);
       }
       const newResult = (await res.json()) as ServiceProgramResult;
       if (!newResult || !Array.isArray(newResult.shifts)) {
         throw new Error("Risposta solver non valida");
+      }
+      // Il solver rimanda i turni bloccati con `locked: true` e la loro
+      // matricola; se un turno bloccato mancasse, non è un risultato accettabile.
+      const tornati = new Set(newResult.shifts.filter(s => s.locked).map(s => s.vehicleId));
+      const persi = lockedChains.filter(c => !tornati.has(c.vehicleId)).map(c => c.vehicleId);
+      if (persi.length) {
+        throw new Error(`Il solver non ha restituito ${persi.length} turn${persi.length === 1 ? "o bloccato" : "i bloccati"} (${persi.join(", ")}): risultato scartato.`);
       }
       setBaselineResult(previousResult);
       setResult(newResult);
@@ -2040,15 +2134,16 @@ export default function VehicleWorkspace({
         `Δveicoli ${diff.vehiclesAfter - diff.vehiclesBefore >= 0 ? "+" : ""}${diff.vehiclesAfter - diff.vehiclesBefore}`,
       );
       toast.success("Ottimizzatore rilanciato", {
-        description: `${newResult.shifts.length} veicoli · Δ ${diff.vehiclesAfter - diff.vehiclesBefore >= 0 ? "+" : ""}${diff.vehiclesAfter - diff.vehiclesBefore}`,
+        description: `${newResult.shifts.length} veicoli · Δ ${diff.vehiclesAfter - diff.vehiclesBefore >= 0 ? "+" : ""}${diff.vehiclesAfter - diff.vehiclesBefore}`
+          + (lockedChains.length ? ` · 🔒 ${lockedChains.length} mantenut${lockedChains.length === 1 ? "o" : "i"}` : ""),
       });
     } catch (err: any) {
       setReoptimizeError(err.message);
-      toast.error("Errore ri-ottimizzazione", { description: err.message });
+      toast.error("Errore ri-ottimizzazione", { description: err.message, duration: 12000 });
     } finally {
       setReoptimizing(false);
     }
-  }, [result, pushHistory]);
+  }, [result, pushHistory, customLabels, psProjectId]);
 
   /* ── Load scenario specifico dalla lista ── */
   const handleLoadScenario = useCallback((id: number, name: string, loaded: ServiceProgramResult) => {
@@ -2364,6 +2459,16 @@ export default function VehicleWorkspace({
               </span>
             )}
 
+            {/* Il lucchetto: quanti turni il solver manterrà com'è */}
+            {lockedShiftIds.size > 0 && (
+              <Badge
+                variant="outline"
+                className="h-6 text-[10px] border-amber-500/40 text-amber-300 bg-amber-500/10"
+                title={`Turni bloccati: ${[...lockedShiftIds].map(id => customLabels[id] ?? id).join(", ")}. Ri-ottimizza li mantiene com'è.`}
+              >
+                🔒 {lockedShiftIds.size} bloccat{lockedShiftIds.size === 1 ? "o" : "i"}
+              </Badge>
+            )}
             {/* Ri-ottimizza CP-SAT sullo scenario corrente */}
             <Button
               size="sm"
@@ -2371,7 +2476,9 @@ export default function VehicleWorkspace({
               onClick={handleReoptimize}
               disabled={!result || reoptimizing}
               className="border-purple-500/40 text-purple-300 hover:bg-purple-500/10 h-8 text-[11px]"
-              title="Rilancia il solver CP-SAT sulle linee dello scenario corrente"
+              title={lockedShiftIds.size > 0
+                ? `Rilancia il solver CP-SAT mantenendo ${lockedShiftIds.size} turn${lockedShiftIds.size === 1 ? "o bloccato" : "i bloccati"} così com'è`
+                : "Rilancia il solver CP-SAT sulle linee dello scenario corrente. Blocca un turno col lucchetto sulla riga per conservarlo"}
             >
               {reoptimizing
                 ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
@@ -2542,6 +2649,7 @@ export default function VehicleWorkspace({
               rowsDraggable={wwOpen}
               onBarChange={handleBarChange}
               onRowRename={handleRowRename}
+              onRowLockToggle={toggleShiftLock}
               getSuggestions={getSuggestions}
               onBarClick={handleBarClick}
               onBarContextMenu={handleBarContextMenu}
@@ -2607,6 +2715,7 @@ export default function VehicleWorkspace({
                     undo: "text-muted-foreground",
                     redo: "text-muted-foreground",
                     deadhead: "text-amber-300",
+                    lock: "text-amber-400",
                   };
                   return (
                     <div

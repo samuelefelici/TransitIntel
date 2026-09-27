@@ -619,6 +619,15 @@ def main() -> None:
                 log(f"[VCSP] round {r}: partenza a caldo dal round {best[2]} "
                     f"({len(seme)} blocchi)")
         vsp_out = vsp_engine.run(vsp_in)
+        if vsp_out.get("error"):
+            # Un turno bloccato (lucchetto) che il modello non puo' rispettare:
+            # l'errore e' parlante e deve arrivare all'operatore com'e', non
+            # diventare un anonimo "VSP senza turni".
+            log(f"[VCSP] round {r}: {vsp_out['error']}")
+            write_output({"error": vsp_out["error"], "errorKind": vsp_out.get("errorKind"),
+                          "vehicleShifts": [], "metrics": {"status": "ERROR"},
+                          "vcsp": {"rounds": rounds_kpi, "bestRound": None}})
+            return
         shifts = vsp_out.get("vehicleShifts", [])
         if not shifts:
             log(f"[VCSP] round {r}: VSP senza turni, stop")
