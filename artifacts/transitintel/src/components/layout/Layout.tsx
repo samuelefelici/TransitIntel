@@ -7,7 +7,7 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
-  Milestone, Radio, Printer, Shuffle, Wrench,
+  Milestone, Radio, Printer, Shuffle, Wrench, SatelliteDish,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -33,6 +33,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { href: "/operations", label: "Sala Operativa", icon: Radio },
+      { href: "/avm", label: "AVM", icon: SatelliteDish },
       { href: "/traffic", label: "Traffico & Rete", icon: Activity },
       { href: "/territory", label: "Territorio & Domanda", icon: Map },
     ],
@@ -115,7 +116,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           return {
             ...s,
             items: s.items.filter(i => {
-              if (i.href === "/traffic" || i.href === "/territory" || i.href === "/operations") return hasPermission("analytics");
+              if (i.href === "/traffic" || i.href === "/territory" || i.href === "/operations" || i.href === "/avm") return hasPermission("analytics");
               return true;
             }),
           };

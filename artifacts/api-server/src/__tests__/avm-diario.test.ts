@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  esitoGiorno, classificaVettura, analizzaDiario, GIORNATE_MINIME,
+  esitoGiorno, classificaVettura, analizzaDiario, GIORNATE_MINIME, GIORNI_SMESSA,
   type RigaDiario,
 } from "../lib/avm-diario";
 
@@ -63,29 +63,37 @@ describe("classificaVettura — ci si ferma al primo anello rotto", () => {
     expect(v.destinatario).toBe("Esercizio");
   });
 
-  it("seguita dal centro ma senza posizione: è l'antenna", () => {
+  it("parla e dichiara errore GPS senza mai localizzarsi: è l'antenna", () => {
     const v = classificaVettura("1314", SETTIMANA.map(g => riga(g, "1314", {
-      lettureFresche: 8, lettureMonitorata: 8, lettureErroreGps: 8,
+      lettureFresche: 8, lettureErroreGps: 8,
     })), SETTIMANA);
     expect(v.esito).toBe("senza_posizione");
     expect(v.destinatario).toBe("Officina");
+    expect(v.avviso).toBe("antenna");
   });
 
-  it("parla col centro ma il centro non la segue: è Mizar", () => {
+  it("parla senza errori a bordo ma il centro non la localizza mai: è Mizar", () => {
     const v = classificaVettura("256", SETTIMANA.map(g => riga(g, "256", {
-      lettureFresche: 4, lettureErroreGprs: 4,
+      lettureFresche: 4,
     })), SETTIMANA);
     expect(v.esito).toBe("non_attivata");
     expect(v.destinatario).toBe("Mizar");
+    expect(v.avviso).toBe("da_attivare");
   });
 
-  it("non si incolpa l'antenna di una vettura che il centro non segue", () => {
-    /* Errore GPS ma mai monitorata: la segnalazione resta a Mizar, perché
-     * finché il centro non la segue l'antenna non è dimostrabile. */
-    const v = classificaVettura("999", SETTIMANA.map(g => riga(g, "999", {
-      lettureFresche: 4, lettureErroreGps: 4,
+  it("il flag Monitored non decide niente: è la negazione dell'errore, non l'attivazione", () => {
+    /* Misurato il 15 settembre: Monitored=true su 76 vetture, esattamente
+     * quelle senza MonitoringError. Un errore GPS su una vettura che parla è
+     * l'antenna anche se Monitored è falso — e una vettura monitorata senza
+     * errori né posizione non è "seguita", è non attivata. */
+    const conGps = classificaVettura("999", SETTIMANA.map(g => riga(g, "999", {
+      lettureFresche: 4, lettureErroreGps: 4, lettureMonitorata: 0,
     })), SETTIMANA);
-    expect(v.esito).toBe("non_attivata");
+    expect(conGps.esito).toBe("senza_posizione");
+    const monitorata = classificaVettura("998", SETTIMANA.map(g => riga(g, "998", {
+      lettureFresche: 4, lettureMonitorata: 4,
+    })), SETTIMANA);
+    expect(monitorata.esito).toBe("non_attivata");
   });
 
   it("muta tutta la settimana: SIM e verifica fisica", () => {
@@ -104,6 +112,40 @@ describe("classificaVettura — ci si ferma al primo anello rotto", () => {
     expect(v.intermittente).toBe(true);
     expect(v.giorniConContatto).toBe(2);
     expect(v.giorniDiSilenzio).toBe(5);
+  });
+
+  it("una vettura che funzionava e tace da tre giornate è 'smessa', ma il verdetto resta 'funziona'", () => {
+    const v = classificaVettura("455", [
+      ...SETTIMANA.slice(0, 3).map(g => riga(g, "455", { lettureFresche: 9, letturePosizione: 9, lettureCorsa: 4, corse: [g] })),
+      ...SETTIMANA.slice(3).map(g => riga(g, "455")),
+    ], SETTIMANA);
+    expect(v.esito).toBe("funziona");
+    expect(v.avviso).toBe("smessa");
+    expect(v.ultimoGiornoBuono).toBe("2026-09-11");
+    expect(v.giorniDaBuono).toBe(4);
+    expect(v.nota).toContain("ultima posizione il 2026-09-11");
+  });
+
+  it("due giornate di silenzio non bastano: potrebbe essere un fine settimana", () => {
+    const v = classificaVettura("455", [
+      ...SETTIMANA.slice(0, 5).map(g => riga(g, "455", { lettureFresche: 9, letturePosizione: 9 })),
+      ...SETTIMANA.slice(5).map(g => riga(g, "455")),
+    ], SETTIMANA);
+    expect(GIORNI_SMESSA).toBe(3);
+    expect(v.giorniDaBuono).toBe(2);
+    expect(v.avviso).toBeNull();
+  });
+
+  it("le giornate senza dati non contano come silenzio", () => {
+    /* Buona il 9, poi il connettore fermo il 10, 11 e 12, poi muta il 13: una
+     * sola giornata osservata di silenzio, non quattro. */
+    const osservate = ["2026-09-09", "2026-09-13"];
+    const v = classificaVettura("455", [
+      riga("2026-09-09", "455", { lettureFresche: 9, letturePosizione: 9 }),
+      riga("2026-09-13", "455"),
+    ], osservate);
+    expect(v.giorniDaBuono).toBe(1);
+    expect(v.avviso).toBeNull();
   });
 
   it("conta le corse distinte, non i campioni", () => {
@@ -145,6 +187,22 @@ describe("analizzaDiario — il periodo intero", () => {
   it("vede l'attivazione fatta a metà periodo", () => {
     expect(d.cambiamenti.migliorate.map(x => x.vehicleRef)).toEqual(["256"]);
     expect(d.cambiamenti.peggiorate).toEqual([]);
+  });
+
+  it("elenca gli avvisi dal più urgente, e misura la qualità della raccolta", () => {
+    /* La 263 smette il 13; il diario dell'11 è a metà. */
+    const r2 = righe
+      .filter(r => !(r.vehicleRef === "263" && r.giorno >= "2026-09-13"))
+      .map(r => r.giorno === "2026-09-11" ? { ...r, letture: 100 } : { ...r, letture: 700 });
+    r2.push(riga("2026-09-13", "263"), riga("2026-09-14", "263"), riga("2026-09-15", "263"));
+    const x = analizzaDiario(r2, SETTIMANA);
+    /* La 256 si è attivata a metà settimana: ha parlato 3 giornate su 7,
+     * quindi è intermittente per il diario, ed è giusto che lo dica. */
+    expect(x.avvisi.map(a => a.avviso)).toEqual(["smessa", "intermittente"]);
+    expect(x.avvisi[0].matricole).toEqual(["263"]);
+    expect(x.avvisi[1].matricole).toEqual(["256"]);
+    expect(x.qualita.giornateParziali).toEqual(["2026-09-11"]);
+    expect(x.perGiorno.find(g => g.giorno === "2026-09-11")?.campioni).toBe(100);
   });
 
   it("dà una riga per giornata osservata", () => {

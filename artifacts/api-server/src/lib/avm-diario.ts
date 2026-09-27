@@ -98,14 +98,32 @@ export type EsitoSettimana =
   | "funziona"
   /** si localizza ma non aggancia mai una corsa */
   | "senza_corsa"
-  /** il centro la segue ma non si localizza mai */
+  /** parla col centro, dichiara errore GPS e non si localizza mai: antenna */
   | "senza_posizione"
-  /** parla col centro ma il centro non la segue */
+  /** parla col centro senza errori a bordo, ma il centro non la localizza mai:
+   *  non è attivata (grafo, modo di localizzazione) */
   | "non_attivata"
   /** non ha mai parlato col centro in tutto il periodo */
   | "muta";
 
 export type Destinatario = "Mizar" | "Officina" | "Esercizio" | "Gestore SIM" | "nessuno";
+
+/**
+ * L'avviso è diverso dal verdetto. Il verdetto dice che cosa la vettura ha
+ * DIMOSTRATO di saper fare nel periodo; l'avviso dice che cosa va guardato
+ * ADESSO. Una vettura che ha fatto corse lunedì e tace da giovedì "funziona"
+ * come verdetto, ed è la prima da controllare come avviso: è un apparato che
+ * si è rotto da poco, e quelli si riparano.
+ */
+export type Avviso =
+  /** funzionava (corse o posizione) e tace da almeno GIORNI_SMESSA giornate */
+  | "smessa"
+  /** parla, dichiara errore GPS, non si è mai localizzata: antenna */
+  | "antenna"
+  /** parla senza errori a bordo, mai localizzata dal centro: da attivare */
+  | "da_attivare"
+  /** parla a sprazzi: rete o alimentazione incerta */
+  | "intermittente";
 
 export interface VetturaSettimana {
   vehicleRef: string;
@@ -134,6 +152,12 @@ export interface VetturaSettimana {
   intermittente: boolean;
   /** un esito per giornata, in ordine: è la riga di stato da leggere a colpo d'occhio */
   perGiorno: Array<{ giorno: string; esito: EsitoGiorno }>;
+  /** ultima giornata in cui si è localizzata o ha fatto corse, se mai */
+  ultimoGiornoBuono: string | null;
+  /** giornate osservate passate da allora */
+  giorniDaBuono: number | null;
+  /** che cosa va guardato adesso, se qualcosa */
+  avviso: Avviso | null;
 }
 
 export interface GiornataDiario {
@@ -146,6 +170,9 @@ export interface GiornataDiario {
   monitorate: number;
   /** vetture con almeno una lettura nella giornata */
   vetture: number;
+  /** campioni scritti in quella giornata (il massimo fra le vetture): misura
+   *  di quanto il connettore ha girato, non di quanto hanno parlato i mezzi */
+  campioni: number;
 }
 
 export interface Segnalazione {
@@ -180,6 +207,16 @@ export interface DiarioSettimana {
   nota: string;
   /** giornate mancanti nel mezzo: il connettore era fermo, non le vetture */
   giornateSenzaDati: string[];
+  /** le vetture da guardare adesso, per avviso, dalle più urgenti */
+  avvisi: Array<{ avviso: Avviso; matricole: string[]; titolo: string; perche: string }>;
+  /** quanto è affidabile la raccolta su cui poggia tutto il resto */
+  qualita: {
+    /** campioni attesi in una giornata piena con un campione ogni due minuti */
+    campioniAttesi: number;
+    /** giornate con meno di mezza raccolta, escluse la prima e l'ultima */
+    giornateParziali: string[];
+    nota: string;
+  };
 }
 
 /** Ordine degli anelli, dal più completo al più rotto. */
@@ -194,8 +231,8 @@ const PESO_ESITO: Record<EsitoSettimana, number> = {
 export const ETICHETTE_ESITO: Record<EsitoSettimana, string> = {
   funziona: "Funziona: ha fatto corse",
   senza_corsa: "Si localizza ma non aggancia la corsa",
-  senza_posizione: "Seguita dal centro ma senza posizione",
-  non_attivata: "Parla col centro ma non è attivata",
+  senza_posizione: "Parla ma non aggancia il GPS",
+  non_attivata: "Parla ma il centro non la localizza",
   muta: "Nessun contatto nel periodo",
 };
 
@@ -218,14 +255,15 @@ const AZIONI: Record<EsitoSettimana, { destinatario: Destinatario; azione: strin
   },
   senza_posizione: {
     destinatario: "Officina",
-    azione: "Il centro la segue ma non arriva mai una posizione valida: "
-      + "controllare antenna GPS, cavo e collocazione dell'apparato.",
+    azione: "L'apparato parla col centro e dichiara errore GPS: non arriva mai "
+      + "una posizione valida. Controllare antenna, cavo e collocazione "
+      + "dell'apparato.",
   },
   non_attivata: {
     destinatario: "Mizar",
-    azione: "L'apparato parla col centro ma il centro non lo dichiara monitorato: "
-      + "attivarla come le altre (monitoraggio, grafo di linea, modo di "
-      + "localizzazione). È l'intervento più rapido, si fa dal centro.",
+    azione: "L'apparato parla col centro senza errori a bordo, ma il centro non "
+      + "produce mai una posizione: manca l'attivazione (grafo di linea, modo "
+      + "di localizzazione). È l'intervento più rapido, si fa dal centro.",
   },
   muta: {
     destinatario: "Gestore SIM",
@@ -241,6 +279,41 @@ const QUOTA_CONTINUA = 0.5;
 
 /** Sotto questo numero di giornate un verdetto sarebbe un'istantanea travestita. */
 export const GIORNATE_MINIME = 3;
+
+/**
+ * Da quante giornate osservate senza posizione una vettura che funzionava si
+ * considera "smessa". Tre coprono un fine settimana più un giorno di riposo:
+ * sotto, si manderebbe l'officina a cercare il guasto di un mezzo in sosta.
+ */
+export const GIORNI_SMESSA = 3;
+
+/** Un campione ogni due minuti: in una giornata piena sono 720. */
+export const CAMPIONI_GIORNATA = 720;
+
+export const ETICHETTE_AVVISO: Record<Avviso, { titolo: string; perche: string }> = {
+  smessa: {
+    titolo: "Ha smesso di tracciare",
+    perche: "Si localizzava o faceva corse, e da almeno tre giornate non dà più "
+      + "una posizione. È un apparato che si è rotto da poco: quelli si riparano, "
+      + "e prima si guarda meglio è.",
+  },
+  antenna: {
+    titolo: "Errore GPS a bordo",
+    perche: "Parla col centro ma dichiara errore GPS e non si è mai localizzata: "
+      + "antenna, cavo o collocazione dell'apparato.",
+  },
+  da_attivare: {
+    titolo: "Parla ma non è attivata",
+    perche: "Contatto regolare, nessun errore a bordo, nessuna posizione dal "
+      + "centro: manca l'attivazione. Un elenco per Mizar, nessuna officina.",
+  },
+  intermittente: {
+    titolo: "Parla a sprazzi",
+    perche: "Presente meno di metà delle giornate ma non muta: rete, SIM o "
+      + "alimentazione incerta. In officina si chiude sempre con «a me "
+      + "funzionava»: serve il diario davanti.",
+  },
+};
 
 function giornoDi(iso: string | null): string | null {
   return iso ? iso.slice(0, 10) : null;
@@ -288,10 +361,17 @@ export function classificaVettura(
   const ultimoContatto = contatti.length ? contatti[contatti.length - 1] : null;
   const primoContatto = primi.length ? primi[0] : null;
 
+  /* La scala. I due anelli di mezzo si distinguono con l'errore che l'apparato
+   * dichiara, non col flag Monitored: misurato sul flusso vero del 15
+   * settembre, Monitored è la negazione esatta di MonitoringError su 368
+   * vetture su 368, quindi non dice se il centro la segue, dice solo se quella
+   * lettura è pulita. Un errore GPS su una vettura che parla è l'antenna; una
+   * vettura che parla senza errori e che il centro non localizza mai è una
+   * vettura che il centro non ha attivato. */
   const esito: EsitoSettimana =
     giorniConCorsa > 0 ? "funziona"
       : giorniConPosizione > 0 ? "senza_corsa"
-        : giorniMonitorata > 0 ? "senza_posizione"
+        : giorniConContatto > 0 && giorniErroreGps > 0 ? "senza_posizione"
           : giorniConContatto > 0 ? "non_attivata"
             : "muta";
 
@@ -308,6 +388,22 @@ export function classificaVettura(
 
   const perGiorno = ordinate.map(r => ({ giorno: r.giorno, esito: esitoGiorno(r) }));
 
+  /* L'ultima giornata buona e quante giornate osservate sono passate da
+   * allora. Si contano le giornate OSSERVATE, non quelle di calendario: un
+   * buco del connettore non deve far sembrare smessa una vettura sana. */
+  const buone = perGiorno.filter(g => g.esito === "in_servizio" || g.esito === "traccia");
+  const ultimoGiornoBuono = buone.length ? buone[buone.length - 1].giorno : null;
+  const giorniDaBuono = ultimoGiornoBuono
+    ? giornate.filter(g => g > ultimoGiornoBuono).length
+    : null;
+
+  const avviso: Avviso | null =
+    ultimoGiornoBuono && giorniDaBuono != null && giorniDaBuono >= GIORNI_SMESSA ? "smessa"
+      : esito === "senza_posizione" ? "antenna"
+        : esito === "non_attivata" ? "da_attivare"
+          : intermittente && esito !== "muta" ? "intermittente"
+            : null;
+
   const { destinatario, azione } = AZIONI[esito];
 
   /* La nota è quella che finisce nella segnalazione: deve reggere da sola,
@@ -321,6 +417,7 @@ export function classificaVettura(
   if (giorniErroreGprs > 0) pezzi.push(`${giorniErroreGprs} con errore di rete`);
   if (intermittente) pezzi.push("parla a sprazzi, non con continuità");
   if (esito !== "muta" && giorniDiSilenzio >= 2) pezzi.push(`tace da ${giorniDiSilenzio} giornate`);
+  if (avviso === "smessa") pezzi.push(`ultima posizione il ${ultimoGiornoBuono}, poi niente per ${giorniDaBuono} giornate`);
 
   return {
     vehicleRef, esito, destinatario, azione,
@@ -331,7 +428,7 @@ export function classificaVettura(
     corse: corse.size,
     linee: [...linee].sort().slice(0, 8),
     primoContatto, ultimoContatto, giorniDiSilenzio, intermittente,
-    perGiorno,
+    perGiorno, ultimoGiornoBuono, giorniDaBuono, avviso,
   };
 }
 
@@ -375,8 +472,9 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
   const perGiorno: GiornataDiario[] = osservate.map(g => {
     const delGiorno = righe.filter(r => r.giorno === g);
     const conteggi = { inServizio: 0, traccia: 0, collegata: 0, muta: 0 };
-    let monitorate = 0;
+    let monitorate = 0, campioni = 0;
     for (const r of delGiorno) {
+      if (r.letture > campioni) campioni = r.letture;
       const e = esitoGiorno(r);
       if (e === "in_servizio") conteggi.inServizio++;
       else if (e === "traccia") conteggi.traccia++;
@@ -384,8 +482,28 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
       else conteggi.muta++;
       if (r.lettureMonitorata > 0) monitorate++;
     }
-    return { giorno: g, ...conteggi, monitorate, vetture: delGiorno.length };
+    return { giorno: g, ...conteggi, monitorate, vetture: delGiorno.length, campioni };
   });
+
+  /* La qualità della raccolta. Le giornate a metà nel MEZZO del periodo sono
+   * un connettore che si è fermato: vanno dette, perché una vettura che quel
+   * giorno risulta muta forse ha solo parlato mentre nessuno ascoltava. La
+   * prima e l'ultima giornata sono parziali per natura. */
+  const interne = perGiorno.slice(1, -1);
+  const giornateParziali = interne
+    .filter(g => g.campioni < CAMPIONI_GIORNATA / 2)
+    .map(g => g.giorno);
+  const qualita: DiarioSettimana["qualita"] = {
+    campioniAttesi: CAMPIONI_GIORNATA,
+    giornateParziali,
+    nota: perGiorno.length === 0
+      ? "Nessuna giornata raccolta."
+      : giornateParziali.length
+        ? `${giornateParziali.length} giornate con meno di mezza raccolta (`
+          + `${giornateParziali.join(", ")}): il connettore era fermo per ore. `
+          + "I silenzi di quei giorni non sono tutti delle vetture."
+        : `Raccolta regolare: ogni giornata interna ha almeno ${CAMPIONI_GIORNATA / 2} campioni.`,
+  };
 
   /* Che cosa è cambiato: si confronta la prima giornata osservata con
    * l'ultima, sulla scala degli anelli. È la misura di un'attivazione fatta
@@ -421,6 +539,15 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
           .map(v => v.vehicleRef),
       };
     });
+
+  const ORDINE_AVVISI: Avviso[] = ["smessa", "antenna", "da_attivare", "intermittente"];
+  const avvisi = ORDINE_AVVISI
+    .map(a => ({
+      avviso: a,
+      matricole: vetture.filter(v => v.avviso === a).map(v => v.vehicleRef),
+      ...ETICHETTE_AVVISO[a],
+    }))
+    .filter(x => x.matricole.length > 0);
 
   const perDest = new Map<Destinatario, number>();
   for (const v of vetture) {
@@ -461,5 +588,7 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
     segnalazioni,
     nota,
     giornateSenzaDati,
+    avvisi,
+    qualita,
   };
 }
