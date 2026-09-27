@@ -49,6 +49,8 @@ export interface SchedulingProject {
   psLastChangeAt?: string;
   /** ISO dell'ultima materializzazione del feed usato */
   feedSyncedAt?: string;
+  /** l'azione del registro Planning che ha fatto l'ultima modifica (es. trip.shift), se nota */
+  psLastChangeAction?: string;
   /** flag esplicito di condivisione (true quando ci sono membri o owner ha attivato lo sharing) */
   isShared?: boolean;
   /** info arricchite dalla list/get */
@@ -201,6 +203,28 @@ export function stageProgress(stage: ProjectStage): number {
 
 /* ───── Scenari vetture / turni guida agganciati al progetto ───── */
 
+/** Il ciclo chiuso: il quadro orario è cambiato dopo il calcolo di questo
+ *  scenario? Lo dice il server leggendo il registro attività di Planning
+ *  (ogni scrittura: spostamenti, ritocchi, cancellazioni, corse nuove…). */
+export interface QuadroStato {
+  superato: boolean;
+  modificheDopo: number;
+  /** ISO dell'ultima modifica dopo il calcolo */
+  ultimaModificaIl: string | null;
+  /** «3 spostamenti · 2 ritocchi d'orario · 1 cancellazione» */
+  riassunto: string;
+}
+
+/** Lo stato del quadro a livello di progetto. */
+export interface QuadroProgetto {
+  psProjectId: string;
+  modificatoIl: string | null;
+  ultimaAzione: string | null;
+  feedSincronizzatoIl: string | null;
+  /** true = il pacchetto dati è più vecchio dell'ultima modifica: prima di ri-ottimizzare va sincronizzato */
+  feedSuperato: boolean;
+}
+
 export interface ProjectVehicleScenario {
   id: string;
   name: string;
@@ -221,6 +245,8 @@ export interface ProjectVehicleScenario {
   coveredTrips?: number | null;
   /** corse SCOPERTE (result.unassigned): >0 = piano incompleto */
   uncoveredTrips?: number;
+  /** il quadro orario è cambiato dopo il calcolo? */
+  quadro?: QuadroStato | null;
 }
 
 export interface ProjectDriverScenario {
@@ -244,6 +270,8 @@ export interface ProjectDriverScenario {
   dutyCount?: number;
   /** corse SCOPERTE persistite col DSS (pool dell'Area di lavoro) */
   uncoveredTrips?: number;
+  /** il quadro orario è cambiato dopo il calcolo? */
+  quadro?: QuadroStato | null;
 }
 
 export async function listProjectVehicleScenarios(projectId: string): Promise<ProjectVehicleScenario[]> {
@@ -251,6 +279,18 @@ export async function listProjectVehicleScenarios(projectId: string): Promise<Pr
     `/api/scheduling/projects/${projectId}/vehicle-scenarios`,
   );
   return r.vehicleScenarios;
+}
+
+/** Come sopra, con lo stato del quadro del progetto (serve al workspace per
+ *  dire se il pacchetto dati va sincronizzato prima di ri-ottimizzare). */
+export async function listProjectVehicleScenariosConQuadro(projectId: string): Promise<{
+  vehicleScenarios: ProjectVehicleScenario[];
+  quadro: QuadroProgetto | null;
+}> {
+  const r = await apiFetch<{ vehicleScenarios: ProjectVehicleScenario[]; quadro?: QuadroProgetto | null }>(
+    `/api/scheduling/projects/${projectId}/vehicle-scenarios`,
+  );
+  return { vehicleScenarios: r.vehicleScenarios, quadro: r.quadro ?? null };
 }
 
 export async function listProjectDriverScenarios(projectId: string): Promise<ProjectDriverScenario[]> {

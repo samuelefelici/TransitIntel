@@ -29,6 +29,7 @@ import {
 import { RefreshCw, AlertTriangle } from "lucide-react";
 import { Power } from "lucide-react";
 import ShareProjectDialog from "@/components/scheduling/ShareProjectDialog";
+import QuadroSuperatoBadge from "@/components/scheduling/QuadroSuperatoBadge";
 import { useAuth } from "@/hooks/use-auth";
 
 type StepState = "done" | "current" | "locked";
@@ -466,6 +467,7 @@ export default function ProjectDashboardPage() {
                         <Truck className="w-3.5 h-3.5 text-amber-400/70 shrink-0" />
                         <span className="text-xs text-zinc-200 truncate flex-1">{s.name}</span>
                         {s.numVehicles != null && <span className="text-[10px] text-amber-400/80 font-mono shrink-0">{s.numVehicles} vett.</span>}
+                        <QuadroSuperatoBadge quadro={s.quadro} compact />
                         {s.isOperational && <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 shrink-0"><Power className="w-2.5 h-2.5" /> esercizio</span>}
                       </button>
                     ))}
@@ -488,6 +490,7 @@ export default function ProjectDashboardPage() {
                         <Users className="w-3.5 h-3.5 text-purple-400/70 shrink-0" />
                         <span className="text-xs text-zinc-200 truncate flex-1">{s.name}</span>
                         <span className="text-[10px] text-zinc-500 truncate shrink-0 max-w-[90px]">← {s.vehicleScenarioName}</span>
+                        <QuadroSuperatoBadge quadro={s.quadro} compact />
                         {s.isOperational && <span className="inline-flex items-center gap-0.5 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 shrink-0"><Power className="w-2.5 h-2.5" /> esercizio</span>}
                       </button>
                     ))}
