@@ -225,11 +225,21 @@ export default function DiarioAvm() {
             onChange={e => setSoloConerobus(e.target.checked)} />
           solo Conerobus (matricola a 3–4 cifre)
         </label>
+        {/* L'allegato della segnalazione: stesso dettaglio del CSV, ma con il
+            marchio, i colori della pagina e la striscia giorno per giorno.
+            Esporta il perimetro che si sta guardando. */}
+        <a
+          href={`${getApiBase()}/api/siri/parco/settimana?giorni=${giorni}&formato=xlsx${soloConerobus ? "&perimetro=conerobus" : ""}`}
+          className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/40 text-sky-200 transition-colors"
+        >
+          <Download className="w-3 h-3" /> Foglio da allegare (Excel)
+        </a>
         <a
           href={`${getApiBase()}/api/siri/parco/settimana?giorni=${giorni}&formato=csv`}
-          className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] bg-white/5 hover:bg-white/10 border border-border/60 transition-colors"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] bg-white/5 hover:bg-white/10 border border-border/60 transition-colors"
+          title="Solo i dati, senza colori: per chi li deve incrociare"
         >
-          <Download className="w-3 h-3" /> Foglio da allegare
+          <Download className="w-3 h-3" /> CSV
         </a>
       </div>
 

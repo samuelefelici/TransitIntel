@@ -52,6 +52,7 @@ import { letturaDa, registraCampione, leggiDiario, erroreDiario, campioniDiario 
 import {
   analizzaDiario, ETICHETTE_ESITO, GIORNATE_MINIME, type DiarioSettimana,
 } from "../lib/avm-diario";
+import { esportaDiarioXlsx } from "../lib/avm-diario-xlsx";
 
 const router: IRouter = Router();
 
@@ -1314,6 +1315,23 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
     const inizio = giornataOggi(new Date(Date.now() - (giorni - 1) * 86_400_000));
     const righe = await leggiDiario(inizio);
     const diario = analizzaDiario(righe, giornateDelPeriodo(inizio, oggi));
+
+    /* Il perimetro: nel flusso SIRI le consorziate hanno matricole a cinque
+     * cifre (11096 è la CJ096), le Conerobus a tre o quattro. È la stessa
+     * regola della pagina, letta dai dati e non dichiarata da nessuno. */
+    const perimetro = String(req.query.perimetro ?? "");
+    const vettureEsportate = perimetro === "conerobus"
+      ? diario.vetture.filter(v => /^\d{1,4}$/.test(v.vehicleRef))
+      : diario.vetture;
+
+    if (String(req.query.formato ?? "") === "xlsx") {
+      const xlsx = esportaDiarioXlsx(diario, { da: inizio, a: oggi }, testoSegnalazioni(diario, inizio, oggi), vettureEsportate);
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="Cerbero-diario-AVM-${inizio}_${oggi}${perimetro === "conerobus" ? "-conerobus" : ""}.xlsx"`);
+      res.send(xlsx);
+      return;
+    }
 
     if (String(req.query.formato ?? "") === "csv") {
       const testata = ["matricola", "esito", "destinatario", "giornate",
