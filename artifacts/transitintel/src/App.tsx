@@ -56,6 +56,7 @@ const Traffic = lazyWithRetry(() => import("@/pages/traffic"));
 const Territory = lazyWithRetry(() => import("@/pages/territory"));
 const NetworkPage = lazyWithRetry(() => import("@/pages/network"));
 const DataPage = lazyWithRetry(() => import("@/pages/data"));
+const AvmPage = lazyWithRetry(() => import("@/pages/avm"));
 const ScenariosPage = lazyWithRetry(() => import("@/pages/scenarios"));
 const IntermodalPage = lazyWithRetry(() => import("@/pages/intermodal"));
 const OptimizationPage = lazyWithRetry(() => import("@/pages/optimization"));
@@ -146,6 +147,9 @@ function Router() {
             <Route path="/dashboard" component={Dashboard} />
             <Route path="/operations">
               <Gated perm="analytics"><OperationsPage /></Gated>
+            </Route>
+            <Route path="/avm">
+              <Gated perm="analytics"><AvmPage /></Gated>
             </Route>
             <Route path="/timetables">
               <Gated perm="analytics"><TimetablesPage /></Gated>

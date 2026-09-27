@@ -31,6 +31,7 @@ import { apiFetch, getApiBase } from "@/lib/api";
 type Esito = "funziona" | "senza_corsa" | "senza_posizione" | "non_attivata" | "muta";
 type EsitoGiorno = "in_servizio" | "traccia" | "collegata" | "muta";
 type Destinatario = "Mizar" | "Officina" | "Esercizio" | "Gestore SIM" | "nessuno";
+type Avviso = "smessa" | "antenna" | "da_attivare" | "intermittente";
 
 interface Vettura {
   vehicleRef: string;
@@ -51,6 +52,10 @@ interface Vettura {
   giorniDiSilenzio: number;
   intermittente: boolean;
   perGiorno: Array<{ giorno: string; esito: EsitoGiorno }>;
+  /* assenti se l'API in esecuzione è più vecchia della pagina */
+  ultimoGiornoBuono?: string | null;
+  giorniDaBuono?: number | null;
+  avviso?: Avviso | null;
 }
 
 interface Resp {
@@ -66,8 +71,10 @@ interface Resp {
   vetture: Vettura[];
   perGiorno: Array<{
     giorno: string; inServizio: number; traccia: number; collegata: number;
-    muta: number; monitorate: number; vetture: number;
+    muta: number; monitorate: number; vetture: number; campioni?: number;
   }>;
+  avvisi?: Array<{ avviso: Avviso; matricole: string[]; titolo: string; perche: string }>;
+  qualita?: { campioniAttesi: number; giornateParziali: string[]; nota: string };
   riepilogo: {
     totale: number; funzionanti: number; daSegnalare: number;
     perEsito: Array<{ esito: Esito; conteggio: number }>;
@@ -86,8 +93,8 @@ interface Resp {
 const ESITI: Record<Esito, { etichetta: string; breve: string; colore: string; fondo: string; icona: React.ElementType }> = {
   funziona:        { etichetta: "Funziona: ha fatto corse", breve: "Funziona", colore: "#34d399", fondo: "rgba(52,211,153,0.12)", icona: Check },
   senza_corsa:     { etichetta: "Si localizza ma non aggancia la corsa", breve: "Senza corsa", colore: "#7dd3fc", fondo: "rgba(125,211,252,0.12)", icona: Route },
-  senza_posizione: { etichetta: "Seguita dal centro ma senza posizione", breve: "Senza posizione", colore: "#fb923c", fondo: "rgba(251,146,60,0.12)", icona: MapPin },
-  non_attivata:    { etichetta: "Parla col centro ma non è attivata", breve: "Non attivata", colore: "#c084fc", fondo: "rgba(192,132,252,0.12)", icona: Radio },
+  senza_posizione: { etichetta: "Parla ma non aggancia il GPS", breve: "Errore GPS", colore: "#fb923c", fondo: "rgba(251,146,60,0.12)", icona: MapPin },
+  non_attivata:    { etichetta: "Parla ma il centro non la localizza", breve: "Non attivata", colore: "#c084fc", fondo: "rgba(192,132,252,0.12)", icona: Radio },
   muta:            { etichetta: "Nessun contatto nel periodo", breve: "Muta", colore: "#f87171", fondo: "rgba(248,113,113,0.12)", icona: Wrench },
 };
 
@@ -97,6 +104,19 @@ const GIORNI: Record<EsitoGiorno, { colore: string; testo: string }> = {
   collegata:   { colore: "#fbbf24", testo: "collegata, senza posizione" },
   muta:        { colore: "#3f3f46", testo: "nessun contatto" },
 };
+
+/* L'avviso ha un colore suo, separato dall'esito: dice l'urgenza, non l'anello. */
+const AVVISI: Record<Avviso, { colore: string; fondo: string; bordo: string }> = {
+  smessa:        { colore: "#fca5a5", fondo: "rgba(248,113,113,0.14)", bordo: "rgba(248,113,113,0.45)" },
+  antenna:       { colore: "#fdba74", fondo: "rgba(251,146,60,0.14)",  bordo: "rgba(251,146,60,0.45)" },
+  da_attivare:   { colore: "#d8b4fe", fondo: "rgba(192,132,252,0.14)", bordo: "rgba(192,132,252,0.45)" },
+  intermittente: { colore: "#fde68a", fondo: "rgba(251,191,36,0.14)",  bordo: "rgba(251,191,36,0.45)" },
+};
+
+/* Nel flusso SIRI le consorziate hanno matricole a cinque cifre (11096 è la
+   CJ096); le Conerobus a tre o quattro. È una regola letta dai dati, non
+   dichiarata da nessuno: per questo è un filtro che si può togliere. */
+const isConerobus = (ref: string) => /^\d{1,4}$/.test(ref);
 
 const DESTINATARI: Record<Destinatario, string> = {
   Mizar: "#c084fc", Officina: "#fb923c", Esercizio: "#7dd3fc",
@@ -111,6 +131,8 @@ function giornoBreve(g: string): string {
 export default function DiarioAvm() {
   const [giorni, setGiorni] = useState(7);
   const [filtro, setFiltro] = useState<Esito | null>(null);
+  const [filtroAvviso, setFiltroAvviso] = useState<Avviso | null>(null);
+  const [soloConerobus, setSoloConerobus] = useState(true);
   const [cerca, setCerca] = useState("");
   const [copiato, setCopiato] = useState<string | null>(null);
 
@@ -121,13 +143,33 @@ export default function DiarioAvm() {
   });
   const d = q.data;
 
+  /* Il perimetro (solo Conerobus o tutto il flusso) si applica PRIMA dei
+     contatori, così i numeri sui pulsanti e negli avvisi sono del perimetro
+     che si sta guardando, non di tutto il parco. */
+  const perimetro = useMemo(
+    () => (d?.vetture ?? []).filter(v => !soloConerobus || isConerobus(v.vehicleRef)),
+    [d, soloConerobus],
+  );
+  const perEsito = useMemo(() => {
+    const m = new Map<Esito, number>();
+    for (const v of perimetro) m.set(v.esito, (m.get(v.esito) ?? 0) + 1);
+    return (["funziona", "senza_corsa", "senza_posizione", "non_attivata", "muta"] as Esito[])
+      .filter(e => m.has(e)).map(e => ({ esito: e, conteggio: m.get(e)! }));
+  }, [perimetro]);
+  const avvisi = useMemo(
+    () => (d?.avvisi ?? []).map(a => ({
+      ...a, matricole: a.matricole.filter(m => !soloConerobus || isConerobus(m)),
+    })).filter(a => a.matricole.length > 0),
+    [d, soloConerobus],
+  );
   const visibili = useMemo(() => {
     const term = cerca.trim().toLowerCase();
-    return (d?.vetture ?? []).filter(v =>
+    return perimetro.filter(v =>
       (!filtro || v.esito === filtro)
+      && (!filtroAvviso || v.avviso === filtroAvviso)
       && (!term || v.vehicleRef.toLowerCase().includes(term)
         || v.linee.some(l => l.toLowerCase().includes(term))));
-  }, [d, filtro, cerca]);
+  }, [perimetro, filtro, filtroAvviso, cerca]);
 
   async function copia(testo: string, chiave: string) {
     try {
@@ -178,6 +220,11 @@ export default function DiarioAvm() {
             </button>
           ))}
         </div>
+        <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none">
+          <input type="checkbox" id="diario-solo-conerobus" checked={soloConerobus}
+            onChange={e => setSoloConerobus(e.target.checked)} />
+          solo Conerobus (matricola a 3–4 cifre)
+        </label>
         <a
           href={`${getApiBase()}/api/siri/parco/settimana?giorni=${giorni}&formato=csv`}
           className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] bg-white/5 hover:bg-white/10 border border-border/60 transition-colors"
@@ -208,6 +255,56 @@ export default function DiarioAvm() {
         </div>
       )}
 
+      {/* ── 0. Gli avvisi: che cosa va guardato adesso ──────────────────── */}
+      {d.maturo && (
+        <section className="space-y-2">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <h3 className="text-[12px] font-medium flex items-center gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> Dispositivi da controllare
+            </h3>
+            <span className="text-[10px] text-muted-foreground">
+              non è il verdetto della settimana: è quello che si è mosso, dal più urgente
+            </span>
+          </div>
+          {avvisi.length === 0 ? (
+            <div className="px-3 py-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 text-[11px] text-emerald-200">
+              Nessun dispositivo da controllare nel perimetro scelto: chi tracciava traccia ancora,
+              e non ci sono apparati che parlano senza localizzarsi.
+            </div>
+          ) : (
+            <div className="grid gap-2 md:grid-cols-2">
+              {avvisi.map(a => {
+                const c = AVVISI[a.avviso];
+                const attivo = filtroAvviso === a.avviso;
+                return (
+                  <button
+                    key={a.avviso}
+                    onClick={() => { setFiltroAvviso(f => (f === a.avviso ? null : a.avviso)); setFiltro(null); }}
+                    className="text-left rounded-xl p-3 space-y-1.5 border transition-colors"
+                    style={{ background: c.fondo, borderColor: attivo ? c.colore : c.bordo }}
+                    aria-pressed={attivo}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-medium" style={{ color: c.colore }}>{a.titolo}</span>
+                      <span className="ml-auto font-mono text-[13px]" style={{ color: c.colore }}>{a.matricole.length}</span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground leading-relaxed">{a.perche}</p>
+                    <p className="font-mono text-[10.5px] leading-relaxed break-words" style={{ color: c.colore }}>
+                      {a.matricole.slice(0, 24).join(", ")}{a.matricole.length > 24 && ` … e altre ${a.matricole.length - 24}`}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {d.qualita && (
+            <p className={`text-[10px] leading-relaxed ${d.qualita.giornateParziali.length ? "text-amber-300" : "text-muted-foreground"}`}>
+              Raccolta: {d.qualita.nota}
+            </p>
+          )}
+        </section>
+      )}
+
       {/* ── 1. L'andamento: sta migliorando? ────────────────────────────── */}
       {d.perGiorno.length > 0 && (
         <section className="rounded-xl border border-border/50 bg-white/[0.02] p-4 space-y-3">
@@ -222,7 +319,8 @@ export default function DiarioAvm() {
             {d.perGiorno.map(g => (
               <div key={g.giorno} className="flex-1 flex flex-col justify-end min-w-0" title={
                 `${giornoBreve(g.giorno)} — in servizio ${g.inServizio}, si localizzano ${g.traccia}, `
-                + `collegate ${g.collegata}, mute ${g.muta}`}>
+                + `collegate ${g.collegata}, mute ${g.muta}`
+                + (g.campioni != null ? ` · ${g.campioni} campioni` : "")}>
                 {([["muta", g.muta], ["collegata", g.collegata], ["traccia", g.traccia],
                   ["in_servizio", g.inServizio]] as Array<[EsitoGiorno, number]>).map(([e, n]) => (
                   n > 0 ? (
@@ -339,15 +437,15 @@ export default function DiarioAvm() {
             className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${
               filtro === null ? "bg-white/10 border-border" : "bg-white/[0.02] border-border/40 text-muted-foreground hover:bg-white/5"}`}
           >
-            tutte <span className="font-mono">{d.riepilogo.totale}</span>
+            tutte <span className="font-mono">{perimetro.length}</span>
           </button>
-          {d.riepilogo.perEsito.map(({ esito, conteggio }) => {
+          {perEsito.map(({ esito, conteggio }) => {
             const cfg = ESITI[esito];
             const Icona = cfg.icona;
             return (
               <button
                 key={esito}
-                onClick={() => setFiltro(f => (f === esito ? null : esito))}
+                onClick={() => { setFiltro(f => (f === esito ? null : esito)); setFiltroAvviso(null); }}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] border transition-colors"
                 style={{
                   color: cfg.colore,
@@ -377,6 +475,7 @@ export default function DiarioAvm() {
                 <th className="px-3 py-2 font-medium">Vettura</th>
                 <th className="px-3 py-2 font-medium">Andamento</th>
                 <th className="px-3 py-2 font-medium">Esito</th>
+                <th className="px-3 py-2 font-medium">Avviso</th>
                 <th className="px-3 py-2 font-medium text-right">Contatto</th>
                 <th className="px-3 py-2 font-medium text-right">Centro</th>
                 <th className="px-3 py-2 font-medium text-right">Posizione</th>
@@ -412,6 +511,19 @@ export default function DiarioAvm() {
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap" style={{ color: cfg.colore }} title={v.nota}>
                       {cfg.breve}
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      {v.avviso ? (
+                        <span className="px-1.5 py-0.5 rounded-md text-[10px]"
+                          style={{ color: AVVISI[v.avviso].colore, background: AVVISI[v.avviso].fondo }}
+                          title={v.avviso === "smessa" && v.ultimoGiornoBuono
+                            ? `ultima posizione il ${giornoBreve(v.ultimoGiornoBuono)}, poi ${v.giorniDaBuono} giornate senza`
+                            : undefined}>
+                          {v.avviso === "smessa" ? `smessa da ${v.giorniDaBuono} gg`
+                            : v.avviso === "antenna" ? "antenna"
+                              : v.avviso === "da_attivare" ? "da attivare" : "a sprazzi"}
+                        </span>
+                      ) : <span className="text-muted-foreground">—</span>}
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono text-muted-foreground">
                       {v.giorniConContatto}/{v.giornate}
