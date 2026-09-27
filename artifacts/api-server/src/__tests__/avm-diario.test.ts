@@ -8,7 +8,7 @@ import {
 function riga(giorno: string, vehicleRef: string, p: Partial<RigaDiario> = {}): RigaDiario {
   return {
     giorno, vehicleRef,
-    letture: 10, lettureFresche: 0, lettureMonitorata: 0, letturePosizione: 0,
+    letture: 700, lettureFresche: 0, lettureMonitorata: 0, letturePosizione: 0,
     lettureCorsa: 0, lettureErroreGps: 0, lettureErroreGprs: 0, lettureInRimessa: 0,
     primoContatto: null, ultimoContatto: null, linee: [], corse: [],
     ...p,
@@ -196,11 +196,11 @@ describe("analizzaDiario — il periodo intero", () => {
       .map(r => r.giorno === "2026-09-11" ? { ...r, letture: 100 } : { ...r, letture: 700 });
     r2.push(riga("2026-09-13", "263"), riga("2026-09-14", "263"), riga("2026-09-15", "263"));
     const x = analizzaDiario(r2, SETTIMANA);
-    /* La 256 si è attivata a metà settimana: ha parlato 3 giornate su 7,
-     * quindi è intermittente per il diario, ed è giusto che lo dica. */
-    expect(x.avvisi.map(a => a.avviso)).toEqual(["smessa", "intermittente"]);
+    /* L'11 è a un quarto e non conta: restano 6 giornate. La 256, attivata a
+     * metà settimana, ha parlato 3 giornate su 6: metà esatta, non a sprazzi. */
+    expect(x.avvisi.map(a => a.avviso)).toEqual(["smessa"]);
     expect(x.avvisi[0].matricole).toEqual(["263"]);
-    expect(x.avvisi[1].matricole).toEqual(["256"]);
+    expect(x.giornateOsservate).toBe(6);
     expect(x.qualita.giornateParziali).toEqual(["2026-09-11"]);
     expect(x.perGiorno.find(g => g.giorno === "2026-09-11")?.campioni).toBe(100);
   });
@@ -219,6 +219,26 @@ describe("analizzaDiario — il periodo intero", () => {
     expect(x.perGiorno.map(p => p.giorno)).not.toContain("2026-09-11");
     /* E non devono abbassare la continuità di chi non ha saltato un giro. */
     expect(x.vetture.find(v => v.vehicleRef === "263")?.intermittente).toBe(false);
+  });
+
+  it("una giornata ascoltata a un quarto non conta come silenzio delle vetture", () => {
+    /* Misurato sul vero: il 27 settembre alle 17 il diario aveva 26 campioni
+     * e 118 vetture risultavano «peggiorate». Era il connettore ripartito da
+     * un'ora, non il parco. */
+    const r2 = righe.map(r => r.giorno === "2026-09-15"
+      ? { ...r, letture: 26, lettureFresche: 0, letturePosizione: 0, lettureCorsa: 0, corse: [] }
+      : r);
+    const x = analizzaDiario(r2, SETTIMANA);
+    expect(x.qualita.giornateParziali).toEqual(["2026-09-15"]);
+    expect(x.giornateOsservate).toBe(6);
+    expect(x.perGiorno.find(g => g.giorno === "2026-09-15")?.parziale).toBe(true);
+    /* La 263 va a corse ogni giorno: il 15 a un quarto non la fa diventare
+     * né peggiorata né smessa, e i suoi giorni con corsa restano sei. */
+    expect(x.cambiamenti.peggiorate).toEqual([]);
+    const v263 = x.vetture.find(v => v.vehicleRef === "263")!;
+    expect(v263.avviso).toBeNull();
+    expect(v263.giorniConCorsa).toBe(6);
+    expect(v263.perGiorno.map(g => g.giorno)).not.toContain("2026-09-15");
   });
 
   it("con poche giornate avverte invece di dare un verdetto", () => {
