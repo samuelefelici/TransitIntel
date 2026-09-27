@@ -27,6 +27,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import ShareScheduleDialog from "@/components/scheduling/ShareScheduleDialog";
+import QuadroSuperatoBadge from "@/components/scheduling/QuadroSuperatoBadge";
 
 export default function DriverScenariosPage() {
   const [, navigate] = useLocation();
@@ -285,7 +286,9 @@ export default function DriverScenariosPage() {
                                     ⚠ {d.uncoveredTrips} corse scoperte
                                   </span>
                                 )}
-                                {d.staleSince && (
+                                {/* Il ciclo chiuso: calcolato prima dell'ultima modifica al quadro orario */}
+                                <QuadroSuperatoBadge quadro={d.quadro} />
+                                {d.staleSince && !d.quadro?.superato && (
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 border border-orange-500/30"
                                         title={`Il feed è stato risincronizzato il ${new Date(d.staleSince).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}: questi turni riflettono i dati precedenti. Rigenera o risalva per allinearli.`}>
                                     ⚠ dati superati

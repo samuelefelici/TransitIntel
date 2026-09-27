@@ -10,7 +10,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   Truck, Play, Loader2, Save, CheckCircle2, AlertTriangle,
   BarChart3, Route, Clock, Fuel, ArrowRight, Download,
-  Flame, RotateCcw, Info, Undo2, Redo2, History, Home, Wind,
+  Flame, RotateCcw, Info, Undo2, Redo2, History, Home, Wind, RefreshCw,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +29,10 @@ import {
   CATEGORY_COLORS, ROUTE_PALETTE,
 } from "@/pages/optimizer-route/constants";
 import { getApiBase } from "@/lib/api";
+import {
+  getProject as getSchedulingProject, listProjectVehicleScenariosConQuadro, syncProjectFromPs,
+  type QuadroStato, type QuadroProgetto,
+} from "@/lib/scheduling-projects-api";
 import IntermodalAdvisor from "./IntermodalAdvisor";
 import { SaveScenarioDialog, LoadScenarioDialog } from "./ScenarioDialogs";
 import { exportScenarioToPrint } from "./VehicleShiftsPrintExport";
@@ -555,18 +559,20 @@ export default function VehicleWorkspace({
 
   // PS project collegato (se esiste): caricato in lazy per passarlo al CP-SAT
   // nelle ri-ottimizzazioni, cosi i cluster PS logici diventano transfer 0.
+  // Insieme, il feed del progetto: «Ri-ottimizza» lo passa al solver, che
+  // altrimenti prende l'ultimo feed dell'utente — di solito questo, ma non
+  // per forza (un altro progetto sincronizzato dopo lo scavalcherebbe).
   const [psProjectId, setPsProjectId] = useState<string | null>(null);
+  const [projectFeedId, setProjectFeedId] = useState<string | null>(null);
   useEffect(() => {
-    if (!projectIdFromUrl) { setPsProjectId(null); return; }
+    if (!projectIdFromUrl) { setPsProjectId(null); setProjectFeedId(null); return; }
     let cancelled = false;
     (async () => {
       try {
-        const base = getApiBase();
-        const res = await fetch(`${base}/api/scheduling-projects/${projectIdFromUrl}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const ps = data?.project?.planningStudioProjectId ?? data?.planningStudioProjectId ?? null;
-        if (!cancelled) setPsProjectId(ps ? String(ps) : null);
+        const proj = await getSchedulingProject(projectIdFromUrl);
+        if (cancelled) return;
+        setPsProjectId(proj?.planningStudioProjectId ? String(proj.planningStudioProjectId) : null);
+        setProjectFeedId(proj?.feedId ? String(proj.feedId) : null);
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
@@ -579,6 +585,26 @@ export default function VehicleWorkspace({
   const [modifications, setModifications] = useState<TripReassignment[]>([]);
   const [scenarioName, setScenarioName] = useState(initialName ?? "");
   const [savedId, setSavedId] = useState<number | string | null>(initialSavedId ?? null);
+  // Il ciclo chiuso: questi turni sono stati calcolati prima dell'ultima
+  // modifica al quadro orario? Lo dice il server (registro attività di
+  // Planning); qui si mostra e si offre il rimedio. Si rilegge a ogni
+  // salvataggio: lo scenario nuovo nasce allineato.
+  const [quadro, setQuadro] = useState<QuadroStato | null>(null);
+  const [quadroProgetto, setQuadroProgetto] = useState<QuadroProgetto | null>(null);
+  const [riallineo, setRiallineo] = useState(false);
+  useEffect(() => {
+    if (!projectIdFromUrl || !savedId) { setQuadro(null); setQuadroProgetto(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await listProjectVehicleScenariosConQuadro(projectIdFromUrl);
+        if (cancelled) return;
+        setQuadroProgetto(r.quadro ?? null);
+        setQuadro(r.vehicleScenarios.find(s => String(s.id) === String(savedId))?.quadro ?? null);
+      } catch { /* senza segnale: nessun avviso */ }
+    })();
+    return () => { cancelled = true; };
+  }, [projectIdFromUrl, savedId]);
   const [reportBusy, setReportBusy] = useState(false);
   // Prima di generare si chiede che cosa metterci dentro: il capitolo delle
   // coincidenze con tutte le linee insieme non si legge.
@@ -2065,7 +2091,7 @@ export default function VehicleWorkspace({
 
   /* ── Re-lancia il solver CP-SAT sullo scenario modificato. Usa le linee
    * dei turni correnti come input (mantenendo i tipi veicolo richiesti). ── */
-  const handleReoptimize = useCallback(async () => {
+  const handleReoptimize = useCallback(async (feedIdOverride?: string) => {
     if (!result) return;
     // Il lucchetto: i turni bloccati partono come vincoli duri (stesse corse,
     // stesso ordine, stessa matricola); il solver ricalcola solo il resto.
@@ -2101,6 +2127,8 @@ export default function VehicleWorkspace({
           solverIntensity: "normal",
           ...(psProjectId ? { psProjectId } : {}),
           ...(lockedChains.length ? { lockedChains } : {}),
+          // il pacchetto dati di QUESTO progetto (o quello appena sincronizzato)
+          ...((feedIdOverride || projectFeedId) ? { feedId: feedIdOverride || projectFeedId } : {}),
         }),
       });
       if (!res.ok) {
@@ -2143,7 +2171,31 @@ export default function VehicleWorkspace({
     } finally {
       setReoptimizing(false);
     }
-  }, [result, pushHistory, customLabels, psProjectId]);
+  }, [result, pushHistory, customLabels, psProjectId, projectFeedId]);
+
+  /* ── Il ciclo chiuso, il rimedio in un gesto: se il pacchetto dati del
+   * progetto è più vecchio dell'ultima modifica in Planning, prima lo
+   * sincronizza (altrimenti il solver ricalcolerebbe sul quadro vecchio),
+   * poi ri-ottimizza sul feed nuovo. I turni bloccati restano. ── */
+  const riallinea = useCallback(async () => {
+    if (!projectIdFromUrl || !quadroProgetto?.feedSuperato) {
+      await handleReoptimize();
+      return;
+    }
+    setRiallineo(true);
+    try {
+      const r = await syncProjectFromPs(projectIdFromUrl);
+      setProjectFeedId(r.feedId);
+      toast.success("Pacchetto dati sincronizzato da Planning Studio", {
+        description: `${r.counts.routes} linee · ${r.counts.trips} corse`,
+      });
+      await handleReoptimize(r.feedId);
+    } catch (e: any) {
+      toast.error("Sincronizzazione fallita", { description: e?.message });
+    } finally {
+      setRiallineo(false);
+    }
+  }, [projectIdFromUrl, quadroProgetto, handleReoptimize]);
 
   /* ── Load scenario specifico dalla lista ── */
   const handleLoadScenario = useCallback((id: number, name: string, loaded: ServiceProgramResult) => {
@@ -2473,7 +2525,7 @@ export default function VehicleWorkspace({
             <Button
               size="sm"
               variant="outline"
-              onClick={handleReoptimize}
+              onClick={() => { void handleReoptimize(); }}
               disabled={!result || reoptimizing}
               className="border-purple-500/40 text-purple-300 hover:bg-purple-500/10 h-8 text-[11px]"
               title={lockedShiftIds.size > 0
@@ -2640,6 +2692,35 @@ export default function VehicleWorkspace({
                   </div>
                 </div>
               )}
+            </div>
+          )}
+          {/* Il ciclo chiuso: il quadro orario è cambiato dopo il calcolo di questi turni */}
+          {quadro?.superato && (
+            <div className="mx-4 mt-2 mb-1 rounded-lg border border-orange-500/40 bg-orange-500/10 px-3 py-2 flex items-start gap-2 text-[11px]">
+              <AlertTriangle className="w-4 h-4 text-orange-400 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0 leading-relaxed">
+                <span className="font-semibold text-orange-200">Il quadro orario è cambiato dopo il calcolo di questi turni</span>
+                <span className="text-orange-300/80">
+                  {" — "}{quadro.riassunto || "modifiche al quadro"}
+                  {quadro.ultimaModificaIl ? `, ultima ${new Date(quadro.ultimaModificaIl).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}` : ""}.{" "}
+                  {quadroProgetto?.feedSuperato
+                    ? "Il pacchetto dati del progetto è ancora quello vecchio: sincronizza da Planning Studio e ri-ottimizza."
+                    : "Ri-ottimizza per riallineare i turni."}
+                  {lockedShiftIds.size > 0
+                    ? ` I ${lockedShiftIds.size} turni bloccati restano com'è.`
+                    : " I turni bloccati col lucchetto restano com'è."}
+                </span>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={riallineo || reoptimizing || !result}
+                onClick={() => { void riallinea(); }}
+                className="border-orange-500/50 text-orange-200 hover:bg-orange-500/15 h-7 text-[11px] shrink-0"
+              >
+                {riallineo ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                {quadroProgetto?.feedSuperato ? "Sincronizza e ri-ottimizza" : "Ri-ottimizza"}
+              </Button>
             </div>
           )}
           <div className="flex-1 min-h-0">

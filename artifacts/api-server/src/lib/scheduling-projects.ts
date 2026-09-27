@@ -18,6 +18,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getVehicleScenarioAccess } from "./scenario-access";
 import { withVia } from "./agent-context";
+import { quadroDiScenario, piuRecente, type ModificaDelQuadro, type QuadroStato, type QuadroProgetto } from "./quadro-orario";
 
 /* ────────────────────────────────────────────────────────────
  * Bootstrap tabelle
@@ -282,6 +283,7 @@ function rowToProject(r: any) {
     udpStale: r.udp_stale ?? undefined,
     psLastChangeAt: r.ps_last_change_at ?? undefined,
     feedSyncedAt: r.feed_synced_at ?? undefined,
+    psLastChangeAction: r.ps_last_change_action ?? undefined,
     depotConfig: r.depot_config ?? {},
     clusterConfig: r.cluster_config ?? {},
     deadheadConfig: r.deadhead_config ?? {},
@@ -394,6 +396,127 @@ async function logActivity(
   } catch (e: any) {
     console.warn("[activity-log] insert failed:", e?.message || e);
   }
+}
+
+/* ────────────────────────────────────────────────────────────
+ * Il ciclo chiuso: il quadro orario è cambiato dopo il calcolo?
+ *
+ * Il confronto per `updated_at` non bastava: `ps_trips.updated_at` si
+ * aggiorna SOLO per il calendario (per scelta), le corse nuove hanno solo
+ * created_at e una cancellazione non lascia niente. Uno spostamento di corsa
+ * fatto nell'orario grafico non faceva scattare «Dati superati». Il registro
+ * attività del progetto Planning riceve invece OGNI scrittura, anche quelle
+ * di Argos: è la fonte, con i timestamp delle tabelle come rete per i dati
+ * nati prima del registro. Il giudizio puro sta in quadro-orario.ts.
+ * ──────────────────────────────────────────────────────────── */
+
+/** Le azioni del registro che toccano il quadro orario — stesso elenco di
+ *  eModificaDelQuadro (quadro-orario.ts): se cambi qui, cambia anche lì. */
+const QUADRO_ACTIONS_SQL = sql`(
+  a.action LIKE 'trip.%' OR a.action LIKE 'ps.trip%' OR a.action LIKE 'ps.calendar.%'
+  OR a.action LIKE 'ps.variant.%' OR a.action LIKE 'validity.%'
+  OR a.action IN ('ps.shape.save', 'ps.route.delete'))`;
+
+const isoOrNull = (v: unknown): string | null => {
+  if (!v) return null;
+  const t = new Date(v as any).getTime();
+  return Number.isFinite(t) ? new Date(t).toISOString() : null;
+};
+
+/** Il progetto Planning di un progetto di scheduling: diretto, o attraverso l'UDP. */
+async function psProjectIdDi(row: any): Promise<string | null> {
+  if (row?.planning_studio_project_id) return String(row.planning_studio_project_id);
+  if (!row?.validity_unit_id) return null;
+  try {
+    const r: any = await db.execute(sql`
+      SELECT project_id FROM ps_validity_units WHERE id = ${row.validity_unit_id}::uuid LIMIT 1`);
+    const pid = (r.rows?.[0] ?? r[0])?.project_id;
+    return pid ? String(pid) : null;
+  } catch { return null; }
+}
+
+/** L'ultima modifica al quadro orario del progetto Planning e l'azione che
+ *  l'ha causata (se è il registro la fonte più recente). */
+async function ultimaModificaDelQuadro(psProjectId: string): Promise<{ at: string | null; ultimaAzione: string | null }> {
+  try {
+    const r: any = await db.execute(sql`
+      SELECT
+        (SELECT max(updated_at) FROM ps_trips          WHERE project_id = ${psProjectId}::uuid) AS t_upd,
+        (SELECT max(created_at) FROM ps_trips          WHERE project_id = ${psProjectId}::uuid) AS t_new,
+        (SELECT max(updated_at) FROM ps_calendars      WHERE project_id = ${psProjectId}::uuid) AS c_upd,
+        (SELECT max(updated_at) FROM ps_route_variants WHERE project_id = ${psProjectId}::uuid) AS v_upd,
+        (SELECT a.at     FROM ps_project_activity_log a
+          WHERE a.project_id = ${psProjectId}::uuid AND ${QUADRO_ACTIONS_SQL}
+          ORDER BY a.at DESC LIMIT 1) AS a_at,
+        (SELECT a.action FROM ps_project_activity_log a
+          WHERE a.project_id = ${psProjectId}::uuid AND ${QUADRO_ACTIONS_SQL}
+          ORDER BY a.at DESC LIMIT 1) AS a_action`);
+    const x: any = r.rows?.[0] ?? r[0] ?? {};
+    const aAt = isoOrNull(x.a_at);
+    const at = piuRecente(isoOrNull(x.t_upd), isoOrNull(x.t_new), isoOrNull(x.c_upd), isoOrNull(x.v_upd), aAt);
+    return { at, ultimaAzione: at && aAt === at ? (String(x.a_action ?? "") || null) : null };
+  } catch { return { at: null, ultimaAzione: null }; }
+}
+
+/** Le modifiche al quadro dal registro, dalla più recente, solo da `dopo` in
+ *  avanti (prima del più vecchio salvataggio nessuno scenario le sente). */
+async function modificheDelQuadro(psProjectId: string, dopo: string, limit = 2000): Promise<ModificaDelQuadro[]> {
+  try {
+    const r: any = await db.execute(sql`
+      SELECT a.action, a.at FROM ps_project_activity_log a
+       WHERE a.project_id = ${psProjectId}::uuid AND ${QUADRO_ACTIONS_SQL}
+         AND a.at > ${dopo}::timestamptz
+       ORDER BY a.at DESC LIMIT ${limit}`);
+    const rows: any[] = r.rows ?? r ?? [];
+    return rows
+      .map(x => ({ action: String(x.action), at: isoOrNull(x.at) ?? "" }))
+      .filter(m => m.at);
+  } catch { return []; }
+}
+
+/** Per una lista di scenari salvati: lo stato del quadro del progetto e il
+ *  giudizio su ciascuno («calcolato prima dell'ultima modifica?»). Una sola
+ *  lettura del registro, dal salvataggio più vecchio in avanti. */
+async function quadroPerScenari(projectRow: any, calcolatiIl: unknown[]): Promise<{
+  progetto: QuadroProgetto | null;
+  perScenario: (calcolatoIl: unknown) => QuadroStato | null;
+}> {
+  const psId = await psProjectIdDi(projectRow);
+  if (!psId) return { progetto: null, perScenario: () => null };
+  const istanti = calcolatiIl.map(v => new Date(v as any).getTime()).filter(Number.isFinite);
+  const dopo = istanti.length ? new Date(Math.min(...istanti)).toISOString() : null;
+  const [ultima, mods, feed] = await Promise.all([
+    ultimaModificaDelQuadro(psId),
+    dopo ? modificheDelQuadro(psId, dopo) : Promise.resolve([] as ModificaDelQuadro[]),
+    projectRow?.feed_id
+      ? db.execute(sql`SELECT uploaded_at FROM gtfs_feeds WHERE id = ${projectRow.feed_id}::uuid`).catch(() => null)
+      : Promise.resolve(null),
+  ]);
+  const fRow: any = (feed as any)?.rows?.[0] ?? (feed as any)?.[0];
+  const feedSincronizzatoIl = isoOrNull(fRow?.uploaded_at);
+  const progetto: QuadroProgetto = {
+    psProjectId: psId,
+    modificatoIl: ultima.at,
+    ultimaAzione: ultima.ultimaAzione,
+    feedSincronizzatoIl,
+    feedSuperato: !!(feedSincronizzatoIl && ultima.at
+      && new Date(ultima.at).getTime() > new Date(feedSincronizzatoIl).getTime()),
+  };
+  const perScenario = (calcolatoIl: unknown): QuadroStato | null => {
+    const iso = isoOrNull(calcolatoIl);
+    if (!iso) return null;
+    const q = quadroDiScenario(mods, iso);
+    if (q.superato) return q;
+    // Il registro non sa niente ma le tabelle dicono che il quadro è cambiato
+    // dopo (dati nati prima del registro, o scritture fuori dalle rotte):
+    // superato lo stesso, senza il dettaglio — meglio dirlo che tacere.
+    if (ultima.at && new Date(ultima.at).getTime() > new Date(iso).getTime()) {
+      return { superato: true, modificheDopo: 0, ultimaModificaIl: ultima.at,
+               riassunto: "modifiche senza dettaglio nel registro" };
+    }
+    return q;
+  };
+  return { progetto, perScenario };
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -601,24 +724,25 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
   // materializzazione (gtfs_feeds.uploaded_at del feed usato) con l'ultimo
   // cambiamento nel PS collegato. Se il PS è cambiato dopo → il piano gira su
   // dati vecchi: il client mostra "dati superati, risincronizza".
+  // Il ciclo chiuso: l'ultima modifica viene dal registro attività (ogni
+  // scrittura, anche spostamenti/ritocchi/cancellazioni che updated_at non
+  // vede) più i timestamp delle tabelle. Vedi ultimaModificaDelQuadro.
   let feedStale: boolean | undefined;
   let psLastChangeAt: string | null = null;
+  let psLastChangeAction: string | null = null;
   let feedSyncedAt: string | null = null;
   if (row.planning_studio_project_id) {
     try {
-      const stR: any = await db.execute(sql`
-        SELECT
-          (SELECT to_char(uploaded_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')
-             FROM gtfs_feeds WHERE id = ${row.feed_id ?? null}::uuid) AS feed_synced_at,
-          to_char(GREATEST(
-            COALESCE((SELECT max(updated_at) FROM ps_trips           WHERE project_id = ${row.planning_studio_project_id}::uuid), 'epoch'),
-            COALESCE((SELECT max(updated_at) FROM ps_calendars       WHERE project_id = ${row.planning_studio_project_id}::uuid), 'epoch'),
-            COALESCE((SELECT max(updated_at) FROM ps_route_variants  WHERE project_id = ${row.planning_studio_project_id}::uuid), 'epoch')
-          ), 'YYYY-MM-DD"T"HH24:MI:SSOF') AS ps_last_change_at
-      `);
-      const s = stR.rows?.[0] ?? stR[0] ?? {};
-      feedSyncedAt = s.feed_synced_at ?? null;
-      psLastChangeAt = (s.ps_last_change_at && !String(s.ps_last_change_at).startsWith("1970")) ? s.ps_last_change_at : null;
+      const [q, fs] = await Promise.all([
+        ultimaModificaDelQuadro(String(row.planning_studio_project_id)),
+        row.feed_id
+          ? db.execute(sql`SELECT uploaded_at FROM gtfs_feeds WHERE id = ${row.feed_id}::uuid`).catch(() => null)
+          : Promise.resolve(null),
+      ]);
+      const fRow: any = (fs as any)?.rows?.[0] ?? (fs as any)?.[0];
+      feedSyncedAt = isoOrNull(fRow?.uploaded_at);
+      psLastChangeAt = q.at;
+      psLastChangeAction = q.ultimaAzione;
       if (feedSyncedAt && psLastChangeAt) {
         feedStale = new Date(psLastChangeAt).getTime() > new Date(feedSyncedAt).getTime();
       }
@@ -645,7 +769,7 @@ router.get("/scheduling/projects/:id", async (req: Request, res: Response): Prom
     } catch { /* best-effort: nessun segnale se la valutazione fallisce */ }
   }
 
-  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames, udp_feed_scoped: udpFeedScoped, feed_stale: feedStale, ps_last_change_at: psLastChangeAt, feed_synced_at: feedSyncedAt, udp_stale: udpStale }) });
+  res.json({ project: rowToProject({ ...row, ...ext, validity_unit_route_ids: validityUnitRouteIds, validity_unit_route_names: validityUnitRouteNames, udp_feed_scoped: udpFeedScoped, feed_stale: feedStale, ps_last_change_at: psLastChangeAt, ps_last_change_action: psLastChangeAction, feed_synced_at: feedSyncedAt, udp_stale: udpStale }) });
 });
 
 /* PATCH /api/scheduling/projects/:id — update parziale (owner o editor) */
@@ -873,12 +997,18 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
      ORDER BY is_operational DESC, created_at DESC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+  const quadro = await quadroPerScenari(owned, rows.map(s => s.created_at));
   res.json({
+    // Il ciclo chiuso: stato del quadro orario del progetto (ultima modifica,
+    // feed più vecchio della modifica?) — la stessa lettura vale per ogni scenario.
+    quadro: quadro.progetto,
     vehicleScenarios: rows.map(s => ({
       id: s.id,
       name: s.name,
       date: s.date,
       createdAt: s.created_at,
+      // calcolato prima dell'ultima modifica al quadro? con che cosa è cambiato
+      quadro: quadro.perScenario(s.created_at),
       isOperational: !!s.is_operational,
       // valorizzato dal resync del feed: il result riflette dati superati
       staleSince: s.stale_since ?? null,
@@ -952,11 +1082,14 @@ router.get("/scheduling/projects/:id/driver-scenarios", async (req: Request, res
      ORDER BY dss.is_operational DESC, dss.created_at DESC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
+  const quadro = await quadroPerScenari(owned, rows.map(s => s.created_at));
   res.json({
+    quadro: quadro.progetto,
     driverScenarios: rows.map(s => ({
       id: s.id,
       name: s.name,
       createdAt: s.created_at,
+      quadro: quadro.perScenario(s.created_at),
       isOperational: !!s.is_operational,
       // valorizzato dal resync del feed: il result riflette dati superati
       staleSince: s.stale_since ?? null,

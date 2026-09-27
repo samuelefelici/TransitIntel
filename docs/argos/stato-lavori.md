@@ -1990,6 +1990,55 @@ bloccato potrebbe non stare piu' in piedi: da decidere se deve fermarsi o
 sbloccare). Poi PR 2 (badge di disallineamento scenario ↔ quadro orario),
 PR 3 (le 18 rotte orfane) e PR 4 (traccia del lavoro manuale nella relazione).
 
+## Il ciclo chiuso: il quadro orario cambia, e i turni lo sanno
+
+PR 2 del piano. Il ciclo pianificazione → turni macchina → turni guida si
+chiudeva male: in Planning si sposta una corsa nell'orario grafico, se ne
+cancella una, si ritocca un orario — e lo scenario salvato in Fucina resta li'
+come se niente fosse. Il cruscotto aveva gia' un avviso «Dati superati», ma
+guardava `ps_trips.updated_at`, che per scelta si aggiorna SOLO per il
+calendario (lo dice il commento nel codice): uno spostamento, un ritocco
+d'orario, una corsa nuova (ha solo created_at) o una cancellazione (non lascia
+niente) non lo facevano scattare. E sui singoli scenari, e nel workspace, non
+c'era nessun segnale.
+
+La fonte giusta esisteva: il registro attivita' del progetto Planning
+(`ps_project_activity_log`) riceve OGNI scrittura, comprese quelle di Argos.
+Ho verificato rotta per rotta che tutte le vie di modifica delle corse loggano
+(`trip.shift`, `ps.trip.stop-times`, `trip.batch_create`, `ps.trip.delete`,
+`trip.bulk_delete`, `trip.retime_traffic`, eccezioni, validita', calendari,
+percorsi): l'unica senza log e' una lettura mascherata da POST.
+
+Che cosa cambia:
+
+- il server calcola «ultima modifica al quadro» dal registro + i timestamp
+  delle tabelle (`ultimaModificaDelQuadro`), e l'avviso del cruscotto ora
+  scatta anche per gli spostamenti;
+- ogni scenario (turni macchina e turni guida) porta `quadro: {superato,
+  modificheDopo, ultimaModificaIl, riassunto}` — «3 spostamenti · 2 ritocchi
+  d'orario · 1 cancellazione» — e le liste lo mostrano come pastiglia
+  arancione «quadro cambiato dopo il calcolo · N modifiche», nel cruscotto in
+  forma compatta;
+- nel workspace dei turni macchina un banner sopra il Gantt dice che cosa e'
+  cambiato e quando, e offre il rimedio in un gesto: se il pacchetto dati del
+  progetto e' piu' vecchio della modifica, **Sincronizza e ri-ottimizza**
+  (prima rimaterializza il feed, poi ricalcola sul feed nuovo); altrimenti
+  **Ri-ottimizza**. I turni bloccati col lucchetto restano;
+- «Ri-ottimizza» passa al solver il `feedId` del progetto (la pipeline lo
+  faceva gia'; il workspace no, e il solver prendeva l'ultimo feed
+  dell'utente — quasi sempre giusto, non per forza).
+
+Il giudizio e' una funzione pura (`lib/quadro-orario.ts`), provata con vitest
+(13 casi: azioni che contano e no, prima/dopo/stesso istante del calcolo,
+riassunto e singolari, ordine del registro, date non valide). `tsc` puliti su
+API e frontend. Non provato a mano sull'app: va fatto dopo il deploy —
+spostare una corsa in Planning, aprire Fucina, vedere la pastiglia, premere il
+bottone, salvare, vedere la pastiglia sparire.
+
+Deciso da me e dichiarato: la cancellazione di una corsa non si puo' contare
+per corsa (non lascia updated_at), quindi il conteggio e' di AZIONI del
+registro, non di corse; una `bulk_delete` di dieci corse vale una modifica.
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
