@@ -2,13 +2,14 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * AVM — gli apparati di bordo, giorno per giorno
  * ───────────────────────────────────────────────────────────────────────────
- * Lo Stato del parco nella Sala Operativa dice come sta il parco adesso, ed è
+ * Lo Stato del parco nella Mappa dice come sta il parco adesso, ed è
  * un'istantanea. Questa sezione dice che cosa ha fatto ogni apparato nelle
  * ultime giornate e che cosa va guardato: è la pagina su cui si scrive una
  * segnalazione, perché porta con sé i giorni, non il minuto.
  *
  * Il contenuto è il Diario AVM; qui vive con una testata sua e un indirizzo
- * suo, perché chi cerca «gli apparati» deve trovarli nel menu, non sotto una
+ * suo, dentro il modulo Centrale Operativa (permesso "centrale") accanto alla
+ * Mappa: chi cerca «gli apparati» deve trovarli nel menu, non sotto una
  * scheda di «Dati».
  * ═══════════════════════════════════════════════════════════════════════════
  */

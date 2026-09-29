@@ -1,7 +1,10 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * SALA OPERATIVA — monitoraggio live della flotta
+ * MAPPA (Centrale Operativa) — monitoraggio live della flotta
  * ───────────────────────────────────────────────────────────────────────────
+ * Nel menu si chiama «Mappa» e vive nel modulo Centrale Operativa insieme
+ * all'AVM; il percorso resta /operations e nel codice la chiamiamo ancora
+ * Sala Operativa dove il nome è già scritto.
  * Chiude il cerchio Planning → Scheduling → Esercizio: mappa live dei mezzi
  * (posizioni AVM dallo schema caronte), corse attive, ritardi alle fermate e
  * KPI di puntualità della giornata. Polling ogni 10s via TanStack Query

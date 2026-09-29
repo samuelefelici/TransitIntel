@@ -33,8 +33,19 @@ const PERM_LABEL: Record<Permission, string> = {
   fares: "Bigliettazione (Fares Engine)",
   scheduling: "Scheduling (Crea Servizio + Ottimizzazione)",
   network: "Network Engine (PlannerStudio + Crea Servizio)",
+  centrale: "Centrale Operativa (Mappa live + AVM)",
   fleetcare: "FleetCare (Gestione Flotta e Manutenzione)",
 };
+
+/** Colonne-interruttore della tabella utenti, nell'ordine in cui compaiono.
+ *  FleetCare ha una colonna sua perché porta anche il ruolo. */
+const PERM_COLONNE: Array<{ perm: Permission; intestazione: string }> = [
+  { perm: "analytics", intestazione: "Analytics" },
+  { perm: "fares", intestazione: "Fares" },
+  { perm: "scheduling", intestazione: "Scheduling" },
+  { perm: "network", intestazione: "Network" },
+  { perm: "centrale", intestazione: "Centrale Op." },
+];
 
 /** Ruoli disponibili DENTRO FleetCare (gli admin entrano sempre come Admin Flotta). */
 const FLEETCARE_ROLE_LABEL: Record<string, string> = {
@@ -167,11 +178,10 @@ export default function AdminUsersPage() {
                     <th className="py-2 pr-4">Nome</th>
                     <th className="py-2 pr-4">Ruolo</th>
                     <th className="py-2 pr-4">Attivo</th>
-                    <th className="py-2 pr-4">Analytics</th>
-                    <th className="py-2 pr-4">Fares</th>
-                    <th className="py-2 pr-4">Scheduling</th>
-                    <th className="py-2 pr-4">Network</th>
-                    <th className="py-2 pr-4">FleetCare</th>
+                    {PERM_COLONNE.map((c) => (
+                      <th key={c.perm} className="py-2 pr-4" title={PERM_LABEL[c.perm]}>{c.intestazione}</th>
+                    ))}
+                    <th className="py-2 pr-4" title={PERM_LABEL.fleetcare}>FleetCare</th>
                     <th className="py-2 pr-4">Ultimo login</th>
                     <th className="py-2 pr-4 text-right">Azioni</th>
                   </tr>
@@ -202,11 +212,12 @@ export default function AdminUsersPage() {
                             onCheckedChange={() => handleToggleActive(u)}
                           />
                         </td>
-                        {(["analytics", "fares", "scheduling", "network"] as Permission[]).map((p) => (
+                        {PERM_COLONNE.map(({ perm: p }) => (
                           <td key={p} className="py-2 pr-4">
                             <Switch
                               checked={isAdminRow ? true : !!u.permissions?.[p]}
                               disabled={isAdminRow}
+                              aria-label={PERM_LABEL[p]}
                               onCheckedChange={() => handleTogglePermission(u, p)}
                             />
                           </td>
@@ -322,7 +333,8 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     fares: true,
     scheduling: true,
     network: true,
-    // FleetCare va abilitato esplicitamente dall'admin
+    // I moduli (Centrale Operativa, FleetCare) li abilita esplicitamente l'admin
+    centrale: false,
     fleetcare: false,
   });
   const [fleetcareRole, setFleetcareRole] = useState("driver");

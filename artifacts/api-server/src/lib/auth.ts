@@ -18,7 +18,15 @@ import { loginLimiter } from "../middlewares/rate-limit";
 /* ────────────────────────────────────────────────────────────
  * Tipi
  * ──────────────────────────────────────────────────────────── */
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare";
+/**
+ * I permessi sono i MODULI attivabili per utente. Un modulo nuovo si aggiunge
+ * qui, nel DEFAULT della tabella, nel backfill di ensureUsersTable, nei due
+ * handler admin (POST/PATCH) e nello speculare `Permission` del frontend
+ * (hooks/use-auth.tsx): la chiave è un jsonb chiuso nel codice, non un enum.
+ *   centrale = Centrale Operativa (Mappa live + AVM): attivazione ESPLICITA,
+ *              come FleetCare.
+ */
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale";
 export interface AuthUser {
   id: string;
   email: string;
@@ -75,7 +83,7 @@ async function ensureUsersTable(): Promise<void> {
         password_hash text NOT NULL,
         full_name text,
         role text NOT NULL DEFAULT 'user',
-        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false}'::jsonb,
+        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false}'::jsonb,
         active boolean NOT NULL DEFAULT true,
         last_login_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now()
@@ -103,6 +111,17 @@ async function ensureUsersTable(): Promise<void> {
       ALTER TABLE users ADD COLUMN IF NOT EXISTS fleetcare_role text NOT NULL DEFAULT 'driver'
     `);
 
+    // Centrale Operativa (Mappa live + AVM): modulo ad attivazione esplicita,
+    // default false per i NUOVI utenti. Chi esiste già eredita il valore di
+    // "analytics", perché fino a oggi Mappa e AVM vivevano sotto quel permesso:
+    // il rilascio del modulo non deve togliere a nessuno una pagina che vedeva.
+    await db.execute(sql`
+      UPDATE users
+         SET permissions = permissions
+             || jsonb_build_object('centrale', coalesce((permissions->>'analytics')::boolean, true))
+       WHERE NOT (permissions ? 'centrale')
+    `);
+
     const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users`);
     const n = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
     if (n === 0) {
@@ -119,7 +138,7 @@ async function ensureUsersTable(): Promise<void> {
           INSERT INTO users (email, password_hash, full_name, role, permissions, active)
           VALUES (
             ${u.email}, ${hash}, ${u.full}, ${u.role},
-            '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false}'::jsonb,
+            '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true}'::jsonb,
             true
           )
         `);
@@ -185,7 +204,7 @@ async function loadUserById(id: string): Promise<AuthUser | null> {
     email: row.email,
     fullName: row.full_name,
     role: row.role,
-    permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true, fleetcare: false },
+    permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true, fleetcare: false, centrale: false },
     fleetcareRole: row.fleetcare_role ?? "driver",
     active: row.active,
   };
@@ -253,10 +272,18 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   ["/intermodal", "network"],
   // fares
   ["/fares", "fares"],
-  // analytics (analisi, territorio, gtfs, operazioni, orari, intermodale)
+  // Centrale Operativa (Mappa live + AVM). Il parco letto da SIRI serve solo
+  // alle due pagine del modulo; il resto di /siri (fermate Mizar, diagnostica)
+  // resta solo-autenticato perché lo usa la scheda Dati.
+  ["/siri/parco", "centrale"],
+  // /operations è condiviso: la Mappa legge /live, /punctuality, /anomalie,
+  // /vehicles; i Tempi di percorrenza (analytics) leggono /runtimes,
+  // /copertura, e /trips lo leggono entrambi. Basta uno dei due permessi.
+  ["/operations", ["centrale", "analytics"]],
+  // analytics (analisi, territorio, gtfs, orari, intermodale)
   ["/analysis", "analytics"], ["/territory", "analytics"], ["/gtfs", "analytics"],
   ["/traffic", "analytics"], ["/poi", "analytics"], ["/population", "analytics"],
-  ["/operations", "analytics"], ["/timetables", "analytics"], ["/planning", "analytics"],
+  ["/timetables", "analytics"], ["/planning", "analytics"],
   ["/scenarios", "analytics"], ["/weather", "analytics"],
   ["/calendar-presets", "analytics"], ["/settings", "analytics"],
 ];
@@ -430,8 +457,9 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
     // anche per gli utenti salvati prima che l'implicazione fosse imposta.
     scheduling:!!(permissions?.scheduling?? true) || !!(permissions?.network ?? true),
     network:   !!(permissions?.network   ?? true),
-    // FleetCare: abilitazione esplicita → default false
+    // FleetCare e Centrale Operativa: abilitazione esplicita → default false
     fleetcare: !!(permissions?.fleetcare ?? false),
+    centrale:  !!(permissions?.centrale  ?? false),
   };
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
@@ -479,6 +507,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
       scheduling: !!permissions.scheduling || !!permissions.network,
       network: !!permissions.network,
       fleetcare: !!permissions.fleetcare,
+      centrale: !!permissions.centrale,
     };
     sets.push(sql`permissions = ${JSON.stringify(p)}::jsonb`);
   }

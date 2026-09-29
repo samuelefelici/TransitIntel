@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
-import { AuthProvider, useAuth } from "@/hooks/use-auth";
+import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
 import VirgilioController from "@/components/VirgilioController";
@@ -123,7 +123,7 @@ function PageLoader() {
  * Guardia di permesso: se l'utente non ha il permesso richiesto
  * (e non è admin), redirige a /dashboard.
  */
-function Gated({ perm, children }: { perm: "analytics" | "fares" | "scheduling" | "network"; children: ReactNode }) {
+function Gated({ perm, children }: { perm: Permission; children: ReactNode }) {
   const { hasPermission } = useAuth();
   if (!hasPermission(perm)) return <Redirect to="/dashboard" />;
   return <>{children}</>;
@@ -145,11 +145,12 @@ function Router() {
               <Redirect to="/dashboard" />
             </Route>
             <Route path="/dashboard" component={Dashboard} />
+            {/* Centrale Operativa: Mappa live + AVM, modulo attivabile per utente */}
             <Route path="/operations">
-              <Gated perm="analytics"><OperationsPage /></Gated>
+              <Gated perm="centrale"><OperationsPage /></Gated>
             </Route>
             <Route path="/avm">
-              <Gated perm="analytics"><AvmPage /></Gated>
+              <Gated perm="centrale"><AvmPage /></Gated>
             </Route>
             <Route path="/timetables">
               <Gated perm="analytics"><TimetablesPage /></Gated>
