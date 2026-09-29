@@ -7,7 +7,7 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
-  Milestone, Radio, Printer, Shuffle, Wrench, SatelliteDish,
+  Milestone, Radio, Printer, Shuffle, Wrench, SatelliteDish, MapPinned,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -32,10 +32,20 @@ const NAV_SECTIONS: NavSection[] = [
     title: "Panoramica",
     items: [
       { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { href: "/operations", label: "Sala Operativa", icon: Radio },
-      { href: "/avm", label: "AVM", icon: SatelliteDish },
       { href: "/traffic", label: "Traffico & Rete", icon: Activity },
       { href: "/territory", label: "Territorio & Domanda", icon: Map },
+    ],
+  },
+  {
+    // Modulo attivabile per utente (permesso "centrale"): la Mappa live del
+    // servizio e il diario degli apparati AVM. Stesso dato SIRI, due tempi:
+    // la Mappa è l'adesso, l'AVM sono le giornate.
+    title: "Centrale Operativa",
+    icon: Radio,
+    permission: "centrale",
+    items: [
+      { href: "/operations", label: "Mappa", icon: MapPinned },
+      { href: "/avm", label: "AVM", icon: SatelliteDish },
     ],
   },
   {
@@ -116,7 +126,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           return {
             ...s,
             items: s.items.filter(i => {
-              if (i.href === "/traffic" || i.href === "/territory" || i.href === "/operations" || i.href === "/avm") return hasPermission("analytics");
+              if (i.href === "/traffic" || i.href === "/territory") return hasPermission("analytics");
               return true;
             }),
           };

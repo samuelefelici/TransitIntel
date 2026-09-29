@@ -123,7 +123,7 @@ export const TOOL_DEFS: Anthropic.Tool[] = [
   {
     name: "get_live_operations",
     description:
-      "Sala Operativa: stato live della flotta dall'AVM (mezzi in servizio negli ultimi 15 minuti, corse attive) e KPI di puntualità della giornata dai transiti reali (percentuale in orario, ritardo medio, corse più in ritardo adesso). Usalo per domande tipo 'come sta andando il servizio?', 'ci sono bus in ritardo?', 'quanti mezzi sono fuori?'. Dopo i dati, ui_navigate(/operations) per mostrare la mappa live.",
+      "Mappa della Centrale Operativa: stato live della flotta dall'AVM (mezzi in servizio negli ultimi 15 minuti, corse attive) e KPI di puntualità della giornata dai transiti reali (percentuale in orario, ritardo medio, corse più in ritardo adesso). Usalo per domande tipo 'come sta andando il servizio?', 'ci sono bus in ritardo?', 'quanti mezzi sono fuori?'. Dopo i dati, ui_navigate(/operations) per mostrare la Mappa live (visibile solo a chi ha il modulo Centrale Operativa).",
     input_schema: { type: "object", properties: {} },
   },
   {

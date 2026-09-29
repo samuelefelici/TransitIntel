@@ -8,7 +8,9 @@ import {
 } from "react";
 import { apiFetch } from "@/lib/api";
 
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare";
+/** Speculare a `Permission` in api-server/src/lib/auth.ts: un modulo per chiave.
+ *  centrale = Centrale Operativa (Mappa live + AVM), attivabile per utente. */
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale";
 
 export interface CurrentUser {
   id: string;
