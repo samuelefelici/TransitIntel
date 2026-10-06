@@ -7,7 +7,13 @@
  * consorziate è un numero a cinque cifre in cui le DUE cifre iniziali
  * sostituiscono la sigla dell'azienda e le tre finali sono il progressivo:
  *
- *     11096  →  CJ096        10003  →  SA003        13163  →  RE163
+ *     10003 → SA003    10031 → BV031    11096 → CJ096
+ *     12002 → BU002    13163 → RE163
+ *
+ * Il prefisso 10 vale per due sigle, SA e BV, i cui progressivi non si
+ * sovrappongono (SA 001–016, BV 023–040): decide quale codice esiste in
+ * anagrafica. Il prefisso 15 (AF e SAP) NON segue il progressivo — 15004 è
+ * SAP052 — e si abbina solo con la tabella ECCEZIONI_SIRI.
  *
  * FlashNet applica questa stessa transcodifica al contrario e mostra il
  * codice con le lettere, insieme a una descrizione del mezzo (ambito, classe
@@ -16,12 +22,17 @@
  * segnalazione all'officina dice «1372, X30p Interurbano 29+1 posti» e non
  * solo un numero.
  *
- * I prefissi sono LETTI DAI DATI, non dichiarati da nessuno: ciascuno è
- * confermato da vetture viste nel feed con lo stesso progressivo di un codice
- * in anagrafica, e dalla linea coerente con l'azienda. I prefissi non ancora
- * confermati (AF, BU, BV, SAP) restano fuori dalla mappa: una vettura con un
- * prefisso ignoto si vede come «consorziata, prefisso NN» e non viene
- * attribuita a caso.
+ * Come è stato verificato. Il 6 ottobre 2026 alle 12:04 sono stati presi,
+ * a venti secondi di distanza, l'export FlashNet «Dettaglio veicoli» e il
+ * parco SIRI completo: 365 vetture da entrambe le parti. La colonna
+ * «Rilevamento» di FlashNet è l'ultimo contatto (ora italiana) e coincide al
+ * secondo con il RecordedAtTime di SIRI. Su 290 vetture con un contatto
+ * stabile (più di due minuti prima degli export) l'orario conferma la regola
+ * in tutti i casi, senza nessuna smentita: 237 Conerobus, 23 BU, 11 CJ,
+ * 10 SA, 6 RE, 3 BV. Le eccezioni del 15 vengono dallo stesso confronto.
+ *
+ * Una matricola che non si riesce ad attribuire si legge «consorziata,
+ * prefisso NN», o con le sigle possibili, e non viene attribuita a caso.
  *
  * L'elenco qui sotto è l'export FlashNet «Codice veicolo / Descrizione
  * veicolo» (ottobre 2026). Per aggiornarlo si incolla l'export nuovo: una
@@ -29,17 +40,41 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
-/** Prefisso SIRI (due cifre) → sigla aziendale nei codici FlashNet. */
-export const AZIENDE_SIRI: Readonly<Record<string, string>> = {
-  "10": "SA", // 10003/10004 sulla linea SA2, 10015 = SA015
-  "11": "CJ", // 11096 = CJ096 (stessa corsa nell'export FlashNet), 11063, 11067, 11108
-  "13": "RE", // 13155 = RE155, 13163 = RE163
+/** Prefisso SIRI (due cifre) → sigle aziendali possibili nei codici FlashNet. */
+export const AZIENDE_SIRI: Readonly<Record<string, readonly string[]>> = {
+  "10": ["SA", "BV"], // SA001–016 e BV023–040: progressivi disgiunti
+  "11": ["CJ"],
+  "12": ["BU"],
+  "13": ["RE"],
+  "15": ["AF", "SAP"], // solo via ECCEZIONI_SIRI: il progressivo non coincide
 };
 
-/** Sigle presenti in anagrafica il cui prefisso SIRI non è ancora confermato. */
-export const SIGLE_SENZA_PREFISSO: readonly string[] = ["AF", "BU", "BV", "SAP"];
+/** Prefissi per cui il progressivo SIRI è il progressivo del codice. */
+const PREFISSI_A_PROGRESSIVO = new Set(["10", "11", "12", "13"]);
 
-const SIGLA_A_PREFISSO = new Map(Object.entries(AZIENDE_SIRI).map(([p, s]) => [s, p]));
+/**
+ * Le matricole SIRI che non seguono il progressivo, abbinate una per una
+ * sull'orario di ultimo contatto (confronto del 6/10/2026).
+ *   15004, 15005, 15007: orario identico al secondo con SAP052, SAP051, SAP053.
+ *   15006: per esclusione — è l'unica vettura SIRI rimasta con un contatto, e
+ *          AF006 l'unica rimasta in FlashNet; gli orari però differivano di
+ *          otto minuti, quindi va riconfermata.
+ *   15001, 15002, 15003 non hanno mai parlato col centro, come AF002, AF003 e
+ *   SAP062 in FlashNet: l'ordine fra loro non si può dedurre e restano fuori.
+ */
+export const ECCEZIONI_SIRI: Readonly<Record<string, string>> = {
+  "15004": "SAP052",
+  "15005": "SAP051",
+  "15006": "AF006",
+  "15007": "SAP053",
+};
+
+const ECCEZIONI_INVERSE = new Map(Object.entries(ECCEZIONI_SIRI).map(([s, c]) => [c, s]));
+const SIGLA_A_PREFISSO = new Map(
+  Object.entries(AZIENDE_SIRI)
+    .filter(([p]) => PREFISSI_A_PROGRESSIVO.has(p))
+    .flatMap(([p, sigle]) => sigle.map(s => [s, p] as const)),
+);
 
 export type Ambito = "urbano" | "interurbano";
 
@@ -61,32 +96,50 @@ export interface SchedaVettura {
 
 /* ── Transcodifica ────────────────────────────────────────────────────────── */
 
-/** Da matricola SIRI a codice FlashNet. `null` se il prefisso non è noto. */
+/**
+ * Da matricola SIRI a codice FlashNet; `null` se non si può dire.
+ *
+ * Con una sola sigla per prefisso il codice si costruisce anche se non è in
+ * anagrafica (una vettura nuova di CJ resta CJ). Con due sigle, come per il
+ * 10, decide l'anagrafica: se il progressivo non c'è in nessuna delle due la
+ * vettura non viene attribuita.
+ */
 export function codiceDaSiri(siriRef: string): string | null {
   const ref = siriRef.trim();
   if (/^\d{1,4}$/.test(ref)) return ref;
-  if (/^\d{5}$/.test(ref)) {
-    const sigla = AZIENDE_SIRI[ref.slice(0, 2)];
-    return sigla ? sigla + ref.slice(2) : null;
-  }
-  return null;
+  const eccezione = ECCEZIONI_SIRI[ref];
+  if (eccezione) return eccezione;
+  if (!/^\d{5}$/.test(ref)) return null;
+  const prefisso = ref.slice(0, 2);
+  if (!PREFISSI_A_PROGRESSIVO.has(prefisso)) return null;
+  const candidati = (AZIENDE_SIRI[prefisso] ?? []).map(s => s + ref.slice(2));
+  const inAnagrafica = candidati.filter(c => ANAGRAFICA.has(c));
+  if (inAnagrafica.length === 1) return inAnagrafica[0];
+  return candidati.length === 1 ? candidati[0] : null;
 }
 
-/** Da codice FlashNet a matricola SIRI. `null` se la sigla non ha prefisso. */
+/** Da codice FlashNet a matricola SIRI. `null` se la sigla non ha una regola. */
 export function siriDaCodice(codice: string): string | null {
   const c = codice.trim().toUpperCase();
   if (/^\d{1,4}$/.test(c)) return c;
+  const eccezione = ECCEZIONI_INVERSE.get(c);
+  if (eccezione) return eccezione;
   const m = c.match(/^([A-Z]+)(\d{3})$/);
   if (!m) return null;
   const prefisso = SIGLA_A_PREFISSO.get(m[1]);
   return prefisso ? prefisso + m[2] : null;
 }
 
-/** "Conerobus", la sigla della consorziata, o `null` se il prefisso è ignoto. */
+/**
+ * "Conerobus", la sigla della consorziata, le sigle possibili ("AF/SAP") se
+ * il prefisso è noto ma la vettura no, oppure `null` se il prefisso è ignoto.
+ */
 export function aziendaDaSiri(siriRef: string): string | null {
   const ref = siriRef.trim();
   if (/^\d{1,4}$/.test(ref)) return "Conerobus";
-  if (/^\d{5}$/.test(ref)) return AZIENDE_SIRI[ref.slice(0, 2)] ?? null;
+  const codice = codiceDaSiri(ref);
+  if (codice) return codice.match(/^[A-Z]+/)?.[0] ?? null;
+  if (/^\d{5}$/.test(ref)) return AZIENDE_SIRI[ref.slice(0, 2)]?.join("/") ?? null;
   return null;
 }
 
