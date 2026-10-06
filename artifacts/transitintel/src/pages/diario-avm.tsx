@@ -35,6 +35,10 @@ type Avviso = "smessa" | "antenna" | "da_attivare" | "intermittente";
 
 interface Vettura {
   vehicleRef: string;
+  /* dall'anagrafica FlashNet; assenti se l'API è più vecchia della pagina */
+  codice?: string | null;
+  azienda?: string;
+  mezzo?: string | null;
   esito: Esito;
   destinatario: Destinatario;
   azione: string;
@@ -168,6 +172,8 @@ export default function DiarioAvm() {
       (!filtro || v.esito === filtro)
       && (!filtroAvviso || v.avviso === filtroAvviso)
       && (!term || v.vehicleRef.toLowerCase().includes(term)
+        || (v.codice ?? "").toLowerCase().includes(term)
+        || (v.mezzo ?? "").toLowerCase().includes(term)
         || v.linee.some(l => l.toLowerCase().includes(term))));
   }, [perimetro, filtro, filtroAvviso, cerca]);
 
@@ -502,9 +508,18 @@ export default function DiarioAvm() {
                   <tr key={v.vehicleRef} className="border-b border-border/20 last:border-0 hover:bg-white/[0.02]">
                     <td className="px-3 py-1.5 font-mono whitespace-nowrap">
                       {v.vehicleRef}
+                      {v.codice && v.codice !== v.vehicleRef && (
+                        <span className="ml-1.5 text-[10px] text-muted-foreground" title="codice FlashNet">{v.codice}</span>
+                      )}
                       {v.intermittente && (
                         <span className="ml-1.5 text-[9px] text-amber-400" title="parla a sprazzi">⌁</span>
                       )}
+                      {/* Il mezzo sotto la matricola: è quello che l'officina
+                          riconosce, e la segnalazione lo deve portare con sé. */}
+                      <span className="block font-sans text-[10px] text-muted-foreground/80 truncate max-w-[240px]"
+                        title={v.mezzo ?? undefined}>
+                        {v.mezzo ?? (v.codice ? "non in anagrafica" : v.azienda ?? "")}
+                      </span>
                     </td>
                     {/* La riga di stato: sette quadratini, uno per giornata.
                         Si legge prima della tabella, ed è quello che mostra a

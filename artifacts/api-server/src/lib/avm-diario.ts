@@ -40,6 +40,7 @@
  * Funzioni pure: niente database, niente rete (vedi __tests__/avm-diario.test.ts).
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { identitaVettura } from "./parco-anagrafica";
 
 /** Una giornata di una vettura, come sta scritta nel diario. */
 export interface RigaDiario {
@@ -127,6 +128,12 @@ export type Avviso =
 
 export interface VetturaSettimana {
   vehicleRef: string;
+  /** codice FlashNet (CJ096 per 11096); null se il prefisso non è abbinato */
+  codice: string | null;
+  /** "Conerobus", sigla della consorziata, o perché non si sa */
+  azienda: string;
+  /** il mezzo come lo descrive FlashNet; null se non è in anagrafica */
+  mezzo: string | null;
   esito: EsitoSettimana;
   destinatario: Destinatario;
   /** che cosa chiedere, in una riga da incollare nella segnalazione */
@@ -438,7 +445,7 @@ export function classificaVettura(
   if (avviso === "smessa") pezzi.push(`ultima posizione il ${ultimoGiornoBuono}, poi niente per ${giorniDaBuono} giornate`);
 
   return {
-    vehicleRef, esito, destinatario, azione,
+    vehicleRef, ...identitaVettura(vehicleRef), esito, destinatario, azione,
     nota: pezzi.join("; ") + ".",
     giornate: osservate,
     giorniConContatto, giorniMonitorata, giorniConPosizione, giorniConCorsa,

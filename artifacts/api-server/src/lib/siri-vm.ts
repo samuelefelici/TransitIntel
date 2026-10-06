@@ -17,6 +17,7 @@
  * rete né Postgres (vedi src/__tests__/siri-vm.test.ts).
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { identitaVettura } from "./parco-anagrafica";
 
 /* ── Mini-parser XML ──────────────────────────────────────────────────────── */
 
@@ -656,6 +657,11 @@ export type StatoVettura =
 
 export interface VetturaDiagnostica {
   vehicleRef: string;
+  /** codice FlashNet (CJ096 per 11096); null se il prefisso non è abbinato */
+  codice: string | null;
+  azienda: string;
+  /** il mezzo come lo descrive FlashNet; null se non è in anagrafica */
+  mezzo: string | null;
   stato: StatoVettura;
   /** da quanti secondi l'AVM non riceve un aggiornamento */
   etaContattoSec: number | null;
@@ -673,6 +679,7 @@ export function diagnosiVettura(v: SiriVehicle, now = Date.now()): VetturaDiagno
   const eta = fixAgeSeconds(v, now);
   const base = {
     vehicleRef: v.vehicleRef ?? "(senza matricola)",
+    ...identitaVettura(v.vehicleRef ?? ""),
     etaContattoSec: eta,
     ultimoContatto: v.recordedAt ? v.recordedAt.toISOString() : null,
     errore: v.monitoringError,
