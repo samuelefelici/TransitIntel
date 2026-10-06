@@ -30,6 +30,10 @@ export type StatoVettura =
 
 export interface VetturaDiagnostica {
   vehicleRef: string;
+  /* dall'anagrafica FlashNet; assenti se l'API è più vecchia della pagina */
+  codice?: string | null;
+  azienda?: string;
+  mezzo?: string | null;
   stato: StatoVettura;
   etaContattoSec: number | null;
   ultimoContatto: string | null;
@@ -288,6 +292,11 @@ export default function StatoParco({
                   {v.progressStatus ?? "—"}
                   {v.linea ? ` · ${v.linea}` : ""}
                 </span>
+                {v.mezzo && (
+                  <span className="block text-[10px] text-muted-foreground/70 truncate" title={v.mezzo}>
+                    {v.codice && v.codice !== v.vehicleRef ? `${v.codice} · ` : ""}{v.mezzo}
+                  </span>
+                )}
               </span>
 
               <span className="shrink-0 text-right">

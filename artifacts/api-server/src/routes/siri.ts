@@ -1188,10 +1188,10 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
       const elenco = req.query.tutte === "1"
         ? result.vehicles.map(v => diagnosiVettura(v))
         : stato.daVerificare;
-      const testata = ["matricola", "stato", "errore", "ultimo_contatto",
+      const testata = ["matricola", "codice", "azienda", "mezzo", "stato", "errore", "ultimo_contatto",
         "fermo_da_ore", "progress_status", "linea", "posizione"];
       const righe = elenco.map(d => [
-        d.vehicleRef, ETICHETTE_STATO[d.stato], d.errore ?? "",
+        d.vehicleRef, d.codice ?? "", d.azienda, d.mezzo ?? "", ETICHETTE_STATO[d.stato], d.errore ?? "",
         d.ultimoContatto ?? "",
         d.etaContattoSec != null ? (d.etaContattoSec / 3600).toFixed(1) : "",
         d.progressStatus ?? "", d.linea ?? "", d.haPosizione ? "sì" : "no",
@@ -1334,13 +1334,13 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
     }
 
     if (String(req.query.formato ?? "") === "csv") {
-      const testata = ["matricola", "esito", "destinatario", "giornate",
+      const testata = ["matricola", "codice", "azienda", "mezzo", "esito", "destinatario", "giornate",
         "giorni_con_contatto", "giorni_seguita_dal_centro", "giorni_con_posizione",
         "giorni_con_corsa", "corse", "giorni_errore_gps", "giorni_errore_rete",
         "giorni_di_silenzio", "intermittente", "linee", "ultimo_contatto",
         "nota", "azione"];
       const corpo = diario.vetture.map(v => [
-        v.vehicleRef, ETICHETTE_ESITO[v.esito], v.destinatario, v.giornate,
+        v.vehicleRef, v.codice ?? "", v.azienda, v.mezzo ?? "", ETICHETTE_ESITO[v.esito], v.destinatario, v.giornate,
         v.giorniConContatto, v.giorniMonitorata, v.giorniConPosizione,
         v.giorniConCorsa, v.corse, v.giorniErroreGps, v.giorniErroreGprs,
         v.giorniDiSilenzio, v.intermittente ? "sì" : "no", v.linee.join(" · "),

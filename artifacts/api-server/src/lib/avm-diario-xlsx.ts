@@ -168,10 +168,10 @@ export function esportaDiarioXlsx(
   };
 
   /* ── Foglio 2: Vetture ───────────────────────────────────────────────── */
-  const fisse = ["Matricola", "Verdetto", "Avviso", "Destinatario", "Giornate", "Contatto (gg)", "Seguita dal centro (gg)",
+  const fisse = ["Matricola", "Codice", "Mezzo", "Verdetto", "Avviso", "Destinatario", "Giornate", "Contatto (gg)", "Seguita dal centro (gg)",
     "Posizione (gg)", "Corse (gg)", "Corse distinte", "Silenzio (gg)", "A sprazzi", "Ultimo contatto", "Linee viste"];
   const testata: Valore[] = [
-    ...fisse.map((t, i) => ({ v: t, s: i >= 4 && i <= 11 ? S.intestazioneCentro : S.intestazione })),
+    ...fisse.map((t, i) => ({ v: t, s: i >= 6 && i <= 13 ? S.intestazioneCentro : S.intestazione })),
     ...giornate.map(g => ({ v: ddmm(g), s: S.intestazioneCentro })),
     { v: "Nota", s: S.intestazione }, { v: "Azione", s: S.intestazione },
   ];
@@ -180,6 +180,10 @@ export function esportaDiarioXlsx(
     const perGiorno = new Map(v.perGiorno.map(g => [g.giorno, g.esito]));
     V.push([
       { v: v.vehicleRef, s: S.cellaMono },
+      /* Il codice FlashNet e il mezzo: è quello che l'officina riconosce, e
+       * la segnalazione «1372» da sola la farebbe cercare in un altro elenco. */
+      { v: v.codice ?? "", s: S.cellaMono },
+      { v: v.mezzo ?? (v.codice ? "non in anagrafica" : v.azienda), s: S.cella },
       { v: ETICHETTE_ESITO[v.esito], s: colorato(COLORE_ESITO[v.esito]) },
       v.avviso ? { v: BREVE_AVVISO[v.avviso] + (v.avviso === "smessa" && v.giorniDaBuono != null ? ` da ${v.giorniDaBuono} gg` : ""), s: colorato(COLORE_AVVISO[v.avviso]) } : { v: "", s: S.cella },
       { v: v.destinatario === "nessuno" ? "" : v.destinatario, s: S.cella },
@@ -198,7 +202,7 @@ export function esportaDiarioXlsx(
   const vettureFoglio: Foglio = {
     nome: "Vetture",
     righe: V,
-    larghezze: [11, 30, 16, 13, 9, 9, 9, 9, 9, 9, 9, 8, 17, 42, ...giornate.map(() => 5), 60, 60],
+    larghezze: [11, 9, 40, 30, 16, 13, 9, 9, 9, 9, 9, 9, 9, 8, 17, 42, ...giornate.map(() => 5), 60, 60],
     altezze: { 1: 42 },
     blocca: { righe: 1, colonne: 1 },
   };
