@@ -34,6 +34,15 @@ export interface VetturaDiagnostica {
   codice?: string | null;
   azienda?: string;
   mezzo?: string | null;
+  /* che cosa dice l'officina (FleetCare); assente se non disponibile */
+  officina?: {
+    stato: "in_servizio" | "riserva" | "in_officina" | "dismesso" | "fuori_parco";
+    etichetta: string;
+    targa?: string;
+    deposito?: string | null;
+    fermoDal?: string | null;
+    fermoMotivo?: string | null;
+  } | null;
   stato: StatoVettura;
   etaContattoSec: number | null;
   ultimoContatto: string | null;
@@ -295,6 +304,16 @@ export default function StatoParco({
                 {v.mezzo && (
                   <span className="block text-[10px] text-muted-foreground/70 truncate" title={v.mezzo}>
                     {v.codice && v.codice !== v.vehicleRef ? `${v.codice} · ` : ""}{v.mezzo}
+                  </span>
+                )}
+                {/* L'officina: una muta che il parco non ha più, o ferma con la
+                    commessa aperta, non è un apparato da riparare. */}
+                {v.officina && v.officina.stato !== "in_servizio" && (
+                  <span className="block text-[10px] truncate"
+                    style={{ color: v.officina.stato === "in_officina" ? "#fbbf24" : "#94a3b8" }}
+                    title={v.officina.fermoMotivo ?? undefined}>
+                    officina: {v.officina.etichetta}
+                    {v.officina.fermoDal ? ` dal ${new Date(v.officina.fermoDal).toLocaleDateString("it-IT")}` : ""}
                   </span>
                 )}
               </span>

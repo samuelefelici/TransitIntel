@@ -50,9 +50,31 @@ import { aggiornaPrevisioni, esitoPrevisioni, type EsitoPrevisioni } from "../li
 import { namesCompatible } from "../lib/siri-vm";
 import { letturaDa, registraCampione, leggiDiario, erroreDiario, campioniDiario } from "../lib/avm-diario-store";
 import {
-  analizzaDiario, ETICHETTE_ESITO, GIORNATE_MINIME, type DiarioSettimana,
+  analizzaDiario, ETICHETTE_ESITO, ETICHETTE_ESCLUSIONE, GIORNATE_MINIME, type DiarioSettimana,
 } from "../lib/avm-diario";
 import { esportaDiarioXlsx } from "../lib/avm-diario-xlsx";
+import {
+  leggiParcoOfficina, mezziSenzaAvm, parcoCredibile, ETICHETTE_STATO_OFFICINA,
+  type MezzoOfficina, type ParcoOfficina,
+} from "../lib/officina";
+
+/** Il parco dell'officina indicizzato per matricola SIRI; null se non disponibile. */
+function mappaOfficina(parco: ParcoOfficina): Map<string, MezzoOfficina> | null {
+  return parco.disponibile ? new Map(parco.mezzi.map(m => [m.matricola, m])) : null;
+}
+
+/** Che cosa dice l'officina di una vettura dello stato del parco, in breve. */
+function officinaPerParco(
+  ref: string, mappa: Map<string, MezzoOfficina> | null,
+): { stato: string; etichetta: string; targa?: string; deposito?: string | null; fermoDal?: string | null; fermoMotivo?: string | null } | null {
+  if (!mappa || !/^\d{1,4}$/.test(ref)) return null;
+  const m = mappa.get(ref);
+  if (!m) return { stato: "fuori_parco", etichetta: "non è nel parco dell'officina" };
+  return {
+    stato: m.stato, etichetta: ETICHETTE_STATO_OFFICINA[m.stato], targa: m.targa,
+    deposito: m.deposito, fermoDal: m.fermoDal, fermoMotivo: m.fermoMotivo,
+  };
+}
 
 const router: IRouter = Router();
 
@@ -1183,18 +1205,26 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
     }
 
     const stato = statoParco(result.vehicles);
+    /* L'officina accanto a ogni vettura: una muta da due anni che l'officina
+     * non ha più nel parco non è un apparato da riparare. */
+    const parcoOfficina = parcoCredibile(
+      await leggiParcoOfficina(), result.vehicles.map(v => v.vehicleRef ?? ""));
+    const mappa = mappaOfficina(parcoOfficina);
+    const conOfficina = <T extends { vehicleRef: string }>(d: T) =>
+      ({ ...d, officina: officinaPerParco(d.vehicleRef, mappa) });
 
     if (String(req.query.formato ?? "") === "csv") {
-      const elenco = req.query.tutte === "1"
+      const elenco = (req.query.tutte === "1"
         ? result.vehicles.map(v => diagnosiVettura(v))
-        : stato.daVerificare;
+        : stato.daVerificare).map(conOfficina);
       const testata = ["matricola", "codice", "azienda", "mezzo", "stato", "errore", "ultimo_contatto",
-        "fermo_da_ore", "progress_status", "linea", "posizione"];
+        "fermo_da_ore", "progress_status", "linea", "posizione", "officina", "targa"];
       const righe = elenco.map(d => [
         d.vehicleRef, d.codice ?? "", d.azienda, d.mezzo ?? "", ETICHETTE_STATO[d.stato], d.errore ?? "",
         d.ultimoContatto ?? "",
         d.etaContattoSec != null ? (d.etaContattoSec / 3600).toFixed(1) : "",
         d.progressStatus ?? "", d.linea ?? "", d.haPosizione ? "sì" : "no",
+        d.officina?.etichetta ?? "", d.officina?.targa ?? "",
       ]);
       const csv = [testata, ...righe]
         .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(";"))
@@ -1216,12 +1246,16 @@ router.get("/siri/parco", async (req, res): Promise<void> => {
       perStato: stato.perStato.map(x => ({
         stato: x.stato, etichetta: ETICHETTE_STATO[x.stato], conteggio: x.conteggio,
       })),
-      daVerificare: stato.daVerificare,
+      daVerificare: stato.daVerificare.map(conOfficina),
       /* L'intero parco solo su richiesta: 368 righe non servono a chi cerca i
        * mezzi da riparare, e allungano ogni risposta. */
       tutte: req.query.tutte === "1"
-        ? result.vehicles.map(v => diagnosiVettura(v))
+        ? result.vehicles.map(v => conOfficina(diagnosiVettura(v)))
         : undefined,
+      officina: {
+        disponibile: parcoOfficina.disponibile, motivo: parcoOfficina.motivo,
+        tenant: parcoOfficina.tenant, lettoAlle: parcoOfficina.lettoAlle,
+      },
     });
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "richiesta fallita" });
@@ -1314,7 +1348,13 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
     const oggi = giornataOggi(new Date());
     const inizio = giornataOggi(new Date(Date.now() - (giorni - 1) * 86_400_000));
     const righe = await leggiDiario(inizio);
-    const diario = analizzaDiario(righe, giornateDelPeriodo(inizio, oggi));
+    /* Il parco dell'officina (FleetCare): se c'è, le vetture che l'officina
+     * spiega — fuori parco, dismesse, ferme, già segnalate — escono dalle
+     * segnalazioni; se non c'è, il diario è quello di sempre. */
+    const parcoOfficina = parcoCredibile(await leggiParcoOfficina(), righe.map(r => r.vehicleRef));
+    const diario = analizzaDiario(righe, giornateDelPeriodo(inizio, oggi), mappaOfficina(parcoOfficina));
+    const senzaAvm = mezziSenzaAvm(parcoOfficina, diario.vetture.map(v => v.vehicleRef));
+    const testi = testoSegnalazioni(diario, inizio, oggi, senzaAvm);
 
     /* Il perimetro: nel flusso SIRI le consorziate hanno matricole a cinque
      * cifre (11096 è la CJ096), le Conerobus a tre o quattro. È la stessa
@@ -1325,7 +1365,7 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
       : diario.vetture;
 
     if (String(req.query.formato ?? "") === "xlsx") {
-      const xlsx = esportaDiarioXlsx(diario, { da: inizio, a: oggi }, testoSegnalazioni(diario, inizio, oggi), vettureEsportate);
+      const xlsx = esportaDiarioXlsx(diario, { da: inizio, a: oggi }, testi, vettureEsportate);
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition",
         `attachment; filename="Cerbero-diario-AVM-${inizio}_${oggi}${perimetro === "conerobus" ? "-conerobus" : ""}.xlsx"`);
@@ -1338,13 +1378,16 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
         "giorni_con_contatto", "giorni_seguita_dal_centro", "giorni_con_posizione",
         "giorni_con_corsa", "corse", "giorni_errore_gps", "giorni_errore_rete",
         "giorni_di_silenzio", "intermittente", "linee", "ultimo_contatto",
-        "nota", "azione"];
+        "nota", "azione", "officina", "targa", "esclusa_perche"];
       const corpo = diario.vetture.map(v => [
         v.vehicleRef, v.codice ?? "", v.azienda, v.mezzo ?? "", ETICHETTE_ESITO[v.esito], v.destinatario, v.giornate,
         v.giorniConContatto, v.giorniMonitorata, v.giorniConPosizione,
         v.giorniConCorsa, v.corse, v.giorniErroreGps, v.giorniErroreGprs,
         v.giorniDiSilenzio, v.intermittente ? "sì" : "no", v.linee.join(" · "),
         v.ultimoContatto ?? "", v.nota, v.azione,
+        v.officina ? ETICHETTE_STATO_OFFICINA[v.officina.stato] : "",
+        v.officina?.targa ?? "",
+        v.esclusa ? ETICHETTE_ESCLUSIONE[v.esclusa.motivo] : "",
       ]);
       const csv = [testata, ...corpo]
         .map(r => r.map(x => `"${String(x).replace(/"/g, '""')}"`).join(";"))
@@ -1367,7 +1410,17 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
       maturo: diario.giornateOsservate >= GIORNATE_MINIME,
       erroreRaccolta: erroreDiario(),
       ...diario,
-      testoSegnalazioni: testoSegnalazioni(diario, inizio, oggi),
+      testoSegnalazioni: testi,
+      /* Che cosa ha detto l'officina, e che cosa non le torna: i mezzi del
+       * suo parco che l'AVM non ha mai visto nel periodo. */
+      officina: {
+        disponibile: parcoOfficina.disponibile,
+        motivo: parcoOfficina.motivo,
+        tenant: parcoOfficina.tenant,
+        lettoAlle: parcoOfficina.lettoAlle,
+        mezzi: parcoOfficina.mezzi.length,
+        senzaAvm,
+      },
     });
   } catch (e: any) {
     res.status(500).json({ configured: true, error: e?.message ?? "lettura fallita" });
@@ -1382,11 +1435,39 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
  * analisi muoiono. Il testo porta con sé il periodo, il numero e le matricole,
  * cioè esattamente le tre cose che chi risponde chiederebbe indietro.
  */
-function testoSegnalazioni(d: DiarioSettimana, da: string, a: string): Array<{
+function testoSegnalazioni(d: DiarioSettimana, da: string, a: string, senzaAvm: MezzoOfficina[] = []): Array<{
   destinatario: string; oggetto: string; testo: string; matricole: number;
 }> {
   const periodo = `dal ${da.split("-").reverse().join("/")} al ${a.split("-").reverse().join("/")}`;
-  return d.segnalazioni.map(s => {
+  /* Le due richieste all'anagrafica di Mizar che solo l'officina permette di
+   * scrivere: togliere le vetture che il parco non ha più, censire quelle che
+   * ha e che il centro non conosce. Non sono guasti: sono elenchi sbagliati. */
+  const anagrafica: ReturnType<typeof testoSegnalazioni> = [];
+  const daTogliere = d.vetture.filter(v => v.esclusa?.motivo === "fuori_parco" || v.esclusa?.motivo === "dismesso");
+  if (daTogliere.length) {
+    anagrafica.push({
+      destinatario: "Mizar",
+      oggetto: `AVM Conerobus — vetture da togliere dall'anagrafica del centro (${daTogliere.length})`,
+      testo: `Nel canale SIRI compaiono ${daTogliere.length} matricole Conerobus che il parco `
+        + "dell'officina non ha più, o che dà per dismesse. Non sono apparati da riparare: "
+        + "chiediamo di toglierle dall'anagrafica del centro, così che non risultino come "
+        + `vetture mute.\n\nMatricole: ${daTogliere.map(v => v.vehicleRef).join(", ")}.`,
+      matricole: daTogliere.length,
+    });
+  }
+  if (senzaAvm.length) {
+    anagrafica.push({
+      destinatario: "Mizar",
+      oggetto: `AVM Conerobus — vetture del parco che il centro non conosce (${senzaAvm.length})`,
+      testo: `${senzaAvm.length} vetture del parco Conerobus non sono mai comparse nel canale SIRI `
+        + `${periodo}. Chiediamo di verificare se hanno l'apparato a bordo e se sono censite `
+        + "nell'anagrafica del centro.\n\n"
+        + senzaAvm.map(m => `${m.matricola} (${m.targa}${m.modello ? `, ${m.modello}` : ""}`
+          + `${m.deposito ? `, ${m.deposito}` : ""})`).join("\n"),
+      matricole: senzaAvm.length,
+    });
+  }
+  return [...d.segnalazioni.map(s => {
     const elenco = s.matricole.join(", ");
     const recenti = s.conContattoRecente.length
       ? `\n\nDi queste, ${s.conContattoRecente.length} hanno avuto un contatto col centro `
@@ -1406,7 +1487,7 @@ function testoSegnalazioni(d: DiarioSettimana, da: string, a: string): Array<{
         + "è nel foglio allegato.",
       matricole: s.matricole.length,
     };
-  });
+  }), ...anagrafica];
 }
 
 /* ── Verifica dell'aggancio corsa ─────────────────────────────────────────

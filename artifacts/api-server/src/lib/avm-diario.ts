@@ -41,6 +41,82 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { identitaVettura } from "./parco-anagrafica";
+import type { MezzoOfficina } from "./officina";
+
+/**
+ * Perché una vettura non va segnalata, secondo l'officina. L'esito resta
+ * quello che l'AVM ha visto: cambia solo a chi scrivere, cioè a nessuno.
+ */
+export type MotivoEsclusione = "fuori_parco" | "dismesso" | "in_officina" | "gia_segnalata";
+
+export interface Esclusione {
+  motivo: MotivoEsclusione;
+  /** la frase da leggere al posto dell'azione */
+  testo: string;
+}
+
+export const ETICHETTE_ESCLUSIONE: Record<MotivoEsclusione, string> = {
+  fuori_parco: "Non è nel parco dell'officina",
+  dismesso: "Dismessa per l'officina",
+  in_officina: "Ferma in officina",
+  gia_segnalata: "Già segnalata in FleetCare",
+};
+
+function dataBreve(iso: string | null): string {
+  if (!iso) return "";
+  const [a, m, g] = iso.slice(0, 10).split("-");
+  return `${g}/${m}/${a}`;
+}
+
+/**
+ * Che cosa dice l'officina di una vettura che l'AVM giudica. Solo le
+ * Conerobus: FleetCare oggi tiene il parco Conerobus, e una consorziata
+ * assente dal parco non vuol dire niente.
+ *
+ * L'ordine conta. Una vettura che l'officina non ha più non si ripara, si
+ * toglie dall'anagrafica di Mizar, qualunque cosa faccia l'apparato. Una
+ * vettura che funziona non ha bisogno di spiegazioni. Una ferma in officina
+ * tace perché è ferma; una già segnalata non ha bisogno di una seconda
+ * segnalazione.
+ */
+export function esclusioneOfficina(
+  vehicleRef: string, esito: EsitoSettimana, mezzo: MezzoOfficina | undefined,
+): Esclusione | null {
+  if (!/^\d{1,4}$/.test(vehicleRef)) return null;
+  if (!mezzo) {
+    return {
+      motivo: "fuori_parco",
+      testo: "Non è nel parco dell'officina: con ogni probabilità venduta o demolita. "
+        + "Va tolta dall'anagrafica del centro Mizar, non riparata.",
+    };
+  }
+  if (mezzo.stato === "dismesso") {
+    return {
+      motivo: "dismesso",
+      testo: "L'officina la dà dismessa: va tolta dall'anagrafica del centro Mizar, non riparata.",
+    };
+  }
+  if (esito === "funziona") return null;
+  if (mezzo.stato === "in_officina") {
+    const dal = mezzo.fermoDal ? ` dal ${dataBreve(mezzo.fermoDal)}` : "";
+    const perche = mezzo.fermoMotivo ? ` (${mezzo.fermoMotivo})` : "";
+    const commessa = mezzo.commessa ? `, commessa ${mezzo.commessa}` : "";
+    return {
+      motivo: "in_officina",
+      testo: `Ferma in officina${dal}${perche}${commessa}: il silenzio dell'apparato si spiega col fermo. `
+        + "Si riguarda al rientro in servizio.",
+    };
+  }
+  if (mezzo.segnalazioneAvm) {
+    const s = mezzo.segnalazioneAvm;
+    return {
+      motivo: "gia_segnalata",
+      testo: `Già segnalata in FleetCare (${s.numero}, ${s.fonte}${s.dal ? `, dal ${dataBreve(s.dal)}` : ""}): `
+        + "non serve una seconda segnalazione.",
+    };
+  }
+  return null;
+}
 
 /** Una giornata di una vettura, come sta scritta nel diario. */
 export interface RigaDiario {
@@ -165,6 +241,10 @@ export interface VetturaSettimana {
   giorniDaBuono: number | null;
   /** che cosa va guardato adesso, se qualcosa */
   avviso: Avviso | null;
+  /** il mezzo come lo conosce l'officina (FleetCare); null se non c'è o non si è letto */
+  officina: MezzoOfficina | null;
+  /** perché l'officina la toglie dalle segnalazioni, se la toglie */
+  esclusa: Esclusione | null;
 }
 
 export interface GiornataDiario {
@@ -206,6 +286,8 @@ export interface DiarioSettimana {
     daSegnalare: number;
     perEsito: Array<{ esito: EsitoSettimana; conteggio: number }>;
     perDestinatario: Array<{ destinatario: Destinatario; conteggio: number }>;
+    /** le vetture che l'officina toglie dalle segnalazioni, per motivo */
+    esclusiOfficina: Array<{ motivo: MotivoEsclusione; etichetta: string; matricole: string[] }>;
   };
   /** che cosa è cambiato fra l'inizio e la fine del periodo */
   cambiamenti: {
@@ -454,6 +536,27 @@ export function classificaVettura(
     linee: [...linee].sort().slice(0, 8),
     primoContatto, ultimoContatto, giorniDiSilenzio, intermittente,
     perGiorno, ultimoGiornoBuono, giorniDaBuono, avviso,
+    officina: null, esclusa: null,
+  };
+}
+
+/**
+ * Aggiunge alla vettura quello che sa l'officina. Se l'officina la toglie
+ * dalle segnalazioni, il destinatario diventa «nessuno», l'azione diventa la
+ * spiegazione e l'avviso cade: l'avviso dice che cosa guardare adesso, e una
+ * vettura venduta o ferma in officina non è da guardare.
+ */
+export function conOfficina(v: VetturaSettimana, officina: ReadonlyMap<string, MezzoOfficina>): VetturaSettimana {
+  const mezzo = officina.get(v.vehicleRef);
+  const esclusa = esclusioneOfficina(v.vehicleRef, v.esito, mezzo);
+  const conMezzo = { ...v, officina: mezzo ?? null, esclusa };
+  if (!esclusa) return conMezzo;
+  return {
+    ...conMezzo,
+    destinatario: "nessuno",
+    azione: esclusa.testo,
+    avviso: null,
+    nota: `${v.nota} ${ETICHETTE_ESCLUSIONE[esclusa.motivo]}.`,
   };
 }
 
@@ -465,8 +568,14 @@ export function classificaVettura(
  * con dati: una giornata in cui il connettore era fermo non deve diventare una
  * giornata in cui tutte le vetture erano mute, e infatti viene segnalata a
  * parte in `giornateSenzaDati`.
+ *
+ * `officina` è il parco di FleetCare per matricola SIRI. Se manca (FleetCare
+ * non raggiungibile) il diario è quello di sempre; se c'è, le vetture che
+ * l'officina spiega escono da segnalazioni, avvisi e conteggi da segnalare.
  */
-export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioSettimana {
+export function analizzaDiario(
+  righe: RigaDiario[], giornate: string[], officina?: ReadonlyMap<string, MezzoOfficina> | null,
+): DiarioSettimana {
   const giorni = [...new Set(giornate)].sort();
   const campioniPerGiorno = new Map<string, number>();
   for (const r of righe) {
@@ -494,6 +603,7 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
 
   const vetture = [...perVettura.entries()]
     .map(([ref, l]) => classificaVettura(ref, l, osservate))
+    .map(v => (officina ? conOfficina(v, officina) : v))
     .sort((a, b) => {
       const p = PESO_ESITO[a.esito] - PESO_ESITO[b.esito];
       if (p !== 0) return p;
@@ -562,7 +672,7 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
   const segnalazioni: Segnalazione[] = perEsito
     .filter(x => x.esito !== "funziona")
     .map(({ esito }) => {
-      const gruppo = vetture.filter(v => v.esito === esito);
+      const gruppo = vetture.filter(v => v.esito === esito && !v.esclusa);
       return {
         destinatario: AZIONI[esito].destinatario,
         esito,
@@ -571,7 +681,18 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
         conContattoRecente: gruppo.filter(v => v.giorniDiSilenzio <= 1 && v.giorniConContatto > 0)
           .map(v => v.vehicleRef),
       };
-    });
+    })
+    .filter(s => s.matricole.length > 0);
+
+  const ORDINE_ESCLUSIONI: MotivoEsclusione[] = ["fuori_parco", "dismesso", "in_officina", "gia_segnalata"];
+  const esclusiOfficina = ORDINE_ESCLUSIONI
+    .map(motivo => ({
+      motivo,
+      etichetta: ETICHETTE_ESCLUSIONE[motivo],
+      matricole: vetture.filter(v => v.esclusa?.motivo === motivo).map(v => v.vehicleRef),
+    }))
+    .filter(x => x.matricole.length > 0);
+  const escluse = esclusiOfficina.reduce((n, x) => n + x.matricole.length, 0);
 
   const ORDINE_AVVISI: Avviso[] = ["smessa", "antenna", "da_attivare", "intermittente"];
   const avvisi = ORDINE_AVVISI
@@ -584,11 +705,12 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
 
   const perDest = new Map<Destinatario, number>();
   for (const v of vetture) {
-    if (v.esito === "funziona") continue;
+    if (v.esito === "funziona" || v.esclusa) continue;
     perDest.set(v.destinatario, (perDest.get(v.destinatario) ?? 0) + 1);
   }
 
   const funzionanti = vetture.filter(v => v.esito === "funziona").length;
+  const daSegnalare = vetture.filter(v => v.esito !== "funziona" && !v.esclusa).length;
   const nota = osservate.length === 0
     ? "Il diario è vuoto: nessun giro di lettura ha ancora registrato una giornata."
     : osservate.length < GIORNATE_MINIME
@@ -596,8 +718,12 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
         + `${GIORNATE_MINIME} giornate prima di segnalare, altrimenti si sta guardando `
         + "un'istantanea con più passaggi."
       : `${funzionanti} vetture su ${vetture.length} hanno fatto almeno una corsa in `
-        + `${osservate.length} giornate; ${vetture.length - funzionanti} hanno un anello `
+        + `${osservate.length} giornate; ${daSegnalare} hanno un anello `
         + "rotto e sono divise per destinatario qui sotto."
+        + (escluse
+          ? ` Altre ${escluse} le spiega l'officina (fuori parco, dismesse, ferme o già `
+            + "segnalate) e non entrano nelle segnalazioni."
+          : "")
         + (giornateSenzaDati.length
           ? ` Attenzione: ${giornateSenzaDati.length} giornate del periodo non hanno dati `
             + "(connettore fermo) e non entrano nei conti."
@@ -611,11 +737,12 @@ export function analizzaDiario(righe: RigaDiario[], giornate: string[]): DiarioS
     riepilogo: {
       totale: vetture.length,
       funzionanti,
-      daSegnalare: vetture.length - funzionanti,
+      daSegnalare,
       perEsito,
       perDestinatario: [...perDest.entries()]
         .map(([destinatario, conteggio]) => ({ destinatario, conteggio }))
         .sort((a, b) => b.conteggio - a.conteggio),
+      esclusiOfficina,
     },
     cambiamenti: { migliorate, peggiorate },
     segnalazioni,

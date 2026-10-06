@@ -163,6 +163,7 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CERBERO_API_KEY` | — | Bearer key per `/api/caronte/*` (validatore + AVM) |
 | `GTFS_RT_API_KEY` | — | key per i feed `/api/gtfs-rt/*` (vuota = feed pubblico) |
 | `GTFS_FEED_ID` | — | forza il feed GTFS usato da Sala Operativa / caronte |
+| `FLEETCARE_TENANT` | — | slug dell'azienda in FleetCare da cui l'AVM legge il parco dell'officina (`fleetcare.parco_per_avm()`); serve solo se FleetCare ne ha più di una, di solito è lo stesso valore di `FLEETCARE_SSO_TENANT` di FleetCare |
 
 ### Web (`Dockerfile.web`) — **build-time** (build args)
 

@@ -32,6 +32,22 @@ type Esito = "funziona" | "senza_corsa" | "senza_posizione" | "non_attivata" | "
 type EsitoGiorno = "in_servizio" | "traccia" | "collegata" | "muta";
 type Destinatario = "Mizar" | "Officina" | "Esercizio" | "Gestore SIM" | "nessuno";
 type Avviso = "smessa" | "antenna" | "da_attivare" | "intermittente";
+type MotivoEsclusione = "fuori_parco" | "dismesso" | "in_officina" | "gia_segnalata";
+type StatoOfficina = "in_servizio" | "riserva" | "in_officina" | "dismesso";
+
+/** Il mezzo come lo conosce l'officina (FleetCare). */
+interface MezzoOfficina {
+  matricola: string;
+  numeroDiParco: string;
+  targa: string;
+  stato: StatoOfficina;
+  deposito: string | null;
+  modello: string | null;
+  fermoDal: string | null;
+  fermoMotivo: string | null;
+  commessa: string | null;
+  segnalazioneAvm: { numero: string; fonte: string; dal: string | null } | null;
+}
 
 interface Vettura {
   vehicleRef: string;
@@ -60,6 +76,9 @@ interface Vettura {
   ultimoGiornoBuono?: string | null;
   giorniDaBuono?: number | null;
   avviso?: Avviso | null;
+  /* dall'officina (FleetCare); assenti se l'API è più vecchia della pagina */
+  officina?: MezzoOfficina | null;
+  esclusa?: { motivo: MotivoEsclusione; testo: string } | null;
 }
 
 interface Resp {
@@ -83,12 +102,21 @@ interface Resp {
     totale: number; funzionanti: number; daSegnalare: number;
     perEsito: Array<{ esito: Esito; conteggio: number }>;
     perDestinatario: Array<{ destinatario: Destinatario; conteggio: number }>;
+    esclusiOfficina?: Array<{ motivo: MotivoEsclusione; etichetta: string; matricole: string[] }>;
   };
   cambiamenti: {
     migliorate: Array<{ vehicleRef: string; da: EsitoGiorno; a: EsitoGiorno }>;
     peggiorate: Array<{ vehicleRef: string; da: EsitoGiorno; a: EsitoGiorno }>;
   };
   testoSegnalazioni: Array<{ destinatario: string; oggetto: string; testo: string; matricole: number }>;
+  officina?: {
+    disponibile: boolean;
+    motivo: string | null;
+    tenant: string | null;
+    lettoAlle: string;
+    mezzi: number;
+    senzaAvm: MezzoOfficina[];
+  };
   error?: string;
 }
 
@@ -122,6 +150,15 @@ const AVVISI: Record<Avviso, { colore: string; fondo: string; bordo: string }> =
    dichiarata da nessuno: per questo è un filtro che si può togliere. */
 const isConerobus = (ref: string) => /^\d{1,4}$/.test(ref);
 
+/* Che cosa dice l'officina: grigio per chi non c'è più, ambra per chi è
+   fermo, azzurro per chi è già stato segnalato. Non sono anelli rotti. */
+const ESCLUSIONI: Record<MotivoEsclusione, { breve: string; colore: string }> = {
+  fuori_parco:   { breve: "fuori parco",    colore: "#94a3b8" },
+  dismesso:      { breve: "dismessa",       colore: "#94a3b8" },
+  in_officina:   { breve: "in officina",    colore: "#fbbf24" },
+  gia_segnalata: { breve: "già segnalata",  colore: "#7dd3fc" },
+};
+
 const DESTINATARI: Record<Destinatario, string> = {
   Mizar: "#c084fc", Officina: "#fb923c", Esercizio: "#7dd3fc",
   "Gestore SIM": "#f87171", nessuno: "#34d399",
@@ -137,6 +174,7 @@ export default function DiarioAvm() {
   const [filtro, setFiltro] = useState<Esito | null>(null);
   const [filtroAvviso, setFiltroAvviso] = useState<Avviso | null>(null);
   const [soloConerobus, setSoloConerobus] = useState(true);
+  const [soloParcoOfficina, setSoloParcoOfficina] = useState(true);
   const [cerca, setCerca] = useState("");
   const [copiato, setCopiato] = useState<string | null>(null);
 
@@ -150,9 +188,16 @@ export default function DiarioAvm() {
   /* Il perimetro (solo Conerobus o tutto il flusso) si applica PRIMA dei
      contatori, così i numeri sui pulsanti e negli avvisi sono del perimetro
      che si sta guardando, non di tutto il parco. */
+  /* Con il parco dell'officina, le vetture che l'officina non ha più
+     (fuori parco o dismesse) si tolgono dal perimetro: non sono apparati da
+     riparare, sono righe da togliere dall'anagrafica di Mizar. */
+  const officinaAttiva = !!d?.officina?.disponibile;
   const perimetro = useMemo(
-    () => (d?.vetture ?? []).filter(v => !soloConerobus || isConerobus(v.vehicleRef)),
-    [d, soloConerobus],
+    () => (d?.vetture ?? []).filter(v =>
+      (!soloConerobus || isConerobus(v.vehicleRef))
+      && (!officinaAttiva || !soloParcoOfficina
+        || (v.esclusa?.motivo !== "fuori_parco" && v.esclusa?.motivo !== "dismesso"))),
+    [d, soloConerobus, soloParcoOfficina, officinaAttiva],
   );
   const perEsito = useMemo(() => {
     const m = new Map<Esito, number>();
@@ -173,6 +218,7 @@ export default function DiarioAvm() {
       && (!filtroAvviso || v.avviso === filtroAvviso)
       && (!term || v.vehicleRef.toLowerCase().includes(term)
         || (v.codice ?? "").toLowerCase().includes(term)
+        || (v.officina?.targa ?? "").toLowerCase().includes(term)
         || (v.mezzo ?? "").toLowerCase().includes(term)
         || v.linee.some(l => l.toLowerCase().includes(term))));
   }, [perimetro, filtro, filtroAvviso, cerca]);
@@ -231,6 +277,14 @@ export default function DiarioAvm() {
             onChange={e => setSoloConerobus(e.target.checked)} />
           solo Conerobus (matricola a 3–4 cifre)
         </label>
+        {officinaAttiva && (
+          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none"
+            title="Toglie le vetture che il parco dell'officina non ha più o dà per dismesse">
+            <input type="checkbox" id="diario-solo-parco-officina" checked={soloParcoOfficina}
+              onChange={e => setSoloParcoOfficina(e.target.checked)} />
+            solo parco officina
+          </label>
+        )}
         {/* L'allegato della segnalazione: stesso dettaglio del CSV, ma con il
             marchio, i colori della pagina e la striscia giorno per giorno.
             Esporta il perimetro che si sta guardando. */}
@@ -317,6 +371,61 @@ export default function DiarioAvm() {
             <p className={`text-[10px] leading-relaxed ${d.qualita.giornateParziali.length ? "text-amber-300" : "text-muted-foreground"}`}>
               Raccolta: {d.qualita.nota}
             </p>
+          )}
+        </section>
+      )}
+
+      {/* ── 0b. L'officina: che cosa spiega, e che cosa non le torna ─────── */}
+      {d.officina && !d.officina.disponibile && (
+        <p className="text-[10px] text-muted-foreground leading-relaxed">
+          Parco dell'officina non disponibile: {d.officina.motivo} Il diario funziona come
+          sempre, senza i dati dell'officina.
+        </p>
+      )}
+      {d.officina?.disponibile && (
+        <section className="rounded-xl border border-border/50 bg-white/[0.02] p-4 space-y-3">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h3 className="text-[12px] font-medium flex items-center gap-1.5">
+              <Wrench className="w-3.5 h-3.5 text-amber-300" /> Officina
+            </h3>
+            <span className="text-[10px] text-muted-foreground">
+              {d.officina.mezzi} mezzi nel parco FleetCare · letto alle{" "}
+              {new Date(d.officina.lettoAlle).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}
+              {" "}· le vetture che l'officina spiega non entrano nelle segnalazioni
+            </span>
+          </div>
+          {(d.riepilogo.esclusiOfficina ?? []).length > 0 && (
+            <div className="grid gap-2 md:grid-cols-2">
+              {(d.riepilogo.esclusiOfficina ?? []).map(x => (
+                <div key={x.motivo} className="rounded-lg border border-border/40 p-2.5 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-medium" style={{ color: ESCLUSIONI[x.motivo].colore }}>{x.etichetta}</span>
+                    <span className="ml-auto font-mono text-[12px]" style={{ color: ESCLUSIONI[x.motivo].colore }}>{x.matricole.length}</span>
+                  </div>
+                  <p className="font-mono text-[10.5px] leading-relaxed break-words text-muted-foreground">
+                    {x.matricole.slice(0, 30).join(", ")}{x.matricole.length > 30 && ` … e altre ${x.matricole.length - 30}`}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+          {d.officina.senzaAvm.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-[11px]">
+                <span className="font-medium text-violet-300">{d.officina.senzaAvm.length} mezzi del parco</span>
+                <span className="text-muted-foreground"> non sono mai comparsi nel canale SIRI nel periodo: da far
+                  censire o attrezzare a Mizar.</span>
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {d.officina.senzaAvm.map(m => (
+                  <span key={m.matricola} className="px-2 py-0.5 rounded-md text-[10px] border border-violet-400/30 bg-violet-500/10"
+                    title={[m.modello, m.deposito, m.stato === "in_officina" ? "ferma in officina" : null].filter(Boolean).join(" · ")}>
+                    <span className="font-mono text-violet-200">{m.matricola}</span>
+                    <span className="text-muted-foreground"> {m.targa}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
         </section>
       )}
@@ -480,7 +589,7 @@ export default function DiarioAvm() {
             <input
               value={cerca}
               onChange={e => setCerca(e.target.value)}
-              placeholder="matricola o linea"
+              placeholder="matricola, targa o linea"
               className="pl-7 pr-2 py-1 w-44 rounded-lg text-[11px] bg-white/[0.03] border border-border/40 focus:border-border outline-none"
             />
           </div>
@@ -520,6 +629,21 @@ export default function DiarioAvm() {
                         title={v.mezzo ?? undefined}>
                         {v.mezzo ?? (v.codice ? "non in anagrafica" : v.azienda ?? "")}
                       </span>
+                      {(v.esclusa || v.officina) && (
+                        <span className="block font-sans text-[10px] truncate max-w-[240px]"
+                          title={v.esclusa?.testo ?? undefined}>
+                          {v.esclusa && (
+                            <span style={{ color: ESCLUSIONI[v.esclusa.motivo].colore }}>
+                              {ESCLUSIONI[v.esclusa.motivo].breve}
+                            </span>
+                          )}
+                          {v.officina && (
+                            <span className="text-muted-foreground/70">
+                              {v.esclusa ? " · " : ""}{v.officina.targa}{v.officina.deposito ? ` · ${v.officina.deposito}` : ""}
+                            </span>
+                          )}
+                        </span>
+                      )}
                     </td>
                     {/* La riga di stato: sette quadratini, uno per giornata.
                         Si legge prima della tabella, ed è quello che mostra a
@@ -565,9 +689,11 @@ export default function DiarioAvm() {
                       {v.corse || "—"}
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">
-                      {v.destinatario === "nessuno"
-                        ? <span className="text-muted-foreground">—</span>
-                        : <span style={{ color: DESTINATARI[v.destinatario] }}>{v.destinatario}</span>}
+                      {v.esclusa
+                        ? <span className="text-muted-foreground" title={v.esclusa.testo}>spiegata dall'officina</span>
+                        : v.destinatario === "nessuno"
+                          ? <span className="text-muted-foreground">—</span>
+                          : <span style={{ color: DESTINATARI[v.destinatario] }}>{v.destinatario}</span>}
                     </td>
                   </tr>
                 );
