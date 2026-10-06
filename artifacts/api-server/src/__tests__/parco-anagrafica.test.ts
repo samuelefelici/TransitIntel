@@ -6,7 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   codiceDaSiri, siriDaCodice, aziendaDaSiri, etichettaAzienda, schedaVettura,
-  identitaVettura, interpretaDescrizione, anagraficaParco, AZIENDE_SIRI, SIGLE_SENZA_PREFISSO,
+  identitaVettura, interpretaDescrizione, anagraficaParco, AZIENDE_SIRI, ECCEZIONI_SIRI,
 } from "../lib/parco-anagrafica";
 
 describe("da matricola SIRI a codice FlashNet", () => {
@@ -21,34 +21,68 @@ describe("da matricola SIRI a codice FlashNet", () => {
     expect(codiceDaSiri("11096")).toBe("CJ096");
     expect(codiceDaSiri("10003")).toBe("SA003");
     expect(codiceDaSiri("13163")).toBe("RE163");
+    expect(codiceDaSiri("12002")).toBe("BU002");
     expect(aziendaDaSiri("13155")).toBe("RE");
+    expect(aziendaDaSiri("12046")).toBe("BU");
   });
 
-  it("un prefisso non confermato non viene attribuito a caso", () => {
-    expect(codiceDaSiri("12001")).toBeNull();
-    expect(aziendaDaSiri("12001")).toBeNull();
-    expect(etichettaAzienda("12001")).toBe("consorziata, prefisso 12");
+  it("il prefisso 10 vale per SA e per BV: decide l'anagrafica", () => {
+    expect(codiceDaSiri("10016")).toBe("SA016");
+    expect(codiceDaSiri("10031")).toBe("BV031");
+    expect(codiceDaSiri("10040")).toBe("BV040");
+    expect(aziendaDaSiri("10034")).toBe("BV");
+    /* un progressivo che non è né SA né BV non si attribuisce */
+    expect(codiceDaSiri("10099")).toBeNull();
+    expect(etichettaAzienda("10099")).toBe("SA/BV");
+  });
+
+  it("il prefisso 15 si abbina solo con la tabella, il progressivo non c'entra", () => {
+    expect(codiceDaSiri("15004")).toBe("SAP052");
+    expect(codiceDaSiri("15005")).toBe("SAP051");
+    expect(codiceDaSiri("15007")).toBe("SAP053");
+    expect(aziendaDaSiri("15004")).toBe("SAP");
+    /* le tre mai collegate restano senza codice, con le sigle possibili */
+    expect(codiceDaSiri("15001")).toBeNull();
+    expect(etichettaAzienda("15001")).toBe("AF/SAP");
+  });
+
+  it("un prefisso sconosciuto non viene attribuito a caso", () => {
+    expect(codiceDaSiri("14001")).toBeNull();
+    expect(aziendaDaSiri("14001")).toBeNull();
+    expect(etichettaAzienda("14001")).toBe("consorziata, prefisso 14");
     expect(etichettaAzienda("CJ096")).toBe("matricola non riconosciuta");
   });
 
   it("la transcodifica torna indietro", () => {
     expect(siriDaCodice("CJ096")).toBe("11096");
     expect(siriDaCodice("sa015")).toBe("10015");
+    expect(siriDaCodice("BV023")).toBe("10023");
+    expect(siriDaCodice("BU002")).toBe("12002");
+    expect(siriDaCodice("SAP052")).toBe("15004");
+    expect(siriDaCodice("AF002")).toBeNull();
     expect(siriDaCodice("263")).toBe("263");
-    expect(siriDaCodice("BU002")).toBeNull();
-    for (const [prefisso, sigla] of Object.entries(AZIENDE_SIRI)) {
-      expect(siriDaCodice(sigla + "001")).toBe(prefisso + "001");
+    for (const [siri, codice] of Object.entries(ECCEZIONI_SIRI)) {
+      expect(siriDaCodice(codice)).toBe(siri);
+      expect(codiceDaSiri(siri)).toBe(codice);
     }
   });
 });
 
 describe("l'anagrafica FlashNet", () => {
-  it("ha tutte le righe dell'export e ogni sigla è nota o dichiarata in attesa", () => {
+  it("ha tutte le righe dell'export e ogni sigla ha un prefisso SIRI", () => {
     const voci = anagraficaParco();
     expect(voci.length).toBeGreaterThan(340);
     const sigle = new Set(voci.map(v => v.codice.match(/^[A-Z]+/)?.[0]).filter(Boolean));
-    for (const s of sigle) {
-      expect(Object.values(AZIENDE_SIRI).includes(s!) || SIGLE_SENZA_PREFISSO.includes(s!), s).toBe(true);
+    const note = new Set(Object.values(AZIENDE_SIRI).flat());
+    for (const s of sigle) expect(note.has(s!), s).toBe(true);
+  });
+
+  it("ogni codice SA, BV, CJ, BU, RE dell'export fa andata e ritorno", () => {
+    for (const v of anagraficaParco()) {
+      if (!/^(SA|BV|CJ|BU|RE)\d{3}$/.test(v.codice)) continue;
+      const siri = siriDaCodice(v.codice);
+      expect(siri, v.codice).not.toBeNull();
+      expect(codiceDaSiri(siri!), v.codice).toBe(v.codice);
     }
   });
 
@@ -66,7 +100,8 @@ describe("l'anagrafica FlashNet", () => {
   it("una matricola fuori anagrafica non ha scheda, ma ha un'identità", () => {
     expect(schedaVettura("9999")).toBeNull();
     expect(identitaVettura("9999")).toEqual({ codice: "9999", azienda: "Conerobus", mezzo: null });
-    expect(identitaVettura("12001")).toEqual({ codice: null, azienda: "consorziata, prefisso 12", mezzo: null });
+    expect(identitaVettura("14001")).toEqual({ codice: null, azienda: "consorziata, prefisso 14", mezzo: null });
+    expect(identitaVettura("10031")).toEqual({ codice: "BV031", azienda: "BV", mezzo: "Interurbano =11<15m Setra S 415 UL" });
   });
 });
 
