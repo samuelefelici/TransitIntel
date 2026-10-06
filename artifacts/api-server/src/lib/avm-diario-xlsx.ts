@@ -18,8 +18,17 @@
  */
 import {
   type DiarioSettimana, type VetturaSettimana, type EsitoSettimana, type EsitoGiorno, type Avviso,
-  ETICHETTE_ESITO, ETICHETTE_AVVISO,
+  ETICHETTE_ESITO, ETICHETTE_AVVISO, ETICHETTE_ESCLUSIONE,
 } from "./avm-diario.js";
+import { ETICHETTE_STATO_OFFICINA } from "./officina.js";
+
+/** La cella «Officina»: il motivo dell'esclusione, oppure stato · targa · deposito. */
+function officinaInBreve(v: VetturaSettimana): string {
+  if (v.esclusa) return ETICHETTE_ESCLUSIONE[v.esclusa.motivo];
+  if (!v.officina) return "";
+  return [ETICHETTE_STATO_OFFICINA[v.officina.stato], v.officina.targa, v.officina.deposito]
+    .filter(Boolean).join(" · ");
+}
 import { scriviXlsx, Stili, lettereColonna, type Foglio, type Valore } from "./xlsx-mini.js";
 import { CERBERO, logoCerberoPng, LOGO_CERBERO_PX } from "./cerbero-brand.js";
 
@@ -39,6 +48,11 @@ const COLORE_AVVISO: Record<Avviso, string> = {
 const BREVE_AVVISO: Record<Avviso, string> = {
   smessa: "Ha smesso", antenna: "Antenna GPS", da_attivare: "Da attivare", intermittente: "A sprazzi",
 };
+
+/** Le colonne fisse del foglio Vetture, prima di quelle dei giorni. */
+const COLONNE_FISSE = ["Matricola", "Codice", "Mezzo", "Officina", "Verdetto", "Avviso", "Destinatario", "Giornate",
+  "Contatto (gg)", "Seguita dal centro (gg)", "Posizione (gg)", "Corse (gg)", "Corse distinte", "Silenzio (gg)",
+  "A sprazzi", "Ultimo contatto", "Linee viste"];
 
 export interface TestoSegnalazione {
   destinatario: string; oggetto: string; testo: string; matricole: number;
@@ -168,10 +182,9 @@ export function esportaDiarioXlsx(
   };
 
   /* ── Foglio 2: Vetture ───────────────────────────────────────────────── */
-  const fisse = ["Matricola", "Codice", "Mezzo", "Verdetto", "Avviso", "Destinatario", "Giornate", "Contatto (gg)", "Seguita dal centro (gg)",
-    "Posizione (gg)", "Corse (gg)", "Corse distinte", "Silenzio (gg)", "A sprazzi", "Ultimo contatto", "Linee viste"];
+  const fisse = COLONNE_FISSE;
   const testata: Valore[] = [
-    ...fisse.map((t, i) => ({ v: t, s: i >= 6 && i <= 13 ? S.intestazioneCentro : S.intestazione })),
+    ...fisse.map((t, i) => ({ v: t, s: i >= 7 && i <= 14 ? S.intestazioneCentro : S.intestazione })),
     ...giornate.map(g => ({ v: ddmm(g), s: S.intestazioneCentro })),
     { v: "Nota", s: S.intestazione }, { v: "Azione", s: S.intestazione },
   ];
@@ -184,6 +197,9 @@ export function esportaDiarioXlsx(
        * la segnalazione «1372» da sola la farebbe cercare in un altro elenco. */
       { v: v.codice ?? "", s: S.cellaMono },
       { v: v.mezzo ?? (v.codice ? "non in anagrafica" : v.azienda), s: S.cella },
+      /* Quello che dice l'officina: perché la vettura esce dalle
+       * segnalazioni, se esce, altrimenti stato, targa e deposito. */
+      { v: officinaInBreve(v), s: S.cella },
       { v: ETICHETTE_ESITO[v.esito], s: colorato(COLORE_ESITO[v.esito]) },
       v.avviso ? { v: BREVE_AVVISO[v.avviso] + (v.avviso === "smessa" && v.giorniDaBuono != null ? ` da ${v.giorniDaBuono} gg` : ""), s: colorato(COLORE_AVVISO[v.avviso]) } : { v: "", s: S.cella },
       { v: v.destinatario === "nessuno" ? "" : v.destinatario, s: S.cella },
@@ -202,7 +218,7 @@ export function esportaDiarioXlsx(
   const vettureFoglio: Foglio = {
     nome: "Vetture",
     righe: V,
-    larghezze: [11, 9, 40, 30, 16, 13, 9, 9, 9, 9, 9, 9, 9, 8, 17, 42, ...giornate.map(() => 5), 60, 60],
+    larghezze: [11, 9, 40, 34, 30, 16, 13, 9, 9, 9, 9, 9, 9, 9, 8, 17, 42, ...giornate.map(() => 5), 60, 60],
     altezze: { 1: 42 },
     blocca: { righe: 1, colonne: 1 },
   };
@@ -232,5 +248,5 @@ export function esportaDiarioXlsx(
 
 /** Per i test e per chi vuole sapere quante colonne di giorni aspettarsi. */
 export function colonneGiorni(d: DiarioSettimana): string[] {
-  return d.perGiorno.filter(g => !g.parziale).map(g => lettereColonna(14 + d.perGiorno.filter(x => !x.parziale).indexOf(g)));
+  return d.perGiorno.filter(g => !g.parziale).map(g => lettereColonna(COLONNE_FISSE.length + d.perGiorno.filter(x => !x.parziale).indexOf(g)));
 }
