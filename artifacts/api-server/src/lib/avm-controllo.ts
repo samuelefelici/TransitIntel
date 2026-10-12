@@ -8,14 +8,16 @@
  * È una domanda di confronto, e la risposta si scrive una volta a settimana.
  *
  * Il metro è l'apparato, non il servizio: una vettura «funziona» in una
- * settimana se si è LOCALIZZATA almeno in una giornata osservata. La corsa
+ * settimana se si è LOCALIZZATA almeno in una giornata contata. La corsa
  * dipende dal conducente che qualifica il turno a bordo, quindi si riporta
  * accanto ma non decide la categoria.
  *
  * La settimana è lunedì–domenica di giornate di esercizio (taglio alle 03:00,
- * fuso di esercizio), identificata dal suo lunedì. Le giornate con meno di
- * mezza raccolta non contano, come nel diario: un buco del connettore non è
- * un apparato rotto.
+ * fuso di esercizio), identificata dal suo lunedì. Una giornata conta solo
+ * con almeno mezza raccolta e solo quando è finita (oggi non conta mai), come
+ * nel diario: un buco del connettore non è un apparato rotto. Una settimana
+ * si giudica solo con almeno GIORNATE_MINIME giornate contate: con una o due
+ * giornate un mezzo rimasto in rimessa la domenica diventa «si è fermata».
  *
  * «Prima» non è per forza la settimana precedente: è l'ultima settimana in
  * cui la vettura si poteva giudicare. Se il connettore è stato fermo tutta la
@@ -26,8 +28,8 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import {
-  esitoGiorno, esclusioneOfficina, CAMPIONI_MINIMI_GIORNATA,
-  type RigaDiario, type Esclusione, type EsitoGiorno,
+  esclusioneOfficina, CAMPIONI_MINIMI_GIORNATA, GIORNATE_MINIME, GIORNI_SMESSA,
+  type RigaDiario, type Esclusione,
 } from "./avm-diario";
 import { identitaVettura } from "./parco-anagrafica";
 import { giornateDelPeriodo } from "./fleet-trend";
@@ -41,10 +43,11 @@ export const VERSIONE_CONTROLLO = 1;
 export const SETTIMANE_STORIA = 8;
 
 /**
- * Giornate osservate dopo la chiusura di un intervento prima di dire che non
- * è servito: un mezzo può restare in rimessa un giorno o due dopo la
- * riparazione, e chi legge «senza effetto» dopo un giorno richiama l'officina
- * per niente.
+ * Giornate con contatto dopo la chiusura di un intervento prima di dire che
+ * non è servito. Contano solo le giornate in cui l'apparato ha parlato col
+ * centro: un mezzo rimasto spento in rimessa dopo la riparazione non dice
+ * niente dell'apparato, e chi legge «senza effetto» richiama l'officina per
+ * niente. Dopo una settimana intera si giudica comunque.
  */
 export const GIORNATE_DOPO_MINIME = 3;
 
@@ -55,19 +58,20 @@ export const GIORNATE_DOPO_MINIME = 3;
 
 /**
  * Lo stato di una vettura in una settimana:
- *   F funziona  — almeno una giornata osservata con posizione
+ *   F funziona  — almeno una giornata contata con posizione
  *   P parla     — contatto col centro, mai una posizione
- *   M muta      — elencata, nessun contatto nelle giornate osservate
- *   A assente   — non elencata dal flusso SIRI in nessuna giornata osservata
- *   . senza dati — la settimana non ha giornate osservate: non si giudica
+ *   M muta      — elencata, nessun contatto nelle giornate contate
+ *   A assente   — non elencata dal flusso SIRI in nessuna giornata contata
+ *   . non giudicabile — meno di GIORNATE_MINIME giornate contate
  */
 export type StatoSettimana = "F" | "P" | "M" | "A" | ".";
 
 /**
- * Una giornata nella striscia:
- *   S in servizio · T si localizza · C collegata senza posizione · M muta
- *   - non elencata · . giornata non osservata (connettore fermo o a metà)
- *   ' ' giornata ancora da venire (settimana in corso)
+ * Una giornata nella striscia, sull'apparato:
+ *   S si localizza ed è su una corsa · T si localizza, senza corsa
+ *   C parla col centro senza posizione · M muta
+ *   - non elencata · . giornata non contata (connettore fermo o a metà)
+ *   ' ' giornata non ancora finita (oggi e i giorni a venire)
  */
 export type CarattereGiorno = "S" | "T" | "C" | "M" | "-" | "." | " ";
 
@@ -75,10 +79,10 @@ export type Categoria =
   | "fermata"         // si localizzava, non si localizza più
   | "ripresa"         // non si localizzava, ora sì
   | "guasta"          // non si localizza né prima né ora
-  | "nuova"           // prima volta nel flusso, nella finestra guardata
+  | "nuova"           // prima volta nel flusso, nelle settimane guardate
   | "uscita"          // c'era, questa settimana il flusso non la elenca più
   | "funziona"        // si localizza prima e ora
-  | "non_giudicabile";// settimana senza dati
+  | "non_giudicabile";// troppo poche giornate, o niente con cui confrontare
 
 /** L'ordine di lettura: prima le notizie da girare a qualcuno. */
 export const ORDINE_CATEGORIE: Categoria[] = [
@@ -89,7 +93,7 @@ export const ETICHETTE_CATEGORIA: Record<Categoria, { titolo: string; breve: str
   fermata: {
     titolo: "Ha smesso di localizzarsi", breve: "Si è fermata",
     perche: "Nella settimana precedente si localizzava, in questa no. È un guasto nuovo, oppure il mezzo "
-      + "è rimasto fermo: la nota dice quale dei due è più probabile.",
+      + "è rimasto fermo: la nota dice che cosa fa l'apparato e che cosa sa l'officina.",
   },
   ripresa: {
     titolo: "Ha ripreso a localizzarsi", breve: "Ripresa",
@@ -113,20 +117,48 @@ export const ETICHETTE_CATEGORIA: Record<Categoria, { titolo: string; breve: str
     perche: "Si localizza sia nella settimana precedente sia in questa.",
   },
   non_giudicabile: {
-    titolo: "Non giudicabile", breve: "Senza dati",
-    perche: "La settimana non ha giornate con abbastanza raccolta per giudicare.",
+    titolo: "Non giudicabile", breve: "Non giudicabile",
+    perche: "Troppo poche giornate contate per giudicare, oppure nessuna settimana precedente con cui confrontare.",
   },
 };
 
 /** Che cosa ha prodotto un intervento chiuso, misurato sull'apparato. */
-export type EsitoIntervento = "riuscito" | "gia_funzionava" | "senza_effetto" | "peggiorato" | "da_verificare";
+export type EsitoIntervento =
+  | "riuscito"        // era guasto prima, dopo si localizza
+  | "gia_funzionava"  // si localizzava già prima della chiusura
+  | "senza_effetto"   // era guasto, dopo continua a non localizzarsi
+  | "peggiorato"      // si localizzava prima, dopo no
+  | "ricaduta"        // dopo si è localizzato, poi ha smesso di nuovo
+  | "senza_confronto" // dopo si localizza, ma prima non c'erano giornate contate
+  | "da_verificare"   // troppo poche giornate dopo per dirlo
+  | "non_nel_flusso"; // la vettura non compare nel flusso SIRI
+
+export const ORDINE_ESITI_INTERVENTO: EsitoIntervento[] = [
+  "riuscito", "ricaduta", "senza_effetto", "peggiorato", "gia_funzionava", "senza_confronto",
+  "da_verificare", "non_nel_flusso",
+];
 
 export const ETICHETTE_ESITO_INTERVENTO: Record<EsitoIntervento, string> = {
   riuscito: "Riuscito: prima non si localizzava, dopo sì",
   gia_funzionava: "Si localizzava già prima",
   senza_effetto: "Senza effetto: dopo non si localizza",
-  peggiorato: "Dopo non si localizza più",
-  da_verificare: "Da verificare: troppe poche giornate dopo",
+  peggiorato: "Prima si localizzava, dopo no",
+  ricaduta: "Ricaduta: dopo si è localizzata, poi ha smesso di nuovo",
+  senza_confronto: "Dopo si localizza; prima nessuna giornata contata per confrontare",
+  da_verificare: "Da verificare: troppo poche giornate dopo",
+  non_nel_flusso: "La vettura non compare nel flusso SIRI",
+};
+
+/** La stessa cosa in minuscolo, da mettere in una frase dopo una virgola. */
+const ESITO_IN_FRASE: Record<EsitoIntervento, string> = {
+  riuscito: "riuscito, dopo si localizza",
+  gia_funzionava: "si localizzava già prima",
+  senza_effetto: "senza effetto, dopo non si localizza",
+  peggiorato: "prima si localizzava, dopo no",
+  ricaduta: "dopo si è localizzata, poi ha smesso di nuovo",
+  senza_confronto: "dopo si localizza, ma prima non c'erano giornate contate per confrontare",
+  da_verificare: "da verificare, troppo poche giornate dopo",
+  non_nel_flusso: "la vettura non compare nel flusso SIRI",
 };
 
 /** Un intervento AVM chiuso, come lo restituisce FleetCare. */
@@ -147,14 +179,19 @@ export interface InterventoGiudicato extends InterventoAvm {
   /** la giornata di esercizio della chiusura */
   giornoChiusura: string;
   esitoAvm: EsitoIntervento;
-  /** giornate osservate guardate prima della chiusura, e quante con posizione */
+  /** giornate contate guardate prima della chiusura, e quante con posizione */
   giorniPrima: number;
   posizionePrima: number;
-  /** giornate osservate dopo la chiusura, e quante con posizione */
+  /** se prima della chiusura c'era un tratto senza posizione: il guasto riparato */
+  guastoPrima: boolean;
+  /** giornate contate dopo la chiusura, quante con contatto e quante con posizione */
   giorniDopo: number;
+  giorniDopoConContatto: number;
   posizioneDopo: number;
   /** la prima giornata con posizione dopo la chiusura, se c'è */
   primaPosizioneDopo: string | null;
+  /** la prima giornata con posizione dopo il guasto, anche prima della chiusura (commessa chiusa in ritardo) */
+  ripresaIl: string | null;
 }
 
 export interface SintesiSettimana {
@@ -177,11 +214,11 @@ export interface VetturaControllo {
   settimana: SintesiSettimana;
   /** l'ultima settimana giudicabile prima di quella sotto controllo */
   prima: SintesiSettimana | null;
-  /** ripresa: prima giornata con posizione; fermata: ultima giornata con posizione */
+  /** ripresa: prima giornata con posizione; fermata: prima giornata senza */
   dal: string | null;
   /** ultima giornata con posizione nelle settimane guardate */
   ultimaPosizione: string | null;
-  /** giornate osservate dall'ultima posizione alla fine dei dati; null se mai nella finestra */
+  /** giornate contate dall'ultima posizione alla fine dei dati; null se mai nella finestra */
   giorniSenzaPosizione: number | null;
   /** 14 caratteri: settimana precedente (di calendario) + settimana sotto controllo */
   giorni: string;
@@ -200,7 +237,7 @@ export interface SettimanaDelControllo {
   giornateOsservate: number;
   giornateParziali: number;
   giornateSenzaDati: number;
-  /** giornate ancora da venire: solo per la settimana in corso */
+  /** giornate non ancora finite: oggi e i giorni a venire, solo per la settimana in corso */
   giornateFuture: number;
 }
 
@@ -215,9 +252,12 @@ export interface ControlloSettimanale {
   giornate: string[];
   /** le SETTIMANE_STORIA settimane della storia, dalla più vecchia */
   settimane: SettimanaDelControllo[];
+  /** su tutto il flusso: per un perimetro si ricontano con contaCategorie */
   conteggi: Record<Categoria, number>;
   vetture: VetturaControllo[];
+  /** gli interventi chiusi nelle settimane guardate, compresi quelli su vetture fuori dal flusso */
   interventi: InterventoGiudicato[];
+  /** la frase di sintesi su tutto il flusso: per un perimetro si riscrive con notaGenerale */
   nota: string;
   /** che cosa si è letto dall'officina al momento del calcolo (lo scrive il servizio) */
   officina?: { disponibile: boolean; motivo: string | null; tenant: string | null; lettoAlle: string; mezzi: number } | null;
@@ -244,6 +284,7 @@ export function lunediDi(giorno: string): string {
 export function eLunedi(giorno: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(giorno)
     && !Number.isNaN(new Date(`${giorno}T00:00:00Z`).getTime())
+    && new Date(`${giorno}T00:00:00Z`).toISOString().slice(0, 10) === giorno
     && lunediDi(giorno) === giorno;
 }
 
@@ -268,6 +309,11 @@ export function ddmm(giorno: string | null): string {
   return `${g}/${m}`;
 }
 
+/** «1 giornata», «3 giornate». */
+function giornate(n: number): string {
+  return `${n} ${n === 1 ? "giornata" : "giornate"}`;
+}
+
 /* ── Il calcolo ─────────────────────────────────────────────────────────── */
 
 export interface DatiControllo {
@@ -284,9 +330,16 @@ export interface DatiControllo {
   generatoIl?: string;
 }
 
-const CARATTERE: Record<EsitoGiorno, CarattereGiorno> = {
-  in_servizio: "S", traccia: "T", collegata: "C", muta: "M",
-};
+/**
+ * La giornata sull'apparato. Non è l'esito del diario: lì una corsa vale più
+ * di tutto, anche senza posizione (il codice corsa non dipende dal GPS); qui
+ * conta se l'apparato si è localizzato, e la corsa colora solo le giornate
+ * in cui si è localizzato.
+ */
+function carattereGiorno(r: RigaDiario): CarattereGiorno {
+  if (r.letturePosizione > 0) return r.lettureCorsa > 0 ? "S" : "T";
+  return r.lettureFresche > 0 ? "C" : "M";
+}
 
 function vuoti(): Record<Categoria, number> {
   return { fermata: 0, ripresa: 0, guasta: 0, nuova: 0, uscita: 0, funziona: 0, non_giudicabile: 0 };
@@ -316,31 +369,68 @@ export function andamentoSettimane(
   });
 }
 
-/** Il giudizio di un intervento, sulle giornate osservate della vettura. */
+/**
+ * Il giudizio di un intervento, sulle giornate contate della vettura.
+ *
+ * «Prima» non sono le sette giornate prima della chiusura: un apparato rotto
+ * due giorni prima della riparazione in quelle sette giornate si localizzava
+ * ancora, e l'intervento sembrerebbe inutile. Prima è il tratto dall'apertura
+ * della segnalazione o della commessa alla chiusura; senza apertura, le sette
+ * giornate contate prima. In quel tratto si cerca il guasto: almeno
+ * GIORNI_SMESSA giornate di fila senza posizione (o tutto il tratto, se è più
+ * corto). Se dopo il guasto la posizione torna, anche prima della chiusura
+ * (la commessa chiusa in ritardo), l'intervento è riuscito.
+ */
 export function giudicaIntervento(
   i: InterventoAvm,
   osservate: string[],
   posizioneIl: (g: string) => boolean,
+  contattoIl: (g: string) => boolean = posizioneIl,
   giornoChiusura: string = giornataDiIstante(new Date(i.chiusaIl)),
 ): InterventoGiudicato {
-  const prima = osservate.filter(g => g < giornoChiusura).slice(-7);
+  const giornoApertura = i.apertaIl ? giornataDiIstante(new Date(i.apertaIl)) : null;
+  const precedenti = osservate.filter(g => g < giornoChiusura);
+  let prima = giornoApertura && giornoApertura < giornoChiusura
+    ? precedenti.filter(g => g >= giornoApertura)
+    : [];
+  if (prima.length === 0) prima = precedenti.slice(-7);
   const dopo = osservate.filter(g => g > giornoChiusura);
-  const posizionePrima = prima.filter(posizioneIl).length;
+
+  /* Il guasto: l'ultimo tratto di giornate di fila senza posizione abbastanza lungo. */
+  const minimo = Math.min(GIORNI_SMESSA, prima.length);
+  let fila = 0;
+  let fineGuasto = -1;
+  prima.forEach((g, k) => {
+    if (posizioneIl(g)) { fila = 0; return; }
+    fila++;
+    if (minimo > 0 && fila >= minimo) fineGuasto = k;
+  });
+  const guastoPrima = fineGuasto >= 0;
+
+  const dopoIlGuasto = guastoPrima ? [...prima.slice(fineGuasto + 1), ...dopo] : dopo;
+  const conPosizioneDopoGuasto = dopoIlGuasto.filter(posizioneIl);
+  const ripresaIl = guastoPrima ? conPosizioneDopoGuasto[0] ?? null : null;
   const conPosDopo = dopo.filter(posizioneIl);
-  const posizioneDopo = conPosDopo.length;
+  const conContattoDopo = dopo.filter(contattoIl);
+  /* Abbastanza giornate per dire che non va: tre con contatto, o una settimana intera. */
+  const abbastanzaDopo = conContattoDopo.length >= GIORNATE_DOPO_MINIME || dopo.length >= 7;
+
+  /* La ricaduta: si è localizzata dopo, poi è tornata zitta per GIORNI_SMESSA giornate. */
+  const ultimaDopo = (guastoPrima ? conPosizioneDopoGuasto : conPosDopo).at(-1) ?? null;
+  const ricaduta = ultimaDopo != null && dopo.filter(g => g > ultimaDopo).length >= GIORNI_SMESSA;
 
   const esitoAvm: EsitoIntervento =
-    posizioneDopo > 0
-      ? (posizionePrima > 0 ? "gia_funzionava" : "riuscito")
-      : dopo.length < GIORNATE_DOPO_MINIME
-        ? "da_verificare"
-        : (posizionePrima > 0 ? "peggiorato" : "senza_effetto");
+    prima.length === 0
+      ? (conPosDopo.length ? (ricaduta ? "ricaduta" : "senza_confronto") : abbastanzaDopo ? "senza_effetto" : "da_verificare")
+      : guastoPrima
+        ? (ripresaIl ? (ricaduta ? "ricaduta" : "riuscito") : abbastanzaDopo ? "senza_effetto" : "da_verificare")
+        : (conPosDopo.length ? (ricaduta ? "ricaduta" : "gia_funzionava") : abbastanzaDopo ? "peggiorato" : "da_verificare");
 
   return {
     ...i, giornoChiusura, esitoAvm,
-    giorniPrima: prima.length, posizionePrima,
-    giorniDopo: dopo.length, posizioneDopo,
-    primaPosizioneDopo: conPosDopo[0] ?? null,
+    giorniPrima: prima.length, posizionePrima: prima.filter(posizioneIl).length, guastoPrima,
+    giorniDopo: dopo.length, giorniDopoConContatto: conContattoDopo.length, posizioneDopo: conPosDopo.length,
+    primaPosizioneDopo: conPosDopo[0] ?? null, ripresaIl,
   };
 }
 
@@ -350,19 +440,22 @@ function dataBreve(iso: string | null): string {
   return `${g}/${m}/${a}`;
 }
 
-/** La frase dell'officina da accodare alla nota, se c'è qualcosa da dire. */
-function notaOfficina(m: MezzoOfficina | null, esclusa: Esclusione | null): string | null {
+/** Il fermo in officina, detto in una frase: è la spiegazione che toglie ogni altra diagnosi. */
+function fermoInOfficina(m: MezzoOfficina): string {
+  return `Ferma in officina${m.fermoDal ? ` dal ${dataBreve(m.fermoDal)}` : ""}`
+    + `${m.fermoMotivo ? ` (${m.fermoMotivo})` : ""}${m.commessa ? `, commessa ${m.commessa}` : ""}: `
+    + "il silenzio dell'apparato si spiega col fermo, si riguarda al rientro in servizio.";
+}
+
+/** Le altre frasi dell'officina da accodare alla nota, se c'è qualcosa da dire. */
+function notaOfficina(m: MezzoOfficina | null, esclusa: Esclusione | null, fermoGiaDetto: boolean): string | null {
   if (esclusa) return esclusa.motivo === "fuori_parco"
     ? "Non è nel parco dell'officina: con ogni probabilità venduta o demolita."
     : "L'officina la dà dismessa.";
   if (!m) return null;
   const pezzi: string[] = [];
-  if (m.stato === "in_officina") {
-    pezzi.push(`Ferma in officina${m.fermoDal ? ` dal ${dataBreve(m.fermoDal)}` : ""}`
-      + `${m.fermoMotivo ? ` (${m.fermoMotivo})` : ""}${m.commessa ? `, commessa ${m.commessa}` : ""}.`);
-  } else if (m.stato === "riserva") {
-    pezzi.push("Di riserva per l'officina: può essere rimasta in rimessa.");
-  }
+  if (m.stato === "in_officina" && !fermoGiaDetto) pezzi.push(fermoInOfficina(m));
+  else if (m.stato === "riserva") pezzi.push("Di riserva per l'officina: può essere rimasta in rimessa.");
   if (m.segnalazioneAvm) {
     const s = m.segnalazioneAvm;
     pezzi.push(`Segnalazione AVM aperta in FleetCare: ${s.numero} (${s.fonte}${s.dal ? `, dal ${dataBreve(s.dal)}` : ""}).`);
@@ -380,7 +473,8 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
   const nellaFinestra = new Set(tutteLeGiornate);
 
   /* Quanta raccolta ha ogni giornata: il massimo dei campioni fra le vetture,
-   * come nel diario. Una giornata conta solo con almeno mezza raccolta. */
+   * come nel diario. Conta solo una giornata finita (oggi no) con almeno
+   * mezza raccolta. */
   const campioni = new Map<string, number>();
   const perVettura = new Map<string, Map<string, RigaDiario>>();
   for (const r of righe) {
@@ -390,14 +484,19 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
     if (!m) { m = new Map(); perVettura.set(r.vehicleRef, m); }
     m.set(r.giorno, r);
   }
-  const osservata = (g: string) => g <= oggi && (campioni.get(g) ?? 0) >= CAMPIONI_MINIMI_GIORNATA;
+  const osservata = (g: string) => g < oggi && (campioni.get(g) ?? 0) >= CAMPIONI_MINIMI_GIORNATA;
   const osservate = tutteLeGiornate.filter(osservata);
+  const inizioDati = osservate[0] ?? inizio;
+
+  /* Le giornate contate di ogni settimana, calcolate una volta sola. */
+  const giorniDi = new Map(lunediSettimane.map(l => [l, giornateDelPeriodo(l, spostaGiorni(l, 6))]));
+  const contateDi = new Map(lunediSettimane.map(l => [l, giorniDi.get(l)!.filter(osservata)]));
 
   const descriviSettimana = (lun: string): SettimanaDelControllo => {
-    const giorni = giornateDelPeriodo(lun, spostaGiorni(lun, 6));
-    const future = giorni.filter(g => g > oggi).length;
+    const giorni = giorniDi.get(lun) ?? giornateDelPeriodo(lun, spostaGiorni(lun, 6));
+    const future = giorni.filter(g => g >= oggi).length;
     const oss = giorni.filter(osservata).length;
-    const parziali = giorni.filter(g => g <= oggi && campioni.has(g) && !osservata(g)).length;
+    const parziali = giorni.filter(g => g < oggi && campioni.has(g) && !osservata(g)).length;
     return {
       lunedi: lun, domenica: spostaGiorni(lun, 6),
       giornateOsservate: oss, giornateParziali: parziali,
@@ -405,12 +504,18 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
     };
   };
   const settimane = lunediSettimane.map(descriviSettimana);
+  /* C'è stata almeno una settimana giudicabile prima di questa? Se no, è la
+   * prima settimana del diario: nessuna vettura è «nuova», non c'è confronto. */
+  const storiaPrima = settimane.slice(0, -1).some(s => s.giornateOsservate >= GIORNATE_MINIME);
   const precedenteLun = spostaGiorni(lunedi, -7);
   const giornateStriscia = giornateDelPeriodo(precedenteLun, fine);
 
-  /* Gli interventi per matricola, ordinati per chiusura. */
+  /* Gli interventi chiusi nelle settimane guardate, per matricola. Una
+   * chiusura dopo la domenica si giudica nelle settimane dopo, non in questa. */
   const interventiPer = new Map<string, InterventoAvm[]>();
   for (const i of dati.interventi ?? []) {
+    const giorno = giornataDiIstante(new Date(i.chiusaIl));
+    if (giorno < inizio || giorno > fine) continue;
     const l = interventiPer.get(i.matricola) ?? [];
     l.push(i);
     interventiPer.set(i.matricola, l);
@@ -419,19 +524,20 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
   const vetture: VetturaControllo[] = [];
   for (const [ref, giorniVettura] of perVettura) {
     const conPosizione = (g: string) => (giorniVettura.get(g)?.letturePosizione ?? 0) > 0;
+    const conContatto = (g: string) => (giorniVettura.get(g)?.lettureFresche ?? 0) > 0;
 
     const sintesi = (lun: string): SintesiSettimana => {
-      const giorni = giornateDelPeriodo(lun, spostaGiorni(lun, 6)).filter(osservata);
+      const giorni = contateDi.get(lun)!;
       const presenti = giorni.map(g => giorniVettura.get(g)).filter((r): r is RigaDiario => !!r);
       const s = {
         lunedi: lun,
         giornateOsservate: giorni.length,
         conContatto: presenti.filter(r => r.lettureFresche > 0).length,
         conPosizione: presenti.filter(r => r.letturePosizione > 0).length,
-        conCorsa: presenti.filter(r => r.lettureCorsa > 0).length,
+        conCorsa: presenti.filter(r => r.letturePosizione > 0 && r.lettureCorsa > 0).length,
         conErroreGps: presenti.filter(r => r.lettureErroreGps > 0).length,
       };
-      const stato: StatoSettimana = giorni.length === 0 ? "."
+      const stato: StatoSettimana = giorni.length < GIORNATE_MINIME ? "."
         : presenti.length === 0 ? "A"
           : s.conPosizione > 0 ? "F"
             : s.conContatto > 0 ? "P"
@@ -448,7 +554,7 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
     const categoria: Categoria =
       questa.stato === "." ? "non_giudicabile"
         : questa.stato === "A" ? (prima ? "uscita" : "non_giudicabile")
-          : !prima ? "nuova"
+          : !prima ? (storiaPrima ? "nuova" : "non_giudicabile")
             : funziona(prima) && funziona(questa) ? "funziona"
               : funziona(prima) ? "fermata"
                 : funziona(questa) ? "ripresa"
@@ -461,14 +567,15 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
       : null;
     const dal = categoria === "ripresa"
       ? giorniPos.find(g => g > spostaGiorni(prima!.lunedi, 6)) ?? null
-      : categoria === "fermata" ? ultimaPosizione
+      : categoria === "fermata" && ultimaPosizione
+        ? osservate.find(g => g > ultimaPosizione) ?? null
         : null;
 
     const giorni = giornateStriscia.map((g): CarattereGiorno => {
-      if (g > oggi) return " ";
+      if (g >= oggi) return " ";
       if (!osservata(g)) return ".";
       const r = giorniVettura.get(g);
-      return r ? CARATTERE[esitoGiorno(r)] : "-";
+      return r ? carattereGiorno(r) : "-";
     }).join("");
     const storia = storiaSintesi.map(s => s.stato).join("");
 
@@ -479,8 +586,7 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
     const esclusa = escl && (escl.motivo === "fuori_parco" || escl.motivo === "dismesso") ? escl : null;
 
     const interventi = (interventiPer.get(ref) ?? [])
-      .map(i => giudicaIntervento(i, osservate, conPosizione))
-      .filter(i => i.giornoChiusura >= inizio)
+      .map(i => giudicaIntervento(i, osservate, conPosizione, conContatto))
       .sort((a, b) => a.chiusaIl.localeCompare(b.chiusaIl));
 
     const id = identitaVettura(ref);
@@ -489,7 +595,7 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
       categoria, settimana: questa, prima, dal, ultimaPosizione, giorniSenzaPosizione,
       giorni, storia, officina: mezzoOfficina, esclusa, interventi, nota: "",
     };
-    v.nota = scriviNota(v, osservate, conPosizione, inizio, notaOfficina(mezzoOfficina, esclusa));
+    v.nota = scriviNota(v, osservate, conPosizione, inizioDati, storiaPrima);
     vetture.push(v);
   }
 
@@ -498,10 +604,22 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
     (peso.get(a.categoria)! - peso.get(b.categoria)!)
     || a.vehicleRef.localeCompare(b.vehicleRef, undefined, { numeric: true }));
 
+  /* Gli interventi su vetture che il flusso non ha mai elencato nelle
+   * settimane guardate: sono spesso proprio quelle da far censire a Mizar, e
+   * un intervento che sparisce dal foglio è peggio di uno senza giudizio. */
+  const conRighe = new Set(perVettura.keys());
+  const fuoriFlusso: InterventoGiudicato[] = [];
+  for (const [ref, lista] of interventiPer) {
+    if (conRighe.has(ref)) continue;
+    for (const i of lista) {
+      fuoriFlusso.push({ ...giudicaIntervento(i, [], () => false), esitoAvm: "non_nel_flusso" });
+    }
+  }
+
   const conteggi = contaCategorie(vetture);
   const settimana = settimane[settimane.length - 1];
   const chiusa = settimanaChiusa(lunedi, oggi);
-  const interventi = vetture.flatMap(v => v.interventi)
+  const interventi = [...vetture.flatMap(v => v.interventi), ...fuoriFlusso]
     .sort((a, b) => a.chiusaIl.localeCompare(b.chiusaIl));
 
   return {
@@ -520,21 +638,39 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
 
 /* ── Le parole ──────────────────────────────────────────────────────────── */
 
-function notaGenerale(
+const FRASE_CATEGORIA: Record<Categoria, [string, string]> = {
+  fermata: ["ha smesso di localizzarsi", "hanno smesso di localizzarsi"],
+  ripresa: ["ha ripreso a localizzarsi", "hanno ripreso a localizzarsi"],
+  guasta: ["ancora non si localizza", "ancora non si localizzano"],
+  nuova: ["è nuova nel flusso", "sono nuove nel flusso"],
+  uscita: ["è uscita dal flusso", "sono uscite dal flusso"],
+  funziona: ["funziona", "funzionano"],
+  non_giudicabile: ["non si può giudicare", "non si possono giudicare"],
+};
+
+/**
+ * La frase di sintesi della settimana. Si scrive sulle vetture che si stanno
+ * guardando: la pagina e il foglio Excel la richiamano col perimetro scelto,
+ * così la frase e le schede contano le stesse vetture.
+ */
+export function notaGenerale(
   s: SettimanaDelControllo, chiusa: boolean, c: Record<Categoria, number>, totale: number,
 ): string {
   const periodo = `dal ${ddmm(s.lunedi)} al ${ddmm(s.domenica)}`;
   if (s.giornateOsservate === 0) {
-    return `Nessuna giornata con abbastanza raccolta ${periodo}: la settimana non si può giudicare.`;
+    return chiusa
+      ? `Nessuna giornata con abbastanza raccolta ${periodo}: la settimana non si può giudicare.`
+      : `La settimana ${periodo} non ha ancora giornate finite con abbastanza raccolta.`;
   }
-  const pezzi = [
-    `${totale} vetture ${periodo}${chiusa ? "" : " (settimana in corso, risultato provvisorio)"}:`,
-    `${c.ripresa} hanno ripreso a localizzarsi, ${c.fermata} hanno smesso,`,
-    `${c.guasta} ancora non si localizzano, ${c.funziona} funzionano.`,
-  ];
-  if (s.giornateOsservate < 7 - s.giornateFuture) {
-    pezzi.push(`Giornate contate: ${s.giornateOsservate} su ${7 - s.giornateFuture}`
-      + " (le altre senza raccolta sufficiente).");
+  const voci = ORDINE_CATEGORIE.filter(k => c[k] > 0)
+    .map(k => `${c[k]} ${FRASE_CATEGORIA[k][c[k] === 1 ? 0 : 1]}`);
+  const pezzi = [`${totale} ${totale === 1 ? "vettura" : "vetture"} ${periodo}`
+    + `${chiusa ? "" : " (settimana in corso, risultato provvisorio)"}: ${voci.join(", ")}.`];
+  const possibili = 7 - s.giornateFuture;
+  if (s.giornateOsservate < GIORNATE_MINIME) {
+    pezzi.push(`Solo ${giornate(s.giornateOsservate)} contate: ne servono almeno ${GIORNATE_MINIME} per giudicare.`);
+  } else if (s.giornateOsservate < possibili) {
+    pezzi.push(`Giornate contate: ${s.giornateOsservate} su ${possibili} (le altre senza raccolta sufficiente).`);
   }
   return pezzi.join(" ");
 }
@@ -545,68 +681,94 @@ function notaGenerale(
  */
 function scriviNota(
   v: VetturaControllo, osservate: string[], conPosizione: (g: string) => boolean,
-  inizio: string, officina: string | null,
+  inizioDati: string, storiaPrima: boolean,
 ): string {
   const s = v.settimana;
   const pezzi: string[] = [];
   const corse = s.conCorsa > 0
     ? `con corse in ${s.conCorsa}`
     : "senza corse agganciate (turno non qualificato a bordo?)";
+  /* Se l'officina dice che il mezzo è fermo, la diagnosi dell'apparato non
+   * serve: dentro l'officina l'apparato tace o non vede il cielo. */
+  const fermo = v.officina?.stato === "in_officina" && (v.categoria === "fermata" || v.categoria === "guasta");
 
   switch (v.categoria) {
     case "ripresa": {
-      /* Da quanto non si localizzava: giornate osservate fra l'ultima
+      /* Da quanto non si localizzava: giornate contate fra l'ultima
        * posizione prima della ripresa e la ripresa stessa. */
       const precedente = v.dal ? osservate.filter(g => g < v.dal! && conPosizione(g)).pop() : undefined;
       const buco = v.dal && precedente
         ? osservate.filter(g => g > precedente && g < v.dal!).length
         : null;
-      pezzi.push(`Si localizza di nuovo dal ${ddmm(v.dal)}: ${s.conPosizione} giornate su ${s.giornateOsservate}, ${corse}.`);
+      pezzi.push(`Si localizza di nuovo dal ${ddmm(v.dal)}: ${s.conPosizione} su ${giornate(s.giornateOsservate)}, ${corse}.`);
       pezzi.push(buco != null
-        ? `Prima non si localizzava da ${buco} giornate osservate (ultima posizione il ${ddmm(precedente!)}).`
-        : `Non si localizzava in nessuna giornata dal ${ddmm(inizio)}.`);
+        ? `Prima non si localizzava da ${giornate(buco)} contate (ultima posizione il ${ddmm(precedente!)}).`
+        : `Non si localizzava in nessuna giornata contata dal ${ddmm(inizioDati)}.`);
       break;
     }
     case "fermata":
-      pezzi.push(`Ultima posizione il ${ddmm(v.dal)}; da allora ${v.giorniSenzaPosizione} giornate osservate senza.`);
-      pezzi.push(s.stato === "P"
+      pezzi.push(`Ultima posizione il ${ddmm(v.ultimaPosizione)}; da allora ${giornate(v.giorniSenzaPosizione ?? 0)} contate senza.`);
+      if (fermo) pezzi.push(fermoInOfficina(v.officina!));
+      else pezzi.push(s.stato === "P"
         ? `Parla col centro ma non si localizza${s.conErroreGps ? ", con errore GPS dichiarato" : ""}: `
           + "da guardare antenna e GPS."
         : "Non dà più segno: apparato spento, SIM, oppure mezzo rimasto fermo in rimessa.");
       break;
     case "guasta":
-      if (s.stato === "P") {
-        pezzi.push(s.conErroreGps
-          ? `Parla col centro in ${s.conContatto} giornate ma non si localizza, con errore GPS: antenna.`
-          : `Parla col centro in ${s.conContatto} giornate ma non si localizza, senza errori dichiarati: `
-            + "attivazione al centro Mizar.");
+      if (fermo) {
+        pezzi.push(fermoInOfficina(v.officina!));
+      } else if (s.stato === "P") {
+        pezzi.push(v.ultimaPosizione
+          /* Si è già localizzata: il centro la conosce, non è l'attivazione. */
+          ? `Parla col centro in ${giornate(s.conContatto)} ma non si localizza dal ${ddmm(v.ultimaPosizione)}`
+            + `${s.conErroreGps ? ", con errore GPS" : ""}: antenna o apparato, non l'attivazione.`
+          : s.conErroreGps
+            ? `Parla col centro in ${giornate(s.conContatto)} ma non si localizza, con errore GPS: antenna.`
+            : `Parla col centro in ${giornate(s.conContatto)} ma non si è mai localizzata, senza errori dichiarati: `
+              + "attivazione al centro Mizar.");
       } else {
         pezzi.push("Nessun contatto col centro: apparato spento, SIM, o mezzo fermo.");
       }
-      pezzi.push(v.ultimaPosizione
-        ? `Ultima posizione il ${ddmm(v.ultimaPosizione)}.`
-        : `Nessuna posizione dal ${ddmm(inizio)}.`);
+      if (!(s.stato === "P" && v.ultimaPosizione && !fermo)) {
+        pezzi.push(v.ultimaPosizione
+          ? `Ultima posizione il ${ddmm(v.ultimaPosizione)}.`
+          : `Nessuna posizione nelle giornate contate dal ${ddmm(inizioDati)}.`);
+      }
       break;
     case "funziona":
-      pezzi.push(`Si localizza in ${s.conPosizione} giornate su ${s.giornateOsservate}, ${corse}.`);
+      pezzi.push(`Si localizza in ${s.conPosizione} su ${giornate(s.giornateOsservate)}, ${corse}.`);
       break;
     case "nuova":
-      pezzi.push(`Compare nel flusso SIRI per la prima volta dal ${ddmm(inizio)}: `
-        + (s.stato === "F" ? `si localizza in ${s.conPosizione} giornate su ${s.giornateOsservate}.`
-          : s.stato === "P" ? "parla col centro ma non si localizza." : "elencata ma muta."));
+      pezzi.push(`Non compariva nel flusso SIRI nelle giornate contate dal ${ddmm(inizioDati)}: `
+        + (s.stato === "F" ? `ora si localizza in ${s.conPosizione} su ${giornate(s.giornateOsservate)}.`
+          : s.stato === "P" ? "ora parla col centro ma non si localizza." : "ora è elencata ma muta."));
       break;
     case "uscita":
       pezzi.push(`Il flusso SIRI non la elenca più in questa settimana${v.ultimaPosizione
         ? `; ultima posizione il ${ddmm(v.ultimaPosizione)}` : ""}.`);
       break;
     case "non_giudicabile":
-      pezzi.push("Settimana senza raccolta sufficiente: non si può giudicare.");
+      pezzi.push(s.stato === "."
+        ? (s.giornateOsservate === 0
+          ? "Settimana senza giornate contate: non si può giudicare."
+          : `Solo ${giornate(s.giornateOsservate)} contate in settimana: troppo poche per giudicare.`)
+        : s.stato === "A"
+          ? "Non elencata dal flusso SIRI in nessuna giornata contata."
+          : !storiaPrima
+            ? "Prima settimana del diario: nessuna settimana precedente con cui confrontare."
+            : "Nessuna settimana precedente con cui confrontare.");
       break;
   }
+  /* Funziona o ripresa, ma da qualche giornata non si localizza più: da tenere d'occhio. */
+  if ((v.categoria === "funziona" || v.categoria === "ripresa")
+      && v.giorniSenzaPosizione != null && v.giorniSenzaPosizione >= GIORNI_SMESSA) {
+    pezzi.push(`Ma dall'ultima posizione (${ddmm(v.ultimaPosizione)}) sono passate ${giornate(v.giorniSenzaPosizione)} `
+      + "contate senza: da tenere d'occhio.");
+  }
+  const officina = notaOfficina(v.officina, v.esclusa, fermo);
   if (officina) pezzi.push(officina);
   for (const i of v.interventi) {
-    pezzi.push(`Intervento ${i.riferimento} chiuso il ${ddmm(i.giornoChiusura)}: `
-      + `${ETICHETTE_ESITO_INTERVENTO[i.esitoAvm].toLowerCase()}.`);
+    pezzi.push(`Intervento ${i.riferimento} chiuso il ${ddmm(i.giornoChiusura)}, ${ESITO_IN_FRASE[i.esitoAvm]}.`);
   }
   return pezzi.join(" ");
 }

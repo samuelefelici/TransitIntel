@@ -120,6 +120,19 @@ describe("il CSV del controllo", () => {
     expect(cellaCsv("+39")).toBe("'+39");
     expect(cellaCsv("@a")).toBe("'@a");
     expect(cellaCsv("263")).toBe("263");
-    expect(csv).toContain(`"'-------TTTTTTT"`);
+  });
+
+  it("le strisce non hanno bisogno dell'apostrofo: sono tutte lunghe 14", () => {
+    expect(csv).toContain('"_______TTTTTTT"');
+    expect(csv).not.toContain("'-");
+    const giorni = csv.split("\r\n").slice(1).map(r => r.split(";")[14].replace(/"/g, ""));
+    expect(giorni.every(g => g.length === 14)).toBe(true);
+  });
+
+  it("la frase di sintesi del foglio conta le vetture esportate", () => {
+    const solo = esportaControlloXlsx(c, c.vetture.filter(x => /^\d{1,4}$/.test(x.vehicleRef)));
+    const riepilogo = voci(solo).get("xl/worksheets/sheet1.xml")!;
+    expect(riepilogo).toContain("4 vetture dal 05/10 al 11/10");
+    expect(riepilogo).not.toContain("5 vetture dal 05/10");
   });
 });

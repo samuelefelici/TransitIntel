@@ -324,6 +324,9 @@ export async function leggiInterventiAvm(
       elenco: [],
     };
   }
+  /* La cache non cresce: via le voci scadute, e al massimo venti periodi. */
+  for (const [k, e] of cacheInterventi) if (now - e.at >= DURATA_CACHE_MS) cacheInterventi.delete(k);
+  while (cacheInterventi.size >= 20) cacheInterventi.delete(cacheInterventi.keys().next().value!);
   cacheInterventi.set(chiave, { at: now, v });
   return v;
 }

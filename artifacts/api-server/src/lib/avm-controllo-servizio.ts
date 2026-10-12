@@ -17,6 +17,14 @@
  * diario (fino a ARRETRATO_SETTIMANE), così l'archivio non parte vuoto.
  * Quelle istantanee portano lo stato dell'officina del giorno in cui sono
  * state calcolate, non di allora: è scritto nel controllo.
+ *
+ * Che cosa non si congela:
+ *   · una settimana letta senza vetture, che nel diario ha righe: è una
+ *     lettura fallita, non una settimana vuota, e si riprova al giro dopo;
+ *   · una settimana calcolata senza FleetCare (parco o interventi non
+ *     leggibili), per la settimana dopo la chiusura: si riprova ogni ora.
+ *     Passata quella, si archivia lo stesso, e appena FleetCare torna
+ *     leggibile l'istantanea incompleta si ricalcola e si sovrascrive.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { leggiDiario, settimaneConDati } from "./avm-diario-store.js";
@@ -24,12 +32,24 @@ import {
   calcolaControllo, inizioFinestra, spostaGiorni, ultimaSettimanaChiusa,
   type ControlloSettimanale,
 } from "./avm-controllo.js";
-import { salvaControllo, settimaneArchiviate } from "./avm-controllo-store.js";
+import { salvaControllo, settimaneArchiviate, settimaneIncomplete } from "./avm-controllo-store.js";
 import { leggiParcoOfficina, leggiInterventiAvm, parcoCredibile, type MezzoOfficina, type ParcoOfficina } from "./officina.js";
 import { giornataOggi } from "./service-day.js";
 
 /** Quante settimane all'indietro l'archivio recupera da sé. */
 export const ARRETRATO_SETTIMANE = 12;
+
+/** Giornate dopo la domenica in cui si aspetta FleetCare prima di archiviare senza. */
+export const ATTESA_FLEETCARE_GIORNI = 7;
+
+/** Ogni quanto si riprovano le istantanee archiviate senza FleetCare. */
+const RIPROVA_INCOMPLETE_MS = 6 * 60 * 60 * 1000;
+let ultimaRiprova = 0;
+
+/** Il controllo ha letto sia il parco dell'officina sia gli interventi? */
+export function controlloCompleto(c: ControlloSettimanale): boolean {
+  return !!c.officina?.disponibile && !!c.fonteInterventi?.disponibile;
+}
 
 function mappaOfficina(parco: ParcoOfficina): Map<string, MezzoOfficina> | null {
   return parco.disponibile ? new Map(parco.mezzi.map(m => [m.matricola, m])) : null;
@@ -77,14 +97,32 @@ export function assicuraArchivio(now: Date = new Date()): Promise<string[]> {
     const archiviate: string[] = [];
     let errore: string | null = null;
     try {
-      const ultima = ultimaSettimanaChiusa(giornataOggi(now));
+      const oggi = giornataOggi(now);
+      const ultima = ultimaSettimanaChiusa(oggi);
       const primo = spostaGiorni(ultima, -7 * (ARRETRATO_SETTIMANE - 1));
       const conDati = new Set(await settimaneConDati(primo));
       const fatte = await settimaneArchiviate(primo);
       const daFare = [...conDati].filter(l => l <= ultima && !fatte.has(l)).sort();
       for (const lunedi of daFare) {
         const c = await calcolaControlloDellaSettimana(lunedi, now);
+        /* Righe nel diario ma nessuna vettura letta: la lettura è fallita. */
+        if (c.vetture.length === 0) continue;
+        /* Senza FleetCare si aspetta, finché la settimana è fresca. */
+        const inAttesa = oggi <= spostaGiorni(lunedi, 6 + ATTESA_FLEETCARE_GIORNI);
+        if (!controlloCompleto(c) && inAttesa) continue;
         if (await salvaControllo(c)) archiviate.push(lunedi);
+      }
+
+      /* Le istantanee archiviate senza FleetCare: si rifanno quando FleetCare
+       * torna leggibile, e solo se il nuovo calcolo è completo. */
+      if (now.getTime() - ultimaRiprova >= RIPROVA_INCOMPLETE_MS) {
+        ultimaRiprova = now.getTime();
+        for (const lunedi of await settimaneIncomplete(primo)) {
+          const c = await calcolaControlloDellaSettimana(lunedi, now);
+          if (c.vetture.length > 0 && controlloCompleto(c) && await salvaControllo(c, true)) {
+            archiviate.push(lunedi);
+          }
+        }
       }
       if (archiviate.length) {
         console.log(`[siri] controllo AVM archiviato per le settimane: ${archiviate.join(", ")}`);

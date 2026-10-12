@@ -14,7 +14,8 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import {
-  ETICHETTE_CATEGORIA, ETICHETTE_ESITO_INTERVENTO, ORDINE_CATEGORIE, andamentoSettimane, contaCategorie,
+  ETICHETTE_CATEGORIA, ETICHETTE_ESITO_INTERVENTO, ORDINE_CATEGORIE, ORDINE_ESITI_INTERVENTO,
+  andamentoSettimane, contaCategorie, notaGenerale,
   type Categoria, type ControlloSettimanale, type EsitoIntervento, type VetturaControllo,
 } from "./avm-controllo.js";
 import { ETICHETTE_ESCLUSIONE } from "./avm-diario.js";
@@ -35,15 +36,17 @@ export const COLORE_STATO_SETTIMANA: Record<string, string | null> = {
   F: "34D399", P: "FBBF24", M: "3F3F46", A: "E4E4E7", ".": null,
 };
 export const COLORE_ESITO_INTERVENTO: Record<EsitoIntervento, string> = {
-  riuscito: "34D399", gia_funzionava: "7DD3FC", senza_effetto: "F87171", peggiorato: "FB923C", da_verificare: "FBBF24",
+  riuscito: "34D399", gia_funzionava: "7DD3FC", senza_effetto: "F87171", peggiorato: "FB923C",
+  ricaduta: "F87171", senza_confronto: "A7F3D0", da_verificare: "FBBF24", non_nel_flusso: "D4D4D8",
 };
 const TESTO_CARATTERE: Array<[string, string]> = [
-  ["S", "in servizio (corsa agganciata)"], ["T", "si localizza, senza corsa"], ["C", "parla col centro, senza posizione"],
+  ["S", "si localizza ed è su una corsa"], ["T", "si localizza, senza corsa"], ["C", "parla col centro, senza posizione"],
   ["M", "elencata, nessun contatto"], ["-", "non elencata dal flusso SIRI"], [".", "giornata non contata (raccolta a metà o assente)"],
+  [" ", "giornata non ancora finita"],
 ];
 const TESTO_STATO: Array<[string, string]> = [
   ["F", "si è localizzata almeno un giorno"], ["P", "ha parlato col centro, mai localizzata"],
-  ["M", "nessun contatto"], ["A", "non elencata dal flusso SIRI"], [".", "settimana senza raccolta"],
+  ["M", "nessun contatto"], ["A", "non elencata dal flusso SIRI"], [".", "meno di 3 giornate contate: non si giudica"],
 ];
 
 function ddmm(g: string): string {
@@ -114,8 +117,11 @@ export function esportaControlloXlsx(
   const sett = c.settimana;
   const statoSettimana = sett.chiusa ? "settimana chiusa" : "settimana in corso: risultato provvisorio";
   const origine = info.archiviato ? `archiviato il ${oraLocale(c.generatoIl)}` : `calcolato il ${oraLocale(c.generatoIl)}`;
-  const sottotitolo = `Settimana dal ${ddmmyyyy(sett.lunedi)} al ${ddmmyyyy(sett.domenica)} · ${statoSettimana} · `
-    + `${vetture.length} vetture${info.perimetro ? ` (${info.perimetro})` : ""} · ${origine}`;
+  /* Il sottotitolo sta su due righe della banda: in una sola, dentro celle
+   * unite che Excel non lascia traboccare, il perimetro e l'origine sparivano. */
+  const sottotitolo = `Settimana dal ${ddmmyyyy(sett.lunedi)} al ${ddmmyyyy(sett.domenica)} · ${statoSettimana}`;
+  const sottotitolo2 = `${vetture.length} ${vetture.length === 1 ? "vettura" : "vetture"}`
+    + `${info.perimetro ? ` (${info.perimetro})` : ""} · ${origine}`;
   const conteggi = contaCategorie(vetture);
 
   /* ── Foglio 1: Riepilogo ─────────────────────────────────────────────── */
@@ -126,13 +132,14 @@ export function esportaControlloXlsx(
   R.push(banda());
   R.push(banda("Controllo settimanale AVM", S.titolo));
   R.push(banda(sottotitolo, S.sottotitolo));
-  R.push(banda());
+  R.push(banda(sottotitolo2, S.sottotitolo));
   R.push([]);
   R.push([{ v: "Come leggere", s: S.h2 }]);
   R.push([{ v: "Ogni vettura è confrontata con l'ultima settimana in cui si poteva giudicare. Il metro è l'apparato: "
     + "funziona chi si è localizzato almeno in una giornata contata; la corsa dipende dal conducente e sta nella nota. "
     + "Una giornata conta solo se il connettore l'ha ascoltata almeno per metà.", s: S.testo }]);
-  R.push([{ v: c.nota, s: S.testoTenue }]);
+  /* La frase di sintesi sulle vetture esportate, come la tabella sotto. */
+  R.push([{ v: notaGenerale(sett, sett.chiusa, conteggi, vetture.length), s: S.testoTenue }]);
   R.push([]);
 
   R.push([{ v: "Le categorie della settimana", s: S.h2 }]);
@@ -157,7 +164,9 @@ export function esportaControlloXlsx(
   R.push([]);
 
   const perimetroRef = new Set(vetture.map(v => v.vehicleRef));
-  const interventi = c.interventi.filter(i => perimetroRef.has(i.matricola));
+  /* Gli interventi delle vetture esportate, più quelli su vetture che il
+   * flusso non elenca (non hanno una riga da filtrare): restano visibili. */
+  const interventi = c.interventi.filter(i => perimetroRef.has(i.matricola) || i.esitoAvm === "non_nel_flusso");
   R.push([{ v: "Interventi AVM chiusi (FleetCare)", s: S.h2 }]);
   if (c.fonteInterventi && !c.fonteInterventi.disponibile) {
     R.push([{ v: c.fonteInterventi.motivo ?? "Interventi non disponibili.", s: S.testoTenue }]);
@@ -165,7 +174,7 @@ export function esportaControlloXlsx(
     R.push([{ v: "Nessun intervento AVM chiuso nelle settimane guardate, per le vetture esportate.", s: S.testoTenue }]);
   } else {
     R.push([{ v: "Esito sull'apparato", s: S.intestazione }, { v: "Interventi", s: S.intestazioneCentro }]);
-    for (const e of Object.keys(ETICHETTE_ESITO_INTERVENTO) as EsitoIntervento[]) {
+    for (const e of ORDINE_ESITI_INTERVENTO) {
       const n = interventi.filter(i => i.esitoAvm === e).length;
       if (n) R.push([{ v: ETICHETTE_ESITO_INTERVENTO[e], s: colorato(COLORE_ESITO_INTERVENTO[e], { bold: true }) }, { v: n, s: S.numero }]);
     }
@@ -189,7 +198,7 @@ export function esportaControlloXlsx(
     righe: R,
     larghezze: [34, 14, 70, 16, 12, 14, 12, 12],
     altezze: { 1: 18, 2: 30, 3: 18, 4: 18, 7: 48, 8: 30 },
-    unioni: ["D2:H2", "D3:H3", "A7:H7", "A8:H8"],
+    unioni: ["D2:H2", "D3:H3", "D4:H4", "A7:H7", "A8:H8"],
     immagine: {
       id: 1, cella: "A1",
       larghezzaPx: 200, altezzaPx: Math.round(200 * LOGO_CERBERO_PX.altezza / LOGO_CERBERO_PX.larghezza),
@@ -273,6 +282,7 @@ export function esportaControlloXlsx(
 
 /** Le colonne del CSV, una riga per vettura: per chi deve incrociare i dati. */
 export function esportaControlloCsv(c: ControlloSettimanale, vetture: VetturaControllo[] = c.vetture): string {
+  /* giorni: S T C M come sulla pagina, «_» non elencata, «.» non contata, « » non ancora finita */
   const testata = ["matricola", "codice", "azienda", "mezzo", "categoria", "dal", "stato_settimana",
     "giornate_contate", "giornate_con_posizione", "giornate_con_corsa", "settimana_prima", "stato_prima",
     "ultima_posizione", "giornate_senza_posizione", "giorni", "storia", "officina", "targa",
@@ -281,7 +291,7 @@ export function esportaControlloCsv(c: ControlloSettimanale, vetture: VetturaCon
     v.vehicleRef, v.codice ?? "", v.azienda, v.mezzo ?? "", ETICHETTE_CATEGORIA[v.categoria].breve, v.dal ?? "",
     v.settimana.stato, v.settimana.giornateOsservate, v.settimana.conPosizione, v.settimana.conCorsa,
     v.prima?.lunedi ?? "", v.prima?.stato ?? "", v.ultimaPosizione ?? "", v.giorniSenzaPosizione ?? "",
-    v.giorni, v.storia, officinaInBreve(v), v.officina?.targa ?? "",
+    strisciaCsv(v.giorni), v.storia, officinaInBreve(v), v.officina?.targa ?? "",
     v.interventi.map(i => `${i.riferimento} ${i.giornoChiusura} ${i.esitoAvm}`).join(" | "), v.nota,
   ]);
   return "﻿" + [testata, ...righe]
@@ -290,11 +300,19 @@ export function esportaControlloCsv(c: ControlloSettimanale, vetture: VetturaCon
 }
 
 /**
- * Una cella CSV che Excel non scambia per una formula. Le strisce possono
- * cominciare con «-» (vettura non elencata), e Excel legge «-------TTT»
- * come un'espressione; peggio, un testo che comincia con = + - @ è il varco
- * classico dell'iniezione di formule. L'apostrofo davanti lo fa leggere come
- * testo e Excel non lo mostra.
+ * La striscia delle giornate nel CSV: «-» (non elencata) diventa «_», così
+ * nessuna striscia comincia con un segno che Excel legge come formula, e
+ * nessuna ha bisogno dell'apostrofo che la renderebbe lunga 15 caratteri
+ * invece di 14, sfasando i giorni per chi la legge con un programma.
+ */
+export function strisciaCsv(giorni: string): string {
+  return giorni.replace(/-/g, "_");
+}
+
+/**
+ * Una cella CSV che Excel non scambia per una formula: un testo che comincia
+ * con = + - @ è il varco classico dell'iniezione di formule. L'apostrofo
+ * davanti lo fa leggere come testo.
  */
 export function cellaCsv(x: unknown): string {
   const s = String(x ?? "");

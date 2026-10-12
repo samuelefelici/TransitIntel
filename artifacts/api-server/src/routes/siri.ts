@@ -54,7 +54,7 @@ import {
 } from "../lib/avm-diario";
 import { esportaDiarioXlsx } from "../lib/avm-diario-xlsx";
 import {
-  eLunedi, lunediDi, ultimaSettimanaChiusa, type ControlloSettimanale, type VetturaControllo,
+  eLunedi, lunediDi, spostaGiorni, ultimaSettimanaChiusa, type ControlloSettimanale, type VetturaControllo,
 } from "../lib/avm-controllo";
 import { leggiControllo, elencoControlli, erroreArchivioControlli } from "../lib/avm-controllo-store";
 import { calcolaControlloDellaSettimana, statoArchivioAutomatico } from "../lib/avm-controllo-servizio";
@@ -1453,6 +1453,13 @@ router.get("/siri/parco/controllo", async (req, res): Promise<void> => {
     }
     if (lunedi > lunediDi(oggi)) {
       res.status(400).json({ error: "Quella settimana non è ancora cominciata." });
+      return;
+    }
+    /* Un anno indietro basta e avanza: il diario parte da settembre 2026, e una
+     * settimana arbitraria nel passato farebbe leggere a FleetCare decenni di
+     * interventi per niente. */
+    if (lunedi < spostaGiorni(ultimaSettimanaChiusa(oggi), -7 * 52)) {
+      res.status(400).json({ error: "Il controllo settimanale guarda al massimo un anno indietro." });
       return;
     }
     const ricalcola = req.query.ricalcola === "1";

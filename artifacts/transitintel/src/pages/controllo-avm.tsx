@@ -24,7 +24,9 @@ import { apiFetch, getApiBase } from "@/lib/api";
 /* ── I tipi, come li manda l'API (lib/avm-controllo.ts) ─────────────────── */
 
 type Categoria = "fermata" | "ripresa" | "guasta" | "nuova" | "uscita" | "funziona" | "non_giudicabile";
-type EsitoIntervento = "riuscito" | "gia_funzionava" | "senza_effetto" | "peggiorato" | "da_verificare";
+type EsitoIntervento =
+  | "riuscito" | "gia_funzionava" | "senza_effetto" | "peggiorato" | "ricaduta"
+  | "senza_confronto" | "da_verificare" | "non_nel_flusso";
 type StatoOfficina = "in_servizio" | "riserva" | "in_officina" | "dismesso";
 
 interface Sintesi {
@@ -102,7 +104,12 @@ interface Resp {
 }
 
 interface RespArchivio {
-  settimane: Array<{ lunedi: string; generatoIl: string; versione: number; conteggi: Partial<Record<Categoria, number>> }>;
+  settimane: Array<{
+    lunedi: string; generatoIl: string; versione: number;
+    conteggi: Partial<Record<Categoria, number>>;
+    /* solo Conerobus, escluse fuori parco e dismesse; assente se l'API è più vecchia della pagina */
+    conteggiConerobus?: Partial<Record<Categoria, number>>;
+  }>;
   errore: string | null;
 }
 
@@ -121,8 +128,8 @@ const CATEGORIE: Record<Categoria, { titolo: string; breve: string; colore: stri
     perche: "il flusso non la elenca più" },
   funziona: { titolo: "Funziona", breve: "Funziona", colore: "#7dd3fc", fondo: "rgba(125,211,252,0.12)", icona: Check,
     perche: "si localizza prima e ora" },
-  non_giudicabile: { titolo: "Non giudicabile", breve: "Senza dati", colore: "#71717a", fondo: "rgba(113,113,122,0.12)", icona: HelpCircle,
-    perche: "settimana senza raccolta" },
+  non_giudicabile: { titolo: "Non giudicabile", breve: "Non giudicabile", colore: "#71717a", fondo: "rgba(113,113,122,0.12)", icona: HelpCircle,
+    perche: "troppo poche giornate, o niente da confrontare" },
 };
 const ORDINE: Categoria[] = ["fermata", "ripresa", "guasta", "nuova", "uscita", "funziona", "non_giudicabile"];
 
@@ -133,22 +140,59 @@ const GIORNO: Record<string, { colore: string | null; testo: string }> = {
   M: { colore: "#3f3f46", testo: "nessun contatto" },
   "-": { colore: null, testo: "non elencata" },
   ".": { colore: null, testo: "giornata non contata" },
-  " ": { colore: null, testo: "da venire" },
+  " ": { colore: null, testo: "non ancora finita" },
 };
 const SETTIMANA: Record<string, { colore: string | null; testo: string }> = {
   F: { colore: "#34d399", testo: "si è localizzata" },
   P: { colore: "#fbbf24", testo: "ha parlato, mai localizzata" },
   M: { colore: "#3f3f46", testo: "nessun contatto" },
   A: { colore: null, testo: "non elencata" },
-  ".": { colore: null, testo: "senza raccolta" },
+  ".": { colore: null, testo: "meno di 3 giornate contate" },
 };
 const ESITI: Record<EsitoIntervento, { testo: string; colore: string }> = {
   riuscito: { testo: "Riuscito", colore: "#34d399" },
   gia_funzionava: { testo: "Si localizzava già", colore: "#7dd3fc" },
   senza_effetto: { testo: "Senza effetto", colore: "#f87171" },
-  peggiorato: { testo: "Dopo non si localizza più", colore: "#fb923c" },
+  peggiorato: { testo: "Prima sì, dopo no", colore: "#fb923c" },
+  ricaduta: { testo: "Ricaduta", colore: "#f87171" },
+  senza_confronto: { testo: "Dopo si localizza (senza confronto)", colore: "#a7f3d0" },
   da_verificare: { testo: "Da verificare", colore: "#fbbf24" },
+  non_nel_flusso: { testo: "Non nel flusso SIRI", colore: "#a1a1aa" },
 };
+
+/* La frase di sintesi sul perimetro scelto, con le stesse parole del server
+   (notaGenerale in api-server/src/lib/avm-controllo.ts): così la frase e le
+   schede contano le stesse vetture. */
+const FRASE: Record<Categoria, [string, string]> = {
+  fermata: ["ha smesso di localizzarsi", "hanno smesso di localizzarsi"],
+  ripresa: ["ha ripreso a localizzarsi", "hanno ripreso a localizzarsi"],
+  guasta: ["ancora non si localizza", "ancora non si localizzano"],
+  nuova: ["è nuova nel flusso", "sono nuove nel flusso"],
+  uscita: ["è uscita dal flusso", "sono uscite dal flusso"],
+  funziona: ["funziona", "funzionano"],
+  non_giudicabile: ["non si può giudicare", "non si possono giudicare"],
+};
+const GIORNATE_MINIME = 3;
+
+function fraseDiSintesi(s: Settimana & { chiusa: boolean }, c: Record<Categoria, number>, totale: number): string {
+  const periodo = `dal ${ddmm(s.lunedi)} al ${ddmm(s.domenica)}`;
+  if (s.giornateOsservate === 0) {
+    return s.chiusa
+      ? `Nessuna giornata con abbastanza raccolta ${periodo}: la settimana non si può giudicare.`
+      : `La settimana ${periodo} non ha ancora giornate finite con abbastanza raccolta.`;
+  }
+  const voci = ORDINE.filter(k => c[k] > 0).map(k => `${c[k]} ${FRASE[k][c[k] === 1 ? 0 : 1]}`);
+  let frase = `${totale} ${totale === 1 ? "vettura" : "vetture"} ${periodo}`
+    + `${s.chiusa ? "" : " (settimana in corso, risultato provvisorio)"}: ${voci.join(", ")}.`;
+  const possibili = 7 - s.giornateFuture;
+  if (s.giornateOsservate < GIORNATE_MINIME) {
+    frase += ` Solo ${s.giornateOsservate} ${s.giornateOsservate === 1 ? "giornata contata" : "giornate contate"}: `
+      + `ne servono almeno ${GIORNATE_MINIME} per giudicare.`;
+  } else if (s.giornateOsservate < possibili) {
+    frase += ` Giornate contate: ${s.giornateOsservate} su ${possibili} (le altre senza raccolta sufficiente).`;
+  }
+  return frase;
+}
 
 const isConerobus = (ref: string) => /^\d{1,4}$/.test(ref);
 
@@ -162,6 +206,14 @@ function ddmmyyyy(g: string | null): string {
 }
 function spostaGiorni(g: string, n: number): string {
   return new Date(new Date(`${g}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
+}
+
+/* L'ultima settimana chiusa vista da qui, quando il server non ha risposto:
+   serve solo da àncora per navigare. La giornata di esercizio finisce alle 03:00. */
+function ultimaChiusaLocale(): string {
+  const t = new Date(Date.now() - 3 * 3_600_000);
+  const oggi = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+  return spostaGiorni(oggi, -((t.getDay() + 6) % 7) - 7);
 }
 function dataOra(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -240,16 +292,45 @@ export default function ControlloAvm() {
   }, [perimetro, filtro, cerca]);
   const interventi = useMemo(() => {
     const refs = new Set(perimetro.map(v => v.vehicleRef));
-    return (d?.interventi ?? []).filter(i => refs.has(i.matricola));
+    /* quelli su vetture che il flusso non elenca non hanno una riga da filtrare: restano */
+    return (d?.interventi ?? []).filter(i => refs.has(i.matricola) || i.esitoAvm === "non_nel_flusso");
   }, [d, perimetro]);
 
   if (q.isLoading) {
     return <div className="p-12 text-center text-xs text-muted-foreground">Calcolo il controllo della settimana…</div>;
   }
   if (q.error || d?.error || !d) {
+    /* Anche con un errore si deve poter cambiare settimana o tornare all'ultima chiusa. */
+    const ancora = lunedi ?? ultimaChiusaLocale();
     return (
-      <div className="p-12 text-center text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
-        Il controllo non si è potuto leggere: {d?.error ?? (q.error as Error)?.message ?? "nessuna risposta"}
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setLunedi(spostaGiorni(ancora, -7))}
+            className="p-1.5 rounded-lg border border-border/40 bg-white/[0.02] hover:bg-white/5 text-muted-foreground"
+            aria-label="Settimana precedente"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+          <span className="px-2 text-[12px] tabular-nums">Settimana del {ddmmyyyy(ancora)}</span>
+          <button
+            onClick={() => setLunedi(spostaGiorni(ancora, 7))}
+            className="p-1.5 rounded-lg border border-border/40 bg-white/[0.02] hover:bg-white/5 text-muted-foreground"
+            aria-label="Settimana successiva"
+          >
+            <ChevronRight className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={() => { setLunedi(null); void q.refetch(); }}
+            className="px-2.5 py-1 rounded-lg text-[11px] border border-border/40 bg-white/[0.02] hover:bg-white/5"
+          >
+            {lunedi ? "Torna all'ultima settimana chiusa" : "Riprova"}
+          </button>
+        </div>
+        <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-red-500/30 bg-red-500/10 text-[11px] text-red-200 leading-relaxed">
+          <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+          <span>Il controllo non si è potuto leggere: {d?.error ?? (q.error as Error)?.message ?? "nessuna risposta"}</span>
+        </div>
       </div>
     );
   }
@@ -321,16 +402,18 @@ export default function ControlloAvm() {
         </a>
       </div>
 
-      <p className="text-[11px] leading-relaxed text-muted-foreground max-w-3xl">{d.nota}</p>
+      <p className="text-[11px] leading-relaxed text-muted-foreground max-w-3xl">
+        {fraseDiSintesi(d.settimana, conteggi, perimetro.length)}
+      </p>
 
-      {d.settimana.giornateOsservate === 0 && (
+      {d.settimana.giornateOsservate < GIORNATE_MINIME && (
         <div className="flex items-start gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-200 leading-relaxed">
           <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
           <span>{d.settimana.chiusa
-            ? "Questa settimana non ha giornate con abbastanza raccolta: il connettore era fermo, "
-              + "e le vetture non si possono giudicare."
-            : "Questa settimana non ha ancora giornate con abbastanza raccolta: il confronto "
-              + "si potrà leggere da domani mattina."}</span>
+            ? `Questa settimana ha ${d.settimana.giornateOsservate} giornate con abbastanza raccolta: il connettore `
+              + "è stato fermo, e le vetture non si possono giudicare."
+            : `Servono almeno ${GIORNATE_MINIME} giornate finite con abbastanza raccolta per giudicare la settimana: `
+              + `per ora sono ${d.settimana.giornateOsservate}. Il confronto si legge dal giovedì mattina.`}</span>
         </div>
       )}
 
@@ -582,7 +665,13 @@ export default function ControlloAvm() {
             uno per settimana chiusa, calcolato da solo il lunedì dopo
           </span>
         </h3>
-        {archivio.data?.errore ? (
+        {archivio.isLoading ? (
+          <p className="text-[10px] text-muted-foreground">Leggo l'archivio…</p>
+        ) : archivio.isError ? (
+          <p className="text-[10px] text-muted-foreground flex items-center gap-1.5">
+            <CircleSlash className="w-3 h-3" /> Archivio non raggiungibile: {(archivio.error as Error)?.message}
+          </p>
+        ) : archivio.data?.errore ? (
           <p className="text-[10px] text-muted-foreground flex items-center gap-1.5">
             <CircleSlash className="w-3 h-3" /> Archivio non disponibile: {archivio.data.errore}
           </p>
@@ -592,7 +681,10 @@ export default function ControlloAvm() {
           </p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
-            {archivio.data!.settimane.map(s => (
+            {archivio.data!.settimane.map(s => {
+              /* le pastiglie contano il perimetro di base (solo Conerobus, parco officina) */
+              const n = s.conteggiConerobus ?? s.conteggi;
+              return (
               <button
                 key={s.lunedi}
                 onClick={() => { setLunedi(s.lunedi); setFiltro(null); }}
@@ -600,13 +692,15 @@ export default function ControlloAvm() {
                 className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${s.lunedi === settimanaMostrata
                   ? "bg-white/10 border-border text-foreground"
                   : "bg-white/[0.02] border-border/40 text-muted-foreground hover:bg-white/5"}`}
-                title={`archiviato il ${dataOra(s.generatoIl)}`}
+                title={`archiviato il ${dataOra(s.generatoIl)} · Conerobus del parco: `
+                  + `${n.fermata ?? 0} si sono fermate, ${n.ripresa ?? 0} hanno ripreso`}
               >
                 <span className="tabular-nums">{ddmm(s.lunedi)}</span>
-                <span className="ml-1.5 font-mono" style={{ color: CATEGORIE.fermata.colore }}>−{s.conteggi.fermata ?? 0}</span>
-                <span className="ml-1 font-mono" style={{ color: CATEGORIE.ripresa.colore }}>+{s.conteggi.ripresa ?? 0}</span>
+                <span className="ml-1.5 font-mono" style={{ color: CATEGORIE.fermata.colore }}>−{n.fermata ?? 0}</span>
+                <span className="ml-1 font-mono" style={{ color: CATEGORIE.ripresa.colore }}>+{n.ripresa ?? 0}</span>
               </button>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>
