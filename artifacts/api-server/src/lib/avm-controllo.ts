@@ -36,8 +36,13 @@ import { giornateDelPeriodo } from "./fleet-trend";
 import { giornataDiIstante } from "./service-day";
 import type { MezzoOfficina } from "./officina";
 
-/** Cambia quando cambia il modo di calcolare: resta scritto in ogni istantanea. */
-export const VERSIONE_CONTROLLO = 1;
+/**
+ * Cambia quando cambia il modo di calcolare: resta scritto in ogni istantanea,
+ * e l'archivio rifà da sé quelle calcolate con una versione più vecchia.
+ * 2: giudizio degli interventi sulla finestra dall'apertura, oggi non conta,
+ *    prima settimana del diario non giudicabile, almeno 3 giornate contate.
+ */
+export const VERSIONE_CONTROLLO = 2;
 
 /** Quante settimane si guardano all'indietro, compresa quella sotto controllo. */
 export const SETTIMANE_STORIA = 8;

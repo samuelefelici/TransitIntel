@@ -154,6 +154,22 @@ export async function settimaneArchiviate(daLunedi: string): Promise<Set<string>
   }
 }
 
+/** Le settimane archiviate con un calcolo più vecchio di `versione`. */
+export async function settimaneVersioneVecchia(daLunedi: string, versione: number): Promise<string[]> {
+  if (!(await assicura())) return [];
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi
+        FROM caronte.avm_controllo_settimanale
+       WHERE settimana >= ${daLunedi}::date AND versione < ${versione}
+       ORDER BY settimana`);
+    return ((r as any).rows ?? []).map((x: any) => String(x.lunedi));
+  } catch (e: any) {
+    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
+    return [];
+  }
+}
+
 /**
  * Le settimane archiviate senza i dati dell'officina o senza gli interventi
  * (FleetCare non leggibile quando sono state calcolate): l'archivio le rifà
