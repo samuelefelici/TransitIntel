@@ -54,6 +54,12 @@ import {
 } from "../lib/avm-diario";
 import { esportaDiarioXlsx } from "../lib/avm-diario-xlsx";
 import {
+  eLunedi, lunediDi, ultimaSettimanaChiusa, type ControlloSettimanale, type VetturaControllo,
+} from "../lib/avm-controllo";
+import { leggiControllo, elencoControlli, erroreArchivioControlli } from "../lib/avm-controllo-store";
+import { calcolaControlloDellaSettimana, statoArchivioAutomatico } from "../lib/avm-controllo-servizio";
+import { esportaControlloXlsx, esportaControlloCsv } from "../lib/avm-controllo-xlsx";
+import {
   leggiParcoOfficina, mezziSenzaAvm, parcoCredibile, ETICHETTE_STATO_OFFICINA,
   type MezzoOfficina, type ParcoOfficina,
 } from "../lib/officina";
@@ -1425,6 +1431,79 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
   } catch (e: any) {
     res.status(500).json({ configured: true, error: e?.message ?? "lettura fallita" });
   }
+});
+
+/* ── Il controllo settimanale ─────────────────────────────────────────────
+ * Rispetto alla settimana prima, chi ha ripreso a localizzarsi e chi ha
+ * smesso: è la domanda di chi segue gli interventi sugli apparati. Una
+ * settimana chiusa si legge dall'archivio, congelata com'era il lunedì dopo;
+ * la settimana in corso, o una non ancora archiviata, si calcola adesso.
+ *
+ *   GET /api/siri/parco/controllo                       — l'ultima settimana chiusa
+ *   GET /api/siri/parco/controllo?settimana=2026-10-05   — una settimana (il lunedì)
+ *       &formato=xlsx|csv  &perimetro=conerobus  &officina=1  &ricalcola=1
+ *   GET /api/siri/parco/controllo/archivio              — le settimane archiviate */
+router.get("/siri/parco/controllo", async (req, res): Promise<void> => {
+  try {
+    const oggi = giornataOggi(new Date());
+    const lunedi = String(req.query.settimana ?? "") || ultimaSettimanaChiusa(oggi);
+    if (!eLunedi(lunedi)) {
+      res.status(400).json({ error: "La settimana si indica col suo lunedì, nel formato AAAA-MM-GG." });
+      return;
+    }
+    if (lunedi > lunediDi(oggi)) {
+      res.status(400).json({ error: "Quella settimana non è ancora cominciata." });
+      return;
+    }
+    const ricalcola = req.query.ricalcola === "1";
+    const archiviato = ricalcola ? null : await leggiControllo(lunedi);
+    const controllo: ControlloSettimanale = archiviato ?? await calcolaControlloDellaSettimana(lunedi);
+
+    /* Il perimetro dell'esportazione: quello che si stava guardando. */
+    const soloConerobus = String(req.query.perimetro ?? "") === "conerobus";
+    const soloParco = req.query.officina === "1";
+    const vetture: VetturaControllo[] = controllo.vetture.filter(v =>
+      (!soloConerobus || /^\d{1,4}$/.test(v.vehicleRef)) && (!soloParco || !v.esclusa));
+    const perimetro = [soloConerobus ? "solo Conerobus" : null, soloParco ? "solo parco officina" : null]
+      .filter(Boolean).join(", ");
+
+    const formato = String(req.query.formato ?? "");
+    if (formato === "xlsx") {
+      const xlsx = esportaControlloXlsx(controllo, vetture, { archiviato: !!archiviato, perimetro });
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition",
+        `attachment; filename="Cerbero-controllo-AVM-settimana-${lunedi}${soloConerobus ? "-conerobus" : ""}.xlsx"`);
+      res.send(xlsx);
+      return;
+    }
+    if (formato === "csv") {
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="controllo-avm-${lunedi}.csv"`);
+      res.send(esportaControlloCsv(controllo, vetture));
+      return;
+    }
+
+    res.json({
+      configured: siriConfig() != null,
+      archiviato: !!archiviato,
+      ultimaChiusa: ultimaSettimanaChiusa(oggi),
+      settimanaCorrente: lunediDi(oggi),
+      erroreArchivio: erroreArchivioControlli(),
+      ...controllo,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message ?? "controllo non calcolato" });
+  }
+});
+
+router.get("/siri/parco/controllo/archivio", async (_req, res): Promise<void> => {
+  const settimane = await elencoControlli();
+  res.json({
+    settimane,
+    errore: erroreArchivioControlli(),
+    /* l'ultimo giro dell'archivio automatico: quando, che cosa, se è fallito */
+    automatico: statoArchivioAutomatico(),
+  });
 });
 
 /**
