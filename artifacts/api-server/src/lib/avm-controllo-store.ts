@@ -101,7 +101,10 @@ export interface VoceArchivio {
   lunedi: string;
   generatoIl: string;
   versione: number;
+  /** su tutto il flusso */
   conteggi: Partial<Record<Categoria, number>>;
+  /** solo Conerobus, escluse fuori parco e dismesse: il perimetro di base della pagina */
+  conteggiConerobus: Partial<Record<Categoria, number>>;
 }
 
 /** Le settimane archiviate, dalla più recente. */
@@ -110,7 +113,15 @@ export async function elencoControlli(limite = 26): Promise<VoceArchivio[]> {
   try {
     const r = await db.execute<any>(sql`
       SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi, generato_il, versione,
-             dati -> 'conteggi' AS conteggi
+             dati -> 'conteggi' AS conteggi,
+             /* gli stessi conteggi sul perimetro che la pagina mostra di base:
+                solo Conerobus (matricola di 1-4 cifre) e non escluse dall'officina */
+             (SELECT coalesce(jsonb_object_agg(cat, n), '{}'::jsonb) FROM (
+                SELECT v ->> 'categoria' AS cat, count(*) AS n
+                  FROM jsonb_array_elements(dati -> 'vetture') v
+                 WHERE v ->> 'vehicleRef' ~ '^[0-9]{1,4}$'
+                   AND jsonb_typeof(coalesce(v -> 'esclusa', 'null'::jsonb)) = 'null'
+                 GROUP BY 1) x) AS conteggi_conerobus
         FROM caronte.avm_controllo_settimanale
        ORDER BY settimana DESC
        LIMIT ${limite}`);
@@ -119,6 +130,9 @@ export async function elencoControlli(limite = 26): Promise<VoceArchivio[]> {
       generatoIl: new Date(x.generato_il).toISOString(),
       versione: Number(x.versione),
       conteggi: (typeof x.conteggi === "string" ? JSON.parse(x.conteggi) : x.conteggi) ?? {},
+      conteggiConerobus: Object.fromEntries(Object.entries(
+        (typeof x.conteggi_conerobus === "string" ? JSON.parse(x.conteggi_conerobus) : x.conteggi_conerobus) ?? {})
+        .map(([k, n]) => [k, Number(n)])),
     }));
   } catch (e: any) {
     ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
@@ -137,5 +151,43 @@ export async function settimaneArchiviate(daLunedi: string): Promise<Set<string>
   } catch (e: any) {
     ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
     return new Set();
+  }
+}
+
+/** Le settimane archiviate con un calcolo più vecchio di `versione`. */
+export async function settimaneVersioneVecchia(daLunedi: string, versione: number): Promise<string[]> {
+  if (!(await assicura())) return [];
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi
+        FROM caronte.avm_controllo_settimanale
+       WHERE settimana >= ${daLunedi}::date AND versione < ${versione}
+       ORDER BY settimana`);
+    return ((r as any).rows ?? []).map((x: any) => String(x.lunedi));
+  } catch (e: any) {
+    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
+    return [];
+  }
+}
+
+/**
+ * Le settimane archiviate senza i dati dell'officina o senza gli interventi
+ * (FleetCare non leggibile quando sono state calcolate): l'archivio le rifà
+ * appena FleetCare torna leggibile.
+ */
+export async function settimaneIncomplete(daLunedi: string): Promise<string[]> {
+  if (!(await assicura())) return [];
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi
+        FROM caronte.avm_controllo_settimanale
+       WHERE settimana >= ${daLunedi}::date
+         AND (coalesce(dati -> 'officina' ->> 'disponibile', 'false') = 'false'
+              OR coalesce(dati -> 'fonteInterventi' ->> 'disponibile', 'false') = 'false')
+       ORDER BY settimana`);
+    return ((r as any).rows ?? []).map((x: any) => String(x.lunedi));
+  } catch (e: any) {
+    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
+    return [];
   }
 }
