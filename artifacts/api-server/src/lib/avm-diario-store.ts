@@ -203,10 +203,19 @@ export async function registraCampione(
   }
 }
 
-/** Le righe del diario dal giorno indicato (compreso) a oggi. */
-export async function leggiDiario(daGiorno: string): Promise<RigaDiario[]> {
+/**
+ * Righe lette al massimo in una volta. Prima erano 20.000 in ordine di
+ * giornata crescente: con circa 370 vetture al giorno, oltre i 54 giorni il
+ * limite tagliava proprio le giornate più recenti, e la vista a 60 giorni le
+ * perdeva senza dirlo. 100.000 coprono più di 250 giornate.
+ */
+const RIGHE_MASSIME = 100_000;
+
+/** Le righe del diario dal giorno indicato (compreso) a oggi, o fino al giorno `aGiorno` (compreso). */
+export async function leggiDiario(daGiorno: string, aGiorno?: string): Promise<RigaDiario[]> {
   if (!(await assicura())) return [];
   try {
+    const fine = aGiorno ? sql`AND day <= ${aGiorno}::date` : sql``;
     const r = await db.execute<any>(sql`
       SELECT to_char(day, 'YYYY-MM-DD')                    AS giorno,
              vehicle_ref, letture, letture_fresche, letture_monitorata,
@@ -214,9 +223,9 @@ export async function leggiDiario(daGiorno: string): Promise<RigaDiario[]> {
              letture_errore_gprs, letture_rimessa,
              primo_contatto, ultimo_contatto, linee, corse
         FROM caronte.avm_diario
-       WHERE day >= ${daGiorno}::date
+       WHERE day >= ${daGiorno}::date ${fine}
        ORDER BY day, vehicle_ref
-       LIMIT 20000`);
+       LIMIT ${RIGHE_MASSIME}`);
     return ((r as any).rows ?? []).map((x: any): RigaDiario => ({
       giorno: String(x.giorno),
       vehicleRef: String(x.vehicle_ref),
@@ -233,6 +242,27 @@ export async function leggiDiario(daGiorno: string): Promise<RigaDiario[]> {
       linee: Array.isArray(x.linee) ? x.linee.map(String) : [],
       corse: Array.isArray(x.corse) ? x.corse.map(String) : [],
     }));
+  } catch (e: any) {
+    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
+    return [];
+  }
+}
+
+/**
+ * I lunedì delle settimane che hanno almeno una riga nel diario, a partire
+ * da una giornata. Serve all'archivio dei controlli settimanali per sapere
+ * quali settimane si possono calcolare senza leggere tutte le righe.
+ * date_trunc('week') in Postgres porta al lunedì, come la settimana ISO.
+ */
+export async function settimaneConDati(daGiorno: string): Promise<string[]> {
+  if (!(await assicura())) return [];
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT DISTINCT to_char(date_trunc('week', day)::date, 'YYYY-MM-DD') AS lunedi
+        FROM caronte.avm_diario
+       WHERE day >= ${daGiorno}::date
+       ORDER BY 1`);
+    return ((r as any).rows ?? []).map((x: any) => String(x.lunedi));
   } catch (e: any) {
     ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
     return [];

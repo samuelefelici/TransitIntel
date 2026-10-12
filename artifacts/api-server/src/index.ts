@@ -122,6 +122,23 @@ const server = app.listen(port, () => {
       { url: process.env.SIRI_VM_URL, everySeconds: SIRI_INTERVAL_MS / 1000 },
       "SIRI auto-poll enabled",
     );
+
+    /* Il controllo settimanale dell'AVM: ogni ora guarda se c'è una settimana
+     * chiusa senza controllo archiviato e lo calcola. Il primo giro dopo le
+     * 03:00 di lunedì archivia la settimana appena chiusa; un deploy nel
+     * momento sbagliato non fa perdere niente, perché il giro dopo recupera.
+     * Due minuti dopo l'avvio, per non accavallarsi col primo giro SIRI. */
+    const controlloAvm = async () => {
+      try {
+        const { assicuraArchivio } = await import("./lib/avm-controllo-servizio");
+        const archiviate = await assicuraArchivio();
+        if (archiviate.length) logger.info({ archiviate }, "Controllo settimanale AVM archiviato");
+      } catch (err) {
+        logger.error(err, "Controllo settimanale AVM: failed");
+      }
+    };
+    setTimeout(() => void controlloAvm(), 120_000);
+    setInterval(() => void controlloAvm(), 60 * 60 * 1000);
   } else {
     logger.warn("SIRI_VM_URL not set — connettore AVM SIRI disattivato");
   }

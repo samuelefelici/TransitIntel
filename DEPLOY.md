@@ -184,8 +184,16 @@ con i cron interni di Coolify:
 | Traffico | `POST /api/cron/traffic` | ogni 15 min |
 | POI | `POST /api/cron/poi` | 1° del mese, ore 3:00 |
 | Popolazione | `POST /api/cron/census` | ogni lunedì, ore 4:00 |
+| Controllo settimanale AVM | `POST /api/cron/avm-controllo-settimanale` | facoltativo: ogni lunedì, ore 4:00 |
 
 Per ogni job: metodo **POST**, header `x-cron-secret: IL-TUO-CRON-SECRET`.
+
+Il controllo settimanale AVM non ha bisogno dello scheduler esterno: con il
+connettore SIRI attivo, il processo dell'API controlla ogni ora se c'è una
+settimana chiusa senza controllo archiviato e la calcola (il primo giro dopo
+le 03:00 di lunedì). L'endpoint serve solo a chi vuole lanciarlo da fuori; è
+idempotente. L'archivio è la tabella `caronte.avm_controllo_settimanale`
+(`migrations/2026-10_avm_controllo_settimanale.sql`), che l'API crea da sé.
 
 ---
 

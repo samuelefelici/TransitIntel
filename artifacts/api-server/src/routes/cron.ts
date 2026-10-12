@@ -647,6 +647,21 @@ router.post("/cron/traffic", async (req, res) => {
   }
 });
 
+// Controllo settimanale AVM: archivia le settimane chiuse che non hanno ancora
+// un controllo (lo fa già da sé il processo dell'API ogni ora; questo serve a
+// chi lo vuole lanciare da fuori, per esempio il lunedì alle 4:00). Idempotente.
+router.post("/cron/avm-controllo-settimanale", async (req, res) => {
+  if (!verifyCronSecret(req, res)) return;
+  try {
+    const { assicuraArchivio, statoArchivioAutomatico } = await import("../lib/avm-controllo-servizio");
+    const archiviate = await assicuraArchivio();
+    res.json({ success: true, archiviate, stato: statoArchivioAutomatico() });
+  } catch (err: any) {
+    req.log.error(err, "Error in avm-controllo-settimanale cron");
+    res.status(500).json({ success: false, message: err.message ?? "Internal error" });
+  }
+});
+
 // Orari treni (coincidenze bus↔treno): acquisizione AUTOMATICA da ViaggiaTreno
 // per gli hub ferroviari del feed in esercizio. Schedulalo ~1/giorno (ViaggiaTreno
 // espone solo una finestra mobile di 7 giorni). Poi /intermodal/analyze valuta le

@@ -25,6 +25,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { siriDaCodice } from "./parco-anagrafica.js";
+import type { InterventoAvm } from "./avm-controllo.js";
 
 /** Lo stato del mezzo per l'officina, nel vocabolario dell'AVM. */
 export type StatoOfficina = "in_servizio" | "riserva" | "in_officina" | "dismesso";
@@ -234,4 +235,95 @@ export async function leggiParcoOfficina(now = Date.now()): Promise<ParcoOfficin
   }
   cache = { at: now, parco };
   return parco;
+}
+
+/* ── Gli interventi AVM chiusi ────────────────────────────────────────────
+ * Le riparazioni degli apparati AVM che l'officina ha chiuso, con la data:
+ * il controllo settimanale le mette accanto alla striscia della vettura e
+ * dice se dopo l'apparato si localizza. Vengono da
+ * `fleetcare.interventi_avm(p_dal)` (migration 0083 di FleetCare): commesse
+ * chiuse con lavorazioni AVM, segnalazioni del gestionale e dei conducenti
+ * chiuse, una riga per riparazione.
+ *
+ * Si usano solo col parco dell'officina disponibile e credibile, e solo del
+ * suo tenant: un intervento di un'altra azienda attaccato alla matricola
+ * sbagliata sarebbe peggio di nessun intervento. */
+
+/** Una riga di `fleetcare.interventi_avm()`. */
+export interface RigaInterventoAvm {
+  tenant: string;
+  fleet_number: string;
+  fonte: string;
+  riferimento: string;
+  aperta_il: string | Date | null;
+  chiusa_il: string | Date | null;
+  descrizione: string | null;
+  esito: string | null;
+  commessa: string | null;
+}
+
+export interface InterventiOfficina {
+  disponibile: boolean;
+  motivo: string | null;
+  elenco: InterventoAvm[];
+}
+
+/** Le righe del tenant scelto, tradotte in interventi con la matricola SIRI. */
+export function costruisciInterventi(righe: RigaInterventoAvm[], tenant: string): InterventoAvm[] {
+  const out: InterventoAvm[] = [];
+  for (const r of righe) {
+    if (r.tenant !== tenant) continue;
+    const matricola = matricolaDaNumeroDiParco(r.fleet_number);
+    const chiusaIl = iso(r.chiusa_il);
+    if (!matricola || !chiusaIl) continue;
+    out.push({
+      matricola,
+      fonte: r.fonte,
+      riferimento: r.riferimento,
+      apertaIl: iso(r.aperta_il),
+      chiusaIl,
+      descrizione: r.descrizione,
+      esito: r.esito,
+      commessa: r.commessa,
+    });
+  }
+  return out;
+}
+
+const cacheInterventi = new Map<string, { at: number; v: InterventiOfficina }>();
+
+/**
+ * Gli interventi AVM chiusi dal giorno `dal` (YYYY-MM-DD), per il tenant del
+ * parco. Non lancia mai: se FleetCare non ha ancora la funzione, dice perché.
+ */
+export async function leggiInterventiAvm(
+  dal: string, parco: ParcoOfficina, now = Date.now(),
+): Promise<InterventiOfficina> {
+  if (!parco.disponibile || !parco.tenant) {
+    return { disponibile: false, motivo: "Senza il parco dell'officina non si leggono gli interventi.", elenco: [] };
+  }
+  const chiave = `${parco.tenant}|${dal}`;
+  const c = cacheInterventi.get(chiave);
+  if (c && now - c.at < DURATA_CACHE_MS) return c.v;
+  let v: InterventiOfficina;
+  try {
+    const r = await db.execute(sql`select * from fleetcare.interventi_avm(${dal}::date::timestamptz)`);
+    const righe = ((r as any).rows ?? r) as RigaInterventoAvm[];
+    v = { disponibile: true, motivo: null, elenco: costruisciInterventi(righe, parco.tenant) };
+  } catch (e: any) {
+    const codice = e?.code ?? e?.cause?.code;
+    v = {
+      disponibile: false,
+      motivo: codice === "42883"
+        ? "FleetCare non espone ancora gli interventi AVM: serve la sua migrazione 0083 "
+          + "(fleetcare.interventi_avm), che si applica al prossimo avvio di FleetCare."
+        : codice === "42501"
+          ? "Il ruolo del database di Cerbero non può chiamare fleetcare.interventi_avm(): "
+            + "la migrazione 0083 di FleetCare concede il permesso al proprietario di public.depots."
+          : `Lettura degli interventi FleetCare fallita: ${e?.message ?? String(e)}`,
+      elenco: [],
+    };
+  }
+  cacheInterventi.set(chiave, { at: now, v });
+  return v;
 }
