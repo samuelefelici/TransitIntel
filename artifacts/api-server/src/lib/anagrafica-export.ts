@@ -13,7 +13,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import {
-  ETICHETTE_DOCUMENTO, ETICHETTE_ESITO, ETICHETTE_STATO, ORDINE_STATI, formattaOrario, scadenzeDi, statoPeggiore,
+  ETICHETTE_DOCUMENTO, ETICHETTE_ESITO, ETICHETTE_MOTIVO, ETICHETTE_STATO, ORDINE_STATI, formattaOrario, scadenzeDi, statoPeggiore,
   type Conducente, type StatoScadenza,
 } from "./anagrafica-campi";
 import { scriviXlsx, Stili, type Foglio, type Valore } from "./xlsx-mini";
@@ -63,6 +63,7 @@ export const COLONNE: Colonna[] = [
   { titolo: "Codice fiscale", larghezza: 18, sensibile: true, valore: c => c.cf ?? null },
   { titolo: "Data di nascita", larghezza: 11, sensibile: true, valore: c => it(c.dataNascita) || null },
   { titolo: "Data di assunzione", larghezza: 11, sensibile: true, valore: c => it(c.dataAssunzione) || null },
+  { titolo: "Motivo dell'uscita", larghezza: 13, sensibile: true, valore: c => (c.motivoCessazione ? ETICHETTE_MOTIVO[c.motivoCessazione] : null) },
   { titolo: "Residenza", larghezza: 32, sensibile: true, valore: c => c.residenzaAnagrafica ?? null },
   { titolo: "Telefono", larghezza: 13, sensibile: true, valore: c => c.telefono ?? null },
   { titolo: "Inquadramento", larghezza: 16, sensibile: true, valore: c => c.inquadramento ?? null },

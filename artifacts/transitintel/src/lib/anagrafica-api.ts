@@ -7,6 +7,14 @@
 
 export type EsitoVisita = "idoneo" | "idoneo_prescrizioni" | "temp_non_idoneo" | "non_idoneo";
 export type UnitaFerie = "giorni" | "ore";
+export type MotivoCessazione = "pensione" | "dimissioni" | "licenziamento" | "fine_contratto" | "altro";
+export const ETICHETTE_MOTIVO: Record<MotivoCessazione, string> = {
+  pensione: "Pensione",
+  dimissioni: "Dimissioni",
+  licenziamento: "Licenziamento",
+  fine_contratto: "Fine contratto",
+  altro: "Altro",
+};
 
 export interface Conducente {
   id: string;
@@ -41,6 +49,7 @@ export interface Conducente {
   cellulare: string | null;
   dataFineServizio: string | null;
   /* solo con il permesso «Personale» */
+  motivoCessazione?: MotivoCessazione | null;
   cf?: string | null;
   dataNascita?: string | null;
   dataAssunzione?: string | null;
@@ -249,7 +258,8 @@ export const STATI_RIGA: Record<StatoRiga, { testo: string; singolare: string; c
 /** Le etichette dei campi come le mostra la pagina (anche nei rapporti dell'import). */
 export const ETICHETTE_CAMPI: Record<string, string> = {
   matricola: "matricola", cognome: "cognome", nome: "nome", badge: "badge", cf: "codice fiscale",
-  dataNascita: "data di nascita", dataAssunzione: "data di assunzione", dataFineServizio: "fine servizio",
+  dataNascita: "data di nascita", dataAssunzione: "data di assunzione", dataFineServizio: "uscita dal servizio",
+  motivoCessazione: "motivo dell'uscita",
   residenzaAnagrafica: "residenza", cellulare: "cellulare", telefono: "telefono", inquadramento: "inquadramento",
   parametro: "parametro", ferieAnnue: "ferie annue", ferieResidue: "ferie residue", ferieUnita: "unità ferie",
   scaglioneFerie: "scaglione ferie", patente: "categorie patente", patenteNumero: "numero patente", cqcNumero: "numero CQC",

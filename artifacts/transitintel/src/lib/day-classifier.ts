@@ -132,3 +132,22 @@ export function classifyRange(from: string, to: string, profile: CalendarProfile
       .sort((a, b) => b.count - a.count),
   };
 }
+
+/**
+ * Il colore di ogni categoria del giorno (chiave level1/level2/fascia): gli
+ * stessi della pagina Calendario Aziendale, usati anche dalla righetta sopra
+ * i giorni del Roster. Un colore per pagina diverso farebbe leggere due cose
+ * diverse allo stesso giorno.
+ */
+export const COLORE_CATEGORIA_GIORNO: Record<string, string> = {
+  "scuole_aperte/-/Feriale": "#10b981",
+  "scuole_aperte/-/Sabato": "#34d399",
+  "scuole_chiuse/invernale/Feriale": "#38bdf8",
+  "scuole_chiuse/invernale/Sabato": "#7dd3fc",
+  "scuole_chiuse/estivo/Feriale": "#f59e0b",
+  "scuole_chiuse/estivo/Sabato": "#fbbf24",
+  "festivo/domenica_aperte/-": "#a78bfa",
+  "festivo/domenica_chiuse/-": "#7c3aed",
+  "festivo/rosso/-": "#ef4444",
+};
+export const COLORE_GIORNO_NEUTRO = "#64748b";

@@ -9,7 +9,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import {
-  ABILITAZIONI, ESITI_VISITA, PARAMETRI, UNITA_FERIE, cifreTelefono, leggiCodiceFiscale, leggiData,
+  ABILITAZIONI, ESITI_VISITA, MOTIVI_CESSAZIONE, PARAMETRI, UNITA_FERIE, cifreTelefono, leggiCodiceFiscale, leggiData,
   leggiFerie, leggiMatricola, leggiOrario, pulisciTesto,
   type EsitoVisita, type Lettura, type UnitaFerie,
 } from "./anagrafica-campi";
@@ -66,6 +66,11 @@ export function leggiCorpoScheda(body: unknown): CorpoScheda {
   con("dataNascita", x => leggiData(x, { min: 1920, max: anno }), x => { v.dataNascita = x; });
   con("dataAssunzione", x => leggiData(x, { min: 1950, max: anno + 1 }), x => { v.dataAssunzione = x; });
   con("dataFineServizio", x => leggiData(x, { min: 1950, max: 2100 }), x => { v.dataFineServizio = x; });
+  if (presente(b, "motivoCessazione")) {
+    if (vuoto(b.motivoCessazione)) v.motivoCessazione = null;
+    else if ((MOTIVI_CESSAZIONE as readonly string[]).includes(String(b.motivoCessazione))) v.motivoCessazione = String(b.motivoCessazione);
+    else errori.motivoCessazione = `motivo: ${MOTIVI_CESSAZIONE.join(", ")}`;
+  }
   testo("residenzaAnagrafica", 200, x => { v.residenzaAnagrafica = x; });
   for (const k of ["cellulare", "telefono"] as const) {
     if (!presente(b, k)) continue;

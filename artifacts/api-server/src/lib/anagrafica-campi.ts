@@ -32,6 +32,16 @@ export const ETICHETTE_ESITO: Record<EsitoVisita, string> = {
   non_idoneo: "Non idoneo",
 };
 
+export const MOTIVI_CESSAZIONE = ["pensione", "dimissioni", "licenziamento", "fine_contratto", "altro"] as const;
+export type MotivoCessazione = typeof MOTIVI_CESSAZIONE[number];
+export const ETICHETTE_MOTIVO: Record<MotivoCessazione, string> = {
+  pensione: "Pensione",
+  dimissioni: "Dimissioni",
+  licenziamento: "Licenziamento",
+  fine_contratto: "Fine contratto",
+  altro: "Altro",
+};
+
 export const UNITA_FERIE = ["giorni", "ore"] as const;
 export type UnitaFerie = typeof UNITA_FERIE[number];
 
@@ -302,6 +312,18 @@ export function leggiEsitoVisita(v: unknown): Lettura<EsitoVisita> {
   return { ok: false, errore: `esito della visita non riconosciuto («${String(v).slice(0, 30)}»)` };
 }
 
+/** Il motivo dell'uscita dal servizio, da come lo scrive il gestionale o un foglio. */
+export function leggiMotivoCessazione(v: unknown): Lettura<MotivoCessazione> {
+  if (vuoto(v)) return null;
+  const k = chiaveTesto(String(v));
+  if ((MOTIVI_CESSAZIONE as readonly string[]).includes(String(v))) return { ok: true, valore: String(v) as MotivoCessazione };
+  if (/pension/.test(k)) return { ok: true, valore: "pensione" };
+  if (/dimiss|dimess/.test(k)) return { ok: true, valore: "dimissioni" };
+  if (/licenzia/.test(k)) return { ok: true, valore: "licenziamento" };
+  if (/fine (contratto|rapporto)|scadenza contratto|tempo determinato/.test(k)) return { ok: true, valore: "fine_contratto" };
+  return { ok: true, valore: "altro", avviso: `motivo dell'uscita «${String(v).slice(0, 30)}» salvato come «altro»` };
+}
+
 /** Indirizzo da colonne separate: solo se la via c'è, altrimenti un indirizzo completo non si sovrascrive con una città. */
 export function componiIndirizzo(p: { indirizzo?: unknown; cap?: unknown; citta?: unknown; prov?: unknown }): string | null {
   const via = pulisciTesto(p.indirizzo, 150);
@@ -379,6 +401,8 @@ export interface Conducente {
   cellulare: string | null;
   dataFineServizio: string | null;
   /* sensibili */
+  /** perché esce dal servizio (pensione, dimissioni…): la data è operativa, il motivo no */
+  motivoCessazione?: MotivoCessazione | null;
   cf?: string | null;
   dataNascita?: string | null;
   dataAssunzione?: string | null;

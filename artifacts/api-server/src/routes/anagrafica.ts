@@ -49,6 +49,7 @@ import {
   applicaVariazioni, categoriaCanonica, disattivaConducente, riattivaConducente,
 } from "../lib/anagrafica-scritture";
 import { CAMPI_SCRIVIBILI_FITTIZI, leggiCorpoScheda } from "../lib/anagrafica-scheda";
+import { creaConducentiDiProva } from "../lib/anagrafica-prova";
 import { analizza, leggiTabella, ErroreFile, type RigaImport } from "../lib/anagrafica-import";
 import { Annulla, eseguiImport, ESCLUDI, type ScelteImport } from "../lib/anagrafica-import-db";
 import { esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-export";
@@ -248,68 +249,23 @@ router.post("/roster/drivers/:id/riattiva", async (req, res): Promise<void> => {
 
 /* ── Conducenti fittizi, per provare il tabellone ──────────────────────── */
 
-const FAKE_COGNOMI = [
-  "Rossi", "Bianchi", "Ferrari", "Russo", "Romano", "Gallo", "Costa", "Fontana",
-  "Conti", "Esposito", "Ricci", "Bruno", "De Luca", "Moretti", "Marino", "Greco",
-  "Barbieri", "Lombardi", "Giordano", "Rizzo", "Colombo", "Mancini", "Longo",
-  "Leone", "Martinelli", "Marchetti", "Serra", "Vitale", "Caruso", "Ferrara",
-];
-const FAKE_NOMI = [
-  "Marco", "Luca", "Andrea", "Francesco", "Alessandro", "Matteo", "Davide", "Stefano",
-  "Simone", "Giuseppe", "Giulia", "Sara", "Martina", "Chiara", "Francesca", "Elena",
-];
-const FAKE_CATEGORIE: Array<[string, number]> = [["Autista", 39 * 60], ["Autista", 39 * 60], ["Autista", 38 * 60 + 30], ["Verificatore", 38 * 60]];
-const scegli = <T,>(a: T[]): T => a[Math.floor(Math.random() * a.length)]!;
-function dataCasuale(da: number, a: number): string {
-  const y = da + Math.floor(Math.random() * (a - da + 1));
-  return `${y}-${String(1 + Math.floor(Math.random() * 12)).padStart(2, "0")}-${String(1 + Math.floor(Math.random() * 28)).padStart(2, "0")}`;
-}
-
-/** Conducenti FITTIZI: niente matricola (non si confondono con quelle vere), depositi del catalogo, orario in minuti. */
+/**
+ * Conducenti FITTIZI completi (lib/anagrafica-prova.ts): ritratto, depositi
+ * diversi, rotazioni riposi miste coi riposi già generati. Niente matricola:
+ * non si confondono con le persone vere.
+ */
 router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
     if (!vedeDatiPersonali(req) && !haPermesso(req, "scheduling")) richiedePersonale(req);
-    const quanti = Math.min(Math.max(Number(req.body?.count) || 10, 1), 200);
+    const quanti = Math.min(Math.max(Number(req.body?.count) || 30, 1), 200);
     const oggi = oggiRoma();
-    const anno = Number(oggi.slice(0, 4));
-    const creati = await db.transaction(async (tx) => {
+    const esito = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
-      const usati = new Set(righe(await ex.execute(sql`SELECT badge FROM roster_drivers WHERE badge LIKE 'FIT-%'`)).map(r => r.badge));
-      let n = 1;
-      const ids: string[] = [];
-      while (ids.length < quanti) {
-        const badge = `FIT-${String(n++).padStart(3, "0")}`;
-        if (usati.has(badge)) continue;
-        const cognome = scegli(FAKE_COGNOMI);
-        const nome = scegli(FAKE_NOMI);
-        const [categoria, minuti] = scegli(FAKE_CATEGORIE);
-        const deposito = scegli(DEPOSITI_INIZIALI).nome;
-        const assunzione = dataCasuale(2005, anno - 1);
-        const abil = new Set(["autobus", ...(Math.random() < 0.3 ? ["autosnodato"] : [])]);
-        if (categoria === "Verificatore") abil.add("verificatore");
-        const id = righe(await ex.execute(sql`
-          INSERT INTO roster_drivers (name, badge, is_fictitious, cognome, nome, data_assunzione, patente, abilitazioni, versione, updated_at)
-          VALUES (${`${cognome} ${nome}`}, ${badge}, true, ${cognome}, ${nome}, ${assunzione}::date, 'D',
-                  ${`{${[...abil].join(",")}}`}::text[], 0, now())
-          RETURNING id`))[0].id;
-        const visita = dataCasuale(anno - 2, anno);
-        await ex.execute(sql`
-          INSERT INTO roster_driver_history (driver_id, kind, value, event_date, expiry_date, note) VALUES
-            (${id}::uuid, 'deposito', ${deposito}, ${assunzione}::date, NULL, 'fittizio'),
-            (${id}::uuid, 'categoria', ${categoria}, ${assunzione}::date, NULL, 'fittizio'),
-            (${id}::uuid, 'orario_lavoro', ${formattaOrario(minuti)}, ${assunzione}::date, NULL, 'fittizio'),
-            (${id}::uuid, 'patente', NULL, ${assunzione}::date, ${dataCasuale(anno, anno + 6)}::date, 'fittizio'),
-            (${id}::uuid, 'cqc', NULL, ${assunzione}::date, ${dataCasuale(anno, anno + 5)}::date, 'fittizio'),
-            (${id}::uuid, 'visita_ferrovie', 'idoneo', ${visita}::date, ${dataCasuale(anno, anno + 3)}::date, 'fittizio'),
-            (${id}::uuid, 'visita_medico_competente', 'idoneo', ${visita}::date, ${dataCasuale(anno, anno + 2)}::date, 'fittizio')`);
-        ids.push(id);
-        usati.add(badge);
-      }
-      await sincronizzaCorrenti(ex, oggi, TIPI_STORICO, ids);
-      await registra(ex, { ...utente(req), azione: "fittizi", dettaglio: { quanti: ids.length } });
-      return ids.length;
+      const r = await creaConducentiDiProva(ex, quanti, oggi);
+      await registra(ex, { ...utente(req), azione: "fittizi", dettaglio: { quanti: r.creati } });
+      return r;
     });
-    res.json({ ok: true, created: creati });
+    res.json({ ok: true, created: esito.creati, rotazioni: esito.rotazioni, riposi: esito.riposi });
   } catch (e) { rispondiErrore(res, e, "fittizi"); }
 });
 

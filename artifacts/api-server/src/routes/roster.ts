@@ -12,6 +12,7 @@
  *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId}
  *   DELETE /api/roster/assignments/:id         — rimuovi assegnazione
  *   GET    /api/roster/voci                    — catalogo assenze/presenze
+ *   GET    /api/roster/calendario?from=&days=  — la categoria di ogni giorno nel calendario aziendale
  *   POST   /api/roster/entries · DELETE /api/roster/entries/:id
  *
  * I conducenti (anagrafica, storico, fittizi) stanno in routes/anagrafica.ts.
@@ -26,6 +27,8 @@ import { sql } from "drizzle-orm";
 import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
 import { assicuraAnagrafica, type Ex } from "../lib/anagrafica-store";
 import { conducentiPer } from "./anagrafica";
+import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
+import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
 
 const router: IRouter = Router();
 
@@ -123,6 +126,95 @@ function extractDuties(result: any): Array<{
 }
 
 // Conducenti, storico, fittizi: routes/anagrafica.ts (montato prima di questo router).
+
+// ── Calendario aziendale sopra i giorni ─────────────────────────────────────
+
+/**
+ * La categoria di ogni giorno nel Calendario Aziendale di Planning Studio
+ * (scuole aperte, scuole chiuse invernali o estive, domeniche, festivi
+ * rossi), per la righetta colorata sopra le colonne del tabellone.
+ *
+ * Il calendario è per progetto. Quale progetto, in quest'ordine:
+ *   1. ?psProjectId (il tabellone aperto da un servizio);
+ *   2. quello dei turni scelti (?dssId);
+ *   3. il progetto in esercizio, se ha il calendario compilato;
+ *   4. l'unico progetto con un calendario compilato (calendarioPredefinito);
+ *   5. nessuno: domeniche e festivi nazionali sì, scuole aperte/chiuse no.
+ * Un profilo vuoto classificherebbe ogni feriale come «scuole aperte»:
+ * sembra giusto ed è sbagliato, quindi la risposta dice se è compilato.
+ */
+router.get("/roster/calendario", async (req, res): Promise<void> => {
+  try {
+    const from = String(req.query.from ?? "");
+    if (!DATE_RE.test(from)) { res.status(400).json({ error: "from=YYYY-MM-DD richiesto" }); return; }
+    const days = Math.min(Math.max(Number(req.query.days) || 28, 1), 62);
+    const to = new Date(Date.parse(`${from}T00:00:00Z`) + (days - 1) * 86_400_000).toISOString().slice(0, 10);
+    const richiesto = String(req.query.psProjectId ?? "");
+    const dssId = String(req.query.dssId ?? "");
+
+    let psProjectId: string | null = null;
+    let scelto: "indicato" | "dai turni" | "in esercizio" | "riconosciuto" | "assente" = "assente";
+    if (UUID_RE.test(richiesto)) { psProjectId = richiesto; scelto = "indicato"; }
+    if (!psProjectId && UUID_RE.test(dssId)) {
+      try {
+        const r = await db.execute<any>(sql`
+          SELECT sp.planning_studio_project_id AS id
+            FROM driver_shift_scenarios d
+            JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
+            JOIN scheduling_projects sp ON sp.id = s.project_id
+           WHERE d.id = ${dssId}::uuid AND sp.planning_studio_project_id IS NOT NULL`);
+        if (r.rows[0]?.id) { psProjectId = r.rows[0].id; scelto = "dai turni"; }
+      } catch { /* collegamento non leggibile: si va avanti */ }
+    }
+    if (!psProjectId) {
+      try {
+        const r = await db.execute<any>(sql`
+          SELECT p.id FROM ps_projects p
+            JOIN gtfs_feeds f ON f.id = p.materialized_feed_id AND COALESCE(f.is_active, false)
+            JOIN ps_calendar_profiles cp ON cp.project_id = p.id
+           WHERE jsonb_array_length(COALESCE(cp.closed_periods, '[]'::jsonb)) > 0 OR cp.summer_period IS NOT NULL
+           ORDER BY p.updated_at DESC LIMIT 1`);
+        if (r.rows[0]?.id) { psProjectId = r.rows[0].id; scelto = "in esercizio"; }
+      } catch { /* tabelle di Planning Studio assenti */ }
+    }
+    let nota: string | null = null;
+    if (!psProjectId) {
+      const p = await calendarioPredefinito();
+      if (p.projectId) { psProjectId = p.projectId; scelto = "riconosciuto"; }
+      nota = p.nota ?? null;
+    }
+
+    let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
+    let nome: string | null = null;
+    if (psProjectId) {
+      try { profilo = await loadCalendarProfile(psProjectId); } catch { /* resta il calendario civile */ }
+      try {
+        const r = await db.execute<any>(sql`SELECT name FROM ps_projects WHERE id = ${psProjectId}::uuid`);
+        nome = r.rows[0]?.name ?? null;
+      } catch { /* nome facoltativo */ }
+    }
+    const compilato = profilo.closedPeriods.length > 0 || profilo.summerPeriod !== null;
+    if (!compilato) {
+      nota = psProjectId
+        ? "Il calendario aziendale di questo progetto non ha periodi di scuole chiuse: si distinguono solo domeniche e festivi."
+        : (nota ?? "Nessun calendario aziendale compilato in Planning Studio: si distinguono solo domeniche e festivi.");
+    }
+    const { days: classi } = classifyRange(from, to, profilo);
+    res.json({
+      from, to,
+      calendario: { psProjectId, nome, compilato, scelto, nota },
+      days: classi.map(d => ({
+        date: d.date, key: d.key, level1: d.level1, level2: d.level2, label: d.label,
+        periodo: d.level1 === "scuole_chiuse"
+          ? (profilo.closedPeriods.find(p => p.from <= d.date && d.date <= p.to)?.label ?? null)
+          : null,
+      })),
+    });
+  } catch (e: any) {
+    console.error("[roster.calendario]", e?.cause?.code ?? e?.code ?? "errore");
+    res.status(500).json({ error: "Calendario non leggibile" });
+  }
+});
 
 // ── Fonti turni (DSS salvati) ────────────────────────────────────────────────
 

@@ -43,6 +43,7 @@ export interface Variazioni {
   dataNascita?: string | null;
   dataAssunzione?: string | null;
   dataFineServizio?: string | null;
+  motivoCessazione?: string | null;
   residenzaAnagrafica?: string | null;
   cellulare?: string | null;
   telefono?: string | null;
@@ -193,7 +194,7 @@ export async function applicaVariazioni(
   const semplici: Array<[keyof Variazioni, string, "testo" | "data"]> = [
     ["badge", "badge", "testo"], ["cf", "cf", "testo"],
     ["dataNascita", "data_nascita", "data"], ["dataAssunzione", "data_assunzione", "data"],
-    ["dataFineServizio", "data_fine_servizio", "data"],
+    ["dataFineServizio", "data_fine_servizio", "data"], ["motivoCessazione", "motivo_cessazione", "testo"],
     ["residenzaAnagrafica", "residenza_anagrafica", "testo"], ["cellulare", "cellulare", "testo"],
     ["telefono", "telefono", "testo"], ["inquadramento", "inquadramento", "testo"],
     ["patente", "patente", "testo"], ["patenteNumero", "patente_numero", "testo"],

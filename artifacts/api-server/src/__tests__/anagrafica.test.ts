@@ -303,3 +303,26 @@ describe("l'esportazione", () => {
     expect(tutto).toContain("Non idoneo");
   });
 });
+
+describe("motivo dell'uscita e ritratti di prova", async () => {
+  const { leggiMotivoCessazione } = await import("../lib/anagrafica-campi");
+  const { ritrattoSvg, ritrattoDataUri } = await import("../lib/ritratto-fittizio");
+  it("il motivo dell'uscita da come lo scrive un foglio", () => {
+    expect(ok(leggiMotivoCessazione("Pensionamento"))).toBe("pensione");
+    expect(ok(leggiMotivoCessazione("dimissioni volontarie"))).toBe("dimissioni");
+    expect(ok(leggiMotivoCessazione("Licenziamento"))).toBe("licenziamento");
+    expect(ok(leggiMotivoCessazione("fine contratto a tempo determinato"))).toBe("fine_contratto");
+    const altro = leggiMotivoCessazione("trasferimento") as any;
+    expect(altro.valore).toBe("altro");
+    expect(altro.avviso).toMatch(/altro/);
+  });
+  it("lo stesso seme dà lo stesso ritratto; semi diversi, ritratti diversi; niente riferimenti esterni", () => {
+    expect(ritrattoSvg({ seme: 7, donna: false })).toBe(ritrattoSvg({ seme: 7, donna: false }));
+    const tutti = new Set(Array.from({ length: 30 }, (_, i) => ritrattoSvg({ seme: i, donna: i % 3 === 0, eta: 30 + i })));
+    expect(tutti.size).toBe(30);
+    const s = ritrattoSvg({ seme: 3, donna: true, eta: 55 });
+    expect(s.startsWith("<svg")).toBe(true);
+    expect(s).not.toMatch(/href|<script|url\(/);
+    expect(ritrattoDataUri({ seme: 1, donna: false })).toMatch(/^data:image\/svg\+xml;base64,/);
+  });
+});
