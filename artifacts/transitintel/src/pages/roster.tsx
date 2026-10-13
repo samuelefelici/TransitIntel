@@ -38,6 +38,7 @@ interface CalendarioRoster {
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
+import { useDialogo } from "@/components/roster/useDialogo";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
 interface DutySegment {
@@ -78,7 +79,8 @@ interface DutySource {
   isOperational?: boolean; validityUnitName?: string | null;
 }
 interface Board {
-  from: string; days: string[]; drivers: RosterDriver[];
+  /** depositoCodice: il deposito del catalogo, abbinato dal server come fa l'anagrafica */
+  from: string; days: string[]; drivers: Array<RosterDriver & { depositoCodice?: string | null }>;
   duties: RosterDuty[]; assignments: RosterAssignment[];
   entries?: RosterEntry[];
   /** residenza di servizio (deposito) dello scenario → colore dei turni */
@@ -529,6 +531,10 @@ export default function RosterPage() {
   useEffect(() => {
     if (swapFrom && !board?.assignments.some((x) => x.id === swapFrom.id && x.driverId === swapFrom.driverId)) setSwapFrom(null);
   }, [board?.assignments, swapFrom]);
+  /* la croce fissata si lascia quando la sua cella esce dal tabellone (altro periodo, conducente tolto) */
+  useEffect(() => {
+    if (pin && board && (!board.days.includes(pin.c) || !board.drivers.some((d) => d.id === pin.r))) setPin(null);
+  }, [board, pin]);
 
   /** Cambia strumento: la croce fissata e il turno scelto per lo scambio si lasciano. */
   const scegliStrumento = (t: Strumento) => {
@@ -538,29 +544,49 @@ export default function RosterPage() {
     if (t !== "puntatore") { setArmedVoce(null); setVoceMenu(null); }
   };
 
+  /* la scelta della gomma su una cella che intanto si è svuotata non si vede: si chiude */
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (e.key === "Escape") {
-        /* un passo alla volta: prima la domanda sullo scambio, poi il turno scelto, poi tutto */
-        if (swapAsk) { setSwapAsk(null); return; }
-        if (swapFrom) { setSwapFrom(null); return; }
-        setCut(null); setArmedVoce(null); setVoceMenu(null); setTool("puntatore"); setPin(null);
-        setOpenTopMenu(null); setCtxDuty(null); setEraseChoice(null);
-        return;
-      }
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const k = e.key.toLowerCase();
-      if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
-      else if (k === "w") { e.preventDefault(); doPaste(); }
-      else if (k === "v") scegliStrumento("puntatore");
-      else if (k === "g") scegliStrumento("gomma");
-      else if (k === "c") scegliStrumento("cambio");
-    };
+    if (!eraseChoice) return;
+    const k = `${eraseChoice.driverId}|${eraseChoice.day}`;
+    if (!(assignmentsByCell.get(k)?.length || entriesByCell.get(k)?.length)) setEraseChoice(null);
+  }, [eraseChoice, assignmentsByCell, entriesByCell]);
+  /* le due finestre del tabellone: focus dentro, Tab che gira dentro, Esc che chiude */
+  const swapAskRef = useRef<HTMLDivElement>(null);
+  const eraseChoiceRef = useRef<HTMLDivElement>(null);
+  useDialogo(swapAskRef, () => setSwapAsk(null), !!swapAsk);
+  useDialogo(eraseChoiceRef, () => setEraseChoice(null), !!eraseChoice);
+
+  /* La tastiera. Il gestore si rilegge a ogni giro (onKeyRef), così vede sempre
+     lo stato attuale; con una finestra aperta i tasti sono suoi, non del tabellone. */
+  const finestraAperta = editDriver !== null || rotDialog !== null || !!swapAsk || !!eraseChoice;
+  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  onKeyRef.current = (e: KeyboardEvent) => {
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
+    if (finestraAperta || document.querySelector('[aria-modal="true"]')) return;
+    if (e.key === "Escape") {
+      /* un passo alla volta: menu e dettagli aperti, poi il turno scelto per lo
+         scambio, poi lo strumento o la voce o il taglio, infine la croce fissata */
+      if (ctxDuty || voceMenu || openTopMenu) { setCtxDuty(null); setVoceMenu(null); setOpenTopMenu(null); return; }
+      if (swapFrom) { setSwapFrom(null); return; }
+      if (cut || armedVoce || tool !== "puntatore") { setCut(null); setArmedVoce(null); setTool("puntatore"); return; }
+      setPin(null);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
+    else if (k === "w") { e.preventDefault(); doPaste(); }
+    else if (k === "v") scegliStrumento("puntatore");
+    else if (k === "g") scegliStrumento("gomma");
+    else if (k === "c") scegliStrumento("cambio");
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => onKeyRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selDuty, selDriver, cut, swapFrom, swapAsk]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // colore turno: residenza per-turno (deposito del turno) → residenza scenario → tipo
   const resColor = (duty: RosterDuty | null | undefined) =>
@@ -568,19 +594,19 @@ export default function RosterPage() {
 
   // ── Deposito del conducente: la righetta ha lo stesso colore dei turni del deposito ──
   const coloreDeposito = useMemo(
-    () => new Map((board?.depositi ?? []).map((d) => [d.nome.toLowerCase(), d])),
+    () => new Map((board?.depositi ?? []).map((d) => [d.codice, d])),
     [board?.depositi],
   );
-  const depositoDi = (drv: RosterDriver) =>
-    (drv.residenzaServizio ? coloreDeposito.get(drv.residenzaServizio.toLowerCase()) : undefined) ?? null;
+  const depositoDi = (drv: Board["drivers"][number]) =>
+    (drv.depositoCodice ? coloreDeposito.get(drv.depositoCodice) : undefined) ?? null;
   const spiegaColore = (d: ColoreDeposito) =>
     d.da === "turni" ? `colore dei turni (${d.depositoPlanner})`
       : d.da === "planner" ? `colore del deposito di Planner Studio «${d.depositoPlanner}»`
         : "colore predefinito: il deposito non si ritrova fra quelli di Planner Studio";
   /* i depositi dei conducenti sul tabellone, per la legenda */
   const legendaDepositi = useMemo(() => {
-    const presenti = new Set((board?.drivers ?? []).map((d) => d.residenzaServizio?.toLowerCase()).filter(Boolean));
-    return (board?.depositi ?? []).filter((d) => presenti.has(d.nome.toLowerCase()));
+    const presenti = new Set((board?.drivers ?? []).map((d) => d.depositoCodice).filter(Boolean));
+    return (board?.depositi ?? []).filter((d) => presenti.has(d.codice));
   }, [board?.drivers, board?.depositi]);
 
   const menuItemCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-2";
@@ -1085,9 +1111,10 @@ export default function RosterPage() {
         if (items.length === 0) return null; // cella già svuotata: niente da scegliere
         return (
           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4" onClick={() => setEraseChoice(null)}>
-            <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col text-slate-100" onClick={(e) => e.stopPropagation()}>
+            <div ref={eraseChoiceRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="gomma-titolo"
+              className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col text-slate-100 outline-none" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
-                <div className="text-sm font-semibold flex items-center gap-2"><Eraser className="w-4 h-4 text-rose-400" /> Cosa vuoi togliere?</div>
+                <div id="gomma-titolo" className="text-sm font-semibold flex items-center gap-2"><Eraser className="w-4 h-4 text-rose-400" /> Cosa vuoi togliere?</div>
                 <button onClick={() => setEraseChoice(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"><X className="h-4 w-4" /></button>
               </div>
               <div className="px-4 py-2 text-[11px] text-slate-400 border-b border-slate-800">
@@ -1125,8 +1152,8 @@ export default function RosterPage() {
       {/* Cambio turno verso chi quel giorno è assente: si chiede prima */}
       {swapAsk && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4" onClick={() => setSwapAsk(null)}>
-          <div role="dialog" aria-modal="true" aria-labelledby="scambio-titolo"
-            className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md flex flex-col text-slate-100" onClick={(e) => e.stopPropagation()}>
+          <div ref={swapAskRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="scambio-titolo"
+            className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md flex flex-col text-slate-100 outline-none" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
               <div id="scambio-titolo" className="text-sm font-semibold flex items-center gap-2"><ArrowLeftRight className="w-4 h-4 text-amber-400" /> Chi riceve il turno è assente</div>
               <button onClick={() => setSwapAsk(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800" aria-label="Chiudi"><X className="h-4 w-4" /></button>
@@ -1136,7 +1163,7 @@ export default function RosterPage() {
             </ul>
             <p className="px-4 pb-3 text-[11px] text-slate-500">Si spostano solo i turni: le assenze e le altre voci restano dove sono.</p>
             <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800">
-              <button autoFocus onClick={() => setSwapAsk(null)} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
+              <button onClick={() => setSwapAsk(null)} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
               <button onClick={() => { const { avvisi: _a, ...s } = swapAsk; setSwapAsk(null); swapMut.mutate(s); }}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-500">
                 <ArrowLeftRight className="w-4 h-4" /> Scambia lo stesso

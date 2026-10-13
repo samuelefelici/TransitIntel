@@ -67,6 +67,33 @@ describe("il colore di ogni deposito", () => {
     for (const vicino of ["#10b981", "#f97316", "#14b8a6"]) expect(predefiniti).not.toContain(vicino);
   });
 
+  it("dentro una fonte il nome esatto vince su quello che lo contiene, anche se arriva dopo", () => {
+    const colori = abbinaColori(cat, [{ da: "planner", depositi: [
+      { name: "Jesi Zona Industriale", color: "#ef4444" }, { name: "Jesi", color: "#10B981" },
+    ] }]);
+    expect(colori.find(x => x.codice === "jesi")).toMatchObject({ colore: "#10b981", depositoPlanner: "Jesi" });
+  });
+
+  it("la tavolozza non ripete un colore finché ce ne sono di liberi", () => {
+    /* tinte che lasciano «lontano» un solo colore della tavolozza */
+    const colori = abbinaColori(cat, [{ da: "planner", depositi: [
+      { name: "Ancona", color: "#2dd4bf" }, { name: "Jesi", color: "#e11d48" },
+      { name: "Osimo", color: "#6366f1" }, { name: "Marina", color: "#f97316" },
+    ] }]);
+    const predefiniti = colori.filter(x => x.da === "predefinito").map(x => x.colore);
+    expect(predefiniti).toHaveLength(3);
+    expect(new Set(predefiniti).size).toBe(3);
+  });
+
+  it("migliaia di turni con pochi depositi: ogni coppia nome-colore si abbina una volta", () => {
+    const turni = Array.from({ length: 5000 }, (_, i) => ({ name: i % 2 ? "Deposito Conerobus Ancona Via Bocconi" : "Autorimessa Osimo Campocavallo", color: i % 2 ? "#ec4899" : "#f59e0b" }));
+    const t0 = performance.now();
+    const colori = abbinaColori(cat, [{ da: "turni", depositi: turni }]);
+    expect(performance.now() - t0).toBeLessThan(50);
+    expect(colori.find(x => x.codice === "ancona")?.colore).toBe("#ec4899");
+    expect(colori.find(x => x.codice === "osimo")?.colore).toBe("#f59e0b");
+  });
+
   it("senza nessuna fonte, ogni deposito ha comunque un colore e tutti diversi", () => {
     const colori = abbinaColori(cat, []);
     expect(colori.every(c => c.da === "predefinito" && /^#[0-9a-f]{6}$/.test(c.colore))).toBe(true);

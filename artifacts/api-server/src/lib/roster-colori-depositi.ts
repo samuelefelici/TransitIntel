@@ -97,7 +97,9 @@ export function depositoDelNome(nome: string, catalogo: Deposito[]): Deposito | 
 
 /**
  * Il colore di ogni deposito del catalogo. `fonti` in ordine di precedenza:
- * vince la prima che si accoppia al deposito. Funzione pura.
+ * vince la prima che si accoppia al deposito, e dentro una fonte un nome
+ * esatto («Jesi») vince su uno che lo contiene soltanto («Jesi zona
+ * industriale»), in qualunque ordine arrivino. Funzione pura.
  */
 export function abbinaColori(
   catalogo: Deposito[],
@@ -105,20 +107,32 @@ export function abbinaColori(
 ): ColoreDeposito[] {
   const trovati = new Map<string, ColoreDeposito>();
   for (const fonte of fonti) {
+    /* i turni sono migliaia ma i depositi pochi: ogni coppia nome-colore una volta sola */
+    const visti = new Set<string>();
+    const coppie: DepositoColorato[] = [];
     for (const d of fonte.depositi) {
-      const colore = String(d.color ?? "").trim();
-      if (!d.name || !COLORE_RE.test(colore)) continue;
-      const dep = depositoDelNome(d.name, catalogo);
-      if (!dep || trovati.has(dep.codice)) continue;
-      trovati.set(dep.codice, { codice: dep.codice, nome: dep.nome, colore, da: fonte.da, depositoPlanner: d.name });
+      const colore = String(d.color ?? "").trim().toLowerCase();
+      const chiave = `${d.name}|${colore}`;
+      if (!d.name || !COLORE_RE.test(colore) || visti.has(chiave)) continue;
+      visti.add(chiave);
+      coppie.push({ name: d.name, color: colore });
+    }
+    const esatto = (n: string) => trovaDeposito(nomeEssenziale(n), catalogo) ?? trovaDeposito(n, catalogo);
+    for (const passo of [esatto, (n: string) => depositoDelNome(n, catalogo)]) {
+      for (const d of coppie) {
+        const dep = passo(d.name);
+        if (!dep || trovati.has(dep.codice)) continue;
+        trovati.set(dep.codice, { codice: dep.codice, nome: dep.nome, colore: d.color, da: fonte.da, depositoPlanner: d.name });
+      }
     }
   }
   /* la tavolozza: prima i colori lontani da quelli che i depositi hanno già
-     (verde e smeraldo, uno accanto all'altro, sembrano lo stesso deposito) */
-  const usati = [...trovati.values()].map(c => c.colore.toLowerCase());
+     (verde e smeraldo, uno accanto all'altro, sembrano lo stesso deposito),
+     poi gli altri liberi; si ricomincia solo quando sono finiti tutti */
+  const usati = [...trovati.values()].map(c => c.colore);
   const liberi = TAVOLOZZA_DEPOSITI.filter(c => !usati.includes(c));
   const lontani = liberi.filter(c => usati.every(u => !tinteVicine(c, u)));
-  const tavolozza = lontani.length ? lontani : liberi.length ? liberi : TAVOLOZZA_DEPOSITI;
+  const tavolozza = liberi.length ? [...lontani, ...liberi.filter(c => !lontani.includes(c))] : TAVOLOZZA_DEPOSITI;
   let i = 0;
   return catalogo.map(dep => trovati.get(dep.codice) ?? {
     codice: dep.codice, nome: dep.nome, colore: tavolozza[i++ % tavolozza.length]!, da: "predefinito" as const, depositoPlanner: null,
