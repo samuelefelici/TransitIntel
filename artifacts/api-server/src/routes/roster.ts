@@ -478,7 +478,7 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
 
 /**
  * Cambio turno: due conducenti si scambiano i turni dello stesso giorno.
- *   { da, daConducente, a?, aConducente }
+ *   { da, daConducente, a?, aConducente, dssVisto? }
  * «da» è l'assegnazione che il primo conducente cede; «a», se c'è, quella che
  * riceve in cambio. Senza «a» il turno passa e basta: il secondo conducente
  * quel giorno non aveva turni da dare.
@@ -498,8 +498,10 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
       .map(v => (typeof v === "string" ? v.toLowerCase() : v));
     const conA = a !== undefined && a !== null && a !== "";
     const uuid = (v: unknown) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(v ?? ""));
-    if (![da, daConducente, aConducente].every(uuid) || (conA && !uuid(a))) {
-      res.status(400).json({ error: "da, daConducente e aConducente (uuid) richiesti; a facoltativo" }); return;
+    /* il DSS del tabellone che l'utente guardava (null: tutti i turni, AUTO o nessun DSS) */
+    const dssVisto = typeof corpo.dssVisto === "string" && corpo.dssVisto ? corpo.dssVisto.toLowerCase() : null;
+    if (![da, daConducente, aConducente].every(uuid) || (conA && !uuid(a)) || (dssVisto !== null && !uuid(dssVisto))) {
+      res.status(400).json({ error: "da, daConducente e aConducente (uuid) richiesti; a e dssVisto facoltativi" }); return;
     }
     if (daConducente === aConducente) { res.status(400).json({ error: "Lo scambio è fra due conducenti diversi" }); return; }
     if (conA && a === da) { res.status(400).json({ error: "Lo scambio è fra due turni diversi" }); return; }
@@ -509,15 +511,18 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
       const ex = tx as unknown as Ex;
       /* Prima i conducenti, poi i turni, sempre in ordine di id: è l'ordine della
          disattivazione e dell'import, così nessuno resta ad aspettare l'altro.
-         FOR SHARE aspetta chi sta cambiando il conducente (disattivazione, data
-         di uscita) e poi legge il dato già salvato, non quello di prima. */
+         Il blocco aspetta chi sta cambiando il conducente (disattivazione, data
+         di uscita) e poi legge il dato già salvato, non quello di prima; ed è
+         esclusivo fra due cambi turno sullo stesso conducente, così il secondo
+         vede il turno passato dal primo. NO KEY UPDATE lascia passare i
+         controlli delle chiavi esterne (chi inserisce turni e voci). */
       const conducenti = righe(await ex.execute(sql`
         SELECT id, cognome, nome, name, is_active,
                to_char(data_assunzione, 'YYYY-MM-DD') AS dal, to_char(data_fine_servizio, 'YYYY-MM-DD') AS al
           FROM roster_drivers
          WHERE id IN (${aConducente}::uuid, ${daConducente}::uuid)
          ORDER BY id
-           FOR SHARE`));
+           FOR NO KEY UPDATE`));
       const r = righe(await ex.execute(sql`
         SELECT id, driver_id, day::text AS day, duty_code
           FROM roster_assignments
@@ -539,12 +544,15 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
         const c = conducenti.find(x => x.id === id);
         return c ? ([c.cognome, c.nome].filter(Boolean).join(" ") || c.name) : "Il conducente";
       };
-      /* senza turno in cambio, chi riceve quel giorno non aveva turni: se intanto
-         ne ha ricevuto uno, l'utente voleva uno scambio e non un turno in più */
+      /* senza turno in cambio, chi riceve quel giorno non aveva turni, fra quelli
+         che l'utente vedeva: se intanto ne ha ricevuto uno, voleva uno scambio e
+         non un turno in più. Un turno di un altro DSS, che il tabellone per DSS
+         non mostra, non conta: avere più turni nello stesso giorno si può. */
       if (!ricevuto) {
         const gia = righe(await ex.execute(sql`
           SELECT duty_code FROM roster_assignments
            WHERE driver_id = ${aConducente}::uuid AND day = ${giorno}::date
+             AND (${dssVisto}::uuid IS NULL OR dss_id = ${dssVisto}::uuid)
            LIMIT 1`));
         if (gia.length) {
           throw new Rifiuto(409, `${nomeDi(aConducente)} nel frattempo ha ricevuto ${gia[0].duty_code} il ${quando}: il tabellone si ricarica`);

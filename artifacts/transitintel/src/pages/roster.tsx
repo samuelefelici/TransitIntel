@@ -476,7 +476,11 @@ export default function RosterPage() {
   const swapMut = useMutation({
     mutationFn: (s: Scambio) => apiFetch("/api/roster/assignments/scambia", {
       method: "POST",
-      body: JSON.stringify({ da: s.da.id, daConducente: s.da.driverId, a: s.a?.id ?? null, aConducente: s.aConducente }),
+      body: JSON.stringify({
+        da: s.da.id, daConducente: s.da.driverId, a: s.a?.id ?? null, aConducente: s.aConducente,
+        /* col tabellone di un solo DSS, i turni degli altri DSS non si vedono e non contano */
+        dssVisto: isAuto || !dssId ? null : dssId,
+      }),
     }),
     onSuccess: (_r, s) => {
       toast.success(s.a
