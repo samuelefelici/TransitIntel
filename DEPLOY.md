@@ -136,6 +136,33 @@ curl -X POST https://api.transitintel.tuodominio.it/api/cron/traffic \
   -H "x-cron-secret: IL-TUO-CRON-SECRET"
 ```
 
+### Anagrafica del personale
+
+Il roster ha un'anagrafica completa dei conducenti (Ottimizzazione → Personale →
+Anagrafica personale). Le tabelle si creano da sé al primo avvio; il file
+`migrations/2026-10_anagrafica_personale.sql` è lo specchio per chi le vuole
+preparare prima.
+
+1. **Subito dopo il rilascio**, dalla Gestione Utenti accendi il permesso
+   **«Personale»** a chi tiene l'anagrafica (ufficio personale, chi fa il
+   roster). Prima del rilascio non si può: la Gestione Utenti non conosce
+   ancora il permesso. Nessun utente esistente lo riceve da sé, e finché non lo
+   ha, chi ha solo lo Scheduling vede i dati operativi (niente contatti tranne
+   il cellulare, paghe, ferie, date delle visite), non modifica le schede delle
+   persone vere e non importa; crea e modifica solo conducenti fittizi. Gli
+   admin vedono e modificano tutto.
+2. Carica i dipendenti da **Importa da Excel** (.xlsx o .csv): va bene
+   l'esportazione della tabella dei dipendenti del gestionale. La prova mostra
+   riga per riga che cosa succederebbe; l'applicazione è tutto o niente.
+3. Al primo avvio l'API controlla le matricole: se due conducenti attivi hanno
+   la stessa, la pagina lo segnala e l'indice unico non si crea. Il controllo
+   si ripete ogni mattina: sistemati i doppioni, l'indice arriva da sé (o al
+   primo riavvio).
+4. Al primo avvio, una volta sola, l'API sistema i dati del roster di prima:
+   le scadenze di patente e CQC scritte a mano nella scheda vecchia passano
+   nello storico, gli esiti delle visite scritti a mano diventano quelli
+   dell'elenco, il numero della patente si prende dal CQC dove manca.
+
 ---
 
 ## Variabili d'Ambiente

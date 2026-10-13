@@ -370,14 +370,28 @@ export function AssegnaRotazioniDialog({ onClose }: { onClose: () => void }) {
   const [pickerWeek, setPickerWeek] = useState<number | null>(null);
 
   const saveMut = useMutation({
-    mutationFn: () => apiFetch(`/api/roster/rotazioni-riposi/${rotId}/assegnazioni`, {
-      method: "PUT",
-      body: JSON.stringify({ assignments: Object.entries(assign).map(([driverId, weekIndex]) => ({ driverId, weekIndex })) }),
-    }),
-    onSuccess: () => {
+    mutationFn: async () => {
+      const salva = (sposta: boolean) => apiFetch<{ daRigenerare?: string[]; spostati?: number }>(`/api/roster/rotazioni-riposi/${rotId}/assegnazioni`, {
+        method: "PUT",
+        body: JSON.stringify({ assignments: Object.entries(assign).map(([driverId, weekIndex]) => ({ driverId, weekIndex })), sposta }),
+      });
+      try {
+        return await salva(false);
+      } catch (e: any) {
+        /* un conducente sta in una rotazione sola: chi è già in un'altra si sposta solo se lo si conferma */
+        const sp: Array<{ conducente: string; rotazione: string }> | undefined = e?.body?.spostamenti;
+        if (e?.status !== 409 || !sp?.length) throw e;
+        const elenco = sp.map(x => `· ${x.conducente} (ora in «${x.rotazione}»)`).join("\n");
+        if (!confirm(`Questi conducenti sono già in un'altra rotazione riposi:\n${elenco}\n\nSpostarli qui? I riposi già generati dalla rotazione di prima si tolgono.`)) {
+          throw new Error("Assegnazioni non salvate");
+        }
+        return salva(true);
+      }
+    },
+    onSuccess: (r) => {
       toast.success("Assegnazioni salvate — la cadenza compare nei dati di ogni conducente");
-      qc.invalidateQueries({ queryKey: ["roster", "assegnazioni", rotId] });
-      qc.invalidateQueries({ queryKey: ["roster", "cadenze"] });
+      if (r?.daRigenerare?.length) toast.warning("Rigenera i riposi delle rotazioni toccate («Algoritmi → Assegna cadenze → Riposi»)");
+      qc.invalidateQueries({ queryKey: ["roster"] });
     },
     onError: (e: Error) => toast.error(e.message),
   });

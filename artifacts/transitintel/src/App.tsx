@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "rea
 import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
+import { Toaster as ToasterSonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
@@ -50,6 +51,7 @@ const NetworkSharePage = lazyWithRetry(() => import("@/pages/network-share"));
 const TimetableMapPage = lazyWithRetry(() => import("@/pages/timetable-map"));
 const RuntimesPage = lazyWithRetry(() => import("@/pages/runtimes"));
 const RosterPage = lazyWithRetry(() => import("@/pages/roster"));
+const AnagraficaPage = lazyWithRetry(() => import("@/pages/anagrafica"));
 const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
 const ServiceDbPage = lazyWithRetry(() => import("@/pages/service-db"));
 const Traffic = lazyWithRetry(() => import("@/pages/traffic"));
@@ -123,9 +125,10 @@ function PageLoader() {
  * Guardia di permesso: se l'utente non ha il permesso richiesto
  * (e non è admin), redirige a /dashboard.
  */
-function Gated({ perm, children }: { perm: Permission; children: ReactNode }) {
+function Gated({ perm, children }: { perm: Permission | Permission[]; children: ReactNode }) {
   const { hasPermission } = useAuth();
-  if (!hasPermission(perm)) return <Redirect to="/dashboard" />;
+  /* con più permessi ne basta uno */
+  if (!(Array.isArray(perm) ? perm : [perm]).some(p => hasPermission(p))) return <Redirect to="/dashboard" />;
   return <>{children}</>;
 }
 
@@ -314,6 +317,9 @@ function Router() {
             <Route path="/optimization">
               <Gated perm="scheduling"><OptimizationPage /></Gated>
             </Route>
+            <Route path="/roster/anagrafica">
+              <Gated perm={["scheduling", "personale"]}><AnagraficaPage /></Gated>
+            </Route>
             <Route path="/roster">
               <Gated perm="scheduling"><RosterPage /></Gated>
             </Route>
@@ -428,6 +434,8 @@ function App() {
               <AuthGate />
             </WouterRouter>
             <Toaster />
+            {/* il roster e l'anagrafica avvisano con sonner: senza questo i loro messaggi non si vedevano */}
+            <ToasterSonner position="bottom-right" richColors closeButton />
             {/* Regia in diretta: le scritture dell'agente invalidano i dati
                 di Planning Studio e le pagine aperte si aggiornano da sole. */}
             <ArgosLiveBridge />

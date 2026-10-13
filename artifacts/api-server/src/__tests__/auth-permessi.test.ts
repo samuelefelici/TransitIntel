@@ -15,11 +15,11 @@ vi.mock("@workspace/db", () => ({
   db: { execute: vi.fn(async () => ({ rows: [{ n: 1 }] })) },
 }));
 
-import { requirePermissionByPath, type AuthUser, type Permission } from "../lib/auth";
+import { requirePermission, requirePermissionByPath, vedeDatiPersonali, type AuthUser, type Permission } from "../lib/auth";
 
 function utente(attivi: Permission[], role: "admin" | "user" = "user"): AuthUser {
   const permissions = Object.fromEntries(
-    (["analytics", "fares", "scheduling", "network", "fleetcare", "centrale"] as Permission[])
+    (["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale"] as Permission[])
       .map(p => [p, attivi.includes(p)]),
   ) as Record<Permission, boolean>;
   return { id: "u", email: "u@x", fullName: null, role, permissions, fleetcareRole: "driver", active: true };
@@ -77,5 +77,49 @@ describe("Centrale Operativa: chi vede la Mappa e l'AVM", () => {
   it("il prefisso non cattura nomi che iniziano allo stesso modo", () => {
     /* /siri/parco non deve coprire un ipotetico /siri/parcometri */
     expect(verifica("/siri/parcometri", nessuno)).toBe("passa");
+  });
+});
+
+
+describe("Anagrafica del personale: chi entra, chi vede i dati personali", () => {
+  const soloPersonale = utente(["personale"]);
+  const soloScheduling = utente(["scheduling"]);
+  const nessuno = utente(["fares"]);
+
+  it("una maiuscola nel percorso non salta il controllo", () => {
+    expect(verifica("/Roster/drivers", nessuno)).toBe(403);
+    expect(verifica("/ROSTER/board", nessuno)).toBe(403);
+    expect(verifica("/roster/ANAGRAFICA/import/leggi", soloScheduling)).toBe(403);
+    expect(verifica("/FARES/x", soloScheduling)).toBe(403);
+  });
+
+  it("chi ha solo «personale» legge e scrive l'anagrafica, ma non il tabellone", () => {
+    expect(verifica("/roster/drivers", soloPersonale)).toBe("passa");
+    expect(verifica("/roster/drivers/abc/history", soloPersonale)).toBe("passa");
+    expect(verifica("/roster/history/abc", soloPersonale)).toBe("passa");
+    expect(verifica("/roster/depositi", soloPersonale)).toBe("passa");
+    expect(verifica("/roster/rotazioni-riposi", soloPersonale)).toBe("passa");
+    expect(verifica("/roster/anagrafica/import/leggi", soloPersonale)).toBe("passa");
+    expect(verifica("/roster/board", soloPersonale)).toBe(403);
+    expect(verifica("/roster/assignments", soloPersonale)).toBe(403);
+  });
+
+  it("chi ha solo «scheduling» legge i conducenti ed esporta, ma non importa né vede lo storico", () => {
+    expect(verifica("/roster/drivers", soloScheduling)).toBe("passa");
+    expect(verifica("/roster/anagrafica/esporta", soloScheduling)).toBe("passa");
+    expect(verifica("/roster/board", soloScheduling)).toBe("passa");
+    expect(verifica("/roster/anagrafica/import/prova", soloScheduling)).toBe(403);
+    expect(verifica("/roster/history/abc", soloScheduling)).toBe(403);
+  });
+
+  it("i dati personali: admin o «personale», mai col token di Argos", () => {
+    expect(vedeDatiPersonali({ user: soloPersonale })).toBe(true);
+    expect(vedeDatiPersonali({ user: soloScheduling })).toBe(false);
+    expect(vedeDatiPersonali({ user: utente([], "admin") })).toBe(true);
+    expect(vedeDatiPersonali({ user: utente([], "admin"), authVia: "argos" })).toBe(false);
+    let codice: number | "passa" = "passa";
+    const res = { status(c: number) { codice = c; return this; }, json() { return this; } };
+    requirePermission("personale")({ user: utente([], "admin"), authVia: "argos" } as any, res as any, () => { codice = "passa"; });
+    expect(codice).toBe(403);
   });
 });

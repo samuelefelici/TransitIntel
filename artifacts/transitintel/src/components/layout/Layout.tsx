@@ -7,7 +7,7 @@ import {
   Zap, ChevronDown, Truck, LogOut, Network, Ticket, MapPinCheck,
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
-  Milestone, Radio, Printer, Shuffle, Wrench, SatelliteDish, MapPinned,
+  Milestone, Radio, Printer, Shuffle, Wrench, SatelliteDish, MapPinned, IdCard,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -23,7 +23,8 @@ interface NavSection {
   title: string;
   icon?: any;            // section-level icon (shown when collapsed & for expandable groups)
   collapsible?: boolean; // if true, items are behind a toggle
-  permission?: Permission; // se presente, sezione visibile solo con questo permesso (admin sempre)
+  /** se presente, sezione visibile solo con questo permesso (o uno di questi; admin sempre) */
+  permission?: Permission | Permission[];
   items: NavItem[];
 }
 
@@ -63,6 +64,15 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/roster", label: "Roster Personale", icon: Users },
       { href: "/misto", label: "Completamento / Misti", icon: Shuffle },
       { href: "/service-db", label: "Database di Esercizio", icon: Database },
+    ],
+  },
+  {
+    // L'anagrafica la tiene chi ha «personale» (anche senza lo Scheduling) e
+    // la legge chi fa il roster: per questo è una sezione a sé.
+    title: "Personale",
+    permission: ["scheduling", "personale"],
+    items: [
+      { href: "/roster/anagrafica", label: "Anagrafica personale", icon: IdCard },
     ],
   },
   {
@@ -120,7 +130,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // e nasconde sezioni intere se non si ha il permesso richiesto.
   const visibleSections = React.useMemo(() => {
     return NAV_SECTIONS
-      .filter(s => !s.permission || hasPermission(s.permission))
+      .filter(s => !s.permission || (Array.isArray(s.permission) ? s.permission : [s.permission]).some(p => hasPermission(p)))
       .map(s => {
         if (s.title === "Panoramica") {
           return {

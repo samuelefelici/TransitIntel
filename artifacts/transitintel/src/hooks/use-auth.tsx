@@ -3,14 +3,17 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 
 /** Speculare a `Permission` in api-server/src/lib/auth.ts: un modulo per chiave.
- *  centrale = Centrale Operativa (Mappa live + AVM), attivabile per utente. */
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale";
+ *  centrale = Centrale Operativa (Mappa live + AVM), attivabile per utente.
+ *  personale = anagrafica del personale completa (dati personali, paghe, ferie, visite). */
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale";
 
 export interface CurrentUser {
   id: string;
@@ -76,6 +79,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUserState(u);
     saveCachedUser(u);
   }, []);
+
+  /* Cambia la persona (uscita, o un altro accesso dallo stesso PC): via tutta
+   * la cache delle query. Dentro ci sono dati che il nuovo utente non deve
+   * vedere (l'anagrafica del personale coi dati personali), e con 5 minuti
+   * di staleTime li vedrebbe senza che la pagina li richieda al server. */
+  const queryClient = useQueryClient();
+  const utenteId = user?.id ?? null;
+  const utentePrima = useRef(utenteId);
+  useEffect(() => {
+    if (utentePrima.current === utenteId) return;
+    utentePrima.current = utenteId;
+    queryClient.clear();
+  }, [utenteId, queryClient]);
 
   const refresh = useCallback(async () => {
     try {

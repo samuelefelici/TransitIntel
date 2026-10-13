@@ -18,6 +18,8 @@ import {
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { Link } from "wouter";
+import { useAuth } from "@/hooks/use-auth";
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
@@ -150,7 +152,11 @@ export default function RosterPage() {
   const [selDuty, setSelDuty] = useState<{ day: string; code: string } | null>(null);
   const [selDriver, setSelDriver] = useState<string | null>(null);
   const [cut, setCut] = useState<{ day: string; code: string } | null>(null);
-  const [editDriver, setEditDriver] = useState<RosterDriver | null | "new">(null);
+  /* id del conducente di cui è aperta la scheda, o "new" */
+  const [editDriver, setEditDriver] = useState<string | null | "new">(null);
+  const { hasPermission } = useAuth();
+  /* senza «Personale» dal tabellone si creano solo conducenti fittizi */
+  const personale = hasPermission("personale");
 
   const sourcesQ = useQuery({
     queryKey: ["roster", "sources", operationalOnly, psProjectId],
@@ -191,7 +197,7 @@ export default function RosterPage() {
 
   const seedMut = useMutation({
     mutationFn: () => apiFetch<{ created: number }>("/api/roster/drivers/seed", { method: "POST", body: JSON.stringify({ count: 30 }) }),
-    onSuccess: (r) => { toast.success(`${r.created} operatori fittizi creati`); qc.invalidateQueries({ queryKey: ["roster"] }); },
+    onSuccess: (r) => { toast.success(`${r.created} conducenti fittizi creati`); qc.invalidateQueries({ queryKey: ["roster"] }); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -520,8 +526,12 @@ export default function RosterPage() {
 
         <div className="ml-auto flex items-center gap-2">
           <span className="hidden lg:flex items-center gap-1 text-[10px] text-slate-500"><Scissors className="w-3 h-3" /> Q taglia · <ClipboardPaste className="w-3 h-3" /> W incolla</span>
-          <button onClick={() => setEditDriver("new")} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium">
-            <UserPlus className="w-3.5 h-3.5" /> Conducente
+          <Link href="/roster/anagrafica" className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">
+            Anagrafica
+          </Link>
+          <button onClick={() => setEditDriver("new")} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium"
+            title={personale ? "Nuovo conducente" : "Nuovo conducente fittizio (per i conducenti veri serve il permesso «Personale»)"}>
+            <UserPlus className="w-3.5 h-3.5" /> {personale ? "Conducente" : "Fittizio"}
           </button>
           <button onClick={() => seedMut.mutate()} disabled={seedMut.isPending} className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs disabled:opacity-50">
             +30 fittizi
@@ -603,7 +613,7 @@ export default function RosterPage() {
                               {drv.abilitazioni?.length > 0 && <AbilitazioneBadges keys={drv.abilitazioni} size={9} />}
                             </div>
                           </div>
-                          <button onClick={(e) => { e.stopPropagation(); setEditDriver(drv); }} className="p-0.5 rounded text-slate-500 hover:text-violet-300 shrink-0" title="Anagrafica conducente"><Pencil className="w-3 h-3" /></button>
+                          <button onClick={(e) => { e.stopPropagation(); setEditDriver(drv.id); }} className="p-0.5 rounded text-slate-500 hover:text-violet-300 shrink-0" title="Anagrafica conducente"><Pencil className="w-3 h-3" /></button>
                         </div>
                       </td>
                       {board.days.map((day) => {
@@ -731,7 +741,7 @@ export default function RosterPage() {
       </div>
 
       {editDriver !== null && (
-        <DriverEditDialog driver={editDriver === "new" ? null : editDriver} onClose={() => setEditDriver(null)} />
+        <DriverEditDialog driverId={editDriver === "new" ? null : editDriver} fittizio={editDriver === "new" && !personale} onClose={() => setEditDriver(null)} />
       )}
 
       {rotDialog === "create-riposi" && <RotazioneRiposiCreateDialog onClose={() => setRotDialog(null)} />}
