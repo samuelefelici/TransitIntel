@@ -19,12 +19,18 @@ import path from "node:path";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { SCRIPTS_DIR } from "./scripts-dir";
+import { requirePermission } from "./auth";
+
+/* Chi ha solo «personale» legge le rotazioni (le sceglie nella scheda del
+ * conducente) ma non le crea, non le cancella e non genera i riposi. */
+const soloScheduling = requirePermission("scheduling");
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 let bootstrapped = false;
-async function ensureTable(): Promise<void> {
+/** Crea le tabelle delle rotazioni: lo chiama anche l'anagrafica, che le legge. */
+export async function ensureTable(): Promise<void> {
   if (bootstrapped) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS roster_rotazioni_riposi (
@@ -93,7 +99,7 @@ router.get("/roster/rotazioni-riposi", async (_req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/roster/rotazioni-riposi", async (req, res): Promise<void> => {
+router.post("/roster/rotazioni-riposi", soloScheduling, async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     const name = String(b.name ?? "").trim().slice(0, 120);
@@ -111,7 +117,7 @@ router.post("/roster/rotazioni-riposi", async (req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete("/roster/rotazioni-riposi/:id", async (req, res): Promise<void> => {
+router.delete("/roster/rotazioni-riposi/:id", soloScheduling, async (req, res): Promise<void> => {
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -162,34 +168,100 @@ router.get("/roster/rotazioni-riposi/:id/assegnazioni", async (req, res): Promis
 });
 
 // PUT assegnazioni: sostituisce l'intero set di scaglioni della rotazione.
-// body: { assignments: [{ weekIndex, driverId }] }. Un conducente = un solo scaglione.
-router.put("/roster/rotazioni-riposi/:id/assegnazioni", async (req, res): Promise<void> => {
+// body: { assignments: [{ weekIndex, driverId }], sposta?: boolean }.
+// Un conducente sta in UNA rotazione riposi: chi entra qui ed è già in
+// un'altra fa rispondere 409 con l'elenco, finché non arriva `sposta: true`.
+// Chi esce o cambia scaglione perde i riposi futuri già generati da questa
+// rotazione (si rigenerano): restare col vecchio schema sul tabellone è
+// peggio che restare senza.
+router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloScheduling, async (req, res): Promise<void> => {
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-    const rot = await db.execute<any>(sql`SELECT weeks FROM roster_rotazioni_riposi WHERE id = ${id}::uuid`);
-    if (!rot.rows[0]) { res.status(404).json({ error: "Rotazione non trovata" }); return; }
-    const weeks = Number(rot.rows[0].weeks);
     const raw = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
-    // Deduplica per conducente (ultimo scaglione vince) e valida.
+    const sposta = req.body?.sposta === true;
     const byDriver = new Map<string, number>();
-    for (const a of raw) {
-      const driverId = String(a?.driverId ?? "");
-      const wi = Number(a?.weekIndex);
-      if (!UUID_RE.test(driverId)) continue;
-      if (!Number.isInteger(wi) || wi < 0 || wi >= weeks) continue;
-      byDriver.set(driverId, wi);
+    const oggi = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome" }).format(new Date());
+    const esito = await db.transaction(async (tx) => {
+      const rot = await tx.execute<any>(sql`SELECT weeks FROM roster_rotazioni_riposi WHERE id = ${id}::uuid FOR UPDATE`);
+      if (!rot.rows[0]) return { stato: 404 as const };
+      const weeks = Number(rot.rows[0].weeks);
+      // Deduplica per conducente (ultimo scaglione vince) e valida.
+      for (const a of raw) {
+        const driverId = String(a?.driverId ?? "");
+        const wi = Number(a?.weekIndex);
+        if (!UUID_RE.test(driverId)) continue;
+        if (!Number.isInteger(wi) || wi < 0 || wi >= weeks) continue;
+        byDriver.set(driverId, wi);
+      }
+      const prima = await tx.execute<any>(sql`
+        SELECT driver_id, week_index FROM roster_rotazione_assegnazioni WHERE rotazione_id = ${id}::uuid`);
+      const primaMap = new Map<string, number>(prima.rows.map((r: any) => [r.driver_id, Number(r.week_index)]));
+      const toccati = [...new Set([...byDriver.keys(), ...primaMap.keys()])].sort();
+      if (toccati.length) {
+        /* stesso ordine per tutti: due salvataggi insieme non si incrociano */
+        await tx.execute(sql`
+          SELECT id FROM roster_drivers WHERE id = ANY(${uuidArrayLiteral(toccati)}::uuid[]) ORDER BY id FOR UPDATE`);
+      }
+      const nuovi = [...byDriver.keys()].filter(d => !primaMap.has(d));
+      const altrove = nuovi.length ? (await tx.execute<any>(sql`
+        SELECT a.driver_id, a.rotazione_id, r.name AS rotazione,
+               coalesce(nullif(btrim(concat_ws(' ', d.cognome, d.nome)), ''), d.name) AS conducente
+          FROM roster_rotazione_assegnazioni a
+          JOIN roster_rotazioni_riposi r ON r.id = a.rotazione_id
+          JOIN roster_drivers d ON d.id = a.driver_id
+         WHERE a.driver_id = ANY(${uuidArrayLiteral(nuovi)}::uuid[]) AND a.rotazione_id <> ${id}::uuid`)).rows : [];
+      if (altrove.length && !sposta) {
+        return {
+          stato: 409 as const,
+          spostamenti: altrove.map((x: any) => ({ driverId: x.driver_id, conducente: x.conducente, rotazione: x.rotazione })),
+        };
+      }
+      const daRigenerare = new Set<string>();
+      for (const x of altrove) {
+        await tx.execute(sql`
+          DELETE FROM roster_entries WHERE driver_id = ${x.driver_id}::uuid
+             AND source = ${`rotazione:${x.rotazione_id}`} AND day >= ${oggi}::date`);
+        await tx.execute(sql`
+          DELETE FROM roster_rotazione_assegnazioni WHERE driver_id = ${x.driver_id}::uuid AND rotazione_id = ${x.rotazione_id}::uuid`);
+        daRigenerare.add(x.rotazione_id);
+      }
+      for (const [driverId, wi] of primaMap) {
+        if (byDriver.get(driverId) !== wi) {
+          await tx.execute(sql`
+            DELETE FROM roster_entries WHERE driver_id = ${driverId}::uuid
+               AND source = ${`rotazione:${id}`} AND day >= ${oggi}::date`);
+          daRigenerare.add(id);
+        }
+      }
+      if (nuovi.length) daRigenerare.add(id);
+      await tx.execute(sql`DELETE FROM roster_rotazione_assegnazioni WHERE rotazione_id = ${id}::uuid`);
+      for (const [driverId, wi] of byDriver) {
+        await tx.execute(sql`
+          INSERT INTO roster_rotazione_assegnazioni (rotazione_id, week_index, driver_id)
+          VALUES (${id}::uuid, ${wi}, ${driverId}::uuid)
+          ON CONFLICT (rotazione_id, driver_id) DO UPDATE SET week_index = EXCLUDED.week_index`);
+      }
+      if (toccati.length) {
+        await tx.execute(sql`
+          UPDATE roster_drivers SET versione = versione + 1, updated_at = now()
+           WHERE id = ANY(${uuidArrayLiteral(toccati.filter(d => byDriver.get(d) !== primaMap.get(d)))}::uuid[])`);
+      }
+      return { stato: 200 as const, daRigenerare: [...daRigenerare], spostati: altrove.length };
+    });
+    if (esito.stato === 404) { res.status(404).json({ error: "Rotazione non trovata" }); return; }
+    if (esito.stato === 409) {
+      res.status(409).json({
+        error: "Alcuni conducenti sono già in un'altra rotazione riposi: confermi lo spostamento?",
+        spostamenti: esito.spostamenti,
+      });
+      return;
     }
-    await db.execute(sql`DELETE FROM roster_rotazione_assegnazioni WHERE rotazione_id = ${id}::uuid`);
-    for (const [driverId, wi] of byDriver) {
-      await db.execute(sql`
-        INSERT INTO roster_rotazione_assegnazioni (rotazione_id, week_index, driver_id)
-        VALUES (${id}::uuid, ${wi}, ${driverId}::uuid)
-        ON CONFLICT (rotazione_id, driver_id) DO UPDATE SET week_index = EXCLUDED.week_index
-      `);
-    }
-    res.json({ ok: true, count: byDriver.size });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+    res.json({ ok: true, count: byDriver.size, daRigenerare: esito.daRigenerare, spostati: esito.spostati });
+  } catch (e: any) {
+    console.error("[rotazioni.assegnazioni]", e?.cause?.code ?? e?.code ?? "errore");
+    res.status(500).json({ error: "Assegnazioni non salvate" });
+  }
 });
 
 // GET cadenze di un conducente → rotazioni a cui è assegnato + scaglione + pattern.
@@ -223,7 +295,7 @@ function weekdayMon0(d: Date): number { return (d.getUTCDay() + 6) % 7; }
 // Idempotente: cancella e rigenera le voci con source='rotazione:<id>' nello
 // scope (categoria/deposito) e range, gestendo variazioni (nuovo conducente,
 // rimozione, cambio scaglione).
-router.post("/roster/rotazioni-riposi/:id/genera-riposi", async (req, res): Promise<void> => {
+router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloScheduling, async (req, res): Promise<void> => {
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -329,7 +401,7 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", async (req, res): Prom
   }
 });
 
-router.post("/roster/rotazioni-riposi/solve", async (req, res): Promise<void> => {
+router.post("/roster/rotazioni-riposi/solve", soloScheduling, async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     // range limitato lato server per proteggere il worker

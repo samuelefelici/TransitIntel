@@ -17,6 +17,10 @@
  *     (lo «zip bomb» si ferma prima di decomprimere);
  *   · XML: nessun parser con DTD. Si leggono solo le entità predefinite e
  *     quelle numeriche, quindi un'entità dichiarata nel file non si espande;
+ *   · XML: niente espressioni regolari che cercano la chiusura di un tag
+ *     (`<si>([\s\S]*?)</si>`): con mille aperture e nessuna chiusura costano
+ *     il quadrato della lunghezza, e un file di pochi KB ferma il processo.
+ *     Gli elementi si scorrono con indexOf, in tempo lineare;
  *   · tetto alle righe e alle colonne.
  * ═══════════════════════════════════════════════════════════════════════════
  */
@@ -54,13 +58,69 @@ function decodifica(s: string): string {
     .replace(/_x([0-9a-fA-F]{4})_/g, (_m, h: string) => String.fromCharCode(parseInt(h, 16)));
 }
 
+/**
+ * Gli elementi `<tag …>…</tag>` e `<tag …/>` di un testo XML, in ordine, in
+ * tempo lineare. Non gestisce lo stesso tag annidato in sé stesso, che negli
+ * elementi letti qui (si, t, r, rPh, row, c, v, is, sheet, Relationship) non
+ * c'è. Un tag aperto e mai chiuso è un file rotto.
+ */
+function* elementi(xml: string, tag: string): Generator<{ attr: string; corpo: string | null }> {
+  const apri = `<${tag}`;
+  const chiudi = `</${tag}>`;
+  let i = 0;
+  for (;;) {
+    const a = xml.indexOf(apri, i);
+    if (a < 0) return;
+    const dopo = xml.charCodeAt(a + apri.length);
+    /* "<c" non deve prendere "<cols", né "<row" "<rowBreaks" */
+    if (!(dopo === 32 || dopo === 62 || dopo === 47 || dopo === 9 || dopo === 10 || dopo === 13)) {
+      i = a + apri.length;
+      continue;
+    }
+    const fine = xml.indexOf(">", a);
+    if (fine < 0) throw new ErroreXlsx("Il file è danneggiato (tag non chiuso).");
+    if (xml.charCodeAt(fine - 1) === 47) {
+      yield { attr: xml.slice(a + apri.length, fine - 1), corpo: null };
+      i = fine + 1;
+      continue;
+    }
+    const c = xml.indexOf(chiudi, fine + 1);
+    if (c < 0) throw new ErroreXlsx("Il file è danneggiato (elemento non chiuso).");
+    yield { attr: xml.slice(a + apri.length, fine), corpo: xml.slice(fine + 1, c) };
+    i = c + chiudi.length;
+  }
+}
+
+/** Il contenuto del primo `<tag>` di un testo, o undefined. */
+function primo(xml: string, tag: string): string | undefined {
+  for (const e of elementi(xml, tag)) return e.corpo ?? "";
+  return undefined;
+}
+
+/** Il valore di un attributo, letto da un testo di attributi già isolato. */
+function attributo(attr: string, nome: string): string | undefined {
+  const k = attr.indexOf(` ${nome}="`);
+  const j = k >= 0 ? k : attr.search(new RegExp(`(^|\\s)${nome.replace(":", "\\:")}="`));
+  if (j < 0) return undefined;
+  const inizio = attr.indexOf('"', j) + 1;
+  const fine = attr.indexOf('"', inizio);
+  return fine < 0 ? undefined : attr.slice(inizio, fine);
+}
+
 /** Il testo di un <si> o di un <is>: i <t> diretti e quelli dei run, senza la fonetica. */
 function testoRicco(xml: string): string {
-  const senzaFonetica = xml.replace(/<rPh\b[\s\S]*?<\/rPh>/g, "");
-  let out = "";
-  for (const m of senzaFonetica.matchAll(/<t(?:\s[^>]*)?>([\s\S]*?)<\/t>|<t(?:\s[^>]*)?\/>/g)) {
-    out += m[1] !== undefined ? decodifica(m[1]) : "";
+  let senzaFonetica = "";
+  let i = 0;
+  for (;;) {
+    const a = xml.indexOf("<rPh", i);
+    if (a < 0) { senzaFonetica += xml.slice(i); break; }
+    senzaFonetica += xml.slice(i, a);
+    const c = xml.indexOf("</rPh>", a);
+    if (c < 0) break;
+    i = c + 6;
   }
+  let out = "";
+  for (const t of elementi(senzaFonetica, "t")) out += t.corpo ? decodifica(t.corpo) : "";
   return out;
 }
 
@@ -98,14 +158,12 @@ function percorsoPrimoFoglio(zip: AdmZip): string {
   const wb = leggiVoce(zip, "xl/workbook.xml");
   const rels = leggiVoce(zip, "xl/_rels/workbook.xml.rels");
   if (!wb || !rels) return ripiego;
-  const primo = /<sheet\b[^>]*\br:id="([^"]+)"/.exec(wb)?.[1]
-    ?? /<sheet\b[^>]*\bid="([^"]+)"/.exec(wb)?.[1];
-  if (!primo) return ripiego;
-  for (const m of rels.matchAll(/<Relationship\b([^>]*)\/?>/g)) {
-    const attr = m[1];
-    const id = /\bId="([^"]+)"/.exec(attr)?.[1];
-    const target = /\bTarget="([^"]+)"/.exec(attr)?.[1];
-    if (id === primo && target) {
+  let id: string | undefined;
+  for (const f of elementi(wb, "sheet")) { id = attributo(f.attr, "r:id") ?? attributo(f.attr, "id"); break; }
+  if (!id) return ripiego;
+  for (const r of elementi(rels, "Relationship")) {
+    const target = attributo(r.attr, "Target");
+    if (attributo(r.attr, "Id") === id && target) {
       const t = decodifica(target);
       return t.startsWith("/") ? t.slice(1) : `xl/${t.replace(/^\.\//, "")}`;
     }
@@ -131,34 +189,34 @@ export function leggiXlsx(buf: Buffer): Array<Array<string | null>> {
 
   const condivise: string[] = [];
   const ss = leggiVoce(zip, "xl/sharedStrings.xml");
-  if (ss) for (const m of ss.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>|<si\b[^>]*\/>/g)) condivise.push(testoRicco(m[1] ?? ""));
+  if (ss) for (const si of elementi(ss, "si")) condivise.push(testoRicco(si.corpo ?? ""));
 
   const foglio = leggiVoce(zip, percorsoPrimoFoglio(zip));
   if (!foglio) throw new ErroreXlsx("Il file non ha fogli.");
 
   const righe: Array<Array<string | null>> = [];
   let righeLette = 0;
-  for (const r of foglio.matchAll(/<row\b([^>]*)>([\s\S]*?)<\/row>|<row\b([^>]*)\/>/g)) {
+  for (const r of elementi(foglio, "row")) {
     if (++righeLette > LIMITI_XLSX.righe) throw new ErroreXlsx(`Il foglio ha più di ${LIMITI_XLSX.righe} righe.`);
-    const attrRiga = r[1] ?? r[3] ?? "";
-    const numero = Number(/\br="(\d+)"/.exec(attrRiga)?.[1] ?? righe.length + 1);
+    const numero = Number(attributo(r.attr, "r") ?? righe.length + 1);
     /* un numero di riga enorme allocherebbe righe vuote fino a lì */
-    if (numero > LIMITI_XLSX.righe) throw new ErroreXlsx(`Il foglio ha più di ${LIMITI_XLSX.righe} righe.`);
+    if (!Number.isInteger(numero) || numero < 1 || numero > LIMITI_XLSX.righe) {
+      throw new ErroreXlsx(`Il foglio ha più di ${LIMITI_XLSX.righe} righe.`);
+    }
     const riga: Array<string | null> = [];
     let colonnaPrecedente = -1;
-    for (const c of (r[2] ?? "").matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
-      const attr = c[1];
-      const corpo = c[2] ?? "";
-      const rif = /\br="([A-Z]+\d+)"/.exec(attr)?.[1];
-      const col = rif ? indiceColonna(rif) : colonnaPrecedente + 1;
+    for (const c of elementi(r.corpo ?? "", "c")) {
+      const rif = attributo(c.attr, "r");
+      const col = rif && /^[A-Z]{1,3}\d+$/.test(rif) ? indiceColonna(rif) : colonnaPrecedente + 1;
       colonnaPrecedente = col;
       if (col < 0 || col >= LIMITI_XLSX.colonne) continue;
-      const tipo = /\bt="([a-zA-Z]+)"/.exec(attr)?.[1] ?? "n";
-      const v = /<v>([\s\S]*?)<\/v>/.exec(corpo)?.[1];
+      const corpo = c.corpo ?? "";
+      const tipo = attributo(c.attr, "t") ?? "n";
+      const v = corpo ? primo(corpo, "v") : undefined;
       let valore: string | null = null;
       switch (tipo) {
         case "s": valore = v !== undefined ? (condivise[Number(v)] ?? null) : null; break;
-        case "inlineStr": valore = testoRicco(/<is>([\s\S]*?)<\/is>/.exec(corpo)?.[1] ?? ""); break;
+        case "inlineStr": valore = testoRicco(primo(corpo, "is") ?? ""); break;
         case "b": valore = v === "1" ? "VERO" : v === "0" ? "FALSO" : null; break;
         case "e": valore = null; break;
         default: valore = v !== undefined ? decodifica(v) : null;

@@ -2,117 +2,35 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * ROSTER — assegnazione turni guida al personale viaggiante
  * ───────────────────────────────────────────────────────────────────────────
- * Tabellone: righe = operatori (anche fittizi, in attesa dell'anagrafica HR),
- * colonne = giorni. I turni da coprire arrivano dai turni guida salvati
- * (driver_shift_scenarios.result.driverShifts, prodotti dallo Scheduling
- * Engine): per ogni giorno i turni non ancora assegnati sono gli "scoperti".
+ * Tabellone: righe = conducenti (anche fittizi), colonne = giorni. I turni da
+ * coprire arrivano dai turni guida salvati (driver_shift_scenarios.result.
+ * driverShifts, prodotti dallo Scheduling Engine): per ogni giorno i turni non
+ * ancora assegnati sono gli "scoperti".
  *
- *   GET    /api/roster/drivers                 — operatori
- *   POST   /api/roster/drivers                 — crea operatore {name, badge?}
- *   POST   /api/roster/drivers/seed            — genera N operatori fittizi
- *   DELETE /api/roster/drivers/:id
  *   GET    /api/roster/duty-sources            — DSS disponibili come fonte turni
- *   GET    /api/roster/board?from=&days=&dssId=— griglia: turni, assegnazioni
+ *   GET    /api/roster/board?from=&days=&dssId=— griglia: turni, assegnazioni, voci
  *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId}
  *   DELETE /api/roster/assignments/:id         — rimuovi assegnazione
+ *   GET    /api/roster/voci                    — catalogo assenze/presenze
+ *   POST   /api/roster/entries · DELETE /api/roster/entries/:id
  *
- * Vincoli: un solo turno per operatore al giorno; un turno coperto da un solo
- * operatore al giorno (per la stessa fonte DSS).
+ * I conducenti (anagrafica, storico, fittizi) stanno in routes/anagrafica.ts.
+ *
+ * Vincoli: un turno è coperto da un solo conducente al giorno (per la stessa
+ * fonte DSS); un conducente può fare più turni nello stesso giorno.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
+import { assicuraAnagrafica, type Ex } from "../lib/anagrafica-store";
+import { conducentiPer } from "./anagrafica";
 
 const router: IRouter = Router();
 
-let bootstrapped = false;
-async function ensureRosterTables(): Promise<void> {
-  if (bootstrapped) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_drivers (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      name text NOT NULL,
-      badge text,
-      is_fictitious boolean NOT NULL DEFAULT false,
-      is_active boolean NOT NULL DEFAULT true,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_assignments (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
-      day date NOT NULL,
-      dss_id uuid NOT NULL,
-      duty_code text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (driver_id, day),
-      UNIQUE (dss_id, day, duty_code)
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_day ON roster_assignments(day)`);
-  // SNAPSHOT minimo del turno al momento dell'assegnazione (inizio/fine/ore/
-  // deposito): se il DSS viene versionato o sparisce, lo storico resta leggibile.
-  await db.execute(sql`ALTER TABLE roster_assignments ADD COLUMN IF NOT EXISTS snapshot jsonb`);
-  // Un conducente può fare PIÙ turni nello stesso giorno: togliamo il vincolo
-  // "un turno per giorno". Resta UNIQUE(dss_id, day, duty_code): un turno è
-  // assegnabile a un solo conducente.
-  await db.execute(sql`ALTER TABLE roster_assignments DROP CONSTRAINT IF EXISTS roster_assignments_driver_id_day_key`);
-  // Anagrafica conducente ricca (colonne additive, idempotenti)
-  for (const col of [
-    "matricola text", "cognome text", "nome text", "cf text", "cellulare text",
-    "residenza_anagrafica text", "residenza_servizio text",
-    "ore_settimanali integer", "categoria text",
-    "data_nascita date", "data_assunzione date", "data_fine_servizio date",
-    "patente text", "patente_validita date",
-    "cqc_numero text", "cqc_validita date",
-    "visita_medica_validita date", "note text",
-    // ── nuovi: foto, abilitazioni, visite mediche distinte ──
-    "photo_url text",
-    "abilitazioni text[] NOT NULL DEFAULT '{}'::text[]",
-    "visita_ferrovie_validita date",           // idoneità sanitaria ferrovie
-    "visita_medico_competente_validita date",  // sorveglianza sanitaria D.Lgs 81
-  ]) {
-    await db.execute(sql.raw(`ALTER TABLE roster_drivers ADD COLUMN IF NOT EXISTS ${col}`));
-  }
-  // Storico del conducente (append-only): depositi, categoria, visite, patente, cqc.
-  // event_date = data di passaggio/visita; expiry_date = scadenza (dove ha senso).
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_driver_history (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
-      kind text NOT NULL,               -- deposito | categoria | visita_ferrovie | visita_medico_competente | patente | cqc
-      value text,                       -- deposito/categoria/classe patente/esito visita/n. cqc
-      event_date date,                  -- data di passaggio o della visita
-      expiry_date date,                 -- scadenza (visite/patenti/cqc)
-      note text,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_hist_driver ON roster_driver_history(driver_id, event_date DESC)`);
-  // Voci di ASSENZA / PRESENZA inserite sul tabellone (conducente × giorno),
-  // in aggiunta ai turni. Indipendenti dalla fonte turni (DSS).
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_entries (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
-      day date NOT NULL,
-      category text NOT NULL,   -- assenza | presenza
-      code text NOT NULL,       -- R, MA3, STRA, D1 …
-      created_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (driver_id, day, code)
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_entries_day ON roster_entries(day)`);
-  // `source` traccia l'origine di una voce generata (es. "rotazione:<uuid>"):
-  // permette la rigenerazione idempotente (cancella per source + reinserisci) a
-  // fronte di variazioni (nuovo conducente, cambio rotazione…). NULL = manuale.
-  await db.execute(sql`ALTER TABLE roster_entries ADD COLUMN IF NOT EXISTS source text`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_entries_source ON roster_entries(source)`);
-  bootstrapped = true;
-}
+/* Le tabelle del roster (conducenti, assegnazioni, storico, voci) le crea
+ * l'anagrafica del personale: lib/anagrafica-store.ts. */
 
 /** Catalogo voci Assenza/Presenza. Estendibile: aggiungi qui nuovi codici. */
 const VOCI_CATALOG: Record<"assenza" | "presenza", Array<{ code: string; label: string }>> = {
@@ -137,39 +55,12 @@ const VOCE_CODES: Record<string, Set<string>> = {
   presenza: new Set(VOCI_CATALOG.presenza.map((v) => v.code)),
 };
 
-/** Abilitazioni ammesse (chiavi stabili, il simbolo/label è lato frontend). */
-const ABILITAZIONI = ["autobus", "filobus", "autosnodato", "ascensore", "verificatore"];
-const HISTORY_KINDS = ["deposito", "categoria", "orario_lavoro", "visita_ferrovie", "visita_medico_competente", "patente", "cqc"];
-/** kind dello storico che richiedono SEMPRE la data di inizio. */
-const HISTORY_REQUIRES_DATE = new Set(HISTORY_KINDS);
-/** kind → colonna "valore attuale" (denormalizzato = ultima voce dello storico). */
-const CURRENT_COL: Record<string, { col: string; from: "value" | "expiry"; numeric?: boolean }> = {
-  deposito: { col: "residenza_servizio", from: "value" },
-  categoria: { col: "categoria", from: "value" },
-  orario_lavoro: { col: "ore_settimanali", from: "value", numeric: true },
-  visita_ferrovie: { col: "visita_ferrovie_validita", from: "expiry" },
-  visita_medico_competente: { col: "visita_medico_competente_validita", from: "expiry" },
-  patente: { col: "patente_validita", from: "expiry" },
-  cqc: { col: "cqc_validita", from: "expiry" },
-};
-
-/** Riallinea la colonna "valore attuale" del conducente all'ultima voce dello
- *  storico per quel kind (o la azzera se non ce ne sono). */
-async function syncCurrentFromHistory(driverId: string, kind: string): Promise<void> {
-  const map = CURRENT_COL[kind];
-  if (!map) return;
-  const r = await db.execute<any>(sql`
-    SELECT value, expiry_date FROM roster_driver_history
-     WHERE driver_id = ${driverId}::uuid AND kind = ${kind}
-     ORDER BY event_date DESC NULLS LAST, created_at DESC LIMIT 1
-  `);
-  const row = r.rows[0];
-  let val: any = row ? (map.from === "expiry" ? row.expiry_date : row.value) : null;
-  if (map.numeric) { const n = parseInt(String(val ?? ""), 10); val = Number.isFinite(n) ? n : null; }
-  await db.execute(sql`UPDATE roster_drivers SET ${sql.raw(map.col)} = ${val} WHERE id = ${driverId}::uuid`);
-}
-
-router.use(async (_req, _res, next) => { await ensureRosterTables(); next(); });
+router.use(async (req, res, next) => {
+  if (!req.path.toLowerCase().startsWith("/roster")) { next(); return; }
+  try { await assicuraAnagrafica(); }
+  catch { res.status(503).json({ error: "Roster non disponibile: riprova tra poco" }); return; }
+  next();
+});
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -231,303 +122,7 @@ function extractDuties(result: any): Array<{
   });
 }
 
-// ── Operatori ────────────────────────────────────────────────────────────────
-
-function rowToDriver(d: any) {
-  return {
-    id: d.id, name: d.name, badge: d.badge, isFictitious: d.is_fictitious,
-    matricola: d.matricola ?? null, cognome: d.cognome ?? null, nome: d.nome ?? null,
-    cf: d.cf ?? null, cellulare: d.cellulare ?? null,
-    residenzaAnagrafica: d.residenza_anagrafica ?? null, residenzaServizio: d.residenza_servizio ?? null,
-    oreSettimanali: d.ore_settimanali ?? null, categoria: d.categoria ?? null,
-    dataNascita: d.data_nascita ?? null, dataAssunzione: d.data_assunzione ?? null,
-    dataFineServizio: d.data_fine_servizio ?? null,
-    patente: d.patente ?? null, patenteValidita: d.patente_validita ?? null,
-    cqcNumero: d.cqc_numero ?? null, cqcValidita: d.cqc_validita ?? null,
-    visitaMedicaValidita: d.visita_medica_validita ?? null, note: d.note ?? null,
-    photoUrl: d.photo_url ?? null,
-    abilitazioni: Array.isArray(d.abilitazioni) ? d.abilitazioni : [],
-    visitaFerrovieValidita: d.visita_ferrovie_validita ?? null,
-    visitaMedicoCompetenteValidita: d.visita_medico_competente_validita ?? null,
-  };
-}
-
-// mappa body camelCase → coppie colonna/valore per INSERT/UPDATE
-function driverFieldPairs(b: any): Array<{ col: string; val: any }> {
-  const m: Record<string, any> = {
-    matricola: b.matricola, cognome: b.cognome, nome: b.nome, cf: b.cf, cellulare: b.cellulare,
-    residenza_anagrafica: b.residenzaAnagrafica, residenza_servizio: b.residenzaServizio,
-    ore_settimanali: b.oreSettimanali, categoria: b.categoria,
-    data_nascita: b.dataNascita, data_assunzione: b.dataAssunzione, data_fine_servizio: b.dataFineServizio,
-    patente: b.patente, patente_validita: b.patenteValidita,
-    cqc_numero: b.cqcNumero, cqc_validita: b.cqcValidita,
-    visita_medica_validita: b.visitaMedicaValidita, note: b.note, badge: b.badge,
-    photo_url: b.photoUrl,
-    visita_ferrovie_validita: b.visitaFerrovieValidita,
-    visita_medico_competente_validita: b.visitaMedicoCompetenteValidita,
-  };
-  const dateCols = new Set([
-    "data_nascita", "data_assunzione", "data_fine_servizio",
-    "patente_validita", "cqc_validita", "visita_medica_validita",
-    "visita_ferrovie_validita", "visita_medico_competente_validita",
-  ]);
-  const out: Array<{ col: string; val: any }> = [];
-  for (const [col, raw] of Object.entries(m)) {
-    if (raw === undefined) continue;
-    let val = raw === "" ? null : raw;
-    if (col === "ore_settimanali" && val != null) val = Number(val) || null;
-    if (dateCols.has(col) && val != null && !DATE_RE.test(String(val))) val = null;
-    out.push({ col, val });
-  }
-  return out;
-}
-
-/** Letterale Postgres `{a,b}` per la colonna abilitazioni (chiavi allowlist,
- *  quindi alfanumeriche: nessun escaping necessario). undefined = non toccare. */
-function abilitazioniLiteral(b: any): string | undefined {
-  if (!Array.isArray(b.abilitazioni)) return undefined;
-  const vals = b.abilitazioni.map((x: any) => String(x)).filter((x: string) => ABILITAZIONI.includes(x));
-  return `{${vals.join(",")}}`;
-}
-
-router.get("/roster/drivers", async (_req, res): Promise<void> => {
-  try {
-    const r = await db.execute<any>(sql`
-      SELECT * FROM roster_drivers WHERE is_active = true
-      ORDER BY cognome NULLS LAST, nome NULLS LAST, name
-    `);
-    res.json({ drivers: r.rows.map(rowToDriver) });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.post("/roster/drivers", async (req, res): Promise<void> => {
-  try {
-    const b = req.body ?? {};
-    // name = "Cognome Nome" se non passato esplicitamente
-    const name = String(b.name ?? [b.cognome, b.nome].filter(Boolean).join(" ")).trim();
-    if (!name) { res.status(400).json({ error: "Cognome/Nome obbligatori" }); return; }
-    const pairs = driverFieldPairs(b);
-    const cols = ["name", "is_fictitious", ...pairs.map((p) => p.col)];
-    const frags = [sql`${name}`, sql`${!!b.isFictitious}`, ...pairs.map((p) => sql`${p.val}`)];
-    const abil = abilitazioniLiteral(b);
-    if (abil !== undefined) { cols.push("abilitazioni"); frags.push(sql`${abil}::text[]`); }
-    const colSql = sql.raw(cols.join(", "));
-    const valSql = sql.join(frags, sql`, `);
-    const r = await db.execute<any>(sql`
-      INSERT INTO roster_drivers (${colSql}) VALUES (${valSql}) RETURNING *
-    `);
-    res.status(201).json(rowToDriver(r.rows[0]));
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-    const b = req.body ?? {};
-    const sets: any[] = [];
-    if (typeof b.name === "string" && b.name.trim()) sets.push(sql`name = ${b.name.trim()}`);
-    else if (b.cognome !== undefined || b.nome !== undefined) {
-      const nm = [b.cognome, b.nome].filter(Boolean).join(" ").trim();
-      if (nm) sets.push(sql`name = ${nm}`);
-    }
-    for (const { col, val } of driverFieldPairs(b)) sets.push(sql`${sql.raw(col)} = ${val}`);
-    const abil = abilitazioniLiteral(b);
-    if (abil !== undefined) sets.push(sql`abilitazioni = ${abil}::text[]`);
-    if (sets.length === 0) { res.status(400).json({ error: "Nessun campo da aggiornare" }); return; }
-    const r = await db.execute<any>(sql`
-      UPDATE roster_drivers SET ${sql.join(sets, sql`, `)}
-       WHERE id = ${id}::uuid RETURNING *
-    `);
-    if (!r.rows[0]) { res.status(404).json({ error: "Conducente non trovato" }); return; }
-    res.json(rowToDriver(r.rows[0]));
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-// ── Generatore anagrafica fittizia (dati falsi, coerenti) ─────────────────────
-const FAKE_COGNOMI = [
-  "Rossi", "Bianchi", "Ferrari", "Russo", "Romano", "Gallo", "Costa", "Fontana",
-  "Conti", "Esposito", "Ricci", "Bruno", "De Luca", "Moretti", "Marino", "Greco",
-  "Barbieri", "Lombardi", "Giordano", "Rizzo", "Colombo", "Mancini", "Longo",
-  "Leone", "Martinelli", "Marchetti", "Serra", "Vitale", "Caruso", "Ferrara",
-  "Galli", "Martini", "Pellegrini", "Palumbo", "Sanna", "Farina", "Rinaldi",
-  "Villa", "Monti", "Cattaneo",
-];
-const FAKE_NOMI_M = [
-  "Marco", "Luca", "Andrea", "Francesco", "Alessandro", "Matteo", "Davide",
-  "Stefano", "Simone", "Giuseppe", "Antonio", "Giovanni", "Roberto", "Paolo",
-  "Fabio", "Michele", "Riccardo", "Emanuele", "Daniele", "Nicola",
-];
-const FAKE_NOMI_F = [
-  "Giulia", "Sara", "Martina", "Chiara", "Francesca", "Alessia", "Valentina",
-  "Federica", "Elena", "Silvia", "Laura", "Anna", "Elisa", "Marta", "Serena",
-];
-// Depositi dell'azienda (residenza di servizio). "depositi diversi".
-const FAKE_DEPOSITI = ["Ancona", "Jesi", "Senigallia", "Falconara", "Fabriano", "Osimo"];
-const FAKE_CATEGORIE = ["Autista", "Autista", "Autista", "Verificatore", "Manovratore"];
-const FAKE_ORE = [39, 39, 39, 38, 24];
-const _pick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)]!;
-const _pad = (n: number, w: number) => String(n).padStart(w, "0");
-/** Data casuale (YYYY-MM-DD) tra due anni interi inclusi. */
-function _fakeDate(yearFrom: number, yearTo: number): string {
-  const y = yearFrom + Math.floor(Math.random() * (yearTo - yearFrom + 1));
-  const m = 1 + Math.floor(Math.random() * 12);
-  const d = 1 + Math.floor(Math.random() * 28);
-  return `${y}-${_pad(m, 2)}-${_pad(d, 2)}`;
-}
-/** Codice fiscale plausibile (NON valido: solo formato, dato fittizio). */
-function _fakeCF(cognome: string, nome: string): string {
-  const cons = (s: string) => s.toUpperCase().replace(/[^A-Z]/g, "").replace(/[AEIOU]/g, "");
-  const c3 = (cons(cognome) + "XXX").slice(0, 3);
-  const n3 = (cons(nome) + "XXX").slice(0, 3);
-  const yy = _pad(50 + Math.floor(Math.random() * 50), 2);
-  const mm = "ABCDEHLMPRST"[Math.floor(Math.random() * 12)];
-  const dd = _pad(1 + Math.floor(Math.random() * 28), 2);
-  const cat = "ABCDEFGHILMNPRSTZ";
-  const catcode = cat[Math.floor(Math.random() * cat.length)] + _pad(100 + Math.floor(Math.random() * 899), 3);
-  const chk = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[Math.floor(Math.random() * 26)];
-  return `${c3}${n3}${yy}${mm}${dd}${catcode}${chk}`;
-}
-
-// POST /roster/drivers/seed — genera N operatori fittizi con anagrafica ricca
-// (cognome/nome/CF/cellulare/categoria/deposito/abilitazioni) e depositi diversi.
-router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
-  try {
-    const count = Math.min(Math.max(Number(req.body?.count) || 10, 1), 200);
-    const existing = await db.execute<any>(sql`SELECT badge FROM roster_drivers WHERE badge LIKE 'FIT-%'`);
-    const usedBadges = new Set(existing.rows.map((r: any) => r.badge));
-    // prossima matricola libera
-    let nextN = 1;
-    while (usedBadges.has(`FIT-${_pad(nextN, 3)}`)) nextN++;
-
-    let created = 0;
-    for (let k = 0; created < count && k < count + 400; k++) {
-      const badge = `FIT-${_pad(nextN, 3)}`;
-      nextN++;
-      if (usedBadges.has(badge)) continue;
-
-      const female = Math.random() < 0.25;
-      const cognome = _pick(FAKE_COGNOMI);
-      const nome = female ? _pick(FAKE_NOMI_F) : _pick(FAKE_NOMI_M);
-      const name = `${cognome} ${nome}`;
-      const cf = _fakeCF(cognome, nome);
-      const cellulare = `3${_pick([2, 3, 4, 6, 8])}${_pad(Math.floor(Math.random() * 10000000), 7)}`;
-      const deposito = _pick(FAKE_DEPOSITI);
-      const idx = Math.floor(Math.random() * FAKE_CATEGORIE.length);
-      const categoria = FAKE_CATEGORIE[idx]!;
-      const ore = FAKE_ORE[idx]!;
-      const dataNascita = _fakeDate(1968, 2000);
-      const dataAssunzione = _fakeDate(2005, 2024);
-      const patenteValidita = _fakeDate(2026, 2031);
-      const cqcValidita = _fakeDate(2026, 2030);
-      const visitaFerrovie = _fakeDate(2026, 2028);
-      const visitaMedico = _fakeDate(2026, 2028);
-      // 1–3 abilitazioni casuali (sempre almeno "autobus")
-      const abil = new Set<string>(["autobus"]);
-      const nExtra = Math.floor(Math.random() * 3);
-      for (let j = 0; j < nExtra; j++) abil.add(_pick(ABILITAZIONI));
-      if (categoria === "Verificatore") abil.add("verificatore");
-      const abilLit = `{${[...abil].join(",")}}`;
-
-      const ins = await db.execute<any>(sql`
-        INSERT INTO roster_drivers (
-          name, badge, is_fictitious, cognome, nome, matricola, cf, cellulare,
-          residenza_servizio, residenza_anagrafica, categoria, ore_settimanali,
-          data_nascita, data_assunzione, patente, patente_validita,
-          cqc_numero, cqc_validita, visita_ferrovie_validita, visita_medico_competente_validita,
-          abilitazioni
-        ) VALUES (
-          ${name}, ${badge}, true, ${cognome}, ${nome}, ${badge.replace("FIT-", "")}, ${cf}, ${cellulare},
-          ${deposito}, ${deposito}, ${categoria}, ${ore},
-          ${dataNascita}::date, ${dataAssunzione}::date, ${"D-CQC"}, ${patenteValidita}::date,
-          ${`CQC${_pad(100000 + Math.floor(Math.random() * 899999), 6)}`}, ${cqcValidita}::date,
-          ${visitaFerrovie}::date, ${visitaMedico}::date,
-          ${abilLit}::text[]
-        ) RETURNING id
-      `);
-      const driverId = ins.rows[0]?.id;
-      // Storico: deposito + categoria a partire dall'assunzione.
-      if (driverId) {
-        await db.execute(sql`
-          INSERT INTO roster_driver_history (driver_id, kind, value, event_date)
-          VALUES (${driverId}::uuid, 'deposito', ${deposito}, ${dataAssunzione}::date),
-                 (${driverId}::uuid, 'categoria', ${categoria}, ${dataAssunzione}::date)
-        `);
-      }
-      usedBadges.add(badge);
-      created++;
-    }
-    res.json({ ok: true, created });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.delete("/roster/drivers/:id", async (req, res): Promise<void> => {
-  try {
-    await db.execute(sql`UPDATE roster_drivers SET is_active = false WHERE id = ${String(req.params.id)}::uuid`);
-    res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-// ── Storico conducente (depositi, categoria, visite, patente, cqc) ────────────
-
-function rowToHistory(h: any) {
-  return {
-    id: h.id, driverId: h.driver_id, kind: h.kind, value: h.value ?? null,
-    eventDate: h.event_date ?? null, expiryDate: h.expiry_date ?? null,
-    note: h.note ?? null, createdAt: h.created_at,
-  };
-}
-
-router.get("/roster/drivers/:id/history", async (req, res): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-    const r = await db.execute<any>(sql`
-      SELECT * FROM roster_driver_history
-       WHERE driver_id = ${id}::uuid
-       ORDER BY event_date DESC NULLS LAST, created_at DESC
-    `);
-    res.json({ history: r.rows.map(rowToHistory) });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.post("/roster/drivers/:id/history", async (req, res): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-    const b = req.body ?? {};
-    const kind = String(b.kind ?? "");
-    if (!HISTORY_KINDS.includes(kind)) { res.status(400).json({ error: "kind non valido" }); return; }
-    const value = b.value != null && String(b.value).trim() ? String(b.value).trim().slice(0, 200) : null;
-    const eventDate = DATE_RE.test(String(b.eventDate ?? "")) ? String(b.eventDate) : null;
-    const expiryDate = DATE_RE.test(String(b.expiryDate ?? "")) ? String(b.expiryDate) : null;
-    const note = b.note != null && String(b.note).trim() ? String(b.note).trim().slice(0, 500) : null;
-    // Ogni voce dello storico richiede la DATA DI INIZIO (data di passaggio/visita).
-    if (HISTORY_REQUIRES_DATE.has(kind) && !eventDate) {
-      res.status(400).json({ error: "Data di inizio obbligatoria" }); return;
-    }
-    const r = await db.execute<any>(sql`
-      INSERT INTO roster_driver_history (driver_id, kind, value, event_date, expiry_date, note)
-      VALUES (${id}::uuid, ${kind}, ${value}, ${eventDate}::date, ${expiryDate}::date, ${note})
-      RETURNING *
-    `);
-    await syncCurrentFromHistory(id, kind); // allinea il "valore attuale"
-    res.status(201).json(rowToHistory(r.rows[0]));
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.delete("/roster/history/:hid", async (req, res): Promise<void> => {
-  try {
-    const hid = String(req.params.hid);
-    if (!UUID_RE.test(hid)) { res.status(400).json({ error: "ID non valido" }); return; }
-    // recupera driver_id + kind prima di eliminare, per ri-allineare il valore attuale
-    const before = await db.execute<any>(sql`SELECT driver_id, kind FROM roster_driver_history WHERE id = ${hid}::uuid LIMIT 1`);
-    const row = before.rows[0];
-    await db.execute(sql`DELETE FROM roster_driver_history WHERE id = ${hid}::uuid`);
-    if (row) await syncCurrentFromHistory(row.driver_id, row.kind);
-    res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
+// Conducenti, storico, fittizi: routes/anagrafica.ts (montato prima di questo router).
 
 // ── Fonti turni (DSS salvati) ────────────────────────────────────────────────
 
@@ -581,10 +176,8 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       dayList.push(new Date(d0.getTime() + i * 86_400_000).toISOString().slice(0, 10));
     }
 
-    const driversQ = await db.execute<any>(sql`
-      SELECT * FROM roster_drivers
-      WHERE is_active = true ORDER BY cognome NULLS LAST, nome NULLS LAST, name
-    `);
+    /* i conducenti come li può vedere chi chiede: senza «personale», solo i dati operativi */
+    const drivers = await conducentiPer(req, db as unknown as Ex);
 
     // ── Modalità AUTO (dssId = "auto"): risoluzione del DSS competente PER
     // DATA usando i periodi valid_from/valid_to (P5). La settimana a cavallo
@@ -634,7 +227,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       `);
       res.json({
         from, days: dayList,
-        drivers: driversQ.rows.map(rowToDriver),
+        drivers,
         duties: [], residenza: null,
         dutiesByDss, dssByDay,
         assignments: assignAll.rows.map((a: any) => ({
@@ -694,7 +287,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
 
     res.json({
       from, days: dayList,
-      drivers: driversQ.rows.map(rowToDriver),
+      drivers,
       duties,
       residenza,
       assignments: assignQ.rows.map((a: any) => ({

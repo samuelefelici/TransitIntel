@@ -93,3 +93,21 @@ describe("una dimensione dichiarata falsa", () => {
     expect(() => leggiXlsx(truccato)).toThrow(/troppo grande/);
   });
 });
+
+describe("un XML costruito per far lavorare il lettore", () => {
+  it("migliaia di aperture senza chiusura: errore subito, non minuti di calcolo", () => {
+    const t0 = Date.now();
+    expect(() => leggiXlsx(xlsxDaXml(`<worksheet><sheetData/></worksheet>`, "<sst>" + "<si>".repeat(200_000))))
+      .toThrow(ErroreXlsx);
+    expect(() => leggiXlsx(xlsxDaXml(`<worksheet><sheetData>${"<row>".repeat(200_000)}</sheetData></worksheet>`)))
+      .toThrow(ErroreXlsx);
+    expect(() => leggiXlsx(xlsxDaXml(`<worksheet><sheetData><row r="1"><c r="A1">${"<v>".repeat(200_000)}</c></row></sheetData></worksheet>`)))
+      .toThrow(ErroreXlsx);
+    expect(Date.now() - t0).toBeLessThan(1_500);
+  });
+
+  it("i tag con lo stesso inizio non si confondono (cols, rowBreaks)", () => {
+    const sh = `<worksheet><cols><col min="1" max="2" width="9"/></cols><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>a</t></is></c></row></sheetData><rowBreaks count="0"/></worksheet>`;
+    expect(leggiXlsx(xlsxDaXml(sh))).toEqual([["a"]]);
+  });
+});
