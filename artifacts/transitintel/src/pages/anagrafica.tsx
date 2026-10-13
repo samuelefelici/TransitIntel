@@ -15,15 +15,16 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import React, { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { Link } from "wouter";
 import {
-  IdCard, Search, Plus, Upload, Download, AlertTriangle, CalendarClock, ListChecks, ArrowUpDown, Users,
+  IdCard, Search, Plus, Upload, Download, AlertTriangle, CalendarClock, ListChecks, ArrowUpDown, Users, FlaskConical,
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  DOCUMENTI, ORDINE_STATI, STATI, ddmmyyyy, formattaOrario, nominativo, oggiRoma, scadenzeDi, statoPeggiore,
+  DOCUMENTI, ETICHETTE_MOTIVO, ORDINE_STATI, STATI, ddmmyyyy, formattaOrario, nominativo, oggiRoma, scadenzeDi, statoPeggiore,
   type Conducente, type Deposito, type StatoScadenza,
 } from "@/lib/anagrafica-api";
 import DriverEditDialog from "@/components/roster/DriverEditDialog";
@@ -50,6 +51,7 @@ function aggiornaIndirizzo(chiave: string, valore: string | null) {
 export default function AnagraficaPage() {
   const { hasPermission } = useAuth();
   const personale = hasPermission("personale");
+  const qc = useQueryClient();
   const [vista, setVista] = useState<Vista>(() => (parametri().get("vista") === "scadenze" ? "scadenze" : "elenco"));
   const [scheda, setScheda] = useState<string | "nuovo" | null>(() => parametri().get("conducente"));
   const [importa, setImporta] = useState(false);
@@ -123,6 +125,17 @@ export default function AnagraficaPage() {
     return m;
   }, [visibili]);
 
+  /* conducenti di prova: ritratto, depositi diversi, rotazioni riposi miste coi riposi già generati */
+  const prova = useMutation({
+    mutationFn: () => apiFetch<{ created: number; riposi: number }>("/api/roster/drivers/seed", { method: "POST", body: JSON.stringify({ count: 30 }) }),
+    onSuccess: (r) => {
+      toast.success(`${r.created} conducenti di prova creati, con ${r.riposi} riposi già sul tabellone`);
+      setAncheFittizi(true);
+      qc.invalidateQueries({ queryKey: ["roster"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
   const scegliVista = (v: Vista) => { setVista(v); aggiornaIndirizzo("vista", v === "scadenze" ? "scadenze" : null); };
   const apri = (id: string | "nuovo" | null) => { setScheda(id); aggiornaIndirizzo("conducente", id && id !== "nuovo" ? id : null); };
   const esporta = (formato: "xlsx" | "csv") => `${getApiBase()}/api/roster/anagrafica/esporta?formato=${formato}${ancheFuori ? "&tutti=1" : ""}`;
@@ -150,6 +163,12 @@ export default function AnagraficaPage() {
           <Link href="/roster" className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5">
             <Users className="w-3.5 h-3.5" /> Roster
           </Link>
+          <button onClick={() => { if (confirm("Creare 30 conducenti di prova (fittizi, senza matricola) con foto, depositi diversi e rotazioni riposi?")) prova.mutate(); }}
+            disabled={prova.isPending}
+            className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5 disabled:opacity-50"
+            title="Conducenti fittizi per provare il roster: si riconoscono dall'etichetta «fittizio» e si tolgono dalla scheda">
+            <FlaskConical className="w-3.5 h-3.5" /> Conducenti di prova
+          </button>
           {personale && (
             <>
               <button onClick={() => setImporta(true)} className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5">
@@ -192,7 +211,7 @@ export default function AnagraficaPage() {
           {(q.data?.avvisi ?? []).map(a => (
             <div key={a} className="flex items-start gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-100" role="status">
               <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-              <span>Da sistemare nell'anagrafica: {a}. Finché ci sono, l'unicità della matricola non è garantita dal database.</span>
+              <span>Da sistemare nell'anagrafica: {a}.</span>
             </div>
           ))}
 
@@ -255,6 +274,7 @@ export default function AnagraficaPage() {
                     {intestazione("nome", "Cognome e nome")}
                     {intestazione("deposito", "Deposito")}
                     <th scope="col" className="px-2 py-2 text-left font-medium">Categoria</th>
+                    <th scope="col" className="px-2 py-2 text-left font-medium">Servizio</th>
                     <th scope="col" className="px-2 py-2 text-right font-medium">Orario</th>
                     <th scope="col" className="px-2 py-2 text-left font-medium">Riposi</th>
                     <th scope="col" className="px-2 py-2 text-left font-medium">Turni</th>
@@ -282,6 +302,21 @@ export default function AnagraficaPage() {
                         </td>
                         <td className={`px-2 py-1.5 ${c.residenzaServizio && depositi.data && !elencoDepositi.includes(c.residenzaServizio) ? "text-amber-300" : ""}`}>{c.residenzaServizio ?? "—"}</td>
                         <td className="px-2 py-1.5">{c.categoria ?? "—"}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">
+                          {c.dataAssunzione && <span className="text-muted-foreground tabular-nums">dal {ddmmyyyy(c.dataAssunzione)}</span>}
+                          {c.dataFineServizio && (() => {
+                            /* l'uscita annunciata: entro 6 mesi in evidenza, già passata in rosso */
+                            const g = Math.round((Date.parse(`${c.dataFineServizio}T00:00:00Z`) - Date.parse(`${oggi}T00:00:00Z`)) / 86_400_000);
+                            const motivo = c.motivoCessazione ? ` · ${ETICHETTE_MOTIVO[c.motivoCessazione].toLowerCase()}` : "";
+                            const stile = g < 0 ? "bg-rose-500/15 text-rose-300" : g <= 183 ? "bg-amber-500/15 text-amber-200" : "bg-white/5 text-muted-foreground";
+                            return (
+                              <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded tabular-nums ${stile}`}>
+                                {g < 0 ? "uscito il" : "esce il"} {ddmmyyyy(c.dataFineServizio)}{motivo}
+                              </span>
+                            );
+                          })()}
+                          {!c.dataAssunzione && !c.dataFineServizio && <span className="text-muted-foreground">—</span>}
+                        </td>
                         <td className="px-2 py-1.5 text-right tabular-nums">{formattaOrario(c.orarioSettimanaleMin) || "—"}</td>
                         <td className="px-2 py-1.5">
                           {c.rotazioneRiposi ? <span title={c.rotazioneRiposi.nome}>scagl. {c.rotazioneRiposi.scaglione}</span> : "—"}

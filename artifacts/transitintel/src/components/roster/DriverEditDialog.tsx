@@ -21,9 +21,9 @@ import {
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  ETICHETTE_CAMPI, ETICHETTE_ESITO, ETICHETTE_STORICO, GIORNI, PARAMETRI, ddmmyyyy, formattaOrario, leggiOrarioInput,
+  ETICHETTE_CAMPI, ETICHETTE_ESITO, ETICHETTE_MOTIVO, ETICHETTE_STORICO, GIORNI, PARAMETRI, ddmmyyyy, formattaOrario, leggiOrarioInput,
   oggiRoma, scadenzeDi, STATI,
-  type Categoria, type Conducente, type Deposito, type EsitoScrittura, type EsitoVisita, type GruppoTurni,
+  type Categoria, type Conducente, type Deposito, type EsitoScrittura, type EsitoVisita, type GruppoTurni, type MotivoCessazione,
   type RigaStorico, type Rotazione,
 } from "@/lib/anagrafica-api";
 import { ABILITAZIONI, type AbilitazioneKey } from "./abilitazioni";
@@ -42,7 +42,7 @@ interface Modulo {
   matricola: string; cognome: string; nome: string; cf: string; dataNascita: string;
   residenzaServizio: string; categoria: string; orario: string;
   rotazioneId: string; scaglione: string; scaglioneFerie: string; gruppoTurni: string; posizioneTurni: string;
-  abilitazioni: string[]; dataFineServizio: string;
+  abilitazioni: string[]; dataFineServizio: string; motivoCessazione: string;
   cellulare: string; telefono: string; residenzaAnagrafica: string;
   dataAssunzione: string; inquadramento: string; parametro: string;
   ferieAnnue: string; ferieResidue: string; ferieResidueAl: string; ferieUnita: "giorni" | "ore";
@@ -60,7 +60,7 @@ function daConducente(c: Conducente | null): Modulo {
     residenzaServizio: s(c?.residenzaServizio), categoria: s(c?.categoria), orario: formattaOrario(c?.orarioSettimanaleMin),
     rotazioneId: s(c?.rotazioneRiposi?.id), scaglione: s(c?.rotazioneRiposi?.scaglione),
     scaglioneFerie: s(c?.scaglioneFerie), gruppoTurni: s(c?.rotazioneTurni?.gruppo), posizioneTurni: s(c?.rotazioneTurni?.posizione),
-    abilitazioni: c?.abilitazioni ?? [], dataFineServizio: s(c?.dataFineServizio),
+    abilitazioni: c?.abilitazioni ?? [], dataFineServizio: s(c?.dataFineServizio), motivoCessazione: s(c?.motivoCessazione),
     cellulare: s(c?.cellulare), telefono: s(c?.telefono), residenzaAnagrafica: s(c?.residenzaAnagrafica),
     dataAssunzione: s(c?.dataAssunzione), inquadramento: s(c?.inquadramento), parametro: s(c?.parametro),
     ferieAnnue: s(c?.ferieAnnue), ferieResidue: s(c?.ferieResidue), ferieResidueAl: s(c?.ferieResidueAl),
@@ -79,7 +79,7 @@ function corpoCambiato(prima: Modulo, ora: Modulo, errori: Record<string, string
   const b: Record<string, unknown> = {};
   const vuotoNull = (v: string) => (v.trim() === "" ? null : v.trim());
   const semplici: Array<keyof Modulo> = [
-    "matricola", "cognome", "nome", "cf", "dataNascita", "residenzaServizio", "categoria", "scaglioneFerie", "dataFineServizio",
+    "matricola", "cognome", "nome", "cf", "dataNascita", "residenzaServizio", "categoria", "scaglioneFerie", "dataFineServizio", "motivoCessazione",
     "cellulare", "telefono", "residenzaAnagrafica", "dataAssunzione", "inquadramento", "patente", "patenteNumero", "cqcNumero",
     "patenteValidita", "cqcValidita", "visitaFerrovieData", "visitaFerrovieValidita", "visitaFerrovieEsito",
     "visitaMedicoCompetenteData", "visitaMedicoCompetenteValidita", "visitaMedicoCompetenteEsito", "note", "photoUrl",
@@ -382,6 +382,36 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
               </div>
             </section>
 
+            {/* Rapporto di lavoro: quando è entrato, quando esce e perché */}
+            <section>
+              <h4 className={SEZIONE}>Rapporto di lavoro</h4>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {sensibili && (
+                  <Campo id="ana-assunzione" label="Assunto il" errore={errori.dataAssunzione}>
+                    <input id="ana-assunzione" type="date" className={TEXT} disabled={ro} value={f.dataAssunzione} onChange={e => set("dataAssunzione", e.target.value)} />
+                  </Campo>
+                )}
+                <Campo id="ana-fine" label="Esce dal servizio il (dimissioni o pensione)" errore={errori.dataFineServizio}>
+                  <input id="ana-fine" type="date" className={TEXT} disabled={ro} value={f.dataFineServizio} onChange={e => set("dataFineServizio", e.target.value)} />
+                </Campo>
+                {sensibili && (
+                  <Campo id="ana-motivo" label="Motivo dell'uscita" errore={errori.motivoCessazione}>
+                    <select id="ana-motivo" className={TEXT} disabled={ro || !f.dataFineServizio} value={f.motivoCessazione} onChange={e => set("motivoCessazione", e.target.value)}>
+                      <option value="">—</option>
+                      {(Object.keys(ETICHETTE_MOTIVO) as MotivoCessazione[]).map(k => <option key={k} value={k}>{ETICHETTE_MOTIVO[k]}</option>)}
+                    </select>
+                  </Campo>
+                )}
+                {f.dataFineServizio && (
+                  <p className="col-span-2 md:col-span-1 self-end text-[10px] text-slate-500">
+                    {f.dataFineServizio < oggi
+                      ? "La data è passata: quando hai finito, mettilo fuori servizio (in basso a sinistra)."
+                      : "Fino a quella data resta nel roster come gli altri."}
+                  </p>
+                )}
+              </div>
+            </section>
+
             {/* Servizio */}
             <section>
               <h4 className={SEZIONE}>Deposito e servizio</h4>
@@ -566,14 +596,8 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
                 </section>
 
                 <section>
-                  <h4 className={SEZIONE}>Rapporto e busta paga</h4>
+                  <h4 className={SEZIONE}>Busta paga e ferie</h4>
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <Campo id="ana-assunzione" label="Data di assunzione" errore={errori.dataAssunzione}>
-                      <input id="ana-assunzione" type="date" className={TEXT} disabled={ro} value={f.dataAssunzione} onChange={e => set("dataAssunzione", e.target.value)} />
-                    </Campo>
-                    <Campo id="ana-fine" label="In servizio fino al" errore={errori.dataFineServizio}>
-                      <input id="ana-fine" type="date" className={TEXT} disabled={ro} value={f.dataFineServizio} onChange={e => set("dataFineServizio", e.target.value)} />
-                    </Campo>
                     <Campo id="ana-inquadramento" label="Inquadramento" errore={errori.inquadramento}>
                       <input id="ana-inquadramento" className={TEXT} disabled={ro} value={f.inquadramento} onChange={e => set("inquadramento", e.target.value)} />
                     </Campo>

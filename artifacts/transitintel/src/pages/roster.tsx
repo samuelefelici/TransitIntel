@@ -20,6 +20,14 @@ import {
 import { apiFetch } from "@/lib/api";
 import { Link } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
+import { COLORE_CATEGORIA_GIORNO, COLORE_GIORNO_NEUTRO } from "@/lib/day-classifier";
+
+/** La categoria di un giorno nel calendario aziendale (GET /api/roster/calendario). */
+interface GiornoCalendario { date: string; key: string; level1: string; level2: string | null; label: string; periodo: string | null }
+interface CalendarioRoster {
+  calendario: { psProjectId: string | null; nome: string | null; compilato: boolean; scelto: string; nota: string | null };
+  days: GiornoCalendario[];
+}
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
@@ -178,6 +186,37 @@ export default function RosterPage() {
   });
   const invalidateBoard = () => qc.invalidateQueries({ queryKey: ["roster", "board"] });
 
+  /* Il calendario aziendale di Planning Studio, per la righetta sopra ogni giorno. */
+  const dssPerCalendario = /^[0-9a-f-]{36}$/i.test(dssId) ? dssId : "";
+  const calendarioQ = useQuery({
+    queryKey: ["roster", "calendario", from, RANGE_DAYS, psProjectId, dssPerCalendario],
+    queryFn: () => apiFetch<CalendarioRoster>(`/api/roster/calendario?from=${from}&days=${RANGE_DAYS}`
+      + `${psProjectId ? `&psProjectId=${psProjectId}` : ""}${dssPerCalendario ? `&dssId=${dssPerCalendario}` : ""}`),
+    staleTime: 10 * 60 * 1000,
+  });
+  const giornoCal = useMemo(() => new Map((calendarioQ.data?.days ?? []).map(g => [g.date, g])), [calendarioQ.data]);
+  const calCompilato = !!calendarioQ.data?.calendario.compilato;
+  /** colore e descrizione della righetta: senza calendario compilato, solo domeniche e festivi */
+  const righetta = (day: string): { colore: string; testo: string } | null => {
+    const g = giornoCal.get(day);
+    if (!g) return null;
+    const vale = calCompilato || g.level1 === "festivo";
+    return {
+      colore: vale ? (COLORE_CATEGORIA_GIORNO[g.key] ?? COLORE_GIORNO_NEUTRO) : COLORE_GIORNO_NEUTRO,
+      testo: vale ? `${g.label}${g.periodo ? ` — ${g.periodo}` : ""}` : "Calendario aziendale non compilato: scuole aperte o chiuse non si sa",
+    };
+  };
+  /* le categorie presenti nel periodo, per la legenda */
+  const legendaCal = useMemo(() => {
+    const m = new Map<string, { colore: string; testo: string }>();
+    for (const g of calendarioQ.data?.days ?? []) {
+      const vale = calCompilato || g.level1 === "festivo";
+      const chiave = vale ? g.key : "neutro";
+      if (!m.has(chiave)) m.set(chiave, { colore: vale ? (COLORE_CATEGORIA_GIORNO[g.key] ?? COLORE_GIORNO_NEUTRO) : COLORE_GIORNO_NEUTRO, testo: vale ? g.label : "non classificato" });
+    }
+    return [...m.values()];
+  }, [calendarioQ.data, calCompilato]);
+
   // Scroll orizzontale sincronizzato: tabellone (sopra) ↔ turni scoperti (sotto).
   // Sincronizzazione proporzionale (larghezze diverse), con lock anti-loop.
   const boardScrollRef = useRef<HTMLDivElement>(null);
@@ -197,7 +236,10 @@ export default function RosterPage() {
 
   const seedMut = useMutation({
     mutationFn: () => apiFetch<{ created: number }>("/api/roster/drivers/seed", { method: "POST", body: JSON.stringify({ count: 30 }) }),
-    onSuccess: (r) => { toast.success(`${r.created} conducenti fittizi creati`); qc.invalidateQueries({ queryKey: ["roster"] }); },
+    onSuccess: (r: { created: number; riposi?: number }) => {
+      toast.success(`${r.created} conducenti di prova creati${r.riposi ? `, con ${r.riposi} riposi già sul tabellone` : ""}`);
+      qc.invalidateQueries({ queryKey: ["roster"] });
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -539,6 +581,21 @@ export default function RosterPage() {
         </div>
       </div>
 
+      {/* legenda del calendario aziendale (le righette sopra i giorni) */}
+      {calendarioQ.data && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1 border-b border-slate-800 bg-slate-900/60 text-[10px] text-slate-400">
+          <span title={calendarioQ.data.calendario.nota ?? undefined}>
+            Calendario aziendale{calendarioQ.data.calendario.nome ? `: ${calendarioQ.data.calendario.nome}` : ""}
+            {!calCompilato && <span className="ml-1 text-amber-300/90">· non compilato, solo domeniche e festivi</span>}
+          </span>
+          {legendaCal.map(l => (
+            <span key={l.testo} className="inline-flex items-center gap-1">
+              <span className="inline-block w-3 h-1.5 rounded-sm" style={{ background: l.colore }} /> {l.testo}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* appunti attivo */}
       {cut && (
         <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-1.5 text-[11px] text-amber-200 flex items-center gap-2 shrink-0">
@@ -583,6 +640,10 @@ export default function RosterPage() {
                     const unc = uncoveredByDay.get(day)?.length ?? 0;
                     return (
                       <th key={day} className={`px-1 py-1 border-b border-slate-800 text-center ${dayColW} ${festBg(day)}`}>
+                        {(() => {
+                          const r = righetta(day);
+                          return r ? <span className="block h-1.5 -mx-1 -mt-1 mb-1 rounded-b-sm" style={{ background: r.colore }} title={r.testo} aria-label={r.testo} /> : null;
+                        })()}
                         <span className={`uppercase text-[9px] ${festLevel(day) ? "text-rose-300/80" : "text-slate-500"}`}>{dow} </span>
                         <span className="font-semibold text-[11px]">{dm}</span>
                         {dssId && cellSize !== "small" && (
@@ -703,6 +764,10 @@ export default function RosterPage() {
                   const list = uncoveredByDay.get(day) ?? [];
                   return (
                     <div key={day} className={`w-28 shrink-0 border-r border-slate-800/70 flex flex-col min-h-0 ${festBg(day)}`}>
+                      {(() => {
+                        const r = righetta(day);
+                        return r ? <span className="block h-1 shrink-0" style={{ background: r.colore }} title={r.testo} /> : null;
+                      })()}
                       <div className={`px-2 py-1 shrink-0 text-[10px] uppercase tracking-wide border-b border-slate-800/60 flex items-center justify-between ${festLevel(day) ? "text-rose-300/80" : "text-slate-400"}`}>
                         <span>{dayLabel(day).dow} {dayLabel(day).dm}</span>
                         <span className={list.length ? "text-amber-400" : "text-emerald-400"}>{list.length}</span>

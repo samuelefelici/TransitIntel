@@ -17,7 +17,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { AlertTriangle, ArrowLeft, CalendarRange, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
-import { classifyRange, type CalendarProfile as AlgoProfile } from "@/lib/day-classifier";
+import { classifyRange, COLORE_CATEGORIA_GIORNO, type CalendarProfile as AlgoProfile } from "@/lib/day-classifier";
 import ValiditySectionNav from "./ValiditySectionNav";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
@@ -42,17 +42,8 @@ function periodKind(p: ClosedPeriod, summer: { from: string; to: string } | null
   return "invernale";
 }
 
-const LEAF_COLOR: Record<string, string> = {
-  "scuole_aperte/-/Feriale": "#10b981",
-  "scuole_aperte/-/Sabato": "#34d399",
-  "scuole_chiuse/invernale/Feriale": "#38bdf8",
-  "scuole_chiuse/invernale/Sabato": "#7dd3fc",
-  "scuole_chiuse/estivo/Feriale": "#f59e0b",
-  "scuole_chiuse/estivo/Sabato": "#fbbf24",
-  "festivo/domenica_aperte/-": "#a78bfa",
-  "festivo/domenica_chiuse/-": "#7c3aed",
-  "festivo/rosso/-": "#ef4444",
-};
+/* i colori stanno in lib/day-classifier.ts: li usa anche il Roster */
+const LEAF_COLOR = COLORE_CATEGORIA_GIORNO;
 
 export default function CalendarProfilePage() {
   const params = useParams<{ id: string }>();

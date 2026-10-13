@@ -62,6 +62,7 @@ const COLONNE_CONDUCENTE: Array<[string, string]> = [
   ["visita_ferrovie_data", "date"], ["visita_medico_competente_data", "date"],
   ["visita_ferrovie_esito", "text"], ["visita_medico_competente_esito", "text"],
   ["patente_numero", "text"],
+  ["motivo_cessazione", "text"],
   ["matricola_chiave", "text"],
   ["versione", "integer NOT NULL DEFAULT 0"],
   ["updated_at", "timestamptz"],
@@ -276,7 +277,10 @@ async function passiSuiDati(ex: Ex): Promise<void> {
          WHERE id = ${h.id}::uuid`);
     } else illeggibili++;
   }
-  if (illeggibili) avvisiBootstrap.push(`${illeggibili} righe di storico dell'orario non leggibili (es. «Part-time»): l'orario resta quello che c'era`);
+  if (illeggibili) {
+    avvisiBootstrap.push(`${illeggibili === 1 ? "una riga" : `${illeggibili} righe`} di storico dell'orario `
+      + `${illeggibili === 1 ? "non leggibile" : "non leggibili"} (es. «Part-time»): l'orario resta quello che c'era`);
+  }
   await ex.execute(sql`
     UPDATE roster_drivers SET orario_settimanale_min =
            CASE WHEN ore_settimanali <= 80 THEN ore_settimanali * 60 ELSE ore_settimanali END
@@ -305,7 +309,7 @@ async function passiSuiDati(ex: Ex): Promise<void> {
            WHERE id = ${h.id}::uuid`);
       } else nonLetti++;
     }
-    if (nonLetti) avvisiBootstrap.push(`${nonLetti} esiti di visita scritti a mano non riconosciuti: controllali nello storico`);
+    if (nonLetti) avvisiBootstrap.push(`${nonLetti === 1 ? "un esito" : `${nonLetti} esiti`} di visita scritti a mano non riconosciuti: controllali nello storico`);
   });
   await unaVolta(ex, "2026-10 scadenze di patente e CQC", async () => {
     /* Prima la scheda scriveva le scadenze di patente e CQC sulla colonna e lo
@@ -363,7 +367,8 @@ export async function verificaUnicitaMatricole(ex: Ex): Promise<void> {
     SELECT matricola_chiave FROM roster_drivers WHERE ${PREDICATO_UNICITA}
      GROUP BY matricola_chiave HAVING count(*) > 1 ORDER BY 1 LIMIT 10`)));
   if (doppie.length) {
-    avvisiMatricole = [`matricole doppie fra i conducenti attivi: ${doppie.map((x: any) => x.matricola_chiave).join(", ")}`];
+    avvisiMatricole = [`matricole doppie fra i conducenti attivi: ${doppie.map((x: any) => x.matricola_chiave).join(", ")}. `
+      + "Finché ci sono, il database non può garantire che la matricola sia unica"];
     return;
   }
   avvisiMatricole = [];
@@ -507,6 +512,7 @@ export function rigaAConducente(d: any, oggi: string): Conducente {
     visitaMedicoCompetenteEsito: esito(d.visita_medico_competente_esito),
     cellulare: d.cellulare ?? null,
     dataFineServizio: data(d.data_fine_servizio),
+    motivoCessazione: d.motivo_cessazione ?? null,
     cf: d.cf ?? null, dataNascita: data(d.data_nascita), dataAssunzione: data(d.data_assunzione),
     residenzaAnagrafica: d.residenza_anagrafica ?? null, telefono: d.telefono ?? null,
     inquadramento: d.inquadramento ?? null, parametro: num(d.parametro),

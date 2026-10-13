@@ -23,7 +23,7 @@
 import { parse } from "csv-parse/sync";
 import {
   chiaveTesto, classificaTelefoni, componiIndirizzo, leggiCodiceFiscale, leggiData, leggiEsitoVisita,
-  leggiFerie, leggiMatricola, leggiOrario, leggiParametro, pulisciTesto, formattaOrario,
+  leggiFerie, leggiMatricola, leggiMotivoCessazione, leggiOrario, leggiParametro, pulisciTesto, formattaOrario,
   type Lettura,
 } from "./anagrafica-campi";
 import { leggiXlsx, LIMITI_XLSX } from "./xlsx-leggi";
@@ -71,7 +71,7 @@ export function leggiTabella(buf: Buffer, nomeFile: string): Array<Array<string 
 
 export type CampoImport =
   | "matricola" | "cognome" | "nome" | "nominativo" | "cf"
-  | "dataNascita" | "dataAssunzione" | "dataFineServizio"
+  | "dataNascita" | "dataAssunzione" | "dataFineServizio" | "motivoCessazione"
   | "deposito" | "categoria" | "orario"
   | "rotazioneRiposi" | "scaglioneRiposi" | "scaglioneFerie" | "rotazioneTurniGruppo" | "rotazioneTurniPosizione"
   | "inquadramento" | "parametro" | "ferieAnnue" | "ferieResidue" | "ferieResidueAl"
@@ -95,7 +95,9 @@ export const ALIAS: Array<[CampoImport, string, string[]]> = [
   ["cf", "Codice fiscale", ["codice fiscale", "cod fiscale", "cf", "cod fis"]],
   ["dataNascita", "Data di nascita", ["data nascita", "data di nascita", "nato il", "data nasc"]],
   ["dataAssunzione", "Data di assunzione", ["data assunzione", "data di assunzione", "assunto il", "data assunz"]],
-  ["dataFineServizio", "Fine servizio", ["data fine servizio", "fine servizio", "data licenziamento", "data cessazione", "data fine rapporto", "cessato il"]],
+  ["dataFineServizio", "Fine servizio", ["data fine servizio", "fine servizio", "data licenziamento", "data cessazione", "data fine rapporto", "cessato il",
+    "data dimissioni", "data dimissione", "dimesso il", "data pensionamento", "data pensione", "in pensione dal", "data uscita"]],
+  ["motivoCessazione", "Motivo dell'uscita", ["motivo cessazione", "causa cessazione", "motivo uscita", "motivo fine rapporto", "causa fine rapporto", "tipo cessazione"]],
   ["deposito", "Deposito", ["deposito", "deposito di appartenenza", "id residenza", "desc residenza", "residenza di servizio", "residenza servizio", "codice deposito", "cod deposito", "sede"]],
   ["categoria", "Categoria", ["categoria", "categoria conducente", "qualifica", "desc qualifica", "mansione", "desc mansione", "id qualifica", "id mansione", "profilo", "ruolo"]],
   ["orario", "Orario settimanale", ["orario settimanale", "orario di lavoro settimanale", "orario lavoro", "ore settimanali", "orario contrattuale settimanale", "orario contrattuale", "minuti settimanali", "ore contratto"]],
@@ -288,6 +290,7 @@ export function analizza(tabella: Array<Array<string | null>>, colonnaChiave?: n
     metti("dataNascita", "Data di nascita", leggiData(cella("dataNascita"), { min: 1920, max: new Date().getUTCFullYear() }));
     metti("dataAssunzione", "Data di assunzione", leggiData(cella("dataAssunzione"), { min: 1950, max: new Date().getUTCFullYear() + 1 }));
     metti("dataFineServizio", "Fine servizio", leggiData(cella("dataFineServizio"), { min: 1950, max: 2100 }));
+    metti("motivoCessazione", "Motivo dell'uscita", leggiMotivoCessazione(cella("motivoCessazione")));
 
     const dep = pulisciTesto(cella("deposito"), 60);
     if (dep) r.depositoGrezzo = dep;
