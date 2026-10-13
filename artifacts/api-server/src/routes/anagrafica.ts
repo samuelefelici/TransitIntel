@@ -43,7 +43,7 @@ import {
 } from "../lib/anagrafica-campi";
 import {
   assicuraAnagrafica, leggiCategorie, leggiConducenti, leggiDepositi, leggiGruppiTurni, oggiRoma,
-  registra, righe, sincronizzaCorrenti, sincronizzaSeNuovoGiorno, TIPI_STORICO, type Ex, type TipoStorico,
+  registra, righe, sincronizzaCorrenti, sincronizzaSeNuovoGiorno, statoAnagrafica, TIPI_STORICO, type Ex, type TipoStorico,
 } from "../lib/anagrafica-store";
 import {
   applicaVariazioni, categoriaCanonica, disattivaConducente, riattivaConducente,
@@ -131,7 +131,8 @@ router.get("/roster/drivers", async (req, res): Promise<void> => {
       ancheDisattivati: req.query.tutti === "1",
       conFoto: req.query.foto !== "0",
     });
-    res.json({ drivers, sensibili: vedeDatiPersonali(req) });
+    /* chi tiene l'anagrafica vede anche i problemi trovati all'avvio (matricole doppie…) */
+    res.json({ drivers, sensibili: vedeDatiPersonali(req), avvisi: vedeDatiPersonali(req) ? statoAnagrafica().avvisi : [] });
   } catch (e) { rispondiErrore(res, e, "elenco"); }
 });
 
