@@ -126,6 +126,10 @@ export async function eseguiImport(
   };
   const toccati = new Map<TipoStorico, Set<string>>();
   const daRigenerare = new Set<string>();
+  /* un conducente si tocca una volta per import: due righe sulla stessa
+   * persona (due «collega», o un «collega» e la sua matricola) sono un errore */
+  const giaToccati = new Map<string, number>();
+  const cfNormale = (x: unknown) => (x ? String(x).replace(/\s+/g, "").toUpperCase() : null);
 
   for (const r of righeFile) {
     const e: EsitoRiga = {
@@ -168,6 +172,8 @@ export async function eseguiImport(
       }
       valori.rotazioneRiposi = { id: trovate[0].id, scaglione: r.rotazioneRiposi.scaglione };
     }
+    /* una data del residuo senza il residuo non vuol dire niente: non deve cancellare quello che c'è */
+    if (valori.ferieResidue === undefined) delete valori.ferieResidueAl;
     if (valori.ferieResidue !== undefined && valori.ferieResidueAl === undefined) {
       if (!s.ferieAl) { e.messaggi.push("ferie residue senza la data a cui valgono"); fine("errore"); continue; }
       valori.ferieResidueAl = s.ferieAl;
@@ -190,15 +196,16 @@ export async function eseguiImport(
     let d: any = null;
     if (attivi.length > 1) { e.messaggi.push(`matricola presente su ${attivi.length} conducenti attivi`); fine("errore"); continue; }
     if (!attivi.length && stessi.length) {
-      e.messaggi.push("matricola di un conducente disattivato: riattivalo prima dalla scheda");
-      fine("errore");
+      /* chi è già fuori servizio torna in ogni esportazione del gestionale: non è un errore */
+      e.messaggi.push("conducente non più in servizio: riga ignorata (per riattivarlo usa la scheda)");
+      fine("saltata");
       continue;
     }
     if (attivi.length === 1) {
       d = attivi[0];
       const cognomeDiverso = v.cognome && d.cognome && chiaveTesto(v.cognome) !== chiaveTesto(d.cognome);
       const nomeDiverso = v.nome && d.nome && chiaveTesto(v.nome) !== chiaveTesto(d.nome);
-      const cfDiverso = v.cf && d.cf && v.cf !== d.cf;
+      const cfDiverso = v.cf && d.cf && cfNormale(v.cf) !== cfNormale(d.cf);
       if ((cognomeDiverso && nomeDiverso) || cfDiverso) {
         e.messaggi.push(`la matricola ${r.valori.matricola} in anagrafica è di ${nominativo(d.cognome, d.nome) || d.name}: nel file è un'altra persona`);
         fine("errore");
@@ -209,6 +216,12 @@ export async function eseguiImport(
       if (!d || !d.is_active || d.is_fictitious) { e.messaggi.push("il conducente da collegare non c'è più"); fine("errore"); continue; }
       if (d.matricola_chiave && d.matricola_chiave !== chiave) {
         e.messaggi.push(`il conducente da collegare ha già la matricola ${d.matricola}`);
+        fine("errore");
+        continue;
+      }
+      /* il collegamento vale per la persona che si è vista: se la riga ora è un'altra (file cambiato), no */
+      if (chiaveTesto(`${v.cognome ?? ""} ${v.nome ?? ""}`) !== chiaveTesto(`${d.cognome ?? ""} ${d.nome ?? ""}`)) {
+        e.messaggi.push(`il collegamento era per ${[d.cognome, d.nome].filter(Boolean).join(" ")}, ma la riga è di ${nominativo(v.cognome, v.nome)}: rifai la scelta`);
         fine("errore");
         continue;
       }
@@ -244,6 +257,12 @@ export async function eseguiImport(
       continue;
     }
 
+    if (giaToccati.has(d.id)) {
+      e.messaggi.push(`la riga ${giaToccati.get(d.id)} è già dello stesso conducente`);
+      fine("errore");
+      continue;
+    }
+    giaToccati.set(d.id, r.n);
     if (!s.aggiornaEsistenti) { fine("saltata"); continue; }
     const es = await applicaVariazioni(ex, d.id, v, {
       oggi, decorrenza: s.decorrenza, nota, depositi, categorie, riga: d, ultimeDate: ultime.get(d.id) ?? new Map(),

@@ -113,8 +113,8 @@ export function pulisciTesto(v: unknown, max = 200): string | null {
 
 /**
  * La forma con cui due matricole si confrontano: senza spazi, maiuscole, e
- * se è tutta cifre senza zeri iniziali («00123» = «123»). Gemella della
- * espressione SQL MATRICOLA_CHIAVE_SQL in anagrafica-store.ts.
+ * se è tutta cifre senza zeri iniziali («00123» = «123»). È l'unica
+ * definizione: anche il bootstrap la usa per la colonna matricola_chiave.
  */
 export function matricolaCanonica(v: unknown): string | null {
   if (vuoto(v)) return null;

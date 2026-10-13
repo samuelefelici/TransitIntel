@@ -33,7 +33,7 @@
  */
 import { Router, type IRouter, type Request, type Response } from "express";
 import multer from "multer";
-import { strictLimiter } from "../middlewares/rate-limit";
+import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { haPermesso, requirePermission, vedeDatiPersonali } from "../lib/auth";
@@ -176,7 +176,7 @@ router.post("/roster/drivers", async (req, res): Promise<void> => {
         INSERT INTO roster_drivers (name, is_fictitious, versione, updated_at)
         VALUES (${nome}, ${fittizio}, 0, now()) RETURNING id`))[0].id;
       const es = await applicaVariazioni(ex, id, corpo.variazioni, {
-        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", depositi: await leggiDepositi(ex), categorie: await leggiCategorie(ex),
+        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", puoCreareCataloghi: vedeDatiPersonali(req), depositi: await leggiDepositi(ex), categorie: await leggiCategorie(ex),
       });
       if (es.conflitti.length) throw new Rifiuto(409, es.conflitti.join("; "), { conflitti: es.conflitti });
       await sincronizzaCorrenti(ex, oggi, [...es.tipi], [id]);
@@ -202,7 +202,7 @@ router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
         throw new Rifiuto(409, "La scheda è stata cambiata da qualcun altro mentre la modificavi: ricaricala", { versione: Number(riga.versione) });
       }
       const es = await applicaVariazioni(ex, id, corpo.variazioni, {
-        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", riga,
+        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", puoCreareCataloghi: vedeDatiPersonali(req), riga,
         depositi: await leggiDepositi(ex), categorie: await leggiCategorie(ex),
       });
       if (es.conflitti.length) throw new Rifiuto(409, es.conflitti.join("; "), { conflitti: es.conflitti });
@@ -419,8 +419,31 @@ router.delete("/roster/history/:hid", async (req, res): Promise<void> => {
  * 5 MB per chiunque provi */
 const caricamento = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 10 } });
 const soloPersonale = requirePermission("personale");
+/* Un import si fa a giri: leggi, prova, una scelta, prova di nuovo, applica.
+ * Il limite delle operazioni pesanti (10 al minuto, condiviso) si esaurisce
+ * a metà di un import normale; questo è suo e più largo. */
+const limiteImport = rateLimit({
+  windowMs: 60 * 1000,
+  max: 40,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Troppi passaggi dell'import in un minuto: aspetta un momento e riprova." },
+});
 
-router.post("/roster/anagrafica/import/leggi", strictLimiter, soloPersonale, caricamento.single("file"), async (req, res): Promise<void> => {
+/* gli errori di multer (file troppo grande, troppi file) diventano un messaggio leggibile, non un 500 */
+const unFile: import("express").RequestHandler = (req, res, next) => {
+  caricamento.single("file")(req, res, (e?: unknown) => {
+    if (e instanceof multer.MulterError) {
+      res.status(e.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
+        error: e.code === "LIMIT_FILE_SIZE" ? "File troppo grande: al massimo 5 MB" : "Caricamento non valido: un file solo",
+      });
+      return;
+    }
+    next(e as Error | undefined);
+  });
+};
+
+router.post("/roster/anagrafica/import/leggi", limiteImport, soloPersonale, unFile, async (req, res): Promise<void> => {
   try {
     const file = (req as Request & { file?: { buffer: Buffer; originalname: string } }).file;
     if (!file) throw new Rifiuto(400, "Manca il file");
@@ -500,12 +523,12 @@ async function importa(req: Request, scrivi: boolean) {
   }
 }
 
-router.post("/roster/anagrafica/import/prova", strictLimiter, soloPersonale, async (req, res): Promise<void> => {
+router.post("/roster/anagrafica/import/prova", limiteImport, soloPersonale, async (req, res): Promise<void> => {
   try { res.json({ rapporto: await importa(req, false), escludi: ESCLUDI }); }
   catch (e) { rispondiErrore(res, e, "prova dell'import"); }
 });
 
-router.post("/roster/anagrafica/import/applica", strictLimiter, soloPersonale, async (req, res): Promise<void> => {
+router.post("/roster/anagrafica/import/applica", limiteImport, soloPersonale, async (req, res): Promise<void> => {
   try {
     const rapporto = await importa(req, true);
     res.status(rapporto.applicato ? 200 : 409).json({

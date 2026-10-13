@@ -28,6 +28,7 @@ import {
 } from "@/lib/anagrafica-api";
 import { ABILITAZIONI, type AbilitazioneKey } from "./abilitazioni";
 import { MiniGrid } from "./RotazioniRiposi";
+import { useDialogo } from "./useDialogo";
 
 /** Il conducente come lo usa il tabellone: è lo stesso oggetto dell'API. */
 export type RosterDriver = Conducente;
@@ -74,7 +75,7 @@ function daConducente(c: Conducente | null): Modulo {
 }
 
 /** I campi cambiati, nel formato dell'API. `errori` raccoglie quelli che non si leggono già qui. */
-function corpoCambiato(prima: Modulo, ora: Modulo, errori: Record<string, string>): Record<string, unknown> {
+function corpoCambiato(prima: Modulo, ora: Modulo, errori: Record<string, string>, forzaRotazione = false): Record<string, unknown> {
   const b: Record<string, unknown> = {};
   const vuotoNull = (v: string) => (v.trim() === "" ? null : v.trim());
   const semplici: Array<keyof Modulo> = [
@@ -97,7 +98,8 @@ function corpoCambiato(prima: Modulo, ora: Modulo, errori: Record<string, string
   }
   if (prima.ferieUnita !== ora.ferieUnita) b.ferieUnita = ora.ferieUnita;
   if ([...prima.abilitazioni].sort().join() !== [...ora.abilitazioni].sort().join()) b.abilitazioni = ora.abilitazioni;
-  if (prima.rotazioneId !== ora.rotazioneId || prima.scaglione !== ora.scaglione) {
+  /* forzaRotazione: il conducente è in più rotazioni; mandare quella scelta toglie le altre */
+  if (forzaRotazione || prima.rotazioneId !== ora.rotazioneId || prima.scaglione !== ora.scaglione) {
     if (!ora.rotazioneId) b.rotazioneRiposi = null;
     else if (!ora.scaglione) errori.rotazioneRiposi = "manca lo scaglione";
     else b.rotazioneRiposi = { id: ora.rotazioneId, scaglione: Number(ora.scaglione) };
@@ -195,24 +197,32 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
     setConflitto(null);
   }, [c, sporco]);
 
-  const set = <K extends keyof Modulo>(k: K, v: Modulo[K]) => setF(p => ({ ...p, [k]: v }));
+  /* il numero del CQC segue quello della patente, finché non si dice che è diverso */
+  const set = <K extends keyof Modulo>(k: K, v: Modulo[K]) => setF(p => ({
+    ...p, [k]: v, ...(k === "patenteNumero" && !cqcDiversoRef.current ? { cqcNumero: v as string } : {}),
+  }));
+  const cqcDiversoRef = useRef(false);
+  cqcDiversoRef.current = cqcDiverso;
   const primoCampo = useRef<HTMLInputElement>(null);
-  useEffect(() => { primoCampo.current?.focus(); }, []);
+  const finestra = useRef<HTMLDivElement>(null);
+  const doppie = (c?.rotazioniRiposi ?? 0) > 1 && !!f.rotazioneId;
 
   const salva = useMutation({
     mutationFn: async () => {
       const err: Record<string, string> = {};
-      const corpo = corpoCambiato(id ? iniziale : daConducente(null), f, err);
-      if (!cqcDiverso && "patenteNumero" in corpo && sensibili) corpo.cqcNumero = corpo.patenteNumero;
+      const corpo = corpoCambiato(id ? iniziale : daConducente(null), f, err, doppie);
       if (Object.keys(err).length) { setErrori(err); throw new Error("Controlla i campi segnati"); }
-      if (decorrenza) corpo.decorrenza = decorrenza;
+      /* la decorrenza vale per deposito, categoria e orario: solo se uno dei tre cambia */
+      if (decorrenza && cambiaStorico) corpo.decorrenza = decorrenza;
       if (!id) {
         if (eFittizio) corpo.isFictitious = true;
         return apiFetch<EsitoScrittura>("/api/roster/drivers", { method: "POST", body: JSON.stringify(corpo) });
       }
       if (Object.keys(corpo).filter(k => k !== "decorrenza").length === 0) return null;
+      /* la versione su cui è stato costruito il modulo, non l'ultima letta:
+       * se nel frattempo la scheda è cambiata, il server deve dire 409 */
       return apiFetch<EsitoScrittura>(`/api/roster/drivers/${id}`, {
-        method: "PATCH", body: JSON.stringify({ ...corpo, versione: c?.versione }),
+        method: "PATCH", body: JSON.stringify({ ...corpo, versione: versioneVista.current ?? c?.versione }),
       });
     },
     onSuccess: (r) => {
@@ -256,16 +266,20 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
     onError: (e: Error) => toast.error(e.message),
   });
 
-  /* Esc chiude, se non si sta salvando e non ci sono modifiche da perdere */
+  /* Chiudi, X ed Esc passano tutti da qui: con modifiche non salvate si chiede */
+  const chiudi = () => {
+    if (salva.isPending) return;
+    if (sporco && !confirm("Chiudere senza salvare le modifiche?")) return;
+    onClose();
+  };
+  useDialogo(finestra, chiudi);
+  /* a scheda caricata il focus va sul primo campo che si può scrivere */
+  const caricata = !id || q.isSuccess;
   useEffect(() => {
-    const k = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || salva.isPending) return;
-      if (sporco && !confirm("Chiudere senza salvare le modifiche?")) return;
-      onClose();
-    };
-    window.addEventListener("keydown", k);
-    return () => window.removeEventListener("keydown", k);
-  }, [onClose, salva.isPending, sporco]);
+    if (!caricata) return;
+    const el = finestra.current?.querySelector<HTMLElement>("input:not([disabled]), select:not([disabled]), textarea:not([disabled])");
+    (el ?? finestra.current)?.focus();
+  }, [caricata]);
 
   const fotoRef = useRef<HTMLInputElement>(null);
   const [caricaFoto, setCaricaFoto] = useState(false);
@@ -284,12 +298,13 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
   const iniziali = ((f.cognome || c?.name || "?").trim().slice(0, 2) || "?").toUpperCase();
   const ro = !puoScrivere;
   const cambiaStorico = iniziale.residenzaServizio !== f.residenzaServizio || iniziale.categoria !== f.categoria || iniziale.orario !== f.orario;
+  const daSalvare = sporco || doppie;
   const oggi = oggiRoma();
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
-      <div role="dialog" aria-modal="true" aria-labelledby={titoloId}
-        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col text-slate-100">
+      <div ref={finestra} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby={titoloId}
+        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[92vh] flex flex-col text-slate-100 focus:outline-none">
         <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800">
           <div id={titoloId} className="text-sm font-semibold">
             {!id ? (eFittizio ? "Nuovo conducente fittizio" : "Nuovo conducente") : c ? [c.cognome, c.nome].filter(Boolean).join(" ") || c.name : "Conducente"}
@@ -298,7 +313,7 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
           {eFittizio && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">fittizio</span>}
           {c && !c.isActive && <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-300">non più in servizio</span>}
           {ro && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 inline-flex items-center gap-1"><Lock className="w-3 h-3" /> sola lettura</span>}
-          <button onClick={onClose} aria-label="Chiudi la scheda" className="ml-auto p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 focus-visible:ring-1 focus-visible:ring-violet-500">
+          <button onClick={chiudi} aria-label="Chiudi la scheda" className="ml-auto p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 focus-visible:ring-1 focus-visible:ring-violet-500">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -436,7 +451,7 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
               </div>
               {(c?.rotazioniRiposi ?? 0) > 1 && (
                 <p className="mt-2 text-[11px] text-amber-300 flex items-center gap-1.5">
-                  <AlertTriangle className="w-3.5 h-3.5" /> Questo conducente è in {c!.rotazioniRiposi} rotazioni riposi: salvando la scheda resta solo quella scelta qui.
+                  <AlertTriangle className="w-3.5 h-3.5" /> Questo conducente è in {c!.rotazioniRiposi} rotazioni riposi: con «Salva» resta solo quella scelta qui, le altre e i loro riposi futuri si tolgono.
                 </p>
               )}
               {rotScelta && f.scaglione && (
@@ -501,7 +516,8 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
                 {sensibili && (
                   <div className="col-span-2 md:col-span-4 -mt-1">
                     <label className="inline-flex items-center gap-1.5 text-[10px] text-slate-400">
-                      <input type="checkbox" disabled={ro} checked={cqcDiverso} onChange={e => setCqcDiverso(e.target.checked)} className="accent-violet-500" />
+                      <input type="checkbox" disabled={ro} checked={cqcDiverso}
+                        onChange={e => { setCqcDiverso(e.target.checked); if (!e.target.checked) set("cqcNumero", f.patenteNumero); }} className="accent-violet-500" />
                       il CQC ha un numero diverso dalla patente (vecchia carta separata)
                     </label>
                     {cqcDiverso && (
@@ -613,14 +629,14 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
               <UserCheck className="h-3.5 w-3.5" /> Di nuovo in servizio
             </button>
           ))}
-          {sporco && !ro && (
+          {daSalvare && !ro && (
             <span className="text-[10px] text-slate-500">
-              modifiche non salvate: {(() => { const e: Record<string, string> = {}; return Object.keys(corpoCambiato(iniziale, f, e)).map(k => ETICHETTE_CAMPI[k] ?? k).join(", "); })()}
+              modifiche non salvate: {(() => { const e: Record<string, string> = {}; return Object.keys(corpoCambiato(iniziale, f, e, doppie)).map(k => ETICHETTE_CAMPI[k] ?? k).join(", "); })()}
             </span>
           )}
-          <button onClick={onClose} className="ml-auto px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Chiudi</button>
+          <button onClick={chiudi} className="ml-auto px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Chiudi</button>
           {!ro && (
-            <button onClick={() => salva.mutate()} disabled={salva.isPending || (!!id && !sporco) || (!f.cognome.trim() && !f.nome.trim())}
+            <button onClick={() => salva.mutate()} disabled={salva.isPending || (!!id && !daSalvare) || (!f.cognome.trim() && !f.nome.trim())}
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
               {salva.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} Salva
             </button>

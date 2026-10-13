@@ -257,4 +257,8 @@ export const ETICHETTE_CAMPI: Record<string, string> = {
   orarioSettimanaleMin: "orario", patenteValidita: "scadenza patente", cqcValidita: "scadenza CQC",
   visitaFerrovie: "visita ferrovie", visitaMedicoCompetente: "visita medico competente",
   rotazioneRiposi: "rotazione riposi", rotazioneTurni: "rotazione turni",
+  residenzaServizio: "deposito", ferieResidueAl: "residuo ferie al",
+  visitaFerrovieData: "data visita ferrovie", visitaFerrovieValidita: "scadenza visita ferrovie", visitaFerrovieEsito: "esito visita ferrovie",
+  visitaMedicoCompetenteData: "data visita medico competente", visitaMedicoCompetenteValidita: "scadenza visita medico competente",
+  visitaMedicoCompetenteEsito: "esito visita medico competente",
 };

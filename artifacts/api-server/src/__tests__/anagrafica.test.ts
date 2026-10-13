@@ -266,8 +266,11 @@ describe("l'esportazione", () => {
     expect(cellaSicura("=HYPERLINK(\"x\")")).toBe("'=HYPERLINK(\"x\")");
     expect(cellaSicura("@a")).toBe("'@a");
     expect(cellaSicura("-x")).toBe("'-x");
-    expect(cellaSicura("+39 333 1234567")).toBe("+39 333 1234567");
+    expect(cellaSicura("-1+1")).toBe("'-1+1");
+    expect(cellaSicura("+1+cmd|' /C calc'!A0")).toBe("'+1+cmd|' /C calc'!A0");
+    expect(cellaSicura("- 1+1")).toBe("'- 1+1");
     expect(cellaSicura("-1,5")).toBe("-1,5");
+    expect(cellaSicura("3331234567")).toBe("3331234567");
   });
 
   it("senza «personale» non escono le colonne personali, nemmeno vuote", () => {

@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { X, Upload, Loader2, FlaskConical, Check, AlertTriangle, FileSpreadsheet } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useDialogo } from "./useDialogo";
 import {
   ESCLUDI, ETICHETTE_CAMPI, STATI_RIGA, chiave, formattaOrario, oggiRoma, trovaDeposito,
   type AnalisiImport, type Categoria, type Deposito, type RapportoImport, type StatoRiga,
@@ -54,7 +55,13 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
   const [collega, setCollega] = useState<Record<string, string>>({});
   const [creaComunque, setCreaComunque] = useState<number[]>([]);
   const [rapporto, setRapporto] = useState<RapportoImport | null>(null);
+  /* il rapporto mostrato vale per le scelte di adesso? (una scelta cambiata lo rende vecchio, ma resta visibile) */
+  const [provaValida, setProvaValida] = useState(false);
+  /* ogni cambio di scelte fa un giro nuovo: una prova partita prima e finita dopo non vale */
+  const giro = useRef(0);
   const [filtroStato, setFiltroStato] = useState<StatoRiga | null>(null);
+  const finestra = useRef<HTMLDivElement>(null);
+  useDialogo(finestra, () => { if (!applica.isPending) onClose(); });
 
   const depositi = useQuery({ queryKey: ["roster", "depositi"], queryFn: () => apiFetch<{ depositi: Deposito[] }>("/api/roster/depositi").then(r => r.depositi) });
   const categorie = useQuery({ queryKey: ["roster", "categorie"], queryFn: () => apiFetch<{ categorie: Categoria[] }>("/api/roster/categorie").then(r => r.categorie) });
@@ -68,10 +75,15 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
       if (colonnaChiave !== undefined) fd.append("colonnaChiave", String(colonnaChiave));
       return apiFetch<{ analisi: AnalisiImport; nomeFile: string }>("/api/roster/anagrafica/import/leggi", { method: "POST", body: fd });
     },
-    onSuccess: (r) => {
+    onSuccess: (r, colonnaChiave) => {
       setAnalisi(r.analisi);
       setNomeFile(r.nomeFile);
       setRapporto(null);
+      setProvaValida(false);
+      giro.current++;
+      /* le scelte riga per riga valgono per il file su cui sono state fatte:
+       * restano solo se si è riletto lo stesso file cambiando la colonna chiave */
+      if (colonnaChiave === undefined) { setCollega({}); setCreaComunque([]); }
       /* i depositi che il catalogo riconosce da sé partono già abbinati */
       const dep: Record<string, string> = {};
       for (const d of r.analisi.depositi) {
@@ -97,10 +109,19 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
   });
 
   const prova = useMutation({
-    mutationFn: () => apiFetch<{ rapporto: RapportoImport }>("/api/roster/anagrafica/import/prova", {
-      method: "POST", body: JSON.stringify({ righe: analisi!.righe, scelte: scelte() }),
-    }),
-    onSuccess: (r) => { setRapporto(r.rapporto); setFiltroStato(r.rapporto.conteggi.errore ? "errore" : null); },
+    mutationFn: async () => {
+      const mio = giro.current;
+      const r = await apiFetch<{ rapporto: RapportoImport }>("/api/roster/anagrafica/import/prova", {
+        method: "POST", body: JSON.stringify({ righe: analisi!.righe, scelte: scelte() }),
+      });
+      return { ...r, mio };
+    },
+    onSuccess: (r) => {
+      if (r.mio !== giro.current) return; // le scelte sono cambiate mentre girava: questo rapporto è vecchio
+      setRapporto(r.rapporto);
+      setProvaValida(true);
+      setFiltroStato(r.rapporto.conteggi.errore ? "errore" : null);
+    },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -128,12 +149,13 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
   const depDaScegliere = (analisi?.depositi ?? []).filter(d => !depScelti[d.valore]).length;
   const catDaScegliere = (analisi?.categorie ?? []).filter(d => !catScelte[d.valore]).length;
   const righeRapporto = useMemo(() => (rapporto?.righe ?? []).filter(r => !filtroStato || r.stato === filtroStato), [rapporto, filtroStato]);
-  const invalidaProva = () => setRapporto(null);
+  /* una scelta cambiata: il rapporto resta da leggere ma non vale più per applicare */
+  const invalidaProva = () => { giro.current++; setProvaValida(false); };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
-      <div role="dialog" aria-modal="true" aria-labelledby="import-titolo"
-        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col text-slate-100">
+      <div ref={finestra} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="import-titolo"
+        className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-5xl max-h-[92vh] flex flex-col text-slate-100 focus:outline-none">
         <div className="flex items-center gap-3 px-5 py-3 border-b border-slate-800">
           <FileSpreadsheet className="w-4 h-4 text-violet-300" />
           <div id="import-titolo" className="text-sm font-semibold">Importa l'anagrafica</div>
@@ -151,8 +173,13 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
               Gruppo_Ferie, ID_Parametro, NumeroPatente, scadenze, telefoni, indirizzo…). Le celle vuote non cancellano niente.
             </p>
             <div className="flex items-center gap-2">
+              <label htmlFor="import-file" className="sr-only">File da importare</label>
               <input id="import-file" type="file" accept=".xlsx,.csv" className="text-[11px] file:mr-2 file:px-2.5 file:py-1 file:rounded-md file:border-0 file:bg-slate-800 file:text-slate-200"
-                onChange={e => { fileRef.current = e.target.files?.[0] ?? null; setAnalisi(null); setRapporto(null); }} />
+                onChange={e => {
+                  fileRef.current = e.target.files?.[0] ?? null;
+                  setAnalisi(null); setRapporto(null); setProvaValida(false); giro.current++;
+                  setCollega({}); setCreaComunque([]);
+                }} />
               <button onClick={() => leggi.mutate(undefined)} disabled={leggi.isPending}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-violet-600 text-white text-xs hover:bg-violet-500 disabled:opacity-50">
                 {leggi.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />} Leggi
@@ -297,6 +324,9 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
                   </button>
                 ))}
               </div>
+              {!provaValida && (
+                <p className="text-amber-200 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Le scelte sono cambiate dopo questa prova: rifai «Prova» per vedere il risultato e poter applicare.</p>
+              )}
               {rapporto.conteggi.errore > 0 && (
                 <p className="text-rose-300 flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Con righe in errore l'import non scrive niente: correggi il file o le scelte e riprova.</p>
               )}
@@ -322,12 +352,30 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
                         <td className="px-2 py-1 text-slate-400">{r.campi.map(c => ETICHETTE_CAMPI[c] ?? c).join(", ")}</td>
                         <td className="px-2 py-1 text-slate-300">
                           {r.messaggi.join(" · ")}
-                          {r.stato === "possibile" && r.simile && (
-                            <span className="ml-2 inline-flex gap-1">
-                              <button onClick={() => { setCollega(p => ({ ...p, [r.n]: r.simile!.id })); setCreaComunque(p => p.filter(x => x !== r.n)); invalidaProva(); }}
-                                className="px-1.5 rounded border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/10">è lui: collega</button>
-                              <button onClick={() => { setCreaComunque(p => [...p, r.n]); setCollega(p => { const q = { ...p }; delete q[r.n]; return q; }); invalidaProva(); }}
-                                className="px-1.5 rounded border border-slate-600 hover:bg-slate-800">è un altro: crea</button>
+                          {(r.stato === "possibile" || collega[r.n] || creaComunque.includes(r.n)) && (
+                            <span className="ml-2 inline-flex flex-wrap gap-1 align-middle">
+                              {collega[r.n] ? (
+                                <span className="px-1.5 rounded bg-emerald-500/15 text-emerald-200">scelto: è la stessa persona</span>
+                              ) : creaComunque.includes(r.n) ? (
+                                <span className="px-1.5 rounded bg-slate-700 text-slate-200">scelto: è un'altra persona</span>
+                              ) : null}
+                              {(collega[r.n] || creaComunque.includes(r.n)) ? (
+                                <button onClick={() => { setCollega(p => { const q = { ...p }; delete q[r.n]; return q; }); setCreaComunque(p => p.filter(x => x !== r.n)); invalidaProva(); }}
+                                  className="px-1.5 rounded border border-slate-600 hover:bg-slate-800">annulla la scelta</button>
+                              ) : r.simile && (
+                                <>
+                                  {r.simile.matricola ? (
+                                    <span className="text-slate-400" title="Per collegarli, correggi prima la matricola nella scheda o nel file">
+                                      ha già la matricola {r.simile.matricola}: se è la stessa persona, correggi la matricola
+                                    </span>
+                                  ) : (
+                                    <button onClick={() => { setCollega(p => ({ ...p, [r.n]: r.simile!.id })); setCreaComunque(p => p.filter(x => x !== r.n)); invalidaProva(); }}
+                                      className="px-1.5 rounded border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/10">è lui: collega</button>
+                                  )}
+                                  <button onClick={() => { setCreaComunque(p => [...p, r.n]); setCollega(p => { const q = { ...p }; delete q[r.n]; return q; }); invalidaProva(); }}
+                                    className="px-1.5 rounded border border-slate-600 hover:bg-slate-800">è un altro: crea</button>
+                                </>
+                              )}
                             </span>
                           )}
                         </td>
@@ -348,7 +396,7 @@ export default function ImportaAnagraficaDialog({ onClose }: { onClose: () => vo
           <span className="text-[10px] text-slate-500">Se cambi una scelta, rifai la prova prima di applicare.</span>
           <button onClick={onClose} className="ml-auto px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Chiudi</button>
           <button onClick={() => { if (confirm(`Applicare l'import? ${rapporto?.conteggi.nuovo ?? 0} nuovi, ${rapporto?.conteggi.aggiorna ?? 0} da aggiornare.`)) applica.mutate(); }}
-            disabled={!rapporto || rapporto.conteggi.errore > 0 || applica.isPending}
+            disabled={!rapporto || !provaValida || rapporto.conteggi.errore > 0 || applica.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
             {applica.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />} Applica
           </button>

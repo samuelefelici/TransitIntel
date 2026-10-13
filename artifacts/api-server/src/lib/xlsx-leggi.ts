@@ -36,6 +36,9 @@ export const LIMITI_XLSX = {
   byteVoce: 40 * 1024 * 1024,
   righe: 20_000,
   colonne: 400,
+  /** caratteri di una cella: un'anagrafica non ha celle più lunghe, e una
+   *  stringa condivisa enorme ripetuta in migliaia di celle costerebbe minuti */
+  cella: 2_000,
 };
 
 export class ErroreXlsx extends Error {}
@@ -222,6 +225,7 @@ export function leggiXlsx(buf: Buffer): Array<Array<string | null>> {
         default: valore = v !== undefined ? decodifica(v) : null;
       }
       if (valore !== null && valore.trim() === "") valore = null;
+      if (valore !== null && valore.length > LIMITI_XLSX.cella) valore = valore.slice(0, LIMITI_XLSX.cella);
       while (riga.length < col) riga.push(null);
       riga[col] = valore;
     }

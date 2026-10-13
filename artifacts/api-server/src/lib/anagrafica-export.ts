@@ -209,13 +209,15 @@ export function esportaAnagraficaXlsx(conducenti: Conducente[], info: InfoEsport
 }
 
 /**
- * Una cella di CSV che Excel non scambia per una formula: davanti a =, @,
- * tabulazione, a capo, e a + o - seguiti da una non-cifra va un apostrofo.
- * «+39 333…» e «-1,5» restano come sono.
+ * Una cella di CSV che Excel non scambia per una formula: davanti a ogni
+ * cella che comincia con = + - @, tabulazione o a capo va un apostrofo, a
+ * meno che sia un numero e basta («-1,5» delle ferie). «-1+WEBSERVICE(…)»
+ * comincia con una cifra dopo il segno ed è una formula lo stesso.
  */
 export function cellaSicura(x: unknown): string {
   const s = String(x ?? "");
-  return /^[=@\t\r]/.test(s) || /^[+-](?![\d\s])/.test(s) ? `'${s}` : s;
+  if (/^[+-]?\d+([.,]\d+)?$/.test(s)) return s;
+  return /^[=+\-@\t\r\n]/.test(s) ? `'${s}` : s;
 }
 
 export function esportaAnagraficaCsv(conducenti: Conducente[], info: InfoEsportazione): string {

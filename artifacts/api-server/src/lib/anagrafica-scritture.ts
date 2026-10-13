@@ -94,6 +94,13 @@ export interface OpzioniScrittura {
   riga?: any;
   /** data più recente dello storico per tipo (import) */
   ultimeDate?: Map<string, string | null>;
+  /**
+   * può aggiungere voci ai cataloghi condivisi (categorie, gruppi della
+   * rotazione turni)? No per chi ha solo «scheduling» e scrive un fittizio:
+   * una categoria aggiunta da lì farebbe passare senza domande le righe
+   * dell'import con quella categoria (default sì)
+   */
+  puoCreareCataloghi?: boolean;
 }
 
 const it = (iso: string) => iso.split("-").reverse().join("/");
@@ -178,7 +185,8 @@ export async function applicaVariazioni(
   const sets: SQL[] = [];
   const set = (campo: string, col: string, valore: SQL) => { sets.push(sql`${sql.raw(col)} = ${valore}`); esito.cambiati.push(campo); };
   const nuoveRighe: RigaStorico[] = [];
-  const correzioni: Array<{ kind: TipoStorico; eventDate: string; value: string | null; expiry: string | null }> = [];
+  /** correzioni di una visita già registrata: per data, o (eventDate null) quella in vigore senza data */
+  const correzioni: Array<{ kind: TipoStorico; eventDate: string | null; value: string | null; expiry: string | null }> = [];
   const dopo: Array<() => Promise<void>> = [];
 
   /* ── campi semplici ── */
@@ -202,6 +210,9 @@ export async function applicaVariazioni(
     const chiave = matricolaCanonica(v.matricola);
     if (!uguali(testo(d.matricola), v.matricola)) {
       if (chiave && chiave !== d.matricola_chiave && d.is_active && !d.is_fictitious) {
+        /* finché l'indice unico non c'è (doppioni vecchi), due salvataggi
+         * insieme della stessa matricola si mettono in fila qui */
+        await ex.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`matricola:${chiave}`}))`);
         const altro = righe(await ex.execute(sql`
           SELECT cognome, nome, name FROM roster_drivers
            WHERE matricola_chiave = ${chiave} AND id <> ${driverId}::uuid
@@ -261,6 +272,15 @@ export async function applicaVariazioni(
     const u = ultime.get(kind);
     return u && u > quando ? u : null;
   };
+  /** Il valore di un tipo di storico in vigore a una data (la riga più recente fino a quella data). */
+  const valoreAl = async (kind: TipoStorico, quando: string): Promise<{ value: string | null } | null> =>
+    righe(await ex.execute(sql`
+      SELECT value FROM roster_driver_history
+       WHERE driver_id = ${driverId}::uuid AND kind = ${kind} AND (event_date IS NULL OR event_date <= ${quando}::date)
+       ORDER BY event_date DESC NULLS LAST, created_at DESC, id DESC LIMIT 1`))[0] ?? null;
+  /** Con una decorrenza futura si confronta col valore che ci sarà allora, non con quello di oggi. */
+  const diRiferimento = async (kind: TipoStorico, corrente: string | null): Promise<string | null> =>
+    decorrenza > oggi ? ((await valoreAl(kind, decorrenza))?.value ?? null) : corrente;
   const storico = (campo: string, kind: TipoStorico, value: string | null, expiry: string | null, quando = decorrenza) => {
     const recente = piuRecente(kind, quando);
     if (recente) {
@@ -276,7 +296,7 @@ export async function applicaVariazioni(
   if (v.deposito !== undefined) {
     const dep = v.deposito === null ? null : trovaDeposito(v.deposito, opz.depositi);
     if (v.deposito !== null && !dep) esito.conflitti.push(`deposito «${v.deposito}» non in elenco`);
-    else if (!uguali(chiaveTesto(d.residenza_servizio ?? ""), chiaveTesto(dep?.nome ?? ""))) {
+    else if (!uguali(chiaveTesto(await diRiferimento("deposito", d.residenza_servizio ?? null) ?? ""), chiaveTesto(dep?.nome ?? ""))) {
       storico("deposito", "deposito", dep?.nome ?? null, null);
       if (decorrenza <= oggi) depositoNuovo = dep;
       else esito.avvisi.push("dal giorno del cambio di deposito ricordati di rivedere gruppo turni e rotazione riposi");
@@ -284,8 +304,10 @@ export async function applicaVariazioni(
   }
   if (v.categoria !== undefined) {
     const c = v.categoria === null ? null : categoriaCanonica(v.categoria, opz.categorie);
-    if (!uguali(chiaveTesto(d.categoria ?? ""), chiaveTesto(c?.nome ?? ""))) {
-      if (c?.nuova) {
+    if (!uguali(chiaveTesto(await diRiferimento("categoria", d.categoria ?? null) ?? ""), chiaveTesto(c?.nome ?? ""))) {
+      if (c?.nuova && opz.puoCreareCataloghi === false) {
+        esito.conflitti.push(`categoria «${c.nome}» non in elenco: la aggiunge chi ha il permesso «Personale»`);
+      } else if (c?.nuova) {
         const codice = chiaveTesto(c.nome).replace(/ /g, "-") || "categoria";
         dopo.push(async () => {
           await ex.execute(sql`INSERT INTO roster_categorie (codice, nome) VALUES (${codice}, ${c.nome}) ON CONFLICT DO NOTHING`);
@@ -295,14 +317,20 @@ export async function applicaVariazioni(
       storico("categoria", "categoria", c?.nome ?? null, null);
     }
   }
-  if (v.orarioSettimanaleMin !== undefined && !uguali(numeroDi(d.orario_settimanale_min), v.orarioSettimanaleMin)) {
-    storico("orarioSettimanaleMin", "orario_lavoro", v.orarioSettimanaleMin === null ? null : formattaOrario(v.orarioSettimanaleMin), null);
+  if (v.orarioSettimanaleMin !== undefined) {
+    const nuovo = v.orarioSettimanaleMin === null ? null : formattaOrario(v.orarioSettimanaleMin);
+    const prima = await diRiferimento("orario_lavoro", d.orario_settimanale_min === null || d.orario_settimanale_min === undefined
+      ? null : formattaOrario(Number(d.orario_settimanale_min)));
+    if (!uguali(prima, nuovo)) storico("orarioSettimanaleMin", "orario_lavoro", nuovo, null);
   }
+  /* Le scadenze di patente e CQC valgono da oggi: la decorrenza della
+   * scheda riguarda deposito, categoria e orario, e un rinnovo registrato
+   * «da domani» resterebbe invisibile fino a domani. */
   if (v.patenteValidita !== undefined && !uguali(dataDi(d.patente_validita), v.patenteValidita)) {
-    storico("patenteValidita", "patente", null, v.patenteValidita);
+    storico("patenteValidita", "patente", null, v.patenteValidita, oggi);
   }
   if (v.cqcValidita !== undefined && !uguali(dataDi(d.cqc_validita), v.cqcValidita)) {
-    storico("cqcValidita", "cqc", null, v.cqcValidita);
+    storico("cqcValidita", "cqc", null, v.cqcValidita, oggi);
   }
   const visite: Array<[keyof Variazioni, TipoStorico, string]> = [
     ["visitaFerrovie", "visita_ferrovie", "visita_ferrovie"],
@@ -322,15 +350,22 @@ export async function applicaVariazioni(
       continue;
     }
     if (uguali(unita.data, cor.data) && uguali(unita.scadenza, cor.scadenza) && uguali(unita.esito, cor.esito)) continue;
+    if (nv.data === null && cor.data) {
+      esito.conflitti.push(`${campo}: la data della visita non si toglie; se è sbagliata, correggila`);
+      continue;
+    }
     if (unita.data && unita.scadenza && unita.scadenza <= unita.data) {
       esito.avvisi.push(`${campo}: la scadenza non è dopo la data della visita`);
     }
-    if (unita.data && unita.data === cor.data) {
-      /* stessa visita: si corregge la sua riga, non se ne aggiunge un'altra */
+    if (!unita.data || unita.data === cor.data) {
+      /* La stessa visita: si corregge la sua riga invece di aggiungerne
+       * un'altra. Anche quando la data non si sa (le visite di prima non ce
+       * l'hanno): inventarla con la data di oggi direbbe che c'è stata una
+       * visita oggi, e poi la data vera verrebbe rifiutata come più vecchia. */
       correzioni.push({ kind, eventDate: unita.data, value: unita.esito, expiry: unita.scadenza });
       esito.cambiati.push(campo);
     } else {
-      storico(campo, kind, unita.esito, unita.scadenza, unita.data ?? decorrenza);
+      storico(campo, kind, unita.esito, unita.scadenza, unita.data);
     }
   }
 
@@ -364,6 +399,13 @@ export async function applicaVariazioni(
       else if (!Number.isInteger(s) || s < 1 || s > Number(r.weeks)) esito.conflitti.push(`scaglione ${s} fuori dalla rotazione (1–${r.weeks})`);
       else rotazione = { id: v.rotazioneRiposi.id, weekIndex: s - 1 };
     }
+    /* già così: niente da fare (e niente versione nuova che fa fallire le schede aperte) */
+    const ora = righe(await ex.execute(sql`
+      SELECT rotazione_id, week_index FROM roster_rotazione_assegnazioni WHERE driver_id = ${driverId}::uuid`));
+    if (rotazione === null && ora.length === 0) rotazione = undefined;
+    if (rotazione && ora.length === 1 && ora[0].rotazione_id === rotazione.id && Number(ora[0].week_index) === rotazione.weekIndex) {
+      rotazione = undefined;
+    }
   }
 
   /* ── rotazione turni: gruppo del deposito + posizione ── */
@@ -383,7 +425,9 @@ export async function applicaVariazioni(
       else {
         const g = righe(await ex.execute(sql`
           SELECT id FROM roster_gruppi_turni WHERE deposito_codice = ${dep.codice} AND nome = ${nome}`))[0];
-        if (!g || g.id !== d.rotazione_turni_gruppo_id || !uguali(numeroDi(d.rotazione_turni_posizione), pos)) {
+        if (!g && opz.puoCreareCataloghi === false) {
+          esito.conflitti.push(`gruppo turni «${nome}» non esiste: lo crea chi ha il permesso «Personale»`);
+        } else if (!g || g.id !== d.rotazione_turni_gruppo_id || !uguali(numeroDi(d.rotazione_turni_posizione), pos)) {
           esito.cambiati.push("rotazioneTurni");
           if (pos !== null && g) {
             const doppio = righe(await ex.execute(sql`
@@ -415,12 +459,22 @@ export async function applicaVariazioni(
     esito.tipi.add(r.kind);
   }
   for (const c of correzioni) {
-    await ex.execute(sql`
+    const quale = c.eventDate
+      ? sql`event_date = ${c.eventDate}::date`
+      : sql`(event_date IS NULL OR event_date <= ${oggi}::date)`;
+    const fatte = righe(await ex.execute(sql`
       UPDATE roster_driver_history SET value = ${c.value}, expiry_date = ${c.expiry}::date,
              note = concat_ws(' · ', note, ${opz.nota ?? "corretta"}::text)
        WHERE id = (SELECT id FROM roster_driver_history
-                    WHERE driver_id = ${driverId}::uuid AND kind = ${c.kind} AND event_date = ${c.eventDate}::date
-                    ORDER BY created_at DESC, id DESC LIMIT 1)`);
+                    WHERE driver_id = ${driverId}::uuid AND kind = ${c.kind} AND ${quale}
+                    ORDER BY event_date DESC NULLS LAST, created_at DESC, id DESC LIMIT 1)
+       RETURNING id`));
+    if (!fatte.length) {
+      /* nessuna visita registrata: la prima, senza data */
+      await ex.execute(sql`
+        INSERT INTO roster_driver_history (driver_id, kind, value, event_date, expiry_date, note)
+        VALUES (${driverId}::uuid, ${c.kind}, ${c.value}, ${c.eventDate}::date, ${c.expiry}::date, ${opz.nota ?? null})`);
+    }
     esito.tipi.add(c.kind);
   }
   for (const f of dopo) await f();

@@ -97,9 +97,11 @@ export default function AnagraficaPage() {
       return true;
     });
     const cmp = (a: string, b: string) => a.localeCompare(b, "it", { numeric: true });
+    /* i vuoti in fondo (un segnaposto come «~» finisce invece in cima con localeCompare) */
+    const cmpVuotiInFondo = (a: string | null, b: string | null) => (a === null) !== (b === null) ? (a === null ? 1 : -1) : a === null ? 0 : cmp(a, b!);
     out.sort((x, y) => {
-      if (ordine === "matricola") return cmp(x.c.matricola ?? "~", y.c.matricola ?? "~");
-      if (ordine === "deposito") return cmp(x.c.residenzaServizio ?? "~", y.c.residenzaServizio ?? "~") || cmp(nominativo(x.c), nominativo(y.c));
+      if (ordine === "matricola") return cmpVuotiInFondo(x.c.matricola, y.c.matricola);
+      if (ordine === "deposito") return cmpVuotiInFondo(x.c.residenzaServizio, y.c.residenzaServizio) || cmp(nominativo(x.c), nominativo(y.c));
       if (ordine === "documenti") {
         return ORDINE_STATI.indexOf(x.voci.length ? statoPeggiore(x.voci) : "ok") - ORDINE_STATI.indexOf(y.voci.length ? statoPeggiore(y.voci) : "ok")
           || cmp(nominativo(x.c), nominativo(y.c));
@@ -114,11 +116,12 @@ export default function AnagraficaPage() {
     .sort((a, b) => ORDINE_STATI.indexOf(a.v.stato) - ORDINE_STATI.indexOf(b.v.stato)
       || (a.v.scadenza ?? "9999").localeCompare(b.v.scadenza ?? "9999")), [visibili]);
 
+  /* contano quello che c'è nella tabella sotto: gli stessi filtri */
   const conteggiStati = useMemo(() => {
     const m: Record<StatoScadenza, number> = { non_idoneo: 0, scaduta: 0, entro_30: 0, entro_60: 0, entro_90: 0, mancante: 0, ok: 0 };
-    for (const { voci } of conScadenze) for (const v of voci) m[v.stato]++;
+    for (const { voci } of visibili) for (const v of voci) m[v.stato]++;
     return m;
-  }, [conScadenze]);
+  }, [visibili]);
 
   const scegliVista = (v: Vista) => { setVista(v); aggiornaIndirizzo("vista", v === "scadenze" ? "scadenze" : null); };
   const apri = (id: string | "nuovo" | null) => { setScheda(id); aggiornaIndirizzo("conducente", id && id !== "nuovo" ? id : null); };

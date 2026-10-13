@@ -24,7 +24,7 @@
 import { db } from "@workspace/db";
 import { sql, type SQL } from "drizzle-orm";
 import {
-  DEPOSITI_INIZIALI, ESITI_VISITA, formattaOrario, leggiOrario, rigaRotazione, lunediDi,
+  DEPOSITI_INIZIALI, ESITI_VISITA, formattaOrario, leggiEsitoVisita, leggiOrario, matricolaCanonica, rigaRotazione, lunediDi,
   type Conducente, type EsitoVisita, type Deposito, type UnitaFerie,
 } from "./anagrafica-campi";
 import { ensureTable as assicuraTabelleRotazioni } from "./roster-rotazioni";
@@ -67,15 +67,6 @@ const COLONNE_CONDUCENTE: Array<[string, string]> = [
   ["updated_at", "timestamptz"],
 ];
 
-/**
- * La matricola canonica in SQL: gemella di matricolaCanonica() in
- * anagrafica-campi.ts (senza spazi, maiuscole, «123.0» → «123», zeri
- * iniziali tolti se è tutta cifre). Il test di prova su Postgres le confronta.
- */
-const M = `regexp_replace(regexp_replace(upper(coalesce(matricola, '')), '\\s', '', 'g'), '^([0-9]+)\\.0+$', '\\1')`;
-export const MATRICOLA_CHIAVE_SQL =
-  `CASE WHEN ${M} = '' THEN NULL WHEN ${M} ~ '^[0-9]+$' THEN coalesce(nullif(ltrim(${M}, '0'), ''), '0') ELSE ${M} END`;
-
 /** Il predicato dell'unicità della matricola: identico nel controllo e nell'indice. */
 const PREDICATO_UNICITA = "is_active AND NOT is_fictitious AND matricola_chiave IS NOT NULL";
 
@@ -98,8 +89,9 @@ async function aggiungiColonne(tabella: string, colonne: Array<[string, string]>
 let pronto: Promise<void> | null = null;
 let ultimoErrore: string | null = null;
 let avvisiBootstrap: string[] = [];
+let avvisiMatricole: string[] = [];
 
-export function statoAnagrafica() { return { errore: ultimoErrore, avvisi: avvisiBootstrap }; }
+export function statoAnagrafica() { return { errore: ultimoErrore, avvisi: [...avvisiBootstrap, ...avvisiMatricole] }; }
 
 export function assicuraAnagrafica(): Promise<void> {
   if (!pronto) {
@@ -202,6 +194,12 @@ async function crea(): Promise<void> {
       created_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE (deposito_codice, nome)
     )`);
+  /* i passi sui dati vecchi che si fanno una volta sola (una migrazione, non un controllo) */
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS roster_anagrafica_passi (
+      passo text PRIMARY KEY,
+      fatto_il timestamptz NOT NULL DEFAULT now()
+    )`);
   /* chi ha scritto che cosa nell'anagrafica: i NOMI dei campi, mai i valori */
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS roster_anagrafica_log (
@@ -228,8 +226,16 @@ async function crea(): Promise<void> {
 /** Il lock consultivo dei passi iniziali: un numero qualsiasi, purché fisso. */
 const LOCK_BOOTSTRAP = 7_331_015;
 
+/** Un passo sui dati vecchi da fare una volta sola: dopo, resta segnato. */
+async function unaVolta(ex: Ex, passo: string, fai: () => Promise<void>): Promise<void> {
+  if (righe(await ex.execute(sql`SELECT 1 FROM roster_anagrafica_passi WHERE passo = ${passo}`)).length) return;
+  await fai();
+  await ex.execute(sql`INSERT INTO roster_anagrafica_passi (passo) VALUES (${passo}) ON CONFLICT DO NOTHING`);
+}
+
 async function passiSuiDati(ex: Ex): Promise<void> {
   await ex.execute(sql`SELECT pg_advisory_xact_lock(${LOCK_BOOTSTRAP})`);
+  const oggi = oggiRoma();
 
   /* cataloghi: non si sovrascrive quello che qualcuno ha già cambiato */
   for (const d of DEPOSITI_INIZIALI) {
@@ -247,15 +253,20 @@ async function passiSuiDati(ex: Ex): Promise<void> {
      ORDER BY lower(btrim(v)), prio, (btrim(v) = initcap(btrim(v))) DESC, btrim(v)
     ON CONFLICT DO NOTHING`);
 
-  /* matricola canonica */
-  await ex.execute(sql.raw(`
-    UPDATE roster_drivers SET matricola_chiave = ${MATRICOLA_CHIAVE_SQL}
-     WHERE matricola_chiave IS DISTINCT FROM (${MATRICOLA_CHIAVE_SQL})`));
+  /* matricola canonica: la calcola lo stesso codice dell'import e della
+   * scheda (un'espressione SQL «gemella» divergeva su spazi speciali e ß) */
+  for (const d of righe(await ex.execute(sql`SELECT id, matricola, matricola_chiave FROM roster_drivers`))) {
+    const k = matricolaCanonica(d.matricola);
+    if (k !== (d.matricola_chiave ?? null)) {
+      await ex.execute(sql`UPDATE roster_drivers SET matricola_chiave = ${k} WHERE id = ${d.id}::uuid`);
+    }
+  }
 
   /* orario: lo storico in un formato solo («hh:mm»), poi i minuti dove mancano */
   const storOrario = await ex.execute(sql`
     SELECT id, value FROM roster_driver_history
      WHERE kind = 'orario_lavoro' AND value IS NOT NULL AND value !~ '^[0-9]{1,3}:[0-9]{2}$'`);
+  let illeggibili = 0;
   for (const h of righe(storOrario)) {
     const l = leggiOrario(h.value);
     if (l && l.ok === true) {
@@ -263,17 +274,56 @@ async function passiSuiDati(ex: Ex): Promise<void> {
         UPDATE roster_driver_history SET value = ${formattaOrario(l.valore)},
                note = concat_ws(' · ', note, ${`era «${String(h.value).slice(0, 40)}»`}::text)
          WHERE id = ${h.id}::uuid`);
-    }
+    } else illeggibili++;
   }
+  if (illeggibili) avvisiBootstrap.push(`${illeggibili} righe di storico dell'orario non leggibili (es. «Part-time»): l'orario resta quello che c'era`);
   await ex.execute(sql`
     UPDATE roster_drivers SET orario_settimanale_min =
            CASE WHEN ore_settimanali <= 80 THEN ore_settimanali * 60 ELSE ore_settimanali END
      WHERE orario_settimanale_min IS NULL AND ore_settimanali IS NOT NULL`);
 
-  /* il numero della patente è quello del CQC (così in azienda) */
-  await ex.execute(sql`
-    UPDATE roster_drivers SET patente_numero = cqc_numero
-     WHERE patente_numero IS NULL AND cqc_numero IS NOT NULL`);
+  /* Una volta sola, sui dati di prima. */
+  await unaVolta(ex, "2026-10 numero patente dal CQC", async () => {
+    /* il numero della patente è quello del CQC (così in azienda) */
+    await ex.execute(sql`
+      UPDATE roster_drivers SET patente_numero = cqc_numero
+       WHERE patente_numero IS NULL AND cqc_numero IS NOT NULL`);
+  });
+  await unaVolta(ex, "2026-10 esiti delle visite", async () => {
+    /* prima l'esito era un testo libero: «Non idoneo», «Idonea con prescrizioni»… */
+    const vecchie = righe(await ex.execute(sql.raw(`
+      SELECT id, value FROM roster_driver_history
+       WHERE kind IN ('visita_ferrovie', 'visita_medico_competente') AND value IS NOT NULL
+         AND value NOT IN ${`(${ESITI_VISITA.map(e => `'${e}'`).join(", ")})`}`)));
+    let nonLetti = 0;
+    for (const h of vecchie) {
+      const l = leggiEsitoVisita(h.value);
+      if (l && l.ok === true) {
+        await ex.execute(sql`
+          UPDATE roster_driver_history SET value = ${l.valore},
+                 note = concat_ws(' · ', note, ${`era «${String(h.value).slice(0, 40)}»`}::text)
+           WHERE id = ${h.id}::uuid`);
+      } else nonLetti++;
+    }
+    if (nonLetti) avvisiBootstrap.push(`${nonLetti} esiti di visita scritti a mano non riconosciuti: controllali nello storico`);
+  });
+  await unaVolta(ex, "2026-10 scadenze di patente e CQC", async () => {
+    /* Prima la scheda scriveva le scadenze di patente e CQC sulla colonna e lo
+     * storico le scriveva di nuovo: le due possono non coincidere, e la
+     * colonna è l'ultima scritta a mano. Una riga di storico di oggi la
+     * mette davanti, così la prima sincronizzazione non la cancella. */
+    for (const [kind, col] of [["patente", "patente_validita"], ["cqc", "cqc_validita"]] as const) {
+      await ex.execute(sql.raw(`
+        INSERT INTO roster_driver_history (driver_id, kind, value, event_date, expiry_date, note)
+        SELECT d.id, '${kind}', NULL, '${oggi}'::date, d.${col}, 'allineamento stato iniziale'
+          FROM roster_drivers d
+          JOIN LATERAL (SELECT h.expiry_date FROM roster_driver_history h
+                         WHERE h.driver_id = d.id AND h.kind = '${kind}'
+                           AND (h.event_date IS NULL OR h.event_date <= '${oggi}'::date)
+                         ORDER BY h.event_date DESC NULLS LAST, h.created_at DESC, h.id DESC LIMIT 1) h ON true
+         WHERE d.${col} IS NOT NULL AND h.expiry_date IS DISTINCT FROM d.${col}`));
+    }
+  });
 
   /* righe di base: ogni valore corrente che non ha storico ne riceve una
    * senza data, così cancellare per sbaglio l'ultima riga non lo azzera */
@@ -299,17 +349,27 @@ async function passiSuiDati(ex: Ex): Promise<void> {
          AND NOT EXISTS (SELECT 1 FROM roster_driver_history h WHERE h.driver_id = d.id AND h.kind = '${kind}')`));
   }
 
-  /* unicità della matricola: solo se oggi i dati la rispettano già */
-  const doppie = await ex.execute(sql.raw(`
+  await verificaUnicitaMatricole(ex);
+}
+
+/**
+ * L'unicità della matricola fra i conducenti attivi veri: se i dati la
+ * rispettano si crea l'indice unico (che poi la garantisce), altrimenti un
+ * avviso con le matricole doppie. Gira all'avvio e ogni mattina: quando
+ * qualcuno sistema i doppioni, l'indice arriva senza riavviare.
+ */
+export async function verificaUnicitaMatricole(ex: Ex): Promise<void> {
+  const doppie = righe(await ex.execute(sql.raw(`
     SELECT matricola_chiave FROM roster_drivers WHERE ${PREDICATO_UNICITA}
-     GROUP BY matricola_chiave HAVING count(*) > 1 LIMIT 5`));
-  if (righe(doppie).length) {
-    avvisiBootstrap.push(`matricole doppie fra i conducenti attivi: ${righe(doppie).map((x: any) => x.matricola_chiave).join(", ")}`);
-  } else {
-    await ex.execute(sql.raw(`
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_roster_drivers_matricola
-          ON roster_drivers (matricola_chiave) WHERE ${PREDICATO_UNICITA}`));
+     GROUP BY matricola_chiave HAVING count(*) > 1 ORDER BY 1 LIMIT 10`)));
+  if (doppie.length) {
+    avvisiMatricole = [`matricole doppie fra i conducenti attivi: ${doppie.map((x: any) => x.matricola_chiave).join(", ")}`];
+    return;
   }
+  avvisiMatricole = [];
+  await ex.execute(sql.raw(`
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_roster_drivers_matricola
+        ON roster_drivers (matricola_chiave) WHERE ${PREDICATO_UNICITA}`));
 }
 
 /* ── Valore corrente dallo storico ──────────────────────────────────────── */
@@ -396,7 +456,10 @@ export function sincronizzaSeNuovoGiorno(now: Date = new Date()): Promise<void> 
   const oggi = oggiRoma(now);
   if (ultimoGiornoSincronizzato === oggi) return Promise.resolve();
   if (!sincronizzazioneInCorso) {
-    sincronizzazioneInCorso = db.transaction(async (tx) => { await sincronizzaCorrenti(tx as unknown as Ex, oggi); })
+    sincronizzazioneInCorso = db.transaction(async (tx) => {
+      await sincronizzaCorrenti(tx as unknown as Ex, oggi);
+      await verificaUnicitaMatricole(tx as unknown as Ex);
+    })
       .then(() => { ultimoGiornoSincronizzato = oggi; })
       .catch((e: any) => { console.error("[anagrafica] risincronizzazione del giorno:", e?.cause?.message ?? e?.message ?? e); })
       .finally(() => { sincronizzazioneInCorso = null; });

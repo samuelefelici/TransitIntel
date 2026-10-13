@@ -26,7 +26,7 @@ import {
   leggiFerie, leggiMatricola, leggiOrario, leggiParametro, pulisciTesto, formattaOrario,
   type Lettura,
 } from "./anagrafica-campi";
-import { leggiXlsx } from "./xlsx-leggi";
+import { leggiXlsx, LIMITI_XLSX } from "./xlsx-leggi";
 
 export class ErroreFile extends Error {}
 
@@ -56,7 +56,10 @@ export function leggiTabella(buf: Buffer, nomeFile: string): Array<Array<string 
         delimiter: separatore(testo), bom: true, relax_column_count: true, relax_quotes: true,
         skip_empty_lines: false, trim: true,
       }) as string[][];
-      return righe.map(r => r.map(c => (c === "" ? null : c.replace(/\u0000/g, ""))));
+      /* gli stessi limiti del lettore .xlsx */
+      if (righe.length > LIMITI_XLSX.righe) throw new ErroreFile(`Il file ha più di ${LIMITI_XLSX.righe} righe.`);
+      if (righe.some(r => r.length > LIMITI_XLSX.colonne)) throw new ErroreFile(`Il file ha più di ${LIMITI_XLSX.colonne} colonne.`);
+      return righe.map(r => r.map(c => (c === "" ? null : c.replace(/\u0000/g, "").slice(0, LIMITI_XLSX.cella))));
     } catch {
       throw new ErroreFile("Il CSV non si legge: controlla separatore e virgolette.");
     }
@@ -128,8 +131,8 @@ export const ALIAS: Array<[CampoImport, string, string[]]> = [
 
 const CAMPI_CHIAVE = new Set(["matricola", "matr", "n matricola", "numero matricola", "id dipendente", "codice dipendente", "cod dipendente", "codice per paghe", "vecchia matricola"].map(a => a.replace(/ /g, "")));
 
-/** Un'intestazione confrontabile: «Data_Scadenza_CQC» → «datascadenzacqc». */
-export const chiaveIntestazione = (s: string) => chiaveTesto(s.replace(/_/g, " ")).replace(/ /g, "");
+/** Un'intestazione confrontabile: «Data_Scadenza_CQC» → «datascadenzacqc». Un'intestazione vera è corta. */
+export const chiaveIntestazione = (s: string) => (s.length > 120 ? "" : chiaveTesto(s.replace(/_/g, " ")).replace(/ /g, ""));
 
 const INDICE_ALIAS = new Map<string, { campo: CampoImport; priorita: number }>();
 for (const [campo, , alias] of ALIAS) {

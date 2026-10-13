@@ -63,7 +63,14 @@ export async function ensureTable(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_rot_asg_drv ON roster_rotazione_assegnazioni(driver_id)`);
   bootstrapped = true;
 }
-router.use(async (_req, _res, next) => { await ensureTable(); next(); });
+/* solo per le richieste del roster: il router è montato senza prefisso, e
+ * su un database vuoto la tabella fa riferimento a roster_drivers, che crea
+ * l'anagrafica (montata prima, sullo stesso percorso) */
+router.use(async (req, _res, next) => {
+  if (!req.path.toLowerCase().startsWith("/roster")) { next(); return; }
+  await ensureTable();
+  next();
+});
 
 function getUserId(req: Request): string | null {
   return (req as any).user?.id ?? (req as any).session?.userId ?? null;
@@ -183,7 +190,11 @@ router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloScheduling, async (r
     const byDriver = new Map<string, number>();
     const oggi = new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome" }).format(new Date());
     const esito = await db.transaction(async (tx) => {
-      const rot = await tx.execute<any>(sql`SELECT weeks FROM roster_rotazioni_riposi WHERE id = ${id}::uuid FOR UPDATE`);
+      /* FOR NO KEY UPDATE: blocca le altre modifiche alla rotazione ma non il
+       * controllo di chiave esterna di chi aggiunge un'assegnazione dalla
+       * scheda (che prende prima il conducente): con FOR UPDATE i due
+       * percorsi si bloccavano a vicenda */
+      const rot = await tx.execute<any>(sql`SELECT weeks FROM roster_rotazioni_riposi WHERE id = ${id}::uuid FOR NO KEY UPDATE`);
       if (!rot.rows[0]) return { stato: 404 as const };
       const weeks = Number(rot.rows[0].weeks);
       // Deduplica per conducente (ultimo scaglione vince) e valida.
