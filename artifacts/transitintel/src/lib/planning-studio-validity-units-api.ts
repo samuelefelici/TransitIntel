@@ -105,9 +105,18 @@ export interface PsValidityUnitComputed {
   mergedCount?: number;
 }
 
+/** Urbana o extraurbana: nel Roster decide il riposo minimo fra due turni (8h o 9h). */
+export type PsServizioUdp = "urbano" | "extraurbano";
+
 export interface PsValidityUnit {
   id: string;
   validityId: string;
+  /** scelto a mano; null = vale la proposta dalle linee */
+  serviceType: PsServizioUdp | null;
+  /** urbana se tutte le corse sono su linee urbane, extraurbana se almeno una non lo è */
+  serviceTypeProposto: PsServizioUdp | null;
+  corseUrbane: number;
+  corseExtraurbane: number;
   name: string;
   description: string | null;
   categoryId: string | null;
@@ -216,8 +225,8 @@ export function deletePsValidityUnit(projectId: string, unitId: string): Promise
 }
 
 export function renamePsValidityUnit(projectId: string, unitId: string, patch: {
-  name?: string; description?: string; tripIds?: string[];
-}): Promise<{ id: string; name: string; description: string | null; updated_at: string }> {
+  name?: string; description?: string; tripIds?: string[]; serviceType?: PsServizioUdp | null;
+}): Promise<{ id: string; name: string; description: string | null; serviceType: PsServizioUdp | null; updated_at: string }> {
   return apiFetch(`/api/planning-studio/projects/${projectId}/validity-units/${unitId}`, {
     method: "PATCH",
     body: JSON.stringify(patch),

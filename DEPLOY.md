@@ -163,6 +163,25 @@ preparare prima.
    nello storico, gli esiti delle visite scritti a mano diventano quelli
    dell'elenco, il numero della patente si prende dal CQC dove manca.
 
+### Roster: riposi fra i turni
+
+Fra due turni dello stesso conducente servono almeno **8h se urbani, 9h se
+uno è extraurbano**, e due turni non si sovrappongono. Assegnando o
+scambiando un turno che non lo rispetta il roster avvisa; si può procedere lo
+stesso e il turno resta segnato come forzato (chi, quando). Le colonne si
+creano da sé; `migrations/2026-10_roster_riposi.sql` è lo specchio.
+
+1. **Dopo il rilascio**, in Planning Studio → Unità di Progettazione, controlla
+   per ogni unità il campo **Servizio**. Finché nessuno lo sceglie vale la
+   proposta dalle linee (urbane le reti di Ancona, Jesi, Falconara, Senigallia
+   e Castelfidardo; extraurbana l'unità se ha anche una sola corsa
+   extraurbana). Le unità miste vanno decise a mano.
+2. I turni guida senza un'unità vanno col «Tipo di servizio» scelto in Fucina
+   al calcolo; se manca anche quello, il roster presume 9h e lo dice
+   nell'avviso.
+3. Le assegnazioni già fatte prima del rilascio non bloccano niente: il
+   tabellone mostra in rosso quelle che violano le regole, da controllare.
+
 ---
 
 ## Variabili d'Ambiente

@@ -130,8 +130,12 @@ async function crea(): Promise<void> {
       UNIQUE (dss_id, day, duty_code)
     )`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_day ON roster_assignments(day)`);
-  /* snapshot minimo del turno al momento dell'assegnazione */
-  await aggiungiColonne("roster_assignments", [["snapshot", "jsonb"]]);
+  /* snapshot minimo del turno al momento dell'assegnazione (orari, anche in
+     minuti); forzatura = chi ha assegnato il turno nonostante riposo troppo
+     corto o sovrapposizione, quando e quali regole (lib/roster-normativa.ts) */
+  await aggiungiColonne("roster_assignments", [["snapshot", "jsonb"], ["forzatura", "jsonb"]]);
+  /* i controlli sui riposi leggono i turni di un conducente intorno a un giorno */
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_driver_day ON roster_assignments(driver_id, day)`);
   /* un conducente può fare più turni nello stesso giorno */
   const vincolo = await db.execute<any>(sql`
     SELECT 1 FROM pg_constraint WHERE conname = 'roster_assignments_driver_id_day_key'`);
