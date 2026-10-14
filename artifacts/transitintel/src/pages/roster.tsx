@@ -56,7 +56,28 @@ interface RosterDuty {
 /** Snapshot minimo del turno al momento dell'assegnazione (P6): lo storico
  *  resta leggibile anche se il DSS viene versionato o il duty rinumerato. */
 interface DutySnapshot { start?: string | null; end?: string | null; paidHours?: unknown; name?: string | null }
-interface RosterAssignment { id: string; driverId: string; day: string; dutyCode: string; dssId: string; snapshot?: DutySnapshot | null }
+/** Chi ha assegnato un turno nonostante riposo troppo corto o sovrapposizione, quando e cosa. */
+interface Forzatura { da: string | null; il: string; regole: string[]; testi: string[] }
+interface RosterAssignment {
+  id: string; driverId: string; day: string; dutyCode: string; dssId: string;
+  snapshot?: DutySnapshot | null; forzatura?: Forzatura | null;
+}
+type Servizio = "urbano" | "extraurbano";
+/** Riposo troppo corto o sovrapposizione fra due turni di un conducente (api-server lib/roster-normativa.ts). */
+interface ViolazioneRoster {
+  regola: "riposo" | "sovrapposizione";
+  conducenteId: string;
+  minuti: number;
+  minimo: number | null;
+  /** 9h perché di un turno non si sa se è urbano o extraurbano */
+  presunto: boolean;
+  testo: string;
+  /** chi forza manda le chiavi delle violazioni che ha visto */
+  chiave: string;
+  /** chi ha assegnato uno dei due turni ha visto e forzato proprio questa */
+  forzata: boolean;
+  turni: Array<{ assegnazioneId: string | null; giorno: string; codice: string; dssId: string; servizio: Servizio | null; servizioDa: string | null }>;
+}
 interface RosterEntry { id: string; driverId: string; day: string; category: "assenza" | "presenza"; code: string }
 interface VoceDef { code: string; label: string }
 type VociCatalog = { assenza: VoceDef[]; presenza: VoceDef[] };
@@ -77,6 +98,8 @@ interface DutySource {
   dssId: string; name: string; scenarioName: string | null;
   scenarioDate: string | null; dutyCount: number; createdAt: string;
   isOperational?: boolean; validityUnitName?: string | null;
+  /** urbano o extraurbano (riposo minimo 8h o 9h) e da dove viene: UDP, linee dell'UDP, Fucina */
+  serviceType?: Servizio | null; serviceTypeDa?: "udp" | "linee" | "fucina" | null;
 }
 interface Board {
   /** depositoCodice: il deposito del catalogo, abbinato dal server come fa l'anagrafica */
@@ -90,6 +113,8 @@ interface Board {
   /** Modalità AUTO (dssId="auto"): duty raggruppati per DSS + DSS competente per giorno */
   dutiesByDss?: Record<string, RosterDuty[]>;
   dssByDay?: Record<string, string | null>;
+  /** riposi troppo corti e sovrapposizioni nei giorni visibili, anche coi turni di altri DSS */
+  violazioni?: ViolazioneRoster[];
 }
 
 /** Da dove viene il colore: i turni sul tabellone, Planner Studio, o la tavolozza fissa. */
@@ -98,7 +123,13 @@ interface ColoreDeposito { codice: string; nome: string; colore: string; da: "tu
 /** Lo strumento attivo sul tabellone. */
 type Strumento = "puntatore" | "gomma" | "cambio";
 /** Un cambio turno: «da» passa a aConducente, «a» (se c'è) torna al conducente di «da». */
-interface Scambio { da: RosterAssignment; aConducente: string; a: RosterAssignment | null }
+interface Scambio { da: RosterAssignment; aConducente: string; a: RosterAssignment | null; forza?: string[] }
+/** Un'assegnazione chiesta al server; forza = le chiavi delle violazioni viste, si procede nonostante quelle. */
+interface Assegnazione { driverId: string; day: string; dutyCode: string; dssId: string; forza?: string[] }
+/** Il 409 forzabile del server: violazioni da mostrare e l'azione da rifare con forza. */
+interface AvvisoNormativa { titolo: string; violazioni: ViolazioneRoster[]; conferma: string; forza: () => void }
+const eForzabile = (e: unknown): e is Error & { status: number; body: { forzabile: true; violazioni: ViolazioneRoster[] } } =>
+  (e as any)?.status === 409 && (e as any)?.body?.forzabile === true && Array.isArray((e as any)?.body?.violazioni);
 
 /* cursori degli strumenti: le stesse icone dei pulsanti, con un bordo scuro per vederle su ogni fondo */
 const cursoreSvg = (tratti: string, colore: string, x: number, y: number, riserva: string) =>
@@ -300,11 +331,23 @@ export default function RosterPage() {
     onError: (e: Error) => toast.error(e.message),
   });
 
+  /* riposo troppo corto o turni sovrapposti: il server avvisa (409) e si può forzare */
+  const [avviso, setAvviso] = useState<AvvisoNormativa | null>(null);
   const assignMut = useMutation({
-    mutationFn: (input: { driverId: string; day: string; dutyCode: string; dssId: string }) =>
-      apiFetch("/api/roster/assignments", { method: "POST", body: JSON.stringify(input) }),
-    onSuccess: () => { setCut(null); setSelDuty(null); invalidateBoard(); },
-    onError: (e: Error) => toast.error("Assegnazione fallita", { description: e.message }),
+    mutationFn: (input: Assegnazione) =>
+      apiFetch<{ forzato?: boolean }>("/api/roster/assignments", { method: "POST", body: JSON.stringify(input) }),
+    onSuccess: (r, input) => {
+      if (r?.forzato) toast.warning(`${input.dutyCode} assegnato nonostante l'avviso: resta segnato sul turno`);
+      setCut(null); setSelDuty(null); invalidateBoard();
+    },
+    onError: (e: Error, input) => {
+      if (eForzabile(e)) {
+        const viste = e.body.violazioni.map((v) => v.chiave);
+        setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Assegna comunque", forza: () => assignMut.mutate({ ...input, forza: viste }) });
+        return;
+      }
+      toast.error("Assegnazione fallita", { description: e.message });
+    },
   });
   const unassignMut = useMutation({
     mutationFn: (id: string) => apiFetch(`/api/roster/assignments/${id}`, { method: "DELETE" }),
@@ -434,6 +477,8 @@ export default function RosterPage() {
   // ── Taglia/incolla via tastiera: Q = taglia turno selezionato, W = incolla sul conducente ──
   /* il conducente si passa quando arriva da un click: lo stato selDriver si aggiorna solo al giro dopo */
   function doPaste(driverId: string | null = selDriver) {
+    /* un'assegnazione per volta: il secondo click di un doppio click non incolla altrove */
+    if (assignMut.isPending) return;
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!driverId) { toast.info("Seleziona un conducente a sinistra"); return; }
     // In AUTO l'assegnazione va sul DSS competente per la data del turno.
@@ -480,16 +525,26 @@ export default function RosterPage() {
         da: s.da.id, daConducente: s.da.driverId, a: s.a?.id ?? null, aConducente: s.aConducente,
         /* col tabellone di un solo DSS, i turni degli altri DSS non si vedono e non contano */
         dssVisto: isAuto || !dssId ? null : dssId,
+        ...(s.forza ? { forza: s.forza } : {}),
       }),
-    }),
-    onSuccess: (_r, s) => {
-      toast.success(s.a
+    }) as Promise<{ forzato?: boolean }>,
+    onSuccess: (r, s) => {
+      const fatto = s.a
         ? `Cambio turno di ${quandoDi(s.da.day)}: ${s.da.dutyCode} a ${nomeDi(s.aConducente)}, ${s.a.dutyCode} a ${nomeDi(s.da.driverId)}`
-        : `${s.da.dutyCode} di ${quandoDi(s.da.day)} passa a ${nomeDi(s.aConducente)}`);
+        : `${s.da.dutyCode} di ${quandoDi(s.da.day)} passa a ${nomeDi(s.aConducente)}`;
+      /* forzato lo dice il server: se intanto la violazione è sparita, non c'è niente da segnare */
+      if (r?.forzato) toast.warning(`${fatto}, nonostante l'avviso: resta segnato sul turno`);
+      else toast.success(fatto);
       setSwapFrom(null);
       invalidateBoard();
     },
-    onError: (e: Error) => {
+    onError: (e: Error, s) => {
+      /* riposi o sovrapposizioni: il turno scelto resta, si decide nella finestra */
+      if (eForzabile(e)) {
+        const viste = e.body.violazioni.map((v) => v.chiave);
+        setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Scambia comunque", forza: () => swapMut.mutate({ ...s, forza: viste }) });
+        return;
+      }
       toast.error("Cambio turno non riuscito", { description: e.message });
       setSwapFrom(null);
       invalidateBoard();
@@ -557,12 +612,14 @@ export default function RosterPage() {
   /* le due finestre del tabellone: focus dentro, Tab che gira dentro, Esc che chiude */
   const swapAskRef = useRef<HTMLDivElement>(null);
   const eraseChoiceRef = useRef<HTMLDivElement>(null);
+  const avvisoRef = useRef<HTMLDivElement>(null);
   useDialogo(swapAskRef, () => setSwapAsk(null), !!swapAsk);
   useDialogo(eraseChoiceRef, () => setEraseChoice(null), !!eraseChoice);
+  useDialogo(avvisoRef, () => setAvviso(null), !!avviso);
 
   /* La tastiera. Il gestore si rilegge a ogni giro (onKeyRef), così vede sempre
      lo stato attuale; con una finestra aperta i tasti sono suoi, non del tabellone. */
-  const finestraAperta = editDriver !== null || rotDialog !== null || !!swapAsk || !!eraseChoice;
+  const finestraAperta = editDriver !== null || rotDialog !== null || !!swapAsk || !!eraseChoice || !!avviso;
   const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   onKeyRef.current = (e: KeyboardEvent) => {
     const t = e.target as HTMLElement | null;
@@ -612,6 +669,31 @@ export default function RosterPage() {
     const presenti = new Set((board?.drivers ?? []).map((d) => d.depositoCodice).filter(Boolean));
     return (board?.depositi ?? []).filter((d) => presenti.has(d.codice));
   }, [board?.drivers, board?.depositi]);
+
+  // ── Riposi e sovrapposizioni: le violazioni di ogni turno sul tabellone ──
+  const violazioniDi = useMemo(() => {
+    const m = new Map<string, ViolazioneRoster[]>();
+    for (const v of board?.violazioni ?? []) {
+      for (const t of v.turni) {
+        if (!t.assegnazioneId) continue;
+        const l = m.get(t.assegnazioneId);
+        if (l) l.push(v); else m.set(t.assegnazioneId, [v]);
+      }
+    }
+    return m;
+  }, [board?.violazioni]);
+  /* si contano solo quelle che sul tabellone hanno un turno segnato: col tabellone di
+     un solo DSS, una violazione fra turni di altri DSS qui non si vedrebbe */
+  const violazioniVisibili = useMemo(() => {
+    const visibili = new Set((board?.assignments ?? []).map((a) => a.id));
+    return (board?.violazioni ?? []).filter((v) => v.turni.some((t) => t.assegnazioneId && visibili.has(t.assegnazioneId)));
+  }, [board?.violazioni, board?.assignments]);
+  const contaViolazioni = useMemo(() => ({
+    aperte: violazioniVisibili.filter((v) => !v.forzata).length,
+    forzate: violazioniVisibili.filter((v) => v.forzata).length,
+  }), [violazioniVisibili]);
+  const etichettaServizio = (s: DutySource) =>
+    s.serviceType ? ` · ${s.serviceType}${s.serviceTypeDa === "fucina" ? " (da Fucina)" : ""}` : " · tipo ?";
 
   const menuItemCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-2";
   const menuDisabledCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-600 cursor-not-allowed flex items-center gap-2";
@@ -717,7 +799,7 @@ export default function RosterPage() {
           <option value="auto">🗓 Auto — DSS per data (periodi di validità)</option>
           {sourcesQ.data?.sources.map((s) => (
             <option key={s.dssId} value={s.dssId}>
-              {s.isOperational ? "● " : ""}{s.validityUnitName ? `${s.validityUnitName} · ` : ""}{s.name} · {s.dutyCount} turni
+              {s.isOperational ? "● " : ""}{s.validityUnitName ? `${s.validityUnitName} · ` : ""}{s.name} · {s.dutyCount} turni{etichettaServizio(s)}
             </option>
           ))}
         </select>
@@ -811,8 +893,24 @@ export default function RosterPage() {
       </div>
 
       {/* legenda: calendario aziendale (le righette sopra i giorni) e depositi (le righette accanto ai conducenti) */}
-      {(calendarioQ.data || legendaDepositi.length > 0) && (
+      {(calendarioQ.data || legendaDepositi.length > 0 || contaViolazioni.aperte + contaViolazioni.forzate > 0) && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1 border-b border-slate-800 bg-slate-900/60 text-[10px] text-slate-400">
+          {/* riposi troppo corti e turni sovrapposti nei giorni visibili */}
+          {contaViolazioni.aperte + contaViolazioni.forzate > 0 && (
+            <span className="inline-flex items-center gap-2" title={violazioniVisibili.slice(0, 12).map((v) => `${v.forzata ? "(forzato) " : ""}${nomeDi(v.conducenteId)}: ${v.testo}`).join("\n")}>
+              {contaViolazioni.aperte > 0 && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-200 border border-rose-500/40">
+                  <AlertTriangle className="w-3 h-3" /> {contaViolazioni.aperte} da controllare
+                </span>
+              )}
+              {contaViolazioni.forzate > 0 && (
+                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-200 border border-amber-500/30">
+                  <AlertTriangle className="w-3 h-3" /> {contaViolazioni.forzate} forzati
+                </span>
+              )}
+              <span>riposi e sovrapposizioni</span>
+            </span>
+          )}
           {calendarioQ.data && (
             <>
               <span title={calendarioQ.data.calendario.nota ?? undefined}>
@@ -990,19 +1088,33 @@ export default function RosterPage() {
                                       const duty = dutyFor(it.a);
                                       const a = it.a;
                                       const scelto = swapFrom?.id === a.id;
+                                      /* riposo troppo corto o sovrapposizione: rosso da controllare, ambra se forzato */
+                                      const sue = violazioniDi.get(a.id) ?? [];
+                                      const daControllare = sue.some((v) => !v.forzata);
+                                      const avvisoTurno = sue.length
+                                        ? `\n\n${sue.map((v) => `${v.forzata ? "Forzato: " : "⚠ "}${v.testo}`).join("\n")}`
+                                        : "";
                                       return (
                                         <button key={a.id}
                                           /* col puntatore il click passa alla cella (seleziona, croce); col cambio turno sceglie QUESTO turno */
                                           onClick={tool === "cambio" ? (e) => { e.stopPropagation(); swapClick(drv.id, day, a); } : undefined}
                                           onContextMenu={(e) => { e.stopPropagation(); openDutyContext(e, duty); }}
                                           aria-pressed={tool === "cambio" ? scelto : undefined}
-                                          title={tool === "cambio"
+                                          title={(tool === "cambio"
                                             ? (scelto ? "Turno scelto: ora clicca un'altra persona (un altro click lo lascia)" : swapFrom ? `Scambia con ${swapFrom.dutyCode}` : "Scegli questo turno da scambiare")
-                                            : "Tasto destro: dettaglio · per toglierlo la Gomma, per scambiarlo il Cambio turno"}
-                                          className={`w-full rounded text-white font-bold leading-tight ${tool === "cambio" ? "hover:opacity-80" : "cursor-default"} ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"} ${
-                                            scelto ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950" : ""
+                                            : "Tasto destro: dettaglio · per toglierlo la Gomma, per scambiarlo il Cambio turno") + avvisoTurno}
+                                          aria-description={sue.length ? sue.map((v) => v.testo).join(". ") : undefined}
+                                          className={`relative w-full rounded text-white font-bold leading-tight ${tool === "cambio" ? "hover:opacity-80" : "cursor-default"} ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"} ${
+                                            scelto ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950"
+                                              : daControllare ? "ring-2 ring-rose-500 ring-offset-1 ring-offset-slate-950"
+                                                : sue.length ? "ring-1 ring-amber-400/80" : ""
                                           }`}
                                           style={{ backgroundColor: resColor(duty), ...(tool === "cambio" ? { cursor: CURSORE.cambio } : {}) }}>
+                                          {sue.length > 0 && (
+                                            <span aria-hidden className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full flex items-center justify-center shadow ${daControllare ? "bg-rose-500" : "bg-amber-400 text-slate-900"}`}>
+                                              <AlertTriangle className="w-2.5 h-2.5" />
+                                            </span>
+                                          )}
                                           {it.a.dutyCode}
                                           {big && showTimes && duty?.start && <span className="block font-normal opacity-90 text-[9px]">{duty.start}–{duty.end}</span>}
                                           {big && showExtra && duty && (duty.tripsCount || duty.nastro) && (
@@ -1171,6 +1283,44 @@ export default function RosterPage() {
               <button onClick={() => { const { avvisi: _a, ...s } = swapAsk; setSwapAsk(null); swapMut.mutate(s); }}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-500">
                 <ArrowLeftRight className="w-4 h-4" /> Scambia lo stesso
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Riposo troppo corto o turni sovrapposti: si può assegnare lo stesso */}
+      {avviso && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4" onClick={() => setAvviso(null)}>
+          <div ref={avvisoRef} tabIndex={-1} role="alertdialog" aria-modal="true" aria-labelledby="avviso-titolo" aria-describedby="avviso-elenco"
+            className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col text-slate-100 outline-none" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <div id="avviso-titolo" className="text-sm font-semibold flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-amber-400" /> {avviso.titolo}
+              </div>
+              <button onClick={() => setAvviso(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800" aria-label="Chiudi"><X className="h-4 w-4" /></button>
+            </div>
+            <ul id="avviso-elenco" className="px-4 py-3 space-y-2 max-h-[50vh] overflow-auto">
+              {avviso.violazioni.map((v, i) => (
+                <li key={i} className="flex gap-2 text-xs leading-relaxed">
+                  <span className={`shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${
+                    v.regola === "sovrapposizione" ? "bg-rose-500/20 text-rose-200" : "bg-amber-500/15 text-amber-200"
+                  }`}>{v.regola === "sovrapposizione" ? "Sovrapposti" : "Riposo"}</span>
+                  <span className="text-slate-200">
+                    <b className="font-semibold">{nomeDi(v.conducenteId)}: </b>{v.testo}
+                    {v.presunto && <span className="block text-[11px] text-slate-400 mt-0.5">Per togliere il dubbio, indica se l'Unità di Progettazione è urbana o extraurbana in Planning Studio.</span>}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p className="px-4 pb-3 text-[11px] text-slate-400">
+              Puoi procedere lo stesso: il turno resta segnato come forzato, con il tuo nome e l'ora.
+            </p>
+            <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800">
+              <button onClick={() => setAvviso(null)} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
+              <button onClick={() => { const a = avviso; setAvviso(null); a.forza(); }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-500">
+                <AlertTriangle className="w-4 h-4" /> {avviso.conferma}
               </button>
             </div>
           </div>

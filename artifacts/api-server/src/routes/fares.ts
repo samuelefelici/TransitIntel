@@ -54,36 +54,12 @@ import {
 import { eq, and, sql, inArray, desc } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
+import { classifyRoute } from "../lib/reti-linee";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
 
-// ═══════════════════════════════════════════════════════════
-// HELPER: classify a route_short_name into a default network
-// ═══════════════════════════════════════════════════════════
-function classifyRoute(shortName: string): string {
-  if (!shortName) return "extraurbano";
-  const s = shortName.trim().toUpperCase();
-
-  // Urbano Jesi — starts with "JE"
-  if (s.startsWith("JE")) return "urbano_jesi";
-
-  // Urbano Falconara — starts with "Y"
-  if (s.startsWith("Y")) return "urbano_falconara";
-
-  // Urbano Senigallia — BUS* e BUSS* (es. BUS3, BUS5, BUS6, BUS7, BUS8, BUS10, BUS87, BUSS2, BUSS3)
-  if (/^BUSS?\d/.test(s)) return "urbano_senigallia";
-
-  // Urbano Castelfidardo — CIRCA e CIRCB
-  if (s === "CIRCA" || s === "CIRCB") return "urbano_castelfidardo";
-
-  // Urbano Ancona — starts with a digit, OR is C.D., C.S., or similar single-letter+dot combos
-  if (/^\d/.test(s)) return "urbano_ancona";
-  if (/^[A-Z]\.[A-Z]\.?$/.test(s)) return "urbano_ancona"; // C.D., C.S., etc.
-
-  // Everything else → extraurbano
-  return "extraurbano";
-}
+// La rete di default di una linea: lib/reti-linee.ts (la usano anche le UDP).
 
 // ═══════════════════════════════════════════════════════════
 // The 23 extraurban fare bands (DGR Regione Marche)

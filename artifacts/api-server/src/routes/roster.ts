@@ -9,8 +9,8 @@
  *
  *   GET    /api/roster/duty-sources            — DSS disponibili come fonte turni
  *   GET    /api/roster/board?from=&days=&dssId=— griglia: turni, assegnazioni, voci
- *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId}
- *   POST   /api/roster/assignments/scambia     — cambio turno fra due conducenti, stesso giorno
+ *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId, forza?: chiavi viste}
+ *   POST   /api/roster/assignments/scambia     — cambio turno fra due conducenti, stesso giorno (forza?)
  *   DELETE /api/roster/assignments/:id         — rimuovi assegnazione
  *   GET    /api/roster/voci                    — catalogo assenze/presenze
  *   GET    /api/roster/calendario?from=&days=  — la categoria di ogni giorno nel calendario aziendale
@@ -20,17 +20,29 @@
  *
  * Vincoli: un turno è coperto da un solo conducente al giorno (per la stessa
  * fonte DSS); un conducente può fare più turni nello stesso giorno.
+ *
+ * Riposi e sovrapposizioni (lib/roster-normativa.ts): fra due turni dello
+ * stesso conducente servono 8h se urbani, 9h se uno è extraurbano, e due
+ * turni non si sovrappongono. Assegnare o scambiare un turno che le viola
+ * risponde 409 { violazioni, forzabile: true }; con forza: [le chiavi delle
+ * violazioni mostrate] si fa lo stesso e l'assegnazione resta segnata
+ * (forzatura: chi, quando, quali coppie di turni).
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
-import { assicuraAnagrafica, leggiDepositi, righe, type Ex } from "../lib/anagrafica-store";
+import { assicuraAnagrafica, leggiDepositi, registra, righe, type Ex } from "../lib/anagrafica-store";
 import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
 import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeDatiPersonali } from "../lib/auth";
+import { perIlClient, type Violazione } from "../lib/roster-normativa";
+import {
+  forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, violazioniDeiCambi, violazioniDelTabellone,
+  type Lettore,
+} from "../lib/roster-normativa-db";
 import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
 import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
 
@@ -157,6 +169,15 @@ async function depositiDelTabellone(drivers: Conducente[], dalTurni: DepositoCol
   };
 }
 
+/** Riposi troppo corti e sovrapposizioni nei giorni del tabellone; se il controllo fallisce, il tabellone si vede lo stesso. */
+async function violazioniPerTabellone(conducenti: string[], dal: string, al: string) {
+  try { return (await violazioniDelTabellone(conducenti, dal, al)).map(perIlClient); }
+  catch (e: any) {
+    console.error("[roster] controllo riposi:", e?.code ?? e?.message);
+    return [];
+  }
+}
+
 // ── Calendario aziendale sopra i giorni ─────────────────────────────────────
 
 /**
@@ -273,11 +294,15 @@ router.get("/roster/duty-sources", async (req, res): Promise<void> => {
       ORDER BY d.is_operational DESC, d.created_at DESC
       LIMIT 50
     `);
+    /* urbano o extraurbano: decide il riposo minimo fra i turni (8h o 9h) */
+    const servizi = await serviziDeiDss(r.rows.map((x: any) => String(x.id))).catch(() => new Map());
     res.json({ sources: r.rows.map((x: any) => ({
       dssId: x.id, name: x.name, scenarioName: x.scenario_name,
       scenarioDate: x.scenario_date, dutyCount: Number(x.duty_count ?? 0),
       isOperational: !!x.is_operational,
       validityUnitId: x.validity_unit_id ?? null, validityUnitName: x.unit_name ?? null,
+      serviceType: servizi.get(String(x.id))?.servizio ?? null,
+      serviceTypeDa: servizi.get(String(x.id))?.da ?? null,
       createdAt: x.created_at,
     })) });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -308,7 +333,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
     if (dssId === "auto") {
       const userId = (req as any).user?.id ?? null;
       const assignAll = await db.execute<any>(sql`
-        SELECT a.id, a.driver_id, a.day::text AS day, a.duty_code, a.dss_id, a.snapshot
+        SELECT a.id, a.driver_id, a.day::text AS day, a.duty_code, a.dss_id, a.snapshot, a.forzatura
         FROM roster_assignments a
         WHERE a.day >= ${from}::date AND a.day < ${from}::date + (${days} * interval '1 day')
       `);
@@ -362,8 +387,9 @@ router.get("/roster/board", async (req, res): Promise<void> => {
         dutiesByDss, dssByDay,
         assignments: assignAll.rows.map((a: any) => ({
           id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
-          snapshot: a.snapshot ?? null,
+          snapshot: a.snapshot ?? null, forzatura: a.forzatura ?? null,
         })),
+        violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, dayList[dayList.length - 1]!),
         entries: entriesA.rows.map((e: any) => ({
           id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
           source: e.source ?? null,
@@ -386,7 +412,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
     }
 
     const assignQ = await db.execute<any>(sql`
-      SELECT a.id, a.driver_id, a.day::text AS day, a.duty_code, a.dss_id
+      SELECT a.id, a.driver_id, a.day::text AS day, a.duty_code, a.dss_id, a.forzatura
       FROM roster_assignments a
       WHERE a.day >= ${from}::date AND a.day < ${from}::date + (${days} * interval '1 day')
         AND (${dssId}::text = '' OR a.dss_id = ${dssId || "00000000-0000-0000-0000-000000000000"}::uuid)
@@ -424,7 +450,10 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       depositi: dep.depositi,
       assignments: assignQ.rows.map((a: any) => ({
         id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
+        forzatura: a.forzatura ?? null,
       })),
+      /* anche coi turni degli altri DSS, che qui non si vedono: il riposo è del conducente */
+      violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, dayList[dayList.length - 1]!),
       entries: entriesQ.rows.map((e: any) => ({
         id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
         source: e.source ?? null,
@@ -433,47 +462,126 @@ router.get("/roster/board", async (req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
+const UUID_STRETTO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/** Chi ha fatto la richiesta, per il registro. */
+const utente = (req: any) => ({ userId: req.user?.id ?? null, via: req.authVia ?? null });
+
+/**
+ * Blocca i conducenti e li rilegge: prima i conducenti, poi i turni, sempre
+ * in ordine di id. È l'ordine della disattivazione e dell'import, così
+ * nessuno resta ad aspettare l'altro. Il blocco aspetta chi sta cambiando il
+ * conducente (disattivazione, data di uscita) e poi legge il dato già
+ * salvato; ed è esclusivo fra due assegnazioni allo stesso conducente, così
+ * la seconda vede il turno della prima (riposi, sovrapposizioni). NO KEY
+ * UPDATE lascia passare i controlli delle chiavi esterne.
+ */
+async function bloccaConducenti(ex: Ex, ids: string[]): Promise<any[]> {
+  return righe(await ex.execute(sql`
+    SELECT id, cognome, nome, name, is_active,
+           to_char(data_assunzione, 'YYYY-MM-DD') AS dal, to_char(data_fine_servizio, 'YYYY-MM-DD') AS al
+      FROM roster_drivers
+     WHERE id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
+     ORDER BY id
+       FOR NO KEY UPDATE`));
+}
+
+const nomeConducente = (c: any): string =>
+  c ? ([c.cognome, c.nome].filter(Boolean).join(" ") || c.name) : "Il conducente";
+
+/** Riceve un turno solo chi è in servizio quel giorno: attivo, assunto, non ancora uscito. */
+function controllaInServizio(c: any, giorno: string, personale: boolean): void {
+  const chi = nomeConducente(c);
+  const quando = giorno.split("-").reverse().join("/");
+  if (!c || !c.is_active) throw new Rifiuto(409, `${chi} non è più fra i conducenti attivi`);
+  /* la data di uscita è un dato operativo; quella di assunzione no: a chi non
+     vede i dati personali non si dice se non è ancora assunto */
+  if (c.dal && c.dal > giorno) throw new Rifiuto(409, personale ? `${chi} il ${quando} non è ancora assunto` : `${chi} il ${quando} non è in servizio`);
+  if (c.al && c.al < giorno) throw new Rifiuto(409, `${chi} il ${quando} non è più in servizio`);
+}
+
+/**
+ * Forzare vuol dire: ho visto queste violazioni e procedo. Il client manda in
+ * `forza` le chiavi delle violazioni che ha mostrato; si procede solo se
+ * quelle di adesso sono tutte fra queste. Se nel frattempo ne è nata
+ * un'altra (un collega ha assegnato un turno allo stesso conducente), si
+ * chiede di nuovo, con l'elenco aggiornato.
+ */
+function viste(corpo: any): Set<string> {
+  return new Set(Array.isArray(corpo?.forza) ? corpo.forza.filter((x: unknown) => typeof x === "string") : []);
+}
+function controllaForzatura(violazioni: Violazione[], forzate: Set<string>): void {
+  if (!violazioni.length || violazioni.every(v => forzate.has(v.chiave))) return;
+  const sovr = violazioni.filter(v => v.regola === "sovrapposizione").length;
+  const rip = violazioni.length - sovr;
+  const parti = [
+    sovr ? (sovr === 1 ? "due turni si sovrappongono" : `${sovr} sovrapposizioni`) : "",
+    rip ? (rip === 1 ? "un riposo è troppo corto" : `${rip} riposi troppo corti`) : "",
+  ].filter(Boolean);
+  const cambiato = forzate.size > 0;
+  throw new Rifiuto(409, `${cambiato ? "Nel frattempo è cambiato qualcosa" : "Attenzione"}: ${parti.join(" e ")}`,
+    { violazioni: violazioni.map(perIlClient), forzabile: true, ...(cambiato ? { cambiato: true } : {}) });
+}
+
+/** Dentro la transazione si legge in un savepoint: un errore non la rovina, e non si prendono altre connessioni. */
+const inSavepoint = (tx: any): Lettore => f => tx.transaction((sp: any) => f(sp as Ex));
+
+/**
+ * Assegna un turno a un conducente. Un conducente può avere più turni in un
+ * giorno; il turno resta però di un solo conducente (UNIQUE dss_id/day/
+ * duty_code): riassegnarlo lo sposta sul nuovo conducente.
+ *
+ * Lo SNAPSHOT del turno (orari, anche in minuti) resta con l'assegnazione:
+ * lo storico e i controlli sui riposi funzionano anche se il DSS viene
+ * versionato o il turno rinumerato.
+ */
 router.post("/roster/assignments", async (req, res): Promise<void> => {
   try {
-    const { driverId, day, dutyCode, dssId } = req.body ?? {};
-    if (!driverId || !DATE_RE.test(String(day ?? "")) || !dutyCode || !dssId) {
-      res.status(400).json({ error: "driverId, day (YYYY-MM-DD), dutyCode e dssId richiesti" });
+    const corpo = req.body ?? {};
+    const driverId = typeof corpo.driverId === "string" ? corpo.driverId.toLowerCase() : "";
+    const dssId = typeof corpo.dssId === "string" ? corpo.dssId.toLowerCase() : "";
+    const day = String(corpo.day ?? "");
+    const dutyCode = typeof corpo.dutyCode === "string" ? corpo.dutyCode.trim() : "";
+    if (!UUID_STRETTO.test(driverId) || !UUID_STRETTO.test(dssId) || !DATE_RE.test(day) || !dutyCode || dutyCode.length > 100) {
+      res.status(400).json({ error: "driverId e dssId (uuid), day (YYYY-MM-DD) e dutyCode richiesti" });
       return;
     }
-    // SNAPSHOT del turno al momento dell'assegnazione: inizio/fine/ore pagate/
-    // nome, così lo storico resta leggibile anche se il DSS viene versionato
-    // (P5) o il duty rinumerato. Best-effort: mai bloccare l'assegnazione.
-    let snapshot: string | null = null;
-    try {
-      const dQ = await db.execute<any>(sql`
-        SELECT result FROM driver_shift_scenarios WHERE id = ${dssId}::uuid LIMIT 1`);
-      const duty = extractDuties(dQ.rows[0]?.result).find((x: any) => String(x.code) === String(dutyCode));
-      if (duty) {
-        snapshot = JSON.stringify({
-          start: (duty as any).start ?? null, end: (duty as any).end ?? null,
-          paidHours: (duty as any).paidHours ?? null, name: (duty as any).name ?? null,
-        });
+    const forzate = viste(corpo);
+    const personale = vedeDatiPersonali(req);
+    const chi = utente(req);
+    /* fuori dalla transazione, con db: orari e tipi dei turni intorno al giorno e del turno nuovo */
+    const preparato = await preparaControllo([driverId], [day], [{ dssId, codice: dutyCode }]);
+    const snapshot = snapshotDa(preparato.orari.get(`${dssId}|${dutyCode}`));
+    const esito = await db.transaction(async (tx) => {
+      const ex = tx as unknown as Ex;
+      const [conducente] = await bloccaConducenti(ex, [driverId]);
+      controllaInServizio(conducente, day, personale);
+      const prima = righe(await ex.execute(sql`
+        SELECT id::text, driver_id::text, snapshot FROM roster_assignments
+         WHERE dss_id = ${dssId}::uuid AND day = ${day}::date AND duty_code = ${dutyCode}
+           FOR UPDATE`))[0];
+      if (prima?.driver_id === driverId) return { id: prima.id as string, violazioni: [] as Violazione[] };
+      const violazioni = await violazioniDeiCambi(ex, [
+        { id: prima?.id ?? null, driverId, day, dssId, dutyCode, snapshot: prima?.snapshot ?? snapshot },
+      ], preparato, inSavepoint(tx));
+      controllaForzatura(violazioni, forzate);
+      const forzatura = violazioni.length ? forzaturaDa(chi.userId, violazioni) : null;
+      const r = righe(await ex.execute(sql`
+        INSERT INTO roster_assignments (driver_id, day, dss_id, duty_code, snapshot, forzatura)
+        VALUES (${driverId}::uuid, ${day}::date, ${dssId}::uuid, ${dutyCode},
+                ${snapshot ? JSON.stringify(snapshot) : null}::jsonb, ${forzatura ? JSON.stringify(forzatura) : null}::jsonb)
+        ON CONFLICT (dss_id, day, duty_code)
+        DO UPDATE SET driver_id = EXCLUDED.driver_id,
+                      snapshot = COALESCE(roster_assignments.snapshot, EXCLUDED.snapshot),
+                      forzatura = EXCLUDED.forzatura
+        RETURNING id::text`));
+      if (forzatura) {
+        await registra(ex, { ...chi, driverId, azione: "turno-forzato", campi: forzatura.regole, dettaglio: { dutyCode, day, dssId, testi: forzatura.testi } });
       }
-    } catch { /* snapshot facoltativo */ }
-    // Un conducente può avere più turni in un giorno. Il turno resta però
-    // assegnabile a un solo conducente (UNIQUE dss_id/day/duty_code): riassegnarlo
-    // lo sposta sul nuovo conducente.
-    const r = await db.execute<any>(sql`
-      INSERT INTO roster_assignments (driver_id, day, dss_id, duty_code, snapshot)
-      VALUES (${driverId}::uuid, ${day}::date, ${dssId}::uuid, ${dutyCode}, ${snapshot}::jsonb)
-      ON CONFLICT (dss_id, day, duty_code)
-      DO UPDATE SET driver_id = EXCLUDED.driver_id,
-                    snapshot = COALESCE(roster_assignments.snapshot, EXCLUDED.snapshot)
-      RETURNING id
-    `);
-    res.status(201).json({ ok: true, id: r.rows[0]?.id });
-  } catch (e: any) {
-    if (String(e.message).includes("roster_assignments_dss_id_day_duty_code_key")) {
-      res.status(409).json({ error: "Turno già assegnato a un altro operatore in quel giorno" });
-      return;
-    }
-    res.status(500).json({ error: e.message });
-  }
+      return { id: r[0]?.id as string, violazioni };
+    });
+    res.status(201).json({ ok: true, id: esito.id, forzato: esito.violazioni.length > 0 });
+  } catch (e: any) { rispondiErrore(res, e, "assegnazione turno"); }
 });
 
 /**
@@ -489,6 +597,9 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
  * è in servizio quel giorno (attivo, assunto, non ancora uscito); a chi non
  * vede i dati personali non si dice se non è ancora assunto o se è uscito,
  * perché la data di assunzione per lui è mascherata.
+ *
+ * Se dopo lo scambio uno dei due resta con un riposo troppo corto o con due
+ * turni sovrapposti, 409 forzabile; con forza: [chiavi viste] si scambia lo stesso.
  */
 router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
   try {
@@ -507,24 +618,19 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
     if (conA && a === da) { res.status(400).json({ error: "Lo scambio è fra due turni diversi" }); return; }
 
     const personale = vedeDatiPersonali(req);
+    const forzate = viste(corpo);
+    const chi = utente(req);
+    /* fuori dalla transazione, con db: i due turni e quelli dei due conducenti intorno al giorno */
+    const dueTurni = righe(await db.execute(sql`
+      SELECT day::text AS day FROM roster_assignments
+       WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)`));
+    /* i due turni stanno già fra le assegnazioni dei due conducenti: si leggono dal DSS solo se lo snapshot non ha i minuti */
+    const preparato = await preparaControllo([daConducente, aConducente], dueTurni.map(t => String(t.day).slice(0, 10)), []);
     const esito = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
-      /* Prima i conducenti, poi i turni, sempre in ordine di id: è l'ordine della
-         disattivazione e dell'import, così nessuno resta ad aspettare l'altro.
-         Il blocco aspetta chi sta cambiando il conducente (disattivazione, data
-         di uscita) e poi legge il dato già salvato, non quello di prima; ed è
-         esclusivo fra due cambi turno sullo stesso conducente, così il secondo
-         vede il turno passato dal primo. NO KEY UPDATE lascia passare i
-         controlli delle chiavi esterne (chi inserisce turni e voci). */
-      const conducenti = righe(await ex.execute(sql`
-        SELECT id, cognome, nome, name, is_active,
-               to_char(data_assunzione, 'YYYY-MM-DD') AS dal, to_char(data_fine_servizio, 'YYYY-MM-DD') AS al
-          FROM roster_drivers
-         WHERE id IN (${aConducente}::uuid, ${daConducente}::uuid)
-         ORDER BY id
-           FOR NO KEY UPDATE`));
+      const conducenti = await bloccaConducenti(ex, [aConducente, daConducente]);
       const r = righe(await ex.execute(sql`
-        SELECT id, driver_id, day::text AS day, duty_code
+        SELECT id, driver_id, day::text AS day, dss_id::text, duty_code, snapshot
           FROM roster_assignments
          WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)
          ORDER BY id
@@ -540,10 +646,7 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
         throw new Rifiuto(400, "Si scambiano solo turni dello stesso giorno");
       }
       const quando = giorno.split("-").reverse().join("/");
-      const nomeDi = (id: string) => {
-        const c = conducenti.find(x => x.id === id);
-        return c ? ([c.cognome, c.nome].filter(Boolean).join(" ") || c.name) : "Il conducente";
-      };
+      const nomeDi = (id: string) => nomeConducente(conducenti.find(x => x.id === id));
       /* senza turno in cambio, chi riceve quel giorno non aveva turni, fra quelli
          che l'utente vedeva: se intanto ne ha ricevuto uno, voleva uno scambio e
          non un turno in più. Un turno di un altro DSS, che il tabellone per DSS
@@ -560,17 +663,32 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
       }
       /* chi riceve un turno dev'essere in servizio quel giorno */
       for (const id of ricevuto ? [aConducente, daConducente] : [aConducente]) {
-        const c = conducenti.find(x => x.id === id);
-        const chi = nomeDi(id);
-        if (!c || !c.is_active) throw new Rifiuto(409, `${chi} non è più fra i conducenti attivi`);
-        const nonAncora = !!c.dal && c.dal > giorno, uscito = !!c.al && c.al < giorno;
-        /* la data di uscita è un dato operativo; quella di assunzione no */
-        if (nonAncora) throw new Rifiuto(409, personale ? `${chi} il ${quando} non è ancora assunto` : `${chi} il ${quando} non è in servizio`);
-        if (uscito) throw new Rifiuto(409, `${chi} il ${quando} non è più in servizio`);
+        controllaInServizio(conducenti.find(x => x.id === id), giorno, personale);
       }
-      await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${aConducente}::uuid WHERE id = ${da}::uuid`);
-      if (ricevuto) await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${daConducente}::uuid WHERE id = ${a}::uuid`);
+      /* riposi e sovrapposizioni dopo lo scambio, per tutti e due */
+      const cambi = [
+        { id: da as string, driverId: aConducente as string, day: giorno, dssId: ceduto.dss_id, dutyCode: ceduto.duty_code, snapshot: ceduto.snapshot },
+        ...(ricevuto ? [{ id: a as string, driverId: daConducente as string, day: giorno, dssId: ricevuto.dss_id, dutyCode: ricevuto.duty_code, snapshot: ricevuto.snapshot }] : []),
+      ];
+      const violazioni = await violazioniDeiCambi(ex, cambi, preparato, inSavepoint(tx));
+      controllaForzatura(violazioni, forzate);
+      /* il segno della forzatura va sul turno spostato che viola; gli altri lo perdono, cambiato il conducente */
+      const forzaturaDi = (dssId: string, codice: string) => {
+        const sue = violazioni.filter(v => v.turni.some(t => t.dssId === dssId && t.codice === codice && t.giorno === giorno));
+        return sue.length ? forzaturaDa(chi.userId, sue) : null;
+      };
+      const fCeduto = forzaturaDi(ceduto.dss_id, ceduto.duty_code);
+      await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${aConducente}::uuid,
+        forzatura = ${fCeduto ? JSON.stringify(fCeduto) : null}::jsonb WHERE id = ${da}::uuid`);
+      if (fCeduto) await registra(ex, { ...chi, driverId: aConducente, azione: "turno-forzato", campi: fCeduto.regole, dettaglio: { dutyCode: ceduto.duty_code, day: giorno, dssId: ceduto.dss_id, testi: fCeduto.testi, scambio: true } });
+      if (ricevuto) {
+        const fRicevuto = forzaturaDi(ricevuto.dss_id, ricevuto.duty_code);
+        await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${daConducente}::uuid,
+          forzatura = ${fRicevuto ? JSON.stringify(fRicevuto) : null}::jsonb WHERE id = ${a}::uuid`);
+        if (fRicevuto) await registra(ex, { ...chi, driverId: daConducente, azione: "turno-forzato", campi: fRicevuto.regole, dettaglio: { dutyCode: ricevuto.duty_code, day: giorno, dssId: ricevuto.dss_id, testi: fRicevuto.testi, scambio: true } });
+      }
       return {
+        forzato: violazioni.length > 0,
         giorno,
         ceduto: { id: da, dutyCode: ceduto.duty_code, driverId: aConducente },
         ricevuto: ricevuto ? { id: a, dutyCode: ricevuto.duty_code, driverId: daConducente } : null,

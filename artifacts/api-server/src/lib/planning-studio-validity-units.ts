@@ -23,7 +23,9 @@
  * Endpoint sotto /api/planning-studio/projects/:id/validity-units:
  *   POST /compute   { from, to } → preview gruppi (no save)
  *   POST /save      { from, to, units: [{validityId, name, description?}] } → upsert
- *   GET  /          → lista unità salvate del progetto
+ *   GET  /          → lista unità salvate del progetto (con urbana/extraurbana:
+ *                     scelta e proposta dalle linee)
+ *   PATCH /:unitId  { name?, description?, tripIds?, serviceType? }
  *   DELETE /:unitId
  */
 import type { Request, Response } from "express";
@@ -32,6 +34,8 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { italianHolidays } from "./validity-matrix-shared";
+import { eServizio, serviziDelleUdp } from "./udp-servizio";
+import type { Ex } from "./anagrafica-store";
 
 const router: IRouter = Router();
 
@@ -80,6 +84,17 @@ async function ensureTables(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_ps_validity_units_project
         ON ps_validity_units (project_id)
     `);
+    /* Urbana o extraurbana: decide il riposo minimo fra due turni nel Roster
+       (8h o 9h). NULL = nessuno l'ha scelto, vale la proposta dalle linee
+       (lib/udp-servizio.ts). */
+    await db.execute(sql`ALTER TABLE ps_validity_units ADD COLUMN IF NOT EXISTS service_type text`);
+    await db.execute(sql`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ps_validity_units_service_type_check') THEN
+          ALTER TABLE ps_validity_units ADD CONSTRAINT ps_validity_units_service_type_check
+            CHECK (service_type IS NULL OR service_type IN ('urbano', 'extraurbano'));
+        END IF;
+      END $$`);
     bootstrapped = true;
     console.log("[planning-studio.validity-units] tables ready");
   } catch (e: any) {
@@ -625,9 +640,16 @@ router.get("/planning-studio/projects/:id/validity-units", async (req, res): Pro
        WHERE u.project_id = ${proj.id}::uuid
        ORDER BY u.day_count DESC, u.created_at DESC
     `);
-    const out = ((r as any).rows ?? []).map((row: any) => ({
+    const rows = (r as any).rows ?? [];
+    /* urbana o extraurbana: quella scelta e quella che dicono le linee */
+    const servizi = await serviziDelleUdp(db as unknown as Ex, rows.map((row: any) => String(row.id)));
+    const out = rows.map((row: any) => ({
       id: row.id,
       validityId: row.validity_id,
+      serviceType: servizi.get(String(row.id))?.scelto ?? null,
+      serviceTypeProposto: servizi.get(String(row.id))?.proposto ?? null,
+      corseUrbane: servizi.get(String(row.id))?.corseUrbane ?? 0,
+      corseExtraurbane: servizi.get(String(row.id))?.corseExtraurbane ?? 0,
       name: row.name,
       description: row.description,
       categoryId: row.category_id,
@@ -667,7 +689,7 @@ router.delete("/planning-studio/projects/:id/validity-units/:unitId", async (req
   }
 });
 
-/* ────────── PATCH /:unitId (rename) ────────── */
+/* ────────── PATCH /:unitId (nome, descrizione, corse, urbana/extraurbana) ────────── */
 router.patch("/planning-studio/projects/:id/validity-units/:unitId", async (req, res): Promise<void> => {
   await ensureTables();
   const userId = getUserId(req);
@@ -676,6 +698,12 @@ router.patch("/planning-studio/projects/:id/validity-units/:unitId", async (req,
   if (!proj) { res.status(404).json({ error: "not_found_or_no_write" }); return; }
   const { name, description, tripIds } = req.body ?? {};
   const sets: any[] = [];
+  /* urbana / extraurbana; null torna alla proposta dalle linee */
+  if (req.body && "serviceType" in req.body) {
+    const st = req.body.serviceType;
+    if (st !== null && !eServizio(st)) { res.status(400).json({ error: "serviceType: urbano, extraurbano o null" }); return; }
+    sets.push(sql`service_type = ${st}`);
+  }
   if (typeof name === "string" && name.trim()) sets.push(sql`name = ${name.trim()}`);
   if (typeof description === "string") sets.push(sql`description = ${description}`);
   // Modifica della composizione corse dell'UDP (rimozione/aggiunta corse).
@@ -691,7 +719,7 @@ router.patch("/planning-studio/projects/:id/validity-units/:unitId", async (req,
     const r = await db.execute(sql`
       UPDATE ps_validity_units SET ${setClause}
        WHERE id = ${req.params.unitId}::uuid AND project_id = ${proj.id}::uuid
-       RETURNING id, name, description, updated_at
+       RETURNING id, name, description, service_type AS "serviceType", updated_at
     `);
     const row = (r as any).rows?.[0];
     if (!row) { res.status(404).json({ error: "not_found" }); return; }

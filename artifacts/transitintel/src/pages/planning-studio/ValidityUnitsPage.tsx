@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import {
   listPsValidityUnits, deletePsValidityUnit, renamePsValidityUnit, getPsValidityUnitDetail,
-  type PsValidityUnit,
+  type PsValidityUnit, type PsServizioUdp,
 } from "@/lib/planning-studio-validity-units-api";
 import { getPsProject } from "@/lib/planning-studio-api";
 import ValiditySectionNav from "./ValiditySectionNav";
@@ -141,6 +141,52 @@ export default function PlanningStudioValidityUnitsPage() {
   );
 }
 
+const nomeServizio = (v: PsServizioUdp) => (v === "urbano" ? "urbana" : "extraurbana");
+
+/**
+ * Urbana o extraurbana. Nel Roster decide il riposo minimo fra due turni di
+ * un conducente: 8h urbano, 9h extraurbano. Finché non si sceglie vale la
+ * proposta dalle linee delle corse; senza né l'una né l'altra vale il «Tipo
+ * di servizio» scelto in Fucina quando si sono calcolati i turni guida, che
+ * parte da «urbano»: meglio sceglierlo qui.
+ */
+function ServizioUdp({ unit, projectId }: { unit: PsValidityUnit; projectId: string }) {
+  const qc = useQueryClient();
+  const mut = useMutation({
+    mutationFn: (v: PsServizioUdp | null) => renamePsValidityUnit(projectId, unit.id, { serviceType: v }),
+    onSuccess: (_r, v) => {
+      toast.success(v ? `Unità ${nomeServizio(v)}: riposo minimo ${v === "urbano" ? "8h" : "9h"} nel Roster` : "Torna a valere la proposta dalle linee");
+      qc.invalidateQueries({ queryKey: ["ps", projectId, "validity-units"] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const id = `servizio-${unit.id}`;
+  const proposta = unit.serviceTypeProposto;
+  return (
+    <div className="flex flex-col gap-0.5 mt-1 w-44">
+      <label htmlFor={id} className="text-[10px] uppercase tracking-wide text-slate-500">Servizio</label>
+      <select
+        id={id}
+        value={unit.serviceType ?? ""}
+        disabled={mut.isPending}
+        onChange={(e) => mut.mutate((e.target.value || null) as PsServizioUdp | null)}
+        className="w-44 bg-slate-950 border border-slate-700 rounded px-1.5 py-1 text-xs text-slate-100 focus:border-indigo-500 focus:outline-none disabled:opacity-60"
+      >
+        <option value="">{proposta ? `Dalle linee: ${nomeServizio(proposta)}` : "Non determinato"}</option>
+        <option value="urbano">Urbana · riposo 8h</option>
+        <option value="extraurbano">Extraurbana · riposo 9h</option>
+      </select>
+      <span className="text-[10px] text-slate-500 leading-snug">
+        {unit.serviceType
+          ? "scelta a mano"
+          : proposta
+            ? `${unit.corseUrbane} corse su linee urbane, ${unit.corseExtraurbane} extraurbane`
+            : "da scegliere: senza, vale il tipo dato in Fucina ai turni guida"}
+      </span>
+    </div>
+  );
+}
+
 interface UnitCardProps {
   unit: PsValidityUnit;
   projectId: string;
@@ -225,6 +271,7 @@ function UnitCard({ unit, projectId, onDelete }: UnitCardProps) {
               (senza day-type)
             </span>
           )}
+          <ServizioUdp unit={unit} projectId={projectId} />
         </div>
 
         {/* Nome + descrizione */}
