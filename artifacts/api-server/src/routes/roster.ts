@@ -9,7 +9,7 @@
  *
  *   GET    /api/roster/duty-sources            — DSS disponibili come fonte turni
  *   GET    /api/roster/board?from=&days=&dssId=— griglia: turni, assegnazioni, voci
- *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId, forza?}
+ *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId, forza?: chiavi viste}
  *   POST   /api/roster/assignments/scambia     — cambio turno fra due conducenti, stesso giorno (forza?)
  *   DELETE /api/roster/assignments/:id         — rimuovi assegnazione
  *   GET    /api/roster/voci                    — catalogo assenze/presenze
@@ -24,8 +24,9 @@
  * Riposi e sovrapposizioni (lib/roster-normativa.ts): fra due turni dello
  * stesso conducente servono 8h se urbani, 9h se uno è extraurbano, e due
  * turni non si sovrappongono. Assegnare o scambiare un turno che le viola
- * risponde 409 { violazioni, forzabile: true }; con forza: true si fa lo
- * stesso e l'assegnazione resta segnata (forzatura: chi, quando, cosa).
+ * risponde 409 { violazioni, forzabile: true }; con forza: [le chiavi delle
+ * violazioni mostrate] si fa lo stesso e l'assegnazione resta segnata
+ * (forzatura: chi, quando, quali coppie di turni).
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter } from "express";
@@ -39,7 +40,8 @@ import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeDatiPersonali } from "../lib/auth";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
-  forzaturaDa, serviziDeiDss, snapshotDelTurno, violazioniDeiCambi, violazioniDelTabellone,
+  forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, violazioniDeiCambi, violazioniDelTabellone,
+  type Lettore,
 } from "../lib/roster-normativa-db";
 import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
 import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
@@ -498,16 +500,31 @@ function controllaInServizio(c: any, giorno: string, personale: boolean): void {
   if (c.al && c.al < giorno) throw new Rifiuto(409, `${chi} il ${quando} non è più in servizio`);
 }
 
-/** Il 409 forzabile: il titolo dice quante e quali regole, le violazioni vanno al client. */
-function rifiutoForzabile(violazioni: Violazione[]): Rifiuto {
+/**
+ * Forzare vuol dire: ho visto queste violazioni e procedo. Il client manda in
+ * `forza` le chiavi delle violazioni che ha mostrato; si procede solo se
+ * quelle di adesso sono tutte fra queste. Se nel frattempo ne è nata
+ * un'altra (un collega ha assegnato un turno allo stesso conducente), si
+ * chiede di nuovo, con l'elenco aggiornato.
+ */
+function viste(corpo: any): Set<string> {
+  return new Set(Array.isArray(corpo?.forza) ? corpo.forza.filter((x: unknown) => typeof x === "string") : []);
+}
+function controllaForzatura(violazioni: Violazione[], forzate: Set<string>): void {
+  if (!violazioni.length || violazioni.every(v => forzate.has(v.chiave))) return;
   const sovr = violazioni.filter(v => v.regola === "sovrapposizione").length;
   const rip = violazioni.length - sovr;
   const parti = [
     sovr ? (sovr === 1 ? "due turni si sovrappongono" : `${sovr} sovrapposizioni`) : "",
     rip ? (rip === 1 ? "un riposo è troppo corto" : `${rip} riposi troppo corti`) : "",
   ].filter(Boolean);
-  return new Rifiuto(409, `Attenzione: ${parti.join(" e ")}`, { violazioni: violazioni.map(perIlClient), forzabile: true });
+  const cambiato = forzate.size > 0;
+  throw new Rifiuto(409, `${cambiato ? "Nel frattempo è cambiato qualcosa" : "Attenzione"}: ${parti.join(" e ")}`,
+    { violazioni: violazioni.map(perIlClient), forzabile: true, ...(cambiato ? { cambiato: true } : {}) });
 }
+
+/** Dentro la transazione si legge in un savepoint: un errore non la rovina, e non si prendono altre connessioni. */
+const inSavepoint = (tx: any): Lettore => f => tx.transaction((sp: any) => f(sp as Ex));
 
 /**
  * Assegna un turno a un conducente. Un conducente può avere più turni in un
@@ -529,11 +546,12 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       res.status(400).json({ error: "driverId e dssId (uuid), day (YYYY-MM-DD) e dutyCode richiesti" });
       return;
     }
-    const forza = corpo.forza === true;
+    const forzate = viste(corpo);
     const personale = vedeDatiPersonali(req);
     const chi = utente(req);
-    /* fuori dalla transazione: gli orari del turno dal DSS, una lettura senza blocchi */
-    const snapshot = await snapshotDelTurno(dssId, dutyCode).catch(() => null);
+    /* fuori dalla transazione, con db: orari e tipi dei turni intorno al giorno e del turno nuovo */
+    const preparato = await preparaControllo([driverId], [day], [{ dssId, codice: dutyCode }]);
+    const snapshot = snapshotDa(preparato.orari.get(`${dssId}|${dutyCode}`));
     const esito = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
       const [conducente] = await bloccaConducenti(ex, [driverId]);
@@ -545,8 +563,8 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       if (prima?.driver_id === driverId) return { id: prima.id as string, violazioni: [] as Violazione[] };
       const violazioni = await violazioniDeiCambi(ex, [
         { id: prima?.id ?? null, driverId, day, dssId, dutyCode, snapshot: prima?.snapshot ?? snapshot },
-      ]);
-      if (violazioni.length && !forza) throw rifiutoForzabile(violazioni);
+      ], preparato, inSavepoint(tx));
+      controllaForzatura(violazioni, forzate);
       const forzatura = violazioni.length ? forzaturaDa(chi.userId, violazioni) : null;
       const r = righe(await ex.execute(sql`
         INSERT INTO roster_assignments (driver_id, day, dss_id, duty_code, snapshot, forzatura)
@@ -581,7 +599,7 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
  * perché la data di assunzione per lui è mascherata.
  *
  * Se dopo lo scambio uno dei due resta con un riposo troppo corto o con due
- * turni sovrapposti, 409 forzabile; con forza: true si scambia lo stesso.
+ * turni sovrapposti, 409 forzabile; con forza: [chiavi viste] si scambia lo stesso.
  */
 router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
   try {
@@ -600,8 +618,14 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
     if (conA && a === da) { res.status(400).json({ error: "Lo scambio è fra due turni diversi" }); return; }
 
     const personale = vedeDatiPersonali(req);
-    const forza = corpo.forza === true;
+    const forzate = viste(corpo);
     const chi = utente(req);
+    /* fuori dalla transazione, con db: i due turni e quelli dei due conducenti intorno al giorno */
+    const dueTurni = righe(await db.execute(sql`
+      SELECT day::text AS day, dss_id::text, duty_code FROM roster_assignments
+       WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)`));
+    const preparato = await preparaControllo([daConducente, aConducente], dueTurni.map(t => String(t.day).slice(0, 10)),
+      dueTurni.map(t => ({ dssId: t.dss_id, codice: t.duty_code })));
     const esito = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
       const conducenti = await bloccaConducenti(ex, [aConducente, daConducente]);
@@ -646,8 +670,8 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
         { id: da as string, driverId: aConducente as string, day: giorno, dssId: ceduto.dss_id, dutyCode: ceduto.duty_code, snapshot: ceduto.snapshot },
         ...(ricevuto ? [{ id: a as string, driverId: daConducente as string, day: giorno, dssId: ricevuto.dss_id, dutyCode: ricevuto.duty_code, snapshot: ricevuto.snapshot }] : []),
       ];
-      const violazioni = await violazioniDeiCambi(ex, cambi);
-      if (violazioni.length && !forza) throw rifiutoForzabile(violazioni);
+      const violazioni = await violazioniDeiCambi(ex, cambi, preparato, inSavepoint(tx));
+      controllaForzatura(violazioni, forzate);
       /* il segno della forzatura va sul turno spostato che viola; gli altri lo perdono, cambiato il conducente */
       const forzaturaDi = (dssId: string, codice: string) => {
         const sue = violazioni.filter(v => v.turni.some(t => t.dssId === dssId && t.codice === codice && t.giorno === giorno));

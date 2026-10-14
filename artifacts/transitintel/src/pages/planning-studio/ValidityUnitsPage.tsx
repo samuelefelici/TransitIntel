@@ -146,8 +146,9 @@ const nomeServizio = (v: PsServizioUdp) => (v === "urbano" ? "urbana" : "extraur
 /**
  * Urbana o extraurbana. Nel Roster decide il riposo minimo fra due turni di
  * un conducente: 8h urbano, 9h extraurbano. Finché non si sceglie vale la
- * proposta dalle linee delle corse; senza né l'una né l'altra il Roster
- * presume 9h.
+ * proposta dalle linee delle corse; senza né l'una né l'altra vale il «Tipo
+ * di servizio» scelto in Fucina quando si sono calcolati i turni guida, che
+ * parte da «urbano»: meglio sceglierlo qui.
  */
 function ServizioUdp({ unit, projectId }: { unit: PsValidityUnit; projectId: string }) {
   const qc = useQueryClient();
@@ -180,7 +181,7 @@ function ServizioUdp({ unit, projectId }: { unit: PsValidityUnit; projectId: str
           ? "scelta a mano"
           : proposta
             ? `${unit.corseUrbane} corse su linee urbane, ${unit.corseExtraurbane} extraurbane`
-            : "nel Roster vale 9h"}
+            : "da scegliere: senza, vale il tipo dato in Fucina ai turni guida"}
       </span>
     </div>
   );

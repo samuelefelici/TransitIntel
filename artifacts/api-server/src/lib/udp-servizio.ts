@@ -42,22 +42,28 @@ export const servizioEffettivo = (u: Pick<ServizioUdp, "scelto" | "proposto">): 
  * Tipo scelto e proposta di più UDP in una query. Le corse si contano per
  * linea (ps_routes.short_name) e si classificano qui, con la stessa regola
  * delle reti tariffarie. `to_jsonb(u)` legge `service_type` anche dove la
- * colonna non c'è ancora (il modulo UDP la aggiunge al primo uso).
+ * colonna non c'è ancora (il modulo UDP la aggiunge al primo uso), e si
+ * calcola una volta per UDP, prima di aprire l'elenco delle corse: dopo,
+ * costerebbe una volta per corsa, con tutte le corse dentro.
  */
 export async function serviziDelleUdp(ex: Ex, udpIds: string[]): Promise<Map<string, ServizioUdp>> {
   const ids = [...new Set(udpIds.filter(id => /^[0-9a-f-]{36}$/i.test(id)))];
   const out = new Map<string, ServizioUdp>();
   if (!ids.length) return out;
   const r = await ex.execute(sql`
-    SELECT u.id::text AS udp_id, u.name, to_jsonb(u)->>'service_type' AS scelto,
-           r.short_name, count(t.id)::int AS corse
-      FROM ps_validity_units u
-      LEFT JOIN LATERAL jsonb_array_elements_text(
-             CASE WHEN jsonb_typeof(u.trip_ids) = 'array' THEN u.trip_ids ELSE '[]'::jsonb END) t(id) ON true
-      LEFT JOIN ps_trips pt ON pt.id::text = t.id
+    WITH udp AS MATERIALIZED (
+      SELECT u.id, u.name, to_jsonb(u)->>'service_type' AS scelto,
+             CASE WHEN jsonb_typeof(u.trip_ids) = 'array' THEN u.trip_ids ELSE '[]'::jsonb END AS corse
+        FROM ps_validity_units u
+       WHERE u.id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
+    )
+    SELECT udp.id::text AS udp_id, udp.name, udp.scelto, r.short_name, count(pt.id)::int AS corse
+      FROM udp
+      LEFT JOIN LATERAL jsonb_array_elements_text(udp.corse) t(id) ON true
+      LEFT JOIN ps_trips pt
+             ON pt.id = CASE WHEN t.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN t.id::uuid END
       LEFT JOIN ps_routes r ON r.id = pt.route_id
-     WHERE u.id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
-     GROUP BY u.id, u.name, scelto, r.short_name`);
+     GROUP BY udp.id, udp.name, udp.scelto, r.short_name`);
   for (const x of r.rows ?? []) {
     const u = out.get(x.udp_id) ?? {
       udpId: x.udp_id, nome: x.name ?? null, scelto: eServizio(x.scelto) ? x.scelto : null,

@@ -72,6 +72,9 @@ interface ViolazioneRoster {
   /** 9h perché di un turno non si sa se è urbano o extraurbano */
   presunto: boolean;
   testo: string;
+  /** chi forza manda le chiavi delle violazioni che ha visto */
+  chiave: string;
+  /** chi ha assegnato uno dei due turni ha visto e forzato proprio questa */
   forzata: boolean;
   turni: Array<{ assegnazioneId: string | null; giorno: string; codice: string; dssId: string; servizio: Servizio | null; servizioDa: string | null }>;
 }
@@ -120,9 +123,9 @@ interface ColoreDeposito { codice: string; nome: string; colore: string; da: "tu
 /** Lo strumento attivo sul tabellone. */
 type Strumento = "puntatore" | "gomma" | "cambio";
 /** Un cambio turno: «da» passa a aConducente, «a» (se c'è) torna al conducente di «da». */
-interface Scambio { da: RosterAssignment; aConducente: string; a: RosterAssignment | null; forza?: boolean }
-/** Un'assegnazione chiesta al server; forza = nonostante riposi e sovrapposizioni. */
-interface Assegnazione { driverId: string; day: string; dutyCode: string; dssId: string; forza?: boolean }
+interface Scambio { da: RosterAssignment; aConducente: string; a: RosterAssignment | null; forza?: string[] }
+/** Un'assegnazione chiesta al server; forza = le chiavi delle violazioni viste, si procede nonostante quelle. */
+interface Assegnazione { driverId: string; day: string; dutyCode: string; dssId: string; forza?: string[] }
 /** Il 409 forzabile del server: violazioni da mostrare e l'azione da rifare con forza. */
 interface AvvisoNormativa { titolo: string; violazioni: ViolazioneRoster[]; conferma: string; forza: () => void }
 const eForzabile = (e: unknown): e is Error & { status: number; body: { forzabile: true; violazioni: ViolazioneRoster[] } } =>
@@ -339,7 +342,8 @@ export default function RosterPage() {
     },
     onError: (e: Error, input) => {
       if (eForzabile(e)) {
-        setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Assegna comunque", forza: () => assignMut.mutate({ ...input, forza: true }) });
+        const viste = e.body.violazioni.map((v) => v.chiave);
+        setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Assegna comunque", forza: () => assignMut.mutate({ ...input, forza: viste }) });
         return;
       }
       toast.error("Assegnazione fallita", { description: e.message });
@@ -473,6 +477,8 @@ export default function RosterPage() {
   // ── Taglia/incolla via tastiera: Q = taglia turno selezionato, W = incolla sul conducente ──
   /* il conducente si passa quando arriva da un click: lo stato selDriver si aggiorna solo al giro dopo */
   function doPaste(driverId: string | null = selDriver) {
+    /* un'assegnazione per volta: il secondo click di un doppio click non incolla altrove */
+    if (assignMut.isPending) return;
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!driverId) { toast.info("Seleziona un conducente a sinistra"); return; }
     // In AUTO l'assegnazione va sul DSS competente per la data del turno.
@@ -519,14 +525,15 @@ export default function RosterPage() {
         da: s.da.id, daConducente: s.da.driverId, a: s.a?.id ?? null, aConducente: s.aConducente,
         /* col tabellone di un solo DSS, i turni degli altri DSS non si vedono e non contano */
         dssVisto: isAuto || !dssId ? null : dssId,
-        ...(s.forza ? { forza: true } : {}),
+        ...(s.forza ? { forza: s.forza } : {}),
       }),
-    }),
-    onSuccess: (_r, s) => {
+    }) as Promise<{ forzato?: boolean }>,
+    onSuccess: (r, s) => {
       const fatto = s.a
         ? `Cambio turno di ${quandoDi(s.da.day)}: ${s.da.dutyCode} a ${nomeDi(s.aConducente)}, ${s.a.dutyCode} a ${nomeDi(s.da.driverId)}`
         : `${s.da.dutyCode} di ${quandoDi(s.da.day)} passa a ${nomeDi(s.aConducente)}`;
-      if (s.forza) toast.warning(`${fatto}, nonostante l'avviso: resta segnato sul turno`);
+      /* forzato lo dice il server: se intanto la violazione è sparita, non c'è niente da segnare */
+      if (r?.forzato) toast.warning(`${fatto}, nonostante l'avviso: resta segnato sul turno`);
       else toast.success(fatto);
       setSwapFrom(null);
       invalidateBoard();
@@ -534,7 +541,8 @@ export default function RosterPage() {
     onError: (e: Error, s) => {
       /* riposi o sovrapposizioni: il turno scelto resta, si decide nella finestra */
       if (eForzabile(e)) {
-        setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Scambia comunque", forza: () => swapMut.mutate({ ...s, forza: true }) });
+        const viste = e.body.violazioni.map((v) => v.chiave);
+        setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Scambia comunque", forza: () => swapMut.mutate({ ...s, forza: viste }) });
         return;
       }
       toast.error("Cambio turno non riuscito", { description: e.message });
@@ -674,10 +682,16 @@ export default function RosterPage() {
     }
     return m;
   }, [board?.violazioni]);
-  const contaViolazioni = useMemo(() => {
-    const tutte = board?.violazioni ?? [];
-    return { aperte: tutte.filter((v) => !v.forzata).length, forzate: tutte.filter((v) => v.forzata).length };
-  }, [board?.violazioni]);
+  /* si contano solo quelle che sul tabellone hanno un turno segnato: col tabellone di
+     un solo DSS, una violazione fra turni di altri DSS qui non si vedrebbe */
+  const violazioniVisibili = useMemo(() => {
+    const visibili = new Set((board?.assignments ?? []).map((a) => a.id));
+    return (board?.violazioni ?? []).filter((v) => v.turni.some((t) => t.assegnazioneId && visibili.has(t.assegnazioneId)));
+  }, [board?.violazioni, board?.assignments]);
+  const contaViolazioni = useMemo(() => ({
+    aperte: violazioniVisibili.filter((v) => !v.forzata).length,
+    forzate: violazioniVisibili.filter((v) => v.forzata).length,
+  }), [violazioniVisibili]);
   const etichettaServizio = (s: DutySource) =>
     s.serviceType ? ` · ${s.serviceType}${s.serviceTypeDa === "fucina" ? " (da Fucina)" : ""}` : " · tipo ?";
 
@@ -883,7 +897,7 @@ export default function RosterPage() {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1 border-b border-slate-800 bg-slate-900/60 text-[10px] text-slate-400">
           {/* riposi troppo corti e turni sovrapposti nei giorni visibili */}
           {contaViolazioni.aperte + contaViolazioni.forzate > 0 && (
-            <span className="inline-flex items-center gap-2" title={(board?.violazioni ?? []).slice(0, 12).map((v) => `${v.forzata ? "(forzato) " : ""}${v.testo}`).join("\n")}>
+            <span className="inline-flex items-center gap-2" title={violazioniVisibili.slice(0, 12).map((v) => `${v.forzata ? "(forzato) " : ""}${nomeDi(v.conducenteId)}: ${v.testo}`).join("\n")}>
               {contaViolazioni.aperte > 0 && (
                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/15 text-rose-200 border border-rose-500/40">
                   <AlertTriangle className="w-3 h-3" /> {contaViolazioni.aperte} da controllare
