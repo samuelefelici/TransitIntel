@@ -5,8 +5,14 @@
  * A sinistra il tabellone (operatori × giorni). A destra i turni SCOPERTI per
  * giorno. Per assegnare: seleziona un turno a destra → Q (taglia), seleziona
  * un conducente a sinistra → W (incolla): il turno va nel giorno giusto perché
- * la tabella ha una colonna per ogni giorno. Click su un turno assegnato per
- * rimuoverlo. Anagrafica conducente completa via la matita.
+ * la tabella ha una colonna per ogni giorno. Anagrafica conducente completa
+ * via la matita; accanto a ogni conducente la righetta del suo deposito, dello
+ * stesso colore dei turni di quel deposito.
+ *
+ * Strumenti: col puntatore il click non cambia niente (seleziona la cella e ci
+ * ferma il crocino di riga e colonna); la gomma toglie turni e voci; il cambio
+ * turno scambia i turni di due persone nello stesso giorno (click sul turno,
+ * poi sull'altra persona).
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
@@ -16,6 +22,7 @@ import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
+  MousePointer2, ArrowLeftRight, Pin,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Link } from "wouter";
@@ -31,6 +38,7 @@ interface CalendarioRoster {
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
+import { useDialogo } from "@/components/roster/useDialogo";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
 interface DutySegment {
@@ -71,14 +79,63 @@ interface DutySource {
   isOperational?: boolean; validityUnitName?: string | null;
 }
 interface Board {
-  from: string; days: string[]; drivers: RosterDriver[];
+  /** depositoCodice: il deposito del catalogo, abbinato dal server come fa l'anagrafica */
+  from: string; days: string[]; drivers: Array<RosterDriver & { depositoCodice?: string | null }>;
   duties: RosterDuty[]; assignments: RosterAssignment[];
   entries?: RosterEntry[];
   /** residenza di servizio (deposito) dello scenario → colore dei turni */
   residenza?: { name: string; color: string } | null;
+  /** il colore di ogni deposito del personale, lo stesso dei suoi turni */
+  depositi?: ColoreDeposito[];
   /** Modalità AUTO (dssId="auto"): duty raggruppati per DSS + DSS competente per giorno */
   dutiesByDss?: Record<string, RosterDuty[]>;
   dssByDay?: Record<string, string | null>;
+}
+
+/** Da dove viene il colore: i turni sul tabellone, Planner Studio, o la tavolozza fissa. */
+interface ColoreDeposito { codice: string; nome: string; colore: string; da: "turni" | "planner" | "predefinito"; depositoPlanner: string | null }
+
+/** Lo strumento attivo sul tabellone. */
+type Strumento = "puntatore" | "gomma" | "cambio";
+/** Un cambio turno: «da» passa a aConducente, «a» (se c'è) torna al conducente di «da». */
+interface Scambio { da: RosterAssignment; aConducente: string; a: RosterAssignment | null }
+
+/* cursori degli strumenti: le stesse icone dei pulsanti, con un bordo scuro per vederle su ogni fondo */
+const cursoreSvg = (tratti: string, colore: string, x: number, y: number, riserva: string) =>
+  `url("data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">`
+    + `<g stroke="#0f172a" stroke-width="4.5">${tratti}</g><g stroke="${colore}" stroke-width="2">${tratti}</g></svg>`,
+  )}") ${x} ${y}, ${riserva}`;
+const CURSORE: Record<Strumento, string | undefined> = {
+  puntatore: undefined,
+  gomma: cursoreSvg(`<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>`, "#fda4af", 3, 20, "cell"),
+  cambio: cursoreSvg(`<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>`, "#fcd34d", 12, 12, "alias"),
+};
+
+/** Le regole CSS del crocino: riga e colonna della cella sotto il mouse, o di quella fissata. */
+function regoleCroce(hover: { r: string | null; c: string | null }, pin: { r: string; c: string } | null): string {
+  const sicuro = (v: string | null) => (v && /^[0-9A-Za-z-]+$/.test(v) ? v : null);
+  const out: string[] = [];
+  const croce = (r: string | null, c: string | null, tinta: string, bordo: string) => {
+    if (r) out.push(`.roster-board tr[data-r="${r}"] > td { box-shadow: inset 0 0 0 999px ${tinta}; }`);
+    if (c) out.push(`.roster-board td[data-c="${c}"], .roster-unc [data-c="${c}"] { box-shadow: inset 0 0 0 999px ${tinta}; }`);
+    if (c) out.push(`.roster-board th[data-c="${c}"] { box-shadow: inset 0 -2px 0 ${bordo}, inset 0 0 0 999px ${tinta}; }`);
+    if (r && c) out.push(`.roster-board tr[data-r="${r}"] > td[data-c="${c}"] { box-shadow: inset 0 0 0 2px ${bordo}, inset 0 0 0 999px ${tinta}; }`);
+  };
+  const hr = sicuro(hover.r), hc = sicuro(hover.c);
+  if (pin) {
+    /* con la croce fissata, sotto il mouse resta solo il contorno della cella
+       (sopra la tinta della croce, se la cella ci sta dentro) */
+    const tinta = "rgba(56,189,248,0.13)";
+    if (hr && hc) {
+      const dentro = hr === pin.r || hc === pin.c ? `, inset 0 0 0 999px ${tinta}` : "";
+      out.push(`.roster-board tr[data-r="${hr}"] > td[data-c="${hc}"] { box-shadow: inset 0 0 0 1px #64748b${dentro}; }`);
+    }
+    croce(sicuro(pin.r), sicuro(pin.c), tinta, "#38bdf8");
+  } else {
+    croce(hr, hc, "rgba(148,163,184,0.10)", "#94a3b8");
+  }
+  return out.join("\n");
 }
 
 const DUTY_TYPE_COLOR: Record<string, string> = {
@@ -137,10 +194,10 @@ function festBg(iso: string): string {
   return lvl === 2 ? "bg-rose-500/20" : lvl === 1 ? "bg-rose-500/10" : "";
 }
 /** Avatar del conducente: foto se presente, altrimenti iniziali. size=0 → nascosto. */
-function DriverAvatar({ drv, size = 28 }: { drv: RosterDriver; size?: number }) {
+function DriverAvatar({ drv, size = 28, bordo }: { drv: RosterDriver; size?: number; bordo?: string }) {
   if (!size) return null;
   const initials = (drv.cognome ?? drv.name ?? "?").trim().slice(0, 2).toUpperCase() || "?";
-  const st = { width: size, height: size };
+  const st = { width: size, height: size, ...(bordo ? { borderColor: bordo } : {}) };
   return drv.photoUrl ? (
     <img src={drv.photoUrl} alt="" style={st} className="rounded-full object-cover border border-slate-700 shrink-0" />
   ) : (
@@ -277,8 +334,9 @@ export default function RosterPage() {
     addEntryMut.mutate({ driverId, day, category: armedVoce.category, code: armedVoce.code });
   };
 
-  // ── Gomma: cancella turno + voci di una cella (il turno torna fra gli scoperti) ──
-  const [eraser, setEraser] = useState(false);
+  // ── Strumenti: puntatore (il click non cambia niente), gomma, cambio turno ──
+  const [tool, setTool] = useState<Strumento>("puntatore");
+  const eraser = tool === "gomma";
   const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
   const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | null>(null);
   // Se una cella ha ≥2 attività, la gomma chiede QUALE togliere.
@@ -374,31 +432,186 @@ export default function RosterPage() {
   }, [board, isAuto]);
 
   // ── Taglia/incolla via tastiera: Q = taglia turno selezionato, W = incolla sul conducente ──
-  function doPaste() {
+  /* il conducente si passa quando arriva da un click: lo stato selDriver si aggiorna solo al giro dopo */
+  function doPaste(driverId: string | null = selDriver) {
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
-    if (!selDriver) { toast.info("Seleziona un conducente a sinistra"); return; }
+    if (!driverId) { toast.info("Seleziona un conducente a sinistra"); return; }
     // In AUTO l'assegnazione va sul DSS competente per la data del turno.
     const effDss = isAuto ? (board?.dssByDay?.[cut.day] ?? null) : dssId;
     if (!effDss) { toast.error("Nessun turno guida competente per questa data (periodo di validità mancante)"); return; }
     // Un conducente può avere più turni nello stesso giorno: nessun blocco.
-    assignMut.mutate({ driverId: selDriver, day: cut.day, dutyCode: cut.code, dssId: effDss });
+    assignMut.mutate({ driverId, day: cut.day, dutyCode: cut.code, dssId: effDss });
   }
+
+  // ── Crocino: riga e colonna sotto il mouse; il click col puntatore lo ferma ──
+  /* Si colora con un foglio di stile riscritto a ogni cambio di cella, non con
+     lo stato di React: così il mouse non fa ridisegnare migliaia di celle. */
+  const croceRef = useRef<HTMLStyleElement>(null);
+  const hoverCell = useRef<{ r: string | null; c: string | null }>({ r: null, c: null });
+  const [pin, setPin] = useState<{ r: string; c: string } | null>(null);
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
+  const dipingiCroce = () => {
+    if (croceRef.current) croceRef.current.textContent = regoleCroce(hoverCell.current, pinRef.current);
+  };
+  useEffect(dipingiCroce, [pin]);
+  const onBoardOver = (e: ReactMouseEvent) => {
+    const t = e.target as HTMLElement;
+    const r = t.closest<HTMLElement>("tr[data-r]")?.dataset.r ?? null;
+    const c = t.closest<HTMLElement>("[data-c]")?.dataset.c ?? null;
+    if (hoverCell.current.r === r && hoverCell.current.c === c) return;
+    hoverCell.current = { r, c };
+    dipingiCroce();
+  };
+  const onBoardLeave = () => { hoverCell.current = { r: null, c: null }; dipingiCroce(); };
+
+  // ── Cambio turno: click sul turno da cedere, poi su un'altra persona dello stesso giorno ──
+  const [swapFrom, setSwapFrom] = useState<RosterAssignment | null>(null);
+  const [swapAsk, setSwapAsk] = useState<(Scambio & { avvisi: string[] }) | null>(null);
+  const nomeDi = (id: string) => {
+    const d = board?.drivers.find((x) => x.id === id);
+    return d ? driverLabel(d) : "il conducente";
+  };
+  const quandoDi = (day: string) => `${dayLabel(day).dow} ${dayLabel(day).dm}`;
+  const swapMut = useMutation({
+    mutationFn: (s: Scambio) => apiFetch("/api/roster/assignments/scambia", {
+      method: "POST",
+      body: JSON.stringify({
+        da: s.da.id, daConducente: s.da.driverId, a: s.a?.id ?? null, aConducente: s.aConducente,
+        /* col tabellone di un solo DSS, i turni degli altri DSS non si vedono e non contano */
+        dssVisto: isAuto || !dssId ? null : dssId,
+      }),
+    }),
+    onSuccess: (_r, s) => {
+      toast.success(s.a
+        ? `Cambio turno di ${quandoDi(s.da.day)}: ${s.da.dutyCode} a ${nomeDi(s.aConducente)}, ${s.a.dutyCode} a ${nomeDi(s.da.driverId)}`
+        : `${s.da.dutyCode} di ${quandoDi(s.da.day)} passa a ${nomeDi(s.aConducente)}`);
+      setSwapFrom(null);
+      invalidateBoard();
+    },
+    onError: (e: Error) => {
+      toast.error("Cambio turno non riuscito", { description: e.message });
+      setSwapFrom(null);
+      invalidateBoard();
+    },
+  });
+  const labelAssenza = (code: string) => vociQ.data?.assenza.find((v) => v.code === code)?.label ?? code;
+  /** Un click col cambio turno: sul turno (target) o sulla cella/sul nome di un conducente (target null). */
+  const swapClick = (driverId: string, day: string | null, target: RosterAssignment | null) => {
+    if (swapMut.isPending) return;
+    if (!swapFrom) {
+      if (target) setSwapFrom(target);
+      else toast.info("Cambio turno: clicca prima il turno da scambiare");
+      return;
+    }
+    if (target?.id === swapFrom.id) { setSwapFrom(null); return; }
+    if (driverId === swapFrom.driverId) {
+      /* un altro turno della stessa persona diventa quello da cedere */
+      if (target) setSwapFrom(target); else toast.info("Ora clicca un'altra persona");
+      return;
+    }
+    const giorno = swapFrom.day;
+    if ((target?.day ?? day ?? giorno) !== giorno) {
+      toast.info(`Il cambio turno è nello stesso giorno: clicca nella colonna di ${quandoDi(giorno)}`);
+      return;
+    }
+    let a = target;
+    if (!a) {
+      const loro = assignmentsByCell.get(`${driverId}|${giorno}`) ?? [];
+      if (loro.length > 1) { toast.info(`${nomeDi(driverId)} ${quandoDi(giorno)} ha ${loro.length} turni: clicca quello da scambiare`); return; }
+      a = loro[0] ?? null;
+    }
+    /* chi riceve un turno in un giorno di assenza: si chiede prima */
+    const assenze = (id: string) => (entriesByCell.get(`${id}|${giorno}`) ?? []).filter((en) => en.category === "assenza");
+    const avvisi = assenze(driverId).map((en) => `${nomeDi(driverId)} ${quandoDi(giorno)} ha ${en.code} (${labelAssenza(en.code)}) e riceve ${swapFrom.dutyCode}`);
+    if (a) {
+      const ricevuto = a.dutyCode;
+      avvisi.push(...assenze(swapFrom.driverId).map((en) => `${nomeDi(swapFrom.driverId)} ${quandoDi(giorno)} ha ${en.code} (${labelAssenza(en.code)}) e riceve ${ricevuto}`));
+    }
+    const s: Scambio = { da: swapFrom, aConducente: driverId, a };
+    if (avvisi.length) setSwapAsk({ ...s, avvisi }); else swapMut.mutate(s);
+  };
+  /* se il turno scelto sparisce o cambia conducente (ricarica, un altro utente), si riparte */
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      const k = e.key.toLowerCase();
-      if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
-      else if (k === "w") { e.preventDefault(); doPaste(); }
-      else if (e.key === "Escape") { setCut(null); setArmedVoce(null); setVoceMenu(null); setEraser(false); setOpenTopMenu(null); setCtxDuty(null); setEraseChoice(null); }
-    };
+    if (swapFrom && !board?.assignments.some((x) => x.id === swapFrom.id && x.driverId === swapFrom.driverId)) setSwapFrom(null);
+  }, [board?.assignments, swapFrom]);
+  /* la croce fissata si lascia quando la sua cella esce dal tabellone (altro periodo, conducente tolto) */
+  useEffect(() => {
+    if (pin && board && (!board.days.includes(pin.c) || !board.drivers.some((d) => d.id === pin.r))) setPin(null);
+  }, [board, pin]);
+
+  /** Cambia strumento: la croce fissata e il turno scelto per lo scambio si lasciano. */
+  const scegliStrumento = (t: Strumento) => {
+    setTool(t);
+    setSwapFrom(null);
+    setPin(null);
+    if (t !== "puntatore") { setArmedVoce(null); setVoceMenu(null); }
+  };
+
+  /* la scelta della gomma su una cella che intanto si è svuotata non si vede: si chiude */
+  useEffect(() => {
+    if (!eraseChoice) return;
+    const k = `${eraseChoice.driverId}|${eraseChoice.day}`;
+    if (!(assignmentsByCell.get(k)?.length || entriesByCell.get(k)?.length)) setEraseChoice(null);
+  }, [eraseChoice, assignmentsByCell, entriesByCell]);
+  /* le due finestre del tabellone: focus dentro, Tab che gira dentro, Esc che chiude */
+  const swapAskRef = useRef<HTMLDivElement>(null);
+  const eraseChoiceRef = useRef<HTMLDivElement>(null);
+  useDialogo(swapAskRef, () => setSwapAsk(null), !!swapAsk);
+  useDialogo(eraseChoiceRef, () => setEraseChoice(null), !!eraseChoice);
+
+  /* La tastiera. Il gestore si rilegge a ogni giro (onKeyRef), così vede sempre
+     lo stato attuale; con una finestra aperta i tasti sono suoi, non del tabellone. */
+  const finestraAperta = editDriver !== null || rotDialog !== null || !!swapAsk || !!eraseChoice;
+  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {});
+  onKeyRef.current = (e: KeyboardEvent) => {
+    const t = e.target as HTMLElement | null;
+    const tag = t?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t?.isContentEditable) return;
+    if (finestraAperta || document.querySelector('[aria-modal="true"]')) return;
+    if (e.key === "Escape") {
+      /* un passo alla volta: menu e dettagli aperti, poi il turno scelto per lo
+         scambio, poi lo strumento o la voce o il taglio, infine la croce fissata */
+      if (ctxDuty || voceMenu || openTopMenu) { setCtxDuty(null); setVoceMenu(null); setOpenTopMenu(null); return; }
+      if (swapFrom) { setSwapFrom(null); return; }
+      if (cut || armedVoce || tool !== "puntatore") { setCut(null); setArmedVoce(null); setTool("puntatore"); return; }
+      setPin(null);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
+    else if (k === "w") { e.preventDefault(); doPaste(); }
+    else if (k === "v") scegliStrumento("puntatore");
+    else if (k === "g") scegliStrumento("gomma");
+    else if (k === "c") scegliStrumento("cambio");
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => onKeyRef.current(e);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selDuty, selDriver, cut]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
   // colore turno: residenza per-turno (deposito del turno) → residenza scenario → tipo
   const resColor = (duty: RosterDuty | null | undefined) =>
     duty?.residenzaColor ?? board?.residenza?.color ?? dutyColor(duty?.type ?? null);
+
+  // ── Deposito del conducente: la righetta ha lo stesso colore dei turni del deposito ──
+  const coloreDeposito = useMemo(
+    () => new Map((board?.depositi ?? []).map((d) => [d.codice, d])),
+    [board?.depositi],
+  );
+  const depositoDi = (drv: Board["drivers"][number]) =>
+    (drv.depositoCodice ? coloreDeposito.get(drv.depositoCodice) : undefined) ?? null;
+  const spiegaColore = (d: ColoreDeposito) =>
+    d.da === "turni" ? `colore dei turni (${d.depositoPlanner})`
+      : d.da === "planner" ? `colore del deposito di Planner Studio «${d.depositoPlanner}»`
+        : "colore predefinito: il deposito non si ritrova fra quelli di Planner Studio";
+  /* i depositi dei conducenti sul tabellone, per la legenda */
+  const legendaDepositi = useMemo(() => {
+    const presenti = new Set((board?.drivers ?? []).map((d) => d.depositoCodice).filter(Boolean));
+    return (board?.depositi ?? []).filter((d) => presenti.has(d.codice));
+  }, [board?.drivers, board?.depositi]);
 
   const menuItemCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-2";
   const menuDisabledCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-600 cursor-not-allowed flex items-center gap-2";
@@ -416,6 +629,8 @@ export default function RosterPage() {
 
   return (
     <div className="flex flex-col h-screen bg-slate-950 text-slate-100">
+      {/* il crocino: le regole le scrive dipingiCroce */}
+      <style ref={croceRef} />
       {/* ── Toolbar software (menu) ── */}
       <div className="h-9 bg-slate-900 border-b border-slate-800 flex items-center px-2 gap-0.5 shrink-0 text-xs relative z-40">
         {([
@@ -524,6 +739,22 @@ export default function RosterPage() {
         </div>
         <span className="text-[10px] text-slate-500 hidden xl:inline">← scorri il tabellone per vedere le {RANGE_DAYS} giornate</span>
 
+        {/* Strumenti: puntatore (il click non cambia niente), gomma, cambio turno */}
+        <div className="flex items-center gap-0.5 rounded-lg border border-slate-700 p-0.5" role="group" aria-label="Strumenti del tabellone">
+          {([
+            ["puntatore", MousePointer2, "Puntatore", "Puntatore (V): il click seleziona la cella e ci ferma la croce; non cambia niente", "bg-slate-700 text-white"],
+            ["gomma", Eraser, "Gomma", "Gomma (G): clicca una cella per cancellarne turno e voci (il turno torna fra gli scoperti)", "bg-rose-500/25 text-rose-100"],
+            ["cambio", ArrowLeftRight, "Cambio turno", "Cambio turno (C): clicca il turno di una persona, poi un'altra persona nello stesso giorno: i due turni si scambiano", "bg-amber-500/25 text-amber-100"],
+          ] as const).map(([k, Icona, testo, aiuto, attivo]) => (
+            <button key={k} onClick={() => scegliStrumento(k)} aria-pressed={tool === k} title={aiuto}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400 ${
+                tool === k ? attivo : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+              }`}>
+              <Icona className="w-3.5 h-3.5" /> <span className="hidden md:inline">{testo}</span>
+            </button>
+          ))}
+        </div>
+
         {/* Voci Assenza / Presenza: scegli una voce → clicca una cella per inserirla */}
         {(["assenza", "presenza"] as const).map((cat) => (
           <div key={cat} className="relative">
@@ -543,7 +774,7 @@ export default function RosterPage() {
               <div className="absolute z-30 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
                 {(vociQ.data?.[cat] ?? []).map((v) => (
                   <button key={v.code}
-                    onClick={() => { setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); setEraser(false); }}
+                    onClick={() => { scegliStrumento("puntatore"); setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); }}
                     className="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left hover:bg-slate-800"
                   >
                     <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${voceStyle(cat)}`}>{v.code}</span>
@@ -556,18 +787,16 @@ export default function RosterPage() {
           </div>
         ))}
 
-        <button
-          onClick={() => { setEraser((v) => !v); setArmedVoce(null); setVoceMenu(null); }}
-          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
-            eraser ? "border-rose-500 bg-rose-500/20 text-rose-100" : "border-slate-700 text-slate-300 hover:bg-slate-800"
-          }`}
-          title="Gomma: cancella turno e voci da una cella (il turno torna fra gli scoperti)"
-        >
-          <Eraser className="w-3.5 h-3.5" /> Gomma
-        </button>
+        {pin && (
+          <span className="flex items-center gap-1 pl-2 pr-1 py-1 rounded-lg border border-sky-500/40 bg-sky-500/10 text-[11px] text-sky-100 whitespace-nowrap"
+            title="Cella fissata: la croce resta qui. Clicca di nuovo la cella, o premi Esc, per lasciarla">
+            <Pin className="w-3 h-3" /> {nomeDi(pin.r)} · {quandoDi(pin.c)}
+            <button onClick={() => setPin(null)} className="p-0.5 rounded hover:bg-sky-500/20" aria-label="Lascia la cella"><X className="w-3 h-3" /></button>
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-2">
-          <span className="hidden lg:flex items-center gap-1 text-[10px] text-slate-500"><Scissors className="w-3 h-3" /> Q taglia · <ClipboardPaste className="w-3 h-3" /> W incolla</span>
+          <span className="hidden lg:flex items-center gap-1 text-[10px] text-slate-500"><Scissors className="w-3 h-3" /> Q taglia · <ClipboardPaste className="w-3 h-3" /> W incolla · V G C strumenti</span>
           <Link href="/roster/anagrafica" className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">
             Anagrafica
           </Link>
@@ -581,18 +810,32 @@ export default function RosterPage() {
         </div>
       </div>
 
-      {/* legenda del calendario aziendale (le righette sopra i giorni) */}
-      {calendarioQ.data && (
+      {/* legenda: calendario aziendale (le righette sopra i giorni) e depositi (le righette accanto ai conducenti) */}
+      {(calendarioQ.data || legendaDepositi.length > 0) && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-1 border-b border-slate-800 bg-slate-900/60 text-[10px] text-slate-400">
-          <span title={calendarioQ.data.calendario.nota ?? undefined}>
-            Calendario aziendale{calendarioQ.data.calendario.nome ? `: ${calendarioQ.data.calendario.nome}` : ""}
-            {!calCompilato && <span className="ml-1 text-amber-300/90">· non compilato, solo domeniche e festivi</span>}
-          </span>
-          {legendaCal.map(l => (
-            <span key={l.testo} className="inline-flex items-center gap-1">
-              <span className="inline-block w-3 h-1.5 rounded-sm" style={{ background: l.colore }} /> {l.testo}
+          {calendarioQ.data && (
+            <>
+              <span title={calendarioQ.data.calendario.nota ?? undefined}>
+                Calendario aziendale{calendarioQ.data.calendario.nome ? `: ${calendarioQ.data.calendario.nome}` : ""}
+                {!calCompilato && <span className="ml-1 text-amber-300/90">· non compilato, solo domeniche e festivi</span>}
+              </span>
+              {legendaCal.map(l => (
+                <span key={l.testo} className="inline-flex items-center gap-1">
+                  <span className="inline-block w-3 h-1.5 rounded-sm" style={{ background: l.colore }} /> {l.testo}
+                </span>
+              ))}
+            </>
+          )}
+          {legendaDepositi.length > 0 && (
+            <span className="inline-flex flex-wrap items-center gap-x-2.5 gap-y-1 sm:ml-auto">
+              <span>Depositi</span>
+              {legendaDepositi.map(d => (
+                <span key={d.codice} className="inline-flex items-center gap-1" title={spiegaColore(d)}>
+                  <span className="inline-block w-1.5 h-3 rounded-sm" style={{ background: d.colore }} /> {d.nome}
+                </span>
+              ))}
             </span>
-          ))}
+          )}
         </div>
       )}
 
@@ -618,7 +861,24 @@ export default function RosterPage() {
       {eraser && (
         <div className="bg-rose-500/10 border-b border-rose-500/30 px-4 py-1.5 text-[11px] text-rose-100 flex items-center gap-2 shrink-0">
           <Eraser className="w-3.5 h-3.5" /> Gomma attiva — <b>clicca una cella</b> per cancellarne turno e voci (il turno torna fra gli scoperti). Esc per uscire.
-          <button onClick={() => setEraser(false)} className="ml-auto underline hover:no-underline">Chiudi</button>
+          <button onClick={() => scegliStrumento("puntatore")} className="ml-auto underline hover:no-underline">Chiudi</button>
+        </div>
+      )}
+
+      {/* cambio turno attivo */}
+      {tool === "cambio" && (
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-1.5 text-[11px] text-amber-100 flex items-center gap-2 shrink-0" aria-live="polite">
+          <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
+          {swapFrom ? (
+            <span>
+              Cambio turno: <b>{swapFrom.dutyCode}</b> di <b>{nomeDi(swapFrom.driverId)}</b> · {quandoDi(swapFrom.day)} — ora <b>clicca un'altra persona</b>,
+              nella stessa colonna o sul nome. Esc per scegliere un altro turno.
+            </span>
+          ) : (
+            <span>Cambio turno — <b>clicca il turno</b> da scambiare, poi l'altra persona. Esc per uscire.</span>
+          )}
+          {swapMut.isPending && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+          <button onClick={() => scegliStrumento("puntatore")} className="ml-auto underline hover:no-underline">Chiudi</button>
         </div>
       )}
 
@@ -631,7 +891,8 @@ export default function RosterPage() {
           ) : !board || board.drivers.length === 0 ? (
             <div className="p-10 text-center text-slate-500 text-sm">Nessun conducente. Aggiungine uno o genera operatori fittizi.</div>
           ) : (
-            <table className="min-w-full text-xs border-collapse">
+            <table className={`roster-board min-w-full text-xs border-collapse ${tool === "puntatore" && !armedVoce ? "cursor-default" : ""}`}
+              onMouseOver={onBoardOver} onMouseLeave={onBoardLeave}>
               <thead className="sticky top-0 bg-slate-900 z-30">
                 <tr>
                   <th className={`text-left px-2 py-1 border-b border-slate-800 sticky left-0 z-20 bg-slate-900 ${nameColW}`}>Conducente</th>
@@ -639,7 +900,7 @@ export default function RosterPage() {
                     const { dow, dm } = dayLabel(day);
                     const unc = uncoveredByDay.get(day)?.length ?? 0;
                     return (
-                      <th key={day} className={`px-1 py-1 border-b border-slate-800 text-center ${dayColW} ${festBg(day)}`}>
+                      <th key={day} data-c={day} className={`px-1 py-1 border-b border-slate-800 text-center ${dayColW} ${festBg(day)}`}>
                         {(() => {
                           const r = righetta(day);
                           return r ? <span className="block h-1.5 -mx-1 -mt-1 mb-1 rounded-b-sm" style={{ background: r.colore }} title={r.testo} aria-label={r.testo} /> : null;
@@ -659,12 +920,24 @@ export default function RosterPage() {
               <tbody>
                 {board.drivers.map((drv) => {
                   const isSel = selDriver === drv.id;
+                  const dep = depositoDi(drv);
                   return (
-                    <tr key={drv.id} className={isSel ? "bg-violet-500/10" : "odd:bg-white/[0.02]"}>
-                      <td className={`px-2 py-0.5 border-b border-slate-800/40 sticky left-0 z-20 cursor-pointer ${isSel ? "bg-violet-950" : "bg-slate-950"}`}
-                          onClick={() => setSelDriver(isSel ? null : drv.id)}>
+                    <tr key={drv.id} data-r={drv.id} className={isSel ? "bg-violet-500/10" : "odd:bg-white/[0.02]"}>
+                      <td className={`pl-3 pr-2 py-0.5 border-b border-slate-800/40 sticky left-0 z-20 cursor-pointer ${isSel ? "bg-violet-950" : "bg-slate-950"}`}
+                          style={tool === "cambio" && swapFrom ? { cursor: CURSORE.cambio } : undefined}
+                          onClick={() => {
+                            /* col cambio turno avviato, il nome è un bersaglio: lo scambio è nel giorno del turno scelto */
+                            if (tool === "cambio" && swapFrom) swapClick(drv.id, null, null);
+                            else setSelDriver(isSel ? null : drv.id);
+                          }}>
+                        {/* la righetta del deposito: lo stesso colore dei suoi turni */}
+                        {dep ? (
+                          <span aria-hidden className="absolute left-0 top-0 bottom-0 w-1" style={{ background: dep.colore }} title={`Deposito ${dep.nome} — ${spiegaColore(dep)}`} />
+                        ) : drv.residenzaServizio ? (
+                          <span aria-hidden className="absolute left-0 top-0 bottom-0 w-1 bg-[repeating-linear-gradient(180deg,#64748b_0_3px,transparent_3px_6px)]" title={`Deposito «${drv.residenzaServizio}» fuori elenco: niente colore`} />
+                        ) : null}
                         <div className="flex items-center gap-1.5">
-                          <DriverAvatar drv={drv} size={avatarSize} />
+                          <DriverAvatar drv={drv} size={avatarSize} bordo={dep?.colore} />
                           <div className="min-w-0 flex-1">
                             {/* Nome su riga propria (meno troncato); matricola e simboli sotto */}
                             <div className="font-medium truncate text-[12px] leading-tight">{driverLabel(drv)}</div>
@@ -686,14 +959,23 @@ export default function RosterPage() {
                           ...cellEntries.map((en) => ({ kind: "voce" as const, en })),
                         ];
                         const hasItems = items.length > 0;
-                        const cellClick = eraser ? () => eraseCell(drv.id, day)
-                          : armedVoce ? () => placeVoce(drv.id, day)
-                          : () => { setSelDriver(drv.id); if (cut && cut.day === day) doPaste(); };
+                        const cellClick = () => {
+                          if (armedVoce) placeVoce(drv.id, day);
+                          else if (tool === "gomma") eraseCell(drv.id, day);
+                          else if (tool === "cambio") swapClick(drv.id, day, null);
+                          else {
+                            /* puntatore: seleziona e ferma la croce (un altro click la lascia); incolla solo se c'è un turno in taglio */
+                            setSelDriver(drv.id);
+                            setPin((p) => (p && p.r === drv.id && p.c === day ? null : { r: drv.id, c: day }));
+                            if (cut && cut.day === day) doPaste(drv.id);
+                          }
+                        };
                         return (
-                          <td key={day}
+                          <td key={day} data-c={day}
                             onClick={cellClick}
+                            style={!armedVoce && CURSORE[tool] ? { cursor: CURSORE[tool] } : undefined}
                             className={`px-0.5 py-0.5 border-b border-slate-800/40 text-center align-middle ${festBg(day)} ${
-                              armedVoce ? "cursor-crosshair hover:bg-white/[0.04]" : eraser ? "cursor-pointer hover:bg-rose-500/10" : ""
+                              armedVoce ? "cursor-crosshair" : ""
                             }`}>
                             <div className={armedVoce || eraser ? "pointer-events-none" : ""}>
                               {!hasItems ? (
@@ -706,13 +988,21 @@ export default function RosterPage() {
                                     const big = idx === 0;
                                     if (it.kind === "duty") {
                                       const duty = dutyFor(it.a);
+                                      const a = it.a;
+                                      const scelto = swapFrom?.id === a.id;
                                       return (
-                                        <button key={it.a.id}
-                                          onClick={(e) => { e.stopPropagation(); if (confirm(`Rimuovere ${it.a.dutyCode} da ${driverLabel(drv)}?`)) unassignMut.mutate(it.a.id); }}
+                                        <button key={a.id}
+                                          /* col puntatore il click passa alla cella (seleziona, croce); col cambio turno sceglie QUESTO turno */
+                                          onClick={tool === "cambio" ? (e) => { e.stopPropagation(); swapClick(drv.id, day, a); } : undefined}
                                           onContextMenu={(e) => { e.stopPropagation(); openDutyContext(e, duty); }}
-                                          title="Click: rimuovi · Tasto destro: dettaglio"
-                                          className={`w-full rounded text-white font-bold leading-tight hover:opacity-80 ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"}`}
-                                          style={{ backgroundColor: resColor(duty) }}>
+                                          aria-pressed={tool === "cambio" ? scelto : undefined}
+                                          title={tool === "cambio"
+                                            ? (scelto ? "Turno scelto: ora clicca un'altra persona (un altro click lo lascia)" : swapFrom ? `Scambia con ${swapFrom.dutyCode}` : "Scegli questo turno da scambiare")
+                                            : "Tasto destro: dettaglio · per toglierlo la Gomma, per scambiarlo il Cambio turno"}
+                                          className={`w-full rounded text-white font-bold leading-tight ${tool === "cambio" ? "hover:opacity-80" : "cursor-default"} ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"} ${
+                                            scelto ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950" : ""
+                                          }`}
+                                          style={{ backgroundColor: resColor(duty), ...(tool === "cambio" ? { cursor: CURSORE.cambio } : {}) }}>
                                           {it.a.dutyCode}
                                           {big && showTimes && duty?.start && <span className="block font-normal opacity-90 text-[9px]">{duty.start}–{duty.end}</span>}
                                           {big && showExtra && duty && (duty.tripsCount || duty.nastro) && (
@@ -725,12 +1015,11 @@ export default function RosterPage() {
                                     }
                                     const en = it.en;
                                     return (
+                                      /* niente × sulla voce: col puntatore il click non toglie niente, per toglierla c'è la Gomma */
                                       <div key={en.id}
-                                        className={`group relative w-full font-bold leading-none ${voceTextColor(en.category, en.code)} ${big ? voceBigCls : "text-[11px] py-0.5"}`}
-                                        title={en.category}>
+                                        className={`w-full font-bold leading-none ${voceTextColor(en.category, en.code)} ${big ? voceBigCls : "text-[11px] py-0.5"}`}
+                                        title={`${vociQ.data?.[en.category]?.find((v) => v.code === en.code)?.label ?? en.category} · per toglierla la Gomma`}>
                                         {en.code}
-                                        <button onClick={(e) => { e.stopPropagation(); delEntryMut.mutate(en.id); }}
-                                          className="absolute -top-0.5 -right-0.5 opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-400 text-[10px] leading-none">×</button>
                                       </div>
                                     );
                                   })}
@@ -759,11 +1048,12 @@ export default function RosterPage() {
               </button>
             </div>
             {showUncovered && (
-              <div ref={uncoveredScrollRef} onScroll={() => mirrorScroll("unc")} className="flex-1 min-h-0 overflow-x-auto overflow-y-hidden flex">
+              <div ref={uncoveredScrollRef} onScroll={() => mirrorScroll("unc")} onMouseOver={onBoardOver} onMouseLeave={onBoardLeave}
+                className="roster-unc flex-1 min-h-0 overflow-x-auto overflow-y-hidden flex">
                 {board?.days.map((day) => {
                   const list = uncoveredByDay.get(day) ?? [];
                   return (
-                    <div key={day} className={`w-28 shrink-0 border-r border-slate-800/70 flex flex-col min-h-0 ${festBg(day)}`}>
+                    <div key={day} data-c={day} className={`w-28 shrink-0 border-r border-slate-800/70 flex flex-col min-h-0 ${festBg(day)}`}>
                       {(() => {
                         const r = righetta(day);
                         return r ? <span className="block h-1 shrink-0" style={{ background: r.colore }} title={r.testo} /> : null;
@@ -825,9 +1115,10 @@ export default function RosterPage() {
         if (items.length === 0) return null; // cella già svuotata: niente da scegliere
         return (
           <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4" onClick={() => setEraseChoice(null)}>
-            <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col text-slate-100" onClick={(e) => e.stopPropagation()}>
+            <div ref={eraseChoiceRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="gomma-titolo"
+              className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-sm flex flex-col text-slate-100 outline-none" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
-                <div className="text-sm font-semibold flex items-center gap-2"><Eraser className="w-4 h-4 text-rose-400" /> Cosa vuoi togliere?</div>
+                <div id="gomma-titolo" className="text-sm font-semibold flex items-center gap-2"><Eraser className="w-4 h-4 text-rose-400" /> Cosa vuoi togliere?</div>
                 <button onClick={() => setEraseChoice(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"><X className="h-4 w-4" /></button>
               </div>
               <div className="px-4 py-2 text-[11px] text-slate-400 border-b border-slate-800">
@@ -861,6 +1152,30 @@ export default function RosterPage() {
           </div>
         );
       })()}
+
+      {/* Cambio turno verso chi quel giorno è assente: si chiede prima */}
+      {swapAsk && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4" onClick={() => setSwapAsk(null)}>
+          <div ref={swapAskRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="scambio-titolo"
+            className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-md flex flex-col text-slate-100 outline-none" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+              <div id="scambio-titolo" className="text-sm font-semibold flex items-center gap-2"><ArrowLeftRight className="w-4 h-4 text-amber-400" /> Chi riceve il turno è assente</div>
+              <button onClick={() => setSwapAsk(null)} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800" aria-label="Chiudi"><X className="h-4 w-4" /></button>
+            </div>
+            <ul className="px-4 py-3 space-y-1.5 text-xs text-slate-200 list-disc list-inside">
+              {swapAsk.avvisi.map((a) => <li key={a}>{a}</li>)}
+            </ul>
+            <p className="px-4 pb-3 text-[11px] text-slate-500">Si spostano solo i turni: le assenze e le altre voci restano dove sono.</p>
+            <div className="flex items-center justify-between gap-2 px-4 py-3 border-t border-slate-800">
+              <button onClick={() => setSwapAsk(null)} className="px-3 py-1.5 text-sm rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800">Annulla</button>
+              <button onClick={() => { const { avvisi: _a, ...s } = swapAsk; setSwapAsk(null); swapMut.mutate(s); }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-500">
+                <ArrowLeftRight className="w-4 h-4" /> Scambia lo stesso
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dettaglio turno (tasto destro) */}
       {ctxDuty && (

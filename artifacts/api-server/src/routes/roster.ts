@@ -10,6 +10,7 @@
  *   GET    /api/roster/duty-sources            — DSS disponibili come fonte turni
  *   GET    /api/roster/board?from=&days=&dssId=— griglia: turni, assegnazioni, voci
  *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId}
+ *   POST   /api/roster/assignments/scambia     — cambio turno fra due conducenti, stesso giorno
  *   DELETE /api/roster/assignments/:id         — rimuovi assegnazione
  *   GET    /api/roster/voci                    — catalogo assenze/presenze
  *   GET    /api/roster/calendario?from=&days=  — la categoria di ogni giorno nel calendario aziendale
@@ -25,8 +26,11 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
-import { assicuraAnagrafica, type Ex } from "../lib/anagrafica-store";
-import { conducentiPer } from "./anagrafica";
+import { assicuraAnagrafica, leggiDepositi, righe, type Ex } from "../lib/anagrafica-store";
+import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
+import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
+import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
+import { vedeDatiPersonali } from "../lib/auth";
 import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
 import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
 
@@ -126,6 +130,32 @@ function extractDuties(result: any): Array<{
 }
 
 // Conducenti, storico, fittizi: routes/anagrafica.ts (montato prima di questo router).
+
+/** I depositi dei turni con il loro colore, come li vede l'utente nelle celle. */
+function residenzeDeiTurni(duties: ReturnType<typeof extractDuties>): DepositoColorato[] {
+  return duties.filter(d => d.residenzaName && d.residenzaColor)
+    .map(d => ({ name: d.residenzaName!, color: d.residenzaColor! }));
+}
+
+/**
+ * I depositi per la righetta accanto ai conducenti. Il colore di ogni deposito
+ * del personale: prima quello dei turni sul tabellone, poi quello di Planner
+ * Studio, poi la tavolozza (lib/roster-colori-depositi.ts). Il deposito di
+ * ogni conducente lo decide qui lo stesso abbinamento dell'anagrafica (nome,
+ * codice o alias), così anche un «Jesi Urb.» rimasto da un vecchio import ha
+ * il colore di Jesi Urbano.
+ */
+async function depositiDelTabellone(drivers: Conducente[], dalTurni: DepositoColorato[]) {
+  const ex = db as unknown as Ex;
+  const catalogo = await leggiDepositi(ex);
+  return {
+    drivers: drivers.map(d => ({ ...d, depositoCodice: trovaDeposito(d.residenzaServizio, catalogo)?.codice ?? null })),
+    depositi: abbinaColori(catalogo, [
+      { da: "turni", depositi: dalTurni },
+      { da: "planner", depositi: await depositiPlanner(ex) },
+    ]),
+  };
+}
 
 // ── Calendario aziendale sopra i giorni ─────────────────────────────────────
 
@@ -317,10 +347,18 @@ router.get("/roster/board", async (req, res): Promise<void> => {
           FROM roster_entries
          WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day')
       `);
+      /* il colore dei turni dai DSS che si vedono, dal giorno più recente indietro
+         (il più aggiornato vince), poi quelli delle assegnazioni; gli altri candidati no */
+      const visibili = [...new Set<string>([
+        ...[...dayList].reverse().map(d => dssByDay[d]).filter((x): x is string => !!x),
+        ...assignAll.rows.map((a: any) => String(a.dss_id)),
+      ])];
+      const dep = await depositiDelTabellone(drivers, visibili.flatMap(id => residenzeDeiTurni(dutiesByDss[id] ?? [])));
       res.json({
         from, days: dayList,
-        drivers,
+        drivers: dep.drivers,
         duties: [], residenza: null,
+        depositi: dep.depositi,
         dutiesByDss, dssByDay,
         assignments: assignAll.rows.map((a: any) => ({
           id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
@@ -377,11 +415,13 @@ router.get("/roster/board", async (req, res): Promise<void> => {
        WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day')
     `);
 
+    const dep = await depositiDelTabellone(drivers, [...residenzeDeiTurni(duties), ...(residenza ? [residenza] : [])]);
     res.json({
       from, days: dayList,
-      drivers,
+      drivers: dep.drivers,
       duties,
       residenza,
+      depositi: dep.depositi,
       assignments: assignQ.rows.map((a: any) => ({
         id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
       })),
@@ -434,6 +474,110 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
     }
     res.status(500).json({ error: e.message });
   }
+});
+
+/**
+ * Cambio turno: due conducenti si scambiano i turni dello stesso giorno.
+ *   { da, daConducente, a?, aConducente, dssVisto? }
+ * «da» è l'assegnazione che il primo conducente cede; «a», se c'è, quella che
+ * riceve in cambio. Senza «a» il turno passa e basta: il secondo conducente
+ * quel giorno non aveva turni da dare.
+ *
+ * Le righe si bloccano e si ricontrollano: se nel frattempo qualcuno ha già
+ * spostato uno dei due turni, o senza «a» il secondo conducente ha ricevuto un
+ * turno quel giorno, 409 e il tabellone si ricarica. Riceve un turno solo chi
+ * è in servizio quel giorno (attivo, assunto, non ancora uscito); a chi non
+ * vede i dati personali non si dice se non è ancora assunto o se è uscito,
+ * perché la data di assunzione per lui è mascherata.
+ */
+router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
+  try {
+    const corpo = req.body ?? {};
+    /* minuscole: si confrontano con gli uuid che restituisce Postgres */
+    const [da, daConducente, a, aConducente] = [corpo.da, corpo.daConducente, corpo.a, corpo.aConducente]
+      .map(v => (typeof v === "string" ? v.toLowerCase() : v));
+    const conA = a !== undefined && a !== null && a !== "";
+    const uuid = (v: unknown) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(v ?? ""));
+    /* il DSS del tabellone che l'utente guardava (null: tutti i turni, AUTO o nessun DSS) */
+    const dssVisto = typeof corpo.dssVisto === "string" && corpo.dssVisto ? corpo.dssVisto.toLowerCase() : null;
+    if (![da, daConducente, aConducente].every(uuid) || (conA && !uuid(a)) || (dssVisto !== null && !uuid(dssVisto))) {
+      res.status(400).json({ error: "da, daConducente e aConducente (uuid) richiesti; a e dssVisto facoltativi" }); return;
+    }
+    if (daConducente === aConducente) { res.status(400).json({ error: "Lo scambio è fra due conducenti diversi" }); return; }
+    if (conA && a === da) { res.status(400).json({ error: "Lo scambio è fra due turni diversi" }); return; }
+
+    const personale = vedeDatiPersonali(req);
+    const esito = await db.transaction(async (tx) => {
+      const ex = tx as unknown as Ex;
+      /* Prima i conducenti, poi i turni, sempre in ordine di id: è l'ordine della
+         disattivazione e dell'import, così nessuno resta ad aspettare l'altro.
+         Il blocco aspetta chi sta cambiando il conducente (disattivazione, data
+         di uscita) e poi legge il dato già salvato, non quello di prima; ed è
+         esclusivo fra due cambi turno sullo stesso conducente, così il secondo
+         vede il turno passato dal primo. NO KEY UPDATE lascia passare i
+         controlli delle chiavi esterne (chi inserisce turni e voci). */
+      const conducenti = righe(await ex.execute(sql`
+        SELECT id, cognome, nome, name, is_active,
+               to_char(data_assunzione, 'YYYY-MM-DD') AS dal, to_char(data_fine_servizio, 'YYYY-MM-DD') AS al
+          FROM roster_drivers
+         WHERE id IN (${aConducente}::uuid, ${daConducente}::uuid)
+         ORDER BY id
+           FOR NO KEY UPDATE`));
+      const r = righe(await ex.execute(sql`
+        SELECT id, driver_id, day::text AS day, duty_code
+          FROM roster_assignments
+         WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)
+         ORDER BY id
+           FOR UPDATE`));
+      const ceduto = r.find(x => x.id === da);
+      const ricevuto = conA ? r.find(x => x.id === a) : null;
+      if (!ceduto || (conA && !ricevuto)) throw new Rifiuto(409, "Uno dei due turni non c'è più: il tabellone si ricarica");
+      if (ceduto.driver_id !== daConducente || (ricevuto && ricevuto.driver_id !== aConducente)) {
+        throw new Rifiuto(409, "Nel frattempo uno dei due turni è passato a un altro conducente: il tabellone si ricarica");
+      }
+      const giorno = String(ceduto.day).slice(0, 10);
+      if (ricevuto && String(ricevuto.day).slice(0, 10) !== giorno) {
+        throw new Rifiuto(400, "Si scambiano solo turni dello stesso giorno");
+      }
+      const quando = giorno.split("-").reverse().join("/");
+      const nomeDi = (id: string) => {
+        const c = conducenti.find(x => x.id === id);
+        return c ? ([c.cognome, c.nome].filter(Boolean).join(" ") || c.name) : "Il conducente";
+      };
+      /* senza turno in cambio, chi riceve quel giorno non aveva turni, fra quelli
+         che l'utente vedeva: se intanto ne ha ricevuto uno, voleva uno scambio e
+         non un turno in più. Un turno di un altro DSS, che il tabellone per DSS
+         non mostra, non conta: avere più turni nello stesso giorno si può. */
+      if (!ricevuto) {
+        const gia = righe(await ex.execute(sql`
+          SELECT duty_code FROM roster_assignments
+           WHERE driver_id = ${aConducente}::uuid AND day = ${giorno}::date
+             AND (${dssVisto}::uuid IS NULL OR dss_id = ${dssVisto}::uuid)
+           LIMIT 1`));
+        if (gia.length) {
+          throw new Rifiuto(409, `${nomeDi(aConducente)} nel frattempo ha ricevuto ${gia[0].duty_code} il ${quando}: il tabellone si ricarica`);
+        }
+      }
+      /* chi riceve un turno dev'essere in servizio quel giorno */
+      for (const id of ricevuto ? [aConducente, daConducente] : [aConducente]) {
+        const c = conducenti.find(x => x.id === id);
+        const chi = nomeDi(id);
+        if (!c || !c.is_active) throw new Rifiuto(409, `${chi} non è più fra i conducenti attivi`);
+        const nonAncora = !!c.dal && c.dal > giorno, uscito = !!c.al && c.al < giorno;
+        /* la data di uscita è un dato operativo; quella di assunzione no */
+        if (nonAncora) throw new Rifiuto(409, personale ? `${chi} il ${quando} non è ancora assunto` : `${chi} il ${quando} non è in servizio`);
+        if (uscito) throw new Rifiuto(409, `${chi} il ${quando} non è più in servizio`);
+      }
+      await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${aConducente}::uuid WHERE id = ${da}::uuid`);
+      if (ricevuto) await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${daConducente}::uuid WHERE id = ${a}::uuid`);
+      return {
+        giorno,
+        ceduto: { id: da, dutyCode: ceduto.duty_code, driverId: aConducente },
+        ricevuto: ricevuto ? { id: a, dutyCode: ricevuto.duty_code, driverId: daConducente } : null,
+      };
+    });
+    res.json({ ok: true, ...esito });
+  } catch (e: any) { rispondiErrore(res, e, "scambio turni"); }
 });
 
 // ── Voci Assenza / Presenza ───────────────────────────────────────────────────
