@@ -22,7 +22,7 @@ import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
-  MousePointer2, ArrowLeftRight, Pin,
+  MousePointer2, ArrowLeftRight, Pin, Send,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Link } from "wouter";
@@ -58,9 +58,15 @@ interface RosterDuty {
 interface DutySnapshot { start?: string | null; end?: string | null; paidHours?: unknown; name?: string | null }
 /** Chi ha assegnato un turno nonostante riposo troppo corto o sovrapposizione, quando e cosa. */
 interface Forzatura { da: string | null; il: string; regole: string[]; testi: string[] }
+/** Stato di un'assegnazione nel canale della pubblicazione (api-server routes/roster.ts, board). */
+type StatoAssegnazione = "pubblicato" | "da_riassegnare" | "non_pubblicato";
 interface RosterAssignment {
   id: string; driverId: string; day: string; dutyCode: string; dssId: string;
   snapshot?: DutySnapshot | null; forzatura?: Forzatura | null;
+  /** pubblicato; da_riassegnare = il giorno è pubblicato ma questo turno no; non_pubblicato = giorno mai pubblicato */
+  stato?: StatoAssegnazione;
+  /** l'ultima volta che una ripubblicazione l'ha spostata su un turno uguale */
+  ricollegata?: { pubblicazione: string; il: string; prima: { dssId: string; codice: string } } | null;
 }
 type Servizio = "urbano" | "extraurbano";
 /** Riposo troppo corto o sovrapposizione fra due turni di un conducente (api-server lib/roster-normativa.ts). */
@@ -94,28 +100,26 @@ function voceTextColor(cat: "assenza" | "presenza", code: string): string {
   if (cat === "assenza") return code === "R" ? "text-blue-400" : "text-rose-500";
   return "text-slate-100";
 }
-interface DutySource {
-  dssId: string; name: string; scenarioName: string | null;
-  scenarioDate: string | null; dutyCount: number; createdAt: string;
-  isOperational?: boolean; validityUnitName?: string | null;
-  /** urbano o extraurbano (riposo minimo 8h o 9h) e da dove viene: UDP, linee dell'UDP, Fucina */
-  serviceType?: Servizio | null; serviceTypeDa?: "udp" | "linee" | "fucina" | null;
-}
+/** Un'UDP pubblicata in un giorno, con i suoi turni guida (il canale della pubblicazione). */
+interface Pubblicato { udpId: string; udpNome: string | null; dssId: string; dssNome: string | null; psProjectId: string | null }
 interface Board {
   /** depositoCodice: il deposito del catalogo, abbinato dal server come fa l'anagrafica */
   from: string; days: string[]; drivers: Array<RosterDriver & { depositoCodice?: string | null }>;
-  duties: RosterDuty[]; assignments: RosterAssignment[];
+  assignments: RosterAssignment[];
   entries?: RosterEntry[];
-  /** residenza di servizio (deposito) dello scenario → colore dei turni */
-  residenza?: { name: string; color: string } | null;
   /** il colore di ogni deposito del personale, lo stesso dei suoi turni */
   depositi?: ColoreDeposito[];
-  /** Modalità AUTO (dssId="auto"): duty raggruppati per DSS + DSS competente per giorno */
-  dutiesByDss?: Record<string, RosterDuty[]>;
-  dssByDay?: Record<string, string | null>;
-  /** riposi troppo corti e sovrapposizioni nei giorni visibili, anche coi turni di altri DSS */
+  /** per giorno, le UDP pubblicate e i loro turni guida: l'unica fonte dei turni */
+  pubblicati: Record<string, Pubblicato[]>;
+  /** i programmi pubblicati nei giorni visibili */
+  programmi: Array<{ id: string; nome: string }>;
+  /** i turni (senza tratte) dei DSS pubblicati e di quelli delle assegnazioni */
+  dutiesByDss: Record<string, RosterDuty[]>;
+  /** riposi troppo corti e sovrapposizioni nei giorni visibili */
   violazioni?: ViolazioneRoster[];
 }
+/** Un turno nel tabellone: il codice da solo non basta, due UDP dello stesso deposito hanno entrambe A001. */
+interface RifTurno { day: string; code: string; dssId: string }
 
 /** Da dove viene il colore: i turni sul tabellone, Planner Studio, o la tavolozza fissa. */
 interface ColoreDeposito { codice: string; nome: string; colore: string; da: "turni" | "planner" | "predefinito"; depositoPlanner: string | null }
@@ -125,7 +129,7 @@ type Strumento = "puntatore" | "gomma" | "cambio";
 /** Un cambio turno: «da» passa a aConducente, «a» (se c'è) torna al conducente di «da». */
 interface Scambio { da: RosterAssignment; aConducente: string; a: RosterAssignment | null; forza?: string[] }
 /** Un'assegnazione chiesta al server; forza = le chiavi delle violazioni viste, si procede nonostante quelle. */
-interface Assegnazione { driverId: string; day: string; dutyCode: string; dssId: string; forza?: string[] }
+interface Assegnazione { driverId: string; day: string; dutyCode: string; dssId: string; forza?: string[]; sostituisce?: string }
 /** Il 409 forzabile del server: violazioni da mostrare e l'azione da rifare con forza. */
 interface AvvisoNormativa { titolo: string; violazioni: ViolazioneRoster[]; conferma: string; forza: () => void }
 const eForzabile = (e: unknown): e is Error & { status: number; body: { forzabile: true; violazioni: ViolazioneRoster[] } } =>
@@ -241,45 +245,32 @@ export default function RosterPage() {
   const urlParams = useMemo(() => new URLSearchParams(window.location.search), []);
   const psProjectId = urlParams.get("psProjectId") ?? "";
   const [from, setFrom] = useState(() => mondayOf(new Date()));
-  const [dssId, setDssId] = useState("");
-  const [operationalOnly, setOperationalOnly] = useState(urlParams.get("operational") === "1");
 
   // selezioni + appunti (taglia/incolla)
-  const [selDuty, setSelDuty] = useState<{ day: string; code: string } | null>(null);
+  const [selDuty, setSelDuty] = useState<RifTurno | null>(null);
   const [selDriver, setSelDriver] = useState<string | null>(null);
-  const [cut, setCut] = useState<{ day: string; code: string } | null>(null);
+  const [cut, setCut] = useState<RifTurno | null>(null);
   /* id del conducente di cui è aperta la scheda, o "new" */
   const [editDriver, setEditDriver] = useState<string | null | "new">(null);
   const { hasPermission } = useAuth();
   /* senza «Personale» dal tabellone si creano solo conducenti fittizi */
   const personale = hasPermission("personale");
 
-  const sourcesQ = useQuery({
-    queryKey: ["roster", "sources", operationalOnly, psProjectId],
-    queryFn: () => {
-      const qs = new URLSearchParams();
-      if (operationalOnly) qs.set("operationalOnly", "1");
-      if (psProjectId) qs.set("psProjectId", psProjectId);
-      const suffix = qs.toString() ? `?${qs.toString()}` : "";
-      return apiFetch<{ sources: DutySource[] }>(`/api/roster/duty-sources${suffix}`);
-    },
-  });
-
   // Vista a più settimane: il tabellone scorre orizzontalmente (barra di
-  // scorrimento) invece di navigare una settimana alla volta.
+  // scorrimento) invece di navigare una settimana alla volta. I turni vengono
+  // solo dalla pubblicazione: niente più scelta della fonte qui.
   const RANGE_DAYS = 28;
   const boardQ = useQuery({
-    queryKey: ["roster", "board", from, dssId],
-    queryFn: () => apiFetch<Board>(`/api/roster/board?from=${from}&days=${RANGE_DAYS}${dssId ? `&dssId=${dssId}` : ""}`),
+    queryKey: ["roster", "board", from],
+    queryFn: () => apiFetch<Board>(`/api/roster/board?from=${from}&days=${RANGE_DAYS}`),
   });
   const invalidateBoard = () => qc.invalidateQueries({ queryKey: ["roster", "board"] });
 
-  /* Il calendario aziendale di Planning Studio, per la righetta sopra ogni giorno. */
-  const dssPerCalendario = /^[0-9a-f-]{36}$/i.test(dssId) ? dssId : "";
+  /* Il calendario aziendale di Planning Studio, per la righetta sopra ogni giorno: quello del programma pubblicato */
   const calendarioQ = useQuery({
-    queryKey: ["roster", "calendario", from, RANGE_DAYS, psProjectId, dssPerCalendario],
+    queryKey: ["roster", "calendario", from, RANGE_DAYS, psProjectId],
     queryFn: () => apiFetch<CalendarioRoster>(`/api/roster/calendario?from=${from}&days=${RANGE_DAYS}`
-      + `${psProjectId ? `&psProjectId=${psProjectId}` : ""}${dssPerCalendario ? `&dssId=${dssPerCalendario}` : ""}`),
+      + `${psProjectId ? `&psProjectId=${psProjectId}` : ""}`),
     staleTime: 10 * 60 * 1000,
   });
   const giornoCal = useMemo(() => new Map((calendarioQ.data?.days ?? []).map(g => [g.date, g])), [calendarioQ.data]);
@@ -346,6 +337,8 @@ export default function RosterPage() {
         setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Assegna comunque", forza: () => assignMut.mutate({ ...input, forza: viste }) });
         return;
       }
+      /* il turno non è (più) pubblicato quel giorno: il tabellone era vecchio */
+      if ((e as any)?.body?.nonPubblicato) { setCut(null); invalidateBoard(); }
       toast.error("Assegnazione fallita", { description: e.message });
     },
   });
@@ -408,12 +401,19 @@ export default function RosterPage() {
 
   // ── Menu della toolbar + tooltip dettaglio turno (tasto destro) ──
   const [openTopMenu, setOpenTopMenu] = useState<string | null>(null);
-  const [ctxDuty, setCtxDuty] = useState<{ x: number; y: number; duty: RosterDuty } | null>(null);
-  const openDutyContext = (e: ReactMouseEvent, duty: RosterDuty | undefined) => {
+  const [ctxDuty, setCtxDuty] = useState<{ x: number; y: number; duty: RosterDuty; dssId: string } | null>(null);
+  const openDutyContext = (e: ReactMouseEvent, duty: RosterDuty | undefined, dssId: string) => {
     if (!duty) return;
     e.preventDefault();
-    setCtxDuty({ x: e.clientX, y: e.clientY, duty });
+    setCtxDuty({ x: e.clientX, y: e.clientY, duty, dssId });
   };
+  /* le tratte del turno si chiedono quando si apre il dettaglio: il tabellone porta solo i riassunti */
+  const tratteQ = useQuery({
+    queryKey: ["roster", "turno", ctxDuty?.dssId, ctxDuty?.duty.code],
+    queryFn: () => apiFetch<{ turno: RosterDuty }>(`/api/roster/turni/${ctxDuty!.dssId}/${encodeURIComponent(ctxDuty!.duty.code)}`).then(r => r.turno),
+    enabled: !!ctxDuty,
+    staleTime: 10 * 60 * 1000,
+  });
   const toggleFullscreen = () => {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     else document.documentElement.requestFullscreen().catch(() => {});
@@ -421,24 +421,24 @@ export default function RosterPage() {
   };
 
   const board = boardQ.data;
-  const isAuto = dssId === "auto";
-  const dutyByCode = useMemo(() => new Map((board?.duties ?? []).map((d) => [d.code, d])), [board?.duties]);
-  /** Dettaglio turno di un'assegnazione: in AUTO cerca nel DSS dell'assegnazione
-   *  (dutiesByDss) e in ultima istanza ricostruisce dallo snapshot salvato. */
+  /* i turni per DSS e codice */
+  const turnoDi = useMemo(() => {
+    const m = new Map<string, RosterDuty>();
+    for (const [dss, l] of Object.entries(board?.dutiesByDss ?? {})) for (const d of l) m.set(`${dss}|${d.code}`, d);
+    return m;
+  }, [board?.dutiesByDss]);
+  /** Il turno di un'assegnazione, dal suo DSS; senza, ricostruito dallo snapshot salvato. */
   const dutyFor = (a: RosterAssignment): RosterDuty | undefined => {
-    if (isAuto) {
-      const d = board?.dutiesByDss?.[a.dssId]?.find((x) => x.code === a.dutyCode);
-      if (d) return d;
-      if (a.snapshot) {
-        return {
-          code: a.dutyCode, type: null, start: a.snapshot.start ?? null, end: a.snapshot.end ?? null,
-          nastro: null, work: null, interruption: null, ripreseCount: 0, tripsCount: 0, costEuro: null,
-        };
-      }
-      return undefined;
-    }
-    return dutyByCode.get(a.dutyCode);
+    const d = turnoDi.get(`${a.dssId}|${a.dutyCode}`);
+    if (d) return d;
+    if (!a.snapshot) return undefined;
+    return {
+      code: a.dutyCode, type: null, start: a.snapshot.start ?? null, end: a.snapshot.end ?? null,
+      nastro: null, work: null, interruption: null, ripreseCount: 0, tripsCount: 0, costEuro: null,
+    };
   };
+  /* l'UDP pubblicata di un DSS in un giorno, per l'etichetta quando un giorno ne ha più d'una */
+  const udpDi = (day: string, dssId: string) => board?.pubblicati?.[day]?.find(p => p.dssId === dssId)?.udpNome ?? null;
   const assignmentsByCell = useMemo(() => {
     const m = new Map<string, RosterAssignment[]>();
     for (const a of board?.assignments ?? []) {
@@ -455,24 +455,19 @@ export default function RosterPage() {
     }
     return m;
   }, [board?.entries]);
+  /* gli scoperti di ogni giorno: i turni delle UDP pubblicate quel giorno, meno quelli assegnati */
   const uncoveredByDay = useMemo(() => {
-    const m = new Map<string, RosterDuty[]>();
+    const m = new Map<string, Array<{ duty: RosterDuty; dssId: string; udpNome: string | null }>>();
     if (!board) return m;
     for (const day of board.days) {
-      // In AUTO i turni del giorno sono quelli del DSS competente per QUELLA
-      // data (dssByDay, dai periodi P5); coprono solo le assegnazioni sul
-      // medesimo DSS — un turno omonimo del DSS vecchio non copre il nuovo.
-      const competent = isAuto ? (board.dssByDay?.[day] ?? null) : null;
-      const dayDuties = isAuto
-        ? (competent ? board.dutiesByDss?.[competent] ?? [] : [])
-        : board.duties;
-      const taken = new Set(board.assignments
-        .filter((a) => a.day === day && (!isAuto || a.dssId === competent))
-        .map((a) => a.dutyCode));
-      m.set(day, dayDuties.filter((d) => !taken.has(d.code)));
+      const taken = new Set(board.assignments.filter((a) => a.day === day).map((a) => `${a.dssId}|${a.dutyCode}`));
+      m.set(day, (board.pubblicati?.[day] ?? []).flatMap(p =>
+        (board.dutiesByDss?.[p.dssId] ?? []).filter(d => !taken.has(`${p.dssId}|${d.code}`)).map(d => ({ duty: d, dssId: p.dssId, udpNome: p.udpNome }))));
     }
     return m;
-  }, [board, isAuto]);
+  }, [board]);
+  const giornoPubblicato = (day: string) => (board?.pubblicati?.[day]?.length ?? 0) > 0;
+  const daRiassegnare = useMemo(() => (board?.assignments ?? []).filter(a => a.stato === "da_riassegnare"), [board?.assignments]);
 
   // ── Taglia/incolla via tastiera: Q = taglia turno selezionato, W = incolla sul conducente ──
   /* il conducente si passa quando arriva da un click: lo stato selDriver si aggiorna solo al giro dopo */
@@ -481,11 +476,10 @@ export default function RosterPage() {
     if (assignMut.isPending) return;
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!driverId) { toast.info("Seleziona un conducente a sinistra"); return; }
-    // In AUTO l'assegnazione va sul DSS competente per la data del turno.
-    const effDss = isAuto ? (board?.dssByDay?.[cut.day] ?? null) : dssId;
-    if (!effDss) { toast.error("Nessun turno guida competente per questa data (periodo di validità mancante)"); return; }
+    /* se il conducente quel giorno ha un turno da riassegnare, il nuovo lo sostituisce */
+    const vecchio = (assignmentsByCell.get(`${driverId}|${cut.day}`) ?? []).find(a => a.stato === "da_riassegnare");
     // Un conducente può avere più turni nello stesso giorno: nessun blocco.
-    assignMut.mutate({ driverId, day: cut.day, dutyCode: cut.code, dssId: effDss });
+    assignMut.mutate({ driverId, day: cut.day, dutyCode: cut.code, dssId: cut.dssId, ...(vecchio ? { sostituisce: vecchio.id } : {}) });
   }
 
   // ── Crocino: riga e colonna sotto il mouse; il click col puntatore lo ferma ──
@@ -524,7 +518,8 @@ export default function RosterPage() {
       body: JSON.stringify({
         da: s.da.id, daConducente: s.da.driverId, a: s.a?.id ?? null, aConducente: s.aConducente,
         /* col tabellone di un solo DSS, i turni degli altri DSS non si vedono e non contano */
-        dssVisto: isAuto || !dssId ? null : dssId,
+        /* il tabellone mostra tutti i turni pubblicati: niente filtro per DSS */
+        dssVisto: null,
         ...(s.forza ? { forza: s.forza } : {}),
       }),
     }) as Promise<{ forzato?: boolean }>,
@@ -637,7 +632,7 @@ export default function RosterPage() {
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key.toLowerCase();
-    if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio — scegli un conducente e premi W`); } }
+    if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio: scegli un conducente e premi W`); } }
     else if (k === "w") { e.preventDefault(); doPaste(); }
     else if (k === "v") scegliStrumento("puntatore");
     else if (k === "g") scegliStrumento("gomma");
@@ -649,9 +644,9 @@ export default function RosterPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // colore turno: residenza per-turno (deposito del turno) → residenza scenario → tipo
+  // colore turno: residenza per-turno (deposito del turno) → tipo
   const resColor = (duty: RosterDuty | null | undefined) =>
-    duty?.residenzaColor ?? board?.residenza?.color ?? dutyColor(duty?.type ?? null);
+    duty?.residenzaColor ?? dutyColor(duty?.type ?? null);
 
   // ── Deposito del conducente: la righetta ha lo stesso colore dei turni del deposito ──
   const coloreDeposito = useMemo(
@@ -692,8 +687,8 @@ export default function RosterPage() {
     aperte: violazioniVisibili.filter((v) => !v.forzata).length,
     forzate: violazioniVisibili.filter((v) => v.forzata).length,
   }), [violazioniVisibili]);
-  const etichettaServizio = (s: DutySource) =>
-    s.serviceType ? ` · ${s.serviceType}${s.serviceTypeDa === "fucina" ? " (da Fucina)" : ""}` : " · tipo ?";
+  /* i giorni visibili con turni pubblicati e i programmi da cui vengono */
+  const giorniPubblicati = useMemo(() => (board?.days ?? []).filter(d => (board?.pubblicati?.[d]?.length ?? 0) > 0).length, [board]);
 
   const menuItemCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-2";
   const menuDisabledCls = "w-full text-left px-2.5 py-1.5 rounded text-xs text-slate-600 cursor-not-allowed flex items-center gap-2";
@@ -790,29 +785,15 @@ export default function RosterPage() {
           <Users className="w-5 h-5 text-violet-400" />
           <span className="font-bold text-sm">Roster · Personale Viaggiante</span>
         </div>
-        <select
-          value={dssId}
-          onChange={(e) => setDssId(e.target.value)}
-          className="min-w-64 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-sm outline-none focus:border-violet-500"
-        >
-          <option value="">— Fonte turni (DSS) —</option>
-          <option value="auto">🗓 Auto — DSS per data (periodi di validità)</option>
-          {sourcesQ.data?.sources.map((s) => (
-            <option key={s.dssId} value={s.dssId}>
-              {s.isOperational ? "● " : ""}{s.validityUnitName ? `${s.validityUnitName} · ` : ""}{s.name} · {s.dutyCount} turni{etichettaServizio(s)}
-            </option>
-          ))}
-        </select>
-        <label className="flex items-center gap-1.5 text-xs text-slate-400 whitespace-nowrap cursor-pointer">
-          <input type="checkbox" checked={operationalOnly} onChange={(e) => { setOperationalOnly(e.target.checked); setDssId(""); }} className="accent-emerald-500" />
-          Solo in esercizio
-        </label>
-        {board?.residenza && (
-          <span className="flex items-center gap-1.5 text-[11px] text-slate-300 whitespace-nowrap" title="Residenza di servizio (deposito) — colore dei turni">
-            <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: board.residenza.color }} />
-            {board.residenza.name}
-          </span>
-        )}
+        {/* da dove vengono i turni: solo dalla pubblicazione */}
+        <Link href={`/roster/pubblicazione${psProjectId ? `?psProjectId=${psProjectId}` : ""}`}
+          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-xs text-slate-200 whitespace-nowrap"
+          title="I turni del roster arrivano solo dalla pubblicazione: qui si sceglie per periodo quali turni guida mandare">
+          <Send className="w-3.5 h-3.5 text-violet-400" />
+          {board?.programmi?.length
+            ? <span>Turni pubblicati: <b className="font-semibold">{board.programmi.map(p => p.nome).join(" · ")}</b> · {giorniPubblicati}/{board.days.length} giorni</span>
+            : <span>Nessun turno pubblicato · <b className="font-semibold">Pubblica</b></span>}
+        </Link>
         <div className="flex items-center gap-1 rounded-lg border border-slate-700 px-1 py-0.5">
           <button onClick={() => setFrom(shiftDate(from, -RANGE_DAYS))} className="p-1.5 rounded hover:bg-white/10" title="Periodo precedente"><ChevronLeft className="w-4 h-4" /></button>
           <span className="text-xs font-mono px-2 flex items-center gap-1.5"><CalendarDays className="w-3.5 h-3.5 text-violet-400" />{dayLabel(from).dm} – {dayLabel(shiftDate(from, RANGE_DAYS - 1)).dm}</span>
@@ -1005,9 +986,9 @@ export default function RosterPage() {
                         })()}
                         <span className={`uppercase text-[9px] ${festLevel(day) ? "text-rose-300/80" : "text-slate-500"}`}>{dow} </span>
                         <span className="font-semibold text-[11px]">{dm}</span>
-                        {dssId && cellSize !== "small" && (
-                          isAuto && !board?.dssByDay?.[day]
-                            ? <span className="block text-[9px] font-mono text-slate-600">—</span>
+                        {cellSize !== "small" && (
+                          !giornoPubblicato(day)
+                            ? <span className="block text-[9px] font-mono text-slate-500" title="Nessun turno pubblicato per questo giorno">non pubbl.</span>
                             : <span className={`block text-[9px] font-mono ${unc > 0 ? "text-amber-400" : "text-emerald-400"}`}>{unc > 0 ? `${unc} scoperti` : "coperto"}</span>
                         )}
                       </th>
@@ -1094,22 +1075,34 @@ export default function RosterPage() {
                                       const avvisoTurno = sue.length
                                         ? `\n\n${sue.map((v) => `${v.forzata ? "Forzato: " : "⚠ "}${v.testo}`).join("\n")}`
                                         : "";
+                                      /* il canale: turno non più pubblicato quel giorno (da riassegnare), o giorno mai pubblicato */
+                                      const orfano = a.stato === "da_riassegnare";
+                                      const statoTurno = orfano
+                                        ? "Da riassegnare: questo turno non è più pubblicato per il giorno. Incolla qui un turno pubblicato per sostituirlo, o toglilo con la Gomma.\n\n"
+                                        : a.stato === "non_pubblicato" ? "Giorno non pubblicato: assegnazione di prima della pubblicazione.\n\n" : "";
+                                      const ricollegata = a.ricollegata
+                                        ? `\n\nPassato qui da ${a.ricollegata.prima.codice} con la pubblicazione del ${new Date(a.ricollegata.il).toLocaleDateString("it-IT")} (stesse corse e orari).`
+                                        : "";
+                                      const etichettaUdp = (board?.pubblicati?.[day]?.length ?? 0) > 1 ? udpDi(day, a.dssId) : null;
                                       return (
                                         <button key={a.id}
                                           /* col puntatore il click passa alla cella (seleziona, croce); col cambio turno sceglie QUESTO turno */
                                           onClick={tool === "cambio" ? (e) => { e.stopPropagation(); swapClick(drv.id, day, a); } : undefined}
-                                          onContextMenu={(e) => { e.stopPropagation(); openDutyContext(e, duty); }}
+                                          onContextMenu={(e) => { e.stopPropagation(); openDutyContext(e, duty, a.dssId); }}
                                           aria-pressed={tool === "cambio" ? scelto : undefined}
-                                          title={(tool === "cambio"
+                                          title={statoTurno + (etichettaUdp ? `${etichettaUdp}\n` : "") + (tool === "cambio"
                                             ? (scelto ? "Turno scelto: ora clicca un'altra persona (un altro click lo lascia)" : swapFrom ? `Scambia con ${swapFrom.dutyCode}` : "Scegli questo turno da scambiare")
-                                            : "Tasto destro: dettaglio · per toglierlo la Gomma, per scambiarlo il Cambio turno") + avvisoTurno}
-                                          aria-description={sue.length ? sue.map((v) => v.testo).join(". ") : undefined}
-                                          className={`relative w-full rounded text-white font-bold leading-tight ${tool === "cambio" ? "hover:opacity-80" : "cursor-default"} ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"} ${
+                                            : "Tasto destro: dettaglio · per toglierlo la Gomma, per scambiarlo il Cambio turno") + avvisoTurno + ricollegata}
+                                          aria-description={[orfano ? "Da riassegnare" : "", ...sue.map((v) => v.testo)].filter(Boolean).join(". ") || undefined}
+                                          className={`relative w-full rounded font-bold leading-tight ${tool === "cambio" ? "hover:opacity-80" : "cursor-default"} ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"} ${
+                                            orfano ? "text-amber-100 border-2 border-dashed border-amber-400 bg-slate-900"
+                                              : a.stato === "non_pubblicato" ? "text-white opacity-60" : "text-white"
+                                          } ${
                                             scelto ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950"
                                               : daControllare ? "ring-2 ring-rose-500 ring-offset-1 ring-offset-slate-950"
                                                 : sue.length ? "ring-1 ring-amber-400/80" : ""
                                           }`}
-                                          style={{ backgroundColor: resColor(duty), ...(tool === "cambio" ? { cursor: CURSORE.cambio } : {}) }}>
+                                          style={{ ...(orfano ? {} : { backgroundColor: resColor(duty) }), ...(tool === "cambio" ? { cursor: CURSORE.cambio } : {}) }}>
                                           {sue.length > 0 && (
                                             <span aria-hidden className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full flex items-center justify-center shadow ${daControllare ? "bg-rose-500" : "bg-amber-400 text-slate-900"}`}>
                                               <AlertTriangle className="w-2.5 h-2.5" />
@@ -1150,11 +1143,17 @@ export default function RosterPage() {
         </div>
 
         {/* BASSO: turni scoperti — finestra con i GIORNI come colonne, scorrevole */}
-        {dssId && (
+        {board && (
           <div className={`shrink-0 border-t border-slate-800 bg-slate-900/50 flex flex-col ${showUncovered ? "h-44" : "h-8"}`}>
             <div className="px-3 h-8 shrink-0 border-b border-slate-800 text-xs font-semibold text-slate-300 flex items-center gap-2">
               <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> Turni scoperti per giorno
               <span className="text-[10px] font-normal text-slate-500">tasto destro per il dettaglio · Q taglia · W incolla</span>
+              {daRiassegnare.length > 0 && (
+                <span className="text-[10px] font-normal px-1.5 py-0.5 rounded border border-dashed border-amber-400 text-amber-200"
+                  title="Turni assegnati che una ripubblicazione ha tolto senza trovare un turno uguale: incollaci sopra un turno pubblicato o toglili con la Gomma">
+                  {daRiassegnare.length} da riassegnare
+                </span>
+              )}
               <button onClick={() => setShowUncovered((v) => !v)} className="ml-auto text-[11px] text-slate-400 hover:text-slate-100">
                 {showUncovered ? "Nascondi ▾" : "Mostra ▸"}
               </button>
@@ -1172,27 +1171,31 @@ export default function RosterPage() {
                       })()}
                       <div className={`px-2 py-1 shrink-0 text-[10px] uppercase tracking-wide border-b border-slate-800/60 flex items-center justify-between ${festLevel(day) ? "text-rose-300/80" : "text-slate-400"}`}>
                         <span>{dayLabel(day).dow} {dayLabel(day).dm}</span>
-                        <span className={list.length ? "text-amber-400" : "text-emerald-400"}>{list.length}</span>
+                        <span className={!giornoPubblicato(day) ? "text-slate-500" : list.length ? "text-amber-400" : "text-emerald-400"}>{giornoPubblicato(day) ? list.length : "—"}</span>
                       </div>
                       <div className="flex-1 overflow-y-auto p-1 space-y-1">
-                        {list.length === 0 ? (
-                          isAuto && !board?.dssByDay?.[day]
-                            ? <div className="text-[10px] text-slate-500 px-1">nessun DSS competente</div>
-                            : <div className="text-[10px] text-emerald-400/60 px-1">tutto coperto</div>
-                        ) : list.map((d) => {
-                          const isSel = selDuty?.day === day && selDuty?.code === d.code;
-                          const isCut = cut?.day === day && cut?.code === d.code;
+                        {!giornoPubblicato(day) ? (
+                          <Link href={`/roster/pubblicazione${psProjectId ? `?psProjectId=${psProjectId}` : ""}`} className="block text-[10px] text-slate-500 px-1 hover:text-violet-300">
+                            non pubblicato · <span className="underline">pubblica</span>
+                          </Link>
+                        ) : list.length === 0 ? (
+                          <div className="text-[10px] text-emerald-400/60 px-1">tutto coperto</div>
+                        ) : list.map(({ duty: d, dssId: dss, udpNome }) => {
+                          const isSel = selDuty?.day === day && selDuty?.code === d.code && selDuty?.dssId === dss;
+                          const isCut = cut?.day === day && cut?.code === d.code && cut?.dssId === dss;
+                          const piuUdp = (board?.pubblicati?.[day]?.length ?? 0) > 1;
                           return (
-                            <button key={`${day}|${d.code}`}
-                              onClick={() => setSelDuty(isSel ? null : { day, code: d.code })}
-                              onContextMenu={(e) => openDutyContext(e, d)}
+                            <button key={`${day}|${dss}|${d.code}`}
+                              onClick={() => setSelDuty(isSel ? null : { day, code: d.code, dssId: dss })}
+                              onContextMenu={(e) => openDutyContext(e, d, dss)}
+                              title={piuUdp && udpNome ? udpNome : undefined}
                               className={`w-full text-left px-1.5 py-1 rounded border flex items-center gap-1.5 transition-colors ${
                                 isCut ? "border-amber-500/70 bg-amber-500/10" : isSel ? "border-violet-500/70 bg-violet-500/10" : "border-slate-800 hover:border-violet-500/40"
                               }`}>
                               <span className="px-1 py-0.5 rounded text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: resColor(d) }}>{d.code}</span>
                               <span className="min-w-0 flex-1">
                                 <span className="block text-[10px] text-slate-200 leading-tight">{d.start ?? "?"}–{d.end ?? "?"}</span>
-                                <span className="block text-[9px] text-slate-500 leading-tight">{d.type ?? "turno"}{d.tripsCount ? ` · ${d.tripsCount}c` : ""}</span>
+                                <span className="block text-[9px] text-slate-500 leading-tight truncate">{piuUdp && udpNome ? udpNome : (d.type ?? "turno")}{d.tripsCount ? ` · ${d.tripsCount}c` : ""}</span>
                               </span>
                             </button>
                           );
@@ -1346,7 +1349,9 @@ export default function RosterPage() {
               <span>Lavoro: <span className="text-slate-100 font-medium">{ctxDuty.duty.work ?? "—"}</span></span>
             </div>
             <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1 border-t border-slate-800 pt-2">Contenuto del turno</div>
-            {(ctxDuty.duty.segments ?? []).length === 0 ? (
+            {tratteQ.isLoading ? (
+              <div className="text-[10px] text-slate-500 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Carico le tratte…</div>
+            ) : (tratteQ.data?.segments ?? []).length === 0 ? (
               <div className="text-[10px] text-slate-500 italic">Dettaglio tratte non disponibile per questo turno.</div>
             ) : (
               <table className="w-full text-[10px]">
@@ -1358,7 +1363,7 @@ export default function RosterPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(ctxDuty.duty.segments ?? []).map((s, i) => {
+                  {(tratteQ.data?.segments ?? []).map((s, i) => {
                     const isLine = (s.type ?? "trip") === "trip";
                     return (
                       <tr key={i} className="border-t border-slate-800/60 align-top">

@@ -3,12 +3,13 @@
  * ROSTER — assegnazione turni guida al personale viaggiante
  * ───────────────────────────────────────────────────────────────────────────
  * Tabellone: righe = conducenti (anche fittizi), colonne = giorni. I turni da
- * coprire arrivano dai turni guida salvati (driver_shift_scenarios.result.
- * driverShifts, prodotti dallo Scheduling Engine): per ogni giorno i turni non
- * ancora assegnati sono gli "scoperti".
+ * coprire arrivano da un canale solo, la pubblicazione (routes/roster-
+ * pubblicazione.ts): per ogni giorno, i turni guida delle UDP pubblicate.
+ * I turni non ancora assegnati sono gli "scoperti".
  *
- *   GET    /api/roster/duty-sources            — DSS disponibili come fonte turni
- *   GET    /api/roster/board?from=&days=&dssId=— griglia: turni, assegnazioni, voci
+ *   GET    /api/roster/duty-sources            — DSS salvati (lo usa la pagina Misti; il roster no)
+ *   GET    /api/roster/board?from=&days=       — griglia: turni pubblicati, assegnazioni, voci
+ *   GET    /api/roster/turni/:dssId/:codice    — le tratte di un turno (dettaglio)
  *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId, forza?: chiavi viste}
  *   POST   /api/roster/assignments/scambia     — cambio turno fra due conducenti, stesso giorno (forza?)
  *   DELETE /api/roster/assignments/:id         — rimuovi assegnazione
@@ -32,7 +33,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
+import { driverScenariosAccessibleWhere } from "../lib/scenario-access";
 import { assicuraAnagrafica, leggiDepositi, registra, righe, type Ex } from "../lib/anagrafica-store";
 import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
 import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
@@ -40,10 +41,12 @@ import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeDatiPersonali } from "../lib/auth";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
-  forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, violazioniDeiCambi, violazioniDelTabellone,
+  forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, turniDelDss, violazioniDeiCambi, violazioniDelTabellone,
   type Lettore,
 } from "../lib/roster-normativa-db";
 import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
+import { turnoRoster } from "../lib/roster-turni";
+import { assicuraPubblicazione, bloccoCanaleCondiviso, canale, riassuntiDei, snapshotDaRiassunto, statoNelCanale } from "../lib/roster-pubblicazione-db";
 import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
 
 const router: IRouter = Router();
@@ -76,7 +79,7 @@ const VOCE_CODES: Record<string, Set<string>> = {
 
 router.use(async (req, res, next) => {
   if (!req.path.toLowerCase().startsWith("/roster")) { next(); return; }
-  try { await assicuraAnagrafica(); }
+  try { await assicuraAnagrafica(); await assicuraPubblicazione(); }
   catch { res.status(503).json({ error: "Roster non disponibile: riprova tra poco" }); return; }
   next();
 });
@@ -84,67 +87,10 @@ router.use(async (req, res, next) => {
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
-interface DutySegment {
-  type: string;                 // trip | deadhead | depot | riserva …
-  line: string | null;          // linea (route) — null per fuorilinea/attività
-  startTime: string | null; startPlace: string | null;
-  endTime: string | null;   endPlace: string | null;
-}
-const _hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
-
-/** Estrae i turni guida dal result JSON di un DSS (formato crew_scheduler_v4). */
-function extractDuties(result: any): Array<{
-  code: string; type: string | null; start: string | null; end: string | null;
-  nastro: string | null; work: string | null;
-  interruption: string | null; ripreseCount: number; tripsCount: number; costEuro: number | null;
-  residenzaName: string | null; residenzaColor: string | null;
-  segments: DutySegment[];
-}> {
-  const list = result?.driverShifts ?? result?.duties ?? [];
-  if (!Array.isArray(list)) return [];
-  return list.map((d: any, i: number) => {
-    const riprese = Array.isArray(d.riprese) ? d.riprese : [];
-    const tripsCount = riprese.reduce(
-      (s: number, r: any) => s + (Array.isArray(r?.trips) ? r.trips.filter((t: any) => (t?.type ?? "trip") === "trip").length : 0),
-      0,
-    );
-    // Contenuto del turno: ogni tratta con linea, orari e luoghi (anche fuorilinea).
-    const segments: DutySegment[] = [];
-    for (const r of riprese) {
-      for (const t of (Array.isArray(r?.trips) ? r.trips : [])) {
-        segments.push({
-          type: t?.type ?? "trip",
-          line: t?.routeName ?? t?.routeShortName ?? (t?.routeId || null),
-          startTime: t?.departureTime ?? (typeof t?.departureMin === "number" ? _hhmm(t.departureMin) : null),
-          startPlace: t?.firstStopName ?? null,
-          endTime: t?.arrivalTime ?? (typeof t?.arrivalMin === "number" ? _hhmm(t.arrivalMin) : null),
-          endPlace: t?.lastStopName ?? null,
-        });
-      }
-    }
-    return {
-      code: String(d.driverId ?? d.dutyId ?? d.id ?? `T${i + 1}`),
-      type: d.type ?? d.dutyType ?? null,
-      start: d.nastroStart ?? d.startTime ?? null,
-      end: d.nastroEnd ?? d.endTime ?? null,
-      nastro: d.nastro ?? null,
-      work: d.work ?? null,
-      interruption: d.interruption ?? null,
-      ripreseCount: riprese.length,
-      tripsCount,
-      costEuro: typeof d.costEuro === "number" ? d.costEuro : null,
-      // Residenza per-turno (dal turno macchina, propagata dal crew scheduler)
-      residenzaName: d.residenzaName ?? null,
-      residenzaColor: d.residenzaColor ?? null,
-      segments,
-    };
-  });
-}
-
 // Conducenti, storico, fittizi: routes/anagrafica.ts (montato prima di questo router).
 
 /** I depositi dei turni con il loro colore, come li vede l'utente nelle celle. */
-function residenzeDeiTurni(duties: ReturnType<typeof extractDuties>): DepositoColorato[] {
+function residenzeDeiTurni(duties: Array<{ residenzaName: string | null; residenzaColor: string | null }>): DepositoColorato[] {
   return duties.filter(d => d.residenzaName && d.residenzaColor)
     .map(d => ({ name: d.residenzaName!, color: d.residenzaColor! }));
 }
@@ -201,21 +147,19 @@ router.get("/roster/calendario", async (req, res): Promise<void> => {
     const days = Math.min(Math.max(Number(req.query.days) || 28, 1), 62);
     const to = new Date(Date.parse(`${from}T00:00:00Z`) + (days - 1) * 86_400_000).toISOString().slice(0, 10);
     const richiesto = String(req.query.psProjectId ?? "");
-    const dssId = String(req.query.dssId ?? "");
 
     let psProjectId: string | null = null;
     let scelto: "indicato" | "dai turni" | "in esercizio" | "riconosciuto" | "assente" = "assente";
     if (UUID_RE.test(richiesto)) { psProjectId = richiesto; scelto = "indicato"; }
-    if (!psProjectId && UUID_RE.test(dssId)) {
+    /* il programma dei turni pubblicati in quei giorni (quello con più giorni, se sono due) */
+    if (!psProjectId) {
       try {
         const r = await db.execute<any>(sql`
-          SELECT sp.planning_studio_project_id AS id
-            FROM driver_shift_scenarios d
-            JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
-            JOIN scheduling_projects sp ON sp.id = s.project_id
-           WHERE d.id = ${dssId}::uuid AND sp.planning_studio_project_id IS NOT NULL`);
+          SELECT ps_project_id::text AS id FROM roster_turni_pubblicati
+           WHERE sostituita_da IS NULL AND ps_project_id IS NOT NULL AND day BETWEEN ${from}::date AND ${to}::date
+           GROUP BY ps_project_id ORDER BY count(DISTINCT day) DESC LIMIT 1`);
         if (r.rows[0]?.id) { psProjectId = r.rows[0].id; scelto = "dai turni"; }
-      } catch { /* collegamento non leggibile: si va avanti */ }
+      } catch { /* canale non ancora creato: si va avanti */ }
     }
     if (!psProjectId) {
       try {
@@ -310,156 +254,102 @@ router.get("/roster/duty-sources", async (req, res): Promise<void> => {
 
 // ── Tabellone ────────────────────────────────────────────────────────────────
 
+/**
+ * Il tabellone. I turni arrivano solo dal canale della pubblicazione
+ * (lib/roster-pubblicazione-db.ts): per ogni giorno le UDP pubblicate e i
+ * loro turni guida. Ogni assegnazione ha uno stato:
+ *   - pubblicato: il suo turno è pubblicato quel giorno;
+ *   - da_riassegnare: il giorno è pubblicato ma il suo turno no (una
+ *     ripubblicazione l'ha tolto e non ha trovato un turno uguale);
+ *   - non_pubblicato: il giorno non è pubblicato (assegnazioni di prima).
+ * I turni sono riassunti (senza tratte): le tratte di un turno si chiedono
+ * a parte (GET /roster/turni/:dssId/:codice).
+ */
 router.get("/roster/board", async (req, res): Promise<void> => {
   try {
     const from = String(req.query.from ?? "");
     if (!DATE_RE.test(from)) { res.status(400).json({ error: "from=YYYY-MM-DD richiesto" }); return; }
     const days = Math.min(Math.max(Number(req.query.days) || 7, 1), 31);
-    const dssId = String(req.query.dssId ?? "");
-
     const dayList: string[] = [];
     const d0 = new Date(`${from}T00:00:00Z`);
-    for (let i = 0; i < days; i++) {
-      dayList.push(new Date(d0.getTime() + i * 86_400_000).toISOString().slice(0, 10));
-    }
+    for (let i = 0; i < days; i++) dayList.push(new Date(d0.getTime() + i * 86_400_000).toISOString().slice(0, 10));
+    const al = dayList[dayList.length - 1]!;
+    const ex = db as unknown as Ex;
 
     /* i conducenti come li può vedere chi chiede: senza «personale», solo i dati operativi */
-    const drivers = await conducentiPer(req, db as unknown as Ex);
+    const drivers = await conducentiPer(req, ex);
+    const righeCanale = await canale(ex, from, al);
+    const assegnazioni = righe(await ex.execute(sql`
+      SELECT id::text, driver_id::text, day::text AS day, duty_code, dss_id::text, snapshot, forzatura, ricollegamenti
+        FROM roster_assignments WHERE day BETWEEN ${from}::date AND ${al}::date`));
+    const riassunti = await riassuntiDei([...righeCanale.map(r => r.dssId), ...assegnazioni.map(a => String(a.dss_id))]);
+    const dutiesByDss: Record<string, unknown[]> = {};
+    for (const [id, r] of riassunti) dutiesByDss[id] = r.turni.map(({ firma: _f, corse: _c, inizio: _i, fine: _e, ...t }) => t);
 
-    // ── Modalità AUTO (dssId = "auto"): risoluzione del DSS competente PER
-    // DATA usando i periodi valid_from/valid_to (P5). La settimana a cavallo
-    // di un cambio turni diventa visibile in un'unica board: giorni < X sul
-    // DSS vecchio, giorni ≥ X sul nuovo. I duty arrivano raggruppati per DSS.
-    if (dssId === "auto") {
-      const userId = (req as any).user?.id ?? null;
-      const assignAll = await db.execute<any>(sql`
-        SELECT a.id, a.driver_id, a.day::text AS day, a.duty_code, a.dss_id, a.snapshot, a.forzatura
-        FROM roster_assignments a
-        WHERE a.day >= ${from}::date AND a.day < ${from}::date + (${days} * interval '1 day')
-      `);
-      // candidati = DSS referenziati dalle assegnazioni nel range ∪ DSS con
-      // periodo che interseca la finestra o attualmente operativi (accessibili)
-      const candQ = await db.execute<any>(sql`
-        SELECT d.id, d.result, COALESCE(d.is_operational, false) AS is_operational,
-               to_char(d.valid_from, 'YYYY-MM-DD') AS valid_from,
-               to_char(d.valid_to,   'YYYY-MM-DD') AS valid_to,
-               d.created_at
-          FROM driver_shift_scenarios d
-         WHERE (d.owner_user_id = ${userId}::uuid OR d.owner_user_id IS NULL)
-           AND (
-             d.id IN (SELECT DISTINCT dss_id FROM roster_assignments
-                       WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day'))
-             OR COALESCE(d.is_operational, false) = true
-             OR (d.valid_from IS NOT NULL AND d.valid_from < ${from}::date + (${days} * interval '1 day')
-                 AND (d.valid_to IS NULL OR d.valid_to >= ${from}::date))
-           )
-      `);
-      const cands = (candQ.rows ?? []) as any[];
-      const dutiesByDss: Record<string, ReturnType<typeof extractDuties>> = {};
-      for (const c of cands) dutiesByDss[c.id] = extractDuties(c.result);
-      // per ogni giorno: il DSS il cui periodo copre la data (preferendo
-      // l'operativo, poi il più recente); null = nessun turno competente
-      const dssByDay: Record<string, string | null> = {};
-      for (const d of dayList) {
-        const covering = cands.filter((c) =>
-          c.valid_from && c.valid_from <= d && (!c.valid_to || c.valid_to >= d));
-        covering.sort((a, b) => (Number(b.is_operational) - Number(a.is_operational))
-          || String(b.created_at).localeCompare(String(a.created_at)));
-        dssByDay[d] = covering[0]?.id ?? null;
-      }
-      const entriesA = await db.execute<any>(sql`
-        SELECT id, driver_id, day::text AS day, category, code, source
-          FROM roster_entries
-         WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day')
-      `);
-      /* il colore dei turni dai DSS che si vedono, dal giorno più recente indietro
-         (il più aggiornato vince), poi quelli delle assegnazioni; gli altri candidati no */
-      const visibili = [...new Set<string>([
-        ...[...dayList].reverse().map(d => dssByDay[d]).filter((x): x is string => !!x),
-        ...assignAll.rows.map((a: any) => String(a.dss_id)),
-      ])];
-      const dep = await depositiDelTabellone(drivers, visibili.flatMap(id => residenzeDeiTurni(dutiesByDss[id] ?? [])));
-      res.json({
-        from, days: dayList,
-        drivers: dep.drivers,
-        duties: [], residenza: null,
-        depositi: dep.depositi,
-        dutiesByDss, dssByDay,
-        assignments: assignAll.rows.map((a: any) => ({
-          id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
-          snapshot: a.snapshot ?? null, forzatura: a.forzatura ?? null,
-        })),
-        violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, dayList[dayList.length - 1]!),
-        entries: entriesA.rows.map((e: any) => ({
-          id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
-          source: e.source ?? null,
-        })),
-      });
-      return;
+    const pubblicati: Record<string, Array<{ udpId: string; udpNome: string | null; dssId: string; dssNome: string | null; psProjectId: string | null }>> = {};
+    for (const r of righeCanale) {
+      (pubblicati[r.day] ??= []).push({ udpId: r.udpId, udpNome: r.udpNome ?? null, dssId: r.dssId, dssNome: r.dssNome ?? null, psProjectId: r.psProjectId });
     }
+    const stato = (day: string, dss: string) =>
+      !pubblicati[day]?.length ? "non_pubblicato" : pubblicati[day]!.some(x => x.dssId === dss) ? "pubblicato" : "da_riassegnare";
 
-    let duties: ReturnType<typeof extractDuties> = [];
-    if (dssId) {
-      // IDOR fix: verifica che l'utente possa leggere QUESTO scenario turni
-      // prima di esporne i duty (codici, orari, costi, residenze).
-      if (!UUID_RE.test(dssId)) { res.status(400).json({ error: "dssId non valido" }); return; }
-      const acc = await requireDriverScenarioRead(req, res, dssId);
-      if (!acc) return;
-      const dssQ = await db.execute<any>(sql`
-        SELECT result FROM driver_shift_scenarios WHERE id = ${dssId}::uuid LIMIT 1
-      `);
-      duties = extractDuties(dssQ.rows[0]?.result);
-    }
-
-    const assignQ = await db.execute<any>(sql`
-      SELECT a.id, a.driver_id, a.day::text AS day, a.duty_code, a.dss_id, a.forzatura
-      FROM roster_assignments a
-      WHERE a.day >= ${from}::date AND a.day < ${from}::date + (${days} * interval '1 day')
-        AND (${dssId}::text = '' OR a.dss_id = ${dssId || "00000000-0000-0000-0000-000000000000"}::uuid)
-    `);
-
-    // Residenza di servizio = deposito dello scenario turni-macchina collegato al
-    // DSS. I turni del Roster vengono colorati con il colore del deposito.
-    let residenza: { name: string; color: string } | null = null;
-    if (dssId) {
+    const idProgrammi = [...new Set(righeCanale.map(r => r.psProjectId).filter((x): x is string => !!x))];
+    let programmi: Array<{ id: string; nome: string }> = [];
+    if (idProgrammi.length) {
       try {
-        const depR = await db.execute<any>(sql`
-          SELECT dep.name, dep.color
-            FROM driver_shift_scenarios d
-            JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
-            JOIN depots dep ON dep.id = s.depot_id
-           WHERE d.id = ${dssId}::uuid LIMIT 1`);
-        const dep = depR.rows?.[0];
-        if (dep) residenza = { name: dep.name, color: dep.color || "#3b82f6" };
-      } catch { /* depot_id può non esistere su scenari vecchi */ }
+        programmi = righe(await ex.execute(sql`
+          SELECT id::text, name FROM ps_projects WHERE id IN (${sql.join(idProgrammi.map(id => sql`${id}::uuid`), sql`, `)})`))
+          .map(x => ({ id: x.id, nome: x.name }));
+      } catch { /* nomi facoltativi */ }
     }
 
-    // Voci Assenza/Presenza nel range (indipendenti dal DSS selezionato).
+    // Voci Assenza/Presenza nel range.
     const entriesQ = await db.execute<any>(sql`
       SELECT id, driver_id, day::text AS day, category, code, source
         FROM roster_entries
        WHERE day >= ${from}::date AND day < ${from}::date + (${days} * interval '1 day')
     `);
 
-    const dep = await depositiDelTabellone(drivers, [...residenzeDeiTurni(duties), ...(residenza ? [residenza] : [])]);
+    /* il colore dei depositi dai turni pubblicati, dal giorno più recente indietro */
+    const dssPubblicati = [...new Set([...righeCanale].reverse().map(r => r.dssId))];
+    const dep = await depositiDelTabellone(drivers, dssPubblicati.flatMap(id => residenzeDeiTurni(riassunti.get(id)?.turni ?? [])));
     res.json({
       from, days: dayList,
       drivers: dep.drivers,
-      duties,
-      residenza,
       depositi: dep.depositi,
-      assignments: assignQ.rows.map((a: any) => ({
-        id: a.id, driverId: a.driver_id, day: a.day.slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
-        forzatura: a.forzatura ?? null,
+      pubblicati,
+      programmi,
+      dutiesByDss,
+      assignments: assegnazioni.map((a: any) => ({
+        id: a.id, driverId: a.driver_id, day: String(a.day).slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
+        snapshot: a.snapshot ?? null, forzatura: a.forzatura ?? null,
+        stato: stato(String(a.day).slice(0, 10), a.dss_id),
+        ricollegata: Array.isArray(a.ricollegamenti) && a.ricollegamenti.length ? a.ricollegamenti[a.ricollegamenti.length - 1] : null,
       })),
-      /* anche coi turni degli altri DSS, che qui non si vedono: il riposo è del conducente */
-      violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, dayList[dayList.length - 1]!),
+      violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, al),
       entries: entriesQ.rows.map((e: any) => ({
         id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
         source: e.source ?? null,
       })),
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) {
+    console.error("[roster.board]", e?.cause?.code ?? e?.code ?? e?.message);
+    res.status(500).json({ error: "Tabellone non leggibile" });
+  }
+});
+
+/** Le tratte di un turno (linea, orari, luoghi), per il dettaglio col tasto destro. */
+router.get("/roster/turni/:dssId/:codice", async (req, res): Promise<void> => {
+  try {
+    const dssId = String(req.params.dssId).toLowerCase(), codice = String(req.params.codice);
+    if (!UUID_RE.test(dssId) || !codice || codice.length > 100) { res.status(400).json({ error: "dssId e codice richiesti" }); return; }
+    const turno = (await turniDelDss([{ dssId, codice }])).get(`${dssId}|${codice}`);
+    if (!turno) { res.status(404).json({ error: "Turno non trovato" }); return; }
+    res.json({ turno: turnoRoster(turno, 0) });
+  } catch (e: any) {
+    console.error("[roster.turno]", e?.cause?.code ?? e?.code ?? e?.message);
+    res.status(500).json({ error: "Turno non leggibile" });
+  }
 });
 
 const UUID_STRETTO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -527,6 +417,32 @@ function controllaForzatura(violazioni: Violazione[], forzate: Set<string>): voi
 const inSavepoint = (tx: any): Lettore => f => tx.transaction((sp: any) => f(sp as Ex));
 
 /**
+ * L'inizio di ogni scrittura sulle assegnazioni: non si aspetta un blocco
+ * per più di qualche secondo (poi 409 «riprova»), e si prende il lucchetto
+ * del canale condiviso, così una pubblicazione in corso finisce prima.
+ */
+async function iniziaScrittura(ex: Ex): Promise<void> {
+  await ex.execute(sql`SET LOCAL lock_timeout = '5s'`);
+  await bloccoCanaleCondiviso(ex);
+}
+
+/**
+ * Il canale unico: un turno si assegna o si sposta solo se è pubblicato quel
+ * giorno. In un giorno mai pubblicato (assegnazioni di prima della
+ * pubblicazione) si può solo spostare quello che c'è già.
+ */
+async function controllaPubblicato(ex: Ex, day: string, dssId: string, codice: string, cosa: "assegna" | "sposta"): Promise<void> {
+  const stato = await statoNelCanale(ex, day, dssId);
+  const quando = day.split("-").reverse().join("/");
+  if (stato === "pubblicato") return;
+  if (stato === "giorno_vuoto" && cosa === "sposta") return;
+  if (stato === "giorno_vuoto") {
+    throw new Rifiuto(409, `Il ${quando} non ha turni pubblicati: pubblicali prima da «Pubblicazione turni»`, { nonPubblicato: true });
+  }
+  throw new Rifiuto(409, `${codice} non è più pubblicato il ${quando}: va tolto o sostituito`, { nonPubblicato: true });
+}
+
+/**
  * Assegna un turno a un conducente. Un conducente può avere più turni in un
  * giorno; il turno resta però di un solo conducente (UNIQUE dss_id/day/
  * duty_code): riassegnarlo lo sposta sul nuovo conducente.
@@ -547,6 +463,7 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       return;
     }
     const forzate = viste(corpo);
+    const sostituisce = typeof corpo.sostituisce === "string" && UUID_STRETTO.test(corpo.sostituisce.toLowerCase()) ? corpo.sostituisce.toLowerCase() : null;
     const personale = vedeDatiPersonali(req);
     const chi = utente(req);
     /* fuori dalla transazione, con db: orari e tipi dei turni intorno al giorno e del turno nuovo */
@@ -554,8 +471,24 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
     const snapshot = snapshotDa(preparato.orari.get(`${dssId}|${dutyCode}`));
     const esito = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
+      await iniziaScrittura(ex);
       const [conducente] = await bloccaConducenti(ex, [driverId]);
       controllaInServizio(conducente, day, personale);
+      /* il canale unico: si assegnano solo turni pubblicati quel giorno */
+      await controllaPubblicato(ex, day, dssId, dutyCode, "assegna");
+      if (!snapshot) throw new Rifiuto(409, `Il turno ${dutyCode} non c'è in quei turni guida: il tabellone si ricarica`);
+      /* «sostituisci»: l'assegnazione da riassegnare dello stesso conducente e giorno se ne va qui */
+      if (sostituisce) {
+        const vecchia = righe(await ex.execute(sql`
+          SELECT id::text, driver_id::text, day::text AS day, dss_id::text, duty_code FROM roster_assignments
+           WHERE id = ${sostituisce}::uuid FOR UPDATE`))[0];
+        if (!vecchia || vecchia.driver_id !== driverId || String(vecchia.day).slice(0, 10) !== day
+          || (await statoNelCanale(ex, day, vecchia.dss_id)) !== "non_pubblicato") {
+          throw new Rifiuto(409, "Il turno da sostituire non è più da riassegnare: il tabellone si ricarica");
+        }
+        await ex.execute(sql`DELETE FROM roster_assignments WHERE id = ${sostituisce}::uuid`);
+        await registra(ex, { ...chi, driverId, azione: "turno-sostituito", campi: ["turno"], dettaglio: { day, da: { dssId: vecchia.dss_id, codice: vecchia.duty_code }, a: { dssId, codice: dutyCode } } });
+      }
       const prima = righe(await ex.execute(sql`
         SELECT id::text, driver_id::text, snapshot FROM roster_assignments
          WHERE dss_id = ${dssId}::uuid AND day = ${day}::date AND duty_code = ${dutyCode}
@@ -628,6 +561,7 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
     const preparato = await preparaControllo([daConducente, aConducente], dueTurni.map(t => String(t.day).slice(0, 10)), []);
     const esito = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
+      await iniziaScrittura(ex);
       const conducenti = await bloccaConducenti(ex, [aConducente, daConducente]);
       const r = righe(await ex.execute(sql`
         SELECT id, driver_id, day::text AS day, dss_id::text, duty_code, snapshot
@@ -645,6 +579,9 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
       if (ricevuto && String(ricevuto.day).slice(0, 10) !== giorno) {
         throw new Rifiuto(400, "Si scambiano solo turni dello stesso giorno");
       }
+      /* il canale unico: un turno non più pubblicato quel giorno non passa a un altro, si toglie o si sostituisce */
+      await controllaPubblicato(ex, giorno, ceduto.dss_id, ceduto.duty_code, "sposta");
+      if (ricevuto) await controllaPubblicato(ex, giorno, ricevuto.dss_id, ricevuto.duty_code, "sposta");
       const quando = giorno.split("-").reverse().join("/");
       const nomeDi = (id: string) => nomeConducente(conducenti.find(x => x.id === id));
       /* senza turno in cambio, chi riceve quel giorno non aveva turni, fra quelli
@@ -733,9 +670,16 @@ router.delete("/roster/entries/:id", async (req, res): Promise<void> => {
 
 router.delete("/roster/assignments/:id", async (req, res): Promise<void> => {
   try {
-    await db.execute(sql`DELETE FROM roster_assignments WHERE id = ${String(req.params.id)}::uuid`);
+    const id = String(req.params.id).toLowerCase();
+    if (!UUID_STRETTO.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    /* anche togliere aspetta una pubblicazione in corso: il ricollegamento lavora su queste righe */
+    await db.transaction(async (tx) => {
+      const ex = tx as unknown as Ex;
+      await iniziaScrittura(ex);
+      await ex.execute(sql`DELETE FROM roster_assignments WHERE id = ${id}::uuid`);
+    });
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { rispondiErrore(res, e, "togli turno"); }
 });
 
 export default router;

@@ -130,6 +130,14 @@ async function loadProject(projectId: string, userId: string, needWrite: boolean
   return row;
 }
 
+/** Una data delle UDP (YYYY-MM-DD o YYYYMMDD) come YYYY-MM-DD. */
+function normDataUdp(x: unknown): string | null {
+  const s = String(x ?? "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  if (/^\d{8}$/.test(s)) return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  return null;
+}
+
 function isValidISODate(s: unknown): s is string {
   return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
@@ -573,6 +581,11 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
 
   const units: any[] = Array.isArray(req.body?.units) ? req.body.units : [];
   if (units.length === 0) { res.status(400).json({ error: "units_required" }); return; }
+  /* il periodo calcolato: dentro le date si sostituiscono, fuori restano. Un
+     nuovo calcolo su gennaio–giugno non deve cancellare le date di
+     settembre–dicembre di un'UDP già salvata (e magari pubblicata nel roster). */
+  const periodo = isValidISODate(req.body?.from) && isValidISODate(req.body?.to) && req.body.from <= req.body.to
+    ? { from: req.body.from as string, to: req.body.to as string } : null;
 
   try {
     // Transazione: il salvataggio di un set di unità è tutto-o-niente — un
@@ -589,7 +602,16 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
       const tripIds        = Array.isArray(u.tripIds) ? u.tripIds : [];
       const repDates       = Array.isArray(u.dates) ? u.dates : (Array.isArray(u.representativeDates) ? u.representativeDates : []);
       const tripCount      = Number.isFinite(u.tripCount) ? u.tripCount : tripIds.length;
-      const dayCount       = Number.isFinite(u.dayCount)  ? u.dayCount  : repDates.length;
+      /* le date: quelle nuove, più quelle già salvate fuori dal periodo calcolato */
+      const nuove = [...new Set(repDates.map(normDataUdp).filter((d: string | null): d is string => !!d))].sort() as string[];
+      const dal = periodo?.from ?? nuove[0], al = periodo?.to ?? nuove[nuove.length - 1];
+      const salvate = (await tx.execute(sql`
+        SELECT representative_dates FROM ps_validity_units
+         WHERE project_id = ${proj.id}::uuid AND validity_id = ${validityId} FOR UPDATE`) as any).rows?.[0]?.representative_dates;
+      const fuori = (Array.isArray(salvate) ? salvate : []).map(normDataUdp)
+        .filter((d: string | null): d is string => !!d && (!dal || !al || d < dal || d > al));
+      const date = [...new Set([...fuori, ...nuove])].sort();
+      const dayCount       = date.length;
 
       await tx.execute(sql`
         INSERT INTO ps_validity_units (
@@ -599,7 +621,7 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
           ${proj.id}::uuid, ${validityId}, ${name}, ${description},
           ${categoryId}::uuid, ${dayTypeId}::uuid,
           ${JSON.stringify(tripIds)}::jsonb, ${tripCount},
-          ${JSON.stringify(repDates)}::jsonb, ${dayCount}
+          ${JSON.stringify(date)}::jsonb, ${dayCount}
         )
         ON CONFLICT (project_id, validity_id) DO UPDATE SET
           name = EXCLUDED.name,

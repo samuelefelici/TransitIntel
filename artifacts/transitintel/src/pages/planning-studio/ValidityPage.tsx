@@ -2061,15 +2061,18 @@ function ComputeUnitsDialog(props: {
   }, [props.routes, routeSearch]);
   const allSelected = selectedRoutes.size === props.routes.length;
 
+  /* il periodo dell'ultimo calcolo: salvando, le UDP cambiano le date solo lì dentro */
+  const [periodoCalcolato, setPeriodoCalcolato] = useState<{ from: string; to: string } | null>(null);
   const computeMut = useMutation({
-    mutationFn: () => computePsValidityUnits(props.projectId, {
-      from, to, tolerance: tolerancePct / 100,
+    mutationFn: (periodo: { from: string; to: string }) => computePsValidityUnits(props.projectId, {
+      from: periodo.from, to: periodo.to, tolerance: tolerancePct / 100,
       // tutte → ometti (= tutte lato server); altrimenti invia la lista esatta
       // (anche vuota = nessuna linea).
       routeIds: allSelected ? undefined : Array.from(selectedRoutes),
       calendarCriterion: calCriterion || undefined,
     }),
-    onSuccess: (res) => {
+    onSuccess: (res, periodo) => {
+      setPeriodoCalcolato(periodo);
       setGroups(res.units);
       setCoverage(res.coverage ?? null);
       setExactGroups(res.exactGroups ?? null);
@@ -2100,7 +2103,7 @@ function ComputeUnitsDialog(props: {
           dayCount: g.dates.length,
           tripCount: g.tripIds.length,
         }));
-      return savePsValidityUnits(props.projectId, items);
+      return savePsValidityUnits(props.projectId, items, periodoCalcolato);
     },
     onSuccess: () => {
       props.onSaved();
@@ -2261,7 +2264,7 @@ function ComputeUnitsDialog(props: {
             )}
           </div>
           <button
-            onClick={() => computeMut.mutate()}
+            onClick={() => computeMut.mutate({ from, to })}
             disabled={!from || !to || computeMut.isPending}
             className="px-3 py-1.5 text-sm font-medium rounded-lg bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:from-indigo-500 hover:to-violet-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-lg shadow-indigo-900/30 transition-all"
           >

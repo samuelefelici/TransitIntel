@@ -46,6 +46,7 @@ import {
 } from "../lib/scenario-access";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
+import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
 
 const router: IRouter = Router();
 
@@ -1479,18 +1480,10 @@ router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) =>
       });
       return;
     }
-    // STORICO IMMUTABILE: un DSS referenziato dallo storico assegnazioni del
-    // roster non si elimina — le righe passate diventerebbero illeggibili.
-    try {
-      const rr = await db.execute<any>(sql`
-        SELECT count(*)::int AS c FROM roster_assignments WHERE dss_id = ${req.params.dssId}::uuid`);
-      if (Number(rr.rows?.[0]?.c ?? 0) > 0) {
-        res.status(409).json({
-          error: "Turni guida referenziati dallo storico roster: non eliminabili (le assegnazioni passate resterebbero orfane).",
-        });
-        return;
-      }
-    } catch { /* tabella roster assente: nessun vincolo */ }
+    // STORICO IMMUTABILE: un DSS assegnato o pubblicato nel roster non si
+    // elimina — le righe passate diventerebbero illeggibili.
+    const usi = messaggioUsi(await usiNelRoster({ dssIds: [req.params.dssId as string] }), "Non eliminabili");
+    if (usi) { res.status(409).json({ error: usi }); return; }
     await db.delete(driverShiftScenarios)
       .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     res.json({ ok: true });
@@ -1860,12 +1853,9 @@ router.put("/driver-shifts/scenarios/:id", async (req, res) => {
     // superseded_by; il client adotta l'id nuovo. Rinominare o cambiare config
     // senza toccare il result resta un update in place.
     if (result) {
-      let rosterRefs = 0;
-      try {
-        const rr = await db.execute<any>(sql`
-          SELECT count(*)::int AS c FROM roster_assignments WHERE dss_id = ${req.params.id}::uuid`);
-        rosterRefs = Number(rr.rows?.[0]?.c ?? 0);
-      } catch { /* tabella roster assente: nessun vincolo */ }
+      /* assegnato o pubblicato nel roster: si salva una versione nuova, mai sopra */
+      const usi = await usiNelRoster({ dssIds: [req.params.id as string] });
+      const rosterRefs = usi.assegnazioni + usi.giorniPubblicati;
       if (rosterRefs > 0) {
         try {
           const ins = await db.execute<any>(sql`
@@ -1888,6 +1878,11 @@ router.put("/driver-shifts/scenarios/:id", async (req, res) => {
           }
         } catch (verErr: any) {
           req.log.warn({ err: verErr?.message }, "versioning DSS fallito, fallback a overwrite");
+        }
+        /* pubblicati: lo storico del roster li legge, non si sovrascrivono mai */
+        if (usi.giorniPubblicati > 0) {
+          res.status(409).json({ error: "Turni guida pubblicati nel roster: la nuova versione non si è potuta creare, e sopra non si scrive. Riprova." });
+          return;
         }
       }
     }

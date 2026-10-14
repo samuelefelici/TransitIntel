@@ -40,6 +40,7 @@ import timetableMapShareRouter from "./timetable-map-share";
 import planningStudioTimetablesRouter from "./planning-studio-timetables";
 import planningStudioEstimateRouter from "./planning-studio-estimate";
 import rosterRouter from "./roster";
+import rosterPubblicazioneRouter from "./roster-pubblicazione";
 import anagraficaRouter from "./anagrafica";
 import serviceDbRouter from "./service-db";
 import depotsRouter from "./depots";
@@ -125,6 +126,7 @@ router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari general
 router.use(planningStudioTimetablesRouter); // Stampa Orari dal programma di esercizio Planning Studio (ps_*)
 router.use(planningStudioEstimateRouter); // Stima istantanea risorse (vetture/ore) su corse reali e ipotetiche
 router.use(anagraficaRouter); // Roster: anagrafica del personale (prima del tabellone: risponde a /roster/drivers)
+router.use(rosterPubblicazioneRouter); // Roster: pubblicazione dei turni guida, il canale unico dallo Scheduling Engine
 router.use(rosterRouter); // Roster: assegnazione turni guida al personale viaggiante
 router.use(rosterRotazioniRouter); // Roster: rotazioni riposi (ciclo settimanale) + assistente CP-SAT
 router.use(serviceDbRouter); // Database di Esercizio: vista unica della catena di pianificazione

@@ -182,6 +182,28 @@ creano da sé; `migrations/2026-10_roster_riposi.sql` è lo specchio.
 3. Le assegnazioni già fatte prima del rilascio non bloccano niente: il
    tabellone mostra in rosso quelle che violano le regole, da controllare.
 
+### Roster: pubblicazione dei turni guida
+
+Il roster riceve i turni guida da un solo canale, **Pubblicazione turni** (menu
+Ottimizzazione servizio, o «Pubblica nel Roster» dal Quadro d'esercizio): si
+sceglie programma e periodo, e per ogni Unità di Progettazione quale turni
+guida vale nei suoi giorni (proposto quello in esercizio). Le tabelle si
+creano da sé; `migrations/2026-10_roster_pubblicazione.sql` è lo specchio.
+
+1. **Dopo il rilascio il tabellone non ha turni**: ogni giorno è «non
+   pubblicato» e non si assegna finché non si pubblica. Le assegnazioni di
+   prima restano visibili. Fai subito la prima pubblicazione per il periodo in
+   corso: l'anteprima dice quante assegnazioni restano, quante passano a un
+   turno uguale di un altro turni guida e quante restano da riassegnare.
+2. I giorni di ogni unità sono le sue date (Unità di Progettazione) al momento
+   della pubblicazione: se il calendario cambia, ripubblica il periodo.
+3. Un turni guida pubblicato o con assegnazioni **non si cancella e non si
+   sovrascrive**: salvandolo se ne crea una nuova versione. Per la stessa
+   ragione non si cancella un turni macchina o un programma di esercizio i cui
+   turni guida sono pubblicati o assegnati.
+4. Pubblica chi ha il permesso Scheduling e vede il progetto di Planning
+   Studio. Ogni pubblicazione e ogni ritiro restano nel registro della pagina.
+
 ---
 
 ## Variabili d'Ambiente

@@ -8,6 +8,7 @@ import {
   Flame, BookOpen, Gamepad2, ChevronLeft, ClipboardList, Clock, Grip, Anvil,
   Layers, Building2, Trash2, RefreshCw, FolderOpen, Coins, Wallet, Receipt, Navigation,
   Milestone, Radio, Printer, Shuffle, Wrench, SatelliteDish, MapPinned, IdCard,
+  Send,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useAuth, type Permission } from "@/hooks/use-auth";
@@ -61,6 +62,8 @@ const NAV_SECTIONS: NavSection[] = [
     permission: "scheduling",
     items: [
       { href: "/fucina/esercizio", label: "Scheduling Engine", icon: Flame },
+      /* il canale unico fra Scheduling Engine e Roster: si decide per periodo quali turni guida arrivano */
+      { href: "/roster/pubblicazione", label: "Pubblicazione turni", icon: Send },
       { href: "/roster", label: "Roster Personale", icon: Users },
       { href: "/misto", label: "Completamento / Misti", icon: Shuffle },
       { href: "/service-db", label: "Database di Esercizio", icon: Database },

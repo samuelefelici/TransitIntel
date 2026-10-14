@@ -17,6 +17,7 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { messaggioUsi, usiNelRoster } from "./roster-pubblicazione-db";
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -254,7 +255,14 @@ router.delete("/vehicle-schedules/:id", async (req: Request, res: Response): Pro
   if (row.owner_user_id && row.owner_user_id !== req.user!.id) {
     res.status(403).json({ error: "Solo l'owner può eliminare" }); return;
   }
-  await db.execute(sql`DELETE FROM service_program_scenarios WHERE id = ${id}::uuid`);
+  /* i turni guida figli se ne andrebbero in cascata: se il roster li usa, no */
+  const usi = messaggioUsi(await usiNelRoster({ spsId: id }), "Turni macchina non eliminabili");
+  if (usi) { res.status(409).json({ error: usi }); return; }
+  try { await db.execute(sql`DELETE FROM service_program_scenarios WHERE id = ${id}::uuid`); }
+  catch (e: any) {
+    if ((e?.cause?.code ?? e?.code) === "23503") { res.status(409).json({ error: "Turni macchina non eliminabili: i loro turni guida sono pubblicati nel roster." }); return; }
+    throw e;
+  }
   res.json({ ok: true });
 });
 
@@ -456,7 +464,13 @@ router.delete("/driver-schedules/:id", async (req: Request, res: Response): Prom
   if (row.owner_user_id && row.owner_user_id !== req.user!.id) {
     res.status(403).json({ error: "Solo l'owner può eliminare" }); return;
   }
-  await db.execute(sql`DELETE FROM driver_shift_scenarios WHERE id = ${id}::uuid`);
+  const usi = messaggioUsi(await usiNelRoster({ dssIds: [id] }), "Non eliminabili");
+  if (usi) { res.status(409).json({ error: usi }); return; }
+  try { await db.execute(sql`DELETE FROM driver_shift_scenarios WHERE id = ${id}::uuid`); }
+  catch (e: any) {
+    if ((e?.cause?.code ?? e?.code) === "23503") { res.status(409).json({ error: "Non eliminabili: turni guida pubblicati nel roster." }); return; }
+    throw e;
+  }
   res.json({ ok: true });
 });
 
