@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  chiaveTurno, durata, inizioGiorno, intervalloDaSnapshot, intervalloTurno, minutiDa, quando,
+  chiaveTurno, durata, intervalloDaSnapshot, intervalloTurno, istante, minutiDa, quando,
   riposoMinimo, violazioniDelConducente, violazioniDeiTurni, perIlClient, type TurnoNelTempo,
 } from "../lib/roster-normativa";
 import { propostaServizio } from "../lib/udp-servizio";
@@ -9,10 +9,9 @@ import type { Servizio } from "../lib/udp-servizio";
 
 /** Un turno di prova: giorno, «HH:MM» di inizio e fine (anche oltre le 24), tipo di servizio. */
 function turno(codice: string, giorno: string, dalle: string, alle: string, servizio: Servizio | null = "urbano", conducenteId = "c1"): TurnoNelTempo {
-  const base = inizioGiorno(giorno);
   return {
     chiave: chiaveTurno("dss", giorno, codice), assegnazioneId: codice, conducenteId, giorno, codice, dssId: "dss",
-    inizio: base + minutiDa(dalle)!, fine: base + minutiDa(alle)!, servizio, servizioDa: servizio ? "udp" : null, coppieForzate: [],
+    inizio: istante(giorno, minutiDa(dalle)!), fine: istante(giorno, minutiDa(alle)!), servizio, servizioDa: servizio ? "udp" : null, coppieForzate: [],
   };
 }
 
@@ -52,11 +51,15 @@ describe("tempi dei turni", () => {
   });
 
   it("testi: giorno e ora leggibili, durate in ore e minuti", () => {
-    expect(quando(inizioGiorno("2026-10-13") + 1300)).toBe("mar 13/10 21:40");
+    expect(quando(istante("2026-10-13", 1300))).toBe("mar 13/10 21:40");
     /* 25:10 del 13 è l'01:10 del 14 */
-    expect(quando(inizioGiorno("2026-10-13") + 1510)).toBe("mer 14/10 01:10");
+    expect(quando(istante("2026-10-13", 1510))).toBe("mer 14/10 01:10");
     /* d'inverno e d'estate l'ora è quella di Roma */
-    expect(quando(inizioGiorno("2027-01-15") + 360)).toBe("ven 15/01 06:00");
+    expect(quando(istante("2027-01-15", 360))).toBe("ven 15/01 06:00");
+    /* le domeniche del cambio d'ora: le 00:30 sono le 00:30 */
+    expect(quando(istante("2026-10-25", 30))).toBe("dom 25/10 00:30");
+    expect(quando(istante("2027-03-28", 30))).toBe("dom 28/03 00:30");
+    expect(quando(istante("2026-10-24", 1470))).toBe("dom 25/10 00:30");
     expect(durata(485)).toBe("8h05");
     expect(durata(45)).toBe("45 min");
   });
@@ -127,20 +130,31 @@ describe("violazioni fra i turni di un conducente", () => {
     expect(v).toEqual([]);
   });
 
-  it("il riposo si misura col turno che viene subito prima, ognuno con la sua regola", () => {
-    /* P urbano e Q extraurbano si sovrappongono e finiscono quasi insieme: Q→C vuole 9h */
+  it("il riposo è fra blocchi di lavoro: un turno extraurbano nel blocco, prima o dopo, vuole 9h", () => {
+    /* P urbano e Q extraurbano si sovrappongono: un blocco che finisce alle 21:40; C alle 05:50 → 8h10 */
     const P = turno("P", "2026-10-13", "13:00", "21:40", "urbano"), Q = turno("Q", "2026-10-13", "13:30", "21:35", "extraurbano");
     const C = turno("C", "2026-10-14", "05:50", "12:00", "urbano");
     const v = violazioniDelConducente([P, Q, C]);
-    expect(v.map(x => `${x.regola}:${x.turni[0].codice}>${x.turni[1].codice}`).sort()).toEqual(["riposo:Q>C", "sovrapposizione:P>Q"]);
-    /* finiscono alla stessa ora: conta anche quello extraurbano */
-    const X = turno("X", "2026-10-13", "13:00", "21:00", "urbano"), Y = turno("Y", "2026-10-13", "14:00", "21:00", "extraurbano");
-    const Z = turno("Z", "2026-10-14", "05:30", "12:00", "urbano");
-    expect(violazioniDelConducente([X, Y, Z]).filter(x => x.regola === "riposo").map(x => x.turni[0].codice)).toEqual(["Y"]);
-    /* con un turno in mezzo, il turno di prima non fa coppia con quello dopo */
+    expect(v.map(x => `${x.regola}:${x.turni[0].codice}>${x.turni[1].codice}`).sort()).toEqual(["riposo:P>C", "sovrapposizione:P>Q"]);
+    expect(v.find(x => x.regola === "riposo")!.testo).toContain("Q è extraurbano: servono almeno 9h00");
+    /* dopo il riposo: W urbano e X extraurbano si sovrappongono, il riposo prima vale 9h */
+    const S = turno("S", "2026-10-13", "14:00", "22:00", "urbano");
+    const W = turno("W", "2026-10-14", "06:00", "06:40", "urbano"), X = turno("X", "2026-10-14", "06:30", "14:00", "extraurbano");
+    const dopo = violazioniDelConducente([S, W, X]).find(x => x.regola === "riposo");
+    expect(dopo).toMatchObject({ minuti: 480, minimo: 540 });
+    expect(dopo!.testo).toContain("X è extraurbano");
+    /* con un turno in mezzo, staccato, il riposo si conta da quello */
     const A = turno("A", "2026-10-13", "13:00", "21:00", "extraurbano"), B = turno("B", "2026-10-13", "21:10", "21:50", "urbano");
     const D = turno("D", "2026-10-14", "05:55", "12:00", "urbano");
     expect(violazioniDelConducente([A, B, D]).map(x => `${x.turni[0].codice}>${x.turni[1].codice}`)).toEqual(["A>B"]);
+  });
+
+  it("niente riposo finto mentre si lavora a un altro turno; niente turni lunghi zero", () => {
+    /* W copre tutto lo spazio fra U e T: sovrapposizioni sì, riposo no */
+    const U = turno("U", "2026-10-13", "13:00", "20:00", "extraurbano"), W = turno("W", "2026-10-13", "19:00", "23:00");
+    const T = turno("T", "2026-10-13", "22:00", "23:30");
+    expect(violazioniDelConducente([U, W, T]).map(x => x.regola)).toEqual(["sovrapposizione", "sovrapposizione"]);
+    expect(intervalloTurno({ nastroStartMin: 600, nastroEndMin: 600 })).toBeNull();
   });
 
   it("la notte del cambio d'ora il riposo è quello vero", () => {
@@ -154,6 +168,13 @@ describe("violazioni fra i turni di un conducente", () => {
     expect(violazioniDelConducente([
       turno("S", "2026-10-24", "14:00", "21:40", "extraurbano"), turno("D", "2026-10-25", "06:00", "12:00", "extraurbano"),
     ])).toEqual([]);
+    /* un turno di domenica che inizia prima delle 3: 16:00 → 00:30 sono 8h30, d'autunno come in primavera */
+    const autunno = violazioniDelConducente([
+      turno("S", "2026-10-24", "08:00", "16:00", "extraurbano"), turno("N", "2026-10-25", "00:30", "06:00", "extraurbano"),
+    ]);
+    expect(autunno).toHaveLength(1);
+    expect(autunno[0]).toMatchObject({ minuti: 510, minimo: 540 });
+    expect(violazioniDelConducente([turno("S", "2027-03-27", "08:00", "16:00"), turno("N", "2027-03-28", "00:30", "06:00")])).toEqual([]);
   });
 
   it("per il client: niente minuti assoluti; forzata solo la coppia che è stata forzata", () => {

@@ -622,10 +622,10 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
     const chi = utente(req);
     /* fuori dalla transazione, con db: i due turni e quelli dei due conducenti intorno al giorno */
     const dueTurni = righe(await db.execute(sql`
-      SELECT day::text AS day, dss_id::text, duty_code FROM roster_assignments
+      SELECT day::text AS day FROM roster_assignments
        WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)`));
-    const preparato = await preparaControllo([daConducente, aConducente], dueTurni.map(t => String(t.day).slice(0, 10)),
-      dueTurni.map(t => ({ dssId: t.dss_id, codice: t.duty_code })));
+    /* i due turni stanno già fra le assegnazioni dei due conducenti: si leggono dal DSS solo se lo snapshot non ha i minuti */
+    const preparato = await preparaControllo([daConducente, aConducente], dueTurni.map(t => String(t.day).slice(0, 10)), []);
     const esito = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
       const conducenti = await bloccaConducenti(ex, [aConducente, daConducente]);

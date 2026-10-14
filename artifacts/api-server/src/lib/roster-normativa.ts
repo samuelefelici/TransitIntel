@@ -10,11 +10,11 @@
  *   - due turni dello stesso conducente non si sovrappongono.
  *
  * I tempi dei turni sono minuti dalla mezzanotte del giorno di servizio e a
- * mezzanotte non si azzerano (convenzione GTFS: «25:10» è l'01:10 del giorno
- * dopo). Per confrontare giorni diversi diventano istanti veri, in minuti
- * dall'epoca: come in GTFS, il giorno di servizio parte da mezzogiorno meno
- * 12 ore, ora di Roma. Così la notte del cambio d'ora il riposo è quello
- * vero, un'ora in più o in meno di quello che dice l'orologio.
+ * mezzanotte non si azzerano («25:10» è l'01:10 del giorno dopo). Per
+ * confrontare giorni diversi diventano istanti veri, in minuti dall'epoca,
+ * leggendoli come ora dell'orologio di Roma: la notte del cambio d'ora il
+ * riposo è quello vero, un'ora in più o in meno di quello che dice
+ * l'orologio.
  *
  * Funzioni pure; la parte che legge il database sta in roster-normativa-db.ts.
  * ═══════════════════════════════════════════════════════════════════════════
@@ -78,7 +78,8 @@ function intervalloSensato(inizio: number | null, fine: number | null): { inizio
   if (inizio === null || fine === null) return null;
   /* vecchi orari già riportati sotto le 24h: «23:30–01:10» finisce il giorno dopo */
   if (fine < inizio) fine += MINUTI_GIORNO;
-  if (fine - inizio > MINUTI_GIORNO) return null;
+  /* un turno lungo zero o più di 24 ore non è un turno: non si controlla */
+  if (fine === inizio || fine - inizio > MINUTI_GIORNO) return null;
   return { inizio, fine };
 }
 
@@ -95,20 +96,28 @@ function scartoRoma(istante: Date): number {
   const locale = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute));
   return Math.round((locale - Math.floor(istante.getTime() / 60_000) * 60_000) / 60_000);
 }
-const inizi = new Map<string, number>();
+/* l'ora legale cambia solo allo scoccare di un'ora: si ricorda lo scarto di ogni ora già vista */
+const scarti = new Map<number, number>();
+function scartoAlMinuto(minutiUtc: number): number {
+  const ora = Math.floor(minutiUtc / 60);
+  let scarto = scarti.get(ora);
+  if (scarto === undefined) {
+    scarto = scartoRoma(new Date(ora * 3_600_000));
+    if (scarti.size > 20_000) scarti.clear();
+    scarti.set(ora, scarto);
+  }
+  return scarto;
+}
+
 /**
- * L'istante, in minuti dall'epoca, da cui si contano i minuti del giorno di
- * servizio: mezzogiorno di Roma meno 12 ore (convenzione GTFS). Fuori dai
- * giorni del cambio d'ora è la mezzanotte di Roma.
+ * L'istante vero, in minuti dall'epoca, di un orario del giorno di servizio:
+ * il giorno più i minuti, letti sull'orologio di Roma. Nell'ora che d'autunno
+ * si ripete vale la seconda volta; in quella che a marzo non c'è, l'ora dopo.
  */
-export function inizioGiorno(giorno: string): number {
-  const noto = inizi.get(giorno);
-  if (noto !== undefined) return noto;
-  const epoca = giornoEpoca(giorno);
-  const valore = epoca * MINUTI_GIORNO - scartoRoma(new Date((epoca * MINUTI_GIORNO + 720) * 60_000));
-  if (inizi.size > 5000) inizi.clear();
-  inizi.set(giorno, valore);
-  return valore;
+export function istante(giorno: string, minuti: number): number {
+  const orologio = giornoEpoca(giorno) * MINUTI_GIORNO + minuti;
+  const primo = scartoAlMinuto(orologio - 60);
+  return orologio - scartoAlMinuto(orologio - primo);
 }
 
 /* ── Regole ──────────────────────────────────────────────────────────────── */
@@ -123,7 +132,7 @@ export interface TurnoNelTempo {
   giorno: string;
   codice: string;
   dssId: string;
-  /** istanti in minuti dall'epoca: inizioGiorno(giorno) + minuti del giorno di servizio */
+  /** istanti in minuti dall'epoca: istante(giorno, minuti del giorno di servizio) */
   inizio: number;
   fine: number;
   servizio: Servizio | null;
@@ -154,20 +163,35 @@ export const chiaveTurno = (dssId: string, giorno: string, codice: string): stri
 export const chiaveViolazione = (regola: Regola, a: Pick<TurnoNelTempo, "chiave">, b: Pick<TurnoNelTempo, "chiave">): string =>
   `${regola}|${a.chiave}|${b.chiave}`;
 
+/**
+ * Il riposo minimo fra due blocchi di lavoro: 8h solo se tutti i turni dei
+ * due blocchi sono urbani. `decisivi` sono i turni che portano a 9h: gli
+ * extraurbani, o quelli di tipo ignoto se non ce n'è uno extraurbano.
+ */
+export function riposoMinimoFra<T extends Pick<TurnoNelTempo, "servizio">>(turni: T[]): { minimo: number; presunto: boolean; decisivi: T[] } {
+  const extra = turni.filter(t => t.servizio === "extraurbano");
+  if (extra.length) return { minimo: RIPOSO_MINIMO_MIN.extraurbano, presunto: false, decisivi: extra };
+  const ignoti = turni.filter(t => t.servizio !== "urbano");
+  if (ignoti.length) return { minimo: RIPOSO_MINIMO_MIN.extraurbano, presunto: true, decisivi: ignoti };
+  return { minimo: RIPOSO_MINIMO_MIN.urbano, presunto: false, decisivi: [] };
+}
+
 /** Il riposo minimo fra due turni: 8h solo se sono urbani tutti e due. */
 export function riposoMinimo(a: Pick<TurnoNelTempo, "servizio">, b: Pick<TurnoNelTempo, "servizio">): { minimo: number; presunto: boolean } {
-  if (a.servizio === "urbano" && b.servizio === "urbano") return { minimo: RIPOSO_MINIMO_MIN.urbano, presunto: false };
-  const certo = a.servizio === "extraurbano" || b.servizio === "extraurbano";
-  return { minimo: RIPOSO_MINIMO_MIN.extraurbano, presunto: !certo };
+  const { minimo, presunto } = riposoMinimoFra([a, b]);
+  return { minimo, presunto };
 }
 
 /**
- * Le violazioni fra i turni di UN conducente: tutte le coppie che si
- * sovrappongono, e i riposi troppo corti fra un turno e il turno che viene
- * subito dopo. «Subito dopo»: finito u, nessun altro turno comincia prima di
- * t. Se più turni finiscono prima di t senza niente in mezzo (due turni
- * sovrapposti, o che finiscono insieme), ognuno fa coppia con t con la sua
- * regola: un extraurbano vuole 9h anche se l'altro, urbano, finisce dopo.
+ * Le violazioni fra i turni di UN conducente.
+ *
+ * Sovrapposizioni: ogni coppia di turni che si sovrappongono.
+ *
+ * Riposi: i turni che si sovrappongono formano un blocco di lavoro, e il
+ * riposo è lo spazio fra un blocco e il successivo, dalla fine dell'ultimo
+ * turno di uno all'inizio del primo turno dell'altro. Basta un turno
+ * extraurbano (o di tipo ignoto) in uno dei due blocchi per volere 9h. Due
+ * turni che si toccano senza sovrapporsi sono due blocchi con riposo zero.
  */
 export function violazioniDelConducente(turni: TurnoNelTempo[]): Violazione[] {
   const ordinati = [...turni].sort((a, b) => a.inizio - b.inizio || a.fine - b.fine || a.chiave.localeCompare(b.chiave));
@@ -176,22 +200,24 @@ export function violazioniDelConducente(turni: TurnoNelTempo[]): Violazione[] {
     for (let j = i + 1; j < ordinati.length && ordinati[j]!.inizio < ordinati[i]!.fine; j++) {
       const a = ordinati[i]!, b = ordinati[j]!;
       const minuti = Math.min(a.fine, b.fine) - b.inizio;
-      if (minuti > 0) out.push(violazione("sovrapposizione", a, b, minuti, null, false));
+      if (minuti > 0) out.push(violazione("sovrapposizione", a, b, minuti, null, false, []));
     }
   }
-  for (let j = 0; j < ordinati.length; j++) {
-    const t = ordinati[j]!;
-    for (let i = 0; i < ordinati.length; i++) {
-      const u = ordinati[i]!;
-      if (i === j || u.fine > t.inizio || u.inizio > t.inizio) continue;
-      const riposo = t.inizio - u.fine;
-      /* oltre le 9h va bene comunque */
-      if (riposo >= RIPOSO_MINIMO_MIN.extraurbano) continue;
-      const inMezzo = ordinati.some((v, k) => k !== i && k !== j && v.inizio >= u.fine && v.inizio < t.inizio);
-      if (inMezzo) continue;
-      const { minimo, presunto } = riposoMinimo(u, t);
-      if (riposo < minimo) out.push(violazione("riposo", u, t, riposo, minimo, presunto));
-    }
+  const blocchi: TurnoNelTempo[][] = [];
+  let fineBlocco = -Infinity;
+  for (const t of ordinati) {
+    const ultimo = blocchi[blocchi.length - 1];
+    if (ultimo && t.inizio < fineBlocco) { ultimo.push(t); fineBlocco = Math.max(fineBlocco, t.fine); }
+    else { blocchi.push([t]); fineBlocco = t.fine; }
+  }
+  for (let i = 1; i < blocchi.length; i++) {
+    const prima = blocchi[i - 1]!, dopo = blocchi[i]!;
+    const a = prima.reduce((x, y) => (y.fine > x.fine ? y : x));
+    const b = dopo[0]!;
+    const riposo = b.inizio - a.fine;
+    if (riposo >= RIPOSO_MINIMO_MIN.extraurbano) continue;
+    const { minimo, presunto, decisivi } = riposoMinimoFra([...prima, ...dopo]);
+    if (riposo < minimo) out.push(violazione("riposo", a, b, riposo, minimo, presunto, decisivi, prima.length + dopo.length));
   }
   return out;
 }
@@ -231,20 +257,20 @@ export function durata(minuti: number): string {
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h${due(m % 60)}`;
 }
 
-function perche(a: TurnoNelTempo, b: TurnoNelTempo, minimo: number, presunto: boolean): string {
-  if (a.servizio === "urbano" && b.servizio === "urbano") return `fra due turni urbani servono almeno ${durata(minimo)}`;
-  if (presunto) {
-    const ignoto = [a, b].filter(t => !t.servizio).map(t => t.codice).join(" e ");
-    return `servono almeno ${durata(minimo)}: di ${ignoto} non si sa se è urbano o extraurbano, e nel dubbio vale la regola più severa`;
-  }
-  const extra = [a, b].filter(t => t.servizio === "extraurbano").map(t => t.codice).join(" e ");
-  return `${extra} ${extra.includes(" e ") ? "sono extraurbani" : "è extraurbano"}: servono almeno ${durata(minimo)}`;
+/** Perché serve quel minimo: chi è extraurbano, o di chi non si sa il tipo. */
+function perche(minimo: number, presunto: boolean, decisivi: TurnoNelTempo[], quanti: number): string {
+  const codici = [...new Set(decisivi.map(t => t.codice))];
+  const elenco = codici.length > 1 ? `${codici.slice(0, -1).join(", ")} e ${codici[codici.length - 1]}` : codici[0] ?? "";
+  if (!decisivi.length) return `fra ${quanti === 2 ? "due " : ""}turni urbani servono almeno ${durata(minimo)}`;
+  if (presunto) return `servono almeno ${durata(minimo)}: di ${elenco} non si sa se è urbano o extraurbano, e nel dubbio vale la regola più severa`;
+  return `${elenco} ${codici.length > 1 ? "sono extraurbani" : "è extraurbano"}: servono almeno ${durata(minimo)}`;
 }
 
-function violazione(regola: Regola, a: TurnoNelTempo, b: TurnoNelTempo, minuti: number, minimo: number | null, presunto: boolean): Violazione {
+function violazione(regola: Regola, a: TurnoNelTempo, b: TurnoNelTempo, minuti: number, minimo: number | null,
+  presunto: boolean, decisivi: TurnoNelTempo[], quanti = 2): Violazione {
   const testo = regola === "sovrapposizione"
     ? `${a.codice} (${quando(a.inizio)}–${finoA(a.inizio, a.fine)}) e ${b.codice} (${quando(b.inizio)}–${finoA(b.inizio, b.fine)}) si sovrappongono per ${durata(minuti)}`
-    : `Riposo di ${durata(minuti)} fra ${a.codice} (fine ${quando(a.fine)}) e ${b.codice} (inizio ${quando(b.inizio)}): ${perche(a, b, minimo!, presunto)}`;
+    : `Riposo di ${durata(minuti)} fra ${a.codice} (fine ${quando(a.fine)}) e ${b.codice} (inizio ${quando(b.inizio)}): ${perche(minimo!, presunto, decisivi, quanti)}`;
   return { regola, conducenteId: a.conducenteId, turni: [a, b], minuti, minimo, presunto, testo, chiave: chiaveViolazione(regola, a, b) };
 }
 

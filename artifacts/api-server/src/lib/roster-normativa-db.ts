@@ -28,7 +28,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { righe, type Ex } from "./anagrafica-store";
 import { eServizio, serviziDelleUdp, type Servizio, type ServizioUdp } from "./udp-servizio";
 import {
-  chiaveTurno, inizioGiorno, intervalloDaSnapshot, intervalloTurno, violazioniDeiTurni,
+  chiaveTurno, intervalloDaSnapshot, intervalloTurno, istante, violazioniDeiTurni,
   type ServizioDa, type TurnoNelTempo, type Violazione,
 } from "./roster-normativa";
 
@@ -241,7 +241,6 @@ export async function turniNelTempo(righeTurni: RigaTurno[], p: Preparato = nuov
       ?? intervalloTurno(p.orari.get(`${r.dss_id}|${r.duty_code}`))
       ?? intervalloDaSnapshot(r.snapshot);
     if (!intervallo) continue;
-    const base = inizioGiorno(r.day);
     const s = p.servizi.get(r.dss_id);
     out.push({
       chiave: chiaveTurno(r.dss_id, r.day, r.duty_code),
@@ -250,8 +249,8 @@ export async function turniNelTempo(righeTurni: RigaTurno[], p: Preparato = nuov
       giorno: r.day,
       codice: r.duty_code,
       dssId: r.dss_id,
-      inizio: base + intervallo.inizio,
-      fine: base + intervallo.fine,
+      inizio: istante(r.day, intervallo.inizio),
+      fine: istante(r.day, intervallo.fine),
       servizio: s?.servizio ?? null,
       servizioDa: s?.da ?? null,
       coppieForzate: Array.isArray(r.forzatura?.coppie) ? r.forzatura.coppie.filter((x: unknown) => typeof x === "string") : [],
