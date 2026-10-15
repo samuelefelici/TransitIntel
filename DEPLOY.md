@@ -199,8 +199,8 @@ creano da sé; `migrations/2026-10_roster_pubblicazione.sql` è lo specchio.
    della pubblicazione: se il calendario cambia, ripubblica il periodo.
 3. Un turni guida pubblicato o con assegnazioni **non si cancella e non si
    sovrascrive**: salvandolo se ne crea una nuova versione. Per la stessa
-   ragione non si cancella un turni macchina o un programma di esercizio i cui
-   turni guida sono pubblicati o assegnati.
+   ragione non si cancella un turni macchina, un programma di esercizio o un
+   progetto di scheduling i cui turni guida sono pubblicati o assegnati.
 4. Pubblica chi ha il permesso Scheduling e vede il progetto di Planning
    Studio. Ogni pubblicazione e ogni ritiro restano nel registro della pagina.
 
