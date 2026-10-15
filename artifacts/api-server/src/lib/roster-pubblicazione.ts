@@ -171,6 +171,11 @@ export interface EsitoRicollegamento {
  * stesso codice, poi un candidato solo; se ne restano più d'uno, nessuno
  * (ambiguo: lo decide una persona). Un turno senza corse si ricollega solo
  * nella stessa UDP. Ogni turno nuovo si usa una volta sola.
+ *
+ * Giorno per giorno, a giri: prima chi ritrova il suo codice, poi chi ha un
+ * candidato solo, e di nuovo, finché qualcuno si sistema. Così l'esito non
+ * dipende dall'ordine dei codici: chi è ambiguo al primo giro può non esserlo
+ * più quando gli altri hanno preso il loro turno.
  */
 export function ricollega(p: {
   assegnazioni: DaRicollegare[];
@@ -183,26 +188,55 @@ export function ricollega(p: {
   const out: EsitoRicollegamento = { spostamenti: [], restano: [] };
   const occupati = new Set(p.occupati);
   const ordinate = [...p.assegnazioni].sort((a, b) => a.day.localeCompare(b.day) || a.dssId.localeCompare(b.dssId) || a.codice.localeCompare(b.codice) || a.id.localeCompare(b.id));
-  for (const a of ordinate) {
-    if (!a.firma) { out.restano.push({ id: a.id, day: a.day, motivo: "turno illeggibile" }); continue; }
-    const senzaCorse = a.firma.startsWith("R|");
-    const candidati: Array<{ udpId: string; dssId: string; codice: string }> = [];
-    for (const { udpId, dssId } of p.pubblicati.get(a.day) ?? []) {
-      if (senzaCorse && udpId !== a.udpPrima) continue;
+  const perGiorno = new Map<string, DaRicollegare[]>();
+  for (const a of ordinate) perGiorno.set(a.day, [...(perGiorno.get(a.day) ?? []), a]);
+  const esito = new Map<string, MotivoRestano | null>();
+
+  for (const [giorno, lista] of perGiorno) {
+    /* i turni pubblicati quel giorno, per firma */
+    const perFirma = new Map<string, Array<{ udpId: string; dssId: string; codice: string }>>();
+    for (const { udpId, dssId } of p.pubblicati.get(giorno) ?? []) {
       for (const t of p.turni.get(dssId) ?? []) {
-        if (t.firma === a.firma && !occupati.has(`${dssId}|${a.day}|${t.codice}`)) candidati.push({ udpId, dssId, codice: t.codice });
+        if (!t.firma) continue;
+        perFirma.set(t.firma, [...(perFirma.get(t.firma) ?? []), { udpId, dssId, codice: t.codice }]);
       }
     }
-    const stessaUdp = candidati.filter(c => c.udpId === a.udpPrima);
-    const gruppo = stessaUdp.length ? stessaUdp : candidati;
-    const stessoCodice = gruppo.filter(c => c.codice === a.codice);
-    const scelto = stessoCodice.length === 1 ? stessoCodice[0] : gruppo.length === 1 ? gruppo[0] : null;
-    if (!scelto) {
-      out.restano.push({ id: a.id, day: a.day, motivo: gruppo.length ? "ambiguo" : "nessun turno uguale" });
-      continue;
+    const gruppo = (a: DaRicollegare) => {
+      const senzaCorse = a.firma!.startsWith("R|");
+      const liberi = (perFirma.get(a.firma!) ?? [])
+        .filter(c => !(senzaCorse && c.udpId !== a.udpPrima) && !occupati.has(`${c.dssId}|${giorno}|${c.codice}`));
+      const stessaUdp = liberi.filter(c => c.udpId === a.udpPrima);
+      return stessaUdp.length ? stessaUdp : liberi;
+    };
+    const sposta = (a: DaRicollegare, c: { udpId: string; dssId: string; codice: string }) => {
+      occupati.add(`${c.dssId}|${giorno}|${c.codice}`);
+      out.spostamenti.push({ id: a.id, day: giorno, dssId: c.dssId, codice: c.codice, udpId: c.udpId, daDss: a.dssId, daCodice: a.codice });
+      esito.set(a.id, null);
+      pendenti.delete(a);
+    };
+    const pendenti = new Set<DaRicollegare>();
+    for (const a of lista) {
+      if (!a.firma) esito.set(a.id, "turno illeggibile");
+      else pendenti.add(a);
     }
-    occupati.add(`${scelto.dssId}|${a.day}|${scelto.codice}`);
-    out.spostamenti.push({ id: a.id, day: a.day, dssId: scelto.dssId, codice: scelto.codice, udpId: scelto.udpId, daDss: a.dssId, daCodice: a.codice });
+    for (;;) {
+      let fatto = false;
+      for (const a of pendenti) {
+        const c = gruppo(a).filter(x => x.codice === a.codice);
+        if (c.length === 1) { sposta(a, c[0]!); fatto = true; }
+      }
+      if (fatto) continue;
+      for (const a of pendenti) {
+        const g = gruppo(a);
+        if (g.length === 1) { sposta(a, g[0]!); fatto = true; break; }
+      }
+      if (!fatto) break;
+    }
+    for (const a of pendenti) esito.set(a.id, gruppo(a).length ? "ambiguo" : "nessun turno uguale");
+  }
+  for (const a of ordinate) {
+    const m = esito.get(a.id);
+    if (m) out.restano.push({ id: a.id, day: a.day, motivo: m });
   }
   return out;
 }

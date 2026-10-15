@@ -34,6 +34,8 @@ function rispondi(res: Response, e: any, contesto: string): void {
   if (e instanceof RifiutoPubblicazione) { res.status(e.status).json({ error: e.message, ...e.extra }); return; }
   const codice = e?.cause?.code ?? e?.code;
   if (codice === "40P01" || codice === "55P03") { res.status(409).json({ error: "Qualcun altro sta pubblicando o assegnando turni: riprova" }); return; }
+  if (codice === "23503") { res.status(409).json({ error: "Nel frattempo un turni guida è stato cancellato: guarda di nuovo l'anteprima", cambiato: true }); return; }
+  if (codice === "22P02" || codice === "22008" || codice === "22007") { res.status(400).json({ error: "Dati della richiesta non validi" }); return; }
   console.error(`[roster.pubblicazione] ${contesto}:`, codice ?? e?.message);
   res.status(500).json({ error: "Errore interno della pubblicazione" });
 }
@@ -81,7 +83,8 @@ router.post("/roster/pubblicazioni/ritira", async (req, res): Promise<void> => {
     const b = req.body ?? {};
     res.json(await ritira({
       dal: testo(b.dal), al: testo(b.al), psProjectId: testo(b.psProjectId).toLowerCase() || null,
-      udpIds: Array.isArray(b.udpIds) ? b.udpIds.map((x: unknown) => testo(x).toLowerCase()) : null,
+      /* assente = tutte le UDP; qualunque altra cosa che non sia un elenco di UDP si rifiuta */
+      udpIds: b.udpIds == null ? null : Array.isArray(b.udpIds) ? b.udpIds.map((x: unknown) => testo(x).toLowerCase()) : [],
       passato: b.passato === true, nota: testo(b.nota).slice(0, 500) || null,
     }, c.userId, c.admin));
   } catch (e) { rispondi(res, e, "ritira"); }

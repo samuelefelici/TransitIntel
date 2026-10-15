@@ -102,8 +102,12 @@ async function crea(): Promise<void> {
       corse jsonb NOT NULL DEFAULT '[]'::jsonb,
       PRIMARY KEY (dss_id, codice)
     )`);
-  /* ricollegamenti: da quale turno veniva un'assegnazione spostata da una ripubblicazione */
-  await db.execute(sql`ALTER TABLE roster_assignments ADD COLUMN IF NOT EXISTS ricollegamenti jsonb`);
+  /* ricollegamenti: da quale turno veniva un'assegnazione spostata da una ripubblicazione.
+     ALTER solo se manca: anche con IF NOT EXISTS prende la tabella in esclusiva */
+  const c = await db.execute<any>(sql`
+    SELECT 1 FROM information_schema.columns
+     WHERE table_schema = current_schema() AND table_name = 'roster_assignments' AND column_name = 'ricollegamenti'`);
+  if (!righe(c).length) await db.execute(sql`ALTER TABLE roster_assignments ADD COLUMN IF NOT EXISTS ricollegamenti jsonb`);
 }
 
 /* ── Riassunti dei turni di un DSS ───────────────────────────────────────── */
@@ -114,7 +118,8 @@ export interface TurnoRiassunto extends Omit<TurnoRoster, "segments"> {
   firma: string | null;
   corse: string[];
 }
-export interface RiassuntoDss { dssId: string; turni: TurnoRiassunto[]; codiciDoppi: string[] }
+/** `impronta`: la versione della riga del DSS (xmin) da cui viene il riassunto. */
+export interface RiassuntoDss { dssId: string; impronta: string; turni: TurnoRiassunto[]; codiciDoppi: string[] }
 
 /**
  * I turni di questi DSS, riassunti (senza le tratte). Si leggono dalla tabella
@@ -133,13 +138,15 @@ export async function riassuntiDei(dssIds: string[]): Promise<Map<string, Riassu
   const daRifare = stato.filter(x => x.impronta !== x.ora).map(x => String(x.id));
   for (const id of daRifare) await rifaiRiassunto(id);
   const doppi = new Map<string, string[]>(stato.map(x => [String(x.id), x.codici_doppi ?? []]));
+  const impronte = new Map<string, string>(stato.map(x => [String(x.id), String(x.ora)]));
   if (daRifare.length) {
-    for (const x of righe(await dbEx.execute(sql`SELECT dss_id::text AS id, codici_doppi FROM roster_dss_riassunti WHERE dss_id IN (${inLista(daRifare)})`))) {
+    for (const x of righe(await dbEx.execute(sql`SELECT dss_id::text AS id, impronta, codici_doppi FROM roster_dss_riassunti WHERE dss_id IN (${inLista(daRifare)})`))) {
       doppi.set(String(x.id), x.codici_doppi ?? []);
+      impronte.set(String(x.id), String(x.impronta));
     }
   }
   const presenti = stato.map(x => String(x.id));
-  for (const id of presenti) out.set(id, { dssId: id, turni: [], codiciDoppi: doppi.get(id) ?? [] });
+  for (const id of presenti) out.set(id, { dssId: id, impronta: impronte.get(id) ?? "", turni: [], codiciDoppi: doppi.get(id) ?? [] });
   if (!presenti.length) return out;
   for (const r of righe(await dbEx.execute(sql`
     SELECT dss_id::text AS dss, codice, riassunto, firma, corse
@@ -149,21 +156,29 @@ export async function riassuntiDei(dssIds: string[]): Promise<Map<string, Riassu
   return out;
 }
 
+/** Il lucchetto di un riassunto: due richieste che rifanno lo stesso DSS si mettono in fila. */
+const CHIAVE_RIASSUNTI = 712_340_102;
+
 async function rifaiRiassunto(dssId: string): Promise<void> {
-  const r = righe(await dbEx.execute(sql`SELECT xmin::text AS impronta, result FROM driver_shift_scenarios WHERE id = ${dssId}::uuid`))[0];
-  if (!r) return;
-  const lista = turniDelRisultato(r.result);
-  const visti = new Map<string, number>();
-  const turni = lista.map((d, i) => {
-    const { segments: _s, ...t } = turnoRoster(d, i);
-    const f = firmaTurno(d);
-    const intervallo = intervalloTurno(d);
-    visti.set(t.code, (visti.get(t.code) ?? 0) + 1);
-    return { ordine: i, codice: codiceTurno(d, i), riassunto: { ...t, inizio: intervallo?.inizio ?? null, fine: intervallo?.fine ?? null }, firma: f.firma, corse: f.corse };
-  });
-  const doppi = [...visti].filter(([, n]) => n > 1).map(([c]) => c);
   await db.transaction(async (tx) => {
     const ex = tx as unknown as Ex;
+    await ex.execute(sql`SELECT pg_advisory_xact_lock(${CHIAVE_RIASSUNTI}, hashtext(${dssId}))`);
+    /* letto dopo il lucchetto: se intanto l'ha rifatto un altro, per questa versione, non c'è niente da fare */
+    const r = righe(await ex.execute(sql`
+      SELECT d.xmin::text AS impronta, d.result, r.impronta AS fatta
+        FROM driver_shift_scenarios d LEFT JOIN roster_dss_riassunti r ON r.dss_id = d.id
+       WHERE d.id = ${dssId}::uuid`))[0];
+    if (!r || r.fatta === r.impronta) return;
+    const lista = turniDelRisultato(r.result);
+    const visti = new Map<string, number>();
+    const turni = lista.map((d, i) => {
+      const { segments: _s, ...t } = turnoRoster(d, i);
+      const f = firmaTurno(d);
+      const intervallo = intervalloTurno(d);
+      visti.set(t.code, (visti.get(t.code) ?? 0) + 1);
+      return { ordine: i, codice: codiceTurno(d, i), riassunto: { ...t, inizio: intervallo?.inizio ?? null, fine: intervallo?.fine ?? null }, firma: f.firma, corse: f.corse };
+    });
+    const doppi = [...visti].filter(([, n]) => n > 1).map(([c]) => c);
     await ex.execute(sql`DELETE FROM roster_turni_dss WHERE dss_id = ${dssId}::uuid`);
     /* con codici doppi si tiene il primo: il DSS comunque non si pubblica */
     const unici = turni.filter((t, i) => turni.findIndex(x => x.codice === t.codice) === i);
@@ -275,13 +290,33 @@ export async function candidatiDelleUdp(udpIds: string[]): Promise<Map<string, C
       JOIN scheduling_projects sp ON sp.id = COALESCE(d.project_id, s.project_id)
      WHERE sp.validity_unit_id IN (${inLista(ids)})
      ORDER BY op DESC, versione DESC, d.created_at DESC`));
-  for (const x of r) {
-    out.get(x.udp_id)?.push({
-      dssId: x.id, nome: x.name, versione: Number(x.versione), inEsercizio: !!x.op, superatoDa: x.superato_da ?? null,
-      datiSuperati: !!x.stale_since, turni: Number(x.turni ?? 0), creatoIl: new Date(x.created_at).toISOString(), progetto: x.progetto,
-    });
-  }
+  for (const x of r) out.get(x.udp_id)?.push(candidatoDa(x));
   return out;
+}
+
+const candidatoDa = (x: any): Candidato => ({
+  dssId: x.id, nome: x.name, versione: Number(x.versione), inEsercizio: !!x.op, superatoDa: x.superato_da ?? null,
+  datiSuperati: !!x.stale_since, turni: Number(x.turni ?? 0), creatoIl: new Date(x.created_at).toISOString(), progetto: x.progetto,
+});
+
+/**
+ * DSS già pubblicati per un'UDP che non risultano più fra i suoi (il progetto
+ * di scheduling è stato cancellato o spostato): restano una scelta valida,
+ * così la pubblicazione in corso si può tenere o allungare.
+ */
+async function candidatiGiaPubblicati(mancanti: Array<{ udpId: string; dssId: string }>): Promise<Array<{ udpId: string; c: Candidato }>> {
+  const ids = [...new Set(mancanti.map(m => m.dssId))];
+  if (!ids.length) return [];
+  const r = righe(await dbEx.execute(sql`
+    SELECT d.id::text, d.name, d.created_at, COALESCE(d.is_operational, false) AS op,
+           COALESCE(d.version, 1) AS versione, d.superseded_by::text AS superato_da, d.stale_since,
+           jsonb_array_length(COALESCE(d.result->'driverShifts', d.result->'duties', '[]'::jsonb)) AS turni
+      FROM driver_shift_scenarios d WHERE d.id IN (${inLista(ids)})`));
+  const perId = new Map(r.map(x => [String(x.id), x]));
+  return mancanti.flatMap(m => {
+    const x = perId.get(m.dssId);
+    return x ? [{ udpId: m.udpId, c: candidatoDa({ ...x, progetto: "già pubblicato" }) }] : [];
+  });
 }
 
 /* ── Le assegnazioni toccate ─────────────────────────────────────────────── */
@@ -298,11 +333,19 @@ async function assegnazioniNeiGiorni(ex: Ex, dal: string, al: string, lucchetto 
   }));
 }
 
-/** Il gettone dell'anteprima: se fra anteprima e pubblicazione cambia il canale o le assegnazioni, si richiede. */
-function gettone(attuali: RigaCanale[], assegnazioni: AssegnazionePeriodo[]): string {
+/**
+ * Il gettone dell'anteprima: se fra anteprima e pubblicazione cambia qualcosa
+ * di ciò che l'anteprima ha mostrato, si richiede. Conta il canale, le
+ * assegnazioni, il piano (giorni toccati e righe nuove, quindi date e scelte
+ * delle UDP) e la versione di ogni turni guida letto.
+ */
+function gettone(attuali: RigaCanale[], assegnazioni: AssegnazionePeriodo[], piano: ReturnType<typeof pianoCanale>, riassunti: Map<string, RiassuntoDss>): string {
   const h = createHash("sha256");
   for (const r of attuali) h.update(`c:${r.day}|${r.udpId}|${r.dssId}\n`);
   for (const a of [...assegnazioni].sort((x, y) => x.id.localeCompare(y.id))) h.update(`a:${a.id}|${a.day}|${a.dssId}|${a.codice}|${a.driverId}\n`);
+  h.update(`t:${piano.giorniToccati.join(",")}\n`);
+  for (const r of piano.nuove) h.update(`n:${r.day}|${r.udpId}|${r.dssId}\n`);
+  for (const [id, r] of [...riassunti].sort((x, y) => x[0].localeCompare(y[0]))) h.update(`v:${id}|${r.impronta}\n`);
   return h.digest("hex").slice(0, 24);
 }
 
@@ -318,9 +361,15 @@ export interface Richiesta {
 
 const MAX_GIORNI = 366;
 
+/** Una data vera (il 30 febbraio no: Date.parse lo fa diventare il 2 marzo). */
+const dataVera = (d: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const t = Date.parse(`${d}T00:00:00Z`);
+  return !Number.isNaN(t) && new Date(t).toISOString().slice(0, 10) === d && d >= "2000-01-01" && d <= "2099-12-31";
+};
+
 function controllaPeriodo(dal: string, al: string): void {
-  const re = /^\d{4}-\d{2}-\d{2}$/;
-  if (!re.test(dal) || !re.test(al) || Number.isNaN(Date.parse(dal)) || Number.isNaN(Date.parse(al))) {
+  if (!dataVera(dal) || !dataVera(al)) {
     throw new RifiutoPubblicazione(400, "Periodo non valido: dal e al nel formato AAAA-MM-GG");
   }
   if (al < dal) throw new RifiutoPubblicazione(400, "Il periodo finisce prima di cominciare");
@@ -330,6 +379,7 @@ function controllaPeriodo(dal: string, al: string): void {
 /** Tutto quello che serve per decidere e per pubblicare, calcolato fuori dalla transazione. */
 async function prepara(req: Richiesta, userId: string, admin: boolean) {
   controllaPeriodo(req.dal, req.al);
+  if (!UUID.test(String(req.psProjectId ?? ""))) throw new RifiutoPubblicazione(400, "Programma non valido");
   const [programma] = await programmi(userId, admin, req.psProjectId);
   if (!programma) throw new RifiutoPubblicazione(404, "Programma non trovato, o non visibile");
   const udp = await udpDelProgramma(req.psProjectId);
@@ -337,6 +387,13 @@ async function prepara(req: Richiesta, userId: string, admin: boolean) {
   const attuali = await canale(dbEx, req.dal, req.al);
   const assegnazioni = await assegnazioniNeiGiorni(dbEx, req.dal, req.al);
   const periodo = new Set(giorniDelPeriodo(req.dal, req.al));
+  /* un DSS già pubblicato per un'UDP resta fra i suoi candidati anche se non ne risulta più */
+  const mancanti = udp.flatMap(u => [...new Set(attuali.filter(r => r.udpId === u.id).map(r => r.dssId))]
+    .filter(d => !(candidati.get(u.id) ?? []).some(c => c.dssId === d)).map(dssId => ({ udpId: u.id, dssId })));
+  for (const { udpId, c } of await candidatiGiaPubblicati(mancanti)) candidati.get(udpId)?.push(c);
+  /* l'UDP di ogni turni guida: serve a ricollegare i turni senza corse */
+  const udpDelDss = new Map<string, string>();
+  for (const [udpId, l] of candidati) for (const c of l) if (!udpDelDss.has(c.dssId)) udpDelDss.set(c.dssId, udpId);
 
   /* la proposta per ogni UDP: quello già pubblicato (se uno solo), poi quello in
      esercizio (se uno solo), poi quello che le assegnazioni del periodo già usano */
@@ -387,13 +444,17 @@ async function prepara(req: Richiesta, userId: string, admin: boolean) {
   }
 
   const piano = pianoCanale({ psProjectId: req.psProjectId, udp, scelte, dal: req.dal, al: req.al, attuali, nomiDss });
-  return { programma, udp, candidati, attuali, assegnazioni, proposte, scelte, avvisi, riassunti, piano, nomiDss };
+  return { programma, udp, candidati, attuali, assegnazioni, proposte, scelte, avvisi, riassunti, piano, nomiDss, udpDelDss };
 }
 
-/** Il ricollegamento delle assegnazioni dei giorni toccati, dato un piano. */
+/**
+ * Il ricollegamento delle assegnazioni dei giorni toccati, dato un piano.
+ * Anche nei giorni passati: un turno uguale è lo stesso lavoro, e il canale
+ * deve tornare con le assegnazioni.
+ */
 function simulaRicollegamento(
   piano: ReturnType<typeof pianoCanale>, assegnazioni: AssegnazionePeriodo[],
-  riassunti: Map<string, RiassuntoDss>, oggi: string,
+  riassunti: Map<string, RiassuntoDss>, udpDelDss: Map<string, string>,
 ) {
   const toccati = new Set(piano.giorniToccati);
   const dopo = new Map<string, Array<{ udpId: string; dssId: string }>>();
@@ -409,26 +470,25 @@ function simulaRicollegamento(
   for (const [id, r] of riassunti) turni.set(id, r.turni.map(t => ({ dssId: id, codice: t.code, firma: t.firma })));
   const occupati = new Set<string>();
   const daRicollegare: DaRicollegare[] = [];
-  /* i giorni passati non si riscrivono: le assegnazioni restano dove sono */
-  const passate: AssegnazionePeriodo[] = [];
   for (const a of assegnazioni) {
     if (!toccati.has(a.day)) continue;
     const resta = (dopo.get(a.day) ?? []).some(x => x.dssId === a.dssId);
     if (resta) { occupati.add(`${a.dssId}|${a.day}|${a.codice}`); continue; }
-    if (a.day < oggi) { passate.push(a); continue; }
     daRicollegare.push({
       id: a.id, day: a.day, dssId: a.dssId, codice: a.codice,
-      firma: firme.get(a.dssId)?.get(a.codice) ?? null, udpPrima: udpPrima.get(`${a.day}|${a.dssId}`) ?? null,
+      firma: firme.get(a.dssId)?.get(a.codice) ?? null,
+      /* l'UDP in cui era pubblicato; se il giorno non lo era, quella del suo turni guida */
+      udpPrima: udpPrima.get(`${a.day}|${a.dssId}`) ?? udpDelDss.get(a.dssId) ?? null,
     });
   }
   const esito = ricollega({ assegnazioni: daRicollegare, pubblicati: dopo, turni, occupati });
-  return { esito, passate, restanoDove: occupati.size };
+  return { esito, restanoDove: occupati.size };
 }
 
 export async function anteprima(req: Richiesta, userId: string, admin: boolean) {
   const p = await prepara(req, userId, admin);
   const oggi = oggiRoma();
-  const sim = simulaRicollegamento(p.piano, p.assegnazioni, p.riassunti, oggi);
+  const sim = simulaRicollegamento(p.piano, p.assegnazioni, p.riassunti, p.udpDelDss);
   const periodo = giorniDelPeriodo(req.dal, req.al);
   const dentro = new Set(periodo);
   const dopoPerGiorno = new Map<string, string[]>();
@@ -471,9 +531,8 @@ export async function anteprima(req: Richiesta, userId: string, admin: boolean) 
       ricollegate: sim.esito.spostamenti.length,
       daRiassegnare: sim.esito.restano.length,
       motivi: conta(sim.esito.restano.map(r => r.motivo)),
-      passateSenzaRicollegare: sim.passate.length,
     },
-    gettone: gettone(p.attuali, p.assegnazioni),
+    gettone: gettone(p.attuali, p.assegnazioni, p.piano, p.riassunti),
   };
 }
 
@@ -505,7 +564,7 @@ export async function pubblica(req: Pubblicazione, userId: string | null, via: s
   }
   const passati = p.piano.giorniToccati.filter(d => d < oggi);
   if (passati.length && !req.passato) {
-    throw new RifiutoPubblicazione(409, `Il periodo comprende ${passati.length} giorni già passati: conferma per pubblicarli (le assegnazioni di quei giorni non si spostano)`, { passati: passati.length });
+    throw new RifiutoPubblicazione(409, `Il periodo comprende ${passati.length} giorni già passati: conferma per pubblicarli`, { passati: passati.length });
   }
 
   const esito = await db.transaction(async (tx) => {
@@ -520,11 +579,21 @@ export async function pubblica(req: Pubblicazione, userId: string | null, via: s
     }
     const attuali = await canale(ex, req.dal, req.al);
     const assegnazioni = await assegnazioniNeiGiorni(ex, req.dal, req.al, true);
-    if (gettone(attuali, assegnazioni) !== req.gettone) {
-      throw new RifiutoPubblicazione(409, "Nel frattempo il canale o le assegnazioni sono cambiati: guarda di nuovo l'anteprima", { cambiato: true });
+    /* i turni guida letti (scelti e delle assegnazioni): fermi fino alla fine, e com'erano quando
+       si sono riassunti. FOR SHARE ferma chi li salva sul posto o li cancella. */
+    const letti = [...p.riassunti.keys()].sort();
+    if (letti.length) {
+      const ora = new Map(righe(await ex.execute(sql`
+        SELECT id::text, xmin::text AS v FROM driver_shift_scenarios WHERE id IN (${inLista(letti)}) ORDER BY id FOR SHARE`)).map(x => [String(x.id), String(x.v)]));
+      if (letti.some(id => ora.get(id) !== p.riassunti.get(id)!.impronta)) {
+        throw new RifiutoPubblicazione(409, "Nel frattempo un turni guida è stato salvato o cancellato: guarda di nuovo l'anteprima", { cambiato: true });
+      }
     }
     const piano = pianoCanale({ psProjectId: req.psProjectId, udp: p.udp, scelte: p.scelte, dal: req.dal, al: req.al, attuali, nomiDss: p.nomiDss });
-    const sim = simulaRicollegamento(piano, assegnazioni, p.riassunti, oggi);
+    if (gettone(attuali, assegnazioni, piano, p.riassunti) !== req.gettone) {
+      throw new RifiutoPubblicazione(409, "Nel frattempo il canale, le assegnazioni o le UDP sono cambiati: guarda di nuovo l'anteprima", { cambiato: true });
+    }
+    const sim = simulaRicollegamento(piano, assegnazioni, p.riassunti, p.udpDelDss);
 
     const pub = righe(await ex.execute(sql`
       INSERT INTO roster_pubblicazioni (tipo, ps_project_id, programma, dal, al, scelte, prima, nota, creata_da)
@@ -590,7 +659,6 @@ export async function pubblica(req: Pubblicazione, userId: string | null, via: s
       ricollegate: sim.esito.spostamenti.length,
       daRiassegnare: sim.esito.restano.length,
       motivi: conta(sim.esito.restano.map(r => r.motivo)),
-      passateSenzaRicollegare: sim.passate.length,
       forzatureRiscritte,
     };
     /* lo storico di ogni spostamento sta sull'assegnazione (ricollegamenti); nel registro, chi e quando */
@@ -615,10 +683,15 @@ export async function pubblica(req: Pubblicazione, userId: string | null, via: s
 export async function ritira(p: { dal: string; al: string; psProjectId?: string | null; udpIds?: string[] | null; passato?: boolean; nota?: string | null },
   userId: string | null, admin: boolean) {
   controllaPeriodo(p.dal, p.al);
+  /* un filtro storto non si allarga mai a tutto: si rifiuta */
+  if (p.psProjectId && !UUID.test(p.psProjectId)) throw new RifiutoPubblicazione(400, "Programma non valido");
+  if (p.udpIds != null && (!Array.isArray(p.udpIds) || !p.udpIds.length || p.udpIds.some(id => !UUID.test(String(id))))) {
+    throw new RifiutoPubblicazione(400, "UDP da ritirare non valide");
+  }
   const oggi = oggiRoma();
   if (p.dal < oggi && !p.passato) throw new RifiutoPubblicazione(409, "Il periodo comprende giorni già passati: conferma per ritirarli", { passati: true });
   if (p.psProjectId && !(await programmi(userId ?? "", admin, p.psProjectId)).length) throw new RifiutoPubblicazione(404, "Programma non trovato, o non visibile");
-  const udp = (p.udpIds ?? []).filter(id => UUID.test(id));
+  const udp = p.udpIds ?? [];
   return db.transaction(async (tx) => {
     const ex = tx as unknown as Ex;
     await bloccoCanaleEsclusivo(ex);
@@ -660,9 +733,13 @@ export async function registro(limite = 50) {
  * assegnazioni e giorni pubblicati, anche passati. Un DSS usato non si
  * cancella e non si sovrascrive: lo storico del roster deve restare leggibile.
  */
-export async function usiNelRoster(p: { dssIds?: string[]; spsId?: string }): Promise<{ assegnazioni: number; giorniPubblicati: number }> {
+export async function usiNelRoster(p: { dssIds?: string[]; spsId?: string }, ex: Ex = dbEx): Promise<{ assegnazioni: number; giorniPubblicati: number }> {
+  /* dentro una transazione la tabella che manca non la deve rovinare: si legge in un savepoint */
+  const leggi = (q: ReturnType<typeof sql>) => ex === dbEx
+    ? ex.execute(q)
+    : (ex as any).transaction((sp: Ex) => sp.execute(q));
   const conta = async (q: ReturnType<typeof sql>) => {
-    try { return Number(righe(await dbEx.execute(q))[0]?.n ?? 0); }
+    try { return Number(righe(await leggi(q))[0]?.n ?? 0); }
     catch (e: any) { if ((e?.cause?.code ?? e?.code) === "42P01") return 0; throw e; }
   };
   const dss = p.spsId && UUID.test(p.spsId)

@@ -17,6 +17,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getVehicleScenarioAccess } from "./scenario-access";
+import { messaggioUsi, usiNelRoster } from "./roster-pubblicazione-db";
 import { withVia } from "./agent-context";
 import { quadroDiScenario, piuRecente, type ModificaDelQuadro, type QuadroStato, type QuadroProgetto } from "./quadro-orario";
 
@@ -834,6 +835,19 @@ router.delete("/scheduling/projects/:id", async (req: Request, res: Response): P
   if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
   const owned = await loadProjectOwned(id, req.user!.id);
   if (!owned) { res.status(404).json({ error: "Progetto non trovato" }); return; }
+  /* i suoi turni guida pubblicati o assegnati nel roster: senza progetto non
+     sarebbero più dell'UDP, e la pubblicazione non si potrebbe tenere */
+  let dssIds: string[] = [];
+  try {
+    dssIds = ((await db.execute<any>(sql`
+      SELECT d.id::text FROM driver_shift_scenarios d
+        LEFT JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
+       WHERE d.project_id = ${id}::uuid OR s.project_id = ${id}::uuid`)).rows ?? []).map((x: any) => String(x.id));
+  } catch (e: any) {
+    if (!["42P01", "42703"].includes(e?.cause?.code ?? e?.code)) throw e;
+  }
+  const usi = messaggioUsi(await usiNelRoster({ dssIds }), "Progetto non eliminabile");
+  if (usi) { res.status(409).json({ error: usi }); return; }
   await db.execute(sql`DELETE FROM scheduling_projects WHERE id = ${id}::uuid`);
   res.json({ ok: true });
 });

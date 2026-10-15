@@ -107,6 +107,21 @@ describe("il ricollegamento", () => {
     expect(e.restano.map(r => `${r.id}:${r.motivo}`).sort()).toEqual(["a1:nessun turno uguale", "a2:nessun turno uguale", "a3:turno illeggibile"]);
   });
 
+  it("l'esito non dipende dall'ordine dei codici: chi era ambiguo prende il turno rimasto", () => {
+    /* prima R1 e R2 uguali; dopo R2 e R3 (R1 rinumerato): R2 resta a chi l'aveva, R3 all'altro */
+    const turni2 = new Map([["nuovo", [
+      { dssId: "nuovo", codice: "R2", firma: "R|Ancona|300|700" },
+      { dssId: "nuovo", codice: "R3", firma: "R|Ancona|300|700" },
+    ]]]);
+    const e = ricollega({
+      assegnazioni: [ass("x", "R1", "R|Ancona|300|700"), ass("y", "R2", "R|Ancona|300|700")],
+      pubblicati: new Map([["2026-11-02", [{ udpId: "feriale", dssId: "nuovo" }]]]),
+      turni: turni2, occupati: new Set(),
+    });
+    expect(e.spostamenti.map(s => `${s.id}:${s.codice}`).sort()).toEqual(["x:R3", "y:R2"]);
+    expect(e.restano).toEqual([]);
+  });
+
   it("i turni senza corse si ricollegano solo nella stessa UDP", () => {
     const pubblicati = new Map([["2026-11-02", [{ udpId: "feriale", dssId: "nuovo" }]]]);
     expect(ricollega({ assegnazioni: [ass("r", "R09", "R|Ancona|300|700", "feriale")], pubblicati, turni, occupati: new Set() }).spostamenti[0]!.codice).toBe("R01");

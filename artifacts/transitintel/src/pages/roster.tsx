@@ -337,8 +337,8 @@ export default function RosterPage() {
         setAvviso({ titolo: e.message, violazioni: e.body.violazioni, conferma: "Assegna comunque", forza: () => assignMut.mutate({ ...input, forza: viste }) });
         return;
       }
-      /* il turno non è (più) pubblicato quel giorno: il tabellone era vecchio */
-      if ((e as any)?.body?.nonPubblicato) { setCut(null); invalidateBoard(); }
+      /* il turno non è (più) pubblicato quel giorno, o il tabellone era vecchio: si ricarica e si riparte */
+      if ((e as any)?.body?.nonPubblicato || (e as any)?.body?.ricarica) { setCut(null); setSelDuty(null); invalidateBoard(); }
       toast.error("Assegnazione fallita", { description: e.message });
     },
   });
@@ -517,7 +517,6 @@ export default function RosterPage() {
       method: "POST",
       body: JSON.stringify({
         da: s.da.id, daConducente: s.da.driverId, a: s.a?.id ?? null, aConducente: s.aConducente,
-        /* col tabellone di un solo DSS, i turni degli altri DSS non si vedono e non contano */
         /* il tabellone mostra tutti i turni pubblicati: niente filtro per DSS */
         dssVisto: null,
         ...(s.forza ? { forza: s.forza } : {}),

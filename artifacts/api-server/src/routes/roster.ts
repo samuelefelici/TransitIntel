@@ -33,7 +33,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { driverScenariosAccessibleWhere } from "../lib/scenario-access";
+import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
 import { assicuraAnagrafica, leggiDepositi, registra, righe, type Ex } from "../lib/anagrafica-store";
 import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
 import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
@@ -343,6 +343,11 @@ router.get("/roster/turni/:dssId/:codice", async (req, res): Promise<void> => {
   try {
     const dssId = String(req.params.dssId).toLowerCase(), codice = String(req.params.codice);
     if (!UUID_RE.test(dssId) || !codice || codice.length > 100) { res.status(400).json({ error: "dssId e codice richiesti" }); return; }
+    /* il roster mostra i turni dei DSS pubblicati o assegnati; gli altri solo a chi può leggerli */
+    const nelRoster = righe(await db.execute<any>(sql`
+      SELECT EXISTS (SELECT 1 FROM roster_turni_pubblicati WHERE dss_id = ${dssId}::uuid)
+          OR EXISTS (SELECT 1 FROM roster_assignments WHERE dss_id = ${dssId}::uuid) AS si`))[0]?.si;
+    if (!nelRoster && !(await requireDriverScenarioRead(req, res, dssId))) return;
     const turno = (await turniDelDss([{ dssId, codice }])).get(`${dssId}|${codice}`);
     if (!turno) { res.status(404).json({ error: "Turno non trovato" }); return; }
     res.json({ turno: turnoRoster(turno, 0) });
@@ -476,7 +481,7 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       controllaInServizio(conducente, day, personale);
       /* il canale unico: si assegnano solo turni pubblicati quel giorno */
       await controllaPubblicato(ex, day, dssId, dutyCode, "assegna");
-      if (!snapshot) throw new Rifiuto(409, `Il turno ${dutyCode} non c'è in quei turni guida: il tabellone si ricarica`);
+      if (!snapshot) throw new Rifiuto(409, `Il turno ${dutyCode} non c'è in quei turni guida: il tabellone si ricarica`, { ricarica: true });
       /* «sostituisci»: l'assegnazione da riassegnare dello stesso conducente e giorno se ne va qui */
       if (sostituisce) {
         const vecchia = righe(await ex.execute(sql`
@@ -484,7 +489,7 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
            WHERE id = ${sostituisce}::uuid FOR UPDATE`))[0];
         if (!vecchia || vecchia.driver_id !== driverId || String(vecchia.day).slice(0, 10) !== day
           || (await statoNelCanale(ex, day, vecchia.dss_id)) !== "non_pubblicato") {
-          throw new Rifiuto(409, "Il turno da sostituire non è più da riassegnare: il tabellone si ricarica");
+          throw new Rifiuto(409, "Il turno da sostituire non è più da riassegnare: il tabellone si ricarica", { ricarica: true });
         }
         await ex.execute(sql`DELETE FROM roster_assignments WHERE id = ${sostituisce}::uuid`);
         await registra(ex, { ...chi, driverId, azione: "turno-sostituito", campi: ["turno"], dettaglio: { day, da: { dssId: vecchia.dss_id, codice: vecchia.duty_code }, a: { dssId, codice: dutyCode } } });
@@ -571,9 +576,9 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
            FOR UPDATE`));
       const ceduto = r.find(x => x.id === da);
       const ricevuto = conA ? r.find(x => x.id === a) : null;
-      if (!ceduto || (conA && !ricevuto)) throw new Rifiuto(409, "Uno dei due turni non c'è più: il tabellone si ricarica");
+      if (!ceduto || (conA && !ricevuto)) throw new Rifiuto(409, "Uno dei due turni non c'è più: il tabellone si ricarica", { ricarica: true });
       if (ceduto.driver_id !== daConducente || (ricevuto && ricevuto.driver_id !== aConducente)) {
-        throw new Rifiuto(409, "Nel frattempo uno dei due turni è passato a un altro conducente: il tabellone si ricarica");
+        throw new Rifiuto(409, "Nel frattempo uno dei due turni è passato a un altro conducente: il tabellone si ricarica", { ricarica: true });
       }
       const giorno = String(ceduto.day).slice(0, 10);
       if (ricevuto && String(ricevuto.day).slice(0, 10) !== giorno) {
@@ -595,7 +600,7 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
              AND (${dssVisto}::uuid IS NULL OR dss_id = ${dssVisto}::uuid)
            LIMIT 1`));
         if (gia.length) {
-          throw new Rifiuto(409, `${nomeDi(aConducente)} nel frattempo ha ricevuto ${gia[0].duty_code} il ${quando}: il tabellone si ricarica`);
+          throw new Rifiuto(409, `${nomeDi(aConducente)} nel frattempo ha ricevuto ${gia[0].duty_code} il ${quando}: il tabellone si ricarica`, { ricarica: true });
         }
       }
       /* chi riceve un turno dev'essere in servizio quel giorno */

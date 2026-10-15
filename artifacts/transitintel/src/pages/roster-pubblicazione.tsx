@@ -45,13 +45,13 @@ interface Anteprima {
   doppie: Array<{ giorni: string[]; dss: string[]; corse: number; esempio: string }>;
   impatto: {
     assegnazioni: number; restanoDove: number; ricollegate: number; daRiassegnare: number;
-    motivi: Record<string, number>; passateSenzaRicollegare: number;
+    motivi: Record<string, number>;
   };
   gettone: string;
 }
 interface Esito {
   id: string;
-  riepilogo: { giorni: number; righe: number; sostituite: number; ricollegate: number; daRiassegnare: number; nuoveViolazioni: number; passateSenzaRicollegare: number };
+  riepilogo: { giorni: number; righe: number; sostituite: number; ricollegate: number; daRiassegnare: number; nuoveViolazioni: number };
   nuoveViolazioni: string[];
 }
 interface VoceRegistro {
@@ -94,9 +94,12 @@ export default function RosterPubblicazionePage() {
   const [psProjectId, setPsProjectId] = useState(daUrl);
   const [dal, setDal] = useState(oggi);
   const [al, setAl] = useState(piu(oggi, 27));
-  /* null = le proposte del server; altrimenti le scelte fatte qui, per UDP */
+  /* null = le proposte del server; altrimenti solo le scelte fatte qui, per UDP:
+     le altre seguono la proposta del periodo (che cambia col periodo) */
   const [scelte, setScelte] = useState<Record<string, string | null> | null>(null);
   const [passato, setPassato] = useState(false);
+  /* il consenso ai giorni passati vale per quei giorni: cambiati programma o periodo, si richiede */
+  useEffect(() => { setPassato(false); }, [psProjectId, dal, al]);
   const [nota, setNota] = useState("");
   const [esito, setEsito] = useState<Esito | null>(null);
 
@@ -117,6 +120,11 @@ export default function RosterPubblicazionePage() {
     }),
     enabled: !!psProjectId && periodoValido,
     placeholderData: keepPreviousData,
+    /* l'anteprima è sempre di adesso: niente cache, si rifà tornando sulla pagina */
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
     retry: false,
   });
   const a = anteprimaQ.data;
@@ -128,12 +136,11 @@ export default function RosterPubblicazionePage() {
 
   const sceltaDi = (u: UdpAnteprima) => (scelte && u.id in scelte ? scelte[u.id] ?? null : u.scelta);
   const scegli = (udpId: string, dssId: string | null) => {
-    if (!a) return;
-    const base: Record<string, string | null> = {};
-    for (const u of a.udp) base[u.id] = sceltaDi(u);
-    setScelte({ ...base, [udpId]: dssId });
+    setScelte(prev => ({ ...(prev ?? {}), [udpId]: dssId }));
     setEsito(null);
   };
+  /* mentre arriva l'anteprima di un altro programma si vedono ancora le UDP di prima: non si scelgono */
+  const sceltaBloccata = anteprimaQ.isPlaceholderData;
   const cambiaProgramma = (id: string) => { setPsProjectId(id); setScelte(null); setEsito(null); };
 
   const bloccanti = (a?.udp ?? []).filter(u => sceltaDi(u) && u.avvisi.some(x => x.includes("codici ripetuti") || x.includes("non hanno turni")));
@@ -154,10 +161,17 @@ export default function RosterPubblicazionePage() {
       toast.success(`Pubblicati ${r.riepilogo.giorni} giorni nel roster`);
       qc.invalidateQueries({ queryKey: ["roster"] });
     },
-    onError: (e: Error & { body?: any }) => {
+    onError: (e: Error & { body?: any; status?: number }) => {
+      /* qualunque 409 vuol dire che l'anteprima non è più quella: si rifà */
+      if (e.body?.cambiato || e.body?.passati || e.status === 409) {
+        qc.invalidateQueries({ queryKey: ["roster", "pubblicazione", "anteprima"] });
+      }
       if (e.body?.cambiato) {
         toast.warning("Nel frattempo è cambiato qualcosa: ecco l'anteprima aggiornata. Ricontrolla e pubblica di nuovo.");
-        qc.invalidateQueries({ queryKey: ["roster", "pubblicazione", "anteprima"] });
+        return;
+      }
+      if (e.body?.passati) {
+        toast.warning("Il periodo comprende giorni già passati: spunta la casella per pubblicarli, poi pubblica di nuovo.");
         return;
       }
       toast.error("Pubblicazione non riuscita", { description: e.message });
@@ -233,8 +247,14 @@ export default function RosterPubblicazionePage() {
         {/* ── Le UDP del programma ── */}
         <section className="min-w-0 space-y-2" aria-label="Unità di Progettazione">
           {anteprimaQ.isError && (
-            <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
-              {(anteprimaQ.error as Error).message}
+            <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200 flex flex-wrap items-center gap-2">
+              <span className="flex-1 min-w-0">{(anteprimaQ.error as Error).message}</span>
+              {scelte && (
+                <button onClick={() => { setScelte(null); setEsito(null); }}
+                  className="px-2 py-1 rounded-md border border-rose-400/40 hover:bg-rose-500/20 text-[11px]">
+                  Torna alle proposte
+                </button>
+              )}
             </div>
           )}
           {a && !a.udp.length && (
@@ -267,7 +287,8 @@ export default function RosterPubblicazionePage() {
                   <div className="flex flex-col gap-1 w-full sm:w-auto sm:min-w-80">
                     <label htmlFor={`pub-udp-${u.id}`} className="sr-only">Turni guida da pubblicare per {u.nome}</label>
                     <select id={`pub-udp-${u.id}`} value={scelta ?? ""} onChange={e => scegli(u.id, e.target.value || null)}
-                      className="px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs focus:border-violet-500 focus:outline-none">
+                      disabled={sceltaBloccata}
+                      className="disabled:opacity-60 px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-xs focus:border-violet-500 focus:outline-none">
                       <option value="">— non pubblicare —</option>
                       {u.candidati.map(c => <option key={c.dssId} value={c.dssId}>{etichettaCandidato(c)}</option>)}
                     </select>
@@ -336,14 +357,11 @@ export default function RosterPubblicazionePage() {
                       {d.corse} corse stanno in due turni pubblicati ({d.dss.join(" e ")}) in {d.giorni.length} giorni: verrebbero coperte due volte.
                     </p>
                   ))}
-                  {a.impatto.passateSenzaRicollegare > 0 && (
-                    <p className="text-slate-400">{a.impatto.passateSenzaRicollegare} assegnazioni di giorni passati non si spostano.</p>
-                  )}
                 </div>
                 {a.giorniPassati.length > 0 && (
                   <label className="flex items-start gap-2 text-[11px] text-slate-300">
                     <input type="checkbox" checked={passato} onChange={e => setPassato(e.target.checked)} className="mt-0.5 accent-violet-500" />
-                    <span>Pubblica anche {a.giorniPassati.length} giorni già passati (le loro assegnazioni non si spostano)</span>
+                    <span>Pubblica anche {a.giorniPassati.length} giorni già passati (anche lì le assegnazioni passano ai turni uguali; le altre restano da riassegnare)</span>
                   </label>
                 )}
                 <div>

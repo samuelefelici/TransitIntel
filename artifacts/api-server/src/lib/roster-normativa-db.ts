@@ -193,7 +193,8 @@ export interface RigaTurno {
 /**
  * Le assegnazioni di questi conducenti fra due giorni compresi. Non contano
  * quelle «da riassegnare»: il giorno è pubblicato ma il loro turno non più
- * (roster-pubblicazione.ts); stanno lì per essere sostituite.
+ * (roster-pubblicazione.ts); stanno lì per essere sostituite. Nei giorni
+ * passati contano sempre: quel lavoro è stato fatto.
  */
 export async function assegnazioniDei(ex: Ex, conducenti: string[], dal: string, al: string): Promise<RigaTurno[]> {
   const ids = [...new Set(conducenti.filter(id => UUID.test(id)))];
@@ -203,7 +204,8 @@ export async function assegnazioniDei(ex: Ex, conducenti: string[], dal: string,
       FROM roster_assignments a
      WHERE a.driver_id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
        AND a.day BETWEEN ${dal}::date AND ${al}::date
-       AND (NOT EXISTS (SELECT 1 FROM roster_turni_pubblicati p WHERE p.day = a.day AND p.sostituita_da IS NULL)
+       AND (a.day < (now() AT TIME ZONE 'Europe/Rome')::date
+            OR NOT EXISTS (SELECT 1 FROM roster_turni_pubblicati p WHERE p.day = a.day AND p.sostituita_da IS NULL)
             OR EXISTS (SELECT 1 FROM roster_turni_pubblicati p WHERE p.day = a.day AND p.dss_id = a.dss_id AND p.sostituita_da IS NULL))`))
     .map(x => ({ ...x, day: String(x.day).slice(0, 10) }));
 }

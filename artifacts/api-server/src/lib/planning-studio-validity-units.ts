@@ -592,6 +592,9 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
     // errore a metà lasciava salvate solo alcune UDP del calcolo.
     let upsertCount = 0;
     await db.transaction(async (tx) => {
+    /* due salvataggi dello stesso progetto in fila: FOR UPDATE non blocca una riga che non c'è ancora,
+       e il secondo riscriverebbe le date del primo invece di unirle */
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(712340103, hashtext(${proj.id}))`);
     for (const u of units) {
       const validityId = String(u.validityId ?? u.validity_id ?? "").trim();
       const name       = String(u.name ?? "").trim();
