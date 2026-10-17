@@ -51,6 +51,7 @@ const NetworkSharePage = lazyWithRetry(() => import("@/pages/network-share"));
 const TimetableMapPage = lazyWithRetry(() => import("@/pages/timetable-map"));
 const RuntimesPage = lazyWithRetry(() => import("@/pages/runtimes"));
 const RosterPage = lazyWithRetry(() => import("@/pages/roster"));
+const RosterPubblicazionePage = lazyWithRetry(() => import("@/pages/roster-pubblicazione"));
 const AnagraficaPage = lazyWithRetry(() => import("@/pages/anagrafica"));
 const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
 const ServiceDbPage = lazyWithRetry(() => import("@/pages/service-db"));
@@ -319,6 +320,9 @@ function Router() {
             </Route>
             <Route path="/roster/anagrafica">
               <Gated perm={["scheduling", "personale"]}><AnagraficaPage /></Gated>
+            </Route>
+            <Route path="/roster/pubblicazione">
+              <Gated perm="scheduling"><RosterPubblicazionePage /></Gated>
             </Route>
             <Route path="/roster">
               <Gated perm="scheduling"><RosterPage /></Gated>

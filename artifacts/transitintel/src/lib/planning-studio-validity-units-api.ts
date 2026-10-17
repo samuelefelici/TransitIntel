@@ -206,10 +206,11 @@ export function savePsValidityUnits(projectId: string, units: Array<{
   tripCount?: number;
   dates: string[];
   dayCount?: number;
-}>): Promise<{ ok: true; count: number }> {
+}>, periodo?: { from: string; to: string } | null): Promise<{ ok: true; count: number }> {
+  /* il periodo calcolato: le date delle UDP già salvate fuori da lì restano */
   return apiFetch(`/api/planning-studio/projects/${projectId}/validity-units/save`, {
     method: "POST",
-    body: JSON.stringify({ units }),
+    body: JSON.stringify({ units, ...(periodo ? { from: periodo.from, to: periodo.to } : {}) }),
   });
 }
 

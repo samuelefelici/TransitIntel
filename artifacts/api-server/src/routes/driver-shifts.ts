@@ -46,6 +46,7 @@ import {
 } from "../lib/scenario-access";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
+import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
 
 const router: IRouter = Router();
 
@@ -1479,22 +1480,19 @@ router.delete("/driver-shifts/:scenarioId/scenarios/:dssId", async (req, res) =>
       });
       return;
     }
-    // STORICO IMMUTABILE: un DSS referenziato dallo storico assegnazioni del
-    // roster non si elimina — le righe passate diventerebbero illeggibili.
-    try {
-      const rr = await db.execute<any>(sql`
-        SELECT count(*)::int AS c FROM roster_assignments WHERE dss_id = ${req.params.dssId}::uuid`);
-      if (Number(rr.rows?.[0]?.c ?? 0) > 0) {
-        res.status(409).json({
-          error: "Turni guida referenziati dallo storico roster: non eliminabili (le assegnazioni passate resterebbero orfane).",
-        });
-        return;
-      }
-    } catch { /* tabella roster assente: nessun vincolo */ }
+    // STORICO IMMUTABILE: un DSS assegnato o pubblicato nel roster non si
+    // elimina — le righe passate diventerebbero illeggibili.
+    const usi = messaggioUsi(await usiNelRoster({ dssIds: [req.params.dssId as string] }), "Non eliminabili");
+    if (usi) { res.status(409).json({ error: usi }); return; }
     await db.delete(driverShiftScenarios)
       .where(eq(driverShiftScenarios.id, (req.params.dssId as string)));
     res.json({ ok: true });
   } catch (err: any) {
+    /* pubblicato nel frattempo: lo ferma la FK del canale */
+    if ((err?.cause?.code ?? err?.code) === "23503") {
+      res.status(409).json({ error: "Turni guida appena pubblicati nel roster: non eliminabili" });
+      return;
+    }
     req.log.error(err, "Error deleting driver-shift scenario");
     res.status(500).json({ error: err.message });
   }
@@ -1859,56 +1857,66 @@ router.put("/driver-shifts/scenarios/:id", async (req, res) => {
     // del contenuto crea una VERSIONE NUOVA (version+1) e marca la vecchia
     // superseded_by; il client adotta l'id nuovo. Rinominare o cambiare config
     // senza toccare il result resta un update in place.
-    if (result) {
-      let rosterRefs = 0;
-      try {
-        const rr = await db.execute<any>(sql`
-          SELECT count(*)::int AS c FROM roster_assignments WHERE dss_id = ${req.params.id}::uuid`);
-        rosterRefs = Number(rr.rows?.[0]?.c ?? 0);
-      } catch { /* tabella roster assente: nessun vincolo */ }
-      if (rosterRefs > 0) {
-        try {
-          const ins = await db.execute<any>(sql`
-            INSERT INTO driver_shift_scenarios
-              (service_program_scenario_id, name, result, config, project_id, owner_user_id, version, valid_from)
-            SELECT service_program_scenario_id,
-                   ${typeof name === "string" && name ? name : sql`name`},
-                   ${JSON.stringify(result)}::jsonb,
-                   ${config !== undefined ? sql`${JSON.stringify(config)}::jsonb` : sql`config`},
-                   project_id, owner_user_id, COALESCE(version, 1) + 1, valid_from
-              FROM driver_shift_scenarios WHERE id = ${req.params.id}::uuid
-            RETURNING id`);
-          const newId: string | undefined = ins.rows?.[0]?.id;
-          if (newId) {
-            await db.execute(sql`
-              UPDATE driver_shift_scenarios SET superseded_by = ${newId}::uuid
-               WHERE id = ${req.params.id}::uuid`);
-            res.json({ ok: true, id: newId, versionedFrom: req.params.id });
-            return;
+    //
+    // Controllo e scrittura nella stessa transazione, con la riga bloccata
+    // (FOR UPDATE): una pubblicazione in corso la tiene FOR SHARE, quindi qui
+    // si aspetta che finisca e poi la si vede. Mai sopra un DSS appena pubblicato.
+    const id = req.params.id as string;
+    const esito = await db.transaction(async (tx) => {
+      if (result) {
+        const c = await tx.execute<any>(sql`SELECT id FROM driver_shift_scenarios WHERE id = ${id}::uuid FOR UPDATE`);
+        if (!c.rows?.length) return { stato: 404 as const };
+        /* assegnato o pubblicato nel roster: si salva una versione nuova, mai sopra */
+        const usi = await usiNelRoster({ dssIds: [id] }, tx as any);
+        if (usi.assegnazioni + usi.giorniPubblicati > 0) {
+          try {
+            const newId = await tx.transaction(async (sp) => {
+              const ins = await sp.execute<any>(sql`
+                INSERT INTO driver_shift_scenarios
+                  (service_program_scenario_id, name, result, config, project_id, owner_user_id, version, valid_from)
+                SELECT service_program_scenario_id,
+                       ${typeof name === "string" && name ? name : sql`name`},
+                       ${JSON.stringify(result)}::jsonb,
+                       ${config !== undefined ? sql`${JSON.stringify(config)}::jsonb` : sql`config`},
+                       project_id, owner_user_id, COALESCE(version, 1) + 1, valid_from
+                  FROM driver_shift_scenarios WHERE id = ${id}::uuid
+                RETURNING id`);
+              const nuovo: string | undefined = ins.rows?.[0]?.id;
+              if (nuovo) await sp.execute(sql`UPDATE driver_shift_scenarios SET superseded_by = ${nuovo}::uuid WHERE id = ${id}::uuid`);
+              return nuovo;
+            });
+            if (newId) return { stato: 200 as const, id: newId, versionedFrom: id };
+          } catch (verErr: any) {
+            req.log.warn({ err: verErr?.message }, "versioning DSS fallito, fallback a overwrite");
           }
-        } catch (verErr: any) {
-          req.log.warn({ err: verErr?.message }, "versioning DSS fallito, fallback a overwrite");
+          /* pubblicati: lo storico del roster li legge, non si sovrascrivono mai */
+          if (usi.giorniPubblicati > 0) return { stato: 409 as const };
         }
       }
+      const [row] = await tx.update(driverShiftScenarios)
+        .set({
+          ...(name ? { name } : {}),
+          ...(result ? { result } : {}),
+          ...(config !== undefined ? { config } : {}),
+        })
+        .where(eq(driverShiftScenarios.id, id))
+        .returning();
+      if (!row) return { stato: 404 as const };
+      // Salvataggio nuovo = contenuto allineato ai dati correnti → azzera il
+      // flag "dati superati" impostato dal resync (colonna additiva, best-effort)
+      if (result) {
+        try {
+          await tx.transaction(async (sp) => { await sp.execute(sql`UPDATE driver_shift_scenarios SET stale_since = NULL WHERE id = ${id}::uuid`); });
+        } catch { /* colonna assente su DB legacy */ }
+      }
+      return { stato: 200 as const, id: row.id as string };
+    });
+    if (esito.stato === 404) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+    if (esito.stato === 409) {
+      res.status(409).json({ error: "Turni guida pubblicati nel roster: la nuova versione non si è potuta creare, e sopra non si scrive. Riprova." });
+      return;
     }
-
-    const [row] = await db.update(driverShiftScenarios)
-      .set({
-        ...(name ? { name } : {}),
-        ...(result ? { result } : {}),
-        ...(config !== undefined ? { config } : {}),
-      })
-      .where(eq(driverShiftScenarios.id, req.params.id as string))
-      .returning();
-    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
-    // Salvataggio nuovo = contenuto allineato ai dati correnti → azzera il
-    // flag "dati superati" impostato dal resync (colonna additiva, best-effort)
-    if (result) {
-      try {
-        await db.execute(sql`UPDATE driver_shift_scenarios SET stale_since = NULL WHERE id = ${req.params.id}::uuid`);
-      } catch { /* colonna assente su DB legacy */ }
-    }
-    res.json({ ok: true, id: row.id });
+    res.json({ ok: true, id: esito.id, ...("versionedFrom" in esito ? { versionedFrom: esito.versionedFrom } : {}) });
   } catch (err: any) {
     req.log.error(err, "Error updating driver shift scenario");
     res.status(500).json({ error: err.message });

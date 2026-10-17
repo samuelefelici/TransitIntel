@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import {
   ArrowLeft, Loader2, Truck, Users, CheckCircle2, AlertTriangle, XCircle,
   ClipboardList, ChevronRight, Layers, Power, Plus, ArrowRight, Sparkles,
+  Send,
 } from "lucide-react";
 import { getPsOperationalBoard, listProjects, type OperationalUnit } from "@/lib/scheduling-projects-api";
 import { listPsProjects, getPsProject } from "@/lib/planning-studio-api";
@@ -296,9 +297,9 @@ function Board({ psId }: { psId: string }) {
             <p className="text-[11px] text-slate-500 leading-tight">Progetto di esercizio · UDP, scheduling per unità, corse scoperte</p>
           </div>
           {board && (
-            <button onClick={() => navigate(`/roster?psProjectId=${psId}&operational=1`)}
+            <button onClick={() => navigate(`/roster/pubblicazione?psProjectId=${psId}`)}
               className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors shrink-0">
-              <Users className="h-3.5 w-3.5" /> Apri nel Roster
+              <Send className="h-3.5 w-3.5" /> Pubblica nel Roster
             </button>
           )}
         </div>

@@ -34,6 +34,7 @@ import {
 } from "../lib/scenario-access";
 import { startSyncJob } from "../lib/planning-studio-materialize";
 
+import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
 const router: IRouter = Router();
 
 /** true se lo scenario turni macchina è marcato "in esercizio" (soluzione
@@ -4262,10 +4263,14 @@ router.delete("/service-program/scenarios/:id", async (req, res) => {
       });
       return;
     }
+    /* i turni guida figli se ne andrebbero in cascata: se il roster li usa, no */
+    const usi = messaggioUsi(await usiNelRoster({ spsId: req.params.id }), "Scenario non eliminabile");
+    if (usi) { res.status(409).json({ error: usi }); return; }
     await db.delete(serviceProgramScenarios)
       .where(eq(serviceProgramScenarios.id, req.params.id));
     res.json({ ok: true });
   } catch (err: any) {
+    if ((err?.cause?.code ?? err?.code) === "23503") { res.status(409).json({ error: "Scenario non eliminabile: i suoi turni guida sono pubblicati nel roster." }); return; }
     res.status(500).json({ error: err.message });
   }
 });

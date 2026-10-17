@@ -274,6 +274,12 @@ function violazione(regola: Regola, a: TurnoNelTempo, b: TurnoNelTempo, minuti: 
   return { regola, conducenteId: a.conducenteId, turni: [a, b], minuti, minimo, presunto, testo, chiave: chiaveViolazione(regola, a, b) };
 }
 
+/** La violazione è fra le coppie forzate di uno dei suoi due turni? */
+export function forzataLaCoppia(v: Violazione): boolean {
+  const inverso = chiaveViolazione(v.regola, v.turni[1], v.turni[0]);
+  return v.turni.some(t => t.coppieForzate.includes(v.chiave) || t.coppieForzate.includes(inverso));
+}
+
 /** Come le violazioni vanno al client: niente minuti assoluti, solo quello che serve a mostrarle. */
 export function perIlClient(v: Violazione) {
   return {
@@ -284,8 +290,9 @@ export function perIlClient(v: Violazione) {
     presunto: v.presunto,
     testo: v.testo,
     chiave: v.chiave,
-    /* forzata solo se chi ha assegnato uno dei due turni ha visto e forzato proprio questa */
-    forzata: v.turni.some(t => t.coppieForzate.includes(v.chiave)),
+    /* forzata solo se chi ha assegnato uno dei due turni ha visto e forzato proprio questa
+       (in un ordine o nell'altro: a parità di orari l'ordine può cambiare col codice) */
+    forzata: forzataLaCoppia(v),
     turni: v.turni.map(t => ({
       assegnazioneId: t.assegnazioneId, giorno: t.giorno, codice: t.codice, dssId: t.dssId,
       servizio: t.servizio, servizioDa: t.servizioDa,
