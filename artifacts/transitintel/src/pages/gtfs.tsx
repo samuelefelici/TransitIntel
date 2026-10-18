@@ -905,7 +905,9 @@ export default function GtfsPage() {
               <div className="flex-1 min-w-0">
                 <p className="text-xs uppercase tracking-wider font-semibold text-amber-700">Nessun feed attivo</p>
                 <p className="text-sm text-foreground">
-                  Le altre pagine usano l'ultimo feed importato come fallback. Clicca <strong>Attiva</strong> sul feed che vuoi analizzare per renderlo dataset di riferimento.
+                  Le altre pagine usano l'ultimo feed importato come fallback. {isAdmin
+                    ? <>Clicca <strong>Attiva</strong> sul feed che vuoi analizzare per renderlo dataset di riferimento.</>
+                    : <>Il feed di riferimento lo sceglie l'amministratore.</>}
                 </p>
               </div>
             </CardContent>

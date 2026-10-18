@@ -127,9 +127,14 @@ function PageLoader() {
  * (e non è admin), redirige a /dashboard.
  */
 function Gated({ perm, children }: { perm: Permission | Permission[]; children: ReactNode }) {
-  const { hasPermission } = useAuth();
+  const { hasPermission, verificato } = useAuth();
   /* con più permessi ne basta uno */
-  if (!(Array.isArray(perm) ? perm : [perm]).some(p => hasPermission(p))) return <Redirect to="/dashboard" />;
+  if (!(Array.isArray(perm) ? perm : [perm]).some(p => hasPermission(p))) {
+    /* i permessi in cache possono essere di prima (un permesso nuovo, un cambio dell'admin):
+     * si rimanda via solo dopo che il server ha risposto */
+    if (!verificato) return <PageLoader />;
+    return <Redirect to="/dashboard" />;
+  }
   return <>{children}</>;
 }
 

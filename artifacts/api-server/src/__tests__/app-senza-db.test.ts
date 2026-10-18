@@ -11,8 +11,10 @@ describe("l'API senza database", () => {
     expect(r.status).toBe(401);
   });
 
-  it("le condivisioni pubbliche rispondono 503 sulle loro rotte", async () => {
-    expect((await request(app).get("/api/network-share/abcdef")).status).toBe(503);
-    expect((await request(app).get("/api/timetable-map/abcdef")).status).toBe(503);
+  it("le condivisioni pubbliche rispondono 503 sulle loro rotte (404 con un database di prova)", async () => {
+    /* con TEST_DATABASE_URL la tabella si crea e il token, che non esiste, dà 404 */
+    const atteso = process.env.TEST_DATABASE_URL ? 404 : 503;
+    expect((await request(app).get("/api/network-share/abcdef")).status).toBe(atteso);
+    expect((await request(app).get("/api/timetable-map/abcdef")).status).toBe(atteso);
   });
 });

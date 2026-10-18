@@ -23,11 +23,31 @@ describe("le password nuove", () => {
 
   it("si rifiutano il nome dell'azienda con poco altro e i dati della persona", () => {
     expect(erroreNuovaPassword("Conerobus2026!")).toMatch(/ovvia/);
-    expect(erroreNuovaPassword("cerbero-cerbero")).toMatch(/ovvia/);
+    expect(erroreNuovaPassword("cerbero-cerbero")).toMatch(/ripetuto|ovvia/);
     expect(erroreNuovaPassword("conerobus e la luna piena")).toBeNull();
     expect(erroreNuovaPassword("Mario-del-2026!", { email: "mario.rossi@azienda.it" })).toMatch(/nome o l'email/);
     expect(erroreNuovaPassword("tantissimi rossi 1", { nome: "Paolo Rossi" })).toMatch(/nome o l'email/);
     expect(erroreNuovaPassword("lampione verde 77", { email: "mario.rossi@azienda.it", nome: "Mario Rossi" })).toBeNull();
+    expect(erroreNuovaPassword("mariorossi-2026!", { nome: "Mario Rossi" })).toMatch(/nome o l'email/);
+  });
+
+  it("parole ripetute: la stessa parola più volte non basta", () => {
+    expect(erroreNuovaPassword("Password Password Password")).toMatch(/ripetuto|ovvia/);
+    expect(erroreNuovaPassword("Conerobus Conerobus")).toMatch(/ripetuto|ovvia/);
+    expect(erroreNuovaPassword("Cerbero Cerbero 1")).toMatch(/ovvia/);
+    expect(erroreNuovaPassword("Ancona Ancona Ancona")).toMatch(/ripetuto|ovvia/);
+    expect(erroreNuovaPassword("passwordpassword1")).toMatch(/ovvia|comune/);
+  });
+
+  it("un nome corto dentro una parola qualsiasi non conta", () => {
+    expect(erroreNuovaPassword("il camaleonte verde 7", { nome: "Leo Bianchi" })).toBeNull();
+    expect(erroreNuovaPassword("la strada di casa mia", { nome: "Ada Neri" })).toBeNull();
+    expect(erroreNuovaPassword("il motivo della corsa", { nome: "Ivo Verdi" })).toBeNull();
+    expect(erroreNuovaPassword("corriera blu e treni", { email: "ufficio.turni@azienda.it" })).toBeNull();
+    expect(erroreNuovaPassword("informazioni utili 2026", { email: "info@azienda.it" })).toBeNull();
+    /* ma il nome da solo, anche con numeri, sì */
+    expect(erroreNuovaPassword("leo e la sua bici 7", { nome: "Leo Bianchi" })).toMatch(/nome o l'email/);
+    expect(erroreNuovaPassword("ufficio turni sereno", { email: "ufficio.turni@azienda.it" })).toMatch(/nome o l'email/);
   });
 });
 

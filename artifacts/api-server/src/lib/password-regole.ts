@@ -46,6 +46,22 @@ function pezziDellaPersona(email?: string | null, nome?: string | null): string[
     .map(compatta).filter(p => p.length >= 3);
 }
 
+/**
+ * La password contiene la persona? Si guarda parola per parola, senza le
+ * cifre: «Mario2026!» e «rossi mario» sì, «il camaleonte verde» per Leo no
+ * (un nome corto dentro una parola qualsiasi non conta).
+ */
+function contieneLaPersona(p: string, pezzi: string[]): boolean {
+  if (!pezzi.length) return false;
+  const parole = p.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .split(/[^a-z0-9]+/).map(w => w.replace(/[0-9]/g, "")).filter(Boolean);
+  const insieme = new Set(pezzi);
+  /* le parole da sole, e attaccate fra loro («mariorossi») */
+  if (parole.some(w => insieme.has(w))) return true;
+  const tutto = parole.join("");
+  return pezzi.some((a, i) => pezzi.some((b, j) => i !== j && (tutto === a + b || parole.some(w => w === a + b))));
+}
+
 /** Il motivo per cui una password nuova non va bene, o null se va bene. */
 export function erroreNuovaPassword(p: unknown, persona: { email?: string | null; nome?: string | null } = {}): string | null {
   if (typeof p !== "string" || !p) return "La password è obbligatoria";
@@ -53,13 +69,14 @@ export function erroreNuovaPassword(p: unknown, persona: { email?: string | null
   if ([...p].length > PASSWORD_MAX) return `La password può avere al massimo ${PASSWORD_MAX} caratteri`;
   const c = compatta(p);
   if (COMUNI.has(p.toLowerCase()) || COMUNI.has(c)) return "Password troppo comune: scegline un'altra";
-  /* un pezzo ripetuto (aaaa…, abcabc…, 123123…) o una sequenza della tastiera */
-  if (/^(.{1,4})\1+$/.test(p.toLowerCase())) return "Password troppo semplice: è un pezzo ripetuto";
+  /* un pezzo ripetuto (aaaa…, abcabc…, «password password») o una sequenza della tastiera */
+  if (/^(.+?)\1+$/.test(c)) return "Password troppo semplice: è un pezzo ripetuto";
   if (c.length >= 8 && SEQUENZE.some(s => s.includes(c))) return "Password troppo semplice: è una sequenza della tastiera";
   for (const w of PAROLE_AZIENDA) {
-    if (c.includes(w) && c.replace(w, "").length < 8) return "Password troppo legata a una parola ovvia (nome dell'azienda o «password»)";
+    /* tolte tutte le volte che compare: «Conerobus Conerobus 1» resta quasi vuota */
+    if (c.includes(w) && c.split(w).join("").length < 8) return "Password troppo legata a una parola ovvia (nome dell'azienda o «password»)";
   }
-  if (pezziDellaPersona(persona.email, persona.nome).some(x => c.includes(x))) {
+  if (contieneLaPersona(p, pezziDellaPersona(persona.email, persona.nome))) {
     return "La password non deve contenere il nome o l'email della persona";
   }
   return null;

@@ -30,7 +30,9 @@ import {
   gtfsRoutes,
 } from "@workspace/db/schema";
 import { eq, and, sql, desc, inArray } from "drizzle-orm";
-import { getLatestFeedId } from "./gtfs-helpers";
+/* il feed si risolve sempre con getLatestFeedId: un ?feedId= o un feedId nel corpo
+ * vale solo se è un feed che l'utente può vedere (gtfs-helpers.ts) */
+import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
 
 const router: IRouter = Router();
@@ -516,7 +518,7 @@ async function computeOdMatrix(feedId: string): Promise<ComputeResult> {
 router.post("/fares/min-od/build-graph", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.body?.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const onlyExtraurban = req.body?.onlyExtraurban !== false;
     const result = await buildNetworkGraph(feedId, { onlyExtraurban });
@@ -531,7 +533,7 @@ router.post("/fares/min-od/build-graph", async (req, res) => {
 router.post("/fares/min-od/compute-matrix", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.body?.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
 
     const runRows = await db.insert(gtfsFareOdMatrixRuns).values({
@@ -570,7 +572,7 @@ router.post("/fares/min-od/compute-matrix", async (req, res) => {
 router.get("/fares/min-od/simulate", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.query.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     const from = req.query.from as string | undefined;
     const to = req.query.to as string | undefined;
     if (!feedId || !from || !to) return res.status(400).json({ error: "feedId, from, to richiesti" });
@@ -591,7 +593,7 @@ router.get("/fares/min-od/simulate", async (req, res) => {
 router.get("/fares/min-od/matrix", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.query.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const limit = Math.min(Number(req.query.limit ?? 5000), 20000);
     const offset = Number(req.query.offset ?? 0);
@@ -609,7 +611,7 @@ router.get("/fares/min-od/matrix", async (req, res) => {
 router.get("/fares/min-od/edges", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.query.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const rows = await db.select().from(gtfsFareNetworkEdges)
       .where(eq(gtfsFareNetworkEdges.feedId, feedId));
@@ -623,7 +625,7 @@ router.get("/fares/min-od/edges", async (req, res) => {
 router.get("/fares/min-od/runs", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.query.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const rows = await db.select().from(gtfsFareOdMatrixRuns)
       .where(eq(gtfsFareOdMatrixRuns.feedId, feedId))
@@ -639,7 +641,7 @@ router.get("/fares/min-od/runs", async (req, res) => {
 router.post("/fares/min-od/edges", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.body?.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     const { fromClusterId, toClusterId, km, bidirectional } = req.body ?? {};
     if (!feedId || !fromClusterId || !toClusterId || typeof km !== "number") {
       return res.status(400).json({ error: "feedId, fromClusterId, toClusterId, km richiesti" });
@@ -662,9 +664,10 @@ router.post("/fares/min-od/edges", async (req, res) => {
 router.delete("/fares/min-od/edges/:id", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const id = req.params.id;
-    await db.delete(gtfsFareNetworkEdges).where(eq(gtfsFareNetworkEdges.id, id));
-    return res.json({ ok: true, id });
+    const sc = await idNelFeed(req, res); if (!sc) return;
+    const via = await db.delete(gtfsFareNetworkEdges).where(nelFeed(gtfsFareNetworkEdges, sc)).returning({ id: gtfsFareNetworkEdges.id });
+    if (!via.length) return res.status(404).json(NON_NEL_FEED);
+    return res.json({ ok: true, id: sc.id });
   } catch (err: any) {
     return res.status(500).json({ error: err?.message ?? String(err) });
   }
@@ -674,7 +677,7 @@ router.delete("/fares/min-od/edges/:id", async (req, res) => {
 router.delete("/fares/min-od/matrix", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.query.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const result = await db.delete(gtfsFareOdMatrix).where(eq(gtfsFareOdMatrix.feedId, feedId));
     return res.json({ ok: true, feedId, deleted: (result as any).rowCount ?? null });
@@ -700,7 +703,7 @@ router.delete("/fares/min-od/matrix", async (req, res) => {
 router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.query.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     const routeId = req.params.routeId;
     if (!feedId || !routeId) return res.status(400).json({ error: "feedId e routeId richiesti" });
 
@@ -965,7 +968,7 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
 router.get("/fares/min-od/route-variants/:routeId", async (req, res) => {
   try {
     await ensureMinOdTables();
-    const feedId = (req.query.feedId as string) || (await getLatestFeedId(req));
+    const feedId = await getLatestFeedId(req);
     const routeId = req.params.routeId;
     if (!feedId || !routeId) return res.status(400).json({ error: "feedId e routeId richiesti" });
 

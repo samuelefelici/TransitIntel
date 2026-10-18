@@ -253,6 +253,8 @@ export default function RosterPage() {
   /* id del conducente di cui è aperta la scheda, o "new" */
   const [editDriver, setEditDriver] = useState<string | null | "new">(null);
   const { hasPermission, datiProva } = useAuth();
+  /* la pubblicazione dei turni è dello Scheduling: senza, i link non portano da nessuna parte */
+  const puoPubblicare = hasPermission("scheduling");
   /* senza «Personale» dal tabellone si creano solo conducenti fittizi */
   const personale = hasPermission("personale");
 
@@ -784,15 +786,24 @@ export default function RosterPage() {
           <Users className="w-5 h-5 text-violet-400" />
           <span className="font-bold text-sm">Roster · Personale Viaggiante</span>
         </div>
-        {/* da dove vengono i turni: solo dalla pubblicazione */}
-        <Link href={`/roster/pubblicazione${psProjectId ? `?psProjectId=${psProjectId}` : ""}`}
-          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-xs text-slate-200 whitespace-nowrap"
-          title="I turni del roster arrivano solo dalla pubblicazione: qui si sceglie per periodo quali turni guida mandare">
-          <Send className="w-3.5 h-3.5 text-violet-400" />
-          {board?.programmi?.length
+        {/* da dove vengono i turni: solo dalla pubblicazione (che è dello Scheduling) */}
+        {(() => {
+          const testo = board?.programmi?.length
             ? <span>Turni pubblicati: <b className="font-semibold">{board.programmi.map(p => p.nome).join(" · ")}</b> · {giorniPubblicati}/{board.days.length} giorni</span>
-            : <span>Nessun turno pubblicato · <b className="font-semibold">Pubblica</b></span>}
-        </Link>
+            : <span>Nessun turno pubblicato{puoPubblicare && <> · <b className="font-semibold">Pubblica</b></>}</span>;
+          return puoPubblicare ? (
+            <Link href={`/roster/pubblicazione${psProjectId ? `?psProjectId=${psProjectId}` : ""}`}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 hover:bg-slate-800 text-xs text-slate-200 whitespace-nowrap"
+              title="I turni del roster arrivano solo dalla pubblicazione: qui si sceglie per periodo quali turni guida mandare">
+              <Send className="w-3.5 h-3.5 text-violet-400" />{testo}
+            </Link>
+          ) : (
+            <span className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-800 text-xs text-slate-300 whitespace-nowrap"
+              title="I turni li pubblica l'ufficio turni (permesso Scheduling)">
+              <Send className="w-3.5 h-3.5 text-violet-400" />{testo}
+            </span>
+          );
+        })()}
         <div className="flex items-center gap-1 rounded-lg border border-slate-700 px-1 py-0.5">
           <button onClick={() => setFrom(shiftDate(from, -RANGE_DAYS))} className="p-1.5 rounded hover:bg-white/10" title="Periodo precedente"><ChevronLeft className="w-4 h-4" /></button>
           <span className="text-xs font-mono px-2 flex items-center gap-1.5"><CalendarDays className="w-3.5 h-3.5 text-violet-400" />{dayLabel(from).dm} – {dayLabel(shiftDate(from, RANGE_DAYS - 1)).dm}</span>
@@ -1174,9 +1185,11 @@ export default function RosterPage() {
                       </div>
                       <div className="flex-1 overflow-y-auto p-1 space-y-1">
                         {!giornoPubblicato(day) ? (
-                          <Link href={`/roster/pubblicazione${psProjectId ? `?psProjectId=${psProjectId}` : ""}`} className="block text-[10px] text-slate-500 px-1 hover:text-violet-300">
-                            non pubblicato · <span className="underline">pubblica</span>
-                          </Link>
+                          puoPubblicare ? (
+                            <Link href={`/roster/pubblicazione${psProjectId ? `?psProjectId=${psProjectId}` : ""}`} className="block text-[10px] text-slate-500 px-1 hover:text-violet-300">
+                              non pubblicato · <span className="underline">pubblica</span>
+                            </Link>
+                          ) : <div className="text-[10px] text-slate-500 px-1">non pubblicato</div>
                         ) : list.length === 0 ? (
                           <div className="text-[10px] text-emerald-400/60 px-1">tutto coperto</div>
                         ) : list.map(({ duty: d, dssId: dss, udpNome }) => {

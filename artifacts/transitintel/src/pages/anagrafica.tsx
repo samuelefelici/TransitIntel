@@ -160,9 +160,11 @@ export default function AnagraficaPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link href="/roster" className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5">
-            <Users className="w-3.5 h-3.5" /> Roster
-          </Link>
+          {hasPermission("roster") && (
+            <Link href="/roster" className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5" /> Roster
+            </Link>
+          )}
           {/* solo nelle installazioni di prova (CERBERO_DATI_PROVA=1) */}
           {datiProva && (
             <button onClick={() => { if (confirm("Creare 30 conducenti di prova (fittizi, senza matricola) con foto, depositi diversi e rotazioni riposi?")) prova.mutate(); }}

@@ -20,6 +20,7 @@ import {
   AlertTriangle, ArrowRight, CalendarRange, CheckCircle2, History, Loader2, Send, Undo2, Users,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 
 /* ── Tipi (allineati a /api/roster/pubblicazioni/*) ── */
 interface Programma { id: string; nome: string; inEsercizio: boolean; udp: number; ultimaPubblicazione: string | null }
@@ -88,6 +89,8 @@ const MOTIVI: Record<string, string> = {
 };
 
 export default function RosterPubblicazionePage() {
+  /* il roster ha un permesso suo: chi pubblica non sempre lo vede */
+  const vedeRoster = useAuth().hasPermission("roster");
   const qc = useQueryClient();
   const daUrl = useMemo(() => new URLSearchParams(window.location.search).get("psProjectId") ?? "", []);
   const oggi = isoOggi();
@@ -206,9 +209,11 @@ export default function RosterPubblicazionePage() {
           <h1 className="font-bold text-sm">Pubblicazione turni</h1>
           <p className="text-[11px] text-slate-400">Dallo Scheduling Engine al Roster: per ogni periodo, quali turni guida arrivano. Il roster riceve solo da qui.</p>
         </div>
-        <Link href="/roster" className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">
-          <Users className="w-3.5 h-3.5" /> Apri il roster
-        </Link>
+        {vedeRoster && (
+          <Link href="/roster" className="ml-auto inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">
+            <Users className="w-3.5 h-3.5" /> Apri il roster
+          </Link>
+        )}
       </div>
 
       {/* ── Programma e periodo ── */}
@@ -394,7 +399,7 @@ export default function RosterPubblicazionePage() {
                   <ul className="list-disc pl-4">{esito.nuoveViolazioni.slice(0, 5).map(t => <li key={t}>{t}</li>)}</ul>
                 </div>
               )}
-              <Link href="/roster" className="inline-flex items-center gap-1 text-emerald-200 underline hover:no-underline">Vai al roster <ArrowRight className="w-3 h-3" /></Link>
+              {vedeRoster && <Link href="/roster" className="inline-flex items-center gap-1 text-emerald-200 underline hover:no-underline">Vai al roster <ArrowRight className="w-3 h-3" /></Link>}
             </div>
           )}
 

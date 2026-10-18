@@ -20,6 +20,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { SCRIPTS_DIR } from "./scripts-dir";
 import { requirePermission } from "./auth";
+import { CODICI_SANITARI } from "./roster-voci";
 
 /* Chi ha solo «personale» legge le rotazioni (le sceglie nella scheda del
  * conducente) ma non le crea, non le cancella e non genera i riposi. */
@@ -113,6 +114,11 @@ router.post("/roster/rotazioni-riposi", soloRoster, async (req, res): Promise<vo
     if (!name) { res.status(400).json({ error: "Nome obbligatorio" }); return; }
     const pattern = normalizePattern(b.pattern);
     if (!pattern) { res.status(400).json({ error: "Pattern non valido (matrice settimane × 7 giorni)" }); return; }
+    /* le rotazioni scrivono voci di assenza per tutti i conducenti assegnati:
+     * i codici sanitari passano solo dalla voce del singolo (lib/roster-voci.ts) */
+    if (pattern.flat().some(c => c && CODICI_SANITARI.has(c))) {
+      res.status(400).json({ error: "Malattia, infortunio e 104 non si mettono in una rotazione: la rotazione è per i riposi" }); return;
+    }
     const meta = b.meta && typeof b.meta === "object" ? b.meta : null;
     const r = await db.execute<any>(sql`
       INSERT INTO roster_rotazioni_riposi (name, weeks, pattern, meta, owner_user_id)

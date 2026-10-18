@@ -37,6 +37,8 @@ interface AuthCtx {
   hasPermission: (p: Permission) => boolean;
   /** installazione di prova: si possono creare conducenti fittizi (CERBERO_DATI_PROVA=1) */
   datiProva: boolean;
+  /** il server ha risposto almeno una volta a /me: i permessi in cache possono essere vecchi */
+  verificato: boolean;
 }
 
 const AuthContext = createContext<AuthCtx | null>(null);
@@ -76,6 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<CurrentUser | null>(() => loadCachedUser());
   /* non in cache: finché /me non risponde, niente dati di prova */
   const [datiProva, setDatiProva] = useState(false);
+  const [verificato, setVerificato] = useState(false);
   // Se abbiamo cache, possiamo già mostrare l'app: niente loading screen iniziale.
   const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null);
 
@@ -117,6 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } finally {
       setLoading(false);
+      setVerificato(true);
     }
   }, [setUser]);
 
@@ -167,6 +171,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh,
     hasPermission,
     datiProva,
+    verificato,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

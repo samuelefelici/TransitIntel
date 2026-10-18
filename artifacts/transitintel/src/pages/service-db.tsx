@@ -10,6 +10,7 @@ import {
   Bus, CalendarRange, Database, Layers, Loader2, Power, Users, ClipboardList,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 
 interface Overview {
   projects: Array<{ id: string; name: string; agencyName: string | null; status: string; updatedAt: string; isOperational: boolean; materializedAt: string | null; routes: number; trips: number; validityUnits: number }>;
@@ -41,6 +42,7 @@ function Section({ icon, title, count, children }: {
 }
 
 export default function ServiceDbPage() {
+  const vedeRoster = useAuth().hasPermission("roster");
   const q = useQuery({
     queryKey: ["service-db", "overview"],
     queryFn: () => apiFetch<Overview>("/api/service-db/overview"),
@@ -68,7 +70,7 @@ export default function ServiceDbPage() {
           <span className="px-3 py-1.5 rounded-lg bg-violet-500/10 text-violet-300 flex items-center gap-1.5">
             <Users className="w-3.5 h-3.5" /> {d?.roster.drivers ?? 0} operatori · {d?.roster.assignmentsNext7 ?? 0} turni assegnati (7gg)
           </span>
-          <Link href="/roster"><span className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 cursor-pointer">Apri Roster →</span></Link>
+          {vedeRoster && <Link href="/roster"><span className="px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 cursor-pointer">Apri Roster →</span></Link>}
         </div>
       </div>
 
