@@ -10,8 +10,8 @@
  * Anziché modificarle una per una, patchiamo il globale: se la chiamata ha già
  * un `credentials` esplicito viene rispettato, altrimenti diventa "include".
  *
- * Bonus: su 401 dispatcha l'evento globale `auth:unauthorized` (allineato
- * con apiFetch).
+ * Bonus: su 401 dispatcha l'evento globale `auth:unauthorized`, e su un 403
+ * di sessione limitata `auth:limited` (allineato con apiFetch).
  */
 import { getApiBase } from "./api";
 
@@ -57,6 +57,13 @@ if (typeof window !== "undefined" && !(window as any).__tiFetchPatched) {
       } catch {
         /* noop */
       }
+    }
+    /* 403 di sessione limitata: lo si legge da una copia, il chiamante ha ancora la sua risposta */
+    if (res.status === 403 && isApiUrl(input)) {
+      void res.clone().json().then(
+        (b: any) => { if (b?.accessoLimitato) window.dispatchEvent(new CustomEvent("auth:limited")); },
+        () => { /* non JSON */ },
+      );
     }
     return res;
   };

@@ -9,7 +9,7 @@
  */
 import { useState } from "react";
 import { toast } from "sonner";
-import { KeyRound, LogOut, MonitorSmartphone, ShieldAlert, ShieldCheck, Smartphone } from "lucide-react";
+import { KeyRound, LifeBuoy, LogOut, MonitorSmartphone, ShieldAlert, ShieldCheck, Smartphone } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,7 @@ export default function AccountPage({ forzata = false }: { forzata?: boolean }) 
           </div>
         )}
 
+        {accesso?.recupero && <TelefonoPerso onFatto={refresh} />}
         <CambioPassword onFatto={refresh} evidenziata={accesso?.limitato === "password"} />
         {accesso?.limitato !== "password" && <VerificaDueFattori onCambio={refresh} />}
         {!accesso?.limitato && <Sessioni />}
@@ -115,16 +116,24 @@ function VerificaDueFattori({ onCambio }: { onCambio: () => Promise<void> }) {
   const [codiciRecupero, setCodiciRecupero] = useState<string[] | null>(null);
   const [azione, setAzione] = useState<"disattiva" | "codici" | null>(null);
   const [busy, setBusy] = useState(false);
+  /* se la password non è stata data da poco, il server la richiede prima di legare un telefono */
+  const [chiediPassword, setChiediPassword] = useState(false);
+  const [password, setPassword] = useState("");
 
-  const inizia = async () => {
+  const inizia = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     setBusy(true);
     try {
-      const r = await apiFetch<{ segreto: string; uri: string }>("/api/auth/mfa/attiva", { method: "POST" });
+      const r = await apiFetch<{ segreto: string; uri: string }>("/api/auth/mfa/attiva", {
+        method: "POST", body: JSON.stringify(chiediPassword ? { password } : {}),
+      });
       const QRCode = (await import("qrcode")).default;
       setNuovo({ segreto: r.segreto, qr: await QRCode.toDataURL(r.uri, { margin: 1, width: 220 }) });
       setCodice("");
+      setPassword(""); setChiediPassword(false);
     } catch (e: any) {
-      toast.error("Verifica non avviata", { description: e?.message });
+      if (e?.body?.serve === "password" && !chiediPassword) setChiediPassword(true);
+      else toast.error("Verifica non avviata", { description: e?.message });
     } finally { setBusy(false); }
   };
 
@@ -214,6 +223,16 @@ function VerificaDueFattori({ onCambio }: { onCambio: () => Promise<void> }) {
                 <Button type="button" variant="ghost" onClick={() => setNuovo(null)}>Annulla</Button>
               </div>
             </form>
+          ) : chiediPassword ? (
+            <form onSubmit={inizia} className="flex flex-wrap items-end gap-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="mfa-password">Per sicurezza, la tua password</Label>
+                <Input id="mfa-password" type="password" autoComplete="current-password" value={password}
+                  onChange={e => setPassword(e.target.value)} required className="w-64" />
+              </div>
+              <Button type="submit" disabled={busy}>{busy ? "Verifica…" : "Continua"}</Button>
+              <Button type="button" variant="ghost" onClick={() => { setChiediPassword(false); setPassword(""); }}>Annulla</Button>
+            </form>
           ) : (
             <Button type="button" onClick={() => void inizia()} disabled={busy}>Attiva la verifica</Button>
           )
@@ -241,6 +260,46 @@ function VerificaDueFattori({ onCambio }: { onCambio: () => Promise<void> }) {
             </div>
           )
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Entrato con un codice di recupero: la password, e la verifica si rifà col telefono nuovo. */
+function TelefonoPerso({ onFatto }: { onFatto: () => Promise<void> }) {
+  const { accesso } = useAuth();
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const invia = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await apiFetch("/api/auth/mfa/reimposta", { method: "POST", body: JSON.stringify({ password }) });
+      toast.success(accesso?.mfaObbligatoria
+        ? "Verifica tolta: attivala ora con il telefono nuovo"
+        : "Verifica tolta: se vuoi, riattivala con il telefono nuovo");
+      setPassword("");
+      await onFatto();
+    } catch (e: any) {
+      toast.error("Non riuscito", { description: e?.message });
+    } finally { setBusy(false); }
+  };
+  return (
+    <Card className="border-amber-500/60">
+      <CardHeader><CardTitle className="text-base flex items-center gap-2"><LifeBuoy className="w-4 h-4" aria-hidden /> Hai perso il telefono?</CardTitle></CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        <p className="text-muted-foreground">
+          Per entrare hai usato un codice di recupero. Se il telefono con l'app non ce l'hai più, rifai la verifica con quello
+          nuovo: inserisci la password, poi inquadri il QR nuovo. Il vecchio telefono smette di valere, e anche i codici di recupero rimasti.
+        </p>
+        <form onSubmit={invia} className="flex flex-wrap items-end gap-2">
+          <div className="grid gap-1.5">
+            <Label htmlFor="recupero-password">Password</Label>
+            <Input id="recupero-password" type="password" autoComplete="current-password" value={password}
+              onChange={e => setPassword(e.target.value)} required className="w-64" />
+          </div>
+          <Button type="submit" disabled={busy}>{busy ? "Attendi…" : "Rifai la verifica"}</Button>
+        </form>
       </CardContent>
     </Card>
   );

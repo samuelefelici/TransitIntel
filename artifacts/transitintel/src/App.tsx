@@ -373,16 +373,19 @@ function AuthGate() {
   const { isAuthenticated, loading, user, accesso } = useAuth();
   const [location, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
+  /* entrato con un codice di recupero: si parte dalla pagina per rifare la verifica */
+  const recuperoRef = useRef(false);
+  recuperoRef.current = !!accesso?.recupero;
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
   const [waitingSequence, setWaitingSequence] = useState(false);
 
-  // Listener globale: 401 -> svuota lo stato; AuthProvider rinegozierà via /me.
+  // Listener globale: 401 -> svuota lo stato; AuthProvider richiede /me (hooks/use-auth.tsx)
+  // e, se la sessione è davvero finita, torna il login.
   // NON forziamo redirect duro a /login: lasciamo che lo stato di auth si auto-aggiorni
   // (un singolo 401 su una route protetta non significa che la sessione è caduta — può essere
   // un endpoint per cui l'utente non ha permesso, e usare navigate qui interrompe la UX).
   useEffect(() => {
     function onUnauth() {
-      // best-effort: invalida cache locale; AuthProvider farà /me al prossimo tick
       try { sessionStorage.removeItem("transitintel_auth"); } catch {}
     }
     window.addEventListener("auth:unauthorized", onUnauth);
@@ -401,7 +404,7 @@ function AuthGate() {
     if (!prevAuth.current && isAuthenticated) {
       // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
       setWaitingSequence(true);
-      navigate("/dashboard");
+      navigate(recuperoRef.current ? "/account" : "/dashboard");
     }
     prevAuth.current = isAuthenticated;
   }, [isAuthenticated, navigate]);

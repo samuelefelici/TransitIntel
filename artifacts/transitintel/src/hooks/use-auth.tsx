@@ -33,6 +33,8 @@ export interface Accesso {
   mfaAttiva: boolean;
   mfaObbligatoria: boolean;
   passwordDaCambiare: boolean;
+  /** entrato con un codice di recupero (telefono perso): può rifare la verifica */
+  recupero: boolean;
 }
 
 export type EsitoLogin =
@@ -79,32 +81,42 @@ const AuthContext = createContext<AuthCtx | null>(null);
  *  solo metadati identity/permessi che il backend riemetterà comunque.
  * ──────────────────────────────────────────────────────────── */
 const AUTH_CACHE_KEY = "transitintel.auth.user.v1";
-function loadCachedUser(): CurrentUser | null {
+/* anche lo stato dell'accesso: chi ha una sessione limitata, ricaricando la
+ * pagina, va subito alla pagina per mettersi in regola invece di aprire l'app
+ * e prendere una raffica di 403 finché /me non risponde */
+const ACCESSO_CACHE_KEY = "transitintel.auth.accesso.v1";
+function loadCached<T>(key: string): T | null {
   try {
-    const raw = localStorage.getItem(AUTH_CACHE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return null;
-    return JSON.parse(raw) as CurrentUser;
+    return JSON.parse(raw) as T;
   } catch { return null; }
 }
-function saveCachedUser(u: CurrentUser | null): void {
+function saveCached(key: string, v: unknown): void {
   try {
-    if (u) localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(u));
-    else localStorage.removeItem(AUTH_CACHE_KEY);
+    if (v) localStorage.setItem(key, JSON.stringify(v));
+    else localStorage.removeItem(key);
   } catch { /* noop */ }
 }
+const loadCachedUser = () => loadCached<CurrentUser>(AUTH_CACHE_KEY);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<CurrentUser | null>(() => loadCachedUser());
   /* non in cache: finché /me non risponde, niente dati di prova */
   const [datiProva, setDatiProva] = useState(false);
   const [verificato, setVerificato] = useState(false);
-  const [accesso, setAccesso] = useState<Accesso | null>(null);
+  const [accesso, setAccessoState] = useState<Accesso | null>(() => (loadCachedUser() ? loadCached<Accesso>(ACCESSO_CACHE_KEY) : null));
   // Se abbiamo cache, possiamo già mostrare l'app: niente loading screen iniziale.
   const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null);
 
   const setUser = useCallback((u: CurrentUser | null) => {
     setUserState(u);
-    saveCachedUser(u);
+    saveCached(AUTH_CACHE_KEY, u);
+    if (!u) { setAccessoState(null); saveCached(ACCESSO_CACHE_KEY, null); }
+  }, []);
+  const setAccesso = useCallback((a: Accesso | null) => {
+    setAccessoState(a);
+    saveCached(ACCESSO_CACHE_KEY, a);
   }, []);
 
   /* Cambia la persona (uscita, o un altro accesso dallo stesso PC): via tutta
@@ -143,10 +155,37 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       setVerificato(true);
     }
-  }, [setUser]);
+  }, [setUser, setAccesso]);
 
   useEffect(() => {
     void refresh();
+  }, [refresh]);
+
+  /* Un 401 a sessione aperta (12 ore finite, «esci ovunque» da un altro PC,
+   * password cambiata) o un 403 di sessione limitata: si richiede /me, che
+   * decide. Al più una richiesta ogni 5 secondi, e mai da sloggati: i 401 del
+   * login stesso non devono rimbalzare qui. */
+  const userRef = useRef(user);
+  userRef.current = user;
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let ultimo = 0;
+    const ricontrolla = () => {
+      if (!userRef.current || timer) return;
+      timer = setTimeout(() => {
+        timer = null;
+        if (!userRef.current || Date.now() - ultimo < 5000) return;
+        ultimo = Date.now();
+        void refresh();
+      }, 500);
+    };
+    window.addEventListener("auth:unauthorized", ricontrolla);
+    window.addEventListener("auth:limited", ricontrolla);
+    return () => {
+      window.removeEventListener("auth:unauthorized", ricontrolla);
+      window.removeEventListener("auth:limited", ricontrolla);
+      if (timer) clearTimeout(timer);
+    };
   }, [refresh]);
 
   type RispostaLogin = { user?: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; mfaRichiesta?: boolean; biglietto?: string };
@@ -154,7 +193,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(r.user!);
     setDatiProva(!!r.datiProva);
     setAccesso(r.accesso ?? null);
-  }, [setUser]);
+  }, [setUser, setAccesso]);
 
   const login = useCallback(async (email: string, password: string): Promise<EsitoLogin> => {
     try {
@@ -192,7 +231,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
     setUser(null);
-    setAccesso(null);
   }, [setUser]);
 
   const hasPermission = useCallback(

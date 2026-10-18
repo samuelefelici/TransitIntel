@@ -47,6 +47,8 @@ const ESITO_LABEL: Record<string, string> = {
   bloccato: "bloccato (troppi tentativi)", password_pubblicata: "password pubblicata: disattivato",
   password_cambiata: "password cambiata", verifica_attivata: "verifica attivata", verifica_disattivata: "verifica disattivata",
   codici_recupero_nuovi: "nuovi codici di recupero", sessioni_chiuse: "uscito da tutti i dispositivi",
+  codici_bloccati: "codici bloccati (troppi sbagliati)", segreto_illeggibile: "verifica non leggibile: controlla CERBERO_CHIAVE_MFA",
+  password_attuale_errata: "password attuale sbagliata", verifica_reimpostata: "verifica rifatta dopo il telefono perso",
 };
 const esitoLeggibile = (e: string) => {
   const m = /^admin:([a-z_]+) \((.*)\)$/.exec(e);
@@ -298,7 +300,7 @@ export default function AdminUsersPage() {
                             {u.mfaAttiva ? "verifica attiva" : u.mfaObbligatoria ? "verifica da attivare" : "solo password"}
                           </div>
                           {u.passwordDaCambiare && <div className="text-amber-400">password provvisoria</div>}
-                          {u.bloccatoFino && <div className="text-red-400">bloccato fino alle {new Date(u.bloccatoFino).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</div>}
+                          {u.bloccatoFino && <div className="text-red-400">bloccato fino al {new Date(u.bloccatoFino).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>}
                         </td>
                         <td className="py-2 pr-4 text-xs text-muted-foreground">
                           {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("it-IT") : "mai"}
@@ -671,7 +673,7 @@ function RegistroAccessi() {
                     <tr key={v.id} className="border-b border-border/10">
                       <td className="py-1 pr-3 whitespace-nowrap tabular-nums">{new Date(v.ts).toLocaleString("it-IT")}</td>
                       <td className="py-1 pr-3 font-mono">{v.email ?? "—"}</td>
-                      <td className={`py-1 pr-3 ${/errat|sconosciut|bloccat|pubblicat/.test(v.esito) ? "text-amber-400" : ""}`}>{esitoLeggibile(v.esito)}</td>
+                      <td className={`py-1 pr-3 ${/errat|sconosciut|bloccat|pubblicat|illeggibil/.test(v.esito) ? "text-amber-400" : ""}`}>{esitoLeggibile(v.esito)}</td>
                       <td className="py-1 pr-3 font-mono text-muted-foreground" title={v.userAgent ?? ""}>{v.ip ?? "—"}</td>
                     </tr>
                   ))}

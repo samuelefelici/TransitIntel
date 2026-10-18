@@ -70,8 +70,9 @@ parlarsi via rete interna:
    - `CRON_SECRET` (genera con `openssl rand -hex 32`)
    - `CERBERO_CHIAVE_MFA` (genera con `openssl rand -hex 32`) — **OBBLIGATORIA**:
      cifra i segreti della verifica in due passaggi; senza, in produzione l'API
-     non parte. Impostala **prima** del deploy e non cambiarla: con un'altra chiave
-     i segreti salvati non si leggono più e la verifica va rifatta da tutti
+     non parte. Impostala **prima** del deploy e non perderla: con un'altra chiave
+     i segreti salvati non si leggono più (il log lo dice all'avvio). Per
+     cambiarla vedi «Accesso sicuro» qui sotto
    - `CERBERO_ADMIN_EMAIL` e `CERBERO_ADMIN_PASSWORD` **solo se non c'è un
      amministratore attivo** (database nuovo, o recupero): l'API crea o rimette in
      piedi un amministratore con questi dati (password di almeno 12 caratteri, non
@@ -202,24 +203,56 @@ creano da sé; `migrations/2026-10_roster_riposi.sql` è lo specchio.
 
 ### Accesso sicuro
 
+**Prima del rilascio.** Al rilascio del permesso Roster, chi aveva Scheduling
+lo ha ricevuto in automatico; con l'accesso sicuro, Roster rende obbligatoria
+la verifica in due passaggi. Quindi, sulla versione che hai già in esercizio:
+1. imposta `CERBERO_CHIAVE_MFA`;
+2. in Gestione Utenti togli Roster a chi non lavora sul roster (altrimenti al
+   primo accesso dovrà attivare la verifica anche chi non ne ha bisogno);
+3. avvisa admin e utenti di Personale e Roster che serve un'app di
+   autenticazione sul telefono.
+
+Dopo il rilascio tutti devono rientrare (le sessioni di prima non valgono più).
+L'admin entra per primo e attiva la sua verifica.
+
 - **Verifica in due passaggi** (codice a 6 cifre da un'app come Google o
   Microsoft Authenticator) obbligatoria per admin e per chi ha i permessi
   Personale o Roster; facoltativa per gli altri. Chi deve attivarla, al primo
   accesso vede solo la pagina «Sicurezza dell'account» finché non l'ha fatto.
+  Le sorveglianze e il connettore di Argos non partono per chi deve ancora
+  attivarla (o cambiare la password provvisoria): lo dicono nel loro esito.
 - **Password**: almeno 12 caratteri; quella data dall'admin è provvisoria e va
-  cambiata al primo accesso. Dopo 5 errori di fila l'account si blocca 15
-  minuti (poi il doppio a ogni errore, al massimo un giorno); l'admin lo sblocca
-  da Gestione Utenti.
-- **Sessioni**: durano 12 ore. Cambio password, reset della verifica e «esci da
-  tutti i dispositivi» chiudono le altre sessioni. Al primo avvio dopo il
-  rilascio tutti devono rientrare.
+  cambiata al primo accesso.
+- **Tentativi sbagliati**:
+  - password, dallo stesso indirizzo: dopo 5 errori quell'indirizzo aspetta 15
+    minuti, poi il doppio a ogni errore, al massimo un giorno. Chi sbaglia da un
+    altro posto non blocca il titolare;
+  - password, da qualunque indirizzo: al massimo 20 errori in 15 minuti, poi
+    l'account aspetta 15 minuti (ferma chi prova da tanti indirizzi);
+  - codici della verifica: dopo 5 errori 15 minuti, poi il doppio, al massimo
+    un giorno (chi li sbaglia conosce già la password: se non è il titolare,
+    la password va cambiata).
+  Gli stessi limiti valgono per la password e i codici chiesti dentro la pagina
+  «Sicurezza dell'account». L'admin sblocca da Gestione Utenti; anche dare una
+  password provvisoria sblocca la password.
+- **Sessioni**: durano 12 ore da quando si è data la password; cambio password,
+  reset della verifica e «esci da tutti i dispositivi» chiudono le altre
+  sessioni senza allungare quella in uso.
 - **Registro degli accessi** in Gestione Utenti, conservato 12 mesi.
-- **Telefono perso**: l'utente entra con un codice di recupero; oppure l'admin
-  usa «Reimposta verifica». Se è l'unico admin ad averlo perso: imposta
-  `CERBERO_ADMIN_EMAIL`, `CERBERO_ADMIN_PASSWORD` e `CERBERO_ADMIN_RIPRISTINA=1`,
-  riavvia, entra, poi togli le tre variabili.
+- **Telefono perso**: l'utente entra con un codice di recupero e, nella pagina
+  «Sicurezza dell'account», ridando la password rifà la verifica con il
+  telefono nuovo. Oppure l'admin usa «Reimposta verifica». Se è l'unico admin
+  ad averlo perso: imposta `CERBERO_ADMIN_EMAIL`, `CERBERO_ADMIN_PASSWORD` e
+  `CERBERO_ADMIN_RIPRISTINA=1`, riavvia, entra, poi togli le tre variabili.
+- **Cambiare `CERBERO_CHIAVE_MFA`** (per esempio se è uscita): metti la nuova in
+  `CERBERO_CHIAVE_MFA` e la vecchia in `CERBERO_CHIAVE_MFA_PRECEDENTE`, riavvia.
+  I segreti si ricifrano con la nuova al primo accesso di ciascuno; i codici di
+  recupero di prima valgono finché la vecchia resta impostata, quindi chiedi a
+  tutti di rifarli («Nuovi codici di recupero») prima di toglierla.
 - **FleetCare** accetta ancora la password di Cerbero sul suo login: finché non
-  arriva la PR che lo fa entrare solo da Cerbero, lì la verifica non c'è.
+  arriva la PR che lo fa entrare solo da Cerbero, lì non valgono la verifica in
+  due passaggi, il blocco dei tentativi, la password provvisoria da cambiare e
+  la chiusura delle sessioni.
 - Riferimenti da verificare con il DPO: GDPR art. 32; Direttiva NIS2
   2022/2555 art. 21 (autenticazione a più fattori «dove appropriato»); se
   Conerobus rientri nel D.Lgs. 138/2024.
@@ -262,7 +295,8 @@ Riferimento completo in `.env.example`. Sintesi:
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
 | `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
-| `CERBERO_CHIAVE_MFA` | ✅ | `openssl rand -hex 32`: cifra i segreti della verifica in due passaggi. Senza, in produzione l'API non parte; non cambiarla |
+| `CERBERO_CHIAVE_MFA` | ✅ | `openssl rand -hex 32`: cifra i segreti della verifica in due passaggi. Senza, in produzione l'API non parte; non perderla |
+| `CERBERO_CHIAVE_MFA_PRECEDENTE` | — | Solo durante un cambio di chiave: la chiave di prima (vedi «Accesso sicuro») |
 | `CERBERO_ADMIN_RIPRISTINA` | — | `1` insieme alle due qui sotto: rimette in piedi quell'admin anche se risulta attivo (password o telefono persi). Poi togli tutte e tre |
 | `CERBERO_ADMIN_EMAIL` | senza admin attivi | email dell'amministratore da creare o ripristinare, solo se non ce n'è uno attivo |
 | `CERBERO_ADMIN_PASSWORD` | senza admin attivi | sua password (≥ 12 caratteri, non comune); da togliere dopo il primo accesso |
