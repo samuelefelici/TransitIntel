@@ -18,6 +18,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { messaggioUsi, usiNelRoster } from "./roster-pubblicazione-db";
+import { numeroVettureSql } from "./numero-vetture";
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -165,7 +166,7 @@ router.get("/vehicle-schedules", async (req: Request, res: Response) => {
            sps.owner_user_id, sps.is_shared, sps.created_at, sps.updated_at,
            u.email AS owner_email, u.full_name AS owner_full_name,
            sp.name AS scheduling_project_name,
-           (sps.result->'summary'->>'numVehicles')::int AS num_vehicles,
+           ${numeroVettureSql(sql`sps.result`)} AS num_vehicles,
            (sps.result->'summary'->>'totalDeadheadKm')::float AS total_deadhead_km,
            (SELECT count(*)::int FROM vehicle_schedule_members vsm2
               WHERE vsm2.scenario_id = sps.id) AS member_count,
@@ -200,6 +201,7 @@ router.get("/vehicle-schedules/:id", async (req: Request, res: Response): Promis
   const enrich = await db.execute(sql`
     SELECT u.email AS owner_email, u.full_name AS owner_full_name,
            sp.name AS scheduling_project_name,
+           ${numeroVettureSql(sql`sps.result`)} AS num_vehicles,
            (SELECT count(*)::int FROM vehicle_schedule_members vsm
               WHERE vsm.scenario_id = ${id}::uuid) AS member_count
       FROM service_program_scenarios sps
