@@ -68,6 +68,10 @@ parlarsi via rete interna:
    - `CERBERO_API_KEY` — **OBBLIGATORIA** se usi Caronte (validatore/AVM): senza,
      gli endpoint `/api/caronte/*` rispondono 503 fail-closed
    - `CRON_SECRET` (genera con `openssl rand -hex 32`)
+   - `CERBERO_CHIAVE_MFA` (genera con `openssl rand -hex 32`) — **OBBLIGATORIA**:
+     cifra i segreti della verifica in due passaggi; senza, in produzione l'API
+     non parte. Impostala **prima** del deploy e non cambiarla: con un'altra chiave
+     i segreti salvati non si leggono più e la verifica va rifatta da tutti
    - `CERBERO_ADMIN_EMAIL` e `CERBERO_ADMIN_PASSWORD` **solo se non c'è un
      amministratore attivo** (database nuovo, o recupero): l'API crea o rimette in
      piedi un amministratore con questi dati (password di almeno 12 caratteri, non
@@ -196,6 +200,30 @@ creano da sé; `migrations/2026-10_roster_riposi.sql` è lo specchio.
 3. Le assegnazioni già fatte prima del rilascio non bloccano niente: il
    tabellone mostra in rosso quelle che violano le regole, da controllare.
 
+### Accesso sicuro
+
+- **Verifica in due passaggi** (codice a 6 cifre da un'app come Google o
+  Microsoft Authenticator) obbligatoria per admin e per chi ha i permessi
+  Personale o Roster; facoltativa per gli altri. Chi deve attivarla, al primo
+  accesso vede solo la pagina «Sicurezza dell'account» finché non l'ha fatto.
+- **Password**: almeno 12 caratteri; quella data dall'admin è provvisoria e va
+  cambiata al primo accesso. Dopo 5 errori di fila l'account si blocca 15
+  minuti (poi il doppio a ogni errore, al massimo un giorno); l'admin lo sblocca
+  da Gestione Utenti.
+- **Sessioni**: durano 12 ore. Cambio password, reset della verifica e «esci da
+  tutti i dispositivi» chiudono le altre sessioni. Al primo avvio dopo il
+  rilascio tutti devono rientrare.
+- **Registro degli accessi** in Gestione Utenti, conservato 12 mesi.
+- **Telefono perso**: l'utente entra con un codice di recupero; oppure l'admin
+  usa «Reimposta verifica». Se è l'unico admin ad averlo perso: imposta
+  `CERBERO_ADMIN_EMAIL`, `CERBERO_ADMIN_PASSWORD` e `CERBERO_ADMIN_RIPRISTINA=1`,
+  riavvia, entra, poi togli le tre variabili.
+- **FleetCare** accetta ancora la password di Cerbero sul suo login: finché non
+  arriva la PR che lo fa entrare solo da Cerbero, lì la verifica non c'è.
+- Riferimenti da verificare con il DPO: GDPR art. 32; Direttiva NIS2
+  2022/2555 art. 21 (autenticazione a più fattori «dove appropriato»); se
+  Conerobus rientri nel D.Lgs. 138/2024.
+
 ### Roster: pubblicazione dei turni guida
 
 Il roster riceve i turni guida da un solo canale, **Pubblicazione turni** (menu
@@ -234,6 +262,8 @@ Riferimento completo in `.env.example`. Sintesi:
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
 | `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
+| `CERBERO_CHIAVE_MFA` | ✅ | `openssl rand -hex 32`: cifra i segreti della verifica in due passaggi. Senza, in produzione l'API non parte; non cambiarla |
+| `CERBERO_ADMIN_RIPRISTINA` | — | `1` insieme alle due qui sotto: rimette in piedi quell'admin anche se risulta attivo (password o telefono persi). Poi togli tutte e tre |
 | `CERBERO_ADMIN_EMAIL` | senza admin attivi | email dell'amministratore da creare o ripristinare, solo se non ce n'è uno attivo |
 | `CERBERO_ADMIN_PASSWORD` | senza admin attivi | sua password (≥ 12 caratteri, non comune); da togliere dopo il primo accesso |
 | `CERBERO_DATI_PROVA` | — | `1` solo sulle installazioni di prova o demo: abilita i conducenti fittizi («+30 fittizi»). In produzione lasciala vuota |
