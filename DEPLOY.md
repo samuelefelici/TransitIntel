@@ -41,6 +41,8 @@ parlarsi via rete interna:
    psql "$DATABASE_URL" -f caronte_setup.sql
    ```
    > In alternativa puoi incollare il contenuto degli `.sql` in un SQL editor.
+   > Lo schema cambia **solo** con i file di `migrations/`: `drizzle-kit push` è
+   > disattivato, perché proporrebbe di cancellare le tabelle che l'API crea da sé.
    > Alcune tabelle (es. polimetriche, snapshot) vengono create **lazy**
    > dall'API al primo uso (`CREATE TABLE IF NOT EXISTS`), quindi non serve
    > una migration manuale per quelle.
