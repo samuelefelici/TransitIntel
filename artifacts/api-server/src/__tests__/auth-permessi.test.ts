@@ -15,11 +15,11 @@ vi.mock("@workspace/db", () => ({
   db: { execute: vi.fn(async () => ({ rows: [{ n: 1 }] })) },
 }));
 
-import { requirePermission, requirePermissionByPath, vedeDatiPersonali, type AuthUser, type Permission } from "../lib/auth";
+import { requirePermission, requirePermissionByPath, vedeCodiciSanitari, vedeDatiPersonali, type AuthUser, type Permission } from "../lib/auth";
 
 function utente(attivi: Permission[], role: "admin" | "user" = "user"): AuthUser {
   const permissions = Object.fromEntries(
-    (["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale"] as Permission[])
+    (["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale", "roster"] as Permission[])
       .map(p => [p, attivi.includes(p)]),
   ) as Record<Permission, boolean>;
   return { id: "u", email: "u@x", fullName: null, role, permissions, fleetcareRole: "driver", active: true };
@@ -83,14 +83,15 @@ describe("Centrale Operativa: chi vede la Mappa e l'AVM", () => {
 
 describe("Anagrafica del personale: chi entra, chi vede i dati personali", () => {
   const soloPersonale = utente(["personale"]);
+  const soloRoster = utente(["roster"]);
   const soloScheduling = utente(["scheduling"]);
   const nessuno = utente(["fares"]);
 
   it("una maiuscola nel percorso non salta il controllo", () => {
     expect(verifica("/Roster/drivers", nessuno)).toBe(403);
     expect(verifica("/ROSTER/board", nessuno)).toBe(403);
-    expect(verifica("/roster/ANAGRAFICA/import/leggi", soloScheduling)).toBe(403);
-    expect(verifica("/FARES/x", soloScheduling)).toBe(403);
+    expect(verifica("/roster/ANAGRAFICA/import/leggi", soloRoster)).toBe(403);
+    expect(verifica("/FARES/x", soloRoster)).toBe(403);
   });
 
   it("chi ha solo «personale» legge e scrive l'anagrafica, ma non il tabellone", () => {
@@ -104,17 +105,39 @@ describe("Anagrafica del personale: chi entra, chi vede i dati personali", () =>
     expect(verifica("/roster/assignments", soloPersonale)).toBe(403);
   });
 
-  it("chi ha solo «scheduling» legge i conducenti ed esporta, ma non importa né vede lo storico", () => {
-    expect(verifica("/roster/drivers", soloScheduling)).toBe("passa");
-    expect(verifica("/roster/anagrafica/esporta", soloScheduling)).toBe("passa");
-    expect(verifica("/roster/board", soloScheduling)).toBe("passa");
-    expect(verifica("/roster/anagrafica/import/prova", soloScheduling)).toBe(403);
-    expect(verifica("/roster/history/abc", soloScheduling)).toBe(403);
+  it("chi ha solo «roster» legge i conducenti ed esporta, ma non importa né vede lo storico", () => {
+    expect(verifica("/roster/drivers", soloRoster)).toBe("passa");
+    expect(verifica("/roster/anagrafica/esporta", soloRoster)).toBe("passa");
+    expect(verifica("/roster/board", soloRoster)).toBe("passa");
+    expect(verifica("/roster/voci", soloRoster)).toBe("passa");
+    expect(verifica("/roster/anagrafica/import/prova", soloRoster)).toBe(403);
+    expect(verifica("/roster/history/abc", soloRoster)).toBe(403);
+    /* la pubblicazione dei turni è dello Scheduling */
+    expect(verifica("/roster/pubblicazioni", soloRoster)).toBe(403);
+  });
+
+  it("chi ha solo «scheduling» pubblica i turni ma non entra nel roster", () => {
+    expect(verifica("/roster/pubblicazioni/anteprima", soloScheduling)).toBe("passa");
+    expect(verifica("/roster/duty-sources", soloScheduling)).toBe("passa");
+    expect(verifica("/roster/board", soloScheduling)).toBe(403);
+    expect(verifica("/roster/assignments", soloScheduling)).toBe(403);
+    expect(verifica("/roster/drivers", soloScheduling)).toBe(403);
+    expect(verifica("/roster/rotazioni-riposi", soloScheduling)).toBe(403);
+  });
+
+  it("i codici sanitari: admin o «roster», mai col token di Argos", () => {
+    expect(vedeCodiciSanitari({ user: soloRoster })).toBe(true);
+    expect(vedeCodiciSanitari({ user: soloScheduling })).toBe(false);
+    expect(vedeCodiciSanitari({ user: soloPersonale })).toBe(false);
+    expect(vedeCodiciSanitari({ user: utente([], "admin") })).toBe(true);
+    expect(vedeCodiciSanitari({ user: soloRoster, authVia: "argos" })).toBe(false);
+    expect(vedeCodiciSanitari({})).toBe(false);
   });
 
   it("i dati personali: admin o «personale», mai col token di Argos", () => {
     expect(vedeDatiPersonali({ user: soloPersonale })).toBe(true);
     expect(vedeDatiPersonali({ user: soloScheduling })).toBe(false);
+    expect(vedeDatiPersonali({ user: soloRoster })).toBe(false);
     expect(vedeDatiPersonali({ user: utente([], "admin") })).toBe(true);
     expect(vedeDatiPersonali({ user: utente([], "admin"), authVia: "argos" })).toBe(false);
     let codice: number | "passa" = "passa";

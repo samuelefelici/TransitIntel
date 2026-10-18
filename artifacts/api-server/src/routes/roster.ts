@@ -38,7 +38,8 @@ import { assicuraAnagrafica, leggiDepositi, registra, righe, type Ex } from "../
 import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
 import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
-import { vedeDatiPersonali } from "../lib/auth";
+import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
+import { catalogoPer, esitoScrittura, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
   forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, turniDelDss, violazioniDeiCambi, violazioniDelTabellone,
@@ -54,28 +55,6 @@ const router: IRouter = Router();
 /* Le tabelle del roster (conducenti, assegnazioni, storico, voci) le crea
  * l'anagrafica del personale: lib/anagrafica-store.ts. */
 
-/** Catalogo voci Assenza/Presenza. Estendibile: aggiungi qui nuovi codici. */
-const VOCI_CATALOG: Record<"assenza" | "presenza", Array<{ code: string; label: string }>> = {
-  assenza: [
-    { code: "R",   label: "Riposo" },
-    { code: "MA3", label: "Malattia primi 3 giorni" },
-    { code: "MA",  label: "Malattia giorni successivi" },
-    { code: "I",   label: "Infortunio" },
-    { code: "PAD", label: "Permesso 104" },
-  ],
-  presenza: [
-    { code: "STRA", label: "Straordinario" },
-    { code: "D1",   label: "Disposizione mattinale" },
-    { code: "D2",   label: "Disposizione pomeridiana" },
-    { code: "DISP", label: "Disposizione" },
-    { code: "DAM1", label: "Controllerie mattinali" },
-    { code: "DAM2", label: "Controllerie pomeridiane" },
-  ],
-};
-const VOCE_CODES: Record<string, Set<string>> = {
-  assenza: new Set(VOCI_CATALOG.assenza.map((v) => v.code)),
-  presenza: new Set(VOCI_CATALOG.presenza.map((v) => v.code)),
-};
 
 router.use(async (req, res, next) => {
   if (!req.path.toLowerCase().startsWith("/roster")) { next(); return; }
@@ -327,10 +306,11 @@ router.get("/roster/board", async (req, res): Promise<void> => {
         ricollegata: Array.isArray(a.ricollegamenti) && a.ricollegamenti.length ? a.ricollegamenti[a.ricollegamenti.length - 1] : null,
       })),
       violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, al),
-      entries: entriesQ.rows.map((e: any) => ({
+      /* i codici sanitari (malattia, infortunio, 104) solo a chi ha il permesso roster */
+      entries: entriesQ.rows.map((e: any) => mascheraVoce({
         id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
         source: e.source ?? null,
-      })),
+      }, vedeCodiciSanitari(req))),
     });
   } catch (e: any) {
     console.error("[roster.board]", e?.cause?.code ?? e?.code ?? e?.message);
@@ -642,8 +622,8 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
 
 // ── Voci Assenza / Presenza ───────────────────────────────────────────────────
 
-router.get("/roster/voci", async (_req, res): Promise<void> => {
-  res.json({ catalog: VOCI_CATALOG });
+router.get("/roster/voci", async (req, res): Promise<void> => {
+  res.json({ catalog: catalogoPer(vedeCodiciSanitari(req)) });
 });
 
 router.post("/roster/entries", async (req, res): Promise<void> => {
@@ -652,8 +632,11 @@ router.post("/roster/entries", async (req, res): Promise<void> => {
     if (!driverId || !UUID_RE.test(String(driverId)) || !DATE_RE.test(String(day ?? ""))) {
       res.status(400).json({ error: "driverId (uuid) e day (YYYY-MM-DD) richiesti" }); return;
     }
-    if (category !== "assenza" && category !== "presenza") { res.status(400).json({ error: "category non valida" }); return; }
-    if (!VOCE_CODES[category].has(String(code))) { res.status(400).json({ error: "codice voce non valido" }); return; }
+    const esito = esitoScrittura(category, code, vedeCodiciSanitari(req));
+    if (esito === "non-valido") { res.status(400).json({ error: "categoria o codice voce non validi" }); return; }
+    if (esito === "riservato") {
+      res.status(403).json({ error: "Malattia, infortunio e 104 li scrive solo chi ha il permesso Roster: usa «ASS – Assenza»" }); return;
+    }
     const r = await db.execute<any>(sql`
       INSERT INTO roster_entries (driver_id, day, category, code)
       VALUES (${driverId}::uuid, ${day}::date, ${category}, ${code})

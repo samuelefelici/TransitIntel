@@ -19,7 +19,11 @@ import ArgosSidebar from "@/components/ArgosSidebar";
 import logoImg from "/logo.png";
 import logoSidebarImg from "/logosidebar.png";
 
-interface NavItem { href: string; label: string; icon: any; }
+interface NavItem {
+  href: string; label: string; icon: any;
+  /** se presente, voce visibile solo con questo permesso (o uno di questi; admin sempre) */
+  permission?: Permission | Permission[];
+}
 interface NavSection {
   title: string;
   icon?: any;            // section-level icon (shown when collapsed & for expandable groups)
@@ -64,17 +68,17 @@ const NAV_SECTIONS: NavSection[] = [
       { href: "/fucina/esercizio", label: "Scheduling Engine", icon: Flame },
       /* il canale unico fra Scheduling Engine e Roster: si decide per periodo quali turni guida arrivano */
       { href: "/roster/pubblicazione", label: "Pubblicazione turni", icon: Send },
-      { href: "/roster", label: "Roster Personale", icon: Users },
       { href: "/misto", label: "Completamento / Misti", icon: Shuffle },
       { href: "/service-db", label: "Database di Esercizio", icon: Database },
     ],
   },
   {
-    // L'anagrafica la tiene chi ha «personale» (anche senza lo Scheduling) e
-    // la legge chi fa il roster: per questo è una sezione a sé.
+    // L'anagrafica la tiene chi ha «personale» e la legge chi fa il roster;
+    // il roster ha un permesso suo, perché mostra malattie, infortuni e 104.
     title: "Personale",
-    permission: ["scheduling", "personale"],
+    permission: ["roster", "personale"],
     items: [
+      { href: "/roster", label: "Roster Personale", icon: Users, permission: "roster" },
       { href: "/roster/anagrafica", label: "Anagrafica personale", icon: IdCard },
     ],
   },
@@ -134,6 +138,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const visibleSections = React.useMemo(() => {
     return NAV_SECTIONS
       .filter(s => !s.permission || (Array.isArray(s.permission) ? s.permission : [s.permission]).some(p => hasPermission(p)))
+      .map(s => ({
+        ...s,
+        items: s.items.filter(i => !i.permission || (Array.isArray(i.permission) ? i.permission : [i.permission]).some(p => hasPermission(p))),
+      }))
       .map(s => {
         if (s.title === "Panoramica") {
           return {

@@ -39,6 +39,7 @@ const PERM_LABEL: Record<Permission, string> = {
   network: "Network Engine (PlannerStudio + Crea Servizio)",
   centrale: "Centrale Operativa (Mappa live + AVM)",
   personale: "Personale (anagrafica completa: contatti, paghe, ferie, visite)",
+  roster: "Roster (tabellone, assenze, rotazioni; vede malattia, infortunio, 104)",
   fleetcare: "FleetCare (Gestione Flotta e Manutenzione)",
 };
 
@@ -51,6 +52,7 @@ const PERM_COLONNE: Array<{ perm: Permission; intestazione: string }> = [
   { perm: "network", intestazione: "Network" },
   { perm: "centrale", intestazione: "Centrale Op." },
   { perm: "personale", intestazione: "Personale" },
+  { perm: "roster", intestazione: "Roster" },
 ];
 
 /** Ruoli disponibili DENTRO FleetCare (gli admin entrano sempre come Admin Flotta). */
@@ -342,6 +344,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
     // I moduli (Centrale Operativa, FleetCare) li abilita esplicitamente l'admin
     centrale: false,
     personale: false,
+    roster: false,
     fleetcare: false,
   });
   const [fleetcareRole, setFleetcareRole] = useState("driver");

@@ -319,13 +319,13 @@ function Router() {
               <Gated perm="scheduling"><OptimizationPage /></Gated>
             </Route>
             <Route path="/roster/anagrafica">
-              <Gated perm={["scheduling", "personale"]}><AnagraficaPage /></Gated>
+              <Gated perm={["roster", "personale"]}><AnagraficaPage /></Gated>
             </Route>
             <Route path="/roster/pubblicazione">
               <Gated perm="scheduling"><RosterPubblicazionePage /></Gated>
             </Route>
             <Route path="/roster">
-              <Gated perm="scheduling"><RosterPage /></Gated>
+              <Gated perm="roster"><RosterPage /></Gated>
             </Route>
             <Route path="/misto">
               <Gated perm="scheduling"><MistoPage /></Gated>

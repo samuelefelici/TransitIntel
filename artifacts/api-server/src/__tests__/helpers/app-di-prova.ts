@@ -6,7 +6,7 @@
 import express, { type Express, type IRouter } from "express";
 import type { AuthUser, Permission } from "../../lib/auth";
 
-const PERMESSI: Permission[] = ["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale"];
+const PERMESSI: Permission[] = ["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale", "roster"];
 
 export function utenteDiProva(id: string, permessi: Permission[] = [], ruolo: "admin" | "user" = "user"): AuthUser {
   return {

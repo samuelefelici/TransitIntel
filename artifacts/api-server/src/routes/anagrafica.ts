@@ -146,10 +146,10 @@ router.get("/roster/drivers/:id", async (req, res): Promise<void> => {
   } catch (e) { rispondiErrore(res, e, "scheda"); }
 });
 
-/** Chi ha solo «scheduling» tocca solo i fittizi, e solo nei campi operativi. */
+/** Chi ha solo «roster» tocca solo i fittizi, e solo nei campi operativi. */
 function controllaScrittura(req: Request, fittizio: boolean, chiavi: string[]): void {
   if (vedeDatiPersonali(req)) return;
-  if (!fittizio || !haPermesso(req, "scheduling")) richiedePersonale(req);
+  if (!fittizio || !haPermesso(req, "roster")) richiedePersonale(req);
   const fuori = chiavi.filter(k => !CAMPI_SCRIVIBILI_FITTIZI.has(k) && k !== "isFictitious" && k !== "name");
   if (fuori.length) throw new Rifiuto(403, `Senza il permesso «Personale» non si possono scrivere: ${fuori.join(", ")}`);
 }
@@ -256,7 +256,7 @@ router.post("/roster/drivers/:id/riattiva", async (req, res): Promise<void> => {
  */
 router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
-    if (!vedeDatiPersonali(req) && !haPermesso(req, "scheduling")) richiedePersonale(req);
+    if (!vedeDatiPersonali(req) && !haPermesso(req, "roster")) richiedePersonale(req);
     const quanti = Math.min(Math.max(Number(req.body?.count) || 30, 1), 200);
     const oggi = oggiRoma();
     const esito = await db.transaction(async (tx) => {

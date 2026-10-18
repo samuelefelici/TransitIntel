@@ -13,7 +13,7 @@ import { apiFetch } from "@/lib/api";
 /** Speculare a `Permission` in api-server/src/lib/auth.ts: un modulo per chiave.
  *  centrale = Centrale Operativa (Mappa live + AVM), attivabile per utente.
  *  personale = anagrafica del personale completa (dati personali, paghe, ferie, visite). */
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale";
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale" | "roster";
 
 export interface CurrentUser {
   id: string;

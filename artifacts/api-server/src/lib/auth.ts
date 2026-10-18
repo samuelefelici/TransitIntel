@@ -31,8 +31,12 @@ import { decidiPrimoAdmin, erroreNuovaPassword } from "./password-regole";
  *   personale = Anagrafica del personale completa (dati personali, paghe,
  *              ferie, visite): attivazione ESPLICITA. Senza, il roster mostra
  *              solo i dati operativi dei conducenti.
+ *   roster = Roster del personale (tabellone, assegnazioni, voci di
+ *              assenza, rotazioni) con i codici sanitari (malattia,
+ *              infortunio, 104). La pubblicazione dei turni resta a
+ *              «scheduling».
  */
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale";
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale" | "roster";
 export interface AuthUser {
   id: string;
   email: string;
@@ -91,7 +95,7 @@ async function ensureUsersTable(): Promise<void> {
         password_hash text NOT NULL,
         full_name text,
         role text NOT NULL DEFAULT 'user',
-        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false,"personale":false}'::jsonb,
+        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false,"personale":false,"roster":false}'::jsonb,
         active boolean NOT NULL DEFAULT true,
         last_login_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now()
@@ -138,6 +142,16 @@ async function ensureUsersTable(): Promise<void> {
        WHERE NOT (permissions ? 'personale')
     `);
 
+    // Roster: fino a oggi stava sotto «scheduling». Chi esiste già eredita
+    // quel valore, così il rilascio non toglie a nessuno il roster che usava;
+    // poi l'admin lo toglie a chi non ci lavora. I nuovi utenti partono senza.
+    await db.execute(sql`
+      UPDATE users
+         SET permissions = permissions
+             || jsonb_build_object('roster', coalesce((permissions->>'scheduling')::boolean, true))
+       WHERE NOT (permissions ? 'roster')
+    `);
+
     const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users`);
     const n = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
     const primo = decidiPrimoAdmin(n, process.env);
@@ -147,7 +161,7 @@ async function ensureUsersTable(): Promise<void> {
         INSERT INTO users (email, password_hash, full_name, role, permissions, active)
         VALUES (
           ${primo.email}, ${bcrypt.hashSync(primo.password, BCRYPT_ROUNDS)}, 'Amministratore', 'admin',
-          '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false}'::jsonb,
+          '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false,"roster":true}'::jsonb,
           true
         )
         ON CONFLICT (email) DO NOTHING
@@ -267,6 +281,16 @@ export function vedeDatiPersonali(req: { user?: AuthUser; authVia?: string }): b
   return req.user.role === "admin" || !!req.user.permissions?.personale;
 }
 
+/**
+ * I codici sanitari delle voci del roster (malattia, infortunio, 104): admin
+ * o permesso «roster», e mai attraverso un token emesso per Argos. Chi non
+ * li vede legge un'assenza generica (lib/roster-voci.ts).
+ */
+export function vedeCodiciSanitari(req: { user?: AuthUser; authVia?: string }): boolean {
+  if (!req.user || req.authVia) return false;
+  return req.user.role === "admin" || !!req.user.permissions?.roster;
+}
+
 export function haPermesso(req: { user?: AuthUser }, p: Permission): boolean {
   if (!req.user) return false;
   return req.user.role === "admin" || !!req.user.permissions?.[p];
@@ -283,19 +307,24 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // scheduling (turni, ottimizzatori, roster, depositi, coincidenze)
   ["/service-program", "scheduling"], ["/driver-shifts", "scheduling"],
   ["/driver-schedules", "scheduling"], ["/vehicle-schedules", "scheduling"],
+  // La pubblicazione dei turni guida è dello Scheduling (chi fa i turni li
+  // manda al roster); le sorgenti dei turni servono anche ai Misti.
+  ["/roster/pubblicazioni", "scheduling"],
+  ["/roster/duty-sources", ["scheduling", "roster"]],
   // Anagrafica del personale: chi ha «personale» deve poterla leggere e
-  // scrivere anche senza «scheduling», e chi ha «scheduling» legge i dati
+  // scrivere anche senza «roster», e chi ha «roster» legge i dati
   // operativi (la mascheratura e le scritture si decidono nel singolo
   // handler). Queste voci stanno PRIMA di "/roster", che altrimenti vince.
   ["/roster/anagrafica/import", "personale"],
-  ["/roster/anagrafica", ["scheduling", "personale"]],
-  ["/roster/drivers", ["scheduling", "personale"]],
+  ["/roster/anagrafica", ["roster", "personale"]],
+  ["/roster/drivers", ["roster", "personale"]],
   ["/roster/history", "personale"],
-  ["/roster/depositi", ["scheduling", "personale"]],
-  ["/roster/categorie", ["scheduling", "personale"]],
-  ["/roster/gruppi-turni", ["scheduling", "personale"]],
-  ["/roster/rotazioni-riposi", ["scheduling", "personale"]],
-  ["/roster", "scheduling"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
+  ["/roster/depositi", ["roster", "personale"]],
+  ["/roster/categorie", ["roster", "personale"]],
+  ["/roster/gruppi-turni", ["roster", "personale"]],
+  ["/roster/rotazioni-riposi", ["roster", "personale"]],
+  // il roster (tabellone, assegnazioni, voci, calendario, tratte dei turni)
+  ["/roster", "roster"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
   ["/deadheads", "scheduling"],
   // Depositi e archi fuorilinea sono infrastruttura di PROGETTO: si gestiscono
   // in Planner Studio (permesso network) e servono alla pipeline Scheduling
@@ -505,10 +534,11 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
     // anche per gli utenti salvati prima che l'implicazione fosse imposta.
     scheduling:!!(permissions?.scheduling?? true) || !!(permissions?.network ?? true),
     network:   !!(permissions?.network   ?? true),
-    // FleetCare, Centrale Operativa, Personale: abilitazione esplicita → default false
+    // FleetCare, Centrale Operativa, Personale, Roster: abilitazione esplicita → default false
     fleetcare: !!(permissions?.fleetcare ?? false),
     centrale:  !!(permissions?.centrale  ?? false),
     personale: !!(permissions?.personale ?? false),
+    roster:    !!(permissions?.roster    ?? false),
   };
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
@@ -558,6 +588,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
       fleetcare: !!permissions.fleetcare,
       centrale: !!permissions.centrale,
       personale: !!permissions.personale,
+      roster: !!permissions.roster,
     };
     sets.push(sql`permissions = ${JSON.stringify(p)}::jsonb`);
   }

@@ -173,7 +173,7 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
   const c = q.data?.conducente ?? null;
   const sensibili = id ? !!q.data?.sensibili : personale;
   const eFittizio = c ? c.isFictitious : fittizio;
-  const puoScrivere = personale || (eFittizio && hasPermission("scheduling"));
+  const puoScrivere = personale || (eFittizio && hasPermission("roster"));
 
   const [iniziale, setIniziale] = useState<Modulo>(() => daConducente(null));
   const [f, setF] = useState<Modulo>(() => daConducente(null));
