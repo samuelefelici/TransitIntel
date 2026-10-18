@@ -347,46 +347,61 @@ export function emettiSessione(res: Response, userId: string, s: { sv: number; m
 
 /* ─── Il browser da cui la persona è già entrata ───
  * Dopo un accesso riuscito il browser riceve un cookie firmato (OWASP «device
- * cookie») con un suo id e le impronte delle email entrate da lì (al più 5,
- * non le email). Da quel browser gli errori di password fanno una serie sua e
- * il blocco per account non vale: chi prova da tanti indirizzi non tiene
- * fuori il titolare, che entra dal solito computer. */
+ * cookie») con un suo id e, per al più 5 persone entrate da lì, un'impronta
+ * legata all'utente e alla versione della sessione, con la data dell'accesso
+ * che l'ha data (niente email nel cookie). Da quel browser gli errori di
+ * password fanno una serie sua e il blocco per account non vale: chi prova da
+ * tanti indirizzi non tiene fuori il titolare. Cambio password, «esci
+ * ovunque», password provvisoria e disattivazione alzano la versione: gli
+ * altri browser non sono più riconosciuti. Ogni impronta vale 180 giorni
+ * dall'accesso che l'ha data, anche se il cookie si riscrive per altri. */
 const COOKIE_DISPOSITIVO = "ti_disp";
 const AUD_DISPOSITIVO = "cerbero-dispositivo";
 const GIORNI_DISPOSITIVO = 180;
-const segnoEmail = (chiave: string) => createHmac("sha256", JWT_SECRET).update(`dispositivo|${chiave}`).digest("base64url").slice(0, 16);
+const MS_DISPOSITIVO = GIORNI_DISPOSITIVO * 24 * 3600 * 1000;
+const segno = (testo: string) => createHmac("sha256", JWT_SECRET).update(testo).digest("base64url").slice(0, 16);
+/** [chi: impronta dell'utente, versione: impronta di utente+versione della sessione, quando: ms] */
+type Impronta = [string, string, number];
 
-function leggiDispositivo(req: Request): { n: string; e: string[] } | null {
+function leggiDispositivo(req: Request): { n: string; e: Impronta[] } | null {
   const t = (req as any).cookies?.[COOKIE_DISPOSITIVO];
   if (typeof t !== "string") return null;
   try {
     const d = jwt.verify(t, JWT_SECRET, { audience: AUD_DISPOSITIVO }) as any;
     if (typeof d.n === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(d.n) && Array.isArray(d.e)) {
-      return { n: d.n, e: d.e.filter((x: unknown): x is string => typeof x === "string") };
+      const e = (d.e as unknown[]).filter((x): x is Impronta =>
+        Array.isArray(x) && typeof x[0] === "string" && typeof x[1] === "string" && typeof x[2] === "number"
+        && Date.now() - x[2] < MS_DISPOSITIVO);
+      return { n: d.n, e };
     }
   } catch { /* scaduto o non nostro */ }
   return null;
 }
 
-/** L'id del browser, se da qui si è già entrati con questa email; altrimenti null. */
-export function dispositivoPer(req: Request, chiave: string): string | null {
+/** L'id del browser, se da qui questo utente è entrato con la versione di sessione di adesso; altrimenti null. */
+export function dispositivoPer(req: Request, utente: { id: string; sv: number } | null): string | null {
+  if (!utente) return null;
   const d = leggiDispositivo(req);
-  return d && d.e.includes(segnoEmail(chiave)) ? d.n : null;
+  const v = segno(`dispositivo|${utente.id}|${utente.sv}`);
+  return d && d.e.some(x => x[1] === v) ? d.n : null;
 }
 
-/** Accesso riuscito: il browser si ricorda di questa email. */
-function ricordaDispositivo(req: Request, res: Response, chiave: string): void {
+/** Accesso riuscito (o versione della sessione cambiata da qui): il browser si ricorda di questo utente. */
+export function ricordaDispositivo(req: Request, res: Response, userId: string, sv: number): void {
   const d = leggiDispositivo(req);
-  const segno = segnoEmail(chiave);
+  const chi = segno(`dispositivo-utente|${userId}`);
+  const nuova: Impronta = [chi, segno(`dispositivo|${userId}|${sv}`), Date.now()];
+  const e: Impronta[] = [nuova, ...(d?.e ?? []).filter(x => x[0] !== chi)].slice(0, 5);
   const token = jwt.sign(
-    { n: d?.n ?? randomBytes(16).toString("base64url"), e: [segno, ...(d?.e ?? []).filter(x => x !== segno)].slice(0, 5) },
+    { n: d?.n ?? randomBytes(16).toString("base64url"), e },
     JWT_SECRET,
+    /* il cookie dura quanto l'impronta più recente; le altre scadono alla loro data (leggiDispositivo) */
     { audience: AUD_DISPOSITIVO, expiresIn: `${GIORNI_DISPOSITIVO}d` },
   );
   const isProd = process.env.NODE_ENV === "production";
   res.cookie(COOKIE_DISPOSITIVO, token, {
     httpOnly: true, secure: isProd, sameSite: isProd ? "none" : "lax",
-    maxAge: GIORNI_DISPOSITIVO * 24 * 3600 * 1000, path: "/",
+    maxAge: MS_DISPOSITIVO, path: "/",
   });
 }
 
@@ -744,7 +759,7 @@ export function rispostaBloccato(res: Response, fino: Date, che: "password" | "a
 async function apriSessione(req: Request, res: Response, row: any, s: { mfa: boolean; rec?: boolean }): Promise<void> {
   await db.execute(sql`UPDATE users SET last_login_at = now() WHERE id = ${row.id}::uuid`);
   emettiSessione(res, row.id, { sv: Number(row.sessione_versione ?? 0), mfa: s.mfa, rec: s.rec });
-  ricordaDispositivo(req, res, chiaveEmail(row.email));
+  ricordaDispositivo(req, res, row.id, Number(row.sessione_versione ?? 0));
   await registraAccesso(req, { userId: row.id, email: row.email, esito: s.mfa ? "ok_con_verifica" : "ok" });
   const u = await loadUserById(row.id);
   res.json({
@@ -772,7 +787,7 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
   /* il tentativo si conta prima del confronto, che è lento: per indirizzo e per
    * account (o per il browser, se da qui si è già entrati), e anche per le email
    * che non esistono (la risposta è la stessa) */
-  const dispositivo = dispositivoPer(req, chiave);
+  const dispositivo = dispositivoPer(req, row ? { id: row.id, sv: Number(row.sessione_versione ?? 0) } : null);
   const prenotato = await prenotaTentativoPassword(chiave, ip, dispositivo);
   if (!prenotato.ok) {
     await registraAccesso(req, { userId: row?.id ?? null, email: row?.email ?? chiave, esito: prenotato.account ? "bloccato_account" : "bloccato" });
@@ -943,7 +958,7 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, permissions, fleetcare_role, active, last_login_at, created_at,
-           mfa_attiva, deve_cambiare_password,
+           mfa_attiva, deve_cambiare_password, mfa_recupero_chiave,
            /* bloccato: per i codici sbagliati, o per la password da almeno un indirizzo */
            GREATEST(
              CASE WHEN mfa_bloccata_fino > now() THEN mfa_bloccata_fino END,
@@ -968,6 +983,8 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
     mfaObbligatoria: mfaObbligatoria({ role: u.role, permissions: u.permissions }),
     passwordDaCambiare: !!u.deve_cambiare_password,
     bloccatoFino: u.bloccato_fino ?? null,
+    /* codici di recupero di una chiave che non è più quella attuale (cambio di chiave) */
+    codiciDaRifare: !!u.mfa_attiva && !!u.mfa_recupero_chiave && u.mfa_recupero_chiave !== idChiave(),
   }));
   res.json({ users });
 });

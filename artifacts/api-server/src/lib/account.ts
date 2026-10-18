@@ -24,7 +24,8 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { loginLimiter } from "../middlewares/rate-limit";
 import {
-  BCRYPT_ROUNDS, dispositivoPer, emettiSessione, indirizzoDi, registraAccesso, requireAdmin, requireAuth, rispostaBloccato,
+  BCRYPT_ROUNDS, dispositivoPer, emettiSessione, indirizzoDi, registraAccesso, requireAdmin, requireAuth, ricordaDispositivo,
+  rispostaBloccato,
 } from "./auth";
 import { erroreNuovaPassword } from "./password-regole";
 import { nuovoSegreto, uriOtpauth } from "./totp";
@@ -53,6 +54,8 @@ function nuovaSessione(req: Request, res: Response, sv: number, s: { mfa: boolea
     pw: s.passwordData ? Math.floor(Date.now() / 1000) : req.sessione?.pw,
     rec: s.rec ?? req.sessione?.rec,
   });
+  /* questo browser resta riconosciuto con la versione nuova; gli altri no */
+  ricordaDispositivo(req, res, req.user!.id, sv);
 }
 
 async function riga(id: string): Promise<any> {
@@ -70,7 +73,7 @@ async function riga(id: string): Promise<any> {
 async function passwordGiusta(req: Request, res: Response, u: any, password: unknown, esitoErrato: string): Promise<boolean> {
   const chiave = chiaveEmail(u.email);
   const ip = indirizzoDi(req);
-  const dispositivo = dispositivoPer(req, chiave);
+  const dispositivo = dispositivoPer(req, { id: u.id, sv: req.sessione?.sv ?? -1 });
   const prenotato = await prenotaTentativoPassword(chiave, ip, dispositivo);
   if (!prenotato.ok) {
     await registraAccesso(req, { userId: u.id, email: u.email, esito: prenotato.account ? "bloccato_account" : "bloccato" });

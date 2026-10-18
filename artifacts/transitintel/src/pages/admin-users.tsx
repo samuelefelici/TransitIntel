@@ -35,6 +35,7 @@ interface AdminUser {
   mfaObbligatoria?: boolean;
   passwordDaCambiare?: boolean;
   bloccatoFino?: string | null;
+  codiciDaRifare?: boolean;
 }
 
 interface VoceAccesso { id: string; ts: string; userId: string | null; email: string | null; esito: string; ip: string | null; userAgent: string | null }
@@ -301,6 +302,7 @@ export default function AdminUsersPage() {
                             {u.mfaAttiva ? "verifica attiva" : u.mfaObbligatoria ? "verifica da attivare" : "solo password"}
                           </div>
                           {u.passwordDaCambiare && <div className="text-amber-400">password provvisoria</div>}
+                          {u.codiciDaRifare && <div className="text-amber-400">codici di recupero da rifare</div>}
                           {u.bloccatoFino && <div className="text-red-400">bloccato fino al {new Date(u.bloccatoFino).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>}
                         </td>
                         <td className="py-2 pr-4 text-xs text-muted-foreground">

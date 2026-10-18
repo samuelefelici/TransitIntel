@@ -3,6 +3,7 @@ import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wo
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as ToasterSonner } from "@/components/ui/sonner";
+import { toast as toastSonner } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
@@ -376,6 +377,9 @@ function AuthGate() {
   /* entrato con un codice di recupero: si parte dalla pagina per rifare la verifica */
   const recuperoRef = useRef(false);
   recuperoRef.current = !!accesso?.recupero;
+  /* codici di recupero da rifare dopo un cambio di chiave: lo si dice all'ingresso */
+  const codiciRef = useRef(false);
+  codiciRef.current = !!accesso?.codiciDaRifare;
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
   const [waitingSequence, setWaitingSequence] = useState(false);
 
@@ -405,6 +409,12 @@ function AuthGate() {
       // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
       setWaitingSequence(true);
       navigate(recuperoRef.current ? "/account" : "/dashboard");
+      if (codiciRef.current && !recuperoRef.current) {
+        toastSonner.warning("Rifai i codici di recupero", {
+          description: "Quelli che hai sono di prima di un aggiornamento della sicurezza: fanne di nuovi in «Sicurezza dell'account».",
+          duration: 15000,
+        });
+      }
     }
     prevAuth.current = isAuthenticated;
   }, [isAuthenticated, navigate]);

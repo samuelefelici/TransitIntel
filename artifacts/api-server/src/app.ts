@@ -55,7 +55,11 @@ app.use((req, res, next) => {
 // il cookie `secure` funziona. Con più proxy davanti (CDN, nginx che inoltra
 // /api) CERBERO_TRUST_PROXY dice quanti sono, o i loro indirizzi (DEPLOY.md).
 const trustProxy = (process.env.CERBERO_TRUST_PROXY ?? "").trim();
-app.set("trust proxy", /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy || 1);
+try {
+  app.set("trust proxy", /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy || 1);
+} catch (e: any) {
+  throw new Error(`CERBERO_TRUST_PROXY non valida («${trustProxy}»): un numero di proxy (es. 1) o i loro indirizzi separati da virgola. ${e?.message ?? ""}`);
+}
 
 // CORS: allowlist ESATTA di origin. Con credentials:true NON si può mai
 // riflettere un origin arbitrario (leggerebbe i cookie della vittima cross-site).

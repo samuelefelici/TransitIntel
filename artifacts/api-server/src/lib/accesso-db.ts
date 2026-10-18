@@ -76,18 +76,31 @@ export async function prenotaTentativoPassword(
   });
 }
 
-/** Cancella righe di accessi_tentativi prendendole prima nello stesso ordine delle prenotazioni. */
+/**
+ * Cancella righe di accessi_tentativi prendendole prima nello stesso ordine
+ * delle prenotazioni, e cancella solo quelle prese: una riga arrivata dopo
+ * (un tentativo nuovo) resta, e la DELETE non deve aspettare nessuno.
+ */
 async function cancellaInOrdine(chiave: string, ips: string[] | null): Promise<void> {
   const filtro = ips ? sql`AND ip IN (${sql.join(ips.map(x => sql`${x}`), sql`, `)})` : sql``;
   await db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT 1 FROM accessi_tentativi WHERE chiave = ${chiave} ${filtro} ORDER BY ip COLLATE "C" FOR UPDATE`);
-    await tx.execute(sql`DELETE FROM accessi_tentativi WHERE chiave = ${chiave} ${filtro}`);
+    const r = await tx.execute<any>(sql`
+      SELECT ip FROM accessi_tentativi WHERE chiave = ${chiave} ${filtro} ORDER BY ip COLLATE "C" FOR UPDATE`);
+    const prese = ((r as any).rows as any[]).map(x => String(x.ip));
+    if (!prese.length) return;
+    await tx.execute(sql`
+      DELETE FROM accessi_tentativi WHERE chiave = ${chiave} AND ip IN (${sql.join(prese.map(x => sql`${x}`), sql`, `)})`);
   });
 }
 
-/** Password giusta: le serie di errori di questa email (da qui, del browser, dell'account) si chiudono. */
+/**
+ * Password giusta: si chiudono le serie di errori di questa email da qui e
+ * dell'account; dal browser già riconosciuto solo la sua. Così un accesso dal
+ * solito browser non toglie in anticipo il blocco dell'account: chi lo tiene
+ * non capisce che l'email esiste né quando il titolare entra.
+ */
 export async function azzeraTentativiPassword(chiave: string, ip: string, dispositivo: string | null): Promise<void> {
-  await cancellaInOrdine(chiave, [TUTTI, ip, ...(dispositivo ? [rigaDispositivo(dispositivo)] : [])]);
+  await cancellaInOrdine(chiave, dispositivo ? [rigaDispositivo(dispositivo)] : [TUTTI, ip]);
 }
 
 /** L'admin sblocca (o dà una password provvisoria): via le serie della password da ogni indirizzo. */
@@ -187,25 +200,40 @@ export function improntePerSalvare(codici: string[]): { impronte: string; chiave
 /**
  * All'avvio: le chiavi aprono i segreti salvati? Se no, chi ha la verifica
  * attiva non può entrare, e conviene saperlo dai log, non dagli utenti.
- * Durante un cambio di chiave dice quanti segreti e quante serie di codici di
- * recupero sono ancora della chiave precedente: finché ce ne sono, la
- * precedente non si toglie.
+ * Durante un cambio di chiave i segreti della chiave precedente si ricifrano
+ * subito con la nuova (non serve che ciascuno entri); i codici di recupero no
+ * (se ne salva solo l'impronta): il log dice di chi sono ancora della chiave
+ * precedente, e Gestione Utenti li segna.
  */
 export async function controllaChiaveMfa(): Promise<void> {
   const r = await db.execute<any>(sql`
-    SELECT mfa_segreto, mfa_recupero_chiave FROM users WHERE mfa_attiva AND active AND mfa_segreto IS NOT NULL`);
+    SELECT id, email, mfa_segreto, mfa_recupero_chiave FROM users WHERE mfa_attiva AND mfa_segreto IS NOT NULL`);
+  const chiavi = chiaviConfigurate();
   const attuale = idChiave();
-  let illeggibili = 0, segretiVecchi = 0, codiciVecchi = 0;
+  const precedente = chiavi.find(k => !k.attuale)?.id ?? null;
+  const illeggibili: string[] = [], codiciPrecedente: string[] = [], codiciPersi: string[] = [];
+  let ricifrati = 0;
   for (const x of ((r as any).rows ?? []) as any[]) {
-    try { if (apriSegreto(String(x.mfa_segreto)).vecchiaChiave) segretiVecchi++; }
-    catch { illeggibili++; }
-    if (x.mfa_recupero_chiave && x.mfa_recupero_chiave !== attuale) codiciVecchi++;
+    try {
+      const s = apriSegreto(String(x.mfa_segreto));
+      if (s.vecchiaChiave) {
+        await db.execute(sql`UPDATE users SET mfa_segreto = ${cifra(s.testo)} WHERE id = ${x.id}::uuid AND mfa_segreto = ${x.mfa_segreto}`);
+        ricifrati++;
+      }
+    } catch { illeggibili.push(String(x.email)); }
+    const k = x.mfa_recupero_chiave as string | null;
+    if (k && k !== attuale) (k === precedente ? codiciPrecedente : codiciPersi).push(String(x.email));
   }
-  if (illeggibili) {
-    console.error(`[accesso] ATTENZIONE: ${illeggibili} utenti con la verifica in due passaggi hanno un segreto che CERBERO_CHIAVE_MFA non apre: non possono entrare. Rimetti la chiave di prima, o mettila in CERBERO_CHIAVE_MFA_PRECEDENTE.`);
+  const elenco = (v: string[]) => v.slice(0, 20).join(", ") + (v.length > 20 ? ` e altri ${v.length - 20}` : "");
+  if (ricifrati) console.log(`[accesso] cambio di chiave: ${ricifrati} segreti della verifica ricifrati con la chiave nuova`);
+  if (illeggibili.length) {
+    console.error(`[accesso] ATTENZIONE: ${illeggibili.length} utenti con la verifica in due passaggi hanno un segreto che CERBERO_CHIAVE_MFA non apre: non possono entrare (${elenco(illeggibili)}). Rimetti la chiave di prima, o mettila in CERBERO_CHIAVE_MFA_PRECEDENTE.`);
   }
-  if (segretiVecchi || codiciVecchi) {
-    console.warn(`[accesso] cambio di chiave in corso: ${segretiVecchi} segreti e ${codiciVecchi} serie di codici di recupero sono ancora della chiave precedente. Non togliere CERBERO_CHIAVE_MFA_PRECEDENTE finché questo avviso non sparisce.`);
+  if (codiciPrecedente.length) {
+    console.warn(`[accesso] cambio di chiave in corso: ${codiciPrecedente.length} utenti hanno ancora i codici di recupero della chiave precedente (${elenco(codiciPrecedente)}). Li vedono da rifare in «Sicurezza dell'account»; quando non ne resta nessuno, o dopo «Reimposta verifica», togli CERBERO_CHIAVE_MFA_PRECEDENTE.`);
+  }
+  if (codiciPersi.length) {
+    console.warn(`[accesso] i codici di recupero di ${codiciPersi.length} utenti sono di una chiave non più impostata e non valgono (${elenco(codiciPersi)}): entrano con il codice dell'app e possono rifarli da «Sicurezza dell'account».`);
   }
 }
 

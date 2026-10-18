@@ -234,9 +234,12 @@ attivare la verifica.
   - password, da qualunque indirizzo: al massimo 20 errori in 15 minuti, poi
     l'account aspetta 15 minuti (ferma chi prova da tanti indirizzi). Questo
     blocco non vale dai browser da cui la persona è già entrata (un cookie
-    firmato, 180 giorni): lì gli errori fanno una serie a parte, 5 e poi
-    l'attesa. Se qualcuno tiene bloccato l'account dell'unico admin, l'admin
-    entra dal suo solito computer;
+    firmato, 180 giorni; cambio password, «esci da tutti i dispositivi» e
+    password provvisoria lo annullano sugli altri browser): lì gli errori
+    fanno una serie a parte, 5 e poi l'attesa. Se qualcuno tiene bloccata la
+    password dell'unico admin, l'admin entra dal suo solito computer; se il
+    blocco è sui codici della verifica, qualcuno conosce la sua password:
+    cambiala (da un'altra sessione aperta, o con `CERBERO_ADMIN_RIPRISTINA`);
   - codici della verifica: dopo 5 errori 15 minuti, poi il doppio, al massimo
     un giorno (chi li sbaglia conosce già la password: se non è il titolare,
     la password va cambiata).
@@ -252,20 +255,31 @@ attivare la verifica.
   telefono nuovo. Oppure l'admin usa «Reimposta verifica». Se è l'unico admin
   ad averlo perso: imposta `CERBERO_ADMIN_EMAIL`, `CERBERO_ADMIN_PASSWORD` e
   `CERBERO_ADMIN_RIPRISTINA=1`, riavvia, entra, poi togli le tre variabili.
-- **Cambiare `CERBERO_CHIAVE_MFA`** (per esempio se è uscita): metti la nuova in
-  `CERBERO_CHIAVE_MFA` e la vecchia in `CERBERO_CHIAVE_MFA_PRECEDENTE`, riavvia.
-  I segreti si ricifrano con la nuova al primo accesso di ciascuno; i codici di
-  recupero di prima valgono finché la vecchia resta impostata, e la pagina
-  «Sicurezza dell'account» chiede a ciascuno di rifarli. A ogni avvio il log
-  dice quanti segreti e codici sono ancora della chiave precedente: toglila
-  solo quando l'avviso sparisce. Se la chiave non apre un segreto, la verifica
-  risponde «non disponibile» (e il log lo dice) senza contare errori.
+- **Cambiare `CERBERO_CHIAVE_MFA`** (per esempio se è uscita):
+  1. metti la nuova in `CERBERO_CHIAVE_MFA` e la vecchia in
+     `CERBERO_CHIAVE_MFA_PRECEDENTE`, riavvia: all'avvio tutti i segreti della
+     verifica si ricifrano con la nuova;
+  2. i codici di recupero non si possono ricifrare (se ne tiene solo
+     l'impronta): finché la vecchia resta impostata valgono, e chi li ha
+     ancora vecchi lo vede all'ingresso e in «Sicurezza dell'account»;
+     Gestione Utenti segna «codici di recupero da rifare», e il log all'avvio
+     dice chi sono;
+  3. quando nessuno è più segnato, o dopo aver usato «Reimposta verifica» per
+     chi resta, togli `CERBERO_CHIAVE_MFA_PRECEDENTE` e riavvia. Se lo togli
+     prima, i codici di recupero rimasti non valgono più (il codice dell'app
+     sì): rispondono «non disponibile» senza contare errori, e si rifanno da
+     «Sicurezza dell'account».
+  Se una chiave manca del tutto, la verifica risponde «non disponibile» e il
+  log all'avvio dice chi è coinvolto.
 - **Indirizzo dei client**: il blocco per indirizzo e i limiti per IP usano
   l'indirizzo che arriva dal proxy davanti all'API. Con Coolify (un solo
   proxy, Traefik) va bene così; se metti davanti un altro proxy (una CDN, o
   nginx che inoltra `/api`) imposta `CERBERO_TRUST_PROXY` al numero dei proxy,
-  e non pubblicare mai la porta dell'API direttamente. Se in produzione
-  l'indirizzo risulta interno, il log lo segnala.
+  e non pubblicare mai la porta dell'API direttamente. Con una CDN anche
+  Traefik deve fidarsi degli indirizzi della CDN (`forwardedHeaders.trustedIPs`),
+  altrimenti tutti risultano con l'indirizzo della CDN. Per controllare: nel
+  registro degli accessi (Gestione Utenti) l'IP deve essere quello vero di
+  chi entra. Se in produzione l'indirizzo risulta interno, il log lo segnala.
 - **FleetCare** accetta ancora la password di Cerbero sul suo login: finché non
   arriva la PR che lo fa entrare solo da Cerbero, lì non valgono la verifica in
   due passaggi, il blocco dei tentativi, la password provvisoria da cambiare e
