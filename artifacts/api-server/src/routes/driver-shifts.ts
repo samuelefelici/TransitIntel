@@ -37,7 +37,7 @@ import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings, g
 import { eq, inArray, and, desc, sql } from "drizzle-orm";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { jobManager } from "../lib/job-manager.js";
+import { jobManager, puoVedereJob } from "../lib/job-manager.js";
 import {
   driverScenariosAccessibleWhere,
   requireVehicleScenarioRead,
@@ -1136,6 +1136,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
 
     const jobId = jobManager.createJob({
       scenarioId: (req.params.scenarioId as string),
+      userId: req.user!.id,
       scriptPath,
       args: [String(timeLimitSec)],
       inputJson: {
@@ -1183,7 +1184,8 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
 /** GET /api/driver-shifts/jobs/:jobId/stream — SSE progress stream */
 router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
   const job = jobManager.getJob((req.params.jobId as string));
-  if (!job) { res.status(404).json({ error: "Job non trovato" }); return; }
+  /* il job di un altro risponde come uno che non c'è: l'id non deve dire niente */
+  if (!job || !puoVedereJob(job, req.user)) { res.status(404).json({ error: "Job non trovato" }); return; }
 
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
@@ -1282,7 +1284,7 @@ router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
 /** GET /api/driver-shifts/jobs/:jobId — Polling endpoint */
 router.get("/driver-shifts/jobs/:jobId", (req, res) => {
   const job = jobManager.getJob((req.params.jobId as string));
-  if (!job) { res.status(404).json({ error: "Job non trovato" }); return; }
+  if (!job || !puoVedereJob(job, req.user)) { res.status(404).json({ error: "Job non trovato" }); return; }
 
   const response: any = {
     jobId: job.id,
@@ -1317,7 +1319,9 @@ router.get("/driver-shifts/jobs/:jobId", (req, res) => {
 
 /** POST /api/driver-shifts/jobs/:jobId/stop — Stop a running job */
 router.post("/driver-shifts/jobs/:jobId/stop", (req, res) => {
-  const ok = jobManager.stopJob((req.params.jobId as string));
+  const job = jobManager.getJob((req.params.jobId as string));
+  if (!job || !puoVedereJob(job, req.user)) { res.status(404).json({ error: "Job non trovato" }); return; }
+  const ok = jobManager.stopJob(job.id);
   if (!ok) {
     res.status(400).json({ error: "Job non trovato o non in esecuzione" });
     return;

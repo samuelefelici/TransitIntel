@@ -46,6 +46,15 @@ export interface Job {
   pid: number | null;
   /** Arbitrary metadata attached at creation (e.g. scenarioName, date) */
   metadata?: Record<string, unknown>;
+  /** chi l'ha lanciato: lo vedono e lo fermano solo lui e l'admin (puoVedereJob).
+   *  Manca solo nei job ripresi da uno snapshot di prima: quelli li vede l'admin. */
+  userId?: string;
+}
+
+/** Un job lo vede (stato, risultato, stream) e lo ferma chi l'ha lanciato, o l'admin. */
+export function puoVedereJob(job: Pick<Job, "userId">, user?: { id: string; role: string }): boolean {
+  if (!user) return false;
+  return user.role === "admin" || (!!job.userId && job.userId === user.id);
 }
 
 /* ─── Internal state per job ───────────────────────────────── */
@@ -58,6 +67,7 @@ interface JobInternal extends Job {
 
 interface CreateJobOpts {
   scenarioId: string;
+  userId: string;
   scriptPath: string;
   args: string[];
   inputJson: unknown;
@@ -159,6 +169,7 @@ class JobManager {
       updatedAt: now,
       pid: null,
       metadata: opts.metadata,
+      userId: opts.userId,
       process: null,
       emitter,
       cleanupTimer: null,
@@ -371,6 +382,7 @@ class JobManager {
       updatedAt: j.updatedAt,
       pid: j.pid,
       metadata: j.metadata,
+      userId: j.userId,
     };
   }
 
