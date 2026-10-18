@@ -59,19 +59,23 @@ export function totp(chiave: Buffer, ms: number, cifre = CIFRE): string {
 /**
  * Il codice va bene? Si accetta il passo attuale e quelli subito prima e
  * dopo (orologi un po' sfasati), ma mai un passo già usato: un codice
- * intercettato non si riusa. Restituisce il passo da ricordare.
+ * intercettato non si riusa. Restituisce il passo da ricordare; `riusato`
+ * dice che il codice era giusto ma già usato (si aspetta il prossimo, e non
+ * conta come errore).
  */
-export function verificaCodice(segreto: string, codice: unknown, ms: number, ultimoPasso: number | null): { ok: true; passo: number } | { ok: false } {
+export function verificaCodice(segreto: string, codice: unknown, ms: number, ultimoPasso: number | null): { ok: true; passo: number } | { ok: false; riusato?: true } {
   if (typeof codice !== "string") return { ok: false };
   const c = codice.replace(/\s/g, "");
   if (!/^\d{6}$/.test(c)) return { ok: false };
   const chiave = daBase32(segreto);
   const ora = passoDi(ms);
+  let riusato = false;
   for (const passo of [ora - 1, ora, ora + 1]) {
-    if (ultimoPasso != null && passo <= ultimoPasso) continue;
-    if (hotp(chiave, passo) === c) return { ok: true, passo };
+    if (hotp(chiave, passo) !== c) continue;
+    if (ultimoPasso != null && passo <= ultimoPasso) { riusato = true; continue; }
+    return { ok: true, passo };
   }
-  return { ok: false };
+  return riusato ? { ok: false, riusato: true } : { ok: false };
 }
 
 /** L'indirizzo da mettere nel QR: l'app lo legge e aggiunge l'account. */

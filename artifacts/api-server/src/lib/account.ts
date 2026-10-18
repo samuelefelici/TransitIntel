@@ -1,137 +1,226 @@
 /**
  * Sicurezza dell'account: cambio della password, verifica in due passaggi
- * (attiva, conferma, disattiva, nuovi codici di recupero), «esci da tutti i
- * dispositivi», e per l'admin il registro degli accessi.
+ * (attiva, conferma, disattiva, nuovi codici di recupero, reimposta dopo il
+ * telefono perso), «esci da tutti i dispositivi», e per l'admin il registro
+ * degli accessi.
  *
  *   POST /api/auth/password            { attuale, nuova }
- *   POST /api/auth/mfa/attiva          → { segreto, uri } (non ancora attiva)
+ *   POST /api/auth/mfa/attiva          { password? } → { segreto, uri } (non ancora attiva)
  *   POST /api/auth/mfa/conferma        { codice } → { codiciRecupero }
  *   POST /api/auth/mfa/disattiva       { codice } (solo se il ruolo non la chiede)
  *   POST /api/auth/mfa/codici-recupero { codice } → { codiciRecupero }
+ *   POST /api/auth/mfa/reimposta       { password } (sessione entrata con un codice di recupero)
  *   POST /api/auth/sessioni/chiudi     tutte le altre sessioni decadono
  *   GET  /api/admin/accessi?limite=&utente=
  *
  * Ogni cambio alza la versione della sessione (le altre sessioni decadono) e
- * riemette il cookie di questa, così chi lo fa resta dentro.
+ * riemette il cookie di questa, così chi lo fa resta dentro. Password e codici
+ * sbagliati qui contano come al login: chi ha in mano una sessione non può
+ * provarli all'infinito. I token dati ad Argos non arrivano qui (requireAuth).
  */
-import { Router, type IRouter, type Request, type Response } from "express";
+import { Router, type IRouter, type Request, type Response, type RequestHandler } from "express";
 import bcrypt from "bcryptjs";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { BCRYPT_ROUNDS, registraAccesso, requireAdmin, requireAuth, setAuthCookie, signToken } from "./auth";
+import { loginLimiter } from "../middlewares/rate-limit";
+import {
+  BCRYPT_ROUNDS, emettiSessione, indirizzoDi, registraAccesso, requireAdmin, requireAuth, rispostaBloccato,
+} from "./auth";
 import { erroreNuovaPassword } from "./password-regole";
-import { nuovoSegreto, uriOtpauth, verificaCodice } from "./totp";
-import { cifra, decifra } from "./mfa-cifratura";
-import { improntaRecupero, mfaObbligatoria, nuoviCodiciDiRecupero } from "./accesso-regole";
+import { nuovoSegreto, uriOtpauth } from "./totp";
+import { cifra, improntaRecupero } from "./mfa-cifratura";
+import { accessoRecente, chiaveEmail, mfaObbligatoria, nuoviCodiciDiRecupero } from "./accesso-regole";
+import { azzeraTentativiPassword, prenotaTentativoPassword, provaCodice, type EsitoCodice } from "./accesso-db";
 
 const router: IRouter = Router();
 
-/** La versione della sessione è salita: si riemette il cookie di chi ha fatto il cambio. */
-function nuovaSessione(req: Request, res: Response, sv: number, mfa: boolean): void {
-  setAuthCookie(res, signToken(req.user!.id, sv, mfa));
+/** Solo la persona, mai un servizio per conto suo (doppia sicurezza: requireAuth li ferma già). */
+const soloPersona: RequestHandler = (req, res, next) => {
+  if (req.authVia) { res.status(403).json({ error: "Non disponibile da questo canale" }); return; }
+  next();
+};
+
+/**
+ * La versione della sessione è salita: si riemette il cookie di chi ha fatto
+ * il cambio. La sessione dura sempre 12 ore da quando si è data la password:
+ * `rinnova` solo se la password è appena stata data di nuovo.
+ */
+function nuovaSessione(req: Request, res: Response, sv: number, s: { mfa: boolean; rinnova?: boolean; rec?: boolean }): void {
+  emettiSessione(res, req.user!.id, {
+    sv, mfa: s.mfa,
+    at: s.rinnova ? undefined : req.sessione?.at,
+    rec: s.rec ?? req.sessione?.rec,
+  });
 }
 
 async function riga(id: string): Promise<any> {
   const r = await db.execute<any>(sql`
-    SELECT id, email, full_name, role, permissions, password_hash, mfa_attiva, mfa_segreto, mfa_ultimo_passo
+    SELECT id, email, full_name, role, permissions, password_hash, mfa_attiva, mfa_segreto
       FROM users WHERE id = ${id}::uuid`);
   return (r as any).rows?.[0] ?? null;
 }
 
-/** Il codice dell'app va bene? E il passo si segna, così non si riusa. */
-async function codiceValido(u: any, codice: unknown): Promise<boolean> {
-  if (!u?.mfa_segreto) return false;
-  let v: ReturnType<typeof verificaCodice> = { ok: false };
-  try { v = verificaCodice(decifra(u.mfa_segreto), codice, Date.now(), u.mfa_ultimo_passo == null ? null : Number(u.mfa_ultimo_passo)); }
-  catch { return false; }
-  if (!v.ok) return false;
-  const r = await db.execute<any>(sql`
-    UPDATE users SET mfa_ultimo_passo = ${v.passo}
-     WHERE id = ${u.id}::uuid AND (mfa_ultimo_passo IS NULL OR mfa_ultimo_passo < ${v.passo}) RETURNING id`);
-  return !!(r as any).rows?.length;
+/**
+ * La password di chi è già dentro (cambio password, reimposta, attivazione
+ * senza un accesso recente): conta come un tentativo di login. Risponde da sé
+ * se è bloccata o sbagliata.
+ */
+async function passwordGiusta(req: Request, res: Response, u: any, password: unknown, esitoErrato: string): Promise<boolean> {
+  const chiave = chiaveEmail(u.email);
+  const ip = indirizzoDi(req);
+  const prenotato = await prenotaTentativoPassword(chiave, ip);
+  if (!prenotato.ok) {
+    await registraAccesso(req, { userId: u.id, email: u.email, esito: "bloccato" });
+    rispostaBloccato(res, prenotato.fino, "password");
+    return false;
+  }
+  if (typeof password !== "string" || !(await bcrypt.compare(password, u.password_hash))) {
+    await registraAccesso(req, { userId: u.id, email: u.email, esito: esitoErrato });
+    res.status(400).json({ error: "La password non è giusta", serve: "password" });
+    return false;
+  }
+  await azzeraTentativiPassword(chiave, ip);
+  return true;
 }
 
-router.post("/auth/password", requireAuth, async (req, res): Promise<void> => {
+/** Un codice provato e non andato bene: risponde con il messaggio giusto. */
+async function rispostaCodice(req: Request, res: Response, u: any, e: Exclude<EsitoCodice, { esito: "ok" }>): Promise<void> {
+  switch (e.esito) {
+    case "bloccato":
+      await registraAccesso(req, { userId: u.id, email: u.email, esito: "codici_bloccati" });
+      rispostaBloccato(res, e.fino, "codici"); return;
+    case "illeggibile":
+      await registraAccesso(req, { userId: u.id, email: u.email, esito: "segreto_illeggibile" });
+      res.status(503).json({ error: "La verifica in due passaggi non è disponibile in questo momento: avvisa l'amministratore." }); return;
+    case "riusato":
+      res.status(400).json({ error: "Codice già usato: aspetta il prossimo" }); return;
+    case "manca":
+      res.status(409).json({ error: "Prima avvia l'attivazione" }); return;
+    case "errato":
+      await registraAccesso(req, { userId: u.id, email: u.email, esito: "codice_errato" });
+      res.status(400).json({ error: "Codice non valido: controlla l'ora del telefono e riprova" }); return;
+  }
+}
+
+router.post("/auth/password", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
     const { attuale, nuova } = req.body ?? {};
     const u = await riga(req.user!.id);
-    if (!u || typeof attuale !== "string" || !(await bcrypt.compare(attuale, u.password_hash))) {
-      res.status(400).json({ error: "La password attuale non è giusta" }); return;
-    }
+    if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
+    /* prima le regole della nuova (non costa niente), poi l'attuale, che conta come un tentativo */
     const errore = erroreNuovaPassword(nuova, { email: u.email, nome: u.full_name });
     if (errore) { res.status(400).json({ error: errore }); return; }
     if (nuova === attuale) { res.status(400).json({ error: "La password nuova deve essere diversa da quella attuale" }); return; }
+    if (!(await passwordGiusta(req, res, u, attuale, "password_attuale_errata"))) return;
     const r = await db.execute<any>(sql`
       UPDATE users SET password_hash = ${await bcrypt.hash(nuova, BCRYPT_ROUNDS)}, password_cambiata_il = now(),
-             deve_cambiare_password = false, sessione_versione = sessione_versione + 1
+             deve_cambiare_password = false, password_controllata = true, sessione_versione = sessione_versione + 1
        WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), !!req.sessione?.mfa);
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: !!req.sessione?.mfa, rinnova: true });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "password_cambiata" });
     res.json({ ok: true });
   } catch (e: any) { console.error("[account] password:", e?.message || e); res.status(500).json({ error: "Password non cambiata" }); }
 });
 
-router.post("/auth/mfa/attiva", requireAuth, async (req, res): Promise<void> => {
+router.post("/auth/mfa/attiva", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
     const u = await riga(req.user!.id);
-    if (u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi è già attiva" }); return; }
+    if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
+    if (u.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi è già attiva" }); return; }
+    /* una sessione rubata non deve poter legare il telefono di un altro: se la
+     * password non è stata data da poco, si chiede di nuovo */
+    if (!accessoRecente(req.sessione?.at, Date.now())) {
+      if (req.body?.password === undefined) {
+        res.status(403).json({ error: "Per sicurezza inserisci di nuovo la password", serve: "password" }); return;
+      }
+      if (!(await passwordGiusta(req, res, u, req.body.password, "password_attuale_errata"))) return;
+    }
     /* il segreto si salva subito, cifrato, ma la verifica parte solo alla conferma */
     const segreto = nuovoSegreto();
-    await db.execute(sql`UPDATE users SET mfa_segreto = ${cifra(segreto)}, mfa_ultimo_passo = NULL WHERE id = ${req.user!.id}::uuid AND NOT mfa_attiva`);
-    res.json({ segreto, uri: uriOtpauth(segreto, req.user!.email) });
+    await db.execute(sql`UPDATE users SET mfa_segreto = ${cifra(segreto)}, mfa_ultimo_passo = NULL WHERE id = ${u.id}::uuid AND NOT mfa_attiva`);
+    res.json({ segreto, uri: uriOtpauth(segreto, u.email) });
   } catch (e: any) { console.error("[account] mfa attiva:", e?.message || e); res.status(500).json({ error: "Verifica non avviata" }); }
 });
 
-router.post("/auth/mfa/conferma", requireAuth, async (req, res): Promise<void> => {
+router.post("/auth/mfa/conferma", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
     const u = await riga(req.user!.id);
     if (u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi è già attiva" }); return; }
     if (!u?.mfa_segreto) { res.status(400).json({ error: "Prima avvia l'attivazione" }); return; }
-    if (!(await codiceValido(u, req.body?.codice))) { res.status(400).json({ error: "Codice non valido: controlla l'ora del telefono e riprova" }); return; }
+    /* qui gli errori non contano: il segreto l'ha appena ricevuto chi prova */
+    const e = await provaCodice(u.id, { codice: req.body?.codice }, { recupero: false, conta: false });
+    if (e.esito !== "ok") { await rispostaCodice(req, res, u, e); return; }
     const codici = nuoviCodiciDiRecupero();
+    /* si attiva il segreto appena verificato, non uno cambiato nel frattempo da un'altra scheda */
     const r = await db.execute<any>(sql`
-      UPDATE users SET mfa_attiva = true, mfa_recupero = ${JSON.stringify(codici.map(improntaRecupero))}::jsonb,
+      UPDATE users SET mfa_attiva = true, mfa_recupero = ${JSON.stringify(codici.map(c => improntaRecupero(c)))}::jsonb,
              sessione_versione = sessione_versione + 1
-       WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), true);
+       WHERE id = ${u.id}::uuid AND NOT mfa_attiva AND mfa_segreto = ${u.mfa_segreto}
+      RETURNING sessione_versione`);
+    if (!(r as any).rows?.length) { res.status(409).json({ error: "L'attivazione è cambiata nel frattempo: ricomincia" }); return; }
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: true, rec: false });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_attivata" });
     res.json({ codiciRecupero: codici });
   } catch (e: any) { console.error("[account] mfa conferma:", e?.message || e); res.status(500).json({ error: "Verifica non attivata" }); }
 });
 
-router.post("/auth/mfa/disattiva", requireAuth, async (req, res): Promise<void> => {
+router.post("/auth/mfa/disattiva", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
     if (mfaObbligatoria(req.user!)) { res.status(403).json({ error: "Per il tuo ruolo la verifica in due passaggi è obbligatoria" }); return; }
     const u = await riga(req.user!.id);
     if (!u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi non è attiva" }); return; }
-    if (!(await codiceValido(u, req.body?.codice))) { res.status(400).json({ error: "Codice non valido" }); return; }
+    const e = await provaCodice(u.id, { codice: req.body?.codice }, { recupero: false, conta: true });
+    if (e.esito !== "ok") { await rispostaCodice(req, res, u, e); return; }
     const r = await db.execute<any>(sql`
       UPDATE users SET mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_ultimo_passo = NULL,
              sessione_versione = sessione_versione + 1
        WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), false);
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: false, rec: false });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_disattivata" });
     res.json({ ok: true });
   } catch (e: any) { console.error("[account] mfa disattiva:", e?.message || e); res.status(500).json({ error: "Verifica non disattivata" }); }
 });
 
-router.post("/auth/mfa/codici-recupero", requireAuth, async (req, res): Promise<void> => {
+router.post("/auth/mfa/codici-recupero", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
     const u = await riga(req.user!.id);
     if (!u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi non è attiva" }); return; }
-    if (!(await codiceValido(u, req.body?.codice))) { res.status(400).json({ error: "Codice non valido" }); return; }
+    const e = await provaCodice(u.id, { codice: req.body?.codice }, { recupero: false, conta: true });
+    if (e.esito !== "ok") { await rispostaCodice(req, res, u, e); return; }
     const codici = nuoviCodiciDiRecupero();
-    await db.execute(sql`UPDATE users SET mfa_recupero = ${JSON.stringify(codici.map(improntaRecupero))}::jsonb WHERE id = ${u.id}::uuid`);
+    await db.execute(sql`UPDATE users SET mfa_recupero = ${JSON.stringify(codici.map(c => improntaRecupero(c)))}::jsonb WHERE id = ${u.id}::uuid`);
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "codici_recupero_nuovi" });
     res.json({ codiciRecupero: codici });
   } catch (e: any) { console.error("[account] codici recupero:", e?.message || e); res.status(500).json({ error: "Codici non rifatti" }); }
 });
 
-router.post("/auth/sessioni/chiudi", requireAuth, async (req, res): Promise<void> => {
+/**
+ * Telefono perso: chi è entrato con un codice di recupero, ridando la
+ * password, toglie la verifica e la rifà col telefono nuovo (per i ruoli che
+ * la chiedono, la sessione diventa limitata finché non la riattiva). Sono due
+ * fattori, come per entrare: il codice di recupero e la password.
+ */
+router.post("/auth/mfa/reimposta", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
+  try {
+    if (!req.sessione?.rec) { res.status(403).json({ error: "Si può fare solo entrando con un codice di recupero" }); return; }
+    const u = await riga(req.user!.id);
+    if (!u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi non è attiva" }); return; }
+    if (!(await passwordGiusta(req, res, u, req.body?.password, "password_attuale_errata"))) return;
+    const r = await db.execute<any>(sql`
+      UPDATE users SET mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_ultimo_passo = NULL,
+             mfa_errori = 0, mfa_bloccata_fino = NULL, sessione_versione = sessione_versione + 1
+       WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: false, rinnova: true, rec: false });
+    await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_reimpostata" });
+    res.json({ ok: true });
+  } catch (e: any) { console.error("[account] mfa reimposta:", e?.message || e); res.status(500).json({ error: "Verifica non reimpostata" }); }
+});
+
+router.post("/auth/sessioni/chiudi", requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
     const r = await db.execute<any>(sql`
       UPDATE users SET sessione_versione = sessione_versione + 1 WHERE id = ${req.user!.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), !!req.sessione?.mfa);
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: !!req.sessione?.mfa });
     await registraAccesso(req, { userId: req.user!.id, email: req.user!.email, esito: "sessioni_chiuse" });
     res.json({ ok: true });
   } catch (e: any) { console.error("[account] sessioni:", e?.message || e); res.status(500).json({ error: "Sessioni non chiuse" }); }

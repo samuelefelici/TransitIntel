@@ -234,7 +234,7 @@ cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
       res.status(403).json({ error: "utente non membro del progetto" });
       return;
     }
-    res.json({ token: await mintTokenServizio(userId), expiresInSec: 600 });
+    await rispondiConToken(res, userId);
     return;
   }
   const r = await db.execute(sql`
@@ -242,8 +242,17 @@ cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
   `);
   const owner = (r as any).rows?.[0]?.owner_user_id;
   if (!owner) { res.status(404).json({ error: "progetto non trovato" }); return; }
-  res.json({ token: await mintTokenServizio(String(owner)), expiresInSec: 600 });
+  await rispondiConToken(res, String(owner));
 });
+
+/** Il token per Argos, o perché non si può: l'utente deve prima mettersi in regola (password provvisoria, verifica da attivare). */
+async function rispondiConToken(res: any, userId: string): Promise<void> {
+  try {
+    res.json({ token: await mintTokenServizio(userId), expiresInSec: 600 });
+  } catch (e: any) {
+    res.status(409).json({ error: e?.message || "token non disponibile" });
+  }
+}
 
 /* POST /api/cron/argos-mcp-projects — elenco progetti per il connettore MCP:
  * Claude scopre i projectId da solo (tool argos_projects) senza dover
