@@ -52,7 +52,7 @@ import {
   gtfsFareAuditLog,
 } from "@workspace/db/schema";
 import { eq, and, sql, inArray, desc } from "drizzle-orm";
-import { getLatestFeedId } from "./gtfs-helpers";
+import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
 import { classifyRoute } from "../lib/reti-linee";
 import AdmZip from "adm-zip";
@@ -810,23 +810,24 @@ router.post("/fares/rider-categories", async (req, res): Promise<void> => {
 
 router.delete("/fares/rider-categories/:id", async (req, res) => {
   try {
-    await db.delete(gtfsRiderCategories).where(eq(gtfsRiderCategories.id, req.params.id));
+    const s = await idNelFeed(req, res); if (!s) return;
+    const via = await db.delete(gtfsRiderCategories).where(nelFeed(gtfsRiderCategories, s)).returning({ id: gtfsRiderCategories.id });
+    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 router.put("/fares/rider-categories/:id", async (req, res): Promise<void> => {
   try {
+    const s = await idNelFeed(req, res); if (!s) return;
     const { riderCategoryName, isDefault, eligibilityUrl } = req.body;
     const update: Record<string, unknown> = { updatedAt: sql`now()` };
     if (riderCategoryName !== undefined) update.riderCategoryName = riderCategoryName;
     if (isDefault !== undefined) update.isDefault = isDefault;
     if (eligibilityUrl !== undefined) update.eligibilityUrl = eligibilityUrl;
-    await db.update(gtfsRiderCategories).set(update).where(eq(gtfsRiderCategories.id, req.params.id));
-    const feedId = await getLatestFeedId(req);
-    const rows = feedId
-      ? await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId))
-      : [];
+    const cambiate = await db.update(gtfsRiderCategories).set(update).where(nelFeed(gtfsRiderCategories, s)).returning({ id: gtfsRiderCategories.id });
+    if (!cambiate.length) { res.status(404).json(NON_NEL_FEED); return; }
+    const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, s.feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -889,6 +890,7 @@ router.post("/fares/calendar", async (req, res): Promise<void> => {
 
 router.put("/fares/calendar/:id", async (req, res): Promise<void> => {
   try {
+    const s = await idNelFeed(req, res); if (!s) return;
     const { monday, tuesday, wednesday, thursday, friday, saturday, sunday, startDate, endDate } = req.body;
     const update: Record<string, unknown> = {};
     if (monday !== undefined) update.monday = monday;
@@ -900,18 +902,20 @@ router.put("/fares/calendar/:id", async (req, res): Promise<void> => {
     if (sunday !== undefined) update.sunday = sunday;
     if (startDate !== undefined) update.startDate = startDate;
     if (endDate !== undefined) update.endDate = endDate;
-    await db.update(gtfsCalendar).set(update).where(eq(gtfsCalendar.id, req.params.id));
-    const feedId = await getLatestFeedId(req);
-    const rows = feedId
-      ? await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId))
-      : [];
+    if (Object.keys(update).length) {
+      const cambiate = await db.update(gtfsCalendar).set(update).where(nelFeed(gtfsCalendar, s)).returning({ id: gtfsCalendar.id });
+      if (!cambiate.length) { res.status(404).json(NON_NEL_FEED); return; }
+    }
+    const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, s.feedId));
     res.json(rows);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 router.delete("/fares/calendar/:id", async (req, res) => {
   try {
-    await db.delete(gtfsCalendar).where(eq(gtfsCalendar.id, req.params.id));
+    const s = await idNelFeed(req, res); if (!s) return;
+    const via = await db.delete(gtfsCalendar).where(nelFeed(gtfsCalendar, s)).returning({ id: gtfsCalendar.id });
+    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -943,7 +947,9 @@ router.post("/fares/calendar-dates", async (req, res): Promise<void> => {
 
 router.delete("/fares/calendar-dates/:id", async (req, res) => {
   try {
-    await db.delete(gtfsCalendarDates).where(eq(gtfsCalendarDates.id, req.params.id));
+    const s = await idNelFeed(req, res); if (!s) return;
+    const via = await db.delete(gtfsCalendarDates).where(nelFeed(gtfsCalendarDates, s)).returning({ id: gtfsCalendarDates.id });
+    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -1260,27 +1266,25 @@ router.post("/fares/products", async (req, res): Promise<void> => {
 // DELETE /api/fares/products/:id — elimina prodotto
 router.delete("/fares/products/:id", async (req, res): Promise<void> => {
   try {
-    const feedId = await getLatestFeedId(req);
-    const [deleted] = await db.delete(gtfsFareProducts).where(eq(gtfsFareProducts.id, req.params.id)).returning();
-    if (deleted && feedId) {
-      await logAudit(feedId, "update_product", `Prodotto eliminato: ${deleted.fareProductId} — €${deleted.amount}`);
-    }
+    const s = await idNelFeed(req, res); if (!s) return;
+    const [deleted] = await db.delete(gtfsFareProducts).where(nelFeed(gtfsFareProducts, s)).returning();
+    if (!deleted) { res.status(404).json(NON_NEL_FEED); return; }
+    await logAudit(s.feedId, "update_product", `Prodotto eliminato: ${deleted.fareProductId} — €${deleted.amount}`);
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 router.put("/fares/products/:id", async (req, res) => {
   try {
-    const feedId = await getLatestFeedId(req);
+    const s = await idNelFeed(req, res); if (!s) return;
     const { amount, fareProductName, durationMinutes } = req.body;
     const update: Record<string, any> = { updatedAt: sql`now()` };
     if (typeof amount === "number") update.amount = amount;
     if (fareProductName) update.fareProductName = fareProductName;
     if (typeof durationMinutes === "number") update.durationMinutes = durationMinutes;
-    const [updated] = await db.update(gtfsFareProducts).set(update).where(eq(gtfsFareProducts.id, req.params.id)).returning();
-    if (updated && feedId) {
-      await logAudit(feedId, "update_price", `Prodotto aggiornato: ${updated.fareProductId} → €${updated.amount}${fareProductName ? ` — nome: "${fareProductName}"` : ""}`);
-    }
+    const [updated] = await db.update(gtfsFareProducts).set(update).where(nelFeed(gtfsFareProducts, s)).returning();
+    if (!updated) { res.status(404).json(NON_NEL_FEED); return; }
+    await logAudit(s.feedId, "update_price", `Prodotto aggiornato: ${updated.fareProductId} → €${updated.amount}${fareProductName ? ` — nome: "${fareProductName}"` : ""}`);
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -1846,7 +1850,9 @@ router.post("/fares/timeframes", async (req, res): Promise<void> => {
 
 router.delete("/fares/timeframes/:id", async (req, res): Promise<void> => {
   try {
-    await db.delete(gtfsTimeframes).where(eq(gtfsTimeframes.id, req.params.id));
+    const s = await idNelFeed(req, res); if (!s) return;
+    const via = await db.delete(gtfsTimeframes).where(nelFeed(gtfsTimeframes, s)).returning({ id: gtfsTimeframes.id });
+    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -2557,19 +2563,24 @@ router.post("/fares/fare-attributes", async (req, res): Promise<void> => {
 
 router.put("/fares/fare-attributes/:id", async (req, res): Promise<void> => {
   try {
+    const s = await idNelFeed(req, res); if (!s) return;
     const updates: any = {};
     if (req.body.price != null) updates.price = Number(req.body.price);
     if (req.body.paymentMethod != null) updates.paymentMethod = req.body.paymentMethod;
     if (req.body.transfers !== undefined) updates.transfers = req.body.transfers;
     if (req.body.transferDuration !== undefined) updates.transferDuration = req.body.transferDuration;
-    const [row] = await db.update(gtfsFareAttributes).set(updates).where(eq(gtfsFareAttributes.id, req.params.id)).returning();
+    if (!Object.keys(updates).length) { res.status(400).json({ error: "Niente da cambiare" }); return; }
+    const [row] = await db.update(gtfsFareAttributes).set(updates).where(nelFeed(gtfsFareAttributes, s)).returning();
+    if (!row) { res.status(404).json(NON_NEL_FEED); return; }
     res.json(row);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 router.delete("/fares/fare-attributes/:id", async (req, res): Promise<void> => {
   try {
-    await db.delete(gtfsFareAttributes).where(eq(gtfsFareAttributes.id, req.params.id));
+    const s = await idNelFeed(req, res); if (!s) return;
+    const via = await db.delete(gtfsFareAttributes).where(nelFeed(gtfsFareAttributes, s)).returning({ id: gtfsFareAttributes.id });
+    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -2628,7 +2639,9 @@ router.post("/fares/fare-rules", async (req, res): Promise<void> => {
 
 router.delete("/fares/fare-rules/:id", async (req, res): Promise<void> => {
   try {
-    await db.delete(gtfsFareRules).where(eq(gtfsFareRules.id, req.params.id));
+    const s = await idNelFeed(req, res); if (!s) return;
+    const via = await db.delete(gtfsFareRules).where(nelFeed(gtfsFareRules, s)).returning({ id: gtfsFareRules.id });
+    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -3425,6 +3438,7 @@ router.post("/fares/zone-clusters", async (req, res): Promise<void> => {
 // PUT /api/fares/zone-clusters/:id — update cluster
 router.put("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
   try {
+    const s = await idNelFeed(req, res); if (!s) return;
     const { clusterName, polygon, color } = req.body;
     let centroidLat: number | null = null;
     let centroidLon: number | null = null;
@@ -3435,8 +3449,9 @@ router.put("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
     }
     const [row] = await db.update(gtfsFareZoneClusters)
       .set({ clusterName, polygon: polygon || null, centroidLat, centroidLon, color, updatedAt: sql`now()` })
-      .where(eq(gtfsFareZoneClusters.id, req.params.id))
+      .where(nelFeed(gtfsFareZoneClusters, s))
       .returning();
+    if (!row) { res.status(404).json(NON_NEL_FEED); return; }
     res.json(row);
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -3460,14 +3475,14 @@ router.delete("/fares/zone-clusters", async (req, res): Promise<void> => {
 // DELETE /api/fares/zone-clusters/:id — delete cluster + its stops
 router.delete("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
   try {
+    const s = await idNelFeed(req, res); if (!s) return;
     // Get the cluster to find its clusterId for stop cleanup
-    const [cluster] = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.id, req.params.id));
-    if (cluster) {
-      await db.delete(gtfsFareZoneClusterStops).where(
-        and(eq(gtfsFareZoneClusterStops.feedId, cluster.feedId!), eq(gtfsFareZoneClusterStops.clusterId, cluster.clusterId))
-      );
-    }
-    await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.id, req.params.id));
+    const [cluster] = await db.select().from(gtfsFareZoneClusters).where(nelFeed(gtfsFareZoneClusters, s));
+    if (!cluster) { res.status(404).json(NON_NEL_FEED); return; }
+    await db.delete(gtfsFareZoneClusterStops).where(
+      and(eq(gtfsFareZoneClusterStops.feedId, s.feedId), eq(gtfsFareZoneClusterStops.clusterId, cluster.clusterId))
+    );
+    await db.delete(gtfsFareZoneClusters).where(nelFeed(gtfsFareZoneClusters, s));
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });

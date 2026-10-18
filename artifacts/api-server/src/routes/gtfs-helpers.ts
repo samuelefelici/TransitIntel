@@ -4,7 +4,8 @@
 import { parse } from "csv-parse/sync";
 import { db } from "@workspace/db";
 import { gtfsFeeds, gtfsCalendar, gtfsCalendarDates, gtfsTrips } from "@workspace/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { haversineKm } from "../lib/geo-utils";
 
 // ── CSV / Shape helpers ───────────────────────────────────────
@@ -291,4 +292,28 @@ export function shapeSegmentDist(coords: [number, number][], fromIdx: number, to
     d += haversineKm(lat1, lng1, lat2, lng2);
   }
   return d;
+}
+
+/* ── Modifiche per id dentro il feed corrente ─────────────────────────────── */
+
+const UUID_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const NON_NEL_FEED = { error: "Non trovato nel feed corrente" };
+
+/**
+ * Per cambiare o cancellare una riga per id (tariffe, calendari, nodi): l'id
+ * deve essere di una riga del feed corrente dell'utente (getLatestFeedId, lo
+ * stesso da cui la pagina legge l'elenco), non di un feed qualsiasi. Risponde
+ * da sé con 400 o 404 e restituisce null quando non si può andare avanti.
+ */
+export async function idNelFeed(req: any, res: any, param = "id"): Promise<{ id: string; feedId: string } | null> {
+  const id = String(req.params?.[param] ?? "");
+  if (!UUID_ID.test(id)) { res.status(400).json({ error: "ID non valido" }); return null; }
+  const feedId = await getLatestFeedId(req);
+  if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS" }); return null; }
+  return { id, feedId };
+}
+
+/** WHERE id = … AND feed_id = …: il modello di PUT /fares/media/:fareMediaId. */
+export function nelFeed(t: { id: AnyPgColumn; feedId: AnyPgColumn }, s: { id: string; feedId: string }): SQL {
+  return and(eq(t.feedId, s.feedId), eq(t.id, s.id))!;
 }
