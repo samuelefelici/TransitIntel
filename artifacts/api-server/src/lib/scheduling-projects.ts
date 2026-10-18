@@ -18,6 +18,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getVehicleScenarioAccess } from "./scenario-access";
 import { messaggioUsi, usiNelRoster } from "./roster-pubblicazione-db";
+import { numeroVettureSql } from "./numero-vetture";
 import { withVia } from "./agent-context";
 import { quadroDiScenario, piuRecente, type ModificaDelQuadro, type QuadroStato, type QuadroProgetto } from "./quadro-orario";
 
@@ -1000,7 +1001,7 @@ router.get("/scheduling/projects/:id/vehicle-scenarios", async (req: Request, re
            stale_since, COALESCE(version, 1) AS version, superseded_by,
            to_char(valid_from, 'YYYY-MM-DD') AS valid_from,
            to_char(valid_to,   'YYYY-MM-DD') AS valid_to,
-           (result->'summary'->>'numVehicles')::int AS num_vehicles,
+           ${numeroVettureSql(sql`result`)} AS num_vehicles,
            (result->'summary'->>'totalDeadheadKm')::float AS total_deadhead_km,
            -- copertura: il primo numero che si guarda prima di scegliere lo
            -- scenario da mettere in esercizio (corse nei turni vs scoperte)
@@ -1309,7 +1310,7 @@ router.get("/scheduling/ps-projects/:psProjectId/operational", async (req: Reque
 
       const vR = await db.execute(sql`
         SELECT id, name, date,
-               (result->'summary'->>'numVehicles')::int AS num_vehicles,
+               ${numeroVettureSql(sql`result`)} AS num_vehicles,
                COALESCE(jsonb_array_length(result->'unassigned'), 0) AS uncovered
           FROM service_program_scenarios
          WHERE project_id = ${sp.id}::uuid AND is_operational = true LIMIT 1`);

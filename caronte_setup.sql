@@ -1,9 +1,10 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SCHEMA `caronte` — dati read-write di AVM + validatore biglietti
 -- ───────────────────────────────────────────────────────────────────────────
--- Le TABELLE sono definite (source of truth) in lib/db/src/schema/index.ts e
--- create da `pnpm --filter @workspace/db push`. Questo file serve per:
---   1. creare lo schema se non si usa drizzle push;
+-- Le TABELLE sono descritte in lib/db/src/schema/index.ts e si creano con
+-- questo file o con le migrazioni (drizzle-kit push è disattivato: vedi
+-- lib/db/drizzle.config.ts). Questo file serve per:
+--   1. creare lo schema e le tabelle;
 --   2. creare l'UTENTE applicativo con permessi di SCRITTURA limitati a `caronte`
 --      e SOLA LETTURA sui gtfs_* in `public` (il gestionale non va mai inquinato).
 --
@@ -12,7 +13,7 @@
 
 CREATE SCHEMA IF NOT EXISTS caronte;
 
--- Tabelle (mirror di lib/db/src/schema/index.ts; usare drizzle push in dev) ----
+-- Tabelle (specchio di lib/db/src/schema/index.ts) ----
 
 CREATE TABLE IF NOT EXISTS caronte.tap_events (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -1,8 +1,10 @@
 /**
  * Auth — modulo unico per gestione utenti, login, JWT, middleware.
  *
- * Bootstrap idempotente: alla prima richiesta crea la tabella `users` e
- * fa il seed dell'admin + 3 utenti cerbero.it se la tabella è vuota.
+ * Bootstrap idempotente: alla prima richiesta crea la tabella `users`. A
+ * tabella vuota crea un solo amministratore dalle variabili d'ambiente
+ * CERBERO_ADMIN_EMAIL e CERBERO_ADMIN_PASSWORD (lib/password-regole.ts):
+ * nessuna password è scritta nel codice.
  *
  * Nessuna modifica a Drizzle schema: usiamo db.execute(sql\`...\`) come
  * già fatto per `fares_polimetriche_snapshots`.
@@ -14,6 +16,8 @@ import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { loginLimiter } from "../middlewares/rate-limit";
+import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
+import { datiProvaAttivi } from "./dati-prova";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -28,8 +32,12 @@ import { loginLimiter } from "../middlewares/rate-limit";
  *   personale = Anagrafica del personale completa (dati personali, paghe,
  *              ferie, visite): attivazione ESPLICITA. Senza, il roster mostra
  *              solo i dati operativi dei conducenti.
+ *   roster = Roster del personale (tabellone, assegnazioni, voci di
+ *              assenza, rotazioni) con i codici sanitari (malattia,
+ *              infortunio, 104). La pubblicazione dei turni resta a
+ *              «scheduling».
  */
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale";
+export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale" | "roster";
 export interface AuthUser {
   id: string;
   email: string;
@@ -75,7 +83,7 @@ const JWT_TTL_DAYS = 30;
 const BCRYPT_ROUNDS = 10;
 
 /* ────────────────────────────────────────────────────────────
- * Bootstrap tabella + seed
+ * Bootstrap tabella + primo amministratore
  * ──────────────────────────────────────────────────────────── */
 let bootstrapped = false;
 async function ensureUsersTable(): Promise<void> {
@@ -88,7 +96,7 @@ async function ensureUsersTable(): Promise<void> {
         password_hash text NOT NULL,
         full_name text,
         role text NOT NULL DEFAULT 'user',
-        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false,"personale":false}'::jsonb,
+        permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false,"personale":false,"roster":false}'::jsonb,
         active boolean NOT NULL DEFAULT true,
         last_login_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now()
@@ -135,35 +143,68 @@ async function ensureUsersTable(): Promise<void> {
        WHERE NOT (permissions ? 'personale')
     `);
 
-    const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users`);
-    const n = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
-    if (n === 0) {
-      // Seed iniziale
-      const seedUsers: { email: string; pwd: string; full: string; role: "admin" | "user" }[] = [
-        { email: "samuele@transitintel.local", pwd: "Capo2026!", full: "Samuele (admin)", role: "admin" },
-        { email: "f.beccacece@cerbero.it", pwd: "Fabrizio", full: "Fabrizio Beccacece", role: "user" },
-        { email: "g.giuliodori@cerbero.it", pwd: "Giorgio", full: "Giorgio Giuliodori", role: "user" },
-        { email: "a.bergantino@cerbero.it", pwd: "Aldo", full: "Aldo Bergantino", role: "user" },
-      ];
-      for (const u of seedUsers) {
-        const hash = bcrypt.hashSync(u.pwd, BCRYPT_ROUNDS);
-        await db.execute(sql`
-          INSERT INTO users (email, password_hash, full_name, role, permissions, active)
-          VALUES (
-            ${u.email}, ${hash}, ${u.full}, ${u.role},
-            '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false}'::jsonb,
-            true
-          )
-        `);
-      }
-      console.log("[auth] seeded 4 users (1 admin + 3 cerbero.it)");
+    // Roster: fino a oggi stava sotto «scheduling». Chi esiste già eredita
+    // quel valore, così il rilascio non toglie a nessuno il roster che usava;
+    // poi l'admin lo toglie a chi non ci lavora. I nuovi utenti partono senza.
+    await db.execute(sql`
+      UPDATE users
+         SET permissions = permissions
+             || jsonb_build_object('roster', coalesce((permissions->>'scheduling')::boolean, true))
+       WHERE NOT (permissions ? 'roster')
+    `);
+
+    /* gli admin con una password pubblicata si disattivano subito (sono pochi, e il
+       recupero qui sotto deve sapere se ne resta uno); gli altri dopo, in background */
+    await disattivaPasswordPubblicate("admin");
+
+    const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users WHERE role = 'admin' AND active`);
+    const nAdmin = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
+    const primo = decidiPrimoAdmin(nAdmin, process.env);
+    if (primo.tipo === "crea") {
+      /* se l'email c'è già (per esempio l'admin appena disattivato) si rimette in
+       * piedi con la password nuova; ON CONFLICT copre anche due bootstrap insieme */
+      await db.execute(sql`
+        INSERT INTO users (email, password_hash, full_name, role, permissions, active)
+        VALUES (
+          ${primo.email}, ${bcrypt.hashSync(primo.password, BCRYPT_ROUNDS)}, 'Amministratore', 'admin',
+          '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false,"roster":true}'::jsonb,
+          true
+        )
+        ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin', active = true
+      `);
+      console.log(`[auth] amministratore ${primo.email} pronto (da CERBERO_ADMIN_*): cambia la password al primo accesso e togli CERBERO_ADMIN_PASSWORD`);
+    } else if (primo.tipo === "avviso") {
+      console.warn(`[auth] ${primo.messaggio}`);
     }
     bootstrapped = true;
+    void disattivaPasswordPubblicate("altri").catch((e: any) => console.error("[auth] controllo password pubblicate:", e?.message || e));
   } catch (e: any) {
     console.error("[auth] bootstrap users error:", e?.message || e);
   }
 }
 void ensureUsersTable();
+
+/**
+ * Disattiva gli account attivi che usano ancora una delle password che il
+ * vecchio codice pubblicava in chiaro (PASSWORD_PUBBLICATE). Disattivare
+ * chiude anche le sessioni già aperte: requireAuth controlla active. L'admin
+ * li riattiva impostando una password nuova.
+ */
+async function disattivaPasswordPubblicate(quali: "admin" | "altri"): Promise<void> {
+  const r = await db.execute(sql`
+    SELECT id, email, password_hash FROM users
+     WHERE active AND ${quali === "admin" ? sql`role = 'admin'` : sql`role <> 'admin'`}`);
+  const righe: any[] = (r as any).rows ?? [];
+  const bruciati: Array<{ id: string; email: string }> = [];
+  for (const u of righe) {
+    for (const p of PASSWORD_PUBBLICATE) {
+      if (await bcrypt.compare(p, u.password_hash)) { bruciati.push({ id: u.id, email: u.email }); break; }
+    }
+  }
+  if (!bruciati.length) return;
+  await db.execute(sql`UPDATE users SET active = false WHERE id IN (${sql.join(bruciati.map(b => sql`${b.id}::uuid`), sql`, `)})`);
+  console.warn(`[auth] disattivati ${bruciati.length} account con una password pubblicata nel vecchio codice: ${bruciati.map(b => b.email).join(", ")}. Riattivali da Gestione Utenti con una password nuova.`);
+}
 
 /* ────────────────────────────────────────────────────────────
  * Helpers JWT/cookie
@@ -269,6 +310,16 @@ export function vedeDatiPersonali(req: { user?: AuthUser; authVia?: string }): b
   return req.user.role === "admin" || !!req.user.permissions?.personale;
 }
 
+/**
+ * I codici sanitari delle voci del roster (malattia, infortunio, 104): admin
+ * o permesso «roster», e mai attraverso un token emesso per Argos. Chi non
+ * li vede legge un'assenza generica (lib/roster-voci.ts).
+ */
+export function vedeCodiciSanitari(req: { user?: AuthUser; authVia?: string }): boolean {
+  if (!req.user || req.authVia) return false;
+  return req.user.role === "admin" || !!req.user.permissions?.roster;
+}
+
 export function haPermesso(req: { user?: AuthUser }, p: Permission): boolean {
   if (!req.user) return false;
   return req.user.role === "admin" || !!req.user.permissions?.[p];
@@ -285,19 +336,24 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // scheduling (turni, ottimizzatori, roster, depositi, coincidenze)
   ["/service-program", "scheduling"], ["/driver-shifts", "scheduling"],
   ["/driver-schedules", "scheduling"], ["/vehicle-schedules", "scheduling"],
+  // La pubblicazione dei turni guida è dello Scheduling (chi fa i turni li
+  // manda al roster); le sorgenti dei turni servono anche ai Misti.
+  ["/roster/pubblicazioni", "scheduling"],
+  ["/roster/duty-sources", ["scheduling", "roster"]],
   // Anagrafica del personale: chi ha «personale» deve poterla leggere e
-  // scrivere anche senza «scheduling», e chi ha «scheduling» legge i dati
+  // scrivere anche senza «roster», e chi ha «roster» legge i dati
   // operativi (la mascheratura e le scritture si decidono nel singolo
   // handler). Queste voci stanno PRIMA di "/roster", che altrimenti vince.
   ["/roster/anagrafica/import", "personale"],
-  ["/roster/anagrafica", ["scheduling", "personale"]],
-  ["/roster/drivers", ["scheduling", "personale"]],
+  ["/roster/anagrafica", ["roster", "personale"]],
+  ["/roster/drivers", ["roster", "personale"]],
   ["/roster/history", "personale"],
-  ["/roster/depositi", ["scheduling", "personale"]],
-  ["/roster/categorie", ["scheduling", "personale"]],
-  ["/roster/gruppi-turni", ["scheduling", "personale"]],
-  ["/roster/rotazioni-riposi", ["scheduling", "personale"]],
-  ["/roster", "scheduling"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
+  ["/roster/depositi", ["roster", "personale"]],
+  ["/roster/categorie", ["roster", "personale"]],
+  ["/roster/gruppi-turni", ["roster", "personale"]],
+  ["/roster/rotazioni-riposi", ["roster", "personale"]],
+  // il roster (tabellone, assegnazioni, voci, calendario, tratte dei turni)
+  ["/roster", "roster"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
   ["/deadheads", "scheduling"],
   // Depositi e archi fuorilinea sono infrastruttura di PROGETTO: si gestiscono
   // in Planner Studio (permesso network) e servono alla pipeline Scheduling
@@ -374,6 +430,13 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
   // non deve congelare tutte le altre richieste).
   const ok = await bcrypt.compare(password, row.password_hash);
   if (!ok) { res.status(401).json({ error: "Credenziali non valide" }); return; }
+  /* password giusta ma pubblicata dal vecchio codice: l'account si chiude qui */
+  if (ePasswordPubblicata(password)) {
+    await db.execute(sql`UPDATE users SET active = false WHERE id = ${row.id}::uuid`);
+    console.warn(`[auth] disattivato ${row.email}: ha provato a entrare con una password pubblicata nel vecchio codice`);
+    res.status(403).json({ error: "Questa password era pubblica: l'account è stato disattivato. Chiedi all'amministratore di riattivarlo con una password nuova." });
+    return;
+  }
   await db.execute(sql`UPDATE users SET last_login_at = now() WHERE id = ${row.id}::uuid`);
   setAuthCookie(res, signToken(row.id));
   res.json({
@@ -382,6 +445,7 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
       role: row.role, permissions: row.permissions,
       fleetcareRole: row.fleetcare_role ?? "driver", active: row.active,
     },
+    datiProva: datiProvaAttivi(),
   });
 });
 
@@ -393,7 +457,8 @@ router.post("/auth/logout", (_req, res) => {
 
 // GET /api/auth/me
 router.get("/auth/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
+  /* datiProva: se questa installazione permette i conducenti fittizi (lib/dati-prova.ts) */
+  res.json({ user: req.user, datiProva: datiProvaAttivi() });
 });
 
 /* ─── SSO verso FleetCare (modulo Cerbero di gestione flotta) ───
@@ -494,9 +559,11 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
 // POST /api/admin/users { email, password, fullName, role, permissions, fleetcareRole }
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const { email, password, fullName, role, permissions, fleetcareRole } = req.body || {};
-  if (typeof email !== "string" || typeof password !== "string" || password.length < 4) {
-    res.status(400).json({ error: "Email e password (≥4 char) obbligatori" }); return;
+  if (typeof email !== "string" || !/^[^@\s]+@[^@\s]+$/.test(email.trim())) {
+    res.status(400).json({ error: "Email non valida" }); return;
   }
+  const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null });
+  if (erroreP) { res.status(400).json({ error: erroreP }); return; }
   const safeRole = role === "admin" ? "admin" : "user";
   const safePerm = {
     analytics: !!(permissions?.analytics ?? true),
@@ -505,10 +572,11 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
     // anche per gli utenti salvati prima che l'implicazione fosse imposta.
     scheduling:!!(permissions?.scheduling?? true) || !!(permissions?.network ?? true),
     network:   !!(permissions?.network   ?? true),
-    // FleetCare, Centrale Operativa, Personale: abilitazione esplicita → default false
+    // FleetCare, Centrale Operativa, Personale, Roster: abilitazione esplicita → default false
     fleetcare: !!(permissions?.fleetcare ?? false),
     centrale:  !!(permissions?.centrale  ?? false),
     personale: !!(permissions?.personale ?? false),
+    roster:    !!(permissions?.roster    ?? false),
   };
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
@@ -558,6 +626,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
       fleetcare: !!permissions.fleetcare,
       centrale: !!permissions.centrale,
       personale: !!permissions.personale,
+      roster: !!permissions.roster,
     };
     sets.push(sql`permissions = ${JSON.stringify(p)}::jsonb`);
   }
@@ -568,7 +637,13 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
     sets.push(sql`fleetcare_role = ${fleetcareRole}`);
   }
   if (active !== undefined) sets.push(sql`active = ${!!active}`);
-  if (typeof password === "string" && password.length >= 4) {
+  /* una password corta o banale si rifiuta: prima veniva ignorata in silenzio */
+  if (password !== undefined) {
+    const ur = await db.execute<any>(sql`SELECT email, full_name FROM users WHERE id = ${id}::uuid`);
+    const u = (ur as any).rows?.[0];
+    if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
+    const erroreP = erroreNuovaPassword(password, { email: u.email, nome: typeof fullName === "string" ? fullName : u.full_name });
+    if (erroreP) { res.status(400).json({ error: erroreP }); return; }
     sets.push(sql`password_hash = ${bcrypt.hashSync(password, BCRYPT_ROUNDS)}`);
   }
   if (sets.length === 0) { res.json({ ok: true, noop: true }); return; }

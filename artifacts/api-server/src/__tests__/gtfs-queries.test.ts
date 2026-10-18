@@ -1,6 +1,10 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import app from "../app";
+import router from "../routes/gtfs-queries";
+import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+
+/* il router vero con un utente iniettato: senza database le query rispondono 500 */
+const app = appDiProva(router, utenteDiProva("10000000-0000-0000-0000-000000000001", [], "admin"));
 
 describe("GTFS Query endpoints", () => {
   describe("GET /api/gtfs/summary", () => {

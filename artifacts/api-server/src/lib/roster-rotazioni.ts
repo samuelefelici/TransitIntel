@@ -20,10 +20,11 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { SCRIPTS_DIR } from "./scripts-dir";
 import { requirePermission } from "./auth";
+import { CODICI_SANITARI } from "./roster-voci";
 
 /* Chi ha solo «personale» legge le rotazioni (le sceglie nella scheda del
  * conducente) ma non le crea, non le cancella e non genera i riposi. */
-const soloScheduling = requirePermission("scheduling");
+const soloRoster = requirePermission("roster");
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -106,13 +107,18 @@ router.get("/roster/rotazioni-riposi", async (_req, res): Promise<void> => {
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.post("/roster/rotazioni-riposi", soloScheduling, async (req, res): Promise<void> => {
+router.post("/roster/rotazioni-riposi", soloRoster, async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     const name = String(b.name ?? "").trim().slice(0, 120);
     if (!name) { res.status(400).json({ error: "Nome obbligatorio" }); return; }
     const pattern = normalizePattern(b.pattern);
     if (!pattern) { res.status(400).json({ error: "Pattern non valido (matrice settimane × 7 giorni)" }); return; }
+    /* le rotazioni scrivono voci di assenza per tutti i conducenti assegnati:
+     * i codici sanitari passano solo dalla voce del singolo (lib/roster-voci.ts) */
+    if (pattern.flat().some(c => c && CODICI_SANITARI.has(c))) {
+      res.status(400).json({ error: "Malattia, infortunio e 104 non si mettono in una rotazione: la rotazione è per i riposi" }); return;
+    }
     const meta = b.meta && typeof b.meta === "object" ? b.meta : null;
     const r = await db.execute<any>(sql`
       INSERT INTO roster_rotazioni_riposi (name, weeks, pattern, meta, owner_user_id)
@@ -124,7 +130,7 @@ router.post("/roster/rotazioni-riposi", soloScheduling, async (req, res): Promis
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
-router.delete("/roster/rotazioni-riposi/:id", soloScheduling, async (req, res): Promise<void> => {
+router.delete("/roster/rotazioni-riposi/:id", soloRoster, async (req, res): Promise<void> => {
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -181,7 +187,7 @@ router.get("/roster/rotazioni-riposi/:id/assegnazioni", async (req, res): Promis
 // Chi esce o cambia scaglione perde i riposi futuri già generati da questa
 // rotazione (si rigenerano): restare col vecchio schema sul tabellone è
 // peggio che restare senza.
-router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloScheduling, async (req, res): Promise<void> => {
+router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloRoster, async (req, res): Promise<void> => {
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -306,7 +312,7 @@ function weekdayMon0(d: Date): number { return (d.getUTCDay() + 6) % 7; }
 // Idempotente: cancella e rigenera le voci con source='rotazione:<id>' nello
 // scope (categoria/deposito) e range, gestendo variazioni (nuovo conducente,
 // rimozione, cambio scaglione).
-router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloScheduling, async (req, res): Promise<void> => {
+router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloRoster, async (req, res): Promise<void> => {
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -412,7 +418,7 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloScheduling, async 
   }
 });
 
-router.post("/roster/rotazioni-riposi/solve", soloScheduling, async (req, res): Promise<void> => {
+router.post("/roster/rotazioni-riposi/solve", soloRoster, async (req, res): Promise<void> => {
   try {
     const b = req.body ?? {};
     // range limitato lato server per proteggere il worker

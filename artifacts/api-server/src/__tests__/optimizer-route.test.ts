@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import app from "../app";
+import router from "../routes/optimizer-route";
+import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+
+const app = appDiProva(router, utenteDiProva("10000000-0000-0000-0000-000000000002", ["analytics"]));
 
 describe("Optimizer Route endpoints", () => {
   describe("GET /api/optimizer/bus-profiles", () => {

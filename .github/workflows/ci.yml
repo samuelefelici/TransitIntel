@@ -1,5 +1,6 @@
-# CI di TransitIntel: typecheck dell'intero workspace (libs + artifacts + scripts).
-# Stesso comando del build di deploy, senza la parte Python/ortools.
+# CI di Cerbero: typecheck, test dell'API, build della SPA, test dei solver.
+# Ogni job deve passare prima del merge. I test non hanno database: le rotte
+# si provano con un utente iniettato (src/__tests__/helpers/app-di-prova.ts).
 name: CI
 
 # Solo pull_request: con anche `push` ogni commit su un branch di PR
@@ -23,3 +24,57 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck
         run: pnpm run typecheck
+
+  test-api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Installazione workspace
+        run: pnpm install --frozen-lockfile
+      - name: Librerie del workspace
+        run: pnpm run typecheck:libs
+      - name: Test dell'API (vitest, senza database)
+        run: pnpm --filter @workspace/api-server run test
+
+  build-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Installazione workspace
+        run: pnpm install --frozen-lockfile
+      - name: Librerie del workspace
+        run: pnpm run typecheck:libs
+      # non il build di root: artifacts/mockup-sandbox vuole PORT e BASE_PATH
+      - name: Build della SPA
+        run: pnpm --filter @workspace/transitintel run build
+
+  test-python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      # 3.11 come python3 di node:20-slim (Debian bookworm) in Dockerfile.api
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Dipendenze (ortools fissato, pytest)
+        run: python -m pip install -r requirements-dev.txt
+      - name: Test dei solver (pytest)
+        working-directory: scripts
+        run: python -m pytest -q --durations=15

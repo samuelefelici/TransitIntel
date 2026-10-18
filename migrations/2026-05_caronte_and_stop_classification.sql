@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- Migrazione additiva idempotente — equivalente a `drizzle-kit push` per:
+-- Migrazione additiva idempotente per:
 --   • §6.1 classificazione fermata persistita  (gtfs_stops)
 --   • §6.2 biglietto orario urbano             (gtfs_fare_products.is_urban_hourly)
 --   • schema `caronte` + tabelle               (tap_events, journeys, vehicle_positions)

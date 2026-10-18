@@ -41,6 +41,8 @@ parlarsi via rete interna:
    psql "$DATABASE_URL" -f caronte_setup.sql
    ```
    > In alternativa puoi incollare il contenuto degli `.sql` in un SQL editor.
+   > Lo schema cambia **solo** con i file di `migrations/`: `drizzle-kit push` è
+   > disattivato, perché proporrebbe di cancellare le tabelle che l'API crea da sé.
    > Alcune tabelle (es. polimetriche, snapshot) vengono create **lazy**
    > dall'API al primo uso (`CREATE TABLE IF NOT EXISTS`), quindi non serve
    > una migration manuale per quelle.
@@ -66,6 +68,18 @@ parlarsi via rete interna:
    - `CERBERO_API_KEY` — **OBBLIGATORIA** se usi Caronte (validatore/AVM): senza,
      gli endpoint `/api/caronte/*` rispondono 503 fail-closed
    - `CRON_SECRET` (genera con `openssl rand -hex 32`)
+   - `CERBERO_ADMIN_EMAIL` e `CERBERO_ADMIN_PASSWORD` **solo se non c'è un
+     amministratore attivo** (database nuovo, o recupero): l'API crea o rimette in
+     piedi un amministratore con questi dati (password di almeno 12 caratteri, non
+     banale). Nessun utente è scritto nel codice: senza le due variabili non si
+     crea nessuno. Dopo il primo accesso cambia la password e togli
+     `CERBERO_ADMIN_PASSWORD`
+   - **Password pubblicate dal vecchio codice.** Fino a ottobre 2026 il bootstrap
+     creava quattro utenti con password scritte nel sorgente (repo pubblico).
+     All'avvio l'API disattiva ogni account che le usa ancora, e lo scrive nel log;
+     chi prova a entrare con una di quelle viene disattivato. L'admin li riattiva da
+     Gestione Utenti dando una password nuova. Se l'unico admin era uno di quelli,
+     imposta le due variabili qui sopra e riavvia
    - `FRONTEND_URL` = dominio pubblico del Web (per il CORS, allowlist ESATTA di
      origin) — lo completi allo STEP 4
    - chiavi opzionali: `TOMTOM_API_KEY`, `MAPBOX_TOKEN`, `GOOGLE_PLACES_API_KEY`, `OPENROUTE_API_KEY`
@@ -220,6 +234,9 @@ Riferimento completo in `.env.example`. Sintesi:
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
 | `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
+| `CERBERO_ADMIN_EMAIL` | senza admin attivi | email dell'amministratore da creare o ripristinare, solo se non ce n'è uno attivo |
+| `CERBERO_ADMIN_PASSWORD` | senza admin attivi | sua password (≥ 12 caratteri, non comune); da togliere dopo il primo accesso |
+| `CERBERO_DATI_PROVA` | — | `1` solo sulle installazioni di prova o demo: abilita i conducenti fittizi («+30 fittizi»). In produzione lasciala vuota |
 | `FRONTEND_URL` | ✅ | dominio del Web (CORS) |
 | `TOMTOM_API_KEY` | — | traffico |
 | `MAPBOX_TOKEN` | — | usi server-side mappe |
@@ -283,6 +300,18 @@ cd artifacts/transitintel && PORT=5173 pnpm run dev
 
 In locale, il proxy di Vite gira `/api` verso il backend, quindi `VITE_API_BASE_URL`
 può restare vuoto e il cookie usa `SameSite=Lax`.
+
+### Test (gli stessi della CI)
+
+```bash
+# API: senza database. I test non usano MAI DATABASE_URL; un database di
+# prova, se serve, si passa con TEST_DATABASE_URL
+pnpm --filter @workspace/api-server run test
+
+# Solver Python
+python3 -m pip install -r requirements-dev.txt
+cd scripts && python3 -m pytest -q
+```
 
 ---
 

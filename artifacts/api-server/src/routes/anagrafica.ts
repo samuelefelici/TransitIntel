@@ -54,6 +54,7 @@ import { analizza, leggiTabella, ErroreFile, type RigaImport } from "../lib/anag
 import { Annulla, eseguiImport, ESCLUDI, type ScelteImport } from "../lib/anagrafica-import-db";
 import { esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-export";
 import { ErroreXlsx } from "../lib/xlsx-leggi";
+import { datiProvaAttivi } from "../lib/dati-prova";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -146,10 +147,10 @@ router.get("/roster/drivers/:id", async (req, res): Promise<void> => {
   } catch (e) { rispondiErrore(res, e, "scheda"); }
 });
 
-/** Chi ha solo «scheduling» tocca solo i fittizi, e solo nei campi operativi. */
+/** Chi ha solo «roster» tocca solo i fittizi, e solo nei campi operativi. */
 function controllaScrittura(req: Request, fittizio: boolean, chiavi: string[]): void {
   if (vedeDatiPersonali(req)) return;
-  if (!fittizio || !haPermesso(req, "scheduling")) richiedePersonale(req);
+  if (!fittizio || !haPermesso(req, "roster")) richiedePersonale(req);
   const fuori = chiavi.filter(k => !CAMPI_SCRIVIBILI_FITTIZI.has(k) && k !== "isFictitious" && k !== "name");
   if (fuori.length) throw new Rifiuto(403, `Senza il permesso «Personale» non si possono scrivere: ${fuori.join(", ")}`);
 }
@@ -252,11 +253,12 @@ router.post("/roster/drivers/:id/riattiva", async (req, res): Promise<void> => {
 /**
  * Conducenti FITTIZI completi (lib/anagrafica-prova.ts): ritratto, depositi
  * diversi, rotazioni riposi miste coi riposi già generati. Niente matricola:
- * non si confondono con le persone vere.
+ * non si confondono con le persone vere. Solo nelle installazioni di prova.
  */
 router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
-    if (!vedeDatiPersonali(req) && !haPermesso(req, "scheduling")) richiedePersonale(req);
+    if (!datiProvaAttivi()) { res.status(404).json({ error: "Non trovato" }); return; }
+    if (!vedeDatiPersonali(req) && !haPermesso(req, "roster")) richiedePersonale(req);
     const quanti = Math.min(Math.max(Number(req.body?.count) || 30, 1), 200);
     const oggi = oggiRoma();
     const esito = await db.transaction(async (tx) => {

@@ -57,7 +57,7 @@ import {
   gtfsFareStopAssignmentOverrides,
 } from "@workspace/db/schema";
 import { eq, and, sql, inArray } from "drizzle-orm";
-import { getLatestFeedId } from "./gtfs-helpers";
+import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
 
 const router: IRouter = Router();
@@ -1313,7 +1313,9 @@ router.post("/fares/official-nodes/import-atma-2013", async (req, res): Promise<
 router.delete("/fares/official-nodes/:id", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
-    await db.delete(gtfsFareOfficialNodes).where(eq(gtfsFareOfficialNodes.id, req.params.id));
+    const s = await idNelFeed(req, res); if (!s) return;
+    const via = await db.delete(gtfsFareOfficialNodes).where(nelFeed(gtfsFareOfficialNodes, s)).returning({ id: gtfsFareOfficialNodes.id });
+    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
@@ -1412,8 +1414,9 @@ router.get("/fares/stop-assignment/overrides", async (req, res): Promise<void> =
 router.post("/fares/stop-assignment/revert/:overrideId", async (req, res): Promise<void> => {
   try {
     await ensureNodeAssignmentTables();
+    const s = await idNelFeed(req, res, "overrideId"); if (!s) return;
     const [ov] = await db.select().from(gtfsFareStopAssignmentOverrides)
-      .where(eq(gtfsFareStopAssignmentOverrides.id, req.params.overrideId));
+      .where(nelFeed(gtfsFareStopAssignmentOverrides, s));
     if (!ov) { res.status(404).json({ error: "Override non trovato" }); return; }
     if (!ov.fromClusterId) { res.status(400).json({ error: "Override non reversibile (fermata era orfana)" }); return; }
 

@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import app from "../app";
+import router from "../routes/driver-shifts";
+import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+
+const app = appDiProva(router, utenteDiProva("10000000-0000-0000-0000-000000000002", ["scheduling"]));
 
 describe("Driver Shifts endpoints", () => {
   describe("GET /api/driver-shifts/:scenarioId", () => {
@@ -43,12 +46,10 @@ describe("Driver Shifts endpoints", () => {
   });
 
   describe("GET /api/driver-shifts/:scenarioId/scenarios", () => {
-    it("returns an array or 500 without DB", async () => {
+    it("uno scenario che non esiste: 404 dal controllo di accesso", async () => {
       const res = await request(app).get("/api/driver-shifts/non-existent-id/scenarios");
-      expect([200, 500]).toContain(res.status);
-      if (res.status === 200) {
-        expect(Array.isArray(res.body)).toBe(true);
-      }
+      expect(res.status).toBe(404);
+      expect(res.body).toHaveProperty("error");
     }, 15_000);
   });
 
