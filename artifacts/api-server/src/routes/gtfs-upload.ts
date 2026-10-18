@@ -580,7 +580,7 @@ void ensureFeedActiveColumn();
 router.post("/gtfs/feeds/:id/activate", requireAdmin, async (req, res) => {
   try {
     await ensureFeedActiveColumn();
-    const id = req.params.id;
+    const id = String(req.params.id);
     if (!/^[0-9a-f-]{36}$/i.test(id)) {
       res.status(400).json({ error: "ID feed non valido" });
       return;
