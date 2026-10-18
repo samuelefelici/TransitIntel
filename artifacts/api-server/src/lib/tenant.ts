@@ -8,7 +8,7 @@
  *   - planning_scenarios (workspace pianificazione)
  *
  * Backfill: tutti i record esistenti vengono assegnati al primo admin
- * (samuele@transitintel.local) così non si perde nulla durante il rollout.
+ * (il più vecchio per created_at) così non si perde nulla durante il rollout.
  *
  * Helper:
  *   - tenantWhere(req): SQL fragment "(owner_user_id = $uid OR owner_user_id IS NULL)"

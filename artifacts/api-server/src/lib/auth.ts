@@ -1,8 +1,10 @@
 /**
  * Auth — modulo unico per gestione utenti, login, JWT, middleware.
  *
- * Bootstrap idempotente: alla prima richiesta crea la tabella `users` e
- * fa il seed dell'admin + 3 utenti cerbero.it se la tabella è vuota.
+ * Bootstrap idempotente: alla prima richiesta crea la tabella `users`. A
+ * tabella vuota crea un solo amministratore dalle variabili d'ambiente
+ * CERBERO_ADMIN_EMAIL e CERBERO_ADMIN_PASSWORD (lib/password-regole.ts):
+ * nessuna password è scritta nel codice.
  *
  * Nessuna modifica a Drizzle schema: usiamo db.execute(sql\`...\`) come
  * già fatto per `fares_polimetriche_snapshots`.
@@ -14,6 +16,7 @@ import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { loginLimiter } from "../middlewares/rate-limit";
+import { decidiPrimoAdmin, erroreNuovaPassword } from "./password-regole";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -75,7 +78,7 @@ const JWT_TTL_DAYS = 30;
 const BCRYPT_ROUNDS = 10;
 
 /* ────────────────────────────────────────────────────────────
- * Bootstrap tabella + seed
+ * Bootstrap tabella + primo amministratore
  * ──────────────────────────────────────────────────────────── */
 let bootstrapped = false;
 async function ensureUsersTable(): Promise<void> {
@@ -137,26 +140,21 @@ async function ensureUsersTable(): Promise<void> {
 
     const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users`);
     const n = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
-    if (n === 0) {
-      // Seed iniziale
-      const seedUsers: { email: string; pwd: string; full: string; role: "admin" | "user" }[] = [
-        { email: "samuele@transitintel.local", pwd: "Capo2026!", full: "Samuele (admin)", role: "admin" },
-        { email: "f.beccacece@cerbero.it", pwd: "Fabrizio", full: "Fabrizio Beccacece", role: "user" },
-        { email: "g.giuliodori@cerbero.it", pwd: "Giorgio", full: "Giorgio Giuliodori", role: "user" },
-        { email: "a.bergantino@cerbero.it", pwd: "Aldo", full: "Aldo Bergantino", role: "user" },
-      ];
-      for (const u of seedUsers) {
-        const hash = bcrypt.hashSync(u.pwd, BCRYPT_ROUNDS);
-        await db.execute(sql`
-          INSERT INTO users (email, password_hash, full_name, role, permissions, active)
-          VALUES (
-            ${u.email}, ${hash}, ${u.full}, ${u.role},
-            '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false}'::jsonb,
-            true
-          )
-        `);
-      }
-      console.log("[auth] seeded 4 users (1 admin + 3 cerbero.it)");
+    const primo = decidiPrimoAdmin(n, process.env);
+    if (primo.tipo === "crea") {
+      /* ON CONFLICT: il bootstrap può partire due volte insieme (import e prima richiesta) */
+      await db.execute(sql`
+        INSERT INTO users (email, password_hash, full_name, role, permissions, active)
+        VALUES (
+          ${primo.email}, ${bcrypt.hashSync(primo.password, BCRYPT_ROUNDS)}, 'Amministratore', 'admin',
+          '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false}'::jsonb,
+          true
+        )
+        ON CONFLICT (email) DO NOTHING
+      `);
+      console.log(`[auth] creato l'amministratore iniziale ${primo.email}: cambia la password al primo accesso e togli CERBERO_ADMIN_PASSWORD`);
+    } else if (primo.tipo === "avviso") {
+      console.warn(`[auth] ${primo.messaggio}`);
     }
     bootstrapped = true;
   } catch (e: any) {
@@ -494,9 +492,11 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
 // POST /api/admin/users { email, password, fullName, role, permissions, fleetcareRole }
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const { email, password, fullName, role, permissions, fleetcareRole } = req.body || {};
-  if (typeof email !== "string" || typeof password !== "string" || password.length < 4) {
-    res.status(400).json({ error: "Email e password (≥4 char) obbligatori" }); return;
+  if (typeof email !== "string" || !/^[^@\s]+@[^@\s]+$/.test(email.trim())) {
+    res.status(400).json({ error: "Email non valida" }); return;
   }
+  const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null });
+  if (erroreP) { res.status(400).json({ error: erroreP }); return; }
   const safeRole = role === "admin" ? "admin" : "user";
   const safePerm = {
     analytics: !!(permissions?.analytics ?? true),
@@ -568,7 +568,13 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
     sets.push(sql`fleetcare_role = ${fleetcareRole}`);
   }
   if (active !== undefined) sets.push(sql`active = ${!!active}`);
-  if (typeof password === "string" && password.length >= 4) {
+  /* una password corta o banale si rifiuta: prima veniva ignorata in silenzio */
+  if (password !== undefined) {
+    const ur = await db.execute<any>(sql`SELECT email, full_name FROM users WHERE id = ${id}::uuid`);
+    const u = (ur as any).rows?.[0];
+    if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
+    const erroreP = erroreNuovaPassword(password, { email: u.email, nome: typeof fullName === "string" ? fullName : u.full_name });
+    if (erroreP) { res.status(400).json({ error: erroreP }); return; }
     sets.push(sql`password_hash = ${bcrypt.hashSync(password, BCRYPT_ROUNDS)}`);
   }
   if (sets.length === 0) { res.json({ ok: true, noop: true }); return; }

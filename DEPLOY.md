@@ -66,6 +66,11 @@ parlarsi via rete interna:
    - `CERBERO_API_KEY` — **OBBLIGATORIA** se usi Caronte (validatore/AVM): senza,
      gli endpoint `/api/caronte/*` rispondono 503 fail-closed
    - `CRON_SECRET` (genera con `openssl rand -hex 32`)
+   - `CERBERO_ADMIN_EMAIL` e `CERBERO_ADMIN_PASSWORD` **solo su un database
+     nuovo**: a tabella utenti vuota l'API crea un unico amministratore con questi
+     dati (password di almeno 12 caratteri, non banale). Nessun utente è scritto
+     nel codice: senza le due variabili non si crea nessuno e nessuno può entrare.
+     Dopo il primo accesso cambia la password e togli `CERBERO_ADMIN_PASSWORD`
    - `FRONTEND_URL` = dominio pubblico del Web (per il CORS, allowlist ESATTA di
      origin) — lo completi allo STEP 4
    - chiavi opzionali: `TOMTOM_API_KEY`, `MAPBOX_TOKEN`, `GOOGLE_PLACES_API_KEY`, `OPENROUTE_API_KEY`
@@ -220,6 +225,8 @@ Riferimento completo in `.env.example`. Sintesi:
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
 | `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
+| `CERBERO_ADMIN_EMAIL` | solo DB nuovo | email del primo amministratore, creato solo se la tabella utenti è vuota |
+| `CERBERO_ADMIN_PASSWORD` | solo DB nuovo | sua password (≥ 12 caratteri, non comune); da togliere dopo il primo accesso |
 | `FRONTEND_URL` | ✅ | dominio del Web (CORS) |
 | `TOMTOM_API_KEY` | — | traffico |
 | `MAPBOX_TOKEN` | — | usi server-side mappe |
