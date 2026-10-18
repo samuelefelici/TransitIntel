@@ -35,6 +35,8 @@ interface AuthCtx {
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   hasPermission: (p: Permission) => boolean;
+  /** installazione di prova: si possono creare conducenti fittizi (CERBERO_DATI_PROVA=1) */
+  datiProva: boolean;
 }
 
 const AuthContext = createContext<AuthCtx | null>(null);
@@ -72,6 +74,8 @@ function saveCachedUser(u: CurrentUser | null): void {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<CurrentUser | null>(() => loadCachedUser());
+  /* non in cache: finché /me non risponde, niente dati di prova */
+  const [datiProva, setDatiProva] = useState(false);
   // Se abbiamo cache, possiamo già mostrare l'app: niente loading screen iniziale.
   const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null);
 
@@ -95,8 +99,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const r = await apiFetch<{ user: CurrentUser }>("/api/auth/me");
+      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean }>("/api/auth/me");
       setUser(r.user);
+      setDatiProva(!!r.datiProva);
     } catch (e: any) {
       // Sloggiamo SOLO se il backend ha risposto con un 401 esplicito
       // ("Non autenticato" / "Sessione non valida"). In tutti gli altri
@@ -121,12 +126,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     try {
-      const r = await apiFetch<{ user: CurrentUser }>("/api/auth/login", {
+      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean }>("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
       setUser(r.user);
+      setDatiProva(!!r.datiProva);
       return { ok: true };
     } catch (e: any) {
       return { ok: false, error: e?.message || "Credenziali non valide" };
@@ -160,6 +166,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logout,
     refresh,
     hasPermission,
+    datiProva,
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -252,7 +252,7 @@ export default function RosterPage() {
   const [cut, setCut] = useState<RifTurno | null>(null);
   /* id del conducente di cui è aperta la scheda, o "new" */
   const [editDriver, setEditDriver] = useState<string | null | "new">(null);
-  const { hasPermission } = useAuth();
+  const { hasPermission, datiProva } = useAuth();
   /* senza «Personale» dal tabellone si creano solo conducenti fittizi */
   const personale = hasPermission("personale");
 
@@ -866,9 +866,9 @@ export default function RosterPage() {
             title={personale ? "Nuovo conducente" : "Nuovo conducente fittizio (per i conducenti veri serve il permesso «Personale»)"}>
             <UserPlus className="w-3.5 h-3.5" /> {personale ? "Conducente" : "Fittizio"}
           </button>
-          <button onClick={() => seedMut.mutate()} disabled={seedMut.isPending} className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs disabled:opacity-50">
+          {datiProva && <button onClick={() => { if (confirm("Creare 30 conducenti di prova (fittizi, senza matricola) con foto, depositi diversi e rotazioni riposi?")) seedMut.mutate(); }} disabled={seedMut.isPending} className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs disabled:opacity-50">
             +30 fittizi
-          </button>
+          </button>}
         </div>
       </div>
 
@@ -967,7 +967,7 @@ export default function RosterPage() {
           {boardQ.isLoading ? (
             <div className="p-10 text-center text-slate-500 text-sm flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Carico il tabellone…</div>
           ) : !board || board.drivers.length === 0 ? (
-            <div className="p-10 text-center text-slate-500 text-sm">Nessun conducente. Aggiungine uno o genera operatori fittizi.</div>
+            <div className="p-10 text-center text-slate-500 text-sm">Nessun conducente. {datiProva ? "Aggiungine uno o genera operatori fittizi." : "Aggiungili dall'Anagrafica personale."}</div>
           ) : (
             <table className={`roster-board min-w-full text-xs border-collapse ${tool === "puntatore" && !armedVoce ? "cursor-default" : ""}`}
               onMouseOver={onBoardOver} onMouseLeave={onBoardLeave}>

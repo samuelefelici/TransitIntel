@@ -54,6 +54,7 @@ import { analizza, leggiTabella, ErroreFile, type RigaImport } from "../lib/anag
 import { Annulla, eseguiImport, ESCLUDI, type ScelteImport } from "../lib/anagrafica-import-db";
 import { esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-export";
 import { ErroreXlsx } from "../lib/xlsx-leggi";
+import { datiProvaAttivi } from "../lib/dati-prova";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -252,10 +253,11 @@ router.post("/roster/drivers/:id/riattiva", async (req, res): Promise<void> => {
 /**
  * Conducenti FITTIZI completi (lib/anagrafica-prova.ts): ritratto, depositi
  * diversi, rotazioni riposi miste coi riposi già generati. Niente matricola:
- * non si confondono con le persone vere.
+ * non si confondono con le persone vere. Solo nelle installazioni di prova.
  */
 router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
+    if (!datiProvaAttivi()) { res.status(404).json({ error: "Non trovato" }); return; }
     if (!vedeDatiPersonali(req) && !haPermesso(req, "roster")) richiedePersonale(req);
     const quanti = Math.min(Math.max(Number(req.body?.count) || 30, 1), 200);
     const oggi = oggiRoma();

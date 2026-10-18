@@ -229,6 +229,7 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
 | `CERBERO_ADMIN_EMAIL` | solo DB nuovo | email del primo amministratore, creato solo se la tabella utenti è vuota |
 | `CERBERO_ADMIN_PASSWORD` | solo DB nuovo | sua password (≥ 12 caratteri, non comune); da togliere dopo il primo accesso |
+| `CERBERO_DATI_PROVA` | — | `1` solo sulle installazioni di prova o demo: abilita i conducenti fittizi («+30 fittizi»). In produzione lasciala vuota |
 | `FRONTEND_URL` | ✅ | dominio del Web (CORS) |
 | `TOMTOM_API_KEY` | — | traffico |
 | `MAPBOX_TOKEN` | — | usi server-side mappe |

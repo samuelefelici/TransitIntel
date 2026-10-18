@@ -49,7 +49,7 @@ function aggiornaIndirizzo(chiave: string, valore: string | null) {
 }
 
 export default function AnagraficaPage() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, datiProva } = useAuth();
   const personale = hasPermission("personale");
   const qc = useQueryClient();
   const [vista, setVista] = useState<Vista>(() => (parametri().get("vista") === "scadenze" ? "scadenze" : "elenco"));
@@ -163,12 +163,15 @@ export default function AnagraficaPage() {
           <Link href="/roster" className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5">
             <Users className="w-3.5 h-3.5" /> Roster
           </Link>
-          <button onClick={() => { if (confirm("Creare 30 conducenti di prova (fittizi, senza matricola) con foto, depositi diversi e rotazioni riposi?")) prova.mutate(); }}
-            disabled={prova.isPending}
-            className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5 disabled:opacity-50"
-            title="Conducenti fittizi per provare il roster: si riconoscono dall'etichetta «fittizio» e si tolgono dalla scheda">
-            <FlaskConical className="w-3.5 h-3.5" /> Conducenti di prova
-          </button>
+          {/* solo nelle installazioni di prova (CERBERO_DATI_PROVA=1) */}
+          {datiProva && (
+            <button onClick={() => { if (confirm("Creare 30 conducenti di prova (fittizi, senza matricola) con foto, depositi diversi e rotazioni riposi?")) prova.mutate(); }}
+              disabled={prova.isPending}
+              className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5 disabled:opacity-50"
+              title="Conducenti fittizi per provare il roster: si riconoscono dall'etichetta «fittizio» e si tolgono dalla scheda">
+              <FlaskConical className="w-3.5 h-3.5" /> Conducenti di prova
+            </button>
+          )}
           {personale && (
             <>
               <button onClick={() => setImporta(true)} className="px-2.5 py-1.5 rounded-lg text-[11px] border border-border/40 hover:bg-white/5 inline-flex items-center gap-1.5">

@@ -17,6 +17,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, erroreNuovaPassword } from "./password-regole";
+import { datiProvaAttivi } from "./dati-prova";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -409,6 +410,7 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
       role: row.role, permissions: row.permissions,
       fleetcareRole: row.fleetcare_role ?? "driver", active: row.active,
     },
+    datiProva: datiProvaAttivi(),
   });
 });
 
@@ -420,7 +422,8 @@ router.post("/auth/logout", (_req, res) => {
 
 // GET /api/auth/me
 router.get("/auth/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
+  /* datiProva: se questa installazione permette i conducenti fittizi (lib/dati-prova.ts) */
+  res.json({ user: req.user, datiProva: datiProvaAttivi() });
 });
 
 /* ─── SSO verso FleetCare (modulo Cerbero di gestione flotta) ───
