@@ -101,6 +101,7 @@ const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-stu
 const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
 const NetworkEngineHub = lazyWithRetry(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
+const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
 
 // Initialize TanStack Query client
@@ -150,6 +151,7 @@ function Router() {
       <ErrorBoundary context="Pagina">
         <Suspense fallback={<PageLoader />}>
           <Switch>
+            <Route path="/account"><AccountPage /></Route>
             <Route path="/">
               <Redirect to="/dashboard" />
             </Route>
@@ -368,7 +370,7 @@ function Router() {
 }
 
 function AuthGate() {
-  const { isAuthenticated, loading, user } = useAuth();
+  const { isAuthenticated, loading, user, accesso } = useAuth();
   const [location, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
@@ -421,7 +423,11 @@ function AuthGate() {
 
   return (
     <Suspense fallback={<PageLoader />}>
-      {showApp ? (
+      {showApp && accesso?.limitato ? (
+        /* sessione limitata (password provvisoria, verifica da attivare): solo la pagina
+         * per mettersi in regola, senza menu; il server rifiuta comunque il resto */
+        <AccountPage forzata />
+      ) : showApp ? (
         <>
           <VirgilioController />
           <Router />

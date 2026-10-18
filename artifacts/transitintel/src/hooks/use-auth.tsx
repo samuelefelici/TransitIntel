@@ -26,12 +26,31 @@ export interface CurrentUser {
   active: boolean;
 }
 
+/** Stato dell'accesso (api-server/src/lib/auth.ts, Accesso): sessione limitata e verifica. */
+export interface Accesso {
+  /** "password": password provvisoria da cambiare; "mfa": verifica in due passaggi da attivare */
+  limitato: null | "password" | "mfa";
+  mfaAttiva: boolean;
+  mfaObbligatoria: boolean;
+  passwordDaCambiare: boolean;
+}
+
+export type EsitoLogin =
+  | { ok: true }
+  | { ok: false; error: string }
+  /* password giusta, serve il codice dell'app: il biglietto vale 5 minuti */
+  | { ok: false; mfaBiglietto: string };
+
 interface AuthCtx {
   user: CurrentUser | null;
   loading: boolean;
   isAuthenticated: boolean;
   isAdmin: boolean;
-  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<EsitoLogin>;
+  /** il secondo passo: il codice dell'app o un codice di recupero */
+  loginMfa: (biglietto: string, prova: { codice: string } | { recupero: string }) => Promise<{ ok: boolean; error?: string }>;
+  /** null finché il server non ha risposto */
+  accesso: Accesso | null;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   hasPermission: (p: Permission) => boolean;
@@ -79,6 +98,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   /* non in cache: finché /me non risponde, niente dati di prova */
   const [datiProva, setDatiProva] = useState(false);
   const [verificato, setVerificato] = useState(false);
+  const [accesso, setAccesso] = useState<Accesso | null>(null);
   // Se abbiamo cache, possiamo già mostrare l'app: niente loading screen iniziale.
   const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null);
 
@@ -102,9 +122,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     try {
-      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean }>("/api/auth/me");
+      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean; accesso?: Accesso | null }>("/api/auth/me");
       setUser(r.user);
       setDatiProva(!!r.datiProva);
+      setAccesso(r.accesso ?? null);
     } catch (e: any) {
       // Sloggiamo SOLO se il backend ha risposto con un 401 esplicito
       // ("Non autenticato" / "Sessione non valida"). In tutti gli altri
@@ -128,20 +149,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void refresh();
   }, [refresh]);
 
-  const login = useCallback(async (email: string, password: string) => {
+  type RispostaLogin = { user?: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; mfaRichiesta?: boolean; biglietto?: string };
+  const entra = useCallback((r: RispostaLogin) => {
+    setUser(r.user!);
+    setDatiProva(!!r.datiProva);
+    setAccesso(r.accesso ?? null);
+  }, [setUser]);
+
+  const login = useCallback(async (email: string, password: string): Promise<EsitoLogin> => {
     try {
-      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean }>("/api/auth/login", {
+      const r = await apiFetch<RispostaLogin>("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      setUser(r.user);
-      setDatiProva(!!r.datiProva);
+      if (r.mfaRichiesta && r.biglietto) return { ok: false, mfaBiglietto: r.biglietto };
+      entra(r);
       return { ok: true };
     } catch (e: any) {
       return { ok: false, error: e?.message || "Credenziali non valide" };
     }
-  }, []);
+  }, [entra]);
+
+  const loginMfa = useCallback(async (biglietto: string, prova: { codice: string } | { recupero: string }) => {
+    try {
+      const r = await apiFetch<RispostaLogin>("/api/auth/login/mfa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ biglietto, ...prova }),
+      });
+      entra(r);
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, error: e?.message || "Codice non valido" };
+    }
+  }, [entra]);
 
   const logout = useCallback(async () => {
     try {
@@ -150,7 +192,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
     setUser(null);
-  }, []);
+    setAccesso(null);
+  }, [setUser]);
 
   const hasPermission = useCallback(
     (p: Permission) => {
@@ -167,6 +210,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isAuthenticated: !!user,
     isAdmin: user?.role === "admin",
     login,
+    loginMfa,
+    accesso,
     logout,
     refresh,
     hasPermission,

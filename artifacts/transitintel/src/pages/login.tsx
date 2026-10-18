@@ -79,12 +79,17 @@ function ScanLine() {
 
 /* ─── MAIN LOGIN PAGE ─── */
 export default function LoginPage() {
-  const { login, user } = useAuth();
+  const { login, loginMfa, user } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
-  const [error, setError] = useState(false);
+  /* il messaggio del server: credenziali, blocco dopo troppi tentativi, codice sbagliato */
+  const [error, setError] = useState<string | null>(null);
+  /* password giusta e verifica attiva: il biglietto per il secondo passo */
+  const [biglietto, setBiglietto] = useState<string | null>(null);
+  const [codice, setCodice] = useState("");
+  const [usaRecupero, setUsaRecupero] = useState(false);
   const [shake, setShake] = useState(false);
   const [loading, setLoading] = useState(false);
   const [accessGranted, setAccessGranted] = useState(false);
@@ -119,34 +124,67 @@ export default function LoginPage() {
 
   useMatrixRain(canvasRef);
 
+  const sbagliato = useCallback((messaggio: string) => {
+    setLoading(false);
+    setError(messaggio);
+    setShake(true);
+    setTimeout(() => setShake(false), 600);
+  }, []);
+
+  const avviaSequenza = useCallback(() => {
+    // Login OK: AuthProvider gia' aggiornato. Animazione poi App.tsx renderizza l'app.
+    setLoading(false);
+    setAccessGranted(true);
+    setPhase("scanning");
+    // Timing: scanning 2.2s -> granted 2.6s -> entering 2.0s -> done.
+    // Totale ~6.8s, abbastanza per leggere ogni schermata e gustarsi il codename.
+    setTimeout(() => setPhase("granted"), 2200);
+    setTimeout(() => setPhase("entering"), 4800);
+    // Notifica AuthGate di smontare LoginPage SOLO a fine sequenza cinematica
+    setTimeout(() => {
+      window.dispatchEvent(new Event("auth:login-sequence-done"));
+    }, 6800);
+  }, []);
+
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
       e.preventDefault();
-      setError(false);
+      setError(null);
       setLoading(true);
 
       const result = await login(username, password);
       if (!result.ok) {
-        setLoading(false);
-        setError(true);
-        setShake(true);
-        setTimeout(() => setShake(false), 600);
+        if ("mfaBiglietto" in result) {
+          setLoading(false);
+          setBiglietto(result.mfaBiglietto);
+          setCodice("");
+          setUsaRecupero(false);
+          return;
+        }
+        sbagliato(result.error);
         return;
       }
-      // Login OK: AuthProvider gia' aggiornato. Animazione poi App.tsx renderizza l'app.
-      setLoading(false);
-      setAccessGranted(true);
-      setPhase("scanning");
-      // Timing: scanning 2.2s -> granted 2.6s -> entering 2.0s -> done.
-      // Totale ~6.8s, abbastanza per leggere ogni schermata e gustarsi il codename.
-      setTimeout(() => setPhase("granted"), 2200);
-      setTimeout(() => setPhase("entering"), 4800);
-      // Notifica AuthGate di smontare LoginPage SOLO a fine sequenza cinematica
-      setTimeout(() => {
-        window.dispatchEvent(new Event("auth:login-sequence-done"));
-      }, 6800);
+      avviaSequenza();
     },
-    [login, username, password],
+    [login, username, password, sbagliato, avviaSequenza],
+  );
+
+  const handleCodice = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!biglietto) return;
+      setError(null);
+      setLoading(true);
+      const r = await loginMfa(biglietto, usaRecupero ? { recupero: codice } : { codice });
+      if (!r.ok) {
+        /* biglietto scaduto (5 minuti): si torna a email e password */
+        if (/scaduto/i.test(r.error ?? "")) setBiglietto(null);
+        sbagliato(r.error ?? "Codice non valido");
+        return;
+      }
+      avviaSequenza();
+    },
+    [biglietto, codice, usaRecupero, loginMfa, sbagliato, avviaSequenza],
   );
 
   return (
@@ -450,6 +488,55 @@ export default function LoginPage() {
               </span>
             </div>
 
+            {biglietto ? (
+              <form onSubmit={handleCodice} className="space-y-4" aria-describedby="login-codice-aiuto">
+                <p id="login-codice-aiuto" className="font-mono text-[11px] text-cyan-300/80 leading-relaxed">
+                  {usaRecupero
+                    ? "Inserisci uno dei codici di recupero che hai salvato quando hai attivato la verifica (ognuno vale una volta)."
+                    : "Verifica in due passaggi: inserisci il codice a 6 cifre che vedi nell'app sul telefono."}
+                </p>
+                <div>
+                  <label htmlFor="login-codice" className="block font-mono text-[11px] text-cyan-600 mb-1.5 tracking-wider uppercase">
+                    {usaRecupero ? "Codice di recupero" : "Codice"}
+                  </label>
+                  <input
+                    id="login-codice"
+                    value={codice}
+                    onChange={(e) => setCodice(e.target.value)}
+                    inputMode={usaRecupero ? "text" : "numeric"}
+                    autoComplete="one-time-code"
+                    autoFocus
+                    maxLength={usaRecupero ? 12 : 7}
+                    className="w-full bg-[hsl(224,71%,8%)] border border-cyan-500/15 rounded-lg px-4 py-2.5 font-mono text-lg tracking-[0.3em] text-center text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
+                    placeholder={usaRecupero ? "XXXXX-XXXXX" : "000000"}
+                    required
+                  />
+                </div>
+                {error && (
+                  <div role="alert" className="flex items-center gap-2 text-red-400 font-mono text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{error}</span>
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="relative w-full py-2.5 rounded-lg font-mono text-sm tracking-wider uppercase overflow-hidden transition-all
+                    bg-gradient-to-r from-cyan-600/80 to-blue-600/80 hover:from-cyan-500/90 hover:to-blue-500/90
+                    text-white border border-cyan-400/20 hover:border-cyan-400/40 disabled:opacity-60"
+                >
+                  <span className="flex items-center justify-center gap-2"><Shield className="w-4 h-4" />{loading ? "Verifica in corso..." : "Verifica"}</span>
+                </button>
+                <div className="flex justify-between font-mono text-[11px]">
+                  <button type="button" className="text-cyan-500 hover:text-cyan-300 underline" onClick={() => { setUsaRecupero(!usaRecupero); setCodice(""); setError(null); }}>
+                    {usaRecupero ? "Usa il codice dell'app" : "Ho perso il telefono: codice di recupero"}
+                  </button>
+                  <button type="button" className="text-cyan-700 hover:text-cyan-400" onClick={() => { setBiglietto(null); setError(null); }}>
+                    Indietro
+                  </button>
+                </div>
+              </form>
+            ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               {/* Email */}
               <div>
@@ -503,7 +590,7 @@ export default function LoginPage() {
                     className="flex items-center gap-2 text-red-400 font-mono text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"
                   >
                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    <span>Credenziali non valide. Accesso negato.</span>
+                    <span role="alert">{error}</span>
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -533,6 +620,7 @@ export default function LoginPage() {
                 )}
               </button>
             </form>
+            )}
           </div>
 
           {/* Security badge — centered to match login card width */}
