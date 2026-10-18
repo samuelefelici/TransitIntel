@@ -82,22 +82,35 @@ export function erroreNuovaPassword(p: unknown, persona: { email?: string | null
   return null;
 }
 
+/**
+ * Le password che il vecchio bootstrap scriveva in chiaro nel codice, in un
+ * repository pubblico: sono bruciate. Non servono più come credenziali, solo
+ * per riconoscere e disattivare gli account che le usano ancora (auth.ts).
+ */
+export const PASSWORD_PUBBLICATE: readonly string[] = ["Capo2026!", "Fabrizio", "Giorgio", "Aldo"];
+
+export function ePasswordPubblicata(p: unknown): boolean {
+  return typeof p === "string" && PASSWORD_PUBBLICATE.includes(p);
+}
+
 export type PrimoAdmin =
   | { tipo: "niente" }
   | { tipo: "crea"; email: string; password: string }
   | { tipo: "avviso"; messaggio: string };
 
 /**
- * Che cosa fare a database vuoto. Nessun utente scritto nel codice: il
- * primo amministratore viene da CERBERO_ADMIN_EMAIL e CERBERO_ADMIN_PASSWORD
- * e, senza, non si crea nessuno (e lo si dice nel log).
+ * Che cosa fare quando non c'è nessun amministratore attivo (database nuovo,
+ * o l'unico admin disattivato perché usava una password pubblicata).
+ * Nessun utente scritto nel codice: l'amministratore viene da
+ * CERBERO_ADMIN_EMAIL e CERBERO_ADMIN_PASSWORD e, senza, non si crea nessuno
+ * (e lo si dice nel log).
  */
-export function decidiPrimoAdmin(nUtenti: number, env: { CERBERO_ADMIN_EMAIL?: string; CERBERO_ADMIN_PASSWORD?: string }): PrimoAdmin {
-  if (nUtenti > 0) return { tipo: "niente" };
+export function decidiPrimoAdmin(nAdminAttivi: number, env: { CERBERO_ADMIN_EMAIL?: string; CERBERO_ADMIN_PASSWORD?: string }): PrimoAdmin {
+  if (nAdminAttivi > 0) return { tipo: "niente" };
   const email = (env.CERBERO_ADMIN_EMAIL ?? "").trim().toLowerCase();
   const password = env.CERBERO_ADMIN_PASSWORD ?? "";
   if (!email || !password) {
-    return { tipo: "avviso", messaggio: "nessun utente e CERBERO_ADMIN_EMAIL/CERBERO_ADMIN_PASSWORD non impostate: nessuno può entrare finché non le imposti e riavvii" };
+    return { tipo: "avviso", messaggio: "nessun amministratore attivo e CERBERO_ADMIN_EMAIL/CERBERO_ADMIN_PASSWORD non impostate: nessuno può amministrare finché non le imposti e riavvii" };
   }
   if (!/^[^@\s]+@[^@\s]+$/.test(email)) return { tipo: "avviso", messaggio: "CERBERO_ADMIN_EMAIL non è un'email: amministratore non creato" };
   const errore = erroreNuovaPassword(password, { email });

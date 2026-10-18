@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decidiPrimoAdmin, erroreNuovaPassword, PASSWORD_MIN } from "../lib/password-regole";
+import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_MIN, PASSWORD_PUBBLICATE } from "../lib/password-regole";
 
 describe("le password nuove", () => {
   it("la lunghezza: almeno 12 caratteri, al massimo 128; nessun obbligo di simboli", () => {
@@ -51,13 +51,25 @@ describe("le password nuove", () => {
   });
 });
 
+describe("le password pubblicate dal vecchio codice", () => {
+  it("si riconoscono tutte e quattro, e nessuna passerebbe come password nuova", () => {
+    expect(PASSWORD_PUBBLICATE).toHaveLength(4);
+    for (const p of PASSWORD_PUBBLICATE) {
+      expect(ePasswordPubblicata(p)).toBe(true);
+      expect(erroreNuovaPassword(p)).not.toBeNull();
+    }
+    expect(ePasswordPubblicata("lampione verde 77")).toBe(false);
+    expect(ePasswordPubblicata(undefined)).toBe(false);
+  });
+});
+
 describe("il primo amministratore", () => {
   const buona = "lampione verde 77";
-  it("con utenti già presenti non si fa niente, anche con le variabili impostate", () => {
+  it("con un amministratore attivo non si fa niente, anche con le variabili impostate", () => {
     expect(decidiPrimoAdmin(3, { CERBERO_ADMIN_EMAIL: "a@b.it", CERBERO_ADMIN_PASSWORD: buona })).toEqual({ tipo: "niente" });
   });
 
-  it("a database vuoto senza variabili: nessun utente, un avviso", () => {
+  it("senza amministratori attivi e senza variabili: nessun utente, un avviso", () => {
     const d = decidiPrimoAdmin(0, {});
     expect(d.tipo).toBe("avviso");
   });

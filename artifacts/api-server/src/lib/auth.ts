@@ -16,7 +16,7 @@ import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { loginLimiter } from "../middlewares/rate-limit";
-import { decidiPrimoAdmin, erroreNuovaPassword } from "./password-regole";
+import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import { datiProvaAttivi } from "./dati-prova";
 
 /* ────────────────────────────────────────────────────────────
@@ -153,11 +153,16 @@ async function ensureUsersTable(): Promise<void> {
        WHERE NOT (permissions ? 'roster')
     `);
 
-    const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users`);
-    const n = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
-    const primo = decidiPrimoAdmin(n, process.env);
+    /* gli admin con una password pubblicata si disattivano subito (sono pochi, e il
+       recupero qui sotto deve sapere se ne resta uno); gli altri dopo, in background */
+    await disattivaPasswordPubblicate("admin");
+
+    const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users WHERE role = 'admin' AND active`);
+    const nAdmin = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
+    const primo = decidiPrimoAdmin(nAdmin, process.env);
     if (primo.tipo === "crea") {
-      /* ON CONFLICT: il bootstrap può partire due volte insieme (import e prima richiesta) */
+      /* se l'email c'è già (per esempio l'admin appena disattivato) si rimette in
+       * piedi con la password nuova; ON CONFLICT copre anche due bootstrap insieme */
       await db.execute(sql`
         INSERT INTO users (email, password_hash, full_name, role, permissions, active)
         VALUES (
@@ -165,18 +170,41 @@ async function ensureUsersTable(): Promise<void> {
           '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false,"roster":true}'::jsonb,
           true
         )
-        ON CONFLICT (email) DO NOTHING
+        ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin', active = true
       `);
-      console.log(`[auth] creato l'amministratore iniziale ${primo.email}: cambia la password al primo accesso e togli CERBERO_ADMIN_PASSWORD`);
+      console.log(`[auth] amministratore ${primo.email} pronto (da CERBERO_ADMIN_*): cambia la password al primo accesso e togli CERBERO_ADMIN_PASSWORD`);
     } else if (primo.tipo === "avviso") {
       console.warn(`[auth] ${primo.messaggio}`);
     }
     bootstrapped = true;
+    void disattivaPasswordPubblicate("altri").catch((e: any) => console.error("[auth] controllo password pubblicate:", e?.message || e));
   } catch (e: any) {
     console.error("[auth] bootstrap users error:", e?.message || e);
   }
 }
 void ensureUsersTable();
+
+/**
+ * Disattiva gli account attivi che usano ancora una delle password che il
+ * vecchio codice pubblicava in chiaro (PASSWORD_PUBBLICATE). Disattivare
+ * chiude anche le sessioni già aperte: requireAuth controlla active. L'admin
+ * li riattiva impostando una password nuova.
+ */
+async function disattivaPasswordPubblicate(quali: "admin" | "altri"): Promise<void> {
+  const r = await db.execute(sql`
+    SELECT id, email, password_hash FROM users
+     WHERE active AND ${quali === "admin" ? sql`role = 'admin'` : sql`role <> 'admin'`}`);
+  const righe: any[] = (r as any).rows ?? [];
+  const bruciati: Array<{ id: string; email: string }> = [];
+  for (const u of righe) {
+    for (const p of PASSWORD_PUBBLICATE) {
+      if (await bcrypt.compare(p, u.password_hash)) { bruciati.push({ id: u.id, email: u.email }); break; }
+    }
+  }
+  if (!bruciati.length) return;
+  await db.execute(sql`UPDATE users SET active = false WHERE id IN (${sql.join(bruciati.map(b => sql`${b.id}::uuid`), sql`, `)})`);
+  console.warn(`[auth] disattivati ${bruciati.length} account con una password pubblicata nel vecchio codice: ${bruciati.map(b => b.email).join(", ")}. Riattivali da Gestione Utenti con una password nuova.`);
+}
 
 /* ────────────────────────────────────────────────────────────
  * Helpers JWT/cookie
@@ -402,6 +430,13 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
   // non deve congelare tutte le altre richieste).
   const ok = await bcrypt.compare(password, row.password_hash);
   if (!ok) { res.status(401).json({ error: "Credenziali non valide" }); return; }
+  /* password giusta ma pubblicata dal vecchio codice: l'account si chiude qui */
+  if (ePasswordPubblicata(password)) {
+    await db.execute(sql`UPDATE users SET active = false WHERE id = ${row.id}::uuid`);
+    console.warn(`[auth] disattivato ${row.email}: ha provato a entrare con una password pubblicata nel vecchio codice`);
+    res.status(403).json({ error: "Questa password era pubblica: l'account è stato disattivato. Chiedi all'amministratore di riattivarlo con una password nuova." });
+    return;
+  }
   await db.execute(sql`UPDATE users SET last_login_at = now() WHERE id = ${row.id}::uuid`);
   setAuthCookie(res, signToken(row.id));
   res.json({
