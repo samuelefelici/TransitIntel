@@ -15,6 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getApiBase } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 import PlanningAnalysisTab from "@/components/planning/PlanningAnalysisTab";
 
 /** "20260802" → "02/08/2026": il formato GTFS non si legge a colpo d'occhio. */
@@ -501,11 +502,13 @@ function AnalysisTab({ feedId }: { feedId: string | null }) {
 }
 
 function FeedCard({
-  feed, onDelete, isSelected, onSelect, onActivate, activating
+  feed, onDelete, isSelected, onSelect, onActivate, activating, puoAttivare
 }: {
   feed: GtfsFeed; onDelete: (id: string) => void;
   isSelected: boolean; onSelect: (id: string) => void;
   onActivate: (id: string) => void; activating: boolean;
+  /** solo l'admin: il feed attivo vale per tutti, AVM compreso */
+  puoAttivare: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [routes, setRoutes] = useState<any[]>([]);
@@ -557,7 +560,7 @@ function FeedCard({
                     <CheckCircle2 className="w-3 h-3" />
                     In uso ovunque
                   </Badge>
-                ) : (
+                ) : puoAttivare && (
                   <Button
                     variant="default"
                     size="sm"
@@ -729,6 +732,7 @@ function FeedCard({
 }
 
 export default function GtfsPage() {
+  const { isAdmin } = useAuth();
   const [feeds, setFeeds] = useState<GtfsFeed[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -1060,6 +1064,7 @@ export default function GtfsPage() {
                     onSelect={id => { setSelectedFeed(id); setActiveTab("analysis"); }}
                     onActivate={handleActivate}
                     activating={activatingId === feed.id}
+                    puoAttivare={isAdmin}
                   />
                 ))}
               </div>

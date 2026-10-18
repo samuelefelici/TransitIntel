@@ -17,6 +17,7 @@ import { timeToMinutes } from "../lib/geo-utils";
 import { parseCsv, buildShapeGeojson, normalizzaOrarioGtfs, getLatestFeedId } from "./gtfs-helpers";
 import { clearCache } from "../middlewares/cache";
 import { strictLimiter } from "../middlewares/rate-limit";
+import { requireAdmin } from "../lib/auth";
 import { tenantWhere, assertFeedAccess, ensureTenantColumns, feedAccessibleWhere } from "../lib/tenant";
 import { causaDb, spiegaCausa } from "../lib/db-error";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
@@ -574,8 +575,9 @@ void ensureFeedActiveColumn();
  * Imposta il feed come unico attivo. Tutti gli altri vengono disattivati.
  * Tutte le altre route che usano `getLatestFeedId(req)` vedranno questo feed
  * come "il" feed corrente (analisi tariffe, scheduling, ecc.).
+ * Solo admin: cambia il feed per tutti, compreso quello letto dall'AVM.
  */
-router.post("/gtfs/feeds/:id/activate", async (req, res) => {
+router.post("/gtfs/feeds/:id/activate", requireAdmin, async (req, res) => {
   try {
     await ensureFeedActiveColumn();
     const id = req.params.id;
@@ -615,8 +617,9 @@ router.post("/gtfs/feeds/:id/activate", async (req, res) => {
  * POST /api/gtfs/feeds/deactivate-all
  * Rimuove la selezione esplicita: getLatestFeedId(req) tornerà a usare il feed
  * più recente come fallback.
+ * Solo admin: vale per tutti, come l'attivazione.
  */
-router.post("/gtfs/feeds/deactivate-all", async (_req, res) => {
+router.post("/gtfs/feeds/deactivate-all", requireAdmin, async (_req, res) => {
   try {
     await ensureFeedActiveColumn();
     await db.execute(sql`UPDATE gtfs_feeds SET is_active = false WHERE is_active = true`);
