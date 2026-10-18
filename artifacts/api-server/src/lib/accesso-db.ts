@@ -206,26 +206,34 @@ export function improntePerSalvare(codici: string[]): { impronte: string; chiave
  * precedente, e Gestione Utenti li segna.
  */
 export async function controllaChiaveMfa(): Promise<void> {
+  /* anche le attivazioni in corso (segreto salvato, verifica non ancora confermata) */
   const r = await db.execute<any>(sql`
-    SELECT id, email, mfa_segreto, mfa_recupero_chiave FROM users WHERE mfa_attiva AND mfa_segreto IS NOT NULL`);
+    SELECT id, email, mfa_attiva, mfa_segreto, mfa_recupero_chiave FROM users WHERE mfa_segreto IS NOT NULL`);
   const chiavi = chiaviConfigurate();
   const attuale = idChiave();
   const precedente = chiavi.find(k => !k.attuale)?.id ?? null;
   const illeggibili: string[] = [], codiciPrecedente: string[] = [], codiciPersi: string[] = [];
-  let ricifrati = 0;
+  let ricifrati = 0, nonRicifrati = 0;
   for (const x of ((r as any).rows ?? []) as any[]) {
-    try {
-      const s = apriSegreto(String(x.mfa_segreto));
-      if (s.vecchiaChiave) {
-        await db.execute(sql`UPDATE users SET mfa_segreto = ${cifra(s.testo)} WHERE id = ${x.id}::uuid AND mfa_segreto = ${x.mfa_segreto}`);
-        ricifrati++;
-      }
-    } catch { illeggibili.push(String(x.email)); }
+    let s: ReturnType<typeof apriSegreto> | null = null;
+    try { s = apriSegreto(String(x.mfa_segreto)); }
+    catch { if (x.mfa_attiva) illeggibili.push(String(x.email)); }
+    if (s?.vecchiaChiave) {
+      /* un errore del database qui non vuol dire che la chiave è sbagliata: si riprova al prossimo avvio */
+      try {
+        const u = await db.execute<any>(sql`
+          UPDATE users SET mfa_segreto = ${cifra(s.testo)} WHERE id = ${x.id}::uuid AND mfa_segreto = ${x.mfa_segreto} RETURNING id`);
+        if ((u as any).rows?.length) ricifrati++;
+      } catch { nonRicifrati++; }
+    }
     const k = x.mfa_recupero_chiave as string | null;
-    if (k && k !== attuale) (k === precedente ? codiciPrecedente : codiciPersi).push(String(x.email));
+    if (x.mfa_attiva && k && k !== attuale) (k === precedente ? codiciPrecedente : codiciPersi).push(String(x.email));
   }
   const elenco = (v: string[]) => v.slice(0, 20).join(", ") + (v.length > 20 ? ` e altri ${v.length - 20}` : "");
   if (ricifrati) console.log(`[accesso] cambio di chiave: ${ricifrati} segreti della verifica ricifrati con la chiave nuova`);
+  if (nonRicifrati) {
+    console.error(`[accesso] cambio di chiave: ${nonRicifrati} segreti non ricifrati per un errore del database. Sono ancora della chiave precedente: lascia CERBERO_CHIAVE_MFA_PRECEDENTE impostata e riavvia.`);
+  }
   if (illeggibili.length) {
     console.error(`[accesso] ATTENZIONE: ${illeggibili.length} utenti con la verifica in due passaggi hanno un segreto che CERBERO_CHIAVE_MFA non apre: non possono entrare (${elenco(illeggibili)}). Rimetti la chiave di prima, o mettila in CERBERO_CHIAVE_MFA_PRECEDENTE.`);
   }

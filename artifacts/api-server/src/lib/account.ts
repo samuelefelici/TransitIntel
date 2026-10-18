@@ -47,20 +47,20 @@ const soloPersona: RequestHandler = (req, res, next) => {
  * è appena ridata la password: `passwordData` segna solo che la password è
  * fresca (pw), così attivare la verifica subito dopo non la richiede.
  */
-function nuovaSessione(req: Request, res: Response, sv: number, s: { mfa: boolean; passwordData?: boolean; rec?: boolean }): void {
+function nuovaSessione(req: Request, res: Response, sv: number, s: { mfa: boolean; passwordData?: boolean; rec?: boolean; dv?: number }): void {
   emettiSessione(res, req.user!.id, {
     sv, mfa: s.mfa,
     at: req.sessione?.at,
     pw: s.passwordData ? Math.floor(Date.now() / 1000) : req.sessione?.pw,
     rec: s.rec ?? req.sessione?.rec,
   });
-  /* questo browser resta riconosciuto con la versione nuova; gli altri no */
-  ricordaDispositivo(req, res, req.user!.id, sv);
+  /* browser dimenticati (cambio password, «esci ovunque»): questo resta riconosciuto, gli altri no */
+  if (s.dv !== undefined) ricordaDispositivo(req, res, req.user!.id, s.dv);
 }
 
 async function riga(id: string): Promise<any> {
   const r = await db.execute<any>(sql`
-    SELECT id, email, full_name, role, permissions, password_hash, mfa_attiva, mfa_segreto
+    SELECT id, email, full_name, role, permissions, password_hash, mfa_attiva, mfa_segreto, dispositivi_versione
       FROM users WHERE id = ${id}::uuid`);
   return (r as any).rows?.[0] ?? null;
 }
@@ -73,7 +73,7 @@ async function riga(id: string): Promise<any> {
 async function passwordGiusta(req: Request, res: Response, u: any, password: unknown, esitoErrato: string): Promise<boolean> {
   const chiave = chiaveEmail(u.email);
   const ip = indirizzoDi(req);
-  const dispositivo = dispositivoPer(req, { id: u.id, sv: req.sessione?.sv ?? -1 });
+  const dispositivo = dispositivoPer(req, { id: u.id, dv: Number(u.dispositivi_versione ?? 1) });
   const prenotato = await prenotaTentativoPassword(chiave, ip, dispositivo);
   if (!prenotato.ok) {
     await registraAccesso(req, { userId: u.id, email: u.email, esito: prenotato.account ? "bloccato_account" : "bloccato" });
@@ -120,9 +120,12 @@ router.post("/auth/password", loginLimiter, requireAuth, soloPersona, async (req
     if (!(await passwordGiusta(req, res, u, attuale, "password_attuale_errata"))) return;
     const r = await db.execute<any>(sql`
       UPDATE users SET password_hash = ${await bcrypt.hash(nuova, BCRYPT_ROUNDS)}, password_cambiata_il = now(),
-             deve_cambiare_password = false, password_controllata = true, sessione_versione = sessione_versione + 1
-       WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: !!req.sessione?.mfa, passwordData: true });
+             deve_cambiare_password = false, password_controllata = true, sessione_versione = sessione_versione + 1,
+             dispositivi_versione = dispositivi_versione + 1
+       WHERE id = ${u.id}::uuid RETURNING sessione_versione, dispositivi_versione`);
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), {
+      mfa: !!req.sessione?.mfa, passwordData: true, dv: Number((r as any).rows[0].dispositivi_versione),
+    });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "password_cambiata" });
     res.json({ ok: true });
   } catch (e: any) { console.error("[account] password:", e?.message || e); res.status(500).json({ error: "Password non cambiata" }); }
@@ -234,8 +237,11 @@ router.post("/auth/mfa/reimposta", loginLimiter, requireAuth, soloPersona, async
 router.post("/auth/sessioni/chiudi", requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
     const r = await db.execute<any>(sql`
-      UPDATE users SET sessione_versione = sessione_versione + 1 WHERE id = ${req.user!.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: !!req.sessione?.mfa });
+      UPDATE users SET sessione_versione = sessione_versione + 1, dispositivi_versione = dispositivi_versione + 1
+       WHERE id = ${req.user!.id}::uuid RETURNING sessione_versione, dispositivi_versione`);
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), {
+      mfa: !!req.sessione?.mfa, dv: Number((r as any).rows[0].dispositivi_versione),
+    });
     await registraAccesso(req, { userId: req.user!.id, email: req.user!.email, esito: "sessioni_chiuse" });
     res.json({ ok: true });
   } catch (e: any) { console.error("[account] sessioni:", e?.message || e); res.status(500).json({ error: "Sessioni non chiuse" }); }

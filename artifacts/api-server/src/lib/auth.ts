@@ -158,6 +158,9 @@ async function preparaUtenti(): Promise<void> {
      WHERE table_schema = current_schema() AND table_name = 'users'`)) as any).rows.map((x: any) => String(x.column_name)));
   const nuove: Array<[string, string]> = [
     ["sessione_versione", "integer NOT NULL DEFAULT 1"],
+    /* i browser riconosciuti (cookie del dispositivo): sale solo quando vanno dimenticati
+     * (cambio password, «esci ovunque», password provvisoria, disattivazione) */
+    ["dispositivi_versione", "integer NOT NULL DEFAULT 1"],
     ["password_cambiata_il", "timestamptz"],
     ["deve_cambiare_password", "boolean NOT NULL DEFAULT false"],
     /* la password di adesso non è una di quelle pubblicate dal vecchio codice */
@@ -348,13 +351,15 @@ export function emettiSessione(res: Response, userId: string, s: { sv: number; m
 /* ─── Il browser da cui la persona è già entrata ───
  * Dopo un accesso riuscito il browser riceve un cookie firmato (OWASP «device
  * cookie») con un suo id e, per al più 5 persone entrate da lì, un'impronta
- * legata all'utente e alla versione della sessione, con la data dell'accesso
+ * legata all'utente e a users.dispositivi_versione, con la data dell'accesso
  * che l'ha data (niente email nel cookie). Da quel browser gli errori di
  * password fanno una serie sua e il blocco per account non vale: chi prova da
  * tanti indirizzi non tiene fuori il titolare. Cambio password, «esci
- * ovunque», password provvisoria e disattivazione alzano la versione: gli
- * altri browser non sono più riconosciuti. Ogni impronta vale 180 giorni
- * dall'accesso che l'ha data, anche se il cookie si riscrive per altri. */
+ * ovunque», password provvisoria e disattivazione alzano dispositivi_versione:
+ * gli altri browser non sono più riconosciuti. La verifica in due passaggi
+ * (attivarla, toglierla, rifarla) e il ripristino dell'admin no: il solito
+ * computer resta riconosciuto, anche sotto attacco. Ogni impronta vale 180
+ * giorni dall'accesso che l'ha data, anche se il cookie si riscrive per altri. */
 const COOKIE_DISPOSITIVO = "ti_disp";
 const AUD_DISPOSITIVO = "cerbero-dispositivo";
 const GIORNI_DISPOSITIVO = 180;
@@ -378,19 +383,19 @@ function leggiDispositivo(req: Request): { n: string; e: Impronta[] } | null {
   return null;
 }
 
-/** L'id del browser, se da qui questo utente è entrato con la versione di sessione di adesso; altrimenti null. */
-export function dispositivoPer(req: Request, utente: { id: string; sv: number } | null): string | null {
+/** L'id del browser, se da qui questo utente è entrato dopo l'ultima volta che i browser sono stati dimenticati; altrimenti null. */
+export function dispositivoPer(req: Request, utente: { id: string; dv: number } | null): string | null {
   if (!utente) return null;
   const d = leggiDispositivo(req);
-  const v = segno(`dispositivo|${utente.id}|${utente.sv}`);
+  const v = segno(`dispositivo|${utente.id}|${utente.dv}`);
   return d && d.e.some(x => x[1] === v) ? d.n : null;
 }
 
-/** Accesso riuscito (o versione della sessione cambiata da qui): il browser si ricorda di questo utente. */
-export function ricordaDispositivo(req: Request, res: Response, userId: string, sv: number): void {
+/** Accesso riuscito (o browser dimenticati da qui): il browser si ricorda di questo utente. */
+export function ricordaDispositivo(req: Request, res: Response, userId: string, dv: number): void {
   const d = leggiDispositivo(req);
   const chi = segno(`dispositivo-utente|${userId}`);
-  const nuova: Impronta = [chi, segno(`dispositivo|${userId}|${sv}`), Date.now()];
+  const nuova: Impronta = [chi, segno(`dispositivo|${userId}|${dv}`), Date.now()];
   const e: Impronta[] = [nuova, ...(d?.e ?? []).filter(x => x[0] !== chi)].slice(0, 5);
   const token = jwt.sign(
     { n: d?.n ?? randomBytes(16).toString("base64url"), e },
@@ -759,7 +764,7 @@ export function rispostaBloccato(res: Response, fino: Date, che: "password" | "a
 async function apriSessione(req: Request, res: Response, row: any, s: { mfa: boolean; rec?: boolean }): Promise<void> {
   await db.execute(sql`UPDATE users SET last_login_at = now() WHERE id = ${row.id}::uuid`);
   emettiSessione(res, row.id, { sv: Number(row.sessione_versione ?? 0), mfa: s.mfa, rec: s.rec });
-  ricordaDispositivo(req, res, row.id, Number(row.sessione_versione ?? 0));
+  ricordaDispositivo(req, res, row.id, Number(row.dispositivi_versione ?? 1));
   await registraAccesso(req, { userId: row.id, email: row.email, esito: s.mfa ? "ok_con_verifica" : "ok" });
   const u = await loadUserById(row.id);
   res.json({
@@ -780,14 +785,14 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
   const ip = indirizzoDi(req);
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, permissions, fleetcare_role, active, password_hash,
-           sessione_versione, mfa_attiva, password_controllata
+           sessione_versione, dispositivi_versione, mfa_attiva, password_controllata
       FROM users WHERE lower(trim(email)) = ${chiave} ORDER BY ${ORDINE_STESSA_EMAIL} LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   /* il tentativo si conta prima del confronto, che è lento: per indirizzo e per
    * account (o per il browser, se da qui si è già entrati), e anche per le email
    * che non esistono (la risposta è la stessa) */
-  const dispositivo = dispositivoPer(req, row ? { id: row.id, sv: Number(row.sessione_versione ?? 0) } : null);
+  const dispositivo = dispositivoPer(req, row ? { id: row.id, dv: Number(row.dispositivi_versione ?? 1) } : null);
   const prenotato = await prenotaTentativoPassword(chiave, ip, dispositivo);
   if (!prenotato.ok) {
     await registraAccesso(req, { userId: row?.id ?? null, email: row?.email ?? chiave, esito: prenotato.account ? "bloccato_account" : "bloccato" });
@@ -842,7 +847,7 @@ router.post("/auth/login/mfa", loginLimiter, async (req: Request, res: Response)
   const b = leggiBiglietto(req.body?.biglietto);
   if (!b) { res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return; }
   const r = await db.execute(sql`
-    SELECT id, email, active, sessione_versione, mfa_attiva FROM users WHERE id = ${b.sub}::uuid LIMIT 1`);
+    SELECT id, email, active, sessione_versione, dispositivi_versione, mfa_attiva FROM users WHERE id = ${b.sub}::uuid LIMIT 1`);
   const row: any = (r as any).rows?.[0];
   if (!row || !row.active || !row.mfa_attiva || Number(row.sessione_versione ?? 0) !== b.sv) {
     res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return;
@@ -1097,6 +1102,9 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   if (sblocca === true || resetMfa === true) sets.push(sql`mfa_errori = 0`, sql`mfa_bloccata_fino = NULL`);
   if (active === false) revoca = true;
   if (revoca) sets.push(sql`sessione_versione = sessione_versione + 1`);
+  /* password provvisoria o disattivazione: anche i browser riconosciuti si dimenticano
+   * (non per «Reimposta verifica»: il solito computer deve restare riconosciuto) */
+  if (password !== undefined || active === false) sets.push(sql`dispositivi_versione = dispositivi_versione + 1`);
   if (sets.length === 0) { res.json({ ok: true, noop: true }); return; }
   // Concatena gli assignment con virgole
   const assignments = sql.join(sets, sql`, `);

@@ -14,6 +14,8 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessione_versione integer NOT NULL DEFAULT 1;
+-- i browser riconosciuti: sale con cambio password, «esci ovunque», password provvisoria, disattivazione
+ALTER TABLE users ADD COLUMN IF NOT EXISTS dispositivi_versione integer NOT NULL DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_cambiata_il timestamptz;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS deve_cambiare_password boolean NOT NULL DEFAULT false;
 -- la password di adesso non è una di quelle pubblicate dal vecchio codice (si controlla una volta)

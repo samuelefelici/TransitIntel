@@ -234,9 +234,11 @@ attivare la verifica.
   - password, da qualunque indirizzo: al massimo 20 errori in 15 minuti, poi
     l'account aspetta 15 minuti (ferma chi prova da tanti indirizzi). Questo
     blocco non vale dai browser da cui la persona è già entrata (un cookie
-    firmato, 180 giorni; cambio password, «esci da tutti i dispositivi» e
-    password provvisoria lo annullano sugli altri browser): lì gli errori
-    fanno una serie a parte, 5 e poi l'attesa. Se qualcuno tiene bloccata la
+    firmato, 180 giorni; cambio password, «esci da tutti i dispositivi»,
+    password provvisoria e disattivazione lo annullano sugli altri browser,
+    mentre attivare o rifare la verifica, «Reimposta verifica» e il
+    ripristino dell'admin no): lì gli errori fanno una serie a parte, 5 e poi
+    l'attesa. Se qualcuno tiene bloccata la
     password dell'unico admin, l'admin entra dal suo solito computer; se il
     blocco è sui codici della verifica, qualcuno conosce la sua password:
     cambiala (da un'altra sessione aperta, o con `CERBERO_ADMIN_RIPRISTINA`);
