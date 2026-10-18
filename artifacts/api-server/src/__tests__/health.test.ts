@@ -4,13 +4,10 @@ import app from "../app";
 
 describe("GET /api/healthz", () => {
   it("returns 200 with status ok", async () => {
+    /* pubblica e senza database: deve rispondere anche quando il database non c'è */
     const res = await request(app).get("/api/healthz");
-    // healthz may return 500 if DB is unreachable in test env
-    expect([200, 500]).toContain(res.status);
-    if (res.status === 200) {
-      expect(res.body).toHaveProperty("status", "ok");
-      expect(res.body).toHaveProperty("cacheEntries");
-      expect(typeof res.body.cacheEntries).toBe("number");
-    }
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("status", "ok");
+    expect(typeof res.body.cacheEntries).toBe("number");
   });
 });

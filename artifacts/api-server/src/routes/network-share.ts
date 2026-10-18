@@ -27,7 +27,13 @@ export async function ensureNetworkShareTable(): Promise<void> {
   await db.execute(sql`ALTER TABLE ps_network_shares ADD COLUMN IF NOT EXISTS expires_at timestamptz`);
   booted = true;
 }
-router.use(async (_req, _res, next) => { await ensureNetworkShareTable(); next(); });
+/* Solo per le sue rotte: il router è montato senza prefisso, prima del login,
+ * e un errore qui non deve fermare il resto dell'API. */
+router.use("/network-share", async (_req, res, next) => {
+  try { await ensureNetworkShareTable(); }
+  catch { res.status(503).json({ error: "Mappa di rete non disponibile: riprova tra poco" }); return; }
+  next();
+});
 
 router.get("/network-share/:token", async (req, res): Promise<void> => {
   try {

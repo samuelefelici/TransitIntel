@@ -284,6 +284,18 @@ cd artifacts/transitintel && PORT=5173 pnpm run dev
 In locale, il proxy di Vite gira `/api` verso il backend, quindi `VITE_API_BASE_URL`
 può restare vuoto e il cookie usa `SameSite=Lax`.
 
+### Test (gli stessi della CI)
+
+```bash
+# API: senza database. I test non usano MAI DATABASE_URL; un database di
+# prova, se serve, si passa con TEST_DATABASE_URL
+pnpm --filter @workspace/api-server run test
+
+# Solver Python
+python3 -m pip install -r requirements-dev.txt
+cd scripts && python3 -m pytest -q
+```
+
 ---
 
 ## Troubleshooting

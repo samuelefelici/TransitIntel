@@ -854,6 +854,8 @@ router.patch("/planning-studio/:projectId/timetable-map-shares/:token", async (r
       res.status(400).json({ error: "parametri non validi" }); return;
     }
     if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
+    await ensureTimetableMapShareTable();
     const sets: any[] = [];
     if (Array.isArray(req.body?.routeIds)) {
       const ids = req.body.routeIds.filter((x: any) => UUID_RE.test(String(x)));
@@ -889,6 +891,8 @@ router.delete("/planning-studio/:projectId/timetable-map-shares/:token", async (
       res.status(400).json({ error: "parametri non validi" }); return;
     }
     if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
+    await ensureTimetableMapShareTable();
     await db.execute(sql`
       DELETE FROM ps_timetable_map_shares
        WHERE token = ${token} AND project_id = ${projectId}::uuid`);

@@ -39,7 +39,13 @@ export async function ensureTimetableMapShareTable(): Promise<void> {
     )`);
   booted = true;
 }
-router.use(async (_req, _res, next) => { await ensureTimetableMapShareTable(); next(); });
+/* Solo per le sue rotte: il router è montato senza prefisso, prima del login,
+ * e un errore qui non deve fermare il resto dell'API. */
+router.use("/timetable-map", async (_req, res, next) => {
+  try { await ensureTimetableMapShareTable(); }
+  catch { res.status(503).json({ error: "Mappa orari non disponibile: riprova tra poco" }); return; }
+  next();
+});
 
 interface ShareRow { project_id: string; route_ids: string[]; title: string | null; expires_at: string | null }
 

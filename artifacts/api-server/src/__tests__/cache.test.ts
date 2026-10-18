@@ -1,48 +1,62 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { clearCache, cacheSize } from "../middlewares/cache";
+import express from "express";
 import request from "supertest";
-import app from "../app";
+import { cache, clearCache, cacheSize } from "../middlewares/cache";
+
+/* il middleware su rotte finte: niente database, conta quante volte lavora l'handler */
+function appConContatore() {
+  const conta = { n: 0 };
+  const app = express();
+  app.get("/api/prova-cache/a", cache({ ttlSeconds: 60 }), (_req, res) => { conta.n++; res.json({ n: conta.n }); });
+  app.get("/api/altro/b", cache({ ttlSeconds: 60 }), (_req, res) => { conta.n++; res.json({ n: conta.n }); });
+  app.get("/api/prova-cache/errore", cache({ ttlSeconds: 60 }), (_req, res) => { conta.n++; res.status(500).json({ n: conta.n }); });
+  app.post("/api/prova-cache/a", cache({ ttlSeconds: 60 }), (_req, res) => { conta.n++; res.json({ n: conta.n }); });
+  return { app, conta };
+}
 
 describe("Cache middleware", () => {
-  beforeEach(() => {
-    clearCache(); // start fresh each test
-  });
+  beforeEach(() => { clearCache(); });
 
   it("cacheSize returns 0 after clearCache()", () => {
     expect(cacheSize()).toBe(0);
   });
 
-  it("stores entry after first request", async () => {
-    // Use a lightweight cached endpoint
-    const res = await request(app).get("/api/gtfs/routes");
-    // If DB is unreachable, the response may be 500 but cache still works for successful endpoints
-    if (res.status === 200) {
-      expect(cacheSize()).toBeGreaterThanOrEqual(1);
-    }
-  }, 15_000);
-
-  it("clearCache with prefix only removes matching entries", async () => {
-    const r1 = await request(app).get("/api/gtfs/routes");
-    const r2 = await request(app).get("/api/poi");
-    if (r1.status !== 200 || r2.status !== 200) return; // skip if DB unavailable
-    const before = cacheSize();
-    expect(before).toBeGreaterThanOrEqual(2);
-
-    const cleared = clearCache("/api/gtfs/");
-    expect(cleared).toBeGreaterThanOrEqual(1);
-    // POI cache entry should still be there
-    expect(cacheSize()).toBe(before - cleared);
-  }, 15_000);
-
-  it("second identical request returns HIT", async () => {
-    clearCache(); // ensure clean
-    const r1 = await request(app).get("/api/gtfs/routes");
-    if (r1.status !== 200) return; // skip if DB unavailable
+  it("la prima richiesta è MISS, la seconda HIT con lo stesso corpo e senza rifare il lavoro", async () => {
+    const { app, conta } = appConContatore();
+    const r1 = await request(app).get("/api/prova-cache/a");
+    expect(r1.status).toBe(200);
     expect(r1.headers["x-cache"]).toBe("MISS");
-
-    const r2 = await request(app).get("/api/gtfs/routes");
+    expect(cacheSize()).toBe(1);
+    const r2 = await request(app).get("/api/prova-cache/a");
     expect(r2.headers["x-cache"]).toBe("HIT");
-    expect(r2.status).toBe(r1.status);
     expect(r2.body).toEqual(r1.body);
-  }, 15_000);
+    expect(conta.n).toBe(1);
+  });
+
+  it("parametri diversi sono voci diverse", async () => {
+    const { app } = appConContatore();
+    expect((await request(app).get("/api/prova-cache/a?limit=3")).headers["x-cache"]).toBe("MISS");
+    expect((await request(app).get("/api/prova-cache/a?limit=7")).headers["x-cache"]).toBe("MISS");
+    expect(cacheSize()).toBe(2);
+  });
+
+  it("clearCache con un prefisso toglie solo le voci che lo contengono", async () => {
+    const { app } = appConContatore();
+    await request(app).get("/api/prova-cache/a");
+    await request(app).get("/api/altro/b");
+    expect(cacheSize()).toBe(2);
+    expect(clearCache("/api/prova-cache/")).toBe(1);
+    expect(cacheSize()).toBe(1);
+    expect((await request(app).get("/api/altro/b")).headers["x-cache"]).toBe("HIT");
+  });
+
+  it("non tiene gli errori né le richieste che non sono GET", async () => {
+    const { app, conta } = appConContatore();
+    await request(app).get("/api/prova-cache/errore");
+    await request(app).get("/api/prova-cache/errore");
+    await request(app).post("/api/prova-cache/a").send({});
+    await request(app).post("/api/prova-cache/a").send({});
+    expect(conta.n).toBe(4);
+    expect(cacheSize()).toBe(0);
+  });
 });

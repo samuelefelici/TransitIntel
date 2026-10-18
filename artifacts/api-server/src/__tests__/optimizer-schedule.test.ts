@@ -1,12 +1,17 @@
 import { describe, it, expect } from "vitest";
 import request from "supertest";
-import app from "../app";
+import router from "../routes/optimizer-schedule";
+import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
+const app = appDiProva(router, utenteDiProva("10000000-0000-0000-0000-000000000002", ["analytics"]));
+
+/* Senza un feed GTFS (qui non c'è database) le rotte rispondono 404 «Nessun
+ * feed GTFS caricato»; con un database di prova (TEST_DATABASE_URL) 200. */
 describe("Optimizer Schedule endpoints", () => {
   describe("GET /api/optimizer/schedule/dates", () => {
-    it("returns 200 with dates data or 500 without DB", async () => {
+    it("returns 200 with dates data, or 404 without a feed", async () => {
       const res = await request(app).get("/api/optimizer/schedule/dates");
-      expect([200, 500]).toContain(res.status);
+      expect([200, 404]).toContain(res.status);
       if (res.status === 200) {
         expect(res.body).toBeDefined();
       }
@@ -18,8 +23,7 @@ describe("Optimizer Schedule endpoints", () => {
       const res = await request(app)
         .post("/api/optimizer/schedule")
         .send({});
-      // Either 200 with empty results or 500 if no GTFS loaded — both valid
-      expect([200, 500]).toContain(res.status);
+      expect([200, 404]).toContain(res.status);
       if (res.status === 200) {
         expect(res.body).toHaveProperty("summary");
         expect(res.body).toHaveProperty("suggestions");
@@ -33,7 +37,7 @@ describe("Optimizer Schedule endpoints", () => {
       const res = await request(app)
         .post("/api/optimizer/schedule")
         .send({ date: "20240115" });
-      expect([200, 500]).toContain(res.status);
+      expect([200, 404]).toContain(res.status);
       if (res.status === 200) {
         expect(res.body.summary).toBeDefined();
       }
@@ -45,8 +49,7 @@ describe("Optimizer Schedule endpoints", () => {
       const res = await request(app)
         .post("/api/optimizer/schedule/optimize")
         .send({});
-      // Should fail gracefully — 200 with no data or 400/500
-      expect([200, 400, 500]).toContain(res.status);
+      expect([200, 400, 404]).toContain(res.status);
     }, 30_000);
   });
 });
