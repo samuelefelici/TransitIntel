@@ -86,3 +86,11 @@ describe("il primo amministratore", () => {
       .toEqual({ tipo: "crea", email: "capo@azienda.it", password: buona });
   });
 });
+
+describe("il ripristino dell'amministratore", () => {
+  it("con CERBERO_ADMIN_RIPRISTINA=1 si rimette in piedi anche se un admin attivo c'è", () => {
+    const env = { CERBERO_ADMIN_EMAIL: "capo@azienda.it", CERBERO_ADMIN_PASSWORD: "lampione verde 77" };
+    expect(decidiPrimoAdmin(1, env)).toEqual({ tipo: "niente" });
+    expect(decidiPrimoAdmin(1, { ...env, CERBERO_ADMIN_RIPRISTINA: "1" })).toMatchObject({ tipo: "crea", email: "capo@azienda.it" });
+  });
+});

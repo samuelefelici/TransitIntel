@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import healthRouter from "./health";
 import authRouter from "../lib/auth";
+import accountRouter from "../lib/account";
 import { requireAuth, requirePermissionByPath } from "../lib/auth";
 import { ensureTenantMiddleware } from "../lib/tenant";
 import trafficRouter from "./traffic";
@@ -79,6 +80,7 @@ const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(authRouter);
+router.use(accountRouter); // sicurezza dell'account: ogni rotta chiede il login da sé
 router.use(cronRouter); // pubblico (webhook/job esterni)
 router.use(argosWatchCronRouter); // pubblico (x-cron-secret): tick sorveglianza Argos
 router.use("/caronte", caronteRouter); // pubblico, prefisso /caronte: auth via Bearer CERBERO_API_KEY (validatore)

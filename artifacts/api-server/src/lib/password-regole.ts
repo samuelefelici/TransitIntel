@@ -100,13 +100,18 @@ export type PrimoAdmin =
 
 /**
  * Che cosa fare quando non c'è nessun amministratore attivo (database nuovo,
- * o l'unico admin disattivato perché usava una password pubblicata).
+ * o l'unico admin disattivato perché usava una password pubblicata), o quando
+ * si chiede il ripristino (CERBERO_ADMIN_RIPRISTINA=1). L'admin così creato o
+ * ripristinato entra con una password provvisoria e senza verifica: al primo
+ * accesso cambia la password e la riattiva.
  * Nessun utente scritto nel codice: l'amministratore viene da
  * CERBERO_ADMIN_EMAIL e CERBERO_ADMIN_PASSWORD e, senza, non si crea nessuno
  * (e lo si dice nel log).
  */
-export function decidiPrimoAdmin(nAdminAttivi: number, env: { CERBERO_ADMIN_EMAIL?: string; CERBERO_ADMIN_PASSWORD?: string }): PrimoAdmin {
-  if (nAdminAttivi > 0) return { tipo: "niente" };
+export function decidiPrimoAdmin(nAdminAttivi: number, env: { CERBERO_ADMIN_EMAIL?: string; CERBERO_ADMIN_PASSWORD?: string; CERBERO_ADMIN_RIPRISTINA?: string }): PrimoAdmin {
+  /* CERBERO_ADMIN_RIPRISTINA=1: l'unico admin ha perso la password o il telefono della
+   * verifica; si rimette in piedi anche se risulta attivo */
+  if (nAdminAttivi > 0 && env.CERBERO_ADMIN_RIPRISTINA !== "1") return { tipo: "niente" };
   const email = (env.CERBERO_ADMIN_EMAIL ?? "").trim().toLowerCase();
   const password = env.CERBERO_ADMIN_PASSWORD ?? "";
   if (!email || !password) {

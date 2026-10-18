@@ -18,6 +18,9 @@ import jwt from "jsonwebtoken";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import { datiProvaAttivi } from "./dati-prova";
+import { limitazione, mfaObbligatoria, minutiDiBlocco, percorsoConsentitoLimitato, improntaRecupero, type Limitazione } from "./accesso-regole";
+import { verificaCodice } from "./totp";
+import { decifra } from "./mfa-cifratura";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -58,6 +61,14 @@ export const FLEETCARE_ROLES = [
   "fleet_admin",
 ] as const;
 
+/** Lo stato dell'accesso, per il client e per i controlli delle rotte. */
+export interface Accesso {
+  limitato: Limitazione;
+  mfaAttiva: boolean;
+  mfaObbligatoria: boolean;
+  passwordDaCambiare: boolean;
+}
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
@@ -65,6 +76,10 @@ declare global {
       user?: AuthUser;
       /** il token è stato emesso per un servizio che agisce per conto dell'utente (es. "argos") */
       authVia?: string;
+      /** la sessione: versione (si revoca alzandola) e se è passata dalla verifica in due passaggi */
+      sessione?: { sv: number; mfa: boolean };
+      /** sessione «limitata»: password provvisoria da cambiare o verifica da attivare */
+      accesso?: Accesso;
     }
   }
 }
@@ -79,8 +94,11 @@ const JWT_SECRET = process.env.JWT_SECRET
         ? (() => { throw new Error("JWT_SECRET obbligatorio in produzione"); })()
         : "dev-only-cerbero123-in-production-please");
 const JWT_COOKIE = "ti_auth";
-const JWT_TTL_DAYS = 30;
-const BCRYPT_ROUNDS = 10;
+/* una sessione dura un turno di lavoro: dopo 12 ore si rientra (con la verifica, se attiva) */
+const SESSIONE_ORE = 12;
+export const BCRYPT_ROUNDS = 12;
+/* il biglietto fra password e codice: vale 5 minuti e solo per /auth/login/mfa */
+const AUD_MFA = "cerbero-mfa";
 
 /* ────────────────────────────────────────────────────────────
  * Bootstrap tabella + primo amministratore
@@ -103,6 +121,41 @@ async function ensureUsersTable(): Promise<void> {
       )
     `);
     await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
+
+    /* Accesso sicuro (migrations/2026-10_accesso_sicuro.sql). ALTER solo se la colonna
+     * manca: anche con IF NOT EXISTS prende la tabella in esclusiva. sessione_versione
+     * parte da 1: i token di prima (senza versione) valgono 0 e non entrano più. */
+    const colonne = new Set(((await db.execute(sql`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = current_schema() AND table_name = 'users'`)) as any).rows.map((x: any) => String(x.column_name)));
+    const nuove: Array<[string, string]> = [
+      ["sessione_versione", "integer NOT NULL DEFAULT 1"],
+      ["password_cambiata_il", "timestamptz"],
+      ["deve_cambiare_password", "boolean NOT NULL DEFAULT false"],
+      ["tentativi_falliti", "integer NOT NULL DEFAULT 0"],
+      ["bloccato_fino", "timestamptz"],
+      ["mfa_attiva", "boolean NOT NULL DEFAULT false"],
+      ["mfa_segreto", "text"],
+      ["mfa_recupero", "jsonb"],
+      ["mfa_ultimo_passo", "bigint"],
+    ];
+    for (const [nome, tipo] of nuove) {
+      if (!colonne.has(nome)) await db.execute(sql.raw(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${nome} ${tipo}`));
+    }
+    /* il registro degli accessi: chi, quando, da dove, com'è andata (12 mesi) */
+    await db.execute(sql`
+      CREATE TABLE IF NOT EXISTS accessi_log (
+        id bigserial PRIMARY KEY,
+        ts timestamptz NOT NULL DEFAULT now(),
+        user_id uuid,
+        email text,
+        esito text NOT NULL,
+        ip text,
+        user_agent text
+      )`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_accessi_log_ts ON accessi_log(ts DESC)`);
+    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_accessi_log_user ON accessi_log(user_id, ts DESC)`);
+    await db.execute(sql`DELETE FROM accessi_log WHERE ts < now() - interval '12 months'`);
 
     // Backfill idempotente: assicura che ogni utente abbia la chiave "network"
     // (default true, così chi aveva già accesso a "scheduling" mantiene tutto).
@@ -164,13 +217,17 @@ async function ensureUsersTable(): Promise<void> {
       /* se l'email c'è già (per esempio l'admin appena disattivato) si rimette in
        * piedi con la password nuova; ON CONFLICT copre anche due bootstrap insieme */
       await db.execute(sql`
-        INSERT INTO users (email, password_hash, full_name, role, permissions, active)
+        INSERT INTO users (email, password_hash, full_name, role, permissions, active, deve_cambiare_password)
         VALUES (
           ${primo.email}, ${bcrypt.hashSync(primo.password, BCRYPT_ROUNDS)}, 'Amministratore', 'admin',
           '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false,"roster":true}'::jsonb,
-          true
+          true, true
         )
-        ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = 'admin', active = true
+        ON CONFLICT (email) DO UPDATE SET
+          password_hash = EXCLUDED.password_hash, role = 'admin', active = true, deve_cambiare_password = true,
+          tentativi_falliti = 0, bloccato_fino = NULL,
+          mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_ultimo_passo = NULL,
+          sessione_versione = users.sessione_versione + 1
       `);
       console.log(`[auth] amministratore ${primo.email} pronto (da CERBERO_ADMIN_*): cambia la password al primo accesso e togli CERBERO_ADMIN_PASSWORD`);
     } else if (primo.tipo === "avviso") {
@@ -209,32 +266,61 @@ async function disattivaPasswordPubblicate(quali: "admin" | "altri"): Promise<vo
 /* ────────────────────────────────────────────────────────────
  * Helpers JWT/cookie
  * ──────────────────────────────────────────────────────────── */
-function signToken(userId: string): string {
-  return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: `${JWT_TTL_DAYS}d` });
+/** Il token della sessione: chi è, la versione della sessione, se è passata dalla verifica. */
+export function signToken(userId: string, sv: number, mfa: boolean): string {
+  return jwt.sign({ sub: userId, sv, ...(mfa ? { mfa: true } : {}) }, JWT_SECRET, { expiresIn: `${SESSIONE_ORE}h` });
+}
+
+/** Il biglietto fra la password e il codice: non apre niente se non /auth/login/mfa. */
+function firmaBiglietto(userId: string, sv: number): string {
+  return jwt.sign({ sub: userId, sv }, JWT_SECRET, { expiresIn: "5m", audience: AUD_MFA });
+}
+function leggiBiglietto(b: unknown): { sub: string; sv: number } | null {
+  if (typeof b !== "string") return null;
+  try {
+    const d = jwt.verify(b, JWT_SECRET, { audience: AUD_MFA }) as any;
+    return typeof d.sub === "string" ? { sub: d.sub, sv: Number(d.sv ?? 0) } : null;
+  } catch { return null; }
 }
 
 /** Token a BREVE scadenza per chiamate server-to-server on-behalf-of-user.
  * Usato dal proxy Argos: Argos lo rigira agli endpoint /api/ai/argos/* e
  * /api/intermodal/* come Bearer, così il controllo accessi per-utente resta
  * valido ma il token vive solo per la durata di una risposta. */
-export function mintShortLivedUserToken(userId: string): string {
+export function mintShortLivedUserToken(userId: string, sessione?: { sv: number; mfa: boolean }): string {
   /* "via": chi usa questo token è un servizio esterno (Argos, e dietro un
-   * modello linguistico), non la persona: non vede i dati personali. */
-  return jwt.sign({ sub: userId, via: "argos" }, JWT_SECRET, { expiresIn: "10m" });
+   * modello linguistico), non la persona: non vede i dati personali. Porta la
+   * stessa versione della sessione da cui nasce: si revoca con lei. */
+  return jwt.sign({ sub: userId, via: "argos", sv: sessione?.sv ?? 0, ...(sessione?.mfa ? { mfa: true } : {}) }, JWT_SECRET, { expiresIn: "10m" });
 }
-function verifyToken(token: string): { sub: string; via?: string } | null {
+/**
+ * Lo stesso token per Argos, per un lavoro che parte senza una richiesta
+ * (le sorveglianze periodiche): la versione della sessione e la verifica si
+ * leggono dall'utente, così il token vale finché l'utente non revoca le sessioni.
+ */
+export async function mintTokenServizio(userId: string): Promise<string> {
+  const r = await db.execute<any>(sql`SELECT sessione_versione, mfa_attiva FROM users WHERE id = ${userId}::uuid`);
+  const u = (r as any).rows?.[0];
+  return mintShortLivedUserToken(userId, { sv: Number(u?.sessione_versione ?? 0), mfa: !!u?.mfa_attiva });
+}
+function verifyToken(token: string): { sub: string; via?: string; sv: number; mfa: boolean } | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; via?: unknown };
-    return { sub: decoded.sub, via: typeof decoded.via === "string" ? decoded.via : undefined };
+    const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; via?: unknown; sv?: unknown; mfa?: unknown; aud?: unknown };
+    /* un biglietto della verifica (o altro con un destinatario) non è una sessione */
+    if (decoded.aud !== undefined) return null;
+    return {
+      sub: decoded.sub, via: typeof decoded.via === "string" ? decoded.via : undefined,
+      sv: typeof decoded.sv === "number" ? decoded.sv : 0, mfa: decoded.mfa === true,
+    };
   } catch { return null; }
 }
-function setAuthCookie(res: Response, token: string) {
+export function setAuthCookie(res: Response, token: string) {
   const isProd = process.env.NODE_ENV === "production";
   res.cookie(JWT_COOKIE, token, {
     httpOnly: true,
     secure: isProd,
     sameSite: isProd ? "none" : "lax", // none + secure per cross-site (Vercel ↔ Render)
-    maxAge: JWT_TTL_DAYS * 24 * 60 * 60 * 1000,
+    maxAge: SESSIONE_ORE * 60 * 60 * 1000,
     path: "/",
   });
 }
@@ -248,21 +334,41 @@ function clearAuthCookie(res: Response) {
   });
 }
 
-async function loadUserById(id: string): Promise<AuthUser | null> {
+interface UtenteCaricato { user: AuthUser; sv: number; mfaAttiva: boolean; deveCambiarePassword: boolean }
+
+async function loadUserById(id: string): Promise<UtenteCaricato | null> {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, fleetcare_role, active
+    SELECT id, email, full_name, role, permissions, fleetcare_role, active,
+           sessione_versione, mfa_attiva, deve_cambiare_password
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   if (!row) return null;
   return {
-    id: row.id,
-    email: row.email,
-    fullName: row.full_name,
-    role: row.role,
-    permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true, fleetcare: false, centrale: false, personale: false },
-    fleetcareRole: row.fleetcare_role ?? "driver",
-    active: row.active,
+    user: {
+      id: row.id,
+      email: row.email,
+      fullName: row.full_name,
+      role: row.role,
+      permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true, fleetcare: false, centrale: false, personale: false, roster: false },
+      fleetcareRole: row.fleetcare_role ?? "driver",
+      active: row.active,
+    },
+    sv: Number(row.sessione_versione ?? 0),
+    mfaAttiva: !!row.mfa_attiva,
+    deveCambiarePassword: !!row.deve_cambiare_password,
+  };
+}
+
+/** Lo stato dell'accesso di un utente caricato, con la sessione che sta usando. */
+function accessoDi(u: UtenteCaricato, sessione: { mfa: boolean }): Accesso & { rifiuta: boolean } {
+  const lim = limitazione({ ...u.user, deveCambiarePassword: u.deveCambiarePassword, mfaAttiva: u.mfaAttiva }, sessione);
+  return {
+    limitato: lim === "rifiuta" ? null : lim,
+    rifiuta: lim === "rifiuta",
+    mfaAttiva: u.mfaAttiva,
+    mfaObbligatoria: mfaObbligatoria(u.user),
+    passwordDaCambiare: u.deveCambiarePassword,
   };
 }
 
@@ -276,12 +382,41 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
   if (!token) { res.status(401).json({ error: "Non autenticato" }); return; }
   const verificato = verifyToken(token);
   if (!verificato) { res.status(401).json({ error: "Sessione non valida" }); return; }
-  const user = await loadUserById(verificato.sub);
-  if (!user || !user.active) { res.status(401).json({ error: "Utente non attivo" }); return; }
-  req.user = user;
+  const u = await loadUserById(verificato.sub);
+  if (!u || !u.user.active) { res.status(401).json({ error: "Utente non attivo" }); return; }
+  /* la versione sale al cambio password, al reset della verifica, a «esci ovunque»:
+   * i token di prima non valgono più */
+  if (verificato.sv !== u.sv) { res.status(401).json({ error: "Sessione scaduta: entra di nuovo" }); return; }
+  const accesso = accessoDi(u, verificato);
+  if (accesso.rifiuta) { res.status(401).json({ error: "Serve il codice di verifica: entra di nuovo" }); return; }
+  req.user = u.user;
   req.authVia = verificato.via;
+  req.sessione = { sv: u.sv, mfa: verificato.mfa };
+  req.accesso = { limitato: accesso.limitato, mfaAttiva: accesso.mfaAttiva, mfaObbligatoria: accesso.mfaObbligatoria, passwordDaCambiare: accesso.passwordDaCambiare };
+  /* sessione limitata: solo le rotte per mettersi in regola */
+  if (accesso.limitato && !percorsoConsentitoLimitato(req.path)) {
+    res.status(403).json({
+      error: accesso.limitato === "password"
+        ? "Prima cambia la password provvisoria"
+        : "Prima attiva la verifica in due passaggi (Sicurezza dell'account)",
+      accessoLimitato: accesso.limitato,
+    });
+    return;
+  }
   next();
 };
+
+/** Una riga nel registro degli accessi; non blocca mai la richiesta. */
+export async function registraAccesso(req: Request, voce: { userId?: string | null; email?: string | null; esito: string }): Promise<void> {
+  try {
+    await db.execute(sql`
+      INSERT INTO accessi_log (user_id, email, esito, ip, user_agent)
+      VALUES (${voce.userId ?? null}::uuid, ${voce.email ?? null}, ${voce.esito},
+              ${req.ip ?? null}, ${String(req.headers["user-agent"] ?? "").slice(0, 300) || null})`);
+  } catch (e: any) {
+    console.error("[auth] registro accessi:", e?.message || e);
+  }
+}
 
 export const requireAdmin: RequestHandler = (req, res, next) => {
   if (!req.user) { res.status(401).json({ error: "Non autenticato" }); return; }
@@ -413,6 +548,40 @@ export const requirePermissionByPath: RequestHandler = (req, res, next) => {
 const router: IRouter = Router();
 
 // POST /api/auth/login { email, password }
+/* un hash fittizio per chi non esiste: il login costa lo stesso tempo, e il
+ * tempo di risposta non dice quali email ci sono */
+let HASH_FITTIZIO: string | null = null;
+const hashFittizio = () => (HASH_FITTIZIO ??= bcrypt.hashSync("nessuno-ha-questa-password", BCRYPT_ROUNDS));
+
+/** Dopo un errore di password o di codice: un tentativo in più, e il blocco se si arriva al limite. */
+async function contaErrore(userId: string): Promise<void> {
+  const r = await db.execute<any>(sql`
+    UPDATE users SET tentativi_falliti = tentativi_falliti + 1 WHERE id = ${userId}::uuid
+    RETURNING tentativi_falliti`);
+  const minuti = minutiDiBlocco(Number((r as any).rows?.[0]?.tentativi_falliti ?? 0));
+  if (minuti > 0) {
+    await db.execute(sql`UPDATE users SET bloccato_fino = now() + make_interval(mins => ${minuti}) WHERE id = ${userId}::uuid`);
+  }
+}
+
+function rispostaBloccato(res: Response, fino: Date): void {
+  const minuti = Math.max(1, Math.ceil((fino.getTime() - Date.now()) / 60_000));
+  res.status(429).json({ error: `Troppi tentativi falliti: riprova fra ${minuti} minuti, o chiedi all'amministratore di sbloccare l'account.` });
+}
+
+/** Entra davvero: cookie della sessione, ultimo accesso, tentativi azzerati, registro. */
+async function apriSessione(req: Request, res: Response, row: any, mfa: boolean): Promise<void> {
+  await db.execute(sql`UPDATE users SET last_login_at = now(), tentativi_falliti = 0, bloccato_fino = NULL WHERE id = ${row.id}::uuid`);
+  setAuthCookie(res, signToken(row.id, Number(row.sessione_versione ?? 0), mfa));
+  await registraAccesso(req, { userId: row.id, email: row.email, esito: mfa ? "ok_con_verifica" : "ok" });
+  const u = await loadUserById(row.id);
+  res.json({
+    user: u!.user,
+    datiProva: datiProvaAttivi(),
+    accesso: u ? (({ rifiuta: _r, ...a }) => a)(accessoDi(u, { mfa })) : null,
+  });
+}
+
 router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Promise<void> => {
   await ensureUsersTable();
   const { email, password } = req.body || {};
@@ -421,32 +590,100 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
     return;
   }
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, fleetcare_role, active, password_hash
+    SELECT id, email, full_name, role, permissions, fleetcare_role, active, password_hash,
+           sessione_versione, bloccato_fino, mfa_attiva
       FROM users WHERE lower(email) = lower(${email}) LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
-  if (!row || !row.active) { res.status(401).json({ error: "Credenziali non valide" }); return; }
+  if (!row) {
+    await bcrypt.compare(password, hashFittizio());
+    await registraAccesso(req, { email: email.slice(0, 200), esito: "utente_sconosciuto" });
+    res.status(401).json({ error: "Credenziali non valide" }); return;
+  }
+  if (row.bloccato_fino && new Date(row.bloccato_fino) > new Date()) {
+    await registraAccesso(req, { userId: row.id, email: row.email, esito: "bloccato" });
+    rispostaBloccato(res, new Date(row.bloccato_fino)); return;
+  }
   // async: non blocca l'event loop durante l'hashing bcrypt (una login lenta
   // non deve congelare tutte le altre richieste).
   const ok = await bcrypt.compare(password, row.password_hash);
-  if (!ok) { res.status(401).json({ error: "Credenziali non valide" }); return; }
+  if (!row.active) {
+    await registraAccesso(req, { userId: row.id, email: row.email, esito: "utente_inattivo" });
+    res.status(401).json({ error: "Credenziali non valide" }); return;
+  }
+  if (!ok) {
+    await contaErrore(row.id);
+    await registraAccesso(req, { userId: row.id, email: row.email, esito: "password_errata" });
+    res.status(401).json({ error: "Credenziali non valide" }); return;
+  }
   /* password giusta ma pubblicata dal vecchio codice: l'account si chiude qui */
   if (ePasswordPubblicata(password)) {
     await db.execute(sql`UPDATE users SET active = false WHERE id = ${row.id}::uuid`);
+    await registraAccesso(req, { userId: row.id, email: row.email, esito: "password_pubblicata" });
     console.warn(`[auth] disattivato ${row.email}: ha provato a entrare con una password pubblicata nel vecchio codice`);
     res.status(403).json({ error: "Questa password era pubblica: l'account è stato disattivato. Chiedi all'amministratore di riattivarlo con una password nuova." });
     return;
   }
-  await db.execute(sql`UPDATE users SET last_login_at = now() WHERE id = ${row.id}::uuid`);
-  setAuthCookie(res, signToken(row.id));
-  res.json({
-    user: {
-      id: row.id, email: row.email, fullName: row.full_name,
-      role: row.role, permissions: row.permissions,
-      fleetcareRole: row.fleetcare_role ?? "driver", active: row.active,
-    },
-    datiProva: datiProvaAttivi(),
-  });
+  /* hash di prima, più leggero: si rifà col costo di adesso, ora che la password c'è */
+  if (bcrypt.getRounds(row.password_hash) < BCRYPT_ROUNDS) {
+    await db.execute(sql`UPDATE users SET password_hash = ${await bcrypt.hash(password, BCRYPT_ROUNDS)} WHERE id = ${row.id}::uuid`);
+  }
+  /* verifica in due passaggi attiva: niente sessione, un biglietto per il codice */
+  if (row.mfa_attiva) {
+    await registraAccesso(req, { userId: row.id, email: row.email, esito: "codice_richiesto" });
+    res.json({ mfaRichiesta: true, biglietto: firmaBiglietto(row.id, Number(row.sessione_versione ?? 0)) });
+    return;
+  }
+  await apriSessione(req, res, row, false);
+});
+
+// POST /api/auth/login/mfa { biglietto, codice } oppure { biglietto, recupero }
+router.post("/auth/login/mfa", loginLimiter, async (req: Request, res: Response): Promise<void> => {
+  await ensureUsersTable();
+  const b = leggiBiglietto(req.body?.biglietto);
+  if (!b) { res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return; }
+  const r = await db.execute(sql`
+    SELECT id, email, active, sessione_versione, bloccato_fino, mfa_attiva, mfa_segreto, mfa_recupero, mfa_ultimo_passo
+      FROM users WHERE id = ${b.sub}::uuid LIMIT 1`);
+  const row: any = (r as any).rows?.[0];
+  if (!row || !row.active || !row.mfa_attiva || Number(row.sessione_versione ?? 0) !== b.sv) {
+    res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return;
+  }
+  if (row.bloccato_fino && new Date(row.bloccato_fino) > new Date()) {
+    await registraAccesso(req, { userId: row.id, email: row.email, esito: "bloccato" });
+    rispostaBloccato(res, new Date(row.bloccato_fino)); return;
+  }
+  const { codice, recupero } = req.body ?? {};
+  if (typeof recupero === "string" && recupero.trim()) {
+    /* un codice di recupero vale una volta sola: si toglie dall'elenco nella stessa UPDATE */
+    const impronta = improntaRecupero(recupero);
+    const usato = await db.execute<any>(sql`
+      UPDATE users SET mfa_recupero = mfa_recupero - ${impronta}
+       WHERE id = ${row.id}::uuid AND mfa_recupero ? ${impronta}
+      RETURNING jsonb_array_length(mfa_recupero) AS restano`);
+    if (!(usato as any).rows?.length) {
+      await contaErrore(row.id);
+      await registraAccesso(req, { userId: row.id, email: row.email, esito: "recupero_errato" });
+      res.status(401).json({ error: "Codice di recupero non valido" }); return;
+    }
+    await registraAccesso(req, { userId: row.id, email: row.email, esito: "recupero_usato" });
+  } else {
+    let v: ReturnType<typeof verificaCodice> = { ok: false };
+    try { v = verificaCodice(decifra(row.mfa_segreto), codice, Date.now(), row.mfa_ultimo_passo == null ? null : Number(row.mfa_ultimo_passo)); }
+    catch (e: any) { console.error("[auth] segreto della verifica non leggibile:", e?.message || e); }
+    if (!v.ok) {
+      await contaErrore(row.id);
+      await registraAccesso(req, { userId: row.id, email: row.email, esito: "codice_errato" });
+      res.status(401).json({ error: "Codice non valido" }); return;
+    }
+    /* il passo usato non vale più: lo stesso codice, intercettato, non rientra */
+    const preso = await db.execute<any>(sql`
+      UPDATE users SET mfa_ultimo_passo = ${v.passo}
+       WHERE id = ${row.id}::uuid AND (mfa_ultimo_passo IS NULL OR mfa_ultimo_passo < ${v.passo})
+      RETURNING id`);
+    if (!(preso as any).rows?.length) { res.status(401).json({ error: "Codice già usato: aspetta il prossimo" }); return; }
+  }
+  await apriSessione(req, res, { ...row, sessione_versione: b.sv }, true);
 });
 
 // POST /api/auth/logout
@@ -457,8 +694,9 @@ router.post("/auth/logout", (_req, res) => {
 
 // GET /api/auth/me
 router.get("/auth/me", requireAuth, (req, res) => {
-  /* datiProva: se questa installazione permette i conducenti fittizi (lib/dati-prova.ts) */
-  res.json({ user: req.user, datiProva: datiProvaAttivi() });
+  /* datiProva: se questa installazione permette i conducenti fittizi (lib/dati-prova.ts);
+   * accesso: sessione limitata (password provvisoria, verifica da attivare) e stato della verifica */
+  res.json({ user: req.user, datiProva: datiProvaAttivi(), accesso: req.accesso ?? null });
 });
 
 /* ─── SSO verso FleetCare (modulo Cerbero di gestione flotta) ───
@@ -537,7 +775,8 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 // GET /api/admin/users
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, fleetcare_role, active, last_login_at, created_at
+    SELECT id, email, full_name, role, permissions, fleetcare_role, active, last_login_at, created_at,
+           mfa_attiva, deve_cambiare_password, tentativi_falliti, bloccato_fino
       FROM users ORDER BY created_at ASC
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
@@ -552,6 +791,10 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
     active: u.active,
     lastLoginAt: u.last_login_at,
     createdAt: u.created_at,
+    mfaAttiva: !!u.mfa_attiva,
+    mfaObbligatoria: mfaObbligatoria({ role: u.role, permissions: u.permissions }),
+    passwordDaCambiare: !!u.deve_cambiare_password,
+    bloccatoFino: u.bloccato_fino && new Date(u.bloccato_fino) > new Date() ? u.bloccato_fino : null,
   }));
   res.json({ users });
 });
@@ -584,8 +827,8 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   try {
     const hash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
     const r = await db.execute(sql`
-      INSERT INTO users (email, password_hash, full_name, role, permissions, fleetcare_role, active)
-      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${JSON.stringify(safePerm)}::jsonb, ${safeFleetcareRole}, true)
+      INSERT INTO users (email, password_hash, full_name, role, permissions, fleetcare_role, active, deve_cambiare_password)
+      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${JSON.stringify(safePerm)}::jsonb, ${safeFleetcareRole}, true, true)
       RETURNING id, email, full_name, role, permissions, fleetcare_role, active, created_at
     `);
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -608,8 +851,9 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
 router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const id = String(req.params.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-  const { fullName, role, permissions, fleetcareRole, active, password } = req.body || {};
+  const { fullName, role, permissions, fleetcareRole, active, password, resetMfa, sblocca } = req.body || {};
   const sets: any[] = [];
+  let revoca = false;
   if (fullName !== undefined) sets.push(sql`full_name = ${fullName}`);
   if (role !== undefined) sets.push(sql`role = ${role === "admin" ? "admin" : "user"}`);
   if (permissions !== undefined) {
@@ -644,8 +888,20 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
     if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
     const erroreP = erroreNuovaPassword(password, { email: u.email, nome: typeof fullName === "string" ? fullName : u.full_name });
     if (erroreP) { res.status(400).json({ error: erroreP }); return; }
+    /* la password data dall'admin è provvisoria: al primo accesso va cambiata, e
+     * le sessioni aperte si chiudono */
     sets.push(sql`password_hash = ${bcrypt.hashSync(password, BCRYPT_ROUNDS)}`);
+    sets.push(sql`deve_cambiare_password = true`, sql`password_cambiata_il = now()`);
+    revoca = true;
   }
+  /* telefono perso: si toglie la verifica (al prossimo accesso la riattiva) */
+  if (resetMfa === true) {
+    sets.push(sql`mfa_attiva = false`, sql`mfa_segreto = NULL`, sql`mfa_recupero = NULL`, sql`mfa_ultimo_passo = NULL`);
+    revoca = true;
+  }
+  if (sblocca === true) sets.push(sql`tentativi_falliti = 0`, sql`bloccato_fino = NULL`);
+  if (active === false) revoca = true;
+  if (revoca) sets.push(sql`sessione_versione = sessione_versione + 1`);
   if (sets.length === 0) { res.json({ ok: true, noop: true }); return; }
   // Concatena gli assignment con virgole
   const assignments = sql.join(sets, sql`, `);
@@ -655,6 +911,12 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   if (!row) { res.status(404).json({ error: "Utente non trovato" }); return; }
+  /* nel registro degli accessi: chi ha fatto che cosa sull'accesso di chi */
+  const azioni = [
+    password !== undefined && "password_provvisoria", resetMfa === true && "verifica_tolta",
+    sblocca === true && "sbloccato", active === false && "disattivato", active === true && "riattivato",
+  ].filter((x): x is string => !!x);
+  for (const a of azioni) await registraAccesso(req, { userId: id, email: row.email, esito: `admin:${a} (${req.user!.email})` });
   res.json({ user: {
     id: row.id, email: row.email, fullName: row.full_name,
     role: row.role, permissions: row.permissions,
