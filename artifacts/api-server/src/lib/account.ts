@@ -24,13 +24,13 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { loginLimiter } from "../middlewares/rate-limit";
 import {
-  BCRYPT_ROUNDS, emettiSessione, indirizzoDi, registraAccesso, requireAdmin, requireAuth, rispostaBloccato,
+  BCRYPT_ROUNDS, dispositivoPer, emettiSessione, indirizzoDi, registraAccesso, requireAdmin, requireAuth, rispostaBloccato,
 } from "./auth";
 import { erroreNuovaPassword } from "./password-regole";
 import { nuovoSegreto, uriOtpauth } from "./totp";
-import { cifra, improntaRecupero } from "./mfa-cifratura";
+import { cifra } from "./mfa-cifratura";
 import { accessoRecente, chiaveEmail, mfaObbligatoria, nuoviCodiciDiRecupero } from "./accesso-regole";
-import { azzeraTentativiPassword, prenotaTentativoPassword, provaCodice, type EsitoCodice } from "./accesso-db";
+import { azzeraTentativiPassword, improntePerSalvare, prenotaTentativoPassword, provaCodice, type EsitoCodice } from "./accesso-db";
 
 const router: IRouter = Router();
 
@@ -42,13 +42,15 @@ const soloPersona: RequestHandler = (req, res, next) => {
 
 /**
  * La versione della sessione è salita: si riemette il cookie di chi ha fatto
- * il cambio. La sessione dura sempre 12 ore da quando si è data la password:
- * `rinnova` solo se la password è appena stata data di nuovo.
+ * il cambio. La sessione scade sempre 12 ore dopo l'accesso (at), anche se si
+ * è appena ridata la password: `passwordData` segna solo che la password è
+ * fresca (pw), così attivare la verifica subito dopo non la richiede.
  */
-function nuovaSessione(req: Request, res: Response, sv: number, s: { mfa: boolean; rinnova?: boolean; rec?: boolean }): void {
+function nuovaSessione(req: Request, res: Response, sv: number, s: { mfa: boolean; passwordData?: boolean; rec?: boolean }): void {
   emettiSessione(res, req.user!.id, {
     sv, mfa: s.mfa,
-    at: s.rinnova ? undefined : req.sessione?.at,
+    at: req.sessione?.at,
+    pw: s.passwordData ? Math.floor(Date.now() / 1000) : req.sessione?.pw,
     rec: s.rec ?? req.sessione?.rec,
   });
 }
@@ -68,10 +70,11 @@ async function riga(id: string): Promise<any> {
 async function passwordGiusta(req: Request, res: Response, u: any, password: unknown, esitoErrato: string): Promise<boolean> {
   const chiave = chiaveEmail(u.email);
   const ip = indirizzoDi(req);
-  const prenotato = await prenotaTentativoPassword(chiave, ip);
+  const dispositivo = dispositivoPer(req, chiave);
+  const prenotato = await prenotaTentativoPassword(chiave, ip, dispositivo);
   if (!prenotato.ok) {
-    await registraAccesso(req, { userId: u.id, email: u.email, esito: "bloccato" });
-    rispostaBloccato(res, prenotato.fino, "password");
+    await registraAccesso(req, { userId: u.id, email: u.email, esito: prenotato.account ? "bloccato_account" : "bloccato" });
+    rispostaBloccato(res, prenotato.fino, prenotato.account ? "account" : "password");
     return false;
   }
   if (typeof password !== "string" || !(await bcrypt.compare(password, u.password_hash))) {
@@ -79,7 +82,7 @@ async function passwordGiusta(req: Request, res: Response, u: any, password: unk
     res.status(400).json({ error: "La password non è giusta", serve: "password" });
     return false;
   }
-  await azzeraTentativiPassword(chiave, ip);
+  await azzeraTentativiPassword(chiave, ip, dispositivo);
   return true;
 }
 
@@ -116,7 +119,7 @@ router.post("/auth/password", loginLimiter, requireAuth, soloPersona, async (req
       UPDATE users SET password_hash = ${await bcrypt.hash(nuova, BCRYPT_ROUNDS)}, password_cambiata_il = now(),
              deve_cambiare_password = false, password_controllata = true, sessione_versione = sessione_versione + 1
        WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: !!req.sessione?.mfa, rinnova: true });
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: !!req.sessione?.mfa, passwordData: true });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "password_cambiata" });
     res.json({ ok: true });
   } catch (e: any) { console.error("[account] password:", e?.message || e); res.status(500).json({ error: "Password non cambiata" }); }
@@ -129,7 +132,7 @@ router.post("/auth/mfa/attiva", loginLimiter, requireAuth, soloPersona, async (r
     if (u.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi è già attiva" }); return; }
     /* una sessione rubata non deve poter legare il telefono di un altro: se la
      * password non è stata data da poco, si chiede di nuovo */
-    if (!accessoRecente(req.sessione?.at, Date.now())) {
+    if (!accessoRecente(req.sessione?.pw ?? req.sessione?.at, Date.now())) {
       if (req.body?.password === undefined) {
         res.status(403).json({ error: "Per sicurezza inserisci di nuovo la password", serve: "password" }); return;
       }
@@ -147,18 +150,25 @@ router.post("/auth/mfa/conferma", loginLimiter, requireAuth, soloPersona, async 
     const u = await riga(req.user!.id);
     if (u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi è già attiva" }); return; }
     if (!u?.mfa_segreto) { res.status(400).json({ error: "Prima avvia l'attivazione" }); return; }
-    /* qui gli errori non contano: il segreto l'ha appena ricevuto chi prova */
-    const e = await provaCodice(u.id, { codice: req.body?.codice }, { recupero: false, conta: false });
-    if (e.esito !== "ok") { await rispostaCodice(req, res, u, e); return; }
+    /* qui gli errori non contano: il segreto l'ha appena ricevuto chi prova. L'attivazione
+     * avviene nella stessa transazione della verifica, con la riga sotto lucchetto: si attiva
+     * proprio il segreto appena verificato, non uno cambiato nel frattempo da un'altra scheda */
     const codici = nuoviCodiciDiRecupero();
-    /* si attiva il segreto appena verificato, non uno cambiato nel frattempo da un'altra scheda */
-    const r = await db.execute<any>(sql`
-      UPDATE users SET mfa_attiva = true, mfa_recupero = ${JSON.stringify(codici.map(c => improntaRecupero(c)))}::jsonb,
-             sessione_versione = sessione_versione + 1
-       WHERE id = ${u.id}::uuid AND NOT mfa_attiva AND mfa_segreto = ${u.mfa_segreto}
-      RETURNING sessione_versione`);
-    if (!(r as any).rows?.length) { res.status(409).json({ error: "L'attivazione è cambiata nel frattempo: ricomincia" }); return; }
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: true, rec: false });
+    const salva = improntePerSalvare(codici);
+    const e = await provaCodice(u.id, { codice: req.body?.codice }, {
+      recupero: false, conta: false,
+      seOk: async (tx) => {
+        const r = await tx.execute<any>(sql`
+          UPDATE users SET mfa_attiva = true, mfa_recupero = ${salva.impronte}::jsonb, mfa_recupero_chiave = ${salva.chiave},
+                 sessione_versione = sessione_versione + 1
+           WHERE id = ${u.id}::uuid AND NOT mfa_attiva
+          RETURNING sessione_versione`);
+        return (r as any).rows?.[0]?.sessione_versione ?? null;
+      },
+    });
+    if (e.esito !== "ok") { await rispostaCodice(req, res, u, e); return; }
+    if (e.dato == null) { res.status(409).json({ error: "La verifica in due passaggi è già attiva" }); return; }
+    nuovaSessione(req, res, Number(e.dato), { mfa: true, rec: false });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_attivata" });
     res.json({ codiciRecupero: codici });
   } catch (e: any) { console.error("[account] mfa conferma:", e?.message || e); res.status(500).json({ error: "Verifica non attivata" }); }
@@ -172,7 +182,7 @@ router.post("/auth/mfa/disattiva", loginLimiter, requireAuth, soloPersona, async
     const e = await provaCodice(u.id, { codice: req.body?.codice }, { recupero: false, conta: true });
     if (e.esito !== "ok") { await rispostaCodice(req, res, u, e); return; }
     const r = await db.execute<any>(sql`
-      UPDATE users SET mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_ultimo_passo = NULL,
+      UPDATE users SET mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_recupero_chiave = NULL, mfa_ultimo_passo = NULL,
              sessione_versione = sessione_versione + 1
        WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
     nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: false, rec: false });
@@ -188,7 +198,9 @@ router.post("/auth/mfa/codici-recupero", loginLimiter, requireAuth, soloPersona,
     const e = await provaCodice(u.id, { codice: req.body?.codice }, { recupero: false, conta: true });
     if (e.esito !== "ok") { await rispostaCodice(req, res, u, e); return; }
     const codici = nuoviCodiciDiRecupero();
-    await db.execute(sql`UPDATE users SET mfa_recupero = ${JSON.stringify(codici.map(c => improntaRecupero(c)))}::jsonb WHERE id = ${u.id}::uuid`);
+    const salva = improntePerSalvare(codici);
+    await db.execute(sql`
+      UPDATE users SET mfa_recupero = ${salva.impronte}::jsonb, mfa_recupero_chiave = ${salva.chiave} WHERE id = ${u.id}::uuid`);
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "codici_recupero_nuovi" });
     res.json({ codiciRecupero: codici });
   } catch (e: any) { console.error("[account] codici recupero:", e?.message || e); res.status(500).json({ error: "Codici non rifatti" }); }
@@ -207,10 +219,10 @@ router.post("/auth/mfa/reimposta", loginLimiter, requireAuth, soloPersona, async
     if (!u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi non è attiva" }); return; }
     if (!(await passwordGiusta(req, res, u, req.body?.password, "password_attuale_errata"))) return;
     const r = await db.execute<any>(sql`
-      UPDATE users SET mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_ultimo_passo = NULL,
+      UPDATE users SET mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_recupero_chiave = NULL, mfa_ultimo_passo = NULL,
              mfa_errori = 0, mfa_bloccata_fino = NULL, sessione_versione = sessione_versione + 1
        WHERE id = ${u.id}::uuid RETURNING sessione_versione`);
-    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: false, rinnova: true, rec: false });
+    nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: false, passwordData: true, rec: false });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_reimpostata" });
     res.json({ ok: true });
   } catch (e: any) { console.error("[account] mfa reimposta:", e?.message || e); res.status(500).json({ error: "Verifica non reimpostata" }); }

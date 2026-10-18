@@ -21,6 +21,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS password_controllata boolean NOT NULL
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_attiva boolean NOT NULL DEFAULT false;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_segreto text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recupero jsonb;
+-- con quale chiave sono fatte le impronte dei codici di recupero
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_recupero_chiave text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_ultimo_passo bigint;
 -- codici della verifica sbagliati di fila, e il blocco che ne segue
 ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_errori integer NOT NULL DEFAULT 0;
@@ -29,7 +31,8 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_bloccata_fino timestamptz;
 -- un'email, un utente: maiuscole e spazi non contano (non si crea se ci sono già doppioni)
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_normale_uq ON users (lower(trim(email)));
 
--- password sbagliate: una serie per email e indirizzo, e una per l'account (ip = '*')
+-- password sbagliate: una serie per email e indirizzo, una per l'account (ip = '*')
+-- e una per ogni browser da cui la persona è già entrata (ip = 'd:<id>')
 CREATE TABLE IF NOT EXISTS accessi_tentativi (
   chiave text NOT NULL,
   ip text NOT NULL,

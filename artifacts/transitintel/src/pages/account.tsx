@@ -184,6 +184,12 @@ function VerificaDueFattori({ onCambio }: { onCambio: () => Promise<void> }) {
           {accesso?.mfaObbligatoria && " Per il tuo ruolo è obbligatoria."}
         </p>
 
+        {accesso?.mfaAttiva && accesso.codiciDaRifare && !codiciRecupero && (
+          <p role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+            I tuoi codici di recupero sono di prima di un aggiornamento della sicurezza e presto non varranno più: fanne di nuovi qui sotto.
+          </p>
+        )}
+
         {codiciRecupero && (
           <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4 space-y-3">
             <p className="font-medium">Codici di recupero: salvali ora, non li vedrai più.</p>

@@ -11,7 +11,9 @@
  * Cambio di chiave: la nuova va in CERBERO_CHIAVE_MFA e la vecchia in
  * CERBERO_CHIAVE_MFA_PRECEDENTE. I segreti si leggono con l'una o con l'altra
  * e si ricifrano con la nuova al primo accesso di ciascuno; i codici di
- * recupero di prima valgono finché la vecchia resta impostata.
+ * recupero di prima valgono finché la vecchia resta impostata. Accanto ai
+ * codici si salva l'impronta della chiave con cui sono fatti (idChiave): così
+ * si distingue un codice sbagliato da uno fatto con una chiave che non c'è più.
  */
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes } from "node:crypto";
 
@@ -39,6 +41,18 @@ export function chiavePrecedenteDa(env: Env): Buffer | null {
 
 const CHIAVE = chiaveDa(process.env);
 const PRECEDENTE = chiavePrecedenteDa(process.env);
+
+/** Un nome corto per la chiave (non dice niente della chiave stessa): con quale sono fatti i codici di recupero. */
+export function idChiave(chiave: Buffer = CHIAVE): string {
+  return createHmac("sha256", chiave).update("cerbero-id-chiave-v1").digest("hex").slice(0, 12);
+}
+/** Le chiavi impostate adesso: quella attuale e, durante un cambio, la precedente. */
+export function chiaviConfigurate(): Array<{ id: string; chiave: Buffer; attuale: boolean }> {
+  return [
+    { id: idChiave(CHIAVE), chiave: CHIAVE, attuale: true },
+    ...(PRECEDENTE ? [{ id: idChiave(PRECEDENTE), chiave: PRECEDENTE, attuale: false }] : []),
+  ];
+}
 
 export function cifra(testo: string, chiave: Buffer = CHIAVE): string {
   const iv = randomBytes(12);
@@ -76,9 +90,4 @@ const normaleRecupero = (codice: string) => codice.toUpperCase().replace(/[^A-Z0
 export function improntaRecupero(codice: string, chiave: Buffer = CHIAVE): string {
   const sottochiave = createHmac("sha256", chiave).update("cerbero-codici-recupero-v1").digest();
   return createHmac("sha256", sottochiave).update(normaleRecupero(codice)).digest("hex");
-}
-
-/** Le impronte con cui cercare un codice: con la chiave di adesso e, se c'è, con quella di prima. */
-export function impronteRecupero(codice: string): string[] {
-  return [CHIAVE, PRECEDENTE].filter((k): k is Buffer => !!k).map(k => improntaRecupero(codice, k));
 }

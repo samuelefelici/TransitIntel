@@ -35,6 +35,8 @@ export interface Accesso {
   passwordDaCambiare: boolean;
   /** entrato con un codice di recupero (telefono perso): può rifare la verifica */
   recupero: boolean;
+  /** i codici di recupero sono di prima di un cambio di chiave: vanno rifatti */
+  codiciDaRifare?: boolean;
 }
 
 export type EsitoLogin =

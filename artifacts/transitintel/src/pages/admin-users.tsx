@@ -49,6 +49,7 @@ const ESITO_LABEL: Record<string, string> = {
   codici_recupero_nuovi: "nuovi codici di recupero", sessioni_chiuse: "uscito da tutti i dispositivi",
   codici_bloccati: "codici bloccati (troppi sbagliati)", segreto_illeggibile: "verifica non leggibile: controlla CERBERO_CHIAVE_MFA",
   password_attuale_errata: "password attuale sbagliata", verifica_reimpostata: "verifica rifatta dopo il telefono perso",
+  bloccato_account: "account bloccato (errori da più indirizzi)",
 };
 const esitoLeggibile = (e: string) => {
   const m = /^admin:([a-z_]+) \((.*)\)$/.exec(e);
@@ -323,8 +324,8 @@ export default function AdminUsersPage() {
                             <KeyRound className="w-3.5 h-3.5" />
                           </Button>
                           {u.mfaAttiva && (
-                            <Button size="sm" variant="outline" title="Toglie la verifica in due passaggi (telefono perso): al prossimo accesso la riattiva"
-                              onClick={() => handleAccesso(u, { resetMfa: true }, `Togliere la verifica in due passaggi a ${u.email}? Le sue sessioni si chiudono e al prossimo accesso dovrà riattivarla.`, "Verifica tolta")}>
+                            <Button size="sm" variant="outline" title="Toglie la verifica in due passaggi (telefono perso). Se per il suo ruolo è obbligatoria, al prossimo accesso dovrà riattivarla"
+                              onClick={() => handleAccesso(u, { resetMfa: true }, `Togliere la verifica in due passaggi a ${u.email}? Le sue sessioni si chiudono${u.mfaObbligatoria ? " e al prossimo accesso dovrà riattivarla" : "; potrà riattivarla quando vuole"}.`, "Verifica tolta")}>
                               Reimposta verifica
                             </Button>
                           )}

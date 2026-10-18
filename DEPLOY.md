@@ -204,16 +204,20 @@ creano da sé; `migrations/2026-10_roster_riposi.sql` è lo specchio.
 ### Accesso sicuro
 
 **Prima del rilascio.** Al rilascio del permesso Roster, chi aveva Scheduling
-lo ha ricevuto in automatico; con l'accesso sicuro, Roster rende obbligatoria
-la verifica in due passaggi. Quindi, sulla versione che hai già in esercizio:
+lo riceve in automatico; con l'accesso sicuro, Roster rende obbligatoria la
+verifica in due passaggi. Quindi:
 1. imposta `CERBERO_CHIAVE_MFA`;
-2. in Gestione Utenti togli Roster a chi non lavora sul roster (altrimenti al
-   primo accesso dovrà attivare la verifica anche chi non ne ha bisogno);
-3. avvisa admin e utenti di Personale e Roster che serve un'app di
+2. se il permesso Roster è già in esercizio (rilascio precedente), togli
+   Roster in Gestione Utenti a chi non lavora sul roster;
+3. avvisa admin e utenti di Personale e Roster (e, se Roster arriva con
+   questo stesso rilascio, tutti quelli con Scheduling) che serve un'app di
    autenticazione sul telefono.
 
 Dopo il rilascio tutti devono rientrare (le sessioni di prima non valgono più).
-L'admin entra per primo e attiva la sua verifica.
+L'admin entra per primo e attiva la sua verifica; se Roster è arrivato con
+questo rilascio, toglie subito Roster a chi non lavora sul roster, **prima**
+di dire agli altri di entrare: chi non ha più Roster (né Personale) non deve
+attivare la verifica.
 
 - **Verifica in due passaggi** (codice a 6 cifre da un'app come Google o
   Microsoft Authenticator) obbligatoria per admin e per chi ha i permessi
@@ -228,14 +232,18 @@ L'admin entra per primo e attiva la sua verifica.
     minuti, poi il doppio a ogni errore, al massimo un giorno. Chi sbaglia da un
     altro posto non blocca il titolare;
   - password, da qualunque indirizzo: al massimo 20 errori in 15 minuti, poi
-    l'account aspetta 15 minuti (ferma chi prova da tanti indirizzi);
+    l'account aspetta 15 minuti (ferma chi prova da tanti indirizzi). Questo
+    blocco non vale dai browser da cui la persona è già entrata (un cookie
+    firmato, 180 giorni): lì gli errori fanno una serie a parte, 5 e poi
+    l'attesa. Se qualcuno tiene bloccato l'account dell'unico admin, l'admin
+    entra dal suo solito computer;
   - codici della verifica: dopo 5 errori 15 minuti, poi il doppio, al massimo
     un giorno (chi li sbaglia conosce già la password: se non è il titolare,
     la password va cambiata).
   Gli stessi limiti valgono per la password e i codici chiesti dentro la pagina
   «Sicurezza dell'account». L'admin sblocca da Gestione Utenti; anche dare una
   password provvisoria sblocca la password.
-- **Sessioni**: durano 12 ore da quando si è data la password; cambio password,
+- **Sessioni**: durano 12 ore dall'accesso, sempre; cambio password,
   reset della verifica e «esci da tutti i dispositivi» chiudono le altre
   sessioni senza allungare quella in uso.
 - **Registro degli accessi** in Gestione Utenti, conservato 12 mesi.
@@ -247,8 +255,17 @@ L'admin entra per primo e attiva la sua verifica.
 - **Cambiare `CERBERO_CHIAVE_MFA`** (per esempio se è uscita): metti la nuova in
   `CERBERO_CHIAVE_MFA` e la vecchia in `CERBERO_CHIAVE_MFA_PRECEDENTE`, riavvia.
   I segreti si ricifrano con la nuova al primo accesso di ciascuno; i codici di
-  recupero di prima valgono finché la vecchia resta impostata, quindi chiedi a
-  tutti di rifarli («Nuovi codici di recupero») prima di toglierla.
+  recupero di prima valgono finché la vecchia resta impostata, e la pagina
+  «Sicurezza dell'account» chiede a ciascuno di rifarli. A ogni avvio il log
+  dice quanti segreti e codici sono ancora della chiave precedente: toglila
+  solo quando l'avviso sparisce. Se la chiave non apre un segreto, la verifica
+  risponde «non disponibile» (e il log lo dice) senza contare errori.
+- **Indirizzo dei client**: il blocco per indirizzo e i limiti per IP usano
+  l'indirizzo che arriva dal proxy davanti all'API. Con Coolify (un solo
+  proxy, Traefik) va bene così; se metti davanti un altro proxy (una CDN, o
+  nginx che inoltra `/api`) imposta `CERBERO_TRUST_PROXY` al numero dei proxy,
+  e non pubblicare mai la porta dell'API direttamente. Se in produzione
+  l'indirizzo risulta interno, il log lo segnala.
 - **FleetCare** accetta ancora la password di Cerbero sul suo login: finché non
   arriva la PR che lo fa entrare solo da Cerbero, lì non valgono la verifica in
   due passaggi, il blocco dei tentativi, la password provvisoria da cambiare e
@@ -297,6 +314,7 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
 | `CERBERO_CHIAVE_MFA` | ✅ | `openssl rand -hex 32`: cifra i segreti della verifica in due passaggi. Senza, in produzione l'API non parte; non perderla |
 | `CERBERO_CHIAVE_MFA_PRECEDENTE` | — | Solo durante un cambio di chiave: la chiave di prima (vedi «Accesso sicuro») |
+| `CERBERO_TRUST_PROXY` | — | Quanti proxy ci sono davanti all'API (default `1`, il Traefik di Coolify), o i loro indirizzi |
 | `CERBERO_ADMIN_RIPRISTINA` | — | `1` insieme alle due qui sotto: rimette in piedi quell'admin anche se risulta attivo (password o telefono persi). Poi togli tutte e tre |
 | `CERBERO_ADMIN_EMAIL` | senza admin attivi | email dell'amministratore da creare o ripristinare, solo se non ce n'è uno attivo |
 | `CERBERO_ADMIN_PASSWORD` | senza admin attivi | sua password (≥ 12 caratteri, non comune); da togliere dopo il primo accesso |

@@ -40,6 +40,17 @@ describe("la sessione", () => {
     expect(opzioni.maxAge).toBeGreaterThan(3500 * 1000);
   });
 
+  it("la password ridata segna pw, ma la scadenza resta quella dell'accesso", () => {
+    let valore = "";
+    const res: any = { cookie: (_n: string, v: string) => { valore = v; } };
+    const ora = Math.floor(Date.now() / 1000);
+    const at = ora - 11 * 3600;
+    emettiSessione(res, UTENTE, { sv: 2, mfa: true, at, pw: ora });
+    const d = jwt.decode(valore) as any;
+    expect(d.exp).toBe(at + 12 * 3600);
+    expect(d.pw).toBe(ora);
+  });
+
   it("una sessione nuova parte da adesso, senza recupero se non c'è stato", () => {
     let valore = "";
     const res: any = { cookie: (_n: string, v: string) => { valore = v; } };
@@ -47,6 +58,7 @@ describe("la sessione", () => {
     const d = jwt.decode(valore) as any;
     expect(Math.abs(d.at - Date.now() / 1000)).toBeLessThan(5);
     expect(d.exp - d.at).toBe(12 * 3600);
+    expect(d.pw).toBe(d.at);
     expect(d.mfa).toBeUndefined();
     expect(d.rec).toBeUndefined();
   });

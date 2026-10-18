@@ -15,10 +15,13 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { createHmac, randomBytes } from "node:crypto";
+import { isIP } from "node:net";
 import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import { datiProvaAttivi } from "./dati-prova";
+import { idChiave } from "./mfa-cifratura";
 import { chiaveEmail, limitazione, mfaObbligatoria, percorsoConsentitoLimitato, percorsoVietatoAiServizi, type Limitazione } from "./accesso-regole";
 import {
   azzeraTentativiPassword, azzeraTuttiITentativiPassword, controllaChiaveMfa, forsePulisciAccessi, prenotaTentativoPassword,
@@ -72,6 +75,8 @@ export interface Accesso {
   passwordDaCambiare: boolean;
   /** la sessione è entrata con un codice di recupero (telefono perso): può rifare la verifica */
   recupero: boolean;
+  /** i codici di recupero sono di una chiave che non è più quella attuale: vanno rifatti */
+  codiciDaRifare: boolean;
 }
 
 declare global {
@@ -82,8 +87,9 @@ declare global {
       /** il token è stato emesso per un servizio che agisce per conto dell'utente (es. "argos") */
       authVia?: string;
       /** la sessione: versione (si revoca alzandola), se è passata dalla verifica in due
-       *  passaggi, quando ha dato la password (secondi), se è entrata con un codice di recupero */
-      sessione?: { sv: number; mfa: boolean; at?: number; rec?: boolean };
+       *  passaggi, quando è cominciata (at, secondi: scade 12 ore dopo), quando si è data
+       *  la password l'ultima volta (pw), se è entrata con un codice di recupero */
+      sessione?: { sv: number; mfa: boolean; at?: number; pw?: number; rec?: boolean };
       /** sessione «limitata»: password provvisoria da cambiare o verifica da attivare */
       accesso?: Accesso;
     }
@@ -159,6 +165,8 @@ async function preparaUtenti(): Promise<void> {
     ["mfa_attiva", "boolean NOT NULL DEFAULT false"],
     ["mfa_segreto", "text"],
     ["mfa_recupero", "jsonb"],
+    /* con quale chiave sono fatte le impronte dei codici di recupero (mfa-cifratura idChiave) */
+    ["mfa_recupero_chiave", "text"],
     ["mfa_ultimo_passo", "bigint"],
     ["mfa_errori", "integer NOT NULL DEFAULT 0"],
     ["mfa_bloccata_fino", "timestamptz"],
@@ -263,7 +271,7 @@ async function preparaUtenti(): Promise<void> {
     const rimesso = await db.execute<any>(sql`
       UPDATE users SET
         password_hash = ${hash}, role = 'admin', active = true, deve_cambiare_password = true, password_controllata = true,
-        mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_ultimo_passo = NULL,
+        mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_recupero_chiave = NULL, mfa_ultimo_passo = NULL,
         mfa_errori = 0, mfa_bloccata_fino = NULL, sessione_versione = sessione_versione + 1
        WHERE id = (SELECT id FROM users WHERE lower(trim(email)) = ${primo.email} ORDER BY ${ORDINE_STESSA_EMAIL} LIMIT 1)
       RETURNING id`);
@@ -319,19 +327,67 @@ async function disattivaPasswordPubblicate(quali: "admin" | "altri"): Promise<vo
  * ──────────────────────────────────────────────────────────── */
 /**
  * Il cookie della sessione. Il token dice chi è, la versione della sessione,
- * se è passata dalla verifica, quando ha dato la password (`at`, in secondi) e
- * se è entrata con un codice di recupero. Scade 12 ore dopo `at`: riemettere
- * il cookie (cambio password, «esci ovunque»…) non allunga la sessione, e un
- * token rubato non si rinnova all'infinito.
+ * se è passata dalla verifica, quando è cominciata (`at`, in secondi), quando
+ * si è data la password l'ultima volta (`pw`) e se è entrata con un codice di
+ * recupero. Scade 12 ore dopo `at`, sempre: riemettere il cookie (cambio
+ * password, «esci ovunque»…) non allunga la sessione, e un token rubato non
+ * si rinnova all'infinito. `pw` serve solo a non richiedere la password a chi
+ * l'ha appena data.
  */
-export function emettiSessione(res: Response, userId: string, s: { sv: number; mfa: boolean; at?: number; rec?: boolean }): void {
-  const at = s.at ?? Math.floor(Date.now() / 1000);
+export function emettiSessione(res: Response, userId: string, s: { sv: number; mfa: boolean; at?: number; pw?: number; rec?: boolean }): void {
+  const ora = Math.floor(Date.now() / 1000);
+  const at = s.at ?? ora;
   const scade = at + SESSIONE_ORE * 3600;
   const token = jwt.sign(
-    { sub: userId, sv: s.sv, at, ...(s.mfa ? { mfa: true } : {}), ...(s.rec ? { rec: true } : {}), exp: scade },
+    { sub: userId, sv: s.sv, at, pw: s.pw ?? at, ...(s.mfa ? { mfa: true } : {}), ...(s.rec ? { rec: true } : {}), exp: scade },
     JWT_SECRET,
   );
   setAuthCookie(res, token, scade * 1000 - Date.now());
+}
+
+/* ─── Il browser da cui la persona è già entrata ───
+ * Dopo un accesso riuscito il browser riceve un cookie firmato (OWASP «device
+ * cookie») con un suo id e le impronte delle email entrate da lì (al più 5,
+ * non le email). Da quel browser gli errori di password fanno una serie sua e
+ * il blocco per account non vale: chi prova da tanti indirizzi non tiene
+ * fuori il titolare, che entra dal solito computer. */
+const COOKIE_DISPOSITIVO = "ti_disp";
+const AUD_DISPOSITIVO = "cerbero-dispositivo";
+const GIORNI_DISPOSITIVO = 180;
+const segnoEmail = (chiave: string) => createHmac("sha256", JWT_SECRET).update(`dispositivo|${chiave}`).digest("base64url").slice(0, 16);
+
+function leggiDispositivo(req: Request): { n: string; e: string[] } | null {
+  const t = (req as any).cookies?.[COOKIE_DISPOSITIVO];
+  if (typeof t !== "string") return null;
+  try {
+    const d = jwt.verify(t, JWT_SECRET, { audience: AUD_DISPOSITIVO }) as any;
+    if (typeof d.n === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(d.n) && Array.isArray(d.e)) {
+      return { n: d.n, e: d.e.filter((x: unknown): x is string => typeof x === "string") };
+    }
+  } catch { /* scaduto o non nostro */ }
+  return null;
+}
+
+/** L'id del browser, se da qui si è già entrati con questa email; altrimenti null. */
+export function dispositivoPer(req: Request, chiave: string): string | null {
+  const d = leggiDispositivo(req);
+  return d && d.e.includes(segnoEmail(chiave)) ? d.n : null;
+}
+
+/** Accesso riuscito: il browser si ricorda di questa email. */
+function ricordaDispositivo(req: Request, res: Response, chiave: string): void {
+  const d = leggiDispositivo(req);
+  const segno = segnoEmail(chiave);
+  const token = jwt.sign(
+    { n: d?.n ?? randomBytes(16).toString("base64url"), e: [segno, ...(d?.e ?? []).filter(x => x !== segno)].slice(0, 5) },
+    JWT_SECRET,
+    { audience: AUD_DISPOSITIVO, expiresIn: `${GIORNI_DISPOSITIVO}d` },
+  );
+  const isProd = process.env.NODE_ENV === "production";
+  res.cookie(COOKIE_DISPOSITIVO, token, {
+    httpOnly: true, secure: isProd, sameSite: isProd ? "none" : "lax",
+    maxAge: GIORNI_DISPOSITIVO * 24 * 3600 * 1000, path: "/",
+  });
 }
 
 /** Il biglietto fra la password e il codice: non apre niente se non /auth/login/mfa. */
@@ -370,15 +426,16 @@ export async function mintTokenServizio(userId: string): Promise<string> {
   if (a.limitato === "mfa") throw new Error("L'utente deve prima attivare la verifica in due passaggi");
   return mintShortLivedUserToken(userId, { sv: u.sv, mfa: u.mfaAttiva });
 }
-function verifyToken(token: string): { sub: string; via?: string; sv: number; mfa: boolean; at?: number; rec: boolean } | null {
+function verifyToken(token: string): { sub: string; via?: string; sv: number; mfa: boolean; at?: number; pw?: number; rec: boolean } | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; via?: unknown; sv?: unknown; mfa?: unknown; aud?: unknown; at?: unknown; rec?: unknown };
+    const decoded = jwt.verify(token, JWT_SECRET) as { sub: string; via?: unknown; sv?: unknown; mfa?: unknown; aud?: unknown; at?: unknown; pw?: unknown; rec?: unknown };
     /* un biglietto della verifica (o altro con un destinatario) non è una sessione */
     if (decoded.aud !== undefined) return null;
     return {
       sub: decoded.sub, via: typeof decoded.via === "string" ? decoded.via : undefined,
       sv: typeof decoded.sv === "number" ? decoded.sv : 0, mfa: decoded.mfa === true,
-      at: typeof decoded.at === "number" ? decoded.at : undefined, rec: decoded.rec === true,
+      at: typeof decoded.at === "number" ? decoded.at : undefined,
+      pw: typeof decoded.pw === "number" ? decoded.pw : undefined, rec: decoded.rec === true,
     };
   } catch { return null; }
 }
@@ -402,12 +459,12 @@ function clearAuthCookie(res: Response) {
   });
 }
 
-interface UtenteCaricato { user: AuthUser; sv: number; mfaAttiva: boolean; deveCambiarePassword: boolean }
+interface UtenteCaricato { user: AuthUser; sv: number; mfaAttiva: boolean; deveCambiarePassword: boolean; codiciChiave: string | null }
 
 async function loadUserById(id: string): Promise<UtenteCaricato | null> {
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, permissions, fleetcare_role, active,
-           sessione_versione, mfa_attiva, deve_cambiare_password
+           sessione_versione, mfa_attiva, deve_cambiare_password, mfa_recupero_chiave
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -425,6 +482,7 @@ async function loadUserById(id: string): Promise<UtenteCaricato | null> {
     sv: Number(row.sessione_versione ?? 0),
     mfaAttiva: !!row.mfa_attiva,
     deveCambiarePassword: !!row.deve_cambiare_password,
+    codiciChiave: row.mfa_recupero_chiave ?? null,
   };
 }
 
@@ -438,6 +496,7 @@ function accessoDi(u: UtenteCaricato, sessione: { mfa: boolean; rec?: boolean })
     mfaObbligatoria: mfaObbligatoria(u.user),
     passwordDaCambiare: u.deveCambiarePassword,
     recupero: !!sessione.rec && u.mfaAttiva,
+    codiciDaRifare: u.mfaAttiva && !!u.codiciChiave && u.codiciChiave !== idChiave(),
   };
 }
 
@@ -462,10 +521,11 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
   if (accesso.rifiuta) { res.status(401).json({ error: "Serve il codice di verifica: entra di nuovo" }); return; }
   req.user = u.user;
   req.authVia = verificato.via;
-  req.sessione = { sv: u.sv, mfa: verificato.mfa, at: verificato.at, rec: verificato.rec };
+  req.sessione = { sv: u.sv, mfa: verificato.mfa, at: verificato.at, pw: verificato.pw, rec: verificato.rec };
   req.accesso = {
     limitato: accesso.limitato, mfaAttiva: accesso.mfaAttiva, mfaObbligatoria: accesso.mfaObbligatoria,
     passwordDaCambiare: accesso.passwordDaCambiare, recupero: accesso.recupero && !verificato.via,
+    codiciDaRifare: accesso.codiciDaRifare,
   };
   /* sessione limitata: solo le rotte per mettersi in regola */
   if (accesso.limitato && !percorsoConsentitoLimitato(req.path)) {
@@ -651,23 +711,40 @@ async function confrontaPassword(password: string, hash: string | null): Promise
 }
 
 /** L'indirizzo di chi prova: IPv4 intero, IPv6 per sottorete (/56), come il limitatore. */
+let avvisatoIndirizzoInterno = false;
 export function indirizzoDi(req: Request): string {
-  return ipKeyGenerator(req.ip ?? "") || "?";
+  const ip = req.ip ?? "";
+  /* in produzione un indirizzo interno vuol dire che i proxy davanti all'API non sono
+   * quelli di CERBERO_TRUST_PROXY: tutti avrebbero lo stesso indirizzo (DEPLOY.md) */
+  if (!avvisatoIndirizzoInterno && process.env.NODE_ENV === "production" && indirizzoInterno(ip)) {
+    avvisatoIndirizzoInterno = true;
+    console.warn(`[auth] l'indirizzo dei client risulta interno (${ip}): controlla CERBERO_TRUST_PROXY, altrimenti il blocco per indirizzo vale per tutti insieme`);
+  }
+  return ipKeyGenerator(ip) || "?";
+}
+function indirizzoInterno(ip: string): boolean {
+  const v4 = ip.replace(/^::ffff:/i, "");
+  if (isIP(v4) === 4) return /^(10\.|127\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(v4);
+  return ip === "::1" || /^f[cd]/i.test(ip);
 }
 
-export function rispostaBloccato(res: Response, fino: Date, che: "password" | "codici"): void {
+/** 429 per un blocco. Per quello dell'account non si dice quando finisce: servirebbe solo a chi lo tiene. */
+export function rispostaBloccato(res: Response, fino: Date, che: "password" | "account" | "codici"): void {
   const minuti = Math.max(1, Math.ceil((fino.getTime() - Date.now()) / 60_000));
   res.status(429).json({
     error: che === "password"
       ? `Troppi tentativi sbagliati: riprova fra ${minuti} minuti, o chiedi all'amministratore di sbloccare l'account.`
-      : `Troppi codici sbagliati: riprova fra ${minuti} minuti, o chiedi all'amministratore di sbloccare l'account.`,
+      : che === "account"
+        ? "Troppi tentativi sbagliati su questo account: riprova più tardi, o chiedi all'amministratore. Dai browser che hai già usato per entrare il blocco non vale."
+        : `Troppi codici sbagliati: riprova fra ${minuti} minuti, o chiedi all'amministratore di sbloccare l'account.`,
   });
 }
 
-/** Entra davvero: cookie della sessione, ultimo accesso, registro. */
+/** Entra davvero: cookie della sessione e del browser, ultimo accesso, registro. */
 async function apriSessione(req: Request, res: Response, row: any, s: { mfa: boolean; rec?: boolean }): Promise<void> {
   await db.execute(sql`UPDATE users SET last_login_at = now() WHERE id = ${row.id}::uuid`);
   emettiSessione(res, row.id, { sv: Number(row.sessione_versione ?? 0), mfa: s.mfa, rec: s.rec });
+  ricordaDispositivo(req, res, chiaveEmail(row.email));
   await registraAccesso(req, { userId: row.id, email: row.email, esito: s.mfa ? "ok_con_verifica" : "ok" });
   const u = await loadUserById(row.id);
   res.json({
@@ -693,11 +770,13 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   /* il tentativo si conta prima del confronto, che è lento: per indirizzo e per
-   * account, e anche per le email che non esistono (la risposta è la stessa) */
-  const prenotato = await prenotaTentativoPassword(chiave, ip);
+   * account (o per il browser, se da qui si è già entrati), e anche per le email
+   * che non esistono (la risposta è la stessa) */
+  const dispositivo = dispositivoPer(req, chiave);
+  const prenotato = await prenotaTentativoPassword(chiave, ip, dispositivo);
   if (!prenotato.ok) {
-    await registraAccesso(req, { userId: row?.id ?? null, email: row?.email ?? chiave, esito: "bloccato" });
-    rispostaBloccato(res, prenotato.fino, "password"); return;
+    await registraAccesso(req, { userId: row?.id ?? null, email: row?.email ?? chiave, esito: prenotato.account ? "bloccato_account" : "bloccato" });
+    rispostaBloccato(res, prenotato.fino, prenotato.account ? "account" : "password"); return;
   }
   // async: non blocca l'event loop durante l'hashing bcrypt (una login lenta
   // non deve congelare tutte le altre richieste).
@@ -711,7 +790,7 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
     res.status(401).json({ error: "Credenziali non valide" }); return;
   }
   /* password giusta: le serie di errori della password si chiudono (i codici hanno la loro) */
-  await azzeraTentativiPassword(chiave, ip);
+  await azzeraTentativiPassword(chiave, ip, dispositivo);
   if (!row.active) {
     await registraAccesso(req, { userId: row.id, email: row.email, esito: "utente_inattivo" });
     res.status(401).json({ error: "Credenziali non valide" }); return;
@@ -994,7 +1073,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   }
   /* telefono perso: si toglie la verifica (al prossimo accesso la riattiva) */
   if (resetMfa === true) {
-    sets.push(sql`mfa_attiva = false`, sql`mfa_segreto = NULL`, sql`mfa_recupero = NULL`, sql`mfa_ultimo_passo = NULL`);
+    sets.push(sql`mfa_attiva = false`, sql`mfa_segreto = NULL`, sql`mfa_recupero = NULL`, sql`mfa_recupero_chiave = NULL`, sql`mfa_ultimo_passo = NULL`);
     revoca = true;
   }
   /* sblocca (e con una password nuova o la verifica tolta si riparte puliti) */
