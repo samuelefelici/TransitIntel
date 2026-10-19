@@ -84,6 +84,10 @@ export async function apiFetch<T = unknown>(
     if (res.status === 401 && typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("auth:unauthorized"));
     }
+    /* sessione limitata (password provvisoria, verifica da attivare): l'app va alla pagina per mettersi in regola */
+    if (res.status === 403 && (body as any)?.accessoLimitato && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("auth:limited"));
+    }
     const err = new Error(msg) as Error & { status?: number; body?: any };
     err.status = res.status;
     err.body = body;

@@ -30,7 +30,36 @@ interface AdminUser {
   active: boolean;
   lastLoginAt: string | null;
   createdAt: string;
+  /* accesso sicuro (api-server/src/lib/auth.ts) */
+  mfaAttiva?: boolean;
+  mfaObbligatoria?: boolean;
+  passwordDaCambiare?: boolean;
+  bloccatoFino?: string | null;
+  codiciDaRifare?: boolean;
 }
+
+interface VoceAccesso { id: string; ts: string; userId: string | null; email: string | null; esito: string; ip: string | null; userAgent: string | null }
+
+/* gli esiti del registro, in parole */
+const ESITO_LABEL: Record<string, string> = {
+  ok: "entrato", ok_con_verifica: "entrato con la verifica", codice_richiesto: "password giusta, codice richiesto",
+  password_errata: "password sbagliata", codice_errato: "codice sbagliato", recupero_errato: "codice di recupero sbagliato",
+  recupero_usato: "codice di recupero usato", utente_sconosciuto: "email sconosciuta", utente_inattivo: "utente disattivato",
+  bloccato: "bloccato (troppi tentativi)", password_pubblicata: "password pubblicata: disattivato",
+  password_cambiata: "password cambiata", verifica_attivata: "verifica attivata", verifica_disattivata: "verifica disattivata",
+  codici_recupero_nuovi: "nuovi codici di recupero", sessioni_chiuse: "uscito da tutti i dispositivi",
+  codici_bloccati: "codici bloccati (troppi sbagliati)", segreto_illeggibile: "verifica non leggibile: controlla CERBERO_CHIAVE_MFA",
+  password_attuale_errata: "password attuale sbagliata", verifica_reimpostata: "verifica rifatta dopo il telefono perso",
+  bloccato_account: "account bloccato (errori da più indirizzi)",
+};
+const esitoLeggibile = (e: string) => {
+  const m = /^admin:([a-z_]+) \((.*)\)$/.exec(e);
+  if (m) {
+    const azione = ({ password_provvisoria: "password provvisoria", verifica_tolta: "verifica tolta", sbloccato: "sbloccato", disattivato: "disattivato", riattivato: "riattivato" } as Record<string, string>)[m[1]!] ?? m[1];
+    return `${azione}, dall'admin ${m[2]}`;
+  }
+  return ESITO_LABEL[e] ?? e;
+};
 
 const PERM_LABEL: Record<Permission, string> = {
   analytics: "Analytics (Traffico/Territorio/Rete)",
@@ -107,6 +136,18 @@ export default function AdminUsersPage() {
     try {
       await apiFetch(`/api/admin/users/${u.id}`, { method: "DELETE" });
       toast({ title: "Utente eliminato" });
+      void load();
+    } catch (e: any) {
+      toast({ title: "Errore", description: e?.message, variant: "destructive" });
+    }
+  };
+
+  /* telefono perso o troppi tentativi: due interventi dell'admin sull'accesso */
+  const handleAccesso = async (u: AdminUser, corpo: { resetMfa: true } | { sblocca: true }, domanda: string, fatto: string) => {
+    if (!confirm(domanda)) return;
+    try {
+      await apiFetch(`/api/admin/users/${u.id}`, { method: "PATCH", body: JSON.stringify(corpo) });
+      toast({ title: fatto });
       void load();
     } catch (e: any) {
       toast({ title: "Errore", description: e?.message, variant: "destructive" });
@@ -190,6 +231,7 @@ export default function AdminUsersPage() {
                       <th key={c.perm} className="py-2 pr-4" title={PERM_LABEL[c.perm]}>{c.intestazione}</th>
                     ))}
                     <th className="py-2 pr-4" title={PERM_LABEL.fleetcare}>FleetCare</th>
+                    <th className="py-2 pr-4">Accesso</th>
                     <th className="py-2 pr-4">Ultimo login</th>
                     <th className="py-2 pr-4 text-right">Azioni</th>
                   </tr>
@@ -255,6 +297,14 @@ export default function AdminUsersPage() {
                             ) : null}
                           </div>
                         </td>
+                        <td className="py-2 pr-4 text-xs whitespace-nowrap">
+                          <div className={u.mfaAttiva ? "text-emerald-400" : u.mfaObbligatoria ? "text-amber-400" : "text-muted-foreground"}>
+                            {u.mfaAttiva ? "verifica attiva" : u.mfaObbligatoria ? "verifica da attivare" : "solo password"}
+                          </div>
+                          {u.passwordDaCambiare && <div className="text-amber-400">password provvisoria</div>}
+                          {u.codiciDaRifare && <div className="text-amber-400">codici di recupero da rifare</div>}
+                          {u.bloccatoFino && <div className="text-red-400">bloccato fino al {new Date(u.bloccatoFino).toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>}
+                        </td>
                         <td className="py-2 pr-4 text-xs text-muted-foreground">
                           {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("it-IT") : "mai"}
                         </td>
@@ -275,6 +325,18 @@ export default function AdminUsersPage() {
                           >
                             <KeyRound className="w-3.5 h-3.5" />
                           </Button>
+                          {u.mfaAttiva && (
+                            <Button size="sm" variant="outline" title="Toglie la verifica in due passaggi (telefono perso). Se per il suo ruolo è obbligatoria, al prossimo accesso dovrà riattivarla"
+                              onClick={() => handleAccesso(u, { resetMfa: true }, `Togliere la verifica in due passaggi a ${u.email}? Le sue sessioni si chiudono${u.mfaObbligatoria ? " e al prossimo accesso dovrà riattivarla" : "; potrà riattivarla quando vuole"}.`, "Verifica tolta")}>
+                              Reimposta verifica
+                            </Button>
+                          )}
+                          {u.bloccatoFino && (
+                            <Button size="sm" variant="outline" title="Toglie il blocco dopo i tentativi falliti"
+                              onClick={() => handleAccesso(u, { sblocca: true }, `Sbloccare ${u.email}?`, "Utente sbloccato")}>
+                              Sblocca
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="ghost"
@@ -295,6 +357,8 @@ export default function AdminUsersPage() {
           )}
         </CardContent>
       </Card>
+
+      <RegistroAccessi />
 
       {showCreate && (
         <CreateUserDialog
@@ -575,5 +639,53 @@ function ResetPasswordDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Il registro degli accessi: chi, quando, da dove, com'è andata (12 mesi). */
+function RegistroAccessi() {
+  const [voci, setVoci] = useState<VoceAccesso[] | null>(null);
+  const [aperto, setAperto] = useState(false);
+  const carica = useCallback(async () => {
+    try { setVoci((await apiFetch<{ accessi: VoceAccesso[] }>("/api/admin/accessi?limite=500")).accessi); }
+    catch { setVoci([]); }
+  }, []);
+  useEffect(() => { if (aperto && !voci) void carica(); }, [aperto, voci, carica]);
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardTitle className="text-base">Registro degli accessi</CardTitle>
+        <div className="flex gap-2">
+          {aperto && <Button size="sm" variant="ghost" onClick={() => void carica()}>Aggiorna</Button>}
+          <Button size="sm" variant="outline" onClick={() => setAperto(!aperto)} aria-expanded={aperto}>{aperto ? "Nascondi" : "Mostra"}</Button>
+        </div>
+      </CardHeader>
+      {aperto && (
+        <CardContent>
+          <p className="text-xs text-muted-foreground mb-2">Ultimi 500 eventi. Si conservano 12 mesi.</p>
+          {!voci ? <p className="text-sm text-muted-foreground">Caricamento…</p> : (
+            <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-card">
+                  <tr className="text-left text-muted-foreground border-b border-border/40">
+                    <th className="py-1.5 pr-3">Quando</th><th className="py-1.5 pr-3">Utente</th><th className="py-1.5 pr-3">Che cosa</th><th className="py-1.5 pr-3">IP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {voci.map(v => (
+                    <tr key={v.id} className="border-b border-border/10">
+                      <td className="py-1 pr-3 whitespace-nowrap tabular-nums">{new Date(v.ts).toLocaleString("it-IT")}</td>
+                      <td className="py-1 pr-3 font-mono">{v.email ?? "—"}</td>
+                      <td className={`py-1 pr-3 ${/errat|sconosciut|bloccat|pubblicat|illeggibil/.test(v.esito) ? "text-amber-400" : ""}`}>{esitoLeggibile(v.esito)}</td>
+                      <td className="py-1 pr-3 font-mono text-muted-foreground" title={v.userAgent ?? ""}>{v.ip ?? "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      )}
+    </Card>
   );
 }

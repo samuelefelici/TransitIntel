@@ -24,8 +24,10 @@ function authBucket(req: any): string | null {
   const token = req.cookies?.[JWT_COOKIE];
   if (token) {
     try {
-      const decoded = jwt.verify(token, JWT_SECRET) as { sub?: string };
-      if (decoded?.sub) bucket = `user:${decoded.sub}`;
+      const decoded = jwt.verify(token, JWT_SECRET) as { sub?: string; sv?: unknown; aud?: unknown };
+      /* solo le sessioni (un biglietto della verifica ha un destinatario), e per versione:
+       * un token revocato consuma il suo secchio, non quello della sessione buona */
+      if (decoded?.sub && decoded.aud === undefined) bucket = `user:${decoded.sub}:${typeof decoded.sv === "number" ? decoded.sv : 0}`;
     } catch { /* token assente/scaduto/invalido → bucket per IP */ }
   }
   req.__rlBucket = bucket;

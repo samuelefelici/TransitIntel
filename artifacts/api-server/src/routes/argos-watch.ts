@@ -16,7 +16,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { hasProjectAccess } from "./argos-context";
-import { mintShortLivedUserToken } from "../lib/auth";
+import { mintTokenServizio } from "../lib/auth";
 import { logger } from "../lib/logger";
 
 const ARGOS_URL = (process.env.ARGOS_URL || "").replace(/\/+$/, "");
@@ -187,7 +187,7 @@ async function runOldestActiveGoal(projectId: string, userId: string): Promise<{
     const out = await drainSse(`/agent/goals/${target.id}/run/stream`, {
       client_slug: ARGOS_CLIENT_SLUG, project_id: projectId,
       // Token fresco: quello del giro di sorveglianza potrebbe essere a fine vita.
-      ti_auth_token: mintShortLivedUserToken(userId), note: "",
+      ti_auth_token: await mintTokenServizio(userId), note: "",
     }, GOAL_TIMEOUT_MS);
     return { goal: out.goal, error: out.error };
   } catch (err: any) {
@@ -234,7 +234,7 @@ cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
       res.status(403).json({ error: "utente non membro del progetto" });
       return;
     }
-    res.json({ token: mintShortLivedUserToken(userId), expiresInSec: 600 });
+    await rispondiConToken(res, userId);
     return;
   }
   const r = await db.execute(sql`
@@ -242,8 +242,17 @@ cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
   `);
   const owner = (r as any).rows?.[0]?.owner_user_id;
   if (!owner) { res.status(404).json({ error: "progetto non trovato" }); return; }
-  res.json({ token: mintShortLivedUserToken(String(owner)), expiresInSec: 600 });
+  await rispondiConToken(res, String(owner));
 });
+
+/** Il token per Argos, o perché non si può: l'utente deve prima mettersi in regola (password provvisoria, verifica da attivare). */
+async function rispondiConToken(res: any, userId: string): Promise<void> {
+  try {
+    res.json({ token: await mintTokenServizio(userId), expiresInSec: 600 });
+  } catch (e: any) {
+    res.status(409).json({ error: e?.message || "token non disponibile" });
+  }
+}
 
 /* POST /api/cron/argos-mcp-projects — elenco progetti per il connettore MCP:
  * Claude scopre i projectId da solo (tool argos_projects) senza dover
@@ -295,7 +304,7 @@ cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
     try {
       const out = await drainSse("/agent/watch/stream", {
         client_slug: ARGOS_CLIENT_SLUG, project_id: projectId,
-        ti_auth_token: mintShortLivedUserToken(String(w.user_id)),
+        ti_auth_token: await mintTokenServizio(String(w.user_id)),
       }, WATCH_TIMEOUT_MS);
       if (out.watch) {
         status = String(out.watch.status || "errore");

@@ -50,9 +50,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// Dietro il proxy di Render/nginx: fidati del primo hop così req.ip è l'IP
-// reale del client (rate-limit per-IP corretto) e cookie `secure` funziona.
-app.set("trust proxy", 1);
+// Dietro il proxy (Traefik di Coolify): fidati del primo hop così req.ip è l'IP
+// reale del client (rate-limit e blocco dei tentativi per indirizzo corretti) e
+// il cookie `secure` funziona. Con più proxy davanti (CDN, nginx che inoltra
+// /api) CERBERO_TRUST_PROXY dice quanti sono, o i loro indirizzi (DEPLOY.md).
+const trustProxy = (process.env.CERBERO_TRUST_PROXY ?? "").trim();
+try {
+  app.set("trust proxy", /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy || 1);
+} catch (e: any) {
+  throw new Error(`CERBERO_TRUST_PROXY non valida («${trustProxy}»): un numero di proxy (es. 1) o i loro indirizzi separati da virgola. ${e?.message ?? ""}`);
+}
 
 // CORS: allowlist ESATTA di origin. Con credentials:true NON si può mai
 // riflettere un origin arbitrario (leggerebbe i cookie della vittima cross-site).

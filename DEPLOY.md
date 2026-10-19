@@ -68,6 +68,11 @@ parlarsi via rete interna:
    - `CERBERO_API_KEY` — **OBBLIGATORIA** se usi Caronte (validatore/AVM): senza,
      gli endpoint `/api/caronte/*` rispondono 503 fail-closed
    - `CRON_SECRET` (genera con `openssl rand -hex 32`)
+   - `CERBERO_CHIAVE_MFA` (genera con `openssl rand -hex 32`) — **OBBLIGATORIA**:
+     cifra i segreti della verifica in due passaggi; senza, in produzione l'API
+     non parte. Impostala **prima** del deploy e non perderla: con un'altra chiave
+     i segreti salvati non si leggono più (il log lo dice all'avvio). Per
+     cambiarla vedi «Accesso sicuro» qui sotto
    - `CERBERO_ADMIN_EMAIL` e `CERBERO_ADMIN_PASSWORD` **solo se non c'è un
      amministratore attivo** (database nuovo, o recupero): l'API crea o rimette in
      piedi un amministratore con questi dati (password di almeno 12 caratteri, non
@@ -196,6 +201,95 @@ creano da sé; `migrations/2026-10_roster_riposi.sql` è lo specchio.
 3. Le assegnazioni già fatte prima del rilascio non bloccano niente: il
    tabellone mostra in rosso quelle che violano le regole, da controllare.
 
+### Accesso sicuro
+
+**Prima del rilascio.** Al rilascio del permesso Roster, chi aveva Scheduling
+lo riceve in automatico; con l'accesso sicuro, Roster rende obbligatoria la
+verifica in due passaggi. Quindi:
+1. imposta `CERBERO_CHIAVE_MFA`;
+2. se il permesso Roster è già in esercizio (rilascio precedente), togli
+   Roster in Gestione Utenti a chi non lavora sul roster;
+3. avvisa admin e utenti di Personale e Roster (e, se Roster arriva con
+   questo stesso rilascio, tutti quelli con Scheduling) che serve un'app di
+   autenticazione sul telefono.
+
+Dopo il rilascio tutti devono rientrare (le sessioni di prima non valgono più).
+L'admin entra per primo e attiva la sua verifica; se Roster è arrivato con
+questo rilascio, toglie subito Roster a chi non lavora sul roster, **prima**
+di dire agli altri di entrare: chi non ha più Roster (né Personale) non deve
+attivare la verifica.
+
+- **Verifica in due passaggi** (codice a 6 cifre da un'app come Google o
+  Microsoft Authenticator) obbligatoria per admin e per chi ha i permessi
+  Personale o Roster; facoltativa per gli altri. Chi deve attivarla, al primo
+  accesso vede solo la pagina «Sicurezza dell'account» finché non l'ha fatto.
+  Le sorveglianze e il connettore di Argos non partono per chi deve ancora
+  attivarla (o cambiare la password provvisoria): lo dicono nel loro esito.
+- **Password**: almeno 12 caratteri; quella data dall'admin è provvisoria e va
+  cambiata al primo accesso.
+- **Tentativi sbagliati**:
+  - password, dallo stesso indirizzo: dopo 5 errori quell'indirizzo aspetta 15
+    minuti, poi il doppio a ogni errore, al massimo un giorno. Chi sbaglia da un
+    altro posto non blocca il titolare;
+  - password, da qualunque indirizzo: al massimo 20 errori in 15 minuti, poi
+    l'account aspetta 15 minuti (ferma chi prova da tanti indirizzi). Questo
+    blocco non vale dai browser da cui la persona è già entrata (un cookie
+    firmato, 180 giorni; cambio password, «esci da tutti i dispositivi»,
+    password provvisoria e disattivazione lo annullano sugli altri browser,
+    mentre attivare o rifare la verifica, «Reimposta verifica» e il
+    ripristino dell'admin no): lì gli errori fanno una serie a parte, 5 e poi
+    l'attesa. Se qualcuno tiene bloccata la
+    password dell'unico admin, l'admin entra dal suo solito computer; se il
+    blocco è sui codici della verifica, qualcuno conosce la sua password:
+    cambiala (da un'altra sessione aperta, o con `CERBERO_ADMIN_RIPRISTINA`);
+  - codici della verifica: dopo 5 errori 15 minuti, poi il doppio, al massimo
+    un giorno (chi li sbaglia conosce già la password: se non è il titolare,
+    la password va cambiata).
+  Gli stessi limiti valgono per la password e i codici chiesti dentro la pagina
+  «Sicurezza dell'account». L'admin sblocca da Gestione Utenti; anche dare una
+  password provvisoria sblocca la password.
+- **Sessioni**: durano 12 ore dall'accesso, sempre; cambio password,
+  reset della verifica e «esci da tutti i dispositivi» chiudono le altre
+  sessioni senza allungare quella in uso.
+- **Registro degli accessi** in Gestione Utenti, conservato 12 mesi.
+- **Telefono perso**: l'utente entra con un codice di recupero e, nella pagina
+  «Sicurezza dell'account», ridando la password rifà la verifica con il
+  telefono nuovo. Oppure l'admin usa «Reimposta verifica». Se è l'unico admin
+  ad averlo perso: imposta `CERBERO_ADMIN_EMAIL`, `CERBERO_ADMIN_PASSWORD` e
+  `CERBERO_ADMIN_RIPRISTINA=1`, riavvia, entra, poi togli le tre variabili.
+- **Cambiare `CERBERO_CHIAVE_MFA`** (per esempio se è uscita):
+  1. metti la nuova in `CERBERO_CHIAVE_MFA` e la vecchia in
+     `CERBERO_CHIAVE_MFA_PRECEDENTE`, riavvia: all'avvio tutti i segreti della
+     verifica si ricifrano con la nuova;
+  2. i codici di recupero non si possono ricifrare (se ne tiene solo
+     l'impronta): finché la vecchia resta impostata valgono, e chi li ha
+     ancora vecchi lo vede all'ingresso e in «Sicurezza dell'account»;
+     Gestione Utenti segna «codici di recupero da rifare», e il log all'avvio
+     dice chi sono;
+  3. quando nessuno è più segnato, o dopo aver usato «Reimposta verifica» per
+     chi resta, togli `CERBERO_CHIAVE_MFA_PRECEDENTE` e riavvia. Se lo togli
+     prima, i codici di recupero rimasti non valgono più (il codice dell'app
+     sì): rispondono «non disponibile» senza contare errori, e si rifanno da
+     «Sicurezza dell'account».
+  Se una chiave manca del tutto, la verifica risponde «non disponibile» e il
+  log all'avvio dice chi è coinvolto.
+- **Indirizzo dei client**: il blocco per indirizzo e i limiti per IP usano
+  l'indirizzo che arriva dal proxy davanti all'API. Con Coolify (un solo
+  proxy, Traefik) va bene così; se metti davanti un altro proxy (una CDN, o
+  nginx che inoltra `/api`) imposta `CERBERO_TRUST_PROXY` al numero dei proxy,
+  e non pubblicare mai la porta dell'API direttamente. Con una CDN anche
+  Traefik deve fidarsi degli indirizzi della CDN (`forwardedHeaders.trustedIPs`),
+  altrimenti tutti risultano con l'indirizzo della CDN. Per controllare: nel
+  registro degli accessi (Gestione Utenti) l'IP deve essere quello vero di
+  chi entra. Se in produzione l'indirizzo risulta interno, il log lo segnala.
+- **FleetCare** accetta ancora la password di Cerbero sul suo login: finché non
+  arriva la PR che lo fa entrare solo da Cerbero, lì non valgono la verifica in
+  due passaggi, il blocco dei tentativi, la password provvisoria da cambiare e
+  la chiusura delle sessioni.
+- Riferimenti da verificare con il DPO: GDPR art. 32; Direttiva NIS2
+  2022/2555 art. 21 (autenticazione a più fattori «dove appropriato»); se
+  Conerobus rientri nel D.Lgs. 138/2024.
+
 ### Roster: pubblicazione dei turni guida
 
 Il roster riceve i turni guida da un solo canale, **Pubblicazione turni** (menu
@@ -234,6 +328,10 @@ Riferimento completo in `.env.example`. Sintesi:
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
 | `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
+| `CERBERO_CHIAVE_MFA` | ✅ | `openssl rand -hex 32`: cifra i segreti della verifica in due passaggi. Senza, in produzione l'API non parte; non perderla |
+| `CERBERO_CHIAVE_MFA_PRECEDENTE` | — | Solo durante un cambio di chiave: la chiave di prima (vedi «Accesso sicuro») |
+| `CERBERO_TRUST_PROXY` | — | Quanti proxy ci sono davanti all'API (default `1`, il Traefik di Coolify), o i loro indirizzi |
+| `CERBERO_ADMIN_RIPRISTINA` | — | `1` insieme alle due qui sotto: rimette in piedi quell'admin anche se risulta attivo (password o telefono persi). Poi togli tutte e tre |
 | `CERBERO_ADMIN_EMAIL` | senza admin attivi | email dell'amministratore da creare o ripristinare, solo se non ce n'è uno attivo |
 | `CERBERO_ADMIN_PASSWORD` | senza admin attivi | sua password (≥ 12 caratteri, non comune); da togliere dopo il primo accesso |
 | `CERBERO_DATI_PROVA` | — | `1` solo sulle installazioni di prova o demo: abilita i conducenti fittizi («+30 fittizi»). In produzione lasciala vuota |

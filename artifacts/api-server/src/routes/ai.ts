@@ -276,7 +276,7 @@ router.post("/ai/argos/chat", async (req, res) => {
       return;
     }
     psProjectId = projectId;
-    tiAuthToken = mintShortLivedUserToken(userId);
+    tiAuthToken = mintShortLivedUserToken(userId, req.sessione);
   }
 
   // Ultimo turno utente = domanda corrente; il resto = storia della conversazione.
@@ -492,7 +492,7 @@ router.post("/ai/argos/agent/goal", async (req, res) => {
   }
   const userId = await requireProjectMember(req, res, String(projectId || ""));
   if (!userId) return;
-  const tiAuthToken = mintShortLivedUserToken(userId);
+  const tiAuthToken = mintShortLivedUserToken(userId, req.sessione);
   try {
     // La pianificazione è multi-step (più letture + Opus): timeout generoso.
     const upstream = await fetch(`${ARGOS_URL}/agent/goal`, {
@@ -539,7 +539,7 @@ router.post("/ai/argos/agent/chat", async (req, res) => {
   }
   const userId = await requireProjectMember(req, res, String(projectId || ""));
   if (!userId) return;
-  const tiAuthToken = mintShortLivedUserToken(userId);
+  const tiAuthToken = mintShortLivedUserToken(userId, req.sessione);
 
   const last = messages[messages.length - 1];
   const question = (last?.content || "").trim();
@@ -682,7 +682,7 @@ router.post("/ai/argos/agent/goals/:id/run", async (req, res) => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         client_slug: ARGOS_CLIENT_SLUG, project_id: projectId,
-        ti_auth_token: mintShortLivedUserToken(userId), note: note || "",
+        ti_auth_token: mintShortLivedUserToken(userId, req.sessione), note: note || "",
       }),
       signal: ctrl.signal,
     });
@@ -728,7 +728,7 @@ router.post("/ai/argos/agent/runs/:id/undo", async (req, res) => {
     const upstream = await fetch(`${ARGOS_URL}/agent/runs/${runId}/undo`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ project_id: projectId, ti_auth_token: mintShortLivedUserToken(userId) }),
+      body: JSON.stringify({ project_id: projectId, ti_auth_token: mintShortLivedUserToken(userId, req.sessione) }),
       signal: AbortSignal.timeout(60000),
     });
     const data = await upstream.json().catch(() => ({}));

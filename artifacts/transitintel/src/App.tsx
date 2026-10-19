@@ -3,6 +3,7 @@ import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wo
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { Toaster as ToasterSonner } from "@/components/ui/sonner";
+import { toast as toastSonner } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
@@ -101,6 +102,7 @@ const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-stu
 const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
 const NetworkEngineHub = lazyWithRetry(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
+const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
 
 // Initialize TanStack Query client
@@ -150,6 +152,7 @@ function Router() {
       <ErrorBoundary context="Pagina">
         <Suspense fallback={<PageLoader />}>
           <Switch>
+            <Route path="/account"><AccountPage /></Route>
             <Route path="/">
               <Redirect to="/dashboard" />
             </Route>
@@ -368,19 +371,25 @@ function Router() {
 }
 
 function AuthGate() {
-  const { isAuthenticated, loading, user } = useAuth();
+  const { isAuthenticated, loading, user, accesso } = useAuth();
   const [location, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
+  /* entrato con un codice di recupero: si parte dalla pagina per rifare la verifica */
+  const recuperoRef = useRef(false);
+  recuperoRef.current = !!accesso?.recupero;
+  /* codici di recupero da rifare dopo un cambio di chiave: lo si dice all'ingresso */
+  const codiciRef = useRef(false);
+  codiciRef.current = !!accesso?.codiciDaRifare;
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
   const [waitingSequence, setWaitingSequence] = useState(false);
 
-  // Listener globale: 401 -> svuota lo stato; AuthProvider rinegozierà via /me.
+  // Listener globale: 401 -> svuota lo stato; AuthProvider richiede /me (hooks/use-auth.tsx)
+  // e, se la sessione è davvero finita, torna il login.
   // NON forziamo redirect duro a /login: lasciamo che lo stato di auth si auto-aggiorni
   // (un singolo 401 su una route protetta non significa che la sessione è caduta — può essere
   // un endpoint per cui l'utente non ha permesso, e usare navigate qui interrompe la UX).
   useEffect(() => {
     function onUnauth() {
-      // best-effort: invalida cache locale; AuthProvider farà /me al prossimo tick
       try { sessionStorage.removeItem("transitintel_auth"); } catch {}
     }
     window.addEventListener("auth:unauthorized", onUnauth);
@@ -399,7 +408,13 @@ function AuthGate() {
     if (!prevAuth.current && isAuthenticated) {
       // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
       setWaitingSequence(true);
-      navigate("/dashboard");
+      navigate(recuperoRef.current ? "/account" : "/dashboard");
+      if (codiciRef.current && !recuperoRef.current) {
+        toastSonner.warning("Rifai i codici di recupero", {
+          description: "Quelli che hai sono di prima di un aggiornamento della sicurezza: fanne di nuovi in «Sicurezza dell'account».",
+          duration: 15000,
+        });
+      }
     }
     prevAuth.current = isAuthenticated;
   }, [isAuthenticated, navigate]);
@@ -421,7 +436,11 @@ function AuthGate() {
 
   return (
     <Suspense fallback={<PageLoader />}>
-      {showApp ? (
+      {showApp && accesso?.limitato ? (
+        /* sessione limitata (password provvisoria, verifica da attivare): solo la pagina
+         * per mettersi in regola, senza menu; il server rifiuta comunque il resto */
+        <AccountPage forzata />
+      ) : showApp ? (
         <>
           <VirgilioController />
           <Router />

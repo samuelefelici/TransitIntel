@@ -795,6 +795,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </div>
                 <div className="font-mono opacity-60 truncate">{user.email}</div>
                 {isAdmin && <div className="text-amber-400/70 mt-0.5">admin</div>}
+                <Link href="/account" className="inline-block mt-1 text-primary/80 hover:text-primary underline-offset-2 hover:underline">
+                  Sicurezza dell'account
+                </Link>
               </div>
             )}
             <div className="bg-gradient-to-br from-primary/10 to-accent/10 rounded-xl p-4 border border-primary/20">
