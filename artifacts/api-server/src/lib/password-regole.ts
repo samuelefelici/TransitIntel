@@ -109,11 +109,16 @@ export type PrimoAdmin =
  * (e lo si dice nel log).
  */
 export function decidiPrimoAdmin(nAdminAttivi: number, env: { CERBERO_ADMIN_EMAIL?: string; CERBERO_ADMIN_PASSWORD?: string; CERBERO_ADMIN_RIPRISTINA?: string }): PrimoAdmin {
-  /* CERBERO_ADMIN_RIPRISTINA=1: l'unico admin ha perso la password o il telefono della
-   * verifica; si rimette in piedi anche se risulta attivo */
-  if (nAdminAttivi > 0 && env.CERBERO_ADMIN_RIPRISTINA !== "1") return { tipo: "niente" };
   const email = (env.CERBERO_ADMIN_EMAIL ?? "").trim().toLowerCase();
   const password = env.CERBERO_ADMIN_PASSWORD ?? "";
+  /* CERBERO_ADMIN_RIPRISTINA=1: l'unico admin ha perso la password o il telefono della
+   * verifica; si rimette in piedi anche se risulta attivo */
+  if (nAdminAttivi > 0 && env.CERBERO_ADMIN_RIPRISTINA !== "1") {
+    /* chi le ha impostate di solito è rimasto fuori: non deve sembrare che non sia successo niente */
+    return email || password
+      ? { tipo: "avviso", messaggio: "CERBERO_ADMIN_EMAIL/CERBERO_ADMIN_PASSWORD impostate, ma c'è già un amministratore attivo: non cambio niente. Per rimetterlo in piedi (password o telefono persi) aggiungi CERBERO_ADMIN_RIPRISTINA=1 e riavvia; se non servono, toglile" }
+      : { tipo: "niente" };
+  }
   if (!email || !password) {
     return { tipo: "avviso", messaggio: "nessun amministratore attivo e CERBERO_ADMIN_EMAIL/CERBERO_ADMIN_PASSWORD non impostate: nessuno può amministrare finché non le imposti e riavvii" };
   }

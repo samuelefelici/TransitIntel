@@ -290,7 +290,13 @@ async function preparaUtenti(): Promise<void> {
         ON CONFLICT DO NOTHING`);
     }
     await azzeraTuttiITentativiPassword(primo.email);
-    console.log(`[auth] amministratore ${primo.email} pronto (da CERBERO_ADMIN_*): cambia la password al primo accesso e togli CERBERO_ADMIN_PASSWORD`);
+    /* «creato» con un admin già esistente vuol dire un'email scritta diversa: lo si legge qui */
+    const come = (rimesso as any).rows?.length ? "rimesso in piedi" : "creato (nessun utente aveva questa email)";
+    /* con RIPRISTINA ancora impostata, il prossimo riavvio rifà tutto e la password scelta al primo accesso si perde */
+    const poi = process.env.CERBERO_ADMIN_RIPRISTINA === "1"
+      ? "poi togli CERBERO_ADMIN_EMAIL, CERBERO_ADMIN_PASSWORD e CERBERO_ADMIN_RIPRISTINA e riavvia: finché c'è CERBERO_ADMIN_RIPRISTINA=1, a ogni riavvio la password torna quella della variabile e la verifica si toglie"
+      : "poi togli CERBERO_ADMIN_EMAIL e CERBERO_ADMIN_PASSWORD";
+    console.warn(`[auth] amministratore ${primo.email} ${come} da CERBERO_ADMIN_*: entra con la password della variabile e cambiala; ${poi}`);
   } else if (primo.tipo === "avviso") {
     console.warn(`[auth] ${primo.messaggio}`);
   }
