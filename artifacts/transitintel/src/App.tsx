@@ -412,7 +412,9 @@ function AuthGate() {
     if (!prevAuth.current && isAuthenticated) {
       // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
       setWaitingSequence(true);
-      navigate(recuperoRef.current ? "/account" : locationRef.current === "/fleetcare" ? "/fleetcare" : "/dashboard");
+      navigate(recuperoRef.current
+        ? "/account"
+        : locationRef.current === "/fleetcare" ? `/fleetcare${window.location.search}` : "/dashboard");
       if (codiciRef.current && !recuperoRef.current) {
         toastSonner.warning("Rifai i codici di recupero", {
           description: "Quelli che hai sono di prima di un aggiornamento della sicurezza: fanne di nuovi in «Sicurezza dell'account».",

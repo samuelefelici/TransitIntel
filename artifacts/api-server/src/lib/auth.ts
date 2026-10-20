@@ -942,6 +942,17 @@ export function firmaAccessoFleetCare(
   );
 }
 
+/**
+ * Dove tornare in FleetCare dopo l'ingresso (?da=, dal pulsante «Entra con
+ * Cerbero» di una pagina chiesta prima del login): solo un percorso /fleet…,
+ * mai un altro sito. FleetCare lo ricontrolla comunque (ritornoDopoIlLogin).
+ */
+export function ritornoFleetCare(da: unknown): string | null {
+  if (typeof da !== "string" || da.length > 2000) return null;
+  if (!/^\/fleet(?:[/?#]|$)/.test(da) || da.includes("//") || da.includes("\\")) return null;
+  return da;
+}
+
 router.get("/auth/fleetcare-sso", requireAuth, async (req, res): Promise<void> => {
   const user = req.user!;
   if (!accessoFleetCare(user).abilitato) {
@@ -958,7 +969,10 @@ router.get("/auth/fleetcare-sso", requireAuth, async (req, res): Promise<void> =
   }
   const token = firmaAccessoFleetCare(user, { sv: req.sessione!.sv, at: req.sessione?.at }, secret);
   await registraAccesso(req, { userId: user.id, email: user.email, esito: "fleetcare" });
-  res.json({ url: `${fleetcareUrl}/api/auth/sso?token=${encodeURIComponent(token)}` });
+  const da = ritornoFleetCare(req.query.da);
+  res.json({
+    url: `${fleetcareUrl}/api/auth/sso?token=${encodeURIComponent(token)}${da ? `&da=${encodeURIComponent(da)}` : ""}`,
+  });
 });
 
 /* ─── Lookup utenti (per picker membri progetto) ─── */

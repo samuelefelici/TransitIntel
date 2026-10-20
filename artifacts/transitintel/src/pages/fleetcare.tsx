@@ -17,7 +17,9 @@ export default function ApriFleetCare() {
     /* una richiesta sola, anche se React monta due volte l'effetto */
     if (partito.current) return;
     partito.current = true;
-    apiFetch<{ url: string }>("/api/auth/fleetcare-sso")
+    /* la pagina di FleetCare chiesta prima dell'accesso (?da=): FleetCare la ricontrolla */
+    const da = new URLSearchParams(window.location.search).get("da");
+    apiFetch<{ url: string }>(`/api/auth/fleetcare-sso${da ? `?da=${encodeURIComponent(da)}` : ""}`)
       .then(r => {
         /* replace: tornando indietro da FleetCare non si riparte da qui */
         window.location.replace(r.url);

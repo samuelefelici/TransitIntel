@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import jwt from "jsonwebtoken";
-import { accessoFleetCare, firmaAccessoFleetCare } from "../lib/auth";
+import { accessoFleetCare, firmaAccessoFleetCare, ritornoFleetCare } from "../lib/auth";
 import { mfaObbligatoria } from "../lib/accesso-regole";
 
 const SEGRETO = "segreto-condiviso-di-prova-0123456789";
@@ -55,5 +55,15 @@ describe("le regole che FleetCare copia (aggiorna FleetCare 0088 se cambiano)", 
       ["user", { fleetcare: true, scheduling: true, analytics: true }, false],
     ];
     for (const [role, permissions, atteso] of casi) expect(mfaObbligatoria({ role, permissions })).toBe(atteso);
+  });
+});
+
+describe("il ritorno in FleetCare dopo l'ingresso", () => {
+  it("solo un percorso /fleet di FleetCare, mai un altro sito", () => {
+    expect(ritornoFleetCare("/fleet/vehicles/123?apri=4")).toBe("/fleet/vehicles/123?apri=4");
+    expect(ritornoFleetCare("/fleet")).toBe("/fleet");
+    for (const x of ["//altro.it/fleet", "/fleetX", "https://altro.it/fleet", "/\\altro", "/fleet//x", "", undefined, ["/fleet"], "/".padEnd(2100, "a")]) {
+      expect(ritornoFleetCare(x), String(x)).toBeNull();
+    }
   });
 });
