@@ -15,7 +15,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
@@ -888,20 +888,75 @@ router.get("/auth/me", requireAuth, (req, res) => {
 
 /* ─── SSO verso FleetCare (modulo Cerbero di gestione flotta) ───
  *
- * FleetCare è un'app separata (stesso database, schema `fleetcare`) e NON ha
- * un login proprio: si entra SOLO da qui. Il flusso:
- *   1. l'utente (già autenticato su Cerbero) clicca "FleetCare" in sidebar
- *   2. il frontend chiama questo endpoint → token firmato monouso (60s)
- *      con il segreto condiviso FLEETCARE_SSO_SECRET
- *   3. il browser viene rediretto a <FLEETCARE_URL>/api/auth/sso?token=…
- *   4. FleetCare verifica il token e crea la SUA sessione (upsert profilo)
+ * FleetCare è un'app separata (stesso database, schema `fleetcare`): chi ha un
+ * account Cerbero ci entra SOLO da qui (FleetCare migrazione 0088). Il flusso:
+ *   1. l'utente (già entrato in Cerbero, sessione completa) clicca "FleetCare"
+ *      in sidebar, o apre <cerbero>/fleetcare dal pulsante «Entra con Cerbero»
+ *   2. il frontend chiama questo endpoint (POST: da un altro sito non si può,
+ *      la richiesta porta l'Origin e il CORS la ferma) → biglietto firmato con
+ *      il segreto condiviso FLEETCARE_SSO_SECRET: 60 secondi, una volta sola (jti)
+ *   3. il browser va a <FLEETCARE_URL>/api/auth/sso?token=…
+ *   4. FleetCare verifica il biglietto, usa il jti, rilegge l'utente nel database
+ *      e crea la SUA sessione; poi la ricontrolla ogni ~30 s (versione della
+ *      sessione, account attivo, permesso, ruolo, verifica in due passaggi).
  *
- * Autorizzazione: admin sempre; gli altri solo con permissions.fleetcare.
+ * Le sessioni limitate e i token di Argos non arrivano qui (requireAuth).
  */
-router.get("/auth/fleetcare-sso", requireAuth, (req, res): void => {
+
+/**
+ * Chi entra in FleetCare e con quale ruolo: gli admin sempre, come fleet_admin;
+ * gli altri con il permesso «fleetcare» e il ruolo scelto in Gestione Utenti.
+ * Lo stesso calcolo è in FleetCare (fleetcare.cerbero_stato_utente, migrazione
+ * 0088): se cambia qui, va cambiato anche là.
+ */
+export function accessoFleetCare(user: Pick<AuthUser, "role" | "permissions" | "fleetcareRole">): { abilitato: boolean; ruolo: string } {
+  return {
+    abilitato: user.role === "admin" || !!user.permissions?.fleetcare,
+    ruolo: user.role === "admin" ? "fleet_admin" : user.fleetcareRole || "driver",
+  };
+}
+
+/**
+ * Il biglietto per FleetCare: chi è (sub), la versione della sua sessione
+ * (sv: FleetCare chiude la propria quando cambia), quando è cominciata la
+ * sessione Cerbero (at: quella di FleetCare non dura oltre le sue 12 ore) e un
+ * jti che FleetCare accetta una volta sola. email, name e fleetcareRole restano
+ * per il FleetCare di prima, durante il rilascio: quello nuovo li rilegge dal
+ * database.
+ */
+export function firmaAccessoFleetCare(
+  user: Pick<AuthUser, "id" | "email" | "fullName" | "role" | "permissions" | "fleetcareRole">,
+  sessione: { sv: number; at?: number },
+  secret: string,
+): string {
+  return jwt.sign(
+    {
+      sub: user.id,
+      email: user.email,
+      name: user.fullName ?? undefined,
+      fleetcareRole: accessoFleetCare(user).ruolo,
+      sv: sessione.sv,
+      ...(typeof sessione.at === "number" ? { at: sessione.at } : {}),
+    },
+    secret,
+    { expiresIn: "60s", issuer: "cerbero", audience: "fleetcare", jwtid: randomUUID() },
+  );
+}
+
+/**
+ * Dove tornare in FleetCare dopo l'ingresso (?da=, dal pulsante «Entra con
+ * Cerbero» di una pagina chiesta prima del login): solo un percorso /fleet…,
+ * mai un altro sito. FleetCare lo ricontrolla comunque (ritornoDopoIlLogin).
+ */
+export function ritornoFleetCare(da: unknown): string | null {
+  if (typeof da !== "string" || da.length > 2000) return null;
+  if (!/^\/fleet(?:[/?#]|$)/.test(da) || da.includes("//") || da.includes("\\")) return null;
+  return da;
+}
+
+router.post("/auth/fleetcare-sso", requireAuth, async (req, res): Promise<void> => {
   const user = req.user!;
-  const enabled = user.role === "admin" || !!user.permissions?.fleetcare;
-  if (!enabled) {
+  if (!accessoFleetCare(user).abilitato) {
     res.status(403).json({ error: "Non sei abilitato a FleetCare: chiedi all'amministratore." });
     return;
   }
@@ -913,20 +968,13 @@ router.get("/auth/fleetcare-sso", requireAuth, (req, res): void => {
     });
     return;
   }
-  // Gli admin di Cerbero entrano sempre come fleet_admin; gli altri col ruolo
-  // scelto dall'amministratore in Gestione Utenti.
-  const fleetcareRole = user.role === "admin" ? "fleet_admin" : user.fleetcareRole || "driver";
-  const token = jwt.sign(
-    {
-      sub: user.id,
-      email: user.email,
-      name: user.fullName ?? undefined,
-      fleetcareRole,
-    },
-    secret,
-    { expiresIn: "60s", issuer: "cerbero", audience: "fleetcare" },
-  );
-  res.json({ url: `${fleetcareUrl}/api/auth/sso?token=${encodeURIComponent(token)}` });
+  const token = firmaAccessoFleetCare(user, { sv: req.sessione!.sv, at: req.sessione?.at }, secret);
+  /* il biglietto emesso, non l'ingresso: quello lo decide FleetCare */
+  await registraAccesso(req, { userId: user.id, email: user.email, esito: "biglietto_fleetcare" });
+  const da = ritornoFleetCare(req.body?.da);
+  res.json({
+    url: `${fleetcareUrl}/api/auth/sso?token=${encodeURIComponent(token)}${da ? `&da=${encodeURIComponent(da)}` : ""}`,
+  });
 });
 
 /* ─── Lookup utenti (per picker membri progetto) ─── */

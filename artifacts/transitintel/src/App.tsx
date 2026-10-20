@@ -103,6 +103,7 @@ const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-
 const NetworkEngineHub = lazyWithRetry(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
 const AccountPage = lazyWithRetry(() => import("@/pages/account"));
+const ApriFleetCare = lazyWithRetry(() => import("@/pages/fleetcare"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
 
 // Initialize TanStack Query client
@@ -380,6 +381,9 @@ function AuthGate() {
   /* codici di recupero da rifare dopo un cambio di chiave: lo si dice all'ingresso */
   const codiciRef = useRef(false);
   codiciRef.current = !!accesso?.codiciDaRifare;
+  /* arrivati da FleetCare («Entra con Cerbero»): dopo l'accesso si torna lì */
+  const locationRef = useRef(location);
+  locationRef.current = location;
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
   const [waitingSequence, setWaitingSequence] = useState(false);
 
@@ -408,7 +412,12 @@ function AuthGate() {
     if (!prevAuth.current && isAuthenticated) {
       // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
       setWaitingSequence(true);
-      navigate(recuperoRef.current ? "/account" : "/dashboard");
+      /* replace: la pagina del login non resta nella cronologia (da FleetCare, Indietro
+       * non deve riportare a /fleetcare e far ripartire un biglietto) */
+      navigate(recuperoRef.current
+        ? "/account"
+        : locationRef.current === "/fleetcare" ? `/fleetcare${window.location.search}` : "/dashboard",
+        { replace: true });
       if (codiciRef.current && !recuperoRef.current) {
         toastSonner.warning("Rifai i codici di recupero", {
           description: "Quelli che hai sono di prima di un aggiornamento della sicurezza: fanne di nuovi in «Sicurezza dell'account».",
@@ -440,6 +449,9 @@ function AuthGate() {
         /* sessione limitata (password provvisoria, verifica da attivare): solo la pagina
          * per mettersi in regola, senza menu; il server rifiuta comunque il resto */
         <AccountPage forzata />
+      ) : showApp && location === "/fleetcare" ? (
+        /* il passaggio verso FleetCare: fuori dal menu, porta subito di là */
+        <ApriFleetCare />
       ) : showApp ? (
         <>
           <VirgilioController />

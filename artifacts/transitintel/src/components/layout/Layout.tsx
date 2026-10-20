@@ -114,14 +114,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const { toast } = useToast();
 
   /* ── SSO verso FleetCare (modulo gestione flotta) ──
-   * FleetCare è un'app separata sullo stesso database: NON ha login proprio.
-   * Il backend emette un token monouso (60s) e ci reindirizza là già autenticati. */
+   * FleetCare è un'app separata sullo stesso database: chi ha un account Cerbero
+   * ci entra solo da qui (o da /fleetcare, pages/fleetcare.tsx). Il backend emette
+   * un biglietto monouso (60s) e ci reindirizza là già autenticati. */
   const [fleetcareBusy, setFleetcareBusy] = React.useState(false);
   const openFleetCare = React.useCallback(async () => {
     if (fleetcareBusy) return;
     setFleetcareBusy(true);
     try {
-      const r = await apiFetch<{ url: string }>("/api/auth/fleetcare-sso");
+      const r = await apiFetch<{ url: string }>("/api/auth/fleetcare-sso", { method: "POST", body: "{}" });
       window.location.href = r.url;
     } catch (e: any) {
       setFleetcareBusy(false);
@@ -132,6 +133,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       });
     }
   }, [fleetcareBusy, toast]);
+  /* tornando indietro da FleetCare la pagina può riapparire dalla cache del browser
+   * (bfcache) col pulsante ancora «occupato»: lo si libera */
+  React.useEffect(() => {
+    const sblocca = (e: PageTransitionEvent) => { if (e.persisted) setFleetcareBusy(false); };
+    window.addEventListener("pageshow", sblocca);
+    return () => window.removeEventListener("pageshow", sblocca);
+  }, []);
 
   // Filtra le voci di Panoramica per i permessi (analytics)
   // e nasconde sezioni intere se non si ha il permesso richiesto.
