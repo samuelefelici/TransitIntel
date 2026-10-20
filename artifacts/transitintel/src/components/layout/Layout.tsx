@@ -122,7 +122,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     if (fleetcareBusy) return;
     setFleetcareBusy(true);
     try {
-      const r = await apiFetch<{ url: string }>("/api/auth/fleetcare-sso");
+      const r = await apiFetch<{ url: string }>("/api/auth/fleetcare-sso", { method: "POST", body: "{}" });
       window.location.href = r.url;
     } catch (e: any) {
       setFleetcareBusy(false);
@@ -133,6 +133,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       });
     }
   }, [fleetcareBusy, toast]);
+  /* tornando indietro da FleetCare la pagina può riapparire dalla cache del browser
+   * (bfcache) col pulsante ancora «occupato»: lo si libera */
+  React.useEffect(() => {
+    const sblocca = (e: PageTransitionEvent) => { if (e.persisted) setFleetcareBusy(false); };
+    window.addEventListener("pageshow", sblocca);
+    return () => window.removeEventListener("pageshow", sblocca);
+  }, []);
 
   // Filtra le voci di Panoramica per i permessi (analytics)
   // e nasconde sezioni intere se non si ha il permesso richiesto.

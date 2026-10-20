@@ -412,9 +412,12 @@ function AuthGate() {
     if (!prevAuth.current && isAuthenticated) {
       // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
       setWaitingSequence(true);
+      /* replace: la pagina del login non resta nella cronologia (da FleetCare, Indietro
+       * non deve riportare a /fleetcare e far ripartire un biglietto) */
       navigate(recuperoRef.current
         ? "/account"
-        : locationRef.current === "/fleetcare" ? `/fleetcare${window.location.search}` : "/dashboard");
+        : locationRef.current === "/fleetcare" ? `/fleetcare${window.location.search}` : "/dashboard",
+        { replace: true });
       if (codiciRef.current && !recuperoRef.current) {
         toastSonner.warning("Rifai i codici di recupero", {
           description: "Quelli che hai sono di prima di un aggiornamento della sicurezza: fanne di nuovi in «Sicurezza dell'account».",

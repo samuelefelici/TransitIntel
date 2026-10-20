@@ -892,8 +892,9 @@ router.get("/auth/me", requireAuth, (req, res) => {
  * account Cerbero ci entra SOLO da qui (FleetCare migrazione 0088). Il flusso:
  *   1. l'utente (già entrato in Cerbero, sessione completa) clicca "FleetCare"
  *      in sidebar, o apre <cerbero>/fleetcare dal pulsante «Entra con Cerbero»
- *   2. il frontend chiama questo endpoint → biglietto firmato con il segreto
- *      condiviso FLEETCARE_SSO_SECRET: 60 secondi, una volta sola (jti)
+ *   2. il frontend chiama questo endpoint (POST: da un altro sito non si può,
+ *      la richiesta porta l'Origin e il CORS la ferma) → biglietto firmato con
+ *      il segreto condiviso FLEETCARE_SSO_SECRET: 60 secondi, una volta sola (jti)
  *   3. il browser va a <FLEETCARE_URL>/api/auth/sso?token=…
  *   4. FleetCare verifica il biglietto, usa il jti, rilegge l'utente nel database
  *      e crea la SUA sessione; poi la ricontrolla ogni ~30 s (versione della
@@ -953,7 +954,7 @@ export function ritornoFleetCare(da: unknown): string | null {
   return da;
 }
 
-router.get("/auth/fleetcare-sso", requireAuth, async (req, res): Promise<void> => {
+router.post("/auth/fleetcare-sso", requireAuth, async (req, res): Promise<void> => {
   const user = req.user!;
   if (!accessoFleetCare(user).abilitato) {
     res.status(403).json({ error: "Non sei abilitato a FleetCare: chiedi all'amministratore." });
@@ -968,8 +969,9 @@ router.get("/auth/fleetcare-sso", requireAuth, async (req, res): Promise<void> =
     return;
   }
   const token = firmaAccessoFleetCare(user, { sv: req.sessione!.sv, at: req.sessione?.at }, secret);
-  await registraAccesso(req, { userId: user.id, email: user.email, esito: "fleetcare" });
-  const da = ritornoFleetCare(req.query.da);
+  /* il biglietto emesso, non l'ingresso: quello lo decide FleetCare */
+  await registraAccesso(req, { userId: user.id, email: user.email, esito: "biglietto_fleetcare" });
+  const da = ritornoFleetCare(req.body?.da);
   res.json({
     url: `${fleetcareUrl}/api/auth/sso?token=${encodeURIComponent(token)}${da ? `&da=${encodeURIComponent(da)}` : ""}`,
   });

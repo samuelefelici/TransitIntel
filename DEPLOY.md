@@ -291,6 +291,11 @@ attivare la verifica.
   tutti i dispositivi», cambio password e verifica da attivare la chiudono.
   Uscire da Cerbero non chiude FleetCare, che comunque scade 12 ore dopo
   l'accesso a Cerbero. **Ordine di rilascio: prima Cerbero, poi FleetCare.**
+  Per tornare indietro l'ordine è il contrario: prima FleetCare, poi Cerbero.
+  Mai Cerbero da solo a una versione precedente mentre FleetCare ha la 0088: i
+  suoi biglietti non entrano e chi ha un account Cerbero resta fuori da
+  FleetCare. Nel registro degli accessi la voce «biglietto per FleetCare
+  emesso» dice che Cerbero ha dato il biglietto, non che FleetCare l'ha accettato.
 - Riferimenti da verificare con il DPO: GDPR art. 32; Direttiva NIS2
   2022/2555 art. 21 (autenticazione a più fattori «dove appropriato»); se
   Conerobus rientri nel D.Lgs. 138/2024.
