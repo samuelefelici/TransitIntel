@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
@@ -385,8 +386,12 @@ export default function AdminUsersPage() {
       {resetPwdFor && (
         <ResetPasswordDialog
           user={resetPwdFor}
+          sonoIo={resetPwdFor.id === me?.id}
           onClose={() => setResetPwdFor(null)}
-          onDone={() => setResetPwdFor(null)}
+          onDone={() => {
+            setResetPwdFor(null);
+            void load();
+          }}
         />
       )}
     </div>
@@ -578,20 +583,32 @@ function EditUserDialog({
 
 function ResetPasswordDialog({
   user,
+  sonoIo,
   onClose,
   onDone,
 }: {
   user: AdminUser;
+  sonoIo: boolean;
   onClose: () => void;
   onDone: () => void;
 }) {
   const { toast } = useToast();
   const [password, setPassword] = useState("");
+  /* il campo è mascherato: senza la ripetizione un errore di battitura fa una password che nessuno conosce */
+  const [ripetuta, setRipetuta] = useState("");
+  /* un account disattivato (per esempio perché usava una password pubblicata) con la sola
+   * password nuova resterebbe fuori: «Credenziali non valide», come per una password sbagliata */
+  const [riattiva, setRiattiva] = useState(!user.active);
   const [busy, setBusy] = useState(false);
+  const diverse = ripetuta !== "" && ripetuta !== password;
 
   const submit = async () => {
     if (password.length < PASSWORD_MIN) {
       toast({ title: `Password troppo corta (almeno ${PASSWORD_MIN} caratteri)`, variant: "destructive" });
+      return;
+    }
+    if (ripetuta !== password) {
+      toast({ title: "Le due password non coincidono", variant: "destructive" });
       return;
     }
     setBusy(true);
@@ -599,9 +616,12 @@ function ResetPasswordDialog({
       await apiFetch(`/api/admin/users/${user.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify(!user.active && riattiva ? { password, active: true } : { password }),
       });
-      toast({ title: "Password aggiornata" });
+      toast({
+        title: !user.active && riattiva ? "Password provvisoria impostata e account riattivato" : "Password provvisoria impostata",
+        description: `Al primo accesso ${user.email} dovrà sceglierne una sua.`,
+      });
       onDone();
     } catch (e: any) {
       toast({ title: "Errore", description: e?.message, variant: "destructive" });
@@ -617,6 +637,14 @@ function ResetPasswordDialog({
           <DialogTitle>Reset password — {user.email}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            È una password provvisoria: al primo accesso Cerbero chiede di cambiarla. Le sessioni aperte di questo account si chiudono.
+          </p>
+          {sonoIo && (
+            <p className="text-sm text-amber-400">
+              È il tuo account: dopo il salvataggio esci e rientri con questa password. Per cambiarla senza uscire usa «Sicurezza dell'account».
+            </p>
+          )}
           <div>
             <Label htmlFor="reset-password">Nuova password</Label>
             <Input
@@ -633,6 +661,31 @@ function ResetPasswordDialog({
               Almeno {PASSWORD_MIN} caratteri. Meglio una frase di più parole; niente nome, email o password comuni.
             </p>
           </div>
+          <div>
+            <Label htmlFor="reset-password-ripeti">Ripeti la password</Label>
+            <Input
+              id="reset-password-ripeti"
+              type="password"
+              autoComplete="new-password"
+              aria-invalid={diverse}
+              aria-describedby={diverse ? "reset-password-diverse" : undefined}
+              value={ripetuta}
+              onChange={(e) => setRipetuta(e.target.value)}
+            />
+            {diverse && (
+              <p id="reset-password-diverse" role="alert" className="text-xs text-red-400 mt-1">
+                Le due password non coincidono.
+              </p>
+            )}
+          </div>
+          {!user.active && (
+            <div className="flex items-start gap-2">
+              <Checkbox id="reset-password-riattiva" checked={riattiva} onCheckedChange={(v) => setRiattiva(v === true)} className="mt-0.5" />
+              <Label htmlFor="reset-password-riattiva" className="font-normal leading-snug">
+                Riattiva anche l'account. Ora è disattivato: con la sola password nuova non entra.
+              </Label>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Annulla</Button>
