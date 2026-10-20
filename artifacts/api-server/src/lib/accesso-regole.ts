@@ -91,7 +91,12 @@ export function chiaveEmail(email: string): string {
   return email.trim().toLowerCase().slice(0, 200);
 }
 
-/** La verifica in due passaggi è obbligatoria per chi amministra o vede dati personali e sanitari. */
+/**
+ * La verifica in due passaggi è obbligatoria per chi amministra o vede dati
+ * personali e sanitari. La regola è copiata in FleetCare
+ * (fleetcare.cerbero_stato_utente, migrazione 0088): se cambia qui, va cambiata
+ * anche là (il test fleetcare-sso lo ricorda).
+ */
 export function mfaObbligatoria(u: { role: string; permissions?: Record<string, boolean> | null }): boolean {
   return u.role === "admin" || !!u.permissions?.personale || !!u.permissions?.roster;
 }

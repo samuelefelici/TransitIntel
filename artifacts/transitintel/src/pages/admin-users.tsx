@@ -51,6 +51,7 @@ const ESITO_LABEL: Record<string, string> = {
   codici_bloccati: "codici bloccati (troppi sbagliati)", segreto_illeggibile: "verifica non leggibile: controlla CERBERO_CHIAVE_MFA",
   password_attuale_errata: "password attuale sbagliata", verifica_reimpostata: "verifica rifatta dopo il telefono perso",
   bloccato_account: "account bloccato (errori da più indirizzi)",
+  fleetcare: "entrato in FleetCare",
 };
 const esitoLeggibile = (e: string) => {
   const m = /^admin:([a-z_]+) \((.*)\)$/.exec(e);

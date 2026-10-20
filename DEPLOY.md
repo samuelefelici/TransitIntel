@@ -282,10 +282,15 @@ attivare la verifica.
   altrimenti tutti risultano con l'indirizzo della CDN. Per controllare: nel
   registro degli accessi (Gestione Utenti) l'IP deve essere quello vero di
   chi entra. Se in produzione l'indirizzo risulta interno, il log lo segnala.
-- **FleetCare** accetta ancora la password di Cerbero sul suo login: finché non
-  arriva la PR che lo fa entrare solo da Cerbero, lì non valgono la verifica in
-  due passaggi, il blocco dei tentativi, la password provvisoria da cambiare e
-  la chiusura delle sessioni.
+- **FleetCare** (dalla sua migrazione 0088): chi ha un account Cerbero ci entra
+  **solo** da Cerbero, dal pulsante FleetCare nel menu o da `<cerbero>/fleetcare`
+  (è l'indirizzo del pulsante «Entra con Cerbero» sulla pagina di login di
+  FleetCare). Il modulo di FleetCare resta solo per gli account locali (officine
+  esterne), con il blocco dei tentativi. FleetCare ricontrolla la sessione ogni
+  ~30 secondi: disattivazione, permesso o ruolo FleetCare cambiati, «esci da
+  tutti i dispositivi», cambio password e verifica da attivare la chiudono.
+  Uscire da Cerbero non chiude FleetCare, che comunque scade 12 ore dopo
+  l'accesso a Cerbero. **Ordine di rilascio: prima Cerbero, poi FleetCare.**
 - Riferimenti da verificare con il DPO: GDPR art. 32; Direttiva NIS2
   2022/2555 art. 21 (autenticazione a più fattori «dove appropriato»); se
   Conerobus rientri nel D.Lgs. 138/2024.
@@ -346,6 +351,8 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CERBERO_API_KEY` | — | Bearer key per `/api/caronte/*` (validatore + AVM) |
 | `GTFS_RT_API_KEY` | — | key per i feed `/api/gtfs-rt/*` (vuota = feed pubblico) |
 | `GTFS_FEED_ID` | — | forza il feed GTFS usato da Sala Operativa / caronte |
+| `FLEETCARE_SSO_SECRET` | per FleetCare | Segreto condiviso con FleetCare (stesso valore nelle due app, almeno 32 caratteri): firma il biglietto con cui si entra in FleetCare |
+| `FLEETCARE_URL` | per FleetCare | Indirizzo pubblico di FleetCare, senza `/` finale |
 | `FLEETCARE_TENANT` | — | slug dell'azienda in FleetCare da cui l'AVM legge il parco dell'officina (`fleetcare.parco_per_avm()`); serve solo se FleetCare ne ha più di una, di solito è lo stesso valore di `FLEETCARE_SSO_TENANT` di FleetCare |
 
 ### Web (`Dockerfile.web`) — **build-time** (build args)
