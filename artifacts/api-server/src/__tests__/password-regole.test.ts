@@ -65,8 +65,19 @@ describe("le password pubblicate dal vecchio codice", () => {
 
 describe("il primo amministratore", () => {
   const buona = "lampione verde 77";
-  it("con un amministratore attivo non si fa niente, anche con le variabili impostate", () => {
-    expect(decidiPrimoAdmin(3, { CERBERO_ADMIN_EMAIL: "a@b.it", CERBERO_ADMIN_PASSWORD: buona })).toEqual({ tipo: "niente" });
+  it("con un amministratore attivo non si fa niente; se le variabili ci sono, il log lo dice", () => {
+    expect(decidiPrimoAdmin(3, {})).toEqual({ tipo: "niente" });
+    for (const env of [
+      { CERBERO_ADMIN_EMAIL: "a@b.it", CERBERO_ADMIN_PASSWORD: buona },
+      { CERBERO_ADMIN_EMAIL: "a@b.it" },
+      { CERBERO_ADMIN_PASSWORD: buona },
+    ]) {
+      const d = decidiPrimoAdmin(3, env);
+      expect(d.tipo).toBe("avviso");
+      expect((d as any).messaggio).toMatch(/CERBERO_ADMIN_RIPRISTINA=1/);
+      /* la password non finisce mai nel log */
+      expect((d as any).messaggio).not.toContain(buona);
+    }
   });
 
   it("senza amministratori attivi e senza variabili: nessun utente, un avviso", () => {
@@ -90,7 +101,9 @@ describe("il primo amministratore", () => {
 describe("il ripristino dell'amministratore", () => {
   it("con CERBERO_ADMIN_RIPRISTINA=1 si rimette in piedi anche se un admin attivo c'è", () => {
     const env = { CERBERO_ADMIN_EMAIL: "capo@azienda.it", CERBERO_ADMIN_PASSWORD: "lampione verde 77" };
-    expect(decidiPrimoAdmin(1, env)).toEqual({ tipo: "niente" });
+    expect(decidiPrimoAdmin(1, env)).toMatchObject({ tipo: "avviso" });
     expect(decidiPrimoAdmin(1, { ...env, CERBERO_ADMIN_RIPRISTINA: "1" })).toMatchObject({ tipo: "crea", email: "capo@azienda.it" });
+    /* ripristino chiesto ma password che non va: si dice perché, senza ripristinare */
+    expect(decidiPrimoAdmin(1, { ...env, CERBERO_ADMIN_PASSWORD: "corta", CERBERO_ADMIN_RIPRISTINA: "1" })).toMatchObject({ tipo: "avviso" });
   });
 });

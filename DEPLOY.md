@@ -257,6 +257,36 @@ attivare la verifica.
   telefono nuovo. Oppure l'admin usa «Reimposta verifica». Se è l'unico admin
   ad averlo perso: imposta `CERBERO_ADMIN_EMAIL`, `CERBERO_ADMIN_PASSWORD` e
   `CERBERO_ADMIN_RIPRISTINA=1`, riavvia, entra, poi togli le tre variabili.
+- **«Credenziali non valide» con la password giusta.** Il login dà lo stesso
+  messaggio per tre motivi diversi, per non rivelare quali account esistono.
+  Il registro degli accessi li distingue (`accessi_log.esito`):
+  - `utente_inattivo`: la password è giusta ma l'account è disattivato. Succede
+    per esempio a un account che usava una password pubblicata, dopo che gli
+    si è data solo una password nuova. Va anche riattivato: il dialogo «Reset
+    password» lo propone per gli account disattivati;
+  - `password_errata`: la password salvata non è quella che si scrive. Una
+    riga `admin:password_provvisoria (…)` dice chi l'ha cambiata e quando;
+  - `utente_sconosciuto`: l'email è scritta diversa.
+
+  Se non entra più nessun admin, si legge direttamente dal database:
+  ```sql
+  SELECT ts, email, esito, ip FROM accessi_log ORDER BY ts DESC LIMIT 30;
+  SELECT email, role, active, deve_cambiare_password, mfa_attiva, password_cambiata_il, last_login_at
+    FROM users ORDER BY role, lower(trim(email));
+  ```
+  In tutti e tre i casi rientri con il ripristino:
+  1. imposta `CERBERO_ADMIN_EMAIL` (l'email esatta della query),
+     `CERBERO_ADMIN_PASSWORD` e `CERBERO_ADMIN_RIPRISTINA=1`. La password va
+     scelta con le regole qui sopra e senza `$`, che Coolify può interpretare
+     come variabile;
+  2. riavvia. Il log dice «amministratore … rimesso in piedi da
+     CERBERO_ADMIN_*». Se dice «creato (nessun utente aveva questa email)»,
+     l'email non era quella dell'admin;
+  3. entra e cambia subito la password;
+  4. togli le tre variabili e riavvia di nuovo. Con `CERBERO_ADMIN_RIPRISTINA=1`
+     ancora impostata, a ogni riavvio la password torna quella della
+     variabile. Senza `CERBERO_ADMIN_RIPRISTINA`, se c'è un admin attivo, le
+     altre due non fanno niente: il log lo dice.
 - **Cambiare `CERBERO_CHIAVE_MFA`** (per esempio se è uscita):
   1. metti la nuova in `CERBERO_CHIAVE_MFA` e la vecchia in
      `CERBERO_CHIAVE_MFA_PRECEDENTE`, riavvia: all'avvio tutti i segreti della
