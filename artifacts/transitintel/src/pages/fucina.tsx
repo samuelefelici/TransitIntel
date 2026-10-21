@@ -21,10 +21,9 @@ import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 import { getApiBase } from "@/lib/api";
 import { getProject as getSchedulingProject, syncProjectFromPs } from "@/lib/scheduling-projects-api";
 
-// NB: GtfsSelectorStep deprecato — il feed arriva sempre dal Planning Studio
+// il feed e i cluster arrivano dal Planning Studio: qui niente scelta del feed né cluster
 const VehicleAssignmentStep = lazy(() => import("@/pages/fucina/steps/VehicleAssignmentStep"));
 const DepotStep = lazy(() => import("@/pages/fucina/steps/DepotStep"));
-// ClustersStep deprecato — i cluster vivono solo nel Network Engine
 const DeadheadStep = lazy(() => import("@/pages/fucina/steps/DeadheadStep"));
 const OptimizerStep = lazy(() => import("@/pages/fucina/steps/OptimizerStep"));
 const WorkspaceStep = lazy(() => import("@/pages/fucina/steps/WorkspaceStep"));

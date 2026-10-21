@@ -11,7 +11,7 @@
 import {
   BarChart3, BookOpen, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Shuffle, Ticket, Timer,
-  Users, IdCard, Activity, Database, Wrench, Zap, type LucideIcon,
+  Users, IdCard, Activity, Database, Wrench, Zap, Settings2, type LucideIcon,
 } from "lucide-react";
 import type { Permission } from "@/hooks/use-auth";
 
@@ -166,6 +166,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
     titolo: "Amministrazione",
     voci: [
       { href: "/admin/users", etichetta: "Utenti e accessi", icona: Users, descrizione: "Permessi, sblocchi, registro", soloAdmin: true },
+      { href: "/admin/parametri", etichetta: "Parametri di esercizio", icona: Settings2, descrizione: "Autovetture aziendali", soloAdmin: true },
       { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline Mizar", permessi: PERMESSI_PAGINA["/data"] },
       { href: "/account", etichetta: "Sicurezza dell'account", icona: Shield, descrizione: "Password e verifica" },
     ],

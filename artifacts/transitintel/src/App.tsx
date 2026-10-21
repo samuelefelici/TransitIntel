@@ -11,7 +11,6 @@ import { CASA, NOMI_PERMESSI, PERMESSI_PAGINA } from "@/lib/navigazione";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
 import VirgilioController from "@/components/VirgilioController";
-// VirgilioTentacles disabilitato — mantenuto solo l'highlight CSS sui target
 
 /**
  * lazy() resiliente al DEPLOY. Dopo un rilascio i chunk vecchi spariscono dal
@@ -65,7 +64,6 @@ const DataPage = lazyWithRetry(() => import("@/pages/data"));
 const AvmPage = lazyWithRetry(() => import("@/pages/avm"));
 const ScenariosPage = lazyWithRetry(() => import("@/pages/scenarios"));
 const IntermodalPage = lazyWithRetry(() => import("@/pages/intermodal"));
-const OptimizationPage = lazyWithRetry(() => import("@/pages/optimization"));
 const FucinaPage = lazyWithRetry(() => import("@/pages/fucina"));
 const SchedulingProjectDashboardPage = lazyWithRetry(() => import("@/pages/scheduling/ProjectDashboardPage"));
 const VehicleScenariosPage = lazyWithRetry(() => import("@/pages/scheduling/VehicleScenariosPage"));
@@ -85,8 +83,6 @@ const TripPlannerPage = lazyWithRetry(() => import("@/pages/trip-planner"));
 const DepotsPage = lazyWithRetry(() => import("@/pages/depots"));
 const DeadheadArcsPage = lazyWithRetry(() => import("@/pages/deadhead-arcs"));
 const PlanningListPage = lazyWithRetry(() => import("@/pages/planning"));
-const PlanningNewPage = lazyWithRetry(() => import("@/pages/planning/new"));
-const PlanningWorkspacePage = lazyWithRetry(() => import("@/pages/planning/workspace"));
 const PlanningStudioListPage = lazyWithRetry(() => import("@/pages/planning-studio"));
 const PlanningStudioEditorPage = lazyWithRetry(() => import("@/pages/planning-studio/EditorPage"));
 const PlanningStudioClustersPage = lazyWithRetry(() => import("@/pages/planning-studio/ClustersPage"));
@@ -101,6 +97,7 @@ const PlanningStudioPercorrenzePage = lazyWithRetry(() => import("@/pages/planni
 const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-studio/ZonesPage"));
 const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
+const AdminParametriPage = lazyWithRetry(() => import("@/pages/admin-parametri"));
 const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const ApriFleetCare = lazyWithRetry(() => import("@/pages/fleetcare"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
@@ -230,19 +227,11 @@ function Router() {
               <Gated perm={PERMESSI_PAGINA["/coincidence-zones"]}><CoincidenceZonesPage /></Gated>
             </Route>
 
-            {/* PlannerStudio (scheduling) */}
+            {/* Confronta programmi; il vecchio planner sugli scenari GTFS (new, workspace) non c'è più */}
             <Route path="/planning">
               <Gated perm={PERMESSI_PAGINA["/planning"]}><PlanningListPage /></Gated>
             </Route>
-            <Route path="/planning/new">
-              <Gated perm="network"><PlanningNewPage /></Gated>
-            </Route>
-            <Route path="/planning/:scenarioId/workspace">
-              <Gated perm="network"><PlanningWorkspacePage /></Gated>
-            </Route>
-            <Route path="/planning/:scenarioId">
-              {(p) => <Redirect to={`/planning/${p.scenarioId}/workspace`} replace />}
-            </Route>
+            <Route path="/planning/*"><Redirect to="/planning" replace /></Route>
 
             {/* PlannerStudio (DB master del servizio) */}
             <Route path="/planning-studio">
@@ -347,9 +336,8 @@ function Router() {
             <Route path="/fucina/:projectId">
               <Gated perm="scheduling"><SchedulingProjectDashboardPage /></Gated>
             </Route>
-            <Route path="/optimization">
-              <Gated perm="scheduling"><OptimizationPage /></Gated>
-            </Route>
+            {/* la vecchia «Ottimizzazione Servizio»: le autovetture aziendali sono in Amministrazione › Parametri */}
+            <Route path="/optimization"><Redirect to="/fucina/esercizio" replace /></Route>
             <Route path="/roster/anagrafica">
               <Gated perm={PERMESSI_PAGINA["/roster/anagrafica"]}><AnagraficaPage /></Gated>
             </Route>
@@ -383,6 +371,9 @@ function Router() {
             {/* Admin */}
             <Route path="/admin/users">
               <AdminOnly><AdminUsersPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/parametri">
+              <AdminOnly><AdminParametriPage /></AdminOnly>
             </Route>
 
             {/* Redirects for old optimizer paths */}
