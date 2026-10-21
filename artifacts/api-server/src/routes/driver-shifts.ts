@@ -943,6 +943,95 @@ async function loadAndGenerate(scenarioId: string) {
   };
 }
 
+/**
+ * POST /driver-shifts/misto — completamento turni misti.
+ * Body: { targetDssId, sources: [{dssId, dutyCodes?: string[]}], name?, config? }
+ * Spacchetta i turni/supplementi sorgente in corse e prova a incastrarle nei turni
+ * del DSS target. Salva un NUOVO scenario misto (non distruttivo).
+ * Sta prima di POST /driver-shifts/:scenarioId: dopo, «misto» finiva lì come
+ * id di uno scenario e la pagina riceveva sempre 404.
+ */
+router.post("/driver-shifts/misto", async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+    const { targetDssId, sources, name, config } = req.body ?? {};
+    if (!targetDssId || !Array.isArray(sources)) { res.status(400).json({ error: "targetDssId e sources richiesti" }); return; }
+
+    const dssIds = Array.from(new Set([String(targetDssId), ...sources.map((s: any) => String(s.dssId))].filter(Boolean)));
+    const idsLit = `{${dssIds.map((id) => `"${id}"`).join(",")}}`;
+    const dssRows = await db.execute<any>(sql`
+      SELECT id, name, service_program_scenario_id, result, owner_user_id
+        FROM driver_shift_scenarios
+       WHERE id = ANY(${idsLit}::uuid[])
+         AND (owner_user_id = ${userId}::uuid OR owner_user_id IS NULL)
+    `);
+    const byId = new Map<string, any>((dssRows.rows ?? []).map((r: any) => [String(r.id), r]));
+    const target = byId.get(String(targetDssId));
+    if (!target) { res.status(404).json({ error: "target DSS non trovato o non accessibile" }); return; }
+
+    const targetDuties: any[] = target.result?.driverShifts ?? [];
+    const shifts = targetDuties.map((d: any) => {
+      const cat = _catFromCode(d.driverId);
+      return {
+        driverId: d.driverId, category: cat,
+        residenzaDepotId: d.residenzaDepotId ?? null, residenzaName: d.residenzaName ?? null, residenzaColor: d.residenzaColor ?? null,
+        trips: _flattenDutyTrips(d, cat),
+      };
+    });
+
+    const uncovered: any[] = [];
+    for (const src of sources) {
+      const dss = byId.get(String(src.dssId));
+      if (!dss) continue;
+      const codes: Set<string> = new Set((src.dutyCodes ?? []).map(String));
+      for (const d of (dss.result?.driverShifts ?? [])) {
+        if (codes.size && !codes.has(String(d.driverId))) continue;
+        uncovered.push(..._flattenDutyTrips(d, _catFromCode(d.driverId)));
+      }
+    }
+
+    // arricchimento coordinate (corse target + corse loose)
+    const coords = await _enrichTripCoords([...shifts.flatMap((s: any) => s.trips), ...uncovered].map((t: any) => t.tripId));
+    for (const s of shifts) s.trips.forEach((t: any) => _applyCoords(t, coords));
+    uncovered.forEach((t: any) => _applyCoords(t, coords));
+
+    // coordinate deposito residenza per turno
+    const depotIds = Array.from(new Set(shifts.map((s: any) => s.residenzaDepotId).filter(Boolean)));
+    if (depotIds.length) {
+      const dLit = `{${depotIds.map((id) => `"${id}"`).join(",")}}`;
+      const dr = await db.execute<any>(sql`SELECT id, lat, lon FROM depots WHERE id = ANY(${dLit}::uuid[])`);
+      const dmap = new Map<string, any>((dr.rows ?? []).map((r: any) => [String(r.id), r]));
+      for (const s of shifts) {
+        const d = s.residenzaDepotId ? dmap.get(String(s.residenzaDepotId)) : null;
+        if (d && d.lat != null && d.lon != null) { (s as any).depotLat = Number(d.lat); (s as any).depotLon = Number(d.lon); }
+      }
+    }
+
+    const engineOut = await runMistoEngine({ shifts, uncovered, config: config ?? {} });
+    const driverShifts = (engineOut.shifts ?? []).map(_engineShiftToDriverShift);
+    const dssResult = {
+      driverShifts,
+      unassignedTrips: engineOut.uncovered ?? [],
+      misto: true,
+      stats: engineOut.stats ?? {},
+    };
+
+    const [row] = await db.insert(driverShiftScenarios).values({
+      serviceProgramScenarioId: target.service_program_scenario_id,
+      name: name || `Misto ${new Date().toISOString().slice(0, 10)}`,
+      result: dssResult as any,
+      config: { misto: true } as any,
+    }).returning();
+    try { await db.execute(sql`UPDATE driver_shift_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`); } catch { /* non-fatal */ }
+
+    res.json({ dssId: row.id, stats: engineOut.stats, preview: dssResult });
+  } catch (err: any) {
+    req.log.error(err, "Error in misto completamento");
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post("/driver-shifts/:scenarioId", strictLimiter, async (req, res) => {
   try {
     const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
@@ -1641,93 +1730,6 @@ function _engineShiftToDriverShift(s: any): any {
     })),
   };
 }
-
-/**
- * POST /driver-shifts/misto — completamento turni misti.
- * Body: { targetDssId, sources: [{dssId, dutyCodes?: string[]}], name?, config? }
- * Spacchetta i turni/supplementi sorgente in corse e prova a incastrarle nei turni
- * del DSS target. Salva un NUOVO scenario misto (non distruttivo).
- */
-router.post("/driver-shifts/misto", async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) { res.status(401).json({ error: "auth required" }); return; }
-    const { targetDssId, sources, name, config } = req.body ?? {};
-    if (!targetDssId || !Array.isArray(sources)) { res.status(400).json({ error: "targetDssId e sources richiesti" }); return; }
-
-    const dssIds = Array.from(new Set([String(targetDssId), ...sources.map((s: any) => String(s.dssId))].filter(Boolean)));
-    const idsLit = `{${dssIds.map((id) => `"${id}"`).join(",")}}`;
-    const dssRows = await db.execute<any>(sql`
-      SELECT id, name, service_program_scenario_id, result, owner_user_id
-        FROM driver_shift_scenarios
-       WHERE id = ANY(${idsLit}::uuid[])
-         AND (owner_user_id = ${userId}::uuid OR owner_user_id IS NULL)
-    `);
-    const byId = new Map<string, any>((dssRows.rows ?? []).map((r: any) => [String(r.id), r]));
-    const target = byId.get(String(targetDssId));
-    if (!target) { res.status(404).json({ error: "target DSS non trovato o non accessibile" }); return; }
-
-    const targetDuties: any[] = target.result?.driverShifts ?? [];
-    const shifts = targetDuties.map((d: any) => {
-      const cat = _catFromCode(d.driverId);
-      return {
-        driverId: d.driverId, category: cat,
-        residenzaDepotId: d.residenzaDepotId ?? null, residenzaName: d.residenzaName ?? null, residenzaColor: d.residenzaColor ?? null,
-        trips: _flattenDutyTrips(d, cat),
-      };
-    });
-
-    const uncovered: any[] = [];
-    for (const src of sources) {
-      const dss = byId.get(String(src.dssId));
-      if (!dss) continue;
-      const codes: Set<string> = new Set((src.dutyCodes ?? []).map(String));
-      for (const d of (dss.result?.driverShifts ?? [])) {
-        if (codes.size && !codes.has(String(d.driverId))) continue;
-        uncovered.push(..._flattenDutyTrips(d, _catFromCode(d.driverId)));
-      }
-    }
-
-    // arricchimento coordinate (corse target + corse loose)
-    const coords = await _enrichTripCoords([...shifts.flatMap((s: any) => s.trips), ...uncovered].map((t: any) => t.tripId));
-    for (const s of shifts) s.trips.forEach((t: any) => _applyCoords(t, coords));
-    uncovered.forEach((t: any) => _applyCoords(t, coords));
-
-    // coordinate deposito residenza per turno
-    const depotIds = Array.from(new Set(shifts.map((s: any) => s.residenzaDepotId).filter(Boolean)));
-    if (depotIds.length) {
-      const dLit = `{${depotIds.map((id) => `"${id}"`).join(",")}}`;
-      const dr = await db.execute<any>(sql`SELECT id, lat, lon FROM depots WHERE id = ANY(${dLit}::uuid[])`);
-      const dmap = new Map<string, any>((dr.rows ?? []).map((r: any) => [String(r.id), r]));
-      for (const s of shifts) {
-        const d = s.residenzaDepotId ? dmap.get(String(s.residenzaDepotId)) : null;
-        if (d && d.lat != null && d.lon != null) { (s as any).depotLat = Number(d.lat); (s as any).depotLon = Number(d.lon); }
-      }
-    }
-
-    const engineOut = await runMistoEngine({ shifts, uncovered, config: config ?? {} });
-    const driverShifts = (engineOut.shifts ?? []).map(_engineShiftToDriverShift);
-    const dssResult = {
-      driverShifts,
-      unassignedTrips: engineOut.uncovered ?? [],
-      misto: true,
-      stats: engineOut.stats ?? {},
-    };
-
-    const [row] = await db.insert(driverShiftScenarios).values({
-      serviceProgramScenarioId: target.service_program_scenario_id,
-      name: name || `Misto ${new Date().toISOString().slice(0, 10)}`,
-      result: dssResult as any,
-      config: { misto: true } as any,
-    }).returning();
-    try { await db.execute(sql`UPDATE driver_shift_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`); } catch { /* non-fatal */ }
-
-    res.json({ dssId: row.id, stats: engineOut.stats, preview: dssResult });
-  } catch (err: any) {
-    req.log.error(err, "Error in misto completamento");
-    res.status(500).json({ error: err.message });
-  }
-});
 
 /* ═══════════════════════════════════════════════════════════════
  *  STRUMENTI BDSI (crew_tools.py) — verifica turni, scambia con

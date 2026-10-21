@@ -20,6 +20,7 @@ import { isIP } from "node:net";
 import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
+import { normalizzaPermessi, PERMESSI_NUOVO_UTENTE, type Permission } from "./permessi";
 import { datiProvaAttivi } from "./dati-prova";
 import { idChiave } from "./mfa-cifratura";
 import { chiaveEmail, limitazione, mfaObbligatoria, percorsoConsentitoLimitato, percorsoVietatoAiServizi, type Limitazione } from "./accesso-regole";
@@ -31,22 +32,8 @@ import {
 /* ────────────────────────────────────────────────────────────
  * Tipi
  * ──────────────────────────────────────────────────────────── */
-/**
- * I permessi sono i MODULI attivabili per utente. Un modulo nuovo si aggiunge
- * qui, nel DEFAULT della tabella, nel backfill di ensureUsersTable, nei due
- * handler admin (POST/PATCH) e nello speculare `Permission` del frontend
- * (hooks/use-auth.tsx): la chiave è un jsonb chiuso nel codice, non un enum.
- *   centrale = Centrale Operativa (Mappa live + AVM): attivazione ESPLICITA,
- *              come FleetCare.
- *   personale = Anagrafica del personale completa (dati personali, paghe,
- *              ferie, visite): attivazione ESPLICITA. Senza, il roster mostra
- *              solo i dati operativi dei conducenti.
- *   roster = Roster del personale (tabellone, assegnazioni, voci di
- *              assenza, rotazioni) con i codici sanitari (malattia,
- *              infortunio, 104). La pubblicazione dei turni resta a
- *              «scheduling».
- */
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale" | "roster";
+/* i permessi per utente (i moduli del menu) e le loro regole: lib/permessi.ts */
+export type { Permission };
 export interface AuthUser {
   id: string;
   email: string;
@@ -142,7 +129,7 @@ async function preparaUtenti(): Promise<void> {
       password_hash text NOT NULL,
       full_name text,
       role text NOT NULL DEFAULT 'user',
-      permissions jsonb NOT NULL DEFAULT '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false,"personale":false,"roster":false}'::jsonb,
+      permissions jsonb NOT NULL DEFAULT '{"analytics":false,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false,"personale":false,"roster":false}'::jsonb,
       active boolean NOT NULL DEFAULT true,
       last_login_at timestamptz,
       created_at timestamptz NOT NULL DEFAULT now()
@@ -501,7 +488,7 @@ async function loadUserById(id: string): Promise<UtenteCaricato | null> {
       email: row.email,
       fullName: row.full_name,
       role: row.role,
-      permissions: row.permissions ?? { analytics: true, fares: true, scheduling: true, network: true, fleetcare: false, centrale: false, personale: false, roster: false },
+      permissions: row.permissions ?? { ...PERMESSI_NUOVO_UTENTE },
       fleetcareRole: row.fleetcare_role ?? "driver",
       active: row.active,
     },
@@ -652,6 +639,7 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   ["/roster/rotazioni-riposi", ["roster", "personale"]],
   // il roster (tabellone, assegnazioni, voci, calendario, tratte dei turni)
   ["/roster", "roster"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
+  ["/service-db", "scheduling"],
   ["/deadheads", "scheduling"],
   // Depositi e archi fuorilinea sono infrastruttura di PROGETTO: si gestiscono
   // in Planner Studio (permesso network) e servono alla pipeline Scheduling
@@ -687,6 +675,45 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   ["/calendar-presets", "analytics"], ["/settings", "analytics"],
 ];
 
+/**
+ * Letture che servono a più moduli, oltre a quello che possiede i dati: solo
+ * GET e HEAD, con il percorso esatto. Si guardano prima della mappa qui sopra.
+ * Senza, spegnere Analisi (analytics) lascerebbe la Fucina senza feed e
+ * fermate, le Tariffe senza linee e confini, la Stampa Orari col dominio dei
+ * QR sbagliato, e chi fa i turni senza la scelta del programma. Le scritture
+ * restano al modulo che possiede i dati.
+ */
+const LETTURE_CONDIVISE: Array<[string | RegExp, Permission[]]> = [
+  // feed e fermate: Fucina (scelta della data), fuorilinea, editor dei turni guida, zone di coincidenza
+  ["/gtfs/feeds", ["analytics", "scheduling", "network"]],
+  ["/gtfs/stops/all", ["analytics", "scheduling", "network"]],
+  // la mappa delle Tariffe: linee, forme, fermate per linea, confini dei comuni
+  ["/gtfs/routes", ["analytics", "fares"]],
+  ["/gtfs/shapes/geojson", ["analytics", "fares"]],
+  ["/gtfs/route-stop-ids", ["analytics", "fares"]],
+  ["/territory/comuni-boundaries", ["analytics", "fares"]],
+  // parametri letti dai motori dei turni e dalla Stampa Orari (il dominio dei QR)
+  ["/settings/company-cars", ["analytics", "scheduling", "network"]],
+  ["/settings/timetable-map-domain", ["analytics", "network"]],
+  // le linee per i Tempi osservati (Esercizio)
+  ["/timetables/routes", ["analytics", "centrale"]],
+  // Rete e orari: confronto fra programmi; Analisi: elenco delle zone per le ipotesi di linea
+  ["/planning/compare", ["analytics", "network"]],
+  ["/coincidence-zones", ["scheduling", "network", "analytics"]],
+  // Turni: la scelta del programma e l'unità di validità nel Quadro d'esercizio
+  ["/planning-studio/projects", ["network", "scheduling"]],
+  [/^\/planning-studio\/projects\/[0-9a-f-]{36}$/, ["network", "scheduling"]],
+  [/^\/planning-studio\/projects\/[0-9a-f-]{36}\/validity-units\/[0-9a-f-]{36}\/detail$/, ["network", "scheduling"]],
+];
+
+/** Il permesso che apre questa lettura condivisa, se è una di quelle. */
+export function letturaCondivisa(metodo: string, path: string): Permission[] | null {
+  if (metodo !== "GET" && metodo !== "HEAD") return null;
+  const p = path.toLowerCase();
+  const voce = LETTURE_CONDIVISE.find(([chi]) => typeof chi === "string" ? p === chi : chi.test(p));
+  return voce ? voce[1] : null;
+}
+
 export const requirePermissionByPath: RequestHandler = (req, res, next) => {
   if (!req.user) { res.status(401).json({ error: "Non autenticato" }); return; }
   if (req.user.role === "admin") { next(); return; }
@@ -694,6 +721,8 @@ export const requirePermissionByPath: RequestHandler = (req, res, next) => {
    * arriva allo stesso handler di /roster/drivers. Il confronto qui deve fare
    * lo stesso, altrimenti basta una maiuscola per saltare il controllo. */
   const path = req.path.toLowerCase();
+  const condivisa = letturaCondivisa(req.method, path);
+  if (condivisa?.some(pp => req.user!.permissions?.[pp])) { next(); return; }
   for (const [prefix, perm] of PERMISSION_BY_PREFIX) {
     if (path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "?")) {
       const needed = Array.isArray(perm) ? perm : [perm];
@@ -1059,19 +1088,8 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null });
   if (erroreP) { res.status(400).json({ error: erroreP }); return; }
   const safeRole = role === "admin" ? "admin" : "user";
-  const safePerm = {
-    analytics: !!(permissions?.analytics ?? true),
-    fares:     !!(permissions?.fares     ?? true),
-    // network ⇒ scheduling (dato condiviso tra le due piattaforme): vale
-    // anche per gli utenti salvati prima che l'implicazione fosse imposta.
-    scheduling:!!(permissions?.scheduling?? true) || !!(permissions?.network ?? true),
-    network:   !!(permissions?.network   ?? true),
-    // FleetCare, Centrale Operativa, Personale, Roster: abilitazione esplicita → default false
-    fleetcare: !!(permissions?.fleetcare ?? false),
-    centrale:  !!(permissions?.centrale  ?? false),
-    personale: !!(permissions?.personale ?? false),
-    roster:    !!(permissions?.roster    ?? false),
-  };
+  /* chi nasce senza indicazioni parte senza Analisi (lib/permessi.ts) */
+  const safePerm = normalizzaPermessi(permissions, { nuovo: true });
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
     : "driver";
@@ -1110,22 +1128,8 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   if (fullName !== undefined) sets.push(sql`full_name = ${fullName}`);
   if (role !== undefined) sets.push(sql`role = ${role === "admin" ? "admin" : "user"}`);
   if (permissions !== undefined) {
-    // Planner Studio e Scheduling Engine lavorano sullo STESSO dato
-    // (stessa rete, stessi depositi, stessi nodi, stessi archi): chi ha il
-    // primo ha per forza il secondo, altrimenti l'accesso ai dati condivisi
-    // diverge tra le due piattaforme. L'implicazione è imposta qui, non
-    // lasciata alla disciplina di chi compila la form.
-    const p = {
-      analytics: !!permissions.analytics,
-      fares: !!permissions.fares,
-      scheduling: !!permissions.scheduling || !!permissions.network,
-      network: !!permissions.network,
-      fleetcare: !!permissions.fleetcare,
-      centrale: !!permissions.centrale,
-      personale: !!permissions.personale,
-      roster: !!permissions.roster,
-    };
-    sets.push(sql`permissions = ${JSON.stringify(p)}::jsonb`);
+    /* l'oggetto intero, come lo manda Gestione Utenti; rete e orari porta con sé i turni (lib/permessi.ts) */
+    sets.push(sql`permissions = ${JSON.stringify(normalizzaPermessi(permissions, { nuovo: false }))}::jsonb`);
   }
   if (fleetcareRole !== undefined) {
     if (!(FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)) {
