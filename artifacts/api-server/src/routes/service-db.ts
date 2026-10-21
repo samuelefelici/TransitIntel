@@ -12,6 +12,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { driverScenariosAccessibleWhere, vehicleScenariosAccessibleWhere } from "../lib/scenario-access";
 
 const router: IRouter = Router();
 
@@ -50,11 +51,15 @@ router.get("/service-db/overview", async (req, res): Promise<void> => {
       LIMIT 200
     `));
 
+    /* turni macchina e turni guida come negli elenchi della Fucina: solo quelli che l'utente
+     * può aprire (proprietario, membri dello scenario o del progetto, admin) */
     const vehicleScenarios = await safeRows(db.execute(sql`
       SELECT s.id, s.name, s.date, s.created_at,
              (SELECT count(*)::int FROM driver_shift_scenarios d
-               WHERE d.service_program_scenario_id = s.id) AS dss_count
+               WHERE d.service_program_scenario_id = s.id
+                 AND ${driverScenariosAccessibleWhere(userId, isAdmin)}) AS dss_count
       FROM service_program_scenarios s
+      WHERE ${vehicleScenariosAccessibleWhere(userId, isAdmin)}
       ORDER BY s.created_at DESC
       LIMIT 100
     `));
@@ -65,6 +70,7 @@ router.get("/service-db/overview", async (req, res): Promise<void> => {
              jsonb_array_length(COALESCE(d.result->'driverShifts', '[]'::jsonb)) AS duties
       FROM driver_shift_scenarios d
       LEFT JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
+      WHERE ${driverScenariosAccessibleWhere(userId, isAdmin)}
       ORDER BY d.created_at DESC
       LIMIT 100
     `));

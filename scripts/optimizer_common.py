@@ -1,7 +1,7 @@
 """
 optimizer_common.py — Tipi condivisi, I/O JSON, utilità geometriche e costanti CCNL
 per i solver CP-SAT Turni Macchina (vehicle_scheduler_cpsat.py)
-e Turni Guida (crew_scheduler_cpsat.py).
+e Turni Guida (crew_scheduler_v4.py).
 """
 
 from __future__ import annotations

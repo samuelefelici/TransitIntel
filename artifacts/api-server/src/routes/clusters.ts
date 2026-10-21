@@ -435,19 +435,6 @@ router.get("/gtfs/stops/all", asyncHandler(async (_req, res) => {
   res.json({ data: stops.rows, total: stops.rows.length });
 }));
 
-// GET /api/gtfs/routes/list — lista sintetica delle linee (per il filtro)
-router.get("/gtfs/routes/list", asyncHandler(async (_req, res) => {
-  const routes = await db.execute<any>(sql`
-    SELECT DISTINCT route_short_name AS "routeShortName",
-           route_long_name AS "routeLongName",
-           route_color AS "routeColor"
-    FROM gtfs_routes
-    WHERE route_short_name IS NOT NULL
-    ORDER BY route_short_name
-  `);
-  res.json({ data: routes.rows });
-}));
-
 // GET /api/gtfs/route-stop-ids?routeIds=a,b,c
 // Restituisce, per ciascuna routeId richiesta, l'elenco distinto di stop_id
 // effettivamente toccati dai trips di quella linea (usato dalla mappa cluster
