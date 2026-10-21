@@ -1113,7 +1113,8 @@ export default function TimetablesPage() {
   const [tab, setTab] = useState<"stop" | "route">("route");
 
   // progetto Planning Studio (sorgente del programma di esercizio)
-  const [projectId, setProjectId] = useState<string>(DEFAULT_PROJECT_ID);
+  /* vuoto finché non arriva l'elenco dei programmi: le letture partono sul programma giusto */
+  const [projectId, setProjectId] = useState<string>("");
 
   // day-type selezionati (validità): multi per "orario di linea", singolo per "fermata"
   const [routeDayTypeIds, setRouteDayTypeIds] = useState<string[]>([]);
@@ -1199,13 +1200,15 @@ export default function TimetablesPage() {
    * finché chi stampa non ne sceglie un altro */
   const sceltoAMano = useRef(false);
   useEffect(() => {
+    /* elenco non leggibile: si prova il programma di sempre */
+    if (projectsQ.isError && !projectId) { setProjectId(DEFAULT_PROJECT_ID); return; }
     if (!projects.length || sceltoAMano.current) return;
     const inEsercizio = projects.find((p) => p.inEsercizio);
     if (inEsercizio && inEsercizio.id !== projectId) { setProjectId(inEsercizio.id); return; }
     if (!projects.some((p) => p.id === projectId)) {
       setProjectId(projects.find((p) => p.id === DEFAULT_PROJECT_ID)?.id ?? projects[0].id);
     }
-  }, [projects, projectId]);
+  }, [projects, projectId, projectsQ.isError]);
 
   const dayTypesQ = useQuery({
     queryKey: ["pstt", "day-types", projectId],
@@ -1611,7 +1614,9 @@ export default function TimetablesPage() {
           className="px-2.5 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60 max-w-72"
           title="Progetto Planning Studio (sorgente dati e validità)"
         >
-          {projects.length === 0 && <option value={projectId}>Progetto predefinito</option>}
+          {projects.length === 0 && (
+            <option value={projectId}>{projectsQ.isLoading ? "Caricamento…" : projectId ? "Progetto predefinito" : "Nessun programma disponibile"}</option>
+          )}
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.inEsercizio ? " · in esercizio" : ""}</option>)}
         </select>
         {dayTypesQ.isLoading && <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> day-type…</span>}
