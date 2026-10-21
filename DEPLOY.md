@@ -137,7 +137,7 @@ parlarsi via rete interna:
 
 ## STEP 5: Popola i Dati
 
-Dall'app, pagina **"Dati & GTFS" / "Sincronizza Dati"**:
+Dall'app, menu **Amministrazione → Dati e integrazioni** (permesso Analisi, o admin):
 1. **Popolazione — ISTAT** → comuni della provincia di Ancona
 2. **Punti di Interesse** → Google Places o OpenStreetMap
 3. **Traffico — TomTom** → primo snapshot
@@ -145,7 +145,7 @@ Dall'app, pagina **"Dati & GTFS" / "Sincronizza Dati"**:
 
 Oppure da terminale (sostituisci il dominio API e il secret):
 ```bash
-curl -X POST https://api.transitintel.tuodominio.it/api/cron/census \
+curl -X POST https://api.transitintel.tuodominio.it/api/cron/population \
   -H "x-cron-secret: IL-TUO-CRON-SECRET"
 
 curl -X POST https://api.transitintel.tuodominio.it/api/cron/poi \
@@ -157,8 +157,8 @@ curl -X POST https://api.transitintel.tuodominio.it/api/cron/traffic \
 
 ### Anagrafica del personale
 
-Il roster ha un'anagrafica completa dei conducenti (Ottimizzazione → Personale →
-Anagrafica personale). Le tabelle si creano da sé al primo avvio; il file
+Il roster ha un'anagrafica completa dei conducenti (menu Personale →
+Anagrafica). Le tabelle si creano da sé al primo avvio; il file
 `migrations/2026-10_anagrafica_personale.sql` è lo specchio per chi le vuole
 preparare prima.
 
@@ -332,8 +332,8 @@ attivare la verifica.
 
 ### Roster: pubblicazione dei turni guida
 
-Il roster riceve i turni guida da un solo canale, **Pubblicazione turni** (menu
-Ottimizzazione servizio, o «Pubblica nel Roster» dal Quadro d'esercizio): si
+Il roster riceve i turni guida da un solo canale, **Turni al roster** (menu
+Pubblicazione, o «Pubblica nel Roster» dal Quadro d'esercizio): si
 sceglie programma e periodo, e per ogni Unità di Progettazione quale turni
 guida vale nei suoi giorni (proposto quello in esercizio). Le tabelle si
 creano da sé; `migrations/2026-10_roster_pubblicazione.sql` è lo specchio.
@@ -351,6 +351,46 @@ creano da sé; `migrations/2026-10_roster_pubblicazione.sql` è lo specchio.
    progetto di scheduling i cui turni guida sono pubblicati o assegnati.
 4. Pubblica chi ha il permesso Scheduling e vede il progetto di Planning
    Studio. Ogni pubblicazione e ogni ritiro restano nel registro della pagina.
+
+### Menu e permessi
+
+Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazione.ts`):
+
+| Sezione | Voci | Permesso |
+|---|---|---|
+| Oggi | la pagina d'ingresso | tutti |
+| Rete e orari | Planning Studio, Confronta programmi, Zone di coincidenza | Rete e orari (`network`) |
+| Turni | Progetti di esercizio, Turni misti | Turni (`scheduling`) |
+| Pubblicazione | Turni al roster; Orari al pubblico (stampa orari, QR) | Turni; Rete e orari |
+| Personale | Roster, Anagrafica | Roster; Roster o Personale |
+| Esercizio | Mappa live, AVM, Tempi osservati | Esercizio (`centrale`); i Tempi osservati anche con Analisi |
+| Flotta | FleetCare | Flotta (`fleetcare`) |
+| Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa, Documentazione ATMA | Tariffe (`fares`) |
+| Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi (`analytics`) |
+| Amministrazione | Utenti e accessi (admin), Dati e integrazioni (Analisi), Sicurezza dell'account | — |
+
+- **Oggi** (`/oggi`) è la pagina d'ingresso. Mostra il servizio adesso dall'AVM,
+  i turni del giorno nel roster (pubblicati, scoperti, assenze), il programma in
+  esercizio e l'ultima pubblicazione dei turni; ognuno vede solo i riquadri dei
+  suoi permessi. Dopo l'accesso si torna alla pagina chiesta (un segnalibro, un
+  link); una pagina senza permesso riporta a Oggi e dice quale permesso serve.
+- **Analisi parte spenta per i nuovi utenti.** Chi la aveva la tiene: l'admin la
+  toglie da Gestione Utenti a chi non la usa. Le letture che servono anche agli
+  altri moduli (feed e fermate per i turni, linee e confini per le tariffe, il
+  dominio dei QR per la stampa orari, l'elenco dei programmi per i turni) non
+  dipendono più da Analisi. `migrations/2026-11_analisi_spenta.sql` cambia solo
+  il default della colonna: non serve applicarla, l'app scrive i permessi per
+  intero quando crea un utente.
+- **Rete e orari porta con sé i Turni**, come prima.
+- **Orari al pubblico** si apre sul programma in esercizio; prima chiedeva il
+  permesso Analisi, ora Rete e orari (è lì che si leggono gli orari).
+- **Ipotesi di linea** (gli scenari KML) e la pagina **Dati e integrazioni** ora
+  chiedono Analisi, come le loro API. Il numero di autovetture aziendali usato
+  dai motori dei turni si cambia solo da admin.
+- I vecchi indirizzi portano ai nuovi: `/network-engine` → Planning Studio,
+  `/fares-engine` e `/stops-classification` → Bigliettazione, `/fucina` e
+  `/optimizer-*` → Progetti di esercizio. La vecchia pagina dei turni guida
+  (`/driver-shifts/…`) resta raggiungibile dai link della Fucina, fuori dal menu.
 
 ---
 
@@ -408,7 +448,7 @@ con i cron interni di Coolify:
 |---|---|---|
 | Traffico | `POST /api/cron/traffic` | ogni 15 min |
 | POI | `POST /api/cron/poi` | 1° del mese, ore 3:00 |
-| Popolazione | `POST /api/cron/census` | ogni lunedì, ore 4:00 |
+| Popolazione | `POST /api/cron/population` | ogni lunedì, ore 4:00 |
 | Controllo settimanale AVM | `POST /api/cron/avm-controllo-settimanale` | facoltativo: ogni lunedì, ore 4:00 |
 
 Per ogni job: metodo **POST**, header `x-cron-secret: IL-TUO-CRON-SECRET`.
@@ -447,6 +487,9 @@ può restare vuoto e il cookie usa `SameSite=Lax`.
 # API: senza database. I test non usano MAI DATABASE_URL; un database di
 # prova, se serve, si passa con TEST_DATABASE_URL
 pnpm --filter @workspace/api-server run test
+
+# SPA: il menu (profili di permesso, nessuna sezione vuota) e i conti delle pagine
+pnpm --filter @workspace/transitintel run test
 
 # Solver Python
 python3 -m pip install -r requirements-dev.txt

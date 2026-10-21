@@ -1952,7 +1952,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <span className="flex-1 min-w-0">🚌 Turni macchina salvati{result.solver === "vcsp" ? ` (round #${selectedRound ?? (result as any).vcsp?.bestRound})` : ""}</span>
                     {result.solver === "vcsp" ? (
                       /* VCSP: il workspace si apre dallo SCENARIO salvato (deep-link) */
-                      <a href={projectId ? `/fucina/${projectId}/vehicles/${savedScenarioId}` : `/fucina?scenario=${savedScenarioId}`}
+                      <a href={projectId ? `/fucina/${projectId}/vehicles/${savedScenarioId}` : "/fucina/esercizio"}
                         className="text-[11px] px-2.5 py-1 rounded-lg border border-cyan-500/30 bg-cyan-500/8 text-cyan-300 hover:bg-cyan-500/15 transition-all">
                         Apri Workspace Vetture
                       </a>

@@ -1,4 +1,4 @@
-# CI di Cerbero: typecheck, test dell'API, build della SPA, test dei solver.
+# CI di Cerbero: typecheck, test dell'API, test e build della SPA, test dei solver.
 # Ogni job deve passare prima del merge. I test non hanno database: le rotte
 # si provano con un utente iniettato (src/__tests__/helpers/app-di-prova.ts).
 name: CI
@@ -56,6 +56,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Librerie del workspace
         run: pnpm run typecheck:libs
+      - name: Test della SPA (menu, conti delle pagine)
+        run: pnpm --filter @workspace/transitintel run test
       # non il build di root: artifacts/mockup-sandbox vuole PORT e BASE_PATH
       - name: Build della SPA
         run: pnpm --filter @workspace/transitintel run build

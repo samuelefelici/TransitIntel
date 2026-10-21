@@ -2731,7 +2731,7 @@ export default function PlanningStudioEditorPage() {
 
         {/* CTA primaria: nuovo progetto Scheduling collegato a questo PS */}
         <button
-          onClick={() => navigate(`/fucina?ps=${projectId}&new=1`)}
+          onClick={() => navigate(`/fucina/esercizio/${projectId}`)}
           className="ml-1 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_15px_rgba(251,146,60,0.4)] transition-shadow shrink-0"
           title="Crea un nuovo progetto Scheduling collegato a questo PS"
         >

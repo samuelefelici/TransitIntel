@@ -9,6 +9,7 @@ import { Link } from "wouter";
 import { Loader2, Wrench } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { CASA } from "@/lib/navigazione";
 
 export default function ApriFleetCare() {
   const [errore, setErrore] = useState<string | null>(null);
@@ -61,12 +62,12 @@ export default function ApriFleetCare() {
         {errore ? (
           <>
             <p role="alert" className="text-sm">{errore}</p>
-            <Link href="/dashboard" className="text-sm text-primary underline">Vai a Cerbero</Link>
+            <Link href={CASA} className="text-sm text-primary underline">Vai a Cerbero</Link>
           </>
         ) : tornato ? (
           <div className="flex flex-col items-center gap-3">
             <Button type="button" onClick={apri}>Apri FleetCare</Button>
-            <Link href="/dashboard" className="text-sm text-primary underline">Vai a Cerbero</Link>
+            <Link href={CASA} className="text-sm text-primary underline">Vai a Cerbero</Link>
           </div>
         ) : (
           <p role="status" className="text-sm text-muted-foreground flex items-center justify-center gap-2">
