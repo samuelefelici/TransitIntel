@@ -470,7 +470,8 @@ router.get("/gtfs/route-stop-ids", asyncHandler(async (req, res) => {
 router.get("/settings/company-cars", asyncHandler(async (_req, res) => {
   const [row] = await db.select().from(appSettings).where(eq(appSettings.key, "company_cars"));
   const count = row ? (typeof row.value === "number" ? row.value : parseInt(String(row.value), 10)) : 5;
-  res.json({ companyCars: count || 5 });
+  /* 0 è un valore vero (nessuna auto): il 5 vale solo se il parametro manca, come in loadCompanyCars */
+  res.json({ companyCars: Number.isFinite(count) ? count : 5 });
 }));
 
 // PUT /api/settings/company-cars — solo l'admin: il valore lo leggono i motori dei turni di tutti

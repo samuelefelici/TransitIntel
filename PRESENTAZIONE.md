@@ -1,3 +1,11 @@
+> **Nota (ottobre 2026, Fase 1).** Questo documento è la presentazione storica del
+> prodotto. Da allora sono stati tolti Virgilio (l'assistente in chat, con
+> `/api/ai/chat` e `/api/ai/health`), l'ottimizzatore orari e di percorso di
+> prima e gli script `crew_scheduler_cpsat.py` e `schedule_optimizer_engine.py`.
+> L'assistente è Argos, dentro Planning Studio: richiede il servizio Argos e la
+> sua chiave Anthropic. Il menu e le pagine di oggi sono descritti in DEPLOY.md,
+> sezione «Menu e permessi».
+
 # TransitIntel — Sintesi per Presentazione# 🚍 TransitIntel — Piattaforma Intelligente per il Trasporto Pubblico Locale
 
 
@@ -404,7 +412,7 @@ Import GTFS via drag&drop zip, visualizza feed importati, sync TomTom / OSM / IS
 
 ### 💾 10. Dati & GTFS
 
-- [ ] **Backend up**: `curl http://localhost:3000/api/ai/health` → deve restituire `{configured:true, tools:16}`
+- [ ] **Backend up**: `curl http://localhost:3000/api/healthz`; Argos: `curl http://localhost:3000/api/ai/argos/health` (con l'accesso) → `configured:true`
 
 - [ ] **Frontend up**: il task "Frontend Dev Server" deve girare (porta 5173)Pagina di gestione dati con 2 tab:
 

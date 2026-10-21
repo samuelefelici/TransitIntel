@@ -154,161 +154,6 @@ export const GetPopulationChoroplethResponse = zod.object({
 });
 
 /**
- * @summary List all bus stops
- */
-export const GetStopsResponse = zod.object({
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string().optional(),
-        code: zod.string().nullish(),
-        name: zod.string().optional(),
-        lng: zod.number().optional(),
-        lat: zod.number().optional(),
-        lines: zod.array(zod.string()).optional(),
-      }),
-    )
-    .optional(),
-  total: zod.number().optional(),
-});
-
-/**
- * @summary Create a bus stop
- */
-export const CreateStopBody = zod.object({
-  code: zod.string().optional(),
-  name: zod.string(),
-  lng: zod.number(),
-  lat: zod.number(),
-  lines: zod.array(zod.string()).optional(),
-});
-
-/**
- * @summary Update a bus stop
- */
-export const UpdateStopParams = zod.object({
-  id: zod.coerce.string(),
-});
-
-export const UpdateStopBody = zod.object({
-  code: zod.string().optional(),
-  name: zod.string(),
-  lng: zod.number(),
-  lat: zod.number(),
-  lines: zod.array(zod.string()).optional(),
-});
-
-export const UpdateStopResponse = zod.object({
-  id: zod.string().optional(),
-  code: zod.string().nullish(),
-  name: zod.string().optional(),
-  lng: zod.number().optional(),
-  lat: zod.number().optional(),
-  lines: zod.array(zod.string()).optional(),
-});
-
-/**
- * @summary Delete a bus stop
- */
-export const DeleteStopParams = zod.object({
-  id: zod.coerce.string(),
-});
-
-/**
- * @summary Nearby POI & population for a stop
- */
-export const GetStopNearbyParams = zod.object({
-  id: zod.coerce.string(),
-});
-
-export const GetStopNearbyResponse = zod.object({
-  stopId: zod.string().optional(),
-  nearbyPois: zod
-    .array(
-      zod.object({
-        id: zod.string().optional(),
-        osmId: zod.number().nullish(),
-        name: zod.string().optional(),
-        category: zod.string().optional(),
-        lng: zod.number().optional(),
-        lat: zod.number().optional(),
-        properties: zod.object({}).passthrough().optional(),
-      }),
-    )
-    .optional(),
-  populationServed: zod.number().optional(),
-  poiCount: zod.number().optional(),
-});
-
-/**
- * @summary List all bus routes
- */
-export const GetRoutesResponse = zod.object({
-  data: zod
-    .array(
-      zod.object({
-        id: zod.string().optional(),
-        lineCode: zod.string().nullish(),
-        name: zod.string().optional(),
-        serviceType: zod.string().optional(),
-        stopCount: zod.number().optional(),
-      }),
-    )
-    .optional(),
-  total: zod.number().optional(),
-});
-
-/**
- * @summary Create a bus route
- */
-export const CreateRouteBody = zod.object({
-  lineCode: zod.string().optional(),
-  name: zod.string(),
-  serviceType: zod.string(),
-});
-
-/**
- * @summary Delete a bus route
- */
-export const DeleteRouteParams = zod.object({
-  id: zod.coerce.string(),
-});
-
-/**
- * @summary Stop coverage analysis
- */
-export const getAnalysisCoverageQueryRadiusKmDefault = 0.5;
-
-export const GetAnalysisCoverageQueryParams = zod.object({
-  radiusKm: zod.coerce
-    .number()
-    .default(getAnalysisCoverageQueryRadiusKmDefault),
-});
-
-export const GetAnalysisCoverageResponse = zod.object({}).passthrough();
-
-/**
- * @summary Demand score grid
- */
-export const GetAnalysisDemandScoreResponse = zod.object({
-  data: zod
-    .array(
-      zod.object({
-        cellId: zod.string().optional(),
-        lng: zod.number().optional(),
-        lat: zod.number().optional(),
-        score: zod.number().optional(),
-        populationScore: zod.number().optional(),
-        poiScore: zod.number().optional(),
-        trafficScore: zod.number().optional(),
-        hasStop: zod.boolean().optional(),
-        source: zod.string().optional(),
-      }),
-    )
-    .optional(),
-});
-
-/**
  * @summary Underserved areas
  */
 export const GetAnalysisUnderservedQueryParams = zod.object({
@@ -338,11 +183,6 @@ export const GetAnalysisUnderservedResponse = zod.object({
     .optional(),
   total: zod.number().optional(),
 });
-
-/**
- * @summary Demand analysis (population + POI combined)
- */
-export const GetAnalysisDemandResponse = zod.object({}).passthrough();
 
 /**
  * @summary Dashboard stats
@@ -730,21 +570,6 @@ export const GetGtfsRoutesResponse = zod.object({
         routeColor: zod.string().nullish(),
         routeTextColor: zod.string().nullish(),
         tripsCount: zod.number().optional(),
-      }),
-    )
-    .optional(),
-});
-
-/**
- * @summary Synthetic route list (for filters)
- */
-export const GetGtfsRoutesListResponse = zod.object({
-  data: zod
-    .array(
-      zod.object({
-        routeShortName: zod.string().optional(),
-        routeLongName: zod.string().optional(),
-        routeColor: zod.string().nullish(),
       }),
     )
     .optional(),
@@ -1683,71 +1508,6 @@ export const SyncIntermodalSchedulesResponse = zod.object({}).passthrough();
  * @summary Sync status of intermodal schedules
  */
 export const GetIntermodalSyncStatusResponse = zod.object({}).passthrough();
-
-/**
- * @summary Optimize stop placement on a scenario route
- */
-export const optimizeRoutePlacementBodyBusSizeDefault = `standard`;
-export const optimizeRoutePlacementBodyMaxStopsDefault = 40;
-export const optimizeRoutePlacementBodyRadiusKmDefault = 0.4;
-
-export const OptimizeRoutePlacementBody = zod.object({
-  scenarioId: zod.string(),
-  busSize: zod
-    .enum(["mini", "standard", "articulated"])
-    .default(optimizeRoutePlacementBodyBusSizeDefault),
-  targetInterStopKm: zod.number().nullish(),
-  maxStops: zod.number().default(optimizeRoutePlacementBodyMaxStopsDefault),
-  radiusKm: zod.number().default(optimizeRoutePlacementBodyRadiusKmDefault),
-});
-
-export const OptimizeRoutePlacementResponse = zod.object({}).passthrough();
-
-/**
- * @summary Bus size profiles reference data
- */
-export const GetBusProfilesResponse = zod.object({}).passthrough();
-
-/**
- * @summary CP-SAT schedule optimization
- */
-export const optimizeScheduleCpsatBodyTimeLimitSecondsDefault = 60;
-
-export const OptimizeScheduleCpsatBody = zod.object({
-  date: zod.string().describe("YYYYMMDD or YYYY-MM-DD"),
-  timeLimitSeconds: zod
-    .number()
-    .default(optimizeScheduleCpsatBodyTimeLimitSecondsDefault),
-  customStrategy: zod.object({}).passthrough().nullish(),
-});
-
-export const OptimizeScheduleCpsatResponse = zod.object({}).passthrough();
-
-/**
- * @summary Greedy schedule optimization for a date
- */
-export const OptimizeScheduleGreedyBody = zod.object({
-  date: zod.string(),
-});
-
-export const OptimizeScheduleGreedyResponse = zod.object({}).passthrough();
-
-/**
- * @summary Available dates in GTFS feed
- */
-export const GetScheduleDatesResponse = zod.object({
-  mode: zod.enum(["calendar", "calendar_dates"]).optional(),
-  minDate: zod.string().optional(),
-  maxDate: zod.string().optional(),
-  dates: zod
-    .array(
-      zod.object({
-        date: zod.string().optional(),
-        services: zod.number().optional(),
-      }),
-    )
-    .optional(),
-});
 
 /**
  * @summary GTFS routes with vehicle-type info

@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import { AlertTriangle } from "lucide-react";
 
 import {
-  useGetAnalysisStats, useGetPoi, useGetAnalysisDemandScore,
+  useGetAnalysisStats, useGetPoi,
 } from "@workspace/api-client-react";
 import { getApiBase } from "@/lib/api";
 import {
@@ -80,7 +80,6 @@ export default function Dashboard() {
   // ── React Query hooks ─────────────────────────────────────────
 
   const { data: statsData }   = useGetAnalysisStats();
-  const { data: demandData }  = useGetAnalysisDemandScore();
   const { data: poiData }     = useGetPoi({});
 
   // GTFS data via custom hooks (replaces manual fetch + useEffect)
@@ -219,18 +218,6 @@ export default function Dashboard() {
   }, [viewMode, mapLoaded, isStandardStyle]);
 
   // ── GeoJSON builders ──────────────────────────────────────────
-
-  const demandGeojson = useMemo(() => {
-    if (!demandData?.data) return null;
-    return {
-      type: "FeatureCollection",
-      features: demandData.data.map(d => ({
-        type: "Feature",
-        geometry: { type: "Point", coordinates: [d.lng, d.lat] },
-        properties: { score: d.score },
-      })),
-    };
-  }, [demandData]);
 
   // Enrich choropleth with "covered" flag when walkability data is available
   const enrichedChoropleth = useMemo(() => {

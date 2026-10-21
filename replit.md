@@ -41,11 +41,10 @@ artifacts-monorepo/
 
 - `/dashboard` — Full-screen Mapbox map with layer toggles (traffic heatmap, demand heatmap, POIs, GTFS stops) and live status overlay
 - `/operations` — Sala Operativa: live fleet map (AVM/caronte data), active trips, delays per stop, daily punctuality KPIs (polling 10s)
-- `/timetables` — Stampa Orari: printable stop departure posters + general line timetables from the active service program
+- `/timetables` — Orari al pubblico: printable stop departure posters + general line timetables from the operational Planning Studio programme (`/api/planning-studio/:id/timetables/*`)
 - `/roster` — Roster: crew assignment board (drivers × days; per-day uncovered duties panel fed by saved driver-shift scenarios)
 - `/traffic` — Traffic analysis charts (by hour, by day of week) with Recharts
 - `/territory` — Population density & POI distribution analysis
-- `/stops` — Bus stop CRUD management with nearby POI/population data
 - `/reports` — Demand analysis, underserved area table with export to CSV
 - `/gtfs` — GTFS feed upload (drag & drop zip), route/stop/trip visualization, feed management
 
@@ -65,13 +64,6 @@ artifacts-monorepo/
 - `GET /api/traffic/stats` — Aggregated traffic statistics
 - `GET /api/poi?categories=...` — POIs with category filter
 - `GET /api/population/density` — Census section polygons
-- `GET /api/stops` — Bus stops list
-- `POST/PUT/DELETE /api/stops/:id` — CRUD for stops
-- `GET /api/stops/:id/nearby` — Nearby POIs and population for a stop
-- `GET /api/routes` — Bus routes
-- `POST/DELETE /api/routes/:id` — CRUD for routes
-- `GET /api/analysis/coverage` — Population coverage analysis
-- `GET /api/analysis/demand-score` — Composite demand score grid
 - `GET /api/analysis/underserved` — High-demand zones without stops
 - `GET /api/analysis/stats` — Dashboard summary stats
 
@@ -88,9 +80,6 @@ artifacts-monorepo/
 
 ### Service Program & Timetables
 - `POST /api/planning-studio/projects/:id/activate` — "Metti in esercizio": promotes the project's materialized feed to THE active feed (single operational service program; AVM/operations/fares/GTFS-RT follow it automatically)
-- `GET /api/timetables/stops/search?q=` — Stop picker with served routes
-- `GET /api/timetables/stop/:stopId?dayType=weekday|saturday|sunday` — Stop departure poster (per line: hour × minutes grid)
-- `GET /api/timetables/route/:routeId?dayType=&directionId=` — Line timetable (stops × trips, topological merge of patterns)
 
 ### Roster (crew assignment board)
 - `GET /api/roster/drivers` · `POST /api/roster/drivers` · `POST /api/roster/drivers/seed` — Operators (incl. fictitious seeding)
