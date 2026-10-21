@@ -272,8 +272,8 @@ export interface DriverTripChange {
  *   - cambio vehicleId     → almeno MIN_VEHICLE_HANDOVER_MIN (cambio in linea)
  *   - cambio vehicleType   → ulteriore MIN_VEHICLE_HANDOVER_EXTRA per pull-out/pull-in
  *
- * I valori sono allineati a quanto usato dal backend in transfer_matrix.py
- * (default conservativi). Sovrascrivibili in futuro caricando una matrice
+ * I valori sono i default conservativi che usava il vecchio transfer_matrix.py
+ * (tolto con il solver v3). Sovrascrivibili in futuro caricando una matrice
  * vera dal backend.
  */
 const MIN_DEADHEAD_DIFFERENT_STOP_MIN = 10;

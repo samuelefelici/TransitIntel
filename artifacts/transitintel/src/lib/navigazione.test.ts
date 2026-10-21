@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import type { Permission } from "@/hooks/use-auth";
 import {
   CASA, NOMI_PERMESSI, PERMESSI_PAGINA, PREFISSI_PUBBLICI, SEZIONI,
-  paginaDiLavoro, paginaTariffe, permessiDelPercorso, sezioniVisibili, voceAttiva,
+  paginaDiLavoro, paginaTariffe, sezioniVisibili, voceAttiva,
 } from "./navigazione";
 import { schedeVisibili } from "@/pages/data";
 
@@ -58,7 +58,7 @@ describe("il menu di chi entra", () => {
   it("l'admin vede tutto, compresa Gestione Utenti", () => {
     const m = menu(con(), true);
     expect(Object.keys(m)).toEqual(SEZIONI.map(s => s.titolo));
-    expect(m["Amministrazione"]).toContain("Utenti e accessi");
+    expect(m["Amministrazione"]).toEqual(["Utenti e accessi", "Parametri di esercizio", "Dati e integrazioni", "Sicurezza dell'account"]);
     expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Utenti e accessi");
   });
 
@@ -133,17 +133,6 @@ describe("la voce accesa e le pagine di lavoro", () => {
     expect(paginaDiLavoro("/roster")).toBe(false);
     expect(paginaTariffe("/fare-docs")).toBe(true);
     expect(paginaTariffe("/fucina")).toBe(false);
-  });
-});
-
-describe("i permessi di un percorso qualunque (per chi naviga da sé, come Virgilio)", () => {
-  it("la pagina più specifica che lo contiene", () => {
-    expect(permessiDelPercorso("/planning-studio/abc/trips")).toEqual(["network"]);
-    expect(permessiDelPercorso("/roster/anagrafica?x=1")).toEqual(["roster", "personale"]);
-    expect(permessiDelPercorso("/roster")).toEqual(["roster"]);
-    expect(permessiDelPercorso("/territory")).toEqual(["analytics"]);
-    expect(permessiDelPercorso("/oggi")).toBeNull();
-    expect(permessiDelPercorso("/planning")).toEqual(["network"]);
   });
 });
 

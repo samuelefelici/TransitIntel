@@ -648,7 +648,7 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   ["/roster/gruppi-turni", ["roster", "personale"]],
   ["/roster/rotazioni-riposi", ["roster", "personale"]],
   // il roster (tabellone, assegnazioni, voci, calendario, tratte dei turni)
-  ["/roster", "roster"], ["/optimizer", "scheduling"], ["/scheduling", "scheduling"],
+  ["/roster", "roster"], ["/scheduling", "scheduling"],
   ["/service-db", "scheduling"],
   ["/deadheads", "scheduling"],
   // Depositi e archi fuorilinea sono infrastruttura di PROGETTO: si gestiscono
@@ -661,8 +661,7 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // mentre la rotta frontend è gated su "network", così chi aveva solo
   // network vedeva la pagina e prendeva 403 su ogni chiamata, e chi aveva
   // solo analytics veniva rimbalzato alla dashboard.
-  ["/planning-studio", "network"], ["/zones", "network"], ["/routes", "network"],
-  ["/stops", "network"],
+  ["/planning-studio", "network"], ["/zones", "network"],
   // I nodi sono l'infrastruttura condivisa per eccellenza: il Planner Studio
   // li disegna, lo Scheduling Engine li usa come punti di cambio vettura.
   ["/clusters", ["network", "scheduling"]],

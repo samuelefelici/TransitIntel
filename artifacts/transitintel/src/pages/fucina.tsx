@@ -21,10 +21,9 @@ import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 import { getApiBase } from "@/lib/api";
 import { getProject as getSchedulingProject, syncProjectFromPs } from "@/lib/scheduling-projects-api";
 
-// NB: GtfsSelectorStep deprecato — il feed arriva sempre dal Planning Studio
+// il feed e i cluster arrivano dal Planning Studio: qui niente scelta del feed né cluster
 const VehicleAssignmentStep = lazy(() => import("@/pages/fucina/steps/VehicleAssignmentStep"));
 const DepotStep = lazy(() => import("@/pages/fucina/steps/DepotStep"));
-// ClustersStep deprecato — i cluster vivono solo nel Network Engine
 const DeadheadStep = lazy(() => import("@/pages/fucina/steps/DeadheadStep"));
 const OptimizerStep = lazy(() => import("@/pages/fucina/steps/OptimizerStep"));
 const WorkspaceStep = lazy(() => import("@/pages/fucina/steps/WorkspaceStep"));
@@ -241,7 +240,6 @@ function StepperBar({
             <button
               onClick={() => clickable && onStepClick(step.id)}
               disabled={!clickable}
-              data-virgilio-id={`fucina:step-${step.id}`}
               className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg transition-all ${
                 active ? "bg-orange-500/15 cursor-default" : clickable ? "hover:bg-orange-500/8 cursor-pointer" : "cursor-default opacity-40"
               }`}
@@ -566,42 +564,6 @@ export default function FucinaPage() {
     return () => { cancelled = true; };
   }, [gtfsSelection?.tempFeedId, gtfsSelection?.date, vehicleAssignment, psProjectId]);
 
-
-  React.useEffect(() => {
-    (window as any).__virgilioFucinaReady = true;
-    const handler = (e: Event) => {
-      const d = (e as CustomEvent).detail as {
-        action: "start" | "goto_step" | "highlight_field";
-        step?: number;
-        field_id?: string;
-        label?: string;
-      };
-      if (!d) return;
-      if (d.action === "start") {
-        setShowSplash(false);
-        setStep(0);
-        return;
-      }
-      if (d.action === "goto_step" && typeof d.step === "number") {
-        setShowSplash(false);
-        setStep(Math.max(0, Math.min(7, d.step)));
-        return;
-      }
-      if (d.action === "highlight_field" && d.field_id) {
-        // riusa il sistema tentacoli con prefisso fucina:
-        window.dispatchEvent(
-          new CustomEvent("virgilio:highlight", {
-            detail: { target: d.field_id, label: d.label, color: "amber" },
-          }),
-        );
-      }
-    };
-    window.addEventListener("virgilio:fucina", handler as EventListener);
-    return () => {
-      window.removeEventListener("virgilio:fucina", handler as EventListener);
-      (window as any).__virgilioFucinaReady = false;
-    };
-  }, []);
 
   // ── Deep-link: /fucina?scenario=ID  oppure  /fucina/:pid/vehicles/:scenarioId  oppure  /drivers/:scenarioId
   React.useEffect(() => {

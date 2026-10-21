@@ -435,19 +435,6 @@ router.get("/gtfs/stops/all", asyncHandler(async (_req, res) => {
   res.json({ data: stops.rows, total: stops.rows.length });
 }));
 
-// GET /api/gtfs/routes/list — lista sintetica delle linee (per il filtro)
-router.get("/gtfs/routes/list", asyncHandler(async (_req, res) => {
-  const routes = await db.execute<any>(sql`
-    SELECT DISTINCT route_short_name AS "routeShortName",
-           route_long_name AS "routeLongName",
-           route_color AS "routeColor"
-    FROM gtfs_routes
-    WHERE route_short_name IS NOT NULL
-    ORDER BY route_short_name
-  `);
-  res.json({ data: routes.rows });
-}));
-
 // GET /api/gtfs/route-stop-ids?routeIds=a,b,c
 // Restituisce, per ciascuna routeId richiesta, l'elenco distinto di stop_id
 // effettivamente toccati dai trips di quella linea (usato dalla mappa cluster
@@ -483,7 +470,8 @@ router.get("/gtfs/route-stop-ids", asyncHandler(async (req, res) => {
 router.get("/settings/company-cars", asyncHandler(async (_req, res) => {
   const [row] = await db.select().from(appSettings).where(eq(appSettings.key, "company_cars"));
   const count = row ? (typeof row.value === "number" ? row.value : parseInt(String(row.value), 10)) : 5;
-  res.json({ companyCars: count || 5 });
+  /* 0 è un valore vero (nessuna auto): il 5 vale solo se il parametro manca, come in loadCompanyCars */
+  res.json({ companyCars: Number.isFinite(count) ? count : 5 });
 }));
 
 // PUT /api/settings/company-cars — solo l'admin: il valore lo leggono i motori dei turni di tutti

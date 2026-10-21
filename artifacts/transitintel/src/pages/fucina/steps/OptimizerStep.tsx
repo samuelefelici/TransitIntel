@@ -1592,7 +1592,6 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
 
               {/* CTA avvio */}
               <button onClick={runOptimizer}
-                data-virgilio-id="fucina:run-optimizer"
                 className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-sm text-black transition-all shadow-lg ${
                   solverMode === "cpsat"
                     ? "bg-gradient-to-r from-purple-500 to-violet-500 hover:from-purple-400 hover:to-violet-400 shadow-purple-500/20"

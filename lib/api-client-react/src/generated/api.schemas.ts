@@ -720,38 +720,6 @@ export type GetPopulationChoropleth200 = {
   features?: GetPopulationChoropleth200FeaturesItem[];
 };
 
-export type GetStops200 = {
-  data?: BusStop[];
-  total?: number;
-};
-
-export type GetRoutes200 = {
-  data?: BusRoute[];
-  total?: number;
-};
-
-export type GetAnalysisCoverageParams = {
-  radiusKm?: number;
-};
-
-export type GetAnalysisCoverage200 = { [key: string]: unknown };
-
-export type GetAnalysisDemandScore200DataItem = {
-  cellId?: string;
-  lng?: number;
-  lat?: number;
-  score?: number;
-  populationScore?: number;
-  poiScore?: number;
-  trafficScore?: number;
-  hasStop?: boolean;
-  source?: string;
-};
-
-export type GetAnalysisDemandScore200 = {
-  data?: GetAnalysisDemandScore200DataItem[];
-};
-
 export type GetAnalysisUnderservedParams = {
   minScore?: number;
 };
@@ -777,8 +745,6 @@ export type GetAnalysisUnderserved200 = {
   data?: GetAnalysisUnderserved200DataItem[];
   total?: number;
 };
-
-export type GetAnalysisDemand200 = { [key: string]: unknown };
 
 export type GetAnalysisStats200 = { [key: string]: unknown };
 
@@ -923,17 +889,6 @@ export type GetGtfsRoutesParams = {
 
 export type GetGtfsRoutes200 = {
   data?: GtfsRoute[];
-};
-
-export type GetGtfsRoutesList200DataItem = {
-  routeShortName?: string;
-  routeLongName?: string;
-  /** @nullable */
-  routeColor?: string | null;
-};
-
-export type GetGtfsRoutesList200 = {
-  data?: GetGtfsRoutesList200DataItem[];
 };
 
 export type GetGtfsRoutesActiveByBandParams = {
@@ -1132,53 +1087,6 @@ export type GetIntermodalPois200 = { [key: string]: unknown };
 export type SyncIntermodalSchedules200 = { [key: string]: unknown };
 
 export type GetIntermodalSyncStatus200 = { [key: string]: unknown };
-
-export type OptimizeRoutePlacement200 = { [key: string]: unknown };
-
-export type GetBusProfiles200 = { [key: string]: unknown };
-
-/**
- * @nullable
- */
-export type OptimizeScheduleCpsatBodyCustomStrategy = {
-  [key: string]: unknown;
-} | null;
-
-export type OptimizeScheduleCpsatBody = {
-  /** YYYYMMDD or YYYY-MM-DD */
-  date: string;
-  timeLimitSeconds?: number;
-  /** @nullable */
-  customStrategy?: OptimizeScheduleCpsatBodyCustomStrategy;
-};
-
-export type OptimizeScheduleCpsat200 = { [key: string]: unknown };
-
-export type OptimizeScheduleGreedyBody = {
-  date: string;
-};
-
-export type OptimizeScheduleGreedy200 = { [key: string]: unknown };
-
-export type GetScheduleDates200Mode =
-  (typeof GetScheduleDates200Mode)[keyof typeof GetScheduleDates200Mode];
-
-export const GetScheduleDates200Mode = {
-  calendar: "calendar",
-  calendar_dates: "calendar_dates",
-} as const;
-
-export type GetScheduleDates200DatesItem = {
-  date?: string;
-  services?: number;
-};
-
-export type GetScheduleDates200 = {
-  mode?: GetScheduleDates200Mode;
-  minDate?: string;
-  maxDate?: string;
-  dates?: GetScheduleDates200DatesItem[];
-};
 
 export type GetServiceProgramRoutes200RoutesItem = { [key: string]: unknown };
 
