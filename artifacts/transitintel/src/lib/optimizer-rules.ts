@@ -11,9 +11,9 @@
  * servizio (urbano/extraurbano/misto) fungono da preset iniziale ma restano
  * editabili; i profili-regole salvati (DB) permettono il riuso tra aziende.
  *
- * NB: weights / maxRounds / taskGranularity / enableCrossCluster NON sono esposti
- * perché letti solo dal vecchio crew_scheduler_cpsat.py (v3), non dal v4 attivo:
- * sarebbero controlli morti.
+ * NB: weights / maxRounds / taskGranularity / enableCrossCluster NON sono esposti:
+ * li leggeva solo il vecchio solver v3 (crew_scheduler_cpsat.py, tolto), non il v4
+ * attivo; sarebbero controlli morti.
  */
 import type { OperatorConfig } from "@/hooks/use-crew-optimization";
 
