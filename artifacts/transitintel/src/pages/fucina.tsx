@@ -654,7 +654,7 @@ export default function FucinaPage() {
         {showSplash && (
           <SplashScreen
             onEnter={() => setShowSplash(false)}
-            onBack={() => navigate("/network")}
+            onBack={() => navigate("/fucina/esercizio")}
           />
         )}
       </AnimatePresence>

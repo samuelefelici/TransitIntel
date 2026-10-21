@@ -63,27 +63,28 @@ const esitoLeggibile = (e: string) => {
   return ESITO_LABEL[e] ?? e;
 };
 
+/** I permessi sono i moduli del menu (lib/navigazione.ts), nell'ordine della giornata. */
 const PERM_LABEL: Record<Permission, string> = {
-  analytics: "Analytics (Traffico/Territorio/Rete)",
-  fares: "Bigliettazione (Fares Engine)",
-  scheduling: "Scheduling (Crea Servizio + Ottimizzazione)",
-  network: "Network Engine (PlannerStudio + Crea Servizio)",
-  centrale: "Centrale Operativa (Mappa live + AVM)",
-  personale: "Personale (anagrafica completa: contatti, paghe, ferie, visite)",
+  network: "Rete e orari (Planning Studio, confronto programmi, orari al pubblico)",
+  scheduling: "Turni (progetti di esercizio, turni misti, pubblicazione al roster)",
   roster: "Roster (tabellone, assenze, rotazioni; vede malattia, infortunio, 104)",
-  fleetcare: "FleetCare (Gestione Flotta e Manutenzione)",
+  personale: "Personale (anagrafica completa: contatti, paghe, ferie, visite)",
+  centrale: "Esercizio (mappa live, AVM, tempi osservati)",
+  fleetcare: "Flotta (FleetCare: mezzi, fermi, officina)",
+  fares: "Tariffe (bigliettazione, polimetriche, simulatore)",
+  analytics: "Analisi (mappa del territorio, traffico, domanda, linee GTFS, ipotesi di linea, dati GTFS)",
 };
 
 /** Colonne-interruttore della tabella utenti, nell'ordine in cui compaiono.
  *  FleetCare ha una colonna sua perché porta anche il ruolo. */
 const PERM_COLONNE: Array<{ perm: Permission; intestazione: string }> = [
-  { perm: "analytics", intestazione: "Analytics" },
-  { perm: "fares", intestazione: "Fares" },
-  { perm: "scheduling", intestazione: "Scheduling" },
-  { perm: "network", intestazione: "Network" },
-  { perm: "centrale", intestazione: "Centrale Op." },
-  { perm: "personale", intestazione: "Personale" },
+  { perm: "network", intestazione: "Rete e orari" },
+  { perm: "scheduling", intestazione: "Turni" },
   { perm: "roster", intestazione: "Roster" },
+  { perm: "personale", intestazione: "Personale" },
+  { perm: "centrale", intestazione: "Esercizio" },
+  { perm: "fares", intestazione: "Tariffe" },
+  { perm: "analytics", intestazione: "Analisi" },
 ];
 
 /** Ruoli disponibili DENTRO FleetCare (gli admin entrano sempre come Admin Flotta). */
@@ -207,6 +208,9 @@ export default function AdminUsersPage() {
           <p className="text-sm text-muted-foreground">
             Crea utenti, assegna permessi, resetta password.
           </p>
+          <p className="text-xs text-muted-foreground mt-1 max-w-3xl">
+            Ogni permesso è una sezione del menu. Analisi parte spenta per i nuovi utenti: chi l'aveva la tiene finché non la togli.
+          </p>
         </div>
         <Button onClick={() => setShowCreate(true)}>
           <UserPlus className="w-4 h-4 mr-2" /> Nuovo utente
@@ -264,16 +268,22 @@ export default function AdminUsersPage() {
                             onCheckedChange={() => handleToggleActive(u)}
                           />
                         </td>
-                        {PERM_COLONNE.map(({ perm: p }) => (
-                          <td key={p} className="py-2 pr-4">
-                            <Switch
-                              checked={isAdminRow ? true : !!u.permissions?.[p]}
-                              disabled={isAdminRow}
-                              aria-label={PERM_LABEL[p]}
-                              onCheckedChange={() => handleTogglePermission(u, p)}
-                            />
-                          </td>
-                        ))}
+                        {PERM_COLONNE.map(({ perm: p }) => {
+                          /* Rete e orari porta con sé i Turni (lo impone anche il server); un dato
+                           * di prima incoerente resta cliccabile e il salvataggio lo sistema */
+                          const legato = p === "scheduling" && !!u.permissions?.network && !!u.permissions?.scheduling;
+                          return (
+                            <td key={p} className="py-2 pr-4">
+                              <Switch
+                                checked={isAdminRow ? true : !!u.permissions?.[p]}
+                                disabled={isAdminRow || legato}
+                                title={legato ? "Compreso in Rete e orari" : undefined}
+                                aria-label={PERM_LABEL[p]}
+                                onCheckedChange={() => handleTogglePermission(u, p)}
+                              />
+                            </td>
+                          );
+                        })}
                         {/* FleetCare: abilitazione + ruolo dentro il modulo.
                             Gli admin sono sempre abilitati (come fleet_admin). */}
                         <td className="py-2 pr-4">
@@ -406,12 +416,13 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<"admin" | "user">("user");
+  /* come PERMESSI_NUOVO_UTENTE del server (api-server/src/lib/permessi.ts): Analisi spenta,
+   * i moduli con dati delicati (Esercizio, Flotta, Personale, Roster) li accende l'admin */
   const [perms, setPerms] = useState<Record<Permission, boolean>>({
-    analytics: true,
-    fares: true,
-    scheduling: true,
     network: true,
-    // I moduli (Centrale Operativa, FleetCare) li abilita esplicitamente l'admin
+    scheduling: true,
+    fares: true,
+    analytics: false,
     centrale: false,
     personale: false,
     roster: false,
@@ -482,16 +493,21 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
           </div>
           <div className="space-y-2 border-t border-border/40 pt-3">
             <p className="text-sm font-medium">Permessi</p>
-            {(Object.keys(PERM_LABEL) as Permission[]).map((p) => (
-              <div key={p} className="flex items-center justify-between">
-                <span className="text-sm">{PERM_LABEL[p]}</span>
-                <Switch
-                  checked={role === "admin" ? true : perms[p]}
-                  disabled={role === "admin"}
-                  onCheckedChange={(v) => setPerms((prev) => ({ ...prev, [p]: v }))}
-                />
-              </div>
-            ))}
+            {(Object.keys(PERM_LABEL) as Permission[]).map((p) => {
+              const legato = p === "scheduling" && perms.network;
+              return (
+                <div key={p} className="flex items-center justify-between gap-3">
+                  <span className="text-sm">{PERM_LABEL[p]}</span>
+                  <Switch
+                    checked={role === "admin" ? true : perms[p] || legato}
+                    disabled={role === "admin" || legato}
+                    title={legato ? "Compreso in Rete e orari" : undefined}
+                    aria-label={PERM_LABEL[p]}
+                    onCheckedChange={(v) => setPerms((prev) => ({ ...prev, [p]: v, ...(p === "network" && v ? { scheduling: true } : {}) }))}
+                  />
+                </div>
+              );
+            })}
             {/* Ruolo dentro FleetCare (solo se abilitato; gli admin sono sempre Admin Flotta) */}
             {role !== "admin" && perms.fleetcare && (
               <div className="flex items-center justify-between pl-4">

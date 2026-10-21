@@ -1,6 +1,7 @@
 import React, { useState, lazy, Suspense } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Database, FileArchive, RefreshCw, MapPin } from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
 
 // Lazy-load each sub-page to preserve code-splitting
 const GtfsContent = lazy(() => import("@/pages/gtfs"));
@@ -23,8 +24,18 @@ function TabLoader() {
   );
 }
 
+/* chi vede cosa: i feed GTFS sono dell'Analisi, la sincronizzazione dell'admin (come le loro
+ * API); le paline Mizar le consulta anche l'Esercizio (la pagina è aperta ad Analisi o Esercizio) */
+export function schedeVisibili(ha: { analisi: boolean; admin: boolean }): Tab[] {
+  return TABS.map(t => t.id).filter(id => id === "paline" || (id === "gtfs" ? ha.analisi || ha.admin : ha.admin));
+}
+
 export default function DataPage() {
-  const [tab, setTab] = useState<Tab>("gtfs");
+  const { isAdmin, hasPermission } = useAuth();
+  const schede = schedeVisibili({ analisi: hasPermission("analytics"), admin: isAdmin });
+  const [scelta, setTab] = useState<Tab>(schede[0]!);
+  /* i permessi in cache possono cambiare dopo la risposta del server: mai una scheda che non si vede */
+  const tab = schede.includes(scelta) ? scelta : schede[0]!;
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 pb-8">
@@ -35,9 +46,9 @@ export default function DataPage() {
             <Database className="w-5 h-5 text-primary" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Dati & GTFS</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Dati e integrazioni</h1>
             <p className="text-sm text-muted-foreground">
-              Importa feed GTFS e sincronizza sorgenti dati esterne
+              Feed GTFS, sorgenti esterne e paline Mizar
             </p>
           </div>
         </div>
@@ -45,7 +56,7 @@ export default function DataPage() {
 
       {/* Tab bar */}
       <div className="flex gap-1 p-1 rounded-xl bg-muted/30 border border-border/30 w-fit">
-        {TABS.map((t) => (
+        {TABS.filter((t) => schede.includes(t.id)).map((t) => (
           <button
             key={t.id}
             onClick={() => setTab(t.id)}

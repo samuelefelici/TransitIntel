@@ -26,13 +26,13 @@ function utente(attivi: Permission[], role: "admin" | "user" = "user"): AuthUser
 }
 
 /** "passa" se il middleware chiama next, altrimenti il codice HTTP. */
-function verifica(path: string, user: AuthUser): "passa" | number {
+function verifica(path: string, user: AuthUser, method = "GET"): "passa" | number {
   let esito: "passa" | number = "passa";
   const res = {
     status(c: number) { esito = c; return this; },
     json() { return this; },
   };
-  requirePermissionByPath({ user, path } as any, res as any, () => { esito = "passa"; });
+  requirePermissionByPath({ user, path, method } as any, res as any, () => { esito = "passa"; });
   return esito;
 }
 
@@ -144,5 +144,67 @@ describe("Anagrafica del personale: chi entra, chi vede i dati personali", () =>
     const res = { status(c: number) { codice = c; return this; }, json() { return this; } };
     requirePermission("personale")({ user: utente([], "admin"), authVia: "argos" } as any, res as any, () => { codice = "passa"; });
     expect(codice).toBe(403);
+  });
+});
+
+describe("Letture condivise: Analisi spenta non rompe gli altri moduli", () => {
+  const UUID = "0b0e6a6c-1d2e-4f3a-9b8c-7d6e5f4a3b2c";
+  const UUID2 = "1c1f7b7d-2e3f-4a4b-8c9d-8e7f6a5b4c3d";
+
+  it("Turni senza Analisi: feed, fermate, autovetture e la scelta del programma", () => {
+    const turni = utente(["scheduling"]);
+    expect(verifica("/gtfs/feeds", turni)).toBe("passa");
+    expect(verifica("/gtfs/stops/all", turni)).toBe("passa");
+    expect(verifica("/settings/company-cars", turni)).toBe("passa");
+    expect(verifica("/planning-studio/projects", turni)).toBe("passa");
+    expect(verifica(`/planning-studio/projects/${UUID}`, turni)).toBe("passa");
+    expect(verifica(`/planning-studio/projects/${UUID}/validity-units/${UUID2}/detail`, turni)).toBe("passa");
+    /* le maiuscole non contano, come per Express */
+    expect(verifica(`/Planning-Studio/projects/${UUID.toUpperCase()}`, turni)).toBe("passa");
+  });
+
+  it("solo in lettura: le scritture restano al modulo che possiede i dati", () => {
+    const turni = utente(["scheduling"]);
+    expect(verifica("/gtfs/feeds", turni, "DELETE")).toBe(403);
+    expect(verifica("/gtfs/feeds/abc", turni)).toBe(403);
+    expect(verifica("/settings/company-cars", turni, "PUT")).toBe(403);
+    expect(verifica("/planning-studio/projects", turni, "POST")).toBe(403);
+    expect(verifica(`/planning-studio/projects/${UUID}`, turni, "PATCH")).toBe(403);
+    expect(verifica(`/planning-studio/projects/${UUID}/trips`, turni)).toBe(403);
+    expect(verifica("/settings/timetable-map-domain", turni)).toBe(403);
+  });
+
+  it("Tariffe senza Analisi: linee, forme, fermate per linea e confini dei comuni", () => {
+    const tariffe = utente(["fares"]);
+    for (const p of ["/gtfs/routes", "/gtfs/shapes/geojson", "/gtfs/route-stop-ids", "/territory/comuni-boundaries"]) {
+      expect(verifica(p, tariffe), p).toBe("passa");
+    }
+    expect(verifica("/territory/zones", tariffe)).toBe(403);
+    expect(verifica("/gtfs/summary", tariffe)).toBe(403);
+  });
+
+  it("Rete e orari senza Analisi: il dominio dei QR e il confronto fra programmi", () => {
+    const rete = utente(["network"]);
+    expect(verifica("/settings/timetable-map-domain", rete)).toBe("passa");
+    expect(verifica("/planning/compare", rete)).toBe("passa");
+    expect(verifica("/planning/scenarios", rete)).toBe(403);
+    expect(verifica("/settings/timetable-map-domain", rete, "PUT")).toBe(403);
+  });
+
+  it("Esercizio senza Analisi: le linee per i Tempi osservati, non il resto degli orari", () => {
+    const esercizio = utente(["centrale"]);
+    expect(verifica("/timetables/routes", esercizio)).toBe("passa");
+    expect(verifica("/timetables", esercizio)).toBe(403);
+  });
+
+  it("Analisi legge l'elenco delle zone di coincidenza ma non le modifica", () => {
+    const analisi = utente(["analytics"]);
+    expect(verifica("/coincidence-zones", analisi)).toBe("passa");
+    expect(verifica("/coincidence-zones", analisi, "POST")).toBe(403);
+  });
+
+  it("il Database di esercizio è dei Turni (prima bastava essere entrati)", () => {
+    expect(verifica("/service-db/overview", utente([]))).toBe(403);
+    expect(verifica("/service-db/overview", utente(["scheduling"]))).toBe("passa");
   });
 });

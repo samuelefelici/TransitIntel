@@ -11,13 +11,14 @@
  * La stampa apre una finestra con HTML standalone + window.print().
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, QrCode, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
 import NetworkMap3D, { type NetLineStyle, type NetNodeLabels } from "@/components/NetworkMap3D";
 
@@ -1113,7 +1114,8 @@ export default function TimetablesPage() {
   const [tab, setTab] = useState<"stop" | "route">("route");
 
   // progetto Planning Studio (sorgente del programma di esercizio)
-  const [projectId, setProjectId] = useState<string>(DEFAULT_PROJECT_ID);
+  /* vuoto finché non arriva l'elenco dei programmi: le letture partono sul programma giusto */
+  const [projectId, setProjectId] = useState<string>("");
 
   // day-type selezionati (validità): multi per "orario di linea", singolo per "fermata"
   const [routeDayTypeIds, setRouteDayTypeIds] = useState<string[]>([]);
@@ -1190,16 +1192,25 @@ export default function TimetablesPage() {
     queryFn: () => apiFetch<any>("/api/planning-studio/projects"),
     staleTime: 5 * 60 * 1000,
   });
-  const projects: PsProject[] = useMemo(() => {
+  const projects: Array<PsProject & { inEsercizio: boolean }> = useMemo(() => {
     const d: any = projectsQ.data;
     const list = Array.isArray(d) ? d : (d?.projects ?? []);
-    return list.map((p: any) => ({ id: p.id, name: p.name ?? p.id }));
+    return list.map((p: any) => ({ id: p.id, name: p.name ?? p.id, inEsercizio: !!p.isOperational }));
   }, [projectsQ.data]);
+  /* gli orari al pubblico sono quelli del programma in esercizio: si parte da lì,
+   * finché chi stampa non ne sceglie un altro */
+  const sceltoAMano = useRef(false);
+  const { isAdmin } = useAuth();
   useEffect(() => {
-    if (projects.length && !projects.some((p) => p.id === projectId)) {
+    /* elenco non leggibile, o vuoto per l'admin (che apre ogni programma): si prova quello di sempre */
+    if (!projectId && (projectsQ.isError || (projectsQ.isSuccess && !projects.length && isAdmin))) { setProjectId(DEFAULT_PROJECT_ID); return; }
+    if (!projects.length || sceltoAMano.current) return;
+    const inEsercizio = projects.find((p) => p.inEsercizio);
+    if (inEsercizio && inEsercizio.id !== projectId) { setProjectId(inEsercizio.id); return; }
+    if (!projects.some((p) => p.id === projectId)) {
       setProjectId(projects.find((p) => p.id === DEFAULT_PROJECT_ID)?.id ?? projects[0].id);
     }
-  }, [projects, projectId]);
+  }, [projects, projectId, projectsQ.isError, projectsQ.isSuccess, isAdmin]);
 
   const dayTypesQ = useQuery({
     queryKey: ["pstt", "day-types", projectId],
@@ -1601,12 +1612,14 @@ export default function TimetablesPage() {
         <span className="text-xs font-medium text-muted-foreground">Programma di esercizio</span>
         <select
           value={projectId}
-          onChange={(e) => setProjectId(e.target.value)}
+          onChange={(e) => { sceltoAMano.current = true; setProjectId(e.target.value); }}
           className="px-2.5 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60 max-w-72"
           title="Progetto Planning Studio (sorgente dati e validità)"
         >
-          {projects.length === 0 && <option value={projectId}>Progetto predefinito</option>}
-          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          {projects.length === 0 && (
+            <option value={projectId}>{projectsQ.isLoading ? "Caricamento…" : projectId ? "Progetto predefinito" : "Nessun programma disponibile"}</option>
+          )}
+          {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.inEsercizio ? " · in esercizio" : ""}</option>)}
         </select>
         {dayTypesQ.isLoading && <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> day-type…</span>}
         <span className="text-[10px] text-muted-foreground ml-auto">Validità per day-type da Planning Studio → Validità</span>

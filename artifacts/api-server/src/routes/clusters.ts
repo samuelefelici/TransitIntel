@@ -21,6 +21,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { asyncHandler } from "../middlewares/error-handler";
+import { requireAdmin } from "../lib/auth";
 import { getLatestFeedId } from "./gtfs-helpers";
 
 const router: IRouter = Router();
@@ -485,8 +486,8 @@ router.get("/settings/company-cars", asyncHandler(async (_req, res) => {
   res.json({ companyCars: count || 5 });
 }));
 
-// PUT /api/settings/company-cars
-router.put("/settings/company-cars", asyncHandler(async (req, res) => {
+// PUT /api/settings/company-cars — solo l'admin: il valore lo leggono i motori dei turni di tutti
+router.put("/settings/company-cars", requireAdmin, asyncHandler(async (req, res) => {
   const { companyCars } = req.body;
   const value = parseInt(String(companyCars), 10);
   if (isNaN(value) || value < 0 || value > 50) {

@@ -8,6 +8,7 @@
  * pulsante per uscire, perché il menu non c'è.
  */
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { KeyRound, LifeBuoy, LogOut, MonitorSmartphone, ShieldAlert, ShieldCheck, Smartphone } from "lucide-react";
 import { apiFetch } from "@/lib/api";
@@ -22,6 +23,7 @@ const PASSWORD_MIN = 12;
 
 export default function AccountPage({ forzata = false }: { forzata?: boolean }) {
   const { user, accesso, refresh, logout } = useAuth();
+  const [, navigate] = useLocation();
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -33,7 +35,7 @@ export default function AccountPage({ forzata = false }: { forzata?: boolean }) 
             <p className="text-sm text-muted-foreground truncate">{user?.email}</p>
           </div>
           {forzata && (
-            <Button variant="outline" size="sm" onClick={() => void logout()}>
+            <Button variant="outline" size="sm" onClick={() => void logout().then(() => navigate("/", { replace: true }))}>
               <LogOut className="w-4 h-4 mr-1.5" /> Esci
             </Button>
           )}

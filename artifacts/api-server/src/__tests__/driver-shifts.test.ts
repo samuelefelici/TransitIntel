@@ -27,6 +27,22 @@ describe("Driver Shifts endpoints", () => {
     }, 15_000);
   });
 
+  describe("POST /api/driver-shifts/misto", () => {
+    it("arriva al completamento dei misti, non alla generazione di uno scenario", async () => {
+      /* prima la rotta /:scenarioId stava davanti e prendeva «misto» per un id: sempre 404 */
+      const res = await request(app).post("/api/driver-shifts/misto").send({});
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe("targetDssId e sources richiesti");
+    });
+    it("id che non sono uuid: 400 prima di toccare il database", async () => {
+      const res = await request(app).post("/api/driver-shifts/misto").send({ targetDssId: "abc", sources: [] });
+      expect(res.status).toBe(400);
+      const senzaId = await request(app).post("/api/driver-shifts/misto")
+        .send({ targetDssId: "0b0e6a6c-1d2e-4f3a-9b8c-7d6e5f4a3b2c", sources: [{ dutyCodes: ["A001"] }] });
+      expect(senzaId.status).toBe(400);
+    });
+  });
+
   describe("GET /api/driver-shifts/jobs/:jobId", () => {
     it("returns 404 for non-existent job", async () => {
       const res = await request(app).get("/api/driver-shifts/jobs/fake-job-id-123");

@@ -7,6 +7,7 @@ import { toast as toastSonner } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
+import { CASA, NOMI_PERMESSI, PERMESSI_PAGINA } from "@/lib/navigazione";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
 import VirgilioController from "@/components/VirgilioController";
@@ -45,6 +46,7 @@ function lazyWithRetry<T extends { default: React.ComponentType<any> }>(
 
 // Lazy-loaded pages — each is code-split into its own chunk
 const LoginPage = lazyWithRetry(() => import("@/pages/login"));
+const OggiPage = lazyWithRetry(() => import("@/pages/oggi"));
 const Dashboard = lazyWithRetry(() => import("@/pages/dashboard"));
 const OperationsPage = lazyWithRetry(() => import("@/pages/operations"));
 const TimetablesPage = lazyWithRetry(() => import("@/pages/timetables"));
@@ -79,8 +81,6 @@ const FaresPolimetrichePage = lazyWithRetry(() => import("@/pages/fares-polimetr
 const FareAnalyticsPage = lazyWithRetry(() => import("@/pages/fare-analytics"));
 const FareDocsPage = lazyWithRetry(() => import("@/pages/fare-docs"));
 const FareSimulatorPage = lazyWithRetry(() => import("@/pages/fare-simulator"));
-const StopsClassificationPage = lazyWithRetry(() => import("@/pages/stops-classification"));
-const FaresEnginePage = lazyWithRetry(() => import("@/pages/fares-engine"));
 const TripPlannerPage = lazyWithRetry(() => import("@/pages/trip-planner"));
 const DepotsPage = lazyWithRetry(() => import("@/pages/depots"));
 const DeadheadArcsPage = lazyWithRetry(() => import("@/pages/deadhead-arcs"));
@@ -100,7 +100,6 @@ const PlanningStudioTtdPage = lazyWithRetry(() => import("@/pages/planning-studi
 const PlanningStudioPercorrenzePage = lazyWithRetry(() => import("@/pages/planning-studio/PercorrenzePage"));
 const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-studio/ZonesPage"));
 const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
-const NetworkEngineHub = lazyWithRetry(() => import("@/pages/network-engine"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
 const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const ApriFleetCare = lazyWithRetry(() => import("@/pages/fleetcare"));
@@ -126,25 +125,48 @@ function PageLoader() {
 }
 
 /**
- * Guardia di permesso: se l'utente non ha il permesso richiesto
- * (e non è admin), redirige a /dashboard.
+ * Una pagina che l'utente non può aprire: si torna a Oggi e si dice perché.
+ * L'avviso parte una volta sola, anche se React monta due volte.
  */
-function Gated({ perm, children }: { perm: Permission | Permission[]; children: ReactNode }) {
+function Respinto({ motivo }: { motivo: string }) {
+  const detto = useRef(false);
+  useEffect(() => {
+    if (detto.current) return;
+    detto.current = true;
+    toastSonner.info("Pagina non disponibile", { description: motivo });
+  }, [motivo]);
+  return <Redirect to={CASA} replace />;
+}
+
+/**
+ * Guardia di permesso: se l'utente non ha il permesso richiesto
+ * (e non è admin), torna a Oggi.
+ */
+function Gated({ perm, children }: { perm: Permission | readonly Permission[]; children: ReactNode }) {
   const { hasPermission, verificato } = useAuth();
+  const servono: readonly Permission[] = typeof perm === "string" ? [perm] : perm;
   /* con più permessi ne basta uno */
-  if (!(Array.isArray(perm) ? perm : [perm]).some(p => hasPermission(p))) {
+  if (!servono.some(p => hasPermission(p))) {
     /* i permessi in cache possono essere di prima (un permesso nuovo, un cambio dell'admin):
      * si rimanda via solo dopo che il server ha risposto */
     if (!verificato) return <PageLoader />;
-    return <Redirect to="/dashboard" />;
+    return <Respinto motivo={`Serve il permesso «${servono.map(p => NOMI_PERMESSI[p]).join("» o «")}»: chiedilo all'amministratore.`} />;
   }
   return <>{children}</>;
 }
 
 function AdminOnly({ children }: { children: ReactNode }) {
-  const { isAdmin } = useAuth();
-  if (!isAdmin) return <Redirect to="/dashboard" />;
+  const { isAdmin, verificato } = useAuth();
+  if (!isAdmin) {
+    if (!verificato) return <PageLoader />;
+    return <Respinto motivo="Questa pagina è riservata agli amministratori." />;
+  }
   return <>{children}</>;
+}
+
+/** Un percorso vecchio che porta al nuovo, con la stessa query (wouter la perderebbe). */
+function RedirectConQuery({ to }: { to: string }) {
+  return <Redirect to={`${to}${window.location.search}`} replace />;
 }
 
 function Router() {
@@ -154,60 +176,63 @@ function Router() {
         <Suspense fallback={<PageLoader />}>
           <Switch>
             <Route path="/account"><AccountPage /></Route>
-            <Route path="/">
-              <Redirect to="/dashboard" />
+            <Route path="/"><Redirect to={CASA} replace /></Route>
+            <Route path="/oggi"><OggiPage /></Route>
+            {/* la mappa di analisi: era la home, ora è nella sezione Analisi */}
+            <Route path="/dashboard">
+              <Gated perm={PERMESSI_PAGINA["/dashboard"]}><Dashboard /></Gated>
             </Route>
-            <Route path="/dashboard" component={Dashboard} />
             {/* Centrale Operativa: Mappa live + AVM, modulo attivabile per utente */}
             <Route path="/operations">
-              <Gated perm="centrale"><OperationsPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/operations"]}><OperationsPage /></Gated>
             </Route>
             <Route path="/avm">
-              <Gated perm="centrale"><AvmPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/avm"]}><AvmPage /></Gated>
             </Route>
             <Route path="/timetables">
-              <Gated perm="analytics"><TimetablesPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/timetables"]}><TimetablesPage /></Gated>
             </Route>
             <Route path="/runtimes">
-              <Gated perm="analytics"><RuntimesPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/runtimes"]}><RuntimesPage /></Gated>
             </Route>
             <Route path="/traffic">
-              <Gated perm="analytics"><Traffic /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/traffic"]}><Traffic /></Gated>
             </Route>
             <Route path="/territory">
-              <Gated perm="analytics"><Territory /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/territory"]}><Territory /></Gated>
             </Route>
             <Route path="/network">
-              <Gated perm="analytics"><NetworkPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/network"]}><NetworkPage /></Gated>
             </Route>
-            <Route path="/data" component={DataPage} />
+            <Route path="/data">
+              <Gated perm={PERMESSI_PAGINA["/data"]}><DataPage /></Gated>
+            </Route>
 
             {/* Redirects for old paths → new unified pages */}
-            <Route path="/routes"><Redirect to="/network" /></Route>
-            <Route path="/travel-time"><Redirect to="/network" /></Route>
-            <Route path="/stops"><Redirect to="/network" /></Route>
-            <Route path="/demand"><Redirect to="/territory" /></Route>
-            <Route path="/segments"><Redirect to="/territory" /></Route>
-            <Route path="/reports"><Redirect to="/territory" /></Route>
-            <Route path="/gtfs"><Redirect to="/data" /></Route>
-            <Route path="/sync"><Redirect to="/data" /></Route>
+            <Route path="/routes"><Redirect to="/network" replace /></Route>
+            <Route path="/travel-time"><Redirect to="/network" replace /></Route>
+            <Route path="/stops"><Redirect to="/network" replace /></Route>
+            <Route path="/demand"><Redirect to="/territory" replace /></Route>
+            <Route path="/segments"><Redirect to="/territory" replace /></Route>
+            <Route path="/reports"><Redirect to="/territory" replace /></Route>
+            <Route path="/gtfs"><Redirect to="/data" replace /></Route>
+            <Route path="/sync"><Redirect to="/data" replace /></Route>
 
             {/* Crea Servizio (scheduling) */}
-            <Route path="/network-engine">
-              <Gated perm="network"><NetworkEngineHub /></Gated>
-            </Route>
+            {/* l'ingresso di Network Engine: ora le voci stanno nel menu */}
+            <Route path="/network-engine"><Redirect to="/planning-studio" replace /></Route>
             <Route path="/scenarios">
-              <Gated perm="network"><ScenariosPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/scenarios"]}><ScenariosPage /></Gated>
             </Route>
             {/* Intermodale: sezione di progetto (/planning-studio/:id/intermodal) */}
-            <Route path="/intermodal"><Redirect to="/planning-studio" /></Route>
+            <Route path="/intermodal"><Redirect to="/planning-studio" replace /></Route>
             <Route path="/coincidence-zones">
-              <Gated perm="network"><CoincidenceZonesPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/coincidence-zones"]}><CoincidenceZonesPage /></Gated>
             </Route>
 
             {/* PlannerStudio (scheduling) */}
             <Route path="/planning">
-              <Gated perm="network"><PlanningListPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/planning"]}><PlanningListPage /></Gated>
             </Route>
             <Route path="/planning/new">
               <Gated perm="network"><PlanningNewPage /></Gated>
@@ -216,12 +241,12 @@ function Router() {
               <Gated perm="network"><PlanningWorkspacePage /></Gated>
             </Route>
             <Route path="/planning/:scenarioId">
-              {(p) => <Redirect to={`/planning/${p.scenarioId}/workspace`} />}
+              {(p) => <Redirect to={`/planning/${p.scenarioId}/workspace`} replace />}
             </Route>
 
             {/* PlannerStudio (DB master del servizio) */}
             <Route path="/planning-studio">
-              <Gated perm="network"><PlanningStudioListPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/planning-studio"]}><PlanningStudioListPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id">
               <Gated perm="network"><PlanningStudioEditorPage /></Gated>
@@ -270,38 +295,36 @@ function Router() {
             </Route>
 
             {/* Bigliettazione (fares) */}
-            <Route path="/fares-engine">
-              <Gated perm="fares"><FaresEnginePage /></Gated>
-            </Route>
+            {/* l'ingresso di Fares Engine: ora le voci stanno nel menu */}
+            <Route path="/fares-engine"><Redirect to="/fares" replace /></Route>
             <Route path="/fares">
-              <Gated perm="fares"><FaresPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/fares"]}><FaresPage /></Gated>
             </Route>
             <Route path="/fares-polimetriche">
-              <Gated perm="fares"><FaresPolimetrichePage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/fares-polimetriche"]}><FaresPolimetrichePage /></Gated>
             </Route>
             <Route path="/fare-analytics">
-              <Gated perm="fares"><FareAnalyticsPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/fare-analytics"]}><FareAnalyticsPage /></Gated>
             </Route>
             <Route path="/fare-docs">
-              <Gated perm="fares"><FareDocsPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/fare-docs"]}><FareDocsPage /></Gated>
             </Route>
             <Route path="/fare-simulator">
-              <Gated perm="fares"><FareSimulatorPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/fare-simulator"]}><FareSimulatorPage /></Gated>
             </Route>
-            <Route path="/stops-classification">
-              <Gated perm="fares"><StopsClassificationPage /></Gated>
-            </Route>
+            {/* la classificazione delle fermate è il passo 2 di Bigliettazione */}
+            <Route path="/stops-classification"><Redirect to="/fares" replace /></Route>
             <Route path="/trip-planner">
-              <Gated perm="fares"><TripPlannerPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/trip-planner"]}><TripPlannerPage /></Gated>
             </Route>
 
             {/* Scheduling Engine — tutte le rotte della zona fuoco */}
-            <Route path="/fucina"><Redirect to="/fucina/esercizio" /></Route>
+            <Route path="/fucina"><RedirectConQuery to="/fucina/esercizio" /></Route>
             <Route path="/fucina/esercizio/:id">
               <Gated perm="scheduling"><PlanningStudioOperationalBoardPage /></Gated>
             </Route>
             <Route path="/fucina/esercizio">
-              <Gated perm="scheduling"><PlanningStudioOperationalBoardPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/fucina/esercizio"]}><PlanningStudioOperationalBoardPage /></Gated>
             </Route>
             <Route path="/fucina/relazioni/:reportId">
               <Gated perm="scheduling"><ProcessReportPage /></Gated>
@@ -328,31 +351,34 @@ function Router() {
               <Gated perm="scheduling"><OptimizationPage /></Gated>
             </Route>
             <Route path="/roster/anagrafica">
-              <Gated perm={["roster", "personale"]}><AnagraficaPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/roster/anagrafica"]}><AnagraficaPage /></Gated>
             </Route>
             <Route path="/roster/pubblicazione">
-              <Gated perm="scheduling"><RosterPubblicazionePage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/roster/pubblicazione"]}><RosterPubblicazionePage /></Gated>
             </Route>
             <Route path="/roster">
-              <Gated perm="roster"><RosterPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/roster"]}><RosterPage /></Gated>
             </Route>
             <Route path="/misto">
-              <Gated perm="scheduling"><MistoPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/misto"]}><MistoPage /></Gated>
             </Route>
             <Route path="/service-db">
-              <Gated perm="scheduling"><ServiceDbPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/service-db"]}><ServiceDbPage /></Gated>
             </Route>
             {/* I cluster sono gestiti per-progetto dentro Planner Studio.
                 Le vecchie rotte globali /cluster e /cluster-management vengono
                 rediretti alla lista progetti Planner Studio. */}
-            <Route path="/cluster"><Redirect to="/planning-studio" /></Route>
-            <Route path="/cluster-management"><Redirect to="/planning-studio" /></Route>
+            <Route path="/cluster"><Redirect to="/planning-studio" replace /></Route>
+            <Route path="/cluster-management"><Redirect to="/planning-studio" replace /></Route>
             {/* Depositi e archi fuorilinea sono infrastruttura DI PROGETTO:
                 si gestiscono in /planning-studio/:id/(depots|deadhead-arcs).
                 Le vecchie pagine globali restano solo come redirect. */}
-            <Route path="/depots"><Redirect to="/planning-studio" /></Route>
-            <Route path="/deadhead-arcs"><Redirect to="/planning-studio" /></Route>
-            <Route path="/driver-shifts/:scenarioId" component={DriverShiftsPage} />
+            <Route path="/depots"><Redirect to="/planning-studio" replace /></Route>
+            <Route path="/deadhead-arcs"><Redirect to="/planning-studio" replace /></Route>
+            {/* la pagina di prima dei turni guida: fuori dal menu, si toglie in Fase 2 */}
+            <Route path="/driver-shifts/:scenarioId">
+              <Gated perm={PERMESSI_PAGINA["/driver-shifts"]}><DriverShiftsPage /></Gated>
+            </Route>
 
             {/* Admin */}
             <Route path="/admin/users">
@@ -360,8 +386,8 @@ function Router() {
             </Route>
 
             {/* Redirects for old optimizer paths */}
-            <Route path="/optimizer-route"><Redirect to="/fucina" /></Route>
-            <Route path="/optimizer-schedule"><Redirect to="/fucina" /></Route>
+            <Route path="/optimizer-route"><Redirect to="/fucina/esercizio" replace /></Route>
+            <Route path="/optimizer-schedule"><Redirect to="/fucina/esercizio" replace /></Route>
 
             <Route component={NotFound} />
           </Switch>
@@ -381,7 +407,7 @@ function AuthGate() {
   /* codici di recupero da rifare dopo un cambio di chiave: lo si dice all'ingresso */
   const codiciRef = useRef(false);
   codiciRef.current = !!accesso?.codiciDaRifare;
-  /* arrivati da FleetCare («Entra con Cerbero»): dopo l'accesso si torna lì */
+  /* la pagina chiesta prima dell'accesso (anche /fleetcare, da «Entra con Cerbero»): dopo si torna lì */
   const locationRef = useRef(location);
   locationRef.current = location;
   // true = appena fatto login, stiamo lasciando finire la sequenza cinematica dentro <LoginPage>
@@ -414,9 +440,12 @@ function AuthGate() {
       setWaitingSequence(true);
       /* replace: la pagina del login non resta nella cronologia (da FleetCare, Indietro
        * non deve riportare a /fleetcare e far ripartire un biglietto) */
+      /* si torna alla pagina chiesta prima dell'accesso (un segnalibro, un link), con la sua
+       * query; dalla radice o dal login si parte da Oggi */
+      const chiesta = locationRef.current;
       navigate(recuperoRef.current
         ? "/account"
-        : locationRef.current === "/fleetcare" ? `/fleetcare${window.location.search}` : "/dashboard",
+        : chiesta && chiesta !== "/" && chiesta !== "/login" ? `${chiesta}${window.location.search}` : CASA,
         { replace: true });
       if (codiciRef.current && !recuperoRef.current) {
         toastSonner.warning("Rifai i codici di recupero", {
