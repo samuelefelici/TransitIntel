@@ -7,7 +7,6 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { CASA, paginaDiLavoro, paginaTariffe, sezioniVisibili, voceAttiva, type VoceMenu } from "@/lib/navigazione";
-import CopilotSidebar from "@/components/CopilotSidebar";
 import ArgosSidebar from "@/components/ArgosSidebar";
 import logoSidebarImg from "/logosidebar.png";
 
@@ -61,8 +60,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   /* nelle pagine di lavoro «compresso» vuol dire nascosto del tutto */
   const nascosto = lavoro && collapsed;
   const icone = !lavoro && collapsed;
-  // Planning Studio: qui il copilot è Argos (non Virgilio). Se siamo dentro un
-  // progetto specifico ne estraiamo l'id (uuid) da passare ad Argos come contesto.
+  // Planning Studio: qui c'è Argos. Se siamo dentro un progetto specifico ne
+  // estraiamo l'id (uuid) da passare ad Argos come contesto.
   const isPlanningStudio = location === "/planning-studio" || location.startsWith("/planning-studio/");
   const planningStudioProjectId = location.match(/^\/planning-studio\/([0-9a-f-]{36})/i)?.[1];
 
@@ -105,7 +104,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           onClick={() => { setIsMobileOpen(false); void openFleetCare(); }}
           disabled={fleetcareBusy}
           title={icone ? v.etichetta : v.descrizione}
-          data-virgilio-id="nav:fleetcare"
           className={`${classi} disabled:opacity-60`}
         >
           {contenuto}
@@ -118,7 +116,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           onClick={() => setIsMobileOpen(false)}
           title={icone ? v.etichetta : v.descrizione}
           aria-current={isActive ? "page" : undefined}
-          data-virgilio-id={`nav:${v.href.replace(/^\//, "").replace(/\//g, "-")}`}
           className={classi}
         >
           {contenuto}
@@ -264,11 +261,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </main>
 
-      {/* AI Copilot: Virgilio ovunque, ma dentro Planning Studio lo sostituisce
-          Argos, che legge i dati del PROGETTO aperto (ps_*) via /api/ai/argos/chat. */}
-      {isPlanningStudio
-        ? <ArgosSidebar projectId={planningStudioProjectId} />
-        : <CopilotSidebar />}
+      {/* Argos, dentro Planning Studio: legge i dati del PROGETTO aperto (ps_*) via /api/ai/argos/chat */}
+      {isPlanningStudio && <ArgosSidebar projectId={planningStudioProjectId} />}
     </div>
   );
 }

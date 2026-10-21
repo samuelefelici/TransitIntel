@@ -766,7 +766,6 @@ export default function Territory() {
                         {underservedAreas.slice(0, 15).map((area, i) => (
                           <tr
                             key={area.cellId ?? i}
-                            data-virgilio-id={area.cellId ? `zone:${area.cellId}` : undefined}
                             className="border-b border-border/20 hover:bg-white/[0.02] transition-colors scroll-mt-24"
                           >
                             <td className="px-4 py-2">

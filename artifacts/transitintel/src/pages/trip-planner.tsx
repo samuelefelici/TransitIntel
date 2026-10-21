@@ -173,61 +173,6 @@ export default function TripPlanner() {
     setOrigin(null); setDest(null); setResult(null); setPickMode("origin");
   };
 
-  // ── 🐙 Virgilio: ascolta evento 'virgilio:plan-trip' e simula la compilazione del form
-  useEffect(() => {
-    (window as any).__virgilioTripPlannerReady = true;
-    const handler = (e: Event) => {
-      const d = (e as CustomEvent).detail as {
-        origin_lat: number; origin_lon: number; origin_label?: string;
-        dest_lat: number; dest_lon: number; dest_label?: string;
-        date?: string; time?: string; allow_transfers?: boolean;
-      };
-      if (!d) return;
-      const o: LatLon = { lat: d.origin_lat, lon: d.origin_lon, label: d.origin_label };
-      const dst: LatLon = { lat: d.dest_lat, lon: d.dest_lon, label: d.dest_label };
-      // Animazione "macchina da scrivere" — riempie i campi visualmente uno alla volta
-      setPickMode(null);
-      setResult(null);
-      setOrigin(null);
-      setDest(null);
-      setTimeout(() => setOrigin(o), 200);
-      setTimeout(() => setDest(dst), 800);
-      if (d.date) setTimeout(() => setDate(d.date!), 1100);
-      if (d.time) setTimeout(() => setTime(d.time!), 1300);
-      if (typeof d.allow_transfers === "boolean") {
-        setTimeout(() => setAllowTransfers(d.allow_transfers!), 1500);
-      }
-      // Click "Calcola viaggio"
-      setTimeout(async () => {
-        if (!o.lat || !dst.lat) return;
-        setLoading(true); setResult(null);
-        try {
-          const r = await fetch(`${BASE()}/api/fares/journey-plan`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              from: o, to: dst,
-              date: d.date || date,
-              time: d.time || time,
-              maxWalkM: 1500,
-              allowTransfers: typeof d.allow_transfers === "boolean" ? d.allow_transfers : allowTransfers,
-            }),
-          });
-          const data = await r.json();
-          setResult(data);
-          setSelectedIdx(0);
-        } catch (err) { console.error(err); }
-        finally { setLoading(false); }
-      }, 1900);
-    };
-    window.addEventListener("virgilio:plan-trip", handler as EventListener);
-    return () => {
-      window.removeEventListener("virgilio:plan-trip", handler as EventListener);
-      (window as any).__virgilioTripPlannerReady = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const selected = result?.alternatives?.[selectedIdx];
   const selectedBusLegs = useMemo(() => selected ? busLegs(selected) : [], [selected]);
 

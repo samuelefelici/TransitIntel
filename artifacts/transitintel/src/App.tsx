@@ -10,7 +10,6 @@ import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
 import { CASA, NOMI_PERMESSI, PERMESSI_PAGINA } from "@/lib/navigazione";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
-import VirgilioController from "@/components/VirgilioController";
 
 /**
  * lazy() resiliente al DEPLOY. Dopo un rilascio i chunk vecchi spariscono dal
@@ -473,10 +472,7 @@ function AuthGate() {
         /* il passaggio verso FleetCare: fuori dal menu, porta subito di là */
         <ApriFleetCare />
       ) : showApp ? (
-        <>
-          <VirgilioController />
-          <Router />
-        </>
+        <Router />
       ) : (
         <LoginPage />
       )}

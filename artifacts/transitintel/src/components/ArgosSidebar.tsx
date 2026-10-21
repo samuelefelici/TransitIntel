@@ -1,5 +1,5 @@
 /**
- * Argos — assistente AI usato SOLO dentro Planning Studio, al posto di Virgilio.
+ * Argos — l'assistente AI di Planning Studio.
  *
  * Questo file è il GUSCIO: bottone flottante, drawer ridimensionabile, header
  * con lo stato del servizio. La conversazione vera e propria (tab Chat e tab

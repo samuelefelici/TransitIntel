@@ -367,7 +367,7 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 | Flotta | FleetCare | Flotta (`fleetcare`) |
 | Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa, Documentazione ATMA | Tariffe (`fares`) |
 | Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi (`analytics`) |
-| Amministrazione | Utenti e accessi (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
+| Amministrazione | Utenti e accessi (admin), Parametri di esercizio (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
 
 - **Oggi** (`/oggi`) è la pagina d'ingresso. Mostra il servizio adesso dall'AVM,
   i turni del giorno nel roster (pubblicati, scoperti, assenze), il programma in
@@ -389,10 +389,19 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 - **Ipotesi di linea** (gli scenari KML) ora chiede Analisi, come le sue API.
   **Dati e integrazioni** si apre con Analisi (i feed GTFS) o con Esercizio (le
   paline Mizar); la sincronizzazione delle sorgenti resta dell'admin. Il numero di autovetture aziendali usato
-  dai motori dei turni si cambia solo da admin.
+  dai motori dei turni si cambia solo da admin, in **Amministrazione › Parametri
+  di esercizio** (prima stava nella pagina /optimization, che non c'è più).
 - I vecchi indirizzi portano ai nuovi: `/network-engine` → Planning Studio,
-  `/fares-engine` e `/stops-classification` → Bigliettazione, `/fucina` e
-  `/optimizer-*` → Progetti di esercizio. La vecchia pagina dei turni guida
+  `/fares-engine` e `/stops-classification` → Bigliettazione, `/fucina`,
+  `/optimization` e `/optimizer-*` → Progetti di esercizio, `/planning/*` →
+  Confronta programmi.
+- **Tolti** (nessuna pagina li usava più): il vecchio planner sugli scenari
+  GTFS, l'ottimizzatore orari e di percorso di prima, le API `/stops` e
+  `/routes` del primo prototipo, gli orari sul feed GTFS (si stampano da
+  Planning Studio) e Virgilio, il vecchio assistente in chat. Argos resta in
+  Planning Studio. Le tabelle restano dove sono: nessuna è stata cancellata.
+- **Database di esercizio** mostra i turni macchina e i turni guida che
+  l'utente può aprire, come gli elenchi della Fucina. La vecchia pagina dei turni guida
   (`/driver-shifts/…`) resta raggiungibile dai link della Fucina, fuori dal menu.
 
 ---
@@ -425,7 +434,6 @@ Riferimento completo in `.env.example`. Sintesi:
 | `OPENROUTE_API_KEY` | — | isocrone pedonali |
 | `PROVINCE_BBOX` | — | default `12.7,43.2,13.65,43.95` |
 | `LOG_LEVEL` | — | `info` / `debug` / `warn` / `error` |
-| `COPILOT_MODEL` | — | override modello provider AI |
 | `CERBERO_API_KEY` | — | Bearer key per `/api/caronte/*` (validatore + AVM) |
 | `GTFS_RT_API_KEY` | — | key per i feed `/api/gtfs-rt/*` (vuota = feed pubblico) |
 | `GTFS_FEED_ID` | — | forza il feed GTFS usato da Sala Operativa / caronte |

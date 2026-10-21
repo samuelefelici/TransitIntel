@@ -180,19 +180,6 @@ export function voceVisibile(v: VoceMenu, ha: (p: Permission) => boolean, admin:
   return !v.permessi || v.permessi.some(p => ha(p));
 }
 
-/**
- * I permessi che servono per aprire un percorso: quelli della pagina più specifica che lo
- * contiene (/planning-studio/abc → /planning-studio), null se il percorso non ne chiede.
- */
-export function permessiDelPercorso(percorso: string): readonly Permission[] | null {
-  const p = percorso.split(/[?#]/)[0]!;
-  let migliore: { pagina: PaginaConPermesso; lunghezza: number } | null = null;
-  for (const pagina of Object.keys(PERMESSI_PAGINA) as PaginaConPermesso[]) {
-    if (sotto(p, pagina) && (!migliore || pagina.length > migliore.lunghezza)) migliore = { pagina, lunghezza: pagina.length };
-  }
-  return migliore ? PERMESSI_PAGINA[migliore.pagina] : null;
-}
-
 /** Il menu di chi è entrato: solo le voci che può aprire, e niente sezioni vuote. */
 export function sezioniVisibili(ha: (p: Permission) => boolean, admin: boolean): SezioneMenu[] {
   return SEZIONI
