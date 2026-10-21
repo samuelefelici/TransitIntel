@@ -3,8 +3,9 @@ import { describe, it, expect } from "vitest";
 import type { Permission } from "@/hooks/use-auth";
 import {
   CASA, NOMI_PERMESSI, PERMESSI_PAGINA, PREFISSI_PUBBLICI, SEZIONI,
-  paginaDiLavoro, paginaTariffe, sezioniVisibili, voceAttiva,
+  paginaDiLavoro, paginaTariffe, permessiDelPercorso, sezioniVisibili, voceAttiva,
 } from "./navigazione";
+import { schedeVisibili } from "@/pages/data";
 
 const TUTTI: Permission[] = ["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale", "roster"];
 const con = (...p: Permission[]) => (x: Permission) => p.includes(x);
@@ -26,7 +27,7 @@ describe("il menu di chi entra", () => {
 
   it("solo Turni: i progetti, i misti e la pubblicazione al roster, non gli orari al pubblico", () => {
     const m = menu(con("scheduling"));
-    expect(m["Turni"]).toEqual(["Progetti di esercizio", "Turni misti"]);
+    expect(m["Turni"]).toEqual(["Progetti di esercizio", "Turni misti", "Database di esercizio"]);
     expect(m["Pubblicazione"]).toEqual(["Turni al roster"]);
     expect(m["Rete e orari"]).toBeUndefined();
   });
@@ -36,8 +37,9 @@ describe("il menu di chi entra", () => {
     expect(menu(con("personale"))["Personale"]).toEqual(["Anagrafica"]);
   });
 
-  it("Esercizio: mappa, AVM e tempi osservati; chi ha solo Analisi tiene i tempi osservati", () => {
+  it("Esercizio: mappa, AVM e tempi osservati, più le paline in Dati; chi ha solo Analisi tiene i tempi osservati", () => {
     expect(menu(con("centrale"))["Esercizio"]).toEqual(["Mappa live", "AVM", "Tempi osservati"]);
+    expect(menu(con("centrale"))["Amministrazione"]).toEqual(["Dati e integrazioni", "Sicurezza dell'account"]);
     expect(menu(con("analytics"))["Esercizio"]).toEqual(["Tempi osservati"]);
   });
 
@@ -131,5 +133,24 @@ describe("la voce accesa e le pagine di lavoro", () => {
     expect(paginaDiLavoro("/roster")).toBe(false);
     expect(paginaTariffe("/fare-docs")).toBe(true);
     expect(paginaTariffe("/fucina")).toBe(false);
+  });
+});
+
+describe("i permessi di un percorso qualunque (per chi naviga da sé, come Virgilio)", () => {
+  it("la pagina più specifica che lo contiene", () => {
+    expect(permessiDelPercorso("/planning-studio/abc/trips")).toEqual(["network"]);
+    expect(permessiDelPercorso("/roster/anagrafica?x=1")).toEqual(["roster", "personale"]);
+    expect(permessiDelPercorso("/roster")).toEqual(["roster"]);
+    expect(permessiDelPercorso("/territory")).toEqual(["analytics"]);
+    expect(permessiDelPercorso("/oggi")).toBeNull();
+    expect(permessiDelPercorso("/planning")).toEqual(["network"]);
+  });
+});
+
+describe("Dati e integrazioni: le schede secondo i permessi", () => {
+  it("l'Esercizio vede solo le paline; Analisi anche i feed; l'admin tutto", () => {
+    expect(schedeVisibili({ analisi: false, admin: false })).toEqual(["paline"]);
+    expect(schedeVisibili({ analisi: true, admin: false })).toEqual(["gtfs", "paline"]);
+    expect(schedeVisibili({ analisi: false, admin: true })).toEqual(["gtfs", "sync", "paline"]);
   });
 });

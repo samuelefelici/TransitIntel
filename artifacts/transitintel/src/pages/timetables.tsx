@@ -18,6 +18,7 @@ import {
   ArrowLeftRight, Link2, Loader2, Map as MapIcon, MapPin, MapPinned, Printer, QrCode, Search, Share2, SignpostBig,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 import { listPsValidityCategories } from "@/lib/planning-studio-validity-units-api";
 import NetworkMap3D, { type NetLineStyle, type NetNodeLabels } from "@/components/NetworkMap3D";
 
@@ -1199,16 +1200,17 @@ export default function TimetablesPage() {
   /* gli orari al pubblico sono quelli del programma in esercizio: si parte da lì,
    * finché chi stampa non ne sceglie un altro */
   const sceltoAMano = useRef(false);
+  const { isAdmin } = useAuth();
   useEffect(() => {
-    /* elenco non leggibile: si prova il programma di sempre */
-    if (projectsQ.isError && !projectId) { setProjectId(DEFAULT_PROJECT_ID); return; }
+    /* elenco non leggibile, o vuoto per l'admin (che apre ogni programma): si prova quello di sempre */
+    if (!projectId && (projectsQ.isError || (projectsQ.isSuccess && !projects.length && isAdmin))) { setProjectId(DEFAULT_PROJECT_ID); return; }
     if (!projects.length || sceltoAMano.current) return;
     const inEsercizio = projects.find((p) => p.inEsercizio);
     if (inEsercizio && inEsercizio.id !== projectId) { setProjectId(inEsercizio.id); return; }
     if (!projects.some((p) => p.id === projectId)) {
       setProjectId(projects.find((p) => p.id === DEFAULT_PROJECT_ID)?.id ?? projects[0].id);
     }
-  }, [projects, projectId, projectsQ.isError]);
+  }, [projects, projectId, projectsQ.isError, projectsQ.isSuccess, isAdmin]);
 
   const dayTypesQ = useQuery({
     queryKey: ["pstt", "day-types", projectId],

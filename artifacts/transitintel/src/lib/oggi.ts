@@ -15,11 +15,15 @@ export interface TabelloneGiorno {
   pubblicati?: Record<string, Array<{ dssId: string; udpNome: string | null }>>;
   dutiesByDss?: Record<string, Array<{ code: string }>>;
   assignments?: Array<{ day: string; dssId: string; dutyCode: string }>;
-  entries?: Array<{ day: string; category: string }>;
-  violazioni?: unknown[];
+  entries?: Array<{ day: string; driverId: string; category: string; code: string }>;
+  /** forzata: assegnata lo stesso, sapendolo (il roster la mostra a parte) */
+  violazioni?: Array<{ forzata?: boolean }>;
 }
 
-/** Turni del giorno dal tabellone: pubblicati, assegnati, scoperti, assenze. */
+/** Il riposo della rotazione è una voce di assenza nel catalogo, ma non è una persona che manca. */
+const RIPOSO = "R";
+
+/** Turni del giorno dal tabellone: pubblicati, assegnati, scoperti; persone assenti e a riposo. */
 export function riassuntoTurni(b: TabelloneGiorno, giorno: string) {
   const presi = new Set((b.assignments ?? []).filter(a => a.day === giorno).map(a => `${a.dssId}|${a.dutyCode}`));
   let pubblicati = 0, scoperti = 0;
@@ -29,12 +33,16 @@ export function riassuntoTurni(b: TabelloneGiorno, giorno: string) {
       if (!presi.has(`${p.dssId}|${d.code}`)) scoperti++;
     }
   }
+  const voci = (b.entries ?? []).filter(e => e.day === giorno && e.category === "assenza");
   return {
     pubblicati,
     assegnati: presi.size,
     scoperti,
-    assenze: (b.entries ?? []).filter(e => e.day === giorno && e.category === "assenza").length,
-    violazioni: (b.violazioni ?? []).length,
+    /* per persona: due voci dello stesso conducente nello stesso giorno sono un'assenza */
+    assenze: new Set(voci.filter(e => e.code !== RIPOSO).map(e => e.driverId)).size,
+    riposi: new Set(voci.filter(e => e.code === RIPOSO).map(e => e.driverId)).size,
+    /* quelle già forzate il roster le mostra a parte, non da controllare */
+    violazioni: (b.violazioni ?? []).filter(v => !v.forzata).length,
     unita: (b.pubblicati?.[giorno] ?? []).length,
   };
 }

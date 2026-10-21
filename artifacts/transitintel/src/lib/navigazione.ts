@@ -61,6 +61,7 @@ export const PERMESSI_PAGINA = {
   "/coincidence-zones": ["network"],
   "/fucina/esercizio": ["scheduling"],
   "/misto": ["scheduling"],
+  "/service-db": ["scheduling"],
   "/driver-shifts": ["scheduling"],
   "/roster/pubblicazione": ["scheduling"],
   /* gli orari al pubblico si leggono dal programma di Planning Studio */
@@ -82,7 +83,8 @@ export const PERMESSI_PAGINA = {
   "/territory": ["analytics"],
   "/network": ["analytics"],
   "/scenarios": ["analytics"],
-  "/data": ["analytics"],
+  /* i feed GTFS sono dell'Analisi; le paline Mizar servono all'Esercizio (pages/data.tsx sceglie le schede) */
+  "/data": ["analytics", "centrale"],
 } as const satisfies Record<string, readonly Permission[]>;
 
 export type PaginaConPermesso = keyof typeof PERMESSI_PAGINA;
@@ -108,6 +110,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
         permessi: PERMESSI_PAGINA["/fucina/esercizio"], ancheSu: ["/fucina", "/driver-shifts"],
       },
       { href: "/misto", etichetta: "Turni misti", icona: Shuffle, descrizione: "Completamento fra unità", permessi: PERMESSI_PAGINA["/misto"] },
+      { href: "/service-db", etichetta: "Database di esercizio", icona: Database, descrizione: "Programmi, unità, turni, roster", permessi: PERMESSI_PAGINA["/service-db"] },
     ],
   },
   {
@@ -163,7 +166,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
     titolo: "Amministrazione",
     voci: [
       { href: "/admin/users", etichetta: "Utenti e accessi", icona: Users, descrizione: "Permessi, sblocchi, registro", soloAdmin: true },
-      { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline", permessi: PERMESSI_PAGINA["/data"] },
+      { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline Mizar", permessi: PERMESSI_PAGINA["/data"] },
       { href: "/account", etichetta: "Sicurezza dell'account", icona: Shield, descrizione: "Password e verifica" },
     ],
   },
@@ -174,6 +177,19 @@ export function voceVisibile(v: VoceMenu, ha: (p: Permission) => boolean, admin:
   if (admin) return true;
   if (v.soloAdmin) return false;
   return !v.permessi || v.permessi.some(p => ha(p));
+}
+
+/**
+ * I permessi che servono per aprire un percorso: quelli della pagina più specifica che lo
+ * contiene (/planning-studio/abc → /planning-studio), null se il percorso non ne chiede.
+ */
+export function permessiDelPercorso(percorso: string): readonly Permission[] | null {
+  const p = percorso.split(/[?#]/)[0]!;
+  let migliore: { pagina: PaginaConPermesso; lunghezza: number } | null = null;
+  for (const pagina of Object.keys(PERMESSI_PAGINA) as PaginaConPermesso[]) {
+    if (sotto(p, pagina) && (!migliore || pagina.length > migliore.lunghezza)) migliore = { pagina, lunghezza: pagina.length };
+  }
+  return migliore ? PERMESSI_PAGINA[migliore.pagina] : null;
 }
 
 /** Il menu di chi è entrato: solo le voci che può aprire, e niente sezioni vuote. */

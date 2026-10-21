@@ -182,7 +182,7 @@ export const TOOL_DEFS: Anthropic.Tool[] = [
   {
     name: "ui_navigate",
     description:
-      "AZIONE UI: naviga l'utente verso una pagina dell'app. Usalo quando un'analisi è più chiara su una pagina specifica (es: zone scoperte → /territory; linee → /network; mappa traffico → /traffic). Sempre PRIMA di highlight/focus_map. Path validi: /dashboard, /operations, /traffic, /territory, /network, /data, /scenarios, /intermodal, /trip-planner, /fares, /fucina, /optimization.",
+      "AZIONE UI: naviga l'utente verso una pagina dell'app. Usalo quando un'analisi è più chiara su una pagina specifica (es: zone scoperte → /territory; linee → /network; mappa traffico → /traffic). Sempre PRIMA di highlight/focus_map. Path validi: /oggi, /dashboard, /operations, /traffic, /territory, /network, /data, /scenarios, /trip-planner, /fares, /fucina/esercizio, /planning-studio.",
     input_schema: {
       type: "object",
       properties: {

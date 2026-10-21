@@ -269,8 +269,9 @@ export default function AdminUsersPage() {
                           />
                         </td>
                         {PERM_COLONNE.map(({ perm: p }) => {
-                          /* Rete e orari porta con sé i Turni (lo impone anche il server) */
-                          const legato = p === "scheduling" && !!u.permissions?.network;
+                          /* Rete e orari porta con sé i Turni (lo impone anche il server); un dato
+                           * di prima incoerente resta cliccabile e il salvataggio lo sistema */
+                          const legato = p === "scheduling" && !!u.permissions?.network && !!u.permissions?.scheduling;
                           return (
                             <td key={p} className="py-2 pr-4">
                               <Switch

@@ -360,14 +360,14 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 |---|---|---|
 | Oggi | la pagina d'ingresso | tutti |
 | Rete e orari | Planning Studio, Confronta programmi, Zone di coincidenza | Rete e orari (`network`) |
-| Turni | Progetti di esercizio, Turni misti | Turni (`scheduling`) |
+| Turni | Progetti di esercizio, Turni misti, Database di esercizio | Turni (`scheduling`) |
 | Pubblicazione | Turni al roster; Orari al pubblico (stampa orari, QR) | Turni; Rete e orari |
 | Personale | Roster, Anagrafica | Roster; Roster o Personale |
 | Esercizio | Mappa live, AVM, Tempi osservati | Esercizio (`centrale`); i Tempi osservati anche con Analisi |
 | Flotta | FleetCare | Flotta (`fleetcare`) |
 | Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa, Documentazione ATMA | Tariffe (`fares`) |
 | Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi (`analytics`) |
-| Amministrazione | Utenti e accessi (admin), Dati e integrazioni (Analisi), Sicurezza dell'account | — |
+| Amministrazione | Utenti e accessi (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
 
 - **Oggi** (`/oggi`) è la pagina d'ingresso. Mostra il servizio adesso dall'AVM,
   i turni del giorno nel roster (pubblicati, scoperti, assenze), il programma in
@@ -381,11 +381,14 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
   dipendono più da Analisi. `migrations/2026-11_analisi_spenta.sql` cambia solo
   il default della colonna: non serve applicarla, l'app scrive i permessi per
   intero quando crea un utente.
-- **Rete e orari porta con sé i Turni**, come prima.
+- **Rete e orari porta con sé i Turni**, come prima. All'avvio l'app allinea chi
+  aveva Rete e orari senza Turni (salvato prima che la regola valesse anche al
+  salvataggio): da lì in poi vede anche i Turni.
 - **Orari al pubblico** si apre sul programma in esercizio; prima chiedeva il
   permesso Analisi, ora Rete e orari (è lì che si leggono gli orari).
-- **Ipotesi di linea** (gli scenari KML) e la pagina **Dati e integrazioni** ora
-  chiedono Analisi, come le loro API. Il numero di autovetture aziendali usato
+- **Ipotesi di linea** (gli scenari KML) ora chiede Analisi, come le sue API.
+  **Dati e integrazioni** si apre con Analisi (i feed GTFS) o con Esercizio (le
+  paline Mizar); la sincronizzazione delle sorgenti resta dell'admin. Il numero di autovetture aziendali usato
   dai motori dei turni si cambia solo da admin.
 - I vecchi indirizzi portano ai nuovi: `/network-engine` → Planning Studio,
   `/fares-engine` e `/stops-classification` → Bigliettazione, `/fucina` e

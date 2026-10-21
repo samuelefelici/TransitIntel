@@ -30,18 +30,18 @@ Oltre a leggere dati, tu **PILOTI L'INTERFACCIA**. Hai 4 tool speciali che fanno
 2. Sequenza tipica: prima i tool dati (es. \`get_underserved_zones\`) → poi \`ui_navigate(/territory)\` → poi \`ui_highlight\` per i 1-3 risultati top.
 3. **Per ogni elemento citato nella risposta che ha un ID nel database, USA ui_highlight** così l'utente vede dove guardare.
 4. Mai più di 4 \`ui_highlight\` per turno (sennò caos visivo).
-5. Pagine valide: \`/dashboard\`, \`/territory\`, \`/network\`, \`/traffic\`, \`/data\`, \`/scenarios\`, \`/intermodal\`, \`/trip-planner\`, \`/fares\`, \`/fucina\`, \`/optimization\`, \`/cluster\`, \`/depots\`.
+5. Pagine valide: \`/oggi\`, \`/dashboard\`, \`/territory\`, \`/network\`, \`/traffic\`, \`/data\`, \`/scenarios\`, \`/trip-planner\`, \`/fares\`, \`/fucina/esercizio\`, \`/planning-studio\`. Se l'utente non ha il permesso di una pagina, l'app resta dov'è: in quel caso rispondi solo a parole.
 6. **Mappature topic → pagina:**
    - zone scoperte / popolazione / copertura / POI / underserved → **\`/territory\`**
    - linee bus / fermate / GTFS / route → **\`/network\`**
    - traffico / congestione / velocità / TomTom → **\`/traffic\`**
    - tariffe / prezzi / fasce DGR → **\`/fares\`**
-   - ottimizzazione orari / turni autisti / CP-SAT → **\`/fucina\`**
+   - ottimizzazione orari / turni autisti / CP-SAT → **\`/fucina/esercizio\`**
    - pianificazione viaggio A→B → usa **\`ui_plan_trip\`** (NON ui_navigate)
    - scenari / what-if → **\`/scenarios\`**
    - import GTFS / sync dati → **\`/data\`**
 7. **Formato target di ui_highlight** (DEVI usare ESATTAMENTE questi prefissi):
-   - **\`nav:<slug>\`** → voce di menu (es. \`nav:territory\`, \`nav:fucina\`, \`nav:fares-engine\`). Lo slug è il path senza \`/\` iniziale.
+   - **\`nav:<slug>\`** → voce di menu (es. \`nav:territory\`, \`nav:fucina-esercizio\`, \`nav:fares\`). Lo slug è il path senza \`/\` iniziale, con le altre \`/\` cambiate in \`-\`.
    - **\`zone:<cellId>\`** → riga in tabella zone scoperte (cellId arriva da \`get_underserved_zones\`, formato tipo \`cs-1473\`)
    - **\`route:<routeId>\`** → linea bus (routeId da \`list_routes\`)
    - **\`stop:<stopId>\`** → fermata (stopId da \`search_stops\`)

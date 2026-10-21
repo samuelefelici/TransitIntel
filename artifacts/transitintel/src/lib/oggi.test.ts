@@ -17,11 +17,16 @@ describe("Oggi", () => {
         { day: "2026-10-22", dssId: "a", dutyCode: "A002" },
       ],
       entries: [
-        { day: g, category: "assenza" }, { day: g, category: "presenza" }, { day: "2026-10-22", category: "assenza" },
+        { day: g, driverId: "d1", category: "assenza", code: "MA" },
+        { day: g, driverId: "d1", category: "assenza", code: "PAD" },
+        { day: g, driverId: "d2", category: "assenza", code: "R" },
+        { day: g, driverId: "d3", category: "presenza", code: "CORSO" },
+        { day: "2026-10-22", driverId: "d4", category: "assenza", code: "FE" },
       ],
-      violazioni: [{}],
+      violazioni: [{ forzata: false }, { forzata: true }],
     }, g);
-    expect(r).toEqual({ pubblicati: 3, assegnati: 1, scoperti: 2, assenze: 1, violazioni: 1, unita: 2 });
+    /* d1 con due voci è una persona sola; d2 è a riposo, non assente; la violazione forzata non si conta */
+    expect(r).toEqual({ pubblicati: 3, assegnati: 1, scoperti: 2, assenze: 1, riposi: 1, violazioni: 1, unita: 2 });
   });
 
   it("un giorno senza pubblicazioni non ha turni scoperti", () => {

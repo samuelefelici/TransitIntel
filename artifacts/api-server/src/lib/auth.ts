@@ -206,6 +206,16 @@ async function preparaUtenti(): Promise<void> {
      WHERE NOT (permissions ? 'network')
   `);
 
+  // Rete e orari porta con sé i Turni: il server lo imponeva solo al salvataggio, e
+  // chi è stato salvato prima (o ha ricevuto network dal backfill qui sopra) poteva
+  // avere network senza scheduling. Si allinea il dato alla regola, una volta sola.
+  await db.execute(sql`
+    UPDATE users
+       SET permissions = permissions || '{"scheduling":true}'::jsonb
+     WHERE coalesce((permissions->>'network')::boolean, false)
+       AND NOT coalesce((permissions->>'scheduling')::boolean, false)
+  `);
+
   // FleetCare (modulo Cerbero di gestione flotta): abilitazione ESPLICITA,
   // quindi default false — gli admin bypassano comunque (requirePermission).
   await db.execute(sql`

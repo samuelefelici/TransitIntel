@@ -40,10 +40,14 @@ import path from "node:path";
 import { jobManager, puoVedereJob } from "../lib/job-manager.js";
 import {
   driverScenariosAccessibleWhere,
+  getVehicleScenarioAccess,
   requireVehicleScenarioRead,
   requireDriverScenarioRead,
   requireDriverScenarioWrite,
 } from "../lib/scenario-access";
+
+/** id dei turni guida passati nel corpo o nel percorso (il cast ::uuid altrimenti dà 500) */
+const UUID_DSS = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import { strictLimiter } from "../middlewares/rate-limit";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
@@ -958,17 +962,28 @@ router.post("/driver-shifts/misto", async (req, res) => {
     const { targetDssId, sources, name, config } = req.body ?? {};
     if (!targetDssId || !Array.isArray(sources)) { res.status(400).json({ error: "targetDssId e sources richiesti" }); return; }
 
-    const dssIds = Array.from(new Set([String(targetDssId), ...sources.map((s: any) => String(s.dssId))].filter(Boolean)));
+    const richiesti = [String(targetDssId), ...sources.map((s: any) => String(s?.dssId ?? ""))];
+    if (!richiesti.every((id) => UUID_DSS.test(id))) { res.status(400).json({ error: "targetDssId e sources[].dssId devono essere uuid" }); return; }
+    const dssIds = Array.from(new Set(richiesti.map((id) => id.toLowerCase())));
+    /* le stesse regole dell'elenco da cui la pagina li sceglie (/roster/duty-sources):
+     * proprietario, membri dello scenario o del progetto, l'admin */
+    const isAdmin = req.user!.role === "admin";
     const idsLit = `{${dssIds.map((id) => `"${id}"`).join(",")}}`;
     const dssRows = await db.execute<any>(sql`
-      SELECT id, name, service_program_scenario_id, result, owner_user_id
-        FROM driver_shift_scenarios
-       WHERE id = ANY(${idsLit}::uuid[])
-         AND (owner_user_id = ${userId}::uuid OR owner_user_id IS NULL)
+      SELECT d.id, d.name, d.service_program_scenario_id, d.result, d.owner_user_id
+        FROM driver_shift_scenarios d
+       WHERE d.id = ANY(${idsLit}::uuid[])
+         AND ${driverScenariosAccessibleWhere(userId, isAdmin)}
     `);
     const byId = new Map<string, any>((dssRows.rows ?? []).map((r: any) => [String(r.id), r]));
-    const target = byId.get(String(targetDssId));
+    const target = byId.get(String(targetDssId).toLowerCase());
     if (!target) { res.status(404).json({ error: "target DSS non trovato o non accessibile" }); return; }
+    /* una sorgente che non si legge non si salta in silenzio: il misto verrebbe calcolato senza */
+    const mancanti = dssIds.filter((id) => !byId.has(id));
+    if (mancanti.length) { res.status(404).json({ error: "Turni guida sorgente non trovati o non accessibili", mancanti }); return; }
+    /* il misto si salva come un turni guida nuovo sotto lo stesso turni macchina: ci vuole la scrittura lì */
+    const padre = await getVehicleScenarioAccess(String(target.service_program_scenario_id), userId, isAdmin);
+    if (!padre?.canWrite) { res.status(403).json({ error: "Permesso insufficiente sullo scenario vetture: solo lettura" }); return; }
 
     const targetDuties: any[] = target.result?.driverShifts ?? [];
     const shifts = targetDuties.map((d: any) => {
@@ -982,8 +997,7 @@ router.post("/driver-shifts/misto", async (req, res) => {
 
     const uncovered: any[] = [];
     for (const src of sources) {
-      const dss = byId.get(String(src.dssId));
-      if (!dss) continue;
+      const dss = byId.get(String(src.dssId).toLowerCase())!;
       const codes: Set<string> = new Set((src.dutyCodes ?? []).map(String));
       for (const d of (dss.result?.driverShifts ?? [])) {
         if (codes.size && !codes.has(String(d.driverId))) continue;
@@ -1596,10 +1610,13 @@ router.get("/driver-shifts/dss/:dssId/duties", async (req, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+    const dssId = String(req.params.dssId);
+    if (!UUID_DSS.test(dssId)) { res.status(400).json({ error: "dssId non valido" }); return; }
+    /* le stesse regole dell'elenco delle sorgenti dei misti */
     const r = await db.execute<any>(sql`
-      SELECT result FROM driver_shift_scenarios
-       WHERE id = ${req.params.dssId}::uuid
-         AND (owner_user_id = ${userId}::uuid OR owner_user_id IS NULL) LIMIT 1
+      SELECT d.result FROM driver_shift_scenarios d
+       WHERE d.id = ${dssId}::uuid
+         AND ${driverScenariosAccessibleWhere(userId, req.user!.role === "admin")} LIMIT 1
     `);
     const result = r.rows?.[0]?.result;
     if (!result) { res.status(404).json({ error: "DSS non trovato" }); return; }

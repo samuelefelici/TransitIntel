@@ -9,9 +9,20 @@
 import React from "react";
 import { useLocation } from "wouter";
 import { VirgilioBus, VIRGILIO_EVENTS, type UiAction } from "@/lib/virgilio-bus";
+import { useAuth } from "@/hooks/use-auth";
+import { permessiDelPercorso } from "@/lib/navigazione";
 
 export default function VirgilioController() {
   const [, setLocation] = useLocation();
+  /* Virgilio non porta su una pagina che l'utente non può aprire: resterebbe qui e
+   * finirebbe su Oggi con l'avviso del permesso, a ogni risposta */
+  const { isAdmin, hasPermission } = useAuth();
+  const puoAprire = React.useRef<(percorso: string) => boolean>(() => true);
+  puoAprire.current = (percorso: string) => {
+    const servono = permessiDelPercorso(percorso);
+    if (percorso.startsWith("/admin")) return isAdmin;
+    return isAdmin || !servono || servono.some(p => hasPermission(p));
+  };
 
   // ── Listener leggero per ui_highlight: scrolla + pulse CSS, niente SVG ──
   React.useEffect(() => {
@@ -62,7 +73,7 @@ export default function VirgilioController() {
     const off = VirgilioBus.on((action: UiAction) => {
       switch (action.type) {
         case "ui_navigate": {
-          if (action.payload.path) {
+          if (action.payload.path && puoAprire.current(action.payload.path)) {
             setLocation(action.payload.path);
           }
           break;

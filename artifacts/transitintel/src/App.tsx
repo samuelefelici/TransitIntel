@@ -209,14 +209,14 @@ function Router() {
             </Route>
 
             {/* Redirects for old paths → new unified pages */}
-            <Route path="/routes"><Redirect to="/network" /></Route>
-            <Route path="/travel-time"><Redirect to="/network" /></Route>
-            <Route path="/stops"><Redirect to="/network" /></Route>
-            <Route path="/demand"><Redirect to="/territory" /></Route>
-            <Route path="/segments"><Redirect to="/territory" /></Route>
-            <Route path="/reports"><Redirect to="/territory" /></Route>
-            <Route path="/gtfs"><Redirect to="/data" /></Route>
-            <Route path="/sync"><Redirect to="/data" /></Route>
+            <Route path="/routes"><Redirect to="/network" replace /></Route>
+            <Route path="/travel-time"><Redirect to="/network" replace /></Route>
+            <Route path="/stops"><Redirect to="/network" replace /></Route>
+            <Route path="/demand"><Redirect to="/territory" replace /></Route>
+            <Route path="/segments"><Redirect to="/territory" replace /></Route>
+            <Route path="/reports"><Redirect to="/territory" replace /></Route>
+            <Route path="/gtfs"><Redirect to="/data" replace /></Route>
+            <Route path="/sync"><Redirect to="/data" replace /></Route>
 
             {/* Crea Servizio (scheduling) */}
             {/* l'ingresso di Network Engine: ora le voci stanno nel menu */}
@@ -225,7 +225,7 @@ function Router() {
               <Gated perm={PERMESSI_PAGINA["/scenarios"]}><ScenariosPage /></Gated>
             </Route>
             {/* Intermodale: sezione di progetto (/planning-studio/:id/intermodal) */}
-            <Route path="/intermodal"><Redirect to="/planning-studio" /></Route>
+            <Route path="/intermodal"><Redirect to="/planning-studio" replace /></Route>
             <Route path="/coincidence-zones">
               <Gated perm={PERMESSI_PAGINA["/coincidence-zones"]}><CoincidenceZonesPage /></Gated>
             </Route>
@@ -241,7 +241,7 @@ function Router() {
               <Gated perm="network"><PlanningWorkspacePage /></Gated>
             </Route>
             <Route path="/planning/:scenarioId">
-              {(p) => <Redirect to={`/planning/${p.scenarioId}/workspace`} />}
+              {(p) => <Redirect to={`/planning/${p.scenarioId}/workspace`} replace />}
             </Route>
 
             {/* PlannerStudio (DB master del servizio) */}
@@ -363,18 +363,18 @@ function Router() {
               <Gated perm={PERMESSI_PAGINA["/misto"]}><MistoPage /></Gated>
             </Route>
             <Route path="/service-db">
-              <Gated perm="scheduling"><ServiceDbPage /></Gated>
+              <Gated perm={PERMESSI_PAGINA["/service-db"]}><ServiceDbPage /></Gated>
             </Route>
             {/* I cluster sono gestiti per-progetto dentro Planner Studio.
                 Le vecchie rotte globali /cluster e /cluster-management vengono
                 rediretti alla lista progetti Planner Studio. */}
-            <Route path="/cluster"><Redirect to="/planning-studio" /></Route>
-            <Route path="/cluster-management"><Redirect to="/planning-studio" /></Route>
+            <Route path="/cluster"><Redirect to="/planning-studio" replace /></Route>
+            <Route path="/cluster-management"><Redirect to="/planning-studio" replace /></Route>
             {/* Depositi e archi fuorilinea sono infrastruttura DI PROGETTO:
                 si gestiscono in /planning-studio/:id/(depots|deadhead-arcs).
                 Le vecchie pagine globali restano solo come redirect. */}
-            <Route path="/depots"><Redirect to="/planning-studio" /></Route>
-            <Route path="/deadhead-arcs"><Redirect to="/planning-studio" /></Route>
+            <Route path="/depots"><Redirect to="/planning-studio" replace /></Route>
+            <Route path="/deadhead-arcs"><Redirect to="/planning-studio" replace /></Route>
             {/* la pagina di prima dei turni guida: fuori dal menu, si toglie in Fase 2 */}
             <Route path="/driver-shifts/:scenarioId">
               <Gated perm={PERMESSI_PAGINA["/driver-shifts"]}><DriverShiftsPage /></Gated>

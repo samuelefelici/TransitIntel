@@ -6,7 +6,7 @@
  * AVM spento, errore) semplicemente non c'è. Nessuna API nuova: variazioni del
  * giorno, disponibilità dei mezzi e consuntivo arrivano con la Fase 4.
  */
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, MapPinned, Users, Map, Send, ArrowRight } from "lucide-react";
@@ -50,7 +50,13 @@ function Numero({ valore, etichetta, tono }: { valore: ReactNode; etichetta: str
 export default function OggiPage() {
   const { user, isAdmin, hasPermission } = useAuth();
   const ha = (...p: Permission[]) => isAdmin || p.some(x => hasPermission(x));
-  const giorno = oggiARoma();
+  /* la pagina resta aperta in sala: ogni minuto si guarda se è cambiato il giorno */
+  const [ora, setOra] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setOra(Date.now()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  const giorno = oggiARoma(new Date(ora));
   /* un riquadro che non si legge sparisce: niente nuovi tentativi né messaggi d'errore */
   const opzioni = { retry: false, staleTime: 60_000 } as const;
 
@@ -65,6 +71,8 @@ export default function OggiPage() {
     queryKey: ["oggi", "roster", giorno],
     queryFn: () => apiFetch<TabelloneGiorno>(`/api/roster/board?from=${giorno}&days=1`),
     enabled: ha("roster"),
+    /* i colleghi assegnano mentre la pagina è aperta: gli scoperti scendono da soli */
+    refetchInterval: 120_000,
     ...opzioni,
   });
   const programmi = useQuery({
@@ -77,15 +85,20 @@ export default function OggiPage() {
     queryKey: ["oggi", "pubblicazioni"],
     queryFn: () => apiFetch<{ pubblicazioni: Pubblicazione[] }>("/api/roster/pubblicazioni").then(r => r.pubblicazioni ?? []),
     enabled: ha("scheduling"),
+    refetchInterval: 120_000,
     ...opzioni,
   });
 
+  /* un aggiornamento fallito non fa sparire i dati appena letti: si tengono al più tre minuti,
+   * dicendo a che ora risalgono; dopo, il riquadro sparisce come se l'AVM non rispondesse */
+  const liveRecente = !!live.data && (live.isSuccess || ora - live.dataUpdatedAt < 3 * 60_000);
   const kpi = live.data?.caronteAvailable === false ? null : live.data?.kpis ?? null;
   const turni = tabellone.data ? riassuntoTurni(tabellone.data, giorno) : null;
   const inEsercizio = programmi.data?.find(p => p.isOperational) ?? null;
-  const ultima = pubblicazioni.data?.[0] ?? null;
+  /* il registro ha anche i ritiri: l'ultima pubblicazione è l'ultima di tipo «pubblica» */
+  const ultima = pubblicazioni.data?.find(p => p.tipo === "pubblica") ?? null;
   const sezioni = sezioniVisibili(hasPermission, isAdmin).filter(s => s.titolo !== "Oggi");
-  const titoloGiorno = new Date().toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Rome" });
+  const titoloGiorno = new Date(ora).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Rome" });
 
   return (
     <div className="max-w-6xl mx-auto space-y-6">
@@ -99,7 +112,7 @@ export default function OggiPage() {
       </header>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {live.isSuccess && (
+        {liveRecente && (
           <Riquadro titolo="Servizio adesso" icona={MapPinned}
             href={ha("centrale") ? "/operations" : undefined} link="Apri la mappa live">
             {kpi ? (
@@ -113,6 +126,11 @@ export default function OggiPage() {
             ) : (
               <p className="text-sm text-muted-foreground">L'AVM non è collegato: i dati del servizio adesso non arrivano.</p>
             )}
+            {live.isError && (
+              <p className="text-[11px] text-amber-400 mt-2">
+                Dati delle {new Date(live.dataUpdatedAt).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}: l'ultimo aggiornamento non è riuscito.
+              </p>
+            )}
           </Riquadro>
         )}
 
@@ -124,14 +142,14 @@ export default function OggiPage() {
               <div className="grid grid-cols-2 gap-3">
                 <Numero valore={turni.pubblicati} etichetta={`turni pubblicati (${turni.unita} unità)`} />
                 <Numero valore={turni.scoperti} etichetta="turni scoperti" tono={turni.scoperti > 0 ? "attenzione" : "ok"} />
-                <Numero valore={turni.assenze} etichetta="assenze" />
-                <Numero valore={turni.violazioni} etichetta="avvisi su riposi e sovrapposizioni" tono={turni.violazioni > 0 ? "attenzione" : undefined} />
+                <Numero valore={turni.assenze} etichetta={`assenti${turni.riposi ? ` · ${turni.riposi} a riposo` : ""}`} />
+                <Numero valore={turni.violazioni} etichetta="avvisi da controllare (riposi, sovrapposizioni)" tono={turni.violazioni > 0 ? "attenzione" : undefined} />
               </div>
             )}
           </Riquadro>
         )}
 
-        {programmi.isSuccess && (
+        {programmi.data && (
           <Riquadro titolo="Programma in esercizio" icona={Map}
             href={inEsercizio ? (ha("network") ? `/planning-studio/${inEsercizio.id}` : `/fucina/esercizio/${inEsercizio.id}`) : undefined}
             link={ha("network") ? "Apri in Planning Studio" : "Apri il quadro d'esercizio"}>
@@ -150,7 +168,7 @@ export default function OggiPage() {
           </Riquadro>
         )}
 
-        {pubblicazioni.isSuccess && (
+        {pubblicazioni.data && (
           <Riquadro titolo="Turni al roster" icona={Send} href="/roster/pubblicazione" link="Apri la pubblicazione">
             {ultima ? (
               <>
