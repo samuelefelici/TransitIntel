@@ -68,5 +68,10 @@ su main non si tocca più.
   (`lib/db/contratti/argos-lettura.mjs`), che il migratore applica a ogni
   avvio dopo le migrazioni: una tabella nuova non è sua finché non entra nel
   contratto.
+- **Funzioni SECURITY DEFINER**: ogni funzione nuova è eseguibile da tutti
+  (PUBLIC), Argos compreso. Una SECURITY DEFINER gira coi diritti del suo
+  proprietario, quindi va creata con `REVOKE EXECUTE ON FUNCTION … FROM
+  PUBLIC` e data solo a chi serve: altrimenti il migratore lo segnala come
+  errore a ogni avvio.
 - **Il DDL dentro l'API non cresce più** (test `migrazioni.test.ts`, «il DDL a
   runtime può solo scendere»).

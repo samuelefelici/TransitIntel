@@ -32,7 +32,9 @@ export async function controllaLetturaArgos(): Promise<void> {
         + "Dal container dell'API: node lib/db/scripts/argos-permessi.mjs (DEPLOY.md, «Argos: sola lettura»)",
       );
     }
-    if (e.avvisi.length) logger.info({ avvisi: e.avvisi }, "Permessi di Argos: avvisi");
+    // avvisi: per esempio un contratto più nuovo nel database (rollback o revert)
+    // o letture fuori dagli schemi di Cerbero
+    if (e.avvisi.length) logger.warn({ avvisi: e.avvisi }, "Permessi di Argos: avvisi");
   } catch (err) {
     logger.warn({ err }, "Controllo dei permessi di Argos non riuscito");
   }

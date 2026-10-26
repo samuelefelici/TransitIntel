@@ -319,19 +319,24 @@ describe("permessi di Argos: il piano", () => {
     dato_da: null, colonna: false, estensione: false, ...extra,
   });
   const eff = (nome: string, extra: Partial<Effettivo> = {}): Effettivo => ({
-    ...rel(nome), tipo: "r", estensione: false, legge: true, scrive: false, opzione: false, ...extra,
+    ...rel(nome), tipo: "r", cerbero: true, estensione: false, legge: true, scrive: false, opzione: false, ...extra,
   });
-  const schema = (nome: string, extra = {}) => ({
-    schema: nome, uso: true, crea: false, con_opzione: false, tutti_creano: false,
+  type Schema = NonNullable<StatoPermessi["schemi"]>[number];
+  const schema = (nome: string, extra: Partial<Schema> = {}): Schema => ({
+    schema: nome, cerbero: true, uso: true, voci: [], tutti_creano: false,
     crea_eff: false, opzione_eff: false, possiede_via: null, ...extra,
   });
+  const acl = (privilegio: string, extra = {}) => ({ privilegio, con_opzione: false, dato_da: null, ...extra });
+  const db = (extra = {}) => ({
+    nome: "postgres", possiede_via: null, crea_eff: false, connette: true, opzione_eff: false, voci: [], tutti_creano: false, ...extra,
+  });
+  const def = (extra = {}) => ({ proprietario: "postgres", schema: null, tipo: "r", suo: true, a_tutti: false, del_ruolo: false, a_chi: null, gestibile: true, ...extra });
   const base = (): Required<StatoPermessi> => ({
     ruolo: "argos_ro", esiste: true,
-    attributi: { superutente: false, replica: false, bypassrls: false, crearuoli: false, login: true },
-    voci: C.map(t => voce(t)), concessiDaLui: [], possiede: [], predefiniti: [],
-    schemi: [schema("caronte"), schema("public")],
-    database: { nome: "postgres", possiede_via: null, crea_eff: false, connette: true, crea: false, tutti_creano: false },
-    effettivi: C.map(t => eff(t)), altrove: [], membroDi: [], esistenti: [...C],
+    attributi: { superutente: false, replica: false, bypassrls: false, crearuoli: false, creadb: false, login: true },
+    voci: C.map(t => voce(t)), routine: [], concessiDaLui: [], possiede: [], predefiniti: [],
+    schemi: [schema("caronte"), schema("public")], database: db(),
+    effettivi: C.map(t => eff(t)), altrove: [], definer: [], sistema: [], parametri: [], membroDi: [], esistenti: [...C],
   });
   const sqls = (s: StatoPermessi) => piano(s, C).azioni.map(a => a.sql);
 
@@ -346,10 +351,7 @@ describe("permessi di Argos: il piano", () => {
   it("come in produzione: toglie le tabelle in più e le future, lascia quelle del contratto", () => {
     const s = base();
     for (const t of ["public.users", "public.accessi_log", "caronte.app_users"]) { s.voci.push(voce(t)); s.effettivi.push(eff(t)); }
-    s.predefiniti = [
-      { proprietario: "postgres", schema: "public", tipo: "r", suo: true, a_tutti: false, gestibile: true },
-      { proprietario: "postgres", schema: "caronte", tipo: "r", suo: true, a_tutti: false, gestibile: true },
-    ];
+    s.predefiniti = [def({ schema: "public" }), def({ schema: "caronte" })];
     const p = piano(s, C);
     expect(p.azioni.map(a => a.sql)).toEqual([
       'REVOKE ALL ON TABLE "caronte"."app_users" FROM "argos_ro"',
@@ -391,39 +393,46 @@ describe("permessi di Argos: il piano", () => {
     expect(sqls(s)).toContain('GRANT SELECT ON TABLE "public"."gtfs_stops" TO "argos_ro"');
   });
 
-  it("manca la lettura o lo schema: la dà; una tabella del contratto che non c'è è un avviso", () => {
+  it("manca la lettura o lo schema: la dà; una tabella del contratto che non c'è (o non è una tabella) è un avviso", () => {
     const s = base();
     s.voci = s.voci.filter(v => v.tabella !== "gtfs_stops");
     s.esistenti = ["public.gtfs_stops", "public.ps_trips"];
-    s.schemi[0] = schema("caronte", { uso: false, crea: true, crea_eff: true });
+    s.schemi[0] = schema("caronte", { uso: false, voci: [acl("CREATE")], crea_eff: true });
     const p = piano(s, C);
     expect(p.azioni.map(a => a.sql)).toEqual([
       'GRANT SELECT ON TABLE "public"."gtfs_stops" TO "argos_ro"',
       'GRANT USAGE ON SCHEMA "caronte" TO "argos_ro"',
       'REVOKE CREATE ON SCHEMA "caronte" FROM "argos_ro"',
     ]);
-    expect(p.avvisi).toEqual(["caronte.stop_transits è nel contratto ma non esiste"]);
+    expect(p.avvisi).toEqual(["caronte.stop_transits è nel contratto ma non esiste, o non è una tabella"]);
   });
 
-  it("permessi di default: di ogni tipo e globali sì; non gestibili è errore; in altri schemi avviso; a PUBLIC errore", () => {
+  it("permessi di default: di ogni tipo e globali sì; non gestibili è errore; in altri schemi si tolgono; a PUBLIC errore", () => {
     const s = base();
-    const d = (extra: object) => ({ proprietario: "postgres", schema: null, tipo: "r", suo: true, a_tutti: false, gestibile: true, ...extra });
     s.predefiniti = [
-      d({}), d({ schema: "public", tipo: "S" }), d({ tipo: "T" }),
-      d({ schema: "fleetcare" }), d({ proprietario: "altro", schema: "public", tipo: "f", gestibile: false }),
-      d({ proprietario: "altro", suo: false, a_tutti: true }), d({ tipo: "T", suo: false, a_tutti: true }),
+      def(), def({ schema: "public", tipo: "S" }), def({ tipo: "T" }), def({ schema: "fleetcare" }),
+      def({ proprietario: "altro", schema: "public", tipo: "f", gestibile: false }),
+      def({ proprietario: "altro", suo: false, a_tutti: true }), def({ tipo: "T", suo: false, a_tutti: true }),
     ];
     const p = piano(s, C);
     expect(p.azioni.map(a => a.sql)).toEqual([
       'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON TABLES FROM "argos_ro"',
       'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON SEQUENCES FROM "argos_ro"',
       'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON TYPES FROM "argos_ro"',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "fleetcare" REVOKE ALL ON TABLES FROM "argos_ro"',
     ]);
-    expect(p.avvisi).toEqual([expect.stringMatching(/fleetcare.*non è di Cerbero/)]);
     expect(p.errori).toEqual([
       expect.stringMatching(/servono i diritti di altro/),
       expect.stringMatching(/di altro in tutti gli schemi \(TABLES\).*PUBLIC.*FOR ROLE "altro" REVOKE ALL ON TABLES FROM PUBLIC/),
     ]);
+  });
+
+  it("permessi di default del ruolo stesso: errore col comando giusto, nessun REVOKE inutile", () => {
+    const s = base();
+    s.predefiniti = [def({ proprietario: "argos_ro", del_ruolo: true, suo: false, a_chi: ["terzo"] })];
+    const p = piano(s, C);
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toEqual([expect.stringContaining('ALTER DEFAULT PRIVILEGES FOR ROLE "argos_ro" REVOKE ALL ON TABLES FROM "terzo"')]);
   });
 
   it("PUBLIC: errore col REVOKE esatto, mai un'azione; il SELECT su una tabella del contratto va bene; estensioni avviso", () => {
@@ -449,15 +458,15 @@ describe("permessi di Argos: il piano", () => {
     expect(p.avvisi).toEqual([expect.stringMatching(/spatial_ref_sys.*estensione/)]);
   });
 
-  it("permessi passati ad altri, su tabelle e schemi: non si toccano (REVOKE fallirebbe), errore col CASCADE", () => {
+  it("permessi passati ad altri, su tabelle, routine e schemi: non si toccano (REVOKE fallirebbe), errore col CASCADE", () => {
     const s = base();
     s.voci.push(voce("public.users", { con_opzione: true }));
     s.effettivi.push(eff("public.users", { opzione: true }));
-    s.schemi[0] = schema("caronte", { con_opzione: true, opzione_eff: true });
+    s.schemi[0] = schema("caronte", { voci: [acl("USAGE", { con_opzione: true })], opzione_eff: true });
     s.concessiDaLui = [
-      { genere: "relazione", tipo: "r", schema: "public", tabella: "users", a_chi: "terzo" },
-      { genere: "relazione", tipo: "r", schema: "public", tabella: "users", a_chi: "PUBLIC" },
-      { genere: "schema", tipo: null, schema: "caronte", tabella: null, a_chi: "terzo" },
+      { genere: "relazione", tipo: "r", schema: "public", tabella: "users", argomenti: null, a_chi: "terzo" },
+      { genere: "relazione", tipo: "r", schema: "public", tabella: "users", argomenti: null, a_chi: "PUBLIC" },
+      { genere: "schema", tipo: null, schema: "caronte", tabella: null, argomenti: null, a_chi: "terzo" },
     ];
     const p = piano(s, C);
     expect(p.azioni).toEqual([]);
@@ -467,69 +476,145 @@ describe("permessi di Argos: il piano", () => {
     ]);
   });
 
-  it("permesso dato da un ruolo diverso dal proprietario: errore con SET ROLE, nessun REVOKE inutile", () => {
+  it("permessi dati da un ruolo diverso dal proprietario, su tabelle, schemi e database: errore con SET ROLE, nessun REVOKE inutile", () => {
     const s = base();
     s.voci.push(voce("public.depots", { dato_da: "terzo" }));
     s.effettivi.push(eff("public.depots"));
+    s.schemi[0] = schema("caronte", { voci: [acl("USAGE"), acl("CREATE", { dato_da: "terzo" })], crea_eff: true });
+    s.database = db({ voci: [acl("CREATE", { dato_da: "terzo" })], crea_eff: true });
     const p = piano(s, C);
     expect(p.azioni).toEqual([]);
-    expect(p.errori).toEqual([expect.stringContaining('SET ROLE "terzo"; REVOKE ALL ON TABLE "public"."depots" FROM "argos_ro"; RESET ROLE;')]);
+    expect(p.errori).toEqual([
+      expect.stringContaining('SET ROLE "terzo"; REVOKE ALL ON TABLE "public"."depots" FROM "argos_ro"; RESET ROLE;'),
+      expect.stringContaining('SET ROLE "terzo"; REVOKE CREATE ON SCHEMA "caronte" FROM "argos_ro"; RESET ROLE;'),
+      expect.stringContaining('SET ROLE "terzo"; REVOKE CREATE ON DATABASE "postgres" FROM "argos_ro"; RESET ROLE;'),
+    ]);
   });
 
   it("superutente, attributi, proprietà, appartenenze: errori; quello che ne deriva in una riga sola", () => {
     const s = base();
-    s.attributi = { superutente: true, replica: true, bypassrls: false, crearuoli: false, login: false };
+    s.attributi = { superutente: true, replica: true, bypassrls: false, crearuoli: false, creadb: true, login: false };
     s.possiede = [{ oggetto: "table public.zones", schema: "public", tabella: "zones" }];
-    s.membroDi = ["pg_read_all_data"];
+    s.membroDi = [{ ruolo: "pg_read_all_data", da: "postgres", da_superutente: true }];
     s.effettivi.push(eff("public.zones", { scrive: true }), eff("public.users"), eff("public.roster_entries"));
+    s.sistema = [{ genere: "relazione", schema: "pg_catalog", nome: "pg_authid", argomenti: null }];
     const p = piano(s, C);
     expect(p.azioni).toEqual([]);
     expect(p.errori).toEqual([
       expect.stringMatching(/superutente/),
       expect.stringMatching(/REPLICATION.*NOREPLICATION/),
+      expect.stringMatching(/CREATEDB.*NOCREATEDB/),
       expect.stringMatching(/proprietario di table public\.zones.*REASSIGN OWNED BY "argos_ro"/),
-      expect.stringMatching(/membro di pg_read_all_data/),
+      'argos_ro è membro di pg_read_all_data: può tutto quello che può quel ruolo, fuori dal contratto (REVOKE "pg_read_all_data" FROM "argos_ro")',
       "per i motivi qui sopra argos_ro può anche: public.users (legge), public.roster_entries (legge)",
     ]);
     expect(p.avvisi).toEqual([expect.stringMatching(/NOLOGIN/)]);
   });
 
-  it("proprietario di uno schema o del database: errore e nessun REVOKE sullo schema", () => {
+  it("appartenenza concessa da un ruolo che non è superutente: REVOKE … GRANTED BY", () => {
     const s = base();
-    s.schemi[0] = schema("caronte", { possiede_via: "argos_ro", crea: true, crea_eff: true });
-    s.possiede = [{ oggetto: "schema caronte", schema: null, tabella: null }];
+    s.membroDi = [{ ruolo: "pg_read_all_data", da: "amministra", da_superutente: false }];
+    expect(piano(s, C).errori).toEqual([expect.stringContaining('REVOKE "pg_read_all_data" FROM "argos_ro" GRANTED BY "amministra"')]);
+  });
+
+  it("proprietario di uno schema, del database o di una tabella: errore, e niente REVOKE né CASCADE su quello che possiede", () => {
+    const s = base();
+    s.schemi[0] = schema("caronte", { possiede_via: "argos_ro", voci: [acl("CREATE")], crea_eff: true });
+    s.possiede = [{ oggetto: "schema caronte", schema: null, tabella: null }, { oggetto: "table public.depots", schema: "public", tabella: "depots" }];
+    s.concessiDaLui = [{ genere: "relazione", tipo: "r", schema: "public", tabella: "depots", argomenti: null, a_chi: "fleetcare_app" }];
     expect(sqls(s)).toEqual([]);
-    expect(piano(s, C).errori).toEqual([expect.stringMatching(/proprietario di schema caronte/)]);
+    expect(piano(s, C).errori).toEqual([expect.stringMatching(/proprietario di schema caronte, table public\.depots/)]);
     const d = base();
-    d.database = { nome: "prod", possiede_via: "argos_ro", crea_eff: true, connette: true, crea: false, tutti_creano: false };
+    d.database = db({ nome: "prod", possiede_via: "argos_ro", crea_eff: true, voci: [acl("CREATE")] });
     d.possiede = [{ oggetto: "database prod", schema: null, tabella: null }];
     d.schemi[1] = schema("public", { possiede_via: "pg_database_owner", crea_eff: true });
+    expect(sqls(d)).toEqual([]);
     expect(piano(d, C).errori).toEqual([expect.stringMatching(/proprietario di database prod/)]);
+  });
+
+  it("routine: i permessi dati dal proprietario si tolgono, quelli di un terzo sono un errore", () => {
+    const s = base();
+    s.routine = [
+      { schema: "pg_catalog", nome: "pg_read_binary_file", argomenti: "text", privilegio: "EXECUTE", con_opzione: false, dato_da: null },
+      { schema: "public", nome: "conta", argomenti: "a integer", privilegio: "EXECUTE", con_opzione: false, dato_da: "terzo" },
+    ];
+    s.sistema = [{ genere: "routine", schema: "pg_catalog", nome: "pg_read_binary_file", argomenti: "text" }];
+    const p = piano(s, C);
+    expect(p.azioni.map(a => a.sql)).toEqual(['REVOKE ALL ON ROUTINE "pg_catalog"."pg_read_binary_file"(text) FROM "argos_ro"']);
+    expect(p.errori).toEqual([expect.stringContaining('SET ROLE "terzo"; REVOKE ALL ON ROUTINE "public"."conta"(a integer) FROM "argos_ro"; RESET ROLE;')]);
+  });
+
+  it("SECURITY DEFINER eseguibile da tutti: errore con REVOKE … FROM PUBLIC; di un'estensione: avviso", () => {
+    const s = base();
+    s.definer = [
+      { schema: "public", nome: "svuota", argomenti: "", estensione: false, di_tutti: true },
+      { schema: "public", nome: "di_postgis", argomenti: "", estensione: true, di_tutti: true },
+    ];
+    const p = piano(s, C);
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toEqual([expect.stringContaining('REVOKE EXECUTE ON ROUTINE "public"."svuota"() FROM PUBLIC')]);
+    expect(p.avvisi).toEqual([expect.stringMatching(/di_postgis.*estensione/)]);
+  });
+
+  it("oggetti di sistema riservati usabili senza un permesso diretto: errore", () => {
+    const s = base();
+    s.sistema = [{ genere: "relazione", schema: "pg_catalog", nome: "pg_authid", argomenti: null }];
+    expect(piano(s, C).errori).toEqual([expect.stringMatching(/oggetti di sistema riservati.*pg_catalog\.pg_authid/)]);
+  });
+
+  it("parametri: quelli dati al ruolo si tolgono, quelli dati a tutti sono un errore", () => {
+    const s = base();
+    s.parametri = [
+      { nome: "session_replication_role", a_tutti: false, privilegio: "SET" },
+      { nome: "log_min_messages", a_tutti: true, privilegio: "ALTER SYSTEM" },
+    ];
+    const p = piano(s, C);
+    expect(p.azioni.map(a => a.sql)).toEqual(["REVOKE ALL ON PARAMETER session_replication_role FROM \"argos_ro\""]);
+    expect(p.errori).toEqual([expect.stringContaining("REVOKE ALL SYSTEM ON PARAMETER log_min_messages FROM PUBLIC".replace("ALL SYSTEM", "ALTER SYSTEM"))]);
+  });
+
+  it("schemi non di Cerbero: i permessi diretti si tolgono; scrivere è un errore, leggere quello che è di tutti un avviso", () => {
+    const s = base();
+    s.schemi.push(schema("fleetcare", { cerbero: false, uso: true, voci: [acl("USAGE"), acl("CREATE")], crea_eff: true }));
+    s.voci.push(voce("fleetcare.profiles", { privilegio: "INSERT" }));
+    s.altrove = [
+      eff("fleetcare.profiles", { cerbero: false, legge: false, scrive: true }),
+      eff("fleetcare.pubblica", { cerbero: false }),
+      eff("fleetcare.scrivibile", { cerbero: false, legge: false, scrive: true }),
+    ];
+    const p = piano(s, C);
+    expect(p.azioni.map(a => a.sql)).toEqual([
+      'REVOKE ALL ON TABLE "fleetcare"."profiles" FROM "argos_ro"',
+      'REVOKE ALL ON SCHEMA "fleetcare" FROM "argos_ro"',
+    ]);
+    expect(p.errori).toEqual([expect.stringMatching(/^fleetcare\.scrivibile: argos_ro scrive/)]);
+    expect(p.avvisi).toEqual([expect.stringMatching(/fuori dagli schemi di Cerbero, date a tutti i ruoli: fleetcare\.pubblica/)]);
   });
 
   it("permessi effettivi che nessuna voce spiega: errore (il riallineamento non può dire «in regola»)", () => {
     const s = base();
     s.effettivi.push(eff("public.users"), eff("public.zones", { legge: false, scrive: true }));
     s.schemi[1] = schema("public", { crea_eff: true });
-    s.database = { ...s.database!, crea_eff: true };
+    s.database = db({ crea_eff: true });
     const p = piano(s, C);
     expect(p.azioni).toEqual([]);
     expect(p.errori).toEqual([
-      expect.stringMatching(/schema public: argos_ro ci può creare tabelle, e non lo spiegano/),
+      expect.stringMatching(/schema public: argos_ro ci può creare oggetti, e non lo spiegano/),
       expect.stringMatching(/database postgres: argos_ro ci può creare schemi, e non lo spiegano/),
       expect.stringMatching(/^public\.users: argos_ro legge, e non lo spiegano/),
       expect.stringMatching(/^public\.zones: argos_ro scrive, e non lo spiegano/),
     ]);
   });
 
-  it("CREATE sul database dato ad argos_ro: si toglie; letture fuori dagli schemi di Cerbero: avviso", () => {
+  it("CREATE e grant option sul database dati dal proprietario: si tolgono", () => {
     const s = base();
-    s.database = { ...s.database!, crea: true, crea_eff: true };
-    s.altrove = ["fleetcare.veicoli"];
+    s.database = db({ voci: [acl("CREATE"), acl("CONNECT", { con_opzione: true })], crea_eff: true, opzione_eff: true });
     const p = piano(s, C);
-    expect(p.azioni.map(a => a.sql)).toEqual(['REVOKE CREATE ON DATABASE "postgres" FROM "argos_ro"']);
+    expect(p.azioni.map(a => a.sql)).toEqual([
+      'REVOKE CREATE ON DATABASE "postgres" FROM "argos_ro"',
+      'REVOKE GRANT OPTION FOR ALL ON DATABASE "postgres" FROM "argos_ro"',
+    ]);
     expect(p.errori).toEqual([]);
-    expect(p.avvisi).toEqual([expect.stringMatching(/fuori dagli schemi di Cerbero: fleetcare\.veicoli/)]);
   });
 
   it("i nomi vanno tra virgolette, anche con un punto dentro", () => {
@@ -553,21 +638,21 @@ describe("permessi di Argos: quale contratto vale", () => {
   const salvato = (versione: number, elenco: string[]) => ({ disponibile: true, riga: { versione, elenco } });
 
   it("niente nel database: vale il codice e si registra", () => {
-    expect(contrattoEffettivo(codice, { disponibile: true, riga: null })).toMatchObject({ versione: 2, fonte: "codice", scrivi: true });
+    expect(contrattoEffettivo(codice, { disponibile: true, riga: null })).toMatchObject({ versione: 2, fonte: "codice", scrivi: true, salvata: null });
   });
 
   it("il database è più vecchio: vale il codice e si aggiorna", () => {
-    expect(contrattoEffettivo(codice, salvato(1, ["public.a"]))).toMatchObject({ versione: 2, fonte: "codice", scrivi: true });
+    expect(contrattoEffettivo(codice, salvato(1, ["public.a"]))).toMatchObject({ versione: 2, fonte: "codice", scrivi: true, salvata: 1 });
   });
 
   it("stessa versione e stesso elenco: niente da scrivere", () => {
-    expect(contrattoEffettivo(codice, salvato(2, ["public.b", "public.a"]))).toMatchObject({ fonte: "codice", scrivi: false, errori: [] });
+    expect(contrattoEffettivo(codice, salvato(2, ["public.b", "public.a"]))).toMatchObject({ fonte: "codice", scrivi: false, errori: [], avvisi: [] });
   });
 
-  it("il database è più nuovo (rollback): vale il suo elenco, non si scrive, voci strane ignorate", () => {
+  it("il database è più nuovo (rollback o revert): vale il suo elenco, non si scrive, lo si dice; voci strane ignorate", () => {
     const e = contrattoEffettivo(codice, salvato(3, ["public.a", "public.b", "public.c", "x.y"]));
     expect(e).toMatchObject({ versione: 3, fonte: "database", scrivi: false, elenco: ["public.a", "public.b", "public.c"] });
-    expect(e.nota).toMatch(/v3 salvato nel database: questo codice ha la v2/);
+    expect(e.avvisi).toEqual([expect.stringMatching(/v3 salvato nel database: questo codice ha la v2.*si alza la versione/)]);
     expect(e.errori).toEqual([expect.stringMatching(/non valida.*x\.y/)]);
   });
 
@@ -586,6 +671,15 @@ describe("permessi di Argos: quale contratto vale", () => {
     const e = contrattoEffettivo(codice, { disponibile: false, motivo: "non leggibile" });
     expect(e).toMatchObject({ fonte: "codice", scrivi: false });
     expect(e.avvisi).toEqual([expect.stringMatching(/non disponibile \(non leggibile\)/)]);
+  });
+
+  it("contratto salvato non fidato: il codice, con un errore; --forza riscrive solo se è la riga a non essere fidata", () => {
+    const sospetto = { disponibile: false, sospetto: true, motivo: "modificabile da altri" };
+    expect(contrattoEffettivo(codice, sospetto)).toMatchObject({ fonte: "codice", scrivi: false, avvisi: [], errori: [expect.stringMatching(/modificabile da altri/)] });
+    expect(contrattoEffettivo(codice, sospetto, { forza: true })).toMatchObject({ scrivi: false });
+    const riga = { ...sospetto, rigaNonFidata: true, motivo: "scritto da argos_ro" };
+    expect(contrattoEffettivo(codice, riga)).toMatchObject({ scrivi: false, errori: [expect.stringMatching(/scritto da argos_ro/)] });
+    expect(contrattoEffettivo(codice, riga, { forza: true })).toMatchObject({ fonte: "codice", scrivi: true, errori: [] });
   });
 });
 

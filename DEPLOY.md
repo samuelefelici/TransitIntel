@@ -127,8 +127,11 @@ anagrafica, roster. L'elenco, il «contratto», è
 
 A ogni avvio dell'API il migratore riporta i permessi di `argos_ro` al
 contratto:
-- solo la lettura delle tabelle dell'elenco: niente scrittura (MAINTAIN
-  compreso), sequenze, permessi su colonne, grant option;
+- solo la lettura delle tabelle dell'elenco e l'USAGE dei loro schemi;
+- niente scrittura (MAINTAIN compreso), sequenze, permessi su colonne o grant
+  option;
+- niente funzioni e parametri del server, né negli altri schemi dello stesso
+  database (per esempio `fleetcare`);
 - nessun permesso di default che gli dia le tabelle future;
 - nessun CREATE negli schemi o nel database.
 
@@ -139,9 +142,14 @@ esiste, non fa niente.
 Alcune cose non le corregge da solo, perché toccherebbero altri ruoli o
 servono i loro diritti:
 - permessi dati a tutti i ruoli (PUBLIC);
+- funzioni SECURITY DEFINER che `argos_ro` può eseguire: girano coi diritti
+  del proprietario, quindi gli danno quello che fanno;
+- oggetti di sistema riservati, come `pg_authid` o `pg_read_binary_file`, che
+  `argos_ro` può usare grazie a un altro ruolo;
 - l'appartenenza di `argos_ro` a un altro ruolo (per esempio
   `pg_read_all_data`);
-- `argos_ro` proprietario di qualcosa o con attributi come SUPERUSER;
+- `argos_ro` proprietario di qualcosa, o con attributi come SUPERUSER e
+  CREATEDB;
 - permessi dati da un ruolo diverso dal proprietario, o passati da `argos_ro`
   ad altri.
 
@@ -151,7 +159,15 @@ eseguire, e intanto sistema tutto il resto. L'API parte comunque.
 Il database ricorda la versione del contratto applicata
 (`cerbero_migrazioni.contratti`) e **vince la più alta**. Tornare a un'immagine
 precedente di Cerbero (rollback) non toglie quindi ad Argos le tabelle date da
-quella più nuova: nel log si legge `uso il contratto vN salvato nel database`.
+quella più nuova: nel log, come avviso, si legge `uso il contratto vN salvato
+nel database`.
+
+Chi può scrivere quella tabella decide i permessi di Argos, quindi il contratto
+salvato si usa solo se ci scrive soltanto il suo proprietario. Inoltre un
+trigger annota chi ha scritto ogni riga (`scritto_da`), e si usa solo una riga
+scritta da un superutente o da chi migra. Altrimenti vale il contratto del
+codice e nel log c'è un errore: si controlla la tabella e la si riscrive con
+`--forza`.
 
 - **Per controllare** che Argos si colleghi davvero come `argos_ro` e non come
   `postgres`, dal Terminal del PostgreSQL mentre Argos lavora:
@@ -192,10 +208,15 @@ quella più nuova: nel log si legge `uso il contratto vN salvato nel database`.
   accessi, anagrafica, roster, validazioni dei passeggeri, audit) e che non
   abbia colonne dal nome personale. Il resto lo garantisce la revisione della
   PR.
-- **Se un contratto più nuovo era sbagliato**, dall'immagine giusta:
+- **Togliere una tabella ad Argos**: si toglie dall'elenco e si alza la
+  versione, come per aggiungerla. **Non con un revert**: il revert riporta la
+  versione indietro, e il database tiene quella più alta (nel log un avviso a
+  ogni avvio).
+- **Se un contratto più nuovo era sbagliato**, o se il log dice che il
+  contratto salvato non è affidabile, dall'immagine giusta:
   `node lib/db/scripts/argos-permessi.mjs --forza`, che applica e registra il
-  contratto di quell'immagine. Poi si rilascia una versione nuova del
-  contratto.
+  contratto di quell'immagine. Poi, se serve, si rilascia una versione nuova
+  del contratto.
 - **Emergenza** (Argos si ferma per un permesso mancante e serve subito):
   `GRANT SELECT ON <tabella> TO argos_ro;` dal Terminal del PostgreSQL. È una
   toppa che dura fino al prossimo avvio dell'API, che la toglie: la correzione

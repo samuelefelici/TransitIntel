@@ -20,14 +20,21 @@ BEGIN
   END IF;
 
   -- 1. il ruolo: niente attributi speciali, niente appartenenze, niente proprietà
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE oid = argos AND (rolsuper OR rolreplication OR rolbypassrls OR rolcreaterole)) THEN
-    RAISE EXCEPTION 'argos_ro ha attributi speciali (SUPERUSER, REPLICATION, BYPASSRLS o CREATEROLE)';
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE oid = argos AND (rolsuper OR rolreplication OR rolbypassrls OR rolcreaterole OR rolcreatedb)) THEN
+    RAISE EXCEPTION 'argos_ro ha attributi speciali (SUPERUSER, REPLICATION, BYPASSRLS, CREATEROLE o CREATEDB)';
   END IF;
   IF EXISTS (SELECT 1 FROM pg_auth_members WHERE member = argos) THEN
     RAISE EXCEPTION 'argos_ro è membro di: %', ARRAY(SELECT roleid::regrole::text FROM pg_auth_members WHERE member = argos);
   END IF;
   IF pg_has_role(argos, (SELECT datdba FROM pg_database WHERE datname = current_database()), 'MEMBER') THEN
     RAISE EXCEPTION 'argos_ro ha i diritti del proprietario del database';
+  END IF;
+  IF current_setting('server_version_num')::int >= 150000 THEN
+    EXECUTE 'SELECT EXISTS (SELECT 1 FROM pg_parameter_acl p, aclexplode(p.paracl) a WHERE a.grantee IN ($1, 0))'
+      INTO r USING argos;
+    IF r.exists THEN
+      RAISE EXCEPTION 'argos_ro, o chiunque, può cambiare parametri del server (pg_parameter_acl)';
+    END IF;
   END IF;
   IF has_database_privilege(argos, current_database(), 'CREATE') THEN
     RAISE EXCEPTION 'argos_ro può creare schemi nel database';
@@ -99,7 +106,50 @@ BEGIN
   END IF;
   DROP TABLE public.ci_tabella_nuova, caronte.ci_tabella_nuova;
 
-  -- 6. una lettura vera, come argos_ro: le tabelle del contratto sì, users no
+  -- 6. negli altri schemi non di sistema: niente scrittura, niente CREATE
+  FOR r IN SELECT c.oid::regclass AS t, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname NOT IN ('public', 'caronte') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+              AND c.relkind IN ('r', 'v', 'm', 'p', 'f', 'S')
+  LOOP
+    IF (CASE WHEN r.relkind = 'S' THEN has_sequence_privilege(argos, r.t, 'USAGE, UPDATE')
+             ELSE has_table_privilege(argos, r.t, scrittura) OR has_any_column_privilege(argos, r.t, 'INSERT, UPDATE, REFERENCES') END) THEN
+      RAISE EXCEPTION 'argos_ro può scrivere su %', r.t;
+    END IF;
+  END LOOP;
+  IF EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+                AND has_schema_privilege(argos, n.oid, 'CREATE')) THEN
+    RAISE EXCEPTION 'argos_ro può creare oggetti in uno schema';
+  END IF;
+  -- il contratto salvato non lo può toccare
+  IF to_regclass('cerbero_migrazioni.contratti') IS NOT NULL
+     AND (has_table_privilege(argos, 'cerbero_migrazioni.contratti', 'INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER')
+          OR EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a
+                      WHERE c.oid = 'cerbero_migrazioni.contratti'::regclass AND a.grantee = 0
+                        AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER'))) THEN
+    RAISE EXCEPTION 'argos_ro, o chiunque, può modificare cerbero_migrazioni.contratti';
+  END IF;
+
+  -- 7. funzioni: nessuna SECURITY DEFINER eseguibile, nessun oggetto di sistema
+  --    riservato all'installazione (pg_init_privs senza PUBLIC) usabile
+  IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE p.prosecdef AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+                AND has_function_privilege(argos, p.oid, 'EXECUTE')) THEN
+    RAISE EXCEPTION 'argos_ro può eseguire funzioni SECURITY DEFINER: %', ARRAY(
+      SELECT p.oid::regprocedure::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE p.prosecdef AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+         AND has_function_privilege(argos, p.oid, 'EXECUTE'));
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_init_privs i
+              WHERE (i.classoid = 'pg_proc'::regclass
+                     AND NOT EXISTS (SELECT 1 FROM aclexplode(i.initprivs) a WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE')
+                     AND has_function_privilege(argos, i.objoid, 'EXECUTE'))
+                 OR (i.classoid = 'pg_class'::regclass AND i.objsubid = 0
+                     AND NOT EXISTS (SELECT 1 FROM aclexplode(i.initprivs) a WHERE a.grantee = 0 AND a.privilege_type = 'SELECT')
+                     AND has_table_privilege(argos, i.objoid, 'SELECT'))) THEN
+    RAISE EXCEPTION 'argos_ro può usare oggetti di sistema riservati';
+  END IF;
+
+  -- 8. una lettura vera, come argos_ro: le tabelle del contratto sì, users no
   EXECUTE 'SET LOCAL ROLE argos_ro';
   FOREACH voce IN ARRAY contratto LOOP
     EXECUTE format('SELECT 1 FROM %s LIMIT 0', voce::regclass);
