@@ -128,6 +128,8 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE prod"
           # in produzione lo schema public è stato ricreato: su un database nuovo c'è già
           sed '/^CREATE SCHEMA public;$/d' lib/db/schema-produzione/2026-10-25.sql | psql -q -v ON_ERROR_STOP=1 -d prod
+          # argos_ro con i permessi che ha in produzione (lettura di tutto), per la 0002
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
           # il baseline sulla produzione non deve eseguire nessun DDL: un event
           # trigger fa fallire qualunque comando che cambi lo schema
           psql -q -v ON_ERROR_STOP=1 -d prod -c "CREATE FUNCTION public.ci_ddl_vietato() RETURNS event_trigger LANGUAGE plpgsql AS \$\$ BEGIN RAISE EXCEPTION 'il baseline ha eseguito DDL sulla copia della produzione: %', tg_tag; END \$\$" \
@@ -135,6 +137,8 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -1 -d prod -f lib/db/migrations/0000_baseline.sql
           psql -q -v ON_ERROR_STOP=1 -d prod -c "DROP EVENT TRIGGER ci_ddl_vietato" -c "DROP FUNCTION public.ci_ddl_vietato()"
           DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs
+      - name: Argos legge solo le tabelle del contratto
+        run: psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-lettura.test.sql
       - name: Tutti e due hanno lo schema atteso
         run: |
           DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto.json

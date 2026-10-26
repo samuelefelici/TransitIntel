@@ -15,6 +15,13 @@
       "when": 1792933200000,
       "tag": "0001_allinea",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792936800000,
+      "tag": "0002_argos_lettura",
+      "breakpoints": true
     }
   ]
 }

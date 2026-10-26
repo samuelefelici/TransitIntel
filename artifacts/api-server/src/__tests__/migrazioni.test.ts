@@ -11,6 +11,7 @@ import {
   CHIAVE_LUCCHETTO, TRACCIAMENTO, controllaApplicate, daApplicare, descriviErrore, leggiDiario, ritentabile,
 } from "../../../../lib/db/scripts/migrazioni-regole.mjs";
 import { confronta } from "../../../../lib/db/scripts/catalogo.mjs";
+import { ARGOS_LETTURA, letturaFuoriContratto } from "../lib/contratto-argos";
 
 const LIB_DB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../lib/db");
 const CARTELLA = path.join(LIB_DB, "migrations");
@@ -250,5 +251,43 @@ describe("ogni tabella letta dal codice esiste nello schema", () => {
     }
     expect(schema.size).toBeGreaterThan(130);
     expect(ignote, "tabella che non esiste nello schema delle migrazioni; se non è una tabella, aggiungila a NON_TABELLE").toEqual([]);
+  });
+});
+
+/* Argos legge solo le tabelle del contratto: lo stesso elenco nel codice
+ * (lib/contratto-argos.ts), nella migrazione che dà i permessi e nel test SQL
+ * della CI. */
+describe("il contratto di lettura di Argos", () => {
+  const elencoSql = (file: string) => {
+    const testo = readFileSync(file, "utf8");
+    const m = /ARRAY\[([\s\S]*?)\]/.exec(testo);
+    return [...(m?.[1] ?? "").matchAll(/'([a-z_]+\.[a-z0-9_]+)'/g)].map(x => x[1]!).sort();
+  };
+  const contratto = [...ARGOS_LETTURA].sort();
+
+  it("23 tabelle, nessun doppione", () => {
+    expect(contratto).toHaveLength(23);
+    expect(new Set(contratto).size).toBe(contratto.length);
+  });
+
+  it("la migrazione 0002 e il test SQL della CI hanno lo stesso elenco del codice", () => {
+    expect(elencoSql(path.join(CARTELLA, "0002_argos_lettura.sql"))).toEqual(contratto);
+    expect(elencoSql(path.join(LIB_DB, "tests/argos-lettura.test.sql"))).toEqual(contratto);
+  });
+
+  it("ogni tabella del contratto esiste nello schema delle migrazioni", () => {
+    const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+    const esistono = new Set([...Object.keys(catalogo.tabelle), ...Object.keys(catalogo.viste)]);
+    expect(contratto.filter(t => !esistono.has(t))).toEqual([]);
+  });
+
+  it("niente dati personali nel contratto: utenti, accessi, anagrafica, roster", () => {
+    expect(contratto.filter(t => /\.(users|accessi_|roster_|app_users)/.test(t))).toEqual([]);
+  });
+
+  it("letturaFuoriContratto: le tabelle in più, una volta sola e in ordine", () => {
+    expect(letturaFuoriContratto(["public.users", "public.gtfs_stops", "public.accessi_log", "public.users"]))
+      .toEqual(["public.accessi_log", "public.users"]);
+    expect(letturaFuoriContratto([...ARGOS_LETTURA])).toEqual([]);
   });
 });

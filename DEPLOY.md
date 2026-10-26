@@ -117,6 +117,30 @@ migrator di drizzle).
   migratore si ferma se un file già applicato è cambiato, e la CI lo controlla.
   Come scriverne una: `lib/db/migrations/README.md`.
 
+### Argos: sola lettura su un elenco chiuso
+
+Argos legge il database di Cerbero con il ruolo `argos_ro`, solo dalle 23
+tabelle che usa davvero: orari GTFS, Planning Studio, territorio e domanda,
+nodi e matrice delle tariffe, Sala Operativa live. L'elenco è
+`artifacts/api-server/src/lib/contratto-argos.ts`; i permessi li dà la
+migrazione `0002_argos_lettura`, che ha tolto la lettura di tutto il resto
+(utenti, accessi, anagrafica, roster) e delle tabelle future.
+
+- **Non rilanciare `argos/cerbero_readonly_user.sql`** di Argos così com'è: ridà
+  la lettura di tutte le tabelle e di quelle future. Se è successo, l'API lo
+  dice nel log all'avvio («argos_ro legge tabelle fuori dal contratto») e si
+  rimedia rieseguendo la migrazione, che si può rilanciare quante volte si vuole:
+  ```bash
+  psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f lib/db/migrations/0002_argos_lettura.sql
+  ```
+- **Una tabella in più per Argos**: si aggiunge al contratto e la si concede con
+  una migrazione nuova (`GRANT SELECT ON … TO argos_ro`), insieme alla modifica
+  di Argos che la usa. Il test delle migrazioni tiene allineati contratto,
+  0002 e test SQL della CI.
+- **Emergenza** (Argos non risponde per un permesso mancante e serve subito):
+  `GRANT SELECT ON ALL TABLES IN SCHEMA public, caronte TO argos_ro;` ridà
+  tutto, dati personali compresi: è una toppa, poi si corregge il contratto.
+
 ### L'immagine dell'API
 
 `Dockerfile.api` parte da Node 22 (Node 20 è fuori supporto) e fa girare l'API
