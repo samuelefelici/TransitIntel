@@ -556,7 +556,7 @@ router.delete("/gtfs/feeds/:id", async (req, res) => {
 
 // ─── Feed attivo (lazy column bootstrap) ───────────────────────
 let feedActiveColumnEnsured = false;
-async function ensureFeedActiveColumn(): Promise<void> {
+export async function ensureFeedActiveColumn(): Promise<void> {
   if (feedActiveColumnEnsured) return;
   try {
     await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false`);

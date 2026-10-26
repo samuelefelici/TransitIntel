@@ -186,7 +186,7 @@ router.patch("/planning/feeds/:id/economic-params", async (req: Request, res: Re
 
 // ─────────────── Bootstrap tabelle nuove (idempotent) ───────────────
 let bootstrapped = false;
-async function ensureNewTables() {
+export async function ensureNewTables() {
   if (bootstrapped) return;
   try {
     await db.execute(sql`

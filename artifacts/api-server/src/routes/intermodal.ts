@@ -231,7 +231,7 @@ export type { HubSchedule };
  * orari scaricati sparivano e il frontend rilanciava 112 chiamate a
  * ViaggiaTreno per stazione. Ora si appoggiano a una tabella additiva. */
 let schedulesTableReady = false;
-async function ensureSchedulesTable(): Promise<void> {
+export async function ensureSchedulesTable(): Promise<void> {
   if (schedulesTableReady) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS intermodal_hub_schedules (

@@ -54,7 +54,7 @@ async function isOperationalVehicleScenario(id: string): Promise<boolean> {
 // Colonna additiva variant_code su gtfs_trips (feed storici senza colonna):
 // il codice percorso viaggia corsa→turni macchina→turni guida.
 let variantColReady = false;
-async function ensureVariantCodeColumn(): Promise<void> {
+export async function ensureVariantCodeColumn(): Promise<void> {
   if (variantColReady) return;
   try {
     await db.execute(sql`ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS variant_code text`);
@@ -3088,7 +3088,7 @@ function pruneAgentJobs(): void {
  * «running» dopo un riavvio si dichiara interrotto e riporta i parametri
  * con cui rilanciarlo. */
 let agentJobsTableReady: Promise<void> | null = null;
-function ensureAgentJobsTable(): Promise<void> {
+export function ensureAgentJobsTable(): Promise<void> {
   if (!agentJobsTableReady) {
     agentJobsTableReady = db.execute(sql`
       CREATE TABLE IF NOT EXISTS agent_optimize_jobs (

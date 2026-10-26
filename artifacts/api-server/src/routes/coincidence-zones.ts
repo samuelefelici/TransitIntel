@@ -32,7 +32,7 @@ const ZONE_UUID_RE = /^[0-9a-f-]{36}$/i;
  * intermodale di tutti gli altri. Stessa regola di depositi e archi
  * (PS14/PS15): NULL = zona globale, valorizzato = solo quel progetto PS. */
 let zonesScopeReady = false;
-async function ensureZoneScope(): Promise<void> {
+export async function ensureZoneScope(): Promise<void> {
   if (zonesScopeReady) return;
   try {
     await db.execute(sql`ALTER TABLE coincidence_zones ADD COLUMN IF NOT EXISTS ps_project_id uuid`);

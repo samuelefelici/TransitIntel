@@ -5,7 +5,7 @@
 ```
 ┌──────────────────────┐     ┌──────────────────────┐     ┌──────────────────────┐
 │  Web (Dockerfile.web)│────▶│  API (Dockerfile.api)│────▶│  PostgreSQL          │
-│  React + Vite build  │     │  Express + Node 20   │     │  self-hosted         │
+│  React + Vite build  │     │  Express + Node 22   │     │  self-hosted         │
 │  servito da nginx :80│     │  + Python (OR-Tools) │     │  (servizio Coolify)  │
 │  su Coolify          │     │  :3000 su Coolify    │     │                      │
 └──────────────────────┘     └──────────────────────┘     └──────────────────────┘
@@ -20,8 +20,8 @@ parlarsi via rete interna:
 
 | Componente | Sorgente build | Porta | Note |
 |---|---|---|---|
-| **Database** | immagine PostgreSQL di Coolify | 5432 | schema da `setup.sql` + `migrations/` |
-| **API** | `Dockerfile.api` (repo) | 3000 | start: `node artifacts/api-server/dist/index.cjs` |
+| **Database** | immagine PostgreSQL di Coolify | 5432 | schema dalle migrazioni di `lib/db/migrations/`, applicate dall'API all'avvio |
+| **API** | `Dockerfile.api` (repo) | 3000 | start: `sh docker/avvio.sh` (migrazioni, poi l'API) |
 | **Web** | `Dockerfile.web` (repo) | 80 | nginx serve la SPA (`artifacts/transitintel/dist`) |
 
 ---
@@ -32,25 +32,103 @@ parlarsi via rete interna:
 2. Scegli nome, utente e password; avvialo.
 3. Annota l'**hostname interno** del servizio (Coolify lo espone agli altri
    servizi dello stesso progetto via rete privata) e l'eventuale **URL pubblico**.
-4. Applica lo schema. Da un client con accesso al DB:
-   ```bash
-   psql "$DATABASE_URL" -f setup.sql
-   psql "$DATABASE_URL" -f migrations/2026-05_caronte_and_stop_classification.sql
-   psql "$DATABASE_URL" -f migrations/2026-06_operations_live.sql   # Sala Operativa + GTFS-RT
-   # opzionale, validatore Caronte:
-   psql "$DATABASE_URL" -f caronte_setup.sql
-   ```
-   > In alternativa puoi incollare il contenuto degli `.sql` in un SQL editor.
-   > Lo schema cambia **solo** con i file di `migrations/`: `drizzle-kit push` è
-   > disattivato, perché proporrebbe di cancellare le tabelle che l'API crea da sé.
-   > Alcune tabelle (es. polimetriche, snapshot) vengono create **lazy**
-   > dall'API al primo uso (`CREATE TABLE IF NOT EXISTS`), quindi non serve
-   > una migration manuale per quelle.
+4. **Lo schema non si applica a mano.** Lo crea e lo aggiorna il container
+   dell'API all'avvio (`docker/avvio.sh`), con le migrazioni versionate di
+   `lib/db/migrations/` (vedi «Migrazioni del database» qui sotto); in locale
+   con `pnpm --filter @workspace/db run migra`. Su un database vuoto il primo avvio crea tutto lo
+   schema della produzione; su uno che c'è già registra soltanto il punto di
+   partenza (`0000_baseline`), senza toccare nessuna tabella.
+   > `setup.sql` e gli specchi di `migrations/` non esistono più: lo schema
+   > cambia solo con un file nuovo in `lib/db/migrations/`. `drizzle-kit push`
+   > resta disattivato.
+   > Opzionale, validatore Caronte: `caronte_setup.sql` crea il ruolo
+   > `caronte_app` (vedi il file). Va eseguito **dopo il primo avvio dell'API**,
+   > che crea lo schema `caronte`. Chi aveva eseguito la versione di prima deve
+   > rieseguirlo: toglie la lettura di tutte le tabelle (utenti compresi) e
+   > lascia solo le GTFS; poi cambia la password con `\password caronte_app`.
 
 > ✅ Conserva la connection string. Forma tipica su rete interna Coolify (senza SSL):
 > `postgres://user:password@<servizio-db>:5432/dbname`
 > Se il DB è esposto pubblicamente con certificato self-signed, usa
 > `?sslmode=no-verify` **oppure** imposta `PGSSL_NO_VERIFY=1` (vedi env).
+
+---
+
+### Migrazioni del database
+
+Lo schema di Cerbero cambia **solo** con le migrazioni versionate di
+`lib/db/migrations/`: file SQL numerati (`0000_baseline.sql`, `0001_…`) più il
+diario `meta/_journal.json`, con lo stesso strumento di FleetCare (il
+migrator di drizzle).
+
+- **Quando girano.** All'avvio del container dell'API, prima del server
+  (`docker/avvio.sh` → `lib/db/scripts/migra.mjs`). Nel log:
+  `[migrazioni] 0001_allinea applicata` oppure `nessuna migrazione da applicare`.
+- **Con quale utente.** `DATABASE_MIGRATOR_URL` se c'è, altrimenti
+  `DATABASE_URL`: deve essere il proprietario delle tabelle (o un superutente),
+  perché le migrazioni le modificano. Oggi sono lo stesso utente; si
+  separeranno con i ruoli del database (Fase 2). `docker/avvio.sh` la toglie
+  dall'ambiente dell'API e dei solver che lancia; resta però leggibile dentro
+  il container, quindi le credenziali si separeranno davvero solo quando il
+  migratore avrà un servizio suo.
+- **Se una migrazione fallisce** il database non cambia (le migrazioni girano in
+  una transazione) e **il container nuovo non parte**: nel log c'è
+  `[migrazioni] FALLITA: <il motivo dato da Postgres>`, seguito dall'istruzione.
+  Coolify tiene in servizio quello vecchio perché aspetta che il nuovo sia
+  sano, con l'HEALTHCHECK dell'immagine: **vale solo con il rolling update**.
+  Coolify lo disattiva, e ferma il vecchio prima di avviare il nuovo, se ci
+  sono porte mappate sull'host, un nome di container fisso (o «Custom internal
+  name»), `--ip`/`--ip6` nelle Custom Docker Options, o per i deploy delle PR:
+  in quei casi una migrazione fallita lascia l'API spenta finché non si
+  corregge. In Coolify, quindi:
+  - **Application → Health check: lasciarlo spento.** Spento, Coolify usa
+    l'HEALTHCHECK del Dockerfile (nel log del deploy: «Custom healthcheck
+    found in Dockerfile»). Acceso di tipo URL, Coolify lo sostituisce con un
+    controllo fatto con curl o wget, che nell'immagine non ci sono: il
+    container nuovo non risulterebbe mai sano. In alternativa si può accendere
+    di tipo «command» con `node docker/salute.mjs`.
+  - Niente porte mappate sull'host, niente nome di container fisso, niente
+    `--ip` nelle Custom Docker Options.
+- **Quanto possono durare.** Coolify aspetta 20 s e poi controlla
+  l'healthcheck 5 volte, una ogni 15 s: migrazioni e avvio dell'API devono
+  stare in circa un minuto e mezzo. Oltre, Coolify annulla il deploy: nel log
+  c'è `[migrazioni] SIGTERM: interrompo`, il database resta com'era e resta il
+  container vecchio. Le operazioni lunghe sui dati non vanno in una
+  migrazione (vedi il README delle migrazioni).
+- **Avvisi.** Se una migrazione salta qualcosa che i dati non permettono (per
+  esempio un indice unico con doppioni) il log lo dice con
+  `[migrazioni] ATTENZIONE: …`: l'oggetto non verrà ricreato da solo.
+- **Tracciamento.** Le migrazioni applicate stanno in
+  `cerbero_migrazioni.__drizzle_migrations`, uno schema solo di Cerbero
+  (`drizzle.__drizzle_migrations` è di FleetCare):
+  ```sql
+  SELECT id, created_at, left(hash, 12) FROM cerbero_migrazioni.__drizzle_migrations ORDER BY id;
+  ```
+- **Due container insieme** (deploy a rotazione) non migrano insieme: un
+  lucchetto fa aspettare il secondo. Ogni comando aspetta al massimo 5 s una
+  tabella occupata (`lock_timeout`), poi riprova; non resta in coda bloccando
+  tutti.
+- **Compatibilità.** Durante il deploy il container vecchio serve ancora: una
+  migrazione aggiunge (tabelle, colonne con default, indici) e non toglie né
+  rinomina quello che il codice di prima usa. La pulizia va in una migrazione
+  successiva, dopo un rilascio.
+- **Prima di un deploy con migrazioni**, un backup del database da Coolify.
+- **Le migrazioni rilasciate non si modificano**: se ne scrive una nuova. Il
+  migratore si ferma se un file già applicato è cambiato, e la CI lo controlla.
+  Come scriverne una: `lib/db/migrations/README.md`.
+
+### L'immagine dell'API
+
+`Dockerfile.api` parte da Node 22 (Node 20 è fuori supporto) e fa girare l'API
+come utente `node`, non root: il processo scrive solo in `/app/.cache` e in
+`/tmp`. `tini` fa da processo 1. Al deploy Coolify manda il segnale di arresto
+e aspetta 30 s: l'API continua a rispondere ma con «Connection: close», così
+le connessioni si chiudono a fine risposta e il proxy manda le richieste
+successive al container nuovo; esce appena non ha richieste in corso da 1 s,
+o al più tardi dopo `CERBERO_ARRESTO_SECONDI` (25 s, massimo 28). Se il
+segnale arriva durante le migrazioni, la transazione viene annullata. L'immagine ha un HEALTHCHECK suo
+(`docker/salute.mjs`, che chiama `/api/healthz` senza bisogno di curl): è
+quello che Coolify usa se il suo healthcheck resta spento (vedi sopra).
 
 ---
 
@@ -94,8 +172,8 @@ parlarsi via rete interna:
    es. `https://api.transitintel.tuodominio.it`. Verifica `GET /api/healthz`.
 
 > L'API ha bisogno di **Python + OR-Tools** per gli scheduler: ci pensa
-> `Dockerfile.api` (installa `python3` e fa `pnpm run build:deploy`, che include
-> `install:python`). Non serve configurare nulla a mano.
+> `Dockerfile.api` (installa `python3` e OR-Tools da `requirements.txt`). Non
+> serve configurare nulla a mano.
 
 ---
 
@@ -158,9 +236,7 @@ curl -X POST https://api.transitintel.tuodominio.it/api/cron/traffic \
 ### Anagrafica del personale
 
 Il roster ha un'anagrafica completa dei conducenti (menu Personale →
-Anagrafica). Le tabelle si creano da sé al primo avvio; il file
-`migrations/2026-10_anagrafica_personale.sql` è lo specchio per chi le vuole
-preparare prima.
+Anagrafica). Le tabelle sono nello schema delle migrazioni (`0000_baseline`).
 
 1. **Subito dopo il rilascio**, dalla Gestione Utenti accendi il permesso
    **«Personale»** a chi tiene l'anagrafica (ufficio personale, chi fa il
@@ -188,7 +264,7 @@ Fra due turni dello stesso conducente servono almeno **8h se urbani, 9h se
 uno è extraurbano**, e due turni non si sovrappongono. Assegnando o
 scambiando un turno che non lo rispetta il roster avvisa; si può procedere lo
 stesso e il turno resta segnato come forzato (chi, quando). Le colonne si
-creano da sé; `migrations/2026-10_roster_riposi.sql` è lo specchio.
+sono nello schema delle migrazioni.
 
 1. **Dopo il rilascio**, in Planning Studio → Unità di Progettazione, controlla
    per ogni unità il campo **Servizio**. Finché nessuno lo sceglie vale la
@@ -336,7 +412,7 @@ Il roster riceve i turni guida da un solo canale, **Turni al roster** (menu
 Pubblicazione, o «Pubblica nel Roster» dal Quadro d'esercizio): si
 sceglie programma e periodo, e per ogni Unità di Progettazione quale turni
 guida vale nei suoi giorni (proposto quello in esercizio). Le tabelle si
-creano da sé; `migrations/2026-10_roster_pubblicazione.sql` è lo specchio.
+sono nello schema delle migrazioni.
 
 1. **Dopo il rilascio il tabellone non ha turni**: ogni giorno è «non
    pubblicato» e non si assegna finché non si pubblica. Le assegnazioni di
@@ -378,9 +454,9 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
   toglie da Gestione Utenti a chi non la usa. Le letture che servono anche agli
   altri moduli (feed e fermate per i turni, linee e confini per le tariffe, il
   dominio dei QR per la stampa orari, l'elenco dei programmi per i turni) non
-  dipendono più da Analisi. `migrations/2026-11_analisi_spenta.sql` cambia solo
-  il default della colonna: non serve applicarla, l'app scrive i permessi per
-  intero quando crea un utente.
+  dipendono più da Analisi. Il default della colonna lo allinea la migrazione
+  `0001_allinea` (in produzione era rimasto quello iniziale); conta solo per
+  chi inserisce utenti a mano, perché l'app scrive i permessi per intero.
 - **Rete e orari porta con sé i Turni**, come prima. All'avvio l'app allinea chi
   aveva Rete e orari senza Turni (salvato prima che la regola valesse anche al
   salvataggio): da lì in poi vede anche i Turni.
@@ -416,6 +492,8 @@ Riferimento completo in `.env.example`. Sintesi:
 |---|---|---|
 | `DATABASE_URL` | ✅ | `postgres://user:pass@<servizio-db>:5432/dbname` |
 | `PGSSL_NO_VERIFY` | — | `1` se Postgres usa certificato self-signed |
+| `DATABASE_MIGRATOR_URL` | — | utente proprietario delle tabelle, solo per le migrazioni all'avvio; senza, vale `DATABASE_URL` |
+| `CERBERO_ARRESTO_SECONDI` | — | attesa massima all'arresto per le richieste in corso (default 25, massimo 28: Coolify uccide il container dopo 30 s) |
 | `NODE_ENV` | ✅ | `production` |
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
@@ -469,7 +547,7 @@ connettore SIRI attivo, il processo dell'API controlla ogni ora se c'è una
 settimana chiusa senza controllo archiviato e la calcola (il primo giro dopo
 le 03:00 di lunedì). L'endpoint serve solo a chi vuole lanciarlo da fuori; è
 idempotente. L'archivio è la tabella `caronte.avm_controllo_settimanale`
-(`migrations/2026-10_avm_controllo_settimanale.sql`), che l'API crea da sé.
+(nello schema delle migrazioni).
 
 ---
 
@@ -482,7 +560,10 @@ pnpm install
 # Crea .env dalla template e compila i valori
 cp .env.example .env
 
-# Avvia backend
+# Crea o aggiorna lo schema del database (le migrazioni di lib/db/migrations)
+DATABASE_URL=… pnpm --filter @workspace/db run migra
+
+# Avvia backend (oppure ./start-backend.sh, che migra da sé)
 cd artifacts/api-server && pnpm run dev
 
 # Avvia frontend (in un altro terminale)
@@ -506,6 +587,9 @@ pnpm --filter @workspace/transitintel run test
 python3 -m pip install -r requirements-dev.txt
 cd scripts && python3 -m pytest -q
 ```
+
+La CI prova anche le migrazioni su Postgres 17 (job `migrazioni-postgres`):
+i passi si ripetono in locale come spiegato in `lib/db/migrations/README.md`.
 
 ---
 

@@ -10,5 +10,8 @@ if [ -f "$SCRIPT_DIR/.env" ]; then
   set +a
 fi
 
+# Prima lo schema (le migrazioni di lib/db/migrations), poi l'API
+node "$SCRIPT_DIR/lib/db/scripts/migra.mjs" || exit 1
+
 cd "$SCRIPT_DIR/artifacts/api-server"
 exec npx tsx ./src/index.ts

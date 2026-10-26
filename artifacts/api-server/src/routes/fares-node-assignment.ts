@@ -67,7 +67,7 @@ const router: IRouter = Router();
 // CREATE TABLE IF NOT EXISTS + ALTER TABLE … ADD COLUMN IF NOT EXISTS
 // ════════════════════════════════════════════════════════════
 let bootstrapped = false;
-async function ensureNodeAssignmentTables(): Promise<void> {
+export async function ensureNodeAssignmentTables(): Promise<void> {
   if (bootstrapped) return;
 
   // Colonne addittive su gtfs_fare_zone_clusters

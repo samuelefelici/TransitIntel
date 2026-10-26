@@ -40,7 +40,7 @@ import type { Ex } from "./anagrafica-store";
 const router: IRouter = Router();
 
 let bootstrapped = false;
-async function ensureTables(): Promise<void> {
+export async function ensureTables(): Promise<void> {
   if (bootstrapped) return;
   try {
     /* Dipendenze cross-modulo: le tabelle delle CATEGORIE possono non esistere

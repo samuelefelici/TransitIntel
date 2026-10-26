@@ -66,7 +66,7 @@ const LEGACY_SYSTEM_DAY_TYPE_CODES = [
 
 let bootstrapped = false;
 
-async function ensureValidityTables(): Promise<void> {
+export async function ensureValidityTables(): Promise<void> {
   if (bootstrapped) return;
   try {
     /* ─── ps_day_types ─── */
@@ -1685,7 +1685,7 @@ export async function syncValidityCategoriesFromProfile(
  * ════════════════════════════════════════════════════════════ */
 
 let syncMarkerColumnReady = false;
-async function ensureSyncMarkerColumn(): Promise<void> {
+export async function ensureSyncMarkerColumn(): Promise<void> {
   if (syncMarkerColumnReady) return;
   await db.execute(sql`
     ALTER TABLE IF EXISTS ps_calendar_profiles

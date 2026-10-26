@@ -40,7 +40,7 @@ const MAX_VIA_LIBERO = 30;             // punti del tratto LIBERO (la spezzata E
 
 /* ── Tabella additiva (pattern roster.ts: lazy bootstrap idempotente) ── */
 let bootstrapped = false;
-async function ensureTable(): Promise<void> {
+export async function ensureTable(): Promise<void> {
   if (bootstrapped) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS deadhead_arcs (

@@ -105,7 +105,7 @@ const AUD_MFA = "cerbero-mfa";
 let bootstrapped = false;
 let preparazione: Promise<void> | null = null;
 /** Una sola preparazione anche se arrivano tante richieste insieme all'avvio; se fallisce, la prossima riprova. */
-function ensureUsersTable(): Promise<void> {
+export function ensureUsersTable(): Promise<void> {
   if (bootstrapped) return Promise.resolve();
   preparazione ??= preparaUtenti().then(
     () => {
@@ -137,7 +137,7 @@ async function preparaUtenti(): Promise<void> {
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
 
-  /* Accesso sicuro (migrations/2026-10_accesso_sicuro.sql). ALTER solo se la colonna
+  /* Accesso sicuro (colonne nel baseline delle migrazioni). ALTER solo se la colonna
    * manca: anche con IF NOT EXISTS prende la tabella in esclusiva. sessione_versione
    * parte da 1: i token di prima (senza versione) valgono 0 e non entrano più. */
   const colonne = new Set(((await db.execute(sql`

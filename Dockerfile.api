@@ -5,8 +5,9 @@ FROM node:22-bookworm-slim
 # Enable pnpm
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
-# Python per OR-Tools; tini come PID 1: inoltra i segnali all'API e
-# raccoglie i processi figli (i solver)
+# Python per OR-Tools; tini come PID 1: inoltra i segnali (durante le
+# migrazioni docker/avvio.sh li passa al migratore, poi l'API è il figlio
+# diretto di tini) e raccoglie i processi figli (i solver)
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip tini \
  && rm -rf /var/lib/apt/lists/*
 
@@ -47,4 +48,4 @@ EXPOSE 3000
 # spento (DEPLOY.md), e aspetta tutto lo start-period prima di controllare
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 CMD ["node", "docker/salute.mjs"]
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["node", "artifacts/api-server/dist/index.cjs"]
+CMD ["sh", "docker/avvio.sh"]

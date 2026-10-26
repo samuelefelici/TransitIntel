@@ -37,7 +37,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150
  *  Tabelle (bootstrap lazy — niente migration richiesta)
  * ───────────────────────────────────────────────────────────── */
 let bootstrapped = false;
-async function ensureTables(): Promise<void> {
+export async function ensureTables(): Promise<void> {
   if (bootstrapped) return;
   try {
     await db.execute(sql`

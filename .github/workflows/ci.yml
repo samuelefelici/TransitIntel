@@ -1,5 +1,6 @@
-# CI di Cerbero: typecheck, test dell'API, test e build della SPA, test dei solver.
-# Ogni job deve passare prima del merge. I test non hanno database: le rotte
+# CI di Cerbero: typecheck, test dell'API, test e build della SPA, test dei solver,
+# migrazioni su Postgres 17.
+# Ogni job deve passare prima del merge. I test dell'API non hanno database: le rotte
 # si provano con un utente iniettato (src/__tests__/helpers/app-di-prova.ts).
 name: CI
 
@@ -69,7 +70,7 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@v4
-      # 3.11 come python3 di node:20-slim (Debian bookworm) in Dockerfile.api
+      # 3.11 come python3 di node:22-bookworm-slim in Dockerfile.api
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -80,3 +81,78 @@ jobs:
       - name: Test dei solver (pytest)
         working-directory: scripts
         run: python -m pytest -q --durations=15
+
+  # Le migrazioni su un Postgres vero, della stessa versione della produzione:
+  # un database vuoto e una copia dello schema di produzione, migrati, devono
+  # arrivare allo stesso schema (meta/catalogo.json); la seconda volta il
+  # migratore non deve fare niente.
+  migrazioni-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # bash con pipefail: senza, «comando | tail» prende l'uscita di tail
+    defaults:
+      run:
+        shell: bash
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: prova
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: postgres
+      PGPASSWORD: prova
+      PG: postgresql://postgres:prova@127.0.0.1:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Installazione workspace
+        run: pnpm install --frozen-lockfile
+      - name: Database vuoto, migrato due volte
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE vuoto"
+          DATABASE_URL=$PG/vuoto node lib/db/scripts/migra.mjs
+          DATABASE_URL=$PG/vuoto node lib/db/scripts/migra.mjs | tee seconda.log
+          grep -q "nessuna migrazione da applicare" seconda.log
+      - name: Copia dello schema di produzione, migrata
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE prod"
+          # in produzione lo schema public è stato ricreato: su un database nuovo c'è già
+          sed '/^CREATE SCHEMA public;$/d' lib/db/schema-produzione/2026-10-25.sql | psql -q -v ON_ERROR_STOP=1 -d prod
+          # il baseline sulla produzione non deve eseguire nessun DDL: un event
+          # trigger fa fallire qualunque comando che cambi lo schema
+          psql -q -v ON_ERROR_STOP=1 -d prod -c "CREATE FUNCTION public.ci_ddl_vietato() RETURNS event_trigger LANGUAGE plpgsql AS \$\$ BEGIN RAISE EXCEPTION 'il baseline ha eseguito DDL sulla copia della produzione: %', tg_tag; END \$\$" \
+            -c "CREATE EVENT TRIGGER ci_ddl_vietato ON ddl_command_start EXECUTE FUNCTION public.ci_ddl_vietato()"
+          psql -q -v ON_ERROR_STOP=1 -1 -d prod -f lib/db/migrations/0000_baseline.sql
+          psql -q -v ON_ERROR_STOP=1 -d prod -c "DROP EVENT TRIGGER ci_ddl_vietato" -c "DROP FUNCTION public.ci_ddl_vietato()"
+          DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs
+      - name: Tutti e due hanno lo schema atteso
+        run: |
+          DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto.json
+          DATABASE_URL=$PG/prod node lib/db/scripts/catalogo.mjs > prod.json
+          node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json vuoto.json
+          node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json prod.json
+      # Finché l'API crea ancora tabelle da sé (fino alla PR 2.16), il suo DDL
+      # eseguito per intero sopra lo schema migrato non deve cambiare niente:
+      # codice e migrazioni non possono divergere.
+      - name: Il DDL a runtime dell'API non cambia lo schema migrato
+        run: |
+          (cd artifacts/api-server && DATABASE_URL=$PG/vuoto NODE_ENV=development node_modules/.bin/tsx scripts/crea-tutto.ts > ../../crea-tutto.log) \
+            || { cat crea-tutto.log; exit 1; }
+          tail -3 crea-tutto.log
+          DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto-dopo.json
+          node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json vuoto-dopo.json
+      - name: Il migratore si ferma se una migrazione rilasciata è cambiata
+        run: |
+          echo "-- modifica" >> lib/db/migrations/0000_baseline.sql
+          if DATABASE_URL=$PG/vuoto node lib/db/scripts/migra.mjs; then echo "doveva fermarsi"; exit 1; fi
+          git checkout lib/db/migrations/0000_baseline.sql

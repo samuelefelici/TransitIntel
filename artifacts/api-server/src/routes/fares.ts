@@ -5278,7 +5278,7 @@ router.post("/fares/journey-plan", async (req, res): Promise<void> => {
 // chiamata (CREATE TABLE IF NOT EXISTS) per non richiedere una migration.
 
 let polimetricheSnapshotsBootstrapped = false;
-async function ensurePolimetricheSnapshotsTable(): Promise<void> {
+export async function ensurePolimetricheSnapshotsTable(): Promise<void> {
   if (polimetricheSnapshotsBootstrapped) return;
   try {
     await db.execute(sql`

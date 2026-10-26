@@ -26,7 +26,7 @@ import { quadroDiScenario, piuRecente, type ModificaDelQuadro, type QuadroStato,
  * Bootstrap tabelle
  * ──────────────────────────────────────────────────────────── */
 let bootstrapped = false;
-async function ensureSchedulingTables(): Promise<void> {
+export async function ensureSchedulingTables(): Promise<void> {
   if (bootstrapped) return;
   try {
     await db.execute(sql`

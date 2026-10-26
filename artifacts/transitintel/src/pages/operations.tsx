@@ -700,9 +700,9 @@ export default function OperationsPage() {
                 </div>
                 <p className="text-muted-foreground leading-relaxed">
                   I dati live arrivano dall'AVM Caronte (schema <code>caronte</code> sul database).
-                  Esegui la migrazione e collega l'AVM:
+                  Lo schema lo creano le migrazioni all'avvio dell'API: controlla nel log
+                  dell'API la riga <code>[migrazioni]</code>, poi collega l'AVM.
                 </p>
-                <pre className="bg-black/40 rounded p-2 text-[10px] overflow-x-auto">psql "$DATABASE_URL" -f migrations/2026-06_operations_live.sql</pre>
               </div>
             )}
 
