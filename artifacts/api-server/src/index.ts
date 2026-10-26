@@ -2,7 +2,7 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { syncTrafficFromTomTom } from "./routes/cron";
 import { MAX_GAP_SEC as SIRI_MAX_POLL_SECONDS, effectivePollSeconds } from "./lib/siri-vm";
-import { controllaLetturaArgos } from "./lib/controllo-argos";
+import { avviaControlloArgos } from "./lib/controllo-argos";
 
 const rawPort = process.env["PORT"];
 
@@ -21,8 +21,8 @@ if (Number.isNaN(port) || port <= 0) {
 const server = app.listen(port, () => {
   logger.info({ port }, "Server listening");
 
-  // Argos deve leggere solo le tabelle del contratto (migrazione 0002)
-  setTimeout(() => void controllaLetturaArgos(), 5_000);
+  // Argos deve leggere solo le tabelle del contratto: lo si controlla nel log
+  avviaControlloArgos();
 
   // ─── Warm-up cache: precarica gli endpoint pesanti ──────────────
   // territory/deep impiega ~27s a freddo per le subquery nearest-stop su ~4000 fermate.

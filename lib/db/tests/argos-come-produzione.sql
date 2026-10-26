@@ -1,7 +1,8 @@
 -- Per la CI: dà ad argos_ro i permessi che argos/cerbero_readonly_user.sql dà
 -- in produzione (lettura di tutto public e caronte, e delle tabelle future),
--- senza password né CONNECT. Così la migrazione 0002 si prova sullo stato
--- vero, non su un ruolo vuoto.
+-- senza password né CONNECT. Così l'allineamento del migratore si prova sullo
+-- stato vero, non su un ruolo vuoto; la CI lo riesegue anche dopo, come chi
+-- rilancia lo script di Argos.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'argos_ro') THEN

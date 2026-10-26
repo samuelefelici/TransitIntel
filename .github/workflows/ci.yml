@@ -128,7 +128,7 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE prod"
           # in produzione lo schema public è stato ricreato: su un database nuovo c'è già
           sed '/^CREATE SCHEMA public;$/d' lib/db/schema-produzione/2026-10-25.sql | psql -q -v ON_ERROR_STOP=1 -d prod
-          # argos_ro con i permessi che ha in produzione (lettura di tutto), per la 0002
+          # argos_ro con i permessi che ha in produzione (lettura di tutto e tabelle future)
           psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
           # il baseline sulla produzione non deve eseguire nessun DDL: un event
           # trigger fa fallire qualunque comando che cambi lo schema
@@ -137,8 +137,24 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -1 -d prod -f lib/db/migrations/0000_baseline.sql
           psql -q -v ON_ERROR_STOP=1 -d prod -c "DROP EVENT TRIGGER ci_ddl_vietato" -c "DROP FUNCTION public.ci_ddl_vietato()"
           DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs
+      # Il migratore ha riportato argos_ro al contratto. Poi qualcuno rilancia lo
+      # script di Argos (lettura di tutto): la verifica se ne accorge, la cura
+      # sistema, e di nuovo tutto in regola.
       - name: Argos legge solo le tabelle del contratto
-        run: psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-lettura.test.sql
+        run: |
+          contratto=$(node -e 'import("./lib/db/contratti/argos-lettura.mjs").then(m => console.log(m.ARGOS_LETTURA.join(",")))')
+          prova() { psql -q -v ON_ERROR_STOP=1 -d prod -v contratto="$contratto" -f lib/db/tests/argos-lettura.test.sql; }
+          DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs --verifica
+          prova
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
+          if DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs --verifica > verifica.log; then
+            cat verifica.log; echo "la verifica doveva accorgersene"; exit 1
+          fi
+          grep -q "public.users: fuori dal contratto" verifica.log
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs
+          DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs --verifica
+          prova
       - name: Tutti e due hanno lo schema atteso
         run: |
           DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto.json

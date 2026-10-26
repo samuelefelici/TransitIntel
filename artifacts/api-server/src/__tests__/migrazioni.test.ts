@@ -11,7 +11,8 @@ import {
   CHIAVE_LUCCHETTO, TRACCIAMENTO, controllaApplicate, daApplicare, descriviErrore, leggiDiario, ritentabile,
 } from "../../../../lib/db/scripts/migrazioni-regole.mjs";
 import { confronta } from "../../../../lib/db/scripts/catalogo.mjs";
-import { ARGOS_LETTURA, letturaFuoriContratto } from "../lib/contratto-argos";
+import { ARGOS_LETTURA, RUOLO_ARGOS } from "../../../../lib/db/contratti/argos-lettura.mjs";
+import { piano, type StatoPermessi } from "../../../../lib/db/scripts/argos-permessi-regole.mjs";
 
 const LIB_DB = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../lib/db");
 const CARTELLA = path.join(LIB_DB, "migrations");
@@ -147,10 +148,13 @@ describe("le regole del runner", () => {
     expect(r.sconosciute).toEqual([300]);
   });
 
-  it("si riprova solo se una tabella è occupata (lock_timeout)", () => {
+  it("si riprova solo se una tabella è occupata o due GRANT si incrociano", () => {
     expect(ritentabile({ code: "55P03" })).toBe(true);
     // com'è davvero: drizzle avvolge l'errore di pg e il codice sta in cause
     expect(ritentabile(Object.assign(new Error("Failed query"), { cause: { code: "55P03" } }))).toBe(true);
+    expect(ritentabile({ code: "XX000", message: "tuple concurrently updated" })).toBe(true);
+    expect(ritentabile({ cause: { code: "XX000", message: "tuple concurrently updated" } })).toBe(true);
+    expect(ritentabile({ code: "XX000", message: "could not open file" })).toBe(false);
     expect(ritentabile({ code: "42P01" })).toBe(false);
     expect(ritentabile(null)).toBe(false);
   });
@@ -254,40 +258,163 @@ describe("ogni tabella letta dal codice esiste nello schema", () => {
   });
 });
 
-/* Argos legge solo le tabelle del contratto: lo stesso elenco nel codice
- * (lib/contratto-argos.ts), nella migrazione che dà i permessi e nel test SQL
- * della CI. */
+/* Argos legge solo le tabelle del contratto (lib/db/contratti/argos-lettura.mjs):
+ * il migratore ci riporta i permessi di argos_ro a ogni avvio. */
 describe("il contratto di lettura di Argos", () => {
-  const elencoSql = (file: string) => {
-    const testo = readFileSync(file, "utf8");
-    const m = /ARRAY\[([\s\S]*?)\]/.exec(testo);
-    return [...(m?.[1] ?? "").matchAll(/'([a-z_]+\.[a-z0-9_]+)'/g)].map(x => x[1]!).sort();
-  };
   const contratto = [...ARGOS_LETTURA].sort();
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
 
-  it("23 tabelle, nessun doppione", () => {
+  it("23 tabelle schema.tabella, nessun doppione", () => {
     expect(contratto).toHaveLength(23);
     expect(new Set(contratto).size).toBe(contratto.length);
-  });
-
-  it("la migrazione 0002 e il test SQL della CI hanno lo stesso elenco del codice", () => {
-    expect(elencoSql(path.join(CARTELLA, "0002_argos_lettura.sql"))).toEqual(contratto);
-    expect(elencoSql(path.join(LIB_DB, "tests/argos-lettura.test.sql"))).toEqual(contratto);
+    expect(contratto.filter(t => !/^(public|caronte)\.[a-z0-9_]+$/.test(t))).toEqual([]);
+    expect(RUOLO_ARGOS).toBe("argos_ro");
   });
 
   it("ogni tabella del contratto esiste nello schema delle migrazioni", () => {
-    const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
-    const esistono = new Set([...Object.keys(catalogo.tabelle), ...Object.keys(catalogo.viste)]);
-    expect(contratto.filter(t => !esistono.has(t))).toEqual([]);
+    expect(contratto.filter(t => !catalogo.tabelle[t])).toEqual([]);
   });
 
-  it("niente dati personali nel contratto: utenti, accessi, anagrafica, roster", () => {
-    expect(contratto.filter(t => /\.(users|accessi_|roster_|app_users)/.test(t))).toEqual([]);
+  it("niente dati personali: né tabelle di utenti, accessi, anagrafica, roster, né colonne personali", () => {
+    expect(contratto.filter(t => /\.(users|accessi_|roster_|app_users|anagrafica)/.test(t))).toEqual([]);
+    const personale = /(password|mfa|email|phone|telefono|fiscale|matricola|cognome|first_name|last_name|user_agent|segret|secret|token|^pin|_pin|^ip$|_ip$|nascita|birth|indirizzo|address|driver|conducente|autista|user)/i;
+    const colonne = contratto.flatMap(t => Object.keys(catalogo.tabelle[t] ?? {}).filter(c => personale.test(c)).map(c => `${t}.${c}`));
+    // owner_user_id è un uuid, senza nome né email: serve ad Argos per i programmi di chi chiede
+    expect(colonne).toEqual(["public.gtfs_feeds.owner_user_id", "public.ps_projects.owner_user_id"]);
+  });
+});
+
+/* piano(): da quello che il catalogo dice di argos_ro a cosa fare. Lo stato
+ * di partenza è quello di produzione: SELECT su tutto e tabelle future. */
+describe("permessi di Argos: il piano", () => {
+  const C = ["public.gtfs_stops", "public.ps_trips", "caronte.stop_transits"];
+  const sel = (nome: string, extra: Partial<{ tipo: string; privilegio: string; con_opzione: boolean; dato_da: string | null }> = {}) =>
+    ({ nome, tipo: "r", privilegio: "SELECT", con_opzione: false, dato_da: null, ...extra });
+  const base = (): Required<StatoPermessi> => ({
+    ruolo: "argos_ro", esiste: true, superutente: false,
+    relazioni: [], colonne: [], concessiDaLui: [], possiede: [], aTutti: [], predefiniti: [],
+    schemi: [{ schema: "caronte", uso: true, crea: false, con_opzione: false, tutti_creano: false },
+      { schema: "public", uso: true, crea: false, con_opzione: false, tutti_creano: false }],
+    membroDi: [], esistenti: [...C],
+  });
+  const sqls = (s: StatoPermessi) => piano(s, C).azioni.map(a => a.sql);
+
+  it("ruolo assente: niente da fare", () => {
+    expect(piano({ ruolo: "argos_ro", esiste: false }, C)).toEqual({ assente: true, azioni: [], avvisi: [], errori: [] });
   });
 
-  it("letturaFuoriContratto: le tabelle in più, una volta sola e in ordine", () => {
-    expect(letturaFuoriContratto(["public.users", "public.gtfs_stops", "public.accessi_log", "public.users"]))
-      .toEqual(["public.accessi_log", "public.users"]);
-    expect(letturaFuoriContratto([...ARGOS_LETTURA])).toEqual([]);
+  it("già in regola: niente da fare, nessuna scrittura", () => {
+    const s = base();
+    s.relazioni = C.map(t => sel(t));
+    expect(piano(s, C)).toEqual({ assente: false, azioni: [], avvisi: [], errori: [] });
+  });
+
+  it("come in produzione: toglie le tabelle in più e le future, lascia quelle del contratto", () => {
+    const s = base();
+    s.relazioni = [...C, "public.users", "public.accessi_log", "caronte.app_users"].map(t => sel(t));
+    s.predefiniti = [
+      { proprietario: "postgres", schema: "public", tipo: "r", gestibile: true },
+      { proprietario: "postgres", schema: "caronte", tipo: "r", gestibile: true },
+    ];
+    expect(sqls(s)).toEqual([
+      'REVOKE ALL ON TABLE "caronte"."app_users" FROM "argos_ro"',
+      'REVOKE ALL ON TABLE "public"."accessi_log" FROM "argos_ro"',
+      'REVOKE ALL ON TABLE "public"."users" FROM "argos_ro"',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON TABLES FROM "argos_ro"',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "caronte" REVOKE ALL ON TABLES FROM "argos_ro"',
+    ]);
+  });
+
+  it("permessi di scrittura o con opzione su una tabella del contratto: torna alla sola lettura", () => {
+    const s = base();
+    s.relazioni = [sel("public.gtfs_stops"), sel("public.gtfs_stops", { privilegio: "INSERT" }),
+      sel("public.ps_trips", { con_opzione: true }), sel("caronte.stop_transits")];
+    const p = piano(s, C);
+    expect(p.azioni.map(a => a.sql)).toEqual([
+      'REVOKE ALL ON TABLE "public"."gtfs_stops" FROM "argos_ro"',
+      'REVOKE ALL ON TABLE "public"."ps_trips" FROM "argos_ro"',
+      'GRANT SELECT ON TABLE "public"."gtfs_stops" TO "argos_ro"',
+      'GRANT SELECT ON TABLE "public"."ps_trips" TO "argos_ro"',
+    ]);
+    expect(p.azioni[2]!.perche).toMatch(/rimessa la sola lettura/);
+  });
+
+  it("permessi su colonne e sequenze: si tolgono, anche su una tabella del contratto", () => {
+    const s = base();
+    s.relazioni = [...C.map(t => sel(t)), sel("public.users_id_seq", { tipo: "S", privilegio: "USAGE" })];
+    s.colonne = ["public.users", "public.gtfs_stops"];
+    expect(sqls(s)).toEqual([
+      'REVOKE ALL ON TABLE "public"."gtfs_stops" FROM "argos_ro"',
+      'REVOKE ALL ON TABLE "public"."users" FROM "argos_ro"',
+      'REVOKE ALL ON SEQUENCE "public"."users_id_seq" FROM "argos_ro"',
+      'GRANT SELECT ON TABLE "public"."gtfs_stops" TO "argos_ro"',
+    ]);
+  });
+
+  it("manca la lettura o lo schema: la dà; una tabella del contratto che non c'è è un avviso", () => {
+    const s = base();
+    s.esistenti = ["public.gtfs_stops", "public.ps_trips"];
+    s.schemi[0] = { schema: "caronte", uso: false, crea: true, con_opzione: false, tutti_creano: true };
+    const p = piano(s, C);
+    expect(p.azioni.map(a => a.sql)).toEqual([
+      'GRANT SELECT ON TABLE "public"."gtfs_stops" TO "argos_ro"',
+      'GRANT SELECT ON TABLE "public"."ps_trips" TO "argos_ro"',
+      'REVOKE CREATE ON SCHEMA "caronte" FROM "argos_ro"',
+      'GRANT USAGE ON SCHEMA "caronte" TO "argos_ro"',
+    ]);
+    expect(p.avvisi).toEqual([
+      "caronte.stop_transits è nel contratto ma non esiste",
+      "schema caronte: tutti i ruoli ci possono creare tabelle (REVOKE CREATE ON SCHEMA caronte FROM PUBLIC)",
+    ]);
+  });
+
+  it("permessi di default: di ogni tipo e globali sì; di altri schemi o di ruoli che non posso gestire, solo avviso", () => {
+    const s = base();
+    s.relazioni = C.map(t => sel(t));
+    s.predefiniti = [
+      { proprietario: "postgres", schema: null, tipo: "r", gestibile: true },
+      { proprietario: "postgres", schema: "public", tipo: "S", gestibile: true },
+      { proprietario: "postgres", schema: null, tipo: "T", gestibile: true },
+      { proprietario: "postgres", schema: "fleetcare", tipo: "r", gestibile: true },
+      { proprietario: "altro", schema: "public", tipo: "f", gestibile: false },
+    ];
+    const p = piano(s, C);
+    expect(p.azioni.map(a => a.sql)).toEqual([
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON TABLES FROM "argos_ro"',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" REVOKE ALL ON SEQUENCES FROM "argos_ro"',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" REVOKE ALL ON TYPES FROM "argos_ro"',
+    ]);
+    expect(p.avvisi).toHaveLength(2);
+    expect(p.avvisi[0]).toMatch(/fleetcare.*non è di Cerbero/);
+    expect(p.avvisi[1]).toMatch(/serve altro o un superutente/);
+  });
+
+  it("permessi passati ad altri: quella tabella non si tocca (REVOKE fallirebbe) ed è un errore", () => {
+    const s = base();
+    s.relazioni = [...C.map(t => sel(t)), sel("public.users", { con_opzione: true })];
+    s.concessiDaLui = [{ nome: "public.users", a_chi: "terzo" }];
+    const p = piano(s, C);
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toEqual([expect.stringMatching(/argos_ro ha passato a terzo permessi su public\.users/)]);
+  });
+
+  it("superutente, proprietario, membro di un altro ruolo: errori da sistemare a mano", () => {
+    const s = base();
+    s.relazioni = C.map(t => sel(t));
+    s.superutente = true;
+    s.possiede = ["public.zones"];
+    s.membroDi = ["pg_read_all_data"];
+    s.aTutti = ["public.users", "public.gtfs_stops"];
+    const p = piano(s, C);
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toHaveLength(3);
+    expect(p.errori.join("\n")).toMatch(/superutente[\s\S]*proprietario di public\.zones[\s\S]*membro di pg_read_all_data/);
+    expect(p.avvisi).toEqual([expect.stringMatching(/tutti i ruoli \(GRANT … TO PUBLIC\).*public\.users$/)]);
+  });
+
+  it("i nomi vanno tra virgolette", () => {
+    const s = base();
+    s.relazioni = [...C.map(t => sel(t)), sel('public.a"b')];
+    expect(sqls(s)).toEqual(['REVOKE ALL ON TABLE "public"."a""b" FROM "argos_ro"']);
   });
 });
