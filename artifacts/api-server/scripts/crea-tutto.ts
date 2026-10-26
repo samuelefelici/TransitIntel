@@ -83,7 +83,7 @@ const COPERTURA: Record<string, string[]> = {
   "lib/planning-studio-zones.ts": ["pigra: ensureTables (zones)"],
   "lib/planning-studio-materialize.ts": ["pigra: ensureMaterializedColumn", "richiesta: :382 :386 :391 :487 :491 :607 :611"],
   "routes/argos-watch.ts": ["pigra: ensureWatchTable"],
-  "routes/clusters.ts": ["pigra: ensureClusterFlagColumns", "richiesta: :343"],
+  "routes/clusters.ts": ["pigra: ensureClusterFlagColumns", "richiesta: :344"],
   "routes/coincidence-zones.ts": ["pigra: ensureZoneScope"],
   "routes/deadhead-arcs.ts": ["pigra: ensureTable (deadhead_arcs)"],
   "routes/depots.ts": ["pigra: router.use anonimo (SQL copiato, depots.ts:31-32)"],
@@ -118,7 +118,7 @@ const PER_RICHIESTA: Array<{ rif: string; sql: string }> = [
   { rif: "routes/service-program.ts:4135", sql: "ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb" },
   { rif: "routes/service-program.ts:4152", sql: "ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb" },
   // POST /clusters/by-routes con psScope
-  { rif: "routes/clusters.ts:343", sql: "ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid" },
+  { rif: "routes/clusters.ts:344", sql: "ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid" },
   // POST /planning-studio/:projectId/network-share
   {
     rif: "routes/planning-studio-timetables.ts:778",

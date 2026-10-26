@@ -16,13 +16,14 @@
  * GET    /api/coincidence-zones/:id/bus-lines — linee bus nelle fermate della zona
  */
 
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request } from "express";
 import { db } from "@workspace/db";
 import { coincidenceZones, coincidenceZoneStops, gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes } from "@workspace/db/schema";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { asyncHandler } from "../middlewares/error-handler";
 import { haversineKm, walkMinutes as calcWalkMin } from "../lib/geo-utils";
 import { INTERMODAL_HUBS as CORE_HUBS } from "./intermodal";
+import { hasProjectAccess } from "./argos-context";
 
 const router: IRouter = Router();
 const ZONE_UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -46,6 +47,24 @@ export function zoneScopeWhere(psProjectId: string | null) {
   return psProjectId
     ? sql`(ps_project_id IS NULL OR ps_project_id = ${psProjectId}::uuid)`
     : sql`TRUE`;
+}
+
+/** Le zone che l'utente vede: le globali e quelle dei progetti PS che vede —
+ *  owner, membro o progetto in esercizio, la regola di hasProjectAccess
+ *  (argos-context.ts). L'admin le vede tutte. */
+function zoneVisibiliWhere(req: Request) {
+  const u = req.user;
+  if (u?.role === "admin") return sql`TRUE`;
+  if (!u) return sql`ps_project_id IS NULL`;
+  return sql`(ps_project_id IS NULL OR ps_project_id IN (
+    SELECT p.id FROM ps_projects p
+     WHERE p.owner_user_id = ${u.id}::uuid
+        OR EXISTS (SELECT 1 FROM ps_project_members pm
+                    WHERE pm.project_id = p.id AND pm.user_id = ${u.id}::uuid)
+        OR (p.materialized_feed_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM gtfs_feeds gf
+                         WHERE gf.id = p.materialized_feed_id AND gf.is_active = true))
+  ))`;
 }
 
 // ── Default radius: 100 metri ──
@@ -221,12 +240,19 @@ router.get("/coincidence-zones/hubs", asyncHandler(async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // GET /api/coincidence-zones
 // ═══════════════════════════════════════════════════════════════
+// La leggono anche Turni e Analisi (LETTURE_CONDIVISE): con ?psProjectId= il
+// progetto deve essere uno che l'utente vede, e senza restano fuori le zone dei
+// progetti altrui.
 router.get("/coincidence-zones", asyncHandler(async (req, res) => {
   await ensureZoneScope();
   const ps = String(req.query.psProjectId ?? "");
   const scope = ZONE_UUID_RE.test(ps) ? ps : null;
+  if (scope && req.user?.role !== "admin" && !(req.user && await hasProjectAccess(scope, req.user.id))) {
+    res.status(404).json({ error: "Progetto non trovato o non accessibile" });
+    return;
+  }
   const zones = await db.select().from(coincidenceZones)
-    .where(zoneScopeWhere(scope)).orderBy(coincidenceZones.name);
+    .where(and(zoneScopeWhere(scope), zoneVisibiliWhere(req))).orderBy(coincidenceZones.name);
   const allStops = await db.select().from(coincidenceZoneStops);
   const result = zones.map(z => ({
     ...z,

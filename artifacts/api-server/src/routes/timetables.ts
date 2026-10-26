@@ -10,7 +10,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { getLatestFeedId } from "./gtfs-helpers";
+import { feedDellaLettura } from "./gtfs-helpers";
 
 const router: IRouter = Router();
 
@@ -18,9 +18,12 @@ const router: IRouter = Router();
 // Il picker della pagina DEVE elencare solo le linee del feed su cui poi si
 // calcola l'orario: /api/gtfs/routes senza feedId mescola tutti i feed e
 // porta a 404 "Linea non trovata" selezionando linee di feed vecchi.
+// Un feedId esplicito deve essere di un feed che l'utente vede.
 router.get("/timetables/routes", async (req, res): Promise<void> => {
   try {
-    const feedId = String(req.query.feedId ?? "") || (await getLatestFeedId(req));
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const { feedId } = feed;
     if (!feedId) { res.json({ feedId: null, routes: [] }); return; }
     const r = await db.execute<any>(sql`
       SELECT route_id, route_short_name, route_long_name, route_color

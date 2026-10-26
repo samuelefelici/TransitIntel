@@ -7,6 +7,7 @@ import { gtfsFeeds, gtfsCalendar, gtfsCalendarDates, gtfsTrips } from "@workspac
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { haversineKm } from "../lib/geo-utils";
+import { feedVisibile } from "../lib/tenant";
 
 // ── CSV / Shape helpers ───────────────────────────────────────
 /* `bom: true` è la riga che conta. Un file salvato da Excel o da un
@@ -311,6 +312,24 @@ export async function idNelFeed(req: any, res: any, param = "id"): Promise<{ id:
   const feedId = await getLatestFeedId(req);
   if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS" }); return null; }
   return { id, feedId };
+}
+
+export const FEED_NON_TROVATO = { error: "Feed non trovato" };
+
+/**
+ * Il feed su cui risponde una lettura: quello di ?feedId= se l'utente lo vede
+ * (feedAccessibleWhere), altrimenti il suo feed corrente (getLatestFeedId).
+ * Un feedId che l'utente non vede è un 404, come un feed che non c'è:
+ * getLatestFeedId da solo ripiegherebbe in silenzio sul feed corrente, e la
+ * risposta sarebbe di un feed diverso da quello chiesto. Risponde da sé e
+ * restituisce null quando non si può andare avanti; feedId null = l'utente
+ * non ha feed.
+ */
+export async function feedDellaLettura(req: any, res: any): Promise<{ feedId: string | null } | null> {
+  const chiesto = req.query?.feedId;
+  if (chiesto === undefined || chiesto === "") return { feedId: await getLatestFeedId(req) };
+  if (!(await feedVisibile(req, chiesto))) { res.status(404).json(FEED_NON_TROVATO); return null; }
+  return { feedId: chiesto as string };
 }
 
 /** WHERE id = … AND feed_id = …: il modello di PUT /fares/media/:fareMediaId. */

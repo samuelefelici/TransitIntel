@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import express from "express";
 import request from "supertest";
-import { cache, clearCache, cacheSize } from "../middlewares/cache";
+import { cache, chiavePerUtente, clearCache, cacheSize } from "../middlewares/cache";
 
 /* il middleware su rotte finte: niente database, conta quante volte lavora l'handler */
 function appConContatore() {
@@ -48,6 +48,18 @@ describe("Cache middleware", () => {
     expect(clearCache("/api/prova-cache/")).toBe(1);
     expect(cacheSize()).toBe(1);
     expect((await request(app).get("/api/altro/b")).headers["x-cache"]).toBe("HIT");
+  });
+
+  it("con chiavePerUtente lo stesso URL è una voce per utente, e clearCache la trova", async () => {
+    const conta = { n: 0 };
+    const app = express();
+    app.use((req, _res, next) => { (req as any).user = { id: String(req.headers["x-utente"]) }; next(); });
+    app.get("/api/prova-cache/mio", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), (_req, res) => { conta.n++; res.json({ n: conta.n }); });
+    expect((await request(app).get("/api/prova-cache/mio").set("x-utente", "a")).headers["x-cache"]).toBe("MISS");
+    expect((await request(app).get("/api/prova-cache/mio").set("x-utente", "b")).headers["x-cache"]).toBe("MISS");
+    expect((await request(app).get("/api/prova-cache/mio").set("x-utente", "a")).body).toEqual({ n: 1 });
+    expect(cacheSize()).toBe(2);
+    expect(clearCache("/api/prova-cache/")).toBe(2);
   });
 
   it("non tiene gli errori né le richieste che non sono GET", async () => {
