@@ -220,8 +220,27 @@ jobs:
           a_mano "GRANT pg_read_all_data TO ammin WITH ADMIN OPTION; SET ROLE ammin; GRANT pg_read_all_data TO argos_ro; RESET ROLE" \
             'GRANTED BY "ammin"' "REVOKE pg_read_all_data FROM argos_ro GRANTED BY ammin; REVOKE pg_read_all_data FROM ammin"
           a_mano "GRANT CREATE ON SCHEMA caronte TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT CREATE ON SCHEMA caronte TO argos_ro; RESET ROLE" \
-            'SET ROLE "terzo"; REVOKE CREATE ON SCHEMA "caronte" FROM "argos_ro"' \
-            "SET ROLE terzo; REVOKE CREATE ON SCHEMA caronte FROM argos_ro; RESET ROLE; REVOKE ALL ON SCHEMA caronte FROM terzo"
+            'SET ROLE "terzo"; REVOKE ALL ON SCHEMA "caronte" FROM "argos_ro"' \
+            "SET ROLE terzo; REVOKE ALL ON SCHEMA caronte FROM argos_ro; RESET ROLE; GRANT USAGE ON SCHEMA caronte TO argos_ro; REVOKE ALL ON SCHEMA caronte FROM terzo"
+          da_solo "SELECT lo_from_bytea(424242, 'segreto'); GRANT SELECT, UPDATE ON LARGE OBJECT 424242 TO argos_ro"
+          s "SELECT lo_unlink(424242)"
+          a_mano "CREATE SCHEMA rep; CREATE VIEW rep.dump AS SELECT email FROM public.users; GRANT USAGE ON SCHEMA rep TO PUBLIC; GRANT SELECT ON rep.dump TO PUBLIC" \
+            'REVOKE SELECT ON ALL TABLES IN SCHEMA "rep" FROM PUBLIC' "REVOKE USAGE ON SCHEMA rep FROM PUBLIC"
+          s "DROP SCHEMA rep CASCADE"
+          a_mano "GRANT SELECT (rolname, rolpassword) ON pg_catalog.pg_authid TO PUBLIC" "pg_catalog.pg_authid" \
+            "REVOKE SELECT (rolname, rolpassword) ON pg_catalog.pg_authid FROM PUBLIC"
+          echo "::group::trigger del contratto: uno estraneo, o il suo in replica, e il contratto salvato non vale"
+          s "CREATE FUNCTION cerbero_migrazioni.zz() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'; CREATE TRIGGER zz BEFORE UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION cerbero_migrazioni.zz()"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "ce n'è un altro" v.log || { cat v.log; exit 1; }
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          s "DROP TRIGGER zz ON cerbero_migrazioni.contratti; DROP FUNCTION cerbero_migrazioni.zz()"
+          in_regola
+          s "ALTER TABLE cerbero_migrazioni.contratti ENABLE REPLICA TRIGGER contratti_chi_scrive"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          s "ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive"
+          in_regola; echo "::endgroup::"
           echo "::group::contratto salvato manomesso: non vale finché non lo si riscrive"
           psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE scrittore LOGIN PASSWORD 'scrittore'"
           s "GRANT USAGE ON SCHEMA cerbero_migrazioni TO scrittore; GRANT UPDATE ON cerbero_migrazioni.contratti TO scrittore"

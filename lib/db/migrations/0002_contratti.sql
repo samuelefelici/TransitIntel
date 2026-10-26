@@ -45,6 +45,8 @@ BEGIN
                   WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass AND tgname = 'contratti_chi_scrive') THEN
     CREATE TRIGGER contratti_chi_scrive BEFORE INSERT OR UPDATE ON cerbero_migrazioni.contratti
       FOR EACH ROW EXECUTE FUNCTION cerbero_migrazioni.contratti_chi_scrive();
+    -- anche con session_replication_role = replica
+    ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive;
   END IF;
 END
 $trigger$;

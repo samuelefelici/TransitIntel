@@ -13,7 +13,8 @@ export interface StatoPermessi {
   voci?: Voce[];
   routine?: (Routine & { privilegio: string; con_opzione: boolean; dato_da: string | null })[];
   concessiDaLui?: {
-    genere: "relazione" | "routine" | "schema"; tipo: string | null; schema: string; tabella: string | null;
+    genere: "relazione" | "routine" | "schema" | "database" | "largeobject" | "parametro"; tipo: string | null;
+    schema: string | null; tabella: string | null;
     argomenti: string | null; a_chi: string;
   }[];
   possiede?: { oggetto: string; schema: string | null; tabella: string | null }[];
@@ -34,6 +35,8 @@ export interface StatoPermessi {
   definer?: (Routine & { estensione: boolean; di_tutti: boolean })[];
   sistema?: { genere: "relazione" | "routine"; schema: string; nome: string; argomenti: string | null }[];
   parametri?: { nome: string; a_tutti: boolean; privilegio: string }[];
+  largeObject?: { oid: string; a_tutti: boolean; privilegio: string; con_opzione: boolean; dato_da: string | null }[];
+  loCompat?: boolean;
   membroDi?: { ruolo: string; da: string; da_superutente: boolean }[];
   esistenti?: string[];
 }

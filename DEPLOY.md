@@ -130,8 +130,8 @@ contratto:
 - solo la lettura delle tabelle dell'elenco e l'USAGE dei loro schemi;
 - niente scrittura (MAINTAIN compreso), sequenze, permessi su colonne o grant
   option;
-- niente funzioni e parametri del server, né negli altri schemi dello stesso
-  database (per esempio `fleetcare`);
+- niente funzioni, large object e parametri del server, né permessi negli altri
+  schemi dello stesso database (per esempio `fleetcare`);
 - nessun permesso di default che gli dia le tabelle future;
 - nessun CREATE negli schemi o nel database.
 
@@ -141,7 +141,9 @@ esiste, non fa niente.
 
 Alcune cose non le corregge da solo, perché toccherebbero altri ruoli o
 servono i loro diritti:
-- permessi dati a tutti i ruoli (PUBLIC);
+- permessi dati a tutti i ruoli (PUBLIC), anche fuori dagli schemi di Cerbero:
+  una vista data a tutti in un altro schema può mostrare le tabelle di
+  Cerbero;
 - funzioni SECURITY DEFINER che `argos_ro` può eseguire: girano coi diritti
   del proprietario, quindi gli danno quello che fanno;
 - oggetti di sistema riservati, come `pg_authid` o `pg_read_binary_file`, che
@@ -165,7 +167,8 @@ nel database`.
 Chi può scrivere quella tabella decide i permessi di Argos, quindi il contratto
 salvato si usa solo se ci scrive soltanto il suo proprietario. Inoltre un
 trigger annota chi ha scritto ogni riga (`scritto_da`), e si usa solo una riga
-scritta da un superutente o da chi migra. Altrimenti vale il contratto del
+scritta da un superutente o da chi migra; il trigger dev'essere il solo sulla
+tabella e acceso sempre, anche in replica. Altrimenti vale il contratto del
 codice e nel log c'è un errore: si controlla la tabella e la si riscrive con
 `--forza`.
 
