@@ -229,18 +229,30 @@ jobs:
           s "DROP SCHEMA rep CASCADE"
           a_mano "GRANT SELECT (rolname, rolpassword) ON pg_catalog.pg_authid TO PUBLIC" "pg_catalog.pg_authid" \
             "REVOKE SELECT (rolname, rolpassword) ON pg_catalog.pg_authid FROM PUBLIC"
-          echo "::group::trigger del contratto: uno estraneo, o il suo in replica, e il contratto salvato non vale"
+          a_mano "CREATE SCHEMA rv; CREATE SEQUENCE rv.contatore; CREATE TABLE rv.t (x int); GRANT USAGE, SELECT, UPDATE ON SEQUENCE rv.contatore TO PUBLIC; GRANT MAINTAIN ON rv.t TO PUBLIC" \
+            'REVOKE ALL ON SEQUENCE "rv"."contatore" FROM PUBLIC' "REVOKE ALL ON SEQUENCE rv.contatore FROM PUBLIC; REVOKE ALL ON rv.t FROM PUBLIC"
+          s "DROP SCHEMA rv CASCADE"
+          a_mano "ALTER ROLE argos_ro IN DATABASE prod SET lo_compat_privileges = on" "lo_compat_privileges" \
+            "ALTER ROLE argos_ro IN DATABASE prod RESET lo_compat_privileges"
+          a_mano "GRANT SET ON PARAMETER work_mem TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT SET ON PARAMETER work_mem TO argos_ro; RESET ROLE" \
+            'SET ROLE "terzo"; REVOKE ALL ON PARAMETER work_mem FROM "argos_ro"' \
+            "SET ROLE terzo; REVOKE ALL ON PARAMETER work_mem FROM argos_ro; RESET ROLE; REVOKE ALL ON PARAMETER work_mem FROM terzo"
+          echo "::group::trigger del contratto: uno estraneo, o il suo non sempre acceso, e il contratto salvato non vale"
           s "CREATE FUNCTION cerbero_migrazioni.zz() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'; CREATE TRIGGER zz BEFORE UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION cerbero_migrazioni.zz()"
           if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
           grep -q "ce n'è un altro" v.log || { cat v.log; exit 1; }
           if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
           s "DROP TRIGGER zz ON cerbero_migrazioni.contratti; DROP FUNCTION cerbero_migrazioni.zz()"
           in_regola
-          s "ALTER TABLE cerbero_migrazioni.contratti ENABLE REPLICA TRIGGER contratti_chi_scrive"
-          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
-          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
-          s "ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive"
-          in_regola; echo "::endgroup::"
+          for modo in "ENABLE REPLICA" "ENABLE"; do
+            s "ALTER TABLE cerbero_migrazioni.contratti $modo TRIGGER contratti_chi_scrive"
+            if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto ($modo)"; exit 1; fi
+            grep -q "ENABLE ALWAYS TRIGGER" v.log || { cat v.log; exit 1; }
+            if prova 2>/dev/null; then echo "il test SQL doveva fallire ($modo)"; exit 1; fi
+            s "ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive"
+            in_regola
+          done
+          echo "::endgroup::"
           echo "::group::contratto salvato manomesso: non vale finché non lo si riscrive"
           psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE scrittore LOGIN PASSWORD 'scrittore'"
           s "GRANT USAGE ON SCHEMA cerbero_migrazioni TO scrittore; GRANT UPDATE ON cerbero_migrazioni.contratti TO scrittore"

@@ -34,7 +34,7 @@ export interface StatoPermessi {
   altrove?: Effettivo[];
   definer?: (Routine & { estensione: boolean; di_tutti: boolean })[];
   sistema?: { genere: "relazione" | "routine"; schema: string; nome: string; argomenti: string | null }[];
-  parametri?: { nome: string; a_tutti: boolean; privilegio: string }[];
+  parametri?: { nome: string; a_tutti: boolean; privilegio: string; dato_da: string | null }[];
   largeObject?: { oid: string; a_tutti: boolean; privilegio: string; con_opzione: boolean; dato_da: string | null }[];
   loCompat?: boolean;
   membroDi?: { ruolo: string; da: string; da_superutente: boolean }[];

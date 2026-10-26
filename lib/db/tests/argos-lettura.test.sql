@@ -111,25 +111,35 @@ BEGIN
   END IF;
   DROP TABLE public.ci_tabella_nuova, caronte.ci_tabella_nuova;
 
-  -- 6. negli altri schemi non di sistema (con USAGE, senza non serve): niente
-  --    letture fuori dalle estensioni, niente scrittura, niente CREATE
-  FOR r IN SELECT c.oid::regclass AS t, c.relkind,
+  -- 6. negli altri schemi non di sistema: niente letture fuori dalle estensioni,
+  --    niente scrittura, niente CREATE. I permessi che passano dal nome contano
+  --    solo con l'USAGE sullo schema; sequenze (per OID) e MAINTAIN (VACUUM e
+  --    ANALYZE senza elenco) contano sempre
+  FOR r IN SELECT c.oid::regclass AS t, c.relkind, has_schema_privilege(argos, n.oid, 'USAGE') AS uso,
                   EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e') AS ext
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname NOT IN ('public', 'caronte') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
-              AND c.relkind IN ('r', 'v', 'm', 'p', 'f', 'S') AND has_schema_privilege(argos, n.oid, 'USAGE')
+              AND c.relkind IN ('r', 'v', 'm', 'p', 'f', 'S')
   LOOP
-    IF (CASE WHEN r.relkind = 'S' THEN has_sequence_privilege(argos, r.t, 'USAGE, UPDATE')
-             ELSE has_table_privilege(argos, r.t, scrittura) OR has_any_column_privilege(argos, r.t, 'INSERT, UPDATE, REFERENCES') END) THEN
+    IF r.relkind = 'S' THEN
+      IF NOT r.ext AND has_sequence_privilege(argos, r.t, 'USAGE, SELECT, UPDATE') THEN
+        RAISE EXCEPTION 'argos_ro usa la sequenza %', r.t;
+      END IF;
+    ELSIF (current_setting('server_version_num')::int >= 170000 AND has_table_privilege(argos, r.t, 'MAINTAIN'))
+       OR (r.uso AND (has_table_privilege(argos, r.t, scrittura)
+                      OR has_any_column_privilege(argos, r.t, 'INSERT, UPDATE, REFERENCES'))) THEN
       RAISE EXCEPTION 'argos_ro può scrivere su %', r.t;
-    END IF;
-    IF NOT r.ext AND (CASE WHEN r.relkind = 'S' THEN has_sequence_privilege(argos, r.t, 'SELECT')
-                           ELSE has_any_column_privilege(argos, r.t, 'SELECT') END) THEN
+    ELSIF r.uso AND NOT r.ext AND has_any_column_privilege(argos, r.t, 'SELECT') THEN
       RAISE EXCEPTION 'argos_ro legge % fuori dagli schemi di Cerbero', r.t;
     END IF;
   END LOOP;
   -- large object: dati applicativi, leggibili e scrivibili con lo_get/lo_put
   IF current_setting('lo_compat_privileges')::boolean
+     OR EXISTS (SELECT 1 FROM pg_db_role_setting s, unnest(s.setconfig) c
+                 WHERE s.setrole IN (argos, 0)
+                   AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
+                   AND lower(split_part(c, '=', 1)) = 'lo_compat_privileges'
+                   AND lower(split_part(c, '=', 2)) NOT IN ('off', 'of', 'false', 'fals', 'fal', 'fa', 'f', 'no', 'n', '0'))
      OR EXISTS (SELECT 1 FROM pg_largeobject_metadata l, aclexplode(l.lomacl) a WHERE a.grantee IN (argos, 0) OR l.lomowner = argos) THEN
     RAISE EXCEPTION 'argos_ro può leggere o scrivere large object';
   END IF;
@@ -148,10 +158,10 @@ BEGIN
   -- e il trigger che annota chi scrive è l'unico, ed è sempre acceso
   IF to_regclass('cerbero_migrazioni.contratti') IS NOT NULL
      AND (NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass
-                       AND tgname = 'contratti_chi_scrive' AND tgenabled IN ('O', 'A'))
+                       AND tgname = 'contratti_chi_scrive' AND tgenabled = 'A')
           OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass
                       AND NOT tgisinternal AND tgname <> 'contratti_chi_scrive')) THEN
-    RAISE EXCEPTION 'cerbero_migrazioni.contratti: il trigger che annota chi scrive manca, è spento o non è il solo';
+    RAISE EXCEPTION 'cerbero_migrazioni.contratti: il trigger che annota chi scrive manca, non è acceso sempre o non è il solo';
   END IF;
 
   -- 7. funzioni: nessuna SECURITY DEFINER eseguibile, nessun oggetto di sistema

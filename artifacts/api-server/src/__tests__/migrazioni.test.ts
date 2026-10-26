@@ -477,7 +477,7 @@ describe("permessi di Argos: il piano", () => {
     ];
     s.routine = [{ schema: "public", nome: "conta", argomenti: "integer", privilegio: "EXECUTE", con_opzione: true, dato_da: null }];
     s.database = db({ voci: [acl("TEMPORARY", { con_opzione: true })], opzione_eff: true });
-    s.parametri = [{ nome: "work_mem", a_tutti: false, privilegio: "SET" }];
+    s.parametri = [{ nome: "work_mem", a_tutti: false, privilegio: "SET", dato_da: null }];
     s.largeObject = [{ oid: "4242", a_tutti: false, privilegio: "SELECT", con_opzione: true, dato_da: null }];
     const p = piano(s, C);
     expect(p.azioni).toEqual([]);
@@ -580,23 +580,35 @@ describe("permessi di Argos: il piano", () => {
   it("parametri: quelli dati al ruolo si tolgono, quelli dati a tutti sono un errore", () => {
     const s = base();
     s.parametri = [
-      { nome: "session_replication_role", a_tutti: false, privilegio: "SET" },
-      { nome: "log_min_messages", a_tutti: true, privilegio: "ALTER SYSTEM" },
+      { nome: "session_replication_role", a_tutti: false, privilegio: "SET", dato_da: null },
+      { nome: "log_min_messages", a_tutti: true, privilegio: "ALTER SYSTEM", dato_da: null },
     ];
     const p = piano(s, C);
     expect(p.azioni.map(a => a.sql)).toEqual(["REVOKE ALL ON PARAMETER session_replication_role FROM \"argos_ro\""]);
-    expect(p.errori).toEqual([expect.stringContaining("REVOKE ALL SYSTEM ON PARAMETER log_min_messages FROM PUBLIC".replace("ALL SYSTEM", "ALTER SYSTEM"))]);
+    expect(p.errori).toEqual([expect.stringContaining("REVOKE ALTER SYSTEM ON PARAMETER log_min_messages FROM PUBLIC")]);
+  });
+
+  it("parametro concesso da un terzo: errore con SET ROLE, nessun REVOKE inutile", () => {
+    const s = base();
+    s.parametri = [{ nome: "work_mem", a_tutti: false, privilegio: "SET", dato_da: "terzo" }];
+    const p = piano(s, C);
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toEqual([expect.stringContaining('SET ROLE "terzo"; REVOKE ALL ON PARAMETER work_mem FROM "argos_ro"; RESET ROLE;')]);
   });
 
   it("schemi non di Cerbero: i permessi diretti si tolgono; scrivere è un errore, e anche leggere quello che è di tutti", () => {
     const s = base();
     s.schemi.push(schema("fleetcare", { cerbero: false, uso: true, voci: [acl("USAGE"), acl("CREATE")], crea_eff: true }));
     s.voci.push(voce("fleetcare.profiles", { privilegio: "INSERT" }));
+    s.schemi.push(schema("rep", { cerbero: false, uso: true }));
     s.altrove = [
       eff("fleetcare.profiles", { cerbero: false, legge: false, scrive: true }),
-      eff("fleetcare.pubblica", { cerbero: false }),
-      eff("fleetcare.vista_utenti", { cerbero: false, tipo: "v" }),
+      // lette grazie all'USAGE che argos_ro ha su fleetcare: lo toglie il REVOKE sullo schema
+      eff("fleetcare.letta", { cerbero: false }),
       eff("fleetcare.scrivibile", { cerbero: false, legge: false, scrive: true }),
+      // lette grazie a PUBLIC (USAGE e SELECT di tutti)
+      eff("rep.pubblica", { cerbero: false }),
+      eff("rep.vista_utenti", { cerbero: false, tipo: "v" }),
       eff("postgis.spatial_ref_sys", { cerbero: false, estensione: true }),
     ];
     const p = piano(s, C);
@@ -606,7 +618,7 @@ describe("permessi di Argos: il piano", () => {
     ]);
     expect(p.errori).toEqual([
       expect.stringMatching(/^fleetcare\.scrivibile: argos_ro scrive/),
-      expect.stringMatching(/^schema fleetcare: argos_ro legge pubblica, vista_utenti, perché sono date a tutti i ruoli \(PUBLIC\).*REVOKE SELECT ON ALL TABLES IN SCHEMA "fleetcare" FROM PUBLIC/),
+      expect.stringMatching(/^schema rep: argos_ro legge pubblica, vista_utenti, perché sono date a tutti i ruoli \(PUBLIC\).*REVOKE SELECT ON ALL TABLES IN SCHEMA "rep" FROM PUBLIC/),
     ]);
     expect(p.avvisi).toEqual([expect.stringMatching(/postgis\.spatial_ref_sys.*estensione/)]);
   });
