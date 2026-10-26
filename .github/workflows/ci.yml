@@ -151,6 +151,10 @@ jobs:
           tail -3 crea-tutto.log
           DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto-dopo.json
           node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json vuoto-dopo.json
+      # Gli endpoint con l'SQL scritto a mano, contro lo schema vero: il
+      # dettaglio fermata cercava una tabella che non c'è più e rispondeva 500
+      - name: Dettaglio fermata di Planning Studio sul database migrato
+        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/dettaglio-fermata-db.test.ts
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata
         run: |
           echo "-- modifica" >> lib/db/migrations/0000_baseline.sql
