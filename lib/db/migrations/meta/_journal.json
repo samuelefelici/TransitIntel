@@ -15,6 +15,13 @@
       "when": 1792933200000,
       "tag": "0001_allinea",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793059200000,
+      "tag": "0002_contratti",
+      "breakpoints": true
     }
   ]
 }

@@ -1,24 +1,55 @@
 -- Dopo il migratore argos_ro legge esattamente le tabelle del contratto e
--- nient'altro. Controllato con le funzioni di Postgres (has_*_privilege), non
--- con la logica di argos-permessi-regole.mjs. L'elenco arriva dal contratto:
+-- nient'altro. Controllato con le funzioni di Postgres (has_*_privilege,
+-- pg_has_role), non con la logica di argos-permessi-regole.mjs. L'elenco arriva
+-- dal contratto:
 --   psql -v contratto=public.gtfs_feeds,public.gtfs_routes,... -f questo file
 SET argos.contratto = :'contratto';
 
 DO $$
 DECLARE
   contratto text[] := string_to_array(current_setting('argos.contratto'), ',');
+  argos oid := 'argos_ro'::regrole;
+  scrittura text := 'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER'
+    || CASE WHEN current_setting('server_version_num')::int >= 170000 THEN ', MAINTAIN' ELSE '' END;
   leggibili text[];
   r record;
+  voce text;
 BEGIN
   IF cardinality(contratto) < 20 THEN
     RAISE EXCEPTION 'contratto non passato o troppo corto: %', contratto;
   END IF;
 
-  -- 1. legge esattamente le tabelle del contratto
+  -- 1. il ruolo: niente attributi speciali, niente appartenenze, niente proprietà
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE oid = argos AND (rolsuper OR rolreplication OR rolbypassrls OR rolcreaterole)) THEN
+    RAISE EXCEPTION 'argos_ro ha attributi speciali (SUPERUSER, REPLICATION, BYPASSRLS o CREATEROLE)';
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_auth_members WHERE member = argos) THEN
+    RAISE EXCEPTION 'argos_ro è membro di: %', ARRAY(SELECT roleid::regrole::text FROM pg_auth_members WHERE member = argos);
+  END IF;
+  IF pg_has_role(argos, (SELECT datdba FROM pg_database WHERE datname = current_database()), 'MEMBER') THEN
+    RAISE EXCEPTION 'argos_ro ha i diritti del proprietario del database';
+  END IF;
+  IF has_database_privilege(argos, current_database(), 'CREATE') THEN
+    RAISE EXCEPTION 'argos_ro può creare schemi nel database';
+  END IF;
+  FOR r IN SELECT n.nspname, n.nspowner FROM pg_namespace n WHERE n.nspname IN ('public', 'caronte') LOOP
+    IF pg_has_role(argos, r.nspowner, 'MEMBER') THEN
+      RAISE EXCEPTION 'argos_ro ha i diritti del proprietario dello schema %', r.nspname;
+    END IF;
+    IF NOT has_schema_privilege(argos, r.nspname, 'USAGE') THEN
+      RAISE EXCEPTION 'argos_ro non ha USAGE sullo schema %', r.nspname;
+    END IF;
+    IF has_schema_privilege(argos, r.nspname, 'CREATE')
+       OR has_schema_privilege(argos, r.nspname, 'USAGE WITH GRANT OPTION') THEN
+      RAISE EXCEPTION 'argos_ro può creare o passare permessi nello schema %', r.nspname;
+    END IF;
+  END LOOP;
+
+  -- 2. legge esattamente le tabelle del contratto
   SELECT coalesce(array_agg(n.nspname || '.' || c.relname ORDER BY 1), '{}') INTO leggibili
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname IN ('public', 'caronte') AND c.relkind IN ('r', 'v', 'm', 'p', 'f')
-     AND has_any_column_privilege('argos_ro', c.oid, 'SELECT');
+     AND has_any_column_privilege(argos, c.oid, 'SELECT');
   IF EXISTS (SELECT unnest(leggibili) EXCEPT SELECT unnest(contratto)) THEN
     RAISE EXCEPTION 'argos_ro legge tabelle fuori dal contratto: %',
       ARRAY(SELECT unnest(leggibili) EXCEPT SELECT unnest(contratto));
@@ -28,43 +59,57 @@ BEGIN
       ARRAY(SELECT unnest(contratto) EXCEPT SELECT unnest(leggibili));
   END IF;
 
-  -- 2. i dati personali, per nome, anche solo una colonna
+  -- 3. i dati personali, per nome, anche solo una colonna
   FOR r IN SELECT t FROM unnest(ARRAY['public.users', 'public.accessi_log', 'public.accessi_tentativi',
       'public.roster_drivers', 'public.roster_entries', 'caronte.app_users']) t
   LOOP
-    IF to_regclass(r.t) IS NOT NULL AND has_any_column_privilege('argos_ro', r.t, 'SELECT') THEN
+    IF to_regclass(r.t) IS NOT NULL AND has_any_column_privilege(argos, r.t, 'SELECT') THEN
       RAISE EXCEPTION 'argos_ro legge %', r.t;
     END IF;
   END LOOP;
 
-  -- 3. nessuna scrittura, su nessuna tabella; nessuna sequenza
+  -- 4. nessuna scrittura (MAINTAIN compreso), nessuna grant option, nessuna sequenza
   FOR r IN SELECT c.oid::regclass AS t, c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
             WHERE n.nspname IN ('public', 'caronte') AND c.relkind IN ('r', 'v', 'm', 'p', 'f', 'S')
   LOOP
     IF r.relkind = 'S' THEN
-      IF has_sequence_privilege('argos_ro', r.t, 'USAGE, SELECT, UPDATE') THEN
+      IF has_sequence_privilege(argos, r.t, 'USAGE, SELECT, UPDATE') THEN
         RAISE EXCEPTION 'argos_ro usa la sequenza %', r.t;
       END IF;
-    ELSIF has_table_privilege('argos_ro', r.t, 'INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
-       OR has_any_column_privilege('argos_ro', r.t, 'INSERT, UPDATE, REFERENCES') THEN
+    ELSIF has_table_privilege(argos, r.t, scrittura)
+       OR has_any_column_privilege(argos, r.t, 'INSERT, UPDATE, REFERENCES') THEN
       RAISE EXCEPTION 'argos_ro può scrivere su %', r.t;
+    ELSIF has_any_column_privilege(argos, r.t, 'SELECT WITH GRANT OPTION') THEN
+      RAISE EXCEPTION 'argos_ro può passare ad altri la lettura di %', r.t;
     END IF;
   END LOOP;
 
-  -- 4. niente tabelle future e niente CREATE negli schemi
-  IF EXISTS (SELECT 1 FROM pg_default_acl d, aclexplode(d.defaclacl) a WHERE a.grantee = 'argos_ro'::regrole) THEN
-    RAISE EXCEPTION 'restano permessi di default per argos_ro';
-  END IF;
-  IF has_schema_privilege('argos_ro', 'public', 'CREATE') OR has_schema_privilege('argos_ro', 'caronte', 'CREATE') THEN
-    RAISE EXCEPTION 'argos_ro può creare tabelle';
+  -- 5. niente tabelle future: permessi di default, suoi o di tutti (PUBLIC),
+  --    negli schemi di Cerbero o globali; e una tabella nuova non è leggibile
+  IF EXISTS (SELECT 1 FROM pg_default_acl d, aclexplode(d.defaclacl) a
+              WHERE (d.defaclnamespace = 0 OR d.defaclnamespace IN ('public'::regnamespace, 'caronte'::regnamespace))
+                AND (a.grantee = argos OR (a.grantee = 0 AND d.defaclobjtype IN ('r', 'S')))) THEN
+    RAISE EXCEPTION 'restano permessi di default che danno ad argos_ro le tabelle future';
   END IF;
   CREATE TABLE public.ci_tabella_nuova (id int);
   CREATE TABLE caronte.ci_tabella_nuova (id int);
-  IF has_table_privilege('argos_ro', 'public.ci_tabella_nuova', 'SELECT')
-     OR has_table_privilege('argos_ro', 'caronte.ci_tabella_nuova', 'SELECT') THEN
+  IF has_table_privilege(argos, 'public.ci_tabella_nuova', 'SELECT')
+     OR has_table_privilege(argos, 'caronte.ci_tabella_nuova', 'SELECT') THEN
     RAISE EXCEPTION 'una tabella nuova è leggibile da argos_ro';
   END IF;
   DROP TABLE public.ci_tabella_nuova, caronte.ci_tabella_nuova;
+
+  -- 6. una lettura vera, come argos_ro: le tabelle del contratto sì, users no
+  EXECUTE 'SET LOCAL ROLE argos_ro';
+  FOREACH voce IN ARRAY contratto LOOP
+    EXECUTE format('SELECT 1 FROM %s LIMIT 0', voce::regclass);
+  END LOOP;
+  BEGIN
+    PERFORM 1 FROM public.users LIMIT 0;
+    RAISE EXCEPTION 'argos_ro legge public.users';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  EXECUTE 'RESET ROLE';
 
   RAISE NOTICE 'argos_ro legge le % tabelle del contratto e nient''altro', cardinality(contratto);
 END

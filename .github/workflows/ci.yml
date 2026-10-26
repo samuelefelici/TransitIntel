@@ -155,6 +155,76 @@ jobs:
           DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs
           DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs --verifica
           prova
+      # I casi difficili, dalla revisione: quelli che il riallineamento sistema
+      # da solo, e quelli che deve solo segnalare con l'istruzione giusta
+      # (toccano altri ruoli o servono i loro diritti). Dopo ognuno, tutto
+      # torna in regola. Poi il commit parziale (una correzione impossibile non
+      # blocca le altre) e il rollback (vince il contratto più nuovo salvato
+      # nel database, finché non si usa --forza).
+      - name: Argos, i casi difficili
+        run: |
+          contratto=$(node -e 'import("./lib/db/contratti/argos-lettura.mjs").then(m => console.log(m.ARGOS_LETTURA.join(",")))')
+          p() { DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs "$@"; }
+          s() { psql -q -v ON_ERROR_STOP=1 -d prod -c "$1"; }
+          prova() { psql -q -v ON_ERROR_STOP=1 -d prod -v contratto="${1:-$contratto}" -f lib/db/tests/argos-lettura.test.sql; }
+          in_regola() {
+            p --verifica > v.log || { cat v.log; exit 1; }
+            grep -q "in regola" v.log || { cat v.log; exit 1; }
+            prova
+          }
+          # $1 preparazione: il riallineamento la corregge da solo
+          da_solo() {
+            echo "::group::da solo: $1"; s "$1"
+            if p --verifica > v.log; then cat v.log; echo "la verifica doveva accorgersene"; exit 1; fi
+            if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+            p; in_regola; echo "::endgroup::"
+          }
+          # $1 preparazione, $2 testo atteso nell'errore, $3 la cura a mano
+          a_mano() {
+            echo "::group::a mano: $1"; s "$1"
+            if p > v.log 2>&1; then cat v.log; echo "doveva chiedere un intervento a mano"; exit 1; fi
+            grep -qF -- "$2" v.log || { cat v.log; echo "manca nel messaggio: $2"; exit 1; }
+            if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+            s "$3"; p; in_regola; echo "::endgroup::"
+          }
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE terzo"
+          da_solo "GRANT MAINTAIN ON public.users, public.gtfs_stops TO argos_ro"
+          da_solo 'CREATE TABLE public."report.2026" (id int); GRANT SELECT ON public."report.2026" TO argos_ro'
+          s 'DROP TABLE public."report.2026"'
+          a_mano "GRANT SELECT (id) ON public.users TO PUBLIC" 'REVOKE ALL ON TABLE "public"."users" FROM PUBLIC' \
+            "REVOKE ALL ON public.users FROM PUBLIC"
+          a_mano "GRANT INSERT ON public.gtfs_stops TO PUBLIC" 'REVOKE INSERT ON TABLE "public"."gtfs_stops" FROM PUBLIC' \
+            "REVOKE INSERT ON public.gtfs_stops FROM PUBLIC"
+          a_mano "GRANT USAGE ON public.accessi_log_id_seq TO PUBLIC" 'REVOKE ALL ON SEQUENCE "public"."accessi_log_id_seq" FROM PUBLIC' \
+            "REVOKE ALL ON public.accessi_log_id_seq FROM PUBLIC"
+          a_mano "GRANT CREATE ON SCHEMA caronte TO PUBLIC" 'REVOKE CREATE ON SCHEMA "caronte" FROM PUBLIC' \
+            "REVOKE CREATE ON SCHEMA caronte FROM PUBLIC"
+          a_mano "ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT SELECT ON TABLES TO PUBLIC" 'REVOKE ALL ON TABLES FROM PUBLIC' \
+            "ALTER DEFAULT PRIVILEGES FOR ROLE postgres REVOKE ALL ON TABLES FROM PUBLIC"
+          a_mano "ALTER SCHEMA caronte OWNER TO argos_ro" "proprietario di schema caronte" "ALTER SCHEMA caronte OWNER TO postgres"
+          a_mano "ALTER DATABASE prod OWNER TO argos_ro" "proprietario di database prod" "ALTER DATABASE prod OWNER TO postgres"
+          a_mano "GRANT pg_read_all_data TO argos_ro" "membro di pg_read_all_data" "REVOKE pg_read_all_data FROM argos_ro"
+          a_mano "ALTER ROLE argos_ro REPLICATION" "NOREPLICATION" "ALTER ROLE argos_ro NOREPLICATION"
+          a_mano "GRANT SELECT ON public.depots TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT SELECT ON public.depots TO argos_ro; RESET ROLE" \
+            'SET ROLE "terzo"; REVOKE ALL ON TABLE "public"."depots" FROM "argos_ro"' \
+            "SET ROLE terzo; REVOKE ALL ON public.depots FROM argos_ro; RESET ROLE; REVOKE ALL ON public.depots FROM terzo"
+          echo "::group::commit parziale: una grant option sullo schema passata ad altri"
+          s "GRANT USAGE ON SCHEMA caronte TO argos_ro WITH GRANT OPTION; SET ROLE argos_ro; GRANT USAGE ON SCHEMA caronte TO terzo; RESET ROLE"
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
+          if p > v.log 2>&1; then cat v.log; echo "doveva chiedere un intervento a mano"; exit 1; fi
+          grep -qF 'REVOKE GRANT OPTION FOR ALL ON SCHEMA "caronte" FROM "argos_ro" CASCADE' v.log || { cat v.log; exit 1; }
+          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
+          s 'REVOKE GRANT OPTION FOR ALL ON SCHEMA caronte FROM argos_ro CASCADE'
+          p; in_regola; echo "::endgroup::"
+          echo "::group::rollback: il contratto più nuovo del database vince"
+          s "UPDATE cerbero_migrazioni.contratti SET versione = versione + 1, elenco = array_append(elenco, 'public.zones')"
+          p | tee v.log; grep -q "public.zones: nel contratto, manca la lettura" v.log
+          p --verifica | grep -q "salvato nel database"
+          prova "$contratto,public.zones"
+          p --forza | tee v.log; grep -q "public.zones: fuori dal contratto" v.log
+          test "$(psql -Atd prod -c "SELECT versione FROM cerbero_migrazioni.contratti")" = 1
+          in_regola; echo "::endgroup::"
+          s "DROP OWNED BY terzo"; psql -q -c "DROP ROLE terzo"
       - name: Tutti e due hanno lo schema atteso
         run: |
           DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto.json

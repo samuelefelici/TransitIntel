@@ -123,43 +123,79 @@ Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
 tabelle che usa davvero: orari GTFS, Planning Studio, territorio e domanda,
 nodi e matrice delle tariffe, Sala Operativa live. Niente utenti, accessi,
 anagrafica, roster. L'elenco, il «contratto», è
-`lib/db/contratti/argos-lettura.mjs`.
+`lib/db/contratti/argos-lettura.mjs`, con un numero di versione.
 
 A ogni avvio dell'API il migratore riporta i permessi di `argos_ro` al
 contratto:
-- lettura delle tabelle dell'elenco e basta, quindi niente scrittura, sequenze o
-  permessi su singole colonne;
+- solo la lettura delle tabelle dell'elenco: niente scrittura (MAINTAIN
+  compreso), sequenze, permessi su colonne, grant option;
 - nessun permesso di default che gli dia le tabelle future;
-- nessun CREATE negli schemi.
+- nessun CREATE negli schemi o nel database.
 
 Tocca solo quello che è fuori posto, e ogni correzione finisce nel log
-(`[migrazioni] permessi di argos_ro riportati al contratto`). Se non ci riesce,
-lo scrive e l'API parte lo stesso. Se `argos_ro` non esiste non fa niente.
+(`[migrazioni] permessi di argos_ro riportati al contratto`). Se `argos_ro` non
+esiste, non fa niente.
+
+Alcune cose non le corregge da solo, perché toccherebbero altri ruoli o
+servono i loro diritti:
+- permessi dati a tutti i ruoli (PUBLIC);
+- l'appartenenza di `argos_ro` a un altro ruolo (per esempio
+  `pg_read_all_data`);
+- `argos_ro` proprietario di qualcosa o con attributi come SUPERUSER;
+- permessi dati da un ruolo diverso dal proprietario, o passati da `argos_ro`
+  ad altri.
+
+Questi li scrive nel log come `ATTENZIONE: argos_ro: …`, con l'istruzione da
+eseguire, e intanto sistema tutto il resto. L'API parte comunque.
+
+Il database ricorda la versione del contratto applicata
+(`cerbero_migrazioni.contratti`) e **vince la più alta**. Tornare a un'immagine
+precedente di Cerbero (rollback) non toglie quindi ad Argos le tabelle date da
+quella più nuova: nel log si legge `uso il contratto vN salvato nel database`.
 
 - **Per controllare** che Argos si colleghi davvero come `argos_ro` e non come
   `postgres`, dal Terminal del PostgreSQL mentre Argos lavora:
   ```sql
   SELECT usename, application_name, client_addr FROM pg_stat_activity WHERE datname = current_database();
   ```
-- **Non rilanciare `argos/cerbero_readonly_user.sql`** di Argos così com'è: ridà
-  la lettura di tutte le tabelle e di quelle future. Il danno dura poco,
-  perché il prossimo avvio dell'API rimette a posto. Intanto l'API lo scrive nel
-  log: lo controlla all'avvio e ogni 6 ore («argos_ro non è in regola col
-  contratto»). Per rimediare subito, dal **Terminal del container dell'API** in
-  Coolify:
+- **Non rilanciare `argos/cerbero_readonly_user.sql`** di Argos: ridà la lettura
+  di tutte le tabelle, utenti e anagrafica compresi, e di quelle future, e
+  così resta fino al prossimo avvio dell'API. L'API lo nota all'avvio e ogni 6
+  ore e lo scrive nel log («argos_ro non è in regola col contratto»), ma non lo
+  corregge. Se è successo, rimedia subito dal **Terminal del container
+  dell'API** in Coolify:
   ```bash
   node lib/db/scripts/argos-permessi.mjs --verifica   # dice cosa non va, non tocca niente
   node lib/db/scripts/argos-permessi.mjs              # riporta i permessi al contratto
   ```
   Usa `DATABASE_MIGRATOR_URL` (o `DATABASE_URL`), cioè il proprietario delle
-  tabelle. Esce con 1 se resta qualcosa da sistemare a mano, per esempio un
-  permesso dato ad `argos_ro` da un ruolo diverso dal proprietario, o
-  l'appartenenza a un ruolo come `pg_read_all_data`. In quel caso scrive
+  tabelle. Esce con 1 se resta qualcosa da sistemare a mano, e scrive
   l'istruzione da eseguire.
-- **Una tabella in più per Argos**: si aggiunge a
-  `lib/db/contratti/argos-lettura.mjs`, nella stessa PR della modifica di Argos
-  che la usa (o prima). Al deploy il migratore dà il permesso da solo. I test
-  controllano che la tabella esista e che non sia una tabella di dati personali.
+- **Creare `argos_ro` o cambiargli la password**, al posto dello script di
+  Argos. Dal Terminal del PostgreSQL (`psql -U postgres -d postgres`):
+  ```
+  CREATE ROLE argos_ro LOGIN;   -- solo la prima volta
+  \password argos_ro
+  ```
+  `\password` cifra la password in psql, così non finisce nel log del server.
+  Poi, dal container dell'API, `node lib/db/scripts/argos-permessi.mjs`: dà
+  USAGE sugli schemi e la lettura delle tabelle del contratto. La password va
+  in `CERBERO_DATABASE_URL` di Argos.
+- **Una tabella in più per Argos**:
+  1. si aggiunge a `lib/db/contratti/argos-lettura.mjs`, nella stessa PR della
+     modifica di Argos che la usa (o prima);
+  2. si alza `ARGOS_VERSIONE`;
+  3. si aggiunge la riga in `argos-lettura.versioni.json`: il test dice quale.
+
+  Al deploy il migratore dà il permesso da solo. I test controllano che la
+  tabella esista, che non sia una delle tabelle note di dati personali (utenti,
+  accessi, anagrafica, roster, validazioni dei passeggeri, audit) e che non
+  abbia colonne dal nome personale. Il resto lo garantisce la revisione della
+  PR.
+- **Se un contratto più nuovo era sbagliato**, dall'immagine giusta:
+  `node lib/db/scripts/argos-permessi.mjs --forza`, che applica e registra il
+  contratto di quell'immagine. Poi si rilascia una versione nuova del
+  contratto.
 - **Emergenza** (Argos si ferma per un permesso mancante e serve subito):
   `GRANT SELECT ON <tabella> TO argos_ro;` dal Terminal del PostgreSQL. È una
   toppa che dura fino al prossimo avvio dell'API, che la toglie: la correzione
