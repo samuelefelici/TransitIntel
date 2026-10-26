@@ -151,3 +151,43 @@ server.keepAliveTimeout = 1_500_000;   // 25 min — keep-alive
 server.timeout = 0;                    // no socket timeout
 logger.info("HTTP timeouts configurati per CP-SAT estesi (25 min)");
 
+// ─── Arresto ordinato ────────────────────────────────────────────────
+// Al deploy Coolify manda SIGTERM e uccide il container dopo 30 s. Il proxy
+// (Traefik) toglie il container dal bilanciamento solo quando il processo
+// esce: chiudere subito la porta farebbe rifiutare le connessioni che gli
+// arrivano ancora (502). Quindi al SIGTERM l'API continua a rispondere, ma con
+// «Connection: close», così ogni connessione si chiude a fine risposta e le
+// richieste successive vanno al container nuovo; chiude le connessioni
+// inattive (con il keep-alive di 25 min resterebbero aperte) ed esce appena non
+// ha richieste in corso da 1 s, o comunque dopo CERBERO_ARRESTO_SECONDI
+// (25 s, al massimo 28: oltre i 30 s Coolify uccide il processo). I calcoli più
+// lunghi non fanno in tempo: per quelli arriva la coda dei lavori.
+let inArresto = false;
+const risposteInCorso = new Set<import("node:http").ServerResponse>();
+server.prependListener("request", (_req, res) => {
+  if (inArresto) res.shouldKeepAlive = false;
+  risposteInCorso.add(res);
+  res.once("close", () => risposteInCorso.delete(res));
+});
+const ATTESA_ARRESTO_MS = Math.min(Math.max(Number(process.env.CERBERO_ARRESTO_SECONDI) || 25, 1), 28) * 1000;
+function esci(motivo: string): void {
+  logger.info({ motivo, richiesteAperte: risposteInCorso.size }, "Arresto completato");
+  server.close();
+  process.exit(0);
+}
+function arresta(segnale: string): void {
+  if (inArresto) return;
+  inArresto = true;
+  logger.info({ segnale }, "Arresto: chiudo le connessioni a fine risposta e finisco quelle in corso");
+  for (const r of risposteInCorso) if (!r.headersSent) r.shouldKeepAlive = false;
+  let ferma = 0;
+  setInterval(() => {
+    server.closeIdleConnections();
+    ferma = risposteInCorso.size === 0 ? ferma + 1 : 0;
+    if (ferma >= 4) esci("nessuna richiesta in corso");
+  }, 250).unref();
+  setTimeout(() => esci(`scaduti ${ATTESA_ARRESTO_MS / 1000} s`), ATTESA_ARRESTO_MS).unref();
+}
+process.on("SIGTERM", () => arresta("SIGTERM"));
+process.on("SIGINT", () => arresta("SIGINT"));
+

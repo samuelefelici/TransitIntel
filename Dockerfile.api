@@ -1,10 +1,14 @@
-FROM node:20-slim
+# Immagine dell'API di Cerbero (e, dalla Fase 2, del lavoratore dei calcoli).
+# Node 22 LTS su Debian bookworm: python3 resta 3.11, come la CI (test-python).
+FROM node:22-bookworm-slim
 
 # Enable pnpm
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
-# Install Python for OR-Tools
-RUN apt-get update && apt-get install -y python3 python3-pip && rm -rf /var/lib/apt/lists/*
+# Python per OR-Tools; tini come PID 1: inoltra i segnali all'API e
+# raccoglie i processi figli (i solver)
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip tini \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -26,9 +30,21 @@ RUN pnpm install --frozen-lockfile --prefer-offline \
  && pnpm run typecheck:libs \
  && pnpm --filter @workspace/api-server run build
 
+# ── 4) Esecuzione come utente senza privilegi ──────────────────────
+# L'API scrive solo in .cache (cache delle risposte, stato dei lavori) e in
+# /tmp; i sorgenti restano di root, in sola lettura per il processo.
+RUN mkdir -p /app/.cache && chown node:node /app/.cache
+USER node
+
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV PYTHONPATH=/app/.python_packages:/app/scripts
+# niente __pycache__ in /app/scripts, che non è scrivibile
+ENV PYTHONDONTWRITEBYTECODE=1
 
 EXPOSE 3000
+# Coolify usa questo HEALTHCHECK se il suo healthcheck dell'Application è
+# spento (DEPLOY.md), e aspetta tutto lo start-period prima di controllare
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 CMD ["node", "docker/salute.mjs"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "artifacts/api-server/dist/index.cjs"]
