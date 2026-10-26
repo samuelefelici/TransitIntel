@@ -2,11 +2,12 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * Schema `caronte` — rilevazione e riparazione
  * ───────────────────────────────────────────────────────────────────────────
- * Le tabelle dell'esercizio nascono da migrazioni lanciate a mano, e alcune
- * possono preesistere perché create dal sistema AVM esterno. Basta quindi che
- * una migrazione non venga applicata perché la tabella ci sia ma le manchi una
- * colonna: `to_regclass` la trova, il software conclude che l'esercizio sia
- * disponibile, e la prima query muore con "column does not exist".
+ * Le tabelle dell'esercizio nascono dalle migrazioni (lib/db/migrations), ma
+ * alcune possono preesistere perché create dal sistema AVM esterno, e il
+ * baseline non tocca una tabella che c'è già. Così una tabella può esserci ma
+ * mancarle una colonna: `to_regclass` la trova, il software conclude che
+ * l'esercizio sia disponibile, e la prima query muore con "column does not
+ * exist".
  *
  * Due funzioni distinte, e la distinzione è il punto:
  *

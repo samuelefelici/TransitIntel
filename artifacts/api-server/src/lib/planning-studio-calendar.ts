@@ -18,7 +18,7 @@ import { classifyRange, type CalendarProfile } from "./day-classifier";
 const router: IRouter = Router();
 
 let bootstrapped = false;
-async function ensureTable(): Promise<void> {
+export async function ensureTable(): Promise<void> {
   if (bootstrapped) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS ps_calendar_profiles (

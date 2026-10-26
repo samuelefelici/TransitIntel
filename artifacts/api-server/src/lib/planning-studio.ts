@@ -29,7 +29,7 @@ import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop
  *  Bootstrap tabelle
  * ════════════════════════════════════════════════════════════ */
 let bootstrapped = false;
-async function ensurePsTables(): Promise<void> {
+export async function ensurePsTables(): Promise<void> {
   if (bootstrapped) return;
   try {
     /* ─── Progetti ─── */

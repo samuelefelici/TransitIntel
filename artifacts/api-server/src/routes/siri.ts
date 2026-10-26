@@ -239,8 +239,16 @@ router.get("/siri/status", async (req, res): Promise<void> => {
     nota: schema.ready
       ? undefined
       : "Le tabelle dell'esercizio non sono allineate: le scritture del connettore "
-        + "falliscono e Sala Operativa risponde 500. Serve applicare le migrazioni "
-        + "in migrations/, oppure dare al ruolo del database il permesso di CREATE/ALTER.",
+        + "falliscono e Sala Operativa risponde 500. "
+        + (schema.missingTables.length > 0
+          ? "Le tabelle mancanti le crea la migrazione 0000_baseline all'avvio dell'API: "
+            + "controlla nel log la riga [migrazioni]. "
+          : "")
+        + (schema.missingColumns.length > 0
+          ? "Le colonne mancanti stanno in tabelle che c'erano già (create dall'AVM esterno): "
+            + "il baseline non le aggiunge. Serve una migrazione nuova, oppure il permesso "
+            + "di ALTER sulla tabella per l'utente del database dell'API."
+          : ""),
   };
 
   /* La struttura VERA delle tabelle, su richiesta. `schemaCaronte.pronto` dice
@@ -1671,8 +1679,8 @@ router.get("/siri/codici", async (req, res): Promise<void> => {
       errore: erroreRaccolta(),
       nota: "La raccolta delle coppie di codici non è attiva: la tabella "
         + "caronte.journey_codes non esiste e non è stato possibile crearla. "
-        + "Si crea da sé al primo giro del connettore SIRI, oppure con "
-        + "migrations/2026-09_journey_codes.sql.",
+        + "La crea la migrazione 0000_baseline all'avvio dell'API, oppure il primo giro "
+        + "del connettore SIRI.",
     });
     return;
   }

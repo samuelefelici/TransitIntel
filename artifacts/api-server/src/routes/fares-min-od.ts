@@ -101,7 +101,7 @@ function classifyRouteMinOd(shortName: string): string {
 // Chiamato all'inizio di ogni endpoint. Idempotente.
 // ════════════════════════════════════════════════════════════
 let bootstrapped = false;
-async function ensureMinOdTables(): Promise<void> {
+export async function ensureMinOdTables(): Promise<void> {
   if (bootstrapped) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS gtfs_fare_network_edges (

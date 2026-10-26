@@ -77,7 +77,7 @@ async function crea(): Promise<boolean> {
   }
 }
 
-function assicura(): Promise<boolean> {
+export function assicura(): Promise<boolean> {
   if (!pronto) {
     pronto = crea().then(ok => { if (!ok) pronto = null; return ok; })
       .catch(() => { pronto = null; return false; });

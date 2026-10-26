@@ -1072,8 +1072,8 @@ export type GtfsFareStopAssignmentOverride = typeof gtfsFareStopAssignmentOverri
 // ────────────────────────────────────────────────────────────
 // Tutto ciò che AVM e il validatore SCRIVONO vive in uno schema dedicato,
 // separato dai gtfs_* (che restano in `public`, sola lettura dal gestionale).
-// Vedi caronte_setup.sql per la creazione dello schema e dell'utente con
-// permessi di scrittura limitati a `caronte`.
+// Lo schema lo creano le migrazioni (lib/db/migrations); caronte_setup.sql crea
+// il ruolo del validatore, con permessi di scrittura limitati a `caronte`.
 // ════════════════════════════════════════════════════════════
 export const caronte = pgSchema("caronte");
 

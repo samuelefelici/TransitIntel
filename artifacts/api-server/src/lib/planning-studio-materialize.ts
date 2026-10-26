@@ -40,7 +40,7 @@ const UUID_RE = /^[0-9a-f-]{36}$/i;
  *  Bootstrap colonna materialized_feed_id su ps_projects
  * ════════════════════════════════════════════════════════════ */
 let bootstrapped = false;
-async function ensureMaterializedColumn(): Promise<void> {
+export async function ensureMaterializedColumn(): Promise<void> {
   if (bootstrapped) return;
   await db.execute(sql`
     ALTER TABLE ps_projects

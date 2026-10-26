@@ -4,9 +4,9 @@ import { existsSync } from "fs";
 
 // drizzle-kit push è spento: decine di tabelle e colonne esistono solo nel
 // database (le crea l'API al primo uso) e push proporrebbe di cancellarle.
-// Lo schema si cambia con un file SQL in migrations/ (DEPLOY.md, STEP 1).
+// Lo schema si cambia con una migrazione in lib/db/migrations (README lì).
 if (process.argv.some(a => a === "push" || a.startsWith("push:"))) {
-  throw new Error("drizzle-kit push è disattivato in Cerbero: lo schema si cambia con un file in migrations/ (DEPLOY.md, STEP 1).");
+  throw new Error("drizzle-kit push è disattivato in Cerbero: lo schema si cambia con una migrazione in lib/db/migrations (vedi il README lì).");
 }
 
 // Carica le variabili dal .env di root se DATABASE_URL non è già nell'ambiente

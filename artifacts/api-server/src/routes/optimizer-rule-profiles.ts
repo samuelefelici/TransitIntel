@@ -26,7 +26,7 @@ import { sql } from "drizzle-orm";
 const router: IRouter = Router();
 
 let schemaReady = false;
-async function ensureSchema(): Promise<void> {
+export async function ensureSchema(): Promise<void> {
   if (schemaReady) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS optimizer_rule_profiles (

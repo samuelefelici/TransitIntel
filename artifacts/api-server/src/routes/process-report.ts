@@ -26,7 +26,7 @@ const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 let tableReady = false;
-async function ensureTable(): Promise<void> {
+export async function ensureTable(): Promise<void> {
   if (tableReady) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS process_reports (

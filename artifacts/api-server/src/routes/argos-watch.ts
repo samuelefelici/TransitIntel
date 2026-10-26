@@ -31,7 +31,7 @@ const WATCH_TIMEOUT_MS = 300_000; // 5' per il giro di sorveglianza
 const GOAL_TIMEOUT_MS = 540_000; // 9' per un giro-obiettivo (il token vive 10')
 
 let ensured = false;
-async function ensureWatchTable(): Promise<void> {
+export async function ensureWatchTable(): Promise<void> {
   if (ensured) return;
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS ps_argos_watches (

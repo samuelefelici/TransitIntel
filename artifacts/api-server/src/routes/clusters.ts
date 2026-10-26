@@ -30,7 +30,7 @@ const router: IRouter = Router();
  *  Bootstrap colonne is_interchange / is_logical (idempotente)
  * ═══════════════════════════════════════════════════════════════ */
 let _bootstrappedFlags = false;
-async function ensureClusterFlagColumns(): Promise<void> {
+export async function ensureClusterFlagColumns(): Promise<void> {
   if (_bootstrappedFlags) return;
   await db.execute(sql`
     ALTER TABLE stop_clusters

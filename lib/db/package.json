@@ -8,6 +8,10 @@
     "./schema": "./src/schema/index.ts"
   },
   "scripts": {
+    "migra": "node scripts/migra.mjs",
+    "impronte": "node scripts/impronte.mjs",
+    "genera-baseline": "node scripts/genera-baseline.mjs",
+    "catalogo": "node scripts/catalogo.mjs",
     "run-sql": "node scripts/run-sql.mjs",
     "setup-caronte": "node scripts/run-sql.mjs ../../caronte_setup.sql"
   },
