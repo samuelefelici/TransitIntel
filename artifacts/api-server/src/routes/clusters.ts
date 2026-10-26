@@ -22,6 +22,7 @@ import {
 import { eq, sql } from "drizzle-orm";
 import { asyncHandler } from "../middlewares/error-handler";
 import { requireAdmin } from "../lib/auth";
+import { feedVisibiliSql } from "../lib/tenant";
 import { getLatestFeedId } from "./gtfs-helpers";
 
 const router: IRouter = Router();
@@ -409,8 +410,9 @@ router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
  *  FERMATE GTFS — Tutte (per la mappa cluster)
  * ═══════════════════════════════════════════════════════════════ */
 
-// GET /api/gtfs/stops/all — tutte le fermate GTFS (deduplicate) con le linee associate
-router.get("/gtfs/stops/all", asyncHandler(async (_req, res) => {
+// GET /api/gtfs/stops/all — tutte le fermate GTFS (deduplicate) con le linee associate,
+// dei soli feed che l'utente vede: la leggono anche Turni e Rete senza Analisi
+router.get("/gtfs/stops/all", asyncHandler(async (req, res) => {
   const stops = await db.execute<any>(sql`
     SELECT
       s.stop_id   AS "stopId",
@@ -424,6 +426,7 @@ router.get("/gtfs/stops/all", asyncHandler(async (_req, res) => {
     FROM (
       SELECT DISTINCT ON (stop_id) stop_id, stop_name, stop_lat, stop_lon, feed_id
       FROM gtfs_stops
+      WHERE feed_id IN ${feedVisibiliSql(req)}
       ORDER BY stop_id, trips_count DESC NULLS LAST
     ) s
     LEFT JOIN gtfs_stop_times st ON st.stop_id = s.stop_id AND st.feed_id = s.feed_id
@@ -438,7 +441,8 @@ router.get("/gtfs/stops/all", asyncHandler(async (_req, res) => {
 // GET /api/gtfs/route-stop-ids?routeIds=a,b,c
 // Restituisce, per ciascuna routeId richiesta, l'elenco distinto di stop_id
 // effettivamente toccati dai trips di quella linea (usato dalla mappa cluster
-// per evidenziare con un alone le fermate servite dalle linee selezionate).
+// per evidenziare con un alone le fermate servite dalle linee selezionate),
+// nei soli feed che l'utente vede.
 router.get("/gtfs/route-stop-ids", asyncHandler(async (req, res) => {
   const raw = String(req.query.routeIds || "").trim();
   if (!raw) { res.json({ data: {} }); return; }
@@ -453,6 +457,7 @@ router.get("/gtfs/route-stop-ids", asyncHandler(async (req, res) => {
     JOIN gtfs_stop_times st
       ON st.trip_id = t.trip_id AND st.feed_id = t.feed_id
     WHERE t.route_id IN (${placeholders})
+      AND t.feed_id IN ${feedVisibiliSql(req)}
   `);
   const byRoute: Record<string, string[]> = {};
   for (const r of rows.rows as any[]) {

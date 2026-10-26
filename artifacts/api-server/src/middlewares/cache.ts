@@ -140,6 +140,16 @@ export function cache(opts: {
 }
 
 /**
+ * Cache key for responses that depend on who is asking (the feeds they can see,
+ * their current feed): keyed on the URL alone, one user would be served the
+ * response computed for another. Starts with the URL, so clearCache(prefix)
+ * still finds it.
+ */
+export function chiavePerUtente(req: Request): string {
+  return `${req.originalUrl}#utente=${req.user?.id ?? "-"}`;
+}
+
+/**
  * Flush cached entries.
  *
  * @param prefix  If provided, only flush keys containing this substring.

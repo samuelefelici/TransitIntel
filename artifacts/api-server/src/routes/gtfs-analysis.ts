@@ -13,8 +13,8 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
-import { getLatestFeedId, modelCongestion } from "./gtfs-helpers";
-import { cache } from "../middlewares/cache";
+import { getLatestFeedId, feedDellaLettura, modelCongestion } from "./gtfs-helpers";
+import { cache, chiavePerUtente } from "../middlewares/cache";
 
 const router: IRouter = Router();
 
@@ -84,8 +84,9 @@ router.get("/gtfs/routes/active-by-band", cache({ ttlSeconds: 30 }), async (req,
 });
 
 // GET /api/gtfs/shapes/geojson
-router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30 }), async (req, res) => {
-  const feedId = req.query.feedId as string | undefined;
+// Senza feedId il feed è quello corrente di chi chiede: la cache va per utente,
+// altrimenti uno riceverebbe le forme calcolate sul feed di un altro.
+router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtente }), async (req, res) => {
   const routeIds = req.query.routeIds
     ? (req.query.routeIds as string).split(",").map(s => s.trim()).filter(Boolean)
     : [];
@@ -94,13 +95,15 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30 }), async (req, res) =
   const hourParam = req.query.hour !== undefined ? parseFloat(req.query.hour as string) : null;
 
   try {
-    const resolvedFeedId = feedId || await getLatestFeedId(req);
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    /* nessun feed: niente forme (prima arrivavano quelle di tutti i feed) */
+    if (!feed.feedId) { res.json({ type: "FeatureCollection", features: [] }); return; }
+    const resolvedFeedId = feed.feedId;
 
-    const whereCondition = resolvedFeedId && routeIds.length > 0
+    const whereCondition = routeIds.length > 0
       ? sql`${gtfsShapes.feedId} = ${resolvedFeedId} AND ${gtfsShapes.routeId} IN (${sql.join(routeIds.map(r => sql`${r}`), sql`, `)})`
-      : resolvedFeedId
-        ? eq(gtfsShapes.feedId, resolvedFeedId)
-        : undefined;
+      : eq(gtfsShapes.feedId, resolvedFeedId);
 
     let rows = await db
       .select({
@@ -114,7 +117,7 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30 }), async (req, res) =
       .where(whereCondition)
       .limit(routeIds.length > 0 ? 2000 : 1200);
 
-    if (directionIdParam !== null && !isNaN(directionIdParam) && resolvedFeedId) {
+    if (directionIdParam !== null && !isNaN(directionIdParam)) {
       const validShapeRows = await db.execute<{ shape_id: string }>(sql`
         SELECT DISTINCT shape_id FROM gtfs_trips
         WHERE feed_id = ${resolvedFeedId} AND direction_id = ${directionIdParam} AND shape_id IS NOT NULL
