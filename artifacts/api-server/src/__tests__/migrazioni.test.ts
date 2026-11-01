@@ -632,7 +632,7 @@ describe("permessi di Argos: il piano", () => {
     expect(p.errori).toEqual([
       expect.stringMatching(/^fleetcare\.scrivibile: argos_ro scrive/),
       expect.stringMatching(/^schema fleetcare: argos_ro legge letta, perché sono date a tutti/),
-      expect.stringMatching(/^schema rep: argos_ro legge pubblica, vista_utenti, perché sono date a tutti i ruoli \(PUBLIC\).*pg_stats.*REVOKE SELECT ON ALL TABLES IN SCHEMA "rep" FROM PUBLIC\..*FROM <ruolo> CASCADE$/),
+      expect.stringMatching(/^schema rep: argos_ro legge pubblica, vista_utenti, perché sono date a tutti i ruoli \(PUBLIC\).*pg_stats.*REVOKE SELECT ON ALL TABLES IN SCHEMA "rep" FROM PUBLIC\..*SET ROLE <ruolo>; REVOKE SELECT ON … FROM PUBLIC; RESET ROLE;$/),
     ]);
     expect(p.avvisi).toEqual([expect.stringMatching(/postgis\.spatial_ref_sys.*estensione/)]);
   });
@@ -646,6 +646,9 @@ describe("permessi di Argos: il piano", () => {
       expect.stringContaining('REVOKE SELECT ON TABLE "pg_catalog"."pg_class_copia" FROM PUBLIC'),
     ]);
     expect(err.join(" ")).not.toMatch(/ALL TABLES IN SCHEMA/);
+    // information_schema ricreato da information_schema.sql: le viste standard non vanno tolte
+    expect(err[0]).toMatch(/viste standard: è un falso allarme/);
+    expect(err[1]).not.toMatch(/falso allarme/);
   });
 
   it("permessi effettivi che nessuna voce spiega: errore (il riallineamento non può dire «in regola»)", () => {
@@ -724,7 +727,7 @@ describe("permessi di Argos: il piano", () => {
     expect(p.errori).toEqual([
       expect.stringContaining('SET ROLE "terzo"; REVOKE ALL ON FOREIGN SERVER "altro" FROM "argos_ro"; RESET ROLE;'),
       expect.stringContaining('REVOKE ALL ON FOREIGN DATA WRAPPER "postgres_fdw" FROM PUBLIC'),
-      expect.stringMatching(/^server di_tutti: .*per concessione di terzo.*REVOKE ALL ON FOREIGN SERVER "di_tutti" FROM "terzo" CASCADE$/),
+      expect.stringMatching(/^server di_tutti: .*per concessione di terzo.*SET ROLE "terzo"; REVOKE ALL ON FOREIGN SERVER "di_tutti" FROM PUBLIC; RESET ROLE;$/),
       expect.stringMatching(/^server nascosto: argos_ro lo può usare, e non lo spiegano/),
       expect.stringContaining('DROP USER MAPPING FOR "argos_ro" SERVER "remoto"'),
     ]);

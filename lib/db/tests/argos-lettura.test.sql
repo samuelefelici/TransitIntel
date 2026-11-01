@@ -187,20 +187,27 @@ BEGIN
                       AND contype = 'c'
                       AND pg_get_constraintdef(oid) IN ('CHECK ((scritto_da = SESSION_USER))',
                                                         'CHECK ((scritto_da = SESSION_USER)) NOT VALID'))
-       OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass
-                   AND NOT tgisinternal
-                   AND NOT (tgname = 'contratti_chi_scrive'
-                            AND tgfoid = to_regprocedure('cerbero_migrazioni.contratti_chi_scrive()'))) THEN
-      RAISE EXCEPTION 'cerbero_migrazioni.contratti: manca il vincolo su scritto_da, o ha un trigger estraneo';
+       OR EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid LEFT JOIN pg_proc f ON f.oid = t.tgfoid
+                   WHERE t.tgrelid = 'cerbero_migrazioni.contratti'::regclass AND NOT t.tgisinternal
+                     AND NOT (t.tgname = 'contratti_chi_scrive' AND f.proname = 'contratti_chi_scrive'
+                              AND f.pronamespace = c.relnamespace AND f.pronargs = 0
+                              AND (f.proowner = c.relowner
+                                   OR (SELECT rolsuper FROM pg_roles WHERE oid = f.proowner)))) THEN
+      RAISE EXCEPTION 'cerbero_migrazioni.contratti: manca il vincolo su scritto_da, ha un trigger estraneo o la funzione del trigger è di un altro ruolo';
     END IF;
   END IF;
 
-  -- 7. funzioni: nessuna SECURITY DEFINER che argos_ro possa far girare (per
-  --    EXECUTE con l'USAGE sullo schema o tramite un oggetto che la chiama, con
-  --    un aggregato, con un event trigger, o tramite oggetti che la chiamano
-  --    senza controllare l'EXECUTE: classi di operatori, tipi e range,
-  --    conversioni, ricerca testuale, linguaggi, wrapper, metodi d'accesso),
-  --    nessun oggetto di sistema riservato all'installazione (pg_init_privs
+  -- 7. funzioni: nessuna SECURITY DEFINER che argos_ro possa far girare:
+  --    - con l'EXECUTE, se ha l'USAGE sullo schema o se un oggetto la chiama
+  --      senza nominarla (qualunque dipendenza, tranne quelle legate a una
+  --      tabella su cui argos_ro non ha nessun permesso: con un permesso le
+  --      copia in una tabella temporanea sua con CREATE TABLE ... LIKE);
+  --    - con un aggregato o un event trigger;
+  --    - tramite oggetti che la chiamano senza controllare l'EXECUTE: classi e
+  --      operatori di classi, stime di selettività, supporto del planner, I/O
+  --      dei tipi, range, conversioni, ricerca testuale, linguaggi, wrapper,
+  --      metodi d'accesso, trasformazioni.
+  --    Nessun oggetto di sistema riservato all'installazione (pg_init_privs
   --    senza PUBLIC) usabile
   IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
               WHERE p.prosecdef AND n.nspname !~ '^pg_(toast_)?temp_'
@@ -213,17 +220,34 @@ BEGIN
                                         LEFT JOIN pg_trigger tr ON d.classid = 'pg_trigger'::regclass AND tr.oid = d.objid
                                         LEFT JOIN pg_attrdef ad ON d.classid = 'pg_attrdef'::regclass AND ad.oid = d.objid
                                         LEFT JOIN pg_constraint co ON d.classid = 'pg_constraint'::regclass AND co.oid = d.objid
-                                       WHERE d.refclassid = 'pg_proc'::regclass AND d.refobjid = p.oid AND d.deptype = 'n'
-                                         AND (d.classid IN ('pg_proc'::regclass, 'pg_rewrite'::regclass,
-                                                            'pg_operator'::regclass, 'pg_cast'::regclass)
-                                              OR co.contypid <> 0
-                                              OR has_table_privilege(argos, coalesce(po.polrelid, tr.tgrelid, ad.adrelid, nullif(co.conrelid, 0)),
-                                                                     'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')))))
-                     OR EXISTS (SELECT 1 FROM pg_depend d
-                                 WHERE d.refclassid = 'pg_proc'::regclass AND d.refobjid = p.oid AND d.deptype = 'n'
-                                   AND d.classid IN ('pg_amproc'::regclass, 'pg_type'::regclass, 'pg_conversion'::regclass,
-                                                     'pg_ts_parser'::regclass, 'pg_ts_template'::regclass, 'pg_language'::regclass,
-                                                     'pg_foreign_data_wrapper'::regclass, 'pg_am'::regclass))
+                                        LEFT JOIN pg_statistic_ext se ON d.classid = 'pg_statistic_ext'::regclass AND se.oid = d.objid
+                                        LEFT JOIN pg_class cl ON d.classid = 'pg_class'::regclass AND cl.oid = d.objid
+                                        LEFT JOIN pg_index ix ON ix.indexrelid = cl.oid
+                                       WHERE d.refclassid = 'pg_proc'::regclass AND d.refobjid = p.oid AND d.deptype IN ('n', 'a')
+                                         AND (coalesce(po.polrelid, tr.tgrelid, ad.adrelid, nullif(co.conrelid, 0), se.stxrelid, ix.indrelid, cl.oid) IS NULL
+                                              OR has_table_privilege(argos, coalesce(po.polrelid, tr.tgrelid, ad.adrelid, nullif(co.conrelid, 0), se.stxrelid, ix.indrelid, cl.oid),
+                                                                     'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER')
+                                              OR has_any_column_privilege(argos, coalesce(po.polrelid, tr.tgrelid, ad.adrelid, nullif(co.conrelid, 0), se.stxrelid, ix.indrelid, cl.oid),
+                                                                          'SELECT, INSERT, UPDATE, REFERENCES')))))
+                     OR p.oid IN (SELECT amproc FROM pg_amproc)
+                     OR p.oid IN (SELECT o.oprcode FROM pg_operator o JOIN pg_amop m ON m.amopopr = o.oid)
+                     OR p.oid IN (SELECT oprrest FROM pg_operator UNION ALL SELECT oprjoin FROM pg_operator)
+                     OR p.oid IN (SELECT prosupport FROM pg_proc)
+                     OR p.oid IN (SELECT typinput FROM pg_type UNION ALL SELECT typoutput FROM pg_type
+                                  UNION ALL SELECT typreceive FROM pg_type UNION ALL SELECT typsend FROM pg_type
+                                  UNION ALL SELECT typmodin FROM pg_type UNION ALL SELECT typmodout FROM pg_type
+                                  UNION ALL SELECT typanalyze FROM pg_type UNION ALL SELECT typsubscript FROM pg_type)
+                     OR p.oid IN (SELECT rngcanonical FROM pg_range UNION ALL SELECT rngsubdiff FROM pg_range)
+                     OR p.oid IN (SELECT conproc FROM pg_conversion)
+                     OR p.oid IN (SELECT prsstart FROM pg_ts_parser UNION ALL SELECT prstoken FROM pg_ts_parser
+                                  UNION ALL SELECT prsend FROM pg_ts_parser UNION ALL SELECT prsheadline FROM pg_ts_parser
+                                  UNION ALL SELECT prslextype FROM pg_ts_parser)
+                     OR p.oid IN (SELECT tmplinit FROM pg_ts_template UNION ALL SELECT tmpllexize FROM pg_ts_template)
+                     OR p.oid IN (SELECT lanplcallfoid FROM pg_language UNION ALL SELECT laninline FROM pg_language
+                                  UNION ALL SELECT lanvalidator FROM pg_language)
+                     OR p.oid IN (SELECT fdwhandler FROM pg_foreign_data_wrapper UNION ALL SELECT fdwvalidator FROM pg_foreign_data_wrapper)
+                     OR p.oid IN (SELECT amhandler FROM pg_am)
+                     OR p.oid IN (SELECT trffromsql FROM pg_transform UNION ALL SELECT trftosql FROM pg_transform)
                      OR EXISTS (SELECT 1 FROM pg_aggregate g
                                  WHERE p.oid IN (g.aggtransfn, g.aggfinalfn, g.aggcombinefn, g.aggserialfn, g.aggdeserialfn,
                                                  g.aggmtransfn, g.aggminvtransfn, g.aggmfinalfn)

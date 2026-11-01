@@ -249,15 +249,27 @@ jobs:
           s "DROP SCHEMA ev CASCADE"
           a_mano "CREATE SCHEMA ci_op; REVOKE ALL ON SCHEMA ci_op FROM PUBLIC; CREATE FUNCTION ci_op.cmp(int4, int4) RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT btint4cmp(\$1, \$2)'; REVOKE ALL ON FUNCTION ci_op.cmp(int4, int4) FROM PUBLIC; CREATE OPERATOR CLASS ci_op.ord FOR TYPE int4 USING btree AS OPERATOR 1 <, OPERATOR 3 =, FUNCTION 1 ci_op.cmp(int4, int4)" \
             "senza controllare l'EXECUTE" "DROP SCHEMA ci_op CASCADE"
-          echo "::group::una SECURITY DEFINER che nessuno può raggiungere non conta"
-          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
+          # operatore di una classe di operatori: lo chiamano senza controllare l'EXECUTE
+          a_mano "CREATE SCHEMA ci_opr; REVOKE ALL ON SCHEMA ci_opr FROM PUBLIC; CREATE FUNCTION ci_opr.uguale(int4, int4) RETURNS bool LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT \$1 = \$2'; REVOKE ALL ON FUNCTION ci_opr.uguale(int4, int4) FROM PUBLIC; CREATE OPERATOR ci_opr.=== (LEFTARG = int4, RIGHTARG = int4, FUNCTION = ci_opr.uguale); CREATE OPERATOR CLASS ci_opr.hc FOR TYPE int4 USING hash AS OPERATOR 1 ci_opr.===, FUNCTION 1 hashint4(int4)" \
+            "in una classe di operatori" "DROP SCHEMA ci_opr CASCADE"
+          # indice d'espressione su una tabella del contratto: argos_ro lo copia con LIKE in una tabella temporanea sua
+          a_mano "CREATE SCHEMA ci_idx; REVOKE ALL ON SCHEMA ci_idx FROM PUBLIC; CREATE FUNCTION ci_idx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE INDEX ci_idx_scenari ON public.scenarios (ci_idx.chiave(name))" \
+            'REVOKE EXECUTE ON ROUTINE "ci_idx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_idx CASCADE"
+          a_mano "CREATE SCHEMA ci_stx; REVOKE ALL ON SCHEMA ci_stx FROM PUBLIC; CREATE FUNCTION ci_stx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE STATISTICS public.ci_stx_scenari ON (ci_stx.chiave(name)) FROM public.scenarios" \
+            'REVOKE EXECUTE ON ROUTINE "ci_stx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_stx CASCADE"
+          echo "::group::SECURITY DEFINER che argos_ro non può raggiungere: non contano"
+          # in uno schema senza USAGE; helper RLS di una tabella che non legge; DEFAULT di un dominio senza EXECUTE
+          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE FUNCTION ci_chiuso.def() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.def() FROM PUBLIC; CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.def(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f()))"
           in_regola; s "DROP SCHEMA ci_chiuso CASCADE"; echo "::endgroup::"
           a_mano "CREATE TABLE information_schema.ci_copia AS SELECT 1 AS x; GRANT SELECT ON information_schema.ci_copia TO PUBLIC" \
             'REVOKE SELECT ON TABLE "information_schema"."ci_copia" FROM PUBLIC' "DROP TABLE information_schema.ci_copia"
           s "CREATE EXTENSION postgres_fdw; CREATE SERVER ci_remoto FOREIGN DATA WRAPPER postgres_fdw OPTIONS (dbname 'prod')"
           da_solo "GRANT USAGE ON FOREIGN SERVER ci_remoto TO argos_ro"
           a_mano "GRANT USAGE ON FOREIGN SERVER ci_remoto TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT USAGE ON FOREIGN SERVER ci_remoto TO PUBLIC; RESET ROLE" \
-            'REVOKE ALL ON FOREIGN SERVER "ci_remoto" FROM "terzo" CASCADE' "REVOKE ALL ON FOREIGN SERVER ci_remoto FROM terzo CASCADE"
+            'SET ROLE "terzo"; REVOKE ALL ON FOREIGN SERVER "ci_remoto" FROM PUBLIC; RESET ROLE;' \
+            "SET ROLE terzo; REVOKE ALL ON FOREIGN SERVER ci_remoto FROM PUBLIC; RESET ROLE"
+          # la cura l'ha tolto a tutti, non al terzo
+          test "$(psql -Atd prod -c "SELECT has_server_privilege('terzo', 'ci_remoto', 'USAGE')")" = t
           a_mano "CREATE USER MAPPING FOR argos_ro SERVER ci_remoto OPTIONS (user 'postgres')" 'DROP USER MAPPING FOR "argos_ro" SERVER "ci_remoto"' \
             "DROP USER MAPPING FOR argos_ro SERVER ci_remoto"
           s "DROP EXTENSION postgres_fdw CASCADE"
@@ -279,6 +291,13 @@ jobs:
           grep -q "trigger estraneo" v.log || { cat v.log; exit 1; }
           if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
           s "DROP TRIGGER contratti_chi_scrive ON cerbero_migrazioni.contratti; DROP FUNCTION public.ci_falso(); CREATE TRIGGER contratti_chi_scrive BEFORE INSERT OR UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION cerbero_migrazioni.contratti_chi_scrive(); ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive"
+          in_regola
+          # la sua funzione, ma di un altro ruolo: con CREATE OR REPLACE cambierebbe le righe di chi migra
+          s "ALTER FUNCTION cerbero_migrazioni.contratti_chi_scrive() OWNER TO terzo"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "funzione del suo trigger" v.log || { cat v.log; exit 1; }
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          s "ALTER FUNCTION cerbero_migrazioni.contratti_chi_scrive() OWNER TO postgres"
           in_regola
           # col trigger spento, o con un trigger che la cambia, scritto_da resta quello vero (vincolo CHECK)
           psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE falsario LOGIN PASSWORD 'falsario'"
@@ -318,16 +337,21 @@ jobs:
           test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
           s 'REVOKE GRANT OPTION FOR ALL ON SCHEMA caronte FROM argos_ro CASCADE'
           p; in_regola; echo "::endgroup::"
-          echo "::group::tabella dei contratti occupata: le correzioni si salvano, il contratto si registra al giro dopo"
+          echo "::group::tabella dei contratti occupata: una versione nuova si applica solo se si registra, quindi si riprova"
           s "DELETE FROM cerbero_migrazioni.contratti; GRANT SELECT ON public.users TO argos_ro"
-          psql -q -d prod -c "BEGIN; LOCK TABLE cerbero_migrazioni.contratti IN ROW EXCLUSIVE MODE; SELECT pg_sleep(10); COMMIT" > /dev/null &
+          psql -q -d prod -c "BEGIN; LOCK TABLE cerbero_migrazioni.contratti IN ROW EXCLUSIVE MODE; SELECT pg_sleep(8); COMMIT" > /dev/null &
           sleep 2
           p > v.log 2>&1 || { cat v.log; exit 1; }
-          grep -q "era occupata" v.log || { cat v.log; exit 1; }
-          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
+          grep -q "riprovo" v.log || { cat v.log; exit 1; }
+          grep -q "contratto v1 registrato nel database" v.log || { cat v.log; exit 1; }
           wait
-          p | tee v.log; grep -q "contratto v1 registrato nel database" v.log
+          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
           in_regola; echo "::endgroup::"
+          echo "::group::verifica da un utente senza USAGE sugli schemi: il contratto del codice, con un avviso"
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE lettore LOGIN PASSWORD 'lettore'"
+          DATABASE_URL=${PG/postgres:prova@/lettore:lettore@}/prod node lib/db/scripts/argos-permessi.mjs --verifica > v.log 2>&1 || { cat v.log; exit 1; }
+          grep -q "non è leggibile da questo utente" v.log || { cat v.log; exit 1; }
+          psql -q -v ON_ERROR_STOP=1 -c "DROP ROLE lettore"; echo "::endgroup::"
           echo "::group::rollback: il contratto più nuovo del database vince"
           s "UPDATE cerbero_migrazioni.contratti SET versione = versione + 1, elenco = array_append(elenco, 'public.zones')"
           p | tee v.log; grep -q "public.zones: nel contratto, manca la lettura" v.log
