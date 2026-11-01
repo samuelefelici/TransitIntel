@@ -377,7 +377,7 @@ router.get("/planning-studio/projects/:id/stops/:stopId/detail", async (req, res
   const rS = await db.execute(sql`
     SELECT s.*, c.id AS c_id, c.code AS c_code, c.name AS c_name, c.kind AS c_kind
       FROM ps_stops s
-      LEFT JOIN ps_stop_clusters c ON c.id = s.cluster_id
+      LEFT JOIN ps_stop_clusters c ON c.id = s.cluster_id AND c.project_id = s.project_id
      WHERE s.id = ${stopId}::uuid AND s.project_id = ${projectId}::uuid
      LIMIT 1
   `);

@@ -690,7 +690,8 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
  * Senza, spegnere Analisi (analytics) lascerebbe la Fucina senza feed e
  * fermate, le Tariffe senza linee e confini, la Stampa Orari col dominio dei
  * QR sbagliato, e chi fa i turni senza la scelta del programma. Le scritture
- * restano al modulo che possiede i dati.
+ * restano al modulo che possiede i dati. Gli handler rispondono solo sui feed
+ * e sui progetti PS che l'utente vede (feedAccessibleWhere, hasProjectAccess).
  */
 const LETTURE_CONDIVISE: Array<[string | RegExp, Permission[]]> = [
   // feed e fermate: Fucina (scelta della data), fuorilinea, editor dei turni guida, zone di coincidenza

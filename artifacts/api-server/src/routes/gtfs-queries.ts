@@ -16,8 +16,9 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
-import { getLatestFeedId } from "./gtfs-helpers";
-import { cache } from "../middlewares/cache";
+import { getLatestFeedId, FEED_NON_TROVATO } from "./gtfs-helpers";
+import { feedVisibile, feedVisibiliSql } from "../lib/tenant";
+import { cache, chiavePerUtente } from "../middlewares/cache";
 
 const router: IRouter = Router();
 
@@ -68,12 +69,18 @@ router.get("/gtfs/stops", cache({ ttlSeconds: 60 }), async (req, res) => {
 });
 
 // GET /api/gtfs/routes?feedId=
-router.get("/gtfs/routes", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Le linee dei feed che l'utente vede: le legge anche chi ha solo le Tariffe
+// (LETTURE_CONDIVISE), e un feed caricato da un altro utente resta suo.
+router.get("/gtfs/routes", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
-    const feedId = req.query["feedId"] as string | undefined;
-    let query = db.select().from(gtfsRoutes).$dynamic();
-    if (feedId) query = query.where(eq(gtfsRoutes.feedId, feedId));
-    const routes = await query.orderBy(sql`trips_count DESC`);
+    const feedId = req.query["feedId"];
+    if (feedId !== undefined && feedId !== "" && !(await feedVisibile(req, feedId))) {
+      res.status(404).json(FEED_NON_TROVATO);
+      return;
+    }
+    const routes = await db.select().from(gtfsRoutes)
+      .where(feedId ? eq(gtfsRoutes.feedId, feedId as string) : sql`${gtfsRoutes.feedId} IN ${feedVisibiliSql(req)}`)
+      .orderBy(sql`trips_count DESC`);
     res.json({ data: routes });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS routes");

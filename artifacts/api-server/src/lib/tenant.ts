@@ -131,6 +131,22 @@ export function feedAccessibleWhere(req: Request): SQL {
   )`);
 }
 
+/** I feed che l'utente vede, come sottoquery: `feed_id IN ${feedVisibiliSql(req)}`. */
+export function feedVisibiliSql(req: Request): SQL {
+  return sql`(SELECT id FROM gtfs_feeds WHERE ${feedAccessibleWhere(req)})`;
+}
+
+const FEED_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** L'utente vede questo feed? Un id storto è un no, senza chiedere al database. */
+export async function feedVisibile(req: Request, feedId: unknown): Promise<boolean> {
+  if (typeof feedId !== "string" || !FEED_UUID.test(feedId)) return false;
+  const r = await db.execute(sql`
+    SELECT 1 FROM gtfs_feeds WHERE id = ${feedId}::uuid AND ${feedAccessibleWhere(req)} LIMIT 1
+  `);
+  return ((r as any).rows?.length ?? 0) > 0;
+}
+
 /**
  * Verifica che l'utente possa accedere a un feed GTFS.
  * Accetta sia owner diretto sia membro di un progetto (PS o Scheduling)
