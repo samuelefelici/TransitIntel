@@ -117,6 +117,142 @@ migrator di drizzle).
   migratore si ferma se un file già applicato è cambiato, e la CI lo controlla.
   Come scriverne una: `lib/db/migrations/README.md`.
 
+### Argos: sola lettura su un elenco chiuso
+
+Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
+tabelle che usa davvero: orari GTFS, Planning Studio, territorio e domanda,
+nodi e matrice delle tariffe, Sala Operativa live. Niente utenti, accessi,
+anagrafica, roster. L'elenco, il «contratto», è
+`lib/db/contratti/argos-lettura.mjs`, con un numero di versione.
+
+A ogni avvio dell'API il migratore riporta i permessi di `argos_ro` al
+contratto:
+- solo la lettura delle tabelle dell'elenco e l'USAGE dei loro schemi;
+- niente scrittura (MAINTAIN compreso), sequenze, permessi su colonne o grant
+  option;
+- niente funzioni, large object, server esterni e parametri del server, né
+  permessi negli altri schemi dello stesso database (per esempio `fleetcare`)
+  o in quelli di sistema (`pg_catalog`, `information_schema`);
+- nessun permesso di default che gli dia le tabelle future;
+- nessun CREATE negli schemi o nel database.
+
+«In regola» vuol dire: niente oltre al contratto e a quello che ogni ruolo
+può fare per default in Postgres (tabelle temporanee, large object propri,
+lucchetti consultivi). I large object che `argos_ro` creasse, il controllo
+successivo li segnala come «proprietario di …»; gli oggetti temporanei no,
+perché spariscono alla fine della sua sessione.
+
+Tocca solo quello che è fuori posto, e ogni correzione finisce nel log
+(`[migrazioni] permessi di argos_ro riportati al contratto`). Se `argos_ro` non
+esiste, non fa niente.
+
+Alcune cose non le corregge da solo, perché toccherebbero altri ruoli o
+servono i loro diritti:
+- permessi dati a tutti i ruoli (PUBLIC), anche fuori dagli schemi di Cerbero
+  e senza USAGE sullo schema: una vista data a tutti in un altro schema può
+  mostrare le tabelle di Cerbero, e `pg_stats` mostra i valori di qualunque
+  colonna leggibile;
+- funzioni SECURITY DEFINER che `argos_ro` può far girare: girano coi diritti
+  del proprietario, quindi gli danno quello che fanno. Con l'EXECUTE contano
+  se `argos_ro` ha l'USAGE sul loro schema, o se un oggetto qualunque le usa:
+  operatori, viste, indici e policy le raggiungono senza nominarle, e il
+  planner le valuta prima di controllare i permessi sulla tabella. Senza
+  EXECUTE basta un aggregato che le usa, un event trigger che scatta con il DDL
+  di chiunque, un oggetto che le chiama senza controllarlo (operatori, cast,
+  classi di operatori, tipi e range, conversioni, ricerca testuale,
+  TABLESAMPLE), o un cast che `argos_ro` si crea da sé su un tipo temporaneo
+  (per le funzioni con primo argomento `record`). Le funzioni di FleetCare con
+  l'EXECUTE di tutti, nello schema `fleetcare` dove `argos_ro` non entra, non
+  contano finché nessun oggetto le usa; resta buona regola crearle con
+  `REVOKE EXECUTE … FROM PUBLIC`;
+- server esterni (postgres_fdw, dblink) che può usare, e sue user mapping;
+- oggetti di sistema riservati, come `pg_authid` o `pg_read_binary_file`, che
+  `argos_ro` può usare grazie a un altro ruolo;
+- l'appartenenza di `argos_ro` a un altro ruolo (per esempio
+  `pg_read_all_data`);
+- `argos_ro` proprietario di qualcosa, o con attributi come SUPERUSER e
+  CREATEDB;
+- permessi dati da un ruolo diverso dal proprietario, o passati da `argos_ro`
+  ad altri.
+
+Questi li scrive nel log come `ATTENZIONE: argos_ro: …`, con l'istruzione da
+eseguire, e intanto sistema tutto il resto. L'API parte comunque.
+
+Il database ricorda la versione del contratto applicata
+(`cerbero_migrazioni.contratti`) e **vince la più alta**. Tornare a un'immagine
+precedente di Cerbero (rollback) non toglie quindi ad Argos le tabelle date da
+quella più nuova: nel log, come avviso, si legge `uso il contratto vN salvato
+nel database`.
+
+Chi può scrivere quella tabella decide i permessi di Argos, quindi il contratto
+salvato si usa solo se ci scrive soltanto il suo proprietario e non ha trigger
+estranei. Ogni riga dice chi l'ha scritta (`scritto_da`), e un vincolo CHECK
+impone che sia l'utente collegato: non si falsifica né spegnendo il trigger né
+con un altro trigger. Si usa solo una riga scritta da un superutente o da chi
+migra. Altrimenti vale il contratto del codice e nel log c'è un errore: si
+sistema la tabella e, se serve, la si riscrive con `--forza`. L'unico trigger
+ammesso è `contratti_chi_scrive` con la sua funzione. Il vincolo è `NOT VALID`:
+vale per ogni scrittura, e un ripristino con pg_restore fatto da un altro
+utente non si ferma sulle righe già scritte. Una versione nuova del contratto si
+registra prima di applicarla: se la tabella è occupata, il migratore toglie
+comunque i permessi in più ma non dà le tabelle che il contratto salvato non
+ha; la versione si registra e si applica all'avvio successivo (nel log c'è un
+avviso). Con `--forza` invece non rimanda: riprova, e se la tabella resta
+occupata non cambia niente ed esce con un errore.
+
+- **Per controllare** che Argos si colleghi davvero come `argos_ro` e non come
+  `postgres`, dal Terminal del PostgreSQL mentre Argos lavora:
+  ```sql
+  SELECT usename, application_name, client_addr FROM pg_stat_activity WHERE datname = current_database();
+  ```
+- **Non rilanciare `argos/cerbero_readonly_user.sql`** di Argos: ridà la lettura
+  di tutte le tabelle, utenti e anagrafica compresi, e di quelle future, e
+  così resta fino al prossimo avvio dell'API. L'API lo nota all'avvio e ogni 6
+  ore e lo scrive nel log («argos_ro non è in regola col contratto»), ma non lo
+  corregge. Se è successo, rimedia subito dal **Terminal del container
+  dell'API** in Coolify:
+  ```bash
+  node lib/db/scripts/argos-permessi.mjs --verifica   # dice cosa non va, non tocca niente
+  node lib/db/scripts/argos-permessi.mjs              # riporta i permessi al contratto
+  ```
+  Usa `DATABASE_MIGRATOR_URL` (o `DATABASE_URL`), cioè il proprietario delle
+  tabelle. Esce con 1 se resta qualcosa da sistemare a mano, e scrive
+  l'istruzione da eseguire.
+- **Creare `argos_ro` o cambiargli la password**, al posto dello script di
+  Argos. Dal Terminal del PostgreSQL (`psql -U postgres -d postgres`):
+  ```
+  CREATE ROLE argos_ro LOGIN;   -- solo la prima volta
+  \password argos_ro
+  ```
+  `\password` cifra la password in psql, così non finisce nel log del server.
+  Poi, dal container dell'API, `node lib/db/scripts/argos-permessi.mjs`: dà
+  USAGE sugli schemi e la lettura delle tabelle del contratto. La password va
+  in `CERBERO_DATABASE_URL` di Argos.
+- **Una tabella in più per Argos**:
+  1. si aggiunge a `lib/db/contratti/argos-lettura.mjs`, nella stessa PR della
+     modifica di Argos che la usa (o prima);
+  2. si alza `ARGOS_VERSIONE`;
+  3. si aggiunge la riga in `argos-lettura.versioni.json`: il test dice quale.
+
+  Al deploy il migratore dà il permesso da solo. I test controllano che la
+  tabella esista, che non sia una delle tabelle note di dati personali (utenti,
+  accessi, anagrafica, roster, validazioni dei passeggeri, audit) e che non
+  abbia colonne dal nome personale. Il resto lo garantisce la revisione della
+  PR.
+- **Togliere una tabella ad Argos**: si toglie dall'elenco e si alza la
+  versione, come per aggiungerla. **Non con un revert**: il revert riporta la
+  versione indietro, e il database tiene quella più alta (nel log un avviso a
+  ogni avvio).
+- **Se un contratto più nuovo era sbagliato**, o se il log dice che il
+  contratto salvato non è affidabile, dall'immagine giusta:
+  `node lib/db/scripts/argos-permessi.mjs --forza`, che applica e registra il
+  contratto di quell'immagine. Poi, se serve, si rilascia una versione nuova
+  del contratto.
+- **Emergenza** (Argos si ferma per un permesso mancante e serve subito):
+  `GRANT SELECT ON <tabella> TO argos_ro;` dal Terminal del PostgreSQL. È una
+  toppa che dura fino al prossimo avvio dell'API, che la toglie: la correzione
+  vera è aggiungere la tabella al contratto.
+
 ### L'immagine dell'API
 
 `Dockerfile.api` parte da Node 22 (Node 20 è fuori supporto) e fa girare l'API

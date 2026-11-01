@@ -63,8 +63,19 @@ su main non si tocca più.
   tabella grande va in uno script a parte, lanciato fuori dal deploy.
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
-- **Permessi**: nessuna tabella nuova con dati personali in `public` senza
-  pensare ai ruoli in sola lettura (Argos): i permessi di default di `postgres`
-  in `public` la renderebbero leggibile.
+- **Permessi**: niente GRANT nelle migrazioni per i ruoli in sola lettura.
+  Argos legge solo le tabelle del suo contratto
+  (`lib/db/contratti/argos-lettura.mjs`), che il migratore applica a ogni
+  avvio dopo le migrazioni: una tabella nuova non è sua finché non entra nel
+  contratto.
+- **Funzioni SECURITY DEFINER**: ogni funzione nuova è eseguibile da tutti
+  (PUBLIC), Argos compreso. Una SECURITY DEFINER gira coi diritti del suo
+  proprietario, quindi va creata con `REVOKE EXECUTE ON FUNCTION … FROM
+  PUBLIC` e data solo a chi serve: altrimenti il migratore lo segnala come
+  errore a ogni avvio. Non va mai usata come funzione di un operatore o di un
+  cast, come supporto di una classe di operatori, in un tipo o in un range, o
+  in un aggregato: lì gira senza che si controlli l'EXECUTE di chi la usa. Né
+  con un primo argomento `record` in uno schema dove Argos entra (un cast
+  creato da lui la farebbe girare).
 - **Il DDL dentro l'API non cresce più** (test `migrazioni.test.ts`, «il DDL a
   runtime può solo scendere»).

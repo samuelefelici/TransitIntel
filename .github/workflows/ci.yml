@@ -128,6 +128,8 @@ jobs:
           psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE prod"
           # in produzione lo schema public è stato ricreato: su un database nuovo c'è già
           sed '/^CREATE SCHEMA public;$/d' lib/db/schema-produzione/2026-10-25.sql | psql -q -v ON_ERROR_STOP=1 -d prod
+          # argos_ro con i permessi che ha in produzione (lettura di tutto e tabelle future)
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
           # il baseline sulla produzione non deve eseguire nessun DDL: un event
           # trigger fa fallire qualunque comando che cambi lo schema
           psql -q -v ON_ERROR_STOP=1 -d prod -c "CREATE FUNCTION public.ci_ddl_vietato() RETURNS event_trigger LANGUAGE plpgsql AS \$\$ BEGIN RAISE EXCEPTION 'il baseline ha eseguito DDL sulla copia della produzione: %', tg_tag; END \$\$" \
@@ -135,6 +137,245 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -1 -d prod -f lib/db/migrations/0000_baseline.sql
           psql -q -v ON_ERROR_STOP=1 -d prod -c "DROP EVENT TRIGGER ci_ddl_vietato" -c "DROP FUNCTION public.ci_ddl_vietato()"
           DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs
+      # Il migratore ha riportato argos_ro al contratto. Poi qualcuno rilancia lo
+      # script di Argos (lettura di tutto): la verifica se ne accorge, la cura
+      # sistema, e di nuovo tutto in regola.
+      - name: Argos legge solo le tabelle del contratto
+        run: |
+          contratto=$(node -e 'import("./lib/db/contratti/argos-lettura.mjs").then(m => console.log(m.ARGOS_LETTURA.join(",")))')
+          prova() { psql -q -v ON_ERROR_STOP=1 -d prod -v contratto="$contratto" -f lib/db/tests/argos-lettura.test.sql; }
+          DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs --verifica
+          prova
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
+          if DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs --verifica > verifica.log; then
+            cat verifica.log; echo "la verifica doveva accorgersene"; exit 1
+          fi
+          grep -q "public.users: fuori dal contratto" verifica.log
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs
+          DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs --verifica
+          prova
+      # I casi difficili, dalla revisione: quelli che il riallineamento sistema
+      # da solo, e quelli che deve solo segnalare con l'istruzione giusta
+      # (toccano altri ruoli o servono i loro diritti). Dopo ognuno, tutto
+      # torna in regola. Poi il commit parziale (una correzione impossibile non
+      # blocca le altre) e il rollback (vince il contratto più nuovo salvato
+      # nel database, finché non si usa --forza).
+      - name: Argos, i casi difficili
+        run: |
+          contratto=$(node -e 'import("./lib/db/contratti/argos-lettura.mjs").then(m => console.log(m.ARGOS_LETTURA.join(",")))')
+          p() { DATABASE_URL=$PG/prod node lib/db/scripts/argos-permessi.mjs "$@"; }
+          s() { psql -q -v ON_ERROR_STOP=1 -d prod -c "$1"; }
+          prova() { psql -q -v ON_ERROR_STOP=1 -d prod -v contratto="${1:-$contratto}" -f lib/db/tests/argos-lettura.test.sql; }
+          in_regola() {
+            p --verifica > v.log || { cat v.log; exit 1; }
+            grep -q "in regola" v.log || { cat v.log; exit 1; }
+            prova
+          }
+          # $1 preparazione: il riallineamento la corregge da solo
+          da_solo() {
+            echo "::group::da solo: $1"; s "$1"
+            if p --verifica > v.log; then cat v.log; echo "la verifica doveva accorgersene"; exit 1; fi
+            if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+            p; in_regola; echo "::endgroup::"
+          }
+          # $1 preparazione, $2 testo atteso nell'errore, $3 la cura a mano
+          a_mano() {
+            echo "::group::a mano: $1"; s "$1"
+            if p > v.log 2>&1; then cat v.log; echo "doveva chiedere un intervento a mano"; exit 1; fi
+            grep -qF -- "$2" v.log || { cat v.log; echo "manca nel messaggio: $2"; exit 1; }
+            if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+            s "$3"; p; in_regola; echo "::endgroup::"
+          }
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE terzo"
+          da_solo "GRANT MAINTAIN ON public.users, public.gtfs_stops TO argos_ro"
+          da_solo 'CREATE TABLE public."report.2026" (id int); GRANT SELECT ON public."report.2026" TO argos_ro'
+          s 'DROP TABLE public."report.2026"'
+          a_mano "GRANT SELECT (id) ON public.users TO PUBLIC" 'REVOKE ALL ON TABLE "public"."users" FROM PUBLIC' \
+            "REVOKE ALL ON public.users FROM PUBLIC"
+          a_mano "GRANT INSERT ON public.gtfs_stops TO PUBLIC" 'REVOKE INSERT ON TABLE "public"."gtfs_stops" FROM PUBLIC' \
+            "REVOKE INSERT ON public.gtfs_stops FROM PUBLIC"
+          a_mano "GRANT USAGE ON public.accessi_log_id_seq TO PUBLIC" 'REVOKE ALL ON SEQUENCE "public"."accessi_log_id_seq" FROM PUBLIC' \
+            "REVOKE ALL ON public.accessi_log_id_seq FROM PUBLIC"
+          a_mano "GRANT CREATE ON SCHEMA caronte TO PUBLIC" 'REVOKE CREATE ON SCHEMA "caronte" FROM PUBLIC' \
+            "REVOKE CREATE ON SCHEMA caronte FROM PUBLIC"
+          a_mano "ALTER DEFAULT PRIVILEGES FOR ROLE postgres GRANT SELECT ON TABLES TO PUBLIC" 'REVOKE ALL ON TABLES FROM PUBLIC' \
+            "ALTER DEFAULT PRIVILEGES FOR ROLE postgres REVOKE ALL ON TABLES FROM PUBLIC"
+          a_mano "ALTER SCHEMA caronte OWNER TO argos_ro" "proprietario di schema caronte" "ALTER SCHEMA caronte OWNER TO postgres"
+          a_mano "ALTER DATABASE prod OWNER TO argos_ro" "proprietario di database prod" "ALTER DATABASE prod OWNER TO postgres"
+          a_mano "GRANT pg_read_all_data TO argos_ro" "membro di pg_read_all_data" "REVOKE pg_read_all_data FROM argos_ro"
+          a_mano "ALTER ROLE argos_ro REPLICATION" "NOREPLICATION" "ALTER ROLE argos_ro NOREPLICATION"
+          a_mano "GRANT SELECT ON public.depots TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT SELECT ON public.depots TO argos_ro; RESET ROLE" \
+            'SET ROLE "terzo"; REVOKE ALL ON TABLE "public"."depots" FROM "argos_ro"' \
+            "SET ROLE terzo; REVOKE ALL ON public.depots FROM argos_ro; RESET ROLE; REVOKE ALL ON public.depots FROM terzo"
+          da_solo "GRANT EXECUTE ON FUNCTION pg_catalog.pg_read_binary_file(text) TO argos_ro"
+          da_solo "GRANT SET ON PARAMETER session_replication_role TO argos_ro"
+          da_solo "CREATE SCHEMA altro; CREATE TABLE altro.t (x int); GRANT USAGE, CREATE ON SCHEMA altro TO argos_ro; GRANT INSERT ON altro.t TO argos_ro"
+          s "DROP SCHEMA altro CASCADE"
+          a_mano "CREATE FUNCTION public.ci_conta() RETURNS bigint LANGUAGE sql SECURITY DEFINER AS 'SELECT count(*) FROM public.users'" \
+            'REVOKE EXECUTE ON ROUTINE "public"."ci_conta"() FROM PUBLIC' "REVOKE EXECUTE ON FUNCTION public.ci_conta() FROM PUBLIC"
+          s "DROP FUNCTION public.ci_conta()"
+          a_mano "ALTER ROLE argos_ro CREATEDB" "NOCREATEDB" "ALTER ROLE argos_ro NOCREATEDB"
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE ammin"
+          a_mano "GRANT pg_read_all_data TO ammin WITH ADMIN OPTION; SET ROLE ammin; GRANT pg_read_all_data TO argos_ro; RESET ROLE" \
+            'GRANTED BY "ammin"' "REVOKE pg_read_all_data FROM argos_ro GRANTED BY ammin; REVOKE pg_read_all_data FROM ammin"
+          a_mano "GRANT CREATE ON SCHEMA caronte TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT CREATE ON SCHEMA caronte TO argos_ro; RESET ROLE" \
+            'SET ROLE "terzo"; REVOKE ALL ON SCHEMA "caronte" FROM "argos_ro"' \
+            "SET ROLE terzo; REVOKE ALL ON SCHEMA caronte FROM argos_ro; RESET ROLE; GRANT USAGE ON SCHEMA caronte TO argos_ro; REVOKE ALL ON SCHEMA caronte FROM terzo"
+          da_solo "SELECT lo_from_bytea(424242, 'segreto'); GRANT SELECT, UPDATE ON LARGE OBJECT 424242 TO argos_ro"
+          s "SELECT lo_unlink(424242)"
+          a_mano "CREATE SCHEMA rep; CREATE VIEW rep.dump AS SELECT email FROM public.users; GRANT USAGE ON SCHEMA rep TO PUBLIC; GRANT SELECT ON rep.dump TO PUBLIC" \
+            'REVOKE SELECT ON ALL TABLES IN SCHEMA "rep" FROM PUBLIC' "REVOKE SELECT ON rep.dump FROM PUBLIC"
+          s "DROP SCHEMA rep CASCADE"
+          a_mano "GRANT SELECT (rolname, rolpassword) ON pg_catalog.pg_authid TO PUBLIC" "pg_catalog.pg_authid" \
+            "REVOKE SELECT (rolname, rolpassword) ON pg_catalog.pg_authid FROM PUBLIC"
+          # senza USAGE sullo schema: la sequenza si usa per OID, MAINTAIN vale per VACUUM e
+          # ANALYZE senza elenco, e un SELECT si legge da pg_stats
+          s "CREATE SCHEMA rv; CREATE SEQUENCE rv.contatore; CREATE TABLE rv.t (x int); CREATE TABLE rv.autisti (cf text)"
+          s "INSERT INTO rv.autisti SELECT 'RSSMRA' || g FROM generate_series(1, 200) g; ANALYZE rv.autisti"
+          a_mano "GRANT USAGE, SELECT, UPDATE ON SEQUENCE rv.contatore TO PUBLIC" 'REVOKE ALL ON SEQUENCE "rv"."contatore" FROM PUBLIC' \
+            "REVOKE ALL ON SEQUENCE rv.contatore FROM PUBLIC"
+          a_mano "GRANT MAINTAIN ON rv.t TO PUBLIC" 'REVOKE ALL ON TABLE "rv"."t" FROM PUBLIC' "REVOKE ALL ON rv.t FROM PUBLIC"
+          a_mano "GRANT SELECT ON rv.autisti TO PUBLIC" 'pg_stats' "REVOKE SELECT ON rv.autisti FROM PUBLIC"
+          s "DROP SCHEMA rv CASCADE"
+          da_solo "GRANT CREATE ON SCHEMA pg_catalog TO argos_ro"
+          a_mano "GRANT MAINTAIN ON pg_catalog.pg_class TO PUBLIC" 'REVOKE MAINTAIN ON TABLE "pg_catalog"."pg_class" FROM PUBLIC' \
+            "REVOKE MAINTAIN ON pg_catalog.pg_class FROM PUBLIC"
+          s "CREATE FUNCTION public.ci_passo(stato text, q text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN RETURN q; END'; REVOKE ALL ON FUNCTION public.ci_passo(text, text) FROM PUBLIC"
+          a_mano "CREATE AGGREGATE public.ci_agg(text) (SFUNC = public.ci_passo, STYPE = text)" "aggregato" "DROP AGGREGATE public.ci_agg(text)"
+          s "DROP FUNCTION public.ci_passo(text, text)"
+          s "CREATE SCHEMA ev; CREATE FUNCTION ev.registra() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; REVOKE ALL ON FUNCTION ev.registra() FROM PUBLIC"
+          a_mano "CREATE EVENT TRIGGER ci_ddl ON ddl_command_end EXECUTE FUNCTION ev.registra()" "event trigger ci_ddl" "DROP EVENT TRIGGER ci_ddl"
+          s "DROP SCHEMA ev CASCADE"
+          a_mano "CREATE SCHEMA ci_op; REVOKE ALL ON SCHEMA ci_op FROM PUBLIC; CREATE FUNCTION ci_op.cmp(int4, int4) RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT btint4cmp(\$1, \$2)'; REVOKE ALL ON FUNCTION ci_op.cmp(int4, int4) FROM PUBLIC; CREATE OPERATOR CLASS ci_op.ord FOR TYPE int4 USING btree AS OPERATOR 1 <, OPERATOR 3 =, FUNCTION 1 ci_op.cmp(int4, int4)" \
+            "senza controllare l'EXECUTE" "DROP SCHEMA ci_op CASCADE"
+          # operatore di una classe di operatori: lo chiamano senza controllare l'EXECUTE
+          a_mano "CREATE SCHEMA ci_opr; REVOKE ALL ON SCHEMA ci_opr FROM PUBLIC; CREATE FUNCTION ci_opr.uguale(int4, int4) RETURNS bool LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT \$1 = \$2'; REVOKE ALL ON FUNCTION ci_opr.uguale(int4, int4) FROM PUBLIC; CREATE OPERATOR ci_opr.=== (LEFTARG = int4, RIGHTARG = int4, FUNCTION = ci_opr.uguale); CREATE OPERATOR CLASS ci_opr.hc FOR TYPE int4 USING hash AS OPERATOR 1 ci_opr.===, FUNCTION 1 hashint4(int4)" \
+            "senza controllare l'EXECUTE" "DROP SCHEMA ci_opr CASCADE"
+          # un operatore qualunque: le stime di selettività (eqsel) ne chiamano la funzione
+          a_mano "CREATE FUNCTION public.ci_uguale(a int, b int) RETURNS bool LANGUAGE sql SECURITY DEFINER AS 'SELECT a = b'; REVOKE ALL ON FUNCTION public.ci_uguale(int, int) FROM PUBLIC; CREATE OPERATOR public.=== (FUNCTION = public.ci_uguale, LEFTARG = int, RIGHTARG = int, RESTRICT = eqsel, JOIN = eqjoinsel)" \
+            "senza controllare l'EXECUTE" "DROP OPERATOR public.=== (int, int); DROP FUNCTION public.ci_uguale(int, int)"
+          # un cast verso json: to_json lo chiama senza controllare l'EXECUTE
+          a_mano "CREATE TYPE public.ci_t AS (x int); CREATE FUNCTION public.ci_js(public.ci_t) RETURNS json LANGUAGE sql SECURITY DEFINER AS 'SELECT ''{}''::json'; REVOKE ALL ON FUNCTION public.ci_js(public.ci_t) FROM PUBLIC; CREATE CAST (public.ci_t AS json) WITH FUNCTION public.ci_js(public.ci_t)" \
+            "cast from ci_t to json" "DROP TYPE public.ci_t CASCADE"
+          # indice d'espressione su una tabella del contratto: argos_ro lo copia con LIKE in una tabella temporanea sua
+          a_mano "CREATE SCHEMA ci_idx; REVOKE ALL ON SCHEMA ci_idx FROM PUBLIC; CREATE FUNCTION ci_idx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE INDEX ci_idx_scenari ON public.scenarios (ci_idx.chiave(name))" \
+            'REVOKE EXECUTE ON ROUTINE "ci_idx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_idx CASCADE"
+          a_mano "CREATE SCHEMA ci_stx; REVOKE ALL ON SCHEMA ci_stx FROM PUBLIC; CREATE FUNCTION ci_stx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE STATISTICS public.ci_stx_scenari ON (ci_stx.chiave(name)) FROM public.scenarios" \
+            'REVOKE EXECUTE ON ROUTINE "ci_stx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_stx CASCADE"
+          # senza EXECUTE, ma argos_ro la aggancia a un cast creato da lui su un tipo temporaneo
+          a_mano "CREATE FUNCTION public.ci_firma(r record) RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN RETURN md5(format(''%s'', r)); END'; REVOKE ALL ON FUNCTION public.ci_firma(record) FROM PUBLIC" \
+            "cast creato da lui" "DROP FUNCTION public.ci_firma(record)"
+          # con l'EXECUTE conta anche in uno schema senza USAGE, se un oggetto la usa: un indice di public.users la valuta nel piano
+          a_mano "CREATE SCHEMA ci_aperta; REVOKE ALL ON SCHEMA ci_aperta FROM PUBLIC; CREATE FUNCTION ci_aperta.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; CREATE INDEX ci_aperta_utenti ON public.users ((ci_aperta.f()))" \
+            'REVOKE EXECUTE ON ROUTINE "ci_aperta"."f"() FROM PUBLIC' "DROP SCHEMA ci_aperta CASCADE"
+          echo "::group::SECURITY DEFINER che argos_ro non può far girare: non contano"
+          # senza EXECUTE in un indice, in una policy e nel DEFAULT di un dominio; funzione di un event trigger spento;
+          # come in FleetCare: con l'EXECUTE di tutti ma in uno schema senza USAGE, senza oggetti che la usano o solo
+          # come funzione trigger di una tabella di quello schema
+          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.f() FROM PUBLIC; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.f(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f())); CREATE FUNCTION ci_chiuso.ev() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; CREATE EVENT TRIGGER ci_spento ON ddl_command_end EXECUTE FUNCTION ci_chiuso.ev(); ALTER EVENT TRIGGER ci_spento DISABLE; CREATE FUNCTION ci_chiuso.conta() RETURNS bigint LANGUAGE sql SECURITY DEFINER AS 'SELECT count(*) FROM public.users'; CREATE FUNCTION ci_chiuso.audit() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN RETURN NEW; END'; CREATE TRIGGER audit BEFORE UPDATE ON ci_chiuso.t FOR EACH ROW EXECUTE FUNCTION ci_chiuso.audit()"
+          in_regola; s "DROP EVENT TRIGGER ci_spento; DROP SCHEMA ci_chiuso CASCADE"; echo "::endgroup::"
+          a_mano "CREATE TABLE information_schema.ci_copia AS SELECT 1 AS x; GRANT SELECT ON information_schema.ci_copia TO PUBLIC" \
+            'REVOKE SELECT ON TABLE "information_schema"."ci_copia" FROM PUBLIC' "DROP TABLE information_schema.ci_copia"
+          s "CREATE EXTENSION postgres_fdw; CREATE SERVER ci_remoto FOREIGN DATA WRAPPER postgres_fdw OPTIONS (dbname 'prod')"
+          da_solo "GRANT USAGE ON FOREIGN SERVER ci_remoto TO argos_ro"
+          a_mano "GRANT USAGE ON FOREIGN SERVER ci_remoto TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT USAGE ON FOREIGN SERVER ci_remoto TO PUBLIC; RESET ROLE" \
+            'SET ROLE "terzo"; REVOKE ALL ON FOREIGN SERVER "ci_remoto" FROM PUBLIC; RESET ROLE;' \
+            "SET ROLE terzo; REVOKE ALL ON FOREIGN SERVER ci_remoto FROM PUBLIC; RESET ROLE"
+          # la cura l'ha tolto a tutti, non al terzo
+          test "$(psql -Atd prod -c "SELECT has_server_privilege('terzo', 'ci_remoto', 'USAGE')")" = t
+          a_mano "CREATE USER MAPPING FOR argos_ro SERVER ci_remoto OPTIONS (user 'postgres')" 'DROP USER MAPPING FOR "argos_ro" SERVER "ci_remoto"' \
+            "DROP USER MAPPING FOR argos_ro SERVER ci_remoto"
+          s "DROP EXTENSION postgres_fdw CASCADE"
+          a_mano "ALTER ROLE argos_ro IN DATABASE prod SET lo_compat_privileges = on" "lo_compat_privileges" \
+            "ALTER ROLE argos_ro IN DATABASE prod RESET lo_compat_privileges"
+          a_mano "GRANT SET ON PARAMETER work_mem TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT SET ON PARAMETER work_mem TO argos_ro; RESET ROLE" \
+            'SET ROLE "terzo"; REVOKE ALL ON PARAMETER "work_mem" FROM "argos_ro"' \
+            "SET ROLE terzo; REVOKE ALL ON PARAMETER work_mem FROM argos_ro; RESET ROLE; REVOKE ALL ON PARAMETER work_mem FROM terzo"
+          echo "::group::contratto salvato: un trigger estraneo lo rende inaffidabile, scritto_da non si falsifica"
+          s "CREATE FUNCTION cerbero_migrazioni.zz() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'; CREATE TRIGGER zz BEFORE UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION cerbero_migrazioni.zz()"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "trigger estraneo" v.log || { cat v.log; exit 1; }
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          s "DROP TRIGGER zz ON cerbero_migrazioni.contratti; DROP FUNCTION cerbero_migrazioni.zz()"
+          in_regola
+          # col nome giusto ma un'altra funzione: estraneo lo stesso
+          s "CREATE FUNCTION public.ci_falso() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'; DROP TRIGGER contratti_chi_scrive ON cerbero_migrazioni.contratti; CREATE TRIGGER contratti_chi_scrive BEFORE INSERT OR UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION public.ci_falso()"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "trigger estraneo" v.log || { cat v.log; exit 1; }
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          s "DROP TRIGGER contratti_chi_scrive ON cerbero_migrazioni.contratti; DROP FUNCTION public.ci_falso(); CREATE TRIGGER contratti_chi_scrive BEFORE INSERT OR UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION cerbero_migrazioni.contratti_chi_scrive(); ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive"
+          in_regola
+          # la sua funzione, ma di un altro ruolo: con CREATE OR REPLACE cambierebbe le righe di chi migra
+          s "ALTER FUNCTION cerbero_migrazioni.contratti_chi_scrive() OWNER TO terzo"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "funzione del suo trigger" v.log || { cat v.log; exit 1; }
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          s "ALTER FUNCTION cerbero_migrazioni.contratti_chi_scrive() OWNER TO postgres"
+          in_regola
+          # col trigger spento, o con un trigger che la cambia, scritto_da resta quello vero (vincolo CHECK)
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE falsario LOGIN PASSWORD 'falsario'"
+          s "GRANT USAGE ON SCHEMA cerbero_migrazioni TO falsario; GRANT ALL ON cerbero_migrazioni.contratti TO falsario; ALTER TABLE cerbero_migrazioni.contratti DISABLE TRIGGER contratti_chi_scrive"
+          if PGPASSWORD=falsario psql -q -v ON_ERROR_STOP=1 -U falsario -d prod \
+               -c "UPDATE cerbero_migrazioni.contratti SET versione = 99, elenco = '{public.users}', scritto_da = 'postgres'"; then
+            echo "doveva rifiutare scritto_da falso"; exit 1
+          fi
+          if PGPASSWORD=falsario psql -q -v ON_ERROR_STOP=1 -U falsario -d prod \
+               -c "CREATE FUNCTION pg_temp.f() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN NEW.scritto_da := ''postgres''; RETURN NEW; END'" \
+               -c "CREATE TRIGGER zz BEFORE UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION pg_temp.f()" \
+               -c "UPDATE cerbero_migrazioni.contratti SET versione = 98, elenco = '{public.users}'"; then
+            echo "doveva rifiutare scritto_da falso (trigger temporaneo)"; exit 1
+          fi
+          s "REVOKE ALL ON cerbero_migrazioni.contratti FROM falsario; REVOKE ALL ON SCHEMA cerbero_migrazioni FROM falsario; ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive"
+          test "$(psql -Atd prod -c "SELECT versione || ' ' || scritto_da FROM cerbero_migrazioni.contratti")" = "1 postgres"
+          in_regola; echo "::endgroup::"
+          echo "::group::contratto salvato manomesso: non vale finché non lo si riscrive"
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE scrittore LOGIN PASSWORD 'scrittore'"
+          s "GRANT USAGE ON SCHEMA cerbero_migrazioni TO scrittore; GRANT UPDATE ON cerbero_migrazioni.contratti TO scrittore"
+          PGPASSWORD=scrittore psql -q -v ON_ERROR_STOP=1 -U scrittore -d prod \
+            -c "UPDATE cerbero_migrazioni.contratti SET versione = 99, elenco = '{public.users,public.gtfs_stops}'"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "lo può modificare anche chi non dovrebbe" v.log || { cat v.log; exit 1; }
+          s "REVOKE ALL ON cerbero_migrazioni.contratti FROM scrittore; REVOKE ALL ON SCHEMA cerbero_migrazioni FROM scrittore"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "l'ha scritto scrittore" v.log || { cat v.log; exit 1; }
+          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
+          p --forza; in_regola
+          test "$(psql -Atd prod -c "SELECT versione || ' ' || scritto_da FROM cerbero_migrazioni.contratti")" = "1 postgres"
+          echo "::endgroup::"
+          echo "::group::commit parziale: una grant option sullo schema passata ad altri"
+          s "GRANT USAGE ON SCHEMA caronte TO argos_ro WITH GRANT OPTION; SET ROLE argos_ro; GRANT USAGE ON SCHEMA caronte TO terzo; RESET ROLE"
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
+          if p > v.log 2>&1; then cat v.log; echo "doveva chiedere un intervento a mano"; exit 1; fi
+          grep -qF 'REVOKE GRANT OPTION FOR ALL ON SCHEMA "caronte" FROM "argos_ro" CASCADE' v.log || { cat v.log; exit 1; }
+          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
+          s 'REVOKE GRANT OPTION FOR ALL ON SCHEMA caronte FROM argos_ro CASCADE'
+          p; in_regola; echo "::endgroup::"
+          echo "::group::tabella dei contratti occupata: i permessi in più si tolgono, le tabelle nuove aspettano la registrazione"
+          s "DELETE FROM cerbero_migrazioni.contratti; GRANT SELECT ON public.users TO argos_ro; REVOKE SELECT ON public.gtfs_stops FROM argos_ro"
+          psql -q -d prod -c "BEGIN; LOCK TABLE cerbero_migrazioni.contratti IN ROW EXCLUSIVE MODE; SELECT pg_sleep(10); COMMIT" > /dev/null &
+          sleep 2
+          p > v.log 2>&1 || { cat v.log; exit 1; }
+          grep -q "non ho dato le tabelle nuove (public.gtfs_stops)" v.log || { cat v.log; exit 1; }
+          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT') || ' ' || has_table_privilege('argos_ro', 'public.gtfs_stops', 'SELECT')")" = "false false"
+          wait
+          p | tee v.log; grep -q "contratto v1 registrato nel database" v.log
+          in_regola; echo "::endgroup::"
+          echo "::group::verifica da un utente senza USAGE sugli schemi: il contratto del codice, con un avviso"
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE lettore LOGIN PASSWORD 'lettore'"
+          DATABASE_URL=${PG/postgres:prova@/lettore:lettore@}/prod node lib/db/scripts/argos-permessi.mjs --verifica > v.log 2>&1 || { cat v.log; exit 1; }
+          grep -q "non è leggibile da questo utente" v.log || { cat v.log; exit 1; }
+          psql -q -v ON_ERROR_STOP=1 -c "DROP ROLE lettore"; echo "::endgroup::"
+          echo "::group::rollback: il contratto più nuovo del database vince"
+          s "UPDATE cerbero_migrazioni.contratti SET versione = versione + 1, elenco = array_append(elenco, 'public.zones')"
+          p | tee v.log; grep -q "public.zones: nel contratto, manca la lettura" v.log
+          p --verifica | grep -q "salvato nel database"
+          prova "$contratto,public.zones"
+          p --forza | tee v.log; grep -q "public.zones: fuori dal contratto" v.log
+          test "$(psql -Atd prod -c "SELECT versione FROM cerbero_migrazioni.contratti")" = 1
+          in_regola; echo "::endgroup::"
+          s "DROP OWNED BY terzo; DROP OWNED BY ammin; DROP OWNED BY scrittore; DROP OWNED BY falsario"
+          psql -q -v ON_ERROR_STOP=1 -c "DROP ROLE terzo" -c "DROP ROLE ammin" -c "DROP ROLE scrittore" -c "DROP ROLE falsario"
       - name: Tutti e due hanno lo schema atteso
         run: |
           DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto.json
