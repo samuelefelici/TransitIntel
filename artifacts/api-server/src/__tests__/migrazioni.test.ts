@@ -564,7 +564,7 @@ describe("permessi di Argos: il piano", () => {
     type Definer = NonNullable<StatoPermessi["definer"]>[number];
     const def2 = (extra: Partial<Definer> & { nome: string }): Definer => ({
       schema: "public", argomenti: "", estensione: false, di_tutti: true, eseguibile: true, via_aggregati: null, via_eventi: null,
-      via_oggetti: null, ...extra,
+      via_oggetti: null, via_cast: false, ...extra,
     });
     s.definer = [
       def2({ nome: "svuota" }),
@@ -572,6 +572,7 @@ describe("permessi di Argos: il piano", () => {
       def2({ nome: "passo", argomenti: "text, text", di_tutti: false, eseguibile: false, via_aggregati: "public.agg(text)" }),
       def2({ nome: "registra", di_tutti: false, eseguibile: false, via_eventi: "registra_ddl" }),
       def2({ nome: "confronta", argomenti: "integer, integer", di_tutti: false, eseguibile: false, via_oggetti: "function 1 (integer, integer) of operator family x for access method btree" }),
+      def2({ nome: "firma", argomenti: "record", di_tutti: false, eseguibile: false, via_cast: true }),
     ];
     const p = piano(s, C);
     expect(p.azioni).toEqual([]);
@@ -580,6 +581,7 @@ describe("permessi di Argos: il piano", () => {
       expect.stringMatching(/public\.passo\(text, text\).*aggregato public\.agg\(text\).*togliere l'EXECUTE alla funzione non basta/),
       expect.stringMatching(/public\.registra\(\).*event trigger registra_ddl/),
       expect.stringMatching(/public\.confronta\(integer, integer\).*operator family x.*senza controllare l'EXECUTE.*SECURITY INVOKER/),
+      expect.stringMatching(/public\.firma\(record\).*cast creato da lui.*SECURITY INVOKER/),
     ]);
     expect(p.avvisi).toEqual([expect.stringMatching(/di_postgis.*estensione/)]);
   });
@@ -646,6 +648,9 @@ describe("permessi di Argos: il piano", () => {
       expect.stringContaining('REVOKE SELECT ON TABLE "pg_catalog"."pg_class_copia" FROM PUBLIC'),
     ]);
     expect(err.join(" ")).not.toMatch(/ALL TABLES IN SCHEMA/);
+    // information_schema ricreato: le viste standard non si tolgono, solo gli oggetti in più
+    expect(err[0]).toMatch(/togli solo gli oggetti che information_schema\.sql non crea/);
+    expect(err[1]).not.toMatch(/information_schema\.sql/);
   });
 
   it("permessi effettivi che nessuna voce spiega: errore (il riallineamento non può dire «in regola»)", () => {

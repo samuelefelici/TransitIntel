@@ -198,9 +198,13 @@ BEGIN
   END IF;
 
   -- 7. funzioni: nessuna SECURITY DEFINER che argos_ro possa far girare:
-  --    - con l'EXECUTE, sempre (anche senza USAGE sullo schema: operatori,
-  --      cast, viste, indici e policy la raggiungono senza nominarla), tranne
-  --      le funzioni di event trigger, che si chiamano solo come trigger;
+  --    - con l'EXECUTE, se ha l'USAGE sullo schema o se un oggetto qualunque
+  --      dipende dalla funzione (operatori, cast, viste, indici, policy la
+  --      raggiungono senza nominarla); le funzioni trigger solo con l'USAGE,
+  --      quelle di event trigger mai (si chiamano solo come trigger);
+  --    - senza EXECUTE, se la può agganciare a un cast creato da lui su un
+  --      tipo temporaneo (CREATE CAST non controlla l'EXECUTE): primo argomento
+  --      record o polimorfico, USAGE sullo schema, TEMPORARY sul database;
   --    - senza EXECUTE, se la usa un aggregato, un event trigger acceso o un
   --      oggetto che la chiama senza controllare l'EXECUTE: qualunque
   --      operatore o cast, classi di operatori, stime di selettività, supporto
@@ -209,7 +213,8 @@ BEGIN
   --    Nessun oggetto di sistema riservato all'installazione (pg_init_privs
   --    senza PUBLIC) usabile
   IF EXISTS (WITH sd AS MATERIALIZED (
-               SELECT p.oid, p.prorettype FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+               SELECT p.oid, p.prorettype, p.pronamespace, p.pronargs, p.proargtypes
+                 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
                 WHERE p.prosecdef AND n.nspname !~ '^pg_(toast_)?temp_'
                   AND ((n.nspname !~ '^pg_' AND n.nspname <> 'information_schema') OR p.oid >= 16384)
                   AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
@@ -231,10 +236,22 @@ BEGIN
                  UNION ALL SELECT x FROM pg_foreign_data_wrapper, LATERAL (VALUES (fdwhandler), (fdwvalidator)) v(x)
                  UNION ALL SELECT amhandler::oid FROM pg_am
                  UNION ALL SELECT x::oid FROM pg_transform, LATERAL (VALUES (trffromsql), (trftosql)) v(x)
+                 UNION ALL SELECT oid FROM pg_proc
+                            WHERE prorettype IN (SELECT oid FROM pg_type WHERE typnamespace = 'pg_catalog'::regnamespace
+                                                    AND typname IN ('tsm_handler', 'fdw_handler', 'index_am_handler',
+                                                                    'table_am_handler', 'language_handler'))
                ) u WHERE f IN (SELECT oid FROM sd)
              )
              SELECT 1 FROM sd
-              WHERE (has_function_privilege(argos, sd.oid, 'EXECUTE') AND sd.prorettype <> 'event_trigger'::regtype)
+              WHERE (has_function_privilege(argos, sd.oid, 'EXECUTE') AND sd.prorettype <> 'event_trigger'::regtype
+                     AND (has_schema_privilege(argos, sd.pronamespace, 'USAGE')
+                          OR (sd.prorettype <> 'trigger'::regtype
+                              AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.refclassid = 'pg_proc'::regclass
+                                             AND d.refobjid = sd.oid AND d.deptype IN ('n', 'a')))))
+                 OR (has_database_privilege(argos, current_database(), 'TEMPORARY')
+                     AND has_schema_privilege(argos, sd.pronamespace, 'USAGE') AND sd.pronargs BETWEEN 1 AND 3
+                     AND (sd.proargtypes[0] IN ('record'::regtype, '_record'::regtype)
+                          OR (SELECT t.typtype = 'p' AND t.typname ~ '^any' FROM pg_type t WHERE t.oid = sd.proargtypes[0])))
                  OR sd.oid IN (SELECT f FROM senza_controllo)
                  OR EXISTS (SELECT 1 FROM pg_aggregate g
                              WHERE sd.oid IN (g.aggtransfn, g.aggfinalfn, g.aggcombinefn, g.aggserialfn, g.aggdeserialfn,

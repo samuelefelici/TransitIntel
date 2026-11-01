@@ -263,12 +263,17 @@ jobs:
             'REVOKE EXECUTE ON ROUTINE "ci_idx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_idx CASCADE"
           a_mano "CREATE SCHEMA ci_stx; REVOKE ALL ON SCHEMA ci_stx FROM PUBLIC; CREATE FUNCTION ci_stx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE STATISTICS public.ci_stx_scenari ON (ci_stx.chiave(name)) FROM public.scenarios" \
             'REVOKE EXECUTE ON ROUTINE "ci_stx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_stx CASCADE"
-          # con l'EXECUTE conta anche in uno schema senza USAGE: un indice di public.users la valuta nel piano
+          # senza EXECUTE, ma argos_ro la aggancia a un cast creato da lui su un tipo temporaneo
+          a_mano "CREATE FUNCTION public.ci_firma(r record) RETURNS text LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN RETURN md5(format(''%s'', r)); END'; REVOKE ALL ON FUNCTION public.ci_firma(record) FROM PUBLIC" \
+            "cast creato da lui" "DROP FUNCTION public.ci_firma(record)"
+          # con l'EXECUTE conta anche in uno schema senza USAGE, se un oggetto la usa: un indice di public.users la valuta nel piano
           a_mano "CREATE SCHEMA ci_aperta; REVOKE ALL ON SCHEMA ci_aperta FROM PUBLIC; CREATE FUNCTION ci_aperta.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; CREATE INDEX ci_aperta_utenti ON public.users ((ci_aperta.f()))" \
             'REVOKE EXECUTE ON ROUTINE "ci_aperta"."f"() FROM PUBLIC' "DROP SCHEMA ci_aperta CASCADE"
           echo "::group::SECURITY DEFINER che argos_ro non può far girare: non contano"
-          # senza EXECUTE in un indice, in una policy e nel DEFAULT di un dominio; funzione di un event trigger spento
-          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.f() FROM PUBLIC; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.f(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f())); CREATE FUNCTION ci_chiuso.ev() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; CREATE EVENT TRIGGER ci_spento ON ddl_command_end EXECUTE FUNCTION ci_chiuso.ev(); ALTER EVENT TRIGGER ci_spento DISABLE"
+          # senza EXECUTE in un indice, in una policy e nel DEFAULT di un dominio; funzione di un event trigger spento;
+          # come in FleetCare: con l'EXECUTE di tutti ma in uno schema senza USAGE, senza oggetti che la usano o solo
+          # come funzione trigger di una tabella di quello schema
+          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.f() FROM PUBLIC; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.f(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f())); CREATE FUNCTION ci_chiuso.ev() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; CREATE EVENT TRIGGER ci_spento ON ddl_command_end EXECUTE FUNCTION ci_chiuso.ev(); ALTER EVENT TRIGGER ci_spento DISABLE; CREATE FUNCTION ci_chiuso.conta() RETURNS bigint LANGUAGE sql SECURITY DEFINER AS 'SELECT count(*) FROM public.users'; CREATE FUNCTION ci_chiuso.audit() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN RETURN NEW; END'; CREATE TRIGGER audit BEFORE UPDATE ON ci_chiuso.t FOR EACH ROW EXECUTE FUNCTION ci_chiuso.audit()"
           in_regola; s "DROP EVENT TRIGGER ci_spento; DROP SCHEMA ci_chiuso CASCADE"; echo "::endgroup::"
           a_mano "CREATE TABLE information_schema.ci_copia AS SELECT 1 AS x; GRANT SELECT ON information_schema.ci_copia TO PUBLIC" \
             'REVOKE SELECT ON TABLE "information_schema"."ci_copia" FROM PUBLIC' "DROP TABLE information_schema.ci_copia"

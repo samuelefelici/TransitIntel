@@ -34,7 +34,7 @@ export interface StatoPermessi {
   altrove?: Effettivo[];
   definer?: (Routine & {
     estensione: boolean; di_tutti: boolean; eseguibile: boolean; via_aggregati: string | null; via_eventi: string | null;
-    via_oggetti: string | null;
+    via_oggetti: string | null; via_cast: boolean;
   })[];
   sistema?: { genere: "relazione" | "routine"; schema: string; nome: string; argomenti: string | null }[];
   sistemaScrive?: { schema: string; nome: string; privilegi: string }[];

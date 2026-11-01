@@ -72,9 +72,10 @@ su main non si tocca più.
   (PUBLIC), Argos compreso. Una SECURITY DEFINER gira coi diritti del suo
   proprietario, quindi va creata con `REVOKE EXECUTE ON FUNCTION … FROM
   PUBLIC` e data solo a chi serve: altrimenti il migratore lo segnala come
-  errore a ogni avvio, anche in uno schema senza USAGE. Non va mai usata come
-  funzione di un operatore o di un cast, come supporto di una classe di
-  operatori, in un tipo o in un range, o in un aggregato: lì gira senza che si
-  controlli l'EXECUTE di chi la usa.
+  errore a ogni avvio. Non va mai usata come funzione di un operatore o di un
+  cast, come supporto di una classe di operatori, in un tipo o in un range, o
+  in un aggregato: lì gira senza che si controlli l'EXECUTE di chi la usa. Né
+  con un primo argomento `record` in uno schema dove Argos entra (un cast
+  creato da lui la farebbe girare).
 - **Il DDL dentro l'API non cresce più** (test `migrazioni.test.ts`, «il DDL a
   runtime può solo scendere»).

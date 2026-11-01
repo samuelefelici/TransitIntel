@@ -154,13 +154,17 @@ servono i loro diritti:
   colonna leggibile;
 - funzioni SECURITY DEFINER che `argos_ro` può far girare: girano coi diritti
   del proprietario, quindi gli danno quello che fanno. Con l'EXECUTE contano
-  sempre, anche in uno schema senza USAGE: operatori, viste, indici e policy
-  le raggiungono senza nominarle, e il planner le valuta prima di controllare
-  i permessi sulla tabella. Senza EXECUTE basta un aggregato che le usa, un
-  event trigger che scatta con il DDL di chiunque, o un oggetto che le chiama
-  senza controllarlo (operatori, cast, classi di operatori, tipi e range,
-  conversioni, ricerca testuale). Vale anche per le funzioni di FleetCare: una
-  SECURITY DEFINER va sempre creata con `REVOKE EXECUTE … FROM PUBLIC`;
+  se `argos_ro` ha l'USAGE sul loro schema, o se un oggetto qualunque le usa:
+  operatori, viste, indici e policy le raggiungono senza nominarle, e il
+  planner le valuta prima di controllare i permessi sulla tabella. Senza
+  EXECUTE basta un aggregato che le usa, un event trigger che scatta con il DDL
+  di chiunque, un oggetto che le chiama senza controllarlo (operatori, cast,
+  classi di operatori, tipi e range, conversioni, ricerca testuale,
+  TABLESAMPLE), o un cast che `argos_ro` si crea da sé su un tipo temporaneo
+  (per le funzioni con primo argomento `record`). Le funzioni di FleetCare con
+  l'EXECUTE di tutti, nello schema `fleetcare` dove `argos_ro` non entra, non
+  contano finché nessun oggetto le usa; resta buona regola crearle con
+  `REVOKE EXECUTE … FROM PUBLIC`;
 - server esterni (postgres_fdw, dblink) che può usare, e sue user mapping;
 - oggetti di sistema riservati, come `pg_authid` o `pg_read_binary_file`, che
   `argos_ro` può usare grazie a un altro ruolo;
@@ -193,7 +197,8 @@ utente non si ferma sulle righe già scritte. Una versione nuova del contratto s
 registra prima di applicarla: se la tabella è occupata, il migratore toglie
 comunque i permessi in più ma non dà le tabelle che il contratto salvato non
 ha; la versione si registra e si applica all'avvio successivo (nel log c'è un
-avviso).
+avviso). Con `--forza` invece non rimanda: riprova, e se la tabella resta
+occupata non cambia niente ed esce con un errore.
 
 - **Per controllare** che Argos si colleghi davvero come `argos_ro` e non come
   `postgres`, dal Terminal del PostgreSQL mentre Argos lavora:
