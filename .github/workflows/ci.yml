@@ -247,8 +247,17 @@ jobs:
           s "CREATE SCHEMA ev; CREATE FUNCTION ev.registra() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; REVOKE ALL ON FUNCTION ev.registra() FROM PUBLIC"
           a_mano "CREATE EVENT TRIGGER ci_ddl ON ddl_command_end EXECUTE FUNCTION ev.registra()" "event trigger ci_ddl" "DROP EVENT TRIGGER ci_ddl"
           s "DROP SCHEMA ev CASCADE"
+          a_mano "CREATE SCHEMA ci_op; REVOKE ALL ON SCHEMA ci_op FROM PUBLIC; CREATE FUNCTION ci_op.cmp(int4, int4) RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT btint4cmp(\$1, \$2)'; REVOKE ALL ON FUNCTION ci_op.cmp(int4, int4) FROM PUBLIC; CREATE OPERATOR CLASS ci_op.ord FOR TYPE int4 USING btree AS OPERATOR 1 <, OPERATOR 3 =, FUNCTION 1 ci_op.cmp(int4, int4)" \
+            "senza controllare l'EXECUTE" "DROP SCHEMA ci_op CASCADE"
+          echo "::group::una SECURITY DEFINER che nessuno può raggiungere non conta"
+          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'"
+          in_regola; s "DROP SCHEMA ci_chiuso CASCADE"; echo "::endgroup::"
+          a_mano "CREATE TABLE information_schema.ci_copia AS SELECT 1 AS x; GRANT SELECT ON information_schema.ci_copia TO PUBLIC" \
+            'REVOKE SELECT ON TABLE "information_schema"."ci_copia" FROM PUBLIC' "DROP TABLE information_schema.ci_copia"
           s "CREATE EXTENSION postgres_fdw; CREATE SERVER ci_remoto FOREIGN DATA WRAPPER postgres_fdw OPTIONS (dbname 'prod')"
           da_solo "GRANT USAGE ON FOREIGN SERVER ci_remoto TO argos_ro"
+          a_mano "GRANT USAGE ON FOREIGN SERVER ci_remoto TO terzo WITH GRANT OPTION; SET ROLE terzo; GRANT USAGE ON FOREIGN SERVER ci_remoto TO PUBLIC; RESET ROLE" \
+            'REVOKE ALL ON FOREIGN SERVER "ci_remoto" FROM "terzo" CASCADE' "REVOKE ALL ON FOREIGN SERVER ci_remoto FROM terzo CASCADE"
           a_mano "CREATE USER MAPPING FOR argos_ro SERVER ci_remoto OPTIONS (user 'postgres')" 'DROP USER MAPPING FOR "argos_ro" SERVER "ci_remoto"' \
             "DROP USER MAPPING FOR argos_ro SERVER ci_remoto"
           s "DROP EXTENSION postgres_fdw CASCADE"
@@ -263,6 +272,13 @@ jobs:
           grep -q "trigger estraneo" v.log || { cat v.log; exit 1; }
           if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
           s "DROP TRIGGER zz ON cerbero_migrazioni.contratti; DROP FUNCTION cerbero_migrazioni.zz()"
+          in_regola
+          # col nome giusto ma un'altra funzione: estraneo lo stesso
+          s "CREATE FUNCTION public.ci_falso() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END'; DROP TRIGGER contratti_chi_scrive ON cerbero_migrazioni.contratti; CREATE TRIGGER contratti_chi_scrive BEFORE INSERT OR UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION public.ci_falso()"
+          if p > v.log 2>&1; then cat v.log; echo "doveva rifiutare il contratto"; exit 1; fi
+          grep -q "trigger estraneo" v.log || { cat v.log; exit 1; }
+          if prova 2>/dev/null; then echo "il test SQL doveva fallire"; exit 1; fi
+          s "DROP TRIGGER contratti_chi_scrive ON cerbero_migrazioni.contratti; DROP FUNCTION public.ci_falso(); CREATE TRIGGER contratti_chi_scrive BEFORE INSERT OR UPDATE ON cerbero_migrazioni.contratti FOR EACH ROW EXECUTE FUNCTION cerbero_migrazioni.contratti_chi_scrive(); ALTER TABLE cerbero_migrazioni.contratti ENABLE ALWAYS TRIGGER contratti_chi_scrive"
           in_regola
           # col trigger spento, o con un trigger che la cambia, scritto_da resta quello vero (vincolo CHECK)
           psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE falsario LOGIN PASSWORD 'falsario'"
@@ -302,6 +318,16 @@ jobs:
           test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
           s 'REVOKE GRANT OPTION FOR ALL ON SCHEMA caronte FROM argos_ro CASCADE'
           p; in_regola; echo "::endgroup::"
+          echo "::group::tabella dei contratti occupata: le correzioni si salvano, il contratto si registra al giro dopo"
+          s "DELETE FROM cerbero_migrazioni.contratti; GRANT SELECT ON public.users TO argos_ro"
+          psql -q -d prod -c "BEGIN; LOCK TABLE cerbero_migrazioni.contratti IN ROW EXCLUSIVE MODE; SELECT pg_sleep(10); COMMIT" > /dev/null &
+          sleep 2
+          p > v.log 2>&1 || { cat v.log; exit 1; }
+          grep -q "era occupata" v.log || { cat v.log; exit 1; }
+          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
+          wait
+          p | tee v.log; grep -q "contratto v1 registrato nel database" v.log
+          in_regola; echo "::endgroup::"
           echo "::group::rollback: il contratto più nuovo del database vince"
           s "UPDATE cerbero_migrazioni.contratti SET versione = versione + 1, elenco = array_append(elenco, 'public.zones')"
           p | tee v.log; grep -q "public.zones: nel contratto, manca la lettura" v.log

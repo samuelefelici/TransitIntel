@@ -563,13 +563,15 @@ describe("permessi di Argos: il piano", () => {
     const s = base();
     type Definer = NonNullable<StatoPermessi["definer"]>[number];
     const def2 = (extra: Partial<Definer> & { nome: string }): Definer => ({
-      schema: "public", argomenti: "", estensione: false, di_tutti: true, eseguibile: true, via_aggregati: null, via_eventi: null, ...extra,
+      schema: "public", argomenti: "", estensione: false, di_tutti: true, eseguibile: true, via_aggregati: null, via_eventi: null,
+      via_oggetti: null, ...extra,
     });
     s.definer = [
       def2({ nome: "svuota" }),
       def2({ nome: "di_postgis", estensione: true }),
       def2({ nome: "passo", argomenti: "text, text", di_tutti: false, eseguibile: false, via_aggregati: "public.agg(text)" }),
       def2({ nome: "registra", di_tutti: false, eseguibile: false, via_eventi: "registra_ddl" }),
+      def2({ nome: "confronta", argomenti: "integer, integer", di_tutti: false, eseguibile: false, via_oggetti: "function 1 (integer, integer) of operator family x for access method btree" }),
     ];
     const p = piano(s, C);
     expect(p.azioni).toEqual([]);
@@ -577,6 +579,7 @@ describe("permessi di Argos: il piano", () => {
       expect.stringContaining('REVOKE EXECUTE ON ROUTINE "public"."svuota"() FROM PUBLIC'),
       expect.stringMatching(/public\.passo\(text, text\).*aggregato public\.agg\(text\).*togliere l'EXECUTE alla funzione non basta/),
       expect.stringMatching(/public\.registra\(\).*event trigger registra_ddl/),
+      expect.stringMatching(/public\.confronta\(integer, integer\).*operator family x.*senza controllare l'EXECUTE.*SECURITY INVOKER/),
     ]);
     expect(p.avvisi).toEqual([expect.stringMatching(/di_postgis.*estensione/)]);
   });
@@ -629,9 +632,20 @@ describe("permessi di Argos: il piano", () => {
     expect(p.errori).toEqual([
       expect.stringMatching(/^fleetcare\.scrivibile: argos_ro scrive/),
       expect.stringMatching(/^schema fleetcare: argos_ro legge letta, perché sono date a tutti/),
-      expect.stringMatching(/^schema rep: argos_ro legge pubblica, vista_utenti, perché sono date a tutti i ruoli \(PUBLIC\).*pg_stats.*REVOKE SELECT ON ALL TABLES IN SCHEMA "rep" FROM PUBLIC$/),
+      expect.stringMatching(/^schema rep: argos_ro legge pubblica, vista_utenti, perché sono date a tutti i ruoli \(PUBLIC\).*pg_stats.*REVOKE SELECT ON ALL TABLES IN SCHEMA "rep" FROM PUBLIC\..*FROM <ruolo> CASCADE$/),
     ]);
     expect(p.avvisi).toEqual([expect.stringMatching(/postgis\.spatial_ref_sys.*estensione/)]);
+  });
+
+  it("letture date a tutti in uno schema di sistema: la cura è per oggetto, mai «ALL TABLES»", () => {
+    const s = base();
+    s.altrove = [eff("information_schema.sql_parts", { cerbero: false }), eff("pg_catalog.pg_class_copia", { cerbero: false })];
+    const err = piano(s, C).errori;
+    expect(err).toEqual([
+      expect.stringContaining('REVOKE SELECT ON TABLE "information_schema"."sql_parts" FROM PUBLIC'),
+      expect.stringContaining('REVOKE SELECT ON TABLE "pg_catalog"."pg_class_copia" FROM PUBLIC'),
+    ]);
+    expect(err.join(" ")).not.toMatch(/ALL TABLES IN SCHEMA/);
   });
 
   it("permessi effettivi che nessuna voce spiega: errore (il riallineamento non può dire «in regola»)", () => {
@@ -701,6 +715,7 @@ describe("permessi di Argos: il piano", () => {
       { genere: "server", nome: "remoto", a_tutti: false, privilegio: "USAGE", dato_da: null },
       { genere: "server", nome: "altro", a_tutti: false, privilegio: "USAGE", dato_da: "terzo" },
       { genere: "wrapper", nome: "postgres_fdw", a_tutti: true, privilegio: "USAGE", dato_da: null },
+      { genere: "server", nome: "di_tutti", a_tutti: true, privilegio: "USAGE", dato_da: "terzo" },
     ];
     s.esterniUsabili = [{ genere: "server", nome: "remoto" }, { genere: "server", nome: "nascosto" }];
     s.mappature = ["remoto"];
@@ -709,6 +724,7 @@ describe("permessi di Argos: il piano", () => {
     expect(p.errori).toEqual([
       expect.stringContaining('SET ROLE "terzo"; REVOKE ALL ON FOREIGN SERVER "altro" FROM "argos_ro"; RESET ROLE;'),
       expect.stringContaining('REVOKE ALL ON FOREIGN DATA WRAPPER "postgres_fdw" FROM PUBLIC'),
+      expect.stringMatching(/^server di_tutti: .*per concessione di terzo.*REVOKE ALL ON FOREIGN SERVER "di_tutti" FROM "terzo" CASCADE$/),
       expect.stringMatching(/^server nascosto: argos_ro lo può usare, e non lo spiegano/),
       expect.stringContaining('DROP USER MAPPING FOR "argos_ro" SERVER "remoto"'),
     ]);
@@ -787,6 +803,8 @@ describe("permessi di Argos: quale contratto vale", () => {
     const riga = { ...sospetto, rigaNonFidata: true, motivo: "scritto da argos_ro" };
     expect(contrattoEffettivo(codice, riga)).toMatchObject({ scrivi: false, errori: [expect.stringMatching(/scritto da argos_ro/)] });
     expect(contrattoEffettivo(codice, riga, { forza: true })).toMatchObject({ fonte: "codice", scrivi: true, errori: [] });
+    // la versione della riga non fidata resta visibile, per i messaggi
+    expect(contrattoEffettivo(codice, { ...riga, versioneNonFidata: 3 })).toMatchObject({ salvata: 3, nonFidata: true });
   });
 });
 

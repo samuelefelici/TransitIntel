@@ -138,8 +138,9 @@ contratto:
 
 «In regola» vuol dire: niente oltre al contratto e a quello che ogni ruolo
 può fare per default in Postgres (tabelle temporanee, large object propri,
-lucchetti consultivi). Ciò che `argos_ro` creasse in questo modo, il controllo
-successivo lo segnala come «proprietario di …».
+lucchetti consultivi). I large object che `argos_ro` creasse, il controllo
+successivo li segnala come «proprietario di …»; gli oggetti temporanei no,
+perché spariscono alla fine della sua sessione.
 
 Tocca solo quello che è fuori posto, e ogni correzione finisce nel log
 (`[migrazioni] permessi di argos_ro riportati al contratto`). Se `argos_ro` non
@@ -152,9 +153,12 @@ servono i loro diritti:
   mostrare le tabelle di Cerbero, e `pg_stats` mostra i valori di qualunque
   colonna leggibile;
 - funzioni SECURITY DEFINER che `argos_ro` può far girare: girano coi diritti
-  del proprietario, quindi gli danno quello che fanno. Non serve l'EXECUTE: basta
-  un aggregato che le usa, o un event trigger che scatta con il DDL di
-  chiunque;
+  del proprietario, quindi gli danno quello che fanno. Non serve sempre
+  l'EXECUTE: basta un aggregato che le usa, un event trigger che scatta con il
+  DDL di chiunque, o un oggetto che le chiama senza controllarlo (classe di
+  operatori, tipo o range, conversione, ricerca testuale). Una SECURITY DEFINER
+  in uno schema senza USAGE, che nessun oggetto raggiungibile chiama, non
+  conta;
 - server esterni (postgres_fdw, dblink) che può usare, e sue user mapping;
 - oggetti di sistema riservati, come `pg_authid` o `pg_read_binary_file`, che
   `argos_ro` può usare grazie a un altro ruolo;
@@ -180,8 +184,12 @@ estranei. Ogni riga dice chi l'ha scritta (`scritto_da`), e un vincolo CHECK
 impone che sia l'utente collegato: non si falsifica né spegnendo il trigger né
 con un altro trigger. Si usa solo una riga scritta da un superutente o da chi
 migra. Altrimenti vale il contratto del codice e nel log c'è un errore: si
-sistema la tabella e, se serve, la si riscrive con `--forza`. (Un ripristino
-della tabella con pg_restore va fatto dallo stesso utente che l'ha scritta.)
+sistema la tabella e, se serve, la si riscrive con `--forza`. L'unico trigger
+ammesso è `contratti_chi_scrive` con la sua funzione. Il vincolo è `NOT VALID`:
+vale per ogni scrittura, e un ripristino con pg_restore fatto da un altro
+utente non si ferma sulle righe già scritte. Se la tabella è occupata quando il
+migratore deve registrare il contratto, le correzioni si salvano lo stesso e il
+contratto si registra all'avvio successivo (nel log c'è un avviso).
 
 - **Per controllare** che Argos si colleghi davvero come `argos_ro` e non come
   `postgres`, dal Terminal del PostgreSQL mentre Argos lavora:

@@ -34,6 +34,7 @@ export interface StatoPermessi {
   altrove?: Effettivo[];
   definer?: (Routine & {
     estensione: boolean; di_tutti: boolean; eseguibile: boolean; via_aggregati: string | null; via_eventi: string | null;
+    via_oggetti: string | null;
   })[];
   sistema?: { genere: "relazione" | "routine"; schema: string; nome: string; argomenti: string | null }[];
   sistemaScrive?: { schema: string; nome: string; privilegi: string }[];
@@ -50,11 +51,11 @@ export interface Azione { sql: string; perche: string; oggetto: string | null }
 export interface Piano { assente: boolean; azioni: Azione[]; avvisi: string[]; errori: string[] }
 export interface Contratto { nome: string; versione: number; elenco: readonly string[] }
 export interface ContrattoSalvato {
-  disponibile: boolean; sospetto?: boolean; rigaNonFidata?: boolean; motivo?: string;
+  disponibile: boolean; sospetto?: boolean; rigaNonFidata?: boolean; versioneNonFidata?: number; motivo?: string;
   riga?: { versione: number; elenco: string[] } | null;
 }
 export interface ContrattoEffettivo {
-  versione: number; elenco: string[]; fonte: "codice" | "database"; scrivi: boolean; salvata: number | null;
+  versione: number; elenco: string[]; fonte: "codice" | "database"; scrivi: boolean; salvata: number | null; nonFidata: boolean;
   nota: string | null; avvisi: string[]; errori: string[];
 }
 export interface Opzioni { ruolo?: string; codice?: Contratto; forza?: boolean }

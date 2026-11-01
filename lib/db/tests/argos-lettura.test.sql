@@ -181,23 +181,49 @@ BEGIN
                      AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER')) THEN
       RAISE EXCEPTION 'argos_ro, o chiunque, può modificare cerbero_migrazioni.contratti';
     END IF;
+    -- il vincolo può essere NOT VALID (pg_dump lo ricrea dopo i dati): vale comunque
+    -- su ogni scrittura. L'unico trigger ammesso è il suo, con la sua funzione
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'cerbero_migrazioni.contratti'::regclass
-                      AND contype = 'c' AND convalidated
-                      AND pg_get_constraintdef(oid) = 'CHECK ((scritto_da = SESSION_USER))')
+                      AND contype = 'c'
+                      AND pg_get_constraintdef(oid) IN ('CHECK ((scritto_da = SESSION_USER))',
+                                                        'CHECK ((scritto_da = SESSION_USER)) NOT VALID'))
        OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass
-                   AND NOT tgisinternal AND tgname <> 'contratti_chi_scrive') THEN
+                   AND NOT tgisinternal
+                   AND NOT (tgname = 'contratti_chi_scrive'
+                            AND tgfoid = to_regprocedure('cerbero_migrazioni.contratti_chi_scrive()'))) THEN
       RAISE EXCEPTION 'cerbero_migrazioni.contratti: manca il vincolo su scritto_da, o ha un trigger estraneo';
     END IF;
   END IF;
 
   -- 7. funzioni: nessuna SECURITY DEFINER che argos_ro possa far girare (per
-  --    EXECUTE, con un aggregato o con un event trigger), nessun oggetto di
-  --    sistema riservato all'installazione (pg_init_privs senza PUBLIC) usabile
+  --    EXECUTE con l'USAGE sullo schema o tramite un oggetto che la chiama, con
+  --    un aggregato, con un event trigger, o tramite oggetti che la chiamano
+  --    senza controllare l'EXECUTE: classi di operatori, tipi e range,
+  --    conversioni, ricerca testuale, linguaggi, wrapper, metodi d'accesso),
+  --    nessun oggetto di sistema riservato all'installazione (pg_init_privs
+  --    senza PUBLIC) usabile
   IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
               WHERE p.prosecdef AND n.nspname !~ '^pg_(toast_)?temp_'
                 AND ((n.nspname !~ '^pg_' AND n.nspname <> 'information_schema') OR p.oid >= 16384)
                 AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
-                AND (has_function_privilege(argos, p.oid, 'EXECUTE')
+                AND ((has_function_privilege(argos, p.oid, 'EXECUTE')
+                      AND (has_schema_privilege(argos, n.oid, 'USAGE')
+                           OR EXISTS (SELECT 1 FROM pg_depend d
+                                        LEFT JOIN pg_policy po ON d.classid = 'pg_policy'::regclass AND po.oid = d.objid
+                                        LEFT JOIN pg_trigger tr ON d.classid = 'pg_trigger'::regclass AND tr.oid = d.objid
+                                        LEFT JOIN pg_attrdef ad ON d.classid = 'pg_attrdef'::regclass AND ad.oid = d.objid
+                                        LEFT JOIN pg_constraint co ON d.classid = 'pg_constraint'::regclass AND co.oid = d.objid
+                                       WHERE d.refclassid = 'pg_proc'::regclass AND d.refobjid = p.oid AND d.deptype = 'n'
+                                         AND (d.classid IN ('pg_proc'::regclass, 'pg_rewrite'::regclass,
+                                                            'pg_operator'::regclass, 'pg_cast'::regclass)
+                                              OR co.contypid <> 0
+                                              OR has_table_privilege(argos, coalesce(po.polrelid, tr.tgrelid, ad.adrelid, nullif(co.conrelid, 0)),
+                                                                     'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')))))
+                     OR EXISTS (SELECT 1 FROM pg_depend d
+                                 WHERE d.refclassid = 'pg_proc'::regclass AND d.refobjid = p.oid AND d.deptype = 'n'
+                                   AND d.classid IN ('pg_amproc'::regclass, 'pg_type'::regclass, 'pg_conversion'::regclass,
+                                                     'pg_ts_parser'::regclass, 'pg_ts_template'::regclass, 'pg_language'::regclass,
+                                                     'pg_foreign_data_wrapper'::regclass, 'pg_am'::regclass))
                      OR EXISTS (SELECT 1 FROM pg_aggregate g
                                  WHERE p.oid IN (g.aggtransfn, g.aggfinalfn, g.aggcombinefn, g.aggserialfn, g.aggdeserialfn,
                                                  g.aggmtransfn, g.aggminvtransfn, g.aggmfinalfn)
