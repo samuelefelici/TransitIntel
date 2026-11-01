@@ -130,10 +130,16 @@ contratto:
 - solo la lettura delle tabelle dell'elenco e l'USAGE dei loro schemi;
 - niente scrittura (MAINTAIN compreso), sequenze, permessi su colonne o grant
   option;
-- niente funzioni, large object e parametri del server, né permessi negli altri
-  schemi dello stesso database (per esempio `fleetcare`);
+- niente funzioni, large object, server esterni e parametri del server, né
+  permessi negli altri schemi dello stesso database (per esempio `fleetcare`)
+  o in quelli di sistema (`pg_catalog`, `information_schema`);
 - nessun permesso di default che gli dia le tabelle future;
 - nessun CREATE negli schemi o nel database.
+
+«In regola» vuol dire: niente oltre al contratto e a quello che ogni ruolo
+può fare per default in Postgres (tabelle temporanee, large object propri,
+lucchetti consultivi). Ciò che `argos_ro` creasse in questo modo, il controllo
+successivo lo segnala come «proprietario di …».
 
 Tocca solo quello che è fuori posto, e ogni correzione finisce nel log
 (`[migrazioni] permessi di argos_ro riportati al contratto`). Se `argos_ro` non
@@ -141,11 +147,15 @@ esiste, non fa niente.
 
 Alcune cose non le corregge da solo, perché toccherebbero altri ruoli o
 servono i loro diritti:
-- permessi dati a tutti i ruoli (PUBLIC), anche fuori dagli schemi di Cerbero:
-  una vista data a tutti in un altro schema può mostrare le tabelle di
-  Cerbero;
-- funzioni SECURITY DEFINER che `argos_ro` può eseguire: girano coi diritti
-  del proprietario, quindi gli danno quello che fanno;
+- permessi dati a tutti i ruoli (PUBLIC), anche fuori dagli schemi di Cerbero
+  e senza USAGE sullo schema: una vista data a tutti in un altro schema può
+  mostrare le tabelle di Cerbero, e `pg_stats` mostra i valori di qualunque
+  colonna leggibile;
+- funzioni SECURITY DEFINER che `argos_ro` può far girare: girano coi diritti
+  del proprietario, quindi gli danno quello che fanno. Non serve l'EXECUTE: basta
+  un aggregato che le usa, o un event trigger che scatta con il DDL di
+  chiunque;
+- server esterni (postgres_fdw, dblink) che può usare, e sue user mapping;
 - oggetti di sistema riservati, come `pg_authid` o `pg_read_binary_file`, che
   `argos_ro` può usare grazie a un altro ruolo;
 - l'appartenenza di `argos_ro` a un altro ruolo (per esempio
@@ -165,12 +175,13 @@ quella più nuova: nel log, come avviso, si legge `uso il contratto vN salvato
 nel database`.
 
 Chi può scrivere quella tabella decide i permessi di Argos, quindi il contratto
-salvato si usa solo se ci scrive soltanto il suo proprietario. Inoltre un
-trigger annota chi ha scritto ogni riga (`scritto_da`), e si usa solo una riga
-scritta da un superutente o da chi migra; il trigger dev'essere il solo sulla
-tabella e acceso sempre, anche in replica. Altrimenti vale il contratto del
-codice e nel log c'è un errore: si controlla la tabella e la si riscrive con
-`--forza`.
+salvato si usa solo se ci scrive soltanto il suo proprietario e non ha trigger
+estranei. Ogni riga dice chi l'ha scritta (`scritto_da`), e un vincolo CHECK
+impone che sia l'utente collegato: non si falsifica né spegnendo il trigger né
+con un altro trigger. Si usa solo una riga scritta da un superutente o da chi
+migra. Altrimenti vale il contratto del codice e nel log c'è un errore: si
+sistema la tabella e, se serve, la si riscrive con `--forza`. (Un ripristino
+della tabella con pg_restore va fatto dallo stesso utente che l'ha scritta.)
 
 - **Per controllare** che Argos si colleghi davvero come `argos_ro` e non come
   `postgres`, dal Terminal del PostgreSQL mentre Argos lavora:

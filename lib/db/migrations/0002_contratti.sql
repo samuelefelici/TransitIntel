@@ -6,10 +6,12 @@
 -- parte un'immagine più vecchia (rollback), vale il contratto più nuovo e ad
 -- Argos non vengono tolte le tabelle che la release successiva gli ha dato.
 --
--- Chi scrive qui decide i permessi di argos_ro, quindi il trigger annota
--- sempre l'utente collegato (session_user, che solo un superutente può
--- cambiare): il migratore usa un contratto salvato solo se l'ha scritto lui o
--- un superutente.
+-- Chi scrive qui decide i permessi di argos_ro, quindi ogni riga dice chi
+-- l'ha scritta: scritto_da deve essere l'utente collegato (session_user, che
+-- solo un superutente può cambiare). Lo impone un vincolo CHECK, che nessun
+-- trigger e nessuna modalità di replica aggira; il trigger lo compila da sé.
+-- Il migratore usa un contratto salvato solo se l'ha scritto lui o un
+-- superutente. (Un ripristino con pg_restore va fatto dallo stesso utente.)
 --
 -- Tabella nuova nello schema del migratore: niente lock su tabelle esistenti,
 -- e il codice di prima non la usa.
@@ -23,6 +25,7 @@ BEGIN
       elenco        text[] NOT NULL,
       aggiornato_il timestamptz NOT NULL DEFAULT now(),
       scritto_da    text NOT NULL DEFAULT session_user
+                    CONSTRAINT contratti_scritto_da CHECK (scritto_da = session_user)
     );
   END IF;
 END

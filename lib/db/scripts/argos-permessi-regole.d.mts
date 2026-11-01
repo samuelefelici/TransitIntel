@@ -32,11 +32,17 @@ export interface StatoPermessi {
   } | null;
   effettivi?: Effettivo[];
   altrove?: Effettivo[];
-  definer?: (Routine & { estensione: boolean; di_tutti: boolean })[];
+  definer?: (Routine & {
+    estensione: boolean; di_tutti: boolean; eseguibile: boolean; via_aggregati: string | null; via_eventi: string | null;
+  })[];
   sistema?: { genere: "relazione" | "routine"; schema: string; nome: string; argomenti: string | null }[];
+  sistemaScrive?: { schema: string; nome: string; privilegi: string }[];
+  esterni?: { genere: "server" | "wrapper"; nome: string; a_tutti: boolean; privilegio: string; dato_da: string | null }[];
+  esterniUsabili?: { genere: "server" | "wrapper"; nome: string }[];
+  mappature?: string[];
   parametri?: { nome: string; a_tutti: boolean; privilegio: string; dato_da: string | null }[];
   largeObject?: { oid: string; a_tutti: boolean; privilegio: string; con_opzione: boolean; dato_da: string | null }[];
-  loCompat?: boolean;
+  loCompat?: { acceso: boolean; dove: 1 | 2 | 3 | 4 | null };
   membroDi?: { ruolo: string; da: string; da_superutente: boolean }[];
   esistenti?: string[];
 }

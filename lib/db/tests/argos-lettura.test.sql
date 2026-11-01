@@ -111,68 +111,99 @@ BEGIN
   END IF;
   DROP TABLE public.ci_tabella_nuova, caronte.ci_tabella_nuova;
 
-  -- 6. negli altri schemi non di sistema: niente letture fuori dalle estensioni,
-  --    niente scrittura, niente CREATE. I permessi che passano dal nome contano
-  --    solo con l'USAGE sullo schema; sequenze (per OID) e MAINTAIN (VACUUM e
-  --    ANALYZE senza elenco) contano sempre
-  FOR r IN SELECT c.oid::regclass AS t, c.relkind, has_schema_privilege(argos, n.oid, 'USAGE') AS uso,
+  -- 6. fuori dagli schemi di Cerbero (e negli oggetti aggiunti a quelli di
+  --    sistema dopo l'installazione): niente letture fuori dalle estensioni,
+  --    niente scrittura, niente sequenze. Anche senza USAGE sullo schema:
+  --    pg_stats mostra i valori, le sequenze si usano per OID, MAINTAIN vale
+  --    per VACUUM e ANALYZE senza elenco, BEGIN ATOMIC non passa dal nome
+  FOR r IN SELECT c.oid::regclass AS t, c.relkind,
                   EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e') AS ext
              FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-            WHERE n.nspname NOT IN ('public', 'caronte') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+            WHERE n.nspname NOT IN ('public', 'caronte') AND n.nspname !~ '^pg_(toast_)?temp_'
+              AND ((n.nspname !~ '^pg_' AND n.nspname <> 'information_schema') OR c.oid >= 16384)
               AND c.relkind IN ('r', 'v', 'm', 'p', 'f', 'S')
   LOOP
     IF r.relkind = 'S' THEN
       IF NOT r.ext AND has_sequence_privilege(argos, r.t, 'USAGE, SELECT, UPDATE') THEN
         RAISE EXCEPTION 'argos_ro usa la sequenza %', r.t;
       END IF;
-    ELSIF (current_setting('server_version_num')::int >= 170000 AND has_table_privilege(argos, r.t, 'MAINTAIN'))
-       OR (r.uso AND (has_table_privilege(argos, r.t, scrittura)
-                      OR has_any_column_privilege(argos, r.t, 'INSERT, UPDATE, REFERENCES'))) THEN
+    ELSIF has_table_privilege(argos, r.t, scrittura) OR has_any_column_privilege(argos, r.t, 'INSERT, UPDATE, REFERENCES') THEN
       RAISE EXCEPTION 'argos_ro può scrivere su %', r.t;
-    ELSIF r.uso AND NOT r.ext AND has_any_column_privilege(argos, r.t, 'SELECT') THEN
+    ELSIF NOT r.ext AND has_any_column_privilege(argos, r.t, 'SELECT') THEN
       RAISE EXCEPTION 'argos_ro legge % fuori dagli schemi di Cerbero', r.t;
     END IF;
   END LOOP;
+  -- sui cataloghi di sistema dell'installazione: niente scrittura né MAINTAIN
+  -- oltre a quello che PUBLIC poteva già (per esempio UPDATE su pg_settings)
+  IF EXISTS (SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               CROSS JOIN unnest(string_to_array(scrittura, ', ')) p(priv)
+              WHERE n.nspname IN ('pg_catalog', 'information_schema', 'pg_toast') AND c.oid < 16384
+                AND c.relkind IN ('r', 'v', 'm', 'p', 'f')
+                AND (has_table_privilege(argos, c.oid, p.priv)
+                     OR (p.priv IN ('INSERT', 'UPDATE', 'REFERENCES') AND has_any_column_privilege(argos, c.oid, p.priv)))
+                AND NOT EXISTS (SELECT 1 FROM pg_init_privs i, aclexplode(i.initprivs) a
+                                 WHERE i.classoid = 'pg_class'::regclass AND i.objoid = c.oid AND i.objsubid = 0
+                                   AND a.grantee = 0 AND a.privilege_type = p.priv)) THEN
+    RAISE EXCEPTION 'argos_ro può scrivere o fare MAINTAIN su un catalogo di sistema';
+  END IF;
   -- large object: dati applicativi, leggibili e scrivibili con lo_get/lo_put
-  IF current_setting('lo_compat_privileges')::boolean
-     OR EXISTS (SELECT 1 FROM pg_db_role_setting s, unnest(s.setconfig) c
-                 WHERE s.setrole IN (argos, 0)
-                   AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
-                   AND lower(split_part(c, '=', 1)) = 'lo_compat_privileges'
-                   AND lower(split_part(c, '=', 2)) NOT IN ('off', 'of', 'false', 'fals', 'fal', 'fa', 'f', 'no', 'n', '0'))
+  --    (lo_compat_privileges come lo vede argos_ro: database+ruolo, ruolo,
+  --    database, tutti, poi il valore del server)
+  IF coalesce((SELECT lower(split_part(c, '=', 2)) NOT IN ('off', 'of', 'false', 'fals', 'fal', 'fa', 'f', 'no', 'n', '0')
+                 FROM pg_db_role_setting s, unnest(s.setconfig) c
+                WHERE s.setrole IN (argos, 0)
+                  AND s.setdatabase IN (0, (SELECT oid FROM pg_database WHERE datname = current_database()))
+                  AND lower(split_part(c, '=', 1)) = 'lo_compat_privileges'
+                ORDER BY (s.setrole = argos) DESC, (s.setdatabase <> 0) DESC LIMIT 1),
+              current_setting('lo_compat_privileges')::boolean)
      OR EXISTS (SELECT 1 FROM pg_largeobject_metadata l, aclexplode(l.lomacl) a WHERE a.grantee IN (argos, 0) OR l.lomowner = argos) THEN
     RAISE EXCEPTION 'argos_ro può leggere o scrivere large object';
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+  -- nessun CREATE in nessuno schema, quelli di sistema compresi (un CREATE su
+  -- pg_catalog permette di dirottare le query di tutti)
+  IF EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname !~ '^pg_(toast_)?temp_'
                 AND has_schema_privilege(argos, n.oid, 'CREATE')) THEN
     RAISE EXCEPTION 'argos_ro può creare oggetti in uno schema';
   END IF;
-  -- il contratto salvato non lo può toccare
-  IF to_regclass('cerbero_migrazioni.contratti') IS NOT NULL
-     AND (has_table_privilege(argos, 'cerbero_migrazioni.contratti', 'INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER')
-          OR EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a
-                      WHERE c.oid = 'cerbero_migrazioni.contratti'::regclass AND a.grantee = 0
-                        AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER'))) THEN
-    RAISE EXCEPTION 'argos_ro, o chiunque, può modificare cerbero_migrazioni.contratti';
+  -- nessun server esterno usabile e nessuna user mapping (si leggerebbe e
+  -- scriverebbe come un altro utente)
+  IF EXISTS (SELECT 1 FROM pg_foreign_server s WHERE has_server_privilege(argos, s.oid, 'USAGE'))
+     OR EXISTS (SELECT 1 FROM pg_foreign_data_wrapper w WHERE has_foreign_data_wrapper_privilege(argos, w.oid, 'USAGE'))
+     OR EXISTS (SELECT 1 FROM pg_user_mappings WHERE umuser = argos) THEN
+    RAISE EXCEPTION 'argos_ro può usare un server esterno o ha una user mapping';
   END IF;
-  -- e il trigger che annota chi scrive è l'unico, ed è sempre acceso
-  IF to_regclass('cerbero_migrazioni.contratti') IS NOT NULL
-     AND (NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass
-                       AND tgname = 'contratti_chi_scrive' AND tgenabled = 'A')
-          OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass
-                      AND NOT tgisinternal AND tgname <> 'contratti_chi_scrive')) THEN
-    RAISE EXCEPTION 'cerbero_migrazioni.contratti: il trigger che annota chi scrive manca, non è acceso sempre o non è il solo';
+  -- il contratto salvato: argos_ro, o chiunque, non lo può toccare; scritto_da
+  -- non si può falsificare (vincolo); nessun trigger estraneo
+  IF to_regclass('cerbero_migrazioni.contratti') IS NOT NULL THEN
+    IF has_table_privilege(argos, 'cerbero_migrazioni.contratti', 'INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER')
+       OR EXISTS (SELECT 1 FROM pg_class c, aclexplode(c.relacl) a
+                   WHERE c.oid = 'cerbero_migrazioni.contratti'::regclass AND a.grantee = 0
+                     AND a.privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER')) THEN
+      RAISE EXCEPTION 'argos_ro, o chiunque, può modificare cerbero_migrazioni.contratti';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'cerbero_migrazioni.contratti'::regclass
+                      AND contype = 'c' AND convalidated
+                      AND pg_get_constraintdef(oid) = 'CHECK ((scritto_da = SESSION_USER))')
+       OR EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'cerbero_migrazioni.contratti'::regclass
+                   AND NOT tgisinternal AND tgname <> 'contratti_chi_scrive') THEN
+      RAISE EXCEPTION 'cerbero_migrazioni.contratti: manca il vincolo su scritto_da, o ha un trigger estraneo';
+    END IF;
   END IF;
 
-  -- 7. funzioni: nessuna SECURITY DEFINER eseguibile, nessun oggetto di sistema
-  --    riservato all'installazione (pg_init_privs senza PUBLIC) usabile
+  -- 7. funzioni: nessuna SECURITY DEFINER che argos_ro possa far girare (per
+  --    EXECUTE, con un aggregato o con un event trigger), nessun oggetto di
+  --    sistema riservato all'installazione (pg_init_privs senza PUBLIC) usabile
   IF EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-              WHERE p.prosecdef AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
-                AND has_function_privilege(argos, p.oid, 'EXECUTE')) THEN
-    RAISE EXCEPTION 'argos_ro può eseguire funzioni SECURITY DEFINER: %', ARRAY(
-      SELECT p.oid::regprocedure::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-       WHERE p.prosecdef AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
-         AND has_function_privilege(argos, p.oid, 'EXECUTE'));
+              WHERE p.prosecdef AND n.nspname !~ '^pg_(toast_)?temp_'
+                AND ((n.nspname !~ '^pg_' AND n.nspname <> 'information_schema') OR p.oid >= 16384)
+                AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
+                AND (has_function_privilege(argos, p.oid, 'EXECUTE')
+                     OR EXISTS (SELECT 1 FROM pg_aggregate g
+                                 WHERE p.oid IN (g.aggtransfn, g.aggfinalfn, g.aggcombinefn, g.aggserialfn, g.aggdeserialfn,
+                                                 g.aggmtransfn, g.aggminvtransfn, g.aggmfinalfn)
+                                   AND has_function_privilege(argos, g.aggfnoid, 'EXECUTE'))
+                     OR EXISTS (SELECT 1 FROM pg_event_trigger e WHERE e.evtfoid = p.oid AND e.evtenabled <> 'D'))) THEN
+    RAISE EXCEPTION 'argos_ro può far girare funzioni SECURITY DEFINER';
   END IF;
   IF EXISTS (SELECT 1 FROM pg_init_privs i
               WHERE (i.classoid = 'pg_proc'::regclass
