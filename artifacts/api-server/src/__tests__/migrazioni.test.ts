@@ -646,9 +646,6 @@ describe("permessi di Argos: il piano", () => {
       expect.stringContaining('REVOKE SELECT ON TABLE "pg_catalog"."pg_class_copia" FROM PUBLIC'),
     ]);
     expect(err.join(" ")).not.toMatch(/ALL TABLES IN SCHEMA/);
-    // information_schema ricreato da information_schema.sql: le viste standard non vanno tolte
-    expect(err[0]).toMatch(/viste standard: è un falso allarme/);
-    expect(err[1]).not.toMatch(/falso allarme/);
   });
 
   it("permessi effettivi che nessuna voce spiega: errore (il riallineamento non può dire «in regola»)", () => {

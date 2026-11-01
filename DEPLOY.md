@@ -153,16 +153,14 @@ servono i loro diritti:
   mostrare le tabelle di Cerbero, e `pg_stats` mostra i valori di qualunque
   colonna leggibile;
 - funzioni SECURITY DEFINER che `argos_ro` può far girare: girano coi diritti
-  del proprietario, quindi gli danno quello che fanno. Con l'EXECUTE basta un
-  oggetto che le chiama, anche senza USAGE sul loro schema: un operatore, una
-  vista, un indice o una statistica di una tabella che `argos_ro` legge (la
-  copia in una tabella temporanea sua con `CREATE TABLE … LIKE`). Senza
-  EXECUTE basta un aggregato che le usa, un event trigger che scatta con il DDL
-  di chiunque, o un oggetto che le chiama senza controllarlo (classe di
-  operatori e suoi operatori, tipo o range, conversione, ricerca testuale). Non
-  conta una SECURITY DEFINER che `argos_ro` non raggiunge: in uno schema senza
-  USAGE e usata solo da tabelle su cui non ha permessi (come gli helper RLS di
-  FleetCare);
+  del proprietario, quindi gli danno quello che fanno. Con l'EXECUTE contano
+  sempre, anche in uno schema senza USAGE: operatori, viste, indici e policy
+  le raggiungono senza nominarle, e il planner le valuta prima di controllare
+  i permessi sulla tabella. Senza EXECUTE basta un aggregato che le usa, un
+  event trigger che scatta con il DDL di chiunque, o un oggetto che le chiama
+  senza controllarlo (operatori, cast, classi di operatori, tipi e range,
+  conversioni, ricerca testuale). Vale anche per le funzioni di FleetCare: una
+  SECURITY DEFINER va sempre creata con `REVOKE EXECUTE … FROM PUBLIC`;
 - server esterni (postgres_fdw, dblink) che può usare, e sue user mapping;
 - oggetti di sistema riservati, come `pg_authid` o `pg_read_binary_file`, che
   `argos_ro` può usare grazie a un altro ruolo;
@@ -192,9 +190,10 @@ sistema la tabella e, se serve, la si riscrive con `--forza`. L'unico trigger
 ammesso è `contratti_chi_scrive` con la sua funzione. Il vincolo è `NOT VALID`:
 vale per ogni scrittura, e un ripristino con pg_restore fatto da un altro
 utente non si ferma sulle righe già scritte. Una versione nuova del contratto si
-applica solo se si registra: se la tabella è occupata il migratore annulla il
-passo dei permessi e riprova; se non ci riesce, i permessi restano quelli di
-prima fino all'avvio successivo (nel log c'è l'errore) e l'API parte comunque.
+registra prima di applicarla: se la tabella è occupata, il migratore toglie
+comunque i permessi in più ma non dà le tabelle che il contratto salvato non
+ha; la versione si registra e si applica all'avvio successivo (nel log c'è un
+avviso).
 
 - **Per controllare** che Argos si colleghi davvero come `argos_ro` e non come
   `postgres`, dal Terminal del PostgreSQL mentre Argos lavora:

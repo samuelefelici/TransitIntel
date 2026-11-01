@@ -251,16 +251,25 @@ jobs:
             "senza controllare l'EXECUTE" "DROP SCHEMA ci_op CASCADE"
           # operatore di una classe di operatori: lo chiamano senza controllare l'EXECUTE
           a_mano "CREATE SCHEMA ci_opr; REVOKE ALL ON SCHEMA ci_opr FROM PUBLIC; CREATE FUNCTION ci_opr.uguale(int4, int4) RETURNS bool LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT \$1 = \$2'; REVOKE ALL ON FUNCTION ci_opr.uguale(int4, int4) FROM PUBLIC; CREATE OPERATOR ci_opr.=== (LEFTARG = int4, RIGHTARG = int4, FUNCTION = ci_opr.uguale); CREATE OPERATOR CLASS ci_opr.hc FOR TYPE int4 USING hash AS OPERATOR 1 ci_opr.===, FUNCTION 1 hashint4(int4)" \
-            "in una classe di operatori" "DROP SCHEMA ci_opr CASCADE"
+            "senza controllare l'EXECUTE" "DROP SCHEMA ci_opr CASCADE"
+          # un operatore qualunque: le stime di selettività (eqsel) ne chiamano la funzione
+          a_mano "CREATE FUNCTION public.ci_uguale(a int, b int) RETURNS bool LANGUAGE sql SECURITY DEFINER AS 'SELECT a = b'; REVOKE ALL ON FUNCTION public.ci_uguale(int, int) FROM PUBLIC; CREATE OPERATOR public.=== (FUNCTION = public.ci_uguale, LEFTARG = int, RIGHTARG = int, RESTRICT = eqsel, JOIN = eqjoinsel)" \
+            "senza controllare l'EXECUTE" "DROP OPERATOR public.=== (int, int); DROP FUNCTION public.ci_uguale(int, int)"
+          # un cast verso json: to_json lo chiama senza controllare l'EXECUTE
+          a_mano "CREATE TYPE public.ci_t AS (x int); CREATE FUNCTION public.ci_js(public.ci_t) RETURNS json LANGUAGE sql SECURITY DEFINER AS 'SELECT ''{}''::json'; REVOKE ALL ON FUNCTION public.ci_js(public.ci_t) FROM PUBLIC; CREATE CAST (public.ci_t AS json) WITH FUNCTION public.ci_js(public.ci_t)" \
+            "cast from ci_t to json" "DROP TYPE public.ci_t CASCADE"
           # indice d'espressione su una tabella del contratto: argos_ro lo copia con LIKE in una tabella temporanea sua
           a_mano "CREATE SCHEMA ci_idx; REVOKE ALL ON SCHEMA ci_idx FROM PUBLIC; CREATE FUNCTION ci_idx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE INDEX ci_idx_scenari ON public.scenarios (ci_idx.chiave(name))" \
             'REVOKE EXECUTE ON ROUTINE "ci_idx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_idx CASCADE"
           a_mano "CREATE SCHEMA ci_stx; REVOKE ALL ON SCHEMA ci_stx FROM PUBLIC; CREATE FUNCTION ci_stx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE STATISTICS public.ci_stx_scenari ON (ci_stx.chiave(name)) FROM public.scenarios" \
             'REVOKE EXECUTE ON ROUTINE "ci_stx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_stx CASCADE"
-          echo "::group::SECURITY DEFINER che argos_ro non può raggiungere: non contano"
-          # in uno schema senza USAGE; helper RLS di una tabella che non legge; DEFAULT di un dominio senza EXECUTE
-          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE FUNCTION ci_chiuso.def() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.def() FROM PUBLIC; CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.def(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f()))"
-          in_regola; s "DROP SCHEMA ci_chiuso CASCADE"; echo "::endgroup::"
+          # con l'EXECUTE conta anche in uno schema senza USAGE: un indice di public.users la valuta nel piano
+          a_mano "CREATE SCHEMA ci_aperta; REVOKE ALL ON SCHEMA ci_aperta FROM PUBLIC; CREATE FUNCTION ci_aperta.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; CREATE INDEX ci_aperta_utenti ON public.users ((ci_aperta.f()))" \
+            'REVOKE EXECUTE ON ROUTINE "ci_aperta"."f"() FROM PUBLIC' "DROP SCHEMA ci_aperta CASCADE"
+          echo "::group::SECURITY DEFINER che argos_ro non può far girare: non contano"
+          # senza EXECUTE in un indice, in una policy e nel DEFAULT di un dominio; funzione di un event trigger spento
+          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.f() FROM PUBLIC; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.f(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f())); CREATE FUNCTION ci_chiuso.ev() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; CREATE EVENT TRIGGER ci_spento ON ddl_command_end EXECUTE FUNCTION ci_chiuso.ev(); ALTER EVENT TRIGGER ci_spento DISABLE"
+          in_regola; s "DROP EVENT TRIGGER ci_spento; DROP SCHEMA ci_chiuso CASCADE"; echo "::endgroup::"
           a_mano "CREATE TABLE information_schema.ci_copia AS SELECT 1 AS x; GRANT SELECT ON information_schema.ci_copia TO PUBLIC" \
             'REVOKE SELECT ON TABLE "information_schema"."ci_copia" FROM PUBLIC' "DROP TABLE information_schema.ci_copia"
           s "CREATE EXTENSION postgres_fdw; CREATE SERVER ci_remoto FOREIGN DATA WRAPPER postgres_fdw OPTIONS (dbname 'prod')"
@@ -337,15 +346,15 @@ jobs:
           test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
           s 'REVOKE GRANT OPTION FOR ALL ON SCHEMA caronte FROM argos_ro CASCADE'
           p; in_regola; echo "::endgroup::"
-          echo "::group::tabella dei contratti occupata: una versione nuova si applica solo se si registra, quindi si riprova"
-          s "DELETE FROM cerbero_migrazioni.contratti; GRANT SELECT ON public.users TO argos_ro"
-          psql -q -d prod -c "BEGIN; LOCK TABLE cerbero_migrazioni.contratti IN ROW EXCLUSIVE MODE; SELECT pg_sleep(8); COMMIT" > /dev/null &
+          echo "::group::tabella dei contratti occupata: i permessi in più si tolgono, le tabelle nuove aspettano la registrazione"
+          s "DELETE FROM cerbero_migrazioni.contratti; GRANT SELECT ON public.users TO argos_ro; REVOKE SELECT ON public.gtfs_stops FROM argos_ro"
+          psql -q -d prod -c "BEGIN; LOCK TABLE cerbero_migrazioni.contratti IN ROW EXCLUSIVE MODE; SELECT pg_sleep(10); COMMIT" > /dev/null &
           sleep 2
           p > v.log 2>&1 || { cat v.log; exit 1; }
-          grep -q "riprovo" v.log || { cat v.log; exit 1; }
-          grep -q "contratto v1 registrato nel database" v.log || { cat v.log; exit 1; }
+          grep -q "non ho dato le tabelle nuove (public.gtfs_stops)" v.log || { cat v.log; exit 1; }
+          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT') || ' ' || has_table_privilege('argos_ro', 'public.gtfs_stops', 'SELECT')")" = "false false"
           wait
-          test "$(psql -Atd prod -c "SELECT has_table_privilege('argos_ro', 'public.users', 'SELECT')")" = f
+          p | tee v.log; grep -q "contratto v1 registrato nel database" v.log
           in_regola; echo "::endgroup::"
           echo "::group::verifica da un utente senza USAGE sugli schemi: il contratto del codice, con un avviso"
           psql -q -v ON_ERROR_STOP=1 -c "CREATE ROLE lettore LOGIN PASSWORD 'lettore'"
