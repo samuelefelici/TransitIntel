@@ -3,6 +3,7 @@ import { logger } from "./lib/logger";
 import { syncTrafficFromTomTom } from "./routes/cron";
 import { MAX_GAP_SEC as SIRI_MAX_POLL_SECONDS, effectivePollSeconds } from "./lib/siri-vm";
 import { avviaControlloArgos } from "./lib/controllo-argos";
+import { controllaSegretiCron } from "./lib/segreto-cron";
 
 const rawPort = process.env["PORT"];
 
@@ -23,6 +24,7 @@ const server = app.listen(port, () => {
 
   // Argos deve leggere solo le tabelle del contratto: lo si controlla nel log
   avviaControlloArgos();
+  controllaSegretiCron();
 
   // ─── Warm-up cache: precarica gli endpoint pesanti ──────────────
   // territory/deep impiega ~27s a freddo per le subquery nearest-stop su ~4000 fermate.

@@ -200,9 +200,10 @@ async function runOldestActiveGoal(projectId: string, userId: string): Promise<{
 const cronRouter: IRouter = Router();
 
 /* POST /api/cron/argos-mcp-token — token utente a breve scadenza per il
- * connettore MCP di Argos (SOLA LETTURA): dato il progetto, si conia un token
+ * connettore MCP di Argos: dato il progetto, si conia un token
  * per il suo OWNER, con cui Argos legge on-behalf-of-user gli endpoint di
- * Planning Studio. Guardia x-cron-secret con ARGOS_CRON_SECRET, diverso dal
+ * Planning Studio. Il token è dell'utente: può quello che può lui, scritture
+ * comprese. Guardia x-cron-secret con ARGOS_CRON_SECRET, diverso dal
  * CRON_SECRET dei job dei dati: il segreto è solo del backend di Argos, mai
  * di uno scheduler né dei client MCP (che hanno la loro chiave dedicata,
  * verificata da Argos). Vedi lib/segreto-cron.ts.
@@ -275,12 +276,18 @@ cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
   if (!cronDeiDati(req, res)) return;
   if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
   await ensureWatchTable();
+  /* le sorveglianze scadute si prenotano subito (last_run_at = adesso), in modo
+   * atomico: due tick insieme, o uno ripetuto, non rifanno gli stessi giri */
   const due = await db.execute(sql`
-    SELECT * FROM ps_argos_watches
-     WHERE enabled = true
-       AND (last_run_at IS NULL OR last_run_at < now() - (cadence_hours * interval '1 hour'))
-     ORDER BY last_run_at ASC NULLS FIRST
-     LIMIT ${BATCH_PER_TICK}
+    UPDATE ps_argos_watches SET last_run_at = now()
+     WHERE id IN (
+       SELECT id FROM ps_argos_watches
+        WHERE enabled = true
+          AND (last_run_at IS NULL OR last_run_at < now() - (cadence_hours * interval '1 hour'))
+        ORDER BY last_run_at ASC NULLS FIRST
+        LIMIT ${BATCH_PER_TICK}
+        FOR UPDATE SKIP LOCKED)
+    RETURNING *
   `);
   const rows: any[] = (due as any).rows ?? [];
   const results: any[] = [];
@@ -327,10 +334,13 @@ cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
              updated_at = now()
        WHERE id = ${String(w.id)}::uuid
     `);
-    results.push({ projectId, status, findings: findings.length, goal: goalNote });
-    logger.info({ projectId, status, findings: findings.length }, "argos-watch tick");
+    results.push({ status });
+    logger.info({ projectId, status, findings: findings.length, goal: goalNote }, "argos-watch tick");
   }
-  res.json({ processed: rows.length, results });
+  /* allo scheduler bastano i conteggi: i dettagli dei progetti stanno nel log */
+  const esiti: Record<string, number> = {};
+  for (const r of results) esiti[r.status] = (esiti[r.status] ?? 0) + 1;
+  res.json({ processed: rows.length, esiti });
 });
 
 export { userRouter as argosWatchRouter, cronRouter as argosWatchCronRouter };
