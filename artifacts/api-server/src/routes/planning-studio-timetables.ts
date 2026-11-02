@@ -774,14 +774,6 @@ router.post("/planning-studio/:projectId/network-share", async (req, res): Promi
     // scadenza: expiresInDays (0/assente = senza scadenza)
     const days = Number(req.body?.expiresInDays);
     const expiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_network_shares (
-        token text PRIMARY KEY, project_id uuid NOT NULL,
-        route_ids jsonb NOT NULL DEFAULT '[]'::jsonb, title text,
-        options jsonb NOT NULL DEFAULT '{}'::jsonb, created_by uuid,
-        created_at timestamptz NOT NULL DEFAULT now()
-      )`);
-    await db.execute(sql`ALTER TABLE ps_network_shares ADD COLUMN IF NOT EXISTS expires_at timestamptz`);
     // token CSPRNG non indovinabile (Math.random non è crittografico)
     const token = randomBytes(18).toString("base64url");
     const userId = (req as any).user?.id ?? null;

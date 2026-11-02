@@ -8,17 +8,13 @@
  * Serve a confrontare lo schema che il codice si aspetta con quello della
  * produzione (lib/db/scripts/catalogo.mjs): su un database nato dal baseline,
  * ogni differenza dopo questo script è qualcosa che il codice crea e la
- * produzione non ha. Tre parti, nell'ordine:
+ * produzione non ha.
  *
- *  1. AVVIO — i 9 moduli che all'import lanciano il loro DDL con `void ensureX()`.
- *     Si importano uno alla volta e si aspetta che il database torni fermo
- *     (nessuna query in corso): solo dopo si richiama la loro funzione, che
- *     di solito non fa più niente (flag `bootstrapped`) e altrimenti riprova.
- *  2. PIGRE — le funzioni ensure…, assicura…, repairSchema che l'API chiama al
- *     primo uso, in un ordine che rispetta le dipendenze fra tabelle.
- *  3. RICHIESTA — il DDL eseguito dentro singole richieste (16 punti): non sta
- *     in una funzione richiamabile, quindi qui c'è la stessa istruzione copiata
- *     dal sorgente, con file:riga.
+ * Dalla PR 2.4 l'API non fa più DDL all'avvio né dentro le richieste (lo
+ * impedisce migrazioni.test.ts, «senza DDL»): restano le unità PIGRE, le
+ * funzioni ensure…, assicura…, repairSchema che l'API chiama al primo uso,
+ * eseguite qui in un ordine che rispetta le dipendenze fra tabelle. Spariscono
+ * con la PR 2.16.
  *
  * Gli errori si leggono sotto drizzle, al livello del client `pg`: quasi tutte
  * le funzioni dell'API li inghiottono (try/catch con un console.error), quindi
@@ -28,8 +24,8 @@
  * l'elenco COPERTURA non nomina; con 0 altrimenti. Termina il processo da sé:
  * lib/planning-studio.ts all'import avvia un setInterval.
  *
- * Le preparazioni dell'API toccano anche i dati (permessi degli utenti,
- * proprietari dei feed, password pubblicate, festivi…): su un database con
+ * Importare i moduli dell'API e chiamare le unità tocca anche i dati
+ * (proprietari dei feed, password pubblicate, festivi…): su un database con
  * utenti lo script si rifiuta, a meno di --anche-con-dati.
  */
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -58,15 +54,6 @@ const fileRegistro = process.argv.find(a => a.startsWith("--registro="))?.slice(
  * Controllato alla fine contro i sorgenti veri: un file con DDL che manca qui
  * fa uscire con errore. */
 const COPERTURA: Record<string, string[]> = {
-  "lib/auth.ts": ["avvio: ensureUsersTable (preparaUtenti)"],
-  "lib/tenant.ts": ["avvio: ensureTenantColumns"],
-  "lib/scheduling-projects.ts": ["avvio: ensureSchedulingTables"],
-  "lib/planning-studio.ts": ["avvio: ensurePsTables"],
-  "routes/fares-polimetriche.ts": ["avvio: ensureTables (polim_*)"],
-  "routes/planning.ts": ["avvio: ensureNewTables"],
-  "routes/fares.ts": ["avvio: ensurePolimetricheSnapshotsTable"],
-  "routes/gtfs-upload.ts": ["avvio: ensureFeedActiveColumn"],
-  "routes/fares-node-assignment.ts": ["avvio: ensureNodeAssignmentTables"],
   "lib/caronte-schema.ts": ["pigra: repairSchema / ensureCaronteSchema"],
   "lib/avm-diario-store.ts": ["pigra: assicura (caronte.avm_diario)"],
   "lib/avm-controllo-store.ts": ["pigra: assicura (caronte.avm_controllo_settimanale)"],
@@ -81,9 +68,9 @@ const COPERTURA: Record<string, string[]> = {
   "lib/planning-studio-validity.ts": ["pigra: ensureValidityTables", "pigra: ensureSyncMarkerColumn"],
   "lib/planning-studio-validity-units.ts": ["pigra: ensureTables (UDP)"],
   "lib/planning-studio-zones.ts": ["pigra: ensureTables (zones)"],
-  "lib/planning-studio-materialize.ts": ["pigra: ensureMaterializedColumn", "richiesta: :382 :386 :391 :487 :491 :607 :611"],
+  "lib/planning-studio-materialize.ts": ["pigra: ensureMaterializedColumn"],
   "routes/argos-watch.ts": ["pigra: ensureWatchTable"],
-  "routes/clusters.ts": ["pigra: ensureClusterFlagColumns", "richiesta: :344"],
+  "routes/clusters.ts": ["pigra: ensureClusterFlagColumns"],
   "routes/coincidence-zones.ts": ["pigra: ensureZoneScope"],
   "routes/deadhead-arcs.ts": ["pigra: ensureTable (deadhead_arcs)"],
   "routes/depots.ts": ["pigra: router.use anonimo (SQL copiato, depots.ts:31-32)"],
@@ -92,45 +79,9 @@ const COPERTURA: Record<string, string[]> = {
   "routes/network-share.ts": ["pigra: ensureNetworkShareTable"],
   "routes/optimizer-rule-profiles.ts": ["pigra: ensureSchema"],
   "routes/process-report.ts": ["pigra: ensureTable (process_reports)"],
-  "routes/service-program.ts": ["pigra: ensureVariantCodeColumn", "pigra: ensureAgentJobsTable", "richiesta: :2389 :3930 :3946 :4121 :4135 :4152"],
+  "routes/service-program.ts": ["pigra: ensureVariantCodeColumn", "pigra: ensureAgentJobsTable"],
   "routes/timetable-map-share.ts": ["pigra: ensureTimetableMapShareTable"],
-  "routes/planning-studio-timetables.ts": ["richiesta: :778 :784"],
 };
-
-/* ── Il DDL eseguito dentro singole richieste, copiato dal sorgente ───────── */
-const PER_RICHIESTA: Array<{ rif: string; sql: string }> = [
-  // materializePsToFeed (POST …/materialize): colonne del feed materializzato
-  { rif: "lib/planning-studio-materialize.ts:382", sql: "ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS on_demand boolean DEFAULT false" },
-  { rif: "lib/planning-studio-materialize.ts:386", sql: "ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS variant_code text" },
-  { rif: "lib/planning-studio-materialize.ts:391", sql: "ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS block_id text" },
-  { rif: "lib/planning-studio-materialize.ts:487", sql: "ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid" },
-  { rif: "lib/planning-studio-materialize.ts:491", sql: "CREATE INDEX IF NOT EXISTS idx_stop_clusters_source_ps_project ON stop_clusters(source_ps_project_id)" },
-  // mirrorPsClustersToLegacy (a ogni CRUD dei cluster PS): stesse due istruzioni
-  { rif: "lib/planning-studio-materialize.ts:607", sql: "ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid" },
-  { rif: "lib/planning-studio-materialize.ts:611", sql: "CREATE INDEX IF NOT EXISTS idx_stop_clusters_source_ps_project ON stop_clusters(source_ps_project_id)" },
-  // handleVehicleOptimize
-  { rif: "routes/service-program.ts:2389", sql: "ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid" },
-  // POST /service-program/agent-optimize (salvataggio dello scenario)
-  { rif: "routes/service-program.ts:3930", sql: "ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb" },
-  { rif: "routes/service-program.ts:3946", sql: "ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb" },
-  // POST /service-program/scenarios
-  { rif: "routes/service-program.ts:4121", sql: "ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depot_id uuid" },
-  { rif: "routes/service-program.ts:4135", sql: "ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb" },
-  { rif: "routes/service-program.ts:4152", sql: "ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb" },
-  // POST /clusters/by-routes con psScope
-  { rif: "routes/clusters.ts:344", sql: "ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid" },
-  // POST /planning-studio/:projectId/network-share
-  {
-    rif: "routes/planning-studio-timetables.ts:778",
-    sql: `CREATE TABLE IF NOT EXISTS ps_network_shares (
-        token text PRIMARY KEY, project_id uuid NOT NULL,
-        route_ids jsonb NOT NULL DEFAULT '[]'::jsonb, title text,
-        options jsonb NOT NULL DEFAULT '{}'::jsonb, created_by uuid,
-        created_at timestamptz NOT NULL DEFAULT now()
-      )`,
-  },
-  { rif: "routes/planning-studio-timetables.ts:784", sql: "ALTER TABLE ps_network_shares ADD COLUMN IF NOT EXISTS expires_at timestamptz" },
-];
 
 /* depots.ts: il DDL sta in un router.use anonimo, non richiamabile */
 const DEPOTS: Array<{ rif: string; sql: string }> = [
@@ -236,32 +187,9 @@ async function main(): Promise<number> {
   }
   console.log(`crea-tutto: database ${info.db}`);
 
-  /* ═══ 1. AVVIO ═══ */
-  const AVVIO: Array<[string, string, string]> = [
-    // [modulo, funzione esportata, etichetta]
-    ["lib/auth.ts", "ensureUsersTable", "lib/auth.ts ensureUsersTable"],
-    ["lib/tenant.ts", "ensureTenantColumns", "lib/tenant.ts ensureTenantColumns"],
-    ["lib/scheduling-projects.ts", "ensureSchedulingTables", "lib/scheduling-projects.ts ensureSchedulingTables"],
-    ["lib/planning-studio.ts", "ensurePsTables", "lib/planning-studio.ts ensurePsTables"],
-    ["routes/fares-polimetriche.ts", "ensureTables", "routes/fares-polimetriche.ts ensureTables"],
-    ["routes/planning.ts", "ensureNewTables", "routes/planning.ts ensureNewTables"],
-    ["routes/fares.ts", "ensurePolimetricheSnapshotsTable", "routes/fares.ts ensurePolimetricheSnapshotsTable"],
-    ["routes/gtfs-upload.ts", "ensureFeedActiveColumn", "routes/gtfs-upload.ts ensureFeedActiveColumn"],
-    ["routes/fares-node-assignment.ts", "ensureNodeAssignmentTables", "routes/fares-node-assignment.ts ensureNodeAssignmentTables"],
-  ];
   const moduli: Record<string, any> = {};
-  for (const [file, , etichetta] of AVVIO) {
-    await esegui("avvio (import)", etichetta, async () => {
-      moduli[file] = await import(pathToFileURL(join(SRC, file)).href);
-      await quiete(pool);
-    }, pool);
-  }
-  /* di nuovo, esplicitamente: no-op se l'import è riuscito, altrimenti riprova come farebbe l'API */
-  for (const [file, fn, etichetta] of AVVIO) {
-    await esegui("avvio (richiamo)", etichetta, () => moduli[file][fn](), pool);
-  }
 
-  /* ═══ 2. PIGRE ═══ (ordine: prima chi crea le tabelle a cui gli altri si appoggiano) */
+  /* ═══ PIGRE ═══ (ordine: prima chi crea le tabelle a cui gli altri si appoggiano) */
   const m = async (file: string) => moduli[file] ??= await import(pathToFileURL(join(SRC, file)).href);
   const PIGRE: Array<[string, () => Promise<unknown>]> = [
     ["lib/caronte-schema.ts repairSchema", async () => (await m("lib/caronte-schema.ts")).repairSchema()],
@@ -301,11 +229,6 @@ async function main(): Promise<number> {
     ["routes/timetable-map-share.ts ensureTimetableMapShareTable", async () => (await m("routes/timetable-map-share.ts")).ensureTimetableMapShareTable()],
   ];
   for (const [nome, fai] of PIGRE) await esegui("pigra", nome, fai, pool);
-
-  /* ═══ 3. RICHIESTA ═══ (una istruzione per volta: nel sorgente ciascuna ha il suo try) */
-  for (const x of PER_RICHIESTA) {
-    await esegui("richiesta", x.rif, () => db.execute(sql.raw(x.sql)), pool);
-  }
 
   unitaCorrente = "(fine)";
   await quiete(pool);

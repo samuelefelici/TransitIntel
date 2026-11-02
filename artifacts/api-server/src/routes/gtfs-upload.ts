@@ -18,7 +18,7 @@ import { parseCsv, buildShapeGeojson, normalizzaOrarioGtfs, getLatestFeedId } fr
 import { clearCache } from "../middlewares/cache";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { requireAdmin } from "../lib/auth";
-import { tenantWhere, assertFeedAccess, ensureTenantColumns, feedAccessibleWhere } from "../lib/tenant";
+import { tenantWhere, assertFeedAccess, preparaTenant, feedAccessibleWhere } from "../lib/tenant";
 import { causaDb, spiegaCausa } from "../lib/db-error";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 
@@ -172,10 +172,10 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
     }
 
     // ── ALL DB inserts inside a TRANSACTION — if anything fails, everything rolls back ──
-    await ensureTenantColumns();
+    await preparaTenant();
     const ownerId = req.user?.id ?? null;
     const result = await db.transaction(async (tx) => {
-      // Create feed record (owner_user_id via raw UPDATE perché la colonna è bootstrap-runtime)
+      // Create feed record (owner_user_id non è nello schema drizzle: si imposta con un UPDATE)
       const [feed] = await tx.insert(gtfsFeeds).values({
         filename: req.file!.originalname,
         agencyName,
@@ -335,7 +335,6 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
 // GET /api/gtfs/feeds
 router.get("/gtfs/feeds", async (req, res) => {
   try {
-    await ensureFeedActiveColumn();
     const where = feedAccessibleWhere(req);
     /* Le date da feed_info.txt sono spesso assenti, perché quel file è
      * facoltativo e molti produttori non lo includono: la riga della validità
@@ -554,21 +553,7 @@ router.delete("/gtfs/feeds/:id", async (req, res) => {
 });
 
 
-// ─── Feed attivo (lazy column bootstrap) ───────────────────────
-let feedActiveColumnEnsured = false;
-export async function ensureFeedActiveColumn(): Promise<void> {
-  if (feedActiveColumnEnsured) return;
-  try {
-    await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT false`);
-    await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false`);
-    await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS archived_at timestamptz`);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_gtfs_feeds_active ON gtfs_feeds(is_active) WHERE is_active = true`);
-    feedActiveColumnEnsured = true;
-  } catch (e: any) {
-    console.error("[gtfs] bootstrap is_active column failed:", e?.message);
-  }
-}
-void ensureFeedActiveColumn();
+// ─── Feed attivo ───────────────────────────────────────────────
 
 /**
  * POST /api/gtfs/feeds/:id/activate
@@ -579,7 +564,6 @@ void ensureFeedActiveColumn();
  */
 router.post("/gtfs/feeds/:id/activate", requireAdmin, async (req, res) => {
   try {
-    await ensureFeedActiveColumn();
     const id = String(req.params.id);
     if (!/^[0-9a-f-]{36}$/i.test(id)) {
       res.status(400).json({ error: "ID feed non valido" });
@@ -621,7 +605,6 @@ router.post("/gtfs/feeds/:id/activate", requireAdmin, async (req, res) => {
  */
 router.post("/gtfs/feeds/deactivate-all", requireAdmin, async (_req, res) => {
   try {
-    await ensureFeedActiveColumn();
     await db.execute(sql`UPDATE gtfs_feeds SET is_active = false WHERE is_active = true`);
     clearCache("/api/gtfs/");
     clearCache("/api/analysis/");

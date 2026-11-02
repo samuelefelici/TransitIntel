@@ -1,14 +1,14 @@
 /**
  * Tenant — isolamento dati per utente.
  *
- * Aggiunge owner_user_id alle tabelle "user-owned":
+ * Le tabelle "user-owned" hanno owner_user_id (dalle migrazioni, lib/db/migrations):
  *   - gtfs_feeds (root: tutto il GTFS è cascade-figlio)
  *   - service_program_scenarios (turni macchina salvati)
  *   - driver_shift_scenarios (turni guida salvati)
  *   - planning_scenarios (workspace pianificazione)
  *
- * Backfill: tutti i record esistenti vengono assegnati al primo admin
- * (il più vecchio per created_at) così non si perde nulla durante il rollout.
+ * Backfill: i record senza proprietario vengono assegnati al primo admin
+ * (il più vecchio per created_at) così non si perde nulla.
  *
  * Helper:
  *   - tenantWhere(req): SQL fragment "(owner_user_id = $uid OR owner_user_id IS NULL)"
@@ -28,17 +28,10 @@ const TENANT_TABLES = [
   "planning_scenarios",
 ] as const;
 
-export async function ensureTenantColumns(): Promise<void> {
+/** Solo dati: i proprietari mancanti e il feed di default. Le colonne le fanno le migrazioni. */
+export async function preparaTenant(): Promise<void> {
   if (bootstrapped) return;
   try {
-    for (const t of TENANT_TABLES) {
-      await db.execute(sql.raw(
-        `ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS owner_user_id uuid REFERENCES users(id) ON DELETE SET NULL`
-      ));
-      await db.execute(sql.raw(
-        `CREATE INDEX IF NOT EXISTS idx_${t}_owner ON ${t}(owner_user_id)`
-      ));
-    }
     // Backfill: assegna i record orfani al primo admin (per ordine di creazione)
     const admin = await db.execute(sql`
       SELECT id FROM users WHERE role = 'admin' ORDER BY created_at ASC LIMIT 1
@@ -46,9 +39,7 @@ export async function ensureTenantColumns(): Promise<void> {
     const adminId = ((admin as any).rows?.[0] ?? (admin as any)[0])?.id;
     if (adminId) {
       for (const t of TENANT_TABLES) {
-        await db.execute(sql.raw(
-          `UPDATE ${t} SET owner_user_id = '${adminId}'::uuid WHERE owner_user_id IS NULL`
-        ));
+        await db.execute(sql`UPDATE ${sql.identifier(t)} SET owner_user_id = ${adminId}::uuid WHERE owner_user_id IS NULL`);
       }
     }
 
@@ -56,8 +47,6 @@ export async function ensureTenantColumns(): Promise<void> {
     // Permette alle pagine pubbliche (Dashboard, Cartografia, ecc.) di mostrare
     // sempre un GTFS anche se l'utente loggato non ha caricato i propri feed.
     try {
-      await db.execute(sql`ALTER TABLE gtfs_feeds ADD COLUMN IF NOT EXISTS is_default boolean NOT NULL DEFAULT false`);
-      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_gtfs_feeds_default ON gtfs_feeds(is_default) WHERE is_default = true`);
       // Auto-seed: se nessun feed è default ma ce n'è almeno uno nel DB,
       // marca come default il più recente in assoluto (best-effort).
       const has = await db.execute(sql`SELECT 1 FROM gtfs_feeds WHERE is_default = true LIMIT 1`);
@@ -73,12 +62,12 @@ export async function ensureTenantColumns(): Promise<void> {
     }
 
     bootstrapped = true;
-    console.log("[tenant] owner_user_id columns ready + backfilled");
+    console.log("[tenant] proprietari e feed di default a posto");
   } catch (e: any) {
     console.error("[tenant] bootstrap error:", e?.message || e);
   }
 }
-void ensureTenantColumns();
+void preparaTenant();
 
 /**
  * Restituisce un fragment SQL da inserire in WHERE.
@@ -158,7 +147,7 @@ export async function assertFeedAccess(
   req: Request,
   res: Response,
 ): Promise<boolean> {
-  await ensureTenantColumns();
+  await preparaTenant();
   const u = req.user;
   if (!u) { res.status(401).json({ error: "Non autenticato" }); return false; }
   if (u.role === "admin") return true;
@@ -219,6 +208,6 @@ export async function assertFeedAccess(
  * prima di servire la richiesta. Da usare a monte dei router data-owned.
  */
 export async function ensureTenantMiddleware(_req: Request, _res: Response, next: NextFunction) {
-  await ensureTenantColumns();
+  await preparaTenant();
   next();
 }

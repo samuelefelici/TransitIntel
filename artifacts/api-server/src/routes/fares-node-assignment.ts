@@ -62,78 +62,8 @@ import { haversineKm } from "../lib/geo-utils";
 
 const router: IRouter = Router();
 
-// ════════════════════════════════════════════════════════════
-// Lazy bootstrap (pattern del progetto). Idempotente.
-// CREATE TABLE IF NOT EXISTS + ALTER TABLE … ADD COLUMN IF NOT EXISTS
-// ════════════════════════════════════════════════════════════
-let bootstrapped = false;
-export async function ensureNodeAssignmentTables(): Promise<void> {
-  if (bootstrapped) return;
-
-  // Colonne addittive su gtfs_fare_zone_clusters
-  await db.execute(sql`ALTER TABLE gtfs_fare_zone_clusters ADD COLUMN IF NOT EXISTS is_official BOOLEAN NOT NULL DEFAULT FALSE;`);
-  await db.execute(sql`ALTER TABLE gtfs_fare_zone_clusters ADD COLUMN IF NOT EXISTS official_code TEXT;`);
-
-  // Colonne addittive su gtfs_fare_zone_cluster_stops
-  await db.execute(sql`ALTER TABLE gtfs_fare_zone_cluster_stops ADD COLUMN IF NOT EXISTS assignment_layer TEXT;`);
-  await db.execute(sql`ALTER TABLE gtfs_fare_zone_cluster_stops ADD COLUMN IF NOT EXISTS assignment_confidence INTEGER DEFAULT 0;`);
-  await db.execute(sql`ALTER TABLE gtfs_fare_zone_cluster_stops ADD COLUMN IF NOT EXISTS assignment_source TEXT;`);
-  await db.execute(sql`ALTER TABLE gtfs_fare_zone_cluster_stops ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMPTZ DEFAULT NOW();`);
-
-  // Catalogo nodi ufficiali
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS gtfs_fare_official_nodes (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      feed_id UUID NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-      official_code TEXT NOT NULL,
-      official_name TEXT NOT NULL,
-      name_normalized TEXT NOT NULL,
-      centroid_lat DOUBLE PRECISION,
-      centroid_lon DOUBLE PRECISION,
-      aliases JSONB DEFAULT '[]'::jsonb,
-      source TEXT NOT NULL DEFAULT 'manual',
-      notes TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS gtfs_fare_official_nodes_feed_code_idx ON gtfs_fare_official_nodes (feed_id, official_code);`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS gtfs_fare_official_nodes_name_idx ON gtfs_fare_official_nodes (feed_id, name_normalized);`);
-
-  // Storico run pipeline
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS gtfs_fare_node_assignment_runs (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      feed_id UUID NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-      status TEXT NOT NULL,
-      total_stops INTEGER,
-      assigned_by_layer JSONB,
-      clusters_before INTEGER,
-      clusters_after INTEGER,
-      duration_ms INTEGER,
-      error_message TEXT,
-      params JSONB,
-      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      finished_at TIMESTAMPTZ
-    );
-  `);
-
-  // Audit override manuali
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS gtfs_fare_stop_assignment_overrides (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      feed_id UUID NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-      stop_id TEXT NOT NULL,
-      from_cluster_id TEXT,
-      to_cluster_id TEXT,
-      reason TEXT,
-      actor TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS gtfs_fare_stop_overrides_stop_idx ON gtfs_fare_stop_assignment_overrides (feed_id, stop_id);`);
-
-  bootstrapped = true;
-}
+// Le tabelle e le colonne dei nodi ufficiali (gtfs_fare_official_nodes, gtfs_fare_node_assignment_runs,
+// gtfs_fare_stop_assignment_overrides, is_official/assignment_* sui cluster) arrivano dalle migrazioni.
 
 // ════════════════════════════════════════════════════════════
 // Normalizzazione e tokenizzazione
@@ -1067,7 +997,6 @@ const ATMA_2013_NODES: ReadonlyArray<{ code: string; name: string; lat?: number;
 
 router.post("/fares/node-assignment/run", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const result = await runNodeAssignmentPipeline(feedId, req.body ?? {});
@@ -1077,7 +1006,6 @@ router.post("/fares/node-assignment/run", async (req, res): Promise<void> => {
 
 router.get("/fares/node-assignment/runs", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareNodeAssignmentRuns)
@@ -1089,7 +1017,6 @@ router.get("/fares/node-assignment/runs", async (req, res): Promise<void> => {
 
 router.get("/fares/node-assignment/report", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
@@ -1136,7 +1063,6 @@ router.get("/fares/node-assignment/report", async (req, res): Promise<void> => {
 
 router.get("/fares/node-assignment/low-confidence", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const threshold = Number(req.query.threshold ?? 70);
@@ -1156,7 +1082,6 @@ router.get("/fares/node-assignment/low-confidence", async (req, res): Promise<vo
 
 router.get("/fares/node-assignment/ambiguous", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const radiusM = Number(req.query.radiusM ?? 200);
@@ -1200,7 +1125,6 @@ router.get("/fares/node-assignment/ambiguous", async (req, res): Promise<void> =
 
 router.get("/fares/node-assignment/orphans", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.execute<any>(sql`
@@ -1220,7 +1144,6 @@ router.get("/fares/node-assignment/orphans", async (req, res): Promise<void> => 
 
 router.get("/fares/official-nodes", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareOfficialNodes)
@@ -1232,7 +1155,6 @@ router.get("/fares/official-nodes", async (req, res): Promise<void> => {
 
 router.post("/fares/official-nodes", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { officialCode, officialName, centroidLat, centroidLon, aliases, notes, source = "manual" } = req.body ?? {};
@@ -1255,7 +1177,6 @@ router.post("/fares/official-nodes", async (req, res): Promise<void> => {
 
 router.post("/fares/official-nodes/import-csv", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { csv, source = "manual" } = req.body ?? {};
@@ -1292,7 +1213,6 @@ router.post("/fares/official-nodes/import-csv", async (req, res): Promise<void> 
 
 router.post("/fares/official-nodes/import-atma-2013", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     let inserted = 0;
@@ -1312,7 +1232,6 @@ router.post("/fares/official-nodes/import-atma-2013", async (req, res): Promise<
 
 router.delete("/fares/official-nodes/:id", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const s = await idNelFeed(req, res); if (!s) return;
     const via = await db.delete(gtfsFareOfficialNodes).where(nelFeed(gtfsFareOfficialNodes, s)).returning({ id: gtfsFareOfficialNodes.id });
     if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
@@ -1367,7 +1286,6 @@ async function moveStop(feedId: string, stopId: string, toClusterId: string, rea
 
 router.post("/fares/stop-assignment/move", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { stopId, toClusterId, reason, actor = "user" } = req.body ?? {};
@@ -1379,7 +1297,6 @@ router.post("/fares/stop-assignment/move", async (req, res): Promise<void> => {
 
 router.post("/fares/stop-assignment/bulk-move", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { stopIds, toClusterId, reason, actor = "user" } = req.body ?? {};
@@ -1401,7 +1318,6 @@ router.post("/fares/stop-assignment/bulk-move", async (req, res): Promise<void> 
 
 router.get("/fares/stop-assignment/overrides", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareStopAssignmentOverrides)
@@ -1413,7 +1329,6 @@ router.get("/fares/stop-assignment/overrides", async (req, res): Promise<void> =
 
 router.post("/fares/stop-assignment/revert/:overrideId", async (req, res): Promise<void> => {
   try {
-    await ensureNodeAssignmentTables();
     const s = await idNelFeed(req, res, "overrideId"); if (!s) return;
     const [ov] = await db.select().from(gtfsFareStopAssignmentOverrides)
       .where(nelFeed(gtfsFareStopAssignmentOverrides, s));
@@ -1443,13 +1358,6 @@ router.post("/fares/stop-assignment/revert/:overrideId", async (req, res): Promi
 
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
-});
-
-// Bootstrap eager all'import: garantisce che le colonne addittive
-// (is_official, official_code, assignment_*) esistano prima che fares.ts
-// faccia SELECT su gtfs_fare_zone_clusters / gtfs_fare_zone_cluster_stops.
-ensureNodeAssignmentTables().catch((e) => {
-  console.error("[telemaco] eager bootstrap failed:", e);
 });
 
 export default router;

@@ -2383,10 +2383,6 @@ async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp")
     const psProjectIdForClusters = typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)
       ? body.psProjectId : null;
     try {
-      // La colonna di provenienza nasce col materializzatore PS→legacy: su un
-      // DB dove non è mai girato non esiste, e senza questa ALTER la query
-      // sotto fallirebbe lasciando il solver SENZA nodi.
-      await db.execute(sql`ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid`);
       // 5b.1 — cluster legacy: SOLO globali + quelli mirrorati da QUESTO
       // progetto PS. Prima si leggeva l'intera tabella senza filtro: i nodi
       // di altri progetti entravano nel solver e le loro fermate venivano
@@ -3927,7 +3923,6 @@ router.post("/service-program/agent-optimize", async (req, res) => {
               serviceType, defaultVehicleType: b.defaultVehicleType ?? null,
               companyCars: runBody.crewConfig?.companyCars ?? null,
             };
-            await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb`);
             await db.execute(sql`UPDATE service_program_scenarios SET config = ${JSON.stringify(provenance)}::jsonb WHERE id = ${row.id}::uuid`);
           } catch (e: any) {
             jobLog.warn(`agent-optimize: salvataggio configurazione (dossier) fallito (non-fatale): ${e?.message}`);
@@ -3943,7 +3938,6 @@ router.post("/service-program/agent-optimize", async (req, res) => {
               .map((d: any) => ({ id: d.id, maxVehicles: Number.isFinite(Number(d.maxVehicles)) && Number(d.maxVehicles) > 0 ? Number(d.maxVehicles) : null }));
             if (clean.length > 0) {
               try {
-                await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb`);
                 await db.execute(sql`UPDATE service_program_scenarios SET depots = ${JSON.stringify(clean)}::jsonb WHERE id = ${row.id}::uuid`);
               } catch { /* non-fatale */ }
             }
@@ -4114,31 +4108,29 @@ router.post("/service-program/scenarios", async (req, res) => {
     } catch (e: any) {
       req.log.warn({ err: e?.message }, "stamp owner_user_id failed (non-fatal)");
     }
-    // Aggancia al progetto se passato (colonna nullable aggiunta da scheduling-projects)
-    // Residenza di servizio = deposito scelto (colonna additiva depot_id)
+    // Residenza di servizio = deposito scelto (colonna depot_id)
     if (depotId && /^[0-9a-f-]{36}$/i.test(depotId)) {
       try {
-        await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depot_id uuid`);
         await db.execute(sql`UPDATE service_program_scenarios SET depot_id = ${depotId}::uuid WHERE id = ${row.id}::uuid`);
       } catch (e: any) {
         req.log.warn({ err: e?.message }, "attach depot_id failed (non-fatal)");
       }
     }
     // Multi-deposito: salva l'INSIEME dei depositi selezionati (con cap vetture).
-    // Colonna additiva jsonb; depot_id resta per compatibilità (primo deposito).
+    // Colonna jsonb; depot_id resta per compatibilità (primo deposito).
     if (Array.isArray(depotsSel) && depotsSel.length > 0) {
       const clean = depotsSel
         .filter(d => d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id))
         .map(d => ({ id: d.id, maxVehicles: Number.isFinite(Number(d.maxVehicles)) && Number(d.maxVehicles) > 0 ? Number(d.maxVehicles) : null }));
       if (clean.length > 0) {
         try {
-          await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb`);
           await db.execute(sql`UPDATE service_program_scenarios SET depots = ${JSON.stringify(clean)}::jsonb WHERE id = ${row.id}::uuid`);
         } catch (e: any) {
           req.log.warn({ err: e?.message }, "attach depots failed (non-fatal)");
         }
       }
     }
+    // Aggancia al progetto se passato
     if (projectId && /^[0-9a-f-]{36}$/i.test(projectId)) {
       try {
         await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${projectId}::uuid WHERE id = ${row.id}::uuid`);
@@ -4149,7 +4141,6 @@ router.post("/service-program/scenarios", async (req, res) => {
     // Dossier di processo: la configurazione con cui è stato calcolato lo scenario
     if (configReq && typeof configReq === "object") {
       try {
-        await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb`);
         await db.execute(sql`UPDATE service_program_scenarios SET config = ${JSON.stringify({ ...configReq, source: (configReq as any).source ?? "fucina", savedAt: new Date().toISOString() })}::jsonb WHERE id = ${row.id}::uuid`);
       } catch (e: any) {
         req.log.warn({ err: e?.message }, "attach config failed (non-fatal)");

@@ -207,7 +207,7 @@ function sorgentiApi(): string[] {
 }
 
 describe("il DDL a runtime può solo scendere", () => {
-  const TETTO = { "CREATE TABLE": 85, "ALTER TABLE": 80, "CREATE INDEX": 105 };
+  const TETTO = { "CREATE TABLE": 46, "ALTER TABLE": 26, "CREATE INDEX": 45 };
   const testo = sorgentiApi().map(f => senzaCommenti(readFileSync(f, "latin1"))).join("\n");
   const conta = (re: RegExp) => (testo.match(re) ?? []).length;
 
@@ -223,6 +223,21 @@ describe("il DDL a runtime può solo scendere", () => {
         ? `${k}: ${v} contro ${tetto}. Lo schema si cambia con una migrazione in lib/db/migrations, non dall'API`
         : `${k}: ${v} contro ${tetto}. Hai tolto DDL dall'API: abbassa il tetto a ${v}`).toBe(tetto);
     }
+  });
+
+  /* PR 2.4: l'avvio e le richieste non toccano più lo schema. Questi file
+   * avevano il DDL d'avvio (o, l'ultimo, quello di una richiesta): non deve
+   * tornarci. Restano solo le unità pigre (ensure…/assicura…) fino alla 2.16. */
+  const SENZA_DDL = [
+    "lib/auth.ts", "lib/tenant.ts", "lib/scheduling-projects.ts", "lib/planning-studio.ts",
+    "routes/fares-polimetriche.ts", "routes/planning.ts", "routes/fares.ts", "routes/gtfs-upload.ts",
+    "routes/fares-node-assignment.ts", "routes/planning-studio-timetables.ts",
+  ];
+  const DDL = /\b(CREATE|ALTER|DROP)\s+(UNIQUE\s+)?(TABLE|INDEX|SCHEMA|VIEW|SEQUENCE|TYPE|EXTENSION|FUNCTION|TRIGGER)\b|\bOR\s+REPLACE\s+VIEW\b|\b(ADD|ALTER|DROP)\s+(COLUMN|CONSTRAINT)\b/gi;
+  it.each(SENZA_DDL)("%s: senza DDL", (file) => {
+    const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", file);
+    const trovati = senzaCommenti(readFileSync(src, "latin1")).match(DDL) ?? [];
+    expect(trovati, `${file} cambia lo schema (${trovati.join(", ")}): si fa con una migrazione in lib/db/migrations`).toEqual([]);
   });
 
   it("l'impronta del baseline nel test coincide col file (controllo incrociato)", () => {

@@ -33,55 +33,7 @@ import { strictLimiter } from "../middlewares/rate-limit";
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
 
-/* ─────────────────────────────────────────────────────────────
- *  Tabelle (bootstrap lazy — niente migration richiesta)
- * ───────────────────────────────────────────────────────────── */
-let bootstrapped = false;
-export async function ensureTables(): Promise<void> {
-  if (bootstrapped) return;
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS polim_imports (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        filename text,
-        agency_name text,
-        created_by text,
-        line_count int NOT NULL DEFAULT 0,
-        percorso_count int NOT NULL DEFAULT 0,
-        payload jsonb NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_polim_imports_created_at ON polim_imports(created_at DESC)`);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS polim_polimetriche (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        import_id uuid NOT NULL REFERENCES polim_imports(id) ON DELETE CASCADE,
-        route_id text NOT NULL,
-        line_code text,
-        line_name text,
-        variant_id text NOT NULL,
-        direction text NOT NULL DEFAULT 'AB',
-        name text,
-        total_km double precision,
-        stop_count int,
-        tratta_count int,
-        boundaries jsonb,
-        tratte jsonb,
-        stops jsonb,
-        created_by text,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now(),
-        UNIQUE (import_id, route_id, variant_id, direction)
-      )
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_polim_polimetriche_import ON polim_polimetriche(import_id)`);
-    bootstrapped = true;
-  } catch (e: any) {
-    console.error("[polimetriche] bootstrap tables error", e?.message);
-  }
-}
-void ensureTables();
+/* Le tabelle polim_imports e polim_polimetriche arrivano dalle migrazioni (lib/db/migrations). */
 
 const userId = (req: any): string | null => req?.user?.id ?? null;
 const isAdmin = (req: any): boolean => req?.user?.role === "admin";
@@ -198,7 +150,6 @@ router.post("/fares/polimetriche/import", strictLimiter, upload.single("file"), 
     return;
   }
   try {
-    await ensureTables();
     const zip = new AdmZip(req.file.buffer);
     const getFile = (name: string): string | null => {
       const e = zip.getEntry(name);
@@ -429,7 +380,6 @@ router.post("/fares/polimetriche/import", strictLimiter, upload.single("file"), 
  * ───────────────────────────────────────────────────────────── */
 router.get("/fares/polimetriche/imports", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const uid = userId(req);
     const rows = isAdmin(req) || !uid
       ? (await db.execute<any>(sql`
@@ -454,7 +404,6 @@ router.get("/fares/polimetriche/imports", async (req, res): Promise<void> => {
  * ───────────────────────────────────────────────────────────── */
 router.get("/fares/polimetriche/imports/:id", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const r = await db.execute<any>(sql`
       SELECT id, filename, agency_name, line_count, percorso_count, payload, created_at
       FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
@@ -504,7 +453,6 @@ router.get("/fares/polimetriche/imports/:id", async (req, res): Promise<void> =>
  * ───────────────────────────────────────────────────────────── */
 router.get("/fares/polimetriche/imports/:id/percorso", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const { routeId, variantId } = req.query as { routeId?: string; variantId?: string };
     if (!routeId || !variantId) { res.status(400).json({ error: "routeId e variantId richiesti" }); return; }
     const r = await db.execute<any>(sql`SELECT payload FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
@@ -536,7 +484,6 @@ router.get("/fares/polimetriche/imports/:id/percorso", async (req, res): Promise
  * ───────────────────────────────────────────────────────────── */
 router.get("/fares/polimetriche/imports/:id/full", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const r = await db.execute<any>(sql`
       SELECT agency_name, filename, payload FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
     const row = r.rows?.[0];
@@ -570,7 +517,6 @@ router.get("/fares/polimetriche/imports/:id/full", async (req, res): Promise<voi
  * ───────────────────────────────────────────────────────────── */
 router.delete("/fares/polimetriche/imports/:id", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     await db.execute(sql`DELETE FROM polim_imports WHERE id = ${req.params.id}`);
     res.json({ ok: true });
   } catch (e: any) {
@@ -585,7 +531,6 @@ router.delete("/fares/polimetriche/imports/:id", async (req, res): Promise<void>
  * ───────────────────────────────────────────────────────────── */
 router.delete("/fares/polimetriche/imports/:id/percorso", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const { routeId, variantId } = req.query as { routeId?: string; variantId?: string };
     if (!routeId || !variantId) { res.status(400).json({ error: "routeId e variantId richiesti" }); return; }
     const r = await db.execute<any>(sql`SELECT payload FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
@@ -617,7 +562,6 @@ router.delete("/fares/polimetriche/imports/:id/percorso", async (req, res): Prom
  * ───────────────────────────────────────────────────────────── */
 router.post("/fares/polimetriche/imports/:id/percorsi/delete", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const items: { routeId: string; variantId: string }[] = Array.isArray(req.body?.items) ? req.body.items : [];
     if (items.length === 0) { res.status(400).json({ error: "Nessun percorso da eliminare" }); return; }
     const keys = new Set(items.map(i => `${i.routeId}::${i.variantId}`));
@@ -650,7 +594,6 @@ router.post("/fares/polimetriche/imports/:id/percorsi/delete", async (req, res):
  * ───────────────────────────────────────────────────────────── */
 router.get("/fares/polimetriche/saved", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const importId = req.query.importId as string | undefined;
     const rows = importId
       ? (await db.execute<any>(sql`
@@ -690,7 +633,6 @@ function mapSavedRow(r: any) {
  * ───────────────────────────────────────────────────────────── */
 router.post("/fares/polimetriche/saved", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     const b = req.body || {};
     const { importId, routeId, lineCode, lineName, variantId } = b;
     const direction = b.direction === "BA" ? "BA" : "AB";
@@ -736,7 +678,6 @@ router.post("/fares/polimetriche/saved", async (req, res): Promise<void> => {
  * ───────────────────────────────────────────────────────────── */
 router.delete("/fares/polimetriche/saved/:id", async (req, res): Promise<void> => {
   try {
-    await ensureTables();
     await db.execute(sql`DELETE FROM polim_polimetriche WHERE id = ${req.params.id}`);
     res.json({ ok: true });
   } catch (e: any) {
