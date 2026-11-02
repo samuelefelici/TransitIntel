@@ -13,10 +13,11 @@ const stato = vi.hoisted(() => ({
   create: [] as any[],
   chiuse: [] as any[],
   parco: null as any,
+  errore: null as string | null,
 }));
 
 vi.mock("../lib/avm-storia-store", () => ({
-  leggiStoriaDiario: vi.fn(async () => ({ campioni: stato.campioni, vetture: stato.vetture, errore: null })),
+  leggiStoriaDiario: vi.fn(async () => ({ campioni: stato.campioni, vetture: stato.vetture, errore: stato.errore })),
   leggiRichieste: vi.fn(async () => ({ richieste: stato.richieste, errore: null })),
   registraVerifiche: vi.fn(async (c: any[]) => { stato.verifiche.push(...c); return c.length; }),
   pulisciRichieste: vi.fn(async () => 0),
@@ -78,6 +79,8 @@ beforeEach(() => {
     { vehicleRef: "11", giorni, esiti: "3".repeat(14) + "2".repeat(giorni.length - 14) }, // da riparare
     { vehicleRef: "12", giorni, esiti: "0".repeat(giorni.length) },            // fuori parco: da togliere
     { vehicleRef: "13", giorni: giorni.filter(g => g < "2026-10-30"), esiti: "3".repeat(25) }, // tolta dal 30/10
+    /* il resto del flusso (consorziate, che non pesano sul confronto col parco): una vettura che manca è una vettura tolta, non una risposta parziale */
+    ...Array.from({ length: 10 }, (_, i) => ({ vehicleRef: String(11100 + i), giorni, esiti: "3".repeat(giorni.length) })),
   ];
   stato.parco = { disponibile: true, motivo: null, tenant: "conerobus", lettoAlle: ORA.toISOString(),
     mezzi: [mezzo("10"), mezzo("11"), mezzo("13", { stato: "dismesso" }), mezzo("14")] };
@@ -87,7 +90,7 @@ beforeEach(() => {
     { id: "00000000-0000-4000-8000-000000000002", vehicleRef: "14", tipo: "aggiungere", richiestaIl: "2026-10-28", nota: "chiesto per mail",
       creataIl: "2026-10-28T08:00:00Z", creataDa: "Mario Rossi", esito: null, chiusaIl: null, chiusaDa: null, automatica: false },
   ];
-  stato.verifiche = []; stato.create = []; stato.chiuse = [];
+  stato.verifiche = []; stato.create = []; stato.chiuse = []; stato.errore = null;
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -120,6 +123,40 @@ describe("GET /siri/parco/storia", () => {
     expect(r.status).toBe(200);
     expect(r.body.officina).toMatchObject({ disponibile: false, motivo: "FleetCare non espone ancora il parco." });
     expect(r.body.conteggi.da_togliere_da_siri + r.body.conteggi.da_aggiungere_a_siri + r.body.conteggi.da_verificare_alienata).toBe(0);
+  });
+
+  it("diario non leggibile: 503, niente liste (il parco intero sembrerebbe da aggiungere)", async () => {
+    stato.errore = "connessione chiusa";
+    stato.vetture = []; stato.campioni = new Map();
+    const r = await request(app()).get("/api/siri/parco/storia");
+    expect(r.status).toBe(503);
+    expect(r.body.error).toMatch(/diario dell'AVM non si legge/);
+    expect((await request(app()).get("/api/siri/parco/storia?formato=xlsx")).status).toBe(503);
+    expect(stato.verifiche).toEqual([]);
+  });
+
+  it("diario senza vetture Conerobus: il parco non si confronta, niente da aggiungere", async () => {
+    const giorni = giorniDa("2026-10-05", "2026-11-03");
+    stato.vetture = [{ vehicleRef: "11096", giorni, esiti: "3".repeat(giorni.length) }];
+    const r = await request(app()).get("/api/siri/parco/storia");
+    expect(r.status).toBe(200);
+    expect(r.body.officina.disponibile).toBe(false);
+    expect(r.body.conteggi.da_aggiungere_a_siri).toBe(0);
+    expect(r.body.testiMizar.aggiungere).toBeNull();
+  });
+
+  it("l'Excel con «solo parco officina» toglie le alienate solo dall'andamento, non dai fogli delle azioni", async () => {
+    stato.richieste.push({ id: "00000000-0000-4000-8000-000000000003", vehicleRef: "12", tipo: "togliere", richiestaIl: "2026-11-02",
+      nota: "chiesta il 2/11", creataIl: "2026-11-02T08:00:00Z", creataDa: null, esito: null, chiusaIl: null, chiusaDa: null, automatica: false });
+    const r = await request(app()).get("/api/siri/parco/storia?formato=xlsx&perimetro=conerobus&officina=1")
+      .buffer(true).parse((res, cb) => { const b: Buffer[] = []; res.on("data", (c: Buffer) => b.push(c)); res.on("end", () => cb(null, Buffer.concat(b))); });
+    const v = voci(r.body as Buffer);
+    const wb = v.get("xl/workbook.xml")!;
+    const fogli = [...wb.matchAll(/<sheet name="([^"]+)"/g)].map(m => m[1]);
+    const foglio = (nome: string) => v.get(`xl/worksheets/sheet${fogli.indexOf(nome) + 1}.xml`) ?? "";
+    expect(foglio("Da togliere da SIRI")).toContain(">12<");
+    expect(foglio("Richieste a Mizar")).toContain("chiesta il 2/11");
+    expect(foglio("Riepilogo")).toContain("andamento senza fuori parco e dismesse");
   });
 
   it("l'Excel: i fogli delle azioni e delle richieste, senza i nomi di chi le ha segnate", async () => {

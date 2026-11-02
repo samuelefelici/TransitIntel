@@ -66,12 +66,15 @@ function richiestaInBreve(r: RichiestaVista | null): string {
 export interface InfoStoriaXlsx {
   /** descrizione del perimetro esportato, per il sottotitolo */
   perimetro?: string;
+  /** le vetture che contano nell'andamento, se diverse (senza fuori parco e dismesse) */
+  andamento?: VetturaStoria[];
   officina?: { disponibile: boolean; motivo: string | null; lettoAlle: string; mezzi: number } | null;
 }
 
 /**
- * Il foglio completo. `vetture` è il perimetro scelto (solo Conerobus, senza
- * fuori parco e dismesse): andamento, conteggi e fogli contano quelle.
+ * Il foglio completo. `vetture` è il perimetro scelto (solo Conerobus): conteggi,
+ * testi per Mizar, fogli e richieste contano quelle. L'andamento conta
+ * `info.andamento` se c'è (senza fuori parco e dismesse, come nella pagina).
  */
 export function esportaStoriaXlsx(s: StoriaAvm, vetture: VetturaStoria[] = s.vetture, info: InfoStoriaXlsx = {}): Buffer {
   const st = new Stili();
@@ -97,7 +100,8 @@ export function esportaStoriaXlsx(s: StoriaAvm, vetture: VetturaStoria[] = s.vet
   const quadratino = (fill: string | null, testo: string): Valore =>
     fill ? { v: null, s: st.indice({ fill, border: true, borderColor: "FFFFFF" }) } : { v: testo.trim() ? "·" : null, s: S.vuota };
 
-  const andamento = andamentoStoria(s, vetture);
+  const andamento = andamentoStoria(s, info.andamento ?? vetture);
+  const senzaAlienate = !!info.andamento && info.andamento.length !== vetture.length;
   const conteggi = contaAzioni(vetture);
   const testi = testiMizar({ ...s, vetture });
   const primaSettimana = s.settimane[0];
@@ -118,8 +122,12 @@ export function esportaStoriaXlsx(s: StoriaAvm, vetture: VetturaStoria[] = s.vet
   R.push([]);
   R.push([{ v: "Come leggere", s: S.h2 }]);
   R.push([{ v: "Una vettura funziona in una settimana se si è localizzata almeno in una giornata contata, come nel "
-    + "controllo settimanale. Il perimetro è il parco di oggi: le vetture che FleetCare dà fuori parco o dismesse "
-    + "adesso escono da tutte le settimane, così i numeri misurano i lavori sugli apparati e non il parco che cambia.", s: S.testo }]);
+    + "controllo settimanale."
+    + (senzaAlienate
+      ? " Nell'andamento il perimetro è il parco di oggi: le vetture che FleetCare dà fuori parco o dismesse adesso "
+        + "escono da tutte le settimane, così i numeri misurano i lavori sugli apparati e non il parco che cambia. "
+        + "Restano invece nei fogli delle azioni, perché vanno tolte da SIRI."
+      : ""), s: S.testo }]);
   R.push([{ v: fraseAndamento(andamento), s: S.testoTenue }]);
   R.push([]);
 

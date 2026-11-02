@@ -19,9 +19,10 @@ export interface VetturaPerConti {
   vehicleRef: string;
   storia: string;
   primoGiorno: string | null;
+  ultimoGiorno: string | null;
   azione: Azione;
   esclusa: { motivo: string } | null;
-  richiesta: { tipo: "togliere" | "aggiungere"; esito: "fatta" | "annullata" | null } | null;
+  richiesta: { tipo: "togliere" | "aggiungere"; esito: "fatta" | "annullata" | null; ricomparsaIl: string | null } | null;
 }
 export type SettimanaContata = SettimanaStoria & { F: number; P: number; M: number; A: number };
 
@@ -41,6 +42,19 @@ export function ddmm(g: string | null): string {
   const [, m, d] = g.split("-");
   return `${d}/${m}`;
 }
+export function ddmmyyyy(g: string | null): string {
+  return g ? g.slice(0, 10).split("-").reverse().join("/") : "";
+}
+
+/** La giornata di esercizio di adesso nel browser: fuso di Roma, taglio alle 03:00 (come il server). */
+export function oggiDiEsercizio(adesso: Date = new Date()): string {
+  const t = new Date(adesso.getTime() - 3 * 3_600_000);
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).format(t);
+}
+
+export function spostaGiorni(g: string, n: number): string {
+  return new Date(new Date(`${g}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
+}
 
 /** Per settimana, quante vetture si localizzavano, parlavano, tacevano, mancavano: dalla loro prima comparsa. */
 export function andamentoPerimetro(settimane: SettimanaStoria[], vetture: VetturaPerConti[]): SettimanaContata[] {
@@ -48,6 +62,8 @@ export function andamentoPerimetro(settimane: SettimanaStoria[], vetture: Vettur
     const n = { F: 0, P: 0, M: 0, A: 0 };
     for (const v of vetture) {
       if (!v.primoGiorno || lunediDi(v.primoGiorno) > w.lunedi) continue;
+      /* una vettura uscita dal flusso non resta nel denominatore per sempre (come il server) */
+      if (v.azione === "gia_tolta" && v.ultimoGiorno && lunediDi(v.ultimoGiorno) < w.lunedi) continue;
       const ch = v.storia[i];
       if (ch === "F" || ch === "P" || ch === "M" || ch === "A") n[ch]++;
     }
@@ -70,7 +86,7 @@ export function fraseAndamento(a: SettimanaContata[]): string {
   const prima = giudicabili[0];
   if (prima && prima.lunedi !== ultima.lunedi) {
     const p = quota(prima);
-    pezzi.push(`Nella prima settimana osservata, dal ${ddmm(prima.lunedi)}, erano ${prima.F} su ${p.tot} (${p.pct}%).`);
+    pezzi.push(`Nella prima settimana osservata, dal ${ddmmyyyy(prima.lunedi)}, erano ${prima.F} su ${p.tot} (${p.pct}%).`);
   }
   return pezzi.join(" ");
 }
@@ -86,10 +102,18 @@ export function tipoRichiesta(a: Azione): "togliere" | "aggiungere" | null {
   return a === "da_togliere_da_siri" ? "togliere" : a === "da_aggiungere_a_siri" ? "aggiungere" : null;
 }
 
-/** Si può segnare una richiesta per la vettura: l'azione la chiede e non ce n'è già una aperta dello stesso tipo. */
+/**
+ * La richiesta copre già l'azione: aperta, oppure fatta (anche a mano) senza che la vettura sia ricomparsa.
+ * Stessa regola del server (richiestaCopre in api-server/src/lib/avm-storia.ts).
+ */
+export function richiestaCopre(r: VetturaPerConti["richiesta"], tipo: "togliere" | "aggiungere"): boolean {
+  return !!r && r.tipo === tipo && (r.esito == null || (r.esito === "fatta" && !r.ricomparsaIl));
+}
+
+/** Si può segnare una richiesta per la vettura: l'azione la chiede e nessuna richiesta la copre già. */
 export function selezionabile(v: Pick<VetturaPerConti, "azione" | "richiesta">): boolean {
   const tipo = tipoRichiesta(v.azione);
-  return tipo != null && !(v.richiesta && v.richiesta.esito == null && v.richiesta.tipo === tipo);
+  return tipo != null && !richiestaCopre(v.richiesta, tipo);
 }
 
 /** Il tipo comune a una selezione; null se è vuota o mescola i due tipi. */

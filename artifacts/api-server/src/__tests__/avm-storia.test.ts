@@ -4,7 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   calcolaStoria, verificaRichieste, testiMizar, richiestaTogliere, andamentoStoria, fraseAndamento,
-  vediRichiesta, SETTIMANE_SILENZIO_ALIENATA,
+  vediRichiesta, giornateComplete, richiestaCopre, SETTIMANE_SILENZIO_ALIENATA,
   type PresenzaVettura, type RichiestaMizar, type DatiStoria,
 } from "../lib/avm-storia";
 import { calcolaControllo, spostaGiorni, lunediDi, ultimaSettimanaChiusa, type InterventoAvm } from "../lib/avm-controllo";
@@ -140,6 +140,77 @@ describe("le azioni", () => {
     expect(una(s, "5").azione).toBe("funziona");
   });
 
+  it("una sola caduta seguita dalla ripresa è riparata; instabile solo con una ricaduta dopo la ripresa", () => {
+    const s = calcolaStoria(dati({
+      "40": "FFFFFFFMMFF", "41": "FFFFFMMMMFF", "44": "FFFFFFFFMFF", // riparate dentro la finestra
+      "45": "FFFFFMFMFFF",                                           // ricaduta dopo una ripresa: instabile
+      "46": "FFFFFFFMFMF",                                           // ultima chiusa senza: da riparare, instabile
+      "47": "FFFFFFFFFMF",                                           // ultima chiusa senza, una caduta sola
+      "48": "-----MMFFFF",                                           // nuova: appena attivata, non «riparata»
+    }));
+    expect(una(s, "40").azione).toBe("riparata");
+    expect(una(s, "40").riparataDal).toBe(spostaGiorni(PRIMO, 63));
+    expect(una(s, "41").azione).toBe("riparata");
+    expect(una(s, "44").azione).toBe("riparata");
+    expect(una(s, "45").azione).toBe("instabile");
+    expect(una(s, "46")).toMatchObject({ azione: "da_riparare", instabile: true });
+    expect(una(s, "47")).toMatchObject({ azione: "da_riparare", instabile: false });
+    expect(una(s, "48").azione).toBe("funziona");
+  });
+
+  it("le ferme in officina restano fra le da riparare ma in fondo, col fermo come spiegazione", () => {
+    const parco = parcoDi([
+      mezzo("80"), mezzo("81", { stato: "in_officina", fermoDal: "2026-09-20T08:00:00Z", fermoMotivo: "motore", commessa: "C-81" }),
+    ]);
+    const s = calcolaStoria(dati({ "80": "FFFFFFFFPPP", "81": "FFFFMMMMMMM" }, { parco }));
+    expect(s.vetture.map(v => v.vehicleRef).slice(0, 2)).toEqual(["80", "81"]);
+    const v = una(s, "81");
+    expect(v.azione).toBe("da_riparare");
+    expect(v.perche).toMatch(/Ferma in officina dal 20\/09\/2026 \(motore\), commessa C-81/);
+    expect(v.perche).not.toMatch(/apparato spento/);
+    expect(v.perche.match(/Ferma in officina/g)).toHaveLength(1);
+  });
+
+  it("si localizza ma FleetCare non la conosce: da verificare, non da togliere né da chiedere a Mizar", () => {
+    const parco = parcoDi([mezzo("90")]);
+    const s = calcolaStoria(dati({ "90": "FFFFFFFFFFF", "91": "FFFFFFFFFFF" }, { parco }));
+    const v = una(s, "91");
+    expect(v.azione).toBe("da_verificare_alienata");
+    expect(v.esclusa?.motivo).toBe("fuori_parco");
+    expect(v.perche).toMatch(/manca in FleetCare/);
+    expect(testiMizar(s).togliere).toBeNull();
+    /* fuori parco, si localizzava, ma il flusso non la elenca più da giorni: già tolta */
+    const tutte = giornate(PRIMO);
+    const s2 = calcolaStoria(dati({ "90": "FFFFFFFFFFF" }, {
+      parco,
+      vetture: [presenza("90", perSettimane(PRIMO, "FFFFFFFFFFF")),
+        { vehicleRef: "95", giorni: tutte.slice(0, -4), esiti: "3".repeat(tutte.length - 4) }],
+    }));
+    expect(una(s2, "95").azione).toBe("gia_tolta");
+  });
+
+  it("si è localizzata in questa settimana: non è da verificare come alienata", () => {
+    const parco = parcoDi([mezzo("92")]);
+    const s = calcolaStoria(dati({ "92": "FFFFFFMMMMF" }, { parco }));
+    expect(una(s, "92")).toMatchObject({ azione: "da_riparare", posizioneInSettimana: lunediDi(OGGI) });
+  });
+
+  it("sparita dal flusso da 4 settimane senza un parco che la spieghi: già tolta, fuori dall'andamento", () => {
+    const s = calcolaStoria(dati({ "11098": "FFFFFF-----", "93": "FFFFFFFFFFF" }));
+    const v = una(s, "11098");
+    expect(v.azione).toBe("gia_tolta");
+    expect(v.perche).toMatch(/consorziata/);
+    const a = andamentoStoria(s, s.vetture);
+    expect(a[0].F + a[0].P + a[0].M + a[0].A).toBe(2);
+    expect(a.at(-2)!.A).toBe(0);
+  });
+
+  it("senza giornate contate niente da aggiungere a SIRI", () => {
+    const s = calcolaStoria(dati({}, { campioni: new Map(), parco: parcoDi([mezzo("94")]) }));
+    expect(una(s, "94").azione).toBe("non_giudicabile");
+    expect(testiMizar(s).aggiungere).toBeNull();
+  });
+
   it("da riparare viene prima, le più lunghe in cima", () => {
     const s = calcolaStoria(dati({ "1": "FFFFFFFFFFF", "2": "FFFFFFFFFPP", "3": "FFFFFFFPPPP" }));
     expect(s.vetture.map(v => v.vehicleRef)).toEqual(["3", "2", "1"]);
@@ -240,6 +311,29 @@ describe("le richieste a Mizar", () => {
       .toEqual([{ id: "a", chiusaIl: "2026-10-30" }]);
     // l'ultima volta il 2/11: dopo ci sono solo 3/11 (oggi è il 4): non basta
     expect(verificaRichieste([r("b", "91", "togliere", "2026-10-21")], presenze, contate, OGGI)).toEqual([]);
+  });
+
+  it("le giornate complete: una risposta parziale del flusso non conta per l'assenza", () => {
+    const giorni = ["2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23"];
+    const presenze = new Map<string, string[]>();
+    for (let i = 0; i < 10; i++) presenze.set(String(100 + i), i < 3 ? giorni : giorni.filter(g => g !== "2026-10-22"));
+    expect(giornateComplete(giorni, presenze)).toEqual(["2026-10-20", "2026-10-21", "2026-10-23"]);
+  });
+
+  it("una richiesta fatta (anche a mano) copre la vettura finché non ricompare; annullata no", () => {
+    expect(richiestaCopre({ tipo: "aggiungere", esito: "fatta", ricomparsaIl: null }, "aggiungere")).toBe(true);
+    expect(richiestaCopre({ tipo: "togliere", esito: "fatta", ricomparsaIl: "2026-10-30" }, "togliere")).toBe(false);
+    expect(richiestaCopre({ tipo: "togliere", esito: "annullata", ricomparsaIl: null }, "togliere")).toBe(false);
+    expect(richiestaCopre({ tipo: "togliere", esito: null, ricomparsaIl: null }, "aggiungere")).toBe(false);
+    const parco = parcoDi([mezzo("97")]);
+    const fatta: RichiestaMizar = {
+      id: "f", vehicleRef: "97", tipo: "aggiungere", richiestaIl: "2026-10-20", nota: null, creataIl: "2026-10-20T09:00:00Z",
+      creataDa: null, esito: "fatta", chiusaIl: "2026-10-25", chiusaDa: "Anna", automatica: false,
+    };
+    const s = calcolaStoria(dati({}, { parco, richieste: [fatta] }));
+    expect(una(s, "97").azione).toBe("da_aggiungere_a_siri");
+    expect(testiMizar(s).aggiungere).toBeNull();
+    expect(una(s, "97").perche).toMatch(/fatta il 25\/10 \(segnata a mano\)/);
   });
 
   it("un connettore fermo non chiude niente: senza giornate contate non c'è assenza", () => {

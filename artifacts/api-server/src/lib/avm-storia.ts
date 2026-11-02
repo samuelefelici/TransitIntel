@@ -34,7 +34,7 @@
  */
 import { CAMPIONI_MINIMI_GIORNATA, GIORNATE_MINIME, esclusioneOfficina, type Esclusione } from "./avm-diario.js";
 import {
-  ETICHETTE_ESITO_INTERVENTO, giudicaIntervento, lunediDi, notaOfficina, spostaGiorni, statoSettimana,
+  ETICHETTE_ESITO_INTERVENTO, fermoInOfficina, giudicaIntervento, lunediDi, notaOfficina, spostaGiorni, statoSettimana,
   type InterventoAvm, type InterventoGiudicato, type StatoSettimana,
 } from "./avm-controllo.js";
 import { giornateDelPeriodo } from "./fleet-trend.js";
@@ -108,9 +108,10 @@ export const ETICHETTE_AZIONE: Record<Azione, { titolo: string; breve: string; p
       + "va censito a Mizar, o manca l'apparato a bordo.",
   },
   da_verificare_alienata: {
-    titolo: "Da verificare: guasta o alienata?", breve: "Da verificare",
-    perche: `Muta o assente da almeno ${SETTIMANE_SILENZIO_ALIENATA} settimane, ma l'officina la dà in servizio `
-      + "senza fermi né segnalazioni: o l'apparato è guasto, o il mezzo non c'è più e FleetCare non è aggiornato.",
+    titolo: "Da verificare", breve: "Da verificare",
+    perche: "L'apparato e FleetCare non tornano: muta o assente da almeno "
+      + `${SETTIMANE_SILENZIO_ALIENATA} settimane ma in servizio per l'officina, senza fermi né segnalazioni `
+      + "(guasta o alienata?), oppure si localizza ma il parco dell'officina non la conosce (manca in FleetCare?).",
   },
   instabile: {
     titolo: "Instabile", breve: "Instabile",
@@ -130,7 +131,8 @@ export const ETICHETTE_AZIONE: Record<Azione, { titolo: string; breve: string; p
   },
   gia_tolta: {
     titolo: "Già tolta dal flusso", breve: "Già tolta",
-    perche: "Fuori parco o dismessa, e il flusso SIRI non la elenca più.",
+    perche: `Il flusso SIRI non la elenca più: fuori parco o dismessa, oppure assente da almeno `
+      + `${SETTIMANE_SILENZIO_ALIENATA} settimane senza che l'officina la conosca. Non conta più nell'andamento.`,
   },
 };
 
@@ -253,6 +255,11 @@ function ddmm(g: string | null): string {
   const [, m, d] = g.split("-");
   return `${d}/${m}`;
 }
+/** gg/mm, con l'anno se la data è di più di 300 giorni prima di `oggi`: su un anno di dati «03/11» si leggerebbe domani. */
+function data(g: string | null, oggi: string): string {
+  if (!g) return "";
+  return giorniFra(g, oggi) > 300 ? ddmmyyyy(g) : ddmm(g);
+}
 function ddmmyyyy(g: string | null): string {
   return g ? g.slice(0, 10).split("-").reverse().join("/") : "";
 }
@@ -276,7 +283,8 @@ export const eConerobus = (ref: string) => CONEROBUS.test(ref);
  *   togliere:   GIORNATE_ASSENZA_TOLTA giornate contate senza la vettura dopo
  *               la richiesta e dopo l'ultima volta che c'era; il giorno è la
  *               prima di quelle giornate. Un connettore fermo non chiude
- *               niente: senza raccolta non ci sono giornate contate.
+ *               niente: senza raccolta non ci sono giornate contate. Il
+ *               chiamante passa le giornate complete (giornateComplete).
  */
 export function verificaRichieste(
   aperte: Array<Pick<RichiestaMizar, "id" | "vehicleRef" | "tipo" | "richiestaIl" | "esito">>,
@@ -298,6 +306,25 @@ export function verificaRichieste(
     }
   }
   return out;
+}
+
+/** Quota delle vetture tipiche che il flusso deve elencare perché una giornata conti per l'assenza. */
+export const QUOTA_GIORNATA_COMPLETA = 0.8;
+
+/**
+ * Le giornate contate in cui il flusso elenca abbastanza vetture: almeno
+ * QUOTA_GIORNATA_COMPLETA della mediana delle giornate contate. Una risposta
+ * regolare ma parziale di Mizar (un sottoinsieme del parco) non deve far
+ * risultare «tolte» le vetture che quel giorno mancavano: per la chiusura di
+ * una richiesta «togliere» contano solo queste.
+ */
+export function giornateComplete(contate: string[], presenze: ReadonlyMap<string, string[]>): string[] {
+  const quante = new Map<string, number>();
+  for (const giorni of presenze.values()) for (const g of giorni) quante.set(g, (quante.get(g) ?? 0) + 1);
+  const valori = contate.map(g => quante.get(g) ?? 0).sort((a, b) => a - b);
+  if (!valori.length) return [];
+  const mediana = valori[Math.floor(valori.length / 2)];
+  return contate.filter(g => (quante.get(g) ?? 0) >= QUOTA_GIORNATA_COMPLETA * mediana);
 }
 
 /** La richiesta come la vede la pagina: da quanto aspetta, se la vettura è ricomparsa. */
@@ -351,12 +378,20 @@ export function richiestaAggiungere(mezzi: MezzoOfficina[], periodo: string): Te
   };
 }
 
-/** I due testi, solo per le vetture senza una richiesta già aperta dello stesso tipo. */
+/**
+ * La richiesta della vettura copre già l'azione: è aperta, oppure è stata fatta
+ * (anche segnata a mano: per esempio Mizar ha rinumerato la vettura) e la
+ * vettura non è ricomparsa. Annullata non copre niente.
+ */
+export function richiestaCopre(r: Pick<RichiestaVista, "tipo" | "esito" | "ricomparsaIl"> | null, tipo: TipoRichiesta): boolean {
+  return !!r && r.tipo === tipo && (r.esito == null || (r.esito === "fatta" && !r.ricomparsaIl));
+}
+
+/** I due testi, solo per le vetture che non hanno già una richiesta che le copre. */
 export function testiMizar(s: Pick<StoriaAvm, "vetture" | "settimane" | "oggi">): {
   togliere: TestoMizar | null; aggiungere: TestoMizar | null;
 } {
-  const senzaRichiesta = (v: VetturaStoria, tipo: TipoRichiesta) =>
-    !(v.richiesta && v.richiesta.esito == null && v.richiesta.tipo === tipo);
+  const senzaRichiesta = (v: VetturaStoria, tipo: TipoRichiesta) => !richiestaCopre(v.richiesta, tipo);
   const togliere = s.vetture.filter(v => v.azione === "da_togliere_da_siri" && senzaRichiesta(v, "togliere"));
   const aggiungere = s.vetture.filter(v => v.azione === "da_aggiungere_a_siri" && v.officina && senzaRichiesta(v, "aggiungere"));
   const primo = s.settimane.find(w => w.giornateContate > 0)?.lunedi ?? s.oggi;
@@ -388,12 +423,15 @@ export function contaAzioni(vetture: Array<Pick<VetturaStoria, "azione">>): Reco
  * dalla settimana in cui compare per la prima volta.
  */
 export function andamentoStoria(
-  s: Pick<StoriaAvm, "settimane">, vetture: Array<Pick<VetturaStoria, "storia" | "primoGiorno">>,
+  s: Pick<StoriaAvm, "settimane">,
+  vetture: Array<Pick<VetturaStoria, "storia" | "primoGiorno" | "ultimoGiorno" | "azione">>,
 ): Array<SettimanaStoria & { F: number; P: number; M: number; A: number }> {
   return s.settimane.map((w, i) => {
     const n = { F: 0, P: 0, M: 0, A: 0 };
     for (const v of vetture) {
       if (!v.primoGiorno || lunediDi(v.primoGiorno) > w.lunedi) continue;
+      /* una vettura uscita dal flusso non resta nel denominatore per sempre */
+      if (v.azione === "gia_tolta" && v.ultimoGiorno && lunediDi(v.ultimoGiorno) < w.lunedi) continue;
       const ch = v.storia[i] as StatoSettimana | undefined;
       if (ch === "F" || ch === "P" || ch === "M" || ch === "A") n[ch]++;
     }
@@ -465,15 +503,19 @@ export function calcolaStoria(dati: DatiStoria): StoriaAvm {
         presenti.filter(conPosizione).length, presenti.filter(conContatto).length);
     });
 
-    /* Le settimane che contano per l'azione: chiuse, giudicabili, dalla comparsa. */
+    /* Le settimane che contano per l'azione: chiuse, giudicabili, dalla prima in cui il flusso la elenca
+       in una giornata contata (la settimana di comparsa, se c'è entrata in un giorno non contato, non è «prima»). */
     const giudicabili = lunedi
       .map((l, i) => ({ l, s: storia[i] }))
       .filter(x => x.l <= ultimaChiusa && x.s !== "." && lunediComparsa != null && x.l >= lunediComparsa);
+    while (giudicabili.length && giudicabili[0].s === "A") giudicabili.shift();
     const ultima = giudicabili.at(-1) ?? null;
     let senzaPos = 0;
     for (let k = giudicabili.length - 1; k >= 0 && giudicabili[k].s !== "F"; k--) senzaPos++;
     let silenzio = 0;
     for (let k = giudicabili.length - 1; k >= 0 && (giudicabili[k].s === "M" || giudicabili[k].s === "A"); k--) silenzio++;
+    let assenza = 0;
+    for (let k = giudicabili.length - 1; k >= 0 && giudicabili[k].s === "A"; k--) assenza++;
     const recenti = giudicabili.slice(-SETTIMANE_INSTABILITA);
     let cambi = 0;
     for (let k = 1; k < recenti.length; k++) if ((recenti[k].s === "F") !== (recenti[k - 1].s === "F")) cambi++;
@@ -485,14 +527,16 @@ export function calcolaStoria(dati: DatiStoria): StoriaAvm {
       ? tutteContate.find(g => g > ultimaPosizione) ?? null
       : primoGiorno ? tutteContate.find(g => g >= primoGiorno) ?? null : null;
 
-    /* Riparata: l'ultima è F, prima c'è stata una non F, e la serie di F è recente. */
+    /* Riparata: l'ultima è F, prima c'è stata una non F, prima ancora una F (funzionava, si è guastata,
+       è tornata: un apparato appena attivato non è «riparato»), e la serie di F è recente. */
     let riparataDal: string | null = null;
     if (ultima?.s === "F") {
       let k = giudicabili.length - 1;
       while (k >= 0 && giudicabili[k].s === "F") k--;
       const inizioSerie = k + 1;
       const settimaneInSerie = giudicabili.length - inizioSerie;
-      if (k >= 0 && settimaneInSerie <= SETTIMANE_RIPARATA) {
+      const funzionavaPrima = giudicabili.slice(0, Math.max(0, k)).some(x => x.s === "F");
+      if (k >= 0 && funzionavaPrima && settimaneInSerie <= SETTIMANE_RIPARATA) {
         const l = giudicabili[inizioSerie].l;
         riparataDal = giorniPos.find(g => g >= l) ?? l;
       }
@@ -516,14 +560,24 @@ export function calcolaStoria(dati: DatiStoria): StoriaAvm {
 
     /* L'azione, nell'ordine in cui decide. */
     let azione: Azione;
-    if (esclusa) azione = inSiri ? "da_togliere_da_siri" : "gia_tolta";
-    else if (mezzo && p.giorni.length === 0) azione = "da_aggiungere_a_siri";
+    if (esclusa?.motivo === "fuori_parco" && ultima?.s === "F" && inSiri) {
+      /* si localizza ed è ancora nel flusso, ma il parco dell'officina non la conosce: manca in FleetCare,
+         non va tolta da SIRI */
+      azione = "da_verificare_alienata";
+    } else if (esclusa) azione = inSiri ? "da_togliere_da_siri" : "gia_tolta";
+    /* senza giornate contate non si sa se il flusso la elenca: niente da chiedere a Mizar */
+    else if (mezzo && p.giorni.length === 0) azione = tutteContate.length ? "da_aggiungere_a_siri" : "non_giudicabile";
     else if (!ultima) azione = "non_giudicabile";
-    else if (mezzo && silenzio >= SETTIMANE_SILENZIO_ALIENATA
+    else if (mezzo && silenzio >= SETTIMANE_SILENZIO_ALIENATA && !posizioneInSettimana
       && (mezzo.stato === "in_servizio" || mezzo.stato === "riserva") && !mezzo.segnalazioneAvm) {
       azione = "da_verificare_alienata";
+    } else if (!mezzo && assenza >= SETTIMANE_SILENZIO_ALIENATA) {
+      /* sparita dal flusso da settimane, e nessun parco la spiega (consorziata, o FleetCare non disponibile) */
+      azione = "gia_tolta";
     } else if (ultima.s !== "F") azione = "da_riparare";
-    else if (cambi >= CAMBI_INSTABILE) azione = "instabile";
+    /* si localizza: una caduta seguita dalla ripresa (2 cambi) è una riparazione; instabile se c'è anche
+       una ricaduta dopo una ripresa nella finestra (più di 2 cambi) */
+    else if (cambi > CAMBI_INSTABILE) azione = "instabile";
     else if (riparataDal) azione = "riparata";
     else azione = "funziona";
 
@@ -533,20 +587,24 @@ export function calcolaStoria(dati: DatiStoria): StoriaAvm {
       storia: storia.join(""), primoGiorno, ultimoGiorno, inSiri, ultimaPosizione, ultimoContatto,
       settimaneSenzaPosizione: primoGiorno ? senzaPos : null, senzaPosizioneDal, settimaneSilenzio: silenzio,
       cambi, riparataDal: azione === "riparata" ? riparataDal : null,
-      posizioneInSettimana: azione === "da_riparare" ? posizioneInSettimana : null,
+      posizioneInSettimana: azione === "da_riparare" || azione === "da_verificare_alienata" ? posizioneInSettimana : null,
       officina: mezzo, esclusa, ultimoIntervento, interventi: suoi.length,
       azione, instabile: azione === "da_riparare" && cambi >= CAMBI_INSTABILE,
       perche: "", richiesta: richiestaDi.get(p.vehicleRef) ?? null,
     };
     v.perche = scriviPerche(v, ultima?.s ?? null, giudicabili.filter(x => x.s === "F").length, giudicabili.length,
-      inizioDati);
+      inizioDati, oggi);
     return v;
   });
 
   const peso = new Map(ORDINE_AZIONI.map((a, i) => [a, i]));
   vetture.sort((a, b) =>
     (peso.get(a.azione)! - peso.get(b.azione)!)
-    || (a.azione === "da_riparare" ? (b.settimaneSenzaPosizione ?? 0) - (a.settimaneSenzaPosizione ?? 0) : 0)
+    /* fra le da riparare: prima quelle in servizio, le ferme in officina in fondo; poi le più lunghe */
+    || (a.azione === "da_riparare"
+      ? (Number(a.officina?.stato === "in_officina") - Number(b.officina?.stato === "in_officina"))
+        || (b.settimaneSenzaPosizione ?? 0) - (a.settimaneSenzaPosizione ?? 0)
+      : 0)
     || a.vehicleRef.localeCompare(b.vehicleRef, undefined, { numeric: true }));
 
   return {
@@ -566,80 +624,96 @@ export function calcolaStoria(dati: DatiStoria): StoriaAvm {
 /** Il perché di una vettura: deve reggere da solo in una mail, con le date. */
 function scriviPerche(
   v: VetturaStoria, ultimoStato: StatoSettimana | null, settimaneF: number, settimaneGiudicabili: number,
-  inizioDati: string,
+  inizioDati: string, oggi: string,
 ): string {
+  const d = (g: string | null) => data(g, oggi);
   const pezzi: string[] = [];
+  /* il fermo in officina spiega il silenzio solo se è cominciato prima che la vettura smettesse di localizzarsi */
+  const fermo = v.officina?.stato === "in_officina"
+    && (!v.officina.fermoDal || !v.senzaPosizioneDal || v.officina.fermoDal.slice(0, 10) <= v.senzaPosizioneDal);
   switch (v.azione) {
     case "da_togliere_da_siri":
       pezzi.push(v.esclusa!.testo);
-      pezzi.push(`Il flusso SIRI la elenca ancora (ultimo giorno ${ddmm(v.ultimoGiorno)}).`);
+      pezzi.push(`Il flusso SIRI la elenca ancora (ultimo giorno ${d(v.ultimoGiorno)}).`);
       break;
     case "gia_tolta":
-      pezzi.push(`${v.esclusa!.motivo === "fuori_parco" ? "Non è più nel parco dell'officina" : "Dismessa per l'officina"}, `
-        + `e il flusso SIRI non la elenca più dal ${ddmm(v.ultimoGiorno)}.`);
+      pezzi.push(v.esclusa
+        ? `${v.esclusa.motivo === "fuori_parco" ? "Non è più nel parco dell'officina" : "Dismessa per l'officina"}, `
+          + `e il flusso SIRI non la elenca più dal ${d(v.ultimoGiorno)}.`
+        : `Il flusso SIRI non la elenca più dal ${d(v.ultimoGiorno)} (${settimane(v.settimaneSilenzio)} di assenza)`
+          + `${eConerobus(v.vehicleRef) ? "" : "; è di un'azienda consorziata, che il parco dell'officina non tiene"}.`);
       break;
     case "da_aggiungere_a_siri": {
       const m = v.officina!;
       pezzi.push(`Nel parco dell'officina (${[m.targa, m.deposito, m.modello].filter(Boolean).join(", ")}) ma mai `
-        + `comparsa nel flusso SIRI dal ${ddmm(inizioDati)}: va censita a Mizar, o manca l'apparato a bordo.`);
+        + `comparsa nel flusso SIRI dal ${d(inizioDati)}: va censita a Mizar, o manca l'apparato a bordo.`);
       break;
     }
     case "da_verificare_alienata":
-      pezzi.push(`Muta o assente da ${settimane(v.settimaneSilenzio)}`
-        + `${v.ultimoContatto ? ` (ultimo contatto il ${ddmm(v.ultimoContatto)})` : ""}, ma l'officina la dà `
-        + `${v.officina!.stato === "riserva" ? "di riserva" : "in servizio"} senza fermi né segnalazioni AVM aperte. `
-        + "Guasta o alienata? Se il mezzo non c'è più, va segnato dismesso in FleetCare.");
+      if (v.esclusa) {
+        pezzi.push(`Si localizza (ultima posizione il ${d(v.ultimaPosizione)}), ma il parco dell'officina non la `
+          + "conosce: probabilmente manca in FleetCare. Va verificata e aggiunta lì, non tolta da SIRI.");
+      } else {
+        pezzi.push(`Muta o assente da ${settimane(v.settimaneSilenzio)}`
+          + `${v.ultimoContatto ? ` (ultimo contatto il ${d(v.ultimoContatto)})` : ""}, ma l'officina la dà `
+          + `${v.officina!.stato === "riserva" ? "di riserva" : "in servizio"} senza fermi né segnalazioni AVM aperte. `
+          + "Guasta o alienata? Se il mezzo non c'è più, va segnato dismesso in FleetCare.");
+      }
       break;
     case "da_riparare": {
       const n = v.settimaneSenzaPosizione ?? 0;
       pezzi.push(`Non si localizza da ${settimane(n)}`
-        + `${v.senzaPosizioneDal ? ` (dal ${ddmm(v.senzaPosizioneDal)})` : ""}`
-        + `${v.ultimaPosizione ? `; ultima posizione il ${ddmm(v.ultimaPosizione)}` : `; mai localizzata dal ${ddmm(inizioDati)}`}.`);
-      pezzi.push(ultimoStato === "P"
-        ? (v.ultimaPosizione
-          ? "Parla col centro ma non si localizza: antenna o apparato."
-          : "Parla col centro ma non si è mai localizzata: attivazione al centro Mizar, o antenna.")
-        : ultimoStato === "M"
-          ? "Elencata ma muta: apparato spento, SIM, o mezzo fermo in rimessa."
-          : "Il flusso SIRI non la elenca nell'ultima settimana.");
+        + `${v.senzaPosizioneDal ? ` (dal ${d(v.senzaPosizioneDal)})` : ""}`
+        + `${v.ultimaPosizione ? `; ultima posizione il ${d(v.ultimaPosizione)}` : `; mai localizzata dal ${d(inizioDati)}`}.`);
+      pezzi.push(fermo
+        ? fermoInOfficina(v.officina!)
+        : ultimoStato === "P"
+          ? (v.ultimaPosizione
+            ? "Parla col centro ma non si localizza: antenna o apparato."
+            : "Parla col centro ma non si è mai localizzata: attivazione al centro Mizar, o antenna.")
+          : ultimoStato === "M"
+            ? "Elencata ma muta: apparato spento, SIM, o mezzo fermo in rimessa."
+            : "Il flusso SIRI non la elenca nell'ultima settimana.");
       if (v.instabile) pezzi.push(`Instabile: ${v.cambi} cambi nelle ultime ${SETTIMANE_INSTABILITA} settimane.`);
-      if (v.posizioneInSettimana) pezzi.push(`In questa settimana si è localizzata il ${ddmm(v.posizioneInSettimana)}.`);
+      if (v.posizioneInSettimana) pezzi.push(`In questa settimana si è localizzata il ${d(v.posizioneInSettimana)}.`);
       break;
     }
     case "instabile":
       pezzi.push(`Si localizza, ma ha cambiato stato ${v.cambi} volte nelle ultime ${SETTIMANE_INSTABILITA} settimane: `
-        + "da tenere d'occhio.");
+        + "si è guastata di nuovo dopo una ripresa, da tenere d'occhio.");
       break;
     case "riparata":
-      pezzi.push(`Si localizza di nuovo dal ${ddmm(v.riparataDal)}.`);
+      pezzi.push(`Si localizza di nuovo dal ${d(v.riparataDal)}.`);
       break;
     case "funziona":
       pezzi.push(`Si localizza in ${settimaneF} delle ${settimane(settimaneGiudicabili)} giudicabili.`);
       break;
     case "non_giudicabile":
       pezzi.push(v.primoGiorno
-        ? `Compare nel flusso dal ${ddmm(v.primoGiorno)}: nessuna settimana chiusa con abbastanza giornate contate.`
-        : "Nessuna settimana chiusa con abbastanza giornate contate.");
+        ? `Compare nel flusso dal ${d(v.primoGiorno)}: nessuna settimana chiusa con abbastanza giornate contate.`
+        : "Nessuna giornata contata nel periodo: non si sa se il flusso SIRI la elenca.");
       break;
   }
-  if (v.azione !== "da_togliere_da_siri" && v.azione !== "gia_tolta" && v.azione !== "da_aggiungere_a_siri") {
-    const officina = notaOfficina(v.officina, null, false);
+  if (v.azione !== "da_togliere_da_siri" && v.azione !== "gia_tolta" && v.azione !== "da_aggiungere_a_siri"
+      && !(v.azione === "da_verificare_alienata" && v.esclusa)) {
+    const officina = notaOfficina(v.officina, null, v.azione === "da_riparare" && fermo);
     if (officina) pezzi.push(officina);
   }
   if (v.ultimoIntervento) {
     const i = v.ultimoIntervento;
-    pezzi.push(`Ultimo intervento ${i.riferimento} chiuso il ${ddmm(i.giornoChiusura)}: `
+    pezzi.push(`Ultimo intervento ${i.riferimento} chiuso il ${d(i.giornoChiusura)}: `
       + `${ETICHETTE_ESITO_INTERVENTO[i.esitoAvm].toLowerCase()}.`);
   }
   if (v.richiesta) {
     const r = v.richiesta;
     const cosa = r.tipo === "togliere" ? "togliere" : "aggiungere";
     pezzi.push(r.esito == null
-      ? `Richiesta a Mizar di ${cosa} inviata il ${ddmm(r.richiestaIl)}, `
+      ? `Richiesta a Mizar di ${cosa} inviata il ${d(r.richiestaIl)}, `
         + `${r.giorniAttesa === 0 ? "in attesa" : `in attesa da ${r.giorniAttesa} ${r.giorniAttesa === 1 ? "giorno" : "giorni"}`}.`
       : r.esito === "fatta"
-        ? `Richiesta a Mizar di ${cosa} fatta il ${ddmm(r.chiusaIl)}${r.ricomparsaIl ? `, ma è ricomparsa il ${ddmm(r.ricomparsaIl)}` : ""}.`
-        : `Richiesta a Mizar di ${cosa} annullata il ${ddmm(r.chiusaIl)}.`);
+        ? `Richiesta a Mizar di ${cosa} fatta il ${d(r.chiusaIl)}${r.automatica ? "" : " (segnata a mano)"}`
+          + `${r.ricomparsaIl ? `, ma è ricomparsa il ${d(r.ricomparsaIl)}` : ""}.`
+        : `Richiesta a Mizar di ${cosa} annullata il ${d(r.chiusaIl)}.`);
   }
   return pezzi.join(" ");
 }
@@ -662,7 +736,7 @@ export function fraseAndamento(a: Array<SettimanaStoria & { F: number; P: number
   const prima = giudicabili[0];
   if (prima && prima.lunedi !== ultima.lunedi) {
     const p = quota(prima);
-    pezzi.push(`Nella prima settimana osservata, dal ${ddmm(prima.lunedi)}, erano ${prima.F} su ${p.tot} (${p.pct}%).`);
+    pezzi.push(`Nella prima settimana osservata, dal ${ddmmyyyy(prima.lunedi)}, erano ${prima.F} su ${p.tot} (${p.pct}%).`);
   }
   return pezzi.join(" ");
 }

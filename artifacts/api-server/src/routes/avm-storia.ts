@@ -15,7 +15,7 @@ import { giornataOggi } from "../lib/service-day";
 import { spostaGiorni, ultimaSettimanaChiusa } from "../lib/avm-controllo";
 import {
   GIORNI_RICHIESTE_CHIUSE, MESI_CONSERVAZIONE_RICHIESTE, SETTIMANE_MASSIME, SOGLIE,
-  calcolaStoria, testiMizar, verificaRichieste, eConerobus,
+  calcolaStoria, giornateComplete, testiMizar, verificaRichieste, eConerobus,
 } from "../lib/avm-storia";
 import {
   chiudiRichieste, creaRichieste, leggiRichieste, leggiStoriaDiario, pulisciRichieste, registraVerifiche,
@@ -37,7 +37,19 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
     const inizio = spostaGiorni(ultimaSettimanaChiusa(oggi), -7 * (n - 1));
 
     const diario = await leggiStoriaDiario(inizio, oggi);
-    const parco = parcoCredibile(await leggiParcoOfficina(), diario.vetture.map(v => v.vehicleRef));
+    /* senza il diario non si dice niente: il parco intero risulterebbe «da aggiungere a SIRI» */
+    if (diario.errore) {
+      req.log.warn({ err: diario.errore }, "andamento AVM: diario non leggibile");
+      res.status(503).json({ error: "Il diario dell'AVM non si legge in questo momento: riprova fra poco." });
+      return;
+    }
+    /* il parco si confronta solo se il diario ha vetture Conerobus: con nessuna, parcoCredibile non ha
+       niente da misurare e ogni mezzo sembrerebbe mai comparso nel flusso */
+    const letto = await leggiParcoOfficina();
+    const parco = diario.vetture.some(v => eConerobus(v.vehicleRef))
+      ? parcoCredibile(letto, diario.vetture.map(v => v.vehicleRef))
+      : { ...letto, disponibile: false, mezzi: [],
+          motivo: "Il diario dell'AVM non ha vetture Conerobus nel periodo: il parco dell'officina non si può confrontare." };
     const interventi = await leggiInterventiAvm(inizio, parco);
     const chiuseDal = spostaGiorni(oggi, -GIORNI_RICHIESTE_CHIUSE);
     let { richieste, errore: erroreRichieste } = await leggiRichieste(chiuseDal);
@@ -48,7 +60,8 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
       .map(([g]) => g)
       .sort();
     const presenze = new Map(diario.vetture.map(v => [v.vehicleRef, v.giorni]));
-    const chiusure = verificaRichieste(richieste, presenze, contate, oggi);
+    /* per «togliere» contano solo le giornate in cui il flusso elenca quasi tutto il parco tipico */
+    const chiusure = verificaRichieste(richieste, presenze, giornateComplete(contate, presenze), oggi);
     if (chiusure.length) {
       try {
         await registraVerifiche(chiusure);
@@ -78,13 +91,15 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
     };
 
     if (String(req.query.formato ?? "") === "xlsx") {
+      /* come la pagina: «solo Conerobus» vale per tutto il foglio, «senza fuori parco e dismesse» solo per
+         l'andamento (le vetture da togliere da SIRI sono proprio quelle) */
       const soloConerobus = String(req.query.perimetro ?? "") === "conerobus";
       const soloParco = req.query.officina === "1";
-      const vetture = storia.vetture.filter(v =>
-        (!soloConerobus || eConerobus(v.vehicleRef)) && (!soloParco || !v.esclusa));
-      const perimetro = [soloConerobus ? "solo Conerobus" : null, soloParco ? "senza fuori parco e dismesse" : null]
+      const vetture = storia.vetture.filter(v => !soloConerobus || eConerobus(v.vehicleRef));
+      const perAndamento = soloParco ? vetture.filter(v => !v.esclusa) : vetture;
+      const perimetro = [soloConerobus ? "solo Conerobus" : null, soloParco ? "andamento senza fuori parco e dismesse" : null]
         .filter(Boolean).join(", ");
-      const xlsx = esportaStoriaXlsx(storia, vetture, { perimetro, officina });
+      const xlsx = esportaStoriaXlsx(storia, vetture, { perimetro, officina, andamento: perAndamento });
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition",
         `attachment; filename="Cerbero-andamento-AVM-${oggi}${soloConerobus ? "-conerobus" : ""}.xlsx"`);

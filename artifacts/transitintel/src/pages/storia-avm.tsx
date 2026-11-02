@@ -13,7 +13,7 @@
  * regola del controllo settimanale; la pagina sceglie solo il perimetro.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -23,8 +23,8 @@ import {
 import { apiFetch, getApiBase } from "@/lib/api";
 import { Quadratino, SETTIMANA } from "@/components/avm/strisce";
 import {
-  andamentoPerimetro, conteggiAzioni, ddmm, eConerobus, fraseAndamento, selezionabile,
-  tipoDellaSelezione, type Azione, type SettimanaStoria,
+  andamentoPerimetro, conteggiAzioni, ddmm, ddmmyyyy, eConerobus, fraseAndamento, oggiDiEsercizio, selezionabile,
+  spostaGiorni, tipoDellaSelezione, type Azione, type SettimanaStoria,
 } from "@/lib/storia-avm";
 
 /* ── I tipi, come li manda l'API (GET /api/siri/parco/storia) ───────────── */
@@ -101,7 +101,7 @@ const AZIONI: Record<Azione, { titolo: string; breve: string; colore: string; fo
   da_riparare: { titolo: "Da riparare", breve: "Da riparare", colore: "#fb923c", fondo: "rgba(251,146,60,0.12)" },
   da_togliere_da_siri: { titolo: "Da togliere da SIRI", breve: "Da togliere", colore: "#f87171", fondo: "rgba(248,113,113,0.12)" },
   da_aggiungere_a_siri: { titolo: "Da aggiungere a SIRI", breve: "Da aggiungere", colore: "#c084fc", fondo: "rgba(192,132,252,0.12)" },
-  da_verificare_alienata: { titolo: "Da verificare: guasta o alienata?", breve: "Da verificare", colore: "#fbbf24", fondo: "rgba(251,191,36,0.12)" },
+  da_verificare_alienata: { titolo: "Da verificare", breve: "Da verificare", colore: "#fbbf24", fondo: "rgba(251,191,36,0.12)" },
   instabile: { titolo: "Instabili", breve: "Instabile", colore: "#fde68a", fondo: "rgba(253,230,138,0.10)" },
   riparata: { titolo: "Riparate", breve: "Riparata", colore: "#34d399", fondo: "rgba(52,211,153,0.12)" },
   funziona: { titolo: "Funzionano", breve: "Funziona", colore: "#7dd3fc", fondo: "rgba(125,211,252,0.12)" },
@@ -126,9 +126,9 @@ const ETICHETTA_STATO: Record<StatoOfficina, string> = {
   in_servizio: "in servizio", riserva: "di riserva", in_officina: "in officina", dismesso: "dismessa",
 };
 
-function ddmmyyyy(g: string | null): string {
-  return g ? g.slice(0, 10).split("-").reverse().join("/") : "";
-}
+/** Le settimane mostrate nella striscia di ogni vettura: un trimestre (tutto lo storico è nel grafico e nell'Excel). */
+const SETTIMANE_STRISCIA = 13;
+
 function dataOra(iso: string | null | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -158,6 +158,8 @@ export default function StoriaAvm() {
   const [selezione, setSelezione] = useState<Set<string>>(new Set());
   const [inviataIl, setInviataIl] = useState<string>("");
   const [nota, setNota] = useState("");
+  /* un doppio clic manda una sola richiesta: isPending arriva un attimo dopo il primo clic */
+  const inviando = useRef(false);
 
   const q = useQuery({
     queryKey: ["storia-avm"],
@@ -191,7 +193,15 @@ export default function StoriaAvm() {
         || (v.mezzo ?? "").toLowerCase().includes(term)
         || (v.officina?.targa ?? "").toLowerCase().includes(term)));
   }, [perimetro, filtro, cerca]);
-  const selezionate = perimetro.filter(v => selezione.has(v.vehicleRef));
+  /* a ogni dato nuovo la selezione perde le vetture che non si possono più chiedere (già chieste, cambiate) */
+  useEffect(() => {
+    setSelezione(sel => {
+      const valide = new Set(perimetro.filter(selezionabile).map(v => v.vehicleRef));
+      const n = new Set([...sel].filter(r => valide.has(r)));
+      return n.size === sel.size ? sel : n;
+    });
+  }, [perimetro]);
+  const selezionate = perimetro.filter(v => selezione.has(v.vehicleRef) && selezionabile(v));
   const tipoSelezione = tipoDellaSelezione(selezionate);
 
   const segna = useMutation({
@@ -203,9 +213,11 @@ export default function StoriaAvm() {
       });
       setSelezione(new Set());
       setNota("");
+      setInviataIl("");
       void qc.invalidateQueries({ queryKey: ["storia-avm"] });
     },
     onError: (e: Error) => toast.error("Richieste non segnate", { description: e.message }),
+    onSettled: () => { inviando.current = false; },
   });
   const chiudi = useMutation({
     mutationFn: (corpo: { ids: string[]; esito: "annullata" | "fatta" }) =>
@@ -252,10 +264,13 @@ export default function StoriaAvm() {
   if (soloConerobus) parametri.set("perimetro", "conerobus");
   if (officinaAttiva && senzaAlienate) parametri.set("officina", "1");
   const maxAndamento = Math.max(1, ...andamento.map(a => a.F + a.P + a.M + a.A));
-  const daRiparareLunghe = perimetro.filter(v => v.azione === "da_riparare"
+  const daRiparareLunghe = perimetro.filter(v => v.azione === "da_riparare" && v.officina?.stato !== "in_officina"
     && (v.settimaneSenzaPosizione ?? 0) >= d.soglie.settimaneSilenzioAlienata).length;
+  const fermeInOfficina = perimetro.filter(v => v.azione === "da_riparare" && v.officina?.stato === "in_officina").length;
   const piuVecchia = aperte.reduce((m, r) => Math.max(m, r.giorniAttesa), 0);
-  const oggi = d.oggi;
+  /* la pagina può restare aperta da ieri: oggi è il più recente fra quello del server e quello del browser */
+  const oggi = [d.oggi, oggiDiEsercizio()].sort().at(-1)!;
+  const daStriscia = Math.max(0, d.settimane.length - SETTIMANE_STRISCIA);
 
   return (
     <div className="space-y-5">
@@ -311,9 +326,11 @@ export default function StoriaAvm() {
           const attivo = filtro === a;
           const Icona = a === "da_riparare" ? Wrench : a === "da_togliere_da_siri" ? Trash2 : a === "da_aggiungere_a_siri" ? PlusCircle : HelpCircle;
           const sotto = a === "da_riparare"
-            ? (daRiparareLunghe ? `${daRiparareLunghe} da più di ${d.soglie.settimaneSilenzioAlienata} settimane` : "non si localizzano nell'ultima settimana")
+            ? ([daRiparareLunghe ? `${daRiparareLunghe} da almeno ${d.soglie.settimaneSilenzioAlienata} settimane` : null,
+              fermeInOfficina ? `${fermeInOfficina} ferme in officina` : null].filter(Boolean).join(" · ")
+              || "non si localizzano nell'ultima settimana")
             : a === "da_verificare_alienata"
-              ? "mute da settimane, in servizio per l'officina"
+              ? "l'apparato e FleetCare non tornano: guasta, alienata o mancante in FleetCare?"
               : giaChieste(a) === 1 ? "1 già chiesta a Mizar" : `${giaChieste(a)} già chieste a Mizar`;
           return (
             <button
@@ -397,7 +414,7 @@ export default function StoriaAvm() {
         </div>
         <div className="flex items-center gap-1">
           {andamento.map((a, i) => (
-            <span key={a.lunedi} className="flex-1 text-center text-[9px] font-mono min-w-0 truncate text-muted-foreground">
+            <span key={a.lunedi} className="flex-1 text-[9px] font-mono min-w-0 whitespace-nowrap overflow-visible text-muted-foreground">
               {i % 4 === 0 || i === andamento.length - 1 ? ddmm(a.lunedi) : ""}
             </span>
           ))}
@@ -514,7 +531,11 @@ export default function StoriaAvm() {
                         {r.esito == null && (
                           <span className="inline-flex gap-1">
                             <button
-                              onClick={() => chiudi.mutate({ ids: [r.id], esito: "fatta" })}
+                              onClick={() => {
+                                if (window.confirm(`Segnare fatta la richiesta per la vettura ${r.vehicleRef}? Cerbero non la proporrà più a Mizar.`)) {
+                                  chiudi.mutate({ ids: [r.id], esito: "fatta" });
+                                }
+                              }}
                               disabled={chiudi.isPending}
                               className="px-2 py-0.5 rounded-md text-[10px] border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
                               title="Mizar l'ha fatta ma Cerbero non lo vede (per esempio ha cambiato numero alla vettura)"
@@ -522,11 +543,16 @@ export default function StoriaAvm() {
                               Segna fatta
                             </button>
                             <button
-                              onClick={() => chiudi.mutate({ ids: [r.id], esito: "annullata" })}
+                              onClick={() => {
+                                if (window.confirm(`Ritirare la richiesta per la vettura ${r.vehicleRef}? Non si può riaprire: andrà segnata di nuovo.`)) {
+                                  chiudi.mutate({ ids: [r.id], esito: "annullata" });
+                                }
+                              }}
                               disabled={chiudi.isPending}
                               className="px-2 py-0.5 rounded-md text-[10px] border border-border/60 text-muted-foreground hover:bg-white/5 disabled:opacity-40"
+                              title="La richiesta non è più valida (per esempio è stata segnata per errore)"
                             >
-                              Annulla
+                              Ritira
                             </button>
                           </span>
                         )}
@@ -563,15 +589,15 @@ export default function StoriaAvm() {
           </div>
         </div>
 
-        {selezione.size > 0 && (
+        {selezionate.length > 0 && (
           <div className="sticky top-2 z-10 flex flex-wrap items-center gap-2 px-3 py-2 rounded-xl border border-sky-500/40 bg-background/95 backdrop-blur text-[11px]">
-            <span className="font-medium">{selezione.size} {selezione.size === 1 ? "vettura selezionata" : "vetture selezionate"}</span>
+            <span className="font-medium">{selezionate.length} {selezionate.length === 1 ? "vettura selezionata" : "vetture selezionate"}</span>
             {tipoSelezione ? (
               <>
                 <span className="text-muted-foreground">— richiesta di {tipoSelezione} inviata il</span>
                 <input
                   type="date" id="storia-inviata-il" aria-label="Data di invio della richiesta"
-                  value={inviataIl || oggi} max={oggi}
+                  value={inviataIl || oggi} max={oggi} min={spostaGiorni(oggi, -90)}
                   onChange={e => setInviataIl(e.target.value)}
                   className="px-2 py-0.5 rounded-md bg-white/[0.03] border border-border/40 text-[11px]"
                 />
@@ -581,9 +607,14 @@ export default function StoriaAvm() {
                   className="px-2 py-0.5 w-56 rounded-md bg-white/[0.03] border border-border/40 text-[11px]"
                 />
                 <button
-                  onClick={() => segna.mutate({
-                    tipo: tipoSelezione, matricole: [...selezione], richiestaIl: inviataIl || oggi, nota: nota.trim() || undefined,
-                  })}
+                  onClick={() => {
+                    if (inviando.current) return;
+                    inviando.current = true;
+                    segna.mutate({
+                      tipo: tipoSelezione, matricole: selezionate.map(v => v.vehicleRef),
+                      richiestaIl: inviataIl || oggi, nota: nota.trim() || undefined,
+                    });
+                  }}
                   disabled={segna.isPending}
                   className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/50 text-sky-100 disabled:opacity-40"
                 >
@@ -603,10 +634,11 @@ export default function StoriaAvm() {
           <table className="w-full text-[11px]">
             <thead>
               <tr className="text-left text-muted-foreground border-b border-border/40">
-                <th className="px-2 py-2 font-medium"><span className="sr-only">Seleziona</span></th>
-                <th className="px-3 py-2 font-medium">Vettura</th>
+                <th className="px-3 py-2 font-medium sticky left-0 z-[1] bg-background">Vettura</th>
                 <th className="px-3 py-2 font-medium">Azione</th>
-                <th className="px-3 py-2 font-medium">Settimane</th>
+                <th className="px-3 py-2 font-medium" title="tutto lo storico è nel grafico e nel foglio Excel">
+                  Ultime {Math.min(SETTIMANE_STRISCIA, d.settimane.length)} settimane
+                </th>
                 <th className="px-3 py-2 font-medium text-right" title="settimane chiuse di fila senza posizione">Senza pos.</th>
                 <th className="px-3 py-2 font-medium">Ultima posizione</th>
                 <th className="px-3 py-2 font-medium">Ultimo intervento</th>
@@ -619,16 +651,14 @@ export default function StoriaAvm() {
                 const puo = selezionabile(v);
                 return (
                   <tr key={v.vehicleRef} className="border-b border-border/20 last:border-0 hover:bg-white/[0.02] align-top">
-                    <td className="px-2 py-1.5">
+                    <td className="px-3 py-1.5 whitespace-nowrap sticky left-0 z-[1] bg-background">
                       {puo && (
                         <input
-                          type="checkbox" id={`storia-sel-${v.vehicleRef}`}
+                          type="checkbox" id={`storia-sel-${v.vehicleRef}`} className="mr-2 align-middle"
                           aria-label={`Seleziona la vettura ${v.vehicleRef}`}
                           checked={selezione.has(v.vehicleRef)} onChange={() => alterna(v.vehicleRef)}
                         />
                       )}
-                    </td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">
                       <span className="font-mono">{v.vehicleRef}</span>
                       {v.codice && v.codice !== v.vehicleRef && <span className="ml-1.5 text-[10px] text-muted-foreground">{v.codice}</span>}
                       <span className="block text-[10px] text-muted-foreground/80 truncate max-w-[200px]" title={v.mezzo ?? undefined}>
@@ -657,8 +687,8 @@ export default function StoriaAvm() {
                     </td>
                     <td className="px-3 py-1.5">
                       <span className="flex items-center gap-0.5">
-                        {[...v.storia].map((ch, i) => (
-                          <Quadratino key={i} ch={ch} mappa={SETTIMANA} titolo={`settimana del ${ddmm(d.settimane[i]?.lunedi ?? null)}`} alto="h-3" />
+                        {[...v.storia.slice(daStriscia)].map((ch, i) => (
+                          <Quadratino key={i} ch={ch} mappa={SETTIMANA} titolo={`settimana del ${ddmm(d.settimane[daStriscia + i]?.lunedi ?? null)}`} alto="h-3" />
                         ))}
                       </span>
                     </td>

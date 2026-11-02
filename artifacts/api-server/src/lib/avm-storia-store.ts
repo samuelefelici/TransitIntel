@@ -99,7 +99,7 @@ export async function leggiRichieste(chiuseDal: string): Promise<{ richieste: Ri
         LEFT JOIN users c ON c.id = r.creata_da
         LEFT JOIN users x ON x.id = r.chiusa_da
        WHERE r.esito IS NULL OR r.chiusa_il >= ${chiuseDal}::date
-       ORDER BY r.richiesta_il DESC, r.creata_il DESC
+       ORDER BY (r.esito IS NULL) DESC, r.richiesta_il DESC, r.creata_il DESC
        LIMIT 2000`);
     const richieste = ((r as any).rows ?? []).map((x: any): RichiestaMizar => ({
       id: String(x.id),
