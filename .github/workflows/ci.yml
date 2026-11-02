@@ -456,6 +456,9 @@ jobs:
       # tentativi, stop, arresto, indice unico, pulizia
       - name: La coda dei lavori sul database
         run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/coda-db.test.ts
+      # L'andamento AVM: il diario aggregato in SQL e le richieste a Mizar (migrazione 0005)
+      - name: L'andamento AVM e le richieste a Mizar sul database
+        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/avm-storia-db.test.ts
       # Gli endpoint con l'SQL scritto a mano, contro lo schema vero: il
       # dettaglio fermata cercava una tabella che non c'è più e rispondeva 500
       - name: Dettaglio fermata di Planning Studio sul database migrato

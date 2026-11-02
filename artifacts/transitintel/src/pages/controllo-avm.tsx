@@ -20,6 +20,7 @@ import {
   TrendingDown, TrendingUp, CircleSlash, Sparkles, LogOut, HelpCircle, Check,
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
+import { Quadratino, SETTIMANA } from "@/components/avm/strisce";
 
 /* ── I tipi, come li manda l'API (lib/avm-controllo.ts) ─────────────────── */
 
@@ -142,13 +143,6 @@ const GIORNO: Record<string, { colore: string | null; testo: string }> = {
   ".": { colore: null, testo: "giornata non contata" },
   " ": { colore: null, testo: "non ancora finita" },
 };
-const SETTIMANA: Record<string, { colore: string | null; testo: string }> = {
-  F: { colore: "#34d399", testo: "si è localizzata" },
-  P: { colore: "#fbbf24", testo: "ha parlato, mai localizzata" },
-  M: { colore: "#3f3f46", testo: "nessun contatto" },
-  A: { colore: null, testo: "non elencata" },
-  ".": { colore: null, testo: "meno di 3 giornate contate" },
-};
 const ESITI: Record<EsitoIntervento, { testo: string; colore: string }> = {
   riuscito: { testo: "Riuscito", colore: "#34d399" },
   gia_funzionava: { testo: "Si localizzava già", colore: "#7dd3fc" },
@@ -219,25 +213,6 @@ function dataOra(iso: string | null | undefined): string {
   if (!iso) return "";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-}
-
-/** Un quadratino della striscia: pieno col colore, a contorno se non elencata, un punto se non contata. */
-function Quadratino({ ch, mappa, titolo, alto = "h-4" }: {
-  ch: string; mappa: Record<string, { colore: string | null; testo: string }>; titolo: string; alto?: string;
-}) {
-  const voce = mappa[ch] ?? { colore: null, testo: ch };
-  if (voce.colore) {
-    return <span title={`${titolo}: ${voce.testo}`} className={`w-2.5 ${alto} rounded-[2px] shrink-0`}
-      style={{ background: voce.colore, opacity: ch === "M" ? 0.55 : 0.9 }} />;
-  }
-  if (ch === "-" || ch === "A") {
-    return <span title={`${titolo}: ${voce.testo}`} className={`w-2.5 ${alto} rounded-[2px] shrink-0 border border-border/50`} />;
-  }
-  return (
-    <span title={`${titolo}: ${voce.testo}`} className={`w-2.5 ${alto} shrink-0 flex items-center justify-center`}>
-      {ch === "." && <span className="w-1 h-1 rounded-full bg-muted-foreground/40" />}
-    </span>
-  );
 }
 
 export default function ControlloAvm() {

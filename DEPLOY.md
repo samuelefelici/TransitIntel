@@ -1031,6 +1031,25 @@ le 03:00 di lunedì). L'endpoint serve solo a chi vuole lanciarlo da fuori; è
 idempotente. L'archivio è la tabella `caronte.avm_controllo_settimanale`
 (nello schema delle migrazioni).
 
+**L'andamento AVM e le richieste a Mizar** (pagina AVM, scheda «Andamento»).
+L'andamento si ricalcola dal diario dell'AVM (`caronte.avm_diario`) a ogni
+apertura, settimana per settimana dall'inizio dei dati (al massimo un anno),
+con la stessa regola del controllo settimanale. Non c'è niente da
+configurare:
+- la migrazione `0005_richieste_mizar` crea `caronte.avm_richieste_mizar`
+  (vuota, senza lock su tabelle esistenti). Non serve rieseguire
+  `caronte_setup.sql` né toccare i permessi di Argos: la tabella è fuori dal
+  contratto di `argos_ro` e `caronte_app` non la vede;
+- le liste «da togliere da SIRI», «da aggiungere a SIRI» e «da verificare»
+  vengono dal parco di FleetCare (`fleetcare.parco_per_avm()`). Senza
+  FleetCare restano vuote e la pagina lo dice;
+- una richiesta a Mizar si chiude da sola quando il diario lo dimostra:
+  «togliere» dopo 3 giornate contate senza la vettura nel flusso, «aggiungere»
+  il primo giorno in cui la vettura compare. Le richieste chiuse si
+  cancellano dopo 24 mesi; di chi le segna si tiene solo l'id, e il nome non
+  esce nel foglio Excel;
+- scrive solo chi ha il permesso «centrale», come per il resto dell'AVM.
+
 ---
 
 ## Dev Locale

@@ -361,9 +361,9 @@ export function contaCategorie(vetture: Pick<VetturaControllo, "categoria">[]): 
  * funzionavano, parlavano soltanto, tacevano. Si calcola dalle storie, così
  * vale per qualunque perimetro scelga chi legge.
  */
-export function andamentoSettimane(
-  c: Pick<ControlloSettimanale, "settimane">, vetture: Pick<VetturaControllo, "storia">[],
-): Array<SettimanaDelControllo & { F: number; P: number; M: number; A: number }> {
+export function andamentoSettimane<S extends { lunedi: string }>(
+  c: { settimane: S[] }, vetture: Array<{ storia: string }>,
+): Array<S & { F: number; P: number; M: number; A: number }> {
   return c.settimane.map((s, i) => {
     const n = { F: 0, P: 0, M: 0, A: 0 };
     for (const v of vetture) {
@@ -445,15 +445,31 @@ function dataBreve(iso: string | null): string {
   return `${g}/${m}/${a}`;
 }
 
+/**
+ * Lo stato di una vettura in una settimana, dalle sue giornate contate: è la
+ * regola del controllo settimanale, e la usa anche l'andamento lungo
+ * (avm-storia.ts), così le due viste non possono dire cose diverse.
+ *   contate      giornate contate della settimana
+ *   presenti     giornate contate in cui il flusso SIRI elenca la vettura
+ *   conPosizione / conContatto   giornate contate con posizione / con contatto
+ */
+export function statoSettimana(contate: number, presenti: number, conPosizione: number, conContatto: number): StatoSettimana {
+  return contate < GIORNATE_MINIME ? "."
+    : presenti === 0 ? "A"
+      : conPosizione > 0 ? "F"
+        : conContatto > 0 ? "P"
+          : "M";
+}
+
 /** Il fermo in officina, detto in una frase: è la spiegazione che toglie ogni altra diagnosi. */
-function fermoInOfficina(m: MezzoOfficina): string {
+export function fermoInOfficina(m: MezzoOfficina): string {
   return `Ferma in officina${m.fermoDal ? ` dal ${dataBreve(m.fermoDal)}` : ""}`
     + `${m.fermoMotivo ? ` (${m.fermoMotivo})` : ""}${m.commessa ? `, commessa ${m.commessa}` : ""}: `
     + "il silenzio dell'apparato si spiega col fermo, si riguarda al rientro in servizio.";
 }
 
 /** Le altre frasi dell'officina da accodare alla nota, se c'è qualcosa da dire. */
-function notaOfficina(m: MezzoOfficina | null, esclusa: Esclusione | null, fermoGiaDetto: boolean): string | null {
+export function notaOfficina(m: MezzoOfficina | null, esclusa: Esclusione | null, fermoGiaDetto: boolean): string | null {
   if (esclusa) return esclusa.motivo === "fuori_parco"
     ? "Non è nel parco dell'officina: con ogni probabilità venduta o demolita."
     : "L'officina la dà dismessa.";
@@ -542,11 +558,7 @@ export function calcolaControllo(dati: DatiControllo): ControlloSettimanale {
         conCorsa: presenti.filter(r => r.letturePosizione > 0 && r.lettureCorsa > 0).length,
         conErroreGps: presenti.filter(r => r.lettureErroreGps > 0).length,
       };
-      const stato: StatoSettimana = giorni.length < GIORNATE_MINIME ? "."
-        : presenti.length === 0 ? "A"
-          : s.conPosizione > 0 ? "F"
-            : s.conContatto > 0 ? "P"
-              : "M";
+      const stato = statoSettimana(giorni.length, presenti.length, s.conPosizione, s.conContatto);
       return { ...s, stato };
     };
 
