@@ -4,7 +4,11 @@ import { syncTrafficFromTomTom } from "./routes/cron";
 import { MAX_GAP_SEC as SIRI_MAX_POLL_SECONDS, effectivePollSeconds } from "./lib/siri-vm";
 import { avviaControlloArgos } from "./lib/controllo-argos";
 import { controllaSegretiCron } from "./lib/segreto-cron";
-import { avviaGuardiaSchema } from "./lib/guardia-schema";
+import { avviaGuardiaSchema, statoDelloSchema } from "./lib/guardia-schema";
+import { creaEsecutore } from "./lib/lavori/esecutore";
+import { GESTORI } from "./lib/lavori/gestori";
+import { chiSono, esecutoreInternoAcceso, slotDaAmbiente } from "./lib/lavori/ambiente";
+import { arresto } from "./lib/arresto";
 
 const rawPort = process.env["PORT"];
 
@@ -25,6 +29,19 @@ const server = app.listen(port, () => {
 
   // Il database ha tutte le migrazioni di questo codice? (log e /api/healthz)
   avviaGuardiaSchema();
+  // I calcoli della coda (coda.lavori): li esegue il lavoratore; finché non c'è,
+  // o per tornare indietro, anche l'API (CERBERO_LAVORATORE_INTERNO, default acceso)
+  if (esecutoreInternoAcceso()) {
+    esecutoreInterno = creaEsecutore({
+      chi: chiSono("api"),
+      slot: slotDaAmbiente(),
+      gestori: GESTORI,
+      log: logger,
+      puoPrendere: () => { const st = statoDelloSchema(); return st === "ok" || st === "avanti"; },
+    });
+    esecutoreInterno.avvia();
+    logger.info({ slot: slotDaAmbiente() }, "Esecutore interno dei lavori acceso (CERBERO_LAVORATORE_INTERNO=0 lo spegne quando c'è il lavoratore)");
+  }
   // Argos deve leggere solo le tabelle del contratto: lo si controlla nel log
   avviaControlloArgos();
   controllaSegretiCron();
@@ -169,9 +186,14 @@ logger.info("HTTP timeouts configurati per CP-SAT estesi (25 min)");
 // richieste successive vanno al container nuovo; chiude le connessioni
 // inattive (con il keep-alive di 25 min resterebbero aperte) ed esce appena non
 // ha richieste in corso da 1 s, o comunque dopo CERBERO_ARRESTO_SECONDI
-// (25 s, al massimo 28: oltre i 30 s Coolify uccide il processo). I calcoli più
-// lunghi non fanno in tempo: per quelli arriva la coda dei lavori.
+// (25 s, al massimo 28: oltre i 30 s Coolify uccide il processo). I calcoli
+// dell'esecutore interno si fermano e tornano in coda: li riprende il
+// lavoratore o il container nuovo. Lo stream dei lavori si chiude (il client
+// riprova e arriva al container nuovo).
 let inArresto = false;
+let esecutoreInterno: ReturnType<typeof creaEsecutore> | null = null;
+let fermataLavori: Promise<void> = Promise.resolve();
+let uscendo = false;
 const risposteInCorso = new Set<import("node:http").ServerResponse>();
 server.prependListener("request", (_req, res) => {
   if (inArresto) res.shouldKeepAlive = false;
@@ -179,15 +201,24 @@ server.prependListener("request", (_req, res) => {
   res.once("close", () => risposteInCorso.delete(res));
 });
 const ATTESA_ARRESTO_MS = Math.min(Math.max(Number(process.env.CERBERO_ARRESTO_SECONDI) || 25, 1), 28) * 1000;
-function esci(motivo: string): void {
-  logger.info({ motivo, richiesteAperte: risposteInCorso.size }, "Arresto completato");
+function fine(motivo: string): void {
+  logger.info({ motivo, richiesteAperte: risposteInCorso.size, lavoriInCorso: esecutoreInterno?.inCorso() ?? 0 }, "Arresto completato");
   server.close();
   process.exit(0);
+}
+/* senza richieste in corso si esce, ma prima i lavori dell'esecutore interno
+   devono tornare in coda (il termine ATTESA_ARRESTO_MS vale comunque) */
+function esci(motivo: string): void {
+  if (uscendo) return;
+  uscendo = true;
+  void fermataLavori.catch(() => {}).then(() => fine(motivo));
 }
 function arresta(segnale: string): void {
   if (inArresto) return;
   inArresto = true;
   logger.info({ segnale }, "Arresto: chiudo le connessioni a fine risposta e finisco quelle in corso");
+  arresto.abort();
+  if (esecutoreInterno) fermataLavori = esecutoreInterno.ferma(Math.max(0, ATTESA_ARRESTO_MS - 12_000));
   for (const r of risposteInCorso) if (!r.headersSent) r.shouldKeepAlive = false;
   let ferma = 0;
   setInterval(() => {
@@ -195,7 +226,7 @@ function arresta(segnale: string): void {
     ferma = risposteInCorso.size === 0 ? ferma + 1 : 0;
     if (ferma >= 4) esci("nessuna richiesta in corso");
   }, 250).unref();
-  setTimeout(() => esci(`scaduti ${ATTESA_ARRESTO_MS / 1000} s`), ATTESA_ARRESTO_MS).unref();
+  setTimeout(() => fine(`scaduti ${ATTESA_ARRESTO_MS / 1000} s`), ATTESA_ARRESTO_MS).unref();
 }
 process.on("SIGTERM", () => arresta("SIGTERM"));
 process.on("SIGINT", () => arresta("SIGINT"));

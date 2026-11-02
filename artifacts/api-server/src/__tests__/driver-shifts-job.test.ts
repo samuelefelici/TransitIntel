@@ -1,71 +1,142 @@
+/* I lavori dei turni guida stanno nella coda (coda.lavori): qui una coda
+ * finta in memoria. Le risposte sono quelle del vecchio job manager (la SPA
+ * non cambia): stati, progress, date in ms, data, error. Li vede e li ferma
+ * solo chi li ha lanciati (o l'admin); un lavoro di un altro tipo non c'è. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import request from "supertest";
 
-/* il job manager vero lancerebbe Python: qui un elenco di job finti, con il
- * controllo vero di chi li può vedere (puoVedereJob) */
-const jobs = new Map<string, any>();
-const fermati: string[] = [];
-vi.mock("../lib/job-manager.js", async (originale) => {
-  const vero: any = await originale();
-  return {
-    ...vero,
-    jobManager: {
-      getJob: (id: string) => jobs.get(id) ?? null,
-      stopJob: (id: string) => { fermati.push(id); return jobs.get(id)?.status === "running"; },
-      getJobEmitter: () => null,
-      createJob: () => "nuovo",
-    },
-  };
-});
+const righe = new Map<string, any>();
+const annullati: string[] = [];
+vi.mock("../lib/lavori/coda", () => ({
+  leggi: vi.fn(async (id: string) => righe.get(id) ?? null),
+  chiediAnnullamento: vi.fn(async (id: string) => {
+    annullati.push(id);
+    const r = righe.get(id);
+    if (r?.stato === "in_coda") { r.stato = "fermato"; return "fermato"; }
+    if (r?.stato === "in_corso") return "in_fermata";
+    return null;
+  }),
+  accoda: vi.fn(async () => "nuovo"),
+  viviDi: vi.fn(async () => 0),
+}));
 
-import router from "../routes/driver-shifts";
+import router, { tempoDelCalcolo, tempoMassimoTurniGuida } from "../routes/driver-shifts";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const A = utenteDiProva("10000000-0000-0000-0000-00000000000a", ["scheduling"]);
 const B = utenteDiProva("10000000-0000-0000-0000-00000000000b", ["scheduling"]);
 const ADMIN = utenteDiProva("10000000-0000-0000-0000-000000000001", [], "admin");
-const job = (id: string, userId: string | undefined, status = "completed") => ({
-  id, scenarioId: "s", status, userId, progress: { phase: "fine", percentage: 100, detail: "", timestamp: 0 },
-  progressHistory: [], result: { driverShifts: [], summary: {} }, error: null, createdAt: 0, updatedAt: 0, pid: null, metadata: {},
+const T = new Date("2026-11-02T10:00:00Z");
+const riga = (id: string, utente: string | null, stato = "completato", extra: Record<string, any> = {}) => ({
+  id, utente_id: utente, stato, oggetto_id: "s", tipo: "python", versione: 1,
+  metadati: { ambito: "turni-guida", scenarioId: "s", scenarioName: "Feriale", date: "20261102" },
+  avanzamento: null, risultato: stato === "completato" ? { driverShifts: [{ id: 1 }], summary: { totalDriverShifts: 1 }, metrics: { x: 1 } } : null,
+  errore: null, errore_tipo: null, creato_il: T, iniziato_il: T, finito_il: stato === "completato" ? T : null, aggiornato_il: T, ...extra,
 });
 
-describe("i job dei turni guida: li vede e li ferma solo chi li ha lanciati", () => {
+describe("i lavori dei turni guida: li vede e li ferma solo chi li ha lanciati", () => {
   beforeEach(() => {
-    jobs.clear(); fermati.length = 0;
-    jobs.set("di-a", job("di-a", A.id));
-    jobs.set("di-a-in-corso", job("di-a-in-corso", A.id, "running"));
-    jobs.set("vecchio", job("vecchio", undefined));
+    righe.clear(); annullati.length = 0;
+    righe.set("di-a", riga("di-a", A.id));
+    righe.set("di-a-in-corso", riga("di-a-in-corso", A.id, "in_corso"));
+    righe.set("vecchio", riga("vecchio", null));
+    righe.set("altro-tipo", riga("altro-tipo", A.id, "completato", { metadati: { ambito: "turni-macchina" } }));
   });
 
-  it("il job di A, chiesto da B: 404 su stato, stream e stop, e non si ferma", async () => {
+  it("il lavoro di A, chiesto da B: 404 su stato, stream e stop, e non si ferma", async () => {
     const b = appDiProva(router, B);
     expect((await request(b).get("/api/driver-shifts/jobs/di-a")).status).toBe(404);
     expect((await request(b).get("/api/driver-shifts/jobs/di-a/stream")).status).toBe(404);
     expect((await request(b).post("/api/driver-shifts/jobs/di-a-in-corso/stop")).status).toBe(404);
-    expect(fermati).toEqual([]);
+    expect(annullati).toEqual([]);
   });
 
-  it("A e l'admin lo vedono; lo stream di un job finito manda il risultato", async () => {
+  it("A e l'admin lo vedono, con la forma di sempre; lo stream di un lavoro finito manda il risultato", async () => {
     for (const u of [A, ADMIN]) {
       const app = appDiProva(router, u);
       const r = await request(app).get("/api/driver-shifts/jobs/di-a");
       expect(r.status).toBe(200);
-      expect(r.body).toMatchObject({ jobId: "di-a", status: "completed" });
+      expect(r.body).toEqual({
+        jobId: "di-a", scenarioId: "s", status: "completed",
+        progress: { phase: "done", percentage: 100, detail: "Ottimizzazione completata", timestamp: +T },
+        createdAt: +T, updatedAt: +T,
+        data: {
+          solver: "cpsat", scenarioId: "s", scenarioName: "Feriale", date: "20261102",
+          driverShifts: [{ id: 1 }], summary: { totalDriverShifts: 1 }, unassignedBlocks: 0,
+          clusters: expect.any(Array), companyCars: expect.anything(), solverMetrics: { x: 1 }, optimizationAnalysis: null,
+        },
+      });
       const s = await request(app).get("/api/driver-shifts/jobs/di-a/stream");
       expect(s.headers["content-type"]).toMatch(/text\/event-stream/);
+      expect(s.text).toContain("event: status");
       expect(s.text).toContain("event: result");
     }
   });
 
-  it("A ferma il suo job in corso", async () => {
-    const r = await request(appDiProva(router, A)).post("/api/driver-shifts/jobs/di-a-in-corso/stop");
-    expect(r.status).toBe(200);
-    expect(fermati).toEqual(["di-a-in-corso"]);
+  it("in coda, in corso, fallito, fermato: stato, progress ed error come prima", async () => {
+    const app = appDiProva(router, A);
+    righe.set("q", riga("q", A.id, "in_coda", { iniziato_il: null }));
+    righe.set("r", riga("r", A.id, "in_corso", { avanzamento: { phase: "optimize", percentage: 42, detail: "x", timestamp: 5 } }));
+    righe.set("f", riga("f", A.id, "fallito", { errore: "Python exit code 1", finito_il: T,
+      avanzamento: { phase: "optimize", percentage: 53, detail: "Scenario 8/14", timestamp: 5 } }));
+    righe.set("s", riga("s", A.id, "fermato", { finito_il: T, avanzamento: { phase: "optimize", percentage: 30, detail: "x", timestamp: 5 } }));
+    const q = (await request(app).get("/api/driver-shifts/jobs/q")).body;
+    expect(q).toMatchObject({ status: "queued", progress: { phase: "init", percentage: 0, detail: "In coda…" } });
+    expect(q).not.toHaveProperty("data");
+    expect(q).not.toHaveProperty("error");
+    expect((await request(app).get("/api/driver-shifts/jobs/r")).body).toMatchObject({ status: "running", progress: { phase: "optimize", percentage: 42 } });
+    // come il job manager: alla fine «error» al 100% con il messaggio, non l'ultima fase vista
+    expect((await request(app).get("/api/driver-shifts/jobs/f")).body).toMatchObject({
+      status: "failed", error: "Python exit code 1",
+      progress: { phase: "error", percentage: 100, detail: "Python exit code 1", timestamp: +T },
+    });
+    const st = (await request(app).get("/api/driver-shifts/jobs/s")).body;
+    expect(st.status).toBe("stopped");
+    expect(st.error).toBeNull();
+    expect(st.progress).toEqual({ phase: "stopped", percentage: 30, detail: "Fermato dall'utente", timestamp: +T });
   });
 
-  it("un job di prima, senza autore, lo vede solo l'admin; uno che non c'è: 404", async () => {
+  it("lo stream di un lavoro in corso manda il risultato quando finisce", async () => {
+    const app = appDiProva(router, A);
+    setTimeout(() => {
+      const r = righe.get("di-a-in-corso");
+      Object.assign(r, { stato: "completato", risultato: { driverShifts: [], summary: {} }, finito_il: new Date(), aggiornato_il: new Date() });
+    }, 300);
+    const s = await request(app).get("/api/driver-shifts/jobs/di-a-in-corso/stream");
+    expect(s.text.indexOf("event: status")).toBeLessThan(s.text.indexOf("event: result"));
+  });
+
+  it("lo stop: in corso e in coda sì (prima in coda dava 400), finito no", async () => {
+    const app = appDiProva(router, A);
+    righe.set("q", riga("q", A.id, "in_coda"));
+    expect((await request(app).post("/api/driver-shifts/jobs/di-a-in-corso/stop")).body).toEqual({ jobId: "di-a-in-corso", status: "stopped" });
+    expect((await request(app).post("/api/driver-shifts/jobs/q/stop")).status).toBe(200);
+    expect((await request(app).post("/api/driver-shifts/jobs/di-a/stop")).status).toBe(400);
+  });
+
+  it("un lavoro senza proprietario lo vede solo l'admin; uno di un altro tipo non c'è", async () => {
     expect((await request(appDiProva(router, A)).get("/api/driver-shifts/jobs/vecchio")).status).toBe(404);
     expect((await request(appDiProva(router, ADMIN)).get("/api/driver-shifts/jobs/vecchio")).status).toBe(200);
-    expect((await request(appDiProva(router, ADMIN)).get("/api/driver-shifts/jobs/non-esiste")).status).toBe(404);
+    expect((await request(appDiProva(router, A)).get("/api/driver-shifts/jobs/altro-tipo")).status).toBe(404);
+    expect((await request(appDiProva(router, A)).get("/api/driver-shifts/jobs/inventato")).status).toBe(404);
+  });
+});
+
+describe("il budget del calcolo", () => {
+  it("un intero fra 10 s e un'ora (Python lo legge con int())", () => {
+    expect(tempoDelCalcolo(90)).toBe(90);
+    expect(tempoDelCalcolo("240")).toBe(240);
+    expect(tempoDelCalcolo(120.6)).toBe(121);
+    expect(tempoDelCalcolo(undefined)).toBe(120);
+    expect(tempoDelCalcolo("abc")).toBe(120);
+    expect(tempoDelCalcolo(1)).toBe(10);
+    expect(tempoDelCalcolo(99999)).toBe(3600);
+  });
+
+  it("il tempo massimo è una rete di sicurezza, non un secondo budget: almeno un'ora, al massimo due", () => {
+    expect(tempoMassimoTurniGuida(90)).toBe(3600);
+    expect(tempoMassimoTurniGuida(900)).toBe(3600);
+    expect(tempoMassimoTurniGuida(1200)).toBe(4800);
+    expect(tempoMassimoTurniGuida(3600)).toBe(7200);
   });
 });

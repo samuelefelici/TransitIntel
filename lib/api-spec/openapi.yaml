@@ -1883,29 +1883,6 @@ paths:
               schema:
                 type: object
 
-  /driver-shifts/{scenarioId}/cpsat:
-    post:
-      operationId: runDriverShiftsCpsat
-      tags: [driver-shifts]
-      summary: Run CP-SAT crew scheduling (sync)
-      parameters:
-        - $ref: "#/components/parameters/ScenarioIdPath"
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                timeLimit: { type: integer, default: 60 }
-                config: { type: object }
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-
   /driver-shifts/{scenarioId}/cpsat/async:
     post:
       operationId: runDriverShiftsCpsatAsync
@@ -1981,32 +1958,6 @@ paths:
                 properties:
                   jobId: { type: string }
                   status: { type: string }
-
-  /driver-shifts/{scenarioId}/compare:
-    post:
-      operationId: compareDriverShifts
-      tags: [driver-shifts]
-      summary: Compare greedy vs CP-SAT driver shifts
-      parameters:
-        - $ref: "#/components/parameters/ScenarioIdPath"
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                timeLimit: { type: integer, default: 60 }
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  greedy: { type: object }
-                  cpsat: { type: [object, "null"] }
-                  delta: { type: [object, "null"] }
 
   /driver-shifts/{scenarioId}/scenarios:
     get:

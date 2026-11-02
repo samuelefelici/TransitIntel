@@ -56,19 +56,23 @@ async function buildAll() {
       !(pkg.dependencies?.[dep]?.startsWith("workspace:")),
   );
 
-  await esbuild({
-    entryPoints: [path.resolve(__dirname, "src/index.ts")],
-    platform: "node",
-    bundle: true,
-    format: "cjs",
-    outfile: path.resolve(distDir, "index.cjs"),
-    define: {
-      "process.env.NODE_ENV": '"production"',
-    },
-    minify: true,
-    external: externals,
-    logLevel: "info",
-  });
+  // L'API (dist/index.cjs) e il lavoratore dei calcoli (dist/lavoratore.cjs,
+  // CERBERO_PROCESSO=lavoratore in docker/avvio.sh): stessa immagine.
+  for (const [ingresso, uscita] of [["src/index.ts", "index.cjs"], ["src/lavoratore.ts", "lavoratore.cjs"]]) {
+    await esbuild({
+      entryPoints: [path.resolve(__dirname, ingresso)],
+      platform: "node",
+      bundle: true,
+      format: "cjs",
+      outfile: path.resolve(distDir, uscita),
+      define: {
+        "process.env.NODE_ENV": '"production"',
+      },
+      minify: true,
+      external: externals,
+      logLevel: "info",
+    });
+  }
 }
 
 buildAll().catch((err) => {

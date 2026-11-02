@@ -3,6 +3,10 @@
  *
  * Gestisce il ciclo di vita: idle → starting → running → completed/failed
  * Utilizza EventSource (SSE) per progress real-time, con fallback polling.
+ *
+ * Il calcolo gira sulla coda dei lavori del server e sopravvive ai riavvii.
+ * Se la pagina lo abbandona (rilancio, reset, uscita dalla pagina) lo ferma
+ * anche sul server: il jobId si perde, e il calcolo terrebbe occupato uno slot.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -147,8 +151,12 @@ export interface UseCrewOptimizationReturn {
 /* ─── Hook ─────────────────────────────────────────────────── */
 
 const JOB_GONE_MESSAGE =
-  "L'ottimizzazione non è più disponibile sul server: probabile riavvio del servizio durante il calcolo " +
-  "(i calcoli lunghi, tipici dell'extraurbano, sono più esposti). Rilancia l'ottimizzazione.";
+  "L'ottimizzazione non è più disponibile sul server. Rilancia l'ottimizzazione.";
+
+/** Ferma un calcolo sul server senza aspettare la risposta (keepalive: vale anche uscendo dalla pagina). */
+function fermaSulServer(jId: string): void {
+  fetch(`${getApiBase()}/api/driver-shifts/jobs/${jId}/stop`, { method: "POST", keepalive: true }).catch(() => {});
+}
 
 export function useCrewOptimization(): UseCrewOptimizationReturn {
   const [state, setState] = useState<OptimizationState>("idle");
@@ -165,6 +173,10 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
   const startTimeRef = useRef<number>(0);
   // conteggio 404 consecutivi in polling: il job è sparito (riavvio server / TTL)
   const notFoundRef = useRef<number>(0);
+  // il calcolo vivo sul server (da fermare se la pagina lo abbandona)
+  const vivoRef = useRef<string | null>(null);
+  // sale a ogni avvio, reset e smontaggio: una risposta di un avvio vecchio non si aggancia
+  const generazioneRef = useRef<number>(0);
 
   /* ── Cleanup helpers ──────────────────────────────────────── */
 
@@ -190,13 +202,22 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
   }, []);
 
   const cleanup = useCallback(() => {
+    vivoRef.current = null;
     closeSSE();
     stopPolling();
     stopTimer();
   }, [closeSSE, stopPolling, stopTimer]);
 
+  /** La pagina lascia il calcolo in corso: lo si ferma anche sul server. */
+  const abbandona = useCallback(() => {
+    generazioneRef.current += 1;
+    const j = vivoRef.current;
+    vivoRef.current = null;
+    if (j) fermaSulServer(j);
+  }, []);
+
   // Cleanup on unmount
-  useEffect(() => cleanup, [cleanup]);
+  useEffect(() => () => { abbandona(); cleanup(); }, [abbandona, cleanup]);
 
   /* ── Start timer ──────────────────────────────────────────── */
 
@@ -282,9 +303,12 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
     pollingRef.current = setInterval(async () => {
       try {
         const resp = await fetch(`${base}/api/driver-shifts/jobs/${jId}`);
-        // 404 = il job non esiste più (riavvio del server / TTL). Dopo alcuni
+        // 404 dell'API (JSON con error) = il job non esiste più. Dopo alcuni
         // tentativi consecutivi lo dichiariamo perso invece di ciclare all'infinito.
+        // Il 404 del proxy (pagina di testo, API giù durante un riavvio) è transitorio.
         if (resp.status === 404) {
+          const corpo = await resp.json().catch(() => null);
+          if (!corpo || typeof corpo.error !== "string") return;
           notFoundRef.current += 1;
           if (notFoundRef.current >= 3) {
             setError(JOB_GONE_MESSAGE);
@@ -319,7 +343,9 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
   /* ── Start optimization ───────────────────────────────────── */
 
   const start = useCallback((scenarioId: string, timeLimit = 120, config?: OperatorConfig) => {
+    abbandona();
     cleanup();
+    const generazione = generazioneRef.current;
     setState("starting");
     setProgress(null);
     setProgressHistory([]);
@@ -344,16 +370,20 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
       })
       .then((data) => {
         const jId = data.jobId;
+        // nel frattempo la pagina ha rilanciato o resettato: questo calcolo non lo segue nessuno
+        if (generazione !== generazioneRef.current) { fermaSulServer(jId); return; }
+        vivoRef.current = jId;
         setJobId(jId);
         setState("running");
         connectSSE(jId);
       })
       .catch((err) => {
+        if (generazione !== generazioneRef.current) return;
         setError(err.message);
         setState("failed");
         stopTimer();
       });
-  }, [cleanup, startTimer, connectSSE, stopTimer]);
+  }, [abbandona, cleanup, startTimer, connectSSE, stopTimer]);
 
   /* ── Stop optimization ────────────────────────────────────── */
 
@@ -376,6 +406,7 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
   /* ── Reset ────────────────────────────────────────────────── */
 
   const reset = useCallback(() => {
+    abbandona();
     cleanup();
     setState("idle");
     setProgress(null);
@@ -384,7 +415,7 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
     setError(null);
     setJobId(null);
     setElapsedSec(0);
-  }, [cleanup]);
+  }, [abbandona, cleanup]);
 
   return {
     state,

@@ -1648,22 +1648,6 @@ export const GenerateDriverShiftsParams = zod.object({
 export const GenerateDriverShiftsResponse = zod.object({}).passthrough();
 
 /**
- * @summary Run CP-SAT crew scheduling (sync)
- */
-export const RunDriverShiftsCpsatParams = zod.object({
-  scenarioId: zod.coerce.string(),
-});
-
-export const runDriverShiftsCpsatBodyTimeLimitDefault = 60;
-
-export const RunDriverShiftsCpsatBody = zod.object({
-  timeLimit: zod.number().default(runDriverShiftsCpsatBodyTimeLimitDefault),
-  config: zod.object({}).passthrough().optional(),
-});
-
-export const RunDriverShiftsCpsatResponse = zod.object({}).passthrough();
-
-/**
  * @summary Launch async CP-SAT crew scheduling (returns 202 + jobId)
  */
 export const RunDriverShiftsCpsatAsyncParams = zod.object({
@@ -1716,25 +1700,6 @@ export const StopDriverShiftJobParams = zod.object({
 export const StopDriverShiftJobResponse = zod.object({
   jobId: zod.string().optional(),
   status: zod.string().optional(),
-});
-
-/**
- * @summary Compare greedy vs CP-SAT driver shifts
- */
-export const CompareDriverShiftsParams = zod.object({
-  scenarioId: zod.coerce.string(),
-});
-
-export const compareDriverShiftsBodyTimeLimitDefault = 60;
-
-export const CompareDriverShiftsBody = zod.object({
-  timeLimit: zod.number().default(compareDriverShiftsBodyTimeLimitDefault),
-});
-
-export const CompareDriverShiftsResponse = zod.object({
-  greedy: zod.object({}).passthrough().optional(),
-  cpsat: zod.object({}).passthrough().nullish(),
-  delta: zod.object({}).passthrough().nullish(),
 });
 
 /**
