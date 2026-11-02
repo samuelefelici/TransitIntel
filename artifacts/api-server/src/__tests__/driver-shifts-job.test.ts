@@ -17,9 +17,10 @@ vi.mock("../lib/lavori/coda", () => ({
     return null;
   }),
   accoda: vi.fn(async () => "nuovo"),
+  viviDi: vi.fn(async () => 0),
 }));
 
-import router, { tempoDelCalcolo } from "../routes/driver-shifts";
+import router, { tempoDelCalcolo, tempoMassimoTurniGuida } from "../routes/driver-shifts";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const A = utenteDiProva("10000000-0000-0000-0000-00000000000a", ["scheduling"]);
@@ -76,17 +77,23 @@ describe("i lavori dei turni guida: li vede e li ferma solo chi li ha lanciati",
     const app = appDiProva(router, A);
     righe.set("q", riga("q", A.id, "in_coda", { iniziato_il: null }));
     righe.set("r", riga("r", A.id, "in_corso", { avanzamento: { phase: "optimize", percentage: 42, detail: "x", timestamp: 5 } }));
-    righe.set("f", riga("f", A.id, "fallito", { errore: "Python exit code 1" }));
-    righe.set("s", riga("s", A.id, "fermato"));
+    righe.set("f", riga("f", A.id, "fallito", { errore: "Python exit code 1", finito_il: T,
+      avanzamento: { phase: "optimize", percentage: 53, detail: "Scenario 8/14", timestamp: 5 } }));
+    righe.set("s", riga("s", A.id, "fermato", { finito_il: T, avanzamento: { phase: "optimize", percentage: 30, detail: "x", timestamp: 5 } }));
     const q = (await request(app).get("/api/driver-shifts/jobs/q")).body;
     expect(q).toMatchObject({ status: "queued", progress: { phase: "init", percentage: 0, detail: "In coda…" } });
     expect(q).not.toHaveProperty("data");
     expect(q).not.toHaveProperty("error");
     expect((await request(app).get("/api/driver-shifts/jobs/r")).body).toMatchObject({ status: "running", progress: { phase: "optimize", percentage: 42 } });
-    expect((await request(app).get("/api/driver-shifts/jobs/f")).body).toMatchObject({ status: "failed", error: "Python exit code 1" });
+    // come il job manager: alla fine «error» al 100% con il messaggio, non l'ultima fase vista
+    expect((await request(app).get("/api/driver-shifts/jobs/f")).body).toMatchObject({
+      status: "failed", error: "Python exit code 1",
+      progress: { phase: "error", percentage: 100, detail: "Python exit code 1", timestamp: +T },
+    });
     const st = (await request(app).get("/api/driver-shifts/jobs/s")).body;
     expect(st.status).toBe("stopped");
     expect(st.error).toBeNull();
+    expect(st.progress).toEqual({ phase: "stopped", percentage: 30, detail: "Fermato dall'utente", timestamp: +T });
   });
 
   it("lo stream di un lavoro in corso manda il risultato quando finisce", async () => {
@@ -124,5 +131,12 @@ describe("il budget del calcolo", () => {
     expect(tempoDelCalcolo("abc")).toBe(120);
     expect(tempoDelCalcolo(1)).toBe(10);
     expect(tempoDelCalcolo(99999)).toBe(3600);
+  });
+
+  it("il tempo massimo è una rete di sicurezza, non un secondo budget: almeno un'ora, al massimo due", () => {
+    expect(tempoMassimoTurniGuida(90)).toBe(3600);
+    expect(tempoMassimoTurniGuida(900)).toBe(3600);
+    expect(tempoMassimoTurniGuida(1200)).toBe(4800);
+    expect(tempoMassimoTurniGuida(3600)).toBe(7200);
   });
 });

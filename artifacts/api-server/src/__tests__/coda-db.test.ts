@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { pool } from "@workspace/db";
 import {
-  accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci,
+  accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci, viviDi,
 } from "../lib/lavori/coda";
 
 const NOTI = [{ tipo: "python", versione: 1 }];
@@ -58,6 +58,48 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda dei lavori, sul databas
     expect(await chiediAnnullamento(b)).toBe("in_fermata");
     expect(await battito(b, "p")).toEqual({ annulla: true });
     expect(await chiediAnnullamento(a)).toBeNull(); // già finito
+  });
+
+  it("stop in gara con chi lo sta prendendo o rimettendo in coda: non si perde", async () => {
+    // prendi ancora aperto (riga bloccata, in_coda → in_corso): lo stop aspetta il lock e decide sulla riga nuova
+    const a = await nuovo();
+    const c = await pool.connect();
+    try {
+      await c.query("BEGIN");
+      await c.query("UPDATE coda.lavori SET stato = 'in_corso', preso_da = 'p', tentativi = 1, scade_il = now() + interval '1 minute' WHERE id = $1", [a]);
+      const stop = chiediAnnullamento(a);
+      await new Promise(r => setTimeout(r, 150));
+      await c.query("COMMIT");
+      expect(await stop).toBe("in_fermata");
+    } finally { c.release(); }
+    expect(await leggi(a)).toMatchObject({ stato: "in_corso", annulla: true });
+    expect(await battito(a, "p")).toEqual({ annulla: true });
+
+    // rimettiInCoda aperto (in_corso → in_coda): lo stop lo trova in coda e lo ferma
+    const b = await nuovo();
+    await prendi("lunga", "q", NOTI);
+    const d = await pool.connect();
+    try {
+      await d.query("BEGIN");
+      await d.query("UPDATE coda.lavori SET stato = 'in_coda', preso_da = NULL WHERE id = $1", [b]);
+      const stop = chiediAnnullamento(b);
+      await new Promise(r => setTimeout(r, 150));
+      await d.query("COMMIT");
+      expect(await stop).toBe("fermato");
+    } finally { d.release(); }
+    expect(await leggi(b)).toMatchObject({ stato: "fermato", errore_tipo: "annullato", annulla: true });
+  });
+
+  it("i lavori vivi di un utente in un ambito", async () => {
+    const u = "10000000-0000-0000-0000-00000000000a";
+    const m = { ambito: "turni-guida" };
+    await nuovo("lunga", { utenteId: u, metadati: m });
+    await nuovo("veloce", { utenteId: u, metadati: m });
+    await nuovo("lunga", { utenteId: u, metadati: { ambito: "altro" } });
+    const finito = await nuovo("lunga", { utenteId: u, metadati: m });
+    await chiediAnnullamento(finito);
+    expect(await viviDi(u, "turni-guida")).toBe(2);
+    expect(await viviDi("10000000-0000-0000-0000-00000000000b", "turni-guida")).toBe(0);
   });
 
   it("lease scaduto: di nuovo in coda con un ritardo, poi «fallito, interrotto» finiti i tentativi", async () => {

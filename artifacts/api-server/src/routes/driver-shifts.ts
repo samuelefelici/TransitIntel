@@ -1094,6 +1094,20 @@ export function tempoDelCalcolo(v: unknown, def = 120): number {
   return Number.isFinite(n) ? Math.min(3600, Math.max(10, n)) : def;
 }
 
+/**
+ * Il tempo massimo del processo: una rete di sicurezza contro un processo
+ * appeso, non un secondo budget. crew_scheduler_v4 sfora il budget di molto
+ * sulle reti grandi (minimi per scenario, ripieghi, greedy: 250 turni macchina
+ * con budget 90 s finiscono in 32 minuti), e il vecchio job manager non aveva
+ * un tempo massimo. Almeno un'ora, 4 volte il budget, al massimo 2 ore.
+ */
+export function tempoMassimoTurniGuida(budgetSec: number): number {
+  return Math.min(7200, Math.max(3600, 4 * budgetSec));
+}
+
+/** Lavori dei turni guida vivi (in coda o in corso) per utente: oltre, 429. */
+export const VIVI_PER_UTENTE = 3;
+
 /** Il lavoro dei turni guida, se chi chiede lo può vedere: il suo, o qualunque per l'admin. */
 async function lavoroTurniGuida(req: any): Promise<RigaLavoro | null> {
   const l = await coda.leggi(String(req.params.jobId));
@@ -1104,7 +1118,10 @@ async function lavoroTurniGuida(req: any): Promise<RigaLavoro | null> {
 }
 
 function progressoDi(l: RigaLavoro): any {
-  if (l.stato === "completato") return { phase: "done", percentage: 100, detail: "Ottimizzazione completata", timestamp: +(l.finito_il ?? l.aggiornato_il) };
+  const fine = +(l.finito_il ?? l.aggiornato_il);
+  if (l.stato === "completato") return { phase: "done", percentage: 100, detail: "Ottimizzazione completata", timestamp: fine };
+  if (l.stato === "fallito") return { phase: "error", percentage: 100, detail: l.errore ?? "Errore ottimizzazione", timestamp: fine };
+  if (l.stato === "fermato") return { phase: "stopped", percentage: Number(l.avanzamento?.percentage) || 0, detail: "Fermato dall'utente", timestamp: fine };
   if (l.avanzamento) return l.avanzamento;
   if (l.stato === "in_corso") return { phase: "starting", percentage: 0, detail: "Processo Python avviato", timestamp: +(l.iniziato_il ?? l.aggiornato_il) };
   return { phase: "init", percentage: 0, detail: "In coda…", timestamp: +l.creato_il };
@@ -1164,6 +1181,14 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     const companyCarsEffective = typeof operatorConfig?.companyCars === "number" ? operatorConfig.companyCars : dbCompanyCars;
     const { selectedClusterIds: _sci, companyCars: _cc, ...restOperatorConfig } = operatorConfig || {};
 
+    // un tetto ai calcoli vivi per utente: la coda è persistente e non si svuota più a ogni riavvio
+    if (await coda.viviDi(req.user!.id, AMBITO_TURNI_GUIDA) >= VIVI_PER_UTENTE) {
+      res.status(429).json({
+        error: `Hai già ${VIVI_PER_UTENTE} calcoli dei turni guida in coda o in corso: aspetta che finiscano o fermane uno.`,
+      });
+      return;
+    }
+
     const scenarioId = req.params.scenarioId as string;
     const jobId = await coda.accoda({
       tipo: "python",
@@ -1197,8 +1222,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
         },
       },
       metadati: { ambito: AMBITO_TURNI_GUIDA, scenarioId, scenarioName: scenario.name, date: scenario.date },
-      // margine: lo script sfora il budget di qualche minuto (minimi per scenario e polish)
-      timeoutSec: Math.min(7200, timeLimitSec + 300),
+      timeoutSec: tempoMassimoTurniGuida(timeLimitSec),
     });
 
     req.log.info(`Async CSP job started: ${jobId}, scenario=${(req.params.scenarioId as string)}, timeLimit=${timeLimitSec}s`);
@@ -1235,6 +1259,11 @@ router.get("/driver-shifts/jobs/:jobId/stream", async (req, res) => {
 
   invia("status", { jobId: l.id, status: STATO_PUBBLICO[l.stato], progress: progressoDi(l) });
   if (FINITI.has(l.stato)) { finale(l); res.end(); return; }
+  /* la connessione può essersi chiusa durante gli await (login, lettura della riga): 'close' è già
+     passato e non arriverebbe più, e il giro leggerebbe il database ogni secondo per tutta la vita
+     del lavoro. Lo stesso con l'arresto già cominciato: l'abort non scatta più. Da qui a
+     req.on("close") il codice è sincrono. */
+  if (req.destroyed || res.destroyed || arresto.signal.aborted) { res.end(); return; }
 
   let chiuso = false;
   let ultimo = +l.aggiornato_il;
@@ -1249,6 +1278,7 @@ router.get("/driver-shifts/jobs/:jobId/stream", async (req, res) => {
   };
   const giro = setInterval(async () => {
     if (chiuso || leggendo) return;
+    if (res.destroyed || res.writableEnded) { chiudi(); return; }
     leggendo = true;
     try {
       const x = await coda.leggi(l.id);

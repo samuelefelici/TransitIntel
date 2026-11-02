@@ -453,11 +453,20 @@ riavvio.
   container nuovo, da capo. Se un processo muore di colpo, il suo lavoro torna
   in coda dopo 60 s (il lease) e riparte; dopo due interruzioni è «fallito»
   con il messaggio di rilanciarlo. Un errore del calcolo o il tempo massimo
-  superato non si ritentano.
+  superato non si ritentano. Se alla fine il database non risponde, la
+  chiusura si ritenta per 13 s prima di lasciar fare al lease.
 - **Slot.** `LAVORI_SLOT_LUNGA` e `LAVORI_SLOT_VELOCE` (default 1 e 1): quanti
   calcoli insieme per corsia. Veloce = fino a 2 minuti di budget; così un
-  turno guida da 15 minuti non blocca quelli brevi. Più slot vogliono più CPU
-  (ogni calcolo usa fino a 8 thread di OR-Tools).
+  turno guida da 15 minuti non blocca quelli brevi. In tutto girano due
+  calcoli insieme, come con il vecchio job manager, ma due lunghi (Media, Alta,
+  Massima) non più: il secondo aspetta in coda. Con `LAVORI_SLOT_LUNGA=2`
+  tornano a girare insieme, se la CPU basta (ogni calcolo usa fino a 8 thread
+  di OR-Tools).
+- **Turni guida.** Il tempo massimo del processo è 4 volte il budget, almeno
+  un'ora e al massimo due: lo script sfora il budget di molto sulle reti
+  grandi, e il tempo massimo serve solo contro un processo appeso. Ogni utente
+  ha al massimo 3 calcoli in coda o in corso (oltre, 429). La SPA ferma sul
+  server il calcolo che abbandona (rilancio, reset, uscita dalla pagina).
 - **Python** riceve solo l'ambiente che gli serve (niente `JWT_SECRET`,
   `DATABASE_URL`, chiavi…) e lancia solo gli 8 script dell'elenco
   (`artifacts/api-server/src/lib/lavori/python.ts`).
@@ -483,7 +492,10 @@ migrazione `0004_coda_dei_lavori`):
    utenti.
 3. **Health check di Coolify: spento**, come per l'API: vale l'HEALTHCHECK
    dell'immagine, che chiama `/api/healthz` del lavoratore (sulla porta
-   `PORT`, 3000, solo da dentro il container).
+   `PORT`, 3000, solo da dentro il container). Il lavoratore risponde 200
+   anche con lo schema indietro: non riceve traffico, e un 503 farebbe
+   scartare a Coolify il container nuovo quando parte prima che l'API abbia
+   applicato una migrazione. Se prende lavori lo dice `prendeLavori`.
 4. **Limiti di CPU e memoria** in base al server: i calcoli sono pesanti.
 5. **Watch Paths**: il lavoratore si ridistribuisce solo quando cambia quello
    che esegue:
@@ -503,7 +515,9 @@ migrazione `0004_coda_dei_lavori`):
    ```
 6. Deploy, poi nel log: «Lavoratore dei calcoli avviato» e «Schema del
    database allineato al codice». Se lo schema è indietro (l'API non ha
-   ancora migrato) il lavoratore aspetta, senza prendere lavori.
+   ancora migrato) il lavoratore aspetta, senza prendere lavori, e riparte da
+   solo entro 15 s dalla migrazione. Se resta indietro, guarda il deploy
+   dell'API: è lei che applica le migrazioni.
 7. Lancia un turno guida dalla Fucina: nel log del lavoratore compare «lavoro
    preso». Dal Terminal del PostgreSQL:
    ```sql

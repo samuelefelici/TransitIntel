@@ -13,8 +13,14 @@
  *   `annulla`, che chi esegue legge al battito.
  * - La pulizia: risultato e richiesta svuotati dopo 7 giorni, righe cancellate
  *   dopo 30 (la riga dice chi ha lanciato quale calcolo: si tiene poco).
+ * - Ogni query ha un tempo massimo: una connessione morta in silenzio (senza
+ *   RST) non deve bloccare per sempre il battito o il giro dell'esecutore.
  */
 import { pool } from "@workspace/db";
+
+/** Tempo massimo di una query della coda (lato client: poi la connessione si scarta). */
+const QUERY_MS = 30_000;
+const q = (text: string, values: unknown[] = [], ms = QUERY_MS) => pool.query({ text, values, query_timeout: ms } as any);
 
 export type StatoLavoro = "in_coda" | "in_corso" | "completato" | "fallito" | "fermato";
 export type ErroreTipo = "calcolo" | "interrotto" | "scaduto" | "annullato" | "sistema";
@@ -73,7 +79,7 @@ export interface NuovoLavoro {
 }
 
 export async function accoda(n: NuovoLavoro): Promise<string> {
-  const r = await pool.query(
+  const r = await q(
     `INSERT INTO coda.lavori (tipo, versione, corsia, utente_id, via, oggetto_id, chiave_unicita, richiesta, metadati, timeout_sec, max_tentativi)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11)
      RETURNING id`,
@@ -86,7 +92,7 @@ export async function accoda(n: NuovoLavoro): Promise<string> {
 /** La riga, senza la richiesta (può essere grande e serve solo a chi esegue). */
 export async function leggi(id: string): Promise<Omit<Lavoro, "richiesta"> | null> {
   if (!UUID.test(id)) return null;
-  const r = await pool.query(
+  const r = await q(
     `SELECT id, tipo, versione, corsia, stato, utente_id, via, oggetto_id, chiave_unicita, metadati, avanzamento,
             http_codice, risultato, errore, errore_tipo, tentativi, max_tentativi, timeout_sec, disponibile_dal,
             preso_da, battito_il, scade_il, annulla, creato_il, iniziato_il, finito_il, aggiornato_il
@@ -97,24 +103,36 @@ export async function leggi(id: string): Promise<Omit<Lavoro, "richiesta"> | nul
 /**
  * Stop: un lavoro in coda diventa subito «fermato»; uno in corso riceve la
  * richiesta di annullamento. null se il lavoro è già finito (o non c'è).
+ *
+ * Un solo UPDATE: se la riga è bloccata da chi la sta prendendo (o rimettendo
+ * in coda), dopo il lock Postgres rilegge la versione nuova e i CASE decidono
+ * su quella. Con due UPDATE sulla stessa istantanea lo stop si perdeva.
  */
 export async function chiediAnnullamento(id: string): Promise<"fermato" | "in_fermata" | null> {
   if (!UUID.test(id)) return null;
-  const r = await pool.query(
-    `WITH in_coda AS (
-       UPDATE coda.lavori SET stato = 'fermato', errore_tipo = 'annullato', finito_il = now(), aggiornato_il = now()
-        WHERE id = $1 AND stato = 'in_coda' RETURNING 'fermato'::text AS esito),
-     in_corso AS (
-       UPDATE coda.lavori SET annulla = true, aggiornato_il = now()
-        WHERE id = $1 AND stato = 'in_corso' RETURNING 'in_fermata'::text AS esito)
-     SELECT esito FROM in_coda UNION ALL SELECT esito FROM in_corso`, [id]);
+  const r = await q(
+    `UPDATE coda.lavori SET
+            stato = CASE WHEN stato = 'in_coda' THEN 'fermato' ELSE stato END,
+            errore_tipo = CASE WHEN stato = 'in_coda' THEN 'annullato' ELSE errore_tipo END,
+            finito_il = CASE WHEN stato = 'in_coda' THEN now() ELSE finito_il END,
+            annulla = true, aggiornato_il = now()
+      WHERE id = $1 AND stato IN ('in_coda', 'in_corso')
+     RETURNING CASE WHEN stato = 'fermato' THEN 'fermato' ELSE 'in_fermata' END AS esito`, [id]);
   return r.rows[0]?.esito ?? null;
+}
+
+/** Quanti lavori vivi (in coda o in corso) ha un utente in un ambito. */
+export async function viviDi(utenteId: string, ambito: string): Promise<number> {
+  const r = await q(
+    `SELECT count(*)::int AS n FROM coda.lavori
+      WHERE utente_id = $1 AND stato IN ('in_coda', 'in_corso') AND metadati->>'ambito' = $2`, [utenteId, ambito]);
+  return r.rows[0]?.n ?? 0;
 }
 
 /** Prende il lavoro più vecchio di una corsia fra i tipi e le versioni che chi esegue conosce. */
 export async function prendi(corsia: Corsia, chi: string, noti: ReadonlyArray<{ tipo: string; versione: number }>): Promise<Lavoro | null> {
   if (!noti.length) return null;
-  const r = await pool.query(
+  const r = await q(
     `UPDATE coda.lavori SET
             stato = 'in_corso', preso_da = $2, tentativi = tentativi + 1,
             iniziato_il = coalesce(iniziato_il, now()), battito_il = now(),
@@ -137,7 +155,7 @@ export async function prendi(corsia: Corsia, chi: string, noti: ReadonlyArray<{ 
  * (lease scaduto e ripreso da altri, o già chiuso): chi esegue si ferma.
  */
 export async function battito(id: string, chi: string, avanzamento?: unknown): Promise<{ annulla: boolean } | null> {
-  const r = await pool.query(
+  const r = await q(
     `UPDATE coda.lavori SET
             battito_il = now(), scade_il = now() + make_interval(secs => $3),
             avanzamento = coalesce($4::jsonb, avanzamento),
@@ -155,7 +173,7 @@ export type Esito =
 
 /** Chiude il lavoro (solo se è ancora di chi lo chiude). */
 export async function chiudi(id: string, chi: string, e: Esito): Promise<boolean> {
-  const r = await pool.query(
+  const r = await q(
     `UPDATE coda.lavori SET
             stato = $3, risultato = $4::jsonb, errore = $5, errore_tipo = $6, http_codice = $7,
             avanzamento = coalesce($8::jsonb, avanzamento),
@@ -176,7 +194,7 @@ export async function chiudi(id: string, chi: string, e: Esito): Promise<boolean
  * tentativo (o diventa «fermato», se intanto era stato chiesto lo stop).
  */
 export async function rimettiInCoda(id: string, chi: string): Promise<boolean> {
-  const r = await pool.query(
+  const r = await q(
     `UPDATE coda.lavori SET
             stato = CASE WHEN annulla THEN 'fermato' ELSE 'in_coda' END,
             errore_tipo = CASE WHEN annulla THEN 'annullato' END,
@@ -190,7 +208,7 @@ export async function rimettiInCoda(id: string, chi: string): Promise<boolean> {
 
 /** I lavori il cui lease è scaduto: di nuovo in coda (con un ritardo) o «fallito, interrotto». */
 export async function recuperaScaduti(): Promise<Array<{ id: string; stato: StatoLavoro }>> {
-  const r = await pool.query(
+  const r = await q(
     `UPDATE coda.lavori SET
             stato = CASE WHEN annulla THEN 'fermato' WHEN tentativi < max_tentativi THEN 'in_coda' ELSE 'fallito' END,
             errore_tipo = CASE WHEN annulla THEN 'annullato' WHEN tentativi < max_tentativi THEN NULL ELSE 'interrotto' END,
@@ -207,11 +225,11 @@ export async function recuperaScaduti(): Promise<Array<{ id: string; stato: Stat
 
 /** Conservazione: risultato e richiesta via dopo 7 giorni, righe via dopo 30. */
 export async function pulisci(): Promise<{ svuotati: number; cancellati: number }> {
-  const svuotati = await pool.query(
+  const svuotati = await q(
     `UPDATE coda.lavori SET risultato = NULL, richiesta = '{}'::jsonb
-      WHERE finito_il < now() - interval '7 days' AND (risultato IS NOT NULL OR richiesta <> '{}'::jsonb)`);
-  const cancellati = await pool.query(
+      WHERE finito_il < now() - interval '7 days' AND (risultato IS NOT NULL OR richiesta <> '{}'::jsonb)`, [], 120_000);
+  const cancellati = await q(
     `DELETE FROM coda.lavori
-      WHERE stato <> 'in_corso' AND coalesce(finito_il, creato_il) < now() - interval '30 days'`);
+      WHERE stato <> 'in_corso' AND coalesce(finito_il, creato_il) < now() - interval '30 days'`, [], 120_000);
   return { svuotati: svuotati.rowCount ?? 0, cancellati: cancellati.rowCount ?? 0 };
 }

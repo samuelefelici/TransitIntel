@@ -145,4 +145,53 @@ describe("l'esecutore", () => {
     await aspetta(() => pendenti.has("a"));
     await e.ferma(0);
   });
+
+  it("arresto mentre prende: ferma() aspetta il giro, e il lavoro preso torna in coda senza partire", async () => {
+    const f = codaFinta([lavoro("a")]);
+    const { g, pendenti } = gestoreComandato();
+    let rilascia!: () => void;
+    const prendiVero = f.coda.prendi;
+    f.coda.prendi = vi.fn(async (...a: any[]) => { await new Promise<void>(r => { rilascia = r; }); return (prendiVero as any)(...a); }) as any;
+    const e = creaEsecutore({ chi: "t", slot: { lunga: 1, veloce: 0 }, gestori: [g], log, coda: f.coda, pollingMs: 10_000 });
+    e.avvia();
+    await aspetta(() => !!rilascia);
+    let fermo = false;
+    const fermata = e.ferma(5_000).then(() => { fermo = true; });
+    await new Promise(r => setTimeout(r, 30));
+    expect(fermo).toBe(false); // aspetta il prendi in volo
+    rilascia();
+    await fermata;
+    expect(f.rimessi).toEqual(["a"]);
+    expect(pendenti.size).toBe(0);
+    expect(e.inCorso()).toBe(0);
+  });
+
+  it("chiusura: ritenta se il database non risponde; un risultato rifiutato chiude «fallito, sistema»", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      const f = codaFinta([lavoro("a"), lavoro("b")]);
+      let errori = 2;
+      const chiudiVero = f.coda.chiudi;
+      f.coda.chiudi = vi.fn(async (id: string, chi: string, es: any) => {
+        if (id === "a" && errori-- > 0) throw Object.assign(new Error("Connection terminated"), { code: undefined });
+        if (id === "b" && es.stato === "completato") throw Object.assign(new Error("unsupported Unicode escape sequence"), { code: "22P05" });
+        return (chiudiVero as any)(id, chi, es);
+      }) as any;
+      const { g, finisci, pendenti } = gestoreComandato();
+      const e = creaEsecutore({ chi: "t", slot: { lunga: 2, veloce: 0 }, gestori: [g], log, coda: f.coda, pollingMs: 10_000 });
+      e.avvia();
+      await vi.waitFor(() => expect(pendenti.size).toBe(2));
+      finisci("a", { stato: "completato", risultato: 1 });
+      finisci("b", { stato: "completato", risultato: "\u0000" });
+      await vi.waitFor(() => expect(f.chiusi.has("b")).toBe(true));
+      expect(f.chiusi.get("b")).toMatchObject({ stato: "fallito", erroreTipo: "sistema" });
+      expect((f.chiusi.get("b") as any).errore).toContain("22P05");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(3_000);
+      await vi.waitFor(() => expect(f.chiusi.get("a")).toEqual({ stato: "completato", risultato: 1 }));
+      await e.ferma(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

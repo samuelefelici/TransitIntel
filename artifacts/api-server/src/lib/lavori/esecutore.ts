@@ -8,8 +8,14 @@
  *   un processo morto; ogni ora fa la pulizia (conservazione).
  * - Il battito (ogni 5 s, o prima se c'è un avanzamento nuovo, al massimo una
  *   volta al secondo) rinnova il lease e legge lo stop.
- * - Arresto ordinato (deploy): non prende più lavori, aspetta un poco quelli
- *   in corso, poi li ferma e li rimette in coda senza consumare il tentativo.
+ * - Arresto ordinato (deploy): non prende più lavori (aspetta il giro della
+ *   coda già partito: un lavoro preso in quell'istante torna subito in coda),
+ *   aspetta un poco quelli in corso, poi li ferma e li rimette in coda senza
+ *   consumare il tentativo.
+ * - La chiusura è la scrittura che conta (un calcolo può durare un'ora): se il
+ *   database non risponde si ritenta, e un risultato che il database rifiuta
+ *   (per esempio un carattere NUL nel JSON) chiude il lavoro «fallito,
+ *   sistema» invece di farlo ricalcolare da capo.
  */
 import type { Corsia, Esito, Lavoro } from "./coda";
 import * as codaReale from "./coda";
@@ -49,6 +55,15 @@ export interface OpzioniEsecutore {
 
 export type MotivoStop = "annulla" | "arresto" | "lease";
 
+/** Attese fra i tentativi di chiusura: in tutto 13 s, dentro il lease di 60. */
+const ATTESE_CHIUSURA_MS = [1_000, 3_000, 9_000];
+
+/** Un errore del database che ripetere non cambia: il dato è rifiutato (classe 22) o troppo grande (54). */
+export function datoRifiutato(err: unknown): boolean {
+  const codice = String((err as any)?.code ?? "");
+  return /^(22|54)/.test(codice);
+}
+
 interface InCorso { lavoro: Lavoro; controller: AbortController; fine: Promise<void> }
 
 export function creaEsecutore(o: OpzioniEsecutore) {
@@ -63,7 +78,8 @@ export function creaEsecutore(o: OpzioniEsecutore) {
   const occupati: Record<Corsia, number> = { veloce: 0, lunga: 0 };
   let timer: NodeJS.Timeout | null = null;
   let fermando = false;
-  let giroInCorso = false;
+  /* il giro della coda in corso: ferma() lo aspetta, perché può avere un prendi in volo */
+  let giroCorrente: Promise<void> | null = null;
   let ultimoRecupero = 0;
   let ultimaPulizia = 0;
 
@@ -107,20 +123,48 @@ export function creaEsecutore(o: OpzioniEsecutore) {
       clearInterval(orologio);
     }
     const motivo = controller.signal.aborted ? (controller.signal.reason as MotivoStop) : null;
-    try {
-      if (motivo === "lease") {
-        log.warn({ lavoro: l.id }, "lavoro non più di questo processo (lease scaduto): risultato scartato");
-      } else if (motivo === "arresto") {
-        await coda.rimettiInCoda(l.id, o.chi);
-        log.info({ lavoro: l.id }, "arresto: lavoro rimesso in coda");
-      } else if (motivo === "annulla") {
-        await coda.chiudi(l.id, o.chi, { stato: "fermato" });
-      } else {
-        await coda.chiudi(l.id, o.chi, esito.stato === "fermato" ? { stato: "fermato" } : esito);
+    if (motivo === "lease") {
+      log.warn({ lavoro: l.id }, "lavoro non più di questo processo (lease scaduto): risultato scartato");
+    } else if (motivo === "arresto") {
+      await rimetti(l.id);
+    } else {
+      await chiudi(l.id, motivo === "annulla" || esito.stato === "fermato" ? { stato: "fermato" } : esito);
+    }
+  }
+
+  /** Chiude il lavoro, ritentando se il database non risponde. */
+  async function chiudi(id: string, esito: Esito): Promise<void> {
+    for (let tentativo = 0; ; tentativo++) {
+      try {
+        const scritto = await coda.chiudi(id, o.chi, esito);
+        if (!scritto) o.log.warn({ lavoro: id }, "chiusura non scritta: il lavoro non è più di questo processo (lease scaduto o già chiuso)");
+        return;
+      } catch (err: any) {
+        if (datoRifiutato(err) && esito.stato === "completato") {
+          // ripetere non serve: il risultato non entra nel database
+          o.log.error({ err, lavoro: id }, "il database rifiuta il risultato del lavoro: lo chiudo come fallito");
+          esito = { stato: "fallito", errore: `Il risultato del calcolo non si può salvare (${err.code}): ${err.message}`, erroreTipo: "sistema" };
+          continue;
+        }
+        if (tentativo >= ATTESE_CHIUSURA_MS.length) {
+          // la riga resta «in corso»: il lease scade e il recupero la sistema
+          o.log.error({ err, lavoro: id }, "chiusura del lavoro non riuscita");
+          return;
+        }
+        o.log.warn({ err, lavoro: id, tentativo: tentativo + 1 }, "chiusura del lavoro non riuscita: riprovo");
+        await new Promise(r => setTimeout(r, ATTESE_CHIUSURA_MS[tentativo]));
       }
+    }
+  }
+
+  /** Arresto: il lavoro torna in coda senza consumare il tentativo. */
+  async function rimetti(id: string): Promise<void> {
+    try {
+      if (await coda.rimettiInCoda(id, o.chi)) o.log.info({ lavoro: id }, "arresto: lavoro rimesso in coda");
+      else o.log.warn({ lavoro: id }, "arresto: lavoro non rimesso in coda, non è più di questo processo");
     } catch (err) {
-      // la riga resta «in corso»: il lease scade e il recupero la sistema
-      log.error({ err, lavoro: l.id }, "chiusura del lavoro non riuscita");
+      // il lease scade e il recupero lo rimette in coda (consumando il tentativo)
+      o.log.error({ err, lavoro: id }, "arresto: lavoro non rimesso in coda");
     }
   }
 
@@ -135,9 +179,14 @@ export function creaEsecutore(o: OpzioniEsecutore) {
     inCorso.set(l.id, voce);
   }
 
-  async function giro(): Promise<void> {
-    if (fermando || giroInCorso) return;
-    giroInCorso = true;
+  /** Un giro della coda alla volta; ferma() aspetta quello in corso. */
+  function giro(): Promise<void> {
+    if (fermando) return Promise.resolve();
+    if (!giroCorrente) giroCorrente = unGiro().finally(() => { giroCorrente = null; });
+    return giroCorrente;
+  }
+
+  async function unGiro(): Promise<void> {
     try {
       const adesso = Date.now();
       if (adesso - ultimoRecupero >= recuperoMs) {
@@ -155,14 +204,17 @@ export function creaEsecutore(o: OpzioniEsecutore) {
         while (!fermando && occupati[corsia] < o.slot[corsia]) {
           const l = await coda.prendi(corsia, o.chi, noti);
           if (!l) break;
+          if (fermando) {
+            // l'arresto è arrivato mentre lo prendevamo: torna subito in coda
+            await rimetti(l.id);
+            break;
+          }
           o.log.info({ lavoro: l.id, tipo: l.tipo, corsia, tentativo: l.tentativi }, "lavoro preso");
           parti(l);
         }
       }
     } catch (err) {
       o.log.warn({ err }, "giro della coda dei lavori non riuscito: riprovo");
-    } finally {
-      giroInCorso = false;
     }
   }
 
@@ -179,6 +231,7 @@ export function creaEsecutore(o: OpzioniEsecutore) {
       fermando = true;
       if (timer) { clearInterval(timer); timer = null; }
       const fine = Date.now() + attesaMs;
+      if (giroCorrente) await giroCorrente;
       while (inCorso.size && Date.now() < fine) await new Promise(r => setTimeout(r, 200));
       // i lavori ancora in corso: stop con il motivo «arresto» (si rimettono in coda)
       for (const v of inCorso.values()) if (!v.controller.signal.aborted) v.controller.abort("arresto" satisfies MotivoStop);

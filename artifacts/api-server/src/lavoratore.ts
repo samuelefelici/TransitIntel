@@ -7,7 +7,13 @@
  *   nuovo): la guardia di versione (lib/guardia-schema.ts). Non applica
  *   migrazioni: le applica l'API al suo avvio.
  * - GET /api/healthz su 127.0.0.1:PORT, così l'HEALTHCHECK dell'immagine
- *   (docker/salute.mjs) vale anche qui: 503 finché lo schema è indietro.
+ *   (docker/salute.mjs) vale anche qui. Risponde 200 anche con lo schema
+ *   indietro: il lavoratore non riceve traffico, e al push di una migrazione
+ *   il suo container può partire prima che l'API la applichi; con un 503
+ *   Coolify lo scarterebbe e terrebbe il vecchio. Aspetta, senza prendere
+ *   lavori (`prendeLavori: false`), e la guardia lo riallinea in 15 s.
+ *   (PR 2.8: con lo schema «sconosciuto», cioè senza SELECT sulla tabella di
+ *   tracciamento, non prende lavori: il permesso va dato all'utente dell'app.)
  * - SIGTERM: smette di prendere lavori, aspetta 20 s quelli in corso, poi li
  *   ferma e li rimette in coda senza consumare il tentativo (Coolify concede
  *   30 s).
@@ -18,7 +24,7 @@
  */
 import http from "node:http";
 import { logger } from "./lib/logger";
-import { attendiPrimoControllo, avviaGuardiaSchema, fuoriServizio, statoDelloSchema } from "./lib/guardia-schema";
+import { attendiPrimoControllo, avviaGuardiaSchema, statoDelloSchema } from "./lib/guardia-schema";
 import { creaEsecutore } from "./lib/lavori/esecutore";
 import { GESTORI } from "./lib/lavori/gestori";
 import { chiSono, slotDaAmbiente } from "./lib/lavori/ambiente";
@@ -29,16 +35,11 @@ const chi = chiSono("lavoratore");
 const slot = slotDaAmbiente();
 
 avviaGuardiaSchema();
-const esecutore = creaEsecutore({
-  chi,
-  slot,
-  gestori: GESTORI,
-  log: logger,
-  puoPrendere: () => {
-    const s = statoDelloSchema();
-    return s === "ok" || s === "avanti";
-  },
-});
+const puoPrendere = () => {
+  const s = statoDelloSchema();
+  return s === "ok" || s === "avanti";
+};
+const esecutore = creaEsecutore({ chi, slot, gestori: GESTORI, log: logger, puoPrendere });
 esecutore.avvia();
 
 const server = http.createServer(async (req, res) => {
@@ -48,11 +49,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   await attendiPrimoControllo(3_000);
-  const fuori = fuoriServizio();
-  res.writeHead(fuori ? 503 : 200, { "content-type": "application/json" }).end(JSON.stringify({
-    status: fuori ? "schema-indietro" : "ok",
+  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({
+    status: "ok",
     schema: statoDelloSchema(),
     processo: "lavoratore",
+    prendeLavori: puoPrendere(),
     lavoriInCorso: esecutore.inCorso(),
   }));
 });
