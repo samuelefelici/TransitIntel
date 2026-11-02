@@ -87,6 +87,9 @@ su main non si tocca più.
   avvio; ora no: una migrazione che aggiunge colonne a `ps_route_variants`
   ricrea anche la vista (DROP e CREATE nello stesso blocco), se il codice le
   legge da lì.
+- **Lo schema `coda`** (0004) contiene la coda dei lavori: la usano l'API e il
+  lavoratore (`artifacts/api-server/src/lib/lavori/coda.ts`). Senza permessi a
+  PUBLIC e fuori dal contratto di `argos_ro`; il catalogo atteso lo guarda.
 - **L'API controlla di essere allineata** (`artifacts/api-server/src/lib/guardia-schema.ts`):
   conosce il diario della sua immagine (`lib/db/scripts/diario-incluso.mjs`,
   incorporato nel bundle) e, se al database manca una migrazione,

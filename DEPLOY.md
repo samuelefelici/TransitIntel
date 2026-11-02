@@ -434,6 +434,88 @@ quello che Coolify usa se il suo healthcheck resta spento (vedi sopra).
 al codice e il container non è mai stato allineato (vedi «Lo schema rispetto
 al codice»). La sonda non scrive righe nel log delle richieste.
 
+### Il lavoratore dei calcoli
+
+I calcoli lunghi (oggi i turni guida; dalla Fase 2.6 anche turni macchina e
+VCSP) non vivono più nella memoria dell'API. Diventano una riga in
+`coda.lavori`, che il **lavoratore** prende, esegue e chiude: un deploy
+dell'API non li interrompe più, e la SPA ritrova il calcolo anche dopo un
+riavvio.
+
+- **Chi li esegue.** Il lavoratore è un processo a parte con la stessa
+  immagine dell'API (`CERBERO_PROCESSO=lavoratore`). Finché non c'è, li
+  esegue l'API stessa (esecutore interno, acceso salvo
+  `CERBERO_LAVORATORE_INTERNO=0`). Due processi non prendono mai lo stesso
+  lavoro: si possono tenere accesi insieme.
+- **Deploy.** Al segnale d'arresto chi esegue smette di prendere lavori,
+  aspetta un poco (il lavoratore 20 s, l'API 13 s) e rimette in coda quelli
+  in corso, senza consumare un tentativo: li riprende il lavoratore o il
+  container nuovo, da capo. Se un processo muore di colpo, il suo lavoro torna
+  in coda dopo 60 s (il lease) e riparte; dopo due interruzioni è «fallito»
+  con il messaggio di rilanciarlo. Un errore del calcolo o il tempo massimo
+  superato non si ritentano.
+- **Slot.** `LAVORI_SLOT_LUNGA` e `LAVORI_SLOT_VELOCE` (default 1 e 1): quanti
+  calcoli insieme per corsia. Veloce = fino a 2 minuti di budget; così un
+  turno guida da 15 minuti non blocca quelli brevi. Più slot vogliono più CPU
+  (ogni calcolo usa fino a 8 thread di OR-Tools).
+- **Python** riceve solo l'ambiente che gli serve (niente `JWT_SECRET`,
+  `DATABASE_URL`, chiavi…) e lancia solo gli 8 script dell'elenco
+  (`artifacts/api-server/src/lib/lavori/python.ts`).
+- **Conservazione.** La riga dice chi ha lanciato quale calcolo. La leggono
+  solo chi l'ha lanciato e l'admin (Argos non vede lo schema `coda`);
+  risultato e richiesta si cancellano dopo 7 giorni, la riga dopo 30. Va
+  riportata nel registro dei trattamenti.
+
+**Creare il lavoratore in Coolify** (dopo il deploy dell'API con la
+migrazione `0004_coda_dei_lavori`):
+1. **+ New → Application**, stesso repository e branch dell'API, Dockerfile
+   `Dockerfile.api`. **Nessun dominio** e nessuna porta pubblicata: il
+   lavoratore non riceve richieste da fuori.
+2. Variabili d'ambiente:
+   - `CERBERO_PROCESSO=lavoratore`;
+   - `DATABASE_URL` e, se serve, `PGSSL_NO_VERIFY` uguali a quelle dell'API;
+   - `NODE_ENV=production`;
+   - `LAVORI_SLOT_LUNGA=1`, `LAVORI_SLOT_VELOCE=1`;
+   - `MAPBOX_TOKEN` o `MAPBOX_ACCESS_TOKEN`, se la relazione deve scaricare le
+     mappe (dalla Fase 2.6).
+   Non servono `JWT_SECRET`, `CERBERO_CHIAVE_MFA`, `CRON_SECRET`, né
+   `DATABASE_MIGRATOR_URL`: il lavoratore non migra (lo fa l'API) e non ha
+   utenti.
+3. **Health check di Coolify: spento**, come per l'API: vale l'HEALTHCHECK
+   dell'immagine, che chiama `/api/healthz` del lavoratore (sulla porta
+   `PORT`, 3000, solo da dentro il container).
+4. **Limiti di CPU e memoria** in base al server: i calcoli sono pesanti.
+5. **Watch Paths**: il lavoratore si ridistribuisce solo quando cambia quello
+   che esegue:
+   ```
+   scripts/**
+   requirements.txt
+   Dockerfile.api
+   docker/**
+   lib/db/**
+   artifacts/api-server/src/lavoratore.ts
+   artifacts/api-server/src/lib/lavori/**
+   artifacts/api-server/src/lib/guardia-schema.ts
+   artifacts/api-server/src/lib/logger.ts
+   artifacts/api-server/build.ts
+   artifacts/api-server/package.json
+   pnpm-lock.yaml
+   ```
+6. Deploy, poi nel log: «Lavoratore dei calcoli avviato» e «Schema del
+   database allineato al codice». Se lo schema è indietro (l'API non ha
+   ancora migrato) il lavoratore aspetta, senza prendere lavori.
+7. Lancia un turno guida dalla Fucina: nel log del lavoratore compare «lavoro
+   preso». Dal Terminal del PostgreSQL:
+   ```sql
+   SELECT stato, preso_da, creato_il, finito_il FROM coda.lavori ORDER BY creato_il DESC LIMIT 5;
+   ```
+   `preso_da` comincia con `lavoratore:`.
+8. Quando il lavoratore è sano, sull'API `CERBERO_LAVORATORE_INTERNO=0` e
+   redeploy: da lì i calcoli girano solo sul lavoratore.
+
+**Tornare indietro:** `CERBERO_LAVORATORE_INTERNO=1` sull'API (o togliere la
+variabile) e fermare il lavoratore: i lavori in coda li prende l'API.
+
 ---
 
 ## STEP 2: Backend API — `Dockerfile.api`
@@ -827,6 +909,9 @@ Riferimento completo in `.env.example`. Sintesi:
 | `PGSSL_NO_VERIFY` | — | `1` se Postgres usa certificato self-signed |
 | `DATABASE_MIGRATOR_URL` | — | utente proprietario delle tabelle, solo per le migrazioni all'avvio; senza, vale `DATABASE_URL` |
 | `CERBERO_ARRESTO_SECONDI` | — | attesa massima all'arresto per le richieste in corso (default 25, massimo 28: Coolify uccide il container dopo 30 s) |
+| `CERBERO_PROCESSO` | — | `api` (default) o `lavoratore`: quale processo avvia l'immagine (vedi «Il lavoratore dei calcoli») |
+| `CERBERO_LAVORATORE_INTERNO` | — | `0` spegne l'esecutore dei calcoli dentro l'API, quando c'è il lavoratore (default: acceso) |
+| `LAVORI_SLOT_LUNGA` / `LAVORI_SLOT_VELOCE` | — | calcoli insieme per corsia, nel lavoratore e nell'esecutore interno (default 1 e 1) |
 | `NODE_ENV` | ✅ | `production` |
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
