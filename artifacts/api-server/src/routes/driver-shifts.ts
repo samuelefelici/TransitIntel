@@ -1096,10 +1096,12 @@ export function tempoDelCalcolo(v: unknown, def = 120): number {
 
 /**
  * Il tempo massimo del processo: una rete di sicurezza contro un processo
- * appeso, non un secondo budget. crew_scheduler_v4 sfora il budget di molto
- * sulle reti grandi (minimi per scenario, ripieghi, greedy: 250 turni macchina
- * con budget 90 s finiscono in 32 minuti), e il vecchio job manager non aveva
- * un tempo massimo. Almeno un'ora, 4 volte il budget, al massimo 2 ore.
+ * appeso, non un secondo budget. crew_scheduler_v4 tratta il budget come una
+ * scadenza unica (250 turni macchina con budget 90 s: circa 92 s; prima 32
+ * minuti), e al SIGINT del tempo massimo chiude entro 5 s con la soluzione
+ * migliore e `interrupted: true`: il gestore lo chiude «completato» con un
+ * avviso (lib/lavori/gestori.ts). Almeno un'ora, 4 volte il budget, al
+ * massimo 2 ore.
  */
 export function tempoMassimoTurniGuida(budgetSec: number): number {
   return Math.min(7200, Math.max(3600, 4 * budgetSec));
@@ -1119,7 +1121,11 @@ async function lavoroTurniGuida(req: any): Promise<RigaLavoro | null> {
 
 function progressoDi(l: RigaLavoro): any {
   const fine = +(l.finito_il ?? l.aggiornato_il);
-  if (l.stato === "completato") return { phase: "done", percentage: 100, detail: "Ottimizzazione completata", timestamp: fine };
+  if (l.stato === "completato") {
+    // fermato dal tempo massimo con un risultato parziale: lo dice l'avviso del gestore
+    const avviso = (l.risultato as any)?.avvisoLavoro;
+    return { phase: "done", percentage: 100, detail: typeof avviso === "string" ? avviso : "Ottimizzazione completata", timestamp: fine };
+  }
   if (l.stato === "fallito") return { phase: "error", percentage: 100, detail: l.errore ?? "Errore ottimizzazione", timestamp: fine };
   if (l.stato === "fermato") return { phase: "stopped", percentage: Number(l.avanzamento?.percentage) || 0, detail: "Fermato dall'utente", timestamp: fine };
   if (l.avanzamento) return l.avanzamento;
@@ -1141,6 +1147,8 @@ function datiDi(l: RigaLavoro): any {
     companyCars: r.companyCars || COMPANY_CARS,
     solverMetrics: r.metrics || {},
     optimizationAnalysis: r.optimizationAnalysis ?? null,
+    // risultato parziale: lo script fermato dal tempo massimo (lib/lavori/gestori.ts)
+    avviso: typeof r.avvisoLavoro === "string" ? r.avvisoLavoro : null,
   };
 }
 
