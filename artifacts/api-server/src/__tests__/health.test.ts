@@ -8,7 +8,7 @@ vi.mock("@workspace/db", () => ({
 
 import { pool } from "@workspace/db";
 import app from "../app";
-import { azzeraGuardiaSchema, controllaSchema } from "../lib/guardia-schema";
+import { avviaGuardiaSchema, azzeraGuardiaSchema, controllaSchema, statoDelloSchema } from "../lib/guardia-schema";
 import { DIARIO } from "../../../../lib/db/scripts/diario-incluso.mjs";
 
 /* il tracciamento delle migrazioni come lo vede la guardia: c'è la tabella, e queste righe */
@@ -19,7 +19,7 @@ function tracciamento(righe: Array<{ created_at: number }> | null) {
   }) as any);
 }
 
-afterEach(() => { azzeraGuardiaSchema(); vi.mocked(pool.query).mockReset(); });
+afterEach(() => { azzeraGuardiaSchema(); vi.mocked(pool.query).mockReset(); vi.useRealTimers(); });
 
 describe("GET /api/healthz", () => {
   it("returns 200 with status ok", async () => {
@@ -46,6 +46,49 @@ describe("GET /api/healthz", () => {
     expect(res.status).toBe(503);
     expect(res.body).toMatchObject({ status: "schema-indietro", schema: "indietro" });
     expect(JSON.stringify(res.body)).not.toMatch(/\d{4}_/);
+  });
+
+  it("indietro dopo essere stato allineato (un ripristino): resta 200, non si toglie dal servizio", async () => {
+    tracciamento(DIARIO.map(e => ({ created_at: e.when })));
+    expect(await controllaSchema()).toBe("ok");
+    tracciamento(DIARIO.slice(0, -1).map(e => ({ created_at: e.when })));
+    expect(await controllaSchema()).toBe("indietro");
+    const res = await request(app).get("/api/healthz");
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: "ok", schema: "indietro" });
+  });
+
+  it("indietro: riprova ogni 15 s, e appena le migrazioni ci sono torna sano", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    tracciamento(DIARIO.slice(0, -1).map(e => ({ created_at: e.when })));
+    avviaGuardiaSchema();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(statoDelloSchema()).toBe("indietro");
+    tracciamento(DIARIO.map(e => ({ created_at: e.when })));
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(statoDelloSchema()).toBe("indietro");
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(statoDelloSchema()).toBe("ok");
+    // allineato: il prossimo controllo fra 10 minuti, non fra 15 s
+    const chiamate = vi.mocked(pool.query).mock.calls.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.mocked(pool.query).mock.calls.length).toBe(chiamate);
+  });
+
+  it("la prima sonda aspetta il primo controllo: non risponde «sconosciuto» a un database indietro", async () => {
+    let rilascia!: () => void;
+    const fermo = new Promise<void>(r => { rilascia = r; });
+    vi.mocked(pool.query).mockImplementation((async (testo: string) => {
+      await fermo;
+      if (/to_regclass/.test(testo)) return { rows: [{ c: true }] };
+      return { rows: [] };
+    }) as any);
+    avviaGuardiaSchema();
+    const sonda = request(app).get("/api/healthz");
+    setTimeout(() => rilascia(), 50);
+    const res = await sonda;
+    expect(res.status).toBe(503);
+    expect(res.body.schema).toBe("indietro");
   });
 
   it("tracciamento assente (database mai migrato): indietro", async () => {

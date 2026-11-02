@@ -159,7 +159,7 @@ async function esegui(tipo: string, nome: string, fai: () => Promise<unknown>, p
 }
 
 /* ── Controllo della copertura contro i sorgenti ──────────────────────────── */
-const DDL_NEL_SORGENTE = /CREATE TABLE|CREATE (UNIQUE )?INDEX|ALTER TABLE|CREATE SCHEMA|CREATE (OR REPLACE )?VIEW|DROP (TABLE|INDEX|VIEW)/;
+const DDL_NEL_SORGENTE = /CREATE\s+TABLE|CREATE\s+(UNIQUE\s+)?INDEX|ALTER\s+TABLE|CREATE\s+SCHEMA|CREATE\s+(OR\s+REPLACE\s+)?VIEW|DROP\s+(TABLE|INDEX|VIEW)/i;
 function fileConDdl(dir: string): string[] {
   const out: string[] = [];
   for (const nome of readdirSync(dir)) {

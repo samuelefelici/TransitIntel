@@ -242,9 +242,9 @@ describe("il DDL a runtime può solo scendere", () => {
 
   it("CREATE TABLE, ALTER TABLE e CREATE INDEX: esattamente il tetto", () => {
     const ora = {
-      "CREATE TABLE": conta(/CREATE TABLE/g),
-      "ALTER TABLE": conta(/ALTER TABLE/g),
-      "CREATE INDEX": conta(/CREATE (UNIQUE )?INDEX/g),
+      "CREATE TABLE": conta(/CREATE\s+TABLE/gi),
+      "ALTER TABLE": conta(/ALTER\s+TABLE/gi),
+      "CREATE INDEX": conta(/CREATE\s+(UNIQUE\s+)?INDEX/gi),
     };
     for (const [k, v] of Object.entries(ora)) {
       const tetto = TETTO[k as keyof typeof TETTO];
@@ -262,11 +262,24 @@ describe("il DDL a runtime può solo scendere", () => {
     "routes/fares-polimetriche.ts", "routes/planning.ts", "routes/fares.ts", "routes/gtfs-upload.ts",
     "routes/fares-node-assignment.ts", "routes/planning-studio-timetables.ts",
   ];
-  const DDL = /\b(CREATE|ALTER|DROP)\s+(UNIQUE\s+)?(TABLE|INDEX|SCHEMA|VIEW|SEQUENCE|TYPE|EXTENSION|FUNCTION|TRIGGER)\b|\bOR\s+REPLACE\s+VIEW\b|\b(ADD|ALTER|DROP)\s+(COLUMN|CONSTRAINT)\b/gi;
+  const DDL = /\b(CREATE|ALTER|DROP)\s+(UNIQUE\s+|UNLOGGED\s+|MATERIALIZED\s+|OR\s+REPLACE\s+)?(TABLE|INDEX|SCHEMA|VIEW|SEQUENCE|TYPE|EXTENSION|FUNCTION|PROCEDURE|TRIGGER|RULE|POLICY)\b|\b(ADD|ALTER|DROP)\s+(COLUMN|CONSTRAINT)\b/gi;
+  const ddlNel = (file: string) =>
+    senzaCommenti(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", file), "latin1")).match(DDL) ?? [];
   it.each(SENZA_DDL)("%s: senza DDL", (file) => {
-    const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", file);
-    const trovati = senzaCommenti(readFileSync(src, "latin1")).match(DDL) ?? [];
+    const trovati = ddlNel(file);
     expect(trovati, `${file} cambia lo schema (${trovati.join(", ")}): si fa con una migrazione in lib/db/migrations`).toEqual([]);
+  });
+  /* I file da cui la PR 2.4 ha tolto il DDL per richiesta hanno ancora un'unità
+   * pigra: il loro DDL resta esattamente quello dell'unità (conteggio per file),
+   * così non ne torna dentro una richiesta. */
+  const SOLO_UNITA_PIGRE: Record<string, number> = {
+    "lib/planning-studio-materialize.ts": 3, // ensureMaterializedColumn
+    "routes/service-program.ts": 3, // ensureVariantCodeColumn, ensureAgentJobsTable
+    "routes/clusters.ts": 3, // ensureClusterFlagColumns
+  };
+  it.each(Object.entries(SOLO_UNITA_PIGRE))("%s: solo il DDL della sua unità pigra (%i)", (file, n) => {
+    const trovati = ddlNel(file);
+    expect(trovati.length, `${file}: ${trovati.join(", ")}. Lo schema si cambia con una migrazione in lib/db/migrations`).toBe(n);
   });
 
   it("l'impronta del baseline nel test coincide col file (controllo incrociato)", () => {

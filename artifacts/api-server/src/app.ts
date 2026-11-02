@@ -13,6 +13,9 @@ const app: Express = express();
 app.use(
   pinoHttp({
     logger,
+    // la sonda di salute (HEALTHCHECK ogni 15 s): niente righe di log, che con
+    // un 503 avrebbero anche lo stack; lo stato dello schema lo scrive la guardia
+    autoLogging: { ignore: (req) => (req.url ?? "").split("?")[0] === "/api/healthz" },
     // Propagate / generate correlation-id per ogni richiesta
     genReqId: (req) => getRequestId(req as any),
     customProps: (req) => ({

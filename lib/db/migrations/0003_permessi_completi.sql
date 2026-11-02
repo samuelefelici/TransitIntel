@@ -3,10 +3,13 @@
 -- ───────────────────────────────────────────────────────────────────────────
 -- Fino alla PR 2.4 queste 6 UPDATE giravano a ogni avvio dell'API
 -- (lib/auth.ts). Completano i permessi degli utenti nati prima di un modulo,
--- una volta sola: chi crea un utente oggi scrive già tutte le 8 chiavi
--- (lib/permessi.ts normalizzaPermessi, il default della colonna, il primo
--- admin) e network porta con sé scheduling. Stesse istruzioni, stesso ordine:
--- dove le chiavi ci sono già non cambiano niente.
+-- una volta sola: l'applicazione scrive sempre tutte le 8 chiavi (Gestione
+-- Utenti con lib/permessi.ts normalizzaPermessi, il primo admin) e network
+-- porta con sé scheduling. Un utente inserito a mano prende il default della
+-- colonna, che la 0001 porta a 8 chiavi (se users era occupata in quel
+-- momento il default è rimasto quello vecchio, con un avviso nel log): chi
+-- inserisce a mano scriva le chiavi. Stesse istruzioni, stesso ordine: dove
+-- le chiavi ci sono già non cambiano niente.
 --
 -- Solo dati, nessun lock sulla tabella: righe di users, e solo quelle a cui
 -- manca qualcosa. Il codice di prima, che le rifà al suo avvio, non trova

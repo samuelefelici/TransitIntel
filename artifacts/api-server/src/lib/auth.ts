@@ -128,6 +128,14 @@ const ORDINE_STESSA_EMAIL = sql`active DESC, created_at ASC, id ASC`;
 async function preparaUtenti(): Promise<void> {
   /* il registro degli accessi tiene 12 mesi */
   await pulisciAccessi();
+  /* un'email, un utente (maiuscole e spazi non contano): l'indice unico lo fa la
+   * migrazione 0000_baseline, che lo salta se ci sono già doppioni. Qui si
+   * controlla soltanto, e lo si dice finché manca */
+  const indice = await db.execute<any>(sql`
+    SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'users_email_normale_uq'`);
+  if (!(indice as any).rows?.length) {
+    console.warn("[auth] manca l'indice unico delle email (users_email_normale_uq): ci sono utenti con la stessa email scritta in modi diversi (maiuscole, spazi). Unificali da Gestione Utenti, poi crea l'indice come dice DEPLOY.md («L'indice unico delle email»)");
+  }
 
   /* gli admin con una password pubblicata si disattivano subito (sono pochi, e il
      recupero qui sotto deve sapere se ne resta uno); gli altri dopo, in background */

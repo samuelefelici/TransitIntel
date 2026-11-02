@@ -124,20 +124,41 @@ migrator di drizzle).
   DDL torni nell'avvio. Le chiavi mancanti nei permessi degli utenti, che
   prima si completavano a ogni avvio, le completa una volta sola la
   migrazione `0003_permessi_completi`.
-- **Lo schema rispetto al codice.** All'avvio e ogni 10 minuti l'API confronta
-  il tracciamento con le migrazioni della sua immagine, e lo dice in
-  `GET /api/healthz` (campo `schema`) e nel log:
+- **Lo schema rispetto al codice.** All'avvio l'API confronta il tracciamento
+  con le migrazioni della sua immagine, poi ricontrolla ogni 10 minuti (ogni
+  15 secondi se qualcosa non va), e lo dice in `GET /api/healthz` (campo
+  `schema`) e nel log:
   - `ok`: allineati;
-  - `indietro`: mancano migrazioni (l'API avviata senza il migratore, o un
-    backup vecchio rimesso sotto un'immagine nuova). `/api/healthz` risponde
-    **503**, così l'HEALTHCHECK segna il container come non sano e, nel
-    deploy a rotazione, Coolify non gli manda traffico. Nel log, a livello
-    error, quali mancano. Si applicano riavviando il container (l'avvio lancia
-    il migratore) o con `node lib/db/scripts/migra.mjs` dal suo Terminal;
+  - `indietro`: mancano migrazioni. Nel log, a livello error, quali mancano.
+    - **Un container appena partito** che non è mai stato allineato (API
+      avviata senza il migratore, `DATABASE_MIGRATOR_URL` su un altro
+      database): `/api/healthz` risponde **503**, l'HEALTHCHECK lo segna non
+      sano e, nel deploy a rotazione, Coolify non gli manda traffico e tiene
+      quello vecchio.
+    - **Un container già in servizio** che trova il database indietro (un
+      backup vecchio rimesso sotto): resta in servizio, con 200 e
+      `"schema":"indietro"`. Non si spegne apposta: fuori dal deploy un
+      container non sano esce dal routing di Traefik, e tutta l'API
+      risponderebbe 404.
+    - **Rimedio**: riavviare il container (l'avvio lancia il migratore e
+      riparte allineato) oppure `node lib/db/scripts/migra.mjs` dal suo
+      Terminal; in quel caso il controllo se ne accorge entro 15 secondi;
   - `avanti`: il database ha migrazioni più nuove del codice. È il container
     vecchio durante un deploy, o un rollback all'immagine precedente: va bene,
     perché le migrazioni restano compatibili all'indietro (nel log un avviso);
-  - `sconosciuto`: il controllo non è ancora fatto o il database non risponde.
+  - `sconosciuto`: il database non risponde (la prima sonda dopo l'avvio
+    aspetta il primo controllo, al massimo 3 secondi). Resta 200, come prima.
+- **L'indice unico delle email** (`users_email_normale_uq`: un'email, un
+  utente, maiuscole e spazi non contano) lo crea la migrazione `0000_baseline`,
+  che lo salta se in quel momento ci sono già utenti con la stessa email
+  scritta in modi diversi. Finché manca, a ogni avvio il log dice «manca
+  l'indice unico delle email». In produzione c'è. Se manca: si unificano gli
+  utenti doppi da Gestione Utenti (quali sono:
+  `SELECT lower(trim(email)), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;`),
+  poi, da psql:
+  ```sql
+  CREATE UNIQUE INDEX CONCURRENTLY users_email_normale_uq ON users (lower(trim(email)));
+  ```
 
 ### Argos: sola lettura su un elenco chiuso
 
@@ -410,7 +431,8 @@ segnale arriva durante le migrazioni, la transazione viene annullata. L'immagine
 (`docker/salute.mjs`, che chiama `/api/healthz` senza bisogno di curl): è
 quello che Coolify usa se il suo healthcheck resta spento (vedi sopra).
 `/api/healthz` risponde 503 solo se lo schema del database è indietro rispetto
-al codice (vedi «Lo schema rispetto al codice»).
+al codice e il container non è mai stato allineato (vedi «Lo schema rispetto
+al codice»). La sonda non scrive righe nel log delle richieste.
 
 ---
 

@@ -394,9 +394,9 @@ jobs:
           node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json vuoto-dopo.json
       # PR 2.4: l'API non fa più DDL all'avvio. Il bundle vero parte su un
       # database nato solo dalle migrazioni, con un event trigger che registra
-      # ogni DDL: dopo l'avvio il registro è vuoto e /api/healthz dice schema
-      # ok. Tolta l'ultima migrazione dal tracciamento, /api/healthz risponde
-      # 503 (schema indietro): la guardia di versione.
+      # ogni DDL: 20 s dopo l'avvio il registro è vuoto e /api/healthz dice
+      # schema ok. Tolta l'ultima migrazione dal tracciamento, un container
+      # appena partito risponde 503 (schema indietro): la guardia di versione.
       - name: L'API parte su un database nato solo dalle migrazioni, senza DDL
         run: |
           pnpm --filter @workspace/api-server run build
@@ -419,6 +419,8 @@ jobs:
           avvia ok
           esito=$(salute); echo "$esito"
           [[ "$esito" == 200* && "$esito" == *'"schema":"ok"'* ]] || { cat api-ok.log; exit 1; }
+          # anche i lavori d'avvio a tempo: warm-up a 2 s, attivazioni programmate a 15 s
+          sleep 17
           n=$(q "SELECT count(*) FROM ci.ddl")
           [ "$n" = 0 ] || { echo "DDL all'avvio:"; q "SELECT tag, q FROM ci.ddl"; exit 1; }
           ferma
