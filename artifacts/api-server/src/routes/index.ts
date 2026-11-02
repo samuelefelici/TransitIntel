@@ -22,7 +22,7 @@ import driverShiftsRouter from "./driver-shifts";
 import optimizerRuleProfilesRouter from "./optimizer-rule-profiles";
 import clustersRouter from "./clusters";
 import coincidenceZonesRouter from "./coincidence-zones";
-import weatherRouter from "./weather";
+import weatherRouter, { weatherCronRouter } from "./weather";
 import faresRouter from "./fares";
 import faresMinOdRouter from "./fares-min-od";
 import faresNodeAssignmentRouter from "./fares-node-assignment";
@@ -79,6 +79,7 @@ router.use(authRouter);
 router.use(accountRouter); // sicurezza dell'account: ogni rotta chiede il login da sé
 router.use(cronRouter); // pubblico (webhook/job esterni)
 router.use(argosWatchCronRouter); // pubblico (x-cron-secret): tick sorveglianza Argos
+router.use(weatherCronRouter); // pubblico (x-cron-secret): istantanee meteo
 router.use("/caronte", caronteRouter); // pubblico, prefisso /caronte: auth via Bearer CERBERO_API_KEY (validatore)
 router.use("/gtfs-rt", gtfsRtRouter); // pubblico (aggregatori infomobilità): key opzionale GTFS_RT_API_KEY
 router.use(networkShareRouter); // pubblico: mappa di rete condivisa via link

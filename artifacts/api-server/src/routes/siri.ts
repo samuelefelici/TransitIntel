@@ -1758,13 +1758,14 @@ router.get("/siri/sync", (_req, res): void => {
     error: "Questa è un'operazione di scrittura: si lancia in POST, non aprendo l'indirizzo.",
     diNormaNonServe: "Il poller esegue l'ingestione da solo ogni SIRI_POLL_SECONDS. "
       + "Il sync a mano serve solo per vedere subito i contatori di un giro.",
-    comeLanciarla: "Dalla console del browser, mentre sei su una pagina di Cerbero: "
+    comeLanciarla: "Solo un admin, dalla console del browser mentre è su una pagina di Cerbero: "
       + "await (await fetch('/api/siri/sync', { method: 'POST', credentials: 'include' })).json()",
     perVedereSoloLoStato: "GET /api/siri/status  ·  GET /api/siri/preview",
   });
 });
 
-router.post("/siri/sync", async (_req, res): Promise<void> => {
+// scrive nelle tabelle di caronte: solo l'admin (le letture di /siri sono di Analisi e Centrale)
+router.post("/siri/sync", requireAdmin, async (_req, res): Promise<void> => {
   const cfg = siriConfig();
   if (!cfg) { res.status(400).json(NOT_CONFIGURED); return; }
   try {

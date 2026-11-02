@@ -5,6 +5,8 @@ import { sql, desc, and, gte, lte } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
 
 const router: IRouter = Router();
+/** Solo la cron: va montato prima del login (routes/index.ts), si protegge col segreto. */
+export const weatherCronRouter: IRouter = Router();
 
 const OWM_KEY = process.env.OPENWEATHER_API_KEY || "";
 const OWM_BASE = "https://api.openweathermap.org/data/2.5";
@@ -32,9 +34,10 @@ function verifyCronSecret(req: any, res: any): boolean {
 /**
  * POST /api/cron/weather
  * Fetches current weather for all monitoring points and stores snapshots.
- * Should be called every 30–60 minutes.
+ * Should be called every 30–60 minutes. Come le altre cron, si protegge col
+ * segreto x-cron-secret: sta in un router montato prima del login.
  */
-router.post("/cron/weather", async (req, res) => {
+weatherCronRouter.post("/cron/weather", async (req, res) => {
   if (!verifyCronSecret(req, res)) return;
 
   if (!OWM_KEY) {

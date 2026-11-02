@@ -586,6 +586,29 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
   esercizio e l'ultima pubblicazione dei turni; ognuno vede solo i riquadri dei
   suoi permessi. Dopo l'accesso si torna alla pagina chiesta (un segnalibro, un
   link); una pagina senza permesso riporta a Oggi e dice quale permesso serve.
+- **Ogni API ha il suo permesso (deny by default).** Un percorso che non ha una
+  voce in `PERMISSION_BY_PREFIX` (`lib/auth.ts`) risponde 403 a chi non è
+  admin, e il log lo scrive come «percorso senza permesso assegnato»: se dopo
+  un rilascio qualcuno prende un 403 inatteso, è una voce da aggiungere (il
+  test `inventario-rotte` lo impedisce per le rotte del codice). In più:
+  - Argos (`/api/ai/argos/*`, pannello dentro Planning Studio) chiede Rete e
+    orari;
+  - le paline Mizar e la diagnostica SIRI (`/api/siri/*`, pagina Dati e
+    integrazioni) chiedono Analisi o Esercizio;
+  - il lancio a mano dell'ingestione AVM (`POST /api/siri/sync`) è solo
+    dell'admin;
+  - le regole salvate dell'ottimizzatore e l'analisi intermodale della Fucina
+    chiedono Turni;
+  - la ricerca dei colleghi nelle finestre di condivisione dei progetti
+    (`/api/users/lookup`) chiede Rete e orari o Turni, e non è disponibile ai
+    token di Argos;
+  - le sincronizzazioni delle sorgenti (`/api/admin/sync`) rispondono «Solo
+    admin».
+- **Il registro degli accessi** (Gestione Utenti) ora scrive anche quello che
+  l'admin cambia sugli utenti: creazione ed eliminazione, ruolo, permessi
+  (solo i nomi dei moduli aggiunti e tolti), ruolo FleetCare, nome (solo che
+  è cambiato, non il valore), oltre a password provvisoria, verifica tolta,
+  sblocco, disattivazione e riattivazione.
 - **Analisi parte spenta per i nuovi utenti.** Chi la aveva la tiene: l'admin la
   toglie da Gestione Utenti a chi non la usa. Le letture che servono anche agli
   altri moduli (feed e fermate per i turni, linee e confini per le tariffe, il
@@ -675,8 +698,11 @@ con i cron interni di Coolify:
 | POI | `POST /api/cron/poi` | 1° del mese, ore 3:00 |
 | Popolazione | `POST /api/cron/population` | ogni lunedì, ore 4:00 |
 | Controllo settimanale AVM | `POST /api/cron/avm-controllo-settimanale` | facoltativo: ogni lunedì, ore 4:00 |
+| Meteo | `POST /api/cron/weather` | facoltativo: ogni ora (serve `OPENWEATHER_API_KEY`) |
 
 Per ogni job: metodo **POST**, header `x-cron-secret: IL-TUO-CRON-SECRET`.
+Il meteo prima rispondeva 401 a uno scheduler esterno (voleva anche il login):
+ora basta il segreto, come per gli altri.
 
 Il controllo settimanale AVM non ha bisogno dello scheduler esterno: con il
 connettore SIRI attivo, il processo dell'API controlla ogni ora se c'è una
