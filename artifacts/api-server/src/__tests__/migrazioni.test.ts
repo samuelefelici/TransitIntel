@@ -325,6 +325,11 @@ describe("il contratto di lettura di Argos", () => {
   const contratto = [...ARGOS_LETTURA].sort();
   const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
 
+  it("le tabelle con chi ha fatto che cosa restano fuori: richieste a Mizar, coda dei lavori", () => {
+    expect(contratto).not.toContain("caronte.avm_richieste_mizar");
+    expect(contratto.filter(t => t.startsWith("coda."))).toEqual([]);
+  });
+
   it("23 tabelle schema.tabella, nessun doppione", () => {
     expect(contratto).toHaveLength(23);
     expect(new Set(contratto).size).toBe(contratto.length);

@@ -3,33 +3,38 @@
  * AVM — gli apparati di bordo, giorno per giorno e settimana per settimana
  * ───────────────────────────────────────────────────────────────────────────
  * Lo Stato del parco nella Mappa dice come sta il parco adesso, ed è
- * un'istantanea. Questa sezione ha due viste:
+ * un'istantanea. Questa sezione ha tre viste:
  *   · Diario: che cosa ha fatto ogni apparato nelle ultime giornate e che
  *     cosa va guardato — la pagina su cui si scrive una segnalazione;
  *   · Controllo settimanale: rispetto alla settimana prima, chi ha ripreso a
- *     localizzarsi e chi ha smesso — la pagina di chi segue gli interventi.
+ *     localizzarsi e chi ha smesso — la pagina di chi segue gli interventi;
+ *   · Andamento: settimana per settimana dall'inizio dei dati, che cosa c'è da
+ *     fare per ogni vettura e le richieste a Mizar (togliere, aggiungere).
  *
  * Vive dentro il modulo Centrale Operativa (permesso "centrale") accanto alla
- * Mappa. La vista si può aprire direttamente con ?vista=settimanale.
+ * Mappa. La vista si può aprire direttamente con ?vista=settimanale o ?vista=andamento.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import React, { Suspense, lazy, useState } from "react";
 import { motion } from "framer-motion";
-import { SatelliteDish, NotebookText, CalendarCheck } from "lucide-react";
+import { SatelliteDish, NotebookText, CalendarCheck, TrendingUp } from "lucide-react";
 
 const DiarioAvm = lazy(() => import("@/pages/diario-avm"));
 const ControlloAvm = lazy(() => import("@/pages/controllo-avm"));
+const StoriaAvm = lazy(() => import("@/pages/storia-avm"));
 
-type Vista = "diario" | "settimanale";
+type Vista = "diario" | "settimanale" | "andamento";
 
 const VISTE: { id: Vista; label: string; icon: React.ReactNode }[] = [
   { id: "diario", label: "Diario", icon: <NotebookText className="w-3.5 h-3.5" /> },
   { id: "settimanale", label: "Controllo settimanale", icon: <CalendarCheck className="w-3.5 h-3.5" /> },
+  { id: "andamento", label: "Andamento", icon: <TrendingUp className="w-3.5 h-3.5" /> },
 ];
 
 function vistaIniziale(): Vista {
   try {
-    return new URLSearchParams(window.location.search).get("vista") === "settimanale" ? "settimanale" : "diario";
+    const v = new URLSearchParams(window.location.search).get("vista");
+    return v === "settimanale" || v === "andamento" ? v : "diario";
   } catch {
     return "diario";
   }
@@ -43,7 +48,7 @@ export default function AvmPage() {
     /* L'indirizzo segue la vista, così si può mandare il link al controllo. */
     try {
       const url = new URL(window.location.href);
-      if (v === "settimanale") url.searchParams.set("vista", "settimanale");
+      if (v !== "diario") url.searchParams.set("vista", v);
       else url.searchParams.delete("vista");
       window.history.replaceState(null, "", url.toString());
     } catch { /* senza history si resta sulla vista scelta e basta */ }
@@ -61,7 +66,8 @@ export default function AvmPage() {
             Gli apparati di bordo letti dal canale SIRI, un campione ogni due minuti.
             Il diario dice che cosa ha fatto ogni apparato giornata per giornata e a chi
             segnalarlo; il controllo settimanale dice chi ha ripreso a localizzarsi e chi
-            ha smesso rispetto alla settimana prima.
+            ha smesso rispetto alla settimana prima; l'andamento mostra come va il parco
+            dall'inizio e che cosa chiedere a Mizar.
           </p>
         </div>
       </header>
@@ -93,7 +99,7 @@ export default function AvmPage() {
           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
         </div>
       }>
-        {vista === "diario" ? <DiarioAvm /> : <ControlloAvm />}
+        {vista === "diario" ? <DiarioAvm /> : vista === "settimanale" ? <ControlloAvm /> : <StoriaAvm />}
       </Suspense>
     </div>
   );

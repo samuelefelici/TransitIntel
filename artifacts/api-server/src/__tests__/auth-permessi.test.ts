@@ -48,6 +48,15 @@ describe("Centrale Operativa: chi vede la Mappa e l'AVM", () => {
     expect(verifica("/siri/parco/settimana", soloCentrale)).toBe("passa");
   });
 
+  it("l'andamento AVM e le richieste a Mizar: solo con Centrale, anche per scrivere", () => {
+    expect(verifica("/siri/parco/storia", soloCentrale)).toBe("passa");
+    expect(verifica("/siri/parco/richieste", soloCentrale, "POST")).toBe("passa");
+    expect(verifica("/siri/parco/richieste/chiudi", soloCentrale, "POST")).toBe("passa");
+    expect(verifica("/siri/parco/storia", soloAnalytics)).toBe(403);
+    expect(verifica("/siri/parco/richieste", soloAnalytics, "POST")).toBe(403);
+    expect(verifica("/siri/parco/richieste", nessuno, "POST")).toBe(403);
+  });
+
   it("il modulo da solo non apre il resto di analytics", () => {
     expect(verifica("/timetables", soloCentrale)).toBe(403);
     expect(verifica("/territory/zones", soloCentrale)).toBe(403);

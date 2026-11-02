@@ -59,6 +59,7 @@ import {
 import { leggiControllo, elencoControlli, erroreArchivioControlli } from "../lib/avm-controllo-store";
 import { calcolaControlloDellaSettimana, statoArchivioAutomatico } from "../lib/avm-controllo-servizio";
 import { esportaControlloXlsx, esportaControlloCsv } from "../lib/avm-controllo-xlsx";
+import { richiestaAggiungere, richiestaTogliere } from "../lib/avm-storia";
 import {
   leggiParcoOfficina, mezziSenzaAvm, parcoCredibile, ETICHETTE_STATO_OFFICINA,
   type MezzoOfficina, type ParcoOfficina,
@@ -1539,27 +1540,12 @@ function testoSegnalazioni(d: DiarioSettimana, da: string, a: string, senzaAvm: 
   const anagrafica: ReturnType<typeof testoSegnalazioni> = [];
   const daTogliere = d.vetture.filter(v => v.esclusa?.motivo === "fuori_parco" || v.esclusa?.motivo === "dismesso");
   if (daTogliere.length) {
-    anagrafica.push({
-      destinatario: "Mizar",
-      oggetto: `AVM Conerobus — vetture da togliere dall'anagrafica del centro (${daTogliere.length})`,
-      testo: `Nel canale SIRI compaiono ${daTogliere.length} matricole Conerobus che il parco `
-        + "dell'officina non ha più, o che dà per dismesse. Non sono apparati da riparare: "
-        + "chiediamo di toglierle dall'anagrafica del centro, così che non risultino come "
-        + `vetture mute.\n\nMatricole: ${daTogliere.map(v => v.vehicleRef).join(", ")}.`,
-      matricole: daTogliere.length,
-    });
+    const t = richiestaTogliere(daTogliere.map(v => v.vehicleRef));
+    anagrafica.push({ destinatario: "Mizar", oggetto: t.oggetto, testo: t.testo, matricole: t.matricole.length });
   }
   if (senzaAvm.length) {
-    anagrafica.push({
-      destinatario: "Mizar",
-      oggetto: `AVM Conerobus — vetture del parco che il centro non conosce (${senzaAvm.length})`,
-      testo: `${senzaAvm.length} vetture del parco Conerobus non sono mai comparse nel canale SIRI `
-        + `${periodo}. Chiediamo di verificare se hanno l'apparato a bordo e se sono censite `
-        + "nell'anagrafica del centro.\n\n"
-        + senzaAvm.map(m => `${m.matricola} (${m.targa}${m.modello ? `, ${m.modello}` : ""}`
-          + `${m.deposito ? `, ${m.deposito}` : ""})`).join("\n"),
-      matricole: senzaAvm.length,
-    });
+    const t = richiestaAggiungere(senzaAvm, periodo);
+    anagrafica.push({ destinatario: "Mizar", oggetto: t.oggetto, testo: t.testo, matricole: t.matricole.length });
   }
   return [...d.segnalazioni.map(s => {
     const elenco = s.matricole.join(", ");

@@ -90,6 +90,9 @@ su main non si tocca più.
 - **Lo schema `coda`** (0004) contiene la coda dei lavori: la usano l'API e il
   lavoratore (`artifacts/api-server/src/lib/lavori/coda.ts`). Senza permessi a
   PUBLIC e fuori dal contratto di `argos_ro`; il catalogo atteso lo guarda.
+- **Le richieste a Mizar** (0005, `caronte.avm_richieste_mizar`): accanto agli
+  altri archivi AVM di Cerbero, fuori dal contratto di `argos_ro` (un test in
+  `migrazioni.test.ts` lo controlla) e non concesse a `caronte_app`.
 - **L'API controlla di essere allineata** (`artifacts/api-server/src/lib/guardia-schema.ts`):
   conosce il diario della sua immagine (`lib/db/scripts/diario-incluso.mjs`,
   incorporato nel bundle) e, se al database manca una migrazione,

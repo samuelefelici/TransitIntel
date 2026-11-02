@@ -31,6 +31,7 @@ import caronteRouter from "./caronte";
 import gtfsRtRouter from "./gtfs-rt";
 import operationsRouter from "./operations";
 import siriRouter from "./siri";
+import avmStoriaRouter from "./avm-storia";
 import timetablesRouter from "./timetables";
 import networkShareRouter from "./network-share";
 import timetableMapShareRouter from "./timetable-map-share";
@@ -109,6 +110,7 @@ router.use(argosInsightsRouter);
 router.use(argosTerritoryRouter);
 router.use(argosWatchRouter);
 router.use(siriRouter); // connettore AVM esterno (SIRI-VM): diagnostica + ingestione
+router.use(avmStoriaRouter); // AVM: andamento dall'inizio dei dati e richieste a Mizar
 router.use(serviceProgramRouter);
 router.use(processReportRouter); // relazione di processo (dossier + documento)
 router.use(driverShiftsRouter);

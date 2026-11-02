@@ -36,6 +36,13 @@
       "when": 1793631600000,
       "tag": "0004_coda_dei_lavori",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793718000000,
+      "tag": "0005_richieste_mizar",
+      "breakpoints": true
     }
   ]
 }
