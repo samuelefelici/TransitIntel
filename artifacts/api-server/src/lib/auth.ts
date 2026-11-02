@@ -22,6 +22,8 @@ import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import { normalizzaPermessi, PERMESSI_NUOVO_UTENTE, type Permission } from "./permessi";
 import { datiProvaAttivi } from "./dati-prova";
+import { logger } from "./logger";
+import { azioniAdmin } from "./azioni-admin";
 import { idChiave } from "./mfa-cifratura";
 import { chiaveEmail, limitazione, mfaObbligatoria, percorsoConsentitoLimitato, percorsoVietatoAiServizi, type Limitazione } from "./accesso-regole";
 import {
@@ -625,7 +627,10 @@ export function haPermesso(req: { user?: AuthUser }, p: Permission): boolean {
  * router sono montati senza prefisso (i path vivono dentro), quindi un singolo
  * middleware path-aware è più sicuro di N prepend (che bloccherebbero anche i
  * path non pertinenti). Ordine: le voci più specifiche PRIMA (es. /planning-studio
- * prima di /planning). Prefisso non mappato ⇒ solo-autenticato.
+ * prima di /planning). Prefisso non mappato ⇒ 403 per chi non è admin (deny by
+ * default): una rotta nuova va aggiunta qui, e il test inventario-rotte lo
+ * controlla. Le rotte senza permesso (login, cron, condivisioni) stanno nei
+ * router montati prima di requireAuth (routes/index.ts).
  */
 const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // scheduling (turni, ottimizzatori, roster, depositi, coincidenze)
@@ -666,12 +671,20 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // li disegna, lo Scheduling Engine li usa come punti di cambio vettura.
   ["/clusters", ["network", "scheduling"]],
   ["/intermodal", "network"],
+  // Argos vive dentro Planning Studio: il pannello, la chat, l'agente, il
+  // territorio (Mapbox, a consumo). Il controllo sul progetto resta negli handler.
+  ["/ai/argos", "network"],
+  // la Fucina: regole salvate dell'ottimizzatore e analisi intermodale dei turni macchina
+  ["/optimizer-rule-profiles", "scheduling"],
+  ["/intermodal-optimizer", "scheduling"],
   // fares
   ["/fares", "fares"],
   // Centrale Operativa (Mappa live + AVM). Il parco letto da SIRI serve solo
-  // alle due pagine del modulo; il resto di /siri (fermate Mizar, diagnostica)
-  // resta solo-autenticato perché lo usa la scheda Dati.
+  // alle due pagine del modulo; il resto di /siri (paline Mizar, diagnostica)
+  // lo usa la pagina Dati e integrazioni, aperta ad Analisi e Centrale.
+  // POST /siri/sync, che scrive, è solo dell'admin (routes/siri.ts).
   ["/siri/parco", "centrale"],
+  ["/siri", ["centrale", "analytics"]],
   // /operations è condiviso: la Mappa legge /live, /punctuality, /anomalie,
   // /vehicles; i Tempi di percorrenza (analytics) leggono /runtimes,
   // /copertura, e /trips lo leggono entrambi. Basta uno dei due permessi.
@@ -724,24 +737,40 @@ export function letturaCondivisa(metodo: string, path: string): Permission[] | n
   return voce ? voce[1] : null;
 }
 
+/** Il permesso del prefisso che copre questo percorso (il primo nell'ordine), o null. */
+export function permessoDelPrefisso(path: string): Permission[] | null {
+  const p = path.toLowerCase();
+  for (const [prefix, perm] of PERMISSION_BY_PREFIX) {
+    if (p === prefix || p.startsWith(prefix + "/")) return Array.isArray(perm) ? perm : [perm];
+  }
+  return null;
+}
+
+/**
+ * Cosa apre questo percorso: la lettura condivisa (se è una GET di quelle) e
+ * il permesso del prefisso. Tutti e due null: nessuna voce, quindi solo admin.
+ */
+export function permessoPerPercorso(metodo: string, path: string): { condivisa: Permission[] | null; prefisso: Permission[] | null } {
+  return { condivisa: letturaCondivisa(metodo, path), prefisso: permessoDelPrefisso(path) };
+}
+
 export const requirePermissionByPath: RequestHandler = (req, res, next) => {
   if (!req.user) { res.status(401).json({ error: "Non autenticato" }); return; }
   if (req.user.role === "admin") { next(); return; }
   /* Express confronta i percorsi senza badare alle maiuscole: /Roster/drivers
    * arriva allo stesso handler di /roster/drivers. Il confronto qui deve fare
    * lo stesso, altrimenti basta una maiuscola per saltare il controllo. */
-  const path = req.path.toLowerCase();
-  const condivisa = letturaCondivisa(req.method, path);
+  const { condivisa, prefisso } = permessoPerPercorso(req.method, req.path);
   if (condivisa?.some(pp => req.user!.permissions?.[pp])) { next(); return; }
-  for (const [prefix, perm] of PERMISSION_BY_PREFIX) {
-    if (path === prefix || path.startsWith(prefix + "/") || path.startsWith(prefix + "?")) {
-      const needed = Array.isArray(perm) ? perm : [perm];
-      if (needed.some(pp => req.user!.permissions?.[pp])) { next(); return; }
-      res.status(403).json({ error: `Manca il permesso: ${needed.join(" o ")}` });
-      return;
-    }
+  if (prefisso) {
+    if (prefisso.some(pp => req.user!.permissions?.[pp])) { next(); return; }
+    res.status(403).json({ error: `Manca il permesso: ${prefisso.join(" o ")}` });
+    return;
   }
-  next(); // prefisso non mappato: basta l'autenticazione
+  // deny by default: nessuna voce per questo percorso. Il log lo dice, perché
+  // un 403 qui vuol dire quasi sempre una voce dimenticata in PERMISSION_BY_PREFIX
+  logger.warn({ metodo: req.method, percorso: req.path, utente: req.user.id }, "percorso senza permesso assegnato: 403");
+  res.status(403).json({ error: "Percorso senza permesso assegnato" });
 };
 
 /* ────────────────────────────────────────────────────────────
@@ -1113,6 +1142,9 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
       RETURNING id, email, full_name, role, permissions, fleetcare_role, active, created_at
     `);
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
+    for (const a of azioniAdmin(null, row)) {
+      await registraAccesso(req, { userId: row.id, email: row.email, esito: `admin:${a} (${req.user!.email})` });
+    }
     res.json({ user: {
       id: row.id, email: row.email, fullName: row.full_name,
       role: row.role, permissions: row.permissions,
@@ -1174,6 +1206,10 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
    * (non per «Reimposta verifica»: il solito computer deve restare riconosciuto) */
   if (password !== undefined || active === false) sets.push(sql`dispositivi_versione = dispositivi_versione + 1`);
   if (sets.length === 0) { res.json({ ok: true, noop: true }); return; }
+  /* com'era prima: il registro scrive solo quello che cambia davvero */
+  const pr = await db.execute<any>(sql`SELECT role, permissions, fleetcare_role, full_name, active FROM users WHERE id = ${id}::uuid`);
+  const prima = (pr as any).rows?.[0];
+  if (!prima) { res.status(404).json({ error: "Utente non trovato" }); return; }
   // Concatena gli assignment con virgole
   const assignments = sql.join(sets, sql`, `);
   const r = await db.execute(sql`
@@ -1184,11 +1220,9 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   if (!row) { res.status(404).json({ error: "Utente non trovato" }); return; }
   /* la password da ogni indirizzo: sbloccata, o nuova (la provvisoria deve poter entrare) */
   if (sblocca === true || password !== undefined) await azzeraTuttiITentativiPassword(chiaveEmail(row.email));
-  /* nel registro degli accessi: chi ha fatto che cosa sull'accesso di chi */
-  const azioni = [
-    password !== undefined && "password_provvisoria", resetMfa === true && "verifica_tolta",
-    sblocca === true && "sbloccato", active === false && "disattivato", active === true && "riattivato",
-  ].filter((x): x is string => !!x);
+  /* nel registro degli accessi: chi ha fatto che cosa sull'accesso di chi
+   * (ruolo, permessi, ruolo FleetCare, nome, password, verifica, blocco, stato) */
+  const azioni = azioniAdmin(prima, row, { password: password !== undefined, resetMfa: resetMfa === true, sblocca: sblocca === true });
   for (const a of azioni) await registraAccesso(req, { userId: id, email: row.email, esito: `admin:${a} (${req.user!.email})` });
   res.json({ user: {
     id: row.id, email: row.email, fullName: row.full_name,
@@ -1202,7 +1236,13 @@ router.delete("/admin/users/:id", requireAuth, requireAdmin, async (req, res): P
   const id = String(req.params.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
   if (req.user?.id === id) { res.status(400).json({ error: "Non puoi eliminare te stesso" }); return; }
-  await db.execute(sql`DELETE FROM users WHERE id = ${id}::uuid`);
+  const r = await db.execute<any>(sql`DELETE FROM users WHERE id = ${id}::uuid RETURNING id, email, role`);
+  const tolto = (r as any).rows?.[0];
+  if (tolto) {
+    for (const a of azioniAdmin(tolto, null)) {
+      await registraAccesso(req, { userId: tolto.id, email: tolto.email, esito: `admin:${a} (${req.user!.email})` });
+    }
+  }
   res.json({ ok: true });
 });
 

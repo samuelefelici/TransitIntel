@@ -60,11 +60,18 @@ describe("Centrale Operativa: chi vede la Mappa e l'AVM", () => {
     expect(verifica("/siri/parco/settimana", soloAnalytics)).toBe(403);
   });
 
-  it("senza permessi: niente Mappa né parco, ma le fermate Mizar della scheda Dati restano", () => {
+  it("senza permessi: niente Mappa, né parco, né le paline Mizar della pagina Dati", () => {
     expect(verifica("/operations/live", nessuno)).toBe(403);
     expect(verifica("/siri/parco", nessuno)).toBe(403);
-    expect(verifica("/siri/fermate/abbinamenti", nessuno)).toBe("passa");
-    expect(verifica("/siri/status", nessuno)).toBe("passa");
+    expect(verifica("/siri/fermate/abbinamenti", nessuno)).toBe(403);
+    expect(verifica("/siri/status", nessuno)).toBe(403);
+  });
+
+  it("le paline Mizar e la diagnostica SIRI: la pagina Dati, cioè Analisi o Centrale", () => {
+    expect(verifica("/siri/fermate/abbinamenti", soloCentrale)).toBe("passa");
+    expect(verifica("/siri/status", soloAnalytics)).toBe("passa");
+    expect(verifica("/siri/fermate/suggerisci/123", soloAnalytics, "POST")).toBe("passa");
+    expect(verifica("/siri/status", utente(["fares"]))).toBe(403);
   });
 
   it("l'admin passa ovunque anche con tutti i permessi spenti", () => {
@@ -75,8 +82,9 @@ describe("Centrale Operativa: chi vede la Mappa e l'AVM", () => {
   });
 
   it("il prefisso non cattura nomi che iniziano allo stesso modo", () => {
-    /* /siri/parco non deve coprire un ipotetico /siri/parcometri */
-    expect(verifica("/siri/parcometri", nessuno)).toBe("passa");
+    /* /siri/parco non deve coprire un ipotetico /siri/parcometri: lo copre /siri */
+    expect(verifica("/siri/parcometri", soloAnalytics)).toBe("passa");
+    expect(verifica("/siri/parco", soloAnalytics)).toBe(403);
   });
 });
 
@@ -206,5 +214,41 @@ describe("Letture condivise: Analisi spenta non rompe gli altri moduli", () => {
   it("il Database di esercizio è dei Turni (prima bastava essere entrati)", () => {
     expect(verifica("/service-db/overview", utente([]))).toBe(403);
     expect(verifica("/service-db/overview", utente(["scheduling"]))).toBe("passa");
+  });
+});
+
+
+describe("deny by default: un percorso senza voce è solo dell'admin", () => {
+  const tutti = utente(["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale", "roster"]);
+
+  it("un prefisso che nessuna voce copre dà 403 anche con tutti i permessi", () => {
+    expect(verifica("/nuova-rotta", tutti)).toBe(403);
+    expect(verifica("/admin/sync/status", tutti)).toBe(403);
+    expect(verifica("/intermodalita", tutti, "POST")).toBe(403);
+  });
+
+  it("l'admin passa anche lì", () => {
+    expect(verifica("/nuova-rotta", utente([], "admin"))).toBe("passa");
+    expect(verifica("/admin/sync/status", utente([], "admin"))).toBe("passa");
+  });
+
+  it("Argos vive dentro Planning Studio: serve «network»", () => {
+    expect(verifica("/ai/argos/chat", utente(["network"]), "POST")).toBe("passa");
+    expect(verifica("/ai/argos/territory/around", utente(["network"]))).toBe("passa");
+    expect(verifica("/ai/argos/context", utente(["scheduling", "analytics"]))).toBe(403);
+    expect(verifica("/ai/argos/territory/search", utente(["fares"]))).toBe(403);
+  });
+
+  it("la Fucina: regole salvate e analisi intermodale con «scheduling»", () => {
+    expect(verifica("/optimizer-rule-profiles", utente(["scheduling"]))).toBe("passa");
+    expect(verifica("/optimizer-rule-profiles/resolve", utente(["scheduling"]))).toBe("passa");
+    expect(verifica("/intermodal-optimizer/analyze", utente(["scheduling"]), "POST")).toBe("passa");
+    expect(verifica("/intermodal-optimizer/analyze", utente(["network"]), "POST")).toBe(403);
+    expect(verifica("/optimizer-rule-profiles", utente(["network"]))).toBe(403);
+  });
+
+  it("/intermodal non copre /intermodal-optimizer (il prefisso vuole la barra)", () => {
+    expect(verifica("/intermodal/lines", utente(["network"]))).toBe("passa");
+    expect(verifica("/intermodal-optimizer/analyze", utente(["network"]), "POST")).toBe(403);
   });
 });
