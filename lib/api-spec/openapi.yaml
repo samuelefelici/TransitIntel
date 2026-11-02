@@ -81,6 +81,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+        "503":
+          description: Lo schema del database è indietro rispetto al codice
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
 
   # ── Traffic ───────────────────────────────────────────────────
   /traffic:
@@ -2408,6 +2414,14 @@ components:
       properties:
         status: { type: string }
         cacheEntries: { type: integer }
+        schema:
+          type: string
+          enum: [ok, indietro, avanti, sconosciuto]
+          description: >-
+            Il database rispetto alle migrazioni di questo codice: indietro (ne
+            mancano, risposta 503), avanti (codice N-1 durante un deploy o dopo
+            un rollback), sconosciuto (non ancora controllato o database che non
+            risponde).
 
     # ── Traffic ────────────────────────────────────────────────
     TrafficSnapshot:

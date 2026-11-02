@@ -8,8 +8,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ESCLUSE, blocchiDelDump, generaBaseline, guardia } from "../../../../lib/db/scripts/baseline.mjs";
 import {
-  CHIAVE_LUCCHETTO, TRACCIAMENTO, controllaApplicate, daApplicare, descriviErrore, leggiDiario, ritentabile,
+  CHIAVE_LUCCHETTO, TRACCIAMENTO, controllaApplicate, daApplicare, descriviErrore, leggiDiario, ritentabile, statoSchema,
 } from "../../../../lib/db/scripts/migrazioni-regole.mjs";
+import { DIARIO } from "../../../../lib/db/scripts/diario-incluso.mjs";
 import { confronta } from "../../../../lib/db/scripts/catalogo.mjs";
 import { ARGOS_LETTURA, ARGOS_VERSIONE, RUOLO_ARGOS } from "../../../../lib/db/contratti/argos-lettura.mjs";
 import {
@@ -172,6 +173,34 @@ describe("le regole del runner", () => {
     expect(d.motivo).toBe('column "ts" does not exist (codice 42703) — suggerimento: Forse intendevi tsx');
     expect(d.query.startsWith("DO $baseline$ BEGIN IF to_regclass")).toBe(true);
     expect(descriviErrore(new Error("connect ECONNREFUSED 127.0.0.1:1")).motivo).toBe("connect ECONNREFUSED 127.0.0.1:1");
+  });
+});
+
+describe("la guardia di versione (lo schema rispetto al codice)", () => {
+  const d = [{ tag: "0000_a", when: 100 }, { tag: "0001_b", when: 200 }];
+
+  it("ok con esattamente le migrazioni del diario, created_at come testo o numero", () => {
+    expect(statoSchema(d, [{ created_at: "100" }, { created_at: 200 }]))
+      .toEqual({ stato: "ok", mancanti: [], sconosciute: 0, ultimaDelCodice: "0001_b" });
+  });
+
+  it("indietro se ne manca una, anche vecchia, o se il tracciamento è vuoto", () => {
+    expect(statoSchema(d, [{ created_at: 100 }])).toMatchObject({ stato: "indietro", mancanti: ["0001_b"] });
+    expect(statoSchema(d, [{ created_at: 200 }])).toMatchObject({ stato: "indietro", mancanti: ["0000_a"] });
+    expect(statoSchema(d, [])).toMatchObject({ stato: "indietro", mancanti: ["0000_a", "0001_b"] });
+    // ne manca una anche se ce n'è una più nuova: resta indietro, non avanti
+    expect(statoSchema(d, [{ created_at: 100 }, { created_at: 300 }])).toMatchObject({ stato: "indietro", sconosciute: 1 });
+  });
+
+  it("avanti se il database ne ha di più nuove (codice N-1)", () => {
+    expect(statoSchema(d, [{ created_at: 100 }, { created_at: 200 }, { created_at: 300 }]))
+      .toMatchObject({ stato: "avanti", mancanti: [], sconosciute: 1 });
+  });
+
+  it("il diario incorporato nel bundle è quello dei file", () => {
+    expect(DIARIO.map(e => ({ idx: e.idx, tag: e.tag, when: e.when })))
+      .toEqual(diario.map(e => ({ idx: e.idx, tag: e.tag, when: e.when })));
+    expect(statoSchema(DIARIO, diario.map(e => ({ created_at: e.when }))).stato).toBe("ok");
   });
 });
 

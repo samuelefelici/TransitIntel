@@ -13,6 +13,12 @@ import * as zod from "zod";
 export const GetHealthResponse = zod.object({
   status: zod.string().optional(),
   cacheEntries: zod.number().optional(),
+  schema: zod
+    .enum(["ok", "indietro", "avanti", "sconosciuto"])
+    .optional()
+    .describe(
+      "Il database rispetto alle migrazioni di questo codice: indietro (ne mancano, risposta 503), avanti (codice N-1 durante un deploy o dopo un rollback), sconosciuto (non ancora controllato o database che non risponde).",
+    ),
 });
 
 /**

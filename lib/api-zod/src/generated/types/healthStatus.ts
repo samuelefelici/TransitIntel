@@ -5,8 +5,11 @@
  * TransitIntel — Public transport planning intelligence platform for Provincia di Ancona
  * OpenAPI spec version: 0.2.0
  */
+import type { HealthStatusSchema } from "./healthStatusSchema";
 
 export interface HealthStatus {
   status?: string;
   cacheEntries?: number;
+  /** Il database rispetto alle migrazioni di questo codice: indietro (ne mancano, risposta 503), avanti (codice N-1 durante un deploy o dopo un rollback), sconosciuto (non ancora controllato o database che non risponde). */
+  schema?: HealthStatusSchema;
 }
