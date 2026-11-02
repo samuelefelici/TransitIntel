@@ -78,4 +78,11 @@ su main non si tocca più.
   con un primo argomento `record` in uno schema dove Argos entra (un cast
   creato da lui la farebbe girare).
 - **Il DDL dentro l'API non cresce più** (test `migrazioni.test.ts`, «il DDL a
-  runtime può solo scendere»).
+  runtime può solo scendere»). Dalla PR 2.4 l'avvio e le richieste non ne fanno
+  affatto: restano solo le unità pigre (ensure…/assicura…) fino alla 2.16, e
+  lo stesso test vieta il DDL nei file che lo facevano all'avvio. Una colonna
+  o una tabella nuova si aggiunge qui, mai con un `IF NOT EXISTS` nel codice.
+- **L'API controlla di essere allineata** (`artifacts/api-server/src/lib/guardia-schema.ts`):
+  conosce il diario della sua immagine (`lib/db/scripts/diario-incluso.mjs`,
+  incorporato nel bundle) e, se al database manca una migrazione,
+  `/api/healthz` risponde 503 con `schema: "indietro"`.
