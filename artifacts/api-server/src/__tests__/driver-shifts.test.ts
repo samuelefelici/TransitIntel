@@ -68,14 +68,4 @@ describe("Driver Shifts endpoints", () => {
       expect(res.body).toHaveProperty("error");
     }, 15_000);
   });
-
-  describe("POST /api/driver-shifts/:scenarioId/compare", () => {
-    it("returns error without scenarioIds", async () => {
-      const res = await request(app)
-        .post("/api/driver-shifts/test-scenario/compare")
-        .send({});
-      // Should fail gracefully
-      expect([400, 404, 500]).toContain(res.status);
-    }, 15_000);
-  });
 });

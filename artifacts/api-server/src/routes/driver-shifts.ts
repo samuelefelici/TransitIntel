@@ -35,9 +35,9 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { serviceProgramScenarios, stopClusters, stopClusterStops, appSettings, gtfsStopTimes, driverShiftScenarios, depots, gtfsStops } from "@workspace/db/schema";
 import { eq, inArray, and, desc, sql } from "drizzle-orm";
-import { spawn } from "node:child_process";
-import path from "node:path";
-import { jobManager, puoVedereJob } from "../lib/job-manager.js";
+import * as coda from "../lib/lavori/coda";
+import type { StatoLavoro } from "../lib/lavori/coda";
+import { arresto } from "../lib/arresto";
 import {
   driverScenariosAccessibleWhere,
   getVehicleScenarioAccess,
@@ -49,7 +49,6 @@ import {
 /** id dei turni guida passati nel corpo o nel percorso (il cast ::uuid altrimenti dà 500) */
 const UUID_DSS = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import { strictLimiter } from "../middlewares/rate-limit";
-import { SCRIPTS_DIR } from "../lib/scripts-dir";
 import { eseguiPython, jsonDallUscita } from "../lib/lavori/python";
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
 
@@ -1074,133 +1073,62 @@ router.get("/driver-shifts/:scenarioId", async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
- *  CP-SAT CREW SCHEDULING V4 (BDS-inspired)
- *  Spawn python crew_scheduler_v4.py
+ *  TURNI GUIDA CP-SAT (crew_scheduler_v4.py) sulla coda dei lavori
+ *  La richiesta si prepara qui, il calcolo lo esegue il lavoratore (o
+ *  l'esecutore interno dell'API): un deploy non lo interrompe più.
+ *  Polling, stream e stop leggono la riga di coda.lavori, con le stesse
+ *  risposte del vecchio job manager in memoria.
  * ═══════════════════════════════════════════════════════════════ */
 
-async function runCPSATCrewScheduler(
-  vehicleShifts: VehicleShift[],
-  timeLimitSec: number,
-  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
-  extraConfig?: Record<string, any>,
-): Promise<any> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v4.py");
+/** I lavori dei turni guida, fra quelli della coda. */
+const AMBITO_TURNI_GUIDA = "turni-guida";
+const STATO_PUBBLICO: Record<StatoLavoro, string> = {
+  in_coda: "queued", in_corso: "running", completato: "completed", fallito: "failed", fermato: "stopped",
+};
+const FINITI: ReadonlySet<StatoLavoro> = new Set(["completato", "fallito", "fermato"]);
+type RigaLavoro = NonNullable<Awaited<ReturnType<typeof coda.leggi>>>;
 
-  // Carica cluster e autovetture dal DB
-  const [allDbClusters, dbCompanyCars] = await Promise.all([
-    loadClustersForPython(),
-    loadCompanyCars(),
-  ]);
-
-  // Filtro cluster se l'utente ha selezionato un sottoinsieme
-  const selectedIds = Array.isArray(extraConfig?.selectedClusterIds) ? (extraConfig!.selectedClusterIds as string[]) : null;
-  const dbClusters = selectedIds && selectedIds.length > 0
-    ? allDbClusters.filter(c => selectedIds.includes(c.id))
-    : allDbClusters;
-
-  // Override del numero di autovetture aziendali se presente nel config
-  const companyCarsEffective = typeof extraConfig?.companyCars === "number" ? extraConfig!.companyCars : dbCompanyCars;
-
-  // Arricchisci ogni trip con le fermate intermedie in cluster (per tagli intra-corsa)
-  await enrichTripsWithClusterStops(vehicleShifts, logger);
-
-  const result = await new Promise<string>((resolve, reject) => {
-    const py = spawn("python3", [scriptPath, String(timeLimitSec)], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    py.stderr.on("data", (d: Buffer) => {
-      stderr += d.toString();
-      logger.info(`CSP stderr: ${d.toString().trim()}`);
-    });
-
-    py.on("error", (err) => reject(new Error(`Errore avvio Python: ${err.message}`)));
-
-    py.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python exit code ${code}: ${stderr}`));
-      } else {
-        resolve(stdout);
-      }
-    });
-
-    const { selectedClusterIds: _sci, companyCars: _cc, ...restConfig } = (extraConfig ?? {}) as any;
-    const inputJson = JSON.stringify({
-      vehicleShifts,
-      config: {
-        timeLimit: timeLimitSec,
-        ...restConfig,
-        // Autovetture aziendali = vincolo RIGIDO sempre: senza il cap
-        // esplicito il solver v4 userebbe il default 5 anche con un numero
-        // diverso di autovetture reali (campo UI o impostazione DB).
-        bds: {
-          ...(restConfig.bds ?? {}),
-          optimizer: {
-            ...((restConfig.bds ?? {}).optimizer ?? {}),
-            maxCompanyCars: typeof restConfig?.bds?.optimizer?.maxCompanyCars === "number"
-              ? restConfig.bds.optimizer.maxCompanyCars
-              : companyCarsEffective,
-          },
-        },
-        clusters: dbClusters,
-        companyCars: companyCarsEffective,
-      },
-    });
-    py.stdin.write(inputJson);
-    py.stdin.end();
-  });
-
-  return JSON.parse(result);
+/** Il budget del calcolo: un intero fra 10 s e 1 ora (Python legge argv[1] con int()). */
+export function tempoDelCalcolo(v: unknown, def = 120): number {
+  const n = Math.round(Number(v ?? def));
+  return Number.isFinite(n) ? Math.min(3600, Math.max(10, n)) : def;
 }
 
-/** POST /api/driver-shifts/:scenarioId/cpsat — CP-SAT crew scheduling (sync, legacy) */
-router.post("/driver-shifts/:scenarioId/cpsat", strictLimiter, async (req, res) => {
-  try {
-    const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
-    if (!acc) return;
-    const timeLimitSec = (req.body as any)?.timeLimit ?? 60;
+/** Il lavoro dei turni guida, se chi chiede lo può vedere: il suo, o qualunque per l'admin. */
+async function lavoroTurniGuida(req: any): Promise<RigaLavoro | null> {
+  const l = await coda.leggi(String(req.params.jobId));
+  if (!l || l.metadati?.ambito !== AMBITO_TURNI_GUIDA) return null;
+  const u = req.user;
+  if (!u) return null;
+  return u.role === "admin" || (!!l.utente_id && l.utente_id === u.id) ? l : null;
+}
 
-    const [scenario] = await db.select().from(serviceProgramScenarios)
-      .where(eq(serviceProgramScenarios.id, (req.params.scenarioId as string)));
+function progressoDi(l: RigaLavoro): any {
+  if (l.stato === "completato") return { phase: "done", percentage: 100, detail: "Ottimizzazione completata", timestamp: +(l.finito_il ?? l.aggiornato_il) };
+  if (l.avanzamento) return l.avanzamento;
+  if (l.stato === "in_corso") return { phase: "starting", percentage: 0, detail: "Processo Python avviato", timestamp: +(l.iniziato_il ?? l.aggiornato_il) };
+  return { phase: "init", percentage: 0, detail: "In coda…", timestamp: +l.creato_il };
+}
 
-    if (!scenario) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+function datiDi(l: RigaLavoro): any {
+  const r = l.risultato as any;
+  return {
+    solver: "cpsat",
+    scenarioId: l.metadati?.scenarioId ?? l.oggetto_id,
+    scenarioName: l.metadati?.scenarioName ?? "",
+    date: l.metadati?.date ?? "",
+    driverShifts: r.driverShifts || [],
+    summary: r.summary || {},
+    unassignedBlocks: r.metrics?.uncoverableTasks ?? 0,
+    clusters: r.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
+    companyCars: r.companyCars || COMPANY_CARS,
+    solverMetrics: r.metrics || {},
+    optimizationAnalysis: r.optimizationAnalysis ?? null,
+  };
+}
 
-    const vehicleShifts = (scenario.result as any)?.shifts as VehicleShift[] | undefined;
-    if (!vehicleShifts || vehicleShifts.length === 0) {
-      res.status(400).json({ error: "Lo scenario non contiene turni macchina" }); return;
-    }
-
-    req.log.info(`CP-SAT CSP: ${vehicleShifts.length} vehicle shifts, timeLimit=${timeLimitSec}s`);
-
-    const cpResult = await runCPSATCrewScheduler(vehicleShifts, timeLimitSec, req.log);
-
-    res.json({
-      solver: "cpsat",
-      scenarioId: scenario.id,
-      scenarioName: scenario.name,
-      date: scenario.date,
-      driverShifts: cpResult.driverShifts || [],
-      summary: cpResult.summary || {},
-      unassignedBlocks: cpResult.metrics?.uncoverableTasks ?? 0,
-      clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
-      companyCars: cpResult.companyCars || COMPANY_CARS,
-      solverMetrics: cpResult.metrics || {},
-          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
-    });
-  } catch (err: any) {
-    req.log.error(err, "Error in CP-SAT crew scheduling");
-    res.status(500).json({ error: err.message || "Errore nel solver CP-SAT turni guida" });
-  }
-});
-
-/* ═══════════════════════════════════════════════════════════════
- *  ASYNC CP-SAT (Job-based) — Background processing + SSE
- * ═══════════════════════════════════════════════════════════════ */
+/** L'errore come lo dava il job manager: null per un lavoro fermato. */
+const erroreDi = (l: RigaLavoro) => (l.stato === "fermato" ? null : l.errore);
 
 /** POST /api/driver-shifts/:scenarioId/cpsat/async — Launch async optimization, returns 202 + jobId */
 router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req, res) => {
@@ -1208,7 +1136,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
     if (!acc) return;
     const body = req.body as any || {};
-    const timeLimitSec = body.timeLimit ?? 120;
+    const timeLimitSec = tempoDelCalcolo(body.timeLimit);
     const operatorConfig = body.config ?? {};
 
     const [scenario] = await db.select().from(serviceProgramScenarios)
@@ -1220,8 +1148,6 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     if (!vehicleShifts || vehicleShifts.length === 0) {
       res.status(400).json({ error: "Lo scenario non contiene turni macchina" }); return;
     }
-
-    const scriptPath = path.resolve(SCRIPTS_DIR, "crew_scheduler_v4.py");
 
     // Carica cluster, autovetture e nodi di sosta dal DB
     const [allDbClusters, dbCompanyCars, restPoints] = await Promise.all([
@@ -1238,37 +1164,41 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     const companyCarsEffective = typeof operatorConfig?.companyCars === "number" ? operatorConfig.companyCars : dbCompanyCars;
     const { selectedClusterIds: _sci, companyCars: _cc, ...restOperatorConfig } = operatorConfig || {};
 
-    const jobId = jobManager.createJob({
-      scenarioId: (req.params.scenarioId as string),
-      userId: req.user!.id,
-      scriptPath,
-      args: [String(timeLimitSec)],
-      inputJson: {
-        vehicleShifts,
-        config: {
-          timeLimit: timeLimitSec,
-          ...restOperatorConfig,
-          // Autovetture aziendali = vincolo RIGIDO sempre (cap del solver v4);
-          // senza, il default 5 ignorerebbe il numero reale di autovetture.
-          bds: {
-            ...((restOperatorConfig as any).bds ?? {}),
-            optimizer: {
-              ...(((restOperatorConfig as any).bds ?? {}).optimizer ?? {}),
-              maxCompanyCars: typeof (restOperatorConfig as any)?.bds?.optimizer?.maxCompanyCars === "number"
-                ? (restOperatorConfig as any).bds.optimizer.maxCompanyCars
-                : companyCarsEffective,
+    const scenarioId = req.params.scenarioId as string;
+    const jobId = await coda.accoda({
+      tipo: "python",
+      corsia: timeLimitSec <= 120 ? "veloce" : "lunga",
+      utenteId: req.user!.id,
+      via: (req as any).authVia ?? "api",
+      oggettoId: scenarioId,
+      richiesta: {
+        script: "crew_scheduler_v4.py",
+        argv: [String(timeLimitSec)],
+        ingresso: {
+          vehicleShifts,
+          config: {
+            timeLimit: timeLimitSec,
+            ...restOperatorConfig,
+            // Autovetture aziendali = vincolo RIGIDO sempre (cap del solver v4);
+            // senza, il default 5 ignorerebbe il numero reale di autovetture.
+            bds: {
+              ...((restOperatorConfig as any).bds ?? {}),
+              optimizer: {
+                ...(((restOperatorConfig as any).bds ?? {}).optimizer ?? {}),
+                maxCompanyCars: typeof (restOperatorConfig as any)?.bds?.optimizer?.maxCompanyCars === "number"
+                  ? (restOperatorConfig as any).bds.optimizer.maxCompanyCars
+                  : companyCarsEffective,
+              },
             },
+            clusters: dbClusters,
+            companyCars: companyCarsEffective,
+            restPoints,
           },
-          clusters: dbClusters,
-          companyCars: companyCarsEffective,
-          restPoints,
         },
       },
-      logger: req.log,
-      metadata: {
-        scenarioName: scenario.name,
-        date: scenario.date,
-      },
+      metadati: { ambito: AMBITO_TURNI_GUIDA, scenarioId, scenarioName: scenario.name, date: scenario.date },
+      // margine: lo script sfora il budget di qualche minuto (minimi per scenario e polish)
+      timeoutSec: Math.min(7200, timeLimitSec + 300),
     });
 
     req.log.info(`Async CSP job started: ${jobId}, scenario=${(req.params.scenarioId as string)}, timeLimit=${timeLimitSec}s`);
@@ -1285,208 +1215,90 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
   }
 });
 
-/** GET /api/driver-shifts/jobs/:jobId/stream — SSE progress stream */
-router.get("/driver-shifts/jobs/:jobId/stream", (req, res) => {
-  const job = jobManager.getJob((req.params.jobId as string));
-  /* il job di un altro risponde come uno che non c'è: l'id non deve dire niente */
-  if (!job || !puoVedereJob(job, req.user)) { res.status(404).json({ error: "Job non trovato" }); return; }
+/** GET /api/driver-shifts/jobs/:jobId/stream — avanzamento in SSE (legge la riga ogni secondo) */
+router.get("/driver-shifts/jobs/:jobId/stream", async (req, res) => {
+  const l = await lavoroTurniGuida(req);
+  /* il lavoro di un altro risponde come uno che non c'è: l'id non deve dire niente */
+  if (!l) { res.status(404).json({ error: "Job non trovato" }); return; }
 
-  // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no"); // nginx
   res.flushHeaders();
 
-  // Send current state immediately
-  const sendEvent = (event: string, data: unknown) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const invia = (evento: string, dati: unknown) => { res.write(`event: ${evento}\ndata: ${JSON.stringify(dati)}\n\n`); };
+  const finale = (x: RigaLavoro) => {
+    if (x.stato === "completato" && x.risultato) invia("result", { jobId: x.id, status: "completed", data: datiDi(x) });
+    else invia("error", { jobId: x.id, status: STATO_PUBBLICO[x.stato], error: erroreDi(x) });
   };
 
-  sendEvent("status", {
-    jobId: job.id,
-    status: job.status,
-    progress: job.progress,
-  });
+  invia("status", { jobId: l.id, status: STATO_PUBBLICO[l.stato], progress: progressoDi(l) });
+  if (FINITI.has(l.stato)) { finale(l); res.end(); return; }
 
-  // If already done, send result and close
-  if (job.status === "completed" || job.status === "failed" || job.status === "stopped") {
-    if (job.status === "completed" && job.result) {
-      const cpResult = job.result as any;
-      sendEvent("result", {
-        jobId: job.id,
-        status: "completed",
-        data: {
-          solver: "cpsat",
-          scenarioId: job.scenarioId,
-          scenarioName: job.metadata?.scenarioName ?? "",
-          date: job.metadata?.date ?? "",
-          driverShifts: cpResult.driverShifts || [],
-          summary: cpResult.summary || {},
-          unassignedBlocks: cpResult.metrics?.uncoverableTasks ?? 0,
-          clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
-          companyCars: cpResult.companyCars || COMPANY_CARS,
-          solverMetrics: cpResult.metrics || {},
-          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
-        },
-      });
-    } else {
-      sendEvent("error", { jobId: job.id, status: job.status, error: job.error });
-    }
-    res.end();
-    return;
-  }
-
-  // Subscribe to progress events
-  const emitter = jobManager.getJobEmitter((req.params.jobId as string));
-  if (!emitter) { res.end(); return; }
-
-  const onProgress = (evt: { jobId: string; status: string; progress: unknown }) => {
-    sendEvent("progress", evt);
-  };
-
-  const onDone = () => {
-    const finalJob = jobManager.getJob((req.params.jobId as string));
-    if (finalJob?.status === "completed" && finalJob.result) {
-      const cpResult = finalJob.result as any;
-      sendEvent("result", {
-        jobId: finalJob.id,
-        status: "completed",
-        data: {
-          solver: "cpsat",
-          scenarioId: finalJob.scenarioId,
-          scenarioName: finalJob.metadata?.scenarioName ?? "",
-          date: finalJob.metadata?.date ?? "",
-          driverShifts: cpResult.driverShifts || [],
-          summary: cpResult.summary || {},
-          unassignedBlocks: cpResult.metrics?.uncoverableTasks ?? 0,
-          clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
-          companyCars: cpResult.companyCars || COMPANY_CARS,
-          solverMetrics: cpResult.metrics || {},
-          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
-        },
-      });
-    } else if (finalJob) {
-      sendEvent("error", { jobId: finalJob.id, status: finalJob.status, error: finalJob.error });
-    }
-    cleanup();
+  let chiuso = false;
+  let ultimo = +l.aggiornato_il;
+  let leggendo = false;
+  let ultimoInvio = Date.now();
+  const chiudi = () => {
+    if (chiuso) return;
+    chiuso = true;
+    clearInterval(giro);
+    arresto.signal.removeEventListener("abort", chiudi);
     res.end();
   };
-
-  const cleanup = () => {
-    emitter.off("progress", onProgress);
-    emitter.off("done", onDone);
-  };
-
-  emitter.on("progress", onProgress);
-  emitter.on("done", onDone);
-
-  // Client disconnect
-  req.on("close", cleanup);
-});
-
-/** GET /api/driver-shifts/jobs/:jobId — Polling endpoint */
-router.get("/driver-shifts/jobs/:jobId", (req, res) => {
-  const job = jobManager.getJob((req.params.jobId as string));
-  if (!job || !puoVedereJob(job, req.user)) { res.status(404).json({ error: "Job non trovato" }); return; }
-
-  const response: any = {
-    jobId: job.id,
-    scenarioId: job.scenarioId,
-    status: job.status,
-    progress: job.progress,
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-  };
-
-  if (job.status === "completed" && job.result) {
-    const cpResult = job.result as any;
-    response.data = {
-      solver: "cpsat",
-      scenarioId: job.scenarioId,
-      scenarioName: job.metadata?.scenarioName ?? "",
-      date: job.metadata?.date ?? "",
-      driverShifts: cpResult.driverShifts || [],
-      summary: cpResult.summary || {},
-      unassignedBlocks: cpResult.metrics?.uncoverableTasks ?? 0,
-      clusters: cpResult.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
-      companyCars: cpResult.companyCars || COMPANY_CARS,
-      solverMetrics: cpResult.metrics || {},
-          optimizationAnalysis: cpResult.optimizationAnalysis ?? null,
-    };
-  } else if (job.status === "failed" || job.status === "stopped") {
-    response.error = job.error;
-  }
-
-  res.json(response);
-});
-
-/** POST /api/driver-shifts/jobs/:jobId/stop — Stop a running job */
-router.post("/driver-shifts/jobs/:jobId/stop", (req, res) => {
-  const job = jobManager.getJob((req.params.jobId as string));
-  if (!job || !puoVedereJob(job, req.user)) { res.status(404).json({ error: "Job non trovato" }); return; }
-  const ok = jobManager.stopJob(job.id);
-  if (!ok) {
-    res.status(400).json({ error: "Job non trovato o non in esecuzione" });
-    return;
-  }
-  res.json({ jobId: (req.params.jobId as string), status: "stopped" });
-});
-
-/** POST /api/driver-shifts/:scenarioId/compare — Compare greedy vs CP-SAT */
-router.post("/driver-shifts/:scenarioId/compare", async (req, res) => {
-  try {
-    const acc = await requireVehicleScenarioRead(req, res, (req.params.scenarioId as string));
-    if (!acc) return;
-    const timeLimitSec = (req.body as any)?.timeLimit ?? 60;
-
-    // Run greedy
-    const greedyResult = await loadAndGenerate((req.params.scenarioId as string));
-    if (greedyResult.error) {
-      res.status(greedyResult.status!).json({ error: greedyResult.error });
-      return;
-    }
-
-    // Run CP-SAT
-    const [scenario] = await db.select().from(serviceProgramScenarios)
-      .where(eq(serviceProgramScenarios.id, (req.params.scenarioId as string)));
-    if (!scenario) { res.status(404).json({ error: "Scenario non trovato" }); return; }
-
-    const vehicleShifts = (scenario.result as any)?.shifts as VehicleShift[] | undefined;
-    if (!vehicleShifts || vehicleShifts.length === 0) {
-      res.status(400).json({ error: "Lo scenario non contiene turni macchina" }); return;
-    }
-
-    let cpsatResult: any;
+  const giro = setInterval(async () => {
+    if (chiuso || leggendo) return;
+    leggendo = true;
     try {
-      cpsatResult = await runCPSATCrewScheduler(vehicleShifts, timeLimitSec, req.log);
-    } catch (cpErr: any) {
-      req.log.error(cpErr, "CP-SAT failed in compare, using greedy only");
-      cpsatResult = null;
+      const x = await coda.leggi(l.id);
+      if (chiuso) return;
+      if (!x) { chiudi(); return; }
+      if (FINITI.has(x.stato)) { finale(x); chiudi(); return; }
+      if (+x.aggiornato_il !== ultimo) {
+        ultimo = +x.aggiornato_il;
+        invia("progress", { jobId: x.id, status: STATO_PUBBLICO[x.stato], progress: progressoDi(x) });
+        ultimoInvio = Date.now();
+      } else if (Date.now() - ultimoInvio >= 15_000) {
+        res.write(": ping\n\n"); // i proxy non chiudono una connessione muta
+        ultimoInvio = Date.now();
+      }
+    } catch (err) {
+      req.log.warn({ err }, "stream del lavoro: lettura non riuscita, riprovo");
+    } finally {
+      leggendo = false;
     }
-
-    const greedy = greedyResult.data!;
-    const cpsat = cpsatResult ? {
-      driverShifts: cpsatResult.driverShifts || [],
-      summary: cpsatResult.summary || {},
-      solverMetrics: cpsatResult.metrics || {},
-      optimizationAnalysis: cpsatResult.optimizationAnalysis ?? null,
-    } : null;
-
-    // Delta
-    const delta = cpsat ? {
-      driverShifts: (greedy.summary.totalDriverShifts || 0) - (cpsat.summary.totalDriverShifts || 0),
-      totalWorkHours: +((greedy.summary.totalWorkHours || 0) - (cpsat.summary.totalWorkHours || 0)).toFixed(1),
-      totalCambi: (greedy.summary.totalCambi || 0) - (cpsat.summary.totalCambi || 0),
-    } : null;
-
-    res.json({ greedy, cpsat, delta });
-  } catch (err: any) {
-    req.log.error(err, "Error in driver-shifts compare");
-    res.status(500).json({ error: err.message });
-  }
+  }, 1_000);
+  // al deploy lo stream si chiude: il client riprova (o passa al polling) e arriva al container nuovo
+  arresto.signal.addEventListener("abort", chiudi);
+  req.on("close", chiudi);
 });
 
+/** GET /api/driver-shifts/jobs/:jobId — polling */
+router.get("/driver-shifts/jobs/:jobId", async (req, res) => {
+  const l = await lavoroTurniGuida(req);
+  if (!l) { res.status(404).json({ error: "Job non trovato" }); return; }
+  const risposta: any = {
+    jobId: l.id,
+    scenarioId: l.metadati?.scenarioId ?? l.oggetto_id,
+    status: STATO_PUBBLICO[l.stato],
+    progress: progressoDi(l),
+    createdAt: +l.creato_il,
+    updatedAt: +l.aggiornato_il,
+  };
+  if (l.stato === "completato" && l.risultato) risposta.data = datiDi(l);
+  else if (l.stato === "fallito" || l.stato === "fermato") risposta.error = erroreDi(l);
+  res.json(risposta);
+});
+
+/** POST /api/driver-shifts/jobs/:jobId/stop — ferma un lavoro in coda o in corso */
+router.post("/driver-shifts/jobs/:jobId/stop", async (req, res) => {
+  const l = await lavoroTurniGuida(req);
+  if (!l) { res.status(404).json({ error: "Job non trovato" }); return; }
+  const esito = await coda.chiediAnnullamento(l.id);
+  if (!esito) { res.status(400).json({ error: "Job non trovato o non in esecuzione" }); return; }
+  res.json({ jobId: l.id, status: "stopped" });
+});
 
 /* ═══════════════════════════════════════════════════════════════
  *  DRIVER-SHIFT SCENARIOS — CRUD
