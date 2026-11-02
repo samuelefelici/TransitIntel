@@ -253,6 +253,128 @@ occupata non cambia niente ed esce con un errore.
   toppa che dura fino al prossimo avvio dell'API, che la toglie: la correzione
   vera è aggiungere la tabella al contratto.
 
+### Estensioni PostGIS che nessuno usa (tiger, topology)
+
+A ogni avvio dell'API il controllo dei permessi di `argos_ro` scrive 11 avvisi
+su due estensioni che nessuno usa, `postgis_tiger_geocoder` e
+`postgis_topology`:
+
+```
+[migrazioni] ATTENZIONE: argos_ro: tiger.geocode_settings: argos_ro legge (oggetto di un'estensione)
+… lo stesso per tiger.geocode_settings_default, loader_lookuptables, loader_platform,
+  loader_variables, pagc_gaz, pagc_lex, pagc_rules
+[migrazioni] ATTENZIONE: argos_ro: topology.layer: argos_ro legge (oggetto di un'estensione)
+[migrazioni] ATTENZIONE: argos_ro: topology.topology: argos_ro legge (oggetto di un'estensione)
+[migrazioni] ATTENZIONE: argos_ro: topology.topology_id_seq: argos_ro usa la sequenza (oggetto di un'estensione)
+```
+
+Sono innocui. Le estensioni, quando si installano, aprono le loro tabelle a
+tutti i ruoli (PUBLIC), e dentro non c'è niente di Cerbero: le regole e il
+lessico di tiger per gli indirizzi, le impostazioni del geocoder e del suo
+caricatore, l'elenco delle topologie, che è vuoto. Il controllo le segnala e
+non revoca niente, perché sono oggetti di un'estensione e la revoca
+toccherebbe tutti i ruoli.
+
+**Da dove arrivano.** Nessuna repo le crea. Le ha installate l'immagine
+`postgis/postgis` quando Coolify ha creato il database: il suo script d'avvio
+(`/docker-entrypoint-initdb.d/10_postgis.sh`) crea `postgis`,
+`postgis_topology`, `fuzzystrmatch` e `postgis_tiger_geocoder` nel database
+`postgres` e in `template_postgis`. Se il database si ricrea da
+quell'immagine, tornano (tiger solo fino a PostGIS 3.6: dalla 3.7 lo script
+non la installa più). `template_postgis` non dà avvisi e si lascia com'è.
+
+**Prima**, dal Terminal del PostgreSQL (`psql -U postgres -d postgres`):
+1. Query 1, cosa usa le due estensioni. Nessuna riga = niente.
+   ```sql
+   WITH membri AS (
+     SELECT e.extname, m.classid, m.objid
+       FROM pg_extension e
+       JOIN pg_depend m ON m.refclassid = 'pg_extension'::regclass AND m.refobjid = e.oid AND m.deptype = 'e'
+      WHERE e.extname IN ('postgis_tiger_geocoder', 'postgis_topology')
+   ), usi AS (
+     SELECT DISTINCT mb.extname, d.classid, d.objid, d.objsubid,
+            CASE WHEN d.classid = 'pg_constraint'::regclass
+                  AND (SELECT conrelid FROM pg_constraint WHERE oid = d.objid) = 0
+                 THEN 'pg_type'::regclass ELSE 'pg_class'::regclass END AS padre_classe,
+            CASE d.classid
+              WHEN 'pg_rewrite'::regclass    THEN (SELECT ev_class FROM pg_rewrite    WHERE oid = d.objid)
+              WHEN 'pg_attrdef'::regclass    THEN (SELECT adrelid  FROM pg_attrdef    WHERE oid = d.objid)
+              WHEN 'pg_trigger'::regclass    THEN (SELECT tgrelid  FROM pg_trigger    WHERE oid = d.objid)
+              WHEN 'pg_constraint'::regclass THEN (SELECT CASE WHEN conrelid = 0 THEN contypid ELSE conrelid END
+                                                     FROM pg_constraint WHERE oid = d.objid)
+              WHEN 'pg_class'::regclass      THEN coalesce((SELECT indrelid FROM pg_index WHERE indexrelid = d.objid), d.objid)
+            END AS padre
+       FROM membri mb
+       JOIN pg_depend d ON d.refclassid = mb.classid AND d.refobjid = mb.objid AND d.deptype IN ('n', 'a')
+   )
+   SELECT u.extname AS estensione, pg_describe_object(u.classid, u.objid, u.objsubid) AS usata_da
+     FROM usi u
+    WHERE NOT EXISTS (SELECT 1 FROM pg_depend x WHERE x.deptype = 'e'
+                        AND ((x.classid = u.classid AND x.objid = u.objid)
+                          OR (x.classid = u.padre_classe AND x.objid = u.padre)))
+    ORDER BY 1, 2;
+   ```
+2. Query 2, dati caricati e funzioni che le chiamano. `0 | 0 | 0` = niente.
+   ```sql
+   SELECT (SELECT count(*) FROM topology.topology) AS topologie_create,
+          (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'tiger_data') AS tabelle_tiger_caricate,
+          (SELECT count(*) FROM pg_proc p
+            WHERE p.prosrc ~* '\m(tiger|topology)\.'
+              AND NOT EXISTS (SELECT 1 FROM pg_depend x WHERE x.classid = 'pg_proc'::regclass
+                                AND x.objid = p.oid AND x.deptype = 'e')) AS funzioni_che_le_citano;
+   ```
+3. Un backup del database da Coolify.
+4. La ricerca nel codice. L'ultima, il 2 novembre 2026, non ha trovato usi in
+   nessuna delle repo: TransitIntel `9cfc7cc`, fleetmanagement `b85999c` e
+   `82e726f`, argos `b273835`, avm (Caronte) `afc177a` e `526b925`, validator
+   `76eb5db`, rotazioni `238313f`, prenotazionijesi `c740102` e `5a76f2a`,
+   controllerie `4006e33`. Se da allora è cambiato dell'SQL, si rifà in ogni
+   repo:
+   ```bash
+   git grep -n -I -i -P 'postgis_tiger_geocoder|postgis_topology|tiger_data|\btiger\.|\btopology\.|geocode\(|reverse_geocode|geocode_intersection|normalize_address|CreateTopology|DropTopology|toTopoGeom|AddTopoGeometryColumn|TopoGeo_|ST_GetFaceGeometry|GetTopologyID|ValidateTopology|TopoGeometry|topoelement' -- . ':(exclude,glob)**/node_modules/**' ':(exclude,glob)**/dist/**' ':!DEPLOY.md'
+   ```
+   Nessuna riga = niente (`DEPLOY.md` è escluso perché contiene questa
+   sezione). A mano si guardano anche i `search_path`, gli elenchi di schemi
+   degli ORM (`schemaFilter`), i `CREATE`/`DROP EXTENSION`, le immagini e gli
+   script in `docker-entrypoint-initdb.d`.
+
+**I comandi**, come `postgres`, nella stessa sessione:
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+DROP EXTENSION postgis_tiger_geocoder;
+DROP EXTENSION postgis_topology;
+COMMIT;
+```
+Sono senza `CASCADE`: se qualcosa le usa, Postgres rifiuta
+(`cannot drop extension … because other objects depend on it`) e non toglie
+niente, nemmeno l'altra estensione: il `COMMIT` risponde `ROLLBACK`. Se scade
+il lock (`canceling statement due to lock timeout`) non cambia niente lo
+stesso: `ROLLBACK;` e si riprova più tardi. Se si è incollato tutto il blocco,
+il `COMMIT` ha già annullato e `ROLLBACK;` risponde solo
+`there is no transaction in progress`. Restano gli schemi `tiger`,
+`tiger_data` e `topology`, vuoti: non sono delle estensioni, non danno avvisi
+e il ritorno indietro li riusa.
+
+**Per verificare:**
+- `\dx` non mostra più `postgis_tiger_geocoder` e `postgis_topology`, e mostra
+  ancora `postgis` e `fuzzystrmatch`; `SELECT postgis_full_version();`
+  risponde ancora, senza più `TOPOLOGY` in fondo.
+- Al prossimo avvio dell'API spariscono gli avvisi su `tiger.*` e
+  `topology.*`. Si controlla anche subito, dal Terminal del container
+  dell'API: `node lib/db/scripts/argos-permessi.mjs --verifica`. Restano, se
+  ci sono, quelli su `public.geometry_columns`, `public.geography_columns` e
+  `public.spatial_ref_sys`: sono di `postgis`, che resta.
+
+**Per tornare indietro:**
+```sql
+CREATE EXTENSION postgis_topology; CREATE EXTENSION postgis_tiger_geocoder;
+```
+Non si perde niente: non c'è nessuna topologia, `tiger_data` è vuoto e le
+tabelle di consultazione di tiger le riempie l'estensione stessa. Tornano
+anche gli 11 avvisi.
+
 ### L'immagine dell'API
 
 `Dockerfile.api` parte da Node 22 (Node 20 è fuori supporto) e fa girare l'API
