@@ -71,6 +71,16 @@ from cost_model import (CostRates, DutyCostBreakdown, compute_duty_cost,
 # ----------------------------------------------------------------
 # Graceful SIGINT
 # ----------------------------------------------------------------
+# Il lanciatore (api-server, lib/lavori/python.ts) manda SIGINT per lo stop e
+# per il tempo massimo, poi SIGKILL dopo 5 s: lo script deve chiudere entro quel
+# tempo con la soluzione migliore e un JSON valido (`interrupted: true`).
+#
+# CP-SAT, col default catch_sigint_signal=True, durante il solve intercetta il
+# SIGINT (ferma solo quel solve) e alla fine rimette SIGINT al default: il
+# gestore qui sotto non girava mai, e un SIGINT fra due solve uccideva il
+# processo. Per questo ogni solve passa da _risolvi(): catch_sigint_signal=False
+# e solve in un thread a parte, così il thread principale resta in Python, il
+# gestore gira subito e la ricerca si ferma con stop_search().
 _stop_requested = threading.Event()
 
 def _handle_sigint(signum, frame):
@@ -78,6 +88,47 @@ def _handle_sigint(signum, frame):
     _stop_requested.set()
 
 signal.signal(signal.SIGINT, _handle_sigint)
+
+
+class _CalcoloInterrotto(Exception):
+    """Stop chiesto, o scadenza passata, durante un lavoro lungo in Python
+    (coppie fattibili, costruzione del modello)."""
+
+
+def _controlla_stop(scadenza: float | None = None) -> None:
+    """Nei loop lunghi in Python puro: con lo stop chiesto, o passata la
+    `scadenza` (time.monotonic), si esce subito."""
+    if _stop_requested.is_set() or (scadenza is not None and time.monotonic() > scadenza):
+        raise _CalcoloInterrotto()
+
+
+def _risolvi(solver: cp_model.CpSolver, model: cp_model.CpModel):
+    """`solver.solve(model)` fermabile dal SIGINT (vedi sopra)."""
+    solver.parameters.catch_sigint_signal = False
+    esito: dict[str, Any] = {}
+
+    def _corpo() -> None:
+        try:
+            esito["status"] = solver.solve(model)
+        except BaseException as e:  # noqa: BLE001 — si rilancia nel thread principale
+            esito["errore"] = e
+
+    t = threading.Thread(target=_corpo, name="cpsat-solve", daemon=True)
+    t.start()
+    while t.is_alive():
+        t.join(0.1)
+        if _stop_requested.is_set():
+            # a ogni giro: copre anche lo stop arrivato prima che il solve
+            # avesse creato il suo wrapper (stop_search sarebbe andato perso)
+            solver.stop_search()
+    if "errore" in esito:
+        raise esito["errore"]
+    return esito["status"]
+
+
+def _tempo_rimasto(fine: float | None) -> float:
+    """Secondi alla scadenza (time.monotonic); infinito senza scadenza."""
+    return float("inf") if fine is None else fine - time.monotonic()
 
 # ----------------------------------------------------------------
 # Cost scale
@@ -786,7 +837,18 @@ DEFAULT_SCENARIOS = 24             # intensita 2 (medio)
 SCENARIO_TIME_FRACTION = 0.78     # 78% agli scenari, 22% alla polish phase
 SCENARIO_MIN_BUDGET = 6           # almeno 6s per scenario (piu scenari -> meno tempo ciascuno)
 POLISH_TIME_FRACTION = 0.20       # 20% del tempo totale alla rifinitura finale
-POLISH_MIN_BUDGET = 15            # almeno 15s alla polish
+POLISH_MIN_BUDGET = 15            # almeno 15s alla polish (dentro il budget: vedi sotto)
+# Il budget (argv[1]) è una SCADENZA UNICA per tutto il calcolo: scenari,
+# rifinitura, ripieghi e segmentazioni in gara si fermano lì. Dopo la scadenza
+# non parte più niente di nuovo, e un modello in costruzione si abbandona: si
+# tiene la soluzione migliore, o il greedy. Sforo atteso: il primo tentativo
+# garantito (se il parsing ha già consumato il budget), il presolve oltre il
+# limite di CP-SAT, il greedy se serve e la parte finale (validazione, cambi,
+# car pool). Misure in tests/test_budget_e_sigint.py e nella PR.
+# Margine minimo, oltre al tempo di costruzione del modello già misurato, per
+# far partire un altro solve (scenario o rifinitura): sotto, il modello si
+# costruirebbe per niente.
+SOLVE_MIN_UTILE = 1.0             # secondi
 
 # ----------------------------------------------------------------
 # Portfolio di strategie (obiettivi alternativi)
@@ -3204,12 +3266,17 @@ def _build_cpsat_model(
     strategy: str = "balanced",
     hard_pct_caps: bool | None = None,
     hard_car_cap: bool | None = None,
+    scadenza: float | None = None,
 ) -> tuple[cp_model.CpModel, dict, dict, dict]:
     """Costruisce un modello CP-SAT. Parametri:
     - scenario_noise: perturba i costi per esplorare soluzioni alternative
     - strategy: profilo di pesi (vedi SCENARIO_STRATEGIES) per obiettivi alternativi.
     - hard_pct_caps: tetti percentuali dei tipi di turno rigidi (con tolleranza
       di frazione di turno); None = PCT_CAP_HARD.
+    - scadenza: (time.monotonic) oltre, la costruzione si interrompe con
+      _CalcoloInterrotto, come con lo stop. Sulle reti grandi costruire il
+      modello costa decine di secondi (il tetto delle auto aziendali ha un
+      vincolo per istante con tutti i candidati attivi).
     """
     if hard_pct_caps is None:
         hard_pct_caps = PCT_CAP_HARD
@@ -3319,6 +3386,7 @@ def _build_cpsat_model(
         times = sorted({t for _, ev in cand_events for t, _ in ev})
         n_constr = 0
         for tau in times:
+            _controlla_stop(scadenza)
             terms = []
             for var, ev in cand_events:
                 coef = sum(d for t, d in ev if t <= tau)
@@ -3340,17 +3408,18 @@ def _build_cpsat_model(
             f"(picco in transito se tutti singoli: {_interval_peak(_fixed_windows)})")
 
     # -- Vincoli: copertura esatta --
+    # pairs_by_seg ha le coppie di ogni segmento nello stesso ordine di
+    # pair_vars: stesso vincolo di prima, senza riscorrere tutte le coppie per
+    # ogni segmento (era quadratico: secondi su una rete da 250 turni macchina).
+    _controlla_stop(scadenza)
     for s in segments:
-        involved = [single[s.idx]]
-        for key, pv in pair_vars.items():
-            if s.idx in key:
-                involved.append(pv)
+        involved = [single[s.idx]] + [pair_vars[key] for key in pairs_by_seg[s.idx]]
         model.add_exactly_one(involved)
 
     # -- Penalita nastro violato --
     nastro_violation_penalty: dict[int, int] = {}
     for s_idx in too_long_for_single:
-        has_pair = any(s_idx in key for key in pair_vars)
+        has_pair = bool(pairs_by_seg.get(s_idx))
         seg = seg_by_idx[s_idx]
         _t = seg_transfer_out(seg, clusters)
         _tb = seg_transfer_back(seg, clusters)
@@ -3875,6 +3944,9 @@ def optimize_multi_scenario(
     bds: BDSConfig,
     relax_pct_caps: bool = False,
     relax_car_cap: bool = False,
+    deadline: float | None = None,
+    garantisci_tentativo: bool = True,
+    coppie: list[tuple[int, int, str]] | None = None,
 ) -> list[DriverDutyV3]:
     """Ottimizzazione multi-scenario: genera N scenari CP-SAT con parametri diversi,
     poi sceglie il migliore.
@@ -3884,7 +3956,20 @@ def optimize_multi_scenario(
     - Seed CP-SAT diverso -> esplora rami diversi dell'albero di ricerca
     - Noise sui costi -> perturba l'obiettivo per trovare soluzioni strutturalmente diverse
     - Linearization level diverso -> strategie di bound diverse
+
+    Tempo: la chiamata finisce entro `time_limit_sec` e comunque entro
+    `deadline` (time.monotonic(), la scadenza unica di run()). Dopo, non parte
+    più niente di nuovo (scenari, rifinitura, ripieghi): si tiene la soluzione
+    migliore o si fa il greedy. Lo stesso con lo stop (SIGINT).
+    Con `garantisci_tentativo` il primo scenario si costruisce per intero e ha
+    almeno SCENARIO_MIN_BUDGET secondi di solve, anche oltre la scadenza: lo
+    vuole la prima chiamata di run(), perché un tentativo vero di CP-SAT ci sia
+    sempre. Gli altri modelli si abbandonano se la scadenza passa mentre si
+    costruiscono.
+    `coppie`: le coppie fattibili già calcolate (i ripieghi le riusano).
     """
+    t_call = time.monotonic()
+    fine = t_call + time_limit_sec if deadline is None else min(deadline, t_call + time_limit_sec)
     rules = config.get("shiftRules", SHIFT_RULES)
     rates = CostRates.from_config(config)
     n_seg = len(segments)
@@ -3920,22 +4005,30 @@ def optimize_multi_scenario(
     scenario_budget = max(SCENARIO_MIN_BUDGET, scenario_budget)
 
     log(f"Multi-scenario: {n_scenarios} scenari x {scenario_budget}s = {n_scenarios * scenario_budget}s "
-        f"+ polish {polish_time_total}s (totale budget {time_limit_sec}s, intensita {intensity})")
+        f"+ polish {polish_time_total}s (totale budget {time_limit_sec:.0f}s, scadenza fra "
+        f"{max(0.0, _tempo_rimasto(fine)):.0f}s, intensita {intensity})")
     report_progress("optimize", 28, f"Portfolio: {n_scenarios} scenari x {scenario_budget}s + rifinitura")
 
     # -- Pre-calcola coppie fattibili (uguale per tutti gli scenari) --
-    feasible_pairs: list[tuple[int, int, str]] = []
-    for i in range(n_seg):
-        for j in range(i + 1, n_seg):
-            s1, s2 = segments[i], segments[j]
-            gap_between = abs(s1.start_min - s2.end_min)
-            if gap_between > 700:
-                continue
-            if s1.end_min > s2.start_min and s2.end_min > s1.start_min:
-                continue
-            pair_type = _feasible_pair(s1, s2, rules, clusters)
-            if pair_type:
-                feasible_pairs.append((s1.idx, s2.idx, pair_type))
+    feasible_pairs: list[tuple[int, int, str]] = list(coppie) if coppie is not None else []
+    interrotto = False
+    try:
+        for i in range(n_seg if coppie is None else 0):
+            _controlla_stop()
+            for j in range(i + 1, n_seg):
+                s1, s2 = segments[i], segments[j]
+                gap_between = abs(s1.start_min - s2.end_min)
+                if gap_between > 700:
+                    continue
+                if s1.end_min > s2.start_min and s2.end_min > s1.start_min:
+                    continue
+                pair_type = _feasible_pair(s1, s2, rules, clusters)
+                if pair_type:
+                    feasible_pairs.append((s1.idx, s2.idx, pair_type))
+    except _CalcoloInterrotto:
+        interrotto = True
+        feasible_pairs = []
+        log("  Stop richiesto durante il calcolo delle coppie fattibili: niente scenari")
 
     _ptypes: dict[str, int] = {}
     for _, _, _pt in feasible_pairs:
@@ -3979,30 +4072,67 @@ def optimize_multi_scenario(
             "strategy": strategy,
         })
 
-    t_total_start = time.time()
+    t_total_start = time.monotonic()
+    # Il tempo più lungo misurato per costruire il modello in Python: un altro
+    # solve parte solo se, costruito il modello, resta tempo per risolverlo.
+    costruzione_max = 0.0
+    budget_esaurito = False
+
+    def _tempo_scenari_finito(sc_idx: int) -> bool:
+        """Dopo OGNI scenario, qualunque sia l'esito (anche UNKNOWN/INFEASIBLE)."""
+        nonlocal budget_esaurito
+        if _tempo_rimasto(fine) <= 0:
+            budget_esaurito = True
+            log(f"  Budget esaurito dopo {sc_idx+1} scenari")
+            return True
+        if time.monotonic() - t_total_start > scenario_time_total:
+            log(f"  Tempo esaurito dopo {sc_idx+1} scenari")
+            return True
+        return False
 
     for sc_idx, params in enumerate(scenario_params):
-        if _stop_requested.is_set():
+        if interrotto or _stop_requested.is_set():
             log(f"  Scenario {sc_idx+1}/{n_scenarios}: SKIP (stop requested)")
             break
+        rimasto = _tempo_rimasto(fine)
+        if sc_idx > 0 and rimasto < costruzione_max + SOLVE_MIN_UTILE:
+            # il primo scenario parte sempre (chi chiama decide se ne vale la pena)
+            budget_esaurito = True
+            log(f"  Scenario {sc_idx+1}/{n_scenarios}: SKIP (budget esaurito, {max(0.0, rimasto):.1f}s "
+                f"alla scadenza, costruire il modello ne chiede ~{costruzione_max:.1f}s)")
+            break
 
-        sc_start = time.time()
+        sc_start = time.monotonic()
         pct = 28 + int(50 * sc_idx / n_scenarios)
         strat_label = SCENARIO_STRATEGIES.get(params["strategy"], {}).get("label", params["strategy"])
         report_progress("optimize", pct,
                        f"Scenario {sc_idx+1}/{n_scenarios} [{strat_label}] noise={params['noise']:.2f}")
 
-        model, single, pvars, ptypes = _build_cpsat_model(
-            segments, feasible_pairs, rules, rates, bds, clusters,
-            scenario_seed=params["seed"],
-            scenario_noise=params["noise"],
-            strategy=params["strategy"],
-            hard_pct_caps=PCT_CAP_HARD and not relax_pct_caps,
-            hard_car_cap=CAR_CAP_HARD and not relax_car_cap,
-        )
+        try:
+            model, single, pvars, ptypes = _build_cpsat_model(
+                segments, feasible_pairs, rules, rates, bds, clusters,
+                scenario_seed=params["seed"],
+                scenario_noise=params["noise"],
+                strategy=params["strategy"],
+                hard_pct_caps=PCT_CAP_HARD and not relax_pct_caps,
+                hard_car_cap=CAR_CAP_HARD and not relax_car_cap,
+                # il tentativo garantito si costruisce comunque; gli altri modelli
+                # non servono più se la scadenza passa mentre si costruiscono
+                scadenza=None if (sc_idx == 0 and garantisci_tentativo) else fine,
+            )
+        except _CalcoloInterrotto:
+            if _stop_requested.is_set():
+                log(f"  Scenario {sc_idx+1}/{n_scenarios}: stop richiesto durante la costruzione del modello")
+            else:
+                budget_esaurito = True
+                log(f"  Scenario {sc_idx+1}/{n_scenarios}: scadenza passata durante la costruzione del modello "
+                    f"({time.monotonic() - sc_start:.1f}s): interrotto")
+            break
+        costruzione_max = max(costruzione_max, time.monotonic() - sc_start)
 
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = scenario_budget
+        minimo = SCENARIO_MIN_BUDGET if (sc_idx == 0 and garantisci_tentativo) else SOLVE_MIN_UTILE
+        solver.parameters.max_time_in_seconds = float(min(scenario_budget, max(_tempo_rimasto(fine), minimo)))
         solver.parameters.num_workers = params["n_workers"]
         solver.parameters.log_search_progress = False
         solver.parameters.random_seed = params["seed"]
@@ -4015,13 +4145,13 @@ def optimize_multi_scenario(
             except Exception:
                 pass
 
-        status = solver.solve(model)
+        status = _risolvi(solver, model)
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE) and _LAST_CAR_CAP_EXCESS_VARS:
             _exc = sum(solver.value(v) for v in _LAST_CAR_CAP_EXCESS_VARS)
             if _exc > 0:
                 log(f"[V4][CPSAT] ⚠️ tetto auto aziendali superato nel modello: eccedenza "
                     f"cumulata {_exc} auto·istanti (nessuna soluzione entro il tetto con questa segmentazione)")
-        sc_elapsed = time.time() - sc_start
+        sc_elapsed = time.monotonic() - sc_start
 
         status_name = {
             cp_model.OPTIMAL: "OPTIMAL",
@@ -4053,6 +4183,14 @@ def optimize_multi_scenario(
                 "elapsed": round(sc_elapsed, 1),
                 "params": params_out,
             })
+            if status in (cp_model.INFEASIBLE, cp_model.MODEL_INVALID):
+                # Gli scenari cambiano solo l'obiettivo (strategia, rumore,
+                # seme) e i parametri del solver: i vincoli sono gli stessi,
+                # quindi l'esito vale per tutti. Si passa subito al ripiego.
+                log(f"  {status_name} vale per tutti gli scenari (stessi vincoli): niente altri scenari")
+                break
+            if _tempo_scenari_finito(sc_idx):
+                break
             continue
 
         duties = _extract_duties_from_solution(
@@ -4093,11 +4231,10 @@ def optimize_multi_scenario(
                 solver, single, pvars,
             )
 
-        if time.time() - t_total_start > scenario_time_total:
-            log(f"  Tempo esaurito dopo {sc_idx+1} scenari")
+        if _tempo_scenari_finito(sc_idx):
             break
 
-    total_scenario_elapsed = time.time() - t_total_start
+    total_scenario_elapsed = time.monotonic() - t_total_start
 
     # ═══════════ POLISH PHASE ═══════════
     # Prendi il migliore e rifiniscilo: stessa strategia + tempo piu lungo + noise=0
@@ -4107,20 +4244,40 @@ def optimize_multi_scenario(
     polish_score_after = best_score
     polish_elapsed = 0.0
 
-    if best_duties is not None and not _stop_requested.is_set():
-        polish_budget = min(polish_time_total, max(POLISH_MIN_BUDGET, int(polish_time_total)))
+    rimasto_polish = _tempo_rimasto(fine)
+    polish_model = None
+    if (best_duties is not None and not _stop_requested.is_set()
+            and rimasto_polish < costruzione_max + SOLVE_MIN_UTILE):
+        budget_esaurito = True
+        log(f"Polish saltata: {max(0.0, rimasto_polish):.1f}s alla scadenza "
+            f"(costruire il modello ne chiede ~{costruzione_max:.1f}s)")
+    elif best_duties is not None and not _stop_requested.is_set():
+        # POLISH_MIN_BUDGET è il minimo pianificato, ma dentro la scadenza
+        polish_budget = int(min(polish_time_total, rimasto_polish))
         report_progress("optimize", 82, f"Rifinitura: polish {polish_budget}s su strategia {best_strategy_used}")
         log(f"Polish phase: strategia={best_strategy_used}, tempo={polish_budget}s, "
             f"warm-start da scenario {best_scenario_idx + 1}")
 
-        polish_start = time.time()
-        polish_model, p_single, p_pvars, p_ptypes = _build_cpsat_model(
-            segments, feasible_pairs, rules, rates, bds, clusters,
-            scenario_seed=base_seed + 99991,
-            scenario_noise=0.0,
-            strategy=best_strategy_used,
-        )
+        polish_start = time.monotonic()
+        try:
+            # stessi tetti degli scenari: nei ripieghi la rifinitura lavora
+            # sul modello rilassato, non su quello appena risultato infattibile
+            polish_model, p_single, p_pvars, p_ptypes = _build_cpsat_model(
+                segments, feasible_pairs, rules, rates, bds, clusters,
+                scenario_seed=base_seed + 99991,
+                scenario_noise=0.0,
+                strategy=best_strategy_used,
+                hard_pct_caps=PCT_CAP_HARD and not relax_pct_caps,
+                hard_car_cap=CAR_CAP_HARD and not relax_car_cap,
+                scadenza=fine,
+            )
+        except _CalcoloInterrotto:
+            if not _stop_requested.is_set():
+                budget_esaurito = True
+            log("Polish: " + ("stop richiesto" if _stop_requested.is_set() else "scadenza passata")
+                + " durante la costruzione del modello")
 
+    if polish_model is not None:
         # FIX-CSP-3: warm-start dal best scenario.
         # Senza questo, il polish parte cieco e raramente trova soluzioni
         # migliori perche' il budget tempo (15-30s) e' troppo basso per
@@ -4138,14 +4295,16 @@ def optimize_multi_scenario(
         log(f"Polish: applicati {n_hints_single} hint single + {n_hints_pair} hint pair")
 
         polish_solver = cp_model.CpSolver()
-        polish_solver.parameters.max_time_in_seconds = polish_budget
+        # il modello è costruito: il solve ha il tempo che resta, entro il budget di rifinitura
+        polish_solver.parameters.max_time_in_seconds = float(
+            max(SOLVE_MIN_UTILE, min(polish_budget, _tempo_rimasto(fine))))
         polish_solver.parameters.num_workers = 8
         polish_solver.parameters.log_search_progress = False
         polish_solver.parameters.random_seed = base_seed + 99991
         polish_solver.parameters.linearization_level = 2
 
-        polish_status = polish_solver.solve(polish_model)
-        polish_elapsed = time.time() - polish_start
+        polish_status = _risolvi(polish_solver, polish_model)
+        polish_elapsed = time.monotonic() - polish_start
 
         if polish_status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             polish_duties = _extract_duties_from_solution(
@@ -4185,7 +4344,7 @@ def optimize_multi_scenario(
                 best_duties = polish_duties
                 best_score = polish_score
 
-    total_elapsed = time.time() - t_total_start
+    total_elapsed = time.monotonic() - t_total_start
     log(f"Portfolio: {len(scenario_results)} scenari in {total_elapsed:.1f}s, "
         f"migliore = scenario {best_scenario_idx+1} strategia '{best_strategy_used}' (score={best_score:.0f})")
     report_progress("optimize", 88, f"Rifinitura completata (score {best_score:.0f})")
@@ -4281,7 +4440,12 @@ def optimize_multi_scenario(
         "strategySummary": strategy_summary,
         "bestMetrics": best_metrics_final,
         "intensity": intensity,
-        "timeBudgetSec": time_limit_sec,
+        "timeBudgetSec": int(round(time_limit_sec)),
+        # la scadenza ha fermato scenari o rifinitura (sulle reti grandi)
+        "budgetExhausted": budget_esaurito,
+        "stopRequested": _stop_requested.is_set(),
+        # tempo più lungo per costruire un modello (Python, un solo thread)
+        "modelBuildSec": round(costruzione_max, 2),
         "scenarioBudgetSec": scenario_budget,
         "polishBudgetSec": polish_time_total,
         "nSegments": n_seg,
@@ -4293,24 +4457,44 @@ def optimize_multi_scenario(
         "optimalProvenAllScenarios": (n_optimal == len(_non_polish) and len(_non_polish) > 0),
     }
 
-    if best_duties is None and PCT_CAP_HARD and not relax_pct_caps:
-        # Coi tetti percentuali rigidi nessuno scenario è fattibile: si ripiega
-        # sui tetti flessibili e lo si dichiara (pctCapRelaxed nel riepilogo,
-        # violazione globale se il tetto resta sforato).
-        LAST_PCT_CAP["relaxed"] = True
-        log("[V4][PCT-CAP] nessuno scenario fattibile coi tetti percentuali RIGIDI: "
-            "ripiego sui tetti flessibili (penalità), sforamento dichiarato")
-        return optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds,
-                                       relax_pct_caps=True, relax_car_cap=relax_car_cap)
-    if best_duties is None and CAR_CAP_HARD and MAX_COMPANY_CARS > 0 and not relax_car_cap:
-        # Neanche coi tetti percentuali flessibili: l'ultimo ripiego è il tetto
-        # auto a penalità (sforamento dichiarato: companyCarsCapRelaxed).
-        LAST_PCT_CAP["carCapRelaxed"] = True
-        log("[V4][CAR-CAP] nessuno scenario fattibile col tetto auto RIGIDO: ripiego a penalità, sforamento dichiarato")
-        return optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds,
-                                       relax_pct_caps=True, relax_car_cap=True)
-
     if best_duties is None:
+        # Ripieghi: coi tetti percentuali rigidi, poi col tetto auto rigido,
+        # nessuno scenario fattibile → si riprova coi tetti a penalità. Solo
+        # se c'è ancora tempo per almeno uno scenario: a budget finito (o con
+        # lo stop) si va dritti al greedy, che dà comunque una soluzione valida.
+        ripiego = None
+        if PCT_CAP_HARD and not relax_pct_caps:
+            ripiego = "PCT-CAP"
+        elif CAR_CAP_HARD and MAX_COMPANY_CARS > 0 and not relax_car_cap:
+            ripiego = "CAR-CAP"
+        rimasto = _tempo_rimasto(fine)
+        # stessa regola degli scenari: serve il tempo di costruire il modello e risolverlo
+        if ripiego and (_stop_requested.is_set() or rimasto < costruzione_max + SOLVE_MIN_UTILE):
+            perche = ("stop richiesto" if _stop_requested.is_set()
+                      else f"budget finito ({max(0.0, rimasto):.0f}s alla scadenza)")
+            log(f"[V4][RIPIEGO] nessuno scenario fattibile e {perche}: niente ripiego {ripiego}, dritti al greedy")
+            ripiego = None
+        if ripiego == "PCT-CAP":
+            # Coi tetti percentuali rigidi nessuno scenario è fattibile: si ripiega
+            # sui tetti flessibili e lo si dichiara (pctCapRelaxed nel riepilogo,
+            # violazione globale se il tetto resta sforato).
+            LAST_PCT_CAP["relaxed"] = True
+            log("[V4][PCT-CAP] nessuno scenario fattibile coi tetti percentuali RIGIDI: "
+                "ripiego sui tetti flessibili (penalità), sforamento dichiarato")
+            return optimize_multi_scenario(blocks, segments, config, rimasto, clusters, bds,
+                                           relax_pct_caps=True, relax_car_cap=relax_car_cap,
+                                           deadline=fine, garantisci_tentativo=False,
+                                           coppie=feasible_pairs)
+        if ripiego == "CAR-CAP":
+            # Neanche coi tetti percentuali flessibili: l'ultimo ripiego è il tetto
+            # auto a penalità (sforamento dichiarato: companyCarsCapRelaxed).
+            LAST_PCT_CAP["carCapRelaxed"] = True
+            log("[V4][CAR-CAP] nessuno scenario fattibile col tetto auto RIGIDO: ripiego a penalità, sforamento dichiarato")
+            return optimize_multi_scenario(blocks, segments, config, rimasto, clusters, bds,
+                                           relax_pct_caps=True, relax_car_cap=True,
+                                           deadline=fine, garantisci_tentativo=False,
+                                           coppie=feasible_pairs)
+
         log("Tutti gli scenari falliti -- fallback a greedy")
         return greedy_fallback(blocks, segments, config, clusters, bds)
 
@@ -4963,6 +5147,9 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     vengono riassegnati a ogni chiamata (safe per run ripetuti in-process).
     """
     t_start = time.time()
+    # Il budget è una scadenza unica per tutto il calcolo, parsing compreso
+    # (vedi SOLVE_MIN_UTILE): dopo non parte più niente di nuovo.
+    scadenza = time.monotonic() + time_limit_sec
     vehicle_shifts_raw = raw.get("vehicleShifts", [])
     user_config = raw.get("config", {})
     config = merge_config(user_config)
@@ -5066,6 +5253,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
                 targets.append(t)
         seen_shapes: set[tuple] = set()
         for t in targets:
+            if _stop_requested.is_set():
+                break
             pv = build_pair_aware_segments(
                 blocks, clusters, _rules,
                 full_candidates=full_cut_candidates,
@@ -5080,20 +5269,36 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
             seen_shapes.add(shape)
             variants.append((f"pair-aware ≤{t}'", pv[0], pv[1]))
     if not variants:
-        duties = optimize_multi_scenario(blocks, segments, config, time_limit_sec, clusters, bds)
+        duties = optimize_multi_scenario(blocks, segments, config, max(1.0, _tempo_rimasto(scadenza)),
+                                         clusters, bds, deadline=scadenza)
     else:
         legacy_map = {b.vehicle_id: list(b.segments) for b in blocks}
         rates_cmp = CostRates.from_config(config)
-        share_tl = max(20, int(time_limit_sec / (1 + len(variants))))
+        corse = [("storica", segments, legacy_map)] + variants
         log(f"[V4][PAIR-AWARE] gara: storica ({len(segments)} seg.) vs "
             + ", ".join(f"{lab} ({len(sg)} seg.)" for lab, sg, _ in variants)
-            + f" — {share_tl}s ciascuna")
+            + f" — {_tempo_rimasto(scadenza) / len(corse):.0f}s ciascuna (il tempo che resta, diviso)")
         results: list[dict] = []
+        skipped: list[str] = []
         best_pick = None   # (score, label, duties, segments, seg_map, snapshot)
-        for label, segs, seg_map in [("storica", segments, legacy_map)] + variants:
+        costruzione = 0.0  # tempo più lungo per costruire un modello, nelle segmentazioni già corse
+        for k, (label, segs, seg_map) in enumerate(corse):
+            # Ogni segmentazione ha la sua parte del tempo che RESTA: se una
+            # sfora, le altre si dividono il resto. La prima corre sempre; le
+            # altre si saltano con lo stop, o se il tempo non basta neanche a
+            # costruire un modello e risolverlo (stessa regola degli scenari).
+            rimasto = _tempo_rimasto(scadenza)
+            if k > 0 and (_stop_requested.is_set() or rimasto < costruzione + SOLVE_MIN_UTILE):
+                perche = "stop richiesto" if _stop_requested.is_set() else f"budget finito ({max(0.0, rimasto):.0f}s)"
+                log(f"[V4][PAIR-AWARE] {label}: saltata, {perche}")
+                skipped.append(label)
+                continue
+            share_tl = max(1.0, rimasto / (len(corse) - k))
             for b in blocks:
                 b.segments = seg_map.get(b.vehicle_id, b.segments)
-            d_var = optimize_multi_scenario(blocks, segs, config, share_tl, clusters, bds)
+            d_var = optimize_multi_scenario(blocks, segs, config, share_tl, clusters, bds,
+                                            deadline=scadenza, garantisci_tentativo=(k == 0))
+            costruzione = max(costruzione, float(LAST_OPTIMIZATION_ANALYSIS.get("modelBuildSec") or 0))
             sc = _score_solution(d_var, rates_cmp, bds, clusters)
             snap = (list(LAST_SCENARIO_RESULTS), dict(LAST_OPTIMIZATION_ANALYSIS))
             results.append({"label": label, "segments": len(segs), "duties": len(d_var),
@@ -5105,7 +5310,7 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
         for b in blocks:
             b.segments = win_map.get(b.vehicle_id, b.segments)
         LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS = win_snap
-        SEGMENTATION_RESULT = {"winner": win_label, "variants": results}
+        SEGMENTATION_RESULT = {"winner": win_label, "variants": results, "skipped": skipped}
         log(f"[V4][PAIR-AWARE] vince: {win_label}")
 
     # Codici aziendali (A001… mattinali, A100… pomeridiani) PRIMA di cambi e
@@ -5173,6 +5378,12 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     # Inietta l'analisi sintetica del processo di ottimizzazione
     if LAST_OPTIMIZATION_ANALYSIS:
         output["optimizationAnalysis"] = LAST_OPTIMIZATION_ANALYSIS
+
+    # Fermato da un SIGINT (stop dell'utente o tempo massimo del lanciatore):
+    # il risultato è valido ma parziale (soluzione migliore fin lì, o greedy).
+    output["interrupted"] = _stop_requested.is_set()
+    if output["interrupted"]:
+        log("[V4] Calcolo fermato dal SIGINT: risultato parziale (soluzione migliore trovata o greedy)")
 
     log(f"=== DONE in {elapsed:.1f}s — {n_total} turni, {n_suppl} supplementi "
         f"({n_suppl * 100 // max(n_total, 1)}%), €{output['summary']['totalDailyCost']:.0f}/giorno, "
