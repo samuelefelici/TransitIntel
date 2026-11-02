@@ -731,18 +731,18 @@ alla volta, e Argos funziona sempre:
 3. nell'Application di Argos metti lo stesso valore nuovo in
    `TRANSITINTEL_CRON_SECRET`, poi ridistribuisci. Il codice di Argos non
    cambia; il suo README, che dice di usarci `CRON_SECRET`, è superato;
-4. verifica dal Terminal del container dell'API, con i valori veri al posto
-   dei segnaposto. Il primo comando deve dare `200`, il secondo `401`:
+4. verifica dal Terminal del container dell'API. Nell'immagine `curl` non
+   c'è: si usa Node, che legge i due segreti dall'ambiente del container (non
+   vanno incollati):
    ```sh
-   curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:3000/api/cron/argos-mcp-projects -H "x-cron-secret: <ARGOS_CRON_SECRET>"
-   curl -s -o /dev/null -w '%{http_code}\n' -X POST http://localhost:3000/api/cron/argos-mcp-projects -H "x-cron-secret: <CRON_SECRET>"
+   node -e 'const u="http://localhost:"+(process.env.PORT||3000)+"/api/cron/argos-mcp-projects";const p=s=>fetch(u,{method:"POST",headers:{"x-cron-secret":s||""}}).then(r=>r.status);(async()=>{console.log("con ARGOS_CRON_SECRET:",await p(process.env.ARGOS_CRON_SECRET));console.log("con CRON_SECRET:",await p(process.env.CRON_SECRET))})()'
    ```
-   Il secondo dà `200` finché il passaggio è attivo: è normale. Una prova nel
-   pannello di Argos in Planning Studio non basta, perché il pannello non
-   passa da queste rotte. Il connettore MCP invece sì (strumento
-   `argos_projects`);
-5. nell'API togli `ARGOS_CRON_PASSAGGIO` e ridistribuisci. Ora il secondo
-   `curl` deve dare `401`.
+   Con `ARGOS_CRON_SECRET` deve dare `200`. Con `CRON_SECRET` dà `200` finché
+   il passaggio è attivo: è normale. Una prova nel pannello di Argos in
+   Planning Studio non basta, perché il pannello non passa da queste rotte. Il
+   connettore MCP invece sì (strumento `argos_projects`);
+5. nell'API togli `ARGOS_CRON_PASSAGGIO` e ridistribuisci. Ora, con
+   `CRON_SECRET`, lo stesso comando deve dare `401`.
 
 Se Argos manda un segreto sbagliato, il log dell'API lo dice («una rotta cron
 di Argos ha ricevuto un segreto sbagliato»), al massimo una volta l'ora. Lo
