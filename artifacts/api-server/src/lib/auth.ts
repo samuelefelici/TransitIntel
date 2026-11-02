@@ -737,6 +737,15 @@ export function letturaCondivisa(metodo: string, path: string): Permission[] | n
   return voce ? voce[1] : null;
 }
 
+/**
+ * Prefissi solo dell'admin, per scelta: chi non è admin prende 403 «Solo admin»
+ * senza la riga di log della voce dimenticata. Le rotte si proteggono anche da
+ * sé (requireAdmin in routes/admin.ts).
+ */
+export const SOLO_ADMIN: readonly string[] = ["/admin/sync"];
+
+const sotto = (p: string, prefix: string) => p === prefix || p.startsWith(prefix + "/");
+
 /** Il permesso del prefisso che copre questo percorso (il primo nell'ordine), o null. */
 export function permessoDelPrefisso(path: string): Permission[] | null {
   const p = path.toLowerCase();
@@ -762,6 +771,7 @@ export const requirePermissionByPath: RequestHandler = (req, res, next) => {
    * lo stesso, altrimenti basta una maiuscola per saltare il controllo. */
   const { condivisa, prefisso } = permessoPerPercorso(req.method, req.path);
   if (condivisa?.some(pp => req.user!.permissions?.[pp])) { next(); return; }
+  if (SOLO_ADMIN.some(a => sotto(req.path.toLowerCase(), a))) { res.status(403).json({ error: "Solo admin" }); return; }
   if (prefisso) {
     if (prefisso.some(pp => req.user!.permissions?.[pp])) { next(); return; }
     res.status(403).json({ error: `Manca il permesso: ${prefisso.join(" o ")}` });
@@ -1055,17 +1065,25 @@ router.post("/auth/fleetcare-sso", requireAuth, async (req, res): Promise<void> 
 // GET /api/users/lookup?q=stringa  — accessibile a qualunque utente autenticato.
 // Esclude l'utente corrente (non senso aggiungere se stesso). Limit 50.
 router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
-  const q = String(req.query.q || "").trim().toLowerCase();
+  /* serve alle finestre di condivisione dei progetti (Turni, Planning Studio):
+   * chi non ha quei moduli non la vede, e nemmeno i token emessi per Argos */
+  if (req.authVia) { res.status(403).json({ error: "Non disponibile da questo canale" }); return; }
+  if (!haPermesso(req, "network") && !haPermesso(req, "scheduling")) {
+    res.status(403).json({ error: "Manca il permesso: network o scheduling" }); return;
+  }
+  const q = String(req.query.q || "").trim().toLowerCase().slice(0, 100);
   const meId = req.user!.id;
   // Serve una query di ≥2 caratteri: senza, si poteva dumpare l'intera rubrica
   // (email di tutti gli utenti → enumerazione/phishing). Gli admin non hanno
   // questo limite (usano la lista completa dal pannello admin).
   if (q.length < 2 && req.user!.role !== "admin") { res.json({ users: [] }); return; }
+  /* % e _ sono caratteri come gli altri: altrimenti «%%» o «__» elencano tutti */
+  const modello = "%" + q.replace(/[\\%_]/g, (c) => "\\" + c) + "%";
   const r = q
     ? await db.execute(sql`
         SELECT id, email, full_name FROM users
          WHERE active = true AND id <> ${meId}::uuid
-           AND (lower(email) LIKE ${'%' + q + '%'} OR lower(coalesce(full_name,'')) LIKE ${'%' + q + '%'})
+           AND (lower(email) LIKE ${modello} ESCAPE '\\' OR lower(coalesce(full_name,'')) LIKE ${modello} ESCAPE '\\')
          ORDER BY email ASC LIMIT 20
       `)
     : await db.execute(sql`

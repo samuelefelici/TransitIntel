@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
+import { voceAdminLeggibile } from "@/lib/registro-admin";
 import { useAuth, type Permission } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -54,14 +55,7 @@ const ESITO_LABEL: Record<string, string> = {
   bloccato_account: "account bloccato (errori da più indirizzi)",
   biglietto_fleetcare: "biglietto per FleetCare emesso",
 };
-const esitoLeggibile = (e: string) => {
-  const m = /^admin:([a-z_]+) \((.*)\)$/.exec(e);
-  if (m) {
-    const azione = ({ password_provvisoria: "password provvisoria", verifica_tolta: "verifica tolta", sbloccato: "sbloccato", disattivato: "disattivato", riattivato: "riattivato" } as Record<string, string>)[m[1]!] ?? m[1];
-    return `${azione}, dall'admin ${m[2]}`;
-  }
-  return ESITO_LABEL[e] ?? e;
-};
+const esitoLeggibile = (e: string) => voceAdminLeggibile(e) ?? ESITO_LABEL[e] ?? e;
 
 /** I permessi sono i moduli del menu (lib/navigazione.ts), nell'ordine della giornata. */
 const PERM_LABEL: Record<Permission, string> = {

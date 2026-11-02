@@ -224,6 +224,7 @@ describe("deny by default: un percorso senza voce è solo dell'admin", () => {
   it("un prefisso che nessuna voce copre dà 403 anche con tutti i permessi", () => {
     expect(verifica("/nuova-rotta", tutti)).toBe(403);
     expect(verifica("/admin/sync/status", tutti)).toBe(403);
+    expect(verifica("/ADMIN/SYNC", tutti)).toBe(403);
     expect(verifica("/intermodalita", tutti, "POST")).toBe(403);
   });
 

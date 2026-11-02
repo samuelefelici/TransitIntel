@@ -598,7 +598,12 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
   - il lancio a mano dell'ingestione AVM (`POST /api/siri/sync`) è solo
     dell'admin;
   - le regole salvate dell'ottimizzatore e l'analisi intermodale della Fucina
-    chiedono Turni.
+    chiedono Turni;
+  - la ricerca dei colleghi nelle finestre di condivisione dei progetti
+    (`/api/users/lookup`) chiede Rete e orari o Turni, e non è disponibile ai
+    token di Argos;
+  - le sincronizzazioni delle sorgenti (`/api/admin/sync`) rispondono «Solo
+    admin».
 - **Il registro degli accessi** (Gestione Utenti) ora scrive anche quello che
   l'admin cambia sugli utenti: creazione ed eliminazione, ruolo, permessi
   (solo i nomi dei moduli aggiunti e tolti), ruolo FleetCare, nome (solo che
