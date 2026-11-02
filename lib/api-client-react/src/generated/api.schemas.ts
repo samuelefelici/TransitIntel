@@ -1154,15 +1154,6 @@ export type GetDriverShifts200 = { [key: string]: unknown };
 
 export type GenerateDriverShifts200 = { [key: string]: unknown };
 
-export type RunDriverShiftsCpsatBodyConfig = { [key: string]: unknown };
-
-export type RunDriverShiftsCpsatBody = {
-  timeLimit?: number;
-  config?: RunDriverShiftsCpsatBodyConfig;
-};
-
-export type RunDriverShiftsCpsat200 = { [key: string]: unknown };
-
 export type RunDriverShiftsCpsatAsyncBodyConfig = { [key: string]: unknown };
 
 export type RunDriverShiftsCpsatAsyncBody = {
@@ -1180,30 +1171,6 @@ export type RunDriverShiftsCpsatAsync202 = {
 export type StopDriverShiftJob200 = {
   jobId?: string;
   status?: string;
-};
-
-export type CompareDriverShiftsBody = {
-  timeLimit?: number;
-};
-
-export type CompareDriverShifts200Greedy = { [key: string]: unknown };
-
-/**
- * @nullable
- */
-export type CompareDriverShifts200Cpsat = { [key: string]: unknown } | null;
-
-/**
- * @nullable
- */
-export type CompareDriverShifts200Delta = { [key: string]: unknown } | null;
-
-export type CompareDriverShifts200 = {
-  greedy?: CompareDriverShifts200Greedy;
-  /** @nullable */
-  cpsat?: CompareDriverShifts200Cpsat;
-  /** @nullable */
-  delta?: CompareDriverShifts200Delta;
 };
 
 export type GetDriverShiftScenarios200ItemSummary = { [key: string]: unknown };

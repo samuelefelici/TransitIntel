@@ -25,8 +25,6 @@ import type {
   AutoCreateCoincidenceZones200,
   AutoCreateCoincidenceZonesBody,
   CoincidenceZone,
-  CompareDriverShifts200,
-  CompareDriverShiftsBody,
   CompareScenarios200,
   CompareScenariosParams,
   CreateCalendarException200,
@@ -133,10 +131,8 @@ import type {
   ProgramCalendar,
   ReimportScenarioStops200,
   ReimportScenarioStopsBody,
-  RunDriverShiftsCpsat200,
   RunDriverShiftsCpsatAsync202,
   RunDriverShiftsCpsatAsyncBody,
-  RunDriverShiftsCpsatBody,
   RunServiceProgram200,
   RunServiceProgramCpsat200,
   SaveDriverShiftScenario200,
@@ -8198,97 +8194,6 @@ export const useGenerateDriverShifts = <
 };
 
 /**
- * @summary Run CP-SAT crew scheduling (sync)
- */
-export const getRunDriverShiftsCpsatUrl = (scenarioId: string) => {
-  return `/api/driver-shifts/${scenarioId}/cpsat`;
-};
-
-export const runDriverShiftsCpsat = async (
-  scenarioId: string,
-  runDriverShiftsCpsatBody: RunDriverShiftsCpsatBody,
-  options?: RequestInit,
-): Promise<RunDriverShiftsCpsat200> => {
-  return customFetch<RunDriverShiftsCpsat200>(
-    getRunDriverShiftsCpsatUrl(scenarioId),
-    {
-      ...options,
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...options?.headers },
-      body: JSON.stringify(runDriverShiftsCpsatBody),
-    },
-  );
-};
-
-export const getRunDriverShiftsCpsatMutationOptions = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof runDriverShiftsCpsat>>,
-    TError,
-    { scenarioId: string; data: BodyType<RunDriverShiftsCpsatBody> },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationOptions<
-  Awaited<ReturnType<typeof runDriverShiftsCpsat>>,
-  TError,
-  { scenarioId: string; data: BodyType<RunDriverShiftsCpsatBody> },
-  TContext
-> => {
-  const mutationKey = ["runDriverShiftsCpsat"];
-  const { mutation: mutationOptions, request: requestOptions } = options
-    ? options.mutation &&
-      "mutationKey" in options.mutation &&
-      options.mutation.mutationKey
-      ? options
-      : { ...options, mutation: { ...options.mutation, mutationKey } }
-    : { mutation: { mutationKey }, request: undefined };
-
-  const mutationFn: MutationFunction<
-    Awaited<ReturnType<typeof runDriverShiftsCpsat>>,
-    { scenarioId: string; data: BodyType<RunDriverShiftsCpsatBody> }
-  > = (props) => {
-    const { scenarioId, data } = props ?? {};
-
-    return runDriverShiftsCpsat(scenarioId, data, requestOptions);
-  };
-
-  return { mutationFn, ...mutationOptions };
-};
-
-export type RunDriverShiftsCpsatMutationResult = NonNullable<
-  Awaited<ReturnType<typeof runDriverShiftsCpsat>>
->;
-export type RunDriverShiftsCpsatMutationBody =
-  BodyType<RunDriverShiftsCpsatBody>;
-export type RunDriverShiftsCpsatMutationError = ErrorType<unknown>;
-
-/**
- * @summary Run CP-SAT crew scheduling (sync)
- */
-export const useRunDriverShiftsCpsat = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof runDriverShiftsCpsat>>,
-    TError,
-    { scenarioId: string; data: BodyType<RunDriverShiftsCpsatBody> },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationResult<
-  Awaited<ReturnType<typeof runDriverShiftsCpsat>>,
-  TError,
-  { scenarioId: string; data: BodyType<RunDriverShiftsCpsatBody> },
-  TContext
-> => {
-  return useMutation(getRunDriverShiftsCpsatMutationOptions(options));
-};
-
-/**
  * @summary Launch async CP-SAT crew scheduling (returns 202 + jobId)
  */
 export const getRunDriverShiftsCpsatAsyncUrl = (scenarioId: string) => {
@@ -8638,96 +8543,6 @@ export const useStopDriverShiftJob = <
   TContext
 > => {
   return useMutation(getStopDriverShiftJobMutationOptions(options));
-};
-
-/**
- * @summary Compare greedy vs CP-SAT driver shifts
- */
-export const getCompareDriverShiftsUrl = (scenarioId: string) => {
-  return `/api/driver-shifts/${scenarioId}/compare`;
-};
-
-export const compareDriverShifts = async (
-  scenarioId: string,
-  compareDriverShiftsBody: CompareDriverShiftsBody,
-  options?: RequestInit,
-): Promise<CompareDriverShifts200> => {
-  return customFetch<CompareDriverShifts200>(
-    getCompareDriverShiftsUrl(scenarioId),
-    {
-      ...options,
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...options?.headers },
-      body: JSON.stringify(compareDriverShiftsBody),
-    },
-  );
-};
-
-export const getCompareDriverShiftsMutationOptions = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof compareDriverShifts>>,
-    TError,
-    { scenarioId: string; data: BodyType<CompareDriverShiftsBody> },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationOptions<
-  Awaited<ReturnType<typeof compareDriverShifts>>,
-  TError,
-  { scenarioId: string; data: BodyType<CompareDriverShiftsBody> },
-  TContext
-> => {
-  const mutationKey = ["compareDriverShifts"];
-  const { mutation: mutationOptions, request: requestOptions } = options
-    ? options.mutation &&
-      "mutationKey" in options.mutation &&
-      options.mutation.mutationKey
-      ? options
-      : { ...options, mutation: { ...options.mutation, mutationKey } }
-    : { mutation: { mutationKey }, request: undefined };
-
-  const mutationFn: MutationFunction<
-    Awaited<ReturnType<typeof compareDriverShifts>>,
-    { scenarioId: string; data: BodyType<CompareDriverShiftsBody> }
-  > = (props) => {
-    const { scenarioId, data } = props ?? {};
-
-    return compareDriverShifts(scenarioId, data, requestOptions);
-  };
-
-  return { mutationFn, ...mutationOptions };
-};
-
-export type CompareDriverShiftsMutationResult = NonNullable<
-  Awaited<ReturnType<typeof compareDriverShifts>>
->;
-export type CompareDriverShiftsMutationBody = BodyType<CompareDriverShiftsBody>;
-export type CompareDriverShiftsMutationError = ErrorType<unknown>;
-
-/**
- * @summary Compare greedy vs CP-SAT driver shifts
- */
-export const useCompareDriverShifts = <
-  TError = ErrorType<unknown>,
-  TContext = unknown,
->(options?: {
-  mutation?: UseMutationOptions<
-    Awaited<ReturnType<typeof compareDriverShifts>>,
-    TError,
-    { scenarioId: string; data: BodyType<CompareDriverShiftsBody> },
-    TContext
-  >;
-  request?: SecondParameter<typeof customFetch>;
-}): UseMutationResult<
-  Awaited<ReturnType<typeof compareDriverShifts>>,
-  TError,
-  { scenarioId: string; data: BodyType<CompareDriverShiftsBody> },
-  TContext
-> => {
-  return useMutation(getCompareDriverShiftsMutationOptions(options));
 };
 
 /**

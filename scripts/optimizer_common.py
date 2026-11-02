@@ -1180,7 +1180,8 @@ def report_progress(phase: str, percentage: float, detail: str, extra: dict | No
     """
     Emette una riga di progresso su stderr nel formato:
       PROGRESS|phase|percentage|detail|extra_json
-    Il JobManager backend parsifica queste righe e le inoltra via SSE.
+    Il backend le legge (artifacts/api-server/src/lib/lavori/python.ts, leggiProgresso)
+    e le scrive nell'avanzamento del lavoro in coda, che la SPA legge.
     """
     pct = max(0.0, min(100.0, percentage))
     extra_str = json.dumps(extra, ensure_ascii=False) if extra else ""

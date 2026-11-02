@@ -29,6 +29,13 @@
       "when": 1793577600000,
       "tag": "0003_permessi_completi",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793631600000,
+      "tag": "0004_coda_dei_lavori",
+      "breakpoints": true
     }
   ]
 }

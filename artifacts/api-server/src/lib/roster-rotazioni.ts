@@ -14,11 +14,9 @@
  */
 import type { Request } from "express";
 import { Router, type IRouter } from "express";
-import { spawn } from "node:child_process";
-import path from "node:path";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { SCRIPTS_DIR } from "./scripts-dir";
+import { eseguiPython, jsonDallUscita } from "./lavori/python";
 import { requirePermission } from "./auth";
 import { CODICI_SANITARI } from "./roster-voci";
 
@@ -141,23 +139,14 @@ router.delete("/roster/rotazioni-riposi/:id", soloRoster, async (req, res): Prom
 
 /* ─── Assistente CP-SAT ─── */
 
-function runSolver(input: any): Promise<any> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, "rotazione_riposi.py");
-  return new Promise((resolve, reject) => {
-    const py = spawn("python3", [scriptPath], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
-    let stdout = "", stderr = "";
-    const timer = setTimeout(() => { py.kill("SIGKILL"); reject(new Error("timeout ricerca (troppe combinazioni: restringi il range N/K)")); }, 180_000);
-    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    py.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-    py.on("error", (err) => { clearTimeout(timer); reject(err); });
-    py.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) { reject(new Error(`solver exit ${code}: ${stderr.slice(0, 300)}`)); return; }
-      try { resolve(JSON.parse(stdout)); } catch (e: any) { reject(new Error(`parse solver: ${e.message}`)); }
-    });
-    py.stdin.on("error", () => { /* EPIPE guard */ });
-    py.stdin.write(JSON.stringify(input)); py.stdin.end();
-  });
+async function runSolver(input: any): Promise<any> {
+  const esito = await eseguiPython({ script: "rotazione_riposi.py", ingresso: input, timeoutMs: 180_000 });
+  if (esito.motivo === "avvio") throw new Error(`Errore avvio Python: ${esito.erroreAvvio}`);
+  if (esito.motivo === "timeout") throw new Error("timeout ricerca (troppe combinazioni: restringi il range N/K)");
+  if (esito.motivo !== "uscito" || esito.codice !== 0) throw new Error(`solver exit ${esito.codice ?? esito.motivo}: ${esito.stderrTesta.slice(0, 300)}`);
+  const j = jsonDallUscita(esito);
+  if (!j.ok) throw new Error(`parse solver: ${j.errore}`);
+  return j.valore;
 }
 
 /* ─── Assegnazione scaglioni (conducenti → righe della cadenza) ─── */

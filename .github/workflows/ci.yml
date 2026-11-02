@@ -430,6 +430,32 @@ jobs:
           ferma
           [[ "$esito" == 503* && "$esito" == *'"schema":"indietro"'* ]] || { cat api-indietro.log; exit 1; }
           grep -q "schema del database è indietro" api-indietro.log
+      # PR 2.5: il lavoratore dei calcoli dal bundle, su un database migrato:
+      # /api/healthz ok; prende un lavoro python (crew_misto.py, che non usa
+      # OR-Tools) e lo chiude «completato»; uno script fuori elenco finisce
+      # «fallito, sistema» senza partire; al SIGTERM si ferma in ordine.
+      - name: Il lavoratore prende ed esegue i lavori della coda
+        run: |
+          psql -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE lavoratore"
+          DATABASE_URL=$PG/lavoratore node lib/db/scripts/migra.mjs > /dev/null
+          q() { psql -d lavoratore -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          PORT=8098 DATABASE_URL=$PG/lavoratore node artifacts/api-server/dist/lavoratore.cjs > lavoratore.log 2>&1 &
+          echo $! > lavoratore.pid
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8098/api/healthz && break; sleep 0.5; done
+          curl -s http://127.0.0.1:8098/api/healthz | tee salute.json; echo
+          grep -q '"schema":"ok"' salute.json || { cat lavoratore.log; exit 1; }
+          buono=$(q "INSERT INTO coda.lavori (tipo, corsia, richiesta, timeout_sec) VALUES ('python', 'veloce', '{\"script\":\"crew_misto.py\",\"argv\":[],\"ingresso\":{}}', 60) RETURNING id" | head -1)
+          vietato=$(q "INSERT INTO coda.lavori (tipo, corsia, richiesta, timeout_sec) VALUES ('python', 'veloce', '{\"script\":\"../../etc/passwd\"}', 60) RETURNING id" | head -1)
+          for i in $(seq 1 60); do [ "$(q "SELECT count(*) FROM coda.lavori WHERE stato IN ('in_coda', 'in_corso')")" = 0 ] && break; sleep 1; done
+          q "SELECT id, stato, errore_tipo, errore FROM coda.lavori"
+          [ "$(q "SELECT stato FROM coda.lavori WHERE id = '$buono'")" = completato ] || { cat lavoratore.log; exit 1; }
+          [ "$(q "SELECT stato || '/' || errore_tipo FROM coda.lavori WHERE id = '$vietato'")" = fallito/sistema ] || { cat lavoratore.log; exit 1; }
+          kill "$(cat lavoratore.pid)"; wait "$(cat lavoratore.pid)" 2>/dev/null || true
+          grep -q "Lavoratore fermo" lavoratore.log || { cat lavoratore.log; exit 1; }
+      # La coda sul database: SKIP LOCKED con processi concorrenti, lease,
+      # tentativi, stop, arresto, indice unico, pulizia
+      - name: La coda dei lavori sul database
+        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/coda-db.test.ts
       # Gli endpoint con l'SQL scritto a mano, contro lo schema vero: il
       # dettaglio fermata cercava una tabella che non c'è più e rispondeva 500
       - name: Dettaglio fermata di Planning Studio sul database migrato
