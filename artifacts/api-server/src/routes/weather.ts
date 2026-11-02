@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { weatherSnapshots, trafficSnapshots } from "@workspace/db/schema";
 import { sql, desc, and, gte, lte } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
+import { cronDeiDati } from "../lib/segreto-cron";
 
 const router: IRouter = Router();
 /** Solo la cron: va montato prima del login (routes/index.ts), si protegge col segreto. */
@@ -22,14 +23,8 @@ const WEATHER_LOCATIONS = [
 
 // ─── Cron: fetch weather snapshots ─────────────────────────────
 
-function verifyCronSecret(req: any, res: any): boolean {
-  const secret = req.headers["x-cron-secret"];
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-    res.status(401).json({ error: "Unauthorized" });
-    return false;
-  }
-  return true;
-}
+/* le cron dei dati: CRON_SECRET, confrontato a tempo costante (lib/segreto-cron.ts) */
+const verifyCronSecret = cronDeiDati;
 
 /**
  * POST /api/cron/weather

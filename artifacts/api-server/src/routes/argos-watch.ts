@@ -17,6 +17,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { hasProjectAccess } from "./argos-context";
 import { mintTokenServizio } from "../lib/auth";
+import { cronDeiDati, cronDiArgos } from "../lib/segreto-cron";
 import { logger } from "../lib/logger";
 
 const ARGOS_URL = (process.env.ARGOS_URL || "").replace(/\/+$/, "");
@@ -199,11 +200,13 @@ async function runOldestActiveGoal(projectId: string, userId: string): Promise<{
 const cronRouter: IRouter = Router();
 
 /* POST /api/cron/argos-mcp-token — token utente a breve scadenza per il
- * connettore MCP di Argos (SOLA LETTURA): dato il progetto, si conia un token
+ * connettore MCP di Argos: dato il progetto, si conia un token
  * per il suo OWNER, con cui Argos legge on-behalf-of-user gli endpoint di
- * Planning Studio. Stessa guardia x-cron-secret del tick di sorveglianza: il
- * segreto è condiviso solo col backend di Argos, mai coi client MCP (che
- * hanno la loro chiave dedicata, verificata da Argos).
+ * Planning Studio. Il token è dell'utente: può quello che può lui, scritture
+ * comprese. Guardia x-cron-secret con ARGOS_CRON_SECRET, diverso dal
+ * CRON_SECRET dei job dei dati: il segreto è solo del backend di Argos, mai
+ * di uno scheduler né dei client MCP (che hanno la loro chiave dedicata,
+ * verificata da Argos). Vedi lib/segreto-cron.ts.
  *
  * userId (opzionale): RINNOVO del token di un turno agente in corso. Il proxy
  * conia un JWT da 10 minuti per l'intero turno, ma un turno in modalità
@@ -213,11 +216,7 @@ const cronRouter: IRouter = Router();
  * si verifica che sia owner o membro del progetto, così l'attribuzione nel
  * registro attività resta corretta e il perimetro accessi non si allarga. */
 cronRouter.post("/cron/argos-mcp-token", async (req: any, res: any) => {
-  const secret = req.headers["x-cron-secret"];
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+  if (!cronDiArgos(req, res)) return;
   const projectId = String(req.body?.projectId || "");
   if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
   const userId = String(req.body?.userId || "");
@@ -259,11 +258,7 @@ async function rispondiConToken(res: any, userId: string): Promise<void> {
  * configurare MCP_PROJECT_ID. Solo metadati minimi (id, nome, stato): i dati
  * veri passano comunque dai token per-progetto coniati qui sopra. */
 cronRouter.post("/cron/argos-mcp-projects", async (req: any, res: any) => {
-  const secret = req.headers["x-cron-secret"];
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+  if (!cronDiArgos(req, res)) return;
   const r = await db.execute(sql`
     SELECT id, name, status FROM ps_projects
      ORDER BY last_opened_at DESC NULLS LAST, created_at DESC
@@ -278,19 +273,21 @@ cronRouter.post("/cron/argos-mcp-projects", async (req: any, res: any) => {
 
 // POST /api/cron/argos-watch — un tick dello scheduler esterno (es. ogni ora)
 cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
-  const secret = req.headers["x-cron-secret"];
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+  if (!cronDeiDati(req, res)) return;
   if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
   await ensureWatchTable();
+  /* le sorveglianze scadute si prenotano subito (last_run_at = adesso), in modo
+   * atomico: due tick insieme, o uno ripetuto, non rifanno gli stessi giri */
   const due = await db.execute(sql`
-    SELECT * FROM ps_argos_watches
-     WHERE enabled = true
-       AND (last_run_at IS NULL OR last_run_at < now() - (cadence_hours * interval '1 hour'))
-     ORDER BY last_run_at ASC NULLS FIRST
-     LIMIT ${BATCH_PER_TICK}
+    UPDATE ps_argos_watches SET last_run_at = now()
+     WHERE id IN (
+       SELECT id FROM ps_argos_watches
+        WHERE enabled = true
+          AND (last_run_at IS NULL OR last_run_at < now() - (cadence_hours * interval '1 hour'))
+        ORDER BY last_run_at ASC NULLS FIRST
+        LIMIT ${BATCH_PER_TICK}
+        FOR UPDATE SKIP LOCKED)
+    RETURNING *
   `);
   const rows: any[] = (due as any).rows ?? [];
   const results: any[] = [];
@@ -337,10 +334,13 @@ cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
              updated_at = now()
        WHERE id = ${String(w.id)}::uuid
     `);
-    results.push({ projectId, status, findings: findings.length, goal: goalNote });
-    logger.info({ projectId, status, findings: findings.length }, "argos-watch tick");
+    results.push({ status });
+    logger.info({ projectId, status, findings: findings.length, goal: goalNote }, "argos-watch tick");
   }
-  res.json({ processed: rows.length, results });
+  /* allo scheduler bastano i conteggi: i dettagli dei progetti stanno nel log */
+  const esiti: Record<string, number> = {};
+  for (const r of results) esiti[r.status] = (esiti[r.status] ?? 0) + 1;
+  res.json({ processed: rows.length, esiti });
 });
 
 export { userRouter as argosWatchRouter, cronRouter as argosWatchCronRouter };

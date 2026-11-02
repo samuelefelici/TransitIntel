@@ -9,17 +9,12 @@ import * as os from "node:os";
 import { spawnSync } from "node:child_process";
 import * as readline from "node:readline";
 import { syncAllRailwaySchedules } from "./intermodal";
+import { cronDeiDati } from "../lib/segreto-cron";
 
 const router: IRouter = Router();
 
-function verifyCronSecret(req: any, res: any): boolean {
-  const secret = req.headers["x-cron-secret"];
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-    res.status(401).json({ error: "Unauthorized" });
-    return false;
-  }
-  return true;
-}
+/* le cron dei dati: CRON_SECRET, confrontato a tempo costante (lib/segreto-cron.ts) */
+const verifyCronSecret = cronDeiDati;
 
 // ─── Google Places API helpers ────────────────────────────────────────────────
 
