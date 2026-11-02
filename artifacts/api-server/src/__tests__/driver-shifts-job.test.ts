@@ -64,6 +64,7 @@ describe("i lavori dei turni guida: li vede e li ferma solo chi li ha lanciati",
           solver: "cpsat", scenarioId: "s", scenarioName: "Feriale", date: "20261102",
           driverShifts: [{ id: 1 }], summary: { totalDriverShifts: 1 }, unassignedBlocks: 0,
           clusters: expect.any(Array), companyCars: expect.anything(), solverMetrics: { x: 1 }, optimizationAnalysis: null,
+          avviso: null,
         },
       });
       const s = await request(app).get("/api/driver-shifts/jobs/di-a/stream");
@@ -94,6 +95,19 @@ describe("i lavori dei turni guida: li vede e li ferma solo chi li ha lanciati",
     expect(st.status).toBe("stopped");
     expect(st.error).toBeNull();
     expect(st.progress).toEqual({ phase: "stopped", percentage: 30, detail: "Fermato dall'utente", timestamp: +T });
+  });
+
+  it("completato dopo il tempo massimo con un risultato parziale: l'avviso del gestore in data e nel progress", async () => {
+    const app = appDiProva(router, A);
+    const avviso = "Tempo massimo superato (60 min): risultato parziale, la soluzione migliore trovata fino allo stop";
+    righe.set("p", riga("p", A.id, "completato", {
+      risultato: { driverShifts: [{ id: 2 }], summary: {}, interrupted: true, avvisoLavoro: avviso },
+    }));
+    const r = (await request(app).get("/api/driver-shifts/jobs/p")).body;
+    expect(r.status).toBe("completed");
+    expect(r.data.avviso).toBe(avviso);
+    expect(r.data.driverShifts).toEqual([{ id: 2 }]);
+    expect(r.progress).toEqual({ phase: "done", percentage: 100, detail: avviso, timestamp: +T });
   });
 
   it("lo stream di un lavoro in corso manda il risultato quando finisce", async () => {
