@@ -17,7 +17,7 @@ export const GetHealthResponse = zod.object({
     .enum(["ok", "indietro", "avanti", "sconosciuto"])
     .optional()
     .describe(
-      "Il database rispetto alle migrazioni di questo codice: indietro (ne mancano, risposta 503), avanti (codice N-1 durante un deploy o dopo un rollback), sconosciuto (non ancora controllato o database che non risponde).",
+      "Il database rispetto alle migrazioni di questo codice: indietro (ne mancano; risposta 503 se il container non è mai stato allineato da quando è partito), avanti (codice N-1 durante un deploy o dopo un rollback), sconosciuto (database che non risponde).",
     ),
 });
 
