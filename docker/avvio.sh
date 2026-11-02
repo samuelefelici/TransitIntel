@@ -1,6 +1,7 @@
 #!/bin/sh
-# Avvio del container di Cerbero (Dockerfile.api).
-# Prima le migrazioni, poi l'API. Se le migrazioni falliscono il container non
+# Avvio del container di Cerbero (Dockerfile.api): l'API (CERBERO_PROCESSO=api,
+# il default) o il lavoratore dei calcoli (CERBERO_PROCESSO=lavoratore).
+# API: prima le migrazioni, poi l'API. Se le migrazioni falliscono il container non
 # parte (fail-closed): con l'healthcheck Coolify tiene in servizio quello
 # vecchio. Il database non cambia, perché la transazione è annullata.
 #
@@ -28,8 +29,15 @@ case "${CERBERO_PROCESSO:-api}" in
     unset DATABASE_MIGRATOR_URL
     exec node artifacts/api-server/dist/index.cjs
     ;;
+  lavoratore)
+    # niente migrazioni: le applica l'API. Il lavoratore prende lavori solo
+    # quando lo schema è quello che conosce (guardia di versione).
+    unset DATABASE_MIGRATOR_URL
+    export PGAPPNAME="${PGAPPNAME:-cerbero-lavoratore}"
+    exec node artifacts/api-server/dist/lavoratore.cjs
+    ;;
   *)
-    echo "CERBERO_PROCESSO=${CERBERO_PROCESSO}: valore sconosciuto (ammesso: api)" >&2
+    echo "CERBERO_PROCESSO=${CERBERO_PROCESSO}: valore sconosciuto (ammessi: api, lavoratore)" >&2
     exit 1
     ;;
 esac

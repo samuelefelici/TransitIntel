@@ -306,7 +306,7 @@ describe("ogni tabella letta dal codice esiste nello schema", () => {
     for (const f of sorgentiApi()) {
       const t = senzaCommenti(readFileSync(f, "latin1"));
       const cte = new Set([...t.matchAll(/(?:WITH(?: RECURSIVE)?|,)\s+([a-z_][a-z0-9_]*)\s+AS\s*(?:MATERIALIZED\s*)?\(/g)].map(m => m[1]!));
-      for (const m of t.matchAll(/\b(?:FROM|JOIN)\s+(?:(public|caronte)\.)?([a-z_][a-z0-9_]*)\b(\s*\()?/g)) {
+      for (const m of t.matchAll(/\b(?:FROM|JOIN)\s+(?:(public|caronte|coda)\.)?([a-z_][a-z0-9_]*)\b(\s*\()?/g)) {
         const nome = m[2]!;
         if (m[3] || cte.has(nome) || NON_TABELLE.has(nome) || /^pg_|^information_schema$/.test(nome)) continue;
         if (/(EXTRACT|SUBSTRING|TRIM|OVERLAY|POSITION)\s*\([^()]*$/i.test(t.slice(Math.max(0, m.index! - 40), m.index))) continue;
