@@ -1,5 +1,6 @@
 {
   "0000_baseline": "13bd57ef3c02577fdc341d2b3d226ebf12b183fc5eb8246e3a4555e366090466",
   "0001_allinea": "c597dba04406ab623feac76fba5332ef8cba40152fbbd68a86b7141eab8ce8e4",
-  "0002_contratti": "ad9ca110a27abd3b30d910a45af4e85250ee034af2a05db9a8dff30666456bba"
+  "0002_contratti": "ad9ca110a27abd3b30d910a45af4e85250ee034af2a05db9a8dff30666456bba",
+  "0003_permessi_completi": "8a7da2694cfda2e6c9c67a5a36a56199aba08c60b87e56bf6b0b1557a916032b"
 }
