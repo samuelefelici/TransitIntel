@@ -116,6 +116,49 @@ migrator di drizzle).
 - **Le migrazioni rilasciate non si modificano**: se ne scrive una nuova. Il
   migratore si ferma se un file già applicato è cambiato, e la CI lo controlla.
   Come scriverne una: `lib/db/migrations/README.md`.
+- **L'API non tocca lo schema** (dalla PR 2.4): all'avvio e nelle richieste
+  non esegue più `CREATE`/`ALTER`, quindi niente lock esclusivi su tabelle
+  vive come `gtfs_trips` a ogni materializzazione. Restano, fino alla PR 2.16,
+  le unità «pigre» che preparano una tabella al primo uso di una funzione
+  (una volta per processo); un test (`migrazioni.test.ts`) impedisce che il
+  DDL torni nell'avvio. Le chiavi mancanti nei permessi degli utenti, che
+  prima si completavano a ogni avvio, le completa una volta sola la
+  migrazione `0003_permessi_completi`.
+- **Lo schema rispetto al codice.** All'avvio l'API confronta il tracciamento
+  con le migrazioni della sua immagine, poi ricontrolla ogni 10 minuti (ogni
+  15 secondi se qualcosa non va), e lo dice in `GET /api/healthz` (campo
+  `schema`) e nel log:
+  - `ok`: allineati;
+  - `indietro`: mancano migrazioni. Nel log, a livello error, quali mancano.
+    - **Un container appena partito** che non è mai stato allineato (API
+      avviata senza il migratore, `DATABASE_MIGRATOR_URL` su un altro
+      database): `/api/healthz` risponde **503**, l'HEALTHCHECK lo segna non
+      sano e, nel deploy a rotazione, Coolify non gli manda traffico e tiene
+      quello vecchio.
+    - **Un container già in servizio** che trova il database indietro (un
+      backup vecchio rimesso sotto): resta in servizio, con 200 e
+      `"schema":"indietro"`. Non si spegne apposta: fuori dal deploy un
+      container non sano esce dal routing di Traefik, e tutta l'API
+      risponderebbe 404.
+    - **Rimedio**: riavviare il container (l'avvio lancia il migratore e
+      riparte allineato) oppure `node lib/db/scripts/migra.mjs` dal suo
+      Terminal; in quel caso il controllo se ne accorge entro 15 secondi;
+  - `avanti`: il database ha migrazioni più nuove del codice. È il container
+    vecchio durante un deploy, o un rollback all'immagine precedente: va bene,
+    perché le migrazioni restano compatibili all'indietro (nel log un avviso);
+  - `sconosciuto`: il database non risponde (la prima sonda dopo l'avvio
+    aspetta il primo controllo, al massimo 3 secondi). Resta 200, come prima.
+- **L'indice unico delle email** (`users_email_normale_uq`: un'email, un
+  utente, maiuscole e spazi non contano) lo crea la migrazione `0000_baseline`,
+  che lo salta se in quel momento ci sono già utenti con la stessa email
+  scritta in modi diversi. Finché manca, a ogni avvio il log dice «manca
+  l'indice unico delle email». In produzione c'è. Se manca: si unificano gli
+  utenti doppi da Gestione Utenti (quali sono:
+  `SELECT lower(trim(email)), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;`),
+  poi, da psql:
+  ```sql
+  CREATE UNIQUE INDEX CONCURRENTLY users_email_normale_uq ON users (lower(trim(email)));
+  ```
 
 ### Argos: sola lettura su un elenco chiuso
 
@@ -387,6 +430,9 @@ o al più tardi dopo `CERBERO_ARRESTO_SECONDI` (25 s, massimo 28). Se il
 segnale arriva durante le migrazioni, la transazione viene annullata. L'immagine ha un HEALTHCHECK suo
 (`docker/salute.mjs`, che chiama `/api/healthz` senza bisogno di curl): è
 quello che Coolify usa se il suo healthcheck resta spento (vedi sopra).
+`/api/healthz` risponde 503 solo se lo schema del database è indietro rispetto
+al codice e il container non è mai stato allineato (vedi «Lo schema rispetto
+al codice»). La sonda non scrive righe nel log delle richieste.
 
 ---
 
@@ -432,7 +478,8 @@ quello che Coolify usa se il suo healthcheck resta spento (vedi sopra).
 5. Deploy. Il build compila le librerie, builda l'API e installa OR-Tools
    (Python) — può richiedere qualche minuto.
 6. Assegna un **dominio** all'API (Coolify fornisce HTTPS via Traefik/Let's Encrypt),
-   es. `https://api.transitintel.tuodominio.it`. Verifica `GET /api/healthz`.
+   es. `https://api.transitintel.tuodominio.it`. Verifica `GET /api/healthz`:
+   deve rispondere 200 con `"schema":"ok"`.
 
 > L'API ha bisogno di **Python + OR-Tools** per gli scheduler: ci pensa
 > `Dockerfile.api` (installa `python3` e OR-Tools da `requirements.txt`). Non

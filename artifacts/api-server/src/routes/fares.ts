@@ -5274,39 +5274,7 @@ router.post("/fares/journey-plan", async (req, res): Promise<void> => {
 //   POST /api/fares/polimetriche/snapshots   → salva HTML, ritorna { id, url }
 //   GET  /api/fares/polimetriche/snapshots/:id → serve HTML (text/html, pubblico)
 //
-// La tabella `fares_polimetriche_snapshots` viene creata lazy alla prima
-// chiamata (CREATE TABLE IF NOT EXISTS) per non richiedere una migration.
-
-let polimetricheSnapshotsBootstrapped = false;
-export async function ensurePolimetricheSnapshotsTable(): Promise<void> {
-  if (polimetricheSnapshotsBootstrapped) return;
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS fares_polimetriche_snapshots (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        title text,
-        agency_name text,
-        zoning_method text,
-        route_count int,
-        product_count int,
-        area_count int,
-        html text,
-        meta jsonb,
-        created_at timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    // Migrazione: aggiungi colonna html_gz (bytea) per snapshot compressi.
-    // Permette di salvare direttamente il blob gzip senza decomprimere in RAM.
-    await db.execute(sql`ALTER TABLE fares_polimetriche_snapshots ADD COLUMN IF NOT EXISTS html_gz bytea`);
-    // Rilassa NOT NULL su html (storicamente NOT NULL): ora è opzionale se html_gz è presente.
-    await db.execute(sql`ALTER TABLE fares_polimetriche_snapshots ALTER COLUMN html DROP NOT NULL`);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_fares_polimetriche_snapshots_created_at ON fares_polimetriche_snapshots(created_at DESC)`);
-    polimetricheSnapshotsBootstrapped = true;
-  } catch (e: any) {
-    console.error("[fares] bootstrap polimetriche snapshots table error", e?.message);
-  }
-}
-void ensurePolimetricheSnapshotsTable();
+// La tabella `fares_polimetriche_snapshots` arriva dalle migrazioni (lib/db/migrations).
 
 /**
  * POST /api/fares/polimetriche/snapshots
@@ -5323,7 +5291,6 @@ void ensurePolimetricheSnapshotsTable();
  */
 router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => {
   try {
-    await ensurePolimetricheSnapshotsTable();
     const {
       html: htmlRaw, htmlGzipB64,
       title, agencyName, zoningMethod,
@@ -5398,7 +5365,6 @@ router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => 
  */
 router.get("/fares/polimetriche/snapshots/:id", async (req, res): Promise<void> => {
   try {
-    await ensurePolimetricheSnapshotsTable();
     const id = req.params.id;
     if (!/^[0-9a-f-]{36}$/i.test(id)) {
       res.status(400).send("ID snapshot non valido");

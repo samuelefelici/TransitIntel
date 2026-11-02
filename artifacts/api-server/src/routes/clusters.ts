@@ -340,9 +340,6 @@ router.post("/clusters/by-routes", asyncHandler(async (req, res) => {
     // lista completa, per compatibilità con le pagine globali.
     const psScope = String((req.query as any)?.psScope ?? "").trim();
     const scoped = /^[0-9a-f-]{36}$/i.test(psScope) ? psScope : null;
-    if (scoped) {
-      await db.execute(sql`ALTER TABLE stop_clusters ADD COLUMN IF NOT EXISTS source_ps_project_id uuid`);
-    }
     const allClusters = scoped
       ? (await db.execute<any>(sql`
           SELECT * FROM stop_clusters

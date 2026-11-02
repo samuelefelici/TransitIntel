@@ -377,19 +377,8 @@ export async function materializePsToFeed(
     }
   }
 
-  // colonna "a chiamata" (idempotente: feed storici senza colonna)
-  await db.execute(sql`
-    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS on_demand boolean DEFAULT false
-  `);
-  // codice percorso (relazione corsa→percorso→linea): visibile su Corse, TM e TG
-  await db.execute(sql`
-    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS variant_code text
-  `);
-  // blocco vettura (interlining): finora il block_id di ps_trips NON veniva
-  // emesso nel feed — le vetturizzazioni erano invisibili a valle.
-  await db.execute(sql`
-    ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS block_id text
-  `);
+  // gtfs_trips ha on_demand («a chiamata»), variant_code (corsa→percorso→linea) e
+  // block_id (vetturizzazione, prima non emesso nel feed): colonne dalle migrazioni.
   if (useEffectiveValidity) {
     // service_id dalla firma di circolazione (JOIN unnest). L'INNER JOIN esclude
     // automaticamente le corse MAI attive nel range (non presenti nella mappa) —
@@ -476,21 +465,13 @@ export async function materializePsToFeed(
    * /api/clusters/by-routes), quindi a ogni materializzazione
    * facciamo un mirror idempotente.
    *
-   * Tracciamento via colonna additiva `source_ps_project_id`:
+   * Tracciamento via colonna `source_ps_project_id` (dalle migrazioni):
    * a ogni run cancelliamo TUTTI i cluster legacy provenienti
    * da questo PS project (anche quelli con UUID vecchi, ormai
    * spariti da ps_stop_clusters → orfani = doppioni). Poi
    * reinseriamo lo stato corrente. CASCADE su stop_cluster_stops
    * pulisce automaticamente le righe figlie.
    */
-  await db.execute(sql`
-    ALTER TABLE stop_clusters
-      ADD COLUMN IF NOT EXISTS source_ps_project_id uuid
-  `);
-  await db.execute(sql`
-    CREATE INDEX IF NOT EXISTS idx_stop_clusters_source_ps_project
-      ON stop_clusters(source_ps_project_id)
-  `);
 
   // 5a. Wipe completo dei cluster legacy provenienti da QUESTO progetto
   // (CASCADE pulisce stop_cluster_stops grazie al FK con onDelete: cascade).
@@ -603,14 +584,6 @@ export async function materializePsToFeed(
  *  Filtro: solo cluster di tipo "cambio" (kind='interchange').
  * ════════════════════════════════════════════════════════════ */
 export async function mirrorPsClustersToLegacy(psProjectId: string): Promise<void> {
-  await db.execute(sql`
-    ALTER TABLE stop_clusters
-      ADD COLUMN IF NOT EXISTS source_ps_project_id uuid
-  `);
-  await db.execute(sql`
-    CREATE INDEX IF NOT EXISTS idx_stop_clusters_source_ps_project
-      ON stop_clusters(source_ps_project_id)
-  `);
   await db.execute(sql`
     DELETE FROM stop_clusters WHERE source_ps_project_id = ${psProjectId}::uuid
   `);

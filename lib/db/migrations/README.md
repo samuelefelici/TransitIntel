@@ -78,4 +78,16 @@ su main non si tocca più.
   con un primo argomento `record` in uno schema dove Argos entra (un cast
   creato da lui la farebbe girare).
 - **Il DDL dentro l'API non cresce più** (test `migrazioni.test.ts`, «il DDL a
-  runtime può solo scendere»).
+  runtime può solo scendere»). Dalla PR 2.4 l'avvio e le richieste non ne fanno
+  affatto: restano solo le unità pigre (ensure…/assicura…) fino alla 2.16, e
+  lo stesso test vieta il DDL nei file che lo facevano all'avvio. Una colonna
+  o una tabella nuova si aggiunge qui, mai con un `IF NOT EXISTS` nel codice.
+- **La vista `ps_variants`** è un alias di `ps_route_variants` con l'elenco
+  delle sue colonne fissato alla creazione. Prima l'API la ricreava a ogni
+  avvio; ora no: una migrazione che aggiunge colonne a `ps_route_variants`
+  ricrea anche la vista (DROP e CREATE nello stesso blocco), se il codice le
+  legge da lì.
+- **L'API controlla di essere allineata** (`artifacts/api-server/src/lib/guardia-schema.ts`):
+  conosce il diario della sua immagine (`lib/db/scripts/diario-incluso.mjs`,
+  incorporato nel bundle) e, se al database manca una migrazione,
+  `/api/healthz` risponde 503 con `schema: "indietro"`.

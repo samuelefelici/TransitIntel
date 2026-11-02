@@ -8,8 +8,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ESCLUSE, blocchiDelDump, generaBaseline, guardia } from "../../../../lib/db/scripts/baseline.mjs";
 import {
-  CHIAVE_LUCCHETTO, TRACCIAMENTO, controllaApplicate, daApplicare, descriviErrore, leggiDiario, ritentabile,
+  CHIAVE_LUCCHETTO, TRACCIAMENTO, controllaApplicate, daApplicare, descriviErrore, leggiDiario, ritentabile, statoSchema,
 } from "../../../../lib/db/scripts/migrazioni-regole.mjs";
+import { DIARIO } from "../../../../lib/db/scripts/diario-incluso.mjs";
 import { confronta } from "../../../../lib/db/scripts/catalogo.mjs";
 import { ARGOS_LETTURA, ARGOS_VERSIONE, RUOLO_ARGOS } from "../../../../lib/db/contratti/argos-lettura.mjs";
 import {
@@ -175,6 +176,34 @@ describe("le regole del runner", () => {
   });
 });
 
+describe("la guardia di versione (lo schema rispetto al codice)", () => {
+  const d = [{ tag: "0000_a", when: 100 }, { tag: "0001_b", when: 200 }];
+
+  it("ok con esattamente le migrazioni del diario, created_at come testo o numero", () => {
+    expect(statoSchema(d, [{ created_at: "100" }, { created_at: 200 }]))
+      .toEqual({ stato: "ok", mancanti: [], sconosciute: 0, ultimaDelCodice: "0001_b" });
+  });
+
+  it("indietro se ne manca una, anche vecchia, o se il tracciamento è vuoto", () => {
+    expect(statoSchema(d, [{ created_at: 100 }])).toMatchObject({ stato: "indietro", mancanti: ["0001_b"] });
+    expect(statoSchema(d, [{ created_at: 200 }])).toMatchObject({ stato: "indietro", mancanti: ["0000_a"] });
+    expect(statoSchema(d, [])).toMatchObject({ stato: "indietro", mancanti: ["0000_a", "0001_b"] });
+    // ne manca una anche se ce n'è una più nuova: resta indietro, non avanti
+    expect(statoSchema(d, [{ created_at: 100 }, { created_at: 300 }])).toMatchObject({ stato: "indietro", sconosciute: 1 });
+  });
+
+  it("avanti se il database ne ha di più nuove (codice N-1)", () => {
+    expect(statoSchema(d, [{ created_at: 100 }, { created_at: 200 }, { created_at: 300 }]))
+      .toMatchObject({ stato: "avanti", mancanti: [], sconosciute: 1 });
+  });
+
+  it("il diario incorporato nel bundle è quello dei file", () => {
+    expect(DIARIO.map(e => ({ idx: e.idx, tag: e.tag, when: e.when })))
+      .toEqual(diario.map(e => ({ idx: e.idx, tag: e.tag, when: e.when })));
+    expect(statoSchema(DIARIO, diario.map(e => ({ created_at: e.when }))).stato).toBe("ok");
+  });
+});
+
 describe("il confronto dei cataloghi", () => {
   it("trova colonne, indici e tabelle diversi", () => {
     const a = { tabelle: { "public.t": { a: "int", b: "text" } }, indici: { "public.i": "CREATE INDEX i" } };
@@ -207,15 +236,15 @@ function sorgentiApi(): string[] {
 }
 
 describe("il DDL a runtime può solo scendere", () => {
-  const TETTO = { "CREATE TABLE": 85, "ALTER TABLE": 80, "CREATE INDEX": 105 };
+  const TETTO = { "CREATE TABLE": 46, "ALTER TABLE": 26, "CREATE INDEX": 45 };
   const testo = sorgentiApi().map(f => senzaCommenti(readFileSync(f, "latin1"))).join("\n");
   const conta = (re: RegExp) => (testo.match(re) ?? []).length;
 
   it("CREATE TABLE, ALTER TABLE e CREATE INDEX: esattamente il tetto", () => {
     const ora = {
-      "CREATE TABLE": conta(/CREATE TABLE/g),
-      "ALTER TABLE": conta(/ALTER TABLE/g),
-      "CREATE INDEX": conta(/CREATE (UNIQUE )?INDEX/g),
+      "CREATE TABLE": conta(/CREATE\s+TABLE/gi),
+      "ALTER TABLE": conta(/ALTER\s+TABLE/gi),
+      "CREATE INDEX": conta(/CREATE\s+(UNIQUE\s+)?INDEX/gi),
     };
     for (const [k, v] of Object.entries(ora)) {
       const tetto = TETTO[k as keyof typeof TETTO];
@@ -223,6 +252,34 @@ describe("il DDL a runtime può solo scendere", () => {
         ? `${k}: ${v} contro ${tetto}. Lo schema si cambia con una migrazione in lib/db/migrations, non dall'API`
         : `${k}: ${v} contro ${tetto}. Hai tolto DDL dall'API: abbassa il tetto a ${v}`).toBe(tetto);
     }
+  });
+
+  /* PR 2.4: l'avvio e le richieste non toccano più lo schema. Questi file
+   * avevano il DDL d'avvio (o, l'ultimo, quello di una richiesta): non deve
+   * tornarci. Restano solo le unità pigre (ensure…/assicura…) fino alla 2.16. */
+  const SENZA_DDL = [
+    "lib/auth.ts", "lib/tenant.ts", "lib/scheduling-projects.ts", "lib/planning-studio.ts",
+    "routes/fares-polimetriche.ts", "routes/planning.ts", "routes/fares.ts", "routes/gtfs-upload.ts",
+    "routes/fares-node-assignment.ts", "routes/planning-studio-timetables.ts",
+  ];
+  const DDL = /\b(CREATE|ALTER|DROP)\s+(UNIQUE\s+|UNLOGGED\s+|MATERIALIZED\s+|OR\s+REPLACE\s+)?(TABLE|INDEX|SCHEMA|VIEW|SEQUENCE|TYPE|EXTENSION|FUNCTION|PROCEDURE|TRIGGER|RULE|POLICY)\b|\b(ADD|ALTER|DROP)\s+(COLUMN|CONSTRAINT)\b/gi;
+  const ddlNel = (file: string) =>
+    senzaCommenti(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", file), "latin1")).match(DDL) ?? [];
+  it.each(SENZA_DDL)("%s: senza DDL", (file) => {
+    const trovati = ddlNel(file);
+    expect(trovati, `${file} cambia lo schema (${trovati.join(", ")}): si fa con una migrazione in lib/db/migrations`).toEqual([]);
+  });
+  /* I file da cui la PR 2.4 ha tolto il DDL per richiesta hanno ancora un'unità
+   * pigra: il loro DDL resta esattamente quello dell'unità (conteggio per file),
+   * così non ne torna dentro una richiesta. */
+  const SOLO_UNITA_PIGRE: Record<string, number> = {
+    "lib/planning-studio-materialize.ts": 3, // ensureMaterializedColumn
+    "routes/service-program.ts": 3, // ensureVariantCodeColumn, ensureAgentJobsTable
+    "routes/clusters.ts": 3, // ensureClusterFlagColumns
+  };
+  it.each(Object.entries(SOLO_UNITA_PIGRE))("%s: solo il DDL della sua unità pigra (%i)", (file, n) => {
+    const trovati = ddlNel(file);
+    expect(trovati.length, `${file}: ${trovati.join(", ")}. Lo schema si cambia con una migrazione in lib/db/migrations`).toBe(n);
   });
 
   it("l'impronta del baseline nel test coincide col file (controllo incrociato)", () => {

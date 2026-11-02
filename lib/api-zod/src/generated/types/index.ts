@@ -163,6 +163,7 @@ export * from "./gtfsValidationResultErrorsItem";
 export * from "./gtfsValidationResultStats";
 export * from "./gtfsValidationResultWarningsItem";
 export * from "./healthStatus";
+export * from "./healthStatusSchema";
 export * from "./intermodalHub";
 export * from "./intermodalHubType";
 export * from "./patchScenarioBody";

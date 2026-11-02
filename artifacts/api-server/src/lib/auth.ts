@@ -102,12 +102,14 @@ export const BCRYPT_ROUNDS = 12;
 const AUD_MFA = "cerbero-mfa";
 
 /* ────────────────────────────────────────────────────────────
- * Bootstrap tabella + primo amministratore
+ * Preparazione degli utenti e primo amministratore
+ * Tabelle, colonne e indici li fanno le migrazioni (lib/db/migrations), che
+ * girano prima dell'API: qui si toccano solo i dati.
  * ──────────────────────────────────────────────────────────── */
 let bootstrapped = false;
 let preparazione: Promise<void> | null = null;
 /** Una sola preparazione anche se arrivano tante richieste insieme all'avvio; se fallisce, la prossima riprova. */
-export function ensureUsersTable(): Promise<void> {
+export function utentiPronti(): Promise<void> {
   if (bootstrapped) return Promise.resolve();
   preparazione ??= preparaUtenti().then(
     () => {
@@ -115,7 +117,7 @@ export function ensureUsersTable(): Promise<void> {
       void disattivaPasswordPubblicate("altri").catch((e: any) => console.error("[auth] controllo password pubblicate:", e?.message || e));
       void controllaChiaveMfa().catch((e: any) => console.error("[auth] controllo chiave della verifica:", e?.message || e));
     },
-    (e: any) => { console.error("[auth] bootstrap users error:", e?.message || e); preparazione = null; },
+    (e: any) => { console.error("[auth] preparazione degli utenti non riuscita:", e?.message || e); preparazione = null; },
   );
   return preparazione;
 }
@@ -124,140 +126,16 @@ export function ensureUsersTable(): Promise<void> {
 const ORDINE_STESSA_EMAIL = sql`active DESC, created_at ASC, id ASC`;
 
 async function preparaUtenti(): Promise<void> {
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS users (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      email text UNIQUE NOT NULL,
-      password_hash text NOT NULL,
-      full_name text,
-      role text NOT NULL DEFAULT 'user',
-      permissions jsonb NOT NULL DEFAULT '{"analytics":false,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":false,"personale":false,"roster":false}'::jsonb,
-      active boolean NOT NULL DEFAULT true,
-      last_login_at timestamptz,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
-
-  /* Accesso sicuro (colonne nel baseline delle migrazioni). ALTER solo se la colonna
-   * manca: anche con IF NOT EXISTS prende la tabella in esclusiva. sessione_versione
-   * parte da 1: i token di prima (senza versione) valgono 0 e non entrano più. */
-  const colonne = new Set(((await db.execute(sql`
-    SELECT column_name FROM information_schema.columns
-     WHERE table_schema = current_schema() AND table_name = 'users'`)) as any).rows.map((x: any) => String(x.column_name)));
-  const nuove: Array<[string, string]> = [
-    ["sessione_versione", "integer NOT NULL DEFAULT 1"],
-    /* i browser riconosciuti (cookie del dispositivo): sale solo quando vanno dimenticati
-     * (cambio password, «esci ovunque», password provvisoria, disattivazione) */
-    ["dispositivi_versione", "integer NOT NULL DEFAULT 1"],
-    ["password_cambiata_il", "timestamptz"],
-    ["deve_cambiare_password", "boolean NOT NULL DEFAULT false"],
-    /* la password di adesso non è una di quelle pubblicate dal vecchio codice */
-    ["password_controllata", "boolean NOT NULL DEFAULT false"],
-    ["mfa_attiva", "boolean NOT NULL DEFAULT false"],
-    ["mfa_segreto", "text"],
-    ["mfa_recupero", "jsonb"],
-    /* con quale chiave sono fatte le impronte dei codici di recupero (mfa-cifratura idChiave) */
-    ["mfa_recupero_chiave", "text"],
-    ["mfa_ultimo_passo", "bigint"],
-    ["mfa_errori", "integer NOT NULL DEFAULT 0"],
-    ["mfa_bloccata_fino", "timestamptz"],
-  ];
-  for (const [nome, tipo] of nuove) {
-    if (!colonne.has(nome)) await db.execute(sql.raw(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ${nome} ${tipo}`));
-  }
-  /* il registro degli accessi: chi, quando, da dove, com'è andata (12 mesi) */
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS accessi_log (
-      id bigserial PRIMARY KEY,
-      ts timestamptz NOT NULL DEFAULT now(),
-      user_id uuid,
-      email text,
-      esito text NOT NULL,
-      ip text,
-      user_agent text
-    )`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_accessi_log_ts ON accessi_log(ts DESC)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_accessi_log_user ON accessi_log(user_id, ts DESC)`);
-  /* le serie di tentativi sbagliati: per email e indirizzo, e per l'account (ip = '*') */
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS accessi_tentativi (
-      chiave text NOT NULL,
-      ip text NOT NULL,
-      errori integer NOT NULL DEFAULT 0,
-      inizio timestamptz,
-      ultimo timestamptz NOT NULL DEFAULT now(),
-      bloccato_fino timestamptz,
-      PRIMARY KEY (chiave, ip)
-    )`);
+  /* il registro degli accessi tiene 12 mesi */
   await pulisciAccessi();
-  /* un'email, un utente: maiuscole e spazi non contano. Se ci sono già doppioni l'indice
-   * non si crea (lo dice il log) e il login prende sempre la stessa riga */
+  /* un'email, un utente (maiuscole e spazi non contano): l'indice unico lo fa la
+   * migrazione 0000_baseline, che lo salta se ci sono già doppioni. Qui si
+   * controlla soltanto, e lo si dice finché manca */
   const indice = await db.execute<any>(sql`
     SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'users_email_normale_uq'`);
   if (!(indice as any).rows?.length) {
-    try { await db.execute(sql`CREATE UNIQUE INDEX users_email_normale_uq ON users (lower(trim(email)))`); }
-    catch (e: any) { console.warn("[auth] ci sono utenti con la stessa email scritta in modi diversi (maiuscole, spazi): unificali da Gestione Utenti.", e?.message || e); }
+    console.warn("[auth] manca l'indice unico delle email (users_email_normale_uq): ci sono utenti con la stessa email scritta in modi diversi (maiuscole, spazi). Unificali da Gestione Utenti, poi crea l'indice come dice DEPLOY.md («L'indice unico delle email»)");
   }
-
-  // Backfill idempotente: assicura che ogni utente abbia la chiave "network"
-  // (default true, così chi aveva già accesso a "scheduling" mantiene tutto).
-  await db.execute(sql`
-    UPDATE users
-       SET permissions = permissions || '{"network":true}'::jsonb
-     WHERE NOT (permissions ? 'network')
-  `);
-
-  // Rete e orari porta con sé i Turni: il server lo imponeva solo al salvataggio, e
-  // chi è stato salvato prima (o ha ricevuto network dal backfill qui sopra) poteva
-  // avere network senza scheduling. Si allinea il dato alla regola, una volta sola.
-  await db.execute(sql`
-    UPDATE users
-       SET permissions = permissions || '{"scheduling":true}'::jsonb
-     WHERE coalesce((permissions->>'network')::boolean, false)
-       AND NOT coalesce((permissions->>'scheduling')::boolean, false)
-  `);
-
-  // FleetCare (modulo Cerbero di gestione flotta): abilitazione ESPLICITA,
-  // quindi default false — gli admin bypassano comunque (requirePermission).
-  await db.execute(sql`
-    UPDATE users
-       SET permissions = permissions || '{"fleetcare":false}'::jsonb
-     WHERE NOT (permissions ? 'fleetcare')
-  `);
-  // Ruolo che l'utente avrà DENTRO FleetCare quando entra via SSO.
-  await db.execute(sql`
-    ALTER TABLE users ADD COLUMN IF NOT EXISTS fleetcare_role text NOT NULL DEFAULT 'driver'
-  `);
-
-  // Centrale Operativa (Mappa live + AVM): modulo ad attivazione esplicita,
-  // default false per i NUOVI utenti. Chi esiste già eredita il valore di
-  // "analytics", perché fino a oggi Mappa e AVM vivevano sotto quel permesso:
-  // il rilascio del modulo non deve togliere a nessuno una pagina che vedeva.
-  await db.execute(sql`
-    UPDATE users
-       SET permissions = permissions
-           || jsonb_build_object('centrale', coalesce((permissions->>'analytics')::boolean, true))
-     WHERE NOT (permissions ? 'centrale')
-  `);
-
-  // Anagrafica del personale: dati personali e di busta paga, quindi
-  // attivazione ESPLICITA. Nessun utente esistente la riceve da sé.
-  await db.execute(sql`
-    UPDATE users
-       SET permissions = permissions || '{"personale":false}'::jsonb
-     WHERE NOT (permissions ? 'personale')
-  `);
-
-  // Roster: fino a oggi stava sotto «scheduling». Chi esiste già eredita
-  // quel valore, così il rilascio non toglie a nessuno il roster che usava;
-  // poi l'admin lo toglie a chi non ci lavora. I nuovi utenti partono senza.
-  await db.execute(sql`
-    UPDATE users
-       SET permissions = permissions
-           || jsonb_build_object('roster', coalesce((permissions->>'scheduling')::boolean, true))
-     WHERE NOT (permissions ? 'roster')
-  `);
 
   /* gli admin con una password pubblicata si disattivano subito (sono pochi, e il
      recupero qui sotto deve sapere se ne resta uno); gli altri dopo, in background */
@@ -300,7 +178,7 @@ async function preparaUtenti(): Promise<void> {
     console.warn(`[auth] ${primo.messaggio}`);
   }
 }
-void ensureUsersTable();
+void utentiPronti();
 
 /**
  * Disattiva gli account attivi che usano ancora una delle password che il
@@ -529,7 +407,7 @@ function accessoDi(u: UtenteCaricato, sessione: { mfa: boolean; rec?: boolean })
  * Middleware
  * ──────────────────────────────────────────────────────────── */
 export const requireAuth: RequestHandler = async (req, res, next) => {
-  await ensureUsersTable();
+  await utentiPronti();
   const token = (req as any).cookies?.[JWT_COOKIE]
     || (req.headers.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null);
   if (!token) { res.status(401).json({ error: "Non autenticato" }); return; }
@@ -859,7 +737,7 @@ async function apriSessione(req: Request, res: Response, row: any, s: { mfa: boo
 }
 
 router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Promise<void> => {
-  await ensureUsersTable();
+  await utentiPronti();
   const { email, password } = req.body || {};
   if (typeof email !== "string" || typeof password !== "string") {
     res.status(400).json({ error: "Email e password obbligatori" });
@@ -927,7 +805,7 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
 
 // POST /api/auth/login/mfa { biglietto, codice } oppure { biglietto, recupero }
 router.post("/auth/login/mfa", loginLimiter, async (req: Request, res: Response): Promise<void> => {
-  await ensureUsersTable();
+  await utentiPronti();
   const b = leggiBiglietto(req.body?.biglietto);
   if (!b) { res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return; }
   const r = await db.execute(sql`

@@ -14,9 +14,24 @@ export interface SuccessResponse {
   success?: boolean;
 }
 
+/**
+ * Il database rispetto alle migrazioni di questo codice: indietro (ne mancano; risposta 503 se il container non è mai stato allineato da quando è partito), avanti (codice N-1 durante un deploy o dopo un rollback), sconosciuto (database che non risponde).
+ */
+export type HealthStatusSchema =
+  (typeof HealthStatusSchema)[keyof typeof HealthStatusSchema];
+
+export const HealthStatusSchema = {
+  ok: "ok",
+  indietro: "indietro",
+  avanti: "avanti",
+  sconosciuto: "sconosciuto",
+} as const;
+
 export interface HealthStatus {
   status?: string;
   cacheEntries?: number;
+  /** Il database rispetto alle migrazioni di questo codice: indietro (ne mancano; risposta 503 se il container non è mai stato allineato da quando è partito), avanti (codice N-1 durante un deploy o dopo un rollback), sconosciuto (database che non risponde). */
+  schema?: HealthStatusSchema;
 }
 
 export interface TrafficSnapshot {

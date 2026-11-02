@@ -192,7 +192,7 @@ export const getGetHealthQueryKey = () => {
 
 export const getGetHealthQueryOptions = <
   TData = Awaited<ReturnType<typeof getHealth>>,
-  TError = ErrorType<unknown>,
+  TError = ErrorType<HealthStatus>,
 >(options?: {
   query?: UseQueryOptions<Awaited<ReturnType<typeof getHealth>>, TError, TData>;
   request?: SecondParameter<typeof customFetch>;
@@ -215,7 +215,7 @@ export const getGetHealthQueryOptions = <
 export type GetHealthQueryResult = NonNullable<
   Awaited<ReturnType<typeof getHealth>>
 >;
-export type GetHealthQueryError = ErrorType<unknown>;
+export type GetHealthQueryError = ErrorType<HealthStatus>;
 
 /**
  * @summary Health check
@@ -223,7 +223,7 @@ export type GetHealthQueryError = ErrorType<unknown>;
 
 export function useGetHealth<
   TData = Awaited<ReturnType<typeof getHealth>>,
-  TError = ErrorType<unknown>,
+  TError = ErrorType<HealthStatus>,
 >(options?: {
   query?: UseQueryOptions<Awaited<ReturnType<typeof getHealth>>, TError, TData>;
   request?: SecondParameter<typeof customFetch>;

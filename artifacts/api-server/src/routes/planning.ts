@@ -184,45 +184,6 @@ router.patch("/planning/feeds/:id/economic-params", async (req: Request, res: Re
   }
 });
 
-// ─────────────── Bootstrap tabelle nuove (idempotent) ───────────────
-let bootstrapped = false;
-export async function ensureNewTables() {
-  if (bootstrapped) return;
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS planning_route_classifications (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        feed_id uuid NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-        route_id text NOT NULL,
-        category text NOT NULL,
-        fare_type text,
-        updated_at timestamptz DEFAULT now()
-      )
-    `);
-    await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_planning_routeclass_unique ON planning_route_classifications(feed_id, route_id)`);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_planning_routeclass_cat ON planning_route_classifications(feed_id, category)`);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS planning_pois (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        feed_id uuid NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-        name text NOT NULL,
-        category text NOT NULL,
-        lat double precision NOT NULL,
-        lng double precision NOT NULL,
-        weight double precision NOT NULL DEFAULT 1,
-        notes text,
-        created_at timestamptz DEFAULT now()
-      )
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_planning_pois_feed ON planning_pois(feed_id)`);
-    bootstrapped = true;
-  } catch (e: any) {
-    console.error("[planning] bootstrap tables error", e?.message);
-  }
-}
-// fire & forget al primo import
-void ensureNewTables();
-
 // ─────────────── Calendar days disponibili ───────────────
 
 /** GET /api/planning/feeds/:id/calendar-days — elenco date di servizio con metadati */
@@ -316,7 +277,6 @@ router.get("/planning/feeds/:id/calendar-days", async (req: Request, res: Respon
 /** GET /api/planning/feeds/:id/route-classifications */
 router.get("/planning/feeds/:id/route-classifications", async (req: Request, res: Response) => {
   try {
-    await ensureNewTables();
     const id = String(req.params.id);
     const rows = await db
       .select()
@@ -332,7 +292,6 @@ router.get("/planning/feeds/:id/route-classifications", async (req: Request, res
 /** PUT /api/planning/feeds/:id/route-classifications — bulk upsert */
 router.put("/planning/feeds/:id/route-classifications", async (req: Request, res: Response) => {
   try {
-    await ensureNewTables();
     const id = String(req.params.id);
     const items = Array.isArray(req.body?.items) ? req.body.items : [];
     if (items.length === 0) return bad(res, "items vuoto");

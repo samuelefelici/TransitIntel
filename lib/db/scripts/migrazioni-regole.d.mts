@@ -7,3 +7,8 @@ export declare function controllaApplicate(diario: VoceDiario[], applicate: Riga
 export declare function daApplicare(diario: VoceDiario[], applicate: RigaApplicata[]): VoceDiario[];
 export declare function ritentabile(err: unknown): boolean;
 export declare function descriviErrore(err: unknown): { motivo: string; query: string };
+export type StatoSchema = "ok" | "indietro" | "avanti";
+export declare function statoSchema(
+  diario: ReadonlyArray<{ tag: string; when: number }>,
+  applicate: ReadonlyArray<{ created_at: number | string }>,
+): { stato: StatoSchema; mancanti: string[]; sconosciute: number; ultimaDelCodice: string | null };

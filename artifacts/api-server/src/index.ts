@@ -4,6 +4,7 @@ import { syncTrafficFromTomTom } from "./routes/cron";
 import { MAX_GAP_SEC as SIRI_MAX_POLL_SECONDS, effectivePollSeconds } from "./lib/siri-vm";
 import { avviaControlloArgos } from "./lib/controllo-argos";
 import { controllaSegretiCron } from "./lib/segreto-cron";
+import { avviaGuardiaSchema } from "./lib/guardia-schema";
 
 const rawPort = process.env["PORT"];
 
@@ -22,6 +23,8 @@ if (Number.isNaN(port) || port <= 0) {
 const server = app.listen(port, () => {
   logger.info({ port }, "Server listening");
 
+  // Il database ha tutte le migrazioni di questo codice? (log e /api/healthz)
+  avviaGuardiaSchema();
   // Argos deve leggere solo le tabelle del contratto: lo si controlla nel log
   avviaControlloArgos();
   controllaSegretiCron();
