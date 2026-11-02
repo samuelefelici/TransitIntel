@@ -13,11 +13,9 @@
  * persistite (tabella process_reports) e apribili da Cerbero.
  */
 import { Router, type IRouter, type Request, type Response } from "express";
-import { spawn } from "child_process";
-import path from "path";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { SCRIPTS_DIR } from "../lib/scripts-dir";
+import { eseguiPython, jsonDallUscita } from "../lib/lavori/python";
 import { getVehicleScenarioAccess, requireVehicleScenarioRead, vehicleScenariosAccessibleWhere } from "../lib/scenario-access";
 import { coincidenceMapFor } from "./service-program";
 import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "../lib/isochrones";
@@ -370,33 +368,18 @@ function uuidArray(ids: string[]) {
   return sql`ARRAY[${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)}]::uuid[]`;
 }
 
-function runReportBuilder(dossier: unknown, logger: { info: (...a: any[]) => void }): Promise<{ html: string; summary: any }> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, "report_builder.py");
-  return new Promise((resolve, reject) => {
-    const py = spawn("python3", [scriptPath, "--json"], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
-    let stdout = "";
-    let stderr = "";
-    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    py.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-    py.on("error", (e) => reject(new Error(`report_builder non avviabile: ${e.message}`)));
-    py.on("close", (code) => {
-      if (code !== 0) {
-        logger.info(`report_builder stderr: ${stderr.slice(-1500)}`);
-        reject(new Error(`report_builder terminato con codice ${code}: ${stderr.slice(-400)}`));
-        return;
-      }
-      try {
-        const out = JSON.parse(stdout);
-        if (!out || typeof out.html !== "string") { reject(new Error("report_builder: uscita senza html")); return; }
-        resolve({ html: out.html, summary: out.summary ?? null });
-      } catch (e: any) {
-        reject(new Error(`report_builder: uscita non JSON (${e?.message})`));
-      }
-    });
-    py.stdin.on("error", () => { /* il processo può chiudere prima della fine dello stdin */ });
-    py.stdin.write(JSON.stringify(dossier));
-    py.stdin.end();
-  });
+async function runReportBuilder(dossier: unknown, logger: { info: (...a: any[]) => void }): Promise<{ html: string; summary: any }> {
+  const esito = await eseguiPython({ script: "report_builder.py", argv: ["--json"], ingresso: dossier, timeoutMs: 30 * 60 * 1000 });
+  if (esito.motivo === "avvio") throw new Error(`report_builder non avviabile: ${esito.erroreAvvio}`);
+  if (esito.motivo !== "uscito" || esito.codice !== 0) {
+    logger.info(`report_builder stderr: ${esito.stderrCoda.slice(-1500)}`);
+    throw new Error(`report_builder terminato con codice ${esito.codice ?? esito.motivo}: ${esito.stderrCoda.slice(-400)}`);
+  }
+  const j = jsonDallUscita(esito);
+  if (!j.ok) throw new Error(`report_builder: uscita non JSON (${j.errore})`);
+  const out = j.valore;
+  if (!out || typeof out.html !== "string") throw new Error("report_builder: uscita senza html");
+  return { html: out.html, summary: out.summary ?? null };
 }
 
 function minOf(t: string | null | undefined): number | null {

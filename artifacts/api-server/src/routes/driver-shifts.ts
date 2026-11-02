@@ -50,6 +50,7 @@ import {
 const UUID_DSS = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import { strictLimiter } from "../middlewares/rate-limit";
 import { SCRIPTS_DIR } from "../lib/scripts-dir";
+import { eseguiPython, jsonDallUscita } from "../lib/lavori/python";
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
 
 const router: IRouter = Router();
@@ -1699,21 +1700,13 @@ function _applyCoords(trip: any, coords: Map<string, any>): void {
   trip.lastStopLat = c.lLat; trip.lastStopLon = c.lLon;
 }
 
-function runMistoEngine(input: any): Promise<any> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_misto.py");
-  return new Promise((resolve, reject) => {
-    const py = spawn("python3", [scriptPath], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
-    let stdout = "", stderr = "";
-    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    py.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-    py.on("error", (err) => reject(err));
-    py.on("close", (code) => {
-      if (code !== 0) reject(new Error(`crew_misto exit ${code}: ${stderr}`));
-      else { try { resolve(JSON.parse(stdout)); } catch (e: any) { reject(new Error(`parse misto: ${e.message}`)); } }
-    });
-    py.stdin.on("error", () => { /* EPIPE guard */ });
-    py.stdin.write(JSON.stringify(input)); py.stdin.end();
-  });
+async function runMistoEngine(input: any): Promise<any> {
+  const esito = await eseguiPython({ script: "crew_misto.py", ingresso: input, timeoutMs: 30 * 60 * 1000 });
+  if (esito.motivo === "avvio") throw new Error(`Errore avvio Python: ${esito.erroreAvvio}`);
+  if (esito.motivo !== "uscito" || esito.codice !== 0) throw new Error(`crew_misto exit ${esito.codice ?? esito.motivo}: ${esito.stderrCoda}`);
+  const j = jsonDallUscita(esito);
+  if (!j.ok) throw new Error(`parse misto: ${j.errore}`);
+  return j.valore;
 }
 
 const _hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(Math.round(m) % 60).padStart(2, "0")}`;
@@ -1753,21 +1746,13 @@ function _engineShiftToDriverShift(s: any): any {
  *  pezzo, turni unici. Stessa validazione BDS del solver v4.
  * ═══════════════════════════════════════════════════════════════ */
 
-function runCrewTools(input: any): Promise<any> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, "crew_tools.py");
-  return new Promise((resolve, reject) => {
-    const py = spawn("python3", [scriptPath], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } });
-    let stdout = "", stderr = "";
-    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    py.stderr.on("data", (d: Buffer) => { stderr += d.toString(); });
-    py.on("error", (err) => reject(err));
-    py.on("close", (code) => {
-      if (code !== 0) reject(new Error(`crew_tools exit ${code}: ${stderr.slice(0, 500)}`));
-      else { try { resolve(JSON.parse(stdout)); } catch (e: any) { reject(new Error(`parse crew_tools: ${e.message}`)); } }
-    });
-    py.stdin.on("error", () => { /* EPIPE guard */ });
-    py.stdin.write(JSON.stringify(input)); py.stdin.end();
-  });
+async function runCrewTools(input: any): Promise<any> {
+  const esito = await eseguiPython({ script: "crew_tools.py", ingresso: input, timeoutMs: 30 * 60 * 1000 });
+  if (esito.motivo === "avvio") throw new Error(`Errore avvio Python: ${esito.erroreAvvio}`);
+  if (esito.motivo !== "uscito" || esito.codice !== 0) throw new Error(`crew_tools exit ${esito.codice ?? esito.motivo}: ${esito.stderrTesta.slice(0, 500)}`);
+  const j = jsonDallUscita(esito);
+  if (!j.ok) throw new Error(`parse crew_tools: ${j.errore}`);
+  return j.valore;
 }
 
 /** Config comune per crew_tools: cluster reali dal DB + bds del client. */

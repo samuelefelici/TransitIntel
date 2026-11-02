@@ -24,9 +24,7 @@ import {
   enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
 } from "./driver-shifts";
 import { getLatestFeedId } from "./gtfs-helpers";
-import { spawn } from "node:child_process";
-import path from "node:path";
-import { SCRIPTS_DIR } from "../lib/scripts-dir";
+import { eseguiPython, jsonDallUscita, descriviUscita, type ScriptConsentito } from "../lib/lavori/python";
 import {
   vehicleScenariosAccessibleWhere,
   requireVehicleScenarioRead,
@@ -1883,49 +1881,28 @@ async function loadTerminalTransits(
   return out;
 }
 
-/** Spawn generico di uno script Python (JSON stdin → JSON stdout). */
-function spawnPythonJson(
-  scriptName: string,
+/** Uno script Python (JSON stdin → JSON stdout), dal lanciatore unico (lib/lavori/python.ts).
+ *  Le righe di stderr vanno nel log una per una: agentJobLogger ci legge il PROGRESS. */
+async function spawnPythonJson(
+  scriptName: ScriptConsentito,
   argv: string[],
   input: unknown,
-  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
+  logger: { info: (...a: any[]) => void; error?: (...a: any[]) => void },
   label: string,
 ): Promise<any> {
-  const scriptPath = path.resolve(SCRIPTS_DIR, scriptName);
-  return new Promise((resolve, reject) => {
-    const py = spawn("python3", [scriptPath, ...argv], {
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env },
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
-    py.stderr.on("data", (d: Buffer) => {
-      stderr += d.toString();
-      logger.info(`${label} stderr: ${d.toString().trim()}`);
-    });
-
-    py.on("error", (err) => reject(new Error(`Errore avvio Python: ${err.message}`)));
-
-    py.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python exit code ${code}: ${stderr.slice(-1500)}`));
-        return;
-      }
-      try { resolve(JSON.parse(stdout)); }
-      catch (e: any) { reject(new Error(`parse ${label}: ${e.message}`)); }
-    });
-
-    // Guard against EPIPE: if Python dies before we finish writing, catch the error
-    py.stdin.on("error", (err) => {
-      logger.error(`${label} stdin error: ${err.message}`);
-    });
-
-    py.stdin.write(JSON.stringify(input));
-    py.stdin.end();
+  const esito = await eseguiPython({
+    script: scriptName, argv, ingresso: input,
+    // nessun limite prima della coda dei lavori: si tiene largo (VCSP «normal» ~17 min, giri fino a 30)
+    timeoutMs: 2 * 60 * 60 * 1000,
+    suRigaStderr: (r) => logger.info(`${label} stderr: ${r}`),
   });
+  if (esito.motivo === "avvio") throw new Error(`Errore avvio Python: ${esito.erroreAvvio}`);
+  if (esito.motivo !== "uscito" || esito.codice !== 0) {
+    throw new Error(`${descriviUscita(esito)}: ${esito.stderrCoda.slice(-1500)}`);
+  }
+  const j = jsonDallUscita(esito);
+  if (!j.ok) throw new Error(`parse ${label}: ${j.errore}`);
+  return j.valore;
 }
 
 async function runCPSATVehicleScheduler(
