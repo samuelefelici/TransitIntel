@@ -281,7 +281,10 @@ quello che Coolify usa se il suo healthcheck resta spento (vedi sopra).
      in produzione l'API rifiuta l'avvio (i token sarebbero forgiabili)
    - `CERBERO_API_KEY` — **OBBLIGATORIA** se usi Caronte (validatore/AVM): senza,
      gli endpoint `/api/caronte/*` rispondono 503 fail-closed
-   - `CRON_SECRET` (genera con `openssl rand -hex 32`)
+   - `CRON_SECRET` (genera con `openssl rand -hex 32`): i job dei dati, da
+     dare allo scheduler esterno
+   - `ARGOS_CRON_SECRET` (genera con `openssl rand -hex 32`, **diverso** da
+     `CRON_SECRET`) se usi Argos: è solo del backend di Argos (vedi «Cron Jobs»)
    - `CERBERO_CHIAVE_MFA` (genera con `openssl rand -hex 32`) — **OBBLIGATORIA**:
      cifra i segreti della verifica in due passaggi; senza, in produzione l'API
      non parte. Impostala **prima** del deploy e non perderla: con un'altra chiave
@@ -656,7 +659,8 @@ Riferimento completo in `.env.example`. Sintesi:
 | `NODE_ENV` | ✅ | `production` |
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
-| `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`) |
+| `CRON_SECRET` | ✅ | `openssl rand -hex 32` (header `x-cron-secret`): i job dei dati, per lo scheduler esterno |
+| `ARGOS_CRON_SECRET` | con Argos | `openssl rand -hex 32`, diverso da `CRON_SECRET`: solo il backend di Argos, che lo manda come sua `TRANSITINTEL_CRON_SECRET` (vedi «Cron Jobs») |
 | `CERBERO_CHIAVE_MFA` | ✅ | `openssl rand -hex 32`: cifra i segreti della verifica in due passaggi. Senza, in produzione l'API non parte; non perderla |
 | `CERBERO_CHIAVE_MFA_PRECEDENTE` | — | Solo durante un cambio di chiave: la chiave di prima (vedi «Accesso sicuro») |
 | `CERBERO_TRUST_PROXY` | — | Quanti proxy ci sono davanti all'API (default `1`, il Traefik di Coolify), o i loro indirizzi |
@@ -703,6 +707,27 @@ con i cron interni di Coolify:
 Per ogni job: metodo **POST**, header `x-cron-secret: IL-TUO-CRON-SECRET`.
 Il meteo prima rispondeva 401 a uno scheduler esterno (voleva anche il login):
 ora basta il segreto, come per gli altri.
+
+**Il segreto di Argos è un altro.** Argos chiama due rotte cron di Cerbero
+che gli danno un token di 10 minuti a nome del proprietario di un progetto
+(`/api/cron/argos-mcp-token`) e l'elenco dei progetti
+(`/api/cron/argos-mcp-projects`). Se il proprietario è admin, quel token apre
+tutto: per questo non si danno con `CRON_SECRET`, che sta nello scheduler, ma
+con `ARGOS_CRON_SECRET`, che ha solo Argos. Per impostarlo, una volta:
+1. genera un segreto nuovo: `openssl rand -hex 32`;
+2. nell'Application dell'API di Cerbero, aggiungi `ARGOS_CRON_SECRET` con quel
+   valore;
+3. nell'Application di Argos, metti **lo stesso valore** in
+   `TRANSITINTEL_CRON_SECRET` (prima conteneva `CRON_SECRET`; il codice di
+   Argos non cambia);
+4. ridistribuisci tutte e due;
+5. prova Argos dentro un progetto di Planning Studio.
+
+Finché `ARGOS_CRON_SECRET` non c'è, quelle due rotte accettano ancora
+`CRON_SECRET` e il log dell'API lo segnala ogni ora («ARGOS_CRON_SECRET non è
+impostata»): così il deploy non ferma Argos. Il tick della sorveglianza di
+Argos (`/api/cron/argos-watch`) non dà token e resta su `CRON_SECRET`.
+I segreti si confrontano a tempo costante.
 
 Il controllo settimanale AVM non ha bisogno dello scheduler esterno: con il
 connettore SIRI attivo, il processo dell'API controlla ogni ora se c'è una
