@@ -14,6 +14,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import router, { materializePsToFeed } from "../lib/planning-studio-materialize";
+import progettiRouter from "../lib/scheduling-projects";
 import { sincronizzaProgetto } from "../lib/materializzazione/sincronizza";
 import { creaEsecutore } from "../lib/lavori/esecutore";
 import { GESTORI } from "../lib/lavori/gestori";
@@ -218,6 +219,21 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("sincronizzazione nella coda dei
     // dopo un riavvio dell'API non c'è più niente in memoria: lo stato viene dalla coda
     const st = await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`);
     expect(st.body).toMatchObject({ status: "running" });
+  });
+
+  it("la creazione di un progetto accoda la sincronizzazione prima di rispondere: sync-status dice subito «running»", async () => {
+    const progetti = appDiProva(progettiRouter, utenteDiProva(U, ["scheduling"]));
+    const c = await request(progetti).post("/api/scheduling/projects").send({ name: "Nuovo dalla coda", planningStudioProjectId: PS, validityUnitId: UDP });
+    expect(c.status, JSON.stringify(c.body)).toBe(200);
+    const id = c.body.project.id as string;
+    try {
+      expect((await request(app).get(`/api/scheduling/projects/${id}/sync-status`)).body).toMatchObject({ status: "running" });
+      const l = (await db.execute<any>(sql`SELECT stato, chiave_unicita FROM coda.lavori WHERE oggetto_id = ${id}::uuid`)).rows;
+      expect(l).toEqual([{ stato: "in_coda", chiave_unicita: `sync:${id}` }]);
+    } finally {
+      await db.execute(sql`DELETE FROM coda.lavori WHERE oggetto_id = ${id}::uuid`);
+      await db.execute(sql`DELETE FROM scheduling_projects WHERE id = ${id}::uuid`);
+    }
   });
 
   it("il lavoratore la esegue: stesso feed e stesse risposte del percorso dentro l'API", async () => {
