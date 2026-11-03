@@ -14,12 +14,14 @@ import request from "supertest";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+import { creaEsecutore } from "../lib/lavori/esecutore";
+import { GESTORI } from "../lib/lavori/gestori";
 
 /* niente rete: OSRM non risponde e la matrice fuorilinea ricade su Haversine × circuità */
 vi.hoisted(() => { process.env.OSRM_URL = "http://127.0.0.1:1"; });
 
 /** Python finto: registra cosa riceve e risponde come il solver, in modo deterministico. */
-const py = vi.hoisted(() => ({ chiamate: [] as any[], crash: false }));
+const py = vi.hoisted(() => ({ chiamate: [] as any[], crash: false, appeso: false }));
 
 vi.mock("../lib/lavori/python", async (orig) => {
   const vero = await orig<typeof import("../lib/lavori/python")>();
@@ -30,6 +32,11 @@ vi.mock("../lib/lavori/python", async (orig) => {
       const fase = o.script === "vcsp_orchestrator.py" ? "VCSP" : "VSP";
       if (o.suProgresso) o.suProgresso({ phase: fase, percentage: 50, detail: "a metà", timestamp: 0 });
       else o.suRigaStderr?.(`PROGRESS|${fase}|50|a metà`);
+      if (py.appeso) {
+        // un calcolo lungo: finisce solo con lo stop (SIGINT, come il lanciatore vero)
+        await new Promise<void>(r => { if (o.segnale?.aborted) r(); else o.segnale?.addEventListener("abort", () => r(), { once: true }); });
+        return { codice: null, segnaleUscita: "SIGINT", motivo: "fermato", stdout: "", stderrTesta: "", stderrCoda: "" };
+      }
       if (py.crash) {
         return { codice: 1, segnaleUscita: null, motivo: "uscito", stdout: "", stderrTesta: "Traceback", stderrCoda: "Traceback (most recent call last): boom" };
       }
@@ -193,6 +200,7 @@ const CASI: Caso[] = [
 async function eseguiCaso(c: Caso): Promise<{ status: number; body: any; python: any[] }> {
   py.chiamate.length = 0;
   py.crash = false;
+  py.appeso = false;
   c.prima?.();
   const r = await request(c.app === "altro" ? altro : admin).post(c.rotta).send(c.corpo as object);
   return { status: r.status, body: r.body, python: [...py.chiamate] };
@@ -258,5 +266,100 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP, sul data
     expect((await request(altro).get(`/api/service-program/agent-optimize/${jobId}`)).status).toBe(403);
     const elenco = await request(altro).get("/api/service-program/agent-optimize");
     expect(elenco.body.jobs.map((j: any) => j.jobId)).not.toContain(jobId);
+  });
+});
+
+describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, sul database", () => {
+  const log = { info() {}, warn() {}, error() {} };
+  const esecutore = creaEsecutore({
+    chi: "prova:veicoli", slot: { veloce: 1, lunga: 1 }, gestori: GESTORI, log, pollingMs: 50, battitoMs: 100,
+  });
+  const lavori = () => db.execute<any>(sql`
+    SELECT id, tipo, corsia, stato, timeout_sec, http_codice, metadati, utente_id, oggetto_id
+      FROM coda.lavori WHERE richiesta->>'feedId' = ${FEED} OR metadati->>'psProjectId' = ${PS} ORDER BY creato_il`);
+  beforeAll(async () => { await semina(); esecutore.avvia(); });
+  afterAll(async () => { await esecutore.ferma(1_000); await pulisci(); });
+  beforeEach(async () => {
+    await db.execute(sql`DELETE FROM coda.lavori WHERE richiesta->>'feedId' = ${FEED} OR metadati->>'psProjectId' = ${PS}`);
+  });
+
+  it("gli stessi casi danno le stesse risposte e lo stesso ingresso a Python", async () => {
+    for (const c of CASI) {
+      process.env.LAVORI_VEICOLI_IN_CODA = "0";
+      const dentro = await eseguiCaso(c);
+      process.env.LAVORI_VEICOLI_IN_CODA = "1";
+      const inCoda = await eseguiCaso(c);
+      expect({ status: inCoda.status, body: inCoda.body }, c.nome).toEqual({ status: dentro.status, body: dentro.body });
+      expect(inCoda.python, c.nome).toEqual(dentro.python);
+    }
+    // solo le richieste che arrivano al calcolo diventano lavori: 400 e 404 no
+    const righe = (await lavori()).rows;
+    expect(righe.length).toBe(CASI.filter(c => !/: 40[04]$/.test(c.nome)).length);
+    expect(righe.every((r: any) => r.tipo === "ottimizza_veicoli" && r.utente_id === ADMIN && r.oggetto_id === PS)).toBe(true);
+    // corsia e tempo massimo dal budget del VSP: fast (60 s) veloce, la fattibilità di Argos (normal, 180 s) veloce, il VCSP lunga
+    const vcsp = righe.find((r: any) => r.metadati.mode === "vcsp");
+    expect(vcsp).toMatchObject({ corsia: "lunga", timeout_sec: 7200, stato: "completato", http_codice: 200 });
+    expect(righe.filter((r: any) => r.metadati.mode === "cpsat").every((r: any) => r.corsia === "veloce" && r.timeout_sec === 3600)).toBe(true);
+    expect(righe.find((r: any) => r.http_codice === 422)).toMatchObject({ stato: "fallito" });
+    expect(righe.find((r: any) => r.http_codice === 500)).toMatchObject({ stato: "fallito" });
+  }, 120_000);
+
+  it("asincrono: 202 e poi lo stato; un altro utente non lo vede; lo stop ferma il calcolo", async () => {
+    process.env.LAVORI_VEICOLI_IN_CODA = "1";
+    py.chiamate.length = 0;
+    py.appeso = true;
+    try {
+      const avvio = await request(admin).post("/api/service-program/vcsp?asincrono=1").send(corpoVcsp());
+      expect(avvio.status).toBe(202);
+      const { jobId } = avvio.body;
+      expect(avvio.body).toEqual({ jobId, status: "queued" });
+      await vi.waitFor(async () => {
+        const st = await request(admin).get(`/api/service-program/lavori/${jobId}`);
+        expect(st.body).toMatchObject({ jobId, status: "running", mode: "vcsp" });
+      }, { timeout: 5_000 });
+      expect((await request(altro).get(`/api/service-program/lavori/${jobId}`)).status).toBe(404);
+      expect((await request(altro).post(`/api/service-program/lavori/${jobId}/stop`)).status).toBe(404);
+      expect((await request(admin).get("/api/service-program/lavori/non-un-uuid")).status).toBe(404);
+      const stop = await request(admin).post(`/api/service-program/lavori/${jobId}/stop`);
+      expect(stop.body).toEqual({ jobId, status: "stopping" });
+      await vi.waitFor(async () => {
+        const st = await request(admin).get(`/api/service-program/lavori/${jobId}`);
+        expect(st.body).toMatchObject({ status: "stopped", httpStatus: 409 });
+      }, { timeout: 5_000 });
+      expect((await request(admin).post(`/api/service-program/lavori/${jobId}/stop`)).status).toBe(400);
+    } finally {
+      py.appeso = false;
+    }
+  });
+
+  it("chi aspetta si scollega: il calcolo si ferma", async () => {
+    process.env.LAVORI_VEICOLI_IN_CODA = "1";
+    py.chiamate.length = 0;
+    py.appeso = true;
+    try {
+      await expect(request(admin).post("/api/service-program/cpsat").send(corpoFucina()).timeout(1_500)).rejects.toThrow();
+      await vi.waitFor(async () => {
+        const r = (await lavori()).rows;
+        expect(r.map((x: any) => x.stato)).toEqual(["fermato"]);
+      }, { timeout: 5_000 });
+      // il calcolo era davvero partito: lo ha fermato lo scollegamento, non altro
+      expect(py.chiamate.map(c => c.script)).toEqual(["vehicle_scheduler_cpsat.py"]);
+    } finally {
+      py.appeso = false;
+    }
+  });
+
+  it("oltre 3 calcoli vivi dello stesso utente: 429, senza lavoro nuovo", async () => {
+    process.env.LAVORI_VEICOLI_IN_CODA = "1";
+    for (let i = 0; i < 3; i++) {
+      await db.execute(sql`
+        INSERT INTO coda.lavori (tipo, corsia, stato, utente_id, richiesta, metadati, timeout_sec, disponibile_dal)
+        VALUES ('ottimizza_veicoli', 'lunga', 'in_coda', ${ADMIN}::uuid, ${JSON.stringify({ feedId: FEED })}::jsonb,
+                ${JSON.stringify({ ambito: "turni-macchina", psProjectId: PS })}::jsonb, 3600, now() + interval '1 hour')`);
+    }
+    const r = await request(admin).post("/api/service-program/cpsat").send(corpoFucina());
+    expect(r.status).toBe(429);
+    expect(r.body.error).toContain("3 calcoli dei turni macchina");
+    expect((await lavori()).rows.length).toBe(3);
   });
 });

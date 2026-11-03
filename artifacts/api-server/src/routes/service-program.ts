@@ -50,6 +50,10 @@ import {
   eseguiOttimizzazione, validaRichiesta, progettoMancante, type EsitoOttimizzazione, type ModoVeicoli,
 } from "../lib/ottimizza-veicoli/esegui";
 import type { Progresso } from "../lib/lavori/python";
+import * as coda from "../lib/lavori/coda";
+import { arresto } from "../lib/arresto";
+import { attendiEsito, rispostaDi, FINITI, STATO_PUBBLICO, MESSAGGIO_RIAVVIO, type RigaLavoro } from "../lib/facciata-lavori";
+import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli } from "../lib/ottimizza-veicoli/tempi";
 const router: IRouter = Router();
 
 /** true se lo scenario turni macchina è marcato "in esercizio" (soluzione
@@ -1104,16 +1108,22 @@ function rejectWithoutPsProject(req: any, res: any): boolean {
   return !!e;
 }
 
-async function ottimizzaInProcesso(
-  corpo: any, mode: ModoVeicoli, user: any, log: any,
-  progresso?: (p: Progresso) => void,
-): Promise<EsitoOttimizzazione> {
-  const feedId = await getLatestFeedId({ user, body: corpo, query: {} });
-  if (!feedId) return { codice: 404, corpo: { error: "Nessun feed GTFS caricato" } };
-  const errore = validaRichiesta(corpo);
-  if (errore) return errore;
-  await ensureVariantCodeColumn();
-  return eseguiOttimizzazione(corpo, { mode, feedId, log, progresso });
+/* ── Turni macchina e VCSP in coda (PR 2.6) ─────────────────────────────────
+ * Il calcolo gira nel lavoratore (lavoro ottimizza_veicoli); la rotta resta
+ * sincrona con la facciata (lib/facciata-lavori.ts): stesse risposte, e se il
+ * client si scollega il calcolo si ferma. Con ?asincrono=1 risponde subito 202
+ * {jobId}: lo stato si legge da GET /service-program/lavori/:jobId.
+ * LAVORI_VEICOLI_IN_CODA=0 riporta il calcolo dentro l'API (rilascio e ritorno
+ * indietro). Il feed, i 400 e la colonna variant_code (DDL dell'unità pigra)
+ * restano qui: nessun lavoro per una richiesta sbagliata, nessun DDL nel
+ * lavoratore. */
+const AMBITO_VEICOLI = "turni-macchina";
+/** Calcoli dei turni macchina vivi (in coda o in corso) per utente: oltre, 429. */
+export const VIVI_PER_UTENTE_VEICOLI = 3;
+
+/** Il calcolo va in coda salvo LAVORI_VEICOLI_IN_CODA=0. */
+export function veicoliInCoda(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.LAVORI_VEICOLI_IN_CODA !== "0";
 }
 
 async function handleVehicleOptimize(req: any, res: any, mode: ModoVeicoli): Promise<void> {
@@ -1123,17 +1133,92 @@ async function handleVehicleOptimize(req: any, res: any, mode: ModoVeicoli): Pro
     const errore = validaRichiesta(req.body);
     if (errore) { res.status(errore.codice).json(errore.corpo); return; }
     await ensureVariantCodeColumn();
-    const r = await eseguiOttimizzazione(req.body, { mode, feedId, log: req.log });
-    res.status(r.codice).json(r.corpo);
+    if (!veicoliInCoda()) {
+      const r = await eseguiOttimizzazione(req.body, { mode, feedId, log: req.log });
+      res.status(r.codice).json(r.corpo);
+      return;
+    }
+    if (arresto.signal.aborted) { res.status(503).json({ error: MESSAGGIO_RIAVVIO }); return; }
+    const utenteId: string | undefined = req.user?.id;
+    if (!utenteId) { res.status(401).json({ error: "Non autenticato" }); return; }
+    // un tetto ai calcoli vivi per utente: la coda è persistente e non si svuota a ogni riavvio
+    if (await coda.viviDi(utenteId, AMBITO_VEICOLI) >= VIVI_PER_UTENTE_VEICOLI) {
+      res.status(429).json({
+        error: `Hai già ${VIVI_PER_UTENTE_VEICOLI} calcoli dei turni macchina in coda o in corso: aspetta che finiscano o fermane uno.`,
+      });
+      return;
+    }
+    const budgetSec = budgetVsp(req.body);
+    const corsia = corsiaVeicoli(mode, budgetSec);
+    const psProjectId = String(req.body.psProjectId);
+    const jobId = await coda.accoda({
+      tipo: "ottimizza_veicoli",
+      corsia,
+      utenteId,
+      via: req.authVia ?? "api",
+      oggettoId: psProjectId,
+      richiesta: { mode, feedId, corpo: req.body },
+      metadati: { ambito: AMBITO_VEICOLI, mode, date: String(req.body.date), psProjectId, budgetSec },
+      timeoutSec: tempoMassimoVeicoli(mode, budgetSec),
+    });
+    req.log.info({ lavoro: jobId, mode, corsia, budgetSec }, "turni macchina: calcolo in coda");
+    if (req.query?.asincrono === "1") { res.status(202).json({ jobId, status: "queued" }); return; }
+    await attendiEsito(res, jobId, { log: req.log });
   } catch (err: any) {
     req.log.error(err, "Error in CP-SAT service-program");
-    res.status(500).json({ error: err.message || "Errore nel solver CP-SAT" });
+    if (!res.headersSent) res.status(500).json({ error: err.message || "Errore nel solver CP-SAT" });
   }
 }
 
 router.post("/service-program/cpsat", (req, res) => handleVehicleOptimize(req, res, "cpsat"));
 // VCSP: ottimizzazione integrata turni macchina + turni guida (iterativo con feedback)
 router.post("/service-program/vcsp", (req, res) => handleVehicleOptimize(req, res, "vcsp"));
+
+/** Il calcolo dei turni macchina, se chi chiede lo può vedere: il suo, o qualunque per l'admin. */
+async function lavoroVeicoli(req: any): Promise<RigaLavoro | null> {
+  const l = await coda.leggi(String(req.params.jobId));
+  if (!l || l.metadati?.ambito !== AMBITO_VEICOLI) return null;
+  const u = req.user;
+  if (!u) return null;
+  return u.role === "admin" || (!!l.utente_id && l.utente_id === u.id) ? l : null;
+}
+
+/** GET /api/service-program/lavori/:jobId — stato di un calcolo (?asincrono=1); finito, con la risposta. */
+router.get("/service-program/lavori/:jobId", async (req, res) => {
+  try {
+    const l = await lavoroVeicoli(req);
+    /* il lavoro di un altro risponde come uno che non c'è: l'id non deve dire niente */
+    if (!l) { res.status(404).json({ error: "Calcolo non trovato" }); return; }
+    const finito = FINITI.has(l.stato);
+    const r = finito ? rispostaDi(l) : null;
+    res.json({
+      jobId: l.id,
+      status: STATO_PUBBLICO[l.stato],
+      mode: l.metadati?.mode ?? null,
+      progress: l.avanzamento ?? null,
+      createdAt: +l.creato_il,
+      updatedAt: +l.aggiornato_il,
+      ...(r ? { httpStatus: r.codice, result: r.corpo } : {}),
+    });
+  } catch (err: any) {
+    req.log.error(err, "lettura del calcolo dei turni macchina");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/service-program/lavori/:jobId/stop — ferma un calcolo in coda o in corso. */
+router.post("/service-program/lavori/:jobId/stop", async (req, res) => {
+  try {
+    const l = await lavoroVeicoli(req);
+    if (!l) { res.status(404).json({ error: "Calcolo non trovato" }); return; }
+    const esito = await coda.chiediAnnullamento(l.id);
+    if (!esito) { res.status(400).json({ error: "Il calcolo è già finito" }); return; }
+    res.json({ jobId: l.id, status: esito === "fermato" ? "stopped" : "stopping" });
+  } catch (err: any) {
+    req.log.error(err, "stop del calcolo dei turni macchina");
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /* ═══════════════════════════════════════════════════════════════
  *  AGENT-OPTIMIZE — lancio ASINCRONO per Argos (MCP/chat)
