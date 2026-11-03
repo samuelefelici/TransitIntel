@@ -37,6 +37,7 @@ import { serviceProgramScenarios, driverShiftScenarios, depots, gtfsStops } from
 import { eq, and, desc, sql } from "drizzle-orm";
 import * as coda from "../lib/lavori/coda";
 import type { StatoLavoro } from "../lib/lavori/coda";
+import { AMBITI } from "../lib/lavori/ambiti";
 import { arresto } from "../lib/arresto";
 import {
   driverScenariosAccessibleWhere,
@@ -858,7 +859,7 @@ router.get("/driver-shifts/:scenarioId", async (req, res) => {
  * ═══════════════════════════════════════════════════════════════ */
 
 /** I lavori dei turni guida, fra quelli della coda. */
-const AMBITO_TURNI_GUIDA = "turni-guida";
+const AMBITO_TURNI_GUIDA = AMBITI.turniGuida;
 const STATO_PUBBLICO: Record<StatoLavoro, string> = {
   in_coda: "queued", in_corso: "running", completato: "completed", fallito: "failed", fermato: "stopped",
 };

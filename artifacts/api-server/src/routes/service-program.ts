@@ -51,6 +51,7 @@ import {
 } from "../lib/ottimizza-veicoli/esegui";
 import type { Progresso } from "../lib/lavori/python";
 import * as coda from "../lib/lavori/coda";
+import { AMBITI } from "../lib/lavori/ambiti";
 import { arresto } from "../lib/arresto";
 import { attendiEsito, rispostaDi, FINITI, STATO_PUBBLICO, MESSAGGIO_RIAVVIO, type RigaLavoro } from "../lib/facciata-lavori";
 import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli, CORSIA_GIRO, TEMPO_MASSIMO_GIRO } from "../lib/ottimizza-veicoli/tempi";
@@ -1117,7 +1118,7 @@ function rejectWithoutPsProject(req: any, res: any): boolean {
  * indietro). Il feed, i 400 e la colonna variant_code (DDL dell'unità pigra)
  * restano qui: nessun lavoro per una richiesta sbagliata, nessun DDL nel
  * lavoratore. */
-const AMBITO_VEICOLI = "turni-macchina";
+const AMBITO_VEICOLI = AMBITI.turniMacchina;
 /** Calcoli dei turni macchina vivi (in coda o in corso) per utente: oltre, 429. */
 export const VIVI_PER_UTENTE_VEICOLI = 3;
 
@@ -1245,7 +1246,7 @@ const agentJobs = new Map<string, AgentOptimizeJob>();
 /** lo stop dei giri dentro l'API (LAVORI_VEICOLI_IN_CODA=0) */
 const agentStops = new Map<string, AbortController>();
 /** I giri in coda (lavoro giro_agente): al più uno vivo per progetto. */
-const AMBITO_GIRO = "giro-agente";
+const AMBITO_GIRO = AMBITI.giroAgente;
 const chiaveGiro = (psProjectId: string) => `giro:${psProjectId}`;
 const GIRO_GIA_IN_CORSO = "Un giro è già in corso su questo progetto: attendi o interroga lo stato";
 const AGENT_JOB_TTL_MS = 6 * 60 * 60 * 1000;

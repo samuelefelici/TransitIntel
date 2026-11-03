@@ -21,6 +21,7 @@ import { sql } from "drizzle-orm";
 import { materializePsToFeed as materializza, type MaterializeResult } from "./materializzazione/feed";
 import { sincronizzaProgetto } from "./materializzazione/sincronizza";
 import * as coda from "./lavori/coda";
+import { AMBITI } from "./lavori/ambiti";
 
 const router: IRouter = Router();
 
@@ -109,7 +110,7 @@ export function startSyncJob(
  *  una seconda richiesta si aggancia a quella in corso, come prima nello
  *  stesso processo. Con LAVORI_FEED_IN_CODA=0 resta il job in memoria.
  * ════════════════════════════════════════════════════════════ */
-const AMBITO_SYNC = "materializzazione";
+const AMBITO_SYNC = AMBITI.materializzazione;
 const chiaveSync = (projectId: string) => `sync:${projectId}`;
 /** La sincronizzazione più lunga che si attende in coda (poi «fallito, scaduto»). */
 const TEMPO_MASSIMO_SYNC_SEC = 30 * 60;

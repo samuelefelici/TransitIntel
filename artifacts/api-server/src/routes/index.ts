@@ -17,6 +17,7 @@ import adminRouter from "./admin";
 import scenariosRouter from "./scenarios";
 import intermodalRouter from "./intermodal";
 import serviceProgramRouter from "./service-program";
+import lavoriRouter from "./lavori";
 import processReportRouter from "./process-report";
 import driverShiftsRouter from "./driver-shifts";
 import optimizerRuleProfilesRouter from "./optimizer-rule-profiles";
@@ -111,6 +112,7 @@ router.use(argosTerritoryRouter);
 router.use(argosWatchRouter);
 router.use(siriRouter); // connettore AVM esterno (SIRI-VM): diagnostica + ingestione
 router.use(avmStoriaRouter); // AVM: andamento dall'inizio dei dati e richieste a Mizar
+router.use(lavoriRouter); // «I miei calcoli»: i calcoli in coda di chi chiede, e lo stop
 router.use(serviceProgramRouter);
 router.use(processReportRouter); // relazione di processo (dossier + documento)
 router.use(driverShiftsRouter);

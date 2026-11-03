@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { pool } from "@workspace/db";
 import {
   accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci, viviDi, vivoConChiave,
-  segnaAttesa, fermaAbbandonati,
+  segnaAttesa, fermaAbbandonati, lavoriDi, ultimoDi,
 } from "../lib/lavori/coda";
 
 const NOTI = [{ tipo: "python", versione: 1 }];
@@ -101,6 +101,38 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda dei lavori, sul databas
     await chiediAnnullamento(finito);
     expect(await viviDi(u, "turni-guida")).toBe(2);
     expect(await viviDi("10000000-0000-0000-0000-00000000000b", "turni-guida")).toBe(0);
+  });
+
+  it("i miei calcoli: solo i miei, negli ambiti chiesti, i più recenti prima, senza risultato; l'errore anche dalla risposta", async () => {
+    const u = "10000000-0000-0000-0000-00000000000a", altro = "10000000-0000-0000-0000-00000000000b";
+    const vecchio = await nuovo("lunga", { utenteId: u, metadati: { ambito: "turni-guida" } });
+    await pool.query("UPDATE coda.lavori SET creato_il = now() - interval '1 hour' WHERE id = $1", [vecchio]);
+    const fallito = await nuovo("veloce", { utenteId: u, metadati: { ambito: "turni-macchina" } });
+    await pool.query(`UPDATE coda.lavori SET stato = 'fallito', http_codice = 422, risultato = '{"error":"Catene impossibili"}',
+                      errore_tipo = 'calcolo', finito_il = now() WHERE id = $1`, [fallito]);
+    const fatto = await nuovo("veloce", { utenteId: u, metadati: { ambito: "turni-macchina" } });
+    await pool.query(`UPDATE coda.lavori SET stato = 'completato', risultato = '{"error":"non è un errore"}', finito_il = now(),
+                      creato_il = now() + interval '1 second' WHERE id = $1`, [fatto]);
+    await nuovo("lunga", { utenteId: u, metadati: { ambito: "prova" } });
+    await nuovo("lunga", { utenteId: altro, metadati: { ambito: "turni-guida" } });
+    const l = await lavoriDi(u, ["turni-guida", "turni-macchina"]);
+    expect(l.map(x => x.id)).toEqual([fatto, fallito, vecchio]);
+    expect(l[0]).not.toHaveProperty("risultato");
+    expect(l[0]).not.toHaveProperty("richiesta");
+    expect(l[0].errore).toBeNull();
+    expect(l[1]).toMatchObject({ stato: "fallito", errore: "Catene impossibili", http_codice: 422 });
+    expect((await lavoriDi(u, ["turni-guida", "turni-macchina"], 2)).length).toBe(2);
+    expect(await lavoriDi("non-un-uuid", ["turni-guida"])).toEqual([]);
+  });
+
+  it("l'ultimo lavoro di un tipo su un oggetto", async () => {
+    const o = "20000000-0000-0000-0000-000000000001";
+    const primo = await accoda({ tipo: "materializza_feed", corsia: "veloce", oggettoId: o, richiesta: {}, timeoutSec: 60 });
+    await pool.query("UPDATE coda.lavori SET creato_il = now() - interval '1 minute' WHERE id = $1", [primo]);
+    const secondo = await accoda({ tipo: "materializza_feed", corsia: "veloce", oggettoId: o, richiesta: {}, timeoutSec: 60 });
+    await accoda({ tipo: "python", corsia: "veloce", oggettoId: o, richiesta: {}, timeoutSec: 60 });
+    expect((await ultimoDi("materializza_feed", o))?.id).toBe(secondo);
+    expect(await ultimoDi("materializza_feed", "20000000-0000-0000-0000-000000000002")).toBeNull();
   });
 
   it("lease scaduto: di nuovo in coda con un ritardo, poi «fallito, interrotto» finiti i tentativi", async () => {
