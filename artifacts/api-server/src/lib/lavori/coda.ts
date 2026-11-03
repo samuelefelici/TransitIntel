@@ -208,6 +208,13 @@ export async function lavoriDi(utenteId: string, ambiti: readonly string[], n = 
   return r.rows;
 }
 
+/** La richiesta di un lavoro (null dopo 7 giorni: la pulizia la svuota). Solo per chi ha già controllato chi chiede. */
+export async function richiestaDi(id: string): Promise<Record<string, any> | null> {
+  if (!UUID.test(id)) return null;
+  const r = await q(`SELECT richiesta FROM coda.lavori WHERE id = $1`, [id]);
+  return r.rows[0]?.richiesta ?? null;
+}
+
 /** Il codice di Postgres per una chiave di unicità già viva (lavori_unici_vivi). */
 export const CHIAVE_GIA_VIVA = "23505";
 

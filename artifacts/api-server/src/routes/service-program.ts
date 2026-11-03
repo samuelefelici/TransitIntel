@@ -1161,6 +1161,8 @@ async function handleVehicleOptimize(req: any, res: any, mode: ModoVeicoli): Pro
       richiesta: { mode, feedId, corpo: req.body },
       metadati: {
         ambito: AMBITO_VEICOLI, mode, date: String(req.body.date), psProjectId, budgetSec,
+        // il progetto di scheduling della Fucina: «I miei calcoli» riapre il suo calcolo
+        ...(/^[0-9a-f-]{36}$/i.test(String(req.body.projectId ?? "")) ? { projectId: String(req.body.projectId) } : {}),
         // qualcuno aspetta la risposta: senza segni di vita della facciata il calcolo si ferma
         ...(req.query?.asincrono === "1" ? {} : { sincrono: true }),
       },
@@ -1196,6 +1198,9 @@ router.get("/service-program/lavori/:jobId", async (req, res) => {
     if (!l) { res.status(404).json({ error: "Calcolo non trovato" }); return; }
     const finito = FINITI.has(l.stato);
     const r = finito ? rispostaDi(l) : null;
+    // ?richiesta=1: il corpo con cui è stato lanciato, perché la Fucina ricostruisca
+    // il contesto (linee, data, depositi, impostazioni) riaprendo il calcolo
+    const corpo = req.query.richiesta === "1" ? (await coda.richiestaDi(l.id))?.corpo ?? null : undefined;
     res.json({
       jobId: l.id,
       status: STATO_PUBBLICO[l.stato],
@@ -1204,6 +1209,7 @@ router.get("/service-program/lavori/:jobId", async (req, res) => {
       createdAt: +l.creato_il,
       updatedAt: +l.aggiornato_il,
       ...(r ? { httpStatus: r.codice, result: r.corpo } : {}),
+      ...(corpo !== undefined ? { request: corpo } : {}),
     });
   } catch (err: any) {
     req.log.error(err, "lettura del calcolo dei turni macchina");

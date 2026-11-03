@@ -38,7 +38,7 @@ describe("i miei calcoli", () => {
   beforeEach(() => {
     righe.clear(); chiesti.length = 0;
     righe.set("a-macchina", riga("a-macchina", A.id, "in_corso",
-      { ambito: "turni-macchina", mode: "cpsat", date: "20261103", psProjectId: "p", budgetSec: 60, sincrono: true },
+      { ambito: "turni-macchina", mode: "cpsat", date: "20261103", projectId: "sp", psProjectId: "p", budgetSec: 60, sincrono: true },
       { iniziato_il: T, avanzamento: { phase: "solve", percentage: 40 } }));
     righe.set("a-sync", riga("a-sync", A.id, "fallito",
       { ambito: "materializzazione", schedulingProjectId: "s", psProjectId: "p" },
@@ -60,7 +60,7 @@ describe("i miei calcoli", () => {
       jobId: "a-macchina", tipo: "ottimizza_veicoli", ambito: "turni-macchina", status: "running", stopping: false,
       corsia: "veloce", progress: { phase: "solve", percentage: 40 }, httpStatus: null, error: null, errorType: null,
       createdAt: +T, startedAt: +T, finishedAt: null, updatedAt: +T,
-      dettagli: { mode: "cpsat", date: "20261103", psProjectId: "p", budgetSec: 60 },
+      dettagli: { mode: "cpsat", date: "20261103", projectId: "sp", psProjectId: "p", budgetSec: 60 },
     });
     expect(r.body.lavori.find((l: any) => l.jobId === "a-sync")).toMatchObject({ status: "failed", error: "Progetto non accessibile", errorType: "calcolo" });
     // i parametri del giro (anche grandi) restano fuori

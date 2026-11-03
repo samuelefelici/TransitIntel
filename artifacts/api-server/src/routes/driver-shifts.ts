@@ -1007,7 +1007,8 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
           },
         },
       },
-      metadati: { ambito: AMBITO_TURNI_GUIDA, scenarioId, scenarioName: scenario.name, date: scenario.date },
+      // projectId: «I miei calcoli» apre l'area turni guida del progetto
+      metadati: { ambito: AMBITO_TURNI_GUIDA, scenarioId, scenarioName: scenario.name, date: scenario.date, projectId: (scenario as any).projectId ?? null },
       timeoutSec: tempoMassimoTurniGuida(timeLimitSec),
     });
 

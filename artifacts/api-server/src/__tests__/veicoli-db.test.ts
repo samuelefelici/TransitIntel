@@ -346,6 +346,11 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, 
         expect(st.body).toMatchObject({ jobId, status: "running", mode: "vcsp" });
       }, { timeout: 5_000 });
       expect((await request(altro).get(`/api/service-program/lavori/${jobId}`)).status).toBe(404);
+      expect((await request(altro).get(`/api/service-program/lavori/${jobId}?richiesta=1`)).status).toBe(404);
+      // la Fucina che riapre il calcolo ricostruisce il contesto dalla richiesta, solo se la chiede
+      const conRichiesta = await request(admin).get(`/api/service-program/lavori/${jobId}?richiesta=1`);
+      expect(conRichiesta.body.request).toEqual(corpoVcsp());
+      expect((await request(admin).get(`/api/service-program/lavori/${jobId}`)).body).not.toHaveProperty("request");
       expect((await request(altro).post(`/api/service-program/lavori/${jobId}/stop`)).status).toBe(404);
       expect((await request(admin).get("/api/service-program/lavori/non-un-uuid")).status).toBe(404);
       const stop = await request(admin).post(`/api/service-program/lavori/${jobId}/stop`);
