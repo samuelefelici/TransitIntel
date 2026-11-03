@@ -21,6 +21,7 @@ import { sql } from "drizzle-orm";
 import { materializePsToFeed as materializza, type MaterializeResult } from "./materializzazione/feed";
 import { sincronizzaProgetto } from "./materializzazione/sincronizza";
 import * as coda from "./lavori/coda";
+import { arresto } from "./arresto";
 import { AMBITI } from "./lavori/ambiti";
 
 const router: IRouter = Router();
@@ -112,8 +113,10 @@ export function startSyncJob(
  * ════════════════════════════════════════════════════════════ */
 const AMBITO_SYNC = AMBITI.materializzazione;
 const chiaveSync = (projectId: string) => `sync:${projectId}`;
-/** La sincronizzazione più lunga che si attende in coda (poi «fallito, scaduto»). */
+/** Il tempo massimo di una sincronizzazione in coda (poi «fallito, scaduto»: lo applica il gestore). */
 const TEMPO_MASSIMO_SYNC_SEC = 30 * 60;
+/** Quanto si aspetta che una sincronizzazione che si sta fermando finisca, prima di accodarne una nuova. */
+const ATTESA_FERMATA_MS = 15_000;
 
 export function feedInCoda(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.LAVORI_FEED_IN_CODA !== "0";
@@ -131,35 +134,56 @@ export interface StatoSincronizzazione {
   error?: string;
 }
 
+/**
+ * La sincronizzazione viva da seguire con questa chiave, se c'è. Una a cui è
+ * stato chiesto lo stop non si segue (finirebbe «fermata»): si aspetta che
+ * chiuda, al più ATTESA_FERMATA_MS, così la richiesta nuova ne accoda un'altra.
+ */
+async function vivaDaSeguire(chiave: string): Promise<string | null> {
+  const fine = Date.now() + ATTESA_FERMATA_MS;
+  for (;;) {
+    const v = await coda.vivoConChiave(chiave);
+    if (!v) return null;
+    if (!v.annulla || Date.now() >= fine) return v.id;
+    await new Promise(r => setTimeout(r, 250));
+  }
+}
+
 /** Avvia (o ritrova, se è già in corso) la sincronizzazione di un progetto di scheduling. */
 export async function avviaSincronizzazione(
   projectId: string, psProjectId: string, utenteId: string,
   log?: { info?: any; error?: any; warn?: any }, via?: string | null,
 ): Promise<Sincronizzazione> {
+  const chiave = chiaveSync(projectId);
+  // anche col flag a 0 (ritorno indietro) una sincronizzazione ancora viva in coda
+  // conta: ci si aggancia, invece di farne un'altra in memoria in parallelo
+  const viva = await vivaDaSeguire(chiave);
+  if (viva) return { tipo: "coda", id: viva };
   if (!feedInCoda()) return { tipo: "memoria", job: startSyncJob(projectId, psProjectId, utenteId, log) };
   // il bootstrap pigro della colonna resta qui, nell'API: il lavoratore non fa DDL
   await ensureMaterializedColumn();
-  const vivo = await coda.vivoConChiave(chiaveSync(projectId));
-  if (vivo) return { tipo: "coda", id: vivo.id };
-  try {
-    const id = await coda.accoda({
-      tipo: "materializza_feed",
-      corsia: "veloce",
-      utenteId,
-      via: via ?? "api",
-      oggettoId: projectId,
-      chiaveUnicita: chiaveSync(projectId),
-      richiesta: { schedulingProjectId: projectId, psProjectId, utenteId },
-      metadati: { ambito: AMBITO_SYNC, schedulingProjectId: projectId, psProjectId },
-      timeoutSec: TEMPO_MASSIMO_SYNC_SEC,
-    });
-    log?.info?.({ lavoro: id, projectId }, "sync-from-ps in coda");
-    return { tipo: "coda", id };
-  } catch (err: any) {
-    if (err?.code !== coda.CHIAVE_GIA_VIVA) throw err;
-    const v = await coda.vivoConChiave(chiaveSync(projectId));
-    if (v) return { tipo: "coda", id: v.id };
-    throw err;
+  for (let tentativo = 1; ; tentativo++) {
+    try {
+      const id = await coda.accoda({
+        tipo: "materializza_feed",
+        corsia: "veloce",
+        utenteId,
+        via: via ?? "api",
+        oggettoId: projectId,
+        chiaveUnicita: chiave,
+        richiesta: { schedulingProjectId: projectId, psProjectId, utenteId },
+        metadati: { ambito: AMBITO_SYNC, schedulingProjectId: projectId, psProjectId },
+        timeoutSec: TEMPO_MASSIMO_SYNC_SEC,
+      });
+      log?.info?.({ lavoro: id, projectId }, "sync-from-ps in coda");
+      return { tipo: "coda", id };
+    } catch (err: any) {
+      // un'altra richiesta l'ha accodata un attimo prima: ci si aggancia; se è
+      // già finita nel frattempo, si riprova ad accodare
+      if (err?.code !== coda.CHIAVE_GIA_VIVA || tentativo >= 3) throw err;
+      const v = await vivaDaSeguire(chiave);
+      if (v) return { tipo: "coda", id: v };
+    }
   }
 }
 
@@ -188,12 +212,17 @@ export async function statoSincronizzazione(s: Sincronizzazione): Promise<StatoS
   return statoDaRiga(l);
 }
 
-/** Attende la fine della sincronizzazione fino a `ms`; poi ne dà lo stato (anche «running»). */
+/**
+ * Attende la fine della sincronizzazione fino a `ms`; poi ne dà lo stato (anche
+ * «running»). All'arresto dell'API smette subito di aspettare: la
+ * sincronizzazione continua nel lavoratore e chi chiama riceve «running» (202),
+ * invece di una connessione chiusa a metà.
+ */
 export async function attendiSincronizzazione(s: Sincronizzazione, ms: number, passoMs = 500): Promise<StatoSincronizzazione> {
   const fine = Date.now() + ms;
   for (;;) {
     const st = await statoSincronizzazione(s);
-    if (st.status !== "running" || Date.now() >= fine) return st;
+    if (st.status !== "running" || Date.now() >= fine || arresto.signal.aborted) return st;
     await new Promise(r => setTimeout(r, passoMs));
   }
 }
@@ -289,9 +318,17 @@ router.get(
       const proj = await loadProjectForSync(req, res);
       if (!proj) return;
       const projectId = String(proj.id);
-      // 1. il job in memoria (solo con LAVORI_FEED_IN_CODA=0), come prima
+      // il feed agganciato al progetto, se esiste ancora
+      const f: any = proj.feed_id ? (await db.execute<any>(sql`
+        SELECT id, feed_start_date, feed_end_date, uploaded_at,
+               stops_count, routes_count, trips_count, shapes_count
+          FROM gtfs_feeds WHERE id = ${proj.feed_id}::uuid
+      `)).rows?.[0] : undefined;
+
+      // 1. il job in memoria (solo con LAVORI_FEED_IN_CODA=0), come prima; un «done»
+      //    vale solo se il progetto è ancora su quel feed
       const job = feedInCoda() ? undefined : syncJobs.get(projectId);
-      if (job) {
+      if (job && !(job.status === "done" && job.result?.feedId !== proj.feed_id)) {
         if (job.status === "done" && job.result) {
           res.json({ status: "done", ...job.result, durationMs: (job.finishedAt || Date.now()) - job.startedAt });
           return;
@@ -316,42 +353,37 @@ router.get(
           res.json({ status: "running", startedAt: new Date(st.startedAt).toISOString(), elapsedMs: Date.now() - st.startedAt });
           return;
         }
-        if (st.status === "error") {
+        // un errore vale se è più recente del feed agganciato: un feed agganciato dopo
+        // (un PATCH, una sincronizzazione nell'API col flag a 0) non lo nasconde
+        const agganciatoDopo = !!f?.uploaded_at && !!l.finito_il && new Date(f.uploaded_at) > l.finito_il;
+        if (st.status === "error" && !agganciatoDopo) {
           res.json({ status: "error", error: st.error });
           return;
         }
         // finita: vale se il progetto è ancora agganciato a quel feed (un PATCH può averlo cambiato)
-        if (st.result && st.result.feedId === proj.feed_id) {
+        if (st.status === "done" && st.result && st.result.feedId === proj.feed_id) {
           res.json({ status: "done", ...st.result, durationMs: (st.finishedAt ?? Date.now()) - st.startedAt });
           return;
         }
       }
 
       // 3. nessuna sincronizzazione nota: il feed agganciato, se esiste ancora
-      if (proj.feed_id) {
-        const fr: any = await db.execute(sql`
-          SELECT id, feed_start_date, feed_end_date,
-                 stops_count, routes_count, trips_count, shapes_count
-            FROM gtfs_feeds WHERE id = ${proj.feed_id}::uuid
-        `);
-        const f: any = fr.rows?.[0] ?? fr[0];
-        if (f) {
-          res.json({
-            status: "done",
-            feedId: proj.feed_id,
-            label: proj.feed_label || `PS · ${proj.name || ""}`.trim(),
-            feedStartDate: (f?.feed_start_date || "").toString().replace(/-/g, "").slice(0, 8),
-            feedEndDate: (f?.feed_end_date || "").toString().replace(/-/g, "").slice(0, 8),
-            counts: {
-              stops: Number(f?.stops_count ?? 0),
-              routes: Number(f?.routes_count ?? 0),
-              trips: Number(f?.trips_count ?? 0),
-              stopTimes: 0, calendars: 0, calendarDates: 0,
-              shapes: Number(f?.shapes_count ?? 0),
-            },
-          });
-          return;
-        }
+      if (f) {
+        res.json({
+          status: "done",
+          feedId: proj.feed_id,
+          label: proj.feed_label || `PS · ${proj.name || ""}`.trim(),
+          feedStartDate: (f?.feed_start_date || "").toString().replace(/-/g, "").slice(0, 8),
+          feedEndDate: (f?.feed_end_date || "").toString().replace(/-/g, "").slice(0, 8),
+          counts: {
+            stops: Number(f?.stops_count ?? 0),
+            routes: Number(f?.routes_count ?? 0),
+            trips: Number(f?.trips_count ?? 0),
+            stopTimes: 0, calendars: 0, calendarDates: 0,
+            shapes: Number(f?.shapes_count ?? 0),
+          },
+        });
+        return;
       }
       res.json({ status: "idle" });
     } catch (e: any) {

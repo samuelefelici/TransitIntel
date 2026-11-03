@@ -84,6 +84,26 @@ describe("l'esecutore", () => {
     await e.ferma(0);
   });
 
+  it("stop arrivato quando il lavoro ha già i suoi effetti: «completato» resta tale solo per i gestori che lo dichiarano", async () => {
+    // un gestore che allo stop non si ferma: finisce lo stesso e dice «completato»
+    const ostinato = (vince: boolean): Gestore => ({
+      tipo: "python", versione: 1, completatoVinceSulloStop: vince,
+      esegui: (_l, ctx) => new Promise((resolve) => {
+        ctx.segnale.addEventListener("abort", () => resolve({ stato: "completato", risultato: { feedId: "F" } }));
+      }),
+    });
+    for (const [vince, atteso] of [[true, { stato: "completato", risultato: { feedId: "F" } }], [false, { stato: "fermato" }]] as const) {
+      const f = codaFinta([lavoro("a")]);
+      const e = creaEsecutore({ chi: "t", slot: { lunga: 1, veloce: 0 }, gestori: [ostinato(vince)], log, coda: f.coda, pollingMs: 20, battitoMs: 50 });
+      e.avvia();
+      await aspetta(() => e.inCorso() === 1);
+      f.annullati.add("a");
+      await aspetta(() => f.chiusi.has("a"));
+      expect(f.chiusi.get("a")).toEqual(atteso);
+      await e.ferma(0);
+    }
+  });
+
   it("lease perso: il calcolo si ferma e non si scrive niente", async () => {
     const f = codaFinta([lavoro("a")]);
     const { g, pendenti } = gestoreComandato();

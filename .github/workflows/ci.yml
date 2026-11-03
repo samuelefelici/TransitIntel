@@ -436,6 +436,7 @@ jobs:
       # «fallito, sistema» senza partire; al SIGTERM si ferma in ordine.
       # PR 2.6: conosce i turni macchina e i giri di Argos; un turno macchina
       # su un feed senza servizio quel giorno risponde NO_INPUT.
+      # PR 2.7a: conosce la sincronizzazione dei feed (materializza_feed).
       - name: Il lavoratore prende ed esegue i lavori della coda
         run: |
           psql -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE lavoratore"
@@ -451,12 +452,15 @@ jobs:
           q "INSERT INTO gtfs_feeds (id, filename) VALUES ('00000000-0000-0000-0000-0000000000f1', 'ci.zip')"
           veicoli=$(q "INSERT INTO coda.lavori (tipo, corsia, richiesta, timeout_sec) VALUES ('ottimizza_veicoli', 'veloce', '{\"mode\":\"cpsat\",\"feedId\":\"00000000-0000-0000-0000-0000000000f1\",\"corpo\":{\"psProjectId\":\"00000000-0000-0000-0000-0000000000c1\",\"date\":\"2026-11-04\",\"routes\":[{\"routeId\":\"R1\",\"vehicleType\":\"12m\"}]}}', 3600) RETURNING id" | head -1)
           vietato=$(q "INSERT INTO coda.lavori (tipo, corsia, richiesta, timeout_sec) VALUES ('python', 'veloce', '{\"script\":\"../../etc/passwd\"}', 60) RETURNING id" | head -1)
+          # PR 2.7a: una sincronizzazione su un progetto Planning Studio che non c'è → «fallito, calcolo»
+          sync=$(q "INSERT INTO coda.lavori (tipo, corsia, richiesta, timeout_sec) VALUES ('materializza_feed', 'veloce', '{\"schedulingProjectId\":\"00000000-0000-0000-0000-0000000000b1\",\"psProjectId\":\"00000000-0000-0000-0000-0000000000c1\",\"utenteId\":\"00000000-0000-0000-0000-0000000000a1\"}', 60) RETURNING id" | head -1)
           for i in $(seq 1 60); do [ "$(q "SELECT count(*) FROM coda.lavori WHERE stato IN ('in_coda', 'in_corso')")" = 0 ] && break; sleep 1; done
           q "SELECT id, stato, errore_tipo, errore FROM coda.lavori"
           [ "$(q "SELECT stato FROM coda.lavori WHERE id = '$buono'")" = completato ] || { cat lavoratore.log; exit 1; }
           [ "$(q "SELECT stato || '/' || errore_tipo FROM coda.lavori WHERE id = '$vietato'")" = fallito/sistema ] || { cat lavoratore.log; exit 1; }
           [ "$(q "SELECT stato || '/' || http_codice || '/' || (risultato->>'status') FROM coda.lavori WHERE id = '$veicoli'")" = completato/200/NO_INPUT ] || { cat lavoratore.log; exit 1; }
-          grep -q 'ottimizza_veicoli@1' lavoratore.log && grep -q 'giro_agente@1' lavoratore.log || { cat lavoratore.log; exit 1; }
+          [ "$(q "SELECT stato || '/' || errore_tipo FROM coda.lavori WHERE id = '$sync'")" = fallito/calcolo ] || { cat lavoratore.log; exit 1; }
+          grep -q 'ottimizza_veicoli@1' lavoratore.log && grep -q 'giro_agente@1' lavoratore.log && grep -q 'materializza_feed@1' lavoratore.log || { cat lavoratore.log; exit 1; }
           kill "$(cat lavoratore.pid)"; wait "$(cat lavoratore.pid)" 2>/dev/null || true
           grep -q "Lavoratore fermo" lavoratore.log || { cat lavoratore.log; exit 1; }
       # La coda sul database: SKIP LOCKED con processi concorrenti, lease,

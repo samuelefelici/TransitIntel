@@ -170,9 +170,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda dei lavori, sul databas
   it("il lavoro vivo con una chiave: in coda o in corso sì, finito no", async () => {
     expect(await vivoConChiave("giro:2")).toBeNull();
     const id = await nuovo("lunga", { chiaveUnicita: "giro:2", utenteId: "e0000000-0000-0000-0000-000000000001" });
-    expect(await vivoConChiave("giro:2")).toEqual({ id, utente_id: "e0000000-0000-0000-0000-000000000001", stato: "in_coda" });
+    expect(await vivoConChiave("giro:2")).toEqual({ id, utente_id: "e0000000-0000-0000-0000-000000000001", stato: "in_coda", annulla: false });
     await prendi("lunga", "p", NOTI);
     expect(await vivoConChiave("giro:2")).toMatchObject({ id, stato: "in_corso" });
+    // uno stop chiesto si vede: chi vuole seguirlo sa che finirà «fermato»
+    await chiediAnnullamento(id);
+    expect(await vivoConChiave("giro:2")).toMatchObject({ id, stato: "in_corso", annulla: true });
     await chiudi(id, "p", { stato: "fermato" });
     expect(await vivoConChiave("giro:2")).toBeNull();
   });

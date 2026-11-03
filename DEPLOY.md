@@ -525,9 +525,23 @@ riavvio.
     vecchio dopo un riavvio;
   - l'ordine è cambiato: prima il feed nuovo, poi il puntatore del progetto,
     solo alla fine si cancella il feed vecchio, e solo se è un feed sintetico
-    di Planning Studio che nessuno usa più. Un errore a metà non lascia feed
-    parziali;
-  - `LAVORI_FEED_IN_CODA=0` sull'API la riporta dentro l'API, come prima.
+    di Planning Studio fuori esercizio che nessuno usa più: non puntato da un
+    progetto o da un'attivazione, senza tariffe, POI o classificazioni sopra,
+    non letto da un calcolo vivo in coda (la stessa definizione delle pulizie,
+    `lib/materializzazione/usi-feed.ts`). Gli scenari dei turni salvati sul
+    feed vecchio restano col suo id, marcati «superati», come prima. Se il
+    feed vecchio non si può cancellare (in uso, o un lock che non arriva in
+    5 s) resta, e lo riprendono le pulizie. Un errore o uno stop a metà non
+    lasciano feed parziali;
+  - tempo massimo 30 minuti («fallito, scaduto»); uno stop che arriva dopo
+    l'aggancio del feed nuovo non annulla più niente, e la sincronizzazione
+    resta «completata»;
+  - la sincronizzazione va nella corsia veloce, insieme a CP-SAT brevi e
+    turni guida brevi: con `LAVORI_SLOT_VELOCE=2` (consigliato) non aspetta
+    dietro a un calcolo. `agent-optimize` aspetta la sincronizzazione 20 s,
+    poi risponde 409 «in corso» come prima;
+  - `LAVORI_FEED_IN_CODA=0` sull'API la riporta dentro l'API, come prima (una
+    sincronizzazione ancora viva in coda si segue, non se ne fa una seconda).
   «Metti in esercizio» resta sincrono nell'API.
 - **I miei calcoli** (dalla PR 2.7a): `GET /api/lavori` dà gli ultimi 20
   calcoli in coda di chi chiede, di tutti gli ambiti (turni guida, turni
@@ -535,20 +549,24 @@ riavvio.
   errore, senza risultato; `POST /api/lavori/:jobId/stop` ferma un proprio
   calcolo (agli altri, anche all'admin, 404). Permesso: Turni. La pagina e
   l'indicatore nella SPA arrivano con la 2.7b.
-- **Pulizie** (dalla PR 2.7a, solo nel lavoratore, ogni 6 ore, la prima 2
-  minuti dopo l'avvio; con più lavoratori le fa uno solo per volta):
+- **Pulizie** (dalla PR 2.7a, solo nel lavoratore e solo con lo schema del
+  database «ok», ogni 6 ore, la prima 2 minuti dopo l'avvio; con più
+  lavoratori le fa uno solo per volta):
   - i calcoli delle tariffe (matrice O/D minima, assegnazione dei nodi)
     rimasti «running» da oltre 24 ore, perché l'API è morta a metà,
     diventano «error» con «rilancialo»: niente più spinner infiniti;
   - i **feed sintetici orfani** (`ps-….synthetic`) più vecchi di 2 giorni si
     cancellano, al più 5 a giro, uno per riga nel log («feed sintetico orfano
     cancellato»). Orfano vuol dire: non attivo, non di default, non
-    archiviato (un feed in esercizio sostituito resta), non puntato da un
-    progetto di scheduling o di Planning Studio, da un'attivazione o da uno
-    scenario, senza tariffe, POI o classificazioni delle linee sopra. Un GTFS
-    caricato a mano non si tocca mai. Per vedere prima quali sono i
-    candidati (il lavoratore controlla in più le tabelle delle tariffe, dei
-    POI e delle classificazioni):
+    archiviato (un feed in esercizio sostituito resta), non in uso (non
+    puntato da un progetto di scheduling o di Planning Studio o da
+    un'attivazione, senza tariffe, POI o classificazioni delle linee sopra,
+    non letto da un calcolo vivo in coda). Senza un feed in esercizio
+    (`is_active`) non si cancella niente. Un GTFS caricato a mano non si
+    tocca: un file caricato col nome `ps-….synthetic` prende `.zip` in fondo.
+    Per vedere prima quali sono i candidati (il lavoratore controlla in più
+    le tabelle delle tariffe, dei POI e delle classificazioni e i calcoli in
+    coda):
     ```sql
     SELECT f.id, f.filename, f.uploaded_at, f.trips_count
       FROM gtfs_feeds f
@@ -559,7 +577,6 @@ riavvio.
        AND NOT EXISTS (SELECT 1 FROM ps_projects x WHERE f.id IN (x.materialized_feed_id, x.source_feed_id))
        AND NOT EXISTS (SELECT 1 FROM ps_pending_activations x WHERE x.feed_id = f.id)
        AND NOT EXISTS (SELECT 1 FROM ps_activation_log x WHERE x.feed_id = f.id)
-       AND NOT EXISTS (SELECT 1 FROM service_program_scenarios x WHERE x.feed_id = f.id)
        AND NOT EXISTS (SELECT 1 FROM planning_scenarios x WHERE x.baseline_feed_id = f.id)
      ORDER BY f.uploaded_at;
     ```
@@ -689,11 +706,14 @@ Il lavoratore di prima non conosce quei tipi e li lascerebbe in coda.
    - sul lavoratore: le Watch Paths nuove (sopra:
      `artifacts/api-server/src/lib/materializzazione/**` e
      `artifacts/api-server/src/lib/planning-studio-validity-eval.ts`).
-1. **Merge.** Si ridistribuiscono API e lavoratore. Nel log del lavoratore,
-   alla riga «Lavoratore dei calcoli avviato», `tipi` deve contenere
+1. **Merge**, quando nessuno sta sincronizzando un progetto (una
+   sincronizzazione nella memoria dell'API muore col deploy, come prima). Si
+   ridistribuiscono API e lavoratore. Nel log del lavoratore, alla riga
+   «Lavoratore dei calcoli avviato», `tipi` deve contenere
    `materializza_feed@1`.
-2. **Accensione**: si toglie `LAVORI_FEED_IN_CODA` dall'API e la si
-   ridistribuisce.
+2. **Accensione**, ancora senza sincronizzazioni in corso (nel log dell'API
+   ogni «sync-from-ps» avviato ha il suo «completed» o «failed»): si toglie
+   `LAVORI_FEED_IN_CODA` dall'API e la si ridistribuisce.
 3. **Prova**: «Sincronizza con PS» dalla Fucina su un progetto con l'unità di
    produzione. Poi dal Terminal del PostgreSQL:
    ```sql
@@ -706,7 +726,8 @@ Il lavoratore di prima non conosce quei tipi e li lascerebbe in coda.
    progetto. Le pulizie partono 2 minuti dopo l'avvio del lavoratore: se
    cancellano feed orfani, lo dicono nel log.
 
-**Tornare indietro (2.7a):** `LAVORI_FEED_IN_CODA=0` sull'API e redeploy.
+**Tornare indietro (2.7a):** `LAVORI_FEED_IN_CODA=0` sull'API e redeploy (le
+sincronizzazioni ancora in coda le finisce il lavoratore, e l'API le segue).
 Per un revert del codice, prima si fermano le sincronizzazioni ancora vive
 (la query della 2.6 con `WHERE tipo = 'materializza_feed' AND stato IN
 ('in_coda', 'in_corso')`): il lavoratore di prima non conosce quel tipo.

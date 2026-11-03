@@ -9,14 +9,16 @@
  * di scheduling_projects, solo alla fine si cancella il feed vecchio. Prima la
  * cancellazione veniva prima del puntatore: un processo morto in mezzo lasciava
  * il progetto agganciato a un feed che non c'era più. Si cancella solo un feed
- * sintetico di Planning Studio non in uso (mai un GTFS caricato a mano che un
- * PATCH ha agganciato al progetto); se la cancellazione non riesce (per esempio
- * uno scenario di pianificazione lo tiene), il feed resta e la sincronizzazione
- * è comunque riuscita.
+ * sintetico di Planning Studio fuori esercizio e non in uso (usi-feed.ts: mai
+ * un GTFS caricato a mano che un PATCH ha agganciato al progetto, mai un feed
+ * con tariffe, POI o un calcolo vivo sopra); se non si può, il feed resta (lo
+ * riprendono le pulizie) e la sincronizzazione è comunque riuscita. Gli scenari
+ * dei turni salvati sul feed vecchio restano col suo id, marcati «superati».
  */
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { materializePsToFeed, type MaterializeResult } from "./feed";
+import { materializePsToFeed, MaterializzazioneFermata, type MaterializeResult } from "./feed";
+import { SINTETICO_FUORI_ESERCIZIO, nonInUso } from "./usi-feed";
 
 type Log = { info?: (...a: any[]) => void; warn?: (...a: any[]) => void; error?: (...a: any[]) => void };
 
@@ -72,6 +74,12 @@ export async function sincronizzaProgetto(
   });
 
   o.passo?.("aggancio", 85);
+  // l'ultimo momento in cui uno stop vale: dopo, il progetto è sul feed nuovo e la
+  // sincronizzazione è riuscita (il gestore la chiude «completata» anche se lo stop arriva)
+  if (o.segnale?.aborted) {
+    await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${result.feedId}::uuid`).catch(() => undefined);
+    throw new MaterializzazioneFermata();
+  }
   await db.execute(sql`
     UPDATE scheduling_projects
        SET feed_id = ${result.feedId}::uuid,
@@ -81,16 +89,22 @@ export async function sincronizzaProgetto(
   `);
 
   if (vecchio && vecchio !== result.feedId) {
+    // Solo un sintetico fuori esercizio che nessuno usa (usi-feed.ts: la stessa
+    // definizione delle pulizie). Un lock che non arriva in 5 s non blocca la
+    // sincronizzazione: il feed resta e lo riprendono le pulizie.
     try {
-      await db.execute(sql`
-        DELETE FROM gtfs_feeds
-         WHERE id = ${vecchio}::uuid AND filename LIKE 'ps-%.synthetic'
-           AND NOT is_active AND NOT is_default AND archived_at IS NULL
-           AND NOT EXISTS (SELECT 1 FROM scheduling_projects WHERE feed_id = ${vecchio}::uuid)
-           AND NOT EXISTS (SELECT 1 FROM ps_projects WHERE materialized_feed_id = ${vecchio}::uuid)`);
+      const r = await db.transaction(async (tx) => {
+        await tx.execute(sql`SET LOCAL lock_timeout = '5s'`);
+        await tx.execute(sql`SET LOCAL statement_timeout = '10min'`);
+        return tx.execute<any>(sql`
+          DELETE FROM gtfs_feeds f
+           WHERE f.id = ${vecchio}::uuid AND ${sql.raw(SINTETICO_FUORI_ESERCIZIO)} AND ${sql.raw(nonInUso())}
+          RETURNING f.id`);
+      });
+      if (!r.rows?.length) log?.info?.({ feedId: vecchio, projectId: schedulingProjectId }, "feed vecchio in uso o non sintetico: resta");
     } catch (err: any) {
       log?.warn?.({ err: err?.message, feedId: vecchio, projectId: schedulingProjectId },
-        "feed vecchio non cancellato (in uso): resta, la sincronizzazione è riuscita");
+        "feed vecchio non cancellato: resta (lo riprendono le pulizie), la sincronizzazione è riuscita");
     }
   }
 

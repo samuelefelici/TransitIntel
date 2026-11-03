@@ -135,9 +135,9 @@ export async function viviDi(utenteId: string, ambito: string): Promise<number> 
  * 409 prima di un lavoro preliminare costoso; la garanzia resta l'indice
  * (un accoda in gara dà 23505).
  */
-export async function vivoConChiave(chiave: string): Promise<{ id: string; utente_id: string | null; stato: StatoLavoro } | null> {
+export async function vivoConChiave(chiave: string): Promise<{ id: string; utente_id: string | null; stato: StatoLavoro; annulla: boolean } | null> {
   const r = await q(
-    `SELECT id, utente_id, stato FROM coda.lavori
+    `SELECT id, utente_id, stato, annulla FROM coda.lavori
       WHERE chiave_unicita = $1 AND stato IN ('in_coda', 'in_corso') LIMIT 1`, [chiave]);
   return r.rows[0] ?? null;
 }

@@ -24,6 +24,8 @@ const DESCRIZIONE: Record<string, string> = {
 export const gestoreMaterializzazione: Gestore = {
   tipo: "materializza_feed",
   versione: 1,
+  // dopo l'aggancio del feed nuovo lo stop non conta più (sincronizza.ts lo guarda fino a lì)
+  completatoVinceSulloStop: true,
   async esegui(l, ctx) {
     const { schedulingProjectId, psProjectId, utenteId } = (l.richiesta ?? {}) as Record<string, unknown>;
     if (![schedulingProjectId, psProjectId, utenteId].every(x => typeof x === "string" && UUID.test(x))) {
@@ -31,14 +33,22 @@ export const gestoreMaterializzazione: Gestore = {
     }
     const log = (ctx.log as any).child?.({ lavoro: l.id }) ?? ctx.log;
     const t0 = Date.now();
+    // il tempo massimo del lavoro (timeout_sec): il segnale si guarda fra un passo e
+    // l'altro, e i lock hanno un loro lock_timeout, così nessun passo resta appeso
+    const scadenza = AbortSignal.timeout(Math.max(0, Number(l.timeout_sec) || 1800) * 1000);
+    const segnale = AbortSignal.any([ctx.segnale, scadenza]);
     try {
       const r = await sincronizzaProgetto(schedulingProjectId as string, psProjectId as string, utenteId as string, {
-        log, segnale: ctx.segnale,
+        log, segnale,
         passo: (fase, percentuale) => ctx.progresso({ phase: fase, percentage: percentuale, detail: DESCRIZIONE[fase] ?? fase, timestamp: Date.now() }),
       });
       log.info({ projectId: schedulingProjectId, feedId: r.feedId, counts: r.counts, durationMs: Date.now() - t0 }, "sync-from-ps completed");
       return { stato: "completato", risultato: { ...r, durationMs: Date.now() - t0 } };
     } catch (err: any) {
+      if (scadenza.aborted && !ctx.segnale.aborted) {
+        log.warn({ projectId: schedulingProjectId, timeoutSec: l.timeout_sec }, "sync-from-ps oltre il tempo massimo");
+        return { stato: "fallito", errore: "Sincronizzazione oltre il tempo massimo: rilanciala", erroreTipo: "scaduto" };
+      }
       if (err instanceof MaterializzazioneFermata || ctx.segnale.aborted) return { stato: "fermato" };
       log.error({ err, projectId: schedulingProjectId }, "sync-from-ps failed");
       return { stato: "fallito", errore: String(err?.message ?? err).slice(0, 2000), erroreTipo: "calcolo" };

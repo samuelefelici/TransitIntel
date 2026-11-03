@@ -548,6 +548,9 @@ export class MaterializzazioneFermata extends Error {
  *  tabelle legacy, in una transazione con un lock per progetto. */
 async function rispecchiaNodi(psProjectId: string): Promise<void> {
   await db.transaction(async (tx) => {
+    // un'altra sincronizzazione dello stesso progetto PS finisce in pochi secondi:
+    // oltre il minuto qualcosa tiene il lucchetto, meglio fallire che restare appesi
+    await tx.execute(sql`SET LOCAL lock_timeout = '60s'`);
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`cerbero:nodi:${psProjectId}`}, 0))`);
     await tx.execute(sql`
       DELETE FROM stop_clusters WHERE source_ps_project_id = ${psProjectId}::uuid

@@ -40,6 +40,13 @@ export interface ContestoLavoro {
 export interface Gestore {
   tipo: Lavoro["tipo"];
   versione: number;
+  /**
+   * Un esito «completato» vale anche se nel frattempo è arrivato uno stop: il
+   * lavoro ha già effetti che lo stop non annulla (la sincronizzazione ha già
+   * agganciato il feed nuovo al progetto). Senza, uno stop chiude «fermato» e
+   * il risultato si scarta.
+   */
+  completatoVinceSulloStop?: boolean;
   esegui: (lavoro: Lavoro, ctx: ContestoLavoro) => Promise<Exclude<Esito, { stato: "fermato" }> | { stato: "fermato" }>;
 }
 
@@ -139,7 +146,8 @@ export function creaEsecutore(o: OpzioniEsecutore) {
       // finito (e magari già salvato, come un giro di Argos) mentre arrivava l'arresto: si chiude, non si rifà
       await chiudi(l.id, esito);
     } else {
-      await chiudi(l.id, motivo === "annulla" || esito.stato === "fermato" ? { stato: "fermato" } : esito);
+      const vince = motivo === "annulla" && esito.stato === "completato" && g?.completatoVinceSulloStop === true;
+      await chiudi(l.id, (motivo === "annulla" && !vince) || esito.stato === "fermato" ? { stato: "fermato" } : esito);
     }
   }
 

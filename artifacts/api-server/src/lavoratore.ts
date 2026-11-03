@@ -46,7 +46,7 @@ const puoPrendere = () => {
 const esecutore = creaEsecutore({ chi, slot, gestori: GESTORI, log: logger, puoPrendere });
 esecutore.avvia();
 // pulizie periodiche (calcoli delle tariffe appesi, feed sintetici orfani): solo qui, non nell'API
-const fermaPulizie = avviaPulizie(logger, puoPrendere);
+const fermaPulizie = avviaPulizie(logger, () => statoDelloSchema() === "ok");
 
 const server = http.createServer(async (req, res) => {
   const percorso = (req.url ?? "").split("?")[0];

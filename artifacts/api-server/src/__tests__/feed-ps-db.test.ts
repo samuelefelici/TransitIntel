@@ -18,6 +18,7 @@ import progettiRouter from "../lib/scheduling-projects";
 import { sincronizzaProgetto } from "../lib/materializzazione/sincronizza";
 import { creaEsecutore } from "../lib/lavori/esecutore";
 import { GESTORI } from "../lib/lavori/gestori";
+import { gestoreMaterializzazione } from "../lib/materializzazione/gestore";
 
 const U = "f0000000-0000-0000-0000-0000000000a0";
 const PS = "f0000000-0000-0000-0000-0000000000c1";
@@ -181,6 +182,45 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("materializzazione Planning Stud
     expect(await conta()).toBe(prima);
   });
 
+  it("un feed vecchio in uso (un POI sopra) resta; uno tenuto solo da uno scenario dei turni va via", async () => {
+    const f1 = (await sincronizzaProgetto(SP_UDP, PS, U)).feedId;
+    await db.execute(sql`INSERT INTO planning_pois (feed_id, name, category, lat, lng) VALUES (${f1}::uuid, 'POI sul feed vecchio', 'scuola', 43.6, 13.5)`);
+    try {
+      const f2 = (await sincronizzaProgetto(SP_UDP, PS, U)).feedId;
+      expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM planning_pois WHERE feed_id = ${f1}::uuid`)).rows[0].n).toBe(1);
+      await db.execute(sql`DELETE FROM planning_pois WHERE feed_id = ${f1}::uuid`);
+      await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${f1}::uuid`);
+      await db.execute(sql`UPDATE service_program_scenarios SET feed_id = ${f2}::uuid WHERE id = ${SCENARIO}::uuid`);
+      await sincronizzaProgetto(SP_UDP, PS, U);
+      expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE id = ${f2}::uuid`)).rows[0].n).toBe(0);
+    } finally {
+      await db.execute(sql`DELETE FROM planning_pois WHERE name = 'POI sul feed vecchio'`);
+      await db.execute(sql`UPDATE service_program_scenarios SET feed_id = NULL WHERE id = ${SCENARIO}::uuid`);
+    }
+  });
+
+  it("uno stop arrivato quando il feed nuovo è pronto, prima dell'aggancio: niente aggancio, niente feed nuovo", async () => {
+    const prima = (await db.execute<any>(sql`SELECT feed_id FROM scheduling_projects WHERE id = ${SP_UDP}::uuid`)).rows[0].feed_id;
+    const n = async () => (await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE filename = ${`ps-${PS.slice(0, 8)}.synthetic`}`)).rows[0].n;
+    const quanti = await n();
+    const fermo = new AbortController();
+    await expect(sincronizzaProgetto(SP_UDP, PS, U, { segnale: fermo.signal, passo: (fase) => { if (fase === "aggancio") fermo.abort(); } }))
+      .rejects.toThrow("Materializzazione fermata");
+    expect((await db.execute<any>(sql`SELECT feed_id FROM scheduling_projects WHERE id = ${SP_UDP}::uuid`)).rows[0].feed_id).toBe(prima);
+    expect(await n()).toBe(quanti);
+  });
+
+  it("il lavoro oltre il suo tempo massimo: «fallito, scaduto», nessun feed parziale", async () => {
+    const n = async () => (await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE filename = ${`ps-${PS.slice(0, 8)}.synthetic`}`)).rows[0].n;
+    const quanti = await n();
+    const log = { info() {}, warn() {}, error() {} };
+    const esito = await gestoreMaterializzazione.esegui(
+      { id: "prova", timeout_sec: 0.001, richiesta: { schedulingProjectId: SP_UDP, psProjectId: PS, utenteId: U } } as any,
+      { chi: "prova", segnale: new AbortController().signal, progresso() {}, log } as any);
+    expect(esito).toMatchObject({ stato: "fallito", erroreTipo: "scaduto" });
+    expect(await n()).toBe(quanti);
+  });
+
   it("si cancella solo un feed vecchio sintetico: un GTFS caricato e agganciato a mano resta", async () => {
     const vero = (await db.execute<any>(sql`INSERT INTO gtfs_feeds (filename) VALUES ('orari-veri.zip') RETURNING id`)).rows[0].id as string;
     try {
@@ -219,6 +259,14 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("sincronizzazione nella coda dei
     // dopo un riavvio dell'API non c'è più niente in memoria: lo stato viene dalla coda
     const st = await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`);
     expect(st.body).toMatchObject({ status: "running" });
+  });
+
+  it("col flag a 0 (ritorno indietro) una sincronizzazione ancora viva in coda si segue, non se ne fa un'altra in memoria", async () => {
+    process.env.LAVORI_FEED_IN_CODA = "0";
+    const r = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps`).send({});
+    expect(r.status).toBe(202);
+    expect((await lavori()).length).toBe(1);
+    expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toMatchObject({ status: "running" });
   });
 
   it("la creazione di un progetto accoda la sincronizzazione prima di rispondere: sync-status dice subito «running»", async () => {
@@ -264,6 +312,15 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("sincronizzazione nella coda dei
     await db.execute(sql`UPDATE scheduling_projects SET feed_id = NULL WHERE id = ${SP_UDP}::uuid`);
     expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toEqual({ status: "idle" });
     await db.execute(sql`UPDATE scheduling_projects SET feed_id = ${r.body.feedId}::uuid WHERE id = ${SP_UDP}::uuid`);
+  });
+
+  it("una sincronizzazione fallita vale finché non arriva un feed più recente: dopo, sync-status dice il feed agganciato", async () => {
+    const f = (await db.execute<any>(sql`SELECT feed_id FROM scheduling_projects WHERE id = ${SP_UDP}::uuid`)).rows[0].feed_id as string;
+    await db.execute(sql`INSERT INTO coda.lavori (tipo, versione, corsia, stato, oggetto_id, richiesta, errore, errore_tipo, timeout_sec, finito_il, creato_il)
+                         VALUES ('materializza_feed', 1, 'veloce', 'fallito', ${SP_UDP}::uuid, '{}', 'PsProject non trovato', 'calcolo', 60, now(), now() + interval '1 minute')`);
+    expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toEqual({ status: "error", error: "PsProject non trovato" });
+    await db.execute(sql`UPDATE gtfs_feeds SET uploaded_at = now() + interval '5 minutes' WHERE id = ${f}::uuid`);
+    expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toMatchObject({ status: "done", feedId: f });
   });
 });
 

@@ -21,6 +21,7 @@ import { requireAdmin } from "../lib/auth";
 import { tenantWhere, assertFeedAccess, preparaTenant, feedAccessibleWhere } from "../lib/tenant";
 import { causaDb, spiegaCausa } from "../lib/db-error";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
+import { nomeCaricato } from "../lib/materializzazione/usi-feed";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -177,7 +178,7 @@ router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, re
     const result = await db.transaction(async (tx) => {
       // Create feed record (owner_user_id non è nello schema drizzle: si imposta con un UPDATE)
       const [feed] = await tx.insert(gtfsFeeds).values({
-        filename: req.file!.originalname,
+        filename: nomeCaricato(req.file!.originalname),
         agencyName,
         feedStartDate: feedStart,
         feedEndDate: feedEnd,
