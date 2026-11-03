@@ -478,6 +478,9 @@ jobs:
       # righe gtfs_*, puntatori, feed vecchio, nodi di cambio e rotte di sincronizzazione
       - name: Materializzazione dei feed da Planning Studio sul database
         run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/feed-ps-db.test.ts
+      # Le pulizie del lavoratore: feed sintetici orfani, calcoli delle tariffe rimasti «running»
+      - name: Pulizie del lavoratore sul database
+        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/pulizie-db.test.ts
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata
         run: |
           echo "-- modifica" >> lib/db/migrations/0000_baseline.sql

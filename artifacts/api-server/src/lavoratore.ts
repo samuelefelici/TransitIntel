@@ -18,6 +18,9 @@
  *   ferma e li rimette in coda senza consumare il tentativo (Coolify concede
  *   30 s).
  *
+ * - Ogni 6 ore le pulizie (lib/lavori/pulizie.ts): calcoli delle tariffe
+ *   rimasti «running», feed sintetici orfani.
+ *
  * Non importa app.ts, le rotte, lib/auth.ts né lib/planning-studio.ts: lo
  * controlla __tests__/lavoratore-import.test.ts. Non ha bisogno di JWT_SECRET
  * né di CERBERO_CHIAVE_MFA.
@@ -28,6 +31,7 @@ import { attendiPrimoControllo, avviaGuardiaSchema, statoDelloSchema } from "./l
 import { creaEsecutore } from "./lib/lavori/esecutore";
 import { GESTORI } from "./lib/lavori/gestori";
 import { chiSono, slotDaAmbiente } from "./lib/lavori/ambiente";
+import { avviaPulizie } from "./lib/lavori/pulizie";
 
 const porta = Number(process.env.PORT || 3001);
 const ATTESA_ARRESTO_MS = 20_000;
@@ -41,6 +45,8 @@ const puoPrendere = () => {
 };
 const esecutore = creaEsecutore({ chi, slot, gestori: GESTORI, log: logger, puoPrendere });
 esecutore.avvia();
+// pulizie periodiche (calcoli delle tariffe appesi, feed sintetici orfani): solo qui, non nell'API
+const fermaPulizie = avviaPulizie(logger, puoPrendere);
 
 const server = http.createServer(async (req, res) => {
   const percorso = (req.url ?? "").split("?")[0];
@@ -65,6 +71,7 @@ async function arresta(segnale: string): Promise<void> {
   if (inArresto) return;
   inArresto = true;
   logger.info({ segnale, lavoriInCorso: esecutore.inCorso() }, "Arresto del lavoratore: niente lavori nuovi, finisco o rimetto in coda quelli in corso");
+  fermaPulizie();
   try { await esecutore.ferma(ATTESA_ARRESTO_MS); }
   catch (err) { logger.error({ err }, "arresto del lavoratore: errore fermando i lavori"); }
   server.close();

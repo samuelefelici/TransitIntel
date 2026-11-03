@@ -511,6 +511,60 @@ riavvio.
     nella riga del lavoro;
   - `LAVORI_VEICOLI_IN_CODA=0` sull'API riporta questi calcoli dentro l'API,
     come prima (serve al rilascio e per tornare indietro).
+- **Sincronizzazione dei feed da Planning Studio** (dalla PR 2.7a). Anche la
+  materializzazione di un progetto in un feed GTFS («Sincronizza con PS»
+  dalla Fucina, la creazione di un progetto di esercizio, il giro di Argos
+  con un'unità di produzione) è un lavoro `materializza_feed` in corsia
+  veloce:
+  - `POST /api/scheduling/projects/:id/sync-from-ps` accoda e risponde come
+    prima (202, oppure con `?wait=1` il risultato entro 90 s); una seconda
+    richiesta sullo stesso progetto si aggancia alla sincronizzazione in
+    corso;
+  - `GET …/sync-status` legge l'ultima sincronizzazione in coda: un deploy
+    dell'API non la interrompe più, e non c'è più il falso «done» col feed
+    vecchio dopo un riavvio;
+  - l'ordine è cambiato: prima il feed nuovo, poi il puntatore del progetto,
+    solo alla fine si cancella il feed vecchio, e solo se è un feed sintetico
+    di Planning Studio che nessuno usa più. Un errore a metà non lascia feed
+    parziali;
+  - `LAVORI_FEED_IN_CODA=0` sull'API la riporta dentro l'API, come prima.
+  «Metti in esercizio» resta sincrono nell'API.
+- **I miei calcoli** (dalla PR 2.7a): `GET /api/lavori` dà gli ultimi 20
+  calcoli in coda di chi chiede, di tutti gli ambiti (turni guida, turni
+  macchina, giri di Argos, sincronizzazioni), con stato, avanzamento ed
+  errore, senza risultato; `POST /api/lavori/:jobId/stop` ferma un proprio
+  calcolo (agli altri, anche all'admin, 404). Permesso: Turni. La pagina e
+  l'indicatore nella SPA arrivano con la 2.7b.
+- **Pulizie** (dalla PR 2.7a, solo nel lavoratore, ogni 6 ore, la prima 2
+  minuti dopo l'avvio; con più lavoratori le fa uno solo per volta):
+  - i calcoli delle tariffe (matrice O/D minima, assegnazione dei nodi)
+    rimasti «running» da oltre 24 ore, perché l'API è morta a metà,
+    diventano «error» con «rilancialo»: niente più spinner infiniti;
+  - i **feed sintetici orfani** (`ps-….synthetic`) più vecchi di 2 giorni si
+    cancellano, al più 5 a giro, uno per riga nel log («feed sintetico orfano
+    cancellato»). Orfano vuol dire: non attivo, non di default, non
+    archiviato (un feed in esercizio sostituito resta), non puntato da un
+    progetto di scheduling o di Planning Studio, da un'attivazione o da uno
+    scenario, senza tariffe, POI o classificazioni delle linee sopra. Un GTFS
+    caricato a mano non si tocca mai. Per vedere prima quali sono i
+    candidati (il lavoratore controlla in più le tabelle delle tariffe, dei
+    POI e delle classificazioni):
+    ```sql
+    SELECT f.id, f.filename, f.uploaded_at, f.trips_count
+      FROM gtfs_feeds f
+     WHERE f.filename LIKE 'ps-%.synthetic'
+       AND NOT f.is_active AND NOT f.is_default AND f.archived_at IS NULL
+       AND f.uploaded_at < now() - interval '2 days'
+       AND NOT EXISTS (SELECT 1 FROM scheduling_projects x WHERE x.feed_id = f.id)
+       AND NOT EXISTS (SELECT 1 FROM ps_projects x WHERE f.id IN (x.materialized_feed_id, x.source_feed_id))
+       AND NOT EXISTS (SELECT 1 FROM ps_pending_activations x WHERE x.feed_id = f.id)
+       AND NOT EXISTS (SELECT 1 FROM ps_activation_log x WHERE x.feed_id = f.id)
+       AND NOT EXISTS (SELECT 1 FROM service_program_scenarios x WHERE x.feed_id = f.id)
+       AND NOT EXISTS (SELECT 1 FROM planning_scenarios x WHERE x.baseline_feed_id = f.id)
+     ORDER BY f.uploaded_at;
+    ```
+  - i giri di Argos rimasti «running» non si toccano: il loro stato vero lo
+    dà già la coda.
 - **Python** riceve solo l'ambiente che gli serve (niente `JWT_SECRET`,
   `DATABASE_URL`, chiavi…) e lancia solo gli 8 script dell'elenco
   (`artifacts/api-server/src/lib/lavori/python.ts`).
@@ -627,6 +681,35 @@ UPDATE coda.lavori SET
  WHERE tipo IN ('ottimizza_veicoli', 'giro_agente') AND stato IN ('in_coda', 'in_corso');
 ```
 Il lavoratore di prima non conosce quei tipi e li lascerebbe in coda.
+
+**Passare la sincronizzazione dei feed al lavoratore (PR 2.7a)**
+0. **Prima del merge**, in Coolify:
+   - sull'API `LAVORI_FEED_IN_CODA=0` e redeploy: l'API nuova sincronizzerà
+     ancora dentro di sé, finché il lavoratore nuovo non è pronto;
+   - sul lavoratore: le Watch Paths nuove (sopra:
+     `artifacts/api-server/src/lib/materializzazione/**` e
+     `artifacts/api-server/src/lib/planning-studio-validity-eval.ts`).
+1. **Merge.** Si ridistribuiscono API e lavoratore. Nel log del lavoratore,
+   alla riga «Lavoratore dei calcoli avviato», `tipi` deve contenere
+   `materializza_feed@1`.
+2. **Accensione**: si toglie `LAVORI_FEED_IN_CODA` dall'API e la si
+   ridistribuisce.
+3. **Prova**: «Sincronizza con PS» dalla Fucina su un progetto con l'unità di
+   produzione. Poi dal Terminal del PostgreSQL:
+   ```sql
+   SELECT stato, corsia, preso_da, errore, risultato->>'feedId' AS feed,
+          finito_il - iniziato_il AS durata
+     FROM coda.lavori WHERE tipo = 'materializza_feed'
+    ORDER BY creato_il DESC LIMIT 5;
+   ```
+   `preso_da` comincia con `lavoratore:`, `feed` è il `feed_id` nuovo del
+   progetto. Le pulizie partono 2 minuti dopo l'avvio del lavoratore: se
+   cancellano feed orfani, lo dicono nel log.
+
+**Tornare indietro (2.7a):** `LAVORI_FEED_IN_CODA=0` sull'API e redeploy.
+Per un revert del codice, prima si fermano le sincronizzazioni ancora vive
+(la query della 2.6 con `WHERE tipo = 'materializza_feed' AND stato IN
+('in_coda', 'in_corso')`): il lavoratore di prima non conosce quel tipo.
 
 ---
 
@@ -1025,6 +1108,7 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CERBERO_LAVORATORE_INTERNO` | — | `0` spegne l'esecutore dei calcoli dentro l'API, quando c'è il lavoratore (default: acceso) |
 | `LAVORI_SLOT_LUNGA` / `LAVORI_SLOT_VELOCE` | — | calcoli insieme per corsia, nel lavoratore e nell'esecutore interno (default 1 e 1) |
 | `LAVORI_VEICOLI_IN_CODA` | — | `0` riporta turni macchina, VCSP e giri di Argos dentro l'API (rilascio della 2.6 e ritorno indietro); default: in coda, nel lavoratore |
+| `LAVORI_FEED_IN_CODA` | — | `0` riporta la sincronizzazione dei feed da Planning Studio dentro l'API (rilascio della 2.7a e ritorno indietro); default: in coda, nel lavoratore |
 | `OSRM_URL` | — | router per i km dei fuorilinea dei turni macchina (default il router pubblico); dalla 2.6 serve anche al lavoratore |
 | `NODE_ENV` | ✅ | `production` |
 | `PORT` | ✅ | `3000` |
