@@ -182,7 +182,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("materializzazione Planning Stud
     expect(await conta()).toBe(prima);
   });
 
-  it("un feed vecchio in uso (un POI sopra) resta; uno tenuto solo da uno scenario dei turni va via", async () => {
+  it("un feed vecchio in uso (un POI sopra, uno scenario di un altro progetto) resta; uno tenuto solo da uno scenario del progetto va via", async () => {
     const f1 = (await sincronizzaProgetto(SP_UDP, PS, U)).feedId;
     await db.execute(sql`INSERT INTO planning_pois (feed_id, name, category, lat, lng) VALUES (${f1}::uuid, 'POI sul feed vecchio', 'scuola', 43.6, 13.5)`);
     try {
@@ -190,12 +190,18 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("materializzazione Planning Stud
       expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM planning_pois WHERE feed_id = ${f1}::uuid`)).rows[0].n).toBe(1);
       await db.execute(sql`DELETE FROM planning_pois WHERE feed_id = ${f1}::uuid`);
       await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${f1}::uuid`);
-      await db.execute(sql`UPDATE service_program_scenarios SET feed_id = ${f2}::uuid WHERE id = ${SCENARIO}::uuid`);
+      // lo scenario di un altro progetto tiene il feed
+      await db.execute(sql`UPDATE service_program_scenarios SET feed_id = ${f2}::uuid, project_id = ${SP_TUTTO}::uuid WHERE id = ${SCENARIO}::uuid`);
+      const f3 = (await sincronizzaProgetto(SP_UDP, PS, U)).feedId;
+      expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE id = ${f2}::uuid`)).rows[0].n).toBe(1);
+      await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${f2}::uuid`);
+      // quello del progetto stesso no: lo scenario resta col suo id, marcato «superato»
+      await db.execute(sql`UPDATE service_program_scenarios SET feed_id = ${f3}::uuid, project_id = ${SP_UDP}::uuid WHERE id = ${SCENARIO}::uuid`);
       await sincronizzaProgetto(SP_UDP, PS, U);
-      expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE id = ${f2}::uuid`)).rows[0].n).toBe(0);
+      expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE id = ${f3}::uuid`)).rows[0].n).toBe(0);
     } finally {
       await db.execute(sql`DELETE FROM planning_pois WHERE name = 'POI sul feed vecchio'`);
-      await db.execute(sql`UPDATE service_program_scenarios SET feed_id = NULL WHERE id = ${SCENARIO}::uuid`);
+      await db.execute(sql`UPDATE service_program_scenarios SET feed_id = NULL, project_id = ${SP_UDP}::uuid WHERE id = ${SCENARIO}::uuid`);
     }
   });
 
@@ -261,12 +267,21 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("sincronizzazione nella coda dei
     expect(st.body).toMatchObject({ status: "running" });
   });
 
-  it("col flag a 0 (ritorno indietro) una sincronizzazione ancora viva in coda si segue, non se ne fa un'altra in memoria", async () => {
+  it("col flag a 0 (ritorno indietro) una sincronizzazione in corso nel lavoratore si segue; una ancora in coda si ferma e si rifà nell'API", async () => {
     process.env.LAVORI_FEED_IN_CODA = "0";
+    // in corso (presa da un lavoratore): si segue
+    await db.execute(sql`UPDATE coda.lavori SET stato = 'in_corso', preso_da = 'altro', battito_il = now(), scade_il = now() + interval '60 seconds'
+                          WHERE oggetto_id = ${SP_UDP}::uuid AND stato = 'in_coda'`);
     const r = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps`).send({});
     expect(r.status).toBe(202);
-    expect((await lavori()).length).toBe(1);
-    expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toMatchObject({ status: "running" });
+    expect((await lavori()).map((x: any) => x.stato)).toEqual(["in_corso"]);
+    // ancora in coda (nessun lavoratore la prende): si ferma e si sincronizza nell'API
+    await db.execute(sql`UPDATE coda.lavori SET stato = 'in_coda', preso_da = NULL, battito_il = NULL, scade_il = NULL
+                          WHERE oggetto_id = ${SP_UDP}::uuid AND stato = 'in_corso'`);
+    const w = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps?wait=1`).send({});
+    expect(w.status, JSON.stringify(w.body)).toBe(200);
+    expect((await lavori()).map((x: any) => x.stato)).toEqual(["fermato"]);
+    await db.execute(sql`DELETE FROM coda.lavori WHERE oggetto_id = ${SP_UDP}::uuid`);
   });
 
   it("la creazione di un progetto accoda la sincronizzazione prima di rispondere: sync-status dice subito «running»", async () => {
@@ -314,11 +329,17 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("sincronizzazione nella coda dei
     await db.execute(sql`UPDATE scheduling_projects SET feed_id = ${r.body.feedId}::uuid WHERE id = ${SP_UDP}::uuid`);
   });
 
-  it("una sincronizzazione fallita vale finché non arriva un feed più recente: dopo, sync-status dice il feed agganciato", async () => {
+  it("una sincronizzazione fallita vale finché il progetto o il suo feed non cambiano dopo: poi sync-status dice il feed agganciato", async () => {
     const f = (await db.execute<any>(sql`SELECT feed_id FROM scheduling_projects WHERE id = ${SP_UDP}::uuid`)).rows[0].feed_id as string;
     await db.execute(sql`INSERT INTO coda.lavori (tipo, versione, corsia, stato, oggetto_id, richiesta, errore, errore_tipo, timeout_sec, finito_il, creato_il)
                          VALUES ('materializza_feed', 1, 'veloce', 'fallito', ${SP_UDP}::uuid, '{}', 'PsProject non trovato', 'calcolo', 60, now(), now() + interval '1 minute')`);
     expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toEqual({ status: "error", error: "PsProject non trovato" });
+    // un progetto modificato dopo (un PATCH che aggancia un feed già esistente) supera l'errore
+    await db.execute(sql`UPDATE scheduling_projects SET updated_at = now() + interval '5 minutes' WHERE id = ${SP_UDP}::uuid`);
+    expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toMatchObject({ status: "done", feedId: f });
+    await db.execute(sql`UPDATE scheduling_projects SET updated_at = now() - interval '1 hour' WHERE id = ${SP_UDP}::uuid`);
+    expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toMatchObject({ status: "error" });
+    // anche un feed creato dopo (una sincronizzazione nell'API col flag a 0)
     await db.execute(sql`UPDATE gtfs_feeds SET uploaded_at = now() + interval '5 minutes' WHERE id = ${f}::uuid`);
     expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toMatchObject({ status: "done", feedId: f });
   });

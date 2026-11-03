@@ -13,7 +13,8 @@
  * un GTFS caricato a mano che un PATCH ha agganciato al progetto, mai un feed
  * con tariffe, POI o un calcolo vivo sopra); se non si può, il feed resta (lo
  * riprendono le pulizie) e la sincronizzazione è comunque riuscita. Gli scenari
- * dei turni salvati sul feed vecchio restano col suo id, marcati «superati».
+ * dei turni del progetto salvati sul feed vecchio restano col suo id, marcati
+ * «superati», come prima; uno scenario di un altro progetto tiene il feed.
  */
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
@@ -98,7 +99,7 @@ export async function sincronizzaProgetto(
         await tx.execute(sql`SET LOCAL statement_timeout = '10min'`);
         return tx.execute<any>(sql`
           DELETE FROM gtfs_feeds f
-           WHERE f.id = ${vecchio}::uuid AND ${sql.raw(SINTETICO_FUORI_ESERCIZIO)} AND ${sql.raw(nonInUso())}
+           WHERE f.id = ${vecchio}::uuid AND ${sql.raw(SINTETICO_FUORI_ESERCIZIO)} AND ${sql.raw(nonInUso({ progettoSincronizzato: schedulingProjectId }))}
           RETURNING f.id`);
       });
       if (!r.rows?.length) log?.info?.({ feedId: vecchio, projectId: schedulingProjectId }, "feed vecchio in uso o non sintetico: resta");

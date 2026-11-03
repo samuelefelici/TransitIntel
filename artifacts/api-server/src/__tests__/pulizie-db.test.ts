@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { pool } from "@workspace/db";
 import {
-  USI_DEL_FEED, RIGHE_DEL_FEED, RIFERIMENTI_STORICI, chiudiRunAppesi, feedOrfani, cancellaFeedOrfani, eseguiPulizie,
+  USI_DEL_FEED, RIGHE_DEL_FEED, chiudiRunAppesi, feedOrfani, cancellaFeedOrfani, eseguiPulizie,
 } from "../lib/lavori/pulizie";
 import { nomeCaricato } from "../lib/materializzazione/usi-feed";
 
@@ -19,7 +19,7 @@ const CATALOGO = JSON.parse(readFileSync(fileURLToPath(new URL("../../../../lib/
 
 describe("le pulizie conoscono ogni colonna che punta a un feed", () => {
   it("ogni feed_id / *_feed_id del catalogo è un uso o una riga del feed", () => {
-    const note = new Set([...USI_DEL_FEED, ...RIFERIMENTI_STORICI].map(([t, c]) => `${t}.${c}`).concat(RIGHE_DEL_FEED.map(t => `${t}.feed_id`)));
+    const note = new Set(USI_DEL_FEED.map(([t, c]) => `${t}.${c}`).concat(RIGHE_DEL_FEED.map(t => `${t}.feed_id`)));
     const colonne: string[] = [];
     for (const [tabella, cols] of Object.entries<Record<string, string>>(CATALOGO.tabelle)) {
       if (!tabella.startsWith("public.") || tabella === "public.gtfs_feeds") continue;
@@ -118,6 +118,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le pulizie, sul database", () =
     const recente = await run("gtfs_fare_od_matrix_runs", 1);
     const nodi = await run("gtfs_fare_node_assignment_runs", 48);
     const finito = await run("gtfs_fare_node_assignment_runs", 48, "success");
+    // un filtro sul nome che non prende questo feed non chiude niente
+    expect(await chiudiRunAppesi(pool as any, 24, MIEI)).toEqual({ odMinima: 0, assegnazioneNodi: 0 });
     expect(await chiudiRunAppesi(pool as any, 24, { feedIds: [f] })).toEqual({ odMinima: 1, assegnazioneNodi: 1 });
     const stato = async (t: string, id: string) => (await pool.query(`SELECT status, error_message, finished_at FROM ${t} WHERE id = $1`, [id])).rows[0];
     expect(await stato("gtfs_fare_od_matrix_runs", vecchio)).toMatchObject({ status: "error", error_message: expect.stringContaining("rilancialo") });
@@ -127,16 +129,19 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le pulizie, sul database", () =
     expect((await stato("gtfs_fare_node_assignment_runs", finito)).status).toBe("success");
   });
 
-  it("non è orfano un feed letto da un calcolo vivo in coda; lo è uno tenuto solo da uno scenario dei turni (riferimento storico)", async () => {
+  it("non è orfano un feed letto da un calcolo vivo in coda, né uno di uno scenario dei turni; i parametri economici non contano", async () => {
     const letto = await feed("ps-pul30001.synthetic", 5);
-    const storico = await feed("ps-pul30002.synthetic", 5);
+    const scenario = await feed("ps-pul30002.synthetic", 5);
+    const conParametri = await feed("ps-pul30003.synthetic", 5);
     await pool.query(`INSERT INTO coda.lavori (tipo, versione, corsia, richiesta, metadati, timeout_sec)
                       VALUES ('ottimizza_veicoli', 1, 'veloce', $1, '{"prova":"pulizie"}', 60)`, [JSON.stringify({ mode: "cpsat", feedId: letto })]);
-    await pool.query(`INSERT INTO service_program_scenarios (name, date, input, result, feed_id) VALUES ('Turni pulizie', '20261104', '{}', '{}', $1)`, [storico]);
+    await pool.query(`INSERT INTO service_program_scenarios (name, date, input, result, feed_id) VALUES ('Turni pulizie', '20261104', '{}', '{}', $1)`, [scenario]);
+    // la scheda «Pianificazione» li crea già leggendo: non tengono in vita il feed
+    await pool.query("INSERT INTO gtfs_feed_economic_params (feed_id) VALUES ($1)", [conParametri]);
     try {
-      expect((await feedOrfani(pool as any, 2, 5, MIEI)).map(f => f.id)).toEqual([storico]);
+      expect((await feedOrfani(pool as any, 2, 5, MIEI)).map(f => f.id)).toEqual([conParametri]);
       await pool.query("UPDATE coda.lavori SET stato = 'completato', finito_il = now() WHERE metadati->>'prova' = 'pulizie'");
-      expect((await feedOrfani(pool as any, 2, 5, MIEI)).map(f => f.id).sort()).toEqual([letto, storico].sort());
+      expect((await feedOrfani(pool as any, 2, 5, MIEI)).map(f => f.id).sort()).toEqual([conParametri, letto].sort());
     } finally {
       await pool.query("DELETE FROM service_program_scenarios WHERE name = 'Turni pulizie'");
     }
@@ -144,13 +149,16 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le pulizie, sul database", () =
 
   it("senza un feed in esercizio non si cancella niente", async () => {
     await feed("ps-pul40001.synthetic", 5);
-    await pool.query("UPDATE gtfs_feeds SET is_active = false WHERE filename = 'pulizie-esercizio.zip'");
-    const altri = (await pool.query("SELECT id FROM gtfs_feeds WHERE is_active")).rows.map(r => r.id);
-    await pool.query("UPDATE gtfs_feeds SET is_active = false WHERE id = ANY($1::uuid[])", [altri]);
+    expect((await feedOrfani(pool as any, 2, 5, MIEI)).length).toBe(1);
+    // in una transazione annullata: gli altri test sullo stesso database non vedono niente
+    const c = await pool.connect();
     try {
-      expect(await feedOrfani(pool as any, 2, 5, MIEI)).toEqual([]);
+      await c.query("BEGIN");
+      await c.query("UPDATE gtfs_feeds SET is_active = false WHERE is_active");
+      expect(await feedOrfani(c as any, 2, 5, MIEI)).toEqual([]);
     } finally {
-      await pool.query("UPDATE gtfs_feeds SET is_active = true WHERE id = ANY($1::uuid[])", [altri]);
+      await c.query("ROLLBACK");
+      c.release();
     }
   });
 

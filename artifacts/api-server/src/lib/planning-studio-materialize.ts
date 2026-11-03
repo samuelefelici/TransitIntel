@@ -139,12 +139,12 @@ export interface StatoSincronizzazione {
  * stato chiesto lo stop non si segue (finirebbe «fermata»): si aspetta che
  * chiuda, al più ATTESA_FERMATA_MS, così la richiesta nuova ne accoda un'altra.
  */
-async function vivaDaSeguire(chiave: string): Promise<string | null> {
+async function vivaDaSeguire(chiave: string): Promise<{ id: string; stato: string } | null> {
   const fine = Date.now() + ATTESA_FERMATA_MS;
   for (;;) {
     const v = await coda.vivoConChiave(chiave);
     if (!v) return null;
-    if (!v.annulla || Date.now() >= fine) return v.id;
+    if (!v.annulla || Date.now() >= fine) return { id: v.id, stato: v.stato };
     await new Promise(r => setTimeout(r, 250));
   }
 }
@@ -155,10 +155,14 @@ export async function avviaSincronizzazione(
   log?: { info?: any; error?: any; warn?: any }, via?: string | null,
 ): Promise<Sincronizzazione> {
   const chiave = chiaveSync(projectId);
-  // anche col flag a 0 (ritorno indietro) una sincronizzazione ancora viva in coda
-  // conta: ci si aggancia, invece di farne un'altra in memoria in parallelo
   const viva = await vivaDaSeguire(chiave);
-  if (viva) return { tipo: "coda", id: viva };
+  if (viva) {
+    // col flag a 0 (ritorno indietro) si segue solo una sincronizzazione che il
+    // lavoratore sta già eseguendo; una ancora in coda (il lavoratore può essere
+    // giù) si ferma e si rifà qui, invece di aspettarla per sempre
+    if (feedInCoda() || viva.stato === "in_corso") return { tipo: "coda", id: viva.id };
+    await coda.chiediAnnullamento(viva.id);
+  }
   if (!feedInCoda()) return { tipo: "memoria", job: startSyncJob(projectId, psProjectId, utenteId, log) };
   // il bootstrap pigro della colonna resta qui, nell'API: il lavoratore non fa DDL
   await ensureMaterializedColumn();
@@ -182,7 +186,7 @@ export async function avviaSincronizzazione(
       // già finita nel frattempo, si riprova ad accodare
       if (err?.code !== coda.CHIAVE_GIA_VIVA || tentativo >= 3) throw err;
       const v = await vivaDaSeguire(chiave);
-      if (v) return { tipo: "coda", id: v };
+      if (v) return { tipo: "coda", id: v.id };
     }
   }
 }
@@ -242,7 +246,7 @@ async function loadProjectForSync(req: Request, res: Response): Promise<any | nu
   if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "ID progetto non valido" }); return null; }
 
   const projR = await db.execute(sql`
-    SELECT p.id, p.name, p.owner_user_id, p.planning_studio_project_id, p.feed_id, p.feed_label,
+    SELECT p.id, p.name, p.owner_user_id, p.planning_studio_project_id, p.feed_id, p.feed_label, p.updated_at,
            CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
                 ELSE pm.role END AS my_role
       FROM scheduling_projects p
@@ -353,9 +357,12 @@ router.get(
           res.json({ status: "running", startedAt: new Date(st.startedAt).toISOString(), elapsedMs: Date.now() - st.startedAt });
           return;
         }
-        // un errore vale se è più recente del feed agganciato: un feed agganciato dopo
-        // (un PATCH, una sincronizzazione nell'API col flag a 0) non lo nasconde
-        const agganciatoDopo = !!f?.uploaded_at && !!l.finito_il && new Date(f.uploaded_at) > l.finito_il;
+        // un errore vale se dopo non è cambiato niente: un feed creato dopo (una
+        // sincronizzazione nell'API col flag a 0) o un progetto modificato dopo (un
+        // PATCH che aggancia un altro feed) lo superano; una sincronizzazione
+        // fallita non sposta il puntatore e non tocca il progetto
+        const dopo = (t: unknown) => !!t && !!l.finito_il && new Date(t as any) > l.finito_il;
+        const agganciatoDopo = dopo(f?.uploaded_at) || dopo(proj.updated_at);
         if (st.status === "error" && !agganciatoDopo) {
           res.json({ status: "error", error: st.error });
           return;

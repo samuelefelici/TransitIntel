@@ -26,7 +26,7 @@
 import { pool } from "@workspace/db";
 import { SINTETICO_FUORI_ESERCIZIO, nonInUso } from "../materializzazione/usi-feed";
 
-export { USI_DEL_FEED, RIGHE_DEL_FEED, RIFERIMENTI_STORICI } from "../materializzazione/usi-feed";
+export { USI_DEL_FEED, RIGHE_DEL_FEED } from "../materializzazione/usi-feed";
 
 export const OGNI_MS = 6 * 60 * 60 * 1000;
 const PRIMO_GIRO_MS = 2 * 60 * 1000;
@@ -63,7 +63,8 @@ export async function chiudiRunAppesi(c: Client, ore = ORE_RUN_APPESO, ambito: A
         SET status = 'error', error_message = $2, finished_at = now()
       WHERE status = 'running' AND started_at < now() - make_interval(hours => $1)
         AND ($3::uuid[] IS NULL OR feed_id = ANY($3::uuid[]))
-     RETURNING id`, [ore, MESSAGGIO_RUN, ambito.feedIds ?? null]);
+        AND ($4::text IS NULL OR feed_id IN (SELECT id FROM gtfs_feeds WHERE filename LIKE $4::text))
+     RETURNING id`, [ore, MESSAGGIO_RUN, ambito.feedIds ?? null, ambito.filename ?? null]);
   const a = await chiudi("gtfs_fare_od_matrix_runs");
   const b = await chiudi("gtfs_fare_node_assignment_runs");
   return { odMinima: a.rows.length, assegnazioneNodi: b.rows.length };

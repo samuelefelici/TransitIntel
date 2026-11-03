@@ -526,10 +526,12 @@ riavvio.
   - l'ordine è cambiato: prima il feed nuovo, poi il puntatore del progetto,
     solo alla fine si cancella il feed vecchio, e solo se è un feed sintetico
     di Planning Studio fuori esercizio che nessuno usa più: non puntato da un
-    progetto o da un'attivazione, senza tariffe, POI o classificazioni sopra,
-    non letto da un calcolo vivo in coda (la stessa definizione delle pulizie,
-    `lib/materializzazione/usi-feed.ts`). Gli scenari dei turni salvati sul
-    feed vecchio restano col suo id, marcati «superati», come prima. Se il
+    progetto, da un'attivazione o da uno scenario dei turni di un altro
+    progetto, senza tariffe, POI o classificazioni sopra, non letto da un
+    calcolo vivo in coda (la stessa definizione delle pulizie,
+    `lib/materializzazione/usi-feed.ts`). Gli scenari dei turni del progetto
+    salvati sul feed vecchio restano col suo id, marcati «superati», come
+    prima. Se il
     feed vecchio non si può cancellare (in uso, o un lock che non arriva in
     5 s) resta, e lo riprendono le pulizie. Un errore o uno stop a metà non
     lasciano feed parziali;
@@ -559,9 +561,11 @@ riavvio.
     cancellano, al più 5 a giro, uno per riga nel log («feed sintetico orfano
     cancellato»). Orfano vuol dire: non attivo, non di default, non
     archiviato (un feed in esercizio sostituito resta), non in uso (non
-    puntato da un progetto di scheduling o di Planning Studio o da
-    un'attivazione, senza tariffe, POI o classificazioni delle linee sopra,
-    non letto da un calcolo vivo in coda). Senza un feed in esercizio
+    puntato da un progetto di scheduling o di Planning Studio, da
+    un'attivazione o da uno scenario dei turni, senza tariffe, POI o
+    classificazioni delle linee sopra, non letto da un calcolo vivo in coda;
+    i parametri economici, che la scheda «Pianificazione» crea già leggendo,
+    non contano). Senza un feed in esercizio
     (`is_active`) non si cancella niente. Un GTFS caricato a mano non si
     tocca: un file caricato col nome `ps-….synthetic` prende `.zip` in fondo.
     Per vedere prima quali sono i candidati (il lavoratore controlla in più
@@ -577,6 +581,7 @@ riavvio.
        AND NOT EXISTS (SELECT 1 FROM ps_projects x WHERE f.id IN (x.materialized_feed_id, x.source_feed_id))
        AND NOT EXISTS (SELECT 1 FROM ps_pending_activations x WHERE x.feed_id = f.id)
        AND NOT EXISTS (SELECT 1 FROM ps_activation_log x WHERE x.feed_id = f.id)
+       AND NOT EXISTS (SELECT 1 FROM service_program_scenarios x WHERE x.feed_id = f.id)
        AND NOT EXISTS (SELECT 1 FROM planning_scenarios x WHERE x.baseline_feed_id = f.id)
      ORDER BY f.uploaded_at;
     ```
