@@ -463,6 +463,10 @@ jobs:
       # dettaglio fermata cercava una tabella che non c'è più e rispondeva 500
       - name: Dettaglio fermata di Planning Studio sul database migrato
         run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/dettaglio-fermata-db.test.ts
+      # Turni macchina, VCSP e giri di Argos su una rete di prova, con Python
+      # finto: l'ingresso dato al solver e le risposte sono fissati da istantanee
+      - name: Turni macchina, VCSP e giri di Argos sul database
+        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/veicoli-db.test.ts
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata
         run: |
           echo "-- modifica" >> lib/db/migrations/0000_baseline.sql
