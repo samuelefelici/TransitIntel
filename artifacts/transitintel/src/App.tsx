@@ -10,6 +10,7 @@ import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
 import { CASA, NOMI_PERMESSI, PERMESSI_PAGINA } from "@/lib/navigazione";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
+import IndicatoreCalcoli from "@/components/calcoli/IndicatoreCalcoli";
 
 /**
  * lazy() resiliente al DEPLOY. Dopo un rilascio i chunk vecchi spariscono dal
@@ -56,6 +57,7 @@ const RosterPubblicazionePage = lazyWithRetry(() => import("@/pages/roster-pubbl
 const AnagraficaPage = lazyWithRetry(() => import("@/pages/anagrafica"));
 const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
 const ServiceDbPage = lazyWithRetry(() => import("@/pages/service-db"));
+const CalcoliPage = lazyWithRetry(() => import("@/pages/calcoli"));
 const Traffic = lazyWithRetry(() => import("@/pages/traffic"));
 const Territory = lazyWithRetry(() => import("@/pages/territory"));
 const NetworkPage = lazyWithRetry(() => import("@/pages/network"));
@@ -352,6 +354,9 @@ function Router() {
             <Route path="/service-db">
               <Gated perm={PERMESSI_PAGINA["/service-db"]}><ServiceDbPage /></Gated>
             </Route>
+            <Route path="/calcoli">
+              <Gated perm={PERMESSI_PAGINA["/calcoli"]}><CalcoliPage /></Gated>
+            </Route>
             {/* I cluster sono gestiti per-progetto dentro Planner Studio.
                 Le vecchie rotte globali /cluster e /cluster-management vengono
                 rediretti alla lista progetti Planner Studio. */}
@@ -472,7 +477,11 @@ function AuthGate() {
         /* il passaggio verso FleetCare: fuori dal menu, porta subito di là */
         <ApriFleetCare />
       ) : showApp ? (
-        <Router />
+        <>
+          <Router />
+          {/* i calcoli in corso, in tutte le pagine (anche quelle senza menu) */}
+          <IndicatoreCalcoli />
+        </>
       ) : (
         <LoginPage />
       )}

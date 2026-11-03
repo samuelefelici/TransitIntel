@@ -346,6 +346,11 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, 
         expect(st.body).toMatchObject({ jobId, status: "running", mode: "vcsp" });
       }, { timeout: 5_000 });
       expect((await request(altro).get(`/api/service-program/lavori/${jobId}`)).status).toBe(404);
+      expect((await request(altro).get(`/api/service-program/lavori/${jobId}?richiesta=1`)).status).toBe(404);
+      // la Fucina che riapre il calcolo ricostruisce il contesto dalla richiesta, solo se la chiede
+      const conRichiesta = await request(admin).get(`/api/service-program/lavori/${jobId}?richiesta=1`);
+      expect(conRichiesta.body.request).toEqual(corpoVcsp());
+      expect((await request(admin).get(`/api/service-program/lavori/${jobId}`)).body).not.toHaveProperty("request");
       expect((await request(altro).post(`/api/service-program/lavori/${jobId}/stop`)).status).toBe(404);
       expect((await request(admin).get("/api/service-program/lavori/non-un-uuid")).status).toBe(404);
       const stop = await request(admin).post(`/api/service-program/lavori/${jobId}/stop`);
@@ -357,6 +362,34 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, 
       expect((await request(admin).post(`/api/service-program/lavori/${jobId}/stop`)).status).toBe(400);
     } finally {
       py.appeso = false;
+    }
+  });
+
+  it("asincrono di un utente non admin: il progetto finisce nei metadati e la richiesta la rilegge il proprietario", async () => {
+    process.env.LAVORI_VEICOLI_IN_CODA = "1";
+    py.appeso = true;
+    const PROGETTO = "e0000000-0000-0000-0000-0000000000e1";
+    // il feed di prova non ha proprietario: per il tempo del test è quello di default, visibile a tutti
+    await db.execute(sql`UPDATE gtfs_feeds SET is_default = true WHERE id = ${FEED}::uuid`);
+    try {
+      const avvio = await request(altro).post("/api/service-program/cpsat?asincrono=1").send(corpoFucina({ projectId: PROGETTO }));
+      expect(avvio.status).toBe(202);
+      const { jobId } = avvio.body;
+      const riga = (await lavori()).rows.find((r: any) => r.id === jobId);
+      expect(riga).toMatchObject({ utente_id: ALTRO, metadati: { ambito: "turni-macchina", mode: "cpsat", projectId: PROGETTO } });
+      // il proprietario (non admin) riapre il calcolo: la richiesta è quella mandata
+      const conRichiesta = await request(altro).get(`/api/service-program/lavori/${jobId}?richiesta=1`);
+      expect(conRichiesta.status).toBe(200);
+      expect(conRichiesta.body.request).toEqual(corpoFucina({ projectId: PROGETTO }));
+      // un projectId che non è un uuid non entra nei metadati
+      const strano = await request(altro).post("/api/service-program/cpsat?asincrono=1").send(corpoFucina({ projectId: "x' or 1=1" }));
+      expect(strano.status).toBe(202);
+      const rigaStrana = (await lavori()).rows.find((r: any) => r.id === strano.body.jobId);
+      expect(rigaStrana.metadati).not.toHaveProperty("projectId");
+      for (const j of [jobId, strano.body.jobId]) await request(altro).post(`/api/service-program/lavori/${j}/stop`);
+    } finally {
+      py.appeso = false;
+      await db.execute(sql`UPDATE gtfs_feeds SET is_default = false WHERE id = ${FEED}::uuid`);
     }
   });
 

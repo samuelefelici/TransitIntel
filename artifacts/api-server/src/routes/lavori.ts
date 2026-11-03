@@ -14,7 +14,7 @@ import { STATO_PUBBLICO } from "../lib/facciata-lavori";
 const router: IRouter = Router();
 
 /** I metadati che servono a riconoscere un calcolo; il resto (per esempio i parametri di un giro) resta fuori. */
-const DETTAGLI = ["scenarioId", "scenarioName", "date", "mode", "psProjectId", "schedulingProjectId", "budgetSec"] as const;
+const DETTAGLI = ["scenarioId", "scenarioName", "date", "mode", "projectId", "psProjectId", "schedulingProjectId", "budgetSec"] as const;
 
 export function vistaLavoro(l: coda.RigaElenco) {
   const m = l.metadati ?? {};

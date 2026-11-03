@@ -302,7 +302,18 @@ export default function DriverWorkspace({
     setRowHighlights(undefined);
   }, []);
 
-  const cpsat = useCrewOptimization();
+  // il calcolo aperto per lo scenario si riprende al montaggio; «I miei calcoli» apre con ?calcolo=<id>
+  const [calcoloDaLink] = useState<string | null>(() => {
+    const id = new URLSearchParams(window.location.search).get("calcolo");
+    if (id) {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("calcolo");
+      window.history.replaceState(window.history.state, "", u.toString());
+    }
+    return id;
+  });
+  // aprendo uno scenario turni guida salvato (?dss=) si mostra quello: niente ripresa di calcoli
+  const cpsat = useCrewOptimization({ scenarioId: dssId ? null : vehicleScenarioId, calcolo: dssId ? null : calcoloDaLink });
 
   // ── Carica il profilo-regole di default (azienda ⊕ progetto) come config di
   //    partenza. Una sola volta: non sovrascrive le modifiche live dell'operatore.
@@ -394,12 +405,17 @@ export default function DriverWorkspace({
       setError(cpsat.error || "Errore ottimizzazione CP-SAT");
       setLoading(false);
       toast.error("Ottimizzazione fallita", { description: cpsat.error ?? undefined });
+    } else if (cpsat.state === "idle" && cpsat.error) {
+      // ripresa di un calcolo riuscito il cui risultato non c'è più
+      toast.info("Calcolo non più disponibile", { description: cpsat.error });
     }
   }, [cpsat.state, cpsat.result, cpsat.error]);
 
   // Lancia ottimizzazione greedy
   const launchGreedy = useCallback(() => {
     if (!vehicleScenarioId) return;
+    // l'euristica prende il posto del calcolo CP-SAT: non va più ripreso riaprendo la pagina
+    cpsat.reset();
     setLoading(true); setError(null); setResult(null);
     fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
@@ -464,6 +480,8 @@ export default function DriverWorkspace({
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      // salvato: riaprendo la pagina il calcolo non va più ripreso
+      cpsat.dimenticaCalcolo();
       setShowSaveDialog(false); setDssName("");
       toast.success("Scenario turni guida salvato");
       // ── Ritorno alla home del progetto dopo salvataggio turni guida ──
@@ -475,7 +493,7 @@ export default function DriverWorkspace({
     } finally {
       setSavingDss(false);
     }
-  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool]);
+  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool, cpsat]);
 
   /* ── Export handlers ─────────────────────────────────── */
   /* Fogli turno: UNA pagina A4 per turno nel formato aziendale (codice,
