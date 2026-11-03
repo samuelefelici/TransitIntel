@@ -14,6 +14,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import router, { materializePsToFeed } from "../lib/planning-studio-materialize";
+import { sincronizzaProgetto } from "../lib/materializzazione/sincronizza";
 
 const U = "f0000000-0000-0000-0000-0000000000a0";
 const PS = "f0000000-0000-0000-0000-0000000000c1";
@@ -165,4 +166,27 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("materializzazione Planning Stud
     const vuoto = await request(app).get(`/api/scheduling/projects/${SP_TUTTO}/sync-status`);
     expect(vuoto.body).toEqual({ status: "idle" });
   });
+
+  it("uno stop (o un errore) a metà non lascia un feed parziale", async () => {
+    const conta = async () => (await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE filename = ${`ps-${PS.slice(0, 8)}.synthetic`}`)).rows[0].n;
+    const prima = await conta();
+    const fermo = new AbortController();
+    fermo.abort();
+    await expect(materializePsToFeed(PS, U, { tripIds: [T(1)], replaceFeedId: null, updateProjectPointer: false, segnale: fermo.signal }))
+      .rejects.toThrow("Materializzazione fermata");
+    expect(await conta()).toBe(prima);
+  });
+
+  it("si cancella solo un feed vecchio sintetico: un GTFS caricato e agganciato a mano resta", async () => {
+    const vero = (await db.execute<any>(sql`INSERT INTO gtfs_feeds (filename) VALUES ('orari-veri.zip') RETURNING id`)).rows[0].id as string;
+    try {
+      await db.execute(sql`UPDATE scheduling_projects SET feed_id = ${vero}::uuid WHERE id = ${SP_UDP}::uuid`);
+      const r = await sincronizzaProgetto(SP_UDP, PS, U);
+      expect((await db.execute<any>(sql`SELECT feed_id FROM scheduling_projects WHERE id = ${SP_UDP}::uuid`)).rows[0].feed_id).toBe(r.feedId);
+      expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE id = ${vero}::uuid`)).rows[0].n).toBe(1);
+    } finally {
+      await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${vero}::uuid`);
+    }
+  });
 });
+

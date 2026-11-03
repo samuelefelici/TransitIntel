@@ -103,8 +103,11 @@ export async function materializePsToFeed(
     /** Se aggiornare ps_projects.materialized_feed_id (feed d'esercizio globale).
      *  Default: true solo per l'esercizio (non scoped). Le UDP NON devono toccarlo. */
     updateProjectPointer?: boolean;
+    /** Lo stop (lavoro in coda): si controlla fra un passo e l'altro. */
+    segnale?: AbortSignal;
   },
 ): Promise<MaterializeResult> {
+  const controlla = () => { if (opts?.segnale?.aborted) throw new MaterializzazioneFermata(); };
   const project = await loadPsProjectAccessible(psProjectId, ownerUserId);
   if (!project) {
     throw new Error("PsProject non trovato o senza permessi di lettura");
@@ -199,283 +202,264 @@ export async function materializePsToFeed(
   `);
   const feedId: string = (feedR.rows?.[0] ?? feedR[0]).id;
 
-  // owner_user_id (colonna additiva runtime)
-  await db.execute(sql`
-    UPDATE gtfs_feeds SET owner_user_id = ${ownerUserId}::uuid WHERE id = ${feedId}::uuid
-  `);
+  try {
+    // owner_user_id (colonna additiva runtime)
+    await db.execute(sql`
+      UPDATE gtfs_feeds SET owner_user_id = ${ownerUserId}::uuid WHERE id = ${feedId}::uuid
+    `);
 
-  /* ── 4. INSERT ... SELECT puro Postgres ──────────────────────
-   * Tutti i dati restano nel DB. Node non vede una sola riga. */
+    /* ── 4. INSERT ... SELECT puro Postgres ──────────────────────
+     * Tutti i dati restano nel DB. Node non vede una sola riga. */
 
-  /* ── 5C · VALIDITÀ EFFETTIVA ──────────────────────────────────
-   * Se il progetto usa la MATRICE di validità (bollini corsa×day-type),
-   * il feed rappresenta la validità EFFETTIVA (day_validity + weekdays +
-   * eccezioni + valid_from/to + categorie/ombrello) come gtfs_calendar_dates
-   * PURI (una riga add per ogni data attiva), con gtfs_calendar VUOTA. Così i
-   * giorni di servizio del feed coincidono con matrice/UDP/stampe.
-   * Vincolo "no-mix" dei consumatori del feed (buildServiceDayMap ecc.):
-   * o TUTTO settimanale (legacy, ramo else più sotto) o TUTTO calendar_dates
-   * con gtfs_calendar a zero righe — mai un misto. La scelta è per-feed.
-   * (useEffectiveValidity è calcolato sopra, dove allarga la finestra date.) */
-  let effectiveTripSvc: Map<string, string> | null = null;
-  if (useEffectiveValidity) {
-    const isoFrom = ymdToIso(minStart);
-    let isoTo = ymdToIso(maxEnd);
-    // cap difensivo ~2 anni (come il compute UDP) per non esplodere le righe
-    const capTo = plusDaysIso(isoFrom, 731);
-    if (isoTo > capTo) isoTo = capTo;
-    const activeByTrip = await computeActiveDatesByTrip({
-      projectId: psProjectId,
-      from: isoFrom,
-      to: isoTo,
-      tripIds: scoped ? opts!.tripIds! : null,
-    });
-    // Raggruppamento per FIRMA di circolazione: corse con lo stesso insieme di
-    // date condividono un service_id → poche righe invece di una per corsa.
-    const sigToDates = new Map<string, string[]>();
-    effectiveTripSvc = new Map<string, string>();
-    for (const [tripId, dts] of activeByTrip) {
-      const sig = createHash("sha1").update(dts.join(",")).digest("hex").slice(0, 16);
-      if (!sigToDates.has(sig)) sigToDates.set(sig, dts);
-      effectiveTripSvc.set(tripId, sig);
+    /* ── 5C · VALIDITÀ EFFETTIVA ──────────────────────────────────
+     * Se il progetto usa la MATRICE di validità (bollini corsa×day-type),
+     * il feed rappresenta la validità EFFETTIVA (day_validity + weekdays +
+     * eccezioni + valid_from/to + categorie/ombrello) come gtfs_calendar_dates
+     * PURI (una riga add per ogni data attiva), con gtfs_calendar VUOTA. Così i
+     * giorni di servizio del feed coincidono con matrice/UDP/stampe.
+     * Vincolo "no-mix" dei consumatori del feed (buildServiceDayMap ecc.):
+     * o TUTTO settimanale (legacy, ramo else più sotto) o TUTTO calendar_dates
+     * con gtfs_calendar a zero righe — mai un misto. La scelta è per-feed.
+     * (useEffectiveValidity è calcolato sopra, dove allarga la finestra date.) */
+    let effectiveTripSvc: Map<string, string> | null = null;
+    if (useEffectiveValidity) {
+      const isoFrom = ymdToIso(minStart);
+      let isoTo = ymdToIso(maxEnd);
+      // cap difensivo ~2 anni (come il compute UDP) per non esplodere le righe
+      const capTo = plusDaysIso(isoFrom, 731);
+      if (isoTo > capTo) isoTo = capTo;
+      const activeByTrip = await computeActiveDatesByTrip({
+        projectId: psProjectId,
+        from: isoFrom,
+        to: isoTo,
+        tripIds: scoped ? opts!.tripIds! : null,
+      });
+      // Raggruppamento per FIRMA di circolazione: corse con lo stesso insieme di
+      // date condividono un service_id → poche righe invece di una per corsa.
+      const sigToDates = new Map<string, string[]>();
+      effectiveTripSvc = new Map<string, string>();
+      for (const [tripId, dts] of activeByTrip) {
+        const sig = createHash("sha1").update(dts.join(",")).digest("hex").slice(0, 16);
+        if (!sigToDates.has(sig)) sigToDates.set(sig, dts);
+        effectiveTripSvc.set(tripId, sig);
+      }
+      // gtfs_calendar_dates puri (exception_type=1 per data). gtfs_calendar VUOTA.
+      const svcCol: string[] = [];
+      const dateCol: string[] = [];
+      for (const [sig, dts] of sigToDates) for (const d of dts) { svcCol.push(sig); dateCol.push(d); }
+      const BATCH = 10000;
+      for (let i = 0; i < svcCol.length; i += BATCH) {
+        const s = svcCol.slice(i, i + BATCH);
+        const dd = dateCol.slice(i, i + BATCH);
+        await db.execute(sql`
+          INSERT INTO gtfs_calendar_dates (feed_id, service_id, date, exception_type)
+          SELECT ${feedId}::uuid, x.s, x.d, 1
+            FROM unnest(${`{${s.join(",")}}`}::text[], ${`{${dd.join(",")}}`}::text[]) AS x(s, d)
+        `);
+      }
     }
-    // gtfs_calendar_dates puri (exception_type=1 per data). gtfs_calendar VUOTA.
-    const svcCol: string[] = [];
-    const dateCol: string[] = [];
-    for (const [sig, dts] of sigToDates) for (const d of dts) { svcCol.push(sig); dateCol.push(d); }
-    const BATCH = 10000;
-    for (let i = 0; i < svcCol.length; i += BATCH) {
-      const s = svcCol.slice(i, i + BATCH);
-      const dd = dateCol.slice(i, i + BATCH);
+
+    controlla();
+    // 4a. gtfs_stops
+    await db.execute(sql`
+      INSERT INTO gtfs_stops
+             (feed_id, stop_id, stop_code, stop_name, stop_desc,
+              stop_lat, stop_lon, wheelchair_boarding)
+      SELECT ${feedId}::uuid, id::text, code, name, description,
+             lat, lon, COALESCE(wheelchair_boarding, 0)
+        FROM ps_stops
+       WHERE project_id = ${psProjectId}::uuid
+    `);
+
+    controlla();
+    // 4b. gtfs_routes (con trips_count aggregato)
+    await db.execute(sql`
+      INSERT INTO gtfs_routes
+             (feed_id, route_id, agency_id, route_short_name, route_long_name,
+              route_type, route_color, route_text_color, trips_count)
+      SELECT ${feedId}::uuid, r.id::text, r.agency_id,
+             COALESCE(NULLIF(r.short_name, ''), r.code, ''),
+             r.long_name,
+             COALESCE(r.route_type, 3), r.color, r.text_color,
+             COALESCE((SELECT count(*) FROM ps_trips t
+                        WHERE t.route_id = r.id
+                          AND COALESCE(t.is_active, true) = true ${fT}), 0)
+        FROM ps_routes r
+       WHERE r.project_id = ${psProjectId}::uuid ${fRoute}
+    `);
+
+    controlla();
+    // 4c/4d. Calendario LEGACY (ps_calendars settimanale + eccezioni).
+    // Solo quando NON usiamo la validità effettiva (vincolo no-mix: la
+    // gtfs_calendar resta vuota nel ramo calendar_dates-only).
+    if (!useEffectiveValidity) {
+      // 4c. gtfs_calendar
       await db.execute(sql`
-        INSERT INTO gtfs_calendar_dates (feed_id, service_id, date, exception_type)
-        SELECT ${feedId}::uuid, x.s, x.d, 1
-          FROM unnest(${`{${s.join(",")}}`}::text[], ${`{${dd.join(",")}}`}::text[]) AS x(s, d)
+        INSERT INTO gtfs_calendar
+               (feed_id, service_id, monday, tuesday, wednesday, thursday,
+                friday, saturday, sunday, start_date, end_date)
+        SELECT ${feedId}::uuid, id::text,
+               CASE WHEN monday    THEN 1 ELSE 0 END,
+               CASE WHEN tuesday   THEN 1 ELSE 0 END,
+               CASE WHEN wednesday THEN 1 ELSE 0 END,
+               CASE WHEN thursday  THEN 1 ELSE 0 END,
+               CASE WHEN friday    THEN 1 ELSE 0 END,
+               CASE WHEN saturday  THEN 1 ELSE 0 END,
+               CASE WHEN sunday    THEN 1 ELSE 0 END,
+               COALESCE(to_char(start_date, 'YYYYMMDD'), ${minStart}),
+               COALESCE(to_char(end_date,   'YYYYMMDD'), ${maxEnd})
+          FROM ps_calendars
+         WHERE project_id = ${psProjectId}::uuid ${fCalProj}
+      `);
+
+      // 4d. gtfs_calendar_dates
+      await db.execute(sql`
+        INSERT INTO gtfs_calendar_dates
+               (feed_id, service_id, date, exception_type)
+        SELECT ${feedId}::uuid, cd.calendar_id::text,
+               to_char(cd.date, 'YYYYMMDD'),
+               COALESCE(cd.exception_type, 1)
+          FROM ps_calendar_dates cd
+          JOIN ps_calendars c ON c.id = cd.calendar_id
+         WHERE c.project_id = ${psProjectId}::uuid ${fCalC}
       `);
     }
-  }
 
-  // 4a. gtfs_stops
-  await db.execute(sql`
-    INSERT INTO gtfs_stops
-           (feed_id, stop_id, stop_code, stop_name, stop_desc,
-            stop_lat, stop_lon, wheelchair_boarding)
-    SELECT ${feedId}::uuid, id::text, code, name, description,
-           lat, lon, COALESCE(wheelchair_boarding, 0)
-      FROM ps_stops
-     WHERE project_id = ${psProjectId}::uuid
-  `);
-
-  // 4b. gtfs_routes (con trips_count aggregato)
-  await db.execute(sql`
-    INSERT INTO gtfs_routes
-           (feed_id, route_id, agency_id, route_short_name, route_long_name,
-            route_type, route_color, route_text_color, trips_count)
-    SELECT ${feedId}::uuid, r.id::text, r.agency_id,
-           COALESCE(NULLIF(r.short_name, ''), r.code, ''),
-           r.long_name,
-           COALESCE(r.route_type, 3), r.color, r.text_color,
-           COALESCE((SELECT count(*) FROM ps_trips t
-                      WHERE t.route_id = r.id
-                        AND COALESCE(t.is_active, true) = true ${fT}), 0)
-      FROM ps_routes r
-     WHERE r.project_id = ${psProjectId}::uuid ${fRoute}
-  `);
-
-  // 4c/4d. Calendario LEGACY (ps_calendars settimanale + eccezioni).
-  // Solo quando NON usiamo la validità effettiva (vincolo no-mix: la
-  // gtfs_calendar resta vuota nel ramo calendar_dates-only).
-  if (!useEffectiveValidity) {
-    // 4c. gtfs_calendar
-    await db.execute(sql`
-      INSERT INTO gtfs_calendar
-             (feed_id, service_id, monday, tuesday, wednesday, thursday,
-              friday, saturday, sunday, start_date, end_date)
-      SELECT ${feedId}::uuid, id::text,
-             CASE WHEN monday    THEN 1 ELSE 0 END,
-             CASE WHEN tuesday   THEN 1 ELSE 0 END,
-             CASE WHEN wednesday THEN 1 ELSE 0 END,
-             CASE WHEN thursday  THEN 1 ELSE 0 END,
-             CASE WHEN friday    THEN 1 ELSE 0 END,
-             CASE WHEN saturday  THEN 1 ELSE 0 END,
-             CASE WHEN sunday    THEN 1 ELSE 0 END,
-             COALESCE(to_char(start_date, 'YYYYMMDD'), ${minStart}),
-             COALESCE(to_char(end_date,   'YYYYMMDD'), ${maxEnd})
-        FROM ps_calendars
-       WHERE project_id = ${psProjectId}::uuid ${fCalProj}
-    `);
-
-    // 4d. gtfs_calendar_dates
-    await db.execute(sql`
-      INSERT INTO gtfs_calendar_dates
-             (feed_id, service_id, date, exception_type)
-      SELECT ${feedId}::uuid, cd.calendar_id::text,
-             to_char(cd.date, 'YYYYMMDD'),
-             COALESCE(cd.exception_type, 1)
-        FROM ps_calendar_dates cd
-        JOIN ps_calendars c ON c.id = cd.calendar_id
-       WHERE c.project_id = ${psProjectId}::uuid ${fCalC}
-    `);
-  }
-
-  // 4e. gtfs_trips — service_id.
-  // Ramo LEGACY: fallback service_id 7/7 per i trip senza calendar_id.
-  // Ramo VALIDITÀ EFFETTIVA: nessun fallback settimanale (gtfs_calendar resta
-  // vuota); il service_id è la firma di circolazione già emessa in calendar_dates.
-  const fallbackServiceId = `fallback-${feedId.slice(0, 8)}`;
-  if (!useEffectiveValidity) {
-    // Crea il fallback calendar SOLO se ci sono trip senza calendario
-    const needFallbackR: any = await db.execute(sql`
-      SELECT EXISTS (
-        SELECT 1 FROM ps_trips
-         WHERE project_id = ${psProjectId}::uuid
-           AND COALESCE(is_active, true) = true
-           AND COALESCE((attributes->>'prototype')::boolean, false) = false
-           AND calendar_id IS NULL ${fBare}
-      ) AS need
-    `);
-    const needFallback = !!(needFallbackR.rows?.[0]?.need ?? needFallbackR[0]?.need);
-    if (needFallback) {
-      await db.execute(sql`
-        INSERT INTO gtfs_calendar (feed_id, service_id, monday, tuesday, wednesday,
-                                   thursday, friday, saturday, sunday, start_date, end_date)
-        VALUES (${feedId}::uuid, ${fallbackServiceId}, 1, 1, 1, 1, 1, 1, 1, ${minStart}, ${maxEnd})
-        ON CONFLICT (feed_id, service_id) DO NOTHING
+    controlla();
+    // 4e. gtfs_trips — service_id.
+    // Ramo LEGACY: fallback service_id 7/7 per i trip senza calendar_id.
+    // Ramo VALIDITÀ EFFETTIVA: nessun fallback settimanale (gtfs_calendar resta
+    // vuota); il service_id è la firma di circolazione già emessa in calendar_dates.
+    const fallbackServiceId = `fallback-${feedId.slice(0, 8)}`;
+    if (!useEffectiveValidity) {
+      // Crea il fallback calendar SOLO se ci sono trip senza calendario
+      const needFallbackR: any = await db.execute(sql`
+        SELECT EXISTS (
+          SELECT 1 FROM ps_trips
+           WHERE project_id = ${psProjectId}::uuid
+             AND COALESCE(is_active, true) = true
+             AND COALESCE((attributes->>'prototype')::boolean, false) = false
+             AND calendar_id IS NULL ${fBare}
+        ) AS need
       `);
+      const needFallback = !!(needFallbackR.rows?.[0]?.need ?? needFallbackR[0]?.need);
+      if (needFallback) {
+        await db.execute(sql`
+          INSERT INTO gtfs_calendar (feed_id, service_id, monday, tuesday, wednesday,
+                                     thursday, friday, saturday, sunday, start_date, end_date)
+          VALUES (${feedId}::uuid, ${fallbackServiceId}, 1, 1, 1, 1, 1, 1, 1, ${minStart}, ${maxEnd})
+          ON CONFLICT (feed_id, service_id) DO NOTHING
+        `);
+      }
     }
-  }
 
-  // gtfs_trips ha on_demand («a chiamata»), variant_code (corsa→percorso→linea) e
-  // block_id (vetturizzazione, prima non emesso nel feed): colonne dalle migrazioni.
-  if (useEffectiveValidity) {
-    // service_id dalla firma di circolazione (JOIN unnest). L'INNER JOIN esclude
-    // automaticamente le corse MAI attive nel range (non presenti nella mappa) —
-    // coerente con la semantica "assenza di validità = non circola".
-    const tripArr = effectiveTripSvc ? Array.from(effectiveTripSvc.keys()) : [];
-    const sigArr = effectiveTripSvc ? tripArr.map((id) => effectiveTripSvc!.get(id)!) : [];
-    if (tripArr.length > 0) {
+    // gtfs_trips ha on_demand («a chiamata»), variant_code (corsa→percorso→linea) e
+    // block_id (vetturizzazione, prima non emesso nel feed): colonne dalle migrazioni.
+    if (useEffectiveValidity) {
+      // service_id dalla firma di circolazione (JOIN unnest). L'INNER JOIN esclude
+      // automaticamente le corse MAI attive nel range (non presenti nella mappa) —
+      // coerente con la semantica "assenza di validità = non circola".
+      const tripArr = effectiveTripSvc ? Array.from(effectiveTripSvc.keys()) : [];
+      const sigArr = effectiveTripSvc ? tripArr.map((id) => effectiveTripSvc!.get(id)!) : [];
+      if (tripArr.length > 0) {
+        await db.execute(sql`
+          INSERT INTO gtfs_trips
+                 (feed_id, trip_id, route_id, service_id,
+                  trip_headsign, direction_id, shape_id, on_demand, variant_code, block_id)
+          SELECT ${feedId}::uuid, t.id::text, t.route_id::text, m.service_id,
+                 t.headsign, COALESCE(t.direction, 0), t.variant_id::text,
+                 COALESCE((t.attributes->>'onDemand')::boolean, false),
+                 (SELECT COALESCE(NULLIF(v.code, ''), NULLIF(v.name, ''))
+                    FROM ps_route_variants v WHERE v.id = t.variant_id),
+                 NULLIF(t.block_id, '')
+            FROM ps_trips t
+            JOIN unnest(${`{${tripArr.join(",")}}`}::text[], ${`{${sigArr.join(",")}}`}::text[])
+                 AS m(trip_id, service_id) ON m.trip_id = t.id::text
+           WHERE t.project_id = ${psProjectId}::uuid
+             AND COALESCE(t.is_active, true) = true
+             AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT}
+        `);
+      }
+    } else {
       await db.execute(sql`
         INSERT INTO gtfs_trips
                (feed_id, trip_id, route_id, service_id,
                 trip_headsign, direction_id, shape_id, on_demand, variant_code, block_id)
-        SELECT ${feedId}::uuid, t.id::text, t.route_id::text, m.service_id,
+        SELECT ${feedId}::uuid, t.id::text, t.route_id::text,
+               COALESCE(t.calendar_id::text, ${fallbackServiceId}),
                t.headsign, COALESCE(t.direction, 0), t.variant_id::text,
                COALESCE((t.attributes->>'onDemand')::boolean, false),
                (SELECT COALESCE(NULLIF(v.code, ''), NULLIF(v.name, ''))
                   FROM ps_route_variants v WHERE v.id = t.variant_id),
                NULLIF(t.block_id, '')
           FROM ps_trips t
-          JOIN unnest(${`{${tripArr.join(",")}}`}::text[], ${`{${sigArr.join(",")}}`}::text[])
-               AS m(trip_id, service_id) ON m.trip_id = t.id::text
          WHERE t.project_id = ${psProjectId}::uuid
            AND COALESCE(t.is_active, true) = true
            AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT}
       `);
     }
-  } else {
+
+    controlla();
+    // 4f. gtfs_stop_times — la query più pesante (300k+ righe per Conerobus).
+    // Con INSERT ... SELECT resta tutto nel motore Postgres.
+    // Nel ramo validità effettiva, escludi le corse NON emesse in gtfs_trips
+    // (mai attive nel range) per non lasciare stop_times orfani.
+    const fEffStopTimes = (useEffectiveValidity && effectiveTripSvc)
+      ? sql`AND t.id = ANY(${`{${Array.from(effectiveTripSvc.keys()).join(",")}}`}::uuid[])`
+      : sql``;
     await db.execute(sql`
-      INSERT INTO gtfs_trips
-             (feed_id, trip_id, route_id, service_id,
-              trip_headsign, direction_id, shape_id, on_demand, variant_code, block_id)
-      SELECT ${feedId}::uuid, t.id::text, t.route_id::text,
-             COALESCE(t.calendar_id::text, ${fallbackServiceId}),
-             t.headsign, COALESCE(t.direction, 0), t.variant_id::text,
-             COALESCE((t.attributes->>'onDemand')::boolean, false),
-             (SELECT COALESCE(NULLIF(v.code, ''), NULLIF(v.name, ''))
-                FROM ps_route_variants v WHERE v.id = t.variant_id),
-             NULLIF(t.block_id, '')
-        FROM ps_trips t
+      INSERT INTO gtfs_stop_times
+             (feed_id, trip_id, stop_id, stop_sequence,
+              departure_time, arrival_time, pickup_type, drop_off_type)
+      SELECT ${feedId}::uuid, st.trip_id::text, st.stop_id::text, st.stop_seq,
+             st.departure_time, st.arrival_time,
+             COALESCE(st.pickup_type, 0), COALESCE(st.drop_off_type, 0)
+        FROM ps_stop_times st
+        JOIN ps_trips t ON t.id = st.trip_id
        WHERE t.project_id = ${psProjectId}::uuid
          AND COALESCE(t.is_active, true) = true
-         AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT}
+         AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT} ${fEffStopTimes}
     `);
+
+    controlla();
+    // 4g. gtfs_shapes (geometry jsonb → geojson jsonb diretto, niente JSON.stringify)
+    await db.execute(sql`
+      INSERT INTO gtfs_shapes
+             (feed_id, shape_id, route_id, route_short_name, route_color, geojson)
+      SELECT ${feedId}::uuid, s.variant_id::text, r.id::text,
+             COALESCE(NULLIF(r.short_name, ''), r.code),
+             r.color, s.geometry
+        FROM ps_shapes s
+        LEFT JOIN ps_route_variants v ON v.id = s.variant_id
+        LEFT JOIN ps_routes r ON r.id = v.route_id
+       WHERE s.project_id = ${psProjectId}::uuid ${fShape}
+    `);
+
+    /* ── 5. Propaga ps_stop_clusters → stop_clusters legacy ──────
+     *
+     * Single source of truth: i cluster vivono in Planner Studio
+     * (ps_stop_clusters). Lo Scheduling Engine legge ancora dalle
+     * tabelle legacy stop_clusters / stop_cluster_stops (Fucina,
+     * /api/clusters/by-routes), quindi a ogni materializzazione
+     * facciamo un mirror idempotente.
+     *
+     * Tracciamento via colonna `source_ps_project_id` (dalle migrazioni):
+     * a ogni run cancelliamo TUTTI i cluster legacy provenienti
+     * da questo PS project (anche quelli con UUID vecchi, ormai
+     * spariti da ps_stop_clusters → orfani = doppioni). Poi
+     * reinseriamo lo stato corrente. CASCADE su stop_cluster_stops
+     * pulisce automaticamente le righe figlie.
+     */
+
+    controlla();
+    // 5a-5c. Wipe e reinserimento, in una transazione serializzata per progetto
+    // PS (rispecchiaNodi): due sincronizzazioni insieme non si pestano i piedi.
+    await rispecchiaNodi(psProjectId);
+  } catch (err) {
+    // un errore (o uno stop) a metà non lascia un feed parziale che nessuno usa
+    await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${feedId}::uuid`).catch(() => undefined);
+    throw err;
   }
-
-  // 4f. gtfs_stop_times — la query più pesante (300k+ righe per Conerobus).
-  // Con INSERT ... SELECT resta tutto nel motore Postgres.
-  // Nel ramo validità effettiva, escludi le corse NON emesse in gtfs_trips
-  // (mai attive nel range) per non lasciare stop_times orfani.
-  const fEffStopTimes = (useEffectiveValidity && effectiveTripSvc)
-    ? sql`AND t.id = ANY(${`{${Array.from(effectiveTripSvc.keys()).join(",")}}`}::uuid[])`
-    : sql``;
-  await db.execute(sql`
-    INSERT INTO gtfs_stop_times
-           (feed_id, trip_id, stop_id, stop_sequence,
-            departure_time, arrival_time, pickup_type, drop_off_type)
-    SELECT ${feedId}::uuid, st.trip_id::text, st.stop_id::text, st.stop_seq,
-           st.departure_time, st.arrival_time,
-           COALESCE(st.pickup_type, 0), COALESCE(st.drop_off_type, 0)
-      FROM ps_stop_times st
-      JOIN ps_trips t ON t.id = st.trip_id
-     WHERE t.project_id = ${psProjectId}::uuid
-       AND COALESCE(t.is_active, true) = true
-       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT} ${fEffStopTimes}
-  `);
-
-  // 4g. gtfs_shapes (geometry jsonb → geojson jsonb diretto, niente JSON.stringify)
-  await db.execute(sql`
-    INSERT INTO gtfs_shapes
-           (feed_id, shape_id, route_id, route_short_name, route_color, geojson)
-    SELECT ${feedId}::uuid, s.variant_id::text, r.id::text,
-           COALESCE(NULLIF(r.short_name, ''), r.code),
-           r.color, s.geometry
-      FROM ps_shapes s
-      LEFT JOIN ps_route_variants v ON v.id = s.variant_id
-      LEFT JOIN ps_routes r ON r.id = v.route_id
-     WHERE s.project_id = ${psProjectId}::uuid ${fShape}
-  `);
-
-  /* ── 5. Propaga ps_stop_clusters → stop_clusters legacy ──────
-   *
-   * Single source of truth: i cluster vivono in Planner Studio
-   * (ps_stop_clusters). Lo Scheduling Engine legge ancora dalle
-   * tabelle legacy stop_clusters / stop_cluster_stops (Fucina,
-   * /api/clusters/by-routes), quindi a ogni materializzazione
-   * facciamo un mirror idempotente.
-   *
-   * Tracciamento via colonna `source_ps_project_id` (dalle migrazioni):
-   * a ogni run cancelliamo TUTTI i cluster legacy provenienti
-   * da questo PS project (anche quelli con UUID vecchi, ormai
-   * spariti da ps_stop_clusters → orfani = doppioni). Poi
-   * reinseriamo lo stato corrente. CASCADE su stop_cluster_stops
-   * pulisce automaticamente le righe figlie.
-   */
-
-  // 5a. Wipe completo dei cluster legacy provenienti da QUESTO progetto
-  // (CASCADE pulisce stop_cluster_stops grazie al FK con onDelete: cascade).
-  await db.execute(sql`
-    DELETE FROM stop_clusters WHERE source_ps_project_id = ${psProjectId}::uuid
-  `);
-
-  // 5b. Reinserisci con stesso UUID di ps_stop_clusters (così la dedupe
-  // by name nel /by-routes risolve in modo deterministico) e marker
-  // di provenienza per cleanup futuri.
-  await db.execute(sql`
-    INSERT INTO stop_clusters (id, name, transfer_from_depot_min, color, source_ps_project_id)
-    SELECT id,
-           COALESCE(NULLIF(name, ''), 'Cluster'),
-           COALESCE((attributes->>'transferFromDepotMin')::int,
-                    (attributes->>'transfer_from_depot_min')::int, 10),
-           COALESCE(attributes->>'color', '#3b82f6'),
-           ${psProjectId}::uuid
-      FROM ps_stop_clusters
-     WHERE project_id = ${psProjectId}::uuid
-       AND COALESCE(kind, 'interchange') = 'interchange'
-  `);
-
-  // 5c. Mappa fermate. gtfs_stop_id usa ps_stops.id::text per coerenza
-  // con quanto fatto in 4a (INSERT INTO gtfs_stops … SELECT id::text).
-  await db.execute(sql`
-    INSERT INTO stop_cluster_stops (cluster_id, gtfs_stop_id, stop_name, stop_lat, stop_lon)
-    SELECT s.cluster_id, s.id::text,
-           COALESCE(NULLIF(s.name, ''), s.id::text),
-           s.lat, s.lon
-      FROM ps_stops s
-      JOIN ps_stop_clusters c ON c.id = s.cluster_id
-     WHERE s.project_id = ${psProjectId}::uuid
-       AND s.cluster_id IS NOT NULL
-       AND COALESCE(c.kind, 'interchange') = 'interchange'
-  `);
 
   /* ── 6. Aggancia il nuovo feed d'ESERCIZIO (solo se non scoped/UDP) ──
    * Le UDP NON toccano ps_projects.materialized_feed_id: il loro feed vive
@@ -552,30 +536,44 @@ export async function materializePsToFeed(
  *  Filtro: solo cluster di tipo "cambio" (kind='interchange').
  * ════════════════════════════════════════════════════════════ */
 export async function mirrorPsClustersToLegacy(psProjectId: string): Promise<void> {
-  await db.execute(sql`
-    DELETE FROM stop_clusters WHERE source_ps_project_id = ${psProjectId}::uuid
-  `);
-  await db.execute(sql`
-    INSERT INTO stop_clusters (id, name, transfer_from_depot_min, color, source_ps_project_id)
-    SELECT id,
-           COALESCE(NULLIF(name, ''), 'Cluster'),
-           COALESCE((attributes->>'transferFromDepotMin')::int,
-                    (attributes->>'transfer_from_depot_min')::int, 10),
-           COALESCE(attributes->>'color', '#3b82f6'),
-           ${psProjectId}::uuid
-      FROM ps_stop_clusters
-     WHERE project_id = ${psProjectId}::uuid
-       AND COALESCE(kind, 'interchange') = 'interchange'
-  `);
-  await db.execute(sql`
-    INSERT INTO stop_cluster_stops (cluster_id, gtfs_stop_id, stop_name, stop_lat, stop_lon)
-    SELECT s.cluster_id, s.id::text,
-           COALESCE(NULLIF(s.name, ''), s.id::text),
-           s.lat, s.lon
-      FROM ps_stops s
-      JOIN ps_stop_clusters c ON c.id = s.cluster_id
-     WHERE s.project_id = ${psProjectId}::uuid
-       AND s.cluster_id IS NOT NULL
-       AND COALESCE(c.kind, 'interchange') = 'interchange'
-  `);
+  await rispecchiaNodi(psProjectId);
+}
+
+/** Lo stop di una materializzazione (lavoro in coda fermato). */
+export class MaterializzazioneFermata extends Error {
+  constructor() { super("Materializzazione fermata"); }
+}
+
+/** Wipe-by-source e reinserimento dei nodi di cambio di un progetto PS nelle
+ *  tabelle legacy, in una transazione con un lock per progetto. */
+async function rispecchiaNodi(psProjectId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`cerbero:nodi:${psProjectId}`}, 0))`);
+    await tx.execute(sql`
+      DELETE FROM stop_clusters WHERE source_ps_project_id = ${psProjectId}::uuid
+    `);
+    await tx.execute(sql`
+      INSERT INTO stop_clusters (id, name, transfer_from_depot_min, color, source_ps_project_id)
+      SELECT id,
+             COALESCE(NULLIF(name, ''), 'Cluster'),
+             COALESCE((attributes->>'transferFromDepotMin')::int,
+                      (attributes->>'transfer_from_depot_min')::int, 10),
+             COALESCE(attributes->>'color', '#3b82f6'),
+             ${psProjectId}::uuid
+        FROM ps_stop_clusters
+       WHERE project_id = ${psProjectId}::uuid
+         AND COALESCE(kind, 'interchange') = 'interchange'
+    `);
+    await tx.execute(sql`
+      INSERT INTO stop_cluster_stops (cluster_id, gtfs_stop_id, stop_name, stop_lat, stop_lon)
+      SELECT s.cluster_id, s.id::text,
+             COALESCE(NULLIF(s.name, ''), s.id::text),
+             s.lat, s.lon
+        FROM ps_stops s
+        JOIN ps_stop_clusters c ON c.id = s.cluster_id
+       WHERE s.project_id = ${psProjectId}::uuid
+         AND s.cluster_id IS NOT NULL
+         AND COALESCE(c.kind, 'interchange') = 'interchange'
+    `);
+  });
 }

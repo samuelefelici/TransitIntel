@@ -19,6 +19,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { materializePsToFeed as materializza, type MaterializeResult } from "./materializzazione/feed";
+import { sincronizzaProgetto } from "./materializzazione/sincronizza";
 
 const router: IRouter = Router();
 
@@ -79,71 +80,8 @@ export function startSyncJob(
 
   void (async () => {
     try {
-      // Se il progetto-scheduling è agganciato a una UDP, materializza SOLO le
-      // sue corse (feed = pacchetto della UDP, niente corse di altre UDP).
-      let tripIds: string[] | null = null;
-      try {
-        const vuR: any = await db.execute(sql`SELECT validity_unit_id FROM scheduling_projects WHERE id = ${projectId}::uuid LIMIT 1`);
-        const vuId = vuR.rows?.[0]?.validity_unit_id;
-        if (vuId) {
-          const tR: any = await db.execute(sql`SELECT trip_ids FROM ps_validity_units WHERE id = ${vuId}::uuid LIMIT 1`);
-          const arr = tR.rows?.[0]?.trip_ids;
-          if (Array.isArray(arr) && arr.length > 0) {
-            // Interseca con le corse ESISTENTI: trip_ids stantii (corse
-            // rigenerate in PS) produrrebbero un feed scopato VUOTO.
-            const raw = arr.map((x: any) => String(x));
-            const exR: any = await db.execute(sql`
-              SELECT id::text AS id FROM ps_trips WHERE id = ANY(${`{${raw.join(",")}}`}::uuid[])`);
-            const existing = ((exR.rows ?? []) as any[]).map((r) => String(r.id));
-            if (existing.length < raw.length) {
-              logger?.warn?.({ projectId, vuId, requested: raw.length, existing: existing.length },
-                "UDP trip_ids parzialmente stantii: scoping sulle corse ancora esistenti");
-            }
-            tripIds = existing.length > 0 ? existing : null;
-          }
-        }
-      } catch (scopeErr: any) {
-        logger?.warn?.({ err: scopeErr, projectId }, "UDP scope lookup failed, materializzo tutto il progetto");
-      }
-      // Feed VECCHIO di QUESTA UDP (non lo slot globale del progetto): lo
-      // rimpiazziamo col nuovo in modalità delete-last, senza toccare né il
-      // feed d'esercizio né quello delle UDP sorelle.
-      let oldFeedId: string | null = null;
-      try {
-        const ofR: any = await db.execute(sql`SELECT feed_id FROM scheduling_projects WHERE id = ${projectId}::uuid LIMIT 1`);
-        oldFeedId = ofR.rows?.[0]?.feed_id ?? null;
-      } catch { /* colonna assente su DB legacy → nessun vecchio feed da rimuovere */ }
-      const result = await materializePsToFeed(psProjectId, ownerUserId, {
-        tripIds,
-        replaceFeedId: oldFeedId,
-        updateProjectPointer: false,
-      });
-      await db.execute(sql`
-        UPDATE scheduling_projects
-           SET feed_id = ${result.feedId}::uuid,
-               feed_label = ${result.label},
-               updated_at = now()
-         WHERE id = ${projectId}::uuid
-      `);
-      // Il feed è cambiato sotto gli scenari salvati: il loro result riflette
-      // il feed precedente → marcali "dati superati" (stale_since). Un nuovo
-      // salvataggio dello scenario azzera il flag. Best-effort su DB legacy.
-      try {
-        await db.execute(sql`
-          UPDATE service_program_scenarios
-             SET stale_since = COALESCE(stale_since, now())
-           WHERE project_id = ${projectId}::uuid
-        `);
-        await db.execute(sql`
-          UPDATE driver_shift_scenarios d
-             SET stale_since = COALESCE(d.stale_since, now())
-            FROM service_program_scenarios s
-           WHERE d.service_program_scenario_id = s.id
-             AND (s.project_id = ${projectId}::uuid OR d.project_id = ${projectId}::uuid)
-        `);
-      } catch (staleErr: any) {
-        logger?.warn?.({ err: staleErr?.message, projectId }, "marcatura stale_since scenari fallita (sync comunque ok)");
-      }
+      await ensureMaterializedColumn();
+      const result = await sincronizzaProgetto(projectId, psProjectId, ownerUserId, { log: logger });
       job.status = "done";
       job.result = result;
       job.finishedAt = Date.now();
