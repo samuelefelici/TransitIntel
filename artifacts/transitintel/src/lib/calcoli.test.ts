@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { elencoCalcoli, fermaCalcolo, etichetta, statoLeggibile, percentuale, durata, linkDi, appenaFiniti, dataEsercizio, vivo, type Calcolo } from "./calcoli";
+import { elencoCalcoli, fermaCalcolo, etichetta, statoLeggibile, percentuale, durata, linkDi, apriDi, appenaFiniti, dataEsercizio, vivo, type Calcolo } from "./calcoli";
 
 const T = 1_793_700_000_000;
 const calcolo = (extra: Partial<Calcolo> = {}): Calcolo => ({
@@ -59,6 +59,14 @@ describe("i miei calcoli", () => {
     expect(linkDi(calcolo({ ambito: "materializzazione", dettagli: { schedulingProjectId: "sp" } }))).toBe("/fucina/sp");
     expect(linkDi(calcolo({ ambito: "giro-agente", dettagli: { psProjectId: "ps1" } }))).toBe("/fucina/esercizio/ps1");
     expect(linkDi(calcolo({ dettagli: { mode: "cpsat" } }))).toBeNull();
+  });
+
+  it("«Apri» porta il calcolo ai turni macchina e ai turni guida, non agli altri", () => {
+    expect(apriDi(calcolo())).toBe("/fucina/p1/pipeline?calcolo=j1");
+    expect(apriDi(calcolo({ dettagli: { mode: "vcsp", projectId: "p1" } }))).toBe("/fucina/p1/pipeline?mode=vcsp&calcolo=j1");
+    expect(apriDi(calcolo({ ambito: "turni-guida", dettagli: { projectId: "p1", scenarioId: "s1" } }))).toBe("/fucina/p1/drivers/s1?calcolo=j1");
+    expect(apriDi(calcolo({ ambito: "materializzazione", dettagli: { schedulingProjectId: "sp" } }))).toBe("/fucina/sp");
+    expect(apriDi(calcolo({ dettagli: {} }))).toBeNull();
   });
 
   it("appena finiti: solo quelli visti vivi prima", () => {

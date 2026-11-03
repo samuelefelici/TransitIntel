@@ -27,7 +27,7 @@ describe("il menu di chi entra", () => {
 
   it("solo Turni: i progetti, i misti e la pubblicazione al roster, non gli orari al pubblico", () => {
     const m = menu(con("scheduling"));
-    expect(m["Turni"]).toEqual(["Progetti di esercizio", "Turni misti", "Database di esercizio"]);
+    expect(m["Turni"]).toEqual(["Progetti di esercizio", "Turni misti", "Database di esercizio", "I miei calcoli"]);
     expect(m["Pubblicazione"]).toEqual(["Turni al roster"]);
     expect(m["Rete e orari"]).toBeUndefined();
   });

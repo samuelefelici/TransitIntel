@@ -11,7 +11,7 @@
 import {
   BarChart3, BookOpen, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Shuffle, Ticket, Timer,
-  Users, IdCard, Activity, Database, Wrench, Zap, Settings2, type LucideIcon,
+  Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, type LucideIcon,
 } from "lucide-react";
 import type { Permission } from "@/hooks/use-auth";
 
@@ -62,6 +62,8 @@ export const PERMESSI_PAGINA = {
   "/fucina/esercizio": ["scheduling"],
   "/misto": ["scheduling"],
   "/service-db": ["scheduling"],
+  /* «I miei calcoli»: turni macchina, turni guida, sincronizzazioni, giri di Argos */
+  "/calcoli": ["scheduling"],
   "/driver-shifts": ["scheduling"],
   "/roster/pubblicazione": ["scheduling"],
   /* gli orari al pubblico si leggono dal programma di Planning Studio */
@@ -111,6 +113,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
       },
       { href: "/misto", etichetta: "Turni misti", icona: Shuffle, descrizione: "Completamento fra unità", permessi: PERMESSI_PAGINA["/misto"] },
       { href: "/service-db", etichetta: "Database di esercizio", icona: Database, descrizione: "Programmi, unità, turni, roster", permessi: PERMESSI_PAGINA["/service-db"] },
+      { href: "/calcoli", etichetta: "I miei calcoli", icona: Cpu, descrizione: "In corso e finiti, anche a pagina chiusa", permessi: PERMESSI_PAGINA["/calcoli"] },
     ],
   },
   {

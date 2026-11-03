@@ -133,6 +133,17 @@ export function linkDi(c: Calcolo): string | null {
 }
 
 /**
+ * Il link «Apri» di un calcolo: per i turni macchina e i turni guida porta con
+ * sé il calcolo (?calcolo=<id>), così la pagina apre proprio quello, anche da
+ * un altro computer; per gli altri è il link della pagina.
+ */
+export function apriDi(c: Calcolo): string | null {
+  const l = linkDi(c);
+  if (!l || (c.ambito !== "turni-macchina" && c.ambito !== "turni-guida")) return l;
+  return `${l}${l.includes("?") ? "&" : "?"}calcolo=${encodeURIComponent(c.jobId)}`;
+}
+
+/**
  * I calcoli che fra due letture sono passati da vivi a finiti: l'indicatore
  * li annuncia. Un calcolo mai visto vivo non si annuncia (era già finito, o è
  * finito fra due letture senza che l'indicatore lo vedesse partire: lo si
