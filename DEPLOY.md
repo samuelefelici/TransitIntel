@@ -462,6 +462,19 @@ riavvio.
   Massima) non più: il secondo aspetta in coda. Con `LAVORI_SLOT_LUNGA=2`
   tornano a girare insieme, se la CPU basta (ogni calcolo usa fino a 8 thread
   di OR-Tools).
+  **Dalla 2.6** nelle due corsie passano anche i turni macchina, il VCSP e i
+  giri di Argos, che prima giravano subito dentro l'API, anche più d'uno
+  insieme:
+  - corsia veloce: CP-SAT fino a 3 minuti di budget (Rapida, Normale, la
+    fattibilità di Argos, il «Ri-ottimizza» dell'area di lavoro) e turni guida
+    fino a 2 minuti;
+  - corsia lunga: VCSP, giri di Argos, CP-SAT Media e Massima, turni guida
+    lunghi; **uno alla volta** con `LAVORI_SLOT_LUNGA=1`. Un VCSP dalla Fucina
+    lanciato mentre gira un giro di Argos aspetta che il giro finisca (la
+    pagina mostra solo l'attesa).
+  Sul lavoratore a 3 CPU si consiglia `LAVORI_SLOT_VELOCE=2`: la fattibilità
+  di Argos (che chiude dopo 420 s) non aspetta dietro un CP-SAT Normale. Per
+  la corsia lunga `LAVORI_SLOT_LUNGA=2` solo se la memoria basta per due VCSP.
 - **Turni guida.** Il tempo massimo del processo è 4 volte il budget, almeno
   un'ora e al massimo due: lo script sfora il budget di molto sulle reti
   grandi, e il tempo massimo serve solo contro un processo appeso. Ogni utente
@@ -474,8 +487,10 @@ riavvio.
     richiesta (i 400 e il 404 arrivano subito, senza lavoro in coda), accoda,
     legge la riga ogni secondo e risponde con lo stesso codice e lo stesso
     corpo di prima. **Se chi aspetta si scollega, il calcolo si ferma.** Al
-    deploy dell'API: 15 s di grazia, poi il calcolo si ferma e la risposta è
-    503 «rilancia il calcolo tra poco»;
+    deploy dell'API: 15 s di grazia (meno se `CERBERO_ARRESTO_SECONDI` è più
+    corto), poi il calcolo si ferma e la risposta è 503 «rilancia il calcolo
+    tra poco». Se l'API cade senza fermarlo, il lavoratore ferma da solo, dopo
+    un minuto, il calcolo che nessuno aspetta più;
   - corsia dal budget vero del VSP (`vspAdvanced.totalTimeOverrideSec`,
     altrimenti l'intensità: Rapida 60 s, Normale 180, Media 420, Massima 900;
     `timeLimit` non conta, il Python lo ignora): CP-SAT fino a 3 minuti nella
@@ -513,7 +528,7 @@ migrazione `0004_coda_dei_lavori`):
    - `CERBERO_PROCESSO=lavoratore`;
    - `DATABASE_URL` e, se serve, `PGSSL_NO_VERIFY` uguali a quelle dell'API;
    - `NODE_ENV=production`;
-   - `LAVORI_SLOT_LUNGA=1`, `LAVORI_SLOT_VELOCE=1`;
+   - `LAVORI_SLOT_LUNGA=1`, `LAVORI_SLOT_VELOCE=2` (dalla 2.6; vedi «Slot»);
    - `MAPBOX_TOKEN` o `MAPBOX_ACCESS_TOKEN`, se la relazione deve scaricare le
      mappe;
    - `OSRM_URL`, se l'API ce l'ha: la matrice dei fuorilinea dei turni
@@ -529,9 +544,14 @@ migrazione `0004_coda_dei_lavori`):
    applicato una migrazione. Se prende lavori lo dice `prendeLavori`.
 4. **Limiti di CPU e memoria**: sulla macchina da 4 vCPU e 8 GB, **3 CPU e
    3,5 GB** (dalla 2.6, con turni macchina e VCSP). Il VCSP è il calcolo più
-   pesante: se supera la memoria il container riparte e il lavoro torna in
-   coda (al secondo abbandono è «fallito»). Lo stesso budget su meno CPU dà
-   soluzioni un po' peggiori: va guardato sui giri veri.
+   pesante. Se si supera la memoria, il kernel uccide il processo più grande
+   del container, cioè di solito il Python di quel calcolo: il container resta
+   su, il calcolo finisce «fallito» con «Calcolo ucciso dal sistema (SIGKILL),
+   probabilmente per memoria esaurita» e non si ritenta (con due calcoli
+   insieme può toccare all'altro). Si riconosce anche da `dmesg` o dal
+   contatore OOM del container. Se capita, si alza la memoria o si riduce il
+   VCSP. Lo stesso budget su meno CPU dà soluzioni un po' peggiori: va
+   guardato sui giri veri.
 5. **Watch Paths**: il lavoratore si ridistribuisce solo quando cambia quello
    che esegue:
    ```
@@ -576,7 +596,8 @@ variabile) e fermare il lavoratore: i lavori in coda li prende l'API.
      ancora dentro di sé, finché il lavoratore nuovo non è pronto;
    - sul lavoratore: le Watch Paths nuove (sopra: `ottimizza-veicoli/**`,
      `dati-solver.ts`, `deadhead-matrix.ts`, `geo-utils.ts`,
-     `scripts-dir.ts`), `OSRM_URL` se l'API ce l'ha, limiti 3 CPU e 3,5 GB.
+     `scripts-dir.ts`), `OSRM_URL` se l'API ce l'ha, limiti 3 CPU e 3,5 GB,
+     `LAVORI_SLOT_VELOCE=2`.
 1. **Merge.** Si ridistribuiscono API e lavoratore. Nel log del lavoratore,
    alla riga «Lavoratore dei calcoli avviato», `tipi` deve contenere
    `ottimizza_veicoli@1` e `giro_agente@1`.

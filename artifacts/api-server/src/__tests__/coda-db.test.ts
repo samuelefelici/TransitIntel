@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { pool } from "@workspace/db";
 import {
   accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci, viviDi, vivoConChiave,
+  segnaAttesa, fermaAbbandonati,
 } from "../lib/lavori/coda";
 
 const NOTI = [{ tipo: "python", versione: 1 }];
@@ -153,6 +154,27 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda dei lavori, sul databas
     expect(await chiudi(b, "p", { stato: "fallito", errore: "boom", erroreTipo: "calcolo", httpCodice: 500 })).toBe(true);
     expect(await leggi(a)).toMatchObject({ stato: "fallito", http_codice: 422, risultato: { error: "Turno bloccato", errorKind: "lucchetto" } });
     expect(await leggi(b)).toMatchObject({ stato: "fallito", http_codice: 500, risultato: null });
+  });
+
+  it("i calcoli sincroni che nessuno aspetta più da un minuto si fermano; gli altri no", async () => {
+    const sincrono = (m: Record<string, unknown>) => nuovo("lunga", { metadati: { sincrono: true, ...m } });
+    const abbandonatoInCoda = await sincrono({});
+    const abbandonatoInCorso = await sincrono({});
+    const vivo = await sincrono({});
+    const asincrono = await nuovo();
+    await pool.query("UPDATE coda.lavori SET creato_il = now() - interval '2 minutes'");
+    await pool.query("UPDATE coda.lavori SET stato = 'in_corso', preso_da = 'p' WHERE id = $1", [abbandonatoInCorso]);
+    await segnaAttesa(vivo);
+    const fermati = await fermaAbbandonati();
+    expect(fermati.map(f => f.id).sort()).toEqual([abbandonatoInCoda, abbandonatoInCorso].sort());
+    expect(await leggi(abbandonatoInCoda)).toMatchObject({ stato: "fermato", errore_tipo: "annullato", annulla: true });
+    expect(await leggi(abbandonatoInCorso)).toMatchObject({ stato: "in_corso", annulla: true });
+    expect(await leggi(vivo)).toMatchObject({ stato: "in_coda", annulla: false });
+    expect((await leggi(vivo))!.metadati.attesa_il).toBeTruthy();
+    expect(await leggi(asincrono)).toMatchObject({ stato: "in_coda", annulla: false });
+    // il segno di vita invecchia: un minuto dopo anche quello si ferma
+    await pool.query("UPDATE coda.lavori SET metadati = metadati || jsonb_build_object('attesa_il', now() - interval '61 seconds') WHERE id = $1", [vivo]);
+    expect((await fermaAbbandonati()).map(f => f.id)).toEqual([vivo]);
   });
 
   it("pulizia: risultato e richiesta via dopo 7 giorni, righe via dopo 30", async () => {

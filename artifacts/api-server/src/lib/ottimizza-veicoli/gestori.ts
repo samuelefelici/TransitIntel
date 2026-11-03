@@ -20,7 +20,7 @@
 import type { Gestore } from "../lavori/esecutore";
 import type { Progresso } from "../lavori/python";
 import { eseguiOttimizzazione, type ModoVeicoli } from "./esegui";
-import { eseguiGiro, scriviGiro, type RichiestaGiro } from "./giro";
+import { eseguiGiro, giroGiaSalvato, scriviGiro, type RichiestaGiro } from "./giro";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const modoValido = (m: unknown): m is ModoVeicoli => m === "cpsat" || m === "vcsp";
@@ -76,9 +76,20 @@ export const gestoreGiro: Gestore = {
     if (!richiestaGiroValida(r)) return { stato: "fallito", errore: "Richiesta del giro non valida", erroreTipo: "sistema" };
     const log = logDelLavoro(ctx.log, l.id);
     const fase = r.mode === "vcsp" ? "VCSP" : "VSP";
+    const completato = (s: { scenarioId: string | null; dssId: string | null; scenarioName: string | null }) => ({
+      stato: "completato" as const,
+      risultato: { scenarioId: s.scenarioId, dssId: s.dssId, scenarioName: s.scenarioName },
+      avanzamento: { phase: fase, percentage: 100, detail: "Completato", timestamp: Date.now() },
+    });
+    // ripreso dopo un crash o un arresto a salvataggio fatto: niente ricalcolo
+    const gia = await giroGiaSalvato(l.id);
+    if (gia) return completato(gia);
     let ultimo: Progresso | null = null;
-    /* l'esito per Argos (agent_optimize_jobs) quando il giro non arriva al salvataggio */
+    /* l'esito per Argos (agent_optimize_jobs) quando il giro non arriva al salvataggio; non per
+       un arresto o un lease perso: il lavoro torna in coda o è di un altro processo */
     const segna = async (errore: string) => {
+      const motivo = ctx.segnale.aborted ? String(ctx.segnale.reason) : null;
+      if (motivo === "arresto" || motivo === "lease") return;
       try {
         await scriviGiro({
           id: l.id, userId: r.salvataggio.utenteId, psProjectId: r.salvataggio.psProjectId, mode: r.mode,
@@ -99,11 +110,7 @@ export const gestoreGiro: Gestore = {
     });
     switch (esito.stato) {
       case "fatto":
-        return {
-          stato: "completato",
-          risultato: { scenarioId: esito.scenarioId, dssId: esito.dssId, scenarioName: esito.scenarioName },
-          avanzamento: { phase: fase, percentage: 100, detail: "Completato", timestamp: Date.now() },
-        };
+        return completato(esito);
       case "fermato":
         await segna("Giro fermato");
         return { stato: "fermato" };

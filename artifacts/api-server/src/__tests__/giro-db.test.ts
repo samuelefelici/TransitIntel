@@ -7,7 +7,7 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { salvaGiro, type RichiestaGiro } from "../lib/ottimizza-veicoli/giro";
+import { salvaGiro, scriviGiro, giroGiaSalvato, type RichiestaGiro } from "../lib/ottimizza-veicoli/giro";
 
 const UTENTE = "e0000000-0000-0000-0000-00000000aa01";
 const PS = "e0000000-0000-0000-0000-00000000aac1";
@@ -91,6 +91,10 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il salvataggio di fine giro, su
                                  progress: { phase: "VCSP", pct: 100, msg: "Completato" } });
     expect(new Date(giro.created_at).toISOString()).toBe("2026-11-03T08:00:00.000Z");
 
+    // un esito diverso scritto dopo (lo stop o l'errore di un tentativo ripreso) non cancella il «done»
+    await scriviGiro({ id: LAVORO, userId: UTENTE, psProjectId: PS, mode: "vcsp", status: "error", createdAt: Date.now(),
+                       progress: { phase: "VCSP", pct: 0, msg: "" }, params: {}, error: "Giro fermato" });
+    expect(await giroGiaSalvato(LAVORO)).toEqual({ scenarioId: e.scenarioId, dssId: e.dssId, scenarioName: "Argos · Rete · 2026-11-04 · VCSP" });
     // il lavoro ripreso dopo un crash fra salvataggio e chiusura: niente scenario doppio
     const ancora = await salvaGiro({ lavoroId: LAVORO, chi: "w1", payload: payload(), r: richiesta(), log });
     expect(ancora).toMatchObject({ stato: "salvato", giaSalvato: true, scenarioId: e.scenarioId, dssId: e.dssId });

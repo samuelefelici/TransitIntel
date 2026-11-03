@@ -166,6 +166,33 @@ describe("l'esecutore", () => {
     expect(e.inCorso()).toBe(0);
   });
 
+  it("arresto: un lavoro che finisce lo stesso (non era più in Python) si chiude col suo esito, non torna in coda", async () => {
+    const f = codaFinta([lavoro("a"), lavoro("b")]);
+    const g: Gestore = {
+      tipo: "python", versione: 1,
+      // «a» finisce anche dopo lo stop (stava salvando), «b» si ferma
+      esegui: (l, ctx) => new Promise((resolve) => {
+        ctx.segnale.addEventListener("abort", () => setTimeout(() =>
+          resolve(l.id === "a" ? { stato: "completato", risultato: { salvato: true } } : { stato: "fermato" }), 20));
+      }),
+    };
+    const e = creaEsecutore({ chi: "t", slot: { lunga: 2, veloce: 0 }, gestori: [g], log, coda: f.coda, pollingMs: 10_000 });
+    e.avvia();
+    await aspetta(() => e.inCorso() === 2);
+    await e.ferma(0);
+    expect(f.chiusi.get("a")).toEqual({ stato: "completato", risultato: { salvato: true } });
+    expect(f.rimessi).toEqual(["b"]);
+  });
+
+  it("ogni giro della coda ferma anche i calcoli sincroni che nessuno aspetta più", async () => {
+    const f = codaFinta([]);
+    const fermaAbbandonati = vi.fn(async () => [{ id: "x", stato: "fermato" as const }]);
+    const e = creaEsecutore({ chi: "t", slot: { lunga: 1, veloce: 1 }, gestori: [], log, coda: { ...f.coda, fermaAbbandonati }, pollingMs: 10_000 });
+    await e._giro();
+    expect(fermaAbbandonati).toHaveBeenCalledTimes(1);
+    expect(f.coda.recuperaScaduti).toHaveBeenCalledTimes(1);
+  });
+
   it("chiusura: ritenta se il database non risponde; un risultato rifiutato chiude «fallito, sistema»", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {

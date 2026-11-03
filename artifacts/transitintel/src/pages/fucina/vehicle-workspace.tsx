@@ -1237,6 +1237,23 @@ export default function VehicleWorkspace({
     };
   }, [result, wwShiftIds, wwPool, wwBlockVehicleType, wwBlockChecks]);
 
+  /* Il ricalcolo in corso: uscendo dall'area di lavoro o rilanciando si chiude la
+   * richiesta, e il server ferma il calcolo (dalla 2.6 gira in coda: altrimenti
+   * resterebbe vivo e conterebbe nei 3 calcoli dell'utente). */
+  const calcoloRef = React.useRef<AbortController | null>(null);
+  useEffect(() => () => { calcoloRef.current?.abort(); }, []);
+  const nuovoCalcolo = useCallback(() => {
+    calcoloRef.current?.abort();
+    const c = new AbortController();
+    calcoloRef.current = c;
+    return c;
+  }, []);
+  const fineCalcolo = useCallback((c: AbortController) => {
+    if (calcoloRef.current !== c) return;
+    calcoloRef.current = null;
+    setReoptimizing(false);
+  }, []);
+
   /** Ricostruisce un turno macchina con un nuovo set di corse: i vuoti vengono
    * rigenerati globalmente da regenerateMissingDeadheads dopo la modifica. */
   const wwRebuildVehicleShift = useCallback((s: VehicleShift, trips: ShiftTripEntry[]): VehicleShift => {
@@ -1949,6 +1966,7 @@ export default function VehicleWorkspace({
       toast.info("Nessuna modifica oraria da applicare");
       return;
     }
+    const calcolo = nuovoCalcolo();
     setReoptimizing(true);
     setReoptimizeError(null);
     const previousResult = result;
@@ -1966,6 +1984,7 @@ export default function VehicleWorkspace({
           solverIntensity: "normal",
           ...(psProjectId ? { psProjectId } : {}),
         }),
+        signal: calcolo.signal,
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
@@ -1992,10 +2011,11 @@ export default function VehicleWorkspace({
         description: `${Object.keys(overrides).length} corse spostate · Δveicoli ${diff.vehiclesAfter - diff.vehiclesBefore >= 0 ? "+" : ""}${diff.vehiclesAfter - diff.vehiclesBefore}`,
       });
     } catch (err: any) {
+      if (calcolo.signal.aborted) return;
       setReoptimizeError(err.message);
       toast.error("Errore ri-ottimizzazione", { description: err.message });
     } finally {
-      setReoptimizing(false);
+      fineCalcolo(calcolo);
     }
   }, [result, pushHistory]);
 
@@ -2113,6 +2133,7 @@ export default function VehicleWorkspace({
         "Per conservarne qualcuna, prima blocca il turno col lucchetto sulla riga.";
     if (!window.confirm(`Rilanciare l'ottimizzatore sullo scenario corrente?\n\n${avviso}`)) return;
     const previousResult = result;
+    const calcolo = nuovoCalcolo();
     setReoptimizing(true);
     setReoptimizeError(null);
     try {
@@ -2130,6 +2151,7 @@ export default function VehicleWorkspace({
           // il pacchetto dati di QUESTO progetto (o quello appena sincronizzato)
           ...((feedIdOverride || projectFeedId) ? { feedId: feedIdOverride || projectFeedId } : {}),
         }),
+        signal: calcolo.signal,
       });
       if (!res.ok) {
         // 422 = un turno bloccato che il modello non può rispettare: il
@@ -2166,10 +2188,11 @@ export default function VehicleWorkspace({
           + (lockedChains.length ? ` · 🔒 ${lockedChains.length} mantenut${lockedChains.length === 1 ? "o" : "i"}` : ""),
       });
     } catch (err: any) {
+      if (calcolo.signal.aborted) return;
       setReoptimizeError(err.message);
       toast.error("Errore ri-ottimizzazione", { description: err.message, duration: 12000 });
     } finally {
-      setReoptimizing(false);
+      fineCalcolo(calcolo);
     }
   }, [result, pushHistory, customLabels, psProjectId, projectFeedId]);
 

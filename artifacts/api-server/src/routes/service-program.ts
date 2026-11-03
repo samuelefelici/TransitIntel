@@ -1158,7 +1158,11 @@ async function handleVehicleOptimize(req: any, res: any, mode: ModoVeicoli): Pro
       via: req.authVia ?? "api",
       oggettoId: psProjectId,
       richiesta: { mode, feedId, corpo: req.body },
-      metadati: { ambito: AMBITO_VEICOLI, mode, date: String(req.body.date), psProjectId, budgetSec },
+      metadati: {
+        ambito: AMBITO_VEICOLI, mode, date: String(req.body.date), psProjectId, budgetSec,
+        // qualcuno aspetta la risposta: senza segni di vita della facciata il calcolo si ferma
+        ...(req.query?.asincrono === "1" ? {} : { sincrono: true }),
+      },
       timeoutSec: tempoMassimoVeicoli(mode, budgetSec),
     });
     req.log.info({ lavoro: jobId, mode, corsia, budgetSec }, "turni macchina: calcolo in coda");
@@ -1399,11 +1403,11 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     // tutti i processi (indice unico sulla chiave), e si controlla prima del lavoro
     // preliminare (UDP, materializzazione).
     const inCoda = veicoliInCoda();
-    if (inCoda) {
-      if (arresto.signal.aborted) { res.status(503).json({ error: MESSAGGIO_RIAVVIO }); return; }
-      const vivo = await coda.vivoConChiave(chiaveGiro(psProjectId));
-      if (vivo) { res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: vivo.id }); return; }
-    } else {
+    if (inCoda && arresto.signal.aborted) { res.status(503).json({ error: MESSAGGIO_RIAVVIO }); return; }
+    // anche col flag a 0 (ritorno indietro) un giro ancora in coda nel lavoratore conta
+    const vivo = await coda.vivoConChiave(chiaveGiro(psProjectId));
+    if (vivo) { res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: vivo.id }); return; }
+    if (!inCoda) {
       for (const j of agentJobs.values()) {
         if (j.status === "running" && j.psProjectId === psProjectId) {
           res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: j.id });

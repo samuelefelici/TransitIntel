@@ -5,7 +5,7 @@
  */
 import { describe, it, expect, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { attendiEsito, rispostaDi } from "../lib/facciata-lavori";
+import { attendiEsito, rispostaDi, graziaArresto } from "../lib/facciata-lavori";
 
 function resFinta() {
   const e = new EventEmitter() as any;
@@ -105,4 +105,32 @@ describe("l'attesa sincrona", () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(res.codice).toBe(500);
   });
+
+  it("la grazia all'arresto finisce almeno 3 s prima che l'API esca", () => {
+    expect(graziaArresto({})).toBe(15_000);
+    expect(graziaArresto({ CERBERO_ARRESTO_SECONDI: "28" })).toBe(15_000);
+    expect(graziaArresto({ CERBERO_ARRESTO_SECONDI: "10" })).toBe(7_000);
+    expect(graziaArresto({ CERBERO_ARRESTO_SECONDI: "2" })).toBe(0);
+    expect(graziaArresto({ CERBERO_ARRESTO_SECONDI: "x" })).toBe(15_000);
+  });
+
+  it("chi aspetta lo dice ogni 5 s (segnaAttesa), così il lavoratore non lo ferma come abbandonato", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const res = resFinta();
+      const righe: any[] = [inCorso];
+      const coda = { ...codaFinta(righe), segnaAttesa: vi.fn(async () => undefined) };
+      const attesa = attendiEsito(res, "j", { coda, intervalloMs: 1_000, segnaleArresto: new AbortController().signal });
+      for (let i = 0; i < 12; i++) await vi.advanceTimersByTimeAsync(1_000);
+      righe[0] = { stato: "completato", http_codice: 200, risultato: { ok: 1 } };
+      (coda.leggi as any).mockImplementation(async () => righe[0]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await attesa;
+      expect(coda.segnaAttesa.mock.calls.length).toBe(2);
+      expect(res.codice).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
+

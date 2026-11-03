@@ -61,7 +61,9 @@ export interface RichiestaGiro {
   salvataggio: SalvataggioGiro;
 }
 
-/** Il registro persistente di un giro: alla creazione e alla fine (esito compatto, scenario, errore). */
+/** Il registro persistente di un giro: alla creazione e alla fine (esito compatto, scenario, errore).
+ *  Un giro «done» non torna indietro: un esito diverso scritto dopo (uno stop o un errore
+ *  di un tentativo ripreso) non cancella lo scenario già salvato. */
 export async function scriviGiro(
   job: AgentOptimizeJob, request?: unknown, esecutore: { execute: typeof db.execute } = db,
   /** solo se la riga non c'è ancora (la rotta, dopo aver accodato: il lavoratore può aver già scritto l'esito) */
@@ -84,7 +86,15 @@ export async function scriviGiro(
       error = EXCLUDED.error, scenario_id = EXCLUDED.scenario_id, dss_id = EXCLUDED.dss_id,
       scenario_name = EXCLUDED.scenario_name,
       result_compact = COALESCE(EXCLUDED.result_compact, agent_optimize_jobs.result_compact),
-      updated_at = now()`}`);
+      updated_at = now()
+    WHERE agent_optimize_jobs.status <> 'done' OR EXCLUDED.status = 'done'`}`);
+}
+
+/** Il giro già salvato (agent_optimize_jobs «done»), se c'è: un lavoro ripreso non lo ricalcola. */
+export async function giroGiaSalvato(id: string): Promise<{ scenarioId: string | null; dssId: string | null; scenarioName: string | null } | null> {
+  const r = (await db.execute<any>(sql`
+    SELECT scenario_id, dss_id, scenario_name FROM agent_optimize_jobs WHERE id = ${id}::uuid AND status = 'done'`)).rows[0];
+  return r ? { scenarioId: r.scenario_id ?? null, dssId: r.dss_id ?? null, scenarioName: r.scenario_name ?? null } : null;
 }
 
 /** I parametri del giro con il ciclo VERO, letto dal motore: se restassero quelli
@@ -546,6 +556,7 @@ export interface CodaDelGiro {
   stato: "in_coda" | "in_corso" | "completato" | "fallito" | "fermato";
   avanzamento: any | null;
   errore: string | null;
+  errore_tipo?: string | null;
   risultato: any | null;
   utente_id: string | null;
   metadati: Record<string, any> | null;
@@ -579,11 +590,13 @@ export function vistaGiro(row: any | null, l: CodaDelGiro | null, full: boolean,
   };
   const trascorsi = (fine: number | null) => Math.round(((fine ?? adesso) - createdMs) / 1000);
   const params = row?.params ?? l?.metadati?.params ?? {};
+  /* nell'elenco (full=false) anche quando è nato e, se finito, lo scenario: come l'elenco in memoria */
+  const elenco = (scenarioId: string | null) => (full ? {} : { createdAt: new Date(createdMs).toISOString(), scenarioId });
 
   if (row?.status === "done") {
     return {
       ...base, status: "done", progress: row.progress ?? null,
-      elapsedSec: trascorsi(ms(row.finished_at)), params,
+      elapsedSec: trascorsi(ms(row.finished_at)), params, ...elenco(row.scenario_id ?? null),
       ...(full ? {
         scenarioId: row.scenario_id ?? null,
         dssId: row.dss_id ?? null,
@@ -598,7 +611,7 @@ export function vistaGiro(row: any | null, l: CodaDelGiro | null, full: boolean,
     const progress = a
       ? { phase: String(a.phase ?? fase), pct: Math.round(Number(a.percentage) || 0), msg: String(a.detail ?? "").trim() }
       : l.stato === "in_coda" ? { phase: fase, pct: 0, msg: "In coda…" } : (row?.progress ?? { phase: fase, pct: 0, msg: "Avvio…" });
-    return { ...base, status: "running", progress, elapsedSec: trascorsi(null), params };
+    return { ...base, status: "running", progress, elapsedSec: trascorsi(null), params, ...elenco(null) };
   }
   if (l) {
     // finito in coda, ma il giro non è «done»: fallito o fermato (o «done» non scritto)
@@ -608,16 +621,19 @@ export function vistaGiro(row: any | null, l: CodaDelGiro | null, full: boolean,
     if (l.stato === "completato") {
       return {
         ...base, status: "done", progress: row?.progress ?? { phase: fase, pct: 100, msg: "Completato" },
-        elapsedSec: trascorsi(ms(l.finito_il)), params,
+        elapsedSec: trascorsi(ms(l.finito_il)), params, ...elenco(l.risultato?.scenarioId ?? null),
         ...(full ? {
           scenarioId: l.risultato?.scenarioId ?? null, dssId: l.risultato?.dssId ?? null,
           scenarioName: l.risultato?.scenarioName ?? null, result: null, persisted: true,
         } : {}),
       };
     }
+    // interrotto (il lavoratore è caduto più volte): la richiesta per rilanciarlo, come prima
+    const interrotto = l.errore_tipo === "interrotto" || row?.status === "running";
     return {
       ...base, status: "error", progress: row?.progress ?? l.avanzamento ?? null,
-      elapsedSec: trascorsi(ms(row?.finished_at) ?? ms(l.finito_il)), params, error: errore,
+      elapsedSec: trascorsi(ms(row?.finished_at) ?? ms(l.finito_il)), params, error: errore, ...elenco(null),
+      ...(interrotto && row ? { request: row.request ?? null } : {}),
     };
   }
   const interrupted = row.status === "running";
@@ -626,7 +642,7 @@ export function vistaGiro(row: any | null, l: CodaDelGiro | null, full: boolean,
     status: interrupted ? "error" : row.status,
     progress: row.progress ?? null,
     elapsedSec: trascorsi(ms(row.finished_at)),
-    params,
+    params, ...elenco(row.scenario_id ?? null),
     ...(interrupted
       ? { error: "Giro interrotto dal riavvio del server (deploy): rilancialo con gli stessi parametri (campo request)", request: row.request ?? null }
       : row.error ? { error: row.error } : {}),

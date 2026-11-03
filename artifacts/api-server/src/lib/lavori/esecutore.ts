@@ -5,13 +5,16 @@
  *
  * - Slot separati per corsia: un calcolo lungo non ferma i brevi.
  * - Ogni 2 s guarda la coda; ogni 30 s rimette in coda i lavori abbandonati da
- *   un processo morto; ogni ora fa la pulizia (conservazione).
+ *   un processo morto e ferma i calcoli sincroni che nessuno aspetta più
+ *   (coda.fermaAbbandonati); ogni ora fa la pulizia (conservazione).
  * - Il battito (ogni 5 s, o prima se c'è un avanzamento nuovo, al massimo una
  *   volta al secondo) rinnova il lease e legge lo stop.
  * - Arresto ordinato (deploy): non prende più lavori (aspetta il giro della
  *   coda già partito: un lavoro preso in quell'istante torna subito in coda),
  *   aspetta un poco quelli in corso, poi li ferma e li rimette in coda senza
- *   consumare il tentativo.
+ *   consumare il tentativo. Un lavoro che finisce lo stesso (il gestore non era
+ *   più in Python, per esempio un giro che stava salvando) si chiude col suo
+ *   esito invece di tornare in coda.
  * - La chiusura è la scrittura che conta (un calcolo può durare un'ora): se il
  *   database non risponde si ritenta, e un risultato che il database rifiuta
  *   (per esempio un carattere NUL nel JSON, anche nella risposta che un
@@ -40,7 +43,8 @@ export interface Gestore {
   esegui: (lavoro: Lavoro, ctx: ContestoLavoro) => Promise<Exclude<Esito, { stato: "fermato" }> | { stato: "fermato" }>;
 }
 
-export type Coda = Pick<typeof codaReale, "prendi" | "battito" | "chiudi" | "rimettiInCoda" | "recuperaScaduti" | "pulisci">;
+export type Coda = Pick<typeof codaReale, "prendi" | "battito" | "chiudi" | "rimettiInCoda" | "recuperaScaduti" | "pulisci">
+  & Partial<Pick<typeof codaReale, "fermaAbbandonati">>;
 
 export interface OpzioniEsecutore {
   /** chi sono, per il lease (per esempio «lavoratore:host:pid») */
@@ -129,8 +133,11 @@ export function creaEsecutore(o: OpzioniEsecutore) {
     const motivo = controller.signal.aborted ? (controller.signal.reason as MotivoStop) : null;
     if (motivo === "lease") {
       log.warn({ lavoro: l.id }, "lavoro non più di questo processo (lease scaduto): risultato scartato");
-    } else if (motivo === "arresto") {
+    } else if (motivo === "arresto" && esito.stato === "fermato") {
       await rimetti(l.id);
+    } else if (motivo === "arresto") {
+      // finito (e magari già salvato, come un giro di Argos) mentre arrivava l'arresto: si chiude, non si rifà
+      await chiudi(l.id, esito);
     } else {
       await chiudi(l.id, motivo === "annulla" || esito.stato === "fermato" ? { stato: "fermato" } : esito);
     }
@@ -197,6 +204,8 @@ export function creaEsecutore(o: OpzioniEsecutore) {
         ultimoRecupero = adesso;
         const r = await coda.recuperaScaduti();
         if (r.length) o.log.warn({ lavori: r }, "lavori abbandonati da un processo fermo: rimessi in coda o chiusi");
+        const senzaAttesa = coda.fermaAbbandonati ? await coda.fermaAbbandonati() : [];
+        if (senzaAttesa.length) o.log.warn({ lavori: senzaAttesa }, "calcoli sincroni che nessuno aspetta più: fermati");
       }
       if (adesso - ultimaPulizia >= puliziaMs) {
         ultimaPulizia = adesso;

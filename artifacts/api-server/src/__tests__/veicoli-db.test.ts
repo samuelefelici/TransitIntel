@@ -128,7 +128,21 @@ const corpoVcsp = (extra: Record<string, unknown> = {}) => corpoFucina({
   ...extra,
 });
 
+/** Le istantanee fissano anche i dati globali che il solver legge: devono mancare, a parte i nostri. */
+async function databaseDiProvaVuoto(): Promise<void> {
+  const r = (await db.execute<any>(sql`
+    SELECT (SELECT count(*) FROM depots WHERE id <> ${DEPOSITO}::uuid)::int AS depositi,
+           (SELECT count(*) FROM stop_clusters)::int AS cluster,
+           (SELECT count(*) FROM deadhead_arcs)::int AS archi,
+           (SELECT count(*) FROM app_settings WHERE key = 'company_cars')::int AS autovetture,
+           (SELECT count(*) FROM traffic_snapshots)::int AS traffico`)).rows[0];
+  if (Object.values(r).some(n => Number(n) > 0)) {
+    throw new Error(`veicoli-db.test.ts vuole un database migrato senza dati globali del solver (depositi, cluster, archi fuorilinea, autovetture, traffico): trovati ${JSON.stringify(r)}`);
+  }
+}
+
 async function semina(): Promise<void> {
+  await databaseDiProvaVuoto();
   await pulisci();
   await db.execute(sql`INSERT INTO gtfs_feeds (id, filename, is_active, owner_user_id, uploaded_at)
                        VALUES (${FEED}::uuid, 'prova-veicoli.zip', true, NULL, '2026-01-01T00:00:00Z')`);
@@ -286,7 +300,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, 
   const lavori = () => db.execute<any>(sql`
     SELECT id, tipo, corsia, stato, timeout_sec, http_codice, metadati, utente_id, oggetto_id
       FROM coda.lavori WHERE richiesta->>'feedId' = ${FEED} OR metadati->>'psProjectId' = ${PS} ORDER BY creato_il`);
-  beforeAll(async () => { await semina(); esecutore.avvia(); });
+  beforeAll(async () => {
+    await semina();
+    // l'esecutore del test prende qualunque lavoro: niente lavori estranei in coda
+    await db.execute(sql`DELETE FROM coda.lavori WHERE stato IN ('in_coda', 'in_corso')`);
+    esecutore.avvia();
+  });
   afterAll(async () => { await esecutore.ferma(1_000); await pulisci(); });
   beforeEach(async () => {
     await db.execute(sql`DELETE FROM coda.lavori WHERE richiesta->>'feedId' = ${FEED} OR metadati->>'psProjectId' = ${PS}`);

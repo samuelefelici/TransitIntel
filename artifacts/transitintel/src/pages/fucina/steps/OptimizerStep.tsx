@@ -578,7 +578,16 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     if (!initialResult) return; // non auto-runnare: l'utente configura prima il solver
   }, []);
 
+  /* Il calcolo in corso: lasciando lo step o rilanciando si chiude la richiesta, e
+   * il server ferma il calcolo (dalla 2.6 gira in coda: altrimenti resterebbe vivo,
+   * occuperebbe la corsia e conterebbe nei 3 calcoli dell'utente). */
+  const calcoloRef = React.useRef<AbortController | null>(null);
+  useEffect(() => () => { calcoloRef.current?.abort(); }, []);
+
   const runOptimizer = useCallback(async () => {
+    calcoloRef.current?.abort();
+    const calcolo = new AbortController();
+    calcoloRef.current = calcolo;
     setRunning(true);
     setError(null);
     setResult(null);
@@ -656,6 +665,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(bodyPayload),
+        signal: calcolo.signal,
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
@@ -677,12 +687,18 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
             : "L'ottimizzazione non ha prodotto risultati."),
         );
       }
+      if (calcolo.signal.aborted) return;
       setResult(data);
       if (data.solverMetrics) setSolverMetrics(data.solverMetrics);
     } catch (e: any) {
+      // chiuso da noi (step lasciato o calcolo rilanciato): niente errore da mostrare
+      if (calcolo.signal.aborted) return;
       setError(e.message || "Errore sconosciuto");
     } finally {
-      setRunning(false);
+      if (calcoloRef.current === calcolo) {
+        calcoloRef.current = null;
+        setRunning(false);
+      }
     }
   }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, vcspProbe, crewTimeLimit, crewConfig, projectId, robustness, normativa]);
 

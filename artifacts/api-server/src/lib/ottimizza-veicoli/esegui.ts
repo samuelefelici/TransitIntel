@@ -154,6 +154,10 @@ export async function spawnPythonJson(
   if (esito.motivo === "avvio") throw new Error(`Errore avvio Python: ${esito.erroreAvvio}`);
   if (esito.motivo === "fermato") throw new CalcoloInterrotto("fermato", "Calcolo fermato");
   if (esito.motivo === "timeout" && opz.scadenza != null) throw new CalcoloInterrotto("scaduto", "Tempo massimo superato");
+  if (esito.motivo === "uscito" && esito.segnaleUscita === "SIGKILL") {
+    // nessuno di noi l'ha chiesto: di solito è il limite di memoria del container (OOM killer)
+    throw new Error(`Calcolo ucciso dal sistema (SIGKILL), probabilmente per memoria esaurita: ${esito.stderrCoda.slice(-500)}`);
+  }
   if (esito.motivo !== "uscito" || esito.codice !== 0) {
     throw new Error(`${descriviUscita(esito)}: ${esito.stderrCoda.slice(-1500)}`);
   }

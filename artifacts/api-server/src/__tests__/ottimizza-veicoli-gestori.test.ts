@@ -9,9 +9,10 @@ const finti = vi.hoisted(() => ({
   ottimizza: vi.fn(),
   giro: vi.fn(),
   scrivi: vi.fn(async () => undefined),
+  gia: vi.fn(async (): Promise<any> => null),
 }));
 vi.mock("../lib/ottimizza-veicoli/esegui", () => ({ eseguiOttimizzazione: finti.ottimizza }));
-vi.mock("../lib/ottimizza-veicoli/giro", () => ({ eseguiGiro: finti.giro, scriviGiro: finti.scrivi }));
+vi.mock("../lib/ottimizza-veicoli/giro", () => ({ eseguiGiro: finti.giro, scriviGiro: finti.scrivi, giroGiaSalvato: finti.gia }));
 
 import { gestoreOttimizzaVeicoli, gestoreGiro } from "../lib/ottimizza-veicoli/gestori";
 import type { Lavoro } from "../lib/lavori/coda";
@@ -24,7 +25,7 @@ const ctx = () => ({ chi: "lavoratore:x:1", segnale: new AbortController().signa
 const lavoro = (richiesta: unknown, extra: Partial<Lavoro> = {}) =>
   ({ id: "e0000000-0000-0000-0000-000000000011", tipo: "ottimizza_veicoli", versione: 1, timeout_sec: 3600, richiesta, ...extra }) as Lavoro;
 
-beforeEach(() => { finti.ottimizza.mockReset(); finti.giro.mockReset(); finti.scrivi.mockClear(); });
+beforeEach(() => { finti.ottimizza.mockReset(); finti.giro.mockReset(); finti.scrivi.mockClear(); finti.gia.mockReset(); finti.gia.mockResolvedValue(null); });
 
 describe("ottimizza_veicoli", () => {
   const richiesta = { mode: "cpsat", feedId: FEED, corpo: { date: "2026-11-04" } };
@@ -104,6 +105,23 @@ describe("giro_agente", () => {
     finti.scrivi.mockClear();
     finti.giro.mockResolvedValueOnce({ stato: "non-nostro", perche: "lease" });
     expect(await gestoreGiro.esegui(lavoro(richiesta, { tipo: "giro_agente" }), ctx())).toEqual({ stato: "fermato" });
+    expect(finti.scrivi).not.toHaveBeenCalled();
+  });
+
+  it("un giro già salvato (ripreso dopo un crash o un arresto): completato senza ricalcolare", async () => {
+    finti.gia.mockResolvedValue({ scenarioId: "s", dssId: null, scenarioName: "n" });
+    expect(await gestoreGiro.esegui(lavoro(richiesta, { tipo: "giro_agente" }), ctx()))
+      .toMatchObject({ stato: "completato", risultato: { scenarioId: "s", dssId: null, scenarioName: "n" } });
+    expect(finti.giro).not.toHaveBeenCalled();
+  });
+
+  it("all'arresto o col lease perso non si scrive l'esito per Argos: il lavoro torna in coda o è di un altro", async () => {
+    for (const motivo of ["arresto", "lease"]) {
+      const c = new AbortController();
+      c.abort(motivo);
+      finti.giro.mockResolvedValueOnce({ stato: "fermato" });
+      expect(await gestoreGiro.esegui(lavoro(richiesta, { tipo: "giro_agente" }), { ...ctx(), segnale: c.signal })).toEqual({ stato: "fermato" });
+    }
     expect(finti.scrivi).not.toHaveBeenCalled();
   });
 

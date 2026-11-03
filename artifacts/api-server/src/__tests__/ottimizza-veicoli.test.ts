@@ -106,4 +106,16 @@ describe("lo stato di un giro per Argos (vistaGiro)", () => {
     expect(vistaGiro(null, coda("completato", { risultato: { scenarioId: "s", dssId: null, scenarioName: "n" }, finito_il: "2026-11-03T08:01:00Z" }), true, adesso))
       .toMatchObject({ jobId: "g1", status: "done", mode: "vcsp", psProjectId: "p", scenarioId: "s", scenarioName: "n", elapsedSec: 60 });
   });
+
+  it("nell'elenco anche quando è nato e lo scenario; un giro interrotto in coda porta la richiesta", () => {
+    expect(vistaGiro(row({ status: "done", scenario_id: "s" }), null, false, adesso))
+      .toMatchObject({ status: "done", createdAt: "2026-11-03T08:00:00.000Z", scenarioId: "s" });
+    expect(vistaGiro(row(), coda("in_corso"), false, adesso)).toMatchObject({ createdAt: "2026-11-03T08:00:00.000Z", scenarioId: null });
+    expect(vistaGiro(row(), coda("in_corso"), true, adesso)).not.toHaveProperty("createdAt");
+    expect(vistaGiro(row(), coda("fallito", { errore: "Calcolo interrotto: rilancialo.", errore_tipo: "interrotto" }), true, adesso))
+      .toMatchObject({ status: "error", request: { date: "2026-11-04" } });
+    expect(vistaGiro(row({ status: "error", error: "Nessuna corsa" }), coda("fallito", { errore_tipo: "calcolo" }), true, adesso))
+      .not.toHaveProperty("request");
+  });
 });
+

@@ -142,6 +142,35 @@ export async function vivoConChiave(chiave: string): Promise<{ id: string; utent
   return r.rows[0] ?? null;
 }
 
+/**
+ * Chi aspetta un lavoro sincrono (la facciata dell'API) lo dice ogni pochi
+ * secondi: metadati.attesa_il. Un lavoro sincrono che nessuno aspetta più
+ * (l'API è uscita prima di fermarlo, è caduta, l'hanno uccisa) si ferma dopo
+ * ABBANDONO_SEC: nessuno ne leggerebbe il risultato.
+ */
+export const ABBANDONO_SEC = 60;
+
+export async function segnaAttesa(id: string): Promise<void> {
+  await q(
+    `UPDATE coda.lavori SET metadati = metadati || jsonb_build_object('attesa_il', now())
+      WHERE id = $1 AND stato IN ('in_coda', 'in_corso')`, [id]);
+}
+
+/** I lavori sincroni senza più nessuno che li aspetta: in coda diventano «fermato», in corso ricevono lo stop. */
+export async function fermaAbbandonati(): Promise<Array<{ id: string; stato: StatoLavoro }>> {
+  const r = await q(
+    `UPDATE coda.lavori SET
+            stato = CASE WHEN stato = 'in_coda' THEN 'fermato' ELSE stato END,
+            errore_tipo = CASE WHEN stato = 'in_coda' THEN 'annullato' ELSE errore_tipo END,
+            finito_il = CASE WHEN stato = 'in_coda' THEN now() ELSE finito_il END,
+            annulla = true, aggiornato_il = now()
+      WHERE stato IN ('in_coda', 'in_corso') AND NOT annulla
+        AND metadati->>'sincrono' = 'true'
+        AND coalesce((metadati->>'attesa_il')::timestamptz, creato_il) < now() - make_interval(secs => $1)
+     RETURNING id, stato`, [ABBANDONO_SEC]);
+  return r.rows;
+}
+
 /** Il codice di Postgres per una chiave di unicità già viva (lavori_unici_vivi). */
 export const CHIAVE_GIA_VIVA = "23505";
 

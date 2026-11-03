@@ -8,9 +8,12 @@
  *   500: il lavoro «fallito» li porta con sé).
  * - Se chi aspetta si scollega, il calcolo si ferma (chiediAnnullamento): nessuno
  *   leggerebbe più il risultato.
- * - All'arresto dell'API (deploy): 15 s di grazia, poi il calcolo si ferma e si
- *   risponde 503 «rilancia» (Coolify concede 30 s; la connessione cadrebbe
- *   comunque).
+ * - All'arresto dell'API (deploy): 15 s di grazia (meno, se CERBERO_ARRESTO_SECONDI
+ *   è più corto), poi il calcolo si ferma e si risponde 503 «rilancia» (Coolify
+ *   concede 30 s; la connessione cadrebbe comunque).
+ * - Ogni 5 s la facciata scrive nella riga che qualcuno aspetta ancora: se l'API
+ *   cade senza fermare il calcolo, il lavoratore lo ferma dopo un minuto
+ *   (coda.fermaAbbandonati).
  */
 import * as codaReale from "./lavori/coda";
 import type { StatoLavoro } from "./lavori/coda";
@@ -34,8 +37,17 @@ export function rispostaDi(l: Pick<RigaLavoro, "stato" | "http_codice" | "risult
   return { codice: 500, corpo: { error: l.errore ?? "Errore nel calcolo" } };
 }
 
+/** La grazia all'arresto: 15 s, ma almeno 3 s prima che l'API esca (CERBERO_ARRESTO_SECONDI, come index.ts). */
+export function graziaArresto(env: NodeJS.ProcessEnv = process.env): number {
+  const uscitaMs = Math.min(Math.max(Number(env.CERBERO_ARRESTO_SECONDI) || 25, 1), 28) * 1000;
+  return Math.max(0, Math.min(15_000, uscitaMs - 3_000));
+}
+
+/** Ogni quanto la facciata dice al lavoratore che qualcuno aspetta ancora. */
+const SEGNO_DI_VITA_MS = 5_000;
+
 export interface OpzioniAttesa {
-  coda?: Pick<typeof codaReale, "leggi" | "chiediAnnullamento">;
+  coda?: Pick<typeof codaReale, "leggi" | "chiediAnnullamento"> & Partial<Pick<typeof codaReale, "segnaAttesa">>;
   /** l'arresto del processo (di default quello vero) */
   segnaleArresto?: AbortSignal;
   intervalloMs?: number;
@@ -54,10 +66,12 @@ export async function attendiEsito(res: Res, jobId: string, o: OpzioniAttesa = {
   const coda = o.coda ?? codaReale;
   const segnale = o.segnaleArresto ?? arresto.signal;
   const intervallo = o.intervalloMs ?? 1_000;
-  const grazia = o.graziaArrestoMs ?? 15_000;
+  const grazia = o.graziaArrestoMs ?? graziaArresto();
   let risposto = false;
   let andato = false;
-  const ferma = () => { void coda.chiediAnnullamento(jobId).catch((err) => o.log?.warn({ err, lavoro: jobId }, "stop del lavoro non riuscito")); };
+  const fermaOra = () => coda.chiediAnnullamento(jobId).catch((err) => { o.log?.warn({ err, lavoro: jobId }, "stop del lavoro non riuscito"); return null; });
+  const ferma = () => { void fermaOra(); };
+  let ultimoSegno = Date.now();
   /* 'close' arriva anche dopo una risposta completa: conta solo prima */
   const suChiusura = () => { if (!risposto && !andato) { andato = true; ferma(); } };
   const rispondi = (codice: number, corpo: unknown) => {
@@ -83,10 +97,15 @@ export async function attendiEsito(res: Res, jobId: string, o: OpzioniAttesa = {
     if (segnale.aborted) {
       arrestoDal ??= Date.now();
       if (Date.now() - arrestoDal >= grazia) {
-        ferma();
+        // lo stop prima della risposta: subito dopo il processo esce
+        await Promise.race([fermaOra(), new Promise(r => setTimeout(r, 3_000))]);
         rispondi(503, { error: MESSAGGIO_RIAVVIO });
         return;
       }
+    }
+    if (coda.segnaAttesa && Date.now() - ultimoSegno >= SEGNO_DI_VITA_MS) {
+      ultimoSegno = Date.now();
+      await coda.segnaAttesa(jobId).catch((err) => o.log?.warn({ err, lavoro: jobId }, "segno di vita dell'attesa non scritto"));
     }
     await new Promise(r => setTimeout(r, intervallo));
     if (res.destroyed || res.writableEnded) { suChiusura(); return; }
