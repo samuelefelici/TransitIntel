@@ -915,6 +915,8 @@ export default function FucinaPage() {
                             projectId,
                             onSaveAndReturn: (id?: string) => {
                               if (id) setSavedScenarioId(id);
+                              // salvato nel progetto: il calcolo della Fucina non va più ripreso
+                              dimentica(chiaveFucina(projectId));
                               navigate(`/fucina/${projectId}`);
                             },
                           }
