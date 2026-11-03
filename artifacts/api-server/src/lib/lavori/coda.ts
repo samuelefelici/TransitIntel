@@ -135,9 +135,9 @@ export async function viviDi(utenteId: string, ambito: string): Promise<number> 
  * 409 prima di un lavoro preliminare costoso; la garanzia resta l'indice
  * (un accoda in gara dà 23505).
  */
-export async function vivoConChiave(chiave: string): Promise<{ id: string; utente_id: string | null; stato: StatoLavoro } | null> {
+export async function vivoConChiave(chiave: string): Promise<{ id: string; utente_id: string | null; stato: StatoLavoro; annulla: boolean } | null> {
   const r = await q(
-    `SELECT id, utente_id, stato FROM coda.lavori
+    `SELECT id, utente_id, stato, annulla FROM coda.lavori
       WHERE chiave_unicita = $1 AND stato IN ('in_coda', 'in_corso') LIMIT 1`, [chiave]);
   return r.rows[0] ?? null;
 }
@@ -168,6 +168,43 @@ export async function fermaAbbandonati(): Promise<Array<{ id: string; stato: Sta
         AND metadati->>'sincrono' = 'true'
         AND coalesce((metadati->>'attesa_il')::timestamptz, creato_il) < now() - make_interval(secs => $1)
      RETURNING id, stato`, [ABBANDONO_SEC]);
+  return r.rows;
+}
+
+/** L'ultimo lavoro di un tipo su un oggetto (per esempio la sincronizzazione di un progetto), senza la richiesta. */
+export async function ultimoDi(tipo: TipoLavoro, oggettoId: string): Promise<Omit<Lavoro, "richiesta"> | null> {
+  if (!UUID.test(oggettoId)) return null;
+  const r = await q(
+    `SELECT id, tipo, versione, corsia, stato, utente_id, via, oggetto_id, chiave_unicita, metadati, avanzamento,
+            http_codice, risultato, errore, errore_tipo, tentativi, max_tentativi, timeout_sec, disponibile_dal,
+            preso_da, battito_il, scade_il, annulla, creato_il, iniziato_il, finito_il, aggiornato_il
+       FROM coda.lavori WHERE tipo = $1 AND oggetto_id = $2 ORDER BY creato_il DESC LIMIT 1`, [tipo, oggettoId]);
+  return r.rows[0] ?? null;
+}
+
+/** Una riga dell'elenco «i miei calcoli»: niente richiesta e niente risultato (può pesare megabyte). */
+export interface RigaElenco {
+  id: string; tipo: TipoLavoro; corsia: Corsia; stato: StatoLavoro; annulla: boolean;
+  metadati: Record<string, any> | null; avanzamento: Record<string, any> | null;
+  http_codice: number | null; errore: string | null; errore_tipo: ErroreTipo | null;
+  creato_il: Date; iniziato_il: Date | null; finito_il: Date | null; aggiornato_il: Date;
+}
+
+/**
+ * Gli ultimi `n` lavori di una persona negli ambiti dati, i più recenti prima
+ * (indice lavori_utente). L'errore di un fallito che non ha testo proprio si
+ * prende dalla sua risposta (il corpo di un 400 o 422), letta solo per i finiti male.
+ */
+export async function lavoriDi(utenteId: string, ambiti: readonly string[], n = 20): Promise<RigaElenco[]> {
+  if (!UUID.test(utenteId)) return [];
+  const r = await q(
+    `SELECT id, tipo, corsia, stato, annulla, metadati, avanzamento, http_codice, errore_tipo,
+            CASE WHEN stato IN ('fallito', 'fermato')
+                 THEN left(coalesce(errore, risultato->>'error', risultato->>'message'), 500) END AS errore,
+            creato_il, iniziato_il, finito_il, aggiornato_il
+       FROM coda.lavori
+      WHERE utente_id = $1 AND metadati->>'ambito' = ANY($2::text[])
+      ORDER BY creato_il DESC LIMIT $3`, [utenteId, [...ambiti], Math.max(1, Math.min(50, Math.trunc(n)))]);
   return r.rows;
 }
 

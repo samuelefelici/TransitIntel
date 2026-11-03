@@ -19,6 +19,7 @@ import type { Esito, Lavoro } from "./coda";
 import type { Gestore } from "./esecutore";
 import { eseguiPython, jsonDallUscita, scriptConsentito, type EsitoProcesso } from "./python";
 import { gestoreGiro, gestoreOttimizzaVeicoli } from "../ottimizza-veicoli/gestori";
+import { gestoreMaterializzazione } from "../materializzazione/gestore";
 
 /** L'esito del lavoro dall'uscita del processo; `avviso` va anche nel log. */
 export function esitoDaUscita(esito: EsitoProcesso, l: Pick<Lavoro, "timeout_sec">, adesso: number = Date.now()): { esito: Esito; avviso?: string } {
@@ -70,4 +71,4 @@ export const gestorePython: Gestore = {
 };
 
 /** Tutti i tipi che un esecutore sa eseguire: il lavoratore li scrive nel log d'avvio. */
-export const GESTORI: Gestore[] = [gestorePython, gestoreOttimizzaVeicoli, gestoreGiro];
+export const GESTORI: Gestore[] = [gestorePython, gestoreOttimizzaVeicoli, gestoreGiro, gestoreMaterializzazione];

@@ -387,19 +387,19 @@ router.post("/scheduling/projects", async (req: Request, res: Response): Promise
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
 
-  // ── Auto-materializzazione PS → gtfs_feed FIRE-AND-FORGET ─────────────
-  // Avviata in background tramite startSyncJob: la POST risponde subito
-  // (no UI hang). Lo stato è interrogabile via GET /sync-status.
-  // Se fallisce, l'utente la rilancia dalla schermata "Sincronizza con PS".
-  void (async () => {
-    try {
-      const { startSyncJob } = await import("./planning-studio-materialize");
-      startSyncJob(row.id, planningStudioProjectId, userId, req.log);
-    } catch (matErr: any) {
-      req.log?.warn?.({ err: matErr, planningStudioProjectId, projectId: row.id },
-        "Auto-materializzazione PS→feed: impossibile avviare il job background");
-    }
-  })();
+  // ── Auto-materializzazione PS → gtfs_feed in background ───────────────
+  // avviaSincronizzazione la mette nella coda dei lavori (o in memoria con
+  // LAVORI_FEED_IN_CODA=0) e torna subito: la materializzazione la fa il
+  // lavoratore. Si aspetta solo l'accodamento (una riga in coda), così alla
+  // risposta GET /sync-status dice già «running» e non «idle». Se non parte,
+  // il progetto c'è lo stesso: l'utente la rilancia da "Sincronizza con PS".
+  try {
+    const { avviaSincronizzazione } = await import("./planning-studio-materialize");
+    await avviaSincronizzazione(row.id, planningStudioProjectId, userId, req.log, (req as any).authVia ?? null);
+  } catch (matErr: any) {
+    req.log?.warn?.({ err: matErr, planningStudioProjectId, projectId: row.id },
+      "Auto-materializzazione PS→feed: impossibile avviare il job background");
+  }
 
   await logActivity(row.id, userId, "project.create", {
     targetType: "project", targetId: row.id,

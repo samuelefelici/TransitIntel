@@ -513,6 +513,8 @@ export function haPermesso(req: { user?: AuthUser }, p: Permission): boolean {
 const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   // scheduling (turni, ottimizzatori, roster, depositi, coincidenze)
   ["/service-program", "scheduling"], ["/driver-shifts", "scheduling"],
+  // «I miei calcoli»: ogni calcolo in coda nasce da una funzione di scheduling
+  ["/lavori", "scheduling"],
   ["/driver-schedules", "scheduling"], ["/vehicle-schedules", "scheduling"],
   // La pubblicazione dei turni guida è dello Scheduling (chi fa i turni li
   // manda al roster); le sorgenti dei turni servono anche ai Misti.
