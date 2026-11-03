@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { pool } from "@workspace/db";
 import {
-  accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci, viviDi,
+  accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci, viviDi, vivoConChiave,
 } from "../lib/lavori/coda";
 
 const NOTI = [{ tipo: "python", versione: 1 }];
@@ -132,6 +132,27 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda dei lavori, sul databas
     await expect(nuovo("lunga", { chiaveUnicita: "giro:1" })).rejects.toMatchObject({ code: "23505" });
     await pool.query("UPDATE coda.lavori SET stato = 'completato', finito_il = now()");
     await expect(nuovo("lunga", { chiaveUnicita: "giro:1" })).resolves.toBeTruthy();
+  });
+
+  it("il lavoro vivo con una chiave: in coda o in corso sì, finito no", async () => {
+    expect(await vivoConChiave("giro:2")).toBeNull();
+    const id = await nuovo("lunga", { chiaveUnicita: "giro:2", utenteId: "e0000000-0000-0000-0000-000000000001" });
+    expect(await vivoConChiave("giro:2")).toEqual({ id, utente_id: "e0000000-0000-0000-0000-000000000001", stato: "in_coda" });
+    await prendi("lunga", "p", NOTI);
+    expect(await vivoConChiave("giro:2")).toMatchObject({ id, stato: "in_corso" });
+    await chiudi(id, "p", { stato: "fermato" });
+    expect(await vivoConChiave("giro:2")).toBeNull();
+  });
+
+  it("un fallito porta con sé la sua risposta (il corpo di un 400 o 422); senza, risultato null", async () => {
+    const a = await nuovo();
+    const b = await nuovo();
+    await prendi("lunga", "p", NOTI);
+    await prendi("lunga", "p", NOTI);
+    expect(await chiudi(a, "p", { stato: "fallito", errore: "Turno bloccato", erroreTipo: "calcolo", httpCodice: 422, risultato: { error: "Turno bloccato", errorKind: "lucchetto" } })).toBe(true);
+    expect(await chiudi(b, "p", { stato: "fallito", errore: "boom", erroreTipo: "calcolo", httpCodice: 500 })).toBe(true);
+    expect(await leggi(a)).toMatchObject({ stato: "fallito", http_codice: 422, risultato: { error: "Turno bloccato", errorKind: "lucchetto" } });
+    expect(await leggi(b)).toMatchObject({ stato: "fallito", http_codice: 500, risultato: null });
   });
 
   it("pulizia: risultato e richiesta via dopo 7 giorni, righe via dopo 30", async () => {

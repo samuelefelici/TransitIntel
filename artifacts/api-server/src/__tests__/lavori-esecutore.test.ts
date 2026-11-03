@@ -169,23 +169,27 @@ describe("l'esecutore", () => {
   it("chiusura: ritenta se il database non risponde; un risultato rifiutato chiude «fallito, sistema»", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout"] });
     try {
-      const f = codaFinta([lavoro("a"), lavoro("b")]);
+      const f = codaFinta([lavoro("a"), lavoro("b"), lavoro("c")]);
       let errori = 2;
       const chiudiVero = f.coda.chiudi;
       f.coda.chiudi = vi.fn(async (id: string, chi: string, es: any) => {
         if (id === "a" && errori-- > 0) throw Object.assign(new Error("Connection terminated"), { code: undefined });
-        if (id === "b" && es.stato === "completato") throw Object.assign(new Error("unsupported Unicode escape sequence"), { code: "22P05" });
+        if ((id === "b" || id === "c") && es.risultato !== undefined) throw Object.assign(new Error("unsupported Unicode escape sequence"), { code: "22P05" });
         return (chiudiVero as any)(id, chi, es);
       }) as any;
       const { g, finisci, pendenti } = gestoreComandato();
-      const e = creaEsecutore({ chi: "t", slot: { lunga: 2, veloce: 0 }, gestori: [g], log, coda: f.coda, pollingMs: 10_000 });
+      const e = creaEsecutore({ chi: "t", slot: { lunga: 3, veloce: 0 }, gestori: [g], log, coda: f.coda, pollingMs: 10_000 });
       e.avvia();
-      await vi.waitFor(() => expect(pendenti.size).toBe(2));
+      await vi.waitFor(() => expect(pendenti.size).toBe(3));
       finisci("a", { stato: "completato", risultato: 1 });
       finisci("b", { stato: "completato", risultato: "\u0000" });
-      await vi.waitFor(() => expect(f.chiusi.has("b")).toBe(true));
+      // un fallito con la sua risposta (il corpo di un 422): rifiutata anche quella, si chiude senza
+      finisci("c", { stato: "fallito", errore: "422", erroreTipo: "calcolo", httpCodice: 422, risultato: { error: "\u0000" } });
+      await vi.waitFor(() => expect(f.chiusi.has("b") && f.chiusi.has("c")).toBe(true));
       expect(f.chiusi.get("b")).toMatchObject({ stato: "fallito", erroreTipo: "sistema" });
       expect((f.chiusi.get("b") as any).errore).toContain("22P05");
+      expect(f.chiusi.get("c")).toMatchObject({ stato: "fallito", erroreTipo: "sistema" });
+      expect((f.chiusi.get("c") as any).risultato).toBeUndefined();
       await vi.advanceTimersByTimeAsync(1_000);
       await vi.advanceTimersByTimeAsync(3_000);
       await vi.waitFor(() => expect(f.chiusi.get("a")).toEqual({ stato: "completato", risultato: 1 }));
