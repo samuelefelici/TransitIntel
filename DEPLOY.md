@@ -467,6 +467,35 @@ riavvio.
   grandi, e il tempo massimo serve solo contro un processo appeso. Ogni utente
   ha al massimo 3 calcoli in coda o in corso (oltre, 429). La SPA ferma sul
   server il calcolo che abbandona (rilancio, reset, uscita dalla pagina).
+- **Turni macchina, VCSP e giri di Argos** (dalla PR 2.6). Anche questi
+  girano nel lavoratore:
+  - `POST /api/service-program/cpsat` e `/vcsp` restano sincroni per chi li
+    chiama (la Fucina, la fattibilità di Argos): la rotta controlla feed e
+    richiesta (i 400 e il 404 arrivano subito, senza lavoro in coda), accoda,
+    legge la riga ogni secondo e risponde con lo stesso codice e lo stesso
+    corpo di prima. **Se chi aspetta si scollega, il calcolo si ferma.** Al
+    deploy dell'API: 15 s di grazia, poi il calcolo si ferma e la risposta è
+    503 «rilancia il calcolo tra poco»;
+  - corsia dal budget vero del VSP (`vspAdvanced.totalTimeOverrideSec`,
+    altrimenti l'intensità: Rapida 60 s, Normale 180, Media 420, Massima 900;
+    `timeLimit` non conta, il Python lo ignora): CP-SAT fino a 3 minuti nella
+    corsia veloce, il resto e il VCSP nella lunga. Tempo massimo: CP-SAT 4
+    volte il budget, almeno un'ora e al più due; VCSP e giri due ore;
+  - al più 3 calcoli dei turni macchina vivi per utente (oltre, 429);
+  - `?asincrono=1` risponde subito 202 `{jobId}`; lo stato si legge da
+    `GET /api/service-program/lavori/:jobId`, lo stop è
+    `POST /api/service-program/lavori/:jobId/stop` (solo chi l'ha lanciato e
+    l'admin; agli altri 404). La SPA lo userà dalla 2.7;
+  - **giri di Argos** (`agent-optimize`): un giro per progetto per tutti i
+    processi (409 con il `jobId` del giro vivo); il giro sopravvive al deploy
+    dell'API e lo stato resta «running» finché il lavoratore lo esegue (prima,
+    dopo un deploy, diceva «interrotto»). Scenario turni macchina e turni
+    guida si salvano in una transazione sola: tutto o niente. Lo stop è
+    `POST /api/service-program/agent-optimize/:jobId/stop`;
+  - le righe `PROGRESS` del solver non vanno più nel log: l'avanzamento sta
+    nella riga del lavoro;
+  - `LAVORI_VEICOLI_IN_CODA=0` sull'API riporta questi calcoli dentro l'API,
+    come prima (serve al rilascio e per tornare indietro).
 - **Python** riceve solo l'ambiente che gli serve (niente `JWT_SECRET`,
   `DATABASE_URL`, chiavi…) e lancia solo gli 8 script dell'elenco
   (`artifacts/api-server/src/lib/lavori/python.ts`).
@@ -486,7 +515,9 @@ migrazione `0004_coda_dei_lavori`):
    - `NODE_ENV=production`;
    - `LAVORI_SLOT_LUNGA=1`, `LAVORI_SLOT_VELOCE=1`;
    - `MAPBOX_TOKEN` o `MAPBOX_ACCESS_TOKEN`, se la relazione deve scaricare le
-     mappe (dalla Fase 2.6).
+     mappe;
+   - `OSRM_URL`, se l'API ce l'ha: la matrice dei fuorilinea dei turni
+     macchina la calcola il lavoratore (senza, usa il router pubblico).
    Non servono `JWT_SECRET`, `CERBERO_CHIAVE_MFA`, `CRON_SECRET`, né
    `DATABASE_MIGRATOR_URL`: il lavoratore non migra (lo fa l'API) e non ha
    utenti.
@@ -496,7 +527,11 @@ migrazione `0004_coda_dei_lavori`):
    anche con lo schema indietro: non riceve traffico, e un 503 farebbe
    scartare a Coolify il container nuovo quando parte prima che l'API abbia
    applicato una migrazione. Se prende lavori lo dice `prendeLavori`.
-4. **Limiti di CPU e memoria** in base al server: i calcoli sono pesanti.
+4. **Limiti di CPU e memoria**: sulla macchina da 4 vCPU e 8 GB, **3 CPU e
+   3,5 GB** (dalla 2.6, con turni macchina e VCSP). Il VCSP è il calcolo più
+   pesante: se supera la memoria il container riparte e il lavoro torna in
+   coda (al secondo abbandono è «fallito»). Lo stesso budget su meno CPU dà
+   soluzioni un po' peggiori: va guardato sui giri veri.
 5. **Watch Paths**: il lavoratore si ridistribuisce solo quando cambia quello
    che esegue:
    ```
@@ -534,6 +569,41 @@ migrazione `0004_coda_dei_lavori`):
 
 **Tornare indietro:** `CERBERO_LAVORATORE_INTERNO=1` sull'API (o togliere la
 variabile) e fermare il lavoratore: i lavori in coda li prende l'API.
+
+**Passare turni macchina, VCSP e giri al lavoratore (PR 2.6)**
+0. **Prima del merge**, in Coolify:
+   - sull'API `LAVORI_VEICOLI_IN_CODA=0` e redeploy: l'API nuova calcolerà
+     ancora dentro di sé, finché il lavoratore nuovo non è pronto;
+   - sul lavoratore: le Watch Paths nuove (sopra: `ottimizza-veicoli/**`,
+     `dati-solver.ts`, `deadhead-matrix.ts`, `geo-utils.ts`,
+     `scripts-dir.ts`), `OSRM_URL` se l'API ce l'ha, limiti 3 CPU e 3,5 GB.
+1. **Merge.** Si ridistribuiscono API e lavoratore. Nel log del lavoratore,
+   alla riga «Lavoratore dei calcoli avviato», `tipi` deve contenere
+   `ottimizza_veicoli@1` e `giro_agente@1`.
+2. **Accensione**, quando nessun giro di Argos è in corso: si toglie
+   `LAVORI_VEICOLI_IN_CODA` dall'API e la si ridistribuisce.
+3. **Prova**: un CP-SAT «Rapida» dalla Fucina, la fattibilità di Argos, un
+   giro di Argos. Poi dal Terminal del PostgreSQL:
+   ```sql
+   SELECT tipo, corsia, stato, http_codice, preso_da,
+          pg_column_size(risultato) / 1024 AS kb, finito_il - iniziato_il AS durata
+     FROM coda.lavori WHERE tipo IN ('ottimizza_veicoli', 'giro_agente')
+    ORDER BY creato_il DESC LIMIT 10;
+   ```
+   `preso_da` comincia con `lavoratore:`; la corsia è `veloce` per la Rapida
+   e la fattibilità, `lunga` per il VCSP e i giri.
+
+**Tornare indietro (2.6):** `LAVORI_VEICOLI_IN_CODA=0` sull'API e redeploy.
+Per un revert del codice, prima si fermano i lavori nuovi ancora vivi:
+```sql
+UPDATE coda.lavori SET
+       stato = CASE WHEN stato = 'in_coda' THEN 'fermato' ELSE stato END,
+       errore_tipo = CASE WHEN stato = 'in_coda' THEN 'annullato' ELSE errore_tipo END,
+       finito_il = CASE WHEN stato = 'in_coda' THEN now() ELSE finito_il END,
+       annulla = true, aggiornato_il = now()
+ WHERE tipo IN ('ottimizza_veicoli', 'giro_agente') AND stato IN ('in_coda', 'in_corso');
+```
+Il lavoratore di prima non conosce quei tipi e li lascerebbe in coda.
 
 ---
 
@@ -931,6 +1001,8 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CERBERO_PROCESSO` | — | `api` (default) o `lavoratore`: quale processo avvia l'immagine (vedi «Il lavoratore dei calcoli») |
 | `CERBERO_LAVORATORE_INTERNO` | — | `0` spegne l'esecutore dei calcoli dentro l'API, quando c'è il lavoratore (default: acceso) |
 | `LAVORI_SLOT_LUNGA` / `LAVORI_SLOT_VELOCE` | — | calcoli insieme per corsia, nel lavoratore e nell'esecutore interno (default 1 e 1) |
+| `LAVORI_VEICOLI_IN_CODA` | — | `0` riporta turni macchina, VCSP e giri di Argos dentro l'API (rilascio della 2.6 e ritorno indietro); default: in coda, nel lavoratore |
+| `OSRM_URL` | — | router per i km dei fuorilinea dei turni macchina (default il router pubblico); dalla 2.6 serve anche al lavoratore |
 | `NODE_ENV` | ✅ | `production` |
 | `PORT` | ✅ | `3000` |
 | `JWT_SECRET` | ✅ | `openssl rand -hex 32` |
