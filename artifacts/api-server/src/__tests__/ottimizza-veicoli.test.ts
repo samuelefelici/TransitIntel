@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { validaRichiesta, leggiRichiesta } from "../lib/ottimizza-veicoli/esegui";
 import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli } from "../lib/ottimizza-veicoli/tempi";
+import { vistaGiro } from "../lib/ottimizza-veicoli/giro";
 
 const PS = "e0000000-0000-0000-0000-0000000000c1";
 const buono = { psProjectId: PS, date: "2026-11-04", routes: [{ routeId: "R1", vehicleType: "12m" }] };
@@ -66,5 +67,43 @@ describe("corsia e tempo massimo in coda", () => {
     expect(tempoMassimoVeicoli("cpsat", 1200)).toBe(4800);
     expect(tempoMassimoVeicoli("cpsat", 3000)).toBe(7200);
     expect(tempoMassimoVeicoli("vcsp", 60)).toBe(7200);
+  });
+});
+
+describe("lo stato di un giro per Argos (vistaGiro)", () => {
+  const row = (extra: Record<string, unknown> = {}) => ({
+    id: "g1", user_id: "u", ps_project_id: "p", mode: "vcsp", status: "running",
+    created_at: "2026-11-03T08:00:00Z", finished_at: null, progress: { phase: "VCSP", pct: 0, msg: "Avvio…" },
+    params: { date: "2026-11-04" }, request: { date: "2026-11-04" }, error: null, ...extra,
+  });
+  const coda = (stato: string, extra: Record<string, unknown> = {}) => ({
+    id: "g1", stato, avanzamento: null, errore: null, risultato: null, utente_id: "u",
+    metadati: { mode: "vcsp", psProjectId: "p" }, creato_il: "2026-11-03T08:00:00Z", finito_il: null, ...extra,
+  }) as any;
+  const adesso = Date.parse("2026-11-03T08:05:00Z");
+
+  it("«done» vince; in coda o in corso è «running» con l'avanzamento della coda", () => {
+    expect(vistaGiro(row({ status: "done", finished_at: "2026-11-03T08:02:00Z", scenario_id: "s", result_compact: { a: 1 } }), coda("fallito"), true, adesso))
+      .toMatchObject({ status: "done", elapsedSec: 120, scenarioId: "s", result: { a: 1 }, persisted: true });
+    expect(vistaGiro(row(), coda("in_corso", { avanzamento: { phase: "VCSP", percentage: 41.6, detail: " round 2 " } }), true, adesso))
+      .toMatchObject({ status: "running", progress: { phase: "VCSP", pct: 42, msg: "round 2" }, elapsedSec: 300 });
+    expect(vistaGiro(row(), coda("in_coda"), false, adesso)).toMatchObject({ status: "running", progress: { msg: "In coda…" } });
+    expect(vistaGiro(row(), coda("in_corso"), false, adesso)).toMatchObject({ status: "running", progress: { msg: "Avvio…" } });
+  });
+
+  it("fallito o fermato in coda: «error» col messaggio; senza coda e «running»: interrotto", () => {
+    expect(vistaGiro(row({ status: "error", error: "Nessuna corsa attiva" }), coda("fallito", { errore: "x" }), true, adesso))
+      .toMatchObject({ status: "error", error: "Nessuna corsa attiva" });
+    expect(vistaGiro(row(), coda("fallito", { errore: "Calcolo interrotto: rilancialo." }), true, adesso))
+      .toMatchObject({ status: "error", error: "Calcolo interrotto: rilancialo." });
+    expect(vistaGiro(row(), coda("fermato"), true, adesso)).toMatchObject({ status: "error", error: "Giro fermato" });
+    expect(vistaGiro(row(), null, true, adesso))
+      .toMatchObject({ status: "error", error: expect.stringContaining("interrotto dal riavvio"), request: { date: "2026-11-04" } });
+    expect(vistaGiro(null, null, true, adesso)).toBeNull();
+  });
+
+  it("il registro non scritto: la vista viene dalla sola coda", () => {
+    expect(vistaGiro(null, coda("completato", { risultato: { scenarioId: "s", dssId: null, scenarioName: "n" }, finito_il: "2026-11-03T08:01:00Z" }), true, adesso))
+      .toMatchObject({ jobId: "g1", status: "done", mode: "vcsp", psProjectId: "p", scenarioId: "s", scenarioName: "n", elapsedSec: 60 });
   });
 });

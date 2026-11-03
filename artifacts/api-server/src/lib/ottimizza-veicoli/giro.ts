@@ -62,7 +62,11 @@ export interface RichiestaGiro {
 }
 
 /** Il registro persistente di un giro: alla creazione e alla fine (esito compatto, scenario, errore). */
-export async function scriviGiro(job: AgentOptimizeJob, request?: unknown, esecutore: { execute: typeof db.execute } = db): Promise<void> {
+export async function scriviGiro(
+  job: AgentOptimizeJob, request?: unknown, esecutore: { execute: typeof db.execute } = db,
+  /** solo se la riga non c'è ancora (la rotta, dopo aver accodato: il lavoratore può aver già scritto l'esito) */
+  o: { soloSeManca?: boolean } = {},
+): Promise<void> {
   const compact = job.status === "done" && job.result ? compactAgentResult(job.result) : null;
   await esecutore.execute(sql`
     INSERT INTO agent_optimize_jobs (id, user_id, ps_project_id, mode, status, created_at, finished_at,
@@ -74,13 +78,13 @@ export async function scriviGiro(job: AgentOptimizeJob, request?: unknown, esecu
             ${request ? JSON.stringify(request) : null}::jsonb,
             ${job.error ?? null}, ${job.scenarioId ?? null}::uuid, ${job.dssId ?? null}::uuid, ${job.scenarioName ?? null},
             ${compact ? JSON.stringify(compact) : null}::jsonb, now())
-    ON CONFLICT (id) DO UPDATE SET
+    ON CONFLICT (id) DO ${o.soloSeManca ? sql`NOTHING` : sql`UPDATE SET
       status = EXCLUDED.status, finished_at = EXCLUDED.finished_at, progress = EXCLUDED.progress,
       params = EXCLUDED.params, request = COALESCE(EXCLUDED.request, agent_optimize_jobs.request),
       error = EXCLUDED.error, scenario_id = EXCLUDED.scenario_id, dss_id = EXCLUDED.dss_id,
       scenario_name = EXCLUDED.scenario_name,
       result_compact = COALESCE(EXCLUDED.result_compact, agent_optimize_jobs.result_compact),
-      updated_at = now()`);
+      updated_at = now()`}`);
 }
 
 /** I parametri del giro con il ciclo VERO, letto dal motore: se restassero quelli
@@ -533,5 +537,98 @@ export function compactAgentResult(payload: any): any {
         } : null,
       },
     } : {}),
+  };
+}
+
+/** La riga della coda di un giro, per quanto serve alla vista. */
+export interface CodaDelGiro {
+  id: string;
+  stato: "in_coda" | "in_corso" | "completato" | "fallito" | "fermato";
+  avanzamento: any | null;
+  errore: string | null;
+  risultato: any | null;
+  utente_id: string | null;
+  metadati: Record<string, any> | null;
+  creato_il: Date | string;
+  finito_il: Date | string | null;
+}
+
+const ms = (d: Date | string | null | undefined): number | null => (d ? new Date(d).getTime() : null);
+
+/**
+ * Lo stato di un giro per Argos (GET /service-program/agent-optimize/:jobId e
+ * l'elenco), dalla riga di agent_optimize_jobs e da quella della coda, con le
+ * chiavi di sempre:
+ * - «done» in agent_optimize_jobs vince (lo scrive salvaGiro, nella stessa
+ *   transazione dello scenario);
+ * - un lavoro in coda o in corso è «running», con l'avanzamento della coda:
+ *   un deploy dell'API non lo interrompe più;
+ * - un lavoro fallito o fermato è «error», col suo messaggio;
+ * - senza riga in coda e ancora «running» è un giro di prima della coda (o di
+ *   oltre 30 giorni): interrotto da un riavvio, con la richiesta per rilanciarlo.
+ */
+export function vistaGiro(row: any | null, l: CodaDelGiro | null, full: boolean, adesso: number = Date.now()): Record<string, any> | null {
+  if (!row && !l) return null;
+  const mode = row?.mode ?? l?.metadati?.mode ?? null;
+  const fase = mode === "cpsat" ? "VSP" : "VCSP";
+  const createdMs = ms(row?.created_at) ?? ms(l?.creato_il) ?? adesso;
+  const base = {
+    jobId: row?.id ?? l!.id,
+    mode,
+    psProjectId: row?.ps_project_id ?? l?.metadati?.psProjectId ?? null,
+  };
+  const trascorsi = (fine: number | null) => Math.round(((fine ?? adesso) - createdMs) / 1000);
+  const params = row?.params ?? l?.metadati?.params ?? {};
+
+  if (row?.status === "done") {
+    return {
+      ...base, status: "done", progress: row.progress ?? null,
+      elapsedSec: trascorsi(ms(row.finished_at)), params,
+      ...(full ? {
+        scenarioId: row.scenario_id ?? null,
+        dssId: row.dss_id ?? null,
+        scenarioName: row.scenario_name ?? null,
+        result: row.result_compact ?? null,
+        persisted: true,
+      } : {}),
+    };
+  }
+  if (l && (l.stato === "in_coda" || l.stato === "in_corso")) {
+    const a = l.avanzamento;
+    const progress = a
+      ? { phase: String(a.phase ?? fase), pct: Math.round(Number(a.percentage) || 0), msg: String(a.detail ?? "").trim() }
+      : l.stato === "in_coda" ? { phase: fase, pct: 0, msg: "In coda…" } : (row?.progress ?? { phase: fase, pct: 0, msg: "Avvio…" });
+    return { ...base, status: "running", progress, elapsedSec: trascorsi(null), params };
+  }
+  if (l) {
+    // finito in coda, ma il giro non è «done»: fallito o fermato (o «done» non scritto)
+    const errore = row?.status === "error" && row.error
+      ? row.error
+      : l.stato === "fermato" ? "Giro fermato" : (l.errore ?? "Giro non riuscito");
+    if (l.stato === "completato") {
+      return {
+        ...base, status: "done", progress: row?.progress ?? { phase: fase, pct: 100, msg: "Completato" },
+        elapsedSec: trascorsi(ms(l.finito_il)), params,
+        ...(full ? {
+          scenarioId: l.risultato?.scenarioId ?? null, dssId: l.risultato?.dssId ?? null,
+          scenarioName: l.risultato?.scenarioName ?? null, result: null, persisted: true,
+        } : {}),
+      };
+    }
+    return {
+      ...base, status: "error", progress: row?.progress ?? l.avanzamento ?? null,
+      elapsedSec: trascorsi(ms(row?.finished_at) ?? ms(l.finito_il)), params, error: errore,
+    };
+  }
+  const interrupted = row.status === "running";
+  return {
+    ...base,
+    status: interrupted ? "error" : row.status,
+    progress: row.progress ?? null,
+    elapsedSec: trascorsi(ms(row.finished_at)),
+    params,
+    ...(interrupted
+      ? { error: "Giro interrotto dal riavvio del server (deploy): rilancialo con gli stessi parametri (campo request)", request: row.request ?? null }
+      : row.error ? { error: row.error } : {}),
   };
 }

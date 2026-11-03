@@ -43,8 +43,8 @@ import {
   loadDepotPoints, assignResidenzaToShifts, parseDepotSelection, depotCapacityAdvisory,
 } from "../lib/ottimizza-veicoli/esegui";
 import {
-  compactAgentResult, scriviGiro, eseguiGiro,
-  type AgentOptimizeJob, type EsitoGiro, type RichiestaGiro, type SalvataggioGiro,
+  compactAgentResult, scriviGiro, eseguiGiro, vistaGiro,
+  type AgentOptimizeJob, type CodaDelGiro, type EsitoGiro, type RichiestaGiro, type SalvataggioGiro,
 } from "../lib/ottimizza-veicoli/giro";
 import {
   eseguiOttimizzazione, validaRichiesta, progettoMancante, type EsitoOttimizzazione, type ModoVeicoli,
@@ -53,7 +53,7 @@ import type { Progresso } from "../lib/lavori/python";
 import * as coda from "../lib/lavori/coda";
 import { arresto } from "../lib/arresto";
 import { attendiEsito, rispostaDi, FINITI, STATO_PUBBLICO, MESSAGGIO_RIAVVIO, type RigaLavoro } from "../lib/facciata-lavori";
-import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli } from "../lib/ottimizza-veicoli/tempi";
+import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli, CORSIA_GIRO, TEMPO_MASSIMO_GIRO } from "../lib/ottimizza-veicoli/tempi";
 const router: IRouter = Router();
 
 /** true se lo scenario turni macchina è marcato "in esercizio" (soluzione
@@ -1238,6 +1238,12 @@ router.post("/service-program/lavori/:jobId/stop", async (req, res) => {
  * ═══════════════════════════════════════════════════════════════ */
 
 const agentJobs = new Map<string, AgentOptimizeJob>();
+/** lo stop dei giri dentro l'API (LAVORI_VEICOLI_IN_CODA=0) */
+const agentStops = new Map<string, AbortController>();
+/** I giri in coda (lavoro giro_agente): al più uno vivo per progetto. */
+const AMBITO_GIRO = "giro-agente";
+const chiaveGiro = (psProjectId: string) => `giro:${psProjectId}`;
+const GIRO_GIA_IN_CORSO = "Un giro è già in corso su questo progetto: attendi o interroga lo stato";
 const AGENT_JOB_TTL_MS = 6 * 60 * 60 * 1000;
 const AGENT_JOBS_MAX = 30;
 
@@ -1294,16 +1300,27 @@ async function persistAgentJob(job: AgentOptimizeJob, request?: unknown): Promis
   } catch { /* best-effort: il registro in memoria resta la via principale */ }
 }
 
-async function loadAgentJobRows(where: { id?: string; userId?: string; isAdmin?: boolean }): Promise<any[]> {
+/** Le righe dei giri con la loro riga in coda (se c'è): lo stato vero lo dice vistaGiro. */
+async function loadAgentJobRows(where: { id?: string; userId?: string; isAdmin?: boolean }): Promise<Array<{ row: any; coda: CodaDelGiro | null }>> {
   try {
     await ensureAgentJobsTable();
+    const CON_CODA = sql`
+      SELECT a.*, to_jsonb(l) - 'richiesta' AS coda
+        FROM agent_optimize_jobs a
+        LEFT JOIN coda.lavori l ON l.id = a.id AND l.tipo = 'giro_agente'`;
     const r = where.id
-      ? await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs WHERE id = ${where.id}::uuid LIMIT 1`)
+      ? await db.execute<any>(sql`${CON_CODA} WHERE a.id = ${where.id}::uuid LIMIT 1`)
       : where.isAdmin
-        ? await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs ORDER BY created_at DESC LIMIT 20`)
-        : await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs WHERE user_id = ${where.userId ?? null}::uuid ORDER BY created_at DESC LIMIT 20`);
-    return (r.rows ?? []) as any[];
+        ? await db.execute<any>(sql`${CON_CODA} ORDER BY a.created_at DESC LIMIT 20`)
+        : await db.execute<any>(sql`${CON_CODA} WHERE a.user_id = ${where.userId ?? null}::uuid ORDER BY a.created_at DESC LIMIT 20`);
+    return ((r.rows ?? []) as any[]).map(({ coda: c, ...row }) => ({ row, coda: c ?? null }));
   } catch { return []; }
+}
+
+/** Il giro in coda (anche senza riga in agent_optimize_jobs, se il registro non è stato scritto). */
+async function giroInCoda(id: string): Promise<CodaDelGiro | null> {
+  const l = await coda.leggi(id);
+  return l && l.tipo === "giro_agente" ? (l as unknown as CodaDelGiro) : null;
 }
 
 /** Le lezioni della sonda dai giri precedenti dello stesso progetto e della
@@ -1344,34 +1361,6 @@ async function loadProbeLessons(psProjectId: string | null | undefined, date: st
   } catch { return { lezioni: [], giri: 0 }; }
 }
 
-/** Vista API di una riga persistita: un giro «running» su DB ma assente dalla
- * memoria è stato interrotto da un riavvio: lo si dichiara, con la richiesta
- * originale per rilanciarlo con gli stessi parametri. */
-function agentJobRowView(row: any, full: boolean): Record<string, any> {
-  const interrupted = row.status === "running";
-  const createdMs = new Date(row.created_at).getTime();
-  const finishedMs = row.finished_at ? new Date(row.finished_at).getTime() : null;
-  return {
-    jobId: row.id,
-    status: interrupted ? "error" : row.status,
-    mode: row.mode,
-    psProjectId: row.ps_project_id,
-    progress: row.progress ?? null,
-    elapsedSec: Math.round(((finishedMs ?? Date.now()) - createdMs) / 1000),
-    params: row.params ?? {},
-    ...(interrupted
-      ? { error: "Giro interrotto dal riavvio del server (deploy): rilancialo con gli stessi parametri (campo request)", request: row.request ?? null }
-      : row.error ? { error: row.error } : {}),
-    ...(row.status === "done" && full ? {
-      scenarioId: row.scenario_id ?? null,
-      dssId: row.dss_id ?? null,
-      scenarioName: row.scenario_name ?? null,
-      result: row.result_compact ?? null,
-      persisted: true,
-    } : {}),
-  };
-}
-
 /** Il log del giro (un logger morto non ferma il giro) e il suo avanzamento:
  * eseguiOttimizzazione passa solo la fase principale (VCSP o VSP). */
 function agentJobLogger(job: AgentOptimizeJob, base: any) {
@@ -1406,11 +1395,20 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     }
     const mode: "cpsat" | "vcsp" = b.mode === "cpsat" ? "cpsat" : "vcsp";
 
-    // Un solo giro alla volta per progetto: i solve sono pesanti.
-    for (const j of agentJobs.values()) {
-      if (j.status === "running" && j.psProjectId === psProjectId) {
-        res.status(409).json({ error: "Un giro è già in corso su questo progetto: attendi o interroga lo stato", jobId: j.id });
-        return;
+    // Un solo giro alla volta per progetto: i solve sono pesanti. In coda vale per
+    // tutti i processi (indice unico sulla chiave), e si controlla prima del lavoro
+    // preliminare (UDP, materializzazione).
+    const inCoda = veicoliInCoda();
+    if (inCoda) {
+      if (arresto.signal.aborted) { res.status(503).json({ error: MESSAGGIO_RIAVVIO }); return; }
+      const vivo = await coda.vivoConChiave(chiaveGiro(psProjectId));
+      if (vivo) { res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: vivo.id }); return; }
+    } else {
+      for (const j of agentJobs.values()) {
+        if (j.status === "running" && j.psProjectId === psProjectId) {
+          res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: j.id });
+          return;
+        }
       }
     }
 
@@ -1748,34 +1746,70 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     await ensureVariantCodeColumn();
     const richiesta: RichiestaGiro = { mode, feedId: feedCalcolo, corpo: runBody, params: job.params, salvataggio };
 
-    agentJobs.set(job.id, job);
-    pruneAgentJobs();
-    await persistAgentJob(job, req.body);
+    let jobId = job.id;
+    if (inCoda) {
+      // nel lavoratore: il giro sopravvive ai deploy dell'API
+      try {
+        jobId = await coda.accoda({
+          tipo: "giro_agente",
+          corsia: CORSIA_GIRO,
+          utenteId: userId,
+          via: (req as any).authVia ?? "api",
+          oggettoId: psProjectId,
+          chiaveUnicita: chiaveGiro(psProjectId),
+          richiesta,
+          metadati: { ambito: AMBITO_GIRO, mode, date: rawDate, psProjectId, params: job.params },
+          timeoutSec: TEMPO_MASSIMO_GIRO,
+        });
+      } catch (err: any) {
+        if (err?.code !== coda.CHIAVE_GIA_VIVA) throw err;
+        const vivo = await coda.vivoConChiave(chiaveGiro(psProjectId));
+        res.status(409).json({ error: GIRO_GIA_IN_CORSO, ...(vivo ? { jobId: vivo.id } : {}) });
+        return;
+      }
+      // il registro per Argos: solo se il lavoratore non l'ha già scritto (giro velocissimo)
+      try {
+        await ensureAgentJobsTable();
+        await scriviGiro({ ...job, id: jobId }, req.body, db, { soloSeManca: true });
+      } catch (err: any) {
+        req.log.warn({ err: err?.message, lavoro: jobId }, "agent-optimize: registro del giro non scritto (lo stato resta nella coda)");
+      }
+      req.log.info({ lavoro: jobId, mode, psProjectId }, "agent-optimize: giro in coda");
+    }
 
-    // La pipeline del giro è la STESSA della fucina (eseguiOttimizzazione),
-    // il salvataggio dello scenario è in una transazione sola (salvaGiro).
-    const { log: jobLog, progresso } = agentJobLogger(job, req.log);
-    void eseguiGiro(richiesta, { lavoroId: job.id, chi: null, log: jobLog, progresso })
-      .catch((err: any): EsitoGiro => ({ stato: "errore", errore: err?.message || "errore interno" }))
-      .then((esito) => {
-        if (esito.stato === "fatto") {
-          job.result = esito.payload;
-          job.progress = { phase: job.progress.phase, pct: 100, msg: "Completato" };
-          job.scenarioId = esito.scenarioId;
-          job.dssId = esito.dssId;
-          if (esito.scenarioName) job.scenarioName = esito.scenarioName;
-          job.params = esito.params;
-          job.status = "done";
-        } else {
-          job.status = "error";
-          job.error = esito.stato === "errore" ? esito.errore : "Giro fermato";
-        }
-        job.finishedAt = Date.now();
-        void persistAgentJob(job);
-      });
+    if (!inCoda) {
+      agentJobs.set(job.id, job);
+      pruneAgentJobs();
+      await persistAgentJob(job, req.body);
+
+      // La pipeline del giro è la STESSA della fucina (eseguiOttimizzazione),
+      // il salvataggio dello scenario è in una transazione sola (salvaGiro).
+      const { log: jobLog, progresso } = agentJobLogger(job, req.log);
+      const fermo = new AbortController();
+      agentStops.set(job.id, fermo);
+      void eseguiGiro(richiesta, { lavoroId: job.id, chi: null, log: jobLog, progresso, segnale: fermo.signal })
+        .catch((err: any): EsitoGiro => ({ stato: "errore", errore: err?.message || "errore interno" }))
+        .then((esito) => {
+          if (esito.stato === "fatto") {
+            job.result = esito.payload;
+            job.progress = { phase: job.progress.phase, pct: 100, msg: "Completato" };
+            job.scenarioId = esito.scenarioId;
+            job.dssId = esito.dssId;
+            if (esito.scenarioName) job.scenarioName = esito.scenarioName;
+            job.params = esito.params;
+            job.status = "done";
+          } else {
+            job.status = "error";
+            job.error = esito.stato === "errore" ? esito.errore : "Giro fermato";
+          }
+          job.finishedAt = Date.now();
+          agentStops.delete(job.id);
+          void persistAgentJob(job);
+        });
+    }
 
     res.json({
-      jobId: job.id,
+      jobId,
       status: "running",
       mode,
       date: rawDate,
@@ -1798,13 +1832,17 @@ router.post("/service-program/agent-optimize", async (req, res) => {
 router.get("/service-program/agent-optimize/:jobId", async (req, res) => {
   const job = agentJobs.get(String(req.params.jobId));
   if (!job) {
-    const rows = /^[0-9a-f-]{36}$/i.test(String(req.params.jobId)) ? await loadAgentJobRows({ id: String(req.params.jobId) }) : [];
-    const row = rows[0];
-    if (!row) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
-    if (req.user?.id !== String(row.user_id) && req.user?.role !== "admin") {
+    const id = String(req.params.jobId);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
+    const [trovato] = await loadAgentJobRows({ id });
+    const l = trovato?.coda ?? await giroInCoda(id).catch(() => null);
+    const row = trovato?.row ?? null;
+    if (!row && !l) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
+    const proprietario = row ? String(row.user_id) : l?.utente_id;
+    if (req.user?.id !== proprietario && req.user?.role !== "admin") {
       res.status(403).json({ error: "Job di un altro utente" }); return;
     }
-    res.json(agentJobRowView(row, true));
+    res.json(vistaGiro(row, l, true));
     return;
   }
   if (req.user?.id !== job.userId && req.user?.role !== "admin") {
@@ -1827,6 +1865,31 @@ router.get("/service-program/agent-optimize/:jobId", async (req, res) => {
   });
 });
 
+/** Ferma un giro in coda o in corso (solo chi l'ha lanciato, o l'admin). */
+router.post("/service-program/agent-optimize/:jobId/stop", async (req, res) => {
+  try {
+    const id = String(req.params.jobId);
+    const job = agentJobs.get(id);
+    if (job) {
+      if (req.user?.id !== job.userId && req.user?.role !== "admin") { res.status(403).json({ error: "Job di un altro utente" }); return; }
+      const fermo = agentStops.get(id);
+      if (job.status !== "running" || !fermo) { res.status(400).json({ error: "Il giro è già finito" }); return; }
+      fermo.abort();
+      res.json({ jobId: id, status: "stopping" });
+      return;
+    }
+    const l = /^[0-9a-f-]{36}$/i.test(id) ? await giroInCoda(id) : null;
+    if (!l) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito)" }); return; }
+    if (req.user?.id !== l.utente_id && req.user?.role !== "admin") { res.status(403).json({ error: "Job di un altro utente" }); return; }
+    const esito = await coda.chiediAnnullamento(id);
+    if (!esito) { res.status(400).json({ error: "Il giro è già finito" }); return; }
+    res.json({ jobId: id, status: esito === "fermato" ? "stopped" : "stopping" });
+  } catch (err: any) {
+    req.log.error(err, "stop del giro");
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /** Elenco giri dell'utente (recupero jobId persi). */
 router.get("/service-program/agent-optimize", async (req, res) => {
   const userId = req.user?.id;
@@ -1834,8 +1897,8 @@ router.get("/service-program/agent-optimize", async (req, res) => {
   const isAdmin = req.user?.role === "admin";
   const persistedRows = await loadAgentJobRows({ userId, isAdmin });
   const persisted = persistedRows
-    .filter((r) => !agentJobs.has(String(r.id)))
-    .map((r) => agentJobRowView(r, false));
+    .filter(({ row }) => !agentJobs.has(String(row.id)))
+    .map(({ row, coda: l }) => vistaGiro(row, l, false)!);
   const jobs = Array.from(agentJobs.values())
     .filter(j => isAdmin || j.userId === userId)
     .sort((a, b) => b.createdAt - a.createdAt)

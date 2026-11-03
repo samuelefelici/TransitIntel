@@ -206,6 +206,55 @@ async function eseguiCaso(c: Caso): Promise<{ status: number; body: any; python:
   return { status: r.status, body: r.body, python: [...py.chiamate] };
 }
 
+/** Un giro VCSP di Argos dall'avvio allo scenario salvato: avvio, vista finale, ingresso a Python, righe salvate. */
+async function giroCompleto(): Promise<Record<string, any>> {
+  py.chiamate.length = 0;
+  py.crash = false;
+  py.appeso = false;
+  const avvio = await request(admin).post("/api/service-program/agent-optimize").send({
+    psProjectId: PS, date: GIORNO, mode: "vcsp",
+    routes: [{ routeId: "R1", vehicleType: "12m" }, { routeId: "RC", vehicleType: "10m" }],
+    depots: [{ id: DEPOSITO, maxVehicles: 3 }],
+    intensity: "fast", rounds: 2, probes: 0, crewTimeLimit: 30, memoria: false, companyCars: 2,
+    scenarioName: "Giro di prova",
+  });
+  expect(avvio.status, JSON.stringify(avvio.body)).toBe(200);
+  const { jobId, ...restoAvvio } = avvio.body;
+
+  let stato: any = null;
+  for (let i = 0; i < 200; i++) {
+    stato = (await request(admin).get(`/api/service-program/agent-optimize/${jobId}`)).body;
+    if (stato.status !== "running") break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  expect(stato.status, JSON.stringify(stato)).toBe("done");
+  // jobId, tempi e id cambiano a ogni giro; psProjectId e persisted li dà solo la vista dal database
+  const { scenarioId, dssId, elapsedSec: _e, jobId: _j, persisted: _p, psProjectId: _ps, ...vista } = stato;
+
+  const scenario = (await db.execute<any>(sql`
+    SELECT name, date, feed_id, input, result, owner_user_id, project_id, depots, config
+      FROM service_program_scenarios WHERE id = ${scenarioId}::uuid`)).rows[0];
+  expect(scenario.config.savedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+  scenario.config.savedAt = "…";
+  const turniGuida = (await db.execute<any>(sql`
+    SELECT service_program_scenario_id, name, result, config, owner_user_id
+      FROM driver_shift_scenarios WHERE id = ${dssId}::uuid`)).rows[0];
+  expect(turniGuida.service_program_scenario_id).toBe(scenarioId);
+  turniGuida.service_program_scenario_id = "…";
+  const riga = (await db.execute<any>(sql`
+    SELECT status, mode, scenario_id, dss_id, scenario_name, params, result_compact, error
+      FROM agent_optimize_jobs WHERE id = ${jobId}::uuid`)).rows[0];
+  expect(riga).toMatchObject({ status: "done", mode: "vcsp", scenario_id: scenarioId, dss_id: dssId, scenario_name: "Giro di prova", error: null });
+  expect(riga.result_compact).toEqual(vista.result);
+
+  // il giro di un altro: 403; l'elenco dell'altro non lo mostra; il proprio sì
+  expect((await request(altro).get(`/api/service-program/agent-optimize/${jobId}`)).status).toBe(403);
+  expect((await request(altro).get("/api/service-program/agent-optimize")).body.jobs.map((j: any) => j.jobId)).not.toContain(jobId);
+  const mio = (await request(admin).get("/api/service-program/agent-optimize")).body.jobs.find((j: any) => j.jobId === jobId);
+  expect(mio).toMatchObject({ status: "done", mode: "vcsp" });
+  return { jobId, avvio: restoAvvio, vista, python: [...py.chiamate], scenario, turniGuida };
+}
+
 describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP, sul database", () => {
   beforeAll(semina);
   afterAll(pulisci);
@@ -220,52 +269,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP, sul data
   }
 
   it("il giro VCSP di Argos fino allo scenario salvato, con i turni guida", async () => {
-    py.chiamate.length = 0;
-    py.crash = false;
-    const avvio = await request(admin).post("/api/service-program/agent-optimize").send({
-      psProjectId: PS, date: GIORNO, mode: "vcsp",
-      routes: [{ routeId: "R1", vehicleType: "12m" }, { routeId: "RC", vehicleType: "10m" }],
-      depots: [{ id: DEPOSITO, maxVehicles: 3 }],
-      intensity: "fast", rounds: 2, probes: 0, crewTimeLimit: 30, memoria: false, companyCars: 2,
-      scenarioName: "Giro di prova",
-    });
-    expect(avvio.status, JSON.stringify(avvio.body)).toBe(200);
-    const { jobId, ...restoAvvio } = avvio.body;
-    expect(restoAvvio).toMatchSnapshot("avvio");
-
-    let stato: any = null;
-    for (let i = 0; i < 100; i++) {
-      stato = (await request(admin).get(`/api/service-program/agent-optimize/${jobId}`)).body;
-      if (stato.status !== "running") break;
-      await new Promise(r => setTimeout(r, 100));
-    }
-    expect(stato.status, JSON.stringify(stato)).toBe("done");
-    const { scenarioId, dssId, elapsedSec: _e, jobId: _j, persisted: _p, ...vista } = stato;
-    expect(vista).toMatchSnapshot("vista del giro finito");
-    expect(py.chiamate).toMatchSnapshot("python");
-
-    const sc = (await db.execute<any>(sql`
-      SELECT name, date, feed_id, input, result, owner_user_id, project_id, depots, config
-        FROM service_program_scenarios WHERE id = ${scenarioId}::uuid`)).rows[0];
-    expect(sc.config.savedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
-    sc.config.savedAt = "…";
-    expect(sc).toMatchSnapshot("scenario turni macchina");
-    const dss = (await db.execute<any>(sql`
-      SELECT service_program_scenario_id, name, result, config, owner_user_id
-        FROM driver_shift_scenarios WHERE id = ${dssId}::uuid`)).rows[0];
-    expect(dss.service_program_scenario_id).toBe(scenarioId);
-    dss.service_program_scenario_id = "…";
-    expect(dss).toMatchSnapshot("turni guida");
-    const riga = (await db.execute<any>(sql`
-      SELECT status, mode, scenario_id, dss_id, scenario_name, params, result_compact, error
-        FROM agent_optimize_jobs WHERE id = ${jobId}::uuid`)).rows[0];
-    expect(riga).toMatchObject({ status: "done", mode: "vcsp", scenario_id: scenarioId, dss_id: dssId, scenario_name: "Giro di prova", error: null });
-    expect(riga.result_compact).toEqual(vista.result);
-
-    // il giro di un altro: 403; l'elenco dell'altro non lo mostra
-    expect((await request(altro).get(`/api/service-program/agent-optimize/${jobId}`)).status).toBe(403);
-    const elenco = await request(altro).get("/api/service-program/agent-optimize");
-    expect(elenco.body.jobs.map((j: any) => j.jobId)).not.toContain(jobId);
+    const g = await giroCompleto();
+    expect(g.avvio).toMatchSnapshot("avvio");
+    expect(g.vista).toMatchSnapshot("vista del giro finito");
+    expect(g.python).toMatchSnapshot("python");
+    expect(g.scenario).toMatchSnapshot("scenario turni macchina");
+    expect(g.turniGuida).toMatchSnapshot("turni guida");
   });
 });
 
@@ -362,4 +371,67 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, 
     expect(r.body.error).toContain("3 calcoli dei turni macchina");
     expect((await lavori()).rows.length).toBe(3);
   });
+
+  it("il giro di Argos in coda: lo stesso scenario, gli stessi turni guida, la stessa vista", async () => {
+    process.env.LAVORI_VEICOLI_IN_CODA = "0";
+    const dentro = await giroCompleto();
+    process.env.LAVORI_VEICOLI_IN_CODA = "1";
+    const inCoda = await giroCompleto();
+    for (const k of ["avvio", "vista", "python", "scenario", "turniGuida"]) expect(inCoda[k], k).toEqual(dentro[k]);
+    const [l] = (await db.execute<any>(sql`SELECT tipo, corsia, stato, timeout_sec, chiave_unicita, utente_id, risultato FROM coda.lavori WHERE id = ${inCoda.jobId}::uuid`)).rows;
+    expect(l).toMatchObject({ tipo: "giro_agente", corsia: "lunga", stato: "completato", timeout_sec: 7200, chiave_unicita: `giro:${PS}`, utente_id: ADMIN });
+    expect(Object.keys(l.risultato).sort()).toEqual(["dssId", "scenarioId", "scenarioName"]);
+  }, 60_000);
+
+  it("un secondo giro sullo stesso progetto: 409 col giro vivo; lo stop lo chiude «fermato» per Argos", async () => {
+    process.env.LAVORI_VEICOLI_IN_CODA = "1";
+    py.chiamate.length = 0;
+    py.appeso = true;
+    try {
+      const corpo = { psProjectId: PS, date: GIORNO, mode: "cpsat", routes: [{ routeId: "R1", vehicleType: "12m" }], depots: [{ id: DEPOSITO }], memoria: false };
+      const primo = await request(admin).post("/api/service-program/agent-optimize").send(corpo);
+      expect(primo.status).toBe(200);
+      await vi.waitFor(async () => {
+        const st = await request(admin).get(`/api/service-program/agent-optimize/${primo.body.jobId}`);
+        expect(st.body).toMatchObject({ status: "running", mode: "cpsat", progress: { phase: "VSP", pct: 50, msg: "a metà" } });
+      }, { timeout: 5_000 });
+      const secondo = await request(admin).post("/api/service-program/agent-optimize").send(corpo);
+      expect(secondo.status).toBe(409);
+      expect(secondo.body).toEqual({ error: "Un giro è già in corso su questo progetto: attendi o interroga lo stato", jobId: primo.body.jobId });
+      expect((await request(altro).post(`/api/service-program/agent-optimize/${primo.body.jobId}/stop`)).status).toBe(403);
+      expect((await request(admin).post(`/api/service-program/agent-optimize/${primo.body.jobId}/stop`)).body).toEqual({ jobId: primo.body.jobId, status: "stopping" });
+      await vi.waitFor(async () => {
+        const st = await request(admin).get(`/api/service-program/agent-optimize/${primo.body.jobId}`);
+        expect(st.body).toMatchObject({ status: "error", error: "Giro fermato" });
+      }, { timeout: 5_000 });
+      const riga = (await db.execute<any>(sql`SELECT status, error FROM agent_optimize_jobs WHERE id = ${primo.body.jobId}::uuid`)).rows[0];
+      expect(riga).toEqual({ status: "error", error: "Giro fermato" });
+      expect((await request(admin).post(`/api/service-program/agent-optimize/${primo.body.jobId}/stop`)).status).toBe(400);
+    } finally {
+      py.appeso = false;
+    }
+  });
+
+  it("un giro vivo in coda dopo un riavvio dell'API resta «running», mai «interrotto»", async () => {
+    // la riga com'è appena accodata, senza esecutore che la prenda (disponibile fra un'ora)
+    const [{ id }] = (await db.execute<any>(sql`
+      INSERT INTO coda.lavori (tipo, corsia, utente_id, chiave_unicita, richiesta, metadati, timeout_sec, disponibile_dal)
+      VALUES ('giro_agente', 'lunga', ${ADMIN}::uuid, ${`giro:${PS}`}, '{}'::jsonb,
+              ${JSON.stringify({ ambito: "giro-agente", mode: "vcsp", psProjectId: PS, params: { date: GIORNO } })}::jsonb, 7200, now() + interval '1 hour')
+      RETURNING id`)).rows;
+    await db.execute(sql`
+      INSERT INTO agent_optimize_jobs (id, user_id, ps_project_id, mode, status, created_at, progress, params)
+      VALUES (${id}::uuid, ${ADMIN}::uuid, ${PS}::uuid, 'vcsp', 'running', now(), '{"phase":"VCSP","pct":0,"msg":"Avvio…"}', '{"date":"2026-11-04"}')`);
+    const st = (await request(admin).get(`/api/service-program/agent-optimize/${id}`)).body;
+    expect(st).toMatchObject({ jobId: id, status: "running", mode: "vcsp", psProjectId: PS, progress: { phase: "VCSP", pct: 0, msg: "In coda…" }, params: { date: GIORNO } });
+    expect(st.error).toBeUndefined();
+    const elenco = (await request(admin).get("/api/service-program/agent-optimize")).body.jobs.find((j: any) => j.jobId === id);
+    expect(elenco).toMatchObject({ status: "running" });
+    // senza riga in coda (un giro di prima della 2.6): interrotto, con la richiesta per rilanciarlo
+    await db.execute(sql`DELETE FROM coda.lavori WHERE id = ${id}::uuid`);
+    expect((await request(admin).get(`/api/service-program/agent-optimize/${id}`)).body)
+      .toMatchObject({ status: "error", error: expect.stringContaining("interrotto dal riavvio") });
+    await db.execute(sql`DELETE FROM agent_optimize_jobs WHERE id = ${id}::uuid`);
+  });
 });
+
