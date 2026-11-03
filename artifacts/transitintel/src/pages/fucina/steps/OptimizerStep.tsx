@@ -699,9 +699,13 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     const j = jobAttivoRef.current;
     if (!j) return;
     setFermando(true);
-    try { await fermaCalcoloVeicoli(j); }
+    try {
+      await fermaCalcoloVeicoli(j);
+      // fermato per scelta: non va più ripreso, anche se si lascia la pagina prima della fine
+      if (chiaveMemoria) dimenticaSe(chiaveMemoria, j);
+    }
     catch (e: any) { setFermando(false); toast.error("Stop non riuscito", { description: e?.message }); }
-  }, []);
+  }, [chiaveMemoria]);
 
   const runOptimizer = useCallback(async () => {
     calcoloRef.current?.abort();
