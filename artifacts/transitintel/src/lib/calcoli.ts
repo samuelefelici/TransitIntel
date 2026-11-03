@@ -64,6 +64,12 @@ export async function fermaCalcolo(jobId: string, rete?: Rete): Promise<"stopped
 
 export const vivo = (c: Pick<Calcolo, "status">) => c.status === "queued" || c.status === "running";
 
+/** L'evento con cui una pagina dice di aver lanciato un calcolo: elenco e indicatore rileggono subito. */
+export const EVENTO_AVVIO = "calcoli:avviato";
+export function annunciaAvvio(): void {
+  try { if (typeof window !== "undefined") window.dispatchEvent(new Event(EVENTO_AVVIO)); } catch { /* niente */ }
+}
+
 const MODI: Record<string, string> = { cpsat: "CP-SAT", vcsp: "VCSP integrato", greedy: "Euristica" };
 
 /** Come si chiama il calcolo, per chi lo legge. */

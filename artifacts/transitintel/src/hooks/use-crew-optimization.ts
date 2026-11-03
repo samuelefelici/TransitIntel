@@ -16,6 +16,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import { getApiBase } from "@/lib/api";
 import { ricorda, richiama, dimentica, chiaveTurniGuida } from "@/lib/memoria-calcoli";
+import { annunciaAvvio } from "@/lib/calcoli";
 
 /* ─── Types ─────────────────────────────────────────────────── */
 
@@ -160,6 +161,12 @@ export interface OpzioniCrewOptimization {
   scenarioId?: string | null;
   /** un calcolo da aprire (da «I miei calcoli», ?calcolo=<id>) */
   calcolo?: string | null;
+  /**
+   * La vecchia pagina /driver-shifts: lì il calcolo resta legato alla pagina
+   * come prima (uscire lo ferma) e non si ricorda, perché quella pagina non lo
+   * riprenderebbe.
+   */
+  vecchiaPagina?: boolean;
 }
 
 /* ─── Hook ─────────────────────────────────────────────────── */
@@ -246,8 +253,14 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
     if (j) fermaSulServer(j);
   }, []);
 
-  // Smontaggio: si smette di seguire, il calcolo continua sul server (e si riprende riaprendo)
-  useEffect(() => () => { generazioneRef.current += 1; cleanup(); }, [cleanup]);
+  // Smontaggio: si smette di seguire, il calcolo continua sul server (e si riprende
+  // riaprendo). Nella vecchia pagina invece uscire lo ferma, come prima.
+  const vecchiaPagina = !!opzioni.vecchiaPagina;
+  useEffect(() => () => {
+    generazioneRef.current += 1;
+    if (vecchiaPagina && vivoRef.current) fermaSulServer(vivoRef.current);
+    cleanup();
+  }, [cleanup, vecchiaPagina]);
 
   /* ── Start timer ──────────────────────────────────────────── */
 
@@ -352,12 +365,15 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
         } catch { /* fallthrough */ }
       }
       // Connection error — try fallback polling
+      if (eventSourceRef.current !== es) return;
       closeSSE();
       startFallbackPolling(jId);
     });
 
     es.onerror = () => {
-      // Connection lost — try polling
+      // Connection lost — try polling (solo se è ancora questo lo stream seguito:
+      // dopo un risultato, uno stop o un nuovo avvio non si riparte a interrogare)
+      if (eventSourceRef.current !== es) return;
       closeSSE();
       startFallbackPolling(jId);
     };
@@ -385,6 +401,11 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
         if (!resp.ok) return;
         const data = await resp.json();
         if (generazione !== generazioneRef.current) return;
+        // un calcolo di un altro scenario (link sbagliato o memoria vecchia) non si apre qui
+        if (data.scenarioId && data.scenarioId !== sid) {
+          if (!daLink) dimentica(chiaveTurniGuida(sid));
+          return;
+        }
         scenarioRef.current = sid;
         if (daLink) ricorda(chiaveTurniGuida(sid), { jobId: jId, avviatoIl: Number(data.createdAt) || Date.now() });
         setJobId(jId);
@@ -393,6 +414,13 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
         if (data.status === "completed" && data.data) {
           setResult(data.data);
           setState("completed");
+          return;
+        }
+        if (data.status === "completed") {
+          // riuscito, ma il risultato è stato tolto dalla pulizia (oltre 7 giorni)
+          setError("Il risultato di questo calcolo non è più disponibile (oltre 7 giorni): rilancialo.");
+          setState("idle");
+          dimentica(chiaveTurniGuida(sid));
           return;
         }
         if (data.status === "failed" || data.status === "stopped") {
@@ -408,6 +436,7 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
       .catch(() => { /* server non raggiungibile: niente ripresa, la memoria resta */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opzioni.scenarioId]);
+  // (nella vecchia pagina scenarioId non si passa: niente ripresa)
 
   /* ── Start optimization ───────────────────────────────────── */
 
@@ -443,8 +472,11 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
         // nel frattempo la pagina ha rilanciato o resettato: questo calcolo non lo segue nessuno
         if (generazione !== generazioneRef.current) { fermaSulServer(jId); return; }
         vivoRef.current = jId;
-        scenarioRef.current = scenarioId;
-        ricorda(chiaveTurniGuida(scenarioId), { jobId: jId, avviatoIl: Date.now() });
+        if (!vecchiaPagina) {
+          scenarioRef.current = scenarioId;
+          ricorda(chiaveTurniGuida(scenarioId), { jobId: jId, avviatoIl: Date.now() });
+        }
+        annunciaAvvio();
         setJobId(jId);
         setState("running");
         connectSSE(jId);
@@ -455,7 +487,7 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
         setState("failed");
         stopTimer();
       });
-  }, [abbandona, dimenticaCalcolo, cleanup, startTimer, connectSSE, stopTimer]);
+  }, [abbandona, dimenticaCalcolo, cleanup, startTimer, connectSSE, stopTimer, vecchiaPagina]);
 
   /* ── Stop optimization ────────────────────────────────────── */
 

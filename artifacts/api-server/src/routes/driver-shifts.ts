@@ -976,6 +976,9 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     }
 
     const scenarioId = req.params.scenarioId as string;
+    // project_id non è nello schema drizzle di service_program_scenarios (colonna nata a runtime)
+    const progettoDelloScenario: string | null = (await db.execute<any>(sql`
+      SELECT project_id::text AS p FROM service_program_scenarios WHERE id = ${scenarioId}::uuid`)).rows?.[0]?.p ?? null;
     const jobId = await coda.accoda({
       tipo: "python",
       corsia: timeLimitSec <= 120 ? "veloce" : "lunga",
@@ -1008,7 +1011,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
         },
       },
       // projectId: «I miei calcoli» apre l'area turni guida del progetto
-      metadati: { ambito: AMBITO_TURNI_GUIDA, scenarioId, scenarioName: scenario.name, date: scenario.date, projectId: (scenario as any).projectId ?? null },
+      metadati: { ambito: AMBITO_TURNI_GUIDA, scenarioId, scenarioName: scenario.name, date: scenario.date, projectId: progettoDelloScenario },
       timeoutSec: tempoMassimoTurniGuida(timeLimitSec),
     });
 

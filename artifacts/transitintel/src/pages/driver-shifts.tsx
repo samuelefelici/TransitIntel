@@ -330,7 +330,8 @@ function DriverShiftsPageInner() {
   }, [scenarioId, confirmDelDss, loadedDssId]);
 
   // ── Async CP-SAT optimization hook ──
-  const cpsat = useCrewOptimization();
+  // vecchia pagina: il calcolo resta legato alla pagina (uscire lo ferma) e non si ricorda
+  const cpsat = useCrewOptimization({ vecchiaPagina: true });
 
   // NOTE: Non si auto-lanciano i turni guida. L'utente deve cliccare esplicitamente.
 

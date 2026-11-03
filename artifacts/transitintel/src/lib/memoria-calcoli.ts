@@ -17,6 +17,8 @@ export interface CalcoloRicordato {
   jobId: string;
   /** quando è partito (ms) */
   avviatoIl: number;
+  /** VCSP: gli spostamenti della sonda sono già stati applicati in Planning (riaprendo non si riapplicano) */
+  sondaApplicata?: boolean;
 }
 
 /** Il pezzo di Storage che serve (il localStorage del browser, o uno finto nei test). */
@@ -39,6 +41,11 @@ export function dimentica(chiave: string, d: Deposito | null = depositoPredefini
   try { d?.removeItem(PREFISSO + chiave); } catch { /* niente da fare */ }
 }
 
+/** Dimentica solo se la chiave ricorda ancora questo calcolo (non uno lanciato dopo, magari in un'altra scheda). */
+export function dimenticaSe(chiave: string, jobId: string, d: Deposito | null = depositoPredefinito()): void {
+  if (richiama(chiave, Date.now(), d)?.jobId === jobId) dimentica(chiave, d);
+}
+
 /** Il calcolo ricordato per la chiave, se c'è ed è ancora nei 7 giorni; uno scaduto o rovinato si dimentica. */
 export function richiama(chiave: string, adesso = Date.now(), d: Deposito | null = depositoPredefinito()): CalcoloRicordato | null {
   let testo: string | null = null;
@@ -48,7 +55,7 @@ export function richiama(chiave: string, adesso = Date.now(), d: Deposito | null
     const c = JSON.parse(testo);
     if (c && typeof c.jobId === "string" && /^[0-9a-f-]{36}$/i.test(c.jobId)
         && typeof c.avviatoIl === "number" && adesso - c.avviatoIl < VALIDITA_MS) {
-      return { jobId: c.jobId, avviatoIl: c.avviatoIl };
+      return { jobId: c.jobId, avviatoIl: c.avviatoIl, ...(c.sondaApplicata === true ? { sondaApplicata: true } : {}) };
     }
   } catch { /* rovinato: si dimentica */ }
   dimentica(chiave, d);

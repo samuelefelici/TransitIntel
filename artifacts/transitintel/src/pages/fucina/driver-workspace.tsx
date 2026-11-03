@@ -312,7 +312,8 @@ export default function DriverWorkspace({
     }
     return id;
   });
-  const cpsat = useCrewOptimization({ scenarioId: vehicleScenarioId, calcolo: calcoloDaLink });
+  // aprendo uno scenario turni guida salvato (?dss=) si mostra quello: niente ripresa di calcoli
+  const cpsat = useCrewOptimization({ scenarioId: dssId ? null : vehicleScenarioId, calcolo: dssId ? null : calcoloDaLink });
 
   // ── Carica il profilo-regole di default (azienda ⊕ progetto) come config di
   //    partenza. Una sola volta: non sovrascrive le modifiche live dell'operatore.
@@ -404,12 +405,17 @@ export default function DriverWorkspace({
       setError(cpsat.error || "Errore ottimizzazione CP-SAT");
       setLoading(false);
       toast.error("Ottimizzazione fallita", { description: cpsat.error ?? undefined });
+    } else if (cpsat.state === "idle" && cpsat.error) {
+      // ripresa di un calcolo riuscito il cui risultato non c'è più
+      toast.info("Calcolo non più disponibile", { description: cpsat.error });
     }
   }, [cpsat.state, cpsat.result, cpsat.error]);
 
   // Lancia ottimizzazione greedy
   const launchGreedy = useCallback(() => {
     if (!vehicleScenarioId) return;
+    // l'euristica prende il posto del calcolo CP-SAT: non va più ripreso riaprendo la pagina
+    cpsat.reset();
     setLoading(true); setError(null); setResult(null);
     fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}`)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })

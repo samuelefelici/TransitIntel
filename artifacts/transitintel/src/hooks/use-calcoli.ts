@@ -4,8 +4,8 @@
  * altrimenti, ferma quando la scheda del browser è nascosta.
  */
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback } from "react";
-import { elencoCalcoli, fermaCalcolo, vivo, type Calcolo } from "@/lib/calcoli";
+import { useCallback, useEffect } from "react";
+import { elencoCalcoli, fermaCalcolo, vivo, EVENTO_AVVIO, type Calcolo } from "@/lib/calcoli";
 import { useAuth } from "@/hooks/use-auth";
 
 export const CHIAVE_CALCOLI = ["calcoli"] as const;
@@ -18,11 +18,20 @@ export function useCalcoli() {
     queryFn: () => elencoCalcoli(20),
     enabled: abilitato,
     retry: false,
+    // sempre da rileggere: il default dell'app (5 minuti) lascerebbe l'elenco indietro
+    staleTime: 0,
     refetchInterval: (query) => ((query.state.data as Calcolo[] | undefined)?.some(vivo) ? 5_000 : 60_000),
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
   const client = useQueryClient();
+  // un calcolo appena lanciato da una pagina: elenco e indicatore lo mostrano subito
+  useEffect(() => {
+    if (!abilitato) return;
+    const rileggi = () => { void client.invalidateQueries({ queryKey: CHIAVE_CALCOLI }); };
+    window.addEventListener(EVENTO_AVVIO, rileggi);
+    return () => window.removeEventListener(EVENTO_AVVIO, rileggi);
+  }, [abilitato, client]);
   const ferma = useCallback(async (jobId: string) => {
     const esito = await fermaCalcolo(jobId);
     await client.invalidateQueries({ queryKey: CHIAVE_CALCOLI });

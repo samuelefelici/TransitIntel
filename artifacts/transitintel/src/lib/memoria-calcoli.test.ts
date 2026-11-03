@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ricorda, richiama, dimentica, chiaveFucina, chiaveTurniGuida, VALIDITA_MS, type Deposito } from "./memoria-calcoli";
+import { ricorda, richiama, dimentica, dimenticaSe, chiaveFucina, chiaveTurniGuida, VALIDITA_MS, type Deposito } from "./memoria-calcoli";
 
 const J = "11111111-2222-3333-4444-555555555555";
 function deposito(): Deposito & { dati: Map<string, string> } {
@@ -16,6 +16,18 @@ describe("la memoria dei calcoli aperti", () => {
     expect(richiama(chiaveTurniGuida("p1"), 2000, d)).toBeNull();
     dimentica(chiaveFucina("p1"), d);
     expect(richiama(chiaveFucina("p1"), 2000, d)).toBeNull();
+  });
+
+  it("dimenticaSe cancella solo se ricorda ancora quel calcolo; la sonda applicata si conserva", () => {
+    const d = deposito();
+    const altro = "99999999-2222-3333-4444-555555555555";
+    const t = Date.now();
+    ricorda("k", { jobId: J, avviatoIl: t, sondaApplicata: true }, d);
+    expect(richiama("k", t + 1, d)).toEqual({ jobId: J, avviatoIl: t, sondaApplicata: true });
+    dimenticaSe("k", altro, d);
+    expect(richiama("k", t + 1, d)?.jobId).toBe(J);
+    dimenticaSe("k", J, d);
+    expect(richiama("k", t + 1, d)).toBeNull();
   });
 
   it("oltre 7 giorni, o rovinata, non vale e si cancella", () => {

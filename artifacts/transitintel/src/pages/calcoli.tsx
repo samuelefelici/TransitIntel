@@ -4,7 +4,7 @@
  * Girano nel lavoratore e continuano anche a pagina chiusa: da qui si vede a
  * che punto sono, si riaprono e si fermano. Dati da GET /api/lavori.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "wouter";
 import { Cpu, Loader2, ExternalLink, Square, CheckCircle2, AlertTriangle, Clock, CircleSlash } from "lucide-react";
 import { toast } from "sonner";
@@ -33,6 +33,14 @@ const ora = (ms: number) => new Date(ms).toLocaleString("it-IT", { day: "2-digit
 
 function RigaCalcolo({ c, onFerma }: { c: Calcolo; onFerma: (id: string) => Promise<void> }) {
   const [fermando, setFermando] = useState(false);
+  // fermare non si annulla: il primo clic chiede conferma, il secondo ferma (entro 5 secondi)
+  const [conferma, setConferma] = useState(false);
+  useEffect(() => {
+    if (!conferma) return;
+    const t = setTimeout(() => setConferma(false), 5000);
+    return () => clearTimeout(t);
+  }, [conferma]);
+  const nome = etichetta(c);
   const p = percentuale(c);
   const apri = apriDi(c);
   const giorno = dataEsercizio(c);
@@ -40,7 +48,7 @@ function RigaCalcolo({ c, onFerma }: { c: Calcolo; onFerma: (id: string) => Prom
   return (
     <li className="rounded-xl border border-border/50 bg-card/60 p-4 flex flex-col gap-2.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <span className="font-semibold text-sm text-foreground">{etichetta(c)}</span>
+        <span className="font-semibold text-sm text-foreground">{nome}</span>
         {giorno && <span className="text-xs text-muted-foreground tabular-nums">esercizio del {giorno}</span>}
         <span className={`ml-auto inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium ${TONI[c.status]}`}>
           <IconaStato c={c} /> {statoLeggibile(c)}
@@ -49,7 +57,10 @@ function RigaCalcolo({ c, onFerma }: { c: Calcolo; onFerma: (id: string) => Prom
 
       {vivo(c) && (
         <div className="space-y-1">
-          <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={p ?? undefined}>
+          <div className="h-1.5 rounded-full bg-muted/30 overflow-hidden" role="progressbar" aria-label={`Avanzamento: ${nome}`}
+            aria-valuemin={0} aria-valuemax={100}
+            aria-valuenow={c.status === "running" ? (p ?? undefined) : undefined}
+            aria-valuetext={c.status === "queued" ? "In coda" : p != null ? `${p}%` : "In corso"}>
             <div className={`h-full rounded-full ${c.status === "queued" ? "bg-amber-400/60" : "bg-sky-400"} transition-[width] duration-500`}
               style={{ width: `${c.status === "queued" ? 4 : (p ?? 8)}%` }} />
           </div>
@@ -68,19 +79,26 @@ function RigaCalcolo({ c, onFerma }: { c: Calcolo; onFerma: (id: string) => Prom
         <span className="ml-auto flex items-center gap-2">
           {vivo(c) && !c.stopping && (
             <button
+              type="button"
               onClick={async () => {
+                if (!conferma) { setConferma(true); return; }
+                setConferma(false);
                 setFermando(true);
                 try { await onFerma(c.jobId); }
                 finally { setFermando(false); }
               }}
               disabled={fermando}
-              className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-red-500/40 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+              aria-label={conferma ? `Conferma: ferma ${nome}` : `Ferma ${nome}`}
+              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border disabled:opacity-50 ${conferma
+                ? "border-red-500 bg-red-500/20 text-red-100 hover:bg-red-500/30"
+                : "border-red-500/40 text-red-300 hover:bg-red-500/10"}`}
             >
-              {fermando ? <Loader2 className="w-3 h-3 animate-spin" aria-hidden /> : <Square className="w-3 h-3" aria-hidden />} Ferma
+              {fermando ? <Loader2 className="w-3 h-3 animate-spin" aria-hidden /> : <Square className="w-3 h-3" aria-hidden />}
+              {conferma ? "Sicuro? Ferma" : "Ferma"}
             </button>
           )}
           {apri && (
-            <Link href={apri} className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-border/60 text-foreground hover:bg-muted/40">
+            <Link href={apri} aria-label={`Apri ${nome}`} className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-border/60 text-foreground hover:bg-muted/40">
               <ExternalLink className="w-3 h-3" aria-hidden /> Apri
             </Link>
           )}

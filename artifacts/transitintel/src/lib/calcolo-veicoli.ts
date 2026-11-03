@@ -6,7 +6,7 @@
  * depositi, impostazioni) si ricostruisce dalla richiesta che il server tiene
  * con il calcolo. Senza React: si prova con un fetch finto.
  */
-import { erroreDi, type Rete } from "@/lib/calcoli";
+import { erroreDi, annunciaAvvio, type Rete } from "@/lib/calcoli";
 import { getApiBase } from "@/lib/api";
 
 export type ModoVeicoli = "cpsat" | "vcsp";
@@ -37,16 +37,22 @@ export class CalcoloFermato extends Error {
 const reteDi = (r: Rete = {}) => ({ f: r.fetch ?? ((...a: Parameters<typeof fetch>) => fetch(...a)), base: r.base ?? getApiBase() });
 const FINITI = new Set(["completed", "failed", "stopped"]);
 
-/** Lancia il calcolo in coda: il jobId, oppure l'errore immediato del server (400, 404, 429, 503). */
-export async function avviaCalcoloVeicoli(modo: ModoVeicoli, corpo: unknown, rete?: Rete): Promise<string> {
+/**
+ * Lancia il calcolo in coda: il jobId, oppure l'errore immediato del server
+ * (400, 404, 429, 503). Con LAVORI_VEICOLI_IN_CODA=0 (ritorno indietro) l'API
+ * calcola dentro di sé e risponde 200 col risultato: lo si restituisce così.
+ */
+export async function avviaCalcoloVeicoli(modo: ModoVeicoli, corpo: unknown, rete?: Rete): Promise<{ jobId: string } | { risultato: any }> {
   const { f, base } = reteDi(rete);
   const res = await f(`${base}/api/service-program/${modo}?asincrono=1`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo),
   });
+  if (res.status === 200) return { risultato: await res.json() };
   if (res.status !== 202) throw new Error(await erroreDi(res));
   const { jobId } = await res.json();
   if (typeof jobId !== "string") throw new Error("Il server non ha restituito il calcolo");
-  return jobId;
+  annunciaAvvio();
+  return { jobId };
 }
 
 /** Lo stato del calcolo; null se non c'è più (404 dell'API). Un errore di rete lancia. */

@@ -21,7 +21,7 @@ import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 import { getApiBase } from "@/lib/api";
 import { getProject as getSchedulingProject, syncProjectFromPs } from "@/lib/scheduling-projects-api";
 import { leggiCalcoloVeicoli, contestoDaRichiesta, fermaCalcoloVeicoli, type ImpostazioniSolutore } from "@/lib/calcolo-veicoli";
-import { richiama, ricorda, dimentica, chiaveFucina, type CalcoloRicordato } from "@/lib/memoria-calcoli";
+import { richiama, ricorda, dimentica, dimenticaSe, chiaveFucina, type CalcoloRicordato } from "@/lib/memoria-calcoli";
 
 // il feed e i cluster arrivano dal Planning Studio: qui niente scelta del feed né cluster
 const VehicleAssignmentStep = lazy(() => import("@/pages/fucina/steps/VehicleAssignmentStep"));
@@ -362,25 +362,58 @@ export default function FucinaPage() {
   const [ricordato, setRicordato] = useState<CalcoloRicordato | null>(null);
   const ripresaProvata = React.useRef(false);
 
-  const riprendiCalcolo = React.useCallback(async (jobId: string, o: { daLink?: boolean } = {}) => {
+  /** il modo della pipeline scelto dall'URL (dashboard: ?mode=vcsp), quello a cui si torna scartando */
+  const modoUrl = (): "classic" | "vcsp" =>
+    new URLSearchParams(window.location.search).get("mode") === "vcsp" ? "vcsp" : "classic";
+
+  /**
+   * Riapre un calcolo. `automatico`: dalla memoria all'apertura della pagina,
+   * senza che l'operatore l'abbia chiesto: allora un calcolo dell'altro modo
+   * (classica o integrata) non si apre da solo, si propone col banner.
+   */
+  const riprendiCalcolo = React.useCallback(async (jobId: string, o: { daLink?: boolean; automatico?: boolean } = {}) => {
     if (!projectId) return;
     const chiave = chiaveFucina(projectId);
     let st;
     try { st = await leggiCalcoloVeicoli(jobId, { richiesta: true }); }
     catch { toast.error("Non riesco a leggere il calcolo", { description: "Il server non risponde: riprova fra poco." }); return; }
     if (!st) {
-      dimentica(chiave);
+      dimenticaSe(chiave, jobId);
       setRicordato(null);
       if (o.daLink) toast.error("Calcolo non più disponibile", { description: "Oltre 30 giorni, o di un altro utente: rilancialo." });
       return;
     }
+    const vivo = st.status === "queued" || st.status === "running";
+    const fermalo = vivo ? { action: { label: "Fermalo", onClick: () => { fermaCalcoloVeicoli(jobId).catch(() => {}); } } } : {};
+    // solo i calcoli di questo progetto (l'admin può leggere anche quelli degli altri)
+    const progettoDelCalcolo = typeof st.request?.projectId === "string" ? st.request.projectId : null;
+    if (st.request && progettoDelCalcolo !== projectId) {
+      dimenticaSe(chiave, jobId);
+      setRicordato(null);
+      toast.error("Il calcolo non è di questo progetto", { description: "Aprilo dal suo progetto, da «I miei calcoli»." });
+      return;
+    }
+    // calcolato su un feed che una sincronizzazione con Planning Studio ha poi sostituito
+    const feedDelCalcolo = typeof st.request?.feedId === "string" ? st.request.feedId : null;
+    const feedDiOggi = gtfsSelection?.tempFeedId ?? null;
+    if (feedDelCalcolo && feedDiOggi && feedDelCalcolo !== feedDiOggi) {
+      dimenticaSe(chiave, jobId);
+      setRicordato(null);
+      toast.warning("Calcolo su dati superati", {
+        description: "Dopo il lancio i dati di Planning Studio sono stati sincronizzati di nuovo: rilancia il calcolo.",
+        duration: 10000, ...fermalo,
+      });
+      return;
+    }
     const contesto = contestoDaRichiesta(st.mode, st.request);
     if (!contesto) {
-      dimentica(chiave);
+      dimenticaSe(chiave, jobId);
       setRicordato(null);
       toast.error("Non riesco a riaprire il calcolo", { description: "I suoi dati di partenza non ci sono più (oltre 7 giorni): rilancialo." });
       return;
     }
+    // dall'apertura della pagina: un calcolo dell'altra pipeline resta proposto, non cambia quella scelta
+    if (o.automatico && contesto.pipelineMode !== modoUrl()) return;
     ricorda(chiave, { jobId, avviatoIl: st.createdAt });
     setRicordato(null);
     setVehicleAssignment(contesto.assegnazione as VehicleAssignment);
@@ -392,7 +425,6 @@ export default function FucinaPage() {
     setGiroRipresa(g => g + 1);
     setCompletedSteps(new Set([0, 1, 2, 3, 4]));
     setStep(5);
-    const vivo = st.status === "queued" || st.status === "running";
     const quando = new Date(st.createdAt).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
     toast.info(vivo ? `Calcolo del ${quando} ancora in corso: lo seguo da qui` : `Calcolo del ${quando} riaperto`, {
       description: "Data, linee, depositi e impostazioni sono quelli con cui era partito.",
@@ -401,13 +433,14 @@ export default function FucinaPage() {
         label: vivo ? "Fermalo e scarta" : "Scarta",
         onClick: () => {
           if (vivo) fermaCalcoloVeicoli(jobId).catch(() => {});
-          dimentica(chiave);
+          dimenticaSe(chiave, jobId);
           setRipresa(null);
+          setPipelineMode(modoUrl());
           setStep(1);
         },
       },
     });
-  }, [projectId]);
+  }, [projectId, gtfsSelection?.tempFeedId]);
 
   // Al caricamento del progetto (feed pronto): il calcolo chiesto da «I miei calcoli»,
   // altrimenti quello ricordato per il progetto. Una volta per pagina.
@@ -424,7 +457,7 @@ export default function FucinaPage() {
       return;
     }
     const r = richiama(chiaveFucina(projectId));
-    if (r) void riprendiCalcolo(r.jobId);
+    if (r) void riprendiCalcolo(r.jobId, { automatico: true });
   }, [projectId, startMode, gtfsSelection, riprendiCalcolo]);
 
   // Tornando al passo «Ottimizzazione» nella stessa pagina: il calcolo ricordato

@@ -24,11 +24,14 @@ const stato = (extra: Partial<StatoCalcoloVeicoli>): StatoCalcoloVeicoli =>
 describe("i calcoli dei turni macchina in coda", () => {
   it("avvio con ?asincrono=1: il jobId; un errore immediato porta il messaggio del server", async () => {
     const a = sequenza(risposta(202, { jobId: "j1", status: "queued" }));
-    expect(await avviaCalcoloVeicoli("vcsp", { date: "20261104" }, { fetch: a.f, base: "" })).toBe("j1");
+    expect(await avviaCalcoloVeicoli("vcsp", { date: "20261104" }, { fetch: a.f, base: "" })).toEqual({ jobId: "j1" });
     expect(a.chiamate[0].url).toBe("/api/service-program/vcsp?asincrono=1");
     expect(JSON.parse(String(a.chiamate[0].init?.body))).toEqual({ date: "20261104" });
     await expect(avviaCalcoloVeicoli("cpsat", {}, { fetch: sequenza(risposta(429, { error: "Hai già 3 calcoli" })).f, base: "" }))
       .rejects.toThrow("Hai già 3 calcoli");
+    // LAVORI_VEICOLI_IN_CODA=0: l'API calcola dentro di sé e risponde subito col risultato
+    expect(await avviaCalcoloVeicoli("cpsat", {}, { fetch: sequenza(risposta(200, { summary: { totalVehicles: 3 } })).f, base: "" }))
+      .toEqual({ risultato: { summary: { totalVehicles: 3 } } });
   });
 
   it("lettura: con la richiesta se chiesta; il 404 dell'API è «non c'è più», quello di un proxy no", async () => {

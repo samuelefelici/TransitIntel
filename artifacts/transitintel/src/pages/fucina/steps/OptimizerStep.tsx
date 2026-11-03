@@ -36,7 +36,7 @@ import {
   avviaCalcoloVeicoli, seguiCalcoloVeicoli, fermaCalcoloVeicoli, CalcoloFermato, CalcoloSparito,
   type ImpostazioniSolutore, type StatoCalcoloVeicoli,
 } from "@/lib/calcolo-veicoli";
-import { ricorda, dimentica, chiaveFucina } from "@/lib/memoria-calcoli";
+import { ricorda, richiama, dimenticaSe, chiaveFucina } from "@/lib/memoria-calcoli";
 import { AlgoGuide, HelpTip, VSP_GUIDE, VCSP_GUIDE } from "@/components/StepGuide";
 // Anteprima turni guida VCSP (gantt read-only, stessi adapter del workspace TG)
 import InteractiveGantt, { type GanttBar, type GanttRow } from "@/components/InteractiveGantt";
@@ -383,6 +383,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   useEffect(() => {
     if (vspProfileLoadedRef.current) return;
     vspProfileLoadedRef.current = true;
+    // calcolo ripreso: valgono le impostazioni con cui era partito, non il profilo di default
+    if (ripresa) return;
     resolveRuleProfile(psProjectId, "vsp")
       .then((r) => {
         if (!r?.config) return;
@@ -473,6 +475,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   // Sonda: esito dell'applicazione in Planning degli spostamenti proposti.
   // "done" disabilita il pulsante: un secondo click sposterebbe le corse due volte.
   const [probeApply, setProbeApply] = useState<{ state: "idle" | "busy" | "done" | "error"; msg?: string }>({ state: "idle" });
+  /** il calcolo in coda da cui viene il risultato mostrato (per la memoria del progetto) */
+  const jobRisultatoRef = React.useRef<string | null>(null);
 
   const applyProbeShifts = useCallback(async (shifts: Record<string, number>) => {
     if (!psProjectId) return;
@@ -491,6 +495,10 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
         else { const j = await resp.json().catch(() => ({} as any)); fails.push(`${tripId.slice(0, 8)}…: ${j.error ?? resp.status}`); }
       } catch (e: any) { fails.push(`${tripId.slice(0, 8)}…: ${e?.message ?? "errore di rete"}`); }
     }
+    // spostamenti fatti (anche solo in parte): riaprendo questo calcolo non si devono rifare
+    const chiave = projectId ? chiaveFucina(projectId) : null;
+    const ric = chiave ? richiama(chiave) : null;
+    if (ok > 0 && chiave && ric && ric.jobId === jobRisultatoRef.current) ricorda(chiave, { ...ric, sondaApplicata: true });
     if (fails.length === 0) {
       setProbeApply({ state: "done", msg: `${ok} corse spostate in Planning Studio` });
       toast.success("Spostamenti applicati in Planning", { description: `${ok} corse aggiornate: gli orari del piano ora coincidono con lo scenario sonda.` });
@@ -498,7 +506,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       setProbeApply({ state: "error", msg: `${ok} applicati · ${fails.length} falliti — ${fails.join(" · ")}` });
       toast.error("Applicazione parziale", { description: fails.slice(0, 3).join(" · ") });
     }
-  }, [psProjectId]);
+  }, [psProjectId, projectId]);
 
   // VCSP: secondi dedicati al CSP (turni guida) in ogni round
   const [crewTimeLimit, setCrewTimeLimit] = useState(90);
@@ -522,6 +530,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   useEffect(() => {
     if (crewProfileLoadedRef.current) return;
     crewProfileLoadedRef.current = true;
+    if (ripresa) return;
     resolveRuleProfile(psProjectId, "crew")
       .then((r) => {
         if (!r?.config) return;
@@ -663,11 +672,15 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       const data = await seguiCalcoloVeicoli(jobId, { segnale: calcolo.signal, onStato: setStatoCoda });
       if (calcolo.signal.aborted) return;
       accettaRisultato(data);
-      // il risultato resta ricordato finché non si salva lo scenario: un ricaricamento lo ritrova
+      jobRisultatoRef.current = jobId;
+      // il risultato resta ricordato finché non si salva lo scenario: un ricaricamento lo ritrova.
+      // VCSP: spostamenti della sonda già applicati prima di riaprirlo → non si riapplicano
+      const ric = chiaveMemoria ? richiama(chiaveMemoria) : null;
+      if (ric?.jobId === jobId && ric.sondaApplicata) setProbeApply({ state: "done", msg: "Spostamenti già applicati in Planning prima di riaprire il calcolo" });
     } catch (e: any) {
       if (calcolo.signal.aborted) return;
       // finito male: non c'è più niente da riprendere
-      if (chiaveMemoria) dimentica(chiaveMemoria);
+      if (chiaveMemoria) dimenticaSe(chiaveMemoria, jobId);
       if (e instanceof CalcoloFermato) { toast.info("Calcolo fermato"); return; }
       setError(e instanceof CalcoloSparito ? e.message : (e?.message || "Errore sconosciuto"));
     } finally {
@@ -704,6 +717,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     setSolverMetrics(null);
     setProbeApply({ state: "idle" });
     setStatoCoda(null);
+    jobRisultatoRef.current = null;
     let inCoda: string | null = null;
     try {
       const base = getApiBase();
@@ -774,8 +788,18 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
 
       if (solverMode === "cpsat" || solverMode === "vcsp") {
         // in coda: si lancia, si ricorda per il progetto, poi si segue (sotto)
-        inCoda = await avviaCalcoloVeicoli(solverMode, bodyPayload);
-        if (chiaveMemoria) ricorda(chiaveMemoria, { jobId: inCoda, avviatoIl: Date.now() });
+        const avvio = await avviaCalcoloVeicoli(solverMode, bodyPayload);
+        if ("risultato" in avvio) {
+          // ritorno indietro (LAVORI_VEICOLI_IN_CODA=0): calcolato dall'API, risposta subito
+          if (calcolo.signal.aborted) return;
+          accettaRisultato(avvio.risultato);
+        } else {
+          inCoda = avvio.jobId;
+          // il calcolo ricordato prima (magari ancora vivo, non seguito) lascia il posto al nuovo
+          const prima = chiaveMemoria ? richiama(chiaveMemoria) : null;
+          if (prima && prima.jobId !== inCoda) fermaCalcoloVeicoli(prima.jobId).catch(() => {});
+          if (chiaveMemoria) ricorda(chiaveMemoria, { jobId: inCoda, avviatoIl: Date.now() });
+        }
       } else {
         const resp = await fetch(`${base}${endpoint}`, {
           method: "POST",
@@ -966,7 +990,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       const data = await resp.json();
       setSavedScenarioId(data.id);
       // salvato: il calcolo non va più ripreso
-      if (chiaveMemoria) dimentica(chiaveMemoria);
+      if (chiaveMemoria && jobRisultatoRef.current) dimenticaSe(chiaveMemoria, jobRisultatoRef.current);
 
       // ── Pipeline integrata VCSP: salva ANCHE i turni guida del round scelto
       // come DSS collegato allo scenario vetture appena creato. Così entrambe
