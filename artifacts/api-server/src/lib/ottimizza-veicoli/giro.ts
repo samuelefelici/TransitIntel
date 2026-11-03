@@ -1,7 +1,269 @@
 /**
- * I giri di Argos (agent-optimize): la vista compatta del risultato per la
- * chat. Senza Express: la usano le rotte e il lavoratore dei calcoli.
+ * I giri di Argos (agent-optimize): il calcolo, il salvataggio dello scenario
+ * (turni macchina e, in VCSP, turni guida) e la vista compatta del risultato
+ * per la chat. Senza Express e senza DDL: la usano le rotte e il lavoratore
+ * dei calcoli. La tabella agent_optimize_jobs c'è dalle migrazioni.
  */
+import { db } from "@workspace/db";
+import { sql } from "drizzle-orm";
+import type { Progresso } from "../lavori/python";
+import { eseguiOttimizzazione, type ModoVeicoli } from "./esegui";
+
+type LogGiro = { info: (...a: any[]) => void; warn: (...a: any[]) => void; error: (...a: any[]) => void };
+
+/** Un giro come lo registra agent_optimize_jobs (e la memoria dell'API, col flag a 0). */
+export type AgentOptimizeJob = {
+  id: string;
+  userId: string;
+  psProjectId: string;
+  mode: ModoVeicoli;
+  status: "running" | "done" | "error";
+  createdAt: number;
+  finishedAt?: number;
+  progress: { phase: string; pct: number; msg: string };
+  params: Record<string, any>;
+  error?: string;
+  result?: any;               // risposta COMPLETA (in memoria, per il salvataggio)
+  scenarioId?: string | null;
+  dssId?: string | null;
+  scenarioName?: string;
+};
+
+/** Cosa serve per salvare lo scenario a fine giro: lo prepara la rotta, prima di accodare. */
+export interface SalvataggioGiro {
+  utenteId: string;
+  psProjectId: string;
+  /** il nome del progetto Planning Studio, per il nome di default dello scenario */
+  psName: string;
+  /** la data come l'ha scritta chi lancia (YYYY-MM-DD o YYYYMMDD) */
+  rawDate: string;
+  /** il feed del giro come l'ha risolto la rotta (UDP, esercizio o esplicito): va nello scenario */
+  feedId: string;
+  serviceType: string;
+  routes: unknown[];
+  depotsSel: unknown[] | null;
+  schedProjectId: string | null;
+  defaultVehicleType: string | null;
+  saveScenario: boolean;
+  scenarioName: string | null;
+  /** quando il giro è stato chiesto (ms) */
+  creatoIl: number;
+}
+
+/** La richiesta di un giro in coda (giro_agente v1). */
+export interface RichiestaGiro {
+  mode: ModoVeicoli;
+  /** il feed del calcolo, già controllato per l'utente (getLatestFeedId nella rotta) */
+  feedId: string;
+  /** il corpo per eseguiOttimizzazione (runBody) */
+  corpo: Record<string, any>;
+  params: Record<string, any>;
+  salvataggio: SalvataggioGiro;
+}
+
+/** Il registro persistente di un giro: alla creazione e alla fine (esito compatto, scenario, errore). */
+export async function scriviGiro(job: AgentOptimizeJob, request?: unknown, esecutore: { execute: typeof db.execute } = db): Promise<void> {
+  const compact = job.status === "done" && job.result ? compactAgentResult(job.result) : null;
+  await esecutore.execute(sql`
+    INSERT INTO agent_optimize_jobs (id, user_id, ps_project_id, mode, status, created_at, finished_at,
+                                     progress, params, request, error, scenario_id, dss_id, scenario_name, result_compact, updated_at)
+    VALUES (${job.id}::uuid, ${job.userId}::uuid, ${job.psProjectId}::uuid, ${job.mode}, ${job.status},
+            to_timestamp(${job.createdAt / 1000}),
+            ${job.finishedAt ? new Date(job.finishedAt).toISOString() : null}::timestamptz,
+            ${JSON.stringify(job.progress)}::jsonb, ${JSON.stringify(job.params)}::jsonb,
+            ${request ? JSON.stringify(request) : null}::jsonb,
+            ${job.error ?? null}, ${job.scenarioId ?? null}::uuid, ${job.dssId ?? null}::uuid, ${job.scenarioName ?? null},
+            ${compact ? JSON.stringify(compact) : null}::jsonb, now())
+    ON CONFLICT (id) DO UPDATE SET
+      status = EXCLUDED.status, finished_at = EXCLUDED.finished_at, progress = EXCLUDED.progress,
+      params = EXCLUDED.params, request = COALESCE(EXCLUDED.request, agent_optimize_jobs.request),
+      error = EXCLUDED.error, scenario_id = EXCLUDED.scenario_id, dss_id = EXCLUDED.dss_id,
+      scenario_name = EXCLUDED.scenario_name,
+      result_compact = COALESCE(EXCLUDED.result_compact, agent_optimize_jobs.result_compact),
+      updated_at = now()`);
+}
+
+/** I parametri del giro con il ciclo VERO, letto dal motore: se restassero quelli
+ * della richiesta, un giro lanciato coi default li avrebbe vuoti e il confronto
+ * non potrebbe dire che due giri hanno avuto un ciclo diverso. */
+export function paramsConCiclo(params: Record<string, any>, payload: any): Record<string, any> {
+  const ciclo = payload?.vcsp?.ciclo;
+  if (!ciclo || typeof ciclo !== "object") return params;
+  return {
+    ...params,
+    penaltyStep: ciclo.passo ?? null,
+    penaltyAnchor: ciclo.ancora ?? null,
+    seedFromBest: ciclo.seme ?? null,
+    earlyStopPatience: ciclo.pazienza ?? params?.earlyStopPatience ?? null,
+    controllo: ciclo.controllo ?? null,
+  };
+}
+
+const UUID = /^[0-9a-f-]{36}$/i;
+
+export type EsitoSalvataggio =
+  | { stato: "salvato"; scenarioId: string | null; dssId: string | null; scenarioName: string | null; params: Record<string, any>; giaSalvato: boolean }
+  /** la riga della coda non è più di chi salva (lease perso) o è stato chiesto lo stop */
+  | { stato: "non-nostro"; perche: "lease" | "annullato" };
+
+/**
+ * Il salvataggio di fine giro, tutto in una transazione:
+ * 1. con la coda (`chi`), la riga del lavoro FOR UPDATE: deve essere ancora di
+ *    chi salva, in corso e senza stop chiesto (un lavoratore che ha perso il
+ *    lease non scrive uno scenario doppio);
+ * 2. agent_optimize_jobs FOR UPDATE: un giro già «done» non si salva di nuovo
+ *    (il lavoro ripreso dopo un crash fra il salvataggio e la chiusura);
+ * 3. lo scenario turni macchina in un solo INSERT (proprietario, progetto,
+ *    depositi, configurazione);
+ * 4. in VCSP i turni guida del round migliore in un savepoint: un loro errore
+ *    non ferma il resto, come sempre;
+ * 5. agent_optimize_jobs «done» con l'esito compatto.
+ */
+export async function salvaGiro(a: {
+  lavoroId: string; chi: string | null; payload: any; r: RichiestaGiro; log: LogGiro;
+}): Promise<EsitoSalvataggio> {
+  const { payload, r, log } = a;
+  const s = r.salvataggio;
+  return db.transaction(async (tx) => {
+    if (a.chi) {
+      const riga = (await tx.execute<any>(sql`
+        SELECT preso_da, stato, annulla FROM coda.lavori WHERE id = ${a.lavoroId}::uuid FOR UPDATE`)).rows[0];
+      if (!riga || riga.preso_da !== a.chi || riga.stato !== "in_corso") return { stato: "non-nostro", perche: "lease" } as const;
+      if (riga.annulla) return { stato: "non-nostro", perche: "annullato" } as const;
+    }
+    const prima = (await tx.execute<any>(sql`
+      SELECT status, scenario_id, dss_id, scenario_name, params FROM agent_optimize_jobs
+       WHERE id = ${a.lavoroId}::uuid FOR UPDATE`)).rows[0];
+    if (prima?.status === "done") {
+      return {
+        stato: "salvato", scenarioId: prima.scenario_id ?? null, dssId: prima.dss_id ?? null,
+        scenarioName: prima.scenario_name ?? null, params: prima.params ?? r.params, giaSalvato: true,
+      } as const;
+    }
+
+    // il proprietario solo se l'utente c'è ancora (FK su users): cancellato a giro
+    // in corso, lo scenario si salva senza, come quando lo scriveva un UPDATE a parte
+    let scenarioId: string | null = null;
+    let dssId: string | null = null;
+    let scenarioName: string | null = null;
+    if (s.saveScenario) {
+      const name = s.scenarioName ?? `Argos · ${s.psName} · ${s.rawDate}${r.mode === "vcsp" ? " · VCSP" : ""}`;
+      scenarioName = name;
+      // Scenario TURNI MACCHINA (il top-level è già il best round / sonda).
+      const savedResult = payload.vcsp?.bestRound != null
+        ? { ...payload, vcspSelectedRound: payload.vcsp.bestRound }
+        : payload;
+      const input = {
+        date: s.rawDate, serviceType: s.serviceType, routes: s.routes,
+        source: "argos-agent", mode: r.mode,
+        ...(r.corpo.vcsp ? { vcsp: r.corpo.vcsp } : {}),
+      };
+      // Dossier di processo: la CONFIGURAZIONE usata (manopole guida, tariffe,
+      // parametri VCSP/VSP, tetto auto) resta con lo scenario, così la
+      // relazione può dichiarare con quali valori è stato calcolato.
+      const provenance = {
+        source: "argos-agent", mode: r.mode, savedAt: new Date().toISOString(),
+        crewConfig: r.corpo.crewConfig ?? null,
+        vcsp: r.corpo.vcsp ?? null,
+        vehicleCosts: r.corpo.vehicleCosts ?? null,
+        vspAdvanced: r.corpo.vspAdvanced ?? null,
+        intensity: r.corpo.intensity ?? null, robustness: r.corpo.robustness ?? null,
+        serviceType: s.serviceType, defaultVehicleType: s.defaultVehicleType ?? null,
+        companyCars: r.corpo.crewConfig?.companyCars ?? null,
+      };
+      const depots = (Array.isArray(s.depotsSel) ? s.depotsSel : [])
+        .filter((d: any) => d && typeof d.id === "string" && UUID.test(d.id))
+        .map((d: any) => ({ id: d.id, maxVehicles: Number.isFinite(Number(d.maxVehicles)) && Number(d.maxVehicles) > 0 ? Number(d.maxVehicles) : null }));
+      const ins = await tx.execute<any>(sql`
+        INSERT INTO service_program_scenarios (name, date, feed_id, input, result, owner_user_id, project_id, depots, config)
+        VALUES (${name}, ${s.rawDate.replace(/-/g, "")}, ${s.feedId || null}::uuid,
+                ${JSON.stringify(input)}::jsonb, ${JSON.stringify(savedResult)}::jsonb,
+                (SELECT id FROM users WHERE id = ${s.utenteId}::uuid), ${s.schedProjectId}::uuid,
+                ${depots.length > 0 ? JSON.stringify(depots) : null}::jsonb, ${JSON.stringify(provenance)}::jsonb)
+        RETURNING id`);
+      scenarioId = ins.rows[0].id;
+      // VCSP: anche i TURNI GUIDA del best round come DSS collegato,
+      // così entrambe le aree di lavoro sono pronte (parità con la fucina).
+      const v = payload.vcsp;
+      if (r.mode === "vcsp" && Array.isArray(v?.crew?.driverShifts) && v.crew.driverShifts.length > 0) {
+        try {
+          dssId = await tx.transaction(async (sp) => {
+            const dss = await sp.execute<any>(sql`
+              INSERT INTO driver_shift_scenarios (service_program_scenario_id, name, result, config, owner_user_id)
+              VALUES (${scenarioId}::uuid, ${`${name} · Turni guida (VCSP round ${v.bestRound ?? "?"})`},
+                      ${JSON.stringify({
+                        solver: "vcsp_crew",
+                        driverShifts: v.crew.driverShifts,
+                        summary: v.crew.summary ?? null,
+                        handovers: v.crew.handovers ?? [],
+                        clusters: v.crew.clusters ?? [],
+                        metrics: v.crew.metrics ?? null,
+                      })}::jsonb,
+                      ${JSON.stringify({ source: "argos-agent", bestRound: v.bestRound ?? null, selectedRound: v.bestRound ?? null,
+                                         crewConfig: r.corpo.crewConfig ?? null })}::jsonb,
+                      (SELECT id FROM users WHERE id = ${s.utenteId}::uuid))
+              RETURNING id`);
+            return dss.rows[0].id as string;
+          });
+        } catch (e: any) {
+          log.warn(`agent-optimize: salvataggio turni guida fallito (non-fatale): ${e?.message}`);
+        }
+      }
+    }
+
+    const params = paramsConCiclo(r.params, payload);
+    await scriviGiro({
+      id: a.lavoroId, userId: s.utenteId, psProjectId: s.psProjectId, mode: r.mode,
+      status: "done", createdAt: s.creatoIl, finishedAt: Date.now(),
+      progress: { phase: r.mode === "vcsp" ? "VCSP" : "VSP", pct: 100, msg: "Completato" },
+      params, result: payload, scenarioId, dssId, ...(scenarioName ? { scenarioName } : {}),
+    }, undefined, tx as any);
+    return { stato: "salvato", scenarioId, dssId, scenarioName, params, giaSalvato: false } as const;
+  });
+}
+
+export type EsitoGiro =
+  | { stato: "fatto"; scenarioId: string | null; dssId: string | null; scenarioName: string | null; params: Record<string, any>; payload: any }
+  | { stato: "errore"; errore: string; codice?: number; scaduto?: boolean }
+  | { stato: "fermato" }
+  | { stato: "non-nostro"; perche: "lease" | "annullato" };
+
+/**
+ * Un giro: il calcolo (la stessa pipeline della Fucina) e il salvataggio.
+ * `chi` è il lease del lavoro in coda (null dentro l'API, col flag a 0).
+ */
+export async function eseguiGiro(r: RichiestaGiro, ctx: {
+  lavoroId: string; chi: string | null; log: LogGiro;
+  segnale?: AbortSignal; progresso?: (p: Progresso) => void; scadenza?: number;
+}): Promise<EsitoGiro> {
+  const out = await eseguiOttimizzazione(r.corpo, {
+    mode: r.mode, feedId: r.feedId, log: ctx.log,
+    segnale: ctx.segnale, progresso: ctx.progresso, scadenza: ctx.scadenza,
+  });
+  if (out.motivo === "fermato") return { stato: "fermato" };
+  if (out.motivo === "scaduto") return { stato: "errore", errore: out.corpo?.error ?? "Tempo massimo superato", codice: out.codice, scaduto: true };
+  const payload = out.corpo;
+  if (out.codice !== 200 || payload?.error || payload?.status === "NO_INPUT") {
+    return {
+      stato: "errore", codice: out.codice,
+      errore: payload?.error
+        || (payload?.status === "NO_INPUT"
+          ? "Nessuna corsa attiva per la data/linee scelte: controlla la data di esercizio"
+          : `Errore HTTP ${out.codice}`),
+    };
+  }
+  let salvato: EsitoSalvataggio;
+  try {
+    salvato = await salvaGiro({ lavoroId: ctx.lavoroId, chi: ctx.chi, payload, r, log: ctx.log });
+  } catch (e: any) {
+    return { stato: "errore", errore: `Giro completato ma salvataggio fallito: ${e?.message}` };
+  }
+  if (salvato.stato === "non-nostro") return salvato;
+  return {
+    stato: "fatto", scenarioId: salvato.scenarioId, dssId: salvato.dssId,
+    scenarioName: salvato.scenarioName, params: salvato.params, payload,
+  };
+}
 
 /** Aggrega i messaggi per-turno ({driverId: [msg…]}) in un top-10 per tipo. */
 export function aggregateDutyMessages(det: any): { msg: string; n: number }[] | null {

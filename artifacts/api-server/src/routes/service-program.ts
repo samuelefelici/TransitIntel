@@ -42,7 +42,10 @@ import {
   buildPyTrips, loadTerminalTransits, spawnPythonJson, runCPSATVehicleScheduler, runVcspOrchestrator,
   loadDepotPoints, assignResidenzaToShifts, parseDepotSelection, depotCapacityAdvisory,
 } from "../lib/ottimizza-veicoli/esegui";
-import { compactAgentResult } from "../lib/ottimizza-veicoli/giro";
+import {
+  compactAgentResult, scriviGiro, eseguiGiro,
+  type AgentOptimizeJob, type EsitoGiro, type RichiestaGiro, type SalvataggioGiro,
+} from "../lib/ottimizza-veicoli/giro";
 import {
   eseguiOttimizzazione, validaRichiesta, progettoMancante, type EsitoOttimizzazione, type ModoVeicoli,
 } from "../lib/ottimizza-veicoli/esegui";
@@ -1149,23 +1152,6 @@ router.post("/service-program/vcsp", (req, res) => handleVehicleOptimize(req, re
  *  VCSP, anche TG) viene salvato: l'operatore lo apre da Cerbero.
  * ═══════════════════════════════════════════════════════════════ */
 
-type AgentOptimizeJob = {
-  id: string;
-  userId: string;
-  psProjectId: string;
-  mode: "cpsat" | "vcsp";
-  status: "running" | "done" | "error";
-  createdAt: number;
-  finishedAt?: number;
-  progress: { phase: string; pct: number; msg: string };
-  params: Record<string, any>;
-  error?: string;
-  result?: any;               // risposta COMPLETA (in memoria, per il salvataggio)
-  scenarioId?: string | null;
-  dssId?: string | null;
-  scenarioName?: string;
-};
-
 const agentJobs = new Map<string, AgentOptimizeJob>();
 const AGENT_JOB_TTL_MS = 6 * 60 * 60 * 1000;
 const AGENT_JOBS_MAX = 30;
@@ -1219,24 +1205,7 @@ export function ensureAgentJobsTable(): Promise<void> {
 async function persistAgentJob(job: AgentOptimizeJob, request?: unknown): Promise<void> {
   try {
     await ensureAgentJobsTable();
-    const compact = job.status === "done" && job.result ? compactAgentResult(job.result) : null;
-    await db.execute(sql`
-      INSERT INTO agent_optimize_jobs (id, user_id, ps_project_id, mode, status, created_at, finished_at,
-                                       progress, params, request, error, scenario_id, dss_id, scenario_name, result_compact, updated_at)
-      VALUES (${job.id}::uuid, ${job.userId}::uuid, ${job.psProjectId}::uuid, ${job.mode}, ${job.status},
-              to_timestamp(${job.createdAt / 1000}),
-              ${job.finishedAt ? new Date(job.finishedAt).toISOString() : null}::timestamptz,
-              ${JSON.stringify(job.progress)}::jsonb, ${JSON.stringify(job.params)}::jsonb,
-              ${request ? JSON.stringify(request) : null}::jsonb,
-              ${job.error ?? null}, ${job.scenarioId ?? null}::uuid, ${job.dssId ?? null}::uuid, ${job.scenarioName ?? null},
-              ${compact ? JSON.stringify(compact) : null}::jsonb, now())
-      ON CONFLICT (id) DO UPDATE SET
-        status = EXCLUDED.status, finished_at = EXCLUDED.finished_at, progress = EXCLUDED.progress,
-        params = EXCLUDED.params, request = COALESCE(EXCLUDED.request, agent_optimize_jobs.request),
-        error = EXCLUDED.error, scenario_id = EXCLUDED.scenario_id, dss_id = EXCLUDED.dss_id,
-        scenario_name = EXCLUDED.scenario_name,
-        result_compact = COALESCE(EXCLUDED.result_compact, agent_optimize_jobs.result_compact),
-        updated_at = now()`);
+    await scriviGiro(job, request);
   } catch { /* best-effort: il registro in memoria resta la via principale */ }
 }
 
@@ -1680,140 +1649,45 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         } : {}),
       },
     };
+    const salvataggio: SalvataggioGiro = {
+      utenteId: userId, psProjectId, psName, rawDate, feedId, serviceType, routes,
+      depotsSel: depotsSel ?? null, schedProjectId,
+      defaultVehicleType: typeof b.defaultVehicleType === "string" ? b.defaultVehicleType : null,
+      saveScenario: b.saveScenario !== false,
+      scenarioName: typeof b.scenarioName === "string" && b.scenarioName.trim() ? b.scenarioName.trim().slice(0, 120) : null,
+      creatoIl: job.createdAt,
+    };
+    // Il feed del CALCOLO, come per la Fucina: quello del giro, se l'utente lo vede.
+    const feedCalcolo = await getLatestFeedId({ user: req.user, body: runBody, query: {} });
+    if (!feedCalcolo) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+    await ensureVariantCodeColumn();
+    const richiesta: RichiestaGiro = { mode, feedId: feedCalcolo, corpo: runBody, params: job.params, salvataggio };
+
     agentJobs.set(job.id, job);
     pruneAgentJobs();
-    void persistAgentJob(job, req.body);
+    await persistAgentJob(job, req.body);
 
-    // La pipeline del giro è la STESSA della fucina (eseguiOttimizzazione).
+    // La pipeline del giro è la STESSA della fucina (eseguiOttimizzazione),
+    // il salvataggio dello scenario è in una transazione sola (salvaGiro).
     const { log: jobLog, progresso } = agentJobLogger(job, req.log);
-    const runPromise: Promise<{ code: number; payload: any }> = ottimizzaInProcesso(runBody, mode, req.user, jobLog, progresso)
-      .then(r => ({ code: r.codice, payload: r.corpo }))
-      .catch((err: any) => ({ code: 500, payload: { error: err?.message || "errore interno" } }));
-
-    const saveScenario = b.saveScenario !== false;
-    const scenarioNameReq = typeof b.scenarioName === "string" && b.scenarioName.trim()
-      ? b.scenarioName.trim().slice(0, 120) : null;
-
-    void runPromise.then(async ({ code, payload }) => {
-      try {
-        if (code !== 200 || payload?.error || payload?.status === "NO_INPUT") {
+    void eseguiGiro(richiesta, { lavoroId: job.id, chi: null, log: jobLog, progresso })
+      .catch((err: any): EsitoGiro => ({ stato: "errore", errore: err?.message || "errore interno" }))
+      .then((esito) => {
+        if (esito.stato === "fatto") {
+          job.result = esito.payload;
+          job.progress = { phase: job.progress.phase, pct: 100, msg: "Completato" };
+          job.scenarioId = esito.scenarioId;
+          job.dssId = esito.dssId;
+          if (esito.scenarioName) job.scenarioName = esito.scenarioName;
+          job.params = esito.params;
+          job.status = "done";
+        } else {
           job.status = "error";
-          job.error = payload?.error
-            || (payload?.status === "NO_INPUT"
-              ? "Nessuna corsa attiva per la data/linee scelte: controlla la data di esercizio"
-              : `Errore HTTP ${code}`);
-          return;
+          job.error = esito.stato === "errore" ? esito.errore : "Giro fermato";
         }
-        job.result = payload;
-        job.progress = { phase: job.progress.phase, pct: 100, msg: "Completato" };
-        if (saveScenario) {
-          const name = scenarioNameReq
-            ?? `Argos · ${psName} · ${rawDate}${mode === "vcsp" ? " · VCSP" : ""}`;
-          job.scenarioName = name;
-          // Scenario TURNI MACCHINA (il top-level è già il best round / sonda).
-          const savedResult = payload.vcsp?.bestRound != null
-            ? { ...payload, vcspSelectedRound: payload.vcsp.bestRound }
-            : payload;
-          const [row] = await db.insert(serviceProgramScenarios).values({
-            name,
-            date: rawDate.replace(/-/g, ""),
-            feedId: feedId || undefined,
-            input: {
-              date: rawDate, serviceType, routes,
-              source: "argos-agent", mode,
-              ...(runBody.vcsp ? { vcsp: runBody.vcsp } : {}),
-            } as any,
-            result: savedResult as any,
-          }).returning({ id: serviceProgramScenarios.id });
-          job.scenarioId = row.id;
-          try {
-            await db.execute(sql`UPDATE service_program_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`);
-          } catch { /* colonna assente su DB legacy */ }
-          // Dossier di processo: la CONFIGURAZIONE usata (manopole guida, tariffe,
-          // parametri VCSP/VSP, tetto auto) resta con lo scenario, così la
-          // relazione può dichiarare con quali valori è stato calcolato.
-          try {
-            const provenance = {
-              source: "argos-agent", mode, savedAt: new Date().toISOString(),
-              crewConfig: runBody.crewConfig ?? null,
-              vcsp: runBody.vcsp ?? null,
-              vehicleCosts: runBody.vehicleCosts ?? null,
-              vspAdvanced: runBody.vspAdvanced ?? null,
-              intensity: runBody.intensity ?? null, robustness: runBody.robustness ?? null,
-              serviceType, defaultVehicleType: b.defaultVehicleType ?? null,
-              companyCars: runBody.crewConfig?.companyCars ?? null,
-            };
-            await db.execute(sql`UPDATE service_program_scenarios SET config = ${JSON.stringify(provenance)}::jsonb WHERE id = ${row.id}::uuid`);
-          } catch (e: any) {
-            jobLog.warn(`agent-optimize: salvataggio configurazione (dossier) fallito (non-fatale): ${e?.message}`);
-          }
-          if (schedProjectId) {
-            try {
-              await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${schedProjectId}::uuid WHERE id = ${row.id}::uuid`);
-            } catch { /* colonna assente */ }
-          }
-          if (depotsSel && depotsSel.length > 0) {
-            const clean = depotsSel
-              .filter((d: any) => d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id))
-              .map((d: any) => ({ id: d.id, maxVehicles: Number.isFinite(Number(d.maxVehicles)) && Number(d.maxVehicles) > 0 ? Number(d.maxVehicles) : null }));
-            if (clean.length > 0) {
-              try {
-                await db.execute(sql`UPDATE service_program_scenarios SET depots = ${JSON.stringify(clean)}::jsonb WHERE id = ${row.id}::uuid`);
-              } catch { /* non-fatale */ }
-            }
-          }
-          // VCSP: anche i TURNI GUIDA del best round come DSS collegato,
-          // così entrambe le aree di lavoro sono pronte (parità con la fucina).
-          const v = payload.vcsp;
-          if (mode === "vcsp" && Array.isArray(v?.crew?.driverShifts) && v.crew.driverShifts.length > 0) {
-            try {
-              const [dss] = await db.insert(driverShiftScenarios).values({
-                serviceProgramScenarioId: row.id,
-                name: `${name} · Turni guida (VCSP round ${v.bestRound ?? "?"})`,
-                result: {
-                  solver: "vcsp_crew",
-                  driverShifts: v.crew.driverShifts,
-                  summary: v.crew.summary ?? null,
-                  handovers: v.crew.handovers ?? [],
-                  clusters: v.crew.clusters ?? [],
-                  metrics: v.crew.metrics ?? null,
-                } as any,
-                config: { source: "argos-agent", bestRound: v.bestRound ?? null, selectedRound: v.bestRound ?? null,
-                          crewConfig: runBody.crewConfig ?? null } as any,
-              }).returning({ id: driverShiftScenarios.id });
-              job.dssId = dss.id;
-              try {
-                await db.execute(sql`UPDATE driver_shift_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${dss.id}::uuid`);
-              } catch { /* colonna assente */ }
-            } catch (e: any) {
-              jobLog.warn(`agent-optimize: salvataggio turni guida fallito (non-fatale): ${e?.message}`);
-            }
-          }
-        }
-        // I parametri del giro registrano il ciclo VERO, letto dal motore: se
-        // restassero quelli della richiesta, un giro lanciato coi default li
-        // avrebbe vuoti e il confronto non potrebbe dire che due giri hanno
-        // avuto un ciclo diverso.
-        const ciclo = (payload as any)?.vcsp?.ciclo;
-        if (ciclo && typeof ciclo === "object") {
-          job.params = {
-            ...job.params,
-            penaltyStep: ciclo.passo ?? null,
-            penaltyAnchor: ciclo.ancora ?? null,
-            seedFromBest: ciclo.seme ?? null,
-            earlyStopPatience: ciclo.pazienza ?? (job.params as any)?.earlyStopPatience ?? null,
-            controllo: ciclo.controllo ?? null,
-          };
-        }
-        job.status = "done";
-      } catch (e: any) {
-        job.status = "error";
-        job.error = `Giro completato ma salvataggio fallito: ${e?.message}`;
-      } finally {
         job.finishedAt = Date.now();
         void persistAgentJob(job);
-      }
-    });
+      });
 
     res.json({
       jobId: job.id,
