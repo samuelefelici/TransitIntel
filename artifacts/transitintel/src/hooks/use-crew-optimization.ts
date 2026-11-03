@@ -4,13 +4,18 @@
  * Gestisce il ciclo di vita: idle → starting → running → completed/failed
  * Utilizza EventSource (SSE) per progress real-time, con fallback polling.
  *
- * Il calcolo gira sulla coda dei lavori del server e sopravvive ai riavvii.
- * Se la pagina lo abbandona (rilancio, reset, uscita dalla pagina) lo ferma
- * anche sul server: il jobId si perde, e il calcolo terrebbe occupato uno slot.
+ * Il calcolo gira sulla coda dei lavori del server e sopravvive ai riavvii e
+ * alla pagina (2.7b): uscire o ricaricare non lo ferma. Il calcolo aperto per
+ * uno scenario è ricordato nel browser (lib/memoria-calcoli) e la pagina lo
+ * riprende al montaggio, anche se è finito mentre era chiusa; «I miei
+ * calcoli» lo apre con ?calcolo=<id>. Lo fermano solo lo stop, il reset e un
+ * nuovo avvio. Dopo il salvataggio dello scenario la pagina chiama
+ * dimenticaCalcolo().
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
 import { getApiBase } from "@/lib/api";
+import { ricorda, richiama, dimentica, chiaveTurniGuida } from "@/lib/memoria-calcoli";
 
 /* ─── Types ─────────────────────────────────────────────────── */
 
@@ -146,19 +151,29 @@ export interface UseCrewOptimizationReturn {
   stop: () => void;
   /** Reset to idle */
   reset: () => void;
+  /** Il risultato è salvato: il calcolo non va più ripreso riaprendo la pagina */
+  dimenticaCalcolo: () => void;
+}
+
+export interface OpzioniCrewOptimization {
+  /** lo scenario dei turni macchina della pagina: il calcolo aperto per lui si riprende al montaggio */
+  scenarioId?: string | null;
+  /** un calcolo da aprire (da «I miei calcoli», ?calcolo=<id>) */
+  calcolo?: string | null;
 }
 
 /* ─── Hook ─────────────────────────────────────────────────── */
 
 const JOB_GONE_MESSAGE =
   "L'ottimizzazione non è più disponibile sul server. Rilancia l'ottimizzazione.";
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Ferma un calcolo sul server senza aspettare la risposta (keepalive: vale anche uscendo dalla pagina). */
 function fermaSulServer(jId: string): void {
   fetch(`${getApiBase()}/api/driver-shifts/jobs/${jId}/stop`, { method: "POST", keepalive: true }).catch(() => {});
 }
 
-export function useCrewOptimization(): UseCrewOptimizationReturn {
+export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseCrewOptimizationReturn {
   const [state, setState] = useState<OptimizationState>("idle");
   const [progress, setProgress] = useState<OptimizationProgress | null>(null);
   const [progressHistory, setProgressHistory] = useState<OptimizationProgress[]>([]);
@@ -171,10 +186,12 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
-  // conteggio 404 consecutivi in polling: il job è sparito (riavvio server / TTL)
+  // conteggio 404 consecutivi in polling: il job è sparito (oltre 30 giorni)
   const notFoundRef = useRef<number>(0);
-  // il calcolo vivo sul server (da fermare se la pagina lo abbandona)
+  // il calcolo vivo sul server seguito dalla pagina (un nuovo avvio o il reset lo fermano)
   const vivoRef = useRef<string | null>(null);
+  // lo scenario del calcolo seguito: la chiave della memoria nel browser
+  const scenarioRef = useRef<string | null>(null);
   // sale a ogni avvio, reset e smontaggio: una risposta di un avvio vecchio non si aggancia
   const generazioneRef = useRef<number>(0);
 
@@ -208,7 +225,20 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
     stopTimer();
   }, [closeSSE, stopPolling, stopTimer]);
 
-  /** La pagina lascia il calcolo in corso: lo si ferma anche sul server. */
+  /** Il calcolo non va più ripreso (finito male, fermato, salvato, scartato). */
+  const dimenticaCalcolo = useCallback(() => {
+    if (scenarioRef.current) dimentica(chiaveTurniGuida(scenarioRef.current));
+  }, []);
+
+  /** Un esito che chiude il calcolo senza risultato da tenere: fallito o fermato. */
+  const finitoMale = useCallback((stato: "failed" | "stopped", messaggio: string) => {
+    setError(messaggio);
+    setState(stato);
+    dimenticaCalcolo();
+    cleanup();
+  }, [cleanup, dimenticaCalcolo]);
+
+  /** La pagina lascia il calcolo (nuovo avvio, reset): lo si ferma anche sul server. */
   const abbandona = useCallback(() => {
     generazioneRef.current += 1;
     const j = vivoRef.current;
@@ -216,82 +246,19 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
     if (j) fermaSulServer(j);
   }, []);
 
-  // Cleanup on unmount
-  useEffect(() => () => { abbandona(); cleanup(); }, [abbandona, cleanup]);
+  // Smontaggio: si smette di seguire, il calcolo continua sul server (e si riprende riaprendo)
+  useEffect(() => () => { generazioneRef.current += 1; cleanup(); }, [cleanup]);
 
   /* ── Start timer ──────────────────────────────────────────── */
 
-  const startTimer = useCallback(() => {
-    startTimeRef.current = Date.now();
-    setElapsedSec(0);
+  const startTimer = useCallback((dal: number = Date.now()) => {
+    stopTimer();
+    startTimeRef.current = dal;
+    setElapsedSec(Math.max(0, Math.round((Date.now() - dal) / 1000)));
     timerRef.current = setInterval(() => {
       setElapsedSec(Math.round((Date.now() - startTimeRef.current) / 1000));
     }, 1000);
-  }, []);
-
-  /* ── SSE connection ───────────────────────────────────────── */
-
-  const connectSSE = useCallback((jId: string) => {
-    closeSSE();
-    const base = getApiBase();
-    const url = `${base}/api/driver-shifts/jobs/${jId}/stream`;
-    const es = new EventSource(url);
-    eventSourceRef.current = es;
-
-    es.addEventListener("progress", (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        const prog = data.progress as OptimizationProgress;
-        setProgress(prog);
-        setProgressHistory((prev) => [...prev, prog]);
-        setState("running");
-      } catch { /* ignore bad event */ }
-    });
-
-    es.addEventListener("status", (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        if (data.progress) {
-          setProgress(data.progress);
-        }
-      } catch { /* ignore */ }
-    });
-
-    es.addEventListener("result", (evt) => {
-      try {
-        const data = JSON.parse(evt.data);
-        setResult(data.data);
-        setState("completed");
-        cleanup();
-      } catch {
-        setError("Errore parsing risultato");
-        setState("failed");
-        cleanup();
-      }
-    });
-
-    es.addEventListener("error", (evt) => {
-      // SSE "error" event can be either a server error event or connection error
-      if (evt instanceof MessageEvent) {
-        try {
-          const data = JSON.parse(evt.data);
-          setError(data.error || "Errore ottimizzazione");
-          setState(data.status === "stopped" ? "stopped" : "failed");
-          cleanup();
-          return;
-        } catch { /* fallthrough */ }
-      }
-      // Connection error — try fallback polling
-      closeSSE();
-      startFallbackPolling(jId);
-    });
-
-    es.onerror = () => {
-      // Connection lost — try polling
-      closeSSE();
-      startFallbackPolling(jId);
-    };
-  }, [closeSSE, cleanup]);
+  }, [stopTimer]);
 
   /* ── Fallback polling ─────────────────────────────────────── */
 
@@ -310,11 +277,7 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
           const corpo = await resp.json().catch(() => null);
           if (!corpo || typeof corpo.error !== "string") return;
           notFoundRef.current += 1;
-          if (notFoundRef.current >= 3) {
-            setError(JOB_GONE_MESSAGE);
-            setState("failed");
-            cleanup();
-          }
+          if (notFoundRef.current >= 3) finitoMale("failed", JOB_GONE_MESSAGE);
           return;
         }
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -330,20 +293,127 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
           setState("completed");
           cleanup();
         } else if (data.status === "failed" || data.status === "stopped") {
-          setError(data.error || "Ottimizzazione terminata");
-          setState(data.status);
-          cleanup();
+          finitoMale(data.status, data.error || "Ottimizzazione terminata");
         }
       } catch {
         // Errore di rete transitorio — riprova al prossimo intervallo (non è un 404)
       }
     }, 2000);
-  }, [stopPolling, cleanup]);
+  }, [stopPolling, cleanup, finitoMale]);
+
+  /* ── SSE connection ───────────────────────────────────────── */
+
+  const connectSSE = useCallback((jId: string) => {
+    closeSSE();
+    const base = getApiBase();
+    const url = `${base}/api/driver-shifts/jobs/${jId}/stream`;
+    // withCredentials: in produzione l'API è su un'altra origine e senza il cookie
+    // lo stream risponderebbe 401 (si ripiegava sempre sul polling)
+    const es = new EventSource(url, { withCredentials: true });
+    eventSourceRef.current = es;
+
+    es.addEventListener("progress", (evt) => {
+      try {
+        const data = JSON.parse((evt as MessageEvent).data);
+        const prog = data.progress as OptimizationProgress;
+        setProgress(prog);
+        setProgressHistory((prev) => [...prev, prog]);
+        setState("running");
+      } catch { /* ignore bad event */ }
+    });
+
+    es.addEventListener("status", (evt) => {
+      try {
+        const data = JSON.parse((evt as MessageEvent).data);
+        if (data.progress) {
+          setProgress(data.progress);
+        }
+      } catch { /* ignore */ }
+    });
+
+    es.addEventListener("result", (evt) => {
+      try {
+        const data = JSON.parse((evt as MessageEvent).data);
+        setResult(data.data);
+        setState("completed");
+        cleanup();
+      } catch {
+        finitoMale("failed", "Errore parsing risultato");
+      }
+    });
+
+    es.addEventListener("error", (evt) => {
+      // SSE "error" event can be either a server error event or connection error
+      if (evt instanceof MessageEvent) {
+        try {
+          const data = JSON.parse(evt.data);
+          finitoMale(data.status === "stopped" ? "stopped" : "failed", data.error || "Errore ottimizzazione");
+          return;
+        } catch { /* fallthrough */ }
+      }
+      // Connection error — try fallback polling
+      closeSSE();
+      startFallbackPolling(jId);
+    });
+
+    es.onerror = () => {
+      // Connection lost — try polling
+      closeSSE();
+      startFallbackPolling(jId);
+    };
+  }, [closeSSE, cleanup, finitoMale, startFallbackPolling]);
+
+  /* ── Ripresa al montaggio ─────────────────────────────────── */
+
+  // Il calcolo aperto per lo scenario (o quello chiesto da «I miei calcoli»): se
+  // c'è ancora, lo si segue; finito mentre la pagina era chiusa, arriva il risultato.
+  useEffect(() => {
+    const sid = opzioni.scenarioId;
+    if (!sid) return;
+    const daLink = opzioni.calcolo && UUID.test(opzioni.calcolo) ? opzioni.calcolo : null;
+    const jId = daLink ?? richiama(chiaveTurniGuida(sid))?.jobId ?? null;
+    if (!jId) return;
+    const generazione = generazioneRef.current;
+    fetch(`${getApiBase()}/api/driver-shifts/jobs/${jId}`)
+      .then(async (resp) => {
+        if (generazione !== generazioneRef.current) return;
+        if (resp.status === 404) {
+          const corpo = await resp.json().catch(() => null);
+          if (corpo && typeof corpo.error === "string") dimentica(chiaveTurniGuida(sid));
+          return;
+        }
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (generazione !== generazioneRef.current) return;
+        scenarioRef.current = sid;
+        if (daLink) ricorda(chiaveTurniGuida(sid), { jobId: jId, avviatoIl: Number(data.createdAt) || Date.now() });
+        setJobId(jId);
+        setError(null);
+        if (data.progress) setProgress(data.progress);
+        if (data.status === "completed" && data.data) {
+          setResult(data.data);
+          setState("completed");
+          return;
+        }
+        if (data.status === "failed" || data.status === "stopped") {
+          // finito male a pagina chiusa: si dice una volta, poi non si riprende più
+          finitoMale(data.status, data.error || "Ottimizzazione terminata");
+          return;
+        }
+        vivoRef.current = jId;
+        setState("running");
+        startTimer(Number(data.createdAt) || Date.now());
+        connectSSE(jId);
+      })
+      .catch(() => { /* server non raggiungibile: niente ripresa, la memoria resta */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [opzioni.scenarioId]);
 
   /* ── Start optimization ───────────────────────────────────── */
 
   const start = useCallback((scenarioId: string, timeLimit = 120, config?: OperatorConfig) => {
     abbandona();
+    dimenticaCalcolo();
     cleanup();
     const generazione = generazioneRef.current;
     setState("starting");
@@ -373,6 +443,8 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
         // nel frattempo la pagina ha rilanciato o resettato: questo calcolo non lo segue nessuno
         if (generazione !== generazioneRef.current) { fermaSulServer(jId); return; }
         vivoRef.current = jId;
+        scenarioRef.current = scenarioId;
+        ricorda(chiaveTurniGuida(scenarioId), { jobId: jId, avviatoIl: Date.now() });
         setJobId(jId);
         setState("running");
         connectSSE(jId);
@@ -383,13 +455,14 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
         setState("failed");
         stopTimer();
       });
-  }, [abbandona, cleanup, startTimer, connectSSE, stopTimer]);
+  }, [abbandona, dimenticaCalcolo, cleanup, startTimer, connectSSE, stopTimer]);
 
   /* ── Stop optimization ────────────────────────────────────── */
 
   const stop = useCallback(() => {
     if (!jobId) return;
     const base = getApiBase();
+    dimenticaCalcolo();
 
     fetch(`${base}/api/driver-shifts/jobs/${jobId}/stop`, { method: "POST" })
       .then(() => {
@@ -401,12 +474,13 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
         setState("stopped");
         cleanup();
       });
-  }, [jobId, cleanup]);
+  }, [jobId, cleanup, dimenticaCalcolo]);
 
   /* ── Reset ────────────────────────────────────────────────── */
 
   const reset = useCallback(() => {
     abbandona();
+    dimenticaCalcolo();
     cleanup();
     setState("idle");
     setProgress(null);
@@ -415,7 +489,7 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
     setError(null);
     setJobId(null);
     setElapsedSec(0);
-  }, [abbandona, cleanup]);
+  }, [abbandona, cleanup, dimenticaCalcolo]);
 
   return {
     state,
@@ -428,5 +502,6 @@ export function useCrewOptimization(): UseCrewOptimizationReturn {
     start,
     stop,
     reset,
+    dimenticaCalcolo,
   };
 }

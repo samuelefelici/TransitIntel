@@ -302,7 +302,17 @@ export default function DriverWorkspace({
     setRowHighlights(undefined);
   }, []);
 
-  const cpsat = useCrewOptimization();
+  // il calcolo aperto per lo scenario si riprende al montaggio; «I miei calcoli» apre con ?calcolo=<id>
+  const [calcoloDaLink] = useState<string | null>(() => {
+    const id = new URLSearchParams(window.location.search).get("calcolo");
+    if (id) {
+      const u = new URL(window.location.href);
+      u.searchParams.delete("calcolo");
+      window.history.replaceState(window.history.state, "", u.toString());
+    }
+    return id;
+  });
+  const cpsat = useCrewOptimization({ scenarioId: vehicleScenarioId, calcolo: calcoloDaLink });
 
   // ── Carica il profilo-regole di default (azienda ⊕ progetto) come config di
   //    partenza. Una sola volta: non sovrascrive le modifiche live dell'operatore.
@@ -464,6 +474,8 @@ export default function DriverWorkspace({
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      // salvato: riaprendo la pagina il calcolo non va più ripreso
+      cpsat.dimenticaCalcolo();
       setShowSaveDialog(false); setDssName("");
       toast.success("Scenario turni guida salvato");
       // ── Ritorno alla home del progetto dopo salvataggio turni guida ──
@@ -475,7 +487,7 @@ export default function DriverWorkspace({
     } finally {
       setSavingDss(false);
     }
-  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool]);
+  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool, cpsat]);
 
   /* ── Export handlers ─────────────────────────────────── */
   /* Fogli turno: UNA pagina A4 per turno nel formato aziendale (codice,

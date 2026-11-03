@@ -16,7 +16,7 @@ import {
   Truck, Bus, Clock, MapPin, Home, Fuel, TrendingUp, Zap, BarChart3,
   Timer, Navigation, CheckCircle2, AlertTriangle, RefreshCw, X, Users,
   Flame, ArrowRightLeft, TrainFront, Building2, GraduationCap, Pencil,
-  SlidersHorizontal, Car,
+  SlidersHorizontal, Car, Square,
 } from "lucide-react";
 import { VspRulesPanel } from "@/components/VspRulesPanel";
 import { buildDefaultVspConfig, type VspConfig } from "@/lib/vsp-rules";
@@ -32,6 +32,11 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { toast } from "sonner";
 import { getApiBase } from "@/lib/api";
+import {
+  avviaCalcoloVeicoli, seguiCalcoloVeicoli, fermaCalcoloVeicoli, CalcoloFermato, CalcoloSparito,
+  type ImpostazioniSolutore, type StatoCalcoloVeicoli,
+} from "@/lib/calcolo-veicoli";
+import { ricorda, dimentica, chiaveFucina } from "@/lib/memoria-calcoli";
 import { AlgoGuide, HelpTip, VSP_GUIDE, VCSP_GUIDE } from "@/components/StepGuide";
 // Anteprima turni guida VCSP (gantt read-only, stessi adapter del workspace TG)
 import InteractiveGantt, { type GanttBar, type GanttRow } from "@/components/InteractiveGantt";
@@ -122,9 +127,18 @@ const LOADING_MSGS = [
 ];
 
 /* ── Animated loading screen ── */
-function LoadingScreen({ solverMode, intensity }: { solverMode: "greedy" | "cpsat" | "vcsp"; intensity: "fast" | "normal" | "deep" | "extreme" }) {
+function LoadingScreen({ solverMode, intensity, reale, onFerma, fermando }: {
+  solverMode: "greedy" | "cpsat" | "vcsp"; intensity: "fast" | "normal" | "deep" | "extreme";
+  /** l'avanzamento vero dal server (calcoli in coda); senza, la barra è una stima */
+  reale?: StatoCalcoloVeicoli | null;
+  /** il calcolo è in coda: si può fermare, e la pagina si può chiudere */
+  onFerma?: () => void;
+  fermando?: boolean;
+}) {
   const [msgIdx, setMsgIdx] = useState(0);
-  const [progress, setProgress] = useState(0);
+  const [stima, setProgress] = useState(0);
+  const percentualeReale = Number(reale?.progress?.percentage);
+  const progress = Number.isFinite(percentualeReale) ? Math.max(0, Math.min(100, percentualeReale)) : stima;
 
   const cpsatSec = intensity === "fast" ? 60 : intensity === "extreme" ? 900 : intensity === "deep" ? 420 : 180;
   const durationSec = solverMode === "cpsat" ? cpsatSec
@@ -209,19 +223,37 @@ function LoadingScreen({ solverMode, intensity }: { solverMode: "greedy" | "cpsa
         </div>
       </div>
 
-      {/* Animated message */}
+      {/* Animated message (o la fase vera del calcolo in coda) */}
       <AnimatePresence mode="wait">
         <motion.p
-          key={msgIdx}
+          key={reale?.status === "queued" ? "coda" : reale?.progress?.detail ? `r:${reale.progress.detail}` : msgIdx}
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -6 }}
           transition={{ duration: 0.3 }}
           className="text-xs text-orange-300/60 font-mono"
         >
-          {LOADING_MSGS[msgIdx]}
+          {reale?.status === "queued"
+            ? "In coda: parte appena si libera il calcolatore…"
+            : (reale?.progress?.detail || LOADING_MSGS[msgIdx])}
         </motion.p>
       </AnimatePresence>
+
+      {onFerma && (
+        <div className="flex flex-col items-center gap-3 max-w-sm text-center">
+          <p className="text-[11px] text-muted-foreground">
+            Puoi chiudere o ricaricare la pagina: il calcolo continua sul server e lo ritrovi qui, o in «I miei calcoli».
+          </p>
+          <button
+            onClick={onFerma}
+            disabled={fermando}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs border border-red-500/40 text-red-300 hover:bg-red-500/10 disabled:opacity-50"
+          >
+            {fermando ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Square className="w-3.5 h-3.5" />}
+            {fermando ? "Fermo il calcolo…" : "Ferma il calcolo"}
+          </button>
+        </div>
+      )}
     </motion.div>
   );
 }
@@ -245,11 +277,17 @@ interface Props {
    *  "classic" = VSP (turni macchina), poi CSP nello step Turni Guida;
    *  "vcsp"    = pipeline integrata: TM+TG insieme, salvataggio doppio. */
   pipelineMode?: "classic" | "vcsp";
+  /** un calcolo in coda da riprendere (ricaricamento, «I miei calcoli»): le
+   *  impostazioni con cui era partito e il suo id, da seguire fino alla fine */
+  ripresa?: { jobId: string; impostazioni: ImpostazioniSolutore } | null;
+  /** il calcolo ricordato per il progetto, da proporre (tornando su questo passo) */
+  ricordato?: { jobId: string; avviatoIl: number } | null;
+  onRiprendiRicordato?: (jobId: string) => void;
   onBack: () => void;
   onComplete: (result: ServiceProgramResult, savedScenarioId?: string) => void;
 }
 
-export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, depotId, depots, pipelineMode = "classic", onBack, onComplete }: Props) {
+export default function OptimizerStep({ gtfsSelection, assignment, initialResult, projectId, psProjectId, depotId, depots, pipelineMode = "classic", ripresa, ricordato, onRiprendiRicordato, onBack, onComplete }: Props) {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ServiceProgramResult | null>(initialResult ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -578,14 +616,85 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     if (!initialResult) return; // non auto-runnare: l'utente configura prima il solver
   }, []);
 
-  /* Il calcolo in corso: lasciando lo step o rilanciando si chiude la richiesta, e
-   * il server ferma il calcolo (dalla 2.6 gira in coda: altrimenti resterebbe vivo,
-   * occuperebbe la corsia e conterebbe nei 3 calcoli dell'utente). */
+  /* Il calcolo seguito dalla pagina. CP-SAT e VCSP girano in coda (dalla 2.7b
+   * asincroni): uscire dallo step smette solo di seguirli, il calcolo continua
+   * sul server e si ritrova qui (ricordato per progetto) o in «I miei calcoli».
+   * L'euristica è una richiesta breve: lasciando lo step la si chiude. */
   const calcoloRef = React.useRef<AbortController | null>(null);
   useEffect(() => () => { calcoloRef.current?.abort(); }, []);
+  const [jobAttivo, setJobAttivo] = useState<string | null>(null);
+  const jobAttivoRef = React.useRef<string | null>(null);
+  const [statoCoda, setStatoCoda] = useState<StatoCalcoloVeicoli | null>(null);
+  const [fermando, setFermando] = useState(false);
+  const chiaveMemoria = projectId ? chiaveFucina(projectId) : null;
+
+  /** Il risultato di un calcolo; senza summary è un calcolo senza turni, da dire bene. */
+  const accettaRisultato = useCallback((data: any) => {
+    // Risposta 200 ma senza summary = ottimizzazione senza risultati (es.
+    // nessuna corsa per data/linee selezionate). Trattala come errore gestito
+    // invece di far crashare il render (che legge result.summary.*).
+    if (!data || !data.summary) {
+      // Il solver CP-SAT, senza corse in input, risponde { status: "NO_INPUT" }
+      // (niente summary). Greedy invece torna sempre summary.
+      const noInput = data?.status === "NO_INPUT";
+      throw new Error(
+        data?.error || data?.message ||
+        (noInput
+          ? "Nessuna corsa trovata per la data e le linee selezionate. Controlla la data di esercizio dell'UDP (deve essere un giorno con servizio attivo) e che le linee siano quelle dell'unità."
+          : "L'ottimizzazione non ha prodotto risultati."),
+      );
+    }
+    setResult(data);
+    if (data.solverMetrics) setSolverMetrics(data.solverMetrics);
+  }, []);
+
+  /** Segue un calcolo in coda fino alla fine (avanzamento vero, poi risultato o errore). */
+  const segui = useCallback(async (jobId: string) => {
+    calcoloRef.current?.abort();
+    const calcolo = new AbortController();
+    calcoloRef.current = calcolo;
+    jobAttivoRef.current = jobId;
+    setJobAttivo(jobId);
+    setStatoCoda(null);
+    setFermando(false);
+    setError(null);
+    setRunning(true);
+    try {
+      const data = await seguiCalcoloVeicoli(jobId, { segnale: calcolo.signal, onStato: setStatoCoda });
+      if (calcolo.signal.aborted) return;
+      accettaRisultato(data);
+      // il risultato resta ricordato finché non si salva lo scenario: un ricaricamento lo ritrova
+    } catch (e: any) {
+      if (calcolo.signal.aborted) return;
+      // finito male: non c'è più niente da riprendere
+      if (chiaveMemoria) dimentica(chiaveMemoria);
+      if (e instanceof CalcoloFermato) { toast.info("Calcolo fermato"); return; }
+      setError(e instanceof CalcoloSparito ? e.message : (e?.message || "Errore sconosciuto"));
+    } finally {
+      if (calcoloRef.current === calcolo) {
+        calcoloRef.current = null;
+        jobAttivoRef.current = null;
+        setJobAttivo(null);
+        setFermando(false);
+        setRunning(false);
+      }
+    }
+  }, [accettaRisultato, chiaveMemoria]);
+
+  /** Stop esplicito del calcolo in coda: la lettura successiva dice «fermato». */
+  const fermaCalcolo = useCallback(async () => {
+    const j = jobAttivoRef.current;
+    if (!j) return;
+    setFermando(true);
+    try { await fermaCalcoloVeicoli(j); }
+    catch (e: any) { setFermando(false); toast.error("Stop non riuscito", { description: e?.message }); }
+  }, []);
 
   const runOptimizer = useCallback(async () => {
     calcoloRef.current?.abort();
+    // un calcolo in coda ancora seguito: un nuovo avvio lo sostituisce (e lo ferma)
+    const vecchio = jobAttivoRef.current;
+    if (vecchio) { jobAttivoRef.current = null; fermaCalcoloVeicoli(vecchio).catch(() => {}); }
     const calcolo = new AbortController();
     calcoloRef.current = calcolo;
     setRunning(true);
@@ -594,6 +703,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     setSavedScenarioId(null);
     setSolverMetrics(null);
     setProbeApply({ state: "idle" });
+    setStatoCoda(null);
+    let inCoda: string | null = null;
     try {
       const base = getApiBase();
       const endpoint = solverMode === "vcsp"
@@ -661,35 +772,25 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       // qui. Viene eseguita come step separato nel Workspace Turni Macchina,
       // dopo la creazione/modifica dei turni, su esplicita richiesta utente.
 
-      const resp = await fetch(`${base}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(bodyPayload),
-        signal: calcolo.signal,
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || `Errore ${resp.status}`);
+      if (solverMode === "cpsat" || solverMode === "vcsp") {
+        // in coda: si lancia, si ricorda per il progetto, poi si segue (sotto)
+        inCoda = await avviaCalcoloVeicoli(solverMode, bodyPayload);
+        if (chiaveMemoria) ricorda(chiaveMemoria, { jobId: inCoda, avviatoIl: Date.now() });
+      } else {
+        const resp = await fetch(`${base}${endpoint}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(bodyPayload),
+          signal: calcolo.signal,
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.error || `Errore ${resp.status}`);
+        }
+        const data = await resp.json();
+        if (calcolo.signal.aborted) return;
+        accettaRisultato(data);
       }
-      const data = await resp.json();
-      // Risposta 200 ma senza summary = ottimizzazione senza risultati (es.
-      // nessuna corsa per data/linee selezionate). Trattala come errore gestito
-      // invece di far crashare il render (che legge result.summary.*).
-      if (!data || !data.summary) {
-        // Il solver CP-SAT, senza corse in input, risponde { status: "NO_INPUT" }
-        // (niente summary). Greedy invece torna sempre summary. In entrambi i casi
-        // qui gestiamo l'assenza di risultati come errore, senza crashare il render.
-        const noInput = data?.status === "NO_INPUT";
-        throw new Error(
-          data?.error || data?.message ||
-          (noInput
-            ? "Nessuna corsa trovata per la data e le linee selezionate. Controlla la data di esercizio dell'UDP (deve essere un giorno con servizio attivo) e che le linee siano quelle dell'unità."
-            : "L'ottimizzazione non ha prodotto risultati."),
-        );
-      }
-      if (calcolo.signal.aborted) return;
-      setResult(data);
-      if (data.solverMetrics) setSolverMetrics(data.solverMetrics);
     } catch (e: any) {
       // chiuso da noi (step lasciato o calcolo rilanciato): niente errore da mostrare
       if (calcolo.signal.aborted) return;
@@ -697,10 +798,40 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
     } finally {
       if (calcoloRef.current === calcolo) {
         calcoloRef.current = null;
-        setRunning(false);
+        if (!inCoda) setRunning(false);
       }
     }
-  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, vcspProbe, crewTimeLimit, crewConfig, projectId, robustness, normativa]);
+    // step lasciato durante l'avvio: il calcolo resta ricordato e si ritrova tornando qui
+    if (inCoda && !calcolo.signal.aborted) void segui(inCoda);
+  }, [assignment, solverMode, solverIntensity, serviceType, vspConfig, psProjectId, gtfsSelection.tempFeedId, depots, vcspRounds, vcspProbe, crewTimeLimit, crewConfig, projectId, robustness, normativa, accettaRisultato, segui, chiaveMemoria]);
+
+  /* Ripresa di un calcolo in coda (ricaricamento, «I miei calcoli»): le
+   * impostazioni con cui era partito, poi lo si segue. Una volta, al montaggio. */
+  useEffect(() => {
+    if (!ripresa) return;
+    const i = ripresa.impostazioni;
+    setSolverMode(i.solverMode);
+    if (i.solverIntensity === "fast" || i.solverIntensity === "normal" || i.solverIntensity === "deep" || i.solverIntensity === "extreme") {
+      setSolverIntensity(i.solverIntensity);
+    }
+    if (i.serviceType) setServiceType(i.serviceType);
+    if (i.robustness) setRobustness(i.robustness);
+    setNormativa((i.normativa ?? {}) as NormativaCfg);
+    if (i.vehicleCosts || i.vspAdvanced) {
+      const base = buildDefaultVspConfig();
+      setVspConfig({
+        vehicleCosts: { ...base.vehicleCosts, ...(i.vehicleCosts ?? {}) },
+        vspAdvanced: { ...base.vspAdvanced, ...(i.vspAdvanced ?? {}) },
+      } as VspConfig);
+      setProfile("custom");
+    }
+    if (typeof i.vcspRounds === "number") setVcspRounds(i.vcspRounds);
+    if (typeof i.crewTimeLimit === "number") setCrewTimeLimit(i.crewTimeLimit);
+    if (typeof i.vcspProbe === "boolean") setVcspProbe(i.vcspProbe);
+    if (i.crewConfig) { setCrewConfig(i.crewConfig as OperatorConfig); setCrewCfgTouched(true); }
+    void segui(ripresa.jobId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** Result con i TURNI MACCHINA del round scelto (VCSP): tutto ciò che esce
    *  da questo step — salvataggio E area di lavoro — usa QUESTO, così lo
@@ -834,6 +965,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
       if (!resp.ok) throw new Error("Errore nel salvataggio");
       const data = await resp.json();
       setSavedScenarioId(data.id);
+      // salvato: il calcolo non va più ripreso
+      if (chiaveMemoria) dimentica(chiaveMemoria);
 
       // ── Pipeline integrata VCSP: salva ANCHE i turni guida del round scelto
       // come DSS collegato allo scenario vetture appena creato. Così entrambe
@@ -1360,6 +1493,21 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
             <motion.div key="config" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
               className="max-w-xl mx-auto px-5 py-8 space-y-5">
 
+              {/* Un calcolo lanciato prima per questo progetto (ancora in corso, o finito e non salvato) */}
+              {ricordato && onRiprendiRicordato && (
+                <div className="rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 flex items-center gap-3 text-xs">
+                  <RefreshCw className="w-4 h-4 text-sky-300 shrink-0" />
+                  <span className="flex-1 text-sky-100/90">
+                    C'è un calcolo lanciato il {new Date(ricordato.avviatoIl).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} per
+                    questo progetto. Riprenderlo riporta anche data, linee e depositi con cui era partito.
+                  </span>
+                  <button onClick={() => onRiprendiRicordato(ricordato.jobId)}
+                    className="shrink-0 px-2.5 py-1 rounded-lg border border-sky-500/40 text-sky-200 hover:bg-sky-500/10 font-semibold">
+                    Riprendilo
+                  </button>
+                </div>
+              )}
+
               <div className="text-center space-y-1.5">
                 <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-orange-500/10 border border-orange-500/20 mb-2">
                   <Zap className="w-5 h-5 text-orange-400" />
@@ -1622,7 +1770,8 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           {/* ── Loading screen ── */}
           {running && (
             <motion.div key="loading" className="h-full" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <LoadingScreen solverMode={solverMode} intensity={solverIntensity} />
+              <LoadingScreen solverMode={solverMode} intensity={solverIntensity}
+                reale={statoCoda} onFerma={jobAttivo ? () => { void fermaCalcolo(); } : undefined} fermando={fermando} />
             </motion.div>
           )}
 

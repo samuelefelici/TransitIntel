@@ -20,6 +20,8 @@ import type { ServiceProgramResult } from "@/pages/optimizer-route/types";
 import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
 import { getApiBase } from "@/lib/api";
 import { getProject as getSchedulingProject, syncProjectFromPs } from "@/lib/scheduling-projects-api";
+import { leggiCalcoloVeicoli, contestoDaRichiesta, fermaCalcoloVeicoli, type ImpostazioniSolutore } from "@/lib/calcolo-veicoli";
+import { richiama, ricorda, dimentica, chiaveFucina, type CalcoloRicordato } from "@/lib/memoria-calcoli";
 
 // il feed e i cluster arrivano dal Planning Studio: qui niente scelta del feed né cluster
 const VehicleAssignmentStep = lazy(() => import("@/pages/fucina/steps/VehicleAssignmentStep"));
@@ -310,7 +312,8 @@ export default function FucinaPage() {
   const [showSplash, setShowSplash] = useState(!projectId);
   const [step, setStep] = useState<number>(initialStep);
   // Pipeline scelta nella dashboard UDP (?mode=vcsp → integrata Macchina+Guida)
-  const [pipelineMode] = useState<"classic" | "vcsp">(() =>
+  // (un calcolo ripreso porta la sua: un VCSP riaperto da «I miei calcoli» torna integrato)
+  const [pipelineMode, setPipelineMode] = useState<"classic" | "vcsp">(() =>
     new URLSearchParams(window.location.search).get("mode") === "vcsp" ? "vcsp" : "classic");
   const [completedSteps, setCompletedSteps] = useState<Set<number>>(initialCompleted as Set<number>);
   const [gtfsSelection, setGtfsSelection] = useState<GtfsSelection | null>(null);
@@ -346,6 +349,91 @@ export default function FucinaPage() {
     setCompletedSteps(prev => new Set([...prev, s]));
     setStep(s + 1);
   };
+
+  /* ── Calcoli in coda ripresi (2.7b) ──────────────────────────────────
+   * CP-SAT e VCSP girano nel lavoratore e sopravvivono alla pagina. Il calcolo
+   * aperto per il progetto è ricordato nel browser (lib/memoria-calcoli); «I
+   * miei calcoli» lo apre con ?calcolo=<id>. Il contesto del wizard (data,
+   * linee, depositi, impostazioni) si ricostruisce dalla richiesta del calcolo
+   * sul server, così risultato e dati di partenza coincidono. */
+  const [ripresa, setRipresa] = useState<{ jobId: string; impostazioni: ImpostazioniSolutore } | null>(null);
+  // sale a ogni ripresa: il passo «Ottimizzazione» si rimonta e segue il calcolo ripreso
+  const [giroRipresa, setGiroRipresa] = useState(0);
+  const [ricordato, setRicordato] = useState<CalcoloRicordato | null>(null);
+  const ripresaProvata = React.useRef(false);
+
+  const riprendiCalcolo = React.useCallback(async (jobId: string, o: { daLink?: boolean } = {}) => {
+    if (!projectId) return;
+    const chiave = chiaveFucina(projectId);
+    let st;
+    try { st = await leggiCalcoloVeicoli(jobId, { richiesta: true }); }
+    catch { toast.error("Non riesco a leggere il calcolo", { description: "Il server non risponde: riprova fra poco." }); return; }
+    if (!st) {
+      dimentica(chiave);
+      setRicordato(null);
+      if (o.daLink) toast.error("Calcolo non più disponibile", { description: "Oltre 30 giorni, o di un altro utente: rilancialo." });
+      return;
+    }
+    const contesto = contestoDaRichiesta(st.mode, st.request);
+    if (!contesto) {
+      dimentica(chiave);
+      setRicordato(null);
+      toast.error("Non riesco a riaprire il calcolo", { description: "I suoi dati di partenza non ci sono più (oltre 7 giorni): rilancialo." });
+      return;
+    }
+    ricorda(chiave, { jobId, avviatoIl: st.createdAt });
+    setRicordato(null);
+    setVehicleAssignment(contesto.assegnazione as VehicleAssignment);
+    setSelectedDepots(contesto.depositi);
+    setSelectedDepotId(contesto.depositi[0]?.id ?? null);
+    setPipelineMode(contesto.pipelineMode);
+    setOptimizationResult(null);
+    setRipresa({ jobId, impostazioni: contesto.impostazioni });
+    setGiroRipresa(g => g + 1);
+    setCompletedSteps(new Set([0, 1, 2, 3, 4]));
+    setStep(5);
+    const vivo = st.status === "queued" || st.status === "running";
+    const quando = new Date(st.createdAt).toLocaleString("it-IT", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+    toast.info(vivo ? `Calcolo del ${quando} ancora in corso: lo seguo da qui` : `Calcolo del ${quando} riaperto`, {
+      description: "Data, linee, depositi e impostazioni sono quelli con cui era partito.",
+      duration: 8000,
+      action: {
+        label: vivo ? "Fermalo e scarta" : "Scarta",
+        onClick: () => {
+          if (vivo) fermaCalcoloVeicoli(jobId).catch(() => {});
+          dimentica(chiave);
+          setRipresa(null);
+          setStep(1);
+        },
+      },
+    });
+  }, [projectId]);
+
+  // Al caricamento del progetto (feed pronto): il calcolo chiesto da «I miei calcoli»,
+  // altrimenti quello ricordato per il progetto. Una volta per pagina.
+  useEffect(() => {
+    if (!projectId || startMode !== "pipeline" || !gtfsSelection || ripresaProvata.current) return;
+    ripresaProvata.current = true;
+    const daLink = new URLSearchParams(window.location.search).get("calcolo");
+    if (daLink && /^[0-9a-f-]{36}$/i.test(daLink)) {
+      // via dalla barra: un ricaricamento riprende dalla memoria, non dal link
+      const u = new URL(window.location.href);
+      u.searchParams.delete("calcolo");
+      window.history.replaceState(window.history.state, "", u.toString());
+      void riprendiCalcolo(daLink, { daLink: true });
+      return;
+    }
+    const r = richiama(chiaveFucina(projectId));
+    if (r) void riprendiCalcolo(r.jobId);
+  }, [projectId, startMode, gtfsSelection, riprendiCalcolo]);
+
+  // Tornando al passo «Ottimizzazione» nella stessa pagina: il calcolo ricordato
+  // si propone (non si riapre da solo: le linee scelte nel frattempo potrebbero essere altre).
+  useEffect(() => {
+    if (step !== 5) { setRipresa(null); setRicordato(null); return; }
+    if (ripresa || !projectId) { setRicordato(null); return; }
+    setRicordato(richiama(chiaveFucina(projectId)));
+  }, [step, ripresa, projectId]);
 
   // ── Guard per jump diretti: se entri da /vehicles o /drivers ma manca state, torna alla dashboard
   useEffect(() => {
@@ -785,6 +873,7 @@ export default function FucinaPage() {
                   {step === 5 && (
                     vehicleAssignment ? (
                       <OptimizerStep
+                        key={`ottimizzazione-${giroRipresa}`}
                         gtfsSelection={gtfsSelection!}
                         assignment={vehicleAssignment}
                         initialResult={optimizationResult ?? undefined}
@@ -793,6 +882,9 @@ export default function FucinaPage() {
                         depotId={selectedDepotId}
                         depots={selectedDepots}
                         pipelineMode={pipelineMode}
+                        ripresa={ripresa}
+                        ricordato={ricordato}
+                        onRiprendiRicordato={(jobId) => { void riprendiCalcolo(jobId); }}
                         onBack={() => setStep(4)}
                         onComplete={(r, id) => {
                           setOptimizationResult(r);
