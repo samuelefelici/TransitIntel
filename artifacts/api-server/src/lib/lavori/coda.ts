@@ -171,6 +171,17 @@ export async function fermaAbbandonati(): Promise<Array<{ id: string; stato: Sta
   return r.rows;
 }
 
+/** L'ultimo lavoro di un tipo su un oggetto (per esempio la sincronizzazione di un progetto), senza la richiesta. */
+export async function ultimoDi(tipo: TipoLavoro, oggettoId: string): Promise<Omit<Lavoro, "richiesta"> | null> {
+  if (!UUID.test(oggettoId)) return null;
+  const r = await q(
+    `SELECT id, tipo, versione, corsia, stato, utente_id, via, oggetto_id, chiave_unicita, metadati, avanzamento,
+            http_codice, risultato, errore, errore_tipo, tentativi, max_tentativi, timeout_sec, disponibile_dal,
+            preso_da, battito_il, scade_il, annulla, creato_il, iniziato_il, finito_il, aggiornato_il
+       FROM coda.lavori WHERE tipo = $1 AND oggetto_id = $2 ORDER BY creato_il DESC LIMIT 1`, [tipo, oggettoId]);
+  return r.rows[0] ?? null;
+}
+
 /** Il codice di Postgres per una chiave di unicità già viva (lavori_unici_vivi). */
 export const CHIAVE_GIA_VIVA = "23505";
 

@@ -29,7 +29,7 @@ import {
   requireVehicleScenarioRead,
   requireVehicleScenarioWrite,
 } from "../lib/scenario-access";
-import { startSyncJob } from "../lib/planning-studio-materialize";
+import { avviaSincronizzazione, attendiSincronizzazione } from "../lib/planning-studio-materialize";
 
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
 import {
@@ -1524,11 +1524,8 @@ router.post("/service-program/agent-optimize", async (req, res) => {
               feedId = sp.feed_id;
               feedSource = "udp";
             } else {
-              const syncJob = startSyncJob(String(sp.id), psProjectId, userId, req.log);
-              const t0 = Date.now();
-              while (syncJob.status === "running" && Date.now() - t0 < 20_000) {
-                await new Promise(r => setTimeout(r, 500));
-              }
+              const sync = await avviaSincronizzazione(String(sp.id), psProjectId, userId, req.log, (req as any).authVia ?? null);
+              const syncJob = await attendiSincronizzazione(sync, 20_000);
               if (syncJob.status === "done" && syncJob.result) {
                 feedId = syncJob.result.feedId;
                 feedSource = "udp";

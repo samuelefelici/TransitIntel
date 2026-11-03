@@ -8,13 +8,15 @@
  * vecchio, il rispecchiamento dei nodi di cambio e le risposte delle rotte di
  * sincronizzazione.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import request from "supertest";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import router, { materializePsToFeed } from "../lib/planning-studio-materialize";
 import { sincronizzaProgetto } from "../lib/materializzazione/sincronizza";
+import { creaEsecutore } from "../lib/lavori/esecutore";
+import { GESTORI } from "../lib/lavori/gestori";
 
 const U = "f0000000-0000-0000-0000-0000000000a0";
 const PS = "f0000000-0000-0000-0000-0000000000c1";
@@ -118,6 +120,7 @@ const senzaFeed = (r: any, feedId: string) => ({ ...r, feedId: r.feedId === feed
 describe.runIf(!!process.env.TEST_DATABASE_URL)("materializzazione Planning Studio → feed, sul database", () => {
   beforeAll(semina);
   afterAll(pulisci);
+  beforeEach(() => { process.env.LAVORI_FEED_IN_CODA = "0"; });
 
   it("il feed d'esercizio: righe, conteggi, puntatore, nodi di cambio; il secondo archivia il primo", async () => {
     const a = await materializePsToFeed(PS, U);
@@ -187,6 +190,64 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("materializzazione Planning Stud
     } finally {
       await db.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${vero}::uuid`);
     }
+  });
+});
+
+describe.runIf(!!process.env.TEST_DATABASE_URL)("sincronizzazione nella coda dei lavori, sul database", () => {
+  const log = { info() {}, warn() {}, error() {} };
+  const esecutore = creaEsecutore({ chi: "prova:feed", slot: { veloce: 1, lunga: 0 }, gestori: GESTORI, log, pollingMs: 50, battitoMs: 100 });
+  const lavori = async () => (await db.execute<any>(sql`
+    SELECT tipo, corsia, stato, utente_id, oggetto_id, chiave_unicita, metadati->>'ambito' AS ambito, risultato->>'feedId' AS feed
+      FROM coda.lavori WHERE oggetto_id IN (${SP_TUTTO}::uuid, ${SP_UDP}::uuid) ORDER BY creato_il`)).rows;
+  beforeAll(async () => {
+    await semina();
+    await db.execute(sql`DELETE FROM coda.lavori WHERE stato IN ('in_coda', 'in_corso')`);
+  });
+  afterAll(async () => { await esecutore.ferma(1_000); await pulisci(); });
+  beforeEach(() => { process.env.LAVORI_FEED_IN_CODA = "1"; });
+
+  it("senza nessuno che la esegue resta in coda: sync-status dice «running», una seconda richiesta si aggancia alla stessa", async () => {
+    const a = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps`).send({});
+    expect(a.status).toBe(202);
+    expect(a.body).toMatchObject({ ok: true, status: "running" });
+    const b = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps`).send({});
+    expect(b.status).toBe(202);
+    const r = await lavori();
+    expect(r).toEqual([{ tipo: "materializza_feed", corsia: "veloce", stato: "in_coda", utente_id: U, oggetto_id: SP_UDP,
+                         chiave_unicita: `sync:${SP_UDP}`, ambito: "materializzazione", feed: null }]);
+    // dopo un riavvio dell'API non c'è più niente in memoria: lo stato viene dalla coda
+    const st = await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`);
+    expect(st.body).toMatchObject({ status: "running" });
+  });
+
+  it("il lavoratore la esegue: stesso feed e stesse risposte del percorso dentro l'API", async () => {
+    esecutore.avvia();
+    const inCoda = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps?wait=1`).send({});
+    expect(inCoda.status, JSON.stringify(inCoda.body)).toBe(200);
+    const fq = inCoda.body.feedId as string;
+    const st = await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`);
+    const { durationMs, ...restoSt } = st.body;
+    expect(typeof durationMs).toBe("number");
+    const iq = await impronta(fq);
+
+    process.env.LAVORI_FEED_IN_CODA = "0";
+    const dentro = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps?wait=1`).send({});
+    const fd = dentro.body.feedId as string;
+    expect(senzaFeed(inCoda.body, fq)).toEqual(senzaFeed(dentro.body, fd));
+    expect(senzaFeed(restoSt, fq)).toEqual({ ...senzaFeed(dentro.body, fd), ok: undefined, status: "done" });
+    expect(iq).toEqual(await impronta(fd));
+    expect((await lavori()).map((x: any) => x.stato)).toEqual(["completato"]);
+    // il feed della sincronizzazione in coda, sostituito da quella dentro l'API, è stato cancellato
+    expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE id = ${fq}::uuid`)).rows[0].n).toBe(0);
+  });
+
+  it("se il progetto è stato agganciato ad altro feed dopo la sincronizzazione, sync-status non ripete il risultato vecchio", async () => {
+    process.env.LAVORI_FEED_IN_CODA = "1";
+    const r = await request(app).post(`/api/scheduling/projects/${SP_UDP}/sync-from-ps?wait=1`).send({});
+    expect(r.status).toBe(200);
+    await db.execute(sql`UPDATE scheduling_projects SET feed_id = NULL WHERE id = ${SP_UDP}::uuid`);
+    expect((await request(app).get(`/api/scheduling/projects/${SP_UDP}/sync-status`)).body).toEqual({ status: "idle" });
+    await db.execute(sql`UPDATE scheduling_projects SET feed_id = ${r.body.feedId}::uuid WHERE id = ${SP_UDP}::uuid`);
   });
 });
 

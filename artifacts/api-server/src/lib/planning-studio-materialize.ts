@@ -20,6 +20,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { materializePsToFeed as materializza, type MaterializeResult } from "./materializzazione/feed";
 import { sincronizzaProgetto } from "./materializzazione/sincronizza";
+import * as coda from "./lavori/coda";
 
 const router: IRouter = Router();
 
@@ -99,6 +100,104 @@ export function startSyncJob(
 }
 
 /* ════════════════════════════════════════════════════════════
+ *  Sincronizzazione nella coda dei lavori (PR 2.7a)
+ *  ────────────────────────────────────────────────────────────
+ *  Con LAVORI_FEED_IN_CODA (default acceso) la sincronizzazione è un lavoro
+ *  materializza_feed eseguito dal lavoratore: un deploy dell'API non la
+ *  interrompe più, e lo stato si legge dalla riga in coda (niente più falso
+ *  «done» dopo un riavvio). Al più una viva per progetto (chiave sync:<id>):
+ *  una seconda richiesta si aggancia a quella in corso, come prima nello
+ *  stesso processo. Con LAVORI_FEED_IN_CODA=0 resta il job in memoria.
+ * ════════════════════════════════════════════════════════════ */
+const AMBITO_SYNC = "materializzazione";
+const chiaveSync = (projectId: string) => `sync:${projectId}`;
+/** La sincronizzazione più lunga che si attende in coda (poi «fallito, scaduto»). */
+const TEMPO_MASSIMO_SYNC_SEC = 30 * 60;
+
+export function feedInCoda(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.LAVORI_FEED_IN_CODA !== "0";
+}
+
+export type Sincronizzazione =
+  | { tipo: "coda"; id: string }
+  | { tipo: "memoria"; job: SyncJob };
+
+export interface StatoSincronizzazione {
+  status: "running" | "done" | "error";
+  startedAt: number;
+  finishedAt?: number;
+  result?: MaterializeResult;
+  error?: string;
+}
+
+/** Avvia (o ritrova, se è già in corso) la sincronizzazione di un progetto di scheduling. */
+export async function avviaSincronizzazione(
+  projectId: string, psProjectId: string, utenteId: string,
+  log?: { info?: any; error?: any; warn?: any }, via?: string | null,
+): Promise<Sincronizzazione> {
+  if (!feedInCoda()) return { tipo: "memoria", job: startSyncJob(projectId, psProjectId, utenteId, log) };
+  // il bootstrap pigro della colonna resta qui, nell'API: il lavoratore non fa DDL
+  await ensureMaterializedColumn();
+  const vivo = await coda.vivoConChiave(chiaveSync(projectId));
+  if (vivo) return { tipo: "coda", id: vivo.id };
+  try {
+    const id = await coda.accoda({
+      tipo: "materializza_feed",
+      corsia: "veloce",
+      utenteId,
+      via: via ?? "api",
+      oggettoId: projectId,
+      chiaveUnicita: chiaveSync(projectId),
+      richiesta: { schedulingProjectId: projectId, psProjectId, utenteId },
+      metadati: { ambito: AMBITO_SYNC, schedulingProjectId: projectId, psProjectId },
+      timeoutSec: TEMPO_MASSIMO_SYNC_SEC,
+    });
+    log?.info?.({ lavoro: id, projectId }, "sync-from-ps in coda");
+    return { tipo: "coda", id };
+  } catch (err: any) {
+    if (err?.code !== coda.CHIAVE_GIA_VIVA) throw err;
+    const v = await coda.vivoConChiave(chiaveSync(projectId));
+    if (v) return { tipo: "coda", id: v.id };
+    throw err;
+  }
+}
+
+/** Lo stato di una sincronizzazione dalla sua riga in coda. */
+export function statoDaRiga(l: { stato: string; creato_il: Date; iniziato_il: Date | null; finito_il: Date | null; risultato: any; errore: string | null }): StatoSincronizzazione {
+  const startedAt = +(l.iniziato_il ?? l.creato_il);
+  if (l.stato === "in_coda" || l.stato === "in_corso") return { status: "running", startedAt };
+  const finishedAt = l.finito_il ? +l.finito_il : undefined;
+  if (l.stato === "completato") {
+    // dopo 7 giorni la pulizia della coda svuota il risultato: «done» senza dettagli
+    if (!l.risultato) return { status: "done", startedAt, finishedAt };
+    const { durationMs: _d, ...result } = l.risultato as MaterializeResult & { durationMs?: number };
+    return { status: "done", startedAt, finishedAt, result };
+  }
+  if (l.stato === "fermato") return { status: "error", startedAt, finishedAt, error: "Sincronizzazione fermata" };
+  return { status: "error", startedAt, finishedAt, error: l.errore ?? "Errore materializzazione" };
+}
+
+export async function statoSincronizzazione(s: Sincronizzazione): Promise<StatoSincronizzazione> {
+  if (s.tipo === "memoria") {
+    const j = s.job;
+    return { status: j.status, startedAt: j.startedAt, finishedAt: j.finishedAt, result: j.result, error: j.error };
+  }
+  const l = await coda.leggi(s.id);
+  if (!l) return { status: "error", startedAt: Date.now(), error: "Sincronizzazione sparita dalla coda" };
+  return statoDaRiga(l);
+}
+
+/** Attende la fine della sincronizzazione fino a `ms`; poi ne dà lo stato (anche «running»). */
+export async function attendiSincronizzazione(s: Sincronizzazione, ms: number, passoMs = 500): Promise<StatoSincronizzazione> {
+  const fine = Date.now() + ms;
+  for (;;) {
+    const st = await statoSincronizzazione(s);
+    if (st.status !== "running" || Date.now() >= fine) return st;
+    await new Promise(r => setTimeout(r, passoMs));
+  }
+}
+
+/* ════════════════════════════════════════════════════════════
  *  Endpoint HTTP: re-sync di uno scheduling_project con il PS linkato
  *  ────────────────────────────────────────────────────────────
  *  ASYNC: ritorna 202 subito + stato del job. Per attendere il
@@ -146,35 +245,34 @@ router.post(
       const userId = req.user!.id;
       const wantWait = req.query.wait === "1" || (req.body && (req.body as any).wait === true);
 
-      const job = startSyncJob(
+      const sync = await avviaSincronizzazione(
         projectId,
         String(proj.planning_studio_project_id),
         userId,
         req.log,
+        (req as any).authVia ?? null,
       );
 
-      // Modalità sync (legacy / dev): aspetta max 90 s prima di rispondere.
+      // Modalità sync (legacy / dev, e Argos): aspetta max 90 s prima di rispondere.
       if (wantWait) {
-        const start = Date.now();
-        while (job.status === "running" && (Date.now() - start) < 90_000) {
-          await new Promise(r => setTimeout(r, 500));
-        }
-        if (job.status === "done" && job.result) {
-          res.json({ ok: true, ...job.result });
+        const st = await attendiSincronizzazione(sync, 90_000);
+        if (st.status === "done" && st.result) {
+          res.json({ ok: true, ...st.result });
           return;
         }
-        if (job.status === "error") {
-          res.status(500).json({ error: job.error || "Errore materializzazione" });
+        if (st.status === "error") {
+          res.status(500).json({ error: st.error || "Errore materializzazione" });
           return;
         }
         // ancora in esecuzione → riporta 202 con stato
       }
 
+      const st = await statoSincronizzazione(sync);
       res.status(202).json({
         ok: true,
-        status: job.status,
+        status: st.status,
         message: "Sincronizzazione avviata in background. Polla /sync-status per il risultato.",
-        startedAt: new Date(job.startedAt).toISOString(),
+        startedAt: new Date(st.startedAt).toISOString(),
       });
     } catch (e: any) {
       req.log?.error?.({ err: e }, "sync-from-ps endpoint error");
@@ -190,20 +288,53 @@ router.get(
       const proj = await loadProjectForSync(req, res);
       if (!proj) return;
       const projectId = String(proj.id);
-      const job = syncJobs.get(projectId);
+      // 1. il job in memoria (solo con LAVORI_FEED_IN_CODA=0), come prima
+      const job = feedInCoda() ? undefined : syncJobs.get(projectId);
+      if (job) {
+        if (job.status === "done" && job.result) {
+          res.json({ status: "done", ...job.result, durationMs: (job.finishedAt || Date.now()) - job.startedAt });
+          return;
+        }
+        if (job.status === "error") {
+          res.json({ status: "error", error: job.error });
+          return;
+        }
+        res.json({
+          status: "running",
+          startedAt: new Date(job.startedAt).toISOString(),
+          elapsedMs: Date.now() - job.startedAt,
+        });
+        return;
+      }
 
-      // Se non c'è nessun job in memoria, il feed potrebbe essere già pronto
-      // (job completato in una vita precedente del processo, o creato senza job).
-      if (!job) {
-        if (proj.feed_id) {
-          // Recupera info sintetiche dal feed per allineare la response al
-          // formato di MaterializeResult (counts/feedStartDate/feedEndDate).
-          const fr: any = await db.execute(sql`
-            SELECT id, feed_start_date, feed_end_date,
-                   stops_count, routes_count, trips_count, shapes_count
-              FROM gtfs_feeds WHERE id = ${proj.feed_id}::uuid
-          `);
-          const f: any = fr.rows?.[0] ?? fr[0];
+      // 2. l'ultima sincronizzazione in coda: viva, finita o fallita, sopravvive ai riavvii
+      const l = await coda.ultimoDi("materializza_feed", projectId);
+      if (l) {
+        const st = statoDaRiga(l);
+        if (st.status === "running") {
+          res.json({ status: "running", startedAt: new Date(st.startedAt).toISOString(), elapsedMs: Date.now() - st.startedAt });
+          return;
+        }
+        if (st.status === "error") {
+          res.json({ status: "error", error: st.error });
+          return;
+        }
+        // finita: vale se il progetto è ancora agganciato a quel feed (un PATCH può averlo cambiato)
+        if (st.result && st.result.feedId === proj.feed_id) {
+          res.json({ status: "done", ...st.result, durationMs: (st.finishedAt ?? Date.now()) - st.startedAt });
+          return;
+        }
+      }
+
+      // 3. nessuna sincronizzazione nota: il feed agganciato, se esiste ancora
+      if (proj.feed_id) {
+        const fr: any = await db.execute(sql`
+          SELECT id, feed_start_date, feed_end_date,
+                 stops_count, routes_count, trips_count, shapes_count
+            FROM gtfs_feeds WHERE id = ${proj.feed_id}::uuid
+        `);
+        const f: any = fr.rows?.[0] ?? fr[0];
+        if (f) {
           res.json({
             status: "done",
             feedId: proj.feed_id,
@@ -220,23 +351,8 @@ router.get(
           });
           return;
         }
-        res.json({ status: "idle" });
-        return;
       }
-
-      if (job.status === "done" && job.result) {
-        res.json({ status: "done", ...job.result, durationMs: (job.finishedAt || Date.now()) - job.startedAt });
-        return;
-      }
-      if (job.status === "error") {
-        res.json({ status: "error", error: job.error });
-        return;
-      }
-      res.json({
-        status: "running",
-        startedAt: new Date(job.startedAt).toISOString(),
-        elapsedMs: Date.now() - job.startedAt,
-      });
+      res.json({ status: "idle" });
     } catch (e: any) {
       req.log?.error?.({ err: e }, "sync-status endpoint error");
       res.status(500).json({ error: e?.message || "Errore stato sincronizzazione" });

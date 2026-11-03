@@ -563,6 +563,8 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lavoratore.ts
    artifacts/api-server/src/lib/lavori/**
    artifacts/api-server/src/lib/ottimizza-veicoli/**
+   artifacts/api-server/src/lib/materializzazione/**
+   artifacts/api-server/src/lib/planning-studio-validity-eval.ts
    artifacts/api-server/src/lib/dati-solver.ts
    artifacts/api-server/src/lib/deadhead-matrix.ts
    artifacts/api-server/src/lib/geo-utils.ts
