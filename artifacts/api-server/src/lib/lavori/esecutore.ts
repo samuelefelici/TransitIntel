@@ -5,25 +5,32 @@
  *
  * - Slot separati per corsia: un calcolo lungo non ferma i brevi.
  * - Ogni 2 s guarda la coda; ogni 30 s rimette in coda i lavori abbandonati da
- *   un processo morto; ogni ora fa la pulizia (conservazione).
+ *   un processo morto e ferma i calcoli sincroni che nessuno aspetta più
+ *   (coda.fermaAbbandonati); ogni ora fa la pulizia (conservazione).
  * - Il battito (ogni 5 s, o prima se c'è un avanzamento nuovo, al massimo una
  *   volta al secondo) rinnova il lease e legge lo stop.
  * - Arresto ordinato (deploy): non prende più lavori (aspetta il giro della
  *   coda già partito: un lavoro preso in quell'istante torna subito in coda),
  *   aspetta un poco quelli in corso, poi li ferma e li rimette in coda senza
- *   consumare il tentativo.
+ *   consumare il tentativo. Un lavoro che finisce lo stesso (il gestore non era
+ *   più in Python, per esempio un giro che stava salvando) si chiude col suo
+ *   esito invece di tornare in coda.
  * - La chiusura è la scrittura che conta (un calcolo può durare un'ora): se il
  *   database non risponde si ritenta, e un risultato che il database rifiuta
- *   (per esempio un carattere NUL nel JSON) chiude il lavoro «fallito,
- *   sistema» invece di farlo ricalcolare da capo.
+ *   (per esempio un carattere NUL nel JSON, anche nella risposta che un
+ *   fallito porta con sé) chiude il lavoro «fallito, sistema» invece di farlo
+ *   ricalcolare da capo.
  */
 import type { Corsia, Esito, Lavoro } from "./coda";
 import * as codaReale from "./coda";
+import { risultatoDi } from "./coda";
 import type { Progresso } from "./python";
 
 type Log = { info: (...a: any[]) => void; warn: (...a: any[]) => void; error: (...a: any[]) => void };
 
 export interface ContestoLavoro {
+  /** chi esegue (il lease): chi scrive a nome del lavoro controlla che la riga sia ancora sua */
+  chi: string;
   /** abort: stop chiesto, arresto o lease perso (il motivo è in segnale.reason) */
   segnale: AbortSignal;
   progresso: (p: Progresso) => void;
@@ -36,7 +43,8 @@ export interface Gestore {
   esegui: (lavoro: Lavoro, ctx: ContestoLavoro) => Promise<Exclude<Esito, { stato: "fermato" }> | { stato: "fermato" }>;
 }
 
-export type Coda = Pick<typeof codaReale, "prendi" | "battito" | "chiudi" | "rimettiInCoda" | "recuperaScaduti" | "pulisci">;
+export type Coda = Pick<typeof codaReale, "prendi" | "battito" | "chiudi" | "rimettiInCoda" | "recuperaScaduti" | "pulisci">
+  & Partial<Pick<typeof codaReale, "fermaAbbandonati">>;
 
 export interface OpzioniEsecutore {
   /** chi sono, per il lease (per esempio «lavoratore:host:pid») */
@@ -115,7 +123,7 @@ export function creaEsecutore(o: OpzioniEsecutore) {
     const g = gestori.get(`${l.tipo}:${l.versione}`);
     try {
       if (!g) throw new Error(`tipo di lavoro sconosciuto: ${l.tipo} v${l.versione}`);
-      esito = await g.esegui(l, { segnale: controller.signal, progresso: (p) => { progressoNuovo = p; }, log });
+      esito = await g.esegui(l, { chi: o.chi, segnale: controller.signal, progresso: (p) => { progressoNuovo = p; }, log });
     } catch (err: any) {
       log.error({ err, lavoro: l.id }, "lavoro finito con un errore del sistema");
       esito = { stato: "fallito", errore: `Errore interno: ${err?.message ?? err}`, erroreTipo: "sistema" };
@@ -125,8 +133,11 @@ export function creaEsecutore(o: OpzioniEsecutore) {
     const motivo = controller.signal.aborted ? (controller.signal.reason as MotivoStop) : null;
     if (motivo === "lease") {
       log.warn({ lavoro: l.id }, "lavoro non più di questo processo (lease scaduto): risultato scartato");
-    } else if (motivo === "arresto") {
+    } else if (motivo === "arresto" && esito.stato === "fermato") {
       await rimetti(l.id);
+    } else if (motivo === "arresto") {
+      // finito (e magari già salvato, come un giro di Argos) mentre arrivava l'arresto: si chiude, non si rifà
+      await chiudi(l.id, esito);
     } else {
       await chiudi(l.id, motivo === "annulla" || esito.stato === "fermato" ? { stato: "fermato" } : esito);
     }
@@ -140,7 +151,7 @@ export function creaEsecutore(o: OpzioniEsecutore) {
         if (!scritto) o.log.warn({ lavoro: id }, "chiusura non scritta: il lavoro non è più di questo processo (lease scaduto o già chiuso)");
         return;
       } catch (err: any) {
-        if (datoRifiutato(err) && esito.stato === "completato") {
+        if (datoRifiutato(err) && risultatoDi(esito) !== undefined) {
           // ripetere non serve: il risultato non entra nel database
           o.log.error({ err, lavoro: id }, "il database rifiuta il risultato del lavoro: lo chiudo come fallito");
           esito = { stato: "fallito", errore: `Il risultato del calcolo non si può salvare (${err.code}): ${err.message}`, erroreTipo: "sistema" };
@@ -193,6 +204,8 @@ export function creaEsecutore(o: OpzioniEsecutore) {
         ultimoRecupero = adesso;
         const r = await coda.recuperaScaduti();
         if (r.length) o.log.warn({ lavori: r }, "lavori abbandonati da un processo fermo: rimessi in coda o chiusi");
+        const senzaAttesa = coda.fermaAbbandonati ? await coda.fermaAbbandonati() : [];
+        if (senzaAttesa.length) o.log.warn({ lavori: senzaAttesa }, "calcoli sincroni che nessuno aspetta più: fermati");
       }
       if (adesso - ultimaPulizia >= puliziaMs) {
         ultimaPulizia = adesso;

@@ -13,18 +13,17 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
   gtfsTrips, gtfsStopTimes, gtfsRoutes,
-  gtfsCalendar, gtfsCalendarDates, gtfsStops,
+  gtfsCalendar, gtfsStops,
   serviceProgramScenarios, driverShiftScenarios, depots,
 } from "@workspace/db/schema";
 import { randomUUID } from "node:crypto";
-import { eq, sql, and, desc, inArray } from "drizzle-orm";
+import { eq, sql, and } from "drizzle-orm";
 import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
 import { buildDeadheadKmMatrix, dhKey, type DHNode } from "../lib/deadhead-matrix";
 import {
   enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
-} from "./driver-shifts";
+} from "../lib/dati-solver";
 import { getLatestFeedId } from "./gtfs-helpers";
-import { eseguiPython, jsonDallUscita, descriviUscita, type ScriptConsentito } from "../lib/lavori/python";
 import {
   vehicleScenariosAccessibleWhere,
   requireVehicleScenarioRead,
@@ -33,6 +32,28 @@ import {
 import { startSyncJob } from "../lib/planning-studio-materialize";
 
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
+import {
+  type VehicleType, type ServiceCategory, type TripBlock, type VehicleShift,
+  VEHICLE_SIZE, VEHICLE_LABELS, VEHICLE_CAPACITY, DEADHEAD_SPEED, MAX_DEADHEAD_KM, MAX_IDLE_AT_TERMINAL,
+  MIN_LAYOVER, DEADHEAD_BUFFER, MAX_DOWNSIZE_LEVELS, isPeakHour, canVehicleServeTrip,
+  getServiceCategory, getActiveServiceIds, calculateCosts, calculateScore, generateAdvisories,
+} from "../lib/ottimizza-veicoli/modello";
+import {
+  buildPyTrips, loadTerminalTransits, spawnPythonJson, runCPSATVehicleScheduler, runVcspOrchestrator,
+  loadDepotPoints, assignResidenzaToShifts, parseDepotSelection, depotCapacityAdvisory,
+} from "../lib/ottimizza-veicoli/esegui";
+import {
+  compactAgentResult, scriviGiro, eseguiGiro, vistaGiro,
+  type AgentOptimizeJob, type CodaDelGiro, type EsitoGiro, type RichiestaGiro, type SalvataggioGiro,
+} from "../lib/ottimizza-veicoli/giro";
+import {
+  eseguiOttimizzazione, validaRichiesta, progettoMancante, type EsitoOttimizzazione, type ModoVeicoli,
+} from "../lib/ottimizza-veicoli/esegui";
+import type { Progresso } from "../lib/lavori/python";
+import * as coda from "../lib/lavori/coda";
+import { arresto } from "../lib/arresto";
+import { attendiEsito, rispostaDi, FINITI, STATO_PUBBLICO, MESSAGGIO_RIAVVIO, type RigaLavoro } from "../lib/facciata-lavori";
+import { budgetVsp, corsiaVeicoli, tempoMassimoVeicoli, CORSIA_GIRO, TEMPO_MASSIMO_GIRO } from "../lib/ottimizza-veicoli/tempi";
 const router: IRouter = Router();
 
 /** true se lo scenario turni macchina è marcato "in esercizio" (soluzione
@@ -60,714 +81,6 @@ export async function ensureVariantCodeColumn(): Promise<void> {
   variantColReady = true;
 }
 
-/* ═══════════════════════════════════════════════════════════════
- *  VEHICLE TYPES & HIERARCHY
- * ═══════════════════════════════════════════════════════════════ */
-
-type VehicleType = "autosnodato" | "12m" | "10m" | "pollicino";
-type ServiceCategory = "urbano" | "extraurbano";
-
-const VEHICLE_SIZE: Record<VehicleType, number> = {
-  autosnodato: 4, "12m": 3, "10m": 2, pollicino: 1,
-};
-
-const VEHICLE_LABELS: Record<VehicleType, string> = {
-  autosnodato: "Autosnodato (18m)", "12m": "12 metri", "10m": "10 metri", pollicino: "Pollicino (6m)",
-};
-
-const VEHICLE_CAPACITY: Record<VehicleType, number> = {
-  autosnodato: 150, "12m": 80, "10m": 60, pollicino: 25,
-};
-
-const DEADHEAD_SPEED: Record<ServiceCategory, number> = {
-  urbano: 20,
-  extraurbano: 40,
-};
-
-const MAX_DEADHEAD_KM = 30;
-const MAX_IDLE_AT_TERMINAL = 60;
-const MIN_LAYOVER = 3;
-const DEADHEAD_BUFFER = 5;
-
-/* ═══════════════════════════════════════════════════════════════
- *  REGOLA DELLA SAGOMA
- *  Il tipo dichiarato su una linea è il mezzo giusto e insieme il suo TETTO
- *  fisico: sopra quella taglia la strada non regge, quindi non esiste
- *  promozione (un 12m su una linea da pollicino non passa). Sotto si perde
- *  capienza: si concede UN gradino solo, mai due, e il meno possibile —
- *  è l'ultima spiaggia, non la norma. Nelle ore di morbida pesa meno.
- *  Scala: autosnodato → 12m → 10m → pollicino.
- * ═══════════════════════════════════════════════════════════════ */
-
-/** Max livelli di downsize consentiti (1 = un gradino sotto) */
-const MAX_DOWNSIZE_LEVELS = 1;
-
-/** Ore di punta — declassamento più penalizzato */
-function isPeakHour(departureMin: number): boolean {
-  // GTFS ammette orari oltre le 24h (corse a cavallo di mezzanotte): senza il
-  // modulo una corsa "25:30" darebbe h=25 e non sarebbe mai vista come punta.
-  const h = Math.floor(departureMin / 60) % 24;
-  return (h >= 7 && h <= 9) || (h >= 17 && h <= 19);
-}
-
-/**
- * Verifica se un veicolo di dimensione `vehicleSize` può servire
- * una corsa che richiede `requiredSize`.
- * - vehicleSize > requiredSize → MAI: è la sagoma, quel mezzo non ci passa
- * - vehicleSize === requiredSize → il mezzo giusto
- * - vehicleSize < requiredSize → declassamento, entro MAX_DOWNSIZE_LEVELS
- */
-function canVehicleServeTrip(vehicleSize: number, requiredSize: number): boolean {
-  if (vehicleSize > requiredSize) return false;
-  return (requiredSize - vehicleSize) <= MAX_DOWNSIZE_LEVELS;
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  COST MODEL
- *  Due macro-voci separate:
- *    A) VEICOLO — tutti i costi relativi al mezzo (fisso + km)
- *    B) AUTISTA — costo operatore (ore guida)
- *
- *  Nessun ammortamento. Costi reali operativi.
- * ═══════════════════════════════════════════════════════════════ */
-
-/** Costo fisso giornaliero veicolo — assicurazione, manutenzione programmata, bollo.
- *  Si paga per ogni mezzo che esce dal deposito, indipendentemente dai km. */
-const COST_VEHICLE_FIXED_DAY: Record<VehicleType, number> = {
-  autosnodato: 55,   // €/day
-  "12m": 42,
-  "10m": 32,
-  pollicino: 18,
-};
-
-/** Costo variabile veicolo per km IN SERVIZIO — carburante, gomme, usura freni/motore.
- *  Applicato ai km percorsi durante le corse effettive. */
-const COST_VEHICLE_PER_SERVICE_KM: Record<VehicleType, number> = {
-  autosnodato: 1.20,  // €/km — diesel/CNG alto consumo, gomme pesanti
-  "12m": 0.95,
-  "10m": 0.75,
-  pollicino: 0.45,
-};
-
-/** Costo variabile veicolo per km FUORILINEA (trasferimenti a vuoto).
- *  Leggermente inferiore al servizio (no fermate, no aria condiz. piena potenza). */
-const COST_VEHICLE_PER_DEADHEAD_KM: Record<VehicleType, number> = {
-  autosnodato: 1.00,
-  "12m": 0.80,
-  "10m": 0.65,
-  pollicino: 0.40,
-};
-
-/** Velocità media in servizio per stimare km servizio dalle ore servizio */
-const AVG_SERVICE_SPEED: Record<ServiceCategory, number> = {
-  urbano: 18,       // km/h — molte fermate, traffico
-  extraurbano: 32,  // km/h — meno fermate, strade extraurbane
-};
-
-/** Costo orario autista — applicato SOLO sulle ore di guida effettive (servizio + trasferimenti) */
-const COST_PER_DRIVING_HOUR = 28;
-
-/** Costo logistico per ogni rientro deposito (movimentazione, controlli) */
-const COST_PER_DEPOT_RETURN = 15;
-
-/** Costo orario tempo inattivo veicolo (costo opportunità, usura statica) */
-const COST_PER_IDLE_HOUR = 5;
-
-function getServiceCategory(routeName: string): ServiceCategory {
-  const firstChar = routeName.trim().charAt(0);
-  if (/[a-zA-Z]/.test(firstChar)) return "extraurbano";
-  return "urbano";
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  ACTIVE SERVICES
- * ═══════════════════════════════════════════════════════════════ */
-
-const DOW_COLS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
-
-async function getActiveServiceIds(feedId: string, dateYMD: string): Promise<Set<string>> {
-  const y = parseInt(dateYMD.slice(0, 4));
-  const m = parseInt(dateYMD.slice(4, 6)) - 1;
-  const d = parseInt(dateYMD.slice(6, 8));
-  const dow = new Date(y, m, d).getDay();
-  const dowCol = DOW_COLS[dow];
-
-  const calRows = await db.select({ serviceId: gtfsCalendar.serviceId })
-    .from(gtfsCalendar)
-    .where(and(
-      eq(gtfsCalendar.feedId, feedId),
-      sql`${gtfsCalendar.startDate} <= ${dateYMD}`,
-      sql`${gtfsCalendar.endDate} >= ${dateYMD}`,
-      sql`${sql.raw(`"${dowCol}"`)} = 1`,
-    ));
-
-  const active = new Set(calRows.map(r => r.serviceId));
-
-  const cdRows = await db.select({
-    serviceId: gtfsCalendarDates.serviceId,
-    exceptionType: gtfsCalendarDates.exceptionType,
-  }).from(gtfsCalendarDates).where(and(
-    eq(gtfsCalendarDates.feedId, feedId),
-    eq(gtfsCalendarDates.date, dateYMD),
-  ));
-
-  for (const cd of cdRows) {
-    if (cd.exceptionType === 1) active.add(cd.serviceId);
-    if (cd.exceptionType === 2) active.delete(cd.serviceId);
-  }
-
-  return active;
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  TYPES
- * ═══════════════════════════════════════════════════════════════ */
-
-interface TripBlock {
-  tripId: string;
-  routeId: string;
-  routeName: string;
-  headsign: string | null;
-  directionId: number;
-  departureTime: string;
-  arrivalTime: string;
-  departureMin: number;
-  arrivalMin: number;
-  stopCount: number;
-  firstStopId: string;
-  lastStopId: string;
-  firstStopLat: number;
-  firstStopLon: number;
-  lastStopLat: number;
-  lastStopLon: number;
-  firstStopName: string;
-  lastStopName: string;
-  requiredVehicle: VehicleType;
-  category: ServiceCategory;
-  /** codice percorso (ps_route_variants.code): relazione corsa→percorso→linea */
-  variantCode?: string | null;
-  /** When true, this trip MUST run on the exact requiredVehicle type — no flexibility */
-  forced: boolean;
-  /** Corsa A CHIAMATA (DRT): identificabile lungo tutta la pipeline TM/TG */
-  onDemand: boolean;
-  /** Tolleranza di spostamento ±minuti DICHIARATA IN PIANIFICAZIONE (cervello
-   * Pianificazione↔TM↔TG): l'ottimizzatore integrato può proporre traslazioni
-   * entro questa finestra. 0/assente = corsa inchiodata. */
-  flexMin?: number;
-}
-
-interface ShiftTripEntry {
-  type: "trip" | "deadhead" | "depot";
-  tripId: string;
-  routeId: string;
-  routeName: string;
-  /** codice percorso (relazione corsa→percorso→linea) */
-  variantCode?: string | null;
-  headsign: string | null;
-  departureTime: string;
-  arrivalTime: string;
-  departureMin: number;
-  arrivalMin: number;
-  deadheadKm?: number;
-  deadheadMin?: number;
-  // Extra trip data for frontend tooltip
-  firstStopName?: string;
-  lastStopName?: string;
-  stopCount?: number;
-  durationMin?: number;
-  directionId?: number;
-  /** True when trip runs on a smaller vehicle than originally assigned */
-  downsized?: boolean;
-  /** Original required vehicle type (set when downsized) */
-  originalVehicle?: VehicleType;
-  /** Tipo dichiarato dalla linea: è il tetto di sagoma della corsa */
-  requiredVehicle?: VehicleType;
-  /** Corsa A CHIAMATA (su prenotazione) */
-  onDemand?: boolean;
-}
-
-interface VehicleShift {
-  vehicleId: string;
-  vehicleType: VehicleType;
-  category: ServiceCategory;
-  trips: ShiftTripEntry[];
-  startMin: number;
-  endMin: number;
-  totalServiceMin: number;
-  totalDeadheadMin: number;
-  totalDeadheadKm: number;
-  depotReturns: number;
-  tripCount: number;
-  // FIFO fields
-  fifoOrder: number;      // refueling priority (lower = refuel first)
-  firstOut: number;       // first departure (minutes from midnight)
-  lastIn: number;         // last arrival (minutes from midnight)
-  shiftDuration: number;  // total shift length in minutes
-  downsizedTrips: number; // count of trips running on smaller-than-assigned vehicle
-  // Il lucchetto: turno deciso dall'operatore che il solver ha ricevuto come
-  // vincolo duro e restituito tale e quale (stesse corse, stessa matricola).
-  locked?: boolean;
-  // Residenza di servizio (deposito) — assegnata geometricamente: uscita = deposito
-  // più vicino alla prima fermata, rientro = più vicino all'ultima. Per il roster.
-  depotOut?: { id: string; name: string; color: string } | null;
-  depotIn?: { id: string; name: string; color: string } | null;
-  residenzaDepotId?: string | null;
-  residenzaName?: string | null;
-  residenzaColor?: string | null;
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  ADVISORY ENGINE — Suggestion types
- * ═══════════════════════════════════════════════════════════════ */
-
-type AdvisorySeverity = "info" | "warning" | "critical";
-type AdvisoryCategory = "fleet" | "deadhead" | "schedule" | "cost" | "refueling";
-
-interface Advisory {
-  id: string;
-  severity: AdvisorySeverity;
-  category: AdvisoryCategory;
-  title: string;
-  description: string;
-  impact: string;          // e.g. "Risparmio stimato: €120/giorno"
-  action: string;          // suggested action
-  metric?: number;         // quantitative metric for sorting
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  COST & SCORING
- * ═══════════════════════════════════════════════════════════════ */
-
-interface ScenarioCost {
-  /* ── VEICOLO (tutti i costi relativi al mezzo) ── */
-  vehicleFixedCost: number;       // costo fisso giornaliero (assicuraz., manutenz. programmata)
-  vehicleServiceKmCost: number;   // carburante+gomme+usura per km IN SERVIZIO
-  vehicleDeadheadKmCost: number;  // carburante+gomme+usura per km FUORILINEA (vuoto)
-  vehicleTotalCost: number;       // somma dei 3 sopra
-  /* ── AUTISTA (separato dal veicolo) ── */
-  driverCost: number;             // costo operatore — SOLO ore di guida effettive
-  /* ── ALTRI ── */
-  depotReturnCost: number;        // overhead logistico rientri deposito
-  idleCost: number;               // costo opportunità tempo inattivo
-  /* ── TOTALI ── */
-  totalDailyCost: number;         // somma di tutto
-  costPerTrip: number;            // totale / corse
-  costPerServiceHour: number;     // totale / ore servizio
-  /* ── BREAKDOWN ── */
-  byVehicleType: Record<string, {
-    count: number; fixedCost: number; serviceKmCost: number; deadheadKmCost: number;
-    totalVehicleCost: number; serviceKm: number; deadheadKm: number;
-  }>;
-  byCategory: Record<string, { vehicles: number; vehicleCost: number; driverCost: number; totalCost: number }>;
-}
-
-interface ScenarioScore {
-  overall: number;           // 0-100 composite score
-  efficiency: number;        // service time / (service + deadhead + idle)
-  fleetUtilization: number;  // avg trips per vehicle
-  deadheadRatio: number;     // deadhead km / total operational km (lower = better)
-  costEfficiency: number;    // normalized cost score (higher = cheaper)
-  fifoCompliance: number;    // how well the FIFO schedule works for refueling
-  grade: string;             // A+ to F
-  gradeColor: string;
-}
-
-function calculateCosts(
-  shifts: VehicleShift[],
-  totalTrips: number,
-  totalServiceHours: number,
-): ScenarioCost {
-  let vehicleFixedCost = 0;
-  let vehicleServiceKmCost = 0;
-  let vehicleDeadheadKmCost = 0;
-  let driverCost = 0;
-  let idleCost = 0;
-
-  const byVehicleType: ScenarioCost["byVehicleType"] = {};
-  const byCategory: ScenarioCost["byCategory"] = {};
-
-  for (const shift of shifts) {
-    const vt = shift.vehicleType;
-    const cat = shift.category;
-
-    // ── 1. Costo fisso giornaliero veicolo ──
-    const fixedCost = COST_VEHICLE_FIXED_DAY[vt];
-    vehicleFixedCost += fixedCost;
-
-    // ── 2. Costo km in servizio (stima km da ore × velocità media) ──
-    const serviceKm = (shift.totalServiceMin / 60) * AVG_SERVICE_SPEED[cat];
-    const svcKmCost = serviceKm * COST_VEHICLE_PER_SERVICE_KM[vt];
-    vehicleServiceKmCost += svcKmCost;
-
-    // ── 3. Costo km fuorilinea (vuoto) ──
-    const dhKmCost = shift.totalDeadheadKm * COST_VEHICLE_PER_DEADHEAD_KM[vt];
-    vehicleDeadheadKmCost += dhKmCost;
-
-    // ── 4. Costo autista (solo ore guida: servizio + trasferimenti) ──
-    const drivingMin = shift.totalServiceMin + shift.totalDeadheadMin;
-    const shiftDriverCost = (drivingMin / 60) * COST_PER_DRIVING_HOUR;
-    driverCost += shiftDriverCost;
-
-    // ── 5. Costo inattività ──
-    const shiftLength = shift.endMin - shift.startMin;
-    const idleMin = Math.max(0, shiftLength - shift.totalServiceMin - shift.totalDeadheadMin);
-    idleCost += (idleMin / 60) * COST_PER_IDLE_HOUR;
-
-    // ── Breakdown per tipo veicolo ──
-    if (!byVehicleType[vt]) {
-      byVehicleType[vt] = { count: 0, fixedCost: 0, serviceKmCost: 0, deadheadKmCost: 0,
-        totalVehicleCost: 0, serviceKm: 0, deadheadKm: 0 };
-    }
-    byVehicleType[vt].count++;
-    byVehicleType[vt].fixedCost += fixedCost;
-    byVehicleType[vt].serviceKmCost += svcKmCost;
-    byVehicleType[vt].deadheadKmCost += dhKmCost;
-    byVehicleType[vt].totalVehicleCost += fixedCost + svcKmCost + dhKmCost;
-    byVehicleType[vt].serviceKm += serviceKm;
-    byVehicleType[vt].deadheadKm += shift.totalDeadheadKm;
-
-    // ── Breakdown per categoria ──
-    if (!byCategory[cat]) byCategory[cat] = { vehicles: 0, vehicleCost: 0, driverCost: 0, totalCost: 0 };
-    byCategory[cat].vehicles++;
-    const shiftVehicleCost = fixedCost + svcKmCost + dhKmCost;
-    byCategory[cat].vehicleCost += shiftVehicleCost;
-    byCategory[cat].driverCost += shiftDriverCost;
-    byCategory[cat].totalCost += shiftVehicleCost + shiftDriverCost;
-  }
-
-  const depotReturnCost = shifts.reduce((s, v) => s + v.depotReturns, 0) * COST_PER_DEPOT_RETURN;
-  const vehicleTotalCost = vehicleFixedCost + vehicleServiceKmCost + vehicleDeadheadKmCost;
-  const totalDailyCost = vehicleTotalCost + driverCost + depotReturnCost + idleCost;
-
-  // Arrotonda i breakdown per tipo veicolo
-  for (const vt of Object.keys(byVehicleType)) {
-    const d = byVehicleType[vt];
-    d.fixedCost = +d.fixedCost.toFixed(0);
-    d.serviceKmCost = +d.serviceKmCost.toFixed(0);
-    d.deadheadKmCost = +d.deadheadKmCost.toFixed(0);
-    d.totalVehicleCost = +d.totalVehicleCost.toFixed(0);
-    d.serviceKm = +d.serviceKm.toFixed(1);
-    d.deadheadKm = +d.deadheadKm.toFixed(1);
-  }
-  // Arrotonda i breakdown per categoria
-  for (const cat of Object.keys(byCategory)) {
-    const d = byCategory[cat];
-    d.vehicleCost = +d.vehicleCost.toFixed(0);
-    d.driverCost = +d.driverCost.toFixed(0);
-    d.totalCost = +d.totalCost.toFixed(0);
-  }
-
-  return {
-    vehicleFixedCost: +vehicleFixedCost.toFixed(0),
-    vehicleServiceKmCost: +vehicleServiceKmCost.toFixed(0),
-    vehicleDeadheadKmCost: +vehicleDeadheadKmCost.toFixed(0),
-    vehicleTotalCost: +vehicleTotalCost.toFixed(0),
-    driverCost: +driverCost.toFixed(0),
-    depotReturnCost: +depotReturnCost.toFixed(0),
-    idleCost: +idleCost.toFixed(0),
-    totalDailyCost: +totalDailyCost.toFixed(0),
-    costPerTrip: totalTrips > 0 ? +(totalDailyCost / totalTrips).toFixed(2) : 0,
-    costPerServiceHour: totalServiceHours > 0 ? +(totalDailyCost / totalServiceHours).toFixed(2) : 0,
-    byVehicleType,
-    byCategory,
-  };
-}
-
-function calculateScore(
-  shifts: VehicleShift[],
-  totalTrips: number,
-  totalServiceMin: number,
-  totalDeadheadMin: number,
-  totalDeadheadKm: number,
-  costs: ScenarioCost,
-): ScenarioScore {
-  if (shifts.length === 0) {
-    return { overall: 0, efficiency: 0, fleetUtilization: 0, deadheadRatio: 0,
-      costEfficiency: 0, fifoCompliance: 0, grade: "N/A", gradeColor: "#6b7280" };
-  }
-
-  // 1. Efficiency: service time vs total occupied time
-  const totalOccupied = shifts.reduce((s, v) => s + (v.endMin - v.startMin), 0);
-  const efficiency = totalOccupied > 0
-    ? Math.min(100, (totalServiceMin / totalOccupied) * 100)
-    : 0;
-
-  // 2. Fleet utilization: avg trips per vehicle
-  const avgTrips = totalTrips / shifts.length;
-  const fleetUtilization = Math.min(100, (avgTrips / 20) * 100); // 20 trips/vehicle = 100%
-
-  // 3. Deadhead ratio (lower is better → invert for score)
-  // Estimate total service km from service hours × avg speed
-  const avgServiceSpeed = 25; // km/h blended
-  const estServiceKm = (totalServiceMin / 60) * avgServiceSpeed;
-  const deadheadRatio = estServiceKm > 0
-    ? Math.min(100, (totalDeadheadKm / (estServiceKm + totalDeadheadKm)) * 100)
-    : 0;
-  const deadheadScore = Math.max(0, 100 - deadheadRatio * 5); // 20% dh → score 0
-
-  // 4. Cost efficiency: benchmarked against €50/trip (bad) vs €10/trip (excellent)
-  const costPerTrip = costs.costPerTrip;
-  const costEfficiency = Math.max(0, Math.min(100, ((50 - costPerTrip) / 40) * 100));
-
-  // 5. FIFO compliance: check that first-out vehicles return first
-  let fifoScore = 100;
-  const byCat = new Map<string, VehicleShift[]>();
-  for (const s of shifts) {
-    if (!byCat.has(s.category)) byCat.set(s.category, []);
-    byCat.get(s.category)!.push(s);
-  }
-  for (const [, catShifts] of byCat) {
-    const byFirstOut = [...catShifts].sort((a, b) => a.firstOut - b.firstOut);
-    const byLastIn = [...catShifts].sort((a, b) => a.lastIn - b.lastIn);
-    let inversions = 0;
-    for (let i = 0; i < byFirstOut.length; i++) {
-      const foIdx = byLastIn.findIndex(s => s.vehicleId === byFirstOut[i].vehicleId);
-      if (foIdx > i) inversions++;
-    }
-    const maxInversions = catShifts.length;
-    fifoScore = Math.min(fifoScore,
-      maxInversions > 0 ? Math.max(0, 100 - (inversions / maxInversions) * 100) : 100);
-  }
-
-  // Composite: weighted average
-  const overall = +(
-    efficiency * 0.30 +
-    fleetUtilization * 0.20 +
-    deadheadScore * 0.20 +
-    costEfficiency * 0.20 +
-    fifoScore * 0.10
-  ).toFixed(1);
-
-  const grade = overall >= 90 ? "A+" : overall >= 80 ? "A" : overall >= 70 ? "B" :
-    overall >= 60 ? "C" : overall >= 50 ? "D" : "F";
-  const gradeColor = overall >= 80 ? "#22c55e" : overall >= 60 ? "#f59e0b" : "#ef4444";
-
-  return {
-    overall,
-    efficiency: +efficiency.toFixed(1),
-    fleetUtilization: +fleetUtilization.toFixed(1),
-    deadheadRatio: +deadheadRatio.toFixed(1),
-    costEfficiency: +costEfficiency.toFixed(1),
-    fifoCompliance: +fifoScore.toFixed(1),
-    grade,
-    gradeColor,
-  };
-}
-
-/* ═══════════════════════════════════════════════════════════════
- *  ADVISORY ENGINE — generates smart suggestions
- * ═══════════════════════════════════════════════════════════════ */
-
-function generateAdvisories(
-  shifts: VehicleShift[],
-  tripBlocks: TripBlock[],
-  costs: ScenarioCost,
-  score: ScenarioScore,
-  hourlyDist: { hour: number; trips: number }[],
-): Advisory[] {
-  const advisories: Advisory[] = [];
-  let id = 0;
-
-  // ──── 1. UNDERUTILIZED VEHICLES ────
-  const underutilized = shifts.filter(s => s.tripCount <= 3 && s.shiftDuration > 120);
-  if (underutilized.length > 0) {
-    const saveable = underutilized.length;
-    const potentialSaving = underutilized.reduce((s, v) => s + COST_VEHICLE_FIXED_DAY[v.vehicleType], 0);
-    advisories.push({
-      id: `adv-${++id}`,
-      severity: saveable >= 3 ? "critical" : "warning",
-      category: "fleet",
-      title: `${saveable} veicoli sottoutilizzati`,
-      description: `${saveable} veicoli effettuano ≤3 corse in turni di oltre 2 ore. Veicoli: ${underutilized.map(s => s.vehicleId).join(", ")}.`,
-      impact: `Risparmio potenziale: €${potentialSaving}/giorno se consolidati`,
-      action: "Considerare di ridistribuire le corse su meno veicoli o ridurre la flotta. Analizzare se le corse possono essere coperte da veicoli esistenti con gap disponibili.",
-      metric: potentialSaving,
-    });
-  }
-
-  /* ──── 2. MEZZO PIÙ GRANDE DEL DICHIARATO ────
-   * Con la regola della sagoma il tipo del turno è la richiesta PIÙ RESTRITTIVA
-   * fra le sue corse, quindi un turno sopra il dichiarato non può più nascere:
-   * questo avviso è la rete che lo direbbe se accadesse. La versione precedente
-   * proponeva invece di declassare ogni blocco monolinea per risparmiare sul
-   * costo fisso — cioè esattamente il comportamento tolto dal motore — e
-   * spingeva l'operatore a rifare a mano il declassamento appena evitato.
-   * Quando un mezzo sembra troppo grande, l'azione giusta non è declassare il
-   * singolo turno ma rivedere la TIPOLOGIA DICHIARATA della linea, che è anche
-   * il suo tetto di sagoma. */
-  for (const shift of shifts) {
-    const corse = shift.trips.filter(t => t.type === "trip");
-    const richieste = corse
-      .map(t => t.requiredVehicle)
-      .filter((v): v is VehicleType => !!v && v in VEHICLE_SIZE);
-    if (richieste.length === 0) continue;
-    const minReq = Math.min(...richieste.map(v => VEHICLE_SIZE[v]));
-    const currentSize = VEHICLE_SIZE[shift.vehicleType];
-    if (currentSize > minReq) {
-      const soffrono = corse.filter(t => t.requiredVehicle
-        && VEHICLE_SIZE[t.requiredVehicle] < currentSize);
-      const linee = [...new Set(soffrono.map(t => t.routeName).filter(Boolean))];
-      advisories.push({
-        id: `adv-${++id}`,
-        severity: "critical",
-        category: "fleet",
-        title: `${shift.vehicleId}: mezzo fuori sagoma`,
-        description: `Il turno ${shift.vehicleId} gira con un ${VEHICLE_LABELS[shift.vehicleType]}, ma serve ${soffrono.length} corse di linee dichiarate per un mezzo più piccolo (${linee.join(", ")}). Sopra la taglia dichiarata la strada non regge.`,
-        impact: "Corse assegnate a un mezzo che su quel percorso non può transitare",
-        action: `Rimpacchettare il turno separando le corse di ${linee.join(", ")}, oppure correggere la tipologia dichiarata di quelle linee in Planning Studio.`,
-        metric: soffrono.length,
-      });
-    }
-  }
-
-  // ──── 3. EXCESSIVE DEADHEAD ────
-  const highDeadhead = shifts.filter(s => s.totalDeadheadKm > 15);
-  if (highDeadhead.length > 0) {
-    const totalExcessKm = highDeadhead.reduce((s, v) => s + v.totalDeadheadKm, 0);
-    const excessCost = highDeadhead.reduce((s, v) =>
-      s + v.totalDeadheadKm * COST_VEHICLE_PER_DEADHEAD_KM[v.vehicleType], 0);
-    advisories.push({
-      id: `adv-${++id}`,
-      severity: totalExcessKm > 100 ? "critical" : "warning",
-      category: "deadhead",
-      title: `${highDeadhead.length} veicoli con km vuoto elevato`,
-      description: `I veicoli ${highDeadhead.map(s => `${s.vehicleId} (${s.totalDeadheadKm.toFixed(0)}km)`).join(", ")} hanno spostamenti a vuoto significativi.`,
-      impact: `Costo vuoto: €${excessCost.toFixed(0)}/giorno`,
-      action: "Riorganizzare l'assegnazione delle corse per minimizzare gli spostamenti tra capolinea diversi. Considerare di raggruppare linee con terminali comuni sullo stesso veicolo.",
-      metric: excessCost,
-    });
-  }
-
-  // ──── 4. DEPOT RETURNS ────
-  const totalReturns = shifts.reduce((s, v) => s + v.depotReturns, 0);
-  if (totalReturns > 5) {
-    const returnCost = totalReturns * COST_PER_DEPOT_RETURN;
-    advisories.push({
-      id: `adv-${++id}`,
-      severity: totalReturns > 15 ? "warning" : "info",
-      category: "schedule",
-      title: `${totalReturns} rientri deposito nel giorno`,
-      description: "Molti veicoli rientrano al deposito per gap lunghi tra corse. Questo indica frammentazione del servizio.",
-      impact: `Costo overhead: €${returnCost}/giorno + usura aggiuntiva`,
-      action: "Valutare se le corse possono essere ridistribuite per coprire i gap. In alternativa, considerare sosta al capolinea per gap di 60-90 minuti invece del rientro.",
-      metric: returnCost,
-    });
-  }
-
-  // ──── 5. PEAK HOUR COVERAGE ────
-  const peakHours = hourlyDist.filter(h => h.trips > 0);
-  if (peakHours.length > 0) {
-    const maxTrips = Math.max(...peakHours.map(h => h.trips));
-    const peakHour = peakHours.find(h => h.trips === maxTrips)!;
-    const offPeakTrips = peakHours.filter(h => h.trips > 0 && h.trips < maxTrips * 0.3);
-    if (offPeakTrips.length > 3) {
-      advisories.push({
-        id: `adv-${++id}`,
-        severity: "info",
-        category: "schedule",
-        title: "Distribuzione oraria sbilanciata",
-        description: `Picco alle ${peakHour.hour}:00 con ${peakHour.trips} corse, ma ${offPeakTrips.length} ore con meno del 30% del picco. Il servizio è molto concentrato.`,
-        impact: "Veicoli necessari determinati dal picco, sottoutilizzati nelle ore di morbida",
-        action: "Considerare di distribuire alcune corse di punta nelle fasce orarie meno coperte per livellare il carico e ridurre il numero di veicoli necessari al picco.",
-        metric: offPeakTrips.length,
-      });
-    }
-  }
-
-  // ──── 6. FIFO REFUELING ISSUES ────
-  if (score.fifoCompliance < 70) {
-    advisories.push({
-      id: `adv-${++id}`,
-      severity: "warning",
-      category: "refueling",
-      title: "Rotazione FIFO non ottimale",
-      description: `La compliance FIFO è al ${score.fifoCompliance}%. I veicoli che escono per primi non rientrano per primi, complicando il rifornimento/ricarica.`,
-      impact: "Tempi di sosta al deposito più lunghi, rischio di veicoli non riforniti",
-      action: "Riorganizzare i turni in modo che i primi veicoli a uscire siano anche i primi a rientrare, facilitando la rotazione FIFO al rifornimento.",
-      metric: 100 - score.fifoCompliance,
-    });
-  }
-
-  // ──── 7. LONG SHIFTS ────
-  const longShifts = shifts.filter(s => s.shiftDuration > 14 * 60);
-  if (longShifts.length > 0) {
-    advisories.push({
-      id: `adv-${++id}`,
-      severity: "warning",
-      category: "schedule",
-      title: `${longShifts.length} turni oltre 14 ore`,
-      description: `I veicoli ${longShifts.map(s => s.vehicleId).join(", ")} hanno turni molto lunghi (>${14}h). Questo incide sull'usura e richiede doppio turno autista.`,
-      impact: "Costo doppio turno autista + usura veicolo accelerata",
-      action: "Spezzare i turni lunghi in due mezzi-turni con cambio autista, oppure redistribuire le corse serali/mattutine su altri veicoli.",
-      metric: longShifts.length,
-    });
-  }
-
-  // ──── 8. COST PER TRIP TOO HIGH ────
-  if (costs.costPerTrip > 30) {
-    advisories.push({
-      id: `adv-${++id}`,
-      severity: costs.costPerTrip > 50 ? "critical" : "warning",
-      category: "cost",
-      title: `Costo per corsa elevato: €${costs.costPerTrip.toFixed(2)}`,
-      description: "Il costo medio per corsa è superiore alla soglia ottimale (€15-25). Indica eccesso di veicoli rispetto al servizio offerto.",
-      impact: `Con un target di €20/corsa, sprechi €${((costs.costPerTrip - 20) * shifts.reduce((s, v) => s + v.tripCount, 0)).toFixed(0)}/giorno`,
-      action: "Aumentare la saturazione dei turni: consolidare corse su meno veicoli, ridurre i gap e gli spostamenti a vuoto.",
-      metric: costs.costPerTrip,
-    });
-  }
-
-  // ──── 9. URBAN/SUBURBAN IMBALANCE ────
-  const urbanShifts = shifts.filter(s => s.category === "urbano");
-  const subShifts = shifts.filter(s => s.category === "extraurbano");
-  if (urbanShifts.length > 0 && subShifts.length > 0) {
-    const urbanTripsPerVeh = urbanShifts.reduce((s, v) => s + v.tripCount, 0) / urbanShifts.length;
-    const subTripsPerVeh = subShifts.reduce((s, v) => s + v.tripCount, 0) / subShifts.length;
-    if (urbanTripsPerVeh > subTripsPerVeh * 2.5) {
-      advisories.push({
-        id: `adv-${++id}`,
-        severity: "info",
-        category: "fleet",
-        title: "Forte squilibrio urbano/extraurbano",
-        description: `I veicoli urbani fanno ~${urbanTripsPerVeh.toFixed(0)} corse/veicolo, gli extraurbani solo ~${subTripsPerVeh.toFixed(0)}. La flotta extraurbana è molto meno satura.`,
-        impact: "Sottoutilizzo della flotta extraurbana",
-        action: "Valutare se alcune corse extraurbane possono essere consolidate. Per le tratte con bassa domanda, considerare veicoli più piccoli (pollicino).",
-        metric: urbanTripsPerVeh - subTripsPerVeh,
-      });
-    }
-  }
-
-  // ──── 10. DOWNSIZED TRIPS (vehicle flexibility) ────
-  const totalDownsized = shifts.reduce((s, v) => s + v.downsizedTrips, 0);
-  const totalTripsCount = shifts.reduce((s, v) => s + v.tripCount, 0);
-  if (totalDownsized > 0) {
-    const pct = totalTripsCount > 0 ? ((totalDownsized / totalTripsCount) * 100).toFixed(0) : "0";
-    const shiftsWithDownsize = shifts.filter(s => s.downsizedTrips > 0);
-    advisories.push({
-      id: `adv-${++id}`,
-      severity: +pct > 30 ? "warning" : "info",
-      category: "fleet",
-      title: `${totalDownsized} corse su mezzo più piccolo (${pct}%)`,
-      description: `Per ridurre i turni macchina, ${totalDownsized} corse girano su un veicolo più piccolo di quello assegnato. ` +
-        `Veicoli coinvolti: ${shiftsWithDownsize.map(s => s.vehicleId).slice(0, 8).join(", ")}${shiftsWithDownsize.length > 8 ? "…" : ""}.`,
-      impact: `Riduzione turni macchina — meno veicoli in circolazione`,
-      action: +pct > 20
-        ? "Verificare che la capienza sia sufficiente nelle ore di punta. Considerare di ridimensionare l'assegnazione veicoli per queste linee."
-        : "Il livello di flessibilità è accettabile. Le corse in ora di morbida su mezzo più piccolo non impattano il servizio.",
-      metric: totalDownsized,
-    });
-  }
-
-  // Sort by severity then metric
-  const sevOrder: Record<AdvisorySeverity, number> = { critical: 0, warning: 1, info: 2 };
-  advisories.sort((a, b) => {
-    const sd = sevOrder[a.severity] - sevOrder[b.severity];
-    if (sd !== 0) return sd;
-    return (b.metric || 0) - (a.metric || 0);
-  });
-
-  return advisories;
-}
 
 /* ═══════════════════════════════════════════════════════════════
  *  DEADHEAD CALCULATION
@@ -1781,1226 +1094,135 @@ router.post("/service-program", async (req, res) => {
  * ═══════════════════════════════════════════════════════════════ */
 
 /** Corse nel formato atteso dagli script Python (VSP e orchestratore VCSP). */
-function buildPyTrips(tripBlocks: TripBlock[]) {
-  return tripBlocks.map(t => ({
-    tripId: t.tripId,
-    routeId: t.routeId,
-    routeName: t.routeName,
-    headsign: t.headsign,
-    directionId: t.directionId,
-    departureTime: t.departureTime,
-    arrivalTime: t.arrivalTime,
-    departureMin: t.departureMin,
-    arrivalMin: t.arrivalMin,
-    firstStopId: t.firstStopId,
-    lastStopId: t.lastStopId,
-    firstStopLat: t.firstStopLat,
-    firstStopLon: t.firstStopLon,
-    lastStopLat: t.lastStopLat,
-    lastStopLon: t.lastStopLon,
-    firstStopName: t.firstStopName,
-    lastStopName: t.lastStopName,
-    stopCount: t.stopCount,
-    requiredVehicle: t.requiredVehicle,
-    variantCode: t.variantCode ?? undefined,
-    category: t.category,
-    forced: t.forced,
-    onDemand: t.onDemand,
-    // finestra di flessibilità dichiarata in Planning: la sonda di spostamento
-    // del VCSP (cervello P↔TM↔TG) la userà per proporre traslazioni ±flexMin
-    flexMin: t.flexMin ?? 0,
-  }));
-}
 
 /**
- * I PASSAGGI IN TRANSITO sui capolinea ALTRUI, per corsa.
- *
- * La coincidenza fra due linee non si fa solo al capolinea. Alla Madonnetta la
- * 2/6 arriva al suo capolinea e la 21/33 ci transita cinque minuti dopo, senza
- * fermarsi: per il passeggero e' una coincidenza, e nel quadro festivo di
- * Ancona e' costruita a mano sulle quattro corse della giornata. Guardando solo
- * la prima e l'ultima fermata di ogni corsa quella coincidenza e' invisibile, e
- * la sonda di spostamento del VCSP puo' romperla senza accorgersene.
- *
- * Si portano SOLO i passaggi su fermate che sono capolinea di qualche corsa: e'
- * li' che una linea di passaggio incontra chi si ferma. Gli altri transiti sono
- * il corridoio che due linee percorrono insieme — decine di incontri, nessuna
- * coincidenza da difendere.
+ * Il calcolo dentro l'API (il percorso di sempre; con LAVORI_VEICOLI_IN_CODA=1
+ * le rotte lo accodano al lavoratore): feed dell'utente, controlli della
+ * richiesta, la colonna variant_code (unità pigra, DDL: solo qui, mai nel
+ * lavoratore), poi lib/ottimizza-veicoli/esegui.ts.
  */
-async function loadTerminalTransits(
-  feedId: string,
-  blocks: Array<Pick<TripBlock, "tripId" | "firstStopId" | "lastStopId">>,
-  logger?: { info: (...a: any[]) => void },
-): Promise<Record<string, Array<{ stopName: string; arrivalMin: number; departureMin: number }>>> {
-  const out: Record<string, Array<{ stopName: string; arrivalMin: number; departureMin: number }>> = {};
-  if (blocks.length === 0) return out;
-
-  const terminals = new Set<string>();
-  const own = new Map<string, [string, string]>();
-  for (const b of blocks) {
-    if (b.firstStopId) terminals.add(b.firstStopId);
-    if (b.lastStopId) terminals.add(b.lastStopId);
-    own.set(b.tripId, [b.firstStopId, b.lastStopId]);
-  }
-  if (terminals.size === 0) return out;
-
-  const stopRows = await db.select({ stopId: gtfsStops.stopId, stopName: gtfsStops.stopName })
-    .from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
-  const nameOf = new Map<string, string>();
-  for (const s of stopRows) nameOf.set(s.stopId, s.stopName || s.stopId);
-
-  const ids = blocks.map(b => b.tripId);
-  const BATCH = 500;
-  let n = 0;
-  for (let i = 0; i < ids.length; i += BATCH) {
-    const rows = await db.select({
-      tripId: gtfsStopTimes.tripId,
-      stopId: gtfsStopTimes.stopId,
-      arrivalTime: gtfsStopTimes.arrivalTime,
-      departureTime: gtfsStopTimes.departureTime,
-    }).from(gtfsStopTimes)
-      .where(and(eq(gtfsStopTimes.feedId, feedId), inArray(gtfsStopTimes.tripId, ids.slice(i, i + BATCH))));
-
-    for (const r of rows) {
-      if (!terminals.has(r.stopId)) continue;
-      const o = own.get(r.tripId);
-      if (!o || r.stopId === o[0] || r.stopId === o[1]) continue;  // il proprio capolinea non è un transito
-      const a = r.arrivalTime || r.departureTime;
-      const d = r.departureTime || r.arrivalTime;
-      if (!a || !d) continue;
-      (out[r.tripId] ??= []).push({
-        stopName: nameOf.get(r.stopId) || r.stopId,
-        arrivalMin: timeToMinutes(a),
-        departureMin: timeToMinutes(d),
-      });
-      n++;
-    }
-  }
-  for (const v of Object.values(out)) v.sort((x, y) => x.arrivalMin - y.arrivalMin);
-  logger?.info(`loadTerminalTransits: ${n} passaggi su ${terminals.size} capolinea, ${Object.keys(out).length}/${ids.length} corse`);
-  return out;
-}
-
-/** Uno script Python (JSON stdin → JSON stdout), dal lanciatore unico (lib/lavori/python.ts).
- *  Le righe di stderr vanno nel log una per una: agentJobLogger ci legge il PROGRESS. */
-async function spawnPythonJson(
-  scriptName: ScriptConsentito,
-  argv: string[],
-  input: unknown,
-  logger: { info: (...a: any[]) => void; error?: (...a: any[]) => void },
-  label: string,
-): Promise<any> {
-  const esito = await eseguiPython({
-    script: scriptName, argv, ingresso: input,
-    // nessun limite prima della coda dei lavori: si tiene largo (VCSP «normal» ~17 min, giri fino a 30)
-    timeoutMs: 2 * 60 * 60 * 1000,
-    suRigaStderr: (r) => logger.info(`${label} stderr: ${r}`),
-  });
-  if (esito.motivo === "avvio") throw new Error(`Errore avvio Python: ${esito.erroreAvvio}`);
-  if (esito.motivo !== "uscito" || esito.codice !== 0) {
-    throw new Error(`${descriviUscita(esito)}: ${esito.stderrCoda.slice(-1500)}`);
-  }
-  const j = jsonDallUscita(esito);
-  if (!j.ok) throw new Error(`parse ${label}: ${j.errore}`);
-  return j.valore;
-}
-
-async function runCPSATVehicleScheduler(
-  tripBlocks: TripBlock[],
-  timeLimitSec: number,
-  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
-  extraConfig?: Record<string, any>,
-  routeDetails?: { routeId: string; routeName: string }[],
-  psClusters?: { id: string; name: string; kind: string; stopIds: string[] }[],
-  depotsForPy?: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null; fleet?: Record<string, number> }[],
-  deadheadKm?: Record<string, number>,
-  deadheadMin?: Record<string, number>,
-  deadheadArchive?: Record<string, any>,
-  lockedChains?: { vehicleId?: string; tripIds: string[] }[],
-): Promise<any> {
-  return spawnPythonJson("vehicle_scheduler_cpsat.py", [String(timeLimitSec)], {
-    trips: buildPyTrips(tripBlocks),
-    config: {
-      timeLimit: timeLimitSec,
-      ...extraConfig,
-    },
-    routeDetails: routeDetails || [],
-    psClusters: psClusters || [],
-    // Multi-deposito: domiciliazione + cap vetture per deposito (vincolo hard)
-    ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
-    // Matrice fuorilinea (km stradali reali, OSRM/fallback) per archi e tratte deposito
-    ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
-    // Override tempi curati a mano (Archi Fuorilinea, custom_min)
-    ...(deadheadMin && Object.keys(deadheadMin).length > 0 ? { deadheadMin } : {}),
-    // Restrizione all'archivio «Archi fuorilinea» (traccia per log e relazione)
-    ...(deadheadArchive ? { deadheadArchive } : {}),
-    // Il lucchetto: turni bloccati dall'operatore, vincoli duri per il solver
-    ...(lockedChains && lockedChains.length > 0 ? { lockedChains } : {}),
-  }, logger, "VSP");
-}
-
-/** Orchestratore VCSP (loop VSP→CSP→costi-ombra→re-VSP in un unico processo). */
-async function runVcspOrchestrator(
-  logger: { info: (...a: any[]) => void; error: (...a: any[]) => void },
-  input: unknown,
-): Promise<any> {
-  return spawnPythonJson("vcsp_orchestrator.py", [], input, logger, "VCSP");
-}
-
-type DepotPoint = { id: string; name: string; color: string; lat: number; lon: number };
-
-/** Depositi candidati per il solving. Scope PS14: i depositi legati a un
- * progetto Planner Studio valgono SOLO per i giri di quel progetto — senza
- * filtro, un run senza selezione esplicita pescherebbe i depositi
- * sperimentali di altri progetti come residenze candidate. */
-async function loadDepotPoints(schedProjectId?: string | null): Promise<DepotPoint[]> {
-  try {
-    const rows = await db.select().from(depots);
-    const scope = new Map<string, string | null>();
-    try {
-      const r = await db.execute<any>(sql`SELECT id, ps_project_id FROM depots`);
-      for (const x of (r as any).rows ?? []) scope.set(x.id, x.ps_project_id ?? null);
-    } catch { /* colonna assente su DB legacy: tutti globali */ }
-    let psProj: string | null = null;
-    if (schedProjectId && /^[0-9a-f-]{36}$/i.test(schedProjectId)) {
-      try {
-        const pr = await db.execute<any>(sql`SELECT planning_studio_project_id FROM scheduling_projects WHERE id = ${schedProjectId}::uuid`);
-        psProj = (pr.rows?.[0]?.planning_studio_project_id as string | undefined) ?? null;
-      } catch { /* tabella assente */ }
-    }
-    return rows
-      .filter((d: any) => d.lat != null && d.lon != null)
-      .filter((d: any) => { const sc = scope.get(d.id) ?? null; return sc == null || sc === psProj; })
-      .map((d: any) => ({ id: d.id, name: d.name, color: d.color || "#3b82f6", lat: Number(d.lat), lon: Number(d.lon) }));
-  } catch { return []; }
-}
-
-function nearestDepot(lat: number | null | undefined, lon: number | null | undefined, dps: DepotPoint[]): DepotPoint | null {
-  if (lat == null || lon == null || dps.length === 0) return null;
-  let best: DepotPoint | null = null;
-  let bestD = Infinity;
-  for (const d of dps) {
-    const km = haversineKm(lat, lon, d.lat, d.lon);
-    if (km < bestD) { bestD = km; best = d; }
-  }
-  return best;
-}
-
-/**
- * Assegna a ogni turno macchina la RESIDENZA DI SERVIZIO (deposito), in base alla
- * geografia: deposito di uscita = il più vicino alla prima fermata del turno,
- * deposito di rientro = il più vicino all'ultima. In servizio mono-deposito tutti
- * i turni ricadono sullo stesso; in multi-deposito (extraurbano) ognuno prende il
- * proprio. È il legame deposito→turno che il roster usa per la colorazione.
- */
-function assignResidenzaToShifts(
-  shifts: VehicleShift[],
-  tripBlocks: TripBlock[],
-  dps: DepotPoint[],
-  caps?: Map<string, number>,
-): Map<string, number> {
-  // counts = veicoli assegnati per deposito (residenza). Ritornato per l'advisory capacità.
-  const counts = new Map<string, number>();
-  if (dps.length === 0) return counts;
-  const coord = new Map<string, { fLat: number; fLon: number; lLat: number; lLon: number }>();
-  for (const t of tripBlocks) {
-    coord.set(t.tripId, { fLat: t.firstStopLat, fLon: t.firstStopLon, lLat: t.lastStopLat, lLon: t.lastStopLon });
-  }
-  // Cap morbido: preferisci il deposito più vicino tra quelli NON ancora pieni;
-  // se sono tutti pieni, ricadi sul più vicino in assoluto (overflow consentito).
-  const pickOut = (lat: number, lon: number): DepotPoint | null => {
-    if (caps && caps.size > 0) {
-      const avail = dps.filter(d => (counts.get(d.id) ?? 0) < (caps.get(d.id) ?? Infinity));
-      return nearestDepot(lat, lon, avail.length > 0 ? avail : dps);
-    }
-    return nearestDepot(lat, lon, dps);
-  };
-  for (const s of shifts) {
-    const tripEntries = s.trips.filter((t) => t.type === "trip" && coord.has(t.tripId));
-    if (tripEntries.length === 0) { s.depotOut = null; s.depotIn = null; s.residenzaDepotId = null; continue; }
-    const first = coord.get(tripEntries[0].tripId)!;
-    const last = coord.get(tripEntries[tripEntries.length - 1].tripId)!;
-    const dOut = pickOut(first.fLat, first.fLon);
-    const dIn = nearestDepot(last.lLat, last.lLon, dps);
-    s.depotOut = dOut ? { id: dOut.id, name: dOut.name, color: dOut.color } : null;
-    s.depotIn = dIn ? { id: dIn.id, name: dIn.name, color: dIn.color } : null;
-    const res = dOut || dIn;
-    s.residenzaDepotId = res?.id ?? null;
-    s.residenzaName = res?.name ?? null;
-    s.residenzaColor = res?.color ?? null;
-    if (res) counts.set(res.id, (counts.get(res.id) ?? 0) + 1);
-  }
-  return counts;
-}
-
-/** Selezione depositi dall'input ottimizzatore: ids consentiti + capacità (max
- *  veicoli totali e, opzionale, flotta per TIPOLOGIA di veicolo). */
-function parseDepotSelection(raw: any): { ids: Set<string>; caps: Map<string, number>; fleets: Map<string, Record<string, number>> } | null {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
-  const ids = new Set<string>();
-  const caps = new Map<string, number>();
-  const fleets = new Map<string, Record<string, number>>();
-  for (const d of raw) {
-    if (d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id)) {
-      ids.add(d.id);
-      const mv = Number(d.maxVehicles);
-      if (Number.isFinite(mv) && mv > 0) caps.set(d.id, mv);
-      // flotta per tipologia: { "12m": 10, "autosnodato": 3, ... }
-      if (d.fleet && typeof d.fleet === "object" && !Array.isArray(d.fleet)) {
-        const clean: Record<string, number> = {};
-        for (const [vt, n] of Object.entries(d.fleet)) {
-          const num = Number(n);
-          if (typeof vt === "string" && vt.length <= 20 && Number.isFinite(num) && num >= 0) clean[vt] = Math.floor(num);
-        }
-        if (Object.keys(clean).length > 0) fleets.set(d.id, clean);
-      }
-    }
-  }
-  return ids.size > 0 ? { ids, caps, fleets } : null;
-}
-
-/** Advisory "cap morbido": segnala i depositi che superano la capacità indicata. */
-function depotCapacityAdvisory(counts: Map<string, number>, caps: Map<string, number>, points: DepotPoint[]): Advisory | null {
-  const over: string[] = [];
-  let maxOver = 0;
-  for (const [id, cap] of caps) {
-    const used = counts.get(id) ?? 0;
-    if (used > cap) {
-      const nm = points.find(p => p.id === id)?.name ?? "deposito";
-      over.push(`${nm} ${used}/${cap}`);
-      maxOver = Math.max(maxOver, used - cap);
-    }
-  }
-  if (over.length === 0) return null;
-  return {
-    id: "depot-capacity",
-    severity: "warning",
-    category: "fleet",
-    title: "Capacità deposito superata",
-    description: `Alcuni depositi hanno più veicoli della capacità indicata: ${over.join(", ")}.`,
-    impact: `${maxOver} veicol${maxOver === 1 ? "o" : "i"} oltre capacità`,
-    action: "Aumenta la capacità del deposito, aggiungine un altro o riduci le linee in questo scenario.",
-    metric: maxOver,
-  };
-}
-
-/**
- * Handler condiviso CP-SAT / VCSP.
- * mode="cpsat"  → solver turni macchina (vehicle_scheduler_cpsat.py)
- * mode="vcsp"   → ottimizzazione INTEGRATA veicoli+guida (vcsp_orchestrator.py):
- *                 loop VSP→CSP→costi-ombra→re-VSP; la risposta ha la stessa
- *                 forma del CP-SAT (post-processing riusato) + sezione `vcsp`
- *                 con i KPI per round e i turni guida del round migliore.
- */
-/** INVARIANTE: non si ottimizza senza progetto Planner Studio.
- *  Lo Scheduling Engine lavora solo su feed materializzati dal PS, e tutto il
- *  dato condiviso (nodi, depositi, archi, zone) è scopato su quel progetto.
- *  Senza, il giro proseguirebbe in silenzio sui soli dati globali: un
- *  risultato plausibile ma costruito su un'altra rete. Meglio un errore
- *  parlante che una soluzione sbagliata.
- *  Ritorna true se ha già risposto con l'errore. */
+/** Ritorna true se ha già risposto con il 400 del progetto Planner Studio mancante. */
 function rejectWithoutPsProject(req: any, res: any): boolean {
-  if (/^[0-9a-f-]{36}$/i.test(String(req.body?.psProjectId ?? ""))) return false;
-  res.status(400).json({
-    error: "Progetto Planner Studio mancante",
-    detail: "L'ottimizzazione richiede un progetto Scheduling collegato a un progetto Planner Studio: "
-      + "nodi, depositi e archi fuorilinea sono definiti lì. Se il progetto è legacy, ricrealo dal Planner Studio.",
-  });
-  return true;
+  const e = progettoMancante(req.body);
+  if (e) res.status(e.codice).json(e.corpo);
+  return !!e;
 }
 
-async function handleVehicleOptimize(req: any, res: any, mode: "cpsat" | "vcsp"): Promise<void> {
+/* ── Turni macchina e VCSP in coda (PR 2.6) ─────────────────────────────────
+ * Il calcolo gira nel lavoratore (lavoro ottimizza_veicoli); la rotta resta
+ * sincrona con la facciata (lib/facciata-lavori.ts): stesse risposte, e se il
+ * client si scollega il calcolo si ferma. Con ?asincrono=1 risponde subito 202
+ * {jobId}: lo stato si legge da GET /service-program/lavori/:jobId.
+ * LAVORI_VEICOLI_IN_CODA=0 riporta il calcolo dentro l'API (rilascio e ritorno
+ * indietro). Il feed, i 400 e la colonna variant_code (DDL dell'unità pigra)
+ * restano qui: nessun lavoro per una richiesta sbagliata, nessun DDL nel
+ * lavoratore. */
+const AMBITO_VEICOLI = "turni-macchina";
+/** Calcoli dei turni macchina vivi (in coda o in corso) per utente: oltre, 429. */
+export const VIVI_PER_UTENTE_VEICOLI = 3;
+
+/** Il calcolo va in coda salvo LAVORI_VEICOLI_IN_CODA=0. */
+export function veicoliInCoda(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.LAVORI_VEICOLI_IN_CODA !== "0";
+}
+
+async function handleVehicleOptimize(req: any, res: any, mode: ModoVeicoli): Promise<void> {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
-
-    if (rejectWithoutPsProject(req, res)) return;
-
-    const body = req.body as {
-      date?: string;
-      routes?: { routeId: string; vehicleType: VehicleType; forced?: boolean }[];
-      tripVehicleOverrides?: Record<string, VehicleType>;
-      /**
-       * Override degli orari di partenza/arrivo per singolo tripId (in minuti dalla mezzanotte).
-       * Usato dalla ri-ottimizzazione post-Analisi Intermodale: gli orari sono già stati
-       * spostati per garantire le coincidenze, qui ricalcoliamo i turni macchina con i
-       * nuovi tempi senza dover modificare il GTFS.
-       */
-      tripTimeOverrides?: Record<string, { departureMin: number; arrivalMin: number; departureTime?: string; arrivalTime?: string }>;
-      timeLimit?: number;
-      vehicleCosts?: Record<string, any>;
-      solverIntensity?: string;
-      /**
-       * Parametri avanzati VSP esposti via UI (Fucina/OptimizerStep):
-       * - minVehiclesPriority: off | soft | strict | lexicographic (regola #1)
-       * - costRatesOverride: tariffe utente che sovrascrivono i default
-       * - intensity, scenariosOverride, enableNoGoodCuts, ...
-       */
-      vspAdvanced?: Record<string, any>;
-      /**
-       * Planning Studio project ID (UUID). Se presente, il solver riceve
-       * anche i cluster PS "logici" (kind!=interchange) come hint di transfer
-       * a costo zero. I cluster di interscambio sono già propagati via mirror
-       * legacy `stop_clusters` indipendentemente da questo campo.
-       */
-      psProjectId?: string;
-      /**
-       * Il lucchetto (Fucina → Ri-ottimizza): turni macchina che l'operatore
-       * ha bloccato. Il solver li riceve come VINCOLI DURI — stesse corse,
-       * stesso ordine, stessa matricola — e ricalcola solo il resto. Se un
-       * turno bloccato non sta nel modello (corsa sparita, aggancio
-       * impossibile) il solver risponde con un errore parlante → 422.
-       */
-      lockedChains?: { vehicleId?: string; tripIds: string[] }[];
-    };
-
-    const lockedChains = (Array.isArray(body.lockedChains) ? body.lockedChains : [])
-      .filter((c): c is { vehicleId?: string; tripIds: string[] } => !!c && Array.isArray(c.tripIds))
-      .map(c => ({
-        ...(typeof c.vehicleId === "string" && c.vehicleId.trim() ? { vehicleId: c.vehicleId.trim() } : {}),
-        tripIds: c.tripIds.map(t => String(t ?? "").trim()).filter(Boolean),
-      }))
-      .filter(c => c.tripIds.length > 0);
-
-    const rawDate = body.date;
-    if (!rawDate || typeof rawDate !== "string") {
-      res.status(400).json({ error: "Parametro 'date' obbligatorio (YYYYMMDD o YYYY-MM-DD)" });
-      return;
-    }
-    const dateYMD = rawDate.replace(/-/g, "");
-    if (!/^\d{8}$/.test(dateYMD)) {
-      res.status(400).json({ error: "Formato data non valido" });
-      return;
-    }
-
-    if (!body.routes || !Array.isArray(body.routes) || body.routes.length === 0) {
-      res.status(400).json({ error: "Parametro 'routes' obbligatorio" });
-      return;
-    }
-
-    const validTypes = new Set(Object.keys(VEHICLE_SIZE));
-    const routeVehicleMap: Record<string, VehicleType> = {};
-    const routeForcedMap: Record<string, boolean> = {};
-    for (const r of body.routes) {
-      if (!r.routeId || !r.vehicleType || !validTypes.has(r.vehicleType)) {
-        res.status(400).json({ error: `Tipo veicolo non valido: "${r.vehicleType}" per linea "${r.routeId}"` });
-        return;
-      }
-      routeVehicleMap[r.routeId] = r.vehicleType;
-      routeForcedMap[r.routeId] = !!r.forced;
-    }
-
-    const selectedRouteIds = new Set(Object.keys(routeVehicleMap));
-    const timeLimitSec = body.timeLimit ?? 60;
-
-    // 1. Active services
-    const activeServices = await getActiveServiceIds(feedId, dateYMD);
-    if (activeServices.size === 0) {
-      res.json({ status: "NO_INPUT", vehicleShifts: [], metrics: {} });
-      return;
-    }
-
-    // 2. Load trips (same as greedy endpoint)
+    const errore = validaRichiesta(req.body);
+    if (errore) { res.status(errore.codice).json(errore.corpo); return; }
     await ensureVariantCodeColumn();
-    const allTrips = await db.select({
-      tripId: gtfsTrips.tripId,
-      routeId: gtfsTrips.routeId,
-      serviceId: gtfsTrips.serviceId,
-      headsign: gtfsTrips.tripHeadsign,
-      directionId: gtfsTrips.directionId,
-      onDemand: gtfsTrips.onDemand,
-      variantCode: gtfsTrips.variantCode,
-    }).from(gtfsTrips).where(eq(gtfsTrips.feedId, feedId));
-
-    const trips = allTrips.filter(t =>
-      selectedRouteIds.has(t.routeId) && activeServices.has(t.serviceId)
-    );
-
-    if (trips.length === 0) {
-      res.json({ status: "NO_INPUT", vehicleShifts: [], metrics: {} });
+    if (!veicoliInCoda()) {
+      const r = await eseguiOttimizzazione(req.body, { mode, feedId, log: req.log });
+      res.status(r.codice).json(r.corpo);
       return;
     }
-
-    // 3. Stop times
-    const tripIds = trips.map(t => t.tripId);
-    const stopTimesRaw = await db.execute<{
-      trip_id: string; stop_id: string; stop_sequence: number;
-      departure_time: string | null; arrival_time: string | null;
-    }>(sql`
-      SELECT trip_id, stop_id, stop_sequence, departure_time, arrival_time
-      FROM gtfs_stop_times
-      WHERE feed_id = ${feedId}
-        AND trip_id IN ${sql.raw(`(${tripIds.map(id => `'${id.replace(/'/g, "''")}'`).join(",")})`)}
-      ORDER BY trip_id, stop_sequence
-    `);
-
-    const stByTrip: Record<string, typeof stopTimesRaw.rows> = {};
-    for (const st of stopTimesRaw.rows) {
-      if (!stByTrip[st.trip_id]) stByTrip[st.trip_id] = [];
-      stByTrip[st.trip_id].push(st);
-    }
-
-    // 4. Route names + stop coords
-    const routeRows = await db.select({
-      routeId: gtfsRoutes.routeId,
-      shortName: gtfsRoutes.routeShortName,
-      longName: gtfsRoutes.routeLongName,
-    }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
-    const routeNameMap = new Map(routeRows.map(r => [r.routeId, r.shortName || r.longName || r.routeId]));
-
-    const stopRows = await db.select({
-      stopId: gtfsStops.stopId,
-      lat: gtfsStops.stopLat,
-      lon: gtfsStops.stopLon,
-      name: gtfsStops.stopName,
-    }).from(gtfsStops).where(eq(gtfsStops.feedId!, feedId));
-    const stopCoords = new Map(stopRows.map(s => [s.stopId, { lat: s.lat, lon: s.lon, name: s.name || s.stopId }]));
-
-    // 4c. Flessibilità DICHIARATA IN PIANIFICAZIONE (cervello P↔TM↔TG):
-    // flexMin per linea (default) e per corsa (override) dal progetto PS.
-    // Nel feed materializzato route_id/trip_id GTFS = uuid PS, quindi il
-    // lookup è diretto. Corsa senza dichiarazione = inchiodata (0).
-    const flexByRoute = new Map<string, number>();
-    const flexByTrip = new Map<string, number>();
-    const psProjForFlex = typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)
-      ? body.psProjectId : null;
-    if (psProjForFlex) {
-      try {
-        const fr = await db.execute<any>(sql`
-          SELECT id, (attributes->>'flexMin')::int AS flex FROM ps_routes
-           WHERE project_id = ${psProjForFlex}::uuid AND attributes ? 'flexMin'`);
-        for (const r of fr.rows ?? []) if (Number(r.flex) > 0) flexByRoute.set(String(r.id), Math.min(30, Number(r.flex)));
-        const ft = await db.execute<any>(sql`
-          SELECT id, (attributes->>'flexMin')::int AS flex FROM ps_trips
-           WHERE project_id = ${psProjForFlex}::uuid AND attributes ? 'flexMin'`);
-        for (const r of ft.rows ?? []) flexByTrip.set(String(r.id), Math.max(0, Math.min(30, Number(r.flex) || 0)));
-        if (flexByRoute.size || flexByTrip.size) {
-          req.log.info(`CP-SAT VSP: flessibilità dichiarata su ${flexByRoute.size} linee e ${flexByTrip.size} corse (progetto PS)`);
-        }
-      } catch { /* progetto PS senza flex: tutte le corse inchiodate */ }
-    }
-
-    // 5. Build trip blocks
-    const tripBlocks: TripBlock[] = [];
-    for (const t of trips) {
-      const sts = stByTrip[t.tripId];
-      if (!sts || sts.length === 0) continue;
-      sts.sort((a, b) => a.stop_sequence - b.stop_sequence);
-      const firstDep = sts[0].departure_time || sts[0].arrival_time || "00:00:00";
-      const lastArr = sts[sts.length - 1].arrival_time || sts[sts.length - 1].departure_time || firstDep;
-      const firstStop = stopCoords.get(sts[0].stop_id);
-      const lastStop = stopCoords.get(sts[sts.length - 1].stop_id);
-      const routeName = routeNameMap.get(t.routeId) || t.routeId;
-
-      // Applica eventuale override degli orari (post-Analisi Intermodale): gli orari
-      // sono già stati spostati per garantire le coincidenze, qui ricalcoliamo i turni
-      // macchina con i nuovi tempi senza dover modificare il GTFS.
-      const ovr = body.tripTimeOverrides?.[t.tripId];
-      const finalDepartureTime = ovr?.departureTime ?? firstDep;
-      const finalArrivalTime = ovr?.arrivalTime ?? lastArr;
-      const finalDepartureMin = typeof ovr?.departureMin === "number" ? ovr.departureMin : timeToMinutes(firstDep);
-      const finalArrivalMin = typeof ovr?.arrivalMin === "number" ? ovr.arrivalMin : timeToMinutes(lastArr);
-
-      tripBlocks.push({
-        tripId: t.tripId,
-        routeId: t.routeId,
-        routeName,
-        headsign: t.headsign,
-        variantCode: (t as any).variantCode ?? null,
-        directionId: t.directionId ?? 0,
-        departureTime: finalDepartureTime,
-        arrivalTime: finalArrivalTime,
-        departureMin: finalDepartureMin,
-        arrivalMin: finalArrivalMin,
-        stopCount: sts.length,
-        firstStopId: sts[0].stop_id,
-        lastStopId: sts[sts.length - 1].stop_id,
-        firstStopLat: firstStop?.lat ?? 43.6,
-        firstStopLon: firstStop?.lon ?? 13.5,
-        lastStopLat: lastStop?.lat ?? 43.6,
-        lastStopLon: lastStop?.lon ?? 13.5,
-        firstStopName: firstStop?.name || sts[0].stop_id,
-        lastStopName: lastStop?.name || sts[sts.length - 1].stop_id,
-        requiredVehicle: (body.tripVehicleOverrides?.[t.tripId] as VehicleType) ?? (routeVehicleMap[t.routeId] || "12m"),
-        category: getServiceCategory(routeName),
-        forced: routeForcedMap[t.routeId] ?? false,
-        onDemand: !!t.onDemand,
-        flexMin: flexByTrip.get(t.tripId) ?? flexByRoute.get(t.routeId) ?? 0,
+    if (arresto.signal.aborted) { res.status(503).json({ error: MESSAGGIO_RIAVVIO }); return; }
+    const utenteId: string | undefined = req.user?.id;
+    if (!utenteId) { res.status(401).json({ error: "Non autenticato" }); return; }
+    // un tetto ai calcoli vivi per utente: la coda è persistente e non si svuota a ogni riavvio
+    if (await coda.viviDi(utenteId, AMBITO_VEICOLI) >= VIVI_PER_UTENTE_VEICOLI) {
+      res.status(429).json({
+        error: `Hai già ${VIVI_PER_UTENTE_VEICOLI} calcoli dei turni macchina in coda o in corso: aspetta che finiscano o fermane uno.`,
       });
-    }
-
-    // Corse ESCLUSE dall'operatore: fuori dal solver ma restano SCOPERTE (unassigned),
-    // così il traffico dati resta corretto (non spariscono, contano come non coperte).
-    const excludedSet = new Set<string>(Array.isArray((body as any).excludedTripIds)
-      ? (body as any).excludedTripIds.filter((x: any) => typeof x === "string") : []);
-    const excludedBlocks: TripBlock[] = excludedSet.size ? tripBlocks.filter(t => excludedSet.has(t.tripId)) : [];
-    for (const b of excludedBlocks) (b as any).excludedByOperator = true;
-    const solverBlocks: TripBlock[] = excludedSet.size ? tripBlocks.filter(t => !excludedSet.has(t.tripId)) : tripBlocks;
-
-    req.log.info(`CP-SAT VSP: ${solverBlocks.length} trips (${excludedBlocks.length} escluse), timeLimit=${timeLimitSec}s`);
-
-    // Build route details for Python
-    const routeDetailsForPy = Array.from(selectedRouteIds).map(rid => ({
-      routeId: rid,
-      routeName: routeNameMap.get(rid) || rid,
-    }));
-
-    /* ── 5b. Cluster utente (Planning Studio + legacy) per VSP ────────────
-     * I cluster definiti dall'utente sono passati al CP-SAT come hint:
-     * fermate dello stesso cluster vengono trattate come "stesso punto"
-     * (deadhead km=0, tempo=0). Sorgenti aggregate:
-     *  - cluster legacy (`stop_cluster_stops`): comprendono già il mirror
-     *    PS→legacy dei kind='interchange' (cfr planning-studio-materialize)
-     *  - cluster PS logici (kind!='interchange'): NON sono mirrorati,
-     *    quindi li leggiamo direttamente da ps_stop_clusters/ps_stops
-     *    se è specificato un psProjectId.
-     * Lavoriamo per stop_id GTFS (chiave usata dal solver).
-     */
-    const psClustersForPy: { id: string; name: string; kind: string; stopIds: string[] }[] = [];
-    const psProjectIdForClusters = typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)
-      ? body.psProjectId : null;
-    try {
-      // 5b.1 — cluster legacy: SOLO globali + quelli mirrorati da QUESTO
-      // progetto PS. Prima si leggeva l'intera tabella senza filtro: i nodi
-      // di altri progetti entravano nel solver e le loro fermate venivano
-      // trattate come "stesso punto" (fuorilinea 0). Con stop_id GTFS che si
-      // ripetono tra feed diversi, questo falsava la matrice fuorilinea.
-      const legacyRows = await db.execute<{ cluster_id: string; name: string; gtfs_stop_id: string }>(sql`
-        SELECT scs.cluster_id::text AS cluster_id,
-               COALESCE(c.name, 'Cluster') AS name,
-               scs.gtfs_stop_id
-          FROM stop_cluster_stops scs
-          JOIN stop_clusters c ON c.id = scs.cluster_id
-         WHERE c.source_ps_project_id IS NULL
-            OR c.source_ps_project_id = ${psProjectIdForClusters}::uuid
-      `);
-      const legacyByCluster = new Map<string, { name: string; stopIds: Set<string> }>();
-      for (const r of legacyRows.rows) {
-        if (!legacyByCluster.has(r.cluster_id)) {
-          legacyByCluster.set(r.cluster_id, { name: r.name, stopIds: new Set() });
-        }
-        legacyByCluster.get(r.cluster_id)!.stopIds.add(r.gtfs_stop_id);
-      }
-      for (const [cid, v] of legacyByCluster) {
-        if (v.stopIds.size >= 2) {
-          psClustersForPy.push({ id: cid, name: v.name, kind: "interchange", stopIds: Array.from(v.stopIds) });
-        }
-      }
-      // 5b.2 — cluster PS logici (kind != interchange) per il psProjectId, se passato
-      const psProjectId = psProjectIdForClusters;
-      if (psProjectId) {
-        const psRows = await db.execute<{ cluster_id: string; name: string; kind: string; gtfs_stop_id: string }>(sql`
-          SELECT c.id::text AS cluster_id,
-                 COALESCE(NULLIF(c.name, ''), 'Cluster') AS name,
-                 COALESCE(c.kind, 'interchange') AS kind,
-                 s.id::text AS gtfs_stop_id
-            FROM ps_stops s
-            JOIN ps_stop_clusters c ON c.id = s.cluster_id
-           WHERE s.project_id = ${psProjectId}::uuid
-             AND s.cluster_id IS NOT NULL
-             AND COALESCE(c.kind, 'interchange') != 'interchange'
-        `);
-        const psByCluster = new Map<string, { name: string; kind: string; stopIds: Set<string> }>();
-        for (const r of psRows.rows) {
-          if (!psByCluster.has(r.cluster_id)) {
-            psByCluster.set(r.cluster_id, { name: r.name, kind: r.kind, stopIds: new Set() });
-          }
-          psByCluster.get(r.cluster_id)!.stopIds.add(r.gtfs_stop_id);
-        }
-        for (const [cid, v] of psByCluster) {
-          if (v.stopIds.size >= 2) {
-            psClustersForPy.push({ id: cid, name: v.name, kind: v.kind, stopIds: Array.from(v.stopIds) });
-          }
-        }
-      }
-      if (psClustersForPy.length > 0) {
-        const totalStops = psClustersForPy.reduce((s, c) => s + c.stopIds.length, 0);
-        req.log.info(`CP-SAT VSP: ${psClustersForPy.length} user-cluster (${totalStops} stop) inviati al solver [scope PS ${psProjectIdForClusters}]`);
-      }
-    } catch (err: any) {
-      req.log.error(`CP-SAT VSP: errore caricamento cluster utente: ${err?.message}`);
-    }
-
-    // 5c. Multi-deposito: selezione utente + matrice fuorilinea per il solver.
-    // I depositi selezionati entrano nel SOLVER (domiciliazione + cap hard);
-    // la matrice copre {depositi}×{capolinea} ∪ {capolinea}×{capolinea} con km
-    // stradali OSRM (fallback Haversine×circuità).
-    const depotSel = parseDepotSelection((body as any).depots);
-    const allDepots = await loadDepotPoints(String((body as any).projectId ?? "") || null);
-    const depotPoints = depotSel ? allDepots.filter(d => depotSel.ids.has(d.id)) : allDepots;
-
-    let depotsForPy: { id: string; name: string; color: string; lat: number; lon: number; maxVehicles: number | null; fleet?: Record<string, number> }[] | undefined;
-    let deadheadKm: Record<string, number> | undefined;
-    let deadheadMin: Record<string, number> | undefined;
-    // Esito della restrizione all'archivio «Archi fuorilinea» (per il log del
-    // solver e la relazione): scope, archi, coppie ammesse/vietate.
-    let deadheadArchive: {
-      scope: string; arcs: number; ttAllowed: number; ttForbidden: number; depotLegsOutsideArchive: number;
-      // tempi/km presi dall'archivio (custom_min ?? travel_min, custom_km ?? road_km) per le coppie del giro
-      timesApplied?: number; kmApplied?: number; customTimes?: number; depotLegsMissing?: string[];
-      // coppie senza arco proprio che prendono tempo/km dal verso opposto (andata = ritorno)
-      mirroredPairs?: number;
-    } | undefined;
-    if (depotSel && depotPoints.length > 0) {
-      depotsForPy = depotPoints.map(d => ({
-        id: d.id, name: d.name, color: d.color, lat: d.lat, lon: d.lon,
-        maxVehicles: depotSel.caps.get(d.id) ?? null,
-        // flotta per TIPOLOGIA di veicolo (vincolo hard nella domiciliazione)
-        ...(depotSel.fleets.get(d.id) ? { fleet: depotSel.fleets.get(d.id) } : {}),
-      }));
-      try {
-        const depotNodes: DHNode[] = depotPoints.map(d => ({ lat: d.lat, lon: d.lon }));
-        const terminalNodes: DHNode[] = [];
-        for (const t of tripBlocks) {
-          terminalNodes.push({ lat: t.firstStopLat, lon: t.firstStopLon });
-          terminalNodes.push({ lat: t.lastStopLat, lon: t.lastStopLon });
-        }
-        const [outM, inM, ttM] = await Promise.all([
-          buildDeadheadKmMatrix(depotNodes, terminalNodes),   // uscite deposito→capolinea
-          buildDeadheadKmMatrix(terminalNodes, depotNodes),   // rientri capolinea→deposito
-          buildDeadheadKmMatrix(terminalNodes, terminalNodes), // riposizionamenti
-        ]);
-        deadheadKm = { ...ttM.matrix, ...outM.matrix, ...inM.matrix };
-        const osrm = outM.osrmPairs + inM.osrmPairs + ttM.osrmPairs;
-        const total = outM.totalPairs + inM.totalPairs + ttM.totalPairs;
-        req.log.info(`CP-SAT VSP: matrice fuorilinea ${total} coppie (${osrm} da OSRM, ${total - osrm} Haversine)`);
-
-        /* ARCHIVIO «Archi fuorilinea» = elenco dei fuorilinea AMMESSI e dei
-         * loro TEMPI e KM. Lo scheduling usa SOLO quelli: una coppia
-         * capolinea↔capolinea che l'operatore non ha (o ha cancellato) è
-         * vietata; le tratte deposito↔capolinea fuori archivio restano stimate
-         * (il bus deve comunque uscire e rientrare) ma vengono contate ed
-         * elencate. Per OGNI arco risolto sui nodi del giro (deposito per id,
-         * capolinea per stop id, cluster espanso nelle sue fermate) il tempo è
-         * custom_min (curato a mano) altrimenti travel_min, i km custom_km
-         * altrimenti road_km: i minuti che l'operatore vede in Planning Studio
-         * sono quelli che il solver usa (prima solo gli archi «curati a mano»
-         * passavano, e solo se le coordinate coincidevano al 5° decimale: le
-         * tratte deposito e i cluster restavano alla stima km/velocità + 5′).
-         * Scope: archi del progetto PS collegato se ne esistono, altrimenti
-         * gli archi globali; archivio vuoto = nessuna restrizione (matrice
-         * completa, come prima). Precedenza: arco di progetto > globale; arco
-         * su fermata > arco su cluster. */
-        try {
-          let psProjForArchive: string | null = null;
-          const schedProjectIdA = String((body as any).projectId ?? "");
-          if (/^[0-9a-f-]{36}$/i.test(schedProjectIdA)) {
-            const pr = await db.execute<any>(sql`SELECT planning_studio_project_id FROM scheduling_projects WHERE id = ${schedProjectIdA}::uuid`);
-            psProjForArchive = (pr.rows?.[0]?.planning_studio_project_id as string | undefined) ?? null;
-          }
-          // Percorso agente (agent-optimize): il progetto PS arriva come psProjectId
-          // anche senza progetto scheduling collegato
-          if (!psProjForArchive && typeof body.psProjectId === "string" && /^[0-9a-f-]{36}$/i.test(body.psProjectId)) {
-            psProjForArchive = body.psProjectId;
-          }
-          // Archi GLOBALI come base + archi del PROGETTO che li sommano (e vincono
-          // sull'omologo globale).
-          const ARC_COLS = sql`from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, ps_project_id, road_km, travel_min, custom_km, custom_min, source`;
-          const archiveRows: any[] = psProjForArchive
-            ? (await db.execute<any>(sql`SELECT ${ARC_COLS} FROM deadhead_arcs WHERE ps_project_id IS NULL OR ps_project_id = ${psProjForArchive}::uuid ORDER BY (ps_project_id IS NOT NULL)`)).rows ?? []
-            : (await db.execute<any>(sql`SELECT ${ARC_COLS} FROM deadhead_arcs WHERE ps_project_id IS NULL`)).rows ?? [];
-          const nProjectArcs = archiveRows.filter(a => a.ps_project_id).length;
-          const archiveScope = nProjectArcs > 0 ? (archiveRows.length > nProjectArcs ? "globale+progetto" : "progetto") : "globale";
-          if (archiveRows.length > 0) {
-            // nodi di QUESTO giro: capolinea per stop id e coordinate, depositi per id
-            const termCoordByStop = new Map<string, string>();
-            const termCoordKeys = new Set<string>();
-            const nameByCoord = new Map<string, string>();
-            for (const t of tripBlocks) {
-              const k1 = dhKey(t.firstStopLat, t.firstStopLon);
-              const k2 = dhKey(t.lastStopLat, t.lastStopLon);
-              termCoordKeys.add(k1); termCoordKeys.add(k2);
-              if (t.firstStopId) termCoordByStop.set(String(t.firstStopId), k1);
-              if (t.lastStopId) termCoordByStop.set(String(t.lastStopId), k2);
-              if (!nameByCoord.has(k1)) nameByCoord.set(k1, t.firstStopName || String(t.firstStopId));
-              if (!nameByCoord.has(k2)) nameByCoord.set(k2, t.lastStopName || String(t.lastStopId));
-            }
-            const depotCoordById = new Map<string, string>();
-            const depotCoordKeys = new Set<string>();
-            for (const d of depotPoints) {
-              const k = dhKey(d.lat, d.lon);
-              depotCoordById.set(String(d.id), k); depotCoordKeys.add(k);
-              nameByCoord.set(k, `Deposito ${d.name}`);
-            }
-            // Un nodo dell'archivio → una o più chiavi coordinate di QUESTO giro:
-            // deposito per id, capolinea per stop id (poi coordinate), cluster
-            // espanso in tutte le sue fermate membre presenti nel giro.
-            const clusterStops = new Map<string, string[]>();
-            for (const c of psClustersForPy) clusterStops.set(String(c.id), c.stopIds.map(String));
-            const isClusterNode = (key: string, type: string) => type === "cluster" || String(key).startsWith("cluster:");
-            const nodeKeys = (key: string, type: string, lat: number, lon: number): string[] => {
-              if (type === "depot") {
-                const id = String(key).replace(/^depot:/, "");
-                const k = depotCoordById.get(id) ?? (depotCoordKeys.has(dhKey(lat, lon)) ? dhKey(lat, lon) : null);
-                return k ? [k] : [];
-              }
-              if (isClusterNode(key, type)) {
-                const id = String(key).replace(/^cluster:/, "");
-                const members = clusterStops.get(id) ?? [];
-                const ks = members.map(sid => termCoordByStop.get(sid)).filter((k): k is string => !!k);
-                return Array.from(new Set(ks));
-              }
-              if (String(key).startsWith("stop:")) {
-                const k = termCoordByStop.get(String(key).slice(5));
-                if (k) return [k];
-              }
-              const ck = dhKey(lat, lon);
-              return termCoordKeys.has(ck) ? [ck] : [];
-            };
-            const allowed = new Set<string>();
-            const archMin = new Map<string, number>();
-            const archKm = new Map<string, number>();
-            const archRank = new Map<string, number>();
-            let resolvedArcs = 0, unresolvedArcs = 0, customTimes = 0;
-            for (const a of archiveRows) {
-              const kas = nodeKeys(a.from_key, a.from_type, Number(a.from_lat), Number(a.from_lon));
-              const kbs = nodeKeys(a.to_key, a.to_type, Number(a.to_lat), Number(a.to_lon));
-              if (!kas.length || !kbs.length) { unresolvedArcs++; continue; }
-              resolvedArcs++;
-              const viaCluster = isClusterNode(a.from_key, a.from_type) || isClusterNode(a.to_key, a.to_type);
-              // progetto > globale; fermata > cluster
-              const rank = (a.ps_project_id ? 2 : 0) + (viaCluster ? 0 : 1);
-              const minRaw = a.custom_min ?? a.travel_min;
-              const kmRaw = a.custom_km ?? a.road_km;
-              const hasMin = minRaw != null && Number.isFinite(Number(minRaw)) && Number(minRaw) >= 0;
-              const hasKm = kmRaw != null && Number.isFinite(Number(kmRaw)) && Number(kmRaw) >= 0;
-              if (a.custom_min != null) customTimes++;
-              for (const ka of kas) for (const kb of kbs) {
-                if (ka === kb) continue;
-                const key = `${ka}|${kb}`;
-                allowed.add(key);
-                if ((archRank.get(key) ?? -1) > rank) continue;
-                archRank.set(key, rank);
-                if (hasMin) archMin.set(key, Math.round(Number(minRaw) * 10) / 10);
-                if (hasKm) archKm.set(key, Math.round(Number(kmRaw) * 100) / 100);
-              }
-            }
-            /* ANDATA = RITORNO. I fuorilinea si considerano dello stesso tempo nei
-             * due versi: se una coppia ha l'arco solo in un verso, il verso opposto
-             * eredita ammissione, tempo e km; se li ha in entrambi, il tempo è il
-             * tempo curato a mano (se solo un verso lo ha) altrimenti il maggiore
-             * dei due tempi di percorrenza, così andata e ritorno coincidono. */
-            let mirroredPairs = 0;
-            const customKeys = new Set<string>();
-            for (const a of archiveRows) {
-              if (a.custom_min == null) continue;
-              const kas = nodeKeys(a.from_key, a.from_type, Number(a.from_lat), Number(a.from_lon));
-              const kbs = nodeKeys(a.to_key, a.to_type, Number(a.to_lat), Number(a.to_lon));
-              for (const ka of kas) for (const kb of kbs) if (ka !== kb) customKeys.add(`${ka}|${kb}`);
-            }
-            for (const key of Array.from(allowed)) {
-              const [ka, kb] = key.split("|");
-              const rev = `${kb}|${ka}`;
-              if (!allowed.has(rev)) {
-                allowed.add(rev);
-                mirroredPairs++;
-                if (archMin.has(key)) archMin.set(rev, archMin.get(key)!);
-                if (archKm.has(key)) archKm.set(rev, archKm.get(key)!);
-                continue;
-              }
-              const mA = archMin.get(key), mB = archMin.get(rev);
-              if (mA == null || mB == null || mA === mB) continue;
-              const cA = customKeys.has(key), cB = customKeys.has(rev);
-              const t = cA && !cB ? mA : (!cA && cB ? mB : (cA && cB ? null : Math.max(mA, mB)));
-              if (t != null) { archMin.set(key, t); archMin.set(rev, t); }
-            }
-            if (resolvedArcs === 0) {
-              // Archivio di un'altra rete/feed: nessun arco tocca i nodi di questo
-              // giro → nessuna restrizione (matrice completa), ma lo diciamo.
-              deadheadArchive = { scope: `${archiveScope} (non applicato: nessun arco sui nodi del giro)`, arcs: archiveRows.length, ttAllowed: 0, ttForbidden: 0, depotLegsOutsideArchive: 0, timesApplied: 0, kmApplied: 0, customTimes: 0 };
-              req.log.warn(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi) non tocca i nodi di questo giro: matrice completa, nessuna restrizione`);
-            } else {
-              let ttAllowed = 0, ttForbidden = 0, depotOutside = 0, timesApplied = 0, kmApplied = 0;
-              const missing: string[] = [];
-              const describe = (key: string) => key.split("|").map(k => nameByCoord.get(k) ?? k).join(" → ");
-              for (const key of Object.keys(ttM.matrix)) {
-                if (allowed.has(key)) ttAllowed++;
-                else { deadheadKm[key] = 9999; ttForbidden++; }
-              }
-              for (const key of [...Object.keys(outM.matrix), ...Object.keys(inM.matrix)]) {
-                if (!allowed.has(key)) { depotOutside++; if (missing.length < 20) missing.push(describe(key)); }
-              }
-              // Tempi e km dell'archivio su TUTTE le coppie del giro che hanno un arco
-              const minOverrides: Record<string, number> = {};
-              for (const key of Object.keys(deadheadKm)) {
-                if (deadheadKm[key] === 9999) continue;
-                const km = archKm.get(key);
-                const min = archMin.get(key);
-                if (km != null) { deadheadKm[key] = km; kmApplied++; }
-                if (min != null) { minOverrides[key] = min; timesApplied++; }
-              }
-              if (Object.keys(minOverrides).length > 0) deadheadMin = minOverrides;
-              deadheadArchive = { scope: archiveScope, arcs: archiveRows.length, ttAllowed, ttForbidden, depotLegsOutsideArchive: depotOutside, timesApplied, kmApplied, customTimes, depotLegsMissing: missing, mirroredPairs };
-              req.log.info(`CP-SAT VSP: archivio fuorilinea ${archiveScope} (${archiveRows.length} archi, ${resolvedArcs} sui nodi del giro, ${unresolvedArcs} non riconosciuti): ${ttAllowed} coppie capolinea ammesse, ${ttForbidden} vietate (riposizionamento via deposito se il tempo basta), ${depotOutside} tratte deposito fuori archivio (stimate); tempi dell'archivio su ${timesApplied} coppie (${customTimes} archi con tempo curato a mano, ${mirroredPairs} versi specchiati: andata = ritorno), km su ${kmApplied}`);
-              if (missing.length) req.log.warn(`CP-SAT VSP: tratte deposito SENZA arco in archivio (tempo stimato km/velocità + buffer): ${missing.join("; ")}${depotOutside > missing.length ? `; … e altre ${depotOutside - missing.length}` : ""}`);
-            }
-          } else {
-            req.log.info("CP-SAT VSP: archivio fuorilinea vuoto, matrice completa (nessuna restrizione)");
-          }
-        } catch (err: any) {
-          req.log.warn({ err: err?.message }, "archivio fuorilinea non leggibile: matrice completa");
-        }
-      } catch (err: any) {
-        req.log.warn({ err: err?.message }, "matrice fuorilinea non disponibile, il solver stima Haversine");
-      }
-    } else {
-      deadheadArchive = { scope: "non applicato: nessun deposito selezionato (matrice fuorilinea non costruita)", arcs: 0, ttAllowed: 0, ttForbidden: 0, depotLegsOutsideArchive: 0 };
-      req.log.warn("CP-SAT VSP: nessun deposito selezionato: matrice fuorilinea non costruita, archivio «Archi fuorilinea» NON applicato (il solver stima Haversine)");
-    }
-
-    // 5d. DELAY-ROBUST (Fase 2): profilo ritardi orario dai dati di traffico
-    // reali (TomTom, ultimi 30 giorni). delayByHour[h] = minuti di ritardo
-    // atteso per ORA di corsa nella fascia h, stimati dalla congestione media
-    // (congestione 40% ≈ 6 min persi per ora di guida). Il solver li usa come
-    // buffer δ sul concatenamento (off/media/alta).
-    const robustnessLevel = String((body as any).robustness || "off").toLowerCase();
-    let robustnessCfg: { level: string; delayByHour: Record<string, number> } | undefined;
-    if (robustnessLevel === "media" || robustnessLevel === "alta") {
-      const delayByHour: Record<string, number> = {};
-      try {
-        const tr = await db.execute<any>(sql`
-          SELECT EXTRACT(HOUR FROM captured_at)::int AS h, avg(congestion_level) AS cong
-            FROM traffic_snapshots
-           WHERE captured_at > now() - interval '30 days'
-           GROUP BY 1
-        `);
-        for (const r of tr.rows) {
-          const d = Math.min(15, Math.round(Number(r.cong || 0) * 15 * 10) / 10);
-          if (d > 0) delayByHour[String(r.h)] = d;
-        }
-      } catch { /* nessun dato traffico → il solver usa il profilo di default */ }
-      robustnessCfg = { level: robustnessLevel, delayByHour };
-      req.log.info(`VSP robustezza=${robustnessLevel}: profilo ritardi su ${Object.keys(delayByHour).length} fasce orarie${Object.keys(delayByHour).length === 0 ? " (default)" : " (traffico reale)"}`);
-    }
-
-    // 5e. NORMATIVA VSP (MAIOR-style): cambi linea, tripper, sosta capolinea,
-    // max pezzi, vuoti interni. Whitelist dei campi accettati dal solver.
-    let normativaCfg: Record<string, any> | undefined;
-    const rawNorm = (body as any).vspNormativa;
-    if (rawNorm && typeof rawNorm === "object") {
-      const n: Record<string, any> = {};
-      for (const k of ["costoCambioLinea", "maxCambiLinea", "maxPezziPerBlocco", "costoTripper", "tripperServizioMinMin", "maxSostaCapolineaMin"]) {
-        const v = Number(rawNorm[k]);
-        if (rawNorm[k] !== undefined && rawNorm[k] !== null && rawNorm[k] !== "" && Number.isFinite(v)) n[k] = v;
-      }
-      if (rawNorm.vietaCambiLinea) n.vietaCambiLinea = true;
-      if (rawNorm.vietaVuotiInterni) n.vietaVuotiInterni = true;
-      if (Object.keys(n).length > 0) normativaCfg = n;
-    }
-
-    // 5f. SAGOMA: fasce di punta e tetti di declassamento.
-    // Il declassamento pesa in ragione della fascia, e le fasce del feriale
-    // (7-9 e 17-19) non valgono di domenica, dove la punta è il pomeriggio:
-    // senza questo default un mezzo ridotto alle 16 di domenica sarebbe
-    // pagato come fosse morbida. L'operatore può sempre sovrascrivere.
-    const sagomaCfg: Record<string, any> = {};
-    const rawSagoma = (body as any).sagoma;
-    if (rawSagoma && typeof rawSagoma === "object") {
-      const fasce = (rawSagoma as any).fascePunta ?? (rawSagoma as any).peakWindows;
-      if (Array.isArray(fasce)) sagomaCfg.fascePunta = fasce;
-      for (const k of ["maxDeclassatePctPerLinea", "maxDeclassatePctPuntaPerLinea"]) {
-        const v = Number((rawSagoma as any)[k]);
-        if (Number.isFinite(v)) sagomaCfg[k] = v;
-      }
-      if ((rawSagoma as any).flotta && typeof (rawSagoma as any).flotta === "object") {
-        sagomaCfg.flotta = (rawSagoma as any).flotta;
-      }
-    }
-    if (!sagomaCfg.fascePunta) {
-      const y = Number(dateYMD.slice(0, 4)), mo = Number(dateYMD.slice(4, 6)), d = Number(dateYMD.slice(6, 8));
-      const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
-      if (dow === 0) sagomaCfg.fascePunta = [[15, 20]];
-    }
-    if (!sagomaCfg.flotta && Array.isArray(depotsForPy)) {
-      const perTipo: Record<string, number> = {};
-      for (const dep of depotsForPy as any[]) {
-        const fl = dep?.fleet;
-        if (fl && typeof fl === "object") {
-          for (const [k, v] of Object.entries(fl)) {
-            const n = Number(v);
-            if (Number.isFinite(n) && n >= 0) perTipo[k] = (perTipo[k] ?? 0) + n;
-          }
-        }
-      }
-      if (Object.keys(perTipo).length > 0) sagomaCfg.flotta = perTipo;
-    }
-
-    // 6. Spawn Python solver (CP-SAT puro, oppure orchestratore VCSP)
-    const vspExtraConfig = {
-      vehicleCosts: body.vehicleCosts || {},
-      solverIntensity: body.solverIntensity || "normal",
-      // Parametri avanzati VSP (regola #1 + override costi dalla UI)
-      ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
-      // Robustezza ai ritardi (buffer δ data-driven)
-      ...(robustnessCfg ? { robustness: robustnessCfg } : {}),
-      // Normativa VSP (MAIOR-style)
-      ...(normativaCfg ? { normativa: normativaCfg } : {}),
-      // Sagoma: fasce di punta, tetti di declassamento, flotta per tipologia
-      ...(Object.keys(sagomaCfg).length > 0 ? { sagoma: sagomaCfg } : {}),
-    };
-    let cpResult: any;
-    if (mode === "vcsp") {
-      // Relief points per corsa (fermate intermedie nei cluster) precomputati
-      // UNA volta: l'orchestratore li riattacca ai blocchi di ogni round prima
-      // di lanciare il CSP.
-      const pseudoShifts: any[] = [{ trips: solverBlocks.map(tb => ({ type: "trip", tripId: tb.tripId })) }];
-      try { await enrichTripsWithClusterStops(pseudoShifts as any, req.log); } catch { /* senza cluster il CSP taglia solo ai capolinea */ }
-      const tripClusterStops: Record<string, any[]> = {};
-      for (const t of pseudoShifts[0].trips as any[]) {
-        if (Array.isArray(t.clusterStops) && t.clusterStops.length > 0) tripClusterStops[t.tripId] = t.clusterStops;
-      }
-      const vcspBody = (body as any).vcsp || {};
-      // ── Parità col CSP standalone: la config turni guida della UI viene
-      // arricchita con gli stessi dati DB (cluster di stacco, autovetture
-      // aziendali, nodi di sosta) che riceve il CSP lanciato dall'area TG.
-      const operatorCfg = (body as any).crewConfig
-        ?? { bds: { serviceType: (body as any).serviceType || "urbano" } };
-      const [allDbClusters, dbCompanyCars, crewRestPoints] = await Promise.all([
-        loadClustersForPython(),
-        loadCompanyCars(),
-        loadRestPointsForScenario((body as any).projectId ?? null),
-      ]);
-      const selClusterIds = Array.isArray(operatorCfg?.selectedClusterIds) ? (operatorCfg.selectedClusterIds as string[]) : null;
-      const crewDbClusters = selClusterIds && selClusterIds.length > 0
-        ? allDbClusters.filter((c: any) => selClusterIds.includes(c.id))
-        : allDbClusters;
-      // ── Autovetture aziendali = vincolo RIGIDO, sempre ──
-      // Il solver v4 applica il cap HARD solo se bds.optimizer.maxCompanyCars
-      // è presente (altrimenti default 5, ignorando le autovetture reali).
-      // Precedenza: campo "Autovetture aziendali" della UI (imposta entrambi)
-      // > override esplicito dal pannello completo > impostazione DB.
-      const explicitOptimizerCap = (operatorCfg as any)?.bds?.optimizer?.maxCompanyCars;
-      const crewCompanyCars = typeof operatorCfg?.companyCars === "number"
-        ? operatorCfg.companyCars
-        : (typeof explicitOptimizerCap === "number" ? explicitOptimizerCap : dbCompanyCars);
-      const { selectedClusterIds: _sci, companyCars: _cc, ...restOperatorCfg } = operatorCfg || {};
-      const crewConfig = {
-        ...restOperatorCfg,
-        bds: {
-          ...((restOperatorCfg as any).bds ?? {}),
-          optimizer: {
-            ...(((restOperatorCfg as any).bds ?? {}).optimizer ?? {}),
-            maxCompanyCars: crewCompanyCars,
-          },
-        },
-        clusters: crewDbClusters,
-        companyCars: crewCompanyCars,
-        restPoints: crewRestPoints,
-      };
-      // Passaggi sui capolinea altrui: senza questi la sonda vede solo le
-      // coincidenze fatte da fermo e puo' rompere quelle fatte in transito.
-      const pyTrips = buildPyTrips(solverBlocks);
-      try {
-        const transits = await loadTerminalTransits(feedId, solverBlocks, req.log);
-        for (const t of pyTrips as any[]) {
-          const tr = transits[t.tripId];
-          if (tr && tr.length > 0) t.terminalTransits = tr;
-        }
-      } catch (e: any) { req.log.info(`loadTerminalTransits saltato: ${e?.message ?? e}`); }
-      cpResult = await runVcspOrchestrator(req.log, {
-        vsp: {
-          trips: pyTrips,
-          config: { timeLimit: timeLimitSec, ...vspExtraConfig },
-          routeDetails: routeDetailsForPy,
-          psClusters: psClustersForPy,
-          ...(depotsForPy && depotsForPy.length > 0 ? { depots: depotsForPy } : {}),
-          ...(deadheadKm && Object.keys(deadheadKm).length > 0 ? { deadheadKm } : {}),
-          ...(deadheadMin && Object.keys(deadheadMin).length > 0 ? { deadheadMin } : {}),
-          ...(deadheadArchive ? { deadheadArchive } : {}),
-          ...(lockedChains.length > 0 ? { lockedChains } : {}),
-        },
-        crew: { config: crewConfig },
-        vcsp: {
-          rounds: Math.max(1, Math.min(10, Number(vcspBody.rounds) || 3)),
-          crewTimeLimit: Number(vcspBody.crewTimeLimit) || 90,
-          // Sonda di spostamento (cervello P↔TM↔TG): re-solve a caldo con le
-          // corse spostate entro il flexMin dichiarato in Planning. 0 = off.
-          probes: vcspBody.probes != null
-            ? Math.max(0, Math.min(10, Number(vcspBody.probes) || 0))
-            : 4,
-          probeVspTime: Math.max(20, Math.min(300, Number(vcspBody.probeVspTime) || 60)),
-          // Disturbo all'orario (€/corsa·minuto) e portata dei candidati guidati
-          // dai turni: passano al Python così come arrivano dall'agente/UI.
-          ...(Number.isFinite(Number(vcspBody.shiftPenaltyEur)) && vcspBody.shiftPenaltyEur != null
-            ? { shiftPenaltyEur: Math.max(0, Number(vcspBody.shiftPenaltyEur)) } : {}),
-          ...(vcspBody.crewShiftScope === "line" || vcspBody.crewShiftScope === "trip"
-            ? { crewShiftScope: vcspBody.crewShiftScope } : {}),
-          // Pazienza dell'early-stop (round consecutivi senza miglioramento):
-          // i round oscillano per costruzione, e quanta ne serva si prova.
-          ...(vcspBody.earlyStopPatience != null && Number.isFinite(Number(vcspBody.earlyStopPatience))
-            ? { earlyStopPatience: Math.max(1, Math.min(10, Math.round(Number(vcspBody.earlyStopPatience)))) } : {}),
-          // Memoria della sonda (lezioni dei giri precedenti): ordina la coda.
-          ...(Array.isArray(vcspBody.probeMemory) && vcspBody.probeMemory.length > 0
-            ? { probeMemory: vcspBody.probeMemory.slice(0, 200) } : {}),
-          // Controllo della sonda (re-solve del best round senza spostamenti):
-          // acceso salvo un false esplicito.
-          ...(vcspBody.probeControl === false ? { probeControl: false } : {}),
-          // Come il feedback passa da un round all'altro. penaltyStep=1 +
-          // penaltyAnchor="last" + seedFromBest=false riportano il ciclo a
-          // com'era prima della partenza a caldo, senza toccare il codice.
-          ...(Number.isFinite(Number(vcspBody.penaltyStep)) && vcspBody.penaltyStep != null
-            ? { penaltyStep: Math.min(1, Math.max(0.05, Number(vcspBody.penaltyStep))) } : {}),
-          ...(vcspBody.penaltyAnchor === "best" || vcspBody.penaltyAnchor === "last"
-            ? { penaltyAnchor: vcspBody.penaltyAnchor } : {}),
-          ...(vcspBody.seedFromBest === false ? { seedFromBest: false } : {}),
-        },
-        tripClusterStops,
-      });
-    } else {
-      cpResult = await runCPSATVehicleScheduler(
-        solverBlocks, timeLimitSec, req.log,
-        vspExtraConfig,
-        routeDetailsForPy,
-        psClustersForPy,
-        depotsForPy,
-        deadheadKm,
-        deadheadMin,
-        deadheadArchive,
-        lockedChains,
-      );
-    }
-
-    // Il solver ha rifiutato un turno bloccato (corsa non in orario, aggancio
-    // impossibile): il messaggio è già scritto per l'operatore, passa com'è.
-    if (cpResult && typeof cpResult.error === "string" && cpResult.error) {
-      req.log.info(`Solver: ${cpResult.error}`);
-      res.status(422).json({ error: cpResult.error, errorKind: cpResult.errorKind ?? "solver" });
       return;
     }
-
-    // 7. Compute costs & score from CP-SAT shifts (reuse existing functions)
-    const cpShifts: VehicleShift[] = cpResult.vehicleShifts || [];
-
-    // 7b. Residenza di servizio per turno. Se il SOLVER ha già domiciliato i
-    // turni (multi-deposito con cap hard, tratte uscita/rientro incluse) usiamo
-    // la sua assegnazione; altrimenti fallback geometrico legacy.
-    const solverAssigned = cpShifts.length > 0 && cpShifts.every((s: any) => s.residenzaDepotId);
-    const depotCounts = solverAssigned
-      ? cpShifts.reduce((m: Map<string, number>, s: any) => {
-          m.set(s.residenzaDepotId, (m.get(s.residenzaDepotId) ?? 0) + 1);
-          return m;
-        }, new Map<string, number>())
-      : assignResidenzaToShifts(cpShifts, tripBlocks, depotPoints, depotSel?.caps);
-
-    const totalServiceMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalServiceMin, 0);
-    const totalDeadheadMin = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalDeadheadMin, 0);
-    const totalDeadheadKm = cpShifts.reduce((s: number, v: VehicleShift) => s + v.totalDeadheadKm, 0);
-    const totalServiceHours = +(totalServiceMin / 60).toFixed(1);
-
-    const costs = calculateCosts(cpShifts, tripBlocks.length, totalServiceHours);
-    const score = calculateScore(cpShifts, tripBlocks.length, totalServiceMin, totalDeadheadMin, totalDeadheadKm, costs);
-
-    // Hourly distribution
-    const hourlyDist: { hour: number; trips: number }[] = [];
-    for (let h = 4; h <= 26; h++) {
-      hourlyDist.push({ hour: h, trips: tripBlocks.filter(t => Math.floor(t.departureMin / 60) === h).length });
-    }
-
-    const advisories = generateAdvisories(cpShifts, tripBlocks, costs, score, hourlyDist);
-    // Vincolo flotta HARD: se il solver non ha potuto rispettare i cap per
-    // deposito, riportiamo l'infeasibility come advisory CRITICA con il deficit.
-    const fleetInfo = cpResult.metrics?.fleetInfeasibility;
-    if (fleetInfo) {
-      const perDep = Array.isArray(fleetInfo.perDepot) && fleetInfo.perDepot.length > 0
-        ? ` Depositi oltre capacità: ${fleetInfo.perDepot.map((p: any) => `${p.name} ${p.vehicles}/${p.cap}`).join(", ")}.`
-        : "";
-      advisories.unshift({
-        id: "fleet-infeasible",
-        severity: "critical",
-        category: "fleet",
-        title: "Flotta insufficiente per il servizio",
-        description: `Servono ${fleetInfo.required} veicoli ma la flotta disponibile nei depositi selezionati è ${fleetInfo.available} (mancano ${fleetInfo.deficit}).${perDep}`,
-        impact: `${fleetInfo.deficit} veicol${fleetInfo.deficit === 1 ? "o" : "i"} mancant${fleetInfo.deficit === 1 ? "e" : "i"}`,
-        action: "Aumenta le vetture disponibili nei depositi, aggiungi un deposito o riduci le linee dello scenario.",
-        metric: fleetInfo.deficit,
-      });
-    } else if (!solverAssigned && depotSel?.caps.size) {
-      // Fallback geometrico legacy: cap morbido → advisory warning
-      const capAdv = depotCapacityAdvisory(depotCounts, depotSel.caps, depotPoints);
-      if (capAdv) advisories.unshift(capAdv);
-    }
-
-    // Summary
-    const byType: Record<string, number> = {};
-    const byCategory: Record<string, number> = { urbano: 0, extraurbano: 0 };
-    let totalDepotReturns = 0;
-    for (const s of cpShifts) {
-      byType[s.vehicleType] = (byType[s.vehicleType] || 0) + 1;
-      byCategory[s.category] = (byCategory[s.category] || 0) + 1;
-      totalDepotReturns += s.depotReturns;
-    }
-
-    const summary = {
-      date: dateYMD,
-      activeServices: activeServices.size,
-      totalTrips: tripBlocks.length,
-      selectedRoutes: selectedRouteIds.size,
-      totalVehicles: cpShifts.length,
-      byType, byCategory,
-      totalServiceHours,
-      totalDeadheadHours: +(totalDeadheadMin / 60).toFixed(1),
-      totalDeadheadKm: +totalDeadheadKm.toFixed(1),
-      depotReturns: totalDepotReturns,
-      efficiency: totalServiceMin > 0
-        ? +((totalServiceMin / (totalServiceMin + totalDeadheadMin)) * 100).toFixed(1)
-        : 0,
-      downsizedTrips: cpShifts.reduce((s: number, v: VehicleShift) => s + v.downsizedTrips, 0),
-      // Multi-deposito: veicoli domiciliati per deposito (dal solver, cap hard)
-      byDepot: cpResult.metrics?.depotAssignment?.perDepot
-        ?? Array.from(depotCounts.entries()).map(([id, n]) => ({
-          id, name: depotPoints.find(p => p.id === id)?.name ?? "Deposito",
-          vehicles: n, cap: depotSel?.caps.get(id) ?? null,
-        })),
-    };
-
-    // Route stats
-    const routeStats: any[] = [];
-    for (const [routeId, vType] of Object.entries(routeVehicleMap)) {
-      const routeTrips = tripBlocks.filter(tb => tb.routeId === routeId);
-      if (routeTrips.length === 0) continue;
-      const vehiclesForRoute = new Set<string>();
-      for (const s of cpShifts) {
-        if (s.trips.some((t: any) => t.routeId === routeId)) vehiclesForRoute.add(s.vehicleId);
-      }
-      routeTrips.sort((a, b) => a.departureMin - b.departureMin);
-      const rName = routeNameMap.get(routeId) || routeId;
-      routeStats.push({
-        routeId, routeName: rName, vehicleType: vType,
-        category: getServiceCategory(rName),
-        tripsCount: routeTrips.length, vehiclesNeeded: vehiclesForRoute.size,
-        firstDeparture: routeTrips[0].departureTime,
-        lastArrival: routeTrips[routeTrips.length - 1].arrivalTime,
-      });
-    }
-    routeStats.sort((a: any, b: any) => b.tripsCount - a.tripsCount);
-
-    res.json({
-      solver: mode === "vcsp" ? "vcsp" : "cpsat",
-      shifts: cpShifts,
-      // Le corse escluse dall'operatore risultano SCOPERTE (il CP-SAT copre tutte
-      // le altre che riceve, quindi qui l'unica non-copertura è quella voluta).
-      unassigned: excludedBlocks,
-      routeStats,
-      hourlyDist,
-      summary,
-      costs,
-      score,
-      advisories,
-      solverMetrics: cpResult.metrics,
-      costBreakdown: cpResult.costBreakdown || null,
-      greedyComparison: cpResult.greedyComparison || null,
-      // VCSP: KPI dei round, feedback costi-ombra e turni guida del best round
-      ...(cpResult.vcsp ? { vcsp: cpResult.vcsp } : {}),
+    const budgetSec = budgetVsp(req.body);
+    const corsia = corsiaVeicoli(mode, budgetSec);
+    const psProjectId = String(req.body.psProjectId);
+    const jobId = await coda.accoda({
+      tipo: "ottimizza_veicoli",
+      corsia,
+      utenteId,
+      via: req.authVia ?? "api",
+      oggettoId: psProjectId,
+      richiesta: { mode, feedId, corpo: req.body },
+      metadati: {
+        ambito: AMBITO_VEICOLI, mode, date: String(req.body.date), psProjectId, budgetSec,
+        // qualcuno aspetta la risposta: senza segni di vita della facciata il calcolo si ferma
+        ...(req.query?.asincrono === "1" ? {} : { sincrono: true }),
+      },
+      timeoutSec: tempoMassimoVeicoli(mode, budgetSec),
     });
+    req.log.info({ lavoro: jobId, mode, corsia, budgetSec }, "turni macchina: calcolo in coda");
+    if (req.query?.asincrono === "1") { res.status(202).json({ jobId, status: "queued" }); return; }
+    await attendiEsito(res, jobId, { log: req.log });
   } catch (err: any) {
     req.log.error(err, "Error in CP-SAT service-program");
-    res.status(500).json({ error: err.message || "Errore nel solver CP-SAT" });
+    if (!res.headersSent) res.status(500).json({ error: err.message || "Errore nel solver CP-SAT" });
   }
 }
 
 router.post("/service-program/cpsat", (req, res) => handleVehicleOptimize(req, res, "cpsat"));
 // VCSP: ottimizzazione integrata turni macchina + turni guida (iterativo con feedback)
 router.post("/service-program/vcsp", (req, res) => handleVehicleOptimize(req, res, "vcsp"));
+
+/** Il calcolo dei turni macchina, se chi chiede lo può vedere: il suo, o qualunque per l'admin. */
+async function lavoroVeicoli(req: any): Promise<RigaLavoro | null> {
+  const l = await coda.leggi(String(req.params.jobId));
+  if (!l || l.metadati?.ambito !== AMBITO_VEICOLI) return null;
+  const u = req.user;
+  if (!u) return null;
+  return u.role === "admin" || (!!l.utente_id && l.utente_id === u.id) ? l : null;
+}
+
+/** GET /api/service-program/lavori/:jobId — stato di un calcolo (?asincrono=1); finito, con la risposta. */
+router.get("/service-program/lavori/:jobId", async (req, res) => {
+  try {
+    const l = await lavoroVeicoli(req);
+    /* il lavoro di un altro risponde come uno che non c'è: l'id non deve dire niente */
+    if (!l) { res.status(404).json({ error: "Calcolo non trovato" }); return; }
+    const finito = FINITI.has(l.stato);
+    const r = finito ? rispostaDi(l) : null;
+    res.json({
+      jobId: l.id,
+      status: STATO_PUBBLICO[l.stato],
+      mode: l.metadati?.mode ?? null,
+      progress: l.avanzamento ?? null,
+      createdAt: +l.creato_il,
+      updatedAt: +l.aggiornato_il,
+      ...(r ? { httpStatus: r.codice, result: r.corpo } : {}),
+    });
+  } catch (err: any) {
+    req.log.error(err, "lettura del calcolo dei turni macchina");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/** POST /api/service-program/lavori/:jobId/stop — ferma un calcolo in coda o in corso. */
+router.post("/service-program/lavori/:jobId/stop", async (req, res) => {
+  try {
+    const l = await lavoroVeicoli(req);
+    if (!l) { res.status(404).json({ error: "Calcolo non trovato" }); return; }
+    const esito = await coda.chiediAnnullamento(l.id);
+    if (!esito) { res.status(400).json({ error: "Il calcolo è già finito" }); return; }
+    res.json({ jobId: l.id, status: esito === "fermato" ? "stopped" : "stopping" });
+  } catch (err: any) {
+    req.log.error(err, "stop del calcolo dei turni macchina");
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /* ═══════════════════════════════════════════════════════════════
  *  AGENT-OPTIMIZE — lancio ASINCRONO per Argos (MCP/chat)
@@ -3019,24 +1241,13 @@ router.post("/service-program/vcsp", (req, res) => handleVehicleOptimize(req, re
  *  VCSP, anche TG) viene salvato: l'operatore lo apre da Cerbero.
  * ═══════════════════════════════════════════════════════════════ */
 
-type AgentOptimizeJob = {
-  id: string;
-  userId: string;
-  psProjectId: string;
-  mode: "cpsat" | "vcsp";
-  status: "running" | "done" | "error";
-  createdAt: number;
-  finishedAt?: number;
-  progress: { phase: string; pct: number; msg: string };
-  params: Record<string, any>;
-  error?: string;
-  result?: any;               // risposta COMPLETA (in memoria, per il salvataggio)
-  scenarioId?: string | null;
-  dssId?: string | null;
-  scenarioName?: string;
-};
-
 const agentJobs = new Map<string, AgentOptimizeJob>();
+/** lo stop dei giri dentro l'API (LAVORI_VEICOLI_IN_CODA=0) */
+const agentStops = new Map<string, AbortController>();
+/** I giri in coda (lavoro giro_agente): al più uno vivo per progetto. */
+const AMBITO_GIRO = "giro-agente";
+const chiaveGiro = (psProjectId: string) => `giro:${psProjectId}`;
+const GIRO_GIA_IN_CORSO = "Un giro è già in corso su questo progetto: attendi o interroga lo stato";
 const AGENT_JOB_TTL_MS = 6 * 60 * 60 * 1000;
 const AGENT_JOBS_MAX = 30;
 
@@ -3089,37 +1300,31 @@ export function ensureAgentJobsTable(): Promise<void> {
 async function persistAgentJob(job: AgentOptimizeJob, request?: unknown): Promise<void> {
   try {
     await ensureAgentJobsTable();
-    const compact = job.status === "done" && job.result ? compactAgentResult(job.result) : null;
-    await db.execute(sql`
-      INSERT INTO agent_optimize_jobs (id, user_id, ps_project_id, mode, status, created_at, finished_at,
-                                       progress, params, request, error, scenario_id, dss_id, scenario_name, result_compact, updated_at)
-      VALUES (${job.id}::uuid, ${job.userId}::uuid, ${job.psProjectId}::uuid, ${job.mode}, ${job.status},
-              to_timestamp(${job.createdAt / 1000}),
-              ${job.finishedAt ? new Date(job.finishedAt).toISOString() : null}::timestamptz,
-              ${JSON.stringify(job.progress)}::jsonb, ${JSON.stringify(job.params)}::jsonb,
-              ${request ? JSON.stringify(request) : null}::jsonb,
-              ${job.error ?? null}, ${job.scenarioId ?? null}::uuid, ${job.dssId ?? null}::uuid, ${job.scenarioName ?? null},
-              ${compact ? JSON.stringify(compact) : null}::jsonb, now())
-      ON CONFLICT (id) DO UPDATE SET
-        status = EXCLUDED.status, finished_at = EXCLUDED.finished_at, progress = EXCLUDED.progress,
-        params = EXCLUDED.params, request = COALESCE(EXCLUDED.request, agent_optimize_jobs.request),
-        error = EXCLUDED.error, scenario_id = EXCLUDED.scenario_id, dss_id = EXCLUDED.dss_id,
-        scenario_name = EXCLUDED.scenario_name,
-        result_compact = COALESCE(EXCLUDED.result_compact, agent_optimize_jobs.result_compact),
-        updated_at = now()`);
+    await scriviGiro(job, request);
   } catch { /* best-effort: il registro in memoria resta la via principale */ }
 }
 
-async function loadAgentJobRows(where: { id?: string; userId?: string; isAdmin?: boolean }): Promise<any[]> {
+/** Le righe dei giri con la loro riga in coda (se c'è): lo stato vero lo dice vistaGiro. */
+async function loadAgentJobRows(where: { id?: string; userId?: string; isAdmin?: boolean }): Promise<Array<{ row: any; coda: CodaDelGiro | null }>> {
   try {
     await ensureAgentJobsTable();
+    const CON_CODA = sql`
+      SELECT a.*, to_jsonb(l) - 'richiesta' AS coda
+        FROM agent_optimize_jobs a
+        LEFT JOIN coda.lavori l ON l.id = a.id AND l.tipo = 'giro_agente'`;
     const r = where.id
-      ? await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs WHERE id = ${where.id}::uuid LIMIT 1`)
+      ? await db.execute<any>(sql`${CON_CODA} WHERE a.id = ${where.id}::uuid LIMIT 1`)
       : where.isAdmin
-        ? await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs ORDER BY created_at DESC LIMIT 20`)
-        : await db.execute<any>(sql`SELECT * FROM agent_optimize_jobs WHERE user_id = ${where.userId ?? null}::uuid ORDER BY created_at DESC LIMIT 20`);
-    return (r.rows ?? []) as any[];
+        ? await db.execute<any>(sql`${CON_CODA} ORDER BY a.created_at DESC LIMIT 20`)
+        : await db.execute<any>(sql`${CON_CODA} WHERE a.user_id = ${where.userId ?? null}::uuid ORDER BY a.created_at DESC LIMIT 20`);
+    return ((r.rows ?? []) as any[]).map(({ coda: c, ...row }) => ({ row, coda: c ?? null }));
   } catch { return []; }
+}
+
+/** Il giro in coda (anche senza riga in agent_optimize_jobs, se il registro non è stato scritto). */
+async function giroInCoda(id: string): Promise<CodaDelGiro | null> {
+  const l = await coda.leggi(id);
+  return l && l.tipo === "giro_agente" ? (l as unknown as CodaDelGiro) : null;
 }
 
 /** Le lezioni della sonda dai giri precedenti dello stesso progetto e della
@@ -3160,326 +1365,18 @@ async function loadProbeLessons(psProjectId: string | null | undefined, date: st
   } catch { return { lezioni: [], giri: 0 }; }
 }
 
-/** Vista API di una riga persistita: un giro «running» su DB ma assente dalla
- * memoria è stato interrotto da un riavvio: lo si dichiara, con la richiesta
- * originale per rilanciarlo con gli stessi parametri. */
-function agentJobRowView(row: any, full: boolean): Record<string, any> {
-  const interrupted = row.status === "running";
-  const createdMs = new Date(row.created_at).getTime();
-  const finishedMs = row.finished_at ? new Date(row.finished_at).getTime() : null;
-  return {
-    jobId: row.id,
-    status: interrupted ? "error" : row.status,
-    mode: row.mode,
-    psProjectId: row.ps_project_id,
-    progress: row.progress ?? null,
-    elapsedSec: Math.round(((finishedMs ?? Date.now()) - createdMs) / 1000),
-    params: row.params ?? {},
-    ...(interrupted
-      ? { error: "Giro interrotto dal riavvio del server (deploy): rilancialo con gli stessi parametri (campo request)", request: row.request ?? null }
-      : row.error ? { error: row.error } : {}),
-    ...(row.status === "done" && full ? {
-      scenarioId: row.scenario_id ?? null,
-      dssId: row.dss_id ?? null,
-      scenarioName: row.scenario_name ?? null,
-      result: row.result_compact ?? null,
-      persisted: true,
-    } : {}),
-  };
-}
-
-/** Logger che intercetta le righe PROGRESS|fase|pct|msg del solver (già
- * inoltrate su stderr→logger da spawnPythonJson) e aggiorna il job. In VCSP
- * ascoltiamo solo la fase "VCSP" (il VSP interno va 0→100 a ogni round). */
+/** Il log del giro (un logger morto non ferma il giro) e il suo avanzamento:
+ * eseguiOttimizzazione passa solo la fase principale (VCSP o VSP). */
 function agentJobLogger(job: AgentOptimizeJob, base: any) {
-  const wantPhase = job.mode === "vcsp" ? "VCSP" : "VSP";
-  const capture = (args: any[]) => {
-    for (const a of args) {
-      if (typeof a !== "string") continue;
-      // un chunk stderr può portare PIÙ righe PROGRESS: vale l'ultima
-      for (const line of a.split("\n")) {
-        const m = line.match(/PROGRESS\|([^|]+)\|([\d.]+)\|([^|\n]*)/);
-        if (m && m[1] === wantPhase) {
-          job.progress = { phase: m[1], pct: Math.round(Number(m[2])), msg: m[3].trim() };
-        }
-      }
-    }
-  };
   return {
-    info: (...a: any[]) => { capture(a); try { base.info(...a); } catch { /* logger morto: il job continua */ } },
-    warn: (...a: any[]) => { try { base.warn(...a); } catch { /* idem */ } },
-    error: (...a: any[]) => { try { base.error(...a); } catch { /* idem */ } },
-  };
-}
-
-/** Aggrega i messaggi per-turno ({driverId: [msg…]}) in un top-10 per tipo. */
-function aggregateDutyMessages(det: any): { msg: string; n: number }[] | null {
-  if (!det || typeof det !== "object") return null;
-  const counts = new Map<string, number>();
-  for (const msgs of Object.values(det as Record<string, string[]>)) {
-    if (!Array.isArray(msgs)) continue;
-    for (const m of msgs) {
-      const key = String(m).slice(0, 120);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-  }
-  if (counts.size === 0) return [];
-  return Array.from(counts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 10)
-    .map(([msg, n]) => ({ msg, n }));
-}
-
-/** Vista COMPATTA del risultato per la chat (l'MCP tronca a ~40k):
- * KPI, round, sonda e advisories — mai i turni completi (si aprono in app). */
-/** Riepilogo per linea di una lista di spostamenti della sonda (niente corse ripetute). */
-function summarizeShifts(shifts: any[]): { shiftedTrips: number; shiftsByRoute: any[] } {
-  const byKey = new Map<string, { routeName: string; variantCode: string | null; deltaMin: number; trips: number; first: string; last: string }>();
-  for (const sft of shifts) {
-    const routeName = String(sft?.routeName ?? "?");
-    const variantCode = sft?.variantCode ?? null;
-    const deltaMin = Number(sft?.deltaMin ?? 0);
-    const key = `${routeName}|${variantCode ?? ""}|${deltaMin}`;
-    const cur = byKey.get(key);
-    const from = String(sft?.from ?? "");
-    if (cur) {
-      cur.trips += 1;
-      if (from && from < cur.first) cur.first = from;
-      if (from && from > cur.last) cur.last = from;
-    } else {
-      byKey.set(key, { routeName, variantCode, deltaMin, trips: 1, first: from, last: from });
-    }
-  }
-  return { shiftedTrips: shifts.length, shiftsByRoute: Array.from(byKey.values()) };
-}
-
-function compactAgentResult(payload: any): any {
-  const v = payload?.vcsp;
-  const s = payload?.summary ?? {};
-  const m = payload?.solverMetrics ?? {};
-  return {
-    solver: payload?.solver ?? null,
-    summary: {
-      totalVehicles: s.totalVehicles ?? null,
-      totalTrips: s.totalTrips ?? null,
-      totalServiceHours: s.totalServiceHours ?? null,
-      totalDeadheadKm: s.totalDeadheadKm ?? null,
-      efficiency: s.efficiency ?? null,
-      byType: s.byType ?? null,
-      byDepot: s.byDepot ?? null,
+    log: {
+      info: (...a: any[]) => { try { base.info(...a); } catch { /* logger morto: il job continua */ } },
+      warn: (...a: any[]) => { try { base.warn(...a); } catch { /* idem */ } },
+      error: (...a: any[]) => { try { base.error(...a); } catch { /* idem */ } },
     },
-    vehicleCostEur: m.costEur ?? null,
-    solveTimeSec: m.solveTimeSec ?? null,
-    fleetInfeasibility: m.fleetInfeasibility ?? null,
-    // Da dove vengono i fuorilinea: archivio «Archi fuorilinea» (coppie
-    // ammesse/vietate, tempi e km presi dall'archivio, tratte deposito senza
-    // arco e quindi stimate) e riposizionamenti instradati via deposito.
-    deadheadArchive: m.deadheadArchive ?? null,
-    viaDepotArcs: m.viaDepotArcs ?? null,
-    // Rientri a vuoto che potrebbero diventare corse di linea (le corse in
-    // linea sono pagate, i km a vuoto no): proposte, da creare in Planning
-    // Studio solo con conferma dell'operatore.
-    serviceReturnProposals: Array.isArray(m.serviceReturnProposals) ? m.serviceReturnProposals.slice(0, 20) : [],
-    // Regola del giro (linee radiali): ritorni naturali dal capolinea
-    // periferico fatti e saltati nelle catene finali
-    turnarounds: m.turnarounds ?? null,
-    // Regola della sagoma: che mezzo ha preso ogni blocco, quante corse girano
-    // su un mezzo più piccolo di quello dichiarato dalla loro linea e se la
-    // flotta per tipologia basta.
-    sagoma: m.sagoma ?? null,
-    advisories: (Array.isArray(payload?.advisories) ? payload.advisories : [])
-      .filter((a: any) => a.severity === "critical" || a.severity === "warning")
-      .slice(0, 5)
-      .map((a: any) => ({ severity: a.severity, title: a.title, description: a.description })),
-    ...(v ? {
-      vcsp: {
-        bestRound: v.bestRound ?? null,
-      // Il giro fermato prima dei round chiesti: il piano è il migliore fra
-      // QUELLI PROVATI, e due giri con round diversi non sono alla pari.
-      earlyStop: v.earlyStop ?? null,
-      // Le manopole del ciclo EFFETTIVAMENTE in vigore (dal motore, non dalla
-      // richiesta): chi lancia coi default non le scrive, e il confronto fra
-      // giri le vedeva vuote.
-      ciclo: v.ciclo ?? null,
-        roundsExecuted: v.roundsExecuted ?? null,
-        elapsedSec: v.elapsedSec ?? null,
-        rounds: (Array.isArray(v.rounds) ? v.rounds : []).map((r: any) => ({
-          round: r.round, probe: !!r.probe, vehicles: r.vehicles,
-          duties: r.duties, supplementi: r.supplementi, bdsViolations: r.bdsViolations,
-          vehicleCostEur: r.vehicleCostEur, crewCostEur: r.crewCostEur, totalCostEur: r.totalCostEur,
-          // Punteggio usato per scegliere il best round (costo + ombre
-          // turni/violazioni): senza, "bestRound" sembra arbitrario dalla chat.
-          selectionScoreEur: r.selectionScoreEur ?? null,
-          // Quanto del costo grezzo del VSP erano penalità d'arco, cioè soldi
-          // che l'orchestratore inventa per spingere il solver. Il costo qui
-          // sopra è già al netto; questo dice quanto mordeva il feedback.
-          shadowPenaltyEur: r.shadowPenaltyEur ?? null,
-          ...(r.probe ? { shiftedTrips: r.shiftedTrips ?? 0, shiftPenaltyEur: r.shiftPenaltyEur ?? 0 } : {}),
-        })),
-        // IL TERMOMETRO DEL CICLO, un rigo per round: quanto pesano le
-        // penalità in vigore, quanto si sono spostate dal round prima, e su
-        // quale piano sono state calcolate. Se lo spostamento non cala, il
-        // VSP insegue un bersaglio che salta e nessun round può migliorare il
-        // precedente — è esattamente il 21→33 vetture del giro BA. Il
-        // dettaglio per blocco resta fuori: qui servono i numeri che si
-        // leggono in fila.
-        feedback: (Array.isArray(v.feedback) ? v.feedback : []).map((f: any) => ({
-          dopoRound: f.afterRound ?? null,
-          ancora: f.ancora?.round ?? null,
-          modo: f.ancora?.modo ?? null,
-          passo: f.passo ?? null,
-          blocchiPenalizzati: f.blocksPenalized ?? null,
-          // Attenzione ai nomi: "dalPiano" sono gli archi che il piano
-          // ancorato ha fatto penalizzare in QUESTA estrazione; "inVigore"
-          // sono quelli che il round successivo riceve davvero, cioè dopo
-          // che il passo li ha mescolati con quelli di prima. I due numeri
-          // divergono apposta: è la memoria del feedback che si vede.
-          archiDalPiano: f.arcsPenalized ?? null,
-          archiInVigore: f.archiInVigore ?? null,
-          massaPenalitaEur: f.massaPenalitaEur ?? null,
-          spostamentoEur: f.distanzaDalPrecedenteEur ?? null,
-          escalationGiunti: f.giunti?.escalation ?? null,
-        })),
-        crew: v.crew?.summary ? {
-          duties: v.crew.summary.totalShifts ?? null,
-          supplementi: v.crew.summary.totalSupplementi ?? null,
-          costEur: v.crew.summary.totalDailyCost ?? null,
-          bdsViolations: v.crew.summary.validation?.totalViolations ?? 0,
-          dutiesWithViolations: v.crew.summary.validation?.dutiesWithViolations ?? 0,
-          // DIAGNOSI: violazioni aggregate per messaggio (top 10) — senza
-          // questa la chat vede "33 violazioni" ma non QUALI regole saltano,
-          // e non può scegliere la leva giusta per il giro successivo.
-          violationsBreakdown: aggregateDutyMessages(v.crew.summary.validation?.details),
-          // Avvisi non bloccanti (es. pause pasto con severità "avviso"):
-          // il turno resta valido ma l'operatore deve vederli.
-          bdsWarnings: v.crew.summary.validation?.totalWarnings ?? 0,
-          warningsBreakdown: aggregateDutyMessages(v.crew.summary.validation?.warningDetails),
-          // Forma dei turni: quanto lavora un turno medio e quante coppie si
-          // formano — senza, dalla chat non si capisce se si è vicini al
-          // pavimento (ore-vettura ÷ lavoro massimo legale).
-          avgWorkMin: v.crew.summary.avgWorkMin ?? null,
-          avgNastroMin: v.crew.summary.avgNastroMin ?? null,
-          byType: v.crew.summary.byType ?? null,
-          semiunicoPct: v.crew.summary.semiunicoPct ?? null,
-          spezzatoPct: v.crew.summary.spezzatoPct ?? null,
-          // ATTENZIONE: totalCambi conta i soli cambi IN LINEA. Il cambio
-          // in deposito (chi smonta rientra guidando il bus, chi monta
-          // riparte guidandolo fuori) non costa un'autovettura e non ci
-          // finisce dentro: senza totalDepotChanges non si vede se il
-          // motore lo sta usando, e si giudica il giro alla cieca.
-          totalCambi: v.crew.summary.totalCambi ?? null,
-          totalDepotChanges: v.crew.summary.totalDepotChanges ?? null,
-          // Tetti percentuali dei tipi di turno (rigidi, tolleranza di frazione
-          // di turno): tetto, massimo ammesso, conteggio, esito; "relaxed" =
-          // nessuno scenario fattibile coi tetti rigidi
-          pctCaps: v.crew.summary.pctCaps ?? null,
-          pctCapRelaxed: !!v.crew.summary.pctCapRelaxed,
-          // Come si fanno i cambi in linea e quanto resta ferma una vettura senza conducente
-          handoverModes: v.crew.summary.handoverModes ?? null,
-          // Gara fra segmentazioni (storica vs pair-aware): chi ha vinto e perché
-          segmentation: v.crew.metrics?.optimizerParams?.segmentation ?? v.crew.metrics?.segmentation ?? null,
-          // Fattori applicati dai pesi operatore (1.0 = slider al default)
-          weightFactors: v.crew.metrics?.weightFactors ?? null,
-          // Elenco compatto dei turni: serve al passo "pianificazione" (quali
-          // interi restano corti, dove spostare le corse). Un turno = tipo,
-          // nastro/lavoro e i suoi pezzi (bus, orari, nodi, linee).
-          dutyList: (Array.isArray(v.crew.driverShifts) ? v.crew.driverShifts : []).slice(0, 80).map((d: any) => ({
-            id: d.driverId, type: d.type, nastroMin: d.nastroMin, workMin: d.workMin,
-            interruptionMin: d.interruptionMin ?? 0,
-            pieces: (Array.isArray(d.riprese) ? d.riprese : []).map((r: any) => {
-              const trips = Array.isArray(r.trips) ? r.trips.filter((t: any) => t && t.tripId) : [];
-              const lines = Array.from(new Set(trips.map((t: any) => t.routeName).filter(Boolean)));
-              return {
-                veh: Array.isArray(r.vehicleIds) && r.vehicleIds.length ? r.vehicleIds[0] : (trips[0]?.vehicleId ?? null),
-                start: r.startTime, end: r.endTime,
-                from: trips[0]?.firstStopName ?? null, to: r.lastStop ?? null,
-                lines, trips: trips.length,
-              };
-            }),
-          })),
-          // Struttura dei blocchi macchina visti dal CSP (CORTO/MEDIO/LUNGO):
-          // dice se le violazioni sono un problema di blocchi troppo lunghi.
-          blocks: v.crew.metrics ? {
-            vehicleBlocks: v.crew.metrics.vehicleBlocks ?? null,
-            classifications: v.crew.metrics.classifications ?? null,
-          } : null,
-          // Vincolo RIGIDO autovetture (i campi vivono nel SUMMARY del CSP).
-          companyCars: {
-            cap: v.crew.summary.companyCarsCap ?? null,
-            maxSimultaneous: v.crew.summary.companyCarsMaxSimultaneous ?? null,
-            // "used" = auto distinte impiegate (NON i bus toccati dai turni)
-            used: v.crew.summary.companyCarsUsed ?? null,
-            movements: v.crew.summary.companyCarsMovements ?? null,
-            conflicts: v.crew.summary.companyCarsConflicts ?? null,
-            // ritiri che nessuna consegna raggiunge (nessuno porta un'auto a quel nodo)
-            unpaired: v.crew.summary.companyCarsUnpaired ?? null,
-            violated: !!v.crew.summary.companyCarsHardViolation,
-            // Viaggi auto uno per uno (consegna/ritiro, nodo, orari, auto, attesa)
-            trips: Array.isArray(v.crew.metrics?.carPool?.movements) ? v.crew.metrics.carPool.movements.slice(0, 120) : undefined,
-          },
-        } : null,
-        // Sonda di spostamento: ciò che l'agente racconta all'operatore. Il
-        // dettaglio per corsa sta UNA volta sola in timeShifts (cumulato sugli
-        // orari originali); le proposte accettate portano il riepilogo per
-        // linea — con le corse ripetute per proposta il compatto superava il
-        // tetto del canale MCP (40k) e arrivava troncato.
-        probe: v.probe ? {
-          flexTrips: v.probe.flexTrips ?? 0,
-          candidates: v.probe.candidates ?? 0,
-          probesRun: v.probe.probesRun ?? 0,
-          crewScope: v.probe.crewScope ?? null,
-          // Perché la sonda guidata dai turni non propone nulla: bi-riprese
-          // esaminate, quante non possono diventare interi e il δ che servirebbe.
-          crewStats: v.probe.crewStats ?? null,
-          // Coincidenze fra linee riconosciute dall'orario (nodo, A→B,
-          // occorrenze) e quanti candidati sono stati scartati per non
-          // romperle. Senza questi due numeri non si sa se il vincolo morde
-          // troppo poco o troppo, e si giudica la sonda alla cieca.
-          coincidences: Array.isArray(v.probe.coincidences) ? v.probe.coincidences : null,
-          rejectedForCoincidence: v.probe.rejectedForCoincidence ?? null,
-          // Quanti candidati, invece di essere scartati, si sono portati dietro
-          // la corsa in coincidenza: e' la misura del mattone spostato.
-          propagatedForCoincidence: v.probe.propagatedForCoincidence ?? null,
-          // Perché la catena non si è chiusa (flessibilità, delta in conflitto,
-          // tetto): senza il motivo non si sa dove allargare.
-          propagationFailures: v.probe.propagationFailures ?? null,
-          // La coda si è svuotata prima del budget? Quante sonde sono rimaste?
-          // (AX: tre su dieci, e nessuno lo diceva.) E cosa ha imparato il
-          // giro — una voce per firma con esito, motivo e tentativi: è ciò
-          // che il giro dopo rilegge come memoria (vedi loadProbeLessons).
-          codaEsaurita: v.probe.codaEsaurita ?? null,
-          sondeNonUsate: v.probe.sondeNonUsate ?? null,
-          // Il controllo: re-solve del best round senza spostamenti, stessa
-          // configurazione dei candidati. Vetture e punteggio round/controllo
-          // e chi è rimasto riferimento: se è il controllo, il guadagno del
-          // round sonda è del solver, non dell'orario.
-          controllo: v.probe.controllo ?? null,
-          memoria: v.probe.memoria ?? null,
-          lezioni: Array.isArray(v.probe.lezioni) ? v.probe.lezioni.slice(0, 40) : [],
-          shiftPenaltyEurPerTripMin: v.probe.shiftPenaltyEurPerTripMin ?? null,
-          // I candidati «coincidenza» spostano una linea intera: nel rendiconto
-          // portano la linea e le relazioni comprate.
-          accepted: (Array.isArray(v.probe.accepted) ? v.probe.accepted : []).map((a: any) => {
-            const { shifts, ...rest } = a ?? {};
-            return { ...rest, ...summarizeShifts(Array.isArray(shifts) ? shifts : []) };
-          }),
-          rejectedCount: Array.isArray(v.probe.rejected) ? v.probe.rejected.length : 0,
-          rejected: (Array.isArray(v.probe.rejected) ? v.probe.rejected : []).slice(0, 12).map((a: any) => {
-            const { shifts, ...rest } = a ?? {};
-            return { ...rest, ...summarizeShifts(Array.isArray(shifts) ? shifts : []) };
-          }),
-          shiftedTrips: v.probe.shiftedTrips ?? Object.keys(v.probe.timeShifts ?? {}).length,
-          shiftedTripMin: v.probe.shiftedTripMin ?? null,
-          disruptionEur: v.probe.disruptionEur ?? null,
-          timeShifts: Array.isArray(v.probe.timeShiftDetails)
-            ? v.probe.timeShiftDetails.map((d: any) => ({
-                tripId: d.tripId, routeName: d.routeName, variantCode: d.variantCode ?? null,
-                deltaMin: d.deltaMin, from: d.from, to: d.to,
-              }))
-            : Object.entries(v.probe.timeShifts ?? {}).map(([tripId, deltaMin]) => ({ tripId, deltaMin })),
-        } : null,
-      },
-    } : {}),
+    progresso: (p: Progresso) => {
+      job.progress = { phase: p.phase, pct: Math.round(p.percentage), msg: p.detail.trim() };
+    },
   };
 }
 
@@ -3502,11 +1399,20 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     }
     const mode: "cpsat" | "vcsp" = b.mode === "cpsat" ? "cpsat" : "vcsp";
 
-    // Un solo giro alla volta per progetto: i solve sono pesanti.
-    for (const j of agentJobs.values()) {
-      if (j.status === "running" && j.psProjectId === psProjectId) {
-        res.status(409).json({ error: "Un giro è già in corso su questo progetto: attendi o interroga lo stato", jobId: j.id });
-        return;
+    // Un solo giro alla volta per progetto: i solve sono pesanti. In coda vale per
+    // tutti i processi (indice unico sulla chiave), e si controlla prima del lavoro
+    // preliminare (UDP, materializzazione).
+    const inCoda = veicoliInCoda();
+    if (inCoda && arresto.signal.aborted) { res.status(503).json({ error: MESSAGGIO_RIAVVIO }); return; }
+    // anche col flag a 0 (ritorno indietro) un giro ancora in coda nel lavoratore conta
+    const vivo = await coda.vivoConChiave(chiaveGiro(psProjectId));
+    if (vivo) { res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: vivo.id }); return; }
+    if (!inCoda) {
+      for (const j of agentJobs.values()) {
+        if (j.status === "running" && j.psProjectId === psProjectId) {
+          res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: j.id });
+          return;
+        }
       }
     }
 
@@ -3830,150 +1736,84 @@ router.post("/service-program/agent-optimize", async (req, res) => {
         } : {}),
       },
     };
-    agentJobs.set(job.id, job);
-    pruneAgentJobs();
-    void persistAgentJob(job, req.body);
+    const salvataggio: SalvataggioGiro = {
+      utenteId: userId, psProjectId, psName, rawDate, feedId, serviceType, routes,
+      depotsSel: depotsSel ?? null, schedProjectId,
+      defaultVehicleType: typeof b.defaultVehicleType === "string" ? b.defaultVehicleType : null,
+      saveScenario: b.saveScenario !== false,
+      scenarioName: typeof b.scenarioName === "string" && b.scenarioName.trim() ? b.scenarioName.trim().slice(0, 120) : null,
+      creatoIl: job.createdAt,
+    };
+    // Il feed del CALCOLO, come per la Fucina: quello del giro, se l'utente lo vede.
+    const feedCalcolo = await getLatestFeedId({ user: req.user, body: runBody, query: {} });
+    if (!feedCalcolo) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
+    await ensureVariantCodeColumn();
+    const richiesta: RichiestaGiro = { mode, feedId: feedCalcolo, corpo: runBody, params: job.params, salvataggio };
 
-    // Req/res sintetici: la pipeline del giro è la STESSA della fucina.
-    const jobLog = agentJobLogger(job, req.log);
-    const fakeReq = { body: runBody, user: req.user, log: jobLog, query: {}, params: {} };
-    const runPromise = new Promise<{ code: number; payload: any }>((resolve) => {
-      const fakeRes: any = {
-        _code: 200,
-        status(c: number) { this._code = c; return this; },
-        json(p: any) { resolve({ code: this._code, payload: p }); },
-      };
-      handleVehicleOptimize(fakeReq, fakeRes, mode)
-        .catch((err: any) => resolve({ code: 500, payload: { error: err?.message || "errore interno" } }));
-    });
-
-    const saveScenario = b.saveScenario !== false;
-    const scenarioNameReq = typeof b.scenarioName === "string" && b.scenarioName.trim()
-      ? b.scenarioName.trim().slice(0, 120) : null;
-
-    void runPromise.then(async ({ code, payload }) => {
+    let jobId = job.id;
+    if (inCoda) {
+      // nel lavoratore: il giro sopravvive ai deploy dell'API
       try {
-        if (code !== 200 || payload?.error || payload?.status === "NO_INPUT") {
-          job.status = "error";
-          job.error = payload?.error
-            || (payload?.status === "NO_INPUT"
-              ? "Nessuna corsa attiva per la data/linee scelte: controlla la data di esercizio"
-              : `Errore HTTP ${code}`);
-          return;
-        }
-        job.result = payload;
-        job.progress = { phase: job.progress.phase, pct: 100, msg: "Completato" };
-        if (saveScenario) {
-          const name = scenarioNameReq
-            ?? `Argos · ${psName} · ${rawDate}${mode === "vcsp" ? " · VCSP" : ""}`;
-          job.scenarioName = name;
-          // Scenario TURNI MACCHINA (il top-level è già il best round / sonda).
-          const savedResult = payload.vcsp?.bestRound != null
-            ? { ...payload, vcspSelectedRound: payload.vcsp.bestRound }
-            : payload;
-          const [row] = await db.insert(serviceProgramScenarios).values({
-            name,
-            date: rawDate.replace(/-/g, ""),
-            feedId: feedId || undefined,
-            input: {
-              date: rawDate, serviceType, routes,
-              source: "argos-agent", mode,
-              ...(runBody.vcsp ? { vcsp: runBody.vcsp } : {}),
-            } as any,
-            result: savedResult as any,
-          }).returning({ id: serviceProgramScenarios.id });
-          job.scenarioId = row.id;
-          try {
-            await db.execute(sql`UPDATE service_program_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${row.id}::uuid`);
-          } catch { /* colonna assente su DB legacy */ }
-          // Dossier di processo: la CONFIGURAZIONE usata (manopole guida, tariffe,
-          // parametri VCSP/VSP, tetto auto) resta con lo scenario, così la
-          // relazione può dichiarare con quali valori è stato calcolato.
-          try {
-            const provenance = {
-              source: "argos-agent", mode, savedAt: new Date().toISOString(),
-              crewConfig: runBody.crewConfig ?? null,
-              vcsp: runBody.vcsp ?? null,
-              vehicleCosts: runBody.vehicleCosts ?? null,
-              vspAdvanced: runBody.vspAdvanced ?? null,
-              intensity: runBody.intensity ?? null, robustness: runBody.robustness ?? null,
-              serviceType, defaultVehicleType: b.defaultVehicleType ?? null,
-              companyCars: runBody.crewConfig?.companyCars ?? null,
-            };
-            await db.execute(sql`UPDATE service_program_scenarios SET config = ${JSON.stringify(provenance)}::jsonb WHERE id = ${row.id}::uuid`);
-          } catch (e: any) {
-            jobLog.warn(`agent-optimize: salvataggio configurazione (dossier) fallito (non-fatale): ${e?.message}`);
-          }
-          if (schedProjectId) {
-            try {
-              await db.execute(sql`UPDATE service_program_scenarios SET project_id = ${schedProjectId}::uuid WHERE id = ${row.id}::uuid`);
-            } catch { /* colonna assente */ }
-          }
-          if (depotsSel && depotsSel.length > 0) {
-            const clean = depotsSel
-              .filter((d: any) => d && typeof d.id === "string" && /^[0-9a-f-]{36}$/i.test(d.id))
-              .map((d: any) => ({ id: d.id, maxVehicles: Number.isFinite(Number(d.maxVehicles)) && Number(d.maxVehicles) > 0 ? Number(d.maxVehicles) : null }));
-            if (clean.length > 0) {
-              try {
-                await db.execute(sql`UPDATE service_program_scenarios SET depots = ${JSON.stringify(clean)}::jsonb WHERE id = ${row.id}::uuid`);
-              } catch { /* non-fatale */ }
-            }
-          }
-          // VCSP: anche i TURNI GUIDA del best round come DSS collegato,
-          // così entrambe le aree di lavoro sono pronte (parità con la fucina).
-          const v = payload.vcsp;
-          if (mode === "vcsp" && Array.isArray(v?.crew?.driverShifts) && v.crew.driverShifts.length > 0) {
-            try {
-              const [dss] = await db.insert(driverShiftScenarios).values({
-                serviceProgramScenarioId: row.id,
-                name: `${name} · Turni guida (VCSP round ${v.bestRound ?? "?"})`,
-                result: {
-                  solver: "vcsp_crew",
-                  driverShifts: v.crew.driverShifts,
-                  summary: v.crew.summary ?? null,
-                  handovers: v.crew.handovers ?? [],
-                  clusters: v.crew.clusters ?? [],
-                  metrics: v.crew.metrics ?? null,
-                } as any,
-                config: { source: "argos-agent", bestRound: v.bestRound ?? null, selectedRound: v.bestRound ?? null,
-                          crewConfig: runBody.crewConfig ?? null } as any,
-              }).returning({ id: driverShiftScenarios.id });
-              job.dssId = dss.id;
-              try {
-                await db.execute(sql`UPDATE driver_shift_scenarios SET owner_user_id = ${userId}::uuid WHERE id = ${dss.id}::uuid`);
-              } catch { /* colonna assente */ }
-            } catch (e: any) {
-              jobLog.warn(`agent-optimize: salvataggio turni guida fallito (non-fatale): ${e?.message}`);
-            }
-          }
-        }
-        // I parametri del giro registrano il ciclo VERO, letto dal motore: se
-        // restassero quelli della richiesta, un giro lanciato coi default li
-        // avrebbe vuoti e il confronto non potrebbe dire che due giri hanno
-        // avuto un ciclo diverso.
-        const ciclo = (payload as any)?.vcsp?.ciclo;
-        if (ciclo && typeof ciclo === "object") {
-          job.params = {
-            ...job.params,
-            penaltyStep: ciclo.passo ?? null,
-            penaltyAnchor: ciclo.ancora ?? null,
-            seedFromBest: ciclo.seme ?? null,
-            earlyStopPatience: ciclo.pazienza ?? (job.params as any)?.earlyStopPatience ?? null,
-            controllo: ciclo.controllo ?? null,
-          };
-        }
-        job.status = "done";
-      } catch (e: any) {
-        job.status = "error";
-        job.error = `Giro completato ma salvataggio fallito: ${e?.message}`;
-      } finally {
-        job.finishedAt = Date.now();
-        void persistAgentJob(job);
+        jobId = await coda.accoda({
+          tipo: "giro_agente",
+          corsia: CORSIA_GIRO,
+          utenteId: userId,
+          via: (req as any).authVia ?? "api",
+          oggettoId: psProjectId,
+          chiaveUnicita: chiaveGiro(psProjectId),
+          richiesta,
+          metadati: { ambito: AMBITO_GIRO, mode, date: rawDate, psProjectId, params: job.params },
+          timeoutSec: TEMPO_MASSIMO_GIRO,
+        });
+      } catch (err: any) {
+        if (err?.code !== coda.CHIAVE_GIA_VIVA) throw err;
+        const vivo = await coda.vivoConChiave(chiaveGiro(psProjectId));
+        res.status(409).json({ error: GIRO_GIA_IN_CORSO, ...(vivo ? { jobId: vivo.id } : {}) });
+        return;
       }
-    });
+      // il registro per Argos: solo se il lavoratore non l'ha già scritto (giro velocissimo)
+      try {
+        await ensureAgentJobsTable();
+        await scriviGiro({ ...job, id: jobId }, req.body, db, { soloSeManca: true });
+      } catch (err: any) {
+        req.log.warn({ err: err?.message, lavoro: jobId }, "agent-optimize: registro del giro non scritto (lo stato resta nella coda)");
+      }
+      req.log.info({ lavoro: jobId, mode, psProjectId }, "agent-optimize: giro in coda");
+    }
+
+    if (!inCoda) {
+      agentJobs.set(job.id, job);
+      pruneAgentJobs();
+      await persistAgentJob(job, req.body);
+
+      // La pipeline del giro è la STESSA della fucina (eseguiOttimizzazione),
+      // il salvataggio dello scenario è in una transazione sola (salvaGiro).
+      const { log: jobLog, progresso } = agentJobLogger(job, req.log);
+      const fermo = new AbortController();
+      agentStops.set(job.id, fermo);
+      void eseguiGiro(richiesta, { lavoroId: job.id, chi: null, log: jobLog, progresso, segnale: fermo.signal })
+        .catch((err: any): EsitoGiro => ({ stato: "errore", errore: err?.message || "errore interno" }))
+        .then((esito) => {
+          if (esito.stato === "fatto") {
+            job.result = esito.payload;
+            job.progress = { phase: job.progress.phase, pct: 100, msg: "Completato" };
+            job.scenarioId = esito.scenarioId;
+            job.dssId = esito.dssId;
+            if (esito.scenarioName) job.scenarioName = esito.scenarioName;
+            job.params = esito.params;
+            job.status = "done";
+          } else {
+            job.status = "error";
+            job.error = esito.stato === "errore" ? esito.errore : "Giro fermato";
+          }
+          job.finishedAt = Date.now();
+          agentStops.delete(job.id);
+          void persistAgentJob(job);
+        });
+    }
 
     res.json({
-      jobId: job.id,
+      jobId,
       status: "running",
       mode,
       date: rawDate,
@@ -3996,13 +1836,17 @@ router.post("/service-program/agent-optimize", async (req, res) => {
 router.get("/service-program/agent-optimize/:jobId", async (req, res) => {
   const job = agentJobs.get(String(req.params.jobId));
   if (!job) {
-    const rows = /^[0-9a-f-]{36}$/i.test(String(req.params.jobId)) ? await loadAgentJobRows({ id: String(req.params.jobId) }) : [];
-    const row = rows[0];
-    if (!row) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
-    if (req.user?.id !== String(row.user_id) && req.user?.role !== "admin") {
+    const id = String(req.params.jobId);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
+    const [trovato] = await loadAgentJobRows({ id });
+    const l = trovato?.coda ?? await giroInCoda(id).catch(() => null);
+    const row = trovato?.row ?? null;
+    if (!row && !l) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito): rilancia il giro" }); return; }
+    const proprietario = row ? String(row.user_id) : l?.utente_id;
+    if (req.user?.id !== proprietario && req.user?.role !== "admin") {
       res.status(403).json({ error: "Job di un altro utente" }); return;
     }
-    res.json(agentJobRowView(row, true));
+    res.json(vistaGiro(row, l, true));
     return;
   }
   if (req.user?.id !== job.userId && req.user?.role !== "admin") {
@@ -4025,6 +1869,31 @@ router.get("/service-program/agent-optimize/:jobId", async (req, res) => {
   });
 });
 
+/** Ferma un giro in coda o in corso (solo chi l'ha lanciato, o l'admin). */
+router.post("/service-program/agent-optimize/:jobId/stop", async (req, res) => {
+  try {
+    const id = String(req.params.jobId);
+    const job = agentJobs.get(id);
+    if (job) {
+      if (req.user?.id !== job.userId && req.user?.role !== "admin") { res.status(403).json({ error: "Job di un altro utente" }); return; }
+      const fermo = agentStops.get(id);
+      if (job.status !== "running" || !fermo) { res.status(400).json({ error: "Il giro è già finito" }); return; }
+      fermo.abort();
+      res.json({ jobId: id, status: "stopping" });
+      return;
+    }
+    const l = /^[0-9a-f-]{36}$/i.test(id) ? await giroInCoda(id) : null;
+    if (!l) { res.status(404).json({ error: "Job non trovato (scaduto o mai esistito)" }); return; }
+    if (req.user?.id !== l.utente_id && req.user?.role !== "admin") { res.status(403).json({ error: "Job di un altro utente" }); return; }
+    const esito = await coda.chiediAnnullamento(id);
+    if (!esito) { res.status(400).json({ error: "Il giro è già finito" }); return; }
+    res.json({ jobId: id, status: esito === "fermato" ? "stopped" : "stopping" });
+  } catch (err: any) {
+    req.log.error(err, "stop del giro");
+    res.status(500).json({ error: err.message });
+  }
+});
+
 /** Elenco giri dell'utente (recupero jobId persi). */
 router.get("/service-program/agent-optimize", async (req, res) => {
   const userId = req.user?.id;
@@ -4032,8 +1901,8 @@ router.get("/service-program/agent-optimize", async (req, res) => {
   const isAdmin = req.user?.role === "admin";
   const persistedRows = await loadAgentJobRows({ userId, isAdmin });
   const persisted = persistedRows
-    .filter((r) => !agentJobs.has(String(r.id)))
-    .map((r) => agentJobRowView(r, false));
+    .filter(({ row }) => !agentJobs.has(String(row.id)))
+    .map(({ row, coda: l }) => vistaGiro(row, l, false)!);
   const jobs = Array.from(agentJobs.values())
     .filter(j => isAdmin || j.userId === userId)
     .sort((a, b) => b.createdAt - a.createdAt)

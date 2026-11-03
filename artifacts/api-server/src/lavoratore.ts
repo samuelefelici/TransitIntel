@@ -57,7 +57,8 @@ const server = http.createServer(async (req, res) => {
     lavoriInCorso: esecutore.inCorso(),
   }));
 });
-server.listen(porta, "127.0.0.1", () => logger.info({ porta, chi, slot }, "Lavoratore dei calcoli avviato"));
+server.listen(porta, "127.0.0.1", () => logger.info(
+  { porta, chi, slot, tipi: GESTORI.map(g => `${g.tipo}@${g.versione}`) }, "Lavoratore dei calcoli avviato"));
 
 let inArresto = false;
 async function arresta(segnale: string): Promise<void> {

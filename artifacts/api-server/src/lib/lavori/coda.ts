@@ -129,6 +129,51 @@ export async function viviDi(utenteId: string, ambito: string): Promise<number> 
   return r.rows[0]?.n ?? 0;
 }
 
+/**
+ * Il lavoro vivo (in coda o in corso) con questa chiave di unicità, se c'è: al
+ * più uno, per l'indice unico parziale lavori_unici_vivi. Serve a rispondere
+ * 409 prima di un lavoro preliminare costoso; la garanzia resta l'indice
+ * (un accoda in gara dà 23505).
+ */
+export async function vivoConChiave(chiave: string): Promise<{ id: string; utente_id: string | null; stato: StatoLavoro } | null> {
+  const r = await q(
+    `SELECT id, utente_id, stato FROM coda.lavori
+      WHERE chiave_unicita = $1 AND stato IN ('in_coda', 'in_corso') LIMIT 1`, [chiave]);
+  return r.rows[0] ?? null;
+}
+
+/**
+ * Chi aspetta un lavoro sincrono (la facciata dell'API) lo dice ogni pochi
+ * secondi: metadati.attesa_il. Un lavoro sincrono che nessuno aspetta più
+ * (l'API è uscita prima di fermarlo, è caduta, l'hanno uccisa) si ferma dopo
+ * ABBANDONO_SEC: nessuno ne leggerebbe il risultato.
+ */
+export const ABBANDONO_SEC = 60;
+
+export async function segnaAttesa(id: string): Promise<void> {
+  await q(
+    `UPDATE coda.lavori SET metadati = metadati || jsonb_build_object('attesa_il', now())
+      WHERE id = $1 AND stato IN ('in_coda', 'in_corso')`, [id]);
+}
+
+/** I lavori sincroni senza più nessuno che li aspetta: in coda diventano «fermato», in corso ricevono lo stop. */
+export async function fermaAbbandonati(): Promise<Array<{ id: string; stato: StatoLavoro }>> {
+  const r = await q(
+    `UPDATE coda.lavori SET
+            stato = CASE WHEN stato = 'in_coda' THEN 'fermato' ELSE stato END,
+            errore_tipo = CASE WHEN stato = 'in_coda' THEN 'annullato' ELSE errore_tipo END,
+            finito_il = CASE WHEN stato = 'in_coda' THEN now() ELSE finito_il END,
+            annulla = true, aggiornato_il = now()
+      WHERE stato IN ('in_coda', 'in_corso') AND NOT annulla
+        AND metadati->>'sincrono' = 'true'
+        AND coalesce((metadati->>'attesa_il')::timestamptz, creato_il) < now() - make_interval(secs => $1)
+     RETURNING id, stato`, [ABBANDONO_SEC]);
+  return r.rows;
+}
+
+/** Il codice di Postgres per una chiave di unicità già viva (lavori_unici_vivi). */
+export const CHIAVE_GIA_VIVA = "23505";
+
 /** Prende il lavoro più vecchio di una corsia fra i tipi e le versioni che chi esegue conosce. */
 export async function prendi(corsia: Corsia, chi: string, noti: ReadonlyArray<{ tipo: string; versione: number }>): Promise<Lavoro | null> {
   if (!noti.length) return null;
@@ -168,8 +213,19 @@ export async function battito(id: string, chi: string, avanzamento?: unknown): P
 
 export type Esito =
   | { stato: "completato"; risultato: unknown; httpCodice?: number; avanzamento?: unknown }
-  | { stato: "fallito"; errore: string; erroreTipo: Exclude<ErroreTipo, "annullato" | "interrotto">; httpCodice?: number; avanzamento?: unknown }
+  | {
+      stato: "fallito"; errore: string; erroreTipo: Exclude<ErroreTipo, "annullato" | "interrotto">; httpCodice?: number; avanzamento?: unknown;
+      /** la risposta del calcolo, se ne ha una (per esempio il corpo di un 400 o di un 422: la facciata la ripete) */
+      risultato?: unknown;
+    }
   | { stato: "fermato" };
+
+/** Il risultato da scrivere: quello di un completato, o quello che un fallito porta con sé. */
+export function risultatoDi(e: Esito): unknown {
+  if (e.stato === "completato") return e.risultato ?? null;
+  if (e.stato === "fallito" && e.risultato !== undefined) return e.risultato;
+  return undefined;
+}
 
 /** Chiude il lavoro (solo se è ancora di chi lo chiude). */
 export async function chiudi(id: string, chi: string, e: Esito): Promise<boolean> {
@@ -181,7 +237,7 @@ export async function chiudi(id: string, chi: string, e: Esito): Promise<boolean
       WHERE id = $1 AND preso_da = $2 AND stato = 'in_corso'
      RETURNING id`,
     [id, chi, e.stato,
-     e.stato === "completato" ? JSON.stringify(e.risultato ?? null) : null,
+     risultatoDi(e) === undefined ? null : JSON.stringify(risultatoDi(e)),
      e.stato === "fallito" ? e.errore : null,
      e.stato === "fallito" ? e.erroreTipo : e.stato === "fermato" ? "annullato" : null,
      e.stato === "fermato" ? null : (e.httpCodice ?? null),
