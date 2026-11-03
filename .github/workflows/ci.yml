@@ -474,6 +474,10 @@ jobs:
       # finto: l'ingresso dato al solver e le risposte sono fissati da istantanee
       - name: Turni macchina, VCSP e giri di Argos sul database
         run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/veicoli-db.test.ts src/__tests__/giro-db.test.ts
+      # La materializzazione Planning Studio → feed GTFS su un progetto di prova:
+      # righe gtfs_*, puntatori, feed vecchio, nodi di cambio e rotte di sincronizzazione
+      - name: Materializzazione dei feed da Planning Studio sul database
+        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/feed-ps-db.test.ts
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata
         run: |
           echo "-- modifica" >> lib/db/migrations/0000_baseline.sql
