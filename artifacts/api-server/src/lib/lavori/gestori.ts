@@ -1,6 +1,8 @@
 /**
  * I gestori dei tipi di lavoro che sanno eseguire sia il lavoratore sia
- * l'esecutore interno dell'API. Niente rotte, niente auth: solo il lanciatore.
+ * l'esecutore interno dell'API. Niente rotte, niente auth, niente DDL.
+ * I turni macchina, il VCSP e i giri di Argos stanno in
+ * lib/ottimizza-veicoli/gestori.ts.
  *
  * python v1: richiesta { script, argv, ingresso } → risultato = lo stdout JSON
  * dello script. Lo script deve essere nell'elenco (lib/lavori/python.ts):
@@ -16,6 +18,7 @@
 import type { Esito, Lavoro } from "./coda";
 import type { Gestore } from "./esecutore";
 import { eseguiPython, jsonDallUscita, scriptConsentito, type EsitoProcesso } from "./python";
+import { gestoreGiro, gestoreOttimizzaVeicoli } from "../ottimizza-veicoli/gestori";
 
 /** L'esito del lavoro dall'uscita del processo; `avviso` va anche nel log. */
 export function esitoDaUscita(esito: EsitoProcesso, l: Pick<Lavoro, "timeout_sec">, adesso: number = Date.now()): { esito: Esito; avviso?: string } {
@@ -66,4 +69,5 @@ export const gestorePython: Gestore = {
   },
 };
 
-export const GESTORI = [gestorePython];
+/** Tutti i tipi che un esecutore sa eseguire: il lavoratore li scrive nel log d'avvio. */
+export const GESTORI: Gestore[] = [gestorePython, gestoreOttimizzaVeicoli, gestoreGiro];

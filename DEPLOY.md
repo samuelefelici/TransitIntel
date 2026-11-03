@@ -507,6 +507,11 @@ migrazione `0004_coda_dei_lavori`):
    lib/db/**
    artifacts/api-server/src/lavoratore.ts
    artifacts/api-server/src/lib/lavori/**
+   artifacts/api-server/src/lib/ottimizza-veicoli/**
+   artifacts/api-server/src/lib/dati-solver.ts
+   artifacts/api-server/src/lib/deadhead-matrix.ts
+   artifacts/api-server/src/lib/geo-utils.ts
+   artifacts/api-server/src/lib/scripts-dir.ts
    artifacts/api-server/src/lib/guardia-schema.ts
    artifacts/api-server/src/lib/logger.ts
    artifacts/api-server/build.ts
