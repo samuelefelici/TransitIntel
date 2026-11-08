@@ -175,13 +175,19 @@ jobs:
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica
           test "$(psql "$PG_APP/prod" -tAq -c "SELECT session_user || '/' || current_user")" = cerbero_app/cerbero_owner
-          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" -c "INSERT INTO depots (name) VALUES ('ci')" -c "SELECT count(*) FROM cerbero_migrazioni.__drizzle_migrations" -c "ROLLBACK"
+          # una chiave esterna si controlla come il proprietario della tabella: serve USAGE su public
+          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" \
+            -c "INSERT INTO gtfs_feeds (id, filename) VALUES ('00000000-0000-0000-0000-0000000000f9', 'ci.zip')" \
+            -c "INSERT INTO gtfs_fare_transfer_rules (feed_id) VALUES ('00000000-0000-0000-0000-0000000000f9')" \
+            -c "SELECT count(*) FROM cerbero_migrazioni.__drizzle_migrations" -c "ROLLBACK"
           if psql "$PG_APP/prod" -tAq -c "SELECT count(*) FROM caronte.app_users" 2>/dev/null; then echo "cerbero_app non deve leggere caronte.app_users"; exit 1; fi
           if DATABASE_URL=$PG_APP/prod node lib/db/scripts/migra.mjs > migra-app.log 2>&1; then cat migra-app.log; echo "il migratore come cerbero_app doveva fermarsi"; exit 1; fi
           grep -q "non si eseguono come cerbero_app" migra-app.log
-          # fuori dal catalogo atteso: si tolgono prima del confronto
+          # fuori dal catalogo atteso: si tolgono prima del confronto; e public torna
+          # come su un database nuovo, perché i casi di Argos qui sotto lo danno per scontato
           q "DROP EXTENSION pg_stat_statements"
           q "DROP TABLE caronte.app_users"
+          q "GRANT USAGE ON SCHEMA public TO PUBLIC"
       # Il migratore ha riportato argos_ro al contratto. Poi qualcuno rilancia lo
       # script di Argos (lettura di tutto): la verifica se ne accorge, la cura
       # sistema, e di nuovo tutto in regola.
@@ -317,8 +323,9 @@ jobs:
           echo "::group::SECURITY DEFINER che argos_ro non può far girare: non contano"
           # senza EXECUTE in un indice, in una policy e nel DEFAULT di un dominio; funzione di un event trigger spento;
           # come in FleetCare: con l'EXECUTE di tutti ma in uno schema senza USAGE, senza oggetti che la usano o solo
-          # come funzione trigger di una tabella di quello schema
-          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.f() FROM PUBLIC; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.f(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f())); CREATE FUNCTION ci_chiuso.ev() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; CREATE EVENT TRIGGER ci_spento ON ddl_command_end EXECUTE FUNCTION ci_chiuso.ev(); ALTER EVENT TRIGGER ci_spento DISABLE; CREATE FUNCTION ci_chiuso.conta() RETURNS bigint LANGUAGE sql SECURITY DEFINER AS 'SELECT count(*) FROM public.users'; CREATE FUNCTION ci_chiuso.audit() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN RETURN NEW; END'; CREATE TRIGGER audit BEFORE UPDATE ON ci_chiuso.t FOR EACH ROW EXECUTE FUNCTION ci_chiuso.audit()"
+          # come funzione trigger di una tabella di quello schema. (PR 2.8: l'indice su public.users si costruisce come
+          # il suo proprietario, cerbero_owner: a lui l'EXECUTE serve, ad argos_ro resta negato)
+          s "CREATE SCHEMA ci_chiuso; REVOKE ALL ON SCHEMA ci_chiuso FROM PUBLIC; CREATE FUNCTION ci_chiuso.f() RETURNS int LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT 1'; REVOKE ALL ON FUNCTION ci_chiuso.f() FROM PUBLIC; GRANT EXECUTE ON FUNCTION ci_chiuso.f() TO cerbero_owner; CREATE TABLE ci_chiuso.t (x int); ALTER TABLE ci_chiuso.t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON ci_chiuso.t USING (ci_chiuso.f() = 1); CREATE DOMAIN ci_chiuso.d AS int DEFAULT ci_chiuso.f(); CREATE INDEX ci_chiuso_utenti ON public.users ((ci_chiuso.f())); CREATE FUNCTION ci_chiuso.ev() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN NULL; END'; CREATE EVENT TRIGGER ci_spento ON ddl_command_end EXECUTE FUNCTION ci_chiuso.ev(); ALTER EVENT TRIGGER ci_spento DISABLE; CREATE FUNCTION ci_chiuso.conta() RETURNS bigint LANGUAGE sql SECURITY DEFINER AS 'SELECT count(*) FROM public.users'; CREATE FUNCTION ci_chiuso.audit() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER AS 'BEGIN RETURN NEW; END'; CREATE TRIGGER audit BEFORE UPDATE ON ci_chiuso.t FOR EACH ROW EXECUTE FUNCTION ci_chiuso.audit()"
           in_regola; s "DROP EVENT TRIGGER ci_spento; DROP SCHEMA ci_chiuso CASCADE"; echo "::endgroup::"
           a_mano "CREATE TABLE information_schema.ci_copia AS SELECT 1 AS x; GRANT SELECT ON information_schema.ci_copia TO PUBLIC" \
             'REVOKE SELECT ON TABLE "information_schema"."ci_copia" FROM PUBLIC' "DROP TABLE information_schema.ci_copia"
