@@ -4,7 +4,7 @@
  * (migrazioni-postgres) e lo script locale della PR. */
 import { describe, it, expect } from "vitest";
 import {
-  APP, PROPRIETARIO, allinea, elencoDalCatalogo, piano,
+  APP, CORPO_EVENTO_DDL, PROPRIETARIO, allinea, elencoDalCatalogo, piano,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import type { StatoRuoli, Relazione } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 
@@ -37,6 +37,7 @@ function base(extra: Partial<StatoRuoli> = {}): StatoRuoli {
       { firma: "fleetcare.parco_per_avm()", esiste: true, chiama: true },
       { firma: "fleetcare.interventi_avm(timestamp with time zone)", esiste: true, chiama: true },
     ],
+    evento: { funzione: true, corpo: CORPO_EVENTO_DDL, di_superutente: true, di_tutti: false, acceso: "A", momento: "ddl_command_start", sua: true },
     ...extra,
   };
 }
@@ -176,6 +177,36 @@ describe("ruoli del database: il piano", () => {
     expect(p.errori[0]).toMatch(/fleetcare\.cerbero_stato_utente\(uuid\) è SECURITY DEFINER di postgres.*0089.*cerbero_app non va usato/);
   });
 
+  it("l'event trigger che ferma il DDL dell'app: si crea, si accende sempre, si riallinea", () => {
+    const manca = piano(base({ evento: { funzione: false, corpo: null, di_superutente: null, di_tutti: null, acceso: null, momento: null, sua: null } }));
+    expect(manca.azioni.map((a) => a.sql.split(" ").slice(0, 5).join(" "))).toEqual([
+      "CREATE OR REPLACE FUNCTION cerbero_migrazioni.ddl_dell_app()",
+      "REVOKE ALL ON FUNCTION cerbero_migrazioni.ddl_dell_app()",
+      'CREATE EVENT TRIGGER "cerbero_ddl_dell_app" ON',
+      'ALTER EVENT TRIGGER "cerbero_ddl_dell_app" ENABLE',
+    ]);
+    expect(manca.azioni[0]!.sql).toMatch(/tg_tag NOT IN \('CREATE TABLE', 'CREATE TABLE AS', 'CREATE INDEX', 'ALTER TABLE'\)/);
+    expect(manca.azioni[0]!.sql).toMatch(/SET search_path = pg_catalog, pg_temp/);
+    const ev = base().evento!;
+    expect(piano(base({ evento: { ...ev, acceso: "D" } })).azioni.map((a) => a.sql)).toEqual(['ALTER EVENT TRIGGER "cerbero_ddl_dell_app" ENABLE ALWAYS']);
+    expect(piano(base({ evento: { ...ev, corpo: "BEGIN NULL; END" } })).azioni.map((a) => a.sql.slice(0, 26))).toEqual(["CREATE OR REPLACE FUNCTION"]);
+    // spazi diversi non contano
+    expect(piano(base({ evento: { ...ev, corpo: CORPO_EVENTO_DDL.replace(/\n/g, "\n\n  ") } })).azioni).toEqual([]);
+    expect(piano(base({ evento: { ...ev, sua: false } })).azioni.map((a) => a.sql.split(" ").slice(0, 3).join(" ")))
+      .toEqual(["DROP EVENT TRIGGER", "CREATE EVENT TRIGGER", "ALTER EVENT TRIGGER"]);
+    const diAltri = piano(base({ evento: { ...ev, di_superutente: false } }));
+    expect(diAltri.errori[0]).toMatch(/non è di un superutente/);
+  });
+
+  it("una vista che dipende da una relazione di un altro ruolo: errore, non un'attesa infinita", () => {
+    const p = piano(base({ relazioni: [
+      rel("caronte.stop_predictions", { proprietario: "avm_esterno" }),
+      daPostgres(rel("public.v_avm", { tipo: "v", basi: [{ nome: "caronte.stop_predictions", proprietario: "avm_esterno" }] })),
+    ] }));
+    expect(p.attese).toEqual([]);
+    expect(p.errori.join(" ")).toMatch(/public\.v_avm dipende da caronte\.stop_predictions \(di avm_esterno\)/);
+  });
+
   it("le relazioni dal catalogo: tabelle, viste e sequenze, senza le escluse", () => {
     expect(elencoDalCatalogo({
       tabelle: { "public.users": {}, "caronte.app_users": {} }, viste: { "public.ps_variants": "…" },
@@ -208,6 +239,7 @@ describe("ruoli del database: esecuzione", () => {
         }
         // le letture di leggiStato, dallo stato corrente (le più specifiche prima)
         if (/has_column_privilege/.test(sql)) return { rows: stato.lettori ?? [] };
+        if (/pg_event_trigger/.test(sql)) return { rows: [stato.evento] };
         if (/AS funzione/.test(sql)) return { rows: stato.fughe ?? [] };
         if (/current_user AS utente/.test(sql)) return { rows: [stato.io] };
         if (/FROM pg_catalog.pg_roles r WHERE rolname/.test(sql)) return { rows: stato.ruoli };

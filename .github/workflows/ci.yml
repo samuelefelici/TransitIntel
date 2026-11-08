@@ -175,6 +175,17 @@ jobs:
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica
           test "$(psql "$PG_APP/prod" -tAq -c "SELECT session_user || '/' || current_user")" = cerbero_app/cerbero_owner
+          # l'event trigger del migratore: l'app non crea funzioni, viste, trigger (né in public né in pg_temp)
+          test "$(q "SELECT evtenabled FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app'")" = A
+          for vietato in "CREATE FUNCTION public.pg_try_advisory_lock(text) RETURNS boolean LANGUAGE sql AS 'SELECT true'" \
+                         "CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS 'SELECT 1'" \
+                         "CREATE VIEW public.ci_vista AS SELECT 1" \
+                         "CREATE TRIGGER ci_t BEFORE INSERT ON caronte.tap_events FOR EACH ROW EXECUTE FUNCTION pg_catalog.suppress_redundant_updates_trigger()"; do
+            if psql "$PG_APP/prod" -q -c "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -q "cerbero_app non può eseguire" vietato.log || { cat vietato.log; exit 1; }
+          done
+          # i comandi delle unità pigre invece passano
+          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "CREATE TABLE IF NOT EXISTS public.users (id int)" -c "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid"
           # una chiave esterna si controlla come il proprietario della tabella: serve USAGE su public
           psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" \
             -c "INSERT INTO gtfs_feeds (id, filename) VALUES ('00000000-0000-0000-0000-0000000000f9', 'ci.zip')" \
@@ -308,7 +319,7 @@ jobs:
             "senza controllare l'EXECUTE" "DROP OPERATOR public.=== (int, int); DROP FUNCTION public.ci_uguale(int, int)"
           # un cast verso json: to_json lo chiama senza controllare l'EXECUTE
           a_mano "CREATE TYPE public.ci_t AS (x int); CREATE FUNCTION public.ci_js(public.ci_t) RETURNS json LANGUAGE sql SECURITY DEFINER AS 'SELECT ''{}''::json'; REVOKE ALL ON FUNCTION public.ci_js(public.ci_t) FROM PUBLIC; CREATE CAST (public.ci_t AS json) WITH FUNCTION public.ci_js(public.ci_t)" \
-            "cast from ci_t to json" "DROP TYPE public.ci_t CASCADE"
+            "cast from public.ci_t to json" "DROP TYPE public.ci_t CASCADE"
           # indice d'espressione su una tabella del contratto: argos_ro lo copia con LIKE in una tabella temporanea sua
           a_mano "CREATE SCHEMA ci_idx; REVOKE ALL ON SCHEMA ci_idx FROM PUBLIC; CREATE FUNCTION ci_idx.chiave(t text) RETURNS text LANGUAGE sql IMMUTABLE SECURITY DEFINER AS 'SELECT t'; CREATE INDEX ci_idx_scenari ON public.scenarios (ci_idx.chiave(name))" \
             'REVOKE EXECUTE ON ROUTINE "ci_idx"."chiave"(text) FROM PUBLIC' "DROP SCHEMA ci_idx CASCADE"

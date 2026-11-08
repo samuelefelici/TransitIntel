@@ -3,27 +3,36 @@
  *
  * In produzione l'API e il lavoratore si collegano come `cerbero_app`, che
  * lavora come `cerbero_owner` (il proprietario delle tabelle) grazie
- * all'impostazione `role` del ruolo. Se quell'impostazione non si applica
- * (tolta per sbaglio, o un ruolo con la membership senza SET) la sessione
- * resta `cerbero_app`, che non ha diritti sulle tabelle: tutto fallirebbe a
- * metà richiesta. Meglio non partire: il processo esce con 1 e il container
- * vecchio resta in servizio.
+ * all'impostazione `role` del ruolo. Il processo NON parte (esce con 1, e il
+ * container vecchio resta in servizio) se:
+ * - le credenziali sono sbagliate, il ruolo non può entrare o il database non
+ *   c'è (prima della 2.8 lo fermava il migratore, che usava la stessa URL);
+ * - è `cerbero_app` ma la sessione non lavora come `cerbero_owner`
+ *   (impostazione del ruolo tolta, appartenenza senza SET): senza diritti
+ *   sulle tabelle tutto fallirebbe a metà richiesta;
+ * - è `cerbero_app` e manca, o è spento, l'event trigger che gli impedisce di
+ *   creare funzioni, viste, trigger…: senza, un oggetto messo dall'app
+ *   potrebbe girare come superutente;
+ * - è `cerbero_app` e una relazione di Cerbero è ancora di un superutente:
+ *   il riallineamento del migratore non è finito (login e altre richieste
+ *   darebbero «permission denied» mentre /api/healthz dice 200).
  *
  * Il resto finisce nel log: una riga con l'utente, e un avviso se si è ancora
- * superutenti (prima del cambio di DATABASE_URL) o se qualche relazione di
- * Cerbero non è del ruolo con cui si lavora (il riallineamento del migratore
- * non è ancora passato da lì: `node lib/db/scripts/ruoli.mjs`).
+ * superutenti (prima del cambio di DATABASE_URL) o se una relazione di
+ * Cerbero è di un altro ruolo (per esempio il sistema AVM).
  */
 import { pool } from "@workspace/db";
-import { APP, PROPRIETARIO, ESCLUSE } from "../../../../lib/db/scripts/ruoli-nomi.mjs";
+import { APP, PROPRIETARIO, ESCLUSE, EVENTO_DDL } from "../../../../lib/db/scripts/ruoli-nomi.mjs";
 import { logger } from "./logger";
 
 export interface Identita {
   sessione: string;
   corrente: string;
   superutente: boolean;
+  /** l'event trigger che ferma il DDL dell'app c'è ed è acceso sempre */
+  eventoAcceso: boolean;
   /** relazioni di Cerbero (public, caronte, coda) che non sono del ruolo corrente */
-  altrui: string[];
+  altrui: { nome: string; diSuperutente: boolean }[];
 }
 
 export type Giudizio =
@@ -31,15 +40,35 @@ export type Giudizio =
   | { esito: "avviso"; messaggio: string }
   | { esito: "ok"; messaggio: string };
 
+const elenco = (v: string[]) => `${v.slice(0, 10).join(", ")}${v.length > 10 ? ` e altre ${v.length - 10}` : ""}`;
+
 /** Puro: cosa dire (o se fermarsi) per un'identità. */
 export function giudica(i: Identita): Giudizio {
-  if (i.sessione === APP && i.corrente !== PROPRIETARIO) {
-    return {
-      esito: "fatale",
-      messaggio: `collegato come ${APP} ma la sessione lavora come ${i.corrente}, non come ${PROPRIETARIO}: `
-        + `manca l'impostazione «role = ${PROPRIETARIO}» del ruolo ${APP}, o la sua appartenenza a ${PROPRIETARIO} con SET. `
-        + "Le rimette il migratore all'avvio dell'API (o a mano: node lib/db/scripts/ruoli.mjs)",
-    };
+  if (i.sessione === APP) {
+    if (i.corrente !== PROPRIETARIO) {
+      return {
+        esito: "fatale",
+        messaggio: `collegato come ${APP} ma la sessione lavora come ${i.corrente}, non come ${PROPRIETARIO}: `
+          + `manca l'impostazione «role = ${PROPRIETARIO}» del ruolo ${APP}, o la sua appartenenza a ${PROPRIETARIO} con SET. `
+          + "Le rimette il migratore all'avvio dell'API (o a mano: node lib/db/scripts/ruoli.mjs)",
+      };
+    }
+    if (!i.eventoAcceso) {
+      return {
+        esito: "fatale",
+        messaggio: `collegato come ${APP} senza l'event trigger ${EVENTO_DDL} acceso: l'app potrebbe creare oggetti `
+          + "che girano come superutente. Lo crea il migratore all'avvio dell'API (o a mano: node lib/db/scripts/ruoli.mjs)",
+      };
+    }
+    const diSuperutente = i.altrui.filter((a) => a.diSuperutente).map((a) => a.nome);
+    if (diSuperutente.length) {
+      return {
+        esito: "fatale",
+        messaggio: `collegato come ${APP} ma ${diSuperutente.length === 1 ? "una relazione" : `${diSuperutente.length} relazioni`} `
+          + `di Cerbero ${diSuperutente.length === 1 ? "è" : "sono"} ancora di un superutente: ${elenco(diSuperutente)}. `
+          + "Il riallineamento del migratore non è finito: dal container dell'API, node lib/db/scripts/ruoli.mjs",
+      };
+    }
   }
   if (i.superutente) {
     return {
@@ -53,39 +82,53 @@ export function giudica(i: Identita): Giudizio {
     return {
       esito: "avviso",
       messaggio: `${n} ${n === 1 ? "relazione" : "relazioni"} di Cerbero non ${n === 1 ? "è" : "sono"} di ${i.corrente}: `
-        + `${i.altrui.slice(0, 10).join(", ")}${n > 10 ? ` e altre ${n - 10}` : ""}. `
-        + "Dal container dell'API: node lib/db/scripts/ruoli.mjs",
+        + `${elenco(i.altrui.map((a) => a.nome))}. Dal container dell'API: node lib/db/scripts/ruoli.mjs`,
     };
   }
   return { esito: "ok", messaggio: `database: collegato come ${i.sessione}, lavora come ${i.corrente}` };
 }
 
+/** Errori di connessione che non passano da soli: credenziali, ruolo senza accesso, database che non c'è. */
+export const ERRORI_DI_ACCESSO = new Set(["28P01", "28000", "3D000"]);
+
 export async function leggiIdentita(): Promise<Identita> {
   const { rows: [io] } = await pool.query(`
     SELECT session_user AS sessione, current_user AS corrente,
-           (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) AS superutente`);
+           (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) AS superutente,
+           EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger WHERE evtname = $1 AND evtenabled = 'A') AS evento`, [EVENTO_DDL]);
   const { rows } = await pool.query(`
-    SELECT n.nspname || '.' || c.relname AS nome
+    SELECT n.nspname || '.' || c.relname AS nome, o.rolsuper AS di_superutente
       FROM pg_catalog.pg_class c
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_catalog.pg_roles o ON o.oid = c.relowner
      WHERE n.nspname IN ('public', 'caronte', 'coda') AND c.relkind IN ('r', 'p', 'v', 'm')
        AND c.relowner <> (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user)
        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
                         WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e')
        AND n.nspname || '.' || c.relname <> ALL ($1)
      ORDER BY 1`, [[...ESCLUSE]]);
-  return { sessione: io.sessione, corrente: io.corrente, superutente: Boolean(io.superutente), altrui: rows.map((r) => r.nome) };
+  return {
+    sessione: io.sessione, corrente: io.corrente, superutente: Boolean(io.superutente), eventoAcceso: Boolean(io.evento),
+    altrui: rows.map((r) => ({ nome: r.nome, diSuperutente: Boolean(r.di_superutente) })),
+  };
 }
 
 /**
- * All'avvio: una riga nel log, e l'uscita se il ruolo non si è applicato. Un
- * database che non risponde non ferma niente (lo dice la guardia di versione).
+ * All'avvio: una riga nel log, e l'uscita nei casi qui sopra. Un database che
+ * non risponde (rete, riavvio) non ferma niente: lo dice la guardia di versione.
  */
 export async function controllaIdentita(processo: string): Promise<void> {
   let i: Identita;
   try {
     i = await leggiIdentita();
-  } catch (err) {
+  } catch (err: any) {
+    const codice = err?.code ?? err?.cause?.code;
+    if (ERRORI_DI_ACCESSO.has(codice)) {
+      logger.fatal({ processo, codice, err: err?.message },
+        "Il database rifiuta l'accesso (credenziali, ruolo senza LOGIN o database sbagliato in DATABASE_URL): non parto. "
+        + "DEPLOY.md, «Ruoli del database», passo 4");
+      process.exit(1);
+    }
     logger.warn({ err, processo }, "Con chi lavoro sul database? Non riesco a leggerlo");
     return;
   }

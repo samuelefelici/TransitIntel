@@ -17,6 +17,8 @@
 -- Poi la password, da psql: `\password caronte_app` (manda al server solo
 -- l'hash, non la password in chiaro), e `ALTER ROLE caronte_app LOGIN;`.
 -- ═══════════════════════════════════════════════════════════════════════════
+-- da superutente: niente public nel percorso (l'app di Cerbero può creare in public)
+SET search_path = pg_catalog, pg_temp;
 
 DO $$
 BEGIN

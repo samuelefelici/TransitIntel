@@ -76,12 +76,33 @@ su main non si tocca più.
     `IF to_regrole('cerbero_owner') IS NOT NULL THEN ALTER TABLE public.t OWNER TO cerbero_owner; END IF;`.
     Altrimenti, dal commit della migrazione al riallineamento, l'app non lo
     vede (lo controlla un test in `migrazioni.test.ts` dalla 0006 in poi);
-  - i dati delle tabelle di Cerbero (UPDATE, INSERT, DELETE) si toccano sotto
-    `SET LOCAL ROLE cerbero_owner`: le tabelle sono sue, e un trigger o una
-    vista messi lì dall'app non devono girare come superutente;
-  - nomi sempre qualificati (`public.t`, `pg_catalog.lower`): `cerbero_owner`
-    può creare oggetti in `public`, e un superutente non deve trovarsi una sua
-    funzione al posto di quella di sistema.
+  - i dati delle tabelle di Cerbero (UPDATE, INSERT, DELETE) si toccano come
+    `cerbero_owner`: le tabelle sono sue, e un default o un vincolo messi lì
+    dall'app non devono girare come superutente. Si torna a chi migra prima
+    della fine, perché drizzle registra la migrazione nella stessa transazione
+    (in `cerbero_migrazioni`, che `cerbero_owner` non scrive):
+    ```sql
+    DO $$ BEGIN
+      IF pg_catalog.to_regrole('cerbero_owner') IS NOT NULL THEN EXECUTE 'SET LOCAL ROLE cerbero_owner'; END IF;
+    END $$;
+    --> statement-breakpoint
+    UPDATE public.t SET …;
+    --> statement-breakpoint
+    RESET ROLE;
+    ```
+    Come `cerbero_owner` il DDL è fermato dall'event trigger
+    `cerbero_ddl_dell_app`: lì dentro solo dati;
+  - nomi sempre qualificati (`public.t`, `pg_catalog.lower`): il migratore gira
+    con `search_path = pg_catalog, pg_temp`, e un nome senza schema non trova
+    le tabelle.
+- **L'app non crea oggetti (event trigger `cerbero_ddl_dell_app`).** Come
+  `cerbero_app` o `cerbero_owner` si possono eseguire solo i comandi delle
+  unità pigre (`CREATE TABLE`, `CREATE TABLE AS`, `CREATE INDEX`,
+  `ALTER TABLE`); funzioni, viste, operatori, tipi, cast, regole, trigger e
+  policy si fermano con 42501. Altrimenti un oggetto dell'app in `public` (dove
+  ha CREATE per le unità pigre) girerebbe come superutente quando un
+  superutente lo incontra. Lo crea e lo tiene acceso il migratore; API e
+  lavoratore non partono senza.
 - **Aggiornare PostGIS** (`ALTER EXTENSION postgis UPDATE`, come superutente,
   con `public` nel percorso): prima si toglie il CREATE su `public` a
   `cerbero_owner` (`REVOKE CREATE ON SCHEMA public FROM cerbero_owner`), dopo

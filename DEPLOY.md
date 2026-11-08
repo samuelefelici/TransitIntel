@@ -332,13 +332,27 @@ file del server, ruoli). Dalla 2.8:
 
   `ALTER … OWNER` riscrive i permessi già dati (ad `argos_ro`, `caronte_app`,
   `fleetcare_app`), che restano validi.
+- **L'app non crea oggetti eseguibili.** Il migratore crea e tiene acceso
+  sempre (`ENABLE ALWAYS`) l'event trigger `cerbero_ddl_dell_app`, di
+  `postgres`: come `cerbero_app` si eseguono solo i comandi delle unità pigre
+  (`CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`). Funzioni (anche
+  temporanee), viste, operatori, aggregati, tipi, cast, regole, trigger e
+  policy si fermano con «cerbero_app non può eseguire …». Senza, un oggetto
+  messo dall'app in `public` (dove ha CREATE per le unità pigre) girerebbe come
+  superutente quando lo incontra il migratore, un amministratore in psql o una
+  funzione di FleetCare (la revisione lo ha riprodotto).
 - **`cerbero_app` nasce senza accesso** (NOLOGIN, nessuna password). La password
   la dà chi gestisce il database; il migratore non tocca più né la password né
   il LOGIN.
 - **API e lavoratore all'avvio** scrivono con chi lavorano
-  (`database: collegato come cerbero_app, lavora come cerbero_owner`). Escono
-  con 1 se `cerbero_app` non lavora come `cerbero_owner`: manca l'impostazione
-  del ruolo, che il migratore rimette. Ancora come `postgres` danno un avviso.
+  (`database: collegato come cerbero_app, lavora come cerbero_owner`). **Escono
+  con 1**, e resta in servizio il container di prima, se:
+  - il database rifiuta l'accesso (password, LOGIN, nome del database);
+  - `cerbero_app` non lavora come `cerbero_owner`;
+  - l'event trigger `cerbero_ddl_dell_app` manca o è spento;
+  - una relazione di Cerbero è ancora di un superutente.
+
+  Ancora come `postgres` danno solo un avviso.
 - **FleetCare.** Le sue funzioni che leggono Cerbero sono di
   `fleetcare_legge_cerbero`, che non è superutente e legge solo poche colonne
   di `public.users` e il nome dei depositi (FleetCare, migrazione 0089). Le
@@ -354,15 +368,20 @@ file del server, ruoli). Dalla 2.8:
   node lib/db/scripts/ruoli.mjs --verifica   # cosa non va, e chi è collegato con quale utente
   node lib/db/scripts/ruoli.mjs              # riallinea (senza tetto di tempo, lock fino a 5 s)
   ```
-- **Chi lavora in psql.** Come `postgres` si guardano cataloghi, permessi e
-  ruoli. I dati delle tabelle di Cerbero si guardano (e si correggono) come
-  `cerbero_app`: le tabelle sono di `cerbero_owner`, e una vista o un trigger
-  messi lì dall'app non devono girare come superutente.
-- **Il DDL dell'app** (unità pigre, fino alla 2.16) resta possibile, perché
-  l'app possiede le sue tabelle e può creare in `public`. Il registro delle
-  modifiche (2.10) sarà inviolabile solo dopo la 2.16. Prima di aggiornare
-  PostGIS si toglie il CREATE su `public` a `cerbero_owner` (README delle
-  migrazioni).
+- **Chi lavora in psql.** Come `postgres`, per prima cosa
+  `SET search_path = pg_catalog, pg_temp;`, poi solo cataloghi, permessi e
+  ruoli. I dati delle tabelle di Cerbero si guardano e si correggono come
+  `cerbero_app`. Le tabelle sono di `cerbero_owner`: un default o un vincolo
+  messo lì dall'app non deve girare come superutente.
+- **Nessun programma scrive nelle tabelle di Cerbero da superutente.** Per
+  esempio Caronte o il sistema AVM: ne eseguirebbe default e vincoli come
+  superutente. `ruoli.mjs --verifica` dà errore per le sessioni da superutente
+  dei programmi che non conosce.
+- **Il DDL dell'app**, cioè le unità pigre (fino alla 2.16), resta per tabelle
+  e indici: l'app possiede le sue tabelle e può crearne in `public`, e
+  l'event trigger lascia passare solo quello. Il registro delle modifiche
+  (2.10) sarà inviolabile solo dopo la 2.16. Prima di aggiornare PostGIS si
+  toglie il CREATE su `public` a `cerbero_owner` (README delle migrazioni).
 
 **Rilascio (una volta sola), in quest'ordine:**
 0. **Prima, in sola lettura**, dal Terminal del PostgreSQL
@@ -385,10 +404,11 @@ file del server, ruoli). Dalla 2.8:
    ```
    - **Tabelle `caronte` di un ruolo diverso da `postgres`** (il sistema AVM):
      ci si ferma e si decide prima.
-   - **Caronte (il validatore) entra come `postgres`**: conviene passarlo a
-     `caronte_app` prima del passo 4. Le sue scritture su tabelle di
-     `cerbero_owner` resterebbero un modo per far girare codice dell'app come
-     superutente.
+   - **Caronte (il validatore) o un altro programma entra come `postgres`**:
+     va passato a `caronte_app`, o a un suo ruolo, **prima del passo 4**. È
+     una condizione, non un consiglio. Le sue scritture su tabelle di
+     `cerbero_owner` farebbero girare come superutente i default messi
+     dall'app.
 
    Poi sull'API: `DATABASE_MIGRATOR_URL` = l'URL di oggi (quello di
    `postgres`), lasciando `DATABASE_URL` com'è.
@@ -408,7 +428,14 @@ file del server, ruoli). Dalla 2.8:
    \password cerbero_app
    ALTER ROLE cerbero_app LOGIN;
    ```
-4. **Coolify**:
+4. **Prima di cambiare, tutte e due** dal Terminal del container dell'API:
+   - `node lib/db/scripts/ruoli.mjs --verifica` esce con 0, senza errori né
+     «da fare» (se c'è qualcosa da fare: prima `node lib/db/scripts/ruoli.mjs`);
+   - `psql "<nuovo DATABASE_URL>" -c "select current_user"` risponde
+     `cerbero_owner`. Nell'URL la password va codificata (`@ : / # %` e
+     simili) o scelta senza quei caratteri.
+
+   Poi **Coolify**:
    - API: `DATABASE_URL` = `postgres://cerbero_app:<password>@<servizio-db>:5432/<db>`;
      `DATABASE_MIGRATOR_URL` resta quello di `postgres`;
    - lavoratore: `DATABASE_URL` uguale a quello dell'API, nessun
@@ -424,8 +451,25 @@ file del server, ruoli). Dalla 2.8:
    - nel log nessun `permission denied`.
 
 **Rollback:** `DATABASE_URL` di nuovo sull'URL di `postgres` (subito, senza
-altro). Proprietari e ruoli possono restare: `postgres` resta superutente. Per
-il container si torna all'immagine di prima.
+altro). Proprietari, ruoli ed event trigger possono restare: `postgres` resta
+superutente e l'event trigger ferma solo `cerbero_app`. Per il container si
+torna all'immagine di prima.
+
+**Dopo un ripristino** (backup di Coolify o `pg_dump`):
+- un dump non porta i ruoli. Il migratore li ricrea al primo avvio:
+  `cerbero_app` torna NOLOGIN, quindi password e LOGIN vanno ridati (passo 3).
+  Conviene salvare anche i ruoli (`pg_dumpall --roles-only`);
+- un ripristino con `--no-owner` rimette tutto a `postgres`:
+  - le relazioni di Cerbero le ripassa il migratore;
+  - le tre funzioni di FleetCare che leggono Cerbero no. `ruoli.mjs --verifica`
+    le segnala con l'`ALTER FUNCTION … OWNER TO fleetcare_legge_cerbero` da
+    eseguire come `postgres`;
+  - i permessi di `caronte_app` si ridanno con `setup-caronte`.
+- Prima di ridare `DATABASE_URL` a `cerbero_app`: di nuovo il passo 4.
+
+Il container passa all'utente `node` con `setpriv`, che ha bisogno delle
+capacità SETUID e SETGID: con `--cap-drop ALL` (non è il default di Coolify)
+non parte.
 
 ### Estensioni PostGIS che nessuno usa (tiger, topology)
 
