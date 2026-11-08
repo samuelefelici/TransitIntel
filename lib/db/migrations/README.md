@@ -1,6 +1,6 @@
 # Migrazioni del database di Cerbero
 
-Lo schema di Cerbero (schemi `public` e `caronte`) cambia **solo** da qui. Le
+Lo schema di Cerbero (schemi `public`, `caronte` e `coda`) cambia **solo** da qui. Le
 migrazioni le applica l'API all'avvio (`docker/avvio.sh` →
 `lib/db/scripts/migra.mjs`), con il migrator di drizzle: lo stesso strumento
 di FleetCare, con lo schema di tracciamento `cerbero_migrazioni`.
@@ -63,6 +63,29 @@ su main non si tocca più.
   tabella grande va in uno script a parte, lanciato fuori dal deploy.
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
+- **Chi possiede cosa (PR 2.8).** Le tabelle, le viste e le sequenze di
+  Cerbero sono di `cerbero_owner` (NOLOGIN); l'app si collega come
+  `cerbero_app`, che lavora come `cerbero_owner`. Gli schemi e tutto
+  `cerbero_migrazioni` restano di chi migra (`postgres`). Ruoli, diritti e
+  proprietari li tiene in ordine il migratore a ogni avvio, dopo le migrazioni
+  (`lib/db/scripts/ruoli-regole.mjs`; a mano `node lib/db/scripts/ruoli.mjs`).
+  Il migratore è un superutente: una migrazione gira **come postgres**, quindi:
+  - ogni oggetto nuovo (CREATE TABLE, VIEW, SEQUENCE, MATERIALIZED VIEW, e la
+    vista `ps_variants` ricreata) passa subito a `cerbero_owner`, nello stesso
+    blocco e guardato dall'esistenza del ruolo:
+    `IF to_regrole('cerbero_owner') IS NOT NULL THEN ALTER TABLE public.t OWNER TO cerbero_owner; END IF;`.
+    Altrimenti, dal commit della migrazione al riallineamento, l'app non lo
+    vede (lo controlla un test in `migrazioni.test.ts` dalla 0006 in poi);
+  - i dati delle tabelle di Cerbero (UPDATE, INSERT, DELETE) si toccano sotto
+    `SET LOCAL ROLE cerbero_owner`: le tabelle sono sue, e un trigger o una
+    vista messi lì dall'app non devono girare come superutente;
+  - nomi sempre qualificati (`public.t`, `pg_catalog.lower`): `cerbero_owner`
+    può creare oggetti in `public`, e un superutente non deve trovarsi una sua
+    funzione al posto di quella di sistema.
+- **Aggiornare PostGIS** (`ALTER EXTENSION postgis UPDATE`, come superutente,
+  con `public` nel percorso): prima si toglie il CREATE su `public` a
+  `cerbero_owner` (`REVOKE CREATE ON SCHEMA public FROM cerbero_owner`), dopo
+  lo si ridà (o lo ridà il migratore al prossimo avvio).
 - **Permessi**: niente GRANT nelle migrazioni per i ruoli in sola lettura.
   Argos legge solo le tabelle del suo contratto
   (`lib/db/contratti/argos-lettura.mjs`), che il migratore applica a ogni
