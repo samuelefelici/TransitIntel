@@ -180,6 +180,7 @@ jobs:
           for vietato in "CREATE FUNCTION public.pg_try_advisory_lock(text) RETURNS boolean LANGUAGE sql AS 'SELECT true'" \
                          "CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS 'SELECT 1'" \
                          "CREATE VIEW public.ci_vista AS SELECT 1" \
+                         "CREATE INDEX CONCURRENTLY ci_cic ON public.depots (name)" \
                          "CREATE TRIGGER ci_t BEFORE INSERT ON caronte.tap_events FOR EACH ROW EXECUTE FUNCTION pg_catalog.suppress_redundant_updates_trigger()"; do
             if psql "$PG_APP/prod" -q -c "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
             grep -q "cerbero_app non può eseguire" vietato.log || { cat vietato.log; exit 1; }

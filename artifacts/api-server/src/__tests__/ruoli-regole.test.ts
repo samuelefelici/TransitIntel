@@ -219,6 +219,7 @@ describe("ruoli del database: il piano", () => {
 
   it("la funzione dei due event trigger: all'inizio i comandi, alla fine le espressioni con le funzioni ammesse", () => {
     expect(CORPO_EVENTO_DDL).toMatch(/IF tg_event = 'ddl_command_start' THEN/);
+    expect(CORPO_EVENTO_DDL).toMatch(/tg_tag = 'CREATE INDEX' AND coalesce\(pg_catalog\.current_query\(\), ''\) ~\* '\\mconcurrently\\M'/);
     expect(CORPO_EVENTO_DDL).toMatch(/pg_event_trigger_ddl_commands\(\)/);
     expect(CORPO_EVENTO_DDL).toMatch(/relpersistence <> 't'/);
     expect(CORPO_EVENTO_DDL).toMatch(/cerbero_app non può usare queste funzioni in default, vincoli o indici/);
