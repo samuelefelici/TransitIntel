@@ -107,7 +107,10 @@ su main non si tocca più.
   una colonna generata o un indice con un'espressione possono usare solo le
   funzioni di `FUNZIONI_AMMESSE` (`lib/db/scripts/ruoli-regole.mjs`), oltre a
   quelle degli operatori e delle conversioni di sistema: le esegue chi scrive
-  la riga, a volte un superutente. Per l'app lo fa rispettare il secondo
+  la riga, a volte un superutente. Lo stesso per i tipi delle colonne e delle
+  conversioni: domini solo di sistema, tipi con le funzioni di `pg_catalog` o
+  di un'estensione (il CHECK di un dominio e l'input di un tipo girano come
+  chi scrive). Per l'app lo fa rispettare il secondo
   event trigger (`cerbero_ddl_dell_app_fine`). Il migratore, prima di
   migrare, non parte se una tabella di Cerbero ne usa un'altra. Una
   migrazione che ne usa una nuova va guardata (niente SQL passato come testo,

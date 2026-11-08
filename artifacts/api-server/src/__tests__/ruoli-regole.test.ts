@@ -222,7 +222,7 @@ describe("ruoli del database: il piano", () => {
     expect(CORPO_EVENTO_DDL).toMatch(/tg_tag = 'CREATE INDEX' AND coalesce\(pg_catalog\.current_query\(\), ''\) ~\* '\\mconcurrently\\M'/);
     expect(CORPO_EVENTO_DDL).toMatch(/pg_event_trigger_ddl_commands\(\)/);
     expect(CORPO_EVENTO_DDL).toMatch(/relpersistence <> 't'/);
-    expect(CORPO_EVENTO_DDL).toMatch(/cerbero_app non può usare queste funzioni in default, vincoli o indici/);
+    expect(CORPO_EVENTO_DDL).toMatch(/cerbero_app non può usare queste funzioni o tipi in colonne, default, vincoli o indici/);
     for (const f of FUNZIONI_AMMESSE) expect(CORPO_EVENTO_DDL).toContain(`'${f}'`);
     // niente che esegua SQL, legga file o cambi impostazioni
     for (const f of ["query_to_xml", "table_to_xml", "ts_stat", "set_config", "pg_read_file", "lo_export", "current_setting"]) {
@@ -234,6 +234,11 @@ describe("ruoli del database: il piano", () => {
     expect(q).toMatch(/:opno \(\[0-9\]\+\)/);
     expect(q).toMatch(/:opnos \[\(\]o/);
     for (const t of ["pg_attrdef", "pg_constraint", "pg_index", "pg_statistic_ext", "pg_partitioned_table"]) expect(q).toContain(`pg_catalog.${t}`);
+    // e le funzioni chiamate attraverso un tipo: colonne e tipi nominati nelle espressioni, domini, array, composti, range
+    expect(q).toMatch(/WITH RECURSIVE/);
+    expect(q).toContain(":[a-z_]*typ(?:e|id|eid)? ([0-9]+)");
+    for (const c of ["typbasetype", "typelem", "typrelid", "rngsubtype", "typinput", "typoutput", "typsubscript", "rngcanonical"]) expect(q).toContain(c);
+    expect(q).toMatch(/'pg_catalog'::pg_catalog\.regnamespace,\s+'information_schema'::pg_catalog\.regnamespace/);
   });
 
   it("un default, un vincolo o un indice con una funzione non ammessa: errore con la cura", () => {
@@ -243,7 +248,7 @@ describe("ruoli del database: il piano", () => {
     }] }));
     expect(p.azioni).toEqual([]);
     expect(p.errori).toHaveLength(1);
-    expect(p.errori[0]).toMatch(/^public\.depots: il vincolo depots_nome_ok usa query_to_xml\(text,boolean,boolean,text\), fuori dalle funzioni ammesse/);
+    expect(p.errori[0]).toMatch(/^public\.depots: il vincolo depots_nome_ok usa query_to_xml\(text,boolean,boolean,text\), fuori da quello che è ammesso/);
     expect(p.errori[0]).toMatch(/ALTER TABLE public\.depots DROP CONSTRAINT depots_nome_ok; finché c'è, il migratore non migra$/);
   });
 

@@ -343,11 +343,13 @@ file del server, ruoli). Dalla 2.8:
   funzione di FleetCare (la revisione lo ha riprodotto).
 - **Né espressioni pericolose.** Un secondo event trigger,
   `cerbero_ddl_dell_app_fine` (a fine comando, stessa funzione), guarda i
-  default, i vincoli CHECK, le colonne generate e gli indici delle tabelle che
-  l'app ha appena toccato. Ammette solo le funzioni dell'elenco
-  (`FUNZIONI_AMMESSE` in `lib/db/scripts/ruoli-regole.mjs`) e quelle di
-  operatori e conversioni di sistema; altrimenti «cerbero_app non può usare
-  queste funzioni…» e il comando si annulla. Un'espressione di una tabella la
+  default, i vincoli CHECK, le colonne generate, gli indici e i tipi delle
+  colonne delle tabelle che l'app ha appena toccato. Ammette solo le funzioni
+  dell'elenco (`FUNZIONI_AMMESSE` in `lib/db/scripts/ruoli-regole.mjs`),
+  quelle di operatori e conversioni di sistema, e i tipi di sistema o delle
+  estensioni (un dominio con un suo CHECK, anche messo da un superutente, no);
+  altrimenti «cerbero_app non può usare queste funzioni o tipi…» e il comando
+  si annulla. Un'espressione di una tabella la
   esegue chi scrive la riga, una migrazione che cambia la colonna, il
   ripristino di un backup: senza questo controllo l'app poteva far girare SQL
   come superutente (la revisione lo ha riprodotto con un CHECK e

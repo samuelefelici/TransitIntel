@@ -191,21 +191,26 @@ jobs:
           # (le eseguirebbe come superutente chi scrive la riga da superutente, una
           # migrazione che cambia la colonna, il ripristino di un backup)
           test "$(q "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_fine' AND evtevent = 'ddl_command_end' AND evtenabled = 'A'")" = 1
+          # anche attraverso un tipo: un dominio con un CHECK pericoloso (messo da un superutente) non va in una colonna dell'app
+          q "CREATE DOMAIN public.ci_dominio AS int CHECK (pg_catalog.pg_read_file('PG_VERSION') IS NOT NULL)"
           for vietato in "ALTER TABLE public.depots ADD CONSTRAINT ci_c CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL)" \
                          "ALTER TABLE public.depots ALTER COLUMN name SET DEFAULT pg_catalog.current_setting('data_directory')" \
                          "CREATE TABLE public.ci_x (a text DEFAULT pg_catalog.table_to_xml('pg_catalog.pg_class'::regclass, false, false, '')::text)" \
-                         "CREATE INDEX ci_i ON public.depots (pg_catalog.upper(name))"; do
+                         "CREATE INDEX ci_i ON public.depots (pg_catalog.upper(name))" \
+                         "CREATE TABLE public.ci_d (id int, c public.ci_dominio)" \
+                         "CREATE TABLE public.ci_d (id int CHECK ((id::public.ci_dominio) IS NOT NULL))"; do
             if psql "$PG_APP/prod" -q -c "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
             grep -q "cerbero_app non può usare queste funzioni" vietato.log || { cat vietato.log; exit 1; }
           done
+          q "DROP DOMAIN public.ci_dominio"
           psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" \
-            -c "CREATE TABLE public.ci_ok (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, n int CHECK (n >= 0), s text DEFAULT lower(btrim(' A ')), t timestamptz DEFAULT now())" \
+            -c "CREATE TABLE public.ci_ok (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, n int CHECK (n >= 0), s text DEFAULT lower(btrim(' A ')), t timestamptz DEFAULT now(), y information_schema.yes_or_no, a int[] DEFAULT '{}')" \
             -c "CREATE INDEX ON public.ci_ok (lower(s)) WHERE char_length(s) > 0" -c "ROLLBACK"
           # un'espressione vietata che c'era già (di prima della 2.8, o con l'event
           # trigger spento): la verifica la segnala con la cura, il migratore non migra
           q "ALTER TABLE public.depots ADD CONSTRAINT ci_c CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL) NOT VALID"
           if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare il vincolo"; exit 1; fi
-          grep -q "public.depots: il vincolo ci_c usa query_to_xml(text,boolean,boolean,text), fuori dalle funzioni ammesse" ruoli.log || { cat ruoli.log; exit 1; }
+          grep -q "public.depots: il vincolo ci_c usa query_to_xml(text,boolean,boolean,text), fuori da quello che è ammesso" ruoli.log || { cat ruoli.log; exit 1; }
           psql -d postgres -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE ci_espr"
           psql -d ci_espr -v ON_ERROR_STOP=1 -q -c "CREATE TABLE public.depots (name text CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL))"
           if DATABASE_URL=$PG/ci_espr node lib/db/scripts/migra.mjs > migra-espr.log 2>&1; then cat migra-espr.log; echo "il migratore non doveva migrare"; exit 1; fi
