@@ -158,6 +158,24 @@ describe("ruoli del database: il piano", () => {
     expect(piano(base({ fleetcare: base().fleetcare.map((f) => ({ ...f, esiste: false, chiama: null })) })).avvisi).toEqual([]);
   });
 
+  it("chi altro legge dati di Cerbero (FleetCare): USAGE e solo le colonne dell'elenco", () => {
+    const p = piano(base({ lettori: [
+      { ruolo: "fleetcare_legge_cerbero", tabella: "public.users", colonna: "email", uso: false, legge: false },
+      { ruolo: "fleetcare_legge_cerbero", tabella: "public.users", colonna: "active", uso: false, legge: false },
+      { ruolo: "fleetcare_legge_cerbero", tabella: "public.depots", colonna: "name", uso: false, legge: true },
+    ] }));
+    expect(p.azioni.map((a) => a.sql)).toEqual([
+      `GRANT USAGE ON SCHEMA "public" TO "fleetcare_legge_cerbero"`,
+      `GRANT SELECT ("email", "active") ON TABLE "public"."users" TO "fleetcare_legge_cerbero"`,
+    ]);
+  });
+
+  it("una SECURITY DEFINER di un superutente che legge Cerbero: errore, cerbero_app non va usato", () => {
+    const p = piano(base({ fughe: [{ funzione: "fleetcare.cerbero_stato_utente(uuid)", proprietario: "postgres" }] }));
+    expect(p.azioni).toEqual([]);
+    expect(p.errori[0]).toMatch(/fleetcare\.cerbero_stato_utente\(uuid\) è SECURITY DEFINER di postgres.*0089.*cerbero_app non va usato/);
+  });
+
   it("le relazioni dal catalogo: tabelle, viste e sequenze, senza le escluse", () => {
     expect(elencoDalCatalogo({
       tabelle: { "public.users": {}, "caronte.app_users": {} }, viste: { "public.ps_variants": "…" },
@@ -188,7 +206,9 @@ describe("ruoli del database: esecuzione", () => {
             : { ...r, basi: r.basi.map((b) => (b.nome === voce ? { ...b, proprietario: PROPRIETARIO } : b)) }));
           return { rows: [] };
         }
-        // le letture di leggiStato: in ordine, dallo stato corrente
+        // le letture di leggiStato, dallo stato corrente (le più specifiche prima)
+        if (/has_column_privilege/.test(sql)) return { rows: stato.lettori ?? [] };
+        if (/AS funzione/.test(sql)) return { rows: stato.fughe ?? [] };
         if (/current_user AS utente/.test(sql)) return { rows: [stato.io] };
         if (/FROM pg_catalog.pg_roles r WHERE rolname/.test(sql)) return { rows: stato.ruoli };
         if (/pg_auth_members/.test(sql)) return { rows: stato.appartenenze };
@@ -197,6 +217,7 @@ describe("ruoli del database: esecuzione", () => {
         if (/AS legge/.test(sql)) return { rows: stato.lettura };
         if (/AS legata/.test(sql)) return { rows: stato.relazioni.map((r) => ({ ...r, basi: r.basi.map((b) => `${b.nome}|${b.proprietario}`) })) };
         if (/AS chiama/.test(sql)) return { rows: stato.fleetcare };
+
         throw new Error(`query inattesa: ${sql.slice(0, 60)}`);
       },
     };

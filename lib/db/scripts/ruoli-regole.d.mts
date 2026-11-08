@@ -5,6 +5,7 @@ export declare const SCHEMI_DATI: readonly string[];
 export declare const ESCLUSE: readonly string[];
 export declare const FUNZIONI_FLEETCARE: readonly string[];
 export declare const DA_LEGGERE: readonly string[];
+export declare const LETTORI: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
 export interface Ruolo {
   nome: string; login: boolean; superutente: boolean; bypassrls: boolean; crearuoli: boolean; creadb: boolean;
   replica: boolean; col_ruolo: boolean;
@@ -22,6 +23,8 @@ export interface StatoRuoli {
   lettura: { voce: string; esiste: boolean; legge: boolean | null }[];
   relazioni: Relazione[];
   fleetcare: { firma: string; esiste: boolean; chiama: boolean | null }[];
+  lettori?: { ruolo: string; tabella: string; colonna: string; uso: boolean; legge: boolean }[];
+  fughe?: { funzione: string; proprietario: string }[];
 }
 export interface AzioneRuoli { fase: 1 | 2 | 3; sql: string; perche: string; oggetto: string | null }
 export interface PianoRuoli { azioni: AzioneRuoli[]; attese: string[]; avvisi: string[]; errori: string[] }
