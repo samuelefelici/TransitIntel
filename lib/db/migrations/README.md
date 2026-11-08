@@ -103,6 +103,17 @@ su main non si tocca più.
   ha CREATE per le unità pigre) girerebbe come superutente quando un
   superutente lo incontra. Lo crea e lo tiene acceso il migratore; API e
   lavoratore non partono senza.
+- **Funzioni nei default, nei vincoli e negli indici.** Un default, un CHECK,
+  una colonna generata o un indice con un'espressione possono usare solo le
+  funzioni di `FUNZIONI_AMMESSE` (`lib/db/scripts/ruoli-regole.mjs`), oltre a
+  quelle degli operatori e delle conversioni di sistema: le esegue chi scrive
+  la riga, a volte un superutente. Per l'app lo fa rispettare il secondo
+  event trigger (`cerbero_ddl_dell_app_fine`). Il migratore, prima di
+  migrare, non parte se una tabella di Cerbero ne usa un'altra. Una
+  migrazione che ne usa una nuova va guardata (niente SQL passato come testo,
+  file, impostazioni, letture di altre tabelle) e la funzione si aggiunge
+  all'elenco nella stessa PR: la CI la segnala (`ruoli.mjs --verifica` sulla
+  copia della produzione).
 - **Aggiornare PostGIS** (`ALTER EXTENSION postgis UPDATE`, come superutente,
   con `public` nel percorso): prima si toglie il CREATE su `public` a
   `cerbero_owner` (`REVOKE CREATE ON SCHEMA public FROM cerbero_owner`), dopo

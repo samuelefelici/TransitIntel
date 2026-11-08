@@ -4,7 +4,7 @@
  * (migrazioni-postgres) e lo script locale della PR. */
 import { describe, it, expect } from "vitest";
 import {
-  APP, CORPO_EVENTO_DDL, PROPRIETARIO, allinea, elencoDalCatalogo, piano,
+  APP, CORPO_EVENTO_DDL, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, elencoDalCatalogo, piano, sqlEspressioniVietate,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import type { StatoRuoli, Relazione } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 
@@ -37,7 +37,12 @@ function base(extra: Partial<StatoRuoli> = {}): StatoRuoli {
       { firma: "fleetcare.parco_per_avm()", esiste: true, chiama: true },
       { firma: "fleetcare.interventi_avm(timestamp with time zone)", esiste: true, chiama: true },
     ],
-    evento: { funzione: true, corpo: CORPO_EVENTO_DDL, di_superutente: true, di_tutti: false, acceso: "A", momento: "ddl_command_start", sua: true },
+    evento: {
+      funzione: true, corpo: CORPO_EVENTO_DDL, di_superutente: true, di_tutti: false, acceso: "A", momento: "ddl_command_start", sua: true,
+      fine_acceso: "A", fine_momento: "ddl_command_end", fine_sua: true,
+    },
+    espressioni: [],
+    estranee: [],
     ...extra,
   };
 }
@@ -177,13 +182,18 @@ describe("ruoli del database: il piano", () => {
     expect(p.errori[0]).toMatch(/fleetcare\.cerbero_stato_utente\(uuid\) è SECURITY DEFINER di postgres.*0089.*cerbero_app non va usato/);
   });
 
-  it("l'event trigger che ferma il DDL dell'app: si crea, si accende sempre, si riallinea", () => {
-    const manca = piano(base({ evento: { funzione: false, corpo: null, di_superutente: null, di_tutti: null, acceso: null, momento: null, sua: null } }));
-    expect(manca.azioni.map((a) => a.sql.split(" ").slice(0, 5).join(" "))).toEqual([
-      "CREATE OR REPLACE FUNCTION cerbero_migrazioni.ddl_dell_app()",
-      "REVOKE ALL ON FUNCTION cerbero_migrazioni.ddl_dell_app()",
-      'CREATE EVENT TRIGGER "cerbero_ddl_dell_app" ON',
-      'ALTER EVENT TRIGGER "cerbero_ddl_dell_app" ENABLE',
+  it("gli event trigger che fermano il DDL dell'app: si creano, si accendono sempre, si riallineano", () => {
+    const manca = piano(base({ evento: {
+      funzione: false, corpo: null, di_superutente: null, di_tutti: null, acceso: null, momento: null, sua: null,
+      fine_acceso: null, fine_momento: null, fine_sua: null,
+    } }));
+    expect(manca.azioni.map((a) => a.sql.split(" ").slice(0, 6).join(" "))).toEqual([
+      "CREATE OR REPLACE FUNCTION cerbero_migrazioni.ddl_dell_app() RETURNS",
+      "REVOKE ALL ON FUNCTION cerbero_migrazioni.ddl_dell_app() FROM",
+      'CREATE EVENT TRIGGER "cerbero_ddl_dell_app" ON ddl_command_start',
+      'ALTER EVENT TRIGGER "cerbero_ddl_dell_app" ENABLE ALWAYS',
+      'CREATE EVENT TRIGGER "cerbero_ddl_dell_app_fine" ON ddl_command_end',
+      'ALTER EVENT TRIGGER "cerbero_ddl_dell_app_fine" ENABLE ALWAYS',
     ]);
     expect(manca.azioni[0]!.sql).toMatch(/tg_tag NOT IN \('CREATE TABLE', 'CREATE TABLE AS', 'CREATE INDEX', 'ALTER TABLE'\)/);
     expect(manca.azioni[0]!.sql).toMatch(/SET search_path = pg_catalog, pg_temp/);
@@ -196,6 +206,52 @@ describe("ruoli del database: il piano", () => {
       .toEqual(["DROP EVENT TRIGGER", "CREATE EVENT TRIGGER", "ALTER EVENT TRIGGER"]);
     const diAltri = piano(base({ evento: { ...ev, di_superutente: false } }));
     expect(diAltri.errori[0]).toMatch(/non è di un superutente/);
+    // il secondo, a fine comando
+    expect(piano(base({ evento: { ...ev, fine_acceso: "D" } })).azioni.map((a) => a.sql))
+      .toEqual(['ALTER EVENT TRIGGER "cerbero_ddl_dell_app_fine" ENABLE ALWAYS']);
+    expect(piano(base({ evento: { ...ev, fine_momento: "ddl_command_start" } })).azioni.map((a) => a.sql.split(" ").slice(0, 6).join(" ")))
+      .toEqual([
+        'DROP EVENT TRIGGER "cerbero_ddl_dell_app_fine"',
+        'CREATE EVENT TRIGGER "cerbero_ddl_dell_app_fine" ON ddl_command_end',
+        'ALTER EVENT TRIGGER "cerbero_ddl_dell_app_fine" ENABLE ALWAYS',
+      ]);
+  });
+
+  it("la funzione dei due event trigger: all'inizio i comandi, alla fine le espressioni con le funzioni ammesse", () => {
+    expect(CORPO_EVENTO_DDL).toMatch(/IF tg_event = 'ddl_command_start' THEN/);
+    expect(CORPO_EVENTO_DDL).toMatch(/pg_event_trigger_ddl_commands\(\)/);
+    expect(CORPO_EVENTO_DDL).toMatch(/relpersistence <> 't'/);
+    expect(CORPO_EVENTO_DDL).toMatch(/cerbero_app non può usare queste funzioni in default, vincoli o indici/);
+    for (const f of FUNZIONI_AMMESSE) expect(CORPO_EVENTO_DDL).toContain(`'${f}'`);
+    // niente che esegua SQL, legga file o cambi impostazioni
+    for (const f of ["query_to_xml", "table_to_xml", "ts_stat", "set_config", "pg_read_file", "lo_export", "current_setting"]) {
+      expect(FUNZIONI_AMMESSE.some((a) => a.startsWith(`${f}(`))).toBe(false);
+    }
+    // l'albero dell'espressione: funzioni, funzioni degli operatori e operatori di un confronto fra righe
+    const q = sqlEspressioniVietate("$1::oid[]");
+    expect(q).toMatch(/:\(\?:funcid\|opfuncid\|hashfuncid\|negfuncid\|aggfnoid\|winfnoid\)/);
+    expect(q).toMatch(/:opno \(\[0-9\]\+\)/);
+    expect(q).toMatch(/:opnos \[\(\]o/);
+    for (const t of ["pg_attrdef", "pg_constraint", "pg_index", "pg_statistic_ext", "pg_partitioned_table"]) expect(q).toContain(`pg_catalog.${t}`);
+  });
+
+  it("un default, un vincolo o un indice con una funzione non ammessa: errore con la cura", () => {
+    const p = piano(base({ espressioni: [{
+      tabella: "public.depots", oggetto: "il vincolo depots_nome_ok", funzioni: "query_to_xml(text,boolean,boolean,text)",
+      cura: "ALTER TABLE public.depots DROP CONSTRAINT depots_nome_ok",
+    }] }));
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toHaveLength(1);
+    expect(p.errori[0]).toMatch(/^public\.depots: il vincolo depots_nome_ok usa query_to_xml\(text,boolean,boolean,text\), fuori dalle funzioni ammesse/);
+    expect(p.errori[0]).toMatch(/ALTER TABLE public\.depots DROP CONSTRAINT depots_nome_ok; finché c'è, il migratore non migra$/);
+  });
+
+  it("una relazione di un superutente fuori dal catalogo: avviso (l'app non la usa), con le due cure", () => {
+    const p = piano(base({ estranee: [{ nome: "public.users_backup_20261108", tipo: "r", proprietario: "postgres" }] }));
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toEqual([]);
+    expect(p.avvisi[0]).toMatch(/public\.users_backup_20261108 è di postgres \(superutente\) e non è nel catalogo/);
+    expect(p.avvisi[0]).toMatch(/DROP TABLE "public"\."users_backup_20261108".*OWNER TO "cerbero_owner"/);
   });
 
   it("una vista che dipende da una relazione di un altro ruolo: errore, non un'attesa infinita", () => {
@@ -238,6 +294,8 @@ describe("ruoli del database: esecuzione", () => {
           return { rows: [] };
         }
         // le letture di leggiStato, dallo stato corrente (le più specifiche prima)
+        if (/AS funzioni/.test(sql)) return { rows: stato.espressioni ?? [] };
+        if (/<> ALL \(\$2::text\[\]\)/.test(sql)) return { rows: stato.estranee ?? [] };
         if (/has_column_privilege/.test(sql)) return { rows: stato.lettori ?? [] };
         if (/pg_event_trigger/.test(sql)) return { rows: [stato.evento] };
         if (/AS funzione/.test(sql)) return { rows: stato.fughe ?? [] };

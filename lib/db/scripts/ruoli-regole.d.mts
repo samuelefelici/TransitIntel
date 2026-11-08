@@ -7,6 +7,11 @@ export declare const FUNZIONI_FLEETCARE: readonly string[];
 export declare const DA_LEGGERE: readonly string[];
 export declare const COMANDI_DELL_APP: readonly string[];
 export declare const EVENTO_DDL: "cerbero_ddl_dell_app";
+export declare const EVENTO_DDL_FINE: "cerbero_ddl_dell_app_fine";
+export declare const FUNZIONI_AMMESSE: readonly string[];
+export declare function sqlEspressioniVietate(tabelle: string): string;
+export interface EspressioneVietata { tabella: string; oggetto: string; cura: string; funzioni: string }
+export declare function espressioniVietate(client: ClientMinimo, elenco: readonly string[]): Promise<EspressioneVietata[]>;
 export declare const FUNZIONE_EVENTO_DDL: "cerbero_migrazioni.ddl_dell_app()";
 export declare const CORPO_EVENTO_DDL: string;
 export declare const LETTORI: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>>;
@@ -32,7 +37,10 @@ export interface StatoRuoli {
   evento?: {
     funzione: boolean; corpo: string | null; di_superutente: boolean | null; di_tutti: boolean | null;
     acceso: string | null; momento: string | null; sua: boolean | null;
+    fine_acceso: string | null; fine_momento: string | null; fine_sua: boolean | null;
   };
+  espressioni?: EspressioneVietata[];
+  estranee?: { nome: string; tipo: string; proprietario: string }[];
 }
 export interface AzioneRuoli { fase: 1 | 2 | 3; sql: string; perche: string; oggetto: string | null }
 export interface PianoRuoli { azioni: AzioneRuoli[]; attese: string[]; avvisi: string[]; errori: string[] }

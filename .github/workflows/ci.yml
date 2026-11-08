@@ -186,6 +186,37 @@ jobs:
           done
           # i comandi delle unità pigre invece passano
           psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "CREATE TABLE IF NOT EXISTS public.users (id int)" -c "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid"
+          # a fine comando: niente funzioni non ammesse in default, vincoli e indici
+          # (le eseguirebbe come superutente chi scrive la riga da superutente, una
+          # migrazione che cambia la colonna, il ripristino di un backup)
+          test "$(q "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_fine' AND evtevent = 'ddl_command_end' AND evtenabled = 'A'")" = 1
+          for vietato in "ALTER TABLE public.depots ADD CONSTRAINT ci_c CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL)" \
+                         "ALTER TABLE public.depots ALTER COLUMN name SET DEFAULT pg_catalog.current_setting('data_directory')" \
+                         "CREATE TABLE public.ci_x (a text DEFAULT pg_catalog.table_to_xml('pg_catalog.pg_class'::regclass, false, false, '')::text)" \
+                         "CREATE INDEX ci_i ON public.depots (pg_catalog.upper(name))"; do
+            if psql "$PG_APP/prod" -q -c "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -q "cerbero_app non può usare queste funzioni" vietato.log || { cat vietato.log; exit 1; }
+          done
+          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" \
+            -c "CREATE TABLE public.ci_ok (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, n int CHECK (n >= 0), s text DEFAULT lower(btrim(' A ')), t timestamptz DEFAULT now())" \
+            -c "CREATE INDEX ON public.ci_ok (lower(s)) WHERE char_length(s) > 0" -c "ROLLBACK"
+          # un'espressione vietata che c'era già (di prima della 2.8, o con l'event
+          # trigger spento): la verifica la segnala con la cura, il migratore non migra
+          q "ALTER TABLE public.depots ADD CONSTRAINT ci_c CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL) NOT VALID"
+          if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare il vincolo"; exit 1; fi
+          grep -q "public.depots: il vincolo ci_c usa query_to_xml(text,boolean,boolean,text), fuori dalle funzioni ammesse" ruoli.log || { cat ruoli.log; exit 1; }
+          psql -d postgres -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE ci_espr"
+          psql -d ci_espr -v ON_ERROR_STOP=1 -q -c "CREATE TABLE public.depots (name text CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL))"
+          if DATABASE_URL=$PG/ci_espr node lib/db/scripts/migra.mjs > migra-espr.log 2>&1; then cat migra-espr.log; echo "il migratore non doveva migrare"; exit 1; fi
+          grep -q "non migro: un'espressione di una tabella di Cerbero usa funzioni non ammesse" migra-espr.log || { cat migra-espr.log; exit 1; }
+          test "$(psql -d ci_espr -tAq -c "SELECT to_regclass('cerbero_migrazioni.__drizzle_migrations') IS NULL")" = t
+          psql -d postgres -q -c "DROP DATABASE ci_espr"
+          q "ALTER TABLE public.depots DROP CONSTRAINT ci_c"
+          # una tabella di un superutente fuori dal catalogo (un backup fatto a mano): solo un avviso, l'app parte
+          q "CREATE TABLE public.ci_backup AS SELECT * FROM public.depots"
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1 || { cat ruoli.log; exit 1; }
+          grep -q "public.ci_backup è di postgres (superutente) e non è nel catalogo" ruoli.log || { cat ruoli.log; exit 1; }
+          q "DROP TABLE public.ci_backup"
           # una chiave esterna si controlla come il proprietario della tabella: serve USAGE su public
           psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" \
             -c "INSERT INTO gtfs_feeds (id, filename) VALUES ('00000000-0000-0000-0000-0000000000f9', 'ci.zip')" \
