@@ -108,6 +108,10 @@ jobs:
       PGUSER: postgres
       PGPASSWORD: prova
       PG: postgresql://postgres:prova@127.0.0.1:5432
+      # PR 2.8: l'app non è superutente. cerbero_app nasce NOLOGIN e senza
+      # password (la dà chi gestisce il database): qui la prima migrazione la
+      # crea e la CI le dà una password di prova
+      PG_APP: postgresql://cerbero_app:prova@127.0.0.1:5432
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -120,9 +124,12 @@ jobs:
       - name: Database vuoto, migrato due volte
         run: |
           psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE vuoto"
-          DATABASE_URL=$PG/vuoto node lib/db/scripts/migra.mjs
+          DATABASE_URL=$PG/vuoto node lib/db/scripts/migra.mjs | tee prima.log
+          grep -q "oggetti passati a cerbero_owner" prima.log
           DATABASE_URL=$PG/vuoto node lib/db/scripts/migra.mjs | tee seconda.log
           grep -q "nessuna migrazione da applicare" seconda.log
+          grep -q "ruoli del database in regola" seconda.log
+          psql -v ON_ERROR_STOP=1 -c "ALTER ROLE cerbero_app LOGIN PASSWORD 'prova'"
       - name: Copia dello schema di produzione, migrata
         run: |
           psql -v ON_ERROR_STOP=1 -c "CREATE DATABASE prod"
@@ -130,6 +137,13 @@ jobs:
           sed '/^CREATE SCHEMA public;$/d' lib/db/schema-produzione/2026-10-25.sql | psql -q -v ON_ERROR_STOP=1 -d prod
           # argos_ro con i permessi che ha in produzione (lettura di tutto e tabelle future)
           psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/argos-come-produzione.sql
+          # PR 2.8, come in produzione: public ricreato (PUBLIC non ha USAGE),
+          # caronte.app_users di un'altra applicazione, una tabella di Cerbero
+          # del sistema AVM, un'estensione con viste in public
+          psql -q -v ON_ERROR_STOP=1 -d prod -c "REVOKE ALL ON SCHEMA public FROM PUBLIC" \
+            -c "CREATE TABLE caronte.app_users (id serial PRIMARY KEY, pin text)" \
+            -c "CREATE ROLE avm_esterno NOLOGIN" -c "ALTER TABLE caronte.stop_predictions OWNER TO avm_esterno" \
+            -c "CREATE EXTENSION pg_stat_statements"
           # il baseline sulla produzione non deve eseguire nessun DDL: un event
           # trigger fa fallire qualunque comando che cambi lo schema
           psql -q -v ON_ERROR_STOP=1 -d prod -c "CREATE FUNCTION public.ci_ddl_vietato() RETURNS event_trigger LANGUAGE plpgsql AS \$\$ BEGIN RAISE EXCEPTION 'il baseline ha eseguito DDL sulla copia della produzione: %', tg_tag; END \$\$" \
@@ -137,6 +151,37 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -1 -d prod -f lib/db/migrations/0000_baseline.sql
           psql -q -v ON_ERROR_STOP=1 -d prod -c "DROP EVENT TRIGGER ci_ddl_vietato" -c "DROP FUNCTION public.ci_ddl_vietato()"
           DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs
+      # PR 2.8: il migratore ha creato i ruoli e passato a cerbero_owner le
+      # relazioni del catalogo. Non ha toccato estensioni, caronte.app_users,
+      # cerbero_migrazioni né la tabella del sistema AVM (un errore con la
+      # cura). Come cerbero_app si lavora da cerbero_owner, anche con le
+      # chiavi esterne su public senza USAGE a PUBLIC; il migratore come
+      # cerbero_app si ferma.
+      - name: Ruoli del database sulla copia della produzione
+        run: |
+          q() { psql -d prod -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare la tabella del sistema AVM"; exit 1; fi
+          cat ruoli.log
+          grep -q "caronte.stop_predictions è di avm_esterno" ruoli.log
+          test "$(q "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE n.nspname IN ('public', 'caronte', 'coda') AND c.relkind IN ('r', 'v', 'p')
+                       AND c.relowner <> 'cerbero_owner'::regrole
+                       AND c.oid NOT IN ('caronte.app_users'::regclass, 'caronte.stop_predictions'::regclass,
+                                         'public.pg_stat_statements'::regclass, 'public.pg_stat_statements_info'::regclass)")" = 0
+          test "$(q "SELECT string_agg(pg_get_userbyid(relowner), ',' ORDER BY relname) FROM pg_class
+                     WHERE oid IN ('caronte.app_users'::regclass, 'public.pg_stat_statements'::regclass,
+                                   'cerbero_migrazioni.contratti'::regclass, 'cerbero_migrazioni.__drizzle_migrations'::regclass)")" = postgres,postgres,postgres,postgres
+          q "ALTER TABLE caronte.stop_predictions OWNER TO postgres"
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica
+          test "$(psql "$PG_APP/prod" -tAq -c "SELECT session_user || '/' || current_user")" = cerbero_app/cerbero_owner
+          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" -c "INSERT INTO depots (name) VALUES ('ci')" -c "SELECT count(*) FROM cerbero_migrazioni.__drizzle_migrations" -c "ROLLBACK"
+          if psql "$PG_APP/prod" -tAq -c "SELECT count(*) FROM caronte.app_users" 2>/dev/null; then echo "cerbero_app non deve leggere caronte.app_users"; exit 1; fi
+          if DATABASE_URL=$PG_APP/prod node lib/db/scripts/migra.mjs > migra-app.log 2>&1; then cat migra-app.log; echo "il migratore come cerbero_app doveva fermarsi"; exit 1; fi
+          grep -q "non si eseguono come cerbero_app" migra-app.log
+          # fuori dal catalogo atteso: si tolgono prima del confronto
+          q "DROP EXTENSION pg_stat_statements"
+          q "DROP TABLE caronte.app_users"
       # Il migratore ha riportato argos_ro al contratto. Poi qualcuno rilancia lo
       # script di Argos (lettura di tutto): la verifica se ne accorge, la cura
       # sistema, e di nuovo tutto in regola.
@@ -387,7 +432,8 @@ jobs:
       # migrato non deve cambiare niente: codice e migrazioni non divergono.
       - name: Il DDL a runtime dell'API non cambia lo schema migrato
         run: |
-          (cd artifacts/api-server && DATABASE_URL=$PG/vuoto NODE_ENV=development node_modules/.bin/tsx scripts/crea-tutto.ts > ../../crea-tutto.log) \
+          # come l'app (cerbero_app, che lavora come cerbero_owner): con i suoi diritti
+          (cd artifacts/api-server && DATABASE_URL=$PG_APP/vuoto NODE_ENV=development node_modules/.bin/tsx scripts/crea-tutto.ts > ../../crea-tutto.log) \
             || { cat crea-tutto.log; exit 1; }
           tail -3 crea-tutto.log
           DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto-dopo.json
@@ -403,12 +449,14 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE solo_migrazioni"
           DATABASE_URL=$PG/solo_migrazioni node lib/db/scripts/migra.mjs > /dev/null
           q() { psql -d solo_migrazioni -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          # SECURITY DEFINER: l'API è cerbero_app, e senza il trigger fallirebbe
+          # facendo fallire il DDL stesso (il registro resterebbe vuoto per sbaglio)
           q "CREATE SCHEMA ci; CREATE TABLE ci.ddl (tag text, q text);
-             CREATE FUNCTION ci.registra() RETURNS event_trigger LANGUAGE plpgsql
+             CREATE FUNCTION ci.registra() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
                AS \$\$ BEGIN INSERT INTO ci.ddl VALUES (tg_tag, left(current_query(), 300)); END \$\$;
              CREATE EVENT TRIGGER ci_ddl ON ddl_command_start EXECUTE FUNCTION ci.registra();"
           avvia() {
-            PORT=8099 DATABASE_URL=$PG/solo_migrazioni JWT_SECRET="ci-$(openssl rand -hex 16)" CERBERO_CHIAVE_MFA="$(openssl rand -hex 32)" \
+            PORT=8099 DATABASE_URL=$PG_APP/solo_migrazioni JWT_SECRET="ci-$(openssl rand -hex 16)" CERBERO_CHIAVE_MFA="$(openssl rand -hex 32)" \
               node artifacts/api-server/dist/index.cjs > "api-$1.log" 2>&1 &
             echo $! > api.pid
             for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8099/api/healthz && break; sleep 0.5; done
@@ -423,6 +471,9 @@ jobs:
           sleep 17
           n=$(q "SELECT count(*) FROM ci.ddl")
           [ "$n" = 0 ] || { echo "DDL all'avvio:"; q "SELECT tag, q FROM ci.ddl"; exit 1; }
+          # PR 2.8: lavora come cerbero_owner, senza «permission denied» (42501)
+          grep -q "lavora come cerbero_owner" api-ok.log || { cat api-ok.log; exit 1; }
+          if grep -Ei "permission denied|42501" api-ok.log; then exit 1; fi
           ferma
           q "DELETE FROM cerbero_migrazioni.__drizzle_migrations WHERE created_at = (SELECT max(created_at) FROM cerbero_migrazioni.__drizzle_migrations)"
           avvia indietro
@@ -442,7 +493,7 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE lavoratore"
           DATABASE_URL=$PG/lavoratore node lib/db/scripts/migra.mjs > /dev/null
           q() { psql -d lavoratore -v ON_ERROR_STOP=1 -tAq -c "$1"; }
-          PORT=8098 DATABASE_URL=$PG/lavoratore node artifacts/api-server/dist/lavoratore.cjs > lavoratore.log 2>&1 &
+          PORT=8098 DATABASE_URL=$PG_APP/lavoratore node artifacts/api-server/dist/lavoratore.cjs > lavoratore.log 2>&1 &
           echo $! > lavoratore.pid
           for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8098/api/healthz && break; sleep 0.5; done
           curl -s http://127.0.0.1:8098/api/healthz | tee salute.json; echo
@@ -463,28 +514,30 @@ jobs:
           grep -q 'ottimizza_veicoli@1' lavoratore.log && grep -q 'giro_agente@1' lavoratore.log && grep -q 'materializza_feed@1' lavoratore.log || { cat lavoratore.log; exit 1; }
           kill "$(cat lavoratore.pid)"; wait "$(cat lavoratore.pid)" 2>/dev/null || true
           grep -q "Lavoratore fermo" lavoratore.log || { cat lavoratore.log; exit 1; }
+          grep -q "lavora come cerbero_owner" lavoratore.log || { cat lavoratore.log; exit 1; }
+          if grep -Ei "permission denied|42501" lavoratore.log; then exit 1; fi
       # La coda sul database: SKIP LOCKED con processi concorrenti, lease,
       # tentativi, stop, arresto, indice unico, pulizia
       - name: La coda dei lavori sul database
-        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/coda-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/coda-db.test.ts
       # L'andamento AVM: il diario aggregato in SQL e le richieste a Mizar (migrazione 0005)
       - name: L'andamento AVM e le richieste a Mizar sul database
-        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/avm-storia-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/avm-storia-db.test.ts
       # Gli endpoint con l'SQL scritto a mano, contro lo schema vero: il
       # dettaglio fermata cercava una tabella che non c'è più e rispondeva 500
       - name: Dettaglio fermata di Planning Studio sul database migrato
-        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/dettaglio-fermata-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/dettaglio-fermata-db.test.ts
       # Turni macchina, VCSP e giri di Argos su una rete di prova, con Python
       # finto: l'ingresso dato al solver e le risposte sono fissati da istantanee
       - name: Turni macchina, VCSP e giri di Argos sul database
-        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/veicoli-db.test.ts src/__tests__/giro-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/veicoli-db.test.ts src/__tests__/giro-db.test.ts
       # La materializzazione Planning Studio → feed GTFS su un progetto di prova:
       # righe gtfs_*, puntatori, feed vecchio, nodi di cambio e rotte di sincronizzazione
       - name: Materializzazione dei feed da Planning Studio sul database
-        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/feed-ps-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/feed-ps-db.test.ts
       # Le pulizie del lavoratore: feed sintetici orfani, calcoli delle tariffe rimasti «running»
       - name: Pulizie del lavoratore sul database
-        run: TEST_DATABASE_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/pulizie-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/pulizie-db.test.ts
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata
         run: |
           echo "-- modifica" >> lib/db/migrations/0000_baseline.sql
