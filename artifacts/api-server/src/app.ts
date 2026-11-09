@@ -7,6 +7,7 @@ import { logger, getRequestId } from "./lib/logger";
 import { errorHandler } from "./middlewares/error-handler";
 import { globalLimiter } from "./middlewares/rate-limit";
 import { agentAttribution } from "./lib/agent-context";
+import { contestoRichiesta } from "./lib/contesto-http";
 
 const app: Express = express();
 
@@ -105,6 +106,11 @@ app.use(globalLimiter);
 // l'intera durata (AsyncLocalStorage), così il registro attività distingue
 // gli interventi di Argos da quelli manuali dell'operatore.
 app.use(agentAttribution);
+
+// Chi fa la modifica, sulla connessione al database (PR 2.9): ogni richiesta
+// parte come «api» col suo id; requireAuth aggiunge l'utente, le cron e
+// Caronte il loro canale (lib/contesto-http.ts).
+app.use(contestoRichiesta);
 
 app.use("/api", router);
 

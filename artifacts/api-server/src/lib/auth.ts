@@ -12,6 +12,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
+import { conContesto, inSistema } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -30,6 +31,7 @@ import {
   azzeraTentativiPassword, azzeraTuttiITentativiPassword, controllaChiaveMfa, forsePulisciAccessi, prenotaTentativoPassword,
   provaCodice, pulisciAccessi,
 } from "./accesso-db";
+import { viaPerIlDatabase } from "./agent-context";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -111,14 +113,15 @@ let preparazione: Promise<void> | null = null;
 /** Una sola preparazione anche se arrivano tante richieste insieme all'avvio; se fallisce, la prossima riprova. */
 export function utentiPronti(): Promise<void> {
   if (bootstrapped) return Promise.resolve();
-  preparazione ??= preparaUtenti().then(
+  /* è del sistema anche se la fa partire (o ripartire) una richiesta: non va attribuita a lei (PR 2.9) */
+  preparazione ??= inSistema("avvio:utenti", () => preparaUtenti().then(
     () => {
       bootstrapped = true;
       void disattivaPasswordPubblicate("altri").catch((e: any) => console.error("[auth] controllo password pubblicate:", e?.message || e));
       void controllaChiaveMfa().catch((e: any) => console.error("[auth] controllo chiave della verifica:", e?.message || e));
     },
     (e: any) => { console.error("[auth] preparazione degli utenti non riuscita:", e?.message || e); preparazione = null; },
-  );
+  ));
   return preparazione;
 }
 
@@ -440,7 +443,8 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
     });
     return;
   }
-  next();
+  // da qui in poi ogni connessione al database sa chi è (cerbero.attore, PR 2.9)
+  conContesto({ attore: u.user.id, via: viaPerIlDatabase(verificato.via) }, next);
 };
 
 /** Una riga nel registro degli accessi; non blocca mai la richiesta. */
@@ -773,36 +777,39 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
     await registraAccesso(req, { userId: row.id, email: row.email, esito: "password_errata" });
     res.status(401).json({ error: "Credenziali non valide" }); return;
   }
-  /* password giusta: le serie di errori della password si chiudono (i codici hanno la loro) */
-  await azzeraTentativiPassword(chiave, ip, dispositivo);
-  if (!row.active) {
-    await registraAccesso(req, { userId: row.id, email: row.email, esito: "utente_inattivo" });
-    res.status(401).json({ error: "Credenziali non valide" }); return;
-  }
-  /* password giusta ma pubblicata dal vecchio codice: l'account si chiude qui */
-  if (ePasswordPubblicata(password)) {
-    await db.execute(sql`UPDATE users SET active = false WHERE id = ${row.id}::uuid`);
-    await registraAccesso(req, { userId: row.id, email: row.email, esito: "password_pubblicata" });
-    console.warn(`[auth] disattivato ${row.email}: ha provato a entrare con una password pubblicata nel vecchio codice`);
-    res.status(403).json({ error: "Questa password era pubblica: l'account è stato disattivato. Chiedi all'amministratore di riattivarlo con una password nuova." });
-    return;
-  }
-  /* hash di prima, più leggero: si rifà col costo di adesso, ora che la password c'è;
-   * e la password, che non è una di quelle pubblicate, non si ricontrolla all'avvio */
-  const rifai = bcrypt.getRounds(row.password_hash) < BCRYPT_ROUNDS;
-  if (rifai || !row.password_controllata) {
-    await db.execute(sql`
-      UPDATE users SET password_controllata = true
-             ${rifai ? sql`, password_hash = ${await bcrypt.hash(password, BCRYPT_ROUNDS)}` : sql``}
-       WHERE id = ${row.id}::uuid AND password_hash = ${row.password_hash}`);
-  }
-  /* verifica in due passaggi attiva: niente sessione, un biglietto per il codice */
-  if (row.mfa_attiva) {
-    await registraAccesso(req, { userId: row.id, email: row.email, esito: "codice_richiesto" });
-    res.json({ mfaRichiesta: true, biglietto: firmaBiglietto(row.id, Number(row.sessione_versione ?? 0)) });
-    return;
-  }
-  await apriSessione(req, res, row, { mfa: false });
+  /* da qui la persona è identificata (password giusta): le scritture su users sono sue (PR 2.9) */
+  await conContesto({ attore: row.id, via: "accesso" }, async () => {
+    /* password giusta: le serie di errori della password si chiudono (i codici hanno la loro) */
+    await azzeraTentativiPassword(chiave, ip, dispositivo);
+    if (!row.active) {
+      await registraAccesso(req, { userId: row.id, email: row.email, esito: "utente_inattivo" });
+      res.status(401).json({ error: "Credenziali non valide" }); return;
+    }
+    /* password giusta ma pubblicata dal vecchio codice: l'account si chiude qui */
+    if (ePasswordPubblicata(password)) {
+      await db.execute(sql`UPDATE users SET active = false WHERE id = ${row.id}::uuid`);
+      await registraAccesso(req, { userId: row.id, email: row.email, esito: "password_pubblicata" });
+      console.warn(`[auth] disattivato ${row.email}: ha provato a entrare con una password pubblicata nel vecchio codice`);
+      res.status(403).json({ error: "Questa password era pubblica: l'account è stato disattivato. Chiedi all'amministratore di riattivarlo con una password nuova." });
+      return;
+    }
+    /* hash di prima, più leggero: si rifà col costo di adesso, ora che la password c'è;
+     * e la password, che non è una di quelle pubblicate, non si ricontrolla all'avvio */
+    const rifai = bcrypt.getRounds(row.password_hash) < BCRYPT_ROUNDS;
+    if (rifai || !row.password_controllata) {
+      await db.execute(sql`
+        UPDATE users SET password_controllata = true
+               ${rifai ? sql`, password_hash = ${await bcrypt.hash(password, BCRYPT_ROUNDS)}` : sql``}
+         WHERE id = ${row.id}::uuid AND password_hash = ${row.password_hash}`);
+    }
+    /* verifica in due passaggi attiva: niente sessione, un biglietto per il codice */
+    if (row.mfa_attiva) {
+      await registraAccesso(req, { userId: row.id, email: row.email, esito: "codice_richiesto" });
+      res.json({ mfaRichiesta: true, biglietto: firmaBiglietto(row.id, Number(row.sessione_versione ?? 0)) });
+      return;
+    }
+    await apriSessione(req, res, row, { mfa: false });
+  });
 });
 
 // POST /api/auth/login/mfa { biglietto, codice } oppure { biglietto, recupero }
@@ -816,25 +823,28 @@ router.post("/auth/login/mfa", loginLimiter, async (req: Request, res: Response)
   if (!row || !row.active || !row.mfa_attiva || Number(row.sessione_versione ?? 0) !== b.sv) {
     res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return;
   }
-  const { codice, recupero } = req.body ?? {};
-  const esito = await provaCodice(row.id, { codice, recupero }, { recupero: true, conta: true });
-  switch (esito.esito) {
-    case "bloccato":
-      await registraAccesso(req, { userId: row.id, email: row.email, esito: "codici_bloccati" });
-      rispostaBloccato(res, esito.fino, "codici"); return;
-    case "illeggibile":
-      await registraAccesso(req, { userId: row.id, email: row.email, esito: "segreto_illeggibile" });
-      res.status(503).json({ error: "La verifica in due passaggi non è disponibile in questo momento: avvisa l'amministratore." }); return;
-    case "riusato":
-      res.status(401).json({ error: "Codice già usato: aspetta il prossimo" }); return;
-    case "manca":
-      res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return;
-    case "errato":
-      await registraAccesso(req, { userId: row.id, email: row.email, esito: esito.recupero ? "recupero_errato" : "codice_errato" });
-      res.status(401).json({ error: esito.recupero ? "Codice di recupero non valido" : "Codice non valido" }); return;
-  }
-  if (esito.recupero) await registraAccesso(req, { userId: row.id, email: row.email, esito: "recupero_usato" });
-  await apriSessione(req, res, { ...row, sessione_versione: b.sv }, { mfa: true, rec: esito.recupero });
+  /* il biglietto dice chi è: i contatori dei codici e l'accesso sono suoi (PR 2.9) */
+  await conContesto({ attore: row.id, via: "accesso" }, async () => {
+    const { codice, recupero } = req.body ?? {};
+    const esito = await provaCodice(row.id, { codice, recupero }, { recupero: true, conta: true });
+    switch (esito.esito) {
+      case "bloccato":
+        await registraAccesso(req, { userId: row.id, email: row.email, esito: "codici_bloccati" });
+        rispostaBloccato(res, esito.fino, "codici"); return;
+      case "illeggibile":
+        await registraAccesso(req, { userId: row.id, email: row.email, esito: "segreto_illeggibile" });
+        res.status(503).json({ error: "La verifica in due passaggi non è disponibile in questo momento: avvisa l'amministratore." }); return;
+      case "riusato":
+        res.status(401).json({ error: "Codice già usato: aspetta il prossimo" }); return;
+      case "manca":
+        res.status(401).json({ error: "Tempo scaduto: inserisci di nuovo email e password" }); return;
+      case "errato":
+        await registraAccesso(req, { userId: row.id, email: row.email, esito: esito.recupero ? "recupero_errato" : "codice_errato" });
+        res.status(401).json({ error: esito.recupero ? "Codice di recupero non valido" : "Codice non valido" }); return;
+    }
+    if (esito.recupero) await registraAccesso(req, { userId: row.id, email: row.email, esito: "recupero_usato" });
+    await apriSessione(req, res, { ...row, sessione_versione: b.sv }, { mfa: true, rec: esito.recupero });
+  });
 });
 
 // POST /api/auth/logout

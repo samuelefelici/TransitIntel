@@ -6,6 +6,7 @@ import { scenarios, pointsOfInterest, censusSections, trafficSnapshots, scenario
 import { eq, sql, desc, inArray } from "drizzle-orm";
 import { haversineKm, lineLength, pointToLineDistance } from "../lib/geo-utils";
 import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "../lib/isochrones";
+import { legaContesto } from "../lib/contesto-http";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -1142,11 +1143,11 @@ router.get("/scenarios/:id", async (req, res) => {
 });
 
 // POST /api/scenarios/upload — upload KML/KMZ files (stopsFile + routeFile, or single "file")
-const uploadFields = upload.fields([
+const uploadFields = legaContesto(upload.fields([
   { name: "stopsFile", maxCount: 1 },
   { name: "routeFile", maxCount: 1 },
   { name: "file", maxCount: 1 },       // Legacy: single file upload
-]);
+]));
 router.post("/scenarios/upload", uploadFields, async (req, res) => {
   try {
     const files = (req as any).files as Record<string, Express.Multer.File[]> | undefined;
@@ -1273,7 +1274,7 @@ router.delete("/scenarios/:id", async (req, res) => {
 });
 
 // POST /api/scenarios/:id/reimport-stops — re-import stops from KML, updating only Point features
-router.post("/scenarios/:id/reimport-stops", upload.single("stopsFile"), async (req, res) => {
+router.post("/scenarios/:id/reimport-stops", legaContesto(upload.single("stopsFile")), async (req, res) => {
   try {
     const file = (req as any).file as Express.Multer.File | undefined;
     if (!file) { res.status(400).json({ error: "Nessun file caricato" }); return; }

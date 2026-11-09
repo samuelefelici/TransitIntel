@@ -20,6 +20,7 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
+import { conContesto, inSistema } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
 import { withVia } from "./agent-context";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
@@ -561,40 +562,43 @@ export async function processPendingActivations(): Promise<void> {
     rows = r.rows ?? [];
   } catch { return; /* tabella assente su DB legacy */ }
   for (const p of rows) {
-    try {
-      const fe = await db.execute<any>(sql`SELECT 1 FROM gtfs_feeds WHERE id = ${p.feed_id}::uuid`);
-      if (!fe.rows?.length) {
-        // feed pre-costruito sparito (cancellato a mano): pending non eseguibile
-        console.warn("[planning-studio] attivazione programmata senza feed, rimossa:", p.project_id);
+    // scrive come chi ha programmato l'attivazione (cerbero.attore, PR 2.9)
+    await conContesto({ attore: p.user_id ?? "", via: "timer:attivazioni" }, async () => {
+      try {
+        const fe = await db.execute<any>(sql`SELECT 1 FROM gtfs_feeds WHERE id = ${p.feed_id}::uuid`);
+        if (!fe.rows?.length) {
+          // feed pre-costruito sparito (cancellato a mano): pending non eseguibile
+          console.warn("[planning-studio] attivazione programmata senza feed, rimossa:", p.project_id);
+          await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
+          return;
+        }
+        // archivia il feed d'esercizio precedente del progetto (se diverso)
+        await db.execute(sql`
+          UPDATE gtfs_feeds
+             SET is_active = false, is_default = false, archived_at = now()
+           WHERE id = (SELECT materialized_feed_id FROM ps_projects WHERE id = ${p.project_id}::uuid)
+             AND id <> ${p.feed_id}::uuid
+        `);
+        await db.execute(sql`
+          UPDATE ps_projects
+             SET materialized_feed_id = ${p.feed_id}::uuid, materialized_at = now()
+           WHERE id = ${p.project_id}::uuid
+        `);
+        await promoteFeedAndLog(p.project_id, p.feed_id, p.user_id ?? null);
         await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
-        continue;
+        await logActivity(p.project_id, p.user_id ?? p.project_id, "ps.project.activate.scheduled", {
+          targetType: "feed", targetId: p.feed_id,
+        }).catch(() => { /* best-effort */ });
+        console.log("[planning-studio] attivazione programmata eseguita:", p.project_id, "→ feed", p.feed_id);
+      } catch (e: any) {
+        console.error("[planning-studio] attivazione programmata fallita (riprovo al prossimo giro):", e?.message);
       }
-      // archivia il feed d'esercizio precedente del progetto (se diverso)
-      await db.execute(sql`
-        UPDATE gtfs_feeds
-           SET is_active = false, is_default = false, archived_at = now()
-         WHERE id = (SELECT materialized_feed_id FROM ps_projects WHERE id = ${p.project_id}::uuid)
-           AND id <> ${p.feed_id}::uuid
-      `);
-      await db.execute(sql`
-        UPDATE ps_projects
-           SET materialized_feed_id = ${p.feed_id}::uuid, materialized_at = now()
-         WHERE id = ${p.project_id}::uuid
-      `);
-      await promoteFeedAndLog(p.project_id, p.feed_id, p.user_id ?? null);
-      await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
-      await logActivity(p.project_id, p.user_id ?? p.project_id, "ps.project.activate.scheduled", {
-        targetType: "feed", targetId: p.feed_id,
-      }).catch(() => { /* best-effort */ });
-      console.log("[planning-studio] attivazione programmata eseguita:", p.project_id, "→ feed", p.feed_id);
-    } catch (e: any) {
-      console.error("[planning-studio] attivazione programmata fallita (riprovo al prossimo giro):", e?.message);
-    }
+    });
   }
 }
 // bootstrap + controllo periodico (il modulo viene importato una volta sola)
-setTimeout(() => { void processPendingActivations(); }, 15_000);
-setInterval(() => { void processPendingActivations(); }, 5 * 60 * 1000);
+setTimeout(() => { void inSistema("timer:attivazioni", processPendingActivations); }, 15_000);
+setInterval(() => { void inSistema("timer:attivazioni", processPendingActivations); }, 5 * 60 * 1000);
 
 router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;

@@ -32,6 +32,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { parseCsv } from "../routes/gtfs-helpers";
 import { runValidityAutoImportFromCalendars } from "./planning-studio-validity";
+import { legaContesto } from "./contesto-http";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
@@ -718,7 +719,7 @@ function expandFrequencies(
  * Parsa solo routes.txt e trips.txt: veloce anche su feed grandi. */
 router.post(
   "/planning-studio/projects/:id/import-gtfs/preview",
-  upload.single("file"),
+  legaContesto(upload.single("file")),
   async (req: Request, res: Response): Promise<void> => {
     const userId = req.user!.id;
     const projectId = String(req.params.id || "");
@@ -771,7 +772,7 @@ router.post(
 
 router.post(
   "/planning-studio/projects/:id/import-gtfs",
-  upload.single("file"),
+  legaContesto(upload.single("file")),
   async (req: Request, res: Response): Promise<void> => {
     const userId = req.user!.id;
     const projectId = String(req.params.id || "");

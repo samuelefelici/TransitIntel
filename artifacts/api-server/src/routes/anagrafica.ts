@@ -55,6 +55,7 @@ import { Annulla, eseguiImport, ESCLUDI, type ScelteImport } from "../lib/anagra
 import { esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-export";
 import { ErroreXlsx } from "../lib/xlsx-leggi";
 import { datiProvaAttivi } from "../lib/dati-prova";
+import { legaContesto } from "../lib/contesto-http";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -390,7 +391,7 @@ const limiteImport = rateLimit({
 
 /* gli errori di multer (file troppo grande, troppi file) diventano un messaggio leggibile, non un 500 */
 const unFile: import("express").RequestHandler = (req, res, next) => {
-  caricamento.single("file")(req, res, (e?: unknown) => {
+  legaContesto(caricamento.single("file"))(req, res, (e?: unknown) => {
     if (e instanceof multer.MulterError) {
       res.status(e.code === "LIMIT_FILE_SIZE" ? 413 : 400).json({
         error: e.code === "LIMIT_FILE_SIZE" ? "File troppo grande: al massimo 5 MB" : "Caricamento non valido: un file solo",

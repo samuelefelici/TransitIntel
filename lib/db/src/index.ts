@@ -1,8 +1,8 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import pg from "pg";
+import { PoolConContesto } from "./contesto";
 import * as schema from "./schema";
 
-const { Pool } = pg;
+export { conContesto, contestoDb, inSistema, IMPOSTAZIONI, PoolConContesto, type ContestoDb } from "./contesto";
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -10,8 +10,11 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
-export const pool = new Pool({
+// Ogni prestito porta sulla connessione chi fa la modifica (contesto.ts, PR 2.9).
+export const pool = new PoolConContesto({
   connectionString: process.env.DATABASE_URL,
+  // in produzione PGAPPNAME lo mette docker/avvio.sh (cerbero-api, cerbero-lavoratore)
+  application_name: process.env.PGAPPNAME || "cerbero",
   // PGSSL_NO_VERIFY=1 → accetta certificati self-signed (es. Postgres Coolify
   // esposto pubblicamente). Sulla rete interna Coolify in genere niente SSL.
   ssl: process.env.PGSSL_NO_VERIFY === "1" ? { rejectUnauthorized: false } : undefined,

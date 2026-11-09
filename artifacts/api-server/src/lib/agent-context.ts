@@ -35,6 +35,18 @@ export function requestVia(): string | null {
   return store.getStore()?.via ?? null;
 }
 
+/**
+ * Il canale da scrivere sulla connessione al database (cerbero.via, PR 2.9):
+ * conta solo il claim `via` del token (autorevole); l'header X-Argos può solo
+ * precisarne il canale (argos → argos:mcp), mai crearlo. Una persona che manda
+ * l'header resta «api».
+ */
+export function viaPerIlDatabase(authVia: string | undefined | null): string {
+  if (!authVia) return "api";
+  const dichiarata = requestVia();
+  return dichiarata && (dichiarata === authVia || dichiarata.startsWith(`${authVia}:`)) ? dichiarata : authVia;
+}
+
 /** Payload del log attività con l'eventuale marcatura `via` della richiesta corrente. */
 export function withVia(payload: Record<string, any> | null | undefined): Record<string, any> {
   const via = requestVia();

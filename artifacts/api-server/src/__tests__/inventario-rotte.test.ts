@@ -30,6 +30,7 @@ import caronteRouter from "../routes/caronte";
 import gtfsRtRouter from "../routes/gtfs-rt";
 import networkShareRouter from "../routes/network-share";
 import timetableMapShareRouter from "../routes/timetable-map-share";
+import { contestoCron } from "../lib/contesto-http";
 
 type Strato = { handle: any; name?: string; slash?: boolean; route?: { path: string | string[]; methods: Record<string, boolean> } };
 const strati = (r: any): Strato[] => (Array.isArray(r?.stack) ? r.stack : []) as Strato[];
@@ -85,7 +86,7 @@ describe("inventario delle rotte", () => {
 
   it("prima del login solo i router pubblici voluti", () => {
     const attesi = [
-      healthRouter, authRouter, accountRouter, cronRouter, argosWatchCronRouter, weatherCronRouter,
+      healthRouter, authRouter, accountRouter, contestoCron, cronRouter, argosWatchCronRouter, weatherCronRouter,
       caronteRouter, gtfsRtRouter, networkShareRouter, timetableMapShareRouter,
     ];
     const prima = pila.slice(0, posAuth).map((s) => s.handle);

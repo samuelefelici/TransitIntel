@@ -246,3 +246,44 @@ describe("l'esecutore", () => {
     }
   });
 });
+
+/* Chi fa la modifica (PR 2.9): il gestore scrive come chi ha lanciato il
+ * lavoro; il giro della coda, anche quando riparte dalla fine di un lavoro,
+ * è del sistema e non eredita quell'utente. */
+describe("l'esecutore e il contesto sulla connessione", () => {
+  it("il gestore gira come chi ha lanciato il lavoro, la coda come «coda»", async () => {
+    const { contestoDb } = await import("@workspace/db/contesto");
+    const f = codaFinta([
+      lavoro("a", "lunga", { utente_id: "u-a" }),
+      lavoro("b", "lunga", { utente_id: "u-b", tipo: "python" }),
+      lavoro("c", "lunga"),
+      // accodato da Argos: resta di Argos anche nella coda
+      lavoro("d", "lunga", { utente_id: "u-d", via: "argos" }),
+    ]);
+    const visti: Record<string, unknown> = {};
+    const prese: unknown[] = [];
+    const prendi = f.coda.prendi;
+    f.coda.prendi = vi.fn(async (...a: any[]) => { prese.push(contestoDb.getStore()); return (prendi as any)(...a); }) as any;
+    const g: Gestore = {
+      tipo: "python", versione: 1,
+      esegui: async (l) => {
+        await new Promise(r => setTimeout(r, 5));
+        visti[l.id] = contestoDb.getStore();
+        return { stato: "completato", risultato: null };
+      },
+    };
+    // avviato dentro una richiesta: non deve passare niente ai lavori
+    const e = contestoDb.run({ attore: "chi-avvia", via: "api" }, () =>
+      creaEsecutore({ chi: "t", slot: { lunga: 1, veloce: 0 }, gestori: [g], log, coda: f.coda, pollingMs: 20 }));
+    contestoDb.run({ attore: "chi-avvia", via: "api" }, () => e.avvia());
+    await aspetta(() => f.chiusi.size === 4);
+    expect(visti.a).toEqual({ attore: "u-a", via: "coda:python", richiesta: "lavoro:a" });
+    expect(visti.b).toEqual({ attore: "u-b", via: "coda:python", richiesta: "lavoro:b" });
+    expect(visti.c).toEqual({ attore: "", via: "coda:python", richiesta: "lavoro:c" });
+    expect(visti.d).toEqual({ attore: "u-d", via: "argos:coda:python", richiesta: "lavoro:d" });
+    // ogni presa, anche quelle partite dalla fine di un lavoro, è del sistema
+    expect(prese.length).toBeGreaterThanOrEqual(4);
+    for (const p of prese) expect(p).toEqual({ via: "coda" });
+    await e.ferma(0);
+  });
+});

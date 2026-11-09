@@ -28,6 +28,7 @@ import {
   type Conducente, type EsitoVisita, type Deposito, type UnitaFerie,
 } from "./anagrafica-campi";
 import { ensureTable as assicuraTabelleRotazioni } from "./roster-rotazioni";
+import { inSistema } from "@workspace/db/contesto";
 
 export type Ex = { execute(q: SQL): Promise<{ rows: any[]; rowCount?: number | null }> };
 export const righe = (r: { rows?: any[] } | null | undefined): any[] => r?.rows ?? [];
@@ -96,7 +97,7 @@ export function statoAnagrafica() { return { errore: ultimoErrore, avvisi: [...a
 
 export function assicuraAnagrafica(): Promise<void> {
   if (!pronto) {
-    pronto = crea().then(() => { ultimoErrore = null; }).catch((e: any) => {
+    pronto = inSistema("avvio:anagrafica", crea).then(() => { ultimoErrore = null; }).catch((e: any) => {
       pronto = null;
       ultimoErrore = e?.cause?.code ?? e?.code ?? "errore";
       console.error("[anagrafica] tabelle non pronte:", e?.cause?.message ?? e?.message ?? e);
@@ -465,13 +466,14 @@ export function sincronizzaSeNuovoGiorno(now: Date = new Date()): Promise<void> 
   const oggi = oggiRoma(now);
   if (ultimoGiornoSincronizzato === oggi) return Promise.resolve();
   if (!sincronizzazioneInCorso) {
-    sincronizzazioneInCorso = db.transaction(async (tx) => {
+    /* del sistema anche se la fa partire la prima richiesta del giorno (cerbero.via, PR 2.9) */
+    sincronizzazioneInCorso = inSistema("anagrafica:giorno", () => db.transaction(async (tx) => {
       await sincronizzaCorrenti(tx as unknown as Ex, oggi);
       await verificaUnicitaMatricole(tx as unknown as Ex);
     })
       .then(() => { ultimoGiornoSincronizzato = oggi; })
       .catch((e: any) => { console.error("[anagrafica] risincronizzazione del giorno:", e?.cause?.message ?? e?.message ?? e); })
-      .finally(() => { sincronizzazioneInCorso = null; });
+      .finally(() => { sincronizzazioneInCorso = null; }));
   }
   return sincronizzazioneInCorso;
 }
