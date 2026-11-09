@@ -535,7 +535,10 @@ lo accende chi gestisce il database (sotto).
 - i nomi dei campi cambiati (`campi`);
 - i valori prima e dopo (`prima`/`dopo`) **solo** per programmi, orari, turni
   e tariffe (Planning Studio, Fucina, scenari, feed e prodotti tariffari,
-  depositi, impostazioni). Degli utenti, solo ruolo e permessi.
+  depositi, impostazioni), compresi i riferimenti fra loro (calendario,
+  variante, progetto). Degli utenti, solo ruolo e permessi;
+- che una password è cambiata (`password_cambiata_il`) e che la verifica in
+  due passaggi è stata attivata o azzerata (`mfa_attiva`), solo come nomi.
 
 **Cosa non registra:**
 - i valori di anagrafica, roster e utenti: solo i nomi dei campi. Niente codici
@@ -544,7 +547,8 @@ lo accende chi gestisce il database (sotto).
 - le colonne di servizio (`updated_at`, `last_opened_at`, ultimo accesso,
   versioni della sessione, contatori della verifica): un login non scrive
   niente;
-- i JSON pesanti (attributi, risultati dei calcoli): solo il nome.
+- i JSON pesanti (attributi, risultati dei calcoli) e i riferimenti alle
+  persone (proprietario, membro, chi ha aggiunto): solo il nome.
 
 Le regole di ogni tabella sono in `registro.sorvegliate`.
 
@@ -552,6 +556,13 @@ Le regole di ogni tabella sono in `registro.sorvegliate`.
 progetto cancella le sue fermate) o un'operazione in blocco (import GTFS e
 anagrafica, generazione corse, fermate in blocco) danno una riga per
 transazione e tabella: quante righe, 20 chiavi d'esempio, i campi toccati.
+- `righe` somma le righe cambiate di ogni istruzione: due UPDATE sulle stesse
+  60 righe danno 120;
+- l'ambito (`ambito_id`) c'è solo se è lo stesso per tutte le righe, prima e
+  dopo;
+- casi limite: un `TRUNCATE … CASCADE` dà una riga per tabella senza
+  `a_cascata`; un UPDATE che cambia la chiave primaria (l'app oggi non lo fa)
+  dà la riga vecchia e la nuova.
 
 **Anonimizzazione e conservazione** (`registro.impostazioni`):
 - dopo 12 mesi (`anonimizza_dopo_mesi`, almeno 6) `attore` e `richiesta` si
@@ -582,8 +593,8 @@ scritte restano e seguono anonimizzazione e conservazione.
 **Quanto costa** (Postgres 17, misure della PR):
 - spento: un UPDATE di una riga passa da 0,05 a circa 0,07 ms;
   un'istruzione su 10.000 righe +5–10%;
-- acceso: un UPDATE di una riga circa 0,33 ms; 10.000 righe in
-  un'istruzione +15–20% per INSERT e DELETE, +35–45% per UPDATE.
+- acceso: un UPDATE di una riga circa 0,35 ms; 10.000 righe in
+  un'istruzione +10–20% per INSERT, +15–40% per DELETE, +50–60% per UPDATE.
 
 **Leggerlo.** Per ora solo `postgres`, dal Terminal del PostgreSQL. L'app non
 ha il permesso: la pagina dell'amministratore arriva con la 2.11, senza

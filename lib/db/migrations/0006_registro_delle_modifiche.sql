@@ -162,6 +162,9 @@ DECLARE
   campione    jsonb;
   amb_min     text;
   amb_max     text;
+  amb_vuoto   boolean;
+  k_dentro    text;
+  k_fuori     text;
   sorgente    text;
   a_sql       text;
   diff        text[];
@@ -229,7 +232,9 @@ BEGIN
                  EXISTS (SELECT 1 FROM unnest(regola.escluse) AS e(p) WHERE a.attname::text LIKE e.p) AS esclusa,
                  a.attname::text = ANY (regola.valori_di)
                  OR (regola.con_valori
-                     AND t.typcategory NOT IN ('A', 'U') AND t.typname NOT IN ('json', 'jsonb', 'bytea', 'xml')
+                     -- gli uuid sì (calendario, variante, progetto: dati della pianificazione;
+                     -- i riferimenti alle persone sono «solo nome», vedi sorveglia())
+                     AND (t.typcategory NOT IN ('A', 'U') OR t.typname = 'uuid') AND t.typname NOT IN ('json', 'jsonb', 'bytea', 'xml')
                      AND NOT EXISTS (SELECT 1 FROM unnest(regola.solo_nome) AS s(p) WHERE a.attname::text LIKE s.p)) AS valore
             FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
            WHERE a.attrelid = TG_RELID AND a.attnum > 0 AND NOT a.attisdropped) a;
@@ -258,8 +263,8 @@ BEGIN
                                       chiave, ambito_tipo, ambito_id, campi, prima, dopo, riepilogo, righe, a_cascata)
       SELECT now(), pg_current_xact_id(), ctx[3], ctx[1], ctx[2], session_user, ctx[4], nome, 'UPDATE',
              z.k, regola.ambito_tipo, coalesce(z.vn, z.vo) ->> regola.ambito_colonna, z.campi,
-             (SELECT jsonb_object_agg(c, z.vo -> c) FROM unnest(z.campi) AS c WHERE c = ANY (col_valore)),
-             (SELECT jsonb_object_agg(c, z.vn -> c) FROM unnest(z.campi) AS c WHERE c = ANY (col_valore)),
+             (SELECT jsonb_object_agg(c, z.vo -> c) FROM unnest(z.campi) AS c WHERE c = ANY (col_valore) AND z.vo IS NOT NULL),
+             (SELECT jsonb_object_agg(c, z.vn -> c) FROM unnest(z.campi) AS c WHERE c = ANY (col_valore) AND z.vn IS NOT NULL),
              false, 1, false
         FROM (SELECT coalesce(b.k, a.k) AS k, a.v AS vo, b.v AS vn,
                      ARRAY(SELECT c FROM unnest(registrate) AS c WHERE (a.v -> c) IS DISTINCT FROM (b.v -> c)) AS campi
@@ -274,22 +279,24 @@ BEGIN
   END IF;
 
   -- ── istruzioni grandi, cascate, modo riepilogo: un riepilogo per transazione e tabella ──
-  -- il campione: le prime 20 righe toccate
+  -- il campione: le prime 20 righe toccate (per un UPDATE lo fa il passaggio
+  -- qui sotto, sulle sole righe cambiate)
   IF TG_OP = 'DELETE' THEN
     SELECT jsonb_agg(k) INTO campione
       FROM (SELECT (SELECT jsonb_object_agg(c, to_jsonb(x) -> c) FROM unnest(regola.chiave) AS c) AS k FROM vecchie x LIMIT 20) y;
-  ELSE
+  ELSIF TG_OP = 'INSERT' THEN
     SELECT jsonb_agg(k) INTO campione
       FROM (SELECT (SELECT jsonb_object_agg(c, to_jsonb(x) -> c) FROM unnest(regola.chiave) AS c) AS k FROM nuove x LIMIT 20) y;
   END IF;
 
   IF TG_OP IN ('INSERT', 'DELETE') THEN
     IF regola.ambito_colonna IS NOT NULL THEN
-      EXECUTE format('SELECT min(x.%1$I::text), max(x.%1$I::text) FROM %2$I x', regola.ambito_colonna,
-                     CASE TG_OP WHEN 'DELETE' THEN 'vecchie' ELSE 'nuove' END) INTO amb_min, amb_max;
+      -- l'ambito solo se è lo stesso per tutte le righe (min e max non vedono i NULL)
+      EXECUTE format('SELECT min(x.%1$I::text), max(x.%1$I::text), bool_or(x.%1$I IS NULL) FROM %2$I x', regola.ambito_colonna,
+                     CASE TG_OP WHEN 'DELETE' THEN 'vecchie' ELSE 'nuove' END) INTO amb_min, amb_max, amb_vuoto;
     END IF;
     PERFORM registro.riepiloga(nome, TG_OP, cascata, n, campione, NULL, regola.ambito_tipo,
-                               CASE WHEN amb_min = amb_max THEN amb_min END, ctx);
+                               CASE WHEN amb_min = amb_max AND NOT amb_vuoto THEN amb_min END, ctx);
     RETURN NULL;
   END IF;
 
@@ -317,22 +324,34 @@ BEGIN
    WHERE a.attrelid = TG_RELID AND a.attnum > 0 AND NOT a.attisdropped AND a.attname::text = ANY (registrate);
   sorgente := 'vecchie o FULL JOIN nuove n ON ' || coalesce(
                 (SELECT string_agg(format('o.%1$I = n.%1$I', k), ' AND ') FROM unnest(regola.chiave) AS k), 'false');
-  a_sql := CASE WHEN regola.ambito_colonna IS NULL THEN 'NULL::text'
-                ELSE format('coalesce(n.%1$I, o.%1$I)::text', regola.ambito_colonna) END;
+  -- l'ambito vecchio e quello nuovo: si tiene solo se è uno per tutte le righe cambiate
+  a_sql := CASE WHEN regola.ambito_colonna IS NULL THEN 'NULL::text AS ao, NULL::text AS an'
+                ELSE format('o.%1$I::text AS ao, n.%1$I::text AS an', regola.ambito_colonna) END;
+  -- la chiave della riga nuova: per contare una volta sola una riga con la
+  -- chiave cambiata (FULL JOIN: compare da tutte e due le parti) e per il campione
+  k_dentro := (SELECT string_agg(format('n.%I AS k%s', c, i), ', ') FROM unnest(regola.chiave) WITH ORDINALITY AS u(c, i));
+  k_fuori := (SELECT 'jsonb_build_object(' || string_agg(format('%L, z.k%s', c, i), ', ') || ')'
+                FROM unnest(regola.chiave) WITH ORDINALITY AS u(c, i));
   EXECUTE format(
-    'SELECT count(*) FILTER (WHERE %1$s), %2$s, min(z.a) FILTER (WHERE %1$s), max(z.a) FILTER (WHERE %1$s)
-       FROM (SELECT %3$s, %4$s AS a FROM %5$s OFFSET 0) z',
+    'SELECT count(*) FILTER (WHERE %1$s AND %6$s), %2$s,
+            min(least(z.ao, z.an)) FILTER (WHERE %1$s), max(greatest(z.ao, z.an)) FILTER (WHERE %1$s),
+            coalesce(bool_or(z.ao IS NULL OR z.an IS NULL) FILTER (WHERE %1$s), false),
+            to_jsonb((array_agg(%7$s) FILTER (WHERE %1$s AND %6$s))[1:20])
+       FROM (SELECT %3$s, %4$s%8$s FROM %5$s OFFSET 0) z',
     '(' || array_to_string(ARRAY(SELECT format('z.d%s', i) FROM generate_series(1, cardinality(diff)) AS i), ' OR ') || ')',
     'array_remove(ARRAY[' || array_to_string(ARRAY(
        SELECT format('CASE WHEN bool_or(z.d%s) THEN %L END', i, registrate[i]) FROM generate_series(1, cardinality(diff)) AS i), ', ')
        || ']::text[], NULL)',
     array_to_string(ARRAY(SELECT format('%s AS d%s', diff[i], i) FROM generate_series(1, cardinality(diff)) AS i), ', '),
-    a_sql, sorgente) INTO n, campi_agg, amb_min, amb_max;
+    a_sql, sorgente,
+    CASE WHEN k_dentro IS NULL THEN 'true' ELSE 'z.k1 IS NOT NULL' END,
+    coalesce(k_fuori, 'NULL::jsonb'),
+    coalesce(', ' || k_dentro, '')) INTO n, campi_agg, amb_min, amb_max, amb_vuoto, campione;
   IF n = 0 THEN
     RETURN NULL;
   END IF;
   PERFORM registro.riepiloga(nome, 'UPDATE', cascata, n, campione, campi_agg, regola.ambito_tipo,
-                             CASE WHEN amb_min = amb_max THEN amb_min END, ctx);
+                             CASE WHEN amb_min = amb_max AND NOT amb_vuoto THEN amb_min END, ctx);
   RETURN NULL;
 END
 $cattura$;
@@ -362,7 +381,9 @@ BEGIN
   INSERT INTO registro.sorvegliate (tabella, chiave, ambito_tipo, ambito_colonna, con_valori, valori_di, escluse, solo_nome)
   VALUES (nome, p_chiave, p_ambito_tipo, p_ambito_colonna, p_con_valori, p_valori_di,
           -- escluse sempre: date di servizio, cache, segni di ricalcolo
-          p_escluse || ARRAY['updated_at', 'last_opened_at', 'stale_since', '%\_cached'], p_solo_nome)
+          p_escluse || ARRAY['updated_at', 'last_opened_at', 'stale_since', '%\_cached'],
+          -- chi è proprietario o membro: una persona, non un dato della pianificazione
+          p_solo_nome || ARRAY['%user\_id', 'added\_by', 'created\_by'])
   ON CONFLICT (tabella) DO UPDATE SET chiave = EXCLUDED.chiave, ambito_tipo = EXCLUDED.ambito_tipo,
     ambito_colonna = EXCLUDED.ambito_colonna, con_valori = EXCLUDED.con_valori, valori_di = EXCLUDED.valori_di,
     escluse = EXCLUDED.escluse, solo_nome = EXCLUDED.solo_nome;
@@ -539,11 +560,14 @@ ALTER FUNCTION registro.verifica() OWNER TO cerbero_registro;
 REVOKE ALL ON FUNCTION registro.verifica() FROM PUBLIC;
 --> statement-breakpoint
 -- ── La prima ondata ──────────────────────────────────────────────────────
--- Utenti: solo i nomi dei campi, salvo ruolo e permessi; mai la verifica in
--- due passaggi, l'ultimo accesso e i contatori della sessione (un login non
--- scrive niente). password_hash: solo il nome.
+-- Utenti: solo i nomi dei campi, salvo ruolo e permessi. Un login non scrive
+-- niente: fuori l'ultimo accesso, le versioni della sessione, i contatori e i
+-- segreti della verifica in due passaggi, e l'hash della password (il login lo
+-- rifà quando è vecchio). Un cambio di password si vede da
+-- password_cambiata_il; l'attivazione o l'azzeramento della verifica da mfa_attiva.
 SELECT registro.sorveglia('public.users', ARRAY['id'], 'utente', 'id', false, ARRAY['role', 'permissions'],
-  ARRAY['mfa\_%', 'last_login_at', 'sessione_versione', 'dispositivi_versione', 'password_controllata']);
+  ARRAY['password_hash', 'mfa\_segreto', 'mfa\_recupero%', 'mfa\_ultimo\_passo', 'mfa\_errori', 'mfa\_bloccata\_fino',
+        'last_login_at', 'sessione_versione', 'dispositivi_versione', 'password_controllata']);
 --> statement-breakpoint
 SELECT registro.sorveglia('public.app_settings', ARRAY['key'], NULL, NULL, true, ARRAY['value']);
 --> statement-breakpoint

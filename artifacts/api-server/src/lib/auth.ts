@@ -153,7 +153,7 @@ async function preparaUtenti(): Promise<void> {
     const hash = await bcrypt.hash(primo.password, BCRYPT_ROUNDS);
     const rimesso = await db.execute<any>(sql`
       UPDATE users SET
-        password_hash = ${hash}, role = 'admin', active = true, deve_cambiare_password = true, password_controllata = true,
+        password_hash = ${hash}, password_cambiata_il = now(), role = 'admin', active = true, deve_cambiare_password = true, password_controllata = true,
         mfa_attiva = false, mfa_segreto = NULL, mfa_recupero = NULL, mfa_recupero_chiave = NULL, mfa_ultimo_passo = NULL,
         mfa_errori = 0, mfa_bloccata_fino = NULL, sessione_versione = sessione_versione + 1
        WHERE id = (SELECT id FROM users WHERE lower(trim(email)) = ${primo.email} ORDER BY ${ORDINE_STESSA_EMAIL} LIMIT 1)

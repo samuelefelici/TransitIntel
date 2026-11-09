@@ -1021,10 +1021,52 @@ describe("0006: il registro delle modifiche", () => {
     const u = regole.get("users")!;
     expect(u.conValori).toBe(false);
     expect(u.valoriDi).toBe("ARRAY['role', 'permissions']");
-    for (const e of ["'mfa\\_%'", "'last_login_at'", "'sessione_versione'", "'dispositivi_versione'", "'password_controllata'"]) {
+    for (const e of ["'password_hash'", "'mfa\\_segreto'", "'mfa\\_recupero%'", "'mfa\\_ultimo\\_passo'", "'mfa\\_errori'",
+      "'mfa\\_bloccata\\_fino'", "'last_login_at'", "'sessione_versione'", "'dispositivi_versione'", "'password_controllata'"]) {
       expect(u.escluse).toContain(e);
     }
+    // l'attivazione e l'azzeramento della verifica si vedono (solo il nome)
+    expect(u.escluse).not.toMatch(/mfa\\_%|mfa\\_attiva/);
     expect(u.valoriDi).not.toMatch(/password/);
+    // ogni colonna mfa_ è decisa: esclusa (un modello LIKE), o mfa_attiva
+    const modelli = [...u.escluse.matchAll(/'([^']*)'/g)].map(([, m]) =>
+      new RegExp(`^${m!.replace(/\\_/g, "_").replace(/%/g, ".*")}$`));
+    for (const c of Object.keys(catalogo.tabelle["public.users"]).filter((x) => x.startsWith("mfa_") && x !== "mfa_attiva")) {
+      expect(modelli.some((m) => m.test(c)), c).toBe(true);
+    }
+    expect(modelli.some((m) => m.test("mfa_attiva"))).toBe(false);
+  });
+
+  /* Le tabelle coi valori: ogni colonna di testo nuova (note libere, descrizioni,
+   * nomi) finirebbe nel registro col suo valore. Una colonna che non è in questo
+   * elenco fa fallire il test: si decide se va col valore (la si aggiunge qui), o
+   * fra le escluse o «solo nome» nella migrazione che la crea. */
+  it("tabelle coi valori: le colonne di testo sono tutte decise", () => {
+    const decise: Record<string, string[]> = {
+      app_settings: ["key"],
+      depots: ["address", "color", "name", "notes", "operating_hours_end", "operating_hours_start"],
+      driver_shift_scenarios: ["description", "name"],
+      gtfs_fare_products: ["currency", "fare_media_id", "fare_product_id", "fare_product_name", "fare_type", "network_id", "rider_category_id"],
+      gtfs_feeds: ["agency_name", "feed_end_date", "feed_start_date", "filename"],
+      ps_calendars: ["code", "gtfs_id", "name"],
+      ps_project_members: ["role"],
+      ps_projects: ["agency_name", "agency_timezone", "agency_url", "default_lang", "description", "name", "source_feed_label", "status"],
+      ps_route_variants: ["code", "headsign", "import_signature", "name", "notes", "variant_kind"],
+      ps_routes: ["agency_id", "code", "color", "contract_id", "description", "gtfs_id", "long_name", "notes", "service_type", "short_name", "text_color"],
+      ps_stops: ["code", "description", "gtfs_id", "municipality", "name", "notes", "platform_code", "pole_type", "province", "region",
+        "signage_state", "surface_type", "zone_id"],
+      ps_trips: ["block_id", "gtfs_id", "headsign", "service_label", "short_name"],
+      ps_validity_units: ["description", "name", "service_type", "validity_id"],
+      scheduling_projects: ["current_stage", "description", "feed_label", "name", "status"],
+      service_program_scenarios: ["date", "description", "name"],
+    };
+    const conValori = [...regole].filter(([, r]) => r.conValori).map(([t]) => t).sort();
+    expect(conValori).toEqual(Object.keys(decise).sort());
+    for (const t of conValori) {
+      const colonne = catalogo.tabelle[`public.${t}`] as Record<string, string>;
+      const testo = Object.keys(colonne).filter((c) => /^(text|character)/.test(colonne[c]!)).sort();
+      expect(testo, `public.${t}: una colonna di testo nuova va decisa (col valore, esclusa o solo nome)`).toEqual(decise[t]);
+    }
   });
 
   it("roster e anagrafica: mai un valore (i codici sanitari stanno in roster_entries.code)", () => {

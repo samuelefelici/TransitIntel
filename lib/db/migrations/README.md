@@ -135,7 +135,12 @@ su main non si tocca più.
   non contano) e `solo_nome` (colonne di cui va solo il nome).
   - Una **colonna nuova** con dati personali, sanitari o segreti in una
     tabella con i valori va in `escluse` o in `solo_nome` nella stessa
-    migrazione: altrimenti il suo valore finisce nel registro.
+    migrazione: altrimenti il suo valore finisce nel registro. Per le colonne
+    di testo lo ricorda un test (`migrazioni.test.ts`, «le colonne di testo
+    sono tutte decise»). I riferimenti alle persone (`%user_id`, `added_by`,
+    `created_by`) sono già «solo nome» in ogni tabella.
+  - **`app_settings`** si registra col valore: niente segreti lì dentro (le
+    chiavi stanno nelle variabili d'ambiente).
   - Una tabella sorvegliata **rinominata o cancellata**, o una colonna
     nominata da una regola rinominata: la regola si aggiorna nella stessa
     migrazione (`registro.sorveglia` col nome nuovo, `DELETE FROM
