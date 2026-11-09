@@ -11,6 +11,7 @@ export declare const SCHEMA_REGISTRO: "registro";
 export declare const COMANDI_DELL_APP: readonly string[];
 export declare const EVENTO_DDL: "cerbero_ddl_dell_app";
 export declare const EVENTO_DDL_FINE: "cerbero_ddl_dell_app_fine";
+export declare const EVENTO_DDL_RISCRIVE: "cerbero_ddl_dell_app_riscrive";
 export declare const FUNZIONI_AMMESSE: readonly string[];
 export declare function sqlEspressioniVietate(tabelle: string): string;
 export interface EspressioneVietata { tabella: string; oggetto: string; cura: string; funzioni: string }
@@ -43,6 +44,7 @@ export interface StatoRuoli {
     funzione: boolean; corpo: string | null; di_superutente: boolean | null; di_tutti: boolean | null;
     acceso: string | null; momento: string | null; sua: boolean | null;
     fine_acceso: string | null; fine_momento: string | null; fine_sua: boolean | null;
+    riscrive_acceso: string | null; riscrive_momento: string | null; riscrive_sua: boolean | null;
   };
   espressioni?: EspressioneVietata[];
   estranee?: { nome: string; tipo: string; proprietario: string }[];

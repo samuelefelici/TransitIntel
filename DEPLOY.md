@@ -358,6 +358,12 @@ file del server, ruoli). Dalla 2.8:
   le tabelle di Cerbero. Se ne trova una non ammessa **non migra**: il deploy
   fallisce e resta il container di prima. `ruoli.mjs --verifica` dice quale
   espressione e come toglierla.
+- **Né riscritture delle tabelle del registro** (PR 2.10). Un terzo event
+  trigger, `cerbero_ddl_dell_app_riscrive` (`table_rewrite`, stessa funzione),
+  ferma l'app se riscrive una tabella sorvegliata dal registro delle
+  modifiche: `ALTER COLUMN … TYPE … USING` o `SET EXPRESSION` cambierebbero i
+  dati senza passare dai trigger. Lo crea il migratore; se manca o è spento
+  `ruoli.mjs --verifica` lo dice, e il migratore lo rimette.
 - **`cerbero_app` nasce senza accesso** (NOLOGIN, nessuna password). La password
   la dà chi gestisce il database; il migratore non tocca più né la password né
   il LOGIN.
@@ -403,10 +409,12 @@ file del server, ruoli). Dalla 2.8:
   dei programmi che non conosce.
 - **Il DDL dell'app**, cioè le unità pigre (fino alla 2.16), resta per tabelle
   e indici: l'app possiede le sue tabelle e può crearne in `public`, e
-  l'event trigger lascia passare solo quello. Dalla 2.10 non può spegnere i
-  trigger del registro delle modifiche né rinominare o sostituire una tabella
-  sorvegliata o le sue colonne; può ancora, da proprietaria, cancellarne una
-  colonna o crearne di nuove non sorvegliate, fino alla 2.16. Prima di
+  l'event trigger lascia passare solo quello. Dalla 2.10, su una tabella
+  sorvegliata dal registro delle modifiche, l'app non può spegnere i trigger,
+  rinominare o sostituire la tabella o le sue colonne, riscriverla
+  (`ALTER COLUMN … TYPE`) né legarla per ereditarietà o come partizione. Può
+  ancora, da proprietaria, cancellarne una colonna o crearne di nuove non
+  sorvegliate, fino alla 2.16. Prima di
   aggiornare PostGIS si toglie il CREATE su `public` a `cerbero_owner`
   (README delle migrazioni).
 
@@ -590,6 +598,8 @@ SELECT ts, attore, via, operazione, chiave, campi, prima, dopo, righe
 **La verifica.** `node lib/db/scripts/ruoli.mjs --verifica` (e il migratore a
 ogni avvio) dà errore, con la cura, se:
 - un trigger del registro manca o non è acceso sempre (`ENABLE ALWAYS`);
+- una tabella sorvegliata è legata per ereditarietà o come partizione, o una
+  colonna nominata dalla sua regola non c'è più;
 - un oggetto di `registro` non è di `cerbero_registro`, per esempio dopo un
   ripristino `--no-owner`;
 - manca la partizione del mese, o ci sono righe nella partizione di riserva:
@@ -599,7 +609,9 @@ ogni avvio) dà errore, con la cura, se:
 - un superutente (`postgres`) può tutto: spegnere i trigger e cambiare le
   righe. La verifica lo vede solo se lascia un trigger spento;
 - `attore` e `via` li mette l'app sulla connessione (2.9): un'app compromessa
-  può falsificarli. Fa fede `ruolo_db`;
+  può falsificarli, e può chiedere il riepilogo (modo «riepilogo») al posto
+  delle righe coi valori: la modifica resta registrata, coi campi, ma senza
+  prima e dopo. Fa fede `ruolo_db`;
 - una tabella nuova non è sorvegliata finché una migrazione non chiama
   `registro.sorveglia` (README delle migrazioni). Gli orari di dettaglio
   (`ps_stop_times` e simili) entrano con la seconda ondata, nella 2.11.

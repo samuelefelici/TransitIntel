@@ -177,6 +177,8 @@ BEGIN
     'ALTER TABLE public.users ENABLE REPLICA TRIGGER registro_cambia',
     'ALTER TABLE public.depots RENAME TO depots_altrove',
     'ALTER TABLE public.users RENAME COLUMN role TO role_cached',
+    'ALTER TABLE public.users ALTER COLUMN role TYPE text USING ''admin''',
+    'CREATE TABLE public.registro_figlia () INHERITS (public.ps_projects)',
     'SELECT registro.sorveglia(''public.users'', ARRAY[''id''], NULL, NULL, true)'] LOOP
     BEGIN
       EXECUTE prova;

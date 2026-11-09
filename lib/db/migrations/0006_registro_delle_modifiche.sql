@@ -481,6 +481,13 @@ BEGIN
       RETURN NEXT format('%s è sorvegliata ma non esiste', s.tabella);
       CONTINUE;
     END IF;
+    -- nessuna ereditarietà né partizione: le righe di una figlia si leggono dal
+    -- padre, e un UPDATE dal padre cambia le figlie, senza questi trigger
+    IF EXISTS (SELECT 1 FROM pg_inherits i WHERE s.relid IN (i.inhrelid, i.inhparent)) THEN
+      RETURN NEXT format('%s è legata per ereditarietà o come partizione ad altre tabelle (%s): le loro scritture sfuggono al registro',
+                         s.tabella, (SELECT string_agg(format('%s → %s', i.inhrelid::regclass, i.inhparent::regclass), ', ')
+                                       FROM pg_inherits i WHERE s.relid IN (i.inhrelid, i.inhparent)));
+    END IF;
     -- le colonne nominate dalla regola ci sono ancora
     FOR t IN SELECT DISTINCT c FROM registro.sorvegliate r,
                     unnest(r.chiave || r.valori_di || coalesce(r.ambito_colonna, r.chiave[1])) AS c

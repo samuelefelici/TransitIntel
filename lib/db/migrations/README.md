@@ -142,8 +142,10 @@ su main non si tocca più.
     registro.sorvegliate WHERE tabella = '…'` per la vecchia). Altrimenti
     `registro.verifica()` la segnala e `ruoli.mjs --verifica` fallisce.
   - L'app non può farlo da sé: `cerbero_ddl_dell_app_fine` le impedisce di
-    spegnere i trigger e di rinominare o sostituire una tabella sorvegliata o
-    le sue colonne.
+    spegnere i trigger, di rinominare o sostituire una tabella sorvegliata o
+    le sue colonne e di legarla per ereditarietà o come partizione;
+    `cerbero_ddl_dell_app_riscrive` (`table_rewrite`) di riscriverla
+    (`ALTER COLUMN … TYPE … USING`, `SET EXPRESSION`).
 - **Permessi**: niente GRANT nelle migrazioni per i ruoli in sola lettura.
   Argos legge solo le tabelle del suo contratto
   (`lib/db/contratti/argos-lettura.mjs`), che il migratore applica a ogni

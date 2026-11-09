@@ -267,6 +267,14 @@ jobs:
           grep -q "cerbero_app non può rinominare, spostare o sostituire una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
           if app "ALTER TABLE public.users RENAME COLUMN role TO role_cached" 2> vietato.log; then echo "cerbero_app non doveva rinominare role"; exit 1; fi
           grep -q "cerbero_app non può rinominare le colonne di una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          if app "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" 2> vietato.log; then echo "cerbero_app non doveva riscrivere users"; exit 1; fi
+          grep -q "cerbero_app non può riscrivere una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          test "$(app "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_riscrive' AND evtevent = 'table_rewrite' AND evtenabled = 'A'")" = 1
+          for vietato in "CREATE TABLE public.ci_figlia () INHERITS (public.ps_projects)" \
+                         "CREATE TABLE public.ci_padre (name text); ALTER TABLE public.ps_projects INHERIT public.ci_padre"; do
+            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -q "cerbero_app non può legare per ereditarietà o come partizione una tabella del registro" vietato.log || { cat vietato.log; exit 1; }
+          done
           # le unità pigre invece passano anche sulle tabelle sorvegliate
           app "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid"
           for vietato in "SELECT count(*) FROM registro.modifiche" "UPDATE registro.impostazioni SET attivo = false" \

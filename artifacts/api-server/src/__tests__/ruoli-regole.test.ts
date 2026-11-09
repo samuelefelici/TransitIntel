@@ -40,6 +40,7 @@ function base(extra: Partial<StatoRuoli> = {}): StatoRuoli {
     evento: {
       funzione: true, corpo: CORPO_EVENTO_DDL, di_superutente: true, di_tutti: false, acceso: "A", momento: "ddl_command_start", sua: true,
       fine_acceso: "A", fine_momento: "ddl_command_end", fine_sua: true,
+      riscrive_acceso: "A", riscrive_momento: "table_rewrite", riscrive_sua: true,
     },
     espressioni: [],
     estranee: [],
@@ -186,6 +187,7 @@ describe("ruoli del database: il piano", () => {
     const manca = piano(base({ evento: {
       funzione: false, corpo: null, di_superutente: null, di_tutti: null, acceso: null, momento: null, sua: null,
       fine_acceso: null, fine_momento: null, fine_sua: null,
+      riscrive_acceso: null, riscrive_momento: null, riscrive_sua: null,
     } }));
     expect(manca.azioni.map((a) => a.sql.split(" ").slice(0, 6).join(" "))).toEqual([
       "CREATE OR REPLACE FUNCTION cerbero_migrazioni.ddl_dell_app() RETURNS",
@@ -194,6 +196,8 @@ describe("ruoli del database: il piano", () => {
       'ALTER EVENT TRIGGER "cerbero_ddl_dell_app" ENABLE ALWAYS',
       'CREATE EVENT TRIGGER "cerbero_ddl_dell_app_fine" ON ddl_command_end',
       'ALTER EVENT TRIGGER "cerbero_ddl_dell_app_fine" ENABLE ALWAYS',
+      'CREATE EVENT TRIGGER "cerbero_ddl_dell_app_riscrive" ON table_rewrite',
+      'ALTER EVENT TRIGGER "cerbero_ddl_dell_app_riscrive" ENABLE ALWAYS',
     ]);
     expect(manca.azioni[0]!.sql).toMatch(/tg_tag NOT IN \('CREATE TABLE', 'CREATE TABLE AS', 'CREATE INDEX', 'ALTER TABLE'\)/);
     expect(manca.azioni[0]!.sql).toMatch(/SET search_path = pg_catalog, pg_temp/);
@@ -215,6 +219,11 @@ describe("ruoli del database: il piano", () => {
         'CREATE EVENT TRIGGER "cerbero_ddl_dell_app_fine" ON ddl_command_end',
         'ALTER EVENT TRIGGER "cerbero_ddl_dell_app_fine" ENABLE ALWAYS',
       ]);
+    // il terzo, sulla riscrittura delle tabelle (il registro delle modifiche, 2.10)
+    expect(piano(base({ evento: { ...ev, riscrive_acceso: "R" } })).azioni.map((a) => a.sql))
+      .toEqual(['ALTER EVENT TRIGGER "cerbero_ddl_dell_app_riscrive" ENABLE ALWAYS']);
+    expect(piano(base({ evento: { ...ev, riscrive_momento: "ddl_command_end" } })).azioni.map((a) => a.sql.split(" ").slice(0, 3).join(" ")))
+      .toEqual(["DROP EVENT TRIGGER", "CREATE EVENT TRIGGER", "ALTER EVENT TRIGGER"]);
   });
 
   it("la funzione dei due event trigger: all'inizio i comandi, alla fine le espressioni con le funzioni ammesse", () => {
@@ -297,6 +306,10 @@ describe("ruoli del database: il piano", () => {
     expect(CORPO_EVENTO_DDL).toContain("<> EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = c.oid AND t.tgname = 'registro_inserisce')");
     expect(CORPO_EVENTO_DDL).toContain("x.object_type = 'table column'");
     expect(CORPO_EVENTO_DDL).toMatch(/non può rinominare le colonne di una tabella del registro delle modifiche/);
+    expect(CORPO_EVENTO_DDL).toMatch(/IF tg_event = 'table_rewrite' THEN/);
+    expect(CORPO_EVENTO_DDL).toContain("pg_event_trigger_table_rewrite_oid()");
+    expect(CORPO_EVENTO_DDL).toMatch(/non può legare per ereditarietà o come partizione una tabella del registro/);
+    expect(CORPO_EVENTO_DDL).toContain("(i.inhrelid = ANY (tabelle) OR i.inhparent = ANY (tabelle))");
   });
 
   it("una relazione di un superutente fuori dal catalogo: avviso (l'app non la usa), con le due cure", () => {
