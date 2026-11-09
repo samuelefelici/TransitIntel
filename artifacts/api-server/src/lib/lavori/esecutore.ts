@@ -191,9 +191,11 @@ export function creaEsecutore(o: OpzioniEsecutore) {
   function parti(l: Lavoro): void {
     const voce = { lavoro: l, controller: new AbortController() } as InCorso;
     occupati[l.corsia]++;
-    // il gestore scrive come chi ha lanciato il lavoro (cerbero.attore, PR 2.9)
+    // il gestore scrive come chi ha lanciato il lavoro (cerbero.attore, PR 2.9);
+    // un lavoro accodato da Argos resta di Argos anche nella coda
+    const via = l.via?.startsWith("argos") ? `${l.via}:coda:${l.tipo}` : `coda:${l.tipo}`;
     voce.fine = contestoDb.run(
-      { attore: l.utente_id ?? "", via: `coda:${l.tipo}`, richiesta: `lavoro:${l.id}` },
+      { attore: l.utente_id ?? "", via, richiesta: `lavoro:${l.id}` },
       () => esegui(l, voce.controller),
     ).finally(() => {
       inCorso.delete(l.id);

@@ -22,12 +22,13 @@ import { tenantWhere, assertFeedAccess, preparaTenant, feedAccessibleWhere } fro
 import { causaDb, spiegaCausa } from "../lib/db-error";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { nomeCaricato } from "../lib/materializzazione/usi-feed";
+import { legaContesto } from "../lib/contesto-http";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
 
 // POST /api/gtfs/upload
-router.post("/gtfs/upload", strictLimiter, upload.single("file"), async (req, res) => {
+router.post("/gtfs/upload", strictLimiter, legaContesto(upload.single("file")), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: "Nessun file ricevuto. Invia uno zip GTFS come campo 'file'." });
     return;

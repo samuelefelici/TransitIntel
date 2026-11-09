@@ -29,6 +29,7 @@ import { sql } from "drizzle-orm";
 import { haversineKm } from "../lib/geo-utils";
 import { parseCsv } from "./gtfs-helpers";
 import { strictLimiter } from "../middlewares/rate-limit";
+import { legaContesto } from "../lib/contesto-http";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -144,7 +145,7 @@ interface Linea { lineCode: string; lineName: string; routeIds: string[]; percor
 /* ─────────────────────────────────────────────────────────────
  *  POST /api/fares/polimetriche/import
  * ───────────────────────────────────────────────────────────── */
-router.post("/fares/polimetriche/import", strictLimiter, upload.single("file"), async (req, res): Promise<void> => {
+router.post("/fares/polimetriche/import", strictLimiter, legaContesto(upload.single("file")), async (req, res): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ error: "Nessun file ricevuto. Invia uno ZIP GTFS come campo 'file'." });
     return;

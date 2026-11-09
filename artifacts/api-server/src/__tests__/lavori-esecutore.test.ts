@@ -257,6 +257,8 @@ describe("l'esecutore e il contesto sulla connessione", () => {
       lavoro("a", "lunga", { utente_id: "u-a" }),
       lavoro("b", "lunga", { utente_id: "u-b", tipo: "python" }),
       lavoro("c", "lunga"),
+      // accodato da Argos: resta di Argos anche nella coda
+      lavoro("d", "lunga", { utente_id: "u-d", via: "argos" }),
     ]);
     const visti: Record<string, unknown> = {};
     const prese: unknown[] = [];
@@ -274,12 +276,13 @@ describe("l'esecutore e il contesto sulla connessione", () => {
     const e = contestoDb.run({ attore: "chi-avvia", via: "api" }, () =>
       creaEsecutore({ chi: "t", slot: { lunga: 1, veloce: 0 }, gestori: [g], log, coda: f.coda, pollingMs: 20 }));
     contestoDb.run({ attore: "chi-avvia", via: "api" }, () => e.avvia());
-    await aspetta(() => f.chiusi.size === 3);
+    await aspetta(() => f.chiusi.size === 4);
     expect(visti.a).toEqual({ attore: "u-a", via: "coda:python", richiesta: "lavoro:a" });
     expect(visti.b).toEqual({ attore: "u-b", via: "coda:python", richiesta: "lavoro:b" });
     expect(visti.c).toEqual({ attore: "", via: "coda:python", richiesta: "lavoro:c" });
+    expect(visti.d).toEqual({ attore: "u-d", via: "argos:coda:python", richiesta: "lavoro:d" });
     // ogni presa, anche quelle partite dalla fine di un lavoro, è del sistema
-    expect(prese.length).toBeGreaterThanOrEqual(3);
+    expect(prese.length).toBeGreaterThanOrEqual(4);
     for (const p of prese) expect(p).toEqual({ via: "coda" });
     await e.ferma(0);
   });

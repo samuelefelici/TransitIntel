@@ -18,6 +18,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { db } from "@workspace/db";
 import { sql, type SQL } from "drizzle-orm";
+import { inSistema } from "@workspace/db/contesto";
 
 let bootstrapped = false;
 
@@ -29,7 +30,16 @@ const TENANT_TABLES = [
 ] as const;
 
 /** Solo dati: i proprietari mancanti e il feed di default. Le colonne le fanno le migrazioni. */
-export async function preparaTenant(): Promise<void> {
+/* una sola preparazione anche se la ripetono più richieste; è del sistema
+ * anche quando la fa ripartire una richiesta (cerbero.via, PR 2.9) */
+let preparazione: Promise<void> | null = null;
+export function preparaTenant(): Promise<void> {
+  if (bootstrapped) return Promise.resolve();
+  preparazione ??= inSistema("avvio:tenant", preparaDavvero).finally(() => { preparazione = null; });
+  return preparazione;
+}
+
+async function preparaDavvero(): Promise<void> {
   if (bootstrapped) return;
   try {
     // Backfill: assegna i record orfani al primo admin (per ordine di creazione)

@@ -9,11 +9,23 @@
  *   rotta) scrivono come «cron:<nome>»;
  * - Caronte scrive come «caronte» (routes/caronte.ts).
  */
-import type { NextFunction, Request, Response } from "express";
+import { AsyncResource } from "node:async_hooks";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
 import { conContesto, contestoDb } from "@workspace/db/contesto";
 
 export function contestoRichiesta(req: Request, _res: Response, next: NextFunction): void {
   contestoDb.run({ via: "api", richiesta: String(req.id ?? "") }, next);
+}
+
+/**
+ * Per i middleware che chiamano `next` da un evento del socket (multer, che
+ * legge il file con busboy): lì il contesto async della richiesta si perde, e
+ * le scritture dopo l'upload non saprebbero più chi è l'utente. `next` si lega
+ * al contesto di quando il middleware parte. Ogni `upload.single/fields/…` va
+ * avvolto (lo controlla contesto-http.test.ts).
+ */
+export function legaContesto(mw: RequestHandler): RequestHandler {
+  return (req, res, next) => mw(req, res, AsyncResource.bind(next));
 }
 
 /** Da montare su "/cron": il nome è il primo pezzo del percorso (traffic, argos-watch, …). */

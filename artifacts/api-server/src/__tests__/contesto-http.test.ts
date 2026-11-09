@@ -39,7 +39,11 @@ vi.mock("@workspace/db", async () => {
 import { contestoDb } from "@workspace/db/contesto";
 import { emettiSessione, mintShortLivedUserToken, requireAuth } from "../lib/auth";
 import { agentAttribution, viaPerIlDatabase } from "../lib/agent-context";
-import { contestoCron, contestoRichiesta } from "../lib/contesto-http";
+import { contestoCron, contestoRichiesta, legaContesto } from "../lib/contesto-http";
+import multer from "multer";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function app() {
   const a = express();
@@ -108,5 +112,48 @@ describe("chi fa la modifica, per le richieste HTTP", () => {
     expect(viaPerIlDatabase(undefined)).toBe("api");
     expect(viaPerIlDatabase(null)).toBe("api");
     expect(viaPerIlDatabase("argos")).toBe("argos");
+  });
+
+  it("multer perde il contesto (busboy chiama next da un evento del socket): legaContesto lo tiene", async () => {
+    const token = sessioneDi(F.UTENTE);
+    const up = multer({ storage: multer.memoryStorage() });
+    const a = express();
+    a.use(contestoRichiesta);
+    a.post("/nudo", requireAuth, up.single("f"), (_req, res) => { res.json(contestoDb.getStore() ?? null); });
+    a.post("/legato", requireAuth, legaContesto(up.single("f")), (_req, res) => { res.json(contestoDb.getStore() ?? null); });
+    const file = Buffer.alloc(200_000, "x");
+    const nudo = await request(a).post("/nudo").set("Authorization", `Bearer ${token}`).attach("f", file, "a.txt");
+    expect(nudo.body?.attore).toBeUndefined();
+    const legato = await request(a).post("/legato").set("Authorization", `Bearer ${token}`).attach("f", file, "a.txt");
+    expect(legato.body).toMatchObject({ attore: F.UTENTE, via: "api" });
+  });
+
+  it("nel codice, ogni upload di multer è avvolto da legaContesto", () => {
+    const radice = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const file: string[] = [];
+    const visita = (d: string) => {
+      for (const n of readdirSync(d)) {
+        const p = path.join(d, n);
+        if (n === "__tests__" || n === "node_modules") continue;
+        if (statSync(p).isDirectory()) visita(p);
+        else if (p.endsWith(".ts")) file.push(p);
+      }
+    };
+    visita(radice);
+    const scoperti: string[] = [];
+    for (const f of file) {
+      const testo = readFileSync(f, "utf8");
+      if (!/from "multer"/.test(testo)) continue;
+      // i nomi delle istanze di multer nel file (const upload = multer(...))
+      const istanze = [...testo.matchAll(/const (\w+) = multer\(/g)].map((m) => m[1]);
+      for (const nome of istanze) {
+        for (const m of testo.matchAll(new RegExp(`\\b${nome}\\.(single|array|fields|any|none)\\(`, "g"))) {
+          const prima = testo.slice(Math.max(0, m.index! - 15), m.index!);
+          if (!prima.endsWith("legaContesto(")) scoperti.push(`${path.relative(radice, f)}: ${nome}.${m[1]}`);
+        }
+      }
+    }
+    expect(file.length).toBeGreaterThan(50);
+    expect(scoperti).toEqual([]);
   });
 });
