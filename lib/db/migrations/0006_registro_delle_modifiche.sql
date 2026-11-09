@@ -299,12 +299,21 @@ BEGIN
   IF cardinality(registrate) = 0 THEN
     RETURN NULL;
   END IF;
+  -- il confronto tipizzato solo dove il tipo (risolti il dominio e l'elemento
+  -- di un array) ha un'uguaglianza btree; gli altri (json, json[], xml, point,
+  -- tipi composti…) come testo: un confronto impossibile farebbe fallire la scrittura
   SELECT array_agg(
-           CASE WHEN t.typname IN ('json', 'xml') OR t.typcategory IN ('G', 'U')
-                THEN format('o.%1$I::text IS DISTINCT FROM n.%1$I::text', a.attname)
-                ELSE format('o.%1$I IS DISTINCT FROM n.%1$I', a.attname) END ORDER BY a.attnum)
+           CASE WHEN EXISTS (SELECT 1 FROM pg_opclass oc JOIN pg_am am ON am.oid = oc.opcmethod
+                              WHERE am.amname = 'btree' AND oc.opcdefault
+                                AND oc.opcintype = CASE WHEN b.typcategory = 'A' THEN coalesce(nullif(e.typbasetype, 0), e.oid)
+                                                        WHEN b.typtype IN ('b', 'e', 'r') THEN b.oid END)
+                THEN format('o.%1$I IS DISTINCT FROM n.%1$I', a.attname)
+                ELSE format('o.%1$I::text IS DISTINCT FROM n.%1$I::text', a.attname) END ORDER BY a.attnum)
     INTO diff
-    FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+    FROM pg_attribute a
+    JOIN pg_type t ON t.oid = a.atttypid
+    JOIN pg_type b ON b.oid = coalesce(nullif(t.typbasetype, 0), t.oid)
+    LEFT JOIN pg_type e ON e.oid = b.typelem AND b.typcategory = 'A'
    WHERE a.attrelid = TG_RELID AND a.attnum > 0 AND NOT a.attisdropped AND a.attname::text = ANY (registrate);
   sorgente := 'vecchie o FULL JOIN nuove n ON ' || coalesce(
                 (SELECT string_agg(format('o.%1$I = n.%1$I', k), ' AND ') FROM unnest(regola.chiave) AS k), 'false');

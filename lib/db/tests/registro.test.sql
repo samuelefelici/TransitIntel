@@ -102,6 +102,19 @@ DO $$ BEGIN
     'modo riepilogo: un riepilogo, coi campi';
 END $$;
 
+-- un UPDATE grande su colonne senza uguaglianza (json[], point, xml): il
+-- confronto passa per il testo, la scrittura non fallisce mai per il registro
+SAVEPOINT tipi;
+ALTER TABLE public.depots ADD COLUMN prova_j json[], ADD COLUMN prova_p point, ADD COLUMN prova_x xml;
+INSERT INTO public.depots (name, prova_j, prova_p, prova_x)
+SELECT 'Deposito ' || g, ARRAY['{"a": 1}'::json], point(1, 1), '<a/>' FROM generate_series(1, 60) g;
+UPDATE public.depots SET prova_j = ARRAY['{"a": 2}'::json], prova_p = point(2, 2), prova_x = '<b/>' WHERE name LIKE 'Deposito %';
+DO $$ BEGIN
+  ASSERT (SELECT righe = 60 AND campi = '{prova_j,prova_p,prova_x}' FROM nostre
+           WHERE tabella = 'public.depots' AND operazione = 'UPDATE' AND riepilogo), 'UPDATE grande su json[], point, xml';
+END $$;
+ROLLBACK TO SAVEPOINT tipi;
+
 -- un savepoint annullato toglie anche quello che aveva scritto
 SAVEPOINT prova;
 UPDATE public.ps_projects SET name = 'Da annullare' WHERE id = 'f0000000-0000-4000-8000-0000000000a1';

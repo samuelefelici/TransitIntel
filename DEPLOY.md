@@ -573,9 +573,9 @@ scritte restano e seguono anonimizzazione e conservazione.
 
 **Quanto costa** (Postgres 17, misure della PR):
 - spento: un UPDATE di una riga passa da 0,05 a circa 0,07 ms;
-  un'istruzione su 10.000 righe +10–20%;
-- acceso: un UPDATE di una riga circa 0,35 ms; 10.000 righe in
-  un'istruzione +15–20% per INSERT e DELETE, circa +55% per UPDATE.
+  un'istruzione su 10.000 righe +5–10%;
+- acceso: un UPDATE di una riga circa 0,33 ms; 10.000 righe in
+  un'istruzione +15–20% per INSERT e DELETE, +35–45% per UPDATE.
 
 **Leggerlo.** Per ora solo `postgres`, dal Terminal del PostgreSQL. L'app non
 ha il permesso: la pagina dell'amministratore arriva con la 2.11, senza
