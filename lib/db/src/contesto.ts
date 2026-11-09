@@ -71,12 +71,24 @@ const VUOTA = firmaDi(valoriDi(undefined));
 /** L'ultima firma impostata su ogni client: un client nuovo non ha niente (cioè la firma vuota). */
 const firme = new WeakMap<object, string>();
 
+/* un errore del socket durante l'impostazione: lo riporta la query stessa */
+const ignora = () => {};
+
 async function imposta(client: pg.PoolClient, valori: string[]): Promise<void> {
   const firma = firmaDi(valori);
   if ((firme.get(client) ?? VUOTA) === firma) return;
   // se la query fallisce il client si scarta: niente firma a metà da ricordare
   firme.delete(client);
-  await client.query(SQL_IMPOSTA, valori);
+  /* Il pool toglie il suo ascoltatore di 'error' quando presta il client, e
+   * pool.query mette il suo solo dopo questa funzione: senza questo, una
+   * connessione che cade (ECONNRESET) proprio adesso sarebbe un 'error' non
+   * gestito, e il processo uscirebbe. L'errore arriva comunque dalla query. */
+  client.on("error", ignora);
+  try {
+    await client.query(SQL_IMPOSTA, valori);
+  } finally {
+    client.removeListener("error", ignora);
+  }
   firme.set(client, firma);
 }
 

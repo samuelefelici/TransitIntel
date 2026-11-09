@@ -20,6 +20,8 @@ const pausa = (ms: number) => new Promise((f) => setTimeout(f, ms));
 class ClientFinto extends EventEmitter {
   static tutti: ClientFinto[] = [];
   static fallisci = 0;
+  /** il socket cade durante l'impostazione: 'error' sul client, poi la query fallisce */
+  static cade = 0;
   impostazioni: Record<string, string> = {};
   imposte = 0;
   _queryable = true;
@@ -41,6 +43,12 @@ class ClientFinto extends EventEmitter {
     const vals = (valori ?? (typeof cfg === "object" ? cfg.values : undefined) ?? []) as string[];
     const p = new Promise((ok, ko) => setTimeout(() => {
       if (testo.includes("set_config")) {
+        if (ClientFinto.cade > 0) {
+          ClientFinto.cade--;
+          this.emit("error", new Error("read ECONNRESET"));
+          ko(new Error("Connection terminated unexpectedly"));
+          return;
+        }
         if (ClientFinto.fallisci > 0) {
           ClientFinto.fallisci--;
           ko(new Error("impostazione fallita"));
@@ -79,6 +87,7 @@ describe("il contesto sulla connessione, con un client finto", () => {
   beforeEach(() => {
     ClientFinto.tutti = [];
     ClientFinto.fallisci = 0;
+    ClientFinto.cade = 0;
   });
 
   it("si imposta solo quando cambia; senza contesto si azzera, ma un client nuovo non fa niente", async () => {
@@ -134,6 +143,17 @@ describe("il contesto sulla connessione, con un client finto", () => {
     const { rows: [r] } = await contestoDb.run({ attore: "u1" }, () => p.query(LEGGI));
     expect(r.a).toBe("u1");
     expect(ClientFinto.tutti).toHaveLength(3);
+    await p.end();
+  });
+
+  it("la connessione che cade durante l'impostazione non fa uscire il processo: fallisce la query", async () => {
+    const p = nuovoPool(1);
+    ClientFinto.cade = 1;
+    await expect(contestoDb.run({ attore: "u1" }, () => p.query(LEGGI))).rejects.toThrow("Connection terminated");
+    ClientFinto.cade = 1;
+    await expect(contestoDb.run({ attore: "u2" }, () => p.connect())).rejects.toThrow("Connection terminated");
+    const { rows: [r] } = await contestoDb.run({ attore: "u3" }, () => p.query(LEGGI));
+    expect(r.a).toBe("u3");
     await p.end();
   });
 

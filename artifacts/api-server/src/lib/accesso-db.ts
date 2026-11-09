@@ -19,6 +19,7 @@ import { sql } from "drizzle-orm";
 import { prenotaTentativo, REGOLA_ACCOUNT, REGOLA_CODICI, REGOLA_INDIRIZZO, type StatoTentativi } from "./accesso-regole";
 import { verificaCodice } from "./totp";
 import { apriSegreto, chiaviConfigurate, cifra, idChiave, improntaRecupero } from "./mfa-cifratura";
+import { inSistema } from "@workspace/db/contesto";
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -261,5 +262,6 @@ let ultimaPulizia = 0;
 export function forsePulisciAccessi(): void {
   if (Date.now() - ultimaPulizia < 6 * 3_600_000) return;
   ultimaPulizia = Date.now();
-  void pulisciAccessi().catch((e: any) => console.error("[accesso] pulizia del registro:", e?.message || e));
+  /* è del sistema, non di chi la innesca entrando o uscendo (cerbero.via, PR 2.9) */
+  void inSistema("pulizie:accessi", pulisciAccessi).catch((e: any) => console.error("[accesso] pulizia del registro:", e?.message || e));
 }
