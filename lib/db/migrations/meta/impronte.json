@@ -4,5 +4,6 @@
   "0002_contratti": "ad9ca110a27abd3b30d910a45af4e85250ee034af2a05db9a8dff30666456bba",
   "0003_permessi_completi": "e53a86729a73ae4bd3d74c69e26f5e73209acd45d1d76f1ff1a230c6f6c61b85",
   "0004_coda_dei_lavori": "eee2725e76cc410069affd74566339824b8aabdfc7bcaa9541176768f8141cb7",
-  "0005_richieste_mizar": "087aedc9ec03856700def3cdc843b9092fb3548ee738f3b4c5040fba4917cec6"
+  "0005_richieste_mizar": "087aedc9ec03856700def3cdc843b9092fb3548ee738f3b4c5040fba4917cec6",
+  "0006_registro_delle_modifiche": "5e456426a1ced6a3f246bb22fbe7cb30f3e11c3d25c60b822b97a9c756fc185e"
 }

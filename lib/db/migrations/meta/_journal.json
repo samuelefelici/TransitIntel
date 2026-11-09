@@ -43,6 +43,13 @@
       "when": 1793718000000,
       "tag": "0005_richieste_mizar",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794251613539,
+      "tag": "0006_registro_delle_modifiche",
+      "breakpoints": true
     }
   ]
 }

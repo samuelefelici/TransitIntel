@@ -5,6 +5,9 @@ export declare const SCHEMI_DATI: readonly string[];
 export declare const ESCLUSE: readonly string[];
 export declare const FUNZIONI_FLEETCARE: readonly string[];
 export declare const DA_LEGGERE: readonly string[];
+export declare const DA_ESEGUIRE: readonly string[];
+export declare const REGISTRO: "cerbero_registro";
+export declare const SCHEMA_REGISTRO: "registro";
 export declare const COMANDI_DELL_APP: readonly string[];
 export declare const EVENTO_DDL: "cerbero_ddl_dell_app";
 export declare const EVENTO_DDL_FINE: "cerbero_ddl_dell_app_fine";
@@ -30,6 +33,8 @@ export interface StatoRuoli {
   database: { connette: boolean | null; temporanee: boolean | null };
   schemi: { nome: string; esiste: boolean; uso: boolean | null; crea: boolean | null }[];
   lettura: { voce: string; esiste: boolean; legge: boolean | null }[];
+  esecuzione?: { firma: string; esiste: boolean; esegue: boolean | null }[];
+  registro?: { diritti: { tipo: string; oggetto: string; a_chi: string; diritto: string }[]; problemi: string[] } | null;
   relazioni: Relazione[];
   fleetcare: { firma: string; esiste: boolean; chiama: boolean | null }[];
   lettori?: { ruolo: string; tabella: string; colonna: string; uso: boolean; legge: boolean }[];

@@ -57,17 +57,38 @@ describe("il diario delle migrazioni", () => {
 
 /* Dalla 0006 (PR 2.8) chi migra è un superutente ma le tabelle sono di
  * cerbero_owner: ogni oggetto nuovo passa subito a lui, e i dati delle tabelle
- * di Cerbero si toccano come lui (lib/db/migrations/README.md, «Chi possiede cosa»). */
+ * di Cerbero si toccano come lui (lib/db/migrations/README.md, «Chi possiede cosa»).
+ * Il registro delle modifiche (schema registro, PR 2.10) è invece di
+ * cerbero_registro: tabelle e funzioni passano a lui, ogni sua funzione è tolta
+ * a PUBLIC e ogni SECURITY DEFINER ha il search_path fisso. I corpi delle
+ * funzioni non contano (un CREATE TABLE lì dentro lo fa la funzione, non la migrazione). */
 function controllaProprieta(testo: string): string[] {
-  const sql = testo.replace(/--.*$/gm, "");
+  const conCorpi = testo.replace(/--.*$/gm, "");
+  const sql = conCorpi.replace(/\bAS\s+\$(\w*)\$[\s\S]*?\$\1\$/g, "AS $corpo$$corpo$");
   const problemi: string[] = [];
   const nome = (n: string) => n.replace(/"/g, "").toLowerCase();
+  const proprietarioDi = (o: string) => (o.startsWith("registro.") ? "cerbero_registro" : "cerbero_owner");
   const creati = [...sql.matchAll(/\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:UNLOGGED\s+)?(TABLE|VIEW|MATERIALIZED\s+VIEW|SEQUENCE)\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."]+)/gi)];
   for (const [, tipo, oggetto] of creati) {
     const o = nome(oggetto!);
-    const passa = [...sql.matchAll(/\bALTER\s+(?:TABLE|VIEW|MATERIALIZED\s+VIEW|SEQUENCE)\s+(?:IF\s+EXISTS\s+)?([\w."]+)\s+OWNER\s+TO\s+"?cerbero_owner"?/gi)]
-      .some(([, n]) => nome(n!) === o);
-    if (!passa) problemi.push(`${tipo!.toUpperCase()} ${o} non passa a cerbero_owner`);
+    const chi = proprietarioDi(o);
+    const passa = [...sql.matchAll(/\bALTER\s+(?:TABLE|VIEW|MATERIALIZED\s+VIEW|SEQUENCE)\s+(?:IF\s+EXISTS\s+)?([\w."]+)\s+OWNER\s+TO\s+"?(\w+)"?/gi)]
+      .some(([, n, a]) => nome(n!) === o && a!.toLowerCase() === chi);
+    if (!passa) problemi.push(`${tipo!.toUpperCase()} ${o} non passa a ${chi}`);
+  }
+  for (const [, f] of sql.matchAll(/\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(registro\.\w+)\s*\(/gi)) {
+    const o = nome(f!);
+    if (!new RegExp(`ALTER\\s+FUNCTION\\s+${o.replace(".", "\\.")}\\s*\\([^)]*\\)\\s+OWNER\\s+TO\\s+cerbero_registro`, "i").test(sql)) {
+      problemi.push(`FUNCTION ${o} non passa a cerbero_registro`);
+    }
+    if (!new RegExp(`REVOKE\\s+ALL\\s+ON\\s+FUNCTION\\s+${o.replace(".", "\\.")}\\s*\\([^)]*\\)\\s+FROM\\s+PUBLIC`, "i").test(sql)) {
+      problemi.push(`FUNCTION ${o} resta eseguibile da PUBLIC`);
+    }
+  }
+  for (const m of conCorpi.matchAll(/\bCREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+([\w.]+)[\s\S]*?\bAS\s+\$/gi)) {
+    if (/SECURITY\s+DEFINER/i.test(m[0]) && !/SET\s+search_path\s*=\s*pg_catalog/i.test(m[0])) {
+      problemi.push(`FUNCTION ${nome(m[1]!)} è SECURITY DEFINER senza search_path fisso`);
+    }
   }
   if (/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?(public|caronte|coda)"?\./i.test(sql)) {
     // come cerbero_owner, guardato dall'esistenza del ruolo, e di nuovo chi migra prima della fine
@@ -80,6 +101,19 @@ function controllaProprieta(testo: string): string[] {
 }
 
 describe("dalla 0006 gli oggetti nuovi sono di cerbero_owner", () => {
+  it("il registro è di cerbero_registro, le sue funzioni non sono di PUBLIC, i corpi non contano", () => {
+    const funzione = (corpo = "", extra = "") => `CREATE OR REPLACE FUNCTION registro.f() RETURNS void LANGUAGE plpgsql ${extra} AS $f$
+      BEGIN EXECUTE format('CREATE TABLE IF NOT EXISTS registro.%I (x int)', 'p'); ${corpo} END $f$;`;
+    expect(controllaProprieta(`CREATE TABLE registro.t (x int); ALTER TABLE registro.t OWNER TO cerbero_owner;`))
+      .toEqual(["TABLE registro.t non passa a cerbero_registro"]);
+    expect(controllaProprieta(`CREATE TABLE registro.t (x int); ALTER TABLE registro.t OWNER TO cerbero_registro;`)).toEqual([]);
+    expect(controllaProprieta(funzione())).toEqual(["FUNCTION registro.f non passa a cerbero_registro", "FUNCTION registro.f resta eseguibile da PUBLIC"]);
+    const regolare = `${funzione()} ALTER FUNCTION registro.f() OWNER TO cerbero_registro; REVOKE ALL ON FUNCTION registro.f() FROM PUBLIC;`;
+    expect(controllaProprieta(regolare)).toEqual([]);
+    expect(controllaProprieta(regolare.replace("LANGUAGE plpgsql", "LANGUAGE plpgsql SECURITY DEFINER")))
+      .toEqual(["FUNCTION registro.f è SECURITY DEFINER senza search_path fisso"]);
+    expect(controllaProprieta(regolare.replace("LANGUAGE plpgsql", "LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp"))).toEqual([]);
+  });
   it("la regola riconosce le forme giuste e quelle sbagliate", () => {
     expect(controllaProprieta(`CREATE TABLE IF NOT EXISTS public.nuova (id int);`)).toEqual(["TABLE public.nuova non passa a cerbero_owner"]);
     expect(controllaProprieta(`CREATE TABLE public.nuova (id int);
@@ -99,8 +133,8 @@ describe("dalla 0006 gli oggetti nuovi sono di cerbero_owner", () => {
   it.each(diario.filter(e => e.idx >= 6).map(e => e.tag))("%s", (tag) => {
     expect(controllaProprieta(readFileSync(path.join(CARTELLA, `${tag}.sql`), "utf8"))).toEqual([]);
   });
-  it("(nessuna migrazione dalla 0006 per ora: la regola vale per le prossime)", () => {
-    expect(diario.length).toBeGreaterThanOrEqual(6);
+  it("(la regola vale dalla 0006 in poi)", () => {
+    expect(diario.length).toBeGreaterThanOrEqual(7);
   });
 });
 
@@ -355,7 +389,8 @@ describe("ogni tabella letta dal codice esiste nello schema", () => {
     for (const f of sorgentiApi()) {
       const t = senzaCommenti(readFileSync(f, "latin1"));
       const cte = new Set([...t.matchAll(/(?:WITH(?: RECURSIVE)?|,)\s+([a-z_][a-z0-9_]*)\s+AS\s*(?:MATERIALIZED\s*)?\(/g)].map(m => m[1]!));
-      for (const m of t.matchAll(/\b(?:FROM|JOIN)\s+(?:(public|caronte|coda)\.)?([a-z_][a-z0-9_]*)\b(\s*\()?/g)) {
+      // registro: le funzioni del registro delle modifiche (2.10); le sue tabelle l'app non le legge
+      for (const m of t.matchAll(/\b(?:FROM|JOIN)\s+(?:(public|caronte|coda|registro)\.)?([a-z_][a-z0-9_]*)\b(\s*\()?/g)) {
         const nome = m[2]!;
         if (m[3] || cte.has(nome) || NON_TABELLE.has(nome) || /^pg_|^information_schema$/.test(nome)) continue;
         if (/(EXTRACT|SUBSTRING|TRIM|OVERLAY|POSITION)\s*\([^()]*$/i.test(t.slice(Math.max(0, m.index! - 40), m.index))) continue;
@@ -951,5 +986,77 @@ describe("permessi di Argos: esecuzione", () => {
 
   it("uno stallo o un lucchetto annulla tutto e risale (si riprova da capo)", async () => {
     await expect(eseguiAzioni(finto({ B: { code: "40P01" } }), [az("A"), az("B"), az("C")])).rejects.toMatchObject({ code: "40P01" });
+  });
+});
+
+/* Il registro delle modifiche (0006, PR 2.10) e le regole decise il 25/10:
+ * valori prima/dopo solo per programmi, orari, turni e tariffe; per utenti,
+ * roster e anagrafica solo i nomi dei campi (degli utenti, ruolo e permessi
+ * col valore); mai la verifica in due passaggi né l'ultimo accesso; nasce spento. */
+describe("0006: il registro delle modifiche", () => {
+  const sql = readFileSync(path.join(CARTELLA, "0006_registro_delle_modifiche.sql"), "utf8");
+  const regole = new Map([...sql.matchAll(
+    /SELECT registro\.sorveglia\('public\.(\w+)',\s*ARRAY\[([^\]]*)\],\s*(NULL|'\w+'),\s*(NULL|'\w+'),\s*(true|false)(?:,\s*(ARRAY\[[^\]]*\]|'\{\}'))?(?:,\s*(ARRAY\[[^\]]*\]|'\{\}'))?\);/g)]
+    .map(([, t, chiave, , ambito, valori, valoriDi, escluse]) => [t!, {
+      chiave: chiave!, ambito: ambito!, conValori: valori === "true", valoriDi: valoriDi ?? "", escluse: escluse ?? "",
+    }]));
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+
+  it("le 21 tabelle della prima ondata, tutte esistenti", () => {
+    expect([...regole.keys()].sort()).toEqual([
+      "app_settings", "depots", "driver_shift_scenarios", "gtfs_fare_products", "gtfs_feeds", "ps_calendars",
+      "ps_project_members", "ps_projects", "ps_route_variants", "ps_routes", "ps_stops", "ps_trips", "ps_validity_units",
+      "roster_assignments", "roster_driver_history", "roster_drivers", "roster_entries", "roster_pubblicazioni",
+      "scheduling_projects", "service_program_scenarios", "users",
+    ]);
+    for (const [t, r] of regole) {
+      const colonne = catalogo.tabelle[`public.${t}`];
+      expect(colonne, t).toBeTruthy();
+      for (const c of r.chiave.replace(/'/g, "").split(",").map((x) => x.trim())) expect(colonne, `${t}.${c}`).toHaveProperty(c);
+      if (r.ambito !== "NULL") expect(colonne, `${t}.${r.ambito}`).toHaveProperty(r.ambito.replace(/'/g, ""));
+    }
+  });
+
+  it("utenti: solo i nomi dei campi, valori solo di ruolo e permessi, mai la verifica, l'ultimo accesso e i contatori", () => {
+    const u = regole.get("users")!;
+    expect(u.conValori).toBe(false);
+    expect(u.valoriDi).toBe("ARRAY['role', 'permissions']");
+    for (const e of ["'mfa\\_%'", "'last_login_at'", "'sessione_versione'", "'dispositivi_versione'", "'password_controllata'"]) {
+      expect(u.escluse).toContain(e);
+    }
+    expect(u.valoriDi).not.toMatch(/password/);
+  });
+
+  it("roster e anagrafica: mai un valore (i codici sanitari stanno in roster_entries.code)", () => {
+    for (const t of ["roster_drivers", "roster_driver_history", "roster_assignments", "roster_entries", "roster_pubblicazioni"]) {
+      expect(regole.get(t)!.conValori, t).toBe(false);
+      expect(regole.get(t)!.valoriDi, t).toMatch(/^(|'\{\}')$/);
+      expect(regole.get(t)!.chiave, t).toBe("'id'");
+    }
+  });
+
+  it("programmi, orari, turni e tariffe con i valori", () => {
+    for (const t of ["ps_projects", "ps_routes", "ps_trips", "ps_stops", "scheduling_projects", "service_program_scenarios",
+      "driver_shift_scenarios", "gtfs_feeds", "gtfs_fare_products", "depots"]) {
+      expect(regole.get(t)!.conValori, t).toBe(true);
+    }
+  });
+
+  it("nasce spento, e si accende solo con una base giuridica scritta; anonimizzazione mai prima di 6 mesi", () => {
+    expect(sql).toMatch(/attivo\s+boolean NOT NULL DEFAULT false/);
+    expect(sql).toMatch(/CHECK \(NOT attivo OR base_giuridica <> ''\)/);
+    expect(sql).toMatch(/anonimizza_dopo_mesi >= 6/);
+    expect(sql).toMatch(/anonimizza_dopo_mesi\s+integer NOT NULL DEFAULT 12/);
+  });
+
+  it("all'app solo la lettura delle regole e manutenzione() e verifica(); niente sul registro né ad argos_ro", () => {
+    const grant = [...sql.matchAll(/GRANT\s+([^;]+?)\s+TO\s+(\w+)/g)].map(([, cosa, a]) => `${cosa} → ${a}`);
+    expect(grant).toEqual([
+      "USAGE ON SCHEMA registro → cerbero_owner",
+      "SELECT ON TABLE registro.sorvegliate → cerbero_owner",
+      "EXECUTE ON FUNCTION registro.manutenzione() → cerbero_owner",
+      "EXECUTE ON FUNCTION registro.verifica() → cerbero_owner",
+    ]);
+    expect(sql).not.toMatch(/argos_ro/);
   });
 });

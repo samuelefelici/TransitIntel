@@ -252,6 +252,53 @@ describe("ruoli del database: il piano", () => {
     expect(p.errori[0]).toMatch(/ALTER TABLE public\.depots DROP CONSTRAINT depots_nome_ok; finché c'è, il migratore non migra$/);
   });
 
+  it("il registro delle modifiche: diritti di cerbero_owner, nient'altro, il suo ruolo, i problemi come errori", () => {
+    const reg = ruolo("cerbero_registro");
+    const conRegistro = (extra: Partial<StatoRuoli> = {}) => base({
+      ruoli: [...base().ruoli, reg],
+      esecuzione: [
+        { firma: "registro.manutenzione()", esiste: true, esegue: true },
+        { firma: "registro.verifica()", esiste: true, esegue: true },
+      ],
+      registro: { diritti: [], problemi: [] },
+      ...extra,
+    });
+    expect(piano(conRegistro())).toEqual({ azioni: [], attese: [], avvisi: [], errori: [] });
+    // EXECUTE mancante (server nuovo: la migrazione gira prima che cerbero_owner esista)
+    const senza = piano(conRegistro({ esecuzione: [{ firma: "registro.manutenzione()", esiste: true, esegue: false }] }));
+    expect(senza.azioni.map((a) => a.sql)).toEqual([`GRANT EXECUTE ON FUNCTION registro.manutenzione() TO "${PROPRIETARIO}"`]);
+    // diritti in più: si tolgono
+    const troppi = piano(conRegistro({ registro: { problemi: [], diritti: [
+      { tipo: "TABLE", oggetto: "registro.modifiche", a_chi: "cerbero_owner", diritto: "DELETE" },
+      { tipo: "FUNCTION", oggetto: "registro.cattura()", a_chi: "PUBLIC", diritto: "EXECUTE" },
+    ] } }));
+    expect(troppi.azioni.map((a) => a.sql)).toEqual([
+      'REVOKE DELETE ON TABLE registro.modifiche FROM "cerbero_owner"',
+      "REVOKE EXECUTE ON FUNCTION registro.cattura() FROM PUBLIC",
+    ]);
+    // il ruolo: manca, o può entrare
+    expect(piano(conRegistro({ ruoli: base().ruoli })).azioni.map((a) => a.sql)).toEqual(['CREATE ROLE "cerbero_registro" NOLOGIN']);
+    expect(piano(conRegistro({ ruoli: [...base().ruoli, { ...reg, login: true, superutente: true }] })).azioni.map((a) => a.sql))
+      .toEqual(['ALTER ROLE "cerbero_registro" NOSUPERUSER NOLOGIN']);
+    // i problemi di registro.verifica(): errori
+    const spento = piano(conRegistro({ registro: { diritti: [], problemi: ["public.users: il trigger registro_cambia del registro non è acceso sempre (D)"] } }));
+    expect(spento.errori).toEqual(["registro delle modifiche: public.users: il trigger registro_cambia del registro non è acceso sempre (D)"]);
+    // un'appartenenza al ruolo del registro: errore
+    const membro = piano(conRegistro({ appartenenze: [...base().appartenenze,
+      { ruolo: "cerbero_registro", membro: APP, admin: false, eredita: true, imposta: true }] }));
+    expect(membro.errori[0]).toMatch(/cerbero_app è membro di cerbero_registro: non previsto/);
+    // senza registro (prima della 0006) non si chiede niente
+    expect(piano(base({ registro: null })).azioni).toEqual([]);
+  });
+
+  it("l'event trigger: l'app non spegne i trigger del registro e non sostituisce una tabella sorvegliata", () => {
+    expect(CORPO_EVENTO_DDL).toContain("pg_catalog.to_regclass('registro.sorvegliate') IS NOT NULL");
+    expect(CORPO_EVENTO_DDL).toContain("t.tgname LIKE 'registro\\_%' AND t.tgenabled <> 'A'");
+    expect(CORPO_EVENTO_DDL).toContain("<> EXISTS (SELECT 1 FROM pg_catalog.pg_trigger t WHERE t.tgrelid = c.oid AND t.tgname = 'registro_inserisce')");
+    expect(CORPO_EVENTO_DDL).toContain("x.object_type = 'table column'");
+    expect(CORPO_EVENTO_DDL).toMatch(/non può rinominare le colonne di una tabella del registro delle modifiche/);
+  });
+
   it("una relazione di un superutente fuori dal catalogo: avviso (l'app non la usa), con le due cure", () => {
     const p = piano(base({ estranee: [{ nome: "public.users_backup_20261108", tipo: "r", proprietario: "postgres" }] }));
     expect(p.azioni).toEqual([]);
@@ -300,6 +347,11 @@ describe("ruoli del database: esecuzione", () => {
           return { rows: [] };
         }
         // le letture di leggiStato, dallo stato corrente (le più specifiche prima)
+        if (/to_regnamespace\(\$1\) IS NOT NULL AS c/.test(sql)) return { rows: [{ c: !!stato.registro }] };
+        if (/aclexplode/.test(sql)) return { rows: stato.registro?.diritti ?? [] };
+        if (/to_regprocedure\(\$1\) IS NOT NULL AS c/.test(sql)) return { rows: [{ c: true }] };
+        if (/verifica\(\) AS v/.test(sql)) return { rows: (stato.registro?.problemi ?? []).map((problema) => ({ problema })) };
+        if (/AS esegue/.test(sql)) return { rows: stato.esecuzione ?? [] };
         if (/AS funzioni/.test(sql)) return { rows: stato.espressioni ?? [] };
         if (/<> ALL \(\$2::text\[\]\)/.test(sql)) return { rows: stato.estranee ?? [] };
         if (/has_column_privilege/.test(sql)) return { rows: stato.lettori ?? [] };
