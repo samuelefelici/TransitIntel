@@ -24,6 +24,7 @@
  * interrotto restituisce la richiesta per rilanciarlo.
  */
 import { pool } from "@workspace/db";
+import { inSistema } from "@workspace/db/contesto";
 import { SINTETICO_FUORI_ESERCIZIO, nonInUso } from "../materializzazione/usi-feed";
 
 export { USI_DEL_FEED, RIGHE_DEL_FEED } from "../materializzazione/usi-feed";
@@ -108,7 +109,8 @@ export async function cancellaFeedOrfani(c: Client, log: Log, giorni = GIORNI_FE
 
 /** Un giro di pulizie, se nessun altro lo sta facendo. */
 export async function eseguiPulizie(log: Log, ambito: Ambito = {}): Promise<{ saltato: boolean; runChiusi?: { odMinima: number; assegnazioneNodi: number }; feedCancellati?: string[] }> {
-  const c = await pool.connect();
+  // il client lo prende il sistema (cerbero.via = pulizie, PR 2.9)
+  const c = await inSistema("pulizie", () => pool.connect());
   let preso = false;
   try {
     preso = (await c.query("SELECT pg_try_advisory_lock(hashtextextended('cerbero:pulizie', 0)) AS ok")).rows[0]?.ok === true;

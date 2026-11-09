@@ -12,6 +12,7 @@
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
+import { conContesto, inSistema } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -30,6 +31,7 @@ import {
   azzeraTentativiPassword, azzeraTuttiITentativiPassword, controllaChiaveMfa, forsePulisciAccessi, prenotaTentativoPassword,
   provaCodice, pulisciAccessi,
 } from "./accesso-db";
+import { viaPerIlDatabase } from "./agent-context";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -111,14 +113,15 @@ let preparazione: Promise<void> | null = null;
 /** Una sola preparazione anche se arrivano tante richieste insieme all'avvio; se fallisce, la prossima riprova. */
 export function utentiPronti(): Promise<void> {
   if (bootstrapped) return Promise.resolve();
-  preparazione ??= preparaUtenti().then(
+  /* è del sistema anche se la fa partire (o ripartire) una richiesta: non va attribuita a lei (PR 2.9) */
+  preparazione ??= inSistema("avvio:utenti", () => preparaUtenti().then(
     () => {
       bootstrapped = true;
       void disattivaPasswordPubblicate("altri").catch((e: any) => console.error("[auth] controllo password pubblicate:", e?.message || e));
       void controllaChiaveMfa().catch((e: any) => console.error("[auth] controllo chiave della verifica:", e?.message || e));
     },
     (e: any) => { console.error("[auth] preparazione degli utenti non riuscita:", e?.message || e); preparazione = null; },
-  );
+  ));
   return preparazione;
 }
 
@@ -440,7 +443,8 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
     });
     return;
   }
-  next();
+  // da qui in poi ogni connessione al database sa chi è (cerbero.attore, PR 2.9)
+  conContesto({ attore: u.user.id, via: viaPerIlDatabase(verificato.via) }, next);
 };
 
 /** Una riga nel registro degli accessi; non blocca mai la richiesta. */

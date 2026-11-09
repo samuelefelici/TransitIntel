@@ -387,6 +387,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, 
       const rigaStrana = (await lavori()).rows.find((r: any) => r.id === strano.body.jobId);
       expect(rigaStrana.metadati).not.toHaveProperty("projectId");
       for (const j of [jobId, strano.body.jobId]) await request(altro).post(`/api/service-program/lavori/${j}/stop`);
+      // si aspetta che siano chiusi: un lavoro ancora in volo chiamerebbe Python
+      // durante il test dopo (che ne conta le chiamate)
+      await vi.waitFor(async () => {
+        const stati = (await lavori()).rows.filter((r: any) => r.id === jobId || r.id === strano.body.jobId).map((r: any) => r.stato);
+        expect(stati).toEqual(["fermato", "fermato"]);
+      }, { timeout: 5_000 });
     } finally {
       py.appeso = false;
       await db.execute(sql`UPDATE gtfs_feeds SET is_default = false WHERE id = ${FEED}::uuid`);

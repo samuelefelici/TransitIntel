@@ -25,6 +25,7 @@ import type { Corsia, Esito, Lavoro } from "./coda";
 import * as codaReale from "./coda";
 import { risultatoDi } from "./coda";
 import type { Progresso } from "./python";
+import { contestoDb, inSistema } from "@workspace/db/contesto";
 
 type Log = { info: (...a: any[]) => void; warn: (...a: any[]) => void; error: (...a: any[]) => void };
 
@@ -190,7 +191,11 @@ export function creaEsecutore(o: OpzioniEsecutore) {
   function parti(l: Lavoro): void {
     const voce = { lavoro: l, controller: new AbortController() } as InCorso;
     occupati[l.corsia]++;
-    voce.fine = esegui(l, voce.controller).finally(() => {
+    // il gestore scrive come chi ha lanciato il lavoro (cerbero.attore, PR 2.9)
+    voce.fine = contestoDb.run(
+      { attore: l.utente_id ?? "", via: `coda:${l.tipo}`, richiesta: `lavoro:${l.id}` },
+      () => esegui(l, voce.controller),
+    ).finally(() => {
       inCorso.delete(l.id);
       occupati[l.corsia]--;
       if (!fermando) void giro();
@@ -201,7 +206,8 @@ export function creaEsecutore(o: OpzioniEsecutore) {
   /** Un giro della coda alla volta; ferma() aspetta quello in corso. */
   function giro(): Promise<void> {
     if (fermando) return Promise.resolve();
-    if (!giroCorrente) giroCorrente = unGiro().finally(() => { giroCorrente = null; });
+    // il giro è del sistema: può partire dalla fine di un lavoro e non deve ereditarne l'utente
+    if (!giroCorrente) giroCorrente = inSistema("coda", unGiro).finally(() => { giroCorrente = null; });
     return giroCorrente;
   }
 

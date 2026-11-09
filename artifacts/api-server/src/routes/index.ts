@@ -73,12 +73,15 @@ import planningStudioHealthRouter from "../lib/planning-studio-health";
 import planningStudioRoundTripsRouter from "../lib/planning-studio-round-trips";
 import planningCompareRouter from "../lib/planning-compare";
 import rosterRotazioniRouter from "../lib/roster-rotazioni";
+import { contestoCron } from "../lib/contesto-http";
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
 router.use(authRouter);
 router.use(accountRouter); // sicurezza dell'account: ogni rotta chiede il login da sé
+// le cron scrivono come «cron:<nome>» (PR 2.9); il segreto lo controlla ogni rotta
+router.use("/cron", contestoCron);
 router.use(cronRouter); // pubblico (webhook/job esterni)
 router.use(argosWatchCronRouter); // pubblico (x-cron-secret): tick sorveglianza Argos
 router.use(weatherCronRouter); // pubblico (x-cron-secret): istantanee meteo

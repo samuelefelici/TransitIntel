@@ -10,6 +10,7 @@ import { GESTORI } from "./lib/lavori/gestori";
 import { chiSono, esecutoreInternoAcceso, slotDaAmbiente } from "./lib/lavori/ambiente";
 import { arresto } from "./lib/arresto";
 import { controllaIdentita } from "./lib/identita-db";
+import { inSistema } from "@workspace/db/contesto";
 
 const rawPort = process.env["PORT"];
 
@@ -79,7 +80,7 @@ const server = app.listen(port, () => {
     // Primo sync 10 secondi dopo l'avvio
     setTimeout(async () => {
       try {
-        const result = await syncTrafficFromTomTom();
+        const result = await inSistema("timer:traffico", () => syncTrafficFromTomTom());
         logger.info(result, "Traffic auto-sync (startup): done");
       } catch (err) {
         logger.error(err, "Traffic auto-sync (startup): failed");
@@ -89,7 +90,7 @@ const server = app.listen(port, () => {
     // Poi ogni 30 minuti
     setInterval(async () => {
       try {
-        const result = await syncTrafficFromTomTom();
+        const result = await inSistema("timer:traffico", () => syncTrafficFromTomTom());
         logger.info(result, "Traffic auto-sync (scheduled): done");
       } catch (err) {
         logger.error(err, "Traffic auto-sync (scheduled): failed");
@@ -145,8 +146,8 @@ const server = app.listen(port, () => {
       }
     };
 
-    setTimeout(() => void tick("startup"), 15_000);
-    setInterval(() => void tick("scheduled"), SIRI_INTERVAL_MS);
+    setTimeout(() => void inSistema("timer:siri", () => tick("startup")), 15_000);
+    setInterval(() => void inSistema("timer:siri", () => tick("scheduled")), SIRI_INTERVAL_MS);
     logger.info(
       { url: process.env.SIRI_VM_URL, everySeconds: SIRI_INTERVAL_MS / 1000 },
       "SIRI auto-poll enabled",
@@ -166,8 +167,8 @@ const server = app.listen(port, () => {
         logger.error(err, "Controllo settimanale AVM: failed");
       }
     };
-    setTimeout(() => void controlloAvm(), 120_000);
-    setInterval(() => void controlloAvm(), 60 * 60 * 1000);
+    setTimeout(() => void inSistema("timer:avm-controllo", controlloAvm), 120_000);
+    setInterval(() => void inSistema("timer:avm-controllo", controlloAvm), 60 * 60 * 1000);
   } else {
     logger.warn("SIRI_VM_URL not set — connettore AVM SIRI disattivato");
   }

@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./schema": "./src/schema/index.ts"
+    "./schema": "./src/schema/index.ts",
+    "./contesto": "./src/contesto.ts"
   },
   "scripts": {
     "migra": "node scripts/migra.mjs",

@@ -24,6 +24,7 @@
 import { Router, type IRouter, type RequestHandler } from "express";
 import { timingSafeEqual } from "node:crypto";
 import { db } from "@workspace/db";
+import { conContesto } from "@workspace/db/contesto";
 import { carontetapEvents, carontejourneys, carontevehiclePositions } from "@workspace/db/schema";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
@@ -55,6 +56,8 @@ const requireCaronteKey: RequestHandler = (req, res, next) => {
   }
   next();
 };
+// le scritture del validatore arrivano come «caronte» (PR 2.9)
+router.use((_req, _res, next) => conContesto({ via: "caronte" }, next));
 router.use(requireCaronteKey);
 
 // Feed GTFS attivo: GTFS_FEED_ID forza, altrimenti il feed is_active=true.
