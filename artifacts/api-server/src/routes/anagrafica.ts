@@ -56,6 +56,7 @@ import { esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-e
 import { ErroreXlsx } from "../lib/xlsx-leggi";
 import { datiProvaAttivi } from "../lib/dati-prova";
 import { legaContesto } from "../lib/contesto-http";
+import { conContesto } from "@workspace/db/contesto";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -469,13 +470,14 @@ async function importa(req: Request, scrivi: boolean) {
   const scelte = leggiScelte(req.body?.scelte);
   const oggi = oggiRoma();
   try {
-    return await db.transaction(async (tx) => {
+    /* un import tocca molti conducenti: nel registro delle modifiche un riepilogo per tabella (PR 2.10) */
+    return await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
       const rapporto = await eseguiImport(tx as unknown as Ex, righeFile, scelte, { oggi, userId: req.user?.id ?? null, via: req.authVia ?? null });
       /* prova, o applicazione con errori: si annulla tutto, il rapporto esce con l'eccezione */
       if (!scrivi || rapporto.conteggi.errore > 0) throw new Annulla(rapporto);
       rapporto.applicato = true;
       return rapporto;
-    });
+    }));
   } catch (e) {
     if (e instanceof Annulla) return e.rapporto;
     throw e;

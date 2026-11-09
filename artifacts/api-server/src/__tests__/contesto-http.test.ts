@@ -38,7 +38,7 @@ vi.mock("@workspace/db", async () => {
 
 import { contestoDb } from "@workspace/db/contesto";
 import { emettiSessione, mintShortLivedUserToken, requireAuth } from "../lib/auth";
-import { agentAttribution, viaPerIlDatabase } from "../lib/agent-context";
+import { agentAttribution, viaPerIlDatabase, withVia } from "../lib/agent-context";
 import { contestoCron, contestoRichiesta, legaContesto } from "../lib/contesto-http";
 import multer from "multer";
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -53,6 +53,8 @@ function app() {
   a.use(contestoRichiesta);
   a.use("/cron", contestoCron);
   a.post("/cron/traffic", (_req, res) => { res.json(contestoDb.getStore()); });
+  // il registro attività di Planning Studio: withVia (PR 2.10, dal token, non dall'header)
+  a.get("/attivita", requireAuth, (_req, res) => { res.json(withVia({ azione: "x" })); });
   a.get("/pubblica", (_req, res) => { res.json(contestoDb.getStore()); });
   // dopo un await: il contesto regge
   a.get("/dati", requireAuth, async (_req, res) => {
@@ -89,6 +91,17 @@ describe("chi fa la modifica, per le richieste HTTP", () => {
     expect(senza.body).toMatchObject({ via: "argos", attore: F.UTENTE });
     const mcp = await request(app()).get("/dati").set("Authorization", `Bearer ${token}`).set("X-Argos", "mcp");
     expect(mcp.body).toMatchObject({ via: "argos:mcp", attore: F.UTENTE });
+  });
+
+  it("il registro attività: Argos solo se lo dice il token, l'header da solo non basta", async () => {
+    const persona = sessioneDi(F.UTENTE);
+    const argos = mintShortLivedUserToken(F.UTENTE, { sv: 1, mfa: true });
+    const conHeader = await request(app()).get("/attivita").set("Authorization", `Bearer ${persona}`).set("X-Argos", "mcp");
+    expect(conHeader.body).toEqual({ azione: "x" });
+    const senzaHeader = await request(app()).get("/attivita").set("Authorization", `Bearer ${argos}`);
+    expect(senzaHeader.body).toEqual({ azione: "x", via: "argos" });
+    const mcp = await request(app()).get("/attivita").set("Authorization", `Bearer ${argos}`).set("X-Argos", "mcp");
+    expect(mcp.body).toEqual({ azione: "x", via: "argos:mcp" });
   });
 
   it("le cron: «cron:<nome>», senza utente", async () => {

@@ -988,17 +988,20 @@ router.post("/planning-studio/projects/:id/stops/bulk", async (req, res): Promis
   if (list.length === 0) { res.json({ inserted: 0 }); return; }
   if (list.length > 10000) { res.status(400).json({ error: "massimo 10000 fermate per richiesta" }); return; }
   let inserted = 0;
-  for (const s of list) {
-    const la = Number(s.lat), lo = Number(s.lon);
-    if (!s?.name || !isFinite(la) || !isFinite(lo)) continue;
-    await db.execute(sql`
-      INSERT INTO ps_stops (project_id, code, name, lat, lon, zone_id, location_type, attributes)
-      VALUES (${proj.id}::uuid, ${s.code ?? null}, ${String(s.name)},
-              ${la}, ${lo}, ${s.zoneId ?? null}, ${s.locationType ?? 0},
-              ${JSON.stringify(s.attributes ?? {})}::jsonb)
-    `);
-    inserted++;
-  }
+  /* tutte o nessuna, e nel registro delle modifiche un riepilogo invece di una riga per fermata (PR 2.10) */
+  await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+    for (const s of list) {
+      const la = Number(s.lat), lo = Number(s.lon);
+      if (!s?.name || !isFinite(la) || !isFinite(lo)) continue;
+      await tx.execute(sql`
+        INSERT INTO ps_stops (project_id, code, name, lat, lon, zone_id, location_type, attributes)
+        VALUES (${proj.id}::uuid, ${s.code ?? null}, ${String(s.name)},
+                ${la}, ${lo}, ${s.zoneId ?? null}, ${s.locationType ?? 0},
+                ${JSON.stringify(s.attributes ?? {})}::jsonb)
+      `);
+      inserted++;
+    }
+  }));
   await logActivity(proj.id, req.user!.id, "ps.stop.bulk", { payload: { inserted } });
   res.json({ inserted });
 });

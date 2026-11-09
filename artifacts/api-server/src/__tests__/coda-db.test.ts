@@ -227,3 +227,18 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda dei lavori, sul databas
     expect(r.rows[0].richiesta).toEqual({});
   });
 });
+
+/* PR 2.10: il canale scritto nella coda è il più preciso fra quello passato
+ * e quello del contesto (argos → argos:mcp), mai uno diverso */
+describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda e il canale del contesto", () => {
+  it("argos dal chiamante, argos:mcp dal contesto: argos:mcp; un canale diverso non si mescola", async () => {
+    const { contestoDb } = await import("@workspace/db/contesto");
+    const a = await contestoDb.run({ via: "argos:mcp" }, () => nuovo("lunga", { via: "argos" }));
+    const b = await contestoDb.run({ via: "argos:mcp" }, () => nuovo("lunga", { via: "api" }));
+    const c = await nuovo("lunga", { via: "api" });
+    const { rows } = await pool.query("SELECT id, via FROM coda.lavori WHERE id = ANY ($1::uuid[])", [[a, b, c]]);
+    const via = Object.fromEntries(rows.map((r: any) => [r.id, r.via]));
+    expect([via[a], via[b], via[c]]).toEqual(["argos:mcp", "api", "api"]);
+    await pool.query("DELETE FROM coda.lavori WHERE id = ANY ($1::uuid[])", [[a, b, c]]);
+  });
+});

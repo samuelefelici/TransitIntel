@@ -17,6 +17,7 @@
  *   RST) non deve bloccare per sempre il battito o il giro dell'esecutore.
  */
 import { pool } from "@workspace/db";
+import { contestoDb } from "@workspace/db/contesto";
 
 /** Tempo massimo di una query della coda (lato client: poi la connessione si scarta). */
 const QUERY_MS = 30_000;
@@ -79,11 +80,15 @@ export interface NuovoLavoro {
 }
 
 export async function accoda(n: NuovoLavoro): Promise<string> {
+  /* il canale del contesto (PR 2.9) è quello del token, a volte precisato
+   * (argos → argos:mcp): se è lo stesso di quello passato, vale il più preciso (PR 2.10) */
+  const delContesto = contestoDb.getStore()?.via;
+  const via = delContesto && n.via && (delContesto === n.via || delContesto.startsWith(`${n.via}:`)) ? delContesto : (n.via ?? null);
   const r = await q(
     `INSERT INTO coda.lavori (tipo, versione, corsia, utente_id, via, oggetto_id, chiave_unicita, richiesta, metadati, timeout_sec, max_tentativi)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11)
      RETURNING id`,
-    [n.tipo, n.versione ?? 1, n.corsia, n.utenteId ?? null, n.via ?? null, n.oggettoId ?? null, n.chiaveUnicita ?? null,
+    [n.tipo, n.versione ?? 1, n.corsia, n.utenteId ?? null, via, n.oggettoId ?? null, n.chiaveUnicita ?? null,
      JSON.stringify(n.richiesta ?? {}), JSON.stringify(n.metadati ?? {}), Math.round(n.timeoutSec), n.maxTentativi ?? 2],
   );
   return r.rows[0].id;

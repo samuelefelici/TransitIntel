@@ -18,6 +18,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { withVia } from "./agent-context";
+import { conContesto } from "@workspace/db/contesto";
 
 const router: IRouter = Router();
 
@@ -899,7 +900,8 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
   const tripIds: string[] = [];
   let templateRemoved = false;
   try {
-    await db.transaction(async (tx) => {
+    /* molte corse in una volta: nel registro delle modifiche un riepilogo (PR 2.10) */
+    await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
       for (const dep of deps) {
         const times = runTimes(dep);
         const ins = await tx.execute<any>(sql`
@@ -977,7 +979,7 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
         await tx.execute(sql`DELETE FROM ps_trips WHERE id = ${baseTripId}::uuid AND project_id = ${projId}::uuid`);
         templateRemoved = true;
       }
-    });
+    }));
   } catch (e: any) {
     res.status(500).json({ error: e?.message || "Generazione fallita" });
     return;

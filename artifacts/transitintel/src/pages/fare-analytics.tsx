@@ -792,7 +792,6 @@ function AuditTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [noteText, setNoteText] = useState("");
-  const [noteActor, setNoteActor] = useState("");
   const [savingNote, setSavingNote] = useState(false);
   const [filterAction, setFilterAction] = useState("all");
 
@@ -837,7 +836,7 @@ function AuditTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
     try {
       await apiFetch("/api/fares/audit", {
         method: "POST",
-        body: JSON.stringify({ description: noteText, actor: noteActor || undefined }),
+        body: JSON.stringify({ description: noteText }),
       });
       setNoteText("");
       await loadAudit();
@@ -901,12 +900,6 @@ function AuditTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
               value={noteText}
               onChange={(e) => setNoteText(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) addNote(); }}
-            />
-            <input
-              className="w-36 border rounded px-3 py-2 text-sm bg-background"
-              placeholder="Autore (opz.)"
-              value={noteActor}
-              onChange={(e) => setNoteActor(e.target.value)}
             />
             <Button size="sm" onClick={addNote} disabled={savingNote || !noteText.trim()}>
               {savingNote ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
