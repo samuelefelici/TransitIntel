@@ -9,6 +9,7 @@ import { creaEsecutore } from "./lib/lavori/esecutore";
 import { GESTORI } from "./lib/lavori/gestori";
 import { chiSono, esecutoreInternoAcceso, slotDaAmbiente } from "./lib/lavori/ambiente";
 import { arresto } from "./lib/arresto";
+import { controllaIdentita } from "./lib/identita-db";
 
 const rawPort = process.env["PORT"];
 
@@ -27,6 +28,8 @@ if (Number.isNaN(port) || port <= 0) {
 const server = app.listen(port, () => {
   logger.info({ port }, "Server listening");
 
+  // Con chi lavoro sul database (cerbero_app come cerbero_owner): se il ruolo non si applica, esce
+  void controllaIdentita("api");
   // Il database ha tutte le migrazioni di questo codice? (log e /api/healthz)
   avviaGuardiaSchema();
   // I calcoli della coda (coda.lavori): li esegue il lavoratore; finché non c'è,

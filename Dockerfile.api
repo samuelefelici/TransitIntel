@@ -32,10 +32,15 @@ RUN pnpm install --frozen-lockfile --prefer-offline \
  && pnpm --filter @workspace/api-server run build
 
 # ── 4) Esecuzione come utente senza privilegi ──────────────────────
-# L'API scrive solo in .cache (cache delle risposte, stato dei lavori) e in
-# /tmp; i sorgenti restano di root, in sola lettura per il processo.
+# L'API e il lavoratore girano come l'utente node, e scrivono solo in .cache
+# (cache delle risposte, stato dei lavori) e in /tmp; i sorgenti restano di
+# root, in sola lettura per il processo. Il container però parte come root:
+# docker/avvio.sh esegue le migrazioni, toglie DATABASE_MIGRATOR_URL e solo
+# allora passa a node (setpriv). Con `USER node` qui, l'API potrebbe leggere
+# le credenziali del migratore (un superutente del database) dall'ambiente di
+# tini, il PID 1 (/proc/1/environ): ora tini è di root e node non lo legge.
+# Il Terminal di Coolify e l'HEALTHCHECK girano come root.
 RUN mkdir -p /app/.cache && chown node:node /app/.cache
-USER node
 
 ENV NODE_ENV=production
 ENV PORT=3000

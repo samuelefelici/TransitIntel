@@ -46,6 +46,9 @@ parlarsi via rete interna:
    > che crea lo schema `caronte`. Chi aveva eseguito la versione di prima deve
    > rieseguirlo: toglie la lettura di tutte le tabelle (utenti compresi) e
    > lascia solo le GTFS; poi cambia la password con `\password caronte_app`.
+   > Dalla 2.8 si esegue come `postgres` (dal Terminal del PostgreSQL, o
+   > `DATABASE_URL=<url di postgres> pnpm --filter @workspace/db run setup-caronte`),
+   > non come `cerbero_app`, che non crea ruoli.
 
 > ✅ Conserva la connection string. Forma tipica su rete interna Coolify (senza SSL):
 > `postgres://user:password@<servizio-db>:5432/dbname`
@@ -65,12 +68,16 @@ migrator di drizzle).
   (`docker/avvio.sh` → `lib/db/scripts/migra.mjs`). Nel log:
   `[migrazioni] 0001_allinea applicata` oppure `nessuna migrazione da applicare`.
 - **Con quale utente.** `DATABASE_MIGRATOR_URL` se c'è, altrimenti
-  `DATABASE_URL`: deve essere il proprietario delle tabelle (o un superutente),
-  perché le migrazioni le modificano. Oggi sono lo stesso utente; si
-  separeranno con i ruoli del database (Fase 2). `docker/avvio.sh` la toglie
-  dall'ambiente dell'API e dei solver che lancia; resta però leggibile dentro
-  il container, quindi le credenziali si separeranno davvero solo quando il
-  migratore avrà un servizio suo.
+  `DATABASE_URL`: serve un **superutente** (`postgres`), perché le migrazioni
+  cambiano tabelle di `cerbero_owner` e dopo di loro il migratore tiene in
+  ordine i ruoli del database (vedi «Ruoli del database»). Come `cerbero_app`
+  il migratore si ferma e l'API non parte: `DATABASE_MIGRATOR_URL` va
+  impostata **prima** di passare `DATABASE_URL` a `cerbero_app`. Il container
+  parte come root solo per le migrazioni: poi `docker/avvio.sh` toglie la
+  variabile e avvia l'API come utente `node`, che non la può più leggere da
+  nessuna parte (né dal suo ambiente né da quello del processo 1). Resta
+  leggibile dal **Terminal** del container, che è root: è lì che servono gli
+  strumenti a mano (`ruoli.mjs`, `argos-permessi.mjs`).
 - **Se una migrazione fallisce** il database non cambia (le migrazioni girano in
   una transazione) e **il container nuovo non parte**: nel log c'è
   `[migrazioni] FALLITA: <il motivo dato da Postgres>`, seguito dall'istruzione.
@@ -258,9 +265,8 @@ occupata non cambia niente ed esce con un errore.
   node lib/db/scripts/argos-permessi.mjs --verifica   # dice cosa non va, non tocca niente
   node lib/db/scripts/argos-permessi.mjs              # riporta i permessi al contratto
   ```
-  Usa `DATABASE_MIGRATOR_URL` (o `DATABASE_URL`), cioè il proprietario delle
-  tabelle. Esce con 1 se resta qualcosa da sistemare a mano, e scrive
-  l'istruzione da eseguire.
+  Usa `DATABASE_MIGRATOR_URL` (o `DATABASE_URL`), cioè `postgres`. Esce con 1
+  se resta qualcosa da sistemare a mano, e scrive l'istruzione da eseguire.
 - **Creare `argos_ro` o cambiargli la password**, al posto dello script di
   Argos. Dal Terminal del PostgreSQL (`psql -U postgres -d postgres`):
   ```
@@ -295,6 +301,211 @@ occupata non cambia niente ed esce con un errore.
   `GRANT SELECT ON <tabella> TO argos_ro;` dal Terminal del PostgreSQL. È una
   toppa che dura fino al prossimo avvio dell'API, che la toglie: la correzione
   vera è aggiungere la tabella al contratto.
+
+### Ruoli del database (PR 2.8): l'app non è più superutente
+
+Fino alla 2.7 API, lavoratore e migratore entravano come `postgres`, il
+superutente, e le tabelle erano sue: un SQL iniettato o una dipendenza
+compromessa potevano leggere e cambiare tutto (FleetCare, `caronte.app_users`,
+file del server, ruoli). Dalla 2.8:
+
+| Ruolo | Cosa è | Chi lo usa |
+|---|---|---|
+| `cerbero_owner` | NOLOGIN: proprietario delle tabelle, viste e sequenze di Cerbero (public, caronte, coda) | nessuno direttamente |
+| `cerbero_app` | l'utente dell'app: membro di `cerbero_owner` (con SET, senza ereditarne i diritti) e con `role = cerbero_owner`, quindi ogni sua sessione lavora come proprietario | API e lavoratore (`DATABASE_URL`) |
+| `postgres` | superutente: migrazioni, ruoli, permessi di Argos | migratore (`DATABASE_MIGRATOR_URL`), Terminal |
+
+- **Chi li tiene in ordine.** Il migratore, a ogni avvio dell'API, dopo le
+  migrazioni (`lib/db/scripts/ruoli-regole.mjs`):
+  - crea i due ruoli se mancano;
+  - dà a `cerbero_owner` USAGE e CREATE su `public`, `caronte` e `coda`;
+  - gli dà USAGE su `cerbero_migrazioni` e la lettura della tabella di
+    tracciamento e dei contratti. `cerbero_migrazioni` resta di `postgres`,
+    così il contratto di Argos lo scrive solo chi migra;
+  - passa a `cerbero_owner` le relazioni del catalogo
+    (`lib/db/migrations/meta/catalogo.json`) che sono di un superutente: una
+    per transazione, con un lock di 1 s al massimo e circa 25 s in tutto. Un
+    oggetto occupato si riprova al prossimo avvio;
+  - non tocca mai le estensioni (PostGIS), `caronte.app_users` né gli oggetti
+    di un altro ruolo (per esempio del sistema AVM): per questi ultimi scrive
+    nel log l'istruzione da eseguire.
+
+  `ALTER … OWNER` riscrive i permessi già dati (ad `argos_ro`, `caronte_app`,
+  `fleetcare_app`), che restano validi.
+- **L'app non crea oggetti eseguibili.** Il migratore crea e tiene acceso
+  sempre (`ENABLE ALWAYS`) l'event trigger `cerbero_ddl_dell_app`, di
+  `postgres`: come `cerbero_app` si eseguono solo i comandi delle unità pigre
+  (`CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`). Funzioni (anche
+  temporanee), viste, operatori, aggregati, tipi, cast, regole, trigger e
+  policy si fermano con «cerbero_app non può eseguire …». Senza, un oggetto
+  messo dall'app in `public` (dove ha CREATE per le unità pigre) girerebbe come
+  superutente quando lo incontra il migratore, un amministratore in psql o una
+  funzione di FleetCare (la revisione lo ha riprodotto).
+- **Né espressioni pericolose.** Un secondo event trigger,
+  `cerbero_ddl_dell_app_fine` (a fine comando, stessa funzione), guarda i
+  default, i vincoli CHECK, le colonne generate, gli indici e i tipi delle
+  colonne delle tabelle che l'app ha appena toccato. Ammette solo le funzioni
+  dell'elenco (`FUNZIONI_AMMESSE` in `lib/db/scripts/ruoli-regole.mjs`),
+  quelle di operatori e conversioni di sistema, e i tipi di sistema o delle
+  estensioni (un dominio con un suo CHECK, anche messo da un superutente, no);
+  altrimenti «cerbero_app non può usare queste funzioni o tipi…» e il comando
+  si annulla. Un'espressione di una tabella la
+  esegue chi scrive la riga, una migrazione che cambia la colonna, il
+  ripristino di un backup: senza questo controllo l'app poteva far girare SQL
+  come superutente (la revisione lo ha riprodotto con un CHECK e
+  `query_to_xml`).
+  **Prima di migrare**, il migratore controlla le stesse espressioni su tutte
+  le tabelle di Cerbero. Se ne trova una non ammessa **non migra**: il deploy
+  fallisce e resta il container di prima. `ruoli.mjs --verifica` dice quale
+  espressione e come toglierla.
+- **`cerbero_app` nasce senza accesso** (NOLOGIN, nessuna password). La password
+  la dà chi gestisce il database; il migratore non tocca più né la password né
+  il LOGIN.
+- **API e lavoratore all'avvio** scrivono con chi lavorano
+  (`database: collegato come cerbero_app, lavora come cerbero_owner`). **Escono
+  con 1**, e resta in servizio il container di prima, se:
+  - il database rifiuta l'accesso (password, LOGIN, nome del database);
+  - `cerbero_app` non lavora come `cerbero_owner`;
+  - uno dei due event trigger (`cerbero_ddl_dell_app`,
+    `cerbero_ddl_dell_app_fine`) manca o è spento;
+  - una relazione del catalogo di Cerbero è ancora di un superutente.
+
+  Ancora come `postgres` danno solo un avviso. Un avviso c'è anche per una
+  relazione di un superutente fuori dal catalogo (per esempio un backup fatto
+  a mano): l'app non la usa. Se all'avvio il database non risponde,
+  riprovano ogni 15 s e giudicano quando la lettura riesce.
+- **FleetCare.** Le sue funzioni che leggono Cerbero sono di
+  `fleetcare_legge_cerbero`, che non è superutente e legge solo poche colonne
+  di `public.users` e il nome dei depositi (FleetCare, migrazione 0089). Le
+  colonne gliele ridà il migratore di Cerbero a ogni avvio.
+  `cerbero_owner` chiama solo `fleetcare.parco_per_avm()` e
+  `fleetcare.interventi_avm()`.
+  Il migratore segnala come errore ogni funzione SECURITY DEFINER di un
+  superutente che legge tabelle di Cerbero: con le tabelle di `cerbero_owner`,
+  l'app potrebbe farla girare con codice suo come superutente. **Finché c'è
+  un errore così, `cerbero_app` non si usa.**
+- **A mano**, dal Terminal del container dell'API:
+  ```bash
+  node lib/db/scripts/ruoli.mjs --verifica   # cosa non va, e chi è collegato con quale utente
+  node lib/db/scripts/ruoli.mjs              # riallinea (senza tetto di tempo, lock fino a 5 s)
+  node lib/db/scripts/ruoli.mjs --prova-url  # prova un DATABASE_URL (lo chiede, non va scritto nel comando)
+  ```
+- **Chi lavora in psql.** Come `postgres`, per prima cosa
+  `SET search_path = pg_catalog, pg_temp;`, poi solo cataloghi, permessi e
+  ruoli. I dati delle tabelle di Cerbero si guardano e si correggono come
+  `cerbero_app`. Le tabelle sono di `cerbero_owner`: un default o un vincolo
+  messo lì dall'app non deve girare come superutente. Anche una copia di
+  sicurezza di una tabella (`CREATE TABLE … AS`) si fa come `cerbero_app`:
+  fatta come `postgres` resta di un superutente e la verifica la segnala.
+- **Nessun programma scrive nelle tabelle di Cerbero da superutente.** Per
+  esempio Caronte o il sistema AVM: ne eseguirebbe default e vincoli come
+  superutente. `ruoli.mjs --verifica` dà errore per le sessioni da superutente
+  dei programmi che non conosce.
+- **Il DDL dell'app**, cioè le unità pigre (fino alla 2.16), resta per tabelle
+  e indici: l'app possiede le sue tabelle e può crearne in `public`, e
+  l'event trigger lascia passare solo quello. Il registro delle modifiche
+  (2.10) sarà inviolabile solo dopo la 2.16. Prima di aggiornare PostGIS si
+  toglie il CREATE su `public` a `cerbero_owner` (README delle migrazioni).
+
+**Rilascio (una volta sola), in quest'ordine:**
+0. **Prima, in sola lettura**, dal Terminal del PostgreSQL
+   (`psql -U postgres -d postgres`):
+   ```sql
+   -- chi è collegato e con che utente (anche Caronte e FleetCare)
+   SELECT usename, application_name, count(*) FROM pg_stat_activity
+    WHERE datname = current_database() GROUP BY 1, 2 ORDER BY 1, 2;
+   -- di chi sono le relazioni di Cerbero
+   SELECT n.nspname, pg_get_userbyid(c.relowner) AS proprietario, c.relkind, count(*)
+     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname IN ('public', 'caronte', 'coda', 'cerbero_migrazioni') AND c.relkind IN ('r', 'v', 'S', 'p')
+    GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
+   -- schemi e database: proprietario e permessi
+   SELECT nspname, pg_get_userbyid(nspowner), nspacl FROM pg_namespace
+    WHERE nspname IN ('public', 'caronte', 'coda', 'cerbero_migrazioni', 'fleetcare');
+   SELECT datname, pg_get_userbyid(datdba), datacl FROM pg_database WHERE datname = current_database();
+   SELECT rolname, rolsuper, rolcanlogin FROM pg_roles
+    WHERE rolname IN ('cerbero_owner', 'cerbero_app', 'caronte_app', 'fleetcare_app', 'argos_ro');
+   ```
+   - **Tabelle `caronte` di un ruolo diverso da `postgres`** (il sistema AVM):
+     ci si ferma e si decide prima.
+   - **Caronte (il validatore) o un altro programma entra come `postgres`**:
+     va passato a `caronte_app`, o a un suo ruolo, **prima del passo 4**. È
+     una condizione, non un consiglio. Le sue scritture su tabelle di
+     `cerbero_owner` farebbero girare come superutente i default messi
+     dall'app.
+
+   Poi sull'API: `DATABASE_MIGRATOR_URL` = l'URL di oggi (quello di
+   `postgres`), lasciando `DATABASE_URL` com'è.
+1. **Merge e deploy di API e lavoratore** (immagine nuova), la sera. Nel log
+   dell'API:
+   - `ruoli del database sistemati` e `N oggetti passati a cerbero_owner`;
+   - gli **errori** sulle tre funzioni di FleetCare, che finiscono al passo 2;
+   - l'avviso «collegato come postgres, superutente».
+
+   Poi dal Terminal dell'API: `node lib/db/scripts/ruoli.mjs --verifica`.
+   Restano solo FleetCare e l'avviso su `parco_per_avm`/`interventi_avm`.
+   Finché Caronte (o un altro programma) entra come `postgres`, c'è anche
+   l'errore «sessione da superutente di …»: va tolto, come detto al passo 0,
+   prima del passo 4.
+2. **FleetCare: merge della 0089 e deploy.** `ruoli.mjs --verifica` è pulita.
+   Il login in FleetCare (da Cerbero) funziona e i dati dell'officina nell'AVM
+   ci sono.
+3. **Password**, dal Terminal del PostgreSQL:
+   ```
+   \password cerbero_app
+   ALTER ROLE cerbero_app LOGIN;
+   ```
+4. **Prima di cambiare, tutte e due** dal Terminal del container dell'API:
+   - `node lib/db/scripts/ruoli.mjs --verifica` esce con 0, senza errori né
+     «da fare» (se c'è qualcosa da fare: prima `node lib/db/scripts/ruoli.mjs`);
+   - `node lib/db/scripts/ruoli.mjs --prova-url`, poi si incolla il nuovo
+     `DATABASE_URL` e Invio: deve rispondere «l'URL va bene» (collegato come
+     `cerbero_app`, lavora come `cerbero_owner`, due event trigger accesi).
+     Nel container non c'è `psql`. Nell'URL la password va codificata
+     (`@ : / # %` e simili) o scelta senza quei caratteri.
+
+   Poi **Coolify**:
+   - API: `DATABASE_URL` = `postgres://cerbero_app:<password>@<servizio-db>:5432/<db>`;
+     `DATABASE_MIGRATOR_URL` resta quello di `postgres`;
+   - lavoratore: `DATABASE_URL` uguale a quello dell'API, nessun
+     `DATABASE_MIGRATOR_URL`.
+
+   Redeploy di tutti e due, poi di nuovo `ruoli.mjs --verifica`.
+5. **Prove**:
+   - `ruoli.mjs --verifica` mostra `collegati come cerbero_app` per
+     `cerbero-api` e `cerbero-lavoratore`;
+   - nel log c'è la riga `lavora come cerbero_owner`;
+   - un calcolo nella Fucina, il Roster, AVM «Andamento» con i dati di
+     FleetCare, una domanda ad Argos, un salvataggio in Planning Studio;
+   - nel log nessun `permission denied`.
+
+**Rollback:** `DATABASE_URL` di nuovo sull'URL di `postgres` (subito, senza
+altro). Proprietari, ruoli ed event trigger possono restare: `postgres` resta
+superutente e gli event trigger fermano solo `cerbero_app`. Per il container si
+torna all'immagine di prima. Con l'immagine di prima, API e lavoratore entrano
+come `postgres` senza nome di programma: in `ruoli.mjs --verifica` sono le
+sessioni «senza nome», non un programma sconosciuto.
+
+**Dopo un ripristino** (backup di Coolify o `pg_dump`):
+- un dump non porta i ruoli. Il migratore li ricrea al primo avvio:
+  `cerbero_app` torna NOLOGIN, quindi password e LOGIN vanno ridati (passo 3).
+  Conviene salvare anche i ruoli (`pg_dumpall --roles-only`);
+- un ripristino con `--no-owner` rimette tutto a `postgres`:
+  - le relazioni di Cerbero le ripassa il migratore;
+  - le tre funzioni di FleetCare che leggono Cerbero no. `ruoli.mjs --verifica`
+    le segnala con l'`ALTER FUNCTION … OWNER TO fleetcare_legge_cerbero` da
+    eseguire come `postgres`;
+  - i permessi di `caronte_app` si ridanno con `setup-caronte`.
+- un ripristino come `postgres` esegue i vincoli delle tabelle mentre carica
+  i dati. Un backup fatto mentre `ruoli.mjs --verifica` non segnalava
+  espressioni non ammesse è sicuro: con gli event trigger accesi l'app non
+  può aggiungerne. Se la verifica ne segnala, prima si tolgono (la cura è nel
+  messaggio) e poi si fa il backup;
+- Prima di ridare `DATABASE_URL` a `cerbero_app`: di nuovo il passo 4.
+
+Il container passa all'utente `node` con `setpriv`, che ha bisogno delle
+capacità SETUID e SETGID: con `--cap-drop ALL` (non è il default di Coolify)
+non parte.
 
 ### Estensioni PostGIS che nessuno usa (tiger, topology)
 
@@ -422,7 +633,10 @@ anche gli 11 avvisi.
 
 `Dockerfile.api` parte da Node 22 (Node 20 è fuori supporto) e fa girare l'API
 come utente `node`, non root: il processo scrive solo in `/app/.cache` e in
-`/tmp`. `tini` fa da processo 1. Al deploy Coolify manda il segnale di arresto
+`/tmp`. `tini` fa da processo 1. Il container parte come root solo per le
+migrazioni (dalla 2.8): poi `docker/avvio.sh` passa a `node` con `setpriv`,
+senza `DATABASE_MIGRATOR_URL`. Il Terminal di Coolify e l'HEALTHCHECK girano
+come root. Al deploy Coolify manda il segnale di arresto
 e aspetta 30 s: l'API continua a rispondere ma con «Connection: close», così
 le connessioni si chiudono a fine risposta e il proxy manda le richieste
 successive al container nuovo; esce appena non ha richieste in corso da 1 s,
@@ -602,7 +816,8 @@ migrazione `0004_coda_dei_lavori`):
    lavoratore non riceve richieste da fuori.
 2. Variabili d'ambiente:
    - `CERBERO_PROCESSO=lavoratore`;
-   - `DATABASE_URL` e, se serve, `PGSSL_NO_VERIFY` uguali a quelle dell'API;
+   - `DATABASE_URL` e, se serve, `PGSSL_NO_VERIFY` uguali a quelle dell'API
+     (dalla 2.8 l'utente è `cerbero_app`, vedi «Ruoli del database»);
    - `NODE_ENV=production`;
    - `LAVORI_SLOT_LUNGA=1`, `LAVORI_SLOT_VELOCE=2` (dalla 2.6; vedi «Slot»);
    - `MAPBOX_TOKEN` o `MAPBOX_ACCESS_TOKEN`, se la relazione deve scaricare le
@@ -646,6 +861,7 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/geo-utils.ts
    artifacts/api-server/src/lib/scripts-dir.ts
    artifacts/api-server/src/lib/guardia-schema.ts
+   artifacts/api-server/src/lib/identita-db.ts
    artifacts/api-server/src/lib/logger.ts
    artifacts/api-server/build.ts
    artifacts/api-server/package.json
@@ -1126,9 +1342,9 @@ Riferimento completo in `.env.example`. Sintesi:
 
 | Key | Obbligatoria | Note |
 |---|---|---|
-| `DATABASE_URL` | ✅ | `postgres://user:pass@<servizio-db>:5432/dbname` |
+| `DATABASE_URL` | ✅ | `postgres://cerbero_app:pass@<servizio-db>:5432/dbname` (dalla 2.8; prima `postgres`) |
 | `PGSSL_NO_VERIFY` | — | `1` se Postgres usa certificato self-signed |
-| `DATABASE_MIGRATOR_URL` | — | utente proprietario delle tabelle, solo per le migrazioni all'avvio; senza, vale `DATABASE_URL` |
+| `DATABASE_MIGRATOR_URL` | ✅ dalla 2.8 | superutente (`postgres`), solo per le migrazioni e i ruoli all'avvio; l'API non la vede. Senza, vale `DATABASE_URL`, che dalla 2.8 è `cerbero_app`: il migratore si ferma |
 | `CERBERO_ARRESTO_SECONDI` | — | attesa massima all'arresto per le richieste in corso (default 25, massimo 28: Coolify uccide il container dopo 30 s) |
 | `CERBERO_PROCESSO` | — | `api` (default) o `lavoratore`: quale processo avvia l'immagine (vedi «Il lavoratore dei calcoli») |
 | `CERBERO_LAVORATORE_INTERNO` | — | `0` spegne l'esecutore dei calcoli dentro l'API, quando c'è il lavoratore (default: acceso) |

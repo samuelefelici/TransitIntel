@@ -20,9 +20,10 @@
  * Il diario è quello incorporato nel bundle (lib/db/scripts/diario-incluso.mjs):
  * le migrazioni della stessa immagine. Si controlla all'avvio, poi ogni 10
  * minuti se è tutto a posto, ogni 15 secondi se no (così, applicate le
- * migrazioni, torna sano in fretta). Solo in lettura. (PR 2.8: all'utente
- * dell'app servirà SELECT sulla tabella di tracciamento; senza, lo stato resta
- * «sconosciuto».)
+ * migrazioni, torna sano in fretta). Solo in lettura. L'utente dell'app
+ * (cerbero_app, come cerbero_owner) ha USAGE sullo schema e SELECT sulla
+ * tabella di tracciamento, dati dal migratore (lib/db/scripts/ruoli-regole.mjs);
+ * senza, lo stato resta «sconosciuto».
  */
 import { pool } from "@workspace/db";
 import { statoSchema, TRACCIAMENTO } from "../../../../lib/db/scripts/migrazioni-regole.mjs";

@@ -75,7 +75,12 @@ describe("il lavoratore non importa l'API", () => {
                      "ALTER TABLE t ADD COLUMN IF NOT EXISTS c text", "GRANT SELECT ON t TO r", "COMMENT ON TABLE t IS 'x'"]) {
       expect(ddl.test(q), q).toBe(true);
     }
-    const conDdl = moduli.filter(m => {
+    // il catalogo atteso (meta/catalogo.json) è un dato, non codice: descrive
+    // lo schema (anche gli indici, col loro CREATE INDEX) e il lavoratore ne
+    // legge solo i nomi delle relazioni (lib/db/scripts/catalogo-incluso.mjs)
+    const DATI = new Set(["lib/db/migrations/meta/catalogo.json"]);
+    expect(moduli.filter(m => m.endsWith(".json") && !m.endsWith("_journal.json") && !DATI.has(m))).toEqual([]);
+    const conDdl = moduli.filter(m => !DATI.has(m)).filter(m => {
       const codice = readFileSync(path.join(REPO, m), "utf8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
         .replace(/(^|[^:"'`])\/\/.*$/gm, "$1");

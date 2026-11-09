@@ -12,8 +12,9 @@
  *   il suo container può partire prima che l'API la applichi; con un 503
  *   Coolify lo scarterebbe e terrebbe il vecchio. Aspetta, senza prendere
  *   lavori (`prendeLavori: false`), e la guardia lo riallinea in 15 s.
- *   (PR 2.8: con lo schema «sconosciuto», cioè senza SELECT sulla tabella di
- *   tracciamento, non prende lavori: il permesso va dato all'utente dell'app.)
+ *   Con lo schema «sconosciuto» (database che non risponde, o senza SELECT
+ *   sulla tabella di tracciamento) non prende lavori: il SELECT a
+ *   cerbero_owner lo dà il migratore (lib/db/scripts/ruoli-regole.mjs).
  * - SIGTERM: smette di prendere lavori, aspetta 20 s quelli in corso, poi li
  *   ferma e li rimette in coda senza consumare il tentativo (Coolify concede
  *   30 s).
@@ -32,12 +33,15 @@ import { creaEsecutore } from "./lib/lavori/esecutore";
 import { GESTORI } from "./lib/lavori/gestori";
 import { chiSono, slotDaAmbiente } from "./lib/lavori/ambiente";
 import { avviaPulizie } from "./lib/lavori/pulizie";
+import { controllaIdentita } from "./lib/identita-db";
 
 const porta = Number(process.env.PORT || 3001);
 const ATTESA_ARRESTO_MS = 20_000;
 const chi = chiSono("lavoratore");
 const slot = slotDaAmbiente();
 
+// con chi lavora sul database: se il ruolo di cerbero_app non si applica, esce
+void controllaIdentita("lavoratore");
 avviaGuardiaSchema();
 const puoPrendere = () => {
   const s = statoDelloSchema();

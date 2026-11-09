@@ -55,6 +55,55 @@ describe("il diario delle migrazioni", () => {
   });
 });
 
+/* Dalla 0006 (PR 2.8) chi migra è un superutente ma le tabelle sono di
+ * cerbero_owner: ogni oggetto nuovo passa subito a lui, e i dati delle tabelle
+ * di Cerbero si toccano come lui (lib/db/migrations/README.md, «Chi possiede cosa»). */
+function controllaProprieta(testo: string): string[] {
+  const sql = testo.replace(/--.*$/gm, "");
+  const problemi: string[] = [];
+  const nome = (n: string) => n.replace(/"/g, "").toLowerCase();
+  const creati = [...sql.matchAll(/\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:UNLOGGED\s+)?(TABLE|VIEW|MATERIALIZED\s+VIEW|SEQUENCE)\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."]+)/gi)];
+  for (const [, tipo, oggetto] of creati) {
+    const o = nome(oggetto!);
+    const passa = [...sql.matchAll(/\bALTER\s+(?:TABLE|VIEW|MATERIALIZED\s+VIEW|SEQUENCE)\s+(?:IF\s+EXISTS\s+)?([\w."]+)\s+OWNER\s+TO\s+"?cerbero_owner"?/gi)]
+      .some(([, n]) => nome(n!) === o);
+    if (!passa) problemi.push(`${tipo!.toUpperCase()} ${o} non passa a cerbero_owner`);
+  }
+  if (/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?(public|caronte|coda)"?\./i.test(sql)) {
+    // come cerbero_owner, guardato dall'esistenza del ruolo, e di nuovo chi migra prima della fine
+    // (drizzle registra la migrazione nella stessa transazione, in una tabella che cerbero_owner non scrive)
+    const come = /to_regrole\('cerbero_owner'\)\s+IS\s+NOT\s+NULL\s+THEN\s+EXECUTE\s+'SET\s+LOCAL\s+ROLE\s+cerbero_owner'/i.test(sql);
+    if (!come) problemi.push("tocca i dati delle tabelle di Cerbero senza passare a cerbero_owner (README, «Chi possiede cosa»)");
+    else if (!/RESET\s+ROLE\s*;?\s*$/i.test(sql.trim())) problemi.push("passa a cerbero_owner ma non torna a chi migra con RESET ROLE alla fine");
+  }
+  return problemi;
+}
+
+describe("dalla 0006 gli oggetti nuovi sono di cerbero_owner", () => {
+  it("la regola riconosce le forme giuste e quelle sbagliate", () => {
+    expect(controllaProprieta(`CREATE TABLE IF NOT EXISTS public.nuova (id int);`)).toEqual(["TABLE public.nuova non passa a cerbero_owner"]);
+    expect(controllaProprieta(`CREATE TABLE public.nuova (id int);
+      DO $$ BEGIN IF to_regrole('cerbero_owner') IS NOT NULL THEN ALTER TABLE public.nuova OWNER TO cerbero_owner; END IF; END $$;`)).toEqual([]);
+    expect(controllaProprieta(`DROP VIEW public.ps_variants; CREATE VIEW public.ps_variants AS SELECT 1;`))
+      .toEqual(["VIEW public.ps_variants non passa a cerbero_owner"]);
+    expect(controllaProprieta(`UPDATE public.users SET x = 1;`)).toEqual(["tocca i dati delle tabelle di Cerbero senza passare a cerbero_owner (README, «Chi possiede cosa»)"]);
+    // la forma semplice fa fallire il migratore: drizzle non potrebbe registrare la migrazione
+    expect(controllaProprieta(`SET LOCAL ROLE cerbero_owner; UPDATE public.users SET x = 1;`)).toHaveLength(1);
+    const giusta = `DO $$ BEGIN
+      IF pg_catalog.to_regrole('cerbero_owner') IS NOT NULL THEN EXECUTE 'SET LOCAL ROLE cerbero_owner'; END IF;
+    END $$;
+    UPDATE public.users SET x = 1;`;
+    expect(controllaProprieta(giusta)).toEqual(["passa a cerbero_owner ma non torna a chi migra con RESET ROLE alla fine"]);
+    expect(controllaProprieta(`${giusta}\n    RESET ROLE;`)).toEqual([]);
+  });
+  it.each(diario.filter(e => e.idx >= 6).map(e => e.tag))("%s", (tag) => {
+    expect(controllaProprieta(readFileSync(path.join(CARTELLA, `${tag}.sql`), "utf8"))).toEqual([]);
+  });
+  it("(nessuna migrazione dalla 0006 per ora: la regola vale per le prossime)", () => {
+    expect(diario.length).toBeGreaterThanOrEqual(6);
+  });
+});
+
 describe("0000_baseline", () => {
   const dump = readFileSync(DUMP, "utf8");
   const baseline = readFileSync(path.join(CARTELLA, "0000_baseline.sql"), "utf8");

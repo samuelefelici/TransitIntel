@@ -11,8 +11,10 @@
  * Il contratto è quello in vigore nel database se è più nuovo di questo codice
  * (un container vecchio durante un deploy, o dopo un rollback): così non
  * segnala come fuori posto le tabelle date da una versione successiva.
- * (PR 2.8: all'utente dell'app serve SELECT su cerbero_migrazioni.contratti;
- * senza, usa il contratto del codice e lo dice.)
+ * L'utente dell'app (cerbero_app, come cerbero_owner) legge
+ * cerbero_migrazioni.contratti: il SELECT lo dà il migratore
+ * (lib/db/scripts/ruoli-regole.mjs); senza, usa il contratto del codice e lo
+ * dice. Il contratto lo scrive solo chi migra (postgres): resta «fidato».
  */
 import { pool } from "@workspace/db";
 import { verifica } from "../../../../lib/db/scripts/argos-permessi-regole.mjs";
