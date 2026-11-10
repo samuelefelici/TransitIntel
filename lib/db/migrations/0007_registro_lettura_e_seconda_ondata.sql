@@ -300,7 +300,7 @@ BEGIN
              (SELECT jsonb_object_agg(c, r.v -> c) FROM unnest(regola.chiave) AS c), regola.ambito_tipo,
              r.v ->> regola.ambito_colonna, NULL, NULL,
              (SELECT jsonb_object_agg(c, r.v -> c) FROM unnest(col_valore) AS c), false, 1, false
-        FROM (SELECT to_jsonb(x) AS v FROM nuove x OFFSET 0) r;  -- OFFSET 0: to_jsonb una volta per riga
+        FROM (SELECT to_jsonb(riga_del_registro.*) AS v FROM nuove riga_del_registro OFFSET 0) r;  -- OFFSET 0: to_jsonb una volta per riga
     ELSIF TG_OP = 'DELETE' THEN
       INSERT INTO registro.modifiche (ts, transazione, richiesta, attore, via, ruolo_db, origine, tabella, operazione,
                                       chiave, ambito_tipo, ambito_id, campi, prima, dopo, riepilogo, righe, a_cascata)
@@ -308,7 +308,7 @@ BEGIN
              (SELECT jsonb_object_agg(c, r.v -> c) FROM unnest(regola.chiave) AS c), regola.ambito_tipo,
              r.v ->> regola.ambito_colonna, NULL,
              (SELECT jsonb_object_agg(c, r.v -> c) FROM unnest(col_valore) AS c), NULL, false, 1, false
-        FROM (SELECT to_jsonb(x) AS v FROM vecchie x OFFSET 0) r;
+        FROM (SELECT to_jsonb(riga_del_registro.*) AS v FROM vecchie riga_del_registro OFFSET 0) r;
     ELSE
       -- vecchie e nuove per chiave (FULL JOIN: una chiave cambiata non si perde); solo le righe con un campo registrato cambiato
       INSERT INTO registro.modifiche (ts, transazione, richiesta, attore, via, ruolo_db, origine, tabella, operazione,
@@ -321,9 +321,9 @@ BEGIN
         FROM (SELECT coalesce(b.k, a.k) AS k, a.v AS vo, b.v AS vn,
                      ARRAY(SELECT c FROM unnest(registrate) AS c WHERE (a.v -> c) IS DISTINCT FROM (b.v -> c)) AS campi
                 FROM (SELECT (SELECT jsonb_object_agg(c, w.v -> c) FROM unnest(regola.chiave) AS c) AS k, w.v
-                        FROM (SELECT to_jsonb(o) AS v FROM vecchie o OFFSET 0) w OFFSET 0) a
+                        FROM (SELECT to_jsonb(riga_del_registro.*) AS v FROM vecchie riga_del_registro OFFSET 0) w OFFSET 0) a
                 FULL JOIN (SELECT (SELECT jsonb_object_agg(c, w.v -> c) FROM unnest(regola.chiave) AS c) AS k, w.v
-                             FROM (SELECT to_jsonb(x) AS v FROM nuove x OFFSET 0) w OFFSET 0) b ON a.k = b.k
+                             FROM (SELECT to_jsonb(riga_del_registro.*) AS v FROM nuove riga_del_registro OFFSET 0) w OFFSET 0) b ON a.k = b.k
               OFFSET 0) z  -- OFFSET 0: ogni riga si converte e si confronta una volta sola
        WHERE cardinality(z.campi) > 0;
     END IF;
@@ -339,10 +339,10 @@ BEGIN
   -- qui sotto, sulle sole righe cambiate)
   IF TG_OP = 'DELETE' THEN
     SELECT jsonb_agg(k) INTO campione
-      FROM (SELECT (SELECT jsonb_object_agg(c, to_jsonb(x) -> c) FROM unnest(regola.chiave) AS c) AS k FROM vecchie x LIMIT 20) y;
+      FROM (SELECT (SELECT jsonb_object_agg(c, to_jsonb(riga_del_registro.*) -> c) FROM unnest(regola.chiave) AS c) AS k FROM vecchie riga_del_registro LIMIT 20) y;
   ELSIF TG_OP = 'INSERT' THEN
     SELECT jsonb_agg(k) INTO campione
-      FROM (SELECT (SELECT jsonb_object_agg(c, to_jsonb(x) -> c) FROM unnest(regola.chiave) AS c) AS k FROM nuove x LIMIT 20) y;
+      FROM (SELECT (SELECT jsonb_object_agg(c, to_jsonb(riga_del_registro.*) -> c) FROM unnest(regola.chiave) AS c) AS k FROM nuove riga_del_registro LIMIT 20) y;
   END IF;
 
   IF TG_OP IN ('INSERT', 'DELETE') THEN
@@ -350,10 +350,10 @@ BEGIN
       -- l'ambito solo se è lo stesso per tutte le righe (min e max non vedono i NULL)
       IF n <= 50 AND TG_OP = 'DELETE' THEN
         SELECT min(y.a), max(y.a), bool_or(y.a IS NULL) INTO amb_min, amb_max, amb_vuoto
-          FROM (SELECT to_jsonb(x) ->> regola.ambito_colonna AS a FROM vecchie x) y;
+          FROM (SELECT to_jsonb(riga_del_registro.*) ->> regola.ambito_colonna AS a FROM vecchie riga_del_registro) y;
       ELSIF n <= 50 THEN
         SELECT min(y.a), max(y.a), bool_or(y.a IS NULL) INTO amb_min, amb_max, amb_vuoto
-          FROM (SELECT to_jsonb(x) ->> regola.ambito_colonna AS a FROM nuove x) y;
+          FROM (SELECT to_jsonb(riga_del_registro.*) ->> regola.ambito_colonna AS a FROM nuove riga_del_registro) y;
       ELSE
         EXECUTE format('SELECT min(x.%1$I::text), max(x.%1$I::text), bool_or(x.%1$I IS NULL) FROM %2$I x', regola.ambito_colonna,
                        CASE TG_OP WHEN 'DELETE' THEN 'vecchie' ELSE 'nuove' END) INTO amb_min, amb_max, amb_vuoto;
@@ -376,9 +376,9 @@ BEGIN
       SELECT b.k AS kn, a.v AS vo, b.v AS vn,
              ARRAY(SELECT c FROM unnest(registrate) AS c WHERE (a.v -> c) IS DISTINCT FROM (b.v -> c)) AS campi
         FROM (SELECT (SELECT jsonb_object_agg(c, w.v -> c) FROM unnest(regola.chiave) AS c) AS k, w.v
-                FROM (SELECT to_jsonb(o) AS v FROM vecchie o OFFSET 0) w OFFSET 0) a
+                FROM (SELECT to_jsonb(riga_del_registro.*) AS v FROM vecchie riga_del_registro OFFSET 0) w OFFSET 0) a
         FULL JOIN (SELECT (SELECT jsonb_object_agg(c, w.v -> c) FROM unnest(regola.chiave) AS c) AS k, w.v
-                     FROM (SELECT to_jsonb(x) AS v FROM nuove x OFFSET 0) w OFFSET 0) b ON a.k = b.k
+                     FROM (SELECT to_jsonb(riga_del_registro.*) AS v FROM nuove riga_del_registro OFFSET 0) w OFFSET 0) b ON a.k = b.k
     ), cambiate AS MATERIALIZED (
       SELECT z.kn, z.campi, z.vn IS NOT NULL AS nuova,
              z.vo ->> regola.ambito_colonna AS ao, z.vn ->> regola.ambito_colonna AS an
@@ -780,8 +780,13 @@ BEGIN
   -- fra i membri di un progetto) si tolgono anche l'ambito, la chiave e il campione
   UPDATE registro.modifiche m
      SET ambito_id = CASE WHEN m.ambito_id = m.attore THEN NULL ELSE m.ambito_id END,
-         chiave    = CASE WHEN position('"' || m.attore || '"' IN m.chiave::text) > 0 THEN NULL ELSE m.chiave END,
-         campione  = CASE WHEN position('"' || m.attore || '"' IN m.campione::text) > 0 THEN NULL ELSE m.campione END,
+         -- (l'attore fra i valori, non nel testo: «id» non è la chiave {"id": …})
+         chiave    = CASE WHEN EXISTS (SELECT 1 FROM jsonb_each_text(CASE WHEN jsonb_typeof(m.chiave) = 'object' THEN m.chiave ELSE '{}'::jsonb END) AS e
+                                        WHERE e.value = m.attore) THEN NULL ELSE m.chiave END,
+         campione  = CASE WHEN EXISTS (SELECT 1
+                                         FROM jsonb_array_elements(CASE WHEN jsonb_typeof(m.campione) = 'array' THEN m.campione ELSE '[]'::jsonb END) AS el
+                                        CROSS JOIN LATERAL jsonb_each_text(CASE WHEN jsonb_typeof(el) = 'object' THEN el ELSE '{}'::jsonb END) AS e
+                                        WHERE e.value = m.attore) THEN NULL ELSE m.campione END,
          attore = NULL, richiesta = NULL
    WHERE m.ts < limite AND (m.attore IS NOT NULL OR m.richiesta IS NOT NULL);
   GET DIAGNOSTICS anonimizzate = ROW_COUNT;

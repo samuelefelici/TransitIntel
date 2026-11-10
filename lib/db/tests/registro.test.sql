@@ -182,6 +182,40 @@ BEGIN
 END $$;
 ROLLBACK TO SAVEPOINT ambito;
 
+-- colonne che si chiamano come i nomi usati dentro cattura() (x, o, n, c, nome,
+-- regola, campione…): la riga resta la riga, la scrittura non fallisce, i campi
+-- registrati sono quelli cambiati. Con «to_jsonb(x)» e una colonna x la
+-- modifica in riepilogo spariva.
+SAVEPOINT nomi;
+ALTER TABLE public.depots
+  ADD COLUMN x int, ADD COLUMN o text, ADD COLUMN n int, ADD COLUMN c text, ADD COLUMN k text, ADD COLUMN v text,
+  ADD COLUMN a text, ADD COLUMN b text, ADD COLUMN w text, ADD COLUMN z text, ADD COLUMN y text, ADD COLUMN r text,
+  ADD COLUMN q text, ADD COLUMN f text, ADD COLUMN e text, ADD COLUMN i int, ADD COLUMN m text, ADD COLUMN s text,
+  ADD COLUMN t text, ADD COLUMN nome text, ADD COLUMN modo text, ADD COLUMN regola text, ADD COLUMN registrate text[],
+  ADD COLUMN campione jsonb, ADD COLUMN cascata boolean, ADD COLUMN chiave text, ADD COLUMN col_valore text,
+  ADD COLUMN campi_agg text, ADD COLUMN per_record boolean, ADD COLUMN riga_del_registro text, ADD COLUMN ctx text[];
+INSERT INTO public.depots (name, x, o, nome) SELECT 'Nomi ' || g, 1, 'a', 'prima' FROM generate_series(1, 3) g;
+UPDATE public.depots SET x = 2 WHERE name LIKE 'Nomi %';
+DO $$ BEGIN PERFORM set_config('cerbero.registro', 'riepilogo', true); END $$;
+UPDATE public.depots SET o = 'b', riga_del_registro = 'c' WHERE name LIKE 'Nomi %';
+DO $$ BEGIN PERFORM set_config('cerbero.registro', '', true); END $$;
+INSERT INTO public.depots (name, x, o, nome) SELECT 'Nomi tanti ' || g, 1, 'a', 'prima' FROM generate_series(1, 60) g;
+UPDATE public.depots SET nome = 'dopo', n = 7 WHERE name LIKE 'Nomi tanti %';
+DELETE FROM public.depots WHERE name LIKE 'Nomi %' AND name NOT LIKE 'Nomi tanti %';
+:somma
+DO $$ BEGIN
+  ASSERT (SELECT count(*) = 3 AND bool_and(campi = '{x}' AND prima = '{"x": 1}' AND dopo = '{"x": 2}') FROM nostre
+           WHERE tabella = 'public.depots' AND operazione = 'UPDATE' AND NOT riepilogo), 'una colonna x: una riga per record, col suo valore';
+  ASSERT (SELECT count(*) = 3 AND bool_and(dopo ->> 'o' = 'a' AND dopo ->> 'nome' = 'prima' AND chiave ? 'id') FROM nostre
+           WHERE tabella = 'public.depots' AND operazione = 'INSERT' AND NOT riepilogo), 'le righe aggiunte, intere';
+  ASSERT (SELECT count(*) = 3 AND bool_and(prima ->> 'x' = '2' AND prima ->> 'o' = 'b') FROM nostre
+           WHERE tabella = 'public.depots' AND operazione = 'DELETE' AND NOT riepilogo), 'le righe cancellate, intere';
+  ASSERT (SELECT righe = 63 AND campi = '{n,nome,o,riga_del_registro}' AND jsonb_array_length(campione) = 20 FROM nostre
+           WHERE tabella = 'public.depots' AND operazione = 'UPDATE' AND riepilogo),
+    format('riepiloghi con colonne x, o, n, nome: %s', (SELECT row_to_json(q) FROM nostre q WHERE tabella = 'public.depots' AND operazione = 'UPDATE' AND riepilogo));
+END $$;
+ROLLBACK TO SAVEPOINT nomi;
+
 -- un savepoint annullato toglie anche quello che aveva scritto
 SAVEPOINT prova;
 UPDATE public.ps_projects SET name = 'Da annullare' WHERE id = 'f0000000-0000-4000-8000-0000000000a1';
@@ -529,7 +563,10 @@ VALUES (now() - interval '13 months', pg_current_xact_id(), 'u-se', 'api', 'cerb
        (now() - interval '13 months', pg_current_xact_id(), 'u-admin', 'api', 'cerbero_app', 'prova-altro', 'public.users', 'UPDATE',
         '{"id": "u-altro"}', 'utente', 'u-altro', '{role}', false, 1, false),
        (now() - interval '13 months', pg_current_xact_id(), 'u-se', 'api', 'cerbero_app', 'prova-membri', 'public.ps_project_members', 'INSERT',
-        NULL, 'progetto_ps', 'p-1', NULL, true, 2, false);
+        NULL, 'progetto_ps', 'p-1', NULL, true, 2, false),
+       -- un attore che per caso si chiama come una chiave del JSON: non è la riga sua
+       (now() - interval '13 months', pg_current_xact_id(), 'id', 'api', 'cerbero_app', 'prova-corto', 'public.ps_trips', 'UPDATE',
+        '{"id": "qualcosa"}', 'progetto_ps', 'p-1', '{name}', false, 1, false);
 UPDATE registro.modifiche SET campione = '[{"user_id": "u-se", "project_id": "p-1"}, {"user_id": "u-altro", "project_id": "p-1"}]'
  WHERE origine = 'prova-membri';
 -- le consultazioni scadono con il nome di chi modifica
@@ -553,6 +590,8 @@ DO $$ BEGIN
             FROM registro.modifiche WHERE origine = 'prova-altro'), 'la riga di un altro: resta di chi è';
   ASSERT (SELECT attore IS NULL AND campione IS NULL AND ambito_id = 'p-1' AND righe = 2
             FROM registro.modifiche WHERE origine = 'prova-membri'), 'un campione che nomina chi l''ha fatto: via';
+  ASSERT (SELECT attore IS NULL AND chiave = '{"id": "qualcosa"}' FROM registro.modifiche WHERE origine = 'prova-corto'),
+    'un attore che si chiama come una chiave: la chiave resta';
   ASSERT NOT EXISTS (SELECT 1 FROM registro.letture WHERE attore = 'u-vecchio'), 'le consultazioni vecchie: via';
   ASSERT (SELECT count(*) FROM registro.letture) > 0, 'le consultazioni recenti restano';
 END $$;
