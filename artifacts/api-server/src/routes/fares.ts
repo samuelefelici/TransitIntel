@@ -4077,13 +4077,14 @@ router.post("/fares/audit", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    const { description, actor, metadata } = req.body as { description?: string; actor?: string; metadata?: Record<string, unknown> };
+    // l'autore è chi ha la sessione, non un campo libero del modulo (PR 2.10)
+    const { description, metadata } = req.body as { description?: string; metadata?: Record<string, unknown> };
     if (!description?.trim()) { res.status(400).json({ error: "description obbligatoria" }); return; }
     const [row] = await db.insert(gtfsFareAuditLog).values({
       feedId,
       action: "manual_note",
       description: description.trim(),
-      actor: actor?.trim() || "utente",
+      actor: req.user?.fullName?.trim() || req.user?.email || "utente",
       metadata: metadata ?? {},
     }).returning();
     res.json(row);

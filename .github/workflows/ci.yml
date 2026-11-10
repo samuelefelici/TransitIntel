@@ -236,6 +236,65 @@ jobs:
           q "DROP EXTENSION pg_stat_statements"
           q "DROP TABLE caronte.app_users"
           q "GRANT USAGE ON SCHEMA public TO PUBLIC"
+      # PR 2.10: il registro delle modifiche (migrazione 0006). Nasce spento: il
+      # test SQL lo accende dentro una transazione annullata e controlla cosa
+      # registra e cosa no (hash, codici del roster, valori di utenti e roster),
+      # riepiloghi, cascate, anonimizzazione e conservazione. Come cerbero_app:
+      # non lo legge, non lo spegne, non rinomina una tabella sorvegliata; la
+      # manutenzione sì, anche due volte. Un trigger spento da un superutente fa
+      # fallire la verifica dei ruoli. Poi resta acceso su vuoto e
+      # solo_migrazioni: API, lavoratore e test sul database scrivono come
+      # cerbero_app attraverso i trigger.
+      - name: Il registro delle modifiche
+        run: |
+          # come in produzione, PUBLIC senza USAGE su public: le funzioni del
+          # registro girano come cerbero_registro, che non ce l'ha
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "REVOKE USAGE ON SCHEMA public FROM PUBLIC"
+          for d in vuoto prod; do
+            test "$(psql -d $d -tAq -c "SELECT attivo FROM registro.impostazioni")" = f
+            psql -q -v ON_ERROR_STOP=1 -d $d -f lib/db/tests/registro.test.sql
+            # annullato: di nuovo spento e vuoto
+            test "$(psql -d $d -tAq -c "SELECT (SELECT attivo FROM registro.impostazioni)::text || '/' || (SELECT count(*) FROM registro.modifiche)")" = false/0
+          done
+          app() { psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          for vietato in "ALTER TABLE public.users DISABLE TRIGGER registro_cambia" \
+                         "ALTER TABLE public.roster_entries DISABLE TRIGGER USER" \
+                         "ALTER TABLE public.ps_projects ENABLE REPLICA TRIGGER registro_cambia"; do
+            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -q "cerbero_app non può spegnere i trigger del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          done
+          if app "ALTER TABLE public.depots RENAME TO depots_altrove" 2> vietato.log; then echo "cerbero_app non doveva rinominare depots"; exit 1; fi
+          grep -q "cerbero_app non può rinominare, spostare o sostituire una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          if app "ALTER TABLE public.users RENAME COLUMN role TO role_cached" 2> vietato.log; then echo "cerbero_app non doveva rinominare role"; exit 1; fi
+          grep -q "cerbero_app non può rinominare le colonne di una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          if app "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" 2> vietato.log; then echo "cerbero_app non doveva riscrivere users"; exit 1; fi
+          grep -q "cerbero_app non può riscrivere una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          test "$(app "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_riscrive' AND evtevent = 'table_rewrite' AND evtenabled = 'A'")" = 1
+          for vietato in "CREATE TABLE public.ci_figlia () INHERITS (public.ps_projects)" \
+                         "CREATE TABLE public.ci_padre (name text); ALTER TABLE public.ps_projects INHERIT public.ci_padre"; do
+            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -q "cerbero_app non può legare per ereditarietà o come partizione una tabella del registro" vietato.log || { cat vietato.log; exit 1; }
+          done
+          # le unità pigre invece passano anche sulle tabelle sorvegliate
+          app "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid"
+          for vietato in "SELECT count(*) FROM registro.modifiche" "UPDATE registro.impostazioni SET attivo = false" \
+                         "DROP TRIGGER registro_cambia ON public.users" "SELECT registro.cattura()"; do
+            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -Eq "permission denied|non può" vietato.log || { cat vietato.log; exit 1; }
+          done
+          app "SELECT registro.manutenzione()"
+          app "SELECT registro.manutenzione()" | grep -q '"partizioni": \[\]'
+          test -z "$(app "SELECT * FROM registro.verifica()")"
+          # un trigger spento da un superutente: la verifica dei ruoli fallisce, con la cura
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "ALTER TABLE public.users DISABLE TRIGGER registro_cambia"
+          if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare il trigger spento"; exit 1; fi
+          grep -q "registro delle modifiche: public.users: il trigger registro_cambia del registro non è acceso sempre" ruoli.log || { cat ruoli.log; exit 1; }
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "ALTER TABLE public.users ENABLE ALWAYS TRIGGER registro_cambia"
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1 || { cat ruoli.log; exit 1; }
+          DATABASE_URL=$PG/vuoto node lib/db/scripts/migra.mjs | grep -q "ruoli del database in regola"
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "GRANT USAGE ON SCHEMA public TO PUBLIC"
+          # acceso per i passi dopo (in produzione lo accende chi ha la base giuridica)
+          psql -d vuoto -v ON_ERROR_STOP=1 -q -c "UPDATE registro.impostazioni SET attivo = true, base_giuridica = 'prova della CI', attivato_il = now()"
       # Il migratore ha riportato argos_ro al contratto. Poi qualcuno rilancia lo
       # script di Argos (lettura di tutto): la verifica se ne accorge, la cura
       # sistema, e di nuovo tutto in regola.
@@ -504,6 +563,8 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE solo_migrazioni"
           DATABASE_URL=$PG/solo_migrazioni node lib/db/scripts/migra.mjs > /dev/null
           q() { psql -d solo_migrazioni -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          # PR 2.10: col registro delle modifiche acceso (le scritture dell'avvio passano dai trigger)
+          q "UPDATE registro.impostazioni SET attivo = true, base_giuridica = 'prova della CI', attivato_il = now()"
           # SECURITY DEFINER: l'API è cerbero_app, e senza il trigger fallirebbe
           # facendo fallire il DDL stesso (il registro resterebbe vuoto per sbaglio)
           q "CREATE SCHEMA ci; CREATE TABLE ci.ddl (tag text, q text);
@@ -548,6 +609,7 @@ jobs:
           psql -q -v ON_ERROR_STOP=1 -c "CREATE DATABASE lavoratore"
           DATABASE_URL=$PG/lavoratore node lib/db/scripts/migra.mjs > /dev/null
           q() { psql -d lavoratore -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          q "UPDATE registro.impostazioni SET attivo = true, base_giuridica = 'prova della CI', attivato_il = now()"
           PORT=8098 DATABASE_URL=$PG_APP/lavoratore node artifacts/api-server/dist/lavoratore.cjs > lavoratore.log 2>&1 &
           echo $! > lavoratore.pid
           for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8098/api/healthz && break; sleep 0.5; done
@@ -598,6 +660,16 @@ jobs:
       # concorrenti e da cerbero_app, che non è superutente
       - name: Il contesto di chi fa la modifica sulla connessione
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/contesto-db.test.ts
+      # Il registro delle modifiche (PR 2.10), dall'app: la manutenzione e la
+      # verifica sì, anche in parallelo; leggere, cancellare o spegnere no. E
+      # dopo tutti i test sul database qui sopra, scritti col registro acceso:
+      # nessun problema e niente nella partizione di riserva.
+      - name: Il registro delle modifiche dall'app
+        run: |
+          TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/registro-db.test.ts
+          test -z "$(psql -d vuoto -tAq -c "SELECT * FROM registro.verifica()")"
+          psql -d vuoto -tAq -c "SELECT tabella, operazione, count(*), sum(righe) FROM registro.modifiche GROUP BY 1, 2 ORDER BY 1, 2"
+          test "$(psql -d vuoto -tAq -c "SELECT count(*) > 0 FROM registro.modifiche WHERE ruolo_db = 'cerbero_app'")" = t
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata
         run: |
           echo "-- modifica" >> lib/db/migrations/0000_baseline.sql

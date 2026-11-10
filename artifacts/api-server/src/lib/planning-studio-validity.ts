@@ -1825,12 +1825,12 @@ router.post("/planning-studio/projects/:id/validity/generate-unit", async (req, 
       INSERT INTO project_activity_log (project_id, user_id, action, target_type, target_id, payload)
       VALUES (${row.id}::uuid, ${userId}::uuid, 'project.create',
               'project', ${row.id}::uuid,
-              ${JSON.stringify({
+              ${JSON.stringify(withVia({
                 source: "planning-studio.validity",
                 planningStudioProjectId: req.params.id,
                 planningStudioProjectName: proj.name,
                 validityFilter: filter,
-              })}::jsonb)
+              }))}::jsonb)
     `);
   } catch (e: any) {
     console.warn("[ps-validity] generate-unit activity log error:", e?.message || e);

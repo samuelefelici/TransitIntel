@@ -358,6 +358,12 @@ file del server, ruoli). Dalla 2.8:
   le tabelle di Cerbero. Se ne trova una non ammessa **non migra**: il deploy
   fallisce e resta il container di prima. `ruoli.mjs --verifica` dice quale
   espressione e come toglierla.
+- **Né riscritture delle tabelle del registro** (PR 2.10). Un terzo event
+  trigger, `cerbero_ddl_dell_app_riscrive` (`table_rewrite`, stessa funzione),
+  ferma l'app se riscrive una tabella sorvegliata dal registro delle
+  modifiche: `ALTER COLUMN … TYPE … USING` o `SET EXPRESSION` cambierebbero i
+  dati senza passare dai trigger. Lo crea il migratore; se manca o è spento
+  `ruoli.mjs --verifica` lo dice, e il migratore lo rimette.
 - **`cerbero_app` nasce senza accesso** (NOLOGIN, nessuna password). La password
   la dà chi gestisce il database; il migratore non tocca più né la password né
   il LOGIN.
@@ -403,9 +409,14 @@ file del server, ruoli). Dalla 2.8:
   dei programmi che non conosce.
 - **Il DDL dell'app**, cioè le unità pigre (fino alla 2.16), resta per tabelle
   e indici: l'app possiede le sue tabelle e può crearne in `public`, e
-  l'event trigger lascia passare solo quello. Il registro delle modifiche
-  (2.10) sarà inviolabile solo dopo la 2.16. Prima di aggiornare PostGIS si
-  toglie il CREATE su `public` a `cerbero_owner` (README delle migrazioni).
+  l'event trigger lascia passare solo quello. Dalla 2.10, su una tabella
+  sorvegliata dal registro delle modifiche, l'app non può spegnere i trigger,
+  rinominare o sostituire la tabella o le sue colonne, riscriverla
+  (`ALTER COLUMN … TYPE`) né legarla per ereditarietà o come partizione. Può
+  ancora, da proprietaria, cancellarne una colonna o crearne di nuove non
+  sorvegliate, fino alla 2.16. Prima di
+  aggiornare PostGIS si toglie il CREATE su `public` a `cerbero_owner`
+  (README delle migrazioni).
 
 **Rilascio (una volta sola), in quest'ordine:**
 0. **Prima, in sola lettura**, dal Terminal del PostgreSQL
@@ -506,6 +517,120 @@ sessioni «senza nome», non un programma sconosciuto.
 Il container passa all'utente `node` con `setpriv`, che ha bisogno delle
 capacità SETUID e SETGID: con `--cap-drop ALL` (non è il default di Coolify)
 non parte.
+
+### Registro delle modifiche (PR 2.10)
+
+Chi ha cambiato che cosa, scritto dal database: trigger su 21 tabelle (la
+prima ondata) scrivono in `registro.modifiche`. L'app non lo legge, non lo
+cambia e non spegne i trigger. **Nasce spento**: non scrive niente finché non
+lo accende chi gestisce il database (sotto).
+
+**Cosa registra**, per ogni riga cambiata:
+- chi: `attore` (l'id dell'utente), `via` (`api`, `argos:mcp`, `cron:…`,
+  `coda:<tipo>`…), `richiesta`; da quale ruolo del database (`ruolo_db`, il
+  solo che l'app non può falsificare) e da quale programma (`origine`);
+- quando (`ts`) e in quale transazione;
+- quale riga (`chiave`) e a che cosa appartiene (`ambito_tipo`/`ambito_id`:
+  progetto, feed, utente, conducente…);
+- i nomi dei campi cambiati (`campi`);
+- i valori prima e dopo (`prima`/`dopo`) **solo** per programmi, orari, turni
+  e tariffe (Planning Studio, Fucina, scenari, feed e prodotti tariffari,
+  depositi, impostazioni), compresi i riferimenti fra loro (calendario,
+  variante, progetto). Degli utenti, solo ruolo e permessi;
+- che una password è cambiata (`password_cambiata_il`) e che la verifica in
+  due passaggi è stata attivata o azzerata (`mfa_attiva`), solo come nomi.
+
+**Cosa non registra:**
+- i valori di anagrafica, roster e utenti: solo i nomi dei campi. Niente codici
+  delle assenze, niente nomi; di una password o del segreto della verifica
+  solo che è cambiato;
+- le colonne di servizio (`updated_at`, `last_opened_at`, ultimo accesso,
+  versioni della sessione, contatori della verifica): un login non scrive
+  niente;
+- i JSON pesanti (attributi, risultati dei calcoli) e i riferimenti alle
+  persone (proprietario, membro, chi ha aggiunto): solo il nome.
+
+Le regole di ogni tabella sono in `registro.sorvegliate`.
+
+**Riepiloghi.** Più di 50 righe in un'istruzione, una cascata (cancellare un
+progetto cancella le sue fermate) o un'operazione in blocco (import GTFS e
+anagrafica, generazione corse, fermate in blocco) danno una riga per
+transazione e tabella: quante righe, 20 chiavi d'esempio, i campi toccati.
+- `righe` somma le righe cambiate di ogni istruzione: due UPDATE sulle stesse
+  60 righe danno 120;
+- l'ambito (`ambito_id`) c'è solo se è lo stesso per tutte le righe, prima e
+  dopo;
+- casi limite: un `TRUNCATE … CASCADE` dà una riga per tabella senza
+  `a_cascata`; un UPDATE che cambia la chiave primaria (l'app oggi non lo fa)
+  dà la riga vecchia e la nuova.
+
+**Anonimizzazione e conservazione** (`registro.impostazioni`):
+- dopo 12 mesi (`anonimizza_dopo_mesi`, almeno 6) `attore` e `richiesta` si
+  svuotano: resta che cosa è cambiato, non chi;
+- dopo 60 mesi (`conservazione_mesi`) le righe si cancellano;
+- lo fa ogni giorno il lavoratore (`registro.manutenzione()`).
+
+**Accenderlo è una decisione di Conerobus, non del codice.** Il registro
+attribuisce le modifiche alle persone: è un controllo a distanza dell'attività
+dei lavoratori (art. 4 c.1 dello Statuto dei lavoratori). Prima servono:
+- un accordo con le RSU o l'autorizzazione dell'Ispettorato del lavoro;
+- l'informativa a chi usa Cerbero;
+- la DPIA, con i tempi di anonimizzazione e conservazione scelti.
+
+Poi, come `postgres` dal Terminal del PostgreSQL:
+```sql
+-- prima: quanto si scrive oggi nelle tabelle sorvegliate (per stimare il volume)
+SELECT relname, n_tup_ins, n_tup_upd, n_tup_del FROM pg_stat_user_tables
+ WHERE relid IN (SELECT tabella::regclass FROM registro.sorvegliate)
+ ORDER BY n_tup_ins + n_tup_upd + n_tup_del DESC;
+-- acceso: la base giuridica scritta è obbligatoria (un vincolo lo controlla)
+UPDATE registro.impostazioni
+   SET attivo = true, base_giuridica = 'accordo RSU del …; DPIA del …', attivato_il = now();
+```
+Per spegnerlo: `UPDATE registro.impostazioni SET attivo = false;`. Le righe già
+scritte restano e seguono anonimizzazione e conservazione.
+
+**Quanto costa** (Postgres 17, misure della PR):
+- spento: un UPDATE di una riga passa da 0,05 a circa 0,07 ms;
+  un'istruzione su 10.000 righe +5–10%;
+- acceso: un UPDATE di una riga circa 0,35 ms; 10.000 righe in
+  un'istruzione +10–20% per INSERT, +15–40% per DELETE, +50–60% per UPDATE.
+
+**Leggerlo.** Per ora solo `postgres`, dal Terminal del PostgreSQL. L'app non
+ha il permesso: la pagina dell'amministratore arriva con la 2.11, senza
+riepiloghi per persona.
+```sql
+SELECT ts, attore, via, operazione, chiave, campi, prima, dopo, righe
+  FROM registro.modifiche
+ WHERE tabella = 'public.ps_projects' AND ts > now() - interval '7 days'
+ ORDER BY ts DESC LIMIT 50;
+```
+
+**La verifica.** `node lib/db/scripts/ruoli.mjs --verifica` (e il migratore a
+ogni avvio) dà errore, con la cura, se:
+- un trigger del registro manca o non è acceso sempre (`ENABLE ALWAYS`);
+- una tabella sorvegliata è legata per ereditarietà o come partizione, o una
+  colonna nominata dalla sua regola non c'è più;
+- un oggetto di `registro` non è di `cerbero_registro`, per esempio dopo un
+  ripristino `--no-owner`;
+- manca la partizione del mese, o ci sono righe nella partizione di riserva:
+  `SELECT registro.manutenzione();` come `postgres` o come `cerbero_app`.
+
+**Cosa non protegge:**
+- un superutente (`postgres`) può tutto: spegnere i trigger e cambiare le
+  righe. La verifica lo vede solo se lascia un trigger spento;
+- `attore` e `via` li mette l'app sulla connessione (2.9): un'app compromessa
+  può falsificarli, e può chiedere il riepilogo (modo «riepilogo») al posto
+  delle righe coi valori: la modifica resta registrata, coi campi, ma senza
+  prima e dopo. Fa fede `ruolo_db`;
+- una tabella nuova non è sorvegliata finché una migrazione non chiama
+  `registro.sorveglia` (README delle migrazioni). Gli orari di dettaglio
+  (`ps_stop_times` e simili) entrano con la seconda ondata, nella 2.11.
+
+**Rilascio:** deploy normale. La 0006 crea i trigger con un lock breve sulle
+21 tabelle: le letture continuano, le scritture aspettano un attimo.
+**Rollback:** immagine precedente. Schema e trigger restano; spenti non
+scrivono niente.
 
 ### Estensioni PostGIS che nessuno usa (tiger, topology)
 
@@ -801,6 +926,12 @@ riavvio.
     ```
   - i giri di Argos rimasti «running» non si toccano: il loro stato vero lo
     dà già la coda.
+- **Registro delle modifiche** (dalla PR 2.10, solo nel lavoratore e solo con
+  lo schema «ok», ogni 24 ore, la prima 5 minuti dopo l'avvio; con più
+  lavoratori lo fa uno solo per volta): `registro.manutenzione()` crea le
+  partizioni del mese e dei due dopo, anonimizza e cancella le righe vecchie;
+  poi i problemi di `registro.verifica()` vanno nel log come avvisi. Vedi
+  «Registro delle modifiche» qui sopra.
 - **Python** riceve solo l'ambiente che gli serve (niente `JWT_SECRET`,
   `DATABASE_URL`, chiavi…) e lancia solo gli 8 script dell'elenco
   (`artifacts/api-server/src/lib/lavori/python.ts`).

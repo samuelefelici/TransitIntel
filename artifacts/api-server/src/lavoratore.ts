@@ -33,6 +33,7 @@ import { creaEsecutore } from "./lib/lavori/esecutore";
 import { GESTORI } from "./lib/lavori/gestori";
 import { chiSono, slotDaAmbiente } from "./lib/lavori/ambiente";
 import { avviaPulizie } from "./lib/lavori/pulizie";
+import { avviaRegistro } from "./lib/lavori/registro";
 import { controllaIdentita } from "./lib/identita-db";
 
 const porta = Number(process.env.PORT || 3001);
@@ -51,6 +52,8 @@ const esecutore = creaEsecutore({ chi, slot, gestori: GESTORI, log: logger, puoP
 esecutore.avvia();
 // pulizie periodiche (calcoli delle tariffe appesi, feed sintetici orfani): solo qui, non nell'API
 const fermaPulizie = avviaPulizie(logger, () => statoDelloSchema() === "ok");
+// la manutenzione del registro delle modifiche, ogni giorno (PR 2.10)
+const fermaRegistro = avviaRegistro(logger, () => statoDelloSchema() === "ok");
 
 const server = http.createServer(async (req, res) => {
   const percorso = (req.url ?? "").split("?")[0];
@@ -76,6 +79,7 @@ async function arresta(segnale: string): Promise<void> {
   inArresto = true;
   logger.info({ segnale, lavoriInCorso: esecutore.inCorso() }, "Arresto del lavoratore: niente lavori nuovi, finisco o rimetto in coda quelli in corso");
   fermaPulizie();
+  fermaRegistro();
   try { await esecutore.ferma(ATTESA_ARRESTO_MS); }
   catch (err) { logger.error({ err }, "arresto del lavoratore: errore fermando i lavori"); }
   server.close();

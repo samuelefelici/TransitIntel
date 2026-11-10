@@ -33,6 +33,7 @@ import { sql } from "drizzle-orm";
 import { parseCsv } from "../routes/gtfs-helpers";
 import { runValidityAutoImportFromCalendars } from "./planning-studio-validity";
 import { legaContesto } from "./contesto-http";
+import { withVia } from "./agent-context";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
@@ -911,7 +912,7 @@ router.post(
           await db.execute(sql`
             INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, payload)
             VALUES (${projectId}::uuid, ${userId}::uuid, 'ps.import.gtfs.merge', 'project',
-                    ${JSON.stringify({ fileName: req.file.originalname, sizeKb: Math.round(req.file.size / 1024), counts: mergeCounts })}::jsonb)
+                    ${JSON.stringify(withVia({ fileName: req.file.originalname, sizeKb: Math.round(req.file.size / 1024), counts: mergeCounts }))}::jsonb)
           `);
         } catch (e: any) { console.warn("[ps import merge] activity log failed:", e?.message); }
         // NB: niente auto-import della matrice in merge (sovrascriverebbe le
@@ -1319,7 +1320,7 @@ router.post(
         await db.execute(sql`
           INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, payload)
           VALUES (${projectId}::uuid, ${userId}::uuid, 'ps.import.gtfs', 'project',
-                  ${JSON.stringify({
+                  ${JSON.stringify(withVia({
                     fileName: req.file.originalname,
                     sizeKb: Math.round(req.file.size / 1024),
                     counts: {
@@ -1331,7 +1332,7 @@ router.post(
                       calendars: counts.calendars,
                       shapes: counts.shapes,
                     },
-                  })}::jsonb)
+                  }))}::jsonb)
         `);
       } catch (e: any) { console.warn("[ps import] activity log failed:", e?.message); }
 

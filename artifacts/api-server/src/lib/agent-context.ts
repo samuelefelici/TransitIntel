@@ -17,6 +17,7 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { NextFunction, Request, Response } from "express";
+import { contestoDb } from "@workspace/db/contesto";
 
 const store = new AsyncLocalStorage<{ via: string }>();
 
@@ -30,9 +31,22 @@ export function agentAttribution(req: Request, _res: Response, next: NextFunctio
   store.run({ via: channel === "agent" ? "argos" : `argos:${channel}` }, next);
 }
 
-/** "argos" / "argos:mcp" / … se la richiesta corrente viene dall'agente, altrimenti null. */
-export function requestVia(): string | null {
+/** Il canale dichiarato dall'header X-Argos (solo per precisare quello del token). */
+function viaDichiarata(): string | null {
   return store.getStore()?.via ?? null;
+}
+
+/**
+ * "argos" / "argos:mcp" / "argos:coda:…" se la modifica corrente viene
+ * dall'agente, altrimenti null. Dalla PR 2.10 si legge dal contesto della
+ * connessione (lib/db/src/contesto.ts), che si fida solo del token: una
+ * persona che manda l'header non risulta Argos, un token di Argos senza
+ * header sì. Così il registro attività dice quello che dice il registro
+ * delle modifiche.
+ */
+export function requestVia(): string | null {
+  const via = contestoDb.getStore()?.via;
+  return via && /^argos(:|$)/.test(via) ? via : null;
 }
 
 /**
@@ -43,7 +57,7 @@ export function requestVia(): string | null {
  */
 export function viaPerIlDatabase(authVia: string | undefined | null): string {
   if (!authVia) return "api";
-  const dichiarata = requestVia();
+  const dichiarata = viaDichiarata();
   return dichiarata && (dichiarata === authVia || dichiarata.startsWith(`${authVia}:`)) ? dichiarata : authVia;
 }
 

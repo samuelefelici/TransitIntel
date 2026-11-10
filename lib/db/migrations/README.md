@@ -121,6 +121,36 @@ su main non si tocca più.
   con `public` nel percorso): prima si toglie il CREATE su `public` a
   `cerbero_owner` (`REVOKE CREATE ON SCHEMA public FROM cerbero_owner`), dopo
   lo si ridà (o lo ridà il migratore al prossimo avvio).
+- **Il registro delle modifiche (PR 2.10).** Le tabelle sorvegliate hanno i
+  trigger `registro_*`, che scrivono in `registro.modifiche` (schema, tabelle e
+  funzioni di `cerbero_registro`, non di `cerbero_owner`). Una tabella nuova
+  con programmi, orari, turni, tariffe, persone o permessi si sorveglia nella
+  stessa migrazione che la crea:
+  ```sql
+  SELECT registro.sorveglia('public.t', ARRAY['id'], 'progetto_ps', 'project_id', true);
+  ```
+  Gli argomenti: chiave, tipo e colonna dell'ambito, `con_valori` (false per
+  persone, roster e anagrafica), poi `valori_di` (le sole colonne con il
+  valore, se `con_valori` è false), `escluse` (pattern LIKE delle colonne che
+  non contano) e `solo_nome` (colonne di cui va solo il nome).
+  - Una **colonna nuova** con dati personali, sanitari o segreti in una
+    tabella con i valori va in `escluse` o in `solo_nome` nella stessa
+    migrazione: altrimenti il suo valore finisce nel registro. Per le colonne
+    di testo lo ricorda un test (`migrazioni.test.ts`, «le colonne di testo
+    sono tutte decise»). I riferimenti alle persone (`%user_id`, `added_by`,
+    `created_by`) sono già «solo nome» in ogni tabella.
+  - **`app_settings`** si registra col valore: niente segreti lì dentro (le
+    chiavi stanno nelle variabili d'ambiente).
+  - Una tabella sorvegliata **rinominata o cancellata**, o una colonna
+    nominata da una regola rinominata: la regola si aggiorna nella stessa
+    migrazione (`registro.sorveglia` col nome nuovo, `DELETE FROM
+    registro.sorvegliate WHERE tabella = '…'` per la vecchia). Altrimenti
+    `registro.verifica()` la segnala e `ruoli.mjs --verifica` fallisce.
+  - L'app non può farlo da sé: `cerbero_ddl_dell_app_fine` le impedisce di
+    spegnere i trigger, di rinominare o sostituire una tabella sorvegliata o
+    le sue colonne e di legarla per ereditarietà o come partizione;
+    `cerbero_ddl_dell_app_riscrive` (`table_rewrite`) di riscriverla
+    (`ALTER COLUMN … TYPE … USING`, `SET EXPRESSION`).
 - **Permessi**: niente GRANT nelle migrazioni per i ruoli in sola lettura.
   Argos legge solo le tabelle del suo contratto
   (`lib/db/contratti/argos-lettura.mjs`), che il migratore applica a ogni
