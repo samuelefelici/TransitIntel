@@ -241,7 +241,8 @@ jobs:
       # registra e cosa no (hash, codici del roster, valori di utenti e roster),
       # riepiloghi, cascate, anonimizzazione e conservazione. Come cerbero_app:
       # non lo legge, non lo spegne, non rinomina una tabella sorvegliata; la
-      # manutenzione sì, anche due volte. Un trigger spento da un superutente fa
+      # manutenzione sì, anche due volte; dalla 2.11 lo legge con leggi() (mai
+      # per persona, e la consultazione resta annotata). Un trigger spento da un superutente fa
       # fallire la verifica dei ruoli. Poi resta acceso su vuoto e
       # solo_migrazioni: API, lavoratore e test sul database scrivono come
       # cerbero_app attraverso i trigger.
@@ -278,13 +279,22 @@ jobs:
           # le unità pigre invece passano anche sulle tabelle sorvegliate
           app "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid"
           for vietato in "SELECT count(*) FROM registro.modifiche" "UPDATE registro.impostazioni SET attivo = false" \
-                         "DROP TRIGGER registro_cambia ON public.users" "SELECT registro.cattura()"; do
+                         "DROP TRIGGER registro_cambia ON public.users" "SELECT registro.cattura()" \
+                         "SELECT count(*) FROM registro.letture" "SELECT count(*) FROM registro.parziali" \
+                         "SELECT registro.somma(pg_current_xact_id())" "ALTER TABLE registro.parziali DISABLE TRIGGER registro_chiude"; do
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
-            grep -Eq "permission denied|non può" vietato.log || { cat vietato.log; exit 1; }
+            grep -Eq "permission denied|must be owner|non può" vietato.log || { cat vietato.log; exit 1; }
           done
           app "SELECT registro.manutenzione()"
           app "SELECT registro.manutenzione()" | grep -q '"partizioni": \[\]'
           test -z "$(app "SELECT * FROM registro.verifica()")"
+          # PR 2.11: l'app lo legge solo con leggi(), che annota la consultazione e non filtra per persona
+          test "$(app "SELECT registro.stato() ->> 'attivo'")" = false
+          app "SELECT count(*) FROM registro.leggi('{}', 10)"
+          if app "SELECT * FROM registro.leggi('{\"attore\": \"x\"}', 10)" 2> vietato.log; then echo "leggi() non doveva filtrare per persona"; exit 1; fi
+          grep -q "il registro non si legge per persona" vietato.log || { cat vietato.log; exit 1; }
+          # a registro spento e vuoto la consultazione non si annota (la pagina la chiama appena si apre)
+          test "$(psql -d prod -tAq -c "SELECT count(*) FROM registro.letture")" = 0
           # un trigger spento da un superutente: la verifica dei ruoli fallisce, con la cura
           psql -d prod -v ON_ERROR_STOP=1 -q -c "ALTER TABLE public.users DISABLE TRIGGER registro_cambia"
           if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare il trigger spento"; exit 1; fi
@@ -668,6 +678,11 @@ jobs:
         run: |
           TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/registro-db.test.ts
           test -z "$(psql -d vuoto -tAq -c "SELECT * FROM registro.verifica()")"
+          # PR 2.11: i riepiloghi si sommano al COMMIT: nessun parziale resta, e ce ne sono di sommati
+          test "$(psql -d vuoto -tAq -c "SELECT count(*) FROM registro.parziali")" = 0
+          test "$(psql -d vuoto -tAq -c "SELECT count(*) > 0 FROM registro.modifiche WHERE riepilogo AND ruolo_db = 'cerbero_app'")" = t
+          # a registro acceso le consultazioni dell'app sono annotate
+          test "$(psql -d vuoto -tAq -c "SELECT count(*) > 0 FROM registro.letture WHERE ruolo_db = 'cerbero_app'")" = t
           psql -d vuoto -tAq -c "SELECT tabella, operazione, count(*), sum(righe) FROM registro.modifiche GROUP BY 1, 2 ORDER BY 1, 2"
           test "$(psql -d vuoto -tAq -c "SELECT count(*) > 0 FROM registro.modifiche WHERE ruolo_db = 'cerbero_app'")" = t
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata

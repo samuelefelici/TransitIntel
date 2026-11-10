@@ -50,6 +50,13 @@
       "when": 1794251613539,
       "tag": "0006_registro_delle_modifiche",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794301785670,
+      "tag": "0007_registro_lettura_e_seconda_ondata",
+      "breakpoints": true
     }
   ]
 }

@@ -4,7 +4,7 @@
  * (migrazioni-postgres) e lo script locale della PR. */
 import { describe, it, expect } from "vitest";
 import {
-  APP, CORPO_EVENTO_DDL, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, elencoDalCatalogo, piano, sqlEspressioniVietate,
+  APP, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, elencoDalCatalogo, piano, sqlEspressioniVietate,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import type { StatoRuoli, Relazione } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 
@@ -259,6 +259,21 @@ describe("ruoli del database: il piano", () => {
     expect(p.errori).toHaveLength(1);
     expect(p.errori[0]).toMatch(/^public\.depots: il vincolo depots_nome_ok usa query_to_xml\(text,boolean,boolean,text\), fuori da quello che è ammesso/);
     expect(p.errori[0]).toMatch(/ALTER TABLE public\.depots DROP CONSTRAINT depots_nome_ok; finché c'è, il migratore non migra$/);
+  });
+
+  it("del registro l'app esegue quattro funzioni e legge solo le regole, mai le righe (PR 2.11)", () => {
+    // scritte come le stampa regprocedure (senza spazi): leggiRegistro confronta il testo,
+    // e una firma scritta in un altro modo verrebbe revocata a ogni avvio
+    expect([...DA_ESEGUIRE]).toEqual([
+      "registro.manutenzione()", "registro.verifica()", "registro.leggi(jsonb,integer)", "registro.stato()",
+    ]);
+    expect(DA_LEGGERE.filter((v) => v.startsWith("registro."))).toEqual(["registro.sorvegliate"]);
+    // una funzione che non è nell'elenco (la somma dei riepiloghi) data all'app: si revoca
+    const stato = base({
+      ruoli: [...base().ruoli, ruolo("cerbero_registro")],
+      registro: { problemi: [], diritti: [{ tipo: "FUNCTION", oggetto: "registro.somma(xid8)", a_chi: "cerbero_owner", diritto: "EXECUTE" }] },
+    });
+    expect(piano(stato).azioni.map((a) => a.sql)).toEqual(['REVOKE EXECUTE ON FUNCTION registro.somma(xid8) FROM "cerbero_owner"']);
   });
 
   it("il registro delle modifiche: diritti di cerbero_owner, nient'altro, il suo ruolo, i problemi come errori", () => {

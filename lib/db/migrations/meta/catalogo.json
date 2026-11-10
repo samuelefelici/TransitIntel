@@ -1407,7 +1407,8 @@
    "feed_id": "uuid | not null |  |  | ",
    "id": "uuid | not null | gen_random_uuid() |  | ",
    "project_id": "uuid | not null |  |  | ",
-   "user_id": "uuid | null |  |  | "
+   "user_id": "uuid | null |  |  | ",
+   "via": "text | null |  |  | "
   },
   "public.ps_project_activity_log": {
    "action": "text | not null |  |  | ",

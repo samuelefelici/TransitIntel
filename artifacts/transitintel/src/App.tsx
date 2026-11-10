@@ -99,6 +99,7 @@ const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-stu
 const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
 const AdminParametriPage = lazyWithRetry(() => import("@/pages/admin-parametri"));
+const AdminRegistroPage = lazyWithRetry(() => import("@/pages/admin-registro"));
 const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const ApriFleetCare = lazyWithRetry(() => import("@/pages/fleetcare"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
@@ -378,6 +379,9 @@ function Router() {
             </Route>
             <Route path="/admin/parametri">
               <AdminOnly><AdminParametriPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/registro">
+              <AdminOnly><AdminRegistroPage /></AdminOnly>
             </Route>
 
             {/* Redirects for old optimizer paths */}

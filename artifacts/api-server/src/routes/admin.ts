@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import { requireAdmin } from "../lib/auth";
+import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/registro-modifiche";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
 const router: IRouter = Router();
@@ -78,6 +79,52 @@ router.get("/admin/sync/status", (_req, res) => {
     };
   }
   res.json(status);
+});
+
+/**
+ * GET /api/admin/registro — il registro delle modifiche (PR 2.11).
+ * Solo admin (mai un token di Argos: requireAdmin li rifiuta). Parametri: da,
+ * a (istanti ISO), tabella, operazione, ambitoTipo, ambitoId (solo con un
+ * ambito che non è una persona), limite, cursore (`da` compreso, `a` escluso). Ogni altro parametro è un
+ * errore: il registro non si filtra né si ordina per persona.
+ * La lettura passa da registro.leggi(), che annota la consultazione.
+ */
+router.use("/admin/registro", requireAdmin);
+router.get("/admin/registro", async (req, res): Promise<void> => {
+  const p = Parametri.safeParse(req.query);
+  if (!p.success) {
+    const estranei = p.error.issues.filter((i) => i.code === "unrecognized_keys").flatMap((i: any) => i.keys as string[]);
+    // un tentativo di leggere il registro in un modo non previsto (per persona): resta nel log, coi soli nomi dei parametri
+    if (estranei.length) req.log?.warn?.({ parametri: estranei.map((k) => String(k).slice(0, 40)).slice(0, 10), utente: req.user?.id }, "registro delle modifiche: parametro non ammesso");
+    res.status(400).json({
+      error: estranei.length
+        ? `Parametro non ammesso: ${estranei.join(", ")}. Il registro si filtra per periodo, tabella, operazione e ambito, non per persona`
+        : `Parametri non validi: ${p.error.issues.map((i) => `${i.path.join(".") || "richiesta"} (${i.message})`).join("; ")}`,
+    });
+    return;
+  }
+  try {
+    const stato = await statoRegistro();
+    if (p.data.tabella && !stato.tabelle.some((t) => t.tabella === p.data.tabella)) {
+      res.status(400).json({ error: "Questa tabella non è sorvegliata dal registro" });
+      return;
+    }
+    if (p.data.da && p.data.a) {
+      const giorni = (Date.parse(p.data.a) - Date.parse(p.data.da)) / 86_400_000;
+      if (!(giorni > 0) || giorni > GIORNI_MAX) { res.status(400).json({ error: "Il periodo va da un giorno prima a uno dopo, 92 giorni al più" }); return; }
+    }
+    const pagina = await leggiRegistro(p.data);
+    if ("errore" in pagina) { res.status(400).json({ error: pagina.errore }); return; }
+    res.json({ stato, ...pagina });
+  } catch (e: any) {
+    // classe 22: un limite della funzione (periodo, righe, una data fuori scala) che la validazione qui sopra non ha fermato
+    const codice = String(e?.code ?? e?.cause?.code ?? "");
+    if (codice.startsWith("22")) { res.status(400).json({ error: "Richiesta fuori dai limiti del registro" }); return; }
+    // 57014: la lettura ha superato il tempo massimo
+    if (codice === "57014") { res.status(400).json({ error: "La ricerca è troppo ampia: scegli una tabella o un periodo più stretto" }); return; }
+    req.log?.error?.({ err: e?.message }, "registro delle modifiche non leggibile");
+    res.status(500).json({ error: "Registro non leggibile" });
+  }
 });
 
 export default router;
