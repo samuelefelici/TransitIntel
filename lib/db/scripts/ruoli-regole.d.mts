@@ -34,7 +34,9 @@ export interface StatoRuoli {
   database: { connette: boolean | null; temporanee: boolean | null };
   schemi: { nome: string; esiste: boolean; uso: boolean | null; crea: boolean | null }[];
   /** Chi altro può creare negli schemi dei dati; `PUBLIC` se possono tutti. */
-  creatori?: { schema: string; ruolo: string }[];
+  creatori?: { schema: string; ruolo: string; come?: "diretto" | "proprietario" | "ereditato" }[];
+  /** Espressioni non ammesse su tabelle di un altro ruolo (non di Cerbero) negli schemi dei dati. */
+  espressioniDiAltri?: (EspressioneVietata & { proprietario: string })[];
   lettura: { voce: string; esiste: boolean; legge: boolean | null }[];
   esecuzione?: { firma: string; esiste: boolean; esegue: boolean | null }[];
   registro?: { diritti: { tipo: string; oggetto: string; a_chi: string; diritto: string }[]; problemi: string[] } | null;

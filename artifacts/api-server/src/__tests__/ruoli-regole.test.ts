@@ -353,6 +353,34 @@ describe("ruoli del database: il piano", () => {
     expect(piano(base({ creatori: [{ schema: "caronte", ruolo: 'x"; DROP' }] })).avvisi[0]).toContain('FROM "x""; DROP"');
   });
 
+  it("chi può creare senza un diritto dato a lui: la revoca non servirebbe, la cura è un'altra", () => {
+    const p = piano(base({ creatori: [
+      { schema: "caronte", ruolo: "caronte_app", come: "diretto" },
+      { schema: "caronte", ruolo: "erede", come: "ereditato" },
+      { schema: "coda", ruolo: "padrone", come: "proprietario" },
+    ] }));
+    expect(p.errori).toEqual([]);
+    expect(p.avvisi[0]).toContain('REVOKE CREATE ON SCHEMA "caronte" FROM "caronte_app"');
+    expect(p.avvisi[1]).toMatch(/^erede può creare .*gli viene da un ruolo di cui è membro/);
+    expect(p.avvisi[1]).not.toContain("REVOKE");
+    expect(p.avvisi[2]).toMatch(/^padrone può creare .*è il proprietario dello schema: ALTER SCHEMA "coda" OWNER TO postgres/);
+    expect(p.avvisi[2]).not.toContain("REVOKE");
+  });
+
+  it("un'espressione non ammessa su una tabella di un altro programma (caronte.app_users): avviso, con chi la eseguirebbe", () => {
+    const p = piano(base({ espressioniDiAltri: [{
+      tabella: "caronte.app_users", proprietario: "caronte_app", oggetto: "il vincolo rv_pin",
+      cura: "ALTER TABLE caronte.app_users DROP CONSTRAINT rv_pin", funzioni: "query_to_xml(text,boolean,boolean,text)",
+    }] }));
+    // non un errore: le funzioni ammesse sono quelle delle tabelle di Cerbero, e la verifica non deve fermare il rilascio
+    expect(p.errori).toEqual([]);
+    expect(p.azioni).toEqual([]);
+    expect(p.avvisi).toHaveLength(1);
+    expect(p.avvisi[0]).toMatch(/^caronte\.app_users \(di caronte_app, non di Cerbero\): il vincolo rv_pin usa query_to_xml/);
+    expect(p.avvisi[0]).toMatch(/come superutente chi scrive in quella tabella da superutente o ripristina un backup/);
+    expect(p.avvisi[0]).toContain("ALTER TABLE caronte.app_users DROP CONSTRAINT rv_pin");
+  });
+
   it("una vista che dipende da una relazione di un altro ruolo: errore, non un'attesa infinita", () => {
     const p = piano(base({ relazioni: [
       rel("caronte.stop_predictions", { proprietario: "avm_esterno" }),
@@ -504,6 +532,14 @@ describe("la password di cerbero_app (ruoli.mjs --imposta-password)", () => {
       expect(() => improntaScram(p)).toThrow(/almeno 8 caratteri ASCII/);
     }
     expect(() => improntaScram(undefined as unknown as string)).toThrow();
+    // un sale vuoto, corto o che non è un Buffer, o meno iterazioni: PostgreSQL salverebbe un'impronta con cui non si entra, o debole
+    for (const sale of [Buffer.alloc(0), Buffer.alloc(8, 1), "W22ZaJ0SNY7soEsUEjb6gQ==" as unknown as Buffer]) {
+      expect(() => improntaScram("0123456789abcdef", sale)).toThrow(/sale deve essere un Buffer di almeno 16 byte/);
+    }
+    for (const giri of [0, 1000, 4096.5, Number.NaN]) {
+      expect(() => improntaScram("0123456789abcdef", Buffer.alloc(16, 1), giri)).toThrow(/iterazioni devono essere almeno 4096/);
+    }
+    expect(improntaScram("0123456789abcdef", Buffer.alloc(16, 1), 8192)).toMatch(/^SCRAM-SHA-256\$8192:/);
   });
 
   it("l'URL dell'app è quello del migratore con utente e password cambiati, il resto uguale", () => {
@@ -565,12 +601,16 @@ describe("caronte_setup.sql: il ruolo di Caronte", () => {
     expect(senzaCommenti).not.toMatch(/GRANT[^;]*\b(users|roster_|accessi_|registro)\b/i);
   });
 
-  it("app_users è di Caronte: ne diventa proprietario, coi diritti ridati dopo il REVOKE", () => {
+  it("app_users è di Caronte: ne diventa proprietario, e a ciò che è suo si ridanno i diritti dopo il REVOKE", () => {
     const fine = senzaCommenti.slice(senzaCommenti.indexOf("REVOKE ALL ON ALL TABLES IN SCHEMA caronte"));
-    expect(fine).toMatch(/ALTER TABLE caronte\.app_users OWNER TO caronte_app;\s*GRANT ALL ON TABLE caronte\.app_users TO caronte_app;/);
-    expect(fine).toMatch(/GRANT ALL ON SEQUENCE %s TO caronte_app/);
     // solo se la tabella c'è: su un database nuovo la crea Caronte al primo login
-    expect(senzaCommenti).toMatch(/IF to_regclass\('caronte\.app_users'\) IS NOT NULL THEN\s*ALTER TABLE caronte\.app_users OWNER/);
+    expect(fine).toMatch(/IF to_regclass\('caronte\.app_users'\) IS NOT NULL THEN\s*ALTER TABLE caronte\.app_users OWNER TO caronte_app;\s*END IF;/);
+    // tutte le relazioni di caronte_app nello schema, non solo app_users: il REVOKE toglie i diritti anche al proprietario
+    expect(fine).toMatch(/n\.nspname = 'caronte' AND c\.relowner = 'caronte_app'::regrole/);
+    expect(fine).toMatch(/GRANT ALL ON %s %s TO caronte_app/);
+    expect(fine.indexOf("GRANT ALL ON %s %s TO caronte_app")).toBeGreaterThan(fine.indexOf("ALTER TABLE caronte.app_users OWNER TO caronte_app"));
+    // e solo a ciò che è suo: nessun GRANT ALL su una tabella nominata
+    expect(senzaCommenti).not.toMatch(/GRANT ALL ON (TABLE )?(caronte|public)\./);
   });
 
   it("può creare in caronte (Caronte crea la sua tabella a ogni login), e solo lì", () => {

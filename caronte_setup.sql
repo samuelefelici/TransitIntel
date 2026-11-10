@@ -87,24 +87,25 @@ BEGIN
   END LOOP;
 END$$;
 
--- La tabella degli utenti di Caronte: sua, e solo sua. Il REVOKE qui sopra ha
--- tolto i diritti anche al proprietario, quindi si ridanno, con quelli delle
--- sequenze delle sue colonne (se l'id è un serial).
+-- La tabella degli utenti di Caronte è sua. E il REVOKE qui sopra ha tolto i
+-- diritti anche al proprietario: si ridanno a tutto quello che nello schema è
+-- di caronte_app (app_users, la sequenza del suo id se è un serial, e ogni
+-- altra tabella che Caronte si è creato), altrimenti rieseguire questo file
+-- gli chiuderebbe le sue stesse tabelle.
 DO $$
-DECLARE s regclass;
+DECLARE r record;
 BEGIN
   IF to_regclass('caronte.app_users') IS NOT NULL THEN
     ALTER TABLE caronte.app_users OWNER TO caronte_app;
-    GRANT ALL ON TABLE caronte.app_users TO caronte_app;
-    FOR s IN
-      SELECT d.objid::regclass FROM pg_catalog.pg_depend d
-        JOIN pg_catalog.pg_class c ON c.oid = d.objid AND c.relkind = 'S'
-       WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass
-         AND d.refobjid = 'caronte.app_users'::regclass AND d.deptype IN ('a', 'i')
-    LOOP
-      EXECUTE format('GRANT ALL ON SEQUENCE %s TO caronte_app', s);
-    END LOOP;
   END IF;
+  FOR r IN
+    SELECT c.oid::regclass AS nome, c.relkind
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'caronte' AND c.relowner = 'caronte_app'::regrole AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+  LOOP
+    EXECUTE format('GRANT ALL ON %s %s TO caronte_app', CASE WHEN r.relkind = 'S' THEN 'SEQUENCE' ELSE 'TABLE' END, r.nome);
+  END LOOP;
 END$$;
 
 -- Da togliere quando Caronte non crea più la sua tabella a ogni login (vedi in testa)

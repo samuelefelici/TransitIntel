@@ -427,6 +427,15 @@ file del server, ruoli). Dalla 2.8:
     Quando Caronte controllerà prima se la tabella esiste: si toglie la riga
     `GRANT CREATE` da `caronte_setup.sql` e, come `postgres`,
     `REVOKE CREATE ON SCHEMA caronte FROM caronte_app;`
+  - **le sue tabelle non si scrivono da superutente.** Gli event trigger
+    fermano solo l'app di Cerbero: da proprietario, Caronte può mettere su
+    `caronte.app_users` un vincolo o un default qualunque, e lo eseguirebbe
+    come superutente chi ci scrive come `postgres` o **ripristina un backup**.
+    `ruoli.mjs --verifica` lo segnala con un avviso («caronte.app_users (di
+    caronte_app, non di Cerbero): … usa …»), con l'istruzione per toglierlo:
+    va guardato prima di un ripristino. Si chiude del tutto quando Caronte non
+    farà più DDL: allora la tabella torna di `postgres` e a `caronte_app`
+    restano lettura e scrittura;
   - nel suo servizio le variabili con l'URL del database sono **due**,
     `DATABASE_URL` e `CARONTE_URL`: vanno tutte e due su `caronte_app`. La
     seconda connessione nasce al primo login, anche settimane dopo l'avvio:
@@ -534,8 +543,9 @@ file del server, ruoli). Dalla 2.8:
      **L'URL non si compone a mano.** Al primo rilascio la password scritta a
      mano è finita due volte nel posto sbagliato dell'URL, o diversa da quella
      data al ruolo. La riga stampata contiene la password: si copia solo nelle
-     variabili dei due servizi. Il comando si rifiuta fuori da un terminale e
-     chiede un superutente (dal container dell'API: `DATABASE_MIGRATOR_URL`).
+     variabili dei due servizi. Il comando si rifiuta fuori da un terminale,
+     chiede un superutente (dal container dell'API: `DATABASE_MIGRATOR_URL`) e
+     si ferma **prima** di cambiare la password se i ruoli non sono in regola.
 
      A mano si può ancora: `\password cerbero_app` e
      `ALTER ROLE cerbero_app LOGIN;` in psql, poi
