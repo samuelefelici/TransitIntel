@@ -158,7 +158,8 @@ export async function controllaIdentita(processo: string, tentativo = 1): Promis
     if (ERRORI_DI_ACCESSO.has(codice)) {
       logger.fatal({ processo, codice, err: err?.message },
         "Il database rifiuta l'accesso (credenziali, ruolo senza LOGIN o database sbagliato in DATABASE_URL): non parto. "
-        + "DEPLOY.md, «Ruoli del database», passo 4");
+        + "Un URL già provato lo dà, dal container dell'API: node lib/db/scripts/ruoli.mjs --imposta-password "
+        + "(DEPLOY.md, «Ruoli del database», passi 3 e 4)");
       process.exit(1);
     }
     if (tentativo === 1 || tentativo % 20 === 0) {
