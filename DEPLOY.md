@@ -636,12 +636,13 @@ scritte restano e seguono anonimizzazione e conservazione.
   | | senza registro | acceso |
   |---|---|---|
   | salvati una riga per volta (6.200 istruzioni) | 0,1–0,3 s | 0,8 s |
-  | spostati un orario per volta (6.000 UPDATE) | 0,17 s | 1,5 s |
+  | spostati un orario per volta (6.000 UPDATE) | 0,2 s | 1,5–1,8 s |
   | importati a blocchi da 500 | 0,10 s | 0,11 s |
   | cancellati in cascata con le corse | 0,01 s | 0,02 s |
 
   Le operazioni fatte di migliaia di istruzioni da una riga pagano circa
-  0,15–0,25 ms a istruzione; quelle a blocchi quasi niente.
+  0,15–0,25 ms a istruzione, sempre uguali per quanto è lunga la transazione
+  (provato fino a 40.000); quelle a blocchi quasi niente.
 
 **Leggerlo** (dalla 2.11): la pagina **Amministrazione → Registro delle
 modifiche** (`/admin/registro`), solo per l'admin.
