@@ -230,7 +230,7 @@ BEGIN
     VALUES (corsa, r.f, r.id, ora || ':' || lpad(r.f::text, 2, '0') || ':00', ora || ':' || lpad(r.f::text, 2, '0') || ':30');
   END LOOP;
 END $f$;
-SELECT pg_temp.salva_orari('f0000000-0000-4000-8000-0000000000c1', '07');
+DO $$ BEGIN PERFORM pg_temp.salva_orari('f0000000-0000-4000-8000-0000000000c1', '07'); END $$;
 :somma
 DO $$
 DECLARE r record;
@@ -245,7 +245,7 @@ BEGIN
     format('orari di una corsa: %s', row_to_json(r));
 END $$;
 -- la stessa corsa salvata di nuovo, poi un'altra: i riepiloghi della transazione si sommano
-SELECT pg_temp.salva_orari('f0000000-0000-4000-8000-0000000000c1', '08');
+DO $$ BEGIN PERFORM pg_temp.salva_orari('f0000000-0000-4000-8000-0000000000c1', '08'); END $$;
 :somma
 DO $$ BEGIN
   ASSERT (SELECT righe = 30 AND ambito_id = 'f0000000-0000-4000-8000-0000000000c1' AND NOT a_cascata FROM nostre
@@ -253,7 +253,7 @@ DO $$ BEGIN
   ASSERT (SELECT righe = 60 AND ambito_id = 'f0000000-0000-4000-8000-0000000000c1' FROM nostre
            WHERE tabella = 'public.ps_stop_times' AND operazione = 'INSERT'), 'gli inserimenti si sommano, la corsa è sempre quella';
 END $$;
-SELECT pg_temp.salva_orari('f0000000-0000-4000-8000-0000000000c2', '09');
+DO $$ BEGIN PERFORM pg_temp.salva_orari('f0000000-0000-4000-8000-0000000000c2', '09'); END $$;
 -- «sposta orari»: un UPDATE per fermata; uno che non cambia niente non conta;
 -- quelli di un savepoint annullato nemmeno
 UPDATE public.ps_stop_times SET arrival_time = '09:59:00' WHERE trip_id = 'f0000000-0000-4000-8000-0000000000c2' AND stop_seq = 1;

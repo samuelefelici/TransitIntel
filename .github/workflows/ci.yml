@@ -283,7 +283,7 @@ jobs:
                          "SELECT count(*) FROM registro.letture" "SELECT count(*) FROM registro.parziali" \
                          "SELECT registro.somma(pg_current_xact_id())" "ALTER TABLE registro.parziali DISABLE TRIGGER registro_chiude"; do
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
-            grep -Eq "permission denied|non può" vietato.log || { cat vietato.log; exit 1; }
+            grep -Eq "permission denied|must be owner|non può" vietato.log || { cat vietato.log; exit 1; }
           done
           app "SELECT registro.manutenzione()"
           app "SELECT registro.manutenzione()" | grep -q '"partizioni": \[\]'
