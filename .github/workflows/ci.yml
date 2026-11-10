@@ -351,7 +351,7 @@ jobs:
           # dipende la colonna calcolata mfa_obbligatoria (PR 2.12), e Postgres lo rifiuta da sé
           for vietato in "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" "ALTER TABLE public.users DROP COLUMN permissions"; do
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
-            grep -q "generated column" vietato.log || { cat vietato.log; exit 1; }
+            grep -q -E "used by a generated column|column mfa_obbligatoria of table users depends on column permissions" vietato.log || { cat vietato.log; exit 1; }
           done
           test "$(app "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_riscrive' AND evtevent = 'table_rewrite' AND evtenabled = 'A'")" = 1
           for vietato in "CREATE TABLE public.ci_figlia () INHERITS (public.ps_projects)" \
