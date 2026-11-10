@@ -29,9 +29,15 @@ CREATE TEMP VIEW nostre AS SELECT * FROM registro.modifiche WHERE transazione = 
 -- ── spento: niente ──
 INSERT INTO public.users (id, email, password_hash, full_name)
 VALUES ('f0000000-0000-4000-8000-000000000001', 'registro-1@prova.local', 'x', 'Prova Registro');
-DO $$ BEGIN
+DO $$
+DECLARE prima_ bigint := (SELECT count(*) FROM registro.letture);
+BEGIN
   ASSERT (SELECT count(*) FROM nostre) = 0, 'spento: il registro non scrive';
   ASSERT NOT (SELECT attivo FROM registro.impostazioni), 'il registro nasce spento';
+  -- 0007: a registro spento una lettura che non trova niente non si annota
+  -- (la pagina dell'amministratore la chiama appena si apre)
+  ASSERT (SELECT count(*) FROM registro.leggi(jsonb_build_object('tabella', 'public.tabella_che_non_esiste'), 10)) = 0, 'spento: niente da leggere';
+  ASSERT (SELECT count(*) FROM registro.letture) = prima_, 'spento e vuoto: la consultazione non si annota';
 END $$;
 
 -- ── acceso, come una richiesta dell'app (contesto della 2.9) ──
@@ -359,62 +365,70 @@ DECLARE
   tutte   text[];
   viste   text[] := '{}';
   r       record;
-  c_ts    text;
-  c_tx    text;
-  salta   integer := 0;
+  cursore jsonb := '{}';
   n       integer;
   prima_  bigint := (SELECT count(*) FROM registro.letture);
 BEGIN
-  SELECT array_agg(l.chiave ->> 'id' ORDER BY l.ordinality) INTO tutte FROM registro.leggi(cerca, 200, 0) WITH ORDINALITY AS l;
-  ASSERT cardinality(tutte) = 25 AND tutte[1] IN ('1', '2') AND tutte[25] IN ('24', '25'), format('dal più recente: %s', tutte);
-  -- a pagine da 7, come fa l'API: il cursore è l'ultima riga vista, il salto le righe già viste di quella transazione
+  SELECT array_agg(l.chiave ->> 'id' ORDER BY l.ordinality) INTO tutte FROM registro.leggi(cerca, 200) WITH ORDINALITY AS l;
+  -- dal più recente; dentro una transazione dall'ultima riga scritta alla prima
+  ASSERT cardinality(tutte) = 25 AND tutte[1:2] = '{2,1}' AND tutte[24:25] = '{25,24}', format('dal più recente: %s', tutte);
+  -- a pagine da 7, come fa l'API: il cursore è l'ultima riga vista
   LOOP
     n := 0;
-    FOR r IN SELECT * FROM registro.leggi(cerca || CASE WHEN c_ts IS NULL THEN '{}'::jsonb
-                                                         ELSE jsonb_build_object('cursore_ts', c_ts, 'cursore_transazione', c_tx) END, 7, salta) LOOP
+    FOR r IN SELECT * FROM registro.leggi(cerca || cursore, 7) LOOP
       n := n + 1;
       viste := viste || (r.chiave ->> 'id');
-      IF r.ts_esatto = c_ts AND r.transazione = c_tx THEN
-        salta := salta + 1;
-      ELSE
-        c_ts := r.ts_esatto; c_tx := r.transazione; salta := 1;
-      END IF;
+      cursore := jsonb_build_object('cursore_ts', r.ts, 'cursore_transazione', r.transazione, 'cursore_id', r.id::text);
     END LOOP;
     EXIT WHEN n < 7;
   END LOOP;
   ASSERT viste = tutte, format('le pagine danno le stesse righe, una volta sola e nello stesso ordine: %s contro %s', viste, tutte);
+  -- le date escono in ISO 8601, UTC, coi microsecondi, qualunque sia il DateStyle
+  SET LOCAL DateStyle = 'SQL, DMY';
+  ASSERT (SELECT bool_and(l.ts ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$') FROM registro.leggi(cerca, 5) l), 'date in ISO';
+  SET LOCAL DateStyle = 'ISO, MDY';
   -- ogni chiamata è annotata: chi, con quali filtri, quante righe
-  ASSERT (SELECT count(*) FROM registro.letture) = prima_ + 5, 'una riga per consultazione (1 + 4 pagine)';
+  ASSERT (SELECT count(*) FROM registro.letture) = prima_ + 6, 'una riga per consultazione (1 + 4 pagine + 1)';
   ASSERT (SELECT attore = 'a0000000-0000-4000-8000-0000000000aa' AND via = 'api' AND richiesta = 'r-registro' AND ruolo_db = session_user
-                 AND filtri = '{"tabella": "public.prova_lettura"}' AND chieste = 200 AND saltate = 0 AND righe = 25
+                 AND filtri = '{"tabella": "public.prova_lettura"}' AND chieste = 200 AND righe = 25
             FROM registro.letture WHERE chieste = 200 ORDER BY ts DESC LIMIT 1), 'la consultazione annotata';
   -- i filtri
   ASSERT (SELECT count(*) = (SELECT count(*) FROM nostre WHERE tabella = 'public.ps_stop_times') AND bool_and(l.tabella = 'public.ps_stop_times')
-            FROM registro.leggi('{"tabella": "public.ps_stop_times"}', 200, 0) l), 'filtro per tabella';
-  ASSERT (SELECT count(*) = 1 AND bool_and(l.tabella = 'public.app_settings') FROM registro.leggi('{"operazione": "TRUNCATE"}', 200, 0) l), 'filtro per operazione';
+            FROM registro.leggi('{"tabella": "public.ps_stop_times"}', 200) l), 'filtro per tabella';
+  ASSERT (SELECT count(*) = 1 AND bool_and(l.tabella = 'public.app_settings') FROM registro.leggi('{"operazione": "TRUNCATE"}', 200) l), 'filtro per operazione';
   ASSERT (SELECT count(*) = 1 AND bool_and(l.operazione = 'UPDATE' AND l.riepilogo AND l.righe = 3)
-            FROM registro.leggi('{"ambito_tipo": "corsa", "ambito_id": "f0000000-0000-4000-8000-0000000000c2"}', 200, 0) l), 'filtro per ambito';
-  ASSERT (SELECT count(*) = 0 FROM registro.leggi(jsonb_build_object('a', now() - interval '2 days'), 200, 0)), 'fuori dal periodo: niente';
-  ASSERT (SELECT count(*) > 0 AND bool_and(l.ts >= now() - interval '7 days') FROM registro.leggi('{}', 200, 0) l), 'senza periodo: gli ultimi 7 giorni';
+            FROM registro.leggi('{"ambito_tipo": "corsa", "ambito_id": "f0000000-0000-4000-8000-0000000000c2"}', 200) l), 'filtro per ambito';
+  -- il periodo: da compreso, a escluso (due giorni vicini non si perdono né si ripetono una riga)
+  ASSERT (SELECT count(*) = 0 FROM registro.leggi(jsonb_build_object('a', now() - interval '2 days'), 200)), 'fuori dal periodo: niente';
+  ASSERT (SELECT count(*) FROM registro.leggi(cerca || jsonb_build_object('da', now() - interval '2 minutes', 'a', now()), 200)) = 6, 'a escluso: le 6 righe di 1 e 2 minuti fa, non le 2 di adesso';
+  ASSERT (SELECT count(*) FROM registro.leggi(cerca || jsonb_build_object('da', now(), 'a', now() + interval '1 minute'), 200)) = 2, 'da compreso: le 2 righe di adesso';
+  ASSERT (SELECT count(*) > 0 AND bool_and(l.ts::timestamptz >= now() - interval '7 days') FROM registro.leggi('{}', 200) l), 'senza periodo: gli ultimi 7 giorni';
 END $$;
 -- quello che non si può chiedere: una persona, troppe righe, troppo tempo
 DO $$
 DECLARE prova text;
 BEGIN
   FOREACH prova IN ARRAY ARRAY[
-    $q$SELECT * FROM registro.leggi('{"attore": "a0000000-0000-4000-8000-0000000000aa"}', 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{"chiave": "x"}', 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{"ambito_tipo": "utente", "ambito_id": "f0000000-0000-4000-8000-000000000001"}', 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{"ambito_tipo": "conducente", "ambito_id": "f0000000-0000-4000-8000-0000000000d1"}', 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{"ambito_id": "f0000000-0000-4000-8000-0000000000a1"}', 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{}', 0, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{}', 201, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{}', 10, 5001)$q$,
-    $q$SELECT * FROM registro.leggi('{}', 10, -1)$q$,
-    $q$SELECT * FROM registro.leggi(jsonb_build_object('da', now() - interval '93 days'), 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi(jsonb_build_object('da', now(), 'a', now() - interval '1 day'), 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi('{"cursore_ts": "2026-01-01 00:00:00+00"}', 10, 0)$q$,
-    $q$SELECT * FROM registro.leggi('[]', 10, 0)$q$] LOOP
+    $q$SELECT * FROM registro.leggi('{"attore": "a0000000-0000-4000-8000-0000000000aa"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"chiave": "x"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"ambito_tipo": "utente", "ambito_id": "f0000000-0000-4000-8000-000000000001"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"ambito_tipo": "conducente", "ambito_id": "f0000000-0000-4000-8000-0000000000d1"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"ambito_id": "f0000000-0000-4000-8000-0000000000a1"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"ambito_tipo": ["progetto_ps"], "ambito_id": "f0000000-0000-4000-8000-0000000000a1"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{}', 0)$q$,
+    $q$SELECT * FROM registro.leggi('{}', 201)$q$,
+    $q$SELECT * FROM registro.leggi('{}', NULL)$q$,
+    $q$SELECT * FROM registro.leggi(jsonb_build_object('da', now() - interval '94 days'), 10)$q$,
+    $q$SELECT * FROM registro.leggi(jsonb_build_object('da', now(), 'a', now() - interval '1 day'), 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"da": "-infinity"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"da": "0000-01-01T00:00:00Z"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"da": "non una data"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"cursore_ts": "2026-01-01T00:00:00.000000Z"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"cursore_ts": "2026-01-01T00:00:00.000000Z", "cursore_transazione": "99999999999999999999", "cursore_id": "1"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"cursore_ts": "2026-01-01T00:00:00.000000Z", "cursore_transazione": "1", "cursore_id": "x"}', 10)$q$,
+    $q$SELECT * FROM registro.leggi(jsonb_build_object('tabella', repeat('x', 101)), 10)$q$,
+    $q$SELECT * FROM registro.leggi('{"tabella": 7}', 10)$q$,
+    $q$SELECT * FROM registro.leggi('[]', 10)$q$] LOOP
     BEGIN
       EXECUTE prova;
       RAISE EXCEPTION 'registro.leggi doveva rifiutare: %', prova;
@@ -422,8 +436,8 @@ BEGIN
     END;
   END LOOP;
   -- le persone si possono vedere tutte insieme (per tabella o per tipo di ambito), mai una per una
-  PERFORM count(*) FROM registro.leggi('{"ambito_tipo": "conducente"}', 10, 0);
-  PERFORM count(*) FROM registro.leggi('{"tabella": "public.users"}', 10, 0);
+  PERFORM count(*) FROM registro.leggi('{"ambito_tipo": "conducente"}', 10);
+  PERFORM count(*) FROM registro.leggi('{"tabella": "public.users"}', 10);
 END $$;
 -- lo stato, per la pagina
 DO $$
@@ -474,7 +488,7 @@ BEGIN
   -- la manutenzione e la verifica sì; e, dalla 0007, la lettura e lo stato
   PERFORM registro.manutenzione();
   PERFORM count(*) FROM registro.verifica();
-  ASSERT (SELECT count(*) FROM registro.leggi('{"tabella": "public.prova_lettura"}', 5, 0)) = 5, 'l''app legge con leggi()';
+  ASSERT (SELECT count(*) FROM registro.leggi('{"tabella": "public.prova_lettura"}', 5)) = 5, 'l''app legge con leggi()';
   ASSERT registro.stato() ? 'attivo', 'l''app chiede lo stato';
   EXECUTE 'RESET ROLE';
 END $$;
@@ -519,8 +533,8 @@ VALUES (now() - interval '13 months', pg_current_xact_id(), 'u-se', 'api', 'cerb
 UPDATE registro.modifiche SET campione = '[{"user_id": "u-se", "project_id": "p-1"}, {"user_id": "u-altro", "project_id": "p-1"}]'
  WHERE origine = 'prova-membri';
 -- le consultazioni scadono con il nome di chi modifica
-INSERT INTO registro.letture (ts, attore, ruolo_db, filtri, chieste, saltate, righe)
-VALUES (now() - interval '13 months', 'u-vecchio', 'cerbero_app', '{}', 10, 0, 0);
+INSERT INTO registro.letture (ts, attore, ruolo_db, filtri, chieste, righe)
+VALUES (now() - interval '13 months', 'u-vecchio', 'cerbero_app', '{}', 10, 0);
 -- un parziale di una transazione chiusa senza la somma: la verifica lo dice, la manutenzione lo somma
 INSERT INTO registro.parziali (ts, transazione, primo, attore, ruolo_db, tabella, operazione, a_cascata, ambito_tipo, ambito_id, righe, campione)
 VALUES (now() - interval '1 hour', '7'::xid8, false, 'a-rimasto', 'cerbero_app', 'public.ps_stop_times', 'INSERT', false, 'corsa', 'c-rimasta', 3, '[{"k": 1}]'),

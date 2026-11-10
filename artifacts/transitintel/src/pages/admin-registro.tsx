@@ -9,7 +9,8 @@
  *   modifica; non ci sono ordinamenti né conteggi per persona;
  * - i valori prima e dopo ci sono solo dove il registro li tiene (programmi,
  *   orari, turni, tariffe); per utenti, roster e anagrafica solo i nomi dei
- *   campi; degli orari di dettaglio solo i riepiloghi.
+ *   campi (degli utenti anche ruolo e permessi); degli orari di dettaglio solo
+ *   i riepiloghi.
  * Ogni consultazione viene annotata dal database (registro.letture).
  * I valori arrivano come testo e come testo si mostrano.
  */
@@ -38,7 +39,6 @@ export default function AdminRegistroPage() {
   const [stato, setStato] = useState<StatoRegistro | null>(null);
   const [righe, setRighe] = useState<RigaRegistro[]>([]);
   const [successivo, setSuccessivo] = useState<string | null>(null);
-  const [troppe, setTroppe] = useState(false);
   const [caricamento, setCaricamento] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
   const [aperte, setAperte] = useState<ReadonlySet<number>>(new Set());
@@ -54,7 +54,6 @@ export default function AdminRegistroPage() {
       setRighe((prima) => (cursore ? [...prima, ...d.righe] : d.righe));
       if (!cursore) { setAperte(new Set()); setApplicati(f); }
       setSuccessivo(d.successivo);
-      setTroppe(d.troppeInUnaTransazione);
     } catch (e: any) {
       setErrore(e?.message || "Registro non leggibile");
     } finally {
@@ -103,7 +102,8 @@ export default function AdminRegistroPage() {
             <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
             <span>
               Dopo {stato.anonimizzaDopoMesi} mesi il nome di chi ha fatto una modifica viene cancellato; la modifica resta
-              per {stato.conservazioneMesi} mesi. Per utenti, roster e anagrafica il registro tiene solo i nomi dei campi cambiati.
+              per {stato.conservazioneMesi} mesi. Per utenti, roster e anagrafica il registro tiene solo i nomi dei campi cambiati
+              (degli utenti anche il ruolo e i permessi).
               Le consultazioni di questa pagina vengono annotate.
             </span>
           </p>
@@ -219,7 +219,7 @@ export default function AdminRegistroPage() {
                   {righe.map((r, i) => {
                     const aperta = aperte.has(i);
                     return (
-                      <Fragment key={`${r.transazione}-${i}`}>
+                      <Fragment key={r.id}>
                         <tr className="border-b border-border/10 hover:bg-muted/30 cursor-pointer" onClick={() => apri(i)}>
                           <td className="py-1.5 pr-2 align-top">
                             <button
@@ -269,11 +269,6 @@ export default function AdminRegistroPage() {
               </Button>
             </div>
           )}
-          {troppe && (
-            <p className="mt-3 text-xs text-amber-400">
-              Un'operazione sola ha scritto più righe di quante se ne possano scorrere da qui: per vedere il resto scegli una tabella o un periodo più stretto.
-            </p>
-          )}
         </CardContent>
       </Card>
     </div>
@@ -304,7 +299,7 @@ function Dettaglio({ riga, soloRiepiloghi, soloQuesto }: {
               </p>
               <ul className="font-mono text-[11px] leading-5 max-h-40 overflow-y-auto">
                 {riga.campione.map((c, i) => (
-                  <li key={i}>{Object.entries(c).map(([k, v]) => `${k} = ${String(v)}`).join(", ")}</li>
+                  <li key={i}>{Object.entries(c ?? {}).map(([k, v]) => `${k} = ${String(v)}`).join(", ")}</li>
                 ))}
               </ul>
             </div>

@@ -522,8 +522,9 @@ non parte.
 
 Chi ha cambiato che cosa, scritto dal database: trigger su 29 tabelle (21
 della prima ondata, 8 della seconda) scrivono in `registro.modifiche`. L'app
-non ha diritti sulle sue tabelle: non lo cambia, non spegne i trigger, e lo
-legge solo attraverso una funzione (sotto, «Leggerlo»). **Nasce spento**: non
+non ha diritti sulle sue tabelle, salvo leggere l'elenco delle regole
+(`registro.sorvegliate`): non lo cambia, non spegne i trigger, e lo legge solo
+attraverso una funzione (sotto, «Leggerlo»). **Nasce spento**: non
 scrive niente finché non lo accende chi gestisce il database (sotto).
 
 **Cosa registra**, per ogni riga cambiata:
@@ -549,7 +550,9 @@ scrive niente finché non lo accende chi gestisce il database (sotto).
   versioni della sessione, contatori della verifica): un login non scrive
   niente;
 - i JSON pesanti (attributi, risultati dei calcoli) e i riferimenti alle
-  persone (proprietario, membro, chi ha aggiunto): solo il nome.
+  persone (proprietario, chi ha aggiunto): solo il nome. Fa eccezione la
+  riga di un membro di un programma: la sua chiave è l'identificativo del
+  membro, che serve a dire di quale riga si parla.
 
 Le regole di ogni tabella sono in `registro.sorvegliate`.
 
@@ -646,12 +649,16 @@ modifiche** (`/admin/registro`), solo per l'admin.
   programma, un feed, una corsa. **Non si cerca, non si ordina e non si conta
   per persona**: lo rifiutano la pagina, l'API e il database. Un utente o un
   conducente si possono vedere solo tutti insieme, mai uno per uno.
-- Ogni riga si apre sul prima e dopo, campo per campo, o sul campione di un
-  riepilogo. I nomi dei conducenti non compaiono mai: del roster si vede
-  l'identificativo.
+- Dalla più recente; dentro un'operazione, dall'ultima riga scritta alla
+  prima. Ogni riga si apre sul prima e dopo, campo per campo, o sul campione
+  di un riepilogo. I nomi dei conducenti non compaiono mai: del roster si
+  vede l'identificativo.
 - **Ogni consultazione viene annotata** in `registro.letture`: chi, quando,
   con quali filtri, quante righe. Va detto nell'informativa. Come per chi
-  modifica, vale per i percorsi onesti: l'attore lo mette l'app.
+  modifica, vale per i percorsi onesti: l'attore lo mette l'app. Finché il
+  registro è spento e vuoto non si annota niente: non c'è niente da leggere.
+  Un tentativo di cercare per persona non entra in `registro.letture` (la
+  funzione lo rifiuta): resta nel log dell'API, coi nomi dei parametri.
 - L'app non legge le tabelle del registro: chiama `registro.leggi()` e
   `registro.stato()`, che hanno i loro limiti e girano come il proprietario
   del registro. Agli agenti (Argos) la rotta è chiusa.

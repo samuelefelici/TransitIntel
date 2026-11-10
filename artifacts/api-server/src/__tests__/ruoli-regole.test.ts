@@ -265,7 +265,7 @@ describe("ruoli del database: il piano", () => {
     // scritte come le stampa regprocedure (senza spazi): leggiRegistro confronta il testo,
     // e una firma scritta in un altro modo verrebbe revocata a ogni avvio
     expect([...DA_ESEGUIRE]).toEqual([
-      "registro.manutenzione()", "registro.verifica()", "registro.leggi(jsonb,integer,integer)", "registro.stato()",
+      "registro.manutenzione()", "registro.verifica()", "registro.leggi(jsonb,integer)", "registro.stato()",
     ]);
     expect(DA_LEGGERE.filter((v) => v.startsWith("registro."))).toEqual(["registro.sorvegliate"]);
     // una funzione che non è nell'elenco (la somma dei riepiloghi) data all'app: si revoca

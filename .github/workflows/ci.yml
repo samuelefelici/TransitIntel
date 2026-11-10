@@ -290,10 +290,11 @@ jobs:
           test -z "$(app "SELECT * FROM registro.verifica()")"
           # PR 2.11: l'app lo legge solo con leggi(), che annota la consultazione e non filtra per persona
           test "$(app "SELECT registro.stato() ->> 'attivo'")" = false
-          app "SELECT count(*) FROM registro.leggi('{}', 10, 0)"
-          if app "SELECT * FROM registro.leggi('{\"attore\": \"x\"}', 10, 0)" 2> vietato.log; then echo "leggi() non doveva filtrare per persona"; exit 1; fi
+          app "SELECT count(*) FROM registro.leggi('{}', 10)"
+          if app "SELECT * FROM registro.leggi('{\"attore\": \"x\"}', 10)" 2> vietato.log; then echo "leggi() non doveva filtrare per persona"; exit 1; fi
           grep -q "il registro non si legge per persona" vietato.log || { cat vietato.log; exit 1; }
-          test "$(psql -d prod -tAq -c "SELECT count(*) FROM registro.letture WHERE ruolo_db = 'cerbero_app' AND righe = 0")" = 1
+          # a registro spento e vuoto la consultazione non si annota (la pagina la chiama appena si apre)
+          test "$(psql -d prod -tAq -c "SELECT count(*) FROM registro.letture")" = 0
           # un trigger spento da un superutente: la verifica dei ruoli fallisce, con la cura
           psql -d prod -v ON_ERROR_STOP=1 -q -c "ALTER TABLE public.users DISABLE TRIGGER registro_cambia"
           if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare il trigger spento"; exit 1; fi
@@ -680,6 +681,8 @@ jobs:
           # PR 2.11: i riepiloghi si sommano al COMMIT: nessun parziale resta, e ce ne sono di sommati
           test "$(psql -d vuoto -tAq -c "SELECT count(*) FROM registro.parziali")" = 0
           test "$(psql -d vuoto -tAq -c "SELECT count(*) > 0 FROM registro.modifiche WHERE riepilogo AND ruolo_db = 'cerbero_app'")" = t
+          # a registro acceso le consultazioni dell'app sono annotate
+          test "$(psql -d vuoto -tAq -c "SELECT count(*) > 0 FROM registro.letture WHERE ruolo_db = 'cerbero_app'")" = t
           psql -d vuoto -tAq -c "SELECT tabella, operazione, count(*), sum(righe) FROM registro.modifiche GROUP BY 1, 2 ORDER BY 1, 2"
           test "$(psql -d vuoto -tAq -c "SELECT count(*) > 0 FROM registro.modifiche WHERE ruolo_db = 'cerbero_app'")" = t
       - name: Il migratore si ferma se una migrazione rilasciata è cambiata

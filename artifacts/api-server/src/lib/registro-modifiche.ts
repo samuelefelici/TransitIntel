@@ -28,12 +28,16 @@ export const AMBITI = [...AMBITI_FILTRABILI, "utente", "conducente"] as const;
 export const OPERAZIONI = ["INSERT", "UPDATE", "DELETE", "TRUNCATE"] as const;
 /** Righe per pagina: la funzione ne dà al più 200, e una in più serve a sapere se ce ne sono altre. */
 export const LIMITE_MAX = 100;
-const SALTO_MAX = 5000;
+/** Il periodo più lungo: 92 giorni di calendario per chi usa la pagina, uno in più per il cambio dell'ora. */
+export const GIORNI_MAX = 93;
+/** Quanto può durare una lettura (un filtro senza indice su un periodo lungo scorre tutte le sue righe). */
+const TEMPO_MAX = "10s";
 
+/** L'ultima riga vista: l'istante (ISO, UTC, microsecondi), la transazione e il numero della riga. */
 const Cursore = z.object({
-  ts: z.string().regex(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?[+-]\d{2}(:\d{2})?$/),
-  tx: z.string().regex(/^\d{1,20}$/),
-  salta: z.number().int().min(0).max(SALTO_MAX),
+  ts: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/),
+  tx: z.string().regex(/^\d{1,19}$/),
+  id: z.string().regex(/^\d{1,18}$/),
 }).strict();
 export type Cursore = z.infer<typeof Cursore>;
 
@@ -76,6 +80,9 @@ export interface StatoRegistro {
 }
 
 export interface RigaRegistro {
+  /** il numero della riga nel registro: cresce nell'ordine in cui le righe sono state scritte */
+  id: string;
+  /** ISO 8601, UTC */
   ts: string;
   transazione: string;
   richiesta: string | null;
@@ -149,8 +156,6 @@ export interface PaginaRegistro {
   righe: RigaRegistro[];
   /** il cursore per la pagina dopo, se ce n'è una */
   successivo: string | null;
-  /** una transazione con più righe di quante se ne possano scorrere: vanno stretti i filtri */
-  troppeInUnaTransazione: boolean;
 }
 
 /**
@@ -168,23 +173,21 @@ export async function leggiRegistro(p: Parametri): Promise<PaginaRegistro | { er
   if (p.operazione) filtri.operazione = p.operazione;
   if (p.ambitoTipo) filtri.ambito_tipo = p.ambitoTipo;
   if (p.ambitoId) filtri.ambito_id = p.ambitoId.toLowerCase();
-  if (cursore) { filtri.cursore_ts = cursore.ts; filtri.cursore_transazione = cursore.tx; }
+  if (cursore) { filtri.cursore_ts = cursore.ts; filtri.cursore_transazione = cursore.tx; filtri.cursore_id = cursore.id; }
 
-  const r = await db.execute<any>(sql`
-    SELECT * FROM registro.leggi(${JSON.stringify(filtri)}::jsonb, ${p.limite + 1}, ${cursore?.salta ?? 0})`);
-  const tutte: any[] = (r as any).rows ?? [];
+  // in una transazione sua, con un tempo massimo: la funzione annota la consultazione nella stessa transazione
+  const tutte: any[] = await db.transaction(async (tx) => {
+    await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${TEMPO_MAX}'`));
+    const r = await tx.execute<any>(sql`SELECT * FROM registro.leggi(${JSON.stringify(filtri)}::jsonb, ${p.limite + 1})`);
+    return (r as any).rows ?? [];
+  });
   const lette = tutte.slice(0, p.limite);
 
-  // il cursore della pagina dopo: l'ultima riga data, e quante della sua transazione sono già state date
+  // il cursore della pagina dopo: l'ultima riga data
   let successivo: string | null = null;
-  let troppe = false;
   if (tutte.length > p.limite && lette.length) {
     const ultima = lette[lette.length - 1];
-    const stessa = (x: any) => x.ts_esatto === ultima.ts_esatto && x.transazione === ultima.transazione;
-    let salta = lette.filter(stessa).length;
-    if (cursore && cursore.ts === ultima.ts_esatto && cursore.tx === ultima.transazione) salta += cursore.salta;
-    if (salta > SALTO_MAX) troppe = true;
-    else successivo = codificaCursore({ ts: ultima.ts_esatto, tx: ultima.transazione, salta });
+    successivo = codificaCursore({ ts: String(ultima.ts), tx: String(ultima.transazione), id: String(ultima.id) });
   }
 
   // i nomi: chi (solo id che sono uuid), e gli ambiti tipo per tipo
@@ -204,7 +207,9 @@ export async function leggiRegistro(p: Parametri): Promise<PaginaRegistro | { er
   const nomi = await nomiDegliAmbiti(perTipo);
 
   const righe: RigaRegistro[] = lette.map((x) => ({
-    ts: x.ts instanceof Date ? x.ts.toISOString() : String(x.ts),
+    id: String(x.id),
+    // la funzione dà ISO coi microsecondi: per chi legge bastano i millisecondi (e li capisce ogni browser)
+    ts: `${String(x.ts).slice(0, 23)}Z`,
     transazione: String(x.transazione),
     richiesta: x.richiesta ?? null,
     attore: typeof x.attore === "string" && x.attore
@@ -224,8 +229,9 @@ export async function leggiRegistro(p: Parametri): Promise<PaginaRegistro | { er
     dopo: x.dopo ?? null,
     riepilogo: x.riepilogo === true,
     righe: x.righe == null ? null : Number(x.righe),
-    campione: x.campione ?? null,
+    // una regola senza chiave lascerebbe elementi vuoti: si tolgono
+    campione: Array.isArray(x.campione) ? x.campione.filter((c: unknown) => c !== null && typeof c === "object") : null,
     aCascata: x.a_cascata === true,
   }));
-  return { righe, successivo, troppeInUnaTransazione: troppe };
+  return { righe, successivo };
 }

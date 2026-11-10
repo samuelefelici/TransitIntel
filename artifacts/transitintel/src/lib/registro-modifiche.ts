@@ -11,6 +11,8 @@ export interface AttoreRegistro { id: string; nome: string | null; email: string
 export interface AmbitoRegistro { tipo: string; id: string | null; nome: string | null }
 
 export interface RigaRegistro {
+  /** il numero della riga nel registro: cresce nell'ordine in cui le righe sono state scritte */
+  id: string;
   ts: string;
   transazione: string;
   richiesta: string | null;
@@ -44,7 +46,6 @@ export interface RispostaRegistro {
   stato: StatoRegistro;
   righe: RigaRegistro[];
   successivo: string | null;
-  troppeInUnaTransazione: boolean;
 }
 
 const TABELLE: Record<string, string> = {
@@ -199,17 +200,20 @@ export const GIORNI_MAX = 92;
 
 /**
  * Dai due giorni scelti (AAAA-MM-GG, ora locale) agli istanti per l'API:
- * dall'inizio del primo alla fine del secondo. Un periodo rovesciato, vuoto o
- * più lungo di 92 giorni dà un errore da mostrare.
+ * dall'inizio del primo (compreso) all'inizio del giorno dopo il secondo
+ * (escluso), così la fine di una giornata non resta scoperta nemmeno di un
+ * millisecondo. Un periodo rovesciato, vuoto o più lungo di 92 giorni dà un
+ * errore da mostrare.
  */
 export function istanti(da: string, a: string): { da: string; a: string } | { errore: string } {
   const giorno = /^(\d{4})-(\d{2})-(\d{2})$/;
   const i = giorno.exec(da), f = giorno.exec(a);
   if (!i || !f) return { errore: "Scegli il primo e l'ultimo giorno" };
   const inizio = new Date(+i[1]!, +i[2]! - 1, +i[3]!, 0, 0, 0, 0);
-  const fine = new Date(+f[1]!, +f[2]! - 1, +f[3]!, 23, 59, 59, 999);
+  const fine = new Date(+f[1]!, +f[2]! - 1, +f[3]! + 1, 0, 0, 0, 0);
   if (!(inizio.getTime() < fine.getTime())) return { errore: "Il primo giorno viene dopo l'ultimo" };
-  if ((fine.getTime() - inizio.getTime()) / 86_400_000 > GIORNI_MAX) return { errore: `Al più ${GIORNI_MAX} giorni per volta` };
+  // i giorni di calendario (il cambio dell'ora allunga o accorcia il periodo di un'ora, non di un giorno)
+  if (Math.round((fine.getTime() - inizio.getTime()) / 86_400_000) > GIORNI_MAX) return { errore: `Al più ${GIORNI_MAX} giorni per volta` };
   return { da: inizio.toISOString(), a: fine.toISOString() };
 }
 

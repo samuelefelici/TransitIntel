@@ -40,11 +40,19 @@
 -- ═══════════════════════════════════════════════════════════════════════════
 ALTER TABLE registro.sorvegliate ADD COLUMN IF NOT EXISTS riepilogo_sempre boolean NOT NULL DEFAULT false;
 --> statement-breakpoint
--- La lettura scorre dal più recente: serve l'ordine per (ts, transazione), che
--- un BRIN non dà. Il registro è spento: gli indici sono vuoti.
+-- Un numero per riga, nell'ordine in cui le righe sono state scritte: la
+-- lettura scorre dal più recente per (ts, transazione, id), senza salti e senza
+-- un tetto alle righe di una transazione. Un BRIN quell'ordine non lo dà.
+-- Il registro è spento: tabelle e indici sono vuoti.
+ALTER TABLE registro.modifiche ADD COLUMN IF NOT EXISTS id bigint GENERATED ALWAYS AS IDENTITY;
+--> statement-breakpoint
 DROP INDEX IF EXISTS registro.modifiche_ts;
 --> statement-breakpoint
-CREATE INDEX IF NOT EXISTS modifiche_ts_transazione ON registro.modifiche (ts, transazione);
+CREATE INDEX IF NOT EXISTS modifiche_ordine ON registro.modifiche (ts, transazione, id);
+--> statement-breakpoint
+-- L'indice per chi ha fatto la modifica serviva solo a cercare per persona:
+-- il registro non si legge così (decisione del 25/10), e ogni riga lo pagava.
+DROP INDEX IF EXISTS registro.modifiche_attore;
 --> statement-breakpoint
 -- ── I riepiloghi si sommano a fine transazione ───────────────────────────
 -- Nella 0006 ogni istruzione in riepilogo riscriveva la riga del riepilogo.
@@ -597,7 +605,6 @@ CREATE TABLE IF NOT EXISTS registro.letture (
   origine   text,
   filtri    jsonb NOT NULL,
   chieste   integer NOT NULL,   -- il limite della chiamata
-  saltate   integer NOT NULL,
   righe     integer NOT NULL    -- quante ne ha avute
 );
 --> statement-breakpoint
@@ -605,14 +612,17 @@ ALTER TABLE registro.letture OWNER TO cerbero_registro;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS letture_ts ON registro.letture (ts);
 --> statement-breakpoint
--- La lettura. Filtri ammessi: da, a (estremi compresi; periodo obbligato a 92
--- giorni al più; se mancano, gli ultimi 7), tabella, operazione, ambito_tipo, ambito_id (solo
--- con un ambito che non è una persona). Ogni altra chiave è un errore: il
--- registro non si legge per persona. Dal più recente; per andare avanti il
--- cursore (ts e transazione dell'ultima riga vista) e p_salta, cioè quante
--- righe di quella transazione sono già state viste. Solo SQL statico.
-CREATE OR REPLACE FUNCTION registro.leggi(p_filtri jsonb, p_limite integer, p_salta integer)
-  RETURNS TABLE (ts timestamptz, ts_esatto text, transazione text, richiesta text, attore text, via text, ruolo_db text,
+-- La lettura. Filtri ammessi: da (compreso), a (escluso; periodo di 93 giorni
+-- al più, e se mancano gli ultimi 7), tabella, operazione, ambito_tipo,
+-- ambito_id (solo con un ambito che non è una persona). Ogni altra chiave è un
+-- errore: il registro non si legge per persona. I valori sono testi corti.
+-- Dal più recente; per andare avanti il cursore, cioè ts, transazione e id
+-- dell'ultima riga vista. Le date escono in ISO 8601 (UTC, microsecondi),
+-- qualunque sia il DateStyle. Solo SQL statico.
+-- Annota la consultazione, salvo a registro spento e vuoto: lì non c'è niente
+-- da leggere, e non c'è ancora la base per annotare chi guarda.
+CREATE OR REPLACE FUNCTION registro.leggi(p_filtri jsonb, p_limite integer)
+  RETURNS TABLE (id bigint, ts text, transazione text, richiesta text, attore text, via text, ruolo_db text,
                  origine text, tabella text, operazione text, chiave jsonb, ambito_tipo text, ambito_id text,
                  campi text[], prima jsonb, dopo jsonb, riepilogo boolean, righe integer, campione jsonb, a_cascata boolean)
   LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET plan_cache_mode = force_custom_plan AS $leggi$
@@ -627,6 +637,7 @@ DECLARE
   v_amb    text;
   v_cts    timestamptz;
   v_ctx    xid8;
+  v_cid    bigint;
   quante   bigint;
 BEGIN
   IF jsonb_typeof(f) <> 'object' THEN
@@ -634,20 +645,28 @@ BEGIN
   END IF;
   SELECT string_agg(k, ', ' ORDER BY k) INTO estranee
     FROM jsonb_object_keys(f) AS k
-   WHERE k NOT IN ('da', 'a', 'tabella', 'operazione', 'ambito_tipo', 'ambito_id', 'cursore_ts', 'cursore_transazione');
+   WHERE k NOT IN ('da', 'a', 'tabella', 'operazione', 'ambito_tipo', 'ambito_id', 'cursore_ts', 'cursore_transazione', 'cursore_id');
   IF estranee IS NOT NULL THEN
-    RAISE EXCEPTION 'registro.leggi: filtro non ammesso (%): il registro non si legge per persona', estranee USING ERRCODE = '22023';
+    RAISE EXCEPTION 'registro.leggi: filtro non ammesso (%): il registro non si legge per persona', left(estranee, 200) USING ERRCODE = '22023';
+  END IF;
+  IF EXISTS (SELECT 1 FROM jsonb_each(f) AS e
+              WHERE jsonb_typeof(e.value) NOT IN ('string', 'null') OR length(e.value #>> '{}') > 100) THEN
+    RAISE EXCEPTION 'registro.leggi: i valori dei filtri sono testi di 100 caratteri al più' USING ERRCODE = '22023';
   END IF;
   IF p_limite IS NULL OR p_limite < 1 OR p_limite > 200 THEN
     RAISE EXCEPTION 'registro.leggi: da 1 a 200 righe per volta' USING ERRCODE = '22023';
   END IF;
-  IF p_salta IS NULL OR p_salta < 0 OR p_salta > 5000 THEN
-    RAISE EXCEPTION 'registro.leggi: il salto va da 0 a 5000' USING ERRCODE = '22023';
-  END IF;
-  v_a := coalesce((f ->> 'a')::timestamptz, now());
-  v_da := coalesce((f ->> 'da')::timestamptz, v_a - interval '7 days');
-  IF v_da >= v_a OR v_a - v_da > interval '92 days' THEN
-    RAISE EXCEPTION 'registro.leggi: il periodo va da un giorno prima a uno dopo, 92 giorni al più' USING ERRCODE = '22023';
+  BEGIN
+    v_a := coalesce((f ->> 'a')::timestamptz, now() + interval '1 second');
+    v_da := coalesce((f ->> 'da')::timestamptz, v_a - interval '7 days');
+    v_cts := (f ->> 'cursore_ts')::timestamptz;
+    v_ctx := (f ->> 'cursore_transazione')::xid8;
+    v_cid := (f ->> 'cursore_id')::bigint;
+  EXCEPTION WHEN data_exception THEN
+    RAISE EXCEPTION 'registro.leggi: una data o un cursore non si leggono' USING ERRCODE = '22023';
+  END;
+  IF NOT (v_da < v_a) OR NOT isfinite(v_da) OR NOT isfinite(v_a) OR v_a - v_da > interval '93 days' THEN
+    RAISE EXCEPTION 'registro.leggi: il periodo va da un giorno prima a uno dopo, 93 giorni al più' USING ERRCODE = '22023';
   END IF;
   v_tab := f ->> 'tabella';
   v_op := f ->> 'operazione';
@@ -656,38 +675,39 @@ BEGIN
   IF v_amb IS NOT NULL AND coalesce(v_tipo, '') NOT IN ('progetto_ps', 'progetto_turni', 'feed', 'scenario', 'corsa', 'variante', 'calendario') THEN
     RAISE EXCEPTION 'registro.leggi: ambito_id si usa solo con un ambito che non è una persona' USING ERRCODE = '22023';
   END IF;
-  IF ((f ->> 'cursore_ts') IS NULL) <> ((f ->> 'cursore_transazione') IS NULL) THEN
-    RAISE EXCEPTION 'registro.leggi: il cursore ha ts e transazione insieme' USING ERRCODE = '22023';
+  IF num_nonnulls(v_cts, v_ctx, v_cid) NOT IN (0, 3) THEN
+    RAISE EXCEPTION 'registro.leggi: il cursore ha ts, transazione e id insieme' USING ERRCODE = '22023';
   END IF;
-  v_cts := (f ->> 'cursore_ts')::timestamptz;
-  v_ctx := (f ->> 'cursore_transazione')::xid8;
 
   RETURN QUERY
-  SELECT m.ts, m.ts::text, m.transazione::text, m.richiesta, m.attore, m.via, m.ruolo_db, m.origine, m.tabella, m.operazione,
-         m.chiave, m.ambito_tipo, m.ambito_id, m.campi, m.prima, m.dopo, m.riepilogo, m.righe, m.campione, m.a_cascata
+  SELECT m.id, to_char(m.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'), m.transazione::text, m.richiesta, m.attore, m.via,
+         m.ruolo_db, m.origine, m.tabella, m.operazione, m.chiave, m.ambito_tipo, m.ambito_id, m.campi, m.prima, m.dopo,
+         m.riepilogo, m.righe, m.campione, m.a_cascata
     FROM registro.modifiche m
-   WHERE m.ts >= v_da AND m.ts <= v_a
+   WHERE m.ts >= v_da AND m.ts < v_a
      AND (v_tab IS NULL OR m.tabella = v_tab)
      AND (v_op IS NULL OR m.operazione = v_op)
      AND (v_tipo IS NULL OR m.ambito_tipo = v_tipo)
      AND (v_amb IS NULL OR m.ambito_id = v_amb)
-     AND (v_cts IS NULL OR (m.ts, m.transazione) <= (v_cts, v_ctx))
-   -- un ordine totale: due letture della stessa pagina danno le stesse righe
-   ORDER BY m.ts DESC, m.transazione DESC, m.tabella, m.operazione, m.a_cascata, m.riepilogo,
-            m.chiave::text NULLS FIRST, m.tableoid, m.ctid
-  OFFSET p_salta LIMIT p_limite;
+     AND (v_cts IS NULL OR (m.ts, m.transazione, m.id) < (v_cts, v_ctx, v_cid))
+   -- un ordine totale (l'id è di una riga sola): le pagine non si ripetono e non
+   -- saltano niente; dentro una transazione, dall'ultima riga scritta alla prima
+   ORDER BY m.ts DESC, m.transazione DESC, m.id DESC
+   LIMIT p_limite;
   GET DIAGNOSTICS quante = ROW_COUNT;
 
-  INSERT INTO registro.letture (ts, attore, via, richiesta, ruolo_db, origine, filtri, chieste, saltate, righe)
-  VALUES (now(), nullif(current_setting('cerbero.attore', true), ''), nullif(current_setting('cerbero.via', true), ''),
-          nullif(current_setting('cerbero.richiesta', true), ''), session_user, current_setting('application_name', true),
-          f, p_limite, p_salta, quante::integer);
+  IF quante > 0 OR (SELECT i.attivo FROM registro.impostazioni i) THEN
+    INSERT INTO registro.letture (ts, attore, via, richiesta, ruolo_db, origine, filtri, chieste, righe)
+    VALUES (now(), nullif(current_setting('cerbero.attore', true), ''), nullif(current_setting('cerbero.via', true), ''),
+            nullif(current_setting('cerbero.richiesta', true), ''), session_user, current_setting('application_name', true),
+            f, p_limite, quante::integer);
+  END IF;
 END
 $leggi$;
 --> statement-breakpoint
-ALTER FUNCTION registro.leggi(jsonb, integer, integer) OWNER TO cerbero_registro;
+ALTER FUNCTION registro.leggi(jsonb, integer) OWNER TO cerbero_registro;
 --> statement-breakpoint
-REVOKE ALL ON FUNCTION registro.leggi(jsonb, integer, integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION registro.leggi(jsonb, integer) FROM PUBLIC;
 --> statement-breakpoint
 -- Lo stato, per la pagina: acceso o no, da quando e con quale base giuridica,
 -- i mesi, le tabelle sorvegliate. L'app non legge le tabelle del registro.
@@ -824,7 +844,7 @@ SELECT registro.sorveglia('public.ps_pending_activations', ARRAY['id'], 'progett
 DO $diritti$
 BEGIN
   IF pg_catalog.to_regrole('cerbero_owner') IS NOT NULL THEN
-    GRANT EXECUTE ON FUNCTION registro.leggi(jsonb, integer, integer) TO cerbero_owner;
+    GRANT EXECUTE ON FUNCTION registro.leggi(jsonb, integer) TO cerbero_owner;
     GRANT EXECUTE ON FUNCTION registro.stato() TO cerbero_owner;
   END IF;
 END

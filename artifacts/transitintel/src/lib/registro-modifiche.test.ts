@@ -88,10 +88,14 @@ describe("il periodo e la richiesta", () => {
     const p = istanti("2026-11-03", "2026-11-09");
     if ("errore" in p) throw new Error(p.errore);
     expect(new Date(p.da).getTime()).toBe(new Date(2026, 10, 3).getTime());
-    expect(new Date(p.a).getTime()).toBe(new Date(2026, 10, 9, 23, 59, 59, 999).getTime());
+    // fino all'inizio del giorno dopo, escluso: la fine della giornata non resta scoperta
+    expect(new Date(p.a).getTime()).toBe(new Date(2026, 10, 10).getTime());
     expect(istanti("2026-11-09", "2026-11-09")).not.toHaveProperty("errore");
     expect(istanti("2026-11-10", "2026-11-09")).toEqual({ errore: "Il primo giorno viene dopo l'ultimo" });
     expect(istanti("2026-07-01", "2026-11-09")).toEqual({ errore: "Al più 92 giorni per volta" });
+    // 92 giorni di calendario sì, anche a cavallo del cambio dell'ora; 93 no
+    expect(istanti("2026-08-10", "2026-11-09")).not.toHaveProperty("errore");
+    expect(istanti("2026-08-09", "2026-11-09")).toHaveProperty("errore");
     expect(istanti("", "2026-11-09")).toHaveProperty("errore");
   });
 

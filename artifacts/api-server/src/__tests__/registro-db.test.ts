@@ -41,9 +41,9 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il registro delle modifiche, da
     expect(stato.tabelle.find((t) => t.tabella === "public.ps_stop_times")).toMatchObject({ riepilogoSempre: true, conValori: false });
     const pagina = await leggiRegistro(Parametri.parse({ limite: "5" }));
     expect("errore" in pagina).toBe(false);
-    await expect(pool.query(`SELECT * FROM registro.leggi('{"attore": "x"}', 5, 0)`)).rejects.toThrow(/non si legge per persona/);
-    await expect(pool.query(`SELECT * FROM registro.leggi('{"ambito_tipo": "utente", "ambito_id": "x"}', 5, 0)`)).rejects.toThrow(/non è una persona/);
-    await expect(pool.query("SELECT * FROM registro.leggi('{}', 201, 0)")).rejects.toThrow(/da 1 a 200/);
+    await expect(pool.query(`SELECT * FROM registro.leggi('{"attore": "x"}', 5)`)).rejects.toThrow(/non si legge per persona/);
+    await expect(pool.query(`SELECT * FROM registro.leggi('{"ambito_tipo": "utente", "ambito_id": "x"}', 5)`)).rejects.toThrow(/non è una persona/);
+    await expect(pool.query("SELECT * FROM registro.leggi('{}', 201)")).rejects.toThrow(/da 1 a 200/);
   });
 
   it("una transazione dell'app: gli orari di una corsa danno un riepilogo al COMMIT, con chi l'ha fatta", async (ctx) => {
@@ -85,6 +85,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il registro delle modifiche, da
       ambito: { tipo: "corsa", id: corsa },
     });
     expect(pagina.righe[0]!.campione).toHaveLength(12);
+    expect(pagina.righe[0]!.ts).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    expect(Number.isFinite(Date.parse(pagina.righe[0]!.ts))).toBe(true);
     const delProgetto = await leggiRegistro(Parametri.parse({ ambitoTipo: "progetto_ps", ambitoId: progetto, tabella: "public.ps_stops" }));
     if ("errore" in delProgetto) throw new Error(delProgetto.errore);
     expect(delProgetto.righe).toHaveLength(1);

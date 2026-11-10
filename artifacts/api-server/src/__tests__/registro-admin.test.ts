@@ -22,8 +22,9 @@ const F = vi.hoisted(() => {
       { tabella: "public.roster_entries", ambito_tipo: "conducente", con_valori: false, riepilogo_sempre: false },
     ],
   };
+  // come le dà registro.leggi(): l'id cresce con la scrittura, la data è ISO coi microsecondi
   const riga = (i: number, extra: Record<string, unknown> = {}) => ({
-    ts: new Date("2026-11-09T10:00:00Z"), ts_esatto: "2026-11-09 10:00:00.123456+00", transazione: String(900 + Math.floor(i / 3)),
+    id: String(1000 - i), ts: "2026-11-09T10:00:00.123456Z", transazione: String(900 - Math.floor(i / 3)),
     richiesta: `r-${i}`, attore: ADMIN, via: "api", ruolo_db: "cerbero_app", origine: "cerbero-api",
     tabella: "public.ps_projects", operazione: "UPDATE", chiave: { id: PROGETTO }, ambito_tipo: "progetto_ps", ambito_id: PROGETTO,
     campi: ["name"], prima: { name: `vecchio ${i}` }, dopo: { name: `nuovo ${i}` }, riepilogo: false, righe: 1, campione: null, a_cascata: false,
@@ -82,11 +83,14 @@ describe("GET /api/admin/registro", () => {
     for (const c of F.s.chieste) expect(c.testo).not.toMatch(/(from|join) registro\.(modifiche|letture|parziali|impostazioni|sorvegliate)/);
     const [l] = chiamateALeggi();
     expect(JSON.parse(String(l!.valori[0]))).toEqual({});
-    expect(l!.valori.slice(1)).toEqual([51, 0]);
+    expect(l!.valori.slice(1)).toEqual([51]);
+    // la lettura ha il suo tempo massimo, nella stessa transazione
+    expect(F.s.chieste.map((c) => c.testo).filter((t) => /^(begin|commit|set local)/.test(t))).toEqual(["begin", "set local statement_timeout = '10s'", "commit"]);
     expect(r.body.stato).toMatchObject({ attivo: true, baseGiuridica: "accordo di prova", anonimizzaDopoMesi: 12 });
     expect(r.body.stato.tabelle).toHaveLength(3);
     expect(r.body.righe).toHaveLength(2);
     expect(r.body.righe[0]).toMatchObject({
+      id: "1000", ts: "2026-11-09T10:00:00.123Z",
       attore: { id: F.ADMIN, nome: "Ada Admin", email: "ada@esempio.it" }, via: "api", ruoloDb: "cerbero_app",
       tabella: "public.ps_projects", operazione: "UPDATE", campi: ["name"], prima: { name: "vecchio 0" }, dopo: { name: "nuovo 0" },
       ambito: { tipo: "progetto_ps", id: F.PROGETTO, nome: "Programma invernale" }, riepilogo: false, aCascata: false,
@@ -100,12 +104,14 @@ describe("GET /api/admin/registro", () => {
     F.s.righe = [
       F.riga(0, { tabella: "public.roster_entries", ambito_tipo: "conducente", ambito_id: F.CONDUCENTE, prima: null, dopo: null, campi: ["code"] }),
       F.riga(1, { tabella: "public.ps_stop_times", riepilogo: true, righe: 30, chiave: null, prima: null, dopo: null, campi: null,
-        ambito_tipo: "corsa", ambito_id: null, campione: [{ trip_id: F.PROGETTO, stop_seq: 1 }] }),
+        ambito_tipo: "corsa", ambito_id: null, campione: [{ trip_id: F.PROGETTO, stop_seq: 1 }, null] }),
     ];
     const r = await request(admin()).get("/api/admin/registro");
     expect(r.status).toBe(200);
     expect(r.body.righe[0].ambito).toEqual({ tipo: "conducente", id: F.CONDUCENTE, nome: null });
+    // (un elemento vuoto del campione, da una regola senza chiave, si toglie)
     expect(r.body.righe[1]).toMatchObject({ riepilogo: true, righe: 30, campione: [{ trip_id: F.PROGETTO, stop_seq: 1 }], ambito: { tipo: "corsa", id: null, nome: null } });
+    expect(r.body.righe[1].campione).toHaveLength(1);
     for (const c of F.s.chieste) expect(c.testo).not.toMatch(/roster_|ps_trips/);
   });
 
@@ -144,45 +150,51 @@ describe("GET /api/admin/registro", () => {
     expect(chiamateALeggi()).toEqual([]);
     const r = await request(admin()).get("/api/admin/registro?da=2026-10-01T00:00:00%2B02:00&a=2026-10-31T23:59:59%2B01:00&limite=100");
     expect(r.status).toBe(200);
-    expect(chiamateALeggi().at(-1)!.valori.slice(1)).toEqual([101, 0]);
+    expect(chiamateALeggi().at(-1)!.valori.slice(1)).toEqual([101]);
   });
 
-  it("le pagine: una riga in più dice se continuano; il cursore è l'ultima riga data e quante della sua transazione", async () => {
-    F.s.righe = Array.from({ length: 12 }, (_, i) => F.riga(i));   // transazioni 900,900,900,901,901,901,…
+  it("le pagine: una riga in più dice se continuano; il cursore è l'ultima riga data", async () => {
+    F.s.righe = Array.from({ length: 12 }, (_, i) => F.riga(i));
     const prima = await request(admin()).get("/api/admin/registro?limite=5");
-    expect(prima.body.righe).toHaveLength(5);
-    // la quinta riga è la seconda della transazione 901
-    expect(leggiCursore(prima.body.successivo)).toEqual({ ts: "2026-11-09 10:00:00.123456+00", tx: "901", salta: 2 });
-    // la pagina dopo: il cursore va alla funzione; se tutta la pagina è della stessa transazione il salto si somma
-    F.s.righe = Array.from({ length: 6 }, () => F.riga(3));       // tutte della 901
+    expect(prima.body.righe.map((r: any) => r.id)).toEqual(["1000", "999", "998", "997", "996"]);
+    // la quinta riga: id 996, della transazione 899
+    expect(leggiCursore(prima.body.successivo)).toEqual({ ts: "2026-11-09T10:00:00.123456Z", tx: "899", id: "996" });
+    // la pagina dopo: il cursore va alla funzione, coi microsecondi
+    F.s.righe = Array.from({ length: 3 }, (_, i) => F.riga(5 + i));
     const dopo = await request(admin()).get(`/api/admin/registro?limite=5&cursore=${prima.body.successivo}`);
     const l = chiamateALeggi().at(-1)!;
-    expect(JSON.parse(String(l.valori[0]))).toEqual({ cursore_ts: "2026-11-09 10:00:00.123456+00", cursore_transazione: "901" });
-    expect(l.valori.slice(1)).toEqual([6, 2]);
-    expect(leggiCursore(dopo.body.successivo)).toEqual({ ts: "2026-11-09 10:00:00.123456+00", tx: "901", salta: 7 });
-    // l'ultima pagina
-    F.s.righe = [F.riga(3)];
-    const fine = await request(admin()).get(`/api/admin/registro?limite=5&cursore=${dopo.body.successivo}`);
-    expect(fine.body.righe).toHaveLength(1);
-    expect(fine.body.successivo).toBeNull();
-    expect(fine.body.troppeInUnaTransazione).toBe(false);
+    expect(JSON.parse(String(l.valori[0]))).toEqual({ cursore_ts: "2026-11-09T10:00:00.123456Z", cursore_transazione: "899", cursore_id: "996" });
+    expect(l.valori.slice(1)).toEqual([6]);
+    // l'ultima pagina: meno righe del limite, nessun cursore
+    expect(dopo.body.righe).toHaveLength(3);
+    expect(dopo.body.successivo).toBeNull();
+    expect(dopo.body).not.toHaveProperty("troppeInUnaTransazione");
   });
 
-  it("una transazione con più righe di quante se ne possano scorrere: lo dice, senza cursore", async () => {
-    F.s.righe = Array.from({ length: 6 }, () => F.riga(3));
-    const c = codificaCursore({ ts: "2026-11-09 10:00:00.123456+00", tx: "901", salta: 4998 });
-    const r = await request(admin()).get(`/api/admin/registro?limite=5&cursore=${c}`);
-    expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ successivo: null, troppeInUnaTransazione: true });
+  it("un errore di dati del database (una data fuori scala) è una richiesta sbagliata, non un guasto", async () => {
+    const vera = F.client.query;
+    F.client.query = async (cfg: any, valori?: unknown[]) => {
+      const testo = String(typeof cfg === "string" ? cfg : cfg.text).toLowerCase();
+      if (testo.includes("from registro.leggi(")) throw Object.assign(new Error("date/time field value out of range"), { code: "22008" });
+      return vera.call(F.client, cfg, valori);
+    };
+    try {
+      const r = await request(admin()).get("/api/admin/registro?da=0000-01-01T00:00:00Z");
+      expect(r.status).toBe(400);
+    } finally { F.client.query = vera; }
   });
 
   it("il cursore si legge solo se è fatto come deve", () => {
-    expect(leggiCursore(codificaCursore({ ts: "2026-11-09 10:00:00+00", tx: "1", salta: 0 }))).toEqual({ ts: "2026-11-09 10:00:00+00", tx: "1", salta: 0 });
+    const buono = { ts: "2026-11-09T10:00:00.123456Z", tx: "901", id: "42" };
+    expect(leggiCursore(codificaCursore(buono))).toEqual(buono);
     const falso = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
-    expect(leggiCursore(falso({ ts: "2026-11-09 10:00:00+00'; DROP", tx: "1", salta: 0 }))).toBeNull();
-    expect(leggiCursore(falso({ ts: "2026-11-09 10:00:00+00", tx: "1 OR 1=1", salta: 0 }))).toBeNull();
-    expect(leggiCursore(falso({ ts: "2026-11-09 10:00:00+00", tx: "1", salta: 5001 }))).toBeNull();
-    expect(leggiCursore(falso({ ts: "2026-11-09 10:00:00+00", tx: "1", salta: 0, attore: "x" }))).toBeNull();
+    expect(leggiCursore(falso({ ...buono, ts: "2026-11-09 10:00:00+00" }))).toBeNull();
+    expect(leggiCursore(falso({ ...buono, ts: "2026-11-09T10:00:00.123456Z'; DROP" }))).toBeNull();
+    expect(leggiCursore(falso({ ...buono, tx: "1 OR 1=1" }))).toBeNull();
+    expect(leggiCursore(falso({ ...buono, tx: "99999999999999999999" }))).toBeNull();
+    expect(leggiCursore(falso({ ...buono, id: "-1" }))).toBeNull();
+    expect(leggiCursore(falso({ ...buono, attore: "x" }))).toBeNull();
+    expect(leggiCursore("non base64 né json")).toBeNull();
   });
 });
 

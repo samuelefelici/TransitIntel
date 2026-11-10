@@ -1176,7 +1176,7 @@ describe("0007: lettura del registro e seconda ondata", () => {
   it("all'app solo leggi() e stato(): nessun diritto sulle tabelle, niente ad argos_ro", () => {
     const grant = [...senzaCommentiSql.matchAll(/GRANT\s+([^;]+?)\s+TO\s+(\w+)/g)].map(([, cosa, a]) => `${cosa} → ${a}`);
     expect(grant).toEqual([
-      "EXECUTE ON FUNCTION registro.leggi(jsonb, integer, integer) → cerbero_owner",
+      "EXECUTE ON FUNCTION registro.leggi(jsonb, integer) → cerbero_owner",
       "EXECUTE ON FUNCTION registro.stato() → cerbero_owner",
     ]);
     expect(sql).not.toMatch(/argos_ro/);
@@ -1187,17 +1187,26 @@ describe("0007: lettura del registro e seconda ondata", () => {
   it("leggi(): limiti, niente per persona, la consultazione annotata, solo SQL statico", () => {
     const c = corpo("leggi");
     expect(c).not.toMatch(/\bEXECUTE\b|\bformat\s*\(/i);
-    expect(c).toMatch(/k NOT IN \('da', 'a', 'tabella', 'operazione', 'ambito_tipo', 'ambito_id', 'cursore_ts', 'cursore_transazione'\)/);
+    expect(c).toMatch(/k NOT IN \('da', 'a', 'tabella', 'operazione', 'ambito_tipo', 'ambito_id', 'cursore_ts', 'cursore_transazione', 'cursore_id'\)/);
     expect(c).toMatch(/p_limite < 1 OR p_limite > 200/);
-    expect(c).toMatch(/p_salta < 0 OR p_salta > 5000/);
-    expect(c).toMatch(/v_a - v_da > interval '92 days'/);
+    expect(c).toMatch(/v_a - v_da > interval '93 days'/);
+    // i valori dei filtri: testi corti (anche per chi chiama la funzione senza passare dall'API)
+    expect(c).toMatch(/jsonb_typeof\(e\.value\) NOT IN \('string', 'null'\) OR length\(e\.value #>> '\{\}'\) > 100/);
+    // a registro spento e vuoto la consultazione non si annota
+    expect(c).toMatch(/IF quante > 0 OR \(SELECT i\.attivo FROM registro\.impostazioni i\) THEN\s+INSERT INTO registro\.letture/);
     // ambito_id solo con un ambito che non è una persona
     const ammessi = /NOT IN \(('progetto_ps'[^)]*)\)/.exec(c)![1]!;
     expect(ammessi).not.toMatch(/utente|conducente/);
     expect(c).toMatch(/INSERT INTO registro\.letture/);
-    // un ordine totale, per pagine stabili
-    expect(c).toMatch(/ORDER BY m\.ts DESC, m\.transazione DESC,[\s\S]*m\.tableoid, m\.ctid/);
-    expect(sql).toMatch(/registro\.leggi\(p_filtri jsonb, p_limite integer, p_salta integer\)[\s\S]*?SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET plan_cache_mode = force_custom_plan/);
+    // un ordine totale e nessun salto: pagine stabili, senza un tetto alle righe di una transazione
+    expect(c).toMatch(/\(m\.ts, m\.transazione, m\.id\) < \(v_cts, v_ctx, v_cid\)/);
+    expect(c).toMatch(/ORDER BY m\.ts DESC, m\.transazione DESC, m\.id DESC\s+LIMIT p_limite;/);
+    expect(c).not.toMatch(/\bOFFSET\b/);
+    expect(sql).toMatch(/registro\.leggi\(p_filtri jsonb, p_limite integer\)[\s\S]*?SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET plan_cache_mode = force_custom_plan/);
+    expect(sql).toMatch(/ALTER TABLE registro\.modifiche ADD COLUMN IF NOT EXISTS id bigint GENERATED ALWAYS AS IDENTITY;/);
+    expect(sql).toMatch(/CREATE INDEX IF NOT EXISTS modifiche_ordine ON registro\.modifiche \(ts, transazione, id\);/);
+    // l'indice per chi ha fatto la modifica serviva solo a cercare per persona
+    expect(sql).toMatch(/DROP INDEX IF EXISTS registro\.modifiche_attore;/);
   });
 
   it("i riepiloghi si sommano a fine transazione: parziali, trigger differito, niente riscritture per istruzione", () => {
