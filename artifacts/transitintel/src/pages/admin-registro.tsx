@@ -167,7 +167,8 @@ export default function AdminRegistroPage() {
               <Label htmlFor="reg-id" className="text-xs">Identificativo</Label>
               <Input
                 id="reg-id" value={filtri.ambitoId} disabled={!idPermesso} className="font-mono text-xs"
-                placeholder={idPermesso ? "id del programma, del feed…" : "non per le persone"}
+                placeholder={idPermesso ? "incolla l'id" : "non per persona"}
+                title={idPermesso ? "L'identificativo del programma, del feed, della corsa… (si trova aprendo una riga)" : "L'identificativo si può indicare solo per un programma, un feed, una corsa e simili"}
                 onChange={(e) => cambia({ ambitoId: e.target.value })}
               />
             </div>
