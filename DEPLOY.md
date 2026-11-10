@@ -46,9 +46,10 @@ parlarsi via rete interna:
    > che crea lo schema `caronte`. Chi aveva eseguito la versione di prima deve
    > rieseguirlo: toglie la lettura di tutte le tabelle (utenti compresi) e
    > lascia solo le GTFS; poi cambia la password con `\password caronte_app`.
-   > Dalla 2.8 si esegue come `postgres` (dal Terminal del PostgreSQL, o
-   > `DATABASE_URL=<url di postgres> pnpm --filter @workspace/db run setup-caronte`),
-   > non come `cerbero_app`, che non crea ruoli.
+   > Dalla 2.8 si esegue come `postgres`, non come `cerbero_app`, che non crea
+   > ruoli. Dal Terminal del container dell'API:
+   > `DATABASE_URL="$DATABASE_MIGRATOR_URL" node lib/db/scripts/run-sql.mjs caronte_setup.sql`.
+   > Il resto è in «Ruoli del database», «Caronte e gli altri programmi».
 
 > ✅ Conserva la connection string. Forma tipica su rete interna Coolify (senza SSL):
 > `postgres://user:password@<servizio-db>:5432/dbname`
@@ -314,6 +315,7 @@ file del server, ruoli). Dalla 2.8:
 | `cerbero_owner` | NOLOGIN: proprietario delle tabelle, viste e sequenze di Cerbero (public, caronte, coda) | nessuno direttamente |
 | `cerbero_app` | l'utente dell'app: membro di `cerbero_owner` (con SET, senza ereditarne i diritti) e con `role = cerbero_owner`, quindi ogni sua sessione lavora come proprietario | API e lavoratore (`DATABASE_URL`) |
 | `postgres` | superutente: migrazioni, ruoli, permessi di Argos | migratore (`DATABASE_MIGRATOR_URL`), Terminal |
+| `caronte_app` | l'utente di Caronte (`caronte_setup.sql`): scrive le tabelle del validatore e dell'AVM, legge le GTFS, possiede `caronte.app_users` | Caronte (`DATABASE_URL` e `CARONTE_URL` del suo servizio) |
 
 - **Chi li tiene in ordine.** Il migratore, a ogni avvio dell'API, dopo le
   migrazioni (`lib/db/scripts/ruoli-regole.mjs`):
@@ -365,8 +367,8 @@ file del server, ruoli). Dalla 2.8:
   dati senza passare dai trigger. Lo crea il migratore; se manca o è spento
   `ruoli.mjs --verifica` lo dice, e il migratore lo rimette.
 - **`cerbero_app` nasce senza accesso** (NOLOGIN, nessuna password). La password
-  la dà chi gestisce il database; il migratore non tocca più né la password né
-  il LOGIN.
+  la dà chi gestisce il database, con `ruoli.mjs --imposta-password` (passo 3
+  del rilascio); il migratore non tocca né la password né il LOGIN.
 - **API e lavoratore all'avvio** scrivono con chi lavorano
   (`database: collegato come cerbero_app, lavora come cerbero_owner`). **Escono
   con 1**, e resta in servizio il container di prima, se:
@@ -394,7 +396,8 @@ file del server, ruoli). Dalla 2.8:
   ```bash
   node lib/db/scripts/ruoli.mjs --verifica   # cosa non va, e chi è collegato con quale utente
   node lib/db/scripts/ruoli.mjs              # riallinea (senza tetto di tempo, lock fino a 5 s)
-  node lib/db/scripts/ruoli.mjs --prova-url  # prova un DATABASE_URL (lo chiede, non va scritto nel comando)
+  node lib/db/scripts/ruoli.mjs --imposta-password  # password nuova a cerbero_app, e il suo DATABASE_URL già provato
+  node lib/db/scripts/ruoli.mjs --prova-url  # prova un DATABASE_URL scritto a mano (lo chiede, non va scritto nel comando)
   ```
 - **Chi lavora in psql.** Come `postgres`, per prima cosa
   `SET search_path = pg_catalog, pg_temp;`, poi solo cataloghi, permessi e
@@ -407,6 +410,27 @@ file del server, ruoli). Dalla 2.8:
   esempio Caronte o il sistema AVM: ne eseguirebbe default e vincoli come
   superutente. `ruoli.mjs --verifica` dà errore per le sessioni da superutente
   dei programmi che non conosce.
+- **Caronte e gli altri programmi.** Caronte entra come `caronte_app`
+  (`caronte_setup.sql`, che si può rieseguire):
+  - scrive solo `tap_events`, `journeys`, `vehicle_positions`, `active_trips` e
+    `stop_transits`; legge le altre tabelle di `caronte` e le GTFS di `public`;
+    non legge utenti, anagrafica, roster né il registro;
+  - `caronte.app_users`, i suoi utenti, è una tabella sua: non è nel catalogo
+    di Cerbero e ne è proprietario `caronte_app`;
+  - **può creare nello schema `caronte`.** Serve a Caronte com'è oggi: a ogni
+    login esegue `CREATE TABLE IF NOT EXISTS caronte.app_users`, e PostgreSQL
+    lo rifiuta a chi non può creare nello schema anche quando la tabella c'è
+    già. Non tocca le tabelle di Cerbero, che non sono sue; potrebbe però
+    creare lì una tabella col nome che una migrazione vorrà usare. Per questo
+    `ruoli.mjs --verifica` e il log dell'avvio lo ricordano con un avviso
+    («caronte_app può creare tabelle e funzioni nello schema caronte»).
+    Quando Caronte controllerà prima se la tabella esiste: si toglie la riga
+    `GRANT CREATE` da `caronte_setup.sql` e, come `postgres`,
+    `REVOKE CREATE ON SCHEMA caronte FROM caronte_app;`
+  - nel suo servizio le variabili con l'URL del database sono **due**,
+    `DATABASE_URL` e `CARONTE_URL`: vanno tutte e due su `caronte_app`. La
+    seconda connessione nasce al primo login, anche settimane dopo l'avvio:
+    se resta su `postgres`, l'errore della verifica torna allora.
 - **Il DDL dell'app**, cioè le unità pigre (fino alla 2.16), resta per tabelle
   e indici: l'app possiede le sue tabelle e può crearne in `public`, e
   l'event trigger lascia passare solo quello. Dalla 2.10, su una tabella
@@ -445,6 +469,38 @@ file del server, ruoli). Dalla 2.8:
      `cerbero_owner` farebbero girare come superutente i default messi
      dall'app.
 
+     Un programma che non dichiara il suo nome compare come «senza nome». Per
+     sapere chi è, il suo indirizzo e poi il nome del container (il codice
+     prima del trattino è quello del servizio nell'indirizzo della pagina di
+     Coolify):
+     ```sql
+     SELECT client_addr, usename, count(*), min(backend_start), max(state_change) FROM pg_stat_activity WHERE backend_type = 'client backend' AND application_name = '' GROUP BY 1, 2;
+     \! getent hosts <client_addr>
+     ```
+     Per Caronte, in quest'ordine:
+     1. dal Terminal dell'API:
+        `DATABASE_URL="$DATABASE_MIGRATOR_URL" node lib/db/scripts/run-sql.mjs caronte_setup.sql`
+        (finché l'app entra come `postgres` basta
+        `node lib/db/scripts/run-sql.mjs caronte_setup.sql`);
+     2. in psql: `\password caronte_app`, poi `ALTER ROLE caronte_app LOGIN;`.
+        Una password di sole lettere e cifre, lunga: non va codificata nell'URL;
+     3. in Coolify, nel servizio di Caronte, `DATABASE_URL` **e** `CARONTE_URL`:
+        cambiano solo utente e password
+        (`postgresql://caronte_app:<password>@<host>:5432/<db>`). Poi Restart;
+     4. si entra in Caronte e si rilancia la query qui sopra senza il filtro
+        sul nome: quattro sessioni di `caronte_app`, nessuna di `postgres`
+        senza nome. Se il login dà errore, il motivo è nel log di Caronte
+        (`permission denied for …`); per tornare indietro si rimette l'URL di
+        prima.
+
+   **Nel Terminal di Coolify** quello che si incolla arriva su una riga sola:
+   - prima si apre psql (`psql -U postgres`), poi si incollano le query, una
+     per volta e scritte su una riga; un comando con la barra (`\password`,
+     `\!`) va da solo sulla sua riga;
+   - un file `.sql` con commenti non si incolla: si esegue con `run-sql.mjs`;
+   - si esce con `\q`. Un terminale chiuso senza uscire lascia una sessione
+     di `postgres` aperta.
+
    Poi sull'API: `DATABASE_MIGRATOR_URL` = l'URL di oggi (quello di
    `postgres`), lasciando `DATABASE_URL` com'è.
 1. **Merge e deploy di API e lavoratore** (immagine nuova), la sera. Nel log
@@ -461,27 +517,51 @@ file del server, ruoli). Dalla 2.8:
 2. **FleetCare: merge della 0089 e deploy.** `ruoli.mjs --verifica` è pulita.
    Il login in FleetCare (da Cerbero) funziona e i dati dell'officina nell'AVM
    ci sono.
-3. **Password**, dal Terminal del PostgreSQL:
-   ```
-   \password cerbero_app
-   ALTER ROLE cerbero_app LOGIN;
-   ```
-4. **Prima di cambiare, tutte e due** dal Terminal del container dell'API:
+3. **La verifica e la password**, dal Terminal del container dell'API:
    - `node lib/db/scripts/ruoli.mjs --verifica` esce con 0, senza errori né
-     «da fare» (se c'è qualcosa da fare: prima `node lib/db/scripts/ruoli.mjs`);
-   - `node lib/db/scripts/ruoli.mjs --prova-url`, poi si incolla il nuovo
-     `DATABASE_URL` e Invio: deve rispondere «l'URL va bene» (collegato come
-     `cerbero_app`, lavora come `cerbero_owner`, due event trigger accesi).
-     Nel container non c'è `psql`. Nell'URL la password va codificata
-     (`@ : / # %` e simili) o scelta senza quei caratteri.
+     «da fare» (se c'è qualcosa da fare: prima `node lib/db/scripts/ruoli.mjs`).
+     Gli avvisi non fermano;
+   - `node lib/db/scripts/ruoli.mjs --imposta-password`. In un passo:
+     - genera una password (48 cifre e lettere, niente da codificare);
+     - ne manda al database l'impronta, come `\password` di psql: la password
+       non viaggia e non finisce nei log del server;
+     - dà `LOGIN` a `cerbero_app`;
+     - prova l'URL (collegato come `cerbero_app`, lavora come
+       `cerbero_owner`, due event trigger accesi);
+     - stampa il nuovo `DATABASE_URL`: quello del migratore con utente e
+       password cambiati.
 
-   Poi **Coolify**:
-   - API: `DATABASE_URL` = `postgres://cerbero_app:<password>@<servizio-db>:5432/<db>`;
-     `DATABASE_MIGRATOR_URL` resta quello di `postgres`;
+     **L'URL non si compone a mano.** Al primo rilascio la password scritta a
+     mano è finita due volte nel posto sbagliato dell'URL, o diversa da quella
+     data al ruolo. La riga stampata contiene la password: si copia solo nelle
+     variabili dei due servizi. Il comando si rifiuta fuori da un terminale e
+     chiede un superutente (dal container dell'API: `DATABASE_MIGRATOR_URL`).
+
+     A mano si può ancora: `\password cerbero_app` e
+     `ALTER ROLE cerbero_app LOGIN;` in psql, poi
+     `node lib/db/scripts/ruoli.mjs --prova-url` e si incolla l'URL
+     (`postgres://cerbero_app:<password>@<servizio-db>:5432/<db>`, con la
+     password codificata se ha `@ : / # %`).
+4. **Coolify**, in quest'ordine:
+   - API: `DATABASE_MIGRATOR_URL` = l'URL di oggi, quello di `postgres` (se
+     manca si crea **prima**, copiando il valore di `DATABASE_URL`: senza, le
+     migrazioni partirebbero come `cerbero_app` e l'API non si avvia);
+   - API: `DATABASE_URL` = l'URL stampato al passo 3;
    - lavoratore: `DATABASE_URL` uguale a quello dell'API, nessun
      `DATABASE_MIGRATOR_URL`.
 
-   Redeploy di tutti e due, poi di nuovo `ruoli.mjs --verifica`.
+   Redeploy di tutti e due. Salvare le variabili non basta: valgono dal
+   prossimo avvio. Se il container nuovo non parte (per esempio «password
+   authentication failed»), Coolify lo toglie e **resta in servizio quello di
+   prima**: il motivo è nel log del deploy. Poi di nuovo
+   `ruoli.mjs --verifica`, dal Terminal del container nuovo.
+
+   **Cambiare la password più avanti** (dopo una fuga, o di routine):
+   `node lib/db/scripts/ruoli.mjs --imposta-password --anche-se-collegata`,
+   e subito l'URL nuovo in `DATABASE_URL` dei due servizi e il redeploy. Fra
+   il comando e il redeploy le connessioni nuove di API e lavoratore vengono
+   rifiutate (quelle aperte restano): senza l'opzione il comando si ferma, per
+   non farlo per sbaglio.
 5. **Prove**:
    - `ruoli.mjs --verifica` mostra `collegati come cerbero_app` per
      `cerbero-api` e `cerbero-lavoratore`;
@@ -499,20 +579,23 @@ sessioni «senza nome», non un programma sconosciuto.
 
 **Dopo un ripristino** (backup di Coolify o `pg_dump`):
 - un dump non porta i ruoli. Il migratore li ricrea al primo avvio:
-  `cerbero_app` torna NOLOGIN, quindi password e LOGIN vanno ridati (passo 3).
+  `cerbero_app` torna NOLOGIN, quindi password e LOGIN vanno ridati (passo 3:
+  `--imposta-password` stampa un URL nuovo, da mettere nei due servizi).
   Conviene salvare anche i ruoli (`pg_dumpall --roles-only`);
 - un ripristino con `--no-owner` rimette tutto a `postgres`:
   - le relazioni di Cerbero le ripassa il migratore;
   - le tre funzioni di FleetCare che leggono Cerbero no. `ruoli.mjs --verifica`
     le segnala con l'`ALTER FUNCTION … OWNER TO fleetcare_legge_cerbero` da
     eseguire come `postgres`;
-  - i permessi di `caronte_app` si ridanno con `setup-caronte`.
+  - i permessi di `caronte_app` e la proprietà di `caronte.app_users` si
+    ridanno con `caronte_setup.sql` (qui sopra, «Caronte e gli altri
+    programmi»); poi la sua password, con `\password caronte_app`.
 - un ripristino come `postgres` esegue i vincoli delle tabelle mentre carica
   i dati. Un backup fatto mentre `ruoli.mjs --verifica` non segnalava
   espressioni non ammesse è sicuro: con gli event trigger accesi l'app non
   può aggiungerne. Se la verifica ne segnala, prima si tolgono (la cura è nel
   messaggio) e poi si fa il backup;
-- Prima di ridare `DATABASE_URL` a `cerbero_app`: di nuovo il passo 4.
+- Prima di ridare `DATABASE_URL` a `cerbero_app`: di nuovo i passi 3 e 4.
 
 Il container passa all'utente `node` con `setpriv`, che ha bisogno delle
 capacità SETUID e SETGID: con `--cap-drop ALL` (non è il default di Coolify)

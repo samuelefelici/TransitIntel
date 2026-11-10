@@ -231,6 +231,53 @@ jobs:
           if psql "$PG_APP/prod" -tAq -c "SELECT count(*) FROM caronte.app_users" 2>/dev/null; then echo "cerbero_app non deve leggere caronte.app_users"; exit 1; fi
           if DATABASE_URL=$PG_APP/prod node lib/db/scripts/migra.mjs > migra-app.log 2>&1; then cat migra-app.log; echo "il migratore come cerbero_app doveva fermarsi"; exit 1; fi
           grep -q "non si eseguono come cerbero_app" migra-app.log
+          # Il ruolo di Caronte (caronte_setup.sql), due volte. app_users, qui di
+          # postgres e con un serial come in produzione prima del passaggio,
+          # diventa sua: la «crea se non c'è» come fa Caronte a ogni login e ci
+          # scrive. Non legge gli utenti, non scrive gli archivi di Cerbero, non
+          # tocca le sue tabelle, non crea in public. La verifica dei ruoli
+          # ricorda con un avviso, non con un errore, che può creare in caronte.
+          for giro in 1 2; do DATABASE_URL=$PG/prod node lib/db/scripts/run-sql.mjs caronte_setup.sql; done
+          test "$(q "SELECT string_agg(pg_get_userbyid(relowner), ',' ORDER BY relname) FROM pg_class
+                     WHERE oid IN ('caronte.app_users'::regclass, 'caronte.app_users_id_seq'::regclass)")" = caronte_app,caronte_app
+          q "SET ROLE caronte_app; CREATE TABLE IF NOT EXISTS caronte.app_users (id serial PRIMARY KEY, pin text);
+             INSERT INTO caronte.app_users (pin) VALUES ('ci'); SELECT count(*) FROM public.gtfs_routes;
+             DELETE FROM caronte.vehicle_positions WHERE false; SELECT count(*) FROM caronte.avm_diario" > /dev/null
+          for vietato in "SELECT count(*) FROM public.users" "INSERT INTO caronte.avm_diario DEFAULT VALUES" \
+                         "ALTER TABLE caronte.tap_events ADD COLUMN ci int" "DROP TABLE caronte.active_trips" \
+                         "CREATE TABLE public.ci_caronte (a int)" "SELECT count(*) FROM registro.modifiche"; do
+            if q "SET ROLE caronte_app; $vietato" 2> vietato.log; then echo "caronte_app non doveva poter: $vietato"; exit 1; fi
+            grep -q -E "permission denied|must be owner" vietato.log || { cat vietato.log; exit 1; }
+          done
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1 || { cat ruoli.log; exit 1; }
+          grep -q "ATTENZIONE: caronte_app può creare tabelle e funzioni nello schema caronte" ruoli.log || { cat ruoli.log; exit 1; }
+          q "REVOKE CREATE ON SCHEMA caronte FROM caronte_app"
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica | grep -q "ruoli e proprietari in regola: "
+          # La password di cerbero_app in un passo (ruoli.mjs --imposta-password).
+          # Stampa l'URL con la password: fuori da un terminale si rifiuta, e con
+          # l'app collegata anche (cambiarla le chiuderebbe la porta). Cambiata, al
+          # database c'è solo l'impronta, entra solo l'URL stampato, e la password
+          # di prima non vale più. Chi non è superutente non la cambia.
+          if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --imposta-password > password.log 2>&1; then echo "fuori da un terminale doveva rifiutarsi"; exit 1; fi
+          grep -q "si lancia da un terminale" password.log
+          psql "$PG_APP/prod" -q -c "SELECT pg_sleep(60)" > /dev/null 2>&1 &
+          until test "$(q "SELECT count(*) FROM pg_stat_activity WHERE usename = 'cerbero_app'")" = 1; do sleep 0.5; done
+          if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --imposta-password --senza-terminale > password.log 2>&1; then echo "con l'app collegata doveva rifiutarsi"; exit 1; fi
+          grep -q "cerbero_app è collegato adesso (1 sessione)" password.log
+          test "$(psql "$PG_APP/prod" -tAq -c "SELECT 1")" = 1
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --imposta-password --senza-terminale --anche-se-collegata > password.log
+          grep -q "l'URL va bene" password.log
+          URL_APP=$(grep "^postgres" password.log)
+          test "$(psql "$URL_APP" -tAq -c "SELECT session_user || '/' || current_user")" = cerbero_app/cerbero_owner
+          if psql "$PG_APP/prod" -tAq -c "SELECT 1" 2> /dev/null; then echo "la password di prima doveva smettere di valere"; exit 1; fi
+          test "$(q "SELECT rolpassword ~ '^SCRAM-SHA-256[$]4096:' AND rolcanlogin FROM pg_authid WHERE rolname = 'cerbero_app'")" = t
+          if DATABASE_URL=$URL_APP node lib/db/scripts/ruoli.mjs --imposta-password --senza-terminale --anche-se-collegata > password.log 2>&1; then echo "chi non è superutente non doveva cambiarla"; exit 1; fi
+          grep -q "serve un superutente (postgres): qui ci si collega come cerbero_app" password.log
+          test "$(psql "$URL_APP" -tAq -c "SELECT 1")" = 1
+          q "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'cerbero_app'" > /dev/null
+          wait || true
+          psql -v ON_ERROR_STOP=1 -q -c "ALTER ROLE cerbero_app LOGIN PASSWORD 'prova'"
+          rm -f password.log
           # fuori dal catalogo atteso: si tolgono prima del confronto; e public torna
           # come su un database nuovo, perché i casi di Argos qui sotto lo danno per scontato
           q "DROP EXTENSION pg_stat_statements"

@@ -9,16 +9,34 @@
 --     tabelle di caronte (archivi e correzioni di Cerbero) le legge soltanto;
 --   - in `public` legge SOLO le tabelle GTFS (linee, fermate, corse, orari):
 --     niente utenti, anagrafica, roster, registri.
+--   - `caronte.app_users`, gli utenti di Caronte, è una tabella SUA: non la
+--     creano le migrazioni di Cerbero e il migratore non la tocca. Ne diventa
+--     proprietario `caronte_app`;
+--   - può creare nello schema `caronte`. Serve a Caronte com'è oggi: a ogni
+--     login esegue `CREATE TABLE IF NOT EXISTS caronte.app_users`, e
+--     PostgreSQL lo rifiuta a chi non può creare nello schema anche quando la
+--     tabella c'è già. Le tabelle di Cerbero non le tocca lo stesso (non sono
+--     sue). Quando Caronte controllerà prima se la tabella esiste, la riga
+--     `GRANT CREATE` in fondo si toglie e il permesso si revoca:
+--       REVOKE CREATE ON SCHEMA caronte FROM caronte_app;
+--     Finché c'è, `ruoli.mjs --verifica` lo ricorda con un avviso.
 -- Si può rieseguire: prima toglie tutto quello che la versione vecchia di
--- questo file dava (lettura di tutta public, CREATE sullo schema).
+-- questo file dava (lettura di tutta public), poi ridà solo questo.
 --
--- Eseguire come proprietario del database, dopo il primo avvio dell'API:
---   psql -v ON_ERROR_STOP=1 "$DATABASE_URL" -f caronte_setup.sql
+-- Eseguire come superutente (postgres), dopo il primo avvio dell'API. Dal
+-- Terminal del container dell'API, dove DATABASE_URL è dell'app:
+--   DATABASE_URL="$DATABASE_MIGRATOR_URL" node lib/db/scripts/run-sql.mjs caronte_setup.sql
+-- oppure, dove c'è psql:
+--   psql -v ON_ERROR_STOP=1 "<url di postgres>" -f caronte_setup.sql
 -- Poi la password, da psql: `\password caronte_app` (manda al server solo
 -- l'hash, non la password in chiaro), e `ALTER ROLE caronte_app LOGIN;`.
+-- Caronte ha due variabili con l'URL del database, DATABASE_URL e CARONTE_URL:
+-- vanno tutte e due su caronte_app (DEPLOY.md, «Ruoli del database»).
 -- ═══════════════════════════════════════════════════════════════════════════
 -- da superutente: niente public nel percorso (l'app di Cerbero può creare in public)
 SET search_path = pg_catalog, pg_temp;
+-- Tutto insieme o niente: fra il REVOKE e i GRANT Caronte non resta senza permessi
+BEGIN;
 
 DO $$
 BEGIN
@@ -68,3 +86,28 @@ BEGIN
     END IF;
   END LOOP;
 END$$;
+
+-- La tabella degli utenti di Caronte: sua, e solo sua. Il REVOKE qui sopra ha
+-- tolto i diritti anche al proprietario, quindi si ridanno, con quelli delle
+-- sequenze delle sue colonne (se l'id è un serial).
+DO $$
+DECLARE s regclass;
+BEGIN
+  IF to_regclass('caronte.app_users') IS NOT NULL THEN
+    ALTER TABLE caronte.app_users OWNER TO caronte_app;
+    GRANT ALL ON TABLE caronte.app_users TO caronte_app;
+    FOR s IN
+      SELECT d.objid::regclass FROM pg_catalog.pg_depend d
+        JOIN pg_catalog.pg_class c ON c.oid = d.objid AND c.relkind = 'S'
+       WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.refclassid = 'pg_catalog.pg_class'::regclass
+         AND d.refobjid = 'caronte.app_users'::regclass AND d.deptype IN ('a', 'i')
+    LOOP
+      EXECUTE format('GRANT ALL ON SEQUENCE %s TO caronte_app', s);
+    END LOOP;
+  END IF;
+END$$;
+
+-- Da togliere quando Caronte non crea più la sua tabella a ogni login (vedi in testa)
+GRANT CREATE ON SCHEMA caronte TO caronte_app;
+
+COMMIT;

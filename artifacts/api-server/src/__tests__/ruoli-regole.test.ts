@@ -3,6 +3,10 @@
  * occupati saltati, tetto di tempo). Sul database vero lo provano la CI
  * (migrazioni-postgres) e lo script locale della PR. */
 import { describe, it, expect } from "vitest";
+import { createHash, createHmac, pbkdf2Sync } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { GIRI_SCRAM, improntaScram, nuovaPassword, urlDellApp } from "../../../../lib/db/scripts/ruoli-password.mjs";
 import {
   APP, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, elencoDalCatalogo, piano, sqlEspressioniVietate,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
@@ -335,6 +339,20 @@ describe("ruoli del database: il piano", () => {
     expect(p.avvisi[0]).toMatch(/DROP TABLE "public"\."users_backup_20261108".*OWNER TO "cerbero_owner"/);
   });
 
+  it("un altro ruolo che può creare negli schemi dei dati: avviso con la cura, non un errore", () => {
+    // caronte_app, finché Caronte crea la sua tabella a ogni login (caronte_setup.sql)
+    const p = piano(base({ creatori: [{ schema: "caronte", ruolo: "caronte_app" }, { schema: "public", ruolo: "PUBLIC" }] }));
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toEqual([]);
+    expect(p.avvisi).toHaveLength(2);
+    expect(p.avvisi[0]).toMatch(/^caronte_app può creare tabelle e funzioni nello schema caronte/);
+    expect(p.avvisi[0]).toContain('REVOKE CREATE ON SCHEMA "caronte" FROM "caronte_app"');
+    expect(p.avvisi[1]).toMatch(/^tutti i ruoli \(PUBLIC\) possono creare/);
+    expect(p.avvisi[1]).toContain('REVOKE CREATE ON SCHEMA "public" FROM PUBLIC');
+    // il nome di un ruolo finisce in un'istruzione da copiare: sempre fra virgolette
+    expect(piano(base({ creatori: [{ schema: "caronte", ruolo: 'x"; DROP' }] })).avvisi[0]).toContain('FROM "x""; DROP"');
+  });
+
   it("una vista che dipende da una relazione di un altro ruolo: errore, non un'attesa infinita", () => {
     const p = piano(base({ relazioni: [
       rel("caronte.stop_predictions", { proprietario: "avm_esterno" }),
@@ -435,5 +453,134 @@ describe("ruoli del database: esecuzione", () => {
     expect(c2.eseguite).toHaveLength(1);
     expect(e2.rimandate.map((a) => a.oggetto)).toEqual(["public.ps_route_variants"]);
     expect(e2.avvisi.join(" ")).toMatch(/tempo finito/);
+  });
+});
+
+describe("la password di cerbero_app (ruoli.mjs --imposta-password)", () => {
+  it("una password nuova: 48 cifre e lettere da a a f, niente da codificare in un URL", () => {
+    const a = nuovaPassword(), b = nuovaPassword();
+    expect(a).toMatch(/^[0-9a-f]{48}$/);
+    expect(b).not.toBe(a);
+    expect(encodeURIComponent(a)).toBe(a);
+  });
+
+  it("l'impronta SCRAM-SHA-256 è quella dello standard (vettore della RFC 7677)", () => {
+    // utente «user», password «pencil», sale e scambio della RFC 7677, sezione 3
+    const sale = Buffer.from("W22ZaJ0SNY7soEsUEjb6gQ==", "base64");
+    const impronta = improntaScram("pencil00", sale);
+    expect(impronta).toMatch(/^SCRAM-SHA-256\$4096:W22ZaJ0SNY7soEsUEjb6gQ==\$[A-Za-z0-9+/]{43}=:[A-Za-z0-9+/]{43}=$/);
+    expect(GIRI_SCRAM).toBe(4096);
+
+    // «pencil» ha 6 caratteri, meno del minimo: il vettore si prova a mano con le stesse operazioni
+    const vettore = (() => {
+      const salata = pbkdf2Sync("pencil", sale, 4096, 32, "sha256");
+      const firma = (chiave: Buffer, testo: string) => createHmac("sha256", chiave).update(testo).digest();
+      const chiaveCliente = firma(salata, "Client Key");
+      const chiaveSalvata = createHash("sha256").update(chiaveCliente).digest();
+      const messaggio = "n=user,r=rOprNGfwEbeRWgbNEkqO,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,"
+        + "s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096,c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0";
+      const firmaCliente = firma(chiaveSalvata, messaggio);
+      const prova = Buffer.from(chiaveCliente.map((b, i) => b ^ firmaCliente[i]!));
+      return { prova: prova.toString("base64"), server: firma(firma(salata, "Server Key"), messaggio).toString("base64") };
+    })();
+    expect(vettore.prova).toBe("dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ=");
+    expect(vettore.server).toBe("6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4=");
+  });
+
+  it("l'impronta: stessa password e stesso sale danno lo stesso risultato, un sale nuovo a ogni chiamata", () => {
+    const sale = Buffer.alloc(16, 7);
+    expect(improntaScram("0123456789abcdef", sale)).toBe(improntaScram("0123456789abcdef", sale));
+    expect(improntaScram("0123456789abcdef", sale)).not.toBe(improntaScram("0123456789abcdeg", sale));
+    expect(improntaScram("0123456789abcdef")).not.toBe(improntaScram("0123456789abcdef"));
+    // la chiave salvata e quella del server di un'impronta sono quelle che PostgreSQL ricalcola al login
+    const [, resto] = improntaScram("0123456789abcdef", sale).split("$4096:");
+    const [saleB64, chiavi] = resto!.split("$");
+    expect(saleB64).toBe(sale.toString("base64"));
+    expect(chiavi!.split(":")).toHaveLength(2);
+  });
+
+  it("l'impronta rifiuta ciò che PostgreSQL normalizzerebbe: caratteri non ASCII, spazi, password corte", () => {
+    for (const p of ["", "corta", "con uno spazio", "perché-no-1234", "tab\tdentro12"]) {
+      expect(() => improntaScram(p)).toThrow(/almeno 8 caratteri ASCII/);
+    }
+    expect(() => improntaScram(undefined as unknown as string)).toThrow();
+  });
+
+  it("l'URL dell'app è quello del migratore con utente e password cambiati, il resto uguale", () => {
+    expect(urlDellApp("postgres://postgres:vecchia@db-interno:5432/postgres", "cerbero_app", "abc123"))
+      .toBe("postgres://cerbero_app:abc123@db-interno:5432/postgres");
+    // una password vecchia con caratteri codificati, i parametri, lo schema lungo, un host IPv6
+    expect(urlDellApp("postgresql://postgres:p%40ss%3Aw%2Frd@db:6543/cerbero?sslmode=require", "cerbero_app", "abc123"))
+      .toBe("postgresql://cerbero_app:abc123@db:6543/cerbero?sslmode=require");
+    expect(urlDellApp("postgres://postgres:x@[fd07::11]:5432/postgres", "cerbero_app", "abc123"))
+      .toBe("postgres://cerbero_app:abc123@[fd07::11]:5432/postgres");
+    // senza password nell'URL del migratore
+    expect(urlDellApp("postgres://postgres@db/postgres", "cerbero_app", "abc123")).toBe("postgres://cerbero_app:abc123@db/postgres");
+  });
+
+  it("l'URL dell'app non si inventa: senza host, con un altro schema o illeggibile è un errore", () => {
+    expect(() => urlDellApp("postgres:///postgres?host=/var/run/postgresql", "cerbero_app", "abc123")).toThrow(/non ha un host/);
+    expect(() => urlDellApp("mysql://root:x@db/app", "cerbero_app", "abc123")).toThrow(/postgres:\/\/ o postgresql:\/\//);
+    expect(() => urlDellApp("non un url", "cerbero_app", "abc123")).toThrow(/non si legge come URL/);
+    // l'errore non ripete l'URL, che contiene la password del superutente
+    try { urlDellApp("mysql://root:segretissima@db/app", "cerbero_app", "abc123"); } catch (e) { expect(String(e)).not.toContain("segretissima"); }
+  });
+});
+
+describe("caronte_setup.sql: il ruolo di Caronte", () => {
+  const sql = readFileSync(fileURLToPath(new URL("../../../../caronte_setup.sql", import.meta.url)), "utf8");
+  const senzaCommenti = sql.replace(/^\s*--.*$/gm, "");
+  /** L'elenco di tabelle del ciclo che esegue quel GRANT (l'ARRAY che lo precede). */
+  const elenco = (grant: string) => {
+    const fine = senzaCommenti.indexOf(grant);
+    const inizio = senzaCommenti.lastIndexOf("ARRAY ARRAY[", fine);
+    expect(fine).toBeGreaterThan(0);
+    expect(inizio).toBeGreaterThan(0);
+    return senzaCommenti.slice(inizio + "ARRAY ARRAY[".length, senzaCommenti.indexOf("]", inizio))
+      .split(",").map((v) => v.trim().replace(/'/g, "")).filter(Boolean);
+  };
+  const catalogo = JSON.parse(readFileSync(fileURLToPath(new URL("../../../../lib/db/migrations/meta/catalogo.json", import.meta.url)), "utf8"));
+
+  it("tutto in una transazione: fra il REVOKE e i GRANT Caronte non resta senza permessi", () => {
+    const istruzioni = senzaCommenti.split(/;\s*$/m).map((i) => i.trim()).filter(Boolean);
+    expect(istruzioni[0]).toMatch(/^SET search_path = pg_catalog, pg_temp$/);
+    expect(istruzioni[1]).toBe("BEGIN");
+    expect(istruzioni.at(-1)).toBe("COMMIT");
+    expect(senzaCommenti.match(/\bCOMMIT\b/g)).toHaveLength(1);
+  });
+
+  it("scrive solo le tabelle del validatore, legge le altre di caronte e le GTFS: tutte nel catalogo", () => {
+    const scrive = elenco("GRANT SELECT, INSERT, UPDATE, DELETE ON caronte.%I"), legge = elenco("GRANT SELECT ON caronte.%I");
+    const gtfs = elenco("GRANT SELECT ON public.%I");
+    expect(legge).toContain("avm_diario");
+    expect(legge.filter((t) => scrive.includes(t))).toEqual([]);
+    expect(scrive).toEqual(["tap_events", "journeys", "vehicle_positions", "active_trips", "stop_transits"]);
+    for (const t of [...scrive, ...legge]) expect(Object.keys(catalogo.tabelle)).toContain(`caronte.${t}`);
+    for (const t of gtfs) {
+      expect(t).toMatch(/^gtfs_/);
+      expect(Object.keys(catalogo.tabelle)).toContain(`public.${t}`);
+    }
+    // niente utenti, anagrafica, roster, registro: né per nome né con un GRANT su tutto lo schema
+    expect(senzaCommenti).not.toMatch(/GRANT[^;]*ON ALL TABLES/i);
+    expect(senzaCommenti).not.toMatch(/GRANT[^;]*\b(users|roster_|accessi_|registro)\b/i);
+  });
+
+  it("app_users è di Caronte: ne diventa proprietario, coi diritti ridati dopo il REVOKE", () => {
+    const fine = senzaCommenti.slice(senzaCommenti.indexOf("REVOKE ALL ON ALL TABLES IN SCHEMA caronte"));
+    expect(fine).toMatch(/ALTER TABLE caronte\.app_users OWNER TO caronte_app;\s*GRANT ALL ON TABLE caronte\.app_users TO caronte_app;/);
+    expect(fine).toMatch(/GRANT ALL ON SEQUENCE %s TO caronte_app/);
+    // solo se la tabella c'è: su un database nuovo la crea Caronte al primo login
+    expect(senzaCommenti).toMatch(/IF to_regclass\('caronte\.app_users'\) IS NOT NULL THEN\s*ALTER TABLE caronte\.app_users OWNER/);
+  });
+
+  it("può creare in caronte (Caronte crea la sua tabella a ogni login), e solo lì", () => {
+    const revoca = senzaCommenti.indexOf("REVOKE CREATE ON SCHEMA caronte FROM caronte_app");
+    const concede = senzaCommenti.indexOf("GRANT CREATE ON SCHEMA caronte TO caronte_app");
+    expect(revoca).toBeGreaterThan(0);
+    expect(concede).toBeGreaterThan(revoca);
+    expect(senzaCommenti).not.toMatch(/GRANT[^;]*CREATE[^;]*ON SCHEMA public/i);
+    expect(senzaCommenti).not.toMatch(/SUPERUSER|CREATEROLE|BYPASSRLS/i);
+    // come si toglie è scritto nel file
+    expect(sql).toContain("REVOKE CREATE ON SCHEMA caronte FROM caronte_app;");
   });
 });
