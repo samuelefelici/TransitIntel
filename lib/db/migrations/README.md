@@ -197,6 +197,14 @@ su main non si tocca più.
 - **Le richieste a Mizar** (0005, `caronte.avm_richieste_mizar`): accanto agli
   altri archivi AVM di Cerbero, fuori dal contratto di `argos_ro` (un test in
   `migrazioni.test.ts` lo controlla) e non concesse a `caronte_app`.
+- **Per chi la verifica in due passaggi è obbligatoria** (0008,
+  `users.mfa_obbligatoria`): una colonna calcolata (`GENERATED ALWAYS AS …
+  STORED`) da `role` e `permissions`. È la regola: la leggono l'API e
+  FleetCare, nessuno la riscrive. Per cambiarla, una migrazione con
+  `ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria SET EXPRESSION AS (…)`
+  (Postgres 17; riscrive la tabella, che è piccola), con solo operatori e
+  funzioni ammesse. Una colonna calcolata lega le colonne da cui dipende: non
+  se ne cambia il tipo e non si tolgono senza togliere prima lei.
 - **L'API controlla di essere allineata** (`artifacts/api-server/src/lib/guardia-schema.ts`):
   conosce il diario della sua immagine (`lib/db/scripts/diario-incluso.mjs`,
   incorporato nel bundle) e, se al database manca una migrazione,

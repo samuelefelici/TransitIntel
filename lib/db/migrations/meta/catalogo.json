@@ -1991,6 +1991,7 @@
    "mfa_attiva": "boolean | not null | false |  | ",
    "mfa_bloccata_fino": "timestamp with time zone | null |  |  | ",
    "mfa_errori": "integer | not null | 0 |  | ",
+   "mfa_obbligatoria": "boolean | not null | ((role = 'admin'::text) OR (COALESCE((permissions -> 'personale'::text), 'false'::jsonb) <> ALL (ARRAY['false'::jsonb, 'null'::jsonb, '0'::jsonb, '\"\"'::jsonb])) OR (COALESCE((permissions -> 'roster'::text), 'false'::jsonb) <> ALL (ARRAY['false'::jsonb, 'null'::jsonb, '0'::jsonb, '\"\"'::jsonb]))) |  | s",
    "mfa_recupero": "jsonb | null |  |  | ",
    "mfa_recupero_chiave": "text | null |  |  | ",
    "mfa_segreto": "text | null |  |  | ",

@@ -330,8 +330,29 @@ jobs:
           grep -q "cerbero_app non può rinominare, spostare o sostituire una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
           if app "ALTER TABLE public.users RENAME COLUMN role TO role_cached" 2> vietato.log; then echo "cerbero_app non doveva rinominare role"; exit 1; fi
           grep -q "cerbero_app non può rinominare le colonne di una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
-          if app "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" 2> vietato.log; then echo "cerbero_app non doveva riscrivere users"; exit 1; fi
+          if app "ALTER TABLE public.users ALTER COLUMN full_name TYPE text USING 'Altro'" 2> vietato.log; then echo "cerbero_app non doveva riscrivere users"; exit 1; fi
           grep -q "cerbero_app non può riscrivere una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          # La colonna calcolata mfa_obbligatoria (PR 2.12) è una regola. L'app non la può
+          # ricalcolare a modo suo (riscriverebbe la tabella), ma da proprietaria può
+          # toglierle l'espressione e scriverci: la verifica dei ruoli lo dice, con
+          # l'istruzione per rifarla, e rifatta torna pulita.
+          for vietato in "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria SET EXPRESSION AS (false)" \
+                         "ALTER TABLE public.users DROP COLUMN mfa_obbligatoria, ADD COLUMN mfa_obbligatoria boolean GENERATED ALWAYS AS (false) STORED"; do
+            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -q "cerbero_app non può riscrivere una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+          done
+          app "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION"
+          if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare la colonna non più calcolata"; exit 1; fi
+          grep -q "public.users.mfa_obbligatoria non è più calcolata dal database" ruoli.log || { cat ruoli.log; exit 1; }
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "$(grep -o 'ALTER TABLE "public"."users" DROP COLUMN "mfa_obbligatoria".* STORED' ruoli.log)"
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1 || { cat ruoli.log; exit 1; }
+          test "$(psql -d prod -tAq -c "SELECT attgenerated FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'mfa_obbligatoria'")" = s
+          # role e permissions non si riscrivono né si tolgono nemmeno senza l'event trigger: da loro
+          # dipende la colonna calcolata mfa_obbligatoria (PR 2.12), e Postgres lo rifiuta da sé
+          for vietato in "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" "ALTER TABLE public.users DROP COLUMN permissions"; do
+            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+            grep -q "generated column" vietato.log || { cat vietato.log; exit 1; }
+          done
           test "$(app "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_riscrive' AND evtevent = 'table_rewrite' AND evtenabled = 'A'")" = 1
           for vietato in "CREATE TABLE public.ci_figlia () INHERITS (public.ps_projects)" \
                          "CREATE TABLE public.ci_padre (name text); ALTER TABLE public.ps_projects INHERIT public.ci_padre"; do
@@ -732,6 +753,11 @@ jobs:
       # concorrenti e da cerbero_app, che non è superutente
       - name: Il contesto di chi fa la modifica sulla connessione
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/contesto-db.test.ts
+      # PR 2.12: per chi la verifica in due passaggi è obbligatoria lo dice il
+      # database (users.mfa_obbligatoria, migrazione 0008). Come cerbero_app: la
+      # tabella di verità, segue ruolo e permessi, non si scrive a mano.
+      - name: La verifica obbligatoria, calcolata dal database
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/mfa-obbligatoria-db.test.ts
       # Il registro delle modifiche (PR 2.10), dall'app: la manutenzione e la
       # verifica sì, anche in parallelo; leggere, cancellare o spegnere no. E
       # dopo tutti i test sul database qui sopra, scritti col registro acceso:

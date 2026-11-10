@@ -26,7 +26,7 @@ import { datiProvaAttivi } from "./dati-prova";
 import { logger } from "./logger";
 import { azioniAdmin } from "./azioni-admin";
 import { idChiave } from "./mfa-cifratura";
-import { chiaveEmail, limitazione, mfaObbligatoria, percorsoConsentitoLimitato, percorsoVietatoAiServizi, type Limitazione } from "./accesso-regole";
+import { chiaveEmail, limitazione, percorsoConsentitoLimitato, percorsoVietatoAiServizi, type Limitazione } from "./accesso-regole";
 import {
   azzeraTentativiPassword, azzeraTuttiITentativiPassword, controllaChiaveMfa, forsePulisciAccessi, prenotaTentativoPassword,
   provaCodice, pulisciAccessi,
@@ -365,12 +365,16 @@ function clearAuthCookie(res: Response) {
   });
 }
 
-interface UtenteCaricato { user: AuthUser; sv: number; mfaAttiva: boolean; deveCambiarePassword: boolean; codiciChiave: string | null }
+interface UtenteCaricato {
+  user: AuthUser; sv: number; mfaAttiva: boolean; deveCambiarePassword: boolean; codiciChiave: string | null;
+  /** La colonna calcolata users.mfa_obbligatoria: la regola sta nel database (migrazione 0008). */
+  mfaObbligatoria: boolean;
+}
 
 async function loadUserById(id: string): Promise<UtenteCaricato | null> {
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, permissions, fleetcare_role, active,
-           sessione_versione, mfa_attiva, deve_cambiare_password, mfa_recupero_chiave
+           sessione_versione, mfa_attiva, mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -387,6 +391,8 @@ async function loadUserById(id: string): Promise<UtenteCaricato | null> {
     },
     sv: Number(row.sessione_versione ?? 0),
     mfaAttiva: !!row.mfa_attiva,
+    // la colonna è NOT NULL: se non arriva un «false» scritto, la verifica resta obbligatoria
+    mfaObbligatoria: row.mfa_obbligatoria !== false,
     deveCambiarePassword: !!row.deve_cambiare_password,
     codiciChiave: row.mfa_recupero_chiave ?? null,
   };
@@ -394,12 +400,12 @@ async function loadUserById(id: string): Promise<UtenteCaricato | null> {
 
 /** Lo stato dell'accesso di un utente caricato, con la sessione che sta usando. */
 function accessoDi(u: UtenteCaricato, sessione: { mfa: boolean; rec?: boolean }): Accesso & { rifiuta: boolean } {
-  const lim = limitazione({ ...u.user, deveCambiarePassword: u.deveCambiarePassword, mfaAttiva: u.mfaAttiva }, sessione);
+  const lim = limitazione({ mfaObbligatoria: u.mfaObbligatoria, deveCambiarePassword: u.deveCambiarePassword, mfaAttiva: u.mfaAttiva }, sessione);
   return {
     limitato: lim === "rifiuta" ? null : lim,
     rifiuta: lim === "rifiuta",
     mfaAttiva: u.mfaAttiva,
-    mfaObbligatoria: mfaObbligatoria(u.user),
+    mfaObbligatoria: u.mfaObbligatoria,
     passwordDaCambiare: u.deveCambiarePassword,
     recupero: !!sessione.rec && u.mfaAttiva,
     codiciDaRifare: u.mfaAttiva && !!u.codiciChiave && u.codiciChiave !== idChiave(),
@@ -993,7 +999,7 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, permissions, fleetcare_role, active, last_login_at, created_at,
-           mfa_attiva, deve_cambiare_password, mfa_recupero_chiave,
+           mfa_attiva, mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave,
            /* bloccato: per i codici sbagliati, o per la password da almeno un indirizzo */
            GREATEST(
              CASE WHEN mfa_bloccata_fino > now() THEN mfa_bloccata_fino END,
@@ -1015,7 +1021,7 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
     lastLoginAt: u.last_login_at,
     createdAt: u.created_at,
     mfaAttiva: !!u.mfa_attiva,
-    mfaObbligatoria: mfaObbligatoria({ role: u.role, permissions: u.permissions }),
+    mfaObbligatoria: u.mfa_obbligatoria !== false,
     passwordDaCambiare: !!u.deve_cambiare_password,
     bloccatoFino: u.bloccato_fino ?? null,
     /* codici di recupero di una chiave che non è più quella attuale (cambio di chiave) */

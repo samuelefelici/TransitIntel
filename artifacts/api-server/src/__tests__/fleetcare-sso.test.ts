@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
 import jwt from "jsonwebtoken";
 import { accessoFleetCare, firmaAccessoFleetCare, ritornoFleetCare } from "../lib/auth";
-import { mfaObbligatoria } from "../lib/accesso-regole";
 
 const SEGRETO = "segreto-condiviso-di-prova-0123456789";
 const utente = {
@@ -37,24 +36,17 @@ describe("il biglietto per FleetCare", () => {
   });
 });
 
-/* Le stesse regole sono copiate in fleetcare.cerbero_stato_utente (FleetCare,
- * migrazione 0088). Se questo test cambia, va cambiata anche quella funzione. */
+/* Questa regola è copiata in fleetcare.cerbero_stato_utente (FleetCare,
+ * migrazione 0088). Se questo test cambia, va cambiata anche quella funzione.
+ * Per chi la verifica in due passaggi è obbligatoria non si copia più: lo
+ * dice la colonna users.mfa_obbligatoria (PR 2.12), che FleetCare legge dalla
+ * sua migrazione 0090. */
 describe("le regole che FleetCare copia (aggiorna FleetCare 0088 se cambiano)", () => {
   it("chi entra e con quale ruolo", () => {
     expect(accessoFleetCare({ role: "admin", permissions: {} as any, fleetcareRole: "driver" })).toEqual({ abilitato: true, ruolo: "fleet_admin" });
     expect(accessoFleetCare({ role: "user", permissions: { fleetcare: true } as any, fleetcareRole: "" })).toEqual({ abilitato: true, ruolo: "driver" });
     expect(accessoFleetCare({ role: "user", permissions: { fleetcare: true } as any, fleetcareRole: "workshop_manager" })).toEqual({ abilitato: true, ruolo: "workshop_manager" });
     expect(accessoFleetCare({ role: "user", permissions: { fleetcare: false } as any, fleetcareRole: "mechanic" }).abilitato).toBe(false);
-  });
-
-  it("per chi la verifica in due passaggi è obbligatoria", () => {
-    const casi: Array<[string, Record<string, boolean>, boolean]> = [
-      ["admin", {}, true],
-      ["user", { personale: true }, true],
-      ["user", { roster: true }, true],
-      ["user", { fleetcare: true, scheduling: true, analytics: true }, false],
-    ];
-    for (const [role, permissions, atteso] of casi) expect(mfaObbligatoria({ role, permissions })).toBe(atteso);
   });
 });
 

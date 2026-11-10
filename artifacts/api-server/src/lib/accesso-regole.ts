@@ -91,15 +91,14 @@ export function chiaveEmail(email: string): string {
   return email.trim().toLowerCase().slice(0, 200);
 }
 
-/**
- * La verifica in due passaggi è obbligatoria per chi amministra o vede dati
- * personali e sanitari. La regola è copiata in FleetCare
- * (fleetcare.cerbero_stato_utente, migrazione 0088): se cambia qui, va cambiata
- * anche là (il test fleetcare-sso lo ricorda).
+/*
+ * Per chi la verifica in due passaggi è obbligatoria (chi amministra, chi vede
+ * i dati del personale o il roster) lo dice il database: la colonna calcolata
+ * users.mfa_obbligatoria (PR 2.12, migrazione 0008). La leggono l'API e, dalla
+ * sua migrazione 0090, FleetCare: la regola non è più scritta qui né copiata
+ * là. La sua tabella di verità la prova mfa-obbligatoria-db.test.ts sul
+ * database.
  */
-export function mfaObbligatoria(u: { role: string; permissions?: Record<string, boolean> | null }): boolean {
-  return u.role === "admin" || !!u.permissions?.personale || !!u.permissions?.roster;
-}
 
 export type Limitazione = null | "password" | "mfa";
 
@@ -110,12 +109,12 @@ export type Limitazione = null | "password" | "mfa";
  *  - "rifiuta": la verifica è attiva ma la sessione non l'ha fatta: si rientra.
  */
 export function limitazione(
-  u: { role: string; permissions?: Record<string, boolean> | null; deveCambiarePassword: boolean; mfaAttiva: boolean },
+  u: { mfaObbligatoria: boolean; deveCambiarePassword: boolean; mfaAttiva: boolean },
   sessione: { mfa?: boolean },
 ): Limitazione | "rifiuta" {
   if (u.mfaAttiva && !sessione.mfa) return "rifiuta";
   if (u.deveCambiarePassword) return "password";
-  if (mfaObbligatoria(u) && !u.mfaAttiva) return "mfa";
+  if (u.mfaObbligatoria && !u.mfaAttiva) return "mfa";
   return null;
 }
 

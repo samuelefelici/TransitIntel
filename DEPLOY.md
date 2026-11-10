@@ -385,7 +385,9 @@ file del server, ruoli). Dalla 2.8:
 - **FleetCare.** Le sue funzioni che leggono Cerbero sono di
   `fleetcare_legge_cerbero`, che non è superutente e legge solo poche colonne
   di `public.users` e il nome dei depositi (FleetCare, migrazione 0089). Le
-  colonne gliele ridà il migratore di Cerbero a ogni avvio.
+  colonne gliele ridà il migratore di Cerbero a ogni avvio (l'elenco è
+  `LETTORI` in `lib/db/scripts/ruoli-regole.mjs`; dalla 2.12 c'è anche
+  `mfa_obbligatoria`).
   `cerbero_owner` chiama solo `fleetcare.parco_per_avm()` e
   `fleetcare.interventi_avm()`.
   Il migratore segnala come errore ogni funzione SECURITY DEFINER di un
@@ -1429,6 +1431,24 @@ attivare la verifica.
   accesso vede solo la pagina «Sicurezza dell'account» finché non l'ha fatto.
   Le sorveglianze e il connettore di Argos non partono per chi deve ancora
   attivarla (o cambiare la password provvisoria): lo dicono nel loro esito.
+- **Per chi è obbligatoria lo dice il database** (PR 2.12, migrazione 0008):
+  `users.mfa_obbligatoria` è una colonna calcolata da Postgres da ruolo e
+  permessi, a ogni scrittura. Non si imposta a mano.
+  - La leggono l'API di Cerbero e FleetCare (dalla sua migrazione 0090). Prima
+    la regola era scritta nell'API e copiata a mano in una funzione di
+    FleetCare.
+  - **Per cambiarla basta una migrazione di Cerbero** che ridefinisce la
+    colonna: né codice dell'API né FleetCare.
+  - Il registro delle modifiche non la segna: cambia solo insieme a ruolo o
+    permessi, che riporta già.
+  - Da lei dipendono `role` e `permissions`: Postgres rifiuta di cambiarne il
+    tipo o di toglierle.
+  - **Rilascio**: Cerbero e FleetCare in qualunque ordine. FleetCare usa la
+    colonna quando c'è e la può leggere, altrimenti la regola di prima.
+    **Rollback**: l'immagine di prima di Cerbero ignora la colonna, che può
+    restare.
+  - Per controllare: `SELECT email, role, mfa_obbligatoria, mfa_attiva FROM users ORDER BY 1;`
+    (come `cerbero_app`).
 - **Password**: almeno 12 caratteri; quella data dall'admin è provvisoria e va
   cambiata al primo accesso.
 - **Tentativi sbagliati**:
