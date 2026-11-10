@@ -61,6 +61,15 @@ export function viaPerIlDatabase(authVia: string | undefined | null): string {
   return dichiarata && (dichiarata === authVia || dichiarata.startsWith(`${authVia}:`)) ? dichiarata : authVia;
 }
 
+/**
+ * La via con cui il giro delle attivazioni programmate esegue un'attivazione
+ * (PR 2.11): quella di chi l'ha programmata, se era Argos, come fa la coda dei
+ * lavori (`argos:mcp:coda:<tipo>`). Altrimenti il solo nome del giro.
+ */
+export function viaDelGiro(viaSalvata: unknown): string {
+  return typeof viaSalvata === "string" && /^argos(:|$)/.test(viaSalvata) ? `${viaSalvata}:timer:attivazioni` : "timer:attivazioni";
+}
+
 /** Payload del log attività con l'eventuale marcatura `via` della richiesta corrente. */
 export function withVia(payload: Record<string, any> | null | undefined): Record<string, any> {
   const via = requestVia();

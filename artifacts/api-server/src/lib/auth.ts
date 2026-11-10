@@ -626,7 +626,7 @@ export function letturaCondivisa(metodo: string, path: string): Permission[] | n
  * senza la riga di log della voce dimenticata. Le rotte si proteggono anche da
  * sé (requireAdmin in routes/admin.ts).
  */
-export const SOLO_ADMIN: readonly string[] = ["/admin/sync"];
+export const SOLO_ADMIN: readonly string[] = ["/admin/sync", "/admin/registro"];
 
 const sotto = (p: string, prefix: string) => p === prefix || p.startsWith(prefix + "/");
 

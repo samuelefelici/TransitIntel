@@ -20,9 +20,9 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
-import { conContesto, inSistema } from "@workspace/db/contesto";
+import { conContesto, contestoDb, inSistema } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
-import { withVia } from "./agent-context";
+import { withVia, viaDelGiro } from "./agent-context";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
 
 /* ════════════════════════════════════════════════════════════
@@ -556,14 +556,20 @@ export async function processPendingActivations(): Promise<void> {
   let rows: any[] = [];
   try {
     const r = await db.execute<any>(sql`
-      SELECT id, project_id, feed_id, user_id FROM ps_pending_activations
+      SELECT id, project_id, feed_id, user_id, via FROM ps_pending_activations
        WHERE effective_from <= CURRENT_DATE
        ORDER BY effective_from, created_at`);
     rows = r.rows ?? [];
-  } catch { return; /* tabella assente su DB legacy */ }
+  } catch (e: any) {
+    // tabella assente su DB legacy: niente da fare. Ogni altro errore va detto,
+    // altrimenti le attivazioni programmate smettono di scattare in silenzio
+    if ((e?.code ?? e?.cause?.code) !== "42P01") console.error("[planning-studio] attivazioni programmate non leggibili:", e?.message);
+    return;
+  }
   for (const p of rows) {
-    // scrive come chi ha programmato l'attivazione (cerbero.attore, PR 2.9)
-    await conContesto({ attore: p.user_id ?? "", via: "timer:attivazioni" }, async () => {
+    // scrive come chi ha programmato l'attivazione (cerbero.attore, PR 2.9) e dal
+    // suo canale: un'attivazione programmata da Argos resta di Argos (PR 2.11)
+    await conContesto({ attore: p.user_id ?? "", via: viaDelGiro(p.via) }, async () => {
       try {
         const fe = await db.execute<any>(sql`SELECT 1 FROM gtfs_feeds WHERE id = ${p.feed_id}::uuid`);
         if (!fe.rows?.length) {
@@ -637,11 +643,11 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
     await clearPendingActivation(proj.id, { keepFeedId: feedId });
     try {
       await db.execute(sql`
-        INSERT INTO ps_pending_activations (project_id, feed_id, user_id, effective_from)
-        VALUES (${proj.id}::uuid, ${feedId}::uuid, ${req.user!.id}::uuid, ${effRaw}::date)
+        INSERT INTO ps_pending_activations (project_id, feed_id, user_id, effective_from, via)
+        VALUES (${proj.id}::uuid, ${feedId}::uuid, ${req.user!.id}::uuid, ${effRaw}::date, ${contestoDb.getStore()?.via ?? null})
         ON CONFLICT (project_id) DO UPDATE
           SET feed_id = EXCLUDED.feed_id, user_id = EXCLUDED.user_id,
-              effective_from = EXCLUDED.effective_from, created_at = now()
+              effective_from = EXCLUDED.effective_from, via = EXCLUDED.via, created_at = now()
       `);
     } catch (e: any) {
       res.status(500).json({ error: `Programmazione fallita: ${e?.message ?? "errore"}` }); return;
