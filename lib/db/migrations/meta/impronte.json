@@ -5,5 +5,6 @@
   "0003_permessi_completi": "e53a86729a73ae4bd3d74c69e26f5e73209acd45d1d76f1ff1a230c6f6c61b85",
   "0004_coda_dei_lavori": "eee2725e76cc410069affd74566339824b8aabdfc7bcaa9541176768f8141cb7",
   "0005_richieste_mizar": "087aedc9ec03856700def3cdc843b9092fb3548ee738f3b4c5040fba4917cec6",
-  "0006_registro_delle_modifiche": "21e5c03688c724d453a8f082853bb20fb238e1e7324cee6449c35cb34ec72f60"
+  "0006_registro_delle_modifiche": "21e5c03688c724d453a8f082853bb20fb238e1e7324cee6449c35cb34ec72f60",
+  "0007_registro_lettura_e_seconda_ondata": "518e454b29f3bb763401b1ab5d1e7f8ecdc1707f90a275c364ac03f62b32cedc"
 }

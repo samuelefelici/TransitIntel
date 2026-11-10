@@ -1102,3 +1102,126 @@ describe("0006: il registro delle modifiche", () => {
     expect(sql).not.toMatch(/argos_ro/);
   });
 });
+
+/* La 0007 (PR 2.11): la lettura del registro e la seconda ondata.
+ * - l'app non riceve diritti sulle tabelle del registro: solo leggi() e stato();
+ * - leggi() ha i suoi limiti, non filtra per persona, annota la consultazione,
+ *   e non compone SQL;
+ * - gli orari di dettaglio sono sempre in riepilogo e senza valori;
+ * - i riepiloghi si sommano a fine transazione (parziali + trigger differito). */
+describe("0007: lettura del registro e seconda ondata", () => {
+  const sql = readFileSync(path.join(CARTELLA, "0007_registro_lettura_e_seconda_ondata.sql"), "utf8");
+  const senzaCommentiSql = sql.replace(/--.*$/gm, "");
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  const corpo = (nome: string) => {
+    const m = new RegExp(`CREATE OR REPLACE FUNCTION registro\\.${nome}\\([\\s\\S]*?AS \\$(\\w+)\\$([\\s\\S]*?)\\$\\1\\$;`).exec(sql);
+    expect(m, nome).toBeTruthy();
+    return m![2]!.replace(/--.*$/gm, "");
+  };
+  const regole = new Map([...sql.matchAll(
+    /SELECT registro\.sorveglia\('public\.(\w+)',\s*ARRAY\[([^\]]*)\],\s*'(\w+)',\s*'(\w+)',\s*(true|false)(?:,\s*'\{\}',\s*'\{\}',\s*'\{\}',\s*(true|false))?\);/g)]
+    .map(([, t, chiave, tipo, colonna, valori, sempre]) => [t!, {
+      chiave: chiave!.replace(/'/g, "").split(",").map((x) => x.trim()), tipo: tipo!, colonna: colonna!,
+      conValori: valori === "true", riepilogoSempre: sempre === "true",
+    }]));
+
+  it("le 8 tabelle della seconda ondata, con chiavi e ambiti che esistono", () => {
+    expect([...sql.matchAll(/SELECT registro\.sorveglia\(/g)].length).toBe(8);
+    expect(Object.fromEntries([...regole].map(([t, r]) => [t, `${r.chiave.join("+")} · ${r.tipo}/${r.colonna}`]))).toEqual({
+      ps_stop_times: "trip_id+stop_seq · corsa/trip_id",
+      ps_variant_stops: "variant_id+seq · variante/variant_id",
+      ps_calendar_dates: "calendar_id+date · calendario/calendar_id",
+      ps_shapes: "id · progetto_ps/project_id",
+      ps_service_periods: "id · progetto_ps/project_id",
+      ps_stop_clusters: "id · progetto_ps/project_id",
+      ps_no_go_zones: "id · progetto_ps/project_id",
+      ps_pending_activations: "id · progetto_ps/project_id",
+    });
+    for (const [t, r] of regole) {
+      const colonne = catalogo.tabelle[`public.${t}`];
+      expect(colonne, t).toBeTruthy();
+      for (const c of [...r.chiave, r.colonna]) expect(colonne, `${t}.${c}`).toHaveProperty(c);
+    }
+  });
+
+  it("gli orari di dettaglio: sempre in riepilogo, mai un valore", () => {
+    for (const t of ["ps_stop_times", "ps_variant_stops", "ps_calendar_dates"]) {
+      expect(regole.get(t), t).toMatchObject({ riepilogoSempre: true, conValori: false });
+    }
+    for (const t of ["ps_shapes", "ps_service_periods", "ps_stop_clusters", "ps_no_go_zones", "ps_pending_activations"]) {
+      expect(regole.get(t), t).toMatchObject({ riepilogoSempre: false, conValori: true });
+    }
+    expect(corpo("cattura")).toMatch(/per_record := n <= 50 AND NOT cascata AND modo <> 'riepilogo' AND NOT regola\.riepilogo_sempre;/);
+  });
+
+  /* come per la prima ondata: una colonna di testo nuova in una tabella coi
+   * valori va decisa (qui, o fra le escluse o «solo nome» nella sua migrazione) */
+  it("seconda ondata coi valori: le colonne di testo sono tutte decise", () => {
+    const decise: Record<string, string[]> = {
+      ps_shapes: ["mode"],
+      ps_service_periods: ["code", "color", "name", "notes"],
+      ps_stop_clusters: ["code", "kind", "name"],
+      ps_no_go_zones: ["name"],
+      ps_pending_activations: ["via"],
+    };
+    const conValori = [...regole].filter(([, r]) => r.conValori).map(([t]) => t).sort();
+    expect(conValori).toEqual(Object.keys(decise).sort());
+    for (const t of conValori) {
+      const colonne = catalogo.tabelle[`public.${t}`] as Record<string, string>;
+      const testo = Object.keys(colonne).filter((c) => /^(text|character)/.test(colonne[c]!)).sort();
+      expect(testo, `public.${t}: una colonna di testo nuova va decisa (col valore, esclusa o solo nome)`).toEqual(decise[t]);
+    }
+  });
+
+  it("all'app solo leggi() e stato(): nessun diritto sulle tabelle, niente ad argos_ro", () => {
+    const grant = [...senzaCommentiSql.matchAll(/GRANT\s+([^;]+?)\s+TO\s+(\w+)/g)].map(([, cosa, a]) => `${cosa} → ${a}`);
+    expect(grant).toEqual([
+      "EXECUTE ON FUNCTION registro.leggi(jsonb, integer, integer) → cerbero_owner",
+      "EXECUTE ON FUNCTION registro.stato() → cerbero_owner",
+    ]);
+    expect(sql).not.toMatch(/argos_ro/);
+    // le tabelle nuove del registro passano al suo proprietario e non ricevono GRANT
+    for (const t of ["letture", "parziali"]) expect(sql).toMatch(new RegExp(`ALTER TABLE registro\\.${t} OWNER TO cerbero_registro;`));
+  });
+
+  it("leggi(): limiti, niente per persona, la consultazione annotata, solo SQL statico", () => {
+    const c = corpo("leggi");
+    expect(c).not.toMatch(/\bEXECUTE\b|\bformat\s*\(/i);
+    expect(c).toMatch(/k NOT IN \('da', 'a', 'tabella', 'operazione', 'ambito_tipo', 'ambito_id', 'cursore_ts', 'cursore_transazione'\)/);
+    expect(c).toMatch(/p_limite < 1 OR p_limite > 200/);
+    expect(c).toMatch(/p_salta < 0 OR p_salta > 5000/);
+    expect(c).toMatch(/v_a - v_da > interval '92 days'/);
+    // ambito_id solo con un ambito che non è una persona
+    const ammessi = /NOT IN \(('progetto_ps'[^)]*)\)/.exec(c)![1]!;
+    expect(ammessi).not.toMatch(/utente|conducente/);
+    expect(c).toMatch(/INSERT INTO registro\.letture/);
+    // un ordine totale, per pagine stabili
+    expect(c).toMatch(/ORDER BY m\.ts DESC, m\.transazione DESC,[\s\S]*m\.tableoid, m\.ctid/);
+    expect(sql).toMatch(/registro\.leggi\(p_filtri jsonb, p_limite integer, p_salta integer\)[\s\S]*?SECURITY DEFINER SET search_path = pg_catalog, pg_temp SET plan_cache_mode = force_custom_plan/);
+  });
+
+  it("i riepiloghi si sommano a fine transazione: parziali, trigger differito, niente riscritture per istruzione", () => {
+    expect(corpo("cattura")).not.toMatch(/registro\.riepiloga\(/);
+    expect(corpo("cattura").match(/PERFORM registro\.accoda\(/g)).toHaveLength(4);
+    expect(sql).toMatch(/CREATE CONSTRAINT TRIGGER registro_chiude AFTER INSERT ON registro\.parziali\s+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN \(NEW\.primo\) EXECUTE FUNCTION registro\.chiudi\(\);/);
+    expect(sql).toMatch(/ALTER TABLE registro\.parziali ENABLE ALWAYS TRIGGER registro_chiude;/);
+    expect(sql).toMatch(/DROP FUNCTION IF EXISTS registro\.riepiloga\(/);
+    // le funzioni interne non si danno a nessuno
+    for (const f of ["accoda", "somma", "chiudi", "cattura", "sorveglia"]) {
+      expect(senzaCommentiSql, f).not.toMatch(new RegExp(`GRANT[^;]*registro\\.${f}\\(`));
+    }
+  });
+
+  it("la manutenzione: chi modifica la propria riga, le consultazioni, i parziali rimasti", () => {
+    const c = corpo("manutenzione");
+    expect(c).toMatch(/ambito_id = CASE WHEN m\.ambito_id = m\.attore THEN NULL ELSE m\.ambito_id END/);
+    expect(c).toMatch(/DELETE FROM registro\.letture l WHERE l\.ts < limite;/);
+    expect(c).toMatch(/registro\.somma\(p\.transazione\)/);
+    expect(corpo("verifica")).toMatch(/registro\.parziali p WHERE p\.transazione IS DISTINCT FROM pg_current_xact_id_if_assigned\(\)/);
+  });
+
+  it("le attivazioni programmate salvano il canale", () => {
+    expect(sql).toMatch(/ALTER TABLE public\.ps_pending_activations ADD COLUMN IF NOT EXISTS via text;/);
+    expect(catalogo.tabelle["public.ps_pending_activations"]).toHaveProperty("via");
+  });
+});
