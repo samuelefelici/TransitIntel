@@ -518,12 +518,13 @@ Il container passa all'utente `node` con `setpriv`, che ha bisogno delle
 capacità SETUID e SETGID: con `--cap-drop ALL` (non è il default di Coolify)
 non parte.
 
-### Registro delle modifiche (PR 2.10)
+### Registro delle modifiche (PR 2.10 e 2.11)
 
-Chi ha cambiato che cosa, scritto dal database: trigger su 21 tabelle (la
-prima ondata) scrivono in `registro.modifiche`. L'app non lo legge, non lo
-cambia e non spegne i trigger. **Nasce spento**: non scrive niente finché non
-lo accende chi gestisce il database (sotto).
+Chi ha cambiato che cosa, scritto dal database: trigger su 29 tabelle (21
+della prima ondata, 8 della seconda) scrivono in `registro.modifiche`. L'app
+non ha diritti sulle sue tabelle: non lo cambia, non spegne i trigger, e lo
+legge solo attraverso una funzione (sotto, «Leggerlo»). **Nasce spento**: non
+scrive niente finché non lo accende chi gestisce il database (sotto).
 
 **Cosa registra**, per ogni riga cambiata:
 - chi: `attore` (l'id dell'utente), `via` (`api`, `argos:mcp`, `cron:…`,
@@ -552,10 +553,38 @@ lo accende chi gestisce il database (sotto).
 
 Le regole di ogni tabella sono in `registro.sorvegliate`.
 
+**La seconda ondata (2.11): gli orari di dettaglio di Planning Studio.**
+- **Solo in riepilogo, senza valori**: gli orari alle fermate
+  (`ps_stop_times`), le fermate delle varianti (`ps_variant_stops`), le
+  eccezioni dei calendari (`ps_calendar_dates`). L'app li salva cancellando
+  tutto e reinserendo una riga per fermata: una riga di registro per fermata
+  sarebbe solo rumore. Il registro dice chi, quando, quale corsa (se
+  l'operazione ne tocca una sola), quante righe e quali campi; **non dice
+  l'orario di prima e quello di dopo**. Per averlo fermata per fermata serve
+  un confronto a fine transazione: è lavoro a parte, da fare se serve alla
+  rendicontazione.
+- **Coi valori**, come la prima ondata: tracciati (`ps_shapes`, la geometria
+  solo come nome), periodi di servizio, nodi di interscambio, zone vietate,
+  attivazioni programmate.
+- **Restano fuori, con il motivo:**
+  - le tabelle della validità (`ps_trip_day_validity`,
+    `ps_trip_category_validity`, `ps_validity_category_calendar`,
+    `ps_trip_exceptions`, `ps_day_*`, `ps_calendar_profiles`): una
+    sincronizzazione le riscrive anche quando qualcuno apre soltanto una
+    pagina, e il registro attribuirebbe modifiche a chi ha solo letto;
+  - le tariffe a zone (`gtfs_fare_areas`, `gtfs_fare_leg_rules`, i cluster):
+    si rigenerano una riga per volta, fuori da una transazione.
+
+  Prima vanno sistemate quelle scritture; poi entrano con una migrazione.
+
 **Riepiloghi.** Più di 50 righe in un'istruzione, una cascata (cancellare un
-progetto cancella le sue fermate) o un'operazione in blocco (import GTFS e
-anagrafica, generazione corse, fermate in blocco) danno una riga per
-transazione e tabella: quante righe, 20 chiavi d'esempio, i campi toccati.
+progetto cancella le sue fermate), un'operazione in blocco (import GTFS e
+anagrafica, generazione corse, fermate in blocco) o una tabella sempre in
+riepilogo danno una riga per transazione, tabella e operazione: quante righe,
+20 chiavi d'esempio, i campi toccati.
+- si sommano **al COMMIT** (dalla 2.11): ogni istruzione accoda un parziale
+  in `registro.parziali` e un trigger differito li somma una volta sola. Una
+  transazione annullata, o un savepoint annullato, non lascia niente;
 - `righe` somma le righe cambiate di ogni istruzione: due UPDATE sulle stesse
   60 righe danno 120;
 - l'ambito (`ambito_id`) c'è solo se è lo stesso per tutte le righe, prima e
@@ -567,7 +596,12 @@ transazione e tabella: quante righe, 20 chiavi d'esempio, i campi toccati.
 **Anonimizzazione e conservazione** (`registro.impostazioni`):
 - dopo 12 mesi (`anonimizza_dopo_mesi`, almeno 6) `attore` e `richiesta` si
   svuotano: resta che cosa è cambiato, non chi;
+- dove chi ha fatto la modifica è anche la riga modificata (la propria
+  password, la propria verifica), alla stessa scadenza si tolgono anche
+  l'ambito e la chiave: altrimenti il nome resterebbe da un'altra parte;
 - dopo 60 mesi (`conservazione_mesi`) le righe si cancellano;
+- le consultazioni (`registro.letture`, sotto) si cancellano dopo gli stessi
+  12 mesi;
 - lo fa ogni giorno il lavoratore (`registro.manutenzione()`).
 
 **Accenderlo è una decisione di Conerobus, non del codice.** Il registro
@@ -590,20 +624,46 @@ UPDATE registro.impostazioni
 Per spegnerlo: `UPDATE registro.impostazioni SET attivo = false;`. Le righe già
 scritte restano e seguono anonimizzazione e conservazione.
 
-**Quanto costa** (Postgres 17, misure della PR):
-- spento: un UPDATE di una riga passa da 0,05 a circa 0,07 ms;
+**Quanto costa** (Postgres 17, misure delle PR; tempi del solo database):
+- spento: un UPDATE di una riga passa da 0,06 a circa 0,08 ms;
   un'istruzione su 10.000 righe +5–10%;
-- acceso: un UPDATE di una riga circa 0,35 ms; 10.000 righe in
-  un'istruzione +10–20% per INSERT, +15–40% per DELETE, +50–60% per UPDATE.
+- acceso: un UPDATE di una riga circa 0,4 ms; 10.000 righe in
+  un'istruzione +15–20% per INSERT, +30–40% per DELETE, +50–60% per UPDATE;
+- acceso, gli orari di dettaglio (200 corse da 30 fermate, 6.000 righe):
+  | | senza registro | acceso |
+  |---|---|---|
+  | salvati una riga per volta (6.200 istruzioni) | 0,1–0,3 s | 0,8 s |
+  | spostati un orario per volta (6.000 UPDATE) | 0,17 s | 1,5 s |
+  | importati a blocchi da 500 | 0,10 s | 0,11 s |
+  | cancellati in cascata con le corse | 0,01 s | 0,02 s |
 
-**Leggerlo.** Per ora solo `postgres`, dal Terminal del PostgreSQL. L'app non
-ha il permesso: la pagina dell'amministratore arriva con la 2.11, senza
-riepiloghi per persona.
+  Le operazioni fatte di migliaia di istruzioni da una riga pagano circa
+  0,15–0,25 ms a istruzione; quelle a blocchi quasi niente.
+
+**Leggerlo** (dalla 2.11): la pagina **Amministrazione → Registro delle
+modifiche** (`/admin/registro`), solo per l'admin.
+- Si cerca per periodo (92 giorni al più), tabella, operazione e ambito: un
+  programma, un feed, una corsa. **Non si cerca, non si ordina e non si conta
+  per persona**: lo rifiutano la pagina, l'API e il database. Un utente o un
+  conducente si possono vedere solo tutti insieme, mai uno per uno.
+- Ogni riga si apre sul prima e dopo, campo per campo, o sul campione di un
+  riepilogo. I nomi dei conducenti non compaiono mai: del roster si vede
+  l'identificativo.
+- **Ogni consultazione viene annotata** in `registro.letture`: chi, quando,
+  con quali filtri, quante righe. Va detto nell'informativa. Come per chi
+  modifica, vale per i percorsi onesti: l'attore lo mette l'app.
+- L'app non legge le tabelle del registro: chiama `registro.leggi()` e
+  `registro.stato()`, che hanno i loro limiti e girano come il proprietario
+  del registro. Agli agenti (Argos) la rotta è chiusa.
+
+Da `postgres`, dal Terminal del PostgreSQL, si legge tutto:
 ```sql
 SELECT ts, attore, via, operazione, chiave, campi, prima, dopo, righe
   FROM registro.modifiche
  WHERE tabella = 'public.ps_projects' AND ts > now() - interval '7 days'
  ORDER BY ts DESC LIMIT 50;
+-- chi ha consultato il registro
+SELECT ts, attore, via, filtri, righe FROM registro.letture ORDER BY ts DESC LIMIT 50;
 ```
 
 **La verifica.** `node lib/db/scripts/ruoli.mjs --verifica` (e il migratore a
@@ -614,7 +674,9 @@ ogni avvio) dà errore, con la cura, se:
 - un oggetto di `registro` non è di `cerbero_registro`, per esempio dopo un
   ripristino `--no-owner`;
 - manca la partizione del mese, o ci sono righe nella partizione di riserva:
-  `SELECT registro.manutenzione();` come `postgres` o come `cerbero_app`.
+  `SELECT registro.manutenzione();` come `postgres` o come `cerbero_app`;
+- ci sono riepiloghi non sommati in `registro.parziali` (una transazione
+  chiusa senza la somma: non deve succedere): la stessa manutenzione li somma.
 
 **Cosa non protegge:**
 - un superutente (`postgres`) può tutto: spegnere i trigger e cambiare le
@@ -623,12 +685,16 @@ ogni avvio) dà errore, con la cura, se:
   può falsificarli, e può chiedere il riepilogo (modo «riepilogo») al posto
   delle righe coi valori: la modifica resta registrata, coi campi, ma senza
   prima e dopo. Fa fede `ruolo_db`;
+- un'app compromessa può leggere il registro con `registro.leggi()` (entro
+  i suoi limiti) e annullare la transazione per non lasciare la riga in
+  `registro.letture`. Non può leggerne le tabelle, né cambiarle;
 - una tabella nuova non è sorvegliata finché una migrazione non chiama
-  `registro.sorveglia` (README delle migrazioni). Gli orari di dettaglio
-  (`ps_stop_times` e simili) entrano con la seconda ondata, nella 2.11.
+  `registro.sorveglia` (README delle migrazioni). La validità e le tariffe a
+  zone sono fuori (sopra, «La seconda ondata»).
 
-**Rilascio:** deploy normale. La 0006 crea i trigger con un lock breve sulle
-21 tabelle: le letture continuano, le scritture aspettano un attimo.
+**Rilascio:** deploy normale. La 0006 e la 0007 creano i trigger con un lock
+breve sulle tabelle sorvegliate: le letture continuano, le scritture
+aspettano un attimo.
 **Rollback:** immagine precedente. Schema e trigger restano; spenti non
 scrivono niente.
 
@@ -929,7 +995,8 @@ riavvio.
 - **Registro delle modifiche** (dalla PR 2.10, solo nel lavoratore e solo con
   lo schema «ok», ogni 24 ore, la prima 5 minuti dopo l'avvio; con più
   lavoratori lo fa uno solo per volta): `registro.manutenzione()` crea le
-  partizioni del mese e dei due dopo, anonimizza e cancella le righe vecchie;
+  partizioni del mese e dei due dopo, anonimizza e cancella le righe vecchie
+  e le consultazioni scadute, somma i riepiloghi rimasti;
   poi i problemi di `registro.verifica()` vanno nel log come avvisi. Vedi
   «Registro delle modifiche» qui sopra.
 - **Python** riceve solo l'ambiente che gli serve (niente `JWT_SECRET`,
@@ -1403,7 +1470,7 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 | Flotta | FleetCare | Flotta (`fleetcare`) |
 | Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa, Documentazione ATMA | Tariffe (`fares`) |
 | Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi (`analytics`) |
-| Amministrazione | Utenti e accessi (admin), Parametri di esercizio (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
+| Amministrazione | Utenti e accessi (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
 
 - **Oggi** (`/oggi`) è la pagina d'ingresso. Mostra il servizio adesso dall'AVM,
   i turni del giorno nel roster (pubblicati, scoperti, assenze), il programma in

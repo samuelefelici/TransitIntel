@@ -121,7 +121,7 @@ su main non si tocca più.
   con `public` nel percorso): prima si toglie il CREATE su `public` a
   `cerbero_owner` (`REVOKE CREATE ON SCHEMA public FROM cerbero_owner`), dopo
   lo si ridà (o lo ridà il migratore al prossimo avvio).
-- **Il registro delle modifiche (PR 2.10).** Le tabelle sorvegliate hanno i
+- **Il registro delle modifiche (PR 2.10 e 2.11).** Le tabelle sorvegliate hanno i
   trigger `registro_*`, che scrivono in `registro.modifiche` (schema, tabelle e
   funzioni di `cerbero_registro`, non di `cerbero_owner`). Una tabella nuova
   con programmi, orari, turni, tariffe, persone o permessi si sorveglia nella
@@ -132,7 +132,23 @@ su main non si tocca più.
   Gli argomenti: chiave, tipo e colonna dell'ambito, `con_valori` (false per
   persone, roster e anagrafica), poi `valori_di` (le sole colonne con il
   valore, se `con_valori` è false), `escluse` (pattern LIKE delle colonne che
-  non contano) e `solo_nome` (colonne di cui va solo il nome).
+  non contano), `solo_nome` (colonne di cui va solo il nome) e, dalla 0007,
+  `riepilogo_sempre` (true per le tabelle che l'app riscrive una riga per
+  volta, come gli orari alle fermate: un riepilogo per transazione, mai una
+  riga per record).
+  - **Prima di sorvegliare una tabella si guarda come l'app la scrive.** Se
+    la riscrive durante le letture (le tabelle della validità), il registro
+    attribuirebbe modifiche a chi ha solo aperto una pagina: prima si sistema
+    la scrittura. Se la scrive con migliaia di istruzioni da una riga, ogni
+    istruzione paga il trigger (DEPLOY, «Quanto costa»).
+  - Un **tipo di ambito nuovo** che non è una persona va aggiunto all'elenco
+    degli ambiti che si possono fissare, in tre posti: `registro.leggi()` (una
+    migrazione), `AMBITI_FILTRABILI` dell'API (`lib/registro-modifiche.ts`) e
+    della SPA. Un ambito che è una persona non ci va mai.
+  - L'app non legge le tabelle del registro: chiama `registro.leggi()` e
+    `registro.stato()`. Un `FROM registro.<tabella>` nel codice dell'API fa
+    fallire un test, e un GRANT in più lo toglie il migratore a ogni avvio
+    (`DA_ESEGUIRE` in `ruoli-regole.mjs`).
   - Una **colonna nuova** con dati personali, sanitari o segreti in una
     tabella con i valori va in `escluse` o in `solo_nome` nella stessa
     migrazione: altrimenti il suo valore finisce nel registro. Per le colonne
