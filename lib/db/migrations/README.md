@@ -12,7 +12,8 @@ di FleetCare, con lo schema di tracciamento `cerbero_migrazioni`.
 - `meta/impronte.json` fissa lo sha256 di ogni migrazione rilasciata.
 - `meta/catalogo.json` è lo schema atteso dopo tutte le migrazioni (catalogo
   normalizzato): la CI controlla che un database vuoto e una copia della
-  produzione, migrati, ci arrivino tutti e due.
+  produzione, migrati, ci arrivino tutti e due. Descrive solo gli oggetti di
+  Cerbero: quelli delle estensioni (PostGIS in produzione) ne restano fuori.
 
 ## Aggiungere una migrazione
 
