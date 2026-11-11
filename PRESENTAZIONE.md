@@ -48,7 +48,7 @@ Sopra a tutto: **🐙 Virgilio**, l'assistente AI che pilota l'app a voce e in c
 
 ## 🏛️ Architettura| **Solver Engine** | Python 3 · Google OR-Tools CP-SAT · Pipeline multi-stadio |
 
-| **Monorepo** | pnpm Workspaces · 7 pacchetti (`lib/db`, `lib/api-spec`, `lib/api-zod`, `lib/api-client-react`, `artifacts/transitintel`, `artifacts/api-server`, `scripts/`) |
+| **Monorepo** | pnpm Workspaces · 4 pacchetti (`lib/db`, `artifacts/transitintel`, `artifacts/api-server`, `scripts/`) |
 
 **Monorepo pnpm** con 3 deliverable:| **API Contract** | OpenAPI 3.1 (131 endpoint) → Orval codegen → TanStack Query hooks type-safe |
 
@@ -62,7 +62,7 @@ Sopra a tutto: **🐙 Virgilio**, l'assistente AI che pilota l'app a voce e in c
 
 | `artifacts/transitintel` | React 18 · Vite · Tailwind v4 · Shadcn UI · Mapbox GL · Recharts · Framer Motion | Frontend single-page |
 
-| `lib/db` · `lib/api-spec` · `lib/api-zod` · `lib/api-client-react` | Drizzle · OpenAPI · Orval | Schemi DB + contratti API condivisi |## 📄 Le Pagine dell'Applicazione
+| `lib/db` | Drizzle | Schema del database e migrazioni |## 📄 Le Pagine dell'Applicazione
 
 
 

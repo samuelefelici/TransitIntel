@@ -59,7 +59,7 @@ jobs:
         run: pnpm run typecheck:libs
       - name: Test della SPA (menu, conti delle pagine)
         run: pnpm --filter @workspace/transitintel run test
-      # non il build di root: artifacts/mockup-sandbox vuole PORT e BASE_PATH
+      # il build della sola SPA: quello di root rifarebbe anche typecheck e API
       - name: Build della SPA
         run: pnpm --filter @workspace/transitintel run build
 
