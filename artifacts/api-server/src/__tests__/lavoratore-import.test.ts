@@ -70,7 +70,7 @@ describe("il lavoratore non importa l'API", () => {
       `\\b(CREATE\\s+(OR\\s+REPLACE\\s+)?((UNIQUE|TEMP|TEMPORARY|UNLOGGED|MATERIALIZED)\\s+)*(${OGGETTI})`
       + `|(ALTER|DROP)\\s+((MATERIALIZED)\\s+)?(${OGGETTI}|DEFAULT\\s+PRIVILEGES)`
       + `|TRUNCATE\\s+(TABLE\\s+)?\\w|COMMENT\\s+ON|GRANT\\s+\\w+\\s+ON|REVOKE\\s+\\w+\\s+ON)\\b`, "i");
-    // la regola stessa: deve riconoscere le forme che le unità pigre usano davvero
+    // la regola stessa: deve riconoscere le forme che le unità pigre usavano davvero
     for (const q of ["CREATE UNIQUE INDEX IF NOT EXISTS x ON t (a)", "create or replace view v as select 1", "TRUNCATE t",
                      "ALTER TABLE t ADD COLUMN IF NOT EXISTS c text", "GRANT SELECT ON t TO r", "COMMENT ON TABLE t IS 'x'"]) {
       expect(ddl.test(q), q).toBe(true);
