@@ -3,9 +3,7 @@ import Map, { Source, Layer, Popup, MapMouseEvent, MapRef } from "react-map-gl/m
 import { motion } from "framer-motion";
 import { AlertTriangle } from "lucide-react";
 
-import {
-  useGetAnalysisStats, useGetPoi,
-} from "@workspace/api-client-react";
+import { useGetAnalysisStats, useGetPoi } from "@/hooks/use-analisi-queries";
 import { getApiBase } from "@/lib/api";
 import {
   useGtfsSummary, useGtfsRoutes, useGtfsStops,
@@ -80,7 +78,7 @@ export default function Dashboard() {
   // ── React Query hooks ─────────────────────────────────────────
 
   const { data: statsData }   = useGetAnalysisStats();
-  const { data: poiData }     = useGetPoi({});
+  const { data: poiData }     = useGetPoi();
 
   // GTFS data via custom hooks (replaces manual fetch + useEffect)
   const { data: choroplethGeojson } = usePopulationChoropleth(layers.demand);

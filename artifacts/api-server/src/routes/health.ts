@@ -1,5 +1,4 @@
 import { Router, type IRouter } from "express";
-import { GetHealthResponse } from "@workspace/api-zod";
 import { cacheSize } from "../middlewares/cache";
 import { attendiPrimoControllo, fuoriServizio, statoDelloSchema } from "../lib/guardia-schema";
 
@@ -16,8 +15,7 @@ router.get("/healthz", async (_req, res) => {
   await attendiPrimoControllo(3_000);
   const schema = statoDelloSchema();
   const fuori = fuoriServizio();
-  const data = GetHealthResponse.parse({ status: fuori ? "schema-indietro" : "ok", schema });
-  res.status(fuori ? 503 : 200).json({ ...data, cacheEntries: cacheSize() });
+  res.status(fuori ? 503 : 200).json({ status: fuori ? "schema-indietro" : "ok", schema, cacheEntries: cacheSize() });
 });
 
 export default router;

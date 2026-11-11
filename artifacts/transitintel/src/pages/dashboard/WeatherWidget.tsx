@@ -2,7 +2,7 @@ import React from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Cloud, Droplets, Wind, Eye, Thermometer, ChevronDown, ChevronUp } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { useGetWeatherCurrent } from "@workspace/api-client-react";
+import { useGetWeatherCurrent } from "@/hooks/use-analisi-queries";
 
 /** Map OpenWeatherMap icon code to emoji */
 function weatherEmoji(icon?: string, main?: string): string {

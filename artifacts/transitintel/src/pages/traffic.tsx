@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { useGetTrafficStats, useGetTrafficHeatmap, useGetWeatherCorrelation, useGetWeatherCurrent } from "@workspace/api-client-react";
+import { useGetTrafficStats, useGetTrafficHeatmap, useGetWeatherCorrelation, useGetWeatherCurrent } from "@/hooks/use-analisi-queries";
 import {
   Activity, Clock, MapPin, AlertCircle, TrendingDown,
   Calendar, ShieldCheck, Timer, Bus, Cloud, Droplets, Wind,
@@ -123,7 +123,7 @@ const ProfileTooltip = ({ active, payload, label }: any) => {
 
 export default function Traffic() {
   const { data: stats, isLoading } = useGetTrafficStats();
-  const { data: heatmap } = useGetTrafficHeatmap({});
+  const { data: heatmap } = useGetTrafficHeatmap();
   const [dayType, setDayType] = useState<DayType>("feriale");
 
   const extStats = stats as any;

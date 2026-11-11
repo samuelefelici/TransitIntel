@@ -13,7 +13,7 @@ import {
   ZAxis, PieChart, Pie, Legend,
 } from "recharts";
 import { getApiBase } from "@/lib/api";
-import { useGetAnalysisUnderserved } from "@workspace/api-client-react";
+import { useGetAnalysisUnderserved } from "@/hooks/use-analisi-queries";
 
 // Lazy-load sub-pages for "Qualità Servizio" and "Segmenti Utenza"
 const DemandContent = lazy(() => import("@/pages/demand"));
