@@ -47,7 +47,7 @@ import {
 } from "../lib/roster-normativa-db";
 import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
 import { turnoRoster } from "../lib/roster-turni";
-import { assicuraPubblicazione, bloccoCanaleCondiviso, canale, riassuntiDei, snapshotDaRiassunto, statoNelCanale } from "../lib/roster-pubblicazione-db";
+import { bloccoCanaleCondiviso, canale, riassuntiDei, snapshotDaRiassunto, statoNelCanale } from "../lib/roster-pubblicazione-db";
 import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
 
 const router: IRouter = Router();
@@ -58,7 +58,7 @@ const router: IRouter = Router();
 
 router.use(async (req, res, next) => {
   if (!req.path.toLowerCase().startsWith("/roster")) { next(); return; }
-  try { await assicuraAnagrafica(); await assicuraPubblicazione(); }
+  try { await assicuraAnagrafica(); }
   catch { res.status(503).json({ error: "Roster non disponibile: riprova tra poco" }); return; }
   next();
 });

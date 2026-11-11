@@ -33,7 +33,7 @@ import {
 } from "../lib/siri-vm";
 import { loadGtfsIndex, ingestVehicles, closeCancelled, auditAgganci } from "../lib/siri-ingest";
 import { getLatestFeedId } from "./gtfs-helpers";
-import { ensureCaronteSchema, schemaState, tableShape, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
+import { schemaPerScrivere, schemaState, tableShape, hasSourceColumn, SOURCE_SIRI } from "../lib/caronte-schema";
 import { andamentoParco, giornateDelPeriodo } from "../lib/fleet-trend";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { leggiCodici, erroreRaccolta } from "../lib/journey-codes-store";
@@ -1790,7 +1790,7 @@ async function eseguiGiro(): Promise<Record<string, unknown>> {
   /* Prima di scrivere: le tabelle dell'esercizio devono avere tutte le
    * colonne. Se una migrazione non è stata applicata, ogni INSERT fallirebbe
    * in silenzio nel log del poller e non si accumulerebbe alcun dato. */
-  const schema = await ensureCaronteSchema();
+  const schema = await schemaPerScrivere();
   if (!schema.ready) {
     return {
       failed: true,

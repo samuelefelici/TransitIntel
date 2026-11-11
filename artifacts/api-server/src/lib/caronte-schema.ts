@@ -1,6 +1,6 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * Schema `caronte` — rilevazione e riparazione
+ * Schema `caronte` — rilevazione
  * ───────────────────────────────────────────────────────────────────────────
  * Le tabelle dell'esercizio nascono dalle migrazioni (lib/db/migrations), ma
  * alcune possono preesistere perché create dal sistema AVM esterno, e il
@@ -9,23 +9,10 @@
  * l'esercizio sia disponibile, e la prima query muore con "column does not
  * exist".
  *
- * Due funzioni distinte, e la distinzione è il punto:
- *
- *   schemaState()  — SOLA LETTURA. Dice che cosa manca. Si può chiamare da
- *                    qualunque percorso, comprese le repliche di lettura.
- *   repairSchema() — esegue DDL, ma SOLO se manca davvero qualcosa.
- *
- * Perché la separazione conta. Su un database dove le tabelle appartengono al
- * ruolo dell'AVM, `CREATE SCHEMA IF NOT EXISTS` fallisce con "permission
- * denied" ANCHE SE lo schema esiste già: il controllo dei permessi precede lo
- * skip. Eseguire DDL "tanto è idempotente" romperebbe quindi installazioni
- * che funzionano. E `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` prende un lock
- * ACCESS EXCLUSIVE PRIMA di valutare la condizione: un no-op costa quanto la
- * modifica vera e può restare in attesa dietro un lettore, bloccando insieme
- * le scritture dell'AVM e la Sala Operativa.
- *
- * Perciò: se non manca nulla non si tocca il database; se manca qualcosa si
- * altera solo quello, una istruzione per transazione, con un lock_timeout.
+ * schemaState() dice che cosa manca, in SOLA LETTURA: si può chiamare da
+ * qualunque percorso, comprese le repliche di lettura. Se manca qualcosa il
+ * connettore non scrive e lo dice; a sistemare lo schema è una migrazione,
+ * mai l'app (che non esegue DDL).
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";
@@ -198,129 +185,27 @@ export async function idNeedsValue(table: string): Promise<boolean> {
   return ok;
 }
 
-/** Una istruzione DDL isolata: un fallimento non trascina le altre. */
-async function ddl(statement: ReturnType<typeof sql>, applied: string[], label: string): Promise<void> {
-  try {
-    await db.transaction(async (tx: any) => {
-      // Un DDL che aspetta dietro un lettore blocca a catena anche l'AVM.
-      await tx.execute(sql`SET LOCAL lock_timeout = '3s'`);
-      await tx.execute(statement);
-    });
-    applied.push(label);
-  } catch (e: any) {
-    console.warn(`[caronte] non riparabile (${label}): ${e?.message ?? e}`);
-  }
-}
+/* ── Lo stato una volta per processo, sul percorso di SCRITTURA ─────────────
+ * Finché lo schema non è allineato si rilegge a ogni giro: quando arriva la
+ * migrazione che mancava, il connettore riparte da solo. */
+let allineato: Promise<CaronteSchemaState> | null = null;
 
-export interface RepairResult extends CaronteSchemaState {
-  /** che cosa è stato effettivamente creato o aggiunto adesso */
-  applied: string[];
-  /** true se non c'era nulla da fare: nessun DDL è stato eseguito */
-  noop: boolean;
-}
-
-/**
- * Ripara ciò che manca. Se non manca nulla NON tocca il database — è il caso
- * normale, ed è ciò che rende sicuro chiamarla anche a ogni avvio.
- */
-export async function repairSchema(): Promise<RepairResult> {
-  const before = await schemaState();
-  if (before.unknown) {
-    return { ...before, applied: [], noop: true };
-  }
-  if (before.ready) {
-    return { ...before, applied: [], noop: true };
-  }
-
-  const applied: string[] = [];
-
-  if (before.missingTables.length > 0) {
-    await ddl(sql`CREATE SCHEMA IF NOT EXISTS caronte`, applied, "schema caronte");
-  }
-  if (before.missingTables.includes("caronte.vehicle_positions")) {
-    await ddl(sql`
-      CREATE TABLE IF NOT EXISTS caronte.vehicle_positions (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), vehicle_id text, trip_id text,
-        ts timestamptz NOT NULL DEFAULT now(),
-        lat double precision NOT NULL, lon double precision NOT NULL,
-        nearest_stop_id text, speed double precision, heading double precision)`,
-      applied, "caronte.vehicle_positions");
-  }
-  if (before.missingTables.includes("caronte.active_trips")) {
-    await ddl(sql`
-      CREATE TABLE IF NOT EXISTS caronte.active_trips (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), trip_id text, route_id text,
-        vehicle_id text, device_id text,
-        started_at timestamptz NOT NULL DEFAULT now(), ended_at timestamptz)`,
-      applied, "caronte.active_trips");
-  }
-  if (before.missingTables.includes("caronte.stop_transits")) {
-    await ddl(sql`
-      CREATE TABLE IF NOT EXISTS caronte.stop_transits (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), trip_id text, route_id text,
-        vehicle_id text, device_id text, stop_id text NOT NULL, stop_seq integer,
-        scheduled text, actual_ts timestamptz NOT NULL DEFAULT now(),
-        delay_seconds integer, lat double precision, lon double precision)`,
-      applied, "caronte.stop_transits");
-  }
-
-  /* Solo le colonne davvero assenti: un ALTER no-op costa un lock esclusivo
-   * quanto uno vero, quindi non se ne emette nemmeno uno di troppo. */
-  for (const miss of before.missingColumns) {
-    const [table, column] = miss.split(".");
-    const type = (EXPECTED[table] ?? []).find(([c]) => c === column)?.[1];
-    if (!type) continue;
-    await ddl(
-      sql`ALTER TABLE ${sql.raw(`caronte.${table}`)}
-          ADD COLUMN IF NOT EXISTS ${sql.raw(column)} ${sql.raw(type)}`,
-      applied, `caronte.${miss}`);
-  }
-
-  /* Una chiave primaria uuid NOT NULL senza predefinito rifiuta ogni INSERT
-   * che non la elenchi. È il caso di caronte.active_trips, nata così dal
-   * sistema AVM che l'id se lo calcola da sé. Il connettore se lo genera
-   * comunque (idNeedsValue), ma qui si sistema la tabella per chiunque altro
-   * ci scriva — best effort: se il ruolo non può alterare, non cambia nulla. */
-  for (const table of Object.keys(EXPECTED)) {
-    if (!(await idNeedsValue(table))) continue;
-    await ddl(
-      sql`ALTER TABLE ${sql.raw(`caronte.${table}`)}
-          ALTER COLUMN id SET DEFAULT gen_random_uuid()`,
-      applied, `caronte.${table}.id (predefinito mancante)`);
-  }
-
-  const after = await schemaState();
-  if (applied.length > 0) {
-    console.warn(
-      `[caronte] schema allineato: ${applied.join(", ")} — mancavano perché una `
-      + "migrazione non è stata applicata. Sala Operativa e transiti erano fermi per questo.",
-    );
-  }
-  return { ...after, applied, noop: applied.length === 0 };
-}
-
-/* ── Riparazione una volta per processo, sul percorso di SCRITTURA ──────────
- * Un fallimento NON viene memorizzato per sempre: un errore transitorio
- * all'avvio (contesa sul DDL, database non ancora pronto) disabiliterebbe il
- * connettore per tutta la vita del processo. Si ritenta al giro successivo. */
-let repaired: Promise<RepairResult> | null = null;
-
-export function ensureCaronteSchema(): Promise<RepairResult> {
-  if (!repaired) {
-    repaired = repairSchema().then(r => {
-      if (!r.ready) repaired = null; // non allineato: si riproverà
-      return r;
+export function schemaPerScrivere(): Promise<CaronteSchemaState> {
+  if (!allineato) {
+    allineato = schemaState().then(s => {
+      if (!s.ready) allineato = null; // non allineato: si rileggerà
+      return s;
     }).catch(e => {
-      repaired = null;
+      allineato = null;
       throw e;
     });
   }
-  return repaired;
+  return allineato;
 }
 
 /** Per i test e per un riallineamento esplicito dopo una migrazione. */
 export function resetCaronteSchemaCache(): void {
-  repaired = null;
+  allineato = null;
   sourceCheck = null;
   idCheck.clear();
 }

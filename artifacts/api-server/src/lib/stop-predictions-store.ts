@@ -13,8 +13,8 @@
  * l'ultima previsione e la PRIMA, così quando il passaggio osservato arriva
  * si potrà misurare quanto la previsione di Mizar ci aveva preso.
  *
- * Come per le coppie di codici: la tabella si crea da sé al primo bisogno,
- * e se il database non concede la raccolta si spegne senza fermare il giro.
+ * Come per le coppie di codici: la tabella la creano le migrazioni, e se
+ * il database non risponde la previsione si perde senza fermare il giro.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";
@@ -37,58 +37,13 @@ export interface PrevisioneFermata {
   recordedAt: Date | null;
 }
 
-let pronto: Promise<boolean> | null = null;
 let ultimoErrore: string | null = null;
 
 export function errorePrevisioni(): string | null { return ultimoErrore; }
 
-async function crea(): Promise<boolean> {
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.stop_predictions (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        day date NOT NULL,
-        trip_id text NOT NULL,
-        stop_id text NOT NULL,
-        mizar_ref text NOT NULL,
-        vehicle_ref text, line_ref text,
-        aimed_ts timestamptz,
-        expected_ts timestamptz NOT NULL,
-        /* la prima previsione ricevuta: il termine di confronto per misurare
-         * l'affidabilità quando arriva il passaggio osservato */
-        expected_first_ts timestamptz NOT NULL,
-        status text,
-        recorded_at timestamptz,
-        observations integer NOT NULL DEFAULT 1,
-        first_seen timestamptz NOT NULL DEFAULT now(),
-        last_seen timestamptz NOT NULL DEFAULT now())`);
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_caronte_stop_pred_key
-        ON caronte.stop_predictions(day, trip_id, stop_id)`);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_caronte_stop_pred_trip
-        ON caronte.stop_predictions(trip_id, day)`);
-    ultimoErrore = null;
-    return true;
-  } catch (e: any) {
-    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
-    console.warn("[siri] previsioni alle fermate non attive:", ultimoErrore);
-    return false;
-  }
-}
-
-export function assicura(): Promise<boolean> {
-  if (!pronto) {
-    pronto = crea().then(ok => { if (!ok) pronto = null; return ok; })
-      .catch(() => { pronto = null; return false; });
-  }
-  return pronto;
-}
-
 /** Scrive o aggiorna le previsioni di un giro. Duplicati nel giro: l'ultimo vince. */
 export async function registraPrevisioni(giorno: string, previsioni: PrevisioneFermata[]): Promise<number> {
   if (!previsioni.length) return 0;
-  if (!(await assicura())) return 0;
   const per = new Map<string, PrevisioneFermata>();
   for (const p of previsioni) per.set(`${p.tripId}|${p.stopId}`, p);
   try {
@@ -156,4 +111,4 @@ export async function leggiPrevisioniCorsa(giorno: string, tripId: string): Prom
   return out;
 }
 
-export function resetStopPredictionsCache(): void { pronto = null; ultimoErrore = null; }
+export function resetStopPredictionsCache(): void { ultimoErrore = null; }
