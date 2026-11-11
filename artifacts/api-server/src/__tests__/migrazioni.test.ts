@@ -11,7 +11,7 @@ import {
   CHIAVE_LUCCHETTO, TRACCIAMENTO, controllaApplicate, daApplicare, descriviErrore, leggiDiario, ritentabile, statoSchema,
 } from "../../../../lib/db/scripts/migrazioni-regole.mjs";
 import { DIARIO } from "../../../../lib/db/scripts/diario-incluso.mjs";
-import { confronta } from "../../../../lib/db/scripts/catalogo.mjs";
+import { catalogoDalleRighe, confronta, descriviDifferenza } from "../../../../lib/db/scripts/catalogo.mjs";
 import { ARGOS_LETTURA, ARGOS_VERSIONE, RUOLO_ARGOS } from "../../../../lib/db/contratti/argos-lettura.mjs";
 import {
   CONTRATTO, FORMATO, contrattoEffettivo, eseguiAzioni, piano,
@@ -293,6 +293,89 @@ describe("il confronto dei cataloghi", () => {
     const b = { tabelle: { "public.t": { a: "int", b: "uuid" }, "public.u": { x: "int" } }, indici: {} };
     expect(confronta(a, b).map(x => x.chiave).sort()).toEqual(["public.i", "public.t.b", "public.u"]);
     expect(confronta(a, a)).toEqual([]);
+  });
+
+  /* In produzione (11/11/2026) il confronto con lo schema atteso dava 6
+   * differenze, tutte di PostGIS: public.spatial_ref_sys con la sua chiave e
+   * il suo CHECK, e le viste geography_columns e geometry_columns. Lo schema
+   * atteso nasce da un database senza estensioni. Qui le righe come le legge
+   * leggiCatalogo; che `estensione` sia quella vera lo prova la CI su Postgres
+   * (job migrazioni-postgres, con pg_stat_statements). */
+  it("gli oggetti di un'estensione restano fuori: la tabella con colonne, vincoli e indici, le viste, le sequenze", () => {
+    const colonna = (tabella: string, nome: string, tipo: string, estensione: boolean) =>
+      ({ schema: "public", tabella, colonna: nome, tipo, not_null: true, predefinito: null, identita: "", generata: "", estensione });
+    const righe = {
+      colonne: [
+        colonna("depots", "name", "text", false),
+        colonna("spatial_ref_sys", "srid", "integer", true),
+        colonna("spatial_ref_sys", "srtext", "character varying(2048)", true),
+      ],
+      vincoli: [
+        { schema: "public", tabella: "depots", nome: "depots_pkey", tipo: "p", definizione: "PRIMARY KEY (name)", estensione: false },
+        { schema: "public", tabella: "spatial_ref_sys", nome: "spatial_ref_sys_pkey", tipo: "p", definizione: "PRIMARY KEY (srid)", estensione: true },
+        { schema: "public", tabella: "spatial_ref_sys", nome: "spatial_ref_sys_srid_check", tipo: "c",
+          definizione: "CHECK (((srid > 0) AND (srid <= 998999)))", estensione: true },
+      ],
+      indici: [
+        { schema: "public", tabella: "depots", nome: "depots_pkey",
+          definizione: "CREATE UNIQUE INDEX depots_pkey ON public.depots USING btree (name)", estensione: false },
+        { schema: "public", tabella: "spatial_ref_sys", nome: "spatial_ref_sys_pkey",
+          definizione: "CREATE UNIQUE INDEX spatial_ref_sys_pkey ON public.spatial_ref_sys USING btree (srid)", estensione: true },
+      ],
+      viste: [
+        { schema: "public", tabella: "ps_variants", definizione: " SELECT 1;", estensione: false },
+        { schema: "public", tabella: "geography_columns", definizione: " SELECT 2;", estensione: true },
+        { schema: "public", tabella: "geometry_columns", definizione: " SELECT 3;", estensione: true },
+      ],
+      sequenze: [
+        { schema: "coda", tabella: "lavori_id_seq", tipo: "bigint", inizio: "1", passo: "1", estensione: false },
+        { schema: "public", tabella: "di_estensione_seq", tipo: "bigint", inizio: "1", passo: "1", estensione: true },
+      ],
+    };
+    const cerbero = {
+      tabelle: { "public.depots": { name: "text | not null |  |  | " } },
+      vincoli: { "public.depots.depots_pkey": "PRIMARY KEY (name)" },
+      indici: { "public.depots_pkey": "CREATE UNIQUE INDEX depots_pkey ON public.depots USING btree (name)" },
+      viste: { "public.ps_variants": "SELECT 1;" },
+      sequenze: { "coda.lavori_id_seq": "bigint da 1 passo 1" },
+    };
+    expect(catalogoDalleRighe(righe)).toEqual(cerbero);
+    expect(confronta(cerbero, catalogoDalleRighe(righe))).toEqual([]);
+    // la prova che il test guarda davvero l'esclusione: senza il segno sono le 6 differenze della produzione, e una sequenza
+    const senzaSegno = Object.fromEntries(Object.entries(righe).map(([k, v]) => [k, v.map(r => ({ ...r, estensione: false }))]));
+    expect(confronta(cerbero, catalogoDalleRighe(senzaSegno)).map(x => `${x.dove} ${x.chiave}`).sort()).toEqual([
+      "indici public.spatial_ref_sys_pkey", "sequenze public.di_estensione_seq", "tabelle public.spatial_ref_sys",
+      "vincoli public.spatial_ref_sys.spatial_ref_sys_pkey", "vincoli public.spatial_ref_sys.spatial_ref_sys_srid_check",
+      "viste public.geography_columns", "viste public.geometry_columns",
+    ]);
+  });
+
+  it("le tabelle che non sono di Cerbero (ESCLUSE) restano fuori come prima, con vincoli e indici", () => {
+    const [esclusa] = ESCLUSE;
+    const [schema, tabella] = esclusa!.split(".") as [string, string];
+    expect(catalogoDalleRighe({
+      colonne: [{ schema, tabella, colonna: "pin", tipo: "text", not_null: false, predefinito: null, identita: "", generata: "", estensione: false }],
+      vincoli: [{ schema, tabella, nome: `${tabella}_pkey`, tipo: "p", definizione: "PRIMARY KEY (id)", estensione: false }],
+      indici: [{ schema, tabella, nome: `${tabella}_pkey`, definizione: "CREATE UNIQUE INDEX …", estensione: false }],
+    })).toEqual({ tabelle: {}, vincoli: {}, indici: {}, viste: {}, sequenze: {} });
+  });
+
+  it("una tabella presente da una parte sola si legge: i nomi delle colonne, non «[object Object]»", () => {
+    const atteso = { tabelle: { "public.t": { id: "uuid | not null |  |  | " } }, viste: {} };
+    const produzione = {
+      tabelle: { "public.spatial_ref_sys": { auth_name: "character varying(256) | null |  |  | ", srid: "integer | not null |  |  | " } },
+      viste: { "public.geometry_columns": "SELECT 3;" },
+    };
+    const testo = confronta(atteso, produzione).map(descriviDifferenza).join("\n");
+    expect(testo).toBe([
+      "tabelle  public.t", "   a: tabella con una colonna: id", "   b: —",
+      "tabelle  public.spatial_ref_sys", "   a: —", "   b: tabella con 2 colonne: auth_name, srid",
+      "viste  public.geometry_columns", "   a: —", "   b: SELECT 3;",
+    ].join("\n"));
+    expect(testo).not.toContain("[object Object]");
+    // una colonna diversa in una tabella che c'è da tutte e due le parti: come prima, i due valori
+    expect(confronta({ tabelle: { "public.t": { a: "int", b: "text" } } }, { tabelle: { "public.t": { a: "int", b: "uuid" } } })
+      .map(descriviDifferenza)).toEqual(["tabelle  public.t.b\n   a: text\n   b: uuid"]);
   });
 });
 

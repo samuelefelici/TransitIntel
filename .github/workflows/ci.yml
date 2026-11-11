@@ -338,11 +338,29 @@ jobs:
           wait || true
           psql -v ON_ERROR_STOP=1 -q -c "ALTER ROLE cerbero_app LOGIN PASSWORD 'prova'"
           rm -f password.log
-          # fuori dal catalogo atteso: si tolgono prima del confronto; e public torna
+          # fuori dal catalogo atteso: si toglie prima del confronto; e public torna
           # come su un database nuovo, perché i casi di Argos qui sotto lo danno per scontato
-          q "DROP EXTENSION pg_stat_statements"
           q "DROP TABLE caronte.app_users"
           q "GRANT USAGE ON SCHEMA public TO PUBLIC"
+      # Il catalogo descrive solo quello che è di Cerbero: gli oggetti di
+      # un'estensione ne restano fuori. In produzione PostGIS mette in public
+      # spatial_ref_sys, con la sua chiave e un CHECK, e due viste, e il
+      # confronto con lo schema atteso le dava per differenze. Qui l'estensione
+      # è pg_stat_statements, con le sue due viste; una tabella e una sequenza
+      # di prova diventano sue (ALTER EXTENSION … ADD lascia in pg_depend lo
+      # stesso legame di CREATE EXTENSION). Con l'estensione al suo posto la
+      # copia della produzione ha già lo schema atteso. Poi si toglie, e i suoi
+      # oggetti con lei: i passi qui sotto sono scritti senza.
+      - name: Gli oggetti di un'estensione restano fuori dal catalogo
+        run: |
+          q() { psql -d prod -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          q "CREATE TABLE public.ci_di_estensione (srid integer PRIMARY KEY, CONSTRAINT ci_di_estensione_srid_check CHECK (srid > 0));
+             CREATE SEQUENCE public.ci_di_estensione_seq;
+             ALTER EXTENSION pg_stat_statements ADD TABLE public.ci_di_estensione;
+             ALTER EXTENSION pg_stat_statements ADD SEQUENCE public.ci_di_estensione_seq"
+          DATABASE_URL=$PG/prod node lib/db/scripts/catalogo.mjs > con-estensione.json
+          node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json con-estensione.json
+          q "DROP EXTENSION pg_stat_statements"
       # PR 2.10: il registro delle modifiche (migrazione 0006). Nasce spento: il
       # test SQL lo accende dentro una transazione annullata e controlla cosa
       # registra e cosa no (hash, codici del roster, valori di utenti e roster),
