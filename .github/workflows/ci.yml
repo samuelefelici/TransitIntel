@@ -156,7 +156,8 @@ jobs:
       # cerbero_migrazioni né la tabella del sistema AVM (un errore con la
       # cura). Come cerbero_app si lavora da cerbero_owner, anche con le
       # chiavi esterne su public senza USAGE a PUBLIC; il migratore come
-      # cerbero_app si ferma.
+      # cerbero_app si ferma. PR 2.16b: l'app non esegue nessun DDL e non ha
+      # CREATE sugli schemi; un database che aveva il CREATE della 2.8 lo perde.
       - name: Ruoli del database sulla copia della produzione
         run: |
           q() { psql -d prod -v ON_ERROR_STOP=1 -tAq -c "$1"; }
@@ -175,39 +176,82 @@ jobs:
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica
           test "$(psql "$PG_APP/prod" -tAq -c "SELECT session_user || '/' || current_user")" = cerbero_app/cerbero_owner
-          # l'event trigger del migratore: l'app non crea funzioni, viste, trigger (né in public né in pg_temp)
+          # PR 2.16b: l'app non esegue DDL. Gli event trigger del migratore fermano
+          # ogni comando che crea, altera o toglie un oggetto: in public, in pg_temp,
+          # sulle tabelle che possiede (anche «IF NOT EXISTS» su una che c'è, come
+          # facevano le unità pigre), tabelle temporanee comprese, anche da
+          # cerbero_app senza il ruolo
           test "$(q "SELECT evtenabled FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app'")" = A
           for vietato in "CREATE FUNCTION public.pg_try_advisory_lock(text) RETURNS boolean LANGUAGE sql AS 'SELECT true'" \
                          "CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS 'SELECT 1'" \
                          "CREATE VIEW public.ci_vista AS SELECT 1" \
                          "CREATE INDEX CONCURRENTLY ci_cic ON public.depots (name)" \
-                         "CREATE TRIGGER ci_t BEFORE INSERT ON caronte.tap_events FOR EACH ROW EXECUTE FUNCTION pg_catalog.suppress_redundant_updates_trigger()"; do
+                         "CREATE INDEX ci_i ON public.depots (name)" \
+                         "CREATE TRIGGER ci_t BEFORE INSERT ON caronte.tap_events FOR EACH ROW EXECUTE FUNCTION pg_catalog.suppress_redundant_updates_trigger()" \
+                         "CREATE TABLE public.ci_x (a int)" \
+                         "CREATE TABLE IF NOT EXISTS public.users (id int)" \
+                         "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid" \
+                         "ALTER TABLE public.depots ADD CONSTRAINT ci_c CHECK (name <> '')" \
+                         "ALTER TABLE public.users ALTER COLUMN email DROP NOT NULL" \
+                         "DROP TABLE public.depots CASCADE" \
+                         "CREATE TEMP TABLE ci_t (a int)" \
+                         "CREATE TEMP TABLE ci_m ON COMMIT DROP AS SELECT 1 AS a" \
+                         "SELECT 1 AS a INTO TEMP ci_s" \
+                         "GRANT SELECT ON public.users TO PUBLIC" \
+                         "COMMENT ON TABLE public.depots IS 'ci'" \
+                         "RESET ROLE; CREATE TEMP TABLE ci_t (a int)"; do
             if psql "$PG_APP/prod" -q -c "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
             grep -q "cerbero_app non può eseguire" vietato.log || { cat vietato.log; exit 1; }
           done
-          # i comandi delle unità pigre invece passano
-          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "CREATE TABLE IF NOT EXISTS public.users (id int)" -c "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid"
-          # a fine comando: niente funzioni non ammesse in default, vincoli e indici
-          # (le eseguirebbe come superutente chi scrive la riga da superutente, una
-          # migrazione che cambia la colonna, il ripristino di un backup)
+          # la seconda serratura: nessun CREATE sugli schemi, per nessuno dei due ruoli dell'app
+          senza_create() { test "$(q "SELECT count(*) FROM unnest(ARRAY['public', 'caronte', 'coda', 'cerbero_migrazioni', 'registro']) s
+                                      WHERE has_schema_privilege('cerbero_owner', s, 'CREATE') OR has_schema_privilege('cerbero_app', s, 'CREATE')")" = 0; }
+          senza_create
+          # un database che ha visto la 2.8 ce l'ha ancora: la verifica lo dice, il riallineamento lo toglie
+          q "GRANT CREATE ON SCHEMA public, caronte, coda TO cerbero_owner; GRANT CREATE ON SCHEMA public TO cerbero_app"
+          if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare il CREATE sugli schemi"; exit 1; fi
+          grep -q 'REVOKE CREATE ON SCHEMA "caronte" FROM "cerbero_owner"' ruoli.log || { cat ruoli.log; exit 1; }
+          grep -q 'REVOKE CREATE ON SCHEMA "public" FROM "cerbero_app"' ruoli.log || { cat ruoli.log; exit 1; }
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs > /dev/null
+          senza_create
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica
+          # i dati li scrive come prima
+          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" -c "INSERT INTO public.depots (name) VALUES ('ci')" \
+            -c "UPDATE public.depots SET name = 'ci2' WHERE name = 'ci'" -c "DELETE FROM public.depots WHERE name = 'ci2'" -c "ROLLBACK"
+          # La sola eccezione: dentro le funzioni del registro delle modifiche (SECURITY
+          # DEFINER di cerbero_registro) passano CREATE TABLE e ALTER TABLE, per la
+          # partizione del mese, e nient'altro. A fine comando restano vietate le
+          # funzioni non ammesse in default e vincoli, anche attraverso un tipo: le
+          # eseguirebbe come superutente chi scrive la riga da superutente o ripristina
+          # un backup. Una funzione di prova fa da tramite, come una del registro.
           test "$(q "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_fine' AND evtevent = 'ddl_command_end' AND evtenabled = 'A'")" = 1
-          # anche attraverso un tipo: un dominio con un CHECK pericoloso (messo da un superutente) non va in una colonna dell'app
-          q "CREATE DOMAIN public.ci_dominio AS int CHECK (pg_catalog.pg_read_file('PG_VERSION') IS NOT NULL)"
-          for vietato in "ALTER TABLE public.depots ADD CONSTRAINT ci_c CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL)" \
-                         "ALTER TABLE public.depots ALTER COLUMN name SET DEFAULT pg_catalog.current_setting('data_directory')" \
-                         "CREATE TABLE public.ci_x (a text DEFAULT pg_catalog.table_to_xml('pg_catalog.pg_class'::regclass, false, false, '')::text)" \
-                         "CREATE INDEX ci_i ON public.depots (pg_catalog.upper(name))" \
-                         "CREATE TABLE public.ci_d (id int, c public.ci_dominio)" \
-                         "CREATE TABLE public.ci_d (id int CHECK ((id::public.ci_dominio) IS NOT NULL))"; do
-            if psql "$PG_APP/prod" -q -c "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
+          q "CREATE FUNCTION registro.ci_esegue(c text) RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS \$\$ BEGIN EXECUTE c; END \$\$;
+             ALTER FUNCTION registro.ci_esegue(text) OWNER TO cerbero_registro; REVOKE ALL ON FUNCTION registro.ci_esegue(text) FROM PUBLIC;
+             GRANT EXECUTE ON FUNCTION registro.ci_esegue(text) TO cerbero_owner;
+             CREATE DOMAIN registro.ci_dominio AS int CHECK (pg_catalog.pg_read_file('PG_VERSION') IS NOT NULL)"
+          tramite() { psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "SELECT registro.ci_esegue(\$ci\$$1\$ci\$)"; }
+          for vietato in "CREATE VIEW registro.ci_v AS SELECT 1" "CREATE INDEX ci_i ON registro.letture (ts)" \
+                         "CREATE FUNCTION registro.ci_f() RETURNS int LANGUAGE sql AS 'SELECT 1'" "DROP TABLE registro.letture" \
+                         "CREATE TABLE registro.ci_t AS SELECT 1 AS a" "CREATE TEMP TABLE ci_t AS SELECT 1 AS a"; do
+            if tramite "$vietato" 2> vietato.log; then echo "dentro una funzione del registro non doveva passare: $vietato"; exit 1; fi
+            grep -q "le funzioni del registro delle modifiche non eseguono" vietato.log || { cat vietato.log; exit 1; }
+          done
+          for vietato in "CREATE TABLE registro.ci_x (a text DEFAULT pg_catalog.table_to_xml('pg_catalog.pg_class'::regclass, false, false, '')::text)" \
+                         "CREATE TABLE registro.ci_x (a int CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL))" \
+                         "CREATE TABLE registro.ci_x (a text DEFAULT pg_catalog.current_setting('data_directory'))" \
+                         "CREATE TABLE registro.ci_d (id int, c registro.ci_dominio)" \
+                         "CREATE TABLE registro.ci_d (id int CHECK ((id::registro.ci_dominio) IS NOT NULL))"; do
+            if tramite "$vietato" 2> vietato.log; then echo "dentro una funzione del registro non doveva passare: $vietato"; exit 1; fi
             grep -q "cerbero_app non può usare queste funzioni" vietato.log || { cat vietato.log; exit 1; }
           done
-          q "DROP DOMAIN public.ci_dominio"
-          psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -q -c "BEGIN" \
-            -c "CREATE TABLE public.ci_ok (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, n int CHECK (n >= 0), s text DEFAULT lower(btrim(' A ')), t timestamptz DEFAULT now(), y information_schema.yes_or_no, a int[] DEFAULT '{}')" \
-            -c "CREATE INDEX ON public.ci_ok (lower(s)) WHERE char_length(s) > 0" -c "ROLLBACK"
-          # un'espressione vietata che c'era già (di prima della 2.8, o con l'event
-          # trigger spento): la verifica la segnala con la cura, il migratore non migra
+          tramite "CREATE TABLE registro.ci_ok (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, n int CHECK (n >= 0), s text DEFAULT lower(btrim(' A ')), t timestamptz DEFAULT now(), a int[] DEFAULT '{}')"
+          tramite "ALTER TABLE registro.ci_ok ADD COLUMN c int"
+          # su una tabella di Cerbero no, nemmeno da lì: non è del registro
+          if tramite "ALTER TABLE public.users DISABLE TRIGGER registro_cambia" 2> vietato.log; then echo "il registro non doveva toccare users"; exit 1; fi
+          grep -q "must be owner of table users" vietato.log || { cat vietato.log; exit 1; }
+          q "DROP TABLE registro.ci_ok; DROP FUNCTION registro.ci_esegue(text); DROP DOMAIN registro.ci_dominio"
+          # un'espressione vietata che c'era già (di prima della 2.8, o messa da un
+          # superutente): la verifica la segnala con la cura, il migratore non migra
           q "ALTER TABLE public.depots ADD CONSTRAINT ci_c CHECK (pg_catalog.query_to_xml('select 1', false, false, '') IS NOT NULL) NOT VALID"
           if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare il vincolo"; exit 1; fi
           grep -q "public.depots: il vincolo ci_c usa query_to_xml(text,boolean,boolean,text), fuori da quello che è ammesso" ruoli.log || { cat ruoli.log; exit 1; }
@@ -302,8 +346,9 @@ jobs:
       # test SQL lo accende dentro una transazione annullata e controlla cosa
       # registra e cosa no (hash, codici del roster, valori di utenti e roster),
       # riepiloghi, cascate, anonimizzazione e conservazione. Come cerbero_app:
-      # non lo legge, non lo spegne, non rinomina una tabella sorvegliata; la
-      # manutenzione sì, anche due volte; dalla 2.11 lo legge con leggi() (mai
+      # non lo legge, non lo spegne, non rinomina una tabella sorvegliata (dalla
+      # 2.16b non altera nessuna tabella); la manutenzione sì, anche due volte,
+      # e crea la partizione che manca; dalla 2.11 lo legge con leggi() (mai
       # per persona, e la consultazione resta annotata). Un trigger spento da un superutente fa
       # fallire la verifica dei ruoli. Poi resta acceso su vuoto e
       # solo_migrazioni: API, lavoratore e test sul database scrivono come
@@ -320,34 +365,44 @@ jobs:
             test "$(psql -d $d -tAq -c "SELECT (SELECT attivo FROM registro.impostazioni)::text || '/' || (SELECT count(*) FROM registro.modifiche)")" = false/0
           done
           app() { psql "$PG_APP/prod" -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+          # PR 2.16b: sulle tabelle sorvegliate l'app non spegne i trigger, non rinomina,
+          # non riscrive, non tocca la colonna calcolata mfa_obbligatoria (PR 2.12: è una
+          # regola) né le colonne da cui dipende. Ogni ALTER TABLE si ferma all'inizio
+          # del comando; prima passavano DROP EXPRESSION e DROP COLUMN … CASCADE.
           for vietato in "ALTER TABLE public.users DISABLE TRIGGER registro_cambia" \
                          "ALTER TABLE public.roster_entries DISABLE TRIGGER USER" \
-                         "ALTER TABLE public.ps_projects ENABLE REPLICA TRIGGER registro_cambia"; do
+                         "ALTER TABLE public.ps_projects ENABLE REPLICA TRIGGER registro_cambia" \
+                         "ALTER TABLE public.depots RENAME TO depots_altrove" \
+                         "ALTER TABLE public.users RENAME COLUMN role TO role_cached" \
+                         "ALTER TABLE public.users ALTER COLUMN full_name TYPE text USING 'Altro'" \
+                         "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria SET EXPRESSION AS (false)" \
+                         "ALTER TABLE public.users DROP COLUMN mfa_obbligatoria, ADD COLUMN mfa_obbligatoria boolean GENERATED ALWAYS AS (false) STORED" \
+                         "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION" \
+                         "ALTER TABLE public.users DROP COLUMN mfa_obbligatoria" \
+                         "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" \
+                         "ALTER TABLE public.users DROP COLUMN permissions CASCADE" \
+                         "ALTER TABLE public.ps_projects INHERIT public.depots"; do
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
-            grep -q "cerbero_app non può spegnere i trigger del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+            grep -q "cerbero_app non può eseguire ALTER TABLE" vietato.log || { cat vietato.log; exit 1; }
           done
-          if app "ALTER TABLE public.depots RENAME TO depots_altrove" 2> vietato.log; then echo "cerbero_app non doveva rinominare depots"; exit 1; fi
-          grep -q "cerbero_app non può rinominare, spostare o sostituire una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
-          if app "ALTER TABLE public.users RENAME COLUMN role TO role_cached" 2> vietato.log; then echo "cerbero_app non doveva rinominare role"; exit 1; fi
-          grep -q "cerbero_app non può rinominare le colonne di una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
-          if app "ALTER TABLE public.users ALTER COLUMN full_name TYPE text USING 'Altro'" 2> vietato.log; then echo "cerbero_app non doveva riscrivere users"; exit 1; fi
-          grep -q "cerbero_app non può riscrivere una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
-          # La colonna calcolata mfa_obbligatoria (PR 2.12) è una regola. L'app non la può
-          # ricalcolare a modo suo (riscriverebbe la tabella), ma da proprietaria può
-          # toglierle l'espressione e scriverci: la verifica dei ruoli lo dice, con
-          # l'istruzione per rifarla, e rifatta torna pulita.
-          for vietato in "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria SET EXPRESSION AS (false)" \
-                         "ALTER TABLE public.users DROP COLUMN mfa_obbligatoria, ADD COLUMN mfa_obbligatoria boolean GENERATED ALWAYS AS (false) STORED"; do
+          # né le mette accanto una figlia o una tabella temporanea con lo stesso nome
+          for vietato in "CREATE TABLE public.ci_figlia () INHERITS (public.ps_projects)" \
+                         "CREATE TEMP TABLE ci_figlia () INHERITS (public.users)" \
+                         "CREATE TEMP TABLE users AS SELECT * FROM public.users"; do
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
-            grep -q "cerbero_app non può riscrivere una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
+            grep -q "cerbero_app non può eseguire CREATE TABLE" vietato.log || { cat vietato.log; exit 1; }
           done
-          # Con FleetCare nello stesso database (il suo ruolo che legge gli utenti): rifare la
-          # colonna gli toglie la lettura, e il riallineamento dei ruoli gliela ridà.
+          test "$(app "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_riscrive' AND evtevent = 'table_rewrite' AND evtenabled = 'A'")" = 1
+          # Se la colonna calcolata cambia per un'altra strada (un ripristino, un comando a
+          # mano: qui da postgres), la verifica dei ruoli lo dice, con l'istruzione per
+          # rifarla, e rifatta torna pulita. Con FleetCare nello stesso database (il suo
+          # ruolo che legge gli utenti): rifare la colonna gli toglie la lettura, e il
+          # riallineamento dei ruoli gliela ridà.
           psql -d prod -v ON_ERROR_STOP=1 -q -c "CREATE ROLE fleetcare_legge_cerbero NOLOGIN"
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs > /dev/null
           legge() { psql -d prod -tAq -c "SELECT has_column_privilege('fleetcare_legge_cerbero', 'public.users', 'mfa_obbligatoria', 'SELECT')"; }
           test "$(legge)" = t
-          app "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION"
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION"
           if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare la colonna non più calcolata"; exit 1; fi
           grep -q "public.users.mfa_obbligatoria non è più calcolata dal database" ruoli.log || { cat ruoli.log; exit 1; }
           CURA=$(grep -o 'ALTER TABLE "public"."users" DROP COLUMN "mfa_obbligatoria".* STORED' ruoli.log)
@@ -359,21 +414,6 @@ jobs:
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1 || { cat ruoli.log; exit 1; }
           test "$(psql -d prod -tAq -c "SELECT attgenerated FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'mfa_obbligatoria'")" = s
           psql -d prod -v ON_ERROR_STOP=1 -q -c "DROP OWNED BY fleetcare_legge_cerbero" -c "DROP ROLE fleetcare_legge_cerbero"
-          # Da lei dipendono role e permissions: Postgres rifiuta di cambiarne il tipo, e toglierle
-          # chiede CASCADE (che toglie anche lei: l'app lo può fare, fino alla 2.16, e allora l'API
-          # non autentica nessuno e la verifica dei ruoli lo dice)
-          for vietato in "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" "ALTER TABLE public.users DROP COLUMN permissions"; do
-            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
-            grep -q -E "used by a generated column|column mfa_obbligatoria of table users depends on column permissions" vietato.log || { cat vietato.log; exit 1; }
-          done
-          test "$(app "SELECT count(*) FROM pg_event_trigger WHERE evtname = 'cerbero_ddl_dell_app_riscrive' AND evtevent = 'table_rewrite' AND evtenabled = 'A'")" = 1
-          for vietato in "CREATE TABLE public.ci_figlia () INHERITS (public.ps_projects)" \
-                         "CREATE TABLE public.ci_padre (name text); ALTER TABLE public.ps_projects INHERIT public.ci_padre"; do
-            if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
-            grep -q "cerbero_app non può legare per ereditarietà o come partizione una tabella del registro" vietato.log || { cat vietato.log; exit 1; }
-          done
-          # le unità pigre invece passano anche sulle tabelle sorvegliate
-          app "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid"
           for vietato in "SELECT count(*) FROM registro.modifiche" "UPDATE registro.impostazioni SET attivo = false" \
                          "DROP TRIGGER registro_cambia ON public.users" "SELECT registro.cattura()" \
                          "SELECT count(*) FROM registro.letture" "SELECT count(*) FROM registro.parziali" \
@@ -381,7 +421,11 @@ jobs:
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
             grep -Eq "permission denied|must be owner|non può" vietato.log || { cat vietato.log; exit 1; }
           done
-          app "SELECT registro.manutenzione()"
+          # la sola eccezione al divieto: la manutenzione crea la partizione che manca, anche chiamata dall'app
+          ULTIMA=$(psql -d prod -tAq -c "SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid WHERE i.inhparent = 'registro.modifiche'::regclass AND c.relname ~ '_[0-9]{4}_[0-9]{2}\$' ORDER BY 1 DESC LIMIT 1")
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "ALTER TABLE registro.modifiche DETACH PARTITION registro.$ULTIMA" -c "DROP TABLE registro.$ULTIMA"
+          app "SELECT registro.manutenzione()" | grep -q "\"partizioni\": \[\"$ULTIMA\"\]"
+          test "$(psql -d prod -tAq -c "SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'registro.$ULTIMA'::regclass")" = cerbero_registro
           app "SELECT registro.manutenzione()" | grep -q '"partizioni": \[\]'
           test -z "$(app "SELECT * FROM registro.verifica()")"
           # PR 2.11: l'app lo legge solo con leggi(), che annota la consultazione e non filtra per persona
@@ -649,11 +693,13 @@ jobs:
           node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json prod.json
       # PR 2.4: l'API non fa più DDL all'avvio; PR 2.16a: non ne fa più affatto
       # (le unità pigre che creavano tabelle al primo uso non ci sono più, lo
-      # controlla un test sui sorgenti). Il bundle vero parte su un
-      # database nato solo dalle migrazioni, con un event trigger che registra
-      # ogni DDL: 20 s dopo l'avvio il registro è vuoto e /api/healthz dice
-      # schema ok. Tolta l'ultima migrazione dal tracciamento, un container
-      # appena partito risponde 503 (schema indietro): la guardia di versione.
+      # controlla un test sui sorgenti); PR 2.16b: il database glielo vieta. Il
+      # bundle vero parte su un database nato solo dalle migrazioni, con un
+      # event trigger che conta ogni tentativo di DDL (scatta prima di quello
+      # che lo rifiuta, e una sequenza non torna indietro col rifiuto): 20 s
+      # dopo l'avvio nessun tentativo, e /api/healthz dice schema ok. Tolta
+      # l'ultima migrazione dal tracciamento, un container appena partito
+      # risponde 503 (schema indietro): la guardia di versione.
       - name: L'API parte su un database nato solo dalle migrazioni, senza DDL
         run: |
           pnpm --filter @workspace/api-server run build
@@ -664,10 +710,14 @@ jobs:
           q "UPDATE registro.impostazioni SET attivo = true, base_giuridica = 'prova della CI', attivato_il = now()"
           # SECURITY DEFINER: l'API è cerbero_app, e senza il trigger fallirebbe
           # facendo fallire il DDL stesso (il registro resterebbe vuoto per sbaglio)
-          q "CREATE SCHEMA ci; CREATE TABLE ci.ddl (tag text, q text);
+          q "CREATE SCHEMA ci; CREATE TABLE ci.ddl (tag text, q text); CREATE SEQUENCE ci.tentativi;
              CREATE FUNCTION ci.registra() RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog
-               AS \$\$ BEGIN INSERT INTO ci.ddl VALUES (tg_tag, left(current_query(), 300)); END \$\$;
-             CREATE EVENT TRIGGER ci_ddl ON ddl_command_start EXECUTE FUNCTION ci.registra();"
+               AS \$\$ BEGIN PERFORM nextval('ci.tentativi'::regclass); INSERT INTO ci.ddl VALUES (tg_tag, left(current_query(), 300)); END \$\$;
+             CREATE EVENT TRIGGER a_ci_ddl ON ddl_command_start EXECUTE FUNCTION ci.registra();"
+          # la conta funziona: un tentativo rifiutato resta contato, poi si azzera
+          if psql "$PG_APP/solo_migrazioni" -q -c "CREATE TEMP TABLE ci_t (a int)" 2> /dev/null; then echo "cerbero_app non doveva creare una tabella temporanea"; exit 1; fi
+          test "$(q "SELECT is_called::text || '/' || (SELECT count(*) FROM ci.ddl) FROM ci.tentativi")" = true/0
+          q "SELECT setval('ci.tentativi', 1, false)" > /dev/null
           avvia() {
             PORT=8099 DATABASE_URL=$PG_APP/solo_migrazioni JWT_SECRET="ci-$(openssl rand -hex 16)" CERBERO_CHIAVE_MFA="$(openssl rand -hex 32)" \
               node artifacts/api-server/dist/index.cjs > "api-$1.log" 2>&1 &
@@ -684,9 +734,10 @@ jobs:
           sleep 17
           n=$(q "SELECT count(*) FROM ci.ddl")
           [ "$n" = 0 ] || { echo "DDL all'avvio:"; q "SELECT tag, q FROM ci.ddl"; exit 1; }
+          [ "$(q "SELECT is_called FROM ci.tentativi")" = f ] || { echo "l'API ha tentato del DDL (rifiutato)"; cat api-ok.log; exit 1; }
           # PR 2.8: lavora come cerbero_owner, senza «permission denied» (42501)
           grep -q "lavora come cerbero_owner" api-ok.log || { cat api-ok.log; exit 1; }
-          if grep -Ei "permission denied|42501" api-ok.log; then exit 1; fi
+          if grep -Ei "permission denied|42501|non può eseguire" api-ok.log; then exit 1; fi
           ferma
           q "DELETE FROM cerbero_migrazioni.__drizzle_migrations WHERE created_at = (SELECT max(created_at) FROM cerbero_migrazioni.__drizzle_migrations)"
           avvia indietro
@@ -729,7 +780,7 @@ jobs:
           kill "$(cat lavoratore.pid)"; wait "$(cat lavoratore.pid)" 2>/dev/null || true
           grep -q "Lavoratore fermo" lavoratore.log || { cat lavoratore.log; exit 1; }
           grep -q "lavora come cerbero_owner" lavoratore.log || { cat lavoratore.log; exit 1; }
-          if grep -Ei "permission denied|42501" lavoratore.log; then exit 1; fi
+          if grep -Ei "permission denied|42501|non può eseguire" lavoratore.log; then exit 1; fi
       # La coda sul database: SKIP LOCKED con processi concorrenti, lease,
       # tentativi, stop, arresto, indice unico, pulizia
       - name: La coda dei lavori sul database
@@ -744,7 +795,7 @@ jobs:
       # Turni macchina, VCSP e giri di Argos su una rete di prova, con Python
       # finto: l'ingresso dato al solver e le risposte sono fissati da istantanee
       - name: Turni macchina, VCSP e giri di Argos sul database
-        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/veicoli-db.test.ts src/__tests__/giro-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto TEST_DATABASE_MIGRATOR_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/veicoli-db.test.ts src/__tests__/giro-db.test.ts
       # La materializzazione Planning Studio → feed GTFS su un progetto di prova:
       # righe gtfs_*, puntatori, feed vecchio, nodi di cambio e rotte di sincronizzazione
       - name: Materializzazione dei feed da Planning Studio sul database
@@ -759,16 +810,24 @@ jobs:
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/contesto-db.test.ts
       # PR 2.12: per chi la verifica in due passaggi è obbligatoria lo dice il
       # database (users.mfa_obbligatoria, migrazione 0008). Come cerbero_app: la
-      # tabella di verità, segue ruolo e permessi, non si scrive a mano.
+      # tabella di verità, segue ruolo e permessi, non si scrive a mano, e
+      # l'app non le toglie l'espressione (PR 2.16b); se non è più calcolata
+      # (lo fa il migratore, in una transazione annullata) l'API non le crede.
       - name: La verifica obbligatoria, calcolata dal database
-        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/mfa-obbligatoria-db.test.ts
+        run: TEST_DATABASE_URL=$PG_APP/vuoto TEST_DATABASE_MIGRATOR_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/mfa-obbligatoria-db.test.ts
+      # PR 2.16b: la duplicazione di un progetto di Planning Studio usava sette
+      # tabelle temporanee, l'ultimo DDL dell'API. Come cerbero_app, che non ne
+      # può più creare: la copia è uguale all'originale a meno degli id.
+      - name: Duplicazione di un progetto di Planning Studio, senza DDL
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/duplica-progetto-db.test.ts
       # Il registro delle modifiche (PR 2.10), dall'app: la manutenzione e la
-      # verifica sì, anche in parallelo; leggere, cancellare o spegnere no. E
+      # verifica sì, anche in parallelo; leggere, cancellare o spegnere no, e
+      # nessun DDL (PR 2.16b), tranne la partizione che la manutenzione crea. E
       # dopo tutti i test sul database qui sopra, scritti col registro acceso:
       # nessun problema e niente nella partizione di riserva.
       - name: Il registro delle modifiche dall'app
         run: |
-          TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/registro-db.test.ts
+          TEST_DATABASE_URL=$PG_APP/vuoto TEST_DATABASE_MIGRATOR_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/registro-db.test.ts
           test -z "$(psql -d vuoto -tAq -c "SELECT * FROM registro.verifica()")"
           # PR 2.11: i riepiloghi si sommano al COMMIT: nessun parziale resta, e ce ne sono di sommati
           test "$(psql -d vuoto -tAq -c "SELECT count(*) FROM registro.parziali")" = 0
