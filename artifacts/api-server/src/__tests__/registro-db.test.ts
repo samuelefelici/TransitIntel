@@ -8,7 +8,7 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { randomUUID } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { pool, db, contestoDb, conContesto } from "@workspace/db";
+import { pool, db, contestoDb, conContesto, PoolConContesto } from "@workspace/db";
 import { manutieniRegistro } from "../lib/lavori/registro";
 import { leggiRegistro, statoRegistro, Parametri } from "../lib/registro-modifiche";
 
@@ -32,6 +32,43 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il registro delle modifiche, da
       "SELECT count(*) FROM registro.letture", "DELETE FROM registro.letture", "SELECT count(*) FROM registro.parziali",
       "SELECT count(*) FROM registro.impostazioni", "SELECT registro.somma(pg_current_xact_id())"]) {
       await expect(pool.query(q), q).rejects.toThrow(/permission denied/);
+    }
+  });
+
+  /* PR 2.16b: l'app non cambia la struttura del database. Ogni comando di DDL
+   * si ferma all'inizio, anche su una tabella temporanea e anche sulle tabelle
+   * che possiede; i dati li scrive come prima. */
+  it("l'app non esegue DDL: né sulle sue tabelle, né tabelle temporanee, né sui trigger del registro", async () => {
+    for (const q of ["CREATE TABLE public.intrusa (a int)", "CREATE TABLE IF NOT EXISTS public.users (id int)",
+      "CREATE TEMP TABLE intrusa (a int)", "CREATE TEMP TABLE m ON COMMIT DROP AS SELECT 1 AS a", "SELECT 1 AS a INTO TEMP intrusa",
+      "CREATE INDEX intruso ON public.depots (name)", "ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid",
+      "ALTER TABLE public.users DISABLE TRIGGER registro_cambia", "ALTER TABLE public.depots RENAME TO depots_altrove",
+      "DROP TABLE public.depots CASCADE", "CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+      "CREATE VIEW public.intrusa AS SELECT 1", "GRANT SELECT ON public.users TO PUBLIC", "COMMENT ON TABLE public.depots IS 'x'"]) {
+      await expect(pool.query(q), q).rejects.toMatchObject({ code: "42501", message: expect.stringContaining("lo schema lo cambiano solo le migrazioni") });
+    }
+    // e non può creare negli schemi dei dati nemmeno a event trigger assente: il diritto non c'è
+    const r = await pool.query(`SELECT string_agg(s, ',') AS con FROM unnest(ARRAY['public', 'caronte', 'coda', 'registro', 'cerbero_migrazioni']) s
+                                 WHERE has_schema_privilege(current_user, s, 'CREATE')`);
+    expect(r.rows[0].con).toBeNull();
+  });
+
+  it.runIf(!!process.env.TEST_DATABASE_MIGRATOR_URL)("la manutenzione crea la partizione che manca anche chiamata dall'app (la sola eccezione al divieto)", async () => {
+    const migratore = new PoolConContesto({ connectionString: process.env.TEST_DATABASE_MIGRATOR_URL, max: 1 });
+    try {
+      const { rows } = await migratore.query(`SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+                                               WHERE i.inhparent = 'registro.modifiche'::regclass AND c.relname ~ '_[0-9]{4}_[0-9]{2}$' ORDER BY 1 DESC LIMIT 1`);
+      const ultima: string = rows[0].relname;
+      expect((await migratore.query(`SELECT count(*)::int AS n FROM registro."${ultima}"`)).rows[0].n).toBe(0);
+      await migratore.query(`ALTER TABLE registro.modifiche DETACH PARTITION registro."${ultima}"`);
+      await migratore.query(`DROP TABLE registro."${ultima}"`);
+      const e = await manutieniRegistro(log);
+      expect(e.problemi).toEqual([]);
+      const dopo = await migratore.query(`SELECT pg_get_userbyid(c.relowner) AS di FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+                                           WHERE i.inhparent = 'registro.modifiche'::regclass AND c.relname = $1`, [ultima]);
+      expect(dopo.rows).toEqual([{ di: "cerbero_registro" }]);
+    } finally {
+      await migratore.end();
     }
   });
 

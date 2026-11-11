@@ -9,6 +9,7 @@ export declare const DA_ESEGUIRE: readonly string[];
 export declare const REGISTRO: "cerbero_registro";
 export declare const SCHEMA_REGISTRO: "registro";
 export declare const COMANDI_DELL_APP: readonly string[];
+export declare const COMANDI_DEL_REGISTRO: readonly string[];
 export declare const EVENTO_DDL: "cerbero_ddl_dell_app";
 export declare const EVENTO_DDL_FINE: "cerbero_ddl_dell_app_fine";
 export declare const EVENTO_DDL_RISCRIVE: "cerbero_ddl_dell_app_riscrive";
@@ -31,8 +32,9 @@ export interface StatoRuoli {
   io: { utente: string; sessione: string; database: string; superutente: boolean };
   ruoli: Ruolo[];
   appartenenze: { ruolo: string; membro: string; admin: boolean; eredita: boolean; imposta: boolean }[];
-  database: { connette: boolean | null; temporanee: boolean | null };
-  schemi: { nome: string; esiste: boolean; uso: boolean | null; crea: boolean | null }[];
+  database: { connette: boolean | null };
+  /** crea_diretta: chi fra cerbero_owner e cerbero_app ha CREATE dato a lui; di: quale dei due possiede lo schema. */
+  schemi: { nome: string; esiste: boolean; uso: boolean | null; crea: boolean | null; crea_diretta?: string[]; di?: string | null }[];
   /** Chi altro può creare negli schemi dei dati; `PUBLIC` se possono tutti. */
   creatori?: { schema: string; ruolo: string; come?: "diretto" | "proprietario" | "ereditato" }[];
   /** Le colonne calcolate attese dal catalogo, con com'è ognuna nel database. */

@@ -321,8 +321,9 @@ function sorgentiApi(): string[] {
 /* PR 2.16a: l'API non cambia lo schema. La 2.4 aveva tolto il DDL dall'avvio e
  * dalle richieste; restavano le «unità pigre» (ensure…/assicura…/repairSchema),
  * che creavano tabelle, colonne e indici al primo uso. Non ci sono più: lo
- * schema nasce solo dalle migrazioni (lib/db/migrations). Qui si guarda ogni
- * sorgente dell'API, commenti esclusi. */
+ * schema nasce solo dalle migrazioni (lib/db/migrations). PR 2.16b: nemmeno
+ * tabelle temporanee, e il database lo vieta all'app (ruoli-regole.mjs). Qui
+ * si guarda ogni sorgente dell'API, commenti esclusi. */
 describe("l'API non cambia lo schema", () => {
   const OGGETTI = "TABLE|INDEX|SCHEMA|VIEW|EXTENSION|TYPE|FUNCTION|PROCEDURE|TRIGGER|SEQUENCE|ROLE|POLICY|DOMAIN|RULE";
   const DDL = new RegExp(
@@ -332,12 +333,10 @@ describe("l'API non cambia lo schema", () => {
     + `|TRUNCATE\\s+(TABLE\\s+)?\\w|COMMENT\\s+ON|GRANT\\s+\\w+\\s+ON|REVOKE\\s+\\w+\\s+ON)\\b`, "gi");
   const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const codice = (f: string) => readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
-  /* Le sole forme ammesse, contate:
-   * - una tabella TEMPORANEA di lavoro, che sparisce al COMMIT (import di Planning Studio);
-   * - il testo di un avviso: l'istruzione che chi amministra il database esegue a mano
-   *   se manca l'indice unico delle matricole. L'app non la esegue. */
+  /* La sola forma ammessa, contata: il testo di un avviso, l'istruzione che chi
+   * amministra il database esegue a mano se manca l'indice unico delle
+   * matricole. L'app non la esegue: non esegue nessun DDL (PR 2.16b). */
   const AMMESSI: Record<string, string[]> = {
-    "lib/planning-studio.ts": ["CREATE TEMP TABLE"],
     "lib/anagrafica-store.ts": ["CREATE UNIQUE INDEX"],
   };
 
@@ -361,9 +360,19 @@ describe("l'API non cambia lo schema", () => {
     expect(trovati, "Lo schema si cambia con una migrazione in lib/db/migrations, non dall'API").toEqual(AMMESSI);
   });
 
-  it("la tabella temporanea è davvero temporanea e sparisce al COMMIT", () => {
-    const riga = codice(path.join(src, "lib/planning-studio.ts")).split("\n").find((r) => /CREATE\s+TEMP\s+TABLE/i.test(r));
-    expect(riga).toMatch(/CREATE TEMP TABLE \$\{sql\.raw\(tmp\)\} ON COMMIT DROP AS/);
+  /* PR 2.16b: le mappe id vecchio→nuovo della duplicazione erano sette tabelle
+   * temporanee, l'ultimo DDL dell'API. Ora sono CTE calcolate una volta per
+   * istruzione, con l'id nuovo derivato (il comportamento lo prova
+   * duplica-progetto-db.test.ts sul database, come cerbero_app). */
+  it("la duplicazione dei progetti non usa tabelle temporanee: mappe in CTE, id derivati", () => {
+    const c = codice(path.join(src, "lib/planning-studio.ts"));
+    expect(c).not.toMatch(/\bTEMP(ORARY)?\s+TABLE\b|ON COMMIT DROP|pg_temp/i);
+    expect(c).toMatch(/\$\{sql\.raw\(nome\)\} AS MATERIALIZED \(\s+SELECT s\.id AS old_id, \$\{idDellaCopia\(dst, "s\.id"\)\} AS new_id/);
+    // l'id derivato: SHA-256 di progetto nuovo e id vecchio, con il progetto come parametro e i bit di un UUID v4
+    const f = c.slice(c.indexOf("export function idDellaCopia"));
+    expect(f.slice(0, f.indexOf("\n}"))).toMatch(/sha256\(convert_to\(\$\{progettoNuovo\}::text \|\| ':' \|\| \$\{sql\.raw\(colonna\)\}::text, 'UTF8'\)\)[\s\S]*placing '4' from 13\) placing '8' from 17\)\)::uuid/);
+    // nessuno crea un id della copia a caso dentro una mappa: sarebbe diverso a ogni istruzione
+    expect(c).not.toMatch(/AS old_id, gen_random_uuid\(\)/);
   });
 
   it("l'istruzione per l'indice delle matricole è il testo di un avviso, non una query", () => {

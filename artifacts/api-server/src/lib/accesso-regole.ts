@@ -102,9 +102,10 @@ export function chiaveEmail(email: string): string {
 
 /**
  * Come si legge la regola da `users`. La colonna vale solo finché la calcola
- * il database: chi possiede la tabella (l'app, fino alla 2.16) non può
- * cambiarne l'espressione, ma può toglierla (ALTER COLUMN … DROP EXPRESSION) e
- * da lì scriverci «nessuno». Una colonna così non è più una regola: finché non
+ * il database. Dalla 2.16b l'app non può più toglierle l'espressione (ALTER
+ * COLUMN … DROP EXPRESSION) e da lì scriverci «nessuno»; ma può succedere per
+ * un'altra strada (un ripristino, un comando a mano), e qui non ci si fida.
+ * Una colonna non più calcolata non è più una regola: finché non
  * viene rifatta (lo dice, con l'istruzione, `ruoli.mjs --verifica`) la verifica
  * è obbligatoria per tutti. FleetCare nello stesso caso applica la regola di
  * prima (sua migrazione 0090). Se la colonna manca la query fallisce, e non

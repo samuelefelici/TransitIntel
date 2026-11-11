@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { GIRI_SCRAM, improntaScram, nuovaPassword, urlDellApp } from "../../../../lib/db/scripts/ruoli-password.mjs";
 import {
-  APP, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, calcolateDaControllare, calcolateDalCatalogo,
+  APP, COMANDI_DELL_APP, COMANDI_DEL_REGISTRO, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, calcolateDaControllare, calcolateDalCatalogo,
   elencoDalCatalogo, piano, sqlEspressioniVietate,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import type { StatoRuoli, Relazione } from "../../../../lib/db/scripts/ruoli-regole.mjs";
@@ -30,8 +30,8 @@ function base(extra: Partial<StatoRuoli> = {}): StatoRuoli {
     io: { utente: "postgres", sessione: "postgres", database: "postgres", superutente: true },
     ruoli: [ruolo(PROPRIETARIO), ruolo(APP, { login: true })],
     appartenenze: [{ ruolo: PROPRIETARIO, membro: APP, admin: false, eredita: false, imposta: true }],
-    database: { connette: true, temporanee: true },
-    schemi: ["public", "caronte", "coda", "cerbero_migrazioni"].map((nome) => ({ nome, esiste: true, uso: true, crea: true })),
+    database: { connette: true },
+    schemi: ["public", "caronte", "coda", "cerbero_migrazioni"].map((nome) => ({ nome, esiste: true, uso: true, crea: false, crea_diretta: [], di: null })),
     lettura: ["cerbero_migrazioni.__drizzle_migrations", "cerbero_migrazioni.contratti"].map((voce) => ({ voce, esiste: true, legge: true })),
     relazioni: [
       rel("public.users"), rel("public.ps_route_variants"),
@@ -67,7 +67,7 @@ describe("ruoli del database: il piano", () => {
 
   it("database nuovo: crea i ruoli NOLOGIN, l'appartenenza senza eredità, il ruolo di sessione e i diritti", () => {
     const st = base({
-      ruoli: [], appartenenze: [], database: { connette: null, temporanee: null },
+      ruoli: [], appartenenze: [], database: { connette: null },
       schemi: base().schemi.map((s) => ({ ...s, uso: null, crea: null })),
       lettura: base().lettura.map((t) => ({ ...t, legge: null })),
       relazioni: base().relazioni.map(daPostgres),
@@ -79,11 +79,10 @@ describe("ruoli del database: il piano", () => {
       `GRANT "${PROPRIETARIO}" TO "${APP}" WITH INHERIT FALSE, SET TRUE`,
       `ALTER ROLE "${APP}" SET role = '${PROPRIETARIO}'`,
     ]);
-    expect(sql).toContain(`GRANT USAGE, CREATE ON SCHEMA "public" TO "${PROPRIETARIO}"`);
-    expect(sql).toContain(`GRANT USAGE ON SCHEMA "cerbero_migrazioni" TO "${PROPRIETARIO}"`);
+    for (const s of ["public", "caronte", "coda", "cerbero_migrazioni"]) expect(sql).toContain(`GRANT USAGE ON SCHEMA "${s}" TO "${PROPRIETARIO}"`);
     expect(sql).toContain(`GRANT SELECT ON TABLE "cerbero_migrazioni"."__drizzle_migrations" TO "${PROPRIETARIO}"`);
-    // niente CREATE su cerbero_migrazioni: il contratto di Argos lo scrive solo chi migra
-    expect(sql.some((s) => /CREATE ON SCHEMA "cerbero_migrazioni"/.test(s))).toBe(false);
+    // PR 2.16b: CREATE non si dà più su nessuno schema, nemmeno su quelli dei dati
+    expect(sql.some((s) => /GRANT [^;]*\bCREATE\b[^;]* ON SCHEMA/.test(s))).toBe(false);
     expect(sql).toContain(`ALTER TABLE "public"."users" OWNER TO "${PROPRIETARIO}"`);
     // mai una password, mai LOGIN
     expect(sql.some((s) => /PASSWORD|\bLOGIN\b(?! *$)/.test(s.replace("NOLOGIN", "")))).toBe(false);
@@ -153,13 +152,45 @@ describe("ruoli del database: il piano", () => {
     ]);
   });
 
-  it("senza il ruolo di sessione, CONNECT o TEMPORARY: si ridanno", () => {
-    const p = piano(base({ ruoli: [ruolo(PROPRIETARIO), ruolo(APP, { col_ruolo: false })], database: { connette: false, temporanee: false } }));
+  it("senza il ruolo di sessione o CONNECT: si ridanno; TEMPORARY non si dà più", () => {
+    const p = piano(base({ ruoli: [ruolo(PROPRIETARIO), ruolo(APP, { col_ruolo: false })], database: { connette: false } }));
     expect(p.azioni.map((a) => a.sql)).toEqual([
       `ALTER ROLE "${APP}" SET role = '${PROPRIETARIO}'`,
       `GRANT CONNECT ON DATABASE "postgres" TO "${APP}"`,
-      `GRANT TEMPORARY ON DATABASE "postgres" TO "${PROPRIETARIO}"`,
     ]);
+  });
+
+  /* PR 2.16b: l'app non cambia la struttura del database. Il CREATE sugli
+   * schemi dei dati serviva alle unità pigre: chi lo ha ancora (un database
+   * che ha visto la 2.8) lo perde al primo avvio. */
+  it("CREATE sugli schemi: si toglie a cerbero_owner e a cerbero_app, dovunque sia stato dato a loro", () => {
+    const schemi = base().schemi.map((s) => s.nome === "cerbero_migrazioni" ? { ...s, crea: true, crea_diretta: [APP] }
+      : { ...s, crea: true, crea_diretta: [PROPRIETARIO] });
+    const p = piano(base({ schemi }));
+    expect(p.azioni.map((a) => a.sql)).toEqual([
+      `REVOKE CREATE ON SCHEMA "public" FROM "${PROPRIETARIO}"`,
+      `REVOKE CREATE ON SCHEMA "caronte" FROM "${PROPRIETARIO}"`,
+      `REVOKE CREATE ON SCHEMA "coda" FROM "${PROPRIETARIO}"`,
+      `REVOKE CREATE ON SCHEMA "cerbero_migrazioni" FROM "${APP}"`,
+    ]);
+    expect(p.azioni.every((a) => a.fase === 1)).toBe(true);
+    expect(p.errori).toEqual([]);
+    // dopo la revoca non resta niente da fare: il piano converge
+    expect(piano(base()).azioni).toEqual([]);
+  });
+
+  it("CREATE che viene da PUBLIC non si revoca a cerbero_owner (non cambierebbe niente): lo dice l'avviso su PUBLIC", () => {
+    const schemi = base().schemi.map((s) => s.nome === "public" ? { ...s, crea: true, crea_diretta: [] } : s);
+    const p = piano(base({ schemi, creatori: [{ schema: "public", ruolo: "PUBLIC", come: "diretto" }] }));
+    expect(p.azioni).toEqual([]);
+    expect(p.avvisi[0]).toContain('REVOKE CREATE ON SCHEMA "public" FROM PUBLIC');
+  });
+
+  it("uno schema posseduto da un ruolo dell'app: errore con la cura (chi lo possiede ci crea comunque)", () => {
+    const schemi = base().schemi.map((s) => s.nome === "coda" ? { ...s, crea: true, di: PROPRIETARIO } : s);
+    const p = piano(base({ schemi }));
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toEqual([expect.stringMatching(/lo schema coda è di cerbero_owner.*ALTER SCHEMA "coda" OWNER TO postgres/)]);
   });
 
   it("FleetCare senza la 0089: avviso con i GRANT esatti", () => {
@@ -204,7 +235,7 @@ describe("ruoli del database: il piano", () => {
       'CREATE EVENT TRIGGER "cerbero_ddl_dell_app_riscrive" ON table_rewrite',
       'ALTER EVENT TRIGGER "cerbero_ddl_dell_app_riscrive" ENABLE ALWAYS',
     ]);
-    expect(manca.azioni[0]!.sql).toMatch(/tg_tag NOT IN \('CREATE TABLE', 'CREATE TABLE AS', 'CREATE INDEX', 'ALTER TABLE'\)/);
+    expect(manca.azioni[0]!.sql).toMatch(/tg_tag NOT IN \('CREATE TABLE', 'ALTER TABLE'\)/);
     expect(manca.azioni[0]!.sql).toMatch(/SET search_path = pg_catalog, pg_temp/);
     const ev = base().evento!;
     expect(piano(base({ evento: { ...ev, acceso: "D" } })).azioni.map((a) => a.sql)).toEqual(['ALTER EVENT TRIGGER "cerbero_ddl_dell_app" ENABLE ALWAYS']);
@@ -231,9 +262,23 @@ describe("ruoli del database: il piano", () => {
       .toEqual(["DROP EVENT TRIGGER", "CREATE EVENT TRIGGER", "ALTER EVENT TRIGGER"]);
   });
 
-  it("la funzione dei due event trigger: all'inizio i comandi, alla fine le espressioni con le funzioni ammesse", () => {
+  it("PR 2.16b: all'inizio del comando l'app non passa mai; dentro le funzioni del registro solo i due comandi della manutenzione", () => {
+    expect(COMANDI_DELL_APP).toEqual([]);
+    expect(COMANDI_DEL_REGISTRO).toEqual(["CREATE TABLE", "ALTER TABLE"]);
+    const inizio = CORPO_EVENTO_DDL.slice(CORPO_EVENTO_DDL.indexOf("IF tg_event = 'ddl_command_start' THEN"));
+    const blocco = inizio.slice(0, inizio.indexOf("RETURN;"));
+    // prima il rifiuto per chiunque non sia dentro una funzione del registro, poi l'elenco
+    expect(blocco).toMatch(/^IF tg_event = 'ddl_command_start' THEN\s+IF current_user <> 'cerbero_registro' THEN\s+RAISE EXCEPTION 'cerbero_app non può eseguire %: lo schema lo cambiano solo le migrazioni/);
+    expect(blocco).toMatch(/IF tg_tag NOT IN \('CREATE TABLE', 'ALTER TABLE'\) THEN\s+RAISE EXCEPTION/);
+    expect(blocco.match(/USING ERRCODE = '42501'/g)).toHaveLength(2);
+    // nessun altro comando nominato: né indici, né tabelle da una SELECT
+    expect(CORPO_EVENTO_DDL).not.toMatch(/CREATE INDEX|CREATE TABLE AS|SELECT INTO/);
+    // chi è «l'app» non è cambiato: la sessione di cerbero_app, o chi lavora come uno dei due ruoli
+    expect(CORPO_EVENTO_DDL).toMatch(/IF NOT \(session_user = 'cerbero_app' OR current_user IN \('cerbero_owner', 'cerbero_app'\)\) THEN\s+RETURN;/);
+  });
+
+  it("la funzione degli event trigger: alla fine le espressioni con le funzioni ammesse", () => {
     expect(CORPO_EVENTO_DDL).toMatch(/IF tg_event = 'ddl_command_start' THEN/);
-    expect(CORPO_EVENTO_DDL).toMatch(/tg_tag = 'CREATE INDEX' AND coalesce\(pg_catalog\.current_query\(\), ''\) ~\* '\\mconcurrently\\M'/);
     expect(CORPO_EVENTO_DDL).toMatch(/pg_event_trigger_ddl_commands\(\)/);
     expect(CORPO_EVENTO_DDL).toMatch(/relpersistence <> 't'/);
     expect(CORPO_EVENTO_DDL).toMatch(/cerbero_app non può usare queste funzioni o tipi in colonne, default, vincoli o indici/);

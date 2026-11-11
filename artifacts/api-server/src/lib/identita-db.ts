@@ -37,7 +37,7 @@ export interface Identita {
   sessione: string;
   corrente: string;
   superutente: boolean;
-  /** i due event trigger che fermano il DDL pericoloso dell'app ci sono e sono accesi sempre */
+  /** i due event trigger che fermano il DDL dell'app ci sono e sono accesi sempre */
   eventoAcceso: boolean;
   /**
    * relazioni negli schemi di Cerbero (public, caronte, coda) che non sono del
@@ -68,7 +68,8 @@ export function giudica(i: Identita): Giudizio {
       return {
         esito: "fatale",
         messaggio: `collegato come ${APP} senza gli event trigger ${EVENTO_DDL} e ${EVENTO_DDL_FINE} accesi: l'app potrebbe `
-          + "creare oggetti o espressioni che girano come superutente. Li crea il migratore all'avvio dell'API "
+          + "cambiare la struttura del database (togliere colonne e regole, creare oggetti che girano come superutente). "
+          + "Li crea il migratore all'avvio dell'API "
           + "(o a mano: node lib/db/scripts/ruoli.mjs)",
       };
     }

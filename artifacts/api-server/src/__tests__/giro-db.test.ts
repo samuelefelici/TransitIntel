@@ -5,7 +5,7 @@
  * turni guida in un savepoint.
  */
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { db } from "@workspace/db";
+import { db, PoolConContesto } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { salvaGiro, scriviGiro, giroGiaSalvato, type RichiestaGiro } from "../lib/ottimizza-veicoli/giro";
 
@@ -15,6 +15,14 @@ const SCHED = "e0000000-0000-0000-0000-00000000aa5c";
 const LAVORO = "e0000000-0000-0000-0000-00000000aa10";
 const DEPOSITO = "e0000000-0000-0000-0000-00000000aad1";
 const log = { info() {}, warn() {}, error() {} };
+/* Il vincolo di prova lo mette chi migra (TEST_DATABASE_MIGRATOR_URL, un
+ * superutente; in CI c'è): l'app non altera le sue tabelle (PR 2.16b). Senza,
+ * il caso che ne ha bisogno si salta. */
+const MIGRATORE = process.env.TEST_DATABASE_MIGRATOR_URL;
+const comeMigratore = async (q: string) => {
+  const p = new PoolConContesto({ connectionString: MIGRATORE, max: 1 });
+  try { await p.query(q); } finally { await p.end(); }
+};
 
 const payload = (extra: Record<string, unknown> = {}) => ({
   solver: "vcsp", shifts: [{ vehicleId: "V1" }], summary: { totalVehicles: 1, totalTrips: 3 },
@@ -53,7 +61,7 @@ const conta = async () => {
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("il salvataggio di fine giro, sul database", () => {
   const pulisci = async () => {
-    await db.execute(sql`ALTER TABLE driver_shift_scenarios DROP CONSTRAINT IF EXISTS prova_rottura`);
+    if (MIGRATORE) await comeMigratore("ALTER TABLE public.driver_shift_scenarios DROP CONSTRAINT IF EXISTS prova_rottura");
     await db.execute(sql`DELETE FROM service_program_scenarios WHERE feed_id = 'e0000000-0000-0000-0000-00000000aaf1'::uuid`);
     await db.execute(sql`DELETE FROM agent_optimize_jobs WHERE id = ${LAVORO}::uuid`);
     await db.execute(sql`DELETE FROM coda.lavori WHERE id = ${LAVORO}::uuid`);
@@ -122,8 +130,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il salvataggio di fine giro, su
     expect(await conta()).toEqual({ sc: 0, dss: 0, giro: null });
   });
 
-  it("un errore dei turni guida non ferma il resto (savepoint); senza coda niente guardia", async () => {
-    await db.execute(sql`ALTER TABLE driver_shift_scenarios ADD CONSTRAINT prova_rottura CHECK (name NOT LIKE '%ROTTURA%') NOT VALID`);
+  it.runIf(!!MIGRATORE)("un errore dei turni guida non ferma il resto (savepoint); senza coda niente guardia", async () => {
+    await comeMigratore("ALTER TABLE public.driver_shift_scenarios ADD CONSTRAINT prova_rottura CHECK (name NOT LIKE '%ROTTURA%') NOT VALID");
     const avvisi: string[] = [];
     const e = await salvaGiro({
       lavoroId: LAVORO, chi: null, payload: payload(),

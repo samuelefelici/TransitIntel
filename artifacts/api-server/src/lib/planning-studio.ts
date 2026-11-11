@@ -322,8 +322,14 @@ router.post("/planning-studio/projects", async (req, res): Promise<void> => {
  * categorie per-progetto (ps_validity_category_calendar). NON copia il feed
  * materializzato (la copia nasce non
  * operativa) né le UDP/scenari (artefatti generati). Copia GENERICA e set-based:
- * mappe id vecchio→nuovo in tabelle temporanee + lista colonne da
- * information_schema (così prende anche le colonne aggiunte da ALTER). */
+ * mappe id vecchio→nuovo + lista colonne da information_schema (così prende
+ * anche le colonne aggiunte da una migrazione).
+ *
+ * Le mappe NON sono tabelle temporanee (PR 2.16b: l'app non esegue DDL, nemmeno
+ * `CREATE TEMP TABLE`). L'id nuovo di una riga si DERIVA da progetto nuovo + id
+ * vecchio (idDellaCopia): ogni istruzione può quindi ricalcolare la stessa
+ * mappa, come CTE MATERIALIZED — calcolata una volta per istruzione e poi usata
+ * nelle join, come prima la tabella temporanea. */
 router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   const userId = req.user!.id;
@@ -345,15 +351,26 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
         RETURNING id`);
       const dst: string = pr.rows[0].id;
 
-      // helper: crea la mappa id vecchio→nuovo per una tabella (con scope)
-      const mkMap = async (tmp: string, table: string, scope: any) => {
-        await tx.execute(sql`CREATE TEMP TABLE ${sql.raw(tmp)} ON COMMIT DROP AS
-          SELECT id AS old_id, gen_random_uuid() AS new_id FROM ${sql.raw(table)} s WHERE ${scope}`);
+      // helper: definisce la mappa id vecchio→nuovo per una tabella (con scope)
+      const mappe = new Map<string, any>();
+      const mkMap = (nome: string, table: string, scope: any) => {
+        mappe.set(nome, sql`${sql.raw(nome)} AS MATERIALIZED (
+          SELECT s.id AS old_id, ${idDellaCopia(dst, "s.id")} AS new_id FROM ${sql.raw(table)} s WHERE ${scope})`);
+      };
+      // helper: il `WITH …` da mettere davanti all'istruzione che usa quelle mappe
+      const con = (...nomi: Array<string | undefined>) => {
+        const usate = [...new Set(nomi.filter((n): n is string => !!n))];
+        if (!usate.length) return sql``;
+        return sql`WITH ${sql.join(usate.map((n) => {
+          const m = mappe.get(n);
+          if (!m) throw new Error(`mappa ${n} non definita`);
+          return m;
+        }), sql`, `)} `;
       };
       // helper generico: copia una tabella rimappando id/project_id/FK.
       // idCol=null per tabelle senza id proprio (child con solo FK).
       const copy = async (table: string, opts: {
-        idMap?: string;                    // temp map per l'id proprio
+        idMap?: string;                    // mappa per l'id proprio
         genId?: boolean;                   // id proprio non referenziato → uuid nuovo
         projectCol?: string | null;        // colonna project_id da riscrivere (default 'project_id')
         fks?: Array<{ col: string; map: string }>;
@@ -376,7 +393,7 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
         if (opts.idMap) joins.push(`JOIN ${opts.idMap} ms ON ms.old_id = s.id`);
         for (const f of opts.fks ?? []) joins.push(`LEFT JOIN ${f.map} f_${f.col} ON f_${f.col}.old_id = s.${f.col}`);
         await tx.execute(sql`
-          INSERT INTO ${sql.raw(table)} (${sql.raw(cols.join(", "))})
+          ${con(opts.idMap, ...(opts.fks ?? []).map((f) => f.map))}INSERT INTO ${sql.raw(table)} (${sql.raw(cols.join(", "))})
           SELECT ${sql.raw(exprs.join(", "))}
             FROM ${sql.raw(table)} s ${sql.raw(joins.join(" "))}
            WHERE ${opts.scope}`);
@@ -386,14 +403,14 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
       const tripScope = sql`s.trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${src}::uuid)`;
 
       // 2) mappe id per le entità con id proprio (scope = progetto sorgente)
-      await mkMap("m_clu", "ps_stop_clusters", sql`s.project_id = ${src}::uuid`);
-      await mkMap("m_stp", "ps_stops", sql`s.project_id = ${src}::uuid`);
-      await mkMap("m_rte", "ps_routes", sql`s.project_id = ${src}::uuid`);
-      await mkMap("m_var", "ps_route_variants", sql`s.project_id = ${src}::uuid`);
-      await mkMap("m_cal", "ps_calendars", sql`s.project_id = ${src}::uuid`);
-      await mkMap("m_trp", "ps_trips", sql`s.project_id = ${src}::uuid`);
+      mkMap("m_clu", "ps_stop_clusters", sql`s.project_id = ${src}::uuid`);
+      mkMap("m_stp", "ps_stops", sql`s.project_id = ${src}::uuid`);
+      mkMap("m_rte", "ps_routes", sql`s.project_id = ${src}::uuid`);
+      mkMap("m_var", "ps_route_variants", sql`s.project_id = ${src}::uuid`);
+      mkMap("m_cal", "ps_calendars", sql`s.project_id = ${src}::uuid`);
+      mkMap("m_trp", "ps_trips", sql`s.project_id = ${src}::uuid`);
       // day-type CUSTOM del progetto (i globali restano condivisi, non si copiano)
-      await mkMap("m_dt", "ps_day_types", sql`s.project_id = ${src}::uuid`);
+      mkMap("m_dt", "ps_day_types", sql`s.project_id = ${src}::uuid`);
 
       // 3) copia in ordine di dipendenza
       await copy("ps_stop_clusters", { idMap: "m_clu", scope: byProj });
@@ -408,7 +425,7 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
       await copy("ps_trips", { idMap: "m_trp", fks: [{ col: "route_id", map: "m_rte" }, { col: "variant_id", map: "m_var" }, { col: "calendar_id", map: "m_cal" }], scope: byProj });
       await copy("ps_stop_times", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }, { col: "stop_id", map: "m_stp" }], scope: tripScope });
       // validità giorni: trip rimappato; day_type rimappato se custom, altrimenti globale (LEFT JOIN → resta l'originale se non in mappa)
-      await copyDayValidity(tx, src);
+      await copyDayValidity(tx, src, con("m_trp", "m_dt"));
       await copy("ps_trip_category_validity", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
       await copy("ps_trip_exceptions", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
       await copy("ps_no_go_zones", { genId: true, scope: byProj });
@@ -432,7 +449,7 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
       const hasDayCal = await tx.execute<any>(sql`SELECT to_regclass('public.ps_day_calendar') AS t`);
       if (hasDayCal.rows[0]?.t) {
         await tx.execute(sql`
-          INSERT INTO ps_day_calendar (project_id, date, day_type_id, source, note)
+          ${con("m_dt")}INSERT INTO ps_day_calendar (project_id, date, day_type_id, source, note)
           SELECT ${dst}::uuid, s.date, COALESCE(fd.new_id, s.day_type_id), s.source, s.note
             FROM ps_day_calendar s
             LEFT JOIN m_dt fd ON fd.old_id = s.day_type_id
@@ -463,16 +480,32 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
     const nr = await db.execute<any>(sql`SELECT *, 'owner' AS my_role FROM ps_projects WHERE id = ${newId}::uuid`);
     res.json({ project: rowToProject(nr.rows[0]) });
   } catch (e: any) {
-    req.log?.error?.({ err: e?.message, src }, "duplicazione progetto fallita");
-    res.status(500).json({ error: `Duplicazione fallita: ${e?.message ?? "errore"}` });
+    // il testo dell'errore del database (query e parametri) resta nel log, non va a chi chiama
+    req.log?.error?.({ err: e?.cause?.message ?? e?.message, src }, "duplicazione progetto fallita");
+    res.status(500).json({ error: "Duplicazione fallita: riprova, e se si ripete avvisa chi gestisce Cerbero" });
   }
 });
 
+/**
+ * L'id che una riga avrà nella copia di un progetto: derivato dal progetto
+ * nuovo e dall'id vecchio (SHA-256, con i bit di versione e variante di un
+ * UUID v4). Stesso ingresso, stesso id: le mappe della duplicazione non vanno
+ * conservate da nessuna parte. Il progetto nuovo è un UUID casuale appena
+ * generato dal database, quindi gli id derivati non si ripetono fra una copia
+ * e l'altra; se mai coincidessero con una riga esistente, la chiave primaria
+ * farebbe fallire la duplicazione intera.
+ * `colonna` è un nome scritto nel codice, mai un valore dell'utente.
+ */
+export function idDellaCopia(progettoNuovo: string, colonna: string) {
+  return sql`(overlay(overlay(substr(encode(sha256(convert_to(${progettoNuovo}::text || ':' || ${sql.raw(colonna)}::text, 'UTF8')), 'hex'), 1, 32) placing '4' from 13) placing '8' from 17))::uuid`;
+}
+
 /** ps_trip_day_validity: rimappa trip_id (sempre) e day_type_id SOLO se è un
- *  day-type custom del progetto (i globali restano condivisi). */
-async function copyDayValidity(tx: any, src: string): Promise<void> {
+ *  day-type custom del progetto (i globali restano condivisi).
+ *  `mappe` è il `WITH m_trp …, m_dt …` della duplicazione. */
+async function copyDayValidity(tx: any, src: string, mappe: any): Promise<void> {
   await tx.execute(sql`
-    INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
+    ${mappe}INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
     SELECT ft.new_id, COALESCE(fd.new_id, s.day_type_id), s.is_valid
       FROM ps_trip_day_validity s
       JOIN m_trp ft ON ft.old_id = s.trip_id

@@ -8,7 +8,8 @@
 -- coi nomi dei campi (degli utenti ruolo e permessi col valore); mai un hash,
 -- un segreto della verifica, un codice sanitario; un login non scrive niente;
 -- riepiloghi per le istruzioni grandi, le cascate e il modo «riepilogo»; l'app
--- non lo legge, non lo cambia, non lo spegne; anonimizzazione e conservazione.
+-- non lo legge, non lo cambia, non lo spegne (e dalla 2.16b non esegue nessun
+-- DDL); anonimizzazione e conservazione.
 -- Dalla 0007: i riepiloghi si sommano al COMMIT; gli orari di dettaglio sono
 -- sempre in riepilogo e senza valori; la lettura passa da registro.leggi(), che
 -- non filtra per persona e annota ogni consultazione.
@@ -506,6 +507,14 @@ BEGIN
     -- (su full_name: role e permissions non si riscrivono comunque, da loro dipende la colonna calcolata mfa_obbligatoria)
     'ALTER TABLE public.users ALTER COLUMN full_name TYPE text USING ''Altro''',
     'CREATE TABLE public.registro_figlia () INHERITS (public.ps_projects)',
+    -- PR 2.16b: l'app non cambia la struttura, nemmeno delle tabelle che possiede né con una tabella temporanea
+    'ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION',
+    'ALTER TABLE public.users DROP COLUMN permissions CASCADE',
+    'ALTER TABLE public.depots ADD COLUMN IF NOT EXISTS ps_project_id uuid',
+    'CREATE INDEX registro_intruso ON public.depots (name)',
+    'CREATE TEMP TABLE registro_intrusa (a int)',
+    'CREATE TEMP TABLE registro_intrusa ON COMMIT DROP AS SELECT 1 AS a',
+    'DROP TABLE public.depots CASCADE',
     'SELECT registro.sorveglia(''public.users'', ARRAY[''id''], NULL, NULL, true)',
     -- 0007: né le consultazioni, né i parziali, né le funzioni interne
     'SELECT count(*) FROM registro.letture', 'DELETE FROM registro.letture', 'SELECT count(*) FROM registro.impostazioni',

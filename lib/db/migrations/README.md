@@ -91,18 +91,24 @@ su main non si tocca più.
     RESET ROLE;
     ```
     Come `cerbero_owner` il DDL è fermato dall'event trigger
-    `cerbero_ddl_dell_app`: lì dentro solo dati;
+    `cerbero_ddl_dell_app`, tutto (dalla 2.16b anche `CREATE TABLE` e
+    `ALTER TABLE`): lì dentro solo dati. Il DDL di una migrazione si esegue da
+    migratore, prima o dopo quel blocco;
   - nomi sempre qualificati (`public.t`, `pg_catalog.lower`): il migratore gira
     con `search_path = pg_catalog, pg_temp`, e un nome senza schema non trova
     le tabelle.
-- **L'app non crea oggetti (event trigger `cerbero_ddl_dell_app`).** Come
-  `cerbero_app` o `cerbero_owner` si possono eseguire solo i comandi delle
-  unità pigre (`CREATE TABLE`, `CREATE TABLE AS`, `CREATE INDEX`,
-  `ALTER TABLE`); funzioni, viste, operatori, tipi, cast, regole, trigger e
-  policy si fermano con 42501. Altrimenti un oggetto dell'app in `public` (dove
-  ha CREATE per le unità pigre) girerebbe come superutente quando un
-  superutente lo incontra. Lo crea e lo tiene acceso il migratore; API e
-  lavoratore non partono senza.
+- **L'app non esegue DDL (event trigger `cerbero_ddl_dell_app`, PR 2.16b).**
+  Come `cerbero_app` o `cerbero_owner` ogni comando che crea, altera o toglie
+  un oggetto si ferma con 42501: tabelle (anche temporanee), indici, colonne,
+  funzioni, viste, trigger, permessi. Fino alla 2.16a passavano i comandi
+  delle unità pigre (`CREATE TABLE`, `CREATE TABLE AS`, `CREATE INDEX`,
+  `ALTER TABLE`), e `cerbero_owner` aveva CREATE su `public`, `caronte` e
+  `coda`: ora no. Lo crea e lo tiene acceso il migratore; API e lavoratore non
+  partono senza. Unica eccezione: dentro le funzioni del registro delle
+  modifiche (di `cerbero_registro`) passano `CREATE TABLE` e `ALTER TABLE`,
+  per la partizione del mese. Una funzione nuova del registro che avesse
+  bisogno di altro DDL va aggiunta a `COMANDI_DEL_REGISTRO`
+  (`lib/db/scripts/ruoli-regole.mjs`), e va guardata.
 - **Funzioni nei default, nei vincoli e negli indici.** Un default, un CHECK,
   una colonna generata o un indice con un'espressione possono usare solo le
   funzioni di `FUNZIONI_AMMESSE` (`lib/db/scripts/ruoli-regole.mjs`), oltre a
@@ -110,17 +116,18 @@ su main non si tocca più.
   la riga, a volte un superutente. Lo stesso per i tipi delle colonne e delle
   conversioni: domini solo di sistema, tipi con le funzioni di `pg_catalog` o
   di un'estensione (il CHECK di un dominio e l'input di un tipo girano come
-  chi scrive). Per l'app lo fa rispettare il secondo
-  event trigger (`cerbero_ddl_dell_app_fine`). Il migratore, prima di
+  chi scrive). Sui comandi delle funzioni del registro lo fa rispettare il
+  secondo event trigger (`cerbero_ddl_dell_app_fine`). Il migratore, prima di
   migrare, non parte se una tabella di Cerbero ne usa un'altra. Una
   migrazione che ne usa una nuova va guardata (niente SQL passato come testo,
   file, impostazioni, letture di altre tabelle) e la funzione si aggiunge
   all'elenco nella stessa PR: la CI la segnala (`ruoli.mjs --verifica` sulla
   copia della produzione).
 - **Aggiornare PostGIS** (`ALTER EXTENSION postgis UPDATE`, come superutente,
-  con `public` nel percorso): prima si toglie il CREATE su `public` a
-  `cerbero_owner` (`REVOKE CREATE ON SCHEMA public FROM cerbero_owner`), dopo
-  lo si ridà (o lo ridà il migratore al prossimo avvio).
+  con `public` nel percorso): `cerbero_owner` non ha più CREATE su `public`
+  (PR 2.16b), quindi non c'è niente da togliere prima. Se `ruoli.mjs
+  --verifica` avvisa che un altro ruolo può creare in `public`, quello sì va
+  tolto prima.
 - **Il registro delle modifiche (PR 2.10 e 2.11).** Le tabelle sorvegliate hanno i
   trigger `registro_*`, che scrivono in `registro.modifiche` (schema, tabelle e
   funzioni di `cerbero_registro`, non di `cerbero_owner`). Una tabella nuova
@@ -185,7 +192,8 @@ su main non si tocca più.
   schema»). La PR 2.4 l'aveva tolto dall'avvio e dalle richieste; la 2.16a ha
   tolto le unità pigre (ensure…/assicura…) che creavano tabelle al primo uso.
   Una colonna o una tabella nuova si aggiunge qui, mai con un `IF NOT EXISTS`
-  nel codice: il test fallisce, e dalla 2.16b il database lo rifiuta. Un passo
+  nel codice: il test fallisce, e il database lo rifiuta (PR 2.16b, anche per
+  una tabella temporanea: per un insieme di lavoro si usa una CTE). Un passo
   sui dati (righe di default, sistemazioni) può stare nel codice; ciò che
   cambia la struttura no.
 - **La vista `ps_variants`** è un alias di `ps_route_variants` con l'elenco

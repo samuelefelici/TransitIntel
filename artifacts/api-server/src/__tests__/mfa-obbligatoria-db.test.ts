@@ -6,12 +6,14 @@
  *   registro delle modifiche non la segna; l'API non ha più la regola scritta.
  * - Sul database (TEST_DATABASE_URL, migrato; in CI come cerbero_app): la
  *   tabella di verità, che segue i cambi di ruolo e permessi, e che non si
- *   scrive a mano.
+ *   scrive a mano. L'app non può toglierle l'espressione né toglierla (PR
+ *   2.16b); se succede per un'altra strada (qui: da migratore, con
+ *   TEST_DATABASE_MIGRATOR_URL) l'API non le crede.
  */
 import { describe, it, expect, afterAll } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { pool } from "@workspace/db";
+import { pool, PoolConContesto } from "@workspace/db";
 import { LETTORI } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import { SQL_MFA_OBBLIGATORIA } from "../lib/accesso-regole";
 
@@ -124,21 +126,41 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("users.mfa_obbligatoria, sul dat
     expect(await cambia("full_name = 'Non cambia niente'")).toBe(false);
   });
 
-  it("se chi possiede la tabella le toglie l'espressione e ci scrive «nessuno», l'API non ci crede: obbligatoria per tutti", async () => {
-    const c = await pool.connect();
+  it("l'app non le toglie l'espressione, non la toglie e non toglie le colonne da cui dipende (PR 2.16b)", async () => {
+    for (const q of ["ALTER TABLE users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION",
+      "ALTER TABLE users DROP COLUMN mfa_obbligatoria",
+      "ALTER TABLE users DROP COLUMN permissions CASCADE",
+      "ALTER TABLE users ALTER COLUMN mfa_obbligatoria SET EXPRESSION AS (false)"]) {
+      const c = await pool.connect();
+      try {
+        await c.query("BEGIN");
+        await expect(c.query(q), q).rejects.toMatchObject({ code: "42501", message: expect.stringContaining("non può eseguire ALTER TABLE") });
+      } finally {
+        await c.query("ROLLBACK").catch(() => {});
+        c.release();
+      }
+    }
+    const r = await pool.query("SELECT attgenerated FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'mfa_obbligatoria'");
+    expect(r.rows[0].attgenerated).toBe("s");
+  });
+
+  it.runIf(!!process.env.TEST_DATABASE_MIGRATOR_URL)("se non è più calcolata (un ripristino, un comando a mano) e c'è scritto «nessuno», l'API non ci crede: obbligatoria per tutti", async () => {
+    const migratore = new PoolConContesto({ connectionString: process.env.TEST_DATABASE_MIGRATOR_URL, max: 1 });
+    const c = await migratore.connect();
     const leggi = async () => Object.fromEntries((await c.query(
       `SELECT email, ${SQL_MFA_OBBLIGATORIA} AS m, mfa_obbligatoria AS colonna FROM users WHERE email IN ($1, $2)`,
       [EMAIL("admin"), EMAIL("altri-permessi")])).rows.map((r: any) => [r.email, [r.m, r.colonna]]));
     try {
       await c.query("BEGIN");
       expect(await leggi()).toEqual({ [EMAIL("admin")]: [true, true], [EMAIL("altri-permessi")]: [false, false] });
-      // come l'app, da proprietaria: non una riscrittura, quindi gli event trigger la lasciano passare
-      await c.query("ALTER TABLE users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION");
-      await c.query("UPDATE users SET mfa_obbligatoria = false WHERE email = $1", [EMAIL("admin")]);
+      // da migratore, dentro una transazione annullata: l'app non può più farlo
+      await c.query("ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION");
+      await c.query("UPDATE public.users SET mfa_obbligatoria = false WHERE email = $1", [EMAIL("admin")]);
       expect(await leggi()).toEqual({ [EMAIL("admin")]: [true, false], [EMAIL("altri-permessi")]: [true, false] });
     } finally {
       await c.query("ROLLBACK").catch(() => {});
       c.release();
+      await migratore.end();
     }
     // annullato: la colonna è di nuovo calcolata
     const r = await pool.query("SELECT attgenerated FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'mfa_obbligatoria'");
