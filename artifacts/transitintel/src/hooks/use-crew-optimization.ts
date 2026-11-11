@@ -101,8 +101,14 @@ export interface OperatorConfig {
     copertura?: Record<string, any>;
     collegamento?: Record<string, any>;
     /* Fase 2 — avanzate: soglie/scoring tagli e multi-scenario */
-    cuts?: Record<string, number>;
+    /* i tagli dei costi avanzati (BDS5) portano anche elenchi di fasce orarie */
+    cuts?: Record<string, any>;
     cutScoring?: Record<string, number>;
+    /* Ambito del calcolo (pages/fucina/turni-guida/config-solver.ts) */
+    /** BDSI cap. 14: vincoli globali di soluzione */
+    vincoliGlobali?: Array<Record<string, any>>;
+    /** BDS5: scalini, costi di 2° grado, cambio vettura, cambio patente */
+    costiAvanzati?: Record<string, any>;
     scenari?: Record<string, number>;
     /* Sosta inoperosa (extraurbano): durata minima + contributo all'orario */
     sostaInoperosa?: Record<string, number>;

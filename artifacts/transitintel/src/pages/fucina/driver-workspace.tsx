@@ -23,7 +23,7 @@ import {
   Users, Clock, Timer, Coffee, Repeat, Car, DollarSign, Shield,
   AlertTriangle, Zap, Settings, Play, Save, RotateCcw, Brain, Loader2,
   Download, FileText, FileSpreadsheet, Printer, ChevronDown, Undo2, Redo2, Layers,
-  MapPin, Minus, Plus, SlidersHorizontal, Trash2, X,
+  MapPin, Minus, Plus, SlidersHorizontal, Trash2, X, Crosshair, ArrowRightLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -58,7 +58,11 @@ import {
 } from "@/pages/fucina/DriverShiftsPrintExport";
 import { exportDriverShiftSheetsToPrint, stopTimesLoaderFor } from "@/pages/fucina/DriverShiftSheetExport";
 import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/fucina/turni-guida/types";
-import { mkRipresaFromTrips, normalizeDriverShiftsResult } from "@/pages/fucina/turni-guida/bdsi-tools";
+import { mkRipresaFromTrips, normalizeDriverShiftsResult, VincoliReport } from "@/pages/fucina/turni-guida/bdsi-tools";
+import { Bds5Report } from "@/pages/fucina/turni-guida/bds5-costs";
+import { AMBITO_VUOTO, configPerIlSolver, scelteAttive, type AmbitoDelCalcolo } from "@/pages/fucina/turni-guida/config-solver";
+import { AmbitoDelCalcoloPanel, type ClusterDelCalcolo } from "@/pages/fucina/turni-guida/AmbitoDelCalcoloPanel";
+import { DssCompareDialog } from "@/pages/fucina/turni-guida/DssCompareDialog";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/fucina/turni-guida/constants";
 import { AddDriverShiftDialog } from "@/pages/fucina/turni-guida/AddDriverShiftDialog";
@@ -100,6 +104,15 @@ export default function DriverWorkspace({
   const [configOpen, setConfigOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [operatorConfig, setOperatorConfig] = useState<OperatorConfig>(DEFAULT_CONFIG);
+  /* Ambito del calcolo: cluster su cui tagliare, vincoli globali, costi avanzati.
+   * Vale per il calcolo che parte da qui; non entra nel profilo di regole. */
+  const [ambito, setAmbito] = useState<AmbitoDelCalcolo>(AMBITO_VUOTO);
+  const [ambitoOpen, setAmbitoOpen] = useState(false);
+  /* Tutti i cluster che il solver riceve (non solo quelli «di cambio») */
+  const [clusterDelCalcolo, setClusterDelCalcolo] = useState<ClusterDelCalcolo[] | null>(null);
+  /* Gli scenari turni guida già salvati per questi turni macchina (per il confronto) */
+  const [savedDss, setSavedDss] = useState<Array<{ id: string; name: string; createdAt: string; summary?: any }>>([]);
+  const [showCompare, setShowCompare] = useState(false);
   const [serviceType, setServiceTypeState] = useState<ServiceType>("urbano");
   // Cambiando tipo servizio si re-applica il preset dei gruppi service-scoped
   // (regole turno + target), preservando gli altri parametri già modificati.
@@ -252,6 +265,17 @@ export default function DriverWorkspace({
         const list = Array.isArray(data?.data) ? data.data
                    : Array.isArray(data) ? data
                    : (data?.clusters ?? []);
+        const conta = (c: any) => Array.isArray(c.stops) ? c.stops.length
+                               : Array.isArray(c.stopIds) ? c.stopIds.length
+                               : (c.stopCount ?? 0);
+        // Per la scelta dell'ambito servono tutti: il solver li riceve tutti.
+        setClusterDelCalcolo(list.map((c: any) => ({
+          id: String(c.id),
+          name: c.name ?? "Cluster",
+          color: c.color ?? "#3b82f6",
+          stopCount: conta(c),
+          isInterchange: c.isInterchange !== false,
+        })));
         // Mostriamo solo cluster effettivamente di cambio (interchange).
         // Il backend marchia is_interchange=true di default; PS clusters
         // logici puri non vengono mirrorati nel legacy quindi non compaiono qui.
@@ -267,7 +291,7 @@ export default function DriverWorkspace({
                    : (c.stopCount ?? 0),
         })));
       })
-      .catch(() => { if (!cancelled) setInterchangeClusters([]); });
+      .catch(() => { if (!cancelled) { setInterchangeClusters([]); setClusterDelCalcolo([]); } });
     return () => { cancelled = true; };
   }, []);
 
@@ -446,16 +470,29 @@ export default function DriverWorkspace({
       intensity === 4 ? 900 : 240;
     const panelTL = Number(operatorConfig.timeLimit);
     const timeLimit = panelTL > 0 ? panelTL : computed;
-    cpsat.start(vehicleScenarioId, timeLimit, operatorConfig);
+    cpsat.start(vehicleScenarioId, timeLimit, configPerIlSolver(operatorConfig, ambito));
+    const nAmbito = scelteAttive(ambito);
     toast.info(`CP-SAT avviato (timeLimit ${timeLimit}s)`, {
-      description: "I parametri optimizer (saturazione · cap vetture · idle) sono attivi",
+      description: nAmbito > 0
+        ? "Parametri optimizer attivi · ambito del calcolo applicato (cluster, vincoli, costi)"
+        : "I parametri optimizer (saturazione · cap vetture · idle) sono attivi",
     });
-  }, [vehicleScenarioId, cpsat, operatorConfig]);
+  }, [vehicleScenarioId, cpsat, operatorConfig, ambito]);
 
   const runOptimization = useCallback(() => {
     if (solverMode === "cpsat") launchCPSAT();
     else launchGreedy();
   }, [solverMode, launchCPSAT, launchGreedy]);
+
+  // Scenari turni guida già salvati: servono al confronto fianco a fianco
+  const refetchSavedDss = useCallback(() => {
+    if (!vehicleScenarioId) return;
+    fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}/scenarios`)
+      .then(r => (r.ok ? r.json() : []))
+      .then(d => setSavedDss(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, [vehicleScenarioId]);
+  useEffect(() => { refetchSavedDss(); }, [refetchSavedDss]);
 
   // Salva DSS
   const saveDss = useCallback(async () => {
@@ -476,12 +513,14 @@ export default function DriverWorkspace({
         body: JSON.stringify({
           name: dssName.trim(),
           result: resultToSave,
-          config: { ...operatorConfig, solverMode },
+          // insieme al risultato resta scritto con quale ambito è stato chiesto
+          config: { ...configPerIlSolver(operatorConfig, ambito), solverMode },
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       // salvato: riaprendo la pagina il calcolo non va più ripreso
       cpsat.dimenticaCalcolo();
+      refetchSavedDss();
       setShowSaveDialog(false); setDssName("");
       toast.success("Scenario turni guida salvato");
       // ── Ritorno alla home del progetto dopo salvataggio turni guida ──
@@ -493,7 +532,7 @@ export default function DriverWorkspace({
     } finally {
       setSavingDss(false);
     }
-  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool, cpsat]);
+  }, [vehicleScenarioId, result, dssName, operatorConfig, ambito, solverMode, wwPool, cpsat, refetchSavedDss]);
 
   /* ── Export handlers ─────────────────────────────────── */
   /* Fogli turno: UNA pagina A4 per turno nel formato aziendale (codice,
@@ -1259,6 +1298,10 @@ export default function DriverWorkspace({
   }, [handleUndo, handleRedo]);
 
   const optimizerCfg = operatorConfig.bds?.optimizer;
+  const nAmbito = scelteAttive(ambito);
+  /* Come il solver ha trattato vincoli globali e costi avanzati (resta nel risultato salvato) */
+  const esitoVincoli = (result as any)?.solverMetrics?.vincoliGlobali as any[] | undefined;
+  const esitoBds5 = (result as any)?.solverMetrics?.bds5;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -1325,7 +1368,26 @@ export default function DriverWorkspace({
           >
             <Settings className="w-3 h-3" /> Config CSP
           </button>
+          {solverMode === "cpsat" && (
+          <button
+            onClick={() => setAmbitoOpen(true)}
+            title="Cluster di cambio su cui tagliare, vincoli globali di soluzione, costi avanzati"
+            className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded border transition ${nAmbito > 0 ? "text-orange-200 border-orange-500/50 bg-orange-500/15 hover:bg-orange-500/25" : "text-orange-300 border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/15"}`}
+          >
+            <Crosshair className="w-3 h-3" /> Ambito del calcolo
+            {nAmbito > 0 && <span className="font-mono font-bold">{nAmbito}</span>}
+          </button>
+          )}
           </>
+          )}
+          {savedDss.length >= 2 && (
+            <button
+              onClick={() => setShowCompare(true)}
+              title="Confronta fianco a fianco due scenari turni guida salvati"
+              className="flex items-center gap-1.5 text-[11px] text-purple-300/80 px-2.5 py-1 rounded border border-purple-500/30 hover:bg-purple-500/10 transition"
+            >
+              <ArrowRightLeft className="w-3 h-3" /> Confronta salvati ({savedDss.length})
+            </button>
           )}
           <button
             onClick={() => setWwOpen(o => !o)}
@@ -1499,6 +1561,17 @@ export default function DriverWorkspace({
                       </span>
                     ))}
                   </div>
+                )}
+                {solverMode === "cpsat" && (clusterDelCalcolo?.length ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAmbitoOpen(true)}
+                    className="mt-3 text-[11px] text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline"
+                  >
+                    {ambito.clusterScelti?.length
+                      ? `Il calcolo taglierà solo su ${ambito.clusterScelti.length} cluster su ${clusterDelCalcolo!.length} · cambia`
+                      : "Scegli su quali cluster tagliare"}
+                  </button>
                 )}
               </div>
 
@@ -1815,6 +1888,13 @@ export default function DriverWorkspace({
                 );
               })()}
             </div>
+            {/* Esito dei vincoli globali (BDSI cap. 14) e dei costi avanzati (BDS5) */}
+            {(esitoVincoli?.length || esitoBds5) ? (
+              <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+                {esitoVincoli?.length ? <VincoliReport report={esitoVincoli} /> : null}
+                <Bds5Report report={esitoBds5} />
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -2305,6 +2385,26 @@ export default function DriverWorkspace({
         config={operatorConfig}
         onChange={setOperatorConfig}
       />
+
+      {/* ── Ambito del calcolo: cluster, vincoli globali, costi avanzati ── */}
+      <AmbitoDelCalcoloPanel
+        aperto={ambitoOpen}
+        onChiudi={() => setAmbitoOpen(false)}
+        ambito={ambito}
+        onCambia={setAmbito}
+        cluster={clusterDelCalcolo}
+      />
+
+      {/* ── Confronto fra due scenari turni guida salvati ── */}
+      {showCompare && savedDss.length >= 2 && (
+        <DssCompareDialog
+          scenarioId={vehicleScenarioId}
+          savedDss={savedDss}
+          defaultLeftId={dssId ?? savedDss[0]?.id}
+          defaultRightId={savedDss.find(s => s.id !== (dssId ?? savedDss[0]?.id))?.id ?? savedDss[1]?.id}
+          onClose={() => setShowCompare(false)}
+        />
+      )}
 
       {/* ── Save DSS Dialog ─────────────────────────────────── */}
       {showSaveDialog && (
