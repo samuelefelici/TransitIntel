@@ -11,12 +11,20 @@
  * assente»): una colonna sbagliata lì darebbe una risposta 200 con dati in
  * meno. Per questo si registra ogni query che Postgres rifiuta, e alla fine
  * non deve essercene nessuna.
+ *
+ * Corretto quel 500, è diventato raggiungibile un altro caso: chi non vede
+ * nessun feed (getLatestFeedId → null) riceveva gli hub ricavati dalle fermate
+ * di TUTTI i feed, perché «nessun feed» veniva letto come «nessun filtro». Qui
+ * si prova che non succede più, sulle rotte dell'Intermodale e sul ripiego
+ * dell'analisi intermodale dei turni (POST /intermodal-optimizer/analyze).
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import request from "supertest";
+import { Router } from "express";
 import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import router from "../routes/intermodal";
+import routerOttimizzatore from "../routes/intermodal-optimizer";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const UTENTE = "c1000000-0000-0000-0000-000000000001";
@@ -39,11 +47,18 @@ const POI_UFFICI_PROGETTO = "c1000000-0000-0000-0000-0000000000b4";
 /* un comune che non esiste: il suo riquadro tiene fuori gli hub cablati di Ancona */
 const COMUNE = "999990";
 
+/* le rotte dell'Intermodale e l'analisi intermodale dei turni, come nell'app vera */
+const rotte = Router();
+rotte.use(router);
+rotte.use(routerOttimizzatore);
+
 /* admin: sceglie il feed con ?feedId= senza esserne il proprietario */
-const app = appDiProva(router, utenteDiProva(UTENTE, [], "admin"));
+const app = appDiProva(rotte, utenteDiProva(UTENTE, [], "admin"));
 const get = (percorso: string) => request(app).get(`/api/intermodal/${percorso}`);
-/* chi non amministra: il feed si sceglie con il filtro per proprietario, progetti e condivisioni */
-const appSemplice = appDiProva(router, utenteDiProva(UTENTE_SEMPLICE));
+/* chi non amministra: il feed si sceglie con il filtro per proprietario, progetti e condivisioni.
+ * Il feed di prova non ha proprietario e non è di default: questo utente non vede nessun feed */
+const appSemplice = appDiProva(rotte, utenteDiProva(UTENTE_SEMPLICE));
+const getSemplice = (percorso: string) => request(appSemplice).get(`/api/intermodal/${percorso}`);
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", () => {
   const rifiutate: string[] = [];
@@ -63,13 +78,16 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
   beforeAll(async () => {
     await pulisci();
 
-    /* ── Un feed GTFS: una stazione (dal nome), una fermata a 110 m, una lontana ── */
+    /* ── Un feed GTFS: una stazione (dal nome), una fermata a 110 m, una lontana.
+     * La quarta ha l'id "13", lo stesso di una fermata cablata dell'hub curato
+     * rail-ancona: è da lì che le linee di un feed altrui potevano uscire ── */
     await db.execute(sql`INSERT INTO gtfs_feeds (id, filename) VALUES (${FEED}::uuid, 'intermodale-prova.zip')`);
     await db.execute(sql`
       INSERT INTO gtfs_stops (feed_id, stop_id, stop_name, stop_lat, stop_lon)
       VALUES (${FEED}::uuid, 'S-STAZ', 'STAZIONE FS PROVA', 45.0000, 9.0000),
              (${FEED}::uuid, 'S-VIC',  'Via Roma 1',        45.0010, 9.0000),
-             (${FEED}::uuid, 'S-LONT', 'Via Lontana',       45.1000, 9.0000)
+             (${FEED}::uuid, 'S-LONT', 'Via Lontana',       45.1000, 9.0000),
+             (${FEED}::uuid, '13',     'Capolinea tredici', 45.2000, 9.0000)
     `);
     await db.execute(sql`
       INSERT INTO gtfs_routes (feed_id, route_id, route_short_name, route_long_name, route_color)
@@ -89,6 +107,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
       VALUES (${FEED}::uuid, 'T-FER', 'S-STAZ', 1, '08:00:00', '08:00:00'),
              (${FEED}::uuid, 'T-FER', 'S-VIC',  2, '08:05:00', '08:05:00'),
              (${FEED}::uuid, 'T-FER', 'S-LONT', 3, '08:30:00', '08:30:00'),
+             (${FEED}::uuid, 'T-FER', '13',     4, '08:50:00', '08:50:00'),
              (${FEED}::uuid, 'T-SAB', 'S-STAZ', 1, '09:00:00', '09:00:00'),
              (${FEED}::uuid, 'T-SAB', 'S-LONT', 2, '09:30:00', '09:30:00')
     `);
@@ -255,6 +274,111 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
       expect(r.status, JSON.stringify(r.body)).toBe(200);
       expect((r.body.hubPois as any[]).map(h => ({ hub: h.hubName, poli: (h.pois as any[]).map(p => p.name) })))
         .toEqual([{ hub: "Piazza Rosselli", poli: ["Uffici del progetto"] }]);
+    });
+  });
+
+  /* Chi non vede nessun feed riceveva gli hub ricavati dalle fermate del feed di
+   * prova, che non è suo. Ora gli restano gli hub che non vengono da un feed (qui
+   * la stazione dei POI); chi il feed lo vede continua a trovarci tutto. */
+  describe("«nessun feed» non vuol dire «tutti i feed»", () => {
+    const idStazione = async () => {
+      const r = await get(`hubs?feedId=${FEED}&municipality=${COMUNE}`);
+      return (r.body as any[]).find(h => h.name === "STAZIONE FS PROVA").id as string;
+    };
+
+    it("la premessa: chi non amministra, qui, non vede nessun feed", async () => {
+      const r = await getSemplice(`analyze?municipality=${COMUNE}`);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.scope).toMatchObject({ source: "gtfs", feedId: null });
+    });
+
+    it("hubs, a chi non vede feed: non c'è la stazione del feed di prova, nemmeno filtrando per linea o per riquadro", async () => {
+      for (const parametri of [`municipality=${COMUNE}`, `municipality=${COMUNE}&routeIds=R1`, "bbox=44.97,8.97,45.03,9.03"]) {
+        const r = await getSemplice(`hubs?${parametri}`);
+        expect(r.status, `${parametri} ${JSON.stringify(r.body)}`).toBe(200);
+        expect((r.body as any[]).map(h => h.name), parametri).toEqual(["Stazione di Prova Nord"]);
+      }
+      /* senza riquadro: gli hub cablati e le stazioni dei POI sì, quelli ricavati da un feed no */
+      const tutti = await getSemplice("hubs");
+      expect(tutti.status, JSON.stringify(tutti.body)).toBe(200);
+      expect((tutti.body as any[]).map(h => h.name)).not.toContain("STAZIONE FS PROVA");
+      expect((tutti.body as any[]).map(h => h.name)).toContain("Stazione di Prova Nord");
+    });
+
+    it("analyze e pois, a chi non vede feed: nessun hub, fermata o linea del feed di prova", async () => {
+      const analisi = await getSemplice(`analyze?municipality=${COMUNE}`);
+      expect(analisi.status, JSON.stringify(analisi.body)).toBe(200);
+      expect((analisi.body.hubs as any[]).map(h => h.hub.name)).toEqual(["Stazione di Prova Nord"]);
+      expect(analisi.body.hubs[0].nearbyStops).toEqual([]);
+      expect(analisi.body.hubs[0].busLines).toEqual([]);
+
+      const poli = await getSemplice(`pois?municipality=${COMUNE}`);
+      expect(poli.status, JSON.stringify(poli.body)).toBe(200);
+      expect((poli.body.hubPois as any[]).map(h => h.hubName)).toEqual(["Stazione di Prova Nord"]);
+    });
+
+    it("hub/:id/routes, a chi non vede feed: l'hub ricavato dal feed di prova non c'è", async () => {
+      const r = await getSemplice(`hub/${await idStazione()}/routes`);
+      expect(r.status, JSON.stringify(r.body)).toBe(404);
+    });
+
+    it("hub/:id/routes, a chi non vede feed: un hub cablato risponde, ma senza le linee che in un feed altrui passano alle sue fermate", async () => {
+      /* rail-ancona ha la fermata "13" cablata: nel feed di prova ci passa la linea 7 */
+      const r = await getSemplice("hub/rail-ancona/routes");
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.hub.id).toBe("rail-ancona");
+      expect(r.body.nearbyStops).toEqual([]);
+      expect(r.body.routes).toEqual([]);
+    });
+
+    it("chi amministra, con ?feedId=, continua a vedere l'hub, le sue fermate e le sue linee", async () => {
+      const linea7 = [{ routeId: "R1", shortName: "7", longName: "Stazione - Ospedale", color: "#0055aa" }];
+      const r = await get(`hub/${await idStazione()}/routes?feedId=${FEED}`);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.hub.name).toBe("STAZIONE FS PROVA");
+      expect((r.body.nearbyStops as any[]).map(s => s.stopId).sort()).toEqual(["S-STAZ", "S-VIC"]);
+      expect(r.body.routes).toEqual(linea7);
+
+      const cablato = await get(`hub/rail-ancona/routes?feedId=${FEED}`);
+      expect(cablato.status, JSON.stringify(cablato.body)).toBe(200);
+      expect(cablato.body.routes).toEqual(linea7);
+    });
+  });
+
+  /* Senza zone di coincidenza l'analisi intermodale dei turni ripiega sulla
+   * ricerca degli hub: la chiamava senza feed, cioè fra le fermate di tutti i
+   * feed dentro il riquadro delle corse. Ora cerca sul feed della richiesta
+   * (feedId nel corpo, se l'utente lo vede; altrimenti il suo feed corrente). */
+  describe("l'analisi intermodale dei turni, senza zone di coincidenza", () => {
+    /* una corsa dalla stazione alla fermata lontana: il riquadro le contiene entrambe */
+    const corpo = {
+      feedId: FEED,
+      date: "20261111",
+      syncSchedules: false,          // niente ViaggiaTreno
+      includeOtherBusRoutes: false,
+      shifts: [{
+        vehicleId: "V1",
+        trips: [{
+          type: "trip", tripId: "T-FER", routeId: "R1", routeName: "7",
+          departureTime: "08:00", arrivalTime: "08:30", departureMin: 480, arrivalMin: 510,
+          firstStopLat: 45.0, firstStopLon: 9.0, lastStopLat: 45.1, lastStopLon: 9.0,
+        }],
+      }],
+    };
+    const analizza = (a: typeof app) => request(a).post("/api/intermodal-optimizer/analyze").send(corpo);
+
+    it("trova gli hub sul feed della richiesta", async () => {
+      const r = await analizza(app);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.hubSource).toBe("auto"); // nessuna zona nel database di prova
+      expect((r.body.hubs as any[]).map(h => h.name)).toEqual(["STAZIONE FS PROVA", "Stazione di Prova Nord"]);
+    });
+
+    it("a chi non vede il feed chiesto, né altri, non dà gli hub ricavati dalle sue fermate", async () => {
+      const r = await analizza(appSemplice);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.hubSource).toBe("auto");
+      expect((r.body.hubs as any[]).map(h => h.name)).toEqual(["Stazione di Prova Nord"]);
     });
   });
 

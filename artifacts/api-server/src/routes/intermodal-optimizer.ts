@@ -5,7 +5,8 @@
  * dallo scheduler CP-SAT, analizza l'intermodalità con treni/navi/aerei:
  *
  *  1. Scopre AUTOMATICAMENTE gli hub (railway/port/airport/bus_terminal)
- *     dentro il bounding box dei capolinea trip optimizzati.
+ *     dentro il bounding box dei capolinea trip optimizzati, sul feed dei
+ *     turni (feedId della richiesta, altrimenti il feed corrente dell'utente).
  *  2. Sincronizza (opzionale) gli orari treni reali da ViaggiaTreno
  *     per gli hub railway scoperti.
  *  3. Per ogni capolinea trip vicino ad un hub calcola le
@@ -18,6 +19,7 @@
  *   POST /api/intermodal-optimizer/analyze
  *     body: {
  *       shifts: VehicleShift[],
+ *       feedId?: string,                       // il feed dei turni; default: feed corrente dell'utente
  *       date?: "YYYYMMDD" | "YYYY-MM-DD",     // default: oggi
  *       includeExtraurban?: boolean,           // default: true
  *       syncSchedules?: boolean,               // default: false
@@ -36,6 +38,7 @@ import {
   type DiscoveredHub,
 } from "./intermodal";
 import { INTERMODAL_HUBS, zoneScopeWhere } from "./coincidence-zones";
+import { getLatestFeedId } from "./gtfs-helpers";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import { db } from "@workspace/db";
 import { coincidenceZones, coincidenceZoneStops, gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsCalendar, gtfsCalendarDates, pointsOfInterest } from "@workspace/db/schema";
@@ -350,8 +353,11 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
       windowAfterArrivalMin?: number;
       windowBeforeDepartureMin?: number;
       maxHubDistM?: number;
-      /** Progetto Planner Studio del giro: limita zone e hub a quel progetto */
+      /** Progetto Planner Studio del giro: limita le zone di coincidenza a quel progetto */
       psProjectId?: string;
+      /** Feed dei turni (quello su cui ha girato il solver): lo legge
+       *  getLatestFeedId, che lo accetta solo se l'utente lo vede */
+      feedId?: string;
     };
     const psScope = /^[0-9a-f-]{36}$/i.test(String(body.psProjectId ?? "")) ? String(body.psProjectId) : null;
 
@@ -596,8 +602,16 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
     }
 
     if (!usedZones) {
-      hubsRaw = await discoverHubs({ bbox, includeCurated: true });
-      req.log.info(`[intermodal-opt] no coincidence zones found, auto-discovered ${hubsRaw.length} hubs`);
+      /* Il ripiego cercava gli hub senza feed né progetto, cioè fra le fermate
+       * di TUTTI i feed dentro il riquadro delle corse. Ora cerca sul feed dei
+       * turni: quello della richiesta (body.feedId, se l'utente lo vede),
+       * altrimenti il suo feed corrente — la regola con cui il solver dei turni
+       * macchina sceglie il feed delle corse. Il feed e non il progetto PS: le
+       * corse dei turni vengono dal feed, e non tutti i giri hanno un progetto.
+       * Chi non vede nessun feed riceve gli hub curati e le stazioni dai POI. */
+      const feedId = await getLatestFeedId(req);
+      hubsRaw = await discoverHubs({ bbox, includeCurated: true, feedId });
+      req.log.info(`[intermodal-opt] no coincidence zones found, auto-discovered ${hubsRaw.length} hubs (feed ${feedId ?? "nessuno"})`);
     }
 
     // 2bis) Filtro hub per prossimità ai capolinea (no hub fuori area servita)

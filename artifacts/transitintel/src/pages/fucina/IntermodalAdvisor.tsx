@@ -187,6 +187,7 @@ export default function IntermodalAdvisor({
   date,
   trigger,
   psProjectId,
+  feedId,
   onApplyScenario,
 }: {
   shifts: VehicleShift[];
@@ -195,6 +196,10 @@ export default function IntermodalAdvisor({
   /** Progetto Planner Studio del giro: limita le zone di coincidenza a quelle
    *  del progetto (più le globali), come già fanno depositi e archi. */
   psProjectId?: string | null;
+  /** Feed dei turni (il pacchetto dati del progetto di scheduling): senza zone
+   *  di coincidenza gli hub si cercano fra le sue fermate. Se manca, il server
+   *  usa il feed corrente dell'utente. */
+  feedId?: string | null;
   /** Callback invocata quando l'utente applica lo scenario alternativo */
   onApplyScenario?: (modifiedShifts: VehicleShift[]) => void;
 }) {
@@ -262,6 +267,7 @@ export default function IntermodalAdvisor({
           shifts,
           date,
           psProjectId: psProjectId ?? undefined,
+          feedId: feedId ?? undefined,
           syncSchedules,
           includeExtraurban,
           includeOtherBusRoutes: true,
@@ -284,7 +290,7 @@ export default function IntermodalAdvisor({
       stopped = true;
       setLoading(false);
     }
-  }, [shifts, date, syncSchedules, includeExtraurban, PHASES]);
+  }, [shifts, date, psProjectId, feedId, syncSchedules, includeExtraurban, PHASES]);
 
   /** Applica i proposedChanges agli shifts originali producendo uno scenario alternativo */
   const buildScenarioShifts = useCallback((origShifts: VehicleShift[], changes: ProposedChange[]): VehicleShift[] => {
@@ -340,6 +346,7 @@ export default function IntermodalAdvisor({
           shifts: modified,
           date,
           psProjectId: psProjectId ?? undefined,
+          feedId: feedId ?? undefined,
           syncSchedules: false, // evitiamo nuova sincronizzazione lenta
           includeExtraurban,
         }),
@@ -356,7 +363,7 @@ export default function IntermodalAdvisor({
     } finally {
       setScenarioLoading(false);
     }
-  }, [data, shifts, date, includeExtraurban, buildScenarioShifts]);
+  }, [data, shifts, date, psProjectId, feedId, includeExtraurban, buildScenarioShifts]);
 
   const applyScenario = useCallback(() => {
     if (!scenarioShifts) return;
