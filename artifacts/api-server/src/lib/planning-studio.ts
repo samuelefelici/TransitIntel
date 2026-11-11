@@ -413,10 +413,9 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
       await copy("ps_trip_exceptions", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
       await copy("ps_no_go_zones", { genId: true, scope: byProj });
       await copy("ps_service_periods", { genId: true, scope: byProj });
-      // profilo calendario aziendale (PK = project_id, niente id). La tabella ha
-      // bootstrap lazy (creata al primo accesso al modulo calendario): copiamo
-      // solo se già esiste, così un progetto senza calendario aziendale non
-      // fa abortire la transazione.
+      // profilo calendario aziendale (PK = project_id, niente id). Su uno
+      // schema non ancora migrato la tabella può mancare: copiamo solo se
+      // esiste, così la transazione non abortisce.
       const hasProfiles = await tx.execute<any>(sql`SELECT to_regclass('public.ps_calendar_profiles') AS t`);
       if (hasProfiles.rows[0]?.t) {
         await tx.execute(sql`
@@ -425,7 +424,7 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
             FROM ps_calendar_profiles WHERE project_id = ${src}::uuid`);
       }
 
-      // CLASSIFICAZIONE GIORNI del progetto (bootstrap lazy come i profili):
+      // CLASSIFICAZIONE GIORNI del progetto (stessa cautela dei profili):
       // senza queste due copie il clone perde i giorni classificati a mano e
       // il calendario categorie → le UDP del duplicato nascerebbero sbagliate.
       // ps_day_calendar: date→day-type per-progetto; day_type rimappato SOLO se

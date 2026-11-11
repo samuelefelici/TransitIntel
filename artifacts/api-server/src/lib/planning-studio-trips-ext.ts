@@ -1322,8 +1322,8 @@ router.post("/planning-studio/projects/:id/trips/prototype-missing", async (req,
     }
   });
 
-  // validità feriale: best-effort FUORI transazione (la matrice di validità ha
-  // bootstrap lazy → non deve far abortire la creazione dei prototipi).
+  // validità feriale: best-effort FUORI transazione (un errore sulla matrice
+  // di validità non deve far abortire la creazione dei prototipi).
   if (dayTypeId && createdTripIds.length) {
     try {
       const lit = `{${createdTripIds.join(",")}}`;

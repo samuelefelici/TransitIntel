@@ -19,11 +19,11 @@
  * che l'AVM il codice lo manda solo su 17 mezzi. Sono due diagnosi opposte e
  * il rimedio è diverso.
  *
- * ── Se il database non concede ──
+ * ── Se il database non risponde ──
  *
- * La raccolta è un di più: se la tabella non si può creare (ruolo senza
- * permessi sullo schema dell'AVM) non deve fermare né l'ingestione né la Sala
- * Operativa. Si registra il motivo e si va avanti senza.
+ * La raccolta è un di più: se la scrittura fallisce (database fermo, tabella
+ * non ancora migrata) non deve fermare né l'ingestione né la Sala Operativa.
+ * Si registra il motivo e si va avanti senza.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";

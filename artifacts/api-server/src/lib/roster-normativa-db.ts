@@ -39,7 +39,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export type Lettore = <T>(f: (ex: Ex) => Promise<T>) => Promise<T>;
 export const conDb: Lettore = f => f(dbEx);
 
-/** «Quella tabella o colonna qui non c'è» (installazione senza Planning Studio, colonne aggiunte al primo uso). */
+/** «Quella tabella o colonna qui non c'è» (installazione senza Planning Studio, schema non ancora migrato). */
 function manca(e: any): boolean {
   const codice = e?.cause?.code ?? e?.code;
   return codice === "42P01" || codice === "42703";
@@ -57,8 +57,8 @@ export function piuGiorni(giorno: string, n: number): string {
 
 /* ── Colonne che possono mancare ─────────────────────────────────────────── */
 
-/* I moduli di scheduling aggiungono colonne al primo uso (project_id, config):
-   si guarda quali ci sono, e si ricontrolla ogni tanto. */
+/* Su uno schema non ancora migrato alcune colonne possono mancare
+   (project_id, config): si guarda quali ci sono, e si ricontrolla ogni tanto. */
 let colonneNote: { quando: number; mappa: Map<string, Set<string>> } | null = null;
 async function colonne(leggi: Lettore): Promise<Map<string, Set<string>>> {
   if (colonneNote && Date.now() - colonneNote.quando < 60_000) return colonneNote.mappa;

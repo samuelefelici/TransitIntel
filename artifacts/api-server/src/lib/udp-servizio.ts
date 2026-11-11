@@ -42,7 +42,7 @@ export const servizioEffettivo = (u: Pick<ServizioUdp, "scelto" | "proposto">): 
  * Tipo scelto e proposta di più UDP in una query. Le corse si contano per
  * linea (ps_routes.short_name) e si classificano qui, con la stessa regola
  * delle reti tariffarie. `to_jsonb(u)` legge `service_type` anche dove la
- * colonna non c'è ancora (il modulo UDP la aggiunge al primo uso), e si
+ * colonna non c'è ancora (schema non ancora migrato), e si
  * calcola una volta per UDP, prima di aprire l'elenco delle corse: dopo,
  * costerebbe una volta per corsa, con tutte le corse dentro.
  */
