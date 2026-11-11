@@ -41,7 +41,6 @@ import planningStudioEstimateRouter from "./planning-studio-estimate";
 import rosterRouter from "./roster";
 import rosterPubblicazioneRouter from "./roster-pubblicazione";
 import anagraficaRouter from "./anagrafica";
-import serviceDbRouter from "./service-db";
 import depotsRouter from "./depots";
 import deadheadsRouter from "./deadheads";
 import deadheadArcsRouter from "./deadhead-arcs";
@@ -131,7 +130,6 @@ router.use(anagraficaRouter); // Roster: anagrafica del personale (prima del tab
 router.use(rosterPubblicazioneRouter); // Roster: pubblicazione dei turni guida, il canale unico dallo Scheduling Engine
 router.use(rosterRouter); // Roster: assegnazione turni guida al personale viaggiante
 router.use(rosterRotazioniRouter); // Roster: rotazioni riposi (ciclo settimanale) + assistente CP-SAT
-router.use(serviceDbRouter); // Database di Esercizio: vista unica della catena di pianificazione
 router.use(faresRouter);
 router.use(faresMinOdRouter);
 router.use(faresNodeAssignmentRouter);

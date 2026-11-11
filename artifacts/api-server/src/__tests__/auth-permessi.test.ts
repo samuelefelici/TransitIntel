@@ -220,9 +220,9 @@ describe("Letture condivise: Analisi spenta non rompe gli altri moduli", () => {
     expect(verifica("/coincidence-zones", analisi, "POST")).toBe(403);
   });
 
-  it("il Database di esercizio è dei Turni (prima bastava essere entrati)", () => {
+  it("il Database di esercizio non c'è più (PR 2.13b): il suo percorso non ha un permesso, quindi è negato a chi non è admin", () => {
     expect(verifica("/service-db/overview", utente([]))).toBe(403);
-    expect(verifica("/service-db/overview", utente(["scheduling"]))).toBe("passa");
+    expect(verifica("/service-db/overview", utente(["scheduling"]))).toBe(403);
   });
 });
 

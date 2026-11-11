@@ -547,7 +547,6 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   ["/roster/rotazioni-riposi", ["roster", "personale"]],
   // il roster (tabellone, assegnazioni, voci, calendario, tratte dei turni)
   ["/roster", "roster"], ["/scheduling", "scheduling"],
-  ["/service-db", "scheduling"],
   ["/deadheads", "scheduling"],
   // Depositi e archi fuorilinea sono infrastruttura di PROGETTO: si gestiscono
   // in Planner Studio (permesso network) e servono alla pipeline Scheduling
@@ -587,7 +586,7 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   ["/traffic", "analytics"], ["/poi", "analytics"], ["/population", "analytics"],
   ["/timetables", "analytics"], ["/planning", "analytics"],
   ["/scenarios", "analytics"], ["/weather", "analytics"],
-  ["/calendar-presets", "analytics"], ["/settings", "analytics"],
+  ["/settings", "analytics"],
 ];
 
 /**

@@ -56,7 +56,6 @@ const RosterPage = lazyWithRetry(() => import("@/pages/roster"));
 const RosterPubblicazionePage = lazyWithRetry(() => import("@/pages/roster-pubblicazione"));
 const AnagraficaPage = lazyWithRetry(() => import("@/pages/anagrafica"));
 const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
-const ServiceDbPage = lazyWithRetry(() => import("@/pages/service-db"));
 const CalcoliPage = lazyWithRetry(() => import("@/pages/calcoli"));
 const Traffic = lazyWithRetry(() => import("@/pages/traffic"));
 const Territory = lazyWithRetry(() => import("@/pages/territory"));
@@ -78,7 +77,6 @@ const CoincidenceZonesPage = lazyWithRetry(() => import("@/pages/coincidence-zon
 const FaresPage = lazyWithRetry(() => import("@/pages/fares"));
 const FaresPolimetrichePage = lazyWithRetry(() => import("@/pages/fares-polimetriche"));
 const FareAnalyticsPage = lazyWithRetry(() => import("@/pages/fare-analytics"));
-const FareDocsPage = lazyWithRetry(() => import("@/pages/fare-docs"));
 const FareSimulatorPage = lazyWithRetry(() => import("@/pages/fare-simulator"));
 const TripPlannerPage = lazyWithRetry(() => import("@/pages/trip-planner"));
 const DepotsPage = lazyWithRetry(() => import("@/pages/depots"));
@@ -297,9 +295,8 @@ function Router() {
             <Route path="/fare-analytics">
               <Gated perm={PERMESSI_PAGINA["/fare-analytics"]}><FareAnalyticsPage /></Gated>
             </Route>
-            <Route path="/fare-docs">
-              <Gated perm={PERMESSI_PAGINA["/fare-docs"]}><FareDocsPage /></Gated>
-            </Route>
+            {/* la «Documentazione ATMA» (documento statico) non c'è più: PR 2.13b */}
+            <Route path="/fare-docs"><Redirect to="/fares" replace /></Route>
             <Route path="/fare-simulator">
               <Gated perm={PERMESSI_PAGINA["/fare-simulator"]}><FareSimulatorPage /></Gated>
             </Route>
@@ -352,9 +349,8 @@ function Router() {
             <Route path="/misto">
               <Gated perm={PERMESSI_PAGINA["/misto"]}><MistoPage /></Gated>
             </Route>
-            <Route path="/service-db">
-              <Gated perm={PERMESSI_PAGINA["/service-db"]}><ServiceDbPage /></Gated>
-            </Route>
+            {/* il «Database di esercizio» è confluito nei Progetti di esercizio: PR 2.13b */}
+            <Route path="/service-db"><Redirect to="/fucina/esercizio" replace /></Route>
             <Route path="/calcoli">
               <Gated perm={PERMESSI_PAGINA["/calcoli"]}><CalcoliPage /></Gated>
             </Route>

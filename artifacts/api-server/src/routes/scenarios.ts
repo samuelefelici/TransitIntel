@@ -3217,25 +3217,6 @@ function getCalendarPresets(): Record<string, CalendarPreset> {
   };
 }
 
-// ─── GET /api/calendar-presets ────────────────────────────────────────
-
-router.get("/calendar-presets", (_req, res) => {
-  const presets = getCalendarPresets();
-  const list = Object.entries(presets).map(([key, p]) => ({
-    key,
-    serviceId: p.serviceId,
-    serviceName: p.serviceName,
-    days: { mon: p.monday, tue: p.tuesday, wed: p.wednesday, thu: p.thursday, fri: p.friday, sat: p.saturday, sun: p.sunday },
-    startDate: p.startDate,
-    endDate: p.endDate,
-    cadenceMultiplier: p.cadenceMultiplier,
-    isVariant: p.isVariant,
-    color: p.color,
-    exceptionsCount: p.exceptions.length,
-  }));
-  res.json({ presets: list });
-});
-
 // ─── CRUD: Calendars ──────────────────────────────────────────────────
 
 // GET /api/scenarios/:id/programs/:programId/calendars
@@ -3414,19 +3395,6 @@ async function createCalendarFromPreset(programId: string, presetKey: string): P
 
   return cal;
 }
-
-// POST /api/scenarios/:id/programs/:programId/calendars/from-preset
-router.post("/scenarios/:id/programs/:programId/calendars/from-preset", async (req, res) => {
-  try {
-    const { preset } = req.body as { preset: string };
-    if (!preset) { res.status(400).json({ error: "Campo 'preset' richiesto" }); return; }
-    const cal = await createCalendarFromPreset(req.params.programId, preset);
-    res.json(cal);
-  } catch (err: any) {
-    req.log.error(err, "Error creating calendar from preset");
-    res.status(400).json({ error: err.message });
-  }
-});
 
 // POST /api/scenarios/:id/programs/:programId/calendars/from-all-presets
 router.post("/scenarios/:id/programs/:programId/calendars/from-all-presets", async (req, res) => {

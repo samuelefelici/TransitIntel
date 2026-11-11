@@ -226,25 +226,6 @@ router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloRoster, async (req, 
   }
 });
 
-// GET cadenze di un conducente → rotazioni a cui è assegnato + scaglione + pattern.
-router.get("/roster/drivers/:id/cadenze", async (req, res): Promise<void> => {
-  try {
-    const id = String(req.params.id);
-    if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-    const r = await db.execute<any>(sql`
-      SELECT rr.id, rr.name, rr.weeks, rr.pattern, a.week_index
-        FROM roster_rotazione_assegnazioni a
-        JOIN roster_rotazioni_riposi rr ON rr.id = a.rotazione_id
-       WHERE a.driver_id = ${id}::uuid
-       ORDER BY rr.name
-    `);
-    res.json({ cadenze: r.rows.map((x: any) => ({
-      rotazioneId: x.id, name: x.name, weeks: x.weeks,
-      scaglione: x.week_index, pattern: x.pattern,
-    })) });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
 /* ─── Generazione riposi (cadenza → voci sul tabellone, per tutto l'anno) ─── */
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

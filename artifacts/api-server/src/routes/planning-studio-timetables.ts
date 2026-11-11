@@ -11,7 +11,6 @@
  * stampa filtra le corse per il day-type scelto (es. "Feriale Scuole Aperte").
  *
  *   GET /planning-studio/:projectId/timetables/routes
- *   GET /planning-studio/:projectId/timetables/route-stops?routeIds=a,b
  *   GET /planning-studio/:projectId/timetables/stops/search?q=
  *   GET /planning-studio/:projectId/timetables/route/:routeId?dayTypeId=&directionId=
  *   GET /planning-studio/:projectId/timetables/stop/:stopId?dayTypeId=
@@ -22,7 +21,6 @@ import { randomBytes } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { mergeStopPatterns } from "../lib/timetable-merge";
-import { computeWeekValidityByTrip } from "../lib/planning-studio-validity-eval";
 
 const router: IRouter = Router();
 
@@ -165,30 +163,6 @@ router.get("/planning-studio/:projectId/timetables/day-types", async (req, res):
     // tabelle validità non ancora create sul progetto → nessun day-type
     res.json({ dayTypes: [] });
   }
-});
-
-// ── GET /timetables/route-stops?routeIds=a,b — fermate uniche delle linee ─────
-router.get("/planning-studio/:projectId/timetables/route-stops", async (req, res): Promise<void> => {
-  try {
-    const projectId = String(req.params.projectId);
-    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
-    if (!(await requireTimetableRead(projectId, req, res))) return;
-    const ids = String(req.query.routeIds ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    const list = uuidList(ids);
-    if (!list) { res.json({ stops: [] }); return; }
-    const r = await db.execute<any>(sql.raw(`
-      SELECT DISTINCT s.id AS stop_id, s.name AS stop_name, s.code AS stop_code
-      FROM ps_variant_stops vs
-      JOIN ps_route_variants v ON v.id = vs.variant_id AND v.project_id = '${projectId}'
-      JOIN ps_stops s ON s.id = vs.stop_id
-      WHERE v.route_id IN (${list})
-      ORDER BY s.name
-    `));
-    res.json({
-      projectId,
-      stops: (r.rows as any[]).map((s) => ({ stopId: s.stop_id, stopName: s.stop_name, stopCode: s.stop_code })),
-    });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // ── GET /timetables/stops/search?q= — picker fermate ────────────────────────
@@ -404,87 +378,6 @@ router.get("/planning-studio/:projectId/timetables/route/:routeId", async (req, 
       pathStops,
       cityNodes: await loadCityNodes(projectId),
       categories: categoriesInfo,
-      // firstTime resta nella risposta (prima serviva solo all'ordinamento e
-      // veniva tolto): senza, chi legge ripiega sugli estremi di `times`, che
-      // col master fuso delle due direzioni davano «partenza 08:01, arrivo 07:59».
-      trips: tripList.map((t) => ({ ...t, firstTime: t.firstTime === "99:99:99" ? null : t.firstTime })),
-    });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-// ── GET /timetables/route/:routeId/week — ORARIO UNICO per CALENDARIO ─────────
-// Tutte le corse della linea che circolano nella categoria scelta (Scuole
-// Aperte / Scuole Chiuse / …), con per ciascuna il vettore Lun→Dom di validità
-// (giorni reali del calendario aziendale) + flag a chiamata → una sola tabella.
-router.get("/planning-studio/:projectId/timetables/route/:routeId/week", async (req, res): Promise<void> => {
-  try {
-    const projectId = String(req.params.projectId);
-    const routeId = String(req.params.routeId);
-    if (!UUID_RE.test(projectId) || !UUID_RE.test(routeId)) { res.status(400).json({ error: "ID non valido" }); return; }
-    if (!(await requireTimetableRead(projectId, req, res))) return;
-    const categoryCode = typeof req.query.category === "string" ? req.query.category : "";
-    const dirRaw = req.query.directionId;
-    const directionId = dirRaw === "0" || dirRaw === "1" ? Number(dirRaw) : null;
-
-    const routeQ = await db.execute<any>(sql`
-      SELECT id, short_name, long_name, color FROM ps_routes
-      WHERE project_id = ${projectId}::uuid AND id = ${routeId}::uuid LIMIT 1`);
-    const route = routeQ.rows[0];
-    if (!route) { res.status(404).json({ error: "Linea non trovata" }); return; }
-
-    const dirClause = directionId === null ? "" : `AND t.direction = ${directionId}`;
-    const rowsQ = await db.execute<any>(sql.raw(`
-      SELECT t.id AS trip_id, COALESCE(t.headsign, v.headsign) AS headsign, t.direction,
-             t.attributes AS attributes,
-             st.stop_id, st.stop_seq, st.departure_time, st.arrival_time, s.name AS stop_name
-      FROM ps_trips t
-      JOIN ps_route_variants v ON v.id = t.variant_id
-      JOIN ps_stop_times st ON st.trip_id = t.id
-      JOIN ps_stops s ON s.id = st.stop_id
-      WHERE t.project_id = '${projectId}' AND t.route_id = '${routeId}'
-        AND COALESCE(t.is_active, true) = true
-        AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
-        ${dirClause}
-      ORDER BY t.id, st.stop_seq
-    `));
-    interface WTrip { tripId: string; headsign: string | null; directionId: number | null; attributes: any; stops: Array<{ stopId: string; stopName: string | null; time: string | null }> }
-    const trips = new Map<string, WTrip>();
-    for (const r of rowsQ.rows as any[]) {
-      let t = trips.get(r.trip_id);
-      if (!t) { t = { tripId: r.trip_id, headsign: r.headsign, directionId: r.direction, attributes: r.attributes ?? {}, stops: [] }; trips.set(r.trip_id, t); }
-      t.stops.push({ stopId: r.stop_id, stopName: r.stop_name, time: (r.departure_time ?? r.arrival_time ?? null) });
-    }
-    const master = mergeStopPatterns([...trips.values()].map((t) => t.stops));
-    const masterIds = master.map((m) => m.stopId);
-
-    // validità Lun→Dom di ogni corsa dentro la categoria (logica autoritativa 5C)
-    const { repDates, daysByTrip } = await computeWeekValidityByTrip(projectId, categoryCode, [...trips.keys()]);
-
-    const tripList = [...trips.values()]
-      .map((t) => {
-        const timeBy = new Map(t.stops.map((s2) => [s2.stopId, s2.time]));
-        return {
-          tripId: t.tripId, headsign: t.headsign, directionId: t.directionId,
-          firstTime: t.stops.find((s2) => s2.time)?.time ?? "99:99:99",
-          // vedi sopra: l'arrivo si legge da qui, mai dagli estremi di `times`
-          lastTime: [...t.stops].reverse().find((s2) => s2.time)?.time ?? null,
-          times: masterIds.map((sId) => timeBy.get(sId)?.slice(0, 5) ?? null),
-          onDemand: !!t.attributes?.onDemand,
-          days: daysByTrip.get(t.tripId) ?? [false, false, false, false, false, false, false],
-        };
-      })
-      // solo le corse che circolano almeno un giorno nel periodo scelto
-      .filter((t) => t.days.some(Boolean))
-      .sort((a, b) => a.firstTime.localeCompare(b.firstTime));
-
-    const catQ = await db.execute<any>(sql`SELECT name FROM ps_validity_categories WHERE code = ${categoryCode} LIMIT 1`);
-
-    res.json({
-      route: { routeId: route.id, shortName: route.short_name, longName: route.long_name, color: route.color },
-      directionId,
-      category: { code: categoryCode, name: catQ.rows[0]?.name ?? categoryCode },
-      repDates,
-      stops: master.map((m: any) => ({ stopId: m.stopId, stopName: m.stopName })),
       // firstTime resta nella risposta (prima serviva solo all'ordinamento e
       // veniva tolto): senza, chi legge ripiega sugli estremi di `times`, che
       // col master fuso delle due direzioni davano «partenza 08:01, arrivo 07:59».

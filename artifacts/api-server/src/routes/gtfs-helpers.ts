@@ -6,7 +6,6 @@ import { db } from "@workspace/db";
 import { gtfsFeeds, gtfsCalendar, gtfsCalendarDates, gtfsTrips } from "@workspace/db/schema";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { haversineKm } from "../lib/geo-utils";
 import { feedVisibile } from "../lib/tenant";
 
 // ── CSV / Shape helpers ───────────────────────────────────────
@@ -252,47 +251,6 @@ export function modelCongestion(hour: number, lng: number, lat: number): number 
     : 0.55;
   const jitter = (Math.sin((lng * 23.7 + lat * 47.3) * 100) * 0.5 + 0.5) * 0.24 - 0.12;
   return Math.min(0.98, Math.max(0.02, base * zoneFactor + jitter * base));
-}
-
-export const TIME_BANDS = [
-  { id: "00-06", label: "Notte (0–6h)",          speedFactor: 1.45 },
-  { id: "07-09", label: "Picco mattino (7–9h)",   speedFactor: 0.68 },
-  { id: "09-12", label: "Mattina (9–12h)",        speedFactor: 1.10 },
-  { id: "12-15", label: "Pranzo (12–15h)",        speedFactor: 1.02 },
-  { id: "15-19", label: "Picco sera (15–19h)",    speedFactor: 0.76 },
-  { id: "19-22", label: "Sera (19–22h)",          speedFactor: 1.18 },
-  { id: "22-24", label: "Tarda sera (22–24h)",    speedFactor: 1.42 },
-] as const;
-
-export const DEFAULT_SPEED_KMH = 40;
-
-export const DAY_CONGESTION_MULT: Record<string, number> = {
-  weekday: 1.00,
-  saturday: 0.58,
-  sunday: 0.28,
-};
-
-export function nearestShapeIdx(stopLat: number, stopLon: number, coords: [number, number][]): { idx: number; distKm: number } {
-  let minSq = Infinity;
-  let bestIdx = 0;
-  for (let i = 0; i < coords.length; i++) {
-    const [lng, lat] = coords[i];
-    const dSq = (lat - stopLat) ** 2 + (lng - stopLon) ** 2;
-    if (dSq < minSq) { minSq = dSq; bestIdx = i; }
-  }
-  return { idx: bestIdx, distKm: Math.sqrt(minSq) * 111 };
-}
-
-export function shapeSegmentDist(coords: [number, number][], fromIdx: number, toIdx: number): number {
-  let d = 0;
-  const start = Math.min(fromIdx, toIdx);
-  const end = Math.max(fromIdx, toIdx);
-  for (let i = start; i < end; i++) {
-    const [lng1, lat1] = coords[i];
-    const [lng2, lat2] = coords[i + 1];
-    d += haversineKm(lat1, lng1, lat2, lng2);
-  }
-  return d;
 }
 
 /* ── Modifiche per id dentro il feed corrente ─────────────────────────────── */

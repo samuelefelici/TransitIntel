@@ -7,22 +7,6 @@ import { cache } from "../middlewares/cache";
 
 const router: IRouter = Router();
 
-router.get("/population/density", cache({ ttlSeconds: 120 }), asyncHandler(async (req, res) => {
-  const rows = await db.select().from(censusSections).limit(10000);
-
-  const data = rows.map((r) => ({
-    id: r.id,
-    istatCode: r.istatCode,
-    population: r.population,
-    areaKm2: r.areaKm2,
-    density: r.density,
-    centroidLng: r.centroidLng,
-    centroidLat: r.centroidLat,
-  }));
-
-  res.json({ data, total: data.length });
-}));
-
 /**
  * GET /api/population/choropleth
  * Returns a GeoJSON FeatureCollection of census-section polygons
