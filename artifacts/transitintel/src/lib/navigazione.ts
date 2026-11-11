@@ -9,8 +9,8 @@
  * più permessi ne basta uno; l'admin vede tutto.
  */
 import {
-  BarChart3, BookOpen, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
-  Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Shuffle, Ticket, Timer,
+  BarChart3, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
+  Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
   Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, type LucideIcon,
 } from "lucide-react";
 import type { Permission } from "@/hooks/use-auth";
@@ -60,8 +60,8 @@ export const PERMESSI_PAGINA = {
   "/planning": ["network"],
   "/coincidence-zones": ["network"],
   "/fucina/esercizio": ["scheduling"],
+  /* i turni misti sono fuori dal menu (PR 2.13b): la pagina resta al suo indirizzo */
   "/misto": ["scheduling"],
-  "/service-db": ["scheduling"],
   /* «I miei calcoli»: turni macchina, turni guida, sincronizzazioni, giri di Argos */
   "/calcoli": ["scheduling"],
   "/driver-shifts": ["scheduling"],
@@ -79,7 +79,6 @@ export const PERMESSI_PAGINA = {
   "/fare-simulator": ["fares"],
   "/fare-analytics": ["fares"],
   "/trip-planner": ["fares"],
-  "/fare-docs": ["fares"],
   "/dashboard": ["analytics"],
   "/traffic": ["analytics"],
   "/territory": ["analytics"],
@@ -109,10 +108,8 @@ export const SEZIONI: readonly SezioneMenu[] = [
     voci: [
       {
         href: "/fucina/esercizio", etichetta: "Progetti di esercizio", icona: ClipboardList, descrizione: "Turni macchina e turni guida",
-        permessi: PERMESSI_PAGINA["/fucina/esercizio"], ancheSu: ["/fucina", "/driver-shifts"],
+        permessi: PERMESSI_PAGINA["/fucina/esercizio"], ancheSu: ["/fucina", "/driver-shifts", "/misto"],
       },
-      { href: "/misto", etichetta: "Turni misti", icona: Shuffle, descrizione: "Completamento fra unità", permessi: PERMESSI_PAGINA["/misto"] },
-      { href: "/service-db", etichetta: "Database di esercizio", icona: Database, descrizione: "Programmi, unità, turni, roster", permessi: PERMESSI_PAGINA["/service-db"] },
       { href: "/calcoli", etichetta: "I miei calcoli", icona: Cpu, descrizione: "In corso e finiti, anche a pagina chiusa", permessi: PERMESSI_PAGINA["/calcoli"] },
     ],
   },
@@ -152,7 +149,6 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/fare-simulator", etichetta: "Simulatore", icona: Gamepad2, descrizione: "Ipotesi tariffarie", permessi: PERMESSI_PAGINA["/fare-simulator"] },
       { href: "/fare-analytics", etichetta: "Prodotti e KPI", icona: Coins, descrizione: "Titoli, indicatori, controlli", permessi: PERMESSI_PAGINA["/fare-analytics"] },
       { href: "/trip-planner", etichetta: "Percorso e tariffa", icona: Navigation, descrizione: "Da porta a porta, con il prezzo", permessi: PERMESSI_PAGINA["/trip-planner"] },
-      { href: "/fare-docs", etichetta: "Documentazione ATMA", icona: BookOpen, descrizione: "Documento stampabile", permessi: PERMESSI_PAGINA["/fare-docs"] },
     ],
   },
   {

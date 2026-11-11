@@ -25,9 +25,12 @@ describe("il menu di chi entra", () => {
     expect(m["Pubblicazione"]).toEqual(["Turni al roster", "Orari al pubblico"]);
   });
 
-  it("solo Turni: i progetti, i misti e la pubblicazione al roster, non gli orari al pubblico", () => {
+  it("solo Turni: i progetti, i calcoli e la pubblicazione al roster, non gli orari al pubblico", () => {
     const m = menu(con("scheduling"));
-    expect(m["Turni"]).toEqual(["Progetti di esercizio", "Turni misti", "Database di esercizio", "I miei calcoli"]);
+    // PR 2.13b: «Turni misti» è fuori dal menu (la pagina resta), «Database di esercizio» non c'è più
+    expect(m["Turni"]).toEqual(["Progetti di esercizio", "I miei calcoli"]);
+    // dalla pagina dei misti resta accesa la voce dei Progetti di esercizio
+    expect(voceAttiva("/misto", sezioniVisibili(() => true, true))).toBe("/fucina/esercizio");
     expect(m["Pubblicazione"]).toEqual(["Turni al roster"]);
     expect(m["Rete e orari"]).toBeUndefined();
   });
@@ -51,7 +54,7 @@ describe("il menu di chi entra", () => {
   });
 
   it("Tariffe e Flotta", () => {
-    expect(menu(con("fares"))["Tariffe"]).toHaveLength(6);
+    expect(menu(con("fares"))["Tariffe"]).toEqual(["Bigliettazione", "Polimetriche", "Simulatore", "Prodotti e KPI", "Percorso e tariffa"]);
     expect(menu(con("fleetcare"))["Flotta"]).toEqual(["FleetCare"]);
   });
 
@@ -133,7 +136,9 @@ describe("la voce accesa e le pagine di lavoro", () => {
     expect(paginaDiLavoro("/planning-studio")).toBe(false);
     expect(paginaDiLavoro("/fucina/esercizio")).toBe(true);
     expect(paginaDiLavoro("/roster")).toBe(false);
-    expect(paginaTariffe("/fare-docs")).toBe(true);
+    expect(paginaTariffe("/fare-analytics")).toBe(true);
+    // la «Documentazione ATMA» non c'è più (PR 2.13b)
+    expect(paginaTariffe("/fare-docs")).toBe(false);
     expect(paginaTariffe("/fucina")).toBe(false);
   });
 });
