@@ -10,7 +10,10 @@ import {
 } from "./intermodal-source";
 
 const router: IRouter = Router();
-const UUID_RE = /^[0-9a-f-]{36}$/i;
+/* La forma canonica, non «36 caratteri fra cifre esadecimali e trattini»:
+ * chi passa di qui finisce in un cast ::uuid, e Postgres rifiuta per esempio
+ * 36 cifre senza trattini (22P02, cioè un 500). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /* Lo scoping dell'Intermodale vive in ./intermodal-source: legge il
  * PROGETTO VIVO (ps_*) invece di uno snapshot GTFS. Le vecchie
@@ -28,10 +31,10 @@ const UUID_RE = /^[0-9a-f-]{36}$/i;
  * da un progetto, senza feed non si legge niente.
  *
  * `nelProgetto`: dentro un progetto il feed non si risolve (resolveSource), e
- * due letture — il filtro per linee della ricerca degli hub e le linee di
- * /hub/:hubId/routes — passano ancora da gtfs_*: trovano le righe del feed
- * materializzato dal progetto, che porta come id gli uuid di ps_*. Lì il
- * filtro resta aperto, com'era: sono gli id del progetto a scegliere le righe.
+ * una lettura — le linee di /hub/:hubId/routes — passa ancora da gtfs_*:
+ * trova le righe del feed materializzato dal progetto, che porta come id gli
+ * uuid di ps_*. Lì il filtro resta aperto, com'era: sono gli id del progetto
+ * a scegliere le righe.
  */
 export const feedWhere = (col: any, feedId: string | null, nelProgetto = false) =>
   feedId ? eq(col, feedId) : nelProgetto ? sql`TRUE` : sql`FALSE`;
@@ -797,13 +800,34 @@ export async function discoverHubs(opts: {
     }
   }
 
-  // 2. Scopri hub dalle fermate GTFS
+  // 2. Scopri hub dalle fermate della rete
   // Se routeIds è specificato, limitiamo alle fermate di quelle routes
   // (senza una rete non c'è niente da limitare: non si leggono le corse)
   let candidateStopIds: Set<string> | null = null;
-  if (haRete && routeIds && routeIds.size > 0) {
+  if (routeIds && routeIds.size > 0 && psProjectId) {
+    /* Dentro un progetto le linee sono quelle di ps_routes e le loro fermate
+     * stanno nelle corse VIVE (ps_trips, ps_stop_times). Cercarle in gtfs_*
+     * voleva dire leggere le corse di tutti i feed e trovare, al più, quelle
+     * del feed materializzato: uno snapshot, e per un progetto mai
+     * materializzato niente. Senza fermate candidate ogni fermata del
+     * progetto veniva scartata: 200 con una lista vuota.
+     * Fra i routeIds possono esserci id che non sono uuid (linee di un feed):
+     * si scartano prima del cast, come per le fermate in loadPassages. */
+    candidateStopIds = new Set();
+    const projectRouteIds = [...routeIds].filter(id => UUID_RE.test(id));
+    for (let i = 0; i < projectRouteIds.length; i += 500) {
+      const batch = projectRouteIds.slice(i, i + 500);
+      const stRows = await db.execute<any>(sql`
+        SELECT DISTINCT st.stop_id::text AS stop_id
+          FROM ps_trips t
+          JOIN ps_stop_times st ON st.trip_id = t.id
+         WHERE t.project_id = ${psProjectId}::uuid
+           AND t.route_id IN (${sql.join(batch.map(id => sql`${id}::uuid`), sql`, `)})`);
+      for (const r of ((stRows as any).rows ?? [])) candidateStopIds.add(String(r.stop_id));
+    }
+  } else if (haRete && routeIds && routeIds.size > 0) {
     const tripRows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
-      .from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId, nelProgetto));
+      .from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId));
     const relevantTripIds = new Set(tripRows.filter(t => routeIds.has(t.routeId)).map(t => t.tripId));
     candidateStopIds = new Set();
     const tripArr = [...relevantTripIds];
@@ -811,7 +835,7 @@ export async function discoverHubs(opts: {
       const batch = tripArr.slice(i, i + 500);
       if (batch.length === 0) continue;
       const stRows = await db.select({ stopId: gtfsStopTimes.stopId }).from(gtfsStopTimes)
-        .where(and(feedWhere(gtfsStopTimes.feedId, feedId, nelProgetto),
+        .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
           sql`${gtfsStopTimes.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
       for (const r of stRows) candidateStopIds.add(r.stopId);
     }
