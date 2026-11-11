@@ -7,11 +7,9 @@
 **/.turbo
 **/*.tsbuildinfo
 .python_packages
-attached_assets
 *.log
 .DS_Store
 .env
 .env.*
 .vscode
 .cache
-.replit*
