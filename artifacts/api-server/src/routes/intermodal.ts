@@ -19,8 +19,22 @@ const UUID_RE = /^[0-9a-f-]{36}$/i;
  * dati diversi da quelli del progetto. Restano qui solo gli helper che
  * non dipendono da quella risoluzione. */
 
-/** Filtro feed riusabile (ramo GTFS, fuori da un progetto). */
-export const feedWhere = (col: any, feedId: string | null) => (feedId ? eq(col, feedId) : sql`TRUE`);
+/**
+ * Filtro sul feed per le letture di gtfs_*.
+ *
+ * Un feed null NON vuol dire «tutti i feed». getLatestFeedId restituisce null
+ * apposta quando l'utente non vede nessun feed (fail-closed): qui diventava
+ * `TRUE`, e a quell'utente arrivavano fermate e linee dei feed altrui. Fuori
+ * da un progetto, senza feed non si legge niente.
+ *
+ * `nelProgetto`: dentro un progetto il feed non si risolve (resolveSource), e
+ * due letture — il filtro per linee della ricerca degli hub e le linee di
+ * /hub/:hubId/routes — passano ancora da gtfs_*: trovano le righe del feed
+ * materializzato dal progetto, che porta come id gli uuid di ps_*. Lì il
+ * filtro resta aperto, com'era: sono gli id del progetto a scegliere le righe.
+ */
+export const feedWhere = (col: any, feedId: string | null, nelProgetto = false) =>
+  feedId ? eq(col, feedId) : nelProgetto ? sql`TRUE` : sql`FALSE`;
 
 export type { DayKind };
 export { parseDayKind };
@@ -718,13 +732,18 @@ export async function discoverHubs(opts: {
   routeIds?: Set<string> | null;
   municipality?: string | null; // codice ISTAT 5-6 cifre (es. 42021 = Jesi)
   includeCurated?: boolean;
-  /** rete su cui cercare gli hub: senza, si leggerebbero tutti i feed insieme */
+  /** feed su cui cercare gli hub, fuori da un progetto. Senza feed e senza
+   *  progetto non si legge nessuna fermata: restano gli hub curati e le
+   *  stazioni dai POI. Chi chiama passa il feed che ha risolto per l'utente. */
   feedId?: string | null;
   /** progetto Planner Studio: gli hub si scoprono dalle SUE fermate vive */
   psProjectId?: string | null;
 }): Promise<DiscoveredHub[]> {
   const { bbox, routeIds, includeCurated = true, feedId = null, psProjectId = null } = opts;
   const out: DiscoveredHub[] = [];
+  /* C'è una rete da cui ricavare hub? Un progetto, oppure un feed risolto. */
+  const nelProgetto = !!psProjectId;
+  const haRete = nelProgetto || !!feedId;
 
   /* Area del progetto (bbox delle sue fermate, con tolleranza): serve sia a
    * filtrare gli hub curati sia a confinare le stazioni dai POI Google, così
@@ -780,10 +799,11 @@ export async function discoverHubs(opts: {
 
   // 2. Scopri hub dalle fermate GTFS
   // Se routeIds è specificato, limitiamo alle fermate di quelle routes
+  // (senza una rete non c'è niente da limitare: non si leggono le corse)
   let candidateStopIds: Set<string> | null = null;
-  if (routeIds && routeIds.size > 0) {
+  if (haRete && routeIds && routeIds.size > 0) {
     const tripRows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
-      .from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId));
+      .from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId, nelProgetto));
     const relevantTripIds = new Set(tripRows.filter(t => routeIds.has(t.routeId)).map(t => t.tripId));
     candidateStopIds = new Set();
     const tripArr = [...relevantTripIds];
@@ -791,7 +811,7 @@ export async function discoverHubs(opts: {
       const batch = tripArr.slice(i, i + 500);
       if (batch.length === 0) continue;
       const stRows = await db.select({ stopId: gtfsStopTimes.stopId }).from(gtfsStopTimes)
-        .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
+        .where(and(feedWhere(gtfsStopTimes.feedId, feedId, nelProgetto),
           sql`${gtfsStopTimes.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
       for (const r of stRows) candidateStopIds.add(r.stopId);
     }
@@ -806,16 +826,23 @@ export async function discoverHubs(opts: {
    * esiste, gtfs_stops.location_type no (l'import GTFS non la legge, e nel
    * feed ATMA di riferimento vale 0 su tutte le fermate). Chiederla a
    * gtfs_stops faceva fallire la query, e con lei /hubs, /analyze e /pois
-   * (500) fuori da un progetto. Sul feed le stazioni si riconoscono dal nome. */
+   * (500) fuori da un progetto. Sul feed le stazioni si riconoscono dal nome.
+   *
+   * Fuori da un progetto e SENZA feed non si legge nessuna fermata, come fa
+   * loadStops (intermodal-source): prima la condizione diventava `WHERE TRUE`
+   * e gli hub si ricavavano dalle fermate di tutti i feed, anche per chi non
+   * ne vede nessuno. */
   const allStops: Array<{ stopId: string; stopName: string | null; lat: number | string; lng: number | string; locationType?: number | null }> = psProjectId
     ? (((await db.execute<any>(sql`
         SELECT id::text AS "stopId", name AS "stopName", lat, lon AS lng, location_type AS "locationType"
           FROM ps_stops WHERE project_id = ${psProjectId}::uuid
          ORDER BY id`)) as any).rows ?? [])
-    : (((await db.execute<any>(sql`
-        SELECT stop_id AS "stopId", stop_name AS "stopName", stop_lat AS lat, stop_lon AS lng
-          FROM gtfs_stops WHERE ${feedId ? sql`feed_id = ${feedId}::uuid` : sql`TRUE`}
-         ORDER BY stop_id`)) as any).rows ?? []);
+    : feedId
+      ? (((await db.execute<any>(sql`
+          SELECT stop_id AS "stopId", stop_name AS "stopName", stop_lat AS lat, stop_lon AS lng
+            FROM gtfs_stops WHERE feed_id = ${feedId}::uuid
+           ORDER BY stop_id`)) as any).rows ?? [])
+      : [];
 
   const hubStops: Array<{ stopId: string; stopName: string; lat: number; lng: number; type: HubType; walkMin: number }> = [];
   for (const s of allStops) {
@@ -1750,6 +1777,7 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
     // "gtfs-railway-…") dava 404. Ora si passa dalla discovery completa.
     const srcR = await resolveSource(req);
     const feedId = srcR.feedId;
+    const nelProgetto = srcR.kind === "ps";
     const municipality = (req.query.municipality as string | undefined)?.trim() || null;
     const allHubs = await discoverHubs({ bbox: null, municipality, feedId, psProjectId: srcR.psProjectId });
     const hub = allHubs.find(h => h.id === req.params.hubId);
@@ -1775,11 +1803,17 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
     const stopIds = [...hub.gtfsStopIds, ...nearbyStops.map(s => s.stopId)];
     if (stopIds.length === 0) { res.json({ hub, nearbyStops: [], routes: [] }); return; }
 
+    /* Fuori da un progetto e senza feed non c'è una rete in cui cercare le
+     * linee. Un hub curato porta comunque i suoi id di fermata cablati ("13",
+     * "18"…): cercati senza filtro, trovavano le linee che nei feed di altri
+     * passano a una fermata con lo stesso id. */
+    if (!nelProgetto && !feedId) { res.json({ hub, nearbyStops, routes: [] }); return; }
+
     const stRows = await db.select({
       stopId: gtfsStopTimes.stopId,
       tripId: gtfsStopTimes.tripId,
     }).from(gtfsStopTimes)
-      .where(and(feedWhere(gtfsStopTimes.feedId, feedId),
+      .where(and(feedWhere(gtfsStopTimes.feedId, feedId, nelProgetto),
         sql`${gtfsStopTimes.stopId} IN (${sql.join(stopIds.map(id => sql`${id}`), sql`, `)})`));
 
     const tripIds = [...new Set(stRows.map(r => r.tripId))];
@@ -1789,7 +1823,7 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
         const batch = tripIds.slice(i, i + 500);
         const rows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
           .from(gtfsTrips)
-          .where(and(feedWhere(gtfsTrips.feedId, feedId),
+          .where(and(feedWhere(gtfsTrips.feedId, feedId, nelProgetto),
             sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`));
         for (const r of rows) tripRouteMap[r.tripId] = r.routeId;
       }
@@ -1802,7 +1836,7 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
       longName: gtfsRoutes.routeLongName,
       color: gtfsRoutes.routeColor,
     }).from(gtfsRoutes)
-      .where(and(feedWhere(gtfsRoutes.feedId, feedId),
+      .where(and(feedWhere(gtfsRoutes.feedId, feedId, nelProgetto),
         sql`${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(id => sql`${id}`), sql`, `)})`));
 
     res.json({ hub, nearbyStops, routes });

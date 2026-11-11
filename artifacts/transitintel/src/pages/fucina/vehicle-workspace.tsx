@@ -2425,6 +2425,7 @@ export default function VehicleWorkspace({
                 shifts={result.shifts}
                 date={summary?.date}
                 psProjectId={psProjectId}
+                feedId={projectFeedId}
                 onApplyScenario={handleApplyIntermodalScenario}
               />
             )}
