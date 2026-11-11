@@ -16,7 +16,7 @@
 
 import React from "react";
 import { FileDown } from "lucide-react";
-import type { DriverShiftsResult } from "@/pages/driver-shifts/types";
+import type { DriverShiftsResult } from "@/pages/fucina/turni-guida/types";
 import type { OperatorConfig } from "@/hooks/use-crew-optimization";
 
 /* ─── helpers ─── */

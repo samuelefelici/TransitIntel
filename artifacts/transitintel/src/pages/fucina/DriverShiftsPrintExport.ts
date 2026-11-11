@@ -32,12 +32,12 @@ import type {
   HandoverInfo,
   Ripresa,
   RipresaTrip,
-} from "@/pages/driver-shifts/types";
+} from "@/pages/fucina/turni-guida/types";
 import {
   TYPE_LABELS,
   TYPE_COLORS,
   formatDuration,
-} from "@/pages/driver-shifts/constants";
+} from "@/pages/fucina/turni-guida/constants";
 
 const escape = (s: string | undefined | null) =>
   String(s ?? "").replace(/[&<>"']/g, c => ({

@@ -40,9 +40,9 @@ import { ricorda, richiama, dimenticaSe, chiaveFucina } from "@/lib/memoria-calc
 import { AlgoGuide, HelpTip, VSP_GUIDE, VCSP_GUIDE } from "@/components/StepGuide";
 // Anteprima turni guida VCSP (gantt read-only, stessi adapter del workspace TG)
 import InteractiveGantt, { type GanttBar, type GanttRow } from "@/components/InteractiveGantt";
-import { driverShiftsToRows, driverShiftsToBars, driverShiftsBoundsHours } from "@/pages/driver-shifts/gantt-adapters";
-import { TYPE_LABELS as TG_TYPE_LABELS, TYPE_COLORS as TG_TYPE_COLORS } from "@/pages/driver-shifts/constants";
-import type { DriverShiftData } from "@/pages/driver-shifts/types";
+import { driverShiftsToRows, driverShiftsToBars, driverShiftsBoundsHours } from "@/pages/fucina/turni-guida/gantt-adapters";
+import { TYPE_LABELS as TG_TYPE_LABELS, TYPE_COLORS as TG_TYPE_COLORS } from "@/pages/fucina/turni-guida/constants";
+import type { DriverShiftData } from "@/pages/fucina/turni-guida/types";
 import { ReportOptionsDialog, lineeDelPiano } from "@/pages/fucina/ReportOptionsDialog";
 
 /* Gantt read-only dei TURNI MACCHINA per l'anteprima VCSP (una riga = vettura). */

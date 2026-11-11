@@ -26,25 +26,25 @@ import { ExportReportButton } from "@/components/SchedulingReportExport";
 import type {
   DriverShiftType, DriverShiftData, DriverShiftsResult, ScenarioResult,
   OptimizationAnalysis, DriverShiftSummary, RipresaTrip, VincoloGlobale, HandoverInfo,
-} from "./driver-shifts/types";
+} from "./fucina/turni-guida/types";
 import {
   SearchChipsBar, matchShiftQuery, RiassuntiTable, CoveragePanel, buildCoverage,
   SwapDialog, applyPieceToShift, VerifyBadge, effectiveVerifyState,
   VincoliGlobaliEditor, VincoliReport, mkRipresaFromTrips, normalizeDriverShiftsResult, type SwapProposal,
-} from "./driver-shifts/bdsi-tools";
+} from "./fucina/turni-guida/bdsi-tools";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
-import { Bds5CostsEditor, Bds5Report, bds5ToSolverConfig, EMPTY_BDS5, type Bds5Config } from "./driver-shifts/bds5-costs";
+import { Bds5CostsEditor, Bds5Report, bds5ToSolverConfig, EMPTY_BDS5, type Bds5Config } from "./fucina/turni-guida/bds5-costs";
 import { AlgoGuide, HelpTip, CSP_GUIDE } from "@/components/StepGuide";
 import {
   TYPE_LABELS, TYPE_COLORS, TYPE_DESC,
   ymdToDisplay, minToTime, formatDuration,
-} from "./driver-shifts/constants";
+} from "./fucina/turni-guida/constants";
 import {
   DriverShiftsErrorBoundary, SummaryCard,
-} from "./driver-shifts/components";
-import { DssCompareDialog } from "./driver-shifts/DssCompareDialog";
-import { AddDriverShiftDialog } from "./driver-shifts/AddDriverShiftDialog";
-import { AddActivityDialog } from "./driver-shifts/AddActivityDialog";
+} from "./fucina/turni-guida/components";
+import { DssCompareDialog } from "./fucina/turni-guida/DssCompareDialog";
+import { AddDriverShiftDialog } from "./fucina/turni-guida/AddDriverShiftDialog";
+import { AddActivityDialog } from "./fucina/turni-guida/AddActivityDialog";
 import {
   driverShiftsToTripBars,
   applyDriverTripChange,
@@ -55,7 +55,7 @@ import {
   compatibilityGlow,
   createEmptyDriverShift,
   nextDriverId,
-} from "./driver-shifts/gantt-adapters";
+} from "./fucina/turni-guida/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
   exportDriverShiftsToCsv,

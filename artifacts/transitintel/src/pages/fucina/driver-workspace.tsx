@@ -35,8 +35,8 @@ import { buildDefaultConfig, deepClone, SERVICE_PROFILES, type ServiceType } fro
 import { resolveRuleProfile } from "@/lib/rule-profiles-api";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import InteractiveGantt, { type GanttChange, type GanttBar } from "@/components/InteractiveGantt";
-import { SummaryCard } from "@/pages/driver-shifts/components";
-import { formatDuration, minToTime } from "@/pages/driver-shifts/constants";
+import { SummaryCard } from "@/pages/fucina/turni-guida/components";
+import { formatDuration, minToTime } from "@/pages/fucina/turni-guida/constants";
 import {
   driverShiftsToRows,
   driverShiftsToBars,
@@ -50,19 +50,19 @@ import {
   compatibilityGlow,
   createEmptyDriverShift,
   nextDriverId,
-} from "@/pages/driver-shifts/gantt-adapters";
+} from "@/pages/fucina/turni-guida/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
 import { exportDriverShiftSheetsToPrint, stopTimesLoaderFor } from "@/pages/fucina/DriverShiftSheetExport";
-import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/driver-shifts/types";
-import { mkRipresaFromTrips, normalizeDriverShiftsResult } from "@/pages/driver-shifts/bdsi-tools";
+import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/fucina/turni-guida/types";
+import { mkRipresaFromTrips, normalizeDriverShiftsResult } from "@/pages/fucina/turni-guida/bdsi-tools";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
-import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/driver-shifts/constants";
-import { AddDriverShiftDialog } from "@/pages/driver-shifts/AddDriverShiftDialog";
-import { AddActivityDialog } from "@/pages/driver-shifts/AddActivityDialog";
+import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/fucina/turni-guida/constants";
+import { AddDriverShiftDialog } from "@/pages/fucina/turni-guida/AddDriverShiftDialog";
+import { AddActivityDialog } from "@/pages/fucina/turni-guida/AddActivityDialog";
 
 interface DriverWorkspaceProps {
   /** ID dello scenario turni macchina (input al solver autisti) */
