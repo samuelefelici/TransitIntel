@@ -10,7 +10,10 @@ import {
 } from "./intermodal-source";
 
 const router: IRouter = Router();
-const UUID_RE = /^[0-9a-f-]{36}$/i;
+/* La forma canonica, non «36 caratteri fra cifre esadecimali e trattini»:
+ * chi passa di qui finisce in un cast ::uuid, e Postgres rifiuta per esempio
+ * 36 cifre senza trattini (22P02, cioè un 500). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /* Lo scoping dell'Intermodale vive in ./intermodal-source: legge il
  * PROGETTO VIVO (ps_*) invece di uno snapshot GTFS. Le vecchie
@@ -791,10 +794,30 @@ export async function discoverHubs(opts: {
     }
   }
 
-  // 2. Scopri hub dalle fermate GTFS
+  // 2. Scopri hub dalle fermate della rete
   // Se routeIds è specificato, limitiamo alle fermate di quelle routes
   let candidateStopIds: Set<string> | null = null;
-  if (routeIds && routeIds.size > 0) {
+  if (routeIds && routeIds.size > 0 && psProjectId) {
+    /* Dentro un progetto le linee sono quelle di ps_routes e le loro fermate
+     * stanno nelle corse VIVE (ps_trips, ps_stop_times). Cercarle in gtfs_*
+     * non trovava niente — lì gli id delle linee sono altri, e senza feed si
+     * leggevano le corse di tutti i feed — e ogni fermata del progetto veniva
+     * scartata: 200 con una lista vuota.
+     * Fra i routeIds possono esserci id che non sono uuid (linee di un feed):
+     * si scartano prima del cast, come per le fermate in loadPassages. */
+    candidateStopIds = new Set();
+    const projectRouteIds = [...routeIds].filter(id => UUID_RE.test(id));
+    for (let i = 0; i < projectRouteIds.length; i += 500) {
+      const batch = projectRouteIds.slice(i, i + 500);
+      const stRows = await db.execute<any>(sql`
+        SELECT DISTINCT st.stop_id::text AS stop_id
+          FROM ps_trips t
+          JOIN ps_stop_times st ON st.trip_id = t.id
+         WHERE t.project_id = ${psProjectId}::uuid
+           AND t.route_id IN (${sql.join(batch.map(id => sql`${id}::uuid`), sql`, `)})`);
+      for (const r of ((stRows as any).rows ?? [])) candidateStopIds.add(String(r.stop_id));
+    }
+  } else if (routeIds && routeIds.size > 0) {
     const tripRows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
       .from(gtfsTrips).where(feedWhere(gtfsTrips.feedId, feedId));
     const relevantTripIds = new Set(tripRows.filter(t => routeIds.has(t.routeId)).map(t => t.tripId));
