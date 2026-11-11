@@ -82,7 +82,7 @@ userRouter.post("/ai/argos/watch", async (req: any, res: any) => {
   };
   const userId = await requireMember(req, res, String(projectId || ""));
   if (!userId) return;
-  const cad =Math.min(168, Math.max(1, Math.round(Number(cadenceHours) || 24)));
+  const cad = Math.min(168, Math.max(1, Math.round(Number(cadenceHours) || 24)));
   const r = await db.execute(sql`
     INSERT INTO ps_argos_watches (project_id, user_id, enabled, work_goals, cadence_hours)
     VALUES (${projectId}::uuid, ${userId}::uuid, ${enabled !== false}, ${workGoals === true}, ${cad})

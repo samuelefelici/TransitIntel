@@ -318,51 +318,71 @@ function sorgentiApi(): string[] {
   return file;
 }
 
-describe("il DDL a runtime può solo scendere", () => {
-  const TETTO = { "CREATE TABLE": 46, "ALTER TABLE": 26, "CREATE INDEX": 45 };
-  const testo = sorgentiApi().map(f => senzaCommenti(readFileSync(f, "latin1"))).join("\n");
-  const conta = (re: RegExp) => (testo.match(re) ?? []).length;
+/* PR 2.16a: l'API non cambia lo schema. La 2.4 aveva tolto il DDL dall'avvio e
+ * dalle richieste; restavano le «unità pigre» (ensure…/assicura…/repairSchema),
+ * che creavano tabelle, colonne e indici al primo uso. Non ci sono più: lo
+ * schema nasce solo dalle migrazioni (lib/db/migrations). Qui si guarda ogni
+ * sorgente dell'API, commenti esclusi. */
+describe("l'API non cambia lo schema", () => {
+  const OGGETTI = "TABLE|INDEX|SCHEMA|VIEW|EXTENSION|TYPE|FUNCTION|PROCEDURE|TRIGGER|SEQUENCE|ROLE|POLICY|DOMAIN|RULE";
+  const DDL = new RegExp(
+    `\\b(CREATE\\s+(OR\\s+REPLACE\\s+)?((UNIQUE|TEMP|TEMPORARY|UNLOGGED|MATERIALIZED)\\s+)*(${OGGETTI})`
+    + `|(ALTER|DROP)\\s+((MATERIALIZED)\\s+)?(${OGGETTI}|DEFAULT\\s+PRIVILEGES)`
+    + `|(ADD|ALTER|DROP)\\s+(COLUMN|CONSTRAINT)`
+    + `|TRUNCATE\\s+(TABLE\\s+)?\\w|COMMENT\\s+ON|GRANT\\s+\\w+\\s+ON|REVOKE\\s+\\w+\\s+ON)\\b`, "gi");
+  const src = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const codice = (f: string) => readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`])\/\/.*$/gm, "$1");
+  /* Le sole forme ammesse, contate:
+   * - una tabella TEMPORANEA di lavoro, che sparisce al COMMIT (import di Planning Studio);
+   * - il testo di un avviso: l'istruzione che chi amministra il database esegue a mano
+   *   se manca l'indice unico delle matricole. L'app non la esegue. */
+  const AMMESSI: Record<string, string[]> = {
+    "lib/planning-studio.ts": ["CREATE TEMP TABLE"],
+    "lib/anagrafica-store.ts": ["CREATE UNIQUE INDEX"],
+  };
 
-  it("CREATE TABLE, ALTER TABLE e CREATE INDEX: esattamente il tetto", () => {
-    const ora = {
-      "CREATE TABLE": conta(/CREATE\s+TABLE/gi),
-      "ALTER TABLE": conta(/ALTER\s+TABLE/gi),
-      "CREATE INDEX": conta(/CREATE\s+(UNIQUE\s+)?INDEX/gi),
-    };
-    for (const [k, v] of Object.entries(ora)) {
-      const tetto = TETTO[k as keyof typeof TETTO];
-      expect(v, v > tetto
-        ? `${k}: ${v} contro ${tetto}. Lo schema si cambia con una migrazione in lib/db/migrations, non dall'API`
-        : `${k}: ${v} contro ${tetto}. Hai tolto DDL dall'API: abbassa il tetto a ${v}`).toBe(tetto);
+  it("la regola riconosce le forme che le unità pigre usavano", () => {
+    for (const q of ["CREATE TABLE IF NOT EXISTS t (a int)", "CREATE UNIQUE INDEX IF NOT EXISTS x ON t (a)", "create or replace view v as select 1",
+      "ALTER TABLE t ADD COLUMN IF NOT EXISTS c text", "ALTER TABLE ${x} DROP CONSTRAINT IF EXISTS k", "CREATE SCHEMA IF NOT EXISTS caronte",
+      "TRUNCATE t", "GRANT SELECT ON t TO r", "COMMENT ON TABLE t IS 'x'", "CREATE TEMP TABLE t ON COMMIT DROP AS SELECT 1"]) {
+      expect(q.match(DDL), q).not.toBeNull();
+    }
+    for (const q of ["SELECT created_at FROM t", "UPDATE t SET altered = true", "INSERT INTO t (drop_reason) VALUES ($1)", "il tabellone si crea da sé"]) {
+      expect(q.match(DDL), q).toBeNull();
     }
   });
 
-  /* PR 2.4: l'avvio e le richieste non toccano più lo schema. Questi file
-   * avevano il DDL d'avvio (o, l'ultimo, quello di una richiesta): non deve
-   * tornarci. Restano solo le unità pigre (ensure…/assicura…) fino alla 2.16. */
-  const SENZA_DDL = [
-    "lib/auth.ts", "lib/tenant.ts", "lib/scheduling-projects.ts", "lib/planning-studio.ts",
-    "routes/fares-polimetriche.ts", "routes/planning.ts", "routes/fares.ts", "routes/gtfs-upload.ts",
-    "routes/fares-node-assignment.ts", "routes/planning-studio-timetables.ts",
-  ];
-  const DDL = /\b(CREATE|ALTER|DROP)\s+(UNIQUE\s+|UNLOGGED\s+|MATERIALIZED\s+|OR\s+REPLACE\s+)?(TABLE|INDEX|SCHEMA|VIEW|SEQUENCE|TYPE|EXTENSION|FUNCTION|PROCEDURE|TRIGGER|RULE|POLICY)\b|\b(ADD|ALTER|DROP)\s+(COLUMN|CONSTRAINT)\b/gi;
-  const ddlNel = (file: string) =>
-    senzaCommenti(readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", file), "latin1")).match(DDL) ?? [];
-  it.each(SENZA_DDL)("%s: senza DDL", (file) => {
-    const trovati = ddlNel(file);
-    expect(trovati, `${file} cambia lo schema (${trovati.join(", ")}): si fa con una migrazione in lib/db/migrations`).toEqual([]);
+  it("nessun sorgente dell'API crea, altera o toglie oggetti del database", () => {
+    const trovati: Record<string, string[]> = {};
+    for (const f of sorgentiApi()) {
+      const m = codice(f).match(DDL);
+      if (m) trovati[path.relative(src, f)] = m.map((x) => x.replace(/\s+/g, " ").toUpperCase());
+    }
+    expect(trovati, "Lo schema si cambia con una migrazione in lib/db/migrations, non dall'API").toEqual(AMMESSI);
   });
-  /* I file da cui la PR 2.4 ha tolto il DDL per richiesta hanno ancora un'unità
-   * pigra: il loro DDL resta esattamente quello dell'unità (conteggio per file),
-   * così non ne torna dentro una richiesta. */
-  const SOLO_UNITA_PIGRE: Record<string, number> = {
-    "lib/planning-studio-materialize.ts": 3, // ensureMaterializedColumn
-    "routes/service-program.ts": 3, // ensureVariantCodeColumn, ensureAgentJobsTable
-    "routes/clusters.ts": 3, // ensureClusterFlagColumns
-  };
-  it.each(Object.entries(SOLO_UNITA_PIGRE))("%s: solo il DDL della sua unità pigra (%i)", (file, n) => {
-    const trovati = ddlNel(file);
-    expect(trovati.length, `${file}: ${trovati.join(", ")}. Lo schema si cambia con una migrazione in lib/db/migrations`).toBe(n);
+
+  it("la tabella temporanea è davvero temporanea e sparisce al COMMIT", () => {
+    const riga = codice(path.join(src, "lib/planning-studio.ts")).split("\n").find((r) => /CREATE\s+TEMP\s+TABLE/i.test(r));
+    expect(riga).toMatch(/CREATE TEMP TABLE \$\{sql\.raw\(tmp\)\} ON COMMIT DROP AS/);
+  });
+
+  it("l'istruzione per l'indice delle matricole è il testo di un avviso, non una query", () => {
+    const c = codice(path.join(src, "lib/anagrafica-store.ts"));
+    const riga = c.split("\n").find((r) => /CREATE UNIQUE INDEX/.test(r))!;
+    expect(riga.trim()).toMatch(/^\+ `CREATE UNIQUE INDEX uq_roster_drivers_matricola ON roster_drivers \(matricola_chiave\) WHERE \$\{PREDICATO_UNICITA\}`\];$/);
+    expect(c).not.toMatch(/execute\([^)]*CREATE UNIQUE INDEX/);
+    // e l'indice che nomina è quello delle migrazioni, con lo stesso predicato
+    const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+    const indice: string = catalogo.indici["public.uq_roster_drivers_matricola"];
+    expect(indice).toContain("(matricola_chiave)");
+    expect(indice.replace(/[()]/g, "")).toContain("is_active AND NOT is_fictitious AND matricola_chiave IS NOT NULL");
+  });
+
+  it("le unità pigre non ci sono più: nessuna funzione che «assicura» lo schema, né lo script che le eseguiva", () => {
+    const nomi = /\b(ensure\w*(Table|Tables|Schema|Column|Columns)|repairSchema|ensureCaronteSchema|assicuraPubblicazione|aggiungiColonne)\b/;
+    const con = sorgentiApi().filter((f) => nomi.test(codice(f))).map((f) => path.relative(src, f));
+    expect(con).toEqual([]);
+    expect(() => readFileSync(path.resolve(src, "../scripts/crea-tutto.ts"))).toThrow();
   });
 
   it("l'impronta del baseline nel test coincide col file (controllo incrociato)", () => {

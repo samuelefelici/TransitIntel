@@ -236,7 +236,7 @@ router.get("/coincidence-zones/hubs", asyncHandler(async (req, res) => {
 // progetto deve essere uno che l'utente vede, e senza restano fuori le zone dei
 // progetti altrui.
 router.get("/coincidence-zones", asyncHandler(async (req, res) => {
-  const ps =String(req.query.psProjectId ?? "");
+  const ps = String(req.query.psProjectId ?? "");
   const scope = ZONE_UUID_RE.test(ps) ? ps : null;
   if (scope && req.user?.role !== "admin" && !(req.user && await hasProjectAccess(scope, req.user.id))) {
     res.status(404).json({ error: "Progetto non trovato o non accessibile" });

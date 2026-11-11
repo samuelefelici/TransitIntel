@@ -442,14 +442,18 @@ file del server, ruoli). Dalla 2.8:
     `DATABASE_URL` e `CARONTE_URL`: vanno tutte e due su `caronte_app`. La
     seconda connessione nasce al primo login, anche settimane dopo l'avvio:
     se resta su `postgres`, l'errore della verifica torna allora.
-- **Il DDL dell'app**, cioè le unità pigre (fino alla 2.16), resta per tabelle
-  e indici: l'app possiede le sue tabelle e può crearne in `public`, e
-  l'event trigger lascia passare solo quello. Dalla 2.10, su una tabella
+- **L'API non cambia più lo schema** (PR 2.16a). Le funzioni che creavano
+  tabelle, colonne e indici al primo uso non ci sono più: lo schema nasce solo
+  dalle migrazioni, e un test guarda ogni sorgente dell'API. Resta una tabella
+  temporanea di lavoro, che sparisce al COMMIT (import di Planning Studio).
+  I **permessi** per farlo ci sono ancora, fino alla 2.16b: l'app possiede le
+  sue tabelle, può crearne in `public`, e l'event trigger lascia passare
+  `CREATE TABLE`, `CREATE INDEX` e `ALTER TABLE`. Dalla 2.10, su una tabella
   sorvegliata dal registro delle modifiche, l'app non può spegnere i trigger,
   rinominare o sostituire la tabella o le sue colonne, riscriverla
   (`ALTER COLUMN … TYPE`) né legarla per ereditarietà o come partizione. Può
-  ancora, da proprietaria, cancellarne una colonna o crearne di nuove non
-  sorvegliate, fino alla 2.16. Prima di
+  ancora, da proprietaria, cancellarne una colonna o toglierle l'espressione,
+  o crearne di nuove non sorvegliate: lo chiude la 2.16b. Prima di
   aggiornare PostGIS si toglie il CREATE su `public` a `cerbero_owner`
   (README delle migrazioni).
 

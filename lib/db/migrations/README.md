@@ -181,11 +181,13 @@ su main non si tocca più.
   in un aggregato: lì gira senza che si controlli l'EXECUTE di chi la usa. Né
   con un primo argomento `record` in uno schema dove Argos entra (un cast
   creato da lui la farebbe girare).
-- **Il DDL dentro l'API non cresce più** (test `migrazioni.test.ts`, «il DDL a
-  runtime può solo scendere»). Dalla PR 2.4 l'avvio e le richieste non ne fanno
-  affatto: restano solo le unità pigre (ensure…/assicura…) fino alla 2.16, e
-  lo stesso test vieta il DDL nei file che lo facevano all'avvio. Una colonna
-  o una tabella nuova si aggiunge qui, mai con un `IF NOT EXISTS` nel codice.
+- **L'API non contiene DDL** (test `migrazioni.test.ts`, «l'API non cambia lo
+  schema»). La PR 2.4 l'aveva tolto dall'avvio e dalle richieste; la 2.16a ha
+  tolto le unità pigre (ensure…/assicura…) che creavano tabelle al primo uso.
+  Una colonna o una tabella nuova si aggiunge qui, mai con un `IF NOT EXISTS`
+  nel codice: il test fallisce, e dalla 2.16b il database lo rifiuta. Un passo
+  sui dati (righe di default, sistemazioni) può stare nel codice; ciò che
+  cambia la struttura no.
 - **La vista `ps_variants`** è un alias di `ps_route_variants` con l'elenco
   delle sue colonne fissato alla creazione. Prima l'API la ricreava a ogni
   avvio; ora no: una migrazione che aggiunge colonne a `ps_route_variants`

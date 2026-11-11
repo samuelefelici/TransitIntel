@@ -12,6 +12,14 @@ import { computeNetwork } from "./planning-studio-timetables";
 
 const router: IRouter = Router();
 
+/* Rotte pubbliche, senza login: a chi ha solo il link non va il testo di un
+ * errore del database. Un errore (il database che non risponde) è un 503 con
+ * un messaggio fisso; il motivo resta nel log. */
+function nonDisponibile(res: { status(c: number): { json(b: unknown): unknown } }, e: any): void {
+  console.error("[network-share]", e?.cause?.message ?? e?.message ?? e);
+  res.status(503).json({ error: "Mappa di rete non disponibile: riprova tra poco" });
+}
+
 router.get("/network-share/:token", async (req, res): Promise<void> => {
   try {
     const token = String(req.params.token);
@@ -42,7 +50,7 @@ router.get("/network-share/:token", async (req, res): Promise<void> => {
       lines: net.lines,
       cityNodes: net.cityNodes,
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { nonDisponibile(res, e); }
 });
 
 export default router;

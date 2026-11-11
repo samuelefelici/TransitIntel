@@ -117,7 +117,7 @@ router.post("/clusters", asyncHandler(async (req, res) => {
 
 // PUT /api/clusters/:id — aggiorna nome, transferMin, colore e fermate
 router.put("/clusters/:id", asyncHandler(async (req, res) => {
-  const id =req.params.id as string;
+  const id = req.params.id as string;
   const { name, transferFromDepotMin, color, stops, isInterchange, isLogical } = req.body;
 
   const [cluster] = await db.update(stopClusters).set({

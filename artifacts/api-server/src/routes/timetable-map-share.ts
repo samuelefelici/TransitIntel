@@ -23,6 +23,14 @@ import { sql } from "drizzle-orm";
 import { projectHasTripValidity } from "../lib/planning-studio-validity-eval";
 
 const router: IRouter = Router();
+
+/* Rotte pubbliche, senza login: a chi ha solo il link non va il testo di un
+ * errore del database. Un errore (il database che non risponde) è un 503 con
+ * un messaggio fisso; il motivo resta nel log. */
+function nonDisponibile(res: { status(c: number): { json(b: unknown): unknown } }, e: any): void {
+  console.error("[timetable-map]", e?.cause?.message ?? e?.message ?? e);
+  res.status(503).json({ error: "Mappa orari non disponibile: riprova tra poco" });
+}
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface ShareRow { project_id: string; route_ids: string[]; title: string | null; expires_at: string | null }
@@ -142,7 +150,7 @@ router.get("/timetable-map/:token", async (req, res): Promise<void> => {
         dayTypeIds: daysByRoute.get(r.id) ?? [],
       })),
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { nonDisponibile(res, e); }
 });
 
 /* ── 2) Percorsi + fermate della linea scelta ───────────────────── */
@@ -243,7 +251,7 @@ router.get("/timetable-map/:token/route/:routeId", async (req, res): Promise<voi
         stops: stopsByVar.get(v.id) ?? [],
       })),
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { nonDisponibile(res, e); }
 });
 
 /* ── 3) Transiti alla fermata (per la linea scelta) ─────────────── */
@@ -331,7 +339,7 @@ router.get("/timetable-map/:token/stop/:stopId", async (req, res): Promise<void>
         };
       }),
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { nonDisponibile(res, e); }
 });
 
 export default router;
