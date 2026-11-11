@@ -204,7 +204,10 @@ su main non si tocca più.
   `ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria SET EXPRESSION AS (…)`
   (Postgres 17; riscrive la tabella, che è piccola), con solo operatori e
   funzioni ammesse. Una colonna calcolata lega le colonne da cui dipende: non
-  se ne cambia il tipo e non si tolgono senza togliere prima lei.
+  se ne cambia il tipo, e toglierle chiede `CASCADE`, che toglie anche lei.
+  Che sia ancora calcolata, e come dice il catalogo, lo controlla
+  `ruoli.mjs --verifica` (solo su un database alla stessa migrazione del
+  codice): chi possiede la tabella può toglierle l'espressione.
 - **L'API controlla di essere allineata** (`artifacts/api-server/src/lib/guardia-schema.ts`):
   conosce il diario della sua immagine (`lib/db/scripts/diario-incluso.mjs`,
   incorporato nel bundle) e, se al database manca una migrazione,

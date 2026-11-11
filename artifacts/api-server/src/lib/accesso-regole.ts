@@ -100,6 +100,22 @@ export function chiaveEmail(email: string): string {
  * database.
  */
 
+/**
+ * Come si legge la regola da `users`. La colonna vale solo finché la calcola
+ * il database: chi possiede la tabella (l'app, fino alla 2.16) non può
+ * cambiarne l'espressione, ma può toglierla (ALTER COLUMN … DROP EXPRESSION) e
+ * da lì scriverci «nessuno». Una colonna così non è più una regola: finché non
+ * viene rifatta (lo dice, con l'istruzione, `ruoli.mjs --verifica`) la verifica
+ * è obbligatoria per tutti. FleetCare nello stesso caso applica la regola di
+ * prima (sua migrazione 0090). Se la colonna manca la query fallisce, e non
+ * entra nessuno. Testo costante, senza dati di nessuno: va in una SELECT su
+ * `users` così com'è.
+ */
+export const SQL_MFA_OBBLIGATORIA = `(mfa_obbligatoria OR NOT coalesce((
+    SELECT a.attgenerated = 's' FROM pg_catalog.pg_attribute a
+     WHERE a.attrelid = 'public.users'::pg_catalog.regclass AND a.attname = 'mfa_obbligatoria'
+       AND a.attnum > 0 AND NOT a.attisdropped), false))`;
+
 export type Limitazione = null | "password" | "mfa";
 
 /**

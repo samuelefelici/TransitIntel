@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { pool } from "@workspace/db";
 import { LETTORI } from "../../../../lib/db/scripts/ruoli-regole.mjs";
+import { SQL_MFA_OBBLIGATORIA } from "../lib/accesso-regole";
 
 const leggi = (relativo: string) => readFileSync(fileURLToPath(new URL(relativo, import.meta.url)), "utf8");
 const CATALOGO = JSON.parse(leggi("../../../../lib/db/migrations/meta/catalogo.json"));
@@ -66,7 +67,13 @@ describe("users.mfa_obbligatoria: la regola sta nel database", () => {
   it("l'API la legge e non riscrive la regola", () => {
     const regole = leggi("../lib/accesso-regole.ts"), auth = leggi("../lib/auth.ts"), account = leggi("../lib/account.ts");
     expect(regole).not.toMatch(/function mfaObbligatoria/);
-    expect(auth.match(/mfa_obbligatoria/g)!.length).toBeGreaterThanOrEqual(4);
+    // le due letture (la sessione e l'elenco degli utenti) passano dalla stessa espressione,
+    // che si fida della colonna solo finché è calcolata dal database
+    expect(auth.match(/\$\{MFA_OBBLIGATORIA\} AS mfa_obbligatoria/g)).toHaveLength(2);
+    // mai la colonna nuda in una SELECT
+    expect(auth).not.toMatch(/(?<!AS )\bmfa_obbligatoria,/);
+    expect(SQL_MFA_OBBLIGATORIA).toMatch(/^\(mfa_obbligatoria OR NOT coalesce\(\(\s*SELECT a\.attgenerated = 's' FROM pg_catalog\.pg_attribute a/);
+    expect(SQL_MFA_OBBLIGATORIA).not.toMatch(/\$|;/);
     // né qui né altrove un «admin, oppure personale, oppure roster» che decide la verifica
     for (const sorgente of [regole, auth, account]) {
       expect(sorgente).not.toMatch(/permissions\?\.personale\s*\|\|\s*!!\w+\.permissions\?\.roster/);
@@ -115,6 +122,27 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("users.mfa_obbligatoria, sul dat
     expect(await cambia("role = 'admin'")).toBe(true);
     expect(await cambia("role = 'user'")).toBe(false);
     expect(await cambia("full_name = 'Non cambia niente'")).toBe(false);
+  });
+
+  it("se chi possiede la tabella le toglie l'espressione e ci scrive «nessuno», l'API non ci crede: obbligatoria per tutti", async () => {
+    const c = await pool.connect();
+    const leggi = async () => Object.fromEntries((await c.query(
+      `SELECT email, ${SQL_MFA_OBBLIGATORIA} AS m, mfa_obbligatoria AS colonna FROM users WHERE email IN ($1, $2)`,
+      [EMAIL("admin"), EMAIL("altri-permessi")])).rows.map((r: any) => [r.email, [r.m, r.colonna]]));
+    try {
+      await c.query("BEGIN");
+      expect(await leggi()).toEqual({ [EMAIL("admin")]: [true, true], [EMAIL("altri-permessi")]: [false, false] });
+      // come l'app, da proprietaria: non una riscrittura, quindi gli event trigger la lasciano passare
+      await c.query("ALTER TABLE users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION");
+      await c.query("UPDATE users SET mfa_obbligatoria = false WHERE email = $1", [EMAIL("admin")]);
+      expect(await leggi()).toEqual({ [EMAIL("admin")]: [true, false], [EMAIL("altri-permessi")]: [true, false] });
+    } finally {
+      await c.query("ROLLBACK").catch(() => {});
+      c.release();
+    }
+    // annullato: la colonna è di nuovo calcolata
+    const r = await pool.query("SELECT attgenerated FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'mfa_obbligatoria'");
+    expect(r.rows[0].attgenerated).toBe("s");
   });
 
   it("non si scrive: né all'inserimento né dopo", async () => {

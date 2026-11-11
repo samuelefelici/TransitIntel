@@ -26,7 +26,7 @@ import { datiProvaAttivi } from "./dati-prova";
 import { logger } from "./logger";
 import { azioniAdmin } from "./azioni-admin";
 import { idChiave } from "./mfa-cifratura";
-import { chiaveEmail, limitazione, percorsoConsentitoLimitato, percorsoVietatoAiServizi, type Limitazione } from "./accesso-regole";
+import { SQL_MFA_OBBLIGATORIA, chiaveEmail, limitazione, percorsoConsentitoLimitato, percorsoVietatoAiServizi, type Limitazione } from "./accesso-regole";
 import {
   azzeraTentativiPassword, azzeraTuttiITentativiPassword, controllaChiaveMfa, forsePulisciAccessi, prenotaTentativoPassword,
   provaCodice, pulisciAccessi,
@@ -371,10 +371,13 @@ interface UtenteCaricato {
   mfaObbligatoria: boolean;
 }
 
+/* La regola letta da users: una costante di accesso-regole.ts, senza dati di nessuno (sql.raw non prende altro) */
+const MFA_OBBLIGATORIA = sql.raw(SQL_MFA_OBBLIGATORIA); // scan-ok: testo costante del codice
+
 async function loadUserById(id: string): Promise<UtenteCaricato | null> {
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, permissions, fleetcare_role, active,
-           sessione_versione, mfa_attiva, mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave
+           sessione_versione, mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -999,7 +1002,7 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, permissions, fleetcare_role, active, last_login_at, created_at,
-           mfa_attiva, mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave,
+           mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave,
            /* bloccato: per i codici sbagliati, o per la password da almeno un indirizzo */
            GREATEST(
              CASE WHEN mfa_bloccata_fino > now() THEN mfa_bloccata_fino END,

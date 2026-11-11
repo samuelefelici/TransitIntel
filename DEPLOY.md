@@ -602,6 +602,9 @@ sessioni «senza nome», non un programma sconosciuto.
   - i permessi di `caronte_app` e la proprietà di `caronte.app_users` si
     ridanno con `caronte_setup.sql` (qui sopra, «Caronte e gli altri
     programmi»); poi la sua password, con `\password caronte_app`.
+- un backup di prima della 2.12 non ha `users.mfa_obbligatoria`: finché l'API
+  non riparte (il migratore riapplica la 0008) non entra nessuno. Dopo un
+  ripristino si rifà sempre il deploy;
 - un ripristino come `postgres` esegue i vincoli delle tabelle mentre carica
   i dati. Un backup fatto mentre `ruoli.mjs --verifica` non segnalava
   espressioni non ammesse è sicuro: con gli event trigger accesi l'app non
@@ -1442,7 +1445,17 @@ attivare la verifica.
   - Il registro delle modifiche non la segna: cambia solo insieme a ruolo o
     permessi, che riporta già.
   - Da lei dipendono `role` e `permissions`: Postgres rifiuta di cambiarne il
-    tipo o di toglierle.
+    tipo, e toglierle chiede `CASCADE`, che toglie anche lei.
+  - **L'API si fida della colonna solo finché è calcolata dal database.**
+    L'app possiede `users` (fino alla 2.16): non può riscrivere la tabella,
+    quindi né cambiare l'espressione né ricreare la colonna a modo suo, ma
+    può toglierle l'espressione e scriverci, o toglierla. Allora:
+    - colonna non più calcolata: per l'API la verifica diventa obbligatoria
+      **per tutti**, FleetCare applica la regola di prima;
+    - colonna tolta: l'API non autentica nessuno;
+    - in tutti e due i casi `ruoli.mjs --verifica` e il log dell'avvio danno
+      un errore con l'istruzione per rifarla (da eseguire come `postgres`,
+      poi `node lib/db/scripts/ruoli.mjs` per ridare la lettura a FleetCare).
   - **Rilascio**: Cerbero e FleetCare in qualunque ordine. FleetCare usa la
     colonna quando c'è e la può leggere, altrimenti la regola di prima.
     **Rollback**: l'immagine di prima di Cerbero ignora la colonna, che può

@@ -8,8 +8,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { GIRI_SCRAM, improntaScram, nuovaPassword, urlDellApp } from "../../../../lib/db/scripts/ruoli-password.mjs";
 import {
-  APP, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, calcolateDalCatalogo, elencoDalCatalogo, piano,
-  sqlEspressioniVietate,
+  APP, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, calcolateDaControllare, calcolateDalCatalogo,
+  elencoDalCatalogo, piano, sqlEspressioniVietate,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import type { StatoRuoli, Relazione } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 
@@ -421,6 +421,30 @@ describe("ruoli del database: il piano", () => {
     // nel catalogo vero c'è, ed è l'unica
     const vero = JSON.parse(readFileSync(fileURLToPath(new URL("../../../../lib/db/migrations/meta/catalogo.json", import.meta.url)), "utf8"));
     expect(calcolateDalCatalogo(vero).map((c) => `${c.tabella}.${c.colonna}`)).toEqual(["public.users.mfa_obbligatoria"]);
+  });
+
+  it("le colonne calcolate si controllano solo se il database è alla migrazione di questo codice", () => {
+    const catalogo = { tabelle: { "public.users": { mfa_obbligatoria: "boolean | not null | (role = 'admin'::text) |  | s" } } };
+    const diario = [{ tag: "0007_x", when: 7 }, { tag: "0008_mfa_obbligatoria", when: 8 }];
+    const alla = (...quando: number[]) => quando.map((created_at) => ({ created_at }));
+    // alla stessa migrazione: si controllano
+    expect(calcolateDaControllare(catalogo, diario, alla(7, 8))).toEqual({
+      calcolate: [{ tabella: "public.users", colonna: "mfa_obbligatoria", tipo: "boolean", nonNulla: true, espressione: "(role = 'admin'::text)" }],
+      avviso: null,
+    });
+    // avanti (un'immagine precedente dopo un rollback): l'espressione può essere più nuova. Dirla «diversa»
+    // e stampare l'istruzione per rifarla riporterebbe la regola a quella vecchia
+    const avanti = calcolateDaControllare(catalogo, diario, alla(7, 8, 9));
+    expect(avanti.calcolate).toEqual([]);
+    expect(avanti.avviso).toMatch(/una migrazione più nuova di questo codice.*non vanno toccate da qui/);
+    expect(calcolateDaControllare(catalogo, diario, alla(7, 8, 9, 10)).avviso).toMatch(/2 migrazioni più nuove/);
+    // indietro: la colonna manca perché manca la migrazione. Si migra, non si aggiunge a mano
+    const indietro = calcolateDaControllare(catalogo, diario, alla(7));
+    expect(indietro.calcolate).toEqual([]);
+    expect(indietro.avviso).toMatch(/mancano migrazioni \(0008_mfa_obbligatoria\).*Prima il migratore/);
+    expect(calcolateDaControllare(catalogo, diario, []).avviso).toMatch(/mancano migrazioni \(0007_x, 0008_mfa_obbligatoria\)/);
+    // in nessuno dei due casi un'istruzione da eseguire
+    for (const a of [avanti.avviso, indietro.avviso]) expect(a).not.toMatch(/ALTER TABLE/);
   });
 
   it("una vista che dipende da una relazione di un altro ruolo: errore, non un'attesa infinita", () => {

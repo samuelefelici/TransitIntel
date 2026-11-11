@@ -60,6 +60,11 @@ export interface PianoRuoli { azioni: AzioneRuoli[]; attese: string[]; avvisi: s
 export declare function elencoDalCatalogo(catalogo: { tabelle?: object; viste?: object; sequenze?: object }): string[];
 export interface ColonnaCalcolata { tabella: string; colonna: string; tipo: string; nonNulla: boolean; espressione: string }
 export declare function calcolateDalCatalogo(catalogo: { tabelle?: Record<string, Record<string, string>> }): ColonnaCalcolata[];
+export declare function calcolateDaControllare(
+  catalogo: { tabelle?: Record<string, Record<string, string>> },
+  diario: readonly { tag: string; when: number }[], applicate: readonly { created_at: string | number }[],
+): { calcolate: ColonnaCalcolata[]; avviso: string | null };
+export declare function migrazioniApplicate(client: ClientMinimo): Promise<{ created_at: string | number }[]>;
 export declare function leggiStato(client: ClientMinimo, elenco: readonly string[], calcolate?: readonly ColonnaCalcolata[]): Promise<StatoRuoli>;
 export declare function piano(stato: StatoRuoli): PianoRuoli;
 export declare function allinea(

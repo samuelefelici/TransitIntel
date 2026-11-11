@@ -341,14 +341,27 @@ jobs:
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
             grep -q "cerbero_app non può riscrivere una tabella del registro delle modifiche" vietato.log || { cat vietato.log; exit 1; }
           done
+          # Con FleetCare nello stesso database (il suo ruolo che legge gli utenti): rifare la
+          # colonna gli toglie la lettura, e il riallineamento dei ruoli gliela ridà.
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "CREATE ROLE fleetcare_legge_cerbero NOLOGIN"
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs > /dev/null
+          legge() { psql -d prod -tAq -c "SELECT has_column_privilege('fleetcare_legge_cerbero', 'public.users', 'mfa_obbligatoria', 'SELECT')"; }
+          test "$(legge)" = t
           app "ALTER TABLE public.users ALTER COLUMN mfa_obbligatoria DROP EXPRESSION"
           if DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1; then cat ruoli.log; echo "doveva segnalare la colonna non più calcolata"; exit 1; fi
           grep -q "public.users.mfa_obbligatoria non è più calcolata dal database" ruoli.log || { cat ruoli.log; exit 1; }
-          psql -d prod -v ON_ERROR_STOP=1 -q -c "$(grep -o 'ALTER TABLE "public"."users" DROP COLUMN "mfa_obbligatoria".* STORED' ruoli.log)"
+          CURA=$(grep -o 'ALTER TABLE "public"."users" DROP COLUMN "mfa_obbligatoria".* STORED' ruoli.log)
+          test -n "$CURA"
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "$CURA"
+          test "$(legge)" = f
+          DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs > /dev/null
+          test "$(legge)" = t
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1 || { cat ruoli.log; exit 1; }
           test "$(psql -d prod -tAq -c "SELECT attgenerated FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'mfa_obbligatoria'")" = s
-          # role e permissions non si riscrivono né si tolgono nemmeno senza l'event trigger: da loro
-          # dipende la colonna calcolata mfa_obbligatoria (PR 2.12), e Postgres lo rifiuta da sé
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "DROP OWNED BY fleetcare_legge_cerbero" -c "DROP ROLE fleetcare_legge_cerbero"
+          # Da lei dipendono role e permissions: Postgres rifiuta di cambiarne il tipo, e toglierle
+          # chiede CASCADE (che toglie anche lei: l'app lo può fare, fino alla 2.16, e allora l'API
+          # non autentica nessuno e la verifica dei ruoli lo dice)
           for vietato in "ALTER TABLE public.users ALTER COLUMN role TYPE text USING 'admin'" "ALTER TABLE public.users DROP COLUMN permissions"; do
             if app "$vietato" 2> vietato.log; then echo "cerbero_app non doveva poter: $vietato"; exit 1; fi
             grep -q -E "used by a generated column|column mfa_obbligatoria of table users depends on column permissions" vietato.log || { cat vietato.log; exit 1; }
