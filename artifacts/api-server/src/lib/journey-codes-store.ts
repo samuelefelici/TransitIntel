@@ -19,11 +19,11 @@
  * che l'AVM il codice lo manda solo su 17 mezzi. Sono due diagnosi opposte e
  * il rimedio è diverso.
  *
- * ── Se il database non concede ──
+ * ── Se il database non risponde ──
  *
- * La raccolta è un di più: se la tabella non si può creare (ruolo senza
- * permessi sullo schema dell'AVM) non deve fermare né l'ingestione né la Sala
- * Operativa. Si registra il motivo e si va avanti senza.
+ * La raccolta è un di più: se la scrittura fallisce (database fermo, tabella
+ * non ancora migrata) non deve fermare né l'ingestione né la Sala Operativa.
+ * Si registra il motivo e si va avanti senza.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";
@@ -62,66 +62,14 @@ export interface TotaliGiro {
 }
 
 /* ── La tabella ───────────────────────────────────────────────────────────
- * Creata al primo bisogno, una volta per processo. Un fallimento NON viene
- * memorizzato per sempre: un errore transitorio all'avvio spegnerebbe la
- * raccolta per tutta la vita del processo. */
+ * La creano le migrazioni. L'ultimo errore di scrittura si ricorda solo
+ * finché la scrittura dopo non riesce. */
 
-let pronto: Promise<boolean> | null = null;
 let ultimoErrore: string | null = null;
 
 /** Perché la raccolta non sta funzionando, quando non funziona. */
 export function erroreRaccolta(): string | null {
   return ultimoErrore;
-}
-
-async function crea(): Promise<boolean> {
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.journey_codes (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        day date NOT NULL,
-        journey_ref text NOT NULL,
-        /* '' invece di NULL: un indice unico non considera uguali due NULL, e
-         * le letture senza corsa agganciata si moltiplicherebbero a ogni giro. */
-        trip_id text NOT NULL DEFAULT '',
-        matched_by text,
-        vehicle_ref text, line_ref text, published_line_name text,
-        route_ref text, course_ref text, framed_ref text,
-        data_frame_ref text, pattern_ref text, block_ref text,
-        avm_departure text, avm_destination text,
-        route_id text, gtfs_departure text, gtfs_headsign text,
-        observations integer NOT NULL DEFAULT 1,
-        first_seen timestamptz NOT NULL DEFAULT now(),
-        last_seen timestamptz NOT NULL DEFAULT now())`);
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_caronte_jcodes_key
-        ON caronte.journey_codes(day, journey_ref, trip_id)`);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.journey_code_days (
-        day date PRIMARY KEY,
-        rounds integer NOT NULL DEFAULT 0,
-        vehicles integer NOT NULL DEFAULT 0,
-        with_code integer NOT NULL DEFAULT 0,
-        matched integer NOT NULL DEFAULT 0,
-        matched_by_id integer NOT NULL DEFAULT 0,
-        updated_at timestamptz NOT NULL DEFAULT now())`);
-    ultimoErrore = null;
-    return true;
-  } catch (e: any) {
-    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
-    console.warn("[siri] raccolta codici corsa non attiva:", ultimoErrore);
-    return false;
-  }
-}
-
-export function assicura(): Promise<boolean> {
-  if (!pronto) {
-    pronto = crea().then(ok => {
-      if (!ok) pronto = null; // si riproverà al giro successivo
-      return ok;
-    }).catch(() => { pronto = null; return false; });
-  }
-  return pronto;
 }
 
 /* ── Scrittura ────────────────────────────────────────────────────────────── */
@@ -135,7 +83,6 @@ export function assicura(): Promise<boolean> {
 export async function registraCodici(
   giorno: string, osservazioni: OsservazioneCodice[], totali: TotaliGiro,
 ): Promise<number> {
-  if (!(await assicura())) return 0;
 
   const per = new Map<string, { o: OsservazioneCodice; n: number }>();
   for (const o of osservazioni) {
@@ -286,6 +233,5 @@ export async function leggiCodici(giorni: number): Promise<{
 
 /** Per i collaudi e per un riallineamento esplicito. */
 export function resetJourneyCodesCache(): void {
-  pronto = null;
   ultimoErrore = null;
 }

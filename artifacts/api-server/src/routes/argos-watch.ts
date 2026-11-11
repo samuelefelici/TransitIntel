@@ -11,6 +11,8 @@
  * Rotta cron (pubblica, x-cron-secret): POST /api/cron/argos-watch — da
  * agganciare a uno scheduler esterno (es. ogni ora); a ogni tick processa un
  * lotto limitato di sorveglianze scadute, in sequenza, con timeout duri.
+ *
+ * La tabella ps_argos_watches la creano le migrazioni.
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
@@ -30,30 +32,6 @@ const UUID_RE = /^[0-9a-f-]{36}$/i;
 const BATCH_PER_TICK = 3;
 const WATCH_TIMEOUT_MS = 300_000; // 5' per il giro di sorveglianza
 const GOAL_TIMEOUT_MS = 540_000; // 9' per un giro-obiettivo (il token vive 10')
-
-let ensured = false;
-export async function ensureWatchTable(): Promise<void> {
-  if (ensured) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_argos_watches (
-      id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      project_id    uuid NOT NULL UNIQUE,
-      user_id       uuid NOT NULL,
-      enabled       boolean NOT NULL DEFAULT true,
-      work_goals    boolean NOT NULL DEFAULT false,
-      cadence_hours int NOT NULL DEFAULT 24,
-      last_run_at   timestamptz,
-      last_status   text,
-      last_summary  text,
-      last_findings jsonb,
-      last_goal_note text,
-      unseen        boolean NOT NULL DEFAULT false,
-      created_at    timestamptz NOT NULL DEFAULT now(),
-      updated_at    timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  ensured = true;
-}
 
 function rowToWatch(r: any) {
   return {
@@ -90,7 +68,6 @@ userRouter.get("/ai/argos/watch", async (req: any, res: any) => {
   const projectId = String(req.query.projectId || "");
   const userId = await requireMember(req, res, projectId);
   if (!userId) return;
-  await ensureWatchTable();
   const r = await db.execute(sql`SELECT * FROM ps_argos_watches WHERE project_id = ${projectId}::uuid`);
   const row = ((r as any).rows ?? [])[0];
   res.json({ watch: row ? rowToWatch(row) : null });
@@ -105,7 +82,6 @@ userRouter.post("/ai/argos/watch", async (req: any, res: any) => {
   };
   const userId = await requireMember(req, res, String(projectId || ""));
   if (!userId) return;
-  await ensureWatchTable();
   const cad = Math.min(168, Math.max(1, Math.round(Number(cadenceHours) || 24)));
   const r = await db.execute(sql`
     INSERT INTO ps_argos_watches (project_id, user_id, enabled, work_goals, cadence_hours)
@@ -126,7 +102,6 @@ userRouter.post("/ai/argos/watch/seen", async (req: any, res: any) => {
   const { projectId } = req.body as { projectId?: string };
   const userId = await requireMember(req, res, String(projectId || ""));
   if (!userId) return;
-  await ensureWatchTable();
   await db.execute(sql`
     UPDATE ps_argos_watches SET unseen = false, updated_at = now()
      WHERE project_id = ${projectId}::uuid
@@ -275,7 +250,6 @@ cronRouter.post("/cron/argos-mcp-projects", async (req: any, res: any) => {
 cronRouter.post("/cron/argos-watch", async (req: any, res: any) => {
   if (!cronDeiDati(req, res)) return;
   if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
-  await ensureWatchTable();
   /* le sorveglianze scadute si prenotano subito (last_run_at = adesso), in modo
    * atomico: due tick insieme, o uno ripetuto, non rifanno gli stessi giri */
   const due = await db.execute(sql`

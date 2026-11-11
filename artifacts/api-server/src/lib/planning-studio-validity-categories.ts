@@ -7,7 +7,7 @@
  *    attraverso un calendario decido quando sono attive queste validità.
  *    Le categorie sono valide per tutti i progetti."
  *
- * Modello:
+ * Modello (le tabelle le creano le migrazioni):
  *   - ps_validity_categories         (id, code, name, color, sort_order)
  *     → dizionario GLOBALE condiviso (scuole_chiuse_estivo significa lo
  *       stesso ovunque; ciò che cambia per progetto è QUALI giorni lo sono)
@@ -33,7 +33,6 @@ import { sql } from "drizzle-orm";
 const router: IRouter = Router();
 
 let bootstrapped = false;
-let calendarSchemaReady = false;
 
 const SEED_CATEGORIES = [
   { code: "scuole_aperte",  name: "Scuole Aperte",  color: "#3b82f6", sort_order: 10 },
@@ -41,85 +40,10 @@ const SEED_CATEGORIES = [
   { code: "festivita",      name: "Festività",      color: "#ef4444", sort_order: 30 },
 ];
 
-/**
- * Schema del CALENDARIO categorie — migrazione PER-PROGETTO (pacchetto 5B).
- *
- * Storicamente PK sulla sola `date` (calendario unico globale): due progetti
- * si sovrascrivevano a vicenda la classificazione dei giorni a ogni sync.
- * Ora: colonna project_id NULLABLE + indici UNIQUE PARZIALI, stesso pattern
- * di ps_day_calendar (planning-studio-validity.ts). Le righe esistenti restano
- * project_id NULL = fallback legacy leggibile da tutti; le nuove scritture
- * sono per-progetto. Lettura con precedenza project > global.
- *
- * Idempotente e condivisa: chiamata dai 3 moduli che bootstrappavano la
- * tabella inline (questo, validity, validity-units).
- * Ordine importante: indici PRIMA del drop della PK (mai senza arbiter).
- */
-export async function ensureValidityCategoryCalendarSchema(): Promise<void> {
-  if (calendarSchemaReady) return;
-  // Self-contained: la FK del calendario richiede l'anagrafica categorie.
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_validity_categories (
-      id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      code        text NOT NULL UNIQUE,
-      name        text NOT NULL,
-      color       text NOT NULL,
-      sort_order  integer NOT NULL DEFAULT 0,
-      created_at  timestamptz NOT NULL DEFAULT now(),
-      updated_at  timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_validity_category_calendar (
-      date         date PRIMARY KEY,
-      category_id  uuid NOT NULL REFERENCES ps_validity_categories(id) ON DELETE CASCADE,
-      created_at   timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`
-    ALTER TABLE ps_validity_category_calendar
-      ADD COLUMN IF NOT EXISTS project_id uuid REFERENCES ps_projects(id) ON DELETE CASCADE
-  `);
-  await db.execute(sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_vcc_global
-      ON ps_validity_category_calendar (date) WHERE project_id IS NULL
-  `);
-  await db.execute(sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_vcc_project
-      ON ps_validity_category_calendar (project_id, date) WHERE project_id IS NOT NULL
-  `);
-  // drop PK name-agnostic (il NOT NULL su date sopravvive al drop)
-  await db.execute(sql`
-    DO $$ DECLARE pk text;
-    BEGIN
-      SELECT conname INTO pk FROM pg_constraint
-       WHERE conrelid = 'ps_validity_category_calendar'::regclass AND contype = 'p';
-      IF pk IS NOT NULL THEN
-        EXECUTE format('ALTER TABLE ps_validity_category_calendar DROP CONSTRAINT %I', pk);
-      END IF;
-    END $$
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_vcc_cat ON ps_validity_category_calendar(category_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_vcc_lookup ON ps_validity_category_calendar (project_id, date)`);
-  calendarSchemaReady = true;
-}
-
-export async function ensureTables(): Promise<void> {
+/** Seed delle categorie di base, una volta per processo (NOT EXISTS, idempotente). */
+export async function ensureSeedCategories(): Promise<void> {
   if (bootstrapped) return;
   try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_validity_categories (
-        id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        code        text NOT NULL UNIQUE,
-        name        text NOT NULL,
-        color       text NOT NULL,
-        sort_order  integer NOT NULL DEFAULT 0,
-        created_at  timestamptz NOT NULL DEFAULT now(),
-        updated_at  timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await ensureValidityCategoryCalendarSchema();
-
     for (const c of SEED_CATEGORIES) {
       await db.execute(sql`
         INSERT INTO ps_validity_categories (code, name, color, sort_order)
@@ -197,7 +121,7 @@ function rowToCategory(r: any) {
 /* ────────── Categories CRUD ────────── */
 
 router.get("/planning-studio/validity-categories", async (_req, res): Promise<void> => {
-  await ensureTables();
+  await ensureSeedCategories();
   try {
     const r = await db.execute(sql`
       SELECT * FROM ps_validity_categories ORDER BY sort_order ASC, name ASC
@@ -209,7 +133,7 @@ router.get("/planning-studio/validity-categories", async (_req, res): Promise<vo
 });
 
 router.post("/planning-studio/validity-categories", async (req, res): Promise<void> => {
-  await ensureTables();
+  await ensureSeedCategories();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const { code, name, color, sortOrder } = req.body ?? {};
@@ -233,7 +157,7 @@ router.post("/planning-studio/validity-categories", async (req, res): Promise<vo
 });
 
 router.patch("/planning-studio/validity-categories/:catId", async (req, res): Promise<void> => {
-  await ensureTables();
+  await ensureSeedCategories();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const { catId } = req.params;
@@ -263,7 +187,7 @@ router.patch("/planning-studio/validity-categories/:catId", async (req, res): Pr
 });
 
 router.delete("/planning-studio/validity-categories/:catId", async (req, res): Promise<void> => {
-  await ensureTables();
+  await ensureSeedCategories();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const { catId } = req.params;
@@ -278,7 +202,7 @@ router.delete("/planning-studio/validity-categories/:catId", async (req, res): P
 /* ────────── Calendar ────────── */
 
 router.get("/planning-studio/validity-categories/calendar", async (req, res): Promise<void> => {
-  await ensureTables();
+  await ensureSeedCategories();
   const from = req.query.from;
   const to = req.query.to;
   if (!isValidISODate(from) || !isValidISODate(to) || from > to) {
@@ -312,7 +236,7 @@ router.get("/planning-studio/validity-categories/calendar", async (req, res): Pr
 });
 
 router.put("/planning-studio/validity-categories/calendar", async (req, res): Promise<void> => {
-  await ensureTables();
+  await ensureSeedCategories();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const dates: string[] = Array.isArray(req.body?.dates) ? req.body.dates :
@@ -368,7 +292,7 @@ router.put("/planning-studio/validity-categories/calendar", async (req, res): Pr
 });
 
 router.delete("/planning-studio/validity-categories/calendar", async (req, res): Promise<void> => {
-  await ensureTables();
+  await ensureSeedCategories();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const date = req.query.date;

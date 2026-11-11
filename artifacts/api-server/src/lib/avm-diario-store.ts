@@ -17,9 +17,9 @@
  * minuti. Si scrive quindi al massimo una volta ogni CAMPIONE_MS, e i
  * contatori vanno letti come "campioni", non come "letture dell'AVM".
  *
- * Come le altre raccolte accessorie: la tabella si crea da sé al primo
- * bisogno, e se il database non la concede il diario si spegne senza fermare
- * il giro di ingestione. Un'analisi mancata non vale una corsa persa.
+ * Come le altre raccolte accessorie: la tabella la creano le migrazioni, e
+ * se il database non risponde il campione si perde senza fermare il giro di
+ * ingestione. Un'analisi mancata non vale una corsa persa.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";
@@ -56,7 +56,6 @@ const FRESCA_SEC = 15 * 60;
 const CAMPIONE_MS = 120_000;
 
 let ultimoCampione = 0;
-let pronto: Promise<boolean> | null = null;
 let ultimoErrore: string | null = null;
 let campioniScritti = 0;
 
@@ -85,48 +84,6 @@ export function letturaDa(v: SiriVehicle, now = Date.now()): LetturaVettura | nu
   };
 }
 
-async function crea(): Promise<boolean> {
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.avm_diario (
-        day date NOT NULL,
-        vehicle_ref text NOT NULL,
-        /* campioni, non letture dell'AVM: v. CAMPIONE_MS */
-        letture integer NOT NULL DEFAULT 0,
-        letture_fresche integer NOT NULL DEFAULT 0,
-        letture_monitorata integer NOT NULL DEFAULT 0,
-        letture_posizione integer NOT NULL DEFAULT 0,
-        letture_corsa integer NOT NULL DEFAULT 0,
-        letture_errore_gps integer NOT NULL DEFAULT 0,
-        letture_errore_gprs integer NOT NULL DEFAULT 0,
-        letture_rimessa integer NOT NULL DEFAULT 0,
-        primo_contatto timestamptz,
-        ultimo_contatto timestamptz,
-        linee text[] NOT NULL DEFAULT '{}',
-        corse text[] NOT NULL DEFAULT '{}',
-        first_seen timestamptz NOT NULL DEFAULT now(),
-        last_seen timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (day, vehicle_ref))`);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_caronte_avm_diario_day
-        ON caronte.avm_diario(day)`);
-    ultimoErrore = null;
-    return true;
-  } catch (e: any) {
-    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
-    console.warn("[siri] diario dell'AVM non attivo:", ultimoErrore);
-    return false;
-  }
-}
-
-export function assicura(): Promise<boolean> {
-  if (!pronto) {
-    pronto = crea().then(ok => { if (!ok) pronto = null; return ok; })
-      .catch(() => { pronto = null; return false; });
-  }
-  return pronto;
-}
-
 /** ARRAY['a','b']::text[] con i valori come parametri, mai interpolati. */
 function arrayLetterale(valori: Array<string | null>) {
   const puliti = [...new Set(valori.filter((x): x is string => !!x))].slice(0, 8);
@@ -143,7 +100,6 @@ export async function registraCampione(
 ): Promise<number> {
   if (!letture.length) return 0;
   if (now - ultimoCampione < CAMPIONE_MS) return 0;
-  if (!(await assicura())) return 0;
   ultimoCampione = now;
 
   /* Una riga per matricola anche se l'AVM la ripete: l'ultima vince, come
@@ -213,7 +169,6 @@ const RIGHE_MASSIME = 100_000;
 
 /** Le righe del diario dal giorno indicato (compreso) a oggi, o fino al giorno `aGiorno` (compreso). */
 export async function leggiDiario(daGiorno: string, aGiorno?: string): Promise<RigaDiario[]> {
-  if (!(await assicura())) return [];
   try {
     const fine = aGiorno ? sql`AND day <= ${aGiorno}::date` : sql``;
     const r = await db.execute<any>(sql`
@@ -255,7 +210,6 @@ export async function leggiDiario(daGiorno: string, aGiorno?: string): Promise<R
  * date_trunc('week') in Postgres porta al lunedì, come la settimana ISO.
  */
 export async function settimaneConDati(daGiorno: string): Promise<string[]> {
-  if (!(await assicura())) return [];
   try {
     const r = await db.execute<any>(sql`
       SELECT DISTINCT to_char(date_trunc('week', day)::date, 'YYYY-MM-DD') AS lunedi

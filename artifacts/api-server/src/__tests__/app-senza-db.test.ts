@@ -12,9 +12,16 @@ describe("l'API senza database", () => {
   });
 
   it("le condivisioni pubbliche rispondono 503 sulle loro rotte (404 con un database di prova)", async () => {
-    /* con TEST_DATABASE_URL la tabella si crea e il token, che non esiste, dà 404 */
+    /* senza database: 503 con un messaggio fisso, mai il testo dell'errore (sono rotte
+     * pubbliche). Con TEST_DATABASE_URL (migrato) il token, che non esiste, dà 404 */
     const atteso = process.env.TEST_DATABASE_URL ? 404 : 503;
-    expect((await request(app).get("/api/network-share/abcdef")).status).toBe(atteso);
-    expect((await request(app).get("/api/timetable-map/abcdef")).status).toBe(atteso);
+    const rete = await request(app).get("/api/network-share/abcdef");
+    const orari = await request(app).get("/api/timetable-map/abcdef");
+    expect(rete.status).toBe(atteso);
+    expect(orari.status).toBe(atteso);
+    if (atteso === 503) {
+      expect(rete.body).toEqual({ error: "Mappa di rete non disponibile: riprova tra poco" });
+      expect(orari.body).toEqual({ error: "Mappa orari non disponibile: riprova tra poco" });
+    }
   });
 });

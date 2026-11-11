@@ -17,8 +17,11 @@
  *
  *   Giorni con stesso validity_id formano una "Unità di Progettazione".
  *
- * Tabella:
+ * Tabella (la creano le migrazioni):
  *   ps_validity_units (project_id, validity_id) UNIQUE
+ *   service_type: urbana o extraurbana, decide il riposo minimo fra due turni
+ *   nel Roster (8h o 9h). NULL = nessuno l'ha scelto, vale la proposta dalle
+ *   linee (lib/udp-servizio.ts).
  *
  * Endpoint sotto /api/planning-studio/projects/:id/validity-units:
  *   POST /compute   { from, to } → preview gruppi (no save)
@@ -38,69 +41,6 @@ import { eServizio, serviziDelleUdp } from "./udp-servizio";
 import type { Ex } from "./anagrafica-store";
 
 const router: IRouter = Router();
-
-let bootstrapped = false;
-export async function ensureTables(): Promise<void> {
-  if (bootstrapped) return;
-  try {
-    /* Dipendenze cross-modulo: le tabelle delle CATEGORIE possono non esistere
-       ancora (vengono create dal modulo validity-categories al primo uso).
-       Helper condiviso (5B): anagrafica + calendario per-progetto, così la
-       compute delle UDP funziona anche su progetti "da zero". */
-    {
-      const { ensureValidityCategoryCalendarSchema } = await import("./planning-studio-validity-categories");
-      await ensureValidityCategoryCalendarSchema();
-    }
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_trip_category_validity (
-        trip_id     uuid NOT NULL,
-        category_id uuid NOT NULL,
-        PRIMARY KEY (trip_id, category_id)
-      )
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_tcv_category ON ps_trip_category_validity(category_id)`);
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_validity_units (
-        id                   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        project_id           uuid NOT NULL REFERENCES ps_projects(id) ON DELETE CASCADE,
-        validity_id          text NOT NULL,
-        name                 text NOT NULL,
-        description          text,
-        category_id          uuid REFERENCES ps_validity_categories(id) ON DELETE SET NULL,
-        day_type_id          uuid REFERENCES ps_day_types(id) ON DELETE SET NULL,
-        trip_ids             jsonb NOT NULL DEFAULT '[]'::jsonb,
-        trip_count           integer NOT NULL DEFAULT 0,
-        representative_dates jsonb NOT NULL DEFAULT '[]'::jsonb,
-        day_count            integer NOT NULL DEFAULT 0,
-        created_at           timestamptz NOT NULL DEFAULT now(),
-        updated_at           timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_validity_units
-        ON ps_validity_units (project_id, validity_id)
-    `);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_ps_validity_units_project
-        ON ps_validity_units (project_id)
-    `);
-    /* Urbana o extraurbana: decide il riposo minimo fra due turni nel Roster
-       (8h o 9h). NULL = nessuno l'ha scelto, vale la proposta dalle linee
-       (lib/udp-servizio.ts). */
-    await db.execute(sql`ALTER TABLE ps_validity_units ADD COLUMN IF NOT EXISTS service_type text`);
-    await db.execute(sql`
-      DO $$ BEGIN
-        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ps_validity_units_service_type_check') THEN
-          ALTER TABLE ps_validity_units ADD CONSTRAINT ps_validity_units_service_type_check
-            CHECK (service_type IS NULL OR service_type IN ('urbano', 'extraurbano'));
-        END IF;
-      END $$`);
-    bootstrapped = true;
-    console.log("[planning-studio.validity-units] tables ready");
-  } catch (e: any) {
-    console.error("[ps-validity-units] bootstrap error:", e?.message || e);
-  }
-}
 
 function getUserId(req: Request): string | null {
   return (req as any).session?.userId ?? (req as any).user?.id ?? null;
@@ -266,7 +206,6 @@ function mergeUnitsByJaccard(units: ComputedUnit[], tolerance: number): Computed
 
 /* ────────── POST /compute (preview, no save) ────────── */
 router.post("/planning-studio/projects/:id/validity-units/compute", async (req, res): Promise<void> => {
-  await ensureTables();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId, false);
@@ -573,7 +512,6 @@ router.post("/planning-studio/projects/:id/validity-units/compute", async (req, 
 
 /* ────────── POST /save (upsert idempotente) ────────── */
 router.post("/planning-studio/projects/:id/validity-units/save", async (req, res): Promise<void> => {
-  await ensureTables();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -649,7 +587,6 @@ router.post("/planning-studio/projects/:id/validity-units/save", async (req, res
 
 /* ────────── GET / (list units) ────────── */
 router.get("/planning-studio/projects/:id/validity-units", async (req, res): Promise<void> => {
-  await ensureTables();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId, false);
@@ -698,7 +635,6 @@ router.get("/planning-studio/projects/:id/validity-units", async (req, res): Pro
 
 /* ────────── DELETE /:unitId ────────── */
 router.delete("/planning-studio/projects/:id/validity-units/:unitId", async (req, res): Promise<void> => {
-  await ensureTables();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -716,7 +652,6 @@ router.delete("/planning-studio/projects/:id/validity-units/:unitId", async (req
 
 /* ────────── PATCH /:unitId (nome, descrizione, corse, urbana/extraurbana) ────────── */
 router.patch("/planning-studio/projects/:id/validity-units/:unitId", async (req, res): Promise<void> => {
-  await ensureTables();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -758,7 +693,6 @@ router.patch("/planning-studio/projects/:id/validity-units/:unitId", async (req,
  * Un'UDP è un dataset: oltre ai metadati restituisce le corse risolte
  * (linea, codice, orario di partenza, luogo di partenza/arrivo) e le date. */
 router.get("/planning-studio/projects/:id/validity-units/:unitId/detail", async (req, res): Promise<void> => {
-  await ensureTables();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId, false);

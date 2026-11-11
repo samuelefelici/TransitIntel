@@ -798,8 +798,6 @@ router.post("/planning-studio/:projectId/timetable-map-share", async (req, res):
     const title = typeof req.body?.title === "string" ? req.body.title.slice(0, 120) : null;
     const days = Number(req.body?.expiresInDays);
     const expiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
-    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
-    await ensureTimetableMapShareTable();
     const token = randomBytes(18).toString("base64url");
     const userId = (req as any).user?.id ?? null;
     await db.execute(sql`
@@ -817,8 +815,6 @@ router.get("/planning-studio/:projectId/timetable-map-shares", async (req, res):
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
     if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
-    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
-    await ensureTimetableMapShareTable();
     const r = await db.execute<any>(sql`
       SELECT token, title, route_ids, created_at, expires_at
         FROM ps_timetable_map_shares
@@ -846,8 +842,6 @@ router.patch("/planning-studio/:projectId/timetable-map-shares/:token", async (r
       res.status(400).json({ error: "parametri non validi" }); return;
     }
     if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
-    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
-    await ensureTimetableMapShareTable();
     const sets: any[] = [];
     if (Array.isArray(req.body?.routeIds)) {
       const ids = req.body.routeIds.filter((x: any) => UUID_RE.test(String(x)));
@@ -883,8 +877,6 @@ router.delete("/planning-studio/:projectId/timetable-map-shares/:token", async (
       res.status(400).json({ error: "parametri non validi" }); return;
     }
     if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
-    const { ensureTimetableMapShareTable } = await import("./timetable-map-share");
-    await ensureTimetableMapShareTable();
     await db.execute(sql`
       DELETE FROM ps_timetable_map_shares
        WHERE token = ${token} AND project_id = ${projectId}::uuid`);

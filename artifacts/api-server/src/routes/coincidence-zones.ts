@@ -31,16 +31,8 @@ const ZONE_UUID_RE = /^[0-9a-f-]{36}$/i;
 /* SCOPING PER PROGETTO — le zone di coincidenza erano l'ultima tabella
  * condivisa ancora piatta: le zone di un progetto entravano nell'analisi
  * intermodale di tutti gli altri. Stessa regola di depositi e archi
- * (PS14/PS15): NULL = zona globale, valorizzato = solo quel progetto PS. */
-let zonesScopeReady = false;
-export async function ensureZoneScope(): Promise<void> {
-  if (zonesScopeReady) return;
-  try {
-    await db.execute(sql`ALTER TABLE coincidence_zones ADD COLUMN IF NOT EXISTS ps_project_id uuid`);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_coincidence_zones_ps ON coincidence_zones(ps_project_id)`);
-    zonesScopeReady = true;
-  } catch (e: any) { console.warn("[coincidence-zones] scope bootstrap:", e?.message); }
-}
+ * (PS14/PS15): NULL = zona globale, valorizzato = solo quel progetto PS.
+ * La colonna ps_project_id la creano le migrazioni. */
 
 /** Filtro riusabile: globali + zone del progetto indicato. */
 export function zoneScopeWhere(psProjectId: string | null) {
@@ -244,7 +236,6 @@ router.get("/coincidence-zones/hubs", asyncHandler(async (req, res) => {
 // progetto deve essere uno che l'utente vede, e senza restano fuori le zone dei
 // progetti altrui.
 router.get("/coincidence-zones", asyncHandler(async (req, res) => {
-  await ensureZoneScope();
   const ps = String(req.query.psProjectId ?? "");
   const scope = ZONE_UUID_RE.test(ps) ? ps : null;
   if (scope && req.user?.role !== "admin" && !(req.user && await hasProjectAccess(scope, req.user.id))) {
@@ -269,7 +260,6 @@ router.get("/coincidence-zones", asyncHandler(async (req, res) => {
 // POST /api/coincidence-zones
 // ═══════════════════════════════════════════════════════════════
 router.post("/coincidence-zones", asyncHandler(async (req, res) => {
-  await ensureZoneScope();
   const { name, hubId, hubName, hubType, hubLat, hubLng, walkMinutes: wm, radiusKm, color, notes, stops } = req.body;
   if (!name || !hubId) { res.status(400).json({ error: "name and hubId required" }); return; }
   const psScope = ZONE_UUID_RE.test(String(req.body?.psProjectId ?? "")) ? String(req.body.psProjectId) : null;

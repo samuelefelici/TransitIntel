@@ -9,47 +9,17 @@
  * cambiato. Chi rilegge il controllo di tre settimane fa deve vedere quello
  * che si vedeva allora, non quello che si sa oggi.
  *
- * Come il diario: la tabella si crea da sé al primo bisogno (lo schema
- * caronte esiste già, e CREATE SCHEMA IF NOT EXISTS fallisce per permessi
- * anche quando c'è), e se non si può creare l'archivio si spegne senza
- * toccare il resto.
+ * Come il diario: la tabella la creano le migrazioni, e se una scrittura
+ * fallisce l'archivio lo dice (erroreArchivioControlli) senza toccare il resto.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import type { ControlloSettimanale, Categoria } from "./avm-controllo.js";
 
-let pronto: Promise<boolean> | null = null;
 let ultimoErrore: string | null = null;
 
 export function erroreArchivioControlli(): string | null { return ultimoErrore; }
-
-async function crea(): Promise<boolean> {
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.avm_controllo_settimanale (
-        /* il lunedì della settimana controllata */
-        settimana date PRIMARY KEY,
-        generato_il timestamptz NOT NULL DEFAULT now(),
-        /* VERSIONE_CONTROLLO del calcolo che l'ha prodotta */
-        versione integer NOT NULL,
-        dati jsonb NOT NULL)`);
-    ultimoErrore = null;
-    return true;
-  } catch (e: any) {
-    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
-    console.warn("[siri] archivio dei controlli AVM non attivo:", ultimoErrore);
-    return false;
-  }
-}
-
-export function assicura(): Promise<boolean> {
-  if (!pronto) {
-    pronto = crea().then(ok => { if (!ok) pronto = null; return ok; })
-      .catch(() => { pronto = null; return false; });
-  }
-  return pronto;
-}
 
 /**
  * Salva il controllo di una settimana. Di base non sovrascrive: il primo
@@ -58,7 +28,6 @@ export function assicura(): Promise<boolean> {
  * Restituisce true se ha scritto.
  */
 export async function salvaControllo(c: ControlloSettimanale, sovrascrivi = false): Promise<boolean> {
-  if (!(await assicura())) return false;
   try {
     const dati = JSON.stringify(c);
     const r = sovrascrivi
@@ -84,7 +53,6 @@ export async function salvaControllo(c: ControlloSettimanale, sovrascrivi = fals
 
 /** Il controllo archiviato di una settimana, se c'è. */
 export async function leggiControllo(lunedi: string): Promise<ControlloSettimanale | null> {
-  if (!(await assicura())) return null;
   try {
     const r = await db.execute<any>(sql`
       SELECT dati FROM caronte.avm_controllo_settimanale WHERE settimana = ${lunedi}::date`);
@@ -109,7 +77,6 @@ export interface VoceArchivio {
 
 /** Le settimane archiviate, dalla più recente. */
 export async function elencoControlli(limite = 26): Promise<VoceArchivio[]> {
-  if (!(await assicura())) return [];
   try {
     const r = await db.execute<any>(sql`
       SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi, generato_il, versione,
@@ -142,7 +109,6 @@ export async function elencoControlli(limite = 26): Promise<VoceArchivio[]> {
 
 /** Le settimane già archiviate a partire da un lunedì (compreso). */
 export async function settimaneArchiviate(daLunedi: string): Promise<Set<string>> {
-  if (!(await assicura())) return new Set();
   try {
     const r = await db.execute<any>(sql`
       SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi
@@ -156,7 +122,6 @@ export async function settimaneArchiviate(daLunedi: string): Promise<Set<string>
 
 /** Le settimane archiviate con un calcolo più vecchio di `versione`. */
 export async function settimaneVersioneVecchia(daLunedi: string, versione: number): Promise<string[]> {
-  if (!(await assicura())) return [];
   try {
     const r = await db.execute<any>(sql`
       SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi
@@ -176,7 +141,6 @@ export async function settimaneVersioneVecchia(daLunedi: string, versione: numbe
  * appena FleetCare torna leggibile.
  */
 export async function settimaneIncomplete(daLunedi: string): Promise<string[]> {
-  if (!(await assicura())) return [];
   try {
     const r = await db.execute<any>(sql`
       SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi

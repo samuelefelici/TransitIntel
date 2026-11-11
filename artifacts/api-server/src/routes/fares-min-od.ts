@@ -97,67 +97,9 @@ function classifyRouteMinOd(shortName: string): string {
 }
 
 // ════════════════════════════════════════════════════════════
-// Lazy bootstrap: pattern del progetto (CREATE TABLE IF NOT EXISTS)
-// Chiamato all'inizio di ogni endpoint. Idempotente.
+// Le tabelle (gtfs_fare_network_edges, gtfs_fare_od_matrix,
+// gtfs_fare_od_matrix_runs) le creano le migrazioni.
 // ════════════════════════════════════════════════════════════
-let bootstrapped = false;
-export async function ensureMinOdTables(): Promise<void> {
-  if (bootstrapped) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS gtfs_fare_network_edges (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      feed_id UUID NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-      from_cluster_id TEXT NOT NULL,
-      to_cluster_id TEXT NOT NULL,
-      km DOUBLE PRECISION NOT NULL,
-      route_id TEXT,
-      route_short_name TEXT,
-      shape_id TEXT,
-      source TEXT NOT NULL DEFAULT 'dominant',
-      bidirectional BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS gtfs_fare_network_edges_from_to_idx ON gtfs_fare_network_edges (feed_id, from_cluster_id, to_cluster_id);`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS gtfs_fare_network_edges_feed_idx   ON gtfs_fare_network_edges (feed_id);`);
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS gtfs_fare_od_matrix (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      feed_id UUID NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-      from_cluster_id TEXT NOT NULL,
-      to_cluster_id TEXT NOT NULL,
-      km_tariffario DOUBLE PRECISION NOT NULL,
-      fascia INTEGER,
-      prezzo DOUBLE PRECISION NOT NULL,
-      fare_product_id TEXT,
-      path_clusters JSONB NOT NULL,
-      path_routes JSONB NOT NULL,
-      hop_count INTEGER NOT NULL,
-      is_urban BOOLEAN NOT NULL DEFAULT FALSE,
-      computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS gtfs_fare_od_matrix_from_to_idx ON gtfs_fare_od_matrix (feed_id, from_cluster_id, to_cluster_id);`);
-  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS gtfs_fare_od_matrix_unique_idx ON gtfs_fare_od_matrix (feed_id, from_cluster_id, to_cluster_id);`);
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS gtfs_fare_od_matrix_runs (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      feed_id UUID NOT NULL REFERENCES gtfs_feeds(id) ON DELETE CASCADE,
-      status TEXT NOT NULL,
-      edge_count INTEGER,
-      pairs_computed INTEGER,
-      pairs_skipped INTEGER,
-      duration_ms INTEGER,
-      error_message TEXT,
-      params JSONB,
-      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      finished_at TIMESTAMPTZ
-    );
-  `);
-  bootstrapped = true;
-}
 
 // ════════════════════════════════════════════════════════════
 // Calcolo del percorso dominante locale (logica replicata da
@@ -517,7 +459,6 @@ async function computeOdMatrix(feedId: string): Promise<ComputeResult> {
 /** POST /api/fares/min-od/build-graph */
 router.post("/fares/min-od/build-graph", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const onlyExtraurban = req.body?.onlyExtraurban !== false;
@@ -532,7 +473,6 @@ router.post("/fares/min-od/build-graph", async (req, res) => {
 /** POST /api/fares/min-od/compute-matrix */
 router.post("/fares/min-od/compute-matrix", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
 
@@ -571,7 +511,6 @@ router.post("/fares/min-od/compute-matrix", async (req, res) => {
 /** GET /api/fares/min-od/simulate?from=&to=&feedId= */
 router.get("/fares/min-od/simulate", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     const from = req.query.from as string | undefined;
     const to = req.query.to as string | undefined;
@@ -592,7 +531,6 @@ router.get("/fares/min-od/simulate", async (req, res) => {
 /** GET /api/fares/min-od/matrix?feedId=&limit=&offset= */
 router.get("/fares/min-od/matrix", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const limit = Math.min(Number(req.query.limit ?? 5000), 20000);
@@ -610,7 +548,6 @@ router.get("/fares/min-od/matrix", async (req, res) => {
 /** GET /api/fares/min-od/edges?feedId= */
 router.get("/fares/min-od/edges", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const rows = await db.select().from(gtfsFareNetworkEdges)
@@ -624,7 +561,6 @@ router.get("/fares/min-od/edges", async (req, res) => {
 /** GET /api/fares/min-od/runs?feedId= */
 router.get("/fares/min-od/runs", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const rows = await db.select().from(gtfsFareOdMatrixRuns)
@@ -640,7 +576,6 @@ router.get("/fares/min-od/runs", async (req, res) => {
 /** POST /api/fares/min-od/edges  → arco manuale */
 router.post("/fares/min-od/edges", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     const { fromClusterId, toClusterId, km, bidirectional } = req.body ?? {};
     if (!feedId || !fromClusterId || !toClusterId || typeof km !== "number") {
@@ -663,7 +598,6 @@ router.post("/fares/min-od/edges", async (req, res) => {
 /** DELETE /api/fares/min-od/edges/:id */
 router.delete("/fares/min-od/edges/:id", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const sc = await idNelFeed(req, res); if (!sc) return;
     const via = await db.delete(gtfsFareNetworkEdges).where(nelFeed(gtfsFareNetworkEdges, sc)).returning({ id: gtfsFareNetworkEdges.id });
     if (!via.length) return res.status(404).json(NON_NEL_FEED);
@@ -676,7 +610,6 @@ router.delete("/fares/min-od/edges/:id", async (req, res) => {
 /** DELETE /api/fares/min-od/matrix?feedId= */
 router.delete("/fares/min-od/matrix", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     if (!feedId) return res.status(400).json({ error: "no feed" });
     const result = await db.delete(gtfsFareOdMatrix).where(eq(gtfsFareOdMatrix.feedId, feedId));
@@ -702,7 +635,6 @@ router.delete("/fares/min-od/matrix", async (req, res) => {
  */
 router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     const routeId = req.params.routeId;
     if (!feedId || !routeId) return res.status(400).json({ error: "feedId e routeId richiesti" });
@@ -967,7 +899,6 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
  */
 router.get("/fares/min-od/route-variants/:routeId", async (req, res) => {
   try {
-    await ensureMinOdTables();
     const feedId = await getLatestFeedId(req);
     const routeId = req.params.routeId;
     if (!feedId || !routeId) return res.status(400).json({ error: "feedId e routeId richiesti" });

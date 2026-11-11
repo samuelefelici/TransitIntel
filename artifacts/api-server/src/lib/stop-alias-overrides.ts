@@ -12,8 +12,8 @@
  *
  * Il file non si tocca mai: la tabella effettiva è file + correzioni, e si
  * esporta nello stesso formato del file, con la colonna che dice da dove
- * viene ogni riga. Come per le altre tabelle dell'esercizio, si crea da sé
- * al primo bisogno e se il database non concede si legge vuota.
+ * viene ogni riga. Come le altre tabelle dell'esercizio la creano le
+ * migrazioni; se il database non risponde si legge l'ultima copia in memoria.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { db } from "@workspace/db";
@@ -29,45 +29,17 @@ export interface OverridePalina {
   aggiornataAlle: string;
 }
 
-let pronto: Promise<boolean> | null = null;
 let ultimoErrore: string | null = null;
 let cache: { at: number; righe: OverridePalina[] } | null = null;
 const TTL_MS = 60_000;
 
 export function erroreOverrides(): string | null { return ultimoErrore; }
 
-async function crea(): Promise<boolean> {
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS caronte.stop_alias_overrides (
-        mizar_ref text PRIMARY KEY,
-        stop_id text,
-        nome text,
-        nota text,
-        updated_by text,
-        created_at timestamptz NOT NULL DEFAULT now(),
-        updated_at timestamptz NOT NULL DEFAULT now())`);
-    ultimoErrore = null;
-    return true;
-  } catch (e: any) {
-    ultimoErrore = e?.cause?.message ?? e?.message ?? String(e);
-    console.warn("[siri] correzioni alla transcodifica non attive:", ultimoErrore);
-    return false;
-  }
-}
-export function assicura(): Promise<boolean> {
-  if (!pronto) {
-    pronto = crea().then(ok => { if (!ok) pronto = null; return ok; }).catch(() => { pronto = null; return false; });
-  }
-  return pronto;
-}
-
 export function invalidaOverrides(): void { cache = null; }
 
 /** Tutte le correzioni, con una cache breve: l'indice del feed le rilegge a ogni ricarica. */
 export async function leggiOverrides(force = false): Promise<OverridePalina[]> {
   if (!force && cache && Date.now() - cache.at < TTL_MS) return cache.righe;
-  if (!(await assicura())) return cache?.righe ?? [];
   try {
     const r = await db.execute<any>(sql`
       SELECT mizar_ref, stop_id, nome, nota, updated_by, updated_at
@@ -88,7 +60,6 @@ export async function leggiOverrides(force = false): Promise<OverridePalina[]> {
 }
 
 export async function salvaOverride(o: { mizarRef: string; stopId: string | null; nome?: string | null; nota?: string | null; utente?: string | null }): Promise<boolean> {
-  if (!(await assicura())) return false;
   try {
     await db.execute(sql`
       INSERT INTO caronte.stop_alias_overrides (mizar_ref, stop_id, nome, nota, updated_by)
@@ -106,7 +77,6 @@ export async function salvaOverride(o: { mizarRef: string; stopId: string | null
 }
 
 export async function rimuoviOverride(mizarRef: string): Promise<boolean> {
-  if (!(await assicura())) return false;
   try {
     await db.execute(sql`DELETE FROM caronte.stop_alias_overrides WHERE mizar_ref = ${mizarRef}`);
     invalidaOverrides();
@@ -117,4 +87,4 @@ export async function rimuoviOverride(mizarRef: string): Promise<boolean> {
   }
 }
 
-export function resetOverridesCache(): void { pronto = null; cache = null; ultimoErrore = null; }
+export function resetOverridesCache(): void { cache = null; ultimoErrore = null; }

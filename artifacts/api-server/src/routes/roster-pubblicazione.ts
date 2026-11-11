@@ -16,14 +16,14 @@
 import { Router, type IRouter, type Response } from "express";
 import { assicuraAnagrafica } from "../lib/anagrafica-store";
 import {
-  anteprima, assicuraPubblicazione, programmi, pubblica, registro, ritira, RifiutoPubblicazione,
+  anteprima, programmi, pubblica, registro, ritira, RifiutoPubblicazione,
 } from "../lib/roster-pubblicazione-db";
 
 const router: IRouter = Router();
 
 router.use(async (req, res, next) => {
   if (!req.path.toLowerCase().startsWith("/roster/pubblicazioni")) { next(); return; }
-  try { await assicuraAnagrafica(); await assicuraPubblicazione(); }
+  try { await assicuraAnagrafica(); }
   catch { res.status(503).json({ error: "Pubblicazione non disponibile: riprova tra poco" }); return; }
   next();
 });

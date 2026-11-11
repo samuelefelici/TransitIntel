@@ -10,7 +10,8 @@
  * dell'agente. Il dossier alimenta scripts/report_builder.py che produce la
  * relazione HTML completa (testo tecnico, formule, grafici SVG, disegni,
  * costi), stampabile in PDF dal browser. Le relazioni generate sono
- * persistite (tabella process_reports) e apribili da Cerbero.
+ * persistite (tabella process_reports, la creano le migrazioni) e apribili
+ * da Cerbero.
  */
 import { Router, type IRouter, type Request, type Response } from "express";
 import { db } from "@workspace/db";
@@ -22,35 +23,6 @@ import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
-
-let tableReady = false;
-export async function ensureTable(): Promise<void> {
-  if (tableReady) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS process_reports (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      scenario_id uuid,
-      dss_id uuid,
-      project_id uuid,
-      ps_project_id uuid,
-      owner_user_id uuid,
-      title text NOT NULL,
-      is_test boolean NOT NULL DEFAULT false,
-      summary jsonb,
-      dossier jsonb NOT NULL,
-      html text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_process_reports_scenario ON process_reports(scenario_id, created_at DESC)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_process_reports_project ON process_reports(project_id, created_at DESC)`);
-  // Colonne additive lette dal dossier: su un DB dove nessuno scenario è stato
-  // ancora salvato col nuovo codice non esistono e la SELECT fallirebbe.
-  await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS config jsonb`);
-  await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS depots jsonb`);
-  await db.execute(sql`ALTER TABLE service_program_scenarios ADD COLUMN IF NOT EXISTS project_id uuid`);
-  tableReady = true;
-}
 
 function rows(r: any): any[] { return (r as any)?.rows ?? (Array.isArray(r) ? r : []); }
 
@@ -428,7 +400,6 @@ interface DossierExtra {
 
 /** Costruisce il dossier di processo per uno scenario vetture (+ DSS). */
 export async function buildProcessDossier(scenarioId: string, dssIdReq: string | null, extra: DossierExtra): Promise<any> {
-  await ensureTable();
   const scR = await db.execute(sql`
     SELECT id, name, date, feed_id, input, result, created_at, project_id, depots, config
       FROM service_program_scenarios WHERE id = ${scenarioId}::uuid
@@ -833,7 +804,6 @@ router.post("/service-program/scenarios/:id/report", async (req: Request, res: R
   try {
     const acc = await requireVehicleScenarioRead(req, res, String(req.params.id));
     if (!acc) return;
-    await ensureTable();
     const b = (req.body ?? {}) as Record<string, any>;
     const extra: DossierExtra = {
       title: typeof b.title === "string" ? b.title.slice(0, 200) : undefined,
@@ -874,7 +844,6 @@ router.post("/service-program/scenarios/:id/report", async (req: Request, res: R
 router.get("/service-program/reports", async (req: Request, res: Response) => {
   try {
     if (!req.user) { res.status(401).json({ error: "Non autenticato" }); return; }
-    await ensureTable();
     const scenarioId = typeof req.query.scenarioId === "string" && UUID_RE.test(req.query.scenarioId) ? req.query.scenarioId : null;
     const projectId = typeof req.query.projectId === "string" && UUID_RE.test(req.query.projectId) ? req.query.projectId : null;
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? "30"), 10) || 30));
@@ -899,7 +868,6 @@ router.get("/service-program/reports", async (req: Request, res: Response) => {
 router.get("/service-program/reports/:id", async (req: Request, res: Response) => {
   try {
     if (!UUID_RE.test(String(req.params.id))) { res.status(400).json({ error: "id non valido" }); return; }
-    await ensureTable();
     const row = rows(await db.execute(sql`SELECT id, scenario_id, dss_id, project_id, owner_user_id, title, is_test, summary, dossier, created_at FROM process_reports WHERE id = ${String(req.params.id)}::uuid`))[0];
     if (!row || !(await canReadReport(req, row))) { res.status(404).json({ error: "Relazione non trovata o non accessibile" }); return; }
     const withDossier = String(req.query.dossier ?? "") === "1";
@@ -914,7 +882,6 @@ router.get("/service-program/reports/:id", async (req: Request, res: Response) =
 router.get("/service-program/reports/:id/html", async (req: Request, res: Response) => {
   try {
     if (!UUID_RE.test(String(req.params.id))) { res.status(400).send("id non valido"); return; }
-    await ensureTable();
     const row = rows(await db.execute(sql`SELECT id, scenario_id, owner_user_id, title, html FROM process_reports WHERE id = ${String(req.params.id)}::uuid`))[0];
     if (!row || !(await canReadReport(req, row))) { res.status(404).send("Relazione non trovata o non accessibile"); return; }
     res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -929,7 +896,6 @@ router.get("/service-program/reports/:id/html", async (req: Request, res: Respon
 router.delete("/service-program/reports/:id", async (req: Request, res: Response) => {
   try {
     if (!UUID_RE.test(String(req.params.id)) || !req.user) { res.status(400).json({ error: "id non valido" }); return; }
-    await ensureTable();
     const row = rows(await db.execute(sql`SELECT id, owner_user_id FROM process_reports WHERE id = ${String(req.params.id)}::uuid`))[0];
     if (!row) { res.status(404).json({ error: "Relazione non trovata" }); return; }
     if (!isAdmin(req) && row.owner_user_id !== req.user.id) { res.status(403).json({ error: "Solo chi l'ha generata (o un admin) può eliminarla" }); return; }

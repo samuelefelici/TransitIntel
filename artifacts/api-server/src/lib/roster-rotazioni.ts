@@ -27,50 +27,6 @@ const soloRoster = requirePermission("roster");
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
-let bootstrapped = false;
-/** Crea le tabelle delle rotazioni: lo chiama anche l'anagrafica, che le legge. */
-export async function ensureTable(): Promise<void> {
-  if (bootstrapped) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_rotazioni_riposi (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      name text NOT NULL,
-      weeks integer NOT NULL,
-      pattern jsonb NOT NULL,          -- [ [ "R"|null × 7 ] × weeks ]
-      meta jsonb,                      -- parametri/KPI dalla ricerca (opzionale)
-      owner_user_id uuid,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  // ANCORA di fase del ciclo: la prima generazione la fissa; le rigenerazioni
-  // successive mantengono la stessa fase anche partendo da una data diversa.
-  await db.execute(sql`ALTER TABLE roster_rotazioni_riposi ADD COLUMN IF NOT EXISTS anchor_date date`);
-  // Assegnazione conducenti agli scaglioni (righe = settimane) di una rotazione.
-  // week_index = riga di partenza (scaglione, 0-based). Un conducente ha un solo
-  // scaglione per rotazione.
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_rotazione_assegnazioni (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      rotazione_id uuid NOT NULL REFERENCES roster_rotazioni_riposi(id) ON DELETE CASCADE,
-      week_index integer NOT NULL,
-      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (rotazione_id, driver_id)
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_rot_asg_rot ON roster_rotazione_assegnazioni(rotazione_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_rot_asg_drv ON roster_rotazione_assegnazioni(driver_id)`);
-  bootstrapped = true;
-}
-/* solo per le richieste del roster: il router è montato senza prefisso, e
- * su un database vuoto la tabella fa riferimento a roster_drivers, che crea
- * l'anagrafica (montata prima, sullo stesso percorso) */
-router.use(async (req, _res, next) => {
-  if (!req.path.toLowerCase().startsWith("/roster")) { next(); return; }
-  await ensureTable();
-  next();
-});
-
 function getUserId(req: Request): string | null {
   return (req as any).user?.id ?? (req as any).session?.userId ?? null;
 }

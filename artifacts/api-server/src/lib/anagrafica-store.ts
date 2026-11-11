@@ -27,7 +27,6 @@ import {
   DEPOSITI_INIZIALI, ESITI_VISITA, formattaOrario, leggiEsitoVisita, leggiOrario, matricolaCanonica, rigaRotazione, lunediDi,
   type Conducente, type EsitoVisita, type Deposito, type UnitaFerie,
 } from "./anagrafica-campi";
-import { ensureTable as assicuraTabelleRotazioni } from "./roster-rotazioni";
 import { inSistema } from "@workspace/db/contesto";
 
 export type Ex = { execute(q: SQL): Promise<{ rows: any[]; rowCount?: number | null }> };
@@ -40,51 +39,8 @@ export function oggiRoma(now: Date = new Date()): string {
 
 /* ── Colonne ────────────────────────────────────────────────────────────── */
 
-/** Tutte le colonne del conducente oltre a quelle della CREATE iniziale. */
-const COLONNE_CONDUCENTE: Array<[string, string]> = [
-  ["matricola", "text"], ["cognome", "text"], ["nome", "text"], ["cf", "text"], ["cellulare", "text"],
-  ["residenza_anagrafica", "text"], ["residenza_servizio", "text"],
-  ["ore_settimanali", "integer"], ["categoria", "text"],
-  ["data_nascita", "date"], ["data_assunzione", "date"], ["data_fine_servizio", "date"],
-  ["patente", "text"], ["patente_validita", "date"],
-  ["cqc_numero", "text"], ["cqc_validita", "date"],
-  ["visita_medica_validita", "date"], ["note", "text"],
-  ["photo_url", "text"],
-  ["abilitazioni", "text[] NOT NULL DEFAULT '{}'::text[]"],
-  ["visita_ferrovie_validita", "date"], ["visita_medico_competente_validita", "date"],
-  /* anagrafica completa */
-  ["orario_settimanale_min", "integer"],
-  ["telefono", "text"],
-  ["inquadramento", "text"], ["parametro", "smallint"],
-  ["ferie_annue", "numeric(6,1)"], ["ferie_residue", "numeric(6,1)"], ["ferie_residue_al", "date"],
-  ["ferie_unita", "text NOT NULL DEFAULT 'giorni'"],
-  ["scaglione_ferie", "text"],
-  ["rotazione_turni_gruppo_id", "uuid"], ["rotazione_turni_posizione", "integer"],
-  ["visita_ferrovie_data", "date"], ["visita_medico_competente_data", "date"],
-  ["visita_ferrovie_esito", "text"], ["visita_medico_competente_esito", "text"],
-  ["patente_numero", "text"],
-  ["motivo_cessazione", "text"],
-  ["matricola_chiave", "text"],
-  ["versione", "integer NOT NULL DEFAULT 0"],
-  ["updated_at", "timestamptz"],
-];
-
 /** Il predicato dell'unicità della matricola: identico nel controllo e nell'indice. */
 const PREDICATO_UNICITA = "is_active AND NOT is_fictitious AND matricola_chiave IS NOT NULL";
-
-async function colonneEsistenti(tabella: string): Promise<Set<string>> {
-  const r = await db.execute<any>(sql`
-    SELECT column_name FROM information_schema.columns
-     WHERE table_schema = current_schema() AND table_name = ${tabella}`);
-  return new Set(righe(r).map((x: any) => String(x.column_name)));
-}
-
-async function aggiungiColonne(tabella: string, colonne: Array<[string, string]>): Promise<void> {
-  const ci = await colonneEsistenti(tabella);
-  for (const [nome, tipo] of colonne) {
-    if (!ci.has(nome)) await db.execute(sql.raw(`ALTER TABLE ${tabella} ADD COLUMN IF NOT EXISTS ${nome} ${tipo}`));
-  }
-}
 
 /* ── Bootstrap ──────────────────────────────────────────────────────────── */
 
@@ -97,133 +53,23 @@ export function statoAnagrafica() { return { errore: ultimoErrore, avvisi: [...a
 
 export function assicuraAnagrafica(): Promise<void> {
   if (!pronto) {
-    pronto = inSistema("avvio:anagrafica", crea).then(() => { ultimoErrore = null; }).catch((e: any) => {
+    pronto = inSistema("avvio:anagrafica", passiIniziali).then(() => { ultimoErrore = null; }).catch((e: any) => {
       pronto = null;
       ultimoErrore = e?.cause?.code ?? e?.code ?? "errore";
-      console.error("[anagrafica] tabelle non pronte:", e?.cause?.message ?? e?.message ?? e);
+      console.error("[anagrafica] passi iniziali non riusciti:", e?.cause?.message ?? e?.message ?? e);
       throw e;
     });
   }
   return pronto;
 }
 
-async function crea(): Promise<void> {
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_drivers (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      name text NOT NULL,
-      badge text,
-      is_fictitious boolean NOT NULL DEFAULT false,
-      is_active boolean NOT NULL DEFAULT true,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )`);
-  await aggiungiColonne("roster_drivers", COLONNE_CONDUCENTE);
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_assignments (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
-      day date NOT NULL,
-      dss_id uuid NOT NULL,
-      duty_code text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (driver_id, day),
-      UNIQUE (dss_id, day, duty_code)
-    )`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_day ON roster_assignments(day)`);
-  /* snapshot minimo del turno al momento dell'assegnazione (orari, anche in
-     minuti); forzatura = chi ha assegnato il turno nonostante riposo troppo
-     corto o sovrapposizione, quando e quali regole (lib/roster-normativa.ts) */
-  await aggiungiColonne("roster_assignments", [["snapshot", "jsonb"], ["forzatura", "jsonb"]]);
-  /* i controlli sui riposi leggono i turni di un conducente intorno a un giorno */
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_assign_driver_day ON roster_assignments(driver_id, day)`);
-  /* un conducente può fare più turni nello stesso giorno */
-  const vincolo = await db.execute<any>(sql`
-    SELECT 1 FROM pg_constraint WHERE conname = 'roster_assignments_driver_id_day_key'`);
-  if (righe(vincolo).length) {
-    await db.execute(sql`ALTER TABLE roster_assignments DROP CONSTRAINT IF EXISTS roster_assignments_driver_id_day_key`);
-  }
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_driver_history (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
-      kind text NOT NULL,
-      value text,
-      event_date date,
-      expiry_date date,
-      note text,
-      created_at timestamptz NOT NULL DEFAULT now()
-    )`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_hist_driver ON roster_driver_history(driver_id, event_date DESC)`);
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_entries (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      driver_id uuid NOT NULL REFERENCES roster_drivers(id) ON DELETE CASCADE,
-      day date NOT NULL,
-      category text NOT NULL,
-      code text NOT NULL,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (driver_id, day, code)
-    )`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_entries_day ON roster_entries(day)`);
-  /* source = origine di una voce generata ("rotazione:<uuid>"); NULL = manuale */
-  await aggiungiColonne("roster_entries", [["source", "text"]]);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_entries_source ON roster_entries(source)`);
-
-  /* le rotazioni riposi: /roster/drivers le legge, e il loro router potrebbe non essere ancora passato */
-  await assicuraTabelleRotazioni();
-
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_depositi (
-      codice text PRIMARY KEY,
-      nome text NOT NULL UNIQUE,
-      gruppo text NOT NULL CHECK (gruppo IN ('A', 'B')),
-      cadenza_turni text NOT NULL CHECK (cadenza_turni IN ('settimanale', 'semimensile')),
-      alias text[] NOT NULL DEFAULT '{}'::text[],
-      ordine integer NOT NULL DEFAULT 0
-    )`);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_categorie (
-      codice text PRIMARY KEY,
-      nome text NOT NULL UNIQUE,
-      alias text[] NOT NULL DEFAULT '{}'::text[]
-    )`);
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_gruppi_turni (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      deposito_codice text NOT NULL REFERENCES roster_depositi(codice),
-      nome text NOT NULL,
-      /* la posizione dei conducenti si legge a partire da questa data (fase 2) */
-      data_riferimento date,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (deposito_codice, nome)
-    )`);
-  /* i passi sui dati vecchi che si fanno una volta sola (una migrazione, non un controllo) */
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_anagrafica_passi (
-      passo text PRIMARY KEY,
-      fatto_il timestamptz NOT NULL DEFAULT now()
-    )`);
-  /* chi ha scritto che cosa nell'anagrafica: i NOMI dei campi, mai i valori */
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS roster_anagrafica_log (
-      id bigserial PRIMARY KEY,
-      at timestamptz NOT NULL DEFAULT now(),
-      user_id uuid,
-      driver_id uuid,
-      azione text NOT NULL,
-      campi text[] NOT NULL DEFAULT '{}'::text[],
-      dettaglio jsonb
-    )`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_roster_anag_log_driver ON roster_anagrafica_log(driver_id, at DESC)`);
-
+/** I passi sui dati vecchi, una volta per processo. Le tabelle le creano le migrazioni. */
+async function passiIniziali(): Promise<void> {
   avvisiBootstrap = [];
   try {
     await db.transaction(async (tx) => { await passiSuiDati(tx as unknown as Ex); });
   } catch (e: any) {
-    /* le tabelle ci sono: un passo sui dati fallito non spegne l'anagrafica */
+    /* un passo sui dati fallito non spegne l'anagrafica */
     avvisiBootstrap.push(`passi iniziali sui dati non completati (${e?.cause?.code ?? e?.code ?? "errore"})`);
     console.error("[anagrafica] passi iniziali sui dati:", e?.cause?.message ?? e?.message ?? e);
   }
@@ -362,10 +208,12 @@ async function passiSuiDati(ex: Ex): Promise<void> {
 }
 
 /**
- * L'unicità della matricola fra i conducenti attivi veri: se i dati la
- * rispettano si crea l'indice unico (che poi la garantisce), altrimenti un
- * avviso con le matricole doppie. Gira all'avvio e ogni mattina: quando
- * qualcuno sistema i doppioni, l'indice arriva senza riavviare.
+ * L'unicità della matricola fra i conducenti attivi veri. La garantisce
+ * l'indice unico delle migrazioni, che però non nasce su un database dove in
+ * quel momento c'erano matricole doppie: finché ci sono, o finché l'indice
+ * manca, un avviso. Gira all'avvio e ogni mattina. L'indice non lo crea più
+ * l'app (non cambia lo schema): l'avviso dice l'istruzione per chi amministra
+ * il database.
  */
 export async function verificaUnicitaMatricole(ex: Ex): Promise<void> {
   const doppie = righe(await ex.execute(sql.raw(`
@@ -376,10 +224,11 @@ export async function verificaUnicitaMatricole(ex: Ex): Promise<void> {
       + "Finché ci sono, il database non può garantire che la matricola sia unica"];
     return;
   }
-  avvisiMatricole = [];
-  await ex.execute(sql.raw(`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_roster_drivers_matricola
-        ON roster_drivers (matricola_chiave) WHERE ${PREDICATO_UNICITA}`));
+  const indice = righe(await ex.execute(sql`SELECT to_regclass('uq_roster_drivers_matricola') IS NOT NULL AS presente`));
+  avvisiMatricole = indice[0]?.presente ? [] : [
+    "manca l'indice che garantisce l'unicità della matricola (quando è nato lo schema c'erano matricole doppie). "
+    + "Ora i dati lo permettono: chi amministra il database lo crea con "
+    + `CREATE UNIQUE INDEX uq_roster_drivers_matricola ON roster_drivers (matricola_chiave) WHERE ${PREDICATO_UNICITA}`];
 }
 
 /* ── Valore corrente dallo storico ──────────────────────────────────────── */

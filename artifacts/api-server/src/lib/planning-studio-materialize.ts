@@ -28,27 +28,12 @@ const router: IRouter = Router();
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
-/* ════════════════════════════════════════════════════════════
- *  Bootstrap colonna materialized_feed_id su ps_projects
- * ════════════════════════════════════════════════════════════ */
-let bootstrapped = false;
-export async function ensureMaterializedColumn(): Promise<void> {
-  if (bootstrapped) return;
-  await db.execute(sql`
-    ALTER TABLE ps_projects
-      ADD COLUMN IF NOT EXISTS materialized_feed_id uuid,
-      ADD COLUMN IF NOT EXISTS materialized_at timestamptz
-  `);
-  bootstrapped = true;
-}
-
 /* Il cuore della materializzazione sta in lib/materializzazione/feed.ts (lo
- * esegue anche il lavoratore); qui il bootstrap pigro della colonna resta
- * davanti, come prima. */
+ * esegue anche il lavoratore); le colonne ps_projects.materialized_feed_id e
+ * materialized_at le creano le migrazioni. */
 export type { MaterializeResult } from "./materializzazione/feed";
 export { mirrorPsClustersToLegacy } from "./materializzazione/feed";
 export async function materializePsToFeed(...args: Parameters<typeof materializza>): ReturnType<typeof materializza> {
-  await ensureMaterializedColumn();
   return materializza(...args);
 }
 
@@ -83,7 +68,6 @@ export function startSyncJob(
 
   void (async () => {
     try {
-      await ensureMaterializedColumn();
       const result = await sincronizzaProgetto(projectId, psProjectId, ownerUserId, { log: logger });
       job.status = "done";
       job.result = result;
@@ -164,8 +148,6 @@ export async function avviaSincronizzazione(
     await coda.chiediAnnullamento(viva.id);
   }
   if (!feedInCoda()) return { tipo: "memoria", job: startSyncJob(projectId, psProjectId, utenteId, log) };
-  // il bootstrap pigro della colonna resta qui, nell'API: il lavoratore non fa DDL
-  await ensureMaterializedColumn();
   for (let tentativo = 1; ; tentativo++) {
     try {
       const id = await coda.accoda({
