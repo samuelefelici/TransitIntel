@@ -647,18 +647,9 @@ jobs:
           DATABASE_URL=$PG/prod node lib/db/scripts/catalogo.mjs > prod.json
           node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json vuoto.json
           node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json prod.json
-      # Finché l'API ha ancora le unità pigre che creano tabelle al primo uso
-      # (fino alla PR 2.16), il loro DDL eseguito per intero sopra lo schema
-      # migrato non deve cambiare niente: codice e migrazioni non divergono.
-      - name: Il DDL a runtime dell'API non cambia lo schema migrato
-        run: |
-          # come l'app (cerbero_app, che lavora come cerbero_owner): con i suoi diritti
-          (cd artifacts/api-server && DATABASE_URL=$PG_APP/vuoto NODE_ENV=development node_modules/.bin/tsx scripts/crea-tutto.ts > ../../crea-tutto.log) \
-            || { cat crea-tutto.log; exit 1; }
-          tail -3 crea-tutto.log
-          DATABASE_URL=$PG/vuoto node lib/db/scripts/catalogo.mjs > vuoto-dopo.json
-          node lib/db/scripts/catalogo.mjs --confronta lib/db/migrations/meta/catalogo.json vuoto-dopo.json
-      # PR 2.4: l'API non fa più DDL all'avvio. Il bundle vero parte su un
+      # PR 2.4: l'API non fa più DDL all'avvio; PR 2.16a: non ne fa più affatto
+      # (le unità pigre che creavano tabelle al primo uso non ci sono più, lo
+      # controlla un test sui sorgenti). Il bundle vero parte su un
       # database nato solo dalle migrazioni, con un event trigger che registra
       # ogni DDL: 20 s dopo l'avvio il registro è vuoto e /api/healthz dice
       # schema ok. Tolta l'ultima migrazione dal tracciamento, un container

@@ -38,48 +38,8 @@ const FALLBACK_CIRCUITY = 1.35;
 const MAX_VIA_OSRM = 12;               // punti di passaggio per il ricalcolo OSRM
 const MAX_VIA_LIBERO = 30;             // punti del tratto LIBERO (la spezzata E' il percorso)
 
-/* ── Tabella additiva (pattern roster.ts: lazy bootstrap idempotente) ── */
-let bootstrapped = false;
-export async function ensureTable(): Promise<void> {
-  if (bootstrapped) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS deadhead_arcs (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      from_key text NOT NULL,
-      from_type text NOT NULL,
-      from_name text,
-      from_lat double precision NOT NULL,
-      from_lon double precision NOT NULL,
-      to_key text NOT NULL,
-      to_type text NOT NULL,
-      to_name text,
-      to_lat double precision NOT NULL,
-      to_lon double precision NOT NULL,
-      geometry jsonb,
-      road_km double precision,
-      travel_min double precision,
-      custom_min double precision,
-      custom_km double precision,
-      via_points jsonb,
-      source text NOT NULL DEFAULT 'osrm',
-      note text,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      UNIQUE (from_key, to_key)
-    )
-  `);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_deadhead_arcs_from ON deadhead_arcs(from_key)`);
-  // Scope per progetto PS: NULL = globale. L'unicità coppia diventa per-scope
-  // (due progetti possono avere versioni diverse dello stesso arco).
-  await db.execute(sql`ALTER TABLE deadhead_arcs ADD COLUMN IF NOT EXISTS ps_project_id uuid`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_deadhead_arcs_ps ON deadhead_arcs(ps_project_id)`);
-  await db.execute(sql`ALTER TABLE deadhead_arcs DROP CONSTRAINT IF EXISTS deadhead_arcs_from_key_to_key_key`);
-  await db.execute(sql`
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_deadhead_arcs_pair_scope
-      ON deadhead_arcs (from_key, to_key, COALESCE(ps_project_id, '00000000-0000-0000-0000-000000000000'::uuid))
-  `);
-  bootstrapped = true;
-}
+/* ── La tabella deadhead_arcs la creano le migrazioni. L'unicità della coppia
+ *    è per-scope (due progetti possono avere versioni diverse dello stesso arco). ── */
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -267,7 +227,6 @@ function rowToArc(r: any) {
  * dell'archivio storico inquinavano la vista coi depositi di altre reti;
  * includeGlobal=1 li riaggiunge esplicitamente. Senza psProjectId: tutti. */
 router.get("/deadhead-arcs", asyncHandler(async (req, res) => {
-  await ensureTable();
   const psProjectId = String(req.query.psProjectId ?? "");
   const includeGlobal = String(req.query.includeGlobal ?? "") === "1";
   const rows = UUID_RE.test(psProjectId)
@@ -293,7 +252,6 @@ async function loadScopedDepots(psProjectId: string | null): Promise<{ id: strin
  * coppie capolinea↔capolinea), includeClusters?: boolean (default false),
  * clusterIds?: string[] (vuoto = tutti, se includeClusters), replace?: boolean } */
 router.post("/deadhead-arcs/generate", asyncHandler(async (req, res) => {
-  await ensureTable();
   const { depotIds, routeIds, terminalPairsMaxKm, includeClusters, clusterIds, replace, replaceScope } = (req.body ?? {}) as any;
   const psProjectId: string | null = UUID_RE.test(String((req.body as any)?.psProjectId ?? ""))
     ? String((req.body as any).psProjectId) : null;
@@ -424,7 +382,6 @@ router.get("/deadhead-arcs/nodes", asyncHandler(async (req, res) => {
  * Gli estremi devono rispettare la regola delle coppie; il percorso passa
  * dai via points via OSRM e nasce source='manual' (vince nello scheduling). */
 router.post("/deadhead-arcs", asyncHandler(async (req, res) => {
-  await ensureTable();
   const raw = (req.body ?? {}) as any;
   const parseNode = (n: any): ArcNode | null => {
     if (!n || typeof n.key !== "string" || !n.key || typeof n.type !== "string") return null;
@@ -475,7 +432,6 @@ router.post("/deadhead-arcs", asyncHandler(async (req, res) => {
 
 /* ── PATCH tempi/km personalizzati e note ── */
 router.patch("/deadhead-arcs/:id", asyncHandler(async (req, res) => {
-  await ensureTable();
   const { customMin, customKm, note } = (req.body ?? {}) as any;
   const num = (v: any) => (v === null || v === "" || v === undefined ? null
     : Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : undefined);
@@ -500,7 +456,6 @@ router.patch("/deadhead-arcs/:id", asyncHandler(async (req, res) => {
  * spezzata disegnata E' il percorso, senza OSRM: forza il passaggio dove
  * il router non vuole andare). */
 router.post("/deadhead-arcs/:id/reroute", asyncHandler(async (req, res) => {
-  await ensureTable();
   const raw = (req.body ?? {}) as any;
   const freehand = raw.freehand === true;
   const via: [number, number][] = Array.isArray(raw.viaPoints)
@@ -534,13 +489,11 @@ router.post("/deadhead-arcs/:id/reroute", asyncHandler(async (req, res) => {
 
 /* ── DELETE arco singolo / tutti ── */
 router.delete("/deadhead-arcs/:id", asyncHandler(async (req, res) => {
-  await ensureTable();
   await db.execute(sql`DELETE FROM deadhead_arcs WHERE id = ${req.params.id as string}::uuid`);
   res.json({ ok: true });
 }));
 
 router.delete("/deadhead-arcs", asyncHandler(async (req, res) => {
-  await ensureTable();
   const psProjectId = String(req.query.psProjectId ?? "");
   const r = UUID_RE.test(psProjectId)
     // cancella SOLO gli archi di quel progetto (i globali restano)
