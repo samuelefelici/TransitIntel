@@ -995,7 +995,10 @@ describe("permessi di Argos: esecuzione", () => {
  * col valore); mai la verifica in due passaggi né l'ultimo accesso; nasce spento. */
 describe("0006: il registro delle modifiche", () => {
   const sql = readFileSync(path.join(CARTELLA, "0006_registro_delle_modifiche.sql"), "utf8");
-  const regole = new Map([...sql.matchAll(
+  // Vale l'ultima regola dichiarata per una tabella: la 0008 (PR 2.12) ridichiara
+  // quella degli utenti, con la colonna calcolata mfa_obbligatoria fra le escluse
+  const ridichiarate = readFileSync(path.join(CARTELLA, "0008_mfa_obbligatoria.sql"), "utf8");
+  const regole = new Map([...(sql + ridichiarate).matchAll(
     /SELECT registro\.sorveglia\('public\.(\w+)',\s*ARRAY\[([^\]]*)\],\s*(NULL|'\w+'),\s*(NULL|'\w+'),\s*(true|false)(?:,\s*(ARRAY\[[^\]]*\]|'\{\}'))?(?:,\s*(ARRAY\[[^\]]*\]|'\{\}'))?\);/g)]
     .map(([, t, chiave, , ambito, valori, valoriDi, escluse]) => [t!, {
       chiave: chiave!, ambito: ambito!, conValori: valori === "true", valoriDi: valoriDi ?? "", escluse: escluse ?? "",
@@ -1028,7 +1031,9 @@ describe("0006: il registro delle modifiche", () => {
     // l'attivazione e l'azzeramento della verifica si vedono (solo il nome)
     expect(u.escluse).not.toMatch(/mfa\\_%|mfa\\_attiva/);
     expect(u.valoriDi).not.toMatch(/password/);
-    // ogni colonna mfa_ è decisa: esclusa (un modello LIKE), o mfa_attiva
+    // ogni colonna mfa_ è decisa: esclusa (un modello LIKE), o mfa_attiva.
+    // mfa_obbligatoria (0008) è esclusa: è calcolata da ruolo e permessi, che il registro riporta già
+    expect(u.escluse).toContain("'mfa\\_obbligatoria'");
     const modelli = [...u.escluse.matchAll(/'([^']*)'/g)].map(([, m]) =>
       new RegExp(`^${m!.replace(/\\_/g, "_").replace(/%/g, ".*")}$`));
     for (const c of Object.keys(catalogo.tabelle["public.users"]).filter((x) => x.startsWith("mfa_") && x !== "mfa_attiva")) {

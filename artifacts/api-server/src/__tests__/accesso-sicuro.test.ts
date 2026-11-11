@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { base32, daBase32, hotp, nuovoSegreto, totp, uriOtpauth, verificaCodice, passoDi } from "../lib/totp";
 import { apriSegreto, chiaveDa, chiavePrecedenteDa, cifra, decifra, improntaRecupero } from "../lib/mfa-cifratura";
 import {
-  accessoRecente, chiaveEmail, limitazione, mfaObbligatoria, minutiDiBlocco, nuoviCodiciDiRecupero, percorsoConsentitoLimitato,
+  accessoRecente, chiaveEmail, limitazione, minutiDiBlocco, nuoviCodiciDiRecupero, percorsoConsentitoLimitato,
   percorsoVietatoAiServizi, prenotaTentativo, REGOLA_ACCOUNT, REGOLA_CODICI, REGOLA_INDIRIZZO, type StatoTentativi,
 } from "../lib/accesso-regole";
 
@@ -102,21 +102,18 @@ describe("le regole dell'accesso", () => {
     expect([0, 4, 5, 6, 7, 20].map(minutiDiBlocco)).toEqual([0, 0, 15, 30, 60, 1440]);
   });
 
-  it("la verifica in due passaggi: obbligatoria per admin, Personale e Roster", () => {
-    expect(mfaObbligatoria({ role: "admin" })).toBe(true);
-    expect(mfaObbligatoria({ role: "user", permissions: { personale: true } })).toBe(true);
-    expect(mfaObbligatoria({ role: "user", permissions: { roster: true } })).toBe(true);
-    expect(mfaObbligatoria({ role: "user", permissions: { scheduling: true, analytics: true } })).toBe(false);
-  });
-
+  /* Per chi è obbligatoria lo dice il database (users.mfa_obbligatoria, migrazione
+   * 0008): qui arriva già calcolata. La regola la prova mfa-obbligatoria-db.test.ts. */
   it("la sessione limitata: prima la password provvisoria, poi la verifica da attivare", () => {
-    const base = { role: "user", permissions: { roster: true }, deveCambiarePassword: false, mfaAttiva: false };
+    const base = { mfaObbligatoria: true, deveCambiarePassword: false, mfaAttiva: false };
     expect(limitazione({ ...base, deveCambiarePassword: true }, {})).toBe("password");
     expect(limitazione(base, {})).toBe("mfa");
     expect(limitazione({ ...base, mfaAttiva: true }, { mfa: true })).toBeNull();
     /* verifica attiva ma sessione senza: si rientra */
     expect(limitazione({ ...base, mfaAttiva: true }, {})).toBe("rifiuta");
-    expect(limitazione({ ...base, permissions: { scheduling: true } }, {})).toBeNull();
+    expect(limitazione({ ...base, mfaObbligatoria: false }, {})).toBeNull();
+    /* non obbligatoria ma attivata da sé: la sessione senza codice si rifiuta lo stesso */
+    expect(limitazione({ ...base, mfaObbligatoria: false, mfaAttiva: true }, {})).toBe("rifiuta");
   });
 
   it("una sessione limitata raggiunge solo le rotte per mettersi in regola", () => {

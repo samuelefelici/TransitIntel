@@ -35,6 +35,8 @@ export interface StatoRuoli {
   schemi: { nome: string; esiste: boolean; uso: boolean | null; crea: boolean | null }[];
   /** Chi altro può creare negli schemi dei dati; `PUBLIC` se possono tutti. */
   creatori?: { schema: string; ruolo: string; come?: "diretto" | "proprietario" | "ereditato" }[];
+  /** Le colonne calcolate attese dal catalogo, con com'è ognuna nel database. */
+  calcolate?: (ColonnaCalcolata & { esiste: boolean; calcolata: boolean; viva: string | null })[];
   /** Espressioni non ammesse su tabelle di un altro ruolo (non di Cerbero) negli schemi dei dati. */
   espressioniDiAltri?: (EspressioneVietata & { proprietario: string })[];
   lettura: { voce: string; esiste: boolean; legge: boolean | null }[];
@@ -56,15 +58,22 @@ export interface StatoRuoli {
 export interface AzioneRuoli { fase: 1 | 2 | 3; sql: string; perche: string; oggetto: string | null }
 export interface PianoRuoli { azioni: AzioneRuoli[]; attese: string[]; avvisi: string[]; errori: string[] }
 export declare function elencoDalCatalogo(catalogo: { tabelle?: object; viste?: object; sequenze?: object }): string[];
-export declare function leggiStato(client: ClientMinimo, elenco: readonly string[]): Promise<StatoRuoli>;
+export interface ColonnaCalcolata { tabella: string; colonna: string; tipo: string; nonNulla: boolean; espressione: string }
+export declare function calcolateDalCatalogo(catalogo: { tabelle?: Record<string, Record<string, string>> }): ColonnaCalcolata[];
+export declare function calcolateDaControllare(
+  catalogo: { tabelle?: Record<string, Record<string, string>> },
+  diario: readonly { tag: string; when: number }[], applicate: readonly { created_at: string | number }[],
+): { calcolate: ColonnaCalcolata[]; avviso: string | null };
+export declare function migrazioniApplicate(client: ClientMinimo): Promise<{ created_at: string | number }[]>;
+export declare function leggiStato(client: ClientMinimo, elenco: readonly string[], calcolate?: readonly ColonnaCalcolata[]): Promise<StatoRuoli>;
 export declare function piano(stato: StatoRuoli): PianoRuoli;
 export declare function allinea(
   client: ClientMinimo, elenco: readonly string[],
-  opzioni?: { tettoMs?: number; lockMs?: number; adesso?: () => number },
+  opzioni?: { tettoMs?: number; lockMs?: number; adesso?: () => number; calcolate?: readonly ColonnaCalcolata[] },
 ): Promise<{
   fatte: AzioneRuoli[]; occupate: AzioneRuoli[]; rimandate: AzioneRuoli[];
   avvisi: string[]; errori: string[]; daFare: AzioneRuoli[];
 }>;
-export declare function verifica(client: ClientMinimo, elenco: readonly string[]): Promise<{
+export declare function verifica(client: ClientMinimo, elenco: readonly string[], calcolate?: readonly ColonnaCalcolata[]): Promise<{
   daFare: AzioneRuoli[]; attese: string[]; avvisi: string[]; errori: string[];
 }>;

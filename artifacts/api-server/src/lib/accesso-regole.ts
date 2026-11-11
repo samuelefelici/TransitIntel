@@ -91,15 +91,30 @@ export function chiaveEmail(email: string): string {
   return email.trim().toLowerCase().slice(0, 200);
 }
 
-/**
- * La verifica in due passaggi è obbligatoria per chi amministra o vede dati
- * personali e sanitari. La regola è copiata in FleetCare
- * (fleetcare.cerbero_stato_utente, migrazione 0088): se cambia qui, va cambiata
- * anche là (il test fleetcare-sso lo ricorda).
+/*
+ * Per chi la verifica in due passaggi è obbligatoria (chi amministra, chi vede
+ * i dati del personale o il roster) lo dice il database: la colonna calcolata
+ * users.mfa_obbligatoria (PR 2.12, migrazione 0008). La leggono l'API e, dalla
+ * sua migrazione 0090, FleetCare: la regola non è più scritta qui né copiata
+ * là. La sua tabella di verità la prova mfa-obbligatoria-db.test.ts sul
+ * database.
  */
-export function mfaObbligatoria(u: { role: string; permissions?: Record<string, boolean> | null }): boolean {
-  return u.role === "admin" || !!u.permissions?.personale || !!u.permissions?.roster;
-}
+
+/**
+ * Come si legge la regola da `users`. La colonna vale solo finché la calcola
+ * il database: chi possiede la tabella (l'app, fino alla 2.16) non può
+ * cambiarne l'espressione, ma può toglierla (ALTER COLUMN … DROP EXPRESSION) e
+ * da lì scriverci «nessuno». Una colonna così non è più una regola: finché non
+ * viene rifatta (lo dice, con l'istruzione, `ruoli.mjs --verifica`) la verifica
+ * è obbligatoria per tutti. FleetCare nello stesso caso applica la regola di
+ * prima (sua migrazione 0090). Se la colonna manca la query fallisce, e non
+ * entra nessuno. Testo costante, senza dati di nessuno: va in una SELECT su
+ * `users` così com'è.
+ */
+export const SQL_MFA_OBBLIGATORIA = `(mfa_obbligatoria OR NOT coalesce((
+    SELECT a.attgenerated = 's' FROM pg_catalog.pg_attribute a
+     WHERE a.attrelid = 'public.users'::pg_catalog.regclass AND a.attname = 'mfa_obbligatoria'
+       AND a.attnum > 0 AND NOT a.attisdropped), false))`;
 
 export type Limitazione = null | "password" | "mfa";
 
@@ -110,12 +125,12 @@ export type Limitazione = null | "password" | "mfa";
  *  - "rifiuta": la verifica è attiva ma la sessione non l'ha fatta: si rientra.
  */
 export function limitazione(
-  u: { role: string; permissions?: Record<string, boolean> | null; deveCambiarePassword: boolean; mfaAttiva: boolean },
+  u: { mfaObbligatoria: boolean; deveCambiarePassword: boolean; mfaAttiva: boolean },
   sessione: { mfa?: boolean },
 ): Limitazione | "rifiuta" {
   if (u.mfaAttiva && !sessione.mfa) return "rifiuta";
   if (u.deveCambiarePassword) return "password";
-  if (mfaObbligatoria(u) && !u.mfaAttiva) return "mfa";
+  if (u.mfaObbligatoria && !u.mfaAttiva) return "mfa";
   return null;
 }
 

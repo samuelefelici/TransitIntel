@@ -30,7 +30,7 @@ import {
 import { erroreNuovaPassword } from "./password-regole";
 import { nuovoSegreto, uriOtpauth } from "./totp";
 import { cifra } from "./mfa-cifratura";
-import { accessoRecente, chiaveEmail, mfaObbligatoria, nuoviCodiciDiRecupero } from "./accesso-regole";
+import { accessoRecente, chiaveEmail, nuoviCodiciDiRecupero } from "./accesso-regole";
 import { azzeraTentativiPassword, improntePerSalvare, prenotaTentativoPassword, provaCodice, type EsitoCodice } from "./accesso-db";
 
 const router: IRouter = Router();
@@ -182,7 +182,8 @@ router.post("/auth/mfa/conferma", loginLimiter, requireAuth, soloPersona, async 
 
 router.post("/auth/mfa/disattiva", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
   try {
-    if (mfaObbligatoria(req.user!)) { res.status(403).json({ error: "Per il tuo ruolo la verifica in due passaggi è obbligatoria" }); return; }
+    // lo dice il database (users.mfa_obbligatoria, letta da requireAuth); senza un «false» resta obbligatoria
+    if (req.accesso?.mfaObbligatoria !== false) { res.status(403).json({ error: "Per il tuo ruolo la verifica in due passaggi è obbligatoria" }); return; }
     const u = await riga(req.user!.id);
     if (!u?.mfa_attiva) { res.status(409).json({ error: "La verifica in due passaggi non è attiva" }); return; }
     const e = await provaCodice(u.id, { codice: req.body?.codice }, { recupero: false, conta: true });

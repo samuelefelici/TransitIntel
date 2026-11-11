@@ -8,7 +8,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { GIRI_SCRAM, improntaScram, nuovaPassword, urlDellApp } from "../../../../lib/db/scripts/ruoli-password.mjs";
 import {
-  APP, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, elencoDalCatalogo, piano, sqlEspressioniVietate,
+  APP, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, calcolateDaControllare, calcolateDalCatalogo,
+  elencoDalCatalogo, piano, sqlEspressioniVietate,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import type { StatoRuoli, Relazione } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 
@@ -379,6 +380,71 @@ describe("ruoli del database: il piano", () => {
     expect(p.avvisi[0]).toMatch(/^caronte\.app_users \(di caronte_app, non di Cerbero\): il vincolo rv_pin usa query_to_xml/);
     expect(p.avvisi[0]).toMatch(/come superutente chi scrive in quella tabella da superutente o ripristina un backup/);
     expect(p.avvisi[0]).toContain("ALTER TABLE caronte.app_users DROP CONSTRAINT rv_pin");
+  });
+
+  /* Una colonna calcolata è una regola (users.mfa_obbligatoria, PR 2.12). L'app
+   * possiede la tabella: non può riscriverla, ma può togliere l'espressione
+   * alla colonna (DROP EXPRESSION) e scriverci, o togliere la colonna. */
+  const attesa = { tabella: "public.users", colonna: "mfa_obbligatoria", tipo: "boolean", nonNulla: true, espressione: "(role = 'admin'::text)" };
+  it("una colonna calcolata com'è nel catalogo: niente da dire", () => {
+    expect(piano(base({ calcolate: [{ ...attesa, esiste: true, calcolata: true, viva: attesa.espressione }] })))
+      .toEqual({ azioni: [], attese: [], avvisi: [], errori: [] });
+  });
+
+  it("una colonna calcolata che non lo è più, che manca o con un'altra espressione: errore con l'istruzione per rifarla", () => {
+    const p = piano(base({ calcolate: [
+      { ...attesa, esiste: true, calcolata: false, viva: null },
+      { ...attesa, colonna: "tolta", esiste: false, calcolata: false, viva: null },
+      { ...attesa, colonna: "cambiata", nonNulla: false, esiste: true, calcolata: true, viva: "false" },
+    ] }));
+    expect(p.azioni).toEqual([]);
+    expect(p.errori).toHaveLength(3);
+    expect(p.errori[0]).toMatch(/^public\.users\.mfa_obbligatoria non è più calcolata dal database/);
+    expect(p.errori[0]).toContain('ALTER TABLE "public"."users" DROP COLUMN "mfa_obbligatoria", '
+      + 'ADD COLUMN "mfa_obbligatoria" boolean NOT NULL GENERATED ALWAYS AS ((role = \'admin\'::text)) STORED');
+    expect(p.errori[1]).toMatch(/^public\.users\.tolta manca/);
+    expect(p.errori[1]).toContain('ALTER TABLE "public"."users" ADD COLUMN "tolta" boolean NOT NULL GENERATED');
+    expect(p.errori[1]).not.toContain("DROP COLUMN");
+    expect(p.errori[2]).toMatch(/^public\.users\.cambiata è calcolata con un'espressione diversa/);
+    expect(p.errori[2]).toContain('ADD COLUMN "cambiata" boolean GENERATED ALWAYS AS');
+  });
+
+  it("le colonne calcolate dal catalogo: tabella, colonna, tipo ed espressione, anche con « | » dentro", () => {
+    expect(calcolateDalCatalogo({ tabelle: {
+      "public.users": { id: "uuid | not null | gen_random_uuid() |  | ", mfa_obbligatoria: "boolean | not null | (role = 'admin'::text) |  | s" },
+      "public.a": { bit: "integer | null | (x | y) |  | s", identita: "bigint | not null |  | a | " },
+    } })).toEqual([
+      { tabella: "public.a", colonna: "bit", tipo: "integer", nonNulla: false, espressione: "(x | y)" },
+      { tabella: "public.users", colonna: "mfa_obbligatoria", tipo: "boolean", nonNulla: true, espressione: "(role = 'admin'::text)" },
+    ]);
+    expect(calcolateDalCatalogo({})).toEqual([]);
+    // nel catalogo vero c'è, ed è l'unica
+    const vero = JSON.parse(readFileSync(fileURLToPath(new URL("../../../../lib/db/migrations/meta/catalogo.json", import.meta.url)), "utf8"));
+    expect(calcolateDalCatalogo(vero).map((c) => `${c.tabella}.${c.colonna}`)).toEqual(["public.users.mfa_obbligatoria"]);
+  });
+
+  it("le colonne calcolate si controllano solo se il database è alla migrazione di questo codice", () => {
+    const catalogo = { tabelle: { "public.users": { mfa_obbligatoria: "boolean | not null | (role = 'admin'::text) |  | s" } } };
+    const diario = [{ tag: "0007_x", when: 7 }, { tag: "0008_mfa_obbligatoria", when: 8 }];
+    const alla = (...quando: number[]) => quando.map((created_at) => ({ created_at }));
+    // alla stessa migrazione: si controllano
+    expect(calcolateDaControllare(catalogo, diario, alla(7, 8))).toEqual({
+      calcolate: [{ tabella: "public.users", colonna: "mfa_obbligatoria", tipo: "boolean", nonNulla: true, espressione: "(role = 'admin'::text)" }],
+      avviso: null,
+    });
+    // avanti (un'immagine precedente dopo un rollback): l'espressione può essere più nuova. Dirla «diversa»
+    // e stampare l'istruzione per rifarla riporterebbe la regola a quella vecchia
+    const avanti = calcolateDaControllare(catalogo, diario, alla(7, 8, 9));
+    expect(avanti.calcolate).toEqual([]);
+    expect(avanti.avviso).toMatch(/una migrazione più nuova di questo codice.*non vanno toccate da qui/);
+    expect(calcolateDaControllare(catalogo, diario, alla(7, 8, 9, 10)).avviso).toMatch(/2 migrazioni più nuove/);
+    // indietro: la colonna manca perché manca la migrazione. Si migra, non si aggiunge a mano
+    const indietro = calcolateDaControllare(catalogo, diario, alla(7));
+    expect(indietro.calcolate).toEqual([]);
+    expect(indietro.avviso).toMatch(/mancano migrazioni \(0008_mfa_obbligatoria\).*Prima il migratore/);
+    expect(calcolateDaControllare(catalogo, diario, []).avviso).toMatch(/mancano migrazioni \(0007_x, 0008_mfa_obbligatoria\)/);
+    // in nessuno dei due casi un'istruzione da eseguire
+    for (const a of [avanti.avviso, indietro.avviso]) expect(a).not.toMatch(/ALTER TABLE/);
   });
 
   it("una vista che dipende da una relazione di un altro ruolo: errore, non un'attesa infinita", () => {
