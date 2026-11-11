@@ -246,9 +246,10 @@ jobs:
           done
           tramite "CREATE TABLE registro.ci_ok (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, n int CHECK (n >= 0), s text DEFAULT lower(btrim(' A ')), t timestamptz DEFAULT now(), a int[] DEFAULT '{}')"
           tramite "ALTER TABLE registro.ci_ok ADD COLUMN c int"
-          # su una tabella di Cerbero no, nemmeno da lì: non è del registro
+          # su una tabella di Cerbero no, nemmeno da lì: non è del registro (che qui, come in
+          # produzione, non entra nemmeno in public)
           if tramite "ALTER TABLE public.users DISABLE TRIGGER registro_cambia" 2> vietato.log; then echo "il registro non doveva toccare users"; exit 1; fi
-          grep -q "must be owner of table users" vietato.log || { cat vietato.log; exit 1; }
+          grep -Eq "must be owner of table users|permission denied for schema public" vietato.log || { cat vietato.log; exit 1; }
           q "DROP TABLE registro.ci_ok; DROP FUNCTION registro.ci_esegue(text); DROP DOMAIN registro.ci_dominio"
           # un'espressione vietata che c'era già (di prima della 2.8, o messa da un
           # superutente): la verifica la segnala con la cura, il migratore non migra

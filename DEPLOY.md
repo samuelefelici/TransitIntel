@@ -126,10 +126,10 @@ migrator di drizzle).
   Come scriverne una: `lib/db/migrations/README.md`.
 - **L'API non tocca lo schema** (dalla PR 2.4): all'avvio e nelle richieste
   non esegue più `CREATE`/`ALTER`, quindi niente lock esclusivi su tabelle
-  vive come `gtfs_trips` a ogni materializzazione. Restano, fino alla PR 2.16,
-  le unità «pigre» che preparano una tabella al primo uso di una funzione
-  (una volta per processo); un test (`migrazioni.test.ts`) impedisce che il
-  DDL torni nell'avvio. Le chiavi mancanti nei permessi degli utenti, che
+  vive come `gtfs_trips` a ogni materializzazione. Dalla PR 2.16a non ci sono
+  più nemmeno le unità «pigre» che preparavano una tabella al primo uso, e
+  dalla 2.16b il database lo vieta all'app («Ruoli del database»); un test
+  (`migrazioni.test.ts`) guarda ogni sorgente dell'API. Le chiavi mancanti nei permessi degli utenti, che
   prima si completavano a ogni avvio, le completa una volta sola la
   migrazione `0003_permessi_completi`.
 - **Lo schema rispetto al codice.** All'avvio l'API confronta il tracciamento
@@ -320,7 +320,8 @@ file del server, ruoli). Dalla 2.8:
 - **Chi li tiene in ordine.** Il migratore, a ogni avvio dell'API, dopo le
   migrazioni (`lib/db/scripts/ruoli-regole.mjs`):
   - crea i due ruoli se mancano;
-  - dà a `cerbero_owner` USAGE e CREATE su `public`, `caronte` e `coda`;
+  - dà a `cerbero_owner` USAGE su `public`, `caronte` e `coda`, e non CREATE:
+    se lo aveva (serviva alle unità pigre, fino alla 2.16a) glielo toglie;
   - gli dà USAGE su `cerbero_migrazioni` e la lettura della tabella di
     tracciamento e dei contratti. `cerbero_migrazioni` resta di `postgres`,
     così il contratto di Argos lo scrive solo chi migra;
@@ -334,28 +335,36 @@ file del server, ruoli). Dalla 2.8:
 
   `ALTER … OWNER` riscrive i permessi già dati (ad `argos_ro`, `caronte_app`,
   `fleetcare_app`), che restano validi.
-- **L'app non crea oggetti eseguibili.** Il migratore crea e tiene acceso
-  sempre (`ENABLE ALWAYS`) l'event trigger `cerbero_ddl_dell_app`, di
-  `postgres`: come `cerbero_app` si eseguono solo i comandi delle unità pigre
-  (`CREATE TABLE`, `CREATE INDEX`, `ALTER TABLE`). Funzioni (anche
-  temporanee), viste, operatori, aggregati, tipi, cast, regole, trigger e
-  policy si fermano con «cerbero_app non può eseguire …». Senza, un oggetto
-  messo dall'app in `public` (dove ha CREATE per le unità pigre) girerebbe come
-  superutente quando lo incontra il migratore, un amministratore in psql o una
-  funzione di FleetCare (la revisione lo ha riprodotto).
-- **Né espressioni pericolose.** Un secondo event trigger,
-  `cerbero_ddl_dell_app_fine` (a fine comando, stessa funzione), guarda i
-  default, i vincoli CHECK, le colonne generate, gli indici e i tipi delle
-  colonne delle tabelle che l'app ha appena toccato. Ammette solo le funzioni
-  dell'elenco (`FUNZIONI_AMMESSE` in `lib/db/scripts/ruoli-regole.mjs`),
-  quelle di operatori e conversioni di sistema, e i tipi di sistema o delle
-  estensioni (un dominio con un suo CHECK, anche messo da un superutente, no);
-  altrimenti «cerbero_app non può usare queste funzioni o tipi…» e il comando
-  si annulla. Un'espressione di una tabella la
-  esegue chi scrive la riga, una migrazione che cambia la colonna, il
-  ripristino di un backup: senza questo controllo l'app poteva far girare SQL
-  come superutente (la revisione lo ha riprodotto con un CHECK e
-  `query_to_xml`).
+- **L'app non cambia la struttura del database** (PR 2.16b). Il migratore
+  crea e tiene accesi sempre (`ENABLE ALWAYS`) tre event trigger di `postgres`
+  (`cerbero_ddl_dell_app`, `…_fine`, `…_riscrive`). Come `cerbero_app` ogni
+  comando che crea, altera o toglie un oggetto si ferma con «cerbero_app non
+  può eseguire …»: tabelle (anche temporanee), colonne, indici, vincoli,
+  funzioni, viste, trigger, permessi. Vale anche sulle tabelle che l'app
+  possiede:
+  - non può togliere una colonna, un vincolo o l'espressione di una colonna
+    calcolata (`users.mfa_obbligatoria`), né spegnere i trigger del registro
+    delle modifiche;
+  - non può creare un oggetto che girerebbe come superutente quando lo
+    incontra il migratore, un amministratore in psql o una funzione di
+    FleetCare (la revisione della 2.8 lo aveva riprodotto);
+  - non può creare una tabella temporanea: in una connessione del pool
+    resterebbe davanti a quella vera per le richieste successive.
+
+  I dati li legge e li scrive come prima. **Unica eccezione**: la manutenzione
+  del registro delle modifiche, che il lavoratore chiama ogni giorno, crea la
+  partizione del mese. È una funzione scritta dalle migrazioni e gira come
+  `cerbero_registro`; lì dentro passano solo `CREATE TABLE` e `ALTER TABLE`.
+- **Né espressioni pericolose.** Un'espressione di una tabella (default,
+  vincolo CHECK, colonna generata, indice, tipo di una colonna) la esegue chi
+  scrive la riga, una migrazione che cambia la colonna, il ripristino di un
+  backup: a volte un superutente. Sono ammesse solo le funzioni dell'elenco
+  (`FUNZIONI_AMMESSE` in `lib/db/scripts/ruoli-regole.mjs`), quelle di
+  operatori e conversioni di sistema, e i tipi di sistema o delle estensioni
+  (un dominio con un suo CHECK no). Quando l'app poteva ancora alterare le
+  sue tabelle, la revisione aveva fatto girare SQL come superutente con un
+  CHECK e `query_to_xml`. Il controllo a fine comando resta sui comandi della
+  manutenzione del registro.
   **Prima di migrare**, il migratore controlla le stesse espressioni su tutte
   le tabelle di Cerbero. Se ne trova una non ammessa **non migra**: il deploy
   fallisce e resta il container di prima. `ruoli.mjs --verifica` dice quale
@@ -442,20 +451,23 @@ file del server, ruoli). Dalla 2.8:
     `DATABASE_URL` e `CARONTE_URL`: vanno tutte e due su `caronte_app`. La
     seconda connessione nasce al primo login, anche settimane dopo l'avvio:
     se resta su `postgres`, l'errore della verifica torna allora.
-- **L'API non cambia più lo schema** (PR 2.16a). Le funzioni che creavano
-  tabelle, colonne e indici al primo uso non ci sono più: lo schema nasce solo
-  dalle migrazioni, e un test guarda ogni sorgente dell'API. Resta una tabella
-  temporanea di lavoro, che sparisce al COMMIT (import di Planning Studio).
-  I **permessi** per farlo ci sono ancora, fino alla 2.16b: l'app possiede le
-  sue tabelle, può crearne in `public`, e l'event trigger lascia passare
-  `CREATE TABLE`, `CREATE INDEX` e `ALTER TABLE`. Dalla 2.10, su una tabella
-  sorvegliata dal registro delle modifiche, l'app non può spegnere i trigger,
-  rinominare o sostituire la tabella o le sue colonne, riscriverla
-  (`ALTER COLUMN … TYPE`) né legarla per ereditarietà o come partizione. Può
-  ancora, da proprietaria, cancellarne una colonna o toglierle l'espressione,
-  o crearne di nuove non sorvegliate: lo chiude la 2.16b. Prima di
-  aggiornare PostGIS si toglie il CREATE su `public` a `cerbero_owner`
-  (README delle migrazioni).
+- **L'API non contiene DDL** (PR 2.16a e 2.16b). Le funzioni che creavano
+  tabelle, colonne e indici al primo uso non ci sono più, e la duplicazione
+  dei progetti non usa più tabelle temporanee: lo schema nasce solo dalle
+  migrazioni, e un test guarda ogni sorgente dell'API.
+  - **Ordine di rilascio.** La 2.16b va rilasciata dopo che la 2.16a gira su
+    API **e** lavoratore. Il migratore applica il divieto prima che parta il
+    container nuovo: un container vecchio ancora in esecuzione, con le unità
+    pigre, riceverebbe «cerbero_app non può eseguire CREATE TABLE» sulle
+    pagine che non aveva ancora aperto.
+  - **Rollback.** L'immagine di prima: il suo migratore rimette la funzione
+    dell'event trigger e il CREATE sugli schemi com'erano. Non c'è stato da
+    disfare a mano.
+  - **Se serve un intervento a mano sulla struttura** (un indice, una
+    colonna): come `postgres`, con una migrazione. Come `cerbero_app` no, e
+    nemmeno come `postgres` dopo `SET ROLE cerbero_owner`.
+  - Aggiornare PostGIS non chiede più di togliere prima il CREATE su `public`
+    a `cerbero_owner`: non lo ha.
 
 **Rilascio (una volta sola), in quest'ordine:**
 0. **Prima, in sola lettura**, dal Terminal del PostgreSQL
@@ -1451,9 +1463,9 @@ attivare la verifica.
   - Da lei dipendono `role` e `permissions`: Postgres rifiuta di cambiarne il
     tipo, e toglierle chiede `CASCADE`, che toglie anche lei.
   - **L'API si fida della colonna solo finché è calcolata dal database.**
-    L'app possiede `users` (fino alla 2.16): non può riscrivere la tabella,
-    quindi né cambiare l'espressione né ricreare la colonna a modo suo, ma
-    può toglierle l'espressione e scriverci, o toglierla. Allora:
+    Dalla 2.16b l'app non può più toglierle l'espressione né toglierla (prima,
+    da proprietaria di `users`, poteva). Il controllo resta per le altre
+    strade: un ripristino, un comando a mano. Se succede:
     - colonna non più calcolata: per l'API la verifica diventa obbligatoria
       **per tutti**, FleetCare applica la regola di prima;
     - colonna tolta: l'API non autentica nessuno;
