@@ -40,6 +40,11 @@ const P_CAL_SABATO = "c1000000-0000-0000-0000-0000000000a7";
 const P_CORSA_FERIALE = "c1000000-0000-0000-0000-0000000000a8";
 const P_CORSA_SABATO = "c1000000-0000-0000-0000-0000000000a9";
 const P_GIORNO_TIPO = "c1000000-0000-0000-0000-0000000000aa";
+/* una seconda linea del progetto, che la stazione non la serve */
+const P_LONTANA = "c1000000-0000-0000-0000-0000000000ab";
+const P_LINEA_ALTRA = "c1000000-0000-0000-0000-0000000000ac";
+const P_VARIANTE_ALTRA = "c1000000-0000-0000-0000-0000000000ad";
+const P_CORSA_ALTRA = "c1000000-0000-0000-0000-0000000000ae";
 const POI_UFFICI = "c1000000-0000-0000-0000-0000000000b1";
 const POI_PARCO = "c1000000-0000-0000-0000-0000000000b2";
 const POI_STAZIONE = "c1000000-0000-0000-0000-0000000000b3";
@@ -65,7 +70,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
 
   const pulisci = async () => {
     /* prima le righe che una chiave esterna RESTRICT terrebbe ferme */
-    await db.execute(sql`DELETE FROM ps_stop_times WHERE trip_id IN (${P_CORSA_FERIALE}::uuid, ${P_CORSA_SABATO}::uuid)`);
+    await db.execute(sql`DELETE FROM ps_stop_times WHERE trip_id IN (${P_CORSA_FERIALE}::uuid, ${P_CORSA_SABATO}::uuid, ${P_CORSA_ALTRA}::uuid)`);
     await db.execute(sql`DELETE FROM ps_day_calendar WHERE project_id = ${PROG}::uuid`);
     await db.execute(sql`DELETE FROM ps_trips WHERE project_id = ${PROG}::uuid`);
     await db.execute(sql`DELETE FROM ps_projects WHERE id = ${PROG}::uuid`);
@@ -129,15 +134,18 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
     await db.execute(sql`
       INSERT INTO ps_stops (id, project_id, code, name, lat, lon, location_type)
       VALUES (${P_STAZIONE}::uuid, ${PROG}::uuid, '30001', 'Piazza Rosselli', 45.5000, 9.5000, 1),
-             (${P_VICINA}::uuid,   ${PROG}::uuid, '30002', 'Via Marsala',     45.5010, 9.5000, 0)
+             (${P_VICINA}::uuid,   ${PROG}::uuid, '30002', 'Via Marsala',     45.5010, 9.5000, 0),
+             (${P_LONTANA}::uuid,  ${PROG}::uuid, '30003', 'Via Mentana',     45.5100, 9.5000, 0)
     `);
     await db.execute(sql`
       INSERT INTO ps_routes (id, project_id, code, short_name, long_name, color)
-      VALUES (${P_LINEA}::uuid, ${PROG}::uuid, '12', '12', 'Rosselli - Ospedale', '#aa5500')
+      VALUES (${P_LINEA}::uuid, ${PROG}::uuid, '12', '12', 'Rosselli - Ospedale', '#aa5500'),
+             (${P_LINEA_ALTRA}::uuid, ${PROG}::uuid, '31', '31', 'Mentana - Cimitero', '#00aa55')
     `);
     await db.execute(sql`
       INSERT INTO ps_route_variants (id, project_id, route_id, name)
-      VALUES (${P_VARIANTE}::uuid, ${PROG}::uuid, ${P_LINEA}::uuid, 'Andata')
+      VALUES (${P_VARIANTE}::uuid, ${PROG}::uuid, ${P_LINEA}::uuid, 'Andata'),
+             (${P_VARIANTE_ALTRA}::uuid, ${PROG}::uuid, ${P_LINEA_ALTRA}::uuid, 'Andata')
     `);
     await db.execute(sql`
       INSERT INTO ps_calendars (id, project_id, code, monday, tuesday, wednesday, thursday, friday, saturday, start_date, end_date)
@@ -147,13 +155,15 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
     await db.execute(sql`
       INSERT INTO ps_trips (id, project_id, route_id, variant_id, calendar_id)
       VALUES (${P_CORSA_FERIALE}::uuid, ${PROG}::uuid, ${P_LINEA}::uuid, ${P_VARIANTE}::uuid, ${P_CAL_FERIALE}::uuid),
-             (${P_CORSA_SABATO}::uuid,  ${PROG}::uuid, ${P_LINEA}::uuid, ${P_VARIANTE}::uuid, ${P_CAL_SABATO}::uuid)
+             (${P_CORSA_SABATO}::uuid,  ${PROG}::uuid, ${P_LINEA}::uuid, ${P_VARIANTE}::uuid, ${P_CAL_SABATO}::uuid),
+             (${P_CORSA_ALTRA}::uuid,   ${PROG}::uuid, ${P_LINEA_ALTRA}::uuid, ${P_VARIANTE_ALTRA}::uuid, ${P_CAL_FERIALE}::uuid)
     `);
     await db.execute(sql`
       INSERT INTO ps_stop_times (trip_id, stop_id, stop_seq, arrival_time, departure_time)
       VALUES (${P_CORSA_FERIALE}::uuid, ${P_STAZIONE}::uuid, 1, '07:00:00', '07:00:00'),
              (${P_CORSA_FERIALE}::uuid, ${P_VICINA}::uuid,   2, '07:03:00', '07:03:00'),
-             (${P_CORSA_SABATO}::uuid,  ${P_STAZIONE}::uuid, 1, '10:00:00', '10:00:00')
+             (${P_CORSA_SABATO}::uuid,  ${P_STAZIONE}::uuid, 1, '10:00:00', '10:00:00'),
+             (${P_CORSA_ALTRA}::uuid,   ${P_LONTANA}::uuid,  1, '06:30:00', '06:30:00')
     `);
     await db.execute(sql`
       INSERT INTO ps_day_types (id, project_id, code, name, color)
@@ -267,6 +277,59 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
         expect((stazione.nearbyStops as any[]).map(s => s.stopId), parametri).toEqual([P_STAZIONE, P_VICINA]);
         expect(orari(stazione), parametri).toEqual(attesi);
       }
+    });
+
+    /* Con routeIds le fermate delle linee scelte si cercavano in gtfs_trips e
+     * gtfs_stop_times: dentro un progetto (uuid di ps_routes, nessun feed) non
+     * ne usciva nessuna e la stazione spariva, con un 200 e una lista vuota. */
+    it("hubs con routeIds: la stazione resta se la linea la serve, sparisce se non la serve", async () => {
+      const servita = await get(`hubs?psProjectId=${PROG}&routeIds=${P_LINEA}`);
+      expect(servita.status, JSON.stringify(servita.body)).toBe(200);
+      expect((servita.body as any[]).map(h => ({ name: h.name, type: h.type })))
+        .toEqual([{ name: "Piazza Rosselli", type: "railway" }]);
+
+      const nonServita = await get(`hubs?psProjectId=${PROG}&routeIds=${P_LINEA_ALTRA}`);
+      expect(nonServita.status, JSON.stringify(nonServita.body)).toBe(200);
+      expect(nonServita.body).toEqual([]);
+
+      const leDue = await get(`hubs?psProjectId=${PROG}&routeIds=${P_LINEA_ALTRA},${P_LINEA}`);
+      expect((leDue.body as any[]).map(h => h.name)).toEqual(["Piazza Rosselli"]);
+    });
+
+    it("hubs con routeIds: gli id che non sono uuid si scartano, senza arrivare a Postgres", async () => {
+      /* «R1» è una linea del feed; il secondo ha la lunghezza di un uuid ma non lo è */
+      const nonUuid = ["R1", "0".repeat(36)];
+      const conLaLinea = await get(`hubs?psProjectId=${PROG}&routeIds=${[...nonUuid, P_LINEA].join(",")}`);
+      expect(conLaLinea.status, JSON.stringify(conLaLinea.body)).toBe(200);
+      expect((conLaLinea.body as any[]).map(h => h.name)).toEqual(["Piazza Rosselli"]);
+
+      const daSoli = await get(`hubs?psProjectId=${PROG}&routeIds=${nonUuid.join(",")}`);
+      expect(daSoli.status, JSON.stringify(daSoli.body)).toBe(200);
+      expect(daSoli.body).toEqual([]);
+    });
+
+    it("analyze con routeIds: i passaggi della linea alla stazione, nessun hub per la linea che non la serve", async () => {
+      const servita = await get(`analyze?psProjectId=${PROG}&routeIds=${P_LINEA}`);
+      expect(servita.status, JSON.stringify(servita.body)).toBe(200);
+      const stazione = hubDi(servita.body, "Piazza Rosselli");
+      expect(stazione, JSON.stringify(servita.body.hubs)).toBeDefined();
+      expect((stazione.nearbyStops as any[]).map(s => s.stopId)).toEqual([P_STAZIONE, P_VICINA]);
+      expect(orari(stazione)).toEqual([{ linea: "12", orari: ["07:00:00", "07:03:00"] }]);
+
+      const sabato = await get(`analyze?psProjectId=${PROG}&routeIds=${P_LINEA}&day=sabato`);
+      expect(sabato.status, JSON.stringify(sabato.body)).toBe(200);
+      expect(orari(hubDi(sabato.body, "Piazza Rosselli"))).toEqual([{ linea: "12", orari: ["10:00:00"] }]);
+
+      const nonServita = await get(`analyze?psProjectId=${PROG}&routeIds=${P_LINEA_ALTRA}`);
+      expect(nonServita.status, JSON.stringify(nonServita.body)).toBe(200);
+      expect(nonServita.body.hubs).toEqual([]);
+    });
+
+    it("pois con routeIds: i poli attorno alla stazione della linea scelta", async () => {
+      const r = await get(`pois?psProjectId=${PROG}&routeIds=${P_LINEA}`);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect((r.body.hubPois as any[]).map(h => ({ hub: h.hubName, poli: (h.pois as any[]).map(p => p.name) })))
+        .toEqual([{ hub: "Piazza Rosselli", poli: ["Uffici del progetto"] }]);
     });
 
     it("pois: confinati all'area del progetto", async () => {
