@@ -229,38 +229,25 @@ export type { HubSchedule };
 /* ── Persistenza degli orari sincronizzati ────────────────────────────
  * La Map vive nel processo: dopo un restart (o su un'altra replica) gli
  * orari scaricati sparivano e il frontend rilanciava 112 chiamate a
- * ViaggiaTreno per stazione. Ora si appoggiano a una tabella additiva. */
-let schedulesTableReady = false;
-export async function ensureSchedulesTable(): Promise<void> {
-  if (schedulesTableReady) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS intermodal_hub_schedules (
-      hub_id      text PRIMARY KEY,
-      payload     jsonb NOT NULL,
-      fetched_at  timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  schedulesTableReady = true;
-}
+ * ViaggiaTreno per stazione. Ora si appoggiano alla tabella
+ * intermodal_hub_schedules (la creano le migrazioni). */
 
 /** Carica in memoria gli orari persistiti (una volta per processo). */
 let persistedLoaded = false;
 export async function loadPersistedSchedules(): Promise<void> {
   if (persistedLoaded) return;
   try {
-    await ensureSchedulesTable();
     const r = await db.execute<any>(sql`SELECT hub_id, payload FROM intermodal_hub_schedules`);
     for (const row of ((r as any).rows ?? [])) {
       const p = row.payload;
       if (p && typeof p === "object") dynamicHubSchedules.set(String(row.hub_id), p as HubSchedule);
     }
-  } catch { /* tabella non creabile: si resta sulla cache in memoria */ }
+  } catch { /* tabella non leggibile: si resta sulla cache in memoria */ }
   persistedLoaded = true;
 }
 
 async function persistSchedule(hubId: string, sched: HubSchedule): Promise<void> {
   try {
-    await ensureSchedulesTable();
     await db.execute(sql`
       INSERT INTO intermodal_hub_schedules (hub_id, payload, fetched_at)
       VALUES (${hubId}, ${JSON.stringify(sched)}::jsonb, now())

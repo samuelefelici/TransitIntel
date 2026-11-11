@@ -9,6 +9,7 @@
  * Il link è il segreto (token CSPRNG). La creazione avviene dall'endpoint
  * autenticato POST /planning-studio/:projectId/timetable-map-share
  * (in planning-studio-timetables.ts, accanto al gemello network-share).
+ * La tabella ps_timetable_map_shares la creano le migrazioni.
  *
  * Tre endpoint pubblici, pensati per il caricamento LAZY (la pagina resta
  * leggera anche su reti con centinaia di corse):
@@ -23,29 +24,6 @@ import { projectHasTripValidity } from "../lib/planning-studio-validity-eval";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-let booted = false;
-export async function ensureTimetableMapShareTable(): Promise<void> {
-  if (booted) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_timetable_map_shares (
-      token       text PRIMARY KEY,
-      project_id  uuid NOT NULL,
-      route_ids   jsonb NOT NULL DEFAULT '[]'::jsonb,
-      title       text,
-      created_by  uuid,
-      created_at  timestamptz NOT NULL DEFAULT now(),
-      expires_at  timestamptz
-    )`);
-  booted = true;
-}
-/* Solo per le sue rotte: il router è montato senza prefisso, prima del login,
- * e un errore qui non deve fermare il resto dell'API. */
-router.use("/timetable-map", async (_req, res, next) => {
-  try { await ensureTimetableMapShareTable(); }
-  catch { res.status(503).json({ error: "Mappa orari non disponibile: riprova tra poco" }); return; }
-  next();
-});
 
 interface ShareRow { project_id: string; route_ids: string[]; title: string | null; expires_at: string | null }
 

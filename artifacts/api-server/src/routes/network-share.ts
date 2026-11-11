@@ -3,6 +3,7 @@
  * GET /api/network-share/:token  → dati rete (linee + nodi) per la pagina pubblica.
  * Nessuna autenticazione: il link è il segreto. La creazione del link avviene
  * invece dall'endpoint autenticato POST /planning-studio/:id/network-share.
+ * La tabella ps_network_shares la creano le migrazioni.
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
@@ -10,30 +11,6 @@ import { sql } from "drizzle-orm";
 import { computeNetwork } from "./planning-studio-timetables";
 
 const router: IRouter = Router();
-
-let booted = false;
-export async function ensureNetworkShareTable(): Promise<void> {
-  if (booted) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_network_shares (
-      token       text PRIMARY KEY,
-      project_id  uuid NOT NULL,
-      route_ids   jsonb NOT NULL DEFAULT '[]'::jsonb,
-      title       text,
-      options     jsonb NOT NULL DEFAULT '{}'::jsonb,
-      created_by  uuid,
-      created_at  timestamptz NOT NULL DEFAULT now()
-    )`);
-  await db.execute(sql`ALTER TABLE ps_network_shares ADD COLUMN IF NOT EXISTS expires_at timestamptz`);
-  booted = true;
-}
-/* Solo per le sue rotte: il router è montato senza prefisso, prima del login,
- * e un errore qui non deve fermare il resto dell'API. */
-router.use("/network-share", async (_req, res, next) => {
-  try { await ensureNetworkShareTable(); }
-  catch { res.status(503).json({ error: "Mappa di rete non disponibile: riprova tra poco" }); return; }
-  next();
-});
 
 router.get("/network-share/:token", async (req, res): Promise<void> => {
   try {

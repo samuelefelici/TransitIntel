@@ -71,16 +71,8 @@ async function isOperationalVehicleScenario(id: string): Promise<boolean> {
   } catch { return false; }
 }
 
-// Colonna additiva variant_code su gtfs_trips (feed storici senza colonna):
-// il codice percorso viaggia corsa→turni macchina→turni guida.
-let variantColReady = false;
-export async function ensureVariantCodeColumn(): Promise<void> {
-  if (variantColReady) return;
-  try {
-    await db.execute(sql`ALTER TABLE gtfs_trips ADD COLUMN IF NOT EXISTS variant_code text`);
-  } catch { /* la SELECT fallirebbe comunque con errore chiaro */ }
-  variantColReady = true;
-}
+// Colonna variant_code su gtfs_trips (la creano le migrazioni): il codice
+// percorso viaggia corsa→turni macchina→turni guida.
 
 
 /* ═══════════════════════════════════════════════════════════════
@@ -467,7 +459,6 @@ router.get("/service-program/trips", async (req, res) => {
     }
 
     // 2. Get trips for selected routes + active services
-    await ensureVariantCodeColumn();
     const allTrips = await db.select({
       tripId: gtfsTrips.tripId,
       routeId: gtfsTrips.routeId,
@@ -840,7 +831,6 @@ router.post("/service-program", async (req, res) => {
     }
 
     // 2. Load trips
-    await ensureVariantCodeColumn();
     const allTrips = await db.select({
       tripId: gtfsTrips.tripId,
       routeId: gtfsTrips.routeId,
@@ -1133,7 +1123,6 @@ async function handleVehicleOptimize(req: any, res: any, mode: ModoVeicoli): Pro
     if (!feedId) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
     const errore = validaRichiesta(req.body);
     if (errore) { res.status(errore.codice).json(errore.corpo); return; }
-    await ensureVariantCodeColumn();
     if (!veicoliInCoda()) {
       const r = await eseguiOttimizzazione(req.body, { mode, feedId, log: req.log });
       res.status(r.codice).json(r.corpo);
@@ -1277,36 +1266,10 @@ function pruneAgentJobs(): void {
  * scritto su agent_optimize_jobs alla creazione e alla fine (esito compatto,
  * scenario, errore) insieme alla richiesta originale, così un giro trovato
  * «running» dopo un riavvio si dichiara interrotto e riporta i parametri
- * con cui rilanciarlo. */
-let agentJobsTableReady: Promise<void> | null = null;
-export function ensureAgentJobsTable(): Promise<void> {
-  if (!agentJobsTableReady) {
-    agentJobsTableReady = db.execute(sql`
-      CREATE TABLE IF NOT EXISTS agent_optimize_jobs (
-        id uuid PRIMARY KEY,
-        user_id uuid,
-        ps_project_id uuid,
-        mode text,
-        status text NOT NULL,
-        created_at timestamptz NOT NULL,
-        finished_at timestamptz,
-        progress jsonb,
-        params jsonb,
-        request jsonb,
-        error text,
-        scenario_id uuid,
-        dss_id uuid,
-        scenario_name text,
-        result_compact jsonb,
-        updated_at timestamptz NOT NULL DEFAULT now()
-      )`).then(() => undefined).catch((e) => { agentJobsTableReady = null; throw e; });
-  }
-  return agentJobsTableReady;
-}
+ * con cui rilanciarlo. La tabella la creano le migrazioni. */
 
 async function persistAgentJob(job: AgentOptimizeJob, request?: unknown): Promise<void> {
   try {
-    await ensureAgentJobsTable();
     await scriviGiro(job, request);
   } catch { /* best-effort: il registro in memoria resta la via principale */ }
 }
@@ -1314,7 +1277,6 @@ async function persistAgentJob(job: AgentOptimizeJob, request?: unknown): Promis
 /** Le righe dei giri con la loro riga in coda (se c'è): lo stato vero lo dice vistaGiro. */
 async function loadAgentJobRows(where: { id?: string; userId?: string; isAdmin?: boolean }): Promise<Array<{ row: any; coda: CodaDelGiro | null }>> {
   try {
-    await ensureAgentJobsTable();
     const CON_CODA = sql`
       SELECT a.*, to_jsonb(l) - 'richiesta' AS coda
         FROM agent_optimize_jobs a
@@ -1345,7 +1307,6 @@ async function loadProbeLessons(psProjectId: string | null | undefined, date: st
                                 maxJobs = 5, maxLessons = 120): Promise<{ lezioni: any[]; giri: number }> {
   if (!psProjectId || !date) return { lezioni: [], giri: 0 };
   try {
-    await ensureAgentJobsTable();
     const r = await db.execute<any>(sql`
       SELECT id, finished_at, result_compact->'vcsp'->'probe'->'lezioni' AS lezioni
         FROM agent_optimize_jobs
@@ -1751,7 +1712,6 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     // Il feed del CALCOLO, come per la Fucina: quello del giro, se l'utente lo vede.
     const feedCalcolo = await getLatestFeedId({ user: req.user, body: runBody, query: {} });
     if (!feedCalcolo) { res.status(404).json({ error: "Nessun feed GTFS caricato" }); return; }
-    await ensureVariantCodeColumn();
     const richiesta: RichiestaGiro = { mode, feedId: feedCalcolo, corpo: runBody, params: job.params, salvataggio };
 
     let jobId = job.id;
@@ -1777,7 +1737,6 @@ router.post("/service-program/agent-optimize", async (req, res) => {
       }
       // il registro per Argos: solo se il lavoratore non l'ha già scritto (giro velocissimo)
       try {
-        await ensureAgentJobsTable();
         await scriviGiro({ ...job, id: jobId }, req.body, db, { soloSeManca: true });
       } catch (err: any) {
         req.log.warn({ err: err?.message, lavoro: jobId }, "agent-optimize: registro del giro non scritto (lo stato resta nella coda)");

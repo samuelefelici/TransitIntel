@@ -517,8 +517,7 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       return { codice: 200, corpo: { status: "NO_INPUT", vehicleShifts: [], metrics: {} } };
     }
 
-    // 2. Load trips (same as greedy endpoint). La colonna variant_code c'è dalle
-    //    migrazioni: ensureVariantCodeColumn (DDL) lo fa la rotta, mai il lavoratore.
+    // 2. Load trips (same as greedy endpoint). La colonna variant_code c'è dalle migrazioni.
     const allTrips = await db.select({
       tripId: gtfsTrips.tripId,
       routeId: gtfsTrips.routeId,

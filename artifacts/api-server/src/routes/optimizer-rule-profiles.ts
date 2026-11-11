@@ -9,7 +9,8 @@
  * "Azienda" = account (owner_user_id, modello tenant single-owner di TransitIntel).
  * "Progetto" = planning_studio_project_id.
  *
- * Tabella additiva: optimizer_rule_profiles (CREATE TABLE IF NOT EXISTS).
+ * Tabella: optimizer_rule_profiles (la creano le migrazioni). La colonna domain
+ * distingue i profili turni guida ('crew') da turni macchina ('vsp').
  *
  * Endpoints (montati sotto /api):
  *   GET    /optimizer-rule-profiles?projectId=...
@@ -24,31 +25,6 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 
 const router: IRouter = Router();
-
-let schemaReady = false;
-export async function ensureSchema(): Promise<void> {
-  if (schemaReady) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS optimizer_rule_profiles (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      owner_user_id uuid REFERENCES users(id) ON DELETE CASCADE,
-      scope text NOT NULL DEFAULT 'company',
-      project_id uuid,
-      name text NOT NULL,
-      service_type text,
-      config_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-      is_default boolean NOT NULL DEFAULT false,
-      created_at timestamptz NOT NULL DEFAULT now(),
-      updated_at timestamptz NOT NULL DEFAULT now(),
-      CONSTRAINT ck_orp_project_scope CHECK (NOT (scope = 'project' AND project_id IS NULL))
-    )
-  `);
-  // domain distingue i profili turni guida ('crew') da turni macchina ('vsp')
-  await db.execute(sql`ALTER TABLE optimizer_rule_profiles ADD COLUMN IF NOT EXISTS domain text NOT NULL DEFAULT 'crew'`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_orp_owner ON optimizer_rule_profiles(owner_user_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_orp_project ON optimizer_rule_profiles(project_id)`);
-  schemaReady = true;
-}
 
 function uid(req: Request): string | null {
   return (req as any).user?.id ?? null;
@@ -93,7 +69,6 @@ function deepMerge(base: any, override: any): any {
 router.get("/optimizer-rule-profiles", async (req, res): Promise<void> => {
   const userId = uid(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
-  await ensureSchema();
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
   const domain = domainOf(req);
 
@@ -112,7 +87,6 @@ router.get("/optimizer-rule-profiles", async (req, res): Promise<void> => {
 router.get("/optimizer-rule-profiles/resolve", async (req, res): Promise<void> => {
   const userId = uid(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
-  await ensureSchema();
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
   const domain = domainOf(req);
 
@@ -145,7 +119,6 @@ router.get("/optimizer-rule-profiles/resolve", async (req, res): Promise<void> =
 router.post("/optimizer-rule-profiles", async (req, res): Promise<void> => {
   const userId = uid(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
-  await ensureSchema();
 
   const { name, scope = "company", projectId = null, serviceType = null, config = {}, isDefault = false } = req.body ?? {};
   if (!name || typeof name !== "string") { res.status(400).json({ error: "name required" }); return; }
@@ -170,7 +143,6 @@ router.post("/optimizer-rule-profiles", async (req, res): Promise<void> => {
 router.patch("/optimizer-rule-profiles/:id", async (req, res): Promise<void> => {
   const userId = uid(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
-  await ensureSchema();
 
   const existing = await db.execute(sql`
     SELECT * FROM optimizer_rule_profiles WHERE id = ${req.params.id}::uuid AND owner_user_id = ${userId}::uuid LIMIT 1
@@ -204,7 +176,6 @@ router.patch("/optimizer-rule-profiles/:id", async (req, res): Promise<void> => 
 router.delete("/optimizer-rule-profiles/:id", async (req, res): Promise<void> => {
   const userId = uid(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
-  await ensureSchema();
   const r = await db.execute(sql`
     DELETE FROM optimizer_rule_profiles WHERE id = ${req.params.id}::uuid AND owner_user_id = ${userId}::uuid RETURNING id
   `);

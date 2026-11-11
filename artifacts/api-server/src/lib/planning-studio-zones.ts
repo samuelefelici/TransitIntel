@@ -3,6 +3,7 @@
  *
  * Tabella globale `zones` (confini amministrativi, tipicamente comuni ISTAT):
  *   id, name, istat_code, geometry (GeoJSON Polygon/MultiPolygon), properties.
+ *   La creano le migrazioni.
  *
  * Endpoint:
  *   POST   /zones/import   — importa una FeatureCollection GeoJSON (upsert per istat_code)
@@ -39,29 +40,6 @@ const CATEGORY_META: Record<string, { name: string; color: string; order: number
 };
 
 const router: IRouter = Router();
-
-/* ────────── Bootstrap idempotente ────────── */
-let bootstrapped = false;
-export async function ensureTables(): Promise<void> {
-  if (bootstrapped) return;
-  try {
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS zones (
-        id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        name       text NOT NULL,
-        istat_code text,
-        geometry   jsonb NOT NULL,
-        properties jsonb NOT NULL DEFAULT '{}'::jsonb,
-        created_at timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_zones_istat ON zones(istat_code)`);
-    bootstrapped = true;
-    console.log("[planning-studio.zones] tables ready");
-  } catch (e: any) {
-    console.error("[ps-zones] bootstrap error:", e?.message || e);
-  }
-}
 
 function getUserId(req: Request): string | null {
   return (req as any).session?.userId ?? (req as any).user?.id ?? null;
@@ -115,7 +93,6 @@ function r1(x: number): number {
 
 /* ─── POST /zones/import — FeatureCollection GeoJSON ─── */
 router.post("/zones/import", async (req, res): Promise<void> => {
-  await ensureTables();
   if (!getUserId(req)) { res.status(401).json({ error: "unauth" }); return; }
 
   const fc = req.body;
@@ -160,7 +137,6 @@ router.post("/zones/import", async (req, res): Promise<void> => {
 
 /* ─── GET /zones — lista con geometria intera (per la mappa) ─── */
 router.get("/zones", async (req, res): Promise<void> => {
-  await ensureTables();
   if (!getUserId(req)) { res.status(401).json({ error: "unauth" }); return; }
   try {
     const r = await db.execute(sql`
@@ -182,7 +158,6 @@ router.get("/zones", async (req, res): Promise<void> => {
 
 /* ─── DELETE /zones/:id ─── */
 router.delete("/zones/:id", async (req, res): Promise<void> => {
-  await ensureTables();
   if (!getUserId(req)) { res.status(401).json({ error: "unauth" }); return; }
   try {
     await db.execute(sql`DELETE FROM zones WHERE id = ${req.params.id}::uuid`);
@@ -194,7 +169,6 @@ router.delete("/zones/:id", async (req, res): Promise<void> => {
 
 /* ─── DELETE /zones — svuota tutto ─── */
 router.delete("/zones", async (req, res): Promise<void> => {
-  await ensureTables();
   if (!getUserId(req)) { res.status(401).json({ error: "unauth" }); return; }
   try {
     await db.execute(sql`DELETE FROM zones`);
@@ -222,7 +196,6 @@ function yearDates(year: number): Array<{ iso: string; dowKey: (typeof DOW_KEYS)
 
 /* ─── POST /planning-studio/projects/:id/zones/compute?year=YYYY ─── */
 router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Promise<void> => {
-  await ensureTables();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
   const proj = await loadProject(req.params.id, userId);

@@ -1,17 +1,19 @@
 /**
- * PlannerStudio · Validity Matrix — schema bootstrap + endpoint CRUD (PR1).
+ * PlannerStudio · Validity Matrix — seed + endpoint CRUD (PR1).
  *
  * Spec: Cerbero · PlannerStudio Validity Matrix · v1
  *
- * Tabelle nuove (idempotenti, additive):
+ * Tabelle (le creano le migrazioni):
  *   - ps_day_types         — tipologie giorno (system globali + custom per progetto)
  *   - ps_day_calendar      — override day-type per data (globale o per progetto)
  *   - ps_trip_day_validity — default validità corsa × day-type
- *
- * Estensione esistenti:
+ *   - ps_trip_category_validity — vincolo corsa ↔ categorie di validità (calendario
+ *     aziendale): se una corsa ha ≥1 categorie, vale SOLO nei giorni con quella categoria
  *   - ps_projects.agency_settings (jsonb) — patroni locali + altre config minori
+ *   - scheduling_projects.validity_filter (jsonb) — filtro snapshot alla generazione
+ *     dell'Unità di Progettazione: { from, to, dayTypeIds[], includeOnlyValid }
  *
- * Seed eseguiti UNA volta al bootstrap (NOT EXISTS, idempotenti):
+ * Seed eseguiti UNA volta per processo (NOT EXISTS, idempotenti):
  *   - 7 system day-types globali (project_id NULL, is_system=true)
  *   - festivi nazionali italiani 2024-2030 in ps_day_calendar (project_id NULL,
  *     mappati su day-type 'festivo')
@@ -42,7 +44,7 @@ import { withVia } from "./agent-context";
 const router: IRouter = Router();
 
 /* ════════════════════════════════════════════════════════════
- *  Bootstrap idempotente
+ *  Seed idempotenti (una volta per processo)
  * ════════════════════════════════════════════════════════════ */
 
 const SYSTEM_DAY_TYPES: ReadonlyArray<{
@@ -66,99 +68,9 @@ const LEGACY_SYSTEM_DAY_TYPE_CODES = [
 
 let bootstrapped = false;
 
-export async function ensureValidityTables(): Promise<void> {
+export async function ensureValiditySeed(): Promise<void> {
   if (bootstrapped) return;
   try {
-    /* ─── ps_day_types ─── */
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_day_types (
-        id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        project_id  uuid REFERENCES ps_projects(id) ON DELETE CASCADE,
-        code        text NOT NULL,
-        name        text NOT NULL,
-        color       text NOT NULL,
-        is_system   boolean NOT NULL DEFAULT false,
-        is_custom   boolean NOT NULL DEFAULT false,
-        sort_order  integer NOT NULL DEFAULT 0,
-        created_at  timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    // UNIQUE su (project_id, code) richiede partial perché Postgres tratta NULL come distinti.
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_day_types_global_code
-        ON ps_day_types (code) WHERE project_id IS NULL
-    `);
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_day_types_project_code
-        ON ps_day_types (project_id, code) WHERE project_id IS NOT NULL
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_day_types_project ON ps_day_types(project_id)`);
-
-    /* ─── ps_day_calendar ─── */
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_day_calendar (
-        id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        project_id   uuid REFERENCES ps_projects(id) ON DELETE CASCADE,
-        date         date NOT NULL,
-        day_type_id  uuid NOT NULL REFERENCES ps_day_types(id) ON DELETE RESTRICT,
-        source       text NOT NULL DEFAULT 'manual',
-        note         text,
-        created_at   timestamptz NOT NULL DEFAULT now()
-      )
-    `);
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_day_calendar_global
-        ON ps_day_calendar (date) WHERE project_id IS NULL
-    `);
-    await db.execute(sql`
-      CREATE UNIQUE INDEX IF NOT EXISTS uq_ps_day_calendar_project
-        ON ps_day_calendar (project_id, date) WHERE project_id IS NOT NULL
-    `);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_ps_day_calendar_lookup
-        ON ps_day_calendar (project_id, date)
-    `);
-
-    /* ─── ps_trip_day_validity ─── */
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_trip_day_validity (
-        trip_id      uuid NOT NULL REFERENCES ps_trips(id) ON DELETE CASCADE,
-        day_type_id  uuid NOT NULL REFERENCES ps_day_types(id) ON DELETE CASCADE,
-        is_valid     boolean NOT NULL DEFAULT false,
-        updated_at   timestamptz NOT NULL DEFAULT now(),
-        PRIMARY KEY (trip_id, day_type_id)
-      )
-    `);
-    await db.execute(sql`
-      CREATE INDEX IF NOT EXISTS idx_ps_trip_day_validity_trip
-        ON ps_trip_day_validity(trip_id)
-    `);
-
-    /* ─── ps_projects.agency_settings (per patroni locali ecc.) ─── */
-    await db.execute(sql`
-      ALTER TABLE ps_projects
-        ADD COLUMN IF NOT EXISTS agency_settings jsonb NOT NULL DEFAULT '{}'::jsonb
-    `);
-
-    /* ─── scheduling_projects.validity_filter (PR4) ───
-     * Filtro snapshot al momento della generazione dell'Unità di Progettazione:
-     * { from, to, dayTypeIds[], includeOnlyValid } */
-    await db.execute(sql`
-      ALTER TABLE IF EXISTS scheduling_projects
-        ADD COLUMN IF NOT EXISTS validity_filter jsonb
-    `);
-
-    /* ─── Vincolo corsa ↔ categorie di validità (calendario aziendale):
-       se una corsa ha ≥1 categorie, vale SOLO nei giorni con quella categoria ─── */
-    await db.execute(sql`
-      CREATE TABLE IF NOT EXISTS ps_trip_category_validity (
-        trip_id     uuid NOT NULL,
-        category_id uuid NOT NULL,
-        PRIMARY KEY (trip_id, category_id)
-      )
-    `);
-    await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_ps_tcv_category ON ps_trip_category_validity(category_id)`);
-
     /* ─── Seed system day-types globali ─── */
     for (const dt of SYSTEM_DAY_TYPES) {
       await db.execute(sql`
@@ -307,7 +219,7 @@ function telemetry(action: string, projectId: string, extra: Record<string, any>
  * ════════════════════════════════════════════════════════════ */
 
 router.get("/planning-studio/projects/:id/day-types", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, false);
@@ -325,7 +237,7 @@ router.get("/planning-studio/projects/:id/day-types", async (req, res): Promise<
 });
 
 router.post("/planning-studio/projects/:id/day-types", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -358,7 +270,7 @@ router.post("/planning-studio/projects/:id/day-types", async (req, res): Promise
 });
 
 router.patch("/planning-studio/projects/:id/day-types/:dayTypeId", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -403,7 +315,7 @@ router.patch("/planning-studio/projects/:id/day-types/:dayTypeId", async (req, r
 });
 
 router.delete("/planning-studio/projects/:id/day-types/:dayTypeId", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -448,7 +360,7 @@ const MAX_TRIPS_PER_PAGE = 2000;
 /* GET /validity/routes — lista linee con conteggio corse, per popolare il
  * dropdown del filtro UI quando la matrice è troppo grande. */
 router.get("/planning-studio/projects/:id/validity/routes", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, false);
@@ -473,7 +385,7 @@ router.get("/planning-studio/projects/:id/validity/routes", async (req, res): Pr
 });
 
 router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, false);
@@ -663,7 +575,7 @@ router.get("/planning-studio/projects/:id/validity/matrix", async (req, res): Pr
  * ════════════════════════════════════════════════════════════ */
 
 router.put("/planning-studio/projects/:id/validity/trip-day", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -703,7 +615,7 @@ router.put("/planning-studio/projects/:id/validity/trip-day", async (req, res): 
 });
 
 router.put("/planning-studio/projects/:id/validity/day-calendar", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -744,7 +656,7 @@ router.put("/planning-studio/projects/:id/validity/day-calendar", async (req, re
 });
 
 router.put("/planning-studio/projects/:id/validity/exception", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -777,7 +689,7 @@ router.put("/planning-studio/projects/:id/validity/exception", async (req, res):
 
 /** DELETE eccezione — utile per "ripristinare default" su una cella. */
 router.delete("/planning-studio/projects/:id/validity/exception", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -829,7 +741,7 @@ router.delete("/planning-studio/projects/:id/validity/exception", async (req, re
  *       (opzionale filtro tripIds)
  */
 router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -1150,7 +1062,7 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
  * Body opzionale: { dryRun?: boolean }
  */
 router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);
@@ -1205,7 +1117,7 @@ export async function runValidityAutoImportFromCalendars(
     exceptionRowsToWrite: number;
   }>;
 }> {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const dryRun = !!opts.dryRun;
 
   // Lookup id system day-types richiesti
@@ -1504,12 +1416,6 @@ export async function syncValidityCategoriesFromProfile(
   }
 
   /* ── Categorie (tabelle globali + seed idempotenti, lookup id per codice) ── */
-  // Schema condiviso (5B): anagrafica categorie + calendario PER-PROGETTO
-  // (project_id NULLABLE, indici unique parziali, PK legacy rimossa).
-  {
-    const { ensureValidityCategoryCalendarSchema } = await import("./planning-studio-validity-categories");
-    await ensureValidityCategoryCalendarSchema();
-  }
   for (const c of SEED_VALIDITY_CATEGORIES) {
     await db.execute(sql`
       INSERT INTO ps_validity_categories (code, name, color, sort_order)
@@ -1684,19 +1590,8 @@ export async function syncValidityCategoriesFromProfile(
  *  assegnazioni delle altre corse, incluse le curatele manuali, restano.
  * ════════════════════════════════════════════════════════════ */
 
-let syncMarkerColumnReady = false;
-export async function ensureSyncMarkerColumn(): Promise<void> {
-  if (syncMarkerColumnReady) return;
-  await db.execute(sql`
-    ALTER TABLE IF EXISTS ps_calendar_profiles
-      ADD COLUMN IF NOT EXISTS categories_synced_at timestamptz
-  `);
-  syncMarkerColumnReady = true;
-}
-
 async function touchCategoriesSyncedAt(projectId: string): Promise<void> {
   try {
-    await ensureSyncMarkerColumn();
     await db.execute(sql`
       INSERT INTO ps_calendar_profiles (project_id, categories_synced_at)
       VALUES (${projectId}::uuid, now())
@@ -1708,7 +1603,6 @@ async function touchCategoriesSyncedAt(projectId: string): Promise<void> {
 }
 
 export async function ensureCategoriesFresh(projectId: string): Promise<void> {
-  await ensureSyncMarkerColumn();
   const mR = await db.execute<any>(sql`
     SELECT categories_synced_at FROM ps_calendar_profiles
      WHERE project_id = ${projectId}::uuid LIMIT 1
@@ -1764,7 +1658,7 @@ export async function ensureCategoriesFresh(projectId: string): Promise<void> {
  *  - response: { schedulingProjectId, name }
  * ════════════════════════════════════════════════════════════ */
 router.post("/planning-studio/projects/:id/validity/generate-unit", async (req, res): Promise<void> => {
-  await ensureValidityTables();
+  await ensureValiditySeed();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "auth required" }); return; }
   const proj = await loadProject(req.params.id, userId, true);

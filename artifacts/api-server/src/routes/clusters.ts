@@ -28,26 +28,12 @@ import { getLatestFeedId } from "./gtfs-helpers";
 const router: IRouter = Router();
 
 /* ═══════════════════════════════════════════════════════════════
- *  Bootstrap colonne is_interchange / is_logical (idempotente)
- * ═══════════════════════════════════════════════════════════════ */
-let _bootstrappedFlags = false;
-export async function ensureClusterFlagColumns(): Promise<void> {
-  if (_bootstrappedFlags) return;
-  await db.execute(sql`
-    ALTER TABLE stop_clusters
-      ADD COLUMN IF NOT EXISTS is_interchange boolean NOT NULL DEFAULT true,
-      ADD COLUMN IF NOT EXISTS is_logical boolean NOT NULL DEFAULT false
-  `);
-  _bootstrappedFlags = true;
-}
-
-/* ═══════════════════════════════════════════════════════════════
  *  CLUSTER CRUD
+ *  Le colonne is_interchange / is_logical le creano le migrazioni.
  * ═══════════════════════════════════════════════════════════════ */
 
 // GET /api/clusters — tutti i cluster con le fermate associate
 router.get("/clusters", asyncHandler(async (_req, res) => {
-  await ensureClusterFlagColumns();
   // Drizzle non conosce le colonne nuove → query raw per leggere i flag
   const rowsR: any = await db.execute(sql`
     SELECT id, name, transfer_from_depot_min, color, is_interchange, is_logical, created_at, updated_at
@@ -81,7 +67,6 @@ router.get("/clusters", asyncHandler(async (_req, res) => {
 
 // POST /api/clusters — crea un cluster con fermate
 router.post("/clusters", asyncHandler(async (req, res) => {
-  await ensureClusterFlagColumns();
   const { name, transferFromDepotMin, color, stops, isInterchange, isLogical } = req.body;
   if (!name) {
     res.status(400).json({ error: "name is required" });
@@ -132,8 +117,7 @@ router.post("/clusters", asyncHandler(async (req, res) => {
 
 // PUT /api/clusters/:id — aggiorna nome, transferMin, colore e fermate
 router.put("/clusters/:id", asyncHandler(async (req, res) => {
-  await ensureClusterFlagColumns();
-  const id = req.params.id as string;
+  const id =req.params.id as string;
   const { name, transferFromDepotMin, color, stops, isInterchange, isLogical } = req.body;
 
   const [cluster] = await db.update(stopClusters).set({

@@ -17,25 +17,10 @@ import { classifyRange, type CalendarProfile } from "./day-classifier";
 
 const router: IRouter = Router();
 
-let bootstrapped = false;
-export async function ensureTable(): Promise<void> {
-  if (bootstrapped) return;
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS ps_calendar_profiles (
-      project_id uuid PRIMARY KEY REFERENCES ps_projects(id) ON DELETE CASCADE,
-      school_periods jsonb NOT NULL DEFAULT '[]'::jsonb,
-      summer_period jsonb,
-      extra_holidays jsonb NOT NULL DEFAULT '[]'::jsonb,
-      updated_at timestamptz NOT NULL DEFAULT now()
-    )
-  `);
-  // Modello standardizzato: si memorizzano i periodi di SCUOLE CHIUSE (il
-  // default — colonna vuota — significa "tutto l'anno scuole aperte"). La
-  // vecchia colonna school_periods resta per compatibilità ma non è più usata.
-  await db.execute(sql`ALTER TABLE ps_calendar_profiles ADD COLUMN IF NOT EXISTS closed_periods jsonb NOT NULL DEFAULT '[]'::jsonb`);
-  bootstrapped = true;
-}
-router.use(async (_req, _res, next) => { await ensureTable(); next(); });
+// La tabella ps_calendar_profiles la creano le migrazioni.
+// Modello standardizzato: si memorizzano i periodi di SCUOLE CHIUSE
+// (closed_periods: il default — colonna vuota — significa "tutto l'anno scuole
+// aperte"). La colonna school_periods resta per compatibilità ma non è usata.
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -70,7 +55,6 @@ async function requireCalendarAccess(
 }
 
 export async function loadCalendarProfile(projectId: string): Promise<CalendarProfile> {
-  await ensureTable();
   return loadProfile(projectId);
 }
 
@@ -136,7 +120,6 @@ export async function calendarioPredefinito(): Promise<CalendarioPredefinito> {
   }
   let v: CalendarioPredefinito;
   try {
-    await ensureTable();
     /* "Compilato" vuol dire che qualcuno ha davvero detto quando le scuole
      * sono chiuse o quando è estate: una riga vuota equivale a non averla. */
     const r = await db.execute<any>(sql`

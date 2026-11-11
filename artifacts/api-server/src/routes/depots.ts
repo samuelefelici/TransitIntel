@@ -23,18 +23,8 @@ const UUID_RE = /^[0-9a-f-]{36}$/i;
 /* SCOPING PER PROGETTO (colonna additiva fuori dallo schema drizzle):
  * ps_project_id NULL = deposito GLOBALE (visibile ovunque, comportamento
  * storico); valorizzato = deposito del solo progetto Planner Studio indicato.
- * Così due progetti con layout depositi diversi possono coesistere. */
-let bootstrapped = false;
-router.use(async (_req, _res, next) => {
-  if (!bootstrapped) {
-    try {
-      await db.execute(sql`ALTER TABLE depots ADD COLUMN IF NOT EXISTS ps_project_id uuid`);
-      await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_depots_ps_project ON depots(ps_project_id)`);
-      bootstrapped = true;
-    } catch (e: any) { console.warn("[depots] bootstrap ps_project_id:", e?.message); }
-  }
-  next();
-});
+ * Così due progetti con layout depositi diversi possono coesistere.
+ * La colonna e il suo indice li creano le migrazioni. */
 
 /** Mappa id → ps_project_id (letta a parte: la colonna non è nello schema drizzle). */
 async function loadScopeMap(): Promise<Map<string, string | null>> {
