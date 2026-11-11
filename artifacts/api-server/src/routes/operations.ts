@@ -9,7 +9,6 @@
  *
  *   GET /api/operations/live                       — snapshot flotta + KPI giornata
  *   GET /api/operations/punctuality?date=          — puntualità per linea/ora/fermata
- *   GET /api/operations/trend?days=                — andamento giornaliero OTP
  *   GET /api/operations/trips/:tripId/transits     — programmato vs reale per fermata
  *   GET /api/operations/vehicles/:vehicleId/track  — traccia GPS recente del mezzo
  *
@@ -728,46 +727,6 @@ router.get("/operations/anomalie", async (req, res): Promise<void> => {
       sintesi,
       anomalie: anomalie.slice(0, 500),
       troncato: anomalie.length > 500 ? anomalie.length : undefined,
-    });
-  } catch (e: any) {
-    res.status(500).json(dbError(e));
-  }
-});
-
-// ── GET /operations/trend?days=14 — serie giornaliera OTP / ritardo medio ────
-router.get("/operations/trend", async (req, res): Promise<void> => {
-  try {
-    if (!(await caronteAvailable())) {
-      res.json({ caronteAvailable: false, days: [] });
-      return;
-    }
-    const days = Math.min(Math.max(Number(req.query.days) || 14, 1), 90);
-    const q = await db.execute<any>(sql`
-      SELECT ${giornataDi(sql`actual_ts`)} AS day,
-             COUNT(*)::int AS transits,
-             COUNT(DISTINCT trip_id)::int AS trips,
-             /* Solo la matricola: il connettore scrive device_id = 'siri' su
-              * ogni riga, e il ripiego contava quella costante come un mezzo. */
-             COUNT(DISTINCT vehicle_id)::int AS vehicles,
-             AVG(delay_seconds)::float AS avg_delay,
-             (COUNT(*) FILTER (WHERE delay_seconds BETWEEN ${EARLY_S} AND ${LATE_S}))::float
-               / NULLIF(COUNT(delay_seconds), 0) * 100 AS on_time_pct
-      FROM caronte.stop_transits st
-      WHERE ${(await soloSiri("st")).filtro}
-        AND actual_ts >= ${inizioGiornataSql()} - (${days} * interval '1 day')
-      GROUP BY 1
-      ORDER BY 1
-    `);
-    res.json({
-      caronteAvailable: true,
-      days: q.rows.map((d: any) => ({
-        day: d.day,
-        transits: d.transits,
-        trips: d.trips,
-        vehicles: d.vehicles,
-        avgDelaySeconds: d.avg_delay != null ? Math.round(Number(d.avg_delay)) : null,
-        onTimePct: d.on_time_pct != null ? Math.round(Number(d.on_time_pct) * 10) / 10 : null,
-      })),
     });
   } catch (e: any) {
     res.status(500).json(dbError(e));

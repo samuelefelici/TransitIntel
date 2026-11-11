@@ -34,19 +34,32 @@
  * PUT    /api/fares/stop-areas/:id          — manual override
  * GET    /api/fares/leg-rules               — list leg rules
  * POST   /api/fares/leg-rules/generate      — generate all leg rules from areas+products
- * GET    /api/fares/transfer-rules          — list transfer rules
  * POST   /api/fares/generate-gtfs           — generate all GTFS Fares V2 CSV files
  * POST   /api/fares/simulate                — simulate ticket price for OD pair
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
-  gtfsFeeds, gtfsRoutes, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsShapes,
-  gtfsCalendar, gtfsCalendarDates,
-  gtfsFareNetworks, gtfsRouteNetworks, gtfsFareMedia, gtfsRiderCategories,
-  gtfsFareProducts, gtfsFareAreas, gtfsStopAreas, gtfsFareLegRules, gtfsFareTransferRules,
-  gtfsTimeframes, gtfsFareAttributes, gtfsFareRules,
-  gtfsFareZoneClusters, gtfsFareZoneClusterStops,
+  gtfsFeeds,
+  gtfsRoutes,
+  gtfsStops,
+  gtfsTrips,
+  gtfsStopTimes,
+  gtfsShapes,
+  gtfsCalendar,
+  gtfsCalendarDates,
+  gtfsFareNetworks,
+  gtfsRouteNetworks,
+  gtfsFareMedia,
+  gtfsRiderCategories,
+  gtfsFareProducts,
+  gtfsFareAreas,
+  gtfsStopAreas,
+  gtfsFareLegRules,
+  gtfsFareTransferRules,
+  gtfsTimeframes,
+  gtfsFareZoneClusters,
+  gtfsFareZoneClusterStops,
   gtfsFareOdMatrix,
   gtfsFeedInfo,
   gtfsFareAuditLog,
@@ -1813,15 +1826,6 @@ router.post("/fares/leg-rules/generate", async (req, res): Promise<void> => {
 // FARE TRANSFER RULES
 // ═══════════════════════════════════════════════════════════
 
-router.get("/fares/transfer-rules", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.json([]); return; }
-    const rows = await db.select().from(gtfsFareTransferRules).where(eq(gtfsFareTransferRules.feedId, feedId));
-    res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
 // ═══════════════════════════════════════════════════════════
 // TIMEFRAMES (GTFS timeframes.txt)
 // ═══════════════════════════════════════════════════════════
@@ -2493,158 +2497,8 @@ router.get("/fares/route-stops-dominant/:routeId", async (req, res): Promise<voi
 });
 
 // ═══════════════════════════════════════════════════════════
-// ROUTE DOMINANT — inspect dominant percorso for a route
-// ═══════════════════════════════════════════════════════════
-router.get("/fares/route-dominant/:routeId", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    const { routeId } = req.params;
-
-    const { percorsi: allPercorsi, refServiceId, totalTripsDay } = await getRoutePercorsi(feedId, routeId);
-    if (allPercorsi.length === 0) { res.status(404).json({ error: "No trips" }); return; }
-
-    const { dominant, altPercorsi, dirPercorsi } = getDominantPercorso(allPercorsi);
-    if (!dominant) { res.status(404).json({ error: "No dominant" }); return; }
-
-    res.json({
-      routeId,
-      refServiceId,
-      totalTripsDay,
-      totalPercorsi: allPercorsi.length,
-      dirPercorsi: dirPercorsi.length,
-      dominant: {
-        tripId: dominant.tripId,
-        shapeId: dominant.shapeId,
-        tripCount: dominant.tripCount,
-        stopsCount: dominant.stops.length,
-        firstStop: dominant.stops[0]?.stop_name,
-        lastStop: dominant.stops[dominant.stops.length - 1]?.stop_name,
-      },
-      altPercorsi: altPercorsi.map(p => ({
-        tripId: p.tripId,
-        shapeId: p.shapeId,
-        tripCount: p.tripCount,
-        stopsCount: p.stops.length,
-        firstStop: p.stops[0]?.stop_name,
-        lastStop: p.stops[p.stops.length - 1]?.stop_name,
-      })),
-    });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-// ═══════════════════════════════════════════════════════════
 // FARES V1 — fare_attributes.txt & fare_rules.txt
 // ═══════════════════════════════════════════════════════════
-
-router.get("/fares/fare-attributes", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.json([]); return; }
-    const rows = await db.select().from(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
-    res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.post("/fares/fare-attributes", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    const { fareId, price, currencyType, paymentMethod, transfers, agencyId, transferDuration } = req.body;
-    if (!fareId || price == null) { res.status(400).json({ error: "fareId and price required" }); return; }
-    const [row] = await db.insert(gtfsFareAttributes).values({
-      feedId, fareId, price: Number(price), currencyType: currencyType || "EUR",
-      paymentMethod: paymentMethod ?? 0, transfers: transfers ?? null,
-      agencyId: agencyId || "ATMA", transferDuration: transferDuration ?? null,
-    }).returning();
-    res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.put("/fares/fare-attributes/:id", async (req, res): Promise<void> => {
-  try {
-    const s = await idNelFeed(req, res); if (!s) return;
-    const updates: any = {};
-    if (req.body.price != null) updates.price = Number(req.body.price);
-    if (req.body.paymentMethod != null) updates.paymentMethod = req.body.paymentMethod;
-    if (req.body.transfers !== undefined) updates.transfers = req.body.transfers;
-    if (req.body.transferDuration !== undefined) updates.transferDuration = req.body.transferDuration;
-    if (!Object.keys(updates).length) { res.status(400).json({ error: "Niente da cambiare" }); return; }
-    const [row] = await db.update(gtfsFareAttributes).set(updates).where(nelFeed(gtfsFareAttributes, s)).returning();
-    if (!row) { res.status(404).json(NON_NEL_FEED); return; }
-    res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.delete("/fares/fare-attributes/:id", async (req, res): Promise<void> => {
-  try {
-    const s = await idNelFeed(req, res); if (!s) return;
-    const via = await db.delete(gtfsFareAttributes).where(nelFeed(gtfsFareAttributes, s)).returning({ id: gtfsFareAttributes.id });
-    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
-    res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-// Auto-seed Fares V1 from existing Fares V2 products
-router.post("/fares/fare-attributes/seed", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    // Delete existing
-    await db.delete(gtfsFareAttributes).where(eq(gtfsFareAttributes.feedId, feedId));
-    await db.delete(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
-    // Generate from products
-    const products = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
-    const routeNets = await db.select().from(gtfsRouteNetworks).where(eq(gtfsRouteNetworks.feedId, feedId));
-    const attrs: any[] = [];
-    const rules: any[] = [];
-    for (const p of products) {
-      attrs.push({
-        feedId, fareId: p.fareProductId, price: p.amount, currencyType: p.currency,
-        paymentMethod: 0, transfers: 0, agencyId: "ATMA", transferDuration: null,
-      });
-      // Create fare rules linking to routes of that product's network
-      const matchingRoutes = routeNets.filter(rn => rn.networkId === p.networkId);
-      for (const rn of matchingRoutes) {
-        rules.push({ feedId, fareId: p.fareProductId, routeId: rn.routeId });
-      }
-    }
-    if (attrs.length > 0) await db.insert(gtfsFareAttributes).values(attrs);
-    if (rules.length > 0) await db.insert(gtfsFareRules).values(rules);
-    res.json({ fareAttributes: attrs.length, fareRules: rules.length });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.get("/fares/fare-rules", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.json([]); return; }
-    const rows = await db.select().from(gtfsFareRules).where(eq(gtfsFareRules.feedId, feedId));
-    res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.post("/fares/fare-rules", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    const { fareId, routeId, originId, destinationId, containsId } = req.body;
-    if (!fareId) { res.status(400).json({ error: "fareId required" }); return; }
-    const [row] = await db.insert(gtfsFareRules).values({
-      feedId, fareId, routeId, originId, destinationId, containsId,
-    }).returning();
-    res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
-
-router.delete("/fares/fare-rules/:id", async (req, res): Promise<void> => {
-  try {
-    const s = await idNelFeed(req, res); if (!s) return;
-    const via = await db.delete(gtfsFareRules).where(nelFeed(gtfsFareRules, s)).returning({ id: gtfsFareRules.id });
-    if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
-    res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
-});
 
 // ═══════════════════════════════════════════════════════════
 // STOP TIMES EDITOR — pickup_type / drop_off_type per route

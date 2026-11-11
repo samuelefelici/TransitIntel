@@ -243,39 +243,4 @@ router.get("/weather/correlation", cache({ ttlSeconds: 600 }), async (req, res) 
   }
 });
 
-// ─── GET /api/weather/history ──────────────────────────────────
-
-/**
- * Returns weather history for a given time range.
- * Query params:
- *   hours - lookback in hours (default: 24)
- *   location - filter by location_name (optional)
- */
-router.get("/weather/history", cache({ ttlSeconds: 120 }), async (req, res) => {
-  try {
-    const hours = parseInt((req.query as any).hours as string) || 24;
-    const location = (req.query as any).location as string | undefined;
-
-    const since = new Date();
-    since.setHours(since.getHours() - hours);
-    const sinceISO = since.toISOString();
-
-    let q = `
-      SELECT id, lat, lng, location_name, temp, feels_like, humidity, wind_speed,
-             weather_main, weather_description, weather_icon,
-             rain_1h, snow_1h, visibility, captured_at
-      FROM weather_snapshots
-      WHERE captured_at >= '${sinceISO}'::timestamptz
-    `;
-    if (location) q += ` AND location_name = '${location.replace(/'/g, "''")}'`;
-    q += ` ORDER BY captured_at DESC LIMIT 500`;
-
-    const result = await db.execute(sql.raw(q));
-    res.json({ hours, data: result.rows });
-  } catch (err: any) {
-    req.log.error(err, "Error fetching weather history");
-    res.status(500).json({ error: err.message });
-  }
-});
-
 export default router;

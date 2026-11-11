@@ -599,22 +599,4 @@ router.post("/gtfs/feeds/:id/activate", requireAdmin, async (req, res) => {
   }
 });
 
-/**
- * POST /api/gtfs/feeds/deactivate-all
- * Rimuove la selezione esplicita: getLatestFeedId(req) tornerà a usare il feed
- * più recente come fallback.
- * Solo admin: vale per tutti, come l'attivazione.
- */
-router.post("/gtfs/feeds/deactivate-all", requireAdmin, async (_req, res) => {
-  try {
-    await db.execute(sql`UPDATE gtfs_feeds SET is_active = false WHERE is_active = true`);
-    clearCache("/api/gtfs/");
-    clearCache("/api/analysis/");
-    clearCache("/api/fares/");
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
 export default router;

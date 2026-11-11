@@ -55,14 +55,4 @@ describe("GTFS Query endpoints", () => {
       expect(res2.headers["x-cache"]).toBe("MISS");
     }, 15_000);
   });
-
-  describe("GET /api/gtfs/stats", () => {
-    it("returns 200 with stats data or 500 without DB", async () => {
-      const res = await request(app).get("/api/gtfs/stats");
-      expect([200, 500]).toContain(res.status);
-      if (res.status === 200) {
-        expect(res.body).toBeDefined();
-      }
-    }, 15_000);
-  });
 });

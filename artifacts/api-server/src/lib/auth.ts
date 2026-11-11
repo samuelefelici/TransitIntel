@@ -586,7 +586,7 @@ const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
   ["/traffic", "analytics"], ["/poi", "analytics"], ["/population", "analytics"],
   ["/timetables", "analytics"], ["/planning", "analytics"],
   ["/scenarios", "analytics"], ["/weather", "analytics"],
-  ["/calendar-presets", "analytics"], ["/settings", "analytics"],
+  ["/settings", "analytics"],
 ];
 
 /**

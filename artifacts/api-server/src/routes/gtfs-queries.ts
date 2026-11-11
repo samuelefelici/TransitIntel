@@ -4,15 +4,20 @@
  * GET /api/gtfs/routes
  * GET /api/gtfs/shapes
  * GET /api/gtfs/summary
- * GET /api/gtfs/stats
  * GET /api/gtfs/analysis
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
-  gtfsFeeds, gtfsStops, gtfsRoutes, gtfsShapes,
-  gtfsTrips, gtfsStopTimes, gtfsCalendarDates,
-  pointsOfInterest, censusSections, trafficSnapshots,
+  gtfsStops,
+  gtfsRoutes,
+  gtfsShapes,
+  gtfsTrips,
+  gtfsStopTimes,
+  gtfsCalendarDates,
+  pointsOfInterest,
+  censusSections,
+  trafficSnapshots,
 } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
@@ -269,25 +274,6 @@ router.get("/gtfs/summary", cache({ ttlSeconds: 60 }), async (req, res) => {
   } catch (err) {
     req.log.error(err, "Error fetching GTFS summary");
     return void res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// GET /api/gtfs/stats
-router.get("/gtfs/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
-  try {
-    const feedsResult = await db.execute(sql`SELECT COUNT(*)::int as total_feeds FROM gtfs_feeds`);
-    const stopsResult = await db.execute(sql`SELECT COUNT(*)::int as total_stops FROM gtfs_stops`);
-    const routesResult = await db.execute(sql`SELECT COUNT(*)::int as total_routes FROM gtfs_routes`);
-    const latestFeed = await db.select().from(gtfsFeeds).orderBy(sql`uploaded_at DESC`).limit(1);
-    res.json({
-      totalFeeds: (feedsResult.rows as any[])[0]?.total_feeds || 0,
-      totalStops: (stopsResult.rows as any[])[0]?.total_stops || 0,
-      totalRoutes: (routesResult.rows as any[])[0]?.total_routes || 0,
-      latestFeed: latestFeed[0] || null,
-    });
-  } catch (err) {
-    req.log.error(err, "Error fetching GTFS stats");
-    res.status(500).json({ error: "Internal server error" });
   }
 });
 

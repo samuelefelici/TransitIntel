@@ -38,7 +38,6 @@
  *   POST   /api/fares/official-nodes/import-atma-2013
  *   DELETE /api/fares/official-nodes/:id
  *
- *   POST   /api/fares/stop-assignment/move
  *   POST   /api/fares/stop-assignment/bulk-move
  *   GET    /api/fares/stop-assignment/overrides
  *   POST   /api/fares/stop-assignment/revert/:overrideId
@@ -1283,17 +1282,6 @@ async function moveStop(feedId: string, stopId: string, toClusterId: string, rea
   }
   return { fromCluster: current?.clusterId ?? null, toCluster: toClusterId };
 }
-
-router.post("/fares/stop-assignment/move", async (req, res): Promise<void> => {
-  try {
-    const feedId = await getLatestFeedId(req);
-    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    const { stopId, toClusterId, reason, actor = "user" } = req.body ?? {};
-    if (!stopId || !toClusterId) { res.status(400).json({ error: "stopId e toClusterId richiesti" }); return; }
-    const r = await moveStop(feedId, stopId, toClusterId, reason, actor);
-    res.json({ ok: true, ...r });
-  } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
-});
 
 router.post("/fares/stop-assignment/bulk-move", async (req, res): Promise<void> => {
   try {

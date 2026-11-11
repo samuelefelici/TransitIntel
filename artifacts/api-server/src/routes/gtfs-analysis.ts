@@ -2,14 +2,15 @@
  * GTFS analysis endpoints (band filtering, shapes/geojson, impact, network-analysis).
  * GET /api/gtfs/routes/active-by-band
  * GET /api/gtfs/shapes/geojson
- * GET /api/gtfs/routes/impact
  * GET /api/gtfs/routes/network-analysis
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import {
-  gtfsRoutes, gtfsShapes, gtfsTrips, gtfsStopTimes,
-  pointsOfInterest, censusSections, trafficSnapshots,
+  gtfsRoutes,
+  gtfsShapes,
+  gtfsTrips,
+  gtfsStopTimes,
 } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
@@ -231,102 +232,6 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
     res.json({ type: "FeatureCollection", features });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS shapes");
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-// GET /api/gtfs/routes/impact
-router.get("/gtfs/routes/impact", cache({ ttlSeconds: 60 }), async (req, res) => {
-  const feedId = req.query.feedId as string | undefined;
-  try {
-    const routes = feedId
-      ? await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId))
-      : await db.select().from(gtfsRoutes).orderBy(sql`trips_count DESC`).limit(200);
-
-    const census = await db.select({
-      lng: censusSections.centroidLng,
-      lat: censusSections.centroidLat,
-      pop: censusSections.population,
-      density: censusSections.density,
-    }).from(censusSections);
-
-    const pois = await db.select({
-      lng: pointsOfInterest.lng,
-      lat: pointsOfInterest.lat,
-      category: pointsOfInterest.category,
-    }).from(pointsOfInterest);
-
-    const traffic = await db.select({
-      lng: trafficSnapshots.lng,
-      lat: trafficSnapshots.lat,
-      congestion: trafficSnapshots.congestionLevel,
-    }).from(trafficSnapshots);
-
-    const maxTrips = Math.max(...routes.map(r => r.tripsCount ?? 0), 1);
-
-    const CITY_KEYWORDS: Record<string, { lng: number; lat: number }> = {
-      "ancona": { lng: 13.517, lat: 43.617 },
-      "jesi": { lng: 13.241, lat: 43.524 },
-      "senigallia": { lng: 13.219, lat: 43.715 },
-      "fabriano": { lng: 12.907, lat: 43.337 },
-      "osimo": { lng: 13.479, lat: 43.483 },
-      "falconara": { lng: 13.394, lat: 43.629 },
-      "chiaravalle": { lng: 13.322, lat: 43.599 },
-      "castelfidardo": { lng: 13.549, lat: 43.462 },
-      "loreto": { lng: 13.606, lat: 43.441 },
-      "torrette": { lng: 13.454, lat: 43.584 },
-      "baraccola": { lng: 13.499, lat: 43.558 },
-      "stazione": { lng: 13.502, lat: 43.606 },
-      "porto": { lng: 13.503, lat: 43.625 },
-    };
-
-    const result = routes.map(route => {
-      const longName = (route.routeLongName || "").toLowerCase();
-      const shortName = route.routeShortName || route.routeId;
-      const trips = route.tripsCount ?? 0;
-
-      const matchedCities = Object.entries(CITY_KEYWORDS).filter(([k]) => longName.includes(k));
-
-      let demandPop = 0, demandPoi = 0, trafficCongestion = 0, trafficSamples = 0;
-
-      for (const [, center] of matchedCities) {
-        const R = 0.06;
-        census.filter(c =>
-          Math.abs((c.lng ?? 0) - center.lng) < R && Math.abs((c.lat ?? 0) - center.lat) < R
-        ).forEach(c => { demandPop += c.pop ?? 0; });
-
-        pois.filter(p =>
-          Math.abs(p.lng - center.lng) < R && Math.abs(p.lat - center.lat) < R
-        ).forEach(() => { demandPoi++; });
-
-        traffic.filter(t =>
-          Math.abs(t.lng - center.lng) < R && Math.abs(t.lat - center.lat) < R
-        ).forEach(t => { trafficCongestion += t.congestion ?? 0; trafficSamples++; });
-      }
-
-      const avgCongestion = trafficSamples > 0 ? trafficCongestion / trafficSamples : 0;
-      const demandScore = Math.min(demandPop / 30000, 1) * 0.7 + Math.min(demandPoi / 20, 1) * 0.3;
-      const supplyScore = Math.min(trips / (maxTrips * 0.5), 1);
-      const gap = Math.round((demandScore - supplyScore) * 100);
-
-      return {
-        id: route.id, routeId: route.routeId, shortName,
-        longName: route.routeLongName || "",
-        color: route.routeColor || "#6b7280",
-        textColor: route.routeTextColor || "#ffffff",
-        tripsCount: trips,
-        supplyScore: Math.round(supplyScore * 100),
-        demandScore: Math.round(demandScore * 100),
-        gap,
-        avgCongestion: Math.round(avgCongestion * 100) / 100,
-        citiesServed: matchedCities.map(([k]) => k),
-      };
-    });
-
-    result.sort((a, b) => b.gap - a.gap);
-    res.json({ data: result });
-  } catch (err) {
-    req.log.error(err, "Error computing route impact");
     res.status(500).json({ error: "Internal server error" });
   }
 });
