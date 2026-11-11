@@ -800,15 +800,20 @@ export async function discoverHubs(opts: {
   /* Le fermate su cui si cercano stazioni/porti/aeroporti devono essere
    * quelle del PROGETTO quando si lavora dentro un progetto: leggere il
    * feed materializzato significherebbe scoprire hub su fermate che
-   * nel progetto sono già state cancellate. */
-  const allStops = psProjectId
+   * nel progetto sono già state cancellate.
+   *
+   * `locationType` c'è solo nel ramo del progetto: ps_stops.location_type
+   * esiste, gtfs_stops.location_type no (l'import GTFS non la legge, e nel
+   * feed ATMA di riferimento vale 0 su tutte le fermate). Chiederla a
+   * gtfs_stops faceva fallire la query, e con lei /hubs, /analyze e /pois
+   * (500) fuori da un progetto. Sul feed le stazioni si riconoscono dal nome. */
+  const allStops: Array<{ stopId: string; stopName: string | null; lat: number | string; lng: number | string; locationType?: number | null }> = psProjectId
     ? (((await db.execute<any>(sql`
         SELECT id::text AS "stopId", name AS "stopName", lat, lon AS lng, location_type AS "locationType"
           FROM ps_stops WHERE project_id = ${psProjectId}::uuid
          ORDER BY id`)) as any).rows ?? [])
     : (((await db.execute<any>(sql`
-        SELECT stop_id AS "stopId", stop_name AS "stopName", stop_lat AS lat, stop_lon AS lng,
-               location_type AS "locationType"
+        SELECT stop_id AS "stopId", stop_name AS "stopName", stop_lat AS lat, stop_lon AS lng
           FROM gtfs_stops WHERE ${feedId ? sql`feed_id = ${feedId}::uuid` : sql`TRUE`}
          ORDER BY stop_id`)) as any).rows ?? []);
 
@@ -821,8 +826,9 @@ export async function discoverHubs(opts: {
     if (candidateStopIds && !candidateStopIds.has(s.stopId)) continue;
     /* Le fermate marcate come STAZIONE nei dati (location_type=1) sono la
      * verità: valgono come ferroviarie anche se il gestore le chiama
-     * "Piazza Rosselli". È l'aggancio reale che rende robusta la detection. */
-    const isRealStation = Number((s as any).locationType) === 1;
+     * "Piazza Rosselli". È l'aggancio reale che rende robusta la detection.
+     * Solo dentro un progetto: le fermate di un feed non hanno il dato. */
+    const isRealStation = Number(s.locationType) === 1;
     const cls = isRealStation ? { type: "railway" as HubType, walkMin: 2 } : classifyStopAsHub(s.stopName);
     if (!cls) continue;
     // Evita duplicati con hub curati (match diretto su stopId)

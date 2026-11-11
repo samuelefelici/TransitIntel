@@ -423,6 +423,80 @@ describe("ogni tabella letta dal codice esiste nello schema", () => {
   });
 });
 
+/* Anche le colonne, dove si possono leggere senza interpretare l'SQL: le
+ * SELECT su una tabella sola (senza JOIN), e nella loro lista solo le voci che
+ * sono una colonna nuda (`col`, `t.col`, con `::tipo` e `AS alias`). È il
+ * controllo che avrebbe trovato `gtfs_stops.location_type`: la ricerca degli
+ * hub dell'Intermodale la chiedeva, la tabella non l'ha mai avuta, e
+ * /intermodal/hubs, /analyze e /pois rispondevano 500 fuori da un progetto.
+ * Espressioni, funzioni, JOIN, WHERE e SQL composto a pezzi restano a
+ * Postgres: li prova chi esegue la rotta sul database (intermodal-db.test.ts). */
+describe("ogni colonna letta da una SELECT semplice esiste nello schema", () => {
+  /** Colonne di sistema e parole che in una lista non sono colonne. */
+  const NON_COLONNE = new Set(["xmin", "xmax", "cmin", "cmax", "ctid", "tableoid", "null", "true", "false", "current_date", "current_timestamp", "current_user"]);
+  /** Parole che dopo il nome della tabella non sono il suo alias (per l'SQL scritto in minuscolo). */
+  const NON_ALIAS = new Set(["where", "order", "group", "limit", "offset", "having", "union", "for", "on", "join", "left", "right", "inner", "full", "cross", "natural", "returning"]);
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  const COLONNA = /^(?:([a-z_][a-z0-9_]*)\.)?([a-z_][a-z0-9_]*)(?:::[a-z_][a-z0-9_ ]*(?:\[\])?)*(?:\s+(?:AS\s+)?(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*))?$/;
+
+  /** Dove comincia il FROM della SELECT la cui lista parte da `da`; -1 se la lista non è SQL scritto per intero. */
+  const fromDellaLista = (t: string, da: number): number => {
+    let dentro = 0;
+    for (let i = da; i < t.length && i < da + 5000; i++) {
+      const c = t[i];
+      if (c === "(") dentro++;
+      else if (c === ")") { if (dentro-- === 0) return -1; }
+      else if (c === "`" || (c === "$" && t[i + 1] === "{")) return -1;
+      else if (dentro === 0 && /^\sFROM\s/.test(t.slice(i - 1, i + 5))) return i;
+    }
+    return -1;
+  };
+  /** Le voci di una lista: separate dalle virgole che non stanno dentro una parentesi. */
+  const vociDi = (lista: string): string[] => {
+    const voci: string[] = [];
+    let dentro = 0, da = 0;
+    for (let i = 0; i < lista.length; i++) {
+      if (lista[i] === "(") dentro++;
+      else if (lista[i] === ")") dentro--;
+      else if (lista[i] === "," && dentro === 0) { voci.push(lista.slice(da, i)); da = i + 1; }
+    }
+    voci.push(lista.slice(da));
+    return voci.map(v => v.trim());
+  };
+
+  it("nessuna colonna che la tabella non ha", () => {
+    const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    const ignote: string[] = [];
+    let guardate = 0;
+    for (const f of sorgentiApi()) {
+      const t = senzaCommenti(readFileSync(f, "latin1"));
+      const cte = new Set([...t.matchAll(/(?:WITH(?: RECURSIVE)?|,)\s+([a-z_][a-z0-9_]*)\s+AS\s*(?:MATERIALIZED\s*)?\(/g)].map(m => m[1]!));
+      for (const m of t.matchAll(/\bSELECT\s+(?:DISTINCT\s+)?/g)) {
+        const inizio = m.index! + m[0].length;
+        const from = fromDellaLista(t, inizio);
+        if (from < 0) continue;
+        const dopo = /^FROM\s+(?:(public|caronte|coda)\.)?([a-z_][a-z0-9_]*)\b(?:\s+(?:AS\s+)?([a-z_][a-z0-9_]*)\b)?/.exec(t.slice(from, from + 200));
+        if (!dopo) continue;
+        const colonne: Record<string, string> | undefined = catalogo.tabelle[`${dopo[1] ?? "public"}.${dopo[2]}`];
+        if (!colonne || cte.has(dopo[2]!)) continue;
+        const alias = dopo[3] && !NON_ALIAS.has(dopo[3]) ? dopo[3] : undefined;
+        // con un'altra tabella accanto, una colonna senza prefisso può essere la sua
+        const seguito = t.slice(from + dopo[0].length - (dopo[3] && !alias ? dopo[3].length : 0), from + dopo[0].length + 40);
+        if (/^\s*(,|(?:(?:LEFT|RIGHT|INNER|FULL|CROSS|NATURAL)\s+(?:OUTER\s+)?)?JOIN\b)/i.test(seguito)) continue;
+        guardate++;
+        for (const voce of vociDi(t.slice(inizio, from))) {
+          const c = COLONNA.exec(voce);
+          if (!c || NON_COLONNE.has(c[2]!) || (c[1] && c[1] !== alias && c[1] !== dopo[2])) continue;
+          if (!(c[2]! in colonne)) ignote.push(`${dopo[1] ?? "public"}.${dopo[2]}.${c[2]} (${path.relative(SRC, f)})`);
+        }
+      }
+    }
+    // se il riconoscimento smettesse di trovare le SELECT, il test passerebbe a vuoto
+    expect(guardate).toBeGreaterThan(500);
+    expect(ignote, "colonna che la tabella non ha nello schema delle migrazioni: si toglie dalla query o si aggiunge con una migrazione").toEqual([]);
+  });
+});
+
 /* Argos legge solo le tabelle del contratto (lib/db/contratti/argos-lettura.mjs):
  * il migratore ci riporta i permessi di argos_ro a ogni avvio. */
 describe("il contratto di lettura di Argos", () => {

@@ -741,6 +741,11 @@ jobs:
       # dettaglio fermata cercava una tabella che non c'è più e rispondeva 500
       - name: Dettaglio fermata di Planning Studio sul database migrato
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/dettaglio-fermata-db.test.ts
+      # L'Intermodale (hub, coincidenze, poli) su un feed e su un progetto di
+      # prova: fuori da un progetto chiedeva gtfs_stops.location_type, che non
+      # esiste, e confrontava i giorni di gtfs_calendar con true: sempre 500
+      - name: L'Intermodale sul database migrato
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/intermodal-db.test.ts
       # Turni macchina, VCSP e giri di Argos su una rete di prova, con Python
       # finto: l'ingresso dato al solver e le risposte sono fissati da istantanee
       - name: Turni macchina, VCSP e giri di Argos sul database

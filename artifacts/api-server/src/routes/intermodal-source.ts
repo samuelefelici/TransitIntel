@@ -445,9 +445,12 @@ export async function loadActiveTrips(
   }
 
   if (!src.feedId) return out;
+  /* In gtfs_calendar i giorni sono interi (0/1, come nel file GTFS), non
+   * booleani come in ps_calendars: `= true` è un errore di tipo (42883) e
+   * /intermodal/analyze rispondeva 500 con qualunque feed caricato. */
   const cal = await db.execute<any>(sql`
     SELECT service_id FROM gtfs_calendar
-     WHERE feed_id = ${src.feedId}::uuid AND ${sql.raw(col)} = true`);
+     WHERE feed_id = ${src.feedId}::uuid AND ${sql.raw(col)} = 1`);
   const active = new Set<string>(((cal as any).rows ?? []).map((x: any) => String(x.service_id)));
   const trips = await db.execute<any>(sql`
     SELECT trip_id, route_id, service_id FROM gtfs_trips WHERE feed_id = ${src.feedId}::uuid`);
