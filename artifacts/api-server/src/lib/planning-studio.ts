@@ -480,8 +480,9 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
     const nr = await db.execute<any>(sql`SELECT *, 'owner' AS my_role FROM ps_projects WHERE id = ${newId}::uuid`);
     res.json({ project: rowToProject(nr.rows[0]) });
   } catch (e: any) {
-    req.log?.error?.({ err: e?.message, src }, "duplicazione progetto fallita");
-    res.status(500).json({ error: `Duplicazione fallita: ${e?.message ?? "errore"}` });
+    // il testo dell'errore del database (query e parametri) resta nel log, non va a chi chiama
+    req.log?.error?.({ err: e?.cause?.message ?? e?.message, src }, "duplicazione progetto fallita");
+    res.status(500).json({ error: "Duplicazione fallita: riprova, e se si ripete avvisa chi gestisce Cerbero" });
   }
 });
 
