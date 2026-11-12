@@ -63,6 +63,7 @@ import { Bds5Report } from "@/pages/fucina/turni-guida/bds5-costs";
 import { AMBITO_VUOTO, configPerIlSolver, scelteAttive, type AmbitoDelCalcolo } from "@/pages/fucina/turni-guida/config-solver";
 import { AmbitoDelCalcoloPanel, type ClusterDelCalcolo } from "@/pages/fucina/turni-guida/AmbitoDelCalcoloPanel";
 import { DssCompareDialog } from "@/pages/fucina/turni-guida/DssCompareDialog";
+import { LetturaDelRisultato } from "@/pages/fucina/turni-guida/lettura-risultato";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/fucina/turni-guida/constants";
 import { AddDriverShiftDialog } from "@/pages/fucina/turni-guida/AddDriverShiftDialog";
@@ -113,6 +114,8 @@ export default function DriverWorkspace({
   /* Gli scenari turni guida già salvati per questi turni macchina (per il confronto) */
   const [savedDss, setSavedDss] = useState<Array<{ id: string; name: string; createdAt: string; summary?: any }>>([]);
   const [showCompare, setShowCompare] = useState(false);
+  /* Lettura del risultato sotto il Gantt: analisi, classifica, distribuzioni, conformità, riassunti, elenco */
+  const [letturaOpen, setLetturaOpen] = useState(true);
   const [serviceType, setServiceTypeState] = useState<ServiceType>("urbano");
   // Cambiando tipo servizio si re-applica il preset dei gruppi service-scoped
   // (regole turno + target), preservando gli altri parametri già modificati.
@@ -2363,6 +2366,24 @@ export default function DriverWorkspace({
                 onBarDragEnd={ganttMode === "exploded" ? handleBarDragEnd : undefined}
               />
             </div>
+          </div>
+        )}
+
+        {/* Lettura del risultato: analisi, classifica, distribuzioni, conformità, riassunti, elenco dei turni */}
+        {result && result.summary && result.driverShifts.length > 0 && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setLetturaOpen(o => !o)}
+              aria-expanded={letturaOpen}
+              className="w-full flex items-center gap-2 mb-2 text-left"
+            >
+              <div className="h-6 w-1 rounded-full bg-gradient-to-b from-orange-500 to-amber-500" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-orange-300">Lettura del risultato</h3>
+              <span className="text-[10px] text-muted-foreground">— analisi, scenari, distribuzioni, conformità, riassunti, dettaglio dei turni</span>
+              <ChevronDown className={`ml-auto w-3.5 h-3.5 text-muted-foreground transition-transform ${letturaOpen ? "rotate-180" : ""}`} />
+            </button>
+            {letturaOpen && <LetturaDelRisultato result={result} />}
           </div>
         )}
       </div>
