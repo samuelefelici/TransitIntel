@@ -20,7 +20,7 @@ import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
-  Pencil, Copy, Merge, Wand2, Printer,
+  Pencil, Copy, Merge, Wand2, Printer, AlertTriangle,
 } from "lucide-react";
 import {
   getPsProject,
@@ -42,6 +42,9 @@ import OperationalEditWarning from "@/components/planning-studio/OperationalEdit
 import TripTransitsEditor from "@/components/planning-studio/TripTransitsEditor";
 import { useArgosFresh } from "@/hooks/useArgosFresh";
 import { SeScrive } from "@/hooks/use-sola-lettura";
+import {
+  avvisoCategorieCancellate, contaCategorieCancellate, haCategoriaCancellata, senzaCategoria, titoloCategoriaCancellata,
+} from "@/lib/categorie-cancellate";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
  * monotona, altrimenti cumulata haversine. */
@@ -383,6 +386,8 @@ export default function PlanningStudioTripsPage() {
   const [periodFilter, setPeriodFilter] = useState<string>(""); // id periodo chiuso | 'umbrella' | ''
   const [dayFilter, setDayFilter] = useState<string>("");       // ''|feriale|sabato|festivo
   const [onlyActive, setOnlyActive] = useState(false);
+  /* solo le corse legate a una categoria cancellata (lib/categorie-cancellate.ts) */
+  const [soloCancellate, setSoloCancellate] = useState(false);
 
   // varianti dipendenti dalla route selezionata
   const variantsQ = useQuery({
@@ -460,7 +465,10 @@ export default function PlanningStudioTripsPage() {
     // route/variant/periodo sono filtrati server-side (tripsQ); qui restano
     // "solo attive", il tipo di giorno della classe e il caso "senza categoria".
     if (onlyActive) trips = trips.filter(t => t.isActive);
-    if (classSel.none) trips = trips.filter(t => (t.categories ?? []).length === 0);
+    if (soloCancellate) trips = trips.filter(haCategoriaCancellata);
+    /* «senza categoria» è chi non ha nessuna riga: una corsa con la sola categoria
+       cancellata non vale «in ogni periodo», non vale mai */
+    if (classSel.none) trips = trips.filter(senzaCategoria);
     if (classSel.chiuseAny) trips = trips.filter(t => (t.categories ?? []).some(c => c.code?.startsWith("scuole_chiuse")));
     if (classSel.dayCode) trips = trips.filter(t => t.dayTypeCodes?.includes(classSel.dayCode));
     // ordina per orario partenza se disponibile (firstDeparture arriva già
@@ -472,7 +480,12 @@ export default function PlanningStudioTripsPage() {
       if (tb) return 1;
       return (a.shortName || a.headsign || "").localeCompare(b.shortName || b.headsign || "");
     });
-  }, [tripsQ.data, onlyActive, firstTimes, classSel]);
+  }, [tripsQ.data, onlyActive, soloCancellate, firstTimes, classSel]);
+
+  /* Le corse dell'elenco legate a una categoria cancellata: quante, e quante non valgono mai */
+  const cancellate = useMemo(() => contaCategorieCancellate(tripsQ.data ?? []), [tripsQ.data]);
+  /* sistemate tutte (o cambiata linea): il filtro non ha più senso e nasconderebbe l'elenco */
+  useEffect(() => { if (soloCancellate && cancellate.corse === 0) setSoloCancellate(false); }, [soloCancellate, cancellate.corse]);
 
   /* ─── Ordinamento per colonna (clic sull'intestazione) ───
    * null = ordine naturale (partenza, poi nome): il terzo clic ci torna. */
@@ -1293,6 +1306,25 @@ export default function PlanningStudioTripsPage() {
       </div>
 
       {/* Tabella */}
+      {cancellate.corse > 0 && (
+        <div role="alert" className="mx-3 mb-2 flex items-start gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-300" />
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold">{avvisoCategorieCancellate(cancellate)}</p>
+            <p className="text-rose-200/80 mt-0.5">
+              Per sistemarle: selezionale, apri «Giorni/Categorie», scegli «Sostituisci» e applica le categorie giuste
+              (nessuna = la corsa vale in ogni periodo).
+            </p>
+          </div>
+          <button
+            onClick={() => setSoloCancellate(v => !v)}
+            aria-pressed={soloCancellate}
+            className="shrink-0 px-2.5 py-1 rounded-md border border-rose-400/50 text-rose-100 hover:bg-rose-500/20 font-medium whitespace-nowrap"
+          >
+            {soloCancellate ? "Mostra tutte" : "Mostra solo queste"}
+          </button>
+        </div>
+      )}
       <div className="flex-1 overflow-auto">
         {tripsQ.isLoading && (
           <div className="p-6 text-slate-500 text-sm flex items-center gap-2">
@@ -1405,6 +1437,12 @@ export default function PlanningStudioTripsPage() {
                       </div>
                     </td>
                     <td className="p-2">
+                      {haCategoriaCancellata(t) && (
+                        <span title={titoloCategoriaCancellata(t)}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 mb-1 rounded text-[9px] font-semibold border border-rose-500/60 bg-rose-500/15 text-rose-200 whitespace-nowrap">
+                          <AlertTriangle className="w-2.5 h-2.5" /> categoria cancellata
+                        </span>
+                      )}
                       {tripCats.length === 0
                         ? <span className="px-1.5 py-0.5 rounded text-[9px] border border-slate-700 text-slate-500 whitespace-nowrap"
                             title="Nessuna categoria: la corsa vale in ogni periodo del calendario aziendale">tutti i periodi</span>

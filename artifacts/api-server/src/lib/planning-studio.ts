@@ -1866,23 +1866,33 @@ router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void
       }
       for (const t of trips as any[]) t.dayTypeCodes = byTrip.get(t.id) ?? [];
     } catch { /* validità non configurata */ }
-    // Categorie del calendario aziendale per corsa (chip in Corse e TTD)
+    // Categorie del calendario aziendale per corsa (chip in Corse e TTD).
+    // lostCategories: righe della corsa che puntano a una categoria che non
+    // esiste più (cancellata prima che la cancellazione di una categoria in
+    // uso fosse rifiutata). Il calcolo della validità le conta: una corsa che
+    // ha solo quelle non vale in nessun giorno. Qui si contano perché la
+    // pagina le mostri, invece di una casella vuota.
     try {
       const idsLiteral = `{${trips.map((t: any) => t.id).join(",")}}`;
       const cv = await db.execute(sql`
         SELECT cv.trip_id, c.id, c.code, c.name, c.color
           FROM ps_trip_category_validity cv
-          JOIN ps_validity_categories c ON c.id = cv.category_id
+          LEFT JOIN ps_validity_categories c ON c.id = cv.category_id
          WHERE cv.trip_id = ANY(${idsLiteral}::uuid[])
          ORDER BY c.sort_order, c.name
       `);
       const catsByTrip = new Map<string, any[]>();
+      const lostByTrip = new Map<string, number>();
       for (const row of ((cv as any).rows ?? []) as any[]) {
+        if (row.id == null) { lostByTrip.set(row.trip_id, (lostByTrip.get(row.trip_id) ?? 0) + 1); continue; }
         const a = catsByTrip.get(row.trip_id) ?? [];
         a.push({ id: row.id, code: row.code, name: row.name, color: row.color });
         catsByTrip.set(row.trip_id, a);
       }
-      for (const t of trips as any[]) t.categories = catsByTrip.get(t.id) ?? [];
+      for (const t of trips as any[]) {
+        t.categories = catsByTrip.get(t.id) ?? [];
+        t.lostCategories = lostByTrip.get(t.id) ?? 0;
+      }
     } catch { /* categorie non configurate */ }
   }
   res.json({ trips });
