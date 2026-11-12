@@ -22,7 +22,7 @@ import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import {
-  catalogoDeiRuoli, dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
+  dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
   ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, NOMI_AREE,
   type Area, type Diritti, type InterruttoreDiPrima, type Livello, type Permission, type RuoloAziendale,
 } from "./permessi";
@@ -965,11 +965,6 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
     codiciDaRifare: !!u.mfa_attiva && !!u.mfa_recupero_chiave && u.mfa_recupero_chiave !== idChiave(),
   }));
   res.json({ users });
-});
-
-// GET /api/admin/ruoli — i ruoli aziendali, le aree e la matrice, per chi assegna i ruoli
-router.get("/admin/ruoli", requireAuth, requireAdmin, (_req, res) => {
-  res.json(catalogoDeiRuoli());
 });
 
 /**

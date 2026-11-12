@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AREE, AREE_DELL_INTERRUTTORE, INTERRUTTORI, INTERRUTTORI_DI_PRIMA, MATRICE, NESSUN_DIRITTO, NOMI_AREE, NOMI_RUOLI, RUOLI,
-  accessoDiPrimaPulito, accessoDiPrimaRidotto, catalogoDeiRuoli, dirittiDi, haAccessoDiPrima, interruttoriCompatibili,
+  accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, haAccessoDiPrima, interruttoriCompatibili,
   livelloDelMetodo, piuAlto, puo, puoSuUna, ruoliSconosciuti, ruoliValidi, vedeDatiSanitari,
   type Area, type Livello, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
@@ -199,17 +199,5 @@ describe("letture e scritture", () => {
   it("GET e HEAD leggono, il resto scrive", () => {
     for (const m of ["GET", "get", "HEAD", "OPTIONS"]) expect(livelloDelMetodo(m)).toBe("L");
     for (const m of ["POST", "PUT", "PATCH", "DELETE", "delete", "QUALCOSA"]) expect(livelloDelMetodo(m)).toBe("S");
-  });
-});
-
-describe("il catalogo per Gestione utenti", () => {
-  it("porta aree, ruoli e la matrice intera", () => {
-    const c = catalogoDeiRuoli();
-    expect(c.aree.map(a => a.id)).toEqual([...AREE]);
-    expect(c.ruoli.map(r => r.id)).toEqual([...RUOLI]);
-    for (const r of c.ruoli) {
-      expect(Object.keys(r.diritti).sort()).toEqual([...AREE].sort());
-      for (const a of AREE) expect(r.diritti[a]).toBe(ATTESA[r.id][a] ?? null);
-    }
   });
 });

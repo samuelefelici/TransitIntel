@@ -49,8 +49,9 @@ function aggiornaIndirizzo(chiave: string, valore: string | null) {
 }
 
 export default function AnagraficaPage() {
-  const { hasPermission, datiProva } = useAuth();
-  const personale = hasPermission("personale");
+  const { hasPermission, puo, datiProva } = useAuth();
+  /* importare e aggiungere conducenti: serve la scrittura su «Personale» */
+  const personale = puo("personale", "S");
   const qc = useQueryClient();
   const [vista, setVista] = useState<Vista>(() => (parametri().get("vista") === "scadenze" ? "scadenze" : "elenco"));
   const [scheda, setScheda] = useState<string | "nuovo" | null>(() => parametri().get("conducente"));

@@ -64,7 +64,6 @@ const PRIMA_DEL_LOGIN = [
   // accesso e account: ogni rotta autenticata controlla da sé chi la chiama
   "POST /auth/login", "POST /auth/login/mfa", "POST /auth/logout", "GET /auth/me", "POST /auth/fleetcare-sso",
   "GET /users/lookup", "GET /admin/users", "POST /admin/users", "PATCH /admin/users/:id", "DELETE /admin/users/:id",
-  "GET /admin/ruoli",
   "POST /auth/password", "POST /auth/mfa/attiva", "POST /auth/mfa/conferma", "POST /auth/mfa/disattiva",
   "POST /auth/mfa/codici-recupero", "POST /auth/mfa/reimposta", "POST /auth/sessioni/chiudi", "GET /admin/accessi",
   // cron col segreto

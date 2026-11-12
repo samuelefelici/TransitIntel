@@ -154,8 +154,9 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
   fittizio?: boolean;
 }) {
   const qc = useQueryClient();
-  const { hasPermission } = useAuth();
-  const personale = hasPermission("personale");
+  const { puo } = useAuth();
+  /* la scheda si modifica con la scrittura su «Personale»; con la sola scrittura sul roster, i fittizi */
+  const personale = puo("personale", "S");
   const [id, setId] = useState<string | null>(driverId);
   const titoloId = "scheda-conducente-titolo";
 
@@ -173,7 +174,7 @@ export default function DriverEditDialog({ driverId, onClose, fittizio = false }
   const c = q.data?.conducente ?? null;
   const sensibili = id ? !!q.data?.sensibili : personale;
   const eFittizio = c ? c.isFictitious : fittizio;
-  const puoScrivere = personale || (eFittizio && hasPermission("roster"));
+  const puoScrivere = personale || (eFittizio && puo("roster", "S"));
 
   const [iniziale, setIniziale] = useState<Modulo>(() => daConducente(null));
   const [f, setF] = useState<Modulo>(() => daConducente(null));

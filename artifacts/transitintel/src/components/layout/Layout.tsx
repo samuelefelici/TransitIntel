@@ -20,7 +20,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [location, navigate] = useLocation();
   const [isMobileOpen, setIsMobileOpen] = React.useState(false);
   const [collapsed, setCollapsed] = React.useState(false);
-  const { logout: esci, user, isAdmin, hasPermission } = useAuth();
+  const { logout: esci, user, isAdmin, puo } = useAuth();
   /* chi esce di sua volontà riparte dalla radice: chi entra dopo non eredita la sua pagina
    * (una sessione scaduta invece resta dov'era, e dopo l'accesso si torna lì) */
   const logout = React.useCallback(async () => { await esci(); navigate("/", { replace: true }); }, [esci, navigate]);
@@ -54,7 +54,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("pageshow", sblocca);
   }, []);
 
-  const sezioni = React.useMemo(() => sezioniVisibili(hasPermission, isAdmin), [hasPermission, isAdmin]);
+  const sezioni = React.useMemo(() => sezioniVisibili(a => puo(a, "L"), isAdmin), [puo, isAdmin]);
   const attiva = voceAttiva(location, sezioni);
   const lavoro = paginaDiLavoro(location);
   /* nelle pagine di lavoro «compresso» vuol dire nascosto del tutto */

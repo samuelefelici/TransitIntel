@@ -48,7 +48,7 @@ function Numero({ valore, etichetta, tono }: { valore: ReactNode; etichetta: str
 }
 
 export default function OggiPage() {
-  const { user, isAdmin, hasPermission } = useAuth();
+  const { user, isAdmin, hasPermission, puo } = useAuth();
   const ha = (...p: Permission[]) => isAdmin || p.some(x => hasPermission(x));
   /* la pagina resta aperta in sala: ogni minuto si guarda se è cambiato il giorno */
   const [ora, setOra] = useState(() => Date.now());
@@ -97,7 +97,7 @@ export default function OggiPage() {
   const inEsercizio = programmi.data?.find(p => p.isOperational) ?? null;
   /* il registro ha anche i ritiri: l'ultima pubblicazione è l'ultima di tipo «pubblica» */
   const ultima = pubblicazioni.data?.find(p => p.tipo === "pubblica") ?? null;
-  const sezioni = sezioniVisibili(hasPermission, isAdmin).filter(s => s.titolo !== "Oggi");
+  const sezioni = sezioniVisibili(a => puo(a, "L"), isAdmin).filter(s => s.titolo !== "Oggi");
   const titoloGiorno = new Date(ora).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Rome" });
 
   return (

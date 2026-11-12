@@ -4,31 +4,23 @@
  * tariffe; poi l'Analisi (spenta per i nuovi utenti) e l'Amministrazione.
  *
  * È l'unica fonte: la barra laterale (components/layout/Layout.tsx), la home
- * «Oggi» e i permessi delle pagine (App.tsx, PERMESSI_PAGINA) leggono da qui.
- * Un permesso dice quale modulo serve (api-server/src/lib/permessi.ts); con
- * più permessi ne basta uno; l'admin vede tutto.
+ * «Oggi» e le aree delle pagine (App.tsx, AREE_PAGINA) leggono da qui.
+ * Un'area dice che cosa serve poter almeno leggere per aprire la pagina (i
+ * ruoli aziendali e i loro diritti: il pacchetto @workspace/permessi); con più
+ * aree ne basta una; l'amministratore vede tutto.
  */
 import {
   BarChart3, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
   Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, type LucideIcon,
 } from "lucide-react";
-import type { Permission } from "@/hooks/use-auth";
+import { NOMI_AREE, type Area } from "@workspace/permessi";
 
 /** La pagina d'ingresso: dopo il login, e dove si torna quando una pagina non è permessa. */
 export const CASA = "/oggi";
 
-/** Il nome del modulo di ogni permesso, come lo vede chi usa il menu. */
-export const NOMI_PERMESSI: Readonly<Record<Permission, string>> = {
-  network: "Rete e orari",
-  scheduling: "Turni",
-  roster: "Roster",
-  personale: "Personale",
-  centrale: "Esercizio",
-  fleetcare: "Flotta",
-  fares: "Tariffe",
-  analytics: "Analisi",
-};
+/** Il nome di ogni area, come lo vede chi usa il menu. */
+export { NOMI_AREE };
 
 export interface VoceMenu {
   href: string;
@@ -36,8 +28,8 @@ export interface VoceMenu {
   icona: LucideIcon;
   /** sotto l'etichetta, quando c'è spazio */
   descrizione?: string;
-  /** basta uno; senza, la vede chiunque sia entrato */
-  permessi?: readonly Permission[];
+  /** le aree che aprono la voce: basta poterne leggere una; senza, la vede chiunque sia entrato */
+  aree?: readonly Area[];
   soloAdmin?: boolean;
   /** non è una pagina: FleetCare si apre con il biglietto di accesso (Layout) */
   azione?: "fleetcare";
@@ -51,43 +43,44 @@ export interface SezioneMenu {
 }
 
 /**
- * I permessi delle pagine che hanno un modulo. Le voci del menu ripetono gli
- * stessi (lo controlla il test), così una voce non porta mai a una pagina che
- * rimanda indietro.
+ * Le aree delle pagine: per aprirne una basta la lettura su una delle sue
+ * aree. Le voci del menu ripetono le stesse (lo controlla il test), così una
+ * voce non porta mai a una pagina che rimanda indietro.
  */
-export const PERMESSI_PAGINA = {
-  "/planning-studio": ["network"],
-  "/planning": ["network"],
-  "/coincidence-zones": ["network"],
-  "/fucina/esercizio": ["scheduling"],
+export const AREE_PAGINA = {
+  "/planning-studio": ["rete"],
+  "/planning": ["rete"],
+  "/coincidence-zones": ["rete"],
+  "/fucina/esercizio": ["turni"],
   /* i turni misti sono fuori dal menu (PR 2.13b): la pagina resta al suo indirizzo */
-  "/misto": ["scheduling"],
+  "/misto": ["turni"],
   /* «I miei calcoli»: turni macchina, turni guida, sincronizzazioni, giri di Argos */
-  "/calcoli": ["scheduling"],
-  "/roster/pubblicazione": ["scheduling"],
+  "/calcoli": ["turni"],
+  /* pubblicare i turni al roster e gli orari al pubblico sono due aree a sé */
+  "/roster/pubblicazione": ["pubblicazione_turni"],
   /* gli orari al pubblico si leggono dal programma di Planning Studio */
-  "/timetables": ["network"],
+  "/timetables": ["pubblicazione_orari"],
   "/roster": ["roster"],
   "/roster/anagrafica": ["roster", "personale"],
-  "/operations": ["centrale"],
-  "/avm": ["centrale"],
+  "/operations": ["esercizio"],
+  "/avm": ["esercizio"],
   /* i tempi osservati vengono dall'AVM: sono dell'Esercizio, e chi li aveva con Analisi li tiene */
-  "/runtimes": ["centrale", "analytics"],
-  "/fares": ["fares"],
-  "/fares-polimetriche": ["fares"],
-  "/fare-simulator": ["fares"],
-  "/fare-analytics": ["fares"],
-  "/trip-planner": ["fares"],
-  "/dashboard": ["analytics"],
-  "/traffic": ["analytics"],
-  "/territory": ["analytics"],
-  "/network": ["analytics"],
-  "/scenarios": ["analytics"],
+  "/runtimes": ["esercizio", "analisi"],
+  "/fares": ["tariffe"],
+  "/fares-polimetriche": ["tariffe"],
+  "/fare-simulator": ["tariffe"],
+  "/fare-analytics": ["tariffe"],
+  "/trip-planner": ["tariffe"],
+  "/dashboard": ["analisi"],
+  "/traffic": ["analisi"],
+  "/territory": ["analisi"],
+  "/network": ["analisi"],
+  "/scenarios": ["analisi"],
   /* i feed GTFS sono dell'Analisi; le paline Mizar servono all'Esercizio (pages/data.tsx sceglie le schede) */
-  "/data": ["analytics", "centrale"],
-} as const satisfies Record<string, readonly Permission[]>;
+  "/data": ["analisi", "esercizio"],
+} as const satisfies Record<string, readonly Area[]>;
 
-export type PaginaConPermesso = keyof typeof PERMESSI_PAGINA;
+export type PaginaConArea = keyof typeof AREE_PAGINA;
 
 export const SEZIONI: readonly SezioneMenu[] = [
   {
@@ -97,9 +90,9 @@ export const SEZIONI: readonly SezioneMenu[] = [
   {
     titolo: "Rete e orari",
     voci: [
-      { href: "/planning-studio", etichetta: "Planning Studio", icona: Map, descrizione: "Fermate, linee, corse, validità", permessi: PERMESSI_PAGINA["/planning-studio"] },
-      { href: "/planning", etichetta: "Confronta programmi", icona: Layers, descrizione: "Due programmi a confronto", permessi: PERMESSI_PAGINA["/planning"] },
-      { href: "/coincidence-zones", etichetta: "Zone di coincidenza", icona: Zap, descrizione: "Hub e trasbordi", permessi: PERMESSI_PAGINA["/coincidence-zones"] },
+      { href: "/planning-studio", etichetta: "Planning Studio", icona: Map, descrizione: "Fermate, linee, corse, validità", aree: AREE_PAGINA["/planning-studio"] },
+      { href: "/planning", etichetta: "Confronta programmi", icona: Layers, descrizione: "Due programmi a confronto", aree: AREE_PAGINA["/planning"] },
+      { href: "/coincidence-zones", etichetta: "Zone di coincidenza", icona: Zap, descrizione: "Hub e trasbordi", aree: AREE_PAGINA["/coincidence-zones"] },
     ],
   },
   {
@@ -107,57 +100,57 @@ export const SEZIONI: readonly SezioneMenu[] = [
     voci: [
       {
         href: "/fucina/esercizio", etichetta: "Progetti di esercizio", icona: ClipboardList, descrizione: "Turni macchina e turni guida",
-        permessi: PERMESSI_PAGINA["/fucina/esercizio"], ancheSu: ["/fucina", "/misto"],
+        aree: AREE_PAGINA["/fucina/esercizio"], ancheSu: ["/fucina", "/misto"],
       },
-      { href: "/calcoli", etichetta: "I miei calcoli", icona: Cpu, descrizione: "In corso e finiti, anche a pagina chiusa", permessi: PERMESSI_PAGINA["/calcoli"] },
+      { href: "/calcoli", etichetta: "I miei calcoli", icona: Cpu, descrizione: "In corso e finiti, anche a pagina chiusa", aree: AREE_PAGINA["/calcoli"] },
     ],
   },
   {
     titolo: "Pubblicazione",
     voci: [
-      { href: "/roster/pubblicazione", etichetta: "Turni al roster", icona: Send, descrizione: "Quali turni guida, per periodo", permessi: PERMESSI_PAGINA["/roster/pubblicazione"] },
-      { href: "/timetables", etichetta: "Orari al pubblico", icona: Printer, descrizione: "Stampa orari, quadri di palina, QR", permessi: PERMESSI_PAGINA["/timetables"] },
+      { href: "/roster/pubblicazione", etichetta: "Turni al roster", icona: Send, descrizione: "Quali turni guida, per periodo", aree: AREE_PAGINA["/roster/pubblicazione"] },
+      { href: "/timetables", etichetta: "Orari al pubblico", icona: Printer, descrizione: "Stampa orari, quadri di palina, QR", aree: AREE_PAGINA["/timetables"] },
     ],
   },
   {
     titolo: "Personale",
     voci: [
-      { href: "/roster", etichetta: "Roster", icona: Users, descrizione: "Tabellone, assegnazioni, assenze", permessi: PERMESSI_PAGINA["/roster"] },
-      { href: "/roster/anagrafica", etichetta: "Anagrafica", icona: IdCard, descrizione: "Conducenti e personale", permessi: PERMESSI_PAGINA["/roster/anagrafica"] },
+      { href: "/roster", etichetta: "Roster", icona: Users, descrizione: "Tabellone, assegnazioni, assenze", aree: AREE_PAGINA["/roster"] },
+      { href: "/roster/anagrafica", etichetta: "Anagrafica", icona: IdCard, descrizione: "Conducenti e personale", aree: AREE_PAGINA["/roster/anagrafica"] },
     ],
   },
   {
     titolo: "Esercizio",
     voci: [
-      { href: "/operations", etichetta: "Mappa live", icona: MapPinned, descrizione: "Il servizio adesso", permessi: PERMESSI_PAGINA["/operations"] },
-      { href: "/avm", etichetta: "AVM", icona: SatelliteDish, descrizione: "Diario e controllo degli apparati", permessi: PERMESSI_PAGINA["/avm"] },
-      { href: "/runtimes", etichetta: "Tempi osservati", icona: Timer, descrizione: "Percorrenze dall'AVM", permessi: PERMESSI_PAGINA["/runtimes"] },
+      { href: "/operations", etichetta: "Mappa live", icona: MapPinned, descrizione: "Il servizio adesso", aree: AREE_PAGINA["/operations"] },
+      { href: "/avm", etichetta: "AVM", icona: SatelliteDish, descrizione: "Diario e controllo degli apparati", aree: AREE_PAGINA["/avm"] },
+      { href: "/runtimes", etichetta: "Tempi osservati", icona: Timer, descrizione: "Percorrenze dall'AVM", aree: AREE_PAGINA["/runtimes"] },
     ],
   },
   {
     titolo: "Flotta",
     voci: [
-      { href: "/fleetcare", etichetta: "FleetCare", icona: Wrench, descrizione: "Mezzi, fermi, officina", permessi: ["fleetcare"], azione: "fleetcare" },
+      { href: "/fleetcare", etichetta: "FleetCare", icona: Wrench, descrizione: "Mezzi, fermi, officina", aree: ["flotta"], azione: "fleetcare" },
     ],
   },
   {
     titolo: "Tariffe",
     voci: [
-      { href: "/fares", etichetta: "Bigliettazione", icona: Ticket, descrizione: "Tariffe, titoli, zone", permessi: PERMESSI_PAGINA["/fares"] },
-      { href: "/fares-polimetriche", etichetta: "Polimetriche", icona: Milestone, descrizione: "Tratte e prezzi", permessi: PERMESSI_PAGINA["/fares-polimetriche"] },
-      { href: "/fare-simulator", etichetta: "Simulatore", icona: Gamepad2, descrizione: "Ipotesi tariffarie", permessi: PERMESSI_PAGINA["/fare-simulator"] },
-      { href: "/fare-analytics", etichetta: "Prodotti e KPI", icona: Coins, descrizione: "Titoli, indicatori, controlli", permessi: PERMESSI_PAGINA["/fare-analytics"] },
-      { href: "/trip-planner", etichetta: "Percorso e tariffa", icona: Navigation, descrizione: "Da porta a porta, con il prezzo", permessi: PERMESSI_PAGINA["/trip-planner"] },
+      { href: "/fares", etichetta: "Bigliettazione", icona: Ticket, descrizione: "Tariffe, titoli, zone", aree: AREE_PAGINA["/fares"] },
+      { href: "/fares-polimetriche", etichetta: "Polimetriche", icona: Milestone, descrizione: "Tratte e prezzi", aree: AREE_PAGINA["/fares-polimetriche"] },
+      { href: "/fare-simulator", etichetta: "Simulatore", icona: Gamepad2, descrizione: "Ipotesi tariffarie", aree: AREE_PAGINA["/fare-simulator"] },
+      { href: "/fare-analytics", etichetta: "Prodotti e KPI", icona: Coins, descrizione: "Titoli, indicatori, controlli", aree: AREE_PAGINA["/fare-analytics"] },
+      { href: "/trip-planner", etichetta: "Percorso e tariffa", icona: Navigation, descrizione: "Da porta a porta, con il prezzo", aree: AREE_PAGINA["/trip-planner"] },
     ],
   },
   {
     titolo: "Analisi",
     voci: [
-      { href: "/dashboard", etichetta: "Mappa del territorio", icona: BarChart3, descrizione: "Linee, fermate, domanda", permessi: PERMESSI_PAGINA["/dashboard"] },
-      { href: "/traffic", etichetta: "Traffico", icona: Activity, descrizione: "Velocità e congestione", permessi: PERMESSI_PAGINA["/traffic"] },
-      { href: "/territory", etichetta: "Territorio e domanda", icona: Map, descrizione: "Popolazione e servizi", permessi: PERMESSI_PAGINA["/territory"] },
-      { href: "/network", etichetta: "Linee e fermate GTFS", icona: Network, descrizione: "Il feed caricato", permessi: PERMESSI_PAGINA["/network"] },
-      { href: "/scenarios", etichetta: "Ipotesi di linea", icona: Route, descrizione: "Tracciati KML e copertura", permessi: PERMESSI_PAGINA["/scenarios"] },
+      { href: "/dashboard", etichetta: "Mappa del territorio", icona: BarChart3, descrizione: "Linee, fermate, domanda", aree: AREE_PAGINA["/dashboard"] },
+      { href: "/traffic", etichetta: "Traffico", icona: Activity, descrizione: "Velocità e congestione", aree: AREE_PAGINA["/traffic"] },
+      { href: "/territory", etichetta: "Territorio e domanda", icona: Map, descrizione: "Popolazione e servizi", aree: AREE_PAGINA["/territory"] },
+      { href: "/network", etichetta: "Linee e fermate GTFS", icona: Network, descrizione: "Il feed caricato", aree: AREE_PAGINA["/network"] },
+      { href: "/scenarios", etichetta: "Ipotesi di linea", icona: Route, descrizione: "Tracciati KML e copertura", aree: AREE_PAGINA["/scenarios"] },
     ],
   },
   {
@@ -166,21 +159,21 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/admin/users", etichetta: "Utenti e accessi", icona: Users, descrizione: "Permessi, sblocchi, registro", soloAdmin: true },
       { href: "/admin/parametri", etichetta: "Parametri di esercizio", icona: Settings2, descrizione: "Autovetture aziendali", soloAdmin: true },
       { href: "/admin/registro", etichetta: "Registro delle modifiche", icona: History, descrizione: "Chi ha cambiato che cosa", soloAdmin: true },
-      { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline Mizar", permessi: PERMESSI_PAGINA["/data"] },
+      { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline Mizar", aree: AREE_PAGINA["/data"] },
       { href: "/account", etichetta: "Sicurezza dell'account", icona: Shield, descrizione: "Password e verifica" },
     ],
   },
 ];
 
-/** Questa voce si può aprire con questi permessi? */
-export function voceVisibile(v: VoceMenu, ha: (p: Permission) => boolean, admin: boolean): boolean {
+/** Questa voce si può aprire? `legge` dice se l'utente può almeno leggere un'area. */
+export function voceVisibile(v: VoceMenu, legge: (a: Area) => boolean, admin: boolean): boolean {
   if (admin) return true;
   if (v.soloAdmin) return false;
-  return !v.permessi || v.permessi.some(p => ha(p));
+  return !v.aree || v.aree.some(a => legge(a));
 }
 
 /** Il menu di chi è entrato: solo le voci che può aprire, e niente sezioni vuote. */
-export function sezioniVisibili(ha: (p: Permission) => boolean, admin: boolean): SezioneMenu[] {
+export function sezioniVisibili(ha: (a: Area) => boolean, admin: boolean): SezioneMenu[] {
   return SEZIONI
     .map(s => ({ ...s, voci: s.voci.filter(v => voceVisibile(v, ha, admin)) }))
     .filter(s => s.voci.length > 0);

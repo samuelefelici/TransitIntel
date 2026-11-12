@@ -1,17 +1,30 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
-import type { Permission } from "@/hooks/use-auth";
+import { AREE, INTERRUTTORI, dirittiDi, puo, type Area, type Interruttore, type RuoloAziendale } from "@workspace/permessi";
 import {
-  CASA, NOMI_PERMESSI, PERMESSI_PAGINA, PREFISSI_PUBBLICI, SEZIONI,
+  AREE_PAGINA, CASA, NOMI_AREE, PREFISSI_PUBBLICI, SEZIONI,
   paginaDiLavoro, paginaTariffe, sezioniVisibili, voceAttiva,
 } from "./navigazione";
 import { schedeVisibili } from "@/pages/data";
 
-const TUTTI: Permission[] = ["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale", "roster"];
-const con = (...p: Permission[]) => (x: Permission) => p.includes(x);
-/** come il server: Rete e orari porta con sé i Turni */
+type Permission = Interruttore;
+const TUTTI: Permission[] = [...INTERRUTTORI];
+const legge = (ruoli: RuoloAziendale[], interruttori: Permission[]) => {
+  const d = dirittiDi({
+    admin: false, ruoli,
+    accessoDiPrima: Object.fromEntries(interruttori.filter(i => i !== "analytics").map(i => [i, true])),
+    analisi: interruttori.includes("analytics"), datiSanitari: false,
+  });
+  return (a: Area) => puo(d, a, "L");
+};
+/** Chi ha questi interruttori di prima dei ruoli (il suo «accesso di prima»): il menu
+ *  deve restare quello che vedeva. «analytics» è diventato la capacità Analisi. */
+const con = (...p: Permission[]) => legge([], p);
+/** Chi ha solo ruoli aziendali. */
+const conRuoli = (...r: RuoloAziendale[]) => legge(r, []);
+/** come il server di prima dei ruoli: Rete e orari portava con sé i Turni */
 const profilo = (...p: Permission[]) => con(...p, ...(p.includes("network") ? ["scheduling" as const] : []));
-const menu = (ha: (p: Permission) => boolean, admin = false) =>
+const menu = (ha: (a: Area) => boolean, admin = false) =>
   Object.fromEntries(sezioniVisibili(ha, admin).map(s => [s.titolo, s.voci.map(v => v.etichetta)]));
 
 describe("il menu di chi entra", () => {
@@ -81,19 +94,21 @@ describe("il menu di chi entra", () => {
 describe("menu e pagine dicono la stessa cosa", () => {
   const voci = SEZIONI.flatMap(s => s.voci);
 
-  it("ogni voce chiede gli stessi permessi della sua pagina", () => {
+  it("ogni voce chiede le stesse aree della sua pagina", () => {
     for (const v of voci) {
-      if (v.href in PERMESSI_PAGINA) {
-        expect(v.permessi, v.href).toEqual(PERMESSI_PAGINA[v.href as keyof typeof PERMESSI_PAGINA]);
+      if (v.href in AREE_PAGINA) {
+        expect(v.aree, v.href).toEqual(AREE_PAGINA[v.href as keyof typeof AREE_PAGINA]);
       }
     }
   });
 
-  it("App.tsx usa PERMESSI_PAGINA per ogni pagina con un modulo", () => {
+  it("App.tsx usa AREE_PAGINA per ogni pagina con un'area", () => {
     const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
-    for (const pagina of Object.keys(PERMESSI_PAGINA)) {
-      expect(app, pagina).toContain(`PERMESSI_PAGINA["${pagina}"]`);
+    for (const pagina of Object.keys(AREE_PAGINA)) {
+      expect(app, pagina).toContain(`AREE_PAGINA["${pagina}"]`);
     }
+    // nessuna guardia con i nomi di prima dei ruoli
+    expect(app).not.toMatch(/<Gated perm="(network|scheduling|centrale|fares|analytics|fleetcare)"/);
   });
 
   it("nessuna voce comincia come i percorsi pubblici dei QR", () => {
@@ -105,8 +120,52 @@ describe("menu e pagine dicono la stessa cosa", () => {
     expect(voci[0]!.href).toBe(CASA);
   });
 
-  it("ogni permesso ha il suo nome nel menu", () => {
-    for (const p of TUTTI) expect(NOMI_PERMESSI[p]).toBeTruthy();
+  it("ogni area ha il suo nome nel menu, e ogni area di una pagina esiste", () => {
+    for (const a of AREE) expect(NOMI_AREE[a]).toBeTruthy();
+    for (const aree of Object.values(AREE_PAGINA)) for (const a of aree) expect(AREE).toContain(a);
+    for (const v of voci) for (const a of v.aree ?? []) expect(AREE).toContain(a);
+  });
+});
+
+describe("il menu dei ruoli aziendali", () => {
+  it("Pianificatore: rete, turni in lettura, tutta la pubblicazione, esercizio e tariffe; niente personale", () => {
+    const m = menu(conRuoli("pianificatore"));
+    expect(Object.keys(m)).toEqual(["Oggi", "Rete e orari", "Turni", "Pubblicazione", "Esercizio", "Tariffe", "Amministrazione"]);
+    expect(m["Pubblicazione"]).toEqual(["Turni al roster", "Orari al pubblico"]);
+    expect(m["Amministrazione"]).toEqual(["Dati e integrazioni", "Sicurezza dell'account"]);
+  });
+
+  it("Ufficio turni: come il Pianificatore senza le tariffe, più il tabellone", () => {
+    const m = menu(conRuoli("ufficio_turni"));
+    expect(Object.keys(m)).toEqual(["Oggi", "Rete e orari", "Turni", "Pubblicazione", "Personale", "Esercizio", "Amministrazione"]);
+    expect(m["Personale"]).toEqual(["Roster", "Anagrafica"]);
+  });
+
+  it("Capo deposito e Centrale: anche la Flotta", () => {
+    for (const r of ["capo_deposito", "centrale_operativa"] as const) {
+      const m = menu(conRuoli(r));
+      expect(Object.keys(m), r).toEqual(["Oggi", "Rete e orari", "Turni", "Pubblicazione", "Personale", "Esercizio", "Flotta", "Amministrazione"]);
+    }
+  });
+
+  it("Officina: l'esercizio e la flotta, nient'altro", () => {
+    const m = menu(conRuoli("officina"));
+    expect(Object.keys(m)).toEqual(["Oggi", "Esercizio", "Flotta", "Amministrazione"]);
+    expect(m["Esercizio"]).toEqual(["Mappa live", "AVM", "Tempi osservati"]);
+  });
+
+  it("Amministrazione: tutto tranne l'Analisi", () => {
+    const m = menu(conRuoli("amministrazione"));
+    expect(Object.keys(m)).toEqual(["Oggi", "Rete e orari", "Turni", "Pubblicazione", "Personale", "Esercizio", "Flotta", "Tariffe", "Amministrazione"]);
+    expect(m["Amministrazione"]).not.toContain("Utenti e accessi");
+  });
+
+  it("nessun ruolo apre l'Analisi né le pagine dell'amministratore di sistema", () => {
+    for (const r of ["pianificatore", "ufficio_turni", "capo_deposito", "centrale_operativa", "officina", "amministrazione"] as const) {
+      const m = menu(conRuoli(r));
+      expect(m["Analisi"], r).toBeUndefined();
+      for (const voce of ["Utenti e accessi", "Parametri di esercizio", "Registro delle modifiche"]) expect(m["Amministrazione"], r).not.toContain(voce);
+    }
   });
 });
 

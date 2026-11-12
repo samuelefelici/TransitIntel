@@ -283,15 +283,3 @@ export function livelloDelMetodo(metodo: string): Livello {
   const m = metodo.toUpperCase();
   return m === "GET" || m === "HEAD" || m === "OPTIONS" ? "L" : "S";
 }
-
-/** Il catalogo per chi assegna i ruoli: aree, ruoli e matrice, con i nomi. */
-export function catalogoDeiRuoli() {
-  return {
-    aree: AREE.map(a => ({ id: a, nome: NOMI_AREE[a], descrizione: DESCRIZIONI_AREE[a] })),
-    ruoli: RUOLI.map(r => ({
-      id: r, nome: NOMI_RUOLI[r], descrizione: DESCRIZIONI_RUOLI[r],
-      diritti: Object.fromEntries(AREE.map(a => [a, MATRICE[r][a] ?? null])) as Record<Area, Livello | null>,
-      fleetcareSuggerito: RUOLO_FLEETCARE_SUGGERITO[r] ?? null,
-    })),
-  };
-}
