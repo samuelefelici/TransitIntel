@@ -69,7 +69,13 @@ su main non si tocca più.
   un secondo file, perché è DDL e come `cerbero_owner` non passa. Si tolgono
   solo le righe che nessuna richiesta può più leggere, e quante sono si scrive
   nel log con un `RAISE WARNING`. Se togliere una riga cambia quello che l'app
-  calcola, non lo decide la migrazione.
+  calcola, non lo decide la migrazione: in quel caso (0013, la categoria delle
+  corse) la migrazione guarda prima, e se trova righe senza padre **non mette
+  il vincolo e non fallisce**: lo scrive nel log con un `RAISE WARNING`, e il
+  vincolo si mette a mano dopo aver sistemato i dati dall'app (il comando sta
+  in DEPLOY). Va bene solo se l'app funziona uguale con e senza il vincolo, e
+  se un test prova tutti e due i casi
+  (`lib/db/tests/chiave-categoria-rimandata.test.sql`).
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
 - **Chi possiede cosa (PR 2.8).** Le tabelle, le viste e le sequenze di

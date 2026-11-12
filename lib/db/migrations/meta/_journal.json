@@ -92,6 +92,13 @@
       "when": 1794490412222,
       "tag": "0012_depositi_degli_utenti",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794500733891,
+      "tag": "0013_chiave_esterna_sulla_categoria",
+      "breakpoints": true
     }
   ]
 }
