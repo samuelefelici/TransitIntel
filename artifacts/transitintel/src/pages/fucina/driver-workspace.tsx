@@ -62,10 +62,11 @@ import {
   mkRipresaFromTrips, normalizeDriverShiftsResult, VincoliReport, SwapDialog, applyPieceToShift, type SwapProposal,
 } from "@/pages/fucina/turni-guida/bdsi-tools";
 import { Bds5Report } from "@/pages/fucina/turni-guida/bds5-costs";
-import { AMBITO_VUOTO, configPerIlSolver, scelteAttive, type AmbitoDelCalcolo } from "@/pages/fucina/turni-guida/config-solver";
+import { AMBITO_VUOTO, conAutoAziendali, configPerIlSolver, scelteAttive, type AmbitoDelCalcolo } from "@/pages/fucina/turni-guida/config-solver";
 import { AmbitoDelCalcoloPanel, type ClusterDelCalcolo } from "@/pages/fucina/turni-guida/AmbitoDelCalcoloPanel";
 import { DssCompareDialog } from "@/pages/fucina/turni-guida/DssCompareDialog";
 import { LetturaDelRisultato, CoperturaTurniMacchina } from "@/pages/fucina/turni-guida/lettura-risultato";
+import { AlgoGuide, CSP_GUIDE } from "@/components/StepGuide";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/fucina/turni-guida/constants";
 import { AddDriverShiftDialog } from "@/pages/fucina/turni-guida/AddDriverShiftDialog";
@@ -374,14 +375,22 @@ export default function DriverWorkspace({
         }
       } catch { /* best-effort */ }
       setServiceType(baseSt); // applica preset regole del tipo servizio
-      // profilo-regole salvato → vince
+      // auto aziendali: si parte dal parametro dell'azienda (Amministrazione → Parametri), non dal 5 fisso
+      let autoAziendali: unknown = null;
+      try {
+        const d = await fetch(`${getApiBase()}/api/settings/company-cars`).then((r) => (r.ok ? r.json() : null));
+        autoAziendali = d?.companyCars;
+        setOperatorConfig((c) => conAutoAziendali(c, autoAziendali));
+      } catch { /* resta il numero di partenza */ }
+      // profilo-regole salvato → vince (anche sulle auto, se dice il suo numero)
       try {
         const r = await resolveRuleProfile(projectIdFromUrl);
         if (r?.config) {
           const st = (r.config.bds?.serviceType as ServiceType) ?? baseSt;
           const base = buildDefaultConfig(st);
           setServiceTypeState(st);
-          setOperatorConfig({ ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig);
+          const conProfilo = { ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig;
+          setOperatorConfig(conAutoAziendali(conProfilo, autoAziendali, r.config.bds?.optimizer?.maxCompanyCars));
         }
       } catch { /* nessun profilo → resta sul tipo servizio ereditato */ }
     })();
@@ -1697,6 +1706,11 @@ export default function DriverWorkspace({
                   Verifica i parametri principali prima di lanciare l'ottimizzazione.
                 </p>
               </div>
+            </div>
+
+            <div className="mb-5">
+              <AlgoGuide titolo="Come funziona il CSP (turni guida), passo per passo" accent="purple"
+                sottotitolo="dai blocchi vettura ai turni legali RD 131/1938" steps={CSP_GUIDE} />
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">

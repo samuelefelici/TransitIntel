@@ -87,3 +87,17 @@ export function configPerIlSolver(base: OperatorConfig, ambito: AmbitoDelCalcolo
   }
   return config;
 }
+
+/**
+ * Le auto aziendali di partenza: il parametro dell'azienda (Amministrazione →
+ * Parametri) al posto del 5 fisso, a meno che il profilo di regole salvato non
+ * dica il suo numero. Un parametro che non è un numero fra 0 e 50 non cambia niente.
+ */
+export function conAutoAziendali(config: OperatorConfig, parametro: unknown, delProfilo?: unknown): OperatorConfig {
+  if (typeof delProfilo === "number") return config;
+  if (typeof parametro !== "number" || !Number.isInteger(parametro) || parametro < 0 || parametro > 50) return config;
+  return {
+    ...config,
+    bds: { ...(config.bds ?? {}), optimizer: { ...(config.bds?.optimizer ?? {}), maxCompanyCars: parametro } },
+  };
+}

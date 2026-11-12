@@ -124,7 +124,7 @@ describe("la voce accesa e le pagine di lavoro", () => {
 
   it("le pagine dentro la Fucina accendono Progetti di esercizio", () => {
     expect(voceAttiva("/fucina/abc/vehicles/def", tutte)).toBe("/fucina/esercizio");
-    expect(voceAttiva("/driver-shifts/abc", tutte)).toBe("/fucina/esercizio");
+    expect(voceAttiva("/fucina/abc/drivers/def", tutte)).toBe("/fucina/esercizio");
   });
 
   it("una pagina fuori dal menu non accende niente", () => {

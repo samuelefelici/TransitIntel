@@ -1,5 +1,3 @@
-import React from "react";
-import { Clock, Coffee, Timer, Zap, AlertTriangle } from "lucide-react";
 import type { DriverShiftType, DriverActivityType } from "./types";
 
 /* ═══════════════════════════════════════════════════════════════
@@ -20,14 +18,6 @@ export const TYPE_COLORS: Record<DriverShiftType, string> = {
   spezzato: "#ef4444",
   supplemento: "#8b5cf6",
   invalido: "#6b7280",
-};
-
-export const TYPE_ICONS: Record<DriverShiftType, React.ReactNode> = {
-  intero: <Clock className="w-3.5 h-3.5" />,
-  semiunico: <Coffee className="w-3.5 h-3.5" />,
-  spezzato: <Timer className="w-3.5 h-3.5" />,
-  supplemento: <Zap className="w-3.5 h-3.5" />,
-  invalido: <AlertTriangle className="w-3.5 h-3.5" />,
 };
 
 export const TYPE_DESC: Record<DriverShiftType, string> = {

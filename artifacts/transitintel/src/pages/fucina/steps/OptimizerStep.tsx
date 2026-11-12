@@ -38,6 +38,7 @@ import {
 } from "@/lib/calcolo-veicoli";
 import { ricorda, richiama, dimenticaSe, chiaveFucina } from "@/lib/memoria-calcoli";
 import { AlgoGuide, HelpTip, VSP_GUIDE, VCSP_GUIDE } from "@/components/StepGuide";
+import { paginaTurniGuida } from "@/lib/turni-guida-indirizzo";
 // Anteprima turni guida VCSP (gantt read-only, stessi adapter del workspace TG)
 import InteractiveGantt, { type GanttBar, type GanttRow } from "@/components/InteractiveGantt";
 import { driverShiftsToRows, driverShiftsToBars, driverShiftsBoundsHours } from "@/pages/fucina/turni-guida/gantt-adapters";
@@ -2159,7 +2160,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <div className="flex items-center gap-2 text-xs text-green-400 flex-wrap">
                       <CheckCircle2 className="w-4 h-4 shrink-0" />
                       <span className="flex-1 min-w-0">👥 Turni guida salvati</span>
-                      <a href={`/driver-shifts/${savedScenarioId}?dss=${savedDssId}`}
+                      <a href={paginaTurniGuida(projectId, savedScenarioId, savedDssId)}
                         className="text-[11px] px-2.5 py-1 rounded-lg border border-purple-500/30 bg-purple-500/8 text-purple-300 hover:bg-purple-500/15 transition-all">
                         Apri Workspace Turni Guida
                       </a>

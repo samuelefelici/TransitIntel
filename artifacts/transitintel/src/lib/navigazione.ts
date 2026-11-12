@@ -64,7 +64,6 @@ export const PERMESSI_PAGINA = {
   "/misto": ["scheduling"],
   /* «I miei calcoli»: turni macchina, turni guida, sincronizzazioni, giri di Argos */
   "/calcoli": ["scheduling"],
-  "/driver-shifts": ["scheduling"],
   "/roster/pubblicazione": ["scheduling"],
   /* gli orari al pubblico si leggono dal programma di Planning Studio */
   "/timetables": ["network"],
@@ -108,7 +107,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
     voci: [
       {
         href: "/fucina/esercizio", etichetta: "Progetti di esercizio", icona: ClipboardList, descrizione: "Turni macchina e turni guida",
-        permessi: PERMESSI_PAGINA["/fucina/esercizio"], ancheSu: ["/fucina", "/driver-shifts", "/misto"],
+        permessi: PERMESSI_PAGINA["/fucina/esercizio"], ancheSu: ["/fucina", "/misto"],
       },
       { href: "/calcoli", etichetta: "I miei calcoli", icona: Cpu, descrizione: "In corso e finiti, anche a pagina chiusa", permessi: PERMESSI_PAGINA["/calcoli"] },
     ],
@@ -205,7 +204,7 @@ export function voceAttiva(location: string, sezioni: readonly SezioneMenu[]): s
 
 /** Le pagine di lavoro a tutto schermo: qui il menu si può nascondere del tutto. */
 export function paginaDiLavoro(location: string): boolean {
-  return /^\/planning-studio\/[^/]+/.test(location) || sotto(location, "/fucina") || sotto(location, "/driver-shifts");
+  return /^\/planning-studio\/[^/]+/.test(location) || sotto(location, "/fucina");
 }
 
 /** Le pagine delle tariffe hanno la loro tinta (index.css, .fares-zone). */

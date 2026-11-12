@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { OperatorConfig } from "@/hooks/use-crew-optimization";
 import { bds5ToSolverConfig, EMPTY_BDS5, type Bds5Config } from "./bds5-config";
 import {
-  AMBITO_VUOTO, clusterDaMandare, configPerIlSolver, scelteAttive, vincoloAttivo,
+  AMBITO_VUOTO, clusterDaMandare, conAutoAziendali, configPerIlSolver, scelteAttive, vincoloAttivo,
   type AmbitoDelCalcolo,
 } from "./config-solver";
 import type { VincoloGlobale } from "./types";
@@ -126,5 +126,25 @@ describe("scelteAttive", () => {
     expect(scelteAttive(ambito({ vincoliGlobali: [{ tipo: "numerico", tipologie: [] }] }))).toBe(0);
     expect(scelteAttive(ambito({ bds5: EMPTY_BDS5 }))).toBe(0);
     expect(scelteAttive(ambito({ clusterScelti: ["a"], vincoliGlobali: [VINCOLO], bds5: COSTI }))).toBe(3);
+  });
+});
+
+describe("conAutoAziendali", () => {
+  it("mette il parametro dell'azienda al posto del numero di partenza", () => {
+    const c = conAutoAziendali(BASE, 8);
+    expect(c.bds?.optimizer).toEqual({ maxCompanyCars: 8, minWorkPerDuty: 360 });
+    expect(c.bds?.cuts).toBe(BASE.bds?.cuts);
+    expect(BASE.bds?.optimizer?.maxCompanyCars).toBe(4);
+  });
+  it("se il profilo di regole dice il suo numero, vale quello", () => {
+    expect(conAutoAziendali(BASE, 8, 4)).toBe(BASE);
+    expect(conAutoAziendali(BASE, 8, 0)).toBe(BASE);
+  });
+  it("un parametro che non è un numero fra 0 e 50 non cambia niente", () => {
+    for (const no of [null, undefined, "8", 7.5, -1, 51, NaN]) expect(conAutoAziendali(BASE, no)).toBe(BASE);
+    expect(conAutoAziendali(BASE, 0).bds?.optimizer?.maxCompanyCars).toBe(0);
+  });
+  it("funziona anche senza bds", () => {
+    expect(conAutoAziendali({ solverIntensity: 1 }, 3)).toEqual({ solverIntensity: 1, bds: { optimizer: { maxCompanyCars: 3 } } });
   });
 });

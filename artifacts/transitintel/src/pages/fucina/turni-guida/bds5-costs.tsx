@@ -8,7 +8,7 @@ import React, { useState } from "react";
 import { Coins, X } from "lucide-react";
 
 import {
-  bds5ToSolverConfig, type Bds5Config, type Bds5Quadratico, type Bds5Scalino,
+  bds5ToSolverConfig, type Bds5Config, type Bds5Quadratico,
 } from "./bds5-config";
 
 export { bds5ToSolverConfig, EMPTY_BDS5 } from "./bds5-config";

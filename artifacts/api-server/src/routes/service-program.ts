@@ -2031,14 +2031,17 @@ router.get("/service-program/scenarios/:id", async (req, res) => {
     const [row] = await db.select().from(serviceProgramScenarios)
       .where(eq(serviceProgramScenarios.id, req.params.id));
     if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
-    // Colonne additive (fuori dallo schema drizzle): depot_id + depots (multi-deposito)
+    // Colonne fuori dallo schema drizzle: depot_id + depots (multi-deposito) e il
+    // progetto dello scenario (serve a chi arriva con il solo id dello scenario,
+    // per aprire la pagina giusta della Fucina)
     let extra: Record<string, unknown> = {};
     try {
       const r = await db.execute<any>(sql`
-        SELECT depot_id AS "depotId", depots FROM service_program_scenarios WHERE id = ${req.params.id}::uuid
+        SELECT depot_id AS "depotId", depots, project_id::text AS "projectId"
+          FROM service_program_scenarios WHERE id = ${req.params.id}::uuid
       `);
-      if (r.rows[0]) extra = { depotId: r.rows[0].depotId ?? null, depots: r.rows[0].depots ?? null };
-    } catch { /* colonne non ancora presenti su installazioni vecchie */ }
+      if (r.rows[0]) extra = { depotId: r.rows[0].depotId ?? null, depots: r.rows[0].depots ?? null, projectId: r.rows[0].projectId ?? null };
+    } catch { /* la lettura in più è un di più: senza, lo scenario si apre lo stesso */ }
     res.json({ ...row, ...extra });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
