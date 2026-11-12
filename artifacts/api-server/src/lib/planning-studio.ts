@@ -805,6 +805,59 @@ router.patch("/planning-studio/projects/:id", async (req, res): Promise<void> =>
   res.json({ project: rowToProject({ ...row, my_role: proj.my_role }) });
 });
 
+/**
+ * Cancella un progetto di Planning Studio e tutte le sue righe. Va chiamata in
+ * una transazione: `ex` è quella transazione.
+ *
+ * Tutte le tabelle con una chiave verso ps_projects l'hanno ON DELETE CASCADE
+ * (lib/db/migrations/meta/catalogo.json): le porta via la DELETE del progetto.
+ * Da sola però non basta. Gli orari (ps_stop_times) e le fermate dei percorsi
+ * (ps_variant_stops) non hanno una chiave verso il progetto: se ne vanno con
+ * la corsa e con il percorso, e intanto puntano alle fermate con ON DELETE
+ * RESTRICT. Nella cascata Postgres toglie le fermate e controlla quel vincolo
+ * quando loro possono esserci ancora (dipende dall'ordine in cui sono nati i
+ * vincoli): 23503.
+ *
+ * Quindi un ordine FISSO: orari e corse; poi fermate dei percorsi e percorsi
+ * (dopo le corse: ps_trips.variant_id è ON DELETE RESTRICT); poi le tre
+ * tabelle senza chiave verso il progetto, che la cascata non vede; poi il
+ * progetto. Nessun nome di tabella letto dal catalogo e nessun tentativo: dopo
+ * un'istruzione fallita la transazione è annullata, e ogni altra risponde
+ * «current transaction is aborted» fino al ROLLBACK.
+ *
+ * ps_day_calendar.day_type_id → ps_day_types è RESTRICT anche lei, ma non
+ * chiede un passo: giorni del calendario e tipi di giorno sono tutti e due
+ * figli diretti del progetto, e la cascata controlla i vincoli dopo averli
+ * tolti entrambi, in qualunque ordine.
+ *
+ * Una tabella nuova di Planning Studio nasce da una migrazione: se porta dati
+ * di un progetto entra in elimina-progetto-db.test.ts (che altrimenti fallisce)
+ * e, se la cascata non basta, qui.
+ */
+export async function cancellaProgetto(
+  ex: { execute: (q: any) => Promise<any> }, projectId: string,
+): Promise<void> {
+  // 1. orari e corse
+  await ex.execute(sql`
+    DELETE FROM ps_stop_times
+     WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${projectId}::uuid)
+  `);
+  await ex.execute(sql`DELETE FROM ps_trips WHERE project_id = ${projectId}::uuid`);
+  // 2. fermate dei percorsi e percorsi
+  await ex.execute(sql`
+    DELETE FROM ps_variant_stops
+     WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${projectId}::uuid)
+  `);
+  await ex.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${projectId}::uuid`);
+  // 3. senza chiave verso ps_projects: la sorveglianza di Argos (il cron
+  //    continuerebbe a girare su un progetto che non c'è) e i link pubblici
+  await ex.execute(sql`DELETE FROM ps_argos_watches WHERE project_id = ${projectId}::uuid`);
+  await ex.execute(sql`DELETE FROM ps_network_shares WHERE project_id = ${projectId}::uuid`);
+  await ex.execute(sql`DELETE FROM ps_timetable_map_shares WHERE project_id = ${projectId}::uuid`);
+  // 4. il progetto, e a cascata tutto il resto
+  await ex.execute(sql`DELETE FROM ps_projects WHERE id = ${projectId}::uuid`);
+}
+
 // DELETE /api/planning-studio/projects/:id (owner, o chiunque se il progetto è ORFANO)
 router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
@@ -822,51 +875,13 @@ router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> =
     }
     req.log?.warn({ projectId: proj.id }, "progetto ORFANO (owner inesistente): eliminazione consentita");
   }
-  // La sola cascata da ps_projects NON basta: tre FK sono ON DELETE RESTRICT
-  // (ps_variant_stops.stop_id, ps_trips.variant_id, ps_stop_times.stop_id) e
-  // Postgres le verifica subito durante la cascata → la DELETE nuda dava 500.
-  // Cancellazione ORDINATA in transazione: prima chi blocca, poi il progetto
-  // (che cascata il resto: routes, stops, calendars, membri, log, ecc.).
   try {
-    await db.transaction(async (tx) => {
-      await tx.execute(sql`
-        DELETE FROM ps_stop_times
-         WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${proj.id}::uuid)
-      `);
-      await tx.execute(sql`DELETE FROM ps_trips WHERE project_id = ${proj.id}::uuid`);
-      await tx.execute(sql`
-        DELETE FROM ps_variant_stops
-         WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${proj.id}::uuid)
-      `);
-      await tx.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${proj.id}::uuid`);
-      // Passata DINAMICA: sui DB storici possono esistere tabelle figlie
-      // fuori dal codice attuale. Trova ogni FK diretta verso ps_projects e
-      // svuota le righe del progetto (2 passate per dipendenze tra figlie).
-      const rFks = await tx.execute<any>(sql`
-        SELECT c.conrelid::regclass::text AS child_table,
-               a.attname AS child_col
-          FROM pg_constraint c
-          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
-         WHERE c.contype = 'f' AND c.confrelid = 'ps_projects'::regclass
-      `);
-      const fkRows: any[] = (rFks as any).rows ?? [];
-      for (let pass = 0; pass < 2; pass++) {
-        for (const fk of fkRows) {
-          try {
-            await tx.execute(sql.raw(
-              `DELETE FROM ${fk.child_table} WHERE ${fk.child_col} = '${proj.id}'`,
-            ));
-          } catch (e: any) {
-            if ((e?.cause ?? e)?.code !== "23503" || pass === 1) throw e;
-            // prima passata: una figlia con RESTRICT verso un'altra figlia — riprova dopo
-          }
-        }
-      }
-      await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${proj.id}::uuid`);
-    });
+    await db.transaction((tx) => cancellaProgetto(tx, proj.id));
   } catch (e: any) {
-    // FK violation (23503): di' QUALE tabella blocca invece del 500 muto —
-    // sui DB storici possono esistere referenze fuori dal codice attuale.
+    // FK violation (23503): di' QUALE tabella blocca invece del 500 muto. Con
+    // l'ordine di cancellaProgetto può bloccare solo una riga che NON è di
+    // questo progetto e punta a una sua fermata, a un suo percorso o a un suo
+    // tipo di giorno. La transazione è annullata: non si è cancellato niente.
     const cause = e?.cause ?? e;
     if (cause?.code === "23503") {
       req.log?.error({ constraint: cause.constraint, table: cause.table, detail: cause.detail },

@@ -871,6 +871,14 @@ jobs:
       # può più creare: la copia è uguale all'originale a meno degli id.
       - name: Duplicazione di un progetto di Planning Studio, senza DDL
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/duplica-progetto-db.test.ts
+      # La cancellazione di un progetto di Planning Studio: un ordine fisso al
+      # posto dell'SQL scritto come testo e dei tentativi dentro una
+      # transazione annullata. Come cerbero_app: una riga in ogni tabella del
+      # progetto, nessuna dopo; una chiave che blocca dà un 409 che dice quale
+      # tabella. Da migratore, in una transazione annullata: i vincoli rinati
+      # nell'ordine sfavorevole fermano la sola cascata, non l'ordine fisso.
+      - name: Cancellazione di un progetto di Planning Studio
+        run: TEST_DATABASE_URL=$PG_APP/vuoto TEST_DATABASE_MIGRATOR_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/elimina-progetto-db.test.ts
       # Il registro delle modifiche (PR 2.10), dall'app: la manutenzione e la
       # verifica sì, anche in parallelo; leggere, cancellare o spegnere no, e
       # nessun DDL (PR 2.16b), tranne la partizione che la manutenzione crea. E
