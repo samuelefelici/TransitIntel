@@ -2742,16 +2742,18 @@ export default function VehicleWorkspace({
                     : " I turni bloccati col lucchetto restano com'è."}
                 </span>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={riallineo || reoptimizing || !result}
-                onClick={() => { void riallinea(); }}
-                className="border-orange-500/50 text-orange-200 hover:bg-orange-500/15 h-7 text-[11px] shrink-0"
-              >
-                {riallineo ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
-                {quadroProgetto?.feedSuperato ? "Sincronizza e ri-ottimizza" : "Ri-ottimizza"}
-              </Button>
+              <SeScrive>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={riallineo || reoptimizing || !result}
+                  onClick={() => { void riallinea(); }}
+                  className="border-orange-500/50 text-orange-200 hover:bg-orange-500/15 h-7 text-[11px] shrink-0"
+                >
+                  {riallineo ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                  {quadroProgetto?.feedSuperato ? "Sincronizza e ri-ottimizza" : "Ri-ottimizza"}
+                </Button>
+              </SeScrive>
             </div>
           )}
           <div className="flex-1 min-h-0">

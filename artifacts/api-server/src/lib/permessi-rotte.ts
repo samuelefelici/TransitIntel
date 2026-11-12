@@ -114,10 +114,12 @@ const LETTURE_CONDIVISE: Array<[string | RegExp, Area[]]> = [
 ];
 
 /**
- * Richieste che non sono GET ma calcolano o cercano senza scrivere niente:
- * chi ha la sola lettura sull'area le può fare. Elenco corto e rivisto a mano,
- * handler per handler: una richiesta che manca qui chiede la scrittura (si
- * sbaglia dalla parte chiusa). Il test controlla che ognuna sia una rotta vera.
+ * Richieste che non sono GET ma calcolano, cercano o leggono senza scrivere
+ * niente: chi ha la sola lettura sull'area le può fare. Elenco corto e rivisto
+ * a mano, handler per handler: una richiesta che manca qui chiede la scrittura
+ * (si sbaglia dalla parte chiusa). Il test controlla che ognuna sia una rotta
+ * vera. Il percorso è quello della rotta, coi suoi parametri (`:id`): un
+ * parametro vale un solo pezzo di percorso.
  */
 export const CALCOLANO_SENZA_SCRIVERE: ReadonlyArray<readonly [string, string]> = [
   // quali nodi toccano le linee scelte (una ricerca)
@@ -139,7 +141,18 @@ export const CALCOLANO_SENZA_SCRIVERE: ReadonlyArray<readonly [string, string]> 
   // le domande ad Argos: quello che Argos fa lo fa con i diritti di chi chiede
   ["POST", "/ai/argos/chat"],
   ["POST", "/ai/argos/agent/chat"],
+  // letture di molte corse insieme: sono POST solo perché l'elenco delle corse
+  // non sta in un indirizzo. Le usano la tabella Corse, i quadri orari, le
+  // percorrenze e la scheda del turno guida: senza, chi legge le vede vuote.
+  ["POST", "/planning-studio/projects/:id/trips/validity-bulk"],
+  ["POST", "/planning-studio/projects/:id/stop-times/bulk"],
 ];
+
+/** Le stesse, pronte per il confronto: ogni `:parametro` è un pezzo di percorso qualunque. */
+const SENZA_SCRIVERE: ReadonlyArray<readonly [string, RegExp]> = CALCOLANO_SENZA_SCRIVERE.map(([metodo, percorso]) => [
+  metodo,
+  new RegExp("^" + percorso.split("/").map(pezzo => (pezzo.startsWith(":") ? "[^/]+" : pezzo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))).join("/") + "$"),
+]);
 
 /**
  * Prefissi solo dell'admin, per scelta: chi non è admin prende 403 «Solo admin»
@@ -173,7 +186,7 @@ export function livelloPerRichiesta(metodo: string, path: string): Livello {
   const base = livelloDelMetodo(metodo);
   if (base === "L") return "L";
   const m = metodo.toUpperCase(), p = path.toLowerCase();
-  return CALCOLANO_SENZA_SCRIVERE.some(([mm, pp]) => mm === m && pp === p) ? "L" : "S";
+  return SENZA_SCRIVERE.some(([mm, pp]) => mm === m && pp.test(p)) ? "L" : "S";
 }
 
 /**

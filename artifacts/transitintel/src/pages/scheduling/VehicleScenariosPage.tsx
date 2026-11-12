@@ -331,7 +331,7 @@ export default function VehicleScenariosPage() {
                     </button>
                   )}
                   {isOwner && (
-                    <SeScrive>
+                    <SeScrive nascosto>
                       <button
                         onClick={(e) => { e.stopPropagation(); if (s.isOperational) return; setDeleteTarget(s); setDeleteAck(false); }}
                         disabled={s.isOperational}

@@ -339,7 +339,7 @@ export default function DriverScenariosPage() {
                               </button>
                             )}
                             {isOwner && (
-                              <SeScrive>
+                              <SeScrive nascosto>
                                 <button
                                   onClick={(e) => { e.stopPropagation(); setDeleteTarget(d); setDeleteAck(false); }}
                                   title="Elimina scenario"

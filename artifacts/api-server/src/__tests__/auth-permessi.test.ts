@@ -383,6 +383,26 @@ describe("ruoli aziendali: chi legge e chi scrive", () => {
     expect(verifica("/ai/argos/agent/goals", ufficioTurni, "POST")).toBe(403);
   });
 
+  it("le letture di molte corse insieme sono POST, ma restano letture", () => {
+    const P = "/planning-studio/projects/6ae58d5c-8687-4645-9401-9ef6fb8cbf6a";
+    // l'ufficio turni legge la rete: tabella Corse, quadri orari, scheda del turno guida
+    expect(verifica(`${P}/trips/validity-bulk`, ufficioTurni, "POST")).toBe("passa");
+    expect(verifica(`${P}/stop-times/bulk`, ufficioTurni, "POST")).toBe("passa");
+    expect(verifica(`${P.toUpperCase()}/Stop-Times/Bulk`, capoDeposito, "POST")).toBe("passa");
+    // chi non ha la rete no
+    expect(verifica(`${P}/stop-times/bulk`, officina, "POST")).toBe(403);
+    // il parametro vale un solo pezzo: niente percorsi più lunghi o più corti, né altri metodi
+    expect(verifica(`${P}/altro/stop-times/bulk`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica("/planning-studio/projects/stop-times/bulk", ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/stop-times/bulk/x`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/stop-times/bulk`, ufficioTurni, "PUT")).toBe(403);
+    // e le scritture vicine restano scritture
+    expect(verifica(`${P}/trips/11111111-1111-4111-8111-111111111111/shift`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/trips/11111111-1111-4111-8111-111111111111/stop-times`, ufficioTurni, "PUT")).toBe(403);
+    expect(verifica(`${P}/trips/bulk-shift`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/trips/validity-bulk`, pianificatore, "POST")).toBe("passa");
+  });
+
   it("una maiuscola nel percorso non trasforma una scrittura in un calcolo, né salta il controllo", () => {
     expect(verifica("/Driver-Shifts/Tools/Validate", pianificatore, "POST")).toBe("passa");
     expect(verifica("/SERVICE-PROGRAM/CPSAT", pianificatore, "POST")).toBe(403);
