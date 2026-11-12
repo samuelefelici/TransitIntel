@@ -85,6 +85,13 @@
       "when": 1794479936179,
       "tag": "0011_chiavi_esterne_convalida",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794490412222,
+      "tag": "0012_depositi_degli_utenti",
+      "breakpoints": true
     }
   ]
 }

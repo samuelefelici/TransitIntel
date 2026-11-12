@@ -56,6 +56,7 @@ import { esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-e
 import { ErroreXlsx } from "../lib/xlsx-leggi";
 import { datiProvaAttivi } from "../lib/dati-prova";
 import { legaContesto } from "../lib/contesto-http";
+import { controlloDepositi, fuoriDaiDepositi, limiteDi } from "../lib/roster-limite-depositi";
 import { conContesto } from "@workspace/db/contesto";
 
 const router: IRouter = Router();
@@ -163,6 +164,32 @@ function controllaScrittura(req: Request, fittizio: boolean, chiavi: string[]): 
   if (fuori.length) throw new Rifiuto(403, `Senza la scrittura su «Personale» non si possono scrivere: ${fuori.join(", ")}`);
 }
 
+/**
+ * Chi scrive i conducenti fittizi col solo roster e ha dei depositi li scrive
+ * solo nei suoi (PR 2.14c, lib/roster-limite-depositi.ts). Chi scrive il
+ * «Personale» non ha questo limite: i dati del personale sono un'altra area.
+ */
+async function richiedeDeposito(req: Request, ex: Ex, id: string): Promise<void> {
+  if (scriveDatiPersonali(req)) return;
+  const motivo = await fuoriDaiDepositi(req, ex, [id]);
+  if (motivo) throw new Rifiuto(403, motivo, { solaLettura: true });
+}
+
+/**
+ * Il deposito scritto nella scheda. Si guarda quello chiesto, non quello che
+ * risulta sul conducente: il deposito ha una decorrenza, e sulla riga arriva
+ * solo dopo (sincronizzaCorrenti), o in un altro giorno. Chi ha dei depositi
+ * non mette un conducente in un deposito che non è fra i suoi, e non glielo
+ * toglie; a un conducente nuovo deve darne uno dei suoi, altrimenti resterebbe
+ * un conducente che nessun capo deposito può toccare.
+ */
+async function richiedeDepositoChiesto(req: Request, ex: Ex, chiesto: string | null | undefined, nuovo: boolean): Promise<void> {
+  if (scriveDatiPersonali(req)) return;
+  if (chiesto === undefined && !nuovo) return;
+  const c = await controlloDepositi(req, ex);
+  if (c && !c.scrive(chiesto ?? null)) throw new Rifiuto(403, c.motivo(chiesto ?? null), { solaLettura: true });
+}
+
 interface Risultato { conducente: Conducente | null; avvisi: string[]; daRigenerare: string[] }
 
 async function rispostaScrittura(req: Request, id: string, avvisi: string[], daRigenerare: Set<string>): Promise<Risultato> {
@@ -182,6 +209,7 @@ router.post("/roster/drivers", async (req, res): Promise<void> => {
       const ex = tx as unknown as Ex;
       const nome = [corpo.variazioni.cognome, corpo.variazioni.nome].filter(Boolean).join(" ");
       if (!nome) throw new Rifiuto(400, "Servono cognome o nome", { campi: { cognome: "obbligatorio" } });
+      await richiedeDepositoChiesto(req, ex, corpo.variazioni.deposito, true);
       id = righe(await ex.execute(sql`
         INSERT INTO roster_drivers (name, is_fictitious, versione, updated_at)
         VALUES (${nome}, ${fittizio}, 0, now()) RETURNING id`))[0].id;
@@ -208,6 +236,8 @@ router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
       const riga = righe(await ex.execute(sql`SELECT * FROM roster_drivers WHERE id = ${id}::uuid FOR UPDATE`))[0];
       if (!riga) throw new Rifiuto(404, "Conducente non trovato");
       controllaScrittura(req, !!riga.is_fictitious, corpo.chiavi);
+      await richiedeDeposito(req, ex, id);
+      await richiedeDepositoChiesto(req, ex, corpo.variazioni.deposito, false);
       if (corpo.versione !== undefined && Number(riga.versione) !== corpo.versione) {
         throw new Rifiuto(409, "La scheda è stata cambiata da qualcun altro mentre la modificavi: ricaricala", { versione: Number(riga.versione) });
       }
@@ -233,6 +263,7 @@ router.delete("/roster/drivers/:id", async (req, res): Promise<void> => {
       const riga = righe(await ex.execute(sql`SELECT is_fictitious, is_active FROM roster_drivers WHERE id = ${id}::uuid FOR UPDATE`))[0];
       if (!riga) throw new Rifiuto(404, "Conducente non trovato");
       controllaScrittura(req, !!riga.is_fictitious, []);
+      await richiedeDeposito(req, ex, id);
       if (!riga.is_active) return { turniLiberati: 0 };
       const out = await disattivaConducente(ex, id, oggi);
       await registra(ex, { ...utente(req), driverId: id, azione: "disattiva", dettaglio: out });
@@ -267,6 +298,10 @@ router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
     if (!datiProvaAttivi()) { res.status(404).json({ error: "Non trovato" }); return; }
     if (!scriveDatiPersonali(req) && !haDiritto(req, "roster", "S")) richiedePersonale(req);
+    /* nascono in depositi diversi: chi ha dei depositi (e non scrive il «Personale») non li crea */
+    if (!scriveDatiPersonali(req) && limiteDi(req) !== null) {
+      throw new Rifiuto(403, "Sola lettura: i conducenti di prova nascono in tutti i depositi, e tu scrivi solo sui tuoi", { solaLettura: true });
+    }
     const quanti = Math.min(Math.max(Number(req.body?.count) || 30, 1), 200);
     const oggi = oggiRoma();
     const esito = await db.transaction(async (tx) => {

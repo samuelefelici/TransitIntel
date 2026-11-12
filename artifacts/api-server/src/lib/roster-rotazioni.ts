@@ -18,6 +18,8 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { eseguiPython, jsonDallUscita } from "./lavori/python";
 import { richiedeDiritto } from "./auth";
+import { controlloDepositi, fuoriDaiDepositi } from "./roster-limite-depositi";
+import type { Ex } from "./anagrafica-store";
 import { CODICI_SANITARI } from "./roster-voci";
 
 /* Chi ha solo «Personale» legge le rotazioni (le sceglie nella scheda del
@@ -89,6 +91,12 @@ router.delete("/roster/rotazioni-riposi/:id", soloRoster, async (req, res): Prom
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    /* cancellarla toglie la rotazione a tutti i suoi conducenti: chi ha dei
+     * depositi la cancella solo se sono tutti dei suoi (PR 2.14c) */
+    const assegnati = await db.execute<any>(sql`
+      SELECT driver_id::text FROM roster_rotazione_assegnazioni WHERE rotazione_id = ${id}::uuid`);
+    const fuori = await fuoriDaiDepositi(req, db as unknown as Ex, assegnati.rows.map((r: any) => r.driver_id));
+    if (fuori) { res.status(403).json({ error: fuori, solaLettura: true }); return; }
     await db.execute(sql`DELETE FROM roster_rotazioni_riposi WHERE id = ${id}::uuid`);
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
@@ -166,6 +174,13 @@ router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloRoster, async (req, 
         await tx.execute(sql`
           SELECT id FROM roster_drivers WHERE id = ANY(${uuidArrayLiteral(toccati)}::uuid[]) ORDER BY id FOR UPDATE`);
       }
+      /* Chi ha dei depositi cambia la rotazione solo ai conducenti dei suoi
+       * (PR 2.14c). Conta chi cambia davvero: aggiunto, tolto o spostato di
+       * scaglione. La pagina rimanda l'elenco intero, e i conducenti degli
+       * altri depositi che restano dov'erano non sono un cambio. */
+      const cambiati = toccati.filter(d => byDriver.get(d) !== primaMap.get(d));
+      const fuori = await fuoriDaiDepositi(req, tx as unknown as Ex, cambiati);
+      if (fuori) return { stato: 403 as const, errore: fuori };
       const nuovi = [...byDriver.keys()].filter(d => !primaMap.has(d));
       const altrove = nuovi.length ? (await tx.execute<any>(sql`
         SELECT a.driver_id, a.rotazione_id, r.name AS rotazione,
@@ -213,6 +228,7 @@ router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloRoster, async (req, 
       return { stato: 200 as const, daRigenerare: [...daRigenerare], spostati: altrove.length };
     });
     if (esito.stato === 404) { res.status(404).json({ error: "Rotazione non trovata" }); return; }
+    if (esito.stato === 403) { res.status(403).json({ error: esito.errore, solaLettura: true }); return; }
     if (esito.stato === 409) {
       res.status(409).json({
         error: "Alcuni conducenti sono già in un'altra rotazione riposi: confermi lo spostamento?",
@@ -268,18 +284,17 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloRoster, async (req
     // le successive riusano quella salvata, così ripartire da una data diversa
     // non ri-fasa silenziosamente i riposi di tutti.
     let anchorStr: string = rot.rows[0].anchor_date ?? "";
-    if (!anchorStr) {
-      anchorStr = startDate;
-      await db.execute(sql`
-        UPDATE roster_rotazioni_riposi SET anchor_date = ${startDate}::date WHERE id = ${id}::uuid`);
-    }
+    const fissaAncora = !anchorStr;
+    if (fissaAncora) anchorStr = startDate;
+    /* chi ha dei depositi genera e ripulisce solo per i conducenti dei suoi (PR 2.14c) */
+    const controllo = await controlloDepositi(req, db as unknown as Ex);
 
     // Scope = conducenti attivi che rientrano nei filtri categoria/deposito
     // (o tutti se nessun filtro). Le loro voci-rotazione nel range vengono
     // riconciliate. Target = scope ∩ assegnati alla rotazione.
-    const scope = await db.execute<any>(sql`
-      SELECT id, week_index FROM (
-        SELECT d.id,
+    const tutti = await db.execute<any>(sql`
+      SELECT id, week_index, residenza_servizio FROM (
+        SELECT d.id, d.residenza_servizio,
                (SELECT a.week_index FROM roster_rotazione_assegnazioni a
                  WHERE a.rotazione_id = ${id}::uuid AND a.driver_id = d.id) AS week_index
           FROM roster_drivers d
@@ -288,8 +303,18 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloRoster, async (req
            AND (${deposito}::text = '' OR d.residenza_servizio = ${deposito})
       ) s
     `);
+    const scope = { rows: controllo ? tutti.rows.filter((r: any) => controllo.scrive(r.residenza_servizio)) : tutti.rows };
+    /* quanti conducenti restano fuori perché di un altro deposito: la pagina lo dice */
+    const fuoriDeposito = tutti.rows.length - scope.rows.length;
     const scopeIds: string[] = scope.rows.map((r: any) => r.id);
-    if (scopeIds.length === 0) { res.json({ ok: true, drivers: 0, created: 0, cleared: 0 }); return; }
+    /* L'ancora la fissa la prima generazione, come prima. Chi ha dei depositi la
+     * fissa solo se genera davvero per qualcuno dei suoi: altrimenti deciderebbe
+     * la fase dei riposi di tutti senza poter scrivere su nessuno. */
+    if (fissaAncora && (!controllo || scopeIds.length > 0)) {
+      await db.execute(sql`
+        UPDATE roster_rotazioni_riposi SET anchor_date = ${startDate}::date WHERE id = ${id}::uuid`);
+    }
+    if (scopeIds.length === 0) { res.json({ ok: true, drivers: 0, created: 0, cleared: 0, ...(fuoriDeposito ? { fuoriDeposito } : {}) }); return; }
 
     // Range date EFFETTIVO (mai nel passato) + fase dal Lunedì dell'ANCORA.
     const start = new Date(`${effStartStr}T00:00:00Z`);
@@ -338,7 +363,7 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloRoster, async (req
       created += r.rowCount ?? chunk.length;
     }
 
-    res.json({ ok: true, drivers: targets.length, scope: scopeIds.length, created, cleared });
+    res.json({ ok: true, drivers: targets.length, scope: scopeIds.length, created, cleared, ...(fuoriDeposito ? { fuoriDeposito } : {}) });
   } catch (e: any) {
     console.error("[rotazioni.genera-riposi]", e?.message || e);
     res.status(500).json({ error: e?.message || "Errore nella generazione" });

@@ -8,12 +8,14 @@
  *   accesso_di_prima  gli interruttori di prima dei ruoli ancora accesi
  *   dati_sanitari     vede i codici sanitari del roster
  *   analisi           vede l'area Analisi
+ *   depositi          i depositi a cui è limitata la sua scrittura sul roster
+ *                     (migrazione 0012; vuoto = nessun limite)
  *   permissions       NON è una fonte: è la vista che leggono FleetCare e la
  *                     colonna calcolata mfa_obbligatoria. La scrive l'API da
  *                     quello che c'è sopra (interruttoriCompatibili).
  */
 import {
-  accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, interruttoriCompatibili, puo, ruoliValidi,
+  accessoDiPrimaPulito, accessoDiPrimaRidotto, depositiPuliti, dirittiDi, interruttoriCompatibili, puo, ruoliValidi,
   type Diritti, type Interruttore, type InterruttoreDiPrima, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
 
@@ -29,16 +31,18 @@ export interface RigaPermessi {
   accesso_di_prima?: unknown;
   dati_sanitari?: unknown;
   analisi?: unknown;
+  depositi?: unknown;
 }
 
 /** Il profilo di un utente dalla sua riga: quello che non è scritto bene non vale. */
-export function profiloDaRiga(r: RigaPermessi): ProfiloPermessi & { ruoli: RuoloAziendale[]; accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>> } {
+export function profiloDaRiga(r: RigaPermessi): ProfiloPermessi & { ruoli: RuoloAziendale[]; accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>; depositi: string[] } {
   return {
     admin: r.role === "admin",
     ruoli: ruoliValidi(r.ruoli),
     accessoDiPrima: accessoDiPrimaPulito(r.accesso_di_prima),
     datiSanitari: r.dati_sanitari === true,
     analisi: r.analisi === true,
+    depositi: depositiPuliti(r.depositi),
   };
 }
 
@@ -57,6 +61,8 @@ export interface RichiestaPermessi {
   analisi?: boolean;
   /** gli interruttori di prima da tenere accesi: si possono solo togliere */
   accessoDiPrima?: unknown;
+  /** i depositi a cui limitare la scrittura sul roster (vuoto = nessun limite) */
+  depositi?: string[];
 }
 
 /**
@@ -66,6 +72,9 @@ export interface RichiestaPermessi {
  * restano accesi a chi non può più aprire il roster: una capacità che non si
  * può usare tornerebbe attiva da sola il giorno in cui gli si dà un ruolo col
  * roster, senza che nessuno l'abbia deciso.
+ * I depositi invece restano anche a chi perde la scrittura sul roster: sono un
+ * limite, non una capacità, e un limite che torna valido da solo non allarga
+ * l'accesso di nessuno.
  */
 export function permessiDopo(prima: RigaPermessi, richiesta: RichiestaPermessi) {
   const corrente = profiloDaRiga(prima);
@@ -76,6 +85,7 @@ export function permessiDopo(prima: RigaPermessi, richiesta: RichiestaPermessi) 
       ? accessoDiPrimaRidotto(corrente.accessoDiPrima, richiesta.accessoDiPrima) : corrente.accessoDiPrima,
     dati_sanitari: richiesta.datiSanitari ?? corrente.datiSanitari,
     analisi: richiesta.analisi ?? corrente.analisi,
+    depositi: richiesta.depositi !== undefined ? depositiPuliti(richiesta.depositi) : corrente.depositi,
   };
   const { diritti, permissions } = dirittiEVista(profiloDaRiga(dopo));
   if (dopo.role !== "admin" && !puo(diritti, "roster", "L")) dopo.dati_sanitari = false;

@@ -30,7 +30,7 @@
  * (forzatura: chi, quando, quali coppie di turni).
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
@@ -39,6 +39,7 @@ import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
 import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
+import { fuoriDaiDepositi } from "../lib/roster-limite-depositi";
 import { catalogoPer, esitoScrittura, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
@@ -67,6 +68,16 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 // Conducenti, storico, fittizi: routes/anagrafica.ts (montato prima di questo router).
+
+/**
+ * Chi ha dei depositi scrive solo sui conducenti di quelli (PR 2.14c,
+ * lib/roster-limite-depositi.ts). 403 con `solaLettura`: la web mostra
+ * l'avviso unico. Chi non ha limiti non fa nessuna lettura in più.
+ */
+async function richiedeDeposito(req: Request, ex: Ex, conducenti: readonly unknown[]): Promise<void> {
+  const motivo = await fuoriDaiDepositi(req, ex, conducenti);
+  if (motivo) throw new Rifiuto(403, motivo, { solaLettura: true });
+}
 
 /** I depositi dei turni con il loro colore, come li vede l'utente nelle celle. */
 function residenzeDeiTurni(duties: Array<{ residenzaName: string | null; residenzaColor: string | null }>): DepositoColorato[] {
@@ -458,6 +469,7 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       const ex = tx as unknown as Ex;
       await iniziaScrittura(ex);
       const [conducente] = await bloccaConducenti(ex, [driverId]);
+      await richiedeDeposito(req, ex, [driverId]);
       controllaInServizio(conducente, day, personale);
       /* il canale unico: si assegnano solo turni pubblicati quel giorno */
       await controllaPubblicato(ex, day, dssId, dutyCode, "assegna");
@@ -479,6 +491,8 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
          WHERE dss_id = ${dssId}::uuid AND day = ${day}::date AND duty_code = ${dutyCode}
            FOR UPDATE`))[0];
       if (prima?.driver_id === driverId) return { id: prima.id as string, violazioni: [] as Violazione[] };
+      /* il turno è già di un altro conducente: assegnarlo qui glielo toglie, quindi serve scrivere anche sul suo deposito */
+      if (prima?.driver_id) await richiedeDeposito(req, ex, [prima.driver_id]);
       const violazioni = await violazioniDeiCambi(ex, [
         { id: prima?.id ?? null, driverId, day, dssId, dutyCode, snapshot: prima?.snapshot ?? snapshot },
       ], preparato, inSavepoint(tx));
@@ -548,6 +562,8 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
       const ex = tx as unknown as Ex;
       await iniziaScrittura(ex);
       const conducenti = await bloccaConducenti(ex, [aConducente, daConducente]);
+      /* lo scambio tocca il roster di tutti e due: devono essere tutti e due dei depositi di chi scrive */
+      await richiedeDeposito(req, ex, [aConducente, daConducente]);
       const r = righe(await ex.execute(sql`
         SELECT id, driver_id, day::text AS day, dss_id::text, duty_code, snapshot
           FROM roster_assignments
@@ -637,6 +653,7 @@ router.post("/roster/entries", async (req, res): Promise<void> => {
     if (esito === "riservato") {
       res.status(403).json({ error: "Malattia, infortunio e 104 li scrive solo chi ha il permesso Roster: usa «ASS – Assenza»" }); return;
     }
+    await richiedeDeposito(req, db as unknown as Ex, [driverId]);
     const r = await db.execute<any>(sql`
       INSERT INTO roster_entries (driver_id, day, category, code)
       VALUES (${driverId}::uuid, ${day}::date, ${category}, ${code})
@@ -644,16 +661,25 @@ router.post("/roster/entries", async (req, res): Promise<void> => {
       RETURNING id
     `);
     res.status(201).json({ ok: true, id: r.rows[0]?.id });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) {
+    if (e instanceof Rifiuto) { rispondiErrore(res, e, "voce"); return; }
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.delete("/roster/entries/:id", async (req, res): Promise<void> => {
   try {
     const id = String(req.params.id);
     if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
+    /* di chi è la voce: serve solo a chi ha dei depositi, gli altri non leggono niente in più */
+    const voce = righe(await db.execute(sql`SELECT driver_id::text FROM roster_entries WHERE id = ${id}::uuid`))[0];
+    if (voce) await richiedeDeposito(req, db as unknown as Ex, [voce.driver_id]);
     await db.execute(sql`DELETE FROM roster_entries WHERE id = ${id}::uuid`);
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) {
+    if (e instanceof Rifiuto) { rispondiErrore(res, e, "togli voce"); return; }
+    res.status(500).json({ error: e.message });
+  }
 });
 
 router.delete("/roster/assignments/:id", async (req, res): Promise<void> => {
@@ -664,6 +690,8 @@ router.delete("/roster/assignments/:id", async (req, res): Promise<void> => {
     await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
       await iniziaScrittura(ex);
+      const turno = righe(await ex.execute(sql`SELECT driver_id::text FROM roster_assignments WHERE id = ${id}::uuid FOR UPDATE`))[0];
+      if (turno) await richiedeDeposito(req, ex, [turno.driver_id]);
       await ex.execute(sql`DELETE FROM roster_assignments WHERE id = ${id}::uuid`);
     });
     res.json({ ok: true });

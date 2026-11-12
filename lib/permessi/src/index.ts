@@ -283,3 +283,45 @@ export function livelloDelMetodo(metodo: string): Livello {
   const m = metodo.toUpperCase();
   return m === "GET" || m === "HEAD" || m === "OPTIONS" ? "L" : "S";
 }
+
+/* ── I depositi di una persona (PR 2.14c) ─────────────────────────────────── */
+
+/**
+ * La scrittura sul roster si può limitare ai conducenti di alcuni depositi: è
+ * il caso del Capo deposito. Si scelgono utente per utente; **nessun deposito
+ * scelto vuol dire nessun limite**, come prima che il limite esistesse.
+ * Riguarda solo la scrittura sul roster: non quello che si legge, e non la
+ * scrittura sui dati del personale.
+ */
+export const MAX_DEPOSITI_PER_UTENTE = 50;
+
+/** I codici di deposito scritti bene: testo corto, senza doppi, al più MAX_DEPOSITI_PER_UTENTE. */
+export function depositiPuliti(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const v of input) {
+    if (typeof v !== "string") continue;
+    const c = v.trim();
+    if (!c || c.length > 60 || out.includes(c)) continue;
+    out.push(c);
+    if (out.length >= MAX_DEPOSITI_PER_UTENTE) break;
+  }
+  return out;
+}
+
+/** I depositi su cui una persona scrive il roster; `null` = tutti (l'amministratore, o chi non ha limiti). */
+export function limiteDepositi(p: { admin: boolean; depositi?: readonly string[] | null }): readonly string[] | null {
+  if (p.admin) return null;
+  const d = depositiPuliti(p.depositi ?? []);
+  return d.length ? d : null;
+}
+
+/**
+ * Con quel limite, si scrive sul roster di un conducente di quel deposito?
+ * Un conducente senza deposito lo scrive solo chi non ha limiti: altrimenti
+ * basterebbe togliere il deposito a un conducente per renderlo di tutti.
+ */
+export function scriveSulDeposito(limite: readonly string[] | null, codice: string | null | undefined): boolean {
+  if (limite === null) return true;
+  return !!codice && limite.includes(codice);
+}

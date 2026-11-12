@@ -22,8 +22,8 @@ import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import {
-  dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
-  ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, NOMI_AREE,
+  depositiPuliti, dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
+  ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, MAX_DEPOSITI_PER_UTENTE, NOMI_AREE,
   type Area, type Diritti, type InterruttoreDiPrima, type Livello, type Permission, type RuoloAziendale,
 } from "./permessi";
 import { decidi } from "./permessi-rotte";
@@ -57,6 +57,8 @@ export interface AuthUser {
   datiSanitari: boolean;
   /** vede l'area Analisi */
   analisi: boolean;
+  /** i depositi a cui è limitata la sua scrittura sul roster; vuoto = nessun limite (lib/roster-limite-depositi.ts) */
+  depositi: string[];
   /** quello che ne risulta, area per area: è su questo che si decide */
   diritti: Diritti;
   /** la vista di prima (un interruttore = almeno la lettura sulla sua area): la leggono FleetCare e i client di prima */
@@ -442,6 +444,7 @@ export function utenteDaRiga(row: any): AuthUser {
     accessoDiPrima: profilo.accessoDiPrima,
     datiSanitari: profilo.datiSanitari,
     analisi: profilo.analisi,
+    depositi: profilo.depositi,
     ...dirittiEVista(profilo),
     fleetcareRole: row.fleetcare_role ?? "driver",
     active: !!row.active,
@@ -450,7 +453,7 @@ export function utenteDaRiga(row: any): AuthUser {
 
 async function loadUserById(id: string): Promise<UtenteCaricato | null> {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, fleetcare_role, active,
+    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, fleetcare_role, active,
            sessione_versione, mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
@@ -941,7 +944,7 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 // GET /api/admin/users
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, fleetcare_role, active, last_login_at, created_at,
+    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, fleetcare_role, active, last_login_at, created_at,
            mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave,
            /* bloccato: per i codici sbagliati, o per la password da almeno un indirizzo */
            GREATEST(
@@ -973,8 +976,8 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
  * esiste è un errore (non si scarta in silenzio: l'admin crederebbe di averlo
  * dato), e così `permissions`, che mandano i client di prima dei ruoli.
  */
-function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } {
-  const out: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } = {};
+function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown; depositi?: string[] } {
+  const out: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown; depositi?: string[] } = {};
   /* la pagina di prima dei ruoli (rimasta aperta in un browser durante il rilascio) manda gli
    * interruttori: non si scartano in silenzio, altrimenti l'admin crederebbe di averli cambiati */
   if (corpo?.permissions !== undefined) return { errore: "I permessi ora si danno con i ruoli aziendali: ricarica la pagina" };
@@ -990,12 +993,37 @@ function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: Ruol
     out[k] = corpo[k];
   }
   if (corpo?.accessoDiPrima !== undefined) out.accessoDiPrima = corpo.accessoDiPrima;
+  /* i depositi: un elenco di codici. Scritto male è un errore, non «nessun limite» */
+  if (corpo?.depositi !== undefined) {
+    if (!Array.isArray(corpo.depositi) || corpo.depositi.some((d: unknown) => typeof d !== "string" || !d.trim())) {
+      return { errore: "depositi: serve un elenco di codici di deposito" };
+    }
+    if (corpo.depositi.length > MAX_DEPOSITI_PER_UTENTE) return { errore: `depositi: al più ${MAX_DEPOSITI_PER_UTENTE}` };
+    out.depositi = depositiPuliti(corpo.depositi);
+  }
   return out;
 }
 
-const COLONNE_UTENTE = sql.raw("id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions, fleetcare_role, active, created_at"); // scan-ok: testo costante del codice
+/** Un elenco di testi come valore text[]: ogni elemento è un parametro, mai testo dentro l'SQL. */
+const arrayDiTesti = (v: readonly string[]) =>
+  v.length ? sql`ARRAY[${sql.join(v.map(x => sql`${x}`), sql`, `)}]::text[]` : sql`'{}'::text[]`;
 
-// POST /api/admin/users { email, password, fullName, role, ruoli, datiSanitari, analisi, fleetcareRole }
+/**
+ * I depositi chiesti che non sono nel catalogo (public.roster_depositi). Un
+ * codice sbagliato non corrisponderebbe a nessun conducente: la persona
+ * resterebbe limitata a niente, o si crederebbe limitata a un deposito che non
+ * lo è. Si rifiuta, come un ruolo che non esiste.
+ */
+async function depositiSconosciuti(ex: { execute: (q: any) => Promise<any> }, chiesti: readonly string[]): Promise<string[]> {
+  if (!chiesti.length) return [];
+  const r = await ex.execute(sql`SELECT codice FROM roster_depositi`);
+  const noti = new Set<string>(((r as any).rows ?? []).map((x: any) => String(x.codice)));
+  return chiesti.filter(c => !noti.has(c));
+}
+
+const COLONNE_UTENTE = sql.raw("id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, permissions, fleetcare_role, active, created_at"); // scan-ok: testo costante del codice
+
+// POST /api/admin/users { email, password, fullName, role, ruoli, datiSanitari, analisi, depositi, fleetcareRole }
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const { password, fullName, role, fleetcareRole } = req.body || {};
   const chiesti = leggiPermessiRichiesti(req.body);
@@ -1010,7 +1038,10 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   const safeRole = role === "admin" ? "admin" : "user";
   /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima, e
    * senza ruoli non apre nessuna area finché l'amministratore non gliene dà */
-  const nuovo = permessiDopo({ role: "user" }, { role: safeRole, ruoli: chiesti.ruoli ?? [], datiSanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false });
+  const nuovo = permessiDopo({ role: "user" }, {
+    role: safeRole, ruoli: chiesti.ruoli ?? [], datiSanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false,
+    depositi: chiesti.depositi ?? [],
+  });
   const vista = nuovo.permissions;
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
@@ -1018,11 +1049,13 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   try {
     const gia = await db.execute<any>(sql`SELECT 1 FROM users WHERE lower(trim(email)) = ${email} LIMIT 1`);
     if ((gia as any).rows?.length) { res.status(409).json({ error: "Email già registrata" }); return; }
+    const ignoti = await depositiSconosciuti(db, nuovo.depositi);
+    if (ignoti.length) { res.status(400).json({ error: `Deposito sconosciuto: ${ignoti.map(d => d.slice(0, 40)).join(", ")}` }); return; }
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const r = await db.execute(sql`
-      INSERT INTO users (email, password_hash, full_name, role, ruoli, dati_sanitari, analisi, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
+      INSERT INTO users (email, password_hash, full_name, role, ruoli, dati_sanitari, analisi, depositi, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
       VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${pgArray(nuovo.ruoli)}::text[], ${nuovo.dati_sanitari}, ${nuovo.analisi},
-              ${JSON.stringify(vista)}::jsonb, ${safeFleetcareRole}, true, true, true)
+              ${arrayDiTesti(nuovo.depositi)}, ${JSON.stringify(vista)}::jsonb, ${safeFleetcareRole}, true, true, true)
       RETURNING ${COLONNE_UTENTE}
     `);
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
@@ -1039,8 +1072,9 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   }
 });
 
-// PATCH /api/admin/users/:id { fullName?, role?, ruoli?, datiSanitari?, analisi?, accessoDiPrima?, fleetcareRole?, active?, password? }
+// PATCH /api/admin/users/:id { fullName?, role?, ruoli?, datiSanitari?, analisi?, accessoDiPrima?, depositi?, fleetcareRole?, active?, password? }
 // accessoDiPrima: gli interruttori di prima da tenere accesi. Si possono solo togliere.
+// depositi: i codici dei depositi a cui limitare la scrittura sul roster; [] toglie il limite.
 router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const id = String(req.params.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -1048,7 +1082,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   const chiesti = leggiPermessiRichiesti(req.body);
   if ("errore" in chiesti) { res.status(400).json({ error: chiesti.errore }); return; }
   const cambiaPermessi = role !== undefined || chiesti.ruoli !== undefined || chiesti.datiSanitari !== undefined
-    || chiesti.analisi !== undefined || chiesti.accessoDiPrima !== undefined;
+    || chiesti.analisi !== undefined || chiesti.accessoDiPrima !== undefined || chiesti.depositi !== undefined;
   const sets: any[] = [];
   let revoca = false;
   if (fullName !== undefined) sets.push(sql`full_name = ${fullName}`);
@@ -1090,17 +1124,24 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   const esito = await db.transaction(async (tx) => {
     /* com'era prima: il registro scrive solo quello che cambia davvero */
     const pr = await tx.execute<any>(sql`
-      SELECT role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions, fleetcare_role, full_name, active
+      SELECT role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, permissions, fleetcare_role, full_name, active
         FROM users WHERE id = ${id}::uuid FOR UPDATE`);
     const prima = (pr as any).rows?.[0];
     if (!prima) return null;
     if (cambiaPermessi) {
       /* lo stato di prima con sopra la richiesta, e la vista permissions ricavata da lì (lib/permessi.ts) */
       const dopo = permessiDopo(prima, { role, ...chiesti });
+      /* solo i depositi chiesti adesso: quelli che c'erano già non si ricontrollano
+       * (un deposito tolto dal catalogo non deve impedire di cambiare un ruolo) */
+      if (chiesti.depositi !== undefined) {
+        const ignoti = await depositiSconosciuti(tx, dopo.depositi);
+        if (ignoti.length) return { errore: `Deposito sconosciuto: ${ignoti.map(d => d.slice(0, 40)).join(", ")}` };
+      }
       sets.push(
         sql`role = ${dopo.role}`, sql`ruoli = ${pgArray(dopo.ruoli)}::text[]`,
         sql`accesso_di_prima = ${JSON.stringify(dopo.accesso_di_prima)}::jsonb`,
         sql`dati_sanitari = ${dopo.dati_sanitari}`, sql`analisi = ${dopo.analisi}`,
+        sql`depositi = ${arrayDiTesti(dopo.depositi)}`,
         sql`permissions = ${JSON.stringify(dopo.permissions)}::jsonb`,
       );
     }
@@ -1110,6 +1151,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
     `);
     return { prima, row: (r as any).rows?.[0] ?? (r as any)[0] };
   });
+  if (esito && "errore" in esito) { res.status(400).json({ error: esito.errore }); return; }
   if (!esito?.row) { res.status(404).json({ error: "Utente non trovato" }); return; }
   const { prima, row } = esito;
   /* la password da ogni indirizzo: sbloccata, o nuova (la provvisoria deve poter entrare) */
