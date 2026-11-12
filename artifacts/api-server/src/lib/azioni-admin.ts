@@ -5,12 +5,19 @@
  * nella forma `admin:<azione> (<email dell'admin>)`.
  *
  * Minimizzazione: del nome si scrive solo che è cambiato, mai il valore; dei
- * permessi solo i nomi dei moduli. Password e segreti non entrano mai.
+ * permessi solo i nomi dei ruoli e degli interruttori. Password e segreti non
+ * entrano mai. La colonna permissions non si guarda: è la vista che l'API
+ * ricava dai ruoli, e cambia solo insieme a loro.
  */
 
 export interface StatoUtente {
   role?: string | null;
-  permissions?: Record<string, unknown> | null;
+  /** i ruoli aziendali */
+  ruoli?: readonly string[] | null;
+  /** gli interruttori di prima dei ruoli ancora accesi */
+  accesso_di_prima?: Record<string, unknown> | null;
+  dati_sanitari?: boolean | null;
+  analisi?: boolean | null;
   fleetcare_role?: string | null;
   full_name?: string | null;
   active?: boolean | null;
@@ -22,25 +29,33 @@ export interface Richiesta {
   sblocca?: boolean;
 }
 
-const moduliAccesi = (p: StatoUtente["permissions"]): Set<string> =>
+const accesi = (p: StatoUtente["accesso_di_prima"]): Set<string> =>
   new Set(Object.entries(p ?? {}).filter(([, v]) => v === true).map(([k]) => k));
+const ruoliDi = (u: StatoUtente): Set<string> => new Set((u.ruoli ?? []).filter((r) => typeof r === "string"));
+const differenze = (prima: Set<string>, dopo: Set<string>): string[] => [
+  ...[...dopo].filter((m) => !prima.has(m)).sort().map((m) => `+${m}`),
+  ...[...prima].filter((m) => !dopo.has(m)).sort().map((m) => `-${m}`),
+];
 
 /** Le azioni, senza il prefisso `admin:` e senza l'email dell'admin. */
 export function azioniAdmin(prima: StatoUtente | null, dopo: StatoUtente | null, richiesta: Richiesta = {}): string[] {
   if (!prima && dopo) {
-    const moduli = [...moduliAccesi(dopo.permissions)].sort();
-    return [`utente_creato ${dopo.role === "admin" ? "admin" : "user"}${moduli.length ? ` ${moduli.join(",")}` : ""}`];
+    const dati = [...ruoliDi(dopo)].sort();
+    if (dopo.dati_sanitari === true) dati.push("+dati_sanitari");
+    if (dopo.analisi === true) dati.push("+analisi");
+    return [`utente_creato ${dopo.role === "admin" ? "admin" : "user"}${dati.length ? ` ${dati.join(",")}` : ""}`];
   }
   if (prima && !dopo) return ["utente_eliminato"];
   if (!prima || !dopo) return [];
 
   const azioni: string[] = [];
   if ((prima.role ?? "user") !== (dopo.role ?? "user")) azioni.push(`ruolo_cambiato ${prima.role ?? "user"}→${dopo.role ?? "user"}`);
-  const p = moduliAccesi(prima.permissions);
-  const d = moduliAccesi(dopo.permissions);
-  const aggiunti = [...d].filter((m) => !p.has(m)).sort().map((m) => `+${m}`);
-  const tolti = [...p].filter((m) => !d.has(m)).sort().map((m) => `-${m}`);
-  if (aggiunti.length || tolti.length) azioni.push(`permessi_cambiati ${[...aggiunti, ...tolti].join(" ")}`);
+  const ruoli = differenze(ruoliDi(prima), ruoliDi(dopo));
+  if (ruoli.length) azioni.push(`ruoli_aziendali_cambiati ${ruoli.join(" ")}`);
+  const diPrima = differenze(accesi(prima.accesso_di_prima), accesi(dopo.accesso_di_prima));
+  if (diPrima.length) azioni.push(`accesso_di_prima_cambiato ${diPrima.join(" ")}`);
+  if ((prima.dati_sanitari === true) !== (dopo.dati_sanitari === true)) azioni.push(dopo.dati_sanitari === true ? "dati_sanitari_dati" : "dati_sanitari_tolti");
+  if ((prima.analisi === true) !== (dopo.analisi === true)) azioni.push(dopo.analisi === true ? "analisi_data" : "analisi_tolta");
   if ((prima.fleetcare_role ?? null) !== (dopo.fleetcare_role ?? null)) {
     azioni.push(`ruolo_fleetcare_cambiato ${prima.fleetcare_role ?? "-"}→${dopo.fleetcare_role ?? "-"}`);
   }

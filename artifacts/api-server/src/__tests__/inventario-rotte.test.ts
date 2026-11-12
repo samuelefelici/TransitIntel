@@ -1,6 +1,6 @@
 /**
  * Deny by default: ogni rotta montata dopo il controllo dei permessi deve
- * avere una voce in lib/auth.ts (PERMISSION_BY_PREFIX o LETTURE_CONDIVISE).
+ * avere una voce in lib/permessi-rotte.ts (AREE_PER_PREFISSO o LETTURE_CONDIVISE).
  * Senza voce, chi non è admin prende 403: una rotta nuova dimenticata nella
  * mappa si scopre qui, non in produzione.
  *
@@ -18,7 +18,8 @@ vi.mock("@workspace/db", () => ({
 }));
 
 import router from "../routes";
-import { requireAdmin, requireAuth, requirePermissionByPath, permessoPerPercorso, SOLO_ADMIN } from "../lib/auth";
+import { requireAdmin, requireAuth, requirePermissionByPath } from "../lib/auth";
+import { CALCOLANO_SENZA_SCRIVERE, dirittoPerPercorso, SOLO_ADMIN } from "../lib/permessi-rotte";
 import { ensureTenantMiddleware } from "../lib/tenant";
 import healthRouter from "../routes/health";
 import authRouter from "../lib/auth";
@@ -63,6 +64,7 @@ const PRIMA_DEL_LOGIN = [
   // accesso e account: ogni rotta autenticata controlla da sé chi la chiama
   "POST /auth/login", "POST /auth/login/mfa", "POST /auth/logout", "GET /auth/me", "POST /auth/fleetcare-sso",
   "GET /users/lookup", "GET /admin/users", "POST /admin/users", "PATCH /admin/users/:id", "DELETE /admin/users/:id",
+  "GET /admin/ruoli",
   "POST /auth/password", "POST /auth/mfa/attiva", "POST /auth/mfa/conferma", "POST /auth/mfa/disattiva",
   "POST /auth/mfa/codici-recupero", "POST /auth/mfa/reimposta", "POST /auth/sessioni/chiudi", "GET /admin/accessi",
   // cron col segreto
@@ -115,16 +117,40 @@ describe("inventario delle rotte", () => {
     expect(montaggi).toEqual([]);
   });
 
-  it("ogni rotta dopo il controllo dei permessi ha una voce in lib/auth.ts", () => {
+  it("ogni rotta dopo il controllo dei permessi ha una voce in lib/permessi-rotte.ts", () => {
     const tutte = pila.slice(posPermessi + 1).flatMap((s) => (s.route ? rotte({ stack: [s] }) : rotte(s.handle)));
     expect(tutte.length).toBeGreaterThan(500);
     const scoperte = tutte.filter(({ metodo, percorso }) => {
       const p = percorso.toLowerCase();
       if (SOLO_ADMIN.some((a) => p === a || p.startsWith(a + "/"))) return false;
-      const { condivisa, prefisso } = permessoPerPercorso(metodo, percorso);
-      return !condivisa && !prefisso;
+      const { condivisa, aree } = dirittoPerPercorso(metodo, percorso);
+      return !condivisa && !aree;
     });
     expect(scoperte.map((r) => `${r.metodo} ${r.percorso}`)).toEqual([]);
+  });
+
+  it("le richieste che «calcolano senza scrivere» sono rotte vere, non GET, e con un'area", () => {
+    const tutte = new Set(pila.slice(posPermessi + 1).flatMap((s) => (s.route ? rotte({ stack: [s] }) : rotte(s.handle)))
+      .map((r) => `${r.metodo} ${r.percorso.toLowerCase()}`));
+    for (const [metodo, percorso] of CALCOLANO_SENZA_SCRIVERE) {
+      expect(tutte.has(`${metodo} ${percorso}`), `${metodo} ${percorso}`).toBe(true);
+      expect(["GET", "HEAD"]).not.toContain(metodo);
+      expect(percorso).toBe(percorso.toLowerCase());
+      const d = dirittoPerPercorso(metodo, percorso);
+      expect(d.aree, percorso).not.toBeNull();
+      expect(d.livello, percorso).toBe("L");
+    }
+    // e sono poche: l'elenco si allunga solo guardando l'handler
+    expect(CALCOLANO_SENZA_SCRIVERE.length).toBeLessThanOrEqual(20);
+  });
+
+  it("ogni altra rotta che non è una GET chiede la scrittura", () => {
+    const tutte = pila.slice(posPermessi + 1).flatMap((s) => (s.route ? rotte({ stack: [s] }) : rotte(s.handle)));
+    const calcoli = new Set(CALCOLANO_SENZA_SCRIVERE.map(([m, p]) => `${m} ${p}`));
+    for (const { metodo, percorso } of tutte) {
+      const atteso = metodo === "GET" || metodo === "HEAD" || calcoli.has(`${metodo} ${percorso.toLowerCase()}`) ? "L" : "S";
+      expect(dirittoPerPercorso(metodo, percorso).livello, `${metodo} ${percorso}`).toBe(atteso);
+    }
   });
 
   it("la cron del meteo sta prima del login: si protegge col segreto", () => {

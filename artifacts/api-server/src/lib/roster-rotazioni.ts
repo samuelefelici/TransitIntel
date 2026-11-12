@@ -17,12 +17,13 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { eseguiPython, jsonDallUscita } from "./lavori/python";
-import { requirePermission } from "./auth";
+import { richiedeDiritto } from "./auth";
 import { CODICI_SANITARI } from "./roster-voci";
 
-/* Chi ha solo «personale» legge le rotazioni (le sceglie nella scheda del
- * conducente) ma non le crea, non le cancella e non genera i riposi. */
-const soloRoster = requirePermission("roster");
+/* Chi ha solo «Personale» legge le rotazioni (le sceglie nella scheda del
+ * conducente) ma non le crea, non le cancella e non genera i riposi: per
+ * quello serve la scrittura sul roster (sono tutte richieste che scrivono). */
+const soloRoster = richiedeDiritto("roster");
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;

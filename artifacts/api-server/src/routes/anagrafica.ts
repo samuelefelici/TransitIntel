@@ -36,7 +36,7 @@ import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { haPermesso, requirePermission, vedeDatiPersonali } from "../lib/auth";
+import { haDiritto, richiedeDiritto, scriveDatiPersonali, vedeDatiPersonali } from "../lib/auth";
 import {
   DEPOSITI_INIZIALI, ESITI_VISITA, formattaOrario, leggiData, leggiEsitoVisita, leggiOrario,
   mascheraConducente, pulisciTesto, trovaDeposito, type Conducente,
@@ -94,8 +94,14 @@ export function rispondiErrore(res: Response, e: any, contesto: string): void {
 
 const utente = (req: Request) => ({ userId: req.user?.id ?? null, via: req.authVia ?? null });
 
+/** Per modificare l'anagrafica serve la scrittura su «Personale». */
 function richiedePersonale(req: Request): void {
-  if (!vedeDatiPersonali(req)) throw new Rifiuto(403, "Serve il permesso «Personale» per modificare l'anagrafica");
+  if (!scriveDatiPersonali(req)) throw new Rifiuto(403, "Serve la scrittura su «Personale» per modificare l'anagrafica");
+}
+
+/** Lo storico di un conducente è un dato personale: per leggerlo serve la lettura su «Personale». */
+function richiedeLetturaPersonale(req: Request): void {
+  if (!vedeDatiPersonali(req)) throw new Rifiuto(403, "Serve l'accesso a «Personale» per leggere lo storico");
 }
 
 function uuid(v: unknown): string {
@@ -149,12 +155,12 @@ router.get("/roster/drivers/:id", async (req, res): Promise<void> => {
   } catch (e) { rispondiErrore(res, e, "scheda"); }
 });
 
-/** Chi ha solo «roster» tocca solo i fittizi, e solo nei campi operativi. */
+/** Chi scrive sul roster ma non sul «Personale» tocca solo i fittizi, e solo nei campi operativi. */
 function controllaScrittura(req: Request, fittizio: boolean, chiavi: string[]): void {
-  if (vedeDatiPersonali(req)) return;
-  if (!fittizio || !haPermesso(req, "roster")) richiedePersonale(req);
+  if (scriveDatiPersonali(req)) return;
+  if (!fittizio || !haDiritto(req, "roster", "S")) richiedePersonale(req);
   const fuori = chiavi.filter(k => !CAMPI_SCRIVIBILI_FITTIZI.has(k) && k !== "isFictitious" && k !== "name");
-  if (fuori.length) throw new Rifiuto(403, `Senza il permesso «Personale» non si possono scrivere: ${fuori.join(", ")}`);
+  if (fuori.length) throw new Rifiuto(403, `Senza la scrittura su «Personale» non si possono scrivere: ${fuori.join(", ")}`);
 }
 
 interface Risultato { conducente: Conducente | null; avvisi: string[]; daRigenerare: string[] }
@@ -180,7 +186,7 @@ router.post("/roster/drivers", async (req, res): Promise<void> => {
         INSERT INTO roster_drivers (name, is_fictitious, versione, updated_at)
         VALUES (${nome}, ${fittizio}, 0, now()) RETURNING id`))[0].id;
       const es = await applicaVariazioni(ex, id, corpo.variazioni, {
-        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", puoCreareCataloghi: vedeDatiPersonali(req), depositi: await leggiDepositi(ex), categorie: await leggiCategorie(ex),
+        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", puoCreareCataloghi: scriveDatiPersonali(req), depositi: await leggiDepositi(ex), categorie: await leggiCategorie(ex),
       });
       if (es.conflitti.length) throw new Rifiuto(409, es.conflitti.join("; "), { conflitti: es.conflitti });
       await sincronizzaCorrenti(ex, oggi, [...es.tipi], [id]);
@@ -206,7 +212,7 @@ router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
         throw new Rifiuto(409, "La scheda è stata cambiata da qualcun altro mentre la modificavi: ricaricala", { versione: Number(riga.versione) });
       }
       const es = await applicaVariazioni(ex, id, corpo.variazioni, {
-        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", puoCreareCataloghi: vedeDatiPersonali(req), riga,
+        oggi, decorrenza: corpo.decorrenza ?? oggi, nota: "scheda", puoCreareCataloghi: scriveDatiPersonali(req), riga,
         depositi: await leggiDepositi(ex), categorie: await leggiCategorie(ex),
       });
       if (es.conflitti.length) throw new Rifiuto(409, es.conflitti.join("; "), { conflitti: es.conflitti });
@@ -260,7 +266,7 @@ router.post("/roster/drivers/:id/riattiva", async (req, res): Promise<void> => {
 router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
     if (!datiProvaAttivi()) { res.status(404).json({ error: "Non trovato" }); return; }
-    if (!vedeDatiPersonali(req) && !haPermesso(req, "roster")) richiedePersonale(req);
+    if (!scriveDatiPersonali(req) && !haDiritto(req, "roster", "S")) richiedePersonale(req);
     const quanti = Math.min(Math.max(Number(req.body?.count) || 30, 1), 200);
     const oggi = oggiRoma();
     const esito = await db.transaction(async (tx) => {
@@ -287,7 +293,7 @@ function rigaStorico(h: any) {
 router.get("/roster/drivers/:id/history", async (req, res): Promise<void> => {
   try {
     const id = uuid(req.params.id);
-    richiedePersonale(req);
+    richiedeLetturaPersonale(req);
     const r = await db.execute<any>(sql`
       SELECT * FROM roster_driver_history WHERE driver_id = ${id}::uuid
        ORDER BY event_date DESC NULLS LAST, created_at DESC`);
@@ -378,7 +384,8 @@ router.delete("/roster/history/:hid", async (req, res): Promise<void> => {
 /* il permesso si controlla PRIMA di multer, che altrimenti tiene in memoria
  * 5 MB per chiunque provi */
 const caricamento = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 10 } });
-const soloPersonale = requirePermission("personale");
+/* l'import scrive l'anagrafica dal primo passo all'ultimo: serve la scrittura su «Personale» */
+const soloPersonale = richiedeDiritto("personale");
 /* Un import si fa a giri: leggi, prova, una scelta, prova di nuovo, applica.
  * Il limite delle operazioni pesanti (10 al minuto, condiviso) si esaurisce
  * a metà di un import normale; questo è suo e più largo. */

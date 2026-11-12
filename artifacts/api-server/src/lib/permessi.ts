@@ -1,45 +1,78 @@
 /**
- * I permessi per utente: i moduli del menu (spa/lib/navigazione.ts).
+ * I permessi dell'API: i ruoli aziendali, le aree e i livelli stanno nel
+ * pacchetto condiviso `@workspace/permessi` (li legge anche la web). Qui c'è
+ * solo il passaggio dalla riga di public.users al profilo di un utente.
  *
- *   network    = Rete e orari (Planning Studio, confronto programmi, orari al pubblico)
- *   scheduling = Turni (progetti di esercizio, pubblicazione dei turni al roster)
- *   roster     = Roster del personale, con i codici sanitari
- *   personale  = Anagrafica completa del personale
- *   centrale   = Esercizio (Mappa live, AVM)
- *   fares      = Tariffe
- *   fleetcare  = Flotta (FleetCare)
- *   analytics  = Analisi (mappa del territorio, traffico, domanda, linee GTFS,
- *                ipotesi di linea, dati GTFS). Spenta per i nuovi utenti: le
- *                letture che servono anche ai moduli sopra stanno in
- *                LETTURE_CONDIVISE (auth.ts), non qui.
- *
- * Un permesso nuovo si aggiunge qui, nel DEFAULT della colonna (auth.ts e una
- * migrazione), nel `Permission` della SPA (hooks/use-auth.tsx) e in Gestione
- * Utenti (pages/admin-users.tsx).
+ * Che cosa si scrive di un utente (migrazione 0009):
+ *   ruoli             i ruoli aziendali
+ *   accesso_di_prima  gli interruttori di prima dei ruoli ancora accesi
+ *   dati_sanitari     vede i codici sanitari del roster
+ *   analisi           vede l'area Analisi
+ *   permissions       NON è una fonte: è la vista che leggono FleetCare e la
+ *                     colonna calcolata mfa_obbligatoria. La scrive l'API da
+ *                     quello che c'è sopra (interruttoriCompatibili).
  */
-export const PERMESSI = ["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale", "roster"] as const;
-export type Permission = typeof PERMESSI[number];
+import {
+  accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, interruttoriCompatibili, ruoliValidi,
+  type Diritti, type Interruttore, type InterruttoreDiPrima, type ProfiloPermessi, type RuoloAziendale,
+} from "@workspace/permessi";
 
-/** Con che cosa parte un utente nuovo, se l'admin non dice altro. */
-export const PERMESSI_NUOVO_UTENTE: Readonly<Record<Permission, boolean>> = {
-  analytics: false, fares: true, scheduling: true, network: true,
-  fleetcare: false, centrale: false, personale: false, roster: false,
-};
+export * from "@workspace/permessi";
+
+/** I nomi degli interruttori di prima: restano le chiavi di users.permissions. */
+export type Permission = Interruttore;
+
+/** Le colonne di public.users che dicono che cosa può fare un utente. */
+export interface RigaPermessi {
+  role?: unknown;
+  ruoli?: unknown;
+  accesso_di_prima?: unknown;
+  dati_sanitari?: unknown;
+  analisi?: unknown;
+}
+
+/** Il profilo di un utente dalla sua riga: quello che non è scritto bene non vale. */
+export function profiloDaRiga(r: RigaPermessi): ProfiloPermessi & { ruoli: RuoloAziendale[]; accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>> } {
+  return {
+    admin: r.role === "admin",
+    ruoli: ruoliValidi(r.ruoli),
+    accessoDiPrima: accessoDiPrimaPulito(r.accesso_di_prima),
+    datiSanitari: r.dati_sanitari === true,
+    analisi: r.analisi === true,
+  };
+}
+
+/** I diritti e la vista compatibile di un profilo, insieme: si usano sempre in coppia. */
+export function dirittiEVista(p: ProfiloPermessi): { diritti: Diritti; permissions: Record<Permission, boolean> } {
+  const diritti = dirittiDi(p);
+  return { diritti, permissions: interruttoriCompatibili(diritti) };
+}
+
+/** Che cosa chiede Gestione utenti sui permessi di un utente (i campi assenti non cambiano). */
+export interface RichiestaPermessi {
+  /** il ruolo di sistema: "admin" o qualunque altra cosa per "user" */
+  role?: unknown;
+  ruoli?: RuoloAziendale[];
+  datiSanitari?: boolean;
+  analisi?: boolean;
+  /** gli interruttori di prima da tenere accesi: si possono solo togliere */
+  accessoDiPrima?: unknown;
+}
 
 /**
- * I permessi come si salvano: tutte le chiavi, solo booleani, niente chiavi
- * sconosciute. Per un utente nuovo la chiave che manca prende il default;
- * in modifica la chiave che manca è spenta (Gestione Utenti manda sempre
- * l'oggetto intero). Rete e orari porta con sé i Turni: Planning Studio e
- * Scheduling lavorano sugli stessi dati (rete, depositi, nodi, archi), e chi
- * ha il primo senza il secondo vedrebbe divergere l'accesso ai dati condivisi.
+ * Le colonne dei permessi dopo una modifica: lo stato di prima con sopra la
+ * richiesta, e la vista permissions ricavata da lì. L'accesso di prima si può
+ * solo ridurre: i diritti nuovi si danno con i ruoli.
  */
-export function normalizzaPermessi(input: unknown, o: { nuovo: boolean }): Record<Permission, boolean> {
-  const dato = input && typeof input === "object" ? input as Record<string, unknown> : {};
-  const out = {} as Record<Permission, boolean>;
-  for (const p of PERMESSI) {
-    out[p] = p in dato ? dato[p] === true : o.nuovo ? PERMESSI_NUOVO_UTENTE[p] : false;
-  }
-  if (out.network) out.scheduling = true;
-  return out;
+export function permessiDopo(prima: RigaPermessi, richiesta: RichiestaPermessi) {
+  const corrente = profiloDaRiga(prima);
+  const dopo = {
+    role: (richiesta.role !== undefined ? (richiesta.role === "admin" ? "admin" : "user") : corrente.admin ? "admin" : "user") as "admin" | "user",
+    ruoli: richiesta.ruoli !== undefined ? ruoliValidi(richiesta.ruoli) : corrente.ruoli,
+    accesso_di_prima: richiesta.accessoDiPrima !== undefined
+      ? accessoDiPrimaRidotto(corrente.accessoDiPrima, richiesta.accessoDiPrima) : corrente.accessoDiPrima,
+    dati_sanitari: richiesta.datiSanitari ?? corrente.datiSanitari,
+    analisi: richiesta.analisi ?? corrente.analisi,
+  };
+  return { ...dopo, permissions: dirittiEVista(profiloDaRiga(dopo)).permissions };
 }

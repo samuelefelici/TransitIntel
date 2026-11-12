@@ -839,6 +839,12 @@ jobs:
       # (lo fa il migratore, in una transazione annullata) l'API non le crede.
       - name: La verifica obbligatoria, calcolata dal database
         run: TEST_DATABASE_URL=$PG_APP/vuoto TEST_DATABASE_MIGRATOR_URL=$PG/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/mfa-obbligatoria-db.test.ts
+      # PR 2.14a: i ruoli aziendali sugli utenti (migrazione 0009). Come
+      # cerbero_app: i vincoli, il passaggio dei dati della migrazione riga per
+      # riga (nessuno cambia accesso), e il riallineamento della vista
+      # users.permissions, che la verifica in due passaggi segue.
+      - name: I ruoli aziendali sugli utenti
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/ruoli-utenti-db.test.ts
       # PR 2.16b: la duplicazione di un progetto di Planning Studio usava sette
       # tabelle temporanee, l'ultimo DDL dell'API. Come cerbero_app, che non ne
       # può più creare: la copia è uguale all'originale a meno degli id.
