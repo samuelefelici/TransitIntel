@@ -19,7 +19,7 @@ const F = vi.hoisted(() => {
       const t = testo.replace(/\s+/g, " ").toLowerCase();
       const righe = t.includes("from users where id =") && (valori ?? cfg?.values ?? [])[0] === UTENTE
         ? [{
-          id: UTENTE, email: "persona@esempio.it", full_name: "Persona", role: "user", permissions: { scheduling: true },
+          id: UTENTE, email: "persona@esempio.it", full_name: "Persona", role: "user", ruoli: [], accesso_di_prima: { scheduling: true }, dati_sanitari: false, analisi: false,
           fleetcare_role: null, active: true, sessione_versione: 1, mfa_attiva: true, deve_cambiare_password: false,
           mfa_recupero_chiave: null,
         }]

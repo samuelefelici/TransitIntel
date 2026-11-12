@@ -21,7 +21,12 @@ import { isIP } from "node:net";
 import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
-import { normalizzaPermessi, PERMESSI_NUOVO_UTENTE, type Permission } from "./permessi";
+import {
+  dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
+  ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, NOMI_AREE,
+  type Area, type Diritti, type InterruttoreDiPrima, type Livello, type Permission, type RuoloAziendale,
+} from "./permessi";
+import { decidi } from "./permessi-rotte";
 import { datiProvaAttivi } from "./dati-prova";
 import { logger } from "./logger";
 import { azioniAdmin } from "./azioni-admin";
@@ -36,13 +41,25 @@ import { viaPerIlDatabase } from "./agent-context";
 /* ────────────────────────────────────────────────────────────
  * Tipi
  * ──────────────────────────────────────────────────────────── */
-/* i permessi per utente (i moduli del menu) e le loro regole: lib/permessi.ts */
+/* ruoli aziendali, aree e livelli: lib/permessi.ts (il pacchetto @workspace/permessi) */
 export type { Permission };
 export interface AuthUser {
   id: string;
   email: string;
   fullName: string | null;
+  /** "admin" è l'amministratore di sistema: non un ruolo di lavoro, può tutto */
   role: "admin" | "user";
+  /** i ruoli aziendali: ognuno dà lettura o scrittura per area */
+  ruoli: RuoloAziendale[];
+  /** gli interruttori di prima dei ruoli ancora accesi: valgono scrittura sulla loro area */
+  accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>;
+  /** vede i codici sanitari del roster (malattia, infortunio, 104) */
+  datiSanitari: boolean;
+  /** vede l'area Analisi */
+  analisi: boolean;
+  /** quello che ne risulta, area per area: è su questo che si decide */
+  diritti: Diritti;
+  /** la vista di prima (un interruttore = almeno la lettura sulla sua area): la leggono FleetCare e i client di prima */
   permissions: Record<Permission, boolean>;
   /** Ruolo dentro il modulo FleetCare (gli admin sono sempre fleet_admin). */
   fleetcareRole: string;
@@ -110,6 +127,9 @@ const AUD_MFA = "cerbero-mfa";
  * ──────────────────────────────────────────────────────────── */
 let bootstrapped = false;
 let preparazione: Promise<void> | null = null;
+
+/** Un elenco di nomi come parametro text[] ('{a,b}'): solo nomi già passati da ruoliValidi. */
+const pgArray = (nomi: readonly string[]): string => `{${nomi.filter(n => /^[a-z_]+$/.test(n)).join(",")}}`;
 /** Una sola preparazione anche se arrivano tante richieste insieme all'avvio; se fallisce, la prossima riprova. */
 export function utentiPronti(): Promise<void> {
   if (bootstrapped) return Promise.resolve();
@@ -164,7 +184,7 @@ async function preparaUtenti(): Promise<void> {
         INSERT INTO users (email, password_hash, full_name, role, permissions, active, deve_cambiare_password, password_controllata)
         VALUES (
           ${primo.email}, ${hash}, 'Amministratore', 'admin',
-          '{"analytics":true,"fares":true,"scheduling":true,"network":true,"fleetcare":false,"centrale":true,"personale":false,"roster":true}'::jsonb,
+          ${JSON.stringify(dirittiEVista(profiloDaRiga({ role: "admin" })).permissions)}::jsonb,
           true, true, true
         )
         ON CONFLICT DO NOTHING`);
@@ -180,6 +200,38 @@ async function preparaUtenti(): Promise<void> {
   } else if (primo.tipo === "avviso") {
     console.warn(`[auth] ${primo.messaggio}`);
   }
+
+  await riallineaVistaPermessi();
+}
+
+/**
+ * users.permissions è la vista che leggono FleetCare (chi può entrare) e la
+ * colonna calcolata mfa_obbligatoria: un interruttore è acceso se l'utente ha
+ * almeno la lettura su una delle sue aree. La scrive Gestione utenti a ogni
+ * modifica; qui si rimette a posto per chi non coincide, cioè dopo un cambio
+ * della matrice dei ruoli nel codice o una riga toccata a mano. Gli
+ * amministratori non contano: per loro decide il ruolo, non la vista.
+ */
+export async function riallineaVistaPermessi(): Promise<number> {
+  const r = await db.execute<any>(sql`
+    SELECT id, role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions FROM users WHERE role <> 'admin'`);
+  let n = 0;
+  for (const row of ((r as any).rows ?? []) as any[]) {
+    const vista = dirittiEVista(profiloDaRiga(row)).permissions;
+    const scritta = row.permissions && typeof row.permissions === "object" ? row.permissions as Record<string, unknown> : {};
+    const chiavi = Object.keys(vista) as Permission[];
+    if (Object.keys(scritta).length === chiavi.length && chiavi.every(k => scritta[k] === vista[k])) continue;
+    /* solo se nel frattempo nessuno ha cambiato i suoi ruoli: altrimenti la vista giusta l'ha già scritta lui */
+    const fatto = await db.execute<any>(sql`
+      UPDATE users SET permissions = ${JSON.stringify(vista)}::jsonb
+       WHERE id = ${row.id}::uuid AND role <> 'admin'
+         AND ruoli = ${pgArray(profiloDaRiga(row).ruoli)}::text[] AND accesso_di_prima = ${JSON.stringify(row.accesso_di_prima ?? {})}::jsonb
+         AND dati_sanitari = ${row.dati_sanitari === true} AND analisi = ${row.analisi === true}
+      RETURNING id`);
+    if ((fatto as any).rows?.length) n++;
+  }
+  if (n > 0) logger.info({ utenti: n }, "vista dei permessi (users.permissions) riallineata ai ruoli");
+  return n;
 }
 void utentiPronti();
 
@@ -374,24 +426,38 @@ interface UtenteCaricato {
 /* La regola letta da users: una costante di accesso-regole.ts, senza dati di nessuno (sql.raw non prende altro) */
 const MFA_OBBLIGATORIA = sql.raw(SQL_MFA_OBBLIGATORIA); // scan-ok: testo costante del codice
 
+/**
+ * L'utente dalla sua riga. I diritti si calcolano qui, da ruoli, accesso di
+ * prima e capacità: la colonna permissions non si legge, è solo la vista che
+ * l'API scrive per chi sta fuori (FleetCare, la regola della verifica).
+ */
+export function utenteDaRiga(row: any): AuthUser {
+  const profilo = profiloDaRiga(row);
+  return {
+    id: row.id,
+    email: row.email,
+    fullName: row.full_name ?? null,
+    role: profilo.admin ? "admin" : "user",
+    ruoli: profilo.ruoli,
+    accessoDiPrima: profilo.accessoDiPrima,
+    datiSanitari: profilo.datiSanitari,
+    analisi: profilo.analisi,
+    ...dirittiEVista(profilo),
+    fleetcareRole: row.fleetcare_role ?? "driver",
+    active: !!row.active,
+  };
+}
+
 async function loadUserById(id: string): Promise<UtenteCaricato | null> {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, fleetcare_role, active,
+    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, fleetcare_role, active,
            sessione_versione, mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
   const row: any = (r as any).rows?.[0] ?? (r as any)[0];
   if (!row) return null;
   return {
-    user: {
-      id: row.id,
-      email: row.email,
-      fullName: row.full_name,
-      role: row.role,
-      permissions: row.permissions ?? { ...PERMESSI_NUOVO_UTENTE },
-      fleetcareRole: row.fleetcare_role ?? "driver",
-      active: row.active,
-    },
+    user: utenteDaRiga(row),
     sv: Number(row.sessione_versione ?? 0),
     mfaAttiva: !!row.mfa_attiva,
     // la colonna è NOT NULL: se non arriva un «false» scritto, la verifica resta obbligatoria
@@ -477,202 +543,74 @@ export const requireAdmin: RequestHandler = (req, res, next) => {
   next();
 };
 
-export function requirePermission(p: Permission): RequestHandler {
+/**
+ * Ha almeno questo livello sull'area? L'amministratore di sistema sempre.
+ * È la domanda che fanno gli handler quando il percorso non basta a decidere.
+ */
+export function haDiritto(req: { user?: AuthUser }, area: Area, livello: Livello): boolean {
+  if (!req.user) return false;
+  return req.user.role === "admin" || puo(req.user.diritti, area, livello);
+}
+
+/**
+ * Per le rotte che vogliono un'area precisa, più stretta del loro prefisso:
+ * lettura per GET e HEAD, scrittura per il resto.
+ */
+export function richiedeDiritto(area: Area): RequestHandler {
   return (req, res, next) => {
     if (!req.user) { res.status(401).json({ error: "Non autenticato" }); return; }
     /* i dati personali non passano a un servizio che agisce per conto dell'utente */
-    if (p === "personale" && req.authVia) { res.status(403).json({ error: "Dati del personale non disponibili da questo canale" }); return; }
-    if (req.user.role === "admin") { next(); return; }
-    if (req.user.permissions?.[p]) { next(); return; }
-    res.status(403).json({ error: `Manca il permesso: ${p}` });
+    if (area === "personale" && req.authVia) { res.status(403).json({ error: "Dati del personale non disponibili da questo canale" }); return; }
+    const livello = livelloDelMetodo(req.method);
+    if (haDiritto(req, area, livello)) { next(); return; }
+    res.status(403).json({
+      error: livello === "S" && haDiritto(req, area, "L")
+        ? `Sola lettura: per modificare serve la scrittura su «${NOMI_AREE[area]}»`
+        : `Manca l'accesso a «${NOMI_AREE[area]}»`,
+    });
   };
 }
 
 /**
- * Chi può vedere e scrivere i dati personali dell'anagrafica (contatti,
- * residenza, paghe, ferie, visite): admin o permesso «personale», e mai
- * attraverso un token emesso per Argos.
+ * Chi può VEDERE i dati personali dell'anagrafica (contatti, residenza, paghe,
+ * ferie, visite): l'amministratore o chi ha almeno la lettura su «Personale»,
+ * e mai attraverso un token emesso per Argos.
  */
 export function vedeDatiPersonali(req: { user?: AuthUser; authVia?: string }): boolean {
   if (!req.user || req.authVia) return false;
-  return req.user.role === "admin" || !!req.user.permissions?.personale;
+  return haDiritto(req, "personale", "L");
+}
+
+/** Chi può SCRIVERE i dati personali dell'anagrafica: serve la scrittura su «Personale». */
+export function scriveDatiPersonali(req: { user?: AuthUser; authVia?: string }): boolean {
+  if (!req.user || req.authVia) return false;
+  return haDiritto(req, "personale", "S");
 }
 
 /**
- * I codici sanitari delle voci del roster (malattia, infortunio, 104): admin
- * o permesso «roster», e mai attraverso un token emesso per Argos. Chi non
- * li vede legge un'assenza generica (lib/roster-voci.ts).
+ * I codici sanitari delle voci del roster (malattia, infortunio, 104):
+ * l'amministratore o chi ha la capacità «dati sanitari» (e può aprire il
+ * roster), e mai attraverso un token emesso per Argos. Chi non li vede legge
+ * un'assenza generica (lib/roster-voci.ts).
  */
 export function vedeCodiciSanitari(req: { user?: AuthUser; authVia?: string }): boolean {
   if (!req.user || req.authVia) return false;
-  return req.user.role === "admin" || !!req.user.permissions?.roster;
-}
-
-export function haPermesso(req: { user?: AuthUser }, p: Permission): boolean {
-  if (!req.user) return false;
-  return req.user.role === "admin" || !!req.user.permissions?.[p];
+  const u = req.user;
+  return vedeDatiSanitari({ admin: u.role === "admin", ruoli: u.ruoli, accessoDiPrima: u.accessoDiPrima, analisi: u.analisi, datiSanitari: u.datiSanitari });
 }
 
 /**
- * Mappa prefisso-URL → dominio di permesso. È l'ENFORCEMENT RBAC centrale: i
- * router sono montati senza prefisso (i path vivono dentro), quindi un singolo
- * middleware path-aware è più sicuro di N prepend (che bloccherebbero anche i
- * path non pertinenti). Ordine: le voci più specifiche PRIMA (es. /planning-studio
- * prima di /planning). Prefisso non mappato ⇒ 403 per chi non è admin (deny by
- * default): una rotta nuova va aggiunta qui, e il test inventario-rotte lo
- * controlla. Le rotte senza permesso (login, cron, condivisioni) stanno nei
- * router montati prima di requireAuth (routes/index.ts).
+ * Il controllo centrale: quale area e quale livello servono per il percorso lo
+ * dice lib/permessi-rotte.ts (deny by default: un percorso senza voce è solo
+ * dell'amministratore).
  */
-const PERMISSION_BY_PREFIX: Array<[string, Permission | Permission[]]> = [
-  // scheduling (turni, ottimizzatori, roster, depositi, coincidenze)
-  ["/service-program", "scheduling"], ["/driver-shifts", "scheduling"],
-  // «I miei calcoli»: ogni calcolo in coda nasce da una funzione di scheduling
-  ["/lavori", "scheduling"],
-  ["/driver-schedules", "scheduling"], ["/vehicle-schedules", "scheduling"],
-  // La pubblicazione dei turni guida è dello Scheduling (chi fa i turni li
-  // manda al roster); le sorgenti dei turni servono anche ai Misti.
-  ["/roster/pubblicazioni", "scheduling"],
-  ["/roster/duty-sources", ["scheduling", "roster"]],
-  // Anagrafica del personale: chi ha «personale» deve poterla leggere e
-  // scrivere anche senza «roster», e chi ha «roster» legge i dati
-  // operativi (la mascheratura e le scritture si decidono nel singolo
-  // handler). Queste voci stanno PRIMA di "/roster", che altrimenti vince.
-  ["/roster/anagrafica/import", "personale"],
-  ["/roster/anagrafica", ["roster", "personale"]],
-  ["/roster/drivers", ["roster", "personale"]],
-  ["/roster/history", "personale"],
-  ["/roster/depositi", ["roster", "personale"]],
-  ["/roster/categorie", ["roster", "personale"]],
-  ["/roster/gruppi-turni", ["roster", "personale"]],
-  ["/roster/rotazioni-riposi", ["roster", "personale"]],
-  // il roster (tabellone, assegnazioni, voci, calendario, tratte dei turni)
-  ["/roster", "roster"], ["/scheduling", "scheduling"],
-  ["/deadheads", "scheduling"],
-  // Depositi e archi fuorilinea sono infrastruttura di PROGETTO: si gestiscono
-  // in Planner Studio (permesso network) e servono alla pipeline Scheduling
-  // (permesso scheduling). Basta uno dei due.
-  ["/deadhead-arcs", ["scheduling", "network"]], ["/depots", ["scheduling", "network"]],
-  ["/coincidence-zones", ["scheduling", "network"]],
-  // network (Planner Studio, rete, zonizzazione)
-  // L'intermodale è una sezione del Planner Studio: stava sotto "analytics"
-  // mentre la rotta frontend è gated su "network", così chi aveva solo
-  // network vedeva la pagina e prendeva 403 su ogni chiamata, e chi aveva
-  // solo analytics veniva rimbalzato alla dashboard.
-  ["/planning-studio", "network"], ["/zones", "network"],
-  // I nodi sono l'infrastruttura condivisa per eccellenza: il Planner Studio
-  // li disegna, lo Scheduling Engine li usa come punti di cambio vettura.
-  ["/clusters", ["network", "scheduling"]],
-  ["/intermodal", "network"],
-  // Argos vive dentro Planning Studio: il pannello, la chat, l'agente, il
-  // territorio (Mapbox, a consumo). Il controllo sul progetto resta negli handler.
-  ["/ai/argos", "network"],
-  // la Fucina: regole salvate dell'ottimizzatore e analisi intermodale dei turni macchina
-  ["/optimizer-rule-profiles", "scheduling"],
-  ["/intermodal-optimizer", "scheduling"],
-  // fares
-  ["/fares", "fares"],
-  // Centrale Operativa (Mappa live + AVM). Il parco letto da SIRI serve solo
-  // alle due pagine del modulo; il resto di /siri (paline Mizar, diagnostica)
-  // lo usa la pagina Dati e integrazioni, aperta ad Analisi e Centrale.
-  // POST /siri/sync, che scrive, è solo dell'admin (routes/siri.ts).
-  ["/siri/parco", "centrale"],
-  ["/siri", ["centrale", "analytics"]],
-  // /operations è condiviso: la Mappa legge /live, /punctuality, /anomalie,
-  // /vehicles; i Tempi di percorrenza (analytics) leggono /runtimes,
-  // /copertura, e /trips lo leggono entrambi. Basta uno dei due permessi.
-  ["/operations", ["centrale", "analytics"]],
-  // analytics (analisi, territorio, gtfs, orari, intermodale)
-  ["/analysis", "analytics"], ["/territory", "analytics"], ["/gtfs", "analytics"],
-  ["/traffic", "analytics"], ["/poi", "analytics"], ["/population", "analytics"],
-  ["/timetables", "analytics"], ["/planning", "analytics"],
-  ["/scenarios", "analytics"], ["/weather", "analytics"],
-  ["/settings", "analytics"],
-];
-
-/**
- * Letture che servono a più moduli, oltre a quello che possiede i dati: solo
- * GET e HEAD, con il percorso esatto. Si guardano prima della mappa qui sopra.
- * Senza, spegnere Analisi (analytics) lascerebbe la Fucina senza feed e
- * fermate, le Tariffe senza linee e confini, la Stampa Orari col dominio dei
- * QR sbagliato, e chi fa i turni senza la scelta del programma. Le scritture
- * restano al modulo che possiede i dati. Gli handler rispondono solo sui feed
- * e sui progetti PS che l'utente vede (feedAccessibleWhere, hasProjectAccess).
- */
-const LETTURE_CONDIVISE: Array<[string | RegExp, Permission[]]> = [
-  // feed e fermate: Fucina (scelta della data), fuorilinea, editor dei turni guida, zone di coincidenza
-  ["/gtfs/feeds", ["analytics", "scheduling", "network"]],
-  ["/gtfs/stops/all", ["analytics", "scheduling", "network"]],
-  // la mappa delle Tariffe: linee, forme, fermate per linea, confini dei comuni
-  ["/gtfs/routes", ["analytics", "fares"]],
-  ["/gtfs/shapes/geojson", ["analytics", "fares"]],
-  ["/gtfs/route-stop-ids", ["analytics", "fares"]],
-  ["/territory/comuni-boundaries", ["analytics", "fares"]],
-  // parametri letti dai motori dei turni e dalla Stampa Orari (il dominio dei QR)
-  ["/settings/company-cars", ["analytics", "scheduling", "network"]],
-  ["/settings/timetable-map-domain", ["analytics", "network"]],
-  // le linee per i Tempi osservati (Esercizio)
-  ["/timetables/routes", ["analytics", "centrale"]],
-  // Rete e orari: confronto fra programmi; Analisi: elenco delle zone per le ipotesi di linea
-  ["/planning/compare", ["analytics", "network"]],
-  ["/coincidence-zones", ["scheduling", "network", "analytics"]],
-  // Turni: la scelta del programma e l'unità di validità nel Quadro d'esercizio
-  ["/planning-studio/projects", ["network", "scheduling"]],
-  [/^\/planning-studio\/projects\/[0-9a-f-]{36}$/, ["network", "scheduling"]],
-  [/^\/planning-studio\/projects\/[0-9a-f-]{36}\/validity-units\/[0-9a-f-]{36}\/detail$/, ["network", "scheduling"]],
-];
-
-/** Il permesso che apre questa lettura condivisa, se è una di quelle. */
-export function letturaCondivisa(metodo: string, path: string): Permission[] | null {
-  if (metodo !== "GET" && metodo !== "HEAD") return null;
-  const p = path.toLowerCase();
-  const voce = LETTURE_CONDIVISE.find(([chi]) => typeof chi === "string" ? p === chi : chi.test(p));
-  return voce ? voce[1] : null;
-}
-
-/**
- * Prefissi solo dell'admin, per scelta: chi non è admin prende 403 «Solo admin»
- * senza la riga di log della voce dimenticata. Le rotte si proteggono anche da
- * sé (requireAdmin in routes/admin.ts).
- */
-export const SOLO_ADMIN: readonly string[] = ["/admin/sync", "/admin/registro"];
-
-const sotto = (p: string, prefix: string) => p === prefix || p.startsWith(prefix + "/");
-
-/** Il permesso del prefisso che copre questo percorso (il primo nell'ordine), o null. */
-export function permessoDelPrefisso(path: string): Permission[] | null {
-  const p = path.toLowerCase();
-  for (const [prefix, perm] of PERMISSION_BY_PREFIX) {
-    if (p === prefix || p.startsWith(prefix + "/")) return Array.isArray(perm) ? perm : [perm];
-  }
-  return null;
-}
-
-/**
- * Cosa apre questo percorso: la lettura condivisa (se è una GET di quelle) e
- * il permesso del prefisso. Tutti e due null: nessuna voce, quindi solo admin.
- */
-export function permessoPerPercorso(metodo: string, path: string): { condivisa: Permission[] | null; prefisso: Permission[] | null } {
-  return { condivisa: letturaCondivisa(metodo, path), prefisso: permessoDelPrefisso(path) };
-}
-
 export const requirePermissionByPath: RequestHandler = (req, res, next) => {
   if (!req.user) { res.status(401).json({ error: "Non autenticato" }); return; }
-  if (req.user.role === "admin") { next(); return; }
-  /* Express confronta i percorsi senza badare alle maiuscole: /Roster/drivers
-   * arriva allo stesso handler di /roster/drivers. Il confronto qui deve fare
-   * lo stesso, altrimenti basta una maiuscola per saltare il controllo. */
-  const { condivisa, prefisso } = permessoPerPercorso(req.method, req.path);
-  if (condivisa?.some(pp => req.user!.permissions?.[pp])) { next(); return; }
-  if (SOLO_ADMIN.some(a => sotto(req.path.toLowerCase(), a))) { res.status(403).json({ error: "Solo admin" }); return; }
-  if (prefisso) {
-    if (prefisso.some(pp => req.user!.permissions?.[pp])) { next(); return; }
-    res.status(403).json({ error: `Manca il permesso: ${prefisso.join(" o ")}` });
-    return;
-  }
-  // deny by default: nessuna voce per questo percorso. Il log lo dice, perché
-  // un 403 qui vuol dire quasi sempre una voce dimenticata in PERMISSION_BY_PREFIX
-  logger.warn({ metodo: req.method, percorso: req.path, utente: req.user.id }, "percorso senza permesso assegnato: 403");
-  res.status(403).json({ error: "Percorso senza permesso assegnato" });
+  const esito = decidi({ admin: req.user.role === "admin", diritti: req.user.diritti }, req.method, req.path);
+  if (esito.passa) { next(); return; }
+  // un 403 senza voce vuol dire quasi sempre una voce dimenticata in AREE_PER_PREFISSO: il log lo dice
+  if (esito.senzaVoce) logger.warn({ metodo: req.method, percorso: req.path, utente: req.user.id }, "percorso senza permesso assegnato: 403");
+  res.status(403).json({ error: esito.errore });
 };
 
 /* ────────────────────────────────────────────────────────────
@@ -760,7 +698,7 @@ router.post("/auth/login", loginLimiter, async (req: Request, res: Response): Pr
   const chiave = chiaveEmail(email);
   const ip = indirizzoDi(req);
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, fleetcare_role, active, password_hash,
+    SELECT id, email, active, password_hash,
            sessione_versione, dispositivi_versione, mfa_attiva, password_controllata
       FROM users WHERE lower(trim(email)) = ${chiave} ORDER BY ${ORDINE_STESSA_EMAIL} LIMIT 1
   `);
@@ -893,6 +831,7 @@ router.get("/auth/me", requireAuth, (req, res) => {
  */
 export function accessoFleetCare(user: Pick<AuthUser, "role" | "permissions" | "fleetcareRole">): { abilitato: boolean; ruolo: string } {
   return {
+    /* permissions è la vista compatibile: «fleetcare» è acceso per chi ha almeno la lettura su «Flotta» */
     abilitato: user.role === "admin" || !!user.permissions?.fleetcare,
     ruolo: user.role === "admin" ? "fleet_admin" : user.fleetcareRole || "driver",
   };
@@ -966,8 +905,8 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
   /* serve alle finestre di condivisione dei progetti (Turni, Planning Studio):
    * chi non ha quei moduli non la vede, e nemmeno i token emessi per Argos */
   if (req.authVia) { res.status(403).json({ error: "Non disponibile da questo canale" }); return; }
-  if (!haPermesso(req, "network") && !haPermesso(req, "scheduling")) {
-    res.status(403).json({ error: "Manca il permesso: network o scheduling" }); return;
+  if (!haDiritto(req, "rete", "L") && !haDiritto(req, "turni", "L")) {
+    res.status(403).json({ error: "Manca l'accesso a «Rete e orari» o «Turni»" }); return;
   }
   const q = String(req.query.q || "").trim().toLowerCase().slice(0, 100);
   const meId = req.user!.id;
@@ -997,10 +936,11 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 
 /* ─── Admin: gestione utenti ─── */
 
+
 // GET /api/admin/users
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, permissions, fleetcare_role, active, last_login_at, created_at,
+    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, fleetcare_role, active, last_login_at, created_at,
            mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave,
            /* bloccato: per i codici sbagliati, o per la password da almeno un indirizzo */
            GREATEST(
@@ -1013,13 +953,8 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
   // Mappa snake_case -> camelCase per coerenza col resto della API
   const users = rows.map(u => ({
-    id: u.id,
-    email: u.email,
-    fullName: u.full_name,
-    role: u.role,
-    permissions: u.permissions,
-    fleetcareRole: u.fleetcare_role ?? "driver",
-    active: u.active,
+    /* ruoli, accesso di prima, capacità e i diritti che ne risultano (utenteDaRiga) */
+    ...utenteDaRiga(u),
     lastLoginAt: u.last_login_at,
     createdAt: u.created_at,
     mfaAttiva: !!u.mfa_attiva,
@@ -1032,9 +967,38 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   res.json({ users });
 });
 
-// POST /api/admin/users { email, password, fullName, role, permissions, fleetcareRole }
+/**
+ * I campi dei permessi come arrivano da Gestione utenti. Un ruolo che non
+ * esiste è un errore (non si scarta in silenzio: l'admin crederebbe di averlo
+ * dato), e così `permissions`, che mandano i client di prima dei ruoli.
+ */
+function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } {
+  const out: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } = {};
+  /* la pagina di prima dei ruoli (rimasta aperta in un browser durante il rilascio) manda gli
+   * interruttori: non si scartano in silenzio, altrimenti l'admin crederebbe di averli cambiati */
+  if (corpo?.permissions !== undefined) return { errore: "I permessi ora si danno con i ruoli aziendali: ricarica la pagina" };
+  if (corpo?.ruoli !== undefined) {
+    if (!Array.isArray(corpo.ruoli)) return { errore: "ruoli: serve un elenco" };
+    const ignoti = ruoliSconosciuti(corpo.ruoli);
+    if (ignoti.length) return { errore: `Ruolo aziendale sconosciuto: ${ignoti.map(r => String(r).slice(0, 40)).join(", ")}` };
+    out.ruoli = ruoliValidi(corpo.ruoli);
+  }
+  for (const k of ["datiSanitari", "analisi"] as const) {
+    if (corpo?.[k] === undefined) continue;
+    if (typeof corpo[k] !== "boolean") return { errore: `${k}: serve vero o falso` };
+    out[k] = corpo[k];
+  }
+  if (corpo?.accessoDiPrima !== undefined) out.accessoDiPrima = corpo.accessoDiPrima;
+  return out;
+}
+
+const COLONNE_UTENTE = sql.raw("id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions, fleetcare_role, active, created_at"); // scan-ok: testo costante del codice
+
+// POST /api/admin/users { email, password, fullName, role, ruoli, datiSanitari, analisi, fleetcareRole }
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise<void> => {
-  const { password, fullName, role, permissions, fleetcareRole } = req.body || {};
+  const { password, fullName, role, fleetcareRole } = req.body || {};
+  const chiesti = leggiPermessiRichiesti(req.body);
+  if ("errore" in chiesti) { res.status(400).json({ error: chiesti.errore }); return; }
   /* un'email si scrive in un modo solo: il login non bada a maiuscole e spazi */
   const email = typeof req.body?.email === "string" ? chiaveEmail(req.body.email) : "";
   if (!/^[^@\s]+@[^@\s]+$/.test(email)) {
@@ -1043,8 +1007,10 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null });
   if (erroreP) { res.status(400).json({ error: erroreP }); return; }
   const safeRole = role === "admin" ? "admin" : "user";
-  /* chi nasce senza indicazioni parte senza Analisi (lib/permessi.ts) */
-  const safePerm = normalizzaPermessi(permissions, { nuovo: true });
+  /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima, e
+   * senza ruoli non apre nessuna area finché l'amministratore non gliene dà */
+  const nuovo = permessiDopo({ role: "user" }, { role: safeRole, ruoli: chiesti.ruoli ?? [], datiSanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false });
+  const vista = nuovo.permissions;
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
     : "driver";
@@ -1053,20 +1019,16 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
     if ((gia as any).rows?.length) { res.status(409).json({ error: "Email già registrata" }); return; }
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
     const r = await db.execute(sql`
-      INSERT INTO users (email, password_hash, full_name, role, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
-      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${JSON.stringify(safePerm)}::jsonb, ${safeFleetcareRole}, true, true, true)
-      RETURNING id, email, full_name, role, permissions, fleetcare_role, active, created_at
+      INSERT INTO users (email, password_hash, full_name, role, ruoli, dati_sanitari, analisi, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
+      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${pgArray(nuovo.ruoli)}::text[], ${nuovo.dati_sanitari}, ${nuovo.analisi},
+              ${JSON.stringify(vista)}::jsonb, ${safeFleetcareRole}, true, true, true)
+      RETURNING ${COLONNE_UTENTE}
     `);
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
     for (const a of azioniAdmin(null, row)) {
       await registraAccesso(req, { userId: row.id, email: row.email, esito: `admin:${a} (${req.user!.email})` });
     }
-    res.json({ user: {
-      id: row.id, email: row.email, fullName: row.full_name,
-      role: row.role, permissions: row.permissions,
-      fleetcareRole: row.fleetcare_role, active: row.active,
-      createdAt: row.created_at,
-    }});
+    res.json({ user: { ...utenteDaRiga(row), createdAt: row.created_at } });
   } catch (e: any) {
     if (String(e?.message || "").includes("duplicate")) {
       res.status(409).json({ error: "Email già registrata" }); return;
@@ -1076,19 +1038,19 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   }
 });
 
-// PATCH /api/admin/users/:id { fullName?, role?, permissions?, fleetcareRole?, active?, password? }
+// PATCH /api/admin/users/:id { fullName?, role?, ruoli?, datiSanitari?, analisi?, accessoDiPrima?, fleetcareRole?, active?, password? }
+// accessoDiPrima: gli interruttori di prima da tenere accesi. Si possono solo togliere.
 router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const id = String(req.params.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
-  const { fullName, role, permissions, fleetcareRole, active, password, resetMfa, sblocca } = req.body || {};
+  const { fullName, role, fleetcareRole, active, password, resetMfa, sblocca } = req.body || {};
+  const chiesti = leggiPermessiRichiesti(req.body);
+  if ("errore" in chiesti) { res.status(400).json({ error: chiesti.errore }); return; }
+  const cambiaPermessi = role !== undefined || chiesti.ruoli !== undefined || chiesti.datiSanitari !== undefined
+    || chiesti.analisi !== undefined || chiesti.accessoDiPrima !== undefined;
   const sets: any[] = [];
   let revoca = false;
   if (fullName !== undefined) sets.push(sql`full_name = ${fullName}`);
-  if (role !== undefined) sets.push(sql`role = ${role === "admin" ? "admin" : "user"}`);
-  if (permissions !== undefined) {
-    /* l'oggetto intero, come lo manda Gestione Utenti; rete e orari porta con sé i turni (lib/permessi.ts) */
-    sets.push(sql`permissions = ${JSON.stringify(normalizzaPermessi(permissions, { nuovo: false }))}::jsonb`);
-  }
   if (fleetcareRole !== undefined) {
     if (!(FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)) {
       res.status(400).json({ error: `Ruolo FleetCare non valido: ${fleetcareRole}` }); return;
@@ -1121,30 +1083,41 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   /* password provvisoria o disattivazione: anche i browser riconosciuti si dimenticano
    * (non per «Reimposta verifica»: il solito computer deve restare riconosciuto) */
   if (password !== undefined || active === false) sets.push(sql`dispositivi_versione = dispositivi_versione + 1`);
-  if (sets.length === 0) { res.json({ ok: true, noop: true }); return; }
-  /* com'era prima: il registro scrive solo quello che cambia davvero */
-  const pr = await db.execute<any>(sql`SELECT role, permissions, fleetcare_role, full_name, active FROM users WHERE id = ${id}::uuid`);
-  const prima = (pr as any).rows?.[0];
-  if (!prima) { res.status(404).json({ error: "Utente non trovato" }); return; }
-  // Concatena gli assignment con virgole
-  const assignments = sql.join(sets, sql`, `);
-  const r = await db.execute(sql`
-    UPDATE users SET ${assignments} WHERE id = ${id}::uuid
-    RETURNING id, email, full_name, role, permissions, fleetcare_role, active
-  `);
-  const row: any = (r as any).rows?.[0] ?? (r as any)[0];
-  if (!row) { res.status(404).json({ error: "Utente non trovato" }); return; }
+  if (sets.length === 0 && !cambiaPermessi) { res.json({ ok: true, noop: true }); return; }
+  /* Lettura e scrittura nella stessa transazione, con la riga bloccata: i campi dei
+   * permessi e la vista permissions si scrivono insieme, da un solo stato. */
+  const esito = await db.transaction(async (tx) => {
+    /* com'era prima: il registro scrive solo quello che cambia davvero */
+    const pr = await tx.execute<any>(sql`
+      SELECT role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions, fleetcare_role, full_name, active
+        FROM users WHERE id = ${id}::uuid FOR UPDATE`);
+    const prima = (pr as any).rows?.[0];
+    if (!prima) return null;
+    if (cambiaPermessi) {
+      /* lo stato di prima con sopra la richiesta, e la vista permissions ricavata da lì (lib/permessi.ts) */
+      const dopo = permessiDopo(prima, { role, ...chiesti });
+      sets.push(
+        sql`role = ${dopo.role}`, sql`ruoli = ${pgArray(dopo.ruoli)}::text[]`,
+        sql`accesso_di_prima = ${JSON.stringify(dopo.accesso_di_prima)}::jsonb`,
+        sql`dati_sanitari = ${dopo.dati_sanitari}`, sql`analisi = ${dopo.analisi}`,
+        sql`permissions = ${JSON.stringify(dopo.permissions)}::jsonb`,
+      );
+    }
+    const r = await tx.execute(sql`
+      UPDATE users SET ${sql.join(sets, sql`, `)} WHERE id = ${id}::uuid
+      RETURNING ${COLONNE_UTENTE}
+    `);
+    return { prima, row: (r as any).rows?.[0] ?? (r as any)[0] };
+  });
+  if (!esito?.row) { res.status(404).json({ error: "Utente non trovato" }); return; }
+  const { prima, row } = esito;
   /* la password da ogni indirizzo: sbloccata, o nuova (la provvisoria deve poter entrare) */
   if (sblocca === true || password !== undefined) await azzeraTuttiITentativiPassword(chiaveEmail(row.email));
   /* nel registro degli accessi: chi ha fatto che cosa sull'accesso di chi
    * (ruolo, permessi, ruolo FleetCare, nome, password, verifica, blocco, stato) */
   const azioni = azioniAdmin(prima, row, { password: password !== undefined, resetMfa: resetMfa === true, sblocca: sblocca === true });
   for (const a of azioni) await registraAccesso(req, { userId: id, email: row.email, esito: `admin:${a} (${req.user!.email})` });
-  res.json({ user: {
-    id: row.id, email: row.email, fullName: row.full_name,
-    role: row.role, permissions: row.permissions,
-    fleetcareRole: row.fleetcare_role, active: row.active,
-  }});
+  res.json({ user: utenteDaRiga(row) });
 });
 
 // DELETE /api/admin/users/:id

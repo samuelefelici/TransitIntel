@@ -91,9 +91,11 @@ function controllaProprieta(testo: string): string[] {
     }
   }
   if (/\b(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?(public|caronte|coda)"?\./i.test(sql)) {
-    // come cerbero_owner, guardato dall'esistenza del ruolo, e di nuovo chi migra prima della fine
-    // (drizzle registra la migrazione nella stessa transazione, in una tabella che cerbero_owner non scrive)
-    const come = /to_regrole\('cerbero_owner'\)\s+IS\s+NOT\s+NULL\s+THEN\s+EXECUTE\s+'SET\s+LOCAL\s+ROLE\s+cerbero_owner'/i.test(sql);
+    // come cerbero_owner, guardato dal ruolo (che ci sia, o meglio che la tabella sia già sua: su un
+    // database appena creato in un cluster che ha già i ruoli la tabella è ancora di chi migra), e di
+    // nuovo chi migra prima della fine (drizzle registra la migrazione nella stessa transazione, in una
+    // tabella che cerbero_owner non scrive)
+    const come = /to_regrole\('cerbero_owner'\)(?:\s+IS\s+NOT\s+NULL|\s*\))\s+THEN\s+EXECUTE\s+'SET\s+LOCAL\s+ROLE\s+cerbero_owner'/i.test(sql);
     if (!come) problemi.push("tocca i dati delle tabelle di Cerbero senza passare a cerbero_owner (README, «Chi possiede cosa»)");
     else if (!/RESET\s+ROLE\s*;?\s*$/i.test(sql.trim())) problemi.push("passa a cerbero_owner ma non torna a chi migra con RESET ROLE alla fine");
   }
@@ -129,6 +131,17 @@ describe("dalla 0006 gli oggetti nuovi sono di cerbero_owner", () => {
     UPDATE public.users SET x = 1;`;
     expect(controllaProprieta(giusta)).toEqual(["passa a cerbero_owner ma non torna a chi migra con RESET ROLE alla fine"]);
     expect(controllaProprieta(`${giusta}\n    RESET ROLE;`)).toEqual([]);
+    // la guardia migliore: si passa a cerbero_owner solo se la tabella è già sua
+    const sua = `DO $$ BEGIN
+      IF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+                  WHERE c.oid = pg_catalog.to_regclass('public.users')
+                    AND c.relowner = pg_catalog.to_regrole('cerbero_owner')) THEN
+        EXECUTE 'SET LOCAL ROLE cerbero_owner';
+      END IF;
+    END $$;
+    UPDATE public.users SET x = 1;`;
+    expect(controllaProprieta(sua)).toEqual(["passa a cerbero_owner ma non torna a chi migra con RESET ROLE alla fine"]);
+    expect(controllaProprieta(`${sua}\n    RESET ROLE;`)).toEqual([]);
   });
   it.each(diario.filter(e => e.idx >= 6).map(e => e.tag))("%s", (tag) => {
     expect(controllaProprieta(readFileSync(path.join(CARTELLA, `${tag}.sql`), "utf8"))).toEqual([]);

@@ -1,7 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
 import { voceAdminLeggibile } from "@/lib/registro-admin";
-import { useAuth, type Permission } from "@/hooks/use-auth";
+import { useAuth } from "@/hooks/use-auth";
+import {
+  AREE, DESCRIZIONI_AREE, DESCRIZIONI_RUOLI, INTERRUTTORI_DI_PRIMA, NOMI_AREE, NOMI_RUOLI, RUOLI, RUOLO_FLEETCARE_SUGGERITO,
+  dirittiDi, haAccessoDiPrima, puo, vedeDatiSanitari,
+  type Diritti, type InterruttoreDiPrima, type RuoloAziendale,
+} from "@workspace/permessi";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -26,8 +31,14 @@ interface AdminUser {
   id: string;
   email: string;
   fullName: string | null;
+  /** "admin" è l'amministratore di sistema, non un ruolo di lavoro */
   role: "admin" | "user";
-  permissions: Record<Permission, boolean>;
+  ruoli: RuoloAziendale[];
+  accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>;
+  datiSanitari: boolean;
+  analisi: boolean;
+  /** lettura o scrittura per area, come li calcola il server */
+  diritti: Diritti;
   fleetcareRole: string;
   active: boolean;
   lastLoginAt: string | null;
@@ -57,29 +68,25 @@ const ESITO_LABEL: Record<string, string> = {
 };
 const esitoLeggibile = (e: string) => voceAdminLeggibile(e) ?? ESITO_LABEL[e] ?? e;
 
-/** I permessi sono i moduli del menu (lib/navigazione.ts), nell'ordine della giornata. */
-const PERM_LABEL: Record<Permission, string> = {
-  network: "Rete e orari (Planning Studio, confronto programmi, orari al pubblico)",
-  scheduling: "Turni (progetti di esercizio, turni misti, pubblicazione al roster)",
-  roster: "Roster (tabellone, assenze, rotazioni; vede malattia, infortunio, 104)",
-  personale: "Personale (anagrafica completa: contatti, paghe, ferie, visite)",
-  centrale: "Esercizio (mappa live, AVM, tempi osservati)",
-  fleetcare: "Flotta (FleetCare: mezzi, fermi, officina)",
-  fares: "Tariffe (bigliettazione, polimetriche, simulatore)",
-  analytics: "Analisi (mappa del territorio, traffico, domanda, linee GTFS, ipotesi di linea, dati GTFS)",
+/* I nomi degli interruttori di prima dei ruoli, per dire all'amministratore che cosa resta acceso */
+const NOMI_INTERRUTTORI: Record<InterruttoreDiPrima, string> = {
+  network: "Rete e orari", scheduling: "Turni", roster: "Roster", personale: "Personale",
+  centrale: "Esercizio", fleetcare: "Flotta", fares: "Tariffe",
 };
 
-/** Colonne-interruttore della tabella utenti, nell'ordine in cui compaiono.
- *  FleetCare ha una colonna sua perché porta anche il ruolo. */
-const PERM_COLONNE: Array<{ perm: Permission; intestazione: string }> = [
-  { perm: "network", intestazione: "Rete e orari" },
-  { perm: "scheduling", intestazione: "Turni" },
-  { perm: "roster", intestazione: "Roster" },
-  { perm: "personale", intestazione: "Personale" },
-  { perm: "centrale", intestazione: "Esercizio" },
-  { perm: "fares", intestazione: "Tariffe" },
-  { perm: "analytics", intestazione: "Analisi" },
-];
+/** Che cosa si sceglie per i permessi di un utente (la stessa forma in creazione e in modifica). */
+interface Scelte {
+  role: "admin" | "user";
+  ruoli: RuoloAziendale[];
+  /** gli interruttori di prima che restano accesi (in modifica: si possono solo togliere) */
+  accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>;
+  datiSanitari: boolean;
+  analisi: boolean;
+  fleetcareRole: string;
+}
+
+const dirittiDelleScelte = (s: Scelte): Diritti =>
+  dirittiDi({ admin: s.role === "admin", ruoli: s.ruoli, accessoDiPrima: s.accessoDiPrima, analisi: s.analisi, datiSanitari: s.datiSanitari });
 
 /** Ruoli disponibili DENTRO FleetCare (gli admin entrano sempre come Admin Flotta). */
 const FLEETCARE_ROLE_LABEL: Record<string, string> = {
@@ -164,20 +171,6 @@ export default function AdminUsersPage() {
     }
   };
 
-  const handleTogglePermission = async (u: AdminUser, p: Permission) => {
-    const next = { ...u.permissions, [p]: !u.permissions?.[p] };
-    try {
-      await apiFetch(`/api/admin/users/${u.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ permissions: next }),
-      });
-      void load();
-    } catch (e: any) {
-      toast({ title: "Errore", description: e?.message, variant: "destructive" });
-    }
-  };
-
   const handleFleetcareRole = async (u: AdminUser, fleetcareRole: string) => {
     try {
       await apiFetch(`/api/admin/users/${u.id}`, {
@@ -200,10 +193,11 @@ export default function AdminUsersPage() {
             Gestione Utenti
           </h1>
           <p className="text-sm text-muted-foreground">
-            Crea utenti, assegna permessi, resetta password.
+            Crea utenti, assegna i ruoli aziendali, resetta password.
           </p>
           <p className="text-xs text-muted-foreground mt-1 max-w-3xl">
-            Ogni permesso è una sezione del menu. Analisi parte spenta per i nuovi utenti: chi l'aveva la tiene finché non la togli.
+            Un ruolo aziendale dà lettura o scrittura per area; con più ruoli vale il diritto più alto. Chi c'era prima dei ruoli
+            tiene il suo «accesso di prima» finché non glielo spegni da «Modifica», dopo avergli dato i ruoli.
           </p>
         </div>
         <Button onClick={() => setShowCreate(true)}>
@@ -225,12 +219,10 @@ export default function AdminUsersPage() {
                   <tr className="border-b border-border/40 text-left text-muted-foreground">
                     <th className="py-2 pr-4">Email</th>
                     <th className="py-2 pr-4">Nome</th>
-                    <th className="py-2 pr-4">Ruolo</th>
+                    <th className="py-2 pr-4" title="Amministratore di sistema o utente: non è un ruolo di lavoro">Sistema</th>
                     <th className="py-2 pr-4">Attivo</th>
-                    {PERM_COLONNE.map((c) => (
-                      <th key={c.perm} className="py-2 pr-4" title={PERM_LABEL[c.perm]}>{c.intestazione}</th>
-                    ))}
-                    <th className="py-2 pr-4" title={PERM_LABEL.fleetcare}>FleetCare</th>
+                    <th className="py-2 pr-4">Ruoli aziendali</th>
+                    <th className="py-2 pr-4" title="Il ruolo dentro FleetCare, per chi può aprire la Flotta">FleetCare</th>
                     <th className="py-2 pr-4">Accesso</th>
                     <th className="py-2 pr-4">Ultimo login</th>
                     <th className="py-2 pr-4 text-right">Azioni</th>
@@ -252,7 +244,7 @@ export default function AdminUsersPage() {
                               <ShieldCheck className="w-3.5 h-3.5" /> admin
                             </span>
                           ) : (
-                            <span className="text-muted-foreground">user</span>
+                            <span className="text-muted-foreground">utente</span>
                           )}
                         </td>
                         <td className="py-2 pr-4">
@@ -262,46 +254,26 @@ export default function AdminUsersPage() {
                             onCheckedChange={() => handleToggleActive(u)}
                           />
                         </td>
-                        {PERM_COLONNE.map(({ perm: p }) => {
-                          /* Rete e orari porta con sé i Turni (lo impone anche il server); un dato
-                           * di prima incoerente resta cliccabile e il salvataggio lo sistema */
-                          const legato = p === "scheduling" && !!u.permissions?.network && !!u.permissions?.scheduling;
-                          return (
-                            <td key={p} className="py-2 pr-4">
-                              <Switch
-                                checked={isAdminRow ? true : !!u.permissions?.[p]}
-                                disabled={isAdminRow || legato}
-                                title={legato ? "Compreso in Rete e orari" : undefined}
-                                aria-label={PERM_LABEL[p]}
-                                onCheckedChange={() => handleTogglePermission(u, p)}
-                              />
-                            </td>
-                          );
-                        })}
-                        {/* FleetCare: abilitazione + ruolo dentro il modulo.
-                            Gli admin sono sempre abilitati (come fleet_admin). */}
                         <td className="py-2 pr-4">
-                          <div className="flex items-center gap-2">
-                            <Switch
-                              checked={isAdminRow ? true : !!u.permissions?.fleetcare}
-                              disabled={isAdminRow}
-                              onCheckedChange={() => handleTogglePermission(u, "fleetcare")}
-                            />
-                            {isAdminRow ? (
-                              <span className="text-xs text-amber-400/80">Admin Flotta</span>
-                            ) : u.permissions?.fleetcare ? (
-                              <select
-                                className="bg-background border border-border rounded-md h-7 px-1 text-xs"
-                                value={u.fleetcareRole || "driver"}
-                                onChange={(e) => handleFleetcareRole(u, e.target.value)}
-                                title="Ruolo dell'utente dentro FleetCare"
-                              >
-                                {Object.entries(FLEETCARE_ROLE_LABEL).map(([v, l]) => (
-                                  <option key={v} value={v}>{l}</option>
-                                ))}
-                              </select>
-                            ) : null}
-                          </div>
+                          <RuoliInBreve u={u} />
+                        </td>
+                        {/* FleetCare: il ruolo dentro il modulo, per chi può aprire la Flotta.
+                            Gli admin entrano sempre (come fleet_admin). */}
+                        <td className="py-2 pr-4">
+                          {isAdminRow ? (
+                            <span className="text-xs text-amber-400/80">Admin Flotta</span>
+                          ) : puo(u.diritti, "flotta", "L") ? (
+                            <select
+                              className="bg-background border border-border rounded-md h-7 px-1 text-xs"
+                              value={u.fleetcareRole || "driver"}
+                              onChange={(e) => handleFleetcareRole(u, e.target.value)}
+                              aria-label={`Ruolo di ${u.email} dentro FleetCare`}
+                            >
+                              {Object.entries(FLEETCARE_ROLE_LABEL).map(([v, l]) => (
+                                <option key={v} value={v}>{l}</option>
+                              ))}
+                            </select>
+                          ) : <span className="text-xs text-muted-foreground">—</span>}
                         </td>
                         <td className="py-2 pr-4 text-xs whitespace-nowrap">
                           <div className={u.mfaAttiva ? "text-emerald-400" : u.mfaObbligatoria ? "text-amber-400" : "text-muted-foreground"}>
@@ -409,20 +381,8 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   const [email, setEmail] = useState("");
   const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"admin" | "user">("user");
-  /* come PERMESSI_NUOVO_UTENTE del server (api-server/src/lib/permessi.ts): Analisi spenta,
-   * i moduli con dati delicati (Esercizio, Flotta, Personale, Roster) li accende l'admin */
-  const [perms, setPerms] = useState<Record<Permission, boolean>>({
-    network: true,
-    scheduling: true,
-    fares: true,
-    analytics: false,
-    centrale: false,
-    personale: false,
-    roster: false,
-    fleetcare: false,
-  });
-  const [fleetcareRole, setFleetcareRole] = useState("driver");
+  /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima */
+  const [scelte, setScelte] = useState<Scelte>({ role: "user", ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, fleetcareRole: "driver" });
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -439,7 +399,10 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       await apiFetch("/api/admin/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, fullName, password, role, permissions: perms, fleetcareRole }),
+        body: JSON.stringify({
+          email, fullName, password, role: scelte.role, ruoli: scelte.ruoli,
+          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, fleetcareRole: scelte.fleetcareRole,
+        }),
       });
       toast({ title: "Utente creato" });
       onCreated();
@@ -452,18 +415,18 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Nuovo utente</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <Label>Email</Label>
-            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Label htmlFor="nuovo-utente-email">Email</Label>
+            <Input id="nuovo-utente-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
           <div>
-            <Label>Nome completo</Label>
-            <Input value={fullName} onChange={(e) => setFullName(e.target.value)} />
+            <Label htmlFor="nuovo-utente-nome">Nome completo</Label>
+            <Input id="nuovo-utente-nome" value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </div>
           <div>
             <Label htmlFor="nuovo-utente-password">Password</Label>
@@ -474,50 +437,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
               Almeno {PASSWORD_MIN} caratteri. Meglio una frase di più parole; niente nome, email o password comuni.
             </p>
           </div>
-          <div>
-            <Label>Ruolo</Label>
-            <select
-              className="w-full bg-background border border-border rounded-md h-9 px-2"
-              value={role}
-              onChange={(e) => setRole(e.target.value as any)}
-            >
-              <option value="user">user</option>
-              <option value="admin">admin</option>
-            </select>
-          </div>
-          <div className="space-y-2 border-t border-border/40 pt-3">
-            <p className="text-sm font-medium">Permessi</p>
-            {(Object.keys(PERM_LABEL) as Permission[]).map((p) => {
-              const legato = p === "scheduling" && perms.network;
-              return (
-                <div key={p} className="flex items-center justify-between gap-3">
-                  <span className="text-sm">{PERM_LABEL[p]}</span>
-                  <Switch
-                    checked={role === "admin" ? true : perms[p] || legato}
-                    disabled={role === "admin" || legato}
-                    title={legato ? "Compreso in Rete e orari" : undefined}
-                    aria-label={PERM_LABEL[p]}
-                    onCheckedChange={(v) => setPerms((prev) => ({ ...prev, [p]: v, ...(p === "network" && v ? { scheduling: true } : {}) }))}
-                  />
-                </div>
-              );
-            })}
-            {/* Ruolo dentro FleetCare (solo se abilitato; gli admin sono sempre Admin Flotta) */}
-            {role !== "admin" && perms.fleetcare && (
-              <div className="flex items-center justify-between pl-4">
-                <span className="text-sm text-muted-foreground">Ruolo in FleetCare</span>
-                <select
-                  className="bg-background border border-border rounded-md h-8 px-2 text-sm"
-                  value={fleetcareRole}
-                  onChange={(e) => setFleetcareRole(e.target.value)}
-                >
-                  {Object.entries(FLEETCARE_ROLE_LABEL).map(([v, l]) => (
-                    <option key={v} value={v}>{l}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
+          <PermessiUtente scelte={scelte} onChange={setScelte} prefisso="nuovo-utente" />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Annulla</Button>
@@ -539,7 +459,10 @@ function EditUserDialog({
 }) {
   const { toast } = useToast();
   const [fullName, setFullName] = useState(user.fullName || "");
-  const [role, setRole] = useState<"admin" | "user">(user.role);
+  const [scelte, setScelte] = useState<Scelte>({
+    role: user.role, ruoli: user.ruoli ?? [], accessoDiPrima: user.accessoDiPrima ?? {},
+    datiSanitari: !!user.datiSanitari, analisi: !!user.analisi, fleetcareRole: user.fleetcareRole || "driver",
+  });
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -548,7 +471,10 @@ function EditUserDialog({
       await apiFetch(`/api/admin/users/${user.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, role }),
+        body: JSON.stringify({
+          fullName, role: scelte.role, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima,
+          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, fleetcareRole: scelte.fleetcareRole,
+        }),
       });
       toast({ title: "Salvato" });
       onSaved();
@@ -561,26 +487,16 @@ function EditUserDialog({
 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Modifica {user.email}</DialogTitle>
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <Label>Nome completo</Label>
-            <Input value={fullName} onChange={(e) => setFullName(e.target.value)} />
+            <Label htmlFor="modifica-utente-nome">Nome completo</Label>
+            <Input id="modifica-utente-nome" value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </div>
-          <div>
-            <Label>Ruolo</Label>
-            <select
-              className="w-full bg-background border border-border rounded-md h-9 px-2"
-              value={role}
-              onChange={(e) => setRole(e.target.value as any)}
-            >
-              <option value="user">user</option>
-              <option value="admin">admin</option>
-            </select>
-          </div>
+          <PermessiUtente scelte={scelte} onChange={setScelte} diPrima={user.accessoDiPrima ?? {}} prefisso="modifica-utente" />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Annulla</Button>
@@ -588,6 +504,181 @@ function EditUserDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/* ─── I permessi di un utente: ruoli aziendali, accesso di prima, capacità ─── */
+
+/** I ruoli di un utente in una riga della tabella. */
+function RuoliInBreve({ u }: { u: AdminUser }) {
+  if (u.role === "admin") return <span className="text-xs text-amber-400/80">amministratore di sistema: può tutto</span>;
+  const diPrima = INTERRUTTORI_DI_PRIMA.filter(i => u.accessoDiPrima?.[i] === true);
+  const niente = (u.ruoli ?? []).length === 0 && diPrima.length === 0 && !u.analisi;
+  return (
+    <div className="flex flex-wrap gap-1 max-w-md">
+      {(u.ruoli ?? []).map(r => (
+        <span key={r} className="text-[11px] px-1.5 py-0.5 rounded border border-primary/40 bg-primary/10 text-primary">{NOMI_RUOLI[r] ?? r}</span>
+      ))}
+      {diPrima.length > 0 && (
+        <span className="text-[11px] px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300"
+          title="Gli interruttori di prima dei ruoli: valgono scrittura sulla loro area. Si spengono da «Modifica», dopo aver dato i ruoli.">
+          accesso di prima: {diPrima.map(i => NOMI_INTERRUTTORI[i]).join(", ")}
+        </span>
+      )}
+      {u.datiSanitari && <span className="text-[11px] px-1.5 py-0.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300">dati sanitari</span>}
+      {u.analisi && <span className="text-[11px] px-1.5 py-0.5 rounded border border-border text-muted-foreground">Analisi</span>}
+      {niente && <span className="text-xs text-muted-foreground">nessun ruolo: non apre nessuna area</span>}
+    </div>
+  );
+}
+
+const LIVELLO_IN_PAROLE = { S: "scrive", L: "legge" } as const;
+
+function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso }: {
+  scelte: Scelte;
+  onChange: (s: Scelte) => void;
+  /** gli interruttori di prima che l'utente ha oggi: si possono solo togliere */
+  diPrima?: Partial<Record<InterruttoreDiPrima, true>>;
+  prefisso: string;
+}) {
+  const admin = scelte.role === "admin";
+  const diritti = dirittiDelleScelte(scelte);
+  const quelliDiPrima = INTERRUTTORI_DI_PRIMA.filter(i => diPrima[i] === true);
+  const flotta = puo(diritti, "flotta", "L");
+  const roster = puo(diritti, "roster", "L");
+  /* la stessa regola del database (users.mfa_obbligatoria): chi vede il personale o il roster */
+  const verificaObbligatoria = admin || roster || puo(diritti, "personale", "L");
+  const suggerito = scelte.ruoli.map(r => RUOLO_FLEETCARE_SUGGERITO[r]).find(Boolean);
+
+  const cambiaRuolo = (r: RuoloAziendale, acceso: boolean) =>
+    onChange({ ...scelte, ruoli: RUOLI.filter(x => (x === r ? acceso : scelte.ruoli.includes(x))) });
+  const cambiaDiPrima = (i: InterruttoreDiPrima, acceso: boolean) => {
+    const resto = { ...scelte.accessoDiPrima };
+    if (acceso) resto[i] = true; else delete resto[i];
+    onChange({ ...scelte, accessoDiPrima: resto });
+  };
+
+  return (
+    <div className="space-y-4 border-t border-border/40 pt-3">
+      <div>
+        <Label htmlFor={`${prefisso}-sistema`}>Amministratore di sistema</Label>
+        <select
+          id={`${prefisso}-sistema`}
+          className="w-full bg-background border border-border rounded-md h-9 px-2"
+          value={scelte.role}
+          onChange={(e) => onChange({ ...scelte, role: e.target.value === "admin" ? "admin" : "user" })}
+        >
+          <option value="user">no</option>
+          <option value="admin">sì: gestisce utenti, azienda e integrazioni, e può tutto</option>
+        </select>
+      </div>
+
+      {!admin && (
+        <>
+          <fieldset className="space-y-1.5">
+            <legend className="text-sm font-medium mb-1">Ruoli aziendali</legend>
+            {RUOLI.map(r => (
+              <label key={r} className="flex items-start gap-2 cursor-pointer">
+                <Checkbox className="mt-0.5" checked={scelte.ruoli.includes(r)} onCheckedChange={(v) => cambiaRuolo(r, v === true)} />
+                <span className="text-sm leading-tight">
+                  {NOMI_RUOLI[r]}
+                  <span className="block text-xs text-muted-foreground">{DESCRIZIONI_RUOLI[r]}</span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+
+          {quelliDiPrima.length > 0 && (
+            <fieldset className="space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+              <legend className="text-sm font-medium px-1 text-amber-300">Accesso di prima</legend>
+              <p className="text-xs text-muted-foreground">
+                Gli interruttori che questo utente aveva prima dei ruoli: finché restano accesi valgono come scrittura sulla loro area.
+                Dagli i ruoli qui sopra, poi togli la spunta: una volta tolto non si rimette, i diritti nuovi si danno con i ruoli.
+              </p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                {quelliDiPrima.map(i => (
+                  <label key={i} className="flex items-center gap-2 cursor-pointer text-sm">
+                    <Checkbox checked={scelte.accessoDiPrima[i] === true} onCheckedChange={(v) => cambiaDiPrima(i, v === true)} />
+                    {NOMI_INTERRUTTORI[i]}
+                  </label>
+                ))}
+              </div>
+              {haAccessoDiPrima(scelte.accessoDiPrima) && (
+                <Button type="button" size="sm" variant="outline" onClick={() => onChange({ ...scelte, accessoDiPrima: {} })}>
+                  Spegni tutto l'accesso di prima
+                </Button>
+              )}
+            </fieldset>
+          )}
+
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Capacità date a questo utente</p>
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-sm leading-tight">
+                Dati sanitari
+                <span className="block text-xs text-muted-foreground">
+                  Vede e scrive nel roster i codici di malattia, infortunio e 104. Chi non ce l'ha legge «assenza» senza il motivo.
+                  {!roster && " Serve anche poter aprire il roster."}
+                </span>
+              </span>
+              {/* senza il roster la capacità non si può usare: il server la spegne al salvataggio */}
+              <Switch checked={scelte.datiSanitari && roster} disabled={!roster} aria-label="Dati sanitari"
+                onCheckedChange={(v) => onChange({ ...scelte, datiSanitari: v })} />
+            </div>
+            <div className="flex items-start justify-between gap-3">
+              <span className="text-sm leading-tight">
+                Analisi
+                <span className="block text-xs text-muted-foreground">{DESCRIZIONI_AREE.analisi}. Nessun ruolo la dà.</span>
+              </span>
+              <Switch checked={scelte.analisi} aria-label="Analisi" onCheckedChange={(v) => onChange({ ...scelte, analisi: v })} />
+            </div>
+          </div>
+
+          {flotta && (
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor={`${prefisso}-fleetcare`} className="leading-tight">
+                Ruolo dentro FleetCare
+                {suggerito && suggerito !== scelte.fleetcareRole && (
+                  <span className="block text-xs font-normal text-muted-foreground">Di solito, con questi ruoli: {FLEETCARE_ROLE_LABEL[suggerito] ?? suggerito}</span>
+                )}
+              </Label>
+              <select
+                id={`${prefisso}-fleetcare`}
+                className="bg-background border border-border rounded-md h-8 px-2 text-sm"
+                value={scelte.fleetcareRole}
+                onChange={(e) => onChange({ ...scelte, fleetcareRole: e.target.value })}
+              >
+                {Object.entries(FLEETCARE_ROLE_LABEL).map(([v, l]) => (
+                  <option key={v} value={v}>{l}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </>
+      )}
+
+      <div>
+        <p className="text-sm font-medium mb-1">Che cosa può fare</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-0.5 text-sm">
+          {AREE.map(a => (
+            <div key={a} className="flex items-baseline justify-between gap-2 border-b border-border/20 py-0.5" title={DESCRIZIONI_AREE[a]}>
+              <span>{NOMI_AREE[a]}</span>
+              <span className={diritti[a] === "S" ? "text-emerald-400 font-medium" : diritti[a] === "L" ? "text-sky-300" : "text-muted-foreground"}>
+                {diritti[a] ? LIVELLO_IN_PAROLE[diritti[a]] : "—"}
+              </span>
+            </div>
+          ))}
+        </div>
+        {!admin && vedeDatiSanitari({ admin, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima, analisi: scelte.analisi, datiSanitari: scelte.datiSanitari }) && (
+          <p className="text-xs text-rose-300 mt-1">Vede i codici sanitari del roster.</p>
+        )}
+        {verificaObbligatoria && (
+          <p className="text-xs text-muted-foreground mt-1">
+            Con questi diritti la verifica in due passaggi è obbligatoria: al prossimo accesso dovrà attivarla, se non l'ha già.
+          </p>
+        )}
+      </div>
+    </div>
   );
 }
 

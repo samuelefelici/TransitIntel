@@ -4,14 +4,30 @@
  * permessi per percorso hanno i loro test (auth-permessi.test.ts).
  */
 import express, { type Express, type IRouter } from "express";
+import { dirittiDi, interruttoriCompatibili, type InterruttoreDiPrima, type RuoloAziendale } from "@workspace/permessi";
 import type { AuthUser, Permission } from "../../lib/auth";
 
-const PERMESSI: Permission[] = ["analytics", "fares", "scheduling", "network", "fleetcare", "centrale", "personale", "roster"];
-
-export function utenteDiProva(id: string, permessi: Permission[] = [], ruolo: "admin" | "user" = "user"): AuthUser {
+/**
+ * Un utente di prova. `interruttori` sono gli interruttori di prima dei ruoli:
+ * diventano il suo accesso di prima, come fa la migrazione 0009 il giorno del
+ * rilascio (chi ha «roster» tiene i dati sanitari, «analytics» è l'Analisi).
+ * Con `ruoli` si prova invece un utente che ha solo ruoli aziendali.
+ */
+export function utenteDiProva(
+  id: string, interruttori: Permission[] = [], ruolo: "admin" | "user" = "user",
+  extra: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean } = {},
+): AuthUser {
+  const accessoDiPrima = Object.fromEntries(interruttori.filter(i => i !== "analytics").map(i => [i, true])) as Partial<Record<InterruttoreDiPrima, true>>;
+  const profilo = {
+    admin: ruolo === "admin", ruoli: extra.ruoli ?? [], accessoDiPrima,
+    analisi: extra.analisi ?? interruttori.includes("analytics"),
+    datiSanitari: extra.datiSanitari ?? interruttori.includes("roster"),
+  };
+  const diritti = dirittiDi(profilo);
   return {
     id, email: `${id}@prova.local`, fullName: null, role: ruolo,
-    permissions: Object.fromEntries(PERMESSI.map(p => [p, permessi.includes(p)])) as Record<Permission, boolean>,
+    ruoli: profilo.ruoli, accessoDiPrima, datiSanitari: profilo.datiSanitari, analisi: profilo.analisi,
+    diritti, permissions: interruttoriCompatibili(diritti),
     fleetcareRole: "driver", active: true,
   };
 }

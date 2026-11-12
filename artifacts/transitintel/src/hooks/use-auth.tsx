@@ -3,23 +3,35 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
+import { puo as haLivello, type Interruttore, type InterruttoreDiPrima, type RuoloAziendale } from "@workspace/permessi";
+import { dirittiDellUtente, type Area, type Diritti, type Livello } from "@/lib/diritti";
 
-/** Speculare a `Permission` in api-server/src/lib/auth.ts: un modulo per chiave.
- *  centrale = Centrale Operativa (Mappa live + AVM), attivabile per utente.
- *  personale = anagrafica del personale completa (dati personali, paghe, ferie, visite). */
-export type Permission = "analytics" | "fares" | "scheduling" | "network" | "fleetcare" | "centrale" | "personale" | "roster";
+/** Gli interruttori di prima dei ruoli: restano nella vista `permissions` che l'API
+ *  manda (un interruttore = almeno la lettura sulla sua area). I diritti veri sono in `diritti`. */
+export type Permission = Interruttore;
+export type { Area, Livello };
 
 export interface CurrentUser {
   id: string;
   email: string;
   fullName: string | null;
+  /** "admin" è l'amministratore di sistema, non un ruolo di lavoro */
   role: "admin" | "user";
+  /** i ruoli aziendali (assenti nell'utente in cache di prima dei ruoli) */
+  ruoli?: RuoloAziendale[];
+  /** gli interruttori di prima dei ruoli ancora accesi */
+  accessoDiPrima?: Partial<Record<InterruttoreDiPrima, true>>;
+  datiSanitari?: boolean;
+  analisi?: boolean;
+  /** lettura o scrittura per area: è su questo che si decide che cosa mostrare */
+  diritti?: Diritti;
   permissions: Record<Permission, boolean>;
   /** Ruolo dentro il modulo FleetCare (usato dallo SSO; admin = fleet_admin). */
   fleetcareRole?: string;
@@ -57,7 +69,12 @@ interface AuthCtx {
   accesso: Accesso | null;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
+  /** può almeno LEGGERE il modulo di questo interruttore (la vista di prima dei ruoli) */
   hasPermission: (p: Permission) => boolean;
+  /** i diritti per area, lettura o scrittura */
+  diritti: Diritti;
+  /** ha almeno questo livello sull'area? («S» per i comandi che modificano) */
+  puo: (area: Area, livello: Livello) => boolean;
   /** installazione di prova: si possono creare conducenti fittizi (CERBERO_DATI_PROVA=1) */
   datiProva: boolean;
   /** il server ha risposto almeno una volta a /me: i permessi in cache possono essere vecchi */
@@ -244,6 +261,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user],
   );
 
+  /* chi può davvero fare una cosa lo decide l'API: qui si decide solo che cosa mostrare */
+  const diritti = useMemo(() => dirittiDellUtente(user), [user]);
+  const puo = useCallback((area: Area, livello: Livello) => haLivello(diritti, area, livello), [diritti]);
+
   const value: AuthCtx = {
     user,
     loading,
@@ -255,6 +276,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logout,
     refresh,
     hasPermission,
+    diritti,
+    puo,
     datiProva,
     verificato,
   };

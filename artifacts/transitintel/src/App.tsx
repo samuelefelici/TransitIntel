@@ -6,8 +6,8 @@ import { Toaster as ToasterSonner } from "@/components/ui/sonner";
 import { toast as toastSonner } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
-import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
-import { CASA, NOMI_PERMESSI, PERMESSI_PAGINA } from "@/lib/navigazione";
+import { AuthProvider, useAuth, type Area } from "@/hooks/use-auth";
+import { CASA, NOMI_AREE, AREE_PAGINA } from "@/lib/navigazione";
 import { apiFetch } from "@/lib/api";
 import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -137,20 +137,38 @@ function Respinto({ motivo }: { motivo: string }) {
 }
 
 /**
- * Guardia di permesso: se l'utente non ha il permesso richiesto
- * (e non è admin), torna a Oggi.
+ * Guardia della pagina: per aprirla serve poter almeno leggere una delle sue
+ * aree (l'amministratore sempre); altrimenti si torna a Oggi. Chi può leggere
+ * ma non scrivere entra, con l'avviso «Sola lettura»: i comandi che modificano
+ * li rifiuta l'API.
  */
-function Gated({ perm, children }: { perm: Permission | readonly Permission[]; children: ReactNode }) {
-  const { hasPermission, verificato } = useAuth();
-  const servono: readonly Permission[] = typeof perm === "string" ? [perm] : perm;
-  /* con più permessi ne basta uno */
-  if (!servono.some(p => hasPermission(p))) {
-    /* i permessi in cache possono essere di prima (un permesso nuovo, un cambio dell'admin):
+function Gated({ perm, children }: { perm: Area | readonly Area[]; children: ReactNode }) {
+  const { puo, verificato } = useAuth();
+  const servono: readonly Area[] = typeof perm === "string" ? [perm] : perm;
+  /* con più aree ne basta una */
+  if (!servono.some(a => puo(a, "L"))) {
+    /* i diritti in cache possono essere di prima (un ruolo nuovo, un cambio dell'admin):
      * si rimanda via solo dopo che il server ha risposto */
     if (!verificato) return <PageLoader />;
-    return <Respinto motivo={`Serve il permesso «${servono.map(p => NOMI_PERMESSI[p]).join("» o «")}»: chiedilo all'amministratore.`} />;
+    return <Respinto motivo={`Serve l'accesso a «${servono.map(a => NOMI_AREE[a]).join("» o «")}»: chiedilo all'amministratore.`} />;
   }
-  return <>{children}</>;
+  return <>{!servono.some(a => puo(a, "S")) && <SolaLettura aree={servono} />}{children}</>;
+}
+
+/**
+ * L'avviso per chi può leggere la pagina ma non modificarla. Fisso in alto, fuori
+ * dal flusso: le pagine di lavoro occupano tutta l'altezza e non vanno spostate.
+ */
+function SolaLettura({ aree }: { aree: readonly Area[] }) {
+  return (
+    <div
+      role="status"
+      title={`Puoi consultare questa pagina ma non modificarla: per farlo serve la scrittura su «${aree.map(a => NOMI_AREE[a]).join("» o «")}». Chiedila all'amministratore.`}
+      className="fixed top-2 left-1/2 -translate-x-1/2 z-40 pointer-events-auto select-none rounded-full border border-amber-500/40 bg-amber-950/90 px-3 py-1 text-[11px] font-medium text-amber-200 shadow-lg"
+    >
+      Sola lettura
+    </div>
+  );
 }
 
 function AdminOnly({ children }: { children: ReactNode }) {
@@ -196,32 +214,32 @@ function Router() {
             <Route path="/oggi"><OggiPage /></Route>
             {/* la mappa di analisi: era la home, ora è nella sezione Analisi */}
             <Route path="/dashboard">
-              <Gated perm={PERMESSI_PAGINA["/dashboard"]}><Dashboard /></Gated>
+              <Gated perm={AREE_PAGINA["/dashboard"]}><Dashboard /></Gated>
             </Route>
             {/* Centrale Operativa: Mappa live + AVM, modulo attivabile per utente */}
             <Route path="/operations">
-              <Gated perm={PERMESSI_PAGINA["/operations"]}><OperationsPage /></Gated>
+              <Gated perm={AREE_PAGINA["/operations"]}><OperationsPage /></Gated>
             </Route>
             <Route path="/avm">
-              <Gated perm={PERMESSI_PAGINA["/avm"]}><AvmPage /></Gated>
+              <Gated perm={AREE_PAGINA["/avm"]}><AvmPage /></Gated>
             </Route>
             <Route path="/timetables">
-              <Gated perm={PERMESSI_PAGINA["/timetables"]}><TimetablesPage /></Gated>
+              <Gated perm={AREE_PAGINA["/timetables"]}><TimetablesPage /></Gated>
             </Route>
             <Route path="/runtimes">
-              <Gated perm={PERMESSI_PAGINA["/runtimes"]}><RuntimesPage /></Gated>
+              <Gated perm={AREE_PAGINA["/runtimes"]}><RuntimesPage /></Gated>
             </Route>
             <Route path="/traffic">
-              <Gated perm={PERMESSI_PAGINA["/traffic"]}><Traffic /></Gated>
+              <Gated perm={AREE_PAGINA["/traffic"]}><Traffic /></Gated>
             </Route>
             <Route path="/territory">
-              <Gated perm={PERMESSI_PAGINA["/territory"]}><Territory /></Gated>
+              <Gated perm={AREE_PAGINA["/territory"]}><Territory /></Gated>
             </Route>
             <Route path="/network">
-              <Gated perm={PERMESSI_PAGINA["/network"]}><NetworkPage /></Gated>
+              <Gated perm={AREE_PAGINA["/network"]}><NetworkPage /></Gated>
             </Route>
             <Route path="/data">
-              <Gated perm={PERMESSI_PAGINA["/data"]}><DataPage /></Gated>
+              <Gated perm={AREE_PAGINA["/data"]}><DataPage /></Gated>
             </Route>
 
             {/* Redirects for old paths → new unified pages */}
@@ -238,140 +256,140 @@ function Router() {
             {/* l'ingresso di Network Engine: ora le voci stanno nel menu */}
             <Route path="/network-engine"><Redirect to="/planning-studio" replace /></Route>
             <Route path="/scenarios">
-              <Gated perm={PERMESSI_PAGINA["/scenarios"]}><ScenariosPage /></Gated>
+              <Gated perm={AREE_PAGINA["/scenarios"]}><ScenariosPage /></Gated>
             </Route>
             {/* Intermodale: sezione di progetto (/planning-studio/:id/intermodal) */}
             <Route path="/intermodal"><Redirect to="/planning-studio" replace /></Route>
             <Route path="/coincidence-zones">
-              <Gated perm={PERMESSI_PAGINA["/coincidence-zones"]}><CoincidenceZonesPage /></Gated>
+              <Gated perm={AREE_PAGINA["/coincidence-zones"]}><CoincidenceZonesPage /></Gated>
             </Route>
 
             {/* Confronta programmi; il vecchio planner sugli scenari GTFS (new, workspace) non c'è più */}
             <Route path="/planning">
-              <Gated perm={PERMESSI_PAGINA["/planning"]}><PlanningListPage /></Gated>
+              <Gated perm={AREE_PAGINA["/planning"]}><PlanningListPage /></Gated>
             </Route>
             <Route path="/planning/*"><Redirect to="/planning" replace /></Route>
 
             {/* PlannerStudio (DB master del servizio) */}
             <Route path="/planning-studio">
-              <Gated perm={PERMESSI_PAGINA["/planning-studio"]}><PlanningStudioListPage /></Gated>
+              <Gated perm={AREE_PAGINA["/planning-studio"]}><PlanningStudioListPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id">
-              <Gated perm="network"><PlanningStudioEditorPage /></Gated>
+              <Gated perm="rete"><PlanningStudioEditorPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/clusters">
-              <Gated perm="network"><PlanningStudioClustersPage /></Gated>
+              <Gated perm="rete"><PlanningStudioClustersPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/trips">
-              <Gated perm="network"><PlanningStudioTripsPage /></Gated>
+              <Gated perm="rete"><PlanningStudioTripsPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/network">
-              <Gated perm="network"><PlanningStudioNetworkPage /></Gated>
+              <Gated perm="rete"><PlanningStudioNetworkPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/validity">
-              <Gated perm="network"><PlanningStudioValidityPage /></Gated>
+              <Gated perm="rete"><PlanningStudioValidityPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/validity-units">
-              <Gated perm="network"><PlanningStudioValidityUnitsPage /></Gated>
+              <Gated perm="rete"><PlanningStudioValidityUnitsPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/calendar">
-              <Gated perm="network"><PlanningStudioCalendarProfilePage /></Gated>
+              <Gated perm="rete"><PlanningStudioCalendarProfilePage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/ttd">
-              <Gated perm="network"><PlanningStudioTtdPage /></Gated>
+              <Gated perm="rete"><PlanningStudioTtdPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/percorrenze">
-              <Gated perm="network"><PlanningStudioPercorrenzePage /></Gated>
+              <Gated perm="rete"><PlanningStudioPercorrenzePage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/zones">
-              <Gated perm="network"><PlanningStudioZonesPage /></Gated>
+              <Gated perm="rete"><PlanningStudioZonesPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/activity">
-              <Gated perm="network"><PlanningStudioActivityPage /></Gated>
+              <Gated perm="rete"><PlanningStudioActivityPage /></Gated>
             </Route>
             {/* Infrastruttura del progetto: le stesse pagine che prima vivevano
                 come sezioni globali (/depots, /deadhead-arcs, /intermodal),
                 ora dentro il progetto e scopate su di esso. */}
             <Route path="/planning-studio/:id/depots">
-              <Gated perm="network"><DepotsPage /></Gated>
+              <Gated perm="rete"><DepotsPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/deadhead-arcs">
-              <Gated perm="network"><DeadheadArcsPage /></Gated>
+              <Gated perm="rete"><DeadheadArcsPage /></Gated>
             </Route>
             <Route path="/planning-studio/:id/intermodal">
-              <Gated perm="network"><IntermodalPage /></Gated>
+              <Gated perm="rete"><IntermodalPage /></Gated>
             </Route>
 
             {/* Bigliettazione (fares) */}
             {/* l'ingresso di Fares Engine: ora le voci stanno nel menu */}
             <Route path="/fares-engine"><Redirect to="/fares" replace /></Route>
             <Route path="/fares">
-              <Gated perm={PERMESSI_PAGINA["/fares"]}><FaresPage /></Gated>
+              <Gated perm={AREE_PAGINA["/fares"]}><FaresPage /></Gated>
             </Route>
             <Route path="/fares-polimetriche">
-              <Gated perm={PERMESSI_PAGINA["/fares-polimetriche"]}><FaresPolimetrichePage /></Gated>
+              <Gated perm={AREE_PAGINA["/fares-polimetriche"]}><FaresPolimetrichePage /></Gated>
             </Route>
             <Route path="/fare-analytics">
-              <Gated perm={PERMESSI_PAGINA["/fare-analytics"]}><FareAnalyticsPage /></Gated>
+              <Gated perm={AREE_PAGINA["/fare-analytics"]}><FareAnalyticsPage /></Gated>
             </Route>
             {/* la «Documentazione ATMA» (documento statico) non c'è più: PR 2.13b */}
             <Route path="/fare-docs"><Redirect to="/fares" replace /></Route>
             <Route path="/fare-simulator">
-              <Gated perm={PERMESSI_PAGINA["/fare-simulator"]}><FareSimulatorPage /></Gated>
+              <Gated perm={AREE_PAGINA["/fare-simulator"]}><FareSimulatorPage /></Gated>
             </Route>
             {/* la classificazione delle fermate è il passo 2 di Bigliettazione */}
             <Route path="/stops-classification"><Redirect to="/fares" replace /></Route>
             <Route path="/trip-planner">
-              <Gated perm={PERMESSI_PAGINA["/trip-planner"]}><TripPlannerPage /></Gated>
+              <Gated perm={AREE_PAGINA["/trip-planner"]}><TripPlannerPage /></Gated>
             </Route>
 
             {/* Scheduling Engine — tutte le rotte della zona fuoco */}
             <Route path="/fucina"><RedirectConQuery to="/fucina/esercizio" /></Route>
             <Route path="/fucina/esercizio/:id">
-              <Gated perm="scheduling"><PlanningStudioOperationalBoardPage /></Gated>
+              <Gated perm="turni"><PlanningStudioOperationalBoardPage /></Gated>
             </Route>
             <Route path="/fucina/esercizio">
-              <Gated perm={PERMESSI_PAGINA["/fucina/esercizio"]}><PlanningStudioOperationalBoardPage /></Gated>
+              <Gated perm={AREE_PAGINA["/fucina/esercizio"]}><PlanningStudioOperationalBoardPage /></Gated>
             </Route>
             <Route path="/fucina/relazioni/:reportId">
-              <Gated perm="scheduling"><ProcessReportPage /></Gated>
+              <Gated perm="turni"><ProcessReportPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId/pipeline">
-              <Gated perm="scheduling"><FucinaPage /></Gated>
+              <Gated perm="turni"><FucinaPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId/vehicles/:scenarioId">
-              <Gated perm="scheduling"><FucinaPage /></Gated>
+              <Gated perm="turni"><FucinaPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId/vehicles">
-              <Gated perm="scheduling"><VehicleScenariosPage /></Gated>
+              <Gated perm="turni"><VehicleScenariosPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId/drivers/:scenarioId">
-              <Gated perm="scheduling"><FucinaPage /></Gated>
+              <Gated perm="turni"><FucinaPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId/drivers">
-              <Gated perm="scheduling"><DriverScenariosPage /></Gated>
+              <Gated perm="turni"><DriverScenariosPage /></Gated>
             </Route>
             <Route path="/fucina/:projectId">
-              <Gated perm="scheduling"><SchedulingProjectDashboardPage /></Gated>
+              <Gated perm="turni"><SchedulingProjectDashboardPage /></Gated>
             </Route>
             {/* la vecchia «Ottimizzazione Servizio»: le autovetture aziendali sono in Amministrazione › Parametri */}
             <Route path="/optimization"><Redirect to="/fucina/esercizio" replace /></Route>
             <Route path="/roster/anagrafica">
-              <Gated perm={PERMESSI_PAGINA["/roster/anagrafica"]}><AnagraficaPage /></Gated>
+              <Gated perm={AREE_PAGINA["/roster/anagrafica"]}><AnagraficaPage /></Gated>
             </Route>
             <Route path="/roster/pubblicazione">
-              <Gated perm={PERMESSI_PAGINA["/roster/pubblicazione"]}><RosterPubblicazionePage /></Gated>
+              <Gated perm={AREE_PAGINA["/roster/pubblicazione"]}><RosterPubblicazionePage /></Gated>
             </Route>
             <Route path="/roster">
-              <Gated perm={PERMESSI_PAGINA["/roster"]}><RosterPage /></Gated>
+              <Gated perm={AREE_PAGINA["/roster"]}><RosterPage /></Gated>
             </Route>
             <Route path="/misto">
-              <Gated perm={PERMESSI_PAGINA["/misto"]}><MistoPage /></Gated>
+              <Gated perm={AREE_PAGINA["/misto"]}><MistoPage /></Gated>
             </Route>
             {/* il «Database di esercizio» è confluito nei Progetti di esercizio: PR 2.13b */}
             <Route path="/service-db"><Redirect to="/fucina/esercizio" replace /></Route>
             <Route path="/calcoli">
-              <Gated perm={PERMESSI_PAGINA["/calcoli"]}><CalcoliPage /></Gated>
+              <Gated perm={AREE_PAGINA["/calcoli"]}><CalcoliPage /></Gated>
             </Route>
             {/* I cluster sono gestiti per-progetto dentro Planner Studio.
                 Le vecchie rotte globali /cluster e /cluster-management vengono
@@ -385,7 +403,7 @@ function Router() {
             <Route path="/deadhead-arcs"><Redirect to="/planning-studio" replace /></Route>
             {/* la pagina di prima dei turni guida non c'è più: i suoi link portano a quella della Fucina */}
             <Route path="/driver-shifts/:scenarioId">
-              {(params) => <Gated perm={PERMESSI_PAGINA["/fucina/esercizio"]}><VersoITurniGuida scenarioId={params.scenarioId} /></Gated>}
+              {(params) => <Gated perm={AREE_PAGINA["/fucina/esercizio"]}><VersoITurniGuida scenarioId={params.scenarioId} /></Gated>}
             </Route>
 
             {/* Admin */}

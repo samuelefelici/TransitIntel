@@ -252,11 +252,11 @@ export default function RosterPage() {
   const [cut, setCut] = useState<RifTurno | null>(null);
   /* id del conducente di cui è aperta la scheda, o "new" */
   const [editDriver, setEditDriver] = useState<string | null | "new">(null);
-  const { hasPermission, datiProva } = useAuth();
-  /* la pubblicazione dei turni è dello Scheduling: senza, i link non portano da nessuna parte */
-  const puoPubblicare = hasPermission("scheduling");
-  /* senza «Personale» dal tabellone si creano solo conducenti fittizi */
-  const personale = hasPermission("personale");
+  const { puo, datiProva } = useAuth();
+  /* la pubblicazione dei turni è di chi può scriverla: senza, i link non portano da nessuna parte */
+  const puoPubblicare = puo("pubblicazione_turni", "S");
+  /* senza la scrittura su «Personale» dal tabellone si creano solo conducenti fittizi */
+  const personale = puo("personale", "S");
 
   // Vista a più settimane: il tabellone scorre orizzontalmente (barra di
   // scorrimento) invece di navigare una settimana alla volta. I turni vengono

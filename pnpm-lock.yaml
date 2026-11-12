@@ -80,6 +80,9 @@ importers:
       '@workspace/db':
         specifier: workspace:*
         version: link:../../lib/db
+      '@workspace/permessi':
+        specifier: workspace:*
+        version: link:../../lib/permessi
       adm-zip:
         specifier: ^0.5.16
         version: 0.5.16
@@ -186,6 +189,9 @@ importers:
       '@types/three':
         specifier: ^0.185.4
         version: 0.185.4
+      '@workspace/permessi':
+        specifier: workspace:*
+        version: link:../../lib/permessi
       chart.js:
         specifier: ^4.4.6
         version: 4.5.1
@@ -347,6 +353,8 @@ importers:
       drizzle-kit:
         specifier: ^0.31.9
         version: 0.31.10
+
+  lib/permessi: {}
 
   scripts:
     dependencies:

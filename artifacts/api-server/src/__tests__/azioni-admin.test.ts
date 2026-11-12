@@ -7,14 +7,16 @@ import { describe, it, expect } from "vitest";
 import { azioniAdmin, type StatoUtente } from "../lib/azioni-admin";
 
 const base: StatoUtente = {
-  role: "user", permissions: { analytics: false, fares: true, scheduling: true, roster: false },
+  role: "user", ruoli: ["ufficio_turni"], accesso_di_prima: { fares: true, scheduling: true }, dati_sanitari: false, analisi: false,
   fleetcare_role: "driver", full_name: "Mario Rossi", active: true,
 };
 
 describe("azioni dell'admin sugli utenti", () => {
-  it("creazione: ruolo e moduli accesi", () => {
-    expect(azioniAdmin(null, { ...base, role: "admin" })).toEqual(["utente_creato admin fares,scheduling"]);
-    expect(azioniAdmin(null, { ...base, permissions: {} })).toEqual(["utente_creato user"]);
+  it("creazione: ruolo di sistema, ruoli aziendali e capacità", () => {
+    expect(azioniAdmin(null, { ...base, role: "admin" })).toEqual(["utente_creato admin ufficio_turni"]);
+    expect(azioniAdmin(null, { ...base, ruoli: [] })).toEqual(["utente_creato user"]);
+    expect(azioniAdmin(null, { ...base, ruoli: ["capo_deposito", "amministrazione"], dati_sanitari: true, analisi: true }))
+      .toEqual(["utente_creato user amministrazione,capo_deposito,+dati_sanitari,+analisi"]);
   });
 
   it("eliminazione", () => {
@@ -26,10 +28,16 @@ describe("azioni dell'admin sugli utenti", () => {
     expect(azioniAdmin(base, { ...base, active: true })).toEqual([]);
   });
 
-  it("ruolo, permessi, ruolo FleetCare", () => {
+  it("ruolo di sistema, ruoli aziendali, accesso di prima, capacità, ruolo FleetCare", () => {
     expect(azioniAdmin(base, { ...base, role: "admin" })).toEqual(["ruolo_cambiato user→admin"]);
-    expect(azioniAdmin(base, { ...base, permissions: { fares: false, scheduling: true, roster: true, centrale: true } }))
-      .toEqual(["permessi_cambiati +centrale +roster -fares"]);
+    expect(azioniAdmin(base, { ...base, ruoli: ["pianificatore", "capo_deposito"] }))
+      .toEqual(["ruoli_aziendali_cambiati +capo_deposito +pianificatore -ufficio_turni"]);
+    expect(azioniAdmin(base, { ...base, accesso_di_prima: { scheduling: true } })).toEqual(["accesso_di_prima_cambiato -fares"]);
+    expect(azioniAdmin(base, { ...base, accesso_di_prima: {} })).toEqual(["accesso_di_prima_cambiato -fares -scheduling"]);
+    expect(azioniAdmin(base, { ...base, dati_sanitari: true })).toEqual(["dati_sanitari_dati"]);
+    expect(azioniAdmin({ ...base, dati_sanitari: true }, base)).toEqual(["dati_sanitari_tolti"]);
+    expect(azioniAdmin(base, { ...base, analisi: true })).toEqual(["analisi_data"]);
+    expect(azioniAdmin({ ...base, analisi: true }, base)).toEqual(["analisi_tolta"]);
     expect(azioniAdmin(base, { ...base, fleetcare_role: "mechanic" })).toEqual(["ruolo_fleetcare_cambiato driver→mechanic"]);
   });
 

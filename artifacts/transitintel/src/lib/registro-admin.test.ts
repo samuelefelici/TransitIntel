@@ -13,7 +13,16 @@ describe("voci dell'admin nel registro degli accessi", () => {
     expect(voceAdminLeggibile("admin:utente_creato user fares,scheduling (capo@x.it)"))
       .toBe("utente creato (utente; Tariffe, Turni), dall'admin capo@x.it");
     expect(voceAdminLeggibile("admin:utente_creato admin (capo@x.it)")).toBe("utente creato (admin), dall'admin capo@x.it");
-    expect(voceAdminLeggibile("admin:ruolo_cambiato user→admin (capo@x.it)")).toBe("ruolo cambiato (user → admin), dall'admin capo@x.it");
+    expect(voceAdminLeggibile("admin:ruolo_cambiato user→admin (capo@x.it)")).toBe("ruolo di sistema cambiato (user → admin), dall'admin capo@x.it");
+    // i ruoli aziendali (PR 2.14a)
+    expect(voceAdminLeggibile("admin:ruoli_aziendali_cambiati +capo_deposito -ufficio_turni (capo@x.it)"))
+      .toBe("ruoli aziendali cambiati (+ Capo deposito, − Ufficio turni), dall'admin capo@x.it");
+    expect(voceAdminLeggibile("admin:accesso_di_prima_cambiato -fares -scheduling (capo@x.it)"))
+      .toBe("accesso di prima cambiato (− Tariffe, − Turni), dall'admin capo@x.it");
+    expect(voceAdminLeggibile("admin:utente_creato user amministrazione,capo_deposito,+dati_sanitari (capo@x.it)"))
+      .toBe("utente creato (utente; Amministrazione, Capo deposito, dati sanitari), dall'admin capo@x.it");
+    expect(voceAdminLeggibile("admin:dati_sanitari_dati (capo@x.it)")).toBe("dati sanitari: dati, dall'admin capo@x.it");
+    expect(voceAdminLeggibile("admin:analisi_tolta (capo@x.it)")).toBe("Analisi: tolta, dall'admin capo@x.it");
     expect(voceAdminLeggibile("admin:ruolo_fleetcare_cambiato driver→mechanic (capo@x.it)"))
       .toBe("ruolo FleetCare cambiato (driver → mechanic), dall'admin capo@x.it");
   });
