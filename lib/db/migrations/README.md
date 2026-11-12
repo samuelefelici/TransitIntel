@@ -70,6 +70,16 @@ su main non si tocca più.
   solo le righe che nessuna richiesta può più leggere, e quante sono si scrive
   nel log con un `RAISE WARNING`. Se togliere una riga cambia quello che l'app
   calcola, non lo decide la migrazione.
+- **Una tabella nuova di Planning Studio** (`ps_*`) con i dati di un progetto
+  ha la chiave verso `ps_projects` con `ON DELETE CASCADE`, e una riga nel seme
+  di `artifacts/api-server/src/__tests__/elimina-progetto-db.test.ts`: la prova
+  controlla che cancellando il progetto non ne resti nessuna, e fallisce finché
+  la tabella non è in uno dei suoi due elenchi. L'ordine della cancellazione è
+  scritto nel codice (`cancellaProgetto`, in
+  `artifacts/api-server/src/lib/planning-studio.ts`): l'app non cerca più nel
+  catalogo le tabelle da svuotare. Se la tabella nuova punta a un'altra del
+  progetto con `ON DELETE RESTRICT`, o non ha la chiave verso il progetto,
+  quell'ordine va rivisto nella stessa PR.
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
 - **Chi possiede cosa (PR 2.8).** Le tabelle, le viste e le sequenze di
