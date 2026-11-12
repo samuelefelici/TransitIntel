@@ -71,6 +71,20 @@
       "when": 1794471292629,
       "tag": "0009_ruoli_aziendali",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794479936178,
+      "tag": "0010_chiavi_esterne_mancanti",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794479936179,
+      "tag": "0011_chiavi_esterne_convalida",
+      "breakpoints": true
     }
   ]
 }

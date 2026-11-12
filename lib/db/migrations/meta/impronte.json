@@ -8,5 +8,7 @@
   "0006_registro_delle_modifiche": "21e5c03688c724d453a8f082853bb20fb238e1e7324cee6449c35cb34ec72f60",
   "0007_registro_lettura_e_seconda_ondata": "259cb508b404be81be5f342879f94be3792f73069df8b170f5490abedde57399",
   "0008_mfa_obbligatoria": "6c0749b615bbc3381a0f63b708e5a6a9101099f67795a7a18d8e4b511f6280db",
-  "0009_ruoli_aziendali": "e86938f166ad706b4a14a9a140256ce41d11961b65d3aa69d9e6cacd23542e4e"
+  "0009_ruoli_aziendali": "e86938f166ad706b4a14a9a140256ce41d11961b65d3aa69d9e6cacd23542e4e",
+  "0010_chiavi_esterne_mancanti": "73d0b21956dcb0416d94b7de44ce8b8636f4341498b13f23578717bb392b4abb",
+  "0011_chiavi_esterne_convalida": "087ccb50d470611058bbfa5a049fa25744def0f8a8bab456d8e23317a8d99626"
 }

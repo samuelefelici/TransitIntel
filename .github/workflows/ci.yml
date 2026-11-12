@@ -150,7 +150,16 @@ jobs:
             -c "CREATE EVENT TRIGGER ci_ddl_vietato ON ddl_command_start EXECUTE FUNCTION public.ci_ddl_vietato()"
           psql -q -v ON_ERROR_STOP=1 -1 -d prod -f lib/db/migrations/0000_baseline.sql
           psql -q -v ON_ERROR_STOP=1 -d prod -c "DROP EVENT TRIGGER ci_ddl_vietato" -c "DROP FUNCTION public.ci_ddl_vietato()"
-          DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs
+          # PR 2.15: prima di migrare, righe senza padre come ne lascia la
+          # produzione (categorie di corse cancellate, zone vietate di progetti
+          # cancellati), righe vere, e una riga con la categoria cancellata
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/chiavi-esterne-prima.sql
+          DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs | tee prod.log
+          # la 0010 toglie le orfane e lo scrive nel log; le vere restano, e la
+          # riga con la categoria cancellata non si tocca (cambierebbe il servizio)
+          grep -q "ATTENZIONE: 0010: tolte 25 righe di ps_trip_category_validity" prod.log
+          grep -q "ATTENZIONE: 0010: tolte 2 zone vietate" prod.log
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/chiavi-esterne-dopo.sql
       # PR 2.8: il migratore ha creato i ruoli e passato a cerbero_owner le
       # relazioni del catalogo. Non ha toccato estensioni, caronte.app_users,
       # cerbero_migrazioni né la tabella del sistema AVM (un errore con la
@@ -372,6 +381,18 @@ jobs:
       # fallire la verifica dei ruoli. Poi resta acceso su vuoto e
       # solo_migrazioni: API, lavoratore e test sul database scrivono come
       # cerbero_app attraverso i trigger.
+      # PR 2.15: le chiavi esterne che mancavano in Planning Studio (categorie
+      # delle corse → corsa, zone vietate → progetto). Su tutti e due i
+      # database sono valide; come cerbero_owner una riga senza padre non si
+      # scrive più e la cancellazione del padre porta via le figlie. Sulla
+      # categoria non c'è vincolo: va deciso con i dati di produzione (DEPLOY).
+      - name: Le chiavi esterne di Planning Studio
+        run: |
+          for d in vuoto prod; do
+            psql -q -v ON_ERROR_STOP=1 -d $d -f lib/db/tests/chiavi-esterne.test.sql
+          done
+          # su un database senza righe orfane la 0010 non avvisa di niente
+          ! grep -q "ATTENZIONE: 0010" prima.log
       - name: Il registro delle modifiche
         run: |
           # come in produzione, PUBLIC senza USAGE su public: le funzioni del

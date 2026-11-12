@@ -522,7 +522,8 @@ router.post("/planning-studio/projects/:id/trips/bulk-delete", async (req, res):
      RETURNING id
   `);
   const deleted: string[] = ((r as any).rows ?? []).map((row: any) => row.id);
-  // ps_trip_category_validity non ha FK con cascata: pulizia esplicita
+  // Dalla migrazione 0010 la chiave esterna su trip_id porta via queste righe
+  // insieme alla corsa: la pulizia esplicita resta, e non trova più niente.
   if (deleted.length > 0) {
     const delSql = sql.join(deleted.map(id => sql`${id}::uuid`), sql`, `);
     await db.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id IN (${delSql})`);
@@ -1611,7 +1612,7 @@ router.post("/planning-studio/projects/:id/trips/merge-twins", async (req, res):
                updated_at = now()
          WHERE id = ${p.primaryId}::uuid
       `);
-      // elimina le corse fuse (ps_trip_category_validity non ha FK con cascata)
+      // elimina le corse fuse (dalla 0010 le loro categorie le porta via la chiave esterna; la pulizia esplicita resta)
       await tx.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${removeLit}::uuid[])`);
       await tx.execute(sql`DELETE FROM ps_trips WHERE id = ANY(${removeLit}::uuid[]) AND project_id = ${projId}::uuid`);
       removed += p.removeIds.length;
