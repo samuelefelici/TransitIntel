@@ -1769,10 +1769,33 @@ Come funziona:
   almeno la lettura sulla sua area) e riallineata a ogni avvio. Non va scritta
   a mano: i diritti stanno in `ruoli`, `accesso_di_prima`, `dati_sanitari` e
   `analisi` (migrazione 0009).
-- **Limiti di questa prima versione.** Il Capo deposito scrive su tutto il
-  roster, non solo sul suo deposito (il tabellone non ha ancora il filtro per
-  deposito). Consuntivo e variazioni del giorno sono nella matrice ma le pagine
-  non ci sono ancora.
+- **I depositi di una persona (PR 2.14c).** La scrittura sul roster si può
+  limitare ai conducenti di alcuni depositi: è il caso del Capo deposito. Si
+  scelgono in Utenti e accessi › «Modifica» › «Depositi del roster», per chi il
+  roster lo scrive.
+  - **Nessun deposito scelto vuol dire nessun limite.** Il giorno del rilascio
+    nessuno ne ha: il limite comincia quando l'amministratore li sceglie.
+  - **Che cosa limita**: turni assegnati e tolti (anche quello tolto a un
+    conducente per darlo a un altro), cambi turno (devono essere dei propri
+    depositi tutti e due i conducenti), voci di assenza e presenza, rotazioni
+    dei riposi e riposi generati, conducenti fittizi creati da chi non scrive
+    il «Personale».
+  - **Che cosa non limita**: quello che si legge. Il tabellone degli altri
+    depositi resta visibile, con il segno «sola lettura» sulle righe. Se chi è
+    titolare dei dati vuole che un Capo deposito non veda gli altri depositi, è
+    un'altra modifica, da decidere. Non limita nemmeno la scrittura dei dati
+    del personale, che è un'altra area.
+  - **Il deposito di un conducente** è la sua residenza di servizio, abbinata
+    al catalogo come nel resto dell'anagrafica (nome, codice o alias). Un
+    conducente senza deposito lo scrive solo chi non ha limiti.
+  - L'amministratore non ha mai limiti. I depositi restano scritti anche a chi
+    perde la scrittura sul roster: sono un limite, e tornano a valere se la
+    riottiene.
+  - Lo fa rispettare l'API (`lib/roster-limite-depositi.ts`, 403 con
+    `solaLettura`); la regola è in `lib/permessi`. Una rotta nuova che scrive
+    il roster di un conducente deve chiamare `fuoriDaiDepositi`.
+- **Limiti di questa versione.** Consuntivo e variazioni del giorno sono nella
+  matrice ma le pagine non ci sono ancora.
 - **Tornare indietro.** Con l'immagine precedente l'app legge di nuovo
   `users.permissions` come «può tutto» sul modulo: chi nel frattempo ha
   ricevuto un ruolo di sola lettura tornerebbe a poter scrivere sui moduli che

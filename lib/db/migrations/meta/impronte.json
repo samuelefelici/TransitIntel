@@ -10,5 +10,6 @@
   "0008_mfa_obbligatoria": "6c0749b615bbc3381a0f63b708e5a6a9101099f67795a7a18d8e4b511f6280db",
   "0009_ruoli_aziendali": "e86938f166ad706b4a14a9a140256ce41d11961b65d3aa69d9e6cacd23542e4e",
   "0010_chiavi_esterne_mancanti": "73d0b21956dcb0416d94b7de44ce8b8636f4341498b13f23578717bb392b4abb",
-  "0011_chiavi_esterne_convalida": "087ccb50d470611058bbfa5a049fa25744def0f8a8bab456d8e23317a8d99626"
+  "0011_chiavi_esterne_convalida": "087ccb50d470611058bbfa5a049fa25744def0f8a8bab456d8e23317a8d99626",
+  "0012_depositi_degli_utenti": "b8c75013ae3dc572cf4ba8cab1c02ba88aaae1556a7243081027c22e2796506f"
 }

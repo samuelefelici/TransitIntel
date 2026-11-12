@@ -1984,6 +1984,7 @@
    "analisi": "boolean | not null | false |  | ",
    "created_at": "timestamp with time zone | not null | now() |  | ",
    "dati_sanitari": "boolean | not null | false |  | ",
+   "depositi": "text[] | not null | '{}'::text[] |  | ",
    "deve_cambiare_password": "boolean | not null | false |  | ",
    "dispositivi_versione": "integer | not null | 1 |  | ",
    "email": "text | not null |  |  | ",

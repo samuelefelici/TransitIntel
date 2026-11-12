@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   AREE, AREE_DELL_INTERRUTTORE, INTERRUTTORI, INTERRUTTORI_DI_PRIMA, MATRICE, NESSUN_DIRITTO, NOMI_AREE, NOMI_RUOLI, RUOLI,
   accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, haAccessoDiPrima, interruttoriCompatibili,
-  livelloDelMetodo, piuAlto, puo, puoSuUna, ruoliSconosciuti, ruoliValidi, vedeDatiSanitari,
+  depositiPuliti, limiteDepositi, livelloDelMetodo, piuAlto, puo, puoSuUna, ruoliSconosciuti, ruoliValidi, scriveSulDeposito, vedeDatiSanitari,
+  MAX_DEPOSITI_PER_UTENTE,
   type Area, type Livello, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
 
@@ -199,5 +200,47 @@ describe("letture e scritture", () => {
   it("GET e HEAD leggono, il resto scrive", () => {
     for (const m of ["GET", "get", "HEAD", "OPTIONS"]) expect(livelloDelMetodo(m)).toBe("L");
     for (const m of ["POST", "PUT", "PATCH", "DELETE", "delete", "QUALCOSA"]) expect(livelloDelMetodo(m)).toBe("S");
+  });
+});
+
+describe("i depositi di una persona", () => {
+  it("nessun deposito scelto vuol dire nessun limite, come prima", () => {
+    expect(limiteDepositi({ admin: false })).toBeNull();
+    expect(limiteDepositi({ admin: false, depositi: [] })).toBeNull();
+    expect(limiteDepositi({ admin: false, depositi: null })).toBeNull();
+    expect(scriveSulDeposito(null, "jesi")).toBe(true);
+    expect(scriveSulDeposito(null, null)).toBe(true);
+  });
+
+  it("l'amministratore non ha limiti, anche se gli si scrivono dei depositi", () => {
+    expect(limiteDepositi({ admin: true, depositi: ["jesi"] })).toBeNull();
+  });
+
+  it("con dei depositi si scrive solo su quelli", () => {
+    const limite = limiteDepositi({ admin: false, depositi: ["jesi", "jesi-urbano"] });
+    expect(limite).toEqual(["jesi", "jesi-urbano"]);
+    expect(scriveSulDeposito(limite, "jesi")).toBe(true);
+    expect(scriveSulDeposito(limite, "jesi-urbano")).toBe(true);
+    expect(scriveSulDeposito(limite, "ancona")).toBe(false);
+    // il codice è esatto: non un prefisso, non un'altra scrittura
+    expect(scriveSulDeposito(limite, "jes")).toBe(false);
+    expect(scriveSulDeposito(limite, "Jesi")).toBe(false);
+  });
+
+  it("un conducente senza deposito lo scrive solo chi non ha limiti", () => {
+    const limite = limiteDepositi({ admin: false, depositi: ["jesi"] });
+    expect(scriveSulDeposito(limite, null)).toBe(false);
+    expect(scriveSulDeposito(limite, undefined)).toBe(false);
+    expect(scriveSulDeposito(limite, "")).toBe(false);
+  });
+
+  it("i codici scritti male non contano, e non diventano «nessun limite» per sbaglio", () => {
+    expect(depositiPuliti(["jesi", " jesi ", "", 7, null, "ancona", "jesi"])).toEqual(["jesi", "ancona"]);
+    expect(depositiPuliti("jesi")).toEqual([]);
+    expect(depositiPuliti(undefined)).toEqual([]);
+    expect(depositiPuliti(["x".repeat(61)])).toEqual([]);
+    expect(depositiPuliti(Array.from({ length: 80 }, (_, i) => `d${i}`))).toHaveLength(MAX_DEPOSITI_PER_UTENTE);
+    // chi ha un deposito valido e uno scritto male resta limitato a quello valido
+    expect(limiteDepositi({ admin: false, depositi: ["jesi", ""] })).toEqual(["jesi"]);
   });
 });

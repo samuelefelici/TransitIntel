@@ -22,7 +22,7 @@ import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
-  MousePointer2, ArrowLeftRight, Pin, Send,
+  MousePointer2, ArrowLeftRight, Pin, Send, Lock,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Link } from "wouter";
@@ -39,6 +39,8 @@ import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverE
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
 import { SeScrive, useSolaLettura } from "@/hooks/use-sola-lettura";
+import { EVENTO_SOLA_LETTURA } from "@/lib/sola-lettura";
+import { limiteDepositi, scriveSulDeposito } from "@workspace/permessi";
 import { useDialogo } from "@/components/roster/useDialogo";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
@@ -255,7 +257,7 @@ export default function RosterPage() {
   const [cut, setCut] = useState<RifTurno | null>(null);
   /* id del conducente di cui è aperta la scheda, o "new" */
   const [editDriver, setEditDriver] = useState<string | null | "new">(null);
-  const { puo, datiProva } = useAuth();
+  const { puo, datiProva, user } = useAuth();
   /* la pubblicazione dei turni è di chi può scriverla: senza, i link non portano da nessuna parte */
   const puoPubblicare = puo("pubblicazione_turni", "S");
   /* senza la scrittura su «Personale» dal tabellone si creano solo conducenti fittizi */
@@ -375,6 +377,7 @@ export default function RosterPage() {
   });
   const placeVoce = (driverId: string, day: string) => {
     if (!armedVoce) return;
+    if (altroDeposito(driverId)) return;
     addEntryMut.mutate({ driverId, day, category: armedVoce.category, code: armedVoce.code });
   };
 
@@ -389,6 +392,7 @@ export default function RosterPage() {
     if (it.kind === "duty") unassignMut.mutate(it.a.id); else delEntryMut.mutate(it.en.id);
   };
   const eraseCell = (driverId: string, day: string) => {
+    if (altroDeposito(driverId)) return;
     const assigns = assignmentsByCell.get(`${driverId}|${day}`) ?? [];
     const entries = entriesByCell.get(`${driverId}|${day}`) ?? [];
     const total = assigns.length + entries.length;
@@ -447,6 +451,27 @@ export default function RosterPage() {
   };
   /* l'UDP pubblicata di un DSS in un giorno, per l'etichetta quando un giorno ne ha più d'una */
   const udpDi = (day: string, dssId: string) => board?.pubblicati?.[day]?.find(p => p.dssId === dssId)?.udpNome ?? null;
+  /* PR 2.14c: chi ha dei depositi scrive il roster solo per i conducenti di quelli.
+     Gli altri li vede, con un lucchetto; i gesti su di loro si fermano qui con
+     l'avviso unico, e comunque li rifiuta l'API (lib/roster-limite-depositi.ts). */
+  const limite = useMemo(
+    () => limiteDepositi({ admin: user?.role === "admin", depositi: user?.depositi }),
+    [user?.role, user?.depositi],
+  );
+  const codiceDeposito = useMemo(
+    () => new Map((board?.drivers ?? []).map((d) => [d.id, d.depositoCodice ?? null])),
+    [board?.drivers],
+  );
+  const scriveSu = (driverId: string) => scriveSulDeposito(limite, codiceDeposito.get(driverId));
+  /** Vero se uno dei conducenti è di un altro deposito: il gesto va fermato, e lo si dice. */
+  const altroDeposito = (...ids: string[]): boolean => {
+    if (ids.every(scriveSu)) return false;
+    window.dispatchEvent(new CustomEvent(EVENTO_SOLA_LETTURA, {
+      detail: { messaggio: "Sola lettura: questo conducente è di un altro deposito, e tu scrivi solo sui conducenti dei tuoi" },
+    }));
+    return true;
+  };
+
   const assignmentsByCell = useMemo(() => {
     const m = new Map<string, RosterAssignment[]>();
     for (const a of board?.assignments ?? []) {
@@ -485,6 +510,7 @@ export default function RosterPage() {
     if (assignMut.isPending) return;
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!driverId) { toast.info("Seleziona un conducente a sinistra"); return; }
+    if (altroDeposito(driverId)) return;
     /* se il conducente quel giorno ha un turno da riassegnare, il nuovo lo sostituisce */
     const vecchio = (assignmentsByCell.get(`${driverId}|${cut.day}`) ?? []).find(a => a.stato === "da_riassegnare");
     // Un conducente può avere più turni nello stesso giorno: nessun blocco.
@@ -557,6 +583,8 @@ export default function RosterPage() {
   /** Un click col cambio turno: sul turno (target) o sulla cella/sul nome di un conducente (target null). */
   const swapClick = (driverId: string, day: string | null, target: RosterAssignment | null) => {
     if (swapMut.isPending) return;
+    /* lo scambio tocca il roster di tutti e due: devono essere tutti e due dei propri depositi */
+    if (altroDeposito(driverId)) return;
     if (!swapFrom) {
       if (target) setSwapFrom(target);
       else toast.info("Cambio turno: clicca prima il turno da scambiare");
@@ -867,7 +895,8 @@ export default function RosterPage() {
               </button>
             </SeScrive>
             {voceMenu === cat && (
-              <div className="absolute z-30 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
+              /* z-40: sopra l'intestazione dei giorni (sticky, z-30), che altrimenti copre la seconda voce del menu */
+              <div className="absolute z-40 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
                 {(vociQ.data?.[cat] ?? []).map((v) => (
                   <button key={v.code}
                     onClick={() => { scegliStrumento("puntatore"); setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); }}
@@ -1058,6 +1087,12 @@ export default function RosterPage() {
                             <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 mt-0.5">
                               {drv.matricola && <span className="text-[9px] font-mono text-slate-500">{drv.matricola}</span>}
                               {drv.isFictitious && <span className="text-[7px] px-1 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
+                              {!scriveSu(drv.id) && (
+                                <span className="inline-flex items-center gap-0.5 text-[8px] px-1 rounded bg-slate-700/60 text-slate-300"
+                                  title="Di un altro deposito: lo vedi, ma il suo roster non lo modifichi. Scrivi solo sui conducenti dei tuoi depositi.">
+                                  <Lock className="w-2 h-2" aria-hidden /> sola lettura
+                                </span>
+                              )}
                               {drv.abilitazioni?.length > 0 && <AbilitazioneBadges keys={drv.abilitazioni} size={9} />}
                             </div>
                           </div>
