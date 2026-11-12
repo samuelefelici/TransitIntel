@@ -391,13 +391,17 @@ jobs:
       # Il caso in cui la chiave sulla categoria NON si può mettere (una corsa
       # legata a una categoria cancellata quando passa la 0013): la migrazione
       # non fallisce, non tocca la riga, non mette il vincolo; sistemata la
-      # corsa, il vincolo si mette col comando di DEPLOY.
+      # corsa, il vincolo si mette col comando di DEPLOY. E lo stesso quando la
+      # categoria viene cancellata proprio mentre passa la migrazione (dal
+      # container di prima, che durante il deploy serve ancora): la 0013 prende
+      # il lucchetto prima di contare, aspetta, avvisa e non fallisce.
       - name: Le chiavi esterne di Planning Studio
         run: |
           for d in vuoto prod; do
             psql -q -v ON_ERROR_STOP=1 -d $d -f lib/db/tests/chiavi-esterne.test.sql
           done
           psql -q -v ON_ERROR_STOP=1 -d vuoto -f lib/db/tests/chiave-categoria-rimandata.test.sql
+          bash lib/db/tests/chiave-categoria-in-gara.sh vuoto
           # su un database senza righe orfane né categorie cancellate le migrazioni non avvisano di niente
           ! grep -qE "ATTENZIONE: 00(10|13)" prima.log
       - name: Il registro delle modifiche

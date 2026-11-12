@@ -75,7 +75,11 @@ su main non si tocca più.
   vincolo si mette a mano dopo aver sistemato i dati dall'app (il comando sta
   in DEPLOY). Va bene solo se l'app funziona uguale con e senza il vincolo, e
   se un test prova tutti e due i casi
-  (`lib/db/tests/chiave-categoria-rimandata.test.sql`).
+  (`lib/db/tests/chiave-categoria-rimandata.test.sql`). «Guarda prima» vuol
+  dire con il lucchetto già preso (`LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE`
+  prima del conteggio): mentre il deploy migra il container di prima serve
+  ancora, e una riga scritta fra il conteggio e l'`ALTER` farebbe fallire la
+  migrazione (`lib/db/tests/chiave-categoria-in-gara.sh`).
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
 - **Chi possiede cosa (PR 2.8).** Le tabelle, le viste e le sequenze di

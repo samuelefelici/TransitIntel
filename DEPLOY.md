@@ -250,7 +250,9 @@ categoria usata da una corsa non si cancella nemmeno passando accanto all'API.
 **La 0013 non può far fallire il deploy.** Se trova anche una sola corsa legata
 a una categoria cancellata non tocca niente — quelle righe non le toglie, perché
 toglierle cambierebbe i giorni in cui la corsa vale — non mette il vincolo, e
-lo scrive nel log:
+lo scrive nel log. Vale anche se una categoria in uso viene cancellata proprio
+mentre la migrazione passa (dal container di prima, che durante il deploy serve
+ancora): la migrazione aspetta che la cancellazione finisca, poi guarda.
 
 ```
 [migrazioni] ATTENZIONE: 0013: N righe di ps_trip_category_validity puntano a una categoria cancellata: la chiave esterna sulla categoria NON è stata messa. …

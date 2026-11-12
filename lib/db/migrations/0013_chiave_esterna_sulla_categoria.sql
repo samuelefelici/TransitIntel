@@ -17,14 +17,17 @@
 --     (WARNING), con quante sono. Il deploy va avanti: quelle corse si vedono
 --     e si sistemano dalla tabella Corse («categoria cancellata»), e il vincolo
 --     si mette poi a mano (DEPLOY, «Chiavi esterne di Planning Studio»).
---     Finché manca, l'API lo ricorda a ogni avvio.
+--     Finché manca, l'API lo ricorda nel log dopo ogni avvio.
 --
 -- Con le righe che puntano nel vuoto il vincolo non si può mettere nemmeno
 -- NOT VALID: copiare una corsa, generare una cadenza o duplicare un progetto
 -- copierebbero anche quelle righe, e il database le rifiuterebbe.
 --
--- Lock: il vincolo prende SHARE ROW EXCLUSIVE sulle due tabelle e legge
--- ps_trip_category_validity una volta; le letture non aspettano.
+-- Lock: SHARE ROW EXCLUSIVE sulle due tabelle, lo stesso che prende il
+-- vincolo, ma preso **prima di contare**: fra il conteggio e l'ALTER nessuno
+-- può cancellare una categoria o scrivere una riga, quindi il vincolo non può
+-- trovare una riga che il conteggio non ha visto e far fallire il deploy.
+-- Le due tabelle si leggono una volta; le letture non aspettano.
 -- ════════════════════════════════════════════════════════════════════════
 DO $categoria$
 DECLARE nel_vuoto bigint;
@@ -34,6 +37,7 @@ BEGIN
                 AND k.conname = 'ps_trip_category_validity_category_id_fkey') THEN
     RETURN;
   END IF;
+  LOCK TABLE public.ps_validity_categories, public.ps_trip_category_validity IN SHARE ROW EXCLUSIVE MODE;
   SELECT pg_catalog.count(*) INTO nel_vuoto
     FROM public.ps_trip_category_validity v
    WHERE NOT EXISTS (SELECT 1 FROM public.ps_validity_categories c WHERE c.id = v.category_id);
