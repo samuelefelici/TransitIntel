@@ -27,16 +27,20 @@ const AZIONI: Record<string, string> = {
   dati_sanitari_tolti: "dati sanitari: tolti",
   analisi_data: "Analisi: data",
   analisi_tolta: "Analisi: tolta",
+  depositi_cambiati: "depositi del roster cambiati",
   ruolo_fleetcare_cambiato: "ruolo FleetCare cambiato",
   nome_cambiato: "nome cambiato",
 };
 
 /* un interruttore di prima, un ruolo aziendale o una capacità, col suo nome */
 const CAPACITA: Record<string, string> = { "+dati_sanitari": "dati sanitari", "+analisi": "Analisi" };
-const modulo = (m: string) => NOMI_INTERRUTTORI[m] ?? (NOMI_RUOLI as Record<string, string>)[m] ?? CAPACITA[m] ?? m;
+/* «deposito:jesi» alla creazione: il codice del deposito a cui è limitata la scrittura sul roster */
+const modulo = (m: string) => NOMI_INTERRUTTORI[m] ?? (NOMI_RUOLI as Record<string, string>)[m] ?? CAPACITA[m]
+  ?? (m.startsWith("deposito:") ? `deposito ${m.slice(9)}` : m);
 
 function dettaglio(azione: string, d: string): string {
-  if (azione === "permessi_cambiati" || azione === "ruoli_aziendali_cambiati" || azione === "accesso_di_prima_cambiato") {
+  if (azione === "permessi_cambiati" || azione === "ruoli_aziendali_cambiati" || azione === "accesso_di_prima_cambiato"
+    || azione === "depositi_cambiati") {
     /* «+centrale -fares» → «+ Esercizio, − Tariffe»; «+capo_deposito» → «+ Capo deposito» */
     return d.split(" ").filter(Boolean)
       .map((t) => `${t.startsWith("-") ? "−" : "+"} ${modulo(t.slice(1))}`).join(", ");

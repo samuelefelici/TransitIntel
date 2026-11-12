@@ -30,6 +30,8 @@ export interface CurrentUser {
   accessoDiPrima?: Partial<Record<InterruttoreDiPrima, true>>;
   datiSanitari?: boolean;
   analisi?: boolean;
+  /** i depositi a cui è limitata la scrittura sul roster; vuoto o assente = nessun limite (PR 2.14c) */
+  depositi?: string[];
   /** lettura o scrittura per area: è su questo che si decide che cosa mostrare */
   diritti?: Diritti;
   permissions: Record<Permission, boolean>;
