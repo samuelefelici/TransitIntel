@@ -1677,8 +1677,11 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
   Planning Studio) e Virgilio, il vecchio assistente in chat. Argos resta in
   Planning Studio. Le tabelle restano dove sono: nessuna è stata cancellata.
 - **Database di esercizio** mostra i turni macchina e i turni guida che
-  l'utente può aprire, come gli elenchi della Fucina. La vecchia pagina dei turni guida
-  (`/driver-shifts/…`) resta raggiungibile dai link della Fucina, fuori dal menu.
+  l'utente può aprire, come gli elenchi della Fucina.
+- **La vecchia pagina dei turni guida** (`/driver-shifts/…`) non c'è più: tutto
+  quello che faceva è nella pagina dei turni guida della Fucina
+  (`/fucina/<progetto>/drivers/<scenario>`), e i link salvati al vecchio
+  indirizzo portano lì.
 
 ---
 

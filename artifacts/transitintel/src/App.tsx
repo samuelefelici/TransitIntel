@@ -8,6 +8,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth, type Permission } from "@/hooks/use-auth";
 import { CASA, NOMI_PERMESSI, PERMESSI_PAGINA } from "@/lib/navigazione";
+import { apiFetch } from "@/lib/api";
+import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
 import IndicatoreCalcoli from "@/components/calcoli/IndicatoreCalcoli";
@@ -72,7 +74,6 @@ const ProcessReportPage = lazyWithRetry(() => import("@/pages/fucina/ProcessRepo
 // ClusterPage rimosso: i cluster ora vivono in Planner Studio
 // (/planning-studio/:id/clusters). Le rotte /cluster e /cluster-management
 // sono mantenute solo come Redirect per non rompere link esterni.
-const DriverShiftsPage = lazyWithRetry(() => import("@/pages/driver-shifts"));
 const CoincidenceZonesPage = lazyWithRetry(() => import("@/pages/coincidence-zones"));
 const FaresPage = lazyWithRetry(() => import("@/pages/fares"));
 const FaresPolimetrichePage = lazyWithRetry(() => import("@/pages/fares-polimetriche"));
@@ -164,6 +165,24 @@ function AdminOnly({ children }: { children: ReactNode }) {
 /** Un percorso vecchio che porta al nuovo, con la stessa query (wouter la perderebbe). */
 function RedirectConQuery({ to }: { to: string }) {
   return <Redirect to={`${to}${window.location.search}`} replace />;
+}
+
+/**
+ * I link salvati alla pagina di prima dei turni guida (/driver-shifts/<scenario>):
+ * la pagina è dentro la Fucina, e il progetto lo dice l'API con lo scenario.
+ */
+function VersoITurniGuida({ scenarioId }: { scenarioId: string }) {
+  const [dove, setDove] = useState<string | null>(eUuid(scenarioId) ? null : ELENCO_PROGETTI);
+  useEffect(() => {
+    if (!eUuid(scenarioId)) return;
+    let vivo = true;
+    apiFetch<{ projectId?: string | null }>(`/api/service-program/scenarios/${scenarioId}`)
+      .then((s) => { if (vivo) setDove(paginaTurniGuida(s?.projectId, scenarioId, salvataggioDelLink(window.location.search))); })
+      .catch(() => { if (vivo) setDove(ELENCO_PROGETTI); });
+    return () => { vivo = false; };
+  }, [scenarioId]);
+  if (!dove) return <PageLoader />;
+  return <Redirect to={dove} replace />;
 }
 
 function Router() {
@@ -364,9 +383,9 @@ function Router() {
                 Le vecchie pagine globali restano solo come redirect. */}
             <Route path="/depots"><Redirect to="/planning-studio" replace /></Route>
             <Route path="/deadhead-arcs"><Redirect to="/planning-studio" replace /></Route>
-            {/* la pagina di prima dei turni guida: fuori dal menu, si toglie in Fase 2 */}
+            {/* la pagina di prima dei turni guida non c'è più: i suoi link portano a quella della Fucina */}
             <Route path="/driver-shifts/:scenarioId">
-              <Gated perm={PERMESSI_PAGINA["/driver-shifts"]}><DriverShiftsPage /></Gated>
+              {(params) => <Gated perm={PERMESSI_PAGINA["/fucina/esercizio"]}><VersoITurniGuida scenarioId={params.scenarioId} /></Gated>}
             </Route>
 
             {/* Admin */}

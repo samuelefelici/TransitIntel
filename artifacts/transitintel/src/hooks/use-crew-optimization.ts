@@ -101,8 +101,14 @@ export interface OperatorConfig {
     copertura?: Record<string, any>;
     collegamento?: Record<string, any>;
     /* Fase 2 — avanzate: soglie/scoring tagli e multi-scenario */
-    cuts?: Record<string, number>;
+    /* i tagli dei costi avanzati (BDS5) portano anche elenchi di fasce orarie */
+    cuts?: Record<string, any>;
     cutScoring?: Record<string, number>;
+    /* Ambito del calcolo (pages/fucina/turni-guida/config-solver.ts) */
+    /** BDSI cap. 14: vincoli globali di soluzione */
+    vincoliGlobali?: Array<Record<string, any>>;
+    /** BDS5: scalini, costi di 2° grado, cambio vettura, cambio patente */
+    costiAvanzati?: Record<string, any>;
     scenari?: Record<string, number>;
     /* Sosta inoperosa (extraurbano): durata minima + contributo all'orario */
     sostaInoperosa?: Record<string, number>;
@@ -161,12 +167,6 @@ export interface OpzioniCrewOptimization {
   scenarioId?: string | null;
   /** un calcolo da aprire (da «I miei calcoli», ?calcolo=<id>) */
   calcolo?: string | null;
-  /**
-   * La vecchia pagina /driver-shifts: lì il calcolo resta legato alla pagina
-   * come prima (uscire lo ferma) e non si ricorda, perché quella pagina non lo
-   * riprenderebbe.
-   */
-  vecchiaPagina?: boolean;
 }
 
 /* ─── Hook ─────────────────────────────────────────────────── */
@@ -254,13 +254,11 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
   }, []);
 
   // Smontaggio: si smette di seguire, il calcolo continua sul server (e si riprende
-  // riaprendo). Nella vecchia pagina invece uscire lo ferma, come prima.
-  const vecchiaPagina = !!opzioni.vecchiaPagina;
+  // riaprendo).
   useEffect(() => () => {
     generazioneRef.current += 1;
-    if (vecchiaPagina && vivoRef.current) fermaSulServer(vivoRef.current);
     cleanup();
-  }, [cleanup, vecchiaPagina]);
+  }, [cleanup]);
 
   /* ── Start timer ──────────────────────────────────────────── */
 
@@ -436,7 +434,6 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
       .catch(() => { /* server non raggiungibile: niente ripresa, la memoria resta */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opzioni.scenarioId]);
-  // (nella vecchia pagina scenarioId non si passa: niente ripresa)
 
   /* ── Start optimization ───────────────────────────────────── */
 
@@ -472,10 +469,8 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
         // nel frattempo la pagina ha rilanciato o resettato: questo calcolo non lo segue nessuno
         if (generazione !== generazioneRef.current) { fermaSulServer(jId); return; }
         vivoRef.current = jId;
-        if (!vecchiaPagina) {
-          scenarioRef.current = scenarioId;
-          ricorda(chiaveTurniGuida(scenarioId), { jobId: jId, avviatoIl: Date.now() });
-        }
+        scenarioRef.current = scenarioId;
+        ricorda(chiaveTurniGuida(scenarioId), { jobId: jId, avviatoIl: Date.now() });
         annunciaAvvio();
         setJobId(jId);
         setState("running");
@@ -487,7 +482,7 @@ export function useCrewOptimization(opzioni: OpzioniCrewOptimization = {}): UseC
         setState("failed");
         stopTimer();
       });
-  }, [abbandona, dimenticaCalcolo, cleanup, startTimer, connectSSE, stopTimer, vecchiaPagina]);
+  }, [abbandona, dimenticaCalcolo, cleanup, startTimer, connectSSE, stopTimer]);
 
   /* ── Stop optimization ────────────────────────────────────── */
 

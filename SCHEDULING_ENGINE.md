@@ -463,7 +463,7 @@ PEZZO     pre_cambio=3                post_cambio=2
 
 ## 6. Configurabilità da UI
 
-### 🎛️ Pannello Config (driver-shifts → bottone "Config")
+### 🎛️ Pannello Config (turni guida della Fucina → bottone "Config CSP")
 
 ```
 ╔══════════════════════════════════════════════════════════╗
@@ -589,7 +589,8 @@ artifacts/
         │   │   ├── VehicleAssignmentStep.tsx  # Step 2: linee→veicoli
         │   │   ├── OptimizerStep.tsx     # Step 3: lancio CP-SAT
         │   │   └── WorkspaceStep.tsx     # Step 4: gantt + analisi
-        │   └── driver-shifts.tsx         # Pagina turni guida
+        │   ├── fucina/driver-workspace.tsx   # Pagina turni guida (dentro la Fucina)
+        │   └── fucina/turni-guida/       # Moduli dei turni guida: tipi, Gantt, lettura del risultato, ambito del calcolo
         └── components/
             ├── OperatorConfigPanel.tsx   # Pannello config (pesi+BDS+limiti)
             ├── OptimizationProgress.tsx  # Progress streaming SSE

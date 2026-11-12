@@ -23,7 +23,7 @@ import {
   Users, Clock, Timer, Coffee, Repeat, Car, DollarSign, Shield,
   AlertTriangle, Zap, Settings, Play, Save, RotateCcw, Brain, Loader2,
   Download, FileText, FileSpreadsheet, Printer, ChevronDown, Undo2, Redo2, Layers,
-  MapPin, Minus, Plus, SlidersHorizontal, Trash2, X,
+  MapPin, Minus, Plus, SlidersHorizontal, Trash2, X, Crosshair, ArrowRightLeft,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
@@ -35,8 +35,8 @@ import { buildDefaultConfig, deepClone, SERVICE_PROFILES, type ServiceType } fro
 import { resolveRuleProfile } from "@/lib/rule-profiles-api";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import InteractiveGantt, { type GanttChange, type GanttBar } from "@/components/InteractiveGantt";
-import { SummaryCard } from "@/pages/driver-shifts/components";
-import { formatDuration, minToTime } from "@/pages/driver-shifts/constants";
+import { SummaryCard } from "@/pages/fucina/turni-guida/components";
+import { formatDuration, minToTime } from "@/pages/fucina/turni-guida/constants";
 import {
   driverShiftsToRows,
   driverShiftsToBars,
@@ -50,19 +50,27 @@ import {
   compatibilityGlow,
   createEmptyDriverShift,
   nextDriverId,
-} from "@/pages/driver-shifts/gantt-adapters";
+} from "@/pages/fucina/turni-guida/gantt-adapters";
 import {
   exportDriverShiftsToPrint,
   exportDriverShiftsToCsv,
   triggerDownload,
 } from "@/pages/fucina/DriverShiftsPrintExport";
 import { exportDriverShiftSheetsToPrint, stopTimesLoaderFor } from "@/pages/fucina/DriverShiftSheetExport";
-import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/driver-shifts/types";
-import { mkRipresaFromTrips, normalizeDriverShiftsResult } from "@/pages/driver-shifts/bdsi-tools";
+import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/fucina/turni-guida/types";
+import {
+  mkRipresaFromTrips, normalizeDriverShiftsResult, VincoliReport, SwapDialog, applyPieceToShift, type SwapProposal,
+} from "@/pages/fucina/turni-guida/bdsi-tools";
+import { Bds5Report } from "@/pages/fucina/turni-guida/bds5-costs";
+import { AMBITO_VUOTO, conAutoAziendali, configPerIlSolver, scelteAttive, type AmbitoDelCalcolo } from "@/pages/fucina/turni-guida/config-solver";
+import { AmbitoDelCalcoloPanel, type ClusterDelCalcolo } from "@/pages/fucina/turni-guida/AmbitoDelCalcoloPanel";
+import { DssCompareDialog } from "@/pages/fucina/turni-guida/DssCompareDialog";
+import { LetturaDelRisultato, CoperturaTurniMacchina } from "@/pages/fucina/turni-guida/lettura-risultato";
+import { AlgoGuide, CSP_GUIDE } from "@/components/StepGuide";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
-import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/driver-shifts/constants";
-import { AddDriverShiftDialog } from "@/pages/driver-shifts/AddDriverShiftDialog";
-import { AddActivityDialog } from "@/pages/driver-shifts/AddActivityDialog";
+import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/fucina/turni-guida/constants";
+import { AddDriverShiftDialog } from "@/pages/fucina/turni-guida/AddDriverShiftDialog";
+import { AddActivityDialog } from "@/pages/fucina/turni-guida/AddActivityDialog";
 
 interface DriverWorkspaceProps {
   /** ID dello scenario turni macchina (input al solver autisti) */
@@ -100,6 +108,26 @@ export default function DriverWorkspace({
   const [configOpen, setConfigOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [operatorConfig, setOperatorConfig] = useState<OperatorConfig>(DEFAULT_CONFIG);
+  /* Ambito del calcolo: cluster su cui tagliare, vincoli globali, costi avanzati.
+   * Vale per il calcolo che parte da qui; non entra nel profilo di regole. */
+  const [ambito, setAmbito] = useState<AmbitoDelCalcolo>(AMBITO_VUOTO);
+  const [ambitoOpen, setAmbitoOpen] = useState(false);
+  /* Tutti i cluster che il solver riceve (non solo quelli «di cambio») */
+  const [clusterDelCalcolo, setClusterDelCalcolo] = useState<ClusterDelCalcolo[] | null>(null);
+  /* Gli scenari turni guida già salvati per questi turni macchina (per il confronto) */
+  const [savedDss, setSavedDss] = useState<Array<{ id: string; name: string; createdAt: string; summary?: any }>>([]);
+  const [showCompare, setShowCompare] = useState(false);
+  /* Lettura del risultato sotto il Gantt: analisi, classifica, distribuzioni, conformità, riassunti, elenco */
+  const [letturaOpen, setLetturaOpen] = useState(true);
+  /* I turni macchina dello scenario: servono alla copertura (BDSI §2.2) */
+  const [vehicleShifts, setVehicleShifts] = useState<any[] | null>(null);
+  /* BDSI §12.2 «Scambia con pezzo…» */
+  const [swapPiece, setSwapPiece] = useState<{ vehicleId: string; vehicleType: string; trips: RipresaTrip[] } | null>(null);
+  const [swapProposals, setSwapProposals] = useState<SwapProposal[]>([]);
+  const [swapLoading, setSwapLoading] = useState(false);
+  /* Il salvataggio aperto: parte da ?dss= e cambia se il server ne crea una versione nuova */
+  const [dssAperto, setDssAperto] = useState<string | null>(dssId ?? null);
+  const [aggiornando, setAggiornando] = useState(false);
   const [serviceType, setServiceTypeState] = useState<ServiceType>("urbano");
   // Cambiando tipo servizio si re-applica il preset dei gruppi service-scoped
   // (regole turno + target), preservando gli altri parametri già modificati.
@@ -252,6 +280,17 @@ export default function DriverWorkspace({
         const list = Array.isArray(data?.data) ? data.data
                    : Array.isArray(data) ? data
                    : (data?.clusters ?? []);
+        const conta = (c: any) => Array.isArray(c.stops) ? c.stops.length
+                               : Array.isArray(c.stopIds) ? c.stopIds.length
+                               : (c.stopCount ?? 0);
+        // Per la scelta dell'ambito servono tutti: il solver li riceve tutti.
+        setClusterDelCalcolo(list.map((c: any) => ({
+          id: String(c.id),
+          name: c.name ?? "Cluster",
+          color: c.color ?? "#3b82f6",
+          stopCount: conta(c),
+          isInterchange: c.isInterchange !== false,
+        })));
         // Mostriamo solo cluster effettivamente di cambio (interchange).
         // Il backend marchia is_interchange=true di default; PS clusters
         // logici puri non vengono mirrorati nel legacy quindi non compaiono qui.
@@ -267,7 +306,7 @@ export default function DriverWorkspace({
                    : (c.stopCount ?? 0),
         })));
       })
-      .catch(() => { if (!cancelled) setInterchangeClusters([]); });
+      .catch(() => { if (!cancelled) { setInterchangeClusters([]); setClusterDelCalcolo([]); } });
     return () => { cancelled = true; };
   }, []);
 
@@ -330,19 +369,28 @@ export default function DriverWorkspace({
       try {
         if (vehicleScenarioId) {
           const sc = await fetch(`${getApiBase()}/api/service-program/scenarios/${vehicleScenarioId}`).then((r) => (r.ok ? r.json() : null));
+          setVehicleShifts(Array.isArray(sc?.result?.shifts) ? sc.result.shifts : []);
           const st = sc?.input?.serviceType as ServiceType | undefined;
           if (st === "urbano" || st === "extraurbano" || st === "misto") baseSt = st;
         }
       } catch { /* best-effort */ }
       setServiceType(baseSt); // applica preset regole del tipo servizio
-      // profilo-regole salvato → vince
+      // auto aziendali: si parte dal parametro dell'azienda (Amministrazione → Parametri), non dal 5 fisso
+      let autoAziendali: unknown = null;
+      try {
+        const d = await fetch(`${getApiBase()}/api/settings/company-cars`).then((r) => (r.ok ? r.json() : null));
+        autoAziendali = d?.companyCars;
+        setOperatorConfig((c) => conAutoAziendali(c, autoAziendali));
+      } catch { /* resta il numero di partenza */ }
+      // profilo-regole salvato → vince (anche sulle auto, se dice il suo numero)
       try {
         const r = await resolveRuleProfile(projectIdFromUrl);
         if (r?.config) {
           const st = (r.config.bds?.serviceType as ServiceType) ?? baseSt;
           const base = buildDefaultConfig(st);
           setServiceTypeState(st);
-          setOperatorConfig({ ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig);
+          const conProfilo = { ...base, ...r.config, bds: { ...base.bds, ...(r.config.bds ?? {}) } } as OperatorConfig;
+          setOperatorConfig(conAutoAziendali(conProfilo, autoAziendali, r.config.bds?.optimizer?.maxCompanyCars));
         }
       } catch { /* nessun profilo → resta sul tipo servizio ereditato */ }
     })();
@@ -446,42 +494,62 @@ export default function DriverWorkspace({
       intensity === 4 ? 900 : 240;
     const panelTL = Number(operatorConfig.timeLimit);
     const timeLimit = panelTL > 0 ? panelTL : computed;
-    cpsat.start(vehicleScenarioId, timeLimit, operatorConfig);
+    cpsat.start(vehicleScenarioId, timeLimit, configPerIlSolver(operatorConfig, ambito));
+    const nAmbito = scelteAttive(ambito);
     toast.info(`CP-SAT avviato (timeLimit ${timeLimit}s)`, {
-      description: "I parametri optimizer (saturazione · cap vetture · idle) sono attivi",
+      description: nAmbito > 0
+        ? "Parametri optimizer attivi · ambito del calcolo applicato (cluster, vincoli, costi)"
+        : "I parametri optimizer (saturazione · cap vetture · idle) sono attivi",
     });
-  }, [vehicleScenarioId, cpsat, operatorConfig]);
+  }, [vehicleScenarioId, cpsat, operatorConfig, ambito]);
 
   const runOptimization = useCallback(() => {
     if (solverMode === "cpsat") launchCPSAT();
     else launchGreedy();
   }, [solverMode, launchCPSAT, launchGreedy]);
 
+  // Scenari turni guida già salvati: servono al confronto fianco a fianco
+  const refetchSavedDss = useCallback(() => {
+    if (!vehicleScenarioId) return;
+    fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}/scenarios`)
+      .then(r => (r.ok ? r.json() : []))
+      .then(d => setSavedDss(Array.isArray(d) ? d : []))
+      .catch(() => {});
+  }, [vehicleScenarioId]);
+  useEffect(() => { refetchSavedDss(); }, [refetchSavedDss]);
+
+  /* Il risultato come va salvato: con le corse SCOPERTE dell'Area di lavoro di
+   * adesso (spacchettate/estratte e non ancora ricomposte). Senza, vivrebbero
+   * solo nello stato React e il salvataggio le perderebbe. L'elenco letto da un
+   * salvataggio aperto non si riporta: se nel frattempo le corse sono state
+   * ricomposte in un turno, riaprendo tornerebbero anche fra le scoperte. */
+  const risultatoDaSalvare = useCallback((): DriverShiftsResult | null => {
+    if (!result) return null;
+    const poolTrips = wwPool.filter(p => p.trip).map(p => ({ ...p.trip! }));
+    const { unassignedTrips: _lette, ...senza } = result;
+    return poolTrips.length ? { ...senza, unassignedTrips: poolTrips } : senza;
+  }, [result, wwPool]);
+
   // Salva DSS
   const saveDss = useCallback(async () => {
-    if (!vehicleScenarioId || !result || !dssName.trim()) return;
+    const resultToSave = risultatoDaSalvare();
+    if (!vehicleScenarioId || !resultToSave || !dssName.trim()) return;
     setSavingDss(true);
     try {
-      // Persisti le corse SCOPERTE dell'Area di lavoro (spacchettate/estratte e
-      // non ancora ricomposte): senza questo vivrebbero solo nello stato React e
-      // il salvataggio le perderebbe, lasciando il piano "completo" ma con corse
-      // in meno.
-      const poolTrips = wwPool.filter(p => p.trip).map(p => ({ ...p.trip! }));
-      const resultToSave: DriverShiftsResult = poolTrips.length
-        ? { ...result, unassignedTrips: poolTrips }
-        : result;
       const resp = await fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}/scenarios`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: dssName.trim(),
           result: resultToSave,
-          config: { ...operatorConfig, solverMode },
+          // insieme al risultato resta scritto con quale ambito è stato chiesto
+          config: { ...configPerIlSolver(operatorConfig, ambito), solverMode },
         }),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       // salvato: riaprendo la pagina il calcolo non va più ripreso
       cpsat.dimenticaCalcolo();
+      refetchSavedDss();
       setShowSaveDialog(false); setDssName("");
       toast.success("Scenario turni guida salvato");
       // ── Ritorno alla home del progetto dopo salvataggio turni guida ──
@@ -493,7 +561,44 @@ export default function DriverWorkspace({
     } finally {
       setSavingDss(false);
     }
-  }, [vehicleScenarioId, result, dssName, operatorConfig, solverMode, wwPool, cpsat]);
+  }, [vehicleScenarioId, risultatoDaSalvare, dssName, operatorConfig, ambito, solverMode, cpsat, refetchSavedDss]);
+
+  /* Aggiorna il salvataggio aperto invece di crearne uno nuovo. Se il roster lo
+   * usa, il server non lo sovrascrive: ne crea una versione nuova e risponde
+   * con il suo id; da lì in poi si lavora su quella. */
+  const aggiornaSalvataggio = useCallback(async () => {
+    const daSalvare = risultatoDaSalvare();
+    if (!daSalvare || !dssAperto) return;
+    setAggiornando(true);
+    try {
+      const r = await fetch(`${getApiBase()}/api/driver-shifts/scenarios/${dssAperto}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result: daSalvare }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error(j?.error ?? `HTTP ${r.status}`);
+      }
+      const j = await r.json().catch(() => ({} as any));
+      setModifiedCount(0);
+      if (j?.id && j.id !== dssAperto) {
+        setDssAperto(j.id);
+        const u = new URL(window.location.href);
+        u.searchParams.set("dss", j.id);
+        window.history.replaceState(window.history.state, "", u.toString());
+        toast.success("Creata nuova versione dei turni guida", {
+          description: "Lo scenario era usato dal roster: lo storico resta sul precedente, da ora lavori sulla nuova versione.",
+        });
+      } else {
+        toast.success("Turni guida salvati", { description: "Salvataggio aggiornato." });
+      }
+      refetchSavedDss();
+    } catch (e: any) {
+      toast.error("Errore salvataggio", { description: e?.message });
+    } finally {
+      setAggiornando(false);
+    }
+  }, [risultatoDaSalvare, dssAperto, refetchSavedDss]);
 
   /* ── Export handlers ─────────────────────────────────── */
   /* Fogli turno: UNA pagina A4 per turno nel formato aziendale (codice,
@@ -984,6 +1089,122 @@ export default function DriverWorkspace({
       } : cur);
     }).catch(() => { /* restano da verificare */ });
   }, [operatorConfig]);
+
+  /* BDSI §10.1.3 — forzatura: il turno scorretto viene considerato conforme. */
+  const forzaTurno = useCallback((driverId: string) => {
+    const motivo = window.prompt(
+      "Forzatura correttezza (BDSI): il turno scorretto sarà considerato conforme a tutti gli effetti.\nMotivo (opzionale):",
+      "");
+    if (motivo === null) return;
+    setResult(cur => cur ? {
+      ...cur,
+      driverShifts: cur.driverShifts.map(s => s.driverId === driverId
+        ? { ...s, verifyState: "forzato" as const, forcedReason: motivo || undefined } : s),
+    } : cur);
+    setModifiedCount(c => c + 1);
+    toast.info(`Turno ${driverId} forzato`, { description: "Considerato conforme (badge blu). Le violazioni restano tracciate." });
+  }, []);
+
+  const sbloccaTurno = useCallback((driverId: string) => {
+    if (!result) return;
+    const next: DriverShiftsResult = {
+      ...result,
+      driverShifts: result.driverShifts.map(s => s.driverId === driverId
+        ? { ...s, verifyState: undefined, forcedReason: undefined } : s),
+    };
+    setResult(next);
+    wwRevalidate([driverId], next);
+  }, [result, wwRevalidate]);
+
+  /* ── BDSI §12.2 "Scambia con pezzo…" — proposte dal backend ── */
+  const openSwapDialog = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
+    if (!result) return;
+    setSwapPiece({ vehicleId, vehicleType, trips: piece.trips });
+    setSwapLoading(true);
+    setSwapProposals([]);
+    fetch(`${getApiBase()}/api/driver-shifts/tools/swap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        piece: { vehicleId, vehicleType, trips: piece.trips },
+        shifts: result.driverShifts,
+        config: operatorConfig,
+        maxProposals: 12,
+      }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => setSwapProposals(data?.proposals ?? []))
+      .catch(() => toast.error("Errore nella valutazione degli scambi"))
+      .finally(() => setSwapLoading(false));
+  }, [result, operatorConfig]);
+
+  const applySwapProposal = useCallback((p: SwapProposal) => {
+    if (!result || !swapPiece) return;
+    const released = new Set((p.releasedTrips ?? []).map((t: any) => String(t.tripId)));
+    const { shifts } = applyPieceToShift(
+      result.driverShifts, p.driverId, { trips: swapPiece.trips },
+      swapPiece.vehicleId, swapPiece.vehicleType, released,
+    );
+    const newResult: DriverShiftsResult = { ...result, driverShifts: shifts, summary: recomputeSummary(shifts, result.summary) };
+    setResult(newResult);
+    pushHistory(newResult, `🔁 pezzo ${swapPiece.vehicleId} → ${p.driverId}${released.size ? ` (rilascia ${released.size} corse)` : ""}`);
+    wwRevalidate([p.driverId], newResult);
+    setSwapPiece(null);
+    toast.success("Pezzo assorbito", {
+      description: released.size
+        ? `${p.driverId} ha rilasciato ${released.size} corse: ora sono scoperte (vedi Copertura).`
+        : `${p.driverId} copre ora il pezzo di ${swapPiece.vehicleId}.`,
+    });
+  }, [result, swapPiece, pushHistory, wwRevalidate]);
+
+  /* ── BDSI §12.1 "Turni unici" — crea un turno mono-pezzo dal pezzo scoperto ── */
+  const createTurnoUnico = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
+    if (!result) return;
+    fetch(`${getApiBase()}/api/driver-shifts/tools/turni-unici`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pieces: [{ vehicleId, vehicleType, trips: piece.trips }], config: operatorConfig }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        const d = data?.duties?.[0];
+        if (!d) {
+          toast.error("Nessun turno unico conforme possibile", {
+            description: data?.skipped?.[0]?.reason ?? "il pezzo viola la normativa anche da solo",
+          });
+          return;
+        }
+        const existing = new Set(result.driverShifts.map(s => s.driverId));
+        let did: string = d.driverId;
+        let k = 1;
+        while (existing.has(did)) did = `TU${String(++k).padStart(3, "0")}`;
+        const fmt = (m: number) => `${Math.floor(m / 60)}h${String(Math.round(m) % 60).padStart(2, "0")}`;
+        const rip0 = d.riprese[0];
+        const newShift: DriverShiftData = {
+          driverId: did, type: d.type,
+          nastroStart: minToTime(rip0.startMin), nastroEnd: minToTime(rip0.endMin),
+          nastroStartMin: rip0.startMin, nastroEndMin: rip0.endMin,
+          nastroMin: d.nastroMin, nastro: fmt(d.nastroMin),
+          workMin: d.workMin, work: fmt(d.workMin),
+          interruptionMin: 0, interruption: null,
+          transferMin: rip0.transferMin ?? 0, transferBackMin: rip0.transferBackMin ?? 0,
+          preTurnoMin: rip0.preTurnoMin ?? 0, cambiCount: 0,
+          riprese: d.riprese,
+          bdsValidation: d.bdsValidation,
+          verifyState: d.bdsValidation?.valid ? "conforme" : "scorretto",
+        };
+        const shifts = [...result.driverShifts, newShift];
+        const newResult: DriverShiftsResult = { ...result, driverShifts: shifts, summary: recomputeSummary(shifts, result.summary) };
+        setResult(newResult);
+        pushHistory(newResult, `🪄 Turno unico ${did} da ${vehicleId}`);
+        const nLeft = (d.leftoverTrips ?? []).length;
+        toast.success(`Turno unico ${did} creato (${TYPE_LABELS[d.type as DriverShiftType] ?? d.type})`, {
+          description: nLeft ? `${nLeft} corse del pezzo restano scoperte (oltre il limite di lavoro).` : undefined,
+        });
+      })
+      .catch(() => toast.error("Errore nella creazione del turno unico"));
+  }, [result, operatorConfig, pushHistory]);
+
   const wwMoveTrips = useCallback((tripIds: string[], targetShiftId: string | null) => {
     if (!result || tripIds.length === 0) return;
     const idSet = new Set(tripIds);
@@ -1259,6 +1480,10 @@ export default function DriverWorkspace({
   }, [handleUndo, handleRedo]);
 
   const optimizerCfg = operatorConfig.bds?.optimizer;
+  const nAmbito = scelteAttive(ambito);
+  /* Come il solver ha trattato vincoli globali e costi avanzati (resta nel risultato salvato) */
+  const esitoVincoli = (result as any)?.solverMetrics?.vincoliGlobali as any[] | undefined;
+  const esitoBds5 = (result as any)?.solverMetrics?.bds5;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -1325,7 +1550,26 @@ export default function DriverWorkspace({
           >
             <Settings className="w-3 h-3" /> Config CSP
           </button>
+          {solverMode === "cpsat" && (
+          <button
+            onClick={() => setAmbitoOpen(true)}
+            title="Cluster di cambio su cui tagliare, vincoli globali di soluzione, costi avanzati"
+            className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded border transition ${nAmbito > 0 ? "text-orange-200 border-orange-500/50 bg-orange-500/15 hover:bg-orange-500/25" : "text-orange-300 border-orange-500/30 bg-orange-500/8 hover:bg-orange-500/15"}`}
+          >
+            <Crosshair className="w-3 h-3" /> Ambito del calcolo
+            {nAmbito > 0 && <span className="font-mono font-bold">{nAmbito}</span>}
+          </button>
+          )}
           </>
+          )}
+          {savedDss.length >= 2 && (
+            <button
+              onClick={() => setShowCompare(true)}
+              title="Confronta fianco a fianco due scenari turni guida salvati"
+              className="flex items-center gap-1.5 text-[11px] text-purple-300/80 px-2.5 py-1 rounded border border-purple-500/30 hover:bg-purple-500/10 transition"
+            >
+              <ArrowRightLeft className="w-3 h-3" /> Confronta salvati ({savedDss.length})
+            </button>
           )}
           <button
             onClick={() => setWwOpen(o => !o)}
@@ -1350,12 +1594,23 @@ export default function DriverWorkspace({
               <><Play className="w-3.5 h-3.5" /> Genera Turni Guida</>
             )}
           </button>
+          {result && dssAperto && (
+            <button
+              onClick={() => { void aggiornaSalvataggio(); }}
+              disabled={aggiornando}
+              title="Aggiorna il salvataggio aperto. Se il roster lo usa, ne viene creata una versione nuova."
+              className="flex items-center gap-1.5 text-[11px] font-medium text-white px-2.5 py-1 rounded bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 transition"
+            >
+              <Save className="w-3 h-3" /> {aggiornando ? "Salvataggio…" : "Aggiorna salvataggio"}
+            </button>
+          )}
           {result && (
             <button
               onClick={() => setShowSaveDialog(true)}
+              title={dssAperto ? "Salva con nome: crea un salvataggio nuovo" : undefined}
               className="flex items-center gap-1.5 text-[11px] text-emerald-300 px-2.5 py-1 rounded border border-emerald-500/30 bg-emerald-500/8 hover:bg-emerald-500/15 transition"
             >
-              <Save className="w-3 h-3" /> Salva DSS
+              <Save className="w-3 h-3" /> {dssAperto ? "Salva con nome" : "Salva DSS"}
             </button>
           )}
           {result && (
@@ -1453,6 +1708,11 @@ export default function DriverWorkspace({
               </div>
             </div>
 
+            <div className="mb-5">
+              <AlgoGuide titolo="Come funziona il CSP (turni guida), passo per passo" accent="purple"
+                sottotitolo="dai blocchi vettura ai turni legali RD 131/1938" steps={CSP_GUIDE} />
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
               {/* Cluster di cambio */}
               <div className="rounded-xl border border-zinc-800 bg-black/40 p-4">
@@ -1499,6 +1759,17 @@ export default function DriverWorkspace({
                       </span>
                     ))}
                   </div>
+                )}
+                {solverMode === "cpsat" && (clusterDelCalcolo?.length ?? 0) > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAmbitoOpen(true)}
+                    className="mt-3 text-[11px] text-orange-300 hover:text-orange-200 underline-offset-2 hover:underline"
+                  >
+                    {ambito.clusterScelti?.length
+                      ? `Il calcolo taglierà solo su ${ambito.clusterScelti.length} cluster su ${clusterDelCalcolo!.length} · cambia`
+                      : "Scegli su quali cluster tagliare"}
+                  </button>
                 )}
               </div>
 
@@ -1815,6 +2086,13 @@ export default function DriverWorkspace({
                 );
               })()}
             </div>
+            {/* Esito dei vincoli globali (BDSI cap. 14) e dei costi avanzati (BDS5) */}
+            {(esitoVincoli?.length || esitoBds5) ? (
+              <div className="mt-2 flex flex-wrap gap-1.5 items-center">
+                {esitoVincoli?.length ? <VincoliReport report={esitoVincoli} /> : null}
+                <Bds5Report report={esitoBds5} />
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -2285,6 +2563,39 @@ export default function DriverWorkspace({
             </div>
           </div>
         )}
+
+        {/* Lettura del risultato: analisi, classifica, distribuzioni, conformità, riassunti, elenco dei turni */}
+        {result && result.summary && result.driverShifts.length > 0 && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setLetturaOpen(o => !o)}
+              aria-expanded={letturaOpen}
+              className="w-full flex items-center gap-2 mb-2 text-left"
+            >
+              <div className="h-6 w-1 rounded-full bg-gradient-to-b from-orange-500 to-amber-500" />
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-orange-300">Lettura del risultato</h3>
+              <span className="text-[10px] text-muted-foreground">— analisi, scenari, distribuzioni, conformità, riassunti, dettaglio dei turni</span>
+              <ChevronDown className={`ml-auto w-3.5 h-3.5 text-muted-foreground transition-transform ${letturaOpen ? "rotate-180" : ""}`} />
+            </button>
+            {letturaOpen && (
+              <LetturaDelRisultato
+                result={result}
+                forzaTurno={forzaTurno}
+                sbloccaTurno={sbloccaTurno}
+                copertura={(cerca) => (
+                  <CoperturaTurniMacchina
+                    vehicleShifts={vehicleShifts}
+                    driverShifts={result.driverShifts}
+                    onFocusDriver={cerca}
+                    onSwapPiece={openSwapDialog}
+                    onTurnoUnico={createTurnoUnico}
+                  />
+                )}
+              />
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── Parametri & Regole: pannello completo pre-ottimizzazione ── */}
@@ -2304,6 +2615,36 @@ export default function DriverWorkspace({
         onClose={() => setConfigOpen(false)}
         config={operatorConfig}
         onChange={setOperatorConfig}
+      />
+
+      {/* ── Ambito del calcolo: cluster, vincoli globali, costi avanzati ── */}
+      <AmbitoDelCalcoloPanel
+        aperto={ambitoOpen}
+        onChiudi={() => setAmbitoOpen(false)}
+        ambito={ambito}
+        onCambia={setAmbito}
+        cluster={clusterDelCalcolo}
+      />
+
+      {/* ── Confronto fra due scenari turni guida salvati ── */}
+      {showCompare && savedDss.length >= 2 && (
+        <DssCompareDialog
+          scenarioId={vehicleScenarioId}
+          savedDss={savedDss}
+          defaultLeftId={dssId ?? savedDss[0]?.id}
+          defaultRightId={savedDss.find(s => s.id !== (dssId ?? savedDss[0]?.id))?.id ?? savedDss[1]?.id}
+          onClose={() => setShowCompare(false)}
+        />
+      )}
+
+      {/* BDSI §12.2 — «Scambia con pezzo…» */}
+      <SwapDialog
+        open={!!swapPiece}
+        piece={swapPiece}
+        proposals={swapProposals}
+        loading={swapLoading}
+        onApply={applySwapProposal}
+        onClose={() => setSwapPiece(null)}
       />
 
       {/* ── Save DSS Dialog ─────────────────────────────────── */}

@@ -29,8 +29,8 @@ import type {
   HandoverInfo,
   Ripresa,
   RipresaTrip,
-} from "@/pages/driver-shifts/types";
-import { TYPE_LABELS } from "@/pages/driver-shifts/constants";
+} from "@/pages/fucina/turni-guida/types";
+import { TYPE_LABELS } from "@/pages/fucina/turni-guida/constants";
 import { ripresaServiceBounds } from "./DriverShiftsPrintExport";
 
 export interface StopPassage {

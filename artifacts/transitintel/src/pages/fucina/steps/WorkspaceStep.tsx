@@ -17,6 +17,7 @@ import { getApiBase } from "@/lib/api";
 import type { GtfsSelection } from "@/pages/fucina";
 import type { ServiceProgramResult } from "@/pages/optimizer-route/types";
 import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
+import { paginaTurniGuida } from "@/lib/turni-guida-indirizzo";
 
 interface Props {
   gtfsSelection: GtfsSelection;
@@ -211,7 +212,7 @@ export default function WorkspaceStep({
               Turni Guida →
             </button>
           ) : savedScenarioId ? (
-            <a href={`/driver-shifts/${savedScenarioId}`}
+            <a href={paginaTurniGuida(projectId, savedScenarioId)}
               className="flex items-center gap-1.5 text-[11px] text-purple-300 font-medium px-3 py-1.5 rounded-lg border border-purple-500/30 bg-purple-500/8 hover:bg-purple-500/15 transition-all">
               Turni Guida →
             </a>
