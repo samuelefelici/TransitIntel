@@ -207,10 +207,10 @@ righe orfane la tenevano in vita per caso.
 
 **La categoria resta senza chiave, apposta.** Cancellando una categoria di
 validità (Planning Studio › Validità), sulle corse che la usavano resta una
-riga che punta a una categoria che non c'è più. La pagina mostra quelle corse
-come «senza categoria», ma il calcolo le tratta come legate a una categoria che
-non cade in nessun giorno: **una corsa che aveva solo quella categoria non vale
-mai**, e non esce in quadri orari, GTFS e turni. Togliere quelle righe, o
+riga che punta a una categoria che non c'è più. Nella tabella Corse la casella
+delle categorie di quelle corse resta vuota, e il calcolo le tratta come legate
+a una categoria che non cade in nessun giorno: **una corsa che aveva solo
+quella categoria non vale mai**, e non esce in quadri orari, GTFS e turni. Togliere quelle righe, o
 impedire di cancellare una categoria in uso, cambia i giorni in cui le corse
 valgono: non lo decide una migrazione. Per sapere se in produzione ce ne sono,
 in sola lettura:
