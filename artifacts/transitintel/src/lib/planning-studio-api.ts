@@ -165,6 +165,8 @@ export interface PsTrip {
   dayTypeCodes?: string[];
   /** macro-categorie del calendario aziendale (es. Scuole Aperte) */
   categories?: Array<{ id: string; code: string; name: string; color: string | null }>;
+  /** righe della corsa che puntano a una categoria cancellata (lib/categorie-cancellate.ts) */
+  lostCategories?: number;
   createdAt: string;
 }
 

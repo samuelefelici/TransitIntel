@@ -1932,9 +1932,13 @@ function CategoryRow({ category }: { category: PsValidityCategory }) {
   const deleteMut = useMutation({
     mutationFn: () => deletePsValidityCategory(category.id),
     onSuccess: () => {
+      toast.success(`Categoria «${category.name}» cancellata`);
       qc.invalidateQueries({ queryKey: ["ps-validity-categories"] });
       qc.invalidateQueries({ queryKey: ["ps-validity-categories", "calendar"] });
     },
+    /* una categoria usata da corse o da unità di progettazione non si cancella:
+       l'API dice da quante, e senza questo il rifiuto passerebbe in silenzio */
+    onError: (e: Error) => toast.error("Categoria non cancellata", { description: e.message, duration: 12000 }),
   });
 
   return (
@@ -1982,7 +1986,7 @@ function CategoryRow({ category }: { category: PsValidityCategory }) {
           <button
             onClick={() => setConfirmReq({
               title: `Eliminare la categoria "${category.name}"?`,
-              message: "La categoria è un'anagrafica condivisa: il suo calendario e le assegnazioni alle corse che la usano perdono il riferimento.",
+              message: "La categoria è condivisa da tutti i progetti: con lei si cancellano i suoi giorni nel calendario. Se la usano corse o unità di progettazione non si cancella: va prima tolta da lì.",
               confirmLabel: "Elimina",
               onConfirm: () => deleteMut.mutateAsync().then(() => undefined),
             })}
