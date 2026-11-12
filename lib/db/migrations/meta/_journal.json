@@ -64,6 +64,13 @@
       "when": 1794344067441,
       "tag": "0008_mfa_obbligatoria",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794471292629,
+      "tag": "0009_ruoli_aziendali",
+      "breakpoints": true
     }
   ]
 }

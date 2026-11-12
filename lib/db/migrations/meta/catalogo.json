@@ -1979,8 +1979,11 @@
    "speed": "double precision | not null |  |  | "
   },
   "public.users": {
+   "accesso_di_prima": "jsonb | not null | '{}'::jsonb |  | ",
    "active": "boolean | not null | true |  | ",
+   "analisi": "boolean | not null | false |  | ",
    "created_at": "timestamp with time zone | not null | now() |  | ",
+   "dati_sanitari": "boolean | not null | false |  | ",
    "deve_cambiare_password": "boolean | not null | false |  | ",
    "dispositivi_versione": "integer | not null | 1 |  | ",
    "email": "text | not null |  |  | ",
@@ -1999,8 +2002,9 @@
    "password_cambiata_il": "timestamp with time zone | null |  |  | ",
    "password_controllata": "boolean | not null | false |  | ",
    "password_hash": "text | not null |  |  | ",
-   "permissions": "jsonb | not null | '{\"fares\": true, \"roster\": false, \"network\": true, \"centrale\": false, \"analytics\": false, \"fleetcare\": false, \"personale\": false, \"scheduling\": true}'::jsonb |  | ",
+   "permissions": "jsonb | not null | '{\"fares\": false, \"roster\": false, \"network\": false, \"centrale\": false, \"analytics\": false, \"fleetcare\": false, \"personale\": false, \"scheduling\": false}'::jsonb |  | ",
    "role": "text | not null | 'user'::text |  | ",
+   "ruoli": "text[] | not null | '{}'::text[] |  | ",
    "sessione_versione": "integer | not null | 1 |  | "
   },
   "public.vehicle_schedule_members": {
@@ -2295,8 +2299,10 @@
   "public.stop_cluster_stops.stop_cluster_stops_pkey": "PRIMARY KEY (id)",
   "public.stop_clusters.stop_clusters_pkey": "PRIMARY KEY (id)",
   "public.traffic_snapshots.traffic_snapshots_pkey": "PRIMARY KEY (id)",
+  "public.users.users_accesso_di_prima_oggetto": "CHECK ((accesso_di_prima @> '{}'::jsonb))",
   "public.users.users_email_key": "UNIQUE (email)",
   "public.users.users_pkey": "PRIMARY KEY (id)",
+  "public.users.users_ruoli_validi": "CHECK ((ruoli <@ ARRAY['pianificatore'::text, 'ufficio_turni'::text, 'capo_deposito'::text, 'centrale_operativa'::text, 'officina'::text, 'amministrazione'::text]))",
   "public.vehicle_schedule_members.vehicle_schedule_members_pkey": "PRIMARY KEY (scenario_id, user_id)",
   "public.vehicle_schedule_members.vehicle_schedule_members_scenario_id_fkey": "FOREIGN KEY (scenario_id) REFERENCES service_program_scenarios(id) ON DELETE CASCADE",
   "public.weather_snapshots.weather_snapshots_pkey": "PRIMARY KEY (id)",

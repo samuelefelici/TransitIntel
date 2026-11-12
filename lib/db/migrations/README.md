@@ -84,13 +84,22 @@ su main non si tocca più.
     (in `cerbero_migrazioni`, che `cerbero_owner` non scrive):
     ```sql
     DO $$ BEGIN
-      IF pg_catalog.to_regrole('cerbero_owner') IS NOT NULL THEN EXECUTE 'SET LOCAL ROLE cerbero_owner'; END IF;
+      IF EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+                  WHERE c.oid = pg_catalog.to_regclass('public.t')
+                    AND c.relowner = pg_catalog.to_regrole('cerbero_owner')) THEN
+        EXECUTE 'SET LOCAL ROLE cerbero_owner';
+      END IF;
     END $$;
     --> statement-breakpoint
     UPDATE public.t SET …;
     --> statement-breakpoint
     RESET ROLE;
     ```
+    La guardia guarda di chi è la tabella, non solo se il ruolo esiste: su un
+    database appena creato in un cluster che ha già i ruoli (un secondo
+    database, un ripristino) le tabelle sono ancora di chi migra fino al
+    riallineamento, e passare a `cerbero_owner` darebbe «permission denied».
+    `RESET ROLE` è l'ultima istruzione del file (0009);
     Come `cerbero_owner` il DDL è fermato dall'event trigger
     `cerbero_ddl_dell_app`, tutto (dalla 2.16b anche `CREATE TABLE` e
     `ALTER TABLE`): lì dentro solo dati. Il DDL di una migrazione si esegue da
