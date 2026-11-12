@@ -205,15 +205,27 @@ periodo (`scuole_chiuse_<periodo>`) senza più date, senza corse e senza unità
 di progettazione viene tolta alla prossima sincronizzazione del calendario. Le
 righe orfane la tenevano in vita per caso.
 
-**La categoria resta senza chiave, apposta.** Cancellando una categoria di
-validità (Planning Studio › Validità), sulle corse che la usavano resta una
-riga che punta a una categoria che non c'è più. Nella tabella Corse la casella
-delle categorie di quelle corse resta vuota, e il calcolo le tratta come legate
-a una categoria che non cade in nessun giorno: **una corsa che aveva solo
-quella categoria non vale mai**, e non esce in quadri orari, GTFS e turni. Togliere quelle righe, o
-impedire di cancellare una categoria in uso, cambia i giorni in cui le corse
-valgono: non lo decide una migrazione. Per sapere se in produzione ce ne sono,
-in sola lettura:
+**La categoria resta senza chiave, per ora.** Fino alla PR 2.15b una categoria
+di validità in uso si poteva cancellare (Planning Studio › Validità › Categorie
+Periodi › Gestisci categorie): sulle corse che la usavano restava una riga che
+punta a una categoria che non c'è più. Il calcolo tratta quelle corse come
+legate a una categoria che non cade in nessun giorno: **una corsa che aveva
+solo quella categoria non vale mai**, e non esce in quadri orari, GTFS e turni.
+
+Dalla 2.15b:
+
+- **una categoria in uso non si cancella più.** L'API rifiuta finché la usano
+  corse o unità di progettazione, e dice da quante. Va prima tolta da lì;
+- **le corse già in quello stato si vedono.** Nella tabella Corse hanno il
+  segno «categoria cancellata»; un avviso sopra la tabella dice quante sono e
+  quante non valgono in nessun giorno, e «Mostra solo queste» le elenca da
+  sole. Si sistemano selezionandole: «Giorni/Categorie» › «Sostituisci» ›
+  «Applica categorie», con le categorie giuste o con nessuna (la corsa vale in
+  ogni periodo). **Sistemarle cambia i giorni in cui valgono**: una corsa che
+  oggi non esce mai tornerà a uscire. Va fatto guardando corsa per corsa.
+
+Per sapere quante sono in tutti i progetti senza aprirli uno a uno, in sola
+lettura dal Terminal del Postgres:
 
 ```sql
 SELECT p.name AS progetto,
@@ -229,9 +241,10 @@ SELECT p.name AS progetto,
  GROUP BY p.name ORDER BY 2 DESC;
 ```
 
-Nessuna riga: non è mai successo, e la chiave sulla categoria si può mettere
-senza toccare niente. Se ne escono, va deciso che cosa fare di quelle corse
-prima di mettere la chiave.
+Quando non ne resta nessuna, la chiave esterna sulla categoria si può mettere
+con una migrazione, come le altre due. Finché ce n'è una non si può: copiare
+una corsa, generare una cadenza o duplicare un progetto copierebbero anche la
+riga che punta nel vuoto, e il database la rifiuterebbe.
 
 ### Argos: sola lettura su un elenco chiuso
 

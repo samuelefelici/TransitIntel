@@ -36,6 +36,9 @@ describe("messaggioCategoriaInUso", () => {
     expect(messaggioCategoriaInUso({ corse: 12, progetti: 2, unita: 0 })).toMatch(/usata da 12 corse in 2 progetti: toglila/);
     expect(messaggioCategoriaInUso({ corse: 0, progetti: 0, unita: 3 })).toMatch(/usata da 3 unità di progettazione: toglila/);
     expect(messaggioCategoriaInUso({ corse: 5, progetti: 1, unita: 1 })).toMatch(/usata da 5 corse e da 1 unità di progettazione: toglila/);
+    // il perché cambia: le corse non varrebbero più, le unità resterebbero senza categoria
+    expect(messaggioCategoriaInUso({ corse: 1, progetti: 1, unita: 0 })).toMatch(/le corse che hanno solo questa categoria non varrebbero più in nessun giorno\.$/);
+    expect(messaggioCategoriaInUso({ corse: 0, progetti: 0, unita: 3 })).toMatch(/quelle unità resterebbero senza categoria\.$/);
   });
 });
 

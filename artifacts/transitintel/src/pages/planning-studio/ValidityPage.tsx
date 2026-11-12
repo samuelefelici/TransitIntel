@@ -1851,7 +1851,10 @@ function CategoryEditorDialog(props: {
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
+    /* z-[60]: si apre da «Gestisci categorie» dentro la finestra dei periodi (z-50), e deve
+       starle sopra. Con lo stesso livello restava sotto, e il pulsante sembrava non fare niente.
+       La conferma di cancellazione (z-[70]) le sta sopra a sua volta. */
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/70 backdrop-blur-sm p-4">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col text-slate-100">
         <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-gradient-to-r from-fuchsia-500/10 via-violet-500/5 to-transparent">
           <div className="flex items-center gap-3">

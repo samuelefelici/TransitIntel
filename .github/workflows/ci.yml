@@ -871,6 +871,13 @@ jobs:
       # può più creare: la copia è uguale all'originale a meno degli id.
       - name: Duplicazione di un progetto di Planning Studio, senza DDL
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/duplica-progetto-db.test.ts
+      # PR 2.15b: una categoria di validità usata da corse o da unità di
+      # progettazione non si cancella. Prima lasciava sulle corse una riga che
+      # punta a una categoria che non c'è più, e una corsa che aveva solo quella
+      # non valeva più in nessun giorno. Una categoria libera si cancella, col
+      # suo calendario.
+      - name: Cancellare una categoria di validità in uso
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/categorie-validita-db.test.ts
       # Il registro delle modifiche (PR 2.10), dall'app: la manutenzione e la
       # verifica sì, anche in parallelo; leggere, cancellare o spegnere no, e
       # nessun DDL (PR 2.16b), tranne la partizione che la manutenzione crea. E

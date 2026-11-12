@@ -200,8 +200,10 @@ export function messaggioCategoriaInUso(u: UsoCategoria): string {
     pezzi.push(`${u.corse} ${u.corse === 1 ? "corsa" : "corse"}${u.progetti > 1 ? ` in ${u.progetti} progetti` : ""}`);
   }
   if (u.unita > 0) pezzi.push(`${u.unita} unità di progettazione`);
-  return `La categoria è usata da ${pezzi.join(" e da ")}: toglila da lì prima di cancellarla. `
-    + "Cancellandola adesso quelle corse non varrebbero più in nessun giorno.";
+  const perche = u.corse > 0
+    ? "Cancellandola adesso le corse che hanno solo questa categoria non varrebbero più in nessun giorno."
+    : "Cancellandola adesso quelle unità resterebbero senza categoria.";
+  return `La categoria è usata da ${pezzi.join(" e da ")}: toglila da lì prima di cancellarla. ${perche}`;
 }
 
 /*
