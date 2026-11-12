@@ -219,7 +219,7 @@ export default function AdminUsersPage() {
                   <tr className="border-b border-border/40 text-left text-muted-foreground">
                     <th className="py-2 pr-4">Email</th>
                     <th className="py-2 pr-4">Nome</th>
-                    <th className="py-2 pr-4">Ruolo</th>
+                    <th className="py-2 pr-4" title="Amministratore di sistema o utente: non è un ruolo di lavoro">Sistema</th>
                     <th className="py-2 pr-4">Attivo</th>
                     <th className="py-2 pr-4">Ruoli aziendali</th>
                     <th className="py-2 pr-4" title="Il ruolo dentro FleetCare, per chi può aprire la Flotta">FleetCare</th>
@@ -244,7 +244,7 @@ export default function AdminUsersPage() {
                               <ShieldCheck className="w-3.5 h-3.5" /> admin
                             </span>
                           ) : (
-                            <span className="text-muted-foreground">user</span>
+                            <span className="text-muted-foreground">utente</span>
                           )}
                         </td>
                         <td className="py-2 pr-4">
@@ -621,7 +621,8 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso }: {
                   {!roster && " Serve anche poter aprire il roster."}
                 </span>
               </span>
-              <Switch checked={scelte.datiSanitari} aria-label="Dati sanitari"
+              {/* senza il roster la capacità non si può usare: il server la spegne al salvataggio */}
+              <Switch checked={scelte.datiSanitari && roster} disabled={!roster} aria-label="Dati sanitari"
                 onCheckedChange={(v) => onChange({ ...scelte, datiSanitari: v })} />
             </div>
             <div className="flex items-start justify-between gap-3">

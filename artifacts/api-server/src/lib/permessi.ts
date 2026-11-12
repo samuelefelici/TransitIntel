@@ -13,7 +13,7 @@
  *                     quello che c'è sopra (interruttoriCompatibili).
  */
 import {
-  accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, interruttoriCompatibili, ruoliValidi,
+  accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, interruttoriCompatibili, puo, ruoliValidi,
   type Diritti, type Interruttore, type InterruttoreDiPrima, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
 
@@ -62,7 +62,10 @@ export interface RichiestaPermessi {
 /**
  * Le colonne dei permessi dopo una modifica: lo stato di prima con sopra la
  * richiesta, e la vista permissions ricavata da lì. L'accesso di prima si può
- * solo ridurre: i diritti nuovi si danno con i ruoli.
+ * solo ridurre: i diritti nuovi si danno con i ruoli. I dati sanitari non
+ * restano accesi a chi non può più aprire il roster: una capacità che non si
+ * può usare tornerebbe attiva da sola il giorno in cui gli si dà un ruolo col
+ * roster, senza che nessuno l'abbia deciso.
  */
 export function permessiDopo(prima: RigaPermessi, richiesta: RichiestaPermessi) {
   const corrente = profiloDaRiga(prima);
@@ -74,5 +77,7 @@ export function permessiDopo(prima: RigaPermessi, richiesta: RichiestaPermessi) 
     dati_sanitari: richiesta.datiSanitari ?? corrente.datiSanitari,
     analisi: richiesta.analisi ?? corrente.analisi,
   };
-  return { ...dopo, permissions: dirittiEVista(profiloDaRiga(dopo)).permissions };
+  const { diritti, permissions } = dirittiEVista(profiloDaRiga(dopo));
+  if (dopo.role !== "admin" && !puo(diritti, "roster", "L")) dopo.dati_sanitari = false;
+  return { ...dopo, permissions };
 }

@@ -1609,26 +1609,95 @@ sono nello schema delle migrazioni.
 
 Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazione.ts`):
 
-| Sezione | Voci | Permesso |
+| Sezione | Voci | Area che serve poter almeno leggere |
 |---|---|---|
 | Oggi | la pagina d'ingresso | tutti |
-| Rete e orari | Planning Studio, Confronta programmi, Zone di coincidenza | Rete e orari (`network`) |
-| Turni | Progetti di esercizio, Turni misti, Database di esercizio | Turni (`scheduling`) |
-| Pubblicazione | Turni al roster; Orari al pubblico (stampa orari, QR) | Turni; Rete e orari |
+| Rete e orari | Planning Studio, Confronta programmi, Zone di coincidenza | Rete e orari |
+| Turni | Progetti di esercizio, I miei calcoli | Turni |
+| Pubblicazione | Turni al roster; Orari al pubblico (stampa orari, QR) | Pubblicazione dei turni; Pubblicazione degli orari |
 | Personale | Roster, Anagrafica | Roster; Roster o Personale |
-| Esercizio | Mappa live, AVM, Tempi osservati | Esercizio (`centrale`); i Tempi osservati anche con Analisi |
-| Flotta | FleetCare | Flotta (`fleetcare`) |
-| Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa, Documentazione ATMA | Tariffe (`fares`) |
-| Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi (`analytics`) |
+| Esercizio | Mappa live, AVM, Tempi osservati | Esercizio; i Tempi osservati anche con Analisi |
+| Flotta | FleetCare | Flotta |
+| Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa | Tariffe |
+| Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi |
 | Amministrazione | Utenti e accessi (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
+
+#### Ruoli aziendali (PR 2.14a)
+
+Chi può cosa lo dicono i **ruoli aziendali**. Ogni ruolo dà, per ogni area del
+menu, lettura o scrittura; una persona può averne più d'uno, e per ogni area
+vale il diritto più alto. I ruoli e la matrice sono nel codice
+(`lib/permessi/src/index.ts`, il pacchetto che leggono API e web): per
+cambiarne uno serve una modifica al codice.
+
+| Ruolo | Rete e orari | Turni | Pubbl. orari | Pubbl. turni | Personale | Roster | Esercizio | Consuntivo | Flotta | Tariffe |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Pianificatore | scrive | legge | scrive | legge | – | – | legge | legge | – | legge |
+| Ufficio turni | legge | scrive | legge | scrive | – | legge | legge | legge | – | – |
+| Capo deposito | legge | legge | legge | legge | – | scrive | legge | legge | legge | – |
+| Centrale operativa | legge | legge | legge | legge | – | legge | scrive | scrive | legge | – |
+| Officina | – | – | – | – | – | – | legge | – | scrive | – |
+| Amministrazione | legge | legge | legge | legge | scrive | legge | legge | scrive | legge | scrive |
+
+Fuori dai ruoli, date utente per utente in **Amministrazione › Utenti e accessi**:
+
+- **Amministratore di sistema**: non è un ruolo di lavoro. Gestisce utenti,
+  parametri e integrazioni, e può tutto.
+- **Dati sanitari**: vede e scrive nel roster i codici di malattia, infortunio
+  e 104. Chi non ce l'ha legge «assenza» senza il motivo. Vale solo per chi può
+  aprire il roster; se perde il roster la capacità si spegne. Chi la deve avere
+  è una decisione di chi è titolare dei dati.
+- **Analisi**: nessun ruolo la dà.
+- **Ruolo dentro FleetCare**: per chi ha la Flotta, che cosa può fare lì dentro.
+
+Come funziona:
+
+- **Lettura e scrittura.** Nell'API una richiesta `GET` chiede la lettura
+  sull'area del suo percorso, ogni altra la scrittura. Fa eccezione un elenco
+  corto di richieste che calcolano senza scrivere (verifica dei turni,
+  simulazioni di tariffa, anteprima di una pubblicazione, domande ad Argos):
+  `CALCOLANO_SENZA_SCRIVERE` in `artifacts/api-server/src/lib/permessi-rotte.ts`.
+  Chi può leggere ma non scrivere riceve 403 «Sola lettura: per modificare
+  serve la scrittura su …»; nella web la pagina mostra in alto «Sola lettura».
+  I comandi che modificano restano visibili: li rifiuta l'API.
+- **I progetti restano un controllo a parte.** Il ruolo dice che cosa si può
+  fare; quali progetti si vedono lo dice ancora la condivisione del progetto
+  (proprietario, membri). Dare «Ufficio turni» a qualcuno non gli apre i
+  progetti degli altri: glieli condivide chi li possiede, come prima.
+- **Accesso di prima.** Chi c'era prima dei ruoli non cambia accesso il giorno
+  del rilascio: i suoi interruttori (Rete, Turni, Roster, Personale, Esercizio,
+  Tariffe, Flotta) restano validi come scrittura sulla loro area, e in Utenti e
+  accessi compaiono come «accesso di prima». Chi aveva Roster tiene i dati
+  sanitari, chi aveva Analisi tiene l'Analisi. Per passare ai ruoli: «Modifica»,
+  si danno i ruoli, si toglie la spunta all'accesso di prima, si salva. Una
+  volta tolto non si rimette: i diritti nuovi si danno con i ruoli.
+- **Un utente nuovo** non ha niente finché non gli si dà un ruolo.
+- **Verifica in due passaggi.** Resta obbligatoria per chi vede il personale o
+  il roster. Tutti i ruoli tranne Pianificatore e Officina leggono il roster:
+  dando uno di quei ruoli a chi non l'aveva, al prossimo accesso dovrà
+  attivarla.
+- **FleetCare non cambia.** Continua a leggere `users.permissions`, che da qui
+  in poi è una vista tenuta dall'API (un interruttore è acceso se l'utente ha
+  almeno la lettura sulla sua area) e riallineata a ogni avvio. Non va scritta
+  a mano: i diritti stanno in `ruoli`, `accesso_di_prima`, `dati_sanitari` e
+  `analisi` (migrazione 0009).
+- **Limiti di questa prima versione.** Il Capo deposito scrive su tutto il
+  roster, non solo sul suo deposito (il tabellone non ha ancora il filtro per
+  deposito). Consuntivo e variazioni del giorno sono nella matrice ma le pagine
+  non ci sono ancora.
+- **Tornare indietro.** Con l'immagine precedente l'app legge di nuovo
+  `users.permissions` come «può tutto» sul modulo: chi nel frattempo ha
+  ricevuto un ruolo di sola lettura tornerebbe a poter scrivere sui moduli che
+  legge. Se si torna indietro dopo aver assegnato ruoli, vanno ricontrollati
+  gli interruttori in Gestione Utenti.
 
 - **Oggi** (`/oggi`) è la pagina d'ingresso. Mostra il servizio adesso dall'AVM,
   i turni del giorno nel roster (pubblicati, scoperti, assenze), il programma in
   esercizio e l'ultima pubblicazione dei turni; ognuno vede solo i riquadri dei
   suoi permessi. Dopo l'accesso si torna alla pagina chiesta (un segnalibro, un
   link); una pagina senza permesso riporta a Oggi e dice quale permesso serve.
-- **Ogni API ha il suo permesso (deny by default).** Un percorso che non ha una
-  voce in `PERMISSION_BY_PREFIX` (`lib/auth.ts`) risponde 403 a chi non è
+- **Ogni API ha la sua area (deny by default).** Un percorso che non ha una
+  voce in `AREE_PER_PREFISSO` (`lib/permessi-rotte.ts`) risponde 403 a chi non è
   admin, e il log lo scrive come «percorso senza permesso assegnato»: se dopo
   un rilascio qualcuno prende un 403 inatteso, è una voce da aggiungere (il
   test `inventario-rotte` lo impedisce per le rotte del codice). In più:
@@ -1646,8 +1715,9 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
   - le sincronizzazioni delle sorgenti (`/api/admin/sync`) rispondono «Solo
     admin».
 - **Il registro degli accessi** (Gestione Utenti) ora scrive anche quello che
-  l'admin cambia sugli utenti: creazione ed eliminazione, ruolo, permessi
-  (solo i nomi dei moduli aggiunti e tolti), ruolo FleetCare, nome (solo che
+  l'admin cambia sugli utenti: creazione ed eliminazione, ruolo di sistema,
+  ruoli aziendali, accesso di prima, dati sanitari e Analisi (solo i nomi
+  aggiunti e tolti), ruolo FleetCare, nome (solo che
   è cambiato, non il valore), oltre a password provvisoria, verifica tolta,
   sblocco, disattivazione e riattivazione.
 - **Analisi parte spenta per i nuovi utenti.** Chi la aveva la tiene: l'admin la
@@ -1657,9 +1727,9 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
   dipendono più da Analisi. Il default della colonna lo allinea la migrazione
   `0001_allinea` (in produzione era rimasto quello iniziale); conta solo per
   chi inserisce utenti a mano, perché l'app scrive i permessi per intero.
-- **Rete e orari porta con sé i Turni**, come prima. All'avvio l'app allinea chi
-  aveva Rete e orari senza Turni (salvato prima che la regola valesse anche al
-  salvataggio): da lì in poi vede anche i Turni.
+- **Rete e orari portava con sé i Turni** quando i permessi erano interruttori:
+  chi li ha ancora come accesso di prima li ha tutti e due. Con i ruoli non
+  vale più: il Pianificatore scrive la rete e legge i turni.
 - **Orari al pubblico** si apre sul programma in esercizio; prima chiedeva il
   permesso Analisi, ora Rete e orari (è lì che si leggono gli orari).
 - **Ipotesi di linea** (gli scenari KML) ora chiede Analisi, come le sue API.

@@ -105,6 +105,21 @@ describe("permessiDopo: come Gestione utenti cambia i permessi", () => {
     expect(permessiDopo({ ...prima, role: "admin" }, {}).role).toBe("admin");
   });
 
+  it("i dati sanitari non restano accesi a chi non può più aprire il roster", () => {
+    // spento l'accesso di prima col roster, e nessun ruolo col roster: la capacità si spegne
+    const senzaRoster = permessiDopo({ ...prima, ruoli: [] }, { ruoli: ["pianificatore"], accessoDiPrima: {} });
+    expect(senzaRoster.dati_sanitari).toBe(false);
+    // con un ruolo che apre il roster resta
+    expect(permessiDopo(prima, { accessoDiPrima: {} }).dati_sanitari).toBe(true);
+    expect(permessiDopo({ ...prima, ruoli: [] }, { ruoli: ["capo_deposito"], accessoDiPrima: {} }).dati_sanitari).toBe(true);
+    // non si può accendere a chi non ha il roster
+    expect(permessiDopo({ role: "user", ruoli: ["pianificatore"] }, { datiSanitari: true }).dati_sanitari).toBe(false);
+    expect(permessiDopo({ role: "user", ruoli: ["officina"] }, { datiSanitari: true }).dati_sanitari).toBe(false);
+    expect(permessiDopo({ role: "user", ruoli: ["ufficio_turni"] }, { datiSanitari: true }).dati_sanitari).toBe(true);
+    // un utente nuovo senza ruoli non ha niente, qualunque cosa si chieda
+    expect(permessiDopo({ role: "user" }, { datiSanitari: true, analisi: false })).toMatchObject({ ruoli: [], accesso_di_prima: {}, dati_sanitari: false });
+  });
+
   it("profiloDaRiga non crede a quello che non è scritto bene", () => {
     const p = profiloDaRiga({ role: "Admin", ruoli: ["officina", "direttore", 7], accesso_di_prima: { roster: "true", fares: true, analytics: true }, dati_sanitari: "true", analisi: 1 });
     expect(p).toEqual({ admin: false, ruoli: ["officina"], accessoDiPrima: { fares: true }, datiSanitari: false, analisi: false });

@@ -970,10 +970,13 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
 /**
  * I campi dei permessi come arrivano da Gestione utenti. Un ruolo che non
  * esiste è un errore (non si scarta in silenzio: l'admin crederebbe di averlo
- * dato). `permissions`, mandato dai client di prima dei ruoli, non si legge.
+ * dato), e così `permissions`, che mandano i client di prima dei ruoli.
  */
 function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } {
   const out: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } = {};
+  /* la pagina di prima dei ruoli (rimasta aperta in un browser durante il rilascio) manda gli
+   * interruttori: non si scartano in silenzio, altrimenti l'admin crederebbe di averli cambiati */
+  if (corpo?.permissions !== undefined) return { errore: "I permessi ora si danno con i ruoli aziendali: ricarica la pagina" };
   if (corpo?.ruoli !== undefined) {
     if (!Array.isArray(corpo.ruoli)) return { errore: "ruoli: serve un elenco" };
     const ignoti = ruoliSconosciuti(corpo.ruoli);
@@ -1006,11 +1009,8 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   const safeRole = role === "admin" ? "admin" : "user";
   /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima, e
    * senza ruoli non apre nessuna area finché l'amministratore non gliene dà */
-  const nuovo = {
-    role: safeRole, ruoli: chiesti.ruoli ?? [], accesso_di_prima: {},
-    dati_sanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false,
-  };
-  const vista = dirittiEVista(profiloDaRiga(nuovo)).permissions;
+  const nuovo = permessiDopo({ role: "user" }, { role: safeRole, ruoli: chiesti.ruoli ?? [], datiSanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false });
+  const vista = nuovo.permissions;
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
     : "driver";
