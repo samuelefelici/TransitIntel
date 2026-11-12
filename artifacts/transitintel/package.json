@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@types/three": "^0.185.4",
+    "@workspace/permessi": "workspace:*",
     "chart.js": "^4.4.6",
     "fflate": "^0.8.3",
     "katex": "^0.16.11",
