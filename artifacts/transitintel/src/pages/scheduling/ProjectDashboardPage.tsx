@@ -31,6 +31,7 @@ import { Power } from "lucide-react";
 import ShareProjectDialog from "@/components/scheduling/ShareProjectDialog";
 import QuadroSuperatoBadge from "@/components/scheduling/QuadroSuperatoBadge";
 import { useAuth } from "@/hooks/use-auth";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 type StepState = "done" | "current" | "locked";
 
@@ -305,14 +306,16 @@ export default function ProjectDashboardPage() {
                     Ottimizzare ora userebbe gli orari vecchi: risincronizza prima di generare o mettere in esercizio i turni.
                   </p>
                 </div>
-                <button
-                  onClick={handleResync}
-                  disabled={resyncing}
-                  className="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-amber-500/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
-                >
-                  {resyncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                  {resyncing ? "Risincronizzo…" : "Sincronizza con Planning Studio"}
-                </button>
+                <SeScrive>
+                  <button
+                    onClick={handleResync}
+                    disabled={resyncing}
+                    className="shrink-0 inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg border border-amber-500/50 bg-amber-500/15 text-amber-100 hover:bg-amber-500/25 disabled:opacity-60"
+                  >
+                    {resyncing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    {resyncing ? "Risincronizzo…" : "Sincronizza con Planning Studio"}
+                  </button>
+                </SeScrive>
               </motion.div>
             )}
 

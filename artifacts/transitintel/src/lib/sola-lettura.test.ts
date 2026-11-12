@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dettaglioSolaLettura, frenoAvvisi, rifiutoDiSolaLettura } from "./sola-lettura";
+import { dettaglioSolaLettura, frenoAvvisi, mancaLaScrittura, motivoSolaLettura, propsDelComandoSpento, rifiutoDiSolaLettura } from "./sola-lettura";
 
 describe("rifiutoDiSolaLettura", () => {
   it("lo riconosce dal campo, non dal testo", () => {
@@ -46,5 +46,33 @@ describe("frenoAvvisi", () => {
     expect(annuncia("turni", 1000)).toBe(true);
     expect(annuncia("roster", 1100)).toBe(true);
     expect(annuncia("roster", 1200)).toBe(false);
+  });
+});
+
+describe("i comandi spenti", () => {
+  it("il motivo nomina le aree che servono", () => {
+    expect(motivoSolaLettura(["Turni"])).toBe("Sola lettura: per farlo serve la scrittura su «Turni». Il ruolo lo assegna l'amministratore.");
+    expect(motivoSolaLettura(["Roster", "Personale"])).toContain("su «Roster» o «Personale»");
+    expect(motivoSolaLettura([])).toBe("Sola lettura: per farlo serve la scrittura. Il ruolo lo assegna l'amministratore.");
+  });
+
+  it("il messaggio breve passa dall'avviso unico come quello dell'API", () => {
+    const breve = mancaLaScrittura(["Roster"]);
+    expect(breve).toBe("Sola lettura: per farlo serve la scrittura su «Roster»");
+    expect(dettaglioSolaLettura(breve)).toBe("Per farlo serve la scrittura su «Roster»");
+  });
+
+  it("spento, senza azione, col motivo al posto del suggerimento, e le sue classi restano", () => {
+    const p = propsDelComandoSpento("px-2 disabled:pointer-events-none", "perché");
+    expect(p.disabled).toBe(true);
+    expect(p["aria-disabled"]).toBe(true);
+    expect(p.onClick).toBeUndefined();
+    expect(p.title).toBe("perché");
+    expect(p.className).toContain("px-2 disabled:pointer-events-none");
+    // il puntatore resta, altrimenti il motivo non si legge
+    expect(p.className).toContain("!pointer-events-auto");
+    // e resta attenuato anche dove lo stile del pulsante lo schiarirebbe al passaggio
+    expect(p.className).toContain("!opacity-50");
+    expect(propsDelComandoSpento(undefined, "x").className).not.toMatch(/^ /);
   });
 });

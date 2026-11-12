@@ -93,6 +93,7 @@ import {
   CATEGORY_COLORS, SEV_CONFIG, ymdToDisplay, minToTime,
 } from "@/pages/optimizer-route/constants.tsx";
 import { SummaryCard } from "@/pages/optimizer-route/components";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 /* ── Input numerico riusabile per i parametri costi ── */
 function CostInput({ label, value, onChange, step = 1 }: {
@@ -1496,11 +1497,13 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   Pipeline classica: salvataggio nel Workspace (modalità
                   progetto) o qui, poi apertura dell'area di lavoro. */}
               {(!projectId || result.solver === "vcsp") && (
-                <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
-                  className="flex items-center gap-1.5 text-[11px] text-green-300 font-medium px-3 py-1.5 rounded-lg border border-green-500/30 bg-green-500/8 hover:bg-green-500/15 transition-all">
-                  <Save className="w-3.5 h-3.5" />
-                  {result.solver === "vcsp" ? "Salva entrambi gli scenari" : "Salva Scenario"}
-                </button>
+                <SeScrive>
+                  <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
+                    className="flex items-center gap-1.5 text-[11px] text-green-300 font-medium px-3 py-1.5 rounded-lg border border-green-500/30 bg-green-500/8 hover:bg-green-500/15 transition-all">
+                    <Save className="w-3.5 h-3.5" />
+                    {result.solver === "vcsp" ? "Salva entrambi gli scenari" : "Salva Scenario"}
+                  </button>
+                </SeScrive>
               )}
               {result.solver !== "vcsp" && (
                 <button onClick={() => onComplete(resultWithSelectedRound(), savedScenarioId ?? undefined)}
@@ -1784,15 +1787,17 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 */}
 
               {/* CTA avvio */}
-              <button onClick={runOptimizer}
-                className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-sm text-black transition-all shadow-lg ${
-                  solverMode === "cpsat"
-                    ? "bg-gradient-to-r from-purple-500 to-violet-500 hover:from-purple-400 hover:to-violet-400 shadow-purple-500/20"
-                    : "bg-gradient-to-r from-orange-400 to-amber-400 hover:from-orange-300 hover:to-amber-300 shadow-orange-500/20"
-                }`}>
-                <Play className="w-4 h-4" />
-                {solverMode === "vcsp" ? "Avvia VCSP · Integrato" : solverMode === "cpsat" ? "Avvia VSP · CP-SAT" : "Avvia VSP · Greedy"}
-              </button>
+              <SeScrive>
+                <button onClick={runOptimizer}
+                  className={`w-full flex items-center justify-center gap-2 py-3.5 rounded-xl font-bold text-sm text-black transition-all shadow-lg ${
+                    solverMode === "cpsat"
+                      ? "bg-gradient-to-r from-purple-500 to-violet-500 hover:from-purple-400 hover:to-violet-400 shadow-purple-500/20"
+                      : "bg-gradient-to-r from-orange-400 to-amber-400 hover:from-orange-300 hover:to-amber-300 shadow-orange-500/20"
+                  }`}>
+                  <Play className="w-4 h-4" />
+                  {solverMode === "vcsp" ? "Avvia VCSP · Integrato" : solverMode === "cpsat" ? "Avvia VSP · CP-SAT" : "Avvia VSP · Greedy"}
+                </button>
+              </SeScrive>
             </motion.div>
           )}
 
@@ -1813,10 +1818,12 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                 <p className="text-sm font-medium text-red-400 mb-1">Ottimizzazione fallita</p>
                 <p className="text-xs text-muted-foreground">{error}</p>
               </div>
-              <button onClick={runOptimizer}
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-black bg-gradient-to-r from-orange-400 to-amber-400">
-                <RefreshCw className="w-4 h-4" /> Riprova
-              </button>
+              <SeScrive>
+                <button onClick={runOptimizer}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold text-black bg-gradient-to-r from-orange-400 to-amber-400">
+                  <RefreshCw className="w-4 h-4" /> Riprova
+                </button>
+              </SeScrive>
             </motion.div>
           )}
 
@@ -1989,13 +1996,15 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                             ))}
                           </div>
                           <div className="flex items-center gap-2 flex-wrap">
-                            <button
-                              onClick={() => applyProbeShifts(timeShifts)}
-                              disabled={!psProjectId || probeApply.state === "busy" || probeApply.state === "done"}
-                              title={!psProjectId ? "Serve il progetto Planning Studio collegato (l'UDP deve nascere da un progetto PS)" : undefined}
-                              className="px-3 py-1.5 rounded-lg border text-[11px] font-bold transition-all bg-cyan-500/15 border-cyan-500/50 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed">
-                              {probeApply.state === "busy" ? "Applico…" : probeApply.state === "done" ? "✓ Applicati in Planning" : `Applica in Planning (${nShifts} spostament${nShifts === 1 ? "o" : "i"})`}
-                            </button>
+                            <SeScrive area="rete">
+                              <button
+                                onClick={() => applyProbeShifts(timeShifts)}
+                                disabled={!psProjectId || probeApply.state === "busy" || probeApply.state === "done"}
+                                title={!psProjectId ? "Serve il progetto Planning Studio collegato (l'UDP deve nascere da un progetto PS)" : undefined}
+                                className="px-3 py-1.5 rounded-lg border text-[11px] font-bold transition-all bg-cyan-500/15 border-cyan-500/50 text-cyan-200 hover:bg-cyan-500/25 disabled:opacity-40 disabled:cursor-not-allowed">
+                                {probeApply.state === "busy" ? "Applico…" : probeApply.state === "done" ? "✓ Applicati in Planning" : `Applica in Planning (${nShifts} spostament${nShifts === 1 ? "o" : "i"})`}
+                              </button>
+                            </SeScrive>
                             <span className="text-[10px] text-muted-foreground">
                               lo scenario 🧠 assume QUESTI orari: applicali per renderli reali in Planning (un click solo — il doppio click è bloccato)
                             </span>
@@ -2125,11 +2134,13 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                       className="flex-1 bg-background border border-border/50 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:border-green-500/50"
                       autoFocus
                       onKeyDown={e => { if (e.key === "Enter") saveScenario(); if (e.key === "Escape") setShowSaveDialog(false); }} />
-                    <button onClick={saveScenario} disabled={saving || !scenarioName.trim()}
-                      className="flex items-center gap-1.5 bg-green-500/20 text-green-400 border border-green-500/30 px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-green-500/30 disabled:opacity-40">
-                      {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
-                      {result.solver === "vcsp" ? "Salva entrambi" : "Salva"}
-                    </button>
+                    <SeScrive>
+                      <button onClick={saveScenario} disabled={saving || !scenarioName.trim()}
+                        className="flex items-center gap-1.5 bg-green-500/20 text-green-400 border border-green-500/30 px-4 py-1.5 rounded-lg text-xs font-medium hover:bg-green-500/30 disabled:opacity-40">
+                        {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                        {result.solver === "vcsp" ? "Salva entrambi" : "Salva"}
+                      </button>
+                    </SeScrive>
                     <button onClick={() => setShowSaveDialog(false)} className="text-muted-foreground hover:text-foreground p-1">
                       <X className="w-4 h-4" />
                     </button>
@@ -2174,10 +2185,12 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <div className="flex items-center gap-2 text-xs text-amber-400 flex-wrap">
                       <AlertTriangle className="w-4 h-4 shrink-0" />
                       <span className="flex-1 min-w-0">👥 Turni guida NON salvati</span>
-                      <button onClick={() => void retryCrewSave()} disabled={crewRetrying}
-                        className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-amber-500/30 bg-amber-500/8 text-amber-300 hover:bg-amber-500/15 transition-all disabled:opacity-40">
-                        {crewRetrying && <Loader2 className="w-3 h-3 animate-spin" />} Riprova salvataggio turni guida
-                      </button>
+                      <SeScrive>
+                        <button onClick={() => void retryCrewSave()} disabled={crewRetrying}
+                          className="flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-lg border border-amber-500/30 bg-amber-500/8 text-amber-300 hover:bg-amber-500/15 transition-all disabled:opacity-40">
+                          {crewRetrying && <Loader2 className="w-3 h-3 animate-spin" />} Riprova salvataggio turni guida
+                        </button>
+                      </SeScrive>
                     </div>
                   ))}
                 </div>
@@ -2478,11 +2491,13 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     e potrai aprirli nelle rispettive aree di lavoro.
                   </p>
                   {!savedScenarioId && (
-                    <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
-                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-black bg-gradient-to-r from-emerald-400 to-teal-400 hover:shadow-[0_0_20px_rgba(16,185,129,0.35)] transition-shadow shrink-0">
-                      <Save className="w-4 h-4" />
-                      Salva entrambi gli scenari
-                    </button>
+                    <SeScrive>
+                      <button onClick={() => { setScenarioName(`Scenario ${new Date().toLocaleDateString("it-IT")}`); setShowSaveDialog(true); }}
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold text-black bg-gradient-to-r from-emerald-400 to-teal-400 hover:shadow-[0_0_20px_rgba(16,185,129,0.35)] transition-shadow shrink-0">
+                        <Save className="w-4 h-4" />
+                        Salva entrambi gli scenari
+                      </button>
+                    </SeScrive>
                   )}
                 </div>
               ) : (

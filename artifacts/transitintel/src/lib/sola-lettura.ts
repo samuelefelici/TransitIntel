@@ -43,3 +43,32 @@ export function frenoAvvisi(ogniMs = 4000): (messaggio: string, adesso: number) 
     return true;
   };
 }
+
+/* ── I comandi che modificano, nelle pagine ─────────────────────────────── */
+
+/** Che cosa manca, in breve: è anche il messaggio dell'avviso quando la pagina ferma un gesto da sé. */
+export function mancaLaScrittura(nomiDelleAree: readonly string[]): string {
+  const dove = nomiDelleAree.length ? ` su «${nomiDelleAree.join("» o «")}»` : "";
+  return `Sola lettura: per farlo serve la scrittura${dove}`;
+}
+
+/** Perché un comando è spento: lo legge chi ci passa sopra col mouse e chi usa uno screen reader. */
+export function motivoSolaLettura(nomiDelleAree: readonly string[]): string {
+  return `${mancaLaScrittura(nomiDelleAree)}. Il ruolo lo assegna l'amministratore.`;
+}
+
+/**
+ * Le proprietà di un comando spento per sola lettura. Resta visibile (chi
+ * legge deve sapere che la funzione esiste) ma non si preme, e il motivo
+ * sostituisce il suo suggerimento. Il puntatore resta attivo: molti pulsanti
+ * lo tolgono da spenti, e senza puntatore il motivo non comparirebbe.
+ */
+export function propsDelComandoSpento(classi: string | undefined, motivo: string) {
+  return {
+    disabled: true,
+    "aria-disabled": true,
+    title: motivo,
+    onClick: undefined,
+    className: [classi, "!pointer-events-auto !cursor-not-allowed !opacity-50"].filter(Boolean).join(" "),
+  } as const;
+}

@@ -38,6 +38,7 @@ interface CalendarioRoster {
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
+import { SeScrive, useSolaLettura } from "@/hooks/use-sola-lettura";
 import { useDialogo } from "@/components/roster/useDialogo";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
@@ -126,6 +127,8 @@ interface ColoreDeposito { codice: string; nome: string; colore: string; da: "tu
 
 /** Lo strumento attivo sul tabellone. */
 type Strumento = "puntatore" | "gomma" | "cambio";
+/* conducenti e rotazioni dei riposi li scrive chi ha il roster o il personale (come l'API) */
+const ROSTER_O_PERSONALE = ["roster", "personale"] as const;
 /** Un cambio turno: «da» passa a aConducente, «a» (se c'è) torna al conducente di «da». */
 interface Scambio { da: RosterAssignment; aConducente: string; a: RosterAssignment | null; forza?: string[] }
 /** Un'assegnazione chiesta al server; forza = le chiavi delle violazioni viste, si procede nonostante quelle. */
@@ -257,6 +260,9 @@ export default function RosterPage() {
   const puoPubblicare = puo("pubblicazione_turni", "S");
   /* senza la scrittura su «Personale» dal tabellone si creano solo conducenti fittizi */
   const personale = puo("personale", "S");
+  /* chi sul roster ha la sola lettura guarda il tabellone: gli strumenti e le
+     voci che lo cambiano restano spenti, e i tasti che lo cambiano avvisano */
+  const sl = useSolaLettura();
 
   // Vista a più settimane: il tabellone scorre orizzontalmente (barra di
   // scorrimento) invece di navigare una settimana alla volta. I turni vengono
@@ -474,6 +480,7 @@ export default function RosterPage() {
   // ── Taglia/incolla via tastiera: Q = taglia turno selezionato, W = incolla sul conducente ──
   /* il conducente si passa quando arriva da un click: lo stato selDriver si aggiorna solo al giro dopo */
   function doPaste(driverId: string | null = selDriver) {
+    if (sl.solaLettura) { sl.avvisa(); return; }
     /* un'assegnazione per volta: il secondo click di un doppio click non incolla altrove */
     if (assignMut.isPending) return;
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
@@ -593,6 +600,8 @@ export default function RosterPage() {
 
   /** Cambia strumento: la croce fissata e il turno scelto per lo scambio si lasciano. */
   const scegliStrumento = (t: Strumento) => {
+    /* gomma e cambio turno modificano: in sola lettura resta il puntatore */
+    if (sl.solaLettura && t !== "puntatore") { sl.avvisa(); return; }
     setTool(t);
     setSwapFrom(null);
     setPin(null);
@@ -633,7 +642,11 @@ export default function RosterPage() {
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key.toLowerCase();
-    if (k === "q") { e.preventDefault(); if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio: scegli un conducente e premi W`); } }
+    if (k === "q") {
+      e.preventDefault();
+      if (sl.solaLettura) sl.avvisa();
+      else if (selDuty) { setCut(selDuty); toast.success(`Turno ${selDuty.code} in taglio: scegli un conducente e premi W`); }
+    }
     else if (k === "w") { e.preventDefault(); doPaste(); }
     else if (k === "v") scegliStrumento("puntatore");
     else if (k === "g") scegliStrumento("gomma");
@@ -724,15 +737,19 @@ export default function RosterPage() {
                 {m === "Rotazioni" && (
                   <>
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Rotazione riposi</div>
-                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("create-riposi"); }}>
-                      <Plus className="w-3.5 h-3.5" /> Crea rotazione riposi
-                    </button>
+                    <SeScrive area={ROSTER_O_PERSONALE}>
+                      <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("create-riposi"); }}>
+                        <Plus className="w-3.5 h-3.5" /> Crea rotazione riposi
+                      </button>
+                    </SeScrive>
                     <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("list-riposi"); }}>
                       <CalendarDays className="w-3.5 h-3.5" /> Elenco rotazioni riposi
                     </button>
-                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("assegna"); }}>
-                      <Users className="w-3.5 h-3.5" /> Assegna rotazioni
-                    </button>
+                    <SeScrive area={ROSTER_O_PERSONALE}>
+                      <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("assegna"); }}>
+                        <Users className="w-3.5 h-3.5" /> Assegna rotazioni
+                      </button>
+                    </SeScrive>
                     <div className="border-t border-slate-800 my-1" />
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Rotazione turni</div>
                     <button className={menuDisabledCls} disabled>Crea rotazione turni · prossimamente</button>
@@ -741,9 +758,11 @@ export default function RosterPage() {
                 {m === "Algoritmi" && (
                   <>
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Assegna cadenze</div>
-                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("genera-riposi"); }}>
-                      <Wand2 className="w-3.5 h-3.5" /> Assegna cadenze → Riposi
-                    </button>
+                    <SeScrive area={ROSTER_O_PERSONALE}>
+                      <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("genera-riposi"); }}>
+                        <Wand2 className="w-3.5 h-3.5" /> Assegna cadenze → Riposi
+                      </button>
+                    </SeScrive>
                     <div className="border-t border-slate-800 my-1" />
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Assegnazione automatica</div>
                     <button className={menuDisabledCls} disabled>Copri gli scoperti · prossimamente</button>
@@ -819,8 +838,10 @@ export default function RosterPage() {
             ["gomma", Eraser, "Gomma", "Gomma (G): clicca una cella per cancellarne turno e voci (il turno torna fra gli scoperti)", "bg-rose-500/25 text-rose-100"],
             ["cambio", ArrowLeftRight, "Cambio turno", "Cambio turno (C): clicca il turno di una persona, poi un'altra persona nello stesso giorno: i due turni si scambiano", "bg-amber-500/25 text-amber-100"],
           ] as const).map(([k, Icona, testo, aiuto, attivo]) => (
-            <button key={k} onClick={() => scegliStrumento(k)} aria-pressed={tool === k} title={aiuto}
-              className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400 ${
+            <button key={k} onClick={() => scegliStrumento(k)} aria-pressed={tool === k}
+              disabled={sl.solaLettura && k !== "puntatore"}
+              title={sl.solaLettura && k !== "puntatore" ? sl.motivo : aiuto}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400 disabled:opacity-50 disabled:cursor-not-allowed ${
                 tool === k ? attivo : "text-slate-400 hover:bg-slate-800 hover:text-slate-200"
               }`}>
               <Icona className="w-3.5 h-3.5" /> <span className="hidden md:inline">{testo}</span>
@@ -831,18 +852,20 @@ export default function RosterPage() {
         {/* Voci Assenza / Presenza: scegli una voce → clicca una cella per inserirla */}
         {(["assenza", "presenza"] as const).map((cat) => (
           <div key={cat} className="relative">
-            <button
-              onClick={() => setVoceMenu(voceMenu === cat ? null : cat)}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
-                cat === "assenza"
-                  ? "border-rose-500/40 text-rose-200 bg-rose-500/10 hover:bg-rose-500/20"
-                  : "border-sky-500/40 text-sky-200 bg-sky-500/10 hover:bg-sky-500/20"
-              }`}
-            >
-              {cat === "assenza" ? <Ban className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
-              {cat === "assenza" ? "Assenza" : "Presenza"}
-              <ChevronDown className="w-3 h-3" />
-            </button>
+            <SeScrive>
+              <button
+                onClick={() => setVoceMenu(voceMenu === cat ? null : cat)}
+                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium border ${
+                  cat === "assenza"
+                    ? "border-rose-500/40 text-rose-200 bg-rose-500/10 hover:bg-rose-500/20"
+                    : "border-sky-500/40 text-sky-200 bg-sky-500/10 hover:bg-sky-500/20"
+                }`}
+              >
+                {cat === "assenza" ? <Ban className="w-3.5 h-3.5" /> : <Clock className="w-3.5 h-3.5" />}
+                {cat === "assenza" ? "Assenza" : "Presenza"}
+                <ChevronDown className="w-3 h-3" />
+              </button>
+            </SeScrive>
             {voceMenu === cat && (
               <div className="absolute z-30 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
                 {(vociQ.data?.[cat] ?? []).map((v) => (
@@ -873,13 +896,15 @@ export default function RosterPage() {
           <Link href="/roster/anagrafica" className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs">
             Anagrafica
           </Link>
-          <button onClick={() => setEditDriver("new")} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium"
-            title={personale ? "Nuovo conducente" : "Nuovo conducente fittizio (per i conducenti veri serve il permesso «Personale»)"}>
-            <UserPlus className="w-3.5 h-3.5" /> {personale ? "Conducente" : "Fittizio"}
-          </button>
-          {datiProva && <button onClick={() => { if (confirm("Creare 30 conducenti di prova (fittizi, senza matricola) con foto, depositi diversi e rotazioni riposi?")) seedMut.mutate(); }} disabled={seedMut.isPending} className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs disabled:opacity-50">
+          <SeScrive area={ROSTER_O_PERSONALE}>
+            <button onClick={() => setEditDriver("new")} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium"
+              title={personale ? "Nuovo conducente" : "Nuovo conducente fittizio (per i conducenti veri serve il permesso «Personale»)"}>
+              <UserPlus className="w-3.5 h-3.5" /> {personale ? "Conducente" : "Fittizio"}
+            </button>
+          </SeScrive>
+          {datiProva && <SeScrive area={ROSTER_O_PERSONALE}><button onClick={() => { if (confirm("Creare 30 conducenti di prova (fittizi, senza matricola) con foto, depositi diversi e rotazioni riposi?")) seedMut.mutate(); }} disabled={seedMut.isPending} className="px-2.5 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 text-xs disabled:opacity-50">
             +30 fittizi
-          </button>}
+          </button></SeScrive>}
         </div>
       </div>
 
