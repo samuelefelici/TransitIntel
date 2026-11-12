@@ -400,6 +400,25 @@ describe("ruoli aziendali: chi legge e chi scrive", () => {
     expect(messaggio("/service-program/cpsat", officina, "POST")).toBe("Manca l'accesso a «Turni»");
     expect(messaggio("/depots", officina, "GET")).toBe("Manca l'accesso a «Turni» o «Rete e orari»");
   });
+
+  it("il rifiuto di sola lettura porta un campo, non solo il testo: la web lo riconosce da lì", () => {
+    const corpo = (path: string, user: AuthUser, method: string): any => {
+      let detto: any = "passa";
+      const res = { status() { return this; }, json(b: any) { detto = b; return this; } };
+      requirePermissionByPath({ user, path, method } as any, res as any, () => { detto = "passa"; });
+      return detto;
+    };
+    expect(corpo("/service-program/cpsat", pianificatore, "POST")).toEqual({ error: "Sola lettura: per modificare serve la scrittura su «Turni»", solaLettura: true });
+    // chi non ha proprio l'area, un percorso senza voce e una pagina dell'admin non sono «sola lettura»
+    expect(corpo("/service-program/cpsat", officina, "POST")).toEqual({ error: "Manca l'accesso a «Turni»" });
+    expect(corpo("/qualcosa-di-nuovo", pianificatore, "POST")).toEqual({ error: "Percorso senza permesso assegnato" });
+    expect(corpo("/admin/registro", pianificatore, "GET")).toEqual({ error: "Solo admin" });
+    // lo stesso da richiedeDiritto, per le rotte che vogliono un'area precisa
+    let conArea: any = null;
+    richiedeDiritto("roster")({ user: ufficioTurni, method: "POST" } as any,
+      { status() { return this; }, json(b: any) { conArea = b; return this; } } as any, () => {});
+    expect(conArea).toEqual({ error: "Sola lettura: per modificare serve la scrittura su «Roster»", solaLettura: true });
+  });
 });
 
 describe("ruoli aziendali: dati personali e codici sanitari", () => {

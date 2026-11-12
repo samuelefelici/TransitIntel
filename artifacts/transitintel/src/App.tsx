@@ -10,6 +10,7 @@ import { AuthProvider, useAuth, type Area } from "@/hooks/use-auth";
 import { CASA, NOMI_AREE, AREE_PAGINA } from "@/lib/navigazione";
 import { apiFetch } from "@/lib/api";
 import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
+import { EVENTO_SOLA_LETTURA, dettaglioSolaLettura, type RifiutoSolaLettura } from "@/lib/sola-lettura";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
 import IndicatoreCalcoli from "@/components/calcoli/IndicatoreCalcoli";
@@ -201,6 +202,28 @@ function VersoITurniGuida({ scenarioId }: { scenarioId: string }) {
   }, [scenarioId]);
   if (!dove) return <PageLoader />;
   return <Redirect to={dove} replace />;
+}
+
+/**
+ * L'avviso per ogni modifica che l'API rifiuta a chi può solo leggere. Uno solo
+ * per tutta l'app (lib/api.ts lo annuncia, da qualunque pagina parta la
+ * richiesta), sempre lo stesso riquadro: non si accumula.
+ */
+function AvvisoSolaLettura() {
+  useEffect(() => {
+    const avvisa = (e: Event) => {
+      const rifiuto = (e as CustomEvent<RifiutoSolaLettura>).detail;
+      const dettaglio = dettaglioSolaLettura(rifiuto?.messaggio ?? "");
+      toastSonner.warning("Sola lettura", {
+        id: "sola-lettura",
+        description: [dettaglio, "Non è stato modificato niente. Il ruolo lo assegna l'amministratore"].filter(Boolean).join(". ") + ".",
+        duration: 8000,
+      });
+    };
+    window.addEventListener(EVENTO_SOLA_LETTURA, avvisa);
+    return () => window.removeEventListener(EVENTO_SOLA_LETTURA, avvisa);
+  }, []);
+  return null;
 }
 
 function Router() {
@@ -518,6 +541,8 @@ function AuthGate() {
           <Router />
           {/* i calcoli in corso, in tutte le pagine (anche quelle senza menu) */}
           <IndicatoreCalcoli />
+          {/* ogni modifica rifiutata a chi può solo leggere, detta una volta e chiara */}
+          <AvvisoSolaLettura />
         </>
       ) : (
         <LoginPage />

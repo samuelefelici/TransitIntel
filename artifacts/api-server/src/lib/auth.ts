@@ -563,11 +563,12 @@ export function richiedeDiritto(area: Area): RequestHandler {
     if (area === "personale" && req.authVia) { res.status(403).json({ error: "Dati del personale non disponibili da questo canale" }); return; }
     const livello = livelloDelMetodo(req.method);
     if (haDiritto(req, area, livello)) { next(); return; }
-    res.status(403).json({
-      error: livello === "S" && haDiritto(req, area, "L")
-        ? `Sola lettura: per modificare serve la scrittura su «${NOMI_AREE[area]}»`
-        : `Manca l'accesso a «${NOMI_AREE[area]}»`,
-    });
+    /* solaLettura: la web riconosce il caso da qui, non dal testo */
+    if (livello === "S" && haDiritto(req, area, "L")) {
+      res.status(403).json({ error: `Sola lettura: per modificare serve la scrittura su «${NOMI_AREE[area]}»`, solaLettura: true });
+      return;
+    }
+    res.status(403).json({ error: `Manca l'accesso a «${NOMI_AREE[area]}»` });
   };
 }
 
@@ -610,7 +611,7 @@ export const requirePermissionByPath: RequestHandler = (req, res, next) => {
   if (esito.passa) { next(); return; }
   // un 403 senza voce vuol dire quasi sempre una voce dimenticata in AREE_PER_PREFISSO: il log lo dice
   if (esito.senzaVoce) logger.warn({ metodo: req.method, percorso: req.path, utente: req.user.id }, "percorso senza permesso assegnato: 403");
-  res.status(403).json({ error: esito.errore });
+  res.status(403).json(esito.solaLettura ? { error: esito.errore, solaLettura: true } : { error: esito.errore });
 };
 
 /* ────────────────────────────────────────────────────────────

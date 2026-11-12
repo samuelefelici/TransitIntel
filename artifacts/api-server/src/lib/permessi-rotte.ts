@@ -187,7 +187,13 @@ export function dirittoPerPercorso(metodo: string, path: string): { condivisa: A
 
 export type Decisione =
   | { passa: true }
-  | { passa: false; errore: string; /** nessuna voce copre il percorso: quasi sempre una voce dimenticata */ senzaVoce?: true };
+  | {
+    passa: false; errore: string;
+    /** nessuna voce copre il percorso: quasi sempre una voce dimenticata */
+    senzaVoce?: true;
+    /** può leggere l'area ma non scriverla: la web lo dice a modo suo, senza leggere il testo */
+    solaLettura?: true;
+  };
 
 const elenco = (aree: readonly Area[]) => aree.map(a => `«${NOMI_AREE[a]}»`).join(" o ");
 
@@ -205,7 +211,7 @@ export function decidi(chi: { admin: boolean; diritti: Diritti }, metodo: string
     if (puoSuUna(chi.diritti, aree, livello)) return { passa: true };
     /* può leggere ma non scrivere: lo si dice, perché è il caso che un ruolo crea apposta */
     if (livello === "S" && puoSuUna(chi.diritti, aree, "L")) {
-      return { passa: false, errore: `Sola lettura: per modificare serve la scrittura su ${elenco(aree)}` };
+      return { passa: false, errore: `Sola lettura: per modificare serve la scrittura su ${elenco(aree)}`, solaLettura: true };
     }
     return { passa: false, errore: `Manca l'accesso a ${elenco(aree)}` };
   }
