@@ -22,10 +22,11 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type {
-  DriverShiftType, DriverShiftData, DriverShiftsResult, ScenarioResult, OptimizationAnalysis, HandoverInfo,
+  DriverShiftType, DriverShiftData, DriverShiftsResult, ScenarioResult, OptimizationAnalysis, HandoverInfo, RipresaTrip,
 } from "./types";
 import {
   SearchChipsBar, matchShiftQuery, RiassuntiTable, VerifyBadge, effectiveVerifyState,
+  CoveragePanel, buildCoverage,
 } from "./bdsi-tools";
 import { TYPE_LABELS, TYPE_COLORS, TYPE_DESC, formatDuration, minToTime } from "./constants";
 
@@ -1066,6 +1067,47 @@ function AnalysisMetric({
       <div className={`text-lg font-bold font-mono mt-0.5 ${valueClass}`}>{value}</div>
       {sub && <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight">{sub}</div>}
     </div>
+  );
+}
+
+/* ───────────────────────────────────────────────────────────────
+ *  COPERTURA DEI TURNI MACCHINA (BDSI §2.2): quali corse sono coperte
+ *  da quali turni guida, e i pezzi scoperti con i loro comandi
+ * ─────────────────────────────────────────────────────────────── */
+export function CoperturaTurniMacchina({ vehicleShifts, driverShifts, onFocusDriver, onSwapPiece, onTurnoUnico }: {
+  /** `null` finché lo scenario dei turni macchina non è arrivato */
+  vehicleShifts: any[] | null;
+  driverShifts: DriverShiftData[];
+  onFocusDriver: (driverId: string) => void;
+  onSwapPiece: (vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => void;
+  onTurnoUnico: (vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const coverage = useMemo(
+    () => (Array.isArray(vehicleShifts) && vehicleShifts.length > 0 ? buildCoverage(vehicleShifts, driverShifts) : null),
+    [vehicleShifts, driverShifts],
+  );
+  if (!coverage) return null;
+  return (
+    <Card className="bg-muted/30 border-border/30">
+      <CardContent className="p-4">
+        <button onClick={() => setOpen(o => !o)} aria-expanded={open} className="w-full flex items-center gap-1.5 text-sm font-semibold">
+          <Bus className="w-4 h-4 text-orange-400" /> Copertura turni macchina
+          <span className="text-[10px] text-muted-foreground font-normal">— quali corse sono coperte da quali turni guida, e i pezzi scoperti</span>
+          <span className="ml-auto text-[10px] text-muted-foreground">{open ? "▲" : "▼"}</span>
+        </button>
+        {open && (
+          <div className="mt-3">
+            <CoveragePanel
+              coverage={coverage}
+              onFocusDriver={onFocusDriver}
+              onSwapPiece={onSwapPiece}
+              onTurnoUnico={onTurnoUnico}
+            />
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

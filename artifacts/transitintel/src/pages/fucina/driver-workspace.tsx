@@ -58,12 +58,14 @@ import {
 } from "@/pages/fucina/DriverShiftsPrintExport";
 import { exportDriverShiftSheetsToPrint, stopTimesLoaderFor } from "@/pages/fucina/DriverShiftSheetExport";
 import type { DriverShiftsResult, DriverShiftSummary, DriverShiftType, DriverActivity, DriverActivityType, RipresaTrip, DriverShiftData } from "@/pages/fucina/turni-guida/types";
-import { mkRipresaFromTrips, normalizeDriverShiftsResult, VincoliReport } from "@/pages/fucina/turni-guida/bdsi-tools";
+import {
+  mkRipresaFromTrips, normalizeDriverShiftsResult, VincoliReport, SwapDialog, applyPieceToShift, type SwapProposal,
+} from "@/pages/fucina/turni-guida/bdsi-tools";
 import { Bds5Report } from "@/pages/fucina/turni-guida/bds5-costs";
 import { AMBITO_VUOTO, configPerIlSolver, scelteAttive, type AmbitoDelCalcolo } from "@/pages/fucina/turni-guida/config-solver";
 import { AmbitoDelCalcoloPanel, type ClusterDelCalcolo } from "@/pages/fucina/turni-guida/AmbitoDelCalcoloPanel";
 import { DssCompareDialog } from "@/pages/fucina/turni-guida/DssCompareDialog";
-import { LetturaDelRisultato } from "@/pages/fucina/turni-guida/lettura-risultato";
+import { LetturaDelRisultato, CoperturaTurniMacchina } from "@/pages/fucina/turni-guida/lettura-risultato";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/fucina/turni-guida/constants";
 import { AddDriverShiftDialog } from "@/pages/fucina/turni-guida/AddDriverShiftDialog";
@@ -116,6 +118,15 @@ export default function DriverWorkspace({
   const [showCompare, setShowCompare] = useState(false);
   /* Lettura del risultato sotto il Gantt: analisi, classifica, distribuzioni, conformità, riassunti, elenco */
   const [letturaOpen, setLetturaOpen] = useState(true);
+  /* I turni macchina dello scenario: servono alla copertura (BDSI §2.2) */
+  const [vehicleShifts, setVehicleShifts] = useState<any[] | null>(null);
+  /* BDSI §12.2 «Scambia con pezzo…» */
+  const [swapPiece, setSwapPiece] = useState<{ vehicleId: string; vehicleType: string; trips: RipresaTrip[] } | null>(null);
+  const [swapProposals, setSwapProposals] = useState<SwapProposal[]>([]);
+  const [swapLoading, setSwapLoading] = useState(false);
+  /* Il salvataggio aperto: parte da ?dss= e cambia se il server ne crea una versione nuova */
+  const [dssAperto, setDssAperto] = useState<string | null>(dssId ?? null);
+  const [aggiornando, setAggiornando] = useState(false);
   const [serviceType, setServiceTypeState] = useState<ServiceType>("urbano");
   // Cambiando tipo servizio si re-applica il preset dei gruppi service-scoped
   // (regole turno + target), preservando gli altri parametri già modificati.
@@ -357,6 +368,7 @@ export default function DriverWorkspace({
       try {
         if (vehicleScenarioId) {
           const sc = await fetch(`${getApiBase()}/api/service-program/scenarios/${vehicleScenarioId}`).then((r) => (r.ok ? r.json() : null));
+          setVehicleShifts(Array.isArray(sc?.result?.shifts) ? sc.result.shifts : []);
           const st = sc?.input?.serviceType as ServiceType | undefined;
           if (st === "urbano" || st === "extraurbano" || st === "misto") baseSt = st;
         }
@@ -497,19 +509,24 @@ export default function DriverWorkspace({
   }, [vehicleScenarioId]);
   useEffect(() => { refetchSavedDss(); }, [refetchSavedDss]);
 
+  /* Il risultato come va salvato: con le corse SCOPERTE dell'Area di lavoro di
+   * adesso (spacchettate/estratte e non ancora ricomposte). Senza, vivrebbero
+   * solo nello stato React e il salvataggio le perderebbe. L'elenco letto da un
+   * salvataggio aperto non si riporta: se nel frattempo le corse sono state
+   * ricomposte in un turno, riaprendo tornerebbero anche fra le scoperte. */
+  const risultatoDaSalvare = useCallback((): DriverShiftsResult | null => {
+    if (!result) return null;
+    const poolTrips = wwPool.filter(p => p.trip).map(p => ({ ...p.trip! }));
+    const { unassignedTrips: _lette, ...senza } = result;
+    return poolTrips.length ? { ...senza, unassignedTrips: poolTrips } : senza;
+  }, [result, wwPool]);
+
   // Salva DSS
   const saveDss = useCallback(async () => {
-    if (!vehicleScenarioId || !result || !dssName.trim()) return;
+    const resultToSave = risultatoDaSalvare();
+    if (!vehicleScenarioId || !resultToSave || !dssName.trim()) return;
     setSavingDss(true);
     try {
-      // Persisti le corse SCOPERTE dell'Area di lavoro (spacchettate/estratte e
-      // non ancora ricomposte): senza questo vivrebbero solo nello stato React e
-      // il salvataggio le perderebbe, lasciando il piano "completo" ma con corse
-      // in meno.
-      const poolTrips = wwPool.filter(p => p.trip).map(p => ({ ...p.trip! }));
-      const resultToSave: DriverShiftsResult = poolTrips.length
-        ? { ...result, unassignedTrips: poolTrips }
-        : result;
       const resp = await fetch(`${getApiBase()}/api/driver-shifts/${vehicleScenarioId}/scenarios`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -535,7 +552,44 @@ export default function DriverWorkspace({
     } finally {
       setSavingDss(false);
     }
-  }, [vehicleScenarioId, result, dssName, operatorConfig, ambito, solverMode, wwPool, cpsat, refetchSavedDss]);
+  }, [vehicleScenarioId, risultatoDaSalvare, dssName, operatorConfig, ambito, solverMode, cpsat, refetchSavedDss]);
+
+  /* Aggiorna il salvataggio aperto invece di crearne uno nuovo. Se il roster lo
+   * usa, il server non lo sovrascrive: ne crea una versione nuova e risponde
+   * con il suo id; da lì in poi si lavora su quella. */
+  const aggiornaSalvataggio = useCallback(async () => {
+    const daSalvare = risultatoDaSalvare();
+    if (!daSalvare || !dssAperto) return;
+    setAggiornando(true);
+    try {
+      const r = await fetch(`${getApiBase()}/api/driver-shifts/scenarios/${dssAperto}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result: daSalvare }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => null);
+        throw new Error(j?.error ?? `HTTP ${r.status}`);
+      }
+      const j = await r.json().catch(() => ({} as any));
+      setModifiedCount(0);
+      if (j?.id && j.id !== dssAperto) {
+        setDssAperto(j.id);
+        const u = new URL(window.location.href);
+        u.searchParams.set("dss", j.id);
+        window.history.replaceState(window.history.state, "", u.toString());
+        toast.success("Creata nuova versione dei turni guida", {
+          description: "Lo scenario era usato dal roster: lo storico resta sul precedente, da ora lavori sulla nuova versione.",
+        });
+      } else {
+        toast.success("Turni guida salvati", { description: "Salvataggio aggiornato." });
+      }
+      refetchSavedDss();
+    } catch (e: any) {
+      toast.error("Errore salvataggio", { description: e?.message });
+    } finally {
+      setAggiornando(false);
+    }
+  }, [risultatoDaSalvare, dssAperto, refetchSavedDss]);
 
   /* ── Export handlers ─────────────────────────────────── */
   /* Fogli turno: UNA pagina A4 per turno nel formato aziendale (codice,
@@ -1026,6 +1080,122 @@ export default function DriverWorkspace({
       } : cur);
     }).catch(() => { /* restano da verificare */ });
   }, [operatorConfig]);
+
+  /* BDSI §10.1.3 — forzatura: il turno scorretto viene considerato conforme. */
+  const forzaTurno = useCallback((driverId: string) => {
+    const motivo = window.prompt(
+      "Forzatura correttezza (BDSI): il turno scorretto sarà considerato conforme a tutti gli effetti.\nMotivo (opzionale):",
+      "");
+    if (motivo === null) return;
+    setResult(cur => cur ? {
+      ...cur,
+      driverShifts: cur.driverShifts.map(s => s.driverId === driverId
+        ? { ...s, verifyState: "forzato" as const, forcedReason: motivo || undefined } : s),
+    } : cur);
+    setModifiedCount(c => c + 1);
+    toast.info(`Turno ${driverId} forzato`, { description: "Considerato conforme (badge blu). Le violazioni restano tracciate." });
+  }, []);
+
+  const sbloccaTurno = useCallback((driverId: string) => {
+    if (!result) return;
+    const next: DriverShiftsResult = {
+      ...result,
+      driverShifts: result.driverShifts.map(s => s.driverId === driverId
+        ? { ...s, verifyState: undefined, forcedReason: undefined } : s),
+    };
+    setResult(next);
+    wwRevalidate([driverId], next);
+  }, [result, wwRevalidate]);
+
+  /* ── BDSI §12.2 "Scambia con pezzo…" — proposte dal backend ── */
+  const openSwapDialog = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
+    if (!result) return;
+    setSwapPiece({ vehicleId, vehicleType, trips: piece.trips });
+    setSwapLoading(true);
+    setSwapProposals([]);
+    fetch(`${getApiBase()}/api/driver-shifts/tools/swap`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        piece: { vehicleId, vehicleType, trips: piece.trips },
+        shifts: result.driverShifts,
+        config: operatorConfig,
+        maxProposals: 12,
+      }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => setSwapProposals(data?.proposals ?? []))
+      .catch(() => toast.error("Errore nella valutazione degli scambi"))
+      .finally(() => setSwapLoading(false));
+  }, [result, operatorConfig]);
+
+  const applySwapProposal = useCallback((p: SwapProposal) => {
+    if (!result || !swapPiece) return;
+    const released = new Set((p.releasedTrips ?? []).map((t: any) => String(t.tripId)));
+    const { shifts } = applyPieceToShift(
+      result.driverShifts, p.driverId, { trips: swapPiece.trips },
+      swapPiece.vehicleId, swapPiece.vehicleType, released,
+    );
+    const newResult: DriverShiftsResult = { ...result, driverShifts: shifts, summary: recomputeSummary(shifts, result.summary) };
+    setResult(newResult);
+    pushHistory(newResult, `🔁 pezzo ${swapPiece.vehicleId} → ${p.driverId}${released.size ? ` (rilascia ${released.size} corse)` : ""}`);
+    wwRevalidate([p.driverId], newResult);
+    setSwapPiece(null);
+    toast.success("Pezzo assorbito", {
+      description: released.size
+        ? `${p.driverId} ha rilasciato ${released.size} corse: ora sono scoperte (vedi Copertura).`
+        : `${p.driverId} copre ora il pezzo di ${swapPiece.vehicleId}.`,
+    });
+  }, [result, swapPiece, pushHistory, wwRevalidate]);
+
+  /* ── BDSI §12.1 "Turni unici" — crea un turno mono-pezzo dal pezzo scoperto ── */
+  const createTurnoUnico = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
+    if (!result) return;
+    fetch(`${getApiBase()}/api/driver-shifts/tools/turni-unici`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pieces: [{ vehicleId, vehicleType, trips: piece.trips }], config: operatorConfig }),
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => {
+        const d = data?.duties?.[0];
+        if (!d) {
+          toast.error("Nessun turno unico conforme possibile", {
+            description: data?.skipped?.[0]?.reason ?? "il pezzo viola la normativa anche da solo",
+          });
+          return;
+        }
+        const existing = new Set(result.driverShifts.map(s => s.driverId));
+        let did: string = d.driverId;
+        let k = 1;
+        while (existing.has(did)) did = `TU${String(++k).padStart(3, "0")}`;
+        const fmt = (m: number) => `${Math.floor(m / 60)}h${String(Math.round(m) % 60).padStart(2, "0")}`;
+        const rip0 = d.riprese[0];
+        const newShift: DriverShiftData = {
+          driverId: did, type: d.type,
+          nastroStart: minToTime(rip0.startMin), nastroEnd: minToTime(rip0.endMin),
+          nastroStartMin: rip0.startMin, nastroEndMin: rip0.endMin,
+          nastroMin: d.nastroMin, nastro: fmt(d.nastroMin),
+          workMin: d.workMin, work: fmt(d.workMin),
+          interruptionMin: 0, interruption: null,
+          transferMin: rip0.transferMin ?? 0, transferBackMin: rip0.transferBackMin ?? 0,
+          preTurnoMin: rip0.preTurnoMin ?? 0, cambiCount: 0,
+          riprese: d.riprese,
+          bdsValidation: d.bdsValidation,
+          verifyState: d.bdsValidation?.valid ? "conforme" : "scorretto",
+        };
+        const shifts = [...result.driverShifts, newShift];
+        const newResult: DriverShiftsResult = { ...result, driverShifts: shifts, summary: recomputeSummary(shifts, result.summary) };
+        setResult(newResult);
+        pushHistory(newResult, `🪄 Turno unico ${did} da ${vehicleId}`);
+        const nLeft = (d.leftoverTrips ?? []).length;
+        toast.success(`Turno unico ${did} creato (${TYPE_LABELS[d.type as DriverShiftType] ?? d.type})`, {
+          description: nLeft ? `${nLeft} corse del pezzo restano scoperte (oltre il limite di lavoro).` : undefined,
+        });
+      })
+      .catch(() => toast.error("Errore nella creazione del turno unico"));
+  }, [result, operatorConfig, pushHistory]);
+
   const wwMoveTrips = useCallback((tripIds: string[], targetShiftId: string | null) => {
     if (!result || tripIds.length === 0) return;
     const idSet = new Set(tripIds);
@@ -1415,12 +1585,23 @@ export default function DriverWorkspace({
               <><Play className="w-3.5 h-3.5" /> Genera Turni Guida</>
             )}
           </button>
+          {result && dssAperto && (
+            <button
+              onClick={() => { void aggiornaSalvataggio(); }}
+              disabled={aggiornando}
+              title="Aggiorna il salvataggio aperto. Se il roster lo usa, ne viene creata una versione nuova."
+              className="flex items-center gap-1.5 text-[11px] font-medium text-white px-2.5 py-1 rounded bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 transition"
+            >
+              <Save className="w-3 h-3" /> {aggiornando ? "Salvataggio…" : "Aggiorna salvataggio"}
+            </button>
+          )}
           {result && (
             <button
               onClick={() => setShowSaveDialog(true)}
+              title={dssAperto ? "Salva con nome: crea un salvataggio nuovo" : undefined}
               className="flex items-center gap-1.5 text-[11px] text-emerald-300 px-2.5 py-1 rounded border border-emerald-500/30 bg-emerald-500/8 hover:bg-emerald-500/15 transition"
             >
-              <Save className="w-3 h-3" /> Salva DSS
+              <Save className="w-3 h-3" /> {dssAperto ? "Salva con nome" : "Salva DSS"}
             </button>
           )}
           {result && (
@@ -2383,7 +2564,22 @@ export default function DriverWorkspace({
               <span className="text-[10px] text-muted-foreground">— analisi, scenari, distribuzioni, conformità, riassunti, dettaglio dei turni</span>
               <ChevronDown className={`ml-auto w-3.5 h-3.5 text-muted-foreground transition-transform ${letturaOpen ? "rotate-180" : ""}`} />
             </button>
-            {letturaOpen && <LetturaDelRisultato result={result} />}
+            {letturaOpen && (
+              <LetturaDelRisultato
+                result={result}
+                forzaTurno={forzaTurno}
+                sbloccaTurno={sbloccaTurno}
+                copertura={(cerca) => (
+                  <CoperturaTurniMacchina
+                    vehicleShifts={vehicleShifts}
+                    driverShifts={result.driverShifts}
+                    onFocusDriver={cerca}
+                    onSwapPiece={openSwapDialog}
+                    onTurnoUnico={createTurnoUnico}
+                  />
+                )}
+              />
+            )}
           </div>
         )}
       </div>
@@ -2426,6 +2622,16 @@ export default function DriverWorkspace({
           onClose={() => setShowCompare(false)}
         />
       )}
+
+      {/* BDSI §12.2 — «Scambia con pezzo…» */}
+      <SwapDialog
+        open={!!swapPiece}
+        piece={swapPiece}
+        proposals={swapProposals}
+        loading={swapLoading}
+        onApply={applySwapProposal}
+        onClose={() => setSwapPiece(null)}
+      />
 
       {/* ── Save DSS Dialog ─────────────────────────────────── */}
       {showSaveDialog && (
