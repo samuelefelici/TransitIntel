@@ -41,6 +41,7 @@ import CategoryChips from "@/components/planning-studio/CategoryChips";
 import OperationalEditWarning from "@/components/planning-studio/OperationalEditWarning";
 import TripTransitsEditor from "@/components/planning-studio/TripTransitsEditor";
 import { useArgosFresh } from "@/hooks/useArgosFresh";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
  * monotona, altrimenti cumulata haversine. */
@@ -1120,16 +1121,18 @@ export default function PlanningStudioTripsPage() {
           Solo attive
         </label>
 
-        <button
-          onClick={() => {
-            if (!variantId) { toast.info("Seleziona linea e variante", { description: "La corsa si crea sul percorso (variante) scelto." }); return; }
-            setNewOpen(true);
-          }}
-          className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors"
-          title="Crea la prima corsa della variante: orari alle fermate calcolati da distanza e velocità commerciale"
-        >
-          <Plus className="w-3.5 h-3.5" /> Nuova corsa
-        </button>
+        <SeScrive>
+          <button
+            onClick={() => {
+              if (!variantId) { toast.info("Seleziona linea e variante", { description: "La corsa si crea sul percorso (variante) scelto." }); return; }
+              setNewOpen(true);
+            }}
+            className="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 transition-colors"
+            title="Crea la prima corsa della variante: orari alle fermate calcolati da distanza e velocità commerciale"
+          >
+            <Plus className="w-3.5 h-3.5" /> Nuova corsa
+          </button>
+        </SeScrive>
         {/* La cadenza e i tempi dal traffico vivono nella zona PERCORRENZE:
             questo link ci arriva con linea/variante (e template spuntato)
             già preselezionati. */}
@@ -1155,34 +1158,38 @@ export default function PlanningStudioTripsPage() {
             <Timer className="w-3.5 h-3.5" /> Percorrenze / cadenza
           </button>
         </Link>
-        <button
-          onClick={openMergePreview}
-          disabled={mergeBusy}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-100 hover:bg-slate-600 transition-colors disabled:opacity-50"
-          title="Unifica le corse gemelle (stessa variante, stessi orari a tutte le fermate, stesso headsign) in una sola corsa con validità unione. Anteprima prima di applicare."
-        >
-          {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica gemelle
-        </button>
-        <button
-          onClick={() => setConfirmReq({
-            title: "Creare i prototipi mancanti (Corsa ZERO)?",
-            variant: "primary",
-            message: (
-              <>
-                Ambito: <b>{variantId ? "il percorso selezionato" : "TUTTI i percorsi del progetto"}</b> senza corse.
-                Per ognuno viene creata una corsa senza orario reale, con i tempi di percorrenza
-                calcolati dalle distanze — il template per la zona «Percorrenze».
-              </>
-            ),
-            confirmLabel: "Crea prototipi",
-            onConfirm: () => { protoMissingMut.mutate(); },
-          })}
-          disabled={protoMissingMut.isPending}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-50"
-          title="Crea una Corsa ZERO (prototipo) per ogni percorso senza corse: utile quando hai i percorsi ma non le corse (es. GTFS importato e corse cancellate). Poi genera le corse reali dalla zona «Percorrenze»."
-        >
-          {protoMissingMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />} Prototipi mancanti
-        </button>
+        <SeScrive>
+          <button
+            onClick={openMergePreview}
+            disabled={mergeBusy}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-100 hover:bg-slate-600 transition-colors disabled:opacity-50"
+            title="Unifica le corse gemelle (stessa variante, stessi orari a tutte le fermate, stesso headsign) in una sola corsa con validità unione. Anteprima prima di applicare."
+          >
+            {mergeBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Merge className="w-3.5 h-3.5" />} Unifica gemelle
+          </button>
+        </SeScrive>
+        <SeScrive>
+          <button
+            onClick={() => setConfirmReq({
+              title: "Creare i prototipi mancanti (Corsa ZERO)?",
+              variant: "primary",
+              message: (
+                <>
+                  Ambito: <b>{variantId ? "il percorso selezionato" : "TUTTI i percorsi del progetto"}</b> senza corse.
+                  Per ognuno viene creata una corsa senza orario reale, con i tempi di percorrenza
+                  calcolati dalle distanze — il template per la zona «Percorrenze».
+                </>
+              ),
+              confirmLabel: "Crea prototipi",
+              onConfirm: () => { protoMissingMut.mutate(); },
+            })}
+            disabled={protoMissingMut.isPending}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 transition-colors disabled:opacity-50"
+            title="Crea una Corsa ZERO (prototipo) per ogni percorso senza corse: utile quando hai i percorsi ma non le corse (es. GTFS importato e corse cancellate). Poi genera le corse reali dalla zona «Percorrenze»."
+          >
+            {protoMissingMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Wand2 className="w-3.5 h-3.5" />} Prototipi mancanti
+          </button>
+        </SeScrive>
         <button
           onClick={() => { setPrintSel(new Set((routesQ.data ?? []).map(r => r.id))); setPrintOpen(true); }}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-slate-100 hover:bg-slate-600 transition-colors"
@@ -1468,23 +1475,25 @@ export default function PlanningStudioTripsPage() {
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        onClick={() => setConfirmReq({
-                          title: "Eliminare questa corsa?",
-                          message: (
-                            <>
-                              {t.shortName ? <><b>{t.shortName}</b> · </> : null}
-                              {t.firstDeparture ? <>partenza <b>{t.firstDeparture.slice(0, 5)}</b> · </> : null}
-                              {t.headsign ?? "senza destinazione"}
-                            </>
-                          ),
-                          confirmLabel: "Elimina",
-                          onConfirm: () => { deleteMut.mutate(t.id); },
-                        })}
-                        className="p-1 rounded text-rose-400 hover:bg-rose-500/10"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <SeScrive nascosto>
+                        <button
+                          onClick={() => setConfirmReq({
+                            title: "Eliminare questa corsa?",
+                            message: (
+                              <>
+                                {t.shortName ? <><b>{t.shortName}</b> · </> : null}
+                                {t.firstDeparture ? <>partenza <b>{t.firstDeparture.slice(0, 5)}</b> · </> : null}
+                                {t.headsign ?? "senza destinazione"}
+                              </>
+                            ),
+                            confirmLabel: "Elimina",
+                            onConfirm: () => { deleteMut.mutate(t.id); },
+                          })}
+                          className="p-1 rounded text-rose-400 hover:bg-rose-500/10"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </SeScrive>
                     </td>
                   </tr>
                 );

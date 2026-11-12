@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { getPsOperationalBoard, listProjects, type OperationalUnit } from "@/lib/scheduling-projects-api";
 import { listPsProjects, getPsProject } from "@/lib/planning-studio-api";
+import { useSolaLettura } from "@/hooks/use-sola-lettura";
 
 /* ─── Picker: scegli il programma di esercizio (default = quello attivo) ─── */
 function ProgramPicker() {
@@ -139,12 +140,17 @@ function UdpCard({ u, onEnter, entering }: {
   const tgDone = !!u.driverScenario;
   const operative = u.status === "complete" && u.vehicleUncovered === 0;
   const accent = operative ? "border-l-emerald-500" : u.status === "missing_vehicle" || u.status === "not_started" ? "border-l-rose-500/70" : "border-l-amber-500/70";
+  /* entrare in un progetto che c'è già è leggere; su un'unità senza progetto
+   * il clic lo crea, e chi ha la sola lettura non può */
+  const { solaLettura, motivo } = useSolaLettura();
+  const daIniziare = solaLettura && !u.schedulingProjectId;
 
   return (
     <button
       onClick={() => onEnter(u)}
-      disabled={entering}
-      className={`w-full text-left rounded-xl border border-slate-800 border-l-[3px] ${accent} bg-slate-900/40 p-3.5 hover:border-slate-600 hover:bg-slate-900/70 transition-colors disabled:opacity-60`}
+      disabled={entering || daIniziare}
+      title={daIniziare ? `Per questa unità i turni non sono ancora stati iniziati. ${motivo}` : undefined}
+      className={`w-full text-left rounded-xl border border-slate-800 border-l-[3px] ${accent} bg-slate-900/40 p-3.5 hover:border-slate-600 hover:bg-slate-900/70 transition-colors disabled:opacity-60 disabled:cursor-not-allowed`}
     >
       {/* riga 1: nome UDP + stato + entra */}
       <div className="flex items-center gap-2 mb-3">

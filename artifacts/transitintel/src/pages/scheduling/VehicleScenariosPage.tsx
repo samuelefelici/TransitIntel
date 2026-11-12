@@ -27,6 +27,7 @@ import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import ShareScheduleDialog from "@/components/scheduling/ShareScheduleDialog";
 import QuadroSuperatoBadge from "@/components/scheduling/QuadroSuperatoBadge";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 export default function VehicleScenariosPage() {
   const [, navigate] = useLocation();
@@ -149,12 +150,14 @@ export default function VehicleScenariosPage() {
             <span className="text-zinc-400">Scenari Vetture</span>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => setShowAttach(true)}
-              className="text-[11px] text-zinc-400 hover:text-orange-300 px-2 py-1.5 rounded-lg hover:bg-orange-500/8 transition-colors"
-              title="Aggancia uno scenario vetture esistente al progetto"
-            >
-              + Aggancia esistente
-            </button>
+            <SeScrive>
+              <button onClick={() => setShowAttach(true)}
+                className="text-[11px] text-zinc-400 hover:text-orange-300 px-2 py-1.5 rounded-lg hover:bg-orange-500/8 transition-colors"
+                title="Aggancia uno scenario vetture esistente al progetto"
+              >
+                + Aggancia esistente
+              </button>
+            </SeScrive>
             <button onClick={() => navigate(`/fucina/${projectId}/pipeline`)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_20px_rgba(251,146,60,0.4)] transition-shadow"
             >
@@ -291,27 +294,31 @@ export default function VehicleScenariosPage() {
                 </div>
                 </button>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void toggleOperational(s); }}
-                    title={s.isOperational ? "Togli dall'esercizio" : "Metti in esercizio (turni macchina ufficiali per questa UDP)"}
-                    className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors ${
-                      s.isOperational
-                        ? "border-emerald-400 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
-                        : "border-zinc-700 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/40"
-                    }`}
-                  >
-                    <Power className="w-3 h-3" />
-                    {s.isOperational ? "In esercizio" : "Metti in esercizio"}
-                  </button>
-                  {project?.planningStudioProjectId && (
+                  <SeScrive>
                     <button
-                      onClick={(e) => { e.stopPropagation(); askBlocksToPs(s); }}
-                      title="Riporta i blocchi vettura di questo scenario nel Planner Studio (block_id sulle corse)"
-                      className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors"
+                      onClick={(e) => { e.stopPropagation(); void toggleOperational(s); }}
+                      title={s.isOperational ? "Togli dall'esercizio" : "Metti in esercizio (turni macchina ufficiali per questa UDP)"}
+                      className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border transition-colors ${
+                        s.isOperational
+                          ? "border-emerald-400 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                          : "border-zinc-700 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/40"
+                      }`}
                     >
-                      <Boxes className="w-3 h-3" />
-                      Blocchi → PS
+                      <Power className="w-3 h-3" />
+                      {s.isOperational ? "In esercizio" : "Metti in esercizio"}
                     </button>
+                  </SeScrive>
+                  {project?.planningStudioProjectId && (
+                    <SeScrive area="rete">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); askBlocksToPs(s); }}
+                        title="Riporta i blocchi vettura di questo scenario nel Planner Studio (block_id sulle corse)"
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-lg border border-violet-500/30 text-violet-300 hover:bg-violet-500/10 transition-colors"
+                      >
+                        <Boxes className="w-3 h-3" />
+                        Blocchi → PS
+                      </button>
+                    </SeScrive>
                   )}
                   {sh && (
                     <button
@@ -324,18 +331,20 @@ export default function VehicleScenariosPage() {
                     </button>
                   )}
                   {isOwner && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); if (s.isOperational) return; setDeleteTarget(s); setDeleteAck(false); }}
-                      disabled={s.isOperational}
-                      title={s.isOperational ? "In esercizio: togli prima lo stato operativo per eliminare" : "Elimina scenario"}
-                      className={`inline-flex items-center justify-center w-7 h-7 rounded-lg border transition-colors ${
-                        s.isOperational
-                          ? "border-zinc-800 text-zinc-700 cursor-not-allowed"
-                          : "border-rose-500/30 text-rose-400 hover:bg-rose-500/10"
-                      }`}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <SeScrive nascosto>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); if (s.isOperational) return; setDeleteTarget(s); setDeleteAck(false); }}
+                        disabled={s.isOperational}
+                        title={s.isOperational ? "In esercizio: togli prima lo stato operativo per eliminare" : "Elimina scenario"}
+                        className={`inline-flex items-center justify-center w-7 h-7 rounded-lg border transition-colors ${
+                          s.isOperational
+                            ? "border-zinc-800 text-zinc-700 cursor-not-allowed"
+                            : "border-rose-500/30 text-rose-400 hover:bg-rose-500/10"
+                        }`}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </SeScrive>
                   )}
                   <ChevronRight className="w-4 h-4 text-zinc-600 group-hover:text-amber-400 group-hover:translate-x-1 transition-all" />
                 </div>

@@ -383,6 +383,26 @@ describe("ruoli aziendali: chi legge e chi scrive", () => {
     expect(verifica("/ai/argos/agent/goals", ufficioTurni, "POST")).toBe(403);
   });
 
+  it("le letture di molte corse insieme sono POST, ma restano letture", () => {
+    const P = "/planning-studio/projects/6ae58d5c-8687-4645-9401-9ef6fb8cbf6a";
+    // l'ufficio turni legge la rete: tabella Corse, quadri orari, scheda del turno guida
+    expect(verifica(`${P}/trips/validity-bulk`, ufficioTurni, "POST")).toBe("passa");
+    expect(verifica(`${P}/stop-times/bulk`, ufficioTurni, "POST")).toBe("passa");
+    expect(verifica(`${P.toUpperCase()}/Stop-Times/Bulk`, capoDeposito, "POST")).toBe("passa");
+    // chi non ha la rete no
+    expect(verifica(`${P}/stop-times/bulk`, officina, "POST")).toBe(403);
+    // il parametro vale un solo pezzo: niente percorsi più lunghi o più corti, né altri metodi
+    expect(verifica(`${P}/altro/stop-times/bulk`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica("/planning-studio/projects/stop-times/bulk", ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/stop-times/bulk/x`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/stop-times/bulk`, ufficioTurni, "PUT")).toBe(403);
+    // e le scritture vicine restano scritture
+    expect(verifica(`${P}/trips/11111111-1111-4111-8111-111111111111/shift`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/trips/11111111-1111-4111-8111-111111111111/stop-times`, ufficioTurni, "PUT")).toBe(403);
+    expect(verifica(`${P}/trips/bulk-shift`, ufficioTurni, "POST")).toBe(403);
+    expect(verifica(`${P}/trips/validity-bulk`, pianificatore, "POST")).toBe("passa");
+  });
+
   it("una maiuscola nel percorso non trasforma una scrittura in un calcolo, né salta il controllo", () => {
     expect(verifica("/Driver-Shifts/Tools/Validate", pianificatore, "POST")).toBe("passa");
     expect(verifica("/SERVICE-PROGRAM/CPSAT", pianificatore, "POST")).toBe(403);
@@ -399,6 +419,25 @@ describe("ruoli aziendali: chi legge e chi scrive", () => {
     expect(messaggio("/service-program/cpsat", pianificatore, "POST")).toBe("Sola lettura: per modificare serve la scrittura su «Turni»");
     expect(messaggio("/service-program/cpsat", officina, "POST")).toBe("Manca l'accesso a «Turni»");
     expect(messaggio("/depots", officina, "GET")).toBe("Manca l'accesso a «Turni» o «Rete e orari»");
+  });
+
+  it("il rifiuto di sola lettura porta un campo, non solo il testo: la web lo riconosce da lì", () => {
+    const corpo = (path: string, user: AuthUser, method: string): any => {
+      let detto: any = "passa";
+      const res = { status() { return this; }, json(b: any) { detto = b; return this; } };
+      requirePermissionByPath({ user, path, method } as any, res as any, () => { detto = "passa"; });
+      return detto;
+    };
+    expect(corpo("/service-program/cpsat", pianificatore, "POST")).toEqual({ error: "Sola lettura: per modificare serve la scrittura su «Turni»", solaLettura: true });
+    // chi non ha proprio l'area, un percorso senza voce e una pagina dell'admin non sono «sola lettura»
+    expect(corpo("/service-program/cpsat", officina, "POST")).toEqual({ error: "Manca l'accesso a «Turni»" });
+    expect(corpo("/qualcosa-di-nuovo", pianificatore, "POST")).toEqual({ error: "Percorso senza permesso assegnato" });
+    expect(corpo("/admin/registro", pianificatore, "GET")).toEqual({ error: "Solo admin" });
+    // lo stesso da richiedeDiritto, per le rotte che vogliono un'area precisa
+    let conArea: any = null;
+    richiedeDiritto("roster")({ user: ufficioTurni, method: "POST" } as any,
+      { status() { return this; }, json(b: any) { conArea = b; return this; } } as any, () => {});
+    expect(conArea).toEqual({ error: "Sola lettura: per modificare serve la scrittura su «Roster»", solaLettura: true });
   });
 });
 

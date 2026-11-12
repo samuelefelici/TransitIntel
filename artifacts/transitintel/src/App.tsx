@@ -10,6 +10,8 @@ import { AuthProvider, useAuth, type Area } from "@/hooks/use-auth";
 import { CASA, NOMI_AREE, AREE_PAGINA } from "@/lib/navigazione";
 import { apiFetch } from "@/lib/api";
 import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
+import { EVENTO_SOLA_LETTURA, dettaglioSolaLettura, motivoSolaLettura, type RifiutoSolaLettura } from "@/lib/sola-lettura";
+import { PaginaConAree } from "@/hooks/use-sola-lettura";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
 import IndicatoreCalcoli from "@/components/calcoli/IndicatoreCalcoli";
@@ -140,7 +142,8 @@ function Respinto({ motivo }: { motivo: string }) {
  * Guardia della pagina: per aprirla serve poter almeno leggere una delle sue
  * aree (l'amministratore sempre); altrimenti si torna a Oggi. Chi può leggere
  * ma non scrivere entra, con l'avviso «Sola lettura»: i comandi che modificano
- * li rifiuta l'API.
+ * li rifiuta l'API, e la pagina li spegne (hooks/use-sola-lettura.tsx: le aree
+ * della pagina arrivano da qui).
  */
 function Gated({ perm, children }: { perm: Area | readonly Area[]; children: ReactNode }) {
   const { puo, verificato } = useAuth();
@@ -152,7 +155,12 @@ function Gated({ perm, children }: { perm: Area | readonly Area[]; children: Rea
     if (!verificato) return <PageLoader />;
     return <Respinto motivo={`Serve l'accesso a «${servono.map(a => NOMI_AREE[a]).join("» o «")}»: chiedilo all'amministratore.`} />;
   }
-  return <>{!servono.some(a => puo(a, "S")) && <SolaLettura aree={servono} />}{children}</>;
+  return (
+    <PaginaConAree aree={servono}>
+      {!servono.some(a => puo(a, "S")) && <SolaLettura aree={servono} />}
+      {children}
+    </PaginaConAree>
+  );
 }
 
 /**
@@ -163,7 +171,7 @@ function SolaLettura({ aree }: { aree: readonly Area[] }) {
   return (
     <div
       role="status"
-      title={`Puoi consultare questa pagina ma non modificarla: per farlo serve la scrittura su «${aree.map(a => NOMI_AREE[a]).join("» o «")}». Chiedila all'amministratore.`}
+      title={`Puoi consultare questa pagina ma non modificarla. ${motivoSolaLettura(aree.map(a => NOMI_AREE[a]))}`}
       className="fixed top-2 left-1/2 -translate-x-1/2 z-40 pointer-events-auto select-none rounded-full border border-amber-500/40 bg-amber-950/90 px-3 py-1 text-[11px] font-medium text-amber-200 shadow-lg"
     >
       Sola lettura
@@ -201,6 +209,28 @@ function VersoITurniGuida({ scenarioId }: { scenarioId: string }) {
   }, [scenarioId]);
   if (!dove) return <PageLoader />;
   return <Redirect to={dove} replace />;
+}
+
+/**
+ * L'avviso per ogni modifica che l'API rifiuta a chi può solo leggere. Uno solo
+ * per tutta l'app (lib/api.ts lo annuncia, da qualunque pagina parta la
+ * richiesta), sempre lo stesso riquadro: non si accumula.
+ */
+function AvvisoSolaLettura() {
+  useEffect(() => {
+    const avvisa = (e: Event) => {
+      const rifiuto = (e as CustomEvent<RifiutoSolaLettura>).detail;
+      const dettaglio = dettaglioSolaLettura(rifiuto?.messaggio ?? "");
+      toastSonner.warning("Sola lettura", {
+        id: "sola-lettura",
+        description: [dettaglio, "Non è stato modificato niente", "Il ruolo lo assegna l'amministratore"].filter(Boolean).join(". ") + ".",
+        duration: 8000,
+      });
+    };
+    window.addEventListener(EVENTO_SOLA_LETTURA, avvisa);
+    return () => window.removeEventListener(EVENTO_SOLA_LETTURA, avvisa);
+  }, []);
+  return null;
 }
 
 function Router() {
@@ -518,6 +548,8 @@ function AuthGate() {
           <Router />
           {/* i calcoli in corso, in tutte le pagine (anche quelle senza menu) */}
           <IndicatoreCalcoli />
+          {/* ogni modifica rifiutata a chi può solo leggere, detta una volta e chiara */}
+          <AvvisoSolaLettura />
         </>
       ) : (
         <LoginPage />

@@ -1,3 +1,5 @@
+import { EVENTO_SOLA_LETTURA, frenoAvvisi, rifiutoDiSolaLettura } from "./sola-lettura";
+
 /**
  * In produzione (Vercel) → punta al backend su Render
  * In dev locale → stringa vuota (stessa origine, proxy Vite)
@@ -21,6 +23,11 @@ export function getApiBase(): string {
  *  l'API base) aggiungiamo `credentials: "include"` se non già esplicito.
  *  Trasparente per chi usa già apiFetch (che lo include comunque) e per
  *  fetch a domini terzi.
+ *
+ *  Da qui passano tutte le chiamate all'API: è anche il punto in cui si
+ *  riconosce il rifiuto «sola lettura» (403 con solaLettura: true) e lo si
+ *  annuncia una volta, uguale in ogni pagina (lib/sola-lettura.ts). La
+ *  risposta torna a chi l'ha chiesta così com'è.
  * ════════════════════════════════════════════════════════════ */
 declare global {
   interface Window { __ttFetchPatched?: boolean }
@@ -28,6 +35,21 @@ declare global {
 if (typeof window !== "undefined" && !window.__ttFetchPatched) {
   const originalFetch = window.fetch.bind(window);
   const apiBase = getApiBase();
+  const daAnnunciare = frenoAvvisi();
+  /* su una copia della risposta: chi ha fatto la richiesta legge la sua come sempre */
+  const guardaSolaLettura = (res: Response): Response => {
+    if (res.status === 403) {
+      res.clone().json()
+        .then((corpo) => {
+          const rifiuto = rifiutoDiSolaLettura(res.status, corpo);
+          if (rifiuto && daAnnunciare(rifiuto.messaggio, Date.now())) {
+            window.dispatchEvent(new CustomEvent(EVENTO_SOLA_LETTURA, { detail: rifiuto }));
+          }
+        })
+        .catch(() => { /* non era JSON: non è un rifiuto di sola lettura */ });
+    }
+    return res;
+  };
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
     let url = "";
     try {
@@ -44,7 +66,7 @@ if (typeof window !== "undefined" && !window.__ttFetchPatched) {
       // Se l'utente ha esplicitato un altro valore di credentials (es. "omit"),
       // lo rispettiamo. Altrimenti garantiamo "include".
       if (!init || init.credentials === undefined) merged.credentials = "include";
-      return originalFetch(input as any, merged);
+      return originalFetch(input as any, merged).then(guardaSolaLettura);
     }
     return originalFetch(input as any, init);
   };

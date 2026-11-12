@@ -1654,12 +1654,22 @@ Come funziona:
 
 - **Lettura e scrittura.** Nell'API una richiesta `GET` chiede la lettura
   sull'area del suo percorso, ogni altra la scrittura. Fa eccezione un elenco
-  corto di richieste che calcolano senza scrivere (verifica dei turni,
-  simulazioni di tariffa, anteprima di una pubblicazione, domande ad Argos):
-  `CALCOLANO_SENZA_SCRIVERE` in `artifacts/api-server/src/lib/permessi-rotte.ts`.
-  Chi può leggere ma non scrivere riceve 403 «Sola lettura: per modificare
-  serve la scrittura su …»; nella web la pagina mostra in alto «Sola lettura».
-  I comandi che modificano restano visibili: li rifiuta l'API.
+  corto di richieste che calcolano o leggono senza scrivere (verifica dei
+  turni, simulazioni di tariffa, anteprima di una pubblicazione, domande ad
+  Argos, validità e orari di molte corse insieme): `CALCOLANO_SENZA_SCRIVERE`
+  in `artifacts/api-server/src/lib/permessi-rotte.ts`. Una lettura nuova fatta
+  con una `POST` va aggiunta lì, altrimenti chi ha la sola lettura la vede
+  rifiutare.
+- **Sola lettura nelle pagine (PR 2.14b).** Chi può leggere un'area ma non
+  scriverla vede in alto «Sola lettura». I comandi principali che modificano
+  (lanciare un calcolo, salvare, pubblicare, mettere in esercizio, creare un
+  progetto, gli strumenti del tabellone) restano visibili ma spenti, e passando
+  sopra col mouse dicono quale scrittura serve; i cestini di riga non si
+  mostrano. Dove un comando non è stato spento decide comunque l'API: risponde
+  403 con `solaLettura: true`, e la web mostra un solo avviso «Sola lettura»,
+  uguale in ogni pagina. Per spegnere un comando in una pagina:
+  `<SeScrive>` attorno al pulsante, o `useSolaLettura()`
+  (`artifacts/transitintel/src/hooks/use-sola-lettura.tsx`).
 - **I progetti restano un controllo a parte.** Il ruolo dice che cosa si può
   fare; quali progetti si vedono lo dice ancora la condivisione del progetto
   (proprietario, membri). Dare «Ufficio turni» a qualcuno non gli apre i

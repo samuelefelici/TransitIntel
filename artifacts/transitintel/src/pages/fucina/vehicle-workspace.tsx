@@ -44,6 +44,7 @@ import { InlineDeadheadPopover } from "./InlineDeadheadPopover";
 import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPanel";
 import { calculateDeadhead } from "./deadhead-calculator";
 import type { DeadheadMatrix } from "@/pages/fucina/steps/DeadheadStep";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 /* ═══════════════════════════════════════════════════════════════
  *  Conversion helpers — VehicleShift[] → GanttRow[] + GanttBar[]
@@ -2371,41 +2372,45 @@ export default function VehicleWorkspace({
             {/* Salva (overwrite): visibile solo se lo scenario è già stato salvato.
              * Auto-elimina turni vuoti e genera trasferimenti a vuoto mancanti. */}
             {savedId != null && (
-              <Button
-                size="sm"
-                onClick={handleOverwriteSave}
-                disabled={overwriteSaving || !result}
-                className={`text-white h-8 text-[11px] ${dirty ? "bg-emerald-600 hover:bg-emerald-700" : "bg-emerald-600/50 hover:bg-emerald-700/60"}`}
-                title="Sovrascrivi il file dello scenario corrente, eliminando i turni vuoti e generando i trasferimenti a vuoto mancanti"
-              >
-                {overwriteSaving
-                  ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-                  : <Save className="w-3.5 h-3.5 mr-1" />}
-                {dirty ? "Salva ●" : "Salva"}
-              </Button>
+              <SeScrive>
+                <Button
+                  size="sm"
+                  onClick={handleOverwriteSave}
+                  disabled={overwriteSaving || !result}
+                  className={`text-white h-8 text-[11px] ${dirty ? "bg-emerald-600 hover:bg-emerald-700" : "bg-emerald-600/50 hover:bg-emerald-700/60"}`}
+                  title="Sovrascrivi il file dello scenario corrente, eliminando i turni vuoti e generando i trasferimenti a vuoto mancanti"
+                >
+                  {overwriteSaving
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                    : <Save className="w-3.5 h-3.5 mr-1" />}
+                  {dirty ? "Salva ●" : "Salva"}
+                </Button>
+              </SeScrive>
             )}
 
-            <Button
-              size="sm"
-              onClick={() => setSaveDialogOpen(true)}
-              disabled={saving || !result}
-              title={savedId
-                ? "Crea un nuovo scenario separato (variante) senza toccare quello corrente"
-                : "Salva questo scenario di turni macchina con un nome"}
-              className={savedId
-                ? "bg-green-600/70 hover:bg-green-700 text-white"
-                : "bg-orange-500 hover:bg-orange-600 text-white"
-              }
-            >
-              {saving ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-              ) : savedId ? (
-                <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
-              ) : (
-                <Save className="w-3.5 h-3.5 mr-1" />
-              )}
-              {savedId ? "Salva come nuovo…" : "Salva con nome…"}
-            </Button>
+            <SeScrive>
+              <Button
+                size="sm"
+                onClick={() => setSaveDialogOpen(true)}
+                disabled={saving || !result}
+                title={savedId
+                  ? "Crea un nuovo scenario separato (variante) senza toccare quello corrente"
+                  : "Salva questo scenario di turni macchina con un nome"}
+                className={savedId
+                  ? "bg-green-600/70 hover:bg-green-700 text-white"
+                  : "bg-orange-500 hover:bg-orange-600 text-white"
+                }
+              >
+                {saving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                ) : savedId ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 mr-1" />
+                ) : (
+                  <Save className="w-3.5 h-3.5 mr-1" />
+                )}
+                {savedId ? "Salva come nuovo…" : "Salva con nome…"}
+              </Button>
+            </SeScrive>
             <div className="w-px h-6 bg-border/40" />
             {hasModifications && (
               <motion.div
@@ -2546,21 +2551,23 @@ export default function VehicleWorkspace({
               </Badge>
             )}
             {/* Ri-ottimizza CP-SAT sullo scenario corrente */}
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => { void handleReoptimize(); }}
-              disabled={!result || reoptimizing}
-              className="border-purple-500/40 text-purple-300 hover:bg-purple-500/10 h-8 text-[11px]"
-              title={lockedShiftIds.size > 0
-                ? `Rilancia il solver CP-SAT mantenendo ${lockedShiftIds.size} turn${lockedShiftIds.size === 1 ? "o bloccato" : "i bloccati"} così com'è`
-                : "Rilancia il solver CP-SAT sulle linee dello scenario corrente. Blocca un turno col lucchetto sulla riga per conservarlo"}
-            >
-              {reoptimizing
-                ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
-                : <Play className="w-3.5 h-3.5 mr-1" />}
-              Ri-ottimizza
-            </Button>
+            <SeScrive>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => { void handleReoptimize(); }}
+                disabled={!result || reoptimizing}
+                className="border-purple-500/40 text-purple-300 hover:bg-purple-500/10 h-8 text-[11px]"
+                title={lockedShiftIds.size > 0
+                  ? `Rilancia il solver CP-SAT mantenendo ${lockedShiftIds.size} turn${lockedShiftIds.size === 1 ? "o bloccato" : "i bloccati"} così com'è`
+                  : "Rilancia il solver CP-SAT sulle linee dello scenario corrente. Blocca un turno col lucchetto sulla riga per conservarlo"}
+              >
+                {reoptimizing
+                  ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                  : <Play className="w-3.5 h-3.5 mr-1" />}
+                Ri-ottimizza
+              </Button>
+            </SeScrive>
 
           </div>
         </div>
@@ -2735,16 +2742,18 @@ export default function VehicleWorkspace({
                     : " I turni bloccati col lucchetto restano com'è."}
                 </span>
               </div>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={riallineo || reoptimizing || !result}
-                onClick={() => { void riallinea(); }}
-                className="border-orange-500/50 text-orange-200 hover:bg-orange-500/15 h-7 text-[11px] shrink-0"
-              >
-                {riallineo ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
-                {quadroProgetto?.feedSuperato ? "Sincronizza e ri-ottimizza" : "Ri-ottimizza"}
-              </Button>
+              <SeScrive>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={riallineo || reoptimizing || !result}
+                  onClick={() => { void riallinea(); }}
+                  className="border-orange-500/50 text-orange-200 hover:bg-orange-500/15 h-7 text-[11px] shrink-0"
+                >
+                  {riallineo ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />}
+                  {quadroProgetto?.feedSuperato ? "Sincronizza e ri-ottimizza" : "Ri-ottimizza"}
+                </Button>
+              </SeScrive>
             </div>
           )}
           <div className="flex-1 min-h-0">

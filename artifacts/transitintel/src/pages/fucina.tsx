@@ -22,6 +22,7 @@ import { getApiBase } from "@/lib/api";
 import { getProject as getSchedulingProject, syncProjectFromPs } from "@/lib/scheduling-projects-api";
 import { leggiCalcoloVeicoli, contestoDaRichiesta, fermaCalcoloVeicoli, type ImpostazioniSolutore } from "@/lib/calcolo-veicoli";
 import { richiama, ricorda, dimentica, dimenticaSe, chiaveFucina, type CalcoloRicordato } from "@/lib/memoria-calcoli";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 // il feed e i cluster arrivano dal Planning Studio: qui niente scelta del feed né cluster
 const VehicleAssignmentStep = lazy(() => import("@/pages/fucina/steps/VehicleAssignmentStep"));
@@ -835,16 +836,18 @@ export default function FucinaPage() {
                               Per lavorare su questo progetto serve materializzare i dati del Planning Studio
                               in un feed di scheduling. È un'operazione idempotente: puoi rilanciarla quando vuoi.
                             </p>
-                            <button
-                              onClick={handleSyncFromPs}
-                              disabled={psSyncing}
-                              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm text-black bg-gradient-to-r from-fuchsia-400 to-purple-400 disabled:opacity-50"
-                            >
-                              {psSyncing
-                                ? `Sincronizzazione in corso… ${psSyncElapsed > 0 ? `(${psSyncElapsed}s)` : ""}`
-                                : "Sincronizza con Planning Studio"}
-                              {!psSyncing && <ChevronRight className="w-4 h-4" />}
-                            </button>
+                            <SeScrive>
+                              <button
+                                onClick={handleSyncFromPs}
+                                disabled={psSyncing}
+                                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm text-black bg-gradient-to-r from-fuchsia-400 to-purple-400 disabled:opacity-50"
+                              >
+                                {psSyncing
+                                  ? `Sincronizzazione in corso… ${psSyncElapsed > 0 ? `(${psSyncElapsed}s)` : ""}`
+                                  : "Sincronizza con Planning Studio"}
+                                {!psSyncing && <ChevronRight className="w-4 h-4" />}
+                              </button>
+                            </SeScrive>
                           </div>
                         )}
                       </motion.div>

@@ -18,6 +18,7 @@ import {
   getPsProjectHealth, type PsProjectHealth, type PsProject,
 } from "@/lib/planning-studio-api";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 export default function PlanningStudioListPage() {
   const [, navigate] = useLocation();
@@ -171,12 +172,14 @@ export default function PlanningStudioListPage() {
               <p className="text-xs text-slate-400">Database del servizio · fermate, linee, percorsi, orari</p>
             </div>
           </div>
-          <button
-            onClick={() => setCreateOpen(true)}
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-900/30"
-          >
-            <Plus className="w-4 h-4" /> Nuovo progetto
-          </button>
+          <SeScrive>
+            <button
+              onClick={() => setCreateOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500/90 hover:bg-emerald-500 text-white font-medium text-sm transition shadow-lg shadow-emerald-900/30"
+            >
+              <Plus className="w-4 h-4" /> Nuovo progetto
+            </button>
+          </SeScrive>
         </div>
       </div>
 
@@ -440,21 +443,25 @@ function ProjectCard({
         {isOwner && (
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
             {canActivate && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onActivate(); }}
-                className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
-                title="Metti in esercizio (materializza il programma e lo rende operativo)"
-              >
-                <Power className="w-3.5 h-3.5" />
-              </button>
+              <SeScrive nascosto>
+                <button
+                  onClick={(e) => { e.stopPropagation(); onActivate(); }}
+                  className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
+                  title="Metti in esercizio (materializza il programma e lo rende operativo)"
+                >
+                  <Power className="w-3.5 h-3.5" />
+                </button>
+              </SeScrive>
             )}
-            <button
-              onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
-              className="p-1 rounded hover:bg-indigo-500/10 text-slate-500 hover:text-indigo-400 transition"
-              title="Duplica il progetto (copia completa: fermate, linee, corse, calendari, validità)"
-            >
-              <Copy className="w-3.5 h-3.5" />
-            </button>
+            <SeScrive nascosto>
+              <button
+                onClick={(e) => { e.stopPropagation(); onDuplicate(); }}
+                className="p-1 rounded hover:bg-indigo-500/10 text-slate-500 hover:text-indigo-400 transition"
+                title="Duplica il progetto (copia completa: fermate, linee, corse, calendari, validità)"
+              >
+                <Copy className="w-3.5 h-3.5" />
+              </button>
+            </SeScrive>
             <button
               onClick={(e) => { e.stopPropagation(); onExportGtfs(); }}
               className="p-1 rounded hover:bg-teal-500/10 text-slate-500 hover:text-teal-400 transition"
@@ -469,23 +476,25 @@ function ProjectCard({
             >
               <Share2 className="w-3.5 h-3.5" />
             </button>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!delArmed) { setDelArmed(true); return; }
-                setDelArmed(false);
-                onDelete();
-              }}
-              className={`p-1 rounded transition flex items-center gap-1 ${
-                delArmed
-                  ? "bg-red-500/20 text-red-300 ring-1 ring-red-500/50"
-                  : "hover:bg-red-500/10 text-slate-500 hover:text-red-400"
-              }`}
-              title={delArmed ? "Clicca di nuovo per ELIMINARE definitivamente" : "Elimina (doppio click di conferma)"}
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              {delArmed && <span className="text-[10px] font-bold">Confermi?</span>}
-            </button>
+            <SeScrive nascosto>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!delArmed) { setDelArmed(true); return; }
+                  setDelArmed(false);
+                  onDelete();
+                }}
+                className={`p-1 rounded transition flex items-center gap-1 ${
+                  delArmed
+                    ? "bg-red-500/20 text-red-300 ring-1 ring-red-500/50"
+                    : "hover:bg-red-500/10 text-slate-500 hover:text-red-400"
+                }`}
+                title={delArmed ? "Clicca di nuovo per ELIMINARE definitivamente" : "Elimina (doppio click di conferma)"}
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                {delArmed && <span className="text-[10px] font-bold">Confermi?</span>}
+              </button>
+            </SeScrive>
           </div>
         )}
         {!isOwner && (
@@ -510,11 +519,13 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
       </div>
       <h2 className="text-lg font-semibold mb-1">Nessun progetto ancora</h2>
       <p className="text-sm text-slate-500 mb-6">Crea il primo DB del servizio per la tua agenzia.</p>
-      <button onClick={onCreate}
-        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium"
-      >
-        <Plus className="w-4 h-4" /> Nuovo progetto
-      </button>
+      <SeScrive>
+        <button onClick={onCreate}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium"
+        >
+          <Plus className="w-4 h-4" /> Nuovo progetto
+        </button>
+      </SeScrive>
     </div>
   );
 }

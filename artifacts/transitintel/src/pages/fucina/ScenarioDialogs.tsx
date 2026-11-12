@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Save, Loader2, FolderOpen, Trash2, Calendar, Truck, AlertCircle, X } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import type { ServiceProgramResult } from "@/pages/optimizer-route/types";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 /* ═══════════════════════════════════════════════════════════════
  *  SaveScenarioDialog
@@ -100,15 +101,17 @@ export function SaveScenarioDialog({
           <Button size="sm" variant="ghost" onClick={onClose} className="text-xs h-8" disabled={saving}>
             Annulla
           </Button>
-          <Button
-            size="sm"
-            onClick={submit}
-            disabled={saving || tooShort}
-            className="text-xs h-8 bg-orange-500 hover:bg-orange-600 text-white"
-          >
-            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <Save className="w-3.5 h-3.5 mr-1" />}
-            Salva
-          </Button>
+          <SeScrive>
+            <Button
+              size="sm"
+              onClick={submit}
+              disabled={saving || tooShort}
+              className="text-xs h-8 bg-orange-500 hover:bg-orange-600 text-white"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : <Save className="w-3.5 h-3.5 mr-1" />}
+              Salva
+            </Button>
+          </SeScrive>
         </div>
       </div>
     </div>
@@ -262,16 +265,18 @@ export function LoadScenarioDialog({
                         )}
                       </div>
                     </div>
-                    <button
-                      onClick={(e) => handleDelete(item, e)}
-                      disabled={deletingId === item.id}
-                      title="Elimina"
-                      className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10"
-                    >
-                      {deletingId === item.id
-                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        : <Trash2 className="w-3.5 h-3.5" />}
-                    </button>
+                    <SeScrive nascosto>
+                      <button
+                        onClick={(e) => handleDelete(item, e)}
+                        disabled={deletingId === item.id}
+                        title="Elimina"
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-md text-muted-foreground hover:text-red-400 hover:bg-red-500/10"
+                      >
+                        {deletingId === item.id
+                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          : <Trash2 className="w-3.5 h-3.5" />}
+                      </button>
+                    </SeScrive>
                     <Button
                       size="sm"
                       variant="ghost"

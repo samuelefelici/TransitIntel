@@ -28,6 +28,7 @@ import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import ShareScheduleDialog from "@/components/scheduling/ShareScheduleDialog";
 import QuadroSuperatoBadge from "@/components/scheduling/QuadroSuperatoBadge";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 export default function DriverScenariosPage() {
   const [, navigate] = useLocation();
@@ -313,18 +314,20 @@ export default function DriverScenariosPage() {
                               </div>
                             </div>
                             </button>
-                            <button
-                              onClick={(e) => { e.stopPropagation(); void toggleDriverOperational(d); }}
-                              title={d.isOperational ? "Togli dall'esercizio" : "Metti in esercizio (turni guida ufficiali per questa UDP)"}
-                              className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded border transition-colors shrink-0 ${
-                                d.isOperational
-                                  ? "border-emerald-400 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
-                                  : "border-zinc-700 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/40"
-                              }`}
-                            >
-                              <Power className="w-3 h-3" />
-                              {d.isOperational ? "In esercizio" : "Metti in esercizio"}
-                            </button>
+                            <SeScrive>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); void toggleDriverOperational(d); }}
+                                title={d.isOperational ? "Togli dall'esercizio" : "Metti in esercizio (turni guida ufficiali per questa UDP)"}
+                                className={`inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded border transition-colors shrink-0 ${
+                                  d.isOperational
+                                    ? "border-emerald-400 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+                                    : "border-zinc-700 text-zinc-400 hover:text-emerald-300 hover:border-emerald-500/40"
+                                }`}
+                              >
+                                <Power className="w-3 h-3" />
+                                {d.isOperational ? "In esercizio" : "Metti in esercizio"}
+                              </button>
+                            </SeScrive>
                             {sh && (
                               <button
                                 onClick={(e) => { e.stopPropagation(); setShareDialog({ id: d.id, name: d.name, canManage: isOwner }); }}
@@ -336,13 +339,15 @@ export default function DriverScenariosPage() {
                               </button>
                             )}
                             {isOwner && (
-                              <button
-                                onClick={(e) => { e.stopPropagation(); setDeleteTarget(d); setDeleteAck(false); }}
-                                title="Elimina scenario"
-                                className="inline-flex items-center justify-center w-6 h-6 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
+                              <SeScrive nascosto>
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setDeleteTarget(d); setDeleteAck(false); }}
+                                  title="Elimina scenario"
+                                  className="inline-flex items-center justify-center w-6 h-6 rounded border border-rose-500/30 text-rose-400 hover:bg-rose-500/10 transition-colors shrink-0"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </SeScrive>
                             )}
                             <ChevronRight className="w-3.5 h-3.5 text-zinc-600 group-hover:text-purple-400 transition-colors" />
                           </div>

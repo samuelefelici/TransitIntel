@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 /* ── Tipi (allineati a /api/roster/pubblicazioni/*) ── */
 interface Programma { id: string; nome: string; inEsercizio: boolean; udp: number; ultimaPubblicazione: string | null }
@@ -377,11 +378,13 @@ export default function RosterPubblicazionePage() {
                 {bloccanti.length > 0 && (
                   <p className="text-[11px] text-rose-200">Da sistemare prima: {bloccanti.map(u => u.nome).join(", ")}.</p>
                 )}
-                <button onClick={() => pubblicaMut.mutate()} disabled={!puoPubblicare || pubblicaMut.isPending}
-                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
-                  {pubblicaMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  Pubblica nel roster
-                </button>
+                <SeScrive>
+                  <button onClick={() => pubblicaMut.mutate()} disabled={!puoPubblicare || pubblicaMut.isPending}
+                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 text-white text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed">
+                    {pubblicaMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    Pubblica nel roster
+                  </button>
+                </SeScrive>
                 <p className="text-[10px] text-slate-500">
                   {programma?.nome ?? "Il programma"} · dal {lunga(dal)} al {lunga(al)}. Nei giorni pubblicati il roster mostra solo questi turni guida.
                 </p>
@@ -419,11 +422,13 @@ export default function RosterPubblicazionePage() {
                     <input type="date" value={ritiroAl} onChange={e => setRitiroAl(e.target.value)} className="px-2 py-1 rounded bg-slate-950 border border-slate-700 text-xs normal-case tracking-normal text-slate-100" />
                   </label>
                 </div>
-                <button disabled={!psProjectId || ritiroAl < ritiroDal || ritiraMut.isPending}
-                  onClick={() => { if (confirm(`Ritirare dal roster i turni di ${programma?.nome ?? "questo programma"} dal ${lunga(ritiroDal)} al ${lunga(ritiroAl)}?`)) ritiraMut.mutate(); }}
-                  className="px-2.5 py-1.5 rounded-lg border border-rose-500/50 text-rose-200 hover:bg-rose-500/10 disabled:opacity-50">
-                  Ritira
-                </button>
+                <SeScrive>
+                  <button disabled={!psProjectId || ritiroAl < ritiroDal || ritiraMut.isPending}
+                    onClick={() => { if (confirm(`Ritirare dal roster i turni di ${programma?.nome ?? "questo programma"} dal ${lunga(ritiroDal)} al ${lunga(ritiroAl)}?`)) ritiraMut.mutate(); }}
+                    className="px-2.5 py-1.5 rounded-lg border border-rose-500/50 text-rose-200 hover:bg-rose-500/10 disabled:opacity-50">
+                    Ritira
+                  </button>
+                </SeScrive>
               </div>
             )}
           </div>

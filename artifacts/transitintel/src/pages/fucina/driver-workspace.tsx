@@ -71,6 +71,7 @@ import WorkWindowPanel, { type WorkShiftView } from "@/components/WorkWindowPane
 import { TYPE_LABELS, ACTIVITY_LABELS, ACTIVITY_COLORS, timeToMin } from "@/pages/fucina/turni-guida/constants";
 import { AddDriverShiftDialog } from "@/pages/fucina/turni-guida/AddDriverShiftDialog";
 import { AddActivityDialog } from "@/pages/fucina/turni-guida/AddActivityDialog";
+import { SeScrive } from "@/hooks/use-sola-lettura";
 
 interface DriverWorkspaceProps {
   /** ID dello scenario turni macchina (input al solver autisti) */
@@ -1578,40 +1579,47 @@ export default function DriverWorkspace({
           >
             🪟 Finestra di lavoro{wwShiftIds.length > 0 ? ` (${wwShiftIds.length})` : ""}
           </button>
-          <button
-            onClick={() => {
-              if (result && !showOptimizer) { setShowOptimizer(true); toast.info("Parametri ottimizzatore riaperti", { description: "Regola solver e parametri, poi premi di nuovo per rilanciare." }); return; }
-              runOptimization();
-            }}
-            disabled={loading || cpsat.state === "starting" || cpsat.state === "running"}
-            className="flex items-center gap-1.5 text-[11px] font-medium text-white px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 disabled:cursor-not-allowed transition"
-          >
-            {(loading || cpsat.state === "starting" || cpsat.state === "running") ? (
-              <><Loader2 className="w-3.5 h-3.5 animate-spin" /> In corso…</>
-            ) : result ? (
-              <><RotateCcw className="w-3.5 h-3.5" /> Riottimizza</>
-            ) : (
-              <><Play className="w-3.5 h-3.5" /> Genera Turni Guida</>
-            )}
-          </button>
-          {result && dssAperto && (
+          {/* lanciare il calcolo e salvare modificano: in sola lettura restano spenti, col motivo */}
+          <SeScrive>
             <button
-              onClick={() => { void aggiornaSalvataggio(); }}
-              disabled={aggiornando}
-              title="Aggiorna il salvataggio aperto. Se il roster lo usa, ne viene creata una versione nuova."
-              className="flex items-center gap-1.5 text-[11px] font-medium text-white px-2.5 py-1 rounded bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 transition"
+              onClick={() => {
+                if (result && !showOptimizer) { setShowOptimizer(true); toast.info("Parametri ottimizzatore riaperti", { description: "Regola solver e parametri, poi premi di nuovo per rilanciare." }); return; }
+                runOptimization();
+              }}
+              disabled={loading || cpsat.state === "starting" || cpsat.state === "running"}
+              className="flex items-center gap-1.5 text-[11px] font-medium text-white px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
-              <Save className="w-3 h-3" /> {aggiornando ? "Salvataggio…" : "Aggiorna salvataggio"}
+              {(loading || cpsat.state === "starting" || cpsat.state === "running") ? (
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> In corso…</>
+              ) : result ? (
+                <><RotateCcw className="w-3.5 h-3.5" /> Riottimizza</>
+              ) : (
+                <><Play className="w-3.5 h-3.5" /> Genera Turni Guida</>
+              )}
             </button>
+          </SeScrive>
+          {result && dssAperto && (
+            <SeScrive>
+              <button
+                onClick={() => { void aggiornaSalvataggio(); }}
+                disabled={aggiornando}
+                title="Aggiorna il salvataggio aperto. Se il roster lo usa, ne viene creata una versione nuova."
+                className="flex items-center gap-1.5 text-[11px] font-medium text-white px-2.5 py-1 rounded bg-emerald-600/90 hover:bg-emerald-600 disabled:opacity-50 transition"
+              >
+                <Save className="w-3 h-3" /> {aggiornando ? "Salvataggio…" : "Aggiorna salvataggio"}
+              </button>
+            </SeScrive>
           )}
           {result && (
-            <button
-              onClick={() => setShowSaveDialog(true)}
-              title={dssAperto ? "Salva con nome: crea un salvataggio nuovo" : undefined}
-              className="flex items-center gap-1.5 text-[11px] text-emerald-300 px-2.5 py-1 rounded border border-emerald-500/30 bg-emerald-500/8 hover:bg-emerald-500/15 transition"
-            >
-              <Save className="w-3 h-3" /> {dssAperto ? "Salva con nome" : "Salva DSS"}
-            </button>
+            <SeScrive>
+              <button
+                onClick={() => setShowSaveDialog(true)}
+                title={dssAperto ? "Salva con nome: crea un salvataggio nuovo" : undefined}
+                className="flex items-center gap-1.5 text-[11px] text-emerald-300 px-2.5 py-1 rounded border border-emerald-500/30 bg-emerald-500/8 hover:bg-emerald-500/15 transition"
+              >
+                <Save className="w-3 h-3" /> {dssAperto ? "Salva con nome" : "Salva DSS"}
+              </button>
+            </SeScrive>
           )}
           {result && (
             <div className="relative">
@@ -1939,15 +1947,17 @@ export default function DriverWorkspace({
                 </button>
                 .
               </div>
-              <button
-                type="button"
-                onClick={runOptimization}
-                disabled={loading || !vehicleScenarioId}
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg hover:shadow-purple-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-shadow"
-              >
-                <Play className="w-4 h-4" />
-                Genera Turni Guida
-              </button>
+              <SeScrive>
+                <button
+                  type="button"
+                  onClick={runOptimization}
+                  disabled={loading || !vehicleScenarioId}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-bold bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-lg hover:shadow-purple-500/30 disabled:opacity-50 disabled:cursor-not-allowed transition-shadow"
+                >
+                  <Play className="w-4 h-4" />
+                  Genera Turni Guida
+                </button>
+              </SeScrive>
             </div>
           </div>
         )}
