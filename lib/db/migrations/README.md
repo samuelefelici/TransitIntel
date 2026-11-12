@@ -62,6 +62,14 @@ su main non si tocca più.
   `[migrazioni] SIGTERM`, non `FALLITA`) e resta il container vecchio. La CI
   non se ne accorge, perché prova su database senza dati. Un backfill su una
   tabella grande va in uno script a parte, lanciato fuori dal deploy.
+- **Una chiave esterna su una tabella che ha già righe** (0010 e 0011): prima
+  il vincolo `NOT VALID` (da subito niente righe nuove senza padre, e nessuna
+  lettura della tabella), poi la pulizia delle righe orfane come
+  `cerbero_owner`, che chiude il file; la convalida (`VALIDATE CONSTRAINT`) in
+  un secondo file, perché è DDL e come `cerbero_owner` non passa. Si tolgono
+  solo le righe che nessuna richiesta può più leggere, e quante sono si scrive
+  nel log con un `RAISE WARNING`. Se togliere una riga cambia quello che l'app
+  calcola, non lo decide la migrazione.
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
 - **Chi possiede cosa (PR 2.8).** Le tabelle, le viste e le sequenze di

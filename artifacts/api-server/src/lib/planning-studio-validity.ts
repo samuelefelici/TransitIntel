@@ -1563,13 +1563,19 @@ export async function syncValidityCategoriesFromProfile(
     // Pulizia categorie-periodo ORFANE: quando un periodo di scuole chiuse
     // viene rimosso o RINOMINATO, la vecchia categoria scuole_chiuse_<slug>
     // resta senza date e senza corse → va tolta dall'elenco/filtro. Sicura:
-    // cancella SOLO le categorie di periodo prive di qualsiasi riferimento.
+    // cancella SOLO le categorie di periodo prive di qualsiasi riferimento,
+    // anche da un'unità di progettazione: cancellandola, la categoria
+    // dell'unità diventerebbe vuota (SET NULL) e l'unità cambierebbe
+    // significato senza che nessuno l'abbia deciso. Fino alla migrazione 0010
+    // le righe di corse già cancellate tenevano in vita queste categorie per
+    // caso; ora che non ci sono più, l'unità va guardata apposta.
     try {
       await db.execute(sql`
         DELETE FROM ps_validity_categories c
          WHERE c.code LIKE 'scuole_chiuse\\_%'
            AND NOT EXISTS (SELECT 1 FROM ps_validity_category_calendar cc WHERE cc.category_id = c.id)
            AND NOT EXISTS (SELECT 1 FROM ps_trip_category_validity tc WHERE tc.category_id = c.id)
+           AND NOT EXISTS (SELECT 1 FROM ps_validity_units u WHERE u.category_id = c.id)
       `);
     } catch (e: any) {
       console.warn("[validity] pulizia categorie-periodo orfane:", e?.message || e);

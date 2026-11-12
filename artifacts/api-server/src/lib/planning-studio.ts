@@ -1229,7 +1229,8 @@ router.delete("/planning-studio/projects/:id/routes/:routeId", async (req, res):
     return;
   }
   if (tripCount > 0) {
-    // ps_trip_category_validity non ha FK con cascata: pulizia esplicita best-effort
+    // Dalla migrazione 0010 la chiave esterna su trip_id porta via queste righe
+    // insieme alle corse: la pulizia esplicita resta, innocua.
     try {
       await db.execute(sql`
         DELETE FROM ps_trip_category_validity
@@ -1497,8 +1498,8 @@ router.delete("/planning-studio/projects/:id/variants/:variantId", async (req, r
     return;
   }
   if (tripCount > 0) {
-    // ps_trip_category_validity non ha FK con cascata: pulizia esplicita,
-    // best-effort (la tabella può non esistere sui progetti mai validati)
+    // Dalla migrazione 0010 la chiave esterna su trip_id porta via queste righe
+    // insieme alle corse: la pulizia esplicita resta, innocua.
     try {
       await db.execute(sql`
         DELETE FROM ps_trip_category_validity
@@ -1913,10 +1914,10 @@ router.delete("/planning-studio/projects/:id/trips/:tripId", async (req, res): P
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
   const tripId = String(req.params.tripId);
   if (!UUID_RE.test(tripId)) { badId(res, "tripId"); return; }
-  // Elimina la corsa SOLO se appartiene al progetto; la pulizia di
-  // ps_trip_category_validity (senza FK con cascata) avviene atomicamente e
-  // solo se la DELETE ha davvero rimosso la corsa (evita di cancellare la
-  // validità di una corsa omonima in un altro progetto).
+  // Elimina la corsa SOLO se appartiene al progetto. Le sue righe di
+  // ps_trip_category_validity le porta via la chiave esterna (migrazione
+  // 0010); la pulizia esplicita resta, e solo se la DELETE ha davvero rimosso
+  // la corsa (evita di cancellare la validità di una corsa in un altro progetto).
   const deleted = await db.transaction(async (tx) => {
     const r = await tx.execute(sql`
       DELETE FROM ps_trips WHERE id = ${tripId}::uuid AND project_id = ${proj.id}::uuid

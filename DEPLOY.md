@@ -168,6 +168,71 @@ migrator di drizzle).
   CREATE UNIQUE INDEX CONCURRENTLY users_email_normale_uq ON users (lower(trim(email)));
   ```
 
+### Chiavi esterne di Planning Studio (PR 2.15)
+
+Due tabelle non avevano la chiave verso il loro padre: le categorie di validità
+delle corse (`ps_trip_category_validity.trip_id` → `ps_trips`) e le zone vietate
+(`ps_no_go_zones.project_id` → `ps_projects`). Cancellando una corsa o un
+progetto le loro righe restavano nel database, senza padre. L'import che
+sostituisce le corse di un progetto, per esempio, le lasciava tutte.
+
+Le migrazioni `0010` e `0011`, all'avvio dell'API:
+
+1. mettono i due vincoli, con la cancellazione a cascata come le tabelle
+   sorelle;
+2. tolgono le righe già orfane. Nessuna pagina le può leggere: si arriva a loro
+   solo dalla corsa o dal progetto, che non esistono più;
+3. convalidano i vincoli.
+
+Quante righe tolgono lo scrivono nel log del deploy, se sono più di zero:
+
+```
+[migrazioni] ATTENZIONE: 0010: tolte N righe di ps_trip_category_validity di corse che non esistono più …
+[migrazioni] ATTENZIONE: 0010: tolte N zone vietate di progetti che non esistono più …
+```
+
+Per saperlo prima, in sola lettura dal Terminal del Postgres:
+
+```sql
+SELECT count(*) FROM ps_trip_category_validity v
+ WHERE NOT EXISTS (SELECT 1 FROM ps_trips t WHERE t.id = v.trip_id);
+SELECT count(*) FROM ps_no_go_zones z
+ WHERE NOT EXISTS (SELECT 1 FROM ps_projects p WHERE p.id = z.project_id);
+```
+
+Dopo il deploy l'elenco delle categorie può accorciarsi: una categoria di
+periodo (`scuole_chiuse_<periodo>`) senza più date, senza corse e senza unità
+di progettazione viene tolta alla prossima sincronizzazione del calendario. Le
+righe orfane la tenevano in vita per caso.
+
+**La categoria resta senza chiave, apposta.** Cancellando una categoria di
+validità (Planning Studio › Validità), sulle corse che la usavano resta una
+riga che punta a una categoria che non c'è più. La pagina mostra quelle corse
+come «senza categoria», ma il calcolo le tratta come legate a una categoria che
+non cade in nessun giorno: **una corsa che aveva solo quella categoria non vale
+mai**, e non esce in quadri orari, GTFS e turni. Togliere quelle righe, o
+impedire di cancellare una categoria in uso, cambia i giorni in cui le corse
+valgono: non lo decide una migrazione. Per sapere se in produzione ce ne sono,
+in sola lettura:
+
+```sql
+SELECT p.name AS progetto,
+       count(DISTINCT v.trip_id) AS corse_con_una_categoria_cancellata,
+       count(DISTINCT v.trip_id) FILTER (WHERE NOT EXISTS (
+         SELECT 1 FROM ps_trip_category_validity v2
+           JOIN ps_validity_categories c2 ON c2.id = v2.category_id
+          WHERE v2.trip_id = v.trip_id)) AS di_cui_non_valgono_mai
+  FROM ps_trip_category_validity v
+  JOIN ps_trips t ON t.id = v.trip_id
+  JOIN ps_projects p ON p.id = t.project_id
+ WHERE NOT EXISTS (SELECT 1 FROM ps_validity_categories c WHERE c.id = v.category_id)
+ GROUP BY p.name ORDER BY 2 DESC;
+```
+
+Nessuna riga: non è mai successo, e la chiave sulla categoria si può mettere
+senza toccare niente. Se ne escono, va deciso che cosa fare di quelle corse
+prima di mettere la chiave.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
