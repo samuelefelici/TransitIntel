@@ -895,7 +895,8 @@ export default function RosterPage() {
               </button>
             </SeScrive>
             {voceMenu === cat && (
-              <div className="absolute z-30 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
+              /* z-40: sopra l'intestazione dei giorni (sticky, z-30), che altrimenti copre la seconda voce del menu */
+              <div className="absolute z-40 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
                 {(vociQ.data?.[cat] ?? []).map((v) => (
                   <button key={v.code}
                     onClick={() => { scegliStrumento("puntatore"); setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); }}

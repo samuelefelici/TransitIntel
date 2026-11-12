@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dettaglioSolaLettura, frenoAvvisi, mancaLaScrittura, motivoSolaLettura, propsDelComandoSpento, rifiutoDiSolaLettura } from "./sola-lettura";
+import { chiLoDecide, dettaglioSolaLettura, frenoAvvisi, mancaLaScrittura, motivoSolaLettura, propsDelComandoSpento, rifiutoDiSolaLettura } from "./sola-lettura";
 
 describe("rifiutoDiSolaLettura", () => {
   it("lo riconosce dal campo, non dal testo", () => {
@@ -30,6 +30,17 @@ describe("dettaglioSolaLettura", () => {
     expect(dettaglioSolaLettura("Sola lettura: per modificare serve la scrittura su «Turni»")).toBe("Per modificare serve la scrittura su «Turni»");
     expect(dettaglioSolaLettura("Un altro testo")).toBe("Un altro testo");
     expect(dettaglioSolaLettura("Sola lettura:")).toBe("");
+  });
+});
+
+describe("chiLoDecide", () => {
+  it("di solito manca un ruolo; per un rifiuto di deposito mancano i depositi", () => {
+    expect(chiLoDecide("Sola lettura: per modificare serve la scrittura su «Roster»")).toBe("Il ruolo lo assegna l'amministratore");
+    expect(chiLoDecide("Sola lettura: il conducente è del deposito «Ancona», e tu scrivi solo sui conducenti di Jesi")).toBe("I depositi li sceglie l'amministratore");
+    expect(chiLoDecide("Sola lettura: questo conducente è di un altro deposito, e tu scrivi solo sui conducenti dei tuoi")).toBe("I depositi li sceglie l'amministratore");
+    expect(chiLoDecide("Sola lettura: i conducenti di prova nascono in tutti i depositi, e tu scrivi solo sui tuoi")).toBe("I depositi li sceglie l'amministratore");
+    // senza messaggio vale la frase di sempre
+    expect(chiLoDecide("")).toBe("Il ruolo lo assegna l'amministratore");
   });
 });
 

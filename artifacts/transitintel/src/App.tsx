@@ -10,7 +10,7 @@ import { AuthProvider, useAuth, type Area } from "@/hooks/use-auth";
 import { CASA, NOMI_AREE, AREE_PAGINA } from "@/lib/navigazione";
 import { apiFetch } from "@/lib/api";
 import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
-import { EVENTO_SOLA_LETTURA, dettaglioSolaLettura, motivoSolaLettura, type RifiutoSolaLettura } from "@/lib/sola-lettura";
+import { EVENTO_SOLA_LETTURA, chiLoDecide, dettaglioSolaLettura, motivoSolaLettura, type RifiutoSolaLettura } from "@/lib/sola-lettura";
 import { PaginaConAree } from "@/hooks/use-sola-lettura";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
@@ -223,7 +223,7 @@ function AvvisoSolaLettura() {
       const dettaglio = dettaglioSolaLettura(rifiuto?.messaggio ?? "");
       toastSonner.warning("Sola lettura", {
         id: "sola-lettura",
-        description: [dettaglio, "Non è stato modificato niente", "Il ruolo lo assegna l'amministratore"].filter(Boolean).join(". ") + ".",
+        description: [dettaglio, "Non è stato modificato niente", chiLoDecide(rifiuto?.messaggio ?? "")].filter(Boolean).join(". ") + ".",
         duration: 8000,
       });
     };
