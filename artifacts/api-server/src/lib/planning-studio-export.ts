@@ -7,9 +7,16 @@
  * feed_info). È il deliverable che l'ufficio programmazione consegna a
  * Regione/osservatorio, open data (NAP), fornitori AVM/bigliettazione.
  *
- * Scelte di mappatura (stessa semantica della materializzazione interna):
- *  - route_id / trip_id / stop_id / service_id / shape_id = UUID ps_* in testo
- *    (stabili tra export finché non si reimporta).
+ * Scelte di mappatura:
+ *  - stop_id / route_id / trip_id = il CODICE STABILE della fermata, della
+ *    linea e della corsa (PR 3.1, lib/codici-stabili.ts): per le righe
+ *    importate è l'id che avevano nel file d'origine, e resta lo stesso nelle
+ *    copie del programma. Prima usciva l'id interno (un UUID), che cambia a
+ *    ogni copia: chi riceveva il file vedeva cambiare tutti gli identificativi
+ *    da un programma all'altro. Il feed materializzato interno usa ancora gli
+ *    id interni.
+ *  - service_id / shape_id = id interni in testo (calendario, percorso) o la
+ *    firma di circolazione: non sono nomi che chi riceve il file conserva.
  *  - VALIDITÀ EFFETTIVA: se il progetto usa la matrice di validità, lo zip
  *    replica ESATTAMENTE il ramo della materializzazione — calendar.txt vuoto
  *    e calendar_dates.txt puro (una riga per data attiva, corse raggruppate
@@ -151,27 +158,31 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
 
     /* ── stops.txt ── */
     const stops = await rows(sql`
-      SELECT id, code, name, description, lat, lon, zone_id, location_type,
+      SELECT id, codice, code, name, description, lat, lon, zone_id, location_type,
              wheelchair_boarding, platform_code
         FROM ps_stops WHERE project_id = ${projectId}::uuid ORDER BY name
     `);
+    /* id interno → codice stabile. Una riga che manca dalla mappa (non dovrebbe
+     * succedere: il codice è obbligatorio) esce col suo id interno, come prima. */
+    const codiceFermata = new Map<string, string>(stops.map(s => [s.id, s.codice]));
     zip.addFile("stops.txt", Buffer.from(
       "stop_id,stop_code,stop_name,stop_desc,stop_lat,stop_lon,zone_id,location_type,wheelchair_boarding,platform_code\n" +
       stops.map(s => csvLine([
-        s.id, s.code ?? "", s.name, s.description ?? "", s.lat, s.lon,
+        s.codice ?? s.id, s.code ?? "", s.name, s.description ?? "", s.lat, s.lon,
         s.zone_id ?? "", s.location_type ?? 0, s.wheelchair_boarding ?? 0, s.platform_code ?? "",
       ])).join("\n") + "\n", "utf8"));
 
     /* ── routes.txt ── */
     const routes = await rows(sql`
-      SELECT id, code, short_name, long_name, description, route_type, color, text_color, sort_order
+      SELECT id, codice, code, short_name, long_name, description, route_type, color, text_color, sort_order
         FROM ps_routes WHERE project_id = ${projectId}::uuid
        ORDER BY sort_order NULLS LAST, short_name
     `);
+    const codiceLinea = new Map<string, string>(routes.map(r => [r.id, r.codice]));
     zip.addFile("routes.txt", Buffer.from(
       "route_id,agency_id,route_short_name,route_long_name,route_desc,route_type,route_color,route_text_color,route_sort_order\n" +
       routes.map(r => csvLine([
-        r.id, agencyId,
+        r.codice ?? r.id, agencyId,
         r.short_name || r.code || "", r.long_name ?? "", r.description ?? "",
         r.route_type ?? 3,
         (r.color ?? "").replace(/^#/, ""), (r.text_color ?? "").replace(/^#/, ""),
@@ -235,7 +246,7 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
      * Ramo effettivo: service_id = firma di circolazione; le corse mai attive
      * nel range sono ESCLUSE (come nel feed materializzato). */
     const trips = await rows(sql`
-      SELECT t.id, t.route_id, t.calendar_id, t.headsign, t.short_name, t.direction,
+      SELECT t.id, t.codice, t.route_id, t.calendar_id, t.headsign, t.short_name, t.direction,
              t.block_id, t.variant_id,
              EXISTS (SELECT 1 FROM ps_shapes sh WHERE sh.variant_id = t.variant_id) AS has_shape
         FROM ps_trips t
@@ -247,12 +258,13 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     const exportedTrips = effectiveTripSvc
       ? trips.filter(t => effectiveTripSvc!.has(t.id))
       : trips;
+    const codiceCorsa = new Map<string, string>(trips.map(t => [t.id, t.codice]));
     zip.addFile("trips.txt", Buffer.from(
       "route_id,service_id,trip_id,trip_headsign,trip_short_name,direction_id,block_id,shape_id\n" +
       exportedTrips.map(t => csvLine([
-        t.route_id,
+        codiceLinea.get(t.route_id) ?? t.route_id,
         effectiveTripSvc ? effectiveTripSvc.get(t.id)! : (t.calendar_id ?? fallbackServiceId),
-        t.id,
+        t.codice ?? t.id,
         t.headsign ?? "", t.short_name ?? "", t.direction ?? 0, t.block_id ?? "",
         t.has_shape ? t.variant_id : "",
       ])).join("\n") + "\n", "utf8"));
@@ -274,7 +286,8 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     zip.addFile("stop_times.txt", Buffer.from(
       "trip_id,arrival_time,departure_time,stop_id,stop_sequence,pickup_type,drop_off_type,timepoint,shape_dist_traveled\n" +
       exportedStopTimes.map(s => csvLine([
-        s.trip_id, s.arrival_time, s.departure_time, s.stop_id, s.stop_seq,
+        codiceCorsa.get(s.trip_id) ?? s.trip_id, s.arrival_time, s.departure_time,
+        codiceFermata.get(s.stop_id) ?? s.stop_id, s.stop_seq,
         s.pickup_type ?? 0, s.drop_off_type ?? 0, s.timepoint ?? 1, s.shape_dist_traveled ?? "",
       ])).join("\n") + "\n", "utf8"));
 

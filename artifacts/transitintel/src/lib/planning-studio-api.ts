@@ -40,6 +40,10 @@ export interface PsProject {
 export interface PsStop {
   id: string;
   projectId: string;
+  /** Il codice stabile (PR 3.1): unico nel programma, lo stesso nelle sue copie,
+   *  quello del GTFS esportato. Per una fermata importata è l'id del file. Non è
+   *  `code`, il codice esposto al pubblico. */
+  codice?: string;
   code?: string | null;
   name: string;
   description?: string | null;
@@ -59,6 +63,8 @@ export interface PsStop {
 export interface PsRoute {
   id: string;
   projectId: string;
+  /** il codice stabile della linea: vedi PsStop.codice */
+  codice?: string;
   code?: string | null;
   shortName: string;
   longName?: string | null;
@@ -148,6 +154,8 @@ export interface PsCalendar {
 export interface PsTrip {
   id: string;
   projectId: string;
+  /** il codice stabile della corsa: vedi PsStop.codice */
+  codice?: string;
   routeId: string;
   variantId: string;
   calendarId?: string | null;
@@ -1011,7 +1019,7 @@ export async function listPsRestPoints(projectId: string): Promise<PsRestPoint[]
 
 export interface PsRouteDetail {
   route: {
-    id: string; code: string | null; shortName: string; longName: string | null;
+    id: string; codice?: string; code: string | null; shortName: string; longName: string | null;
     description: string | null; routeType: number;
     color: string | null; textColor: string | null; sortOrder: number;
     attributes: Record<string, any>;
@@ -1066,7 +1074,7 @@ export interface PsVariantDetail {
 
 export interface PsStopDetail {
   stop: {
-    id: string; code: string | null; name: string; description: string | null;
+    id: string; codice?: string; code: string | null; name: string; description: string | null;
     lat: number; lon: number;
     zoneId: string | null; locationType: number;
     parentStation: string | null;

@@ -120,6 +120,20 @@
       "when": 1794554712588,
       "tag": "0016_depositi_visibili",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794641112588,
+      "tag": "0017_codici_stabili",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794641172588,
+      "tag": "0018_codici_obbligatori",
+      "breakpoints": true
     }
   ]
 }

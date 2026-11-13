@@ -156,6 +156,13 @@ su main non si tocca più.
   (PR 2.16b), quindi non c'è niente da togliere prima. Se `ruoli.mjs
   --verifica` avvisa che un altro ruolo può creare in `public`, quello sì va
   tolto prima.
+- **Codici stabili (PR 3.1, 0017 e 0018).** `ps_trips`, `ps_stops` e
+  `ps_routes` hanno `codice`: obbligatorio, unico nel progetto, lo stesso
+  nelle copie del programma. Una riga che non lo porta lo riceve dal default
+  (`CB-C…`, `CB-F…`, `CB-L…`, dalla sequenza `ps_codici_seq`). Una migrazione
+  che copia righe di queste tabelle dentro lo stesso progetto non copia il
+  codice; una che le sposta fra progetti lo conserva. L'import scrive come
+  codice l'id del file (`artifacts/api-server/src/lib/codici-stabili.ts`).
 - **Il registro delle modifiche (PR 2.10 e 2.11).** Le tabelle sorvegliate hanno i
   trigger `registro_*`, che scrivono in `registro.modifiche` (schema, tabelle e
   funzioni di `cerbero_registro`, non di `cerbero_owner`). Una tabella nuova

@@ -1672,11 +1672,14 @@ router.post("/planning-studio/projects/:id/trips/:tripId/split-categories", asyn
   const moveLit = `{${move.join(",")}}`;
   let newTripId = "";
   await db.transaction(async (tx) => {
-    // copia riga corsa (tutte le colonne tranne id/created_at → prese da schema)
+    // copia riga corsa (tutte le colonne tranne id/created_at → prese da schema).
+    // Nemmeno il codice stabile (PR 3.1): è unico nel progetto, e la copia è
+    // un'altra corsa: ne riceve uno nuovo dal default della colonna. gtfs_id
+    // invece si copia: dice da quale corsa del file vengono tutte e due.
     const colsR = await tx.execute<any>(sql`
       SELECT column_name FROM information_schema.columns
        WHERE table_schema='public' AND table_name='ps_trips'
-         AND column_name NOT IN ('id','created_at') ORDER BY ordinal_position`);
+         AND column_name NOT IN ('id','created_at','codice') ORDER BY ordinal_position`);
     const cols: string[] = colsR.rows.map((r: any) => r.column_name);
     const ins = await tx.execute<any>(sql`
       INSERT INTO ps_trips (id, ${sql.raw(cols.join(", "))})

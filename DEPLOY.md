@@ -350,6 +350,73 @@ diversa da Conerobus, non a Conerobus):
 - alcune etichette e i centri delle mappe di singole pagine (intermodale,
   tariffe, orari).
 
+### Codici stabili di corsa, fermata e linea (PR 3.1)
+
+Una corsa, una fermata e una linea di Planning Studio hanno un **codice**:
+obbligatorio, unico dentro il programma, e **lo stesso nelle copie del
+programma**. L'id interno (un UUID) cambia a ogni copia e resta interno.
+
+Da dove viene il codice:
+
+| Riga | Codice |
+|---|---|
+| importata da un GTFS | l'id che aveva nel file (`stop_id`, `route_id`, `trip_id`) |
+| creata a mano | lo dà il database: `CB-` più la lettera del tipo (`C` corsa, `F` fermata, `L` linea) e un numero che non si ripete, per esempio `CB-C1042` |
+| copia di una corsa sdoppiata | un codice nuovo (`CB-C…`): è un'altra corsa |
+| stesso id due volte nello stesso file | vale la prima riga, la seconda si salta (prima nascevano due righe, una delle quali senza orari o mai usata) |
+
+Che cosa cambia per chi usa l'app:
+
+- **Il GTFS esportato** da Planning Studio (Esporta GTFS) usa i codici come
+  `stop_id`, `route_id` e `trip_id`. Prima consegnava gli id interni, che
+  cambiavano a ogni copia del programma. **Il primo file esportato dopo questo
+  rilascio ha identificativi diversi dai precedenti**; da lì in poi restano
+  gli stessi, anche fra un programma e la sua copia. Per le righe importate
+  dal GTFS di Maior sono gli id di Maior. Chi ha già ricevuto un file con gli
+  id di prima va avvisato. `service_id` e `shape_id` restano id interni.
+- **Rete** e **Corse** mostrano il codice al posto dei primi caratteri
+  dell'id interno.
+- **Reimportare un GTFS esportato da Cerbero** nello stesso programma
+  (aggiornamento non distruttivo) ritrova ogni riga dal suo codice: non nascono
+  doppioni. Le righe create a mano restano «a mano»: un aggiornamento dal file
+  d'origine non le disattiva.
+
+Che cosa **non** cambia ancora: il programma messo in esercizio (il feed che
+leggono AVM, tariffe e turni) usa ancora gli id interni. È il passo
+successivo.
+
+**Le migrazioni.** La `0017` aggiunge la colonna e dà un codice a ogni riga che
+c'è già; la `0018` lo rende obbligatorio e unico. Durante la migrazione le tre
+tabelle restano chiuse: **misurati 13 secondi su 300.000 corse e 85.000
+fermate** (16 col registro delle modifiche acceso); in quei secondi le pagine
+di Planning Studio aspettano. Nel log del deploy:
+
+- niente, se ogni riga importata ha tenuto l'id del suo file;
+- `ATTENZIONE: 0017: N corse importate hanno preso un codice nuovo…`, se N
+  righe importate non hanno potuto tenerlo: nel programma c'era già un'altra
+  riga con lo stesso id (di solito la copia di una corsa sdoppiata), oppure
+  l'id non va bene come codice (vuoto, più di 200 caratteri, caratteri di
+  controllo). Non è un errore: quelle righe hanno un codice `CB-…`.
+
+Per vedere i codici di un programma, dal Terminal del database:
+
+```sql
+SELECT pg_catalog.count(*) AS corse,
+       pg_catalog.count(*) FILTER (WHERE codice = gtfs_id) AS col_codice_del_file,
+       pg_catalog.count(*) FILTER (WHERE codice ~ '^CB-C') AS col_codice_nuovo
+  FROM public.ps_trips
+ WHERE project_id = '<id del programma>';
+```
+
+**Se si torna all'immagine di prima** (rollback): l'app funziona, perché ogni
+riga nuova riceve il codice dal database. Due limiti, finché non si torna a
+questa versione:
+
+- «Sdoppia per validità» dà errore (il codice di prima copia anche il codice,
+  che è unico);
+- un GTFS importato con l'immagine di prima dà alle righe nuove codici `CB-…`
+  invece degli id del file. Meglio non importare in quel periodo.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
