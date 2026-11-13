@@ -31,8 +31,10 @@ export interface CurrentUser {
   accessoDiPrima?: Partial<Record<InterruttoreDiPrima, true>>;
   datiSanitari?: boolean;
   analisi?: boolean;
-  /** i depositi a cui è limitata la scrittura sul roster; vuoto o assente = nessun limite (PR 2.14c) */
+  /** i depositi di cui modifica i conducenti (PR 2.14c); la regola dei due elenchi è in @workspace/permessi */
   depositi?: string[];
+  /** i depositi di cui vede i conducenti; vuoto o assente = tutti (PR 2.14d) */
+  depositiVisibili?: string[];
   /** lettura o scrittura per area: è su questo che si decide che cosa mostrare */
   diritti?: Diritti;
   permissions: Record<Permission, boolean>;

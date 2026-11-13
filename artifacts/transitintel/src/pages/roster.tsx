@@ -109,6 +109,8 @@ interface Board {
   /** depositoCodice: il deposito del catalogo, abbinato dal server come fa l'anagrafica */
   from: string; days: string[]; drivers: Array<RosterDriver & { depositoCodice?: string | null }>;
   assignments: RosterAssignment[];
+  /** i turni presi da conducenti di depositi che chi guarda non vede: occupati, senza dire da chi (PR 2.14d) */
+  occupatiDaAltri?: Array<{ day: string; dutyCode: string; dssId: string }>;
   entries?: RosterEntry[];
   /** il colore di ogni deposito del personale, lo stesso dei suoi turni */
   depositi?: ColoreDeposito[];
@@ -455,8 +457,8 @@ export default function RosterPage() {
      Gli altri li vede, con un lucchetto; i gesti su di loro si fermano qui con
      l'avviso unico, e comunque li rifiuta l'API (lib/roster-limite-depositi.ts). */
   const limite = useMemo(
-    () => limiteDepositi({ admin: user?.role === "admin", depositi: user?.depositi }),
-    [user?.role, user?.depositi],
+    () => limiteDepositi({ admin: user?.role === "admin", depositi: user?.depositi, depositiVisibili: user?.depositiVisibili }),
+    [user?.role, user?.depositi, user?.depositiVisibili],
   );
   const codiceDeposito = useMemo(
     () => new Map((board?.drivers ?? []).map((d) => [d.id, d.depositoCodice ?? null])),
@@ -493,7 +495,10 @@ export default function RosterPage() {
     const m = new Map<string, Array<{ duty: RosterDuty; dssId: string; udpNome: string | null }>>();
     if (!board) return m;
     for (const day of board.days) {
-      const taken = new Set(board.assignments.filter((a) => a.day === day).map((a) => `${a.dssId}|${a.dutyCode}`));
+      /* occupati anche i turni presi da conducenti di depositi che chi guarda non vede (PR 2.14d):
+         l'API li manda senza il conducente, e non vanno contati fra gli scoperti */
+      const taken = new Set([...board.assignments, ...(board.occupatiDaAltri ?? [])]
+        .filter((a) => a.day === day).map((a) => `${a.dssId}|${a.dutyCode}`));
       m.set(day, (board.pubblicati?.[day] ?? []).flatMap(p =>
         (board.dutiesByDss?.[p.dssId] ?? []).filter(d => !taken.has(`${p.dssId}|${d.code}`)).map(d => ({ duty: d, dssId: p.dssId, udpNome: p.udpNome }))));
     }

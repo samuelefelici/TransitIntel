@@ -18,8 +18,10 @@ export interface StatoUtente {
   accesso_di_prima?: Record<string, unknown> | null;
   dati_sanitari?: boolean | null;
   analisi?: boolean | null;
-  /** i depositi a cui è limitata la scrittura sul roster */
+  /** i depositi di cui modifica i conducenti */
   depositi?: readonly string[] | null;
+  /** i depositi di cui vede i conducenti */
+  depositi_visibili?: readonly string[] | null;
   fleetcare_role?: string | null;
   full_name?: string | null;
   active?: boolean | null;
@@ -35,6 +37,7 @@ const accesi = (p: StatoUtente["accesso_di_prima"]): Set<string> =>
   new Set(Object.entries(p ?? {}).filter(([, v]) => v === true).map(([k]) => k));
 const ruoliDi = (u: StatoUtente): Set<string> => new Set((u.ruoli ?? []).filter((r) => typeof r === "string"));
 const depositiDi = (u: StatoUtente): Set<string> => new Set((u.depositi ?? []).filter((d) => typeof d === "string"));
+const visibiliDi = (u: StatoUtente): Set<string> => new Set((u.depositi_visibili ?? []).filter((d) => typeof d === "string"));
 const differenze = (prima: Set<string>, dopo: Set<string>): string[] => [
   ...[...dopo].filter((m) => !prima.has(m)).sort().map((m) => `+${m}`),
   ...[...prima].filter((m) => !dopo.has(m)).sort().map((m) => `-${m}`),
@@ -47,6 +50,7 @@ export function azioniAdmin(prima: StatoUtente | null, dopo: StatoUtente | null,
     if (dopo.dati_sanitari === true) dati.push("+dati_sanitari");
     if (dopo.analisi === true) dati.push("+analisi");
     for (const d of [...depositiDi(dopo)].sort()) dati.push(`deposito:${d}`);
+    for (const d of [...visibiliDi(dopo)].sort()) dati.push(`vede:${d}`);
     return [`utente_creato ${dopo.role === "admin" ? "admin" : "user"}${dati.length ? ` ${dati.join(",")}` : ""}`];
   }
   if (prima && !dopo) return ["utente_eliminato"];
@@ -63,6 +67,8 @@ export function azioniAdmin(prima: StatoUtente | null, dopo: StatoUtente | null,
   /* i depositi sono codici del catalogo, non dati di persone: si scrivono */
   const depositi = differenze(depositiDi(prima), depositiDi(dopo));
   if (depositi.length) azioni.push(`depositi_cambiati ${depositi.join(" ")}`);
+  const visibili = differenze(visibiliDi(prima), visibiliDi(dopo));
+  if (visibili.length) azioni.push(`depositi_visibili_cambiati ${visibili.join(" ")}`);
   if ((prima.fleetcare_role ?? null) !== (dopo.fleetcare_role ?? null)) {
     azioni.push(`ruolo_fleetcare_cambiato ${prima.fleetcare_role ?? "-"}→${dopo.fleetcare_role ?? "-"}`);
   }

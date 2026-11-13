@@ -8,6 +8,10 @@ import {
   type Diritti, type InterruttoreDiPrima, type Matrice, type RuoloAziendale,
 } from "@workspace/permessi";
 import { matriceDaRuoli, riassuntoDeiDiritti, ruoliValidi } from "@/lib/ruoli-admin";
+import {
+  conInterruttore, conModifica, conScelta, depositiDellUtente, depositiInBreve, elenchiDaSalvare, erroreDepositi, sceltaSul,
+  type DepositiScelti, type SceltaDeposito,
+} from "@/lib/depositi-utente";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -38,8 +42,10 @@ interface AdminUser {
   accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>;
   datiSanitari: boolean;
   analisi: boolean;
-  /** i depositi a cui è limitata la sua scrittura sul roster; vuoto = nessun limite */
+  /** i depositi di cui modifica i conducenti */
   depositi?: string[];
+  /** i depositi di cui vede i conducenti; vuoto = tutti */
+  depositiVisibili?: string[];
   /** lettura o scrittura per area, come li calcola il server */
   diritti: Diritti;
   fleetcareRole: string;
@@ -85,10 +91,12 @@ interface Scelte {
   accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>;
   datiSanitari: boolean;
   analisi: boolean;
-  /** i codici dei depositi a cui limitare la scrittura sul roster; vuoto = nessun limite */
-  depositi: string[];
+  /** di quali depositi vede i conducenti e di quali li modifica (lib/depositi-utente.ts) */
+  depositi: DepositiScelti;
   fleetcareRole: string;
 }
+
+const SCELTE_DEPOSITO: ReadonlyArray<[SceltaDeposito, string]> = [["niente", "Non vede"], ["vede", "Vede"], ["modifica", "Modifica"]];
 
 /** Un deposito del catalogo del roster (GET /api/roster/depositi). */
 interface DepositoCatalogo { codice: string; nome: string }
@@ -422,7 +430,7 @@ function CreateUserDialog({ onClose, onCreated, depositi }: { onClose: () => voi
   const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
   /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima */
-  const [scelte, setScelte] = useState<Scelte>({ role: "user", ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, depositi: [], fleetcareRole: "driver" });
+  const [scelte, setScelte] = useState<Scelte>({ role: "user", ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, depositi: depositiDellUtente({}), fleetcareRole: "driver" });
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -434,6 +442,8 @@ function CreateUserDialog({ onClose, onCreated, depositi }: { onClose: () => voi
       toast({ title: `Password troppo corta (almeno ${PASSWORD_MIN} caratteri)`, variant: "destructive" });
       return;
     }
+    const sbagliati = scelte.role === "admin" ? null : erroreDepositi(scelte.depositi);
+    if (sbagliati) { toast({ title: "Depositi del roster", description: sbagliati, variant: "destructive" }); return; }
     setBusy(true);
     try {
       await apiFetch("/api/admin/users", {
@@ -441,7 +451,7 @@ function CreateUserDialog({ onClose, onCreated, depositi }: { onClose: () => voi
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email, fullName, password, role: scelte.role, ruoli: scelte.ruoli,
-          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, depositi: scelte.depositi, fleetcareRole: scelte.fleetcareRole,
+          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, ...elenchiDaSalvare(scelte.depositi), fleetcareRole: scelte.fleetcareRole,
         }),
       });
       toast({ title: "Utente creato" });
@@ -505,11 +515,13 @@ function EditUserDialog({
   const [fullName, setFullName] = useState(user.fullName || "");
   const [scelte, setScelte] = useState<Scelte>({
     role: user.role, ruoli: user.ruoli ?? [], accessoDiPrima: user.accessoDiPrima ?? {},
-    datiSanitari: !!user.datiSanitari, analisi: !!user.analisi, depositi: user.depositi ?? [], fleetcareRole: user.fleetcareRole || "driver",
+    datiSanitari: !!user.datiSanitari, analisi: !!user.analisi, depositi: depositiDellUtente(user), fleetcareRole: user.fleetcareRole || "driver",
   });
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
+    const sbagliati = scelte.role === "admin" ? null : erroreDepositi(scelte.depositi);
+    if (sbagliati) { toast({ title: "Depositi del roster", description: sbagliati, variant: "destructive" }); return; }
     setBusy(true);
     try {
       await apiFetch(`/api/admin/users/${user.id}`, {
@@ -517,7 +529,7 @@ function EditUserDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fullName, role: scelte.role, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima,
-          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, depositi: scelte.depositi, fleetcareRole: scelte.fleetcareRole,
+          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, ...elenchiDaSalvare(scelte.depositi), fleetcareRole: scelte.fleetcareRole,
         }),
       });
       toast({ title: "Salvato" });
@@ -569,12 +581,12 @@ function RuoliInBreve({ u, depositi }: { u: AdminUser; depositi: DepositoCatalog
           accesso di prima: {diPrima.map(i => NOMI_INTERRUTTORI[i]).join(", ")}
         </span>
       )}
-      {(u.depositi ?? []).length > 0 && (
-        <span className="text-[11px] px-1.5 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300"
-          title="Scrive sul roster solo per i conducenti di questi depositi. Gli altri li vede soltanto.">
-          roster solo per: {(u.depositi ?? []).map(c => depositi.find(d => d.codice === c)?.nome ?? c).join(", ")}
+      {depositiInBreve(u, c => depositi.find(d => d.codice === c)?.nome ?? c).map(testo => (
+        <span key={testo} className="text-[11px] px-1.5 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300"
+          title="I depositi di cui vede e di cui modifica i conducenti, nel tabellone e nell'anagrafica.">
+          {testo}
         </span>
-      )}
+      ))}
       {u.datiSanitari && <span className="text-[11px] px-1.5 py-0.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300">dati sanitari</span>}
       {u.analisi && <span className="text-[11px] px-1.5 py-0.5 rounded border border-border text-muted-foreground">Analisi</span>}
       {niente && <span className="text-xs text-muted-foreground">nessun ruolo: non apre nessuna area</span>}
@@ -599,15 +611,18 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso, depositi }: 
   const quelliDiPrima = INTERRUTTORI_DI_PRIMA.filter(i => diPrima[i] === true);
   const flotta = puo(diritti, "flotta", "L");
   const roster = puo(diritti, "roster", "L");
-  /* il limite per deposito ha senso solo per chi il roster lo scrive */
+  /* «modifica» ha senso solo per chi il roster lo scrive; i depositi che vede, per chi i conducenti li legge */
   const scriveRoster = !admin && puo(diritti, "roster", "S");
+  const leggeConducenti = !admin && (roster || puo(diritti, "personale", "L"));
+  const dep = scelte.depositi;
+  const cambiaDepositi = (d: DepositiScelti) => onChange({ ...scelte, depositi: d });
   /* un deposito scelto che non è più nel catalogo si mostra lo stesso: si deve poter togliere */
+  const sceltiFuoriCatalogo = [...new Set([...dep.depositi, ...dep.depositiVisibili])].filter(c => !depositi.some(d => d.codice === c));
   const depositiMostrati: DepositoCatalogo[] = [
     ...depositi,
-    ...scelte.depositi.filter(c => !depositi.some(d => d.codice === c)).map(c => ({ codice: c, nome: `${c} (non più nel catalogo)` })),
+    ...sceltiFuoriCatalogo.map(c => ({ codice: c, nome: `${c} (non più nel catalogo)` })),
   ];
-  const cambiaDeposito = (codice: string, acceso: boolean) =>
-    onChange({ ...scelte, depositi: acceso ? [...scelte.depositi.filter(c => c !== codice), codice] : scelte.depositi.filter(c => c !== codice) });
+  const erroreDeiDepositi = erroreDepositi(dep);
   /* la stessa regola del database (users.mfa_obbligatoria): chi vede il personale o il roster */
   const verificaObbligatoria = admin || roster || puo(diritti, "personale", "L");
   const suggerito = scelte.ruoli.map(r => RUOLO_FLEETCARE_SUGGERITO[r]).find(Boolean);
@@ -674,23 +689,69 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso, depositi }: 
             </fieldset>
           )}
 
-          {scriveRoster && depositiMostrati.length > 0 && (
+          {leggeConducenti && depositiMostrati.length > 0 && (
             <fieldset className="space-y-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-3">
               <legend className="px-1 text-sm font-medium">Depositi del roster</legend>
               <p className="text-xs text-muted-foreground">
-                {scelte.depositi.length === 0
-                  ? "Nessun deposito scelto: scrive sul roster di tutti i conducenti."
-                  : "Scrive sul roster solo per i conducenti di questi depositi. Gli altri li vede, senza poterli modificare."}
+                Di quali depositi vede i conducenti, nel tabellone e nell'anagrafica, e di quali li può modificare.
               </p>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
-                {depositiMostrati.map(d => (
-                  <label key={d.codice} htmlFor={`${prefisso}-deposito-${d.codice}`} className="flex items-center gap-2 text-sm cursor-pointer">
-                    <Checkbox id={`${prefisso}-deposito-${d.codice}`} checked={scelte.depositi.includes(d.codice)}
-                      onCheckedChange={(v) => cambiaDeposito(d.codice, v === true)} />
-                    {d.nome}
-                  </label>
-                ))}
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor={`${prefisso}-vede-tutti`} className="text-sm font-normal cursor-pointer">Vede i conducenti di tutti i depositi</Label>
+                <Switch id={`${prefisso}-vede-tutti`} checked={dep.vedeTutti}
+                  onCheckedChange={(v) => cambiaDepositi(conInterruttore(dep, v, depositi.map(d => d.codice), scriveRoster))} />
               </div>
+              {dep.vedeTutti ? (
+                scriveRoster && (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      {dep.depositi.length === 0
+                        ? "Nessun deposito scelto: modifica i conducenti di tutti."
+                        : "Modifica solo i conducenti di questi depositi. Gli altri li vede, senza poterli modificare."}
+                    </p>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                      {depositiMostrati.map(d => (
+                        <label key={d.codice} htmlFor={`${prefisso}-deposito-${d.codice}`} className="flex items-center gap-2 text-sm cursor-pointer">
+                          <Checkbox id={`${prefisso}-deposito-${d.codice}`} checked={dep.depositi.includes(d.codice)}
+                            onCheckedChange={(v) => cambiaDepositi(conModifica(dep, d.codice, v === true))} />
+                          {d.nome}
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )
+              ) : (
+                <div className="space-y-1.5">
+                  {depositiMostrati.map(d => {
+                    const valore = sceltaSul(dep, d.codice);
+                    return (
+                      <div key={d.codice} role="radiogroup" aria-label={d.nome} className="flex items-center justify-between gap-3">
+                        <span className="text-sm">{d.nome}</span>
+                        <div className="inline-flex rounded-md border border-border overflow-hidden shrink-0">
+                          {SCELTE_DEPOSITO.map(([s, etichetta]) => {
+                            const id = `${prefisso}-dep-${d.codice}-${s}`;
+                            const accesa = valore === s;
+                            return (
+                              <label key={s} htmlFor={id}
+                                className={`px-2.5 py-1 text-xs cursor-pointer select-none border-r border-border last:border-r-0 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-primary ${
+                                  accesa
+                                    ? s === "modifica" ? "bg-primary text-primary-foreground font-medium" : s === "vede" ? "bg-primary/25 text-foreground font-medium" : "bg-muted text-foreground font-medium"
+                                    : "text-muted-foreground hover:bg-muted/40"}`}>
+                                <input type="radio" id={id} name={`${prefisso}-dep-${d.codice}`} value={s} checked={accesa}
+                                  onChange={() => cambiaDepositi(conScelta(dep, d.codice, s))} className="sr-only" />
+                                {etichetta}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!scriveRoster && (
+                    <p className="text-xs text-muted-foreground">«Modifica» vale solo se il suo ruolo scrive il Roster.</p>
+                  )}
+                  {erroreDeiDepositi && <p role="alert" className="text-xs text-destructive">{erroreDeiDepositi}</p>}
+                </div>
+              )}
             </fieldset>
           )}
 

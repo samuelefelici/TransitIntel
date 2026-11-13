@@ -8,8 +8,10 @@
  *   accesso_di_prima  gli interruttori di prima dei ruoli ancora accesi
  *   dati_sanitari     vede i codici sanitari del roster
  *   analisi           vede l'area Analisi
- *   depositi          i depositi a cui è limitata la sua scrittura sul roster
- *                     (migrazione 0012; vuoto = nessun limite)
+ *   depositi          i depositi di cui modifica i conducenti (migrazione 0012)
+ *   depositi_visibili i depositi di cui vede i conducenti (migrazione 0016);
+ *                     la regola dei due elenchi è in @workspace/permessi
+ *                     (limitiSuiDepositi)
  *   permissions       NON è una fonte: è la vista che leggono FleetCare e la
  *                     colonna calcolata mfa_obbligatoria. La scrive l'API da
  *                     quello che c'è sopra (interruttoriCompatibili).
@@ -34,10 +36,11 @@ export interface RigaPermessi {
   dati_sanitari?: unknown;
   analisi?: unknown;
   depositi?: unknown;
+  depositi_visibili?: unknown;
 }
 
 /** Il profilo di un utente dalla sua riga: quello che non è scritto bene non vale. */
-export function profiloDaRiga(r: RigaPermessi): ProfiloPermessi & { ruoli: RuoloAziendale[]; accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>; depositi: string[] } {
+export function profiloDaRiga(r: RigaPermessi): ProfiloPermessi & { ruoli: RuoloAziendale[]; accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>; depositi: string[]; depositiVisibili: string[] } {
   return {
     admin: r.role === "admin",
     ruoli: ruoliValidi(r.ruoli),
@@ -45,6 +48,7 @@ export function profiloDaRiga(r: RigaPermessi): ProfiloPermessi & { ruoli: Ruolo
     datiSanitari: r.dati_sanitari === true,
     analisi: r.analisi === true,
     depositi: depositiPuliti(r.depositi),
+    depositiVisibili: depositiPuliti(r.depositi_visibili),
   };
 }
 
@@ -68,8 +72,10 @@ export interface RichiestaPermessi {
   analisi?: boolean;
   /** gli interruttori di prima da tenere accesi: si possono solo togliere */
   accessoDiPrima?: unknown;
-  /** i depositi a cui limitare la scrittura sul roster (vuoto = nessun limite) */
+  /** i depositi di cui modifica i conducenti */
   depositi?: string[];
+  /** i depositi di cui vede i conducenti (vuoto = tutti) */
+  depositiVisibili?: string[];
 }
 
 /**
@@ -93,7 +99,13 @@ export function permessiDopo(prima: RigaPermessi, richiesta: RichiestaPermessi) 
     dati_sanitari: richiesta.datiSanitari ?? corrente.datiSanitari,
     analisi: richiesta.analisi ?? corrente.analisi,
     depositi: richiesta.depositi !== undefined ? depositiPuliti(richiesta.depositi) : corrente.depositi,
+    depositi_visibili: richiesta.depositiVisibili !== undefined ? depositiPuliti(richiesta.depositiVisibili) : corrente.depositiVisibili,
   };
+  /* dove si è scelto che cosa far vedere, quello che si modifica sta fra quello che si vede:
+   * un deposito da modificare che manca fra i visibili ci entra (lib/permessi, limitiSuiDepositi) */
+  if (dopo.depositi_visibili.length) {
+    dopo.depositi_visibili = depositiPuliti([...dopo.depositi_visibili, ...dopo.depositi]);
+  }
   const { diritti, permissions } = dirittiEVista(profiloDaRiga(dopo));
   if (dopo.role !== "admin" && !puo(diritti, "roster", "L")) dopo.dati_sanitari = false;
   return { ...dopo, permissions };
