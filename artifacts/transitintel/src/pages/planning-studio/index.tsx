@@ -443,14 +443,17 @@ function ProjectCard({
         {isOwner && (
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
             {canActivate && (
+              /* mettere in esercizio vuole anche la scrittura su «Pubblicazione degli orari» (PR 3.2) */
               <SeScrive nascosto>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onActivate(); }}
-                  className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
-                  title="Metti in esercizio (materializza il programma e lo rende operativo)"
-                >
-                  <Power className="w-3.5 h-3.5" />
-                </button>
+                <SeScrive area="pubblicazione_orari" nascosto>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onActivate(); }}
+                    className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
+                    title="Metti in esercizio (materializza il programma e lo rende operativo)"
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                  </button>
+                </SeScrive>
               </SeScrive>
             )}
             <SeScrive nascosto>

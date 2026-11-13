@@ -163,6 +163,12 @@ su main non si tocca più.
   che copia righe di queste tabelle dentro lo stesso progetto non copia il
   codice; una che le sposta fra progetti lo conserva. L'import scrive come
   codice l'id del file (`artifacts/api-server/src/lib/codici-stabili.ts`).
+- **Il programma in esercizio (PR 3.2, 0019 e 0020).** Al più un feed acceso
+  (`gtfs_feeds.is_active`) e al più un periodo aperto nello storico
+  (`ps_activation_log`): vincoli di esclusione differiti alla fine della
+  transazione. Una migrazione non accende feed: lo fa la porta unica
+  (`artifacts/api-server/src/lib/esercizio-porta.ts`), che scrive anche lo
+  storico.
 - **Il registro delle modifiche (PR 2.10 e 2.11).** Le tabelle sorvegliate hanno i
   trigger `registro_*`, che scrivono in `registro.modifiche` (schema, tabelle e
   funzioni di `cerbero_registro`, non di `cerbero_owner`). Una tabella nuova

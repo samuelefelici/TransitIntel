@@ -1438,3 +1438,39 @@ describe("0007: lettura del registro e seconda ondata", () => {
     expect(catalogo.tabelle["public.ps_pending_activations"]).toHaveProperty("via");
   });
 });
+
+/* 0019 (PR 3.2): un solo programma in esercizio, sempre nello storico. */
+describe("0019 e 0020: un solo programma in esercizio", () => {
+  const sql = readFileSync(path.join(CARTELLA, "0019_un_solo_programma_in_esercizio.sql"), "utf8");
+  const regole = readFileSync(path.join(CARTELLA, "0020_regole_del_programma_in_esercizio.sql"), "utf8");
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+
+  it("lo storico: progetto facoltativo che sopravvive alla cancellazione del progetto, canale", () => {
+    const colonne = catalogo.tabelle["public.ps_activation_log"];
+    expect(colonne.project_id).toMatch(/^uuid \| null/);
+    expect(colonne.via).toMatch(/^text \| null/);
+    expect(catalogo.vincoli["public.ps_activation_log.ps_activation_log_project_id_fkey"]).toMatch(/ON DELETE SET NULL$/);
+  });
+
+  it("le due regole nel database, verificate alla fine della transazione", () => {
+    expect(catalogo.vincoli["public.gtfs_feeds.gtfs_feeds_un_solo_in_esercizio"])
+      .toBe("EXCLUDE USING btree (is_active WITH =) WHERE (is_active) DEFERRABLE INITIALLY DEFERRED");
+    expect(catalogo.vincoli["public.ps_activation_log.ps_activation_log_un_solo_aperto"])
+      .toBe("EXCLUDE USING btree (((deactivated_at IS NULL)) WITH =) WHERE ((deactivated_at IS NULL)) DEFERRABLE INITIALLY DEFERRED");
+  });
+
+  it("lo storico nel registro delle modifiche, coi valori; le colonne di testo sono decise", () => {
+    expect(regole).toMatch(/SELECT registro\.sorveglia\('public\.ps_activation_log', ARRAY\['id'\], 'progetto_ps', 'project_id', true\);/);
+    const colonne = catalogo.tabelle["public.ps_activation_log"] as Record<string, string>;
+    // via col valore (il canale, non una persona); user_id solo nome, come ogni %user_id
+    expect(Object.keys(colonne).filter((c) => /^(text|character)/.test(colonne[c]!)).sort()).toEqual(["via"]);
+  });
+
+  it("lo stato di oggi si mette in regola come cerbero_owner, senza cambiare il feed che legge l'AVM", () => {
+    expect(sql).toMatch(/WHERE f\.is_active ORDER BY f\.uploaded_at DESC NULLS LAST, f\.id LIMIT 1;/);
+    expect(sql).toMatch(/RAISE WARNING '0019: spento il feed/);
+    expect(sql.trim()).toMatch(/--> statement-breakpoint\nRESET ROLE;$/);
+    // i vincoli dopo i dati, da chi migra
+    expect(regole).not.toMatch(/SET LOCAL ROLE/);
+  });
+});

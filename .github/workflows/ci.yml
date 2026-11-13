@@ -158,6 +158,9 @@ jobs:
           # codici stabili (importate, a mano, col gtfs_id ripetuto, vuoto o
           # non valido come codice, linee con l'id del file solo in `code`)
           psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/codici-stabili-prima.sql
+          # PR 3.2: due feed accesi di due proprietari, il «di default» su un
+          # terzo, un periodo dello storico aperto sul feed sbagliato
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/esercizio-prima.sql
           DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs | tee prod.log
           # la 0010 toglie le orfane e lo scrive nel log; le vere restano. Senza
           # corse legate a una categoria cancellata, la 0013 mette anche la
@@ -173,6 +176,12 @@ jobs:
           grep -q "ATTENZIONE: 0017: 1 fermate importate hanno preso un codice nuovo" prod.log
           grep -q "ATTENZIONE: 0017: 2 linee importate hanno preso un codice nuovo" prod.log
           psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/codici-stabili-dopo.sql
+          # la 0019 lascia acceso il feed che l'AVM leggeva, spegne l'altro e
+          # chiude il suo periodo, e lo scrive nel log; dalla 0020 il database
+          # non accetta un secondo feed acceso né un secondo periodo aperto
+          grep -q "ATTENZIONE: 0019: spento il feed «prova-0019-ps.synthetic»" prod.log
+          grep -q "ATTENZIONE: 0019: chiusi 1 periodi dello storico" prod.log
+          psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/esercizio-dopo.sql
       # PR 2.8: il migratore ha creato i ruoli e passato a cerbero_owner le
       # relazioni del catalogo. Non ha toccato estensioni, caronte.app_users,
       # cerbero_migrazioni né la tabella del sistema AVM (un errore con la
@@ -941,6 +950,15 @@ jobs:
       # e trip_id, e reimportato ritrova ogni riga senza doppioni.
       - name: Codici stabili di corsa, fermata e linea
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/codici-stabili-db.test.ts
+      # PR 3.2: una sola porta per il programma in esercizio (migrazioni 0019 e
+      # 0020), con l'API come cerbero_app. «Metti in esercizio», il giro delle
+      # attivazioni programmate e «Attiva» della pagina GTFS lasciano un solo
+      # feed acceso e un solo periodo aperto nello storico, con chi ha
+      # attivato; cinque giri di attivazioni simultanee finiscono coerenti;
+      # senza la scrittura su «Pubblicazione degli orari» non si mette in
+      # esercizio; cancellare il progetto non porta via lo storico.
+      - name: Una sola porta per il programma in esercizio
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-porta-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

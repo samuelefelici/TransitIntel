@@ -23,6 +23,8 @@ import { db } from "@workspace/db";
 import { conContesto, contestoDb, inSistema } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
 import { withVia, viaDelGiro } from "./agent-context";
+import { mettiInEsercizio, AttivazioneRifiutata } from "./esercizio-porta";
+import { richiedeDiritto } from "./auth";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
 
 /* ════════════════════════════════════════════════════════════
@@ -526,43 +528,32 @@ async function copyDayValidity(tx: any, src: string, mappe: any): Promise<void> 
  * resto del sistema — Sala Operativa, AVM Caronte, GTFS-RT, tariffe — risolve
  * automaticamente questo feed (getLatestFeedId / ORDER BY is_active DESC).
  */
-/** Flip esclusivo per-tenant + storico attivazioni: promuove `feedId` a
- *  operativo e registra il periodo su ps_activation_log. Riusata da attivazione
- *  immediata e dal runner delle attivazioni programmate. */
-async function promoteFeedAndLog(projectId: string, feedId: string, userId: string | null): Promise<void> {
-  // Promuovi il nuovo feed a operativo SOLO fra i feed dello STESSO tenant
-  // (owner_user_id del feed). L'UPDATE globale spegnerebbe is_active/is_default
-  // anche sui feed di altri utenti, mentre la risoluzione è per-tenant.
-  await db.execute(sql`
-    UPDATE gtfs_feeds
-       SET is_active = (id = ${feedId}::uuid),
-           is_default = (id = ${feedId}::uuid)
-     WHERE owner_user_id IS NOT DISTINCT FROM (
-             SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
-           )
-  `);
-  // STORICO ATTIVAZIONI: chiudi i periodi ancora aperti del tenant (un solo
-  // feed operativo per tenant → qualunque riga aperta è appena stata
-  // disattivata) e apri quello del nuovo feed. Best-effort: non deve mai far
-  // fallire l'attivazione.
-  try {
-    await db.execute(sql`
-      UPDATE ps_activation_log
-         SET deactivated_at = now()
-       WHERE deactivated_at IS NULL
-         AND (project_id = ${projectId}::uuid
-              OR project_id IN (SELECT id FROM ps_projects
-                                 WHERE owner_user_id IS NOT DISTINCT FROM (
-                                   SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
-                                 )))
+/** Mette in esercizio il feed già materializzato di un progetto, tutto in una
+ *  transazione (PR 3.2): il feed di prima del progetto si archivia, il
+ *  puntatore del progetto passa al nuovo, e la porta unica
+ *  (lib/esercizio-porta.ts) accende il nuovo, spegne tutti gli altri e scrive
+ *  lo storico. Se una cosa fallisce non cambia niente: il programma di prima
+ *  resta in esercizio. La usano l'attivazione immediata e il giro di quelle
+ *  programmate; `dopo` gira nella stessa transazione. */
+async function completaAttivazione(
+  projectId: string, feedId: string, userId: string | null,
+  dopo?: (tx: { execute: (q: any) => Promise<any> }) => Promise<unknown>,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE gtfs_feeds
+         SET is_active = false, is_default = false, archived_at = now()
+       WHERE id = (SELECT materialized_feed_id FROM ps_projects WHERE id = ${projectId}::uuid)
+         AND id <> ${feedId}::uuid
     `);
-    await db.execute(sql`
-      INSERT INTO ps_activation_log (project_id, feed_id, user_id)
-      VALUES (${projectId}::uuid, ${feedId}::uuid, ${userId}::uuid)
+    await tx.execute(sql`
+      UPDATE ps_projects
+         SET materialized_feed_id = ${feedId}::uuid, materialized_at = now()
+       WHERE id = ${projectId}::uuid
     `);
-  } catch (e: any) {
-    console.warn("[planning-studio] scrittura ps_activation_log fallita (attivazione comunque riuscita):", e?.message);
-  }
+    await mettiInEsercizio(tx, { feedId, progettoId: projectId, utenteId: userId });
+    if (dopo) await dopo(tx);
+  });
 }
 
 /** Rimuove l'eventuale attivazione programmata del progetto e il suo feed
@@ -614,20 +605,10 @@ export async function processPendingActivations(): Promise<void> {
           await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
           return;
         }
-        // archivia il feed d'esercizio precedente del progetto (se diverso)
-        await db.execute(sql`
-          UPDATE gtfs_feeds
-             SET is_active = false, is_default = false, archived_at = now()
-           WHERE id = (SELECT materialized_feed_id FROM ps_projects WHERE id = ${p.project_id}::uuid)
-             AND id <> ${p.feed_id}::uuid
-        `);
-        await db.execute(sql`
-          UPDATE ps_projects
-             SET materialized_feed_id = ${p.feed_id}::uuid, materialized_at = now()
-           WHERE id = ${p.project_id}::uuid
-        `);
-        await promoteFeedAndLog(p.project_id, p.feed_id, p.user_id ?? null);
-        await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
+        // tutto o niente (PR 3.2): archivio del feed di prima del progetto,
+        // puntatore, porta unica (feed acceso e storico), programmazione tolta
+        await completaAttivazione(p.project_id, p.feed_id, p.user_id ?? null,
+          (tx) => tx.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`));
         await logActivity(p.project_id, p.user_id ?? p.project_id, "ps.project.activate.scheduled", {
           targetType: "feed", targetId: p.feed_id,
         }).catch(() => { /* best-effort */ });
@@ -642,7 +623,11 @@ export async function processPendingActivations(): Promise<void> {
 setTimeout(() => { void inSistema("timer:attivazioni", processPendingActivations); }, 15_000);
 setInterval(() => { void inSistema("timer:attivazioni", processPendingActivations); }, 5 * 60 * 1000);
 
-router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<void> => {
+/* Mettere in esercizio cambia il programma che leggono AVM, tariffe e turni
+ * per tutta l'azienda: oltre a modificare il progetto serve la scrittura su
+ * «Pubblicazione degli orari» (PR 3.2). Lo stesso per annullare
+ * un'attivazione programmata. */
+router.post("/planning-studio/projects/:id/activate", richiedeDiritto("pubblicazione_orari"), async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
 
@@ -657,16 +642,16 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
   const scheduled = !!effRaw && effRaw > today;
 
   // "Metti in esercizio" materializza SEMPRE l'INTERO programma (tutte le corse
-  // attive). Percorso IMMEDIATO: rimpiazza il feed d'esercizio del progetto
-  // (quello vecchio viene archiviato). Percorso PROGRAMMATO: il feed nuovo
-  // nasce STANDALONE (non tocca né il puntatore né il feed live) — lo switch
-  // completo lo fa il runner alla decorrenza.
+  // attive). Il feed nuovo nasce STANDALONE (non tocca né il puntatore né il
+  // feed in esercizio); lo switch lo fa completaAttivazione in una
+  // transazione: subito, o alla decorrenza dal giro delle programmate. Prima,
+  // nel percorso immediato, la materializzazione archiviava e spegneva il feed
+  // di prima PRIMA che il nuovo fosse acceso: se l'accensione falliva,
+  // l'azienda restava senza programma in esercizio.
   let feedId: string;
   try {
     const { materializePsToFeed } = await import("./planning-studio-materialize");
-    const r = scheduled
-      ? await materializePsToFeed(proj.id, req.user!.id, { replaceFeedId: null, updateProjectPointer: false })
-      : await materializePsToFeed(proj.id, req.user!.id); // nessuno scope → tutto il progetto
+    const r = await materializePsToFeed(proj.id, req.user!.id, { replaceFeedId: null, updateProjectPointer: false });
     feedId = r.feedId;
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, projectId: proj.id }, "materializzazione in attivazione fallita");
@@ -698,7 +683,14 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
 
   // IMMEDIATO: un'attivazione adesso supera qualunque programmazione in sospeso
   await clearPendingActivation(proj.id, { keepFeedId: feedId });
-  await promoteFeedAndLog(proj.id, feedId, req.user!.id);
+  try {
+    await completaAttivazione(proj.id, feedId, req.user!.id);
+  } catch (e: any) {
+    if (e instanceof AttivazioneRifiutata) { res.status(e.stato).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.cause?.message ?? e?.message, projectId: proj.id }, "messa in esercizio fallita");
+    res.status(500).json({ error: "Messa in esercizio non riuscita: il programma di prima resta in esercizio. Riprova, e se si ripete avvisa chi gestisce Cerbero" });
+    return;
+  }
   await logActivity(proj.id, req.user!.id, "ps.project.activate", {
     targetType: "feed", targetId: feedId,
     payload: { name: proj.name },
@@ -708,7 +700,7 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
 
 /* DELETE /api/planning-studio/projects/:id/activations/pending — annulla la
  * attivazione programmata (e il suo feed pre-costruito). */
-router.delete("/planning-studio/projects/:id/activations/pending", async (req, res): Promise<void> => {
+router.delete("/planning-studio/projects/:id/activations/pending", richiedeDiritto("pubblicazione_orari"), async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
   await clearPendingActivation(proj.id);
@@ -852,6 +844,8 @@ router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> =
           FROM pg_constraint c
           JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
          WHERE c.contype = 'f' AND c.confrelid = 'ps_projects'::regclass
+           -- le righe che restano senza progetto (lo storico del programma in esercizio, 0019) non si cancellano
+           AND c.confdeltype <> 'n'
       `);
       const fkRows: any[] = (rFks as any).rows ?? [];
       for (let pass = 0; pass < 2; pass++) {

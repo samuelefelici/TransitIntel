@@ -75,6 +75,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le pulizie, sul database", () =
   it("orfano solo il feed sintetico vecchio che nessuno usa; la cancellazione porta via le sue righe", async () => {
     const orfano = await feed("ps-pul00001.synthetic", 3);
     await feed("ps-pul00002.synthetic", 1); // troppo giovane
+    // il feed in esercizio è uno solo (0019, PR 3.2): qui è un sintetico, al posto di «pulizie-esercizio.zip»
+    await pool.query("UPDATE gtfs_feeds SET is_active = false WHERE filename = 'pulizie-esercizio.zip'");
     await feed("ps-pul00003.synthetic", 3, { attivo: true });
     await feed("ps-pul00004.synthetic", 3, { default: true });
     await feed("ps-pul00005.synthetic", 3, { archiviato: true }); // un esercizio sostituito: resta

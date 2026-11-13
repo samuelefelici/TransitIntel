@@ -23,6 +23,7 @@ import { causaDb, spiegaCausa } from "../lib/db-error";
 import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { nomeCaricato } from "../lib/materializzazione/usi-feed";
 import { legaContesto } from "../lib/contesto-http";
+import { mettiInEsercizio, chiudiPeriodoDelFeed, AttivazioneRifiutata } from "../lib/esercizio-porta";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -497,6 +498,14 @@ router.delete("/gtfs/feeds/:id", async (req, res) => {
      * deve essere una scelta e non una sorpresa. */
     const forza = req.query.forza === "1" || req.query.force === "1";
     const motivi = await feedInUso(id);
+    /* il programma in esercizio lo cambia solo la porta unica (PR 3.2):
+     * cancellarlo, anche forzando, è dell'amministratore */
+    const inEsercizio = ((await db.execute<any>(sql`
+      SELECT COALESCE(is_active, false) AS attivo FROM gtfs_feeds WHERE id = ${id}::uuid`)) as any).rows?.[0]?.attivo === true;
+    if (inEsercizio && forza && req.user?.role !== "admin") {
+      res.status(403).json({ error: "Il feed in esercizio lo cancella solo l'amministratore: prima mettine in esercizio un altro" });
+      return;
+    }
     if (motivi.length > 0 && !forza) {
       res.status(409).json({
         error: "Questo feed è in uso",
@@ -533,6 +542,8 @@ router.delete("/gtfs/feeds/:id", async (req, res) => {
         if (n > 0) svuotate[t] = n;
       }
       await tx.execute(sql`DELETE FROM gtfs_feeds WHERE id = ${id}::uuid`);
+      // il feed in esercizio se ne va: nello storico il suo periodo si chiude
+      if (inEsercizio) await chiudiPeriodoDelFeed(tx, id);
     });
 
     clearCache("/api/gtfs/");
@@ -579,15 +590,16 @@ router.post("/gtfs/feeds/:id/activate", requireAdmin, async (req, res) => {
       res.status(404).json({ error: "Feed non trovato" });
       return;
     }
-    // Programma di esercizio UNICO: il feed selezionato diventa l'unico attivo
-    // E l'unico di default, così non resta un is_default "orfano" su un feed
-    // vecchio (es. una vecchia messa in esercizio da Planner Studio) che
-    // confonderebbe il tie-break di Caronte. is_active + is_default coerenti.
-    await db.execute(sql`
-      UPDATE gtfs_feeds
-         SET is_active = (id = ${id}::uuid),
-             is_default = (id = ${id}::uuid)
-    `);
+    // Programma di esercizio UNICO, dalla porta unica (lib/esercizio-porta.ts,
+    // PR 3.2): il feed selezionato diventa l'unico acceso e di default, e lo
+    // storico lo registra nella stessa transazione (prima da qui non lo
+    // registrava).
+    try {
+      await db.transaction((tx) => mettiInEsercizio(tx, { feedId: id, utenteId: req.user!.id }));
+    } catch (e: any) {
+      if (e instanceof AttivazioneRifiutata) { res.status(e.stato).json({ error: e.message }); return; }
+      throw e;
+    }
     // Invalida cache che dipende dal feed corrente
     clearCache("/api/gtfs/");
     clearCache("/api/analysis/");
