@@ -25,8 +25,12 @@ import { LegendPanel } from "./dashboard/LegendPanel";
 import { WalkabilityPanel } from "./dashboard/WalkabilityPanel";
 import { ViewModeSelector } from "./dashboard/ViewModeSelector";
 import { WeatherWidget } from "./dashboard/WeatherWidget";
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 
 export default function Dashboard() {
+  /* la mappa si apre sul centro della rete dell'azienda (Amministrazione › Azienda) */
+  const azienda = useAzienda();
   const mapRef = useRef<MapRef>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("dark");
@@ -469,7 +473,7 @@ export default function Dashboard() {
 
       <Map
         ref={mapRef}
-        initialViewState={{ longitude: 13.45, latitude: 43.58, zoom: 10 }}
+        initialViewState={vistaIniziale(azienda)}
         mapStyle={MAP_STYLES[viewMode]}
         mapboxAccessToken={MAPBOX_TOKEN}
         style={{ width: "100%", height: "100%", paddingTop: 34 }}

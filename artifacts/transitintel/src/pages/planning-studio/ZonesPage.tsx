@@ -29,6 +29,7 @@ import {
   exportZonizzazioneHtml,
   type CalendarKm, type WeekdayKm, type CalendarDef, type CategoryKm,
 } from "./zonizzazione-export";
+import { useAzienda } from "@/hooks/use-azienda";
 
 /* ─── Tipi API ─── */
 interface Zone {
@@ -99,6 +100,7 @@ const fmtKm = (v: number) =>
   v.toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 export default function PlanningStudioZonesPage() {
+  const azienda = useAzienda();
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const qc = useQueryClient();
@@ -277,7 +279,7 @@ export default function PlanningStudioZonesPage() {
     void exportZonizzazioneHtml(result, {
       year: result.year,
       projectName: projectQ.data?.name,
-      agencyName: "Conerobus",
+      agencyName: azienda.compilata ? azienda.nome : undefined,
     });
   };
 

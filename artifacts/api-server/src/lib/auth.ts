@@ -21,6 +21,7 @@ import { isIP } from "node:net";
 import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
+import { aziendaOppureNeutra, aziendaPerLaWeb, paroleVietateDellAzienda } from "./azienda";
 import {
   depositiPuliti, dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
   ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, MAX_DEPOSITI_PER_UTENTE, NOMI_AREE,
@@ -168,7 +169,7 @@ async function preparaUtenti(): Promise<void> {
 
   const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users WHERE role = 'admin' AND active`);
   const nAdmin = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
-  const primo = decidiPrimoAdmin(nAdmin, process.env);
+  const primo = decidiPrimoAdmin(nAdmin, process.env, await paroleVietateDellAzienda());
   if (primo.tipo === "crea") {
     /* se l'email c'è già (per esempio l'admin appena disattivato, anche scritta con
      * le maiuscole) si rimette in piedi la stessa riga con cui si entra */
@@ -689,6 +690,8 @@ async function apriSessione(req: Request, res: Response, row: any, s: { mfa: boo
     user: u!.user,
     datiProva: datiProvaAttivi(),
     accesso: u ? (({ rifiuta: _r, ...a }) => a)(accessoDi(u, s)) : null,
+    /* come /auth/me: chi entra ha subito nome, città e centro delle mappe dell'azienda */
+    azienda: aziendaPerLaWeb(await aziendaOppureNeutra()),
   });
 }
 
@@ -804,10 +807,15 @@ router.post("/auth/logout", (_req, res) => {
 });
 
 // GET /api/auth/me
-router.get("/auth/me", requireAuth, (req, res) => {
+router.get("/auth/me", requireAuth, async (req, res) => {
   /* datiProva: se questa installazione permette i conducenti fittizi (lib/dati-prova.ts);
-   * accesso: sessione limitata (password provvisoria, verifica da attivare) e stato della verifica */
-  res.json({ user: req.user, datiProva: datiProvaAttivi(), accesso: req.accesso ?? null });
+   * accesso: sessione limitata (password provvisoria, verifica da attivare) e stato della verifica;
+   * azienda: nome, città e centro della mappa di questa installazione (lib/azienda.ts). Se non si
+   * riesce a leggerla la sessione vale lo stesso, con i valori neutri */
+  res.json({
+    user: req.user, datiProva: datiProvaAttivi(), accesso: req.accesso ?? null,
+    azienda: aziendaPerLaWeb(await aziendaOppureNeutra()),
+  });
 });
 
 /* ─── SSO verso FleetCare (modulo Cerbero di gestione flotta) ───
@@ -1033,7 +1041,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   if (!/^[^@\s]+@[^@\s]+$/.test(email)) {
     res.status(400).json({ error: "Email non valida" }); return;
   }
-  const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null });
+  const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null }, await paroleVietateDellAzienda());
   if (erroreP) { res.status(400).json({ error: erroreP }); return; }
   const safeRole = role === "admin" ? "admin" : "user";
   /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima, e
@@ -1098,7 +1106,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
     const ur = await db.execute<any>(sql`SELECT email, full_name FROM users WHERE id = ${id}::uuid`);
     const u = (ur as any).rows?.[0];
     if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
-    const erroreP = erroreNuovaPassword(password, { email: u.email, nome: typeof fullName === "string" ? fullName : u.full_name });
+    const erroreP = erroreNuovaPassword(password, { email: u.email, nome: typeof fullName === "string" ? fullName : u.full_name }, await paroleVietateDellAzienda());
     if (erroreP) { res.status(400).json({ error: erroreP }); return; }
     /* la password data dall'admin è provvisoria: al primo accesso va cambiata, e
      * le sessioni aperte si chiudono */

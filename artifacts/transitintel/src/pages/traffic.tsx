@@ -10,6 +10,7 @@ import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   BarChart, Bar, Cell, ReferenceLine, Legend,
 } from "recharts";
+import { useAzienda } from "@/hooks/use-azienda";
 
 /* ────────────────────────────── CONSTANTS ────────────────────────────── */
 
@@ -122,6 +123,7 @@ const ProfileTooltip = ({ active, payload, label }: any) => {
 /* ────────────────────────────── COMPONENT ────────────────────────────── */
 
 export default function Traffic() {
+  const azienda = useAzienda();
   const { data: stats, isLoading } = useGetTrafficStats();
   const { data: heatmap } = useGetTrafficHeatmap();
   const [dayType, setDayType] = useState<DayType>("feriale");
@@ -238,7 +240,7 @@ export default function Traffic() {
         <div>
           <h1 className="text-3xl font-display font-bold text-foreground">Impatto Traffico sulla Rete TPL</h1>
           <p className="text-muted-foreground mt-1 text-sm">
-            Analisi della congestione stradale e rallentamento dei mezzi pubblici · Area Ancona
+            Analisi della congestione stradale e rallentamento dei mezzi pubblici{azienda.citta ? ` · Area ${azienda.citta}` : ""}
           </p>
           {stats?.lastUpdated && (
             <p className="text-[11px] text-muted-foreground/60 mt-0.5 flex items-center gap-1">

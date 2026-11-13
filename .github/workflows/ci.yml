@@ -404,6 +404,16 @@ jobs:
           bash lib/db/tests/chiave-categoria-in-gara.sh vuoto
           # su un database senza righe orfane né categorie cancellate le migrazioni non avvisano di niente
           ! grep -qE "ATTENZIONE: 00(10|13)" prima.log
+      # PR 2.17a: la riga dell'azienda (migrazione 0014). Su un database nuovo
+      # (senza utenti) la tabella resta vuota: un'installazione nuova non nasce
+      # col nome di un'altra azienda. Su un database già in uso la migrazione
+      # scrive i valori che erano nel codice, e rilanciata non tocca quello che
+      # l'amministratore ha cambiato. Tutto in una transazione annullata.
+      - name: La riga dell'azienda scritta dalla migrazione
+        run: |
+          psql -q -v ON_ERROR_STOP=1 -d vuoto -f lib/db/tests/azienda.test.sql
+          test "$(psql -d vuoto -Atc "SELECT count(*) FROM public.azienda")" = "0"
+          test "$(psql -d prod -Atc "SELECT count(*) FROM public.azienda")" = "0"
       - name: Il registro delle modifiche
         run: |
           # come in produzione, PUBLIC senza USAGE su public: le funzioni del
@@ -877,6 +887,13 @@ jobs:
       # users.permissions, che la verifica in due passaggi segue.
       - name: I ruoli aziendali sugli utenti
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/ruoli-utenti-db.test.ts
+      # PR 2.17a: i dati dell'azienda (public.azienda, migrazione 0014) dall'app.
+      # Tabella vuota = installazione nuova, coi valori neutri; il primo
+      # salvataggio crea la riga e i successivi cambiano quella; i vincoli della
+      # tabella fermano quello che passa accanto all'API. Alla fine la tabella
+      # torna com'era.
+      - name: I dati dell'azienda dall'app
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/azienda-db.test.ts
       # PR 2.14c: chi ha dei depositi (users.depositi, migrazione 0012) scrive il
       # roster solo per i conducenti di quelli: voci, turni, rotazioni dei riposi,
       # riposi generati, conducenti fittizi. Chi non ne ha scrive su tutti, come

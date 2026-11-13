@@ -352,6 +352,8 @@ describe("ruoli aziendali: chi legge e chi scrive", () => {
       expect(verifica("/gtfs/feeds/activate", u, "POST")).toBe(403);
       expect(verifica("/admin/sync/gtfs", u, "POST")).toBe(403);
       expect(verifica("/admin/registro", u)).toBe(403);
+      expect(verifica("/admin/azienda", u)).toBe(403);
+      expect(verifica("/admin/azienda", u, "PUT")).toBe(403);
       expect(verifica("/qualcosa-di-nuovo", u)).toBe(403);
     }
   });
@@ -433,6 +435,7 @@ describe("ruoli aziendali: chi legge e chi scrive", () => {
     expect(corpo("/service-program/cpsat", officina, "POST")).toEqual({ error: "Manca l'accesso a «Turni»" });
     expect(corpo("/qualcosa-di-nuovo", pianificatore, "POST")).toEqual({ error: "Percorso senza permesso assegnato" });
     expect(corpo("/admin/registro", pianificatore, "GET")).toEqual({ error: "Solo admin" });
+    expect(corpo("/admin/azienda", pianificatore, "PUT")).toEqual({ error: "Solo admin" });
     // lo stesso da richiedeDiritto, per le rotte che vogliono un'area precisa
     let conArea: any = null;
     richiedeDiritto("roster")({ user: ufficioTurni, method: "POST" } as any,

@@ -29,6 +29,8 @@ import {
   renderPoiIcon, DEFAULT_PDE_CONFIG,
 } from "./scenarios/constants";
 import { openReportWindow, exportScenarioReport, exportComparisonReport } from "./scenarios/scenario-report";
+import { useAzienda } from "@/hooks/use-azienda";
+import { intestazioneDocumenti, vistaIniziale } from "@/lib/azienda";
 
 // ─── Import di percorsi già a sistema (Planner Studio) ───────────────────
 interface ImportVariant { variantId: string; name: string; direction: number; headsign: string | null; stopCount: number; distanceKm: number | null; }
@@ -37,6 +39,8 @@ interface ImportProject { projectId: string; projectName: string; routes: Import
 
 // ─── Component ──────────────────────────────────────────────────────────
 export default function ScenariosPage() {
+  /* la mappa si apre sul centro della rete dell'azienda (Amministrazione › Azienda) */
+  const azienda = useAzienda();
   const mapRef = useRef<MapRef>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("dark");
@@ -389,7 +393,7 @@ export default function ScenariosPage() {
         apiFetch<any>(`/api/scenarios/${id}/deep?radius=${analysisRadius}&iso=1`),
         loadGeojson(id),
       ]);
-      await exportScenarioReport(win, deep, geojson, { radius: analysisRadius });
+      await exportScenarioReport(win, deep, geojson, { radius: analysisRadius, agencyName: intestazioneDocumenti(azienda) });
     } catch (err: any) {
       try { win.close(); } catch { /* noop */ }
       alert(`Errore nella generazione del report: ${err.message}`);
@@ -405,7 +409,7 @@ export default function ScenariosPage() {
       const deeps = await Promise.all(ids.map(id => apiFetch<any>(`/api/scenarios/${id}/deep?radius=${analysisRadius}&iso=1`).catch(() => null)));
       const geos = await Promise.all(ids.map(id => loadGeojson(id).catch(() => null)));
       const scenarios = (compareResult!.scenarios).map((s, i) => ({ name: s.name, color: s.color, geojson: geos[i], deep: deeps[i] }));
-      await exportComparisonReport(win, compareResult, scenarios);
+      await exportComparisonReport(win, compareResult, scenarios, { agencyName: intestazioneDocumenti(azienda) });
     } catch (err: any) {
       try { win.close(); } catch { /* noop */ }
       alert(`Errore nella generazione del report: ${err.message}`);
@@ -726,7 +730,7 @@ export default function ScenariosPage() {
       {/* ── Map ──────────────────────────────────────────────── */}
       <Map
         ref={mapRef}
-        initialViewState={{ longitude: 13.45, latitude: 43.58, zoom: 10 }}
+        initialViewState={vistaIniziale(azienda)}
         mapStyle={MAP_STYLES[viewMode]}
         mapboxAccessToken={MAPBOX_TOKEN}
         style={{ width: "100%", height: "100%" }}

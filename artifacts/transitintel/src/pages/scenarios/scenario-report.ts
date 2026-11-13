@@ -518,7 +518,7 @@ export async function exportScenarioReport(win: Window | null, analysis: any, ge
   const color = safeColor(a?.scenario?.color);
   const name = a?.scenario?.name ?? "Linea";
   const genDate = new Date().toLocaleDateString("it-IT", { day: "2-digit", month: "long", year: "numeric" });
-  const agency = opts.agencyName ?? "Conerobus · Trasporto Pubblico Locale";
+  const agency = opts.agencyName ?? "Trasporto Pubblico Locale";
   const radius = opts.radius ?? a?.poiCoverage?.radius ?? 0.5;
 
   const comuni = a?.comuniDetails ?? [];
@@ -654,7 +654,7 @@ export async function exportComparisonReport(
   if (!win) return;
   const logo = await fetchLogoDataUri();
   const genDate = new Date().toLocaleDateString("it-IT", { day: "2-digit", month: "long", year: "numeric" });
-  const agency = opts.agencyName ?? "Conerobus · Trasporto Pubblico Locale";
+  const agency = opts.agencyName ?? "Trasporto Pubblico Locale";
   const sc = compare?.scenarios ?? [];
   const A = sc[0], B = sc[1];
   const cA = safeColor(A?.color, "#3b82f6"), cB = safeColor(B?.color, "#8b5cf6");

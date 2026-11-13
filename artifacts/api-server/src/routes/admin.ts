@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { requireAdmin } from "../lib/auth";
 import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/registro-modifiche";
+import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from "../lib/azienda";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
 const router: IRouter = Router();
@@ -124,6 +125,36 @@ router.get("/admin/registro", async (req, res): Promise<void> => {
     if (codice === "57014") { res.status(400).json({ error: "La ricerca è troppo ampia: scegli una tabella o un periodo più stretto" }); return; }
     req.log?.error?.({ err: e?.message }, "registro delle modifiche non leggibile");
     res.status(500).json({ error: "Registro non leggibile" });
+  }
+});
+
+/**
+ * GET e PUT /api/admin/azienda — i dati dell'azienda (PR 2.17a, lib/azienda.ts).
+ * Li legge chiunque sia entrato, con la sessione (/api/auth/me); qui c'è la
+ * pagina dell'amministratore: la riga con chi l'ha salvata e quando, e il
+ * salvataggio. Solo admin, mai un token di Argos (requireAdmin). Un campo che
+ * non è fra quelli previsti è un errore.
+ */
+router.use("/admin/azienda", requireAdmin);
+router.get("/admin/azienda", async (req, res): Promise<void> => {
+  try {
+    res.json(await dettaglioAzienda());
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "dati dell'azienda non leggibili");
+    res.status(500).json({ error: "Dati dell'azienda non leggibili" });
+  }
+});
+router.put("/admin/azienda", async (req, res): Promise<void> => {
+  const p = DatiAzienda.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try {
+    res.json(await salvaAzienda(p.data, req.user?.id ?? null));
+  } catch (e: any) {
+    /* 23514: un vincolo della tabella che la validazione qui sopra non ha fermato */
+    const codice = String(e?.code ?? e?.cause?.code ?? "");
+    if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+    req.log?.error?.({ err: e?.message }, "dati dell'azienda non salvati");
+    res.status(500).json({ error: "Dati dell'azienda non salvati" });
   }
 });
 

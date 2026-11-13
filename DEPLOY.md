@@ -289,6 +289,67 @@ SELECT conname, convalidated FROM pg_constraint
 Devono essere due righe, tutte e due con `convalidated = t`: la corsa (0010) e
 la categoria (0013).
 
+### L'azienda (PR 2.17a)
+
+I dati dell'azienda che usa Cerbero erano scritti nel codice. Dalla migrazione
+`0014` stanno nella tabella `public.azienda`, **una riga sola**, e si cambiano
+da **Amministrazione › Azienda** (solo l'amministratore). Non è per più aziende
+nello stesso database: ogni azienda ha la sua installazione, e questa è la sua
+riga.
+
+| Dato | Dove finisce |
+|---|---|
+| Ragione sociale | agenzia ed editore dei GTFS esportati dagli Scenari |
+| Nome | intestazione dei documenti stampati (rapporti degli scenari, zonizzazione) |
+| Sito | `agency_url` e `feed_publisher_url` dei GTFS (Scenari e Planning Studio) |
+| Telefono | `agency_phone` dei GTFS esportati dagli Scenari |
+| Identificativo GTFS | `agency_id` dei GTFS esportati dagli Scenari |
+| Città, regione | etichetta nella barra laterale, pagina Traffico |
+| Nome e città | parole che una password non può avere al centro («Conerobus2026!») |
+| Centro e zoom | dove si aprono la mappa della pagina iniziale, la Mappa live e gli Scenari |
+
+**Al rilascio su un'installazione in uso** (Conerobus) la migrazione scrive la
+riga con i valori che erano nel codice: non cambia niente, con una eccezione
+voluta. Il GTFS esportato da Planning Studio portava sempre l'indirizzo
+segnaposto `https://example.com`; ora porta il sito del progetto, se c'è, o
+quello dell'azienda. Il nome dell'agenzia in quel GTFS resta quello del
+progetto, come prima.
+
+**Su un'installazione nuova** (database senza utenti quando passa la 0014) la
+tabella resta vuota: un'installazione nuova non nasce col nome di un'altra
+azienda. Finché l'amministratore non compila la pagina, che lo dice in alto
+(«Da compilare»), i GTFS escono come «Azienda di trasporto», le mappe si
+aprono sull'Italia e nome e città non entrano nelle regole delle password.
+È la prima cosa da fare dopo il primo accesso.
+
+Da sapere:
+
+- l'API tiene la riga in memoria per un minuto; chi la salva la fa rileggere
+  subito. Nella web arriva con la sessione: chi è già dentro la vede al
+  prossimo caricamento della pagina;
+- il registro delle modifiche la sorveglia con i valori (sono dati
+  dell'azienda, non di persone);
+- i limiti dei campi stanno anche nei vincoli della tabella: un sito che non
+  comincia con `http://` o `https://`, o un identificativo con una virgola,
+  non si scrivono nemmeno da psql;
+- il fuso orario non è fra i dati: resta `Europe/Rome` ovunque.
+
+Per vederla dal Terminal del Postgres: `SELECT * FROM azienda;`.
+
+**Cosa resta scritto nel codice**, per le prossime PR (servono a un'azienda
+diversa da Conerobus, non a Conerobus):
+
+- AVM: la regola «matricola di 1–4 cifre = vettura dell'azienda» e il nome nei
+  testi per il centro di controllo;
+- tariffe: le reti urbane, i prezzi minimi e la classificazione delle linee;
+- intermodale e zone di coincidenza: stazioni, porto e aeroporto con i loro
+  orari;
+- territorio: i comuni ISTAT della provincia, le zone del traffico, le città
+  del meteo;
+- i depositi di partenza dell'anagrafica;
+- alcune etichette e i centri delle mappe di singole pagine (intermodale,
+  tariffe, orari).
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
@@ -755,8 +816,9 @@ non parte.
 
 ### Registro delle modifiche (PR 2.10 e 2.11)
 
-Chi ha cambiato che cosa, scritto dal database: trigger su 29 tabelle (21
-della prima ondata, 8 della seconda) scrivono in `registro.modifiche`. L'app
+Chi ha cambiato che cosa, scritto dal database: trigger su 30 tabelle (21
+della prima ondata, 8 della seconda, i dati dell'azienda dalla 2.17a) scrivono
+in `registro.modifiche`. L'app
 non ha diritti sulle sue tabelle, salvo leggere l'elenco delle regole
 (`registro.sorvegliate`): non lo cambia, non spegne i trigger, e lo legge solo
 attraverso una funzione (sotto, «Leggerlo»). **Nasce spento**: non
@@ -1741,7 +1803,7 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 | Flotta | FleetCare | Flotta |
 | Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa | Tariffe |
 | Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi |
-| Amministrazione | Utenti e accessi (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
+| Amministrazione | Utenti e accessi (admin), Azienda (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
 
 #### Ruoli aziendali (PR 2.14a)
 

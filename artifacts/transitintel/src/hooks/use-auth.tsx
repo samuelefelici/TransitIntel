@@ -12,6 +12,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api";
 import { puo as haLivello, type Interruttore, type InterruttoreDiPrima, type RuoloAziendale } from "@workspace/permessi";
 import { dirittiDellUtente, type Area, type Diritti, type Livello } from "@/lib/diritti";
+import { AZIENDA_DA_COMPILARE, aziendaValida, type Azienda } from "@/lib/azienda";
 
 /** Gli interruttori di prima dei ruoli: restano nella vista `permissions` che l'API
  *  manda (un interruttore = almeno la lettura sulla sua area). I diritti veri sono in `diritti`. */
@@ -79,6 +80,8 @@ interface AuthCtx {
   puo: (area: Area, livello: Livello) => boolean;
   /** installazione di prova: si possono creare conducenti fittizi (CERBERO_DATI_PROVA=1) */
   datiProva: boolean;
+  /** l'azienda di questa installazione: nome, città, centro delle mappe (lib/azienda.ts) */
+  azienda: Azienda;
   /** il server ha risposto almeno una volta a /me: i permessi in cache possono essere vecchi */
   verificato: boolean;
 }
@@ -120,6 +123,13 @@ function saveCached(key: string, v: unknown): void {
   } catch { /* noop */ }
 }
 const loadCachedUser = () => loadCached<CurrentUser>(AUTH_CACHE_KEY);
+/* anche l'azienda: nome e centro delle mappe servono al primo disegno, e
+ * cambiano di rado. Non è un dato della persona: resta anche dopo l'uscita. */
+const AZIENDA_CACHE_KEY = "transitintel.azienda.v1";
+const loadCachedAzienda = (): Azienda | null => {
+  const a = loadCached<unknown>(AZIENDA_CACHE_KEY);
+  return a ? aziendaValida(a) : null;
+};
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<CurrentUser | null>(() => loadCachedUser());
@@ -127,8 +137,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [datiProva, setDatiProva] = useState(false);
   const [verificato, setVerificato] = useState(false);
   const [accesso, setAccessoState] = useState<Accesso | null>(() => (loadCachedUser() ? loadCached<Accesso>(ACCESSO_CACHE_KEY) : null));
+  const [azienda, setAziendaState] = useState<Azienda>(() => loadCachedAzienda() ?? AZIENDA_DA_COMPILARE);
   // Se abbiamo cache, possiamo già mostrare l'app: niente loading screen iniziale.
-  const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null);
+  // Serve anche l'azienda: senza, la prima mappa si aprirebbe sul centro neutro.
+  const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null || loadCachedAzienda() === null);
 
   const setUser = useCallback((u: CurrentUser | null) => {
     setUserState(u);
@@ -153,12 +165,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     queryClient.clear();
   }, [utenteId, queryClient]);
 
+  /* l'azienda arriva con /me e con la risposta del login. Un server non ancora
+   * aggiornato non la manda: resta quella che c'era */
+  const accogliAzienda = useCallback((x: unknown) => {
+    if (x === undefined) return;
+    const a = aziendaValida(x);
+    setAziendaState(a);
+    saveCached(AZIENDA_CACHE_KEY, a);
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
-      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean; accesso?: Accesso | null }>("/api/auth/me");
+      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; azienda?: unknown }>("/api/auth/me");
       setUser(r.user);
       setDatiProva(!!r.datiProva);
       setAccesso(r.accesso ?? null);
+      accogliAzienda(r.azienda);
     } catch (e: any) {
       // Sloggiamo SOLO se il backend ha risposto con un 401 esplicito
       // ("Non autenticato" / "Sessione non valida"). In tutti gli altri
@@ -176,7 +198,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       setVerificato(true);
     }
-  }, [setUser, setAccesso]);
+  }, [setUser, setAccesso, accogliAzienda]);
 
   useEffect(() => {
     void refresh();
@@ -209,12 +231,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh]);
 
-  type RispostaLogin = { user?: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; mfaRichiesta?: boolean; biglietto?: string };
+  type RispostaLogin = { user?: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; azienda?: unknown; mfaRichiesta?: boolean; biglietto?: string };
   const entra = useCallback((r: RispostaLogin) => {
+    /* prima l'azienda: la prima pagina che si disegna dopo l'accesso ha già nome e centro delle mappe */
+    accogliAzienda(r.azienda);
     setUser(r.user!);
     setDatiProva(!!r.datiProva);
     setAccesso(r.accesso ?? null);
-  }, [setUser, setAccesso]);
+  }, [setUser, setAccesso, accogliAzienda]);
 
   const login = useCallback(async (email: string, password: string): Promise<EsitoLogin> => {
     try {
@@ -281,6 +305,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     diritti,
     puo,
     datiProva,
+    azienda,
     verificato,
   };
 
