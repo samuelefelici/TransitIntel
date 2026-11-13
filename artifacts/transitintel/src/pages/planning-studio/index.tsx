@@ -149,7 +149,10 @@ export default function PlanningStudioListPage() {
           description: "Lo snapshot è già materializzato; lo switch a operativo avverrà automaticamente alla decorrenza.",
         });
       } else {
-        toast.success(`"${p.name}" è ora il programma di esercizio operativo`, { id: tid });
+        toast.success(`"${p.name}" è ora il programma di esercizio operativo`, {
+          id: tid,
+          description: "AVM, tariffe e turni leggono da ora questo programma. Il cambio è nello storico delle attivazioni.",
+        });
       }
       refresh();
     } catch (e: any) {

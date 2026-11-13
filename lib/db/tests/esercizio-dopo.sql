@@ -65,6 +65,5 @@ BEGIN
   -- via le righe di prova
   DELETE FROM public.ps_activation_log WHERE feed_id IN (ps, maior, vecchio);
   DELETE FROM public.gtfs_feeds WHERE id IN (ps, maior, vecchio);
-  DELETE FROM public.users WHERE id IN ('c3200000-0000-4000-8000-0000000000f1', 'c3200000-0000-4000-8000-0000000000f2');
 END $$;
 \echo un solo programma in esercizio: ok

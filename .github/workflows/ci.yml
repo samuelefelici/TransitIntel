@@ -158,8 +158,8 @@ jobs:
           # codici stabili (importate, a mano, col gtfs_id ripetuto, vuoto o
           # non valido come codice, linee con l'id del file solo in `code`)
           psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/codici-stabili-prima.sql
-          # PR 3.2: due feed accesi di due proprietari, il «di default» su un
-          # terzo, un periodo dello storico aperto sul feed sbagliato
+          # PR 3.2: due feed accesi, il «di default» su un terzo, un periodo
+          # dello storico aperto sul feed sbagliato
           psql -q -v ON_ERROR_STOP=1 -d prod -f lib/db/tests/esercizio-prima.sql
           DATABASE_URL=$PG/prod node lib/db/scripts/migra.mjs | tee prod.log
           # la 0010 toglie le orfane e lo scrive nel log; le vere restano. Senza
