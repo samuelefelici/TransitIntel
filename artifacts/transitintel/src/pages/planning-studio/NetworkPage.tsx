@@ -661,10 +661,12 @@ function StopDetailPanel({ projectId, stopId, onDrillVariant, onDrillRoute, acti
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold truncate">{s.name}</h2>
           <div className="text-xs text-slate-500 mt-0.5 font-mono">
-            {s.code && <>{s.code} · </>}
-            {s.codice
-              ? <span title="Codice stabile della fermata: resta lo stesso nelle copie del programma ed è lo stop_id del GTFS esportato">codice {s.codice}</span>
-              : <>{s.id.slice(0, 8)}…</>}
+            {s.code}
+            {/* il codice stabile, se dice qualcosa in più del codice esposto al pubblico */}
+            {s.codice && s.codice !== s.code && (
+              <>{s.code && " · "}<span title="Codice stabile della fermata: resta lo stesso nelle copie del programma ed è lo stop_id del GTFS esportato">codice {s.codice}</span></>
+            )}
+            {!s.code && !s.codice && <>{s.id.slice(0, 8)}…</>}
           </div>
           <div className="text-[10px] text-slate-500 mt-1">
             {s.lat.toFixed(6)}, {s.lon.toFixed(6)}
