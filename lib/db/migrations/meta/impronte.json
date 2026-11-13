@@ -19,5 +19,6 @@
   "0017_codici_stabili": "51440d26f3e74d4d49ba50c967113e726143ddd06d0888b0458fa2122e0ce7c8",
   "0018_codici_obbligatori": "22359bd4172243dfdeb62320ec1a3a2f2fe1c14a7d1b725fb1d928b69c28b290",
   "0019_un_solo_programma_in_esercizio": "fd582dbefabd34f7f98dc44368c2ab77fea1b315ecd965bd2b495d4bfdd1c8aa",
-  "0020_regole_del_programma_in_esercizio": "1129e3492427e8ab489b07361ebda1b4cf1faf5c667772c3091f0c108be740ff"
+  "0020_regole_del_programma_in_esercizio": "1129e3492427e8ab489b07361ebda1b4cf1faf5c667772c3091f0c108be740ff",
+  "0021_versioni_pubblicate": "be6ce0229f07558f2be21dfd9d4b4a5cd9230d55a8ffd9b43b54d2dc842d5164"
 }

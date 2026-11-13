@@ -26,6 +26,17 @@ const MAPBOX_TOKEN: string = (import.meta as any).env?.VITE_MAPBOX_TOKEN || "";
 
 /* ─── Tipi (allineati a /api/planning-studio/:projectId/timetables/*) ─── */
 
+/** Le versioni del programma da cui si stampa (PR 3.3, GET …/timetables/versioni). */
+type QualeVersione = "esercizio" | "programmata" | "bozza";
+interface VersioneOrari { id: string; quale: QualeVersione; dal: string | null }
+interface VersioniDelProgramma { esercizio: VersioneOrari | null; programmata: VersioneOrari | null; bozza: VersioneOrari | null }
+function etichettaVersione(v: VersioneOrari): string {
+  const giorno = (x: string) => new Date(x.length === 10 ? `${x}T00:00:00` : x).toLocaleDateString("it-IT", { day: "2-digit", month: "short", year: "numeric" });
+  if (v.quale === "esercizio") return v.dal ? `In esercizio dal ${giorno(v.dal)}` : "In esercizio";
+  if (v.quale === "programmata") return v.dal ? `Programmata dal ${giorno(v.dal)}` : "Programmata";
+  return "Bozza (modifiche non pubblicate)";
+}
+
 interface StopSearchItem {
   stopId: string; stopName: string; stopCode: string | null;
   lat: number; lon: number; routes: string[];
@@ -1140,6 +1151,28 @@ export default function TimetablesPage() {
   // gestione link Mappa Orari esistenti (i QR alle paline NON si ristampano:
   // stesso token = stesso QR, si aggiorna il contenuto)
   const [manageOpen, setManageOpen] = useState(false);
+  /* PR 3.3: da quale versione del programma si stampa. La versione in
+   * esercizio (o quella programmata) è una copia congelata: la bozza su cui
+   * si lavora non arriva agli orari al pubblico finché non torna in esercizio.
+   * Si parte dalla versione in esercizio; la bozza la vede solo chi lavora sul
+   * programma. */
+  const versioniQ = useQuery({
+    queryKey: ["pstt", "versioni", projectId],
+    queryFn: () => apiFetch<VersioniDelProgramma>(`/api/planning-studio/${encodeURIComponent(projectId)}/timetables/versioni`),
+    enabled: !!projectId,
+    staleTime: 60 * 1000,
+  });
+  const [quale, setQuale] = useState<QualeVersione | "">("");
+  const versioneScelta: VersioneOrari | null = useMemo(() => {
+    const v = versioniQ.data;
+    if (!v) return null;
+    const ordine: QualeVersione[] = quale ? [quale, "esercizio", "bozza", "programmata"] : ["esercizio", "bozza", "programmata"];
+    for (const q of ordine) { const x = v[q]; if (x) return x; }
+    return null;
+  }, [versioniQ.data, quale]);
+  /* l'id da cui leggere: la versione scelta (la bozza è il programma stesso) */
+  const fonteId = versioneScelta?.id ?? (versioniQ.isError ? projectId : "");
+  const leggeLaBozza = !!fonteId && fonteId === projectId;
   // Dominio dei link orari, in ordine di precedenza:
   //   1. env RUNTIME del server (TIMETABLE_MAP_DOMAIN) via API — nessun flag
   //      "build variable", basta impostarla sull'app e riavviare;
@@ -1155,9 +1188,9 @@ export default function TimetablesPage() {
     || window.location.origin).replace(/\/+$/, "");
 
   const mapSharesQ = useQuery({
-    queryKey: ["timetable-map-shares", projectId],
+    queryKey: ["timetable-map-shares", projectId, fonteId],
     queryFn: () => apiFetch<{ shares: Array<{ token: string; title: string | null; routeIds: string[]; createdAt: string; expiresAt: string | null }> }>(
-      `/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-shares`),
+      `/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-shares${leggeLaBozza ? "" : `?vista=${encodeURIComponent(fonteId)}`}`),
     enabled: manageOpen && !!projectId,
   });
   const [nodesOnly, setNodesOnly] = useState(false); // schema solo nodi logici
@@ -1175,6 +1208,8 @@ export default function TimetablesPage() {
   const effColor = (routeId: string, fallback: string | null | undefined): string | null => colorOverrides[routeId] ?? fallback ?? null;
   function setRouteColor(routeId: string, color: string) {
     setColorOverrides((prev) => ({ ...prev, [routeId]: color }));
+    /* su una versione pubblicata il colore resta per questa stampa: la versione non si modifica */
+    if (!leggeLaBozza) return;
     apiFetch(`/api/planning-studio/projects/${encodeURIComponent(projectId)}/routes/${encodeURIComponent(routeId)}`, {
       method: "PATCH", body: JSON.stringify({ color }),
     }).catch(() => { /* l'override locale resta applicato anche se il salvataggio fallisce */ });
@@ -1185,7 +1220,7 @@ export default function TimetablesPage() {
     setLineStyles((prev) => ({ ...prev, [routeId]: style }));
   }
 
-  const ptt = `/api/planning-studio/${encodeURIComponent(projectId)}/timetables`;
+  const ptt = `/api/planning-studio/${encodeURIComponent(fonteId)}/timetables`;
 
   const projectsQ = useQuery({
     queryKey: ["pstt", "ps-projects"],
@@ -1213,11 +1248,11 @@ export default function TimetablesPage() {
   }, [projects, projectId, projectsQ.isError, projectsQ.isSuccess, isAdmin]);
 
   const dayTypesQ = useQuery({
-    queryKey: ["pstt", "day-types", projectId],
+    queryKey: ["pstt", "day-types", fonteId],
     // endpoint di STAMPA (lettura aperta come routes/route): evita il 404
     // "project not found" del router validità su progetti non di proprietà.
     queryFn: () => apiFetch<{ dayTypes: PsDayType[] }>(`${ptt}/day-types`),
-    enabled: !!projectId,
+    enabled: !!fonteId,
     staleTime: 5 * 60 * 1000,
   });
   const dayTypes: PsDayType[] = useMemo(() => dayTypesQ.data?.dayTypes ?? [], [dayTypesQ.data]);
@@ -1252,21 +1287,21 @@ export default function TimetablesPage() {
   }, [dayTypes]);
 
   const stopSearchQ = useQuery({
-    queryKey: ["pstt", "stop-search", projectId, stopQuery],
+    queryKey: ["pstt", "stop-search", fonteId, stopQuery],
     queryFn: () => apiFetch<{ stops: StopSearchItem[] }>(`${ptt}/stops/search?q=${encodeURIComponent(stopQuery)}`),
-    enabled: tab === "stop" && !!projectId && stopQuery.trim().length >= 2,
+    enabled: tab === "stop" && !!fonteId && stopQuery.trim().length >= 2,
   });
 
   const stopTtQ = useQuery({
-    queryKey: ["pstt", "stop", projectId, selectedStop?.stopId, stopDayTypeId],
+    queryKey: ["pstt", "stop", fonteId, selectedStop?.stopId, stopDayTypeId],
     queryFn: () => apiFetch<StopTimetable>(`${ptt}/stop/${encodeURIComponent(selectedStop!.stopId)}?dayTypeId=${encodeURIComponent(stopDayTypeId)}`),
-    enabled: tab === "stop" && !!projectId && !!selectedStop && !!stopDayTypeId,
+    enabled: tab === "stop" && !!fonteId && !!selectedStop && !!stopDayTypeId,
   });
 
   const routesQ = useQuery({
-    queryKey: ["pstt", "routes", projectId],
+    queryKey: ["pstt", "routes", fonteId],
     queryFn: () => apiFetch<{ routes: PsRoute[] }>(`${ptt}/routes`),
-    enabled: tab === "route" && !!projectId,
+    enabled: tab === "route" && !!fonteId,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -1529,7 +1564,7 @@ export default function TimetablesPage() {
         qr = await QRCode.toDataURL(url, { width: 480, margin: 2, color: { dark: "#0f172a", light: "#ffffff" } });
       } catch { /* QR opzionale: il dialog mostra comunque l'URL */ }
       setMapShare({ url, expiresAt: r.expiresAt, qr, linesCount: ids.length });
-      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] });
+      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] }); // anche quelle con la vista
       toast.success("Link Mappa Orari creato e copiato", {
         description: r.expiresAt
           ? `Online fino a ${new Date(r.expiresAt).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}`
@@ -1561,7 +1596,7 @@ export default function TimetablesPage() {
         method: "PATCH", body: JSON.stringify(patch),
       });
       toast.success(okMsg, { description: "Il QR e il link restano gli stessi." });
-      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] });
+      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] }); // anche quelle con la vista
     } catch (e: any) { toast.error(e?.message ?? "Aggiornamento fallito"); }
   }
 
@@ -1570,7 +1605,7 @@ export default function TimetablesPage() {
     try {
       await apiFetch(`/api/planning-studio/${encodeURIComponent(projectId)}/timetable-map-shares/${tokenStr}`, { method: "DELETE" });
       toast.success("Link revocato");
-      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] });
+      qc.invalidateQueries({ queryKey: ["timetable-map-shares", projectId] }); // anche quelle con la vista
     } catch (e: any) { toast.error(e?.message ?? "Revoca fallita"); }
   }
 
@@ -1612,7 +1647,7 @@ export default function TimetablesPage() {
         <span className="text-xs font-medium text-muted-foreground">Programma di esercizio</span>
         <select
           value={projectId}
-          onChange={(e) => { sceltoAMano.current = true; setProjectId(e.target.value); }}
+          onChange={(e) => { sceltoAMano.current = true; setQuale(""); setProjectId(e.target.value); }}
           className="px-2.5 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60 max-w-72"
           title="Progetto Planning Studio (sorgente dati e validità)"
         >
@@ -1621,6 +1656,27 @@ export default function TimetablesPage() {
           )}
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.inEsercizio ? " · in esercizio" : ""}</option>)}
         </select>
+        <label htmlFor="versione-orari" className="text-xs font-medium text-muted-foreground">Versione</label>
+        <select
+          id="versione-orari"
+          value={versioneScelta?.quale ?? ""}
+          onChange={(e) => setQuale(e.target.value as QualeVersione)}
+          disabled={!versioniQ.data}
+          className="px-2.5 py-1.5 rounded-lg bg-card border border-border/60 text-xs outline-none focus:border-sky-500/60"
+          title="Gli orari al pubblico sono quelli della versione in esercizio: la bozza è il programma su cui si sta lavorando"
+        >
+          {!versioniQ.data && <option value="">{versioniQ.isLoading ? "Caricamento…" : "—"}</option>}
+          {versioniQ.data?.esercizio && <option value="esercizio">{etichettaVersione(versioniQ.data.esercizio)}</option>}
+          {versioniQ.data?.programmata && <option value="programmata">{etichettaVersione(versioniQ.data.programmata)}</option>}
+          {versioniQ.data?.bozza && <option value="bozza">{etichettaVersione(versioniQ.data.bozza)}</option>}
+        </select>
+        {leggeLaBozza && (
+          <span role="status" className="text-[11px] px-2 py-1 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30">
+            {versioniQ.data?.esercizio
+              ? "Bozza: modifiche non ancora in esercizio, non sono gli orari al pubblico"
+              : "Bozza: questo programma non ha una versione pubblicata"}
+          </span>
+        )}
         {dayTypesQ.isLoading && <span className="text-[10px] text-muted-foreground flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> day-type…</span>}
         <span className="text-[10px] text-muted-foreground ml-auto">Validità per day-type da Planning Studio → Validità</span>
       </div>
@@ -1825,7 +1881,7 @@ export default function TimetablesPage() {
           </div>
 
           {show3d && (
-            <NetworkMap3D projectId={projectId} routeIds={sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId)} colorOverrides={colorOverrides} lineStyles={lineStyles} nodeLabels={nodeLabels} />
+            <NetworkMap3D projectId={fonteId} routeIds={sortedRoutes.filter((r) => selectedRouteIds.includes(r.routeId)).map((r) => r.routeId)} colorOverrides={colorOverrides} lineStyles={lineStyles} nodeLabels={nodeLabels} />
           )}
 
           <p className="text-[11px] text-muted-foreground">

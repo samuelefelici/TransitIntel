@@ -461,7 +461,9 @@ describe("l'API non cambia lo schema", () => {
    * istruzione, con l'id nuovo derivato (il comportamento lo prova
    * duplica-progetto-db.test.ts sul database, come cerbero_app). */
   it("la duplicazione dei progetti non usa tabelle temporanee: mappe in CTE, id derivati", () => {
-    const c = codice(path.join(src, "lib/planning-studio.ts"));
+    // dalla PR 3.3 la copia sta in lib/progetto-copie.ts (la usano la duplicazione e le versioni pubblicate)
+    const c = codice(path.join(src, "lib/progetto-copie.ts"));
+    expect(codice(path.join(src, "lib/planning-studio.ts"))).not.toMatch(/\bTEMP(ORARY)?\s+TABLE\b|ON COMMIT DROP|pg_temp/i);
     expect(c).not.toMatch(/\bTEMP(ORARY)?\s+TABLE\b|ON COMMIT DROP|pg_temp/i);
     expect(c).toMatch(/\$\{sql\.raw\(nome\)\} AS MATERIALIZED \(\s+SELECT s\.id AS old_id, \$\{idDellaCopia\(dst, "s\.id"\)\} AS new_id/);
     // l'id derivato: SHA-256 di progetto nuovo e id vecchio, con il progetto come parametro e i bit di un UUID v4
@@ -1472,5 +1474,21 @@ describe("0019 e 0020: un solo programma in esercizio", () => {
     expect(sql.trim()).toMatch(/--> statement-breakpoint\nRESET ROLE;$/);
     // i vincoli dopo i dati, da chi migra
     expect(regole).not.toMatch(/SET LOCAL ROLE/);
+  });
+});
+
+/* 0021 (PR 3.3): le versioni pubblicate dei programmi. */
+describe("0021: versioni pubblicate", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("una versione sa da quale progetto e da quale feed viene, e solo lei può non avere un proprietario", () => {
+    const c = catalogo.tabelle["public.ps_projects"];
+    expect(c.versione_di).toMatch(/^uuid \| null/);
+    expect(c.versione_del_feed).toMatch(/^uuid \| null/);
+    expect(c.owner_user_id).toMatch(/^uuid \| null/);
+    const v = catalogo.vincoli;
+    expect(v["public.ps_projects.ps_projects_versione_di_fkey"]).toMatch(/REFERENCES ps_projects\(id\) ON DELETE SET NULL$/);
+    expect(v["public.ps_projects.ps_projects_una_versione_per_feed"]).toBe("UNIQUE (versione_del_feed)");
+    expect(v["public.ps_projects.ps_projects_proprietario"]).toBe("CHECK (((owner_user_id IS NOT NULL) OR (versione_del_feed IS NOT NULL)))");
+    expect(v["public.ps_projects.ps_projects_versione_coerente"]).toBe("CHECK (((versione_di IS NULL) OR (versione_del_feed IS NOT NULL)))");
   });
 });

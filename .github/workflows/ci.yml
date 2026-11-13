@@ -959,6 +959,15 @@ jobs:
       # esercizio; cancellare il progetto non porta via lo storico.
       - name: Una sola porta per il programma in esercizio
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-porta-db.test.ts
+      # PR 3.3: le versioni pubblicate (migrazione 0021), con l'API come
+      # cerbero_app. La messa in esercizio lascia una copia congelata del
+      # programma: stampa orari e link pubblici (mappa orari, mappa di rete)
+      # leggono quella, e una modifica di bozza non arriva al pubblico; la
+      # bozza la legge solo chi lavora sul programma; le versioni non sono fra
+      # i progetti e non si modificano, nemmeno dall'amministratore; una
+      # programmazione annullata porta via la sua versione.
+      - name: Le versioni pubblicate dei programmi
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/versioni-pubblicate-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

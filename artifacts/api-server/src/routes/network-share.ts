@@ -9,6 +9,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { computeNetwork } from "./planning-studio-timetables";
+import { fonteDelLink } from "../lib/versioni-pubblicate";
 
 const router: IRouter = Router();
 
@@ -33,8 +34,10 @@ router.get("/network-share/:token", async (req, res): Promise<void> => {
       res.status(410).json({ error: "Link scaduto", expired: true });
       return;
     }
-    const routeIds: string[] = Array.isArray(row.route_ids) ? row.route_ids : [];
-    const net = await computeNetwork(row.project_id, routeIds);
+    /* PR 3.3: la versione in esercizio del programma, non la bozza (senza
+     * versione, il programma com'è, come prima) */
+    const fonte = await fonteDelLink(row.project_id, Array.isArray(row.route_ids) ? row.route_ids : []);
+    const net = await computeNetwork(fonte.id, fonte.linee);
     let agencyName: string | null = null;
     try {
       const a = await db.execute<any>(sql`SELECT name, agency_name FROM ps_projects WHERE id = ${row.project_id}::uuid LIMIT 1`);

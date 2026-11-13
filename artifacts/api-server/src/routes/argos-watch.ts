@@ -236,6 +236,7 @@ cronRouter.post("/cron/argos-mcp-projects", async (req: any, res: any) => {
   if (!cronDiArgos(req, res)) return;
   const r = await db.execute(sql`
     SELECT id, name, status FROM ps_projects
+     WHERE versione_del_feed IS NULL -- le versioni pubblicate (PR 3.3) non sono progetti su cui lavorare
      ORDER BY last_opened_at DESC NULLS LAST, created_at DESC
      LIMIT 50
   `);
