@@ -134,6 +134,20 @@
       "when": 1794641172588,
       "tag": "0018_codici_obbligatori",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794727572588,
+      "tag": "0019_un_solo_programma_in_esercizio",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794727632588,
+      "tag": "0020_regole_del_programma_in_esercizio",
+      "breakpoints": true
     }
   ]
 }

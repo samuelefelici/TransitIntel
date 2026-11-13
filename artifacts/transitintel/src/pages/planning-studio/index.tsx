@@ -149,7 +149,10 @@ export default function PlanningStudioListPage() {
           description: "Lo snapshot è già materializzato; lo switch a operativo avverrà automaticamente alla decorrenza.",
         });
       } else {
-        toast.success(`"${p.name}" è ora il programma di esercizio operativo`, { id: tid });
+        toast.success(`"${p.name}" è ora il programma di esercizio operativo`, {
+          id: tid,
+          description: "AVM, tariffe e turni leggono da ora questo programma. Il cambio è nello storico delle attivazioni.",
+        });
       }
       refresh();
     } catch (e: any) {
@@ -443,14 +446,17 @@ function ProjectCard({
         {isOwner && (
           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
             {canActivate && (
+              /* mettere in esercizio vuole anche la scrittura su «Pubblicazione degli orari» (PR 3.2) */
               <SeScrive nascosto>
-                <button
-                  onClick={(e) => { e.stopPropagation(); onActivate(); }}
-                  className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
-                  title="Metti in esercizio (materializza il programma e lo rende operativo)"
-                >
-                  <Power className="w-3.5 h-3.5" />
-                </button>
+                <SeScrive area="pubblicazione_orari" nascosto>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onActivate(); }}
+                    className="p-1 rounded hover:bg-emerald-500/10 text-slate-500 hover:text-emerald-400 transition"
+                    title="Metti in esercizio (materializza il programma e lo rende operativo)"
+                  >
+                    <Power className="w-3.5 h-3.5" />
+                  </button>
+                </SeScrive>
               </SeScrive>
             )}
             <SeScrive nascosto>

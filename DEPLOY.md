@@ -417,6 +417,75 @@ questa versione:
 - un GTFS importato con l'immagine di prima dà alle righe nuove codici `CB-…`
   invece degli id del file. Meglio non importare in quel periodo.
 
+### Un solo programma in esercizio (PR 3.2)
+
+Il **programma in esercizio** è il feed GTFS acceso: quello che leggono AVM,
+tariffe, turni e le pagine dell'esercizio. Da questo rilascio lo si cambia da
+**una porta sola**, e ogni cambio finisce nello **storico** (chi, quando, da
+dove). Le strade per arrivarci restano tre:
+
+| Da dove | Chi può |
+|---|---|
+| Planning Studio › **Metti in esercizio** (subito o con una decorrenza) | chi modifica il programma **e** ha «Pubblicazione degli orari» in scrittura (di partenza: il Pianificatore e l'amministratore) |
+| il giro delle attivazioni programmate, alla decorrenza | chi le ha programmate |
+| pagina GTFS › **Attiva** (un file caricato a mano) | solo l'amministratore, come prima |
+
+Che cosa cambia:
+
+- **C'è sempre un solo feed acceso, in tutta l'installazione.** Prima «Metti in
+  esercizio» spegneva solo i feed dello stesso proprietario, e ne potevano
+  restare due accesi (l'AVM prendeva l'ultimo caricato). Ora lo garantisce
+  anche il database.
+- **Lo storico non si perde più.** Prima «Metti in esercizio» lo scriveva «se
+  riusciva», e «Attiva» non lo scriveva mai. Ora, se lo storico non si scrive,
+  l'attivazione non avviene e resta in esercizio il programma di prima.
+  L'attivazione immediata non spegne più il programma di prima prima di aver
+  acceso il nuovo.
+- **Lo storico resta anche se il progetto si cancella** (prima se ne andava
+  col progetto).
+- **Il feed in esercizio** si cancella (forzando) solo dall'amministratore, e
+  nello storico il suo periodo si chiude.
+- Chi non ha «Pubblicazione degli orari» in scrittura non vede più il pulsante
+  «Metti in esercizio». Si cambia da Amministrazione › Ruoli.
+
+**Le migrazioni.** La `0019` mette in regola lo stato di oggi **senza cambiare
+il feed che legge l'AVM**:
+
+- se ci sono più feed accesi, resta acceso quello che l'AVM legge già
+  (l'ultimo caricato), e diventa anche quello di default; gli altri si spengono;
+- nello storico restano aperti solo il periodo di quel feed, e se manca se ne
+  apre uno da adesso (via `migrazione:0019`).
+
+La `0020` aggiunge i due vincoli e mette lo storico nel registro delle
+modifiche. Nel log del deploy:
+
+- niente, se era già tutto in regola;
+- `ATTENZIONE: 0019: spento il feed «…»`, per ogni feed che era acceso insieme
+  a un altro. **Va guardato**: quel feed non era quello che leggeva l'AVM, ma
+  qualcuno poteva crederlo in esercizio;
+- `ATTENZIONE: 0019: chiusi N periodi dello storico…`, per i periodi rimasti
+  aperti su feed non più in esercizio.
+
+Per vedere lo storico, dal Terminal del database:
+
+```sql
+SELECT l.activated_at, l.deactivated_at, f.filename, l.via
+  FROM public.ps_activation_log l LEFT JOIN public.gtfs_feeds f ON f.id = l.feed_id
+ ORDER BY l.activated_at DESC LIMIT 20;
+```
+
+**Mentre il deploy gira** il container di prima serve ancora. Una sua «Metti
+in esercizio» fallisce (e non cambia niente) se lascerebbe due feed accesi: è
+il caso del feed in esercizio che appartiene a un altro utente. Meglio non
+attivare programmi in quel minuto.
+
+**Rollback**: immagine precedente. I vincoli restano, quindi vale lo stesso
+limite: un «Metti in esercizio» quando il feed in esercizio è di un altro
+utente fallisce. «Attiva» dalla pagina GTFS (amministratore) funziona sempre.
+Se serve, i vincoli si tolgono come `postgres`:
+`ALTER TABLE public.gtfs_feeds DROP CONSTRAINT gtfs_feeds_un_solo_in_esercizio;`
+e `ALTER TABLE public.ps_activation_log DROP CONSTRAINT ps_activation_log_un_solo_aperto;`.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
