@@ -363,7 +363,7 @@ Da dove viene il codice:
 | importata da un GTFS | l'id che aveva nel file (`stop_id`, `route_id`, `trip_id`) |
 | creata a mano | lo dà il database: `CB-` più la lettera del tipo (`C` corsa, `F` fermata, `L` linea) e un numero che non si ripete, per esempio `CB-C1042` |
 | copia di una corsa sdoppiata | un codice nuovo (`CB-C…`): è un'altra corsa |
-| stesso id due volte nello stesso file | la seconda riga prende `id~2` |
+| stesso id due volte nello stesso file | vale la prima riga, la seconda si salta (prima nascevano due righe, una delle quali senza orari o mai usata) |
 
 Che cosa cambia per chi usa l'app:
 

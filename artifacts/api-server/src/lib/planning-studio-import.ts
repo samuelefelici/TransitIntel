@@ -980,13 +980,18 @@ router.post(
       // Genero UUID lato app (gen_random_uuid è troppo) — uso quello del DB con RETURNING
       // ma per perf: generiamo lato app con crypto.randomUUID()
       /* PR 3.1: il codice stabile di ogni riga è l'id che ha nel file (il
-       * progetto è appena stato svuotato: nessun codice è già preso). */
+       * progetto è appena stato svuotato: nessun codice è già preso). Un id
+       * ripetuto nel file vale una volta sola, la prima: prima nascevano due
+       * righe con lo stesso gtfs_id, una delle quali senza orari o mai usata.
+       * «id~2» resta per due id diversi che diventano lo stesso codice (tolti
+       * i caratteri di controllo, o tagliati a 200 caratteri). */
       const codiciFermate = new CodiciDelProgetto(), codiciLinee = new CodiciDelProgetto(), codiciCorse = new CodiciDelProgetto();
       const stopGtfsToUuid = new Map<string, string>();
       const stopValues: any[][] = [];
       for (const s of stopRows) {
         const gtfsId = s.stop_id?.trim();
         if (!gtfsId) continue;
+        if (stopGtfsToUuid.has(gtfsId)) continue; // lo stesso id due volte nel file: vale la prima riga
         if (usedStopGtfs && !usedStopGtfs.has(gtfsId)) continue; // import parziale: solo fermate usate
         const lat = num(s.stop_lat, NaN);
         const lon = num(s.stop_lon, NaN);
@@ -1014,6 +1019,7 @@ router.post(
       for (const r of routeRows) {
         const gtfsId = r.route_id?.trim();
         if (!gtfsId) continue;
+        if (routeGtfsToUuid.has(gtfsId)) continue; // lo stesso id due volte nel file: vale la prima riga
         if (keepRoutes && !keepRoutes.has(gtfsId)) continue; // importa solo le linee scelte
         const id = crypto.randomUUID();
         routeGtfsToUuid.set(gtfsId, id);
@@ -1290,6 +1296,7 @@ router.post(
       for (const t of tripRows) {
         const gtfs = t.trip_id?.trim();
         if (!gtfs) continue;
+        if (tripGtfsToUuid.has(gtfs)) continue; // lo stesso id due volte nel file: vale la prima riga
         const variantId = tripGtfsToVariantId.get(gtfs);
         if (!variantId) continue;
         const routeGtfs = t.route_id?.trim();

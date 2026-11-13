@@ -225,20 +225,30 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("codici stabili di corsa, fermat
     expect(aggiornata.rows[0].codice).toBe("623_CodUdp:D1333_363485");
   });
 
-  it("un file con lo stesso id due volte non ferma l'import", async () => {
-    const doppio = gtfs({ fermate: ["12,2012,Capolinea (doppia),43.63,13.53"], linee: ["9,9,Circolare (doppia),3"] });
+  it("un file con lo stesso id due volte non ferma l'import e non crea doppioni: vale la prima riga", async () => {
+    const doppio = gtfs({
+      fermate: ["12,2012,Capolinea (doppia),43.63,13.53"], linee: ["9,9,Circolare (doppia),3"],
+      corse: ["9,FER,900_1,Circolare (doppia),0"],
+    });
     const r = await importaIn(P_DOPPIONI, doppio);
     expect(r.status, JSON.stringify(r.body)).toBe(200);
-    expect(await codici("ps_stops", P_DOPPIONI)).toEqual(["10", "11", "12", "12~2"]);
-    expect(await codici("ps_routes", P_DOPPIONI)).toEqual(["1/3", "9", "9~2"]);
-    // nel reimport non distruttivo vale la prima riga, e non nasce un doppione a ogni giro
+    expect(await codici("ps_stops", P_DOPPIONI)).toEqual(["10", "11", "12"]);
+    expect(await codici("ps_routes", P_DOPPIONI)).toEqual(["1/3", "9"]);
+    expect(await codici("ps_trips", P_DOPPIONI)).toEqual(["623_CodUdp:D1333_363485", "623_CodUdp:D1333_363486", "900_1"]);
+    const nomi = await db.execute<any>(sql`
+      SELECT (SELECT name FROM ps_stops WHERE project_id = ${P_DOPPIONI}::uuid AND codice = '12') AS fermata,
+             (SELECT long_name FROM ps_routes WHERE project_id = ${P_DOPPIONI}::uuid AND codice = '9') AS linea,
+             (SELECT count(*)::int FROM ps_stop_times o JOIN ps_trips t ON t.id = o.trip_id
+               WHERE t.project_id = ${P_DOPPIONI}::uuid AND t.codice = '900_1') AS orari`);
+    expect(nomi.rows[0]).toEqual({ fermata: "Capolinea", linea: "Circolare", orari: 3 });
+    // lo stesso nel reimport non distruttivo, a ogni giro
     for (let giro = 0; giro < 2; giro++) {
       const merge = await importaIn(P_DOPPIONI, doppio, { mode: "merge" });
       expect(merge.status, JSON.stringify(merge.body)).toBe(200);
-      expect(merge.body.merge.stops.added).toBe(0);
-      expect(merge.body.merge.routes.added).toBe(0);
+      expect(merge.body.merge).toMatchObject({ stops: { added: 0 }, routes: { added: 0 }, trips: { added: 0 } });
     }
-    expect(await codici("ps_stops", P_DOPPIONI)).toEqual(["10", "11", "12", "12~2"]);
+    expect(await codici("ps_stops", P_DOPPIONI)).toEqual(["10", "11", "12"]);
+    expect(await codici("ps_trips", P_DOPPIONI)).toEqual(["623_CodUdp:D1333_363485", "623_CodUdp:D1333_363486", "900_1"]);
   });
 
   it("un file coi codici generati da un'altra installazione: le righe nuove non li ripetono", async () => {
