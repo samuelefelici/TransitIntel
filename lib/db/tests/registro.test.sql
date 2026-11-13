@@ -479,7 +479,9 @@ DO $$
 DECLARE st jsonb := registro.stato();
 BEGIN
   ASSERT (st ->> 'attivo')::boolean AND st ->> 'base_giuridica' = 'prova' AND (st ->> 'anonimizza_dopo_mesi')::int = 12
-         AND jsonb_array_length(st -> 'tabelle') = 29, format('stato: %s', st);
+         AND jsonb_array_length(st -> 'tabelle') = 30, format('stato: %s', st);
+  ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.azienda' AND (t ->> 'con_valori')::boolean),
+    'i dati dell''azienda (migrazione 0014): con i valori';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.ps_stop_times'
                     AND (t ->> 'riepilogo_sempre')::boolean AND NOT (t ->> 'con_valori')::boolean AND t ->> 'ambito_tipo' = 'corsa'),
     'gli orari: sempre in riepilogo, senza valori';

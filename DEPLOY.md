@@ -816,8 +816,9 @@ non parte.
 
 ### Registro delle modifiche (PR 2.10 e 2.11)
 
-Chi ha cambiato che cosa, scritto dal database: trigger su 29 tabelle (21
-della prima ondata, 8 della seconda) scrivono in `registro.modifiche`. L'app
+Chi ha cambiato che cosa, scritto dal database: trigger su 30 tabelle (21
+della prima ondata, 8 della seconda, i dati dell'azienda dalla 2.17a) scrivono
+in `registro.modifiche`. L'app
 non ha diritti sulle sue tabelle, salvo leggere l'elenco delle regole
 (`registro.sorvegliate`): non lo cambia, non spegne i trigger, e lo legge solo
 attraverso una funzione (sotto, «Leggerlo»). **Nasce spento**: non
