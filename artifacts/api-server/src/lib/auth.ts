@@ -22,6 +22,8 @@ import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import { aziendaOppureNeutra, aziendaPerLaWeb, paroleVietateDellAzienda } from "./azienda";
+import { matriceFresca, matriceSottoLucchetto } from "./matrice-ruoli";
+import { matriceInVigore } from "./matrice-in-vigore";
 import {
   depositiPuliti, dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
   ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, MAX_DEPOSITI_PER_UTENTE, NOMI_AREE,
@@ -216,6 +218,8 @@ async function preparaUtenti(): Promise<void> {
  * amministratori non contano: per loro decide il ruolo, non la vista.
  */
 export async function riallineaVistaPermessi(): Promise<number> {
+  /* con la matrice dei ruoli che c'è adesso nel database (PR 2.18) */
+  await matriceFresca();
   const r = await db.execute<any>(sql`
     SELECT id, role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions FROM users WHERE role <> 'admin'`);
   let n = 0;
@@ -453,6 +457,9 @@ export function utenteDaRiga(row: any): AuthUser {
 }
 
 async function loadUserById(id: string): Promise<UtenteCaricato | null> {
+  /* i diritti si calcolano con la matrice dei ruoli in vigore: se non si è mai
+   * letta e il database non la dà, qui si ferma tutto (lib/matrice-ruoli.ts) */
+  await matriceFresca();
   const r = await db.execute(sql`
     SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, fleetcare_role, active,
            sessione_versione, mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave
@@ -601,7 +608,7 @@ export function scriveDatiPersonali(req: { user?: AuthUser; authVia?: string }):
 export function vedeCodiciSanitari(req: { user?: AuthUser; authVia?: string }): boolean {
   if (!req.user || req.authVia) return false;
   const u = req.user;
-  return vedeDatiSanitari({ admin: u.role === "admin", ruoli: u.ruoli, accessoDiPrima: u.accessoDiPrima, analisi: u.analisi, datiSanitari: u.datiSanitari });
+  return vedeDatiSanitari({ admin: u.role === "admin", ruoli: u.ruoli, accessoDiPrima: u.accessoDiPrima, analisi: u.analisi, datiSanitari: u.datiSanitari }, matriceInVigore());
 }
 
 /**
@@ -1046,26 +1053,32 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   const safeRole = role === "admin" ? "admin" : "user";
   /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima, e
    * senza ruoli non apre nessuna area finché l'amministratore non gliene dà */
-  const nuovo = permessiDopo({ role: "user" }, {
+  const calcola = () => permessiDopo({ role: "user" }, {
     role: safeRole, ruoli: chiesti.ruoli ?? [], datiSanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false,
     depositi: chiesti.depositi ?? [],
   });
-  const vista = nuovo.permissions;
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
     : "driver";
   try {
     const gia = await db.execute<any>(sql`SELECT 1 FROM users WHERE lower(trim(email)) = ${email} LIMIT 1`);
     if ((gia as any).rows?.length) { res.status(409).json({ error: "Email già registrata" }); return; }
-    const ignoti = await depositiSconosciuti(db, nuovo.depositi);
+    /* i depositi non dipendono dalla matrice dei ruoli: si controllano prima */
+    const ignoti = await depositiSconosciuti(db, calcola().depositi);
     if (ignoti.length) { res.status(400).json({ error: `Deposito sconosciuto: ${ignoti.map(d => d.slice(0, 40)).join(", ")}` }); return; }
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const r = await db.execute(sql`
-      INSERT INTO users (email, password_hash, full_name, role, ruoli, dati_sanitari, analisi, depositi, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
-      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${pgArray(nuovo.ruoli)}::text[], ${nuovo.dati_sanitari}, ${nuovo.analisi},
-              ${arrayDiTesti(nuovo.depositi)}, ${JSON.stringify(vista)}::jsonb, ${safeFleetcareRole}, true, true, true)
-      RETURNING ${COLONNE_UTENTE}
-    `);
+    /* la vista permissions e i dati sanitari si calcolano con la matrice dei ruoli riletta
+     * adesso, in fila con chi la sta cambiando (lib/matrice-ruoli.ts), e si scrivono insieme */
+    const r = await db.transaction(async (tx) => {
+      await matriceSottoLucchetto(tx as any);
+      const nuovo = calcola();
+      return tx.execute(sql`
+        INSERT INTO users (email, password_hash, full_name, role, ruoli, dati_sanitari, analisi, depositi, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
+        VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${pgArray(nuovo.ruoli)}::text[], ${nuovo.dati_sanitari}, ${nuovo.analisi},
+                ${arrayDiTesti(nuovo.depositi)}, ${JSON.stringify(nuovo.permissions)}::jsonb, ${safeFleetcareRole}, true, true, true)
+        RETURNING ${COLONNE_UTENTE}
+      `);
+    });
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
     for (const a of azioniAdmin(null, row)) {
       await registraAccesso(req, { userId: row.id, email: row.email, esito: `admin:${a} (${req.user!.email})` });
@@ -1130,6 +1143,11 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   /* Lettura e scrittura nella stessa transazione, con la riga bloccata: i campi dei
    * permessi e la vista permissions si scrivono insieme, da un solo stato. */
   const esito = await db.transaction(async (tx) => {
+    /* Se cambiano i permessi: in fila con chi sta cambiando i ruoli, e con la matrice
+     * riletta adesso (lib/matrice-ruoli.ts). PRIMA di bloccare la riga dell'utente:
+     * chi cambia i ruoli prende i due lucchetti in quest'ordine, e nell'ordine
+     * opposto i due si fermerebbero a vicenda. */
+    if (cambiaPermessi) await matriceSottoLucchetto(tx as any);
     /* com'era prima: il registro scrive solo quello che cambia davvero */
     const pr = await tx.execute<any>(sql`
       SELECT role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, permissions, fleetcare_role, full_name, active

@@ -4,6 +4,7 @@ import {
   accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, haAccessoDiPrima, interruttoriCompatibili,
   depositiPuliti, limiteDepositi, livelloDelMetodo, piuAlto, puo, puoSuUna, ruoliSconosciuti, ruoliValidi, scriveSulDeposito, vedeDatiSanitari,
   MAX_DEPOSITI_PER_UTENTE,
+  matriceConModifiche, modificheDelRuolo, rigaChiesta, rigaDelRuolo,
   type Area, type Livello, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
 
@@ -242,5 +243,93 @@ describe("i depositi di una persona", () => {
     expect(depositiPuliti(Array.from({ length: 80 }, (_, i) => `d${i}`))).toHaveLength(MAX_DEPOSITI_PER_UTENTE);
     // chi ha un deposito valido e uno scritto male resta limitato a quello valido
     expect(limiteDepositi({ admin: false, depositi: ["jesi", ""] })).toEqual(["jesi"]);
+  });
+});
+
+/* PR 2.18: l'amministratore cambia la matrice cella per cella (Amministrazione › Ruoli). */
+describe("la matrice in vigore: quella di partenza con le modifiche dell'amministratore", () => {
+  const profilo = (ruoli: RuoloAziendale[], extra: Partial<ProfiloPermessi> = {}): ProfiloPermessi =>
+    ({ admin: false, ruoli, accessoDiPrima: {}, analisi: false, datiSanitari: false, ...extra });
+
+  it("una modifica toglie, abbassa o alza una cella; le altre restano quelle di partenza", () => {
+    const m = matriceConModifiche(MATRICE, [
+      { ruolo: "capo_deposito", area: "esercizio", livello: "N" },
+      { ruolo: "capo_deposito", area: "roster", livello: "L" },
+      { ruolo: "capo_deposito", area: "tariffe", livello: "S" },
+    ]);
+    expect(rigaDelRuolo(m, "capo_deposito")).toEqual({ ...rigaDelRuolo(MATRICE, "capo_deposito"), esercizio: null, roster: "L", tariffe: "S" });
+    for (const r of RUOLI.filter(x => x !== "capo_deposito")) expect(rigaDelRuolo(m, r)).toEqual(rigaDelRuolo(MATRICE, r));
+    // la matrice di partenza non si tocca
+    expect(MATRICE.capo_deposito.esercizio).toBe("L");
+    expect(MATRICE.capo_deposito.roster).toBe("S");
+    expect(MATRICE.capo_deposito.tariffe).toBeUndefined();
+  });
+
+  it("senza modifiche è la matrice di partenza", () => {
+    const m = matriceConModifiche(MATRICE, []);
+    for (const r of RUOLI) expect(rigaDelRuolo(m, r)).toEqual(rigaDelRuolo(MATRICE, r));
+  });
+
+  it("una modifica scritta male non vale: resta la cella di partenza", () => {
+    const m = matriceConModifiche(MATRICE, [
+      null, "x", 3, {}, { ruolo: "direttore", area: "roster", livello: "S" }, { ruolo: "officina", area: "magazzino", livello: "S" },
+      { ruolo: "officina", area: "personale", livello: "W" }, { ruolo: "officina", area: "personale", livello: null },
+      { ruolo: "officina", area: "personale" }, { ruolo: "__proto__", area: "roster", livello: "S" },
+    ]);
+    for (const r of RUOLI) expect(rigaDelRuolo(m, r)).toEqual(rigaDelRuolo(MATRICE, r));
+    expect(({} as any).roster).toBeUndefined();
+  });
+
+  it("i diritti si calcolano con la matrice che gli si dà", () => {
+    const m = matriceConModifiche(MATRICE, [
+      { ruolo: "capo_deposito", area: "flotta", livello: "N" },
+      { ruolo: "capo_deposito", area: "personale", livello: "L" },
+    ]);
+    const capo = profilo(["capo_deposito"]);
+    expect(dirittiDi(capo).flotta).toBe("L");
+    expect(dirittiDi(capo, m).flotta).toBeNull();
+    expect(dirittiDi(capo, m).personale).toBe("L");
+    // con più ruoli vale ancora il più alto: l'officina ha la scrittura sulla flotta
+    expect(dirittiDi(profilo(["capo_deposito", "officina"]), m).flotta).toBe("S");
+    // l'amministratore di sistema e l'accesso di prima non dipendono dalla matrice
+    const vuota = matriceConModifiche(MATRICE, RUOLI.flatMap(r => AREE.map(a => ({ ruolo: r, area: a, livello: "N" }))));
+    expect(Object.values(dirittiDi(profilo(RUOLI.slice()), vuota)).every(v => v === null)).toBe(true);
+    expect(Object.values(dirittiDi({ ...profilo(["officina"]), admin: true }, vuota)).every(v => v === "S")).toBe(true);
+    expect(dirittiDi(profilo([], { accessoDiPrima: { roster: true } }), vuota).roster).toBe("S");
+  });
+
+  it("i dati sanitari seguono la matrice: senza il roster non si vedono", () => {
+    const senzaRoster = matriceConModifiche(MATRICE, [{ ruolo: "capo_deposito", area: "roster", livello: "N" }]);
+    const capo = profilo(["capo_deposito"], { datiSanitari: true });
+    expect(vedeDatiSanitari(capo)).toBe(true);
+    expect(vedeDatiSanitari(capo, senzaRoster)).toBe(false);
+  });
+
+  it("le modifiche di un ruolo sono solo le celle diverse da quelle di partenza", () => {
+    const partenza = rigaDelRuolo(MATRICE, "capo_deposito");
+    expect(modificheDelRuolo(MATRICE, "capo_deposito", partenza)).toEqual([]);
+    expect(modificheDelRuolo(MATRICE, "capo_deposito", { ...partenza, esercizio: null, roster: "L", tariffe: "S" })).toEqual([
+      { ruolo: "capo_deposito", area: "roster", livello: "L" },
+      { ruolo: "capo_deposito", area: "esercizio", livello: "N" },
+      { ruolo: "capo_deposito", area: "tariffe", livello: "S" },
+    ]);
+    // andata e ritorno: applicate alla matrice di partenza danno la riga voluta
+    const voluta = { ...partenza, flotta: null, personale: "L" as const };
+    expect(rigaDelRuolo(matriceConModifiche(MATRICE, modificheDelRuolo(MATRICE, "capo_deposito", voluta)), "capo_deposito")).toEqual(voluta);
+  });
+
+  it("quello che chiede l'amministratore: tutte le aree, ognuna lettura, scrittura o niente", () => {
+    const buona = rigaDelRuolo(MATRICE, "pianificatore");
+    expect(rigaChiesta(buona)).toEqual({ diritti: buona });
+    expect(rigaChiesta(null)).toHaveProperty("errore");
+    expect(rigaChiesta([buona])).toHaveProperty("errore");
+    expect(rigaChiesta("S")).toHaveProperty("errore");
+    const { roster: _tolta, ...senzaUnArea } = buona;
+    expect(rigaChiesta(senzaUnArea)).toEqual({ errore: "Manca l'area «Roster»" });
+    expect(rigaChiesta({ ...buona, magazzino: "S" })).toEqual({ errore: "Area sconosciuta: magazzino" });
+    expect(rigaChiesta({ ...buona, roster: "W" })).toEqual({ errore: "«Roster»: il livello è lettura, scrittura o niente" });
+    expect(rigaChiesta({ ...buona, roster: undefined })).toHaveProperty("errore");
+    expect(rigaChiesta({ ...buona, roster: true })).toHaveProperty("errore");
+    expect(rigaChiesta({ ...buona, roster: "N" })).toHaveProperty("errore");
   });
 });

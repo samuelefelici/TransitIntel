@@ -18,8 +18,17 @@
  *   - l'AMMINISTRATORE DI SISTEMA, che non è un ruolo di lavoro: gestisce
  *     utenti, azienda e integrazioni, e può tutto.
  *
- * Per aggiungere o cambiare un ruolo si cambia MATRICE qui sotto (e il
- * vincolo sulla colonna users.ruoli, con una migrazione).
+ * Che cosa dà ogni ruolo lo dice una MATRICE (ruolo × area → livello). Quella
+ * scritta qui sotto è la matrice DI PARTENZA. L'amministratore la cambia cella
+ * per cella da Amministrazione › Ruoli (PR 2.18): le sue modifiche stanno in
+ * public.ruoli_diritti e l'API calcola i diritti con la matrice IN VIGORE,
+ * cioè quella di partenza con sopra le modifiche (matriceConModifiche). Tutte
+ * le funzioni che calcolano diritti prendono la matrice come parametro; senza,
+ * usano quella di partenza.
+ *
+ * I ruoli sono un elenco chiuso: per aggiungerne uno si cambiano RUOLI e
+ * MATRICE qui sotto (e il vincolo sulla colonna users.ruoli, con una
+ * migrazione).
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
@@ -97,13 +106,18 @@ export const DESCRIZIONI_RUOLI: Readonly<Record<RuoloAziendale, string>> = {
   amministrazione: "Tiene l'anagrafica del personale e le tariffe; legge il resto",
 };
 
+/** Una matrice dei ruoli: per ogni ruolo, il livello su ogni area (un'area assente = niente). */
+export type Matrice = Readonly<Record<RuoloAziendale, Readonly<Partial<Record<Area, Livello>>>>>;
+
 /**
- * La matrice (analisi di ottobre 2026, § 3.5). Dove l'analisi mette una
- * condizione che il codice non sa ancora far valere, vale il livello pieno
- * e la condizione è scritta accanto:
+ * La matrice di partenza (analisi di ottobre 2026, § 3.5): quella che vale
+ * finché l'amministratore non la cambia da Amministrazione › Ruoli. Dove
+ * l'analisi mette una condizione che la matrice non sa esprimere, vale il
+ * livello pieno e la condizione è scritta accanto:
  *
- *   capo_deposito.roster      «scrittura, sul suo deposito»: oggi il tabellone
- *                             non ha il filtro per deposito, quindi su tutti.
+ *   capo_deposito.roster      «scrittura, sul suo deposito»: il limite non sta
+ *                             nella matrice ma nell'utente (i suoi depositi,
+ *                             PR 2.14c: limiteDepositi qui sotto).
  *   capo_deposito.personale   «lettura dei soli dati operativi»: i dati
  *                             operativi dell'anagrafica vengono con il roster;
  *                             sui dati personali non ha niente.
@@ -114,7 +128,7 @@ export const DESCRIZIONI_RUOLI: Readonly<Record<RuoloAziendale, string>> = {
  *   flotta                    apre FleetCare; che cosa si può fare lì dentro lo
  *                             dice il ruolo FleetCare dell'utente.
  */
-export const MATRICE: Readonly<Record<RuoloAziendale, Readonly<Partial<Record<Area, Livello>>>>> = {
+export const MATRICE: Matrice = {
   pianificatore: {
     rete: "S", turni: "L", pubblicazione_orari: "S", pubblicazione_turni: "L",
     esercizio: "L", consuntivo: "L", tariffe: "L",
@@ -139,6 +153,65 @@ export const MATRICE: Readonly<Record<RuoloAziendale, Readonly<Partial<Record<Ar
     personale: "S", roster: "L", esercizio: "L", consuntivo: "S", flotta: "L", tariffe: "S",
   },
 };
+
+/* ── Le modifiche dell'amministratore alla matrice (PR 2.18) ──────────────── */
+
+/** Il livello di una cella com'è scritto in una modifica: N = niente, L = lettura, S = scrittura. */
+export const LIVELLI_CELLA = ["N", "L", "S"] as const;
+export type LivelloCella = typeof LIVELLI_CELLA[number];
+
+/** Una cella cambiata rispetto alla matrice di partenza (una riga di public.ruoli_diritti). */
+export interface ModificaMatrice { ruolo: RuoloAziendale; area: Area; livello: LivelloCella }
+
+/** I diritti di un ruolo su tutte le aree, con `null` dove non ha niente. */
+export function rigaDelRuolo(matrice: Matrice, ruolo: RuoloAziendale): Diritti {
+  const riga = matrice[ruolo] ?? {};
+  return Object.fromEntries(AREE.map(a => [a, riga[a] ?? null])) as Record<Area, Livello | null>;
+}
+
+/**
+ * La matrice in vigore: quella di partenza con sopra le modifiche. Una modifica
+ * scritta male (ruolo o area che non esistono più, livello sconosciuto) non
+ * vale: resta la cella di partenza. Chi le salva le controlla prima
+ * (rigaChiesta); qui si legge quello che c'è nel database senza fidarsi.
+ */
+export function matriceConModifiche(base: Matrice, modifiche: readonly unknown[]): Matrice {
+  const out = Object.fromEntries(RUOLI.map(r => [r, { ...(base[r] ?? {}) }])) as Record<RuoloAziendale, Partial<Record<Area, Livello>>>;
+  for (const m of modifiche) {
+    if (!m || typeof m !== "object") continue;
+    const { ruolo, area, livello } = m as Record<string, unknown>;
+    if (!(RUOLI as readonly unknown[]).includes(ruolo) || !(AREE as readonly unknown[]).includes(area)) continue;
+    if (livello === "N") delete out[ruolo as RuoloAziendale][area as Area];
+    else if (livello === "L" || livello === "S") out[ruolo as RuoloAziendale][area as Area] = livello;
+  }
+  return out;
+}
+
+/** Le celle di un ruolo che nella matrice voluta sono diverse da quelle di partenza. */
+export function modificheDelRuolo(base: Matrice, ruolo: RuoloAziendale, voluta: Diritti): ModificaMatrice[] {
+  const partenza = rigaDelRuolo(base, ruolo);
+  return AREE.filter(a => (voluta[a] ?? null) !== partenza[a]).map(a => ({ ruolo, area: a, livello: voluta[a] ?? "N" }));
+}
+
+/**
+ * I diritti di un ruolo come li chiede l'amministratore: un oggetto con TUTTE
+ * le aree, ognuna "S", "L" o null (niente). Un'area in più, una che manca o un
+ * valore diverso sono un errore: su chi può cosa non si indovina.
+ */
+export function rigaChiesta(input: unknown): { diritti: Diritti } | { errore: string } {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { errore: "I diritti del ruolo vanno dati area per area" };
+  const dato = input as Record<string, unknown>;
+  const estranee = Object.keys(dato).filter(k => !(AREE as readonly string[]).includes(k));
+  if (estranee.length) return { errore: `Area sconosciuta: ${estranee.slice(0, 5).map(k => k.slice(0, 40)).join(", ")}` };
+  const out = {} as Record<Area, Livello | null>;
+  for (const a of AREE) {
+    if (!(a in dato)) return { errore: `Manca l'area «${NOMI_AREE[a]}»` };
+    const v = dato[a];
+    if (v !== "S" && v !== "L" && v !== null) return { errore: `«${NOMI_AREE[a]}»: il livello è lettura, scrittura o niente` };
+    out[a] = v;
+  }
+  return { diritti: out };
+}
 
 /** Il ruolo dentro FleetCare che di solito va con un ruolo aziendale: un suggerimento, non una regola. */
 export const RUOLO_FLEETCARE_SUGGERITO: Readonly<Partial<Record<RuoloAziendale, string>>> = {
@@ -186,15 +259,19 @@ export interface ProfiloPermessi {
 
 export const NESSUN_DIRITTO: Diritti = Object.freeze(Object.fromEntries(AREE.map(a => [a, null])) as Record<Area, Livello | null>);
 
-/** I diritti per area: il più alto fra ruoli, accesso di prima e Analisi. */
-export function dirittiDi(p: ProfiloPermessi): Diritti {
+/**
+ * I diritti per area: il più alto fra ruoli, accesso di prima e Analisi.
+ * `matrice`: quella in vigore (l'API la legge dal database); senza, quella di
+ * partenza.
+ */
+export function dirittiDi(p: ProfiloPermessi, matrice: Matrice = MATRICE): Diritti {
   const out = { ...NESSUN_DIRITTO } as Record<Area, Livello | null>;
   if (p.admin) {
     for (const a of AREE) out[a] = "S";
     return out;
   }
   for (const r of p.ruoli) {
-    const riga = MATRICE[r];
+    const riga = matrice[r];
     if (!riga) continue;
     for (const a of AREE) out[a] = piuAlto(out[a], riga[a]);
   }
@@ -218,9 +295,9 @@ export function puoSuUna(d: Diritti, aree: readonly Area[], livello: Livello): b
 }
 
 /** I codici sanitari del roster: la capacità, e mai senza poter aprire il roster. */
-export function vedeDatiSanitari(p: ProfiloPermessi): boolean {
+export function vedeDatiSanitari(p: ProfiloPermessi, matrice: Matrice = MATRICE): boolean {
   if (p.admin) return true;
-  return p.datiSanitari && puo(dirittiDi(p), "roster", "L");
+  return p.datiSanitari && puo(dirittiDi(p, matrice), "roster", "L");
 }
 
 /**
