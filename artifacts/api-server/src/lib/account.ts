@@ -28,6 +28,7 @@ import {
   rispostaBloccato,
 } from "./auth";
 import { erroreNuovaPassword } from "./password-regole";
+import { paroleVietateDellAzienda } from "./azienda";
 import { nuovoSegreto, uriOtpauth } from "./totp";
 import { cifra } from "./mfa-cifratura";
 import { accessoRecente, chiaveEmail, nuoviCodiciDiRecupero } from "./accesso-regole";
@@ -114,7 +115,7 @@ router.post("/auth/password", loginLimiter, requireAuth, soloPersona, async (req
     const u = await riga(req.user!.id);
     if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
     /* prima le regole della nuova (non costa niente), poi l'attuale, che conta come un tentativo */
-    const errore = erroreNuovaPassword(nuova, { email: u.email, nome: u.full_name });
+    const errore = erroreNuovaPassword(nuova, { email: u.email, nome: u.full_name }, await paroleVietateDellAzienda());
     if (errore) { res.status(400).json({ error: errore }); return; }
     if (nuova === attuale) { res.status(400).json({ error: "La password nuova deve essere diversa da quella attuale" }); return; }
     if (!(await passwordGiusta(req, res, u, attuale, "password_attuale_errata"))) return;

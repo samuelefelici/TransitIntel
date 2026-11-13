@@ -74,7 +74,7 @@ describe("il menu di chi entra", () => {
   it("l'admin vede tutto, compresa Gestione Utenti", () => {
     const m = menu(con(), true);
     expect(Object.keys(m)).toEqual(SEZIONI.map(s => s.titolo));
-    expect(m["Amministrazione"]).toEqual(["Utenti e accessi", "Parametri di esercizio", "Registro delle modifiche", "Dati e integrazioni", "Sicurezza dell'account"]);
+    expect(m["Amministrazione"]).toEqual(["Utenti e accessi", "Azienda", "Parametri di esercizio", "Registro delle modifiche", "Dati e integrazioni", "Sicurezza dell'account"]);
     expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Utenti e accessi");
     // il registro delle modifiche lo legge solo l'admin, qualunque permesso abbia l'utente
     expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Registro delle modifiche");
@@ -164,7 +164,7 @@ describe("il menu dei ruoli aziendali", () => {
     for (const r of ["pianificatore", "ufficio_turni", "capo_deposito", "centrale_operativa", "officina", "amministrazione"] as const) {
       const m = menu(conRuoli(r));
       expect(m["Analisi"], r).toBeUndefined();
-      for (const voce of ["Utenti e accessi", "Parametri di esercizio", "Registro delle modifiche"]) expect(m["Amministrazione"], r).not.toContain(voce);
+      for (const voce of ["Utenti e accessi", "Azienda", "Parametri di esercizio", "Registro delle modifiche"]) expect(m["Amministrazione"], r).not.toContain(voce);
     }
   });
 });

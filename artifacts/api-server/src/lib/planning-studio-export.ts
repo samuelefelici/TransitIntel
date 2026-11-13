@@ -29,6 +29,7 @@ import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { projectHasTripValidity, computeActiveDatesByTrip } from "./planning-studio-validity-eval";
+import { leggiAzienda } from "./azienda";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -42,6 +43,12 @@ function csv(v: unknown): string {
 
 function csvLine(cols: unknown[]): string {
   return cols.map(csv).join(",");
+}
+
+/** Il sito scritto nel progetto, se è un indirizzo http o https; altrimenti niente. */
+function sitoValido(v: unknown): string | null {
+  const s = typeof v === "string" ? v.trim() : "";
+  return /^https?:\/\/[^\s",<>]{1,200}$/.test(s) ? s : null;
 }
 
 /** 'YYYY-MM-DD' (o Date) → 'YYYYMMDD' GTFS. */
@@ -120,8 +127,13 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
       if (minD && maxD) { feedStart = gtfsDate(minD); feedEnd = gtfsDate(maxD); }
     }
 
+    /* Il nome resta quello del progetto, come prima. Il sito è quello del
+     * progetto o, senza, quello dell'azienda (lib/azienda.ts): prima usciva
+     * sempre l'indirizzo segnaposto. */
+    const azienda = await leggiAzienda();
     const agencyId = "1";
-    const agencyName = project.agency_name || project.name || "Azienda TPL";
+    const agencyName = project.agency_name || project.name || azienda.ragioneSociale;
+    const agencyUrl = sitoValido(project.agency_url) ?? azienda.sito ?? "https://example.com";
     const tz = project.agency_timezone || "Europe/Rome";
 
     const zip = new AdmZip();
@@ -129,12 +141,12 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     /* ── agency.txt ── */
     zip.addFile("agency.txt", Buffer.from(
       "agency_id,agency_name,agency_url,agency_timezone,agency_lang\n" +
-      csvLine([agencyId, agencyName, "https://example.com", tz, "it"]) + "\n", "utf8"));
+      csvLine([agencyId, agencyName, agencyUrl, tz, "it"]) + "\n", "utf8"));
 
     /* ── feed_info.txt ── */
     zip.addFile("feed_info.txt", Buffer.from(
       "feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version\n" +
-      csvLine([agencyName, "https://example.com", "it", feedStart, feedEnd,
+      csvLine([agencyName, agencyUrl, "it", feedStart, feedEnd,
                `cerbero-${new Date().toISOString().slice(0, 10)}`]) + "\n", "utf8"));
 
     /* ── stops.txt ── */

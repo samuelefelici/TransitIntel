@@ -99,6 +99,13 @@
       "when": 1794500733891,
       "tag": "0013_chiave_esterna_sulla_categoria",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794548620000,
+      "tag": "0014_azienda",
+      "breakpoints": true
     }
   ]
 }

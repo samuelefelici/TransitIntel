@@ -24,8 +24,10 @@ const COMUNI = new Set([
   "cambiami1234", "benvenuto123", "benvenuto1234", "autobus12345", "conducente12",
 ]);
 
-/* parole che chi attacca un'azienda prova per prime */
-const PAROLE_AZIENDA = ["cerbero", "conerobus", "transitintel", "ancona", "password", "autobus"];
+/* parole che chi attacca un'azienda prova per prime. Il nome dell'azienda e la
+ * sua città non stanno qui: li dà chi chiama, dai dati dell'azienda
+ * (lib/azienda.ts, paroleDellAzienda). */
+const PAROLE_OVVIE = ["cerbero", "transitintel", "password", "autobus"];
 
 const SEQUENZE = [
   "0123456789012345678901234567890123456789",
@@ -62,8 +64,14 @@ function contieneLaPersona(p: string, pezzi: string[]): boolean {
   return pezzi.some((a, i) => pezzi.some((b, j) => i !== j && (tutto === a + b || parole.some(w => w === a + b))));
 }
 
-/** Il motivo per cui una password nuova non va bene, o null se va bene. */
-export function erroreNuovaPassword(p: unknown, persona: { email?: string | null; nome?: string | null } = {}): string | null {
+/**
+ * Il motivo per cui una password nuova non va bene, o null se va bene.
+ * `paroleAzienda`: il nome e la città dell'azienda, già in minuscolo e senza
+ * segni (paroleDellAzienda); senza, valgono solo le parole ovvie.
+ */
+export function erroreNuovaPassword(
+  p: unknown, persona: { email?: string | null; nome?: string | null } = {}, paroleAzienda: readonly string[] = [],
+): string | null {
   if (typeof p !== "string" || !p) return "La password è obbligatoria";
   if ([...p].length < PASSWORD_MIN) return `La password deve avere almeno ${PASSWORD_MIN} caratteri`;
   if ([...p].length > PASSWORD_MAX) return `La password può avere al massimo ${PASSWORD_MAX} caratteri`;
@@ -72,7 +80,7 @@ export function erroreNuovaPassword(p: unknown, persona: { email?: string | null
   /* un pezzo ripetuto (aaaa…, abcabc…, «password password») o una sequenza della tastiera */
   if (/^(.+?)\1+$/.test(c)) return "Password troppo semplice: è un pezzo ripetuto";
   if (c.length >= 8 && SEQUENZE.some(s => s.includes(c))) return "Password troppo semplice: è una sequenza della tastiera";
-  for (const w of PAROLE_AZIENDA) {
+  for (const w of [...PAROLE_OVVIE, ...paroleAzienda.filter(w => w.length >= 4)]) {
     /* tolte tutte le volte che compare: «Conerobus Conerobus 1» resta quasi vuota */
     if (c.includes(w) && c.split(w).join("").length < 8) return "Password troppo legata a una parola ovvia (nome dell'azienda o «password»)";
   }
@@ -108,7 +116,10 @@ export type PrimoAdmin =
  * CERBERO_ADMIN_EMAIL e CERBERO_ADMIN_PASSWORD e, senza, non si crea nessuno
  * (e lo si dice nel log).
  */
-export function decidiPrimoAdmin(nAdminAttivi: number, env: { CERBERO_ADMIN_EMAIL?: string; CERBERO_ADMIN_PASSWORD?: string; CERBERO_ADMIN_RIPRISTINA?: string }): PrimoAdmin {
+export function decidiPrimoAdmin(
+  nAdminAttivi: number, env: { CERBERO_ADMIN_EMAIL?: string; CERBERO_ADMIN_PASSWORD?: string; CERBERO_ADMIN_RIPRISTINA?: string },
+  paroleAzienda: readonly string[] = [],
+): PrimoAdmin {
   const email = (env.CERBERO_ADMIN_EMAIL ?? "").trim().toLowerCase();
   const password = env.CERBERO_ADMIN_PASSWORD ?? "";
   /* CERBERO_ADMIN_RIPRISTINA=1: l'unico admin ha perso la password o il telefono della
@@ -123,7 +134,7 @@ export function decidiPrimoAdmin(nAdminAttivi: number, env: { CERBERO_ADMIN_EMAI
     return { tipo: "avviso", messaggio: "nessun amministratore attivo e CERBERO_ADMIN_EMAIL/CERBERO_ADMIN_PASSWORD non impostate: nessuno può amministrare finché non le imposti e riavvii" };
   }
   if (!/^[^@\s]+@[^@\s]+$/.test(email)) return { tipo: "avviso", messaggio: "CERBERO_ADMIN_EMAIL non è un'email: amministratore non creato" };
-  const errore = erroreNuovaPassword(password, { email });
+  const errore = erroreNuovaPassword(password, { email }, paroleAzienda);
   if (errore) return { tipo: "avviso", messaggio: `CERBERO_ADMIN_PASSWORD non va bene (${errore}): amministratore non creato` };
   return { tipo: "crea", email, password };
 }

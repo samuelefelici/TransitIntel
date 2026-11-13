@@ -9,6 +9,7 @@ import { apiFetch } from "@/lib/api";
 import { CASA, paginaDiLavoro, paginaTariffe, sezioniVisibili, voceAttiva, type VoceMenu } from "@/lib/navigazione";
 import ArgosSidebar from "@/components/ArgosSidebar";
 import logoSidebarImg from "/logosidebar.png";
+import { luogoDellAzienda } from "@/lib/azienda";
 
 /**
  * L'impalcatura dell'app: il menu sul ciclo di lavoro (lib/navigazione.ts) e
@@ -20,7 +21,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [location, navigate] = useLocation();
   const [isMobileOpen, setIsMobileOpen] = React.useState(false);
   const [collapsed, setCollapsed] = React.useState(false);
-  const { logout: esci, user, isAdmin, puo } = useAuth();
+  const { logout: esci, user, isAdmin, puo, azienda } = useAuth();
   /* chi esce di sua volontà riparte dalla radice: chi entra dopo non eredita la sua pagina
    * (una sessione scaduta invece resta dov'era, e dopo l'accesso si torna lì) */
   const logout = React.useCallback(async () => { await esci(); navigate("/", { replace: true }); }, [esci, navigate]);
@@ -206,7 +207,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </div>
             )}
             <div className="bg-gradient-to-br from-primary/10 to-accent/10 rounded-xl p-4 border border-primary/20">
-              <h4 className="font-semibold text-xs mb-0.5 text-primary">Ancona / Marche</h4>
+              <h4 className="font-semibold text-xs mb-0.5 text-primary truncate">{luogoDellAzienda(azienda) ?? azienda.nome}</h4>
               <p className="text-[11px] text-muted-foreground">Sistema attivo</p>
             </div>
             <button

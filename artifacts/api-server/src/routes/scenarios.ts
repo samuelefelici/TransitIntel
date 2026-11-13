@@ -7,6 +7,7 @@ import { eq, sql, desc, inArray } from "drizzle-orm";
 import { haversineKm, lineLength, pointToLineDistance } from "../lib/geo-utils";
 import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "../lib/isochrones";
 import { legaContesto } from "../lib/contesto-http";
+import { leggiAzienda, type Azienda } from "../lib/azienda";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -3549,35 +3550,44 @@ interface GtfsConfig {
   feedVersion?: string;
 }
 
-const DEFAULT_GTFS_CONFIG: GtfsConfig = {
-  agencyId: "conerobus",
-  agencyName: "Conerobus S.p.A.",
-  agencyUrl: "https://www.conerobus.it",
-  agencyTimezone: "Europe/Rome",
-  agencyLang: "it",
-  agencyPhone: "+39 071 2837411",
-  feedPublisherName: "Conerobus S.p.A.",
-  feedPublisherUrl: "https://www.conerobus.it",
-  feedLang: "it",
-};
+/**
+ * agency.txt e feed_info.txt con i dati dell'azienda (lib/azienda.ts). Fuso e
+ * lingua restano quelli italiani; senza sito vale un indirizzo segnaposto,
+ * perché agency_url è obbligatorio nel GTFS.
+ */
+export function gtfsDellAzienda(a: Azienda): GtfsConfig {
+  const sito = a.sito ?? "https://example.com";
+  return {
+    agencyId: a.gtfsAgencyId,
+    agencyName: a.ragioneSociale,
+    agencyUrl: sito,
+    agencyTimezone: "Europe/Rome",
+    agencyLang: "it",
+    agencyPhone: a.telefono ?? "",
+    feedPublisherName: a.ragioneSociale,
+    feedPublisherUrl: sito,
+    feedLang: "it",
+  };
+}
 
 type CalendarRow = typeof scenarioProgramCalendars.$inferSelect;
 type CalExceptionRow = typeof scenarioProgramCalendarExceptions.$inferSelect;
 
+/** `cfg` è completo: i dati dell'azienda (gtfsDellAzienda) con sopra quello che chiede chi esporta. */
 function buildGtfsFeed(
   program: any,
   geojson: any,
   calendars: CalendarRow[],
   exceptions: CalExceptionRow[],
-  gtfsConfig: GtfsConfig = {},
+  cfg: GtfsConfig,
 ): Buffer {
-  const cfg = { ...DEFAULT_GTFS_CONFIG, ...gtfsConfig };
   const zip = new AdmZip();
 
   // 1. agency.txt
   const agencyTxt = [
     "agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone",
-    `${cfg.agencyId},${csvEscape(cfg.agencyName!)},${cfg.agencyUrl},${cfg.agencyTimezone},${cfg.agencyLang},${cfg.agencyPhone}`,
+    /* ogni campo passa da csvEscape: nome, sito e telefono sono dati (dell'azienda o di chi esporta), non costanti */
+    [cfg.agencyId, cfg.agencyName, cfg.agencyUrl, cfg.agencyTimezone, cfg.agencyLang, cfg.agencyPhone].map(v => csvEscape(v ?? "")).join(","),
   ].join("\n");
   zip.addFile("agency.txt", Buffer.from(agencyTxt, "utf-8"));
 
@@ -3614,7 +3624,7 @@ function buildGtfsFeed(
   const routesRows = (program.lines || []).map((line: any) => {
     const routeId = `R_${String((line.lineIndex ?? 0) + 1).padStart(2, "0")}`;
     const shortName = (line.lineName || "").substring(0, 10);
-    return `${routeId},${cfg.agencyId},${csvEscape(shortName)},${csvEscape(line.lineName || "")},3,`;
+    return `${routeId},${csvEscape(cfg.agencyId ?? "")},${csvEscape(shortName)},${csvEscape(line.lineName || "")},3,`;
   });
   zip.addFile("routes.txt", Buffer.from([routesHeader, ...routesRows].join("\n"), "utf-8"));
 
@@ -3678,7 +3688,7 @@ function buildGtfsFeed(
   const maxDate = allDates.length > 0 ? allDates.reduce((a, b) => a > b ? a : b) : new Date().toISOString().slice(0, 10);
   const feedInfoTxt = [
     "feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version",
-    `${csvEscape(cfg.feedPublisherName!)},${cfg.feedPublisherUrl},${cfg.feedLang},${formatDateGtfs(minDate)},${formatDateGtfs(maxDate)},${cfg.feedVersion || new Date().toISOString().slice(0, 10)}`,
+    `${csvEscape(cfg.feedPublisherName ?? "")},${csvEscape(cfg.feedPublisherUrl ?? "")},${csvEscape(cfg.feedLang ?? "")},${formatDateGtfs(minDate)},${formatDateGtfs(maxDate)},${csvEscape(cfg.feedVersion || new Date().toISOString().slice(0, 10))}`,
   ].join("\n");
   zip.addFile("feed_info.txt", Buffer.from(feedInfoTxt, "utf-8"));
 
@@ -3851,10 +3861,11 @@ router.get("/scenarios/:id/programs/:programId/export-gtfs", async (req, res) =>
     }
 
     // 5. GTFS config from query params
-    const gtfsConfig: GtfsConfig = {};
-    if (req.query.agencyName) gtfsConfig.agencyName = req.query.agencyName as string;
-    if (req.query.agencyUrl) gtfsConfig.agencyUrl = req.query.agencyUrl as string;
-    if (req.query.feedVersion) gtfsConfig.feedVersion = req.query.feedVersion as string;
+    const gtfsConfig: GtfsConfig = gtfsDellAzienda(await leggiAzienda());
+    const chiesto = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : null);
+    if (chiesto(req.query.agencyName)) gtfsConfig.agencyName = chiesto(req.query.agencyName)!;
+    if (chiesto(req.query.agencyUrl)) gtfsConfig.agencyUrl = chiesto(req.query.agencyUrl)!;
+    if (chiesto(req.query.feedVersion)) gtfsConfig.feedVersion = chiesto(req.query.feedVersion)!;
 
     // 6. Build feed
     const geojson = scenarioRow.geojson as any;
