@@ -1476,3 +1476,19 @@ describe("0019 e 0020: un solo programma in esercizio", () => {
     expect(regole).not.toMatch(/SET LOCAL ROLE/);
   });
 });
+
+/* 0021 (PR 3.3): le versioni pubblicate dei programmi. */
+describe("0021: versioni pubblicate", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("una versione sa da quale progetto e da quale feed viene, e solo lei può non avere un proprietario", () => {
+    const c = catalogo.tabelle["public.ps_projects"];
+    expect(c.versione_di).toMatch(/^uuid \| null/);
+    expect(c.versione_del_feed).toMatch(/^uuid \| null/);
+    expect(c.owner_user_id).toMatch(/^uuid \| null/);
+    const v = catalogo.vincoli;
+    expect(v["public.ps_projects.ps_projects_versione_di_fkey"]).toMatch(/REFERENCES ps_projects\(id\) ON DELETE SET NULL$/);
+    expect(v["public.ps_projects.ps_projects_una_versione_per_feed"]).toBe("UNIQUE (versione_del_feed)");
+    expect(v["public.ps_projects.ps_projects_proprietario"]).toBe("CHECK (((owner_user_id IS NOT NULL) OR (versione_del_feed IS NOT NULL)))");
+    expect(v["public.ps_projects.ps_projects_versione_coerente"]).toBe("CHECK (((versione_di IS NULL) OR (versione_del_feed IS NOT NULL)))");
+  });
+});

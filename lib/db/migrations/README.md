@@ -169,6 +169,12 @@ su main non si tocca più.
   transazione. Una migrazione non accende feed: lo fa la porta unica
   (`artifacts/api-server/src/lib/esercizio-porta.ts`), che scrive anche lo
   storico.
+- **Le versioni pubblicate (PR 3.3, 0021).** Un `ps_projects` con
+  `versione_del_feed` è la copia congelata di un programma messo in esercizio
+  (`artifacts/api-server/src/lib/versioni-pubblicate.ts`): senza proprietario,
+  non si modifica. Una migrazione che tocca i progetti o le loro righe vale
+  anche per le versioni: se non deve, le esclude con
+  `versione_del_feed IS NULL`.
 - **Il registro delle modifiche (PR 2.10 e 2.11).** Le tabelle sorvegliate hanno i
   trigger `registro_*`, che scrivono in `registro.modifiche` (schema, tabelle e
   funzioni di `cerbero_registro`, non di `cerbero_owner`). Una tabella nuova
