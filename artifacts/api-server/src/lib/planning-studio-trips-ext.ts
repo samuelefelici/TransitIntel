@@ -845,6 +845,14 @@ router.post("/planning-studio/projects/:id/trips/generate", async (req, res): Pr
   const categoriesExplicit = Array.isArray(b.categoryIds);
   const categoryIds: string[] = (categoriesExplicit ? b.categoryIds : [])
     .filter((x: any) => typeof x === "string" && UUID_RE.test(x));
+  /* una categoria che non esiste più non si scrive sulle corse nuove (migrazione 0013: la rifiuta anche il database) */
+  if (categoryIds.length > 0) {
+    const catR = await db.execute<any>(sql`
+      SELECT count(*)::int AS c FROM ps_validity_categories WHERE id = ANY(${`{${[...new Set(categoryIds)].join(",")}}`}::uuid[])`);
+    if (Number(catR.rows?.[0]?.c) !== new Set(categoryIds).size) {
+      res.status(400).json({ error: "Una delle categorie scelte non esiste più: ricarica la pagina" }); return;
+    }
+  }
 
   // Template: corsa del progetto con almeno 2 stop_times
   const tplR = await db.execute<any>(sql`

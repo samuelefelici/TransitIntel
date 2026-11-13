@@ -2,22 +2,29 @@
  * Cancellare una categoria di validità, su un database vero (TEST_DATABASE_URL,
  * migrato; in CI come cerbero_app).
  *
- * ps_trip_category_validity non ha la chiave esterna sulla categoria: prima,
- * cancellando una categoria in uso, sulle corse restava una riga che punta a
- * una categoria che non c'è più, e quelle corse non valevano più in nessun
- * giorno. Ora una categoria usata da corse o da unità di progettazione non si
- * cancella, e la risposta dice da quante. Una categoria libera sì, con il suo
- * calendario.
+ * Prima, cancellando una categoria in uso, sulle corse restava una riga che
+ * punta a una categoria che non c'è più, e quelle corse non valevano più in
+ * nessun giorno. Dalla 2.15b una categoria usata da corse o da unità di
+ * progettazione non si cancella, e la risposta dice da quante; una categoria
+ * libera sì, con il suo calendario. Dalla 2.15c (migrazione 0013) c'è anche la
+ * chiave esterna: una categoria che non esiste non si scrive su una corsa, e
+ * il database ferma quello che passa accanto all'API.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
 import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import router, { messaggioCategoriaInUso } from "../lib/planning-studio-validity-categories";
+import { Router } from "express";
+import categorieRouter, { messaggioCategoriaInUso } from "../lib/planning-studio-validity-categories";
+import validitaRouter from "../lib/planning-studio-validity";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const u = (n: number) => `e1500000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [UTENTE, P1, P2, L1, L2, V1, V2, C1, C2, C3, CAT_CORSE, CAT_UNITA, CAT_LIBERA] = Array.from({ length: 13 }, (_, i) => u(i + 1));
+
+const router = Router();
+router.use(categorieRouter);
+router.use(validitaRouter);
 
 const app = appDiProva(router, utenteDiProva(UTENTE));
 const cancella = (id: string) => request(app).delete(`/api/planning-studio/validity-categories/${id}`);
@@ -111,5 +118,35 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellare una categoria di val
 
   it("un id che non è un id: 400, senza arrivare al database", async () => {
     expect((await cancella("non-un-id")).status).toBe(400);
+  });
+
+  /* PR 2.15c: una categoria che non esiste più non si scrive su una corsa. Prima
+   * la riga restava, puntando nel vuoto; dalla migrazione 0013 la rifiuta anche
+   * il database, e l'API lo dice in chiaro invece di un errore generico. */
+  it("dare a una corsa una categoria che non esiste: rifiutato, e la corsa resta com'era", async () => {
+    const dai = (categoryIds: string[], mode = "replace") =>
+      request(app).post(`/api/planning-studio/projects/${P1}/validity/bulk`).send({ op: "trip-categories-set", tripIds: [C1], categoryIds, mode });
+    const diC1 = async () => (await db.execute<any>(sql`SELECT category_id::text FROM ps_trip_category_validity WHERE trip_id = ${C1}::uuid ORDER BY 1`)).rows.map((r: any) => r.category_id);
+    // una categoria vera sì
+    expect((await dai([CAT_UNITA])).status).toBe(200);
+    expect(await diC1()).toEqual([CAT_UNITA]);
+    // una che non c'è no: né da sola, né insieme a una vera, né in aggiunta
+    const FINTA = u(99);
+    for (const [ids, mode] of [[[FINTA], "replace"], [[CAT_UNITA, FINTA], "replace"], [[FINTA], "add"]] as const) {
+      const r = await dai([...ids], mode);
+      expect(r.status).toBe(400);
+      expect(r.body.error).toMatch(/non esiste più/);
+    }
+    expect(await diC1()).toEqual([CAT_UNITA]);
+    // e direttamente nel database la rifiuta la chiave esterna
+    await expect(db.execute(sql`INSERT INTO ps_trip_category_validity (trip_id, category_id) VALUES (${C1}::uuid, ${FINTA}::uuid)`))
+      .rejects.toMatchObject({ cause: { code: "23503" } });
+    await db.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ${C1}::uuid`);
+  });
+
+  it("la chiave esterna ferma anche una cancellazione che passa accanto all'API", async () => {
+    await db.execute(sql`INSERT INTO ps_trip_category_validity (trip_id, category_id) VALUES (${C2}::uuid, ${CAT_UNITA}::uuid) ON CONFLICT DO NOTHING`);
+    await expect(db.execute(sql`DELETE FROM ps_validity_categories WHERE id = ${CAT_UNITA}::uuid`)).rejects.toMatchObject({ cause: { code: "23503" } });
+    await db.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ${C2}::uuid`);
   });
 });

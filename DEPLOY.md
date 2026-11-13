@@ -168,7 +168,7 @@ migrator di drizzle).
   CREATE UNIQUE INDEX CONCURRENTLY users_email_normale_uq ON users (lower(trim(email)));
   ```
 
-### Chiavi esterne di Planning Studio (PR 2.15)
+### Chiavi esterne di Planning Studio (PR 2.15 e 2.15c)
 
 Due tabelle non avevano la chiave verso il loro padre: le categorie di validità
 delle corse (`ps_trip_category_validity.trip_id` → `ps_trips`) e le zone vietate
@@ -205,12 +205,13 @@ periodo (`scuole_chiuse_<periodo>`) senza più date, senza corse e senza unità
 di progettazione viene tolta alla prossima sincronizzazione del calendario. Le
 righe orfane la tenevano in vita per caso.
 
-**La categoria resta senza chiave, per ora.** Fino alla PR 2.15b una categoria
-di validità in uso si poteva cancellare (Planning Studio › Validità › Categorie
-Periodi › Gestisci categorie): sulle corse che la usavano restava una riga che
-punta a una categoria che non c'è più. Il calcolo tratta quelle corse come
-legate a una categoria che non cade in nessun giorno: **una corsa che aveva
-solo quella categoria non vale mai**, e non esce in quadri orari, GTFS e turni.
+**La categoria: il terzo vincolo (migrazione 0013, PR 2.15c).** Fino alla PR
+2.15b una categoria di validità in uso si poteva cancellare (Planning Studio ›
+Validità › Categorie Periodi › Gestisci categorie): sulle corse che la usavano
+restava una riga che punta a una categoria che non c'è più. Il calcolo tratta
+quelle corse come legate a una categoria che non cade in nessun giorno: **una
+corsa che aveva solo quella categoria non vale mai**, e non esce in quadri
+orari, GTFS e turni.
 
 Dalla 2.15b:
 
@@ -241,10 +242,52 @@ SELECT p.name AS progetto,
  GROUP BY p.name ORDER BY 2 DESC;
 ```
 
-Quando non ne resta nessuna, la chiave esterna sulla categoria si può mettere
-con una migrazione, come le altre due. Finché ce n'è una non si può: copiare
-una corsa, generare una cadenza o duplicare un progetto copierebbero anche la
-riga che punta nel vuoto, e il database la rifiuterebbe.
+Dalla 2.15c la migrazione 0013 mette la chiave esterna anche sulla categoria
+(`ps_trip_category_validity.category_id` → `ps_validity_categories`, senza
+cascata): una categoria che non esiste non si scrive più su una corsa, e una
+categoria usata da una corsa non si cancella nemmeno passando accanto all'API.
+
+**La 0013 non può far fallire il deploy.** Se trova anche una sola corsa legata
+a una categoria cancellata non tocca niente — quelle righe non le toglie, perché
+toglierle cambierebbe i giorni in cui la corsa vale — non mette il vincolo, e
+lo scrive nel log. Vale anche se una categoria in uso viene cancellata proprio
+mentre la migrazione passa (dal container di prima, che durante il deploy serve
+ancora): la migrazione aspetta che la cancellazione finisca, poi guarda.
+
+```
+[migrazioni] ATTENZIONE: 0013: N righe di ps_trip_category_validity puntano a una categoria cancellata: la chiave esterna sulla categoria NON è stata messa. …
+```
+
+Se nel log del deploy quella riga non c'è, il vincolo è al suo posto e non c'è
+altro da fare. Se c'è:
+
+1. si sistemano le corse dalla tabella Corse, come scritto sopra (la query qui
+   sopra dice in quali progetti sono);
+2. quando la query non restituisce più righe, il vincolo si mette a mano, come
+   `postgres` dal Terminal del Postgres. Il comando controlla tutte le righe:
+   se ne è rimasta una fallisce senza cambiare niente, e si riprova dopo averla
+   sistemata.
+
+   ```sql
+   ALTER TABLE public.ps_trip_category_validity
+     ADD CONSTRAINT ps_trip_category_validity_category_id_fkey
+     FOREIGN KEY (category_id) REFERENCES public.ps_validity_categories(id)
+     ON DELETE RESTRICT;
+   ```
+
+Finché il vincolo manca l'API lo ricorda nel log dopo ogni avvio, la prima
+volta che qualcuno apre le categorie di validità (`manca la chiave esterna
+sulla categoria delle corse …`, con il numero di corse ancora da sistemare), e
+tutto funziona come prima della 2.15c: l'API rifiuta comunque le categorie
+che non esistono e la cancellazione di quelle in uso. Per vedere se c'è:
+
+```sql
+SELECT conname, convalidated FROM pg_constraint
+ WHERE conrelid = 'public.ps_trip_category_validity'::regclass AND contype = 'f';
+```
+
+Devono essere due righe, tutte e due con `convalidated = t`: la corsa (0010) e
+la categoria (0013).
 
 ### Argos: sola lettura su un elenco chiuso
 

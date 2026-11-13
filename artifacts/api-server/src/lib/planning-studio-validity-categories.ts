@@ -53,11 +53,39 @@ export async function ensureSeedCategories(): Promise<void> {
       `);
     }
 
+    await avvisaSeMancaLaChiave();
     bootstrapped = true;
     console.log("[planning-studio.validity-categories] tables ready");
   } catch (e: any) {
     console.error("[ps-validity-categories] bootstrap error:", e?.message || e);
   }
+}
+
+/**
+ * La chiave esterna sulla categoria (migrazione 0013) non c'è se, quando la
+ * migrazione è passata, c'erano corse legate a una categoria cancellata. Senza
+ * chiave tutto funziona come prima, ma niente impedisce al database di tenere
+ * righe che puntano nel vuoto: lo si ricorda una volta per avvio (alla prima
+ * richiesta sulle categorie), finché non si sistemano quelle corse e si mette
+ * il vincolo (DEPLOY, «Chiavi esterne di Planning Studio»).
+ */
+async function avvisaSeMancaLaChiave(): Promise<void> {
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT (SELECT count(*)::int FROM pg_catalog.pg_constraint
+               WHERE conrelid = pg_catalog.to_regclass('public.ps_trip_category_validity')
+                 AND conname = 'ps_trip_category_validity_category_id_fkey') AS chiave,
+             (SELECT count(DISTINCT v.trip_id)::int FROM ps_trip_category_validity v
+               WHERE NOT EXISTS (SELECT 1 FROM ps_validity_categories c WHERE c.id = v.category_id)) AS corse`);
+    const riga: any = r.rows?.[0] ?? {};
+    if (Number(riga.chiave) > 0) return;
+    console.warn(
+      `[planning-studio.validity-categories] manca la chiave esterna sulla categoria delle corse (migrazione 0013): `
+      + (Number(riga.corse) > 0
+        ? `${riga.corse} corse sono ancora legate a una categoria cancellata. Si sistemano dalla tabella Corse; poi il vincolo si mette a mano (DEPLOY, «Chiavi esterne di Planning Studio»)`
+        : "non ci sono più corse legate a una categoria cancellata: il vincolo si può mettere (DEPLOY, «Chiavi esterne di Planning Studio»)"),
+    );
+  } catch { /* solo un promemoria: se non si riesce a leggere il catalogo si va avanti */ }
 }
 
 function getUserId(req: Request): string | null {
@@ -253,6 +281,11 @@ router.delete("/planning-studio/validity-categories/:catId", async (req, res): P
     }
     res.status(409).json({ error: messaggioCategoriaInUso(inUso), inUso });
   } catch (e: any) {
+    /* assegnata a una corsa proprio adesso: la chiave esterna (migrazione 0013) ferma la cancellazione */
+    if ((e?.cause?.code ?? e?.code) === "23503") {
+      res.status(409).json({ error: "La categoria è stata appena assegnata a una corsa: ricarica la pagina e riprova." });
+      return;
+    }
     res.status(500).json({ error: e?.message || "internal_error" });
   }
 });
