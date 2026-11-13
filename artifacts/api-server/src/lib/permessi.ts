@@ -19,6 +19,8 @@ import {
   type Diritti, type Interruttore, type InterruttoreDiPrima, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
 
+import { matriceInVigore } from "./matrice-in-vigore";
+
 export * from "@workspace/permessi";
 
 /** I nomi degli interruttori di prima: restano le chiavi di users.permissions. */
@@ -46,9 +48,14 @@ export function profiloDaRiga(r: RigaPermessi): ProfiloPermessi & { ruoli: Ruolo
   };
 }
 
-/** I diritti e la vista compatibile di un profilo, insieme: si usano sempre in coppia. */
+/**
+ * I diritti e la vista compatibile di un profilo, insieme: si usano sempre in
+ * coppia. Si calcolano con la matrice dei ruoli IN VIGORE (quella di partenza
+ * con le modifiche dell'amministratore, PR 2.18): chi carica un utente la
+ * rilegge prima dal database (lib/matrice-ruoli.ts, matriceFresca).
+ */
 export function dirittiEVista(p: ProfiloPermessi): { diritti: Diritti; permissions: Record<Permission, boolean> } {
-  const diritti = dirittiDi(p);
+  const diritti = dirittiDi(p, matriceInVigore());
   return { diritti, permissions: interruttoriCompatibili(diritti) };
 }
 

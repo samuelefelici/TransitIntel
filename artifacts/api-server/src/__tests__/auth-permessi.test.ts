@@ -354,6 +354,8 @@ describe("ruoli aziendali: chi legge e chi scrive", () => {
       expect(verifica("/admin/registro", u)).toBe(403);
       expect(verifica("/admin/azienda", u)).toBe(403);
       expect(verifica("/admin/azienda", u, "PUT")).toBe(403);
+      expect(verifica("/admin/ruoli", u)).toBe(403);
+      expect(verifica("/admin/ruoli/amministrazione", u, "PUT")).toBe(403);
       expect(verifica("/qualcosa-di-nuovo", u)).toBe(403);
     }
   });

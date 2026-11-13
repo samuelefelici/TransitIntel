@@ -17,6 +17,7 @@ describe("i token di Argos non toccano l'accesso della persona", () => {
     ["post", "/api/AUTH/mfa/conferma"], ["post", "/api/auth/mfa/reimposta"], ["get", "/api/auth/fleetcare-sso"],
     ["get", "/api/admin/users"], ["get", "/api/admin/accessi"], ["get", "/api/admin/registro"],
     ["get", "/api/admin/azienda"], ["put", "/api/admin/azienda"],
+    ["get", "/api/admin/ruoli"], ["put", "/api/admin/ruoli/capo_deposito"],
   ];
   for (const [metodo, percorso] of casi) {
     it(`${metodo.toUpperCase()} ${percorso} → 403, e nessun cookie`, async () => {

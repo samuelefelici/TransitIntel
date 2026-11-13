@@ -2,6 +2,8 @@ import { Router, type IRouter } from "express";
 import { requireAdmin } from "../lib/auth";
 import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/registro-modifiche";
 import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from "../lib/azienda";
+import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
+import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
 const router: IRouter = Router();
@@ -155,6 +157,47 @@ router.put("/admin/azienda", async (req, res): Promise<void> => {
     if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
     req.log?.error?.({ err: e?.message }, "dati dell'azienda non salvati");
     res.status(500).json({ error: "Dati dell'azienda non salvati" });
+  }
+});
+
+/**
+ * GET /api/admin/ruoli e PUT /api/admin/ruoli/:ruolo — che cosa dà ogni ruolo
+ * aziendale (PR 2.18, lib/matrice-ruoli.ts). Solo admin, mai un token di Argos
+ * (requireAdmin): è chi può fare che cosa.
+ *
+ * Il PUT prende `{ diritti }` con TUTTE le aree, ognuna "S", "L" o null: un
+ * ruolo che non c'è, un'area in più o in meno, un livello diverso sono un
+ * errore. I ruoli sono quelli del codice: da qui non se ne creano e non se ne
+ * tolgono. L'amministratore di sistema non è un ruolo e non si tocca.
+ */
+router.use("/admin/ruoli", requireAdmin);
+router.get("/admin/ruoli", async (req, res): Promise<void> => {
+  try {
+    res.json(await statoDeiRuoli());
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "ruoli non leggibili");
+    res.status(500).json({ error: "Ruoli non leggibili" });
+  }
+});
+router.put("/admin/ruoli/:ruolo", async (req, res): Promise<void> => {
+  const ruolo = String(req.params.ruolo ?? "");
+  if (!(RUOLI as readonly string[]).includes(ruolo)) { res.status(404).json({ error: "Ruolo sconosciuto" }); return; }
+  const corpo = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body as Record<string, unknown> : null;
+  const estranei = corpo ? Object.keys(corpo).filter(k => k !== "diritti") : [];
+  if (!corpo || estranei.length) {
+    res.status(400).json({ error: estranei.length ? `Campo non previsto: ${estranei.slice(0, 5).map(k => k.slice(0, 40)).join(", ")}` : "Richiesta non valida" });
+    return;
+  }
+  const chiesta = rigaChiesta(corpo.diritti);
+  if ("errore" in chiesta) { res.status(400).json({ error: chiesta.errore }); return; }
+  try {
+    const esito = await salvaDirittiDelRuolo(ruolo as RuoloAziendale, chiesta.diritti, req.user?.id ?? null);
+    /* resta nel log dell'applicazione, oltre che nel registro delle modifiche: senza nomi né valori */
+    req.log?.info?.({ ruolo, ...esito, utente: req.user?.id }, "diritti di un ruolo cambiati");
+    res.json({ ...(await statoDeiRuoli()), esito });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, ruolo }, "diritti del ruolo non salvati");
+    res.status(500).json({ error: "Diritti del ruolo non salvati" });
   }
 });
 

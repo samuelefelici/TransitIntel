@@ -330,6 +330,7 @@
   "public.roster_rotazioni_riposi_pkey": "CREATE UNIQUE INDEX roster_rotazioni_riposi_pkey ON public.roster_rotazioni_riposi USING btree (id)",
   "public.roster_turni_dss_pkey": "CREATE UNIQUE INDEX roster_turni_dss_pkey ON public.roster_turni_dss USING btree (dss_id, codice)",
   "public.roster_turni_pubblicati_pkey": "CREATE UNIQUE INDEX roster_turni_pubblicati_pkey ON public.roster_turni_pubblicati USING btree (id)",
+  "public.ruoli_diritti_pkey": "CREATE UNIQUE INDEX ruoli_diritti_pkey ON public.ruoli_diritti USING btree (ruolo, area)",
   "public.scenario_program_calendar_exceptions_pkey": "CREATE UNIQUE INDEX scenario_program_calendar_exceptions_pkey ON public.scenario_program_calendar_exceptions USING btree (id)",
   "public.scenario_program_calendars_pkey": "CREATE UNIQUE INDEX scenario_program_calendars_pkey ON public.scenario_program_calendars USING btree (id)",
   "public.scenario_service_programs_pkey": "CREATE UNIQUE INDEX scenario_service_programs_pkey ON public.scenario_service_programs USING btree (id)",
@@ -1857,6 +1858,13 @@
    "udp_id": "uuid | not null |  |  | ",
    "udp_nome": "text | null |  |  | "
   },
+  "public.ruoli_diritti": {
+   "aggiornata_da": "uuid | null |  |  | ",
+   "aggiornata_il": "timestamp with time zone | not null | now() |  | ",
+   "area": "text | not null |  |  | ",
+   "livello": "text | not null |  |  | ",
+   "ruolo": "text | not null |  |  | "
+  },
   "public.scenario_program_calendar_exceptions": {
    "calendar_id": "uuid | not null |  |  | ",
    "created_at": "timestamp with time zone | null | now() |  | ",
@@ -2314,6 +2322,10 @@
   "public.roster_turni_pubblicati.roster_turni_pubblicati_pkey": "PRIMARY KEY (id)",
   "public.roster_turni_pubblicati.roster_turni_pubblicati_pubblicazione_id_fkey": "FOREIGN KEY (pubblicazione_id) REFERENCES roster_pubblicazioni(id)",
   "public.roster_turni_pubblicati.roster_turni_pubblicati_sostituita_da_fkey": "FOREIGN KEY (sostituita_da) REFERENCES roster_pubblicazioni(id)",
+  "public.ruoli_diritti.ruoli_diritti_area": "CHECK ((area ~ '^[a-z][a-z_]{0,39}$'::text))",
+  "public.ruoli_diritti.ruoli_diritti_livello": "CHECK ((livello = ANY (ARRAY['N'::text, 'L'::text, 'S'::text])))",
+  "public.ruoli_diritti.ruoli_diritti_pkey": "PRIMARY KEY (ruolo, area)",
+  "public.ruoli_diritti.ruoli_diritti_ruolo": "CHECK ((ruolo ~ '^[a-z][a-z_]{0,39}$'::text))",
   "public.scenario_program_calendar_exceptions.scenario_program_calendar_exceptions_calendar_id_scenario_progr": "FOREIGN KEY (calendar_id) REFERENCES scenario_program_calendars(id) ON DELETE CASCADE",
   "public.scenario_program_calendar_exceptions.scenario_program_calendar_exceptions_pkey": "PRIMARY KEY (id)",
   "public.scenario_program_calendars.scenario_program_calendars_pkey": "PRIMARY KEY (id)",

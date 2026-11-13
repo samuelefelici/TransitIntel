@@ -816,9 +816,9 @@ non parte.
 
 ### Registro delle modifiche (PR 2.10 e 2.11)
 
-Chi ha cambiato che cosa, scritto dal database: trigger su 30 tabelle (21
-della prima ondata, 8 della seconda, i dati dell'azienda dalla 2.17a) scrivono
-in `registro.modifiche`. L'app
+Chi ha cambiato che cosa, scritto dal database: trigger su 31 tabelle (21
+della prima ondata, 8 della seconda, i dati dell'azienda dalla 2.17a, i
+diritti dei ruoli dalla 2.18) scrivono in `registro.modifiche`. L'app
 non ha diritti sulle sue tabelle, salvo leggere l'elenco delle regole
 (`registro.sorvegliate`): non lo cambia, non spegne i trigger, e lo legge solo
 attraverso una funzione (sotto, «Leggerlo»). **Nasce spento**: non
@@ -1803,15 +1803,19 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 | Flotta | FleetCare | Flotta |
 | Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa | Tariffe |
 | Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi |
-| Amministrazione | Utenti e accessi (admin), Azienda (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
+| Amministrazione | Utenti e accessi (admin), Ruoli (admin), Azienda (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
 
 #### Ruoli aziendali (PR 2.14a)
 
 Chi può cosa lo dicono i **ruoli aziendali**. Ogni ruolo dà, per ogni area del
 menu, lettura o scrittura; una persona può averne più d'uno, e per ogni area
-vale il diritto più alto. I ruoli e la matrice sono nel codice
-(`lib/permessi/src/index.ts`, il pacchetto che leggono API e web): per
-cambiarne uno serve una modifica al codice.
+vale il diritto più alto. L'elenco dei ruoli e la matrice **di partenza** sono
+nel codice (`lib/permessi/src/index.ts`, il pacchetto che leggono API e web).
+Dalla PR 2.18 l'amministratore cambia che cosa dà ogni ruolo da
+**Amministrazione › Ruoli** (qui sotto); per aggiungere un ruolo serve ancora
+una modifica al codice.
+
+La matrice di partenza:
 
 | Ruolo | Rete e orari | Turni | Pubbl. orari | Pubbl. turni | Personale | Roster | Esercizio | Consuntivo | Flotta | Tariffe |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1821,6 +1825,49 @@ cambiarne uno serve una modifica al codice.
 | Centrale operativa | legge | legge | legge | legge | – | legge | scrive | scrive | legge | – |
 | Officina | – | – | – | – | – | – | legge | – | scrive | – |
 | Amministrazione | legge | legge | legge | legge | scrive | legge | legge | scrive | legge | scrive |
+
+#### Cambiare che cosa dà un ruolo (PR 2.18)
+
+**Amministrazione › Ruoli** (solo l'amministratore): una scheda per ruolo, e
+per ognuna delle 11 aree tre scelte — niente, lettura, scrittura. Prima di
+salvare la pagina elenca le modifiche, dice per quante persone valgono e
+avvisa delle conseguenze.
+
+- **Vale da subito**, anche per chi è già dentro: l'API ricalcola i diritti a
+  ogni richiesta. Con più processi dell'API, gli altri lo vedono entro mezzo
+  minuto.
+- **Il giorno del rilascio non cambia niente**: la tabella nasce vuota, e
+  vuota vuol dire matrice di partenza.
+- **L'amministratore di sistema non dipende dalla matrice**: può sempre tutto,
+  quindi cambiandola non ci si chiude fuori.
+- **Che cosa c'è nel database**: `public.ruoli_diritti` (migrazione 0015) tiene
+  solo le celle diverse dalla matrice di partenza (`N` niente, `L` lettura, `S`
+  scrittura). «Riporta ai valori di partenza» toglie le righe del ruolo. Per
+  vederle: `SELECT * FROM ruoli_diritti ORDER BY ruolo, area;`.
+- **Che cosa succede a chi ha il ruolo**, nella stessa transazione del
+  salvataggio:
+  - la vista `users.permissions` si riallinea. La leggono FleetCare (senza la
+    Flotta non si entra più) e la regola della verifica in due passaggi;
+  - **dare Roster o Personale a un ruolo rende obbligatoria la verifica in due
+    passaggi** per chi ce l'ha: chi non l'ha attivata dovrà farlo prima di
+    continuare, anche se è già dentro. La risposta del salvataggio dice quanti
+    sono;
+  - **togliere il Roster spegne i dati sanitari** a chi non lo apre con un
+    altro ruolo. Se poi il Roster torna, i dati sanitari non tornano da soli:
+    si riaccendono utente per utente.
+- **Dare il Personale a un ruolo** vuol dire far vedere a chi ce l'ha contatti,
+  residenza, paghe, ferie e visite di tutti i dipendenti. È una scelta sul
+  trattamento dei dati dei lavoratori: la pagina lo ricorda, ma a deciderla è
+  chi ne risponde in azienda.
+- **Ogni modifica finisce nel registro delle modifiche**, con i valori, e nel
+  log dell'API («diritti di un ruolo cambiati»).
+- **Se la matrice non si legge**, l'API non ripiega su quella di partenza
+  (ridarebbe a un ruolo quello che gli è stato tolto): finché non l'ha letta
+  almeno una volta le richieste falliscono, come per ogni altro guasto del
+  database; dopo, vale l'ultima lettura.
+- **Tornare indietro**: con l'immagine precedente vale di nuovo la matrice di
+  partenza per tutti, cioè tornano i diritti tolti e spariscono quelli
+  aggiunti. La tabella resta e nessuno la legge.
 
 Fuori dai ruoli, date utente per utente in **Amministrazione › Utenti e accessi**:
 

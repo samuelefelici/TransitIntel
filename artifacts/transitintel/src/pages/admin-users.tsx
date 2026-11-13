@@ -1,12 +1,13 @@
-import { useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
 import { voceAdminLeggibile } from "@/lib/registro-admin";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  AREE, DESCRIZIONI_AREE, DESCRIZIONI_RUOLI, INTERRUTTORI_DI_PRIMA, NOMI_AREE, NOMI_RUOLI, RUOLI, RUOLO_FLEETCARE_SUGGERITO,
-  dirittiDi, haAccessoDiPrima, puo, vedeDatiSanitari,
-  type Diritti, type InterruttoreDiPrima, type RuoloAziendale,
+  AREE, DESCRIZIONI_AREE, INTERRUTTORI_DI_PRIMA, MATRICE, NOMI_AREE, NOMI_RUOLI, RUOLI, RUOLO_FLEETCARE_SUGGERITO,
+  dirittiDi, haAccessoDiPrima, puo, rigaDelRuolo, vedeDatiSanitari,
+  type Diritti, type InterruttoreDiPrima, type Matrice, type RuoloAziendale,
 } from "@workspace/permessi";
+import { matriceDaRuoli, riassuntoDeiDiritti, ruoliValidi } from "@/lib/ruoli-admin";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -92,8 +93,13 @@ interface Scelte {
 /** Un deposito del catalogo del roster (GET /api/roster/depositi). */
 interface DepositoCatalogo { codice: string; nome: string }
 
-const dirittiDelleScelte = (s: Scelte): Diritti =>
-  dirittiDi({ admin: s.role === "admin", ruoli: s.ruoli, accessoDiPrima: s.accessoDiPrima, analisi: s.analisi, datiSanitari: s.datiSanitari });
+/* La matrice dei ruoli in vigore (quella di partenza con le modifiche fatte in
+ * Amministrazione › Ruoli): l'anteprima di quello che un utente potrà fare deve
+ * usare la stessa dell'API. Finché non arriva vale quella di partenza. */
+const MatriceInVigore = createContext<Matrice>(MATRICE);
+
+const dirittiDelleScelte = (s: Scelte, matrice: Matrice): Diritti =>
+  dirittiDi({ admin: s.role === "admin", ruoli: s.ruoli, accessoDiPrima: s.accessoDiPrima, analisi: s.analisi, datiSanitari: s.datiSanitari }, matrice);
 
 /** Ruoli disponibili DENTRO FleetCare (gli admin entrano sempre come Admin Flotta). */
 const FLEETCARE_ROLE_LABEL: Record<string, string> = {
@@ -114,6 +120,7 @@ export default function AdminUsersPage() {
   const [resetPwdFor, setResetPwdFor] = useState<AdminUser | null>(null);
   /* il catalogo dei depositi del roster: serve a limitare la scrittura di un Capo deposito ai suoi */
   const [depositi, setDepositi] = useState<DepositoCatalogo[]>([]);
+  const [matrice, setMatrice] = useState<Matrice>(MATRICE);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -130,6 +137,16 @@ export default function AdminUsersPage() {
   useEffect(() => {
     if (isAdmin) void load();
   }, [isAdmin, load]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let vivo = true;
+    /* che cosa dà ogni ruolo adesso; se non si legge, l'anteprima usa i valori di partenza (decide comunque l'API) */
+    apiFetch<unknown>("/api/admin/ruoli")
+      .then(r => { if (vivo) setMatrice(matriceDaRuoli(ruoliValidi(r))); })
+      .catch(() => { /* resta la matrice di partenza */ });
+    return () => { vivo = false; };
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -204,6 +221,7 @@ export default function AdminUsersPage() {
   };
 
   return (
+    <MatriceInVigore.Provider value={matrice}>
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -392,6 +410,7 @@ export default function AdminUsersPage() {
         />
       )}
     </div>
+    </MatriceInVigore.Provider>
   );
 }
 
@@ -575,7 +594,8 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso, depositi }: 
   depositi: DepositoCatalogo[];
 }) {
   const admin = scelte.role === "admin";
-  const diritti = dirittiDelleScelte(scelte);
+  const matrice = useContext(MatriceInVigore);
+  const diritti = dirittiDelleScelte(scelte, matrice);
   const quelliDiPrima = INTERRUTTORI_DI_PRIMA.filter(i => diPrima[i] === true);
   const flotta = puo(diritti, "flotta", "L");
   const roster = puo(diritti, "roster", "L");
@@ -624,7 +644,8 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso, depositi }: 
                 <Checkbox className="mt-0.5" checked={scelte.ruoli.includes(r)} onCheckedChange={(v) => cambiaRuolo(r, v === true)} />
                 <span className="text-sm leading-tight">
                   {NOMI_RUOLI[r]}
-                  <span className="block text-xs text-muted-foreground">{DESCRIZIONI_RUOLI[r]}</span>
+                  {/* quello che il ruolo dà adesso: si cambia in Amministrazione › Ruoli */}
+                  <span className="block text-xs text-muted-foreground">{riassuntoDeiDiritti(rigaDelRuolo(matrice, r))}</span>
                 </span>
               </label>
             ))}
@@ -731,7 +752,7 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso, depositi }: 
             </div>
           ))}
         </div>
-        {!admin && vedeDatiSanitari({ admin, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima, analisi: scelte.analisi, datiSanitari: scelte.datiSanitari }) && (
+        {!admin && vedeDatiSanitari({ admin, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima, analisi: scelte.analisi, datiSanitari: scelte.datiSanitari }, matrice) && (
           <p className="text-xs text-rose-300 mt-1">Vede i codici sanitari del roster.</p>
         )}
         {verificaObbligatoria && (
