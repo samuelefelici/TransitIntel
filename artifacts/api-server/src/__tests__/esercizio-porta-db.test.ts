@@ -18,6 +18,7 @@ import { sql } from "drizzle-orm";
 import pianificazione, { processPendingActivations } from "../lib/planning-studio";
 import caricamento from "../routes/gtfs-upload";
 import { mettiInEsercizio, AttivazioneRifiutata } from "../lib/esercizio-porta";
+import { cancellaProgetto } from "../lib/progetto-copie";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import type { AuthUser } from "../lib/auth";
 
@@ -62,7 +63,12 @@ async function feed(id: string, nome: string, o: { acceso?: boolean; proprietari
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("la porta unica del programma in esercizio, sul database", () => {
   const pulisci = async () => {
-    await db.execute(sql`DELETE FROM ps_activation_log WHERE feed_id IN ${nostriFeed} OR project_id = ${PROGETTO}::uuid`);
+    // le versioni pubblicate nate dalle messe in esercizio (PR 3.3)
+    const versioni = await db.execute<any>(sql`SELECT id FROM ps_projects WHERE versione_del_feed IS NOT NULL AND name LIKE 'Porta unica%'`);
+    for (const v of versioni.rows) await db.transaction((tx) => cancellaProgetto(tx, v.id));
+    // anche i periodi dei nostri feed già cancellati (il test ne cancella uno)
+    await db.execute(sql`DELETE FROM ps_activation_log WHERE feed_id IN ${nostriFeed} OR project_id = ${PROGETTO}::uuid
+                           OR feed_id IN (${F_MAIOR}::uuid, ${F_ALTRO}::uuid, ${F_VECCHIO}::uuid, ${F_PRONTO}::uuid)`);
     await db.execute(sql`DELETE FROM ps_pending_activations WHERE project_id = ${PROGETTO}::uuid`);
     await db.execute(sql`DELETE FROM ps_stop_times WHERE trip_id = ${CORSA}::uuid`);
     await db.execute(sql`DELETE FROM ps_trips WHERE project_id = ${PROGETTO}::uuid`);

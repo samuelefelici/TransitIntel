@@ -148,6 +148,13 @@
       "when": 1794727632588,
       "tag": "0020_regole_del_programma_in_esercizio",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794814032588,
+      "tag": "0021_versioni_pubblicate",
+      "breakpoints": true
     }
   ]
 }

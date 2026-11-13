@@ -21,17 +21,31 @@ import { randomBytes } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { mergeStopPatterns } from "../lib/timetable-merge";
+import { versioniDelProgetto, seVersione, idNellaVersione, lineeDelProgetto } from "../lib/versioni-pubblicate";
 
 const router: IRouter = Router();
 
 /** True se l'utente è owner o membro del progetto PS (admin sempre true).
  *  Con allowOperational=true (endpoint di sola lettura) è visibile anche il
- *  programma di esercizio operativo — stessa semantica della lista progetti. */
+ *  programma di esercizio operativo — stessa semantica della lista progetti —
+ *  ma solo finché non ha una versione pubblicata: da lì chi non lavora sul
+ *  programma legge la versione, non la bozza (PR 3.3).
+ *
+ *  Una VERSIONE pubblicata (PR 3.3) si legge se si può leggere il programma da
+ *  cui viene (anche solo perché è in esercizio). Non si modifica, e i link
+ *  condivisi si creano dal programma: con nonVersioni=true una versione non
+ *  passa. */
 async function canAccessPsProject(
-  projectId: string, req: any, opts?: { allowOperational?: boolean },
+  projectId: string, req: any, opts?: { allowOperational?: boolean; nonVersioni?: boolean; perVersione?: boolean },
 ): Promise<boolean> {
   const u = req.user;
   if (!u) return false;
+  const versione = await seVersione(projectId);
+  if (versione) {
+    if (opts?.nonVersioni) return false;
+    if (u.role === "admin") return true;
+    return !!versione.progetto && canAccessPsProject(versione.progetto, req, { allowOperational: true, perVersione: true });
+  }
   if (u.role === "admin") return true;
   const r = await db.execute(sql`
     SELECT 1 FROM ps_projects p
@@ -40,7 +54,9 @@ async function canAccessPsProject(
      WHERE p.id = ${projectId}::uuid
        AND (p.owner_user_id = ${u.id}::uuid OR pm.user_id IS NOT NULL
             OR (${opts?.allowOperational === true}
-                AND p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false)))
+                AND p.materialized_feed_id IS NOT NULL AND COALESCE(f.is_active, false)
+                AND (${opts?.perVersione === true}
+                     OR NOT EXISTS (SELECT 1 FROM ps_projects v WHERE v.versione_di = p.id AND v.versione_del_feed = f.id))))
      LIMIT 1`);
   return !!((r as any).rows?.length);
 }
@@ -120,6 +136,24 @@ async function loadCityNodes(projectId: string): Promise<Array<{ name: string; l
     ORDER BY name`);
   return (r.rows as any[]).map((c) => ({ name: c.name, lat: c.center_lat, lon: c.center_lon }));
 }
+
+// ── GET /timetables/versioni — da dove si può stampare (PR 3.3) ─────────────
+// La versione in esercizio e quella programmata (copie congelate del
+// programma, lib/versioni-pubblicate.ts) e la bozza, se chi chiede ci lavora.
+// Le altre rotte di stampa si chiamano con l'id scelto qui al posto del
+// programma.
+router.get("/planning-studio/:projectId/timetables/versioni", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (await seVersione(projectId)) { res.status(400).json({ error: "Le versioni si chiedono al programma" }); return; }
+    // l'elenco lo vede anche chi legge solo il programma in esercizio: è da qui che trova la versione
+    if (!(await canAccessPsProject(projectId, req, { allowOperational: true, perVersione: true }))) { res.status(403).json({ error: "Accesso negato al progetto" }); return; }
+    const { esercizio, programmata } = await versioniDelProgetto(projectId);
+    const bozza = await canAccessPsProject(projectId, req) || (!esercizio && await canAccessPsProject(projectId, req, { allowOperational: true }));
+    res.json({ esercizio, programmata, bozza: bozza ? { id: projectId, quale: "bozza", dal: null } : null });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
+});
 
 // ── GET /timetables/routes — linee del progetto ─────────────────────────────
 router.get("/planning-studio/:projectId/timetables/routes", async (req, res): Promise<void> => {
@@ -659,9 +693,10 @@ router.post("/planning-studio/:projectId/network-share", async (req, res): Promi
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
     // IDOR fix: solo owner/membro può pubblicare un link PUBBLICO del progetto
     // (prima chiunque poteva creare un link permanente per un progetto altrui).
-    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
-    const routeIds: string[] = Array.isArray(req.body?.routeIds)
-      ? req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))) : [];
+    if (!(await canAccessPsProject(projectId, req, { nonVersioni: true }))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    // le linee si salvano come linee del programma (anche se scelte su una versione): il link vale per ogni versione
+    const routeIds: string[] = await lineeDelProgetto(projectId, Array.isArray(req.body?.routeIds)
+      ? req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))) : []);
     if (!routeIds.length) { res.status(400).json({ error: "routeIds richiesti" }); return; }
     const title = typeof req.body?.title === "string" ? req.body.title.slice(0, 120) : null;
     // scadenza: expiresInDays (0/assente = senza scadenza)
@@ -684,10 +719,11 @@ router.post("/planning-studio/:projectId/timetable-map-share", async (req, res):
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
-    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
-    // routeIds opzionali: assenti/vuoti = TUTTE le linee del progetto
-    const routeIds: string[] = Array.isArray(req.body?.routeIds)
-      ? req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))) : [];
+    if (!(await canAccessPsProject(projectId, req, { nonVersioni: true }))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    // routeIds opzionali: assenti/vuoti = TUTTE le linee del progetto. Si
+    // salvano come linee del programma (anche se scelte su una versione)
+    const routeIds: string[] = await lineeDelProgetto(projectId, Array.isArray(req.body?.routeIds)
+      ? req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))) : []);
     const title = typeof req.body?.title === "string" ? req.body.title.slice(0, 120) : null;
     const days = Number(req.body?.expiresInDays);
     const expiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86_400_000).toISOString() : null;
@@ -707,20 +743,27 @@ router.get("/planning-studio/:projectId/timetable-map-shares", async (req, res):
   try {
     const projectId = String(req.params.projectId);
     if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
-    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    if (!(await canAccessPsProject(projectId, req, { nonVersioni: true }))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
     const r = await db.execute<any>(sql`
       SELECT token, title, route_ids, created_at, expires_at
         FROM ps_timetable_map_shares
        WHERE project_id = ${projectId}::uuid
        ORDER BY created_at DESC`);
+    /* ?vista=<versione del programma>: le linee con gli id di quella versione,
+     * quelli che la pagina ha in elenco (PR 3.3) */
+    const vista = String(req.query.vista ?? "");
+    const versione = UUID_RE.test(vista) ? await seVersione(vista) : null;
+    const nellaVista = versione?.progetto === projectId
+      ? (ids: string[]) => idNellaVersione(vista, ids.filter((x) => UUID_RE.test(String(x))))
+      : async (ids: string[]) => ids;
     res.json({
-      shares: (r.rows ?? []).map((s: any) => ({
+      shares: await Promise.all((r.rows ?? []).map(async (s: any) => ({
         token: s.token,
         title: s.title ?? null,
-        routeIds: Array.isArray(s.route_ids) ? s.route_ids : [],
+        routeIds: await nellaVista(Array.isArray(s.route_ids) ? s.route_ids : []),
         createdAt: s.created_at,
         expiresAt: s.expires_at ?? null,
-      })),
+      }))),
     });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
@@ -734,10 +777,10 @@ router.patch("/planning-studio/:projectId/timetable-map-shares/:token", async (r
     if (!UUID_RE.test(projectId) || !/^[A-Za-z0-9_-]{6,64}$/.test(token)) {
       res.status(400).json({ error: "parametri non validi" }); return;
     }
-    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    if (!(await canAccessPsProject(projectId, req, { nonVersioni: true }))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
     const sets: any[] = [];
     if (Array.isArray(req.body?.routeIds)) {
-      const ids = req.body.routeIds.filter((x: any) => UUID_RE.test(String(x)));
+      const ids = await lineeDelProgetto(projectId, req.body.routeIds.filter((x: any) => UUID_RE.test(String(x))));
       sets.push(sql`route_ids = ${JSON.stringify(ids)}::jsonb`);
     }
     if (typeof req.body?.title === "string") sets.push(sql`title = ${req.body.title.slice(0, 120)}`);
@@ -769,7 +812,7 @@ router.delete("/planning-studio/:projectId/timetable-map-shares/:token", async (
     if (!UUID_RE.test(projectId) || !/^[A-Za-z0-9_-]{6,64}$/.test(token)) {
       res.status(400).json({ error: "parametri non validi" }); return;
     }
-    if (!(await canAccessPsProject(projectId, req))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
+    if (!(await canAccessPsProject(projectId, req, { nonVersioni: true }))) { res.status(404).json({ error: "Progetto non accessibile" }); return; }
     await db.execute(sql`
       DELETE FROM ps_timetable_map_shares
        WHERE token = ${token} AND project_id = ${projectId}::uuid`);

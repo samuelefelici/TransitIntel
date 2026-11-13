@@ -21,6 +21,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { projectHasTripValidity } from "../lib/planning-studio-validity-eval";
+import { fonteDelLink } from "../lib/versioni-pubblicate";
 
 const router: IRouter = Router();
 
@@ -46,9 +47,15 @@ async function loadShare(token: string, res: any): Promise<ShareRow | null> {
   if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
     res.status(410).json({ error: "Link scaduto", expired: true }); return null;
   }
+  /* PR 3.3: il link è del programma, ma si legge la sua versione in esercizio
+   * (la copia congelata), non la bozza su cui si lavora. Le linee scelte nel
+   * link diventano le stesse linee della versione. Senza versione in
+   * esercizio, il programma com'è, come prima. */
+  const fonte = await fonteDelLink(row.project_id,
+    Array.isArray(row.route_ids) ? row.route_ids.filter((x: any) => UUID_RE.test(String(x))) : []);
   return {
-    project_id: row.project_id,
-    route_ids: Array.isArray(row.route_ids) ? row.route_ids.filter((x: any) => UUID_RE.test(String(x))) : [],
+    project_id: fonte.id,
+    route_ids: fonte.linee,
     title: row.title ?? null,
     expires_at: row.expires_at ?? null,
   };
