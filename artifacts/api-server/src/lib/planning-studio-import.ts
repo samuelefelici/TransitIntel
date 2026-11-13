@@ -30,6 +30,7 @@ import AdmZip from "adm-zip";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { CodiciDelProgetto, portaLaSequenzaOltre } from "./codici-stabili";
 import { parseCsv } from "../routes/gtfs-helpers";
 import { runValidityAutoImportFromCalendars } from "./planning-studio-validity";
 import { legaContesto } from "./contesto-http";
@@ -143,7 +144,8 @@ async function bulkInsert(
  * eccezioni cascavano via con le corse, i cluster si svuotavano (fermate
  * ricreate), le UDP restavano con trip_ids orfani e gli archi fuorilinea
  * puntavano a fermate inesistenti. In modalità merge le entità vengono
- * riconosciute con le CHIAVI STABILI (gtfs_id; per le varianti la
+ * riconosciute con le CHIAVI STABILI (gtfs_id o, se nessuna riga lo ha, il
+ * codice stabile della PR 3.1; per le varianti la
  * import_signature route|direction|pattern) e gli UUID vengono CONSERVATI:
  *
  *  - fermate:  matched → UPDATE dei soli campi GTFS (nome/coordinate/…);
@@ -215,14 +217,41 @@ async function runMergeImport(
   /* ── Mappe delle entità esistenti (chiavi stabili → uuid).
    * Fallback legacy: per linee e calendari importati prima di questa feature
    * il gtfs_id vive in `code` (l'import lo ha sempre scritto lì). */
-  const exStops = new Map<string, string>();
-  for (const r of rowsOf(await tx.execute(sql`
-    SELECT id, gtfs_id FROM ps_stops WHERE project_id = ${projectId}::uuid AND gtfs_id IS NOT NULL`)))
-    exStops.set(r.gtfs_id, r.id);
-  const exRoutes = new Map<string, string>();
-  for (const r of rowsOf(await tx.execute(sql`
-    SELECT id, COALESCE(gtfs_id, code) AS key FROM ps_routes WHERE project_id = ${projectId}::uuid`)))
-    if (r.key) exRoutes.set(r.key, r.id);
+  /* PR 3.1: una riga si riconosce anche dal suo CODICE stabile, se nessuna ha
+   * quell'id come gtfs_id. È il caso di un GTFS esportato da Cerbero e
+   * reimportato: le righe create a mano escono col loro codice, e al ritorno
+   * devono ritrovare se stesse invece di nascere una seconda volta (e il
+   * vincolo di unicità del codice fermerebbe l'import). Una riga ritrovata dal
+   * codice tiene il gtfs_id che aveva: una corsa creata a mano resta «a mano»,
+   * e un aggiornamento dal file d'origine non la disattiva come sparita. Fra
+   * due righe con lo stesso gtfs_id (una corsa sdoppiata) vince quella che lo
+   * ha anche come codice: l'originale. */
+  const esistenti = (righe: any[]) => {
+    const perChiave = new Map<string, string>(), perCodice = new Map<string, { id: string; gtfsId: string | null }>();
+    for (const r of righe) {
+      perCodice.set(r.codice, { id: r.id, gtfsId: r.gtfs_id ?? null });
+      if (r.key && (!perChiave.has(r.key) || r.codice === r.key)) perChiave.set(r.key, r.id);
+    }
+    const abbinate = new Set<string>();
+    return {
+      codici: new CodiciDelProgetto(perCodice.keys()),
+      /** La riga che c'è già per questo id del file (una volta sola per
+       *  import), col gtfs_id da scriverle: l'id del file se è stata
+       *  riconosciuta da quello, altrimenti quello che aveva. */
+      trova(idDelFile: string): { id: string; gtfsId: string | null } | undefined {
+        const perId = perChiave.get(idDelFile);
+        const trovata = perId ? { id: perId, gtfsId: idDelFile } : perCodice.get(idDelFile);
+        if (!trovata || abbinate.has(trovata.id)) return undefined;
+        abbinate.add(trovata.id);
+        return trovata;
+      },
+      has: (idDelFile: string) => perChiave.has(idDelFile) || perCodice.has(idDelFile),
+    };
+  };
+  const exStops = esistenti(rowsOf(await tx.execute(sql`
+    SELECT id, gtfs_id AS key, gtfs_id, codice FROM ps_stops WHERE project_id = ${projectId}::uuid`)));
+  const exRoutes = esistenti(rowsOf(await tx.execute(sql`
+    SELECT id, COALESCE(gtfs_id, code) AS key, gtfs_id, codice FROM ps_routes WHERE project_id = ${projectId}::uuid`)));
   const exCals = new Map<string, string>();
   for (const r of rowsOf(await tx.execute(sql`
     SELECT id, COALESCE(gtfs_id, code) AS key FROM ps_calendars WHERE project_id = ${projectId}::uuid`)))
@@ -234,10 +263,8 @@ async function runMergeImport(
     if (r.import_signature) exVariants.set(r.import_signature, r.id);
     variantCountByRoute.set(r.route_id, (variantCountByRoute.get(r.route_id) || 0) + 1);
   }
-  const exTrips = new Map<string, string>();
-  for (const r of rowsOf(await tx.execute(sql`
-    SELECT id, gtfs_id FROM ps_trips WHERE project_id = ${projectId}::uuid AND gtfs_id IS NOT NULL`)))
-    exTrips.set(r.gtfs_id, r.id);
+  const exTrips = esistenti(rowsOf(await tx.execute(sql`
+    SELECT id, gtfs_id AS key, gtfs_id, codice FROM ps_trips WHERE project_id = ${projectId}::uuid`)));
   const variantsWithShape = new Set<string>();
   for (const r of rowsOf(await tx.execute(sql`
     SELECT variant_id FROM ps_shapes WHERE project_id = ${projectId}::uuid`)))
@@ -250,15 +277,16 @@ async function runMergeImport(
   for (const s of data.stopRows) {
     const gtfsId = s.stop_id?.trim();
     if (!gtfsId) continue;
+    if (stopGtfsToUuid.has(gtfsId)) continue; // lo stesso id due volte nel file: vale la prima riga
     if (usedStopGtfs && !usedStopGtfs.has(gtfsId) && !exStops.has(gtfsId)) continue;
     const lat = num(s.stop_lat, NaN);
     const lon = num(s.stop_lon, NaN);
     if (!isFinite(lat) || !isFinite(lon)) continue;
-    const existing = exStops.get(gtfsId);
+    const existing = exStops.trova(gtfsId);
     if (existing) {
-      stopGtfsToUuid.set(gtfsId, existing);
+      stopGtfsToUuid.set(gtfsId, existing.id);
       stopUpdates.push({
-        id: existing, gtfs_id: gtfsId, code: s.stop_code || null,
+        id: existing.id, gtfs_id: existing.gtfsId, code: s.stop_code || null,
         name: s.stop_name || gtfsId, description: s.stop_desc || null,
         lat, lon, zone_id: s.zone_id || null,
         location_type: int(s.location_type, 0),
@@ -270,7 +298,7 @@ async function runMergeImport(
       const id = crypto.randomUUID();
       stopGtfsToUuid.set(gtfsId, id);
       stopInserts.push([
-        id, projectId, gtfsId, s.stop_code || null, s.stop_name || gtfsId,
+        id, projectId, gtfsId, exStops.codici.prendi(gtfsId), s.stop_code || null, s.stop_name || gtfsId,
         s.stop_desc || null, lat, lon, s.zone_id || null,
         int(s.location_type, 0), int(s.wheelchair_boarding, 0), s.platform_code || null,
       ]);
@@ -281,7 +309,7 @@ async function runMergeImport(
     "id uuid, gtfs_id text, code text, name text, description text, lat double precision, lon double precision, zone_id text, location_type int, wheelchair_boarding int, platform_code text",
     stopUpdates);
   await bulkInsert("ps_stops",
-    ["id", "project_id", "gtfs_id", "code", "name", "description", "lat", "lon", "zone_id",
+    ["id", "project_id", "gtfs_id", "codice", "code", "name", "description", "lat", "lon", "zone_id",
      "location_type", "wheelchair_boarding", "platform_code"],
     stopInserts, tx);
   counts.stops = { added: stopInserts.length, updated: stopUpdates.length };
@@ -294,13 +322,14 @@ async function runMergeImport(
   for (const r of data.routeRows) {
     const gtfsId = r.route_id?.trim();
     if (!gtfsId) continue;
+    if (routeGtfsToUuid.has(gtfsId)) continue; // lo stesso id due volte nel file: vale la prima riga
     if (keepRoutes && !keepRoutes.has(gtfsId)) continue;
-    const existing = exRoutes.get(gtfsId);
+    const existing = exRoutes.trova(gtfsId);
     if (existing) {
-      routeGtfsToUuid.set(gtfsId, existing);
-      importedRouteUuids.push(existing);
+      routeGtfsToUuid.set(gtfsId, existing.id);
+      importedRouteUuids.push(existing.id);
       routeUpdates.push({
-        id: existing, gtfs_id: gtfsId,
+        id: existing.id, gtfs_id: existing.gtfsId,
         short_name: r.route_short_name || gtfsId,
         long_name: r.route_long_name || null,
         description: r.route_desc || null,
@@ -313,7 +342,7 @@ async function runMergeImport(
       routeGtfsToUuid.set(gtfsId, id);
       importedRouteUuids.push(id);
       routeInserts.push([
-        id, projectId, gtfsId, gtfsId, r.route_short_name || gtfsId,
+        id, projectId, gtfsId, exRoutes.codici.prendi(gtfsId), gtfsId, r.route_short_name || gtfsId,
         r.route_long_name || null, r.route_desc || null, int(r.route_type, 3),
         color(r.route_color), color(r.route_text_color), r.agency_id || null,
         int(r.route_sort_order, 0),
@@ -325,7 +354,7 @@ async function runMergeImport(
     "id uuid, gtfs_id text, short_name text, long_name text, description text, route_type int, color text, text_color text, sort_order int",
     routeUpdates);
   await bulkInsert("ps_routes",
-    ["id", "project_id", "gtfs_id", "code", "short_name", "long_name", "description",
+    ["id", "project_id", "gtfs_id", "codice", "code", "short_name", "long_name", "description",
      "route_type", "color", "text_color", "agency_id", "sort_order"],
     routeInserts, tx);
   counts.routes = { added: routeInserts.length, updated: routeUpdates.length };
@@ -553,9 +582,10 @@ async function runMergeImport(
     if (!gtfs) continue;
     const v = tripGtfsToVariant.get(gtfs);
     if (!v) continue;
+    if (tripUuidByGtfs.has(gtfs)) continue; // lo stesso id due volte nel file: vale la prima riga
     feedTripGtfs.add(gtfs);
     const calId = t.service_id ? calGtfsToUuid.get(t.service_id.trim()) || null : null;
-    const existing = exTrips.get(gtfs);
+    const existing = exTrips.trova(gtfs);
     const common = {
       route_id: v.routeId, variant_id: v.id, calendar_id: calId,
       headsign: (t.trip_headsign || "").trim() || null,
@@ -564,13 +594,13 @@ async function runMergeImport(
       block_id: (t.block_id || "").trim() || null,
     };
     if (existing) {
-      tripUuidByGtfs.set(gtfs, existing);
-      tripUpdates.push({ id: existing, gtfs_id: gtfs, ...common });
+      tripUuidByGtfs.set(gtfs, existing.id);
+      tripUpdates.push({ id: existing.id, gtfs_id: existing.gtfsId, ...common });
     } else {
       const id = crypto.randomUUID();
       tripUuidByGtfs.set(gtfs, id);
       tripInserts.push([
-        id, projectId, gtfs, common.route_id, common.variant_id, common.calendar_id,
+        id, projectId, gtfs, exTrips.codici.prendi(gtfs), common.route_id, common.variant_id, common.calendar_id,
         common.headsign, common.short_name, common.direction, common.block_id,
       ]);
     }
@@ -580,9 +610,10 @@ async function runMergeImport(
     "id uuid, gtfs_id text, route_id uuid, variant_id uuid, calendar_id uuid, headsign text, short_name text, direction smallint, block_id text",
     tripUpdates);
   await bulkInsert("ps_trips",
-    ["id", "project_id", "gtfs_id", "route_id", "variant_id", "calendar_id",
+    ["id", "project_id", "gtfs_id", "codice", "route_id", "variant_id", "calendar_id",
      "headsign", "short_name", "direction", "block_id"],
     tripInserts, tx);
+  await portaLaSequenzaOltre(tx, Math.max(exStops.codici.numeroPiuAlto, exRoutes.codici.numeroPiuAlto, exTrips.codici.numeroPiuAlto));
   counts.trips.added = tripInserts.length;
   counts.trips.updated = tripUpdates.length;
 
@@ -948,6 +979,9 @@ router.post(
       /* ─── 4. STOPS ─── */
       // Genero UUID lato app (gen_random_uuid è troppo) — uso quello del DB con RETURNING
       // ma per perf: generiamo lato app con crypto.randomUUID()
+      /* PR 3.1: il codice stabile di ogni riga è l'id che ha nel file (il
+       * progetto è appena stato svuotato: nessun codice è già preso). */
+      const codiciFermate = new CodiciDelProgetto(), codiciLinee = new CodiciDelProgetto(), codiciCorse = new CodiciDelProgetto();
       const stopGtfsToUuid = new Map<string, string>();
       const stopValues: any[][] = [];
       for (const s of stopRows) {
@@ -960,7 +994,7 @@ router.post(
         const id = crypto.randomUUID();
         stopGtfsToUuid.set(gtfsId, id);
         stopValues.push([
-          id, projectId, gtfsId, s.stop_code || null, s.stop_name || gtfsId,
+          id, projectId, gtfsId, codiciFermate.prendi(gtfsId), s.stop_code || null, s.stop_name || gtfsId,
           s.stop_desc || null, lat, lon, s.zone_id || null,
           int(s.location_type, 0), int(s.wheelchair_boarding, 0),
           s.platform_code || null,
@@ -968,7 +1002,7 @@ router.post(
       }
       await bulkInsert(
         "ps_stops",
-        ["id", "project_id", "gtfs_id", "code", "name", "description", "lat", "lon", "zone_id",
+        ["id", "project_id", "gtfs_id", "codice", "code", "name", "description", "lat", "lon", "zone_id",
          "location_type", "wheelchair_boarding", "platform_code"],
         stopValues,
         tx,
@@ -984,7 +1018,7 @@ router.post(
         const id = crypto.randomUUID();
         routeGtfsToUuid.set(gtfsId, id);
         routeValues.push([
-          id, projectId, gtfsId, gtfsId,
+          id, projectId, gtfsId, codiciLinee.prendi(gtfsId), gtfsId,
           r.route_short_name || gtfsId,
           r.route_long_name || null,
           r.route_desc || null,
@@ -997,7 +1031,7 @@ router.post(
       }
       await bulkInsert(
         "ps_routes",
-        ["id", "project_id", "gtfs_id", "code", "short_name", "long_name", "description",
+        ["id", "project_id", "gtfs_id", "codice", "code", "short_name", "long_name", "description",
          "route_type", "color", "text_color", "agency_id", "sort_order"],
         routeValues,
         tx,
@@ -1265,7 +1299,7 @@ router.post(
         const id = crypto.randomUUID();
         tripGtfsToUuid.set(gtfs, id);
         tripValues.push([
-          id, projectId, gtfs, routeUuid, variantId, calId,
+          id, projectId, gtfs, codiciCorse.prendi(gtfs), routeUuid, variantId, calId,
           (t.trip_headsign || "").trim() || null,
           (t.trip_short_name || "").trim() || null,
           int(t.direction_id, 0),
@@ -1274,11 +1308,12 @@ router.post(
       }
       await bulkInsert(
         "ps_trips",
-        ["id", "project_id", "gtfs_id", "route_id", "variant_id", "calendar_id",
+        ["id", "project_id", "gtfs_id", "codice", "route_id", "variant_id", "calendar_id",
          "headsign", "short_name", "direction", "block_id"],
         tripValues,
         tx,
       );
+      await portaLaSequenzaOltre(tx, Math.max(codiciFermate.numeroPiuAlto, codiciLinee.numeroPiuAlto, codiciCorse.numeroPiuAlto));
 
       /* ─── 15. STOP_TIMES ─── */
       const stValues: any[][] = [];

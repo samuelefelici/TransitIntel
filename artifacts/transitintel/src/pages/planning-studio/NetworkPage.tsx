@@ -303,7 +303,7 @@ function StopsList({ stops, selectedId, onSelect }: {
             <div className="flex-1 min-w-0">
               <div className="text-xs text-slate-200 truncate">{s.name}</div>
               <div className="text-[10px] text-slate-500 font-mono">
-                {s.code || s.id.slice(0, 8)}
+                {s.code || s.codice || s.id.slice(0, 8)}
               </div>
             </div>
           </button>
@@ -474,6 +474,9 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
           <div className="text-xs text-slate-500 mt-0.5">
             {ROUTE_TYPE_LABEL[r.routeType] ?? "—"}
             {r.code && <> · <Hash className="w-3 h-3 inline" />{r.code}</>}
+            {r.codice && r.codice !== r.code && (
+              <> · <span className="font-mono" title="Codice stabile della linea: resta lo stesso nelle copie del programma ed è il route_id del GTFS esportato">codice {r.codice}</span></>
+            )}
           </div>
           {r.description && <p className="text-xs text-slate-400 mt-2">{r.description}</p>}
         </div>
@@ -658,7 +661,10 @@ function StopDetailPanel({ projectId, stopId, onDrillVariant, onDrillRoute, acti
         <div className="flex-1 min-w-0">
           <h2 className="text-lg font-semibold truncate">{s.name}</h2>
           <div className="text-xs text-slate-500 mt-0.5 font-mono">
-            {s.code && <>{s.code} · </>}{s.id.slice(0, 8)}…
+            {s.code && <>{s.code} · </>}
+            {s.codice
+              ? <span title="Codice stabile della fermata: resta lo stesso nelle copie del programma ed è lo stop_id del GTFS esportato">codice {s.codice}</span>
+              : <>{s.id.slice(0, 8)}…</>}
           </div>
           <div className="text-[10px] text-slate-500 mt-1">
             {s.lat.toFixed(6)}, {s.lon.toFixed(6)}
@@ -861,7 +867,7 @@ function StopMiniPanel({ projectId, stopId, onJump }: {
     <div className="p-4 space-y-3">
       <div className="text-[10px] uppercase tracking-wide text-slate-500">Fermata</div>
       <h3 className="text-sm font-semibold">{s.name}</h3>
-      <div className="text-xs text-slate-500 font-mono">{s.code || s.id.slice(0, 8)}</div>
+      <div className="text-xs text-slate-500 font-mono">{s.code || s.codice || s.id.slice(0, 8)}</div>
       <div className="grid grid-cols-2 gap-2">
         <Stat icon={<Bus className="w-3.5 h-3.5" />} label="Linee" value={q.data.routes.length} />
         <Stat icon={<Activity className="w-3.5 h-3.5" />} label="Corse" value={q.data.totalTripCount} />

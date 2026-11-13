@@ -2091,7 +2091,7 @@ function CopyTripDialog({ projectId, trip, dayTypes, categories, onClose, onDone
         </div>
         <div className="p-4 space-y-4 text-sm">
           <div className="text-[11px] text-slate-500">
-            Da: <span className="text-slate-300">{trip.headsign || trip.shortName || trip.id.slice(0, 8)}</span>
+            Da: <span className="text-slate-300">{trip.headsign || trip.shortName || trip.codice || trip.id.slice(0, 8)}</span>
             {baseDep && <> · partenza originale <span className="font-mono text-slate-300">{baseDep.slice(0, 5)}</span></>}
           </div>
           <div>
@@ -2358,7 +2358,9 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
 
         <div className="p-4 border-b border-slate-800 space-y-1 text-xs">
           <div className="text-slate-400">{trip.headsign || trip.shortName || "—"}</div>
-          <div className="text-slate-600 font-mono">{trip.id.slice(0, 8)}…</div>
+          <div className="text-slate-600 font-mono truncate" title={trip.codice ? `Codice stabile della corsa: resta lo stesso nelle copie del programma ed è il trip_id del GTFS esportato (${trip.codice})` : undefined}>
+            {trip.codice ?? `${trip.id.slice(0, 8)}…`}
+          </div>
           {!!trip.attributes?.prototype && !trip.attributes?.prototypeReady && (
             <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200 leading-snug">
               ⚠ <strong>CORSA ZERO (prototipo)</strong> — nessun orario di partenza/arrivo:

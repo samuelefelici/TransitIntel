@@ -72,6 +72,8 @@ function rowToStop(r: any) {
   return {
     id: r.id,
     projectId: r.project_id,
+    // il codice stabile (PR 3.1): lo stesso nelle copie del programma, quello del GTFS esportato
+    codice: r.codice,
     code: r.code,
     name: r.name,
     description: r.description,
@@ -93,6 +95,7 @@ function rowToRoute(r: any) {
   return {
     id: r.id,
     projectId: r.project_id,
+    codice: r.codice,
     code: r.code,
     shortName: r.short_name,
     longName: r.long_name,
@@ -161,6 +164,7 @@ function rowToTrip(r: any) {
   return {
     id: r.id,
     projectId: r.project_id,
+    codice: r.codice,
     routeId: r.route_id,
     variantId: r.variant_id,
     calendarId: r.calendar_id,
