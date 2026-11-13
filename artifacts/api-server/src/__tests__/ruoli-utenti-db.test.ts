@@ -162,10 +162,30 @@ describe("permessiDopo: come Gestione utenti cambia i permessi", () => {
     expect(permessiDopo({ role: "user" }, { datiSanitari: true, analisi: false })).toMatchObject({ ruoli: [], accesso_di_prima: {}, dati_sanitari: false });
   });
 
+  it("i depositi che vede e quelli che modifica: quello che modifica sta sempre fra quello che vede (PR 2.14d)", () => {
+    const base = { role: "user", ruoli: ["capo_deposito"] };
+    // senza visibili resta com'era con la 2.14c: l'elenco di quelli che modifica, e li vede tutti
+    expect(permessiDopo(base, { depositi: ["jesi"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: [] });
+    // con dei visibili, un deposito da modificare che manca fra i visibili ci entra
+    expect(permessiDopo(base, { depositi: ["jesi"], depositiVisibili: ["ancona"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["ancona", "jesi"] });
+    expect(permessiDopo(base, { depositi: ["jesi"], depositiVisibili: ["jesi", "ancona"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] });
+    // cambiando un elenco solo, l'altro resta, e la regola vale ancora
+    const prima = { ...base, depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] };
+    expect(permessiDopo(prima, { depositi: ["osimo"] })).toMatchObject({ depositi: ["osimo"], depositi_visibili: ["jesi", "ancona", "osimo"] });
+    expect(permessiDopo(prima, { depositiVisibili: ["ancona"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["ancona", "jesi"] });
+    // togliere i visibili: di nuovo li vede tutti
+    expect(permessiDopo(prima, { depositiVisibili: [] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: [] });
+    // senza toccare i depositi non cambia niente
+    expect(permessiDopo(prima, { analisi: true })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] });
+  });
+
   it("profiloDaRiga non crede a quello che non è scritto bene", () => {
     const p = profiloDaRiga({ role: "Admin", ruoli: ["officina", "direttore", 7], accesso_di_prima: { roster: "true", fares: true, analytics: true }, dati_sanitari: "true", analisi: 1 });
-    expect(p).toEqual({ admin: false, ruoli: ["officina"], accessoDiPrima: { fares: true }, datiSanitari: false, analisi: false, depositi: [] });
-    expect(profiloDaRiga({})).toEqual({ admin: false, ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, depositi: [] });
+    expect(p).toEqual({ admin: false, ruoli: ["officina"], accessoDiPrima: { fares: true }, datiSanitari: false, analisi: false, depositi: [], depositiVisibili: [] });
+    expect(profiloDaRiga({})).toEqual({ admin: false, ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, depositi: [], depositiVisibili: [] });
+    // i due elenchi di depositi: codici puliti, senza doppi
+    expect(profiloDaRiga({ depositi: ["jesi", " jesi ", 3], depositi_visibili: ["ancona", "", "ancona", "jesi"] }))
+      .toMatchObject({ depositi: ["jesi"], depositiVisibili: ["ancona", "jesi"] });
   });
 });
 

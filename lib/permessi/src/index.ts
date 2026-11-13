@@ -361,14 +361,26 @@ export function livelloDelMetodo(metodo: string): Livello {
   return m === "GET" || m === "HEAD" || m === "OPTIONS" ? "L" : "S";
 }
 
-/* ── I depositi di una persona (PR 2.14c) ─────────────────────────────────── */
+/* ── I depositi di una persona (PR 2.14c e 2.14d) ─────────────────────────── */
 
 /**
- * La scrittura sul roster si può limitare ai conducenti di alcuni depositi: è
- * il caso del Capo deposito. Si scelgono utente per utente; **nessun deposito
- * scelto vuol dire nessun limite**, come prima che il limite esistesse.
- * Riguarda solo la scrittura sul roster: non quello che si legge, e non la
- * scrittura sui dati del personale.
+ * Per ogni utente l'amministratore sceglie, deposito per deposito, che cosa
+ * può fare sui conducenti: MODIFICARLI, solo VEDERLI, o niente. È il caso del
+ * Capo deposito. Sono due elenchi di codici di deposito:
+ *
+ *   depositiVisibili  quelli che vede (PR 2.14d); vuoto = li vede tutti
+ *   depositi          quelli che modifica (PR 2.14c)
+ *
+ * La regola, tutta in limitiSuiDepositi:
+ *   - **senza visibili** (li vede tutti): è com'era con la 2.14c. Senza
+ *     depositi modifica tutti, cioè nessun limite, come prima che i limiti
+ *     esistessero; con dei depositi modifica solo quelli;
+ *   - **con dei visibili**: vede quelli (più quelli che modifica: non si
+ *     modifica quello che non si vede) e modifica esattamente i suoi
+ *     «depositi». Se non ne ha non modifica niente: dove si è scelto che cosa
+ *     far vedere, quello che si può modificare va detto, non si presume.
+ * L'amministratore di sistema non ha mai limiti. Un conducente senza deposito
+ * lo vede e lo modifica solo chi non ha limiti.
  */
 export const MAX_DEPOSITI_PER_UTENTE = 50;
 
@@ -386,11 +398,48 @@ export function depositiPuliti(input: unknown): string[] {
   return out;
 }
 
+/** I limiti per deposito di una persona: `null` = nessun limite (tutti i depositi). */
+export interface LimitiDepositi {
+  /** i depositi di cui vede i conducenti */
+  vede: readonly string[] | null;
+  /** i depositi di cui modifica i conducenti */
+  scrive: readonly string[] | null;
+}
+
+export interface DepositiDiUnaPersona {
+  admin: boolean;
+  depositi?: readonly string[] | null;
+  depositiVisibili?: readonly string[] | null;
+}
+
+/** Che cosa una persona vede e che cosa modifica, deposito per deposito. */
+export function limitiSuiDepositi(p: DepositiDiUnaPersona): LimitiDepositi {
+  if (p.admin) return { vede: null, scrive: null };
+  const scrive = depositiPuliti(p.depositi ?? []);
+  const visibili = depositiPuliti(p.depositiVisibili ?? []);
+  /* li vede tutti: la regola della 2.14c, dove nessun deposito vuol dire nessun limite */
+  if (!visibili.length) return { vede: null, scrive: scrive.length ? scrive : null };
+  /* quello che modifica lo vede sempre, anche se l'elenco dei visibili non lo nomina */
+  return { vede: [...visibili, ...scrive.filter(c => !visibili.includes(c))], scrive };
+}
+
 /** I depositi su cui una persona scrive il roster; `null` = tutti (l'amministratore, o chi non ha limiti). */
-export function limiteDepositi(p: { admin: boolean; depositi?: readonly string[] | null }): readonly string[] | null {
-  if (p.admin) return null;
-  const d = depositiPuliti(p.depositi ?? []);
-  return d.length ? d : null;
+export function limiteDepositi(p: DepositiDiUnaPersona): readonly string[] | null {
+  return limitiSuiDepositi(p).scrive;
+}
+
+/** I depositi di cui una persona vede i conducenti; `null` = tutti. */
+export function limiteVisibilita(p: DepositiDiUnaPersona): readonly string[] | null {
+  return limitiSuiDepositi(p).vede;
+}
+
+/**
+ * Con quel limite, si vede un conducente di quel deposito? Un conducente senza
+ * deposito lo vede solo chi non ha limiti, come per la scrittura.
+ */
+export function vedeIlDeposito(limite: readonly string[] | null, codice: string | null | undefined): boolean {
+  if (limite === null) return true;
+  return !!codice && limite.includes(codice);
 }
 
 /**

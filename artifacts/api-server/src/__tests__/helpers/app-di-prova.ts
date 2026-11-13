@@ -15,7 +15,7 @@ import type { AuthUser, Permission } from "../../lib/auth";
  */
 export function utenteDiProva(
   id: string, interruttori: Permission[] = [], ruolo: "admin" | "user" = "user",
-  extra: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; depositi?: string[] } = {},
+  extra: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; depositi?: string[]; depositiVisibili?: string[] } = {},
 ): AuthUser {
   const accessoDiPrima = Object.fromEntries(interruttori.filter(i => i !== "analytics").map(i => [i, true])) as Partial<Record<InterruttoreDiPrima, true>>;
   const profilo = {
@@ -27,7 +27,7 @@ export function utenteDiProva(
   return {
     id, email: `${id}@prova.local`, fullName: null, role: ruolo,
     ruoli: profilo.ruoli, accessoDiPrima, datiSanitari: profilo.datiSanitari, analisi: profilo.analisi,
-    depositi: extra.depositi ?? [],
+    depositi: extra.depositi ?? [], depositiVisibili: extra.depositiVisibili ?? [],
     diritti, permissions: interruttoriCompatibili(diritti),
     fleetcareRole: "driver", active: true,
   };

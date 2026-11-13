@@ -5,6 +5,7 @@ import {
   depositiPuliti, limiteDepositi, livelloDelMetodo, piuAlto, puo, puoSuUna, ruoliSconosciuti, ruoliValidi, scriveSulDeposito, vedeDatiSanitari,
   MAX_DEPOSITI_PER_UTENTE,
   matriceConModifiche, modificheDelRuolo, rigaChiesta, rigaDelRuolo,
+  limitiSuiDepositi, limiteVisibilita, vedeIlDeposito,
   type Area, type Livello, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
 
@@ -331,5 +332,54 @@ describe("la matrice in vigore: quella di partenza con le modifiche dell'amminis
     expect(rigaChiesta({ ...buona, roster: undefined })).toHaveProperty("errore");
     expect(rigaChiesta({ ...buona, roster: true })).toHaveProperty("errore");
     expect(rigaChiesta({ ...buona, roster: "N" })).toHaveProperty("errore");
+  });
+});
+
+/* PR 2.14d: per ogni utente, i depositi di cui vede i conducenti e quelli di cui li modifica. */
+describe("i depositi che una persona vede e quelli che modifica", () => {
+  const p = (depositi: string[], depositiVisibili: string[], admin = false) => ({ admin, depositi, depositiVisibili });
+
+  it("senza nessun elenco non ha limiti, come prima che esistessero", () => {
+    expect(limitiSuiDepositi(p([], []))).toEqual({ vede: null, scrive: null });
+    expect(limitiSuiDepositi({ admin: false })).toEqual({ vede: null, scrive: null });
+    expect(limitiSuiDepositi({ admin: false, depositi: null, depositiVisibili: null })).toEqual({ vede: null, scrive: null });
+  });
+
+  it("solo quelli che modifica (2.14c): li vede tutti e modifica quelli", () => {
+    expect(limitiSuiDepositi(p(["jesi"], []))).toEqual({ vede: null, scrive: ["jesi"] });
+    expect(limiteDepositi({ admin: false, depositi: ["jesi"] })).toEqual(["jesi"]);
+    expect(limiteVisibilita({ admin: false, depositi: ["jesi"] })).toBeNull();
+  });
+
+  it("con dei visibili: vede quelli e modifica solo i suoi", () => {
+    expect(limitiSuiDepositi(p(["jesi"], ["jesi", "ancona"]))).toEqual({ vede: ["jesi", "ancona"], scrive: ["jesi"] });
+    // quello che modifica lo vede sempre, anche se l'elenco dei visibili non lo nomina
+    expect(limitiSuiDepositi(p(["jesi"], ["ancona"]))).toEqual({ vede: ["ancona", "jesi"], scrive: ["jesi"] });
+  });
+
+  it("con dei visibili e nessuno da modificare: vede e non modifica niente (non «tutti»)", () => {
+    const l = limitiSuiDepositi(p([], ["jesi"]));
+    expect(l).toEqual({ vede: ["jesi"], scrive: [] });
+    expect(scriveSulDeposito(l.scrive, "jesi")).toBe(false);
+    expect(vedeIlDeposito(l.vede, "jesi")).toBe(true);
+  });
+
+  it("l'amministratore di sistema non ha mai limiti", () => {
+    expect(limitiSuiDepositi(p(["jesi"], ["jesi"], true))).toEqual({ vede: null, scrive: null });
+  });
+
+  it("un conducente senza deposito lo vede solo chi non ha limiti", () => {
+    expect(vedeIlDeposito(null, null)).toBe(true);
+    expect(vedeIlDeposito(null, "osimo")).toBe(true);
+    expect(vedeIlDeposito(["jesi"], null)).toBe(false);
+    expect(vedeIlDeposito(["jesi"], undefined)).toBe(false);
+    expect(vedeIlDeposito(["jesi"], "osimo")).toBe(false);
+    expect(vedeIlDeposito(["jesi"], "jesi")).toBe(true);
+    expect(vedeIlDeposito([], "jesi")).toBe(false);
+  });
+
+  it("gli elenchi scritti male non valgono: codici puliti, senza doppi", () => {
+    expect(limitiSuiDepositi({ admin: false, depositi: ["jesi", " jesi ", ""] as any, depositiVisibili: [3, "ancona", "ancona"] as any }))
+      .toEqual({ vede: ["ancona", "jesi"], scrive: ["jesi"] });
   });
 });

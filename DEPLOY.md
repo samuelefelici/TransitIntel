@@ -1921,25 +1921,44 @@ Come funziona:
   almeno la lettura sulla sua area) e riallineata a ogni avvio. Non va scritta
   a mano: i diritti stanno in `ruoli`, `accesso_di_prima`, `dati_sanitari` e
   `analisi` (migrazione 0009).
-- **I depositi di una persona (PR 2.14c).** La scrittura sul roster si può
-  limitare ai conducenti di alcuni depositi: è il caso del Capo deposito. Si
-  scelgono in Utenti e accessi › «Modifica» › «Depositi del roster», per chi il
-  roster lo scrive.
-  - **Nessun deposito scelto vuol dire nessun limite.** Il giorno del rilascio
-    nessuno ne ha: il limite comincia quando l'amministratore li sceglie.
-  - **Che cosa limita**: turni assegnati e tolti (anche quello tolto a un
-    conducente per darlo a un altro), cambi turno (devono essere dei propri
+- **I depositi di una persona (PR 2.14c e 2.14d).** Per ogni utente
+  l'amministratore sceglie, deposito per deposito, se **modifica** i
+  conducenti, li **vede** soltanto, o **non li vede**: è il caso del Capo
+  deposito. Si sceglie in Utenti e accessi, alla creazione dell'utente o da
+  «Modifica», nel riquadro «Depositi del roster» (compare per chi può aprire
+  il roster o il personale).
+  - **In testa c'è «Vede i conducenti di tutti i depositi».** Acceso, è
+    com'era con la 2.14c: si sceglie solo quali modifica, e nessuno scelto
+    vuol dire tutti. Spento, ogni deposito ha le tre scelte, e la persona
+    modifica solo quelli segnati «Modifica». Spegnerlo non cambia niente da
+    solo: parte da quello che la persona poteva già fare, e l'amministratore
+    toglie.
+  - **Il giorno del rilascio nessuno cambia quello che vede**: il limite
+    comincia quando l'amministratore spegne l'interruttore a qualcuno.
+  - **Nel database** sono due elenchi su `users`: `depositi` (quelli che
+    modifica, migrazione 0012) e `depositi_visibili` (quelli che vede,
+    migrazione 0016; vuoto = tutti). La regola è in `lib/permessi`
+    (`limitiSuiDepositi`).
+  - **Che cosa non vede** chi ha un limite: i conducenti degli altri depositi,
+    da nessuna parte. Elenco e scheda dell'anagrafica, storico, esportazione,
+    tabellone, rotazioni dei riposi, e nemmeno i depositi stessi negli elenchi
+    da cui si sceglie. Per lui un conducente di un altro deposito è come se
+    non ci fosse (404), e un tentativo di scriverci sopra viene rifiutato
+    senza dire di che deposito è.
+  - **I turni presi da conducenti che non vede** nel tabellone risultano
+    occupati, senza dire da chi: altrimenti gli sembrerebbero scoperti.
+  - **Che cosa non modifica**: turni assegnati e tolti (anche quello tolto a
+    un conducente per darlo a un altro), cambi turno (devono essere dei propri
     depositi tutti e due i conducenti), voci di assenza e presenza, rotazioni
     dei riposi e riposi generati, conducenti fittizi creati da chi non scrive
     il «Personale».
-  - **Che cosa non limita**: quello che si legge. Il tabellone degli altri
-    depositi resta visibile, con il segno «sola lettura» sulle righe. Se chi è
-    titolare dei dati vuole che un Capo deposito non veda gli altri depositi, è
-    un'altra modifica, da decidere. Non limita nemmeno la scrittura dei dati
-    del personale, che è un'altra area.
+  - **Chi scrive il «Personale»** modifica le schede di tutti i conducenti che
+    vede, anche se sul roster ne modifica solo alcuni: i dati del personale
+    sono un'altra area. Non mette però un conducente in un deposito che non
+    vede, e non fa l'import dell'anagrafica, che tocca tutti i depositi.
   - **Il deposito di un conducente** è la sua residenza di servizio, abbinata
     al catalogo come nel resto dell'anagrafica (nome, codice o alias). Un
-    conducente senza deposito lo scrive solo chi non ha limiti.
+    conducente senza deposito lo vede e lo scrive solo chi non ha limiti.
   - L'amministratore non ha mai limiti. I depositi restano scritti anche a chi
     perde la scrittura sul roster: sono un limite, e tornano a valere se la
     riottiene.

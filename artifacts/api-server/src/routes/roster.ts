@@ -39,7 +39,7 @@ import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
 import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
-import { fuoriDaiDepositi } from "../lib/roster-limite-depositi";
+import { fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
 import { catalogoPer, esitoScrittura, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
@@ -266,8 +266,14 @@ router.get("/roster/board", async (req, res): Promise<void> => {
     const al = dayList[dayList.length - 1]!;
     const ex = db as unknown as Ex;
 
-    /* i conducenti come li può vedere chi chiede: senza «personale», solo i dati operativi */
+    /* i conducenti come li può vedere chi chiede: senza «personale», solo i dati operativi;
+     * chi vede solo alcuni depositi (PR 2.14d), solo i conducenti di quelli */
     const drivers = await conducentiPer(req, ex);
+    /* per chi ha quel limite, turni e voci dei conducenti che non vede non escono: delle voci
+     * niente, dei turni solo che sono occupati (giorno e turno, senza il conducente),
+     * altrimenti gli sembrerebbero scoperti e proverebbe ad assegnarli */
+    const visti = haLimiteDiVisibilita(req) ? new Set(drivers.map(d => String(d.id).toLowerCase())) : null;
+    const vede = (driverId: unknown) => !visti || visti.has(String(driverId).toLowerCase());
     const righeCanale = await canale(ex, from, al);
     const assegnazioni = righe(await ex.execute(sql`
       SELECT id::text, driver_id::text, day::text AS day, duty_code, dss_id::text, snapshot, forzatura, ricollegamenti
@@ -310,15 +316,18 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       pubblicati,
       programmi,
       dutiesByDss,
-      assignments: assegnazioni.map((a: any) => ({
+      assignments: assegnazioni.filter((a: any) => vede(a.driver_id)).map((a: any) => ({
         id: a.id, driverId: a.driver_id, day: String(a.day).slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
         snapshot: a.snapshot ?? null, forzatura: a.forzatura ?? null,
         stato: stato(String(a.day).slice(0, 10), a.dss_id),
         ricollegata: Array.isArray(a.ricollegamenti) && a.ricollegamenti.length ? a.ricollegamenti[a.ricollegamenti.length - 1] : null,
       })),
+      /* i turni presi da conducenti che chi chiede non vede: occupati, senza dire da chi */
+      occupatiDaAltri: assegnazioni.filter((a: any) => !vede(a.driver_id))
+        .map((a: any) => ({ day: String(a.day).slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id })),
       violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, al),
       /* i codici sanitari (malattia, infortunio, 104) solo a chi ha il permesso roster */
-      entries: entriesQ.rows.map((e: any) => mascheraVoce({
+      entries: entriesQ.rows.filter((e: any) => vede(e.driver_id)).map((e: any) => mascheraVoce({
         id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
         source: e.source ?? null,
       }, vedeCodiciSanitari(req))),

@@ -18,7 +18,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { eseguiPython, jsonDallUscita } from "./lavori/python";
 import { richiedeDiritto } from "./auth";
-import { controlloDepositi, fuoriDaiDepositi } from "./roster-limite-depositi";
+import { controlloDepositi, fuoriDaiDepositi, nonVisibili } from "./roster-limite-depositi";
 import type { Ex } from "./anagrafica-store";
 import { CODICI_SANITARI } from "./roster-voci";
 
@@ -130,7 +130,12 @@ router.get("/roster/rotazioni-riposi/:id/assegnazioni", async (req, res): Promis
       SELECT week_index, driver_id FROM roster_rotazione_assegnazioni
        WHERE rotazione_id = ${id}::uuid ORDER BY week_index
     `);
-    res.json({ assegnazioni: r.rows.map((x: any) => ({ weekIndex: x.week_index, driverId: x.driver_id })) });
+    /* chi vede solo alcuni depositi (PR 2.14d) non riceve i conducenti degli altri */
+    const nascosti = await nonVisibili(req, db as unknown as Ex, r.rows.map((x: any) => x.driver_id));
+    res.json({
+      assegnazioni: r.rows.filter((x: any) => !nascosti?.has(String(x.driver_id).toLowerCase()))
+        .map((x: any) => ({ weekIndex: x.week_index, driverId: x.driver_id })),
+    });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -168,6 +173,11 @@ router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloRoster, async (req, 
       const prima = await tx.execute<any>(sql`
         SELECT driver_id, week_index FROM roster_rotazione_assegnazioni WHERE rotazione_id = ${id}::uuid`);
       const primaMap = new Map<string, number>(prima.rows.map((r: any) => [r.driver_id, Number(r.week_index)]));
+      /* Chi vede solo alcuni depositi (PR 2.14d) non ha ricevuto i conducenti degli altri, e
+       * la pagina rimanda l'elenco intero: quelli che non vede restano dov'erano, altrimenti
+       * salvando li toglierebbe dalla rotazione senza saperlo. */
+      const nascosti = await nonVisibili(req, tx as unknown as Ex, [...primaMap.keys()]);
+      if (nascosti) for (const [d, wi] of primaMap) if (nascosti.has(String(d).toLowerCase()) && !byDriver.has(d)) byDriver.set(d, wi);
       const toccati = [...new Set([...byDriver.keys(), ...primaMap.keys()])].sort();
       if (toccati.length) {
         /* stesso ordine per tutti: due salvataggi insieme non si incrociano */
@@ -304,8 +314,10 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloRoster, async (req
       ) s
     `);
     const scope = { rows: controllo ? tutti.rows.filter((r: any) => controllo.scrive(r.residenza_servizio)) : tutti.rows };
-    /* quanti conducenti restano fuori perché di un altro deposito: la pagina lo dice */
-    const fuoriDeposito = tutti.rows.length - scope.rows.length;
+    /* quanti conducenti restano fuori perché di un altro deposito: la pagina lo dice. Si
+     * contano solo quelli che chi chiede vede: degli altri non sa nemmeno quanti sono */
+    const fuoriDeposito = controllo
+      ? tutti.rows.filter((r: any) => controllo.vede(r.residenza_servizio) && !controllo.scrive(r.residenza_servizio)).length : 0;
     const scopeIds: string[] = scope.rows.map((r: any) => r.id);
     /* L'ancora la fissa la prima generazione, come prima. Chi ha dei depositi la
      * fissa solo se genera davvero per qualcuno dei suoi: altrimenti deciderebbe
