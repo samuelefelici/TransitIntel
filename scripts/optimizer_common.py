@@ -51,7 +51,7 @@ COST_PER_IDLE_HOUR = 5
 
 
 # ═══════════════════════════════════════════════════════════════
-#  VEHICLE COST RATES — Tariffe turni macchina (MAIOR-inspired)
+#  VEHICLE COST RATES — Tariffe turni macchina
 # ═══════════════════════════════════════════════════════════════
 
 @dataclass
@@ -59,7 +59,6 @@ class VehicleCostRates:
     """
     Tariffe per il calcolo costi turni macchina.
     Tutti i valori sono in euro — configurabili dall'operatore.
-    Ispirate al modello MAIOR VS.
     """
 
     # A. Costo fisso giornaliero per tipo veicolo (assicurazione, bollo, manutenzione)
@@ -127,13 +126,13 @@ class VehicleCostRates:
     per_missed_turnaround: float = 40.0
     turnaround_max_gap: int = 30
 
-    # F. Sbilanciamento durata turno (QUADRATICO, ispirato a MAIOR CostoLavoroQuadratico)
+    # F. Sbilanciamento durata turno (QUADRATICO)
     target_shift_duration: int = 600    # 10h = target durata turno macchina (minuti)
     balance_quadratic_coeff: float = 0.0003
     # Esempio: turno 8h → delta=120min → 120²×0.0003 = €4.32
     #          turno 14h → delta=240min → 240²×0.0003 = €17.28
 
-    # G. Gap nastro-lavoro (QUADRATICO, ispirato a MAIOR coeff_lav_nastro_quad)
+    # G. Gap nastro-lavoro (QUADRATICO)
     gap_quadratic_coeff: float = 0.0005
     # nastro=600min, lavoro=450min → gap=150 → 150²×0.0005 = €11.25
 
@@ -162,7 +161,7 @@ class VehicleCostRates:
 
     # FIX-VSP-CLUSTER: raggio (in metri) entro cui due fermate terminale con
     # stop_id diversi vengono trattate come "stesso punto" — deadhead km=0,
-    # tempo=0, nessun buffer. Riproduce la logica dei cluster MAIOR/BDS:
+    # tempo=0, nessun buffer. Logica dei cluster di cambio:
     # capolinea fisicamente coincidenti ma con codifica GTFS multipla
     # (es. "Stazione FS lato A/B/C", "Ugo Bassi sud/nord").
     # CRITICO per minimizzazione veicoli: senza questo, archi tight (corsa che
@@ -174,7 +173,7 @@ class VehicleCostRates:
     # Soglia sotto la quale il deadhead è trascurabile
     min_deadhead_km: float = 0.5
 
-    # ── NORMATIVA VSP (MAIOR-style, Manuale normativa VS §4.7/§6) ──
+    # ── NORMATIVA VSP ──
     # Tutti opzionali: default = regola disattiva. Config: config.normativa.
     # VINCOLO_CAMBI_LINEA — costo per ogni cambio linea nel blocco + tetto hard
     cost_per_line_change: float = 0.0
@@ -269,7 +268,7 @@ class VehicleShiftCost:
     gap_penalty: float = 0.0
     downsize_penalty: float = 0.0
     vcsp_penalty: float = 0.0    # feedback CSP (costo-ombra turni guida)
-    normativa_cost: float = 0.0  # cambi linea, tripper, violazioni hard (MAIOR-style)
+    normativa_cost: float = 0.0  # cambi linea, tripper, violazioni hard
     total: float = 0.0
 
     def compute(self) -> float:
@@ -321,12 +320,12 @@ MIN_BREAK_AFTER_DRIVING = 15   # min
 
 
 # ═══════════════════════════════════════════════════════════════
-#  BDS NORMATIVA — Dataclass ispirate a MAIOR BDS v4
+#  NORMATIVA TURNI GUIDA — Dataclass
 # ═══════════════════════════════════════════════════════════════
 
 @dataclass
 class PrePostRules:
-    """Tempi accessori per turni guida, ispirato a BDS PrePostTipoLocalita.
+    """Tempi accessori per turni guida.
 
     4 livelli: turno, ripresa, pezzo guida, mansione.
     Differenziati deposito vs cambio in linea.
@@ -421,7 +420,7 @@ CEE561Config = RD131Config
 
 @dataclass
 class IntervalloPastoConfig:
-    """Vincolo intervallo pasto ispirato a BDS ACIntervalloPasto.
+    """Vincolo intervallo pasto.
 
     severita: "avviso" (default) = la pausa pasto mancante NON invalida il
     turno e non conta nelle violazioni — compare come avvertimento separato.
@@ -485,7 +484,7 @@ class IntervalloPastoConfig:
 
 @dataclass
 class StaccoMinimo:
-    """Stacco minimo ispirato a BDS STACCO_MINIMO_TRA_PEZZI_GUIDA_COSTANTE."""
+    """Stacco minimo."""
     tra_pezzi_guida: int = 5           # min — cambio veicolo al cluster
     per_collegamento_vettura: int = 3   # min — collegamento su vettura come passeggero
     stesso_veicolo: int = 0             # min — continuità sullo stesso mezzo
@@ -515,7 +514,7 @@ class StaccoMinimo:
 
 @dataclass
 class GestoreRiprese:
-    """Configurazione riprese ispirata a BDS GestoreRipreseGenerale."""
+    """Configurazione riprese."""
     sosta_che_spezza: int = 75          # min — sosta ≥ questo valore → spezzatura
     comprendi_pre_post: bool = True     # nel calcolo durata sosta, includi pre/post
     max_riprese: int = 2                # max numero riprese per turno
@@ -551,7 +550,7 @@ class GestoreRiprese:
 
 @dataclass
 class CoperturaSosteConfig:
-    """Configurazione copertura soste ispirata a BDS CoperturaSostePerTipoLinea."""
+    """Configurazione copertura soste."""
     min_sosta_cambio_urbano: int = 5       # min — soste > 5 min su cambio urbano → coperte
     min_sosta_cambio_extra: int = 10       # min — soste > 10 min su cambio extra → coperte
     min_sosta_deposito: int = 0            # min — soste in deposito → sempre punti di taglio
@@ -584,7 +583,7 @@ class CoperturaSosteConfig:
 
 @dataclass
 class CollegamentoConfig:
-    """Configurazione collegamenti ispirata a BDS GESTORE_COLLEGAMENTI."""
+    """Configurazione collegamenti."""
     trasferimenti: str = "FORFE_E_VETTURA"      # VIETATI | SOLO_FORFETTIZZATI | SOLO_VETTURA | FORFE_E_VETTURA
     moltiplicatore_trasferimenti: float = 1.0    # retribuzione al 100%
     moltiplicatore_raggiungimenti: float = 0.7   # retribuzione al 70%
@@ -626,7 +625,7 @@ class CollegamentoConfig:
 
 @dataclass
 class WorkCalculation:
-    """Calcolo lavoro ispirato a BDS RegolaCalcoloLavoroSommaRiprese."""
+    """Calcolo lavoro."""
     driving_min: int = 0
     idle_at_terminal_min: int = 0       # attese al capolinea tra corse
     pre_post_min: int = 0               # pre-turno + pre-ripresa + pre-pezzo
@@ -664,7 +663,7 @@ class WorkCalculation:
 
 @dataclass
 class BDSValidation:
-    """Risultato validazione BDS di un turno guida (RD 131/1938)."""
+    """Risultato della verifica normativa di un turno guida (RD 131/1938)."""
     classificazione_valida: bool = True
     rd131_ok: bool = True
     sosta_capolinea_ok: bool = True

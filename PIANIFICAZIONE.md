@@ -61,7 +61,7 @@ più giorni speciali (vigilie, agosto, eventi).
 
 ## 3. Validità: un sistema semplice per gli operatori
 
-I sistemi commerciali (HASTUS, IVU.plan, MAIOR, Optibus) convergono su tre
+I sistemi professionali di pianificazione convergono su tre
 pattern componibili; la raccomandazione per TransitIntel è la **doppia
 rappresentazione**:
 
@@ -95,7 +95,7 @@ di validità esistente resta come *vista compilata* di verifica.
   ≤ 50 km (art. 3.a): valgono R.D. 148/1931, D.Lgs. 234/2007 e CCNL
   Autoferrotranvieri. Il motore di regole deve quindi essere **parametrico
   per contratto** (urbano vs extraurbano > 50 km), mai cablato su un solo
-  regime. I parametri BDS della Fucina sono già configurabili: la stessa
+  regime. I parametri della normativa turni della Fucina sono già configurabili: la stessa
   filosofia va estesa al roster (riposo giornaliero 11h, riposo settimanale,
   limite 6° giorno).
 

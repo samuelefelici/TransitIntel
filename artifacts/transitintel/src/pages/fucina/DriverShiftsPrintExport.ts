@@ -20,11 +20,11 @@
  *  ├────────────────────────────────────────┤
  *  │  KPI: Lav 6h30 · Vuoto 25′ · Idle 0′   │
  *  │  Cambi 1 · Veicoli V8,V12              │
- *  │  Conformità BDS: ✅ (CEE 561, pasto..)  │
+ *  │  Conformità alla normativa: ✅ (CEE 561, pasto..)  │
  *  └────────────────────────────────────────┘
  *
  * Pagina finale: analisi globale (composizione tipi, distribuzione,
- * top linee, costi, conformità BDS aggregata).
+ * top linee, costi, conformità alla normativa aggregata).
  */
 import type {
   DriverShiftsResult,
@@ -251,11 +251,11 @@ function shiftColumnHtml(shift: DriverShiftData): string {
     `;
   }).join(`<div class="interruption">⏸ Interruzione: ${escape(shift.interruption || "")} (${formatDuration(shift.interruptionMin || 0)})</div>`);
 
-  // BDS validation badge
+  // badge della verifica normativa
   const bdsBadge = shift.bdsValidation
     ? (shift.bdsValidation.valid
-        ? `<span class="bds ok" title="Conforme">✅ BDS</span>`
-        : `<span class="bds ko" title="${escape(shift.bdsValidation.violations.join(' · '))}">⚠ BDS ${shift.bdsValidation.violations.length}</span>`)
+        ? `<span class="bds ok" title="Conforme">✅ Norma</span>`
+        : `<span class="bds ko" title="${escape(shift.bdsValidation.violations.join(' · '))}">⚠ Norma ${shift.bdsValidation.violations.length}</span>`)
     : "";
 
   return `<section class="shift" style="--type-color:${typeColor};">
@@ -285,7 +285,7 @@ function shiftColumnHtml(shift: DriverShiftData): string {
       ${shift.costEuro != null ? `<div><strong>Costo:</strong> €${shift.costEuro.toFixed(0)}</div>` : ""}
       ${shift.workCalculation ? `
         <div class="calc">
-          <strong>Calcolo (BDS):</strong>
+          <strong>Calcolo:</strong>
           <span>netto ${fmtDur(shift.workCalculation.lavoroNetto)}</span>
           <span>· conv. ${fmtDur(shift.workCalculation.lavoroConvenzionale)}</span>
           <span>· guida ${fmtDur(shift.workCalculation.driving)}</span>
@@ -348,7 +348,7 @@ function buildGlobalAnalysisHtml(result: DriverShiftsResult): string {
   const minN = nastri[0] ?? 0;
   const maxN = nastri[nastri.length - 1] ?? 0;
 
-  // BDS
+  // normativa
   const withBds = shifts.filter(s => s.bdsValidation);
   const conformi = withBds.filter(s => s.bdsValidation!.valid).length;
   const bdsPct = withBds.length ? Math.round((conformi / withBds.length) * 100) : null;
@@ -369,7 +369,7 @@ function buildGlobalAnalysisHtml(result: DriverShiftsResult): string {
       <div class="kpi"><div class="lbl">Spezzati</div><div class="val">${summary.spezzatoPct}%</div></div>
       <div class="kpi"><div class="lbl">Cambi linea</div><div class="val">${summary.totalCambi || totalCambi}</div></div>
       <div class="kpi"><div class="lbl">Auto aziendali</div><div class="val">${summary.companyCarsUsed}/${result.companyCars ?? "—"}</div></div>
-      ${bdsPct !== null ? `<div class="kpi ${bdsPct >= 90 ? 'ok' : bdsPct >= 70 ? 'warn' : 'ko'}"><div class="lbl">Conformità BDS</div><div class="val">${bdsPct}%</div></div>` : ""}
+      ${bdsPct !== null ? `<div class="kpi ${bdsPct >= 90 ? 'ok' : bdsPct >= 70 ? 'warn' : 'ko'}"><div class="lbl">Conformità alla normativa</div><div class="val">${bdsPct}%</div></div>` : ""}
       ${result.unassignedBlocks > 0 ? `<div class="kpi ko"><div class="lbl">Non assegnati</div><div class="val">${result.unassignedBlocks}</div></div>` : ""}
     </div>
 
@@ -420,7 +420,7 @@ function buildGlobalAnalysisHtml(result: DriverShiftsResult): string {
           </table>
         ` : ""}
         ${withBds.length ? `
-          <h3>Violazioni BDS</h3>
+          <h3>Violazioni normative</h3>
           <table class="mini">
             <tbody>
               ${(() => {
@@ -455,7 +455,7 @@ function buildGlobalAnalysisHtml(result: DriverShiftsResult): string {
 
     <p class="note">
       Note: <em>nastro</em> = tempo totale dall'inizio al fine turno; <em>lavoro</em> = tempo retribuito (esclude interruzione &gt; 1h);
-      <em>cambi in linea</em> = passaggi di vettura senza tornare in deposito; la <em>conformità BDS</em> verifica regole CEE 561, intervallo pasto,
+      <em>cambi in linea</em> = passaggi di vettura senza tornare in deposito; la <em>conformità alla normativa</em> verifica regole CEE 561, intervallo pasto,
       stacco minimo, durata nastro e numero riprese.
     </p>
   </section>`;

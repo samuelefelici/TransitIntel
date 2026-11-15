@@ -1,5 +1,5 @@
 /**
- * WorkWindowPanel — "Area di lavoro" (stile MAIOR Bdsi, finestra LAVORO) condivisa
+ * WorkWindowPanel — "Area di lavoro" condivisa
  * tra Turni Macchina e Turni Guida.
  *
  * È una PAGINA a schermo intero: sidebar con il gantt dei turni (mini-gantt,
@@ -648,7 +648,7 @@ export default function WorkWindowPanel({
                 <div key={s.id} data-wwshift={s.id}
                   className="absolute rounded-lg border border-border/50 bg-background/95 shadow-xl select-none"
                   style={{ left: p.x, top: p.y, width: 520 }}>
-                  {/* header (drag della card) — stile nastro Bdsi */}
+                  {/* header (drag della card) */}
                   <div onMouseDown={startDrag(`shift:${s.id}`, undefined, (ev, moved) => {
                       if (moved && overSidebar(ev)) onRemoveShift(s.id);   // consegna al gantt
                     })}

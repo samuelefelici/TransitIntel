@@ -152,7 +152,7 @@ export const DEFAULT_COST_RATES: Record<string, number> = {
 
 export const DEFAULT_SOLVER: Record<string, any> = {
   solverIntensity: 2,
-  timeLimit: 240, // allineato al default Maior-style del solver v4
+  timeLimit: 240, // allineato al default del solver v4
   cutOnlyAtClusters: true,
 };
 

@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
- *  Strumenti BDSI per il Workspace Turni Guida
+ *  Strumenti di correzione per il Workspace Turni Guida
  *  - Stato di verifica + forzatura (§10.1)
  *  - Ricerca a chips (cap. 7)
  *  - Riassunti tipologia × residenza con drill-down (cap. 15)
@@ -27,8 +27,8 @@ export function effectiveVerifyState(s: DriverShiftData): VerifyState | null {
 
 export const VERIFY_BADGE: Record<VerifyState, { label: string; cls: string }> = {
   da_verificare: { label: "⏳ DA VERIFICARE", cls: "bg-zinc-500/15 text-zinc-300" },
-  conforme: { label: "✅ BDS", cls: "bg-amber-500/15 text-amber-300" },
-  scorretto: { label: "❌ BDS", cls: "bg-red-500/15 text-red-400" },
+  conforme: { label: "✅ Norma", cls: "bg-amber-500/15 text-amber-300" },
+  scorretto: { label: "❌ Norma", cls: "bg-red-500/15 text-red-400" },
   forzato: { label: "🔵 FORZATO", cls: "bg-blue-500/15 text-blue-300" },
 };
 
@@ -41,7 +41,7 @@ export function VerifyBadge({ shift }: { shift: DriverShiftData }) {
     ? `Forzato dall'operatore${shift.forcedReason ? `: ${shift.forcedReason}` : ""}${nViol ? ` (${nViol} violazioni ignorate)` : ""}`
     : st === "da_verificare"
       ? "Modificato a mano: verifica in corso…"
-      : (shift.bdsValidation?.valid ? "Conforme BDS" : shift.bdsValidation?.violations.join(", ") ?? "");
+      : (shift.bdsValidation?.valid ? "Conforme alla normativa" : shift.bdsValidation?.violations.join(", ") ?? "");
   return (
     <span title={title} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${b.cls}`}>
       {st === "scorretto" && nViol ? `${b.label} (${nViol})` : b.label}
@@ -248,7 +248,7 @@ export function RiassuntiTable({ shifts, onDrill }: {
         </tbody>
       </table>
       <p className="text-[9px] text-muted-foreground/60 mt-1.5">
-        Clicca su un N° per vedere quei turni nella lista (come gli "occhiali" del riassunto BDS). Sfrido = nastro − lavoro.
+        Clicca su un N° per vedere quei turni nella lista. Sfrido = nastro − lavoro.
       </p>
     </div>
   );

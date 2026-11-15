@@ -318,7 +318,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   }, [pipelineMode]);
   // Robustezza ai ritardi: buffer δ sul concatenamento, dai dati di traffico reali
   const [robustness, setRobustness] = useState<"off" | "media" | "alta">("off");
-  // Normativa turni macchina (regole stile MAIOR): cambi linea, tripper, pezzi,
+  // Normativa turni macchina (regole aziendali): cambi linea, tripper, pezzi,
   // sosta max al capolinea, vuoti interni. Tutto opzionale → payload solo se attivo.
   type NormativaCfg = {
     costoCambioLinea?: number; maxCambiLinea?: number; vietaCambiLinea?: boolean;
@@ -514,7 +514,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
   const [crewTimeLimit, setCrewTimeLimit] = useState(90);
 
   /* ── VCSP: config COMPLETA turni guida (stessi parametri del CSP standalone:
-   *    BDS, costi, scalini, vincoli globali…). Default dal tipo di servizio;
+   *    normativa, costi, scalini, vincoli globali…). Default dal tipo di servizio;
    *    se esiste un profilo-regole crew di default (azienda/progetto) parte
    *    da quello. Il pannello di modifica è lo STESSO dell'area Turni Guida. */
   const [crewConfig, setCrewConfig] = useState<OperatorConfig>(() => buildDefaultCrewConfig("urbano"));
@@ -773,12 +773,12 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
           // probes = sonda di spostamento (0 = disattivata dall'operatore).
           bodyPayload.vcsp = { rounds: vcspRounds, crewTimeLimit, probes: vcspProbe ? 4 : 0 };
           // Parità col CSP standalone: TUTTI i parametri turni guida
-          // (BDS, costi, scalini, vincoli…) viaggiano nel giro integrato.
+          // (normativa, costi, scalini, vincoli…) viaggiano nel giro integrato.
           bodyPayload.crewConfig = { ...crewConfig, bds: { ...(crewConfig as any).bds, serviceType } };
         }
         // Robustezza ai ritardi (buffer δ dal traffico reale): off/media/alta
         if (robustness !== "off") bodyPayload.robustness = robustness;
-        // Normativa turni macchina (MAIOR-style): solo le regole attivate
+        // Normativa turni macchina: solo le regole attivate
         if (Object.keys(normativa).length > 0) bodyPayload.vspNormativa = normativa;
         // Parametri turni macchina: fonte unica vspConfig (pannello + quick controls).
         // vehicleCosts top-level (VehicleCostRates.from_config) + vspAdvanced (VSPConfig).
@@ -1072,10 +1072,10 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
               </div>
     </>
   );
-  // Normativa turni macchina (regole MAIOR-style)
+  // Normativa turni macchina (regole aziendali)
   const cfgNormativa = (
     <>
-              {/* ── NORMATIVA TURNI MACCHINA (regole stile MAIOR, tutte opzionali) ── */}
+              {/* ── NORMATIVA TURNI MACCHINA (regole aziendali, tutte opzionali) ── */}
               {solverMode !== "greedy" && (
                 <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
                   className="bg-card/40 border border-border/30 rounded-xl">
@@ -1084,7 +1084,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                     <div className="flex items-center gap-2">
                       <span className="text-base">📏</span>
                       <span className="text-xs font-semibold text-amber-300">Normativa turni macchina</span>
-                      <HelpTip testo={"Regole aziendali sulla composizione dei blocchi vettura (stile MAIOR): cambi di linea, blocchi troppo corti, numero di pezzi, soste massime, vuoti interni. I divieti eliminano gli archi dal grafo; i cap vengono garantiti spezzando i blocchi in violazione."} />
+                      <HelpTip testo={"Regole aziendali sulla composizione dei blocchi vettura: cambi di linea, blocchi troppo corti, numero di pezzi, soste massime, vuoti interni. I divieti eliminano gli archi dal grafo; i cap vengono garantiti spezzando i blocchi in violazione."} />
                       {normativaActiveCount > 0 && (
                         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
                           {normativaActiveCount} regol{normativaActiveCount === 1 ? "a attiva" : "e attive"}
@@ -1564,7 +1564,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                   </div>
                   <p className="text-[11px] text-muted-foreground leading-relaxed">
                     Un unico processo che genera <b className="text-cyan-300">turni macchina E turni guida insieme</b>:
-                    a ogni round i turni guida rimandano "costi-ombra" sui blocchi difficili da tagliare in turni legali (BDS),
+                    a ogni round i turni guida rimandano "costi-ombra" sui blocchi difficili da tagliare in turni legali,
                     e i turni macchina si riorganizzano. Al salvataggio vengono creati <b className="text-cyan-300">entrambi
                     gli scenari</b> — li ritrovi nelle due aree di lavoro (Vetture e Turni Guida) come sempre.
                   </p>
@@ -1609,7 +1609,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                       <div className="flex items-center gap-2">
                         <SlidersHorizontal className="w-4 h-4 text-purple-400" />
                         <span className="text-xs font-semibold text-purple-300">Tutti i parametri turni guida (pannello completo)
-                          <HelpTip testo={"Cosa succede: apre lo STESSO pannello dell'area Turni Guida con TUTTI i parametri del CSP — regole BDS (nastro, guida, pause, spezzato), costi e scalini, soste spezzanti, vincoli globali. Il VCSP usa ESATTAMENTE questa configurazione in ogni round. Qui non si salva nulla: per salvare usa la sezione Algoritmo in cima."} className="ml-1" />
+                          <HelpTip testo={"Cosa succede: apre lo STESSO pannello dell'area Turni Guida con TUTTI i parametri del CSP — regole della normativa (nastro, guida, pause, spezzato), costi e scalini, soste spezzanti, vincoli globali. Il VCSP usa ESATTAMENTE questa configurazione in ogni round. Qui non si salva nulla: per salvare usa la sezione Algoritmo in cima."} className="ml-1" />
                           {crewCfgTouched && (
                             <span className="ml-1.5 text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">personalizzati</span>
                           )}
@@ -1662,7 +1662,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                       })()}
                       <p className="text-[10px] text-muted-foreground">
                         Il tipo di servizio scelto sopra imposta i preset normativi; dal pannello completo
-                        puoi rifinire ogni regola BDS, costo e vincolo — identico all'area Turni Guida.
+                        puoi rifinire ogni regola della normativa, costo e vincolo — identico all'area Turni Guida.
                       </p>
                     </div>
                   </div>
@@ -1882,7 +1882,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                             <th className="text-right px-2">Turni guida</th>
                             <th className="text-right px-2">Suppl.</th>
                             <th className="text-right px-2">Costo guida</th>
-                            <th className="text-right px-2">Violazioni BDS</th>
+                            <th className="text-right px-2">Violazioni normative</th>
                             <th className="text-right pl-2">TOTALE</th>
                           </tr>
                         </thead>
@@ -1918,7 +1918,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                       <p className="text-[10px] text-muted-foreground">
                         Round selezionato: <b className="text-cyan-300">{crewSum.totalShifts} turni guida</b> ({crewSum.totalSupplementi} supplementi) ·
                         €{(crewSum.totalDailyCost ?? 0).toLocaleString("it-IT")}/giorno personale ·
-                        {" "}{crewSum.validation?.totalViolations ?? 0} violazioni BDS.
+                        {" "}{crewSum.validation?.totalViolations ?? 0} violazioni normative.
                         {" "}<b className="text-cyan-300">Turni macchina E turni guida sono già pronti</b>: al salvataggio vengono
                         creati entrambi gli scenari e il pulsante "Apri Turni Guida (già generati)" li apre senza rilanciare nulla.
                       </p>
@@ -2075,7 +2075,7 @@ export default function OptimizerStep({ gtfsSelection, assignment, initialResult
                                   <th className="text-right px-2">Lavoro</th>
                                   <th className="text-right px-2">Nastro</th>
                                   <th className="text-right px-2">Riprese</th>
-                                  <th className="text-right pl-2">BDS</th>
+                                  <th className="text-right pl-2">Norma</th>
                                 </tr>
                               </thead>
                               <tbody>
