@@ -65,7 +65,8 @@ const importaIn = (progetto: string, file: Buffer, campi: Record<string, string>
   return r.attach("file", file, "gtfs.zip");
 };
 const esportaDa = async (progetto: string): Promise<AdmZip> => {
-  const r = await request(app).get(`/api/planning-studio/projects/${progetto}/export-gtfs`).buffer(true)
+  // forzando: qui si guardano i codici, non il controllo del file (gtfs-verifica.test.ts); il database di prova non ha l'azienda
+  const r = await request(app).get(`/api/planning-studio/projects/${progetto}/export-gtfs?versione=bozza&forza=1`).buffer(true)
     .parse((res, fine) => { const pezzi: Buffer[] = []; res.on("data", (c: Buffer) => pezzi.push(c)); res.on("end", () => fine(null, Buffer.concat(pezzi))); });
   expect(r.status).toBe(200);
   return new AdmZip(r.body as Buffer);

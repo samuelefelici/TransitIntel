@@ -15,6 +15,9 @@ import request from "supertest";
 import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import pianificazione from "../lib/planning-studio";
+import esporta from "../lib/planning-studio-export";
+import { dimenticaAzienda } from "../lib/azienda";
+import AdmZip from "adm-zip";
 import stampa from "../routes/planning-studio-timetables";
 import mappaOrari from "../routes/timetable-map-share";
 import mappaRete from "../routes/network-share";
@@ -31,7 +34,7 @@ const NOME = "Versioni di prova 3.3";
 
 const tutte = Router();
 tutte.use(versioniInSolaLettura);
-for (const r of [pianificazione, stampa]) tutte.use(r);
+for (const r of [pianificazione, stampa, esporta]) tutte.use(r);
 const app = (x: AuthUser) => appDiProva(tutte, x);
 const admin = app(utenteDiProva(ADMIN, [], "admin"));
 const pian = app(utenteDiProva(PIAN, [], "user", { ruoli: ["pianificatore"] }));
@@ -70,8 +73,14 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le versioni pubblicate dei prog
     await db.execute(sql`DELETE FROM users WHERE id IN (${ADMIN}::uuid, ${PIAN}::uuid, ${ALTRO}::uuid)`);
   };
 
+  let aziendaDiPrima: any = null;
   beforeAll(async () => {
     await pulisci();
+    aziendaDiPrima = (await db.execute<any>(sql`SELECT * FROM azienda`)).rows[0] ?? null;
+    await db.execute(sql`DELETE FROM azienda`);
+    await db.execute(sql`INSERT INTO azienda (ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, centro_lat, centro_lng, zoom)
+                         VALUES ('Trasporti di prova S.p.A.', 'Prova', 'https://prova.example', '+39 071 000000', 'prova', 'Ancona', 43.6, 13.5, 10)`);
+    dimenticaAzienda();
     const altri = (await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE is_active`)).rows[0].n;
     if (altri > 0) throw new Error("versioni-pubblicate-db.test.ts vuole un database senza un feed in esercizio");
     await db.execute(sql`INSERT INTO users (id, email, password_hash, role) VALUES
@@ -91,7 +100,17 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le versioni pubblicate dei prog
     await db.execute(sql`INSERT INTO ps_stop_times (trip_id, stop_seq, stop_id, arrival_time, departure_time) VALUES
       (${CORSA}::uuid, 1, ${F1}::uuid, '07:00:00', '07:00:00'), (${CORSA}::uuid, 2, ${F2}::uuid, '07:20:00', '07:20:00')`);
   });
-  afterAll(async () => { await pulisci(); await pool.end(); });
+  afterAll(async () => {
+    await pulisci();
+    await db.execute(sql`DELETE FROM azienda`);
+    if (aziendaDiPrima) {
+      const a = aziendaDiPrima;
+      await db.execute(sql`INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom, aggiornata_il, aggiornata_da)
+                           VALUES (true, ${a.ragione_sociale}, ${a.nome}, ${a.sito}, ${a.telefono}, ${a.gtfs_agency_id}, ${a.citta}, ${a.regione}, ${a.centro_lat}, ${a.centro_lng}, ${a.zoom}, ${a.aggiornata_il}, ${a.aggiornata_da})`);
+    }
+    dimenticaAzienda();
+    await pool.end();
+  });
 
   let mappa = "", rete = "", versione = "";
 
@@ -149,6 +168,49 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le versioni pubblicate dei prog
     expect(await versioni(altro)).toMatchObject({ stato: 200, esercizio: { id: versione }, bozza: null });
     expect(await primaPartenza(altro, versione)).toBe("07:00");
     expect((await request(altro).get(`${A}/timetables/routes`)).status).toBe(403);
+  });
+
+  it("il GTFS esportato: dalla versione in esercizio, con l'azienda vera, controllato prima di uscire", async () => {
+    const scarica = async (qs: string) => {
+      const r = await request(pian).get(`/api/planning-studio/projects/${P}/export-gtfs${qs}`).buffer(true)
+        .parse((res, fine) => { const pezzi: Buffer[] = []; res.on("data", (c: Buffer) => pezzi.push(c)); res.on("end", () => fine(null, Buffer.concat(pezzi))); });
+      return r;
+    };
+    const leggi = (zip: AdmZip, nome: string) => zip.readAsText(nome).trim().split("\n");
+    // senza indicazione: la versione in esercizio, con l'orario di prima della modifica
+    const r = await scarica("");
+    expect(r.status).toBe(200);
+    expect(r.headers["x-gtfs-versione"]).toBe("esercizio");
+    const zip = new AdmZip(r.body as Buffer);
+    expect(leggi(zip, "agency.txt")).toEqual([
+      "agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone",
+      "prova,Trasporti di prova S.p.A.,https://prova.example,Europe/Rome,it,+39 071 000000",
+    ]);
+    expect(leggi(zip, "routes.txt")[1]!.split(",")[1]).toBe("prova");
+    expect(leggi(zip, "stop_times.txt")[1]).toContain(",07:00:00,07:00:00,");
+    expect(leggi(zip, "feed_info.txt")[1]).toMatch(/,esercizio-\d{4}-\d{2}-\d{2}$/);
+    // la bozza, a richiesta
+    const b = await scarica("?versione=bozza");
+    expect(b.headers["x-gtfs-versione"]).toBe("bozza");
+    expect(leggi(new AdmZip(b.body as Buffer), "stop_times.txt")[1]).toContain(",09:00:00,09:00:00,");
+    // il controllo: senza il sito dell'azienda l'export si ferma e dice perché
+    await db.execute(sql`UPDATE azienda SET sito = NULL`); dimenticaAzienda();
+    try {
+      const v = await request(pian).get(`/api/planning-studio/projects/${P}/export-gtfs/verifica`);
+      expect(v.status).toBe(200);
+      expect(v.body.errori.map((e: any) => e.codice)).toEqual(["agency_url_non_valido"]);
+      expect(v.body.righe["trips.txt"]).toBe(1);
+      const no = await request(pian).get(`/api/planning-studio/projects/${P}/export-gtfs`);
+      expect(no.status).toBe(422);
+      expect(no.body.errori[0].messaggio).toContain("Amministrazione › Azienda");
+      expect((await scarica("?forza=1")).status).toBe(200);
+    } finally {
+      await db.execute(sql`UPDATE azienda SET sito = 'https://prova.example'`); dimenticaAzienda();
+    }
+    // una versione non si esporta come progetto a sé, e chi non lavora sul programma non esporta
+    expect((await request(pian).get(`/api/planning-studio/projects/${versione}/export-gtfs`)).status).toBe(404);
+    expect((await request(altro).get(`/api/planning-studio/projects/${P}/export-gtfs`)).status).toBe(404);
+    expect((await request(pian).get(`/api/planning-studio/projects/${P}/export-gtfs?versione=programmata`)).status).toBe(404);
   });
 
   it("una versione non si modifica, nemmeno dall'amministratore, e i link non si creano da lei", async () => {

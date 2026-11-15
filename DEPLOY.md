@@ -530,6 +530,43 @@ proprietario e quindi invisibili: i link e la stampa tornano a leggere il
 programma com'è. La colonna `owner_user_id` resta facoltativa (solo per le
 versioni, lo dice un vincolo).
 
+### Il GTFS consegnabile (PR 3.4)
+
+Il GTFS che si scarica da Planning Studio (pulsante «Esporta GTFS» sulla scheda
+del programma) è quello che va a Regione, open data, fornitori di AVM e
+bigliettazione. Da questo rilascio:
+
+- **viene dalla versione in esercizio** del programma (la copia congelata della
+  3.3), non dalla bozza. Se il programma non ha una versione in esercizio, dalla
+  bozza, e il messaggio lo dice. Il nome del file dice quale
+  (`gtfs_<programma>_esercizio_<data>.zip`);
+- **ha l'azienda vera**: `agency.txt` e `feed_info.txt` prendono ragione
+  sociale, identificativo GTFS, sito e telefono da **Amministrazione ›
+  Azienda**. Prima l'azienda era «1» col nome del progetto. Senza i dati
+  dell'azienda, quelli del progetto come prima;
+- **è controllato prima di uscire**:
+  - **errori** (il file non va consegnato: chi lo riceve lo scarterebbe):
+    file obbligatori mancanti, identificativi doppi o che non tornano fra un file
+    e l'altro, coordinate mancanti, orari non validi o che tornano indietro,
+    corse con meno di due fermate, calendari senza date valide, azienda senza
+    sito. L'export si ferma e dice quali; si correggono, oppure si sceglie
+    **«Esporta comunque»**;
+  - **avvisi** (il file è valido ma qualcosa non torna): fermate e linee senza
+    corse, tratti percorsi a più di 120 km/h (orari o posizioni sbagliati),
+    periodo del file già finito, calendari senza giorni. Il file si scarica, e
+    il messaggio li riassume.
+
+Sul programma di prova da 3.502 corse il controllo ha trovato 0 errori e 221
+corse con almeno un tratto «a più di 120 km/h»: sono orari interpolati del file
+d'origine (per esempio 13 secondi per 590 metri).
+
+**Prima di consegnare**: in Amministrazione › Azienda devono esserci almeno
+ragione sociale, identificativo GTFS e **sito** (senza sito il controllo si
+ferma).
+
+Il controllo non sostituisce il validatore ufficiale di chi riceve il file: ferma
+gli errori più comuni prima che il file esca.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
