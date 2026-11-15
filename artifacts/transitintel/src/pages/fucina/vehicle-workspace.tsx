@@ -1198,7 +1198,8 @@ export default function VehicleWorkspace({
             await fetch(`${base}/api/service-program/scenarios/${scenId}`, {
               method: "PUT", credentials: "include",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: newUn } }),
+              /* ritocco automatico: se il roster usa quella fonte non si tocca (né si versiona) */
+              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: newUn }, nonVersionare: true }),
             });
           } catch { /* best-effort: la fonte resta da riallineare a mano */ }
         }
@@ -2082,9 +2083,14 @@ export default function VehicleWorkspace({
         }),
       });
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status} ${txt.slice(0, 200)}`);
+        const j = await res.json().catch(() => null);
+        throw new Error(j?.error ?? `HTTP ${res.status}`);
       }
+      /* il roster usa i suoi turni guida: il server ha creato una versione nuova
+         (PR 3.6). Da qui si lavora su quella; i turni guida restano sulla vecchia. */
+      const esito = await res.json().catch(() => ({} as any));
+      const nuovaVersione = esito?.id && esito.versionedFrom && esito.id !== savedId;
+      if (nuovaVersione) setSavedId(esito.id);
       // 4. update local state
       setResult(finalResult);
       setDirty(false);
@@ -2094,11 +2100,17 @@ export default function VehicleWorkspace({
         if (added > 0) parts.push(`${added} vuot${added === 1 ? "o" : "i"} generat${added === 1 ? "o" : "i"}`);
         pushHistory(finalResult, "deadhead", `Salvataggio · ${parts.join(", ")}`);
       }
-      toast.success("Scenario sovrascritto", {
-        description: added > 0
-          ? `${added} trasferiment${added === 1 ? "o a vuoto generato" : "i a vuoto generati"} automaticamente`
-          : "Modifiche salvate sul file",
-      });
+      if (nuovaVersione) {
+        toast.success(`Creata la versione ${esito.version ?? "nuova"} dei turni macchina`, {
+          description: "I turni guida di questo scenario sono nel roster: restano sulla versione di prima. Calcola i turni guida sulla nuova.",
+        });
+      } else {
+        toast.success("Scenario sovrascritto", {
+          description: added > 0
+            ? `${added} trasferiment${added === 1 ? "o a vuoto generato" : "i a vuoto generati"} automaticamente`
+            : "Modifiche salvate sul file",
+        });
+      }
       // ── Ritorno alla home del progetto anche dopo la sovrascrittura ──
       if (projectIdFromUrl) {
         setTimeout(() => navigate(`/fucina/${projectIdFromUrl}`), 400);

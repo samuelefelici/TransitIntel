@@ -162,6 +162,20 @@
       "when": 1794900000000,
       "tag": "0022_lunghezza_dei_percorsi",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794990000000,
+      "tag": "0023_turni_macchina_nel_canale",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794990060000,
+      "tag": "0024_regole_dei_turni_pubblicati",
+      "breakpoints": true
     }
   ]
 }

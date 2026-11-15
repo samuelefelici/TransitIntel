@@ -628,6 +628,64 @@ le fa circolare solo quel giorno.
 **Rollback**: immagine precedente. Le lunghezze ricalcolate restano: sono più
 giuste di quelle di prima, e la versione precedente le usa senza problemi.
 
+### Turni macchina versionati e pubblicati coi turni guida (PR 3.6)
+
+I turni guida si calcolano su un turni macchina: le loro vetture sono i suoi
+blocchi. Fino a qui i turni guida pubblicati nel roster non si
+sovrascrivevano (se ne creava una versione nuova), ma il loro turni macchina
+sì. Salvato di nuovo, un giorno già pubblicato poteva ritrovarsi con vetture
+diverse da quelle dei suoi turni guida.
+
+Da questo rilascio:
+
+- **Salvare un turni macchina i cui turni guida sono nel roster**
+  (assegnati o pubblicati, anche nel passato) **crea una versione nuova**
+  (v2, v3…), come per i turni guida:
+  - i turni guida restano sulla versione su cui sono stati calcolati;
+  - sulla nuova si calcolano i turni guida nuovi, da pubblicare per i giorni
+    in cui devono valere;
+  - la pagina dei turni macchina lo dice e da lì lavora sulla nuova versione.
+- **Una versione superata non si modifica.** Si apre la più recente; nella
+  lista degli scenari ha «c'è una versione più nuova».
+- Rinominare, o salvare senza cambiare i turni, resta sullo stesso scenario.
+- **Cancellando la versione nuova**, la precedente torna la più recente.
+- L'aggiornamento automatico delle corse scoperte, quando si prendono corse
+  da un'altra UDP, non crea versioni: se il roster usa quella fonte, la
+  lascia com'è.
+- **La pubblicazione registra anche il turno macchina di ogni giorno**
+  (`roster_turni_pubblicati.vss_id`), accanto ai turni guida. Il database
+  tiene la coppia coerente e non lascia cancellare un turno macchina
+  pubblicato. Nell'anteprima, turni guida calcolati su una versione superata
+  dei turni macchina hanno l'avviso «turni macchina con una versione più
+  nuova».
+
+**Le migrazioni**:
+- la `0023` scrive su ogni riga del canale il turno macchina dei suoi turni
+  guida;
+- la `0024` lo rende obbligatorio, coerente e non cancellabile.
+
+Tabelle piccole: un attimo di lock. Il nome della tabella resta
+`roster_turni_pubblicati`.
+
+**Durante il deploy**, fra la migrazione e l'avvio della nuova API, una
+pubblicazione fatta dalla versione vecchia si ferma (le manca il turno
+macchina): basta rifarla.
+
+**Dopo il deploy** non c'è niente da fare. Chi ha turni guida nel roster e
+salva il loro turni macchina vede nascere la versione 2.
+
+**Rollback**: immagine precedente. La colonna e i vincoli restano. La versione
+precedente pubblica senza scrivere `vss_id`, che è obbligatorio: **la
+pubblicazione dei turni guida si fermerebbe**. Con il rollback, quindi, si
+toglie anche l'obbligo (come `postgres`):
+
+```sql
+ALTER TABLE roster_turni_pubblicati ALTER COLUMN vss_id DROP NOT NULL;
+ALTER TABLE roster_turni_pubblicati DROP CONSTRAINT roster_turni_pubblicati_coppia;
+```
+
+Le versioni dei turni macchina già create restano scenari normali.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
@@ -2062,7 +2120,9 @@ sono nello schema delle migrazioni.
 3. Un turni guida pubblicato o con assegnazioni **non si cancella e non si
    sovrascrive**: salvandolo se ne crea una nuova versione. Per la stessa
    ragione non si cancella un turni macchina, un programma di esercizio o un
-   progetto di scheduling i cui turni guida sono pubblicati o assegnati.
+   progetto di scheduling i cui turni guida sono pubblicati o assegnati, e un
+   turni macchina così non si sovrascrive: salvandolo se ne crea una nuova
+   versione (PR 3.6, «Turni macchina versionati e pubblicati coi turni guida»).
 4. Pubblica chi ha il permesso Scheduling e vede il progetto di Planning
    Studio. Ogni pubblicazione e ogni ritiro restano nel registro della pagina.
 
