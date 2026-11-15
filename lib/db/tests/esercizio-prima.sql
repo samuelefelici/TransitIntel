@@ -22,7 +22,7 @@ VALUES ('c3200000-0000-4000-8000-000000000001', 'c3200000-0000-4000-8000-0000000
 -- 0019 i proprietari non contano
 INSERT INTO public.gtfs_feeds (id, filename, owner_user_id, is_active, is_default, uploaded_at) VALUES
   ('c3200000-0000-4000-8000-0000000000a1', 'prova-0019-ps.synthetic', NULL, true,  false, '2026-01-01'),
-  ('c3200000-0000-4000-8000-0000000000a2', 'prova-0019-maior.zip',    NULL, true,  false, '2026-02-01'),
+  ('c3200000-0000-4000-8000-0000000000a2', 'prova-0019-importato.zip', NULL, true,  false, '2026-02-01'),
   ('c3200000-0000-4000-8000-0000000000a3', 'prova-0019-vecchio.zip',  NULL, false, true,  '2025-06-01');
 UPDATE public.ps_projects SET materialized_feed_id = 'c3200000-0000-4000-8000-0000000000a1'
  WHERE id = 'c3200000-0000-4000-8000-000000000001';

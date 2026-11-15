@@ -247,7 +247,7 @@ function buildCorseListHtml(p: {
 
   // Riepilogo km/anno per linea × categoria (dal calendario aziendale)
   let kmSection = "";
-  if (p.km && p.km.hasCalendar && p.km.lines.length) {
+  if (p.km && p.km.hasCalendar && (p.km.lines.length || p.km.periodoDiUnGiorno?.quante)) {
     const km = p.km;
     const rate = p.rate && p.rate > 0 ? p.rate : 0;
     const fmtKm = (v?: number) => (v == null || v === 0) ? `<span class="muted">—</span>` : v.toLocaleString("it-IT", { maximumFractionDigits: 1 });
@@ -289,10 +289,16 @@ function buildCorseListHtml(p: {
         ${km.hasOnDemand ? eurRow("Totale potenziale", combByCat, combTot, "sum") : ""}
         </tbody></table></div>`;
     }
+    const unGiorno = km.periodoDiUnGiorno && km.periodoDiUnGiorno.quante > 0 ? km.periodoDiUnGiorno : null;
+    const fmtGiorno = (iso: string | null) => iso && /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso.split("-").reverse().join("/") : "";
+    const avvisoUnGiorno = unGiorno
+      ? `<p class="warn">⚠ ${unGiorno.quante.toLocaleString("it-IT")} ${unGiorno.quante === 1 ? "corsa ha" : "corse hanno"} un periodo di un giorno solo${unGiorno.giorno ? ` (per esempio il ${fmtGiorno(unGiorno.giorno)})` : ""}: qui ${unGiorno.quante === 1 ? "conta" : "contano"} i km di quel giorno. Succede con alcuni GTFS importati. Se devono circolare tutto l'anno, selezionale e allarga il «Periodo».</p>`
+      : "";
     kmSection = `<section class="kmsum"><h2>Riepilogo km/anno${period}</h2>
+      ${avvisoUnGiorno}
       ${kmTable}
       ${eurTable}
-      <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni di circolazione di ogni corsa (esclusi i prototipi; senza limitare al «Periodo» di validità della corsa).${km.hasOnDemand ? " I km a chiamata sono <strong>potenziali</strong>: conteggiati come se la corsa circolasse ogni giorno utile, ma erogati solo su richiesta." : ""}${rate > 0 ? " Il corrispettivo applica la tariffa €/km indicata sull'intero chilometraggio." : ""}</p>
+      <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni in cui ogni corsa circola davvero: validità, eccezioni e «Periodo» della corsa, come nel GTFS in esercizio e nelle UDP (esclusi i prototipi). La lunghezza è quella del percorso disegnato.${km.hasOnDemand ? " I km a chiamata sono <strong>potenziali</strong>: conteggiati in tutti i giorni in cui la corsa circola, ma erogati solo su richiesta." : ""}${rate > 0 ? " Il corrispettivo applica la tariffa €/km indicata sull'intero chilometraggio." : ""}</p>
     </section>`;
   }
 
@@ -327,6 +333,7 @@ function buildCorseListHtml(p: {
   .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
   h2 .swatch { width: 10px; height: 10px; }
   section.kmsum { margin-bottom: 20px; break-inside: avoid; }
+  section.kmsum p.warn { margin: 6px 0 10px; padding: 6px 10px; border: 1px solid #f59e0b; background: #fffbeb; color: #92400e; border-radius: 4px; font-size: 11px; }
   .scroll { overflow-x: auto; }
   table.km td, table.km th { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   table.km td.l, table.km th.l { text-align: left; }

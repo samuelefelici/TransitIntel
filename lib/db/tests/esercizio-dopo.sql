@@ -12,13 +12,13 @@ DECLARE
   n bigint;
   ok boolean;
   ps constant uuid := 'c3200000-0000-4000-8000-0000000000a1';
-  maior constant uuid := 'c3200000-0000-4000-8000-0000000000a2';
+  importato constant uuid := 'c3200000-0000-4000-8000-0000000000a2';
   vecchio constant uuid := 'c3200000-0000-4000-8000-0000000000a3';
 BEGIN
   -- resta acceso il feed che l'AVM leggeva (l'ultimo caricato), ed è anche quello di default
   SELECT pg_catalog.count(*) INTO n FROM public.gtfs_feeds WHERE is_active;
   IF n <> 1 THEN RAISE EXCEPTION 'feed accesi: %, atteso uno', n; END IF;
-  IF NOT (SELECT is_active AND is_default FROM public.gtfs_feeds WHERE id = maior) THEN
+  IF NOT (SELECT is_active AND is_default FROM public.gtfs_feeds WHERE id = importato) THEN
     RAISE EXCEPTION 'il feed in esercizio non è quello che leggeva l''AVM, o non è di default';
   END IF;
   SELECT pg_catalog.count(*) INTO n FROM public.gtfs_feeds WHERE is_default;
@@ -33,7 +33,7 @@ BEGIN
   SELECT pg_catalog.count(*) INTO n FROM public.ps_activation_log WHERE deactivated_at IS NULL;
   IF n <> 1 THEN RAISE EXCEPTION 'periodi aperti: %, atteso uno', n; END IF;
   SELECT pg_catalog.count(*) INTO n FROM public.ps_activation_log
-   WHERE deactivated_at IS NULL AND feed_id = maior AND project_id IS NULL AND via = 'migrazione:0019';
+   WHERE deactivated_at IS NULL AND feed_id = importato AND project_id IS NULL AND via = 'migrazione:0019';
   IF n <> 1 THEN RAISE EXCEPTION 'il feed in esercizio non ha il suo periodo aperto, senza progetto e con via migrazione:0019'; END IF;
 
   -- da qui il database rifiuta un secondo feed acceso e un secondo periodo aperto
@@ -63,7 +63,7 @@ BEGIN
   IF n <> 1 THEN RAISE EXCEPTION 'cancellando il progetto se n''è andato lo storico'; END IF;
 
   -- via le righe di prova
-  DELETE FROM public.ps_activation_log WHERE feed_id IN (ps, maior, vecchio);
-  DELETE FROM public.gtfs_feeds WHERE id IN (ps, maior, vecchio);
+  DELETE FROM public.ps_activation_log WHERE feed_id IN (ps, importato, vecchio);
+  DELETE FROM public.gtfs_feeds WHERE id IN (ps, importato, vecchio);
 END $$;
 \echo un solo programma in esercizio: ok

@@ -372,7 +372,7 @@ Che cosa cambia per chi usa l'app:
   cambiavano a ogni copia del programma. **Il primo file esportato dopo questo
   rilascio ha identificativi diversi dai precedenti**; da lì in poi restano
   gli stessi, anche fra un programma e la sua copia. Per le righe importate
-  dal GTFS di Maior sono gli id di Maior. Chi ha già ricevuto un file con gli
+  da un GTFS sono gli id del file d'origine. Chi ha già ricevuto un file con gli
   id di prima va avvisato. `service_id` e `shape_id` restano id interni.
 - **Rete** e **Corse** mostrano il codice al posto dei primi caratteri
   dell'id interno.
@@ -566,6 +566,67 @@ ferma).
 
 Il controllo non sostituisce il validatore ufficiale di chi riceve il file: ferma
 gli errori più comuni prima che il file esca.
+
+### Una sola funzione per i km programmati (PR 3.5)
+
+Fino a qui i km dello stesso programma si contavano in tre modi diversi, e i
+numeri non tornavano fra loro:
+
+| Dove | Prima | Da questo rilascio |
+|---|---|---|
+| contatore km (in alto in Planning Studio) | lunghezza mandata dal browser | lunghezza calcolata dal server |
+| km annui per categoria (stampa dell'elenco corse, Argos `ti_km`) | giorni della settimana del calendario × matrice, **senza periodo né eccezioni della corsa** | i giorni in cui la corsa circola davvero |
+| km per comune (zonizzazione) | calendari settimanali, **senza matrice di validità** | i giorni in cui la corsa circola davvero |
+
+**I giorni in cui la corsa circola davvero** sono gli stessi del GTFS in
+esercizio e delle UDP: con la matrice di validità contano bollini, giorni della
+settimana, categorie, eccezioni e **periodo** della corsa; senza matrice, i
+calendari settimanali con le loro eccezioni (come il GTFS). La **lunghezza** è
+quella del percorso disegnato, calcolata dal server.
+
+**I numeri cambiano, e sui programmi importati da un GTFS di molto.** Alcuni
+file danno a ogni corsa un periodo di un giorno solo (il giorno
+dell'esportazione) e calendari con tutti i giorni spenti più quella data. Sul
+programma di prova da 3.502 corse:
+
+- prima: 2.329.597 km annui. Contavano solo i venerdì, perché il giorno
+  dell'esportazione, il 5/12/2025, era un venerdì;
+- adesso: 43.954,7 km, cioè le corse del 5/12/2025, l'unico giorno in cui il
+  GTFS le fa circolare;
+- con il periodo allargato fino al 31/12/2026 (prova su una copia): 11.865.481
+  km. Sono tutti i feriali, perché la matrice importata dà a tutte le corse il
+  «feriale». E la zonizzazione dà lo stesso numero: 703.147,6 km nel 2025 più
+  11.162.333,5 km nel 2026.
+
+Per questo le pagine lo dicono:
+
+- nella stampa dell'elenco corse un avviso giallo conta le corse con un periodo
+  di un giorno solo («Se devono circolare tutto l'anno, selezionale e allarga il
+  Periodo»);
+- il controllo del progetto ha un avviso nuovo, «Corse con un periodo di un
+  giorno solo»;
+- la risposta dei km annui ha il campo `periodoDiUnGiorno`.
+
+Senza matrice di validità il periodo della corsa non entra nella circolazione
+(non entra nemmeno nel GTFS), e l'avviso non compare.
+
+**La migrazione `0022`** ricalcola dal tracciato, con la stessa formula del
+server, la lunghezza dei percorsi già salvati (`ps_shapes.distance_m`). Sui
+percorsi importati non cambia niente (meno di un metro). Cambiano i percorsi
+disegnati a mano, che avevano la distanza del motore di instradamento mandata
+dal browser. Per vedere prima del deploy quanti sono:
+
+```sql
+SELECT count(*) FROM ps_shapes WHERE mode <> 'driving' OR distance_m IS NULL;
+```
+
+**Dopo il deploy**: per i programmi importati che devono valere tutto
+l'anno, selezionare le corse in Planning Studio › Corse e allargare il
+«Periodo»; poi rifare «Metti in esercizio», perché anche il GTFS in esercizio
+le fa circolare solo quel giorno.
+
+**Rollback**: immagine precedente. Le lunghezze ricalcolate restano: sono più
+giuste di quelle di prima, e la versione precedente le usa senza problemi.
 
 ### Argos: sola lettura su un elenco chiuso
 

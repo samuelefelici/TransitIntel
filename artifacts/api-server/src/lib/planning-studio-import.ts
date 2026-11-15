@@ -24,6 +24,7 @@
  *   transfers.txt, fare_*.txt, feed_info.txt.
  */
 import type { Request, Response } from "express";
+import { lunghezzaDellaGeometria } from "./km-programmati";
 import { Router, type IRouter } from "express";
 import multer from "multer";
 import AdmZip from "adm-zip";
@@ -538,16 +539,7 @@ async function runMergeImport(
     if (!pts || pts.length < 2) continue;
     pts.sort((a, b) => a.seq - b.seq);
     const coords = pts.map(p => [p.lng, p.lat]);
-    let distM = 0;
-    for (let i = 1; i < coords.length; i++) {
-      const [x1, y1] = coords[i - 1];
-      const [x2, y2] = coords[i];
-      const R = 6371000;
-      const dLat = ((y2 - y1) * Math.PI) / 180;
-      const dLon = ((x2 - x1) * Math.PI) / 180;
-      const a = Math.sin(dLat / 2) ** 2 + Math.cos((y1 * Math.PI) / 180) * Math.cos((y2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
-      distM += 2 * R * Math.asin(Math.sqrt(a));
-    }
+    const distM = lunghezzaDellaGeometria({ type: "LineString", coordinates: coords }); // PR 3.5: la funzione unica
     shapeInserts.push([
       crypto.randomUUID(), projectId, v.id, "driving",
       JSON.stringify({ type: "LineString", coordinates: coords }),
@@ -1267,17 +1259,8 @@ router.post(
           { lng: coords[0][0], lat: coords[0][1], mode: "snap" },
           { lng: coords[coords.length - 1][0], lat: coords[coords.length - 1][1], mode: "snap" },
         ];
-        // distanza approssimata
-        let distM = 0;
-        for (let i = 1; i < coords.length; i++) {
-          const [x1, y1] = coords[i - 1];
-          const [x2, y2] = coords[i];
-          const R = 6371000;
-          const dLat = ((y2 - y1) * Math.PI) / 180;
-          const dLon = ((x2 - x1) * Math.PI) / 180;
-          const a = Math.sin(dLat / 2) ** 2 + Math.cos((y1 * Math.PI) / 180) * Math.cos((y2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
-          distM += 2 * R * Math.asin(Math.sqrt(a));
-        }
+        // la lunghezza della funzione unica dei km (PR 3.5)
+        const distM = lunghezzaDellaGeometria(geom);
         shapeValues.push([
           crypto.randomUUID(), projectId, v.id, "driving",
           JSON.stringify(geom), JSON.stringify(waypoints), distM, distM / 8.33,

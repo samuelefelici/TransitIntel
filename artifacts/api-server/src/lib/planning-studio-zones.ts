@@ -13,7 +13,9 @@
  *   POST   /planning-studio/projects/:id/zones/compute?year=YYYY
  *     → km/anno per (comune × linea): per ogni variante con shape calcola i km
  *       dentro ogni zona (pre-filtro bbox), poi moltiplica per le corse/anno
- *       della variante (calendari settimanali ∩ anno + eccezioni + validità trip).
+ *       della variante. I giorni di circolazione sono quelli veri, gli stessi
+ *       del GTFS in esercizio, delle UDP e dei km per categoria
+ *       (lib/km-programmati.ts, PR 3.5).
  *
  * Serve per i corrispettivi chilometrici dovuti agli enti locali.
  */
@@ -28,7 +30,7 @@ import {
   bboxIntersects,
   type ZoneGeometry,
 } from "./geo-zones";
-import { haversineKm } from "./geo-utils";
+import { lunghezzaDellaGeometria, giorniDiCircolazione } from "./km-programmati";
 import { loadCalendarProfile } from "./planning-studio-calendar";
 import { classifyDate, italianHolidays } from "./day-classifier";
 
@@ -256,10 +258,8 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
         ? geom.coordinates
         : [];
       if (coords.length < 2) continue;
-      let totalKm = 0;
-      for (let i = 1; i < coords.length; i++) {
-        totalKm += haversineKm(coords[i - 1][1], coords[i - 1][0], coords[i][1], coords[i][0]);
-      }
+      // la lunghezza della funzione unica dei km (PR 3.5, lib/km-programmati.ts)
+      const totalKm = lunghezzaDellaGeometria(geom) / 1000;
       variants.push({
         variantId: row.variant_id,
         routeId: row.route_id,
@@ -284,17 +284,16 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
 
     /* ── 4. Corse/anno per variante ── */
     // Trips attivi con shape-variant nel progetto
+    // (le corse prototipo non fanno km: come in lib/km-programmati.ts)
     const tripsR = await db.execute(sql`
-      SELECT t.id, t.variant_id, t.calendar_id,
-             to_char(t.valid_from, 'YYYY-MM-DD') AS valid_from,
-             to_char(t.valid_to,   'YYYY-MM-DD') AS valid_to
+      SELECT t.id, t.variant_id, t.calendar_id
         FROM ps_trips t
        WHERE t.project_id = ${proj.id}::uuid
-         AND t.is_active = true
+         AND COALESCE(t.is_active, true) = true
+         AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
     `);
     const trips = ((tripsR as any).rows ?? []) as Array<{
       id: string; variant_id: string; calendar_id: string | null;
-      valid_from: string | null; valid_to: string | null;
     }>;
 
     const yStart = `${year}-01-01`;
@@ -347,21 +346,12 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
       calActiveDates.set(c.id, set);
     }
 
-    // Eccezioni per-trip nell'anno
-    const tripIds = trips.map((t) => t.id);
-    const tripExc = new Map<string, Array<{ date: string; type: number }>>();
-    if (tripIds.length > 0) {
-      const exR = await db.execute(sql`
-        SELECT trip_id, to_char(date, 'YYYY-MM-DD') AS date, exception_type
-          FROM ps_trip_exceptions
-         WHERE trip_id = ANY(${`{${tripIds.join(",")}}`}::uuid[])
-           AND date >= ${yStart}::date AND date <= ${yEnd}::date
-      `);
-      for (const r of (exR as any).rows ?? []) {
-        if (!tripExc.has(r.trip_id)) tripExc.set(r.trip_id, []);
-        tripExc.get(r.trip_id)!.push({ date: r.date, type: Number(r.exception_type) });
-      }
-    }
+    // I giorni in cui ogni corsa circola davvero nell'anno: la stessa
+    // circolazione del GTFS in esercizio e delle UDP (PR 3.5,
+    // lib/km-programmati.ts). Prima qui si usavano sempre i calendari
+    // settimanali, anche nei progetti con la matrice di validità: i km per
+    // comune non tornavano con quelli per categoria.
+    const giorniDellaCorsa = await giorniDiCircolazione({ progettoId: proj.id, dal: yStart, al: yEnd });
 
     // Mappa ISO → giorno settimana, per ripartire le corse per weekday
     const dowByIso = new Map<string, (typeof DOW_KEYS)[number]>();
@@ -379,35 +369,23 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
     // Corse/anno per variante = Σ giorni di circolazione dei suoi trip.
     // Oltre al totale, teniamo la ripartizione per calendario aziendale e per
     // giorno della settimana (servono all'export per rendere trasparente il calcolo).
-    const NO_CAL = "__nocal__"; // trip senza calendario che circola solo per eccezioni
+    const NO_CAL = "__nocal__"; // corse senza calendario settimanale (circolano per matrice di validità o eccezioni)
     const runsByVariant = new Map<string, number>();
     const calRunsByVariant = new Map<string, Map<string, number>>(); // variantId → calId → corse
     const dowRunsByVariant = new Map<string, Map<string, number>>(); // variantId → dowKey → corse
     const catRunsByVariant = new Map<string, Map<string, number>>(); // variantId → categoria → corse
     for (const t of trips) {
-      // base dal calendario, ritagliata su valid_from/valid_to del trip
-      const base = t.calendar_id ? (calActiveDates.get(t.calendar_id) ?? new Set<string>()) : new Set<string>();
-      const days = new Set<string>();
-      for (const d of base) {
-        if (t.valid_from && d < t.valid_from) continue;
-        if (t.valid_to && d > t.valid_to) continue;
-        days.add(d);
-      }
-      // eccezioni per-trip: 1 = aggiunta forzata, 2 = rimozione forzata
-      for (const ex of tripExc.get(t.id) ?? []) {
-        if (ex.type === 1) days.add(ex.date);
-        else days.delete(ex.date);
-      }
-      if (days.size === 0) continue;
+      const days = giorniDellaCorsa.get(t.id) ?? [];
+      if (days.length === 0) continue;
 
       const vId = t.variant_id;
-      runsByVariant.set(vId, (runsByVariant.get(vId) ?? 0) + days.size);
+      runsByVariant.set(vId, (runsByVariant.get(vId) ?? 0) + days.length);
 
       // ripartizione per calendario
       const calKey = t.calendar_id ?? NO_CAL;
       let cm = calRunsByVariant.get(vId);
       if (!cm) { cm = new Map(); calRunsByVariant.set(vId, cm); }
-      cm.set(calKey, (cm.get(calKey) ?? 0) + days.size);
+      cm.set(calKey, (cm.get(calKey) ?? 0) + days.length);
 
       // ripartizione per giorno della settimana + categoria aziendale
       let dm = dowRunsByVariant.get(vId);
@@ -443,7 +421,7 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
       });
     }
     const calLabel = (calId: string) =>
-      calId === NO_CAL ? "Senza calendario (solo eccezioni)" : (calMeta.get(calId)?.name ?? calId);
+      calId === NO_CAL ? "Senza calendario settimanale" : (calMeta.get(calId)?.name ?? calId);
     const calCode = (calId: string) =>
       calId === NO_CAL ? null : (calMeta.get(calId)?.code ?? null);
 
@@ -577,7 +555,7 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
     // Calendario sintetico "senza calendario", se presente
     if (usedCalIds.has(NO_CAL)) {
       calendars.push({
-        id: NO_CAL, code: null, name: "Senza calendario (solo eccezioni)",
+        id: NO_CAL, code: null, name: "Senza calendario settimanale",
         weekdays: null, startDate: null, endDate: null, activeDays: 0,
         runsYear: globalCalRuns.get(NO_CAL) ?? 0,
         kmYear: r1(globalCalKm.get(NO_CAL) ?? 0),
