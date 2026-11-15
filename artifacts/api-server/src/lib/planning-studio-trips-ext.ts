@@ -17,6 +17,7 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { lunghezzePercorsi, corseConKm, corseConPeriodoDiUnGiorno } from "./km-programmati";
 import { withVia } from "./agent-context";
 import { conContesto } from "@workspace/db/contesto";
 
@@ -91,10 +92,9 @@ async function logActivity(
 }
 
 /* ─── Contatore km del progetto (badge toolbar Planner Studio) ───
- * km totali = Σ per corsa della lunghezza del SUO percorso:
- * distance_m dello shape della variante, con fallback sull'ultima
- * shape_dist_traveled della sequenza fermate. Cresce man mano che si
- * aggiungono corse (vetture·km programmate). */
+ * km totali = Σ per corsa della lunghezza del SUO percorso, una volta (vetture·km
+ * di un giro di tutte le corse). La lunghezza è quella di lib/km-programmati.ts
+ * (PR 3.5): dalla geometria, calcolata dal server. */
 
 router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promise<void> => {
   const userId = getUserId(req);
@@ -102,43 +102,36 @@ router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promis
   const proj = await loadProject(req.params.id, userId, false);
   if (!proj) { res.status(403).json({ error: "no access" }); return; }
   const r = await db.execute(sql`
-    WITH vlen AS (
-      SELECT v.id AS variant_id,
-             COALESCE(sh.distance_m, vs.max_dist, 0) AS len_m
-        FROM ps_route_variants v
-        LEFT JOIN ps_shapes sh ON sh.variant_id = v.id
-        LEFT JOIN (
-          SELECT variant_id, MAX(shape_dist_traveled) AS max_dist
-            FROM ps_variant_stops GROUP BY variant_id
-        ) vs ON vs.variant_id = v.id
-    )
-    SELECT (count(t.id) FILTER (WHERE NOT proto))::int                          AS total,
-           (count(*) FILTER (WHERE t.is_active AND NOT proto))::int             AS active,
-           (count(*) FILTER (WHERE proto))::int                                 AS prototypes,
-           COALESCE(SUM(vlen.len_m) FILTER (WHERE NOT proto), 0)                AS km_m,
-           COALESCE(SUM(vlen.len_m) FILTER (WHERE t.is_active AND NOT proto), 0) AS km_m_active
-      FROM (SELECT *, COALESCE((attributes->>'prototype')::boolean, false) AS proto
-              FROM ps_trips) t
-      LEFT JOIN vlen ON vlen.variant_id = t.variant_id
+    SELECT t.variant_id, COALESCE(t.is_active, true) AS attiva,
+           COALESCE((t.attributes->>'prototype')::boolean, false) AS proto
+      FROM ps_trips t
      WHERE t.project_id = ${req.params.id}::uuid
   `);
-  const row: any = (r as any).rows?.[0] ?? {};
+  const lunghezze = await lunghezzePercorsi(req.params.id);
+  let total = 0, active = 0, prototypes = 0, kmM = 0, kmMActive = 0;
+  for (const t of ((r as any).rows ?? []) as any[]) {
+    if (t.proto) { prototypes++; continue; } // corse ZERO: non generano km
+    const m = lunghezze.get(t.variant_id) ?? 0;
+    total++; kmM += m;
+    if (t.attiva) { active++; kmMActive += m; }
+  }
   res.json({
-    count: Number(row.total) || 0,
-    active: Number(row.active) || 0,
-    prototypes: Number(row.prototypes) || 0, // corse ZERO: non generano km
-    km: Math.round(((Number(row.km_m) || 0) / 1000) * 10) / 10,
-    kmActive: Math.round(((Number(row.km_m_active) || 0) / 1000) * 10) / 10,
+    count: total,
+    active,
+    prototypes,
+    km: Math.round((kmM / 1000) * 10) / 10,
+    kmActive: Math.round((kmMActive / 1000) * 10) / 10,
   });
 });
 
 /* ─── KM ANNUI per LINEA e per CATEGORIA di validità (stampa elenco corse) ───
- * Per ogni giorno dell'anno classificato dal CALENDARIO AZIENDALE (categoria per
- * data) conta i km delle corse che circolano quel giorno e li attribuisce alla
- * categoria del giorno. Circolazione = maschera settimanale effettiva della
- * corsa ∩ matrice di validità (tipo-giorno) ∩ eventuali categorie assegnate.
- * Si IGNORA il "Periodo" (valid_from/valid_to) della corsa, come richiesto:
- * il riferimento è l'anno solare del calendario aziendale.
+ * Per ogni giorno classificato dal CALENDARIO AZIENDALE (categoria per data)
+ * conta i km delle corse che circolano quel giorno e li attribuisce alla
+ * categoria del giorno. Dalla PR 3.5 la circolazione è quella vera
+ * (lib/km-programmati.ts, la stessa del GTFS in esercizio e delle UDP):
+ * matrice di validità, eccezioni e periodo della corsa. Prima il periodo e le
+ * eccezioni si ignoravano; la risposta dice quante corse hanno un periodo di
+ * un giorno solo (succede negli import da Maior).
  * ──────────────────────────────────────────────────────────────────────── */
 router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: Response): Promise<void> => {
   const userId = getUserId(req);
@@ -159,7 +152,7 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
   // doppio conteggio quando una data ha sia la riga di progetto che la
   // globale legacy (un WHERE piatto darebbe 2 righe per data → km doppi).
   const ccR = await db.execute<any>(sql`
-    SELECT EXTRACT(ISODOW FROM m.date)::int AS isodow, c.code, c.name, c.color, c.sort_order,
+    SELECT to_char(m.date, 'YYYY-MM-DD') AS date, c.code, c.name, c.color, c.sort_order,
            to_char(min(m.date) OVER (), 'YYYY-MM-DD') AS dmin, to_char(max(m.date) OVER (), 'YYYY-MM-DD') AS dmax
       FROM (SELECT DISTINCT ON (date) date, category_id
               FROM ps_validity_category_calendar
@@ -167,89 +160,24 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
              ORDER BY date, project_id ASC NULLS LAST) m
       JOIN ps_validity_categories c ON c.id = m.category_id`);
   const catMeta = new Map<string, { name: string; color: string | null; sort: number }>();
-  const dayCount = new Map<string, number[]>(); // catCode → [7] per weekday (0=Lun..6=Dom)
+  const catByDate = new Map<string, string>();
   let dmin: string | null = null, dmax: string | null = null;
   for (const r of ccR.rows ?? []) {
     dmin = r.dmin; dmax = r.dmax;
     if (!catMeta.has(r.code)) catMeta.set(r.code, { name: r.name, color: r.color, sort: Number(r.sort_order) || 0 });
-    const arr = dayCount.get(r.code) ?? [0, 0, 0, 0, 0, 0, 0];
-    arr[(Number(r.isodow) - 1) % 7] += 1;
-    dayCount.set(r.code, arr);
+    catByDate.set(r.date, r.code);
   }
 
-  // 2) lunghezza (m) per variante
-  const vlenR = await db.execute<any>(sql`
-    SELECT v.id AS variant_id, COALESCE(sh.distance_m, vs.max_dist, 0) AS len_m
-      FROM ps_route_variants v
-      LEFT JOIN ps_shapes sh ON sh.variant_id = v.id
-      LEFT JOIN (SELECT variant_id, MAX(shape_dist_traveled) AS max_dist FROM ps_variant_stops GROUP BY variant_id) vs ON vs.variant_id = v.id
-     WHERE v.project_id = ${projId}::uuid`);
-  const lenByVar = new Map<string, number>();
-  for (const r of vlenR.rows ?? []) lenByVar.set(r.variant_id, Number(r.len_m) || 0);
+  // 2) le corse con i giorni in cui circolano davvero nel periodo del
+  //    calendario aziendale, e la lunghezza del loro percorso (PR 3.5,
+  //    lib/km-programmati.ts: la stessa circolazione del GTFS in esercizio e
+  //    delle UDP). Ogni giorno va alla categoria che il calendario gli dà.
+  const corse = dmin && dmax ? await corseConKm({ progettoId: projId, dal: dmin, al: dmax, linee: routeIdsParam }) : [];
+  const lineeR = await db.execute<any>(sql`
+    SELECT id, short_name, long_name, color FROM ps_routes WHERE project_id = ${projId}::uuid`);
+  const lineaDi = new Map<string, any>((lineeR.rows ?? []).map((r: any) => [r.id, r]));
 
-  // 3) corse (attive, no prototipo), + linee
-  const tR = await db.execute<any>(sql`
-    SELECT t.id, t.route_id, t.variant_id, t.calendar_id, t.attributes,
-           r.short_name, r.long_name, r.color
-      FROM ps_trips t JOIN ps_routes r ON r.id = t.route_id
-     WHERE t.project_id = ${projId}::uuid
-       AND COALESCE(t.is_active, true) = true
-       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
-       ${routeIdsParam ? sql`AND t.route_id = ANY(${`{${routeIdsParam.join(",")}}`}::uuid[])` : sql``}`);
-  const trips: any[] = tR.rows ?? [];
-
-  // 4) calendari (flag) + calendar_dates DOW per la maschera settimanale effettiva
-  const calIds = [...new Set(trips.map(t => t.calendar_id).filter(Boolean))];
-  const calFlags = new Map<string, boolean[]>();
-  const calDow = new Map<string, boolean[]>();
-  if (calIds.length) {
-    const cR = await db.execute<any>(sql`
-      SELECT id, monday, tuesday, wednesday, thursday, friday, saturday, sunday
-        FROM ps_calendars WHERE id = ANY(${`{${calIds.join(",")}}`}::uuid[])`);
-    const DOW = ["monday","tuesday","wednesday","thursday","friday","saturday","sunday"] as const;
-    for (const c of cR.rows ?? []) calFlags.set(c.id, DOW.map(d => !!c[d]));
-    const dR = await db.execute<any>(sql`
-      SELECT calendar_id, EXTRACT(ISODOW FROM date)::int AS isodow
-        FROM ps_calendar_dates WHERE calendar_id = ANY(${`{${calIds.join(",")}}`}::uuid[]) AND exception_type = 1
-        GROUP BY calendar_id, EXTRACT(ISODOW FROM date)`);
-    for (const r of dR.rows ?? []) { const a = calDow.get(r.calendar_id) ?? [false,false,false,false,false,false,false]; a[(Number(r.isodow)-1)%7] = true; calDow.set(r.calendar_id, a); }
-  }
-
-  // 5) tipi-giorno (classificati) + validità per corsa
-  const dtR = await db.execute<any>(sql`SELECT id, code, name FROM ps_day_types WHERE project_id = ${projId}::uuid OR project_id IS NULL`);
-  const dtKind: Record<string, string> = {}; // feriale/sabato/festivo → id
-  for (const d of dtR.rows ?? []) {
-    const c = `${d.code || d.name || ""}`.toLowerCase();
-    if (/^fer/.test(c) && !dtKind.feriale) dtKind.feriale = d.id;
-    else if (/^sab/.test(c) && !dtKind.sabato) dtKind.sabato = d.id;
-    else if (/^fes|^dom/.test(c) && !dtKind.festivo) dtKind.festivo = d.id;
-  }
-  const tripIds = trips.map(t => t.id);
-  const dvByTrip = new Map<string, Record<string, boolean>>();
-  const catByTrip = new Map<string, Set<string>>();
-  if (tripIds.length) {
-    const lit = `{${tripIds.join(",")}}`;
-    const dvR = await db.execute<any>(sql`SELECT trip_id, day_type_id, is_valid FROM ps_trip_day_validity WHERE trip_id = ANY(${lit}::uuid[])`);
-    for (const r of dvR.rows ?? []) { const m = dvByTrip.get(r.trip_id) ?? {}; m[r.day_type_id] = !!r.is_valid; dvByTrip.set(r.trip_id, m); }
-    const tcR = await db.execute<any>(sql`SELECT tc.trip_id, c.code FROM ps_trip_category_validity tc JOIN ps_validity_categories c ON c.id = tc.category_id WHERE tc.trip_id = ANY(${lit}::uuid[])`);
-    for (const r of tcR.rows ?? []) { const s = catByTrip.get(r.trip_id) ?? new Set<string>(); s.add(r.code); catByTrip.set(r.trip_id, s); }
-  }
-
-  // 6) effettiva maschera settimanale della corsa
-  const effMask = (t: any): boolean[] => {
-    const m = (t.attributes as any)?.weekdays;
-    if (Array.isArray(m) && m.length === 7) return m.map((x: any) => x !== false);
-    const f = t.calendar_id ? calFlags.get(t.calendar_id) : null;
-    if (f && f.some(Boolean)) return f;
-    const d = t.calendar_id ? calDow.get(t.calendar_id) : null;
-    if (d && d.some(Boolean)) return d;
-    return [true, true, true, true, true, true, true];
-  };
-  // tipo-giorno di (categoria, weekday): festivo se festività o domenica; sabato il sab; feriale altrimenti
-  const dayTypeOf = (catCode: string, w: number): "feriale" | "sabato" | "festivo" =>
-    (catCode === "festivita" || w === 6) ? "festivo" : (w === 5 ? "sabato" : "feriale");
-
-  // 7) aggrega — km "programmati" e km "potenziali a chiamata" (onDemand) separati
+  // 3) aggrega — km "programmati" e km "potenziali a chiamata" (onDemand) separati
   const allCats = [...catMeta.keys()];
   type LineAgg = {
     routeId: string; shortName: string; longName: string | null; color: string | null;
@@ -260,41 +188,27 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
   const totalsByCat: Record<string, number> = {};
   const odTotalsByCat: Record<string, number> = {};
   let grandTotal = 0, odGrandTotal = 0;
-  for (const t of trips) {
-    const lenKm = (lenByVar.get(t.variant_id) || 0) / 1000;
-    if (lenKm <= 0) continue;
-    const onDemand = !!(t.attributes as any)?.onDemand;
-    const mask = effMask(t);
-    const dv = dvByTrip.get(t.id) ?? {};
-    const cats = catByTrip.get(t.id) ?? null; // null = tutte
-    // "Scuole Chiuse" generica = ombrello su ogni periodo scuole_chiuse_* (coerente con UDP)
-    const umbrellaChiuse = !!cats && cats.has("scuole_chiuse");
-    const line = lineMap.get(t.route_id) ?? { routeId: t.route_id, shortName: t.short_name, longName: t.long_name, color: t.color, kmByCat: {} as Record<string, number>, kmTotal: 0, odByCat: {} as Record<string, number>, odTotal: 0 };
-    for (const catCode of allCats) {
-      if (cats && !cats.has(catCode) && !(umbrellaChiuse && catCode.startsWith("scuole_chiuse"))) continue;
-      const perWd = dayCount.get(catCode)!;
-      let days = 0;
-      for (let w = 0; w < 7; w++) {
-        if (!mask[w]) continue;
-        const dtId = dtKind[dayTypeOf(catCode, w)];
-        if (dtId && dv[dtId] === false) continue; // tipo-giorno esplicitamente spento
-        days += perWd[w];
-      }
-      if (days === 0) continue;
-      const km = lenKm * days;
-      if (onDemand) {
-        line.odByCat[catCode] = (line.odByCat[catCode] || 0) + km;
-        line.odTotal += km;
-        odTotalsByCat[catCode] = (odTotalsByCat[catCode] || 0) + km;
-        odGrandTotal += km;
+  for (const t of corse) {
+    const lenKm = t.metri / 1000;
+    if (lenKm <= 0 || t.giorni.length === 0) continue;
+    const l = lineaDi.get(t.routeId);
+    const line = lineMap.get(t.routeId) ?? { routeId: t.routeId, shortName: l?.short_name ?? "", longName: l?.long_name ?? null, color: l?.color ?? null, kmByCat: {} as Record<string, number>, kmTotal: 0, odByCat: {} as Record<string, number>, odTotal: 0 };
+    for (const giorno of t.giorni) {
+      const catCode = catByDate.get(giorno);
+      if (!catCode) continue;
+      if (t.onDemand) {
+        line.odByCat[catCode] = (line.odByCat[catCode] || 0) + lenKm;
+        line.odTotal += lenKm;
+        odTotalsByCat[catCode] = (odTotalsByCat[catCode] || 0) + lenKm;
+        odGrandTotal += lenKm;
       } else {
-        line.kmByCat[catCode] = (line.kmByCat[catCode] || 0) + km;
-        line.kmTotal += km;
-        totalsByCat[catCode] = (totalsByCat[catCode] || 0) + km;
-        grandTotal += km;
+        line.kmByCat[catCode] = (line.kmByCat[catCode] || 0) + lenKm;
+        line.kmTotal += lenKm;
+        totalsByCat[catCode] = (totalsByCat[catCode] || 0) + lenKm;
+        grandTotal += lenKm;
       }
     }
-    lineMap.set(t.route_id, line);
+    lineMap.set(t.routeId, line);
   }
 
   const round = (x: number) => Math.round(x * 10) / 10;
@@ -310,9 +224,12 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
       onDemandByCategory: roundMap(l.odByCat), onDemandTotal: round(l.odTotal),
     })).sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
 
+  const periodoCorto = await corseConPeriodoDiUnGiorno(projId);
   res.json({
     from: dmin, to: dmax,
     hasCalendar: catMeta.size > 0,
+    // corse con un periodo di un giorno solo: con la circolazione vera fanno i km di quel giorno (PR 3.5)
+    periodoDiUnGiorno: periodoCorto,
     hasOnDemand: odGrandTotal > 0,
     categories,
     lines,

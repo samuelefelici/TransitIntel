@@ -17,6 +17,7 @@
  * Tutte le rotte sono protette da requireAuth (montato globalmente in routes/index.ts).
  */
 import type { Request, Response } from "express";
+import { lunghezzaDellaGeometria } from "./km-programmati";
 import { Router, type IRouter } from "express";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
@@ -1432,7 +1433,9 @@ router.put("/planning-studio/projects/:id/variants/:variantId/stops", async (req
 
 /** PUT /variants/:variantId/shape — upsert dello shape della variante.
  *  body: { mode: 'driving'|'manual'|..., geometry: GeoJSON LineString, waypoints: [...],
- *          distanceM?: number, durationS?: number } */
+ *          durationS?: number }
+ *  La lunghezza (distance_m) la calcola il server dalla geometria (PR 3.5,
+ *  lib/km-programmati.ts): un distanceM mandato dal browser non conta. */
 router.put("/planning-studio/projects/:id/variants/:variantId/shape", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
@@ -1452,7 +1455,7 @@ router.put("/planning-studio/projects/:id/variants/:variantId/shape", async (req
     VALUES (${proj.id}::uuid, ${variantId}::uuid, ${mode},
             ${JSON.stringify(b.geometry)}::jsonb,
             ${JSON.stringify(wpts)}::jsonb,
-            ${b.distanceM ?? null}, ${b.durationS ?? null}, now())
+            ${lunghezzaDellaGeometria(b.geometry)}, ${b.durationS ?? null}, now())
     ON CONFLICT (variant_id) DO UPDATE
       SET mode = EXCLUDED.mode,
           geometry = EXCLUDED.geometry,

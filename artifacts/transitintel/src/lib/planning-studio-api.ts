@@ -707,6 +707,8 @@ export async function splitPsTripByCategories(
 /* ─── KM annui per linea e categoria (stampa elenco corse) ─── */
 export interface PsCorseKm {
   from: string | null; to: string | null; hasCalendar: boolean; hasOnDemand: boolean;
+  /** corse con un periodo di un giorno solo (dal = al): contano i km di quel giorno */
+  periodoDiUnGiorno?: { quante: number; giorno: string | null };
   categories: { code: string; name: string; color: string | null; sort: number }[];
   lines: {
     routeId: string; shortName: string; longName: string | null; color: string | null;
@@ -718,8 +720,10 @@ export interface PsCorseKm {
   onDemandTotalsByCategory: Record<string, number>;
   onDemandGrandTotal: number;
 }
-/** km annui (dal calendario aziendale, ignorando il periodo delle corse),
- *  per linea e ripartiti per categoria di validità, con i totali. */
+/** km annui nel periodo del calendario aziendale, per linea e ripartiti per
+ *  categoria di validità, con i totali. Contano i giorni in cui ogni corsa
+ *  circola davvero (matrice di validità, eccezioni e periodo della corsa: la
+ *  stessa circolazione del GTFS in esercizio e delle UDP, PR 3.5). */
 export async function getPsCorseKm(projectId: string, routeIds?: string[]): Promise<PsCorseKm> {
   const q = routeIds && routeIds.length ? `?routeIds=${encodeURIComponent(routeIds.join(","))}` : "";
   return apiFetch(`/api/planning-studio/projects/${projectId}/corse-km${q}`);

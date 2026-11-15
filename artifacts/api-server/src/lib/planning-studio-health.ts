@@ -186,6 +186,28 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
     samples: zeroDays.rows.slice(0, 5).map((r: any) => r.short_name ?? r.headsign ?? r.id.slice(0, 8)),
   });
 
+  // ── WARNING: corse con un periodo di un giorno solo (dal = al). Con la
+  //    circolazione vera (PR 3.5) circolano, e fanno km, solo quel giorno.
+  //    Succede negli import da Maior, dove il periodo del file diventa il
+  //    giorno dell'esportazione: va allargato con «Imposta validità».
+  const unGiorno = await db.execute<any>(sql`
+    SELECT count(*) OVER ()::int AS n, t.id, t.short_name, t.headsign,
+           to_char(t.valid_from, 'DD/MM/YYYY') AS giorno
+      FROM ps_trips t
+     WHERE t.project_id = ${pid} AND COALESCE(t.is_active, true) = true
+       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+       AND t.valid_from IS NOT NULL AND t.valid_from = t.valid_to
+     ORDER BY t.valid_from, t.short_name
+     LIMIT 5
+  `);
+  checks.push({
+    key: "trips_one_day_period",
+    level: "warning",
+    label: "Corse con un periodo di un giorno solo (dal = al): circolano e fanno km solo quel giorno",
+    count: Number(unGiorno.rows[0]?.n ?? 0),
+    samples: unGiorno.rows.map((r: any) => `${r.short_name ?? r.headsign ?? r.id.slice(0, 8)} (${r.giorno})`),
+  });
+
   // ── WARNING: fermate orfane (nessun percorso le usa) — inquinano ricerche
   //    e quadri di palina, spesso residui di re-import.
   const orphanStops = await db.execute<any>(sql`
