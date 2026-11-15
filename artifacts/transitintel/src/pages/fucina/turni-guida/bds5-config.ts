@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
- *  Costi avanzati BDS5: i dati dell'editor e la loro traduzione nello
+ *  Costi avanzati: i dati dell'editor e la loro traduzione nello
  *  schema che legge il solver (config.bds.costiAvanzati e config.bds.cuts).
  *  Solo logica, niente interfaccia: l'editor è in bds5-costs.tsx.
  * ═══════════════════════════════════════════════════════════════ */

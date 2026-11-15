@@ -4,7 +4,7 @@
  *  I pannelli che si leggono dopo un calcolo: come ha ragionato
  *  l'algoritmo, la classifica degli scenari CP-SAT, le distribuzioni,
  *  i cluster usati, la conformità, i riassunti per tipologia e residenza
- *  (BDSI cap. 15) e l'elenco dei turni con la ricerca (BDSI cap. 7).
+ *  e l'elenco dei turni con la ricerca.
  *  Vengono dalla pagina /driver-shifts; qui sono componenti che ricevono
  *  il risultato e non tengono altro stato che i filtri di lettura.
  * ═══════════════════════════════════════════════════════════════ */
@@ -181,7 +181,7 @@ export function ConformitaNormativa({ result }: { result: DriverShiftsResult }) 
                 <div className="text-[10px] text-muted-foreground">media per turno</div>
               </div>
             </div>
-            {/* BDS per-check breakdown */}
+            {/* verifica normativa per controllo */}
             {result.driverShifts.some(s => s.bdsValidation) && (() => {
               const withBds = result.driverShifts.filter(s => s.bdsValidation);
               const checks: [string, keyof NonNullable<DriverShiftData["bdsValidation"]>][] = [
@@ -214,7 +214,7 @@ export function ConformitaNormativa({ result }: { result: DriverShiftsResult }) 
  * ─────────────────────────────────────────────────────────────── */
 export function ElencoTurni({ shifts, forzaTurno, sbloccaTurno }: {
   shifts: DriverShiftData[];
-  /** BDSI §10.1.3: l'operatore dichiara conforme un turno scorretto. Senza, il comando non compare. */
+  /** L'operatore dichiara conforme un turno scorretto. Senza, il comando non compare. */
   forzaTurno?: (driverId: string) => void;
   sbloccaTurno?: (driverId: string) => void;
 }) {
@@ -249,14 +249,14 @@ export function ElencoTurni({ shifts, forzaTurno, sbloccaTurno }: {
                       {shift.riprese.length > 0 && <> · {shift.riprese.reduce((s, r) => s + r.trips.length, 0)} corse</>}
                       {shift.costEuro != null && shift.costEuro > 0 && <> · <span className="text-amber-400 font-medium">€{shift.costEuro.toFixed(0)}</span></>}
                     </span>
-                    {/* Stato di verifica BDSI (grigio/verde/rosso/blu) */}
+                    {/* Stato di verifica (grigio/verde/rosso/blu) */}
                     <VerifyBadge shift={shift} />
                     {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                   </button>
                   <AnimatePresence>
                     {isExpanded && (
                       <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="px-3 pb-3">
-                        {/* BDSI §10.1.3 — forzatura correttezza */}
+                        {/* Forzatura correttezza */}
                         {(() => {
                           const st = effectiveVerifyState(shift);
                           if (st === "scorretto") return (
@@ -518,15 +518,15 @@ export function ElencoTurni({ shifts, forzaTurno, sbloccaTurno }: {
                           </div>
                         )}
 
-                        {/* BDS Validation & Work Calculation detail */}
+                        {/* Verifica normativa e calcolo del lavoro */}
                         {(shift.bdsValidation || shift.workCalculation) && (
                           <div className="mt-3 space-y-2">
-                            {/* BDS Validation checks */}
+                            {/* Controlli della verifica normativa */}
                             {shift.bdsValidation && (
                               <div className={`rounded-lg border p-3 ${shift.bdsValidation.valid ? "bg-amber-500/10 border-amber-500/30" : "bg-red-500/5 border-red-500/20"}`}>
                                 <div className="flex items-center gap-2 mb-2">
                                   <Shield className="w-3.5 h-3.5 text-orange-400" />
-                                  <span className="text-xs font-semibold">Validazione BDS</span>
+                                  <span className="text-xs font-semibold">Verifica normativa</span>
                                   <Badge variant="outline" className={`text-[9px] ${shift.bdsValidation.valid ? "border-amber-500/40 text-amber-300" : "border-red-500/40 text-red-400"}`}>
                                     {shift.bdsValidation.valid ? "CONFORME" : "NON CONFORME"}
                                   </Badge>
@@ -568,7 +568,7 @@ export function ElencoTurni({ shifts, forzaTurno, sbloccaTurno }: {
                               <div className="rounded-lg border bg-muted/20 border-border/30 p-3">
                                 <div className="flex items-center gap-2 mb-2">
                                   <Clock className="w-3.5 h-3.5 text-orange-400" />
-                                  <span className="text-xs font-semibold">Calcolo Lavoro BDS</span>
+                                  <span className="text-xs font-semibold">Calcolo del lavoro</span>
                                   <span className="text-[10px] text-muted-foreground ml-auto">
                                     Netto: <span className="font-semibold text-foreground">{formatDuration(shift.workCalculation.lavoroNetto)}</span>
                                     {" · "}Conv.: <span className="font-semibold text-foreground">{formatDuration(shift.workCalculation.lavoroConvenzionale)}</span>
@@ -717,7 +717,7 @@ export function ScenarioRankingCard({ scenarios }: { scenarios: ScenarioResult[]
                         ["totalIdleH", "Vuoti h", "Ore 'vuote' (nastro - lavoro)"],
                         ["vuotiSignificativi", "N vuoti", "Turni con > 60' di vuoto"],
                         ["totalCost", "€ Costo", "Costo giornaliero"],
-                        ["bdsViolations", "BDS", "Violazioni normative"],
+                        ["bdsViolations", "Norma", "Violazioni normative"],
                         ["score", "Score", "Punteggio globale (min = meglio)"],
                         ["elapsed", "Sec", "Tempo risoluzione scenario"],
                       ] as [SortKey, string, string][]).map(([k, label, title]) => (
@@ -765,7 +765,7 @@ export function ScenarioRankingCard({ scenarios }: { scenarios: ScenarioResult[]
                                 #{s.rank ?? "?"}
                               </span>
                               {medals.length > 0 && (
-                                <span className="text-[9px]" title={medals.map(m => ({ "💰": "Più economico", "📉": "Meno turni", "⚡": "Meno vuoti", "✅": "0 violazioni BDS", "🧱": "Senza supplementi" }[m as string] || "")).filter(Boolean).join(" · ")}>
+                                <span className="text-[9px]" title={medals.map(m => ({ "💰": "Più economico", "📉": "Meno turni", "⚡": "Meno vuoti", "✅": "0 violazioni normative", "🧱": "Senza supplementi" }[m as string] || "")).filter(Boolean).join(" · ")}>
                                   {medals.join("")}
                                 </span>
                               )}
@@ -823,7 +823,7 @@ export function ScenarioRankingCard({ scenarios }: { scenarios: ScenarioResult[]
                 <span>💰 Più economico</span>
                 <span>📉 Meno turni</span>
                 <span>⚡ Meno vuoti</span>
-                <span>✅ 0 violazioni BDS</span>
+                <span>✅ 0 violazioni normative</span>
                 <span>🧱 0 supplementi</span>
               </div>
 
@@ -1071,7 +1071,7 @@ function AnalysisMetric({
 }
 
 /* ───────────────────────────────────────────────────────────────
- *  COPERTURA DEI TURNI MACCHINA (BDSI §2.2): quali corse sono coperte
+ *  COPERTURA DEI TURNI MACCHINA: quali corse sono coperte
  *  da quali turni guida, e i pezzi scoperti con i loro comandi
  * ─────────────────────────────────────────────────────────────── */
 export function CoperturaTurniMacchina({ vehicleShifts, driverShifts, onFocusDriver, onSwapPiece, onTurnoUnico }: {
@@ -1129,7 +1129,7 @@ export function LetturaDelRisultato({ result, forzaTurno, sbloccaTurno, copertur
   const filteredShifts = useMemo(() => {
     let out = result.driverShifts;
     if (typeFilter !== "all") out = out.filter(s => s.type === typeFilter);
-    // BDSI: drill-down dai riassunti (residenza, tipologia) + ricerca a chips
+    // Drill-down dai riassunti (residenza, tipologia) + ricerca a chips
     if (residenzaFilter) out = out.filter(s => (s.residenzaName || null) === residenzaFilter);
     if (searchQuery.trim()) out = out.filter(s => matchShiftQuery(s, searchQuery));
     return out;
@@ -1169,7 +1169,7 @@ export function LetturaDelRisultato({ result, forzaTurno, sbloccaTurno, copertur
 
       {copertura?.(cerca)}
 
-      {/* BDSI cap. 15: riassunti tipologia × residenza */}
+      {/* riassunti tipologia × residenza */}
       <Card className="bg-muted/30 border-border/30">
         <CardContent className="p-4">
           <h3 className="text-sm font-semibold mb-3 flex items-center gap-1.5">
@@ -1194,7 +1194,7 @@ export function LetturaDelRisultato({ result, forzaTurno, sbloccaTurno, copertur
             <Users className="w-4 h-4 text-orange-400" /> Dettaglio Turni ({filteredShifts.length}
             {filteredShifts.length !== result.driverShifts.length ? ` di ${result.driverShifts.length}` : ""})
           </h3>
-          {/* BDSI cap. 7: ricerca a chips */}
+          {/* ricerca a chips */}
           <div className="mb-3 space-y-1.5">
             <SearchChipsBar query={searchQuery} onChange={setSearchQuery} />
             <div className="flex flex-wrap gap-1.5">

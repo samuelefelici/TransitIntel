@@ -3,7 +3,7 @@
  *
  *  Tre scelte che valgono per un calcolo e non fanno parte del profilo
  *  di regole: su quali cluster di cambio si può tagliare, i vincoli
- *  globali di soluzione (BDSI cap. 14) e i costi avanzati (BDS5).
+ *  globali di soluzione e i costi avanzati.
  *
  *  Qui c'è la sola regola che le unisce alla configurazione dell'operatore
  *  nella forma che l'API e il solver leggono:

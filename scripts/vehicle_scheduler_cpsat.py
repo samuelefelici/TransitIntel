@@ -220,7 +220,7 @@ VSP_STRATEGIES = {
     "min_deadhead": {"label": "Minimo vuoto",        "desc": "Riduce trasferimenti senza passeggeri",
                      "mul_fixed": 0.9, "mul_deadhead": 3.0, "mul_idle": 0.8,
                      "mul_depot": 1.5, "mul_monolinea": 1.0, "mul_pairing": 1.0},
-    "monolinea":    {"label": "Preferenza monolinea","desc": "Stessa linea su un veicolo (Maior-style)",
+    "monolinea":    {"label": "Preferenza monolinea","desc": "Stessa linea su un veicolo",
                      "mul_fixed": 1.1, "mul_deadhead": 1.2, "mul_idle": 1.0,
                      "mul_depot": 1.0, "mul_monolinea": 4.0, "mul_pairing": 0.9},
     "min_idle":     {"label": "Anti-attese",         "desc": "Minimizza minuti morti tra corse",
@@ -510,7 +510,7 @@ def build_terminal_clusters(trips: list[Trip], radius_m: int) -> dict[str, int]:
     vengono trattati come fermate distinte (deadhead reale). Stop nello stesso
     cluster sono considerati "stesso punto fisico" (deadhead km=0, tempo=0).
 
-    Riproduce la logica MAIOR dei punti di interscambio: capolinea
+    Logica dei punti di interscambio: capolinea
     fisicamente coincidenti ma con stop_id GTFS multipli (es. "Stazione FS
     lato A/B/C") che dovrebbero permettere il passaggio diretto della
     vettura tra una corsa e la successiva senza tempo di trasferimento.
@@ -2464,7 +2464,7 @@ def internal_deadhead_km(a: Trip, b: Trip) -> float:
 
 
 def chain_normativa_cost(chain: list[int], trips: list[Trip], rates: VehicleCostRates) -> float:
-    """Costi/penalità della normativa VSP (MAIOR-style) a livello di blocco.
+    """Costi/penalità della normativa VSP a livello di blocco.
 
     - costo per cambio di linea (VINCOLO_CAMBI_LINEA);
     - costo TRIPPER per blocchi "ritaglio" (1 corsa o servizio sotto soglia);
@@ -3421,7 +3421,7 @@ def enforce_normativa_split(
     Le penalità proibitive guidano CP-SAT/greedy/LS lontano dalle violazioni,
     ma il modello ad archi non può imporre cap per-catena: questo post-pass
     SPEZZA le catene residue nel punto di violazione (aumentando i veicoli,
-    come da semantica MAIOR: la regola vince sul risparmio).
+    la regola vince sul risparmio).
     """
     if (rates.max_line_changes < 0 and rates.max_pieces_per_block <= 0
             and not rates.forbid_line_changes and not rates.forbid_internal_deadheads):
@@ -3528,7 +3528,7 @@ def assign_depots_to_shifts(
                 if caps[d] is not None:
                     model.add(sum(x[s][d] for s in range(n)) <= caps[d])
         if enforce_type_caps:
-            # Flotta per TIPOLOGIA (disponibilità_tipologie_per_deposito, MAIOR):
+            # Flotta per TIPOLOGIA (disponibilità_tipologie_per_deposito):
             # se un deposito dichiara la flotta, quella È la sua dotazione:
             # tipo elencato → cap dichiarato, tipo NON elencato → 0 vetture.
             shift_idxs_by_type: dict[str, list[int]] = {}
@@ -4061,7 +4061,7 @@ def run(data: dict) -> dict:
         log(f"  [VSP] Cost rates override applicato: "
             f"{list(vsp_config.cost_rates_override.keys())}")
 
-    # ── NORMATIVA VSP (MAIOR-style): cambi linea, tripper, sosta capolinea,
+    # ── NORMATIVA VSP: cambi linea, tripper, sosta capolinea,
     # max pezzi, vieta vuoti interni. config.normativa (tutte opzionali).
     normativa_active = rates.apply_normativa(config.get("normativa"))
     if normativa_active:
@@ -4124,7 +4124,7 @@ def run(data: dict) -> dict:
         t.idx = i
     n = len(trips)
 
-    log(f"=== CP-SAT Vehicle Scheduler v3 (Maior-inspired, diversity-aware) ===")
+    log(f"=== CP-SAT Vehicle Scheduler v3 (diversity-aware) ===")
     log(f"  Trips: {n}, intensity: {intensity}, forced: {forced}")
     log(f"  {vsp_config.summary()}")
     report_progress("VSP", 5, f"Loaded {n} trips")
@@ -4266,7 +4266,7 @@ def run(data: dict) -> dict:
     # Formato input: data.arcPenalties = { "tripIdA|tripIdB": eur }. Applicate
     # come costo aggiuntivo sull'arco: il solver evita di ri-formare i pairing
     # che al round precedente hanno prodotto blocchi mal tagliabili in turni
-    # guida legali (BDS).
+    # guida legali.
     arc_pen_raw = data.get("arcPenalties") or {}
     arc_pen_applied = 0
     if isinstance(arc_pen_raw, dict) and arc_pen_raw:
@@ -4610,7 +4610,7 @@ def run(data: dict) -> dict:
             "maxBufferMin": max(delay_buffers.values()) if delay_buffers else 0,
             "arcsDropped": _LAST_ROBUST_DROPPED,
         } if robust_factor > 0 else None,
-        # NORMATIVA VSP (MAIOR-style)
+        # NORMATIVA VSP
         "normativa": {
             "rules": normativa_active,
             "lineChangesTotal": sum(

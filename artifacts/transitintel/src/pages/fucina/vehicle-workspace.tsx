@@ -1210,7 +1210,7 @@ export default function VehicleWorkspace({
     });
   }, [result, wwShiftIds, wwSelected, wwPool, wwBlockVehicleType, wwBlockChecks, pushHistory, lockedInvolved, rifiutaPerLucchetto]);
 
-  /* Verifica LIVE della selezione (stile Bdsi, versione TM): tipologia mezzo
+  /* Verifica LIVE della selezione: tipologia mezzo
    * risultante + vincoli + costo ≈ € (ore servizio × costo orario scenario). */
   const wwPreviewIds = useCallback(async (ids: string[]): Promise<{ type: string | null; valid?: boolean; violations?: string[]; costEuro?: number | null } | null> => {
     if (!result) return null;

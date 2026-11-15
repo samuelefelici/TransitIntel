@@ -312,7 +312,7 @@ Import GTFS via drag&drop zip, visualizza feed importati, sync TomTom / OSM / IS
 
 ### Dati Sorgente- **Salva/Carica scenari**: persistenza su DB per confronto successivo
 
-- **GTFS** Conerobus + extraurbano Marche- **Modello di costo MAIOR-inspired**: costo fisso giornaliero + €/km servizio + €/km deadhead + penalità sbilanciamento (quadratica) + penalità gap nastro-lavoro
+- **GTFS** Conerobus + extraurbano Marche- **Modello di costo**: costo fisso giornaliero + €/km servizio + €/km deadhead + penalità sbilanciamento (quadratica) + penalità gap nastro-lavoro
 
 - **TomTom Traffic API** (snapshot ogni ora)
 
@@ -466,7 +466,7 @@ Import GTFS via drag&drop zip, visualizza feed importati, sync TomTom / OSM / IS
 
 |----------|-----------|│  ├── Input: corse GTFS + tipi veicolo + configurazione       │
 
-| Virgilio non risponde | Riavvia backend: `pkill -f "tsx ./src/index.ts" && bash start-backend.sh` |│  ├── Modello: CP-SAT con costi MAIOR-inspired                │
+| Virgilio non risponde | Riavvia backend: `pkill -f "tsx ./src/index.ts" && bash start-backend.sh` |│  ├── Modello: CP-SAT con modello di costo                    │
 
 | Voce non parte | Controlla che `🔊` sia attivo in chat header + scegli voce dal picker ▾ |│  │   ├── Costo fisso giornaliero per veicolo                 │
 

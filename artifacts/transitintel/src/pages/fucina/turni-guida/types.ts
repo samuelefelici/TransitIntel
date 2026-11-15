@@ -150,7 +150,7 @@ export interface DriverShiftData {
   /* v2 cost fields */
   costEuro?: number;
   costBreakdown?: Record<string, number>;
-  /* v4 BDS fields */
+  /* v4 campi della normativa */
   bdsValidation?: {
     valid: boolean;
     classificazioneValida: boolean;
@@ -175,7 +175,7 @@ export interface DriverShiftData {
   residenzaDepotId?: string | null;
   residenzaName?: string | null;
   residenzaColor?: string | null;
-  /* BDSI §10.1 — stato di verifica del turno:
+  /* Stato di verifica del turno:
    *   da_verificare (grigio) → modificato a mano, non ancora ri-verificato
    *   conforme (verde)      → verifica superata
    *   scorretto (rosso)     → almeno un vincolo violato
@@ -185,7 +185,7 @@ export interface DriverShiftData {
   forcedReason?: string;
 }
 
-/** BDSI cap. 14 — vincolo GLOBALE di soluzione per il CSP. */
+/** Vincolo GLOBALE di soluzione per il CSP. */
 export interface VincoloGlobale {
   tipo: "numerico" | "percentuale" | "media";
   tipologie: DriverShiftType[];

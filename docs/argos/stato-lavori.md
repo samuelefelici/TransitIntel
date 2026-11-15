@@ -13,7 +13,7 @@ Aggiornata al 7 settembre 2026, 14:40 UTC.
 
 ## Regole dell'azienda recepite nel motore
 
-- BDS: intero ≤ 7:15; semiunico ≤ 9:15 con interruzione ≥ 1:15; spezzato ≤ 10:30 con interruzione ≥ 3:00; **massimo 5 autovetture aziendali — inviolabile** (il progetto è configurato a 6: passare `companyCars: 5` esplicito a ogni giro finché non viene corretto); domenica: più interi possibile.
+- Normativa: intero ≤ 7:15; semiunico ≤ 9:15 con interruzione ≥ 1:15; spezzato ≤ 10:30 con interruzione ≥ 3:00; **massimo 5 autovetture aziendali — inviolabile** (il progetto è configurato a 6: passare `companyCars: 5` esplicito a ogni giro finché non viene corretto); domenica: più interi possibile.
 - Costo del conducente: **27 €/ora**. Corrispettivo: **2,60 €/km su TUTTI i km**, di linea e di fuorilinea. Un fuorilinea non è quindi una perdita: 10 km rendono 26 €, costano ~9,50 € di mezzo e ~13,50 € di conducente. Quello che costa davvero sono **le ore pagate**.
 - Tetti percentuali di semiunici e spezzati rigidi, sforabili al massimo di 0,9 turni entro l'unità intera; base di calcolo = turni senza i supplementi (modello e stato allineati).
 - Bus mai incustodito oltre 15′; il montante prende il bus all'arrivo (sosta ≤ 30′ coperta); ogni cambio scritto nel turno («In [nodo] lascia/prende la vettura al turno …»).
@@ -80,10 +80,10 @@ Altro meccanismo che non abbiamo: la **Riserva** (4 casi, 4h45) — conducente f
 | AG | 19 | 38 | 7 ❌ | 105′ ❌ | km a vuoto pagati (#456): **nessun effetto**, 169,5 km contro 171,2 |
 | AH | 26 | 41 | **5 ✓** | **15′ ✓** | taglio in deposito ammesso (#457): regole rispettate, ma 7 vetture in piu' e 32,3% di declassate |
 | AI | 19 | 37 | 7 ❌ | 105′ ❌ | prima misura di `cambiInDeposito`: **1 su 33**. Risposta: (b) |
-| **AL** | **19** | 42 | **5 ✓** | **15′ ✓** | rientro come alternativa (#459): 240,4 km a vuoto, 7 cambi in deposito, tetti NON rilassati, 2 violazioni BDS |
+| **AL** | **19** | 42 | **5 ✓** | **15′ ✓** | rientro come alternativa (#459): 240,4 km a vuoto, 7 cambi in deposito, tetti NON rilassati, 2 violazioni normative |
 | AM | 20 | 43 | 5 ✓ | 15′ ✓ | pesi spinti su turni pochi e pieni: **nastro medio identico al minuto**, 367′ |
 | AN | 24 | 43 | 5 ✓ | 15′ ✓ | banda a 7h15: nastro 367→376 (previsti 400-412), **previsione sbagliata** |
-| AO | 22 | 42 | 5 ✓ | 15′ ✓ | trasferimento vero nelle coppie: **0 violazioni BDS**, nastro 379′, costo guida piu' basso della serie |
+| AO | 22 | 42 | 5 ✓ | 15′ ✓ | trasferimento vero nelle coppie: **0 violazioni normative**, nastro 379′, costo guida piu' basso della serie |
 
 Nessun giro ha mai prodotto un mezzo fuori sagoma o un doppio declassamento.
 
@@ -162,7 +162,7 @@ La correzione, in `analyze_vehicle_block`:
 
 ## Il giro AH e la lettura onesta
 
-Col taglio in deposito ammesso (#457) **le due regole rigide rientrano per la prima volta**: autovetture 5 su 5 con zero conflitti e zero turni senza auto, vettura incustodita 15′ esatti. Le violazioni BDS scendono da 6 a 1, i tetti percentuali sono rispettati **senza rilassamento** (era la prima volta), e la forma dei turni migliora molto: 34 interi, 5 semiunici, 1 spezzato, 1 supplemento, nastro medio 371′ contro 414′.
+Col taglio in deposito ammesso (#457) **le due regole rigide rientrano per la prima volta**: autovetture 5 su 5 con zero conflitti e zero turni senza auto, vettura incustodita 15′ esatti. Le violazioni normative scendono da 6 a 1, i tetti percentuali sono rispettati **senza rilassamento** (era la prima volta), e la forma dei turni migliora molto: 34 interi, 5 semiunici, 1 spezzato, 1 supplemento, nastro medio 371′ contro 414′.
 
 Ma il prezzo e' alto e va detto: **26 vetture invece di 19** (il piano umano ne usa 21), km a vuoto 214,4 contro 169,5, e soprattutto il declassamento esplode: **32,3%** contro il 17% di AG, con **5 pollicini** contro i 2-3 dichiarati dall'operatore e 8 catene spezzate. La 91 e' declassata all'83%, la 2/6 al 54%.
 
@@ -206,7 +206,7 @@ Tutti e cinque i criteri dichiarati PRIMA di vedere i numeri sono stati centrati
 | cambi in deposito | devono SALIRE | 1 su 33 | **7 su 33** |
 | nastro medio | non deve esplodere | 417′ | **367′** (sceso) |
 
-`chosenOverDirect` = **8.254 soste convertite in rientri**: la mossa e' entrata nel modello e viene usata. 17 rientri in deposito nel giorno. Restano 19 vetture — **contro le 21 del piano umano** — con 2 sole violazioni BDS, i tetti percentuali rispettati **senza rilassamento**, 0 fuori sagoma, 0 doppi declassamenti, 1/4 a zero declassate, 153 giri naturali e nessuno saltato.
+`chosenOverDirect` = **8.254 soste convertite in rientri**: la mossa e' entrata nel modello e viene usata. 17 rientri in deposito nel giorno. Restano 19 vetture — **contro le 21 del piano umano** — con 2 sole violazioni normative, i tetti percentuali rispettati **senza rilassamento**, 0 fuori sagoma, 0 doppi declassamenti, 1/4 a zero declassate, 153 giri naturali e nessuno saltato.
 
 **Quello che manca e' uno solo, ed e' preciso.** I turni sono 42 contro i 38 del piano umano. Ma il nastro TOTALE e' praticamente identico a quello del giro AI:
 
@@ -260,7 +260,7 @@ Avevo dichiarato prima della misura: nastro medio da 367′ a 400-412′, turni 
 | vetture | invariate (19) | **24** |
 | costo guida | in calo | **+411 €** per lo stesso lavoro |
 
-Le regole rigide hanno tenuto (auto 5 con zero conflitti, incustodito 15′, 1 sola violazione BDS, tetti non rilassati), ma il piano e' peggiore di AL sotto ogni altro aspetto.
+Le regole rigide hanno tenuto (auto 5 con zero conflitti, incustodito 15′, 1 sola violazione normativa, tetti non rilassati), ma il piano e' peggiore di AL sotto ogni altro aspetto.
 
 **L'errore.** Le due soglie di costo del turno erano derivate ENTRAMBE dalla media della banda:
 
@@ -306,7 +306,7 @@ La correzione va in **entrambe le direzioni**: libera 13 minuti dove i pezzi si 
 
 ## Il giro AO, e perche' qui ci si ferma
 
-| giro | vetture | turni | nastro medio | violazioni BDS | costo guida | punteggio |
+| giro | vetture | turni | nastro medio | violazioni normative | costo guida | punteggio |
 |---|---|---|---|---|---|---|
 | **AL** | **19** | 42 | 367′ | 2 | 15.089,61 | 29.793,29 |
 | AM | 20 | 43 | 367′ | 1 | 15.252,46 | — |
@@ -314,7 +314,7 @@ La correzione va in **entrambe le direzioni**: libera 13 minuti dove i pezzi si 
 | **AO** | 22 | 42 | **379′** | **0** | **14.818,77** | **29.475,47** |
 | piano umano | 21 | 38 | 385,8′ | — | — | — |
 
-AO e' il piano piu' pulito che il motore abbia prodotto: **zero violazioni BDS** (mai successo prima), tetti percentuali rispettati senza rilassamento, autovetture 5 con zero conflitti e nessun turno senza auto, incustodito 15′, nastro medio 379′ — il piu' vicino ai 385,8′ dell'operatore. Ha anche il **punteggio migliore** di tutta la serie e il costo guida piu' basso.
+AO e' il piano piu' pulito che il motore abbia prodotto: **zero violazioni normative** (mai successo prima), tetti percentuali rispettati senza rilassamento, autovetture 5 con zero conflitti e nessun turno senza auto, incustodito 15′, nastro medio 379′ — il piu' vicino ai 385,8′ dell'operatore. Ha anche il **punteggio migliore** di tutta la serie e il costo guida piu' basso.
 
 **Ma non batte AL sul criterio dell'operatore**, che sono le vetture: 22 contro 19, e sopra le 21 del piano umano. E i turni restano 42.
 
@@ -370,11 +370,11 @@ La flessibilita' non manca: il motore riporta `flexTrips: 365`, cioe' tutte le c
 - *coincidenze*: un candidato scartato con la motivazione «rompe una coincidenza: **7 → 2/6, attesa −13′**», cioe' la 2/6 sarebbe partita tredici minuti prima che arrivasse la 7. Scartato **prima** del re-solve. E non e' una delle tre nominate dall'operatore: e' una dei cluster principali, trovata da sola;
 - lo spostamento accettato (C.S. +15′) e' una corsa singola, ed e' corretto: la Circolare parte e torna a Piazza Cavour, non ha un capolinea periferico dove la sosta conti.
 
-**Il piano pero' peggiora AL**: 26 vetture, 43 turni, 3 violazioni BDS. Ottavo giro senza migliorare il riferimento.
+**Il piano pero' peggiora AL**: 26 vetture, 43 turni, 3 violazioni normative. Ottavo giro senza migliorare il riferimento.
 
 ### Ma i round dicono perche'
 
-| round | vetture | turni | violazioni BDS | punteggio |
+| round | vetture | turni | violazioni normative | punteggio |
 |---|---|---|---|---|
 | 2 | **20** | 43 | **0** | 30.142,67 |
 | 6 | 26 | 43 | 3 | **29.931,57** ← scelto |
@@ -417,7 +417,7 @@ E' il secondo errore della serie dello stesso tipo — dopo la banda del turno p
 | AP | 26 | 43 | **3** | 5/5 |
 | **AQ2** | **21** | 43 | **0** | **4/5** |
 
-Scenario `366e03ad-7f1e-4a3e-bfa7-c853397fffd3`. **Zero violazioni BDS**, zero supplementi, tetti percentuali rispettati senza rilassamento, autovetture con margine (picco 4 su 5, zero conflitti, nessun turno scoperto), vettura incustodita 15′. 31 interi, 6 semiunici, 6 spezzati; nastro medio 374′; 29 cambi in linea e 5 in deposito.
+Scenario `366e03ad-7f1e-4a3e-bfa7-c853397fffd3`. **Zero violazioni normative**, zero supplementi, tetti percentuali rispettati senza rilassamento, autovetture con margine (picco 4 su 5, zero conflitti, nessun turno scoperto), vettura incustodita 15′. 31 interi, 6 semiunici, 6 spezzati; nastro medio 374′; 29 cambi in linea e 5 in deposito.
 
 E' il **miglior piano a zero violazioni** finora: batte AO (22 vetture) sulle vetture a parita' di pulizia. AL resta piu' basso sulle vetture (19) ma ha 2 violazioni: col principio nuovo non e' un piano migliore, e' un piano non valido.
 
@@ -578,7 +578,7 @@ Scenario `29f79738-e8d6-483e-a2f5-74dc66e11013`, parametri veri di AQ2 (5 round,
 | 5 | 22 | 43 | 3 | 9 | 33.019 |
 | **6 — LA SONDA (scelto)** | **21** | **43** | **0** | **1** | **31.932** |
 
-**Il round vincente e' quello della sonda.** Ha preso il round 3 (21 vetture, 2 violazioni), ha spostato **una corsa** — la 30R delle 21:46 alle 21:31 — e ha tolto una violazione BDS. E' il **primo spostamento accettato di tutta la serie**: da AL in poi la sonda non aveva mai mosso niente.
+**Il round vincente e' quello della sonda.** Ha preso il round 3 (21 vetture, 2 violazioni), ha spostato **una corsa** — la 30R delle 21:46 alle 21:31 — e ha tolto una violazione normativa. E' il **primo spostamento accettato di tutta la serie**: da AL in poi la sonda non aveva mai mosso niente.
 
 E le ombre nuove si vedono nel confronto a parita' di parametri:
 
@@ -709,7 +709,7 @@ AX (`1f51ec44`, scenario `f97e116d`, 1947 s): dieci sonde, il resto come AU. **R
 
 **Correzione (rilettura del codice):** i candidati bocciati dal filtro (coincidenze, macchina) NON consumano sonde — il filtro costa zero e gira prima del solver; le quattro ripetizioni della 7 −11 sono le quattro passate del ciclo, registrate ogni volta. Il fatto vero e' un altro: **su dieci sonde chieste ne sono state usate tre**, perche' la coda si e' svuotata — zero candidati dai turni, uno dai blocchi, e dei quattro di linea (tetto della lista) tre morti nel filtro. La sonda non ha esaurito il budget: ha esaurito le idee, e il rendiconto non lo diceva.
 
-**Il round 5 e' il segnale piu' interessante e il piu' pericoloso**: 37 turni (sei in meno), 20 250 € (−1 300), ma 11 violazioni BDS e 26 vetture. La selezione lessicografica (violazioni prima del punteggio) lo scarta, com'e' giusto — ma dice che con sei turni in meno il costo cala di 1 300 € al giorno. Vanno lette le undici violazioni: se sono tutte «intero senza sosta ≥ 15′ al capolinea», e' il punto in cui la sosta al capolinea periferico (il cuscinetto del giro rigido) puo' fare la differenza.
+**Il round 5 e' il segnale piu' interessante e il piu' pericoloso**: 37 turni (sei in meno), 20 250 € (−1 300), ma 11 violazioni normative e 26 vetture. La selezione lessicografica (violazioni prima del punteggio) lo scarta, com'e' giusto — ma dice che con sei turni in meno il costo cala di 1 300 € al giorno. Vanno lette le undici violazioni: se sono tutte «intero senza sosta ≥ 15′ al capolinea», e' il punto in cui la sosta al capolinea periferico (il cuscinetto del giro rigido) puo' fare la differenza.
 
 **Sagoma**: 129 corse declassate (35%), 60 in punta; superamenti su 30 (17% in punta), 31 (17%, 36% in punta), 42 (23%). Peggio di AU sulla 3 (39 declassate contro 29), meglio sulla 30 (2 contro 10). Fronte aperto, invariato.
 
@@ -1590,7 +1590,7 @@ Gli allegati ora sono **gli stessi fogli**, rifatti in Python leggendo
   pezzo e l'altro; pre-turno, trasferimenti, fuorilinea e cambi vettura come
   righe;
 - **piede**: COMPETENZE / NASTRO / LAVORO / INTERRUZIONE, e le note con i
-  richiami (le violazioni BDS entrano qui, col richiamo `!`).
+  richiami (le violazioni normative entrano qui, col richiamo `!`).
 
 I turni macchina prendono la stessa intestazione e lo stesso piede, ma il corpo
 resta una tabella: una vettura fa venticinque corse, e venticinque schede non

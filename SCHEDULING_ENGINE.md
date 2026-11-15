@@ -37,7 +37,7 @@ Lo **Scheduling Engine** trasforma un **Programma di Esercizio** (lista di corse
        INPUT                     STEP 1                     STEP 2
 ```
 
-**Approccio**: ispirato agli ottimizzatori professionali (Maior, GIRO HASTUS), ogni step esegue un **portfolio multi-scenario** con strategie alternative e seed randomizzati, poi seleziona la soluzione migliore con una **polish phase** finale.
+**Approccio**: come gli ottimizzatori professionali, ogni step esegue un **portfolio multi-scenario** con strategie alternative e seed randomizzati, poi seleziona la soluzione migliore con una **polish phase** finale.
 
 ---
 
@@ -101,7 +101,7 @@ Assegnare le corse del Programma di Esercizio a un numero minimo di veicoli, ris
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ FASE 4 — PORTFOLIO MULTI-SCENARIO CP-SAT (★ Maior-style ★)         │
+│ FASE 4 — PORTFOLIO MULTI-SCENARIO CP-SAT                           │
 │                                                                     │
 │   Per ogni intensità, esegue N scenari con strategia diversa:      │
 │     fast    → 3 scenari × 30s                                      │
@@ -247,7 +247,7 @@ Suddividere ogni **turno macchina** (vehicle block) in segmenti che possano esse
 ┌─────────────────────────────────────────────────────────────────────┐
 │ FASE 3 — COLLASSO CAMBI VICINI                                      │
 │   Tagli a meno di 45 min uno dall'altro vengono collassati nel     │
-│   migliore (BDS — un autista non cambia 2 volte in 1h).            │
+│   migliore (un autista non cambia 2 volte in 1h).                  │
 └─────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -302,7 +302,7 @@ Suddividere ogni **turno macchina** (vehicle block) in segmenti che possano esse
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ FASE 8 — VALIDAZIONE BDS COMPLETA                                   │
+│ FASE 8 — VERIFICA NORMATIVA COMPLETA                                │
 │   Ogni duty viene controllato contro:                               │
 │     ✓ Nastro max (435/555/630 min)                                 │
 │     ✓ Lavoro max (435/480/450 min)                                 │
@@ -444,7 +444,7 @@ minimize
 | **Spezzato** | 10h30 (630) | 7h30 (450) | ≥ 3h | 13% |
 | **Supplemento** | 2h30 (150) | 2h30 (150) | 0 | 100% |
 
-✅ **Tutti modificabili da `Config → Normativa BDS → Limiti Turni Guida`**
+✅ **Tutti modificabili da `Config → Normativa turni → Limiti Turni Guida`**
 
 ### 📜 Intervallo Pasto
 
@@ -482,7 +482,7 @@ PEZZO     pre_cambio=3                post_cambio=2
 ║  💰 Costi (€)                                            ║
 ║     • orario autista · supplemento · cambio bus · auto   ║
 ║                                                          ║
-║  ⚠️ Normativa BDS                                        ║
+║  ⚠️ Normativa turni                                      ║
 ║     ├─ Pre/Post Turno (8 parametri)                     ║
 ║     ├─ CE 561/2006 (3 parametri + on/off)               ║
 ║     ├─ Intervallo Pasto (2 parametri + on/off)          ║
@@ -592,7 +592,7 @@ artifacts/
         │   ├── fucina/driver-workspace.tsx   # Pagina turni guida (dentro la Fucina)
         │   └── fucina/turni-guida/       # Moduli dei turni guida: tipi, Gantt, lettura del risultato, ambito del calcolo
         └── components/
-            ├── OperatorConfigPanel.tsx   # Pannello config (pesi+BDS+limiti)
+            ├── OperatorConfigPanel.tsx   # Pannello config (pesi+normativa+limiti)
             ├── OptimizationProgress.tsx  # Progress streaming SSE
             └── ui/...
 ```
@@ -641,7 +641,7 @@ Browser ──GET /api/driver-shifts/{jobId}/stream──► SSE
 ## 🎯 Esempio di output reale
 
 ```
-=== CP-SAT Vehicle Scheduler v2 (MAIOR-inspired) ===
+=== CP-SAT Vehicle Scheduler v2 ===
   Trips: 248, intensity: deep, forced: false
   Arcs: 4827
   Greedy: 28 vehicles, EUR 4570.30

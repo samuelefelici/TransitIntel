@@ -988,7 +988,7 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       log.info(`VSP robustezza=${robustnessLevel}: profilo ritardi su ${Object.keys(delayByHour).length} fasce orarie${Object.keys(delayByHour).length === 0 ? " (default)" : " (traffico reale)"}`);
     }
 
-    // 5e. NORMATIVA VSP (MAIOR-style): cambi linea, tripper, sosta capolinea,
+    // 5e. NORMATIVA VSP: cambi linea, tripper, sosta capolinea,
     // max pezzi, vuoti interni. Whitelist dei campi accettati dal solver.
     let normativaCfg: Record<string, any> | undefined;
     const rawNorm = (body as any).vspNormativa;
@@ -1048,7 +1048,7 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       ...(body.vspAdvanced ? { vspAdvanced: body.vspAdvanced } : {}),
       // Robustezza ai ritardi (buffer δ data-driven)
       ...(robustnessCfg ? { robustness: robustnessCfg } : {}),
-      // Normativa VSP (MAIOR-style)
+      // Normativa VSP
       ...(normativaCfg ? { normativa: normativaCfg } : {}),
       // Sagoma: fasce di punta, tetti di declassamento, flotta per tipologia
       ...(Object.keys(sagomaCfg).length > 0 ? { sagoma: sagomaCfg } : {}),

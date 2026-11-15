@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
- *  Costi avanzati BDS5 (Manuale configurazione algoritmo MAIOR)
+ *  Costi avanzati dei turni guida
  *  Editor compatto per: scalini, costi 2° grado, cambio vettura per
  *  località, cambio patente, soste spezzanti, fasce senza cambi,
  *  lunghezza minima pezzi. Tutto opzionale → payload solo se attivo.
@@ -44,7 +44,7 @@ export function Bds5CostsEditor({ cfg, onChange }: { cfg: Bds5Config; onChange: 
     <div className="space-y-2">
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-1.5">
         <Coins className="w-3.5 h-3.5 text-orange-400" />
-        <span className="text-[11px] font-semibold text-orange-300">Costi avanzati (BDS5)</span>
+        <span className="text-[11px] font-semibold text-orange-300">Costi avanzati</span>
         {activeCount > 0 && (
           <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500/20 text-orange-300 border border-orange-500/30">
             {activeCount} attiv{activeCount === 1 ? "o" : "i"}
@@ -55,8 +55,8 @@ export function Bds5CostsEditor({ cfg, onChange }: { cfg: Bds5Config; onChange: 
       {open && (
         <div className="space-y-3">
           <p className="text-[10px] text-muted-foreground/70 leading-tight">
-            La funzione obiettivo del BDS5: componenti opzionali sommate al costo di ogni turno.
-            Vuoto = disattivo, il risultato riporta il costo BDS5 totale.
+            I costi avanzati: componenti opzionali sommate al costo di ogni turno.
+            Vuoto = disattivo, il risultato riporta il costo avanzato totale.
           </p>
 
           {/* Scalini */}
@@ -190,8 +190,8 @@ export function Bds5Report({ report }: { report: any | null | undefined }) {
   if (report.lungPezziMin || report.lungPezziMinExtra) parts.push(`pezzi≥${report.lungPezziMin || report.lungPezziMinExtra}'`);
   return (
     <span className="text-[10px] px-2 py-0.5 rounded-full border bg-orange-500/10 border-orange-500/30 text-orange-300"
-      title={`Componenti BDS5 attive: ${parts.join(" · ")}`}>
-      💰 BDS5 attivo ({parts.join(" · ")}) — costo aggiuntivo €{(report.costoTotaleEur ?? 0).toLocaleString("it-IT")}
+      title={`Costi avanzati attivi: ${parts.join(" · ")}`}>
+      💰 Costi avanzati attivi ({parts.join(" · ")}) — costo aggiuntivo €{(report.costoTotaleEur ?? 0).toLocaleString("it-IT")}
     </span>
   );
 }

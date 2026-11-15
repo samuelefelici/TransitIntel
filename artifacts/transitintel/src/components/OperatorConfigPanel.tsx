@@ -612,18 +612,18 @@ export function OperatorConfigPanel({ isOpen, onClose, config, onChange }: Opera
                 </AnimatePresence>
               </div>
 
-              {/* ═══ NORMATIVA BDS ═══ */}
+              {/* ═══ NORMATIVA TURNI ═══ */}
               <div>
                 <button onClick={() => setShowBDS(!showBDS)}
                   className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground mb-2">
                   {showBDS ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
-                  <AlertTriangle className="w-3 h-3" /> Normativa BDS (CCNL / CE 561)
+                  <AlertTriangle className="w-3 h-3" /> Normativa turni (CCNL / CE 561)
                 </button>
                 <AnimatePresence>
                   {showBDS && (
                     <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="space-y-4 overflow-hidden">
                       <div className="text-[10px] text-muted-foreground mb-1">
-                        Parametri normativi ispirati a MAIOR BDS v4. Modifica solo se autorizzato.
+                        Parametri della normativa aziendale. Modifica solo se autorizzato.
                       </div>
 
                       {/* Pre/Post Turno */}
