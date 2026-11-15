@@ -188,7 +188,7 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
 
   // ── WARNING: corse con un periodo di un giorno solo (dal = al). Con la
   //    circolazione vera (PR 3.5) circolano, e fanno km, solo quel giorno.
-  //    Succede negli import da Maior, dove il periodo del file diventa il
+  //    Succede con alcuni GTFS importati, dove il periodo del file diventa il
   //    giorno dell'esportazione: va allargato con «Imposta validità».
   const unGiorno = await db.execute<any>(sql`
     SELECT count(*) OVER ()::int AS n, t.id, t.short_name, t.headsign,

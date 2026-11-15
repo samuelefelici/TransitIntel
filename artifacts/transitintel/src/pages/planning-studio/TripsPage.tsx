@@ -292,7 +292,7 @@ function buildCorseListHtml(p: {
     const unGiorno = km.periodoDiUnGiorno && km.periodoDiUnGiorno.quante > 0 ? km.periodoDiUnGiorno : null;
     const fmtGiorno = (iso: string | null) => iso && /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso.split("-").reverse().join("/") : "";
     const avvisoUnGiorno = unGiorno
-      ? `<p class="warn">⚠ ${unGiorno.quante.toLocaleString("it-IT")} ${unGiorno.quante === 1 ? "corsa ha" : "corse hanno"} un periodo di un giorno solo${unGiorno.giorno ? ` (per esempio il ${fmtGiorno(unGiorno.giorno)})` : ""}: qui ${unGiorno.quante === 1 ? "conta" : "contano"} i km di quel giorno. Succede negli import da Maior. Se devono circolare tutto l'anno, selezionale e allarga il «Periodo».</p>`
+      ? `<p class="warn">⚠ ${unGiorno.quante.toLocaleString("it-IT")} ${unGiorno.quante === 1 ? "corsa ha" : "corse hanno"} un periodo di un giorno solo${unGiorno.giorno ? ` (per esempio il ${fmtGiorno(unGiorno.giorno)})` : ""}: qui ${unGiorno.quante === 1 ? "conta" : "contano"} i km di quel giorno. Succede con alcuni GTFS importati. Se devono circolare tutto l'anno, selezionale e allarga il «Periodo».</p>`
       : "";
     kmSection = `<section class="kmsum"><h2>Riepilogo km/anno${period}</h2>
       ${avvisoUnGiorno}

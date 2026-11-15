@@ -245,7 +245,7 @@ export async function corseConKm(o: { progettoId: string; dal: string; al: strin
 
 /**
  * Le corse attive con un periodo di validità di un giorno solo (valid_from =
- * valid_to): negli import da Maior succede spesso, e con la circolazione vera
+ * valid_to): con alcuni GTFS importati succede spesso, e con la circolazione vera
  * quelle corse fanno i km di un giorno. Lo dicono le pagine dei km. Conta solo
  * nei progetti con la matrice di validità: senza, il periodo della corsa non
  * entra nella circolazione (né nel GTFS).

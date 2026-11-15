@@ -25,7 +25,7 @@ import type { AuthUser } from "../lib/auth";
 const u = (n: number) => `d3200000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [ADMIN, PIAN, SOLO_RETE] = [u(1), u(2), u(3)];
 const PROGETTO = u(10);
-const [F_MAIOR, F_ALTRO, F_VECCHIO, F_PRONTO] = [u(20), u(21), u(22), u(23)];
+const [F_IMPORTATO, F_ALTRO, F_VECCHIO, F_PRONTO] = [u(20), u(21), u(22), u(23)];
 const [FERMATA_1, FERMATA_2, LINEA, PERCORSO, CALENDARIO, CORSA] = [u(30), u(31), u(32), u(33), u(34), u(35)];
 
 const tutte = Router();
@@ -43,7 +43,7 @@ const app = {
   soloRete: appDiProva(tutte, soloRete),
 };
 
-const nostriFeed = sql`(SELECT id FROM gtfs_feeds WHERE id IN (${F_MAIOR}::uuid, ${F_ALTRO}::uuid, ${F_VECCHIO}::uuid, ${F_PRONTO}::uuid)
+const nostriFeed = sql`(SELECT id FROM gtfs_feeds WHERE id IN (${F_IMPORTATO}::uuid, ${F_ALTRO}::uuid, ${F_VECCHIO}::uuid, ${F_PRONTO}::uuid)
                         OR owner_user_id IN (${ADMIN}::uuid, ${PIAN}::uuid, ${SOLO_RETE}::uuid))`;
 
 /** Lo stato del programma in esercizio, per i nostri feed. */
@@ -68,7 +68,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la porta unica del programma in
     for (const v of versioni.rows) await db.transaction((tx) => cancellaProgetto(tx, v.id));
     // anche i periodi dei nostri feed già cancellati (il test ne cancella uno)
     await db.execute(sql`DELETE FROM ps_activation_log WHERE feed_id IN ${nostriFeed} OR project_id = ${PROGETTO}::uuid
-                           OR feed_id IN (${F_MAIOR}::uuid, ${F_ALTRO}::uuid, ${F_VECCHIO}::uuid, ${F_PRONTO}::uuid)`);
+                           OR feed_id IN (${F_IMPORTATO}::uuid, ${F_ALTRO}::uuid, ${F_VECCHIO}::uuid, ${F_PRONTO}::uuid)`);
     await db.execute(sql`DELETE FROM ps_pending_activations WHERE project_id = ${PROGETTO}::uuid`);
     await db.execute(sql`DELETE FROM ps_stop_times WHERE trip_id = ${CORSA}::uuid`);
     await db.execute(sql`DELETE FROM ps_trips WHERE project_id = ${PROGETTO}::uuid`);
@@ -88,10 +88,10 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la porta unica del programma in
       (${PIAN}::uuid, 'porta-pian@prova.local', 'x', 'user'),
       (${SOLO_RETE}::uuid, 'porta-rete@prova.local', 'x', 'user')`);
     // due feed accesi, di due proprietari, come li lasciava la porta di Planning Studio: la 0019 non lo permette più
-    await feed(F_MAIOR, "porta-maior.zip", { acceso: true, caricato: "2026-02-01" });
+    await feed(F_IMPORTATO, "porta-importato.zip", { acceso: true, caricato: "2026-02-01" });
     await feed(F_ALTRO, "porta-altro.zip", { proprietario: PIAN, caricato: "2026-03-01" });
     await feed(F_VECCHIO, "porta-vecchio.zip", { caricato: "2025-06-01" });
-    await db.execute(sql`INSERT INTO ps_activation_log (feed_id, via) VALUES (${F_MAIOR}::uuid, 'prova')`);
+    await db.execute(sql`INSERT INTO ps_activation_log (feed_id, via) VALUES (${F_IMPORTATO}::uuid, 'prova')`);
     // un progetto piccolo, da mettere in esercizio
     await db.execute(sql`INSERT INTO ps_projects (id, owner_user_id, name) VALUES (${PROGETTO}::uuid, ${PIAN}::uuid, 'Porta unica')`);
     await db.execute(sql`INSERT INTO ps_project_members (project_id, user_id, role) VALUES (${PROGETTO}::uuid, ${SOLO_RETE}::uuid, 'editor')`);
@@ -111,12 +111,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la porta unica del programma in
   it("la porta: un feed acceso e di default, un periodo aperto con chi e da dove", async () => {
     const esito = await conContesto({ attore: ADMIN, via: "api" },
       () => db.transaction((tx) => mettiInEsercizio(tx, { feedId: F_ALTRO, utenteId: ADMIN })));
-    expect(esito).toEqual({ precedente: F_MAIOR, giaInEsercizio: false });
+    expect(esito).toEqual({ precedente: F_IMPORTATO, giaInEsercizio: false });
     const s = await stato();
     expect(s.accesi).toEqual([F_ALTRO]);
     expect(s.diDefault).toEqual([F_ALTRO]);
     expect(s.aperti).toEqual([{ feed_id: F_ALTRO, project_id: null, user_id: ADMIN, via: "api" }]);
-    const chiuso = (await db.execute<any>(sql`SELECT deactivated_at IS NOT NULL AS chiuso FROM ps_activation_log WHERE feed_id = ${F_MAIOR}::uuid`)).rows;
+    const chiuso = (await db.execute<any>(sql`SELECT deactivated_at IS NOT NULL AS chiuso FROM ps_activation_log WHERE feed_id = ${F_IMPORTATO}::uuid`)).rows;
     expect(chiuso).toEqual([{ chiuso: true }]);
   });
 
@@ -137,7 +137,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la porta unica del programma in
 
   it("due attivazioni insieme si mettono in fila: alla fine un feed acceso e il suo periodo aperto", async () => {
     for (let giro = 0; giro < 5; giro++) {
-      await Promise.all([F_MAIOR, F_VECCHIO, F_ALTRO].map((f) =>
+      await Promise.all([F_IMPORTATO, F_VECCHIO, F_ALTRO].map((f) =>
         db.transaction((tx) => mettiInEsercizio(tx, { feedId: f, utenteId: ADMIN }))));
       const s = await stato();
       expect(s.accesi).toHaveLength(1);
@@ -156,7 +156,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la porta unica del programma in
     const v = (await db.execute<any>(sql`SELECT archived_at FROM gtfs_feeds WHERE id = ${F_VECCHIO}::uuid`)).rows[0];
     expect(v.archived_at).toBeNull();
     // e resta solo dell'amministratore
-    expect((await request(app.pianificatore).post(`/api/gtfs/feeds/${F_MAIOR}/activate`)).status).toBe(403);
+    expect((await request(app.pianificatore).post(`/api/gtfs/feeds/${F_IMPORTATO}/activate`)).status).toBe(403);
   });
 
   it("Metti in esercizio senza la scrittura sulla pubblicazione degli orari: 403, e niente si materializza", async () => {

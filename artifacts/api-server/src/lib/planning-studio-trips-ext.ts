@@ -131,7 +131,7 @@ router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promis
  * (lib/km-programmati.ts, la stessa del GTFS in esercizio e delle UDP): con la
  * matrice di validità contano anche eccezioni e periodo della corsa, che prima
  * si ignoravano. La risposta dice quante corse hanno un periodo di un giorno
- * solo (succede negli import da Maior).
+ * solo (succede con alcuni GTFS importati).
  * ──────────────────────────────────────────────────────────────────────── */
 router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: Response): Promise<void> => {
   const userId = getUserId(req);
