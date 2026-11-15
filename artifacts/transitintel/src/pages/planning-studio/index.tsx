@@ -114,22 +114,42 @@ export default function PlanningStudioListPage() {
     }
   }
 
-  async function handleExportGtfs(p: PsProject) {
+  /* PR 3.4: il GTFS esce dalla versione in esercizio (se c'è) con i dati
+   * dell'azienda, e passa da un controllo. Con errori il server si ferma e
+   * dice quali: si correggono, oppure si esporta comunque, sapendolo. */
+  async function handleExportGtfs(p: PsProject, forza = false) {
     const tid = toast.loading(`Genero il GTFS di "${p.name}"…`);
     try {
-      const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${p.id}/export-gtfs`, { credentials: "include" });
+      const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${p.id}/export-gtfs${forza ? "?forza=1" : ""}`, { credentials: "include" });
+      if (resp.status === 422) {
+        const r = await resp.json().catch(() => ({}));
+        const errori: Array<{ messaggio: string; quante: number; esempi: string[] }> = Array.isArray(r.errori) ? r.errori : [];
+        toast.error(`Il GTFS ha ${errori.length === 1 ? "un errore" : `${errori.length} errori`}: chi lo riceve non lo accetterebbe`, {
+          id: tid,
+          duration: 30000,
+          description: errori.slice(0, 4).map((e) => `• ${e.messaggio}${e.quante > 1 ? ` (${e.quante})` : ""}${e.esempi.length ? ` — es. ${e.esempi.slice(0, 2).join(", ")}` : ""}`).join("\n"),
+          action: { label: "Esporta comunque", onClick: () => { void handleExportGtfs(p, true); } },
+        });
+        return;
+      }
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${resp.status}`);
       }
+      const versione = resp.headers.get("X-Gtfs-Versione");
+      const avvisi = Number(resp.headers.get("X-Gtfs-Avvisi") ?? 0);
+      const elenco = decodeURIComponent(resp.headers.get("X-Gtfs-Avvisi-Elenco") ?? "");
+      const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `gtfs_${p.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.zip`;
+      a.download = nomeDalServer ?? `gtfs_${p.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.zip`;
       a.click();
       URL.revokeObjectURL(url);
-      toast.success("GTFS esportato", { id: tid, description: "Zip pronto per Regione/open data/AVM." });
+      const da = versione === "esercizio" ? "Dalla versione in esercizio" : versione === "programmata" ? "Dalla versione programmata" : "Dalla bozza (il programma non ha una versione in esercizio)";
+      const sintesi = forza ? "Esportato nonostante gli errori." : avvisi > 0 ? `${avvisi} avvisi: ${elenco}` : "Nessun problema trovato dal controllo.";
+      toast.success("GTFS esportato", { id: tid, duration: avvisi > 0 || forza ? 15000 : 5000, description: `${da}, con i dati dell'azienda. ${sintesi}` });
     } catch (e: any) {
       toast.error("Export GTFS fallito", { id: tid, description: e?.message });
     }
