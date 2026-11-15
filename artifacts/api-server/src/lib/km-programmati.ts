@@ -14,8 +14,11 @@
  *
  *   km = giorni in cui la corsa circola davvero × lunghezza del suo percorso
  *
- *  - i giorni sono quelli di computeActiveDatesByTrip, gli stessi del GTFS
- *    materializzato e delle UDP;
+ *  - i giorni sono quelli del GTFS materializzato (lib/materializzazione/feed.ts)
+ *    e delle UDP: se il progetto usa la matrice di validità, quelli di
+ *    computeActiveDatesByTrip (matrice, eccezioni, periodo della corsa);
+ *    altrimenti i calendari settimanali con le loro eccezioni, e 7 giorni su 7
+ *    per le corse senza calendario (giorniDiCircolazione);
  *  - la lunghezza la calcola il server dalla geometria del percorso (somma
  *    delle distanze fra i punti) e la salva in ps_shapes.distance_m; senza
  *    geometria, dalla sequenza delle fermate. Mai dal valore mandato dal
@@ -26,7 +29,7 @@
  */
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { computeActiveDatesByTrip } from "./planning-studio-validity-eval";
+import { computeActiveDatesByTrip, projectHasTripValidity } from "./planning-studio-validity-eval";
 
 const RAGGIO_M = 6_371_000;
 
@@ -115,6 +118,94 @@ export async function lunghezzePercorsi(progettoId: string): Promise<Map<string,
   return out;
 }
 
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+const isoDi = (d: Date) => d.toISOString().slice(0, 10);
+function giorniFra(dal: string, al: string): string[] {
+  const out: string[] = [];
+  if (!ISO.test(dal) || !ISO.test(al) || dal > al) return out;
+  const d = new Date(`${dal}T00:00:00Z`), fine = new Date(`${al}T00:00:00Z`);
+  for (; d <= fine; d.setUTCDate(d.getUTCDate() + 1)) out.push(isoDi(d));
+  return out;
+}
+const COLONNE_GIORNO = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+
+/**
+ * I giorni (AAAA-MM-GG, fra `dal` e `al` inclusi) in cui circola ogni corsa
+ * attiva e non prototipo del progetto: gli stessi del GTFS materializzato.
+ *
+ *  - Con la matrice di validità (almeno una corsa del progetto ha i bollini):
+ *    computeActiveDatesByTrip, cioè matrice, giorni della settimana,
+ *    categorie, eccezioni e periodo della corsa.
+ *  - Senza: il calendario settimanale della corsa fra le sue date, più e meno
+ *    le eccezioni del calendario; 7 giorni su 7 fra la prima e l'ultima data
+ *    dei calendari per le corse senza calendario. Il periodo e le eccezioni
+ *    della corsa qui non contano, come nel GTFS (ramo dei calendari).
+ *
+ * Una corsa che non circola mai nel periodo ha la lista vuota.
+ */
+export async function giorniDiCircolazione(o: { progettoId: string; dal: string; al: string; corse?: string[] | null }): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const giorni = giorniFra(o.dal, o.al);
+  if (giorni.length === 0) return out;
+  const soloCorse = o.corse?.length ? sql`AND t.id = ANY(${`{${o.corse.join(",")}}`}::uuid[])` : sql``;
+  const corse = await db.execute<any>(sql`
+    SELECT t.id, t.calendar_id
+      FROM ps_trips t
+     WHERE t.project_id = ${o.progettoId}::uuid
+       AND COALESCE(t.is_active, true) = true
+       AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
+       ${soloCorse}`);
+  const righe = (corse.rows ?? []) as Array<{ id: string; calendar_id: string | null }>;
+  for (const r of righe) out.set(r.id, []);
+  if (righe.length === 0) return out;
+
+  if (await projectHasTripValidity(o.progettoId)) {
+    const attive = await computeActiveDatesByTrip({ projectId: o.progettoId, from: o.dal, to: o.al, tripIds: o.corse?.length ? righe.map((r) => r.id) : null });
+    for (const r of righe) {
+      // computeActiveDatesByTrip dà le date come nel GTFS (AAAAMMGG)
+      out.set(r.id, (attive.get(r.id) ?? []).map((d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`));
+    }
+    return out;
+  }
+
+  // ramo dei calendari settimanali, come lib/materializzazione/feed.ts
+  const cal = await db.execute<any>(sql`
+    SELECT id, monday, tuesday, wednesday, thursday, friday, saturday, sunday,
+           to_char(start_date, 'YYYY-MM-DD') AS dal, to_char(end_date, 'YYYY-MM-DD') AS al
+      FROM ps_calendars WHERE project_id = ${o.progettoId}::uuid`);
+  const calendari = (cal.rows ?? []) as any[];
+  const dalCal = calendari.map((c) => c.dal).filter(Boolean).sort()[0] as string | undefined;
+  const alCal = calendari.map((c) => c.al).filter(Boolean).sort().at(-1) as string | undefined;
+  const oggi = new Date();
+  const fraUnAnno = new Date(oggi); fraUnAnno.setFullYear(oggi.getFullYear() + 1);
+  const inizio = dalCal ?? isoDi(oggi), fine = alCal ?? isoDi(fraUnAnno);
+  const eccezioni = await db.execute<any>(sql`
+    SELECT cd.calendar_id, to_char(cd.date, 'YYYY-MM-DD') AS giorno, COALESCE(cd.exception_type, 1) AS tipo
+      FROM ps_calendar_dates cd JOIN ps_calendars c ON c.id = cd.calendar_id
+     WHERE c.project_id = ${o.progettoId}::uuid
+       AND cd.date BETWEEN ${o.dal}::date AND ${o.al}::date`);
+  const eccDi = new Map<string, Map<string, number>>();
+  for (const e of eccezioni.rows ?? []) {
+    let m = eccDi.get(e.calendar_id);
+    if (!m) { m = new Map(); eccDi.set(e.calendar_id, m); }
+    m.set(e.giorno, Number(e.tipo));
+  }
+  const settimana = giorni.map((g) => new Date(`${g}T00:00:00Z`).getUTCDay());
+  const perCalendario = new Map<string | null, string[]>();
+  for (const c of calendari) {
+    const da = c.dal ?? inizio, a = c.al ?? fine, ecc = eccDi.get(c.id);
+    perCalendario.set(c.id, giorni.filter((g, i) => {
+      const e = ecc?.get(g);
+      if (e === 2) return false;
+      if (e === 1) return true;
+      return g >= da && g <= a && !!c[COLONNE_GIORNO[settimana[i]!]!];
+    }));
+  }
+  perCalendario.set(null, giorni.filter((g) => g >= inizio && g <= fine)); // senza calendario: 7 su 7
+  for (const r of righe) out.set(r.id, perCalendario.get(r.calendar_id) ?? []);
+  return out;
+}
+
 export interface CorsaConKm {
   id: string;
   routeId: string;
@@ -127,9 +218,9 @@ export interface CorsaConKm {
 }
 
 /**
- * Le corse del progetto con i giorni in cui circolano fra `dal` e `al`
+ * Le corse attive del progetto con i giorni in cui circolano fra `dal` e `al`
  * (inclusi, AAAA-MM-GG) e la lunghezza del loro percorso. È la base di ogni
- * conteggio di km: per data, per linea, per categoria, per comune.
+ * conteggio di km: per data, per linea, per categoria.
  */
 export async function corseConKm(o: { progettoId: string; dal: string; al: string; linee?: string[] | null }): Promise<CorsaConKm[]> {
   const corse = await db.execute<any>(sql`
@@ -143,7 +234,7 @@ export async function corseConKm(o: { progettoId: string; dal: string; al: strin
   if (righe.length === 0) return [];
   const [lunghezze, giorni] = await Promise.all([
     lunghezzePercorsi(o.progettoId),
-    computeActiveDatesByTrip({ projectId: o.progettoId, from: o.dal, to: o.al, tripIds: o.linee?.length ? righe.map((r: any) => r.id) : null }),
+    giorniDiCircolazione({ progettoId: o.progettoId, dal: o.dal, al: o.al, corse: o.linee?.length ? righe.map((r: any) => r.id) : null }),
   ]);
   return righe.map((r: any) => ({
     id: r.id, routeId: r.route_id, variantId: r.variant_id, onDemand: !!r.on_demand,
@@ -155,9 +246,12 @@ export async function corseConKm(o: { progettoId: string; dal: string; al: strin
 /**
  * Le corse attive con un periodo di validità di un giorno solo (valid_from =
  * valid_to): negli import da Maior succede spesso, e con la circolazione vera
- * quelle corse fanno i km di un giorno. Lo dicono le pagine dei km.
+ * quelle corse fanno i km di un giorno. Lo dicono le pagine dei km. Conta solo
+ * nei progetti con la matrice di validità: senza, il periodo della corsa non
+ * entra nella circolazione (né nel GTFS).
  */
 export async function corseConPeriodoDiUnGiorno(progettoId: string): Promise<{ quante: number; giorno: string | null }> {
+  if (!(await projectHasTripValidity(progettoId))) return { quante: 0, giorno: null };
   const r = await db.execute<any>(sql`
     SELECT count(*)::int AS quante, to_char(min(valid_from), 'YYYY-MM-DD') AS giorno
       FROM ps_trips

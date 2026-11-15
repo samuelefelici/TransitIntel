@@ -197,6 +197,9 @@ export async function computeProjectHealth(projectId: string): Promise<HealthChe
      WHERE t.project_id = ${pid} AND COALESCE(t.is_active, true) = true
        AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
        AND t.valid_from IS NOT NULL AND t.valid_from = t.valid_to
+       -- il periodo della corsa conta solo con la matrice di validità
+       AND EXISTS (SELECT 1 FROM ps_trip_day_validity v JOIN ps_trips t2 ON t2.id = v.trip_id
+                    WHERE t2.project_id = ${pid})
      ORDER BY t.valid_from, t.short_name
      LIMIT 5
   `);

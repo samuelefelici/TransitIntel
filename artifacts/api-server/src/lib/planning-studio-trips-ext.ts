@@ -128,10 +128,10 @@ router.get("/planning-studio/projects/:id/trips-count", async (req, res): Promis
  * Per ogni giorno classificato dal CALENDARIO AZIENDALE (categoria per data)
  * conta i km delle corse che circolano quel giorno e li attribuisce alla
  * categoria del giorno. Dalla PR 3.5 la circolazione è quella vera
- * (lib/km-programmati.ts, la stessa del GTFS in esercizio e delle UDP):
- * matrice di validità, eccezioni e periodo della corsa. Prima il periodo e le
- * eccezioni si ignoravano; la risposta dice quante corse hanno un periodo di
- * un giorno solo (succede negli import da Maior).
+ * (lib/km-programmati.ts, la stessa del GTFS in esercizio e delle UDP): con la
+ * matrice di validità contano anche eccezioni e periodo della corsa, che prima
+ * si ignoravano. La risposta dice quante corse hanno un periodo di un giorno
+ * solo (succede negli import da Maior).
  * ──────────────────────────────────────────────────────────────────────── */
 router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: Response): Promise<void> => {
   const userId = getUserId(req);

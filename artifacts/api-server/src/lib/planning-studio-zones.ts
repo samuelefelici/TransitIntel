@@ -13,9 +13,9 @@
  *   POST   /planning-studio/projects/:id/zones/compute?year=YYYY
  *     → km/anno per (comune × linea): per ogni variante con shape calcola i km
  *       dentro ogni zona (pre-filtro bbox), poi moltiplica per le corse/anno
- *       della variante. I giorni di circolazione sono quelli veri (matrice di
- *       validità, eccezioni, periodo della corsa: lib/km-programmati.ts, PR 3.5),
- *       gli stessi dei km per categoria, del GTFS in esercizio e delle UDP.
+ *       della variante. I giorni di circolazione sono quelli veri, gli stessi
+ *       del GTFS in esercizio, delle UDP e dei km per categoria
+ *       (lib/km-programmati.ts, PR 3.5).
  *
  * Serve per i corrispettivi chilometrici dovuti agli enti locali.
  */
@@ -30,8 +30,7 @@ import {
   bboxIntersects,
   type ZoneGeometry,
 } from "./geo-zones";
-import { lunghezzaDellaGeometria } from "./km-programmati";
-import { computeActiveDatesByTrip } from "./planning-studio-validity-eval";
+import { lunghezzaDellaGeometria, giorniDiCircolazione } from "./km-programmati";
 import { loadCalendarProfile } from "./planning-studio-calendar";
 import { classifyDate, italianHolidays } from "./day-classifier";
 
@@ -348,10 +347,11 @@ router.post("/planning-studio/projects/:id/zones/compute", async (req, res): Pro
     }
 
     // I giorni in cui ogni corsa circola davvero nell'anno: la stessa
-    // circolazione del GTFS in esercizio e delle UDP (PR 3.5). Prima qui si
-    // usavano i calendari settimanali ± eccezioni, senza la matrice di
-    // validità: i km per comune non tornavano con quelli per categoria.
-    const giorniDellaCorsa = await computeActiveDatesByTrip({ projectId: proj.id, from: yStart, to: yEnd });
+    // circolazione del GTFS in esercizio e delle UDP (PR 3.5,
+    // lib/km-programmati.ts). Prima qui si usavano sempre i calendari
+    // settimanali, anche nei progetti con la matrice di validità: i km per
+    // comune non tornavano con quelli per categoria.
+    const giorniDellaCorsa = await giorniDiCircolazione({ progettoId: proj.id, dal: yStart, al: yEnd });
 
     // Mappa ISO → giorno settimana, per ripartire le corse per weekday
     const dowByIso = new Map<string, (typeof DOW_KEYS)[number]>();
