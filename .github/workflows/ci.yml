@@ -504,6 +504,15 @@ jobs:
           test "$(legge)" = t
           DATABASE_URL=$PG/prod node lib/db/scripts/ruoli.mjs --verifica > ruoli.log 2>&1 || { cat ruoli.log; exit 1; }
           test "$(psql -d prod -tAq -c "SELECT attgenerated FROM pg_attribute WHERE attrelid = 'public.users'::regclass AND attname = 'mfa_obbligatoria'")" = s
+          # Tappa 4.8: FleetCare chiama la funzione dei km per vettura con le sole
+          # colonne che le servono; il turno guida (e il resto) non lo legge.
+          psql -d prod -v ON_ERROR_STOP=1 -q -c "SET ROLE fleetcare_legge_cerbero" \
+               -c "SELECT count(*) FROM public.esercizio_km_per_vettura(current_date - 30, current_date)" > /dev/null
+          if psql -d prod -v ON_ERROR_STOP=1 -q -c "SET ROLE fleetcare_legge_cerbero" \
+                  -c "SELECT turno_guida FROM public.esercizio_corse LIMIT 1" 2> vietato.log; then
+            echo "FleetCare non doveva leggere il turno guida"; exit 1
+          fi
+          grep -q "permission denied" vietato.log || { cat vietato.log; exit 1; }
           psql -d prod -v ON_ERROR_STOP=1 -q -c "DROP OWNED BY fleetcare_legge_cerbero" -c "DROP ROLE fleetcare_legge_cerbero"
           for vietato in "SELECT count(*) FROM registro.modifiche" "UPDATE registro.impostazioni SET attivo = false" \
                          "DROP TRIGGER registro_cambia ON public.users" "SELECT registro.cattura()" \
@@ -1043,6 +1052,15 @@ jobs:
       # CSV dall'API.
       - name: Il report mensile del consuntivo
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-report-db.test.ts
+      # Tappa 4.8: i km per vettura e per giorno per FleetCare (migrazione
+      # 0030), solo sulle giornate chiuse: con la vettura, presi dal turno
+      # macchina con una vettura sola, i vuoti programmati. E il GTFS-Realtime:
+      # le soppresse del giornale come CANCELED, i ritardi solo da SIRI, i
+      # codici del GTFS pubblicato e la data della corsa.
+      - name: I km per vettura per FleetCare
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-km-vettura-db.test.ts
+      - name: GTFS-Realtime con soppressioni e codici pubblicati
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/gtfs-rt-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella
