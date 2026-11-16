@@ -10,11 +10,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, MapPinned, Users, Map, Send, ArrowRight, ClipboardCheck } from "lucide-react";
+import { CalendarDays, MapPinned, Users, Map, Send, ArrowRight, ClipboardCheck, Bus } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth, type Permission } from "@/hooks/use-auth";
 import { sezioniVisibili, CASA } from "@/lib/navigazione";
 import { oggiARoma, riassuntoEsercizio, riassuntoTurni, type EsercizioInBreve, type ServizioLive, type TabelloneGiorno } from "@/lib/oggi";
+import { mancanze, mezziDi, type MezziDelGiorno } from "@/lib/mezzi";
 
 interface ProgrammaPs { id: string; name: string; isOperational?: boolean }
 interface Pubblicazione { tipo: string; programma: string | null; dal: string; al: string; creataIl: string; autore: string | null }
@@ -99,6 +100,15 @@ export default function OggiPage() {
     ...opzioni,
   });
 
+  /* i mezzi (5.3): solo dove la giornata c'è e l'officina risponde */
+  const mezzi = useQuery({
+    queryKey: ["oggi", "mezzi", giorno],
+    queryFn: () => apiFetch<MezziDelGiorno>("/api/roster/mezzi"),
+    enabled: ha("roster"),
+    refetchInterval: 300_000,
+    ...opzioni,
+  });
+
   /* un aggiornamento fallito non fa sparire i dati appena letti: si tengono al più tre minuti,
    * dicendo a che ora risalgono; dopo, il riquadro sparisce come se l'AVM non rispondesse */
   const liveRecente = !!live.data && (live.isSuccess || ora - live.dataUpdatedAt < 3 * 60_000);
@@ -109,6 +119,9 @@ export default function OggiPage() {
   const ultima = pubblicazioni.data?.find(p => p.tipo === "pubblica") ?? null;
   const giornata = esercizio.data?.giornata ?? null;
   const consuntivo = esercizio.data ? riassuntoEsercizio(esercizio.data) : null;
+  const mezziUtili = mezzi.data && mezzi.data.giornata && mezzi.data.officina.disponibile ? mezzi.data : null;
+  const mancano = mezziUtili ? mancanze(mezziUtili) : [];
+  const tuttiIMezzi = mezziUtili ? mezziDi(mezziUtili, null) : null;
   const sezioni = sezioniVisibili(a => puo(a, "L"), isAdmin).filter(s => s.titolo !== "Oggi");
   const titoloGiorno = new Date(ora).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Rome" });
 
@@ -203,6 +216,22 @@ export default function OggiPage() {
               <p className="text-xs text-amber-400 mt-2">
                 {consuntivo.daChiudere === 1 ? "1 giornata da chiudere" : `${consuntivo.daChiudere} giornate da chiudere`}, dal {data(consuntivo.dal)}
               </p>
+            )}
+          </Riquadro>
+        )}
+
+        {mezziUtili && tuttiIMezzi && (
+          <Riquadro titolo="Mezzi" icona={Bus} href="/roster/vestizione" link="Apri la vestizione">
+            <div className="grid grid-cols-2 gap-3">
+              <Numero valore={tuttiIMezzi.fabbisogno.totale} etichetta="servono oggi (turni macchina)" />
+              <Numero valore={tuttiIMezzi.disponibili?.totale ?? "—"} etichetta={`disponibili · ${tuttiIMezzi.inOfficina.length} in officina`} />
+            </div>
+            {mancano.length ? (
+              <p className="text-xs text-amber-400 mt-2">
+                Mancano mezzi: {mancano.map((x) => `${x.deposito} (${x.mancano})`).join(", ")}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground mt-2">I mezzi bastano in tutti i depositi.</p>
             )}
           </Riquadro>
         )}

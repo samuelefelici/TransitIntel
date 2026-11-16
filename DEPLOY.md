@@ -1389,6 +1389,49 @@ senza residenza riconosciuta si vede solo con «Tutti i depositi».
 
 **Rollback**: immagine precedente.
 
+### Mezzi: fabbisogno e disponibilità per deposito (tappa 5.3)
+
+Decisioni del 16/11/2026. Quanti mezzi servono e quanti ce ne sono, deposito
+per deposito.
+- **Fabbisogno**: dai turni macchina della giornata di esercizio (4.3), per
+  deposito e tipo di mezzo. Ogni turno macchina vuole un mezzo. Senza la
+  giornata preparata non si sa, e la pagina lo dice.
+- **Disponibilità**: dall'officina (FleetCare, la stessa funzione della pagina
+  AVM).
+  - Contano i mezzi in servizio e di riserva.
+  - Quelli fermi in officina si elencano a parte, con «fermo dal» e commessa.
+  - I dismessi non contano.
+  - È lo stato **di adesso**: per domani si assume che chi è in officina oggi
+    lo sia ancora, e la pagina lo scrive.
+- **Confronto** sui totali per deposito: fabbisogno, disponibili, margine. Se
+  mancano mezzi, in rosso. Per tipo di mezzo solo dove i turni e FleetCare
+  usano lo stesso nome (per esempio «12m»). I depositi si abbinano al catalogo
+  come i colori del tabellone.
+- **Senza FleetCare** (funzione assente o non chiamabile) resta il
+  fabbisogno, col motivo.
+
+**Dove**:
+- un riquadro «Mezzi» nella Vestizione, per il deposito e il giorno scelti;
+- un riquadro «Mezzi» nella home, con i depositi in cui mancano, per chi legge
+  il Roster.
+
+L'API è in sola lettura: `GET /api/roster/mezzi?giorno=`. Chi vede solo
+alcuni depositi vede solo quelli.
+
+**Nessuna migrazione.** Fuori, per dopo:
+- le matricole vere assegnate ai turni macchina del giorno;
+- la disponibilità futura, cioè i fermi programmati, che richiede una funzione
+  nuova su FleetCare.
+
+**Dopo il deploy**:
+1. Nella home il riquadro «Mezzi» compare se FleetCare risponde e la giornata
+   è preparata. Se manca, il motivo si legge in Vestizione.
+2. La definizione di fatto: in un giorno feriale, per un deposito, i mezzi che
+   servono tornano con i turni macchina pubblicati, e i disponibili con
+   l'officina.
+
+**Rollback**: immagine precedente.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
