@@ -686,6 +686,50 @@ ALTER TABLE roster_turni_pubblicati DROP CONSTRAINT roster_turni_pubblicati_copp
 
 Le versioni dei turni macchina già create restano scenari normali.
 
+### Diagnosi dell'esercizio (tappa 4)
+
+Prima di congelare il programmato di ogni giornata (il servizio del giorno)
+vanno prese due decisioni aperte dell'analisi:
+- **la chiave della corsa** fra programma e AVM;
+- **che cosa fa fede come programmato**: il feed in esercizio o i turni
+  pubblicati.
+
+Per prenderle servono i numeri veri. Li dà la pagina **Amministrazione ›
+Diagnosi dell'esercizio** (solo amministratore, sola lettura; l'API è
+`GET /api/admin/esercizio/diagnosi?giorno=AAAA-MM-GG`).
+
+Per una giornata (dalle 03:00 alle 03:00) dice:
+
+- **il programma e il feed in esercizio all'inizio della giornata**, dallo
+  storico delle attivazioni. Non il feed acceso oggi: il passato non si conta
+  sul presente. Dice anche il feed su cui aggancia l'AVM oggi, e se è lo
+  stesso;
+- **le corse programmate**, con la regola del calendario dell'aggancio
+  (settimana nel periodo, meno le date tolte, più quelle aggiunte), e i
+  **numeri di corsa che si ripetono** nel giorno;
+- **quante corse si riconoscono nelle prove dell'AVM** (coppie di codici e
+  passaggi alle fermate di quella giornata), e in che modo:
+  - **per id**: il feed dell'AVM è quello del programma;
+  - **per codice stabile**: l'id del file d'origine, che Planning Studio
+    conserva;
+  - **per numero di corsa**: solo se il numero è unico nel giorno;
+- **i viaggi dell'AVM che non si riconducono a nessuna corsa** del programma:
+  corse aggiunte, o un feed diverso;
+- **le corse senza geometria** e i km del giorno dalla geometria, accanto a
+  quelli dell'analisi del feed;
+- **i turni pubblicati della giornata**:
+  - se ci sono e se sono del programma in esercizio;
+  - quanti turni guida e turni macchina hanno una versione più nuova;
+  - quante corse restano fuori dalle UDP pubblicate.
+
+**Dopo il deploy**: apri la pagina su tre giornate vere di ottobre (un feriale
+scolastico, un sabato, una domenica) e annota i numeri. Con quelli si decide:
+- la chiave della corsa (decisione aperta 2);
+- se il programmato contrattuale è il feed o sono i turni pubblicati
+  (decisione aperta 3).
+
+Nessuna migrazione, nessuna scrittura.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
