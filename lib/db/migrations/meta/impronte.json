@@ -30,5 +30,6 @@
   "0028_giornale_e_conferma": "bb3b4db24b071c45d8497e20cdef2fc3e47f0516ff556c9943b8df734a656504",
   "0029_chiusura_e_blocco": "e7364d5c15d62b0fe8c2cddc7f15365fda2d022f7d0e435fe6e91a9ba1cd7053",
   "0030_km_per_vettura": "f391cc2014cfcd804a1812627c53e6c65730ad72f9bfd4445d2cf3d346cbd6a3",
-  "0031_variazioni_in_anticipo": "61953f78ba2d96ef64168bdb594d0c1a63d32a5e7a2db53df97d173daf5c19d7"
+  "0031_variazioni_in_anticipo": "61953f78ba2d96ef64168bdb594d0c1a63d32a5e7a2db53df97d173daf5c19d7",
+  "0032_sostituzioni": "010b2c0d95c927883d0f8b539c5f51e15e6a4e8e2fc2554267df0734f5fff78b"
 }

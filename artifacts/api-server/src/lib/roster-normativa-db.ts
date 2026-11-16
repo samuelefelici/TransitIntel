@@ -324,6 +324,34 @@ export async function violazioniDeiCambi(ex: Ex, cambi: Cambio[], p: Preparato, 
 }
 
 /**
+ * Per i sostituti suggeriti (5.1): le violazioni che il turno creerebbe a
+ * ciascun candidato. Una lettura sola delle assegnazioni di tutti intorno al
+ * giorno, poi i controlli conducente per conducente (gli orari letti una
+ * volta, in `p`). Fuori da ogni transazione: è un suggerimento, e
+ * l'assegnazione vera ricontrolla tutto sotto blocco.
+ */
+export async function violazioniPerCandidati(turno: Omit<Cambio, "driverId">, candidati: string[], p: Preparato): Promise<Map<string, Violazione[]>> {
+  const out = new Map<string, Violazione[]>();
+  if (!candidati.length) return out;
+  const { dal, al } = finestra([turno.day]);
+  const tutte = await assegnazioniDei(dbEx, candidati, dal, al);
+  const perConducente = new Map<string, RigaTurno[]>();
+  for (const r of tutte) {
+    const l = perConducente.get(r.driver_id);
+    if (l) l.push(r); else perConducente.set(r.driver_id, [r]);
+  }
+  const chiave = chiaveTurno(turno.dssId, turno.day, turno.dutyCode);
+  for (const c of candidati) {
+    const righeDopo: RigaTurno[] = [
+      ...(perConducente.get(c) ?? []).filter(r => r.id !== turno.id && chiaveTurno(r.dss_id, r.day, r.duty_code) !== chiave),
+      { id: turno.id, driver_id: c, day: turno.day, dss_id: turno.dssId, duty_code: turno.dutyCode, snapshot: turno.snapshot, forzatura: null },
+    ];
+    out.set(c, violazioniDeiTurni(await turniNelTempo(righeDopo, p)).filter(v => v.turni.some(t => t.chiave === chiave)));
+  }
+  return out;
+}
+
+/**
  * Le violazioni da mostrare sul tabellone: quelle dei conducenti visibili in
  * cui almeno un turno cade nei giorni visibili.
  */
