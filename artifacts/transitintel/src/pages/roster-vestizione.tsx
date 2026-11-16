@@ -13,11 +13,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, Printer, RefreshCw, UserCheck, Users } from "lucide-react";
+import { Bus, CalendarClock, Printer, RefreshCw, UserCheck, Users } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { oggiARoma } from "@/lib/oggi";
 import { GRUPPI, ordineDiServizio, vestizione, type TabelloneVestizione, type TurnoDelGiorno } from "@/lib/vestizione";
+import { mezziDi, type MezziDelGiorno } from "@/lib/mezzi";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -183,6 +184,8 @@ export default function VestizionePage() {
             </CardContent>
           </Card>
 
+          <div className="space-y-4">
+          <MezziCard giorno={giorno} deposito={deposito === "tutti" ? null : deposito} />
           <Card>
             <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Users className="w-4 h-4" />Conducenti</CardTitle></CardHeader>
             <CardContent className="space-y-3 text-sm">
@@ -203,9 +206,74 @@ export default function VestizionePage() {
               ))}
             </CardContent>
           </Card>
+          </div>
         </div>
       )}
     </div>
+  );
+}
+
+/** I mezzi del deposito nel giorno (5.3): quanti ne servono, quanti ce ne sono, chi è fermo in officina. */
+function MezziCard({ giorno, deposito }: { giorno: string; deposito: string | null }) {
+  const q = useQuery({
+    queryKey: ["vestizione", "mezzi", giorno],
+    queryFn: () => apiFetch<MezziDelGiorno>(`/api/roster/mezzi?giorno=${giorno}`),
+    refetchInterval: 300_000,
+    retry: false,
+  });
+  if (q.isLoading) return null;
+  if (q.isError || !q.data) return null;
+  const m = mezziDi(q.data, deposito);
+  const data = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString("it-IT", { day: "numeric", month: "short" }) : "");
+  return (
+    <Card>
+      <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><Bus className="w-4 h-4" />Mezzi</CardTitle></CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {!q.data.giornata ? (
+          <div className="text-xs text-muted-foreground">La giornata non è ancora preparata: non si sa quanti mezzi servono.</div>
+        ) : !m ? (
+          <div className="text-xs text-muted-foreground">Nessun turno macchina né mezzo per questo deposito.</div>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-2 tabular-nums">
+              <div><div className="text-xl font-semibold">{m.fabbisogno.totale}</div><div className="text-xs text-muted-foreground">servono</div></div>
+              <div><div className="text-xl font-semibold">{m.disponibili ? m.disponibili.totale : "—"}</div><div className="text-xs text-muted-foreground">disponibili</div></div>
+              <div>
+                <div className={`text-xl font-semibold ${m.margine != null && m.margine < 0 ? "text-rose-400" : m.margine != null ? "text-emerald-400" : ""}`}>
+                  {m.margine == null ? "—" : m.margine > 0 ? `+${m.margine}` : m.margine}
+                </div>
+                <div className="text-xs text-muted-foreground">{m.margine != null && m.margine < 0 ? "mancano" : "margine"}</div>
+              </div>
+            </div>
+            {m.fabbisogno.perTipo.length > 0 && (
+              <div className="text-xs text-muted-foreground">Per tipo: {m.fabbisogno.perTipo.map((t) => `${t.tipo} ${t.turni}`).join(" · ")}</div>
+            )}
+            {m.disponibili && <div className="text-xs text-muted-foreground">In servizio {m.disponibili.inServizio}, di riserva {m.disponibili.riserva}</div>}
+            {m.perTipo.filter((t) => t.ci_sono < t.servono).map((t) => (
+              <div key={t.tipo} className="text-xs text-rose-300">{t.tipo}: ne servono {t.servono}, ce ne sono {t.ci_sono}</div>
+            ))}
+            {m.inOfficina.length > 0 && (
+              <div>
+                <div className="text-xs uppercase tracking-wide text-muted-foreground">Fermi in officina · {m.inOfficina.length}</div>
+                <ul className="text-xs space-y-0.5">
+                  {m.inOfficina.slice(0, 8).map((f) => (
+                    <li key={f.matricola} className="flex gap-2">
+                      <span className="font-mono">{f.matricola}</span>
+                      <span className="text-muted-foreground truncate">{[f.modello, f.fermoDal ? `dal ${data(f.fermoDal)}` : null, f.commessa].filter(Boolean).join(" · ")}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+        {!q.data.officina.disponibile ? (
+          <div className="text-xs text-amber-300">Officina non collegata: {q.data.officina.motivo ?? "FleetCare non risponde"}. Resta il fabbisogno.</div>
+        ) : q.data.officina.statoDiAdesso && (
+          <div className="text-xs text-muted-foreground">La disponibilità è quella di adesso in officina: chi è fermo oggi si conta fermo anche domani.</div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

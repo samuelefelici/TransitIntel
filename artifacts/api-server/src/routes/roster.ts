@@ -17,6 +17,7 @@
  *   GET    /api/roster/calendario?from=&days=  — la categoria di ogni giorno nel calendario aziendale
  *   POST   /api/roster/entries · DELETE /api/roster/entries/:id
  *   GET    /api/roster/sostituti?day=&dssId=&dutyCode= — chi può coprire un turno (5.1)
+ *   GET    /api/roster/mezzi?giorno=           — mezzi per deposito: fabbisogno e disponibilità (5.3)
  *
  * Assenze che liberano il turno (5.1, lib/roster-sostituti.ts): un'assenza
  * (non il riposo) del conducente assegnato rimette il turno «da coprire»
@@ -58,6 +59,11 @@ import { turnoRoster } from "../lib/roster-turni";
 import { bloccoCanaleCondiviso, canale, riassuntiDei, snapshotDaRiassunto, statoNelCanale } from "../lib/roster-pubblicazione-db";
 import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
 import { assentiNelGiorno, sostitutiDa, type Candidato, type Voce } from "../lib/roster-sostituti";
+import { fabbisognoDelGiorno, mezziPerDeposito } from "../lib/mezzi-deposito";
+import { leggiParcoOfficina } from "../lib/officina";
+import { limitiDi } from "../lib/roster-limite-depositi";
+import { vedeIlDeposito } from "../lib/permessi";
+import { giornataOggi } from "../lib/service-day";
 
 const router: IRouter = Router();
 
@@ -539,6 +545,38 @@ router.get("/roster/sostituti", async (req, res): Promise<void> => {
       fuori: r.fuori,
     });
   } catch (e) { rispondiErrore(res, e, "sostituti"); }
+});
+
+/**
+ * I mezzi per deposito (5.3): quanti ne servono il giorno (i turni macchina
+ * della giornata di esercizio) e quanti ce ne sono (l'officina, FleetCare:
+ * lo stato di adesso), con il margine. Si legge col Roster; chi vede solo
+ * alcuni depositi vede solo quelli.
+ */
+router.get("/roster/mezzi", async (req, res): Promise<void> => {
+  try {
+    const oggi = giornataOggi();
+    const giorno = req.query.giorno === undefined ? oggi : String(req.query.giorno);
+    const vero = DATE_RE.test(giorno) && !Number.isNaN(Date.parse(`${giorno}T12:00:00Z`)) && new Date(`${giorno}T12:00:00Z`).toISOString().slice(0, 10) === giorno;
+    if (!vero) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+    const [fabbisogno, parco, catalogo] = await Promise.all([fabbisognoDelGiorno(giorno), leggiParcoOfficina(), leggiDepositi(db as unknown as Ex)]);
+    const limite = limitiDi(req).vede;
+    const depositi = mezziPerDeposito({
+      fabbisogno: fabbisogno ?? [], parco, catalogo,
+      vede: limite === null ? undefined : (codice) => !!codice && vedeIlDeposito(limite, codice),
+    });
+    res.json({
+      giorno,
+      /* senza giornata preparata non si sa quanti mezzi servono */
+      giornata: fabbisogno !== null,
+      officina: {
+        disponibile: parco.disponibile, motivo: parco.motivo, lettoAlle: parco.lettoAlle,
+        /* l'officina dice com'è adesso: per un altro giorno è una stima */
+        statoDiAdesso: giorno !== oggi,
+      },
+      depositi,
+    });
+  } catch (e) { rispondiErrore(res, e, "mezzi"); }
 });
 
 /**
