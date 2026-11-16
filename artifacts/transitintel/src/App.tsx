@@ -105,6 +105,7 @@ const AdminRuoliPage = lazyWithRetry(() => import("@/pages/admin-ruoli"));
 const AdminRegistroPage = lazyWithRetry(() => import("@/pages/admin-registro"));
 const AdminEsercizioPage = lazyWithRetry(() => import("@/pages/admin-esercizio"));
 const AdminGiornatePage = lazyWithRetry(() => import("@/pages/admin-giornate"));
+const ConsuntivoPage = lazyWithRetry(() => import("@/pages/esercizio-consuntivo"));
 const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const ApriFleetCare = lazyWithRetry(() => import("@/pages/fleetcare"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
@@ -251,6 +252,9 @@ function Router() {
               <Gated perm={AREE_PAGINA["/dashboard"]}><Dashboard /></Gated>
             </Route>
             {/* Centrale Operativa: Mappa live + AVM, modulo attivabile per utente */}
+            <Route path="/esercizio">
+              <Gated perm={AREE_PAGINA["/esercizio"]}><ConsuntivoPage /></Gated>
+            </Route>
             <Route path="/operations">
               <Gated perm={AREE_PAGINA["/operations"]}><OperationsPage /></Gated>
             </Route>

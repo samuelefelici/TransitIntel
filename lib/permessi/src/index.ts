@@ -63,7 +63,7 @@ export const DESCRIZIONI_AREE: Readonly<Record<Area, string>> = {
   personale: "Anagrafica completa: contatti, residenza, paghe, ferie, visite",
   roster: "Tabellone, assegnazioni, assenze; dell'anagrafica solo i dati operativi",
   esercizio: "Mappa live, AVM, tempi osservati",
-  consuntivo: "Giornate, esiti per corsa, km (non c'è ancora)",
+  consuntivo: "Giornate di esercizio: esiti per corsa, giornale, causali",
   flotta: "FleetCare: mezzi, fermi, officina (il ruolo dentro FleetCare si sceglie a parte)",
   tariffe: "Tariffe, polimetriche, simulatore",
   analisi: "Territorio, traffico, domanda, dati GTFS",
@@ -123,8 +123,9 @@ export type Matrice = Readonly<Record<RuoloAziendale, Readonly<Partial<Record<Ar
  *                             sui dati personali non ha niente.
  *   officina.esercizio        «lettura dello stato del parco»: oggi tutta l'area.
  *   centrale.consuntivo       «scrittura degli esiti, non la chiusura» e
- *   amministrazione.consuntivo «chiusura di giornata e mese»: il consuntivo
- *                             non c'è ancora; la chiusura sarà una capacità a parte.
+ *   amministrazione.consuntivo «chiusura di giornata e mese»: dalla 4.5 la
+ *                             scrittura registra gli eventi del giornale e
+ *                             conferma gli esiti; la chiusura sarà una capacità a parte.
  *   flotta                    apre FleetCare; che cosa si può fare lì dentro lo
  *                             dice il ruolo FleetCare dell'utente.
  */
