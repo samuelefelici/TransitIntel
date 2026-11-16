@@ -1531,3 +1531,23 @@ describe("0025: giornate di esercizio", () => {
     for (const col of ["chiave", "codice", "numero", "partenza", "arrivo", "km_prog"]) expect(c).toHaveProperty(col);
   });
 });
+
+/* 0026 (tappa 4.3): i turni nel programmato. */
+describe("0026: turni nel programmato", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("ogni corsa porta i suoi turni; i turni macchina della giornata se ne vanno con lei", () => {
+    const c = catalogo.tabelle["public.esercizio_corse"];
+    for (const col of ["udp_id", "dss_id", "vss_id", "turno_macchina", "turno_guida", "deposito", "deposito_id"]) expect(c).toHaveProperty(col);
+    expect(catalogo.tabelle["public.esercizio_giornate"].turni).toBe("jsonb | null |  |  | ");
+    const t = catalogo.tabelle["public.esercizio_turni_macchina"];
+    for (const col of ["vss_id", "turno_macchina", "deposito", "uscita", "rientro", "km_vuoto_prog", "vuoti"]) expect(t).toHaveProperty(col);
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_turni_macchina.esercizio_turni_macchina_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE CASCADE$/);
+    expect(v["public.esercizio_turni_macchina.esercizio_turni_macchina_km"]).toBe("CHECK ((km_vuoto_prog >= (0)::numeric))");
+    expect(catalogo.indici["public.esercizio_turni_macchina_pkey"]).toMatch(/\(giorno, vss_id, turno_macchina\)$/);
+  });
+  it("gli id dei turni sono una fotografia: nessuna chiave esterna verso turni, UDP o depositi", () => {
+    const fk = Object.keys(catalogo.vincoli).filter((k) => /^public\.esercizio_(corse|turni_macchina)\./.test(k) && /_fkey$/.test(k));
+    expect(fk.sort()).toEqual(["public.esercizio_corse.esercizio_corse_giorno_fkey", "public.esercizio_turni_macchina.esercizio_turni_macchina_giorno_fkey"]);
+  });
+});
