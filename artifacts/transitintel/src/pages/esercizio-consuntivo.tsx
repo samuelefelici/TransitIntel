@@ -470,6 +470,7 @@ interface VoceReport {
   aggiunte: number; kmProgrammati: number; kmEffettivi: number; regolaritaCorse: number | null; regolaritaKm: number | null;
 }
 interface Report {
+  statoMese: "aperto" | "chiuso";
   giornate: { chiuse: number; delMese: number; aperte: string[] };
   totali: VoceReport & { kmPersi: number; kmAggiunti: number };
   indicatori: {
@@ -498,7 +499,7 @@ function ReportMese({ mese, versione }: { mese: string; versione: string }) {
     <div className="space-y-2 rounded-md border border-border/60 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">Report del mese</span>
-        <span className="text-xs text-muted-foreground">sulle giornate chiuse</span>
+        <span className="text-xs text-muted-foreground">sulle giornate chiuse{r && r.statoMese !== "chiuso" ? " · provvisorio finché il mese è aperto" : ""}</span>
         <Button size="sm" variant="outline" className="ml-auto" disabled={occupato} onClick={() => void calcola()}>
           <RefreshCw className={`w-4 h-4 mr-1.5 ${occupato ? "animate-spin" : ""}`} />{r ? "Ricalcola" : "Calcola il report"}
         </Button>

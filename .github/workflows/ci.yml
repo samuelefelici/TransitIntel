@@ -1035,6 +1035,14 @@ jobs:
       # si chiude con tutte le giornate chiuse e blocca le riaperture.
       - name: Chiusura e blocco del consuntivo
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-chiusura-db.test.ts
+      # Tappa 4.7: il report mensile del consuntivo, con l'API come
+      # cerbero_app. Solo le giornate chiuse; regolarità lorda e netta (corse
+      # e km), quota provata, puntualità sul campione con la copertura;
+      # ripartizioni per linea, servizio, contratto, comune (ritaglio dei
+      # percorsi, somma che torna coi km), causale, giorno e vettore; XLSX e
+      # CSV dall'API.
+      - name: Il report mensile del consuntivo
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-report-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

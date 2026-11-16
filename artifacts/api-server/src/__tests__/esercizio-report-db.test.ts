@@ -102,6 +102,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il report mensile, sul database
     expect(c.kmProgrammati).toBeCloseTo(3, 0);
     expect(c.kmEffettivi).toBeCloseTo(2, 0);
     expect(c.regolaritaKm).toBeCloseTo(66.7, 0);
+    // l'altra metà di S1 fuori dai confini, le corse della linea 2 senza percorso: la somma torna coi km del mese
+    const riga = (nome: string) => r.perComune.find((x: any) => x.comune === nome)!;
+    expect(riga("Fuori dai confini importati").kmProgrammati).toBeCloseTo(3, 0);
+    expect(riga("Corse senza percorso")).toMatchObject({ kmProgrammati: 4, kmEffettivi: 3 });
+    const somma = r.perComune.reduce((t: number, x: any) => t + x.kmProgrammati, 0);
+    expect(somma).toBeCloseTo(r.totali.kmProgrammati, 1);
   });
 
   it("l'XLSX e il CSV del dettaglio", async () => {

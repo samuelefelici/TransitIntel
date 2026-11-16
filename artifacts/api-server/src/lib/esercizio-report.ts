@@ -127,12 +127,19 @@ async function perComune(mese: string) {
            COALESCE(sum(c.km_prog) FILTER (WHERE c.origine = 'programmata'), 0) AS km_prog,
            COALESCE(sum(c.km_eff) FILTER (WHERE c.origine = 'programmata'), 0) AS km_eff
       FROM esercizio_corse c JOIN esercizio_giornate g ON g.giorno = c.giorno AND g.stato = 'chiusa'
-     WHERE c.giorno >= ${`${mese}-01`}::date AND c.giorno < ${`${mese}-01`}::date + interval '1 month' AND c.shape_id IS NOT NULL
+     WHERE c.giorno >= ${`${mese}-01`}::date AND c.giorno < ${`${mese}-01`}::date + interval '1 month'
      GROUP BY g.feed_id, c.shape_id`));
   const perComune = new Map<string, { kmProg: number; kmEff: number }>();
-  let fuoriProg = 0, fuoriEff = 0;
+  /* fuori: la parte dei percorsi fuori da ogni confine; senza: le corse senza un percorso da ritagliare.
+     Con le due righe in più, la somma per comune torna con i km del mese. */
+  let fuoriProg = 0, fuoriEff = 0, senzaProg = 0, senzaEff = 0;
   const perFeed = new Map<string, Set<string>>();
-  for (const p of percorsi) if (p.feed) perFeed.set(p.feed, new Set([...(perFeed.get(p.feed) ?? []), String(p.shape_id)]));
+  for (const p of percorsi) {
+    if (!p.feed || p.shape_id == null) continue;
+    let s = perFeed.get(p.feed);
+    if (!s) perFeed.set(p.feed, (s = new Set()));
+    s.add(String(p.shape_id));
+  }
   const geometrie = new Map<string, any>();
   for (const [feed, shapes] of perFeed) {
     for (const s of righe(await db.execute(sql`
@@ -144,7 +151,7 @@ async function perComune(mese: string) {
     const g = geometrie.get(`${p.feed}|${p.shape_id}`);
     const coords: [number, number][] = g?.type === "LineString" && Array.isArray(g.coordinates) ? g.coordinates : [];
     const totale = lunghezzaDellaGeometria(g) / 1000;
-    if (coords.length < 2 || !(totale > 0)) { fuoriProg += n(p.km_prog); fuoriEff += n(p.km_eff); continue; }
+    if (coords.length < 2 || !(totale > 0)) { senzaProg += n(p.km_prog); senzaEff += n(p.km_eff); continue; }
     const bb = bboxOfCoords(coords);
     let dentro = 0;
     for (const z of zone) {
@@ -167,6 +174,7 @@ async function perComune(mese: string) {
     regolaritaKm: pct(perComune.get(z.id)!.kmEff, perComune.get(z.id)!.kmProg),
   })).sort((a, b) => b.kmProgrammati - a.kmProgrammati || a.comune.localeCompare(b.comune));
   if (fuoriProg > 0.05) comuni.push({ comune: "Fuori dai confini importati", istat: null, kmProgrammati: km(fuoriProg), kmEffettivi: km(fuoriEff), regolaritaKm: pct(fuoriEff, fuoriProg) });
+  if (senzaProg > 0.05) comuni.push({ comune: "Corse senza percorso", istat: null, kmProgrammati: km(senzaProg), kmEffettivi: km(senzaEff), regolaritaKm: pct(senzaEff, senzaProg) });
   return { comuni, nota: null as string | null };
 }
 
@@ -251,7 +259,7 @@ export function reportXlsx(r: Report, azienda: string | null): Buffer {
     nome: "Riepilogo",
     righe: [
       [{ v: `Consuntivo del mese ${r.mese}${azienda ? ` · ${azienda}` : ""}`, s: titolo }],
-      [{ v: `Giornate chiuse ${r.giornate.chiuse} su ${r.giornate.delMese}; mese ${r.statoMese}. Si contano solo le giornate chiuse.`, s: nota }],
+      [{ v: `Giornate chiuse ${r.giornate.chiuse} su ${r.giornate.delMese}; ${r.statoMese === "chiuso" ? "mese chiuso" : "mese aperto: report provvisorio"}. Si contano solo le giornate chiuse.`, s: nota }],
       [],
       intestazione(["Voce", "Valore"]),
       ...([

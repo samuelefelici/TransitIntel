@@ -1074,6 +1074,72 @@ richiuderla senza modifiche dà lo stesso riepilogo.
 «chiusa» né l'esito «presunta»: prima di tornare indietro riapri le giornate
 chiuse, se no restano fuori da ogni scrittura.
 
+### Il report mensile del consuntivo (tappa 4.7)
+
+Decisioni del 16/11/2026, in attesa del modello dell'ente:
+- **Un report standard del mese**, in XLSX (riepilogo, indicatori,
+  ripartizioni) e in CSV (il dettaglio corsa per corsa, per le
+  contestazioni).
+- **Indicatori**:
+  - regolarità **lorda**: corse effettuate (provate e presunte) sulle
+    programmate, e km effettivi sui programmati;
+  - regolarità **netta**: lo stesso, togliendo dal programmato le
+    soppressioni e le parziali con causale non imputabile all'azienda (e i
+    loro km);
+  - **puntualità** solo sul campione che l'AVM ha visto partire dal
+    capolinea, sempre accanto alla sua copertura: in orario fra 1 minuto di
+    anticipo e 5 di ritardo;
+  - **niente penali**.
+- **Le consorziate** stanno nel report dell'azienda, con la ripartizione per
+  vettore.
+
+**Dove.** In Esercizio › Consuntivo, nel riquadro del mese (quando ha almeno
+una giornata chiusa):
+- «Calcola il report» mostra indicatori, vettori e le linee con la regolarità
+  km più bassa;
+- «Scarica XLSX» e «Dettaglio corse (CSV)».
+
+Li vede chi ha l'area Consuntivo, anche in sola lettura.
+
+**Cosa conta**:
+- solo le **giornate chiuse**. Le aperte sono elencate a parte, e così i
+  giorni senza giornata. Il report si calcola anche prima di chiudere il
+  mese, ma finché il mese non è chiuso è provvisorio;
+- le corse **aggiunte** si contano a parte e non entrano nella regolarità.
+
+**Le ripartizioni**:
+- linea, tipo di servizio e contratto: dalle linee di Planning Studio, dove
+  impostati;
+- comune: il ritaglio dei percorsi sui confini importati in Planning Studio ›
+  Zonizzazione, con i km di ogni corsa divisi in proporzione al tratto dentro
+  ogni comune. Due righe in più, «Fuori dai confini importati» e «Corse senza
+  percorso», fanno tornare la somma con i km del mese. Senza confini
+  importati la ripartizione per comune non c'è, e il report lo dice;
+- causale, col codice dell'ente;
+- giorno;
+- vettore: dalla vettura (Conerobus o la consorziata). «Vettura non
+  indicata» sono le corse confermate senza vettura (per esempio le
+  presunte); «Vettura non attribuita» quelle con una matricola che non si
+  riesce a ricondurre a un'azienda.
+
+**Il CSV**: separatore `;`, virgola decimale, una riga per corsa, giorno per
+giorno e in ordine di partenza. In un mese sono circa centomila righe: si scrive man
+mano, senza tenerlo tutto in memoria.
+
+**Nessuna migrazione.** Alla conferma, una corsa proposta per continuità
+prende ora la vettura del turno macchina, così il report per vettore non la
+lascia senza vettura. Vale per le conferme fatte da qui in poi.
+
+**Dopo il deploy**:
+1. Scrivi il **codice dell'ente** delle causali (Esercizio › Consuntivo,
+   riquadro «Causali (amministratore)»), se non l'hai già fatto: esce nella
+   ripartizione per causale.
+2. La definizione di fatto: su un mese con giornate chiuse, i totali dell'XLSX
+   tornano con la somma dei riepiloghi delle giornate, e le righe del CSV sono
+   le corse di quelle giornate.
+
+**Rollback**: immagine precedente. Il report non scrive niente.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
