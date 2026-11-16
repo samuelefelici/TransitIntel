@@ -1746,6 +1746,11 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/guardia-schema.ts
    artifacts/api-server/src/lib/identita-db.ts
    artifacts/api-server/src/lib/logger.ts
+   artifacts/api-server/src/lib/esercizio-*.ts
+   artifacts/api-server/src/lib/service-day.ts
+   artifacts/api-server/src/lib/km-programmati.ts
+   artifacts/api-server/src/lib/siri-vm.ts
+   artifacts/api-server/src/lib/parco-anagrafica.ts
    artifacts/api-server/build.ts
    artifacts/api-server/package.json
    pnpm-lock.yaml

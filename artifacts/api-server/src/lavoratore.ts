@@ -34,6 +34,7 @@ import { GESTORI } from "./lib/lavori/gestori";
 import { chiSono, slotDaAmbiente } from "./lib/lavori/ambiente";
 import { avviaPulizie } from "./lib/lavori/pulizie";
 import { avviaRegistro } from "./lib/lavori/registro";
+import { avviaGiornate } from "./lib/lavori/giornate";
 import { controllaIdentita } from "./lib/identita-db";
 
 const porta = Number(process.env.PORT || 3001);
@@ -54,6 +55,8 @@ esecutore.avvia();
 const fermaPulizie = avviaPulizie(logger, () => statoDelloSchema() === "ok");
 // la manutenzione del registro delle modifiche, ogni giorno (PR 2.10)
 const fermaRegistro = avviaRegistro(logger, () => statoDelloSchema() === "ok");
+/* le giornate di esercizio: domani preparata, oggi congelata (tappa 4.2) */
+const fermaGiornate = avviaGiornate(logger, () => statoDelloSchema() === "ok");
 
 const server = http.createServer(async (req, res) => {
   const percorso = (req.url ?? "").split("?")[0];
@@ -80,6 +83,7 @@ async function arresta(segnale: string): Promise<void> {
   logger.info({ segnale, lavoriInCorso: esecutore.inCorso() }, "Arresto del lavoratore: niente lavori nuovi, finisco o rimetto in coda quelli in corso");
   fermaPulizie();
   fermaRegistro();
+  fermaGiornate();
   try { await esecutore.ferma(ATTESA_ARRESTO_MS); }
   catch (err) { logger.error({ err }, "arresto del lavoratore: errore fermando i lavori"); }
   server.close();

@@ -5,6 +5,7 @@ import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
+import { elencoGiornate, giornoValido, leggiGiornata, preparaGiornata } from "../lib/esercizio-giornate";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
@@ -106,6 +107,60 @@ router.get("/admin/esercizio/diagnosi", async (req, res): Promise<void> => {
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "diagnosi della giornata non riuscita");
     res.status(500).json({ error: "Diagnosi non riuscita" });
+  }
+});
+
+/**
+ * Le giornate di esercizio, il programmato congelato (tappa 4.2,
+ * lib/esercizio-giornate.ts). Le prepara e le congela il lavoratore; qui si
+ * leggono, e l'amministratore può preparare una giornata che manca (una
+ * passata nasce congelata e «ricostruita»).
+ *   GET  /api/admin/esercizio/giornate?dal=&al=   l'elenco (al più 366 giorni; senza: gli ultimi 30 e domani)
+ *   GET  /api/admin/esercizio/giornate/:giorno     una giornata con le sue corse
+ *   POST /api/admin/esercizio/giornate/:giorno/prepara
+ */
+const piuGiorni = (g: string, n: number) => {
+  const d = new Date(`${g}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+router.get("/admin/esercizio/giornate", async (req, res): Promise<void> => {
+  const oggi = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const dal = req.query.dal === undefined ? piuGiorni(oggi, -30) : String(req.query.dal);
+  const al = req.query.al === undefined ? piuGiorni(oggi, 1) : String(req.query.al);
+  if (!giornoValido(dal) || !giornoValido(al) || dal > al || Date.parse(al) - Date.parse(dal) > 366 * 86_400_000) {
+    res.status(400).json({ error: "dal e al: date vere, AAAA-MM-GG, al più un anno" });
+    return;
+  }
+  try {
+    res.json({ dal, al, giornate: await elencoGiornate(dal, al) });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "giornate di esercizio non leggibili");
+    res.status(500).json({ error: "Giornate non leggibili" });
+  }
+});
+router.get("/admin/esercizio/giornate/:giorno", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  try {
+    const g = await leggiGiornata(giorno);
+    if (!g) { res.status(404).json({ error: "Giornata non ancora preparata" }); return; }
+    res.json(g);
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, giorno }, "giornata di esercizio non leggibile");
+    res.status(500).json({ error: "Giornata non leggibile" });
+  }
+});
+router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  try {
+    const e = await preparaGiornata(giorno);
+    if (e.giaCongelata) { res.status(409).json({ error: "Giornata già congelata: il suo programmato non cambia più" }); return; }
+    res.json(e);
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, giorno }, "preparazione della giornata non riuscita");
+    res.status(500).json({ error: "Preparazione non riuscita" });
   }
 });
 
