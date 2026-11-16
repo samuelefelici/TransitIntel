@@ -79,7 +79,8 @@ export async function preparaGiornata(giorno: string): Promise<EsitoPreparazione
     const kmDi = (shape: string | null) => (shape && metri.has(shape) ? Math.round(metri.get(shape)!) / 1000 : null);
     const senzaKm = corse.filter((c) => kmDi(c.shapeId) == null).length;
     if (senzaKm) avvisi.push(`${senzaKm} corse senza geometria: senza km programmati.`);
-    const kmTotali = Math.round(corse.reduce((s, c) => s + (kmDi(c.shapeId) ?? 0), 0) * 10) / 10;
+    /* il totale dai metri pieni, come gli altri conteggi dei km (3.5): arrotondato una volta sola */
+    const kmTotali = Math.round(corse.reduce((s, c) => s + (c.shapeId ? metri.get(c.shapeId) ?? 0 : 0), 0) / 100) / 10;
     const numeri = new Map<string, number>();
     for (const c of corse) numeri.set(c.numero, (numeri.get(c.numero) ?? 0) + 1);
     const ripetuti = [...numeri.values()].filter((n) => n > 1).length;

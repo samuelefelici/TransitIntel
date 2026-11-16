@@ -42,7 +42,9 @@ export default function AdminGiornatePage() {
   const [elenco, setElenco] = useState<VoceGiornata[]>([]);
   const [scelta, setScelta] = useState<string | null>(null);
   const [giornata, setGiornata] = useState<Giornata | null>(null);
-  const [daPreparare, setDaPreparare] = useState("");
+  const [daAprire, setDaAprire] = useState("");
+  /* la giornata chiesta che non è ancora preparata */
+  const [mancante, setMancante] = useState<string | null>(null);
   const [filtro, setFiltro] = useState("");
   const [occupato, setOccupato] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
@@ -55,9 +57,13 @@ export default function AdminGiornatePage() {
     } catch (e: any) { setErrore(e?.message || "Giornate non leggibili"); return []; }
   }, []);
   const apri = useCallback(async (g: string) => {
-    setScelta(g); setErrore(null); setOccupato(true);
+    setScelta(g); setErrore(null); setMancante(null); setOccupato(true);
     try { setGiornata(await apiFetch<Giornata>(`/api/admin/esercizio/giornate/${g}`)); }
-    catch (e: any) { setGiornata(null); setErrore(e?.message || "Giornata non leggibile"); }
+    catch (e: any) {
+      setGiornata(null);
+      if (e?.status === 404 || /non ancora preparata/i.test(String(e?.message ?? ""))) setMancante(g);
+      else setErrore(e?.message || "Giornata non leggibile");
+    }
     finally { setOccupato(false); }
   }, []);
   useEffect(() => { void caricaElenco().then((l) => { if (l[0]) void apri(l.find((x) => x.stato === "congelata")?.giorno ?? l[0].giorno); }); }, [caricaElenco, apri]);
@@ -92,18 +98,25 @@ export default function AdminGiornatePage() {
         </div>
       </div>
 
-      <form className="flex items-end gap-3" onSubmit={(e) => { e.preventDefault(); if (daPreparare) void prepara(daPreparare); }}>
+      <form className="flex items-end gap-3" onSubmit={(e) => { e.preventDefault(); if (daAprire) void apri(daAprire); }}>
         <div className="space-y-1">
-          <Label htmlFor="giornata-da-preparare">Prepara una giornata</Label>
-          <Input id="giornata-da-preparare" type="date" value={daPreparare} onChange={(e) => setDaPreparare(e.target.value)} className="w-44" />
+          <Label htmlFor="giornata-da-aprire">Giornata</Label>
+          <Input id="giornata-da-aprire" type="date" value={daAprire} onChange={(e) => setDaAprire(e.target.value)} className="w-44" />
         </div>
-        <Button type="submit" variant="outline" disabled={occupato || !daPreparare}>
-          <RefreshCw className={`w-4 h-4 mr-1.5 ${occupato ? "animate-spin" : ""}`} /> Prepara
-        </Button>
-        <span className="text-xs text-muted-foreground pb-2">Una giornata già congelata non si rifà.</span>
+        <Button type="submit" variant="outline" disabled={occupato || !daAprire}>Apri</Button>
       </form>
 
       {errore && <div className="text-sm text-destructive">{errore}</div>}
+      {mancante && (
+        <div className="flex items-center gap-3 rounded-md border border-border p-3 text-sm">
+          <span className="capitalize">{data(mancante)}</span>
+          <span className="text-muted-foreground">non è ancora preparata.</span>
+          <Button size="sm" onClick={() => void prepara(mancante)} disabled={occupato}>
+            <RefreshCw className={`w-4 h-4 mr-1.5 ${occupato ? "animate-spin" : ""}`} /> Prepara
+          </Button>
+          <span className="text-xs text-muted-foreground">Una giornata passata nasce congelata e ricostruita dallo storico.</span>
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-[280px_1fr]">
         <Card>
