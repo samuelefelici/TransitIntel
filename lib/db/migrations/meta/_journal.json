@@ -232,6 +232,13 @@
       "when": 1795480000000,
       "tag": "0032_sostituzioni",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1795540000000,
+      "tag": "0033_vetture_sui_turni_macchina",
+      "breakpoints": true
     }
   ]
 }

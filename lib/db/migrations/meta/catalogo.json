@@ -62,6 +62,7 @@
   "public.esercizio_mesi_pkey": "CREATE UNIQUE INDEX esercizio_mesi_pkey ON public.esercizio_mesi USING btree (mese)",
   "public.esercizio_turni_macchina_pkey": "CREATE UNIQUE INDEX esercizio_turni_macchina_pkey ON public.esercizio_turni_macchina USING btree (giorno, vss_id, turno_macchina)",
   "public.esercizio_variazioni_pkey": "CREATE UNIQUE INDEX esercizio_variazioni_pkey ON public.esercizio_variazioni USING btree (id)",
+  "public.esercizio_vetture_pkey": "CREATE UNIQUE INDEX esercizio_vetture_pkey ON public.esercizio_vetture USING btree (giorno, vss_id, turno_macchina)",
   "public.fares_polimetriche_snapshots_pkey": "CREATE UNIQUE INDEX fares_polimetriche_snapshots_pkey ON public.fares_polimetriche_snapshots USING btree (id)",
   "public.gtfs_calendar_dates_pkey": "CREATE UNIQUE INDEX gtfs_calendar_dates_pkey ON public.gtfs_calendar_dates USING btree (id)",
   "public.gtfs_calendar_pkey": "CREATE UNIQUE INDEX gtfs_calendar_pkey ON public.gtfs_calendar USING btree (id)",
@@ -120,6 +121,7 @@
   "public.idx_esercizio_corse_numero": "CREATE INDEX idx_esercizio_corse_numero ON public.esercizio_corse USING btree (giorno, numero)",
   "public.idx_esercizio_eventi_giorno": "CREATE INDEX idx_esercizio_eventi_giorno ON public.esercizio_eventi USING btree (giorno, id)",
   "public.idx_esercizio_variazioni_giorno": "CREATE INDEX idx_esercizio_variazioni_giorno ON public.esercizio_variazioni USING btree (giorno, id)",
+  "public.idx_esercizio_vetture_vettura": "CREATE INDEX idx_esercizio_vetture_vettura ON public.esercizio_vetture USING btree (giorno, vettura)",
   "public.idx_fare_areas_feed_area": "CREATE UNIQUE INDEX idx_fare_areas_feed_area ON public.gtfs_fare_areas USING btree (feed_id, area_id)",
   "public.idx_fare_areas_feed_network": "CREATE INDEX idx_fare_areas_feed_network ON public.gtfs_fare_areas USING btree (feed_id, network_id)",
   "public.idx_fare_areas_feed_route": "CREATE INDEX idx_fare_areas_feed_route ON public.gtfs_fare_areas USING btree (feed_id, route_id)",
@@ -901,6 +903,14 @@
    "nota": "text | null |  |  | ",
    "numeri": "text[] | not null | '{}'::text[] |  | ",
    "tipo": "text | not null |  |  | "
+  },
+  "public.esercizio_vetture": {
+   "assegnata_da": "uuid | null |  |  | ",
+   "assegnata_il": "timestamp with time zone | not null | now() |  | ",
+   "giorno": "date | not null |  |  | ",
+   "turno_macchina": "text | not null |  |  | ",
+   "vettura": "text | not null |  |  | ",
+   "vss_id": "uuid | not null |  |  | "
   },
   "public.fares_polimetriche_snapshots": {
    "agency_name": "text | null |  |  | ",
@@ -2343,6 +2353,9 @@
   "public.esercizio_variazioni.esercizio_variazioni_pkey": "PRIMARY KEY (id)",
   "public.esercizio_variazioni.esercizio_variazioni_stato": "CHECK (((annullata_il IS NULL) OR (applicata_il IS NULL)))",
   "public.esercizio_variazioni.esercizio_variazioni_tipo": "CHECK ((tipo = ANY (ARRAY['soppressione'::text, 'sciopero'::text])))",
+  "public.esercizio_vetture.esercizio_vetture_assegnata_da_fkey": "FOREIGN KEY (assegnata_da) REFERENCES users(id) ON DELETE SET NULL",
+  "public.esercizio_vetture.esercizio_vetture_pkey": "PRIMARY KEY (giorno, vss_id, turno_macchina)",
+  "public.esercizio_vetture.esercizio_vetture_vettura": "CHECK (((char_length(vettura) >= 1) AND (char_length(vettura) <= 40)))",
   "public.fares_polimetriche_snapshots.fares_polimetriche_snapshots_pkey": "PRIMARY KEY (id)",
   "public.gtfs_calendar.gtfs_calendar_feed_id_gtfs_feeds_id_fk": "FOREIGN KEY (feed_id) REFERENCES gtfs_feeds(id) ON DELETE CASCADE",
   "public.gtfs_calendar.gtfs_calendar_pkey": "PRIMARY KEY (id)",

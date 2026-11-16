@@ -1419,7 +1419,8 @@ L'API è in sola lettura: `GET /api/roster/mezzi?giorno=`. Chi vede solo
 alcuni depositi vede solo quelli.
 
 **Nessuna migrazione.** Fuori, per dopo:
-- le matricole vere assegnate ai turni macchina del giorno;
+- le matricole vere assegnate ai turni macchina del giorno (fatto nella 5.4,
+  qui sotto);
 - la disponibilità futura, cioè i fermi programmati, che richiede una funzione
   nuova su FleetCare.
 
@@ -1431,6 +1432,49 @@ alcuni depositi vede solo quelli.
    l'officina.
 
 **Rollback**: immagine precedente.
+
+### Le vetture sui turni macchina (tappa 5.4)
+
+Il capo deposito assegna una vettura (la matricola dell'AVM) a ogni turno
+macchina di oggi o di domani, dalla pagina Vestizione, nel riquadro «Vetture
+sui turni macchina».
+- **Le righe**: i turni macchina della giornata del deposito scelto, in
+  ordine di uscita, con uscita e rientro, tipo di mezzo, corse e la vettura.
+  Quelli senza vettura sono evidenziati.
+- **La scelta**: i mezzi del deposito che FleetCare dà in servizio o di
+  riserva, prima i liberi del tipo giusto; oppure la matricola scritta a mano
+  (anche senza FleetCare).
+- **Avvisi, mai blocchi**:
+  - la stessa vettura su due turni macchina che si sovrappongono;
+  - la vettura ferma in officina o dismessa;
+  - il tipo del turno diverso dal modello della vettura, solo dove turni e
+    FleetCare usano gli stessi nomi;
+  - l'AVM che ha visto un'altra vettura sulle corse del turno.
+- **Tabella a parte** (`esercizio_vetture`, migrazione `0033`): i turni
+  macchina della giornata si riscrivono finché la giornata non comincia. Se un
+  turno macchina sparisce con una nuova pubblicazione, la sua vettura resta
+  «da riassegnare» e si toglie.
+- **Nel consuntivo**: alla conferma (anche la presunzione), una corsa senza
+  vettura vista dall'AVM né per continuità prende quella assegnata al suo
+  turno macchina. Così i km per vettura (4.8) contano anche le corse che l'AVM
+  non ha visto.
+
+**Chi**: scrive chi ha il Roster in scrittura, sui depositi che modifica (il
+capo deposito sui suoi); legge chi ha il Roster in lettura, sui depositi che
+vede. Le assegnazioni senza turno (il deposito non si sa più) le vede e le
+toglie solo chi non ha limiti. La giornata chiusa non si modifica più.
+
+L'API: `GET /api/roster/vetture?giorno=`, `PUT /api/roster/vetture` (giorno,
+vssId, turnoMacchina, vettura), `DELETE /api/roster/vetture?giorno=&vssId=&turnoMacchina=`.
+Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
+
+**Dopo il deploy**:
+1. La migrazione `0033` crea la tabella vuota: niente da fare a mano.
+2. La definizione di fatto: in Vestizione, per un deposito e per domani, si
+   assegna una vettura a ogni turno macchina; il giorno dopo, confermate le
+   corse, quelle che l'AVM non ha visto portano la vettura assegnata.
+
+**Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
 ### Argos: sola lettura su un elenco chiuso
 
