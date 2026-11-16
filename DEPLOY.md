@@ -740,8 +740,8 @@ l'inizio della giornata. È la base del consuntivo.
 - **Il programmato è il feed in esercizio all'inizio della giornata**, preso
   dallo storico delle attivazioni (la porta unica della 3.2), non il feed
   acceso oggi. È la proposta dell'analisi per la decisione aperta 3. I turni
-  pubblicati si aggiungeranno nella prossima PR; dove divergono, lo diranno
-  gli avvisi.
+  pubblicati si aggiungono dalla 4.3 (sezione sotto); dove divergono, lo
+  dicono gli avvisi.
 - **Ogni corsa ha tre identità**:
   - la chiave del feed (l'id della corsa di Planning Studio);
   - il codice stabile;
@@ -789,6 +789,86 @@ solo il sistema; il giornale del consuntivo avrà il suo.
 
 **Rollback**: immagine precedente. Le tabelle restano, ferme; la versione di
 prima non le usa.
+
+### Turni nel programmato (tappa 4.3)
+
+L'istantanea di una giornata dice quali corse sono programmate. Da questo
+rilascio dice anche **chi le porta**:
+- **Per ogni corsa**: il turno macchina, il turno guida e il deposito.
+- **Da dove**: dai turni pubblicati nel roster (Pubblicazione › Turni al
+  roster) **com'erano all'inizio della giornata**, alle 03:00. Il canale tiene
+  lo storico, quindi una pubblicazione o un ritiro fatti dopo non cambiano una
+  giornata cominciata.
+- **Perché bastano i turni guida**: ogni turni guida pubblicato punta ai turni
+  macchina su cui è calcolato, che quindi sono pubblicati con lui. Da quando
+  sono pubblicati i turni non si sovrascrivono (3.6): chi li salva ne crea una
+  versione nuova.
+
+Le corse dei turni si riconoscono:
+- **per id**, quando i turni sono calcolati sullo stesso feed della giornata;
+- **per codice stabile della corsa**, quando sono calcolati su un'altra copia
+  del programma.
+
+Un codice ripetuto nella giornata non riconosce niente: la corsa resta
+scoperta, piuttosto che finire sulla corsa sbagliata.
+
+**Turni macchina della giornata.** Per ognuno: deposito, mezzo, uscita,
+rientro, corse e **vuoti programmati**.
+- I km a vuoto sono il totale del turno salvato dal calcolo. Comprende anche i
+  rientri intermedi in deposito, che non hanno i km sulla singola voce.
+- La somma della giornata si confronta col riepilogo salvato del calcolo. Se
+  non torna, c'è un avviso.
+- Dai turni si prendono solo l'appartenenza delle corse e i vuoti. I km in
+  linea restano quelli della geometria (3.5).
+
+**Il riepilogo della giornata:**
+- che cosa è pubblicato: UDP, turni guida e turni macchina;
+- le corse senza turno macchina e perché:
+  - fuori dalle UDP pubblicate;
+  - lasciate scoperte dal calcolo dei turni macchina;
+  - non comprese nel calcolo, per esempio linee non scelte;
+- le corse col turno macchina ma senza turno guida;
+- le corse dei turni che il programmato non ha;
+- i turni superati, o calcolati su dati poi cambiati;
+- le UDP di un programma diverso da quello in esercizio.
+
+Gli avvisi lo dicono in parole.
+
+**Le giornate già congelate dalla 4.2** non hanno i turni:
+- il lavoratore li aggiunge una volta sola, dallo storico del canale, a
+  partire dalle più recenti (31 per giro);
+- le loro corse non cambiano;
+- dalla pagina lo fa «Aggiungi i turni ora».
+
+**La pagina: Amministrazione › Giornate di esercizio**:
+- il riquadro «Turni pubblicati», con l'elenco dei turni macchina (il
+  dettaglio dei vuoti è nel suggerimento dei km a vuoto);
+- nelle corse, le colonne turno macchina, turno guida e deposito, anche nel
+  filtro;
+- «Per turno macchina» mette in fila le corse di ogni turno.
+
+**La migrazione `0026`**:
+- aggiunge le colonne dei turni a `esercizio_corse` e il riepilogo `turni` a
+  `esercizio_giornate`;
+- crea `esercizio_turni_macchina`.
+
+Gli id dei turni sono una fotografia, come il nome del programma: niente
+chiavi esterne.
+
+**Dopo il deploy**:
+1. Le Watch Paths del lavoratore non cambiano: il file nuovo
+   (`esercizio-turni.ts`) è già coperto da `esercizio-*.ts`, se la 4.2 è
+   stata aggiunta. Il lavoratore si ridistribuisce da solo.
+2. Entro 15 minuti nel log del lavoratore compare «giornate di esercizio:
+   preparate e congelate». Le giornate della 4.2 risultano «congelata, turni
+   aggiunti».
+3. In una giornata con i turni pubblicati, controlla nella pagina:
+   - le corse col turno macchina;
+   - i km a vuoto contro «riepilogo del calcolo»;
+   - le scoperte, giustificate da «non comprese nel calcolo» e dalle UDP.
+
+**Rollback**: immagine precedente. Colonne e tabella restano, ferme; la
+versione di prima non le usa.
 
 ### Argos: sola lettura su un elenco chiuso
 

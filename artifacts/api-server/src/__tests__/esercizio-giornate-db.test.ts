@@ -109,7 +109,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le giornate di esercizio congel
     expect(g.congelataIl).not.toBeNull();
     // il feed cambia dopo: la giornata congelata resta com'era
     await db.execute(sql`INSERT INTO gtfs_trips (feed_id, trip_id, route_id, service_id, shape_id) VALUES (${F}::uuid, ${T_NUOVA}, ${LINEA}, 'GEN', 'S1')`);
-    expect(await preparaGiornata(PASSATA)).toEqual({ stato: "congelata", giaCongelata: true });
+    expect(await preparaGiornata(PASSATA)).toEqual({ stato: "congelata", giaCongelata: true, turniCompletati: false });
     expect((await leggiGiornata(PASSATA))!.elenco.map((c) => c.chiave)).toEqual([T_PASSATA]);
     await db.execute(sql`DELETE FROM gtfs_trips WHERE feed_id = ${F}::uuid AND trip_id = ${T_NUOVA}`);
   });

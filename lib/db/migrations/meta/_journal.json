@@ -183,6 +183,13 @@
       "when": 1795060000000,
       "tag": "0025_giornate_di_esercizio",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1795120000000,
+      "tag": "0026_turni_nel_programmato",
+      "breakpoints": true
     }
   ]
 }

@@ -114,10 +114,12 @@ router.get("/admin/esercizio/diagnosi", async (req, res): Promise<void> => {
  * Le giornate di esercizio, il programmato congelato (tappa 4.2,
  * lib/esercizio-giornate.ts). Le prepara e le congela il lavoratore; qui si
  * leggono, e l'amministratore può preparare una giornata che manca (una
- * passata nasce congelata e «ricostruita»).
+ * passata nasce congelata e «ricostruita»). Dalla 4.3 ogni giornata porta
+ * anche i turni pubblicati: turno macchina, turno guida e deposito per corsa,
+ * i turni macchina con i vuoti e il riepilogo (lib/esercizio-turni.ts).
  *   GET  /api/admin/esercizio/giornate?dal=&al=   l'elenco (al più 366 giorni; senza: gli ultimi 30 e domani)
- *   GET  /api/admin/esercizio/giornate/:giorno     una giornata con le sue corse
- *   POST /api/admin/esercizio/giornate/:giorno/prepara
+ *   GET  /api/admin/esercizio/giornate/:giorno     una giornata con le sue corse e i suoi turni
+ *   POST /api/admin/esercizio/giornate/:giorno/prepara   (409 se congelata; una congelata senza turni li riceve)
  */
 const piuGiorni = (g: string, n: number) => {
   const d = new Date(`${g}T00:00:00Z`);
@@ -156,7 +158,8 @@ router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promi
   if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
   try {
     const e = await preparaGiornata(giorno);
-    if (e.giaCongelata) { res.status(409).json({ error: "Giornata già congelata: il suo programmato non cambia più" }); return; }
+    /* congelata prima della 4.3: le corse restano, i turni si aggiungono dallo storico del canale */
+    if (e.giaCongelata && !e.turniCompletati) { res.status(409).json({ error: "Giornata già congelata: il suo programmato non cambia più" }); return; }
     res.json(e);
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "preparazione della giornata non riuscita");
