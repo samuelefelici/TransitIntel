@@ -1216,6 +1216,31 @@ Nessun dato delle persone: turno guida e conducente restano fuori.
 **Rollback**: immagine precedente. La funzione resta e non scrive niente; per
 toglierla: `DROP FUNCTION public.esercizio_km_per_vettura(date, date);`.
 
+### La giornata di esercizio nella pagina Oggi (tappa 4.9)
+
+Nella home, per chi legge l'area Consuntivo, il riquadro **Consuntivo** mostra
+la giornata in corso:
+- corse programmate;
+- quota di corse **viste dall'AVM**: la proposta dell'AVM, che si aggiorna
+  durante il giorno. Finché la proposta non c'è, il riquadro lo dice invece
+  di scrivere zero;
+- soppresse confermate, in giallo se ce ne sono;
+- corse da decidere, con quelle da verificare;
+- lo stato della giornata.
+
+Sotto, in giallo, quante giornate sono **da chiudere** (cominciate e ancora
+aperte dopo tre giorni, la stessa regola della pagina del consuntivo) e da
+quando. Il riquadro porta al Consuntivo e si aggiorna ogni due minuti.
+
+I dati vengono da `GET /api/esercizio/oggi`, che manda solo conteggi: la
+giornata intera ha circa 3.500 corse. Nessuna migrazione.
+
+**Dopo il deploy**: la definizione di fatto è che, aprendo Oggi durante il
+servizio, i numeri del riquadro tornano con quelli della pagina del consuntivo
+della stessa giornata.
+
+**Rollback**: immagine precedente.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23

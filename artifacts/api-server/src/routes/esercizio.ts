@@ -7,6 +7,7 @@
  * Gli esiti li decide una persona: i token di servizio (Argos) leggono ma
  * non scrivono.
  *
+ *   GET  /api/esercizio/oggi                       la giornata in corso in breve e le giornate da chiudere (4.9, pagina Oggi)
  *   GET  /api/esercizio/giornate?dal=&al=          l'elenco (al più un anno; senza: gli ultimi 30 e domani)
  *   GET  /api/esercizio/giornate/:giorno           la giornata con corse, esiti, proposta, giornale, causali
  *   POST /api/esercizio/giornate/:giorno/eventi    un evento del giornale (esito, conferma, aggiunta, annullamento, nota)
@@ -29,6 +30,8 @@ import { chiudiGiornata, chiusuraDellaGiornata, meseValido, RifiutoChiusura, sta
 import { chiudeLeGiornate } from "@workspace/permessi";
 import { dettaglioCsv, reportDelMese, reportXlsx } from "../lib/esercizio-report";
 import { aziendaOppureNeutra } from "../lib/azienda";
+import { esercizioInBreve } from "../lib/esercizio-oggi";
+import { giornataOggi } from "../lib/service-day";
 
 const router: IRouter = Router();
 
@@ -40,6 +43,16 @@ const piuGiorni = (g: string, n: number) => {
 };
 /** Gli esiti li decide una persona: un token di servizio legge e basta. */
 const daUnServizio = (req: any) => typeof req.authVia === "string" && req.authVia.length > 0;
+
+/* La giornata in corso in breve, per la pagina Oggi (4.9): solo conteggi, e le giornate da chiudere. */
+router.get("/esercizio/oggi", async (req, res): Promise<void> => {
+  try {
+    res.json(await esercizioInBreve(giornataOggi()));
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "consuntivo: giornata in breve non leggibile");
+    res.status(500).json({ error: "Giornata non leggibile" });
+  }
+});
 
 router.get("/esercizio/giornate", async (req, res): Promise<void> => {
   const oggi = oggiRoma();
