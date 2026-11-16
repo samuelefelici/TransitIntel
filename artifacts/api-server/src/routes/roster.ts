@@ -43,7 +43,7 @@ import { sql } from "drizzle-orm";
 import { driverScenariosAccessibleWhere, requireDriverScenarioRead } from "../lib/scenario-access";
 import { assicuraAnagrafica, leggiDepositi, registra, righe, type Ex } from "../lib/anagrafica-store";
 import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
-import { abbinaColori, depositiPlanner, type DepositoColorato } from "../lib/roster-colori-depositi";
+import { abbinaColori, depositiPlanner, depositoDelNome, type DepositoColorato } from "../lib/roster-colori-depositi";
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
 import { fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
@@ -288,7 +288,17 @@ router.get("/roster/board", async (req, res): Promise<void> => {
         FROM roster_assignments WHERE day BETWEEN ${from}::date AND ${al}::date`));
     const riassunti = await riassuntiDei([...righeCanale.map(r => r.dssId), ...assegnazioni.map(a => String(a.dss_id))]);
     const dutiesByDss: Record<string, unknown[]> = {};
-    for (const [id, r] of riassunti) dutiesByDss[id] = r.turni.map(({ firma: _f, corse: _c, inizio: _i, fine: _e, ...t }) => t);
+    /* il deposito del catalogo di ogni turno (5.2, la vestizione per deposito): dalla residenza, come i colori */
+    const catalogoDepositi = await leggiDepositi(ex);
+    const depositoDi = new Map<string, string | null>();
+    const codiceDeposito = (nome: string | null | undefined): string | null => {
+      if (!nome) return null;
+      if (!depositoDi.has(nome)) depositoDi.set(nome, depositoDelNome(nome, catalogoDepositi)?.codice ?? null);
+      return depositoDi.get(nome)!;
+    };
+    for (const [id, r] of riassunti) {
+      dutiesByDss[id] = r.turni.map(({ firma: _f, corse: _c, inizio: _i, fine: _e, ...t }) => ({ ...t, depositoCodice: codiceDeposito(t.residenzaName) }));
+    }
 
     const pubblicati: Record<string, Array<{ udpId: string; udpNome: string | null; dssId: string; dssNome: string | null; psProjectId: string | null }>> = {};
     for (const r of righeCanale) {

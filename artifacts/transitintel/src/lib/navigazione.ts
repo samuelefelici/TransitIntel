@@ -12,7 +12,7 @@
 import {
   BarChart3, CalendarDays, ClipboardCheck, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
-  Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ShieldCheck, Stethoscope, type LucideIcon,
+  Users, UserCheck, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ShieldCheck, Stethoscope, type LucideIcon,
 } from "lucide-react";
 import { NOMI_AREE, type Area } from "@workspace/permessi";
 
@@ -62,6 +62,8 @@ export const AREE_PAGINA = {
   "/timetables": ["pubblicazione_orari"],
   "/roster": ["roster"],
   "/roster/anagrafica": ["roster", "personale"],
+  /* la vestizione per deposito (5.2): il tabellone di oggi e domani, per deposito */
+  "/roster/vestizione": ["roster"],
   "/operations": ["esercizio"],
   "/avm": ["esercizio"],
   /* i tempi osservati vengono dall'AVM: sono dell'Esercizio, e chi li aveva con Analisi li tiene */
@@ -118,6 +120,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
     titolo: "Personale",
     voci: [
       { href: "/roster", etichetta: "Roster", icona: Users, descrizione: "Tabellone, assegnazioni, assenze", aree: AREE_PAGINA["/roster"] },
+      { href: "/roster/vestizione", etichetta: "Vestizione", icona: UserCheck, descrizione: "Turni e conducenti del deposito, oggi e domani", aree: AREE_PAGINA["/roster/vestizione"] },
       { href: "/roster/anagrafica", etichetta: "Anagrafica", icona: IdCard, descrizione: "Conducenti e personale", aree: AREE_PAGINA["/roster/anagrafica"] },
     ],
   },
