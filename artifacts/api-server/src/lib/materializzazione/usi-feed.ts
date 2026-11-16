@@ -18,6 +18,8 @@ export const USI_DEL_FEED: ReadonlyArray<readonly [tabella: string, colonna: str
   ["ps_projects", "source_feed_id"],
   ["ps_pending_activations", "feed_id"],
   ["ps_activation_log", "feed_id"],
+  // il programma di una giornata di esercizio congelata (tappa 4.2)
+  ["esercizio_giornate", "feed_id"],
   ["planning_scenarios", "baseline_feed_id"],
   ["planning_pois", "feed_id"],
   ["planning_route_classifications", "feed_id"],

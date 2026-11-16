@@ -760,6 +760,8 @@ l'inizio della giornata. È la base del consuntivo.
   «ricostruita», col programma dello storico di quel giorno.
 - **Senza un programma nello storico** (le giornate prima della porta unica) la
   giornata resta vuota, e lo dice: non si ripiega sul feed di oggi.
+- **Il feed di una giornata** conta come «in uso»: le pulizie del lavoratore
+  non lo cancellano.
 
 **La pagina: Amministrazione › Giornate di esercizio** (solo amministratore,
 per ora):
