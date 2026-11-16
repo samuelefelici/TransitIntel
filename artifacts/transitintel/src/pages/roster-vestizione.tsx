@@ -3,9 +3,10 @@
  * deposito. I turni del deposito in ordine di uscita, con chi li fa; quelli da
  * coprire in cima (scoperti, e liberati da un'assenza) coi sostituti
  * suggeriti (5.1) e «Assegna»; i conducenti del deposito per gruppo; l'ordine
- * di servizio da stampare.
+ * di servizio da stampare. Sotto, le vetture sui turni macchina del giorno
+ * (5.4): il capo deposito assegna una matricola a ogni turno macchina.
  *
- * Nessuna API nuova: legge il tabellone del roster dei due giorni e assegna
+ * Per i turni guida nessuna API nuova: legge il tabellone del roster dei due giorni e assegna
  * con la chiamata di sempre, quindi i controlli (riposi, sovrapposizioni,
  * depositi che si vedono e che si scrivono) restano quelli del tabellone. I
  * conti stanno in lib/vestizione.ts.
@@ -13,12 +14,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bus, CalendarClock, Printer, RefreshCw, UserCheck, Users } from "lucide-react";
+import { AlertTriangle, Bus, CalendarClock, CarFront, Printer, RefreshCw, UserCheck, Users } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { oggiARoma } from "@/lib/oggi";
 import { GRUPPI, ordineDiServizio, vestizione, type TabelloneVestizione, type TurnoDelGiorno } from "@/lib/vestizione";
 import { mezziDi, type MezziDelGiorno } from "@/lib/mezzi";
+import { MATRICOLA, mezziPer, riepilogoVetture, turniDi, type TurnoConVettura, type VettureDelGiorno } from "@/lib/vetture";
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -209,7 +212,188 @@ export default function VestizionePage() {
           </div>
         </div>
       )}
+
+      {deposito && <VettureCard giorno={giorno} deposito={deposito === "tutti" ? null : deposito} scrive={scrive} />}
     </div>
+  );
+}
+
+/** «05:40», e oltre la mezzanotte «01:10 (+1)». */
+const ora = (t: string | null) => {
+  const m = /^(\d{1,2}):(\d{2})/.exec(t ?? "");
+  if (!m) return "?";
+  const h = Number(m[1]);
+  return h >= 24 ? `${String(h - 24).padStart(2, "0")}:${m[2]} (+1)` : `${m[1]!.padStart(2, "0")}:${m[2]}`;
+};
+
+/**
+ * Le vetture sui turni macchina del giorno (5.4): a ogni turno macchina la
+ * matricola che esce. Si sceglie fra i mezzi del deposito che l'officina dà in
+ * servizio o di riserva, o si scrive a mano. Gli avvisi non bloccano.
+ */
+function VettureCard({ giorno, deposito, scrive }: { giorno: string; deposito: string | null; scrive: boolean }) {
+  const qc = useQueryClient();
+  const [aperto, setAperto] = useState<string | null>(null);
+  const [esito, setEsito] = useState<{ tipo: "ok" | "errore"; testo: string } | null>(null);
+  const q = useQuery({
+    queryKey: ["vestizione", "vetture", giorno],
+    queryFn: () => apiFetch<VettureDelGiorno>(`/api/roster/vetture?giorno=${giorno}`),
+    refetchInterval: 120_000,
+    retry: false,
+  });
+  useEffect(() => { setAperto(null); setEsito(null); }, [giorno, deposito]);
+  if (q.isLoading) return null;
+  if (q.isError || !q.data) {
+    return <div className="text-sm text-destructive">Vetture sui turni macchina non leggibili: {(q.error as Error)?.message ?? "errore"}</div>;
+  }
+  const v = q.data;
+  const turni = turniDi(v, deposito);
+  const r = riepilogoVetture(turni);
+  const modificabile = scrive && !!v.giornata && v.giornata.stato !== "chiusa";
+
+  const salva = async (t: { vssId: string; turnoMacchina: string }, vettura: string | null) => {
+    setEsito(null);
+    try {
+      if (vettura) {
+        await apiFetch("/api/roster/vetture", { method: "PUT", body: JSON.stringify({ giorno, vssId: t.vssId, turnoMacchina: t.turnoMacchina, vettura }) });
+        setEsito({ tipo: "ok", testo: `${vettura} sul turno ${t.turnoMacchina}` });
+      } else {
+        await apiFetch(`/api/roster/vetture?giorno=${giorno}&vssId=${t.vssId}&turnoMacchina=${encodeURIComponent(t.turnoMacchina)}`, { method: "DELETE" });
+        setEsito({ tipo: "ok", testo: `Vettura tolta dal turno ${t.turnoMacchina}` });
+      }
+      setAperto(null);
+      await qc.invalidateQueries({ queryKey: ["vestizione", "vetture", giorno] });
+    } catch (e: any) {
+      setEsito({ tipo: "errore", testo: e?.message ?? "Non riuscito" });
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><CarFront className="w-4 h-4" />Vetture sui turni macchina</CardTitle>
+        {v.giornata && (
+          <p className="text-xs text-muted-foreground tabular-nums">
+            {r.turni} turni macchina{r.senza ? <span className="text-amber-300"> · {r.senza} senza vettura</span> : r.turni ? " · tutti con la vettura" : ""}
+            {r.conAvvisi > 0 && <span className="text-amber-300"> · {r.conAvvisi} con avvisi</span>}
+            {v.giornata.stato === "chiusa" && " · giornata chiusa, non si modifica più"}
+          </p>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {esito && <div role="status" className={`text-sm ${esito.tipo === "ok" ? "text-emerald-300" : "text-destructive"}`}>{esito.testo}</div>}
+        {!v.giornata ? (
+          <div className="text-xs text-muted-foreground">La giornata non è ancora preparata: i turni macchina arrivano quando si prepara.</div>
+        ) : turni.length === 0 ? (
+          <div className="text-xs text-muted-foreground">Nessun turno macchina per questo deposito in questo giorno.</div>
+        ) : (
+          <div className="overflow-x-auto rounded-md border border-border/50">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead className="text-xs text-muted-foreground"><tr className="text-left">
+                <th className="px-3 py-1.5">Turno macchina</th><th className="px-3 py-1.5">Uscita–rientro</th><th className="px-3 py-1.5">Tipo</th>
+                <th className="px-3 py-1.5 text-right">Corse</th><th className="px-3 py-1.5 min-w-[16rem]">Vettura</th><th className="px-3 py-1.5" />
+              </tr></thead>
+              <tbody>
+                {turni.map((t) => {
+                  const k = `${t.vssId}|${t.turnoMacchina}`;
+                  return (
+                    <FilaVettura key={k} t={t} v={v} aperto={aperto === k} modificabile={modificabile}
+                      onApri={() => setAperto(aperto === k ? null : k)} onSalva={salva} />
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {v.daRiassegnare.length > 0 && (
+          <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-2 space-y-1">
+            <div className="text-xs font-medium text-amber-300">Da riassegnare · {v.daRiassegnare.length}</div>
+            <div className="text-xs text-muted-foreground">Vetture assegnate a turni macchina che non ci sono più (è cambiata la pubblicazione).</div>
+            <ul className="text-xs space-y-0.5">
+              {v.daRiassegnare.map((x) => (
+                <li key={`${x.vssId}|${x.turnoMacchina}`} className="flex items-center gap-2">
+                  <span className="font-mono">{x.vettura}</span><span className="text-muted-foreground">era sul turno {x.turnoMacchina}</span>
+                  {modificabile && <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => void salva(x, null)}>Togli</Button>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {!v.officina.disponibile && (
+          <div className="text-xs text-amber-300">Officina non collegata: {v.officina.motivo ?? "FleetCare non risponde"}. La matricola si scrive a mano.</div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function FilaVettura({ t, v, aperto, modificabile, onApri, onSalva }: {
+  t: TurnoConVettura; v: VettureDelGiorno; aperto: boolean; modificabile: boolean;
+  onApri: () => void; onSalva: (t: TurnoConVettura, vettura: string | null) => Promise<void>;
+}) {
+  const [testo, setTesto] = useState(t.vettura ?? "");
+  const [inCorso, setInCorso] = useState(false);
+  useEffect(() => { if (aperto) setTesto(t.vettura ?? ""); }, [aperto, t.vettura]);
+  const proposti = useMemo(() => (aperto ? mezziPer(v, t) : []), [aperto, v, t]);
+  const valida = MATRICOLA.test(testo.trim());
+  const idLista = `vetture-${t.vssId}-${t.turnoMacchina}`.replace(/[^A-Za-z0-9_-]/g, "_");
+  const esegui = async (vettura: string | null) => { setInCorso(true); try { await onSalva(t, vettura); } finally { setInCorso(false); } };
+  return (
+    <>
+      <tr className={`border-t border-border/40 align-top ${t.vettura ? "" : "bg-amber-500/5"}`}>
+        <td className="px-3 py-1.5 font-mono font-semibold">{t.turnoMacchina}{t.udp && <div className="text-xs font-sans font-normal text-muted-foreground">{t.udp}</div>}</td>
+        <td className="px-3 py-1.5 tabular-nums whitespace-nowrap">{ora(t.uscita)}–{ora(t.rientro)}</td>
+        <td className="px-3 py-1.5 text-xs">{t.tipoMezzo ?? "—"}</td>
+        <td className="px-3 py-1.5 text-right tabular-nums">{t.corse}</td>
+        <td className="px-3 py-1.5">
+          {t.vettura ? <span className="font-mono">{t.vettura}</span> : <span className="text-amber-300 text-xs">da assegnare</span>}
+          {t.assegnataDa && <div className="text-xs text-muted-foreground">da {t.assegnataDa}</div>}
+          {t.avvisi.map((a) => (
+            <div key={a} className="text-xs text-amber-300 flex gap-1"><AlertTriangle className="w-3 h-3 mt-0.5 shrink-0" />{a}</div>
+          ))}
+        </td>
+        <td className="px-3 py-1.5 text-right whitespace-nowrap">
+          {modificabile && (
+            <Button size="sm" variant={aperto ? "secondary" : "outline"} className="h-7" onClick={onApri} aria-expanded={aperto}>
+              {t.vettura ? "Cambia" : "Assegna"}
+            </Button>
+          )}
+        </td>
+      </tr>
+      {aperto && (
+        <tr className="bg-muted/30">
+          <td colSpan={6} className="px-3 py-2 space-y-2">
+            <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (valida) void esegui(testo.trim()); }}>
+              <div className="space-y-1">
+                <Label htmlFor={`${idLista}-matricola`} className="text-xs">Matricola</Label>
+                <Input id={`${idLista}-matricola`} list={idLista} value={testo} onChange={(e) => setTesto(e.target.value)} maxLength={40}
+                  className="h-8 w-44 font-mono" autoComplete="off" autoFocus />
+                <datalist id={idLista}>
+                  {proposti.map((m) => (
+                    <option key={m.matricola} value={m.matricola}>{[m.modello, m.stato === "riserva" ? "riserva" : null, m.su ? `già sul ${m.su}` : null].filter(Boolean).join(" · ")}</option>
+                  ))}
+                </datalist>
+              </div>
+              <Button type="submit" size="sm" className="h-8" disabled={!valida || inCorso}>Salva</Button>
+              {t.vettura && <Button type="button" size="sm" variant="ghost" className="h-8" disabled={inCorso} onClick={() => void esegui(null)}>Togli</Button>}
+              <Button type="button" size="sm" variant="ghost" className="h-8" onClick={onApri}>Annulla</Button>
+            </form>
+            {proposti.filter((m) => !m.su).length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">Liberi:</span>
+                {proposti.filter((m) => !m.su).slice(0, 10).map((m) => (
+                  <button key={m.matricola} type="button" onClick={() => setTesto(m.matricola)}
+                    className={`rounded border px-1.5 py-0.5 text-xs font-mono hover:bg-muted ${testo === m.matricola ? "border-primary" : "border-border/60"}`}>
+                    {m.matricola}{m.modello ? <span className="font-sans text-muted-foreground"> · {m.modello}</span> : null}
+                  </button>
+                ))}
+              </div>
+            )}
+            {testo.trim() !== "" && !valida && <div className="text-xs text-destructive">Una matricola: lettere, cifre, spazi, punti, trattini o barre, al più 40.</div>}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 

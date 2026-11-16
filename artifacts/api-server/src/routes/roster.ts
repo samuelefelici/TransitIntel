@@ -18,6 +18,9 @@
  *   POST   /api/roster/entries · DELETE /api/roster/entries/:id
  *   GET    /api/roster/sostituti?day=&dssId=&dutyCode= — chi può coprire un turno (5.1)
  *   GET    /api/roster/mezzi?giorno=           — mezzi per deposito: fabbisogno e disponibilità (5.3)
+ *   GET    /api/roster/vetture?giorno=         — i turni macchina della giornata con le vetture assegnate (5.4)
+ *   PUT    /api/roster/vetture                 — assegna una vettura a un turno macchina {giorno, vssId, turnoMacchina, vettura}
+ *   DELETE /api/roster/vetture?giorno=&vssId=&turnoMacchina= — toglie la vettura
  *
  * Assenze che liberano il turno (5.1, lib/roster-sostituti.ts): un'assenza
  * (non il riposo) del conducente assegnato rimette il turno «da coprire»
@@ -62,7 +65,8 @@ import { assentiNelGiorno, sostitutiDa, type Candidato, type Voce } from "../lib
 import { fabbisognoDelGiorno, mezziPerDeposito } from "../lib/mezzi-deposito";
 import { leggiParcoOfficina } from "../lib/officina";
 import { limitiDi } from "../lib/roster-limite-depositi";
-import { vedeIlDeposito } from "../lib/permessi";
+import { scriveSulDeposito, vedeIlDeposito } from "../lib/permessi";
+import { assegnaVettura, RifiutoVetture, togliVettura, vettureDelGiorno } from "../lib/esercizio-vetture";
 import { giornataOggi } from "../lib/service-day";
 
 const router: IRouter = Router();
@@ -79,6 +83,8 @@ router.use(async (req, res, next) => {
 });
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/** Una data vera, AAAA-MM-GG (non il 30 febbraio). */
+const dataVera = (g: string) => DATE_RE.test(g) && !Number.isNaN(Date.parse(`${g}T12:00:00Z`)) && new Date(`${g}T12:00:00Z`).toISOString().slice(0, 10) === g;
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 // Conducenti, storico, fittizi: routes/anagrafica.ts (montato prima di questo router).
@@ -487,8 +493,7 @@ router.get("/roster/sostituti", async (req, res): Promise<void> => {
     const day = String(req.query.day ?? "");
     const dssId = String(req.query.dssId ?? "").toLowerCase();
     const dutyCode = String(req.query.dutyCode ?? "").trim();
-    const dataVera = DATE_RE.test(day) && !Number.isNaN(Date.parse(`${day}T12:00:00Z`)) && new Date(`${day}T12:00:00Z`).toISOString().slice(0, 10) === day;
-    if (!dataVera || !UUID_STRETTO.test(dssId) || !dutyCode || dutyCode.length > 100) {
+    if (!dataVera(day) || !UUID_STRETTO.test(dssId) || !dutyCode || dutyCode.length > 100) {
       res.status(400).json({ error: "day (YYYY-MM-DD), dssId (uuid) e dutyCode richiesti" });
       return;
     }
@@ -557,7 +562,7 @@ router.get("/roster/mezzi", async (req, res): Promise<void> => {
   try {
     const oggi = giornataOggi();
     const giorno = req.query.giorno === undefined ? oggi : String(req.query.giorno);
-    const vero = DATE_RE.test(giorno) && !Number.isNaN(Date.parse(`${giorno}T12:00:00Z`)) && new Date(`${giorno}T12:00:00Z`).toISOString().slice(0, 10) === giorno;
+    const vero = dataVera(giorno);
     if (!vero) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
     const [fabbisogno, parco, catalogo] = await Promise.all([fabbisognoDelGiorno(giorno), leggiParcoOfficina(), leggiDepositi(db as unknown as Ex)]);
     const limite = limitiDi(req).vede;
@@ -577,6 +582,65 @@ router.get("/roster/mezzi", async (req, res): Promise<void> => {
       depositi,
     });
   } catch (e) { rispondiErrore(res, e, "mezzi"); }
+});
+
+const rispondiVetture = (res: any, e: any, contesto: string) => {
+  if (e instanceof RifiutoVetture) { res.status(e.status).json({ error: e.message, ...e.extra }); return; }
+  rispondiErrore(res, e, contesto);
+};
+
+/**
+ * Le vetture sui turni macchina della giornata (5.4): i turni con la vettura
+ * assegnata e gli avvisi (sovrapposizioni, officina, tipo, AVM), le
+ * assegnazioni rimaste senza turno, i mezzi dell'officina da proporre. Chi
+ * vede solo alcuni depositi vede solo i loro turni.
+ */
+router.get("/roster/vetture", async (req, res): Promise<void> => {
+  try {
+    const giorno = req.query.giorno === undefined ? giornataOggi() : String(req.query.giorno);
+    if (!dataVera(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+    const [catalogo, parco] = await Promise.all([leggiDepositi(db as unknown as Ex), leggiParcoOfficina()]);
+    const r = await vettureDelGiorno(giorno, catalogo, parco);
+    const limite = limitiDi(req).vede;
+    const vede = (codice: string | null) => vedeIlDeposito(limite, codice);
+    const depositoMezzo = (nome: string | null) => (nome ? depositoDelNome(nome, catalogo)?.codice ?? null : null);
+    res.json({
+      giorno, giornata: r.giornata,
+      turni: r.turni.filter((t) => vede(t.depositoCodice)),
+      /* senza turno non si sa di che deposito: le vede solo chi vede tutto */
+      daRiassegnare: limite === null ? r.daRiassegnare : [],
+      officina: { disponibile: parco.disponibile, motivo: parco.motivo },
+      mezzi: parco.disponibile
+        ? parco.mezzi.filter((m) => m.stato === "in_servizio" || m.stato === "riserva")
+          .map((m) => ({ matricola: m.matricola, modello: m.modello, stato: m.stato, depositoCodice: depositoMezzo(m.deposito) }))
+          .filter((m) => vede(m.depositoCodice))
+        : [],
+    });
+  } catch (e) { rispondiVetture(res, e, "vetture"); }
+});
+
+router.put("/roster/vetture", async (req, res): Promise<void> => {
+  try {
+    const { giorno, vssId, turnoMacchina, vettura } = req.body ?? {};
+    if (typeof giorno !== "string" || !dataVera(giorno) || typeof vssId !== "string" || typeof turnoMacchina !== "string" || typeof vettura !== "string") {
+      res.status(400).json({ error: "giorno, vssId, turnoMacchina e vettura richiesti" });
+      return;
+    }
+    const catalogo = await leggiDepositi(db as unknown as Ex);
+    const limite = limitiDi(req).scrive;
+    res.json(await assegnaVettura({ giorno, vssId, turnoMacchina, vettura }, { id: utente(req).userId }, catalogo,
+      (codice) => scriveSulDeposito(limite, codice)));
+  } catch (e) { rispondiVetture(res, e, "assegna vettura"); }
+});
+
+router.delete("/roster/vetture", async (req, res): Promise<void> => {
+  try {
+    const giorno = String(req.query.giorno ?? ""), vssId = String(req.query.vssId ?? ""), turnoMacchina = String(req.query.turnoMacchina ?? "");
+    if (!dataVera(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+    const catalogo = await leggiDepositi(db as unknown as Ex);
+    const limite = limitiDi(req).scrive;
+    res.json(await togliVettura({ giorno, vssId, turnoMacchina }, catalogo, (codice) => scriveSulDeposito(limite, codice)));
+  } catch (e) { rispondiVetture(res, e, "togli vettura"); }
 });
 
 /**
