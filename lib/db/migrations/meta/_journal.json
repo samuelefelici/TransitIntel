@@ -218,6 +218,13 @@
       "when": 1795360000000,
       "tag": "0030_km_per_vettura",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1795420000000,
+      "tag": "0031_variazioni_in_anticipo",
+      "breakpoints": true
     }
   ]
 }

@@ -13,10 +13,11 @@
  * cambiata» e la pagina si ricarica.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarRange, ClipboardCheck, History, Lock, Plus, RefreshCw, Snowflake, Undo2 } from "lucide-react";
+import { AlertTriangle, CalendarClock, CalendarRange, ClipboardCheck, History, Lock, Plus, RefreshCw, Snowflake, Undo2 } from "lucide-react";
 import { chiudeLeGiornate } from "@workspace/permessi";
 import { apiFetch, getApiBase } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
+import { descrivi, elenco as elencoDi, leggiFasce, type VoceVariazione } from "@/lib/variazioni";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -75,7 +76,8 @@ const TIPI_EVENTO: Record<string, string> = {
 };
 const TIPI_AGGIUNTA = [["bis", "Bis"], ["recupero", "Recupero"], ["sostitutiva", "Sostitutiva"], ["fuori_programma", "Fuori programma"]] as const;
 const FILTRI = [
-  ["tutte", "Tutte"], ["da_decidere", "Da decidere"], ["effettuata", "Effettuate"], ["presunta", "Presunte"], ["parziale", "Parziali"],
+  ["tutte", "Tutte"], ["da_decidere", "Da decidere"], ["probabili", "Soppressioni probabili"],
+  ["effettuata", "Effettuate"], ["presunta", "Presunte"], ["parziale", "Parziali"],
   ["soppressa", "Soppresse"], ["da_verificare", "Da verificare"], ["aggiunte", "Aggiunte"],
 ] as const;
 
@@ -145,6 +147,8 @@ export default function ConsuntivoPage() {
     const f = cerca.trim().toLowerCase();
     return l.filter((c) => {
       if (filtro === "da_decidere" && c.esito) return false;
+      /* da decidere, con la proposta «soppressione probabile» (annullata dall'AVM, fuori fascia di uno sciopero, turno scoperto) */
+      if (filtro === "probabili" && (c.esito || c.proposta !== "soppressione_indizio")) return false;
       if (filtro === "aggiunte" && c.origine !== "aggiunta") return false;
       if (["effettuata", "presunta", "parziale", "soppressa", "da_verificare"].includes(filtro) && c.esito !== filtro) return false;
       return !f || [c.linea, c.numero, c.codice, c.turnoMacchina, c.fermataDa, c.fermataA, c.vettura].some((x) => (x ?? "").toLowerCase().includes(f));
@@ -402,6 +406,8 @@ export default function ConsuntivoPage() {
           {admin && g && <CausaliAdmin onSalvato={() => g && void apri(g.giorno)} />}
         </div>
       </div>
+
+      <VariazioniCard scrive={scrive} onCambiato={() => { void caricaElenco(); if (g) void apri(g.giorno); }} />
     </div>
   );
 }
@@ -720,6 +726,7 @@ function GiornaleCard({ g, scrive, occupato, registra }: { g: Giornata; scrive: 
               {e.corse > 0 && <span className="text-xs text-muted-foreground tabular-nums">{e.corse.toLocaleString("it-IT")} corse</span>}
               {e.causale && <span className="text-xs">{g.causali.find((c) => c.codice === e.causale)?.descrizione ?? e.causale}</span>}
               {e.dati?.nota && <span className="text-xs italic">«{e.dati.nota}»</span>}
+              {e.dati?.variazione && <span className="text-xs text-muted-foreground">da una variazione decisa in anticipo (n. {e.dati.variazione})</span>}
               <span className="text-xs text-muted-foreground">{e.autore ?? (e.fonte === "avm" ? "AVM" : "sistema")}</span>
               {e.annulla && <span className="text-xs text-muted-foreground">annulla l'evento delle {oraDi(g.giornale.find((x) => x.id === e.annulla)?.ts ?? e.ts)}</span>}
               {scrive && annullabile(e) && (
@@ -799,6 +806,164 @@ function CausaliAdmin({ onSalvato }: { onSalvato: () => void }) {
             </select></div>
           <Button size="sm" type="submit" disabled={!nuova.codice.trim() || !nuova.descrizione.trim()}>Aggiungi la causale</Button>
         </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Le variazioni decise in anticipo (4.10): soppressioni e scioperi per oggi e i giorni che vengono. */
+function VariazioniCard({ scrive, onCambiato }: { scrive: boolean; onCambiato: () => void }) {
+  const [voci, setVoci] = useState<VoceVariazione[] | null>(null);
+  const [causali, setCausali] = useState<Causale[]>([]);
+  const [tipo, setTipo] = useState<"soppressione" | "sciopero">("soppressione");
+  const [giorno, setGiorno] = useState("");
+  const [linee, setLinee] = useState("");
+  const [numeri, setNumeri] = useState("");
+  const [dalle, setDalle] = useState("");
+  const [alle, setAlle] = useState("");
+  const [fasce, setFasce] = useState("");
+  const [causale, setCausale] = useState("");
+  const [nota, setNota] = useState("");
+  const [occupato, setOccupato] = useState(false);
+  const [messaggio, setMessaggio] = useState<{ tipo: "ok" | "errore"; testo: string } | null>(null);
+
+  const carica = useCallback(async () => {
+    try {
+      const [v, c] = await Promise.all([
+        apiFetch<{ variazioni: VoceVariazione[] }>("/api/esercizio/variazioni"),
+        apiFetch<{ causali: Causale[] }>("/api/esercizio/causali"),
+      ]);
+      setVoci(v.variazioni); setCausali(c.causali);
+    } catch (e: any) { setMessaggio({ tipo: "errore", testo: e?.message || "Variazioni non leggibili" }); }
+  }, []);
+  useEffect(() => { void carica(); }, [carica]);
+
+  const fasceLette = tipo === "sciopero" ? leggiFasce(fasce) : null;
+  const causaleScelta = causale || (tipo === "sciopero" ? "SCIOPERO" : "");
+  const pronta = !!giorno && !!causaleScelta && (tipo === "sciopero"
+    ? !!fasceLette
+    : elencoDi(linee).length + elencoDi(numeri).length > 0 && !dalle === !alle);
+
+  const scrivi = async () => {
+    setOccupato(true); setMessaggio(null);
+    try {
+      const comune = { giorno, linee: elencoDi(linee), causale: causaleScelta, ...(nota.trim() ? { nota: nota.trim() } : {}) };
+      const corpo = tipo === "sciopero"
+        ? { tipo, ...comune, fasce: fasceLette }
+        : { tipo, ...comune, numeri: elencoDi(numeri), ...(dalle && alle ? { dalle, alle } : {}) };
+      const r = await apiFetch<{ id: number; applicata: { corse: number | null; errore?: string } | null }>("/api/esercizio/variazioni", {
+        method: "POST", body: JSON.stringify(corpo),
+      });
+      await carica();
+      setLinee(""); setNumeri(""); setDalle(""); setAlle(""); setFasce(""); setNota("");
+      setMessaggio(r.applicata
+        ? { tipo: r.applicata.errore ? "errore" : "ok", testo: r.applicata.errore
+          ? `Variazione scritta, ma non applicata: ${r.applicata.errore}`
+          : `Variazione scritta e applicata subito, la giornata è già cominciata: ${(r.applicata.corse ?? 0).toLocaleString("it-IT")} corse` }
+        : { tipo: "ok", testo: "Variazione scritta: vale quando la giornata comincia" });
+      if (r.applicata) onCambiato();
+    } catch (e: any) {
+      setMessaggio({ tipo: "errore", testo: e?.message || "Variazione non scritta" });
+    } finally { setOccupato(false); }
+  };
+  const annulla = async (id: number) => {
+    setOccupato(true); setMessaggio(null);
+    try {
+      await apiFetch(`/api/esercizio/variazioni/${id}/annullamento`, { method: "POST", body: "{}" });
+      await carica();
+      setMessaggio({ tipo: "ok", testo: "Variazione annullata" });
+    } catch (e: any) {
+      setMessaggio({ tipo: "errore", testo: e?.message || "Variazione non annullata" });
+    } finally { setOccupato(false); }
+  };
+
+  const stato = (v: VoceVariazione) => {
+    if (v.stato === "annullata") return <span className="text-muted-foreground">annullata{v.annullataDa ? ` da ${v.annullataDa}` : ""}</span>;
+    if (v.stato === "applicata") {
+      return <span className="text-emerald-300">applicata · {(v.corse ?? 0).toLocaleString("it-IT")} {v.tipo === "sciopero" ? "corse fuori fascia" : "corse soppresse"}</span>;
+    }
+    return <span className="text-amber-300">in attesa{v.corse != null ? ` · ${v.corse.toLocaleString("it-IT")} corse previste` : ""}</span>;
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2"><CalendarClock className="w-4 h-4" />Variazioni decise in anticipo</CardTitle>
+        <p className="text-xs text-muted-foreground max-w-4xl">
+          Soppressioni già note e scioperi, per oggi e i giorni che vengono. Quando la giornata comincia, le soppressioni diventano
+          esiti nel giornale a nome di chi le ha scritte (e il GTFS-Realtime le annuncia). Lo sciopero non sopprime niente in
+          anticipo: le corse fuori dalle fasce garantite non si presumono fatte e la proposta dall'AVM le dà come soppressioni
+          probabili. Si annullano fino all'inizio della giornata; dopo si corregge nel giornale.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {messaggio && (
+          <div role="status" className={`text-sm ${messaggio.tipo === "ok" ? "text-emerald-300" : "text-destructive"}`}>{messaggio.testo}</div>
+        )}
+        {scrive && (
+          <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (pronta) void scrivi(); }}>
+            <div className="space-y-1"><Label htmlFor="variazione-tipo" className="text-xs">Tipo</Label>
+              <select id="variazione-tipo" className={`${selectCls} block`} value={tipo} onChange={(e) => setTipo(e.target.value as "soppressione" | "sciopero")}>
+                <option value="soppressione">Soppressione</option>
+                <option value="sciopero">Sciopero</option>
+              </select></div>
+            <div className="space-y-1"><Label htmlFor="variazione-giorno" className="text-xs">Giorno</Label>
+              <Input id="variazione-giorno" type="date" className="h-8 w-40" value={giorno} onChange={(e) => setGiorno(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor="variazione-linee" className="text-xs">{tipo === "sciopero" ? "Linee (vuoto: tutte)" : "Linee"}</Label>
+              <Input id="variazione-linee" className="h-8 w-36" value={linee} onChange={(e) => setLinee(e.target.value)} placeholder="1, 2/3, 30" /></div>
+            {tipo === "soppressione" ? (
+              <>
+                <div className="space-y-1"><Label htmlFor="variazione-numeri" className="text-xs">e/o numeri di corsa</Label>
+                  <Input id="variazione-numeri" className="h-8 w-36" value={numeri} onChange={(e) => setNumeri(e.target.value)} /></div>
+                <div className="space-y-1"><Label htmlFor="variazione-dalle" className="text-xs">Partenze dalle</Label>
+                  <Input id="variazione-dalle" type="time" className="h-8 w-28" value={dalle} onChange={(e) => setDalle(e.target.value)} /></div>
+                <div className="space-y-1"><Label htmlFor="variazione-alle" className="text-xs">alle (esclusa)</Label>
+                  <Input id="variazione-alle" type="time" className="h-8 w-28" value={alle} onChange={(e) => setAlle(e.target.value)} /></div>
+              </>
+            ) : (
+              <div className="space-y-1"><Label htmlFor="variazione-fasce" className="text-xs">Fasce garantite</Label>
+                <Input id="variazione-fasce" className="h-8 w-48" value={fasce} onChange={(e) => setFasce(e.target.value)} placeholder="6-9, 12-15"
+                  aria-invalid={!!fasce.trim() && !fasceLette} /></div>
+            )}
+            <div className="space-y-1"><Label htmlFor="variazione-causale" className="text-xs">Causale</Label>
+              <select id="variazione-causale" className={`${selectCls} block`} value={causaleScelta} onChange={(e) => setCausale(e.target.value)}>
+                <option value="">—</option>
+                {causali.map((c) => <option key={c.codice} value={c.codice}>{c.descrizione}</option>)}
+              </select></div>
+            <div className="space-y-1 grow min-w-[12rem]"><Label htmlFor="variazione-nota" className="text-xs">Nota</Label>
+              <Input id="variazione-nota" className="h-8" maxLength={500} value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Per esempio: corteo in centro" /></div>
+            <Button size="sm" type="submit" disabled={occupato || !pronta}>Scrivi la variazione</Button>
+          </form>
+        )}
+        {voci && voci.length === 0 && <div className="text-muted-foreground">Nessuna variazione per i prossimi 60 giorni.</div>}
+        {voci && voci.length > 0 && (
+          <div className="overflow-x-auto rounded-md border border-border/50">
+            <table className="w-full text-sm">
+              <thead className="text-xs text-muted-foreground"><tr className="text-left">
+                <th className="px-3 py-1.5">Giorno</th><th className="px-3 py-1.5">Cosa</th><th className="px-3 py-1.5">Causale</th>
+                <th className="px-3 py-1.5">Scritta da</th><th className="px-3 py-1.5">Stato</th><th className="px-3 py-1.5" />
+              </tr></thead>
+              <tbody>
+                {voci.map((v) => (
+                  <tr key={v.id} className={`border-t border-border/40 align-top ${v.stato === "annullata" ? "opacity-60" : ""}`}>
+                    <td className="px-3 py-1.5 tabular-nums whitespace-nowrap">{new Date(`${v.giorno}T12:00:00`).toLocaleDateString("it-IT", { weekday: "short", day: "numeric", month: "short" })}</td>
+                    <td className="px-3 py-1.5">{descrivi(v)}{v.nota && <div className="text-xs italic text-muted-foreground">«{v.nota}»</div>}</td>
+                    <td className="px-3 py-1.5">{v.causaleDescrizione ?? v.causale}</td>
+                    <td className="px-3 py-1.5 text-xs text-muted-foreground">{v.creataDa ?? "—"}</td>
+                    <td className="px-3 py-1.5 text-xs">{stato(v)}</td>
+                    <td className="px-3 py-1.5 text-right">
+                      {scrive && v.annullabile && (
+                        <Button size="sm" variant="ghost" className="h-7" disabled={occupato} onClick={() => void annulla(v.id)}>
+                          <Undo2 className="w-3.5 h-3.5 mr-1" />Annulla
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

@@ -8,6 +8,9 @@
  * non scrivono.
  *
  *   GET  /api/esercizio/oggi                       la giornata in corso in breve e le giornate da chiudere (4.9, pagina Oggi)
+ *   GET  /api/esercizio/variazioni?dal=&al=        le variazioni decise in anticipo (4.10; senza: da oggi a 60 giorni)
+ *   POST /api/esercizio/variazioni                 una variazione nuova: soppressione o sciopero (applicata subito se la giornata è cominciata)
+ *   POST /api/esercizio/variazioni/:id/annullamento  l'annullamento, prima che la giornata cominci
  *   GET  /api/esercizio/giornate?dal=&al=          l'elenco (al più un anno; senza: gli ultimi 30 e domani)
  *   GET  /api/esercizio/giornate/:giorno           la giornata con corse, esiti, proposta, giornale, causali
  *   POST /api/esercizio/giornate/:giorno/eventi    un evento del giornale (esito, conferma, aggiunta, annullamento, nota)
@@ -31,6 +34,8 @@ import { chiudeLeGiornate } from "@workspace/permessi";
 import { dettaglioCsv, reportDelMese, reportXlsx } from "../lib/esercizio-report";
 import { aziendaOppureNeutra } from "../lib/azienda";
 import { esercizioInBreve } from "../lib/esercizio-oggi";
+import { annullaVariazione, creaVariazione, elencoVariazioni, GIORNI_AVANTI, leggiVariazione, RifiutoVariazione } from "../lib/esercizio-variazioni";
+import { applicaVariazioni } from "../lib/esercizio-variazioni-applica";
 import { giornataOggi } from "../lib/service-day";
 
 const router: IRouter = Router();
@@ -51,6 +56,53 @@ router.get("/esercizio/oggi", async (req, res): Promise<void> => {
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "consuntivo: giornata in breve non leggibile");
     res.status(500).json({ error: "Giornata non leggibile" });
+  }
+});
+
+/* ── Le variazioni decise in anticipo (4.10) ── */
+
+router.get("/esercizio/variazioni", async (req, res): Promise<void> => {
+  const oggi = giornataOggi();
+  const dal = req.query.dal === undefined ? oggi : String(req.query.dal);
+  const al = req.query.al === undefined ? piuGiorni(oggi, 60) : String(req.query.al);
+  if (!giornoValido(dal) || !giornoValido(al) || dal > al || Date.parse(al) - Date.parse(dal) > GIORNI_AVANTI * 86_400_000) {
+    res.status(400).json({ error: `dal e al: date vere, AAAA-MM-GG, al più ${GIORNI_AVANTI} giorni` });
+    return;
+  }
+  try {
+    res.json({ dal, al, variazioni: await elencoVariazioni(dal, al) });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "consuntivo: variazioni non leggibili");
+    res.status(500).json({ error: "Variazioni non leggibili" });
+  }
+});
+
+router.post("/esercizio/variazioni", async (req, res): Promise<void> => {
+  if (daUnServizio(req)) { res.status(403).json({ error: "Le variazioni le scrive una persona" }); return; }
+  const l = leggiVariazione(req.body);
+  if ("errore" in l) { res.status(400).json({ error: l.errore }); return; }
+  try {
+    const v = await creaVariazione(l.variazione, { id: (req as any).user?.id ?? null });
+    /* la giornata è già cominciata: vale subito */
+    const applicata = v.giornataCominciata ? (await applicaVariazioni(l.variazione.giorno)).find((x) => x.id === v.id) ?? null : null;
+    res.status(201).json({ id: v.id, applicata });
+  } catch (e: any) {
+    if (e instanceof RifiutoVariazione) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message }, "consuntivo: variazione non scritta");
+    res.status(500).json({ error: "Variazione non scritta" });
+  }
+});
+
+router.post("/esercizio/variazioni/:id/annullamento", async (req, res): Promise<void> => {
+  if (daUnServizio(req)) { res.status(403).json({ error: "Le variazioni le annulla una persona" }); return; }
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) { res.status(400).json({ error: "id: un numero" }); return; }
+  try {
+    res.json(await annullaVariazione(id, { id: (req as any).user?.id ?? null }));
+  } catch (e: any) {
+    if (e instanceof RifiutoVariazione) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message, id }, "consuntivo: variazione non annullata");
+    res.status(500).json({ error: "Variazione non annullata" });
   }
 });
 

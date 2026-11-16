@@ -27,7 +27,8 @@
  *   - da_verificare: qualche prova, ma non basta (più vetture, poche
  *     fermate, solo il viaggio dichiarato senza passaggi);
  *   - soppressione_indizio: nessuna prova, e la corsa annullata dall'AVM
- *     (dalla 4.5) o il suo turno guida senza conducente nel roster;
+ *     (dalla 4.5), o fuori dalle fasce garantite di uno sciopero (dalla
+ *     4.10), o il suo turno guida senza conducente nel roster;
  *   - non_rilevata: nessuna prova.
  * Le soglie sono la decisione aperta 6: qui i valori di partenza, scritti nel
  * riepilogo di ogni proposta.
@@ -41,6 +42,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { FUSO_ESERCIZIO, inizioDi } from "./service-day";
+import { corseInSciopero } from "./esercizio-variazioni";
 
 const righe = (r: any): any[] => r?.rows ?? r ?? [];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -86,6 +88,8 @@ export interface DatiProposta {
   turniGuidaScoperti: Set<string> | null;
   /** le corse che l'AVM ha annullato (eventi del giornale, 4.5) */
   cancellate?: Set<string>;
+  /** il giorno di uno sciopero (4.10): le corse che partono fuori dalle fasce garantite */
+  sciopero?: Set<string>;
 }
 
 export interface ProveCorsa {
@@ -261,6 +265,10 @@ export function proponi(d: DatiProposta, soglie: Soglie = SOGLIE): EsitoProposta
     } else if (prove.dichiarata) {
       proposta = "da_verificare";
       prove.motivo = "viaggio dichiarato dall'AVM, senza passaggi alle fermate";
+    } else if (d.sciopero?.has(c.chiave)) {
+      /* fuori dalle fasce garantite, e nessuna prova che sia partita */
+      proposta = "soppressione_indizio";
+      prove.motivo = "sciopero: fuori dalle fasce garantite";
     } else if (d.turniGuidaScoperti && c.dssId && c.turnoGuida && d.turniGuidaScoperti.has(`${c.dssId}|${c.turnoGuida}`)) {
       proposta = "soppressione_indizio";
       prove.motivo = "turno guida senza conducente nel roster";
@@ -452,7 +460,9 @@ export async function calcolaProposta(giorno: string, soglie: Soglie = SOGLIE) {
     /* le corse annullate dall'AVM, dal giornale (4.5) */
     const cancellate = new Set<string>(righe(await ex.execute(sql`
       SELECT DISTINCT unnest(chiavi) AS chiave FROM esercizio_eventi WHERE giorno = ${giorno}::date AND tipo = 'cancellazione_avm'`)).map((x) => String(x.chiave)));
-    const e = proponi({ corse, transiti: prove.transiti, viaggi: prove.viaggi, codiceDi, turniGuidaScoperti, cancellate }, soglie);
+    /* lo sciopero del giorno, se c'è (4.10) */
+    const sciopero = await corseInSciopero(ex, giorno);
+    const e = proponi({ corse, transiti: prove.transiti, viaggi: prove.viaggi, codiceDi, turniGuidaScoperti, cancellate, sciopero }, soglie);
     const daScrivere = corse.map((c) => ({ chiave: c.chiave, proposta: e.perCorsa.get(c.chiave)!.proposta, prove: e.perCorsa.get(c.chiave)!.prove }));
     for (let i = 0; i < daScrivere.length; i += 500) {
       await ex.execute(sql`

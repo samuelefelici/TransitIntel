@@ -34,6 +34,7 @@ import { z } from "zod";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { giornataOggi } from "./service-day";
+import { corseInSciopero } from "./esercizio-variazioni";
 
 const righe = (r: any): any[] => r?.rows ?? r ?? [];
 const MAX_CORSE = 5000;
@@ -119,11 +120,19 @@ async function ripristina(ex: any, giorno: string, prima: StatoCorsa[]) {
 
 export interface Autore { id: string | null }
 
+/** In più, per chi registra per conto d'altro (le variazioni decise in anticipo, 4.10). */
+export interface ExtraEvento {
+  /** dati in più nell'evento (per esempio la variazione da cui nasce) */
+  dati?: Record<string, unknown>;
+  /** nella stessa transazione, dopo l'evento: se lancia, non resta niente */
+  dentro?: (ex: any, evento: number) => Promise<void>;
+}
+
 /**
  * Registra un evento e aggiorna le corse, nella stessa transazione.
  * Restituisce l'evento, la versione nuova della giornata e quante corse ha toccato.
  */
-export async function registraEvento(giorno: string, r: Richiesta, autore: Autore) {
+export async function registraEvento(giorno: string, r: Richiesta, autore: Autore, extra: ExtraEvento = {}) {
   return db.transaction(async (tx) => {
     const ex = tx as any;
     await ex.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`cerbero:giornata:${giorno}`}))`);
@@ -164,11 +173,16 @@ export async function registraEvento(giorno: string, r: Richiesta, autore: Autor
     } else if (r.tipo === "conferma") {
       /* le non rilevate comprendono le corse senza proposta (giornate senza AVM): la presunzione vale per tutte */
       const presunzione = r.proposte.includes("non_rilevata");
-      toccate = righe(await ex.execute(sql`
-        SELECT chiave FROM esercizio_corse
+      const candidate = righe(await ex.execute(sql`
+        SELECT chiave, proposta FROM esercizio_corse
          WHERE giorno = ${giorno}::date AND esito IS NULL
            AND (proposta IN (SELECT jsonb_array_elements_text(${JSON.stringify(r.proposte)}::jsonb))
-                OR (${presunzione} AND proposta IS NULL))`)).map((x) => String(x.chiave));
+                OR (${presunzione} AND proposta IS NULL))`));
+      /* il giorno di uno sciopero (4.10) le corse fuori dalle fasce garantite non si presumono fatte */
+      const sciopero = presunzione ? await corseInSciopero(ex, giorno) : new Set<string>();
+      toccate = candidate
+        .filter((x) => !(sciopero.has(String(x.chiave)) && (x.proposta == null || x.proposta === "non_rilevata")))
+        .map((x) => String(x.chiave));
       if (!toccate.length) throw new RifiutoGiornale(400, "Nessuna corsa da confermare con queste proposte");
       const prima = await statoDi(ex, giorno, toccate);
       await ex.execute(sql`
@@ -241,12 +255,13 @@ export async function registraEvento(giorno: string, r: Richiesta, autore: Autor
 
     const evento = righe(await ex.execute(sql`
       INSERT INTO esercizio_eventi (giorno, tipo, chiavi, dati, causale, fonte, autore, annulla)
-      VALUES (${giorno}::date, ${r.tipo}, ${testi(toccate)}, ${JSON.stringify(dati)}::jsonb, ${causale}, ${r.fonte},
+      VALUES (${giorno}::date, ${r.tipo}, ${testi(toccate)}, ${JSON.stringify({ ...dati, ...extra.dati })}::jsonb, ${causale}, ${r.fonte},
               ${autore.id}::uuid, ${annulla}::bigint)
       RETURNING id, ts`))[0];
     const versione = cambiaStato
       ? Number(righe(await ex.execute(sql`UPDATE esercizio_giornate SET versione = versione + 1 WHERE giorno = ${giorno}::date RETURNING versione`))[0].versione)
       : Number(g.versione);
+    if (extra.dentro) await extra.dentro(ex, Number(evento.id));
     return { evento: Number(evento.id), ts: new Date(evento.ts).toISOString(), versione, corse: toccate.length };
   });
 }
