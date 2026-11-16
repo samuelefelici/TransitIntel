@@ -870,6 +870,86 @@ chiavi esterne.
 **Rollback**: immagine precedente. Colonne e tabella restano, ferme; la
 versione di prima non le usa.
 
+### La proposta dall'AVM (tappa 4.4)
+
+Per ogni corsa di una giornata cominciata (congelata), l'esito che le prove
+dell'AVM suggeriscono, con le prove accanto. È una **proposta**: la conferma è
+di una persona (giornale e conferma, la tappa successiva).
+
+**Una corsa senza prove resta «non rilevata»: non diventa mai «soppressa» da
+sola.** In un giorno di ottobre l'AVM vedeva il 16,7% delle corse, e
+dall'assenza di prove non si deduce l'assenza della corsa. Che cosa ne sarà
+delle non rilevate alla chiusura è la decisione aperta 1 (presunzione di
+effettuazione o prova obbligatoria).
+
+**Come si riconosce la corsa dell'AVM** (decisione aperta 2, presa coi numeri
+della diagnosi di ottobre: per id 517, per numero 508, per codice 0):
+1. per id del feed;
+2. per codice stabile, quando l'AVM aggancia un altro feed dello stesso
+   programma;
+3. per numero di corsa, solo se unico nella giornata.
+
+**Le proposte**, nell'ordine in cui si provano:
+- **Effettuata (AVM)**: una sola vettura, e prima e ultima fermata osservate,
+  oppure almeno il 70% delle fermate.
+- **Parziale?**: partenza osservata, ultima fermata vista ad almeno 3 fermate
+  dalla fine, e la vettura che passa a un'altra corsa prima dell'arrivo
+  programmato o non si vede più.
+- **Per continuità**: nessuna prova contraria, e la stessa vettura effettua la
+  corsa precedente e la successiva dello stesso turno macchina (4.3).
+- **Da verificare**: qualche prova, ma non basta (più vetture, poche fermate,
+  solo il viaggio dichiarato senza passaggi).
+- **Soppressa?**: nessuna prova, e il turno guida della corsa non ha
+  conducente nel roster della giornata. Vale solo dove il roster ha
+  assegnazioni per quei turni guida.
+- **Non rilevata**: nessuna prova.
+
+Le soglie (70%, 3 fermate) sono la decisione aperta 6: sono valori di
+partenza, scritti nel riepilogo di ogni proposta.
+
+Contano solo le righe di **SIRI**: il sistema AVM scrive le proprie nelle
+stesse tabelle, con altri codici.
+
+**Le candidate corse aggiunte** sono i viaggi dell'AVM che non si
+riconducono a nessuna corsa del programmato, con linea, partenza, numero e
+vetture. Fra queste ci sono anche i codici `FRSRV…`: probabilmente movimenti
+fuori servizio, da guardare prima di confermarli come corse.
+
+**Quando si fa**:
+- **definitiva**: il lavoratore la fa per le giornate degli ultimi tre giorni,
+  dopo le 04:00 del giorno dopo, quando i passaggi tardivi sono arrivati;
+- **durante la giornata**: a richiesta, dalla pagina («Calcola la proposta»,
+  «Ricalcola»). È una vista viva;
+- è idempotente, con lo stesso lucchetto della giornata.
+
+**La pagina: Amministrazione › Giornate di esercizio**, riquadro «Proposta
+dall'AVM»:
+- i conteggi per proposta, che filtrano le corse;
+- la copertura e come sono state riconosciute le corse;
+- le candidate aggiunte.
+
+Nelle corse c'è la colonna «Proposta»; il suggerimento spiega le prove.
+
+**La migrazione `0027`**:
+- aggiunge `proposta` e `prove` a `esercizio_corse`, con un vincolo sui valori;
+- aggiunge il riepilogo `proposta` a `esercizio_giornate`;
+- crea `esercizio_aggiunte_proposte`.
+
+**Dopo il deploy**:
+1. Le Watch Paths del lavoratore non cambiano: `esercizio-proposta.ts` è
+   coperto da `esercizio-*.ts`.
+2. Dopo le 04:00 del giorno dopo, nel log del lavoratore compare
+   «giornate di esercizio: proposta dall'AVM».
+3. La definizione di fatto dell'analisi, su giorni veri:
+   - la distribuzione delle proposte su cinque giorni;
+   - la quota di «non rilevate», da confrontare con 1 meno la quota di corse
+     della copertura AVM;
+   - 50 «effettuate (AVM)» controllate a mano con la prova del percorso:
+     nessun falso positivo.
+
+**Rollback**: immagine precedente. Colonne e tabella restano, ferme; la
+versione di prima non le usa.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23

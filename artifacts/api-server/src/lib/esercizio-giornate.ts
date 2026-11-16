@@ -36,6 +36,7 @@ import { inizioDi } from "./service-day";
 import { lunghezzaDellaGeometria } from "./km-programmati";
 import { programmaAllInizio, corseDelFeedNelGiorno } from "./esercizio-corse";
 import { collegaTurni, leggiTurni, scriviTurniMacchina, type CorsaDaCollegare, type EsitoCollegamento } from "./esercizio-turni";
+import { aggiunteDellaGiornata } from "./esercizio-proposta";
 
 const righe = (r: any): any[] => r?.rows ?? r ?? [];
 const GIORNO = /^\d{4}-\d{2}-\d{2}$/;
@@ -207,7 +208,8 @@ export async function elencoGiornate(dal: string, al: string) {
   return righe(await db.execute(sql`
     SELECT giorno::text AS giorno, stato, programma, feed_file, ricostruita, corse, km_prog::float AS km_prog,
            jsonb_array_length(avvisi) AS avvisi, preparata_il, congelata_il,
-           (turni->>'pubblicato')::boolean AS pubblicato, (turni->'scoperte'->>'senzaTurnoMacchina')::int AS scoperte
+           (turni->>'pubblicato')::boolean AS pubblicato, (turni->'scoperte'->>'senzaTurnoMacchina')::int AS scoperte,
+           (proposta->'perProposta'->>'effettuata_avm')::int AS effettuate_avm, (proposta->>'definitiva')::boolean AS proposta_definitiva
       FROM esercizio_giornate WHERE giorno BETWEEN ${dal}::date AND ${al}::date ORDER BY giorno DESC`)).map((x) => ({
     giorno: String(x.giorno).slice(0, 10), stato: x.stato, programma: x.programma ?? null, feed: x.feed_file ?? null,
     ricostruita: !!x.ricostruita, corse: Number(x.corse), kmProg: Number(x.km_prog), avvisi: Number(x.avvisi),
@@ -215,6 +217,9 @@ export async function elencoGiornate(dal: string, al: string) {
     /* turni: null se non ancora calcolati (giornata congelata prima della 4.3) */
     turniPubblicati: x.pubblicato == null ? null : !!x.pubblicato,
     senzaTurnoMacchina: x.scoperte == null ? null : Number(x.scoperte),
+    /* proposta dall'AVM: null se non ancora fatta */
+    effettuateAvm: x.effettuate_avm == null ? null : Number(x.effettuate_avm),
+    propostaDefinitiva: x.proposta_definitiva == null ? null : !!x.proposta_definitiva,
   }));
 }
 
@@ -222,19 +227,20 @@ export async function elencoGiornate(dal: string, al: string) {
 export async function leggiGiornata(giorno: string) {
   const g = righe(await db.execute(sql`
     SELECT giorno::text AS giorno, stato, ps_project_id::text AS progetto_id, feed_id::text AS feed_id, programma, feed_file,
-           ricostruita, corse, km_prog::float AS km_prog, avvisi, turni, preparata_il, congelata_il,
+           ricostruita, corse, km_prog::float AS km_prog, avvisi, turni, proposta, preparata_il, congelata_il,
            ${inizioDi(sql`giorno`)} AS inizio, ${inizioDi(sql`giorno + 1`)} AS fine
       FROM esercizio_giornate WHERE giorno = ${giorno}::date`))[0];
   if (!g) return null;
   const corse = righe(await db.execute(sql`
     SELECT chiave, codice, numero, route_id, linea, variante, direzione, partenza, arrivo, fermata_da, fermata_a,
-           km_prog::float AS km_prog, a_chiamata, turno_macchina, turno_guida, deposito
+           km_prog::float AS km_prog, a_chiamata, turno_macchina, turno_guida, deposito, proposta, prove
       FROM esercizio_corse WHERE giorno = ${giorno}::date ORDER BY partenza NULLS LAST, linea, numero`)).map((c) => ({
     chiave: c.chiave, codice: c.codice ?? null, numero: c.numero, routeId: c.route_id ?? null, linea: c.linea ?? null,
     variante: c.variante ?? null, direzione: c.direzione ?? null, partenza: c.partenza ?? null, arrivo: c.arrivo ?? null,
     fermataDa: c.fermata_da ?? null, fermataA: c.fermata_a ?? null, kmProg: c.km_prog != null ? Number(c.km_prog) : null,
     aChiamata: !!c.a_chiamata,
     turnoMacchina: c.turno_macchina ?? null, turnoGuida: c.turno_guida ?? null, deposito: c.deposito ?? null,
+    proposta: c.proposta ?? null, prove: c.prove ?? null,
   }));
   const turniMacchina = righe(await db.execute(sql`
     SELECT turno_macchina, udp_nome, deposito, tipo_mezzo, uscita, rientro, corse, corse_nel_giorno,
@@ -254,6 +260,9 @@ export async function leggiGiornata(giorno: string) {
     /* il riepilogo dei turni; null se non ancora calcolati (giornata congelata prima della 4.3) */
     turni: g.turni ?? null,
     turniMacchina,
+    /* la proposta dall'AVM (4.4); null se non ancora fatta */
+    proposta: g.proposta ?? null,
+    aggiunte: g.proposta ? await aggiunteDellaGiornata(giorno) : [],
     elenco: corse,
   };
 }

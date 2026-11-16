@@ -8,10 +8,16 @@
  * giornata mette in fila due lavoratori, o il lavoratore e l'amministratore.
  *
  * Senza la migrazione 0025 (database indietro) non fa niente.
+ *
+ * Dalla 4.4 fa anche la proposta dall'AVM, in modo definitivo, delle
+ * giornate degli ultimi giorni passate le 04:00 del giorno dopo, quando i
+ * passaggi tardivi sono arrivati (lib/esercizio-proposta.ts). Una proposta
+ * che non riesce non ferma il giro: lo dice il log, e ci riprova al giro dopo.
  */
 import { pool } from "@workspace/db";
 import { inSistema } from "@workspace/db/contesto";
 import { giroDelleGiornate } from "../esercizio-giornate";
+import { calcolaProposta, giornateDaProporre } from "../esercizio-proposta";
 import { giornataOggi } from "../service-day";
 
 export const OGNI_MS = 15 * 60 * 1000;
@@ -37,6 +43,18 @@ export function giroGiornate(log: Log, adesso: Date = new Date()): Promise<Recor
     const fatto = await giroDelleGiornate(oggi, dopo(oggi));
     const cambiate = Object.entries(fatto).filter(([, e]) => e !== "già congelata");
     if (cambiate.length) log.info({ giornate: Object.fromEntries(cambiate) }, "giornate di esercizio: preparate e congelate");
+    const { rows: [p] } = await pool.query("SELECT pg_catalog.to_regclass('public.esercizio_aggiunte_proposte') IS NOT NULL AS c");
+    if (p?.c) {
+      for (const g of await giornateDaProporre(oggi)) {
+        try {
+          const r: any = await calcolaProposta(g);
+          fatto[g] = r?.caronte === false ? "proposta: tabelle dell'AVM assenti" : `proposta definitiva, ${r?.perProposta?.effettuata_avm ?? 0} effettuate (AVM)`;
+          log.info({ giorno: g, perProposta: r?.perProposta, aggiunte: r?.aggiunte }, "giornate di esercizio: proposta dall'AVM");
+        } catch (err) {
+          log.error({ err, giorno: g }, "giornate di esercizio: proposta non riuscita");
+        }
+      }
+    }
     return fatto;
   });
 }
