@@ -1,9 +1,19 @@
 /**
  * Builder puri dei FeedMessage GTFS-Realtime (VehiclePositions, TripUpdates).
  * Nessuna dipendenza dal DB: prendono righe già lette dallo schema caronte e
- * producono l'oggetto plain conforme allo schema protobuf (verificato e
- * codificato in routes/gtfs-rt.ts). Separati per essere testabili in vitest.
+ * dal consuntivo, e producono l'oggetto plain conforme allo schema protobuf
+ * (verificato e codificato in routes/gtfs-rt.ts). Separati per essere
+ * testabili in vitest.
+ *
+ * Gli identificativi (corsa, linea, fermata) arrivano già tradotti nei codici
+ * del GTFS pubblicato (routes/gtfs-rt.ts): è con quelli che gli aggregatori
+ * abbinano il tempo reale all'orario.
  */
+
+/** TripDescriptor.ScheduleRelationship.CANCELED nello schema GTFS-Realtime. */
+export const CORSA_SOPPRESSA = 3;
+const ORA_GTFS = /^\d{2}:\d{2}:\d{2}$/;
+const DATA_GTFS = /^\d{8}$/;
 
 export interface RtPositionRow {
   vehicle_id: string | null;
@@ -16,6 +26,8 @@ export interface RtPositionRow {
   stop_id: string | null;
   stop_seq: number | null;
   ts_epoch: number;        // unix seconds
+  /** la data della giornata di esercizio della corsa, "YYYYMMDD", se nota */
+  start_date?: string | null;
 }
 
 export interface RtDelayRow {
@@ -26,6 +38,28 @@ export interface RtDelayRow {
   stop_seq: number | null;
   delay_seconds: number;
   ts_epoch: number; // unix seconds
+  /** la data della giornata di esercizio della corsa, "YYYYMMDD", se nota */
+  start_date?: string | null;
+}
+
+/** Una corsa soppressa nel giornale del consuntivo (tappa 4.5). */
+export interface RtCancelRow {
+  trip_id: string;
+  route_id: string | null;
+  /** la giornata di esercizio, "YYYYMMDD" */
+  start_date: string;
+  /** la partenza programmata, "HH:MM:SS" (anche oltre le 24) */
+  start_time: string | null;
+}
+
+/** Il TripDescriptor: data (e ora) servono a distinguere la stessa corsa in due giornate, a cavallo della mezzanotte. */
+function descrittore(tripId: string, routeId: string | null, startDate?: string | null, startTime?: string | null) {
+  return {
+    tripId,
+    ...(routeId ? { routeId } : {}),
+    ...(startDate && DATA_GTFS.test(startDate) ? { startDate } : {}),
+    ...(startTime && ORA_GTFS.test(startTime) ? { startTime } : {}),
+  };
 }
 
 function feedHeader(nowSec: number) {
@@ -45,7 +79,7 @@ export function buildVehiclePositionsFeed(rows: RtPositionRow[], nowSec: number)
       return {
         id: `vp-${key}`,
         vehicle: {
-          ...(r.trip_id ? { trip: { tripId: r.trip_id, ...(r.route_id ? { routeId: r.route_id } : {}) } } : {}),
+          ...(r.trip_id ? { trip: descrittore(r.trip_id, r.route_id, r.start_date) } : {}),
           vehicle: { id: key, ...(r.vehicle_id ? { label: r.vehicle_id } : {}) },
           position: {
             latitude: r.lat,
@@ -63,26 +97,47 @@ export function buildVehiclePositionsFeed(rows: RtPositionRow[], nowSec: number)
   };
 }
 
-/** FeedMessage TripUpdates dall'ultimo transito reale di ogni corsa. */
-export function buildTripUpdatesFeed(rows: RtDelayRow[], nowSec: number) {
+/**
+ * FeedMessage TripUpdates: l'ultimo transito reale di ogni corsa, e le corse
+ * soppresse nel giornale come CANCELED. Una corsa soppressa non porta anche
+ * un ritardo: vale la soppressione.
+ */
+export function buildTripUpdatesFeed(rows: RtDelayRow[], nowSec: number, soppresse: RtCancelRow[] = []) {
+  const tolte = new Set(soppresse.map((c) => c.trip_id));
   return {
     header: feedHeader(nowSec),
-    entity: rows.map((r) => ({
-      id: `tu-${r.trip_id}`,
-      tripUpdate: {
-        trip: { tripId: r.trip_id, ...(r.route_id ? { routeId: r.route_id } : {}) },
-        ...(r.vehicle_id ? { vehicle: { id: r.vehicle_id, label: r.vehicle_id } } : {}),
-        // Un solo StopTimeUpdate sull'ultima fermata osservata: per la spec il
-        // ritardo si propaga alle fermate successive finché non c'è un altro update.
-        stopTimeUpdate: [{
-          ...(r.stop_seq != null ? { stopSequence: r.stop_seq } : {}),
-          ...(r.stop_id ? { stopId: r.stop_id } : {}),
-          arrival: { delay: r.delay_seconds },
-          departure: { delay: r.delay_seconds },
-        }],
-        delay: r.delay_seconds,
-        timestamp: r.ts_epoch,
-      },
-    })),
+    entity: [
+      ...rows.filter((r) => !tolte.has(r.trip_id)).map((r) => {
+        /* Un StopTimeUpdate deve dire la fermata (progressivo o codice): senza
+         * nessuno dei due resta solo il ritardo della corsa. Per la spec il
+         * ritardo si propaga alle fermate successive finché non c'è un altro
+         * update. */
+        const fermata = r.stop_seq != null || !!r.stop_id;
+        return {
+          id: `tu-${r.trip_id}`,
+          tripUpdate: {
+            trip: descrittore(r.trip_id, r.route_id, r.start_date),
+            ...(r.vehicle_id ? { vehicle: { id: r.vehicle_id, label: r.vehicle_id } } : {}),
+            ...(fermata ? {
+              stopTimeUpdate: [{
+                ...(r.stop_seq != null ? { stopSequence: r.stop_seq } : {}),
+                ...(r.stop_id ? { stopId: r.stop_id } : {}),
+                arrival: { delay: r.delay_seconds },
+                departure: { delay: r.delay_seconds },
+              }],
+            } : {}),
+            delay: r.delay_seconds,
+            timestamp: r.ts_epoch,
+          },
+        };
+      }),
+      ...soppresse.map((c) => ({
+        id: `tu-${c.trip_id}`,
+        tripUpdate: {
+          trip: { ...descrittore(c.trip_id, c.route_id, c.start_date, c.start_time), scheduleRelationship: CORSA_SOPPRESSA },
+          timestamp: nowSec,
+        },
+      })),
+    ],
   };
 }

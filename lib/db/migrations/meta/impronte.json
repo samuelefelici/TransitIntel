@@ -28,5 +28,6 @@
   "0026_turni_nel_programmato": "4b9cbdaadb0856071fafdfd288adf929e443290a93df41301edb80cbdab50427",
   "0027_proposta_dall_avm": "0bf34c5f4f9b5755f8a412cec3ebc917910146862403daa756d94474055545f7",
   "0028_giornale_e_conferma": "bb3b4db24b071c45d8497e20cdef2fc3e47f0516ff556c9943b8df734a656504",
-  "0029_chiusura_e_blocco": "e7364d5c15d62b0fe8c2cddc7f15365fda2d022f7d0e435fe6e91a9ba1cd7053"
+  "0029_chiusura_e_blocco": "e7364d5c15d62b0fe8c2cddc7f15365fda2d022f7d0e435fe6e91a9ba1cd7053",
+  "0030_km_per_vettura": "f391cc2014cfcd804a1812627c53e6c65730ad72f9bfd4445d2cf3d346cbd6a3"
 }

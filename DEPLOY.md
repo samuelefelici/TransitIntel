@@ -1140,6 +1140,82 @@ lascia senza vettura. Vale per le conferme fatte da qui in poi.
 
 **Rollback**: immagine precedente. Il report non scrive niente.
 
+### FleetCare e GTFS-Realtime (tappa 4.8)
+
+Decisioni del 16/11/2026: le soppressioni del giornale vanno nel GTFS-Realtime;
+FleetCare legge i km per vettura e per giorno del consuntivo.
+
+**GTFS-Realtime** (`/api/gtfs-rt/trip-updates` e `/vehicle-positions`, stessi
+indirizzi di prima). Cosa cambia:
+- **Soppressioni.** Le corse che il giornale della giornata in corso dà per
+  soppresse escono come `CANCELED`, con data e ora di partenza, e non portano
+  anche un ritardo. Contano solo le soppressioni **confermate**: un
+  annullamento dell'AVM resta un indizio finché qualcuno non lo conferma in
+  Esercizio › Consuntivo.
+- **Codici pubblicati.** Corse, linee e fermate escono con i codici del GTFS
+  esportato da Planning Studio, quello che ricevono gli aggregatori. Prima
+  uscivano gli id interni del feed in esercizio, che con un programma di
+  Planning Studio non corrispondono a niente nel GTFS pubblicato. Per i feed
+  caricati a mano resta l'id del feed, come nell'export.
+- **Data della corsa** (`start_date`) quando la corsa è nella giornata di
+  esercizio: distingue le corse a cavallo della mezzanotte.
+- **Solo SIRI.** I ritardi vengono solo dai passaggi del connettore SIRI. Il
+  sistema AVM scrive i propri nelle stesse tabelle con altri codici, che gli
+  aggregatori non abbinano.
+- **Errori.** Fuori va un messaggio generico; i dettagli restano nel log.
+
+Fuori, per ora: le corse aggiunte (`ADDED`) e le fermate saltate delle
+parziali. La specifica le gestisce male, e delle parziali non sappiamo quali
+fermate sono state saltate.
+
+**I km per vettura per FleetCare** (migrazione `0030`):
+
+```sql
+SELECT * FROM public.esercizio_km_per_vettura('2026-12-01', '2026-12-31');
+```
+
+Restituisce una riga per giorno e vettura (il codice dell'AVM, che FleetCare
+abbina al suo parco):
+- `km_servizio`: le corse fatte con quella vettura indicata;
+- `km_dal_turno`: le corse senza vettura (per esempio le presunte) del turno
+  macchina che quel giorno ha avuto una vettura sola;
+- `km_vuoto`: i km a vuoto programmati dello stesso turno macchina.
+
+Cosa sommare lo decide FleetCare. Un turno macchina con due vetture nello
+stesso giorno non attribuisce né le corse senza vettura né i vuoti. Contano
+solo le **giornate chiuse**, al più 367 giorni per chiamata.
+
+La funzione legge con i diritti di chi la chiama. A ogni avvio il migratore dà
+a `fleetcare_legge_cerbero` la lettura delle sole colonne che servono:
+- giorno e stato delle giornate;
+- vettura, km fatti, esito, turno macchina delle corse;
+- i vuoti dei turni macchina.
+
+Nessun dato delle persone: turno guida e conducente restano fuori.
+
+**Dopo il deploy**:
+1. `node lib/db/scripts/ruoli.mjs --verifica` deve tornare pulita: la lettura
+   delle colonne a FleetCare la dà il migratore.
+2. In una giornata con una soppressione confermata,
+   `/api/gtfs-rt/trip-updates?format=json` deve mostrarla con
+   `"scheduleRelationship": 3`, e i `tripId` devono essere i codici del GTFS
+   pubblicato.
+3. La definizione di fatto per FleetCare, su 20 mezzi e un mese chiuso: i km
+   di Cerbero contro la differenza del contachilometri fra i buoni carburante,
+   entro la tolleranza decisa (propongo ±5%). I km di Cerbero per vettura:
+
+   ```sql
+   SELECT vettura, sum(km_servizio) AS servizio, sum(km_dal_turno) AS dal_turno, sum(km_vuoto) AS vuoto
+     FROM public.esercizio_km_per_vettura('2026-12-01', '2026-12-31')
+    GROUP BY vettura ORDER BY vettura;
+   ```
+
+   La lettura dal lato di FleetCare (e il confronto coi buoni) va in una PR su
+   fleetmanagement.
+
+**Rollback**: immagine precedente. La funzione resta e non scrive niente; per
+toglierla: `DROP FUNCTION public.esercizio_km_per_vettura(date, date);`.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
