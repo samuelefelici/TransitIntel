@@ -1522,8 +1522,9 @@ describe("0025: giornate di esercizio", () => {
   const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
   it("una giornata per giorno, preparata o congelata; le sue corse se ne vanno con lei", () => {
     const v = catalogo.vincoli;
-    expect(v["public.esercizio_giornate.esercizio_giornate_stato"]).toBe("CHECK ((stato = ANY (ARRAY['preparata'::text, 'congelata'::text])))");
-    expect(v["public.esercizio_giornate.esercizio_giornate_congelamento"]).toBe("CHECK (((stato = 'congelata'::text) = (congelata_il IS NOT NULL)))");
+    // dalla 0029 lo stato ha anche «chiusa», e una giornata chiusa è stata congelata
+    expect(v["public.esercizio_giornate.esercizio_giornate_stato"]).toMatch(/^CHECK \(\(stato = ANY \(ARRAY\['preparata'::text, 'congelata'::text/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_congelamento"]).toMatch(/'congelata'::text.*= \(congelata_il IS NOT NULL\)\)\)$/);
     expect(v["public.esercizio_giornate.esercizio_giornate_feed_id_fkey"]).toMatch(/REFERENCES gtfs_feeds\(id\) ON DELETE SET NULL$/);
     expect(v["public.esercizio_giornate.esercizio_giornate_ps_project_id_fkey"]).toMatch(/REFERENCES ps_projects\(id\) ON DELETE SET NULL$/);
     expect(v["public.esercizio_corse.esercizio_corse_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE CASCADE$/);
@@ -1602,5 +1603,20 @@ describe("0028: giornale e conferma", () => {
     const giornale = readFileSync(path.join(__dirname, "../lib/esercizio-giornale.ts"), "utf8");
     expect(giornale).not.toMatch(/UPDATE\s+esercizio_eventi/i);
     expect(giornale).not.toMatch(/DELETE\s+FROM\s+esercizio_eventi/i);
+  });
+});
+
+/* 0029 (tappa 4.6): chiusura e blocco del consuntivo. */
+describe("0029: chiusura e blocco", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("l'esito presunto; la giornata chiusa ha chi, quando e il riepilogo; un mese chiuso lo stesso", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_corse.esercizio_corse_esito"]).toMatch(/'effettuata'.*'presunta'.*'parziale'.*'soppressa'.*'da_verificare'/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_stato"]).toMatch(/'preparata'.*'congelata'.*'chiusa'/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_congelamento"]).toMatch(/'congelata'.*'chiusa'.*congelata_il IS NOT NULL/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_chiusura"]).toMatch(/chiusa_il IS NOT NULL.*riepilogo IS NOT NULL/);
+    expect(v["public.esercizio_eventi.esercizio_eventi_tipo"]).toMatch(/'chiusura'.*'riapertura'/);
+    expect(v["public.esercizio_mesi.esercizio_mesi_chiusura"]).toMatch(/chiuso_il IS NOT NULL.*riepilogo IS NOT NULL/);
+    expect(v["public.esercizio_mesi.esercizio_mesi_chiuso_da_fkey"]).toMatch(/REFERENCES users\(id\) ON DELETE SET NULL$/);
   });
 });

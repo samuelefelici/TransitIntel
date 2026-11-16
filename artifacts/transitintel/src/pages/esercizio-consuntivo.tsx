@@ -13,7 +13,8 @@
  * cambiata» e la pagina si ricarica.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ClipboardCheck, History, Plus, RefreshCw, Snowflake, Undo2 } from "lucide-react";
+import { AlertTriangle, CalendarRange, ClipboardCheck, History, Lock, Plus, RefreshCw, Snowflake, Undo2 } from "lucide-react";
+import { chiudeLeGiornate } from "@workspace/permessi";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
@@ -21,9 +22,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-type Esito = "effettuata" | "parziale" | "soppressa" | "da_verificare";
+type Esito = "effettuata" | "presunta" | "parziale" | "soppressa" | "da_verificare";
 type Proposta = "effettuata_avm" | "parziale" | "continuita" | "da_verificare" | "soppressione_indizio" | "non_rilevata";
-interface VoceGiornata { giorno: string; stato: "preparata" | "congelata"; corse: number; confermate: number; effettuateAvm: number | null }
+interface VoceGiornata { giorno: string; stato: "preparata" | "congelata" | "chiusa"; corse: number; confermate: number; effettuateAvm: number | null }
+interface RiepilogoChiusura {
+  corse: { programmate: number; aggiunte: number; effettuate: number; presunte: number; parziali: number; soppresse: number };
+  km: { programmati: number; effettivi: number; persi: number; aggiunti: number };
+}
+interface Chiusura {
+  chiusa: boolean; chiusaIl: string | null; chiusaDa: string | null; riepilogo: RiepilogoChiusura | null;
+  perché: string | null; meseChiuso: boolean;
+}
 interface Corsa {
   chiave: string; codice: string | null; numero: string; linea: string | null; partenza: string | null; arrivo: string | null;
   fermataDa: string | null; fermataA: string | null; kmProg: number | null; turnoMacchina: string | null;
@@ -38,8 +47,8 @@ interface Evento {
 }
 interface Aggiunta { chiaveAvm: string; linea: string | null; numero: string | null; partenza: string | null; vetture: string[]; transiti: number; osservazioni: number }
 interface Giornata {
-  giorno: string; stato: "preparata" | "congelata"; programma: string | null; corse: number; kmProg: number; versione: number;
-  elenco: Corsa[]; aggiunte: Aggiunta[]; giornale: Evento[]; causali: Causale[];
+  giorno: string; stato: "preparata" | "congelata" | "chiusa"; programma: string | null; corse: number; kmProg: number; versione: number;
+  elenco: Corsa[]; aggiunte: Aggiunta[]; giornale: Evento[]; causali: Causale[]; chiusura: Chiusura | null;
   proposta: { caronte: boolean; definitiva: boolean; calcolataIl: string } | null;
 }
 
@@ -50,6 +59,8 @@ const km = (n: number | null | undefined) => (n == null ? "—" : n.toLocaleStri
 
 const ESITI: Array<{ id: Esito; nome: string; colore: string }> = [
   { id: "effettuata", nome: "Effettuata", colore: "text-emerald-300 border-emerald-400/40" },
+  /* la presunzione di effettuazione (4.6): senza prove, salvo segnalazione */
+  { id: "presunta", nome: "Presunta", colore: "text-teal-200 border-teal-300/40" },
   { id: "parziale", nome: "Parziale", colore: "text-amber-300 border-amber-400/40" },
   { id: "soppressa", nome: "Soppressa", colore: "text-rose-300 border-rose-400/40" },
   { id: "da_verificare", nome: "Da verificare", colore: "text-amber-200 border-amber-300/40" },
@@ -60,11 +71,11 @@ const PROPOSTE: Record<Proposta, string> = {
 };
 const TIPI_EVENTO: Record<string, string> = {
   esito: "Esito", conferma: "Conferma delle proposte", aggiunta: "Corsa aggiunta", annullamento: "Annullamento",
-  cancellazione_avm: "Annullata dall'AVM", nota: "Nota",
+  cancellazione_avm: "Annullata dall'AVM", nota: "Nota", chiusura: "Giornata chiusa", riapertura: "Giornata riaperta",
 };
 const TIPI_AGGIUNTA = [["bis", "Bis"], ["recupero", "Recupero"], ["sostitutiva", "Sostitutiva"], ["fuori_programma", "Fuori programma"]] as const;
 const FILTRI = [
-  ["tutte", "Tutte"], ["da_decidere", "Da decidere"], ["effettuata", "Effettuate"], ["parziale", "Parziali"],
+  ["tutte", "Tutte"], ["da_decidere", "Da decidere"], ["effettuata", "Effettuate"], ["presunta", "Presunte"], ["parziale", "Parziali"],
   ["soppressa", "Soppresse"], ["da_verificare", "Da verificare"], ["aggiunte", "Aggiunte"],
 ] as const;
 
@@ -75,6 +86,8 @@ export default function ConsuntivoPage() {
   const { puo, user } = useAuth();
   const scrive = puo("consuntivo", "S");
   const admin = user?.role === "admin";
+  const chiude = chiudeLeGiornate({ admin, ruoli: user?.ruoli ?? [] });
+  const [motivoRiapertura, setMotivoRiapertura] = useState<string | null>(null);
   const [elenco, setElenco] = useState<VoceGiornata[]>([]);
   const [scelta, setScelta] = useState<string | null>(null);
   const [g, setG] = useState<Giornata | null>(null);
@@ -133,22 +146,25 @@ export default function ConsuntivoPage() {
     return l.filter((c) => {
       if (filtro === "da_decidere" && c.esito) return false;
       if (filtro === "aggiunte" && c.origine !== "aggiunta") return false;
-      if (["effettuata", "parziale", "soppressa", "da_verificare"].includes(filtro) && c.esito !== filtro) return false;
+      if (["effettuata", "presunta", "parziale", "soppressa", "da_verificare"].includes(filtro) && c.esito !== filtro) return false;
       return !f || [c.linea, c.numero, c.codice, c.turnoMacchina, c.fermataDa, c.fermataA, c.vettura].some((x) => (x ?? "").toLowerCase().includes(f));
     });
   }, [g, filtro, cerca]);
   const conteggi = useMemo(() => {
     const l = g?.elenco ?? [];
     const per = Object.fromEntries(ESITI.map((e) => [e.id, 0])) as Record<Esito, number>;
-    let daDecidere = 0, kmEff = 0, kmProgConfermati = 0;
+    let daDecidere = 0, kmEff = 0, kmProgConfermati = 0, senzaProposta = 0;
     const proposteAperte: Partial<Record<Proposta, number>> = {};
     for (const c of l) {
       if (c.esito) { per[c.esito]++; kmEff += c.kmEff ?? 0; kmProgConfermati += c.kmProg ?? 0; }
-      else { daDecidere++; if (c.proposta) proposteAperte[c.proposta] = (proposteAperte[c.proposta] ?? 0) + 1; }
+      else { daDecidere++; if (c.proposta) proposteAperte[c.proposta] = (proposteAperte[c.proposta] ?? 0) + 1; else senzaProposta++; }
     }
-    return { per, daDecidere, kmEff, kmProgConfermati, proposteAperte };
+    /* la presunzione vale per le non rilevate e per le corse senza proposta (giornate senza AVM) */
+    return { per, daDecidere, kmEff, kmProgConfermati, proposteAperte, presumibili: (proposteAperte.non_rilevata ?? 0) + senzaProposta };
   }, [g]);
   const causaliAttive = g?.causali ?? [];
+  /* una giornata chiusa non si scrive più: niente comandi */
+  const scriveGiornata = scrive && g?.stato === "congelata";
   const visibili = corse.slice(0, 1000);
   const tutteSelezionate = visibili.length > 0 && visibili.every((c) => selezione.has(c.chiave));
   const commuta = (k: string) => setSelezione((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
@@ -191,10 +207,16 @@ export default function ConsuntivoPage() {
                     className={`w-full text-left px-4 py-2 border-t border-border/50 hover:bg-muted/40 ${scelta === x.giorno ? "bg-muted/60" : ""}`}>
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium capitalize">{data(x.giorno)}</span>
-                      {x.stato === "congelata" ? <Snowflake className="w-3 h-3 text-sky-300" aria-label="cominciata" /> : <span className="text-xs text-muted-foreground">domani</span>}
+                      {x.stato === "chiusa" ? <Lock className="w-3 h-3 text-emerald-300" aria-label="chiusa" />
+                        : x.stato === "congelata"
+                          ? (daChiudere(x.giorno)
+                            ? <span className="inline-flex items-center gap-1 text-xs text-amber-300"><AlertTriangle className="w-3 h-3" />da chiudere</span>
+                            : <Snowflake className="w-3 h-3 text-sky-300" aria-label="cominciata" />)
+                          : <span className="text-xs text-muted-foreground">domani</span>}
                     </div>
                     <div className="text-xs text-muted-foreground tabular-nums">
-                      {x.stato === "congelata"
+                      {x.stato === "chiusa" ? "chiusa"
+                        : x.stato === "congelata"
                         ? `${x.confermate.toLocaleString("it-IT")} su ${x.corse.toLocaleString("it-IT")} decise`
                         : `${x.corse.toLocaleString("it-IT")} corse programmate`}
                     </div>
@@ -206,10 +228,10 @@ export default function ConsuntivoPage() {
         </Card>
 
         <div className="space-y-4 min-w-0">
-          {g && g.stato !== "congelata" && (
+          {g && g.stato === "preparata" && (
             <Card><CardContent className="py-6 text-sm text-muted-foreground">La giornata del {data(g.giorno)} non è ancora cominciata: il consuntivo si fa da quando comincia, alle 03:00.</CardContent></Card>
           )}
-          {g && g.stato === "congelata" && (
+          {g && g.stato !== "preparata" && (
             <>
               <Card>
                 <CardHeader className="pb-2">
@@ -229,7 +251,7 @@ export default function ConsuntivoPage() {
                   <div className="text-xs text-muted-foreground tabular-nums">
                     Km effettivi delle corse decise: {km(conteggi.kmEff)} su {km(conteggi.kmProgConfermati)} programmati
                   </div>
-                  {scrive && (
+                  {scriveGiornata && (
                     <div className="flex flex-wrap gap-2">
                       {(["effettuata_avm", "continuita"] as const).map((p) => (
                         <Button key={p} size="sm" variant="outline" disabled={occupato || !conteggi.proposteAperte[p]}
@@ -237,6 +259,11 @@ export default function ConsuntivoPage() {
                           Conferma «{PROPOSTE[p]}» ({(conteggi.proposteAperte[p] ?? 0).toLocaleString("it-IT")})
                         </Button>
                       ))}
+                      <Button size="sm" variant="outline" disabled={occupato || !conteggi.presumibili}
+                        title="Le corse senza prove dell'AVM si presumono effettuate, salvo segnalazione: un esito a sé, distinto dalle provate"
+                        onClick={() => void registra({ tipo: "conferma", proposte: ["non_rilevata"] }, "Presunte effettuate le corse non rilevate")}>
+                        Presumi effettuate le non rilevate ({conteggi.presumibili.toLocaleString("it-IT")})
+                      </Button>
                       <Button size="sm" variant="ghost" disabled={occupato}
                         onClick={async () => {
                           setOccupato(true);
@@ -248,6 +275,26 @@ export default function ConsuntivoPage() {
                       </Button>
                     </div>
                   )}
+                  <ChiusuraGiornata g={g} chiude={chiude} admin={admin} occupato={occupato} motivo={motivoRiapertura} setMotivo={setMotivoRiapertura}
+                    onChiudi={async () => {
+                      setOccupato(true); setMessaggio(null);
+                      try {
+                        await apiFetch(`/api/esercizio/giornate/${g.giorno}/chiusura`, { method: "POST", body: JSON.stringify({ versione: g.versione }) });
+                        await Promise.all([apri(g.giorno), caricaElenco()]);
+                        setMessaggio({ tipo: "ok", testo: "Giornata chiusa" });
+                      } catch (e: any) { setMessaggio({ tipo: "errore", testo: e?.message || "Chiusura non riuscita" }); if (e?.status === 409) await apri(g.giorno); }
+                      finally { setOccupato(false); }
+                    }}
+                    onRiapri={async (motivo) => {
+                      setOccupato(true); setMessaggio(null);
+                      try {
+                        await apiFetch(`/api/admin/esercizio/giornate/${g.giorno}/riapertura`, { method: "POST", body: JSON.stringify({ motivo }) });
+                        setMotivoRiapertura(null);
+                        await Promise.all([apri(g.giorno), caricaElenco()]);
+                        setMessaggio({ tipo: "ok", testo: "Giornata riaperta" });
+                      } catch (e: any) { setMessaggio({ tipo: "errore", testo: e?.message || "Riapertura non riuscita" }); }
+                      finally { setOccupato(false); }
+                    }} />
                 </CardContent>
               </Card>
 
@@ -263,7 +310,7 @@ export default function ConsuntivoPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
-                  {scrive && selezione.size > 0 && (
+                  {scriveGiornata && selezione.size > 0 && (
                     <div className="flex flex-wrap items-end gap-2 border-y border-border/50 bg-muted/30 px-3 py-2 text-sm">
                       <span className="mr-1 tabular-nums">{selezione.size.toLocaleString("it-IT")} selezionate:</span>
                       <Button size="sm" disabled={occupato} onClick={() => void registra({ tipo: "esito", chiavi: [...selezione], esito: "effettuata" }, "Segnate effettuate")}>Effettuate</Button>
@@ -307,7 +354,7 @@ export default function ConsuntivoPage() {
                     <table className="w-full text-sm">
                       <thead className="sticky top-0 bg-card text-xs text-muted-foreground">
                         <tr className="text-left">
-                          {scrive && (
+                          {scriveGiornata && (
                             <th className="px-3 py-2 w-8">
                               <input type="checkbox" aria-label="Seleziona tutte quelle mostrate" checked={tutteSelezionate}
                                 onChange={() => setSelezione(tutteSelezionate ? new Set() : new Set(visibili.map((c) => c.chiave)))} />
@@ -323,7 +370,7 @@ export default function ConsuntivoPage() {
                           const e = etichettaEsito(c.esito);
                           return (
                             <tr key={c.chiave} className={`border-t border-border/40 ${selezione.has(c.chiave) ? "bg-muted/40" : ""}`}>
-                              {scrive && (
+                              {scriveGiornata && (
                                 <td className="px-3 py-1.5"><input type="checkbox" aria-label={`Seleziona la corsa ${c.numero}`} checked={selezione.has(c.chiave)} onChange={() => commuta(c.chiave)} /></td>
                               )}
                               <td className="px-3 py-1.5 font-medium">{c.linea ?? "—"}{c.origine === "aggiunta" && <span className="ml-1 text-xs text-sky-300">aggiunta</span>}</td>
@@ -346,10 +393,12 @@ export default function ConsuntivoPage() {
                 </CardContent>
               </Card>
 
-              <AggiunteCard g={g} scrive={scrive} occupato={occupato} registra={registra} causali={causaliAttive} />
-              <GiornaleCard g={g} scrive={scrive} occupato={occupato} registra={registra} />
+              <AggiunteCard g={g} scrive={scriveGiornata} occupato={occupato} registra={registra} causali={causaliAttive} />
+              <GiornaleCard g={g} scrive={scriveGiornata} occupato={occupato} registra={registra} />
             </>
           )}
+          {g && <MeseCard mese={g.giorno.slice(0, 7)} admin={admin} versioneGiornata={`${g.giorno}|${g.stato}|${g.versione}`}
+            onCambiato={() => { void caricaElenco(); if (g) void apri(g.giorno); }} />}
           {admin && g && <CausaliAdmin onSalvato={() => g && void apri(g.giorno)} />}
         </div>
       </div>
@@ -358,6 +407,128 @@ export default function ConsuntivoPage() {
 }
 
 type Registra = (corpo: Record<string, unknown>, fatto: string) => Promise<void>;
+
+/** Una giornata cominciata e ancora aperta dopo tre giorni: va chiusa (nessun blocco automatico, solo il segnale). */
+function daChiudere(giorno: string): boolean {
+  const limite = new Date();
+  limite.setDate(limite.getDate() - 3);
+  return giorno < limite.toISOString().slice(0, 10);
+}
+
+const riepilogoInBreve = (r: RiepilogoChiusura) =>
+  `${r.corse.programmate.toLocaleString("it-IT")} programmate: ${r.corse.effettuate.toLocaleString("it-IT")} effettuate, `
+  + `${r.corse.presunte.toLocaleString("it-IT")} presunte, ${r.corse.parziali.toLocaleString("it-IT")} parziali, ${r.corse.soppresse.toLocaleString("it-IT")} soppresse`
+  + `${r.corse.aggiunte ? `; ${r.corse.aggiunte.toLocaleString("it-IT")} aggiunte` : ""} · km ${km(r.km.effettivi)} su ${km(r.km.programmati)} (persi ${km(r.km.persi)})`;
+
+function ChiusuraGiornata({ g, chiude, admin, occupato, motivo, setMotivo, onChiudi, onRiapri }: {
+  g: Giornata; chiude: boolean; admin: boolean; occupato: boolean; motivo: string | null; setMotivo: (m: string | null) => void;
+  onChiudi: () => void; onRiapri: (motivo: string) => void;
+}) {
+  const c = g.chiusura;
+  if (g.stato === "chiusa" && c) {
+    return (
+      <div className="space-y-2 rounded-md border border-emerald-400/30 bg-emerald-500/5 p-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Lock className="w-4 h-4 text-emerald-300" />
+          <span className="font-medium">Chiusa</span>
+          <span className="text-xs text-muted-foreground">il {c.chiusaIl ? oraDi(c.chiusaIl) : "—"}{c.chiusaDa ? ` da ${c.chiusaDa}` : ""} · non si scrive più</span>
+        </div>
+        {c.riepilogo && <div className="text-xs tabular-nums">{riepilogoInBreve(c.riepilogo)}</div>}
+        {admin && (c.meseChiuso
+          ? <div className="text-xs text-muted-foreground">Il mese è chiuso: per riaprire la giornata riapri prima il mese.</div>
+          : motivo === null
+            ? <Button size="sm" variant="outline" disabled={occupato} onClick={() => setMotivo("")}>Riapri…</Button>
+            : (
+              <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); if (motivo.trim().length >= 5) onRiapri(motivo.trim()); }}>
+                <div className="space-y-1 grow"><Label htmlFor="riapertura-motivo" className="text-xs">Perché la riapri (resta nel giornale)</Label>
+                  <Input id="riapertura-motivo" className="h-8" maxLength={500} value={motivo} onChange={(e) => setMotivo(e.target.value)} /></div>
+                <Button size="sm" type="submit" disabled={occupato || motivo.trim().length < 5}>Riapri la giornata</Button>
+                <Button size="sm" type="button" variant="ghost" onClick={() => setMotivo(null)}>Annulla</Button>
+              </form>
+            ))}
+      </div>
+    );
+  }
+  if (g.stato !== "congelata" || !chiude) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-3 border-t border-border/50 pt-3">
+      <Button size="sm" disabled={occupato || !!c?.perché} onClick={onChiudi}><Lock className="w-4 h-4 mr-1.5" />Chiudi la giornata</Button>
+      <span className={`text-xs ${c?.perché ? "text-amber-200" : "text-muted-foreground"}`}>
+        {c?.perché ?? "Tutte le corse sono decise: chiudendo, il riepilogo si congela e la giornata non si scrive più."}
+      </span>
+    </div>
+  );
+}
+
+interface StatoMese {
+  mese: string; stato: "aperto" | "chiuso"; chiusoIl: string | null; giorni: number; chiuse: number; aperte: string[]; mancanti: string[];
+  riepilogo: RiepilogoChiusura | null; storia: Array<{ azione: string; da: string | null; il: string; motivo?: string }>;
+}
+
+/** Il mese della giornata scelta: giornate chiuse, aperte e mancanti, il riepilogo; chiusura e riapertura dell'amministratore. */
+function MeseCard({ mese, admin, versioneGiornata, onCambiato }: { mese: string; admin: boolean; versioneGiornata: string; onCambiato: () => void }) {
+  const [m, setM] = useState<StatoMese | null>(null);
+  const [motivo, setMotivo] = useState<string | null>(null);
+  const [errore, setErrore] = useState<string | null>(null);
+  const [occupato, setOccupato] = useState(false);
+  const carica = useCallback(async () => {
+    try { setM(await apiFetch<StatoMese>(`/api/esercizio/mesi/${mese}`)); }
+    catch (e: any) { setErrore(e?.message || "Mese non leggibile"); }
+  }, [mese]);
+  useEffect(() => { void carica(); }, [carica, versioneGiornata]);
+  const azione = async (percorso: string, corpo?: unknown) => {
+    setOccupato(true); setErrore(null);
+    try {
+      await apiFetch(percorso, { method: "POST", ...(corpo ? { body: JSON.stringify(corpo) } : {}) });
+      setMotivo(null); await carica(); onCambiato();
+    } catch (e: any) { setErrore(e?.message || "Non riuscito"); }
+    finally { setOccupato(false); }
+  };
+  if (!m) return null;
+  const nome = new Date(`${mese}-15T12:00:00`).toLocaleDateString("it-IT", { month: "long", year: "numeric" });
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2 capitalize"><CalendarRange className="w-4 h-4" />{nome}
+          {m.stato === "chiuso" && <span className="inline-flex items-center gap-1 text-xs font-normal normal-case text-emerald-300"><Lock className="w-3 h-3" />mese chiuso</span>}
+        </CardTitle>
+        <p className="text-xs text-muted-foreground">Il mese si chiude quando è finito e tutte le sue giornate sono chiuse; chiuso, le sue giornate non si riaprono.</p>
+      </CardHeader>
+      <CardContent className="space-y-2 text-sm">
+        {errore && <div className="text-destructive">{errore}</div>}
+        <div className="tabular-nums">
+          {m.chiuse} giornate chiuse su {m.giorni}
+          {m.aperte.length > 0 && <span className="text-amber-200"> · {m.aperte.length} aperte</span>}
+          {m.mancanti.length > 0 && <span className="text-muted-foreground"> · {m.mancanti.length} senza giornata (prima del rilascio, o non preparate)</span>}
+        </div>
+        {m.riepilogo && <div className="text-xs tabular-nums">{m.stato === "chiuso" ? "Congelato: " : "Le giornate chiuse finora: "}{riepilogoInBreve(m.riepilogo)}</div>}
+        {admin && m.stato === "aperto" && (
+          <Button size="sm" variant="outline" disabled={occupato || m.aperte.length > 0 || m.chiuse === 0}
+            onClick={() => void azione(`/api/admin/esercizio/mesi/${mese}/chiusura`)}>
+            <Lock className="w-4 h-4 mr-1.5" />Chiudi il mese
+          </Button>
+        )}
+        {admin && m.stato === "chiuso" && (motivo === null
+          ? <Button size="sm" variant="outline" disabled={occupato} onClick={() => setMotivo("")}>Riapri il mese…</Button>
+          : (
+            <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); void azione(`/api/admin/esercizio/mesi/${mese}/riapertura`, { motivo: motivo.trim() }); }}>
+              <div className="space-y-1 grow"><Label htmlFor="mese-motivo" className="text-xs">Perché lo riapri</Label>
+                <Input id="mese-motivo" className="h-8" maxLength={500} value={motivo} onChange={(e) => setMotivo(e.target.value)} /></div>
+              <Button size="sm" type="submit" disabled={occupato || motivo.trim().length < 5}>Riapri il mese</Button>
+              <Button size="sm" type="button" variant="ghost" onClick={() => setMotivo(null)}>Annulla</Button>
+            </form>
+          ))}
+        {m.storia.length > 0 && (
+          <ul className="text-xs text-muted-foreground space-y-0.5">
+            {m.storia.map((s, i) => (
+              <li key={i}>{oraDi(s.il)}: {s.azione === "chiusura" ? "chiuso" : "riaperto"}{s.da ? ` da ${s.da}` : ""}{s.motivo ? ` («${s.motivo}»)` : ""}</li>
+            ))}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
 
 function AggiunteCard({ g, scrive, occupato, registra, causali }: { g: Giornata; scrive: boolean; occupato: boolean; registra: Registra; causali: Causale[] }) {
   const [tipo, setTipo] = useState<string>("fuori_programma");

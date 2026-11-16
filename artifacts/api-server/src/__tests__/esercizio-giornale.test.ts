@@ -44,7 +44,9 @@ describe("le richieste del giornale", () => {
 
   it("la conferma di massa: solo le proposte che si confermano", () => {
     expect(ok({ tipo: "conferma", versione: 1, proposte: ["effettuata_avm", "continuita"] })).toMatchObject({ tipo: "conferma" });
-    expect(errore({ tipo: "conferma", versione: 1, proposte: ["non_rilevata"] })).toMatch(/^proposte\.0: /);
+    expect(errore({ tipo: "conferma", versione: 1, proposte: ["da_verificare"] })).toMatch(/^proposte\.0: /);
+    // dalla 4.6 le non rilevate si confermano presunte
+    expect(errore({ tipo: "conferma", versione: 1, proposte: ["non_rilevata"] })).toBeNull();
   });
 
   it("un'aggiunta: tipo, linea e partenza; orari veri", () => {

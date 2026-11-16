@@ -24,7 +24,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 interface VoceGiornata {
-  giorno: string; stato: "preparata" | "congelata"; programma: string | null; feed: string | null;
+  giorno: string; stato: "preparata" | "congelata" | "chiusa"; programma: string | null; feed: string | null;
   ricostruita: boolean; corse: number; kmProg: number; avvisi: number; preparataIl: string; congelataIl: string | null;
   /** null: turni non ancora aggiunti (giornata congelata prima dei turni) */
   turniPubblicati: boolean | null; senzaTurnoMacchina: number | null;
@@ -106,6 +106,8 @@ const km = (n: number | null) => (n == null ? "—" : n.toLocaleString("it-IT", 
 const ora = (t: string | null) => (t ? t.slice(0, 5) : "—");
 
 function Stato({ g }: { g: Pick<VoceGiornata, "stato" | "ricostruita"> }) {
+  /* chiusa (4.6): il consuntivo è fatto e non si scrive più */
+  if (g.stato === "chiusa") return <span className="inline-flex items-center gap-1 text-xs text-emerald-300"><Lock className="w-3 h-3" />chiusa{g.ricostruita ? " · ricostruita" : ""}</span>;
   return g.stato === "congelata"
     ? <span className="inline-flex items-center gap-1 text-xs text-sky-300"><Snowflake className="w-3 h-3" />congelata{g.ricostruita ? " · ricostruita" : ""}</span>
     : <span className="inline-flex items-center gap-1 text-xs text-amber-300"><RefreshCw className="w-3 h-3" />preparata</span>;

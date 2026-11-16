@@ -106,9 +106,11 @@ export async function preparaGiornata(giorno: string): Promise<EsitoPreparazione
     const prima = righe(await ex.execute(sql`
       SELECT stato, preparata_il, turni IS NULL AS senza_turni, ps_project_id::text AS progetto
         FROM esercizio_giornate WHERE giorno = ${giorno}::date`))[0];
-    if (prima?.stato === "congelata") {
-      if (prima.senza_turni) await completaTurni(ex, giorno, prima.progetto ?? null);
-      return { stato: "congelata" as const, giaCongelata: true as const, turniCompletati: !!prima.senza_turni };
+    if (prima?.stato === "congelata" || prima?.stato === "chiusa") {
+      /* una giornata chiusa (4.6) non cambia più, nemmeno per i turni */
+      const completa = prima.stato === "congelata" && prima.senza_turni;
+      if (completa) await completaTurni(ex, giorno, prima.progetto ?? null);
+      return { stato: "congelata" as const, giaCongelata: true as const, turniCompletati: !!completa };
     }
 
     const avvisi: string[] = [];

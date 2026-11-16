@@ -12,11 +12,18 @@
  *   POST /api/esercizio/giornate/:giorno/eventi    un evento del giornale (esito, conferma, aggiunta, annullamento, nota)
  *   POST /api/esercizio/giornate/:giorno/proposta  ricalcola la proposta dall'AVM
  *   GET  /api/esercizio/causali                    il catalogo delle causali attive
+ *   POST /api/esercizio/giornate/:giorno/chiusura  chiude la giornata (4.6: ruolo Amministrazione o amministratore)
+ *   GET  /api/esercizio/mesi/:mese                 lo stato di un mese (AAAA-MM): giornate, mancanti, riepilogo
+ *
+ * Riaprire una giornata e chiudere o riaprire un mese: solo l'amministratore
+ * (routes/admin.ts, /admin/esercizio/…).
  */
 import { Router, type IRouter } from "express";
 import { elencoGiornate, giornoValido, leggiGiornata } from "../lib/esercizio-giornate";
 import { calcolaProposta, RifiutoProposta } from "../lib/esercizio-proposta";
 import { elencoCausali, leggiGiornale, leggiRichiesta, registraEvento, RifiutoGiornale } from "../lib/esercizio-giornale";
+import { chiudiGiornata, chiusuraDellaGiornata, meseValido, RifiutoChiusura, statoDelMese } from "../lib/esercizio-chiusura";
+import { chiudeLeGiornate } from "@workspace/permessi";
 
 const router: IRouter = Router();
 
@@ -51,7 +58,7 @@ router.get("/esercizio/giornate/:giorno", async (req, res): Promise<void> => {
   try {
     const g = await leggiGiornata(giorno);
     if (!g) { res.status(404).json({ error: "Giornata non ancora preparata" }); return; }
-    res.json({ ...g, giornale: await leggiGiornale(giorno), causali: await elencoCausali() });
+    res.json({ ...g, giornale: await leggiGiornale(giorno), causali: await elencoCausali(), chiusura: await chiusuraDellaGiornata(giorno) });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "consuntivo: giornata non leggibile");
     res.status(500).json({ error: "Giornata non leggibile" });
@@ -83,6 +90,36 @@ router.post("/esercizio/giornate/:giorno/proposta", async (req, res): Promise<vo
     if (e instanceof RifiutoProposta) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message, giorno }, "consuntivo: proposta non riuscita");
     res.status(500).json({ error: "Proposta non riuscita" });
+  }
+});
+
+router.post("/esercizio/giornate/:giorno/chiusura", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  const u = (req as any).user;
+  if (daUnServizio(req) || !u || !chiudeLeGiornate({ admin: u.role === "admin", ruoli: u.ruoli ?? [] })) {
+    res.status(403).json({ error: "La giornata la chiude chi ha il ruolo Amministrazione" });
+    return;
+  }
+  const versione = Number((req.body ?? {}).versione);
+  if (!Number.isInteger(versione) || versione < 0) { res.status(400).json({ error: "versione: un intero" }); return; }
+  try {
+    res.json(await chiudiGiornata(giorno, versione, u.id ?? null));
+  } catch (e: any) {
+    if (e instanceof RifiutoChiusura) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message, giorno }, "consuntivo: chiusura non riuscita");
+    res.status(500).json({ error: "Chiusura non riuscita" });
+  }
+});
+
+router.get("/esercizio/mesi/:mese", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  try {
+    res.json(await statoDelMese(mese));
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, mese }, "consuntivo: mese non leggibile");
+    res.status(500).json({ error: "Mese non leggibile" });
   }
 });
 

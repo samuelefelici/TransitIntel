@@ -61,7 +61,8 @@ export const RICHIESTA = z.discriminatedUnion("tipo", [
     vettura: testo(40).nullable().optional(), nota: testo(500).nullable().optional(),
   }).strict(),
   z.object({
-    tipo: z.literal("conferma"), ...comune, proposte: z.array(z.enum(["effettuata_avm", "continuita"])).min(1).max(2),
+    /* non_rilevata: la presunzione di effettuazione (4.6), esito «presunta» */
+    tipo: z.literal("conferma"), ...comune, proposte: z.array(z.enum(["effettuata_avm", "continuita", "non_rilevata"])).min(1).max(3),
   }).strict(),
   z.object({
     tipo: z.literal("aggiunta"), ...comune, tipoAggiunta: z.enum(TIPI_AGGIUNTA), linea: testo(40), partenza: ORA,
@@ -128,6 +129,7 @@ export async function registraEvento(giorno: string, r: Richiesta, autore: Autor
     await ex.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`cerbero:giornata:${giorno}`}))`);
     const g = righe(await ex.execute(sql`SELECT stato, versione FROM esercizio_giornate WHERE giorno = ${giorno}::date FOR UPDATE`))[0];
     if (!g) throw new RifiutoGiornale(404, "Giornata non ancora preparata");
+    if (g.stato === "chiusa") throw new RifiutoGiornale(409, "Giornata chiusa: non si scrive più. La riapre l'amministratore, con un motivo");
     if (g.stato !== "congelata") throw new RifiutoGiornale(409, "Il giornale si scrive sulle giornate cominciate (congelate)");
     if (Number(g.versione) !== r.versione) {
       throw new RifiutoGiornale(409, "Nel frattempo la giornata è cambiata: ricaricala e riprova");
@@ -160,14 +162,18 @@ export async function registraEvento(giorno: string, r: Richiesta, autore: Autor
          WHERE giorno = ${giorno}::date AND chiave IN (SELECT jsonb_array_elements_text(${JSON.stringify(toccate)}::jsonb))`);
       dati = { esito: r.esito, kmEff: r.kmEff ?? null, vettura: r.vettura ?? null, nota: r.nota ?? null, prima };
     } else if (r.tipo === "conferma") {
+      /* le non rilevate comprendono le corse senza proposta (giornate senza AVM): la presunzione vale per tutte */
+      const presunzione = r.proposte.includes("non_rilevata");
       toccate = righe(await ex.execute(sql`
         SELECT chiave FROM esercizio_corse
          WHERE giorno = ${giorno}::date AND esito IS NULL
-           AND proposta IN (SELECT jsonb_array_elements_text(${JSON.stringify(r.proposte)}::jsonb))`)).map((x) => String(x.chiave));
+           AND (proposta IN (SELECT jsonb_array_elements_text(${JSON.stringify(r.proposte)}::jsonb))
+                OR (${presunzione} AND proposta IS NULL))`)).map((x) => String(x.chiave));
       if (!toccate.length) throw new RifiutoGiornale(400, "Nessuna corsa da confermare con queste proposte");
       const prima = await statoDi(ex, giorno, toccate);
       await ex.execute(sql`
-        UPDATE esercizio_corse SET esito = 'effettuata', km_eff = km_prog, causale = NULL,
+        UPDATE esercizio_corse SET esito = CASE WHEN proposta = 'non_rilevata' OR proposta IS NULL THEN 'presunta' ELSE 'effettuata' END,
+               km_eff = km_prog, causale = NULL,
                vettura = COALESCE(vettura, CASE WHEN jsonb_array_length(COALESCE(prove->'vetture', '[]'::jsonb)) = 1 THEN prove->'vetture'->>0 END),
                confermata_da = ${autore.id}::uuid, confermata_il = now()
          WHERE giorno = ${giorno}::date AND chiave IN (SELECT jsonb_array_elements_text(${JSON.stringify(toccate)}::jsonb))`);

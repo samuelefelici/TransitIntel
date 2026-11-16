@@ -8,6 +8,7 @@ import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
 import { elencoGiornate, giornoValido, leggiGiornata, preparaGiornata } from "../lib/esercizio-giornate";
 import { calcolaProposta, RifiutoProposta } from "../lib/esercizio-proposta";
 import { elencoCausali, salvaCausale, RifiutoGiornale } from "../lib/esercizio-giornale";
+import { chiudiMese, meseValido, riapriGiornata, riapriMese, RifiutoChiusura } from "../lib/esercizio-chiusura";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
@@ -169,6 +170,28 @@ router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promi
     res.status(500).json({ error: "Preparazione non riuscita" });
   }
 });
+/* chiusura e blocco (4.6): riaprire una giornata, chiudere e riaprire un mese; sempre col motivo per riaprire */
+const rispostaChiusura = (req: any, res: any, cosa: string) => (e: any) => {
+  if (e instanceof RifiutoChiusura) { res.status(e.status).json({ error: e.message }); return; }
+  req.log?.error?.({ err: e?.message }, `${cosa} non riuscita`);
+  res.status(500).json({ error: `${cosa.charAt(0).toUpperCase()}${cosa.slice(1)} non riuscita` });
+};
+router.post("/admin/esercizio/giornate/:giorno/riapertura", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  await riapriGiornata(giorno, String(req.body?.motivo ?? ""), (req as any).user?.id ?? null).then((r) => res.json(r), rispostaChiusura(req, res, "riapertura"));
+});
+router.post("/admin/esercizio/mesi/:mese/chiusura", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  await chiudiMese(mese, (req as any).user?.id ?? null).then((r) => res.json(r), rispostaChiusura(req, res, "chiusura del mese"));
+});
+router.post("/admin/esercizio/mesi/:mese/riapertura", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  await riapriMese(mese, String(req.body?.motivo ?? ""), (req as any).user?.id ?? null).then((r) => res.json(r), rispostaChiusura(req, res, "riapertura del mese"));
+});
+
 /* il catalogo delle causali del consuntivo (4.5): l'amministratore lo cambia; il codice no, le corse lo citano */
 router.get("/admin/esercizio/causali", async (req, res): Promise<void> => {
   try { res.json({ causali: await elencoCausali(true) }); }
