@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CalendarRange, ClipboardCheck, History, Lock, Plus, RefreshCw, Snowflake, Undo2 } from "lucide-react";
 import { chiudeLeGiornate } from "@workspace/permessi";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getApiBase } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -465,6 +465,90 @@ interface StatoMese {
   riepilogo: RiepilogoChiusura | null; storia: Array<{ azione: string; da: string | null; il: string; motivo?: string }>;
 }
 
+interface VoceReport {
+  linea?: string | null; vettore?: string; programmate: number; effettuate: number; presunte: number; parziali: number; soppresse: number;
+  aggiunte: number; kmProgrammati: number; kmEffettivi: number; regolaritaCorse: number | null; regolaritaKm: number | null;
+}
+interface Report {
+  giornate: { chiuse: number; delMese: number; aperte: string[] };
+  totali: VoceReport & { kmPersi: number; kmAggiunti: number };
+  indicatori: {
+    regolaritaCorse: { lorda: number | null; netta: number | null }; regolaritaKm: { lorda: number | null; netta: number | null };
+    quotaProvata: number | null; puntualita: { campione: number; inOrario: number; quota: number | null; copertura: number | null };
+  };
+  perLinea: VoceReport[]; perVettore: VoceReport[]; perComune: Array<{ comune: string; kmProgrammati: number; kmEffettivi: number }>; notaComuni: string | null;
+}
+const perc = (x: number | null | undefined) => (x == null ? "—" : `${x.toLocaleString("it-IT", { maximumFractionDigits: 1 })}%`);
+
+/** Il report del mese (4.7), a richiesta: gli indicatori, le linee più indietro, gli scaricamenti. */
+function ReportMese({ mese, versione }: { mese: string; versione: string }) {
+  const [r, setR] = useState<Report | null>(null);
+  const [occupato, setOccupato] = useState(false);
+  const [errore, setErrore] = useState<string | null>(null);
+  useEffect(() => { setR(null); }, [mese, versione]);
+  const calcola = async () => {
+    setOccupato(true); setErrore(null);
+    try { setR(await apiFetch<Report>(`/api/esercizio/mesi/${mese}/report`)); }
+    catch (e: any) { setErrore(e?.message || "Report non riuscito"); }
+    finally { setOccupato(false); }
+  };
+  const base = `${getApiBase()}/api/esercizio/mesi/${mese}`;
+  const linee = r ? [...r.perLinea].filter((l) => l.programmate > 0).sort((a, b) => (a.regolaritaKm ?? 100) - (b.regolaritaKm ?? 100)).slice(0, 8) : [];
+  return (
+    <div className="space-y-2 rounded-md border border-border/60 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">Report del mese</span>
+        <span className="text-xs text-muted-foreground">sulle giornate chiuse</span>
+        <Button size="sm" variant="outline" className="ml-auto" disabled={occupato} onClick={() => void calcola()}>
+          <RefreshCw className={`w-4 h-4 mr-1.5 ${occupato ? "animate-spin" : ""}`} />{r ? "Ricalcola" : "Calcola il report"}
+        </Button>
+        <a className="text-sm underline underline-offset-2" href={`${base}/report.xlsx`} download>Scarica XLSX</a>
+        <a className="text-sm underline underline-offset-2" href={`${base}/dettaglio.csv`} download>Dettaglio corse (CSV)</a>
+      </div>
+      {errore && <div className="text-destructive text-sm">{errore}</div>}
+      {r && (
+        <>
+          <div className="grid gap-x-6 gap-y-1 sm:grid-cols-2 text-sm tabular-nums">
+            <div><span className="text-muted-foreground">Regolarità corse: </span>{perc(r.indicatori.regolaritaCorse.lorda)} <span className="text-muted-foreground">(netta {perc(r.indicatori.regolaritaCorse.netta)})</span></div>
+            <div><span className="text-muted-foreground">Regolarità km: </span>{perc(r.indicatori.regolaritaKm.lorda)} <span className="text-muted-foreground">(netta {perc(r.indicatori.regolaritaKm.netta)})</span></div>
+            <div><span className="text-muted-foreground">Provate dall'AVM: </span>{perc(r.indicatori.quotaProvata)} <span className="text-muted-foreground">delle programmate</span></div>
+            <div title="Solo sulle corse con la partenza vista dall'AVM: non è la puntualità dell'azienda">
+              <span className="text-muted-foreground">Puntualità sul campione AVM: </span>{perc(r.indicatori.puntualita.quota)}
+              <span className="text-muted-foreground"> su {r.indicatori.puntualita.campione.toLocaleString("it-IT")} corse (copertura {perc(r.indicatori.puntualita.copertura)})</span>
+            </div>
+            <div><span className="text-muted-foreground">Km: </span>{km(r.totali.kmEffettivi)} su {km(r.totali.kmProgrammati)} <span className="text-muted-foreground">(persi {km(r.totali.kmPersi)}, aggiunti {km(r.totali.kmAggiunti)})</span></div>
+            <div><span className="text-muted-foreground">Vettori: </span>{r.perVettore.map((v) => `${v.vettore} ${(v.programmate + v.aggiunte).toLocaleString("it-IT")}`).join(" · ")}</div>
+          </div>
+          {linee.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs tabular-nums">
+                <caption className="text-left py-1 text-muted-foreground">Le linee con la regolarità km più bassa</caption>
+                <thead className="text-muted-foreground"><tr className="text-left">
+                  <th className="px-2 py-1">Linea</th><th className="px-2 py-1 text-right">Programmate</th><th className="px-2 py-1 text-right">Soppresse</th>
+                  <th className="px-2 py-1 text-right">Parziali</th><th className="px-2 py-1 text-right">Km</th><th className="px-2 py-1 text-right">Regolarità km</th>
+                </tr></thead>
+                <tbody>
+                  {linee.map((l) => (
+                    <tr key={String(l.linea)} className="border-t border-border/40">
+                      <td className="px-2 py-1 font-medium">{l.linea ?? "—"}</td><td className="px-2 py-1 text-right">{l.programmate}</td>
+                      <td className="px-2 py-1 text-right">{l.soppresse}</td><td className="px-2 py-1 text-right">{l.parziali}</td>
+                      <td className="px-2 py-1 text-right">{km(l.kmEffettivi)} / {km(l.kmProgrammati)}</td><td className="px-2 py-1 text-right">{perc(l.regolaritaKm)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="text-xs text-muted-foreground">
+            {r.perComune.length ? `Per comune: ${r.perComune.length} voci nell'XLSX.` : r.notaComuni}
+            {r.giornate.aperte.length > 0 && ` · ${r.giornate.aperte.length} giornate aperte restano fuori.`}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 /** Il mese della giornata scelta: giornate chiuse, aperte e mancanti, il riepilogo; chiusura e riapertura dell'amministratore. */
 function MeseCard({ mese, admin, versioneGiornata, onCambiato }: { mese: string; admin: boolean; versioneGiornata: string; onCambiato: () => void }) {
   const [m, setM] = useState<StatoMese | null>(null);
@@ -518,6 +602,7 @@ function MeseCard({ mese, admin, versioneGiornata, onCambiato }: { mese: string;
               <Button size="sm" type="button" variant="ghost" onClick={() => setMotivo(null)}>Annulla</Button>
             </form>
           ))}
+        {m.chiuse > 0 && <ReportMese mese={mese} versione={versioneGiornata} />}
         {m.storia.length > 0 && (
           <ul className="text-xs text-muted-foreground space-y-0.5">
             {m.storia.map((s, i) => (

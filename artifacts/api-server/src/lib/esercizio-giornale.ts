@@ -174,7 +174,9 @@ export async function registraEvento(giorno: string, r: Richiesta, autore: Autor
       await ex.execute(sql`
         UPDATE esercizio_corse SET esito = CASE WHEN proposta = 'non_rilevata' OR proposta IS NULL THEN 'presunta' ELSE 'effettuata' END,
                km_eff = km_prog, causale = NULL,
-               vettura = COALESCE(vettura, CASE WHEN jsonb_array_length(COALESCE(prove->'vetture', '[]'::jsonb)) = 1 THEN prove->'vetture'->>0 END),
+               /* la vettura vista dall'AVM, o quella della continuità sul turno macchina (serve al report per vettore) */
+               vettura = COALESCE(vettura, CASE WHEN jsonb_array_length(COALESCE(prove->'vetture', '[]'::jsonb)) = 1 THEN prove->'vetture'->>0 END,
+                                  prove->'continuita'->>'vettura'),
                confermata_da = ${autore.id}::uuid, confermata_il = now()
          WHERE giorno = ${giorno}::date AND chiave IN (SELECT jsonb_array_elements_text(${JSON.stringify(toccate)}::jsonb))`);
       dati = { proposte: r.proposte, prima };

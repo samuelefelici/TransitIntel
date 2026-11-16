@@ -42,7 +42,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il giornale di esercizio, sul d
       VALUES (${GIORNO}::date, 'congelata', 4, '2026-04-06 12:00+02', '2026-04-07 03:00+02', '{}'::jsonb, '{"caronte": true}'::jsonb)`);
     await db.execute(sql`INSERT INTO esercizio_corse (giorno, chiave, numero, linea, partenza, km_prog, proposta, prove) VALUES
       (${GIORNO}::date, ${C1}, '101', '1', '07:00:00', 12.5, 'effettuata_avm', '{"vetture": ["301"]}'::jsonb),
-      (${GIORNO}::date, ${C2}, '102', '1', '08:00:00', 12.5, 'continuita', '{"vetture": []}'::jsonb),
+      (${GIORNO}::date, ${C2}, '102', '1', '08:00:00', 12.5, 'continuita', '{"vetture": [], "continuita": {"vettura": "301"}}'::jsonb),
       (${GIORNO}::date, ${C3}, '103', '2', '09:00:00', 8.0, 'non_rilevata', '{"vetture": []}'::jsonb),
       (${GIORNO}::date, ${C4}, '104', '2', '10:00:00', 8.0, 'da_verificare', '{"vetture": ["302", "303"]}'::jsonb)`);
     await db.execute(sql`INSERT INTO esercizio_aggiunte_proposte (giorno, chiave_avm, journey_ref, linea, numero, partenza, vetture, osservazioni)
@@ -55,7 +55,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il giornale di esercizio, sul d
     const r = await evento({ tipo: "conferma", versione: 0, proposte: ["effettuata_avm", "continuita"] });
     expect(r).toMatchObject({ versione: 1, corse: 2 });
     expect(await corsa(C1)).toMatchObject({ esito: "effettuata", kmEff: 12.5, vettura: "301" });
-    expect(await corsa(C2)).toMatchObject({ esito: "effettuata", kmEff: 12.5, vettura: null });
+    // per continuità: la vettura che fa la corsa prima e quella dopo
+    expect(await corsa(C2)).toMatchObject({ esito: "effettuata", kmEff: 12.5, vettura: "301" });
     expect((await corsa(C2)).confermataIl).not.toBeNull();
     // chi ha visto la versione di prima riceve 409
     await expect(evento({ tipo: "esito", versione: 0, chiavi: [C3], esito: "effettuata" })).rejects.toMatchObject({ status: 409 });
