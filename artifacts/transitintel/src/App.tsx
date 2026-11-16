@@ -58,6 +58,7 @@ const TimetableMapPage = lazyWithRetry(() => import("@/pages/timetable-map"));
 const RuntimesPage = lazyWithRetry(() => import("@/pages/runtimes"));
 const RosterPage = lazyWithRetry(() => import("@/pages/roster"));
 const RosterPubblicazionePage = lazyWithRetry(() => import("@/pages/roster-pubblicazione"));
+const VestizionePage = lazyWithRetry(() => import("@/pages/roster-vestizione"));
 const AnagraficaPage = lazyWithRetry(() => import("@/pages/anagrafica"));
 const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
 const CalcoliPage = lazyWithRetry(() => import("@/pages/calcoli"));
@@ -417,6 +418,9 @@ function Router() {
             </Route>
             <Route path="/roster/pubblicazione">
               <Gated perm={AREE_PAGINA["/roster/pubblicazione"]}><RosterPubblicazionePage /></Gated>
+            </Route>
+            <Route path="/roster/vestizione">
+              <Gated perm={AREE_PAGINA["/roster/vestizione"]}><VestizionePage /></Gated>
             </Route>
             <Route path="/roster">
               <Gated perm={AREE_PAGINA["/roster"]}><RosterPage /></Gated>

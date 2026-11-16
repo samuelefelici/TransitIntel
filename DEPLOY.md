@@ -1348,6 +1348,47 @@ in servizio ma compatibili.
 **Rollback**: immagine precedente. Le colonne restano e la versione di prima
 le ignora. I turni dei conducenti assenti tornano a sembrare coperti.
 
+### La vestizione per deposito (tappa 5.2)
+
+Decisioni del 16/11/2026. In Personale › **Vestizione**, per chi legge il
+Roster, c'è la pagina del capo deposito: un deposito alla volta, oggi o domani.
+Chi ha dei depositi assegnati parte dal suo, e vede solo i conducenti dei
+depositi che vede, come nel tabellone.
+
+**Cosa mostra.**
+- **I turni del deposito, in ordine di uscita**, con chi li fa.
+  - In cima quelli da coprire: gli scoperti e quelli liberati da un'assenza
+    (5.1), con il titolare assente.
+  - Su ciascuno, «Sostituti» apre i sostituti suggeriti della 5.1, con
+    «Assegna».
+  - Per un sostituto c'è scritto chi sostituisce.
+- **I conducenti del deposito** in cinque gruppi: in servizio, liberi, a
+  disposizione, a riposo, assenti. Il motivo di un'assenza lo vede chi ha il
+  permesso Roster; gli altri leggono «ASS». I conducenti fittizi non ci sono.
+- **L'ordine di servizio da stampare**: turni, orari e conducenti, con le
+  riserve a disposizione. È il foglio per la bacheca: dei turni da coprire dice
+  solo «DA COPRIRE», **mai chi è assente né perché**.
+
+**Il deposito di un turno** viene dalla sua residenza nei turni guida,
+abbinata al catalogo dei depositi come per i colori del tabellone. Un turno
+senza residenza riconosciuta si vede solo con «Tutti i depositi».
+
+**Nessuna API nuova e nessuna migrazione.**
+- La pagina legge il tabellone di oggi e domani: in più c'è solo il deposito di
+  ogni turno.
+- Assegna con la chiamata di sempre, quindi riposi, sovrapposizioni e depositi
+  si controllano come nel tabellone.
+- Se un'assegnazione chiede di forzare un avviso, la pagina rimanda al
+  tabellone.
+
+**Dopo il deploy**: la definizione di fatto.
+1. Il capo deposito apre Vestizione e trova il suo deposito, con i turni di
+   domani in ordine di uscita e quelli da coprire in cima.
+2. Copre un turno con «Assegna».
+3. Stampa l'ordine di servizio, che non nomina gli assenti.
+
+**Rollback**: immagine precedente.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23

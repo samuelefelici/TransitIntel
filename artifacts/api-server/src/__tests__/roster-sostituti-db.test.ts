@@ -30,7 +30,7 @@ const [TITOLARE, LIBERO, DISP, SERALE, SOVRAPP, ASSENTE, FINTO, NUOVO, ANCONA] =
 const CONDUCENTI = [TITOLARE, LIBERO, DISP, SERALE, SOVRAPP, ASSENTE, FINTO, NUOVO, ANCONA];
 const GIORNO = "2032-05-12";
 const TURNI_GUIDA = { driverShifts: [
-  { driverId: "G1", nastroStart: "06:00", nastroEnd: "12:00" },
+  { driverId: "G1", nastroStart: "06:00", nastroEnd: "12:00", residenzaName: "Deposito di Jesi" },
   { driverId: "G2", nastroStart: "10:00", nastroEnd: "16:00" },
   { driverId: "G3", nastroStart: "22:00", nastroEnd: "23:30" },
 ] };
@@ -142,6 +142,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("assenze che liberano il turno e
     const b = await admin.get(`/api/roster/board?from=${GIORNO}&days=1`);
     expect(b.status).toBe(200);
     expect(b.body.assignments.find((x: any) => x.dutyCode === "G1")).toMatchObject({ driverId: DISP, titolareId: TITOLARE });
+    // 5.2: ogni turno porta il deposito del catalogo, dalla sua residenza (come i colori)
+    const catalogo = (await admin.get("/api/roster/depositi")).body.depositi as Array<{ codice: string; nome: string }>;
+    const jesi = catalogo.find((d) => d.nome.toLowerCase() === "jesi")?.codice ?? null;
+    const turni = b.body.dutiesByDss[DSS] as Array<{ code: string; depositoCodice: string | null }>;
+    expect(turni.find((t) => t.code === "G1")!.depositoCodice).toBe(jesi);
+    expect(turni.find((t) => t.code === "G2")!.depositoCodice).toBeNull();
   });
 
   it("il titolare torna: senza assenza, riassegnargli il turno chiude la sostituzione", async () => {

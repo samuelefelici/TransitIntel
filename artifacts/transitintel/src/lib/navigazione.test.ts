@@ -49,7 +49,7 @@ describe("il menu di chi entra", () => {
   });
 
   it("Roster e Personale", () => {
-    expect(menu(con("roster"))["Personale"]).toEqual(["Roster", "Anagrafica"]);
+    expect(menu(con("roster"))["Personale"]).toEqual(["Roster", "Vestizione", "Anagrafica"]);
     expect(menu(con("personale"))["Personale"]).toEqual(["Anagrafica"]);
   });
 
@@ -138,7 +138,7 @@ describe("il menu dei ruoli aziendali", () => {
   it("Ufficio turni: come il Pianificatore senza le tariffe, più il tabellone", () => {
     const m = menu(conRuoli("ufficio_turni"));
     expect(Object.keys(m)).toEqual(["Oggi", "Rete e orari", "Turni", "Pubblicazione", "Personale", "Esercizio", "Amministrazione"]);
-    expect(m["Personale"]).toEqual(["Roster", "Anagrafica"]);
+    expect(m["Personale"]).toEqual(["Roster", "Vestizione", "Anagrafica"]);
   });
 
   it("Capo deposito e Centrale: anche la Flotta", () => {
@@ -183,6 +183,7 @@ describe("la voce accesa e le pagine di lavoro", () => {
   it("la voce più specifica vince", () => {
     expect(voceAttiva("/roster/anagrafica", tutte)).toBe("/roster/anagrafica");
     expect(voceAttiva("/roster/pubblicazione", tutte)).toBe("/roster/pubblicazione");
+    expect(voceAttiva("/roster/vestizione", tutte)).toBe("/roster/vestizione");
     expect(voceAttiva("/roster", tutte)).toBe("/roster");
     expect(voceAttiva("/planning-studio/abc/trips", tutte)).toBe("/planning-studio");
     expect(voceAttiva("/planning", tutte)).toBe("/planning");
