@@ -23,5 +23,6 @@
   "0021_versioni_pubblicate": "be6ce0229f07558f2be21dfd9d4b4a5cd9230d55a8ffd9b43b54d2dc842d5164",
   "0022_lunghezza_dei_percorsi": "d66bfd98b7037bc47e271116169363f0502d1ee8457049e9263e98c9f2c22cf7",
   "0023_turni_macchina_nel_canale": "47c84f74e6c9986838f76b26d3e7c1ab9c83d061c3e71c0d7b984ae8294354f0",
-  "0024_regole_dei_turni_pubblicati": "36d25507c87643f64d6be46300d468b395f8a4b7f2c037e06007ac2dc1cf1204"
+  "0024_regole_dei_turni_pubblicati": "36d25507c87643f64d6be46300d468b395f8a4b7f2c037e06007ac2dc1cf1204",
+  "0025_giornate_di_esercizio": "155e6dc50c7d0be4dfc688b3bb048b45066af32c63dc48f53d6c9aa65fa02147"
 }

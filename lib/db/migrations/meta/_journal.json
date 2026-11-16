@@ -176,6 +176,13 @@
       "when": 1794990060000,
       "tag": "0024_regole_dei_turni_pubblicati",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1795060000000,
+      "tag": "0025_giornate_di_esercizio",
+      "breakpoints": true
     }
   ]
 }

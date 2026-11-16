@@ -27,8 +27,10 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { inizioDi } from "./service-day";
-import { codiceCorsaDi } from "./siri-vm";
 import { lunghezzaDellaGeometria } from "./km-programmati";
+import { programmaAllInizio, corseDelFeedNelGiorno, type CorsaDelGiorno } from "./esercizio-corse";
+
+export { programmaAllInizio, corseDelFeedNelGiorno, type CorsaDelGiorno };
 
 const ESEMPI = 8;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -36,82 +38,6 @@ const righe = (r: any): any[] => r?.rows ?? r ?? [];
 const lista = (xs: unknown[]) => sql`(SELECT jsonb_array_elements_text(${JSON.stringify(xs)}::jsonb))`;
 const tabellaMancante = (e: any) => ["42P01", "3F000"].includes(e?.cause?.code ?? e?.code);
 const pct = (n: number, tot: number) => (tot > 0 ? Math.round((n / tot) * 1000) / 10 : null);
-
-export interface CorsaDelGiorno {
-  tripId: string;
-  routeId: string | null;
-  linea: string | null;
-  shapeId: string | null;
-  partenza: string | null;
-  /** il codice stabile di Planning Studio, se la corsa ne viene */
-  codice: string | null;
-  /** il numero di corsa: l'ultima parte del codice (o del trip_id) */
-  numero: string;
-}
-
-/** Il programma (progetto e feed) in esercizio all'inizio della giornata. */
-export async function programmaAllInizio(giorno: string) {
-  const r = righe(await db.execute(sql`
-    SELECT l.feed_id::text AS feed_id, l.project_id::text AS project_id, l.via,
-           l.activated_at, f.filename, p.name AS progetto
-      FROM ps_activation_log l
-      LEFT JOIN gtfs_feeds f ON f.id = l.feed_id
-      LEFT JOIN ps_projects p ON p.id = l.project_id
-     WHERE l.activated_at <= ${inizioDi(giorno)}
-       AND (l.deactivated_at IS NULL OR l.deactivated_at > ${inizioDi(giorno)})
-     ORDER BY l.activated_at DESC LIMIT 1`));
-  const x = r[0];
-  return x ? {
-    feedId: x.feed_id as string, progettoId: (x.project_id as string | null) ?? null, progetto: x.progetto ?? null,
-    file: x.filename ?? null, via: x.via ?? null, attivatoIl: x.activated_at ? new Date(x.activated_at).toISOString() : null,
-  } : null;
-}
-
-/**
- * Le corse di un feed che circolano nel giorno: settimana del calendario nel
- * periodo, meno le date tolte, più quelle aggiunte (la regola dell'aggancio,
- * siri-ingest, e della copertura, operations).
- */
-export async function corseDelFeedNelGiorno(feedId: string, giorno: string): Promise<CorsaDelGiorno[]> {
-  const ymd = giorno.replace(/-/g, "");
-  const r = righe(await db.execute(sql`
-    WITH attivi AS (
-      SELECT c.service_id FROM gtfs_calendar c
-       WHERE c.feed_id = ${feedId}::uuid AND c.start_date <= ${ymd} AND c.end_date >= ${ymd}
-         AND CASE EXTRACT(ISODOW FROM ${giorno}::date)::int
-               WHEN 1 THEN c.monday    WHEN 2 THEN c.tuesday WHEN 3 THEN c.wednesday
-               WHEN 4 THEN c.thursday  WHEN 5 THEN c.friday  WHEN 6 THEN c.saturday
-               ELSE c.sunday END = 1
-         AND NOT EXISTS (SELECT 1 FROM gtfs_calendar_dates x
-                          WHERE x.feed_id = c.feed_id AND x.service_id = c.service_id
-                            AND x.date = ${ymd} AND x.exception_type = 2)
-      UNION
-      SELECT a.service_id FROM gtfs_calendar_dates a
-       WHERE a.feed_id = ${feedId}::uuid AND a.date = ${ymd} AND a.exception_type = 1
-    )
-    SELECT t.trip_id, t.route_id, t.shape_id, r.route_short_name,
-           (SELECT min(st.departure_time) FROM gtfs_stop_times st
-             WHERE st.feed_id = t.feed_id AND st.trip_id = t.trip_id) AS partenza
-      FROM gtfs_trips t
-      JOIN attivi a ON a.service_id = t.service_id
-      LEFT JOIN gtfs_routes r ON r.feed_id = t.feed_id AND r.route_id = t.route_id
-     WHERE t.feed_id = ${feedId}::uuid
-     ORDER BY t.trip_id`));
-  /* il codice stabile: le corse dei feed di Planning Studio hanno per trip_id l'id della corsa */
-  const ids = r.map(x => String(x.trip_id)).filter(id => UUID.test(id));
-  const codici = new Map<string, string>();
-  if (ids.length) {
-    for (const x of righe(await db.execute(sql`
-      SELECT id::text AS id, codice FROM ps_trips WHERE id::text IN ${lista(ids)}`))) codici.set(x.id, x.codice);
-  }
-  return r.map(x => {
-    const tripId = String(x.trip_id), codice = codici.get(tripId) ?? null;
-    return {
-      tripId, routeId: x.route_id ?? null, linea: x.route_short_name ?? null, shapeId: x.shape_id ?? null,
-      partenza: x.partenza ?? null, codice, numero: codiceCorsaDi(codice ?? tripId),
-    };
-  });
-}
 
 /** Le prove dell'AVM della giornata: coppie di codici e corse con passaggi. Null se Caronte non c'è. */
 async function proveDelGiorno(giorno: string) {
