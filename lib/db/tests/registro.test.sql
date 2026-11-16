@@ -479,7 +479,7 @@ DO $$
 DECLARE st jsonb := registro.stato();
 BEGIN
   ASSERT (st ->> 'attivo')::boolean AND st ->> 'base_giuridica' = 'prova' AND (st ->> 'anonimizza_dopo_mesi')::int = 12
-         AND jsonb_array_length(st -> 'tabelle') = 33, format('stato: %s', st);
+         AND jsonb_array_length(st -> 'tabelle') = 34, format('stato: %s', st);
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.ruoli_diritti' AND (t ->> 'con_valori')::boolean),
     'i diritti dei ruoli (migrazione 0015): con i valori';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.azienda' AND (t ->> 'con_valori')::boolean),
@@ -493,6 +493,8 @@ BEGIN
     'gli utenti: qualche valore (ruolo e permessi)';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.esercizio_vetture' AND (t ->> 'con_valori')::boolean),
     'le vetture sui turni macchina (migrazione 0033): con i valori';
+  ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.roster_voci' AND (t ->> 'con_valori')::boolean),
+    'il catalogo delle voci del roster (migrazione 0034): con i valori';
 END $$;
 
 -- l'app (cerbero_owner): non legge le tabelle, non cambia, non svuota, non spegne
