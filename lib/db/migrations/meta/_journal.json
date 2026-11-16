@@ -239,6 +239,13 @@
       "when": 1795540000000,
       "tag": "0033_vetture_sui_turni_macchina",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1795600000000,
+      "tag": "0034_voci_del_roster",
+      "breakpoints": true
     }
   ]
 }

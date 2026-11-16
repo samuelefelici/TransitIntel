@@ -25,6 +25,7 @@ import {
   MousePointer2, ArrowLeftRight, Pin, Send, Lock,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { liberaTurno } from "@/lib/voci-roster";
 import { Link } from "wouter";
 import { useAuth } from "@/hooks/use-auth";
 import { COLORE_CATEGORIA_GIORNO, COLORE_GIORNO_NEUTRO } from "@/lib/day-classifier";
@@ -81,8 +82,6 @@ interface Sostituti {
   fuori: { assenti: number; violazioni: number };
 }
 const GRUPPI_SOSTITUTI = { libero: "libero", disposizione: "a disposizione", in_servizio: "in servizio" } as const;
-/** Il riposo della rotazione non libera il turno; le altre assenze sì (5.1). */
-const liberaTurno = (e: { category: string; code: string }) => e.category === "assenza" && e.code !== "R";
 type Servizio = "urbano" | "extraurbano";
 /** Riposo troppo corto o sovrapposizione fra due turni di un conducente (api-server lib/roster-normativa.ts). */
 interface ViolazioneRoster {
@@ -99,8 +98,9 @@ interface ViolazioneRoster {
   forzata: boolean;
   turni: Array<{ assegnazioneId: string | null; giorno: string; codice: string; dssId: string; servizio: Servizio | null; servizioDa: string | null }>;
 }
-interface RosterEntry { id: string; driverId: string; day: string; category: "assenza" | "presenza"; code: string }
-interface VoceDef { code: string; label: string }
+/** liberaTurno, aDisposizione: le regole della voce nel catalogo (5.5, lib/voci-roster.ts) */
+interface RosterEntry { id: string; driverId: string; day: string; category: "assenza" | "presenza"; code: string; liberaTurno?: boolean; aDisposizione?: boolean }
+interface VoceDef { code: string; label: string; liberaTurno?: boolean; aDisposizione?: boolean }
 type VociCatalog = { assenza: VoceDef[]; presenza: VoceDef[] };
 interface ArmedVoce { category: "assenza" | "presenza"; code: string; label: string }
 /** Stile chip voce nel menu della toolbar (solo lì usiamo lo sfondo colorato). */

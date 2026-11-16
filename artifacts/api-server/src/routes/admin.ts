@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { requireAdmin } from "../lib/auth";
 import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/registro-modifiche";
 import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from "../lib/azienda";
+import { cancellaVoce, creaVoce, elencoVoci, ModificaVoce, modificaVoce, NuovaVoce, RifiutoVoci } from "../lib/roster-voci";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
@@ -296,6 +297,48 @@ router.put("/admin/azienda", async (req, res): Promise<void> => {
     req.log?.error?.({ err: e?.message }, "dati dell'azienda non salvati");
     res.status(500).json({ error: "Dati dell'azienda non salvati" });
   }
+});
+
+/**
+ * Il catalogo delle voci del roster (tappa 5.5, lib/roster-voci.ts): GET
+ * l'elenco intero con quanto è usata ogni voce, POST una voce nuova, PUT
+ * /:codice le modifiche, DELETE /:codice una voce mai usata. Solo admin, mai
+ * un token di Argos (requireAdmin): le regole decidono anche chi vede i dati
+ * sanitari. Codice e categoria non cambiano; «sanitaria» si accende e non si
+ * spegne; R e ASS cambiano solo nome, ordine e codice per le paghe.
+ */
+const CODICE_VOCE = /^[A-Za-z0-9]{1,40}$/;
+const rifiutoVoci = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoVoci) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/voci-roster", requireAdmin);
+router.get("/admin/voci-roster", async (req, res): Promise<void> => {
+  try { res.json({ voci: await elencoVoci() }); }
+  catch (e) { rifiutoVoci(req, res, e, "catalogo delle voci non leggibile"); }
+});
+router.post("/admin/voci-roster", async (req, res): Promise<void> => {
+  const p = NuovaVoce.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.status(201).json({ voce: await creaVoce(p.data) }); }
+  catch (e) { rifiutoVoci(req, res, e, "voce non creata"); }
+});
+router.put("/admin/voci-roster/:codice", async (req, res): Promise<void> => {
+  const codice = String(req.params.codice ?? "");
+  if (!CODICE_VOCE.test(codice)) { res.status(404).json({ error: "Voce non trovata" }); return; }
+  const p = ModificaVoce.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ voce: await modificaVoce(codice, p.data) }); }
+  catch (e) { rifiutoVoci(req, res, e, "voce non salvata"); }
+});
+router.delete("/admin/voci-roster/:codice", async (req, res): Promise<void> => {
+  const codice = String(req.params.codice ?? "");
+  if (!CODICE_VOCE.test(codice)) { res.status(404).json({ error: "Voce non trovata" }); return; }
+  try { await cancellaVoce(codice); res.json({ ok: true }); }
+  catch (e) { rifiutoVoci(req, res, e, "voce non cancellata"); }
 });
 
 /**

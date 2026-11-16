@@ -20,7 +20,7 @@ import { eseguiPython, jsonDallUscita } from "./lavori/python";
 import { richiedeDiritto } from "./auth";
 import { controlloDepositi, fuoriDaiDepositi, nonVisibili } from "./roster-limite-depositi";
 import type { Ex } from "./anagrafica-store";
-import { CODICI_SANITARI } from "./roster-voci";
+import { leggiCatalogo, problemaRotazione } from "./roster-voci";
 
 /* Chi ha solo «Personale» legge le rotazioni (le sceglie nella scheda del
  * conducente) ma non le crea, non le cancella e non genera i riposi: per
@@ -71,11 +71,11 @@ router.post("/roster/rotazioni-riposi", soloRoster, async (req, res): Promise<vo
     if (!name) { res.status(400).json({ error: "Nome obbligatorio" }); return; }
     const pattern = normalizePattern(b.pattern);
     if (!pattern) { res.status(400).json({ error: "Pattern non valido (matrice settimane × 7 giorni)" }); return; }
-    /* le rotazioni scrivono voci di assenza per tutti i conducenti assegnati:
-     * i codici sanitari passano solo dalla voce del singolo (lib/roster-voci.ts) */
-    if (pattern.flat().some(c => c && CODICI_SANITARI.has(c))) {
-      res.status(400).json({ error: "Malattia, infortunio e 104 non si mettono in una rotazione: la rotazione è per i riposi" }); return;
-    }
+    /* le rotazioni scrivono voci di assenza per tutti i conducenti assegnati: solo
+     * assenze attive del catalogo, e mai i codici sanitari, che passano solo dalla
+     * voce del singolo (lib/roster-voci.ts) */
+    const problema = problemaRotazione(pattern.flat().filter((c): c is string => !!c), await leggiCatalogo());
+    if (problema) { res.status(400).json({ error: problema }); return; }
     const meta = b.meta && typeof b.meta === "object" ? b.meta : null;
     const r = await db.execute<any>(sql`
       INSERT INTO roster_rotazioni_riposi (name, weeks, pattern, meta, owner_user_id)
@@ -285,6 +285,10 @@ router.post("/roster/rotazioni-riposi/:id/genera-riposi", soloRoster, async (req
     const pattern: (string | null)[][] = rot.rows[0].pattern;
     const weeks = Number(rot.rows[0].weeks);
     if (!Array.isArray(pattern) || weeks < 1) { res.status(400).json({ error: "Pattern rotazione non valido" }); return; }
+    /* il catalogo può essere cambiato dopo la rotazione: una voce diventata sanitaria non si scrive per tutti */
+    const problema = problemaRotazione(pattern.flat().filter((c): c is string => !!c).map((c) => String(c).trim().toUpperCase().slice(0, 8)),
+      await leggiCatalogo(), true);
+    if (problema) { res.status(400).json({ error: problema }); return; }
 
     // STORICO IMMUTABILE: la rigenerazione non riscrive mai i giorni già
     // trascorsi — la finestra effettiva parte al più presto da OGGI.

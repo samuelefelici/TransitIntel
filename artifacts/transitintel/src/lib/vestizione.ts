@@ -11,6 +11,7 @@
  * E l'ordine di servizio da stampare: turni, orari e conducenti. Per la
  * bacheca: dei turni da coprire non dice chi è assente.
  */
+import { aDisposizione, aRiposo, liberaTurno } from "./voci-roster";
 
 export interface TurnoTabellone {
   code: string; type: string | null; start: string | null; end: string | null;
@@ -26,7 +27,7 @@ export interface TabelloneVestizione {
   drivers: ConducenteTabellone[];
   assignments: Array<{ id: string; driverId: string; day: string; dutyCode: string; dssId: string; titolareId?: string | null }>;
   occupatiDaAltri?: Array<{ day: string; dutyCode: string; dssId: string }>;
-  entries?: Array<{ driverId: string; day: string; category: string; code: string }>;
+  entries?: Array<{ driverId: string; day: string; category: string; code: string; liberaTurno?: boolean; aDisposizione?: boolean }>;
   pubblicati: Record<string, Array<{ dssId: string; udpNome: string | null }>>;
   dutiesByDss: Record<string, TurnoTabellone[]>;
 }
@@ -51,8 +52,6 @@ export interface Vestizione {
 export const GRUPPI: Array<[Gruppo, string]> = [
   ["in_servizio", "In servizio"], ["liberi", "Liberi"], ["disposizione", "A disposizione"], ["riposo", "A riposo"], ["assenti", "Assenti"],
 ];
-const DISPOSIZIONE = new Set(["D1", "D2"]);
-const RIPOSO = "R";
 
 export const nomeDi = (c: ConducenteTabellone): string => [c.cognome, c.nome].filter(Boolean).join(" ") || c.name;
 const persona = (c: ConducenteTabellone | undefined, id: string): Persona =>
@@ -68,12 +67,13 @@ export function vestizione(b: TabelloneVestizione, giorno: string, deposito: str
   const conducenti = new Map(b.drivers.map((d) => [d.id, d]));
   const voci = (b.entries ?? []).filter((e) => e.day === giorno);
   const assenza = new Map<string, string>();
-  const riposo = new Set<string>();
+  const riposo = new Map<string, string>();
   const disposizione = new Map<string, string>();
   for (const v of voci) {
-    if (v.category === "assenza" && v.code === RIPOSO) riposo.add(v.driverId);
-    else if (v.category === "assenza") assenza.set(v.driverId, v.code);
-    else if (v.category === "presenza" && DISPOSIZIONE.has(v.code)) disposizione.set(v.driverId, v.code);
+    /* le regole della voce nel catalogo (5.5): il riposo non libera il turno, le altre assenze sì */
+    if (aRiposo(v)) riposo.set(v.driverId, v.code);
+    else if (liberaTurno(v)) assenza.set(v.driverId, v.code);
+    else if (aDisposizione(v)) disposizione.set(v.driverId, v.code);
   }
   const delGiorno = b.assignments.filter((a) => a.day === giorno);
   const perTurno = new Map(delGiorno.map((a) => [`${a.dssId}|${a.dutyCode}`, a]));
@@ -111,7 +111,7 @@ export function vestizione(b: TabelloneVestizione, giorno: string, deposito: str
     const turniSuoi = (turniDi.get(c.id) ?? []).sort();
     const x: ConducenteDelGiorno = { id: c.id, nome: nomeDi(c), fittizio: false, matricola: c.matricola ?? null, turni: turniSuoi, voce: null };
     if (assenza.has(c.id)) gruppi.assenti.push({ ...x, voce: assenza.get(c.id)! });
-    else if (riposo.has(c.id)) gruppi.riposo.push({ ...x, voce: RIPOSO });
+    else if (riposo.has(c.id)) gruppi.riposo.push({ ...x, voce: riposo.get(c.id)! });
     else if (turniSuoi.length) gruppi.in_servizio.push(x);
     else if (disposizione.has(c.id)) gruppi.disposizione.push({ ...x, voce: disposizione.get(c.id)! });
     else gruppi.liberi.push(x);

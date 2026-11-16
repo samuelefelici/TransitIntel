@@ -13,7 +13,7 @@
  *   POST   /api/roster/assignments             — assegna {driverId, day, dutyCode, dssId, forza?: chiavi viste}
  *   POST   /api/roster/assignments/scambia     — cambio turno fra due conducenti, stesso giorno (forza?)
  *   DELETE /api/roster/assignments/:id         — rimuovi assegnazione
- *   GET    /api/roster/voci                    — catalogo assenze/presenze
+ *   GET    /api/roster/voci                    — catalogo assenze/presenze (le voci attive; tabella roster_voci, 5.5)
  *   GET    /api/roster/calendario?from=&days=  — la categoria di ogni giorno nel calendario aziendale
  *   POST   /api/roster/entries · DELETE /api/roster/entries/:id
  *   GET    /api/roster/sostituti?day=&dssId=&dutyCode= — chi può coprire un turno (5.1)
@@ -51,7 +51,7 @@ import { abbinaColori, depositiPlanner, depositoDelNome, type DepositoColorato }
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
 import { fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
-import { catalogoPer, esitoScrittura, mascheraVoce } from "../lib/roster-voci";
+import { aDisposizione, catalogoPer, esitoScrittura, leggiCatalogo, liberaIlTurno, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
   forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, turniDelDss, violazioniDeiCambi, violazioniDelTabellone, violazioniPerCandidati,
@@ -329,7 +329,8 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       } catch { /* nomi facoltativi */ }
     }
 
-    // Voci Assenza/Presenza nel range.
+    // Voci Assenza/Presenza nel range, con le regole del catalogo (5.5).
+    const catalogo = await leggiCatalogo(db as unknown as Ex);
     const entriesQ = await db.execute<any>(sql`
       SELECT id, driver_id, day::text AS day, category, code, source
         FROM roster_entries
@@ -358,11 +359,14 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       occupatiDaAltri: assegnazioni.filter((a: any) => !vede(a.driver_id))
         .map((a: any) => ({ day: String(a.day).slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id })),
       violazioni: await violazioniPerTabellone(dep.drivers.map(d => d.id), from, al),
-      /* i codici sanitari (malattia, infortunio, 104) solo a chi ha il permesso roster */
+      /* i codici sanitari (malattia, infortunio, 104) solo a chi ha il permesso roster; le
+       * regole (libera il turno, a disposizione) quelle della voce vera, anche se mascherata */
       entries: entriesQ.rows.filter((e: any) => vede(e.driver_id)).map((e: any) => mascheraVoce({
         id: e.id, driverId: e.driver_id, day: e.day.slice(0, 10), category: e.category, code: e.code,
         source: e.source ?? null,
-      }, vedeCodiciSanitari(req))),
+        liberaTurno: liberaIlTurno({ category: e.category, code: e.code }, catalogo),
+        aDisposizione: aDisposizione({ category: e.category, code: e.code }, catalogo),
+      }, vedeCodiciSanitari(req), catalogo)),
     });
   } catch (e: any) {
     console.error("[roster.board]", e?.cause?.code ?? e?.code ?? e?.message);
@@ -540,7 +544,7 @@ router.get("/roster/sostituti", async (req, res): Promise<void> => {
     const assentiTutti = new Set(voci.filter(v => v.category === "assenza").map(v => v.driverId));
     const daControllare = ids.filter(id => !esclusi.has(id) && !assentiTutti.has(id));
     const violazioni = await violazioniPerCandidati({ id: a?.id ?? null, day, dssId, dutyCode, snapshot }, daControllare, preparato);
-    const r = sostitutiDa({ candidati, esclusi, voci, turni, violazioni: new Map([...violazioni].map(([k, v]) => [k, v.length])) });
+    const r = sostitutiDa({ candidati, esclusi, voci, turni, violazioni: new Map([...violazioni].map(([k, v]) => [k, v.length])), catalogo: await leggiCatalogo(ex) });
     res.json({
       turno: { day, dssId, dutyCode, inizio: snapshot.start ?? null, fine: snapshot.end ?? null },
       deposito,
@@ -853,7 +857,8 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
 // ── Voci Assenza / Presenza ───────────────────────────────────────────────────
 
 router.get("/roster/voci", async (req, res): Promise<void> => {
-  res.json({ catalog: catalogoPer(vedeCodiciSanitari(req)) });
+  try { res.json({ catalog: catalogoPer(vedeCodiciSanitari(req), await leggiCatalogo(db as unknown as Ex)) }); }
+  catch (e) { rispondiErrore(res, e, "catalogo delle voci"); }
 });
 
 router.post("/roster/entries", async (req, res): Promise<void> => {
@@ -862,8 +867,9 @@ router.post("/roster/entries", async (req, res): Promise<void> => {
     if (!driverId || !UUID_RE.test(String(driverId)) || !DATE_RE.test(String(day ?? ""))) {
       res.status(400).json({ error: "driverId (uuid) e day (YYYY-MM-DD) richiesti" }); return;
     }
-    const esito = esitoScrittura(category, code, vedeCodiciSanitari(req));
+    const esito = esitoScrittura(category, code, vedeCodiciSanitari(req), await leggiCatalogo(db as unknown as Ex));
     if (esito === "non-valido") { res.status(400).json({ error: "categoria o codice voce non validi" }); return; }
+    if (esito === "spenta") { res.status(400).json({ error: "Questa voce è spenta nel catalogo: non si scrive più" }); return; }
     if (esito === "riservato") {
       res.status(403).json({ error: "Malattia, infortunio e 104 li scrive solo chi ha il permesso Roster: usa «ASS – Assenza»" }); return;
     }

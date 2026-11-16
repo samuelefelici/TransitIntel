@@ -23,6 +23,9 @@ import anagraficaRouter from "../routes/anagrafica";
 import rosterRouter from "../routes/roster";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import { liberaIlTurno, sostitutiDa } from "../lib/roster-sostituti";
+import { catalogoDa, VOCI_DI_PARTENZA } from "../lib/roster-voci";
+
+const CATALOGO = catalogoDa(VOCI_DI_PARTENZA);
 
 const u = (n: number) => `e5100000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [ADMIN, P, UDP, VSS, DSS, PUB] = [u(1), u(2), u(3), u(4), u(5), u(6)];
@@ -62,10 +65,10 @@ async function pulisci() {
 
 describe("le regole, senza database", () => {
   it("il riposo non libera il turno, le altre assenze sì, le presenze no", () => {
-    expect(liberaIlTurno({ category: "assenza", code: "MA" })).toBe(true);
-    expect(liberaIlTurno({ category: "assenza", code: "ASS" })).toBe(true);
-    expect(liberaIlTurno({ category: "assenza", code: "R" })).toBe(false);
-    expect(liberaIlTurno({ category: "presenza", code: "D1" })).toBe(false);
+    expect(liberaIlTurno({ category: "assenza", code: "MA" }, CATALOGO)).toBe(true);
+    expect(liberaIlTurno({ category: "assenza", code: "ASS" }, CATALOGO)).toBe(true);
+    expect(liberaIlTurno({ category: "assenza", code: "R" }, CATALOGO)).toBe(false);
+    expect(liberaIlTurno({ category: "presenza", code: "D1" }, CATALOGO)).toBe(false);
   });
   it("i gruppi in ordine, poi per nome; fuori gli assenti, chi viola e il titolare", () => {
     const c = (id: string, nome: string) => ({ id, nome, matricola: null, deposito: "Jesi" });
@@ -75,6 +78,7 @@ describe("le regole, senza database", () => {
       voci: [{ driverId: "b", day: "x", category: "presenza", code: "D2" }, { driverId: "e", day: "x", category: "assenza", code: "R" }],
       turni: new Map([["c", ["G3"]], ["d", ["G2"]]]),
       violazioni: new Map([["d", 1]]),
+      catalogo: CATALOGO,
     });
     expect(r.sostituti.map((s) => [s.id, s.gruppo])).toEqual([["a", "libero"], ["b", "disposizione"], ["c", "in_servizio"]]);
     expect(r.sostituti[2]!.turni).toEqual(["G3"]);
@@ -110,7 +114,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("assenze che liberano il turno e
     await db.execute(sql`INSERT INTO roster_entries (driver_id, day, category, code) VALUES
       (${TITOLARE}::uuid, ${GIORNO}::date, 'assenza', 'MA'),
       (${DISP}::uuid, ${GIORNO}::date, 'presenza', 'D1'),
-      (${ASSENTE}::uuid, ${GIORNO}::date, 'assenza', 'FE')`);
+      (${ASSENTE}::uuid, ${GIORNO}::date, 'assenza', 'R')`);
   });
   afterAll(pulisci);
 
@@ -121,7 +125,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("assenze che liberano il turno e
     expect(r.body.deposito).toBe("Jesi");
     expect(r.body.sostituti.map((s: any) => [s.id, s.gruppo])).toEqual([[LIBERO, "libero"], [DISP, "disposizione"], [SERALE, "in_servizio"]]);
     expect(r.body.fuori).toEqual({ assenti: 1, violazioni: 1 });
-    expect(JSON.stringify(r.body)).not.toMatch(/"MA"|Malattia|"FE"/);
+    expect(JSON.stringify(r.body)).not.toMatch(/"MA"|Malattia|"R"|Riposo/);
     expect((await admin.get(`/api/roster/sostituti?day=2032-02-30&dssId=${DSS}&dutyCode=G1`)).status).toBe(400);
   });
 

@@ -1476,6 +1476,59 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il catalogo delle voci del roster (tappa 5.5)
+
+Le voci di assenza e di presenza del roster (R, ASS, MA3, MA, I, PAD, STRA,
+D1, D2, DISP, DAM1, DAM2) e le loro regole erano scritte nel codice. Ora stanno
+nella tabella `roster_voci` (migrazione `0034`), e l'amministratore le cambia
+dalla pagina **Amministrazione → Voci del roster**.
+- **Le regole di ogni voce**:
+  - **dato sanitario**: chi non ha il permesso la legge come «ASS – Assenza» e
+    non la scrive (prima: MA3, MA, I, PAD);
+  - **libera il turno**: il conducente manca e il suo turno torna da coprire
+    (prima: tutte le assenze tranne R);
+  - **a disposizione**: la presenza conta come «a disposizione» nella
+    Vestizione e nei sostituti (prima: D1 e D2; DISP no, come prima);
+  - **codice per le paghe** (BDROP): vuoto, per la tappa delle presenze;
+  - **attiva**: una voce spenta non si offre più; quelle già scritte restano.
+- **I 12 codici di prima** entrano con le regole di prima: il comportamento
+  non cambia. Un codice che c'era già nelle voci o nelle rotazioni ma non nel
+  catalogo entra **spento**, col codice come nome e con le regole di prima;
+  l'amministratore gli dà un nome e decide se riaccenderlo.
+- **Le protezioni**:
+  - «dato sanitario» si accende e **non si spegne** dall'applicazione: le voci
+    già scritte diventerebbero leggibili a chi non ha il permesso. Se serve
+    davvero, si fa in psql come proprietario, con una decisione scritta;
+  - **R e ASS** sono di sistema: cambiano solo nome, ordine e codice per le
+    paghe (R è il riposo delle rotazioni, ASS è la voce che maschera i dati
+    sanitari). Lo ripete un vincolo della tabella;
+  - una voce usata (nel roster o in una rotazione) **non si cancella**: si
+    spegne. Lo ripete una chiave esterna da `roster_entries`;
+  - le rotazioni dei riposi accettano solo assenze attive e non sanitarie del
+    catalogo (prima un codice qualsiasi, purché non sanitario).
+- Nel registro delle modifiche, coi valori.
+
+**Chi**: solo l'amministratore (`/api/admin/voci-roster`, mai un token di
+Argos). Il roster legge le voci attive da `GET /api/roster/voci`, come prima;
+il tabellone manda con ogni voce le sue regole.
+
+**Dopo il deploy**:
+1. Se la pagina mostra voci **spente col codice come nome** (in fondo
+   all'elenco), erano codici già usati fuori dal catalogo: vanno guardate e
+   battezzate (nome, regole), poi riaccese se servono. Per saperlo prima del
+   deploy, in sola lettura:
+   ```sql
+   SELECT category, code, count(*) FROM roster_entries
+    WHERE code NOT IN ('R','ASS','MA3','MA','I','PAD','STRA','D1','D2','DISP','DAM1','DAM2')
+    GROUP BY 1, 2 ORDER BY 3 DESC;
+   ```
+2. La definizione di fatto: si aggiunge una voce nuova (per esempio un riposo
+   compensativo che non libera il turno), la si scrive nel tabellone e il
+   turno del conducente resta coperto.
+
+**Rollback**: immagine precedente. Tabella e chiave esterna restano; il codice
+di prima scrive solo i 12 codici, che ci sono.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
@@ -2936,7 +2989,7 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 | Flotta | FleetCare | Flotta |
 | Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa | Tariffe |
 | Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi |
-| Amministrazione | Utenti e accessi (admin), Ruoli (admin), Azienda (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
+| Amministrazione | Utenti e accessi (admin), Ruoli (admin), Azienda (admin), Voci del roster (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
 
 #### Ruoli aziendali (PR 2.14a)
 

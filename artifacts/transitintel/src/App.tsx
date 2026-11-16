@@ -102,6 +102,7 @@ const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
 const AdminParametriPage = lazyWithRetry(() => import("@/pages/admin-parametri"));
 const AdminAziendaPage = lazyWithRetry(() => import("@/pages/admin-azienda"));
+const AdminVociRosterPage = lazyWithRetry(() => import("@/pages/admin-voci-roster"));
 const AdminRuoliPage = lazyWithRetry(() => import("@/pages/admin-ruoli"));
 const AdminRegistroPage = lazyWithRetry(() => import("@/pages/admin-registro"));
 const AdminEsercizioPage = lazyWithRetry(() => import("@/pages/admin-esercizio"));
@@ -457,6 +458,9 @@ function Router() {
             </Route>
             <Route path="/admin/azienda">
               <AdminOnly><AdminAziendaPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/voci-roster">
+              <AdminOnly><AdminVociRosterPage /></AdminOnly>
             </Route>
             <Route path="/admin/parametri">
               <AdminOnly><AdminParametriPage /></AdminOnly>

@@ -1,4 +1,5 @@
 /** I conti della pagina Oggi (pages/oggi.tsx), senza React: si provano da soli. */
+import { aRiposo, liberaTurno } from "./voci-roster";
 
 /** La data di oggi a Roma, AAAA-MM-GG (il roster ragiona per giorno italiano). */
 export function oggiARoma(adesso = new Date()): string {
@@ -15,13 +16,11 @@ export interface TabelloneGiorno {
   pubblicati?: Record<string, Array<{ dssId: string; udpNome: string | null }>>;
   dutiesByDss?: Record<string, Array<{ code: string }>>;
   assignments?: Array<{ day: string; dssId: string; dutyCode: string; driverId?: string }>;
-  entries?: Array<{ day: string; driverId: string; category: string; code: string }>;
+  entries?: Array<{ day: string; driverId: string; category: string; code: string; liberaTurno?: boolean }>;
   /** forzata: assegnata lo stesso, sapendolo (il roster la mostra a parte) */
   violazioni?: Array<{ forzata?: boolean }>;
 }
 
-/** Il riposo della rotazione è una voce di assenza nel catalogo, ma non è una persona che manca. */
-const RIPOSO = "R";
 
 /**
  * Turni del giorno dal tabellone: pubblicati, assegnati, scoperti; persone
@@ -30,7 +29,8 @@ const RIPOSO = "R";
  */
 export function riassuntoTurni(b: TabelloneGiorno, giorno: string) {
   const voci = (b.entries ?? []).filter(e => e.day === giorno && e.category === "assenza");
-  const assentiConTurno = new Set(voci.filter(e => e.code !== RIPOSO).map(e => e.driverId));
+  /* il riposo è una voce di assenza, ma non è una persona che manca: le regole dal catalogo (5.5) */
+  const assentiConTurno = new Set(voci.filter(liberaTurno).map(e => e.driverId));
   const delGiorno = (b.assignments ?? []).filter(a => a.day === giorno);
   const presi = new Set(delGiorno.map(a => `${a.dssId}|${a.dutyCode}`));
   const liberatiDa = new Set(delGiorno.filter(a => a.driverId && assentiConTurno.has(a.driverId)).map(a => `${a.dssId}|${a.dutyCode}`));
@@ -49,8 +49,8 @@ export function riassuntoTurni(b: TabelloneGiorno, giorno: string) {
     scoperti,
     liberati,
     /* per persona: due voci dello stesso conducente nello stesso giorno sono un'assenza */
-    assenze: new Set(voci.filter(e => e.code !== RIPOSO).map(e => e.driverId)).size,
-    riposi: new Set(voci.filter(e => e.code === RIPOSO).map(e => e.driverId)).size,
+    assenze: new Set(voci.filter(liberaTurno).map(e => e.driverId)).size,
+    riposi: new Set(voci.filter(aRiposo).map(e => e.driverId)).size,
     /* quelle già forzate il roster le mostra a parte, non da controllare */
     violazioni: (b.violazioni ?? []).filter(v => !v.forzata).length,
     unita: (b.pubblicati?.[giorno] ?? []).length,
