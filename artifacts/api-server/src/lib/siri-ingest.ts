@@ -39,6 +39,7 @@ import {
 } from "./trip-match-audit";
 import { registraCodici, type OsservazioneCodice } from "./journey-codes-store";
 import { giornataOggi } from "./service-day";
+import { registraCancellazioneAvm } from "./esercizio-giornale";
 
 /* ── Indice degli identificativi del feed attivo ──────────────────────────── */
 
@@ -1021,6 +1022,8 @@ export async function closeCancelled(
       UPDATE caronte.active_trips SET ended_at = now()
        WHERE trip_id = ${tripId} AND ended_at IS NULL`);
     n += (r as any).rowCount ?? 0;
+    /* nel giornale della giornata (4.5): un indizio di soppressione per la proposta, una volta per corsa */
+    await registraCancellazioneAvm({ tripId, journeyRef: c.journeyRef, vehicleRef: c.vehicleRef });
   }
   return n;
 }

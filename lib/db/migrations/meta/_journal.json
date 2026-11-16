@@ -197,6 +197,13 @@
       "when": 1795180000000,
       "tag": "0027_proposta_dall_avm",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1795240000000,
+      "tag": "0028_giornale_e_conferma",
+      "breakpoints": true
     }
   ]
 }

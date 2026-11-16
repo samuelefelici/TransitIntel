@@ -51,6 +51,8 @@ const AREE_PER_PREFISSO: Array<[string, Area | Area[]]> = [
   ["/deadhead-arcs", ["turni", "rete"]], ["/depots", ["turni", "rete"]],
   ["/coincidence-zones", ["turni", "rete"]],
   // Rete e orari: Planning Studio, zonizzazione, intermodale
+  // Il consuntivo delle giornate di esercizio (4.5): esiti, giornale, causali
+  ["/esercizio", "consuntivo"],
   ["/planning-studio", "rete"], ["/zones", "rete"],
   // I nodi sono l'infrastruttura condivisa per eccellenza: Planning Studio li
   // disegna, i turni li usano come punti di cambio vettura.

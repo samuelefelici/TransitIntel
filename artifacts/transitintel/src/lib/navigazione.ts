@@ -10,7 +10,7 @@
  * aree ne basta una; l'amministratore vede tutto.
  */
 import {
-  BarChart3, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
+  BarChart3, CalendarDays, ClipboardCheck, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
   Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ShieldCheck, Stethoscope, type LucideIcon,
 } from "lucide-react";
@@ -66,6 +66,8 @@ export const AREE_PAGINA = {
   "/avm": ["esercizio"],
   /* i tempi osservati vengono dall'AVM: sono dell'Esercizio, e chi li aveva con Analisi li tiene */
   "/runtimes": ["esercizio", "analisi"],
+  /* il consuntivo delle giornate di esercizio (4.5): esiti, giornale, causali */
+  "/esercizio": ["consuntivo"],
   "/fares": ["tariffe"],
   "/fares-polimetriche": ["tariffe"],
   "/fare-simulator": ["tariffe"],
@@ -125,6 +127,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/operations", etichetta: "Mappa live", icona: MapPinned, descrizione: "Il servizio adesso", aree: AREE_PAGINA["/operations"] },
       { href: "/avm", etichetta: "AVM", icona: SatelliteDish, descrizione: "Diario e controllo degli apparati", aree: AREE_PAGINA["/avm"] },
       { href: "/runtimes", etichetta: "Tempi osservati", icona: Timer, descrizione: "Percorrenze dall'AVM", aree: AREE_PAGINA["/runtimes"] },
+      { href: "/esercizio", etichetta: "Consuntivo", icona: ClipboardCheck, descrizione: "Esiti delle corse, giorno per giorno", aree: AREE_PAGINA["/esercizio"] },
     ],
   },
   {

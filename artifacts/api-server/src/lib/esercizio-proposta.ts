@@ -26,8 +26,8 @@
  *     corsa precedente e la successiva dello stesso turno macchina;
  *   - da_verificare: qualche prova, ma non basta (più vetture, poche
  *     fermate, solo il viaggio dichiarato senza passaggi);
- *   - soppressione_indizio: nessuna prova, e il turno guida della corsa non
- *     ha conducente nel roster della giornata;
+ *   - soppressione_indizio: nessuna prova, e la corsa annullata dall'AVM
+ *     (dalla 4.5) o il suo turno guida senza conducente nel roster;
  *   - non_rilevata: nessuna prova.
  * Le soglie sono la decisione aperta 6: qui i valori di partenza, scritti nel
  * riepilogo di ogni proposta.
@@ -84,6 +84,8 @@ export interface DatiProposta {
   codiceDi: Map<string, string>;
   /** «dss|turno guida» senza conducente nel roster; null se il roster non dice niente per la giornata */
   turniGuidaScoperti: Set<string> | null;
+  /** le corse che l'AVM ha annullato (eventi del giornale, 4.5) */
+  cancellate?: Set<string>;
 }
 
 export interface ProveCorsa {
@@ -253,6 +255,9 @@ export function proponi(d: DatiProposta, soglie: Soglie = SOGLIE): EsitoProposta
         proposta = "da_verificare";
         prove.motivo = !unaVettura ? "più vetture sulla stessa corsa" : "fermate osservate non sufficienti";
       }
+    } else if (d.cancellate?.has(c.chiave)) {
+      proposta = "soppressione_indizio";
+      prove.motivo = "annullata dall'AVM";
     } else if (prove.dichiarata) {
       proposta = "da_verificare";
       prove.motivo = "viaggio dichiarato dall'AVM, senza passaggi alle fermate";
@@ -443,7 +448,10 @@ export async function calcolaProposta(giorno: string, soglie: Soglie = SOGLIE) {
       }
     }
 
-    const e = proponi({ corse, transiti: prove.transiti, viaggi: prove.viaggi, codiceDi, turniGuidaScoperti }, soglie);
+    /* le corse annullate dall'AVM, dal giornale (4.5) */
+    const cancellate = new Set<string>(righe(await ex.execute(sql`
+      SELECT DISTINCT unnest(chiavi) AS chiave FROM esercizio_eventi WHERE giorno = ${giorno}::date AND tipo = 'cancellazione_avm'`)).map((x) => String(x.chiave)));
+    const e = proponi({ corse, transiti: prove.transiti, viaggi: prove.viaggi, codiceDi, turniGuidaScoperti, cancellate }, soglie);
     const daScrivere = corse.map((c) => ({ chiave: c.chiave, proposta: e.perCorsa.get(c.chiave)!.proposta, prove: e.perCorsa.get(c.chiave)!.prove }));
     for (let i = 0; i < daScrivere.length; i += 500) {
       await ex.execute(sql`

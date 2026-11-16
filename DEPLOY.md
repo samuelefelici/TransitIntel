@@ -950,6 +950,78 @@ Nelle corse c'è la colonna «Proposta»; il suggerimento spiega le prove.
 **Rollback**: immagine precedente. Colonne e tabella restano, ferme; la
 versione di prima non le usa.
 
+### Il consuntivo: giornale e conferma degli esiti (tappa 4.5)
+
+La proposta dall'AVM suggerisce; da qui **decide una persona**. Ogni
+decisione è un **evento del giornale**, con autore, ora e fonte (Centrale,
+deposito, ufficio movimento). Il giornale è solo in aggiunta: un evento
+sbagliato si annulla con un altro evento, e le corse tornano com'erano.
+
+**La pagina: Esercizio › Consuntivo** (area «Consuntivo» dei ruoli).
+- **Chi la usa.** Nella matrice di partenza scrivono la Centrale operativa e
+  l'Amministrazione; Pianificatore, Ufficio turni e Capo deposito leggono;
+  l'Officina no. L'amministratore cambia la matrice da Amministrazione ›
+  Ruoli. I token di servizio (Argos) leggono e non scrivono.
+- **La conferma è per eccezione**:
+  - in blocco le corse «Effettuata (AVM)» e quelle «Per continuità»;
+  - poi il resto, a gruppi: effettuate, da verificare, soppresse (con la
+    causale), parziali (con la causale e, se si sanno, i km fatti).
+- **Km effettivi**: effettuata = programmati, soppressa = 0, parziale =
+  quelli detti. Se non si sanno restano vuoti, e si calcoleranno coi
+  progressivi alle fermate.
+- **Corse aggiunte** (bis, recupero, sostitutiva, fuori programma): dalle
+  candidate dell'AVM, una volta sola, o a mano.
+- **Note** sulla giornata o sulle corse.
+- **Annullamento** di un evento: solo se nessun evento dopo ha toccato le
+  stesse corse (prima si annulla quello).
+- **Due persone sulla stessa giornata**: chi salva per secondo riceve «la
+  giornata è cambiata» e la pagina si ricarica (versione della giornata).
+
+**Le causali** (decisione aperta 5). C'è un catalogo iniziale:
+- guasto del mezzo, sinistro e mancanza di personale, imputabili
+  all'azienda;
+- sciopero, traffico, meteo, ordine dell'autorità e manifestazione, non
+  imputabili;
+- altro, imputabile.
+
+L'amministratore lo cambia in fondo alla pagina: imputabilità, codice per
+l'ente, attiva o no, causali nuove. Il codice di una causale non cambia,
+perché le corse lo citano. **Da fare: il codice per l'ente di ogni causale,
+quando si sa.**
+
+**L'annullamento dell'AVM** (SIRI, `VehicleActivityCancellation`), che prima
+non lasciava traccia, diventa un evento del sistema, una volta per corsa e
+giornata. Nella proposta è un indizio di soppressione («Soppressa?»): non
+diventa mai un esito da solo.
+
+**La migrazione `0028`**:
+- crea `esercizio_causali`, col catalogo iniziale scritto come
+  `cerbero_owner`, senza toccare quello che c'è;
+- crea `esercizio_eventi`: una giornata con eventi non si cancella, e un
+  evento si annulla una volta sola;
+- aggiunge a `esercizio_corse` l'esito confermato, i km effettivi, la
+  causale, la vettura, la nota, chi e quando, e le corse aggiunte;
+- aggiunge a `esercizio_giornate` la versione.
+
+Il giornale fa da registro del consuntivo: il registro delle modifiche non
+sorveglia queste tabelle, che il lavoratore riscrive a ogni giro.
+
+**Dopo il deploy**:
+1. Nessuna Watch Path nuova: il lavoratore non usa il giornale.
+2. Dai ruoli giusti alle persone dell'ufficio movimento e della Centrale
+   (Amministrazione › Utenti e accessi).
+3. La definizione di fatto dell'analisi: l'ufficio movimento consuntiva un
+   giorno vero dall'inizio alla fine, e ogni modifica compare nel giornale
+   con autore e momento.
+
+**Sicurezza e lavoratori**: il giornale registra chi ha confermato che cosa,
+cioè un'attività del personale d'ufficio. Vale quanto deciso per il registro
+delle modifiche (art. 4 dello Statuto, informativa): va detto alle persone
+che lo usano.
+
+**Rollback**: immagine precedente. Tabelle e colonne restano, ferme; la
+versione di prima non le usa.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23

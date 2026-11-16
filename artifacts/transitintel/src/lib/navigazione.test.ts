@@ -148,6 +148,14 @@ describe("il menu dei ruoli aziendali", () => {
     }
   });
 
+  it("Consuntivo: a chi ha l'area «Consuntivo» (tutti i ruoli tranne l'Officina), non a chi ha solo gli interruttori di prima", () => {
+    for (const r of ["pianificatore", "ufficio_turni", "capo_deposito", "centrale_operativa", "amministrazione"] as const) {
+      expect(menu(conRuoli(r))["Esercizio"], r).toContain("Consuntivo");
+    }
+    expect(menu(conRuoli("centrale_operativa"))["Esercizio"]).toEqual(["Mappa live", "AVM", "Tempi osservati", "Consuntivo"]);
+    expect(menu(con("centrale"))["Esercizio"]).not.toContain("Consuntivo");
+  });
+
   it("Officina: l'esercizio e la flotta, nient'altro", () => {
     const m = menu(conRuoli("officina"));
     expect(Object.keys(m)).toEqual(["Oggi", "Esercizio", "Flotta", "Amministrazione"]);
