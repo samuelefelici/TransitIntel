@@ -288,10 +288,10 @@ function VettureCard({ giorno, deposito, scrive }: { giorno: string; deposito: s
           <div className="text-xs text-muted-foreground">Nessun turno macchina per questo deposito in questo giorno.</div>
         ) : (
           <div className="overflow-x-auto rounded-md border border-border/50">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead className="text-xs text-muted-foreground"><tr className="text-left">
                 <th className="px-3 py-1.5">Turno macchina</th><th className="px-3 py-1.5">Uscita–rientro</th><th className="px-3 py-1.5">Tipo</th>
-                <th className="px-3 py-1.5 text-right">Corse</th><th className="px-3 py-1.5">Vettura</th><th className="px-3 py-1.5" />
+                <th className="px-3 py-1.5 text-right">Corse</th><th className="px-3 py-1.5 min-w-[16rem]">Vettura</th><th className="px-3 py-1.5" />
               </tr></thead>
               <tbody>
                 {turni.map((t) => {
