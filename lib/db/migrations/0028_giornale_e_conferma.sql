@@ -37,7 +37,7 @@ BEGIN
       ordine              integer NOT NULL DEFAULT 0,
       CONSTRAINT esercizio_causali_codice CHECK (codice ~ '^[A-Z0-9_]{1,30}$'),
       CONSTRAINT esercizio_causali_gruppo CHECK (gruppo IN ('mezzo', 'personale', 'esterna', 'servizio', 'altro')),
-      CONSTRAINT esercizio_causali_testi CHECK (length(descrizione) BETWEEN 1 AND 120 AND (codice_ente IS NULL OR length(codice_ente) <= 30))
+      CONSTRAINT esercizio_causali_testi CHECK (char_length(descrizione) BETWEEN 1 AND 120 AND (codice_ente IS NULL OR char_length(codice_ente) <= 30))
     );
   END IF;
 
@@ -65,7 +65,7 @@ BEGIN
       -- un esito ha sempre il suo momento di conferma
       ADD CONSTRAINT esercizio_corse_conferma CHECK ((esito IS NULL) = (confermata_il IS NULL)),
       ADD CONSTRAINT esercizio_corse_km_eff CHECK (km_eff IS NULL OR km_eff >= 0),
-      ADD CONSTRAINT esercizio_corse_nota CHECK (nota IS NULL OR length(nota) <= 500);
+      ADD CONSTRAINT esercizio_corse_nota CHECK (nota IS NULL OR char_length(nota) <= 500);
   END IF;
 
   IF pg_catalog.to_regclass('public.esercizio_eventi') IS NULL THEN
