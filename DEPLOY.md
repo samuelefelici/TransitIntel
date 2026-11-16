@@ -1022,6 +1022,58 @@ che lo usano.
 **Rollback**: immagine precedente. Tabelle e colonne restano, ferme; la
 versione di prima non le usa.
 
+### Chiusura e blocco del consuntivo (tappa 4.6)
+
+Decisioni del 16/11/2026:
+- **Le corse senza prove dell'AVM** si chiudono con la **presunzione di
+  effettuazione salvo segnalazione** (decisione aperta 1). È un esito a sé,
+  «presunta», distinto dalle effettuate provate: nel report si vede quanto
+  è provato e quanto è presunto.
+- **La giornata la chiude chi ha il ruolo Amministrazione** (o
+  l'amministratore di sistema). La Centrale registra gli esiti ma non chiude.
+- **Riaprire una giornata, chiudere e riaprire un mese** spettano solo
+  all'amministratore di sistema, con un motivo che resta scritto.
+- **Nessun blocco automatico a tempo**: la pagina segnala in giallo le
+  giornate cominciate e ancora aperte dopo tre giorni («da chiudere»).
+
+**La giornata.** In Esercizio › Consuntivo:
+- «Presumi effettuate le non rilevate» conferma in blocco come «presunta»
+  le corse senza prove (comprese quelle senza proposta, nelle giornate senza
+  AVM);
+- «Chiudi la giornata» funziona quando la giornata è finita (dopo le 03:00
+  del giorno dopo) e non ha corse da decidere, da verificare, o parziali
+  senza i km fatti. Altrimenti dice che cosa manca;
+- alla chiusura il **riepilogo si congela**: corse per esito, km
+  programmati, effettivi, persi e aggiunti, per linea e per causale.
+
+Da quel momento **ogni scrittura risponde 409**: eventi, proposta, turni.
+L'amministratore la riapre col motivo, che va nel giornale. Riaprirla e
+richiuderla senza modifiche dà lo stesso riepilogo.
+
+**Il mese** (riquadro in fondo alla pagina, solo l'amministratore):
+- si chiude quando è finito e tutte le sue giornate sono chiuse;
+- i giorni senza giornata (prima del rilascio della 4.2, o mai preparati)
+  restano scritti nel riepilogo come mancanti;
+- chiuso, il riepilogo del mese si congela e le sue giornate non si
+  riaprono;
+- si riapre col motivo, e la storia di chiusure e riaperture resta.
+
+**La migrazione `0029`**:
+- l'esito «presunta»;
+- lo stato «chiusa» della giornata, con chi, quando e il riepilogo;
+- gli eventi di chiusura e riapertura;
+- la tabella `esercizio_mesi`.
+
+**Dopo il deploy**:
+1. Dai il ruolo **Amministrazione** a chi chiude le giornate.
+2. La definizione di fatto: una giornata chiusa risponde 409 a ogni
+   scrittura; riaprirla e richiuderla senza modifiche riproduce gli stessi
+   totali.
+
+**Rollback**: immagine precedente. La versione di prima non conosce lo stato
+«chiusa» né l'esito «presunta»: prima di tornare indietro riapri le giornate
+chiuse, se no restano fuori da ogni scrittura.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
