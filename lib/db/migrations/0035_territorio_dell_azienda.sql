@@ -60,13 +60,18 @@ SELECT registro.sorveglia('public.territorio_comuni', ARRAY['codice_istat'], NUL
 SELECT registro.sorveglia('public.territorio_luoghi', ARRAY['id'], NULL, NULL, true, '{}', ARRAY['aggiornato_il'], '{}');
 --> statement-breakpoint
 -- I dati come cerbero_owner, solo se sono già sue le tabelle che si toccano
--- (su un database appena creato sono ancora di chi migra).
+-- (su un database appena creato sono ancora di chi migra) e se può già usare
+-- lo schema: dove public non è aperto a tutti, il permesso lo dà il
+-- riallineamento dei ruoli, dopo le migrazioni.
 DO $come$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
-                  WHERE c.oid IN (pg_catalog.to_regclass('public.azienda'), pg_catalog.to_regclass('public.territorio_comuni'),
-                                  pg_catalog.to_regclass('public.territorio_luoghi'))
-                    AND c.relowner IS DISTINCT FROM pg_catalog.to_regrole('cerbero_owner')) THEN
-    EXECUTE 'SET LOCAL ROLE cerbero_owner';
+  IF pg_catalog.to_regrole('cerbero_owner') IS NOT NULL THEN
+    IF pg_catalog.has_schema_privilege('cerbero_owner', 'public', 'USAGE')
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+                        WHERE c.oid IN (pg_catalog.to_regclass('public.azienda'), pg_catalog.to_regclass('public.territorio_comuni'),
+                                        pg_catalog.to_regclass('public.territorio_luoghi'))
+                          AND c.relowner IS DISTINCT FROM pg_catalog.to_regrole('cerbero_owner')) THEN
+      EXECUTE 'SET LOCAL ROLE cerbero_owner';
+    END IF;
   END IF;
 END $come$;
 --> statement-breakpoint
