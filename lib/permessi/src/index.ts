@@ -295,6 +295,16 @@ export function puoSuUna(d: Diritti, aree: readonly Area[], livello: Livello): b
   return aree.some(a => puo(d, a, livello));
 }
 
+/**
+ * Chiudere le giornate del consuntivo (tappa 4.6, decisione del 16/11/2026):
+ * chi ha il ruolo Amministrazione, o l'amministratore di sistema. La Centrale
+ * registra gli esiti ma non chiude. Riaprire una giornata e chiudere o
+ * riaprire un mese restano all'amministratore di sistema.
+ */
+export function chiudeLeGiornate(p: { admin: boolean; ruoli: readonly string[] }): boolean {
+  return p.admin || p.ruoli.includes("amministrazione");
+}
+
 /** I codici sanitari del roster: la capacità, e mai senza poter aprire il roster. */
 export function vedeDatiSanitari(p: ProfiloPermessi, matrice: Matrice = MATRICE): boolean {
   if (p.admin) return true;

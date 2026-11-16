@@ -375,6 +375,7 @@ export async function calcolaProposta(giorno: string, soglie: Soglie = SOGLIE) {
       SELECT stato, feed_id::text AS feed, now() >= ${inizioDi(sql`${giorno}::date + 1`)} + interval '1 hour' AS definitiva
         FROM esercizio_giornate WHERE giorno = ${giorno}::date`))[0];
     if (!g) throw new RifiutoProposta(404, "Giornata non ancora preparata");
+    if (g.stato === "chiusa") throw new RifiutoProposta(409, "Giornata chiusa: la proposta non si rifà più");
     if (g.stato !== "congelata") throw new RifiutoProposta(409, "La proposta si fa sulle giornate cominciate (congelate)");
 
     const corse: CorsaDaProporre[] = righe(await ex.execute(sql`
