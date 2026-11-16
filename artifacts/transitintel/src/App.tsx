@@ -103,6 +103,7 @@ const AdminParametriPage = lazyWithRetry(() => import("@/pages/admin-parametri")
 const AdminAziendaPage = lazyWithRetry(() => import("@/pages/admin-azienda"));
 const AdminRuoliPage = lazyWithRetry(() => import("@/pages/admin-ruoli"));
 const AdminRegistroPage = lazyWithRetry(() => import("@/pages/admin-registro"));
+const AdminEsercizioPage = lazyWithRetry(() => import("@/pages/admin-esercizio"));
 const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const ApriFleetCare = lazyWithRetry(() => import("@/pages/fleetcare"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
@@ -453,6 +454,9 @@ function Router() {
             </Route>
             <Route path="/admin/registro">
               <AdminOnly><AdminRegistroPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/esercizio">
+              <AdminOnly><AdminEsercizioPage /></AdminOnly>
             </Route>
 
             {/* Redirects for old optimizer paths */}

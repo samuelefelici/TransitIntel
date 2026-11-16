@@ -4,6 +4,8 @@ import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/regi
 import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from "../lib/azienda";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
+import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
+import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
 const router: IRouter = Router();
@@ -82,6 +84,29 @@ router.get("/admin/sync/status", (_req, res) => {
     };
   }
   res.json(status);
+});
+
+/**
+ * GET /api/admin/esercizio/diagnosi?giorno=AAAA-MM-GG — la diagnosi di una
+ * giornata di esercizio, in sola lettura (tappa 4, lib/esercizio-diagnosi.ts).
+ * Il feed dell'AVM è quello su cui l'aggancio lavora oggi: GTFS_FEED_ID, o
+ * l'ultimo feed, come siri-ingest.
+ */
+router.use("/admin/esercizio", requireAdmin);
+router.get("/admin/esercizio/diagnosi", async (req, res): Promise<void> => {
+  const giorno = String(req.query.giorno ?? "");
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(giorno) ? Date.parse(`${giorno}T00:00:00Z`) : NaN;
+  if (Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== giorno || giorno < "2000-01-01" || giorno > "2099-12-31") {
+    res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" });
+    return;
+  }
+  try {
+    const feedAvm = process.env.GTFS_FEED_ID || (await getLatestFeedId());
+    res.json(await diagnosiDelGiorno(giorno, feedAvm ?? null));
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, giorno }, "diagnosi della giornata non riuscita");
+    res.status(500).json({ error: "Diagnosi non riuscita" });
+  }
 });
 
 /**

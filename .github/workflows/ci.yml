@@ -992,6 +992,13 @@ jobs:
       # tiene la coppia coerente e non cancella un turno macchina pubblicato.
       - name: Turni macchina versionati e pubblicati coi turni guida
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/turni-macchina-versioni-db.test.ts
+      # Tappa 4: la diagnosi di una giornata di esercizio, in sola lettura,
+      # con l'API come cerbero_app. Programma e feed dallo storico delle
+      # attivazioni, corse del giorno con la regola del calendario, collegamento
+      # con le prove dell'AVM per id, codice e numero, geometria, turni
+      # pubblicati; solo l'amministratore.
+      - name: La diagnosi di una giornata di esercizio
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-diagnosi-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

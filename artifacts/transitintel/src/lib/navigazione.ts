@@ -12,7 +12,7 @@
 import {
   BarChart3, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
-  Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ShieldCheck, type LucideIcon,
+  Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ShieldCheck, Stethoscope, type LucideIcon,
 } from "lucide-react";
 import { NOMI_AREE, type Area } from "@workspace/permessi";
 
@@ -161,6 +161,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/admin/azienda", etichetta: "Azienda", icona: Building2, descrizione: "Nome, sito, centro delle mappe", soloAdmin: true },
       { href: "/admin/parametri", etichetta: "Parametri di esercizio", icona: Settings2, descrizione: "Autovetture aziendali", soloAdmin: true },
       { href: "/admin/registro", etichetta: "Registro delle modifiche", icona: History, descrizione: "Chi ha cambiato che cosa", soloAdmin: true },
+      { href: "/admin/esercizio", etichetta: "Diagnosi dell'esercizio", icona: Stethoscope, descrizione: "Programma, AVM e turni di un giorno", soloAdmin: true },
       { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline Mizar", aree: AREE_PAGINA["/data"] },
       { href: "/account", etichetta: "Sicurezza dell'account", icona: Shield, descrizione: "Password e verifica" },
     ],
