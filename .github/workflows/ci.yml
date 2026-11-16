@@ -1065,6 +1065,14 @@ jobs:
       # conteggi), con le corse viste dall'AVM e le giornate da chiudere.
       - name: La giornata di esercizio nella pagina Oggi
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-oggi-db.test.ts
+      # Tappa 4.10: le variazioni decise in anticipo (migrazione 0031), con
+      # l'API come cerbero_app. Si scrivono per i giorni che vengono e si
+      # annullano prima dell'inizio; alla giornata cominciata la soppressione
+      # diventa esito nel giornale a nome di chi l'ha scritta (una volta sola,
+      # anche con due applicazioni insieme); lo sciopero ferma la presunzione
+      # sulle corse fuori dalle fasce garantite; un token di servizio non scrive.
+      - name: Le variazioni decise in anticipo
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-variazioni-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

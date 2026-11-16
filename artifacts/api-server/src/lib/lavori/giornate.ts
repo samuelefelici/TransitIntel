@@ -9,6 +9,9 @@
  *
  * Senza la migrazione 0025 (database indietro) non fa niente.
  *
+ * Dalla 4.10 applica alle giornate appena congelate le variazioni decise in
+ * anticipo (soppressioni e scioperi, lib/esercizio-variazioni-applica.ts).
+ *
  * Dalla 4.4 fa anche la proposta dall'AVM, in modo definitivo, delle
  * giornate degli ultimi giorni passate le 04:00 del giorno dopo, quando i
  * passaggi tardivi sono arrivati (lib/esercizio-proposta.ts). Una proposta
@@ -18,6 +21,7 @@ import { pool } from "@workspace/db";
 import { inSistema } from "@workspace/db/contesto";
 import { giroDelleGiornate } from "../esercizio-giornate";
 import { calcolaProposta, giornateDaProporre } from "../esercizio-proposta";
+import { applicaVariazioni, giornateConVariazioni } from "../esercizio-variazioni-applica";
 import { giornataOggi } from "../service-day";
 
 export const OGNI_MS = 15 * 60 * 1000;
@@ -43,6 +47,20 @@ export function giroGiornate(log: Log, adesso: Date = new Date()): Promise<Recor
     const fatto = await giroDelleGiornate(oggi, dopo(oggi));
     const cambiate = Object.entries(fatto).filter(([, e]) => e !== "già congelata");
     if (cambiate.length) log.info({ giornate: Object.fromEntries(cambiate) }, "giornate di esercizio: preparate e congelate");
+    const { rows: [v] } = await pool.query("SELECT pg_catalog.to_regclass('public.esercizio_variazioni') IS NOT NULL AS c");
+    if (v?.c) {
+      for (const g of await giornateConVariazioni()) {
+        try {
+          const r = await applicaVariazioni(g);
+          const errori = r.filter((x) => x.errore);
+          if (r.length - errori.length) fatto[g] = `variazioni applicate: ${r.length - errori.length}`;
+          log.info({ giorno: g, variazioni: r }, "giornate di esercizio: variazioni decise in anticipo");
+          if (errori.length) log.error({ giorno: g, errori }, "giornate di esercizio: variazioni non applicate");
+        } catch (err) {
+          log.error({ err, giorno: g }, "giornate di esercizio: variazioni non applicate");
+        }
+      }
+    }
     const { rows: [p] } = await pool.query("SELECT pg_catalog.to_regclass('public.esercizio_aggiunte_proposte') IS NOT NULL AS c");
     if (p?.c) {
       for (const g of await giornateDaProporre(oggi)) {

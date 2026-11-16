@@ -1241,6 +1241,60 @@ della stessa giornata.
 
 **Rollback**: immagine precedente.
 
+### Le variazioni decise in anticipo (tappa 4.10)
+
+Decisioni del 16/11/2026. Fino all'inizio della giornata (le 03:00) il
+lavoratore la ricostruisce da capo, e il giornale si scrive solo da lì: quello
+che si sa prima (lavori, un evento, uno sciopero proclamato) adesso ha il suo
+posto.
+
+In Esercizio › Consuntivo, riquadro **Variazioni decise in anticipo**, chi ha
+la scrittura sul Consuntivo può scrivere due tipi di variazione:
+- **Soppressione**:
+  - indica le linee e/o i numeri di corsa, ed eventualmente una fascia
+    oraria sulla partenza (alle esclusa), con causale e nota;
+  - quando la giornata comincia, le corse ancora da decidere diventano
+    «soppressa» nel giornale, a nome di chi ha scritto la variazione, con il
+    suo numero;
+  - da quel momento escono come `CANCELED` nel GTFS-Realtime;
+  - una corsa già decisa da qualcuno non si tocca;
+  - scritta per una giornata già cominciata, vale subito.
+- **Sciopero**:
+  - indica le fasce garantite (per esempio «6-9, 12-15») e, se non tutte, le
+    linee;
+  - le corse fuori fascia **non** si sopprimono in anticipo, perché non si sa
+    chi aderirà;
+  - la proposta dall'AVM le dà come «soppressione probabile (sciopero)»
+    invece che «non rilevate»;
+  - «Presumi effettuate» non le tocca. Il filtro «Soppressioni probabili»
+    della giornata le raccoglie, e si decidono in blocco con l'esito e la
+    causale SCIOPERO.
+
+**Annullare.** Una variazione si annulla, con il nome di chi la annulla, fino
+all'inizio della giornata. Dopo si corregge nel giornale come sempre. I token
+di servizio leggono e basta.
+
+**Dove si vede.**
+- Nell'elenco ci sono lo stato (in attesa, applicata con quante corse,
+  annullata), chi l'ha scritta e, se la giornata è già preparata, le corse
+  previste.
+- Nel giornale, l'evento che nasce da una variazione lo dice.
+- Il lavoratore applica le variazioni a ogni giro (ogni 15 minuti), dopo il
+  congelamento. Nel log: «giornate di esercizio: variazioni decise in
+  anticipo».
+
+**La migrazione `0031`**: la tabella `esercizio_variazioni`.
+
+**Dopo il deploy**: la definizione di fatto.
+1. Si scrive una soppressione per domani, su una linea e una fascia.
+2. Al giro dopo le 03:00 le corse risultano «soppressa» nel giornale, a nome
+   di chi l'ha scritta.
+3. Durante la giornata `trip-updates?format=json` le mostra come `CANCELED`.
+
+**Rollback**: immagine precedente. La tabella resta, e la versione di prima
+non la legge: le variazioni in attesa non si applicano più. Le soppressioni
+già applicate restano nel giornale come ogni altro esito.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
