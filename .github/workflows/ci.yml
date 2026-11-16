@@ -999,6 +999,13 @@ jobs:
       # pubblicati; solo l'amministratore.
       - name: La diagnosi di una giornata di esercizio
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-diagnosi-db.test.ts
+      # Tappa 4.2: le giornate di esercizio, il programmato congelato
+      # (migrazione 0025), con l'API come cerbero_app. Una giornata futura si
+      # prepara e si rifà; una passata nasce congelata e ricostruita e non
+      # cambia più nemmeno se il feed cambia; il giro del lavoratore congela
+      # le preparate già cominciate; senza programma nello storico resta vuota.
+      - name: Le giornate di esercizio congelate
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-giornate-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

@@ -1516,3 +1516,18 @@ describe("0023 e 0024: turni macchina nel canale dei turni pubblicati", () => {
     expect(regole).toMatch(/ALTER COLUMN vss_id SET NOT NULL/);
   });
 });
+
+/* 0025 (tappa 4.2): le giornate di esercizio, il programmato congelato. */
+describe("0025: giornate di esercizio", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("una giornata per giorno, preparata o congelata; le sue corse se ne vanno con lei", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_giornate.esercizio_giornate_stato"]).toBe("CHECK ((stato = ANY (ARRAY['preparata'::text, 'congelata'::text])))");
+    expect(v["public.esercizio_giornate.esercizio_giornate_congelamento"]).toBe("CHECK (((stato = 'congelata'::text) = (congelata_il IS NOT NULL)))");
+    expect(v["public.esercizio_giornate.esercizio_giornate_feed_id_fkey"]).toMatch(/REFERENCES gtfs_feeds\(id\) ON DELETE SET NULL$/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_ps_project_id_fkey"]).toMatch(/REFERENCES ps_projects\(id\) ON DELETE SET NULL$/);
+    expect(v["public.esercizio_corse.esercizio_corse_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE CASCADE$/);
+    const c = catalogo.tabelle["public.esercizio_corse"];
+    for (const col of ["chiave", "codice", "numero", "partenza", "arrivo", "km_prog"]) expect(c).toHaveProperty(col);
+  });
+});

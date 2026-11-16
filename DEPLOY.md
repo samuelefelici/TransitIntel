@@ -730,6 +730,64 @@ scolastico, un sabato, una domenica) e annota i numeri. Con quelli si decide:
 
 Nessuna migrazione, nessuna scrittura.
 
+### Giornate di esercizio: il programmato congelato (tappa 4.2)
+
+Il programmato di un giorno si ricalcolava ogni volta dal feed acceso oggi: il
+passato cambiava col presente. Da questo rilascio ogni giornata di esercizio
+(dalle 03:00 alle 03:00) ha la sua **istantanea**, che non cambia più dopo
+l'inizio della giornata. È la base del consuntivo.
+
+- **Il programmato è il feed in esercizio all'inizio della giornata**, preso
+  dallo storico delle attivazioni (la porta unica della 3.2), non il feed
+  acceso oggi. È la proposta dell'analisi per la decisione aperta 3. I turni
+  pubblicati si aggiungeranno nella prossima PR; dove divergono, lo diranno
+  gli avvisi.
+- **Ogni corsa ha tre identità**:
+  - la chiave del feed (l'id della corsa di Planning Studio);
+  - il codice stabile;
+  - il numero di corsa.
+
+  Così la chiave per le prove dell'AVM (decisione aperta 2) si sceglie quando
+  si collegano le prove, coi numeri della diagnosi.
+- **Ogni corsa ha anche** linea, percorso, direzione, orari (anche oltre le
+  24:00), capolinea, «a chiamata» e i km dalla geometria del feed, calcolati
+  dal server.
+- **Il lavoratore**, ogni 15 minuti:
+  - prepara la giornata di domani, e la rifà a ogni giro finché non comincia;
+  - alle 03:00 la **congela**: da lì una nuova messa in esercizio, una duplica
+    o un feed caricato dopo non la toccano.
+- **Una giornata passata** si può preparare a mano: nasce congelata e
+  «ricostruita», col programma dello storico di quel giorno.
+- **Senza un programma nello storico** (le giornate prima della porta unica) la
+  giornata resta vuota, e lo dice: non si ripiega sul feed di oggi.
+
+**La pagina: Amministrazione › Giornate di esercizio** (solo amministratore,
+per ora):
+- l'elenco degli ultimi 30 giorni e di domani;
+- per ogni giornata programma, feed, stato, avvisi e corse;
+- «Prepara» per una giornata che manca.
+
+L'API è `GET /api/admin/esercizio/giornate`,
+`GET /api/admin/esercizio/giornate/:giorno` e
+`POST /api/admin/esercizio/giornate/:giorno/prepara`.
+
+**La migrazione `0025`** crea `esercizio_giornate` ed `esercizio_corse`,
+tabelle nuove. Il registro delle modifiche non le sorveglia, perché le scrive
+solo il sistema; il giornale del consuntivo avrà il suo.
+
+**Dopo il deploy**:
+1. Aggiorna le **Watch Paths del lavoratore** in Coolify con le righe nuove
+   del blocco più sotto (`esercizio-*.ts`, `service-day.ts`,
+   `km-programmati.ts`, `siri-vm.ts`, `parco-anagrafica.ts`), poi ridistribuisci
+   il lavoratore.
+2. Entro 15 minuti nel log del lavoratore compare «giornate di esercizio:
+   preparate e congelate», e nella pagina ci sono oggi e domani.
+3. Confronta il numero di corse di una giornata con «Corse programmate» della
+   copertura AVM dello stesso giorno, quando il feed è lo stesso.
+
+**Rollback**: immagine precedente. Le tabelle restano, ferme; la versione di
+prima non le usa.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23
