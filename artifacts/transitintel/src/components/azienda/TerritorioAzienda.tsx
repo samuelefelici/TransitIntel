@@ -78,7 +78,7 @@ function Comuni({ comuni, busy, onSalva, onTogli }: {
         {comuni.length === 0 && <div className="text-sm text-muted-foreground">Nessun comune: le analisi scrivono «Comune» e il codice ISTAT.</div>}
         {comuni.length > 0 && (
           <div className="overflow-x-auto rounded-md border border-border/50 max-h-[28rem] overflow-y-auto">
-            <table className="w-full min-w-[720px] text-sm">
+            <table className="w-full min-w-[580px] text-sm">
               <thead className="text-xs text-muted-foreground sticky top-0 bg-card"><tr className="text-left">
                 <th className="px-3 py-1.5">Codice</th><th className="px-3 py-1.5">Nome</th><th className="px-3 py-1.5">Centroide</th>
                 <th className="px-3 py-1.5 text-right">km²</th><th className="px-3 py-1.5 text-right">Abitanti</th><th className="px-3 py-1.5" />
@@ -176,7 +176,7 @@ function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
               </div>
               {di.length > 0 && (
                 <div className="overflow-x-auto rounded-md border border-border/50">
-                  <table className="w-full min-w-[640px] text-sm">
+                  <table className="w-full min-w-[520px] text-sm">
                     <tbody>
                       {di.map((l) => aperto === l.id ? (
                         <tr key={l.id} className="bg-muted/30"><td colSpan={4} className="px-3 py-2">
