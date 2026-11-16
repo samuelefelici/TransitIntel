@@ -1,0 +1,98 @@
+/**
+ * Il consuntivo delle giornate di esercizio (tappa 4.5): l'area «Consuntivo»
+ * dei ruoli (lib/permessi-rotte.ts, prefisso /esercizio). Chi la legge vede
+ * giornate, corse, proposte, esiti e giornale; chi la scrive registra gli
+ * eventi e conferma gli esiti (lib/esercizio-giornale.ts).
+ *
+ * Gli esiti li decide una persona: i token di servizio (Argos) leggono ma
+ * non scrivono.
+ *
+ *   GET  /api/esercizio/giornate?dal=&al=          l'elenco (al più un anno; senza: gli ultimi 30 e domani)
+ *   GET  /api/esercizio/giornate/:giorno           la giornata con corse, esiti, proposta, giornale, causali
+ *   POST /api/esercizio/giornate/:giorno/eventi    un evento del giornale (esito, conferma, aggiunta, annullamento, nota)
+ *   POST /api/esercizio/giornate/:giorno/proposta  ricalcola la proposta dall'AVM
+ *   GET  /api/esercizio/causali                    il catalogo delle causali attive
+ */
+import { Router, type IRouter } from "express";
+import { elencoGiornate, giornoValido, leggiGiornata } from "../lib/esercizio-giornate";
+import { calcolaProposta, RifiutoProposta } from "../lib/esercizio-proposta";
+import { elencoCausali, leggiGiornale, leggiRichiesta, registraEvento, RifiutoGiornale } from "../lib/esercizio-giornale";
+
+const router: IRouter = Router();
+
+const oggiRoma = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+const piuGiorni = (g: string, n: number) => {
+  const d = new Date(`${g}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+/** Gli esiti li decide una persona: un token di servizio legge e basta. */
+const daUnServizio = (req: any) => typeof req.authVia === "string" && req.authVia.length > 0;
+
+router.get("/esercizio/giornate", async (req, res): Promise<void> => {
+  const oggi = oggiRoma();
+  const dal = req.query.dal === undefined ? piuGiorni(oggi, -30) : String(req.query.dal);
+  const al = req.query.al === undefined ? piuGiorni(oggi, 1) : String(req.query.al);
+  if (!giornoValido(dal) || !giornoValido(al) || dal > al || Date.parse(al) - Date.parse(dal) > 366 * 86_400_000) {
+    res.status(400).json({ error: "dal e al: date vere, AAAA-MM-GG, al più un anno" });
+    return;
+  }
+  try {
+    res.json({ dal, al, giornate: await elencoGiornate(dal, al) });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "consuntivo: giornate non leggibili");
+    res.status(500).json({ error: "Giornate non leggibili" });
+  }
+});
+
+router.get("/esercizio/giornate/:giorno", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  try {
+    const g = await leggiGiornata(giorno);
+    if (!g) { res.status(404).json({ error: "Giornata non ancora preparata" }); return; }
+    res.json({ ...g, giornale: await leggiGiornale(giorno), causali: await elencoCausali() });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, giorno }, "consuntivo: giornata non leggibile");
+    res.status(500).json({ error: "Giornata non leggibile" });
+  }
+});
+
+router.post("/esercizio/giornate/:giorno/eventi", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  if (daUnServizio(req)) { res.status(403).json({ error: "Gli esiti li conferma una persona" }); return; }
+  const l = leggiRichiesta(req.body);
+  if ("errore" in l) { res.status(400).json({ error: l.errore }); return; }
+  try {
+    res.json(await registraEvento(giorno, l.richiesta, { id: (req as any).user?.id ?? null }));
+  } catch (e: any) {
+    if (e instanceof RifiutoGiornale) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message, giorno }, "consuntivo: evento non registrato");
+    res.status(500).json({ error: "Evento non registrato" });
+  }
+});
+
+router.post("/esercizio/giornate/:giorno/proposta", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  if (daUnServizio(req)) { res.status(403).json({ error: "La proposta la chiede una persona" }); return; }
+  try {
+    res.json(await calcolaProposta(giorno));
+  } catch (e: any) {
+    if (e instanceof RifiutoProposta) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message, giorno }, "consuntivo: proposta non riuscita");
+    res.status(500).json({ error: "Proposta non riuscita" });
+  }
+});
+
+router.get("/esercizio/causali", async (req, res): Promise<void> => {
+  try {
+    res.json({ causali: await elencoCausali() });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "consuntivo: causali non leggibili");
+    res.status(500).json({ error: "Causali non leggibili" });
+  }
+});
+
+export default router;

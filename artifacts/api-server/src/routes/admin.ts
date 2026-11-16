@@ -7,6 +7,7 @@ import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
 import { elencoGiornate, giornoValido, leggiGiornata, preparaGiornata } from "../lib/esercizio-giornate";
 import { calcolaProposta, RifiutoProposta } from "../lib/esercizio-proposta";
+import { elencoCausali, salvaCausale, RifiutoGiornale } from "../lib/esercizio-giornale";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
@@ -168,6 +169,23 @@ router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promi
     res.status(500).json({ error: "Preparazione non riuscita" });
   }
 });
+/* il catalogo delle causali del consuntivo (4.5): l'amministratore lo cambia; il codice no, le corse lo citano */
+router.get("/admin/esercizio/causali", async (req, res): Promise<void> => {
+  try { res.json({ causali: await elencoCausali(true) }); }
+  catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "causali non leggibili");
+    res.status(500).json({ error: "Causali non leggibili" });
+  }
+});
+router.put("/admin/esercizio/causali/:codice", async (req, res): Promise<void> => {
+  try { res.json(await salvaCausale(String(req.params.codice), req.body)); }
+  catch (e: any) {
+    if (e instanceof RifiutoGiornale) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message }, "causale non salvata");
+    res.status(500).json({ error: "Causale non salvata" });
+  }
+});
+
 /* la proposta dall'AVM di una giornata cominciata (4.4): durante il giorno è una vista viva */
 router.post("/admin/esercizio/giornate/:giorno/proposta", async (req, res): Promise<void> => {
   const giorno = String(req.params.giorno);

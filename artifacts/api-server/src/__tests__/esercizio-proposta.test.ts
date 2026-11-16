@@ -140,6 +140,13 @@ describe("proponi", () => {
     expect(senza.perCorsa.get("c1")!.prove.osservate).toBe(0);
   });
 
+  it("annullata dall'AVM (giornale, 4.5) e senza prove: indizio di soppressione; con le prove conta la corsa vista", () => {
+    const cancellate = new Set(["c1", "c2"]);
+    const e = proponi(dati({ corse: [corsa("c1"), corsa("c2")], transiti: passaggi("c2", [0, 9], SETTE), cancellate }));
+    expect(e.perCorsa.get("c1")).toMatchObject({ proposta: "soppressione_indizio", prove: { motivo: "annullata dall'AVM" } });
+    expect(e.perCorsa.get("c2")!.proposta).toBe("effettuata_avm");
+  });
+
   it("le candidate aggiunte: viaggi senza corsa raggruppati, coi passaggi dello stesso id", () => {
     const e = proponi(dati({
       corse: [corsa("c1")],

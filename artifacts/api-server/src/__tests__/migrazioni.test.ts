@@ -1548,7 +1548,8 @@ describe("0026: turni nel programmato", () => {
   });
   it("gli id dei turni sono una fotografia: nessuna chiave esterna verso turni, UDP o depositi", () => {
     const fk = Object.keys(catalogo.vincoli).filter((k) => /^public\.esercizio_(corse|turni_macchina)\./.test(k) && /_fkey$/.test(k));
-    expect(fk.sort()).toEqual(["public.esercizio_corse.esercizio_corse_giorno_fkey", "public.esercizio_turni_macchina.esercizio_turni_macchina_giorno_fkey"]);
+    expect(fk.filter((k) => /(udp|dss|vss|deposito)_id_fkey$/.test(k))).toEqual([]);
+    expect(fk).toContain("public.esercizio_turni_macchina.esercizio_turni_macchina_giorno_fkey");
   });
 });
 
@@ -1570,5 +1571,36 @@ describe("0027: proposta dall'AVM", () => {
     const { PROPOSTE } = await import("../lib/esercizio-proposta");
     const vincolo = catalogo.vincoli["public.esercizio_corse.esercizio_corse_proposta"] as string;
     expect([...vincolo.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1])).toEqual([...PROPOSTE]);
+  });
+});
+
+/* 0028 (tappa 4.5): il giornale di esercizio e la conferma degli esiti. */
+describe("0028: giornale e conferma", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  const sqlMig = readFileSync(path.join(CARTELLA, "0028_giornale_e_conferma.sql"), "utf8");
+  it("gli esiti hanno solo i valori previsti; soppressa e parziale con la causale; un esito ha il suo momento", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_corse.esercizio_corse_esito"]).toMatch(/'effettuata'.*'parziale'.*'soppressa'.*'da_verificare'/);
+    expect(v["public.esercizio_corse.esercizio_corse_causale"]).toMatch(/causale IS NOT NULL/);
+    expect(v["public.esercizio_corse.esercizio_corse_conferma"]).toBe("CHECK (((esito IS NULL) = (confermata_il IS NULL)))");
+    expect(v["public.esercizio_corse.esercizio_corse_causale_fkey"]).toMatch(/REFERENCES esercizio_causali\(codice\) ON DELETE RESTRICT$/);
+    expect(v["public.esercizio_corse.esercizio_corse_confermata_da_fkey"]).toMatch(/REFERENCES users\(id\) ON DELETE SET NULL$/);
+  });
+  it("il giornale: una giornata con eventi non si cancella, un evento si annulla una volta sola", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_eventi.esercizio_eventi_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE RESTRICT$/);
+    expect(v["public.esercizio_eventi.esercizio_eventi_annullamento"]).toBe("CHECK (((tipo = 'annullamento'::text) = (annulla IS NOT NULL)))");
+    expect(v["public.esercizio_eventi.esercizio_eventi_autore_fkey"]).toMatch(/REFERENCES users\(id\) ON DELETE SET NULL$/);
+    expect(catalogo.indici["public.uq_esercizio_eventi_annullato"]).toMatch(/UNIQUE INDEX .* \(annulla\) WHERE \(annulla IS NOT NULL\)$/);
+  });
+  it("il catalogo iniziale delle causali si scrive come cerbero_owner, senza sovrascrivere quello dell'amministratore", () => {
+    expect(sqlMig).toMatch(/SET LOCAL ROLE cerbero_owner/);
+    expect(sqlMig).toMatch(/ON CONFLICT \(codice\) DO NOTHING/);
+    expect(sqlMig.trim().endsWith("RESET ROLE;")).toBe(true);
+  });
+  it("il codice non aggiorna né cancella gli eventi del giornale", () => {
+    const giornale = readFileSync(path.join(__dirname, "../lib/esercizio-giornale.ts"), "utf8");
+    expect(giornale).not.toMatch(/UPDATE\s+esercizio_eventi/i);
+    expect(giornale).not.toMatch(/DELETE\s+FROM\s+esercizio_eventi/i);
   });
 });

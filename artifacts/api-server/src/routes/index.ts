@@ -14,6 +14,7 @@ import gtfsQueriesRouter from "./gtfs-queries";
 import gtfsAnalysisRouter from "./gtfs-analysis";
 import gtfsTravelRouter from "./gtfs-travel";
 import adminRouter from "./admin";
+import esercizioRouter from "./esercizio";
 import scenariosRouter from "./scenarios";
 import intermodalRouter from "./intermodal";
 import serviceProgramRouter from "./service-program";
@@ -127,6 +128,7 @@ router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
 router.use(operationsRouter); // Sala Operativa: flotta live + puntualità (legge schema caronte)
+router.use(esercizioRouter); // Consuntivo (4.5): giornate, esiti, giornale; area «Consuntivo»
 router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari generali di linea (feed GTFS)
 router.use(planningStudioTimetablesRouter); // Stampa Orari dal programma di esercizio Planning Studio (ps_*)
 router.use(planningStudioEstimateRouter); // Stima istantanea risorse (vetture/ore) su corse reali e ipotetiche
