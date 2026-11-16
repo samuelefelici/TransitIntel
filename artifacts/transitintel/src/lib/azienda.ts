@@ -21,6 +21,8 @@ export interface Azienda {
   regione: string | null;
   /** dove si aprono le mappe di tutta la rete */
   centro: { lat: number; lng: number; zoom: number };
+  /** la provincia degli import ISTAT, tre cifre («042»), o null (tappa 6.1) */
+  provinciaIstat: string | null;
   /** false finché l'amministratore non ha compilato la pagina */
   compilata: boolean;
 }
@@ -35,6 +37,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   citta: null,
   regione: null,
   centro: Object.freeze({ lat: 42.5, lng: 12.5, zoom: 5.5 }),
+  provinciaIstat: null,
   compilata: false,
 });
 
@@ -57,6 +60,7 @@ export function aziendaValida(x: unknown): Azienda {
     ragioneSociale, nome, gtfsAgencyId,
     sito: testo(d.sito), telefono: testo(d.telefono), citta: testo(d.citta), regione: testo(d.regione),
     centro: { lat, lng, zoom },
+    provinciaIstat: typeof d.provinciaIstat === "string" && /^[0-9]{3}$/.test(d.provinciaIstat) ? d.provinciaIstat : null,
     compilata: d.compilata !== false,
   };
 }
@@ -82,7 +86,7 @@ export function intestazioneDocumenti(a: Pick<Azienda, "nome" | "compilata">): s
 /** I campi del modulo, come testo: quello che si scrive nelle caselle. */
 export interface ModuloAzienda {
   ragioneSociale: string; nome: string; sito: string; telefono: string; gtfsAgencyId: string;
-  citta: string; regione: string; centroLat: string; centroLng: string; zoom: string;
+  citta: string; regione: string; centroLat: string; centroLng: string; zoom: string; provinciaIstat: string;
 }
 export type CampoAzienda = keyof ModuloAzienda;
 
@@ -93,6 +97,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     ragioneSociale: scritto(a.ragioneSociale), nome: scritto(a.nome), sito: scritto(a.sito), telefono: scritto(a.telefono),
     gtfsAgencyId: scritto(a.gtfsAgencyId), citta: scritto(a.citta), regione: scritto(a.regione),
     centroLat: String(a.centro.lat), centroLng: String(a.centro.lng), zoom: String(a.centro.zoom),
+    provinciaIstat: scritto(a.provinciaIstat),
   };
 }
 
@@ -121,6 +126,7 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (!(lat >= -90 && lat <= 90)) e.centroLat = "Un numero fra -90 e 90";
   if (!(lng >= -180 && lng <= 180)) e.centroLng = "Un numero fra -180 e 180";
   if (!(zoom >= 3 && zoom <= 18)) e.zoom = "Un numero fra 3 e 18";
+  if (m.provinciaIstat.trim() && !/^[0-9]{3}$/.test(m.provinciaIstat.trim())) e.provinciaIstat = "Tre cifre, come 042";
   return e;
 }
 
@@ -131,6 +137,7 @@ export function datiDaSalvare(m: ModuloAzienda) {
     ragioneSociale: m.ragioneSociale.trim(), nome: m.nome.trim(), sito: facoltativo(m.sito), telefono: facoltativo(m.telefono),
     gtfsAgencyId: m.gtfsAgencyId.trim(), citta: m.citta.trim(), regione: facoltativo(m.regione),
     centroLat: decimale(m.centroLat), centroLng: decimale(m.centroLng), zoom: decimale(m.zoom),
+    provinciaIstat: facoltativo(m.provinciaIstat),
   };
 }
 

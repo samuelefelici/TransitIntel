@@ -18,29 +18,11 @@ import { censusSections } from "@workspace/db/schema";
 import { isNotNull } from "drizzle-orm";
 import polygonClipping from "polygon-clipping";
 import { asyncHandler } from "../middlewares/error-handler";
+import { nomeOppure, nomiComuni } from "../lib/territorio";
 
 const router: IRouter = Router();
 
-// ─── ISTAT commune code → name (Provincia di Ancona, cod. 42) ───
-// Duplicata da scenarios.ts: tenere allineate.
-const COMUNE_NAMES: Record<string, string> = {
-  "42001": "Agugliano", "42002": "Ancona", "42003": "Arcevia", "42004": "Barbara",
-  "42005": "Belvedere Ostrense", "42006": "Camerano", "42007": "Camerata Picena",
-  "42008": "Castelbellino", "42010": "Castelfidardo", "42011": "Castelleone di Suasa",
-  "42012": "Castelplanio", "42013": "Cerreto d'Esi", "42014": "Chiaravalle",
-  "42015": "Corinaldo", "42016": "Cupramontana", "42017": "Fabriano",
-  "42018": "Falconara Marittima", "42019": "Filottrano", "42020": "Genga",
-  "42021": "Jesi", "42022": "Loreto", "42023": "Maiolati Spontini",
-  "42024": "Mergo", "42025": "Monsano", "42026": "Montecarotto",
-  "42027": "Montemarciano", "42029": "Monte Roberto", "42030": "Monte San Vito",
-  "42031": "Morro d'Alba", "42032": "Numana", "42033": "Offagna",
-  "42034": "Osimo", "42035": "Ostra", "42036": "Ostra Vetere",
-  "42037": "Poggio San Marcello", "42038": "Polverigi", "42040": "Rosora",
-  "42041": "San Marcello", "42042": "San Paolo di Jesi", "42043": "Santa Maria Nuova",
-  "42044": "Sassoferrato", "42045": "Senigallia", "42046": "Serra de' Conti",
-  "42047": "Serra San Quirico", "42048": "Sirolo", "42049": "Staffolo",
-  "42050": "Trecastelli",
-};
+// I nomi dei comuni vengono dal territorio dell'azienda (lib/territorio.ts, tappa 6.1)
 
 type Ring = number[][];        // [[lng,lat], ...]
 type Polygon = Ring[];         // outer + holes
@@ -81,6 +63,7 @@ function extractPolygons(geom: any): MultiPolygon {
 }
 
 async function buildComuniBoundaries(): Promise<ComuniBoundariesResponse> {
+  const nomi = await nomiComuni();
   // 1) Carica tutte le sezioni con geometria
   const rows = await db
     .select({
@@ -124,7 +107,7 @@ async function buildComuniBoundaries(): Promise<ComuniBoundariesResponse> {
       type: "Feature",
       properties: {
         code,
-        name: COMUNE_NAMES[code] ?? `Comune ${code}`,
+        name: nomeOppure(code, nomi),
         sectionCount: g.sections,
         population: g.pop,
       },
@@ -144,6 +127,15 @@ async function buildComuniBoundaries(): Promise<ComuniBoundariesResponse> {
   };
 }
 
+/** I nomi al momento della risposta: i confini restano in memoria, i nomi li cambia l'amministratore (6.1). */
+async function conINomi(r: ComuniBoundariesResponse): Promise<ComuniBoundariesResponse> {
+  const nomi = await nomiComuni();
+  const features = r.features
+    .map((f) => ({ ...f, properties: { ...f.properties, name: nomeOppure(f.properties.code, nomi) } }))
+    .sort((a, b) => a.properties.name.localeCompare(b.properties.name, "it"));
+  return { ...r, features };
+}
+
 /**
  * GET /api/territory/comuni-boundaries
  * Ritorna FeatureCollection con un MultiPolygon per comune (ricavato via
@@ -159,7 +151,7 @@ router.get(
       cached = null;
     }
     if (cached) {
-      res.json(cached);
+      res.json(await conINomi(cached));
       return;
     }
     if (!buildingPromise) {
@@ -173,7 +165,7 @@ router.get(
         });
     }
     const result = await buildingPromise;
-    res.json(result);
+    res.json(await conINomi(result));
   })
 );
 

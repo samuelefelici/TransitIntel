@@ -3,6 +3,9 @@ import { requireAdmin } from "../lib/auth";
 import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/registro-modifiche";
 import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from "../lib/azienda";
 import { cancellaVoce, creaVoce, elencoVoci, ModificaVoce, modificaVoce, NuovaVoce, RifiutoVoci } from "../lib/roster-voci";
+import {
+  cancellaComune, cancellaLuogo, creaLuogo, DatiComune, DatiLuogo, elencoTerritorio, modificaLuogo, RifiutoTerritorio, salvaComune,
+} from "../lib/territorio";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
@@ -339,6 +342,62 @@ router.delete("/admin/voci-roster/:codice", async (req, res): Promise<void> => {
   if (!CODICE_VOCE.test(codice)) { res.status(404).json({ error: "Voce non trovata" }); return; }
   try { await cancellaVoce(codice); res.json({ ok: true }); }
   catch (e) { rifiutoVoci(req, res, e, "voce non cancellata"); }
+});
+
+/**
+ * Il territorio dell'azienda (tappa 6.1, lib/territorio.ts): i comuni (per
+ * codice ISTAT) e i luoghi di riferimento (punti d'interesse, meteo, poli di
+ * lavoro). GET tutto; PUT /comuni/:codice salva un comune, nuovo o no;
+ * DELETE lo toglie; POST, PUT e DELETE sui luoghi. Solo admin, mai un token
+ * di Argos (requireAdmin). La provincia ISTAT sta con i dati dell'azienda.
+ */
+const CODICE_COMUNE = /^[0-9]{6}$/;
+const UUID_LUOGO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const rifiutoTerritorio = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoTerritorio) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/territorio", requireAdmin);
+router.get("/admin/territorio", async (req, res): Promise<void> => {
+  try { res.json(await elencoTerritorio()); }
+  catch (e) { rifiutoTerritorio(req, res, e, "territorio non leggibile"); }
+});
+router.put("/admin/territorio/comuni/:codice", async (req, res): Promise<void> => {
+  const codice = String(req.params.codice ?? "");
+  if (!CODICE_COMUNE.test(codice)) { res.status(400).json({ error: "Codice ISTAT: sei cifre, come «042002»" }); return; }
+  const p = DatiComune.safeParse({ ...(req.body ?? {}), codiceIstat: codice });
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ comune: await salvaComune(p.data) }); }
+  catch (e) { rifiutoTerritorio(req, res, e, "comune non salvato"); }
+});
+router.delete("/admin/territorio/comuni/:codice", async (req, res): Promise<void> => {
+  const codice = String(req.params.codice ?? "");
+  if (!CODICE_COMUNE.test(codice)) { res.status(404).json({ error: "Comune non trovato" }); return; }
+  try { await cancellaComune(codice); res.json({ ok: true }); }
+  catch (e) { rifiutoTerritorio(req, res, e, "comune non cancellato"); }
+});
+router.post("/admin/territorio/luoghi", async (req, res): Promise<void> => {
+  const p = DatiLuogo.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.status(201).json({ luogo: await creaLuogo(p.data) }); }
+  catch (e) { rifiutoTerritorio(req, res, e, "luogo non creato"); }
+});
+router.put("/admin/territorio/luoghi/:id", async (req, res): Promise<void> => {
+  const id = String(req.params.id ?? "");
+  if (!UUID_LUOGO.test(id)) { res.status(404).json({ error: "Luogo non trovato" }); return; }
+  const p = DatiLuogo.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ luogo: await modificaLuogo(id, p.data) }); }
+  catch (e) { rifiutoTerritorio(req, res, e, "luogo non salvato"); }
+});
+router.delete("/admin/territorio/luoghi/:id", async (req, res): Promise<void> => {
+  const id = String(req.params.id ?? "");
+  if (!UUID_LUOGO.test(id)) { res.status(404).json({ error: "Luogo non trovato" }); return; }
+  try { await cancellaLuogo(id); res.json({ ok: true }); }
+  catch (e) { rifiutoTerritorio(req, res, e, "luogo non cancellato"); }
 });
 
 /**
