@@ -6,6 +6,7 @@ import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
 import { elencoGiornate, giornoValido, leggiGiornata, preparaGiornata } from "../lib/esercizio-giornate";
+import { calcolaProposta, RifiutoProposta } from "../lib/esercizio-proposta";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
@@ -120,6 +121,7 @@ router.get("/admin/esercizio/diagnosi", async (req, res): Promise<void> => {
  *   GET  /api/admin/esercizio/giornate?dal=&al=   l'elenco (al più 366 giorni; senza: gli ultimi 30 e domani)
  *   GET  /api/admin/esercizio/giornate/:giorno     una giornata con le sue corse e i suoi turni
  *   POST /api/admin/esercizio/giornate/:giorno/prepara   (409 se congelata; una congelata senza turni li riceve)
+ *   POST /api/admin/esercizio/giornate/:giorno/proposta  la proposta dall'AVM (4.4), solo su una giornata congelata
  */
 const piuGiorni = (g: string, n: number) => {
   const d = new Date(`${g}T00:00:00Z`);
@@ -164,6 +166,18 @@ router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promi
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "preparazione della giornata non riuscita");
     res.status(500).json({ error: "Preparazione non riuscita" });
+  }
+});
+/* la proposta dall'AVM di una giornata cominciata (4.4): durante il giorno è una vista viva */
+router.post("/admin/esercizio/giornate/:giorno/proposta", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  try {
+    res.json(await calcolaProposta(giorno));
+  } catch (e: any) {
+    if (e instanceof RifiutoProposta) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message, giorno }, "proposta della giornata non riuscita");
+    res.status(500).json({ error: "Proposta non riuscita" });
   }
 });
 

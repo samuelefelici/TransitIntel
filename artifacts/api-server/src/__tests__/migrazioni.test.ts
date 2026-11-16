@@ -1551,3 +1551,24 @@ describe("0026: turni nel programmato", () => {
     expect(fk.sort()).toEqual(["public.esercizio_corse.esercizio_corse_giorno_fkey", "public.esercizio_turni_macchina.esercizio_turni_macchina_giorno_fkey"]);
   });
 });
+
+/* 0027 (tappa 4.4): la proposta dall'AVM. */
+describe("0027: proposta dall'AVM", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("la proposta ha solo i valori previsti; le candidate aggiunte se ne vanno con la giornata", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_corse.esercizio_corse_proposta"]).toBe(
+      "CHECK (((proposta IS NULL) OR (proposta = ANY (ARRAY['effettuata_avm'::text, 'parziale'::text, 'continuita'::text, 'da_verificare'::text, 'soppressione_indizio'::text, 'non_rilevata'::text]))))");
+    expect(v["public.esercizio_aggiunte_proposte.esercizio_aggiunte_proposte_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE CASCADE$/);
+    for (const col of ["proposta", "prove"]) expect(catalogo.tabelle["public.esercizio_corse"]).toHaveProperty(col);
+    expect(catalogo.tabelle["public.esercizio_giornate"].proposta).toBe("jsonb | null |  |  | ");
+    for (const col of ["chiave_avm", "journey_ref", "trip_id_avm", "numero", "partenza", "vetture", "transiti"]) {
+      expect(catalogo.tabelle["public.esercizio_aggiunte_proposte"]).toHaveProperty(col);
+    }
+  });
+  it("le proposte del codice sono quelle del vincolo", async () => {
+    const { PROPOSTE } = await import("../lib/esercizio-proposta");
+    const vincolo = catalogo.vincoli["public.esercizio_corse.esercizio_corse_proposta"] as string;
+    expect([...vincolo.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1])).toEqual([...PROPOSTE]);
+  });
+});
