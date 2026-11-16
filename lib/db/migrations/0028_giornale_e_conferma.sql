@@ -99,11 +99,17 @@ BEGIN
   END IF;
 END $giornale$;
 --> statement-breakpoint
+-- come cerbero_owner, se può già usare lo schema: su un database appena
+-- copiato i diritti sugli schemi li dà il migratore dopo le migrazioni, e lì
+-- il catalogo lo scrive il migratore (la tabella è nuova, senza trigger)
 DO $come$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
-                  WHERE c.oid = pg_catalog.to_regclass('public.esercizio_causali')
-                    AND c.relowner IS DISTINCT FROM pg_catalog.to_regrole('cerbero_owner')) THEN
-    EXECUTE 'SET LOCAL ROLE cerbero_owner';
+  IF pg_catalog.to_regrole('cerbero_owner') IS NOT NULL THEN
+    IF pg_catalog.has_schema_privilege('cerbero_owner', 'public', 'USAGE')
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c
+                        WHERE c.oid = pg_catalog.to_regclass('public.esercizio_causali')
+                          AND c.relowner IS DISTINCT FROM pg_catalog.to_regrole('cerbero_owner')) THEN
+      EXECUTE 'SET LOCAL ROLE cerbero_owner';
+    END IF;
   END IF;
 END $come$;
 --> statement-breakpoint
