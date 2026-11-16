@@ -21,9 +21,12 @@ import { isIP } from "node:net";
 import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
+import { aziendaOppureNeutra, aziendaPerLaWeb, paroleVietateDellAzienda } from "./azienda";
+import { matriceFresca, matriceSottoLucchetto } from "./matrice-ruoli";
+import { matriceInVigore } from "./matrice-in-vigore";
 import {
-  dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
-  ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, NOMI_AREE,
+  depositiPuliti, dirittiEVista, livelloDelMetodo, permessiDopo, profiloDaRiga, puo,
+  ruoliSconosciuti, ruoliValidi, vedeDatiSanitari, MAX_DEPOSITI_PER_UTENTE, NOMI_AREE,
   type Area, type Diritti, type InterruttoreDiPrima, type Livello, type Permission, type RuoloAziendale,
 } from "./permessi";
 import { decidi } from "./permessi-rotte";
@@ -57,6 +60,10 @@ export interface AuthUser {
   datiSanitari: boolean;
   /** vede l'area Analisi */
   analisi: boolean;
+  /** i depositi di cui modifica i conducenti (lib/roster-limite-depositi.ts; la regola è in @workspace/permessi) */
+  depositi: string[];
+  /** i depositi di cui vede i conducenti; vuoto = tutti */
+  depositiVisibili: string[];
   /** quello che ne risulta, area per area: è su questo che si decide */
   diritti: Diritti;
   /** la vista di prima (un interruttore = almeno la lettura sulla sua area): la leggono FleetCare e i client di prima */
@@ -166,7 +173,7 @@ async function preparaUtenti(): Promise<void> {
 
   const cnt = await db.execute(sql`SELECT count(*)::int AS n FROM users WHERE role = 'admin' AND active`);
   const nAdmin = ((cnt as any).rows?.[0] ?? (cnt as any)[0])?.n ?? 0;
-  const primo = decidiPrimoAdmin(nAdmin, process.env);
+  const primo = decidiPrimoAdmin(nAdmin, process.env, await paroleVietateDellAzienda());
   if (primo.tipo === "crea") {
     /* se l'email c'è già (per esempio l'admin appena disattivato, anche scritta con
      * le maiuscole) si rimette in piedi la stessa riga con cui si entra */
@@ -213,6 +220,8 @@ async function preparaUtenti(): Promise<void> {
  * amministratori non contano: per loro decide il ruolo, non la vista.
  */
 export async function riallineaVistaPermessi(): Promise<number> {
+  /* con la matrice dei ruoli che c'è adesso nel database (PR 2.18) */
+  await matriceFresca();
   const r = await db.execute<any>(sql`
     SELECT id, role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions FROM users WHERE role <> 'admin'`);
   let n = 0;
@@ -442,6 +451,8 @@ export function utenteDaRiga(row: any): AuthUser {
     accessoDiPrima: profilo.accessoDiPrima,
     datiSanitari: profilo.datiSanitari,
     analisi: profilo.analisi,
+    depositi: profilo.depositi,
+    depositiVisibili: profilo.depositiVisibili,
     ...dirittiEVista(profilo),
     fleetcareRole: row.fleetcare_role ?? "driver",
     active: !!row.active,
@@ -449,8 +460,11 @@ export function utenteDaRiga(row: any): AuthUser {
 }
 
 async function loadUserById(id: string): Promise<UtenteCaricato | null> {
+  /* i diritti si calcolano con la matrice dei ruoli in vigore: se non si è mai
+   * letta e il database non la dà, qui si ferma tutto (lib/matrice-ruoli.ts) */
+  await matriceFresca();
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, fleetcare_role, active,
+    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, depositi_visibili, fleetcare_role, active,
            sessione_versione, mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave
       FROM users WHERE id = ${id}::uuid LIMIT 1
   `);
@@ -597,7 +611,7 @@ export function scriveDatiPersonali(req: { user?: AuthUser; authVia?: string }):
 export function vedeCodiciSanitari(req: { user?: AuthUser; authVia?: string }): boolean {
   if (!req.user || req.authVia) return false;
   const u = req.user;
-  return vedeDatiSanitari({ admin: u.role === "admin", ruoli: u.ruoli, accessoDiPrima: u.accessoDiPrima, analisi: u.analisi, datiSanitari: u.datiSanitari });
+  return vedeDatiSanitari({ admin: u.role === "admin", ruoli: u.ruoli, accessoDiPrima: u.accessoDiPrima, analisi: u.analisi, datiSanitari: u.datiSanitari }, matriceInVigore());
 }
 
 /**
@@ -686,6 +700,8 @@ async function apriSessione(req: Request, res: Response, row: any, s: { mfa: boo
     user: u!.user,
     datiProva: datiProvaAttivi(),
     accesso: u ? (({ rifiuta: _r, ...a }) => a)(accessoDi(u, s)) : null,
+    /* come /auth/me: chi entra ha subito nome, città e centro delle mappe dell'azienda */
+    azienda: aziendaPerLaWeb(await aziendaOppureNeutra()),
   });
 }
 
@@ -801,10 +817,15 @@ router.post("/auth/logout", (_req, res) => {
 });
 
 // GET /api/auth/me
-router.get("/auth/me", requireAuth, (req, res) => {
+router.get("/auth/me", requireAuth, async (req, res) => {
   /* datiProva: se questa installazione permette i conducenti fittizi (lib/dati-prova.ts);
-   * accesso: sessione limitata (password provvisoria, verifica da attivare) e stato della verifica */
-  res.json({ user: req.user, datiProva: datiProvaAttivi(), accesso: req.accesso ?? null });
+   * accesso: sessione limitata (password provvisoria, verifica da attivare) e stato della verifica;
+   * azienda: nome, città e centro della mappa di questa installazione (lib/azienda.ts). Se non si
+   * riesce a leggerla la sessione vale lo stesso, con i valori neutri */
+  res.json({
+    user: req.user, datiProva: datiProvaAttivi(), accesso: req.accesso ?? null,
+    azienda: aziendaPerLaWeb(await aziendaOppureNeutra()),
+  });
 });
 
 /* ─── SSO verso FleetCare (modulo Cerbero di gestione flotta) ───
@@ -941,7 +962,7 @@ router.get("/users/lookup", requireAuth, async (req, res): Promise<void> => {
 // GET /api/admin/users
 router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
   const r = await db.execute(sql`
-    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, fleetcare_role, active, last_login_at, created_at,
+    SELECT id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, depositi_visibili, fleetcare_role, active, last_login_at, created_at,
            mfa_attiva, ${MFA_OBBLIGATORIA} AS mfa_obbligatoria, deve_cambiare_password, mfa_recupero_chiave,
            /* bloccato: per i codici sbagliati, o per la password da almeno un indirizzo */
            GREATEST(
@@ -973,8 +994,8 @@ router.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
  * esiste è un errore (non si scarta in silenzio: l'admin crederebbe di averlo
  * dato), e così `permissions`, che mandano i client di prima dei ruoli.
  */
-function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } {
-  const out: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown } = {};
+function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown; depositi?: string[]; depositiVisibili?: string[] } {
+  const out: { ruoli?: RuoloAziendale[]; datiSanitari?: boolean; analisi?: boolean; accessoDiPrima?: unknown; depositi?: string[]; depositiVisibili?: string[] } = {};
   /* la pagina di prima dei ruoli (rimasta aperta in un browser durante il rilascio) manda gli
    * interruttori: non si scartano in silenzio, altrimenti l'admin crederebbe di averli cambiati */
   if (corpo?.permissions !== undefined) return { errore: "I permessi ora si danno con i ruoli aziendali: ricarica la pagina" };
@@ -990,12 +1011,39 @@ function leggiPermessiRichiesti(corpo: any): { errore: string } | { ruoli?: Ruol
     out[k] = corpo[k];
   }
   if (corpo?.accessoDiPrima !== undefined) out.accessoDiPrima = corpo.accessoDiPrima;
+  /* i depositi che modifica e quelli che vede: due elenchi di codici. Scritti male sono un
+   * errore, non «nessun limite» */
+  for (const k of ["depositi", "depositiVisibili"] as const) {
+    if (corpo?.[k] === undefined) continue;
+    if (!Array.isArray(corpo[k]) || corpo[k].some((d: unknown) => typeof d !== "string" || !d.trim())) {
+      return { errore: `${k}: serve un elenco di codici di deposito` };
+    }
+    if (corpo[k].length > MAX_DEPOSITI_PER_UTENTE) return { errore: `${k}: al più ${MAX_DEPOSITI_PER_UTENTE}` };
+    out[k] = depositiPuliti(corpo[k]);
+  }
   return out;
 }
 
-const COLONNE_UTENTE = sql.raw("id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions, fleetcare_role, active, created_at"); // scan-ok: testo costante del codice
+/** Un elenco di testi come valore text[]: ogni elemento è un parametro, mai testo dentro l'SQL. */
+const arrayDiTesti = (v: readonly string[]) =>
+  v.length ? sql`ARRAY[${sql.join(v.map(x => sql`${x}`), sql`, `)}]::text[]` : sql`'{}'::text[]`;
 
-// POST /api/admin/users { email, password, fullName, role, ruoli, datiSanitari, analisi, fleetcareRole }
+/**
+ * I depositi chiesti che non sono nel catalogo (public.roster_depositi). Un
+ * codice sbagliato non corrisponderebbe a nessun conducente: la persona
+ * resterebbe limitata a niente, o si crederebbe limitata a un deposito che non
+ * lo è. Si rifiuta, come un ruolo che non esiste.
+ */
+async function depositiSconosciuti(ex: { execute: (q: any) => Promise<any> }, chiesti: readonly string[]): Promise<string[]> {
+  if (!chiesti.length) return [];
+  const r = await ex.execute(sql`SELECT codice FROM roster_depositi`);
+  const noti = new Set<string>(((r as any).rows ?? []).map((x: any) => String(x.codice)));
+  return chiesti.filter(c => !noti.has(c));
+}
+
+const COLONNE_UTENTE = sql.raw("id, email, full_name, role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, depositi_visibili, permissions, fleetcare_role, active, created_at"); // scan-ok: testo costante del codice
+
+// POST /api/admin/users { email, password, fullName, role, ruoli, datiSanitari, analisi, depositi, fleetcareRole }
 router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const { password, fullName, role, fleetcareRole } = req.body || {};
   const chiesti = leggiPermessiRichiesti(req.body);
@@ -1005,26 +1053,37 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   if (!/^[^@\s]+@[^@\s]+$/.test(email)) {
     res.status(400).json({ error: "Email non valida" }); return;
   }
-  const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null });
+  const erroreP = erroreNuovaPassword(password, { email, nome: typeof fullName === "string" ? fullName : null }, await paroleVietateDellAzienda());
   if (erroreP) { res.status(400).json({ error: erroreP }); return; }
   const safeRole = role === "admin" ? "admin" : "user";
   /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima, e
    * senza ruoli non apre nessuna area finché l'amministratore non gliene dà */
-  const nuovo = permessiDopo({ role: "user" }, { role: safeRole, ruoli: chiesti.ruoli ?? [], datiSanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false });
-  const vista = nuovo.permissions;
+  const calcola = () => permessiDopo({ role: "user" }, {
+    role: safeRole, ruoli: chiesti.ruoli ?? [], datiSanitari: chiesti.datiSanitari ?? false, analisi: chiesti.analisi ?? false,
+    depositi: chiesti.depositi ?? [], depositiVisibili: chiesti.depositiVisibili ?? [],
+  });
   const safeFleetcareRole = (FLEETCARE_ROLES as readonly string[]).includes(fleetcareRole)
     ? fleetcareRole
     : "driver";
   try {
     const gia = await db.execute<any>(sql`SELECT 1 FROM users WHERE lower(trim(email)) = ${email} LIMIT 1`);
     if ((gia as any).rows?.length) { res.status(409).json({ error: "Email già registrata" }); return; }
+    /* i depositi non dipendono dalla matrice dei ruoli: si controllano prima */
+    const ignoti = await depositiSconosciuti(db, [...calcola().depositi, ...calcola().depositi_visibili]);
+    if (ignoti.length) { res.status(400).json({ error: `Deposito sconosciuto: ${ignoti.map(d => d.slice(0, 40)).join(", ")}` }); return; }
     const hash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    const r = await db.execute(sql`
-      INSERT INTO users (email, password_hash, full_name, role, ruoli, dati_sanitari, analisi, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
-      VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${pgArray(nuovo.ruoli)}::text[], ${nuovo.dati_sanitari}, ${nuovo.analisi},
-              ${JSON.stringify(vista)}::jsonb, ${safeFleetcareRole}, true, true, true)
-      RETURNING ${COLONNE_UTENTE}
-    `);
+    /* la vista permissions e i dati sanitari si calcolano con la matrice dei ruoli riletta
+     * adesso, in fila con chi la sta cambiando (lib/matrice-ruoli.ts), e si scrivono insieme */
+    const r = await db.transaction(async (tx) => {
+      await matriceSottoLucchetto(tx as any);
+      const nuovo = calcola();
+      return tx.execute(sql`
+        INSERT INTO users (email, password_hash, full_name, role, ruoli, dati_sanitari, analisi, depositi, depositi_visibili, permissions, fleetcare_role, active, deve_cambiare_password, password_controllata)
+        VALUES (${email}, ${hash}, ${fullName ?? null}, ${safeRole}, ${pgArray(nuovo.ruoli)}::text[], ${nuovo.dati_sanitari}, ${nuovo.analisi},
+                ${arrayDiTesti(nuovo.depositi)}, ${arrayDiTesti(nuovo.depositi_visibili)}, ${JSON.stringify(nuovo.permissions)}::jsonb, ${safeFleetcareRole}, true, true, true)
+        RETURNING ${COLONNE_UTENTE}
+      `);
+    });
     const row: any = (r as any).rows?.[0] ?? (r as any)[0];
     for (const a of azioniAdmin(null, row)) {
       await registraAccesso(req, { userId: row.id, email: row.email, esito: `admin:${a} (${req.user!.email})` });
@@ -1039,8 +1098,9 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
   }
 });
 
-// PATCH /api/admin/users/:id { fullName?, role?, ruoli?, datiSanitari?, analisi?, accessoDiPrima?, fleetcareRole?, active?, password? }
+// PATCH /api/admin/users/:id { fullName?, role?, ruoli?, datiSanitari?, analisi?, accessoDiPrima?, depositi?, fleetcareRole?, active?, password? }
 // accessoDiPrima: gli interruttori di prima da tenere accesi. Si possono solo togliere.
+// depositi: i codici dei depositi a cui limitare la scrittura sul roster; [] toglie il limite.
 router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Promise<void> => {
   const id = String(req.params.id || "");
   if (!/^[0-9a-f-]{36}$/i.test(id)) { res.status(400).json({ error: "ID non valido" }); return; }
@@ -1048,7 +1108,8 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   const chiesti = leggiPermessiRichiesti(req.body);
   if ("errore" in chiesti) { res.status(400).json({ error: chiesti.errore }); return; }
   const cambiaPermessi = role !== undefined || chiesti.ruoli !== undefined || chiesti.datiSanitari !== undefined
-    || chiesti.analisi !== undefined || chiesti.accessoDiPrima !== undefined;
+    || chiesti.analisi !== undefined || chiesti.accessoDiPrima !== undefined || chiesti.depositi !== undefined
+    || chiesti.depositiVisibili !== undefined;
   const sets: any[] = [];
   let revoca = false;
   if (fullName !== undefined) sets.push(sql`full_name = ${fullName}`);
@@ -1064,7 +1125,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
     const ur = await db.execute<any>(sql`SELECT email, full_name FROM users WHERE id = ${id}::uuid`);
     const u = (ur as any).rows?.[0];
     if (!u) { res.status(404).json({ error: "Utente non trovato" }); return; }
-    const erroreP = erroreNuovaPassword(password, { email: u.email, nome: typeof fullName === "string" ? fullName : u.full_name });
+    const erroreP = erroreNuovaPassword(password, { email: u.email, nome: typeof fullName === "string" ? fullName : u.full_name }, await paroleVietateDellAzienda());
     if (erroreP) { res.status(400).json({ error: erroreP }); return; }
     /* la password data dall'admin è provvisoria: al primo accesso va cambiata, e
      * le sessioni aperte si chiudono */
@@ -1088,19 +1149,35 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
   /* Lettura e scrittura nella stessa transazione, con la riga bloccata: i campi dei
    * permessi e la vista permissions si scrivono insieme, da un solo stato. */
   const esito = await db.transaction(async (tx) => {
+    /* Se cambiano i permessi: in fila con chi sta cambiando i ruoli, e con la matrice
+     * riletta adesso (lib/matrice-ruoli.ts). PRIMA di bloccare la riga dell'utente:
+     * chi cambia i ruoli prende i due lucchetti in quest'ordine, e nell'ordine
+     * opposto i due si fermerebbero a vicenda. */
+    if (cambiaPermessi) await matriceSottoLucchetto(tx as any);
     /* com'era prima: il registro scrive solo quello che cambia davvero */
     const pr = await tx.execute<any>(sql`
-      SELECT role, ruoli, accesso_di_prima, dati_sanitari, analisi, permissions, fleetcare_role, full_name, active
+      SELECT role, ruoli, accesso_di_prima, dati_sanitari, analisi, depositi, depositi_visibili, permissions, fleetcare_role, full_name, active
         FROM users WHERE id = ${id}::uuid FOR UPDATE`);
     const prima = (pr as any).rows?.[0];
     if (!prima) return null;
     if (cambiaPermessi) {
       /* lo stato di prima con sopra la richiesta, e la vista permissions ricavata da lì (lib/permessi.ts) */
       const dopo = permessiDopo(prima, { role, ...chiesti });
+      /* solo i depositi chiesti adesso: quelli che c'erano già non si ricontrollano
+       * (un deposito tolto dal catalogo non deve impedire di cambiare un ruolo) */
+      if (chiesti.depositi !== undefined || chiesti.depositiVisibili !== undefined) {
+        const ignoti = await depositiSconosciuti(tx, [
+          ...(chiesti.depositi !== undefined ? dopo.depositi : []),
+          ...(chiesti.depositiVisibili !== undefined ? chiesti.depositiVisibili : []),
+        ]);
+        if (ignoti.length) return { errore: `Deposito sconosciuto: ${ignoti.map(d => d.slice(0, 40)).join(", ")}` };
+      }
       sets.push(
         sql`role = ${dopo.role}`, sql`ruoli = ${pgArray(dopo.ruoli)}::text[]`,
         sql`accesso_di_prima = ${JSON.stringify(dopo.accesso_di_prima)}::jsonb`,
         sql`dati_sanitari = ${dopo.dati_sanitari}`, sql`analisi = ${dopo.analisi}`,
+        sql`depositi = ${arrayDiTesti(dopo.depositi)}`,
+        sql`depositi_visibili = ${arrayDiTesti(dopo.depositi_visibili)}`,
         sql`permissions = ${JSON.stringify(dopo.permissions)}::jsonb`,
       );
     }
@@ -1110,6 +1187,7 @@ router.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res): Pr
     `);
     return { prima, row: (r as any).rows?.[0] ?? (r as any)[0] };
   });
+  if (esito && "errore" in esito) { res.status(400).json({ error: esito.errore }); return; }
   if (!esito?.row) { res.status(404).json({ error: "Utente non trovato" }); return; }
   const { prima, row } = esito;
   /* la password da ogni indirizzo: sbloccata, o nuova (la provvisoria deve poter entrare) */

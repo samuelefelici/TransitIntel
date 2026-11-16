@@ -22,7 +22,7 @@ import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
-  MousePointer2, ArrowLeftRight, Pin, Send,
+  MousePointer2, ArrowLeftRight, Pin, Send, Lock,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { Link } from "wouter";
@@ -39,6 +39,8 @@ import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverE
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
 import { SeScrive, useSolaLettura } from "@/hooks/use-sola-lettura";
+import { EVENTO_SOLA_LETTURA } from "@/lib/sola-lettura";
+import { limiteDepositi, scriveSulDeposito } from "@workspace/permessi";
 import { useDialogo } from "@/components/roster/useDialogo";
 
 /* ─── Tipi (allineati a /api/roster/*) ─── */
@@ -68,7 +70,19 @@ interface RosterAssignment {
   stato?: StatoAssegnazione;
   /** l'ultima volta che una ripubblicazione l'ha spostata su un turno uguale */
   ricollegata?: { pubblicazione: string; il: string; prima: { dssId: string; codice: string } } | null;
+  /** sostituzione per assenza (5.1): chi aveva il turno */
+  titolareId?: string | null;
 }
+/** Chi può coprire un turno (GET /api/roster/sostituti, 5.1). */
+interface Sostituti {
+  deposito: string | null;
+  titolare: { id: string; nome: string | null; assente: boolean } | null;
+  sostituti: Array<{ id: string; nome: string; matricola: string | null; gruppo: "libero" | "disposizione" | "in_servizio"; turni: string[] }>;
+  fuori: { assenti: number; violazioni: number };
+}
+const GRUPPI_SOSTITUTI = { libero: "libero", disposizione: "a disposizione", in_servizio: "in servizio" } as const;
+/** Il riposo della rotazione non libera il turno; le altre assenze sì (5.1). */
+const liberaTurno = (e: { category: string; code: string }) => e.category === "assenza" && e.code !== "R";
 type Servizio = "urbano" | "extraurbano";
 /** Riposo troppo corto o sovrapposizione fra due turni di un conducente (api-server lib/roster-normativa.ts). */
 interface ViolazioneRoster {
@@ -107,6 +121,8 @@ interface Board {
   /** depositoCodice: il deposito del catalogo, abbinato dal server come fa l'anagrafica */
   from: string; days: string[]; drivers: Array<RosterDriver & { depositoCodice?: string | null }>;
   assignments: RosterAssignment[];
+  /** i turni presi da conducenti di depositi che chi guarda non vede: occupati, senza dire da chi (PR 2.14d) */
+  occupatiDaAltri?: Array<{ day: string; dutyCode: string; dssId: string }>;
   entries?: RosterEntry[];
   /** il colore di ogni deposito del personale, lo stesso dei suoi turni */
   depositi?: ColoreDeposito[];
@@ -255,7 +271,7 @@ export default function RosterPage() {
   const [cut, setCut] = useState<RifTurno | null>(null);
   /* id del conducente di cui è aperta la scheda, o "new" */
   const [editDriver, setEditDriver] = useState<string | null | "new">(null);
-  const { puo, datiProva } = useAuth();
+  const { puo, datiProva, user } = useAuth();
   /* la pubblicazione dei turni è di chi può scriverla: senza, i link non portano da nessuna parte */
   const puoPubblicare = puo("pubblicazione_turni", "S");
   /* senza la scrittura su «Personale» dal tabellone si creano solo conducenti fittizi */
@@ -375,6 +391,7 @@ export default function RosterPage() {
   });
   const placeVoce = (driverId: string, day: string) => {
     if (!armedVoce) return;
+    if (altroDeposito(driverId)) return;
     addEntryMut.mutate({ driverId, day, category: armedVoce.category, code: armedVoce.code });
   };
 
@@ -389,6 +406,7 @@ export default function RosterPage() {
     if (it.kind === "duty") unassignMut.mutate(it.a.id); else delEntryMut.mutate(it.en.id);
   };
   const eraseCell = (driverId: string, day: string) => {
+    if (altroDeposito(driverId)) return;
     const assigns = assignmentsByCell.get(`${driverId}|${day}`) ?? [];
     const entries = entriesByCell.get(`${driverId}|${day}`) ?? [];
     const total = assigns.length + entries.length;
@@ -409,12 +427,20 @@ export default function RosterPage() {
 
   // ── Menu della toolbar + tooltip dettaglio turno (tasto destro) ──
   const [openTopMenu, setOpenTopMenu] = useState<string | null>(null);
-  const [ctxDuty, setCtxDuty] = useState<{ x: number; y: number; duty: RosterDuty; dssId: string } | null>(null);
-  const openDutyContext = (e: ReactMouseEvent, duty: RosterDuty | undefined, dssId: string) => {
+  const [ctxDuty, setCtxDuty] = useState<{ x: number; y: number; duty: RosterDuty; dssId: string; day?: string } | null>(null);
+  /* con il giorno (i turni da coprire): anche i sostituti suggeriti */
+  const openDutyContext = (e: ReactMouseEvent, duty: RosterDuty | undefined, dssId: string, day?: string) => {
     if (!duty) return;
     e.preventDefault();
-    setCtxDuty({ x: e.clientX, y: e.clientY, duty, dssId });
+    setCtxDuty({ x: e.clientX, y: e.clientY, duty, dssId, day });
   };
+  const sostitutiQ = useQuery({
+    queryKey: ["roster", "sostituti", ctxDuty?.day, ctxDuty?.dssId, ctxDuty?.duty.code],
+    queryFn: () => apiFetch<Sostituti>(`/api/roster/sostituti?day=${ctxDuty!.day}&dssId=${ctxDuty!.dssId}&dutyCode=${encodeURIComponent(ctxDuty!.duty.code)}`),
+    enabled: !!ctxDuty?.day && !sl.solaLettura,
+    staleTime: 30_000,
+    retry: false,
+  });
   /* le tratte del turno si chiedono quando si apre il dettaglio: il tabellone porta solo i riassunti */
   const tratteQ = useQuery({
     queryKey: ["roster", "turno", ctxDuty?.dssId, ctxDuty?.duty.code],
@@ -447,6 +473,27 @@ export default function RosterPage() {
   };
   /* l'UDP pubblicata di un DSS in un giorno, per l'etichetta quando un giorno ne ha più d'una */
   const udpDi = (day: string, dssId: string) => board?.pubblicati?.[day]?.find(p => p.dssId === dssId)?.udpNome ?? null;
+  /* PR 2.14c: chi ha dei depositi scrive il roster solo per i conducenti di quelli.
+     Gli altri li vede, con un lucchetto; i gesti su di loro si fermano qui con
+     l'avviso unico, e comunque li rifiuta l'API (lib/roster-limite-depositi.ts). */
+  const limite = useMemo(
+    () => limiteDepositi({ admin: user?.role === "admin", depositi: user?.depositi, depositiVisibili: user?.depositiVisibili }),
+    [user?.role, user?.depositi, user?.depositiVisibili],
+  );
+  const codiceDeposito = useMemo(
+    () => new Map((board?.drivers ?? []).map((d) => [d.id, d.depositoCodice ?? null])),
+    [board?.drivers],
+  );
+  const scriveSu = (driverId: string) => scriveSulDeposito(limite, codiceDeposito.get(driverId));
+  /** Vero se uno dei conducenti è di un altro deposito: il gesto va fermato, e lo si dice. */
+  const altroDeposito = (...ids: string[]): boolean => {
+    if (ids.every(scriveSu)) return false;
+    window.dispatchEvent(new CustomEvent(EVENTO_SOLA_LETTURA, {
+      detail: { messaggio: "Sola lettura: questo conducente è di un altro deposito, e tu scrivi solo sui conducenti dei tuoi" },
+    }));
+    return true;
+  };
+
   const assignmentsByCell = useMemo(() => {
     const m = new Map<string, RosterAssignment[]>();
     for (const a of board?.assignments ?? []) {
@@ -465,12 +512,24 @@ export default function RosterPage() {
   }, [board?.entries]);
   /* gli scoperti di ogni giorno: i turni delle UDP pubblicate quel giorno, meno quelli assegnati */
   const uncoveredByDay = useMemo(() => {
-    const m = new Map<string, Array<{ duty: RosterDuty; dssId: string; udpNome: string | null }>>();
+    const m = new Map<string, Array<{ duty: RosterDuty; dssId: string; udpNome: string | null; titolareAssente?: string }>>();
     if (!board) return m;
     for (const day of board.days) {
-      const taken = new Set(board.assignments.filter((a) => a.day === day).map((a) => `${a.dssId}|${a.dutyCode}`));
+      /* occupati anche i turni presi da conducenti di depositi che chi guarda non vede (PR 2.14d):
+         l'API li manda senza il conducente, e non vanno contati fra gli scoperti */
+      const taken = new Set([...board.assignments, ...(board.occupatiDaAltri ?? [])]
+        .filter((a) => a.day === day).map((a) => `${a.dssId}|${a.dutyCode}`));
+      /* liberati (5.1): il conducente del turno quel giorno è assente (non a riposo) */
+      const assenti = new Set((board.entries ?? []).filter((e) => e.day === day && liberaTurno(e)).map((e) => e.driverId));
+      const liberati = new Map(board.assignments.filter((a) => a.day === day && assenti.has(a.driverId))
+        .map((a) => [`${a.dssId}|${a.dutyCode}`, a.driverId] as const));
       m.set(day, (board.pubblicati?.[day] ?? []).flatMap(p =>
-        (board.dutiesByDss?.[p.dssId] ?? []).filter(d => !taken.has(`${p.dssId}|${d.code}`)).map(d => ({ duty: d, dssId: p.dssId, udpNome: p.udpNome }))));
+        (board.dutiesByDss?.[p.dssId] ?? [])
+          .filter(d => !taken.has(`${p.dssId}|${d.code}`) || liberati.has(`${p.dssId}|${d.code}`))
+          .map(d => {
+            const titolare = liberati.get(`${p.dssId}|${d.code}`);
+            return { duty: d, dssId: p.dssId, udpNome: p.udpNome, ...(titolare ? { titolareAssente: titolare } : {}) };
+          })));
     }
     return m;
   }, [board]);
@@ -485,6 +544,7 @@ export default function RosterPage() {
     if (assignMut.isPending) return;
     if (!cut) { toast.info("Prima seleziona un turno e premi Q (taglia)"); return; }
     if (!driverId) { toast.info("Seleziona un conducente a sinistra"); return; }
+    if (altroDeposito(driverId)) return;
     /* se il conducente quel giorno ha un turno da riassegnare, il nuovo lo sostituisce */
     const vecchio = (assignmentsByCell.get(`${driverId}|${cut.day}`) ?? []).find(a => a.stato === "da_riassegnare");
     // Un conducente può avere più turni nello stesso giorno: nessun blocco.
@@ -557,6 +617,8 @@ export default function RosterPage() {
   /** Un click col cambio turno: sul turno (target) o sulla cella/sul nome di un conducente (target null). */
   const swapClick = (driverId: string, day: string | null, target: RosterAssignment | null) => {
     if (swapMut.isPending) return;
+    /* lo scambio tocca il roster di tutti e due: devono essere tutti e due dei propri depositi */
+    if (altroDeposito(driverId)) return;
     if (!swapFrom) {
       if (target) setSwapFrom(target);
       else toast.info("Cambio turno: clicca prima il turno da scambiare");
@@ -867,7 +929,8 @@ export default function RosterPage() {
               </button>
             </SeScrive>
             {voceMenu === cat && (
-              <div className="absolute z-30 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
+              /* z-40: sopra l'intestazione dei giorni (sticky, z-30), che altrimenti copre la seconda voce del menu */
+              <div className="absolute z-40 mt-1 left-0 w-60 rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-1">
                 {(vociQ.data?.[cat] ?? []).map((v) => (
                   <button key={v.code}
                     onClick={() => { scegliStrumento("puntatore"); setArmedVoce({ category: cat, code: v.code, label: v.label }); setVoceMenu(null); }}
@@ -1058,6 +1121,12 @@ export default function RosterPage() {
                             <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 mt-0.5">
                               {drv.matricola && <span className="text-[9px] font-mono text-slate-500">{drv.matricola}</span>}
                               {drv.isFictitious && <span className="text-[7px] px-1 rounded bg-violet-500/15 text-violet-300">fittizio</span>}
+                              {!scriveSu(drv.id) && (
+                                <span className="inline-flex items-center gap-0.5 text-[8px] px-1 rounded bg-slate-700/60 text-slate-300"
+                                  title="Di un altro deposito: lo vedi, ma il suo roster non lo modifichi. Scrivi solo sui conducenti dei tuoi depositi.">
+                                  <Lock className="w-2 h-2" aria-hidden /> sola lettura
+                                </span>
+                              )}
                               {drv.abilitazioni?.length > 0 && <AbilitazioneBadges keys={drv.abilitazioni} size={9} />}
                             </div>
                           </div>
@@ -1118,6 +1187,10 @@ export default function RosterPage() {
                                       const ricollegata = a.ricollegata
                                         ? `\n\nPassato qui da ${a.ricollegata.prima.codice} con la pubblicazione del ${new Date(a.ricollegata.il).toLocaleDateString("it-IT")} (stesse corse e orari).`
                                         : "";
+                                      /* 5.1: il conducente è assente, il turno è da coprire; o è un sostituto */
+                                      const liberato = (entriesByCell.get(`${a.driverId}|${day}`) ?? []).some(liberaTurno);
+                                      const sostituzione = (liberato ? "\n\nAssente: il turno è da coprire (in basso, fra gli scoperti, coi sostituti suggeriti)." : "")
+                                        + (a.titolareId ? `\n\nSostituisce ${nomeDi(a.titolareId)}, assente.` : "");
                                       const etichettaUdp = (board?.pubblicati?.[day]?.length ?? 0) > 1 ? udpDi(day, a.dssId) : null;
                                       return (
                                         <button key={a.id}
@@ -1127,12 +1200,12 @@ export default function RosterPage() {
                                           aria-pressed={tool === "cambio" ? scelto : undefined}
                                           title={statoTurno + (etichettaUdp ? `${etichettaUdp}\n` : "") + (tool === "cambio"
                                             ? (scelto ? "Turno scelto: ora clicca un'altra persona (un altro click lo lascia)" : swapFrom ? `Scambia con ${swapFrom.dutyCode}` : "Scegli questo turno da scambiare")
-                                            : "Tasto destro: dettaglio · per toglierlo la Gomma, per scambiarlo il Cambio turno") + avvisoTurno + ricollegata}
+                                            : "Tasto destro: dettaglio · per toglierlo la Gomma, per scambiarlo il Cambio turno") + avvisoTurno + ricollegata + sostituzione}
                                           aria-description={[orfano ? "Da riassegnare" : "", ...sue.map((v) => v.testo)].filter(Boolean).join(". ") || undefined}
                                           className={`relative w-full rounded font-bold leading-tight ${tool === "cambio" ? "hover:opacity-80" : "cursor-default"} ${big ? dutyBigCls : "px-1 py-0.5 text-[9px]"} ${
                                             orfano ? "text-amber-100 border-2 border-dashed border-amber-400 bg-slate-900"
-                                              : a.stato === "non_pubblicato" ? "text-white opacity-60" : "text-white"
-                                          } ${
+                                              : a.stato === "non_pubblicato" ? "text-white opacity-60" : liberato ? "text-white opacity-40 line-through" : "text-white"
+                                          } ${a.titolareId ? "outline outline-1 outline-dashed outline-sky-300/70" : ""} ${
                                             scelto ? "ring-2 ring-amber-300 ring-offset-2 ring-offset-slate-950"
                                               : daControllare ? "ring-2 ring-rose-500 ring-offset-1 ring-offset-slate-950"
                                                 : sue.length ? "ring-1 ring-amber-400/80" : ""
@@ -1217,22 +1290,26 @@ export default function RosterPage() {
                           ) : <div className="text-[10px] text-slate-500 px-1">non pubblicato</div>
                         ) : list.length === 0 ? (
                           <div className="text-[10px] text-emerald-400/60 px-1">tutto coperto</div>
-                        ) : list.map(({ duty: d, dssId: dss, udpNome }) => {
+                        ) : list.map(({ duty: d, dssId: dss, udpNome, titolareAssente }) => {
                           const isSel = selDuty?.day === day && selDuty?.code === d.code && selDuty?.dssId === dss;
                           const isCut = cut?.day === day && cut?.code === d.code && cut?.dssId === dss;
                           const piuUdp = (board?.pubblicati?.[day]?.length ?? 0) > 1;
                           return (
                             <button key={`${day}|${dss}|${d.code}`}
                               onClick={() => setSelDuty(isSel ? null : { day, code: d.code, dssId: dss })}
-                              onContextMenu={(e) => openDutyContext(e, d, dss)}
-                              title={piuUdp && udpNome ? udpNome : undefined}
+                              onContextMenu={(e) => openDutyContext(e, d, dss, day)}
+                              title={[titolareAssente ? `Da coprire: ${nomeDi(titolareAssente)} è assente. Tasto destro per i sostituti suggeriti.` : "Tasto destro: dettaglio e sostituti suggeriti",
+                                piuUdp && udpNome ? udpNome : ""].filter(Boolean).join("\n")}
                               className={`w-full text-left px-1.5 py-1 rounded border flex items-center gap-1.5 transition-colors ${
-                                isCut ? "border-amber-500/70 bg-amber-500/10" : isSel ? "border-violet-500/70 bg-violet-500/10" : "border-slate-800 hover:border-violet-500/40"
+                                isCut ? "border-amber-500/70 bg-amber-500/10" : isSel ? "border-violet-500/70 bg-violet-500/10"
+                                  : titolareAssente ? "border-dashed border-rose-500/60 hover:border-violet-500/40" : "border-slate-800 hover:border-violet-500/40"
                               }`}>
                               <span className="px-1 py-0.5 rounded text-white text-[10px] font-bold shrink-0" style={{ backgroundColor: resColor(d) }}>{d.code}</span>
                               <span className="min-w-0 flex-1">
                                 <span className="block text-[10px] text-slate-200 leading-tight">{d.start ?? "?"}–{d.end ?? "?"}</span>
-                                <span className="block text-[9px] text-slate-500 leading-tight truncate">{piuUdp && udpNome ? udpNome : (d.type ?? "turno")}{d.tripsCount ? ` · ${d.tripsCount}c` : ""}</span>
+                                {titolareAssente
+                                  ? <span className="block text-[9px] text-rose-300 leading-tight truncate">assente: {nomeDi(titolareAssente)}</span>
+                                  : <span className="block text-[9px] text-slate-500 leading-tight truncate">{piuUdp && udpNome ? udpNome : (d.type ?? "turno")}{d.tripsCount ? ` · ${d.tripsCount}c` : ""}</span>}
                               </span>
                             </button>
                           );
@@ -1372,8 +1449,14 @@ export default function RosterPage() {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setCtxDuty(null)} onContextMenu={(e) => { e.preventDefault(); setCtxDuty(null); }} />
           <div
-            className="fixed z-50 w-[340px] max-h-[70vh] overflow-auto rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-3 text-[11px]"
-            style={{ left: Math.min(ctxDuty.x, window.innerWidth - 350), top: Math.min(ctxDuty.y, window.innerHeight - 320) }}
+            className="fixed z-50 w-[340px] overflow-auto rounded-lg border border-slate-700 bg-slate-900 shadow-2xl p-3 text-[11px]"
+            /* nella metà bassa dello schermo (i turni da coprire stanno in fondo) si apre verso l'alto; se non ci sta, scorre */
+            style={{
+              left: Math.max(8, Math.min(ctxDuty.x, window.innerWidth - 350)),
+              ...(ctxDuty.y > window.innerHeight / 2
+                ? { bottom: Math.max(8, window.innerHeight - ctxDuty.y), maxHeight: Math.max(200, ctxDuty.y - 16) }
+                : { top: ctxDuty.y, maxHeight: Math.max(200, window.innerHeight - ctxDuty.y - 16) }),
+            }}
           >
             <div className="flex items-center gap-1.5 font-semibold text-slate-100 mb-2">
               <span className="px-1.5 py-0.5 rounded text-white text-[10px] font-bold" style={{ backgroundColor: resColor(ctxDuty.duty) }}>{ctxDuty.duty.code}</span>
@@ -1416,6 +1499,53 @@ export default function RosterPage() {
                   })}
                 </tbody>
               </table>
+            )}
+            {ctxDuty.day && !sl.solaLettura && (
+              <div className="border-t border-slate-800 pt-2 mt-2">
+                <div className="text-[10px] uppercase tracking-wide text-slate-500 mb-1">Chi può coprirlo · {quandoDi(ctxDuty.day)}</div>
+                {sostitutiQ.isLoading ? (
+                  <div className="text-[10px] text-slate-500 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Cerco i sostituti…</div>
+                ) : sostitutiQ.isError || !sostitutiQ.data ? (
+                  <div className="text-[10px] text-slate-500 italic">Sostituti non disponibili per questo turno.</div>
+                ) : (() => {
+                  const s = sostitutiQ.data;
+                  return (
+                    <div className="space-y-1">
+                      {s.titolare?.assente && (
+                        <div className="text-[10px] text-rose-300">{s.titolare.nome ?? "Il titolare"} è assente: il turno è da coprire.</div>
+                      )}
+                      {s.sostituti.length === 0 ? (
+                        <div className="text-[10px] text-slate-400">Nessuno {s.deposito ? `del deposito ${s.deposito} ` : ""}può coprirlo senza violare riposi o sovrapposizioni.</div>
+                      ) : (
+                        <ul className="space-y-0.5">
+                          {s.sostituti.slice(0, 15).map((x) => (
+                            <li key={x.id} className="flex items-center gap-2">
+                              <span className="flex-1 min-w-0 truncate text-slate-100">{x.nome}</span>
+                              <span className="text-[9px] text-slate-500 shrink-0">{GRUPPI_SOSTITUTI[x.gruppo]}{x.turni.length ? ` · ${x.turni.join(", ")}` : ""}</span>
+                              <button type="button" disabled={assignMut.isPending}
+                                onClick={() => {
+                                  if (altroDeposito(x.id)) return;
+                                  assignMut.mutate({ driverId: x.id, day: ctxDuty.day!, dutyCode: ctxDuty.duty.code, dssId: ctxDuty.dssId });
+                                  setCtxDuty(null);
+                                }}
+                                className="shrink-0 px-1.5 py-0.5 rounded border border-violet-500/50 text-violet-200 hover:bg-violet-500/15 text-[10px]">
+                                Assegna
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {s.sostituti.length > 15 && <div className="text-[9px] text-slate-500">e altri {s.sostituti.length - 15}</div>}
+                      {s.fuori.assenti + s.fuori.violazioni > 0 && (
+                        <div className="text-[9px] text-slate-500">
+                          Esclusi: {s.fuori.assenti} assenti o a riposo, {s.fuori.violazioni} con riposi corti o turni sovrapposti.
+                        </div>
+                      )}
+                      <div className="text-[9px] text-slate-500">È un suggerimento: chi assegnare lo decidi tu.</div>
+                    </div>
+                  );
+                })()}
+              </div>
             )}
           </div>
         </>

@@ -49,7 +49,7 @@ describe("il menu di chi entra", () => {
   });
 
   it("Roster e Personale", () => {
-    expect(menu(con("roster"))["Personale"]).toEqual(["Roster", "Anagrafica"]);
+    expect(menu(con("roster"))["Personale"]).toEqual(["Roster", "Vestizione", "Anagrafica"]);
     expect(menu(con("personale"))["Personale"]).toEqual(["Anagrafica"]);
   });
 
@@ -74,7 +74,7 @@ describe("il menu di chi entra", () => {
   it("l'admin vede tutto, compresa Gestione Utenti", () => {
     const m = menu(con(), true);
     expect(Object.keys(m)).toEqual(SEZIONI.map(s => s.titolo));
-    expect(m["Amministrazione"]).toEqual(["Utenti e accessi", "Parametri di esercizio", "Registro delle modifiche", "Dati e integrazioni", "Sicurezza dell'account"]);
+    expect(m["Amministrazione"]).toEqual(["Utenti e accessi", "Ruoli", "Azienda", "Parametri di esercizio", "Registro delle modifiche", "Diagnosi dell'esercizio", "Giornate di esercizio", "Dati e integrazioni", "Sicurezza dell'account"]);
     expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Utenti e accessi");
     // il registro delle modifiche lo legge solo l'admin, qualunque permesso abbia l'utente
     expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Registro delle modifiche");
@@ -138,7 +138,7 @@ describe("il menu dei ruoli aziendali", () => {
   it("Ufficio turni: come il Pianificatore senza le tariffe, più il tabellone", () => {
     const m = menu(conRuoli("ufficio_turni"));
     expect(Object.keys(m)).toEqual(["Oggi", "Rete e orari", "Turni", "Pubblicazione", "Personale", "Esercizio", "Amministrazione"]);
-    expect(m["Personale"]).toEqual(["Roster", "Anagrafica"]);
+    expect(m["Personale"]).toEqual(["Roster", "Vestizione", "Anagrafica"]);
   });
 
   it("Capo deposito e Centrale: anche la Flotta", () => {
@@ -146,6 +146,14 @@ describe("il menu dei ruoli aziendali", () => {
       const m = menu(conRuoli(r));
       expect(Object.keys(m), r).toEqual(["Oggi", "Rete e orari", "Turni", "Pubblicazione", "Personale", "Esercizio", "Flotta", "Amministrazione"]);
     }
+  });
+
+  it("Consuntivo: a chi ha l'area «Consuntivo» (tutti i ruoli tranne l'Officina), non a chi ha solo gli interruttori di prima", () => {
+    for (const r of ["pianificatore", "ufficio_turni", "capo_deposito", "centrale_operativa", "amministrazione"] as const) {
+      expect(menu(conRuoli(r))["Esercizio"], r).toContain("Consuntivo");
+    }
+    expect(menu(conRuoli("centrale_operativa"))["Esercizio"]).toEqual(["Mappa live", "AVM", "Tempi osservati", "Consuntivo"]);
+    expect(menu(con("centrale"))["Esercizio"]).not.toContain("Consuntivo");
   });
 
   it("Officina: l'esercizio e la flotta, nient'altro", () => {
@@ -164,7 +172,7 @@ describe("il menu dei ruoli aziendali", () => {
     for (const r of ["pianificatore", "ufficio_turni", "capo_deposito", "centrale_operativa", "officina", "amministrazione"] as const) {
       const m = menu(conRuoli(r));
       expect(m["Analisi"], r).toBeUndefined();
-      for (const voce of ["Utenti e accessi", "Parametri di esercizio", "Registro delle modifiche"]) expect(m["Amministrazione"], r).not.toContain(voce);
+      for (const voce of ["Utenti e accessi", "Ruoli", "Azienda", "Parametri di esercizio", "Registro delle modifiche", "Diagnosi dell'esercizio", "Giornate di esercizio"]) expect(m["Amministrazione"], r).not.toContain(voce);
     }
   });
 });
@@ -175,6 +183,7 @@ describe("la voce accesa e le pagine di lavoro", () => {
   it("la voce più specifica vince", () => {
     expect(voceAttiva("/roster/anagrafica", tutte)).toBe("/roster/anagrafica");
     expect(voceAttiva("/roster/pubblicazione", tutte)).toBe("/roster/pubblicazione");
+    expect(voceAttiva("/roster/vestizione", tutte)).toBe("/roster/vestizione");
     expect(voceAttiva("/roster", tutte)).toBe("/roster");
     expect(voceAttiva("/planning-studio/abc/trips", tutte)).toBe("/planning-studio");
     expect(voceAttiva("/planning", tutte)).toBe("/planning");

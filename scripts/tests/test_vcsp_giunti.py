@@ -2,7 +2,7 @@
 
 Il costo-ombra per blocco dice al VSP «questo blocco costa troppo» e spalma la
 penalità su tutti i suoi archi. Ma il tetto delle autovetture aziendali e il bus
-lasciato senza conducente oltre il limite NON sono violazioni BDS di un turno:
+lasciato senza conducente oltre il limite NON sono violazioni normative di un turno:
 sono esiti del parco auto, e nel segnale di ritorno pesavano zero. Il risultato
 era che nessun numero di round poteva sistemarle, perché il VSP non sapeva
 nemmeno che esistessero — né quale giunto sciogliere.

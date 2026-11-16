@@ -21,6 +21,48 @@ const leggi = (relativo: string) => readFileSync(fileURLToPath(new URL(relativo,
 const CATALOGO = JSON.parse(leggi("../../../../lib/db/migrations/meta/catalogo.json"));
 const MIGRAZIONE = leggi("../../../../lib/db/migrations/0009_ruoli_aziendali.sql");
 
+describe("i depositi di una persona (PR 2.14c, migrazione 0012)", () => {
+  const colonne = CATALOGO.tabelle["public.users"];
+  const MIGRAZIONE_DEPOSITI = leggi("../../../../lib/db/migrations/0012_depositi_degli_utenti.sql");
+
+  it("una colonna, mai nulla, vuota per tutti: al rilascio nessuno ha un limite", () => {
+    expect(colonne.depositi).toBe("text[] | not null | '{}'::text[] |  | ");
+    // la migrazione aggiunge la colonna e basta: non scrive i depositi di nessuno
+    expect(MIGRAZIONE_DEPOSITI.replace(/--.*$/gm, "")).not.toMatch(/\b(UPDATE|INSERT\s+INTO|DELETE\s+FROM)\b/i);
+  });
+
+  it("il registro riporta il valore anche dei depositi; il resto della regola è quella della 0009", () => {
+    const regola = (sql: string) => /SELECT registro\.sorveglia\('public\.users',([\s\S]*?)\);/.exec(sql)![1]!.replace(/\s+/g, " ").trim();
+    const dopo = regola(MIGRAZIONE_DEPOSITI);
+    expect(dopo).toContain("'analisi', 'depositi']");
+    expect(dopo.replace("'analisi', 'depositi']", "'analisi']")).toBe(regola(MIGRAZIONE));
+  });
+
+  it("FleetCare non li legge", () => {
+    expect([...(LETTORI as any).fleetcare_legge_cerbero["public.users"]]).not.toContain("depositi");
+  });
+
+  it("Gestione utenti: si scrivono solo se chiesti, puliti, e [] toglie il limite", () => {
+    const prima = { role: "user", ruoli: ["capo_deposito"], depositi: ["jesi"] };
+    expect(permessiDopo(prima, {}).depositi).toEqual(["jesi"]);
+    expect(permessiDopo(prima, { ruoli: ["capo_deposito", "ufficio_turni"] }).depositi).toEqual(["jesi"]);
+    expect(permessiDopo(prima, { depositi: ["jesi", "ancona", "jesi", " "] }).depositi).toEqual(["jesi", "ancona"]);
+    expect(permessiDopo(prima, { depositi: [] }).depositi).toEqual([]);
+  });
+
+  it("restano anche a chi perde il roster: sono un limite, non una capacità", () => {
+    const dopo = permessiDopo({ role: "user", ruoli: ["capo_deposito"], depositi: ["jesi"] }, { ruoli: ["pianificatore"] });
+    expect(dopo.depositi).toEqual(["jesi"]);
+    // (i dati sanitari invece si spengono: quella è una capacità)
+    expect(permessiDopo({ role: "user", ruoli: ["capo_deposito"], dati_sanitari: true }, { ruoli: ["pianificatore"] }).dati_sanitari).toBe(false);
+  });
+
+  it("profiloDaRiga non crede a quello che non è scritto bene", () => {
+    expect(profiloDaRiga({ depositi: ["jesi", 7, null, "", "ancona"] }).depositi).toEqual(["jesi", "ancona"]);
+    for (const male of [null, undefined, "jesi", { jesi: true }, 3]) expect(profiloDaRiga({ depositi: male }).depositi).toEqual([]);
+  });
+});
+
 describe("le colonne dei ruoli su public.users", () => {
   const colonne = CATALOGO.tabelle["public.users"];
 
@@ -120,10 +162,30 @@ describe("permessiDopo: come Gestione utenti cambia i permessi", () => {
     expect(permessiDopo({ role: "user" }, { datiSanitari: true, analisi: false })).toMatchObject({ ruoli: [], accesso_di_prima: {}, dati_sanitari: false });
   });
 
+  it("i depositi che vede e quelli che modifica: quello che modifica sta sempre fra quello che vede (PR 2.14d)", () => {
+    const base = { role: "user", ruoli: ["capo_deposito"] };
+    // senza visibili resta com'era con la 2.14c: l'elenco di quelli che modifica, e li vede tutti
+    expect(permessiDopo(base, { depositi: ["jesi"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: [] });
+    // con dei visibili, un deposito da modificare che manca fra i visibili ci entra
+    expect(permessiDopo(base, { depositi: ["jesi"], depositiVisibili: ["ancona"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["ancona", "jesi"] });
+    expect(permessiDopo(base, { depositi: ["jesi"], depositiVisibili: ["jesi", "ancona"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] });
+    // cambiando un elenco solo, l'altro resta, e la regola vale ancora
+    const prima = { ...base, depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] };
+    expect(permessiDopo(prima, { depositi: ["osimo"] })).toMatchObject({ depositi: ["osimo"], depositi_visibili: ["jesi", "ancona", "osimo"] });
+    expect(permessiDopo(prima, { depositiVisibili: ["ancona"] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["ancona", "jesi"] });
+    // togliere i visibili: di nuovo li vede tutti
+    expect(permessiDopo(prima, { depositiVisibili: [] })).toMatchObject({ depositi: ["jesi"], depositi_visibili: [] });
+    // senza toccare i depositi non cambia niente
+    expect(permessiDopo(prima, { analisi: true })).toMatchObject({ depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] });
+  });
+
   it("profiloDaRiga non crede a quello che non è scritto bene", () => {
     const p = profiloDaRiga({ role: "Admin", ruoli: ["officina", "direttore", 7], accesso_di_prima: { roster: "true", fares: true, analytics: true }, dati_sanitari: "true", analisi: 1 });
-    expect(p).toEqual({ admin: false, ruoli: ["officina"], accessoDiPrima: { fares: true }, datiSanitari: false, analisi: false });
-    expect(profiloDaRiga({})).toEqual({ admin: false, ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false });
+    expect(p).toEqual({ admin: false, ruoli: ["officina"], accessoDiPrima: { fares: true }, datiSanitari: false, analisi: false, depositi: [], depositiVisibili: [] });
+    expect(profiloDaRiga({})).toEqual({ admin: false, ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, depositi: [], depositiVisibili: [] });
+    // i due elenchi di depositi: codici puliti, senza doppi
+    expect(profiloDaRiga({ depositi: ["jesi", " jesi ", 3], depositi_visibili: ["ancona", "", "ancona", "jesi"] }))
+      .toMatchObject({ depositi: ["jesi"], depositiVisibili: ["ancona", "jesi"] });
   });
 });
 

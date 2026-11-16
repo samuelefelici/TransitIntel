@@ -72,9 +72,9 @@ export const VSP_GUIDE: AlgoStep[] = [
 export const CSP_GUIDE: AlgoStep[] = [
   { t: "Analisi dei blocchi", d: "Ogni turno macchina viene analizzato per trovare i punti di taglio buoni: soste ai capolinea, fermate nei cluster (punti di cambio), anche a metà corsa (cambio intra-corsa). Le fasce senza cambi e le lunghezze minime dei pezzi filtrano i tagli." },
   { t: "Costruzione dei segmenti", d: "I blocchi vengono spezzati nei tagli scelti: ogni segmento è una porzione di lavoro affidabile a un solo conducente." },
-  { t: "Accoppiamento CP-SAT", d: "Il modello decide per ogni segmento se diventa un turno da solo (intero/supplemento) o si accoppia con un altro in un turno a due riprese (semiunico/spezzato), rispettando nastro, lavoro e interruzioni della normativa. Qui agiscono i Vincoli globali e i Costi avanzati BDS5." },
+  { t: "Accoppiamento CP-SAT", d: "Il modello decide per ogni segmento se diventa un turno da solo (intero/supplemento) o si accoppia con un altro in un turno a due riprese (semiunico/spezzato), rispettando nastro, lavoro e interruzioni della normativa. Qui agiscono i Vincoli globali e i Costi avanzati." },
   { t: "Multi-scenario", d: "Come per i mezzi: più risoluzioni con strategie e perturbazioni diverse, poi la classifica sceglie la migliore (vedi 'Come ha ragionato l'algoritmo' nel risultato)." },
-  { t: "Validazione BDS", d: "Ogni turno viene verificato contro RD 131/1938 e regole aziendali: guida continuativa, soste al capolinea, pasto, stacco, riprese. I badge ✅/❌ nel risultato vengono da qui — e si aggiornano a ogni tua modifica manuale." },
+  { t: "Verifica normativa", d: "Ogni turno viene verificato contro RD 131/1938 e regole aziendali: guida continuativa, soste al capolinea, pasto, stacco, riprese. I badge ✅/❌ nel risultato vengono da qui — e si aggiornano a ogni tua modifica manuale." },
   { t: "Cambi e auto aziendali", d: "Dove un bus passa di mano viene creato il cambio (LASCIA/PRENDE) e, se serve, il viaggio con l'auto aziendale — nel rispetto del numero di auto disponibili." },
 ];
 

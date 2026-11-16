@@ -36,6 +36,11 @@ async function impronta(p: string): Promise<Record<string, unknown>> {
                     LEFT JOIN ps_stops m ON m.id = s.parent_station AND m.project_id = s.project_id
                    WHERE s.project_id = ${p}::uuid),
       'linee', (SELECT jsonb_agg(short_name ORDER BY short_name) FROM ps_routes WHERE project_id = ${p}::uuid),
+      -- PR 3.1: i codici stabili sono gli stessi nella copia (gli id interni no)
+      'codici', jsonb_build_object(
+        'corse', (SELECT jsonb_agg(jsonb_build_array(short_name, codice) ORDER BY short_name) FROM ps_trips WHERE project_id = ${p}::uuid),
+        'fermate', (SELECT jsonb_agg(jsonb_build_array(code, codice) ORDER BY code) FROM ps_stops WHERE project_id = ${p}::uuid),
+        'linee', (SELECT jsonb_agg(jsonb_build_array(short_name, codice) ORDER BY short_name) FROM ps_routes WHERE project_id = ${p}::uuid)),
       'percorsi', (SELECT jsonb_agg(jsonb_build_array(v.name, l.short_name) ORDER BY v.name)
                      FROM ps_route_variants v JOIN ps_routes l ON l.id = v.route_id AND l.project_id = v.project_id
                     WHERE v.project_id = ${p}::uuid),

@@ -1,6 +1,15 @@
 import { Router, type IRouter } from "express";
 import { requireAdmin } from "../lib/auth";
 import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/registro-modifiche";
+import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from "../lib/azienda";
+import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
+import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
+import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
+import { elencoGiornate, giornoValido, leggiGiornata, preparaGiornata } from "../lib/esercizio-giornate";
+import { calcolaProposta, RifiutoProposta } from "../lib/esercizio-proposta";
+import { elencoCausali, salvaCausale, RifiutoGiornale } from "../lib/esercizio-giornale";
+import { chiudiMese, meseValido, riapriGiornata, riapriMese, RifiutoChiusura } from "../lib/esercizio-chiusura";
+import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
 
 const router: IRouter = Router();
@@ -82,6 +91,138 @@ router.get("/admin/sync/status", (_req, res) => {
 });
 
 /**
+ * GET /api/admin/esercizio/diagnosi?giorno=AAAA-MM-GG — la diagnosi di una
+ * giornata di esercizio, in sola lettura (tappa 4, lib/esercizio-diagnosi.ts).
+ * Il feed dell'AVM è quello su cui l'aggancio lavora oggi: GTFS_FEED_ID, o
+ * l'ultimo feed, come siri-ingest.
+ */
+router.use("/admin/esercizio", requireAdmin);
+router.get("/admin/esercizio/diagnosi", async (req, res): Promise<void> => {
+  const giorno = String(req.query.giorno ?? "");
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(giorno) ? Date.parse(`${giorno}T00:00:00Z`) : NaN;
+  if (Number.isNaN(t) || new Date(t).toISOString().slice(0, 10) !== giorno || giorno < "2000-01-01" || giorno > "2099-12-31") {
+    res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" });
+    return;
+  }
+  try {
+    const feedAvm = process.env.GTFS_FEED_ID || (await getLatestFeedId());
+    res.json(await diagnosiDelGiorno(giorno, feedAvm ?? null));
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, giorno }, "diagnosi della giornata non riuscita");
+    res.status(500).json({ error: "Diagnosi non riuscita" });
+  }
+});
+
+/**
+ * Le giornate di esercizio, il programmato congelato (tappa 4.2,
+ * lib/esercizio-giornate.ts). Le prepara e le congela il lavoratore; qui si
+ * leggono, e l'amministratore può preparare una giornata che manca (una
+ * passata nasce congelata e «ricostruita»). Dalla 4.3 ogni giornata porta
+ * anche i turni pubblicati: turno macchina, turno guida e deposito per corsa,
+ * i turni macchina con i vuoti e il riepilogo (lib/esercizio-turni.ts).
+ *   GET  /api/admin/esercizio/giornate?dal=&al=   l'elenco (al più 366 giorni; senza: gli ultimi 30 e domani)
+ *   GET  /api/admin/esercizio/giornate/:giorno     una giornata con le sue corse e i suoi turni
+ *   POST /api/admin/esercizio/giornate/:giorno/prepara   (409 se congelata; una congelata senza turni li riceve)
+ *   POST /api/admin/esercizio/giornate/:giorno/proposta  la proposta dall'AVM (4.4), solo su una giornata congelata
+ */
+const piuGiorni = (g: string, n: number) => {
+  const d = new Date(`${g}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+router.get("/admin/esercizio/giornate", async (req, res): Promise<void> => {
+  const oggi = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Rome", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const dal = req.query.dal === undefined ? piuGiorni(oggi, -30) : String(req.query.dal);
+  const al = req.query.al === undefined ? piuGiorni(oggi, 1) : String(req.query.al);
+  if (!giornoValido(dal) || !giornoValido(al) || dal > al || Date.parse(al) - Date.parse(dal) > 366 * 86_400_000) {
+    res.status(400).json({ error: "dal e al: date vere, AAAA-MM-GG, al più un anno" });
+    return;
+  }
+  try {
+    res.json({ dal, al, giornate: await elencoGiornate(dal, al) });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "giornate di esercizio non leggibili");
+    res.status(500).json({ error: "Giornate non leggibili" });
+  }
+});
+router.get("/admin/esercizio/giornate/:giorno", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  try {
+    const g = await leggiGiornata(giorno);
+    if (!g) { res.status(404).json({ error: "Giornata non ancora preparata" }); return; }
+    res.json(g);
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, giorno }, "giornata di esercizio non leggibile");
+    res.status(500).json({ error: "Giornata non leggibile" });
+  }
+});
+router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  try {
+    const e = await preparaGiornata(giorno);
+    /* congelata prima della 4.3: le corse restano, i turni si aggiungono dallo storico del canale */
+    if (e.giaCongelata && !e.turniCompletati) { res.status(409).json({ error: "Giornata già congelata: il suo programmato non cambia più" }); return; }
+    res.json(e);
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, giorno }, "preparazione della giornata non riuscita");
+    res.status(500).json({ error: "Preparazione non riuscita" });
+  }
+});
+/* chiusura e blocco (4.6): riaprire una giornata, chiudere e riaprire un mese; sempre col motivo per riaprire */
+const rispostaChiusura = (req: any, res: any, cosa: string) => (e: any) => {
+  if (e instanceof RifiutoChiusura) { res.status(e.status).json({ error: e.message }); return; }
+  req.log?.error?.({ err: e?.message }, `${cosa} non riuscita`);
+  res.status(500).json({ error: `${cosa.charAt(0).toUpperCase()}${cosa.slice(1)} non riuscita` });
+};
+router.post("/admin/esercizio/giornate/:giorno/riapertura", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  await riapriGiornata(giorno, String(req.body?.motivo ?? ""), (req as any).user?.id ?? null).then((r) => res.json(r), rispostaChiusura(req, res, "riapertura"));
+});
+router.post("/admin/esercizio/mesi/:mese/chiusura", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  await chiudiMese(mese, (req as any).user?.id ?? null).then((r) => res.json(r), rispostaChiusura(req, res, "chiusura del mese"));
+});
+router.post("/admin/esercizio/mesi/:mese/riapertura", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  await riapriMese(mese, String(req.body?.motivo ?? ""), (req as any).user?.id ?? null).then((r) => res.json(r), rispostaChiusura(req, res, "riapertura del mese"));
+});
+
+/* il catalogo delle causali del consuntivo (4.5): l'amministratore lo cambia; il codice no, le corse lo citano */
+router.get("/admin/esercizio/causali", async (req, res): Promise<void> => {
+  try { res.json({ causali: await elencoCausali(true) }); }
+  catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "causali non leggibili");
+    res.status(500).json({ error: "Causali non leggibili" });
+  }
+});
+router.put("/admin/esercizio/causali/:codice", async (req, res): Promise<void> => {
+  try { res.json(await salvaCausale(String(req.params.codice), req.body)); }
+  catch (e: any) {
+    if (e instanceof RifiutoGiornale) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message }, "causale non salvata");
+    res.status(500).json({ error: "Causale non salvata" });
+  }
+});
+
+/* la proposta dall'AVM di una giornata cominciata (4.4): durante il giorno è una vista viva */
+router.post("/admin/esercizio/giornate/:giorno/proposta", async (req, res): Promise<void> => {
+  const giorno = String(req.params.giorno);
+  if (!giornoValido(giorno)) { res.status(400).json({ error: "giorno: una data vera, AAAA-MM-GG" }); return; }
+  try {
+    res.json(await calcolaProposta(giorno));
+  } catch (e: any) {
+    if (e instanceof RifiutoProposta) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message, giorno }, "proposta della giornata non riuscita");
+    res.status(500).json({ error: "Proposta non riuscita" });
+  }
+});
+
+/**
  * GET /api/admin/registro — il registro delle modifiche (PR 2.11).
  * Solo admin (mai un token di Argos: requireAdmin li rifiuta). Parametri: da,
  * a (istanti ISO), tabella, operazione, ambitoTipo, ambitoId (solo con un
@@ -124,6 +265,77 @@ router.get("/admin/registro", async (req, res): Promise<void> => {
     if (codice === "57014") { res.status(400).json({ error: "La ricerca è troppo ampia: scegli una tabella o un periodo più stretto" }); return; }
     req.log?.error?.({ err: e?.message }, "registro delle modifiche non leggibile");
     res.status(500).json({ error: "Registro non leggibile" });
+  }
+});
+
+/**
+ * GET e PUT /api/admin/azienda — i dati dell'azienda (PR 2.17a, lib/azienda.ts).
+ * Li legge chiunque sia entrato, con la sessione (/api/auth/me); qui c'è la
+ * pagina dell'amministratore: la riga con chi l'ha salvata e quando, e il
+ * salvataggio. Solo admin, mai un token di Argos (requireAdmin). Un campo che
+ * non è fra quelli previsti è un errore.
+ */
+router.use("/admin/azienda", requireAdmin);
+router.get("/admin/azienda", async (req, res): Promise<void> => {
+  try {
+    res.json(await dettaglioAzienda());
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "dati dell'azienda non leggibili");
+    res.status(500).json({ error: "Dati dell'azienda non leggibili" });
+  }
+});
+router.put("/admin/azienda", async (req, res): Promise<void> => {
+  const p = DatiAzienda.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try {
+    res.json(await salvaAzienda(p.data, req.user?.id ?? null));
+  } catch (e: any) {
+    /* 23514: un vincolo della tabella che la validazione qui sopra non ha fermato */
+    const codice = String(e?.code ?? e?.cause?.code ?? "");
+    if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+    req.log?.error?.({ err: e?.message }, "dati dell'azienda non salvati");
+    res.status(500).json({ error: "Dati dell'azienda non salvati" });
+  }
+});
+
+/**
+ * GET /api/admin/ruoli e PUT /api/admin/ruoli/:ruolo — che cosa dà ogni ruolo
+ * aziendale (PR 2.18, lib/matrice-ruoli.ts). Solo admin, mai un token di Argos
+ * (requireAdmin): è chi può fare che cosa.
+ *
+ * Il PUT prende `{ diritti }` con TUTTE le aree, ognuna "S", "L" o null: un
+ * ruolo che non c'è, un'area in più o in meno, un livello diverso sono un
+ * errore. I ruoli sono quelli del codice: da qui non se ne creano e non se ne
+ * tolgono. L'amministratore di sistema non è un ruolo e non si tocca.
+ */
+router.use("/admin/ruoli", requireAdmin);
+router.get("/admin/ruoli", async (req, res): Promise<void> => {
+  try {
+    res.json(await statoDeiRuoli());
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "ruoli non leggibili");
+    res.status(500).json({ error: "Ruoli non leggibili" });
+  }
+});
+router.put("/admin/ruoli/:ruolo", async (req, res): Promise<void> => {
+  const ruolo = String(req.params.ruolo ?? "");
+  if (!(RUOLI as readonly string[]).includes(ruolo)) { res.status(404).json({ error: "Ruolo sconosciuto" }); return; }
+  const corpo = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body as Record<string, unknown> : null;
+  const estranei = corpo ? Object.keys(corpo).filter(k => k !== "diritti") : [];
+  if (!corpo || estranei.length) {
+    res.status(400).json({ error: estranei.length ? `Campo non previsto: ${estranei.slice(0, 5).map(k => k.slice(0, 40)).join(", ")}` : "Richiesta non valida" });
+    return;
+  }
+  const chiesta = rigaChiesta(corpo.diritti);
+  if ("errore" in chiesta) { res.status(400).json({ error: chiesta.errore }); return; }
+  try {
+    const esito = await salvaDirittiDelRuolo(ruolo as RuoloAziendale, chiesta.diritti, req.user?.id ?? null);
+    /* resta nel log dell'applicazione, oltre che nel registro delle modifiche: senza nomi né valori */
+    req.log?.info?.({ ruolo, ...esito, utente: req.user?.id }, "diritti di un ruolo cambiati");
+    res.json({ ...(await statoDeiRuoli()), esito });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, ruolo }, "diritti del ruolo non salvati");
+    res.status(500).json({ error: "Diritti del ruolo non salvati" });
   }
 });
 

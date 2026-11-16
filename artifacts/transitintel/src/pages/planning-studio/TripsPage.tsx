@@ -20,7 +20,7 @@ import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio
 import {
   ArrowLeft, Bus, Filter, Trash2, X, Loader2, Check, Calendar as CalendarIcon,
   Power, PowerOff, CalendarPlus, CalendarMinus, Save, Eye, EyeOff, Timer, Plus,
-  Pencil, Copy, Merge, Wand2, Printer,
+  Pencil, Copy, Merge, Wand2, Printer, AlertTriangle,
 } from "lucide-react";
 import {
   getPsProject,
@@ -42,6 +42,9 @@ import OperationalEditWarning from "@/components/planning-studio/OperationalEdit
 import TripTransitsEditor from "@/components/planning-studio/TripTransitsEditor";
 import { useArgosFresh } from "@/hooks/useArgosFresh";
 import { SeScrive } from "@/hooks/use-sola-lettura";
+import {
+  avvisoCategorieCancellate, contaCategorieCancellate, haCategoriaCancellata, senzaCategoria, titoloCategoriaCancellata,
+} from "@/lib/categorie-cancellate";
 
 /** Distanze progressive (m) tra le fermate di una variante: shape_dist se
  * monotona, altrimenti cumulata haversine. */
@@ -244,7 +247,7 @@ function buildCorseListHtml(p: {
 
   // Riepilogo km/anno per linea × categoria (dal calendario aziendale)
   let kmSection = "";
-  if (p.km && p.km.hasCalendar && p.km.lines.length) {
+  if (p.km && p.km.hasCalendar && (p.km.lines.length || p.km.periodoDiUnGiorno?.quante)) {
     const km = p.km;
     const rate = p.rate && p.rate > 0 ? p.rate : 0;
     const fmtKm = (v?: number) => (v == null || v === 0) ? `<span class="muted">—</span>` : v.toLocaleString("it-IT", { maximumFractionDigits: 1 });
@@ -286,10 +289,16 @@ function buildCorseListHtml(p: {
         ${km.hasOnDemand ? eurRow("Totale potenziale", combByCat, combTot, "sum") : ""}
         </tbody></table></div>`;
     }
+    const unGiorno = km.periodoDiUnGiorno && km.periodoDiUnGiorno.quante > 0 ? km.periodoDiUnGiorno : null;
+    const fmtGiorno = (iso: string | null) => iso && /^\d{4}-\d{2}-\d{2}$/.test(iso) ? iso.split("-").reverse().join("/") : "";
+    const avvisoUnGiorno = unGiorno
+      ? `<p class="warn">⚠ ${unGiorno.quante.toLocaleString("it-IT")} ${unGiorno.quante === 1 ? "corsa ha" : "corse hanno"} un periodo di un giorno solo${unGiorno.giorno ? ` (per esempio il ${fmtGiorno(unGiorno.giorno)})` : ""}: qui ${unGiorno.quante === 1 ? "conta" : "contano"} i km di quel giorno. Succede con alcuni GTFS importati. Se devono circolare tutto l'anno, selezionale e allarga il «Periodo».</p>`
+      : "";
     kmSection = `<section class="kmsum"><h2>Riepilogo km/anno${period}</h2>
+      ${avvisoUnGiorno}
       ${kmTable}
       ${eurTable}
-      <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni di circolazione di ogni corsa (esclusi i prototipi; senza limitare al «Periodo» di validità della corsa).${km.hasOnDemand ? " I km a chiamata sono <strong>potenziali</strong>: conteggiati come se la corsa circolasse ogni giorno utile, ma erogati solo su richiesta." : ""}${rate > 0 ? " Il corrispettivo applica la tariffa €/km indicata sull'intero chilometraggio." : ""}</p>
+      <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni in cui ogni corsa circola davvero: validità, eccezioni e «Periodo» della corsa, come nel GTFS in esercizio e nelle UDP (esclusi i prototipi). La lunghezza è quella del percorso disegnato.${km.hasOnDemand ? " I km a chiamata sono <strong>potenziali</strong>: conteggiati in tutti i giorni in cui la corsa circola, ma erogati solo su richiesta." : ""}${rate > 0 ? " Il corrispettivo applica la tariffa €/km indicata sull'intero chilometraggio." : ""}</p>
     </section>`;
   }
 
@@ -324,6 +333,7 @@ function buildCorseListHtml(p: {
   .swatch { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
   h2 .swatch { width: 10px; height: 10px; }
   section.kmsum { margin-bottom: 20px; break-inside: avoid; }
+  section.kmsum p.warn { margin: 6px 0 10px; padding: 6px 10px; border: 1px solid #f59e0b; background: #fffbeb; color: #92400e; border-radius: 4px; font-size: 11px; }
   .scroll { overflow-x: auto; }
   table.km td, table.km th { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   table.km td.l, table.km th.l { text-align: left; }
@@ -383,6 +393,8 @@ export default function PlanningStudioTripsPage() {
   const [periodFilter, setPeriodFilter] = useState<string>(""); // id periodo chiuso | 'umbrella' | ''
   const [dayFilter, setDayFilter] = useState<string>("");       // ''|feriale|sabato|festivo
   const [onlyActive, setOnlyActive] = useState(false);
+  /* solo le corse legate a una categoria cancellata (lib/categorie-cancellate.ts) */
+  const [soloCancellate, setSoloCancellate] = useState(false);
 
   // varianti dipendenti dalla route selezionata
   const variantsQ = useQuery({
@@ -460,7 +472,10 @@ export default function PlanningStudioTripsPage() {
     // route/variant/periodo sono filtrati server-side (tripsQ); qui restano
     // "solo attive", il tipo di giorno della classe e il caso "senza categoria".
     if (onlyActive) trips = trips.filter(t => t.isActive);
-    if (classSel.none) trips = trips.filter(t => (t.categories ?? []).length === 0);
+    if (soloCancellate) trips = trips.filter(haCategoriaCancellata);
+    /* «senza categoria» è chi non ha nessuna riga: una corsa con la sola categoria
+       cancellata non vale «in ogni periodo», non vale mai */
+    if (classSel.none) trips = trips.filter(senzaCategoria);
     if (classSel.chiuseAny) trips = trips.filter(t => (t.categories ?? []).some(c => c.code?.startsWith("scuole_chiuse")));
     if (classSel.dayCode) trips = trips.filter(t => t.dayTypeCodes?.includes(classSel.dayCode));
     // ordina per orario partenza se disponibile (firstDeparture arriva già
@@ -472,7 +487,12 @@ export default function PlanningStudioTripsPage() {
       if (tb) return 1;
       return (a.shortName || a.headsign || "").localeCompare(b.shortName || b.headsign || "");
     });
-  }, [tripsQ.data, onlyActive, firstTimes, classSel]);
+  }, [tripsQ.data, onlyActive, soloCancellate, firstTimes, classSel]);
+
+  /* Le corse dell'elenco legate a una categoria cancellata: quante, e quante non valgono mai */
+  const cancellate = useMemo(() => contaCategorieCancellate(tripsQ.data ?? []), [tripsQ.data]);
+  /* sistemate tutte (o cambiata linea): il filtro non ha più senso e nasconderebbe l'elenco */
+  useEffect(() => { if (soloCancellate && cancellate.corse === 0) setSoloCancellate(false); }, [soloCancellate, cancellate.corse]);
 
   /* ─── Ordinamento per colonna (clic sull'intestazione) ───
    * null = ordine naturale (partenza, poi nome): il terzo clic ci torna. */
@@ -1293,6 +1313,25 @@ export default function PlanningStudioTripsPage() {
       </div>
 
       {/* Tabella */}
+      {cancellate.corse > 0 && (
+        <div role="alert" className="mx-3 mb-2 flex items-start gap-2 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-100">
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-rose-300" />
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold">{avvisoCategorieCancellate(cancellate)}</p>
+            <p className="text-rose-200/80 mt-0.5">
+              Per sistemarle: selezionale, apri «Giorni/Categorie», scegli «Sostituisci» e applica le categorie giuste
+              (nessuna = la corsa vale in ogni periodo).
+            </p>
+          </div>
+          <button
+            onClick={() => setSoloCancellate(v => !v)}
+            aria-pressed={soloCancellate}
+            className="shrink-0 px-2.5 py-1 rounded-md border border-rose-400/50 text-rose-100 hover:bg-rose-500/20 font-medium whitespace-nowrap"
+          >
+            {soloCancellate ? "Mostra tutte" : "Mostra solo queste"}
+          </button>
+        </div>
+      )}
       <div className="flex-1 overflow-auto">
         {tripsQ.isLoading && (
           <div className="p-6 text-slate-500 text-sm flex items-center gap-2">
@@ -1405,6 +1444,12 @@ export default function PlanningStudioTripsPage() {
                       </div>
                     </td>
                     <td className="p-2">
+                      {haCategoriaCancellata(t) && (
+                        <span title={titoloCategoriaCancellata(t)}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 mb-1 rounded text-[9px] font-semibold border border-rose-500/60 bg-rose-500/15 text-rose-200 whitespace-nowrap">
+                          <AlertTriangle className="w-2.5 h-2.5" /> categoria cancellata
+                        </span>
+                      )}
                       {tripCats.length === 0
                         ? <span className="px-1.5 py-0.5 rounded text-[9px] border border-slate-700 text-slate-500 whitespace-nowrap"
                             title="Nessuna categoria: la corsa vale in ogni periodo del calendario aziendale">tutti i periodi</span>
@@ -2053,7 +2098,7 @@ function CopyTripDialog({ projectId, trip, dayTypes, categories, onClose, onDone
         </div>
         <div className="p-4 space-y-4 text-sm">
           <div className="text-[11px] text-slate-500">
-            Da: <span className="text-slate-300">{trip.headsign || trip.shortName || trip.id.slice(0, 8)}</span>
+            Da: <span className="text-slate-300">{trip.headsign || trip.shortName || trip.codice || trip.id.slice(0, 8)}</span>
             {baseDep && <> · partenza originale <span className="font-mono text-slate-300">{baseDep.slice(0, 5)}</span></>}
           </div>
           <div>
@@ -2320,7 +2365,9 @@ function TripDetailDrawer({ projectId, trip, onClose, onChange, onRequestCopy, o
 
         <div className="p-4 border-b border-slate-800 space-y-1 text-xs">
           <div className="text-slate-400">{trip.headsign || trip.shortName || "—"}</div>
-          <div className="text-slate-600 font-mono">{trip.id.slice(0, 8)}…</div>
+          <div className="text-slate-600 font-mono truncate" title={trip.codice ? `Codice stabile della corsa: resta lo stesso nelle copie del programma ed è il trip_id del GTFS esportato (${trip.codice})` : undefined}>
+            {trip.codice ?? `${trip.id.slice(0, 8)}…`}
+          </div>
           {!!trip.attributes?.prototype && !trip.attributes?.prototypeReady && (
             <div className="mt-2 rounded border border-amber-500/50 bg-amber-500/10 px-2.5 py-2 text-[11px] text-amber-200 leading-snug">
               ⚠ <strong>CORSA ZERO (prototipo)</strong> — nessun orario di partenza/arrivo:

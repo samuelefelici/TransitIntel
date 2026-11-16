@@ -17,12 +17,17 @@
  * Tutte le rotte sono protette da requireAuth (montato globalmente in routes/index.ts).
  */
 import type { Request, Response } from "express";
+import { lunghezzaDellaGeometria } from "./km-programmati";
 import { Router, type IRouter } from "express";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
 import { conContesto, contestoDb, inSistema } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
 import { withVia, viaDelGiro } from "./agent-context";
+import { mettiInEsercizio, AttivazioneRifiutata } from "./esercizio-porta";
+import { copiaProgetto, cancellaProgetto } from "./progetto-copie";
+import { creaVersione, cancellaVersioneDelFeed } from "./versioni-pubblicate";
+import { richiedeDiritto } from "./auth";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
 
 /* ════════════════════════════════════════════════════════════
@@ -72,6 +77,8 @@ function rowToStop(r: any) {
   return {
     id: r.id,
     projectId: r.project_id,
+    // il codice stabile (PR 3.1): lo stesso nelle copie del programma, quello del GTFS esportato
+    codice: r.codice,
     code: r.code,
     name: r.name,
     description: r.description,
@@ -93,6 +100,7 @@ function rowToRoute(r: any) {
   return {
     id: r.id,
     projectId: r.project_id,
+    codice: r.codice,
     code: r.code,
     shortName: r.short_name,
     longName: r.long_name,
@@ -161,6 +169,7 @@ function rowToTrip(r: any) {
   return {
     id: r.id,
     projectId: r.project_id,
+    codice: r.codice,
     routeId: r.route_id,
     variantId: r.variant_id,
     calendarId: r.calendar_id,
@@ -313,23 +322,10 @@ router.post("/planning-studio/projects", async (req, res): Promise<void> => {
   res.json({ project: rowToProject({ ...row, my_role: "owner" }) });
 });
 
-/* POST /api/planning-studio/projects/:id/duplicate — copia profonda del progetto.
- *
- * Duplica un intero programma di esercizio in un progetto nuovo (di proprietà
- * dell'utente): fermate, cluster, linee, percorsi, orari, calendari, corse,
- * transiti, validità (giorni + categorie), eccezioni, no-go, periodi, profilo
- * calendario aziendale, classificazione giorni (ps_day_calendar) e calendario
- * categorie per-progetto (ps_validity_category_calendar). NON copia il feed
- * materializzato (la copia nasce non
- * operativa) né le UDP/scenari (artefatti generati). Copia GENERICA e set-based:
- * mappe id vecchio→nuovo + lista colonne da information_schema (così prende
- * anche le colonne aggiunte da una migrazione).
- *
- * Le mappe NON sono tabelle temporanee (PR 2.16b: l'app non esegue DDL, nemmeno
- * `CREATE TEMP TABLE`). L'id nuovo di una riga si DERIVA da progetto nuovo + id
- * vecchio (idDellaCopia): ogni istruzione può quindi ricalcolare la stessa
- * mappa, come CTE MATERIALIZED — calcolata una volta per istruzione e poi usata
- * nelle join, come prima la tabella temporanea. */
+/* POST /api/planning-studio/projects/:id/duplicate — copia profonda del
+ * progetto, in un progetto nuovo dell'utente. Che cosa si copia e come: in
+ * lib/progetto-copie.ts (copiaProgetto), la stessa copia delle versioni
+ * pubblicate (PR 3.3). */
 router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   const userId = req.user!.id;
@@ -338,143 +334,7 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
     ? req.body.name.trim() : `${proj.name} (copia)`;
 
   try {
-    const newId = await db.transaction(async (tx) => {
-      // 1) progetto nuovo = riga sorgente clonata (id nuovo, owner utente,
-      //    nome scelto, NON materializzato/operativo, non condiviso)
-      const pr = await tx.execute<any>(sql`
-        INSERT INTO ps_projects
-          (owner_user_id, name, description, agency_name, agency_url, agency_timezone,
-           default_lang, agency_settings, status, is_shared)
-        SELECT ${userId}::uuid, ${name}, description, agency_name, agency_url, agency_timezone,
-               default_lang, agency_settings, 'draft', false
-          FROM ps_projects WHERE id = ${src}::uuid
-        RETURNING id`);
-      const dst: string = pr.rows[0].id;
-
-      // helper: definisce la mappa id vecchio→nuovo per una tabella (con scope)
-      const mappe = new Map<string, any>();
-      const mkMap = (nome: string, table: string, scope: any) => {
-        mappe.set(nome, sql`${sql.raw(nome)} AS MATERIALIZED (
-          SELECT s.id AS old_id, ${idDellaCopia(dst, "s.id")} AS new_id FROM ${sql.raw(table)} s WHERE ${scope})`);
-      };
-      // helper: il `WITH …` da mettere davanti all'istruzione che usa quelle mappe
-      const con = (...nomi: Array<string | undefined>) => {
-        const usate = [...new Set(nomi.filter((n): n is string => !!n))];
-        if (!usate.length) return sql``;
-        return sql`WITH ${sql.join(usate.map((n) => {
-          const m = mappe.get(n);
-          if (!m) throw new Error(`mappa ${n} non definita`);
-          return m;
-        }), sql`, `)} `;
-      };
-      // helper generico: copia una tabella rimappando id/project_id/FK.
-      // idCol=null per tabelle senza id proprio (child con solo FK).
-      const copy = async (table: string, opts: {
-        idMap?: string;                    // mappa per l'id proprio
-        genId?: boolean;                   // id proprio non referenziato → uuid nuovo
-        projectCol?: string | null;        // colonna project_id da riscrivere (default 'project_id')
-        fks?: Array<{ col: string; map: string }>;
-        scope: any;                        // WHERE per selezionare le righe sorgente
-      }) => {
-        const projectCol = opts.projectCol === undefined ? "project_id" : opts.projectCol;
-        const colsR = await tx.execute<any>(sql`
-          SELECT column_name FROM information_schema.columns
-           WHERE table_schema='public' AND table_name=${table} ORDER BY ordinal_position`);
-        const cols: string[] = colsR.rows.map((r: any) => r.column_name);
-        const fkByCol = new Map((opts.fks ?? []).map(f => [f.col, f.map]));
-        const exprs = cols.map((c) => {
-          if (opts.idMap && c === "id") return `ms.new_id`;
-          if (opts.genId && c === "id") return `gen_random_uuid()`;
-          if (projectCol && c === projectCol) return `'${dst}'::uuid`;
-          if (fkByCol.has(c)) return `f_${c}.new_id`;
-          return `s.${c}`;
-        });
-        const joins: string[] = [];
-        if (opts.idMap) joins.push(`JOIN ${opts.idMap} ms ON ms.old_id = s.id`);
-        for (const f of opts.fks ?? []) joins.push(`LEFT JOIN ${f.map} f_${f.col} ON f_${f.col}.old_id = s.${f.col}`);
-        await tx.execute(sql`
-          ${con(opts.idMap, ...(opts.fks ?? []).map((f) => f.map))}INSERT INTO ${sql.raw(table)} (${sql.raw(cols.join(", "))})
-          SELECT ${sql.raw(exprs.join(", "))}
-            FROM ${sql.raw(table)} s ${sql.raw(joins.join(" "))}
-           WHERE ${opts.scope}`);
-      };
-
-      const byProj = sql`s.project_id = ${src}::uuid`;
-      const tripScope = sql`s.trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${src}::uuid)`;
-
-      // 2) mappe id per le entità con id proprio (scope = progetto sorgente)
-      mkMap("m_clu", "ps_stop_clusters", sql`s.project_id = ${src}::uuid`);
-      mkMap("m_stp", "ps_stops", sql`s.project_id = ${src}::uuid`);
-      mkMap("m_rte", "ps_routes", sql`s.project_id = ${src}::uuid`);
-      mkMap("m_var", "ps_route_variants", sql`s.project_id = ${src}::uuid`);
-      mkMap("m_cal", "ps_calendars", sql`s.project_id = ${src}::uuid`);
-      mkMap("m_trp", "ps_trips", sql`s.project_id = ${src}::uuid`);
-      // day-type CUSTOM del progetto (i globali restano condivisi, non si copiano)
-      mkMap("m_dt", "ps_day_types", sql`s.project_id = ${src}::uuid`);
-
-      // 3) copia in ordine di dipendenza
-      await copy("ps_stop_clusters", { idMap: "m_clu", scope: byProj });
-      await copy("ps_stops", { idMap: "m_stp", fks: [{ col: "cluster_id", map: "m_clu" }, { col: "parent_station", map: "m_stp" }], scope: byProj });
-      await copy("ps_routes", { idMap: "m_rte", scope: byProj });
-      await copy("ps_route_variants", { idMap: "m_var", fks: [{ col: "route_id", map: "m_rte" }], scope: byProj });
-      await copy("ps_variant_stops", { projectCol: null, fks: [{ col: "variant_id", map: "m_var" }, { col: "stop_id", map: "m_stp" }], scope: sql`s.variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${src}::uuid)` });
-      await copy("ps_shapes", { genId: true /* shapes.id non è referenziato */, fks: [{ col: "variant_id", map: "m_var" }], scope: byProj });
-      await copy("ps_calendars", { idMap: "m_cal", scope: byProj });
-      await copy("ps_calendar_dates", { projectCol: null, fks: [{ col: "calendar_id", map: "m_cal" }], scope: sql`s.calendar_id IN (SELECT id FROM ps_calendars WHERE project_id = ${src}::uuid)` });
-      await copy("ps_day_types", { idMap: "m_dt", scope: byProj });
-      await copy("ps_trips", { idMap: "m_trp", fks: [{ col: "route_id", map: "m_rte" }, { col: "variant_id", map: "m_var" }, { col: "calendar_id", map: "m_cal" }], scope: byProj });
-      await copy("ps_stop_times", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }, { col: "stop_id", map: "m_stp" }], scope: tripScope });
-      // validità giorni: trip rimappato; day_type rimappato se custom, altrimenti globale (LEFT JOIN → resta l'originale se non in mappa)
-      await copyDayValidity(tx, src, con("m_trp", "m_dt"));
-      await copy("ps_trip_category_validity", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
-      await copy("ps_trip_exceptions", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
-      await copy("ps_no_go_zones", { genId: true, scope: byProj });
-      await copy("ps_service_periods", { genId: true, scope: byProj });
-      // profilo calendario aziendale (PK = project_id, niente id). Su uno
-      // schema non ancora migrato la tabella può mancare: copiamo solo se
-      // esiste, così la transazione non abortisce.
-      const hasProfiles = await tx.execute<any>(sql`SELECT to_regclass('public.ps_calendar_profiles') AS t`);
-      if (hasProfiles.rows[0]?.t) {
-        await tx.execute(sql`
-          INSERT INTO ps_calendar_profiles (project_id, closed_periods, summer_period, extra_holidays)
-          SELECT ${dst}::uuid, closed_periods, summer_period, extra_holidays
-            FROM ps_calendar_profiles WHERE project_id = ${src}::uuid`);
-      }
-
-      // CLASSIFICAZIONE GIORNI del progetto (stessa cautela dei profili):
-      // senza queste due copie il clone perde i giorni classificati a mano e
-      // il calendario categorie → le UDP del duplicato nascerebbero sbagliate.
-      // ps_day_calendar: date→day-type per-progetto; day_type rimappato SOLO se
-      // custom (i system restano condivisi, come in copyDayValidity).
-      const hasDayCal = await tx.execute<any>(sql`SELECT to_regclass('public.ps_day_calendar') AS t`);
-      if (hasDayCal.rows[0]?.t) {
-        await tx.execute(sql`
-          ${con("m_dt")}INSERT INTO ps_day_calendar (project_id, date, day_type_id, source, note)
-          SELECT ${dst}::uuid, s.date, COALESCE(fd.new_id, s.day_type_id), s.source, s.note
-            FROM ps_day_calendar s
-            LEFT JOIN m_dt fd ON fd.old_id = s.day_type_id
-           WHERE s.project_id = ${src}::uuid
-          ON CONFLICT DO NOTHING`);
-      }
-      // ps_validity_category_calendar: date→categoria per-progetto (5B). Le
-      // categorie sono un dizionario GLOBALE → nessuna rimappa. Su DB legacy la
-      // colonna project_id può non esserci ancora → in quel caso non c'è nulla
-      // di per-progetto da copiare.
-      const hasVcc = await tx.execute<any>(sql`
-        SELECT 1 FROM information_schema.columns
-         WHERE table_schema='public' AND table_name='ps_validity_category_calendar'
-           AND column_name='project_id'`);
-      if (hasVcc.rows.length) {
-        await tx.execute(sql`
-          INSERT INTO ps_validity_category_calendar (project_id, date, category_id)
-          SELECT ${dst}::uuid, s.date, s.category_id
-            FROM ps_validity_category_calendar s
-           WHERE s.project_id = ${src}::uuid
-          ON CONFLICT DO NOTHING`);
-      }
-
-      return dst;
-    });
+    const newId = await db.transaction((tx) => copiaProgetto(tx, src, { nome: name, proprietario: userId }));
 
     await logActivity(newId, userId, "ps.project.duplicate", { targetId: newId, payload: { from: src, name } });
     const nr = await db.execute<any>(sql`SELECT *, 'owner' AS my_role FROM ps_projects WHERE id = ${newId}::uuid`);
@@ -486,33 +346,7 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
   }
 });
 
-/**
- * L'id che una riga avrà nella copia di un progetto: derivato dal progetto
- * nuovo e dall'id vecchio (SHA-256, con i bit di versione e variante di un
- * UUID v4). Stesso ingresso, stesso id: le mappe della duplicazione non vanno
- * conservate da nessuna parte. Il progetto nuovo è un UUID casuale appena
- * generato dal database, quindi gli id derivati non si ripetono fra una copia
- * e l'altra; se mai coincidessero con una riga esistente, la chiave primaria
- * farebbe fallire la duplicazione intera.
- * `colonna` è un nome scritto nel codice, mai un valore dell'utente.
- */
-export function idDellaCopia(progettoNuovo: string, colonna: string) {
-  return sql`(overlay(overlay(substr(encode(sha256(convert_to(${progettoNuovo}::text || ':' || ${sql.raw(colonna)}::text, 'UTF8')), 'hex'), 1, 32) placing '4' from 13) placing '8' from 17))::uuid`;
-}
-
-/** ps_trip_day_validity: rimappa trip_id (sempre) e day_type_id SOLO se è un
- *  day-type custom del progetto (i globali restano condivisi).
- *  `mappe` è il `WITH m_trp …, m_dt …` della duplicazione. */
-async function copyDayValidity(tx: any, src: string, mappe: any): Promise<void> {
-  await tx.execute(sql`
-    ${mappe}INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid)
-    SELECT ft.new_id, COALESCE(fd.new_id, s.day_type_id), s.is_valid
-      FROM ps_trip_day_validity s
-      JOIN m_trp ft ON ft.old_id = s.trip_id
-      LEFT JOIN m_dt fd ON fd.old_id = s.day_type_id
-     WHERE s.trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${src}::uuid)
-    ON CONFLICT DO NOTHING`);
-}
+export { idDellaCopia } from "./progetto-copie";
 
 /* POST /api/planning-studio/projects/:id/activate — "Metti in esercizio".
  *
@@ -522,43 +356,32 @@ async function copyDayValidity(tx: any, src: string, mappe: any): Promise<void> 
  * resto del sistema — Sala Operativa, AVM Caronte, GTFS-RT, tariffe — risolve
  * automaticamente questo feed (getLatestFeedId / ORDER BY is_active DESC).
  */
-/** Flip esclusivo per-tenant + storico attivazioni: promuove `feedId` a
- *  operativo e registra il periodo su ps_activation_log. Riusata da attivazione
- *  immediata e dal runner delle attivazioni programmate. */
-async function promoteFeedAndLog(projectId: string, feedId: string, userId: string | null): Promise<void> {
-  // Promuovi il nuovo feed a operativo SOLO fra i feed dello STESSO tenant
-  // (owner_user_id del feed). L'UPDATE globale spegnerebbe is_active/is_default
-  // anche sui feed di altri utenti, mentre la risoluzione è per-tenant.
-  await db.execute(sql`
-    UPDATE gtfs_feeds
-       SET is_active = (id = ${feedId}::uuid),
-           is_default = (id = ${feedId}::uuid)
-     WHERE owner_user_id IS NOT DISTINCT FROM (
-             SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
-           )
-  `);
-  // STORICO ATTIVAZIONI: chiudi i periodi ancora aperti del tenant (un solo
-  // feed operativo per tenant → qualunque riga aperta è appena stata
-  // disattivata) e apri quello del nuovo feed. Best-effort: non deve mai far
-  // fallire l'attivazione.
-  try {
-    await db.execute(sql`
-      UPDATE ps_activation_log
-         SET deactivated_at = now()
-       WHERE deactivated_at IS NULL
-         AND (project_id = ${projectId}::uuid
-              OR project_id IN (SELECT id FROM ps_projects
-                                 WHERE owner_user_id IS NOT DISTINCT FROM (
-                                   SELECT owner_user_id FROM gtfs_feeds WHERE id = ${feedId}::uuid
-                                 )))
+/** Mette in esercizio il feed già materializzato di un progetto, tutto in una
+ *  transazione (PR 3.2): il feed di prima del progetto si archivia, il
+ *  puntatore del progetto passa al nuovo, e la porta unica
+ *  (lib/esercizio-porta.ts) accende il nuovo, spegne tutti gli altri e scrive
+ *  lo storico. Se una cosa fallisce non cambia niente: il programma di prima
+ *  resta in esercizio. La usano l'attivazione immediata e il giro di quelle
+ *  programmate; `dopo` gira nella stessa transazione. */
+async function completaAttivazione(
+  projectId: string, feedId: string, userId: string | null,
+  dopo?: (tx: { execute: (q: any) => Promise<any> }) => Promise<unknown>,
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      UPDATE gtfs_feeds
+         SET is_active = false, is_default = false, archived_at = now()
+       WHERE id = (SELECT materialized_feed_id FROM ps_projects WHERE id = ${projectId}::uuid)
+         AND id <> ${feedId}::uuid
     `);
-    await db.execute(sql`
-      INSERT INTO ps_activation_log (project_id, feed_id, user_id)
-      VALUES (${projectId}::uuid, ${feedId}::uuid, ${userId}::uuid)
+    await tx.execute(sql`
+      UPDATE ps_projects
+         SET materialized_feed_id = ${feedId}::uuid, materialized_at = now()
+       WHERE id = ${projectId}::uuid
     `);
-  } catch (e: any) {
-    console.warn("[planning-studio] scrittura ps_activation_log fallita (attivazione comunque riuscita):", e?.message);
-  }
+    await mettiInEsercizio(tx, { feedId, progettoId: projectId, utenteId: userId });
+    if (dopo) await dopo(tx);
+  });
 }
 
 /** Rimuove l'eventuale attivazione programmata del progetto e il suo feed
@@ -570,6 +393,8 @@ async function clearPendingActivation(projectId: string, opts?: { keepFeedId?: s
       RETURNING feed_id`);
     const oldFeed: string | undefined = r.rows?.[0]?.feed_id;
     if (oldFeed && oldFeed !== opts?.keepFeedId) {
+      // e la sua versione pubblicata (PR 3.3): la programmazione non c'è più
+      await cancellaVersioneDelFeed(oldFeed).catch((e: any) => console.warn("[planning-studio] versione programmata non tolta:", e?.message));
       await db.execute(sql`
         DELETE FROM gtfs_feeds
          WHERE id = ${oldFeed}::uuid
@@ -610,20 +435,13 @@ export async function processPendingActivations(): Promise<void> {
           await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
           return;
         }
-        // archivia il feed d'esercizio precedente del progetto (se diverso)
-        await db.execute(sql`
-          UPDATE gtfs_feeds
-             SET is_active = false, is_default = false, archived_at = now()
-           WHERE id = (SELECT materialized_feed_id FROM ps_projects WHERE id = ${p.project_id}::uuid)
-             AND id <> ${p.feed_id}::uuid
-        `);
-        await db.execute(sql`
-          UPDATE ps_projects
-             SET materialized_feed_id = ${p.feed_id}::uuid, materialized_at = now()
-           WHERE id = ${p.project_id}::uuid
-        `);
-        await promoteFeedAndLog(p.project_id, p.feed_id, p.user_id ?? null);
-        await db.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`);
+        // la versione pubblicata nasce con la programmazione (PR 3.3); per
+        // quelle programmate prima, si fa adesso, dal progetto com'è oggi
+        await creaVersione(p.project_id, p.feed_id);
+        // tutto o niente (PR 3.2): archivio del feed di prima del progetto,
+        // puntatore, porta unica (feed acceso e storico), programmazione tolta
+        await completaAttivazione(p.project_id, p.feed_id, p.user_id ?? null,
+          (tx) => tx.execute(sql`DELETE FROM ps_pending_activations WHERE id = ${p.id}::uuid`));
         await logActivity(p.project_id, p.user_id ?? p.project_id, "ps.project.activate.scheduled", {
           targetType: "feed", targetId: p.feed_id,
         }).catch(() => { /* best-effort */ });
@@ -638,7 +456,11 @@ export async function processPendingActivations(): Promise<void> {
 setTimeout(() => { void inSistema("timer:attivazioni", processPendingActivations); }, 15_000);
 setInterval(() => { void inSistema("timer:attivazioni", processPendingActivations); }, 5 * 60 * 1000);
 
-router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<void> => {
+/* Mettere in esercizio cambia il programma che leggono AVM, tariffe e turni
+ * per tutta l'azienda: oltre a modificare il progetto serve la scrittura su
+ * «Pubblicazione degli orari» (PR 3.2). Lo stesso per annullare
+ * un'attivazione programmata. */
+router.post("/planning-studio/projects/:id/activate", richiedeDiritto("pubblicazione_orari"), async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
 
@@ -653,20 +475,30 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
   const scheduled = !!effRaw && effRaw > today;
 
   // "Metti in esercizio" materializza SEMPRE l'INTERO programma (tutte le corse
-  // attive). Percorso IMMEDIATO: rimpiazza il feed d'esercizio del progetto
-  // (quello vecchio viene archiviato). Percorso PROGRAMMATO: il feed nuovo
-  // nasce STANDALONE (non tocca né il puntatore né il feed live) — lo switch
-  // completo lo fa il runner alla decorrenza.
+  // attive). Il feed nuovo nasce STANDALONE (non tocca né il puntatore né il
+  // feed in esercizio); lo switch lo fa completaAttivazione in una
+  // transazione: subito, o alla decorrenza dal giro delle programmate. Prima,
+  // nel percorso immediato, la materializzazione archiviava e spegneva il feed
+  // di prima PRIMA che il nuovo fosse acceso: se l'accensione falliva,
+  // l'azienda restava senza programma in esercizio.
   let feedId: string;
   try {
     const { materializePsToFeed } = await import("./planning-studio-materialize");
-    const r = scheduled
-      ? await materializePsToFeed(proj.id, req.user!.id, { replaceFeedId: null, updateProjectPointer: false })
-      : await materializePsToFeed(proj.id, req.user!.id); // nessuno scope → tutto il progetto
+    const r = await materializePsToFeed(proj.id, req.user!.id, { replaceFeedId: null, updateProjectPointer: false });
     feedId = r.feedId;
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, projectId: proj.id }, "materializzazione in attivazione fallita");
     res.status(500).json({ error: `Materializzazione fallita: ${e?.message ?? "errore"}` });
+    return;
+  }
+
+  /* la versione pubblicata (PR 3.3): la copia congelata del programma che
+   * stampa orari e link pubblici leggeranno, al posto della bozza */
+  try {
+    await creaVersione(proj.id, feedId);
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.cause?.message ?? e?.message, projectId: proj.id }, "versione pubblicata non creata");
+    res.status(500).json({ error: "Messa in esercizio non riuscita: non è stato possibile fissare la versione pubblicata. Il programma di prima resta in esercizio" });
     return;
   }
 
@@ -694,7 +526,15 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
 
   // IMMEDIATO: un'attivazione adesso supera qualunque programmazione in sospeso
   await clearPendingActivation(proj.id, { keepFeedId: feedId });
-  await promoteFeedAndLog(proj.id, feedId, req.user!.id);
+  try {
+    await completaAttivazione(proj.id, feedId, req.user!.id);
+  } catch (e: any) {
+    await cancellaVersioneDelFeed(feedId).catch(() => undefined);
+    if (e instanceof AttivazioneRifiutata) { res.status(e.stato).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.cause?.message ?? e?.message, projectId: proj.id }, "messa in esercizio fallita");
+    res.status(500).json({ error: "Messa in esercizio non riuscita: il programma di prima resta in esercizio. Riprova, e se si ripete avvisa chi gestisce Cerbero" });
+    return;
+  }
   await logActivity(proj.id, req.user!.id, "ps.project.activate", {
     targetType: "feed", targetId: feedId,
     payload: { name: proj.name },
@@ -704,7 +544,7 @@ router.post("/planning-studio/projects/:id/activate", async (req, res): Promise<
 
 /* DELETE /api/planning-studio/projects/:id/activations/pending — annulla la
  * attivazione programmata (e il suo feed pre-costruito). */
-router.delete("/planning-studio/projects/:id/activations/pending", async (req, res): Promise<void> => {
+router.delete("/planning-studio/projects/:id/activations/pending", richiedeDiritto("pubblicazione_orari"), async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti (serve owner/editor)" }); return; }
   await clearPendingActivation(proj.id);
@@ -804,59 +644,6 @@ router.patch("/planning-studio/projects/:id", async (req, res): Promise<void> =>
     { payload: { fields: Object.keys(req.body || {}) } });
   res.json({ project: rowToProject({ ...row, my_role: proj.my_role }) });
 });
-
-/**
- * Cancella un progetto di Planning Studio e tutte le sue righe. Va chiamata in
- * una transazione: `ex` è quella transazione.
- *
- * Tutte le tabelle con una chiave verso ps_projects l'hanno ON DELETE CASCADE
- * (lib/db/migrations/meta/catalogo.json): le porta via la DELETE del progetto.
- * Da sola però non basta. Gli orari (ps_stop_times) e le fermate dei percorsi
- * (ps_variant_stops) non hanno una chiave verso il progetto: se ne vanno con
- * la corsa e con il percorso, e intanto puntano alle fermate con ON DELETE
- * RESTRICT. Nella cascata Postgres toglie le fermate e controlla quel vincolo
- * quando loro possono esserci ancora (dipende dall'ordine in cui sono nati i
- * vincoli): 23503.
- *
- * Quindi un ordine FISSO: orari e corse; poi fermate dei percorsi e percorsi
- * (dopo le corse: ps_trips.variant_id è ON DELETE RESTRICT); poi le tre
- * tabelle senza chiave verso il progetto, che la cascata non vede; poi il
- * progetto. Nessun nome di tabella letto dal catalogo e nessun tentativo: dopo
- * un'istruzione fallita la transazione è annullata, e ogni altra risponde
- * «current transaction is aborted» fino al ROLLBACK.
- *
- * ps_day_calendar.day_type_id → ps_day_types è RESTRICT anche lei, ma non
- * chiede un passo: giorni del calendario e tipi di giorno sono tutti e due
- * figli diretti del progetto, e la cascata controlla i vincoli dopo averli
- * tolti entrambi, in qualunque ordine.
- *
- * Una tabella nuova di Planning Studio nasce da una migrazione: se porta dati
- * di un progetto entra in elimina-progetto-db.test.ts (che altrimenti fallisce)
- * e, se la cascata non basta, qui.
- */
-export async function cancellaProgetto(
-  ex: { execute: (q: any) => Promise<any> }, projectId: string,
-): Promise<void> {
-  // 1. orari e corse
-  await ex.execute(sql`
-    DELETE FROM ps_stop_times
-     WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${projectId}::uuid)
-  `);
-  await ex.execute(sql`DELETE FROM ps_trips WHERE project_id = ${projectId}::uuid`);
-  // 2. fermate dei percorsi e percorsi
-  await ex.execute(sql`
-    DELETE FROM ps_variant_stops
-     WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${projectId}::uuid)
-  `);
-  await ex.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${projectId}::uuid`);
-  // 3. senza chiave verso ps_projects: la sorveglianza di Argos (il cron
-  //    continuerebbe a girare su un progetto che non c'è) e i link pubblici
-  await ex.execute(sql`DELETE FROM ps_argos_watches WHERE project_id = ${projectId}::uuid`);
-  await ex.execute(sql`DELETE FROM ps_network_shares WHERE project_id = ${projectId}::uuid`);
-  await ex.execute(sql`DELETE FROM ps_timetable_map_shares WHERE project_id = ${projectId}::uuid`);
-  // 4. il progetto, e a cascata tutto il resto
-  await ex.execute(sql`DELETE FROM ps_projects WHERE id = ${projectId}::uuid`);
-}
 
 // DELETE /api/planning-studio/projects/:id (owner, o chiunque se il progetto è ORFANO)
 router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> => {
@@ -1643,7 +1430,9 @@ router.put("/planning-studio/projects/:id/variants/:variantId/stops", async (req
 
 /** PUT /variants/:variantId/shape — upsert dello shape della variante.
  *  body: { mode: 'driving'|'manual'|..., geometry: GeoJSON LineString, waypoints: [...],
- *          distanceM?: number, durationS?: number } */
+ *          durationS?: number }
+ *  La lunghezza (distance_m) la calcola il server dalla geometria (PR 3.5,
+ *  lib/km-programmati.ts): un distanceM mandato dal browser non conta. */
 router.put("/planning-studio/projects/:id/variants/:variantId/shape", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
@@ -1663,7 +1452,7 @@ router.put("/planning-studio/projects/:id/variants/:variantId/shape", async (req
     VALUES (${proj.id}::uuid, ${variantId}::uuid, ${mode},
             ${JSON.stringify(b.geometry)}::jsonb,
             ${JSON.stringify(wpts)}::jsonb,
-            ${b.distanceM ?? null}, ${b.durationS ?? null}, now())
+            ${lunghezzaDellaGeometria(b.geometry)}, ${b.durationS ?? null}, now())
     ON CONFLICT (variant_id) DO UPDATE
       SET mode = EXCLUDED.mode,
           geometry = EXCLUDED.geometry,
@@ -1881,23 +1670,33 @@ router.get("/planning-studio/projects/:id/trips", async (req, res): Promise<void
       }
       for (const t of trips as any[]) t.dayTypeCodes = byTrip.get(t.id) ?? [];
     } catch { /* validità non configurata */ }
-    // Categorie del calendario aziendale per corsa (chip in Corse e TTD)
+    // Categorie del calendario aziendale per corsa (chip in Corse e TTD).
+    // lostCategories: righe della corsa che puntano a una categoria che non
+    // esiste più (cancellata prima che la cancellazione di una categoria in
+    // uso fosse rifiutata). Il calcolo della validità le conta: una corsa che
+    // ha solo quelle non vale in nessun giorno. Qui si contano perché la
+    // pagina le mostri, invece di una casella vuota.
     try {
       const idsLiteral = `{${trips.map((t: any) => t.id).join(",")}}`;
       const cv = await db.execute(sql`
         SELECT cv.trip_id, c.id, c.code, c.name, c.color
           FROM ps_trip_category_validity cv
-          JOIN ps_validity_categories c ON c.id = cv.category_id
+          LEFT JOIN ps_validity_categories c ON c.id = cv.category_id
          WHERE cv.trip_id = ANY(${idsLiteral}::uuid[])
          ORDER BY c.sort_order, c.name
       `);
       const catsByTrip = new Map<string, any[]>();
+      const lostByTrip = new Map<string, number>();
       for (const row of ((cv as any).rows ?? []) as any[]) {
+        if (row.id == null) { lostByTrip.set(row.trip_id, (lostByTrip.get(row.trip_id) ?? 0) + 1); continue; }
         const a = catsByTrip.get(row.trip_id) ?? [];
         a.push({ id: row.id, code: row.code, name: row.name, color: row.color });
         catsByTrip.set(row.trip_id, a);
       }
-      for (const t of trips as any[]) t.categories = catsByTrip.get(t.id) ?? [];
+      for (const t of trips as any[]) {
+        t.categories = catsByTrip.get(t.id) ?? [];
+        t.lostCategories = lostByTrip.get(t.id) ?? 0;
+      }
     } catch { /* categorie non configurate */ }
   }
   res.json({ trips });

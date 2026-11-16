@@ -24,7 +24,7 @@ Pipeline:
   5. build_initial_segments   — applica tagli, genera segmenti
   6. optimize_multi_scenario  — N scenari CP-SAT con seed e noise diversi
   7. classify_duty            — classificazione post-hoc RD 131/1938
-  8. validate_all_bds         — validazione RD 131 + BDS
+  8. validate_all_bds         — verifica RD 131 e regole aziendali
   9. compute_costs            — costi con pre/post multi-livello
   10. serialize_output        — JSON per il backend
 """
@@ -53,7 +53,7 @@ from optimizer_common import (
     VShiftTrip, VehicleShift, CambioInfo, ClusterStop,
     VehicleBlock, CutCandidate, Segment, DriverDutyV3,
     Cluster, DEFAULT_CLUSTERS, DEFAULT_OPERATOR_CONFIG,
-    # BDS dataclass
+    # dataclass della normativa
     PrePostRules, CEE561Config, RD131Config, IntervalloPastoConfig,
     StaccoMinimo, GestoreRiprese, CoperturaSosteConfig,
     CollegamentoConfig, WorkCalculation, BDSValidation,
@@ -425,7 +425,7 @@ _MISURE_VALIDE = {"lavoro", "nastro", "guida"}
 
 
 def apply_vincoli_globali_config(cfg: dict) -> None:
-    """Parsa config.bds.vincoliGlobali (BDSI cap. 14) nel global VINCOLI_GLOBALI.
+    """Parsa config.bds.vincoliGlobali nel global VINCOLI_GLOBALI.
     Voci malformate vengono scartate (mai un errore fatale)."""
     global VINCOLI_GLOBALI
     VINCOLI_GLOBALI = []
@@ -483,7 +483,7 @@ def apply_vincoli_globali_config(cfg: dict) -> None:
 
 
 # ----------------------------------------------------------------
-# Costi avanzati BDS5 (Manuale configurazione algoritmo, cap. 3-4)
+# Costi avanzati dei turni guida
 # ----------------------------------------------------------------
 # config.bds.costiAvanzati = {
 #   scalini: [{attributo: "nastro"|"lavoro"|"guida",
@@ -502,14 +502,14 @@ BDS5_FASCE_SENZA_CAMBI: list[tuple[int, int]] = []
 BDS5_SOSTE_SPEZZANTI_MIN = 0      # 0 = off
 BDS5_LUNG_PEZZI_MIN = 0           # lunghezza minima pezzi urbani (0 = off)
 BDS5_LUNG_PEZZI_MIN_EXTRA = 0     # lunghezza minima pezzi extraurbani (0 = off)
-FASCIA_SENZA_CAMBI_PENALTY = 100.0  # "preferenzialmente non ammessi" (BDS5 fascia_oraria)
+FASCIA_SENZA_CAMBI_PENALTY = 100.0  # "preferenzialmente non ammessi" (fascia_oraria)
 
 _BDS5_ATTR_SCALARI = {"nastro", "lavoro", "guida"}
 _BDS5_ATTR_LISTE = {"durataRiprese", "equilibrioRiprese", "stacco"}
 
 
 def apply_bds5_config(cfg: dict) -> None:
-    """Parsa config.bds.costiAvanzati + estensioni cuts BDS5 nei global."""
+    """Parsa config.bds.costiAvanzati + estensioni dei tagli nei global."""
     global BDS5_COSTS, BDS5_FASCE_SENZA_CAMBI, BDS5_SOSTE_SPEZZANTI_MIN
     global BDS5_LUNG_PEZZI_MIN, BDS5_LUNG_PEZZI_MIN_EXTRA
     BDS5_COSTS = {}
@@ -604,7 +604,7 @@ def apply_bds5_config(cfg: dict) -> None:
     if BDS5_LUNG_PEZZI_MIN or BDS5_LUNG_PEZZI_MIN_EXTRA:
         active.append(f"lungPezzi≥{BDS5_LUNG_PEZZI_MIN}/{BDS5_LUNG_PEZZI_MIN_EXTRA}'")
     if active:
-        log(f"[V4][BDS5] attivi: {', '.join(active)}")
+        log(f"[V4][costi avanzati] attivi: {', '.join(active)}")
 
 
 def bds5_active() -> bool:
@@ -621,7 +621,7 @@ def bds5_duty_cost(
     cambi: dict[str, int] | None = None,
     vehicle_types: set[str] | None = None,
 ) -> float:
-    """Costo BDS5 (eur) di un turno candidato. Usato IDENTICO nel modello
+    """Costo avanzato (eur) di un turno candidato. Usato IDENTICO nel modello
     CP-SAT (single/pair a build-time) e nel costo dettagliato all'estrazione."""
     if not BDS5_COSTS:
         return 0.0
@@ -694,7 +694,7 @@ def _bds5_cambi_from_segments(segments: list) -> dict[str, int]:
 
 
 def split_blocks_at_soste(blocks: list["VehicleBlock"], clusters: list) -> tuple[list["VehicleBlock"], int]:
-    """BDS5 soste_spezzanti: ogni sosta ≥ soglia nel turno macchina diventa
+    """soste_spezzanti: ogni sosta ≥ soglia nel turno macchina diventa
     un confine OBBLIGATORIO — il blocco viene pre-spezzato in sotto-blocchi,
     così nessun pezzo può scavalcare la sosta."""
     if BDS5_SOSTE_SPEZZANTI_MIN <= 0:
@@ -744,7 +744,7 @@ def split_blocks_at_soste(blocks: list["VehicleBlock"], clusters: list) -> tuple
                 legs=list(b.legs),
             ))
     if splits:
-        log(f"[V4][BDS5] soste spezzanti ≥{BDS5_SOSTE_SPEZZANTI_MIN}': "
+        log(f"[V4][costi avanzati] soste spezzanti ≥{BDS5_SOSTE_SPEZZANTI_MIN}': "
             f"{splits} tagli obbligatori, {len(blocks)} → {len(out)} blocchi")
     return out, splits
 
@@ -914,7 +914,7 @@ PCT_OVER_PENALTY = 150
 # pctCapToleranceShifts.
 PCT_CAP_HARD = True
 PCT_CAP_TOLERANCE_SHIFTS = 0.9
-# Tetto di guida per ripresa (min) letto dalla BDS a inizio run: usato dalla
+# Tetto di guida per ripresa (min) letto dalla normativa a inizio run: usato dalla
 # scelta dei tagli (0 = non applicato)
 MAX_GUIDA_RIPRESA = 0
 LAST_PCT_CAP: dict = {"hard": True, "toleranceShifts": 0.9, "relaxed": False}
@@ -927,7 +927,7 @@ def pct_cap_allowed(max_pct: float | int | None, total: int) -> int | None:
         return None
     return int(math.floor(float(max_pct) * total / 100.0 + PCT_CAP_TOLERANCE_SHIFTS + 1e-9))
 
-# Vincoli GLOBALI di soluzione (BDSI cap. 14) da config.bds.vincoliGlobali:
+# Vincoli GLOBALI di soluzione da config.bds.vincoliGlobali:
 #   {tipo:"numerico",   tipologie:[...], min?, max?, perResidenza?: bool}
 #   {tipo:"percentuale",tipologie:[...], minPct?, maxPct?, perResidenza?: bool}
 #   {tipo:"media",      tipologie:[...], misura:"lavoro"|"nastro"|"guida", minMin?, maxMin?}
@@ -1122,12 +1122,12 @@ INTRA_BALANCE_MAX = 4.0        # bonus max per bilanciamento
 
 
 # ═══════════════════════════════════════════════════════════════
-#  BDS CONFIG BUNDLE
+#  CONFIG BUNDLE DELLA NORMATIVA
 # ═══════════════════════════════════════════════════════════════
 
 @dataclass
 class BDSConfig:
-    """Bundle di tutte le configurazioni BDS (normativa RD 131/1938)."""
+    """Bundle di tutte le configurazioni della normativa (RD 131/1938)."""
     pre_post: PrePostRules = field(default_factory=PrePostRules)
     rd131: RD131Config = field(default_factory=RD131Config)
     pasto: IntervalloPastoConfig = field(default_factory=IntervalloPastoConfig)
@@ -1181,16 +1181,16 @@ class BDSConfig:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  FUNZIONI DI SUPPORTO PRE/POST BDS
+#  FUNZIONI DI SUPPORTO PRE/POST
 # ═══════════════════════════════════════════════════════════════
 
 def pre_turno_bds(is_depot: bool, pp: PrePostRules) -> int:
-    """Pre-turno BDS: deposito vs cambio in linea."""
+    """Pre-turno: deposito vs cambio in linea."""
     return pp.pre_turno_deposito if is_depot else pp.pre_turno_cambio
 
 
 def post_turno_bds(is_depot: bool, pp: PrePostRules) -> int:
-    """Post-turno BDS: deposito vs cambio in linea."""
+    """Post-turno: deposito vs cambio in linea."""
     return pp.post_turno_deposito if is_depot else pp.post_turno_cambio
 
 
@@ -1272,7 +1272,7 @@ def compute_pre_post_total(
     pp: PrePostRules,
     clusters: list[Cluster],
 ) -> int:
-    """Calcola il totale tempi pre/post BDS per un turno guida."""
+    """Calcola il totale tempi pre/post per un turno guida."""
     total = 0
     n_segs = len(duty.segments)
     if n_segs == 0:
@@ -1479,7 +1479,7 @@ def block_trip_index(block: "VehicleBlock", trip: VShiftTrip, edge: str = "both"
 
 
 # ═══════════════════════════════════════════════════════════════
-#  FASE 2: ANALISI PUNTI DI TAGLIO CON BDS
+#  FASE 2: ANALISI PUNTI DI TAGLIO CON LA NORMATIVA
 # ═══════════════════════════════════════════════════════════════
 
 def analyze_vehicle_block(
@@ -1487,7 +1487,7 @@ def analyze_vehicle_block(
     clusters: list[Cluster],
     bds: BDSConfig,
 ) -> None:
-    """Identifica punti di taglio con scoring BDS-aware (copertura soste)."""
+    """Identifica punti di taglio con scoring secondo la normativa (copertura soste)."""
     trips = block.trips
     if len(trips) < 2:
         return
@@ -1524,7 +1524,7 @@ def analyze_vehicle_block(
     total_driving = cum_driving[-1]
     max_guida = int(getattr(getattr(bds, "riprese", None), "max_guida_per_ripresa", 0) or 0)
 
-    # BDS5 lung_pezzi: lunghezza minima dei pezzi generati (per categoria)
+    # lung_pezzi: lunghezza minima dei pezzi generati (per categoria)
     min_pezzo = (BDS5_LUNG_PEZZI_MIN_EXTRA if block.category == "extraurbano"
                  else BDS5_LUNG_PEZZI_MIN)
 
@@ -1555,14 +1555,14 @@ def analyze_vehicle_block(
         else:
             right_work = trips[-1].arrival_min - trips[i + 1].departure_min
 
-        # BDS5 lung_pezzi: il taglio non deve creare pezzi sotto la lunghezza minima
+        # lung_pezzi: il taglio non deve creare pezzi sotto la lunghezza minima
         if min_pezzo > 0 and (left_work < min_pezzo or right_work < min_pezzo):
             continue
 
         # ── Scoring ──
         score = 0.0
 
-        # BDS5 fascia_oraria: cambi preferenzialmente non ammessi in fascia
+        # fascia_oraria: cambi preferenzialmente non ammessi in fascia
         if _bds5_in_fascia_senza_cambi(cut_time):
             score -= FASCIA_SENZA_CAMBI_PENALTY
 
@@ -1580,7 +1580,7 @@ def analyze_vehicle_block(
         if is_depot_cut:
             score += CUT_DEPOT_BONUS + CUT_NO_CLUSTER_PENALTY
 
-        # ── BDS Copertura Soste ──
+        # ── Copertura soste ──
         # Un gap coperto dalla copertura soste NON è un buon taglio (la sosta
         # è coperta dal conducente in testa, non deve essere interrotta)
         min_sosta = bds.copertura.min_sosta_cambio_urbano
@@ -1679,14 +1679,14 @@ def analyze_vehicle_block(
             left_work_intra = cs.arrival_min - trips[0].departure_min
             right_work_intra = trips[-1].arrival_min - cs.departure_min
 
-            # BDS5 lung_pezzi anche per i tagli intra-corsa
+            # lung_pezzi anche per i tagli intra-corsa
             if min_pezzo > 0 and (left_work_intra < min_pezzo or right_work_intra < min_pezzo):
                 continue
 
             # ── Scoring intra ──
             score_intra = INTRA_SCORE_BASE  # penalità base vs inter
 
-            # BDS5 fascia_oraria: cambi preferenzialmente non ammessi in fascia
+            # fascia_oraria: cambi preferenzialmente non ammessi in fascia
             if _bds5_in_fascia_senza_cambi(cut_time_intra):
                 score_intra -= FASCIA_SENZA_CAMBI_PENALTY
 
@@ -1741,7 +1741,7 @@ def analyze_vehicle_block(
 
 def collassa_cambi(blocks: list[VehicleBlock], min_gap: int = COLLASSA_MIN_GAP) -> None:
     """Collassa tagli troppo vicini: se due tagli distano < min_gap min, tieni solo il migliore.
-    Ispirato a BDS collassa_cambi: evita tagli che generano segmenti troppo corti."""
+    Evita tagli che generano segmenti troppo corti."""
     for b in blocks:
         if len(b.cut_candidates) < 2:
             continue
@@ -2526,11 +2526,11 @@ def build_pair_aware_segments(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  CLASSIFICAZIONE POST-HOC BDS
+#  CLASSIFICAZIONE POST-HOC
 # ═══════════════════════════════════════════════════════════════
 
 def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -> str:
-    """Classificazione post-hoc ispirata a BDS TIPOLOGIE_PARAMETRICHE.
+    """Classificazione post-hoc per tipologia.
 
     Ordine: supplemento → intero → semiunico → spezzato → invalido.
     Non forza la classificazione in fase di enumerazione — la determina dopo.
@@ -2579,7 +2579,7 @@ def classify_duty(duty: DriverDutyV3, bds: BDSConfig, clusters: list[Cluster]) -
 
 
 # ═══════════════════════════════════════════════════════════════
-#  VALIDAZIONE BDS
+#  VERIFICA NORMATIVA
 # ═══════════════════════════════════════════════════════════════
 
 def check_rd131(duty: DriverDutyV3, rd: RD131Config) -> tuple[bool, list[str]]:
@@ -2767,7 +2767,7 @@ def check_riprese(
     duty: DriverDutyV3,
     gestore: GestoreRiprese,
 ) -> tuple[bool, list[str]]:
-    """Verifica regole riprese BDS."""
+    """Verifica regole riprese della normativa."""
     violations: list[str] = []
 
     n_segs = len(duty.segments)
@@ -2799,7 +2799,7 @@ def validate_duty_bds(
     bds: BDSConfig,
     clusters: list[Cluster],
 ) -> BDSValidation:
-    """Validazione completa BDS/RD 131/1938 di un turno guida."""
+    """Verifica completa (RD 131/1938 e regole aziendali) di un turno guida."""
     result = BDSValidation()
 
     # Classificazione
@@ -2901,7 +2901,7 @@ def validate_all_bds(
     bds: BDSConfig,
     clusters: list[Cluster],
 ) -> dict:
-    """Valida tutti i turni con BDS. Ritorna stats + lista violazioni."""
+    """Verifica tutti i turni con la normativa. Ritorna stats + lista violazioni."""
     total_violations = 0
     total_warnings = 0
     duty_violations: dict[str, list[str]] = {}
@@ -2945,7 +2945,7 @@ def validate_all_bds(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  CALCOLO LAVORO BDS (WorkCalculation)
+#  CALCOLO LAVORO (WorkCalculation)
 # ═══════════════════════════════════════════════════════════════
 
 def compute_work_bds(
@@ -2953,8 +2953,8 @@ def compute_work_bds(
     bds: BDSConfig,
     clusters: list[Cluster],
 ) -> WorkCalculation:
-    """Calcola il lavoro BDS per un turno guida.
-    Ispirato a BDS RegolaCalcoloLavoroSommaRiprese."""
+    """Calcola il lavoro di un turno guida.
+    Lavoro = somma delle riprese."""
     wc = WorkCalculation()
 
     # Guida
@@ -2970,7 +2970,7 @@ def compute_work_bds(
                 idle += gap
     wc.idle_at_terminal_min = idle
 
-    # Pre/post BDS
+    # Pre/post
     wc.pre_post_min = compute_pre_post_total(duty, bds.pre_post, clusters)
 
     # Trasferimenti
@@ -3008,7 +3008,7 @@ def compute_work_bds(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  COSTO BDS
+#  COSTO DEL TURNO
 # ═══════════════════════════════════════════════════════════════
 
 def compute_duty_cost_v4(
@@ -3017,7 +3017,7 @@ def compute_duty_cost_v4(
     bds: BDSConfig,
     clusters: list[Cluster],
 ) -> DutyCostBreakdown:
-    """Costo turno con pre/post multi-livello BDS."""
+    """Costo turno con pre/post multi-livello."""
     c = DutyCostBreakdown()
     per_min = rates.hourly_rate / 60.0
 
@@ -3038,7 +3038,7 @@ def compute_duty_cost_v4(
                 long_idle_extra += (gap - 20) * rates.long_idle_penalty_per_min
     c.idle_at_terminal_cost = idle_cost + long_idle_extra
 
-    # 3. Pre-turno/post-turno BDS
+    # 3. Pre-turno/post-turno
     c.pre_turno_cost = wc.pre_post_min * per_min * rates.pre_turno_rate_fraction
 
     # 4. Trasferimenti
@@ -3087,7 +3087,7 @@ def compute_duty_cost_v4(
     # score del portfolio. La fascia [target-30, target+12] resta gratuita.
     c.work_imbalance_penalty = 0.0
 
-    # 11. Costi avanzati BDS5 (scalini, quadratici, cambi vettura/patente) —
+    # 11. Costi avanzati (scalini, quadratici, cambi vettura/patente) —
     #     STESSA funzione usata nell'obiettivo CP-SAT (fonte unica).
     if bds5_active():
         segs = sorted(duty.segments, key=lambda s: s.start_min)
@@ -3513,7 +3513,7 @@ def _build_cpsat_model(
         model.add(ex >= 100 * semi_sosta_count - SOSTA_INOP_MAX_PCT_WITH_SEMI * total_duties)
         pct_excess.append(ex)
 
-    # -- Vincoli GLOBALI di soluzione (BDSI cap. 14): quasi-hard con slack --
+    # -- Vincoli GLOBALI di soluzione: quasi-hard con slack --
     # Il tipo di turno di ogni variabile è noto a build-time (single→intero/
     # supplemento, pair→semiunico/spezzato), quindi numerico/percentuale/media
     # sono vincoli lineari esatti. Slack penalizzati in modo proibitivo: il
@@ -3609,7 +3609,7 @@ def _build_cpsat_model(
             hours = work_with_overhead / 60.0
             cost_cents = int((hours * rates.hourly_rate * mul_cost
                              + dev_from_target * rates.work_imbalance_per_min * mul_balance) * COST_SCALE)
-        # BDS5: scalini/quadratici (nessun cambio vettura su un mono-segmento)
+        # Costi avanzati: scalini/quadratici (nessun cambio vettura su un mono-segmento)
         if bds5_active():
             cost_cents += int(bds5_duty_cost(
                 _dtype_s, nastro_s, work_with_overhead, s.driving_min,
@@ -3663,7 +3663,7 @@ def _build_cpsat_model(
                          + dev * rates.work_imbalance_per_min * mul_balance
                          + car_score * mul_transfer) * COST_SCALE * pair_type_mul)
 
-        # BDS5: scalini/quadratici/cambio vettura/cambio patente sul pair
+        # Costi avanzati: scalini/quadratici/cambio vettura/cambio patente sul pair
         if bds5_active():
             _a, _b = (s1, s2) if s1.start_min <= s2.start_min else (s2, s1)
             cost_cents += int(bds5_duty_cost(
@@ -3698,7 +3698,7 @@ def _build_cpsat_model(
     for ex in pct_excess:
         obj_terms.append(PCT_OVER_PENALTY * ex)
 
-    # Vincoli globali di soluzione (BDSI): slack quasi-hard
+    # Vincoli globali di soluzione: slack quasi-hard
     obj_terms.extend(vincoli_slack_terms)
 
     # Tetto auto aziendali: eccedenza (quasi-hard)
@@ -4810,7 +4810,7 @@ def serialize_output(
     handovers: list[Handover] | None = None,
     car_movements: list[CarTrip] | None = None,
 ) -> dict:
-    """Serializza nel formato atteso dal frontend, con dati BDS arricchiti."""
+    """Serializza nel formato atteso dal frontend, con i dati della normativa."""
     rates = CostRates.from_config(config)
 
     if handovers is None:
@@ -4825,7 +4825,7 @@ def serialize_output(
 
     car_by_driver = car_pool_by_driver(car_movements)
 
-    # ── Costi BDS ──
+    # ── Costi della normativa ──
     total_cost = 0.0
     for d in duties:
         cb = compute_duty_cost_v4(d, rates, bds, clusters)
@@ -4919,11 +4919,11 @@ def serialize_output(
         handover_labels: list[str] = [v["label"] for v in handovers_out]
         n_inline_handovers = len(inline_handovers(my_handovers))
 
-        # BDS validation per duty
+        # verifica normativa per turno
         bds_val = getattr(d, 'bds_validation', None)
         bds_val_dict = bds_val.to_dict() if bds_val else None
 
-        # Work calculation BDS
+        # Calcolo del lavoro
         wc = getattr(d, 'work_calculation', None)
         wc_dict = wc.to_dict() if wc else None
 
@@ -4960,7 +4960,7 @@ def serialize_output(
                 "base": round(d.work_min * rates.hourly_rate / 60.0, 2),
                 "transfer": round((d.transfer_min + d.transfer_back_min) * rates.hourly_rate / 60.0, 2),
             },
-            # ── BDS arricchimenti ──
+            # ── arricchimenti della normativa ──
             "bdsValidation": bds_val_dict,
             "workCalculation": wc_dict,
         })
@@ -5080,9 +5080,9 @@ def serialize_output(
             # extraurbane. Echo dei dati ricevuti dal backend: il consumo nella
             # generazione del duty-type "sosta inoperosa" è un follow-up.
             "restPoints": len(config.get("restPoints") or []),
-            # Vincoli GLOBALI di soluzione (BDSI cap. 14): report soddisfacimento
+            # Vincoli GLOBALI di soluzione: report soddisfacimento
             "vincoliGlobali": evaluate_vincoli_globali(duties),
-            # Costi avanzati BDS5: cosa è attivo e quanto pesa sulla soluzione
+            # Costi avanzati: cosa è attivo e quanto pesa sulla soluzione
             "bds5": ({
                 "costi": sorted(BDS5_COSTS.keys()),
                 "sosteSpezzantiMin": BDS5_SOSTE_SPEZZANTI_MIN or None,
@@ -5181,9 +5181,9 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     apply_operator_weights(config)
     # Override avanzati Fase 2 (soglie/scoring tagli, cap %, multi-scenario)
     apply_fase2_overrides(config)
-    # Vincoli GLOBALI di soluzione (BDSI cap. 14)
+    # Vincoli GLOBALI di soluzione
     apply_vincoli_globali_config(config)
-    # Costi avanzati + estensioni tagli BDS5 (manuale configurazione algoritmo)
+    # Costi avanzati + estensioni dei tagli
     apply_bds5_config(config)
 
     clusters = parse_clusters_from_config(config)
@@ -5191,14 +5191,14 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
 
     apply_sosta_inoperosa_config(config)
     rest_points = config.get("restPoints") or []
-    log(f"=== Crew Scheduler V4 (BDS) ===")
+    log(f"=== Crew Scheduler V4 ===")
     log(f"Input: {len(vehicle_shifts_raw)} turni macchina, timeLimit={time_limit_sec}s")
     if REST_STOP_FACILITIES:
         n_fac = sum(1 for v in REST_STOP_FACILITIES.values() if v)
         log(f"Nodi di sosta: {len(rest_points)} cluster, {len(REST_STOP_FACILITIES)} fermate "
             f"({n_fac} con strutture). Sosta inoperosa ≥{SOSTA_INOP_MIN_MIN}': "
             f"contributo {int(SOSTA_INOP_COEFF_FACILITIES*100)}%/{int(SOSTA_INOP_COEFF_NO_FACILITIES*100)}%.")
-    log(f"BDS config: pre/post={bds.pre_post.pre_turno_deposito}/{bds.pre_post.post_turno_deposito}, "
+    log(f"normativa: pre/post={bds.pre_post.pre_turno_deposito}/{bds.pre_post.post_turno_deposito}, "
         f"RD131={'ON' if bds.rd131.attivo else 'OFF'}, "
         f"pasto={'ON' if bds.pasto.attivo else 'OFF'}")
     report_progress("init", 5, f"{len(vehicle_shifts_raw)} turni macchina")
@@ -5207,12 +5207,12 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     global MAX_GUIDA_RIPRESA
     MAX_GUIDA_RIPRESA = int(getattr(bds.riprese, "max_guida_per_ripresa", 0) or 0)
     blocks = parse_vehicle_blocks(vehicle_shifts_raw, clusters)
-    # BDS5 soste_spezzanti: pre-spezza i blocchi alle soste ≥ soglia (tagli obbligatori)
+    # soste_spezzanti: pre-spezza i blocchi alle soste ≥ soglia (tagli obbligatori)
     blocks, _bds5_splits = split_blocks_at_soste(blocks, clusters)
     log(f"Fase 1: {len(blocks)} vehicle blocks parsati")
     report_progress("parse", 10, f"{len(blocks)} blocchi")
 
-    # ── Fase 2: Analisi con BDS ──
+    # ── Fase 2: Analisi con la normativa ──
     for b in blocks:
         analyze_vehicle_block(b, clusters, bds)
     classify_blocks(blocks, clusters, max_driving=int(getattr(bds.riprese, "max_guida_per_ripresa", 0) or 0))
@@ -5220,7 +5220,7 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     # Snapshot dei tagli PRIMA del collasso: serve alla segmentazione pair-aware
     full_cut_candidates = {b.vehicle_id: list(b.cut_candidates) for b in blocks}
 
-    # Collassa tagli troppo vicini (BDS)
+    # Collassa tagli troppo vicini
     collassa_cambi(blocks, COLLASSA_MIN_GAP)  # global (override-abile) anziché il default-arg catturato all'import
 
     # Filtra tagli solo su cluster
@@ -5321,11 +5321,11 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     log(f"Fase 4: {n_total} turni guida ({n_total - n_suppl} principali + {n_suppl} supplementi)")
     report_progress("duties", 70, f"{n_total} turni ({n_suppl} suppl)")
 
-    # ── Fase 5: Validazione BDS completa ──
+    # ── Fase 5: Verifica normativa completa ──
     validation = validate_all_bds(duties, bds, clusters)
     n_viol = validation["totalViolations"]
-    log(f"Fase 5: validazione BDS — {n_viol} violazioni su {validation['dutiesWithViolations']} turni")
-    report_progress("validate", 80, f"{n_viol} violazioni BDS")
+    log(f"Fase 5: verifica normativa — {n_viol} violazioni su {validation['dutiesWithViolations']} turni")
+    report_progress("validate", 80, f"{n_viol} violazioni normative")
 
     # ── Fase 6: Handover & Car Pool ──
     handovers = compute_handovers(duties, clusters)
@@ -5387,14 +5387,14 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
 
     log(f"=== DONE in {elapsed:.1f}s — {n_total} turni, {n_suppl} supplementi "
         f"({n_suppl * 100 // max(n_total, 1)}%), €{output['summary']['totalDailyCost']:.0f}/giorno, "
-        f"{n_viol} violazioni BDS ===")
+        f"{n_viol} violazioni normative ===")
     report_progress("done", 100, f"{n_total} turni, €{output['summary']['totalDailyCost']:.0f}/giorno")
 
     return output
 
 
 def main() -> None:
-    # Default tempo PIÙ ALTO (Maior-style): 240s anziché 120s, scala con intensità via UI
+    # Default tempo PIÙ ALTO: 240s anziché 120s, scala con intensità via UI
     time_limit_sec = int(sys.argv[1]) if len(sys.argv) > 1 else 240
     write_output(run(load_input(), time_limit_sec))
 

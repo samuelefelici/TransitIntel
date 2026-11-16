@@ -32,6 +32,16 @@ export function dettaglioSolaLettura(messaggio: string): string {
 }
 
 /**
+ * A chi rivolgersi, in coda all'avviso. Di solito manca un ruolo; quando il
+ * rifiuto è per deposito (PR 2.14c) il ruolo c'è, e mancano i depositi.
+ */
+export function chiLoDecide(messaggio: string): string {
+  return /\bdeposit[oi]\b/i.test(messaggio)
+    ? "I depositi li sceglie l'amministratore"
+    : "Il ruolo lo assegna l'amministratore";
+}
+
+/**
  * Un avviso ogni tanto, non uno per richiesta: lo stesso messaggio entro
  * `ogniMs` non si ripete. Restituisce la funzione che dice se annunciare.
  */

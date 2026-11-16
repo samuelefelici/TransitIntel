@@ -171,7 +171,7 @@ class DutyCostBreakdown:
     fragmentation_penalty: float = 0.0
     work_imbalance_penalty: float = 0.0
 
-    # Costi avanzati BDS5 (scalini, quadratici, cambi vettura/patente)
+    # Costi avanzati (scalini, quadratici, cambi vettura/patente)
     bds5_cost: float = 0.0
 
     # Totale

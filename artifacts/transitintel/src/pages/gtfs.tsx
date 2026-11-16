@@ -850,12 +850,15 @@ export default function GtfsPage() {
     setActivatingId(feedId);
     try {
       const resp = await fetch(`${getApiBase()}/api/gtfs/feeds/${feedId}/activate`, { method: "POST" });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        const corpo = await resp.json().catch(() => ({}));
+        throw new Error(typeof corpo?.error === "string" ? corpo.error : `HTTP ${resp.status}`);
+      }
       // Aggiorna localmente: setta isActive=true a quel feed e false agli altri
       setFeeds(prev => prev.map(f => ({ ...f, isActive: f.id === feedId })));
     } catch (err) {
       console.error("[GTFS] activate failed:", err);
-      alert("Impossibile attivare il feed. Riprova.");
+      alert(`Impossibile attivare il feed: ${err instanceof Error ? err.message : "riprova"}.`);
     } finally {
       setActivatingId(null);
     }

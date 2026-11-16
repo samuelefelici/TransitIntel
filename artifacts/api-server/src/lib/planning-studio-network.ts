@@ -111,7 +111,7 @@ router.get("/planning-studio/projects/:id/routes/:routeId/detail", async (req, r
 
   res.json({
     route: {
-      id: route.id, code: route.code, shortName: route.short_name, longName: route.long_name,
+      id: route.id, codice: route.codice, code: route.code, shortName: route.short_name, longName: route.long_name,
       description: route.description, routeType: route.route_type,
       color: route.color, textColor: route.text_color, sortOrder: route.sort_order,
       attributes: route.attributes ?? {},
@@ -440,7 +440,7 @@ router.get("/planning-studio/projects/:id/stops/:stopId/detail", async (req, res
 
   res.json({
     stop: {
-      id: s.id, code: s.code, name: s.name, description: s.description,
+      id: s.id, codice: s.codice, code: s.code, name: s.name, description: s.description,
       lat: Number(s.lat), lon: Number(s.lon),
       zoneId: s.zone_id, locationType: s.location_type,
       parentStation: s.parent_station,

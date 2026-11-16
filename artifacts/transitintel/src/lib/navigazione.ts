@@ -10,9 +10,9 @@
  * aree ne basta una; l'amministratore vede tutto.
  */
 import {
-  BarChart3, CalendarDays, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
+  BarChart3, CalendarDays, ClipboardCheck, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
-  Users, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, type LucideIcon,
+  Users, UserCheck, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ShieldCheck, Stethoscope, type LucideIcon,
 } from "lucide-react";
 import { NOMI_AREE, type Area } from "@workspace/permessi";
 
@@ -62,10 +62,14 @@ export const AREE_PAGINA = {
   "/timetables": ["pubblicazione_orari"],
   "/roster": ["roster"],
   "/roster/anagrafica": ["roster", "personale"],
+  /* la vestizione per deposito (5.2): il tabellone di oggi e domani, per deposito */
+  "/roster/vestizione": ["roster"],
   "/operations": ["esercizio"],
   "/avm": ["esercizio"],
   /* i tempi osservati vengono dall'AVM: sono dell'Esercizio, e chi li aveva con Analisi li tiene */
   "/runtimes": ["esercizio", "analisi"],
+  /* il consuntivo delle giornate di esercizio (4.5): esiti, giornale, causali */
+  "/esercizio": ["consuntivo"],
   "/fares": ["tariffe"],
   "/fares-polimetriche": ["tariffe"],
   "/fare-simulator": ["tariffe"],
@@ -116,6 +120,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
     titolo: "Personale",
     voci: [
       { href: "/roster", etichetta: "Roster", icona: Users, descrizione: "Tabellone, assegnazioni, assenze", aree: AREE_PAGINA["/roster"] },
+      { href: "/roster/vestizione", etichetta: "Vestizione", icona: UserCheck, descrizione: "Turni e conducenti del deposito, oggi e domani", aree: AREE_PAGINA["/roster/vestizione"] },
       { href: "/roster/anagrafica", etichetta: "Anagrafica", icona: IdCard, descrizione: "Conducenti e personale", aree: AREE_PAGINA["/roster/anagrafica"] },
     ],
   },
@@ -125,6 +130,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/operations", etichetta: "Mappa live", icona: MapPinned, descrizione: "Il servizio adesso", aree: AREE_PAGINA["/operations"] },
       { href: "/avm", etichetta: "AVM", icona: SatelliteDish, descrizione: "Diario e controllo degli apparati", aree: AREE_PAGINA["/avm"] },
       { href: "/runtimes", etichetta: "Tempi osservati", icona: Timer, descrizione: "Percorrenze dall'AVM", aree: AREE_PAGINA["/runtimes"] },
+      { href: "/esercizio", etichetta: "Consuntivo", icona: ClipboardCheck, descrizione: "Esiti delle corse, giorno per giorno", aree: AREE_PAGINA["/esercizio"] },
     ],
   },
   {
@@ -157,8 +163,12 @@ export const SEZIONI: readonly SezioneMenu[] = [
     titolo: "Amministrazione",
     voci: [
       { href: "/admin/users", etichetta: "Utenti e accessi", icona: Users, descrizione: "Permessi, sblocchi, registro", soloAdmin: true },
+      { href: "/admin/ruoli", etichetta: "Ruoli", icona: ShieldCheck, descrizione: "Che cosa può fare ogni ruolo", soloAdmin: true },
+      { href: "/admin/azienda", etichetta: "Azienda", icona: Building2, descrizione: "Nome, sito, centro delle mappe", soloAdmin: true },
       { href: "/admin/parametri", etichetta: "Parametri di esercizio", icona: Settings2, descrizione: "Autovetture aziendali", soloAdmin: true },
       { href: "/admin/registro", etichetta: "Registro delle modifiche", icona: History, descrizione: "Chi ha cambiato che cosa", soloAdmin: true },
+      { href: "/admin/esercizio", etichetta: "Diagnosi dell'esercizio", icona: Stethoscope, descrizione: "Programma, AVM e turni di un giorno", soloAdmin: true },
+      { href: "/admin/giornate", etichetta: "Giornate di esercizio", icona: CalendarDays, descrizione: "Il programmato congelato di ogni giorno", soloAdmin: true },
       { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline Mizar", aree: AREE_PAGINA["/data"] },
       { href: "/account", etichetta: "Sicurezza dell'account", icona: Shield, descrizione: "Password e verifica" },
     ],

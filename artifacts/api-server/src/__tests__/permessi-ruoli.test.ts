@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   AREE, AREE_DELL_INTERRUTTORE, INTERRUTTORI, INTERRUTTORI_DI_PRIMA, MATRICE, NESSUN_DIRITTO, NOMI_AREE, NOMI_RUOLI, RUOLI,
   accessoDiPrimaPulito, accessoDiPrimaRidotto, dirittiDi, haAccessoDiPrima, interruttoriCompatibili,
-  livelloDelMetodo, piuAlto, puo, puoSuUna, ruoliSconosciuti, ruoliValidi, vedeDatiSanitari,
+  depositiPuliti, limiteDepositi, livelloDelMetodo, piuAlto, puo, puoSuUna, ruoliSconosciuti, ruoliValidi, scriveSulDeposito, vedeDatiSanitari,
+  MAX_DEPOSITI_PER_UTENTE,
+  matriceConModifiche, modificheDelRuolo, rigaChiesta, rigaDelRuolo,
+  limitiSuiDepositi, limiteVisibilita, vedeIlDeposito,
   type Area, type Livello, type ProfiloPermessi, type RuoloAziendale,
 } from "@workspace/permessi";
 
@@ -199,5 +202,184 @@ describe("letture e scritture", () => {
   it("GET e HEAD leggono, il resto scrive", () => {
     for (const m of ["GET", "get", "HEAD", "OPTIONS"]) expect(livelloDelMetodo(m)).toBe("L");
     for (const m of ["POST", "PUT", "PATCH", "DELETE", "delete", "QUALCOSA"]) expect(livelloDelMetodo(m)).toBe("S");
+  });
+});
+
+describe("i depositi di una persona", () => {
+  it("nessun deposito scelto vuol dire nessun limite, come prima", () => {
+    expect(limiteDepositi({ admin: false })).toBeNull();
+    expect(limiteDepositi({ admin: false, depositi: [] })).toBeNull();
+    expect(limiteDepositi({ admin: false, depositi: null })).toBeNull();
+    expect(scriveSulDeposito(null, "jesi")).toBe(true);
+    expect(scriveSulDeposito(null, null)).toBe(true);
+  });
+
+  it("l'amministratore non ha limiti, anche se gli si scrivono dei depositi", () => {
+    expect(limiteDepositi({ admin: true, depositi: ["jesi"] })).toBeNull();
+  });
+
+  it("con dei depositi si scrive solo su quelli", () => {
+    const limite = limiteDepositi({ admin: false, depositi: ["jesi", "jesi-urbano"] });
+    expect(limite).toEqual(["jesi", "jesi-urbano"]);
+    expect(scriveSulDeposito(limite, "jesi")).toBe(true);
+    expect(scriveSulDeposito(limite, "jesi-urbano")).toBe(true);
+    expect(scriveSulDeposito(limite, "ancona")).toBe(false);
+    // il codice è esatto: non un prefisso, non un'altra scrittura
+    expect(scriveSulDeposito(limite, "jes")).toBe(false);
+    expect(scriveSulDeposito(limite, "Jesi")).toBe(false);
+  });
+
+  it("un conducente senza deposito lo scrive solo chi non ha limiti", () => {
+    const limite = limiteDepositi({ admin: false, depositi: ["jesi"] });
+    expect(scriveSulDeposito(limite, null)).toBe(false);
+    expect(scriveSulDeposito(limite, undefined)).toBe(false);
+    expect(scriveSulDeposito(limite, "")).toBe(false);
+  });
+
+  it("i codici scritti male non contano, e non diventano «nessun limite» per sbaglio", () => {
+    expect(depositiPuliti(["jesi", " jesi ", "", 7, null, "ancona", "jesi"])).toEqual(["jesi", "ancona"]);
+    expect(depositiPuliti("jesi")).toEqual([]);
+    expect(depositiPuliti(undefined)).toEqual([]);
+    expect(depositiPuliti(["x".repeat(61)])).toEqual([]);
+    expect(depositiPuliti(Array.from({ length: 80 }, (_, i) => `d${i}`))).toHaveLength(MAX_DEPOSITI_PER_UTENTE);
+    // chi ha un deposito valido e uno scritto male resta limitato a quello valido
+    expect(limiteDepositi({ admin: false, depositi: ["jesi", ""] })).toEqual(["jesi"]);
+  });
+});
+
+/* PR 2.18: l'amministratore cambia la matrice cella per cella (Amministrazione › Ruoli). */
+describe("la matrice in vigore: quella di partenza con le modifiche dell'amministratore", () => {
+  const profilo = (ruoli: RuoloAziendale[], extra: Partial<ProfiloPermessi> = {}): ProfiloPermessi =>
+    ({ admin: false, ruoli, accessoDiPrima: {}, analisi: false, datiSanitari: false, ...extra });
+
+  it("una modifica toglie, abbassa o alza una cella; le altre restano quelle di partenza", () => {
+    const m = matriceConModifiche(MATRICE, [
+      { ruolo: "capo_deposito", area: "esercizio", livello: "N" },
+      { ruolo: "capo_deposito", area: "roster", livello: "L" },
+      { ruolo: "capo_deposito", area: "tariffe", livello: "S" },
+    ]);
+    expect(rigaDelRuolo(m, "capo_deposito")).toEqual({ ...rigaDelRuolo(MATRICE, "capo_deposito"), esercizio: null, roster: "L", tariffe: "S" });
+    for (const r of RUOLI.filter(x => x !== "capo_deposito")) expect(rigaDelRuolo(m, r)).toEqual(rigaDelRuolo(MATRICE, r));
+    // la matrice di partenza non si tocca
+    expect(MATRICE.capo_deposito.esercizio).toBe("L");
+    expect(MATRICE.capo_deposito.roster).toBe("S");
+    expect(MATRICE.capo_deposito.tariffe).toBeUndefined();
+  });
+
+  it("senza modifiche è la matrice di partenza", () => {
+    const m = matriceConModifiche(MATRICE, []);
+    for (const r of RUOLI) expect(rigaDelRuolo(m, r)).toEqual(rigaDelRuolo(MATRICE, r));
+  });
+
+  it("una modifica scritta male non vale: resta la cella di partenza", () => {
+    const m = matriceConModifiche(MATRICE, [
+      null, "x", 3, {}, { ruolo: "direttore", area: "roster", livello: "S" }, { ruolo: "officina", area: "magazzino", livello: "S" },
+      { ruolo: "officina", area: "personale", livello: "W" }, { ruolo: "officina", area: "personale", livello: null },
+      { ruolo: "officina", area: "personale" }, { ruolo: "__proto__", area: "roster", livello: "S" },
+    ]);
+    for (const r of RUOLI) expect(rigaDelRuolo(m, r)).toEqual(rigaDelRuolo(MATRICE, r));
+    expect(({} as any).roster).toBeUndefined();
+  });
+
+  it("i diritti si calcolano con la matrice che gli si dà", () => {
+    const m = matriceConModifiche(MATRICE, [
+      { ruolo: "capo_deposito", area: "flotta", livello: "N" },
+      { ruolo: "capo_deposito", area: "personale", livello: "L" },
+    ]);
+    const capo = profilo(["capo_deposito"]);
+    expect(dirittiDi(capo).flotta).toBe("L");
+    expect(dirittiDi(capo, m).flotta).toBeNull();
+    expect(dirittiDi(capo, m).personale).toBe("L");
+    // con più ruoli vale ancora il più alto: l'officina ha la scrittura sulla flotta
+    expect(dirittiDi(profilo(["capo_deposito", "officina"]), m).flotta).toBe("S");
+    // l'amministratore di sistema e l'accesso di prima non dipendono dalla matrice
+    const vuota = matriceConModifiche(MATRICE, RUOLI.flatMap(r => AREE.map(a => ({ ruolo: r, area: a, livello: "N" }))));
+    expect(Object.values(dirittiDi(profilo(RUOLI.slice()), vuota)).every(v => v === null)).toBe(true);
+    expect(Object.values(dirittiDi({ ...profilo(["officina"]), admin: true }, vuota)).every(v => v === "S")).toBe(true);
+    expect(dirittiDi(profilo([], { accessoDiPrima: { roster: true } }), vuota).roster).toBe("S");
+  });
+
+  it("i dati sanitari seguono la matrice: senza il roster non si vedono", () => {
+    const senzaRoster = matriceConModifiche(MATRICE, [{ ruolo: "capo_deposito", area: "roster", livello: "N" }]);
+    const capo = profilo(["capo_deposito"], { datiSanitari: true });
+    expect(vedeDatiSanitari(capo)).toBe(true);
+    expect(vedeDatiSanitari(capo, senzaRoster)).toBe(false);
+  });
+
+  it("le modifiche di un ruolo sono solo le celle diverse da quelle di partenza", () => {
+    const partenza = rigaDelRuolo(MATRICE, "capo_deposito");
+    expect(modificheDelRuolo(MATRICE, "capo_deposito", partenza)).toEqual([]);
+    expect(modificheDelRuolo(MATRICE, "capo_deposito", { ...partenza, esercizio: null, roster: "L", tariffe: "S" })).toEqual([
+      { ruolo: "capo_deposito", area: "roster", livello: "L" },
+      { ruolo: "capo_deposito", area: "esercizio", livello: "N" },
+      { ruolo: "capo_deposito", area: "tariffe", livello: "S" },
+    ]);
+    // andata e ritorno: applicate alla matrice di partenza danno la riga voluta
+    const voluta = { ...partenza, flotta: null, personale: "L" as const };
+    expect(rigaDelRuolo(matriceConModifiche(MATRICE, modificheDelRuolo(MATRICE, "capo_deposito", voluta)), "capo_deposito")).toEqual(voluta);
+  });
+
+  it("quello che chiede l'amministratore: tutte le aree, ognuna lettura, scrittura o niente", () => {
+    const buona = rigaDelRuolo(MATRICE, "pianificatore");
+    expect(rigaChiesta(buona)).toEqual({ diritti: buona });
+    expect(rigaChiesta(null)).toHaveProperty("errore");
+    expect(rigaChiesta([buona])).toHaveProperty("errore");
+    expect(rigaChiesta("S")).toHaveProperty("errore");
+    const { roster: _tolta, ...senzaUnArea } = buona;
+    expect(rigaChiesta(senzaUnArea)).toEqual({ errore: "Manca l'area «Roster»" });
+    expect(rigaChiesta({ ...buona, magazzino: "S" })).toEqual({ errore: "Area sconosciuta: magazzino" });
+    expect(rigaChiesta({ ...buona, roster: "W" })).toEqual({ errore: "«Roster»: il livello è lettura, scrittura o niente" });
+    expect(rigaChiesta({ ...buona, roster: undefined })).toHaveProperty("errore");
+    expect(rigaChiesta({ ...buona, roster: true })).toHaveProperty("errore");
+    expect(rigaChiesta({ ...buona, roster: "N" })).toHaveProperty("errore");
+  });
+});
+
+/* PR 2.14d: per ogni utente, i depositi di cui vede i conducenti e quelli di cui li modifica. */
+describe("i depositi che una persona vede e quelli che modifica", () => {
+  const p = (depositi: string[], depositiVisibili: string[], admin = false) => ({ admin, depositi, depositiVisibili });
+
+  it("senza nessun elenco non ha limiti, come prima che esistessero", () => {
+    expect(limitiSuiDepositi(p([], []))).toEqual({ vede: null, scrive: null });
+    expect(limitiSuiDepositi({ admin: false })).toEqual({ vede: null, scrive: null });
+    expect(limitiSuiDepositi({ admin: false, depositi: null, depositiVisibili: null })).toEqual({ vede: null, scrive: null });
+  });
+
+  it("solo quelli che modifica (2.14c): li vede tutti e modifica quelli", () => {
+    expect(limitiSuiDepositi(p(["jesi"], []))).toEqual({ vede: null, scrive: ["jesi"] });
+    expect(limiteDepositi({ admin: false, depositi: ["jesi"] })).toEqual(["jesi"]);
+    expect(limiteVisibilita({ admin: false, depositi: ["jesi"] })).toBeNull();
+  });
+
+  it("con dei visibili: vede quelli e modifica solo i suoi", () => {
+    expect(limitiSuiDepositi(p(["jesi"], ["jesi", "ancona"]))).toEqual({ vede: ["jesi", "ancona"], scrive: ["jesi"] });
+    // quello che modifica lo vede sempre, anche se l'elenco dei visibili non lo nomina
+    expect(limitiSuiDepositi(p(["jesi"], ["ancona"]))).toEqual({ vede: ["ancona", "jesi"], scrive: ["jesi"] });
+  });
+
+  it("con dei visibili e nessuno da modificare: vede e non modifica niente (non «tutti»)", () => {
+    const l = limitiSuiDepositi(p([], ["jesi"]));
+    expect(l).toEqual({ vede: ["jesi"], scrive: [] });
+    expect(scriveSulDeposito(l.scrive, "jesi")).toBe(false);
+    expect(vedeIlDeposito(l.vede, "jesi")).toBe(true);
+  });
+
+  it("l'amministratore di sistema non ha mai limiti", () => {
+    expect(limitiSuiDepositi(p(["jesi"], ["jesi"], true))).toEqual({ vede: null, scrive: null });
+  });
+
+  it("un conducente senza deposito lo vede solo chi non ha limiti", () => {
+    expect(vedeIlDeposito(null, null)).toBe(true);
+    expect(vedeIlDeposito(null, "osimo")).toBe(true);
+    expect(vedeIlDeposito(["jesi"], null)).toBe(false);
+    expect(vedeIlDeposito(["jesi"], undefined)).toBe(false);
+    expect(vedeIlDeposito(["jesi"], "osimo")).toBe(false);
+    expect(vedeIlDeposito(["jesi"], "jesi")).toBe(true);
+    expect(vedeIlDeposito([], "jesi")).toBe(false);
+  });
+
+  it("gli elenchi scritti male non valgono: codici puliti, senza doppi", () => {
+    expect(limitiSuiDepositi({ admin: false, depositi: ["jesi", " jesi ", ""] as any, depositiVisibili: [3, "ancona", "ancona"] as any }))
+      .toEqual({ vede: ["ancona", "jesi"], scrive: ["jesi"] });
   });
 });

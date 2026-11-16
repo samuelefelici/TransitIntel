@@ -85,7 +85,7 @@ export interface OperatorConfig {
   /* scenario-level scope */
   selectedClusterIds?: string[];
   companyCars?: number;
-  /* v4 BDS normativa */
+  /* v4 normativa */
   bds?: {
     /** profilo regole per tipo servizio (urbano/extraurbano/misto) */
     shiftRules?: Record<string, { maxNastro?: number; maxLavoro?: number; intMin?: number; intMax?: number; maxPct?: number; sostaMinCapolinea?: number }>;
@@ -101,13 +101,13 @@ export interface OperatorConfig {
     copertura?: Record<string, any>;
     collegamento?: Record<string, any>;
     /* Fase 2 — avanzate: soglie/scoring tagli e multi-scenario */
-    /* i tagli dei costi avanzati (BDS5) portano anche elenchi di fasce orarie */
+    /* i tagli dei costi avanzati portano anche elenchi di fasce orarie */
     cuts?: Record<string, any>;
     cutScoring?: Record<string, number>;
     /* Ambito del calcolo (pages/fucina/turni-guida/config-solver.ts) */
-    /** BDSI cap. 14: vincoli globali di soluzione */
+    /** vincoli globali di soluzione */
     vincoliGlobali?: Array<Record<string, any>>;
-    /** BDS5: scalini, costi di 2° grado, cambio vettura, cambio patente */
+    /** Costi avanzati: scalini, costi di 2° grado, cambio vettura, cambio patente */
     costiAvanzati?: Record<string, any>;
     scenari?: Record<string, number>;
     /* Sosta inoperosa (extraurbano): durata minima + contributo all'orario */

@@ -51,6 +51,8 @@ const AREE_PER_PREFISSO: Array<[string, Area | Area[]]> = [
   ["/deadhead-arcs", ["turni", "rete"]], ["/depots", ["turni", "rete"]],
   ["/coincidence-zones", ["turni", "rete"]],
   // Rete e orari: Planning Studio, zonizzazione, intermodale
+  // Il consuntivo delle giornate di esercizio (4.5): esiti, giornale, causali
+  ["/esercizio", "consuntivo"],
   ["/planning-studio", "rete"], ["/zones", "rete"],
   // I nodi sono l'infrastruttura condivisa per eccellenza: Planning Studio li
   // disegna, i turni li usano come punti di cambio vettura.
@@ -159,7 +161,7 @@ const SENZA_SCRIVERE: ReadonlyArray<readonly [string, RegExp]> = CALCOLANO_SENZA
  * senza la riga di log della voce dimenticata. Le rotte si proteggono anche da
  * sé (requireAdmin in routes/admin.ts).
  */
-export const SOLO_ADMIN: readonly string[] = ["/admin/sync", "/admin/registro"];
+export const SOLO_ADMIN: readonly string[] = ["/admin/sync", "/admin/registro", "/admin/azienda", "/admin/ruoli", "/admin/esercizio"];
 
 const sotto = (p: string, prefix: string) => p === prefix || p.startsWith(prefix + "/");
 

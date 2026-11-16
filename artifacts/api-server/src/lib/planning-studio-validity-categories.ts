@@ -20,7 +20,8 @@
  *   GET    /                            → lista categorie
  *   POST   /                            → crea
  *   PATCH  /:catId                      → modifica
- *   DELETE /:catId                      → elimina (cascade calendar)
+ *   DELETE /:catId                      → elimina (cascade calendar); 409 se
+ *                                         la usano corse o unità di progettazione
  *   GET    /calendar?from=&to=[&projectId=] → entries (merged se projectId)
  *   PUT    /calendar                    → upsert { dates, category_id, projectId? }
  *   DELETE /calendar?date=&projectId?=  → rimuovi assegnazione (per strato)
@@ -52,11 +53,39 @@ export async function ensureSeedCategories(): Promise<void> {
       `);
     }
 
+    await avvisaSeMancaLaChiave();
     bootstrapped = true;
     console.log("[planning-studio.validity-categories] tables ready");
   } catch (e: any) {
     console.error("[ps-validity-categories] bootstrap error:", e?.message || e);
   }
+}
+
+/**
+ * La chiave esterna sulla categoria (migrazione 0013) non c'è se, quando la
+ * migrazione è passata, c'erano corse legate a una categoria cancellata. Senza
+ * chiave tutto funziona come prima, ma niente impedisce al database di tenere
+ * righe che puntano nel vuoto: lo si ricorda una volta per avvio (alla prima
+ * richiesta sulle categorie), finché non si sistemano quelle corse e si mette
+ * il vincolo (DEPLOY, «Chiavi esterne di Planning Studio»).
+ */
+async function avvisaSeMancaLaChiave(): Promise<void> {
+  try {
+    const r = await db.execute<any>(sql`
+      SELECT (SELECT count(*)::int FROM pg_catalog.pg_constraint
+               WHERE conrelid = pg_catalog.to_regclass('public.ps_trip_category_validity')
+                 AND conname = 'ps_trip_category_validity_category_id_fkey') AS chiave,
+             (SELECT count(DISTINCT v.trip_id)::int FROM ps_trip_category_validity v
+               WHERE NOT EXISTS (SELECT 1 FROM ps_validity_categories c WHERE c.id = v.category_id)) AS corse`);
+    const riga: any = r.rows?.[0] ?? {};
+    if (Number(riga.chiave) > 0) return;
+    console.warn(
+      `[planning-studio.validity-categories] manca la chiave esterna sulla categoria delle corse (migrazione 0013): `
+      + (Number(riga.corse) > 0
+        ? `${riga.corse} corse sono ancora legate a una categoria cancellata. Si sistemano dalla tabella Corse; poi il vincolo si mette a mano (DEPLOY, «Chiavi esterne di Planning Studio»)`
+        : "non ci sono più corse legate a una categoria cancellata: il vincolo si può mettere (DEPLOY, «Chiavi esterne di Planning Studio»)"),
+    );
+  } catch { /* solo un promemoria: se non si riesce a leggere il catalogo si va avanti */ }
 }
 
 function getUserId(req: Request): string | null {
@@ -186,15 +215,77 @@ router.patch("/planning-studio/validity-categories/:catId", async (req, res): Pr
   }
 });
 
+/** Chi usa una categoria: corse (di quanti progetti) e unità di progettazione. */
+export interface UsoCategoria { corse: number; progetti: number; unita: number }
+
+/**
+ * Perché una categoria in uso non si cancella. Solo numeri: la categoria è di
+ * tutti i progetti, e chi la cancella può non vedere quelli degli altri.
+ */
+export function messaggioCategoriaInUso(u: UsoCategoria): string {
+  const pezzi: string[] = [];
+  if (u.corse > 0) {
+    pezzi.push(`${u.corse} ${u.corse === 1 ? "corsa" : "corse"}${u.progetti > 1 ? ` in ${u.progetti} progetti` : ""}`);
+  }
+  if (u.unita > 0) pezzi.push(`${u.unita} unità di progettazione`);
+  const perche = u.corse > 0
+    ? "Cancellandola adesso le corse che hanno solo questa categoria non varrebbero più in nessun giorno."
+    : "Cancellandola adesso quelle unità resterebbero senza categoria.";
+  return `La categoria è usata da ${pezzi.join(" e da ")}: toglila da lì prima di cancellarla. ${perche}`;
+}
+
+/*
+ * Una categoria usata non si cancella. ps_trip_category_validity non ha la
+ * chiave esterna sulla categoria (DEPLOY, «Chiavi esterne di Planning
+ * Studio»): cancellandola, sulle corse restava una riga che punta a una
+ * categoria che non c'è più, e il calcolo della validità la legge come «vale
+ * solo nei giorni di quella categoria», cioè mai. Un'unità di progettazione
+ * perdeva la sua categoria (SET NULL) e cambiava significato. Il calendario
+ * della categoria invece se ne va con lei, come prima.
+ */
 router.delete("/planning-studio/validity-categories/:catId", async (req, res): Promise<void> => {
   await ensureSeedCategories();
   const userId = getUserId(req);
   if (!userId) { res.status(401).json({ error: "unauth" }); return; }
-  const { catId } = req.params;
+  const catId = String(req.params.catId);
+  if (!UUID_RE.test(catId)) { res.status(400).json({ error: "catId non valido" }); return; }
+  /* una sola istruzione: se intanto qualcuno la assegna a una corsa, non si cancella */
+  const cancellaSeLibera = async (): Promise<boolean> => {
+    const r = await db.execute(sql`
+      DELETE FROM ps_validity_categories c
+       WHERE c.id = ${catId}::uuid
+         AND NOT EXISTS (SELECT 1 FROM ps_trip_category_validity v WHERE v.category_id = c.id)
+         AND NOT EXISTS (SELECT 1 FROM ps_validity_units u WHERE u.category_id = c.id)
+      RETURNING c.id
+    `);
+    return ((r as any).rows ?? []).length > 0;
+  };
   try {
-    await db.execute(sql`DELETE FROM ps_validity_categories WHERE id = ${catId}::uuid`);
-    res.json({ ok: true });
+    if (await cancellaSeLibera()) { res.json({ ok: true }); return; }
+    const usoR = await db.execute<any>(sql`
+      SELECT (SELECT count(*) FROM ps_validity_categories WHERE id = ${catId}::uuid)::int AS esiste,
+             (SELECT count(DISTINCT v.trip_id) FROM ps_trip_category_validity v WHERE v.category_id = ${catId}::uuid)::int AS corse,
+             (SELECT count(DISTINCT t.project_id) FROM ps_trip_category_validity v JOIN ps_trips t ON t.id = v.trip_id
+               WHERE v.category_id = ${catId}::uuid)::int AS progetti,
+             (SELECT count(*) FROM ps_validity_units u WHERE u.category_id = ${catId}::uuid)::int AS unita
+    `);
+    const riga: any = (usoR as any).rows?.[0] ?? {};
+    /* già cancellata (un doppio clic, un'altra scheda): come prima, non è un errore */
+    if (!Number(riga.esiste)) { res.json({ ok: true }); return; }
+    const inUso: UsoCategoria = { corse: Number(riga.corse) || 0, progetti: Number(riga.progetti) || 0, unita: Number(riga.unita) || 0 };
+    /* liberata fra le due istruzioni (qualcuno l'ha appena tolta dall'ultima corsa): si riprova una volta */
+    if (inUso.corse === 0 && inUso.unita === 0) {
+      if (await cancellaSeLibera()) { res.json({ ok: true }); return; }
+      res.status(409).json({ error: "La categoria è stata appena assegnata a una corsa: ricarica la pagina e riprova." });
+      return;
+    }
+    res.status(409).json({ error: messaggioCategoriaInUso(inUso), inUso });
   } catch (e: any) {
+    /* assegnata a una corsa proprio adesso: la chiave esterna (migrazione 0013) ferma la cancellazione */
+    if ((e?.cause?.code ?? e?.code) === "23503") {
+      res.status(409).json({ error: "La categoria è stata appena assegnata a una corsa: ricarica la pagina e riprova." });
+      return;
+    }
     res.status(500).json({ error: e?.message || "internal_error" });
   }
 });

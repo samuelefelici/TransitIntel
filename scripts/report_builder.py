@@ -49,7 +49,7 @@ COST_COMPONENT_LABEL = {
     "baseSalary": "Paga base (lavoro)", "drivingCost": "Guida", "overtimeCost": "Straordinario", "undertimeCost": "Sotto-lavoro (garantito)",
     "idleAtTerminalCost": "Attese al capolinea", "preTurnoCost": "Pre-turno", "transferDepotCost": "Trasferimenti deposito",
     "interruptionCost": "Interruzioni pagate", "companyCarCost": "Auto aziendale", "taxiCost": "Taxi", "cambioCost": "Cambi in linea",
-    "fragmentationPenalty": "Penalità frammentazione", "workImbalancePenalty": "Penalità squilibrio lavoro", "bds5Cost": "Regola BDS5",
+    "fragmentationPenalty": "Penalità frammentazione", "workImbalancePenalty": "Penalità squilibrio lavoro", "bds5Cost": "Costi avanzati",
     "base": "Paga base (lavoro)", "transfer": "Trasferimenti",
 }
 
@@ -342,7 +342,7 @@ def render_summary(d: dict) -> str:
     tiles = [("Corse coperte", fmt_n(vm.get("totalTrips") or 0), f'{fmt_n(vm.get("totalServiceKm") or 0, 1)} km di linea'),
              ("Vetture", fmt_n(vehicles), f'{fmt_n(vm.get("totalDeadheadKm") or 0, 1)} km fuorilinea'),
              ("Turni guida", fmt_n(n_duties), " · ".join(f'{st["byType"].get(k, 0)} {DUTY_TYPE_LABEL[k].lower()}' for k in DUTY_TYPE_ORDER if st["byType"].get(k))),
-             ("Violazioni BDS", fmt_n(st["violations"]), f'{st["warnings"]} avvisi'),
+             ("Violazioni normative", fmt_n(st["violations"]), f'{st["warnings"]} avvisi'),
              ("Costo giornaliero", fmt_eur(total), f'vetture {fmt_eur(vcost)} · guida {fmt_eur(ccost)}')]
     if car_peak is not None:
         _mov = cs.get("companyCarsMovements")
@@ -702,7 +702,7 @@ def render_method(d: dict) -> str:
         out.append(table(["Fattore", "Valore"], [(k, fmt_n(v, 3)) for k, v in wf.items()], numeric_from=1))
     if weights:
         out.append(para("Manopole impostate: " + ", ".join(f'{esc(k)} = {esc(v)}' for k, v in weights.items()) + "."))
-    out.append("<h3>4.3 Regole di struttura del turno (BDS)</h3>")
+    out.append("<h3>4.3 Regole di struttura del turno</h3>")
     out.append(para("Le regole applicate a ogni turno; vincoli inviolabili per il modello, con l'eccezione delle pause pasto trattate come avvisi quando la severità è impostata così."))
     if rules:
         rows = []
@@ -953,7 +953,7 @@ def render_crew(d: dict) -> str:
         rows.append((x.get("driverId"), x.get("type"), hm(x.get("nastroMin")), hm(x.get("workMin")),
                      f'{x.get("interruptionMin")}′' if x.get("interruptionMin") else "–", fmt_n(x.get("cambiCount") or 0),
                      fmt_eur(x.get("costEuro"), 0), ("✗ " + str(viol)) if viol else "✓", desc))
-    out.append(table(["Turno", "Tipo", "Nastro", "Lavoro", "Interr.", "Cambi", "Costo", "BDS", "Pezzi (vettura, orario, linee)"], rows, numeric_from=2))
+    out.append(table(["Turno", "Tipo", "Nastro", "Lavoro", "Interr.", "Cambi", "Costo", "Norma", "Pezzi (vettura, orario, linee)"], rows, numeric_from=2))
     return "".join(out)
 
 
@@ -1004,7 +1004,7 @@ def unit_cost_table(params: dict) -> list[dict]:
         pass
     vcsp = params.get("vcsp") or {}
     rows.append({"label": "Ombra per turno guida (selezione VCSP)", "value": vcsp.get("dutyShadowEur", 200), "unit": "€/turno", "source": "parametro VCSP"})
-    rows.append({"label": "Ombra per violazione BDS (selezione VCSP)", "value": vcsp.get("violationShadowEur", 100), "unit": "€/violazione", "source": "parametro VCSP"})
+    rows.append({"label": "Ombra per violazione normativa (selezione VCSP)", "value": vcsp.get("violationShadowEur", 100), "unit": "€/violazione", "source": "parametro VCSP"})
     rows.append({"label": "Disturbo all'orario (sonda)", "value": vcsp.get("shiftPenaltyEur", 1), "unit": "€ per corsa·minuto", "source": "parametro VCSP"})
     return rows
 

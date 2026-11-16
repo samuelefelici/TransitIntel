@@ -14,6 +14,7 @@ import gtfsQueriesRouter from "./gtfs-queries";
 import gtfsAnalysisRouter from "./gtfs-analysis";
 import gtfsTravelRouter from "./gtfs-travel";
 import adminRouter from "./admin";
+import esercizioRouter from "./esercizio";
 import scenariosRouter from "./scenarios";
 import intermodalRouter from "./intermodal";
 import serviceProgramRouter from "./service-program";
@@ -56,6 +57,7 @@ import territoryRouter from "./territory";
 import schedulingProjectsRouter from "../lib/scheduling-projects";
 import scheduleSharesRouter from "../lib/schedule-shares";
 import planningStudioRouter from "../lib/planning-studio";
+import { versioniInSolaLettura } from "../lib/versioni-pubblicate";
 import planningStudioImportRouter from "../lib/planning-studio-import";
 import planningStudioExportRouter from "../lib/planning-studio-export";
 import planningStudioClustersRouter from "../lib/planning-studio-clusters";
@@ -94,6 +96,9 @@ router.use(requireAuth);
 router.use(ensureTenantMiddleware);
 // RBAC centralizzato per dominio (analytics/fares/scheduling/network).
 router.use(requirePermissionByPath);
+// PR 3.3: una versione pubblicata di un programma (copia congelata, lib/versioni-pubblicate.ts)
+// non si modifica da nessuna rotta di Planning Studio, nemmeno dall'amministratore
+router.use(versioniInSolaLettura);
 
 router.use(trafficRouter);
 router.use(poiRouter);
@@ -123,6 +128,7 @@ router.use(clustersRouter);
 router.use(coincidenceZonesRouter);
 router.use(weatherRouter);
 router.use(operationsRouter); // Sala Operativa: flotta live + puntualità (legge schema caronte)
+router.use(esercizioRouter); // Consuntivo (4.5): giornate, esiti, giornale; area «Consuntivo»
 router.use(timetablesRouter); // Stampa Orari: quadri di fermata + orari generali di linea (feed GTFS)
 router.use(planningStudioTimetablesRouter); // Stampa Orari dal programma di esercizio Planning Studio (ps_*)
 router.use(planningStudioEstimateRouter); // Stima istantanea risorse (vetture/ore) su corse reali e ipotetiche

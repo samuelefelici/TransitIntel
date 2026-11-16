@@ -30,6 +30,8 @@ import {
   LegendaRitardo, TabellaFermate, colore, fmtDelay, fmtTime,
   type Tinta, type Legenda, type FermataCorsa, type PrevisioniMizarInfo,
 } from "./operations/DettaglioCorsa";
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 
 // ── Tipi (allineati a /api/operations/*) ─────────────────────────────────────
 
@@ -182,6 +184,8 @@ function inCorsa(v: LiveVehicle): boolean {
 // ── Pagina ───────────────────────────────────────────────────────────────────
 
 export default function OperationsPage() {
+  /* la mappa si apre sul centro della rete dell'azienda (Amministrazione › Azienda) */
+  const azienda = useAzienda();
   const mapRef = useRef<MapRef | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showPunctuality, setShowPunctuality] = useState(false);
@@ -368,7 +372,7 @@ export default function OperationsPage() {
     <div className="relative h-full w-full">
       <Map
         ref={mapRef}
-        initialViewState={{ longitude: 13.45, latitude: 43.58, zoom: 10 }}
+        initialViewState={vistaIniziale(azienda)}
         mapStyle={MAP_STYLES.dark}
         mapboxAccessToken={MAPBOX_TOKEN}
         attributionControl={false}

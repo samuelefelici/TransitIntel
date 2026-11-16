@@ -942,6 +942,17 @@ router.post("/planning-studio/projects/:id/validity/bulk", async (req, res): Pro
       if (Number(((ownR as any).rows ?? [])[0]?.c) !== tripIds.length) {
         res.status(404).json({ error: "trip not in project" }); return;
       }
+      /* Una categoria che non esiste (cancellata intanto in un'altra scheda)
+       * non si scrive: resterebbe sulla corsa una riga che punta nel vuoto, e
+       * la corsa non varrebbe più in nessun giorno. Dalla migrazione 0013 la
+       * rifiuta anche il database; qui lo si dice in chiaro. */
+      if (categoryIds.length > 0) {
+        const catR = await db.execute<any>(sql`
+          SELECT count(*)::int AS c FROM ps_validity_categories WHERE id = ANY(${`{${[...new Set(categoryIds)].join(",")}}`}::uuid[])`);
+        if (Number(catR.rows?.[0]?.c) !== new Set(categoryIds).size) {
+          res.status(400).json({ error: "Una delle categorie scelte non esiste più: ricarica la pagina" }); return;
+        }
+      }
       const mode = body.mode === "add" ? "add" : "replace";
       // Transazione: in replace il DELETE e la re-INSERT devono essere atomici
       // (prima un errore a metà cancellava le categorie senza ripristinarle).

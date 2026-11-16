@@ -2,12 +2,14 @@
  * La cancellazione di un progetto di Planning Studio su un database vero
  * (TEST_DATABASE_URL, migrato; in CI come cerbero_app).
  *
- * L'handler cercava nel catalogo le tabelle con una chiave verso ps_projects e
- * le svuotava con SQL scritto come testo, riprovando dopo un errore dentro la
- * stessa transazione (che in Postgres, dopo un errore, è annullata). Ora
- * l'ordine è fisso e scritto nel codice. Qui un progetto con una riga in OGNI
- * tabella di Planning Studio che ne porta i dati: dopo la cancellazione non ne
- * resta nessuna, il progetto accanto e i dati globali non si toccano, e una
+ * cancellaProgetto (lib/progetto-copie.ts: la usano la rotta DELETE e le
+ * versioni pubblicate) cercava nel catalogo le tabelle con una chiave verso
+ * ps_projects e le svuotava con SQL scritto come testo, riprovando dopo un
+ * errore dentro la stessa transazione (che in Postgres, dopo un errore, è
+ * annullata). Ora l'ordine è fisso e scritto nel codice. Qui un progetto con
+ * una riga in OGNI tabella di Planning Studio che ne porta i dati: dopo la
+ * cancellazione resta solo lo storico del programma in esercizio, senza
+ * progetto (0019); il progetto accanto e i dati globali non si toccano, e una
  * chiave esterna che blocca dà un 409 che dice quale tabella, senza cancellare
  * niente.
  *
@@ -24,7 +26,8 @@ import request from "supertest";
 import { db, pool, PoolConContesto } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
-import router, { cancellaProgetto } from "../lib/planning-studio";
+import router from "../lib/planning-studio";
+import { cancellaProgetto, copiaProgetto } from "../lib/progetto-copie";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const UTENTE = "e1000000-0000-4000-8000-000000000001";
@@ -38,7 +41,8 @@ const u = (k: number, n: number) => `e1000000-0000-4000-8000-${String(k).padStar
 /* Le tabelle di Planning Studio con i dati di UN progetto: il seme qui sotto ne
  * riempie ognuna. Le altre ps_* sono di tutti (cache dei percorsi su strada,
  * categorie di validità). Una tabella ps_* nuova va in uno dei due elenchi: se
- * è di un progetto, va anche nel seme, e la cancellazione la deve svuotare. */
+ * è di un progetto, va anche nel seme, e la cancellazione la deve svuotare
+ * (o, se deve restare senza progetto come lo storico, va detto in RESTA). */
 const DEL_PROGETTO = [
   "ps_activation_log", "ps_argos_messages", "ps_argos_watches", "ps_calendar_dates", "ps_calendar_profiles",
   "ps_calendars", "ps_day_calendar", "ps_day_types", "ps_network_shares", "ps_no_go_zones",
@@ -48,6 +52,10 @@ const DEL_PROGETTO = [
   "ps_validity_category_calendar", "ps_validity_units", "ps_variant_stops",
 ];
 const DI_TUTTI = ["ps_route_snap_cache", "ps_route_snap_multi_cache", "ps_validity_categories"];
+/* Quello che di un progetto cancellato deve restare: il periodo dello storico
+ * del programma in esercizio (ps_activation_log.project_id è ON DELETE SET
+ * NULL, migrazione 0019). Del seme gli resta solo l'id del feed. */
+const RESTA = { "ps_activation_log.feed_id": 1 };
 
 const ids = (k: number) => ({
   p: u(k, 1), nodo: u(k, 10), f1: u(k, 11), f2: u(k, 12), linea: u(k, 20), percorso: u(k, 21),
@@ -97,7 +105,8 @@ async function semina(k: number, nome: string, ex: Esecutore = db): Promise<Retu
   await ex.execute(sql`INSERT INTO ps_validity_units (project_id, validity_id, name, day_type_id, category_id, trip_ids, trip_count)
                        VALUES (${i.p}::uuid, 'MERC', 'Mercato', ${i.tg}::uuid, ${CAT}::uuid, ${JSON.stringify([i.c1])}::jsonb, 1)`);
   await ex.execute(sql`INSERT INTO ps_pending_activations (project_id, feed_id, effective_from, user_id) VALUES (${i.p}::uuid, ${i.feed}::uuid, '2027-01-01', ${UTENTE}::uuid)`);
-  await ex.execute(sql`INSERT INTO ps_activation_log (project_id, feed_id, user_id) VALUES (${i.p}::uuid, ${i.feed}::uuid, ${UTENTE}::uuid)`);
+  // un periodo CHIUSO dello storico: di aperti ce n'è al più uno in tutta la tabella (0020)
+  await ex.execute(sql`INSERT INTO ps_activation_log (project_id, feed_id, user_id, deactivated_at) VALUES (${i.p}::uuid, ${i.feed}::uuid, ${UTENTE}::uuid, now())`);
   await ex.execute(sql`INSERT INTO ps_argos_messages (project_id, user_id, role, content) VALUES (${i.p}::uuid, ${UTENTE}::uuid, 'user', 'quante corse ha la linea 1?')`);
   // le tre senza chiave verso ps_projects: la cascata non le vede
   await ex.execute(sql`INSERT INTO ps_argos_watches (project_id, user_id) VALUES (${i.p}::uuid, ${UTENTE}::uuid)`);
@@ -130,7 +139,9 @@ const tabelle = (dove: Record<string, number>) => [...new Set(Object.keys(dove).
 describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di Planning Studio, sul database", () => {
   const app = appDiProva(router, utenteDiProva(UTENTE));
   const pulisci = async () => {
-    const miei = sql`(SELECT id FROM ps_projects WHERE owner_user_id = ${UTENTE}::uuid)`;
+    // i progetti di prova e le loro versioni pubblicate, che non hanno proprietario
+    const diProva = sql`owner_user_id = ${UTENTE}::uuid OR versione_del_feed::text LIKE 'e1000000-0000-4000-8000-%'`;
+    const miei = sql`(SELECT id FROM ps_projects WHERE ${diProva})`;
     // prima corse e percorsi: orari e fermate dei percorsi puntano alle fermate senza cascata
     await db.execute(sql`DELETE FROM ps_trips WHERE project_id IN ${miei}`);
     await db.execute(sql`DELETE FROM ps_route_variants WHERE project_id IN ${miei}`);
@@ -138,7 +149,9 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
     for (const t of ["ps_argos_watches", "ps_network_shares", "ps_timetable_map_shares"]) {
       await db.execute(sql`DELETE FROM ${sql.identifier(t)} WHERE project_id::text LIKE 'e1000000-0000-4000-8000-%'`);
     }
-    await db.execute(sql`DELETE FROM ps_projects WHERE owner_user_id = ${UTENTE}::uuid`);
+    await db.execute(sql`DELETE FROM ps_projects WHERE ${diProva}`);
+    // lo storico resta senza progetto: i periodi di prova si riconoscono dal feed
+    await db.execute(sql`DELETE FROM ps_activation_log WHERE feed_id::text LIKE 'e1000000-0000-4000-8000-%'`);
     await db.execute(sql`DELETE FROM ps_day_types WHERE id = ${TG_GLOBALE}::uuid`);
     await db.execute(sql`DELETE FROM ps_validity_categories WHERE id = ${CAT}::uuid`);
   };
@@ -157,7 +170,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
     expect(nelDatabase).toEqual([...DEL_PROGETTO, ...DI_TUTTI].sort());
   });
 
-  it("un progetto con corse, orari, percorsi, zone vietate, membri e unità: 200, e non ne resta una riga", async () => {
+  it("un progetto con corse, orari, percorsi, zone vietate, membri e unità: 200, e ne resta solo lo storico, senza progetto", async () => {
     const i = await semina(1, "Da cancellare");
     const accanto = await semina(2, "Resta");
     const suoi = Object.values(i);
@@ -169,7 +182,9 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body).toEqual({ ok: true });
 
-    expect(await doveRestano(suoi)).toEqual({});
+    expect(await doveRestano(suoi)).toEqual(RESTA);
+    const storico = (await db.execute<any>(sql`SELECT project_id, deactivated_at IS NOT NULL AS chiuso FROM ps_activation_log WHERE feed_id = ${i.feed}::uuid`)).rows;
+    expect(storico).toEqual([{ project_id: null, chiuso: true }]);
     // le condivisioni pubbliche si cercano per token: sparite anche quelle
     const link = (await db.execute<any>(sql`
       SELECT (SELECT count(*)::int FROM ps_network_shares WHERE token = 'ci-elimina-1-rete') AS rete,
@@ -204,7 +219,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
     await db.execute(sql`DELETE FROM ps_stop_times WHERE trip_id = ${altro.c1}::uuid AND stop_id = ${i.f2}::uuid`);
     const dopo = await request(app).delete(`/api/planning-studio/projects/${i.p}`);
     expect(dopo.status, JSON.stringify(dopo.body)).toBe(200);
-    expect(await doveRestano(Object.values(i))).toEqual({});
+    expect(await doveRestano(Object.values(i))).toEqual(RESTA);
   });
 
   it("chi non vede il progetto: 404, e non sparisce niente", async () => {
@@ -213,6 +228,37 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
     const estraneo = appDiProva(router, utenteDiProva(ESTRANEO));
     expect((await request(estraneo).delete(`/api/planning-studio/projects/${accanto.p}`)).status).toBe(404);
     expect(await doveRestano(Object.values(accanto))).toEqual(prima);
+  });
+
+  it("le versioni pubblicate: cancellarne una non tocca il progetto né i suoi link; cancellato il progetto, l'altra resta senza progetto", async () => {
+    const i = await semina(5, "Con due versioni");
+    // come le crea la messa in esercizio (lib/versioni-pubblicate.ts): copie senza proprietario, legate a un feed
+    const [v1, v2] = await db.transaction(async (tx) => [
+      await copiaProgetto(tx, i.p, { nome: "Versione annullata", proprietario: null, versioneDelFeed: u(5, 60) }),
+      await copiaProgetto(tx, i.p, { nome: "Versione in esercizio", proprietario: null, versioneDelFeed: u(5, 61) }),
+    ]);
+    const conVersioni = await doveRestano(Object.values(i));
+    expect(conVersioni["ps_projects.versione_di"]).toBe(2);
+    const dellaSeconda = await doveRestano([v2]);
+    expect(Object.keys(dellaSeconda)).toEqual(expect.arrayContaining(["ps_projects.id", "ps_stops.project_id", "ps_trips.project_id"]));
+
+    // una versione che non serve più (una programmazione annullata): se ne va lei sola.
+    // Link pubblici e sorveglianza di Argos sono del progetto, e restano
+    await db.transaction((tx) => cancellaProgetto(tx, v1));
+    expect(await doveRestano([v1])).toEqual({});
+    expect(await doveRestano(Object.values(i))).toEqual({ ...conVersioni, "ps_projects.versione_di": 1 });
+    expect(await doveRestano([v2])).toEqual(dellaSeconda);
+
+    // il progetto: la versione rimasta resta intera, senza progetto (ps_projects.versione_di è ON DELETE SET NULL, 0021)
+    const r = await request(app).delete(`/api/planning-studio/projects/${i.p}`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(await doveRestano(Object.values(i))).toEqual(RESTA);
+    expect(await doveRestano([v2])).toEqual(dellaSeconda);
+    const versione = (await db.execute<any>(sql`SELECT versione_di, versione_del_feed FROM ps_projects WHERE id = ${v2}::uuid`)).rows;
+    expect(versione).toEqual([{ versione_di: null, versione_del_feed: u(5, 61) }]);
+
+    await db.transaction((tx) => cancellaProgetto(tx, v2));
+    expect(await doveRestano([v2])).toEqual({});
   });
 
   it.runIf(!!process.env.TEST_DATABASE_MIGRATOR_URL)("l'ordine non dipende da come sono nati i vincoli: nell'ordine sfavorevole la sola cascata si ferma, cancellaProgetto no", async () => {
@@ -242,7 +288,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
       await c.query("ROLLBACK TO SAVEPOINT sola_cascata");
 
       await cancellaProgetto(ex, i.p);
-      expect(await doveRestano(Object.values(i), ex)).toEqual({});
+      expect(await doveRestano(Object.values(i), ex)).toEqual(RESTA);
     } finally {
       await c.query("ROLLBACK").catch(() => {});
       c.release();

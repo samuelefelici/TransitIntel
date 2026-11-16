@@ -56,6 +56,8 @@ import { esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-e
 import { ErroreXlsx } from "../lib/xlsx-leggi";
 import { datiProvaAttivi } from "../lib/dati-prova";
 import { legaContesto } from "../lib/contesto-http";
+import { controlloDepositi, fuoriDaiDepositi, haLimiteDiVisibilita, limiteDi, limitiDi, soloVisibili, vedeConducente } from "../lib/roster-limite-depositi";
+import { vedeIlDeposito } from "@workspace/permessi";
 import { conContesto } from "@workspace/db/contesto";
 
 const router: IRouter = Router();
@@ -112,9 +114,14 @@ function uuid(v: unknown): string {
 
 /* ── Cataloghi ──────────────────────────────────────────────────────────── */
 
-router.get("/roster/depositi", async (_req, res): Promise<void> => {
-  try { res.json({ depositi: await leggiDepositi(db as unknown as Ex) }); }
-  catch (e) { rispondiErrore(res, e, "depositi"); }
+/* Chi vede solo alcuni depositi (PR 2.14d) riceve solo quelli, e i gruppi turni di quelli:
+ * gli altri non li può scegliere, e non deve nemmeno sapere quanti conducenti hanno. */
+router.get("/roster/depositi", async (req, res): Promise<void> => {
+  try {
+    const vede = limitiDi(req).vede;
+    const depositi = await leggiDepositi(db as unknown as Ex);
+    res.json({ depositi: vede ? depositi.filter(d => vedeIlDeposito(vede, d.codice)) : depositi });
+  } catch (e) { rispondiErrore(res, e, "depositi"); }
 });
 
 router.get("/roster/categorie", async (_req, res): Promise<void> => {
@@ -122,17 +129,31 @@ router.get("/roster/categorie", async (_req, res): Promise<void> => {
   catch (e) { rispondiErrore(res, e, "categorie"); }
 });
 
-router.get("/roster/gruppi-turni", async (_req, res): Promise<void> => {
-  try { res.json({ gruppi: await leggiGruppiTurni(db as unknown as Ex) }); }
-  catch (e) { rispondiErrore(res, e, "gruppi turni"); }
+router.get("/roster/gruppi-turni", async (req, res): Promise<void> => {
+  try {
+    const vede = limitiDi(req).vede;
+    const gruppi = await leggiGruppiTurni(db as unknown as Ex);
+    res.json({ gruppi: vede ? gruppi.filter(g => vedeIlDeposito(vede, g.depositoCodice)) : gruppi });
+  } catch (e) { rispondiErrore(res, e, "gruppi turni"); }
 });
 
 /* ── Conducenti ─────────────────────────────────────────────────────────── */
 
-/** I conducenti come li può vedere chi fa la richiesta. */
+/**
+ * I conducenti come li può vedere chi fa la richiesta: senza il «Personale»
+ * solo i dati operativi, e chi vede solo alcuni depositi (PR 2.14d) solo i
+ * conducenti di quelli. Passa da qui ogni lettura dei conducenti: elenco,
+ * scheda, esportazione, tabellone.
+ */
 export async function conducentiPer(req: Request, ex: Ex, f: Parameters<typeof leggiConducenti>[1] = {}): Promise<Conducente[]> {
   const vede = vedeDatiPersonali(req);
-  return (await leggiConducenti(ex, f, oggiRoma())).map(c => mascheraConducente(c, vede));
+  const tutti = await leggiConducenti(ex, f, oggiRoma());
+  return (await soloVisibili(req, ex, tutti)).map(c => mascheraConducente(c, vede));
+}
+
+/** Un conducente che chi fa la richiesta non vede è come se non ci fosse (PR 2.14d). */
+async function richiedeVisibile(req: Request, ex: Ex, id: string): Promise<void> {
+  if (!(await vedeConducente(req, ex, id))) throw new Rifiuto(404, "Conducente non trovato");
 }
 
 router.get("/roster/drivers", async (req, res): Promise<void> => {
@@ -163,6 +184,39 @@ function controllaScrittura(req: Request, fittizio: boolean, chiavi: string[]): 
   if (fuori.length) throw new Rifiuto(403, `Senza la scrittura su «Personale» non si possono scrivere: ${fuori.join(", ")}`);
 }
 
+/**
+ * Chi scrive i conducenti fittizi col solo roster e ha dei depositi li scrive
+ * solo nei suoi (PR 2.14c, lib/roster-limite-depositi.ts). Chi scrive il
+ * «Personale» non ha questo limite: i dati del personale sono un'altra area.
+ */
+async function richiedeDeposito(req: Request, ex: Ex, id: string): Promise<void> {
+  if (scriveDatiPersonali(req)) return;
+  const motivo = await fuoriDaiDepositi(req, ex, [id]);
+  if (motivo) throw new Rifiuto(403, motivo, { solaLettura: true });
+}
+
+/**
+ * Il deposito scritto nella scheda. Si guarda quello chiesto, non quello che
+ * risulta sul conducente: il deposito ha una decorrenza, e sulla riga arriva
+ * solo dopo (sincronizzaCorrenti), o in un altro giorno. Chi ha dei depositi
+ * non mette un conducente in un deposito che non è fra i suoi, e non glielo
+ * toglie; a un conducente nuovo deve darne uno dei suoi, altrimenti resterebbe
+ * un conducente che nessun capo deposito può toccare.
+ */
+async function richiedeDepositoChiesto(req: Request, ex: Ex, chiesto: string | null | undefined, nuovo: boolean): Promise<void> {
+  if (chiesto === undefined && !nuovo) return;
+  const c = await controlloDepositi(req, ex);
+  if (!c) return;
+  /* Chi vede solo alcuni depositi (PR 2.14d) non mette un conducente in uno che non vede,
+   * né lo lascia senza deposito: dopo non lo vedrebbe più. Vale anche per chi scrive il
+   * «Personale», che per il resto non ha il limite sulla scrittura. */
+  if (c.limitaLaVista && !c.vede(chiesto ?? null)) {
+    throw new Rifiuto(403, "Sola lettura: il deposito va scelto fra quelli che vedi", { solaLettura: true });
+  }
+  if (scriveDatiPersonali(req)) return;
+  if (!c.scrive(chiesto ?? null)) throw new Rifiuto(403, c.motivo(chiesto ?? null), { solaLettura: true });
+}
+
 interface Risultato { conducente: Conducente | null; avvisi: string[]; daRigenerare: string[] }
 
 async function rispostaScrittura(req: Request, id: string, avvisi: string[], daRigenerare: Set<string>): Promise<Risultato> {
@@ -182,6 +236,7 @@ router.post("/roster/drivers", async (req, res): Promise<void> => {
       const ex = tx as unknown as Ex;
       const nome = [corpo.variazioni.cognome, corpo.variazioni.nome].filter(Boolean).join(" ");
       if (!nome) throw new Rifiuto(400, "Servono cognome o nome", { campi: { cognome: "obbligatorio" } });
+      await richiedeDepositoChiesto(req, ex, corpo.variazioni.deposito, true);
       id = righe(await ex.execute(sql`
         INSERT INTO roster_drivers (name, is_fictitious, versione, updated_at)
         VALUES (${nome}, ${fittizio}, 0, now()) RETURNING id`))[0].id;
@@ -207,7 +262,10 @@ router.patch("/roster/drivers/:id", async (req, res): Promise<void> => {
       const ex = tx as unknown as Ex;
       const riga = righe(await ex.execute(sql`SELECT * FROM roster_drivers WHERE id = ${id}::uuid FOR UPDATE`))[0];
       if (!riga) throw new Rifiuto(404, "Conducente non trovato");
+      await richiedeVisibile(req, ex, id);
       controllaScrittura(req, !!riga.is_fictitious, corpo.chiavi);
+      await richiedeDeposito(req, ex, id);
+      await richiedeDepositoChiesto(req, ex, corpo.variazioni.deposito, false);
       if (corpo.versione !== undefined && Number(riga.versione) !== corpo.versione) {
         throw new Rifiuto(409, "La scheda è stata cambiata da qualcun altro mentre la modificavi: ricaricala", { versione: Number(riga.versione) });
       }
@@ -232,7 +290,9 @@ router.delete("/roster/drivers/:id", async (req, res): Promise<void> => {
       const ex = tx as unknown as Ex;
       const riga = righe(await ex.execute(sql`SELECT is_fictitious, is_active FROM roster_drivers WHERE id = ${id}::uuid FOR UPDATE`))[0];
       if (!riga) throw new Rifiuto(404, "Conducente non trovato");
+      await richiedeVisibile(req, ex, id);
       controllaScrittura(req, !!riga.is_fictitious, []);
+      await richiedeDeposito(req, ex, id);
       if (!riga.is_active) return { turniLiberati: 0 };
       const out = await disattivaConducente(ex, id, oggi);
       await registra(ex, { ...utente(req), driverId: id, azione: "disattiva", dettaglio: out });
@@ -248,6 +308,7 @@ router.post("/roster/drivers/:id/riattiva", async (req, res): Promise<void> => {
     richiedePersonale(req);
     await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
+      await richiedeVisibile(req, ex, id);
       const errore = await riattivaConducente(ex, id);
       if (errore) throw new Rifiuto(409, errore);
       await registra(ex, { ...utente(req), driverId: id, azione: "riattiva" });
@@ -267,6 +328,10 @@ router.post("/roster/drivers/seed", async (req, res): Promise<void> => {
   try {
     if (!datiProvaAttivi()) { res.status(404).json({ error: "Non trovato" }); return; }
     if (!scriveDatiPersonali(req) && !haDiritto(req, "roster", "S")) richiedePersonale(req);
+    /* nascono in depositi diversi: chi ha dei depositi (e non scrive il «Personale») non li crea */
+    if (haLimiteDiVisibilita(req) || (!scriveDatiPersonali(req) && limiteDi(req) !== null)) {
+      throw new Rifiuto(403, "Sola lettura: i conducenti di prova nascono in tutti i depositi, e tu scrivi solo sui tuoi", { solaLettura: true });
+    }
     const quanti = Math.min(Math.max(Number(req.body?.count) || 30, 1), 200);
     const oggi = oggiRoma();
     const esito = await db.transaction(async (tx) => {
@@ -294,6 +359,7 @@ router.get("/roster/drivers/:id/history", async (req, res): Promise<void> => {
   try {
     const id = uuid(req.params.id);
     richiedeLetturaPersonale(req);
+    await richiedeVisibile(req, db as unknown as Ex, id);
     const r = await db.execute<any>(sql`
       SELECT * FROM roster_driver_history WHERE driver_id = ${id}::uuid
        ORDER BY event_date DESC NULLS LAST, created_at DESC`);
@@ -321,10 +387,13 @@ router.post("/roster/drivers/:id/history", async (req, res): Promise<void> => {
     const oggi = oggiRoma();
     const riga = await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
+      await richiedeVisibile(req, ex, id);
       let value: string | null = null;
       if (kind === "deposito") {
         const dep = trovaDeposito(String(b.value ?? ""), await leggiDepositi(ex));
         if (!dep) throw new Rifiuto(400, "Deposito non in elenco", { campi: { value: "deposito non in elenco" } });
+        /* chi vede solo alcuni depositi non sposta un conducente in uno che non vede */
+        await richiedeDepositoChiesto(req, ex, dep.nome, false);
         value = dep.nome;
       } else if (kind === "categoria") {
         const testo = pulisciTesto(b.value, 60);
@@ -368,6 +437,9 @@ router.delete("/roster/history/:hid", async (req, res): Promise<void> => {
     const oggi = oggiRoma();
     await db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
+      const di = righe(await ex.execute(sql`SELECT driver_id FROM roster_driver_history WHERE id = ${hid}::uuid`))[0];
+      /* la riga di un conducente che non si vede è come se non ci fosse */
+      if (!di || !(await vedeConducente(req, ex, di.driver_id))) throw new Rifiuto(404, "Riga di storico non trovata");
       const h = righe(await ex.execute(sql`
         DELETE FROM roster_driver_history WHERE id = ${hid}::uuid RETURNING driver_id, kind`))[0];
       if (!h) throw new Rifiuto(404, "Riga di storico non trovata");
@@ -386,6 +458,15 @@ router.delete("/roster/history/:hid", async (req, res): Promise<void> => {
 const caricamento = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1, fields: 10 } });
 /* l'import scrive l'anagrafica dal primo passo all'ultimo: serve la scrittura su «Personale» */
 const soloPersonale = richiedeDiritto("personale");
+/* Un import può toccare i conducenti di ogni deposito: chi ne vede solo alcuni
+ * (PR 2.14d) non lo fa, nemmeno con la scrittura sul «Personale». */
+const senzaLimitiDiVista: import("express").RequestHandler = (req, res, next) => {
+  if (haLimiteDiVisibilita(req)) {
+    res.status(403).json({ error: "Sola lettura: l'import tocca i conducenti di tutti i depositi, e tu ne vedi solo alcuni", solaLettura: true });
+    return;
+  }
+  next();
+};
 /* Un import si fa a giri: leggi, prova, una scelta, prova di nuovo, applica.
  * Il limite delle operazioni pesanti (10 al minuto, condiviso) si esaurisce
  * a metà di un import normale; questo è suo e più largo. */
@@ -410,7 +491,7 @@ const unFile: import("express").RequestHandler = (req, res, next) => {
   });
 };
 
-router.post("/roster/anagrafica/import/leggi", limiteImport, soloPersonale, unFile, async (req, res): Promise<void> => {
+router.post("/roster/anagrafica/import/leggi", limiteImport, soloPersonale, senzaLimitiDiVista, unFile, async (req, res): Promise<void> => {
   try {
     const file = (req as Request & { file?: { buffer: Buffer; originalname: string } }).file;
     if (!file) throw new Rifiuto(400, "Manca il file");
@@ -491,12 +572,12 @@ async function importa(req: Request, scrivi: boolean) {
   }
 }
 
-router.post("/roster/anagrafica/import/prova", limiteImport, soloPersonale, async (req, res): Promise<void> => {
+router.post("/roster/anagrafica/import/prova", limiteImport, soloPersonale, senzaLimitiDiVista, async (req, res): Promise<void> => {
   try { res.json({ rapporto: await importa(req, false), escludi: ESCLUDI }); }
   catch (e) { rispondiErrore(res, e, "prova dell'import"); }
 });
 
-router.post("/roster/anagrafica/import/applica", limiteImport, soloPersonale, async (req, res): Promise<void> => {
+router.post("/roster/anagrafica/import/applica", limiteImport, soloPersonale, senzaLimitiDiVista, async (req, res): Promise<void> => {
   try {
     const rapporto = await importa(req, true);
     res.status(rapporto.applicato ? 200 : 409).json({

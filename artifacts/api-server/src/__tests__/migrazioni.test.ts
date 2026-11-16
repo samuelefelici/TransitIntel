@@ -461,7 +461,9 @@ describe("l'API non cambia lo schema", () => {
    * istruzione, con l'id nuovo derivato (il comportamento lo prova
    * duplica-progetto-db.test.ts sul database, come cerbero_app). */
   it("la duplicazione dei progetti non usa tabelle temporanee: mappe in CTE, id derivati", () => {
-    const c = codice(path.join(src, "lib/planning-studio.ts"));
+    // dalla PR 3.3 la copia sta in lib/progetto-copie.ts (la usano la duplicazione e le versioni pubblicate)
+    const c = codice(path.join(src, "lib/progetto-copie.ts"));
+    expect(codice(path.join(src, "lib/planning-studio.ts"))).not.toMatch(/\bTEMP(ORARY)?\s+TABLE\b|ON COMMIT DROP|pg_temp/i);
     expect(c).not.toMatch(/\bTEMP(ORARY)?\s+TABLE\b|ON COMMIT DROP|pg_temp/i);
     expect(c).toMatch(/\$\{sql\.raw\(nome\)\} AS MATERIALIZED \(\s+SELECT s\.id AS old_id, \$\{idDellaCopia\(dst, "s\.id"\)\} AS new_id/);
     // l'id derivato: SHA-256 di progetto nuovo e id vecchio, con il progetto come parametro e i bit di un UUID v4
@@ -1256,10 +1258,10 @@ describe("0006: il registro delle modifiche", () => {
       ps_project_members: ["role"],
       ps_projects: ["agency_name", "agency_timezone", "agency_url", "default_lang", "description", "name", "source_feed_label", "status"],
       ps_route_variants: ["code", "headsign", "import_signature", "name", "notes", "variant_kind"],
-      ps_routes: ["agency_id", "code", "color", "contract_id", "description", "gtfs_id", "long_name", "notes", "service_type", "short_name", "text_color"],
-      ps_stops: ["code", "description", "gtfs_id", "municipality", "name", "notes", "platform_code", "pole_type", "province", "region",
+      ps_routes: ["agency_id", "code", "codice", "color", "contract_id", "description", "gtfs_id", "long_name", "notes", "service_type", "short_name", "text_color"],
+      ps_stops: ["code", "codice", "description", "gtfs_id", "municipality", "name", "notes", "platform_code", "pole_type", "province", "region",
         "signage_state", "surface_type", "zone_id"],
-      ps_trips: ["block_id", "gtfs_id", "headsign", "service_label", "short_name"],
+      ps_trips: ["block_id", "codice", "gtfs_id", "headsign", "service_label", "short_name"],
       ps_validity_units: ["description", "name", "service_type", "validity_id"],
       scheduling_projects: ["current_stage", "description", "feed_label", "name", "status"],
       service_program_scenarios: ["date", "description", "name"],
@@ -1436,5 +1438,185 @@ describe("0007: lettura del registro e seconda ondata", () => {
   it("le attivazioni programmate salvano il canale", () => {
     expect(sql).toMatch(/ALTER TABLE public\.ps_pending_activations ADD COLUMN IF NOT EXISTS via text;/);
     expect(catalogo.tabelle["public.ps_pending_activations"]).toHaveProperty("via");
+  });
+});
+
+/* 0019 (PR 3.2): un solo programma in esercizio, sempre nello storico. */
+describe("0019 e 0020: un solo programma in esercizio", () => {
+  const sql = readFileSync(path.join(CARTELLA, "0019_un_solo_programma_in_esercizio.sql"), "utf8");
+  const regole = readFileSync(path.join(CARTELLA, "0020_regole_del_programma_in_esercizio.sql"), "utf8");
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+
+  it("lo storico: progetto facoltativo che sopravvive alla cancellazione del progetto, canale", () => {
+    const colonne = catalogo.tabelle["public.ps_activation_log"];
+    expect(colonne.project_id).toMatch(/^uuid \| null/);
+    expect(colonne.via).toMatch(/^text \| null/);
+    expect(catalogo.vincoli["public.ps_activation_log.ps_activation_log_project_id_fkey"]).toMatch(/ON DELETE SET NULL$/);
+  });
+
+  it("le due regole nel database, verificate alla fine della transazione", () => {
+    expect(catalogo.vincoli["public.gtfs_feeds.gtfs_feeds_un_solo_in_esercizio"])
+      .toBe("EXCLUDE USING btree (is_active WITH =) WHERE (is_active) DEFERRABLE INITIALLY DEFERRED");
+    expect(catalogo.vincoli["public.ps_activation_log.ps_activation_log_un_solo_aperto"])
+      .toBe("EXCLUDE USING btree (((deactivated_at IS NULL)) WITH =) WHERE ((deactivated_at IS NULL)) DEFERRABLE INITIALLY DEFERRED");
+  });
+
+  it("lo storico nel registro delle modifiche, coi valori; le colonne di testo sono decise", () => {
+    expect(regole).toMatch(/SELECT registro\.sorveglia\('public\.ps_activation_log', ARRAY\['id'\], 'progetto_ps', 'project_id', true\);/);
+    const colonne = catalogo.tabelle["public.ps_activation_log"] as Record<string, string>;
+    // via col valore (il canale, non una persona); user_id solo nome, come ogni %user_id
+    expect(Object.keys(colonne).filter((c) => /^(text|character)/.test(colonne[c]!)).sort()).toEqual(["via"]);
+  });
+
+  it("lo stato di oggi si mette in regola come cerbero_owner, senza cambiare il feed che legge l'AVM", () => {
+    expect(sql).toMatch(/WHERE f\.is_active ORDER BY f\.uploaded_at DESC NULLS LAST, f\.id LIMIT 1;/);
+    expect(sql).toMatch(/RAISE WARNING '0019: spento il feed/);
+    expect(sql.trim()).toMatch(/--> statement-breakpoint\nRESET ROLE;$/);
+    // i vincoli dopo i dati, da chi migra
+    expect(regole).not.toMatch(/SET LOCAL ROLE/);
+  });
+});
+
+/* 0021 (PR 3.3): le versioni pubblicate dei programmi. */
+describe("0021: versioni pubblicate", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("una versione sa da quale progetto e da quale feed viene, e solo lei può non avere un proprietario", () => {
+    const c = catalogo.tabelle["public.ps_projects"];
+    expect(c.versione_di).toMatch(/^uuid \| null/);
+    expect(c.versione_del_feed).toMatch(/^uuid \| null/);
+    expect(c.owner_user_id).toMatch(/^uuid \| null/);
+    const v = catalogo.vincoli;
+    expect(v["public.ps_projects.ps_projects_versione_di_fkey"]).toMatch(/REFERENCES ps_projects\(id\) ON DELETE SET NULL$/);
+    expect(v["public.ps_projects.ps_projects_una_versione_per_feed"]).toBe("UNIQUE (versione_del_feed)");
+    expect(v["public.ps_projects.ps_projects_proprietario"]).toBe("CHECK (((owner_user_id IS NOT NULL) OR (versione_del_feed IS NOT NULL)))");
+    expect(v["public.ps_projects.ps_projects_versione_coerente"]).toBe("CHECK (((versione_di IS NULL) OR (versione_del_feed IS NOT NULL)))");
+  });
+});
+
+/* 0023 e 0024 (PR 3.6): il turno macchina di ogni giorno pubblicato. */
+describe("0023 e 0024: turni macchina nel canale dei turni pubblicati", () => {
+  const dati = readFileSync(path.join(CARTELLA, "0023_turni_macchina_nel_canale.sql"), "utf8");
+  const regole = readFileSync(path.join(CARTELLA, "0024_regole_dei_turni_pubblicati.sql"), "utf8");
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+
+  it("ogni riga del canale ha il suo turno macchina, coerente col turno guida e non cancellabile", () => {
+    expect(catalogo.tabelle["public.roster_turni_pubblicati"].vss_id).toMatch(/^uuid \| not null/);
+    const v = catalogo.vincoli;
+    expect(v["public.driver_shift_scenarios.driver_shift_scenarios_con_turni_macchina"]).toBe("UNIQUE (id, service_program_scenario_id)");
+    expect(v["public.roster_turni_pubblicati.roster_turni_pubblicati_coppia"])
+      .toBe("FOREIGN KEY (dss_id, vss_id) REFERENCES driver_shift_scenarios(id, service_program_scenario_id) ON DELETE RESTRICT");
+    expect(v["public.roster_turni_pubblicati.roster_turni_pubblicati_vss_id_fkey"])
+      .toBe("FOREIGN KEY (vss_id) REFERENCES service_program_scenarios(id) ON DELETE RESTRICT");
+  });
+
+  it("le righe di prima prendono il turno macchina del loro turno guida, come cerbero_owner; i vincoli dopo, da chi migra", () => {
+    expect(dati).toMatch(/SET vss_id = d\.service_program_scenario_id/);
+    expect(dati.trim()).toMatch(/--> statement-breakpoint\nRESET ROLE;$/);
+    expect(regole).not.toMatch(/SET LOCAL ROLE/);
+    expect(regole).toMatch(/ALTER COLUMN vss_id SET NOT NULL/);
+  });
+});
+
+/* 0025 (tappa 4.2): le giornate di esercizio, il programmato congelato. */
+describe("0025: giornate di esercizio", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("una giornata per giorno, preparata o congelata; le sue corse se ne vanno con lei", () => {
+    const v = catalogo.vincoli;
+    // dalla 0029 lo stato ha anche «chiusa», e una giornata chiusa è stata congelata
+    expect(v["public.esercizio_giornate.esercizio_giornate_stato"]).toMatch(/^CHECK \(\(stato = ANY \(ARRAY\['preparata'::text, 'congelata'::text/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_congelamento"]).toMatch(/'congelata'::text.*= \(congelata_il IS NOT NULL\)\)\)$/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_feed_id_fkey"]).toMatch(/REFERENCES gtfs_feeds\(id\) ON DELETE SET NULL$/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_ps_project_id_fkey"]).toMatch(/REFERENCES ps_projects\(id\) ON DELETE SET NULL$/);
+    expect(v["public.esercizio_corse.esercizio_corse_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE CASCADE$/);
+    const c = catalogo.tabelle["public.esercizio_corse"];
+    for (const col of ["chiave", "codice", "numero", "partenza", "arrivo", "km_prog"]) expect(c).toHaveProperty(col);
+  });
+});
+
+/* 0026 (tappa 4.3): i turni nel programmato. */
+describe("0026: turni nel programmato", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("ogni corsa porta i suoi turni; i turni macchina della giornata se ne vanno con lei", () => {
+    const c = catalogo.tabelle["public.esercizio_corse"];
+    for (const col of ["udp_id", "dss_id", "vss_id", "turno_macchina", "turno_guida", "deposito", "deposito_id"]) expect(c).toHaveProperty(col);
+    expect(catalogo.tabelle["public.esercizio_giornate"].turni).toBe("jsonb | null |  |  | ");
+    const t = catalogo.tabelle["public.esercizio_turni_macchina"];
+    for (const col of ["vss_id", "turno_macchina", "deposito", "uscita", "rientro", "km_vuoto_prog", "vuoti"]) expect(t).toHaveProperty(col);
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_turni_macchina.esercizio_turni_macchina_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE CASCADE$/);
+    expect(v["public.esercizio_turni_macchina.esercizio_turni_macchina_km"]).toBe("CHECK ((km_vuoto_prog >= (0)::numeric))");
+    expect(catalogo.indici["public.esercizio_turni_macchina_pkey"]).toMatch(/\(giorno, vss_id, turno_macchina\)$/);
+  });
+  it("gli id dei turni sono una fotografia: nessuna chiave esterna verso turni, UDP o depositi", () => {
+    const fk = Object.keys(catalogo.vincoli).filter((k) => /^public\.esercizio_(corse|turni_macchina)\./.test(k) && /_fkey$/.test(k));
+    expect(fk.filter((k) => /(udp|dss|vss|deposito)_id_fkey$/.test(k))).toEqual([]);
+    expect(fk).toContain("public.esercizio_turni_macchina.esercizio_turni_macchina_giorno_fkey");
+  });
+});
+
+/* 0027 (tappa 4.4): la proposta dall'AVM. */
+describe("0027: proposta dall'AVM", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("la proposta ha solo i valori previsti; le candidate aggiunte se ne vanno con la giornata", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_corse.esercizio_corse_proposta"]).toBe(
+      "CHECK (((proposta IS NULL) OR (proposta = ANY (ARRAY['effettuata_avm'::text, 'parziale'::text, 'continuita'::text, 'da_verificare'::text, 'soppressione_indizio'::text, 'non_rilevata'::text]))))");
+    expect(v["public.esercizio_aggiunte_proposte.esercizio_aggiunte_proposte_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE CASCADE$/);
+    for (const col of ["proposta", "prove"]) expect(catalogo.tabelle["public.esercizio_corse"]).toHaveProperty(col);
+    expect(catalogo.tabelle["public.esercizio_giornate"].proposta).toBe("jsonb | null |  |  | ");
+    for (const col of ["chiave_avm", "journey_ref", "trip_id_avm", "numero", "partenza", "vetture", "transiti"]) {
+      expect(catalogo.tabelle["public.esercizio_aggiunte_proposte"]).toHaveProperty(col);
+    }
+  });
+  it("le proposte del codice sono quelle del vincolo", async () => {
+    const { PROPOSTE } = await import("../lib/esercizio-proposta");
+    const vincolo = catalogo.vincoli["public.esercizio_corse.esercizio_corse_proposta"] as string;
+    expect([...vincolo.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1])).toEqual([...PROPOSTE]);
+  });
+});
+
+/* 0028 (tappa 4.5): il giornale di esercizio e la conferma degli esiti. */
+describe("0028: giornale e conferma", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  const sqlMig = readFileSync(path.join(CARTELLA, "0028_giornale_e_conferma.sql"), "utf8");
+  it("gli esiti hanno solo i valori previsti; soppressa e parziale con la causale; un esito ha il suo momento", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_corse.esercizio_corse_esito"]).toMatch(/'effettuata'.*'parziale'.*'soppressa'.*'da_verificare'/);
+    expect(v["public.esercizio_corse.esercizio_corse_causale"]).toMatch(/causale IS NOT NULL/);
+    expect(v["public.esercizio_corse.esercizio_corse_conferma"]).toBe("CHECK (((esito IS NULL) = (confermata_il IS NULL)))");
+    expect(v["public.esercizio_corse.esercizio_corse_causale_fkey"]).toMatch(/REFERENCES esercizio_causali\(codice\) ON DELETE RESTRICT$/);
+    expect(v["public.esercizio_corse.esercizio_corse_confermata_da_fkey"]).toMatch(/REFERENCES users\(id\) ON DELETE SET NULL$/);
+  });
+  it("il giornale: una giornata con eventi non si cancella, un evento si annulla una volta sola", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_eventi.esercizio_eventi_giorno_fkey"]).toMatch(/REFERENCES esercizio_giornate\(giorno\) ON DELETE RESTRICT$/);
+    expect(v["public.esercizio_eventi.esercizio_eventi_annullamento"]).toBe("CHECK (((tipo = 'annullamento'::text) = (annulla IS NOT NULL)))");
+    expect(v["public.esercizio_eventi.esercizio_eventi_autore_fkey"]).toMatch(/REFERENCES users\(id\) ON DELETE SET NULL$/);
+    expect(catalogo.indici["public.uq_esercizio_eventi_annullato"]).toMatch(/UNIQUE INDEX .* \(annulla\) WHERE \(annulla IS NOT NULL\)$/);
+  });
+  it("il catalogo iniziale delle causali si scrive come cerbero_owner, senza sovrascrivere quello dell'amministratore", () => {
+    expect(sqlMig).toMatch(/SET LOCAL ROLE cerbero_owner/);
+    expect(sqlMig).toMatch(/ON CONFLICT \(codice\) DO NOTHING/);
+    expect(sqlMig.trim().endsWith("RESET ROLE;")).toBe(true);
+  });
+  it("il codice non aggiorna né cancella gli eventi del giornale", () => {
+    const giornale = readFileSync(path.join(__dirname, "../lib/esercizio-giornale.ts"), "utf8");
+    expect(giornale).not.toMatch(/UPDATE\s+esercizio_eventi/i);
+    expect(giornale).not.toMatch(/DELETE\s+FROM\s+esercizio_eventi/i);
+  });
+});
+
+/* 0029 (tappa 4.6): chiusura e blocco del consuntivo. */
+describe("0029: chiusura e blocco", () => {
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+  it("l'esito presunto; la giornata chiusa ha chi, quando e il riepilogo; un mese chiuso lo stesso", () => {
+    const v = catalogo.vincoli;
+    expect(v["public.esercizio_corse.esercizio_corse_esito"]).toMatch(/'effettuata'.*'presunta'.*'parziale'.*'soppressa'.*'da_verificare'/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_stato"]).toMatch(/'preparata'.*'congelata'.*'chiusa'/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_congelamento"]).toMatch(/'congelata'.*'chiusa'.*congelata_il IS NOT NULL/);
+    expect(v["public.esercizio_giornate.esercizio_giornate_chiusura"]).toMatch(/chiusa_il IS NOT NULL.*riepilogo IS NOT NULL/);
+    expect(v["public.esercizio_eventi.esercizio_eventi_tipo"]).toMatch(/'chiusura'.*'riapertura'/);
+    expect(v["public.esercizio_mesi.esercizio_mesi_chiusura"]).toMatch(/chiuso_il IS NOT NULL.*riepilogo IS NOT NULL/);
+    expect(v["public.esercizio_mesi.esercizio_mesi_chiuso_da_fkey"]).toMatch(/REFERENCES users\(id\) ON DELETE SET NULL$/);
   });
 });

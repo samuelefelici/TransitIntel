@@ -51,6 +51,8 @@ export interface RispostaRegistro {
 const TABELLE: Record<string, string> = {
   "public.users": "Utenti",
   "public.app_settings": "Parametri di esercizio",
+  "public.azienda": "Dati dell'azienda",
+  "public.ruoli_diritti": "Diritti dei ruoli",
   "public.gtfs_feeds": "Feed GTFS",
   "public.gtfs_fare_products": "Prodotti tariffari",
   "public.ps_projects": "Programmi di esercizio",

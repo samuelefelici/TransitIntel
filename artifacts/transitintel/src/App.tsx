@@ -10,7 +10,7 @@ import { AuthProvider, useAuth, type Area } from "@/hooks/use-auth";
 import { CASA, NOMI_AREE, AREE_PAGINA } from "@/lib/navigazione";
 import { apiFetch } from "@/lib/api";
 import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
-import { EVENTO_SOLA_LETTURA, dettaglioSolaLettura, motivoSolaLettura, type RifiutoSolaLettura } from "@/lib/sola-lettura";
+import { EVENTO_SOLA_LETTURA, chiLoDecide, dettaglioSolaLettura, motivoSolaLettura, type RifiutoSolaLettura } from "@/lib/sola-lettura";
 import { PaginaConAree } from "@/hooks/use-sola-lettura";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import ArgosLiveBridge from "@/components/argos/ArgosLiveBridge";
@@ -58,6 +58,7 @@ const TimetableMapPage = lazyWithRetry(() => import("@/pages/timetable-map"));
 const RuntimesPage = lazyWithRetry(() => import("@/pages/runtimes"));
 const RosterPage = lazyWithRetry(() => import("@/pages/roster"));
 const RosterPubblicazionePage = lazyWithRetry(() => import("@/pages/roster-pubblicazione"));
+const VestizionePage = lazyWithRetry(() => import("@/pages/roster-vestizione"));
 const AnagraficaPage = lazyWithRetry(() => import("@/pages/anagrafica"));
 const MistoPage = lazyWithRetry(() => import("@/pages/misto"));
 const CalcoliPage = lazyWithRetry(() => import("@/pages/calcoli"));
@@ -100,7 +101,12 @@ const PlanningStudioZonesPage = lazyWithRetry(() => import("@/pages/planning-stu
 const PlanningStudioActivityPage = lazyWithRetry(() => import("@/pages/planning-studio/ActivityPage"));
 const AdminUsersPage = lazyWithRetry(() => import("@/pages/admin-users"));
 const AdminParametriPage = lazyWithRetry(() => import("@/pages/admin-parametri"));
+const AdminAziendaPage = lazyWithRetry(() => import("@/pages/admin-azienda"));
+const AdminRuoliPage = lazyWithRetry(() => import("@/pages/admin-ruoli"));
 const AdminRegistroPage = lazyWithRetry(() => import("@/pages/admin-registro"));
+const AdminEsercizioPage = lazyWithRetry(() => import("@/pages/admin-esercizio"));
+const AdminGiornatePage = lazyWithRetry(() => import("@/pages/admin-giornate"));
+const ConsuntivoPage = lazyWithRetry(() => import("@/pages/esercizio-consuntivo"));
 const AccountPage = lazyWithRetry(() => import("@/pages/account"));
 const ApriFleetCare = lazyWithRetry(() => import("@/pages/fleetcare"));
 const NotFound = lazyWithRetry(() => import("@/pages/not-found"));
@@ -223,7 +229,7 @@ function AvvisoSolaLettura() {
       const dettaglio = dettaglioSolaLettura(rifiuto?.messaggio ?? "");
       toastSonner.warning("Sola lettura", {
         id: "sola-lettura",
-        description: [dettaglio, "Non è stato modificato niente", "Il ruolo lo assegna l'amministratore"].filter(Boolean).join(". ") + ".",
+        description: [dettaglio, "Non è stato modificato niente", chiLoDecide(rifiuto?.messaggio ?? "")].filter(Boolean).join(". ") + ".",
         duration: 8000,
       });
     };
@@ -247,6 +253,9 @@ function Router() {
               <Gated perm={AREE_PAGINA["/dashboard"]}><Dashboard /></Gated>
             </Route>
             {/* Centrale Operativa: Mappa live + AVM, modulo attivabile per utente */}
+            <Route path="/esercizio">
+              <Gated perm={AREE_PAGINA["/esercizio"]}><ConsuntivoPage /></Gated>
+            </Route>
             <Route path="/operations">
               <Gated perm={AREE_PAGINA["/operations"]}><OperationsPage /></Gated>
             </Route>
@@ -410,6 +419,9 @@ function Router() {
             <Route path="/roster/pubblicazione">
               <Gated perm={AREE_PAGINA["/roster/pubblicazione"]}><RosterPubblicazionePage /></Gated>
             </Route>
+            <Route path="/roster/vestizione">
+              <Gated perm={AREE_PAGINA["/roster/vestizione"]}><VestizionePage /></Gated>
+            </Route>
             <Route path="/roster">
               <Gated perm={AREE_PAGINA["/roster"]}><RosterPage /></Gated>
             </Route>
@@ -440,11 +452,23 @@ function Router() {
             <Route path="/admin/users">
               <AdminOnly><AdminUsersPage /></AdminOnly>
             </Route>
+            <Route path="/admin/ruoli">
+              <AdminOnly><AdminRuoliPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/azienda">
+              <AdminOnly><AdminAziendaPage /></AdminOnly>
+            </Route>
             <Route path="/admin/parametri">
               <AdminOnly><AdminParametriPage /></AdminOnly>
             </Route>
             <Route path="/admin/registro">
               <AdminOnly><AdminRegistroPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/esercizio">
+              <AdminOnly><AdminEsercizioPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/giornate">
+              <AdminOnly><AdminGiornatePage /></AdminOnly>
             </Route>
 
             {/* Redirects for old optimizer paths */}

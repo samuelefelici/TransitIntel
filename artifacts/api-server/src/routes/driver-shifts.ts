@@ -1374,8 +1374,8 @@ function _engineShiftToDriverShift(s: any): any {
 }
 
 /* ═══════════════════════════════════════════════════════════════
- *  STRUMENTI BDSI (crew_tools.py) — verifica turni, scambia con
- *  pezzo, turni unici. Stessa validazione BDS del solver v4.
+ *  STRUMENTI DI CORREZIONE (crew_tools.py) — verifica turni, scambia con
+ *  pezzo, turni unici. Stessa verifica normativa del solver v4.
  * ═══════════════════════════════════════════════════════════════ */
 
 async function runCrewTools(input: any): Promise<any> {
@@ -1397,8 +1397,8 @@ async function crewToolsConfig(clientConfig: any): Promise<Record<string, any>> 
 }
 
 /**
- * POST /driver-shifts/tools/validate — ri-verifica BDS di turni guida
- * modificati a mano (BDSI §10.1). Body: { shifts: [...], config? }
+ * POST /driver-shifts/tools/validate — ri-verifica normativa di turni guida
+ * modificati a mano. Body: { shifts: [...], config? }
  * Ritorna per ogni driverId: {type, bdsValidation, nastroMin, workMin, ...}
  */
 router.post("/driver-shifts/tools/validate", async (req, res) => {
@@ -1421,8 +1421,8 @@ router.post("/driver-shifts/tools/validate", async (req, res) => {
 });
 
 /**
- * POST /driver-shifts/tools/swap — euristica "Scambia con pezzo..."
- * (BDSI §12.2). Body: { piece: {vehicleId?, vehicleType?, trips:[...]},
+ * POST /driver-shifts/tools/swap — euristica "Scambia con pezzo...".
+ * Body: { piece: {vehicleId?, vehicleType?, trips:[...]},
  * shifts: [...], config?, maxProposals? }
  */
 router.post("/driver-shifts/tools/swap", async (req, res) => {
@@ -1447,8 +1447,8 @@ router.post("/driver-shifts/tools/swap", async (req, res) => {
 });
 
 /**
- * POST /driver-shifts/tools/turni-unici — euristica "Turni unici"
- * (BDSI §12.1). Body: { pieces: [{vehicleId, vehicleType, trips}],
+ * POST /driver-shifts/tools/turni-unici — euristica "Turni unici".
+ * Body: { pieces: [{vehicleId, vehicleType, trips}],
  * fasciaStartMin?, fasciaEndMin?, config? }
  */
 router.post("/driver-shifts/tools/turni-unici", async (req, res) => {

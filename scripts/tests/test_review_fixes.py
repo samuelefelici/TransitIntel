@@ -1,5 +1,5 @@
 """Rilievi della revisione avversariale sulla #434: sosta coperta vista dalle
-regole BDS, cambio a piedi senza auto, cambio al deposito senza handover,
+regole della normativa, cambio a piedi senza auto, cambio al deposito senza handover,
 righe deposito ai bordi, promessa del pool solo a consegne con auto,
 crew_tools coerente col motore."""
 import os

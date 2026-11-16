@@ -9,9 +9,9 @@ senza riscrivere un monolite: i due motori esistenti girano in loop nello
 stesso processo. A ogni round:
 
   1. VSP  (vehicle_scheduler_cpsat.run)  → blocchi veicolo
-  2. CSP  (crew_scheduler_v4.run)        → turni guida BDS sui blocchi
+  2. CSP  (crew_scheduler_v4.run)        → turni guida a norma sui blocchi
   3. costi-ombra: per ogni blocco si misura l'extra-costo guida che impone
-     (costo turni per ora di servizio oltre la mediana, violazioni BDS,
+     (costo turni per ora di servizio oltre la mediana, violazioni normative,
      supplementi) e lo si trasforma in PENALITÀ sugli archi (pairing di corse)
      che hanno formato quel blocco
   4. il VSP del round successivo ri-ottimizza con quelle penalità → evita i
@@ -42,7 +42,7 @@ from vcsp_probe import run_probe_phase
 
 # ── Parametri del feedback (costi-ombra) ────────────────────────────────
 EXCESS_WEIGHT = 0.5          # quota dell'extra-costo guida trasferita in penalità
-VIOLATION_PENALTY_EUR = 40.0  # per violazione BDS che tocca il blocco
+VIOLATION_PENALTY_EUR = 40.0  # per violazione normativa che tocca il blocco
 SUPPLEMENTO_PENALTY_EUR = 25.0  # per turno "supplemento" che tocca il blocco
 MAX_BLOCK_PENALTY_EUR = 400.0
 MAX_ROUNDS = 10
@@ -187,7 +187,7 @@ def _crew_cost_by_vehicle(crew_out: dict) -> tuple[dict, dict, dict]:
 
 # Regole RIGIDE che si rompono nei giunti fra un pezzo di guida e l'altro:
 # il tetto delle autovetture aziendali e il bus lasciato senza conducente.
-# Non sono violazioni BDS di un turno — sono esiti del parco auto — quindi nel
+# Non sono violazioni normative di un turno — sono esiti del parco auto — quindi nel
 # costo-ombra per blocco pesavano ZERO: il VSP non sapeva nemmeno che
 # esistessero, e nessun numero di round poteva sistemarle.
 # Calibrate sul costo VERO di una vettura in piu' (~42 EUR/giorno di costo
@@ -371,7 +371,7 @@ def extract_arc_penalties(vsp_out: dict, crew_out: dict,
 # in meno e 6 violazioni in meno è stato scartato per €1,76 di costo in più —
 # e l'early-stop lo ha pure letto come "nessun miglioramento". Ogni turno vale
 # un costo nascosto (reperibilità, HR, ferie — come SCORE_PER_DUTY nel CSP) e
-# ogni violazione BDS un costo di sistemazione manuale. Override da
+# ogni violazione normativa un costo di sistemazione manuale. Override da
 # vcsp.dutyShadowEur / vcsp.violationShadowEur.
 DUTY_SHADOW_EUR = 200.0
 VIOLATION_SHADOW_EUR = 100.0
@@ -477,7 +477,7 @@ def _round_kpi(r: int, vsp_out: dict, crew_out: dict) -> dict:
     car_peak = int(cs.get("companyCarsMaxSimultaneous") or 0)
     car_violations = car_conflicts + (max(0, car_peak - car_cap) if car_cap > 0 else 0)
     # Bus lasciato senza conducente oltre il limite: regola rigida che non
-    # compariva ne' fra le violazioni BDS del turno ne' nella selezione, quindi
+    # compariva ne' fra le violazioni normative del turno ne' nella selezione, quindi
     # un round che la sistemava poteva perdere per pochi euro.
     hm = cs.get("handoverModes") or {}
     unattended_over = len(hm.get("overLimit") or [])
@@ -673,7 +673,7 @@ def main() -> None:
         })
 
         # Selezione LESSICOGRAFICA: prima chi rompe MENO REGOLE, poi il
-        # punteggio. Le violazioni contate qui — BDS, tetto autovetture,
+        # punteggio. Le violazioni contate qui — normativa, tetto autovetture,
         # vettura lasciata senza conducente — non sono costi: sono regole. Il
         # tetto delle autovetture l'operatore lo ha definito «inviolabile», e
         # la normativa sui turni e' legge, non una voce di spesa.

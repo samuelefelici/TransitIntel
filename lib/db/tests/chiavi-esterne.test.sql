@@ -1,11 +1,14 @@
 -- ============================================================
--- Le chiavi esterne di Planning Studio (migrazioni 0010 e 0011, PR 2.15)
+-- Le chiavi esterne di Planning Studio (migrazioni 0010, 0011 e 0013, PR 2.15 e 2.15c)
 --   psql "$URL_DI_POSTGRES" -v ON_ERROR_STOP=1 -f lib/db/tests/chiavi-esterne.test.sql
 -- Tutto in una transazione che alla fine si annulla: il database resta com'era.
 -- Come cerbero_owner (il ruolo con cui lavora l'app):
---   - i due vincoli ci sono, sono validi e portano via le figlie col padre;
---   - una riga senza padre non si può più scrivere;
---   - sulla categoria NON c'è vincolo: si decide a parte (DEPLOY).
+--   - i tre vincoli ci sono e sono validi;
+--   - una riga senza padre non si può più scrivere (corsa, progetto, categoria);
+--   - cancellare la corsa o il progetto porta via le figlie;
+--   - una categoria usata da una corsa non si cancella (RESTRICT): prima va
+--     tolta dalle corse. Cancellarla lasciava corse che non valevano più in
+--     nessun giorno.
 -- ============================================================
 \set ON_ERROR_STOP 1
 \set QUIET 1
@@ -25,11 +28,12 @@ BEGIN
            AND pg_catalog.pg_get_constraintdef(k.oid) = 'FOREIGN KEY (project_id) REFERENCES ps_projects(id) ON DELETE CASCADE'));
   IF n <> 2 THEN RAISE EXCEPTION 'le due chiavi esterne non ci sono, o non sono valide, o non sono quelle attese (%)', n; END IF;
 
-  -- nessuna chiave sulla categoria, finché non si decide che cosa fare delle righe che ci sono
+  -- la chiave sulla categoria (0013): valida, e non cancella a cascata
   SELECT pg_catalog.count(*) INTO n FROM pg_catalog.pg_constraint k
-   WHERE k.contype = 'f' AND k.conrelid = 'public.ps_trip_category_validity'::regclass
-     AND k.confrelid = 'public.ps_validity_categories'::regclass;
-  IF n <> 0 THEN RAISE EXCEPTION 'c''è una chiave esterna sulla categoria: va decisa insieme alle righe già scritte (DEPLOY)'; END IF;
+   WHERE k.contype = 'f' AND k.convalidated
+     AND k.conrelid = 'public.ps_trip_category_validity'::regclass AND k.conname = 'ps_trip_category_validity_category_id_fkey'
+     AND pg_catalog.pg_get_constraintdef(k.oid) = 'FOREIGN KEY (category_id) REFERENCES ps_validity_categories(id) ON DELETE RESTRICT';
+  IF n <> 1 THEN RAISE EXCEPTION 'la chiave esterna sulla categoria non c''è, o non è valida, o non è RESTRICT'; END IF;
 END $$;
 
 SET LOCAL ROLE cerbero_owner;
@@ -62,6 +66,23 @@ BEGIN
   END;
   IF NOT rifiutata THEN RAISE EXCEPTION 'una categoria per una corsa che non esiste è stata accettata'; END IF;
 
+  -- una categoria che non esiste: rifiutata (prima restava sulla corsa una riga che punta nel vuoto)
+  rifiutata := false;
+  BEGIN
+    INSERT INTO public.ps_trip_category_validity (trip_id, category_id)
+    VALUES ('c2000000-0000-4000-8000-000000000004', 'c2000000-0000-4000-8000-0000000000cc');
+  EXCEPTION WHEN foreign_key_violation THEN rifiutata := true;
+  END;
+  IF NOT rifiutata THEN RAISE EXCEPTION 'una categoria che non esiste è stata accettata su una corsa'; END IF;
+
+  -- una categoria usata da una corsa non si cancella
+  rifiutata := false;
+  BEGIN
+    DELETE FROM public.ps_validity_categories WHERE id = 'c2000000-0000-4000-8000-000000000006';
+  EXCEPTION WHEN foreign_key_violation THEN rifiutata := true;
+  END;
+  IF NOT rifiutata THEN RAISE EXCEPTION 'una categoria in uso è stata cancellata'; END IF;
+
   -- una zona per un progetto che non esiste: rifiutata
   rifiutata := false;
   BEGIN
@@ -86,10 +107,11 @@ BEGIN
        + (SELECT pg_catalog.count(*) FROM public.ps_no_go_zones WHERE project_id = 'c2000000-0000-4000-8000-000000000001') INTO n;
   IF n <> 0 THEN RAISE EXCEPTION 'cancellato il progetto restano % righe sue', n; END IF;
 
-  -- la categoria non è toccata dalla cancellazione delle corse
+  -- la categoria non è toccata dalla cancellazione delle corse, e ora che nessuna corsa la usa si cancella
   SELECT pg_catalog.count(*) INTO n FROM public.ps_validity_categories WHERE id = 'c2000000-0000-4000-8000-000000000006';
   IF n <> 1 THEN RAISE EXCEPTION 'cancellando le corse è sparita la categoria'; END IF;
+  DELETE FROM public.ps_validity_categories WHERE id = 'c2000000-0000-4000-8000-000000000006';
 END $$;
 RESET ROLE;
 ROLLBACK;
-\echo 'chiavi esterne: vincoli validi, niente righe senza padre, cancellazioni a cascata'
+\echo 'chiavi esterne: tre vincoli validi, niente righe senza padre, cascata su corsa e progetto, categoria in uso non cancellabile'

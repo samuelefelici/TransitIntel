@@ -6,7 +6,7 @@
  *   ┌──────────────────────────────────────────────────────────┐
  *   │  Toolbar: solver mode + Riottimizza + Config CSP + Save  │
  *   ├──────────────────────────────────────────────────────────┤
- *   │  Summary cards (autisti, ore, %, costo, conformità BDS)  │
+ *   │  Summary cards (autisti, ore, %, costo, conformità alla normativa)  │
  *   ├──────────────────────────────────────────────────────────┤
  *   │  Progress panel (durante CP-SAT)                         │
  *   │  Gantt interattivo turni guida                           │
@@ -120,9 +120,9 @@ export default function DriverWorkspace({
   const [showCompare, setShowCompare] = useState(false);
   /* Lettura del risultato sotto il Gantt: analisi, classifica, distribuzioni, conformità, riassunti, elenco */
   const [letturaOpen, setLetturaOpen] = useState(true);
-  /* I turni macchina dello scenario: servono alla copertura (BDSI §2.2) */
+  /* I turni macchina dello scenario: servono alla copertura */
   const [vehicleShifts, setVehicleShifts] = useState<any[] | null>(null);
-  /* BDSI §12.2 «Scambia con pezzo…» */
+  /* «Scambia con pezzo…» */
   const [swapPiece, setSwapPiece] = useState<{ vehicleId: string; vehicleType: string; trips: RipresaTrip[] } | null>(null);
   const [swapProposals, setSwapProposals] = useState<SwapProposal[]>([]);
   const [swapLoading, setSwapLoading] = useState(false);
@@ -174,7 +174,7 @@ export default function DriverWorkspace({
       setWwPool(saved.map(trip => ({ trip: { ...trip } })));
     }
   }, [initialResult]);
-  /* Rimpacchetta stile Bdsi: prima di chiudere il turno si sceglie il DEPOSITO
+  /* Rimpacchetta: prima di chiudere il turno si sceglie il DEPOSITO
    * di appartenenza (residenza); la tipologia la rileva la normativa da sola. */
   const [wwDepots, setWwDepots] = useState<Array<{ id: string; name: string; color: string | null }>>([]);
   const [wwRepackAsk, setWwRepackAsk] = useState<{ ids?: string[] } | null>(null);
@@ -185,7 +185,7 @@ export default function DriverWorkspace({
   /* "Dove la metto?": suggerimenti dei turni che accettano una corsa scoperta */
   const [wwSuggest, setWwSuggest] = useState<{ tripId: string; busy: boolean; results: Array<{ shiftId: string; type: string; residenza: string | null }> } | null>(null);
 
-  /* Verifica normativa puntuale (stile Bdsi): dialogo con tipologia + regole BDS */
+  /* Verifica normativa puntuale: dialogo con tipologia + regole della normativa */
   const [wwVerify, setWwVerify] = useState<{ shiftId: string; busy: boolean; type?: string | null; validation?: DriverShiftData["bdsValidation"] | null; residenza?: string | null } | null>(null);
   useEffect(() => {
     if (!wwOpen || wwDepots.length > 0) return;
@@ -918,7 +918,7 @@ export default function DriverWorkspace({
         id: a.id, type: a.type, startMin: a.startMin, endMin: a.endMin,
         note: [a.fromNode, a.toNode].filter(Boolean).join(" → ") || undefined,
       })) } : {}),
-      // deposito di appartenenza scelto dall'operatore alla chiusura (stile Bdsi)
+      // deposito di appartenenza scelto dall'operatore alla chiusura
       ...(residenza ? { residenzaDepotId: residenza.id, residenzaName: residenza.name, residenzaColor: residenza.color } : {}),
       verifyState: "da_verificare" as const,
     } as DriverShiftData;
@@ -965,7 +965,7 @@ export default function DriverWorkspace({
       } : cur);
       // i confini di nastro seguono pre-turno/trasferimenti appena aggiunti
       setResult(cur => cur ? normalizeDriverShiftsResult(cur) : cur);
-      // feedback stile Bdsi: la tipologia rilevata compare appena la normativa risponde
+      // feedback: la tipologia rilevata compare appena la normativa risponde
       if (rr.type) toast.success(`Tipologia rilevata: ${TYPE_LABELS[rr.type as DriverShiftType] ?? rr.type}`, {
         description: `${newId}${residenza ? ` · deposito ${residenza.name}` : ""}`,
       });
@@ -983,7 +983,8 @@ export default function DriverWorkspace({
             const rm = new Set(tripIds);
             await fetch(`${getApiBase()}/api/service-program/scenarios/${scenId}`, {
               method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: ((sc.result?.unassigned ?? []) as any[]).filter(u => !rm.has(String(u?.tripId))) } }),
+              /* ritocco automatico: se il roster usa quella fonte non si tocca (né si versiona) */
+              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: ((sc.result?.unassigned ?? []) as any[]).filter(u => !rm.has(String(u?.tripId))) }, nonVersionare: true }),
             });
           } catch { /* best-effort */ }
         }
@@ -992,7 +993,7 @@ export default function DriverWorkspace({
     toast.success(`Turno guida ${newId} chiuso`, { description: `${chosen.length} corse · resta nell'area come card compatta: trascinala sulla sidebar per consegnarla al gantt.` });
   }, [result, wwShiftIds, wwSelected, wwPool, pushHistory, operatorConfig]);
 
-  /* Verifica LIVE della selezione (stile Bdsi): monta un turno temporaneo con
+  /* Verifica LIVE della selezione: monta un turno temporaneo con
    * le card selezionate e chiede alla normativa tipologia + violazioni. */
   const wwPreviewType = useCallback(async (ids: string[]): Promise<{ type: string | null; valid?: boolean; violations?: string[]; costEuro?: number | null } | null> => {
     const sel = new Set(ids);
@@ -1091,10 +1092,10 @@ export default function DriverWorkspace({
     }).catch(() => { /* restano da verificare */ });
   }, [operatorConfig]);
 
-  /* BDSI §10.1.3 — forzatura: il turno scorretto viene considerato conforme. */
+  /* Forzatura: il turno scorretto viene considerato conforme. */
   const forzaTurno = useCallback((driverId: string) => {
     const motivo = window.prompt(
-      "Forzatura correttezza (BDSI): il turno scorretto sarà considerato conforme a tutti gli effetti.\nMotivo (opzionale):",
+      "Forzatura correttezza: il turno scorretto sarà considerato conforme a tutti gli effetti.\nMotivo (opzionale):",
       "");
     if (motivo === null) return;
     setResult(cur => cur ? {
@@ -1117,7 +1118,7 @@ export default function DriverWorkspace({
     wwRevalidate([driverId], next);
   }, [result, wwRevalidate]);
 
-  /* ── BDSI §12.2 "Scambia con pezzo…" — proposte dal backend ── */
+  /* ── "Scambia con pezzo…" — proposte dal backend ── */
   const openSwapDialog = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
     if (!result) return;
     setSwapPiece({ vehicleId, vehicleType, trips: piece.trips });
@@ -1158,7 +1159,7 @@ export default function DriverWorkspace({
     });
   }, [result, swapPiece, pushHistory, wwRevalidate]);
 
-  /* ── BDSI §12.1 "Turni unici" — crea un turno mono-pezzo dal pezzo scoperto ── */
+  /* ── "Turni unici" — crea un turno mono-pezzo dal pezzo scoperto ── */
   const createTurnoUnico = useCallback((vehicleId: string, vehicleType: string, piece: { trips: RipresaTrip[] }) => {
     if (!result) return;
     fetch(`${getApiBase()}/api/driver-shifts/tools/turni-unici`, {
@@ -1301,7 +1302,7 @@ export default function DriverWorkspace({
     return { total: inShifts + inPool, uncovered: inPool };
   }, [result, wwPool]);
 
-  /* Verifica normativa PUNTUALE su un turno della finestra (dialogo stile Bdsi) */
+  /* Verifica normativa PUNTUALE su un turno della finestra */
   const wwVerifyShift = useCallback(async (shiftId: string) => {
     const sh = result?.driverShifts.find(s => s.driverId === shiftId);
     if (!sh) return;
@@ -1650,7 +1651,7 @@ export default function DriverWorkspace({
                     <Printer className="w-3.5 h-3.5" />
                     <div>
                       <div className="font-medium">Stampa compatta a colonne</div>
-                      <div className="text-[10px] text-blue-300/50">turni · corse · BDS · KPI</div>
+                      <div className="text-[10px] text-blue-300/50">turni · corse · normativa · KPI</div>
                     </div>
                   </button>
                   <button
@@ -2080,7 +2081,7 @@ export default function DriverWorkspace({
                   sub="blocchi rimasti"
                 />
               )}
-              {/* Conformità BDS */}
+              {/* Conformità alla normativa */}
               {result.driverShifts.some((s: any) => s.bdsValidation) && (() => {
                 const withBds = result.driverShifts.filter((s: any) => s.bdsValidation);
                 const conformi = withBds.filter((s: any) => s.bdsValidation!.valid).length;
@@ -2088,7 +2089,7 @@ export default function DriverWorkspace({
                 return (
                   <SummaryCard
                     icon={<Shield className="w-4 h-4" />}
-                    label="Conformità BDS"
+                    label="Conformità alla normativa"
                     value={`${pct}%`}
                     color={pct >= 90 ? "#fbbf24" : pct >= 70 ? "#f59e0b" : "#ef4444"}
                     sub={`${conformi}/${withBds.length} turni`}
@@ -2096,7 +2097,7 @@ export default function DriverWorkspace({
                 );
               })()}
             </div>
-            {/* Esito dei vincoli globali (BDSI cap. 14) e dei costi avanzati (BDS5) */}
+            {/* Esito dei vincoli globali e dei costi avanzati */}
             {(esitoVincoli?.length || esitoBds5) ? (
               <div className="mt-2 flex flex-wrap gap-1.5 items-center">
                 {esitoVincoli?.length ? <VincoliReport report={esitoVincoli} /> : null}
@@ -2332,7 +2333,7 @@ export default function DriverWorkspace({
                   </div>
                 </div>
               )}
-              {/* Verifica normativa puntuale (stile Bdsi) */}
+              {/* Verifica normativa puntuale */}
               {wwVerify && (
                 <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwVerify(null)}>
                   <div className="w-full max-w-sm rounded-xl border border-emerald-500/30 bg-zinc-950 p-4 space-y-2.5" onClick={(e) => e.stopPropagation()}>
@@ -2383,7 +2384,7 @@ export default function DriverWorkspace({
                   </div>
                 </div>
               )}
-              {/* Rimpacchetta stile Bdsi: scelta del DEPOSITO di appartenenza del
+              {/* Rimpacchetta: scelta del DEPOSITO di appartenenza del
                   nuovo turno guida; la tipologia la rileva la normativa da sola. */}
               {wwRepackAsk && (
                 <div className="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center p-4" onClick={() => setWwRepackAsk(null)}>
@@ -2647,7 +2648,7 @@ export default function DriverWorkspace({
         />
       )}
 
-      {/* BDSI §12.2 — «Scambia con pezzo…» */}
+      {/* «Scambia con pezzo…» */}
       <SwapDialog
         open={!!swapPiece}
         piece={swapPiece}

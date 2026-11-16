@@ -1,14 +1,15 @@
 -- ============================================================
--- Le chiavi esterne di Planning Studio (migrazioni 0010 e 0011, PR 2.15):
--- quello che c'è in un database PRIMA della migrazione.
+-- Le chiavi esterne di Planning Studio (migrazioni 0010, 0011 e 0013, PR 2.15
+-- e 2.15c): quello che c'è in un database PRIMA della migrazione.
 --   psql "$URL_DI_POSTGRES" -v ON_ERROR_STOP=1 -f lib/db/tests/chiavi-esterne-prima.sql
 -- Va caricato su una copia dello schema di produzione non ancora migrata, poi
 -- si migra e si controlla con chiavi-esterne-dopo.sql.
 --   - righe vere (una corsa con la sua categoria, una zona vietata del suo
 --     progetto): devono restare;
---   - righe orfane (corse e progetti che non esistono più): devono sparire;
---   - una riga con una categoria che non esiste più su una corsa vera: NON va
---     toccata, perché toglierla cambierebbe i giorni in cui la corsa vale.
+--   - righe orfane (corse e progetti che non esistono più): devono sparire.
+-- Niente righe con una categoria cancellata: con quelle la 0013 non mette la
+-- chiave sulla categoria, e questo database deve arrivare allo schema atteso.
+-- Quel caso lo prova chiave-categoria-rimandata.test.sql.
 -- ============================================================
 \set ON_ERROR_STOP 1
 \set QUIET 1
@@ -37,8 +38,4 @@ SELECT ('c1000000-0000-4000-8000-0000000a' || pg_catalog.lpad(g::text, 4, '0')):
 INSERT INTO public.ps_no_go_zones (id, project_id, name, polygon)
 VALUES ('c1000000-0000-4000-8000-000000000007', 'c1000000-0000-4000-8000-0000000000aa', 'zona di un progetto cancellato', '[]'::jsonb),
        ('c1000000-0000-4000-8000-000000000008', 'c1000000-0000-4000-8000-0000000000ab', 'zona di un altro progetto cancellato', '[]'::jsonb);
-
--- la categoria non esiste più, la corsa sì: resta com'è
-INSERT INTO public.ps_trip_category_validity (trip_id, category_id)
-VALUES ('c1000000-0000-4000-8000-000000000004', 'c1000000-0000-4000-8000-0000000000cc');
 COMMIT;

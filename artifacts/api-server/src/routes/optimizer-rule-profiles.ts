@@ -1,7 +1,7 @@
 /**
  * optimizer-rule-profiles — Profili-regole riusabili per l'ottimizzatore turni guida.
  *
- * Permette di salvare un set completo di parametri/regole (la config BDS) una
+ * Permette di salvare un set completo di parametri/regole (la config della normativa) una
  * volta e riusarlo. Catena di precedenza:
  *   default azienda (scope='company')  →  default progetto (scope='project')
  *   →  override per-scenario (modifiche live nel pannello, non persistite qui).

@@ -25,6 +25,11 @@ describe("voci dell'admin nel registro degli accessi", () => {
     expect(voceAdminLeggibile("admin:analisi_tolta (capo@x.it)")).toBe("Analisi: tolta, dall'admin capo@x.it");
     expect(voceAdminLeggibile("admin:ruolo_fleetcare_cambiato driver→mechanic (capo@x.it)"))
       .toBe("ruolo FleetCare cambiato (driver → mechanic), dall'admin capo@x.it");
+    // i depositi del roster (PR 2.14c): codici del catalogo, anche col trattino
+    expect(voceAdminLeggibile("admin:depositi_cambiati +jesi-urbano -ancona (capo@x.it)"))
+      .toBe("depositi del roster cambiati (+ jesi-urbano, − ancona), dall'admin capo@x.it");
+    expect(voceAdminLeggibile("admin:utente_creato user capo_deposito,deposito:jesi (capo@x.it)"))
+      .toBe("utente creato (utente; Capo deposito, deposito jesi), dall'admin capo@x.it");
   });
 
   it("le altre voci non sono dell'admin", () => {

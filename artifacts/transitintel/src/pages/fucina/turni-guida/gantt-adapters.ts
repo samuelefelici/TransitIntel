@@ -46,7 +46,7 @@ function extraSegmentBars(shift: DriverShiftData): GanttBar[] {
 export function driverShiftsToRows(shifts: DriverShiftData[]): GanttRow[] {
   return shifts.map(s => {
     const typeShort = TYPE_LABELS[s.type]?.slice(0, 3) ?? s.type.slice(0, 3);
-    // Badge BDS: se la validazione c'è e non è valida, evidenzia il dot e
+    // Badge della normativa: se la validazione c'è e non è valida, evidenzia il dot e
     // arricchisce il sublabel con il numero di violazioni.
     const bds = s.bdsValidation;
     const bdsBad = !!bds && !bds.valid;
@@ -55,7 +55,7 @@ export function driverShiftsToRows(shifts: DriverShiftData[]): GanttRow[] {
       ? (violCount >= 3 ? "#ef4444" : "#f59e0b") // rosso ≥3, ambra altrimenti
       : TYPE_COLORS[s.type];
     const sublabel = bdsBad
-      ? `${typeShort} · ⚠ BDS×${violCount}`
+      ? `${typeShort} · ⚠ norma×${violCount}`
       : typeShort;
     return {
       id: s.driverId,
@@ -492,12 +492,12 @@ function recomputeShiftAggregates(shift: DriverShiftData) {
 export interface DriverSuggestion {
   driverId: string;
   reason: string;          // one-line motivo principale (verde / giallo / rosso)
-  detail?: string;         // dettaglio secondario (gap, vehicleType match, BDS impact)
+  detail?: string;         // dettaglio secondario (gap, vehicleType match, impatto normativo)
   score: number;           // 0..100, più alto = migliore
-  warnings?: string[];     // eventuali avvertimenti BDS
+  warnings?: string[];     // eventuali avvertimenti normativi
 }
 
-/* Limiti normativa BDS hard-coded coerenti con backend
+/* Limiti normativa hard-coded coerenti con backend
  *   intero      → maxNastro 13h00 (780)
  *   semiunico   → maxNastro 13h30 (810)
  *   spezzato    → maxNastro 14h00 (840)

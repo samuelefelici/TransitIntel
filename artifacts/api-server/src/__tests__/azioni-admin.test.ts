@@ -58,6 +58,21 @@ describe("azioni dell'admin sugli utenti", () => {
     expect(azioniAdmin({ ...base, active: false }, { ...base, active: false })).toEqual([]);
   });
 
+  it("i depositi: quali si aggiungono e quali si tolgono, e alla creazione quali ha", () => {
+    expect(azioniAdmin(base, { ...base, depositi: ["jesi", "ancona"] })).toEqual(["depositi_cambiati +ancona +jesi"]);
+    expect(azioniAdmin({ ...base, depositi: ["jesi", "ancona"] }, { ...base, depositi: ["jesi", "osimo"] })).toEqual(["depositi_cambiati +osimo -ancona"]);
+    expect(azioniAdmin({ ...base, depositi: ["jesi"] }, { ...base, depositi: [] })).toEqual(["depositi_cambiati -jesi"]);
+    // PR 2.14d: anche i depositi che vede, e separati da quelli che modifica
+    expect(azioniAdmin(base, { ...base, depositi_visibili: ["jesi", "ancona"] })).toEqual(["depositi_visibili_cambiati +ancona +jesi"]);
+    expect(azioniAdmin({ ...base, depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] }, { ...base, depositi: ["jesi"], depositi_visibili: [] }))
+      .toEqual(["depositi_visibili_cambiati -ancona -jesi"]);
+    expect(azioniAdmin(null, { ...base, depositi: ["jesi"], depositi_visibili: ["jesi", "ancona"] })[0]).toMatch(/deposito:jesi,vede:ancona,vede:jesi/);
+    // gli stessi depositi, anche in un altro ordine o scritti a metà: nessuna azione
+    expect(azioniAdmin({ ...base, depositi: ["jesi", "ancona"] }, { ...base, depositi: ["ancona", "jesi"] })).toEqual([]);
+    expect(azioniAdmin({ ...base, depositi: null }, { ...base, depositi: [] })).toEqual([]);
+    expect(azioniAdmin(null, { ...base, depositi: ["jesi"] })).toEqual(["utente_creato user ufficio_turni,deposito:jesi"]);
+  });
+
   it("più cambi insieme, in ordine fisso", () => {
     expect(azioniAdmin(base, { ...base, role: "admin", full_name: "X", active: false }, { password: true }))
       .toEqual(["ruolo_cambiato user→admin", "nome_cambiato", "password_provvisoria", "disattivato"]);

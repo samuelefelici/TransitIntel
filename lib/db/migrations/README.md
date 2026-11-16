@@ -69,17 +69,29 @@ su main non si tocca più.
   un secondo file, perché è DDL e come `cerbero_owner` non passa. Si tolgono
   solo le righe che nessuna richiesta può più leggere, e quante sono si scrive
   nel log con un `RAISE WARNING`. Se togliere una riga cambia quello che l'app
-  calcola, non lo decide la migrazione.
+  calcola, non lo decide la migrazione: in quel caso (0013, la categoria delle
+  corse) la migrazione guarda prima, e se trova righe senza padre **non mette
+  il vincolo e non fallisce**: lo scrive nel log con un `RAISE WARNING`, e il
+  vincolo si mette a mano dopo aver sistemato i dati dall'app (il comando sta
+  in DEPLOY). Va bene solo se l'app funziona uguale con e senza il vincolo, e
+  se un test prova tutti e due i casi
+  (`lib/db/tests/chiave-categoria-rimandata.test.sql`). «Guarda prima» vuol
+  dire con il lucchetto già preso (`LOCK TABLE … IN SHARE ROW EXCLUSIVE MODE`
+  prima del conteggio): mentre il deploy migra il container di prima serve
+  ancora, e una riga scritta fra il conteggio e l'`ALTER` farebbe fallire la
+  migrazione (`lib/db/tests/chiave-categoria-in-gara.sh`).
 - **Una tabella nuova di Planning Studio** (`ps_*`) con i dati di un progetto
   ha la chiave verso `ps_projects` con `ON DELETE CASCADE`, e una riga nel seme
   di `artifacts/api-server/src/__tests__/elimina-progetto-db.test.ts`: la prova
   controlla che cancellando il progetto non ne resti nessuna, e fallisce finché
   la tabella non è in uno dei suoi due elenchi. L'ordine della cancellazione è
   scritto nel codice (`cancellaProgetto`, in
-  `artifacts/api-server/src/lib/planning-studio.ts`): l'app non cerca più nel
+  `artifacts/api-server/src/lib/progetto-copie.ts`): l'app non cerca più nel
   catalogo le tabelle da svuotare. Se la tabella nuova punta a un'altra del
   progetto con `ON DELETE RESTRICT`, o non ha la chiave verso il progetto,
-  quell'ordine va rivisto nella stessa PR.
+  quell'ordine va rivisto nella stessa PR. Una riga che deve restare quando il
+  progetto si cancella (lo storico del programma in esercizio, 0019) ha la
+  chiave `ON DELETE SET NULL`, e la prova lo dice in `RESTA`.
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
 - **Chi possiede cosa (PR 2.8).** Le tabelle, le viste e le sequenze di
@@ -156,6 +168,25 @@ su main non si tocca più.
   (PR 2.16b), quindi non c'è niente da togliere prima. Se `ruoli.mjs
   --verifica` avvisa che un altro ruolo può creare in `public`, quello sì va
   tolto prima.
+- **Codici stabili (PR 3.1, 0017 e 0018).** `ps_trips`, `ps_stops` e
+  `ps_routes` hanno `codice`: obbligatorio, unico nel progetto, lo stesso
+  nelle copie del programma. Una riga che non lo porta lo riceve dal default
+  (`CB-C…`, `CB-F…`, `CB-L…`, dalla sequenza `ps_codici_seq`). Una migrazione
+  che copia righe di queste tabelle dentro lo stesso progetto non copia il
+  codice; una che le sposta fra progetti lo conserva. L'import scrive come
+  codice l'id del file (`artifacts/api-server/src/lib/codici-stabili.ts`).
+- **Il programma in esercizio (PR 3.2, 0019 e 0020).** Al più un feed acceso
+  (`gtfs_feeds.is_active`) e al più un periodo aperto nello storico
+  (`ps_activation_log`): vincoli di esclusione differiti alla fine della
+  transazione. Una migrazione non accende feed: lo fa la porta unica
+  (`artifacts/api-server/src/lib/esercizio-porta.ts`), che scrive anche lo
+  storico.
+- **Le versioni pubblicate (PR 3.3, 0021).** Un `ps_projects` con
+  `versione_del_feed` è la copia congelata di un programma messo in esercizio
+  (`artifacts/api-server/src/lib/versioni-pubblicate.ts`): senza proprietario,
+  non si modifica. Una migrazione che tocca i progetti o le loro righe vale
+  anche per le versioni: se non deve, le esclude con
+  `versione_del_feed IS NULL`.
 - **Il registro delle modifiche (PR 2.10 e 2.11).** Le tabelle sorvegliate hanno i
   trigger `registro_*`, che scrivono in `registro.modifiche` (schema, tabelle e
   funzioni di `cerbero_registro`, non di `cerbero_owner`). Una tabella nuova

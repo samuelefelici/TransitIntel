@@ -8,7 +8,7 @@
  * un'altra fermata rispetto alla 200 di Mizar. Agganciare per numero senza
  * tabella non produce assenze: produce fermate sbagliate.
  *
- * La tabella esiste — «Transcodifica Conerobus Paline Maior vs SWI», 4 400
+ * La tabella esiste — la transcodifica delle paline di Conerobus (codici della pianificazione contro SWI), 4 400
  * righe, 13 aprile 2026 — e sta in data/transcodifica-paline-mizar.csv:
  *   mizar_ref,stop_id,nome
  * Si carica una volta per processo. Un'altra copia si può indicare con

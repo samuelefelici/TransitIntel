@@ -21,10 +21,18 @@ describe("le password nuove", () => {
     expect(erroreNuovaPassword("asdfghjklzxc")).toMatch(/sequenza/);
   });
 
+  /* il nome e la città dell'azienda li dà chi chiama, dai dati dell'azienda (lib/azienda.ts) */
+  const AZIENDA = ["conerobus", "ancona"];
+
   it("si rifiutano il nome dell'azienda con poco altro e i dati della persona", () => {
-    expect(erroreNuovaPassword("Conerobus2026!")).toMatch(/ovvia/);
+    expect(erroreNuovaPassword("Conerobus2026!", {}, AZIENDA)).toMatch(/ovvia/);
     expect(erroreNuovaPassword("cerbero-cerbero")).toMatch(/ripetuto|ovvia/);
-    expect(erroreNuovaPassword("conerobus e la luna piena")).toBeNull();
+    expect(erroreNuovaPassword("conerobus e la luna piena", {}, AZIENDA)).toBeNull();
+    // senza le parole dell'azienda (installazione ancora da compilare) restano quelle ovvie
+    expect(erroreNuovaPassword("Conerobus2026!")).toBeNull();
+    expect(erroreNuovaPassword("Password-2026!")).toMatch(/ovvia/);
+    // una parola troppo corta fra quelle dell'azienda non ferma tutto
+    expect(erroreNuovaPassword("lampione verde 77", {}, ["a", "ver"])).toBeNull();
     expect(erroreNuovaPassword("Mario-del-2026!", { email: "mario.rossi@azienda.it" })).toMatch(/nome o l'email/);
     expect(erroreNuovaPassword("tantissimi rossi 1", { nome: "Paolo Rossi" })).toMatch(/nome o l'email/);
     expect(erroreNuovaPassword("lampione verde 77", { email: "mario.rossi@azienda.it", nome: "Mario Rossi" })).toBeNull();
@@ -33,9 +41,10 @@ describe("le password nuove", () => {
 
   it("parole ripetute: la stessa parola più volte non basta", () => {
     expect(erroreNuovaPassword("Password Password Password")).toMatch(/ripetuto|ovvia/);
-    expect(erroreNuovaPassword("Conerobus Conerobus")).toMatch(/ripetuto|ovvia/);
+    expect(erroreNuovaPassword("Conerobus Conerobus", {}, AZIENDA)).toMatch(/ripetuto|ovvia/);
     expect(erroreNuovaPassword("Cerbero Cerbero 1")).toMatch(/ovvia/);
-    expect(erroreNuovaPassword("Ancona Ancona Ancona")).toMatch(/ripetuto|ovvia/);
+    expect(erroreNuovaPassword("Ancona Ancona Ancona", {}, AZIENDA)).toMatch(/ripetuto|ovvia/);
+    expect(erroreNuovaPassword("Ancona Ancona 1", {}, AZIENDA)).toMatch(/ovvia/);
     expect(erroreNuovaPassword("passwordpassword1")).toMatch(/ovvia|comune/);
   });
 

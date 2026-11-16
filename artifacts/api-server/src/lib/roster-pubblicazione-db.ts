@@ -133,17 +133,18 @@ export const snapshotDaRiassunto = (t: TurnoRiassunto) => ({ start: t.start, end
 
 /* ── Il canale ───────────────────────────────────────────────────────────── */
 
-export interface RigaAttiva extends RigaCanale { pubblicazioneId: string }
+/** Una riga attiva del canale, col turno macchina su cui valgono i turni guida (PR 3.6). */
+export interface RigaAttiva extends RigaCanale { pubblicazioneId: string; vssId: string }
 
 /** Le righe attive del canale fra due giorni compresi. */
 export async function canale(ex: Ex, dal: string, al: string): Promise<RigaAttiva[]> {
   return righe(await ex.execute(sql`
-    SELECT day::text AS day, udp_id::text, dss_id::text, ps_project_id::text, udp_nome, dss_nome, pubblicazione_id::text
+    SELECT day::text AS day, udp_id::text, dss_id::text, vss_id::text, ps_project_id::text, udp_nome, dss_nome, pubblicazione_id::text
       FROM roster_turni_pubblicati
      WHERE sostituita_da IS NULL AND day BETWEEN ${dal}::date AND ${al}::date
      ORDER BY day, udp_nome, udp_id`)).map(x => ({
     day: String(x.day).slice(0, 10), udpId: x.udp_id, dssId: x.dss_id, psProjectId: x.ps_project_id ?? null,
-    udpNome: x.udp_nome ?? null, dssNome: x.dss_nome ?? null, pubblicazioneId: x.pubblicazione_id,
+    udpNome: x.udp_nome ?? null, dssNome: x.dss_nome ?? null, pubblicazioneId: x.pubblicazione_id, vssId: x.vss_id,
   }));
 }
 
@@ -205,6 +206,8 @@ export async function udpDelProgramma(psProjectId: string): Promise<Array<UdpCon
 export interface Candidato {
   dssId: string; nome: string; versione: number; inEsercizio: boolean;
   superatoDa: string | null; datiSuperati: boolean; turni: number; creatoIl: string; progetto: string;
+  /** calcolati su una versione dei turni macchina che ne ha una più nuova (PR 3.6) */
+  turniMacchinaSuperati: boolean;
 }
 
 /** I turni guida di ogni UDP: quelli dei suoi progetti di scheduling. */
@@ -216,6 +219,7 @@ export async function candidatiDelleUdp(udpIds: string[]): Promise<Map<string, C
     SELECT sp.validity_unit_id::text AS udp_id, sp.name AS progetto,
            d.id::text, d.name, d.created_at, COALESCE(d.is_operational, false) AS op,
            COALESCE(d.version, 1) AS versione, d.superseded_by::text AS superato_da, d.stale_since,
+           (s.superseded_by IS NOT NULL) AS tm_superati,
            jsonb_array_length(COALESCE(d.result->'driverShifts', d.result->'duties', '[]'::jsonb)) AS turni
       FROM driver_shift_scenarios d
       JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
@@ -229,6 +233,7 @@ export async function candidatiDelleUdp(udpIds: string[]): Promise<Map<string, C
 const candidatoDa = (x: any): Candidato => ({
   dssId: x.id, nome: x.name, versione: Number(x.versione), inEsercizio: !!x.op, superatoDa: x.superato_da ?? null,
   datiSuperati: !!x.stale_since, turni: Number(x.turni ?? 0), creatoIl: new Date(x.created_at).toISOString(), progetto: x.progetto,
+  turniMacchinaSuperati: !!x.tm_superati,
 });
 
 /**
@@ -242,8 +247,11 @@ async function candidatiGiaPubblicati(mancanti: Array<{ udpId: string; dssId: st
   const r = righe(await dbEx.execute(sql`
     SELECT d.id::text, d.name, d.created_at, COALESCE(d.is_operational, false) AS op,
            COALESCE(d.version, 1) AS versione, d.superseded_by::text AS superato_da, d.stale_since,
+           (s.superseded_by IS NOT NULL) AS tm_superati,
            jsonb_array_length(COALESCE(d.result->'driverShifts', d.result->'duties', '[]'::jsonb)) AS turni
-      FROM driver_shift_scenarios d WHERE d.id IN (${inLista(ids)})`));
+      FROM driver_shift_scenarios d
+      JOIN service_program_scenarios s ON s.id = d.service_program_scenario_id
+     WHERE d.id IN (${inLista(ids)})`));
   const perId = new Map(r.map(x => [String(x.id), x]));
   return mancanti.flatMap(m => {
     const x = perId.get(m.dssId);
@@ -520,6 +528,12 @@ export async function pubblica(req: Pubblicazione, userId: string | null, via: s
       if (letti.some(id => ora.get(id) !== p.riassunti.get(id)!.impronta)) {
         throw new RifiutoPubblicazione(409, "Nel frattempo un turni guida è stato salvato o cancellato: guarda di nuovo l'anteprima", { cambiato: true });
       }
+      /* e i loro turni macchina: chi li salva aspetta, poi vede i giorni pubblicati
+         e ne crea una versione nuova invece di scriverci sopra (PR 3.6) */
+      await ex.execute(sql`
+        SELECT s.id FROM service_program_scenarios s
+         WHERE s.id IN (SELECT d.service_program_scenario_id FROM driver_shift_scenarios d WHERE d.id IN (${inLista(letti)}))
+         ORDER BY s.id FOR SHARE`);
     }
     const piano = pianoCanale({ psProjectId: req.psProjectId, udp: p.udp, scelte: p.scelte, dal: req.dal, al: req.al, attuali, nomiDss: p.nomiDss });
     if (gettone(attuali, assegnazioni, piano, p.riassunti) !== req.gettone) {
@@ -539,8 +553,10 @@ export async function pubblica(req: Pubblicazione, userId: string | null, via: s
        WHERE sostituita_da IS NULL AND day IN (${sql.join(piano.giorniToccati.map(d => sql`${d}::date`), sql`, `)})`);
     for (let i = 0; i < piano.nuove.length; i += 500) {
       await ex.execute(sql`
-        INSERT INTO roster_turni_pubblicati (day, udp_id, dss_id, ps_project_id, udp_nome, dss_nome, pubblicazione_id)
-        VALUES ${sql.join(piano.nuove.slice(i, i + 500).map(r => sql`(${r.day}::date, ${r.udpId}::uuid, ${r.dssId}::uuid, ${r.psProjectId}::uuid, ${r.udpNome ?? null}, ${r.dssNome ?? null}, ${pub.id}::uuid)`), sql`, `)}`);
+        INSERT INTO roster_turni_pubblicati (day, udp_id, dss_id, vss_id, ps_project_id, udp_nome, dss_nome, pubblicazione_id)
+        VALUES ${sql.join(piano.nuove.slice(i, i + 500).map(r => sql`(${r.day}::date, ${r.udpId}::uuid, ${r.dssId}::uuid,
+          (SELECT d.service_program_scenario_id FROM driver_shift_scenarios d WHERE d.id = ${r.dssId}::uuid),
+          ${r.psProjectId}::uuid, ${r.udpNome ?? null}, ${r.dssNome ?? null}, ${pub.id}::uuid)`), sql`, `)}`);
     }
 
     /* il ricollegamento: le assegnazioni passano al turno uguale, con lo storico di dove erano */

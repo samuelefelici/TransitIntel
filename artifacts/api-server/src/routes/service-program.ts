@@ -32,6 +32,7 @@ import {
 import { avviaSincronizzazione, attendiSincronizzazione } from "../lib/planning-studio-materialize";
 
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
+import { salvaTurniMacchina } from "../lib/turni-macchina-versioni";
 import {
   type VehicleType, type ServiceCategory, type TripBlock, type VehicleShift,
   VEHICLE_SIZE, VEHICLE_LABELS, VEHICLE_CAPACITY, DEADHEAD_SPEED, MAX_DEADHEAD_KM, MAX_IDLE_AT_TERMINAL,
@@ -1982,7 +1983,10 @@ router.get("/service-program/scenarios", async (req, res) => {
   }
 });
 
-/** PUT /api/service-program/scenarios/:id — overwrite an existing scenario (name + result + input) */
+/** PUT /api/service-program/scenarios/:id — salva lo scenario (name + result + input).
+ *  Se il roster usa i suoi turni guida e il risultato cambia, crea una versione
+ *  nuova e risponde col suo id (lib/turni-macchina-versioni.ts, PR 3.6).
+ *  Con nonVersionare: true (i ritocchi automatici) in quel caso risponde 409. */
 router.put("/service-program/scenarios/:id", async (req, res) => {
   try {
     const acc = await requireVehicleScenarioWrite(req, res, req.params.id);
@@ -1996,27 +2000,25 @@ router.put("/service-program/scenarios/:id", async (req, res) => {
       });
       return;
     }
-    const { name, input, result: scenarioResult } = req.body as {
-      name?: string; input?: unknown; result?: unknown;
+    const { name, input, result: scenarioResult, nonVersionare } = req.body as {
+      name?: string; input?: unknown; result?: unknown; nonVersionare?: boolean;
     };
     if (!scenarioResult) {
       res.status(400).json({ error: "Parametro 'result' obbligatorio" });
       return;
     }
-    const update: Record<string, unknown> = { result: scenarioResult as any };
-    if (name) update.name = name;
-    if (input !== undefined) update.input = input as any;
-    const [row] = await db.update(serviceProgramScenarios)
-      .set(update as any)
-      .where(eq(serviceProgramScenarios.id, req.params.id))
-      .returning({ id: serviceProgramScenarios.id });
-    if (!row) { res.status(404).json({ error: "Scenario non trovato" }); return; }
-    // Salvataggio nuovo = contenuto allineato ai dati correnti → azzera il
-    // flag "dati superati" impostato dal resync (colonna additiva, best-effort)
-    try {
-      await db.execute(sql`UPDATE service_program_scenarios SET stale_since = NULL WHERE id = ${req.params.id}::uuid`);
-    } catch { /* colonna assente su DB legacy */ }
-    res.json({ id: row.id, ok: true });
+    const esito = await salvaTurniMacchina(req.params.id, {
+      name: typeof name === "string" && name.trim() ? name : null,
+      input, result: scenarioResult, nonVersionare: nonVersionare === true,
+    });
+    if (esito.stato === 404) { res.status(404).json({ error: "Scenario non trovato" }); return; }
+    if (esito.stato === 409) {
+      res.status(409).json(esito.motivo === "versione_superata"
+        ? { error: "Questa versione dei turni macchina è già stata superata: apri la più recente.", supersededBy: esito.supersededBy ?? null }
+        : { error: "I turni guida di questi turni macchina sono nel roster: non si ritoccano.", usatoNelRoster: true });
+      return;
+    }
+    res.json({ id: esito.id, ok: true, ...(esito.versionedFrom ? { versionedFrom: esito.versionedFrom, version: esito.version } : {}) });
   } catch (err: any) {
     req.log.error(err, "Error updating scenario");
     res.status(500).json({ error: err.message });
@@ -2069,8 +2071,11 @@ router.delete("/service-program/scenarios/:id", async (req, res) => {
     /* i turni guida figli se ne andrebbero in cascata: se il roster li usa, no */
     const usi = messaggioUsi(await usiNelRoster({ spsId: req.params.id }), "Scenario non eliminabile");
     if (usi) { res.status(409).json({ error: usi }); return; }
-    await db.delete(serviceProgramScenarios)
-      .where(eq(serviceProgramScenarios.id, req.params.id));
+    /* se era la versione nuova di un altro, quello torna la versione più recente (PR 3.6) */
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`UPDATE service_program_scenarios SET superseded_by = NULL WHERE superseded_by = ${req.params.id}::uuid`);
+      await tx.delete(serviceProgramScenarios).where(eq(serviceProgramScenarios.id, req.params.id));
+    });
     res.json({ ok: true });
   } catch (err: any) {
     if ((err?.cause?.code ?? err?.code) === "23503") { res.status(409).json({ error: "Scenario non eliminabile: i suoi turni guida sono pubblicati nel roster." }); return; }

@@ -40,6 +40,10 @@ export interface PsProject {
 export interface PsStop {
   id: string;
   projectId: string;
+  /** Il codice stabile (PR 3.1): unico nel programma, lo stesso nelle sue copie,
+   *  quello del GTFS esportato. Per una fermata importata è l'id del file. Non è
+   *  `code`, il codice esposto al pubblico. */
+  codice?: string;
   code?: string | null;
   name: string;
   description?: string | null;
@@ -59,6 +63,8 @@ export interface PsStop {
 export interface PsRoute {
   id: string;
   projectId: string;
+  /** il codice stabile della linea: vedi PsStop.codice */
+  codice?: string;
   code?: string | null;
   shortName: string;
   longName?: string | null;
@@ -148,6 +154,8 @@ export interface PsCalendar {
 export interface PsTrip {
   id: string;
   projectId: string;
+  /** il codice stabile della corsa: vedi PsStop.codice */
+  codice?: string;
   routeId: string;
   variantId: string;
   calendarId?: string | null;
@@ -165,6 +173,8 @@ export interface PsTrip {
   dayTypeCodes?: string[];
   /** macro-categorie del calendario aziendale (es. Scuole Aperte) */
   categories?: Array<{ id: string; code: string; name: string; color: string | null }>;
+  /** righe della corsa che puntano a una categoria cancellata (lib/categorie-cancellate.ts) */
+  lostCategories?: number;
   createdAt: string;
 }
 
@@ -697,6 +707,8 @@ export async function splitPsTripByCategories(
 /* ─── KM annui per linea e categoria (stampa elenco corse) ─── */
 export interface PsCorseKm {
   from: string | null; to: string | null; hasCalendar: boolean; hasOnDemand: boolean;
+  /** corse con un periodo di un giorno solo (dal = al): contano i km di quel giorno */
+  periodoDiUnGiorno?: { quante: number; giorno: string | null };
   categories: { code: string; name: string; color: string | null; sort: number }[];
   lines: {
     routeId: string; shortName: string; longName: string | null; color: string | null;
@@ -708,8 +720,10 @@ export interface PsCorseKm {
   onDemandTotalsByCategory: Record<string, number>;
   onDemandGrandTotal: number;
 }
-/** km annui (dal calendario aziendale, ignorando il periodo delle corse),
- *  per linea e ripartiti per categoria di validità, con i totali. */
+/** km annui nel periodo del calendario aziendale, per linea e ripartiti per
+ *  categoria di validità, con i totali. Contano i giorni in cui ogni corsa
+ *  circola davvero (matrice di validità, eccezioni e periodo della corsa: la
+ *  stessa circolazione del GTFS in esercizio e delle UDP, PR 3.5). */
 export async function getPsCorseKm(projectId: string, routeIds?: string[]): Promise<PsCorseKm> {
   const q = routeIds && routeIds.length ? `?routeIds=${encodeURIComponent(routeIds.join(","))}` : "";
   return apiFetch(`/api/planning-studio/projects/${projectId}/corse-km${q}`);
@@ -1009,7 +1023,7 @@ export async function listPsRestPoints(projectId: string): Promise<PsRestPoint[]
 
 export interface PsRouteDetail {
   route: {
-    id: string; code: string | null; shortName: string; longName: string | null;
+    id: string; codice?: string; code: string | null; shortName: string; longName: string | null;
     description: string | null; routeType: number;
     color: string | null; textColor: string | null; sortOrder: number;
     attributes: Record<string, any>;
@@ -1064,7 +1078,7 @@ export interface PsVariantDetail {
 
 export interface PsStopDetail {
   stop: {
-    id: string; code: string | null; name: string; description: string | null;
+    id: string; codice?: string; code: string | null; name: string; description: string | null;
     lat: number; lon: number;
     zoneId: string | null; locationType: number;
     parentStation: string | null;

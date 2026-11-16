@@ -1,12 +1,17 @@
-import { useEffect, useState, useCallback } from "react";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
 import { apiFetch } from "@/lib/api";
 import { voceAdminLeggibile } from "@/lib/registro-admin";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  AREE, DESCRIZIONI_AREE, DESCRIZIONI_RUOLI, INTERRUTTORI_DI_PRIMA, NOMI_AREE, NOMI_RUOLI, RUOLI, RUOLO_FLEETCARE_SUGGERITO,
-  dirittiDi, haAccessoDiPrima, puo, vedeDatiSanitari,
-  type Diritti, type InterruttoreDiPrima, type RuoloAziendale,
+  AREE, DESCRIZIONI_AREE, INTERRUTTORI_DI_PRIMA, MATRICE, NOMI_AREE, NOMI_RUOLI, RUOLI, RUOLO_FLEETCARE_SUGGERITO,
+  dirittiDi, haAccessoDiPrima, puo, rigaDelRuolo, vedeDatiSanitari,
+  type Diritti, type InterruttoreDiPrima, type Matrice, type RuoloAziendale,
 } from "@workspace/permessi";
+import { matriceDaRuoli, riassuntoDeiDiritti, ruoliValidi } from "@/lib/ruoli-admin";
+import {
+  conInterruttore, conModifica, conScelta, depositiDellUtente, depositiInBreve, elenchiDaSalvare, erroreDepositi, sceltaSul,
+  type DepositiScelti, type SceltaDeposito,
+} from "@/lib/depositi-utente";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,6 +42,10 @@ interface AdminUser {
   accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>;
   datiSanitari: boolean;
   analisi: boolean;
+  /** i depositi di cui modifica i conducenti */
+  depositi?: string[];
+  /** i depositi di cui vede i conducenti; vuoto = tutti */
+  depositiVisibili?: string[];
   /** lettura o scrittura per area, come li calcola il server */
   diritti: Diritti;
   fleetcareRole: string;
@@ -82,11 +91,23 @@ interface Scelte {
   accessoDiPrima: Partial<Record<InterruttoreDiPrima, true>>;
   datiSanitari: boolean;
   analisi: boolean;
+  /** di quali depositi vede i conducenti e di quali li modifica (lib/depositi-utente.ts) */
+  depositi: DepositiScelti;
   fleetcareRole: string;
 }
 
-const dirittiDelleScelte = (s: Scelte): Diritti =>
-  dirittiDi({ admin: s.role === "admin", ruoli: s.ruoli, accessoDiPrima: s.accessoDiPrima, analisi: s.analisi, datiSanitari: s.datiSanitari });
+const SCELTE_DEPOSITO: ReadonlyArray<[SceltaDeposito, string]> = [["niente", "Non vede"], ["vede", "Vede"], ["modifica", "Modifica"]];
+
+/** Un deposito del catalogo del roster (GET /api/roster/depositi). */
+interface DepositoCatalogo { codice: string; nome: string }
+
+/* La matrice dei ruoli in vigore (quella di partenza con le modifiche fatte in
+ * Amministrazione › Ruoli): l'anteprima di quello che un utente potrà fare deve
+ * usare la stessa dell'API. Finché non arriva vale quella di partenza. */
+const MatriceInVigore = createContext<Matrice>(MATRICE);
+
+const dirittiDelleScelte = (s: Scelte, matrice: Matrice): Diritti =>
+  dirittiDi({ admin: s.role === "admin", ruoli: s.ruoli, accessoDiPrima: s.accessoDiPrima, analisi: s.analisi, datiSanitari: s.datiSanitari }, matrice);
 
 /** Ruoli disponibili DENTRO FleetCare (gli admin entrano sempre come Admin Flotta). */
 const FLEETCARE_ROLE_LABEL: Record<string, string> = {
@@ -105,6 +126,9 @@ export default function AdminUsersPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [editing, setEditing] = useState<AdminUser | null>(null);
   const [resetPwdFor, setResetPwdFor] = useState<AdminUser | null>(null);
+  /* il catalogo dei depositi del roster: serve a limitare la scrittura di un Capo deposito ai suoi */
+  const [depositi, setDepositi] = useState<DepositoCatalogo[]>([]);
+  const [matrice, setMatrice] = useState<Matrice>(MATRICE);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -121,6 +145,26 @@ export default function AdminUsersPage() {
   useEffect(() => {
     if (isAdmin) void load();
   }, [isAdmin, load]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let vivo = true;
+    /* che cosa dà ogni ruolo adesso; se non si legge, l'anteprima usa i valori di partenza (decide comunque l'API) */
+    apiFetch<unknown>("/api/admin/ruoli")
+      .then(r => { if (vivo) setMatrice(matriceDaRuoli(ruoliValidi(r))); })
+      .catch(() => { /* resta la matrice di partenza */ });
+    return () => { vivo = false; };
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let vivo = true;
+    /* senza il catalogo la pagina funziona lo stesso: mancano solo le caselle dei depositi */
+    apiFetch<{ depositi: DepositoCatalogo[] }>("/api/roster/depositi")
+      .then(r => { if (vivo) setDepositi((r.depositi ?? []).map(d => ({ codice: d.codice, nome: d.nome }))); })
+      .catch(() => { /* il roster può non essere pronto: i depositi già scelti si mostrano col loro codice */ });
+    return () => { vivo = false; };
+  }, [isAdmin]);
 
   if (!isAdmin) {
     return (
@@ -185,6 +229,7 @@ export default function AdminUsersPage() {
   };
 
   return (
+    <MatriceInVigore.Provider value={matrice}>
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -255,7 +300,7 @@ export default function AdminUsersPage() {
                           />
                         </td>
                         <td className="py-2 pr-4">
-                          <RuoliInBreve u={u} />
+                          <RuoliInBreve u={u} depositi={depositi} />
                         </td>
                         {/* FleetCare: il ruolo dentro il modulo, per chi può aprire la Flotta.
                             Gli admin entrano sempre (come fleet_admin). */}
@@ -340,6 +385,7 @@ export default function AdminUsersPage() {
 
       {showCreate && (
         <CreateUserDialog
+          depositi={depositi}
           onClose={() => setShowCreate(false)}
           onCreated={() => {
             setShowCreate(false);
@@ -351,6 +397,7 @@ export default function AdminUsersPage() {
       {editing && (
         <EditUserDialog
           user={editing}
+          depositi={depositi}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -371,18 +418,19 @@ export default function AdminUsersPage() {
         />
       )}
     </div>
+    </MatriceInVigore.Provider>
   );
 }
 
 /* ─── Dialogs ─── */
 
-function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function CreateUserDialog({ onClose, onCreated, depositi }: { onClose: () => void; onCreated: () => void; depositi: DepositoCatalogo[] }) {
   const { toast } = useToast();
   const [email, setEmail] = useState("");
   const [fullName, setFullName] = useState("");
   const [password, setPassword] = useState("");
   /* un utente nuovo ha solo quello che gli danno i ruoli: nessun accesso di prima */
-  const [scelte, setScelte] = useState<Scelte>({ role: "user", ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, fleetcareRole: "driver" });
+  const [scelte, setScelte] = useState<Scelte>({ role: "user", ruoli: [], accessoDiPrima: {}, datiSanitari: false, analisi: false, depositi: depositiDellUtente({}), fleetcareRole: "driver" });
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -394,6 +442,8 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       toast({ title: `Password troppo corta (almeno ${PASSWORD_MIN} caratteri)`, variant: "destructive" });
       return;
     }
+    const sbagliati = scelte.role === "admin" ? null : erroreDepositi(scelte.depositi);
+    if (sbagliati) { toast({ title: "Depositi del roster", description: sbagliati, variant: "destructive" }); return; }
     setBusy(true);
     try {
       await apiFetch("/api/admin/users", {
@@ -401,7 +451,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email, fullName, password, role: scelte.role, ruoli: scelte.ruoli,
-          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, fleetcareRole: scelte.fleetcareRole,
+          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, ...elenchiDaSalvare(scelte.depositi), fleetcareRole: scelte.fleetcareRole,
         }),
       });
       toast({ title: "Utente creato" });
@@ -437,7 +487,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
               Almeno {PASSWORD_MIN} caratteri. Meglio una frase di più parole; niente nome, email o password comuni.
             </p>
           </div>
-          <PermessiUtente scelte={scelte} onChange={setScelte} prefisso="nuovo-utente" />
+          <PermessiUtente scelte={scelte} onChange={setScelte} prefisso="nuovo-utente" depositi={depositi} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Annulla</Button>
@@ -450,10 +500,14 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
 
 function EditUserDialog({
   user,
+  depositi,
   onClose,
   onSaved,
 }: {
   user: AdminUser;
+  /** il catalogo dei depositi del roster */
+  depositi: DepositoCatalogo[];
+  
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -461,11 +515,13 @@ function EditUserDialog({
   const [fullName, setFullName] = useState(user.fullName || "");
   const [scelte, setScelte] = useState<Scelte>({
     role: user.role, ruoli: user.ruoli ?? [], accessoDiPrima: user.accessoDiPrima ?? {},
-    datiSanitari: !!user.datiSanitari, analisi: !!user.analisi, fleetcareRole: user.fleetcareRole || "driver",
+    datiSanitari: !!user.datiSanitari, analisi: !!user.analisi, depositi: depositiDellUtente(user), fleetcareRole: user.fleetcareRole || "driver",
   });
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
+    const sbagliati = scelte.role === "admin" ? null : erroreDepositi(scelte.depositi);
+    if (sbagliati) { toast({ title: "Depositi del roster", description: sbagliati, variant: "destructive" }); return; }
     setBusy(true);
     try {
       await apiFetch(`/api/admin/users/${user.id}`, {
@@ -473,7 +529,7 @@ function EditUserDialog({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fullName, role: scelte.role, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima,
-          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, fleetcareRole: scelte.fleetcareRole,
+          datiSanitari: scelte.datiSanitari, analisi: scelte.analisi, ...elenchiDaSalvare(scelte.depositi), fleetcareRole: scelte.fleetcareRole,
         }),
       });
       toast({ title: "Salvato" });
@@ -496,7 +552,7 @@ function EditUserDialog({
             <Label htmlFor="modifica-utente-nome">Nome completo</Label>
             <Input id="modifica-utente-nome" value={fullName} onChange={(e) => setFullName(e.target.value)} />
           </div>
-          <PermessiUtente scelte={scelte} onChange={setScelte} diPrima={user.accessoDiPrima ?? {}} prefisso="modifica-utente" />
+          <PermessiUtente scelte={scelte} onChange={setScelte} diPrima={user.accessoDiPrima ?? {}} prefisso="modifica-utente" depositi={depositi} />
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Annulla</Button>
@@ -510,7 +566,7 @@ function EditUserDialog({
 /* ─── I permessi di un utente: ruoli aziendali, accesso di prima, capacità ─── */
 
 /** I ruoli di un utente in una riga della tabella. */
-function RuoliInBreve({ u }: { u: AdminUser }) {
+function RuoliInBreve({ u, depositi }: { u: AdminUser; depositi: DepositoCatalogo[] }) {
   if (u.role === "admin") return <span className="text-xs text-amber-400/80">amministratore di sistema: può tutto</span>;
   const diPrima = INTERRUTTORI_DI_PRIMA.filter(i => u.accessoDiPrima?.[i] === true);
   const niente = (u.ruoli ?? []).length === 0 && diPrima.length === 0 && !u.analisi;
@@ -525,6 +581,12 @@ function RuoliInBreve({ u }: { u: AdminUser }) {
           accesso di prima: {diPrima.map(i => NOMI_INTERRUTTORI[i]).join(", ")}
         </span>
       )}
+      {depositiInBreve(u, c => depositi.find(d => d.codice === c)?.nome ?? c).map(testo => (
+        <span key={testo} className="text-[11px] px-1.5 py-0.5 rounded border border-sky-500/40 bg-sky-500/10 text-sky-300"
+          title="I depositi di cui vede e di cui modifica i conducenti, nel tabellone e nell'anagrafica.">
+          {testo}
+        </span>
+      ))}
       {u.datiSanitari && <span className="text-[11px] px-1.5 py-0.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300">dati sanitari</span>}
       {u.analisi && <span className="text-[11px] px-1.5 py-0.5 rounded border border-border text-muted-foreground">Analisi</span>}
       {niente && <span className="text-xs text-muted-foreground">nessun ruolo: non apre nessuna area</span>}
@@ -534,18 +596,33 @@ function RuoliInBreve({ u }: { u: AdminUser }) {
 
 const LIVELLO_IN_PAROLE = { S: "scrive", L: "legge" } as const;
 
-function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso }: {
+function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso, depositi }: {
   scelte: Scelte;
   onChange: (s: Scelte) => void;
   /** gli interruttori di prima che l'utente ha oggi: si possono solo togliere */
   diPrima?: Partial<Record<InterruttoreDiPrima, true>>;
   prefisso: string;
+  /** il catalogo dei depositi del roster, per limitare la scrittura */
+  depositi: DepositoCatalogo[];
 }) {
   const admin = scelte.role === "admin";
-  const diritti = dirittiDelleScelte(scelte);
+  const matrice = useContext(MatriceInVigore);
+  const diritti = dirittiDelleScelte(scelte, matrice);
   const quelliDiPrima = INTERRUTTORI_DI_PRIMA.filter(i => diPrima[i] === true);
   const flotta = puo(diritti, "flotta", "L");
   const roster = puo(diritti, "roster", "L");
+  /* «modifica» ha senso solo per chi il roster lo scrive; i depositi che vede, per chi i conducenti li legge */
+  const scriveRoster = !admin && puo(diritti, "roster", "S");
+  const leggeConducenti = !admin && (roster || puo(diritti, "personale", "L"));
+  const dep = scelte.depositi;
+  const cambiaDepositi = (d: DepositiScelti) => onChange({ ...scelte, depositi: d });
+  /* un deposito scelto che non è più nel catalogo si mostra lo stesso: si deve poter togliere */
+  const sceltiFuoriCatalogo = [...new Set([...dep.depositi, ...dep.depositiVisibili])].filter(c => !depositi.some(d => d.codice === c));
+  const depositiMostrati: DepositoCatalogo[] = [
+    ...depositi,
+    ...sceltiFuoriCatalogo.map(c => ({ codice: c, nome: `${c} (non più nel catalogo)` })),
+  ];
+  const erroreDeiDepositi = erroreDepositi(dep);
   /* la stessa regola del database (users.mfa_obbligatoria): chi vede il personale o il roster */
   const verificaObbligatoria = admin || roster || puo(diritti, "personale", "L");
   const suggerito = scelte.ruoli.map(r => RUOLO_FLEETCARE_SUGGERITO[r]).find(Boolean);
@@ -582,7 +659,8 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso }: {
                 <Checkbox className="mt-0.5" checked={scelte.ruoli.includes(r)} onCheckedChange={(v) => cambiaRuolo(r, v === true)} />
                 <span className="text-sm leading-tight">
                   {NOMI_RUOLI[r]}
-                  <span className="block text-xs text-muted-foreground">{DESCRIZIONI_RUOLI[r]}</span>
+                  {/* quello che il ruolo dà adesso: si cambia in Amministrazione › Ruoli */}
+                  <span className="block text-xs text-muted-foreground">{riassuntoDeiDiritti(rigaDelRuolo(matrice, r))}</span>
                 </span>
               </label>
             ))}
@@ -607,6 +685,72 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso }: {
                 <Button type="button" size="sm" variant="outline" onClick={() => onChange({ ...scelte, accessoDiPrima: {} })}>
                   Spegni tutto l'accesso di prima
                 </Button>
+              )}
+            </fieldset>
+          )}
+
+          {leggeConducenti && depositiMostrati.length > 0 && (
+            <fieldset className="space-y-2 rounded-md border border-sky-500/30 bg-sky-500/5 p-3">
+              <legend className="px-1 text-sm font-medium">Depositi del roster</legend>
+              <p className="text-xs text-muted-foreground">
+                Di quali depositi vede i conducenti, nel tabellone e nell'anagrafica, e di quali li può modificare.
+              </p>
+              <div className="flex items-center justify-between gap-3">
+                <Label htmlFor={`${prefisso}-vede-tutti`} className="text-sm font-normal cursor-pointer">Vede i conducenti di tutti i depositi</Label>
+                <Switch id={`${prefisso}-vede-tutti`} checked={dep.vedeTutti}
+                  onCheckedChange={(v) => cambiaDepositi(conInterruttore(dep, v, depositi.map(d => d.codice), scriveRoster))} />
+              </div>
+              {dep.vedeTutti ? (
+                scriveRoster && (
+                  <>
+                    <p className="text-xs text-muted-foreground">
+                      {dep.depositi.length === 0
+                        ? "Nessun deposito scelto: modifica i conducenti di tutti."
+                        : "Modifica solo i conducenti di questi depositi. Gli altri li vede, senza poterli modificare."}
+                    </p>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                      {depositiMostrati.map(d => (
+                        <label key={d.codice} htmlFor={`${prefisso}-deposito-${d.codice}`} className="flex items-center gap-2 text-sm cursor-pointer">
+                          <Checkbox id={`${prefisso}-deposito-${d.codice}`} checked={dep.depositi.includes(d.codice)}
+                            onCheckedChange={(v) => cambiaDepositi(conModifica(dep, d.codice, v === true))} />
+                          {d.nome}
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )
+              ) : (
+                <div className="space-y-1.5">
+                  {depositiMostrati.map(d => {
+                    const valore = sceltaSul(dep, d.codice);
+                    return (
+                      <div key={d.codice} role="radiogroup" aria-label={d.nome} className="flex items-center justify-between gap-3">
+                        <span className="text-sm">{d.nome}</span>
+                        <div className="inline-flex rounded-md border border-border overflow-hidden shrink-0">
+                          {SCELTE_DEPOSITO.map(([s, etichetta]) => {
+                            const id = `${prefisso}-dep-${d.codice}-${s}`;
+                            const accesa = valore === s;
+                            return (
+                              <label key={s} htmlFor={id}
+                                className={`px-2.5 py-1 text-xs cursor-pointer select-none border-r border-border last:border-r-0 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-inset has-[:focus-visible]:ring-primary ${
+                                  accesa
+                                    ? s === "modifica" ? "bg-primary text-primary-foreground font-medium" : s === "vede" ? "bg-primary/25 text-foreground font-medium" : "bg-muted text-foreground font-medium"
+                                    : "text-muted-foreground hover:bg-muted/40"}`}>
+                                <input type="radio" id={id} name={`${prefisso}-dep-${d.codice}`} value={s} checked={accesa}
+                                  onChange={() => cambiaDepositi(conScelta(dep, d.codice, s))} className="sr-only" />
+                                {etichetta}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {!scriveRoster && (
+                    <p className="text-xs text-muted-foreground">«Modifica» vale solo se il suo ruolo scrive il Roster.</p>
+                  )}
+                  {erroreDeiDepositi && <p role="alert" className="text-xs text-destructive">{erroreDeiDepositi}</p>}
+                </div>
               )}
             </fieldset>
           )}
@@ -669,7 +813,7 @@ function PermessiUtente({ scelte, onChange, diPrima = {}, prefisso }: {
             </div>
           ))}
         </div>
-        {!admin && vedeDatiSanitari({ admin, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima, analisi: scelte.analisi, datiSanitari: scelte.datiSanitari }) && (
+        {!admin && vedeDatiSanitari({ admin, ruoli: scelte.ruoli, accessoDiPrima: scelte.accessoDiPrima, analisi: scelte.analisi, datiSanitari: scelte.datiSanitari }, matrice) && (
           <p className="text-xs text-rose-300 mt-1">Vede i codici sanitari del roster.</p>
         )}
         {verificaObbligatoria && (

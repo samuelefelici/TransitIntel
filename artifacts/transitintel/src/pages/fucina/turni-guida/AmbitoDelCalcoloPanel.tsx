@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════
  *  Ambito del calcolo dei turni guida: su quali cluster di cambio si può
- *  tagliare, vincoli globali di soluzione (BDSI cap. 14), costi avanzati
- *  (BDS5). Valgono per il calcolo che si sta per lanciare; la regola che
+ *  tagliare, vincoli globali di soluzione, costi avanzati.
+ *  Valgono per il calcolo che si sta per lanciare; la regola che
  *  li unisce alla configurazione è in config-solver.ts.
  * ═══════════════════════════════════════════════════════════════ */
 import React, { useEffect, useId, useRef } from "react";
@@ -143,7 +143,7 @@ export function AmbitoDelCalcoloPanel({ aperto, onChiudi, ambito, onCambia, clus
             )}
           </section>
 
-          {/* ── Vincoli globali (BDSI cap. 14) ── */}
+          {/* ── Vincoli globali ── */}
           <section className="rounded-lg border border-zinc-800 bg-black/30 p-3">
             <VincoliGlobaliEditor
               vincoli={ambito.vincoliGlobali}
@@ -157,7 +157,7 @@ export function AmbitoDelCalcoloPanel({ aperto, onChiudi, ambito, onCambia, clus
             )}
           </section>
 
-          {/* ── Costi avanzati (BDS5) ── */}
+          {/* ── Costi avanzati ── */}
           <section className="rounded-lg border border-zinc-800 bg-black/30 p-3">
             <Bds5CostsEditor
               cfg={ambito.bds5}

@@ -1,14 +1,14 @@
-"""crew_tools.py — Strumenti BDSI-style sul risultato dei turni guida.
+"""crew_tools.py — Strumenti sul risultato dei turni guida.
 
 Tre modalità (campo "mode" nell'input JSON su stdin, output JSON su stdout):
 
-1. "validate"    — ri-verifica BDS di turni guida modificati a mano nel
-                   workspace (BDSI §10.1: verificatore di correttezza).
+1. "validate"    — ri-verifica normativa di turni guida modificati a mano nel
+                   workspace (verificatore di correttezza).
                    Input:  { mode, shifts: [DriverShiftData-like], config }
                    Output: { results: { [driverId]: {type, bdsValidation,
                              nastroMin, workMin, drivingMin, interruptionMin} } }
 
-2. "swap"        — euristica "Scambia con pezzo..." (BDSI §12.2): dato un
+2. "swap"        — euristica "Scambia con pezzo...": dato un
                    pezzo scoperto (lista corse), propone i turni guida che
                    possono assorbirlo rilasciando una loro ripresa/pezzo,
                    validando il turno risultante.
@@ -17,7 +17,7 @@ Tre modalità (campo "mode" nell'input JSON su stdin, output JSON su stdout):
                    Output: { proposals: [{driverId, releasedTrips, valid,
                              violations, deltaWorkMin, newType}] }
 
-3. "turni_unici" — euristica "Turni unici" (BDSI §12.1): dentro una fascia
+3. "turni_unici" — euristica "Turni unici": dentro una fascia
                    oraria crea turni guida composti da un solo pezzo che
                    massimizzano il tempo di lavoro, dai pezzi scoperti.
                    Input:  { mode, pieces: [{vehicleId, vehicleType, trips}],
@@ -208,7 +208,7 @@ def _duty_report(d: DriverDutyV3, bds, clusters) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MODE 1 — VALIDATE (BDSI §10.1)
+#  MODE 1 — VALIDATE
 # ═══════════════════════════════════════════════════════════════
 
 def run_validate(raw: dict) -> dict:
@@ -228,7 +228,7 @@ def run_validate(raw: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MODE 2 — SCAMBIA CON PEZZO (BDSI §12.2)
+#  MODE 2 — SCAMBIA CON PEZZO
 # ═══════════════════════════════════════════════════════════════
 
 def _overlaps(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
@@ -329,7 +329,7 @@ def run_swap(raw: dict) -> dict:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MODE 3 — TURNI UNICI (BDSI §12.1)
+#  MODE 3 — TURNI UNICI
 # ═══════════════════════════════════════════════════════════════
 
 def run_turni_unici(raw: dict) -> dict:

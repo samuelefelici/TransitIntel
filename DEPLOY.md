@@ -168,7 +168,7 @@ migrator di drizzle).
   CREATE UNIQUE INDEX CONCURRENTLY users_email_normale_uq ON users (lower(trim(email)));
   ```
 
-### Chiavi esterne di Planning Studio (PR 2.15)
+### Chiavi esterne di Planning Studio (PR 2.15 e 2.15c)
 
 Due tabelle non avevano la chiave verso il loro padre: le categorie di validità
 delle corse (`ps_trip_category_validity.trip_id` → `ps_trips`) e le zone vietate
@@ -205,15 +205,28 @@ periodo (`scuole_chiuse_<periodo>`) senza più date, senza corse e senza unità
 di progettazione viene tolta alla prossima sincronizzazione del calendario. Le
 righe orfane la tenevano in vita per caso.
 
-**La categoria resta senza chiave, apposta.** Cancellando una categoria di
-validità (Planning Studio › Validità), sulle corse che la usavano resta una
-riga che punta a una categoria che non c'è più. Nella tabella Corse la casella
-delle categorie di quelle corse resta vuota, e il calcolo le tratta come legate
-a una categoria che non cade in nessun giorno: **una corsa che aveva solo
-quella categoria non vale mai**, e non esce in quadri orari, GTFS e turni. Togliere quelle righe, o
-impedire di cancellare una categoria in uso, cambia i giorni in cui le corse
-valgono: non lo decide una migrazione. Per sapere se in produzione ce ne sono,
-in sola lettura:
+**La categoria: il terzo vincolo (migrazione 0013, PR 2.15c).** Fino alla PR
+2.15b una categoria di validità in uso si poteva cancellare (Planning Studio ›
+Validità › Categorie Periodi › Gestisci categorie): sulle corse che la usavano
+restava una riga che punta a una categoria che non c'è più. Il calcolo tratta
+quelle corse come legate a una categoria che non cade in nessun giorno: **una
+corsa che aveva solo quella categoria non vale mai**, e non esce in quadri
+orari, GTFS e turni.
+
+Dalla 2.15b:
+
+- **una categoria in uso non si cancella più.** L'API rifiuta finché la usano
+  corse o unità di progettazione, e dice da quante. Va prima tolta da lì;
+- **le corse già in quello stato si vedono.** Nella tabella Corse hanno il
+  segno «categoria cancellata»; un avviso sopra la tabella dice quante sono e
+  quante non valgono in nessun giorno, e «Mostra solo queste» le elenca da
+  sole. Si sistemano selezionandole: «Giorni/Categorie» › «Sostituisci» ›
+  «Applica categorie», con le categorie giuste o con nessuna (la corsa vale in
+  ogni periodo). **Sistemarle cambia i giorni in cui valgono**: una corsa che
+  oggi non esce mai tornerà a uscire. Va fatto guardando corsa per corsa.
+
+Per sapere quante sono in tutti i progetti senza aprirli uno a uno, in sola
+lettura dal Terminal del Postgres:
 
 ```sql
 SELECT p.name AS progetto,
@@ -229,9 +242,1239 @@ SELECT p.name AS progetto,
  GROUP BY p.name ORDER BY 2 DESC;
 ```
 
-Nessuna riga: non è mai successo, e la chiave sulla categoria si può mettere
-senza toccare niente. Se ne escono, va deciso che cosa fare di quelle corse
-prima di mettere la chiave.
+Dalla 2.15c la migrazione 0013 mette la chiave esterna anche sulla categoria
+(`ps_trip_category_validity.category_id` → `ps_validity_categories`, senza
+cascata): una categoria che non esiste non si scrive più su una corsa, e una
+categoria usata da una corsa non si cancella nemmeno passando accanto all'API.
+
+**La 0013 non può far fallire il deploy.** Se trova anche una sola corsa legata
+a una categoria cancellata non tocca niente — quelle righe non le toglie, perché
+toglierle cambierebbe i giorni in cui la corsa vale — non mette il vincolo, e
+lo scrive nel log. Vale anche se una categoria in uso viene cancellata proprio
+mentre la migrazione passa (dal container di prima, che durante il deploy serve
+ancora): la migrazione aspetta che la cancellazione finisca, poi guarda.
+
+```
+[migrazioni] ATTENZIONE: 0013: N righe di ps_trip_category_validity puntano a una categoria cancellata: la chiave esterna sulla categoria NON è stata messa. …
+```
+
+Se nel log del deploy quella riga non c'è, il vincolo è al suo posto e non c'è
+altro da fare. Se c'è:
+
+1. si sistemano le corse dalla tabella Corse, come scritto sopra (la query qui
+   sopra dice in quali progetti sono);
+2. quando la query non restituisce più righe, il vincolo si mette a mano, come
+   `postgres` dal Terminal del Postgres. Il comando controlla tutte le righe:
+   se ne è rimasta una fallisce senza cambiare niente, e si riprova dopo averla
+   sistemata.
+
+   ```sql
+   ALTER TABLE public.ps_trip_category_validity
+     ADD CONSTRAINT ps_trip_category_validity_category_id_fkey
+     FOREIGN KEY (category_id) REFERENCES public.ps_validity_categories(id)
+     ON DELETE RESTRICT;
+   ```
+
+Finché il vincolo manca l'API lo ricorda nel log dopo ogni avvio, la prima
+volta che qualcuno apre le categorie di validità (`manca la chiave esterna
+sulla categoria delle corse …`, con il numero di corse ancora da sistemare), e
+tutto funziona come prima della 2.15c: l'API rifiuta comunque le categorie
+che non esistono e la cancellazione di quelle in uso. Per vedere se c'è:
+
+```sql
+SELECT conname, convalidated FROM pg_constraint
+ WHERE conrelid = 'public.ps_trip_category_validity'::regclass AND contype = 'f';
+```
+
+Devono essere due righe, tutte e due con `convalidated = t`: la corsa (0010) e
+la categoria (0013).
+
+### L'azienda (PR 2.17a)
+
+I dati dell'azienda che usa Cerbero erano scritti nel codice. Dalla migrazione
+`0014` stanno nella tabella `public.azienda`, **una riga sola**, e si cambiano
+da **Amministrazione › Azienda** (solo l'amministratore). Non è per più aziende
+nello stesso database: ogni azienda ha la sua installazione, e questa è la sua
+riga.
+
+| Dato | Dove finisce |
+|---|---|
+| Ragione sociale | agenzia ed editore dei GTFS esportati dagli Scenari |
+| Nome | intestazione dei documenti stampati (rapporti degli scenari, zonizzazione) |
+| Sito | `agency_url` e `feed_publisher_url` dei GTFS (Scenari e Planning Studio) |
+| Telefono | `agency_phone` dei GTFS esportati dagli Scenari |
+| Identificativo GTFS | `agency_id` dei GTFS esportati dagli Scenari |
+| Città, regione | etichetta nella barra laterale, pagina Traffico |
+| Nome e città | parole che una password non può avere al centro («Conerobus2026!») |
+| Centro e zoom | dove si aprono la mappa della pagina iniziale, la Mappa live e gli Scenari |
+
+**Al rilascio su un'installazione in uso** (Conerobus) la migrazione scrive la
+riga con i valori che erano nel codice: non cambia niente, con una eccezione
+voluta. Il GTFS esportato da Planning Studio portava sempre l'indirizzo
+segnaposto `https://example.com`; ora porta il sito del progetto, se c'è, o
+quello dell'azienda. Il nome dell'agenzia in quel GTFS resta quello del
+progetto, come prima.
+
+**Su un'installazione nuova** (database senza utenti quando passa la 0014) la
+tabella resta vuota: un'installazione nuova non nasce col nome di un'altra
+azienda. Finché l'amministratore non compila la pagina, che lo dice in alto
+(«Da compilare»), i GTFS escono come «Azienda di trasporto», le mappe si
+aprono sull'Italia e nome e città non entrano nelle regole delle password.
+È la prima cosa da fare dopo il primo accesso.
+
+Da sapere:
+
+- l'API tiene la riga in memoria per un minuto; chi la salva la fa rileggere
+  subito. Nella web arriva con la sessione: chi è già dentro la vede al
+  prossimo caricamento della pagina;
+- il registro delle modifiche la sorveglia con i valori (sono dati
+  dell'azienda, non di persone);
+- i limiti dei campi stanno anche nei vincoli della tabella: un sito che non
+  comincia con `http://` o `https://`, o un identificativo con una virgola,
+  non si scrivono nemmeno da psql;
+- il fuso orario non è fra i dati: resta `Europe/Rome` ovunque.
+
+Per vederla dal Terminal del Postgres: `SELECT * FROM azienda;`.
+
+**Cosa resta scritto nel codice**, per le prossime PR (servono a un'azienda
+diversa da Conerobus, non a Conerobus):
+
+- AVM: la regola «matricola di 1–4 cifre = vettura dell'azienda» e il nome nei
+  testi per il centro di controllo;
+- tariffe: le reti urbane, i prezzi minimi e la classificazione delle linee;
+- intermodale e zone di coincidenza: stazioni, porto e aeroporto con i loro
+  orari;
+- territorio: i comuni ISTAT della provincia, le zone del traffico, le città
+  del meteo;
+- i depositi di partenza dell'anagrafica;
+- alcune etichette e i centri delle mappe di singole pagine (intermodale,
+  tariffe, orari).
+
+### Codici stabili di corsa, fermata e linea (PR 3.1)
+
+Una corsa, una fermata e una linea di Planning Studio hanno un **codice**:
+obbligatorio, unico dentro il programma, e **lo stesso nelle copie del
+programma**. L'id interno (un UUID) cambia a ogni copia e resta interno.
+
+Da dove viene il codice:
+
+| Riga | Codice |
+|---|---|
+| importata da un GTFS | l'id che aveva nel file (`stop_id`, `route_id`, `trip_id`) |
+| creata a mano | lo dà il database: `CB-` più la lettera del tipo (`C` corsa, `F` fermata, `L` linea) e un numero che non si ripete, per esempio `CB-C1042` |
+| copia di una corsa sdoppiata | un codice nuovo (`CB-C…`): è un'altra corsa |
+| stesso id due volte nello stesso file | vale la prima riga, la seconda si salta (prima nascevano due righe, una delle quali senza orari o mai usata) |
+
+Che cosa cambia per chi usa l'app:
+
+- **Il GTFS esportato** da Planning Studio (Esporta GTFS) usa i codici come
+  `stop_id`, `route_id` e `trip_id`. Prima consegnava gli id interni, che
+  cambiavano a ogni copia del programma. **Il primo file esportato dopo questo
+  rilascio ha identificativi diversi dai precedenti**; da lì in poi restano
+  gli stessi, anche fra un programma e la sua copia. Per le righe importate
+  da un GTFS sono gli id del file d'origine. Chi ha già ricevuto un file con gli
+  id di prima va avvisato. `service_id` e `shape_id` restano id interni.
+- **Rete** e **Corse** mostrano il codice al posto dei primi caratteri
+  dell'id interno.
+- **Reimportare un GTFS esportato da Cerbero** nello stesso programma
+  (aggiornamento non distruttivo) ritrova ogni riga dal suo codice: non nascono
+  doppioni. Le righe create a mano restano «a mano»: un aggiornamento dal file
+  d'origine non le disattiva.
+
+Che cosa **non** cambia ancora: il programma messo in esercizio (il feed che
+leggono AVM, tariffe e turni) usa ancora gli id interni. È il passo
+successivo.
+
+**Le migrazioni.** La `0017` aggiunge la colonna e dà un codice a ogni riga che
+c'è già; la `0018` lo rende obbligatorio e unico. Durante la migrazione le tre
+tabelle restano chiuse: **misurati 13 secondi su 300.000 corse e 85.000
+fermate** (16 col registro delle modifiche acceso); in quei secondi le pagine
+di Planning Studio aspettano. Nel log del deploy:
+
+- niente, se ogni riga importata ha tenuto l'id del suo file;
+- `ATTENZIONE: 0017: N corse importate hanno preso un codice nuovo…`, se N
+  righe importate non hanno potuto tenerlo: nel programma c'era già un'altra
+  riga con lo stesso id (di solito la copia di una corsa sdoppiata), oppure
+  l'id non va bene come codice (vuoto, più di 200 caratteri, caratteri di
+  controllo). Non è un errore: quelle righe hanno un codice `CB-…`.
+
+Per vedere i codici di un programma, dal Terminal del database:
+
+```sql
+SELECT pg_catalog.count(*) AS corse,
+       pg_catalog.count(*) FILTER (WHERE codice = gtfs_id) AS col_codice_del_file,
+       pg_catalog.count(*) FILTER (WHERE codice ~ '^CB-C') AS col_codice_nuovo
+  FROM public.ps_trips
+ WHERE project_id = '<id del programma>';
+```
+
+**Se si torna all'immagine di prima** (rollback): l'app funziona, perché ogni
+riga nuova riceve il codice dal database. Due limiti, finché non si torna a
+questa versione:
+
+- «Sdoppia per validità» dà errore (il codice di prima copia anche il codice,
+  che è unico);
+- un GTFS importato con l'immagine di prima dà alle righe nuove codici `CB-…`
+  invece degli id del file. Meglio non importare in quel periodo.
+
+### Un solo programma in esercizio (PR 3.2)
+
+Il **programma in esercizio** è il feed GTFS acceso: quello che leggono AVM,
+tariffe, turni e le pagine dell'esercizio. Da questo rilascio lo si cambia da
+**una porta sola**, e ogni cambio finisce nello **storico** (chi, quando, da
+dove). Le strade per arrivarci restano tre:
+
+| Da dove | Chi può |
+|---|---|
+| Planning Studio › **Metti in esercizio** (subito o con una decorrenza) | chi modifica il programma **e** ha «Pubblicazione degli orari» in scrittura (di partenza: il Pianificatore e l'amministratore) |
+| il giro delle attivazioni programmate, alla decorrenza | chi le ha programmate |
+| pagina GTFS › **Attiva** (un file caricato a mano) | solo l'amministratore, come prima |
+
+Che cosa cambia:
+
+- **C'è sempre un solo feed acceso, in tutta l'installazione.** Prima «Metti in
+  esercizio» spegneva solo i feed dello stesso proprietario, e ne potevano
+  restare due accesi (l'AVM prendeva l'ultimo caricato). Ora lo garantisce
+  anche il database.
+- **Lo storico non si perde più.** Prima «Metti in esercizio» lo scriveva «se
+  riusciva», e «Attiva» non lo scriveva mai. Ora, se lo storico non si scrive,
+  l'attivazione non avviene e resta in esercizio il programma di prima.
+  L'attivazione immediata non spegne più il programma di prima prima di aver
+  acceso il nuovo.
+- **Lo storico resta anche se il progetto si cancella** (prima se ne andava
+  col progetto).
+- **Il feed in esercizio** si cancella (forzando) solo dall'amministratore, e
+  nello storico il suo periodo si chiude.
+- Chi non ha «Pubblicazione degli orari» in scrittura non vede più il pulsante
+  «Metti in esercizio». Si cambia da Amministrazione › Ruoli.
+
+**Le migrazioni.** La `0019` mette in regola lo stato di oggi **senza cambiare
+il feed che legge l'AVM**:
+
+- se ci sono più feed accesi, resta acceso quello che l'AVM legge già
+  (l'ultimo caricato), e diventa anche quello di default; gli altri si spengono;
+- nello storico restano aperti solo il periodo di quel feed, e se manca se ne
+  apre uno da adesso (via `migrazione:0019`).
+
+La `0020` aggiunge i due vincoli e mette lo storico nel registro delle
+modifiche. Nel log del deploy:
+
+- niente, se era già tutto in regola;
+- `ATTENZIONE: 0019: spento il feed «…»`, per ogni feed che era acceso insieme
+  a un altro. **Va guardato**: quel feed non era quello che leggeva l'AVM, ma
+  qualcuno poteva crederlo in esercizio;
+- `ATTENZIONE: 0019: chiusi N periodi dello storico…`, per i periodi rimasti
+  aperti su feed non più in esercizio.
+
+Per vedere lo storico, dal Terminal del database:
+
+```sql
+SELECT l.activated_at, l.deactivated_at, f.filename, l.via
+  FROM public.ps_activation_log l LEFT JOIN public.gtfs_feeds f ON f.id = l.feed_id
+ ORDER BY l.activated_at DESC LIMIT 20;
+```
+
+**Mentre il deploy gira** il container di prima serve ancora. Una sua «Metti
+in esercizio» fallisce (e non cambia niente) se lascerebbe due feed accesi: è
+il caso del feed in esercizio che appartiene a un altro utente. Meglio non
+attivare programmi in quel minuto.
+
+**Rollback**: immagine precedente. I vincoli restano, quindi vale lo stesso
+limite: un «Metti in esercizio» quando il feed in esercizio è di un altro
+utente fallisce. «Attiva» dalla pagina GTFS (amministratore) funziona sempre.
+Se serve, i vincoli si tolgono come `postgres`:
+`ALTER TABLE public.gtfs_feeds DROP CONSTRAINT gtfs_feeds_un_solo_in_esercizio;`
+e `ALTER TABLE public.ps_activation_log DROP CONSTRAINT ps_activation_log_un_solo_aperto;`.
+
+### Orari al pubblico dalla versione in esercizio (PR 3.3)
+
+Stampa orari, quadri di palina, **mappa orari pubblica** (il QR alle paline) e
+**mappa di rete condivisa** leggevano il programma di Planning Studio così
+com'era in quel momento: una modifica di bozza finiva subito negli orari al
+pubblico, anche se in esercizio c'era altro.
+
+Da questo rilascio, quando un programma va in esercizio (o se ne programma la
+messa in esercizio) Cerbero ne fa una **copia congelata**, la *versione
+pubblicata*:
+
+| Che cosa | Legge |
+|---|---|
+| link pubblici (mappa orari, mappa di rete) | la versione in esercizio del programma del link. **Gli stessi link e gli stessi QR**: cambia solo da dove leggono |
+| Stampa orari (Orari al pubblico) | parte dalla versione in esercizio; si può scegliere quella programmata o la **bozza**, con un avviso giallo |
+| la bozza | solo chi lavora sul programma (proprietario e membri) |
+
+- Le versioni non compaiono fra i progetti e **non si modificano**, nemmeno
+  dall'amministratore. Si lavora sul programma e lo si rimette in esercizio.
+- Una versione programmata che si annulla o si sostituisce se ne va. Le
+  versioni che sono state in esercizio restano: sono la storia di che cosa è
+  stato pubblicato.
+- La messa in esercizio dura qualche secondo in più: misurati **7,8 secondi in
+  tutto** su un programma di 3.502 corse (materializzazione, copia, cambio).
+
+**Il programma in esercizio oggi non ha ancora una versione**: finché non lo si
+rimette in esercizio, link pubblici e stampa leggono il programma com'è, come
+prima. Per congelarlo: Planning Studio › **Metti in esercizio** sul programma
+già in esercizio (con «Pubblicazione degli orari» in scrittura). Da lì le
+modifiche di bozza non arrivano più al pubblico.
+
+Per vedere le versioni, dal Terminal del database:
+
+```sql
+SELECT v.name, v.created_at, f.is_active AS in_esercizio
+  FROM public.ps_projects v LEFT JOIN public.gtfs_feeds f ON f.id = v.versione_del_feed
+ WHERE v.versione_del_feed IS NOT NULL ORDER BY v.created_at DESC;
+```
+
+**Rollback**: immagine precedente. Le versioni restano nel database, senza
+proprietario e quindi invisibili: i link e la stampa tornano a leggere il
+programma com'è. La colonna `owner_user_id` resta facoltativa (solo per le
+versioni, lo dice un vincolo).
+
+### Il GTFS consegnabile (PR 3.4)
+
+Il GTFS che si scarica da Planning Studio (pulsante «Esporta GTFS» sulla scheda
+del programma) è quello che va a Regione, open data, fornitori di AVM e
+bigliettazione. Da questo rilascio:
+
+- **viene dalla versione in esercizio** del programma (la copia congelata della
+  3.3), non dalla bozza. Se il programma non ha una versione in esercizio, dalla
+  bozza, e il messaggio lo dice. Il nome del file dice quale
+  (`gtfs_<programma>_esercizio_<data>.zip`);
+- **ha l'azienda vera**: `agency.txt` e `feed_info.txt` prendono ragione
+  sociale, identificativo GTFS, sito e telefono da **Amministrazione ›
+  Azienda**. Prima l'azienda era «1» col nome del progetto. Senza i dati
+  dell'azienda, quelli del progetto come prima;
+- **è controllato prima di uscire**:
+  - **errori** (il file non va consegnato: chi lo riceve lo scarterebbe):
+    file obbligatori mancanti, identificativi doppi o che non tornano fra un file
+    e l'altro, coordinate mancanti, orari non validi o che tornano indietro,
+    corse con meno di due fermate, calendari senza date valide, azienda senza
+    sito. L'export si ferma e dice quali; si correggono, oppure si sceglie
+    **«Esporta comunque»**;
+  - **avvisi** (il file è valido ma qualcosa non torna): fermate e linee senza
+    corse, tratti percorsi a più di 120 km/h (orari o posizioni sbagliati),
+    periodo del file già finito, calendari senza giorni. Il file si scarica, e
+    il messaggio li riassume.
+
+Sul programma di prova da 3.502 corse il controllo ha trovato 0 errori e 221
+corse con almeno un tratto «a più di 120 km/h»: sono orari interpolati del file
+d'origine (per esempio 13 secondi per 590 metri).
+
+**Prima di consegnare**: in Amministrazione › Azienda devono esserci almeno
+ragione sociale, identificativo GTFS e **sito** (senza sito il controllo si
+ferma).
+
+Il controllo non sostituisce il validatore ufficiale di chi riceve il file: ferma
+gli errori più comuni prima che il file esca.
+
+### Una sola funzione per i km programmati (PR 3.5)
+
+Fino a qui i km dello stesso programma si contavano in tre modi diversi, e i
+numeri non tornavano fra loro:
+
+| Dove | Prima | Da questo rilascio |
+|---|---|---|
+| contatore km (in alto in Planning Studio) | lunghezza mandata dal browser | lunghezza calcolata dal server |
+| km annui per categoria (stampa dell'elenco corse, Argos `ti_km`) | giorni della settimana del calendario × matrice, **senza periodo né eccezioni della corsa** | i giorni in cui la corsa circola davvero |
+| km per comune (zonizzazione) | calendari settimanali, **senza matrice di validità** | i giorni in cui la corsa circola davvero |
+
+**I giorni in cui la corsa circola davvero** sono gli stessi del GTFS in
+esercizio e delle UDP: con la matrice di validità contano bollini, giorni della
+settimana, categorie, eccezioni e **periodo** della corsa; senza matrice, i
+calendari settimanali con le loro eccezioni (come il GTFS). La **lunghezza** è
+quella del percorso disegnato, calcolata dal server.
+
+**I numeri cambiano, e sui programmi importati da un GTFS di molto.** Alcuni
+file danno a ogni corsa un periodo di un giorno solo (il giorno
+dell'esportazione) e calendari con tutti i giorni spenti più quella data. Sul
+programma di prova da 3.502 corse:
+
+- prima: 2.329.597 km annui. Contavano solo i venerdì, perché il giorno
+  dell'esportazione, il 5/12/2025, era un venerdì;
+- adesso: 43.954,7 km, cioè le corse del 5/12/2025, l'unico giorno in cui il
+  GTFS le fa circolare;
+- con il periodo allargato fino al 31/12/2026 (prova su una copia): 11.865.481
+  km. Sono tutti i feriali, perché la matrice importata dà a tutte le corse il
+  «feriale». E la zonizzazione dà lo stesso numero: 703.147,6 km nel 2025 più
+  11.162.333,5 km nel 2026.
+
+Per questo le pagine lo dicono:
+
+- nella stampa dell'elenco corse un avviso giallo conta le corse con un periodo
+  di un giorno solo («Se devono circolare tutto l'anno, selezionale e allarga il
+  Periodo»);
+- il controllo del progetto ha un avviso nuovo, «Corse con un periodo di un
+  giorno solo»;
+- la risposta dei km annui ha il campo `periodoDiUnGiorno`.
+
+Senza matrice di validità il periodo della corsa non entra nella circolazione
+(non entra nemmeno nel GTFS), e l'avviso non compare.
+
+**La migrazione `0022`** ricalcola dal tracciato, con la stessa formula del
+server, la lunghezza dei percorsi già salvati (`ps_shapes.distance_m`). Sui
+percorsi importati non cambia niente (meno di un metro). Cambiano i percorsi
+disegnati a mano, che avevano la distanza del motore di instradamento mandata
+dal browser. Per vedere prima del deploy quanti sono:
+
+```sql
+SELECT count(*) FROM ps_shapes WHERE mode <> 'driving' OR distance_m IS NULL;
+```
+
+**Dopo il deploy**: per i programmi importati che devono valere tutto
+l'anno, selezionare le corse in Planning Studio › Corse e allargare il
+«Periodo»; poi rifare «Metti in esercizio», perché anche il GTFS in esercizio
+le fa circolare solo quel giorno.
+
+**Rollback**: immagine precedente. Le lunghezze ricalcolate restano: sono più
+giuste di quelle di prima, e la versione precedente le usa senza problemi.
+
+### Turni macchina versionati e pubblicati coi turni guida (PR 3.6)
+
+I turni guida si calcolano su un turni macchina: le loro vetture sono i suoi
+blocchi. Fino a qui i turni guida pubblicati nel roster non si
+sovrascrivevano (se ne creava una versione nuova), ma il loro turni macchina
+sì. Salvato di nuovo, un giorno già pubblicato poteva ritrovarsi con vetture
+diverse da quelle dei suoi turni guida.
+
+Da questo rilascio:
+
+- **Salvare un turni macchina i cui turni guida sono nel roster**
+  (assegnati o pubblicati, anche nel passato) **crea una versione nuova**
+  (v2, v3…), come per i turni guida:
+  - i turni guida restano sulla versione su cui sono stati calcolati;
+  - sulla nuova si calcolano i turni guida nuovi, da pubblicare per i giorni
+    in cui devono valere;
+  - la pagina dei turni macchina lo dice e da lì lavora sulla nuova versione.
+- **Una versione superata non si modifica.** Si apre la più recente; nella
+  lista degli scenari ha «c'è una versione più nuova».
+- Rinominare, o salvare senza cambiare i turni, resta sullo stesso scenario.
+- **Cancellando la versione nuova**, la precedente torna la più recente.
+- L'aggiornamento automatico delle corse scoperte, quando si prendono corse
+  da un'altra UDP, non crea versioni: se il roster usa quella fonte, la
+  lascia com'è.
+- **La pubblicazione registra anche il turno macchina di ogni giorno**
+  (`roster_turni_pubblicati.vss_id`), accanto ai turni guida. Il database
+  tiene la coppia coerente e non lascia cancellare un turno macchina
+  pubblicato. Nell'anteprima, turni guida calcolati su una versione superata
+  dei turni macchina hanno l'avviso «turni macchina con una versione più
+  nuova».
+
+**Le migrazioni**:
+- la `0023` scrive su ogni riga del canale il turno macchina dei suoi turni
+  guida;
+- la `0024` lo rende obbligatorio, coerente e non cancellabile.
+
+Tabelle piccole: un attimo di lock. Il nome della tabella resta
+`roster_turni_pubblicati`.
+
+**Durante il deploy**, fra la migrazione e l'avvio della nuova API, una
+pubblicazione fatta dalla versione vecchia si ferma (le manca il turno
+macchina): basta rifarla.
+
+**Dopo il deploy** non c'è niente da fare. Chi ha turni guida nel roster e
+salva il loro turni macchina vede nascere la versione 2.
+
+**Rollback**: immagine precedente. La colonna e i vincoli restano. La versione
+precedente pubblica senza scrivere `vss_id`, che è obbligatorio: **la
+pubblicazione dei turni guida si fermerebbe**. Con il rollback, quindi, si
+toglie anche l'obbligo (come `postgres`):
+
+```sql
+ALTER TABLE roster_turni_pubblicati ALTER COLUMN vss_id DROP NOT NULL;
+ALTER TABLE roster_turni_pubblicati DROP CONSTRAINT roster_turni_pubblicati_coppia;
+```
+
+Le versioni dei turni macchina già create restano scenari normali.
+
+### Diagnosi dell'esercizio (tappa 4)
+
+Prima di congelare il programmato di ogni giornata (il servizio del giorno)
+vanno prese due decisioni aperte dell'analisi:
+- **la chiave della corsa** fra programma e AVM;
+- **che cosa fa fede come programmato**: il feed in esercizio o i turni
+  pubblicati.
+
+Per prenderle servono i numeri veri. Li dà la pagina **Amministrazione ›
+Diagnosi dell'esercizio** (solo amministratore, sola lettura; l'API è
+`GET /api/admin/esercizio/diagnosi?giorno=AAAA-MM-GG`).
+
+Per una giornata (dalle 03:00 alle 03:00) dice:
+
+- **il programma e il feed in esercizio all'inizio della giornata**, dallo
+  storico delle attivazioni. Non il feed acceso oggi: il passato non si conta
+  sul presente. Dice anche il feed su cui aggancia l'AVM oggi, e se è lo
+  stesso;
+- **le corse programmate**, con la regola del calendario dell'aggancio
+  (settimana nel periodo, meno le date tolte, più quelle aggiunte), e i
+  **numeri di corsa che si ripetono** nel giorno;
+- **quante corse si riconoscono nelle prove dell'AVM** (coppie di codici e
+  passaggi alle fermate di quella giornata), e in che modo:
+  - **per id**: il feed dell'AVM è quello del programma;
+  - **per codice stabile**: l'id del file d'origine, che Planning Studio
+    conserva;
+  - **per numero di corsa**: solo se il numero è unico nel giorno;
+- **i viaggi dell'AVM che non si riconducono a nessuna corsa** del programma:
+  corse aggiunte, o un feed diverso;
+- **le corse senza geometria** e i km del giorno dalla geometria, accanto a
+  quelli dell'analisi del feed;
+- **i turni pubblicati della giornata**:
+  - se ci sono e se sono del programma in esercizio;
+  - quanti turni guida e turni macchina hanno una versione più nuova;
+  - quante corse restano fuori dalle UDP pubblicate.
+
+**Dopo il deploy**: apri la pagina su tre giornate vere di ottobre (un feriale
+scolastico, un sabato, una domenica) e annota i numeri. Con quelli si decide:
+- la chiave della corsa (decisione aperta 2);
+- se il programmato contrattuale è il feed o sono i turni pubblicati
+  (decisione aperta 3).
+
+Nessuna migrazione, nessuna scrittura.
+
+### Giornate di esercizio: il programmato congelato (tappa 4.2)
+
+Il programmato di un giorno si ricalcolava ogni volta dal feed acceso oggi: il
+passato cambiava col presente. Da questo rilascio ogni giornata di esercizio
+(dalle 03:00 alle 03:00) ha la sua **istantanea**, che non cambia più dopo
+l'inizio della giornata. È la base del consuntivo.
+
+- **Il programmato è il feed in esercizio all'inizio della giornata**, preso
+  dallo storico delle attivazioni (la porta unica della 3.2), non il feed
+  acceso oggi. È la proposta dell'analisi per la decisione aperta 3. I turni
+  pubblicati si aggiungono dalla 4.3 (sezione sotto); dove divergono, lo
+  dicono gli avvisi.
+- **Ogni corsa ha tre identità**:
+  - la chiave del feed (l'id della corsa di Planning Studio);
+  - il codice stabile;
+  - il numero di corsa.
+
+  Così la chiave per le prove dell'AVM (decisione aperta 2) si sceglie quando
+  si collegano le prove, coi numeri della diagnosi.
+- **Ogni corsa ha anche** linea, percorso, direzione, orari (anche oltre le
+  24:00), capolinea, «a chiamata» e i km dalla geometria del feed, calcolati
+  dal server.
+- **Il lavoratore**, ogni 15 minuti:
+  - prepara la giornata di domani, e la rifà a ogni giro finché non comincia;
+  - alle 03:00 la **congela**: da lì una nuova messa in esercizio, una duplica
+    o un feed caricato dopo non la toccano.
+- **Una giornata passata** si può preparare a mano: nasce congelata e
+  «ricostruita», col programma dello storico di quel giorno.
+- **Senza un programma nello storico** (le giornate prima della porta unica) la
+  giornata resta vuota, e lo dice: non si ripiega sul feed di oggi.
+- **Il feed di una giornata** conta come «in uso»: le pulizie del lavoratore
+  non lo cancellano.
+
+**La pagina: Amministrazione › Giornate di esercizio** (solo amministratore,
+per ora):
+- l'elenco degli ultimi 30 giorni e di domani;
+- per ogni giornata programma, feed, stato, avvisi e corse;
+- «Prepara» per una giornata che manca.
+
+L'API è `GET /api/admin/esercizio/giornate`,
+`GET /api/admin/esercizio/giornate/:giorno` e
+`POST /api/admin/esercizio/giornate/:giorno/prepara`.
+
+**La migrazione `0025`** crea `esercizio_giornate` ed `esercizio_corse`,
+tabelle nuove. Il registro delle modifiche non le sorveglia, perché le scrive
+solo il sistema; il giornale del consuntivo avrà il suo.
+
+**Dopo il deploy**:
+1. Aggiorna le **Watch Paths del lavoratore** in Coolify con le righe nuove
+   del blocco più sotto (`esercizio-*.ts`, `service-day.ts`,
+   `km-programmati.ts`, `siri-vm.ts`, `parco-anagrafica.ts`), poi ridistribuisci
+   il lavoratore.
+2. Entro 15 minuti nel log del lavoratore compare «giornate di esercizio:
+   preparate e congelate», e nella pagina ci sono oggi e domani.
+3. Confronta il numero di corse di una giornata con «Corse programmate» della
+   copertura AVM dello stesso giorno, quando il feed è lo stesso.
+
+**Rollback**: immagine precedente. Le tabelle restano, ferme; la versione di
+prima non le usa.
+
+### Turni nel programmato (tappa 4.3)
+
+L'istantanea di una giornata dice quali corse sono programmate. Da questo
+rilascio dice anche **chi le porta**:
+- **Per ogni corsa**: il turno macchina, il turno guida e il deposito.
+- **Da dove**: dai turni pubblicati nel roster (Pubblicazione › Turni al
+  roster) **com'erano all'inizio della giornata**, alle 03:00. Il canale tiene
+  lo storico, quindi una pubblicazione o un ritiro fatti dopo non cambiano una
+  giornata cominciata.
+- **Perché bastano i turni guida**: ogni turni guida pubblicato punta ai turni
+  macchina su cui è calcolato, che quindi sono pubblicati con lui. Da quando
+  sono pubblicati i turni non si sovrascrivono (3.6): chi li salva ne crea una
+  versione nuova.
+
+Le corse dei turni si riconoscono:
+- **per id**, quando i turni sono calcolati sullo stesso feed della giornata;
+- **per codice stabile della corsa**, quando sono calcolati su un'altra copia
+  del programma.
+
+Un codice ripetuto nella giornata non riconosce niente: la corsa resta
+scoperta, piuttosto che finire sulla corsa sbagliata.
+
+**Turni macchina della giornata.** Per ognuno: deposito, mezzo, uscita,
+rientro, corse e **vuoti programmati**.
+- I km a vuoto sono il totale del turno salvato dal calcolo. Comprende anche i
+  rientri intermedi in deposito, che non hanno i km sulla singola voce.
+- La somma della giornata si confronta col riepilogo salvato del calcolo. Se
+  non torna, c'è un avviso.
+- Dai turni si prendono solo l'appartenenza delle corse e i vuoti. I km in
+  linea restano quelli della geometria (3.5).
+
+**Il riepilogo della giornata:**
+- che cosa è pubblicato: UDP, turni guida e turni macchina;
+- le corse senza turno macchina e perché:
+  - fuori dalle UDP pubblicate;
+  - lasciate scoperte dal calcolo dei turni macchina;
+  - non comprese nel calcolo, per esempio linee non scelte;
+- le corse col turno macchina ma senza turno guida;
+- le corse dei turni che il programmato non ha;
+- i turni superati, o calcolati su dati poi cambiati;
+- le UDP di un programma diverso da quello in esercizio.
+
+Gli avvisi lo dicono in parole.
+
+**Le giornate già congelate dalla 4.2** non hanno i turni:
+- il lavoratore li aggiunge una volta sola, dallo storico del canale, a
+  partire dalle più recenti (31 per giro);
+- le loro corse non cambiano;
+- dalla pagina lo fa «Aggiungi i turni ora».
+
+**La pagina: Amministrazione › Giornate di esercizio**:
+- il riquadro «Turni pubblicati», con l'elenco dei turni macchina (il
+  dettaglio dei vuoti è nel suggerimento dei km a vuoto);
+- nelle corse, le colonne turno macchina, turno guida e deposito, anche nel
+  filtro;
+- «Per turno macchina» mette in fila le corse di ogni turno.
+
+**La migrazione `0026`**:
+- aggiunge le colonne dei turni a `esercizio_corse` e il riepilogo `turni` a
+  `esercizio_giornate`;
+- crea `esercizio_turni_macchina`.
+
+Gli id dei turni sono una fotografia, come il nome del programma: niente
+chiavi esterne.
+
+**Dopo il deploy**:
+1. Le Watch Paths del lavoratore non cambiano: il file nuovo
+   (`esercizio-turni.ts`) è già coperto da `esercizio-*.ts`, se la 4.2 è
+   stata aggiunta. Il lavoratore si ridistribuisce da solo.
+2. Entro 15 minuti nel log del lavoratore compare «giornate di esercizio:
+   preparate e congelate». Le giornate della 4.2 risultano «congelata, turni
+   aggiunti».
+3. In una giornata con i turni pubblicati, controlla nella pagina:
+   - le corse col turno macchina;
+   - i km a vuoto contro «riepilogo del calcolo»;
+   - le scoperte, giustificate da «non comprese nel calcolo» e dalle UDP.
+
+**Rollback**: immagine precedente. Colonne e tabella restano, ferme; la
+versione di prima non le usa.
+
+### La proposta dall'AVM (tappa 4.4)
+
+Per ogni corsa di una giornata cominciata (congelata), l'esito che le prove
+dell'AVM suggeriscono, con le prove accanto. È una **proposta**: la conferma è
+di una persona (giornale e conferma, la tappa successiva).
+
+**Una corsa senza prove resta «non rilevata»: non diventa mai «soppressa» da
+sola.** In un giorno di ottobre l'AVM vedeva il 16,7% delle corse, e
+dall'assenza di prove non si deduce l'assenza della corsa. Che cosa ne sarà
+delle non rilevate alla chiusura è la decisione aperta 1 (presunzione di
+effettuazione o prova obbligatoria).
+
+**Come si riconosce la corsa dell'AVM** (decisione aperta 2, presa coi numeri
+della diagnosi di ottobre: per id 517, per numero 508, per codice 0):
+1. per id del feed;
+2. per codice stabile, quando l'AVM aggancia un altro feed dello stesso
+   programma;
+3. per numero di corsa, solo se unico nella giornata.
+
+**Le proposte**, nell'ordine in cui si provano:
+- **Effettuata (AVM)**: una sola vettura, e prima e ultima fermata osservate,
+  oppure almeno il 70% delle fermate.
+- **Parziale?**: partenza osservata, ultima fermata vista ad almeno 3 fermate
+  dalla fine, e la vettura che passa a un'altra corsa prima dell'arrivo
+  programmato o non si vede più.
+- **Per continuità**: nessuna prova contraria, e la stessa vettura effettua la
+  corsa precedente e la successiva dello stesso turno macchina (4.3).
+- **Da verificare**: qualche prova, ma non basta (più vetture, poche fermate,
+  solo il viaggio dichiarato senza passaggi).
+- **Soppressa?**: nessuna prova, e il turno guida della corsa non ha
+  conducente nel roster della giornata. Vale solo dove il roster ha
+  assegnazioni per quei turni guida.
+- **Non rilevata**: nessuna prova.
+
+Le soglie (70%, 3 fermate) sono la decisione aperta 6: sono valori di
+partenza, scritti nel riepilogo di ogni proposta.
+
+Contano solo le righe di **SIRI**: il sistema AVM scrive le proprie nelle
+stesse tabelle, con altri codici.
+
+**Le candidate corse aggiunte** sono i viaggi dell'AVM che non si
+riconducono a nessuna corsa del programmato, con linea, partenza, numero e
+vetture. Fra queste ci sono anche i codici `FRSRV…`: probabilmente movimenti
+fuori servizio, da guardare prima di confermarli come corse.
+
+**Quando si fa**:
+- **definitiva**: il lavoratore la fa per le giornate degli ultimi tre giorni,
+  dopo le 04:00 del giorno dopo, quando i passaggi tardivi sono arrivati;
+- **durante la giornata**: a richiesta, dalla pagina («Calcola la proposta»,
+  «Ricalcola»). È una vista viva;
+- è idempotente, con lo stesso lucchetto della giornata.
+
+**La pagina: Amministrazione › Giornate di esercizio**, riquadro «Proposta
+dall'AVM»:
+- i conteggi per proposta, che filtrano le corse;
+- la copertura e come sono state riconosciute le corse;
+- le candidate aggiunte.
+
+Nelle corse c'è la colonna «Proposta»; il suggerimento spiega le prove.
+
+**La migrazione `0027`**:
+- aggiunge `proposta` e `prove` a `esercizio_corse`, con un vincolo sui valori;
+- aggiunge il riepilogo `proposta` a `esercizio_giornate`;
+- crea `esercizio_aggiunte_proposte`.
+
+**Dopo il deploy**:
+1. Le Watch Paths del lavoratore non cambiano: `esercizio-proposta.ts` è
+   coperto da `esercizio-*.ts`.
+2. Dopo le 04:00 del giorno dopo, nel log del lavoratore compare
+   «giornate di esercizio: proposta dall'AVM».
+3. La definizione di fatto dell'analisi, su giorni veri:
+   - la distribuzione delle proposte su cinque giorni;
+   - la quota di «non rilevate», da confrontare con 1 meno la quota di corse
+     della copertura AVM;
+   - 50 «effettuate (AVM)» controllate a mano con la prova del percorso:
+     nessun falso positivo.
+
+**Rollback**: immagine precedente. Colonne e tabella restano, ferme; la
+versione di prima non le usa.
+
+### Il consuntivo: giornale e conferma degli esiti (tappa 4.5)
+
+La proposta dall'AVM suggerisce; da qui **decide una persona**. Ogni
+decisione è un **evento del giornale**, con autore, ora e fonte (Centrale,
+deposito, ufficio movimento). Il giornale è solo in aggiunta: un evento
+sbagliato si annulla con un altro evento, e le corse tornano com'erano.
+
+**La pagina: Esercizio › Consuntivo** (area «Consuntivo» dei ruoli).
+- **Chi la usa.** Nella matrice di partenza scrivono la Centrale operativa e
+  l'Amministrazione; Pianificatore, Ufficio turni e Capo deposito leggono;
+  l'Officina no. L'amministratore cambia la matrice da Amministrazione ›
+  Ruoli. I token di servizio (Argos) leggono e non scrivono.
+- **La conferma è per eccezione**:
+  - in blocco le corse «Effettuata (AVM)» e quelle «Per continuità»;
+  - poi il resto, a gruppi: effettuate, da verificare, soppresse (con la
+    causale), parziali (con la causale e, se si sanno, i km fatti).
+- **Km effettivi**: effettuata = programmati, soppressa = 0, parziale =
+  quelli detti. Se non si sanno restano vuoti, e si calcoleranno coi
+  progressivi alle fermate.
+- **Corse aggiunte** (bis, recupero, sostitutiva, fuori programma): dalle
+  candidate dell'AVM, una volta sola, o a mano.
+- **Note** sulla giornata o sulle corse.
+- **Annullamento** di un evento: solo se nessun evento dopo ha toccato le
+  stesse corse (prima si annulla quello).
+- **Due persone sulla stessa giornata**: chi salva per secondo riceve «la
+  giornata è cambiata» e la pagina si ricarica (versione della giornata).
+
+**Le causali** (decisione aperta 5). C'è un catalogo iniziale:
+- guasto del mezzo, sinistro e mancanza di personale, imputabili
+  all'azienda;
+- sciopero, traffico, meteo, ordine dell'autorità e manifestazione, non
+  imputabili;
+- altro, imputabile.
+
+L'amministratore lo cambia in fondo alla pagina: imputabilità, codice per
+l'ente, attiva o no, causali nuove. Il codice di una causale non cambia,
+perché le corse lo citano. **Da fare: il codice per l'ente di ogni causale,
+quando si sa.**
+
+**L'annullamento dell'AVM** (SIRI, `VehicleActivityCancellation`), che prima
+non lasciava traccia, diventa un evento del sistema, una volta per corsa e
+giornata. Nella proposta è un indizio di soppressione («Soppressa?»): non
+diventa mai un esito da solo.
+
+**La migrazione `0028`**:
+- crea `esercizio_causali`, col catalogo iniziale scritto come
+  `cerbero_owner`, senza toccare quello che c'è;
+- crea `esercizio_eventi`: una giornata con eventi non si cancella, e un
+  evento si annulla una volta sola;
+- aggiunge a `esercizio_corse` l'esito confermato, i km effettivi, la
+  causale, la vettura, la nota, chi e quando, e le corse aggiunte;
+- aggiunge a `esercizio_giornate` la versione.
+
+Il giornale fa da registro del consuntivo: il registro delle modifiche non
+sorveglia queste tabelle, che il lavoratore riscrive a ogni giro.
+
+**Dopo il deploy**:
+1. Nessuna Watch Path nuova: il lavoratore non usa il giornale.
+2. Dai ruoli giusti alle persone dell'ufficio movimento e della Centrale
+   (Amministrazione › Utenti e accessi).
+3. La definizione di fatto dell'analisi: l'ufficio movimento consuntiva un
+   giorno vero dall'inizio alla fine, e ogni modifica compare nel giornale
+   con autore e momento.
+
+**Sicurezza e lavoratori**: il giornale registra chi ha confermato che cosa,
+cioè un'attività del personale d'ufficio. Vale quanto deciso per il registro
+delle modifiche (art. 4 dello Statuto, informativa): va detto alle persone
+che lo usano.
+
+**Rollback**: immagine precedente. Tabelle e colonne restano, ferme; la
+versione di prima non le usa.
+
+### Chiusura e blocco del consuntivo (tappa 4.6)
+
+Decisioni del 16/11/2026:
+- **Le corse senza prove dell'AVM** si chiudono con la **presunzione di
+  effettuazione salvo segnalazione** (decisione aperta 1). È un esito a sé,
+  «presunta», distinto dalle effettuate provate: nel report si vede quanto
+  è provato e quanto è presunto.
+- **La giornata la chiude chi ha il ruolo Amministrazione** (o
+  l'amministratore di sistema). La Centrale registra gli esiti ma non chiude.
+- **Riaprire una giornata, chiudere e riaprire un mese** spettano solo
+  all'amministratore di sistema, con un motivo che resta scritto.
+- **Nessun blocco automatico a tempo**: la pagina segnala in giallo le
+  giornate cominciate e ancora aperte dopo tre giorni («da chiudere»).
+
+**La giornata.** In Esercizio › Consuntivo:
+- «Presumi effettuate le non rilevate» conferma in blocco come «presunta»
+  le corse senza prove (comprese quelle senza proposta, nelle giornate senza
+  AVM);
+- «Chiudi la giornata» funziona quando la giornata è finita (dopo le 03:00
+  del giorno dopo) e non ha corse da decidere, da verificare, o parziali
+  senza i km fatti. Altrimenti dice che cosa manca;
+- alla chiusura il **riepilogo si congela**: corse per esito, km
+  programmati, effettivi, persi e aggiunti, per linea e per causale.
+
+Da quel momento **ogni scrittura risponde 409**: eventi, proposta, turni.
+L'amministratore la riapre col motivo, che va nel giornale. Riaprirla e
+richiuderla senza modifiche dà lo stesso riepilogo.
+
+**Il mese** (riquadro in fondo alla pagina, solo l'amministratore):
+- si chiude quando è finito e tutte le sue giornate sono chiuse;
+- i giorni senza giornata (prima del rilascio della 4.2, o mai preparati)
+  restano scritti nel riepilogo come mancanti;
+- chiuso, il riepilogo del mese si congela e le sue giornate non si
+  riaprono;
+- si riapre col motivo, e la storia di chiusure e riaperture resta.
+
+**La migrazione `0029`**:
+- l'esito «presunta»;
+- lo stato «chiusa» della giornata, con chi, quando e il riepilogo;
+- gli eventi di chiusura e riapertura;
+- la tabella `esercizio_mesi`.
+
+**Dopo il deploy**:
+1. Dai il ruolo **Amministrazione** a chi chiude le giornate.
+2. La definizione di fatto: una giornata chiusa risponde 409 a ogni
+   scrittura; riaprirla e richiuderla senza modifiche riproduce gli stessi
+   totali.
+
+**Rollback**: immagine precedente. La versione di prima non conosce lo stato
+«chiusa» né l'esito «presunta»: prima di tornare indietro riapri le giornate
+chiuse, se no restano fuori da ogni scrittura.
+
+### Il report mensile del consuntivo (tappa 4.7)
+
+Decisioni del 16/11/2026, in attesa del modello dell'ente:
+- **Un report standard del mese**, in XLSX (riepilogo, indicatori,
+  ripartizioni) e in CSV (il dettaglio corsa per corsa, per le
+  contestazioni).
+- **Indicatori**:
+  - regolarità **lorda**: corse effettuate (provate e presunte) sulle
+    programmate, e km effettivi sui programmati;
+  - regolarità **netta**: lo stesso, togliendo dal programmato le
+    soppressioni e le parziali con causale non imputabile all'azienda (e i
+    loro km);
+  - **puntualità** solo sul campione che l'AVM ha visto partire dal
+    capolinea, sempre accanto alla sua copertura: in orario fra 1 minuto di
+    anticipo e 5 di ritardo;
+  - **niente penali**.
+- **Le consorziate** stanno nel report dell'azienda, con la ripartizione per
+  vettore.
+
+**Dove.** In Esercizio › Consuntivo, nel riquadro del mese (quando ha almeno
+una giornata chiusa):
+- «Calcola il report» mostra indicatori, vettori e le linee con la regolarità
+  km più bassa;
+- «Scarica XLSX» e «Dettaglio corse (CSV)».
+
+Li vede chi ha l'area Consuntivo, anche in sola lettura.
+
+**Cosa conta**:
+- solo le **giornate chiuse**. Le aperte sono elencate a parte, e così i
+  giorni senza giornata. Il report si calcola anche prima di chiudere il
+  mese, ma finché il mese non è chiuso è provvisorio;
+- le corse **aggiunte** si contano a parte e non entrano nella regolarità.
+
+**Le ripartizioni**:
+- linea, tipo di servizio e contratto: dalle linee di Planning Studio, dove
+  impostati;
+- comune: il ritaglio dei percorsi sui confini importati in Planning Studio ›
+  Zonizzazione, con i km di ogni corsa divisi in proporzione al tratto dentro
+  ogni comune. Due righe in più, «Fuori dai confini importati» e «Corse senza
+  percorso», fanno tornare la somma con i km del mese. Senza confini
+  importati la ripartizione per comune non c'è, e il report lo dice;
+- causale, col codice dell'ente;
+- giorno;
+- vettore: dalla vettura (Conerobus o la consorziata). «Vettura non
+  indicata» sono le corse confermate senza vettura (per esempio le
+  presunte); «Vettura non attribuita» quelle con una matricola che non si
+  riesce a ricondurre a un'azienda.
+
+**Il CSV**: separatore `;`, virgola decimale, una riga per corsa, giorno per
+giorno e in ordine di partenza. In un mese sono circa centomila righe: si scrive man
+mano, senza tenerlo tutto in memoria.
+
+**Nessuna migrazione.** Alla conferma, una corsa proposta per continuità
+prende ora la vettura del turno macchina, così il report per vettore non la
+lascia senza vettura. Vale per le conferme fatte da qui in poi.
+
+**Dopo il deploy**:
+1. Scrivi il **codice dell'ente** delle causali (Esercizio › Consuntivo,
+   riquadro «Causali (amministratore)»), se non l'hai già fatto: esce nella
+   ripartizione per causale.
+2. La definizione di fatto: su un mese con giornate chiuse, i totali dell'XLSX
+   tornano con la somma dei riepiloghi delle giornate, e le righe del CSV sono
+   le corse di quelle giornate.
+
+**Rollback**: immagine precedente. Il report non scrive niente.
+
+### FleetCare e GTFS-Realtime (tappa 4.8)
+
+Decisioni del 16/11/2026: le soppressioni del giornale vanno nel GTFS-Realtime;
+FleetCare legge i km per vettura e per giorno del consuntivo.
+
+**GTFS-Realtime** (`/api/gtfs-rt/trip-updates` e `/vehicle-positions`, stessi
+indirizzi di prima). Cosa cambia:
+- **Soppressioni.** Le corse che il giornale della giornata in corso dà per
+  soppresse escono come `CANCELED`, con data e ora di partenza, e non portano
+  anche un ritardo. Contano solo le soppressioni **confermate**: un
+  annullamento dell'AVM resta un indizio finché qualcuno non lo conferma in
+  Esercizio › Consuntivo.
+- **Codici pubblicati.** Corse, linee e fermate escono con i codici del GTFS
+  esportato da Planning Studio, quello che ricevono gli aggregatori. Prima
+  uscivano gli id interni del feed in esercizio, che con un programma di
+  Planning Studio non corrispondono a niente nel GTFS pubblicato. Per i feed
+  caricati a mano resta l'id del feed, come nell'export.
+- **Data della corsa** (`start_date`) quando la corsa è nella giornata di
+  esercizio: distingue le corse a cavallo della mezzanotte.
+- **Solo SIRI.** I ritardi vengono solo dai passaggi del connettore SIRI. Il
+  sistema AVM scrive i propri nelle stesse tabelle con altri codici, che gli
+  aggregatori non abbinano.
+- **Errori.** Fuori va un messaggio generico; i dettagli restano nel log.
+
+Fuori, per ora: le corse aggiunte (`ADDED`) e le fermate saltate delle
+parziali. La specifica le gestisce male, e delle parziali non sappiamo quali
+fermate sono state saltate.
+
+**I km per vettura per FleetCare** (migrazione `0030`):
+
+```sql
+SELECT * FROM public.esercizio_km_per_vettura('2026-12-01', '2026-12-31');
+```
+
+Restituisce una riga per giorno e vettura (il codice dell'AVM, che FleetCare
+abbina al suo parco):
+- `km_servizio`: le corse fatte con quella vettura indicata;
+- `km_dal_turno`: le corse senza vettura (per esempio le presunte) del turno
+  macchina che quel giorno ha avuto una vettura sola;
+- `km_vuoto`: i km a vuoto programmati dello stesso turno macchina.
+
+Cosa sommare lo decide FleetCare. Un turno macchina con due vetture nello
+stesso giorno non attribuisce né le corse senza vettura né i vuoti. Contano
+solo le **giornate chiuse**, al più 367 giorni per chiamata.
+
+La funzione legge con i diritti di chi la chiama. A ogni avvio il migratore dà
+a `fleetcare_legge_cerbero` la lettura delle sole colonne che servono:
+- giorno e stato delle giornate;
+- vettura, km fatti, esito, turno macchina delle corse;
+- i vuoti dei turni macchina.
+
+Nessun dato delle persone: turno guida e conducente restano fuori.
+
+**Dopo il deploy**:
+1. `node lib/db/scripts/ruoli.mjs --verifica` deve tornare pulita: la lettura
+   delle colonne a FleetCare la dà il migratore.
+2. In una giornata con una soppressione confermata,
+   `/api/gtfs-rt/trip-updates?format=json` deve mostrarla con
+   `"scheduleRelationship": 3`, e i `tripId` devono essere i codici del GTFS
+   pubblicato.
+3. La definizione di fatto per FleetCare, su 20 mezzi e un mese chiuso: i km
+   di Cerbero contro la differenza del contachilometri fra i buoni carburante,
+   entro la tolleranza decisa (propongo ±5%). I km di Cerbero per vettura:
+
+   ```sql
+   SELECT vettura, sum(km_servizio) AS servizio, sum(km_dal_turno) AS dal_turno, sum(km_vuoto) AS vuoto
+     FROM public.esercizio_km_per_vettura('2026-12-01', '2026-12-31')
+    GROUP BY vettura ORDER BY vettura;
+   ```
+
+   La lettura dal lato di FleetCare (e il confronto coi buoni) va in una PR su
+   fleetmanagement.
+
+**Rollback**: immagine precedente. La funzione resta e non scrive niente; per
+toglierla: `DROP FUNCTION public.esercizio_km_per_vettura(date, date);`.
+
+### La giornata di esercizio nella pagina Oggi (tappa 4.9)
+
+Nella home, per chi legge l'area Consuntivo, il riquadro **Consuntivo** mostra
+la giornata in corso:
+- corse programmate;
+- quota di corse **viste dall'AVM**: la proposta dell'AVM, che si aggiorna
+  durante il giorno. Finché la proposta non c'è, il riquadro lo dice invece
+  di scrivere zero;
+- soppresse confermate, in giallo se ce ne sono;
+- corse da decidere, con quelle da verificare;
+- lo stato della giornata.
+
+Sotto, in giallo, quante giornate sono **da chiudere** (cominciate e ancora
+aperte dopo tre giorni, la stessa regola della pagina del consuntivo) e da
+quando. Il riquadro porta al Consuntivo e si aggiorna ogni due minuti.
+
+I dati vengono da `GET /api/esercizio/oggi`, che manda solo conteggi: la
+giornata intera ha circa 3.500 corse. Nessuna migrazione.
+
+**Dopo il deploy**: la definizione di fatto è che, aprendo Oggi durante il
+servizio, i numeri del riquadro tornano con quelli della pagina del consuntivo
+della stessa giornata.
+
+**Rollback**: immagine precedente.
+
+### Le variazioni decise in anticipo (tappa 4.10)
+
+Decisioni del 16/11/2026. Fino all'inizio della giornata (le 03:00) il
+lavoratore la ricostruisce da capo, e il giornale si scrive solo da lì: quello
+che si sa prima (lavori, un evento, uno sciopero proclamato) adesso ha il suo
+posto.
+
+In Esercizio › Consuntivo, riquadro **Variazioni decise in anticipo**, chi ha
+la scrittura sul Consuntivo può scrivere due tipi di variazione:
+- **Soppressione**:
+  - indica le linee e/o i numeri di corsa, ed eventualmente una fascia
+    oraria sulla partenza (alle esclusa), con causale e nota;
+  - quando la giornata comincia, le corse ancora da decidere diventano
+    «soppressa» nel giornale, a nome di chi ha scritto la variazione, con il
+    suo numero;
+  - da quel momento escono come `CANCELED` nel GTFS-Realtime;
+  - una corsa già decisa da qualcuno non si tocca;
+  - scritta per una giornata già cominciata, vale subito.
+- **Sciopero**:
+  - indica le fasce garantite (per esempio «6-9, 12-15») e, se non tutte, le
+    linee;
+  - le corse fuori fascia **non** si sopprimono in anticipo, perché non si sa
+    chi aderirà;
+  - la proposta dall'AVM le dà come «soppressione probabile (sciopero)»
+    invece che «non rilevate»;
+  - «Presumi effettuate» non le tocca. Il filtro «Soppressioni probabili»
+    della giornata le raccoglie, e si decidono in blocco con l'esito e la
+    causale SCIOPERO.
+
+**Annullare.** Una variazione si annulla, con il nome di chi la annulla, fino
+all'inizio della giornata. Dopo si corregge nel giornale come sempre. I token
+di servizio leggono e basta.
+
+**Dove si vede.**
+- Nell'elenco ci sono lo stato (in attesa, applicata con quante corse,
+  annullata), chi l'ha scritta e, se la giornata è già preparata, le corse
+  previste.
+- Nel giornale, l'evento che nasce da una variazione lo dice.
+- Il lavoratore applica le variazioni a ogni giro (ogni 15 minuti), dopo il
+  congelamento. Nel log: «giornate di esercizio: variazioni decise in
+  anticipo».
+
+**La migrazione `0031`**: la tabella `esercizio_variazioni`.
+
+**Dopo il deploy**: la definizione di fatto.
+1. Si scrive una soppressione per domani, su una linea e una fascia.
+2. Al giro dopo le 03:00 le corse risultano «soppressa» nel giornale, a nome
+   di chi l'ha scritta.
+3. Durante la giornata `trip-updates?format=json` le mostra come `CANCELED`.
+
+**Rollback**: immagine precedente. La tabella resta, e la versione di prima
+non la legge: le variazioni in attesa non si applicano più. Le soppressioni
+già applicate restano nel giornale come ogni altro esito.
+
+### Assenze che liberano il turno e sostituti suggeriti (tappa 5.1)
+
+Decisioni del 16/11/2026. Prima un'assenza registrata non liberava il turno:
+il conducente in malattia restava sul turno, e il turno risultava coperto.
+
+**L'assenza libera il turno.**
+- Un'assenza del conducente assegnato rimette il turno «da coprire». Il
+  riposo «R» no.
+- L'assegnazione non si cancella: resta come titolare. Si calcola dalle voci
+  del roster, senza scrivere niente, quindi se l'assenza si toglie e nessuno ha
+  coperto il turno il titolare torna.
+- Nel tabellone il turno del conducente assente appare barrato. In basso, fra
+  i turni scoperti, compare con il bordo rosso tratteggiato e «assente: …».
+- Nella home, «turni scoperti» conta anche quelli liberati.
+- Il motivo dell'assenza lo vede solo chi ha il permesso Roster, come prima.
+
+**Sostituti suggeriti.** Col tasto destro su un turno scoperto, il dettaglio
+mostra chi può coprirlo, in quest'ordine: liberi, a disposizione (D1, D2), già
+in servizio ma compatibili.
+- Si propongono i conducenti dello stesso deposito del titolare (o del
+  turno), attivi, in servizio quel giorno e non fittizi.
+- Restano fuori, contati ma senza dire chi né perché, quelli con un'assenza
+  quel giorno (riposo compreso) e quelli a cui il turno creerebbe un riposo
+  troppo corto o una sovrapposizione. Le regole sono quelle di sempre.
+- **È un suggerimento: decide una persona.** «Assegna» fa la stessa
+  assegnazione di sempre, con tutti i controlli. Il sistema non sceglie e non
+  assegna da solo, quindi non è una decisione automatizzata sulle persone. Se
+  in futuro si volesse l'assegnazione automatica, servirebbero l'informativa
+  ai lavoratori e le valutazioni del caso.
+
+**La sostituzione si ricorda.**
+- Riassegnare il turno mentre il titolare è assente lo registra
+  sull'assegnazione: il titolare, chi ha deciso, quando, e il motivo
+  «assenza», senza il codice.
+- Resta registrata anche nello storico del conducente («turno-sostituzione»)
+  e, quando è acceso, nel registro delle modifiche.
+- Un secondo sostituto tiene lo stesso titolare. Una riassegnazione normale
+  (titolare non assente) o il ritorno del titolare la chiudono.
+- Nel tabellone, il turno del sostituto ha un bordo tratteggiato e dice chi
+  sostituisce.
+
+**La migrazione `0032`**: in `roster_assignments` le colonne `titolare_id` e
+`sostituzione`.
+
+**Dopo il deploy**: la definizione di fatto.
+1. Si segna un'assenza a un conducente con un turno: il turno compare fra gli
+   scoperti.
+2. Il tasto destro sul turno propone sostituti senza violazioni.
+3. «Assegna» lo copre, e il turno ricorda il titolare.
+
+**Rollback**: immagine precedente. Le colonne restano e la versione di prima
+le ignora. I turni dei conducenti assenti tornano a sembrare coperti.
+
+### La vestizione per deposito (tappa 5.2)
+
+Decisioni del 16/11/2026. In Personale › **Vestizione**, per chi legge il
+Roster, c'è la pagina del capo deposito: un deposito alla volta, oggi o domani.
+Chi ha dei depositi assegnati parte dal suo, e vede solo i conducenti dei
+depositi che vede, come nel tabellone.
+
+**Cosa mostra.**
+- **I turni del deposito, in ordine di uscita**, con chi li fa.
+  - In cima quelli da coprire: gli scoperti e quelli liberati da un'assenza
+    (5.1), con il titolare assente.
+  - Su ciascuno, «Sostituti» apre i sostituti suggeriti della 5.1, con
+    «Assegna».
+  - Per un sostituto c'è scritto chi sostituisce.
+- **I conducenti del deposito** in cinque gruppi: in servizio, liberi, a
+  disposizione, a riposo, assenti. Il motivo di un'assenza lo vede chi ha il
+  permesso Roster; gli altri leggono «ASS». I conducenti fittizi non ci sono.
+- **L'ordine di servizio da stampare**: turni, orari e conducenti, con le
+  riserve a disposizione. È il foglio per la bacheca: dei turni da coprire dice
+  solo «DA COPRIRE», **mai chi è assente né perché**.
+
+**Il deposito di un turno** viene dalla sua residenza nei turni guida,
+abbinata al catalogo dei depositi come per i colori del tabellone. Un turno
+senza residenza riconosciuta si vede solo con «Tutti i depositi».
+
+**Nessuna API nuova e nessuna migrazione.**
+- La pagina legge il tabellone di oggi e domani: in più c'è solo il deposito di
+  ogni turno.
+- Assegna con la chiamata di sempre, quindi riposi, sovrapposizioni e depositi
+  si controllano come nel tabellone.
+- Se un'assegnazione chiede di forzare un avviso, la pagina rimanda al
+  tabellone.
+
+**Dopo il deploy**: la definizione di fatto.
+1. Il capo deposito apre Vestizione e trova il suo deposito, con i turni di
+   domani in ordine di uscita e quelli da coprire in cima.
+2. Copre un turno con «Assegna».
+3. Stampa l'ordine di servizio, che non nomina gli assenti.
+
+**Rollback**: immagine precedente.
+
+### Mezzi: fabbisogno e disponibilità per deposito (tappa 5.3)
+
+Decisioni del 16/11/2026. Quanti mezzi servono e quanti ce ne sono, deposito
+per deposito.
+- **Fabbisogno**: dai turni macchina della giornata di esercizio (4.3), per
+  deposito e tipo di mezzo. Ogni turno macchina vuole un mezzo. Senza la
+  giornata preparata non si sa, e la pagina lo dice.
+- **Disponibilità**: dall'officina (FleetCare, la stessa funzione della pagina
+  AVM).
+  - Contano i mezzi in servizio e di riserva.
+  - Quelli fermi in officina si elencano a parte, con «fermo dal» e commessa.
+  - I dismessi non contano.
+  - È lo stato **di adesso**: per domani si assume che chi è in officina oggi
+    lo sia ancora, e la pagina lo scrive.
+- **Confronto** sui totali per deposito: fabbisogno, disponibili, margine. Se
+  mancano mezzi, in rosso. Per tipo di mezzo solo dove i turni e FleetCare
+  usano lo stesso nome (per esempio «12m»). I depositi si abbinano al catalogo
+  come i colori del tabellone.
+- **Senza FleetCare** (funzione assente o non chiamabile) resta il
+  fabbisogno, col motivo.
+
+**Dove**:
+- un riquadro «Mezzi» nella Vestizione, per il deposito e il giorno scelti;
+- un riquadro «Mezzi» nella home, con i depositi in cui mancano, per chi legge
+  il Roster.
+
+L'API è in sola lettura: `GET /api/roster/mezzi?giorno=`. Chi vede solo
+alcuni depositi vede solo quelli.
+
+**Nessuna migrazione.** Fuori, per dopo:
+- le matricole vere assegnate ai turni macchina del giorno (fatto nella 5.4,
+  qui sotto);
+- la disponibilità futura, cioè i fermi programmati, che richiede una funzione
+  nuova su FleetCare.
+
+**Dopo il deploy**:
+1. Nella home il riquadro «Mezzi» compare se FleetCare risponde e la giornata
+   è preparata. Se manca, il motivo si legge in Vestizione.
+2. La definizione di fatto: in un giorno feriale, per un deposito, i mezzi che
+   servono tornano con i turni macchina pubblicati, e i disponibili con
+   l'officina.
+
+**Rollback**: immagine precedente.
+
+### Le vetture sui turni macchina (tappa 5.4)
+
+Il capo deposito assegna una vettura (la matricola dell'AVM) a ogni turno
+macchina di oggi o di domani, dalla pagina Vestizione, nel riquadro «Vetture
+sui turni macchina».
+- **Le righe**: i turni macchina della giornata del deposito scelto, in
+  ordine di uscita, con uscita e rientro, tipo di mezzo, corse e la vettura.
+  Quelli senza vettura sono evidenziati.
+- **La scelta**: i mezzi del deposito che FleetCare dà in servizio o di
+  riserva, prima i liberi del tipo giusto; oppure la matricola scritta a mano
+  (anche senza FleetCare).
+- **Avvisi, mai blocchi**:
+  - la stessa vettura su due turni macchina che si sovrappongono;
+  - la vettura ferma in officina o dismessa;
+  - il tipo del turno diverso dal modello della vettura, solo dove turni e
+    FleetCare usano gli stessi nomi;
+  - l'AVM che ha visto un'altra vettura sulle corse del turno.
+- **Tabella a parte** (`esercizio_vetture`, migrazione `0033`): i turni
+  macchina della giornata si riscrivono finché la giornata non comincia. Se un
+  turno macchina sparisce con una nuova pubblicazione, la sua vettura resta
+  «da riassegnare» e si toglie.
+- **Nel consuntivo**: alla conferma (anche la presunzione), una corsa senza
+  vettura vista dall'AVM né per continuità prende quella assegnata al suo
+  turno macchina. Così i km per vettura (4.8) contano anche le corse che l'AVM
+  non ha visto.
+
+**Chi**: scrive chi ha il Roster in scrittura, sui depositi che modifica (il
+capo deposito sui suoi); legge chi ha il Roster in lettura, sui depositi che
+vede. Le assegnazioni senza turno (il deposito non si sa più) le vede e le
+toglie solo chi non ha limiti. La giornata chiusa non si modifica più.
+
+L'API: `GET /api/roster/vetture?giorno=`, `PUT /api/roster/vetture` (giorno,
+vssId, turnoMacchina, vettura), `DELETE /api/roster/vetture?giorno=&vssId=&turnoMacchina=`.
+Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
+
+**Dopo il deploy**:
+1. La migrazione `0033` crea la tabella vuota: niente da fare a mano.
+2. La definizione di fatto: in Vestizione, per un deposito e per domani, si
+   assegna una vettura a ogni turno macchina; il giorno dopo, confermate le
+   corse, quelle che l'AVM non ha visto portano la vettura assegnata.
+
+**Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
 ### Argos: sola lettura su un elenco chiuso
 
@@ -699,8 +1942,9 @@ non parte.
 
 ### Registro delle modifiche (PR 2.10 e 2.11)
 
-Chi ha cambiato che cosa, scritto dal database: trigger su 29 tabelle (21
-della prima ondata, 8 della seconda) scrivono in `registro.modifiche`. L'app
+Chi ha cambiato che cosa, scritto dal database: trigger su 31 tabelle (21
+della prima ondata, 8 della seconda, i dati dell'azienda dalla 2.17a, i
+diritti dei ruoli dalla 2.18) scrivono in `registro.modifiche`. L'app
 non ha diritti sulle sue tabelle, salvo leggere l'elenco delle regole
 (`registro.sorvegliate`): non lo cambia, non spegne i trigger, e lo legge solo
 attraverso una funzione (sotto, «Leggerlo»). **Nasce spento**: non
@@ -1248,6 +2492,11 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/guardia-schema.ts
    artifacts/api-server/src/lib/identita-db.ts
    artifacts/api-server/src/lib/logger.ts
+   artifacts/api-server/src/lib/esercizio-*.ts
+   artifacts/api-server/src/lib/service-day.ts
+   artifacts/api-server/src/lib/km-programmati.ts
+   artifacts/api-server/src/lib/siri-vm.ts
+   artifacts/api-server/src/lib/parco-anagrafica.ts
    artifacts/api-server/build.ts
    artifacts/api-server/package.json
    pnpm-lock.yaml
@@ -1666,7 +2915,9 @@ sono nello schema delle migrazioni.
 3. Un turni guida pubblicato o con assegnazioni **non si cancella e non si
    sovrascrive**: salvandolo se ne crea una nuova versione. Per la stessa
    ragione non si cancella un turni macchina, un programma di esercizio o un
-   progetto di scheduling i cui turni guida sono pubblicati o assegnati.
+   progetto di scheduling i cui turni guida sono pubblicati o assegnati, e un
+   turni macchina così non si sovrascrive: salvandolo se ne crea una nuova
+   versione (PR 3.6, «Turni macchina versionati e pubblicati coi turni guida»).
 4. Pubblica chi ha il permesso Scheduling e vede il progetto di Planning
    Studio. Ogni pubblicazione e ogni ritiro restano nel registro della pagina.
 
@@ -1685,15 +2936,19 @@ Il menu segue la giornata dell'azienda (`artifacts/transitintel/src/lib/navigazi
 | Flotta | FleetCare | Flotta |
 | Tariffe | Bigliettazione, Polimetriche, Simulatore, Prodotti e KPI, Percorso e tariffa | Tariffe |
 | Analisi | Mappa del territorio, Traffico, Territorio e domanda, Linee e fermate GTFS, Ipotesi di linea | Analisi |
-| Amministrazione | Utenti e accessi (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
+| Amministrazione | Utenti e accessi (admin), Ruoli (admin), Azienda (admin), Parametri di esercizio (admin), Registro delle modifiche (admin), Dati e integrazioni (Analisi o Esercizio), Sicurezza dell'account | — |
 
 #### Ruoli aziendali (PR 2.14a)
 
 Chi può cosa lo dicono i **ruoli aziendali**. Ogni ruolo dà, per ogni area del
 menu, lettura o scrittura; una persona può averne più d'uno, e per ogni area
-vale il diritto più alto. I ruoli e la matrice sono nel codice
-(`lib/permessi/src/index.ts`, il pacchetto che leggono API e web): per
-cambiarne uno serve una modifica al codice.
+vale il diritto più alto. L'elenco dei ruoli e la matrice **di partenza** sono
+nel codice (`lib/permessi/src/index.ts`, il pacchetto che leggono API e web).
+Dalla PR 2.18 l'amministratore cambia che cosa dà ogni ruolo da
+**Amministrazione › Ruoli** (qui sotto); per aggiungere un ruolo serve ancora
+una modifica al codice.
+
+La matrice di partenza:
 
 | Ruolo | Rete e orari | Turni | Pubbl. orari | Pubbl. turni | Personale | Roster | Esercizio | Consuntivo | Flotta | Tariffe |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -1703,6 +2958,49 @@ cambiarne uno serve una modifica al codice.
 | Centrale operativa | legge | legge | legge | legge | – | legge | scrive | scrive | legge | – |
 | Officina | – | – | – | – | – | – | legge | – | scrive | – |
 | Amministrazione | legge | legge | legge | legge | scrive | legge | legge | scrive | legge | scrive |
+
+#### Cambiare che cosa dà un ruolo (PR 2.18)
+
+**Amministrazione › Ruoli** (solo l'amministratore): una scheda per ruolo, e
+per ognuna delle 11 aree tre scelte — niente, lettura, scrittura. Prima di
+salvare la pagina elenca le modifiche, dice per quante persone valgono e
+avvisa delle conseguenze.
+
+- **Vale da subito**, anche per chi è già dentro: l'API ricalcola i diritti a
+  ogni richiesta. Con più processi dell'API, gli altri lo vedono entro mezzo
+  minuto.
+- **Il giorno del rilascio non cambia niente**: la tabella nasce vuota, e
+  vuota vuol dire matrice di partenza.
+- **L'amministratore di sistema non dipende dalla matrice**: può sempre tutto,
+  quindi cambiandola non ci si chiude fuori.
+- **Che cosa c'è nel database**: `public.ruoli_diritti` (migrazione 0015) tiene
+  solo le celle diverse dalla matrice di partenza (`N` niente, `L` lettura, `S`
+  scrittura). «Riporta ai valori di partenza» toglie le righe del ruolo. Per
+  vederle: `SELECT * FROM ruoli_diritti ORDER BY ruolo, area;`.
+- **Che cosa succede a chi ha il ruolo**, nella stessa transazione del
+  salvataggio:
+  - la vista `users.permissions` si riallinea. La leggono FleetCare (senza la
+    Flotta non si entra più) e la regola della verifica in due passaggi;
+  - **dare Roster o Personale a un ruolo rende obbligatoria la verifica in due
+    passaggi** per chi ce l'ha: chi non l'ha attivata dovrà farlo prima di
+    continuare, anche se è già dentro. La risposta del salvataggio dice quanti
+    sono;
+  - **togliere il Roster spegne i dati sanitari** a chi non lo apre con un
+    altro ruolo. Se poi il Roster torna, i dati sanitari non tornano da soli:
+    si riaccendono utente per utente.
+- **Dare il Personale a un ruolo** vuol dire far vedere a chi ce l'ha contatti,
+  residenza, paghe, ferie e visite di tutti i dipendenti. È una scelta sul
+  trattamento dei dati dei lavoratori: la pagina lo ricorda, ma a deciderla è
+  chi ne risponde in azienda.
+- **Ogni modifica finisce nel registro delle modifiche**, con i valori, e nel
+  log dell'API («diritti di un ruolo cambiati»).
+- **Se la matrice non si legge**, l'API non ripiega su quella di partenza
+  (ridarebbe a un ruolo quello che gli è stato tolto): finché non l'ha letta
+  almeno una volta le richieste falliscono, come per ogni altro guasto del
+  database; dopo, vale l'ultima lettura.
+- **Tornare indietro**: con l'immagine precedente vale di nuovo la matrice di
+  partenza per tutti, cioè tornano i diritti tolti e spariscono quelli
+  aggiunti. La tabella resta e nessuno la legge.
 
 Fuori dai ruoli, date utente per utente in **Amministrazione › Utenti e accessi**:
 
@@ -1756,10 +3054,52 @@ Come funziona:
   almeno la lettura sulla sua area) e riallineata a ogni avvio. Non va scritta
   a mano: i diritti stanno in `ruoli`, `accesso_di_prima`, `dati_sanitari` e
   `analisi` (migrazione 0009).
-- **Limiti di questa prima versione.** Il Capo deposito scrive su tutto il
-  roster, non solo sul suo deposito (il tabellone non ha ancora il filtro per
-  deposito). Consuntivo e variazioni del giorno sono nella matrice ma le pagine
-  non ci sono ancora.
+- **I depositi di una persona (PR 2.14c e 2.14d).** Per ogni utente
+  l'amministratore sceglie, deposito per deposito, se **modifica** i
+  conducenti, li **vede** soltanto, o **non li vede**: è il caso del Capo
+  deposito. Si sceglie in Utenti e accessi, alla creazione dell'utente o da
+  «Modifica», nel riquadro «Depositi del roster» (compare per chi può aprire
+  il roster o il personale).
+  - **In testa c'è «Vede i conducenti di tutti i depositi».** Acceso, è
+    com'era con la 2.14c: si sceglie solo quali modifica, e nessuno scelto
+    vuol dire tutti. Spento, ogni deposito ha le tre scelte, e la persona
+    modifica solo quelli segnati «Modifica». Spegnerlo non cambia niente da
+    solo: parte da quello che la persona poteva già fare, e l'amministratore
+    toglie.
+  - **Il giorno del rilascio nessuno cambia quello che vede**: il limite
+    comincia quando l'amministratore spegne l'interruttore a qualcuno.
+  - **Nel database** sono due elenchi su `users`: `depositi` (quelli che
+    modifica, migrazione 0012) e `depositi_visibili` (quelli che vede,
+    migrazione 0016; vuoto = tutti). La regola è in `lib/permessi`
+    (`limitiSuiDepositi`).
+  - **Che cosa non vede** chi ha un limite: i conducenti degli altri depositi,
+    da nessuna parte. Elenco e scheda dell'anagrafica, storico, esportazione,
+    tabellone, rotazioni dei riposi, e nemmeno i depositi stessi negli elenchi
+    da cui si sceglie. Per lui un conducente di un altro deposito è come se
+    non ci fosse (404), e un tentativo di scriverci sopra viene rifiutato
+    senza dire di che deposito è.
+  - **I turni presi da conducenti che non vede** nel tabellone risultano
+    occupati, senza dire da chi: altrimenti gli sembrerebbero scoperti.
+  - **Che cosa non modifica**: turni assegnati e tolti (anche quello tolto a
+    un conducente per darlo a un altro), cambi turno (devono essere dei propri
+    depositi tutti e due i conducenti), voci di assenza e presenza, rotazioni
+    dei riposi e riposi generati, conducenti fittizi creati da chi non scrive
+    il «Personale».
+  - **Chi scrive il «Personale»** modifica le schede di tutti i conducenti che
+    vede, anche se sul roster ne modifica solo alcuni: i dati del personale
+    sono un'altra area. Non mette però un conducente in un deposito che non
+    vede, e non fa l'import dell'anagrafica, che tocca tutti i depositi.
+  - **Il deposito di un conducente** è la sua residenza di servizio, abbinata
+    al catalogo come nel resto dell'anagrafica (nome, codice o alias). Un
+    conducente senza deposito lo vede e lo scrive solo chi non ha limiti.
+  - L'amministratore non ha mai limiti. I depositi restano scritti anche a chi
+    perde la scrittura sul roster: sono un limite, e tornano a valere se la
+    riottiene.
+  - Lo fa rispettare l'API (`lib/roster-limite-depositi.ts`, 403 con
+    `solaLettura`); la regola è in `lib/permessi`. Una rotta nuova che scrive
+    il roster di un conducente deve chiamare `fuoriDaiDepositi`.
+- **Limiti di questa versione.** Consuntivo e variazioni del giorno sono nella
+  matrice ma le pagine non ci sono ancora.
 - **Tornare indietro.** Con l'immagine precedente l'app legge di nuovo
   `users.permissions` come «può tutto» sul modulo: chi nel frattempo ha
   ricevuto un ruolo di sola lettura tornerebbe a poter scrivere sui moduli che
