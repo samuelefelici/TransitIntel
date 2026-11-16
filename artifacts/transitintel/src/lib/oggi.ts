@@ -46,3 +46,30 @@ export function riassuntoTurni(b: TabelloneGiorno, giorno: string) {
     unita: (b.pubblicati?.[giorno] ?? []).length,
   };
 }
+
+/** La giornata di esercizio in breve (GET /api/esercizio/oggi, tappa 4.9). */
+export interface EsercizioInBreve {
+  giorno: string;
+  giornata: null | {
+    stato: "preparata" | "congelata" | "chiusa"; ricostruita: boolean; chiusaIl: string | null;
+    programmate: number; effettuate: number; presunte: number; parziali: number; soppresse: number;
+    daDecidere: number; daVerificare: number; aggiunte: number;
+    /** null finché l'AVM non ha fatto una proposta */
+    visteAvm: number | null; quotaVisteAvm: number | null;
+  };
+  daChiudere: { totale: number; giorni: Array<{ giorno: string; stato: string }> };
+}
+
+/** Il riquadro del consuntivo: come dire lo stato della giornata, e le giornate rimaste aperte. */
+export function riassuntoEsercizio(d: EsercizioInBreve) {
+  const g = d.giornata;
+  /* la giornata si congela al suo inizio (le 03:00): prima è solo preparata */
+  const stato = !g ? null : g.stato === "chiusa" ? "chiusa" : g.stato === "congelata" ? "in corso" : "non ancora cominciata";
+  return {
+    stato,
+    confermate: g ? g.programmate - g.daDecidere : 0,
+    daChiudere: d.daChiudere.totale,
+    /* la più vecchia: le giornate arrivano in ordine di data */
+    dal: d.daChiudere.giorni[0]?.giorno ?? null,
+  };
+}

@@ -3,17 +3,18 @@
  * giorno, ognuno secondo i suoi permessi: il servizio adesso (AVM), i turni
  * di oggi nel roster, il programma in esercizio, l'ultima pubblicazione dei
  * turni; poi le sezioni del menu. Un riquadro che non si può leggere (permesso,
- * AVM spento, errore) semplicemente non c'è. Nessuna API nuova: variazioni del
- * giorno, disponibilità dei mezzi e consuntivo arrivano con la Fase 4.
+ * AVM spento, errore) semplicemente non c'è. Il consuntivo della giornata in
+ * corso (4.9) arriva da un'API leggera, solo conteggi; variazioni del giorno e
+ * disponibilità dei mezzi verranno dopo.
  */
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, MapPinned, Users, Map, Send, ArrowRight } from "lucide-react";
+import { CalendarDays, MapPinned, Users, Map, Send, ArrowRight, ClipboardCheck } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth, type Permission } from "@/hooks/use-auth";
 import { sezioniVisibili, CASA } from "@/lib/navigazione";
-import { oggiARoma, riassuntoTurni, type ServizioLive, type TabelloneGiorno } from "@/lib/oggi";
+import { oggiARoma, riassuntoEsercizio, riassuntoTurni, type EsercizioInBreve, type ServizioLive, type TabelloneGiorno } from "@/lib/oggi";
 
 interface ProgrammaPs { id: string; name: string; isOperational?: boolean }
 interface Pubblicazione { tipo: string; programma: string | null; dal: string; al: string; creataIl: string; autore: string | null }
@@ -89,6 +90,15 @@ export default function OggiPage() {
     ...opzioni,
   });
 
+  const esercizio = useQuery({
+    queryKey: ["oggi", "esercizio", giorno],
+    queryFn: () => apiFetch<EsercizioInBreve>("/api/esercizio/oggi"),
+    enabled: puo("consuntivo", "L"),
+    /* esiti e proposta dell'AVM cambiano durante il giorno */
+    refetchInterval: 120_000,
+    ...opzioni,
+  });
+
   /* un aggiornamento fallito non fa sparire i dati appena letti: si tengono al più tre minuti,
    * dicendo a che ora risalgono; dopo, il riquadro sparisce come se l'AVM non rispondesse */
   const liveRecente = !!live.data && (live.isSuccess || ora - live.dataUpdatedAt < 3 * 60_000);
@@ -97,6 +107,8 @@ export default function OggiPage() {
   const inEsercizio = programmi.data?.find(p => p.isOperational) ?? null;
   /* il registro ha anche i ritiri: l'ultima pubblicazione è l'ultima di tipo «pubblica» */
   const ultima = pubblicazioni.data?.find(p => p.tipo === "pubblica") ?? null;
+  const giornata = esercizio.data?.giornata ?? null;
+  const consuntivo = esercizio.data ? riassuntoEsercizio(esercizio.data) : null;
   const sezioni = sezioniVisibili(a => puo(a, "L"), isAdmin).filter(s => s.titolo !== "Oggi");
   const titoloGiorno = new Date(ora).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Rome" });
 
@@ -164,6 +176,33 @@ export default function OggiPage() {
               </>
             ) : (
               <p className="text-sm text-muted-foreground">Nessun programma è in esercizio.</p>
+            )}
+          </Riquadro>
+        )}
+
+        {esercizio.data && consuntivo && (
+          <Riquadro titolo="Consuntivo" icona={ClipboardCheck} href="/esercizio" link="Apri il consuntivo">
+            {giornata ? (
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <Numero valore={giornata.programmate.toLocaleString("it-IT")} etichetta="corse programmate" />
+                  <Numero valore={giornata.quotaVisteAvm != null ? `${giornata.quotaVisteAvm.toLocaleString("it-IT")}%` : "—"}
+                    etichetta={giornata.visteAvm != null ? `viste dall'AVM (${giornata.visteAvm.toLocaleString("it-IT")})` : "viste dall'AVM: proposta non ancora fatta"} />
+                  <Numero valore={giornata.soppresse} etichetta="soppresse confermate" tono={giornata.soppresse > 0 ? "attenzione" : undefined} />
+                  <Numero valore={giornata.daDecidere.toLocaleString("it-IT")}
+                    etichetta={`da decidere${giornata.daVerificare ? ` · ${giornata.daVerificare} da verificare` : ""}`} />
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Giornata {consuntivo.stato}{giornata.aggiunte ? ` · ${giornata.aggiunte} corse aggiunte` : ""}
+                </p>
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">La giornata di oggi non è ancora preparata.</p>
+            )}
+            {consuntivo.daChiudere > 0 && consuntivo.dal && (
+              <p className="text-xs text-amber-400 mt-2">
+                {consuntivo.daChiudere === 1 ? "1 giornata da chiudere" : `${consuntivo.daChiudere} giornate da chiudere`}, dal {data(consuntivo.dal)}
+              </p>
             )}
           </Riquadro>
         )}
