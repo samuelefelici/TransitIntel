@@ -28,6 +28,8 @@ interface Programma { id: string; nome: string; inEsercizio: boolean; udp: numbe
 interface Candidato {
   dssId: string; nome: string; versione: number; inEsercizio: boolean;
   superatoDa: string | null; datiSuperati: boolean; turni: number; creatoIl: string; progetto: string;
+  /** calcolati su turni macchina che hanno una versione più nuova */
+  turniMacchinaSuperati?: boolean;
 }
 interface UdpAnteprima {
   id: string; nome: string; servizio: "urbano" | "extraurbano" | null;
@@ -81,7 +83,7 @@ const quando = (iso: string) => new Date(iso).toLocaleString("it-IT", { day: "2-
 const elenco = (xs: string[], n = 6) => `${xs.slice(0, n).map(breve).join(", ")}${xs.length > n ? ` e altri ${xs.length - n}` : ""}`;
 
 const etichettaCandidato = (c: Candidato) =>
-  `${c.inEsercizio ? "● " : ""}v${c.versione} · ${c.nome} · ${c.turni} turni${c.superatoDa ? " · c'è una versione più nuova" : ""}${c.datiSuperati ? " · dati cambiati" : ""}`;
+  `${c.inEsercizio ? "● " : ""}v${c.versione} · ${c.nome} · ${c.turni} turni${c.superatoDa ? " · c'è una versione più nuova" : ""}${c.datiSuperati ? " · dati cambiati" : ""}${c.turniMacchinaSuperati ? " · turni macchina con una versione più nuova" : ""}`;
 
 const MOTIVI: Record<string, string> = {
   "nessun turno uguale": "nessun turno con le stesse corse e gli stessi orari",

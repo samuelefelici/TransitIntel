@@ -1492,3 +1492,27 @@ describe("0021: versioni pubblicate", () => {
     expect(v["public.ps_projects.ps_projects_versione_coerente"]).toBe("CHECK (((versione_di IS NULL) OR (versione_del_feed IS NOT NULL)))");
   });
 });
+
+/* 0023 e 0024 (PR 3.6): il turno macchina di ogni giorno pubblicato. */
+describe("0023 e 0024: turni macchina nel canale dei turni pubblicati", () => {
+  const dati = readFileSync(path.join(CARTELLA, "0023_turni_macchina_nel_canale.sql"), "utf8");
+  const regole = readFileSync(path.join(CARTELLA, "0024_regole_dei_turni_pubblicati.sql"), "utf8");
+  const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
+
+  it("ogni riga del canale ha il suo turno macchina, coerente col turno guida e non cancellabile", () => {
+    expect(catalogo.tabelle["public.roster_turni_pubblicati"].vss_id).toMatch(/^uuid \| not null/);
+    const v = catalogo.vincoli;
+    expect(v["public.driver_shift_scenarios.driver_shift_scenarios_con_turni_macchina"]).toBe("UNIQUE (id, service_program_scenario_id)");
+    expect(v["public.roster_turni_pubblicati.roster_turni_pubblicati_coppia"])
+      .toBe("FOREIGN KEY (dss_id, vss_id) REFERENCES driver_shift_scenarios(id, service_program_scenario_id) ON DELETE RESTRICT");
+    expect(v["public.roster_turni_pubblicati.roster_turni_pubblicati_vss_id_fkey"])
+      .toBe("FOREIGN KEY (vss_id) REFERENCES service_program_scenarios(id) ON DELETE RESTRICT");
+  });
+
+  it("le righe di prima prendono il turno macchina del loro turno guida, come cerbero_owner; i vincoli dopo, da chi migra", () => {
+    expect(dati).toMatch(/SET vss_id = d\.service_program_scenario_id/);
+    expect(dati.trim()).toMatch(/--> statement-breakpoint\nRESET ROLE;$/);
+    expect(regole).not.toMatch(/SET LOCAL ROLE/);
+    expect(regole).toMatch(/ALTER COLUMN vss_id SET NOT NULL/);
+  });
+});

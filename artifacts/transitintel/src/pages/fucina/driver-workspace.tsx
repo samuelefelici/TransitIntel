@@ -983,7 +983,8 @@ export default function DriverWorkspace({
             const rm = new Set(tripIds);
             await fetch(`${getApiBase()}/api/service-program/scenarios/${scenId}`, {
               method: "PUT", credentials: "include", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: ((sc.result?.unassigned ?? []) as any[]).filter(u => !rm.has(String(u?.tripId))) } }),
+              /* ritocco automatico: se il roster usa quella fonte non si tocca (né si versiona) */
+              body: JSON.stringify({ name: sc.name, result: { ...sc.result, unassigned: ((sc.result?.unassigned ?? []) as any[]).filter(u => !rm.has(String(u?.tripId))) }, nonVersionare: true }),
             });
           } catch { /* best-effort */ }
         }

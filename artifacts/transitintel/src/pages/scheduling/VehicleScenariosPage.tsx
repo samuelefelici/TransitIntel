@@ -274,8 +274,11 @@ export default function VehicleScenariosPage() {
                         {s.validTo ? ` al ${new Date(`${s.validTo}T00:00:00`).toLocaleDateString("it-IT")}` : ""}
                       </span>
                     )}
-                    {(s.version ?? 1) > 1 && (
-                      <span className="text-zinc-500" title="Versione dello scenario">v{s.version}</span>
+                    {((s.version ?? 1) > 1 || s.supersededBy) && (
+                      <span className="text-zinc-500"
+                            title="Versione: se il roster usa i suoi turni guida, salvare i turni macchina crea una versione nuova">
+                        v{s.version ?? 1}{s.supersededBy ? " · c'è una versione più nuova" : ""}
+                      </span>
                     )}
                     {ownerLabel && (
                       <span className="text-zinc-600">

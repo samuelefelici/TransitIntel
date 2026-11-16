@@ -21,5 +21,7 @@
   "0019_un_solo_programma_in_esercizio": "fd582dbefabd34f7f98dc44368c2ab77fea1b315ecd965bd2b495d4bfdd1c8aa",
   "0020_regole_del_programma_in_esercizio": "1129e3492427e8ab489b07361ebda1b4cf1faf5c667772c3091f0c108be740ff",
   "0021_versioni_pubblicate": "be6ce0229f07558f2be21dfd9d4b4a5cd9230d55a8ffd9b43b54d2dc842d5164",
-  "0022_lunghezza_dei_percorsi": "d66bfd98b7037bc47e271116169363f0502d1ee8457049e9263e98c9f2c22cf7"
+  "0022_lunghezza_dei_percorsi": "d66bfd98b7037bc47e271116169363f0502d1ee8457049e9263e98c9f2c22cf7",
+  "0023_turni_macchina_nel_canale": "47c84f74e6c9986838f76b26d3e7c1ab9c83d061c3e71c0d7b984ae8294354f0",
+  "0024_regole_dei_turni_pubblicati": "36d25507c87643f64d6be46300d468b395f8a4b7f2c037e06007ac2dc1cf1204"
 }
