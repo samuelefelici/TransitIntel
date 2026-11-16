@@ -14,6 +14,9 @@
  *   GET  /api/esercizio/causali                    il catalogo delle causali attive
  *   POST /api/esercizio/giornate/:giorno/chiusura  chiude la giornata (4.6: ruolo Amministrazione o amministratore)
  *   GET  /api/esercizio/mesi/:mese                 lo stato di un mese (AAAA-MM): giornate, mancanti, riepilogo
+ *   GET  /api/esercizio/mesi/:mese/report          il report del mese (4.7): indicatori e ripartizioni
+ *   GET  /api/esercizio/mesi/:mese/report.xlsx     lo stesso in XLSX
+ *   GET  /api/esercizio/mesi/:mese/dettaglio.csv   il dettaglio corsa per corsa delle giornate chiuse
  *
  * Riaprire una giornata e chiudere o riaprire un mese: solo l'amministratore
  * (routes/admin.ts, /admin/esercizio/…).
@@ -24,6 +27,8 @@ import { calcolaProposta, RifiutoProposta } from "../lib/esercizio-proposta";
 import { elencoCausali, leggiGiornale, leggiRichiesta, registraEvento, RifiutoGiornale } from "../lib/esercizio-giornale";
 import { chiudiGiornata, chiusuraDellaGiornata, meseValido, RifiutoChiusura, statoDelMese } from "../lib/esercizio-chiusura";
 import { chiudeLeGiornate } from "@workspace/permessi";
+import { dettaglioCsv, reportDelMese, reportXlsx } from "../lib/esercizio-report";
+import { aziendaOppureNeutra } from "../lib/azienda";
 
 const router: IRouter = Router();
 
@@ -120,6 +125,49 @@ router.get("/esercizio/mesi/:mese", async (req, res): Promise<void> => {
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, mese }, "consuntivo: mese non leggibile");
     res.status(500).json({ error: "Mese non leggibile" });
+  }
+});
+
+router.get("/esercizio/mesi/:mese/report", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  try {
+    res.json(await reportDelMese(mese));
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, mese }, "consuntivo: report non riuscito");
+    res.status(500).json({ error: "Report non riuscito" });
+  }
+});
+
+router.get("/esercizio/mesi/:mese/report.xlsx", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  try {
+    const azienda = await aziendaOppureNeutra().catch(() => null);
+    const file = reportXlsx(await reportDelMese(mese), azienda?.compilata ? azienda.nome : null);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="consuntivo-${mese}.xlsx"`);
+    res.setHeader("Cache-Control", "no-store");
+    res.send(file);
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, mese }, "consuntivo: XLSX non riuscito");
+    if (!res.headersSent) res.status(500).json({ error: "Report non riuscito" });
+  }
+});
+
+router.get("/esercizio/mesi/:mese/dettaglio.csv", async (req, res): Promise<void> => {
+  const mese = String(req.params.mese);
+  if (!meseValido(mese)) { res.status(400).json({ error: "mese: AAAA-MM" }); return; }
+  try {
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="consuntivo-${mese}-corse.csv"`);
+    res.setHeader("Cache-Control", "no-store");
+    await dettaglioCsv(mese, (pezzo) => { res.write(pezzo); });
+    res.end();
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, mese }, "consuntivo: CSV non riuscito");
+    if (!res.headersSent) res.status(500).json({ error: "Dettaglio non riuscito" });
+    else res.end();
   }
 });
 
