@@ -494,17 +494,22 @@ function ReportMese({ mese, versione }: { mese: string; versione: string }) {
     finally { setOccupato(false); }
   };
   const base = `${getApiBase()}/api/esercizio/mesi/${mese}`;
-  const linee = r ? [...r.perLinea].filter((l) => l.programmate > 0).sort((a, b) => (a.regolaritaKm ?? 100) - (b.regolaritaKm ?? 100)).slice(0, 8) : [];
+  /* solo le linee sotto il 100%: con tutte al 100% l'elenco non direbbe niente */
+  const linee = r ? r.perLinea.filter((l) => l.programmate > 0 && l.regolaritaKm != null && l.regolaritaKm < 100)
+    .sort((a, b) => a.regolaritaKm! - b.regolaritaKm!).slice(0, 8) : [];
+  const nComuni = r?.perComune.length ?? 0;
   return (
     <div className="space-y-2 rounded-md border border-border/60 p-3">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">Report del mese</span>
         <span className="text-xs text-muted-foreground">sulle giornate chiuse{r && r.statoMese !== "chiuso" ? " · provvisorio finché il mese è aperto" : ""}</span>
-        <Button size="sm" variant="outline" className="ml-auto" disabled={occupato} onClick={() => void calcola()}>
-          <RefreshCw className={`w-4 h-4 mr-1.5 ${occupato ? "animate-spin" : ""}`} />{r ? "Ricalcola" : "Calcola il report"}
-        </Button>
-        <a className="text-sm underline underline-offset-2" href={`${base}/report.xlsx`} download>Scarica XLSX</a>
-        <a className="text-sm underline underline-offset-2" href={`${base}/dettaglio.csv`} download>Dettaglio corse (CSV)</a>
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          <Button size="sm" variant="outline" disabled={occupato} onClick={() => void calcola()}>
+            <RefreshCw className={`w-4 h-4 mr-1.5 ${occupato ? "animate-spin" : ""}`} />{r ? "Ricalcola" : "Calcola il report"}
+          </Button>
+          <a className="text-sm underline underline-offset-2" href={`${base}/report.xlsx`} download>Scarica XLSX</a>
+          <a className="text-sm underline underline-offset-2" href={`${base}/dettaglio.csv`} download>Dettaglio corse (CSV)</a>
+        </div>
       </div>
       {errore && <div className="text-destructive text-sm">{errore}</div>}
       {r && (
@@ -520,6 +525,7 @@ function ReportMese({ mese, versione }: { mese: string; versione: string }) {
             <div><span className="text-muted-foreground">Km: </span>{km(r.totali.kmEffettivi)} su {km(r.totali.kmProgrammati)} <span className="text-muted-foreground">(persi {km(r.totali.kmPersi)}, aggiunti {km(r.totali.kmAggiunti)})</span></div>
             <div><span className="text-muted-foreground">Vettori: </span>{r.perVettore.map((v) => `${v.vettore} ${(v.programmate + v.aggiunte).toLocaleString("it-IT")}`).join(" · ")}</div>
           </div>
+          {linee.length === 0 && r.perLinea.length > 0 && <div className="text-sm text-muted-foreground">Tutte le linee al 100% di regolarità km.</div>}
           {linee.length > 0 && (
             <div className="overflow-x-auto">
               <table className="w-full text-xs tabular-nums">
@@ -541,7 +547,7 @@ function ReportMese({ mese, versione }: { mese: string; versione: string }) {
             </div>
           )}
           <div className="text-xs text-muted-foreground">
-            {r.perComune.length ? `Per comune: ${r.perComune.length} voci nell'XLSX.` : r.notaComuni}
+            {nComuni ? `Per comune: ${nComuni} ${nComuni === 1 ? "voce" : "voci"} nell'XLSX.` : r.notaComuni}
             {r.giornate.aperte.length > 0 && ` · ${r.giornate.aperte.length} giornate aperte restano fuori.`}
           </div>
         </>
