@@ -26,7 +26,24 @@ describe("Oggi", () => {
       violazioni: [{ forzata: false }, { forzata: true }],
     }, g);
     /* d1 con due voci è una persona sola; d2 è a riposo, non assente; la violazione forzata non si conta */
-    expect(r).toEqual({ pubblicati: 3, assegnati: 1, scoperti: 2, assenze: 1, riposi: 1, violazioni: 1, unita: 2 });
+    expect(r).toEqual({ pubblicati: 3, assegnati: 1, scoperti: 2, liberati: 0, assenze: 1, riposi: 1, violazioni: 1, unita: 2 });
+  });
+
+  it("il turno di un conducente assente torna scoperto, e si conta fra i liberati; il riposo no", () => {
+    const g = "2026-11-16";
+    const r = riassuntoTurni({
+      pubblicati: { [g]: [{ dssId: "a", udpNome: null }] },
+      dutiesByDss: { a: [{ code: "A1" }, { code: "A2" }, { code: "A3" }] },
+      assignments: [
+        { day: g, dssId: "a", dutyCode: "A1", driverId: "malato" },
+        { day: g, dssId: "a", dutyCode: "A2", driverId: "riposa" },
+      ],
+      entries: [
+        { day: g, driverId: "malato", category: "assenza", code: "ASS" },
+        { day: g, driverId: "riposa", category: "assenza", code: "R" },
+      ],
+    }, g);
+    expect(r).toMatchObject({ pubblicati: 3, assegnati: 1, scoperti: 2, liberati: 1 });
   });
 
   it("un giorno senza pubblicazioni non ha turni scoperti", () => {

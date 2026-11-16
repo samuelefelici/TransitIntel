@@ -1073,6 +1073,14 @@ jobs:
       # sulle corse fuori dalle fasce garantite; un token di servizio non scrive.
       - name: Le variazioni decise in anticipo
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/esercizio-variazioni-db.test.ts
+      # Tappa 5.1: l'assenza (non il riposo) libera il turno assegnato
+      # (migrazione 0032), con l'API come cerbero_app. Sostituti suggeriti:
+      # liberi, a disposizione, in servizio compatibili; fuori gli assenti e chi
+      # avrebbe riposi corti o sovrapposizioni, senza dire perché. Riassegnare
+      # col titolare assente è una sostituzione (anche di seguito); una
+      # riassegnazione normale no; il titolare che torna la chiude.
+      - name: Assenze che liberano il turno e sostituti
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/roster-sostituti-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

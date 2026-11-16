@@ -1295,6 +1295,59 @@ di servizio leggono e basta.
 non la legge: le variazioni in attesa non si applicano più. Le soppressioni
 già applicate restano nel giornale come ogni altro esito.
 
+### Assenze che liberano il turno e sostituti suggeriti (tappa 5.1)
+
+Decisioni del 16/11/2026. Prima un'assenza registrata non liberava il turno:
+il conducente in malattia restava sul turno, e il turno risultava coperto.
+
+**L'assenza libera il turno.**
+- Un'assenza del conducente assegnato rimette il turno «da coprire». Il
+  riposo «R» no.
+- L'assegnazione non si cancella: resta come titolare. Si calcola dalle voci
+  del roster, senza scrivere niente, quindi se l'assenza si toglie e nessuno ha
+  coperto il turno il titolare torna.
+- Nel tabellone il turno del conducente assente appare barrato. In basso, fra
+  i turni scoperti, compare con il bordo rosso tratteggiato e «assente: …».
+- Nella home, «turni scoperti» conta anche quelli liberati.
+- Il motivo dell'assenza lo vede solo chi ha il permesso Roster, come prima.
+
+**Sostituti suggeriti.** Col tasto destro su un turno scoperto, il dettaglio
+mostra chi può coprirlo, in quest'ordine: liberi, a disposizione (D1, D2), già
+in servizio ma compatibili.
+- Si propongono i conducenti dello stesso deposito del titolare (o del
+  turno), attivi, in servizio quel giorno e non fittizi.
+- Restano fuori, contati ma senza dire chi né perché, quelli con un'assenza
+  quel giorno (riposo compreso) e quelli a cui il turno creerebbe un riposo
+  troppo corto o una sovrapposizione. Le regole sono quelle di sempre.
+- **È un suggerimento: decide una persona.** «Assegna» fa la stessa
+  assegnazione di sempre, con tutti i controlli. Il sistema non sceglie e non
+  assegna da solo, quindi non è una decisione automatizzata sulle persone. Se
+  in futuro si volesse l'assegnazione automatica, servirebbero l'informativa
+  ai lavoratori e le valutazioni del caso.
+
+**La sostituzione si ricorda.**
+- Riassegnare il turno mentre il titolare è assente lo registra
+  sull'assegnazione: il titolare, chi ha deciso, quando, e il motivo
+  «assenza», senza il codice.
+- Resta registrata anche nello storico del conducente («turno-sostituzione»)
+  e, quando è acceso, nel registro delle modifiche.
+- Un secondo sostituto tiene lo stesso titolare. Una riassegnazione normale
+  (titolare non assente) o il ritorno del titolare la chiudono.
+- Nel tabellone, il turno del sostituto ha un bordo tratteggiato e dice chi
+  sostituisce.
+
+**La migrazione `0032`**: in `roster_assignments` le colonne `titolare_id` e
+`sostituzione`.
+
+**Dopo il deploy**: la definizione di fatto.
+1. Si segna un'assenza a un conducente con un turno: il turno compare fra gli
+   scoperti.
+2. Il tasto destro sul turno propone sostituti senza violazioni.
+3. «Assegna» lo copre, e il turno ricorda il titolare.
+
+**Rollback**: immagine precedente. Le colonne restano e la versione di prima
+le ignora. I turni dei conducenti assenti tornano a sembrare coperti.
+
 ### Argos: sola lettura su un elenco chiuso
 
 Argos legge il database di Cerbero con il ruolo `argos_ro`, e solo le 23

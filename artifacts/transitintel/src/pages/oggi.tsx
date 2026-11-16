@@ -153,7 +153,7 @@ export default function OggiPage() {
             ) : (
               <div className="grid grid-cols-2 gap-3">
                 <Numero valore={turni.pubblicati} etichetta={`turni pubblicati (${turni.unita} unità)`} />
-                <Numero valore={turni.scoperti} etichetta="turni scoperti" tono={turni.scoperti > 0 ? "attenzione" : "ok"} />
+                <Numero valore={turni.scoperti} etichetta={`turni scoperti${turni.liberati ? ` (${turni.liberati} per assenza)` : ""}`} tono={turni.scoperti > 0 ? "attenzione" : "ok"} />
                 <Numero valore={turni.assenze} etichetta={`assenti${turni.riposi ? ` · ${turni.riposi} a riposo` : ""}`} />
                 <Numero valore={turni.violazioni} etichetta="avvisi da controllare (riposi, sovrapposizioni)" tono={turni.violazioni > 0 ? "attenzione" : undefined} />
               </div>

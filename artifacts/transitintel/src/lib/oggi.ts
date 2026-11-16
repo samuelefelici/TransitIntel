@@ -14,7 +14,7 @@ export interface ServizioLive { caronteAvailable?: boolean; kpis?: Kpi }
 export interface TabelloneGiorno {
   pubblicati?: Record<string, Array<{ dssId: string; udpNome: string | null }>>;
   dutiesByDss?: Record<string, Array<{ code: string }>>;
-  assignments?: Array<{ day: string; dssId: string; dutyCode: string }>;
+  assignments?: Array<{ day: string; dssId: string; dutyCode: string; driverId?: string }>;
   entries?: Array<{ day: string; driverId: string; category: string; code: string }>;
   /** forzata: assegnata lo stesso, sapendolo (il roster la mostra a parte) */
   violazioni?: Array<{ forzata?: boolean }>;
@@ -23,21 +23,31 @@ export interface TabelloneGiorno {
 /** Il riposo della rotazione è una voce di assenza nel catalogo, ma non è una persona che manca. */
 const RIPOSO = "R";
 
-/** Turni del giorno dal tabellone: pubblicati, assegnati, scoperti; persone assenti e a riposo. */
+/**
+ * Turni del giorno dal tabellone: pubblicati, assegnati, scoperti; persone
+ * assenti e a riposo. Un turno di un conducente assente (non a riposo) è
+ * scoperto: l'assenza lo libera (5.1), e i «liberati» si contano anche a parte.
+ */
 export function riassuntoTurni(b: TabelloneGiorno, giorno: string) {
-  const presi = new Set((b.assignments ?? []).filter(a => a.day === giorno).map(a => `${a.dssId}|${a.dutyCode}`));
-  let pubblicati = 0, scoperti = 0;
+  const voci = (b.entries ?? []).filter(e => e.day === giorno && e.category === "assenza");
+  const assentiConTurno = new Set(voci.filter(e => e.code !== RIPOSO).map(e => e.driverId));
+  const delGiorno = (b.assignments ?? []).filter(a => a.day === giorno);
+  const presi = new Set(delGiorno.map(a => `${a.dssId}|${a.dutyCode}`));
+  const liberatiDa = new Set(delGiorno.filter(a => a.driverId && assentiConTurno.has(a.driverId)).map(a => `${a.dssId}|${a.dutyCode}`));
+  let pubblicati = 0, scoperti = 0, liberati = 0;
   for (const p of b.pubblicati?.[giorno] ?? []) {
     for (const d of b.dutiesByDss?.[p.dssId] ?? []) {
       pubblicati++;
-      if (!presi.has(`${p.dssId}|${d.code}`)) scoperti++;
+      const k = `${p.dssId}|${d.code}`;
+      if (!presi.has(k)) scoperti++;
+      else if (liberatiDa.has(k)) { scoperti++; liberati++; }
     }
   }
-  const voci = (b.entries ?? []).filter(e => e.day === giorno && e.category === "assenza");
   return {
     pubblicati,
-    assegnati: presi.size,
+    assegnati: presi.size - liberati,
     scoperti,
+    liberati,
     /* per persona: due voci dello stesso conducente nello stesso giorno sono un'assenza */
     assenze: new Set(voci.filter(e => e.code !== RIPOSO).map(e => e.driverId)).size,
     riposi: new Set(voci.filter(e => e.code === RIPOSO).map(e => e.driverId)).size,

@@ -1873,7 +1873,9 @@
    "forzatura": "jsonb | null |  |  | ",
    "id": "uuid | not null | gen_random_uuid() |  | ",
    "ricollegamenti": "jsonb | null |  |  | ",
-   "snapshot": "jsonb | null |  |  | "
+   "snapshot": "jsonb | null |  |  | ",
+   "sostituzione": "jsonb | null |  |  | ",
+   "titolare_id": "uuid | null |  |  | "
   },
   "public.roster_categorie": {
    "alias": "text[] | not null | '{}'::text[] |  | ",
@@ -2525,6 +2527,8 @@
   "public.roster_assignments.roster_assignments_driver_id_fkey": "FOREIGN KEY (driver_id) REFERENCES roster_drivers(id) ON DELETE CASCADE",
   "public.roster_assignments.roster_assignments_dss_id_day_duty_code_key": "UNIQUE (dss_id, day, duty_code)",
   "public.roster_assignments.roster_assignments_pkey": "PRIMARY KEY (id)",
+  "public.roster_assignments.roster_assignments_sostituzione": "CHECK (((titolare_id IS NULL) OR (sostituzione IS NOT NULL)))",
+  "public.roster_assignments.roster_assignments_titolare_fkey": "FOREIGN KEY (titolare_id) REFERENCES roster_drivers(id) ON DELETE SET NULL",
   "public.roster_categorie.roster_categorie_nome_key": "UNIQUE (nome)",
   "public.roster_categorie.roster_categorie_pkey": "PRIMARY KEY (codice)",
   "public.roster_depositi.roster_depositi_cadenza_turni_check": "CHECK ((cadenza_turni = ANY (ARRAY['settimanale'::text, 'semimensile'::text])))",

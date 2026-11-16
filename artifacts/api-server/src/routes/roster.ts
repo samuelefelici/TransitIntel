@@ -16,6 +16,13 @@
  *   GET    /api/roster/voci                    — catalogo assenze/presenze
  *   GET    /api/roster/calendario?from=&days=  — la categoria di ogni giorno nel calendario aziendale
  *   POST   /api/roster/entries · DELETE /api/roster/entries/:id
+ *   GET    /api/roster/sostituti?day=&dssId=&dutyCode= — chi può coprire un turno (5.1)
+ *
+ * Assenze che liberano il turno (5.1, lib/roster-sostituti.ts): un'assenza
+ * (non il riposo) del conducente assegnato rimette il turno «da coprire»
+ * senza toccare l'assegnazione, che resta come titolare. Riassegnarlo mentre
+ * il titolare è assente lo registra come sostituzione (titolare_id e chi,
+ * quando, perché); una riassegnazione normale la svuota.
  *
  * I conducenti (anagrafica, storico, fittizi) stanno in routes/anagrafica.ts.
  *
@@ -43,13 +50,14 @@ import { fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-dep
 import { catalogoPer, esitoScrittura, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
-  forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, turniDelDss, violazioniDeiCambi, violazioniDelTabellone,
+  forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, turniDelDss, violazioniDeiCambi, violazioniDelTabellone, violazioniPerCandidati,
   type Lettore,
 } from "../lib/roster-normativa-db";
 import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
 import { turnoRoster } from "../lib/roster-turni";
 import { bloccoCanaleCondiviso, canale, riassuntiDei, snapshotDaRiassunto, statoNelCanale } from "../lib/roster-pubblicazione-db";
 import { classifyRange, type CalendarProfile } from "../lib/day-classifier";
+import { assentiNelGiorno, sostitutiDa, type Candidato, type Voce } from "../lib/roster-sostituti";
 
 const router: IRouter = Router();
 
@@ -276,7 +284,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
     const vede = (driverId: unknown) => !visti || visti.has(String(driverId).toLowerCase());
     const righeCanale = await canale(ex, from, al);
     const assegnazioni = righe(await ex.execute(sql`
-      SELECT id::text, driver_id::text, day::text AS day, duty_code, dss_id::text, snapshot, forzatura, ricollegamenti
+      SELECT id::text, driver_id::text, day::text AS day, duty_code, dss_id::text, snapshot, forzatura, ricollegamenti, titolare_id::text
         FROM roster_assignments WHERE day BETWEEN ${from}::date AND ${al}::date`));
     const riassunti = await riassuntiDei([...righeCanale.map(r => r.dssId), ...assegnazioni.map(a => String(a.dss_id))]);
     const dutiesByDss: Record<string, unknown[]> = {};
@@ -319,6 +327,8 @@ router.get("/roster/board", async (req, res): Promise<void> => {
       assignments: assegnazioni.filter((a: any) => vede(a.driver_id)).map((a: any) => ({
         id: a.id, driverId: a.driver_id, day: String(a.day).slice(0, 10), dutyCode: a.duty_code, dssId: a.dss_id,
         snapshot: a.snapshot ?? null, forzatura: a.forzatura ?? null,
+        /* sostituzione per assenza (5.1): chi aveva il turno; il nome lo trova il tabellone, se lo vede */
+        titolareId: a.titolare_id ?? null,
         stato: stato(String(a.day).slice(0, 10), a.dss_id),
         ricollegata: Array.isArray(a.ricollegamenti) && a.ricollegamenti.length ? a.ricollegamenti[a.ricollegamenti.length - 1] : null,
       })),
@@ -448,6 +458,80 @@ async function controllaPubblicato(ex: Ex, day: string, dssId: string, codice: s
 }
 
 /**
+ * Chi può coprire un turno (5.1): i sostituti suggeriti, in gruppi (liberi, a
+ * disposizione, già in servizio ma compatibili), fra i conducenti che chi
+ * chiede vede, dello stesso deposito del titolare (o del turno), attivi, in
+ * servizio quel giorno e non fittizi. Fuori chi quel giorno ha un'assenza
+ * (riposo compreso) e chi avrebbe una violazione di riposo o sovrapposizione:
+ * di loro solo quanti sono, mai chi né perché. È un suggerimento: decide chi
+ * assegna, e l'assegnazione ricontrolla tutto.
+ */
+router.get("/roster/sostituti", async (req, res): Promise<void> => {
+  try {
+    const day = String(req.query.day ?? "");
+    const dssId = String(req.query.dssId ?? "").toLowerCase();
+    const dutyCode = String(req.query.dutyCode ?? "").trim();
+    const dataVera = DATE_RE.test(day) && !Number.isNaN(Date.parse(`${day}T12:00:00Z`)) && new Date(`${day}T12:00:00Z`).toISOString().slice(0, 10) === day;
+    if (!dataVera || !UUID_STRETTO.test(dssId) || !dutyCode || dutyCode.length > 100) {
+      res.status(400).json({ error: "day (YYYY-MM-DD), dssId (uuid) e dutyCode richiesti" });
+      return;
+    }
+    const ex = db as unknown as Ex;
+    const a = righe(await ex.execute(sql`
+      SELECT id::text, driver_id::text, titolare_id::text, snapshot FROM roster_assignments
+       WHERE dss_id = ${dssId}::uuid AND day = ${day}::date AND duty_code = ${dutyCode}`))[0] ?? null;
+    const preparato = await preparaControllo([], [day], [{ dssId, codice: dutyCode }]);
+    const snapshot = a?.snapshot ?? snapshotDa(preparato.orari.get(`${dssId}|${dutyCode}`));
+    if (!snapshot) throw new Rifiuto(404, `Il turno ${dutyCode} non c'è in quei turni guida`);
+
+    const conducenti = await conducentiPer(req, ex);
+    const nomeDi = (c: Conducente) => [c.cognome, c.nome].filter(Boolean).join(" ") || c.name;
+    const titolareId: string | null = a ? (a.titolare_id ?? a.driver_id) : null;
+    const titolare = titolareId ? conducenti.find(c => c.id === titolareId) ?? null : null;
+    const assente = titolareId ? (await assentiNelGiorno(ex, [titolareId], day)).has(titolareId) : false;
+    /* il deposito: del titolare, o quello del turno nel DSS */
+    const catalogo = await leggiDepositi(ex);
+    const dep = (x: string | null | undefined) => (x && x.trim() ? trovaDeposito(x, catalogo)?.nome ?? x.trim() : null);
+    let deposito = dep(titolare?.residenzaServizio);
+    if (!deposito) deposito = dep((await riassuntiDei([dssId])).get(dssId)?.turni.find(t => t.code === dutyCode)?.residenzaName);
+
+    const attivi = conducenti.filter(c => c.isActive && !c.isFictitious && (!deposito || dep(c.residenzaServizio) === deposito));
+    const elenco = (ids: string[]) => sql.join(ids.map(id => sql`${id}::uuid`), sql`, `);
+    const inServizio = new Set(attivi.length ? righe(await ex.execute(sql`
+      SELECT id::text FROM roster_drivers
+       WHERE id IN (${elenco(attivi.map(c => c.id))})
+         AND (data_assunzione IS NULL OR data_assunzione <= ${day}::date)
+         AND (data_fine_servizio IS NULL OR data_fine_servizio >= ${day}::date)`)).map(x => String(x.id)) : []);
+    const candidati: Candidato[] = attivi.filter(c => inServizio.has(c.id))
+      .map(c => ({ id: c.id, nome: nomeDi(c), matricola: c.matricola ?? null, deposito: dep(c.residenzaServizio) }));
+    const ids = candidati.map(c => c.id);
+    const voci: Voce[] = ids.length ? righe(await ex.execute(sql`
+      SELECT driver_id::text, category, code FROM roster_entries WHERE day = ${day}::date AND driver_id IN (${elenco(ids)})`))
+      .map(x => ({ driverId: String(x.driver_id), day, category: String(x.category), code: String(x.code) })) : [];
+    const turni = new Map<string, string[]>();
+    if (ids.length) {
+      for (const t of righe(await ex.execute(sql`
+        SELECT driver_id::text, duty_code FROM roster_assignments WHERE day = ${day}::date AND driver_id IN (${elenco(ids)}) ORDER BY duty_code`))) {
+        const l = turni.get(t.driver_id); if (l) l.push(t.duty_code); else turni.set(t.driver_id, [t.duty_code]);
+      }
+    }
+    const esclusi = new Set([a?.driver_id, titolareId].filter((x): x is string => !!x));
+    const assentiTutti = new Set(voci.filter(v => v.category === "assenza").map(v => v.driverId));
+    const daControllare = ids.filter(id => !esclusi.has(id) && !assentiTutti.has(id));
+    const violazioni = await violazioniPerCandidati({ id: a?.id ?? null, day, dssId, dutyCode, snapshot }, daControllare, preparato);
+    const r = sostitutiDa({ candidati, esclusi, voci, turni, violazioni: new Map([...violazioni].map(([k, v]) => [k, v.length])) });
+    res.json({
+      turno: { day, dssId, dutyCode, inizio: snapshot.start ?? null, fine: snapshot.end ?? null },
+      deposito,
+      /* il titolare, se c'è: assente quel giorno (il turno è da coprire) o no; il motivo non si dice */
+      titolare: titolareId ? { id: titolareId, nome: titolare ? nomeDi(titolare) : null, assente } : null,
+      sostituti: r.sostituti,
+      fuori: r.fuori,
+    });
+  } catch (e) { rispondiErrore(res, e, "sostituti"); }
+});
+
+/**
  * Assegna un turno a un conducente. Un conducente può avere più turni in un
  * giorno; il turno resta però di un solo conducente (UNIQUE dss_id/day/
  * duty_code): riassegnarlo lo sposta sul nuovo conducente.
@@ -496,7 +580,7 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
         await registra(ex, { ...chi, driverId, azione: "turno-sostituito", campi: ["turno"], dettaglio: { day, da: { dssId: vecchia.dss_id, codice: vecchia.duty_code }, a: { dssId, codice: dutyCode } } });
       }
       const prima = righe(await ex.execute(sql`
-        SELECT id::text, driver_id::text, snapshot FROM roster_assignments
+        SELECT id::text, driver_id::text, snapshot, titolare_id::text FROM roster_assignments
          WHERE dss_id = ${dssId}::uuid AND day = ${day}::date AND duty_code = ${dutyCode}
            FOR UPDATE`))[0];
       if (prima?.driver_id === driverId) return { id: prima.id as string, violazioni: [] as Violazione[] };
@@ -507,6 +591,10 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       ], preparato, inSavepoint(tx));
       controllaForzatura(violazioni, forzate);
       const forzatura = violazioni.length ? forzaturaDa(chi.userId, violazioni) : null;
+      /* sostituzione per assenza (5.1): il titolare (quello di prima, o il primo di una catena di sostituti) è assente quel giorno */
+      const titolare: string | null = prima ? (prima.titolare_id ?? prima.driver_id) : null;
+      const perAssenza = !!titolare && titolare !== driverId && (await assentiNelGiorno(ex, [titolare], day)).has(titolare);
+      const sostituzione = perAssenza ? { da: chi.userId, il: new Date().toISOString(), motivo: "assenza" } : null;
       const r = righe(await ex.execute(sql`
         INSERT INTO roster_assignments (driver_id, day, dss_id, duty_code, snapshot, forzatura)
         VALUES (${driverId}::uuid, ${day}::date, ${dssId}::uuid, ${dutyCode},
@@ -514,8 +602,13 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
         ON CONFLICT (dss_id, day, duty_code)
         DO UPDATE SET driver_id = EXCLUDED.driver_id,
                       snapshot = COALESCE(roster_assignments.snapshot, EXCLUDED.snapshot),
-                      forzatura = EXCLUDED.forzatura
+                      forzatura = EXCLUDED.forzatura,
+                      titolare_id = ${perAssenza ? titolare : null}::uuid,
+                      sostituzione = ${sostituzione ? JSON.stringify(sostituzione) : null}::jsonb
         RETURNING id::text`));
+      if (perAssenza) {
+        await registra(ex, { ...chi, driverId, azione: "turno-sostituzione", campi: ["turno"], dettaglio: { day, dssId, codice: dutyCode, titolare, motivo: "assenza" } });
+      }
       if (forzatura) {
         await registra(ex, { ...chi, driverId, azione: "turno-forzato", campi: forzatura.regole, dettaglio: { dutyCode, day, dssId, testi: forzatura.testi } });
       }
