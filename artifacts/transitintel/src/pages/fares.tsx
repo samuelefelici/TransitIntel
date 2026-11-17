@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { notaFermateTolte, riassuntoZoneGenerate, type ZoneGenerate } from "@/lib/zone-tariffarie";
 import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink, exportPolimetricheClustersToPrint, createPolimetricheClustersShareLink } from "./fares-polimetriche-export";
 import FaresTelemacoTab from "./fares-telemaco-tab";
 import StopsClassificationPage from "./stops-classification";
@@ -1633,7 +1634,7 @@ function ZonesTab() {
       clearTimeout(timer);
       toast({
         title: "Zone generate",
-        description: `${result.urbanAreas} aree urbane + ${result.totalZones} zone extraurbane su ${result.extraurbanRoutes} linee`,
+        description: riassuntoZoneGenerate(result),
       });
       await load();
     } catch (e: any) {
@@ -1863,7 +1864,7 @@ function ZonesDirectTab() {
       clearTimeout(timer);
       toast({
         title: "Zone generate (Km per Linea)",
-        description: `${result.urbanAreas} aree urbane + ${result.totalZones} zone extraurbane su ${result.extraurbanRoutes} linee`,
+        description: riassuntoZoneGenerate(result),
       });
       await load();
     } catch (e: any) {
@@ -2078,8 +2079,8 @@ function ZonesDominantTab() {
   const generateAll = async () => {
     setGenerating(true);
     try {
-      const res = await apiFetch<{ generated: number; routes: any[] }>("/api/fares/zones/generate-all-dominant", { method: "POST" });
-      toast({ title: "Zone Percorso Dominante generate", description: `${res.generated} linee processate` });
+      const res = await apiFetch<ZoneGenerate>("/api/fares/zones/generate-all-dominant", { method: "POST" });
+      toast({ title: "Zone Percorso Dominante generate", description: riassuntoZoneGenerate(res) });
       loadData();
       if (selectedRoute) {
         apiFetch<RouteStop[]>(`/api/fares/route-stops-dominant/${selectedRoute}`).then(setRouteStops).catch(() => {});
@@ -3208,7 +3209,7 @@ function ClustersTab() {
     try {
       const result = await apiFetch<any>("/api/fares/zone-clusters/generate-zones", { method: "POST" });
       setGenZonesResult(result);
-      toast({ title: "Zone generate", description: `${result.areasCreated} aree, ${result.stopsAssigned} fermate, ${result.odRules} regole OD` });
+      toast({ title: "Zone generate", description: `${result.areasCreated} aree, ${result.stopsAssigned} fermate, ${result.odRules} regole OD` + notaFermateTolte(result.urbanStopsRemoved) });
     } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
     setGenerating(false);
   };
@@ -4924,23 +4925,22 @@ function GenerateTab() {
   const generateAll = async () => {
     setGenerating(true);
     try {
-      if (zoningMethod === "cluster") {
-        // First generate zones from clusters, then leg rules
-        await apiFetch("/api/fares/zone-clusters/generate-zones", { method: "POST" });
-      } else if (zoningMethod === "shape") {
-        await apiFetch("/api/fares/zones/generate-all", { method: "POST" });
-      } else if (zoningMethod === "direct") {
-        await apiFetch("/api/fares/zones/generate-all-direct", { method: "POST" });
-      } else if (zoningMethod === "dominant") {
-        await apiFetch("/api/fares/zones/generate-all-dominant", { method: "POST" });
-      }
+      // Le zone: dai cluster, oppure per linea con uno dei tre metodi. Tutti e
+      // quattro rimettono a posto le zone urbane e dicono quante fermate hanno tolto.
+      const percorso = {
+        cluster: "/api/fares/zone-clusters/generate-zones",
+        shape: "/api/fares/zones/generate-all",
+        direct: "/api/fares/zones/generate-all-direct",
+        dominant: "/api/fares/zones/generate-all-dominant",
+      }[zoningMethod];
+      const zone = await apiFetch<{ urbanStopsRemoved?: number }>(percorso, { method: "POST" });
       // Generate leg rules (uses whatever areas/stop_areas exist)
       await apiFetch("/api/fares/leg-rules/generate", { method: "POST" });
       // Generate preview
       const data = await apiFetch<GenerateResult>("/api/fares/generate-gtfs", { method: "POST" });
       setResult(data);
       setPreviewFile(null);
-      toast({ title: "✅ Generazione completata", description: `${Object.keys(data.files).length} file tariffari pronti (metodo: ${{shape:"Shape",direct:"Km Diretto",dominant:"Percorso Dominante",cluster:"Cluster"}[zoningMethod]})` });
+      toast({ title: "✅ Generazione completata", description: `${Object.keys(data.files).length} file tariffari pronti (metodo: ${{shape:"Shape",direct:"Km Diretto",dominant:"Percorso Dominante",cluster:"Cluster"}[zoningMethod]})` + notaFermateTolte(zone?.urbanStopsRemoved) });
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
     } finally { setGenerating(false); }

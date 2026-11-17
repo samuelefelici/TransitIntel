@@ -58,6 +58,7 @@ import {
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
+import { classifyRoute, eReteUrbana, reteUrbana } from "../lib/reti-linee";
 
 const router: IRouter = Router();
 
@@ -127,31 +128,14 @@ export function extractSignificantTokens(raw: string): string[] {
 }
 
 // ════════════════════════════════════════════════════════════
-// Classificazione urbana (allineata a fares-min-od.ts)
+// Classificazione urbana: la regola e l'elenco delle reti stanno in
+// lib/reti-linee.ts, uno per tutto il programma.
 // ════════════════════════════════════════════════════════════
-
-/**
- * Mappa route_short_name → categoria.
- * Identica a `classifyRouteMinOd` in fares-min-od.ts (DUPLICATA volutamente
- * per non creare dipendenze cross-router; tenere allineate le due funzioni).
- */
-function classifyRouteCategory(shortName: string | null | undefined): string {
-  if (!shortName) return "extraurbano";
-  const s = shortName.trim().toUpperCase();
-  if (s.startsWith("JE")) return "urbano_jesi";
-  if (s.startsWith("Y")) return "urbano_falconara";
-  if (/^BUSS?\d/.test(s)) return "urbano_senigallia";
-  if (s === "CIRCA" || s === "CIRCB") return "urbano_castelfidardo";
-  if (/^\d/.test(s)) return "urbano_ancona";
-  if (/^[A-Z]\.[A-Z]\.?$/.test(s)) return "urbano_ancona";
-  return "extraurbano";
-}
 
 /** Nome leggibile per cluster urbano (es. "urbano_ancona" → "Urbano Ancona"). */
 function urbanCategoryDisplayName(cat: string): string {
-  if (!cat.startsWith("urbano_")) return cat;
-  const city = cat.slice("urbano_".length);
-  return "Urbano " + city.charAt(0).toUpperCase() + city.slice(1);
+  const rete = reteUrbana(cat);
+  return rete ? `Urbano ${rete.luogo}` : cat;
 }
 
 /**
@@ -173,7 +157,7 @@ async function loadStopUrbanWeights(feedId: string): Promise<Map<string, Map<str
 
   const routeCategory = new Map<string, string>();
   for (const r of routes) {
-    routeCategory.set(r.routeId, classifyRouteCategory(r.shortName));
+    routeCategory.set(r.routeId, classifyRoute(r.shortName));
   }
 
   // Aggregazione SQL: count stop_times per (stop_id, route_id)
@@ -189,7 +173,7 @@ async function loadStopUrbanWeights(feedId: string): Promise<Map<string, Map<str
   const result = new Map<string, Map<string, number>>();
   for (const row of data) {
     const cat = routeCategory.get(row.route_id);
-    if (!cat || !cat.startsWith("urbano_")) continue;  // solo categorie urbane
+    if (!cat || !eReteUrbana(cat)) continue;  // solo le reti urbane
     const inner = result.get(row.stop_id) ?? new Map<string, number>();
     inner.set(cat, (inner.get(cat) ?? 0) + Number(row.cnt));
     result.set(row.stop_id, inner);
@@ -465,9 +449,8 @@ function applyTokenLayer(unassigned: StopRecord[], opts: { minSharedTokens: numb
 // Layer 3.b: K-Means geografico (addensamenti)
 // ─────────────────────────────────────────────────────────────
 // Stessa logica del bottone "auto-generate spatial" già esistente
-// in fares.ts (`kMeansSpatial`). Duplicata qui — come per
-// `classifyRouteCategory` — per non creare dipendenze cross-router.
-// Tenere allineate le due implementazioni.
+// in fares.ts (`kMeansSpatial`). Duplicata qui per non creare
+// dipendenze cross-router. Tenere allineate le due implementazioni.
 //
 // Suddivide le fermate residue in K cluster geografici tramite
 // k-means++ su coordinate (haversine). Se K non è fornito, viene

@@ -67,7 +67,8 @@ import {
 import { eq, and, sql, inArray, desc } from "drizzle-orm";
 import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
-import { classifyRoute } from "../lib/reti-linee";
+import { classifyRoute, ID_RETI_URBANE, nomeReteUrbana, RETE_EXTRAURBANA, RETI_URBANE } from "../lib/reti-linee";
+import { assegnaZoneUrbane } from "../lib/zone-urbane";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
@@ -562,14 +563,10 @@ function computeKmAlongShape(
 // NETWORKS
 // ═══════════════════════════════════════════════════════════
 
+// Le reti di partenza: le urbane dell'elenco (lib/reti-linee.ts) e l'extraurbano.
 const DEFAULT_NETWORKS = [
-  { networkId: "urbano_ancona",        networkName: "Urbano di Ancona" },
-  { networkId: "urbano_jesi",          networkName: "Urbano di Jesi" },
-  { networkId: "urbano_falconara",     networkName: "Urbano di Falconara" },
-  { networkId: "urbano_senigallia",    networkName: "Urbano di Senigallia" },
-  { networkId: "urbano_castelfidardo", networkName: "Urbano di Castelfidardo" },
-  { networkId: "urbano_sassoferrato",  networkName: "Urbano di Sassoferrato" },
-  { networkId: "extraurbano",          networkName: "Extraurbano Provincia di Ancona" },
+  ...RETI_URBANE.map((r) => ({ networkId: r.rete, networkName: nomeReteUrbana(r) })),
+  { networkId: RETE_EXTRAURBANA, networkName: "Extraurbano Provincia di Ancona" },
 ];
 
 // GET /api/fares/networks
@@ -1342,47 +1339,8 @@ router.post("/fares/zones/generate-all", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
-    // 1) Create urban flat areas
-    const urbanNets = ["urbano_ancona","urbano_jesi","urbano_falconara","urbano_senigallia","urbano_castelfidardo","urbano_sassoferrato"];
-    const urbanAreas = [
-      { areaId: "ancona_urban",        areaName: "Zona Urbana Ancona",        networkId: "urbano_ancona" },
-      { areaId: "jesi_urban",          areaName: "Zona Urbana Jesi",          networkId: "urbano_jesi" },
-      { areaId: "falconara_urban",     areaName: "Zona Urbana Falconara",     networkId: "urbano_falconara" },
-      { areaId: "senigallia_urban",    areaName: "Zona Urbana Senigallia",    networkId: "urbano_senigallia" },
-      { areaId: "castelfidardo_urban", areaName: "Zona Urbana Castelfidardo", networkId: "urbano_castelfidardo" },
-      { areaId: "sassoferrato_urban",  areaName: "Zona Urbana Sassoferrato",  networkId: "urbano_sassoferrato" },
-    ];
-
-    for (const ua of urbanAreas) {
-      await db.insert(gtfsFareAreas)
-        .values({ feedId, areaId: ua.areaId, areaName: ua.areaName, networkId: ua.networkId })
-        .onConflictDoUpdate({
-          target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-          set: { areaName: ua.areaName, updatedAt: sql`now()` },
-        });
-    }
-
-    // 2) Assign all urban stops to their areas
-    for (const net of urbanNets) {
-      const urbanAreaId = net === "urbano_ancona" ? "ancona_urban"
-        : net === "urbano_jesi" ? "jesi_urban" : "falconara_urban";
-
-      // Find all stops served by routes in this network
-      const stopRows = await db.execute<any>(sql`
-        SELECT DISTINCT s.stop_id
-        FROM gtfs_stops s
-        JOIN gtfs_stop_times st ON st.stop_id = s.stop_id AND st.feed_id = s.feed_id
-        JOIN gtfs_trips t ON t.trip_id = st.trip_id AND t.feed_id = s.feed_id
-        JOIN gtfs_route_networks rn ON rn.route_id = t.route_id AND rn.feed_id = t.feed_id
-        WHERE s.feed_id = ${feedId} AND rn.network_id = ${net}
-      `);
-
-      for (const row of stopRows.rows) {
-        await db.insert(gtfsStopAreas)
-          .values({ feedId, areaId: urbanAreaId, stopId: row.stop_id })
-          .onConflictDoNothing();
-      }
-    }
+    // 1) Le zone urbane: una per rete, con le fermate delle sue linee (lib/zone-urbane.ts)
+    const urbane = await assegnaZoneUrbane(feedId);
 
     // 3) Generate zones for all extraurban routes
     const extraRoutes = await db.execute<any>(sql`
@@ -1399,7 +1357,7 @@ router.post("/fares/zones/generate-all", async (req, res): Promise<void> => {
       results.push(r);
     }
 
-    res.json({ urbanAreas: urbanAreas.length, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
+    res.json({ urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1410,41 +1368,8 @@ router.post("/fares/zones/generate-all-direct", async (req, res): Promise<void> 
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
-    // 1) Create urban flat areas (same as generate-all)
-    const urbanNets = ["urbano_ancona","urbano_jesi","urbano_falconara","urbano_senigallia","urbano_castelfidardo","urbano_sassoferrato"];
-    const urbanAreas = [
-      { areaId: "ancona_urban",        areaName: "Zona Urbana Ancona",        networkId: "urbano_ancona" },
-      { areaId: "jesi_urban",          areaName: "Zona Urbana Jesi",          networkId: "urbano_jesi" },
-      { areaId: "falconara_urban",     areaName: "Zona Urbana Falconara",     networkId: "urbano_falconara" },
-      { areaId: "senigallia_urban",    areaName: "Zona Urbana Senigallia",    networkId: "urbano_senigallia" },
-      { areaId: "castelfidardo_urban", areaName: "Zona Urbana Castelfidardo", networkId: "urbano_castelfidardo" },
-      { areaId: "sassoferrato_urban",  areaName: "Zona Urbana Sassoferrato",  networkId: "urbano_sassoferrato" },
-    ];
-    for (const ua of urbanAreas) {
-      await db.insert(gtfsFareAreas)
-        .values({ feedId, areaId: ua.areaId, areaName: ua.areaName, networkId: ua.networkId })
-        .onConflictDoUpdate({
-          target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-          set: { areaName: ua.areaName, updatedAt: sql`now()` },
-        });
-    }
-    for (const net of urbanNets) {
-      const urbanAreaId = net === "urbano_ancona" ? "ancona_urban"
-        : net === "urbano_jesi" ? "jesi_urban" : "falconara_urban";
-      const stopRows = await db.execute<any>(sql`
-        SELECT DISTINCT s.stop_id
-        FROM gtfs_stops s
-        JOIN gtfs_stop_times st ON st.stop_id = s.stop_id AND st.feed_id = s.feed_id
-        JOIN gtfs_trips t ON t.trip_id = st.trip_id AND t.feed_id = s.feed_id
-        JOIN gtfs_route_networks rn ON rn.route_id = t.route_id AND rn.feed_id = t.feed_id
-        WHERE s.feed_id = ${feedId} AND rn.network_id = ${net}
-      `);
-      for (const row of stopRows.rows) {
-        await db.insert(gtfsStopAreas)
-          .values({ feedId, areaId: urbanAreaId, stopId: row.stop_id })
-          .onConflictDoNothing();
-      }
-    }
+    // 1) Le zone urbane: una per rete, con le fermate delle sue linee (lib/zone-urbane.ts)
+    const urbane = await assegnaZoneUrbane(feedId);
 
     // 2) Generate zones for all extraurban routes using DIRECT haversine
     const extraRoutes = await db.execute<any>(sql`
@@ -1461,7 +1386,7 @@ router.post("/fares/zones/generate-all-direct", async (req, res): Promise<void> 
       results.push(r);
     }
 
-    res.json({ method: "direct", urbanAreas: urbanAreas.length, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
+    res.json({ method: "direct", urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1471,41 +1396,8 @@ router.post("/fares/zones/generate-all-dominant", async (req, res): Promise<void
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
-    // 1) Create urban flat areas (same as other generate-all methods)
-    const urbanNets = ["urbano_ancona","urbano_jesi","urbano_falconara","urbano_senigallia","urbano_castelfidardo","urbano_sassoferrato"];
-    const urbanAreas = [
-      { areaId: "ancona_urban",        areaName: "Zona Urbana Ancona",        networkId: "urbano_ancona" },
-      { areaId: "jesi_urban",          areaName: "Zona Urbana Jesi",          networkId: "urbano_jesi" },
-      { areaId: "falconara_urban",     areaName: "Zona Urbana Falconara",     networkId: "urbano_falconara" },
-      { areaId: "senigallia_urban",    areaName: "Zona Urbana Senigallia",    networkId: "urbano_senigallia" },
-      { areaId: "castelfidardo_urban", areaName: "Zona Urbana Castelfidardo", networkId: "urbano_castelfidardo" },
-      { areaId: "sassoferrato_urban",  areaName: "Zona Urbana Sassoferrato",  networkId: "urbano_sassoferrato" },
-    ];
-    for (const ua of urbanAreas) {
-      await db.insert(gtfsFareAreas)
-        .values({ feedId, areaId: ua.areaId, areaName: ua.areaName, networkId: ua.networkId })
-        .onConflictDoUpdate({
-          target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-          set: { areaName: ua.areaName, updatedAt: sql`now()` },
-        });
-    }
-    for (const net of urbanNets) {
-      const urbanAreaId = net === "urbano_ancona" ? "ancona_urban"
-        : net === "urbano_jesi" ? "jesi_urban" : "falconara_urban";
-      const stopRows = await db.execute<any>(sql`
-        SELECT DISTINCT s.stop_id
-        FROM gtfs_stops s
-        JOIN gtfs_stop_times st ON st.stop_id = s.stop_id AND st.feed_id = s.feed_id
-        JOIN gtfs_trips t ON t.trip_id = st.trip_id AND t.feed_id = s.feed_id
-        JOIN gtfs_route_networks rn ON rn.route_id = t.route_id AND rn.feed_id = t.feed_id
-        WHERE s.feed_id = ${feedId} AND rn.network_id = ${net}
-      `);
-      for (const row of stopRows.rows) {
-        await db.insert(gtfsStopAreas)
-          .values({ feedId, areaId: urbanAreaId, stopId: row.stop_id })
-          .onConflictDoNothing();
-      }
-    }
+    // 1) Le zone urbane: una per rete, con le fermate delle sue linee (lib/zone-urbane.ts)
+    const urbane = await assegnaZoneUrbane(feedId);
 
     // 2) Generate zones for all extraurban routes using DOMINANT percorso
     const extraRoutes = await db.execute<any>(sql`
@@ -1522,7 +1414,7 @@ router.post("/fares/zones/generate-all-dominant", async (req, res): Promise<void
       results.push(r);
     }
 
-    res.json({ method: "dominant", urbanAreas: urbanAreas.length, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
+    res.json({ method: "dominant", urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2802,14 +2694,10 @@ function csvEscape(s: string): string {
 //   GET /api/fares/stops-classification/export   → stops.txt con colonne classificazione
 // ═══════════════════════════════════════════════════════════
 
-const URBAN_CODES: Record<string, { pure: number; mixed: number; label: string; short: string }> = {
-  urbano_ancona:        { pure: 2, mixed: 12, label: "Ancona",        short: "AN" },
-  urbano_jesi:          { pure: 3, mixed: 13, label: "Jesi",          short: "JE" },
-  urbano_falconara:     { pure: 4, mixed: 14, label: "Falconara",     short: "FA" },
-  urbano_senigallia:    { pure: 5, mixed: 15, label: "Senigallia",    short: "SE" },
-  urbano_castelfidardo: { pure: 6, mixed: 16, label: "Castelfidardo", short: "CF" },
-  urbano_sassoferrato:  { pure: 7, mixed: 17, label: "Sassoferrato",  short: "SS" },
-};
+// I codici vengono dall'elenco delle reti urbane (lib/reti-linee.ts).
+const URBAN_CODES: Record<string, { pure: number; mixed: number; label: string; short: string }> = Object.fromEntries(
+  RETI_URBANE.map((r) => [r.rete, { pure: r.codice, mixed: r.codiceMisto, label: r.luogo, short: r.sigla }]),
+);
 
 // Ramo del calcolo tariffario (§4) per ciascun codice di classificazione.
 // È la chiave che il validatore usa per scegliere il ramo A (oraria) o B (O/D):
@@ -3427,6 +3315,10 @@ router.post("/fares/zone-clusters/generate-zones", async (req, res): Promise<voi
     const clusters = await db.select().from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
     if (clusters.length === 0) { res.status(400).json({ error: "No clusters defined" }); return; }
 
+    // Le zone urbane non vengono dai cluster: restano. Se ci sono già si rimettono
+    // a posto (ogni fermata nella zona della sua rete); se non ci sono, non le crea.
+    const urbane = await assegnaZoneUrbane(feedId, { soloSeCiSono: true });
+
     // 1) Delete existing extraurban areas, stop_areas, and leg_rules (only extraurban — keep urban)
     const existingExtraAreas = await db.select().from(gtfsFareAreas)
       .where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
@@ -3490,7 +3382,7 @@ router.post("/fares/zone-clusters/generate-zones", async (req, res): Promise<voi
       }
     }
 
-    res.json({ areasCreated, stopsAssigned, odRules, totalClusters: clusters.length });
+    res.json({ areasCreated, stopsAssigned, odRules, totalClusters: clusters.length, urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte });
   } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
@@ -3872,7 +3764,7 @@ router.get("/fares/validate", async (req, res): Promise<void> => {
     // 8. Urban rules have priority > 0
     const urbanP0 = await db.execute<any>(sql`
       SELECT count(*) AS cnt FROM gtfs_fare_leg_rules
-      WHERE feed_id = ${feedId} AND network_id IN ('urbano_ancona','urbano_jesi','urbano_falconara') AND rule_priority = 0
+      WHERE feed_id = ${feedId} AND network_id IN (${sql.join(ID_RETI_URBANE.map((rete) => sql`${rete}`), sql`, `)}) AND rule_priority = 0
     `);
     const up0 = Number(urbanP0.rows[0]?.cnt ?? 0);
     checks.push({ id: "urban_priority", label: "Priorità regole urbane > 0", ok: up0 === 0, detail: up0 > 0 ? `${up0} regole urbane con priority=0` : "OK" });
