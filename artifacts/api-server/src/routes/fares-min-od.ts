@@ -34,6 +34,7 @@ import { eq, and, sql, desc, inArray } from "drizzle-orm";
  * vale solo se è un feed che l'utente può vedere (gtfs-helpers.ts) */
 import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
+import { classifyRoute, RETE_EXTRAURBANA } from "../lib/reti-linee";
 
 const router: IRouter = Router();
 
@@ -71,29 +72,6 @@ function getBandForDistanceMinOd(distKm: number) {
   if (distKm <= 0) return undefined;
   return EXTRA_BANDS_MIN_OD.find(b => distKm > b.kmFrom && distKm <= b.kmTo)
     ?? EXTRA_BANDS_MIN_OD[EXTRA_BANDS_MIN_OD.length - 1];
-}
-
-// Tariffa flat urbana (DGR Marche): tutti i bacini urbani a 1.35 €
-const URBAN_FLAT_MIN_OD: Record<string, number> = {
-  urbano_ancona: 1.35,
-  urbano_jesi: 1.35,
-  urbano_falconara: 1.35,
-  urbano_senigallia: 1.35,
-  urbano_castelfidardo: 1.35,
-  urbano_sassoferrato: 1.35,
-};
-
-// Duplica classifyRoute (additivo, non importa da fares.ts)
-function classifyRouteMinOd(shortName: string): string {
-  if (!shortName) return "extraurbano";
-  const s = shortName.trim().toUpperCase();
-  if (s.startsWith("JE")) return "urbano_jesi";
-  if (s.startsWith("Y")) return "urbano_falconara";
-  if (/^BUSS?\d/.test(s)) return "urbano_senigallia";
-  if (s === "CIRCA" || s === "CIRCB") return "urbano_castelfidardo";
-  if (/^\d/.test(s)) return "urbano_ancona";
-  if (/^[A-Z]\.[A-Z]\.?$/.test(s)) return "urbano_ancona";
-  return "extraurbano";
 }
 
 // ════════════════════════════════════════════════════════════
@@ -266,8 +244,8 @@ async function buildNetworkGraph(feedId: string, opts?: { onlyExtraurban?: boole
   let processed = 0, skipped = 0;
 
   for (const r of routeRows) {
-    const klass = classifyRouteMinOd(r.routeShortName ?? "");
-    if (onlyExtraurban && klass !== "extraurbano") { skipped++; continue; }
+    const klass = classifyRoute(r.routeShortName);
+    if (onlyExtraurban && klass !== RETE_EXTRAURBANA) { skipped++; continue; }
 
     const dom = await getDominantPercorsoLocal(feedId, r.routeId);
     if (!dom || dom.stops.length < 2) { skipped++; continue; }

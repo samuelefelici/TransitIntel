@@ -1476,6 +1476,47 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Le reti delle linee e le zone urbane (tappa 6.6)
+
+Due cose che il codice aveva in più copie, e un difetto che ne veniva.
+
+- **La rete di una linea dal suo nome breve** (`JE…` è Jesi, `Y…` Falconara,
+  `BUS5` Senigallia, `CIRCA` Castelfidardo, un numero è Ancona, il resto è
+  extraurbano) era scritta tre volte: per le reti, per le tariffe minime e per
+  i nodi. Ora è una sola, in `lib/reti-linee.ts`, con lo stesso comportamento.
+- **L'elenco delle reti urbane** era ripetuto in più punti, e un controllo ne
+  nominava tre su sei. Ora è una tabella sola, nello stesso file: per ogni
+  rete il nome, la sigla, la zona tariffaria e i codici di classificazione
+  delle fermate. Le reti di partenza, i codici e il controllo sulle priorità
+  delle regole urbane si ricavano da lì.
+- **Il difetto**: generando le zone, le fermate urbane di Senigallia,
+  Castelfidardo e Sassoferrato finivano nella zona «Zona Urbana Falconara».
+  Sul programma in esercizio (copia locale): la zona di Falconara aveva 328
+  fermate, di cui 38 sue; le altre 290 erano di Senigallia (234) e di
+  Castelfidardo (56), e le loro due zone restavano vuote. Ora ogni rete ha la
+  sua zona (`lib/zone-urbane.ts`), e a ogni generazione le fermate finite in
+  una zona urbana che non è la loro vengono tolte.
+- **Chi le genera**: la sezione «Genera & Esporta» della pagina Tariffe, con
+  qualunque metodo. Con «Proiezione Shape» e «Percorso Dominante» le zone
+  urbane si creano e si riempiono. Con «Cluster Territoriali» le zone urbane
+  non si creano (come prima), ma se ci sono già vengono rimesse a posto: prima
+  quel metodo non le toccava.
+- **Che cosa cambia nel GTFS**: solo `stop_areas.txt`, dove le fermate di
+  Senigallia e Castelfidardo escono con la loro zona. I prezzi non cambiano:
+  le regole urbane valgono per rete, non per zona.
+- **Fuori da qui**: i titoli di viaggio e i prezzi, e gli elenchi delle reti
+  nella web (colori ed etichette di quattro pagine). Restano per le prossime
+  tappe.
+
+**Dopo il deploy**
+1. Le zone già generate restano come sono finché non le rigeneri: Tariffe →
+   «Genera & Esporta» → «Genera Anteprima Tariffe», col metodo che usi di
+   solito. L'avviso finale dice quante fermate ha tolto dalla zona sbagliata;
+   la seconda volta non ne toglie più.
+2. Nessuna migrazione e nessuna variabile nuova.
+
+**Rollback**: immagine precedente. Le zone corrette restano corrette.
+
 ### Le vetture dell'azienda nell'AVM (tappa 6.5)
 
 Nel canale dell'AVM passano anche le vetture delle aziende consorziate. Le
