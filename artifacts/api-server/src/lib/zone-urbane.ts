@@ -1,6 +1,6 @@
 /**
  * Le zone tariffarie urbane (tappa 6.6): una zona a tariffa piatta per ogni
- * rete urbana dell'elenco (lib/reti-linee.ts), con dentro le fermate servite
+ * rete urbana dell'azienda (lib/reti-linee.ts), con dentro le fermate servite
  * dalle linee di quella rete.
  *
  * Prima questo codice stava in tre copie, una per ogni modo di generare le
@@ -12,7 +12,7 @@
 import { db } from "@workspace/db";
 import { gtfsFareAreas } from "@workspace/db/schema";
 import { sql, type SQL } from "drizzle-orm";
-import { nomeZonaUrbana, RETI_URBANE } from "./reti-linee";
+import { nomeZonaUrbana, retiUrbane, type ReteUrbana } from "./reti-linee";
 
 export interface ZoneUrbaneAssegnate {
   /** Quante zone urbane ci sono: una per rete dell'elenco. */
@@ -26,8 +26,8 @@ export interface ZoneUrbaneAssegnate {
 }
 
 /** Le righe (rete, zona) dell'elenco, come VALUES con i valori passati per parametro. */
-function retiEZone(): SQL {
-  return sql.join(RETI_URBANE.map((r) => sql`(${r.rete}::text, ${r.zona}::text)`), sql`, `);
+function retiEZone(reti: readonly ReteUrbana[]): SQL {
+  return sql.join(reti.map((r) => sql`(${r.rete}::text, ${r.zona}::text)`), sql`, `);
 }
 
 /**
@@ -41,10 +41,14 @@ function retiEZone(): SQL {
  * le zone urbane le tiene come sono e non le ha mai create.
  */
 export async function assegnaZoneUrbane(feedId: string, opzioni: { soloSeCiSono?: boolean } = {}): Promise<ZoneUrbaneAssegnate> {
+  /* le reti urbane dell'azienda, lette una volta: se cambiano a metà, la generazione resta coerente */
+  const reti = retiUrbane();
+  /* un'azienda senza reti urbane non ha zone urbane da fare */
+  if (reti.length === 0) return { zone: 0, fermate: {}, aggiunte: 0, tolte: 0 };
   return db.transaction(async (tx) => {
     if (opzioni.soloSeCiSono) {
       const ciSono = await tx.execute(sql`
-        SELECT 1 FROM (VALUES ${retiEZone()}) AS r(rete, zona)
+        SELECT 1 FROM (VALUES ${retiEZone(reti)}) AS r(rete, zona)
          WHERE EXISTS (SELECT 1 FROM gtfs_fare_areas a WHERE a.feed_id = ${feedId} AND a.area_id = r.zona)
             OR EXISTS (SELECT 1 FROM gtfs_stop_areas sa WHERE sa.feed_id = ${feedId} AND sa.area_id = r.zona)
          LIMIT 1
@@ -53,7 +57,7 @@ export async function assegnaZoneUrbane(feedId: string, opzioni: { soloSeCiSono?
     }
 
     await tx.insert(gtfsFareAreas)
-      .values(RETI_URBANE.map((r) => ({ feedId, areaId: r.zona, areaName: nomeZonaUrbana(r), networkId: r.rete })))
+      .values(reti.map((r) => ({ feedId, areaId: r.zona, areaName: nomeZonaUrbana(r), networkId: r.rete })))
       .onConflictDoUpdate({
         target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
         set: { areaName: sql`excluded.area_name`, networkId: sql`excluded.network_id`, updatedAt: sql`now()` },
@@ -63,7 +67,7 @@ export async function assegnaZoneUrbane(feedId: string, opzioni: { soloSeCiSono?
        le righe sbagliate e si aggiungono le mancanti. Le due parti non toccano
        mai la stessa riga: una è fuori dall'insieme, l'altra dentro. */
     const conti = await tx.execute<{ tolte: string; aggiunte: string }>(sql`
-      WITH reti AS (SELECT * FROM (VALUES ${retiEZone()}) AS v(rete, zona)),
+      WITH reti AS (SELECT * FROM (VALUES ${retiEZone(reti)}) AS v(rete, zona)),
       servite AS MATERIALIZED (
         SELECT DISTINCT r.zona, s.stop_id
           FROM reti r
@@ -95,15 +99,15 @@ export async function assegnaZoneUrbane(feedId: string, opzioni: { soloSeCiSono?
     const perZona = await tx.execute<{ area_id: string; n: string }>(sql`
       SELECT sa.area_id, count(*) AS n
         FROM gtfs_stop_areas sa
-        JOIN (VALUES ${retiEZone()}) AS r(rete, zona) ON r.zona = sa.area_id
+        JOIN (VALUES ${retiEZone(reti)}) AS r(rete, zona) ON r.zona = sa.area_id
        WHERE sa.feed_id = ${feedId}
        GROUP BY sa.area_id
     `);
-    const fermate: Record<string, number> = Object.fromEntries(RETI_URBANE.map((r) => [r.zona, 0]));
+    const fermate: Record<string, number> = Object.fromEntries(reti.map((r) => [r.zona, 0]));
     for (const riga of perZona.rows) fermate[riga.area_id] = Number(riga.n);
 
     return {
-      zone: RETI_URBANE.length,
+      zone: reti.length,
       fermate,
       aggiunte: Number(conti.rows[0]?.aggiunte ?? 0),
       tolte: Number(conti.rows[0]?.tolte ?? 0),

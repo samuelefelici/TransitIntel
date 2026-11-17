@@ -11,6 +11,8 @@ import {
   AlertCircle, Zap, Search, ArrowDown, Navigation, Calendar,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useReti } from "@/hooks/use-reti";
+import { coloreDi, etichettaDi } from "@/lib/reti";
 
 // ── Types ──────────────────────────────────────────────────
 interface SimRoute {
@@ -67,22 +69,6 @@ type CalcMethod = "media_ponderata" | "regola1" | "regola1_2_auto";
 const PHASES: Phase[] = ["setup", "boarding", "alighting", "paying", "receipt"];
 const PHASE_LABELS = ["Linea", "Salita", "Discesa", "Pagamento", "Ricevuta"];
 
-const NET_COLORS: Record<string, string> = {
-  urbano_ancona: "#3b82f6",
-  urbano_jesi: "#22c55e",
-  urbano_falconara: "#a855f7",
-  urbano_senigallia: "#f97316",
-  urbano_castelfidardo: "#06b6d4",
-  extraurbano: "#ef4444",
-};
-const NET_LABELS: Record<string, string> = {
-  urbano_ancona: "Urbano Ancona",
-  urbano_jesi: "Urbano Jesi",
-  urbano_falconara: "Urbano Falconara",
-  urbano_senigallia: "Urbano Senigallia",
-  urbano_castelfidardo: "Urbano Castelfidardo",
-  extraurbano: "Extraurbano",
-};
 
 // ── Helpers ────────────────────────────────────────────────
 function routeBg(color: string | null) {
@@ -191,6 +177,8 @@ function StopList({
 
 // ── Main ───────────────────────────────────────────────────
 export default function FareSimulatorPage() {
+  /* le reti dell'azienda: etichette e colori (lib/reti.ts) */
+  const reti = useReti();
   const [selectedDate, setSelectedDate] = useState<string | null>(null); // YYYYMMDD
   const [selectedRoute, setSelectedRoute] = useState<SimRoute | null>(null);
   const [selectedTrip, setSelectedTrip] = useState<SimTrip | null>(null);
@@ -294,7 +282,7 @@ export default function FareSimulatorPage() {
 
   // ── Derived ──
   const phaseIdx = PHASES.indexOf(phase);
-  const netColor = selectedRoute ? (NET_COLORS[selectedRoute.network_id ?? ""] ?? "#475569") : "#3b82f6";
+  const netColor = selectedRoute ? coloreDi(reti, selectedRoute.network_id, "#475569") : "#3b82f6";
   const isUrban = selectedRoute?.network_id !== "extraurbano" && !!selectedRoute?.network_id;
   const basePrice = fareResult?.amount ?? null;
   const finalPrice = (basePrice == null && !(fareResult?.products?.length))
@@ -447,8 +435,8 @@ export default function FareSimulatorPage() {
                   Object.entries(routesByNet).sort(([a],[b]) => a.localeCompare(b)).map(([netId, netRoutes]) => (
                     <div key={netId}>
                       <div className="flex items-center gap-2 mb-1.5">
-                        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: NET_COLORS[netId] ?? "#94a3b8" }} />
-                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{NET_LABELS[netId] ?? netId}</span>
+                        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: coloreDi(reti, netId, "#94a3b8") }} />
+                        <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">{etichettaDi(reti, netId)}</span>
                       </div>
                       <div className="flex flex-wrap gap-1.5 pl-4">
                         {netRoutes.map(r => {
@@ -478,7 +466,7 @@ export default function FareSimulatorPage() {
                   </div>
                   <div className="min-w-0">
                     <div className="font-bold text-sm text-white truncate">{selectedRoute.route_long_name || selectedRoute.route_short_name}</div>
-                    <div className="text-xs text-slate-400">{NET_LABELS[selectedRoute.network_id ?? ""] ?? selectedRoute.network_id ?? "—"}</div>
+                    <div className="text-xs text-slate-400">{etichettaDi(reti, selectedRoute.network_id)}</div>
                   </div>
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 ml-auto" />
                 </div>
@@ -790,7 +778,7 @@ export default function FareSimulatorPage() {
                 </div>
                 <div>
                   <div className="font-bold text-sm text-white">{selectedRoute?.route_long_name || selectedRoute?.route_short_name}</div>
-                  <div className="text-xs text-slate-400">{NET_LABELS[selectedRoute?.network_id ?? ""] ?? "—"} · {formatTime(selectedTrip?.departure_time ?? "")}</div>
+                  <div className="text-xs text-slate-400">{etichettaDi(reti, selectedRoute?.network_id)} · {formatTime(selectedTrip?.departure_time ?? "")}</div>
                 </div>
               </div>
 

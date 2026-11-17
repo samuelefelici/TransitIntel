@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { useReti } from "@/hooks/use-reti";
+import { classiFermate, siglaDi, type Rete } from "@/lib/reti";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -45,45 +47,56 @@ interface ClassDef {
 
 // ═══════════════════════════════════════════════════════════
 // CLASSIFICATION CATALOG
-// Enumeration di tutti i 14 codici previsti, ordinati per gruppo.
+// Le classi vengono dalle reti dell'azienda (lib/reti.ts): una per rete
+// urbana, e la stessa con l'extraurbano. Qui stanno solo i colori, per codice.
 // ═══════════════════════════════════════════════════════════
 
-const CLASS_CATALOG: ClassDef[] = [
-  { code: 0,  label: "Non servita",                            shortCode: "NONE",      kind: "none",  color: "text-slate-400",  bg: "bg-slate-500/10",  border: "border-slate-500/30",  icon: <Minus className="w-3.5 h-3.5" /> },
-  { code: 1,  label: "Extraurbano",                            shortCode: "EXTRA",     kind: "extra", color: "text-amber-400",  bg: "bg-amber-500/10",  border: "border-amber-500/30",  icon: <Route className="w-3.5 h-3.5" /> },
-  // Urbani puri
-  { code: 2, label: "Urbano Ancona",                          shortCode: "URB_AN",    kind: "urban", color: "text-blue-400",   bg: "bg-blue-500/10",   border: "border-blue-500/30",   icon: <Bus className="w-3.5 h-3.5" /> },
-  { code: 3, label: "Urbano Jesi",                            shortCode: "URB_JE",    kind: "urban", color: "text-emerald-400",bg: "bg-emerald-500/10",border: "border-emerald-500/30",icon: <Bus className="w-3.5 h-3.5" /> },
-  { code: 4, label: "Urbano Falconara",                       shortCode: "URB_FA",    kind: "urban", color: "text-violet-400", bg: "bg-violet-500/10", border: "border-violet-500/30", icon: <Bus className="w-3.5 h-3.5" /> },
-  { code: 5, label: "Urbano Senigallia",                      shortCode: "URB_SE",    kind: "urban", color: "text-cyan-400",   bg: "bg-cyan-500/10",   border: "border-cyan-500/30",   icon: <Bus className="w-3.5 h-3.5" /> },
-  { code: 6, label: "Urbano Castelfidardo",                   shortCode: "URB_CF",    kind: "urban", color: "text-pink-400",   bg: "bg-pink-500/10",   border: "border-pink-500/30",   icon: <Bus className="w-3.5 h-3.5" /> },
-  { code: 7, label: "Urbano Sassoferrato",                    shortCode: "URB_SS",    kind: "urban", color: "text-orange-400", bg: "bg-orange-500/10", border: "border-orange-500/30", icon: <Bus className="w-3.5 h-3.5" /> },
-  // Misti
-  { code: 12, label: "Mista Extraurbano + Urbano Ancona",      shortCode: "MIX_EX_AN", kind: "mixed", color: "text-indigo-400", bg: "bg-indigo-500/10", border: "border-indigo-500/30", icon: <ArrowRightLeft className="w-3.5 h-3.5" /> },
-  { code: 13, label: "Mista Extraurbano + Urbano Jesi",        shortCode: "MIX_EX_JE", kind: "mixed", color: "text-teal-400",   bg: "bg-teal-500/10",   border: "border-teal-500/30",   icon: <ArrowRightLeft className="w-3.5 h-3.5" /> },
-  { code: 14, label: "Mista Extraurbano + Urbano Falconara",   shortCode: "MIX_EX_FA", kind: "mixed", color: "text-fuchsia-400",bg: "bg-fuchsia-500/10",border: "border-fuchsia-500/30",icon: <ArrowRightLeft className="w-3.5 h-3.5" /> },
-  { code: 15, label: "Mista Extraurbano + Urbano Senigallia",  shortCode: "MIX_EX_SE", kind: "mixed", color: "text-sky-400",    bg: "bg-sky-500/10",    border: "border-sky-500/30",    icon: <ArrowRightLeft className="w-3.5 h-3.5" /> },
-  { code: 16, label: "Mista Extraurbano + Urbano Castelfidardo", shortCode: "MIX_EX_CF", kind: "mixed", color: "text-rose-400", bg: "bg-rose-500/10",   border: "border-rose-500/30",   icon: <ArrowRightLeft className="w-3.5 h-3.5" /> },
-  { code: 17, label: "Mista Extraurbano + Urbano Sassoferrato",shortCode: "MIX_EX_SS", kind: "mixed", color: "text-yellow-400", bg: "bg-yellow-500/10", border: "border-yellow-500/30", icon: <ArrowRightLeft className="w-3.5 h-3.5" /> },
-  // Fallback
-  { code: 99, label: "Multi-rete non prevista",                shortCode: "OTHER",     kind: "other", color: "text-red-400",    bg: "bg-red-500/10",    border: "border-red-500/30",    icon: <AlertCircle className="w-3.5 h-3.5" /> },
+type Stile = Pick<ClassDef, "color" | "bg" | "border">;
+
+/* i colori delle classi «solo urbana», per codice da 2 a 9 */
+const STILE_URBANA: Stile[] = [
+  { color: "text-blue-400",    bg: "bg-blue-500/10",    border: "border-blue-500/30" },
+  { color: "text-emerald-400", bg: "bg-emerald-500/10", border: "border-emerald-500/30" },
+  { color: "text-violet-400",  bg: "bg-violet-500/10",  border: "border-violet-500/30" },
+  { color: "text-cyan-400",    bg: "bg-cyan-500/10",    border: "border-cyan-500/30" },
+  { color: "text-pink-400",    bg: "bg-pink-500/10",    border: "border-pink-500/30" },
+  { color: "text-orange-400",  bg: "bg-orange-500/10",  border: "border-orange-500/30" },
+  { color: "text-lime-400",    bg: "bg-lime-500/10",    border: "border-lime-500/30" },
+  { color: "text-stone-400",   bg: "bg-stone-500/10",   border: "border-stone-500/30" },
 ];
-
-const CLASS_BY_CODE: Record<number, ClassDef> =
-  Object.fromEntries(CLASS_CATALOG.map(c => [c.code, c]));
-
-const FALLBACK_DEF: ClassDef = CLASS_CATALOG[CLASS_CATALOG.length - 1]; // OTHER
-
-// Abbreviazione per network_id → etichetta short per la colonna "Reti"
-const NETWORK_SHORT: Record<string, string> = {
-  extraurbano:          "Extra",
-  urbano_ancona:        "AN",
-  urbano_jesi:          "JE",
-  urbano_falconara:     "FA",
-  urbano_senigallia:    "SE",
-  urbano_castelfidardo: "CF",
-  urbano_sassoferrato:  "SS",
+/* i colori delle classi «urbana con extraurbano», per codice da 12 a 19 */
+const STILE_MISTA: Stile[] = [
+  { color: "text-indigo-400",  bg: "bg-indigo-500/10",  border: "border-indigo-500/30" },
+  { color: "text-teal-400",    bg: "bg-teal-500/10",    border: "border-teal-500/30" },
+  { color: "text-fuchsia-400", bg: "bg-fuchsia-500/10", border: "border-fuchsia-500/30" },
+  { color: "text-sky-400",     bg: "bg-sky-500/10",     border: "border-sky-500/30" },
+  { color: "text-rose-400",    bg: "bg-rose-500/10",    border: "border-rose-500/30" },
+  { color: "text-yellow-400",  bg: "bg-yellow-500/10",  border: "border-yellow-500/30" },
+  { color: "text-purple-400",  bg: "bg-purple-500/10",  border: "border-purple-500/30" },
+  { color: "text-green-400",   bg: "bg-green-500/10",   border: "border-green-500/30" },
+];
+const STILE_FISSO: Record<"none" | "extra" | "other", Stile> = {
+  none:  { color: "text-slate-400", bg: "bg-slate-500/10", border: "border-slate-500/30" },
+  extra: { color: "text-amber-400", bg: "bg-amber-500/10", border: "border-amber-500/30" },
+  other: { color: "text-red-400",   bg: "bg-red-500/10",   border: "border-red-500/30" },
 };
+const ICONA: Record<ClassKind, React.ReactNode> = {
+  none: <Minus className="w-3.5 h-3.5" />,
+  extra: <Route className="w-3.5 h-3.5" />,
+  urban: <Bus className="w-3.5 h-3.5" />,
+  mixed: <ArrowRightLeft className="w-3.5 h-3.5" />,
+  other: <AlertCircle className="w-3.5 h-3.5" />,
+};
+
+/** Il catalogo delle classi di questa azienda, coi colori: l'ultima è «multi-rete», che vale per ogni codice non previsto. */
+function catalogoClassi(reti: readonly Rete[]): ClassDef[] {
+  return classiFermate(reti).map((c) => {
+    const stile = c.kind === "urban" ? STILE_URBANA[(c.code - 2) % STILE_URBANA.length]
+      : c.kind === "mixed" ? STILE_MISTA[(c.code - 12) % STILE_MISTA.length]
+        : STILE_FISSO[c.kind];
+    return { ...c, ...stile, icon: ICONA[c.kind] };
+  });
+}
 
 // ═══════════════════════════════════════════════════════════
 // PAGE COMPONENT
@@ -91,6 +104,11 @@ const NETWORK_SHORT: Record<string, string> = {
 
 export default function StopsClassificationPage() {
   const { toast } = useToast();
+  /* le classi e le sigle vengono dalle reti dell'azienda */
+  const reti = useReti();
+  const CLASS_CATALOG = useMemo(() => catalogoClassi(reti), [reti]);
+  const CLASS_BY_CODE = useMemo<Record<number, ClassDef>>(() => Object.fromEntries(CLASS_CATALOG.map((c) => [c.code, c])), [CLASS_CATALOG]);
+  const FALLBACK_DEF = CLASS_CATALOG[CLASS_CATALOG.length - 1]!; // OTHER
   const [stops, setStops] = useState<ClassifiedStop[]>([]);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
@@ -129,7 +147,7 @@ export default function StopsClassificationPage() {
     }
 
     return { total: stops.length, byCode, presentCodes, byKind };
-  }, [stops]);
+  }, [stops, CLASS_CATALOG, CLASS_BY_CODE, FALLBACK_DEF]);
 
   // ─────────────────────────────────────────────────────────
   // Filtro applicato
@@ -152,7 +170,7 @@ export default function StopsClassificationPage() {
       );
     }
     return result;
-  }, [stops, filterCode, filterKind, searchTerm]);
+  }, [stops, filterCode, filterKind, searchTerm, CLASS_BY_CODE, FALLBACK_DEF]);
 
   // ─────────────────────────────────────────────────────────
   // Export
@@ -253,18 +271,8 @@ export default function StopsClassificationPage() {
                     {(() => {
                       if (def.code === 0) return "Nessuna linea serve la fermata.";
                       if (def.code === 1) return "Solo linee extraurbane.";
-                      if (def.code === 2) return "Urbano Ancona";
-                      if (def.code === 3) return "Urbano Jesi";
-                      if (def.code === 4) return "Urbano Falconara";
-                      if (def.code === 5) return "Urbano Senigallia";
-                      if (def.code === 6) return "Urbano Castelfidardo";
-                      if (def.code === 7) return "Urbano Sassoferrato";
-                      if (def.code === 12) return "Linee extraurbane + Urbano Ancona";
-                      if (def.code === 13) return "Linee extraurbane + Urbano Jesi";
-                      if (def.code === 14) return "Linee extraurbane + Urbano Falconara";
-                      if (def.code === 15) return "Linee extraurbane + Urbano Senigallia";
-                      if (def.code === 16) return "Linee extraurbane + Urbano Castelfidardo";
-                      if (def.code === 17) return "Linee extraurbane + Urbano Sassoferrato";
+                      if (def.kind === "urban") return def.label;
+                      if (def.kind === "mixed") return def.label.replace(/^Mista Extraurbano \+ /, "Linee extraurbane + ");
                       if (def.code === 99) return "Fermata servita da più reti urbane contemporaneamente o da reti non previste.";
                       return "";
                     })()}
@@ -438,7 +446,7 @@ export default function StopsClassificationPage() {
                           <div className="flex flex-wrap gap-1">
                             {s.networks.map(n => (
                               <span key={n} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-muted/30 text-muted-foreground">
-                                {NETWORK_SHORT[n] ?? n}
+                                {siglaDi(reti, n)}
                               </span>
                             ))}
                           </div>

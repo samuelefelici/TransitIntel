@@ -1476,6 +1476,63 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Le reti dell'azienda e le regole delle linee (tappa 6.7)
+
+Le reti (l'extraurbana e le urbane) e le regole che dal nome breve di una
+linea ricavano la sua rete erano scritte nel codice, con i nomi di una sola
+azienda. Da questo rilascio sono dati dell'azienda (tabelle `reti` e
+`reti_regole`, migrazione `0040`), e ogni modifica resta nel registro.
+
+- **Dove**: Amministrazione → Azienda, scheda «Reti e linee».
+- **Le reti**: l'extraurbana c'è sempre ed è una sola; se ne cambiano nome,
+  colore e ordine. Le urbane si aggiungono, si cambiano e si tolgono. Di una
+  rete urbana nuova si scrivono il luogo e la sigla: l'identificativo
+  (`urbano_<luogo>`), la zona tariffaria (`<luogo>_urban`) e il codice con cui
+  si classificano le sue fermate li ricava il programma, e non cambiano più.
+  Le reti urbane sono al più otto, perché i codici vanno da 2 a 9.
+- **Una rete in uso non si toglie**: linee assegnate, titoli di viaggio, zone
+  o regole tariffarie. Prima si sposta o si toglie chi la usa, dalla pagina
+  Tariffe. Con la rete se ne vanno le sue regole delle linee.
+- **Le regole**: un elenco in ordine, e vale la prima che corrisponde. I tipi
+  sono cinque e basta: «comincia con», «è uguale a», «comincia con… più una
+  cifra», «comincia con una cifra», «è di due lettere puntate». Una linea che
+  non ne segue nessuna è extraurbana.
+- **Anteprima**: prima di salvare le regole, dice quali linee del programma
+  in esercizio cambierebbero rete e quali passerebbero da urbane a
+  extraurbane o viceversa. Non scrive niente.
+- **Che cosa seguono le regole**: la rete *proposta* per una linea nella
+  pagina Tariffe (le linee già assegnate restano dove sono) e, nel Roster, se
+  un'Unità di Progettazione è urbana o extraurbana quando nessuno l'ha scelto
+  a mano: riposo minimo di 8 ore su linee urbane, di 9 su linee extraurbane.
+- **Conerobus**: la migrazione carica le sei reti urbane, l'extraurbano e le
+  otto regole che erano nel codice. Non cambia niente: sul programma in
+  esercizio le 128 linee risultano nelle stesse reti di prima (64
+  extraurbane, 36 di Ancona, 17 di Jesi, 8 di Senigallia, 2 di Castelfidardo,
+  1 di Falconara).
+- **Un'installazione nuova** parte con il solo extraurbano e nessuna regola:
+  tutte le linee valgono come extraurbane finché l'amministratore non scrive
+  le sue reti.
+- **Nella web**: le etichette, le sigle e i colori delle reti arrivano con la
+  sessione, come gli altri dati dell'azienda. Cinque punti della web avevano ognuno il
+  suo elenco scritto a mano, e non coincidevano; ora leggono quello. Il
+  simulatore prende gli stessi colori delle altre pagine.
+- **Quando entra in vigore**: subito sull'istanza che ha salvato, entro un
+  minuto sulle altre e sul lavoratore.
+- **Fuori da qui**: i titoli di viaggio e i prezzi (ancora nel codice), e le
+  categorie di partenza dell'analisi di Planning Studio.
+
+**Dopo il deploy**
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify le due righe nuove
+   `artifacts/api-server/src/lib/reti-linee.ts` e
+   `artifacts/api-server/src/lib/reti-lettura.ts` (blocco «Watch Paths» più
+   sopra), poi ridistribuisci il lavoratore.
+2. In Amministrazione → Azienda la scheda «Reti e linee» mostra sette reti e
+   otto regole.
+3. Nella pagina Tariffe i menu delle reti hanno le stesse voci di prima.
+
+**Rollback**: immagine precedente. Le due tabelle restano, senza effetti: il
+codice di prima ha le sue reti scritte dentro.
+
 ### Le reti delle linee e le zone urbane (tappa 6.6)
 
 Due cose che il codice aveva in più copie, e un difetto che ne veniva.
@@ -2872,6 +2929,8 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/netex*.ts
    artifacts/api-server/src/lib/azienda.ts
    artifacts/api-server/src/lib/vetture-azienda.ts
+   artifacts/api-server/src/lib/reti-linee.ts
+   artifacts/api-server/src/lib/reti-lettura.ts
    artifacts/api-server/assets/**
    artifacts/api-server/build.ts
    artifacts/api-server/package.json

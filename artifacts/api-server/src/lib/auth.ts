@@ -22,6 +22,7 @@ import { ipKeyGenerator } from "express-rate-limit";
 import { loginLimiter } from "../middlewares/rate-limit";
 import { decidiPrimoAdmin, ePasswordPubblicata, erroreNuovaPassword, PASSWORD_PUBBLICATE } from "./password-regole";
 import { aziendaOppureNeutra, aziendaPerLaWeb, paroleVietateDellAzienda } from "./azienda";
+import { retiPerLaWeb } from "./reti-linee";
 import { matriceFresca, matriceSottoLucchetto } from "./matrice-ruoli";
 import { matriceInVigore } from "./matrice-in-vigore";
 import {
@@ -700,8 +701,9 @@ async function apriSessione(req: Request, res: Response, row: any, s: { mfa: boo
     user: u!.user,
     datiProva: datiProvaAttivi(),
     accesso: u ? (({ rifiuta: _r, ...a }) => a)(accessoDi(u, s)) : null,
-    /* come /auth/me: chi entra ha subito nome, città e centro delle mappe dell'azienda */
+    /* come /auth/me: chi entra ha subito nome, città e centro delle mappe dell'azienda, e le sue reti */
     azienda: aziendaPerLaWeb(await aziendaOppureNeutra()),
+    reti: retiPerLaWeb(),
   });
 }
 
@@ -821,10 +823,13 @@ router.get("/auth/me", requireAuth, async (req, res) => {
   /* datiProva: se questa installazione permette i conducenti fittizi (lib/dati-prova.ts);
    * accesso: sessione limitata (password provvisoria, verifica da attivare) e stato della verifica;
    * azienda: nome, città e centro della mappa di questa installazione (lib/azienda.ts). Se non si
-   * riesce a leggerla la sessione vale lo stesso, con i valori neutri */
+   * riesce a leggerla la sessione vale lo stesso, con i valori neutri;
+   * reti: le reti dell'azienda (lib/reti-linee.ts), lette insieme all'azienda: etichette e colori
+   * delle pagine vengono da qui */
   res.json({
     user: req.user, datiProva: datiProvaAttivi(), accesso: req.accesso ?? null,
     azienda: aziendaPerLaWeb(await aziendaOppureNeutra()),
+    reti: retiPerLaWeb(),
   });
 });
 

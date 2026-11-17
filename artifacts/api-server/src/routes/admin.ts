@@ -8,6 +8,7 @@ import {
 } from "../lib/territorio";
 import { impostaAttivi, preparaDatiAperti, statoDatiAperti } from "../lib/dati-aperti";
 import { cancellaDeposito, creaDeposito, elencoDepositi, ModificaDeposito, modificaDeposito, NuovoDeposito, RifiutoDepositi } from "../lib/depositi";
+import { anteprimaRegole, cancellaRete, creaRete, elencoReti, ModificaRete, modificaRete, NuovaRete, Regole, RifiutoReti, salvaRegole } from "../lib/reti";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
@@ -529,6 +530,64 @@ router.delete("/admin/depositi/:codice", async (req, res): Promise<void> => {
   if (!CODICE_DEPOSITO.test(codice)) { res.status(404).json({ error: "Deposito non trovato" }); return; }
   try { await cancellaDeposito(codice); res.json({ ok: true }); }
   catch (e) { rifiutoDepositi(req, res, e, "deposito non tolto"); }
+});
+
+/**
+ * Le reti dell'azienda e le regole delle linee (tappa 6.7, lib/reti.ts). GET
+ * tutte, con quanto sono usate, e le regole in ordine; POST crea una rete
+ * urbana (identificativo, zona e codice li ricava il programma); PUT /:rete
+ * cambia nome, luogo, sigla, colore e ordine; DELETE la toglie, se nessuno la
+ * usa. PUT /regole salva l'elenco intero delle regole; POST /regole/anteprima
+ * dice quali linee cambierebbero rete, senza scrivere. Solo admin, mai un
+ * token di Argos (requireAdmin).
+ */
+const ID_RETE = /^[a-z][a-z0-9_]{1,39}$/;
+const rifiutoReti = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoReti) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  if (codice === "23503") { res.status(409).json({ error: "La rete non c'è più: ricarica la pagina" }); return; }
+  if (codice === "23505") { res.status(409).json({ error: "C'è già una rete con questo luogo, questa sigla o questo codice" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/reti", requireAdmin);
+router.get("/admin/reti", async (req, res): Promise<void> => {
+  try { res.json(await elencoReti()); }
+  catch (e) { rifiutoReti(req, res, e, "reti non leggibili"); }
+});
+router.post("/admin/reti", async (req, res): Promise<void> => {
+  const p = NuovaRete.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.status(201).json({ rete: await creaRete(p.data) }); }
+  catch (e) { rifiutoReti(req, res, e, "rete non creata"); }
+});
+/* le due rotte delle regole prima di /:rete: «regole» non è una rete */
+router.put("/admin/reti/regole", async (req, res): Promise<void> => {
+  const p = Regole.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ regole: await salvaRegole(p.data) }); }
+  catch (e) { rifiutoReti(req, res, e, "regole non salvate"); }
+});
+router.post("/admin/reti/regole/anteprima", async (req, res): Promise<void> => {
+  const p = Regole.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json(await anteprimaRegole(p.data)); }
+  catch (e) { rifiutoReti(req, res, e, "anteprima non riuscita"); }
+});
+router.put("/admin/reti/:rete", async (req, res): Promise<void> => {
+  const rete = String(req.params.rete ?? "");
+  if (!ID_RETE.test(rete)) { res.status(404).json({ error: "Rete non trovata" }); return; }
+  const p = ModificaRete.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ rete: await modificaRete(rete, p.data) }); }
+  catch (e) { rifiutoReti(req, res, e, "rete non salvata"); }
+});
+router.delete("/admin/reti/:rete", async (req, res): Promise<void> => {
+  const rete = String(req.params.rete ?? "");
+  if (!ID_RETE.test(rete)) { res.status(404).json({ error: "Rete non trovata" }); return; }
+  try { res.json({ ok: true, ...(await cancellaRete(rete)) }); }
+  catch (e) { rifiutoReti(req, res, e, "rete non tolta"); }
 });
 
 export default router;
