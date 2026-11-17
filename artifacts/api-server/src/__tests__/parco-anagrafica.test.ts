@@ -8,6 +8,11 @@ import {
   codiceDaSiri, siriDaCodice, aziendaDaSiri, etichettaAzienda, schedaVettura,
   identitaVettura, interpretaDescrizione, anagraficaParco, AZIENDE_SIRI, ECCEZIONI_SIRI,
 } from "../lib/parco-anagrafica";
+import { impostaRegolaVetture } from "../lib/vetture-azienda";
+
+/* i test provano un'azienda col suo canale AVM condiviso con le consorziate: la regola è un dato
+ * dell'azienda (tappa 6.5, lib/vetture-azienda.ts), e qui la si dichiara */
+impostaRegolaVetture({ cifre: 4, nome: "Conerobus" });
 
 describe("da matricola SIRI a codice FlashNet", () => {
   it("le Conerobus sono la matricola così com'è", () => {

@@ -11,6 +11,7 @@ import { chiSono, esecutoreInternoAcceso, slotDaAmbiente } from "./lib/lavori/am
 import { arresto } from "./lib/arresto";
 import { controllaIdentita } from "./lib/identita-db";
 import { inSistema } from "@workspace/db/contesto";
+import { tieniAggiornataAzienda } from "./lib/azienda";
 
 const rawPort = process.env["PORT"];
 
@@ -25,6 +26,10 @@ const port = Number(rawPort);
 if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
+
+/* l'azienda in memoria segue la riga anche per i timer, che non passano da una richiesta: la regola
+ * delle vetture dell'azienda nell'AVM sta lì (lib/vetture-azienda.ts) */
+tieniAggiornataAzienda();
 
 const server = app.listen(port, () => {
   logger.info({ port }, "Server listening");

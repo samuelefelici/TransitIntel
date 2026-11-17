@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type RequestHandler } from "express";
 import healthRouter from "./health";
 import authRouter from "../lib/auth";
 import accountRouter from "../lib/account";
@@ -76,10 +76,18 @@ import planningStudioRoundTripsRouter from "../lib/planning-studio-round-trips";
 import planningCompareRouter from "../lib/planning-compare";
 import rosterRotazioniRouter from "../lib/roster-rotazioni";
 import { contestoCron } from "../lib/contesto-http";
+import { aziendaLetta } from "../lib/azienda";
+
+/** Lascia passare la richiesta quando l'azienda è stata letta almeno una volta (o non si riesce a leggerla). */
+export const aspettaAzienda: RequestHandler = (_req, _res, next) => { void aziendaLetta().then(() => next()); };
 
 const router: IRouter = Router();
 
 router.use(healthRouter);
+/* Prima di tutto il resto, l'azienda letta almeno una volta: la regola delle
+ * vetture dell'azienda nell'AVM (lib/vetture-azienda.ts) la usano funzioni che
+ * non leggono il database. Non ferma mai la richiesta. */
+router.use(aspettaAzienda);
 router.use(authRouter);
 router.use(accountRouter); // sicurezza dell'account: ogni rotta chiede il login da sé
 // le cron scrivono come «cron:<nome>» (PR 2.9); il segreto lo controlla ogni rotta

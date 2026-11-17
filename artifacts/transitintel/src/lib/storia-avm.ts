@@ -1,5 +1,5 @@
 /**
- * L'andamento AVM nella pagina: i conti sul perimetro scelto (solo Conerobus,
+ * L'andamento AVM nella pagina: i conti sul perimetro scelto (solo le vetture dell'azienda,
  * senza fuori parco e dismesse). Stesse regole del server
  * (api-server/src/lib/avm-storia.ts: andamentoStoria, fraseAndamento), così
  * il grafico, la frase e il foglio Excel contano le stesse vetture.
@@ -27,8 +27,6 @@ export interface VetturaPerConti {
 export type SettimanaContata = SettimanaStoria & { F: number; P: number; M: number; A: number };
 
 const GIORNATE_MINIME = 3;
-
-export const eConerobus = (ref: string) => /^\d{1,4}$/.test(ref);
 
 /** Il lunedì della settimana che contiene la giornata (date "YYYY-MM-DD" a mezzanotte UTC). */
 export function lunediDi(giorno: string): string {

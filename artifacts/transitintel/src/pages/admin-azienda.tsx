@@ -10,7 +10,7 @@
  * e i depositi del personale (tappa 6.4, components/azienda/DepositiAzienda.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
-import { Building2, FileCode2, MapPin, Save } from "lucide-react";
+import { Building2, FileCode2, MapPin, Radio, Save } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -182,6 +182,24 @@ export default function AdminAziendaPage() {
           </div>
           <p className="text-xs text-muted-foreground">
             Gli identificativi hanno la forma IT:codice locale:Tipo:codice. I codici li decide la Regione: chiedili prima di consegnare il file.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Radio className="w-4 h-4 text-primary" aria-hidden /> AVM: le vetture dell'azienda
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-4 sm:grid-cols-2">
+            {casella("avmMatricolaCifre", "Cifre della matricola", { facoltativo: true, tipo: "decimale", esempio: "4",
+              aiuto: "Nel canale dell'AVM, una vettura è dell'azienda se la sua matricola è un numero con al più queste cifre. Vuoto: tutte le vetture del canale sono dell'azienda." })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Serve dove nel canale dell'AVM passano anche le vetture di aziende consorziate, che hanno matricole più lunghe.
+            Le pagine dell'AVM guardano di base solo le vetture dell'azienda, e solo quelle si confrontano con il parco dell'officina.
           </p>
         </CardContent>
       </Card>

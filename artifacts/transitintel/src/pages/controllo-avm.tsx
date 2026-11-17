@@ -20,6 +20,8 @@ import {
   TrendingDown, TrendingUp, CircleSlash, Sparkles, LogOut, HelpCircle, Check,
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
+import { useAzienda } from "@/hooks/use-azienda";
+import { eDellAzienda } from "@/lib/azienda";
 import { Quadratino, SETTIMANA } from "@/components/avm/strisce";
 
 /* ── I tipi, come li manda l'API (lib/avm-controllo.ts) ─────────────────── */
@@ -108,8 +110,8 @@ interface RespArchivio {
   settimane: Array<{
     lunedi: string; generatoIl: string; versione: number;
     conteggi: Partial<Record<Categoria, number>>;
-    /* solo Conerobus, escluse fuori parco e dismesse; assente se l'API è più vecchia della pagina */
-    conteggiConerobus?: Partial<Record<Categoria, number>>;
+    /* solo le vetture dell'azienda, escluse fuori parco e dismesse; assente se l'API è più vecchia della pagina */
+    conteggiAzienda?: Partial<Record<Categoria, number>>;
   }>;
   errore: string | null;
 }
@@ -188,8 +190,6 @@ function fraseDiSintesi(s: Settimana & { chiusa: boolean }, c: Record<Categoria,
   return frase;
 }
 
-const isConerobus = (ref: string) => /^\d{1,4}$/.test(ref);
-
 function ddmm(g: string | null): string {
   if (!g) return "";
   const [, m, d] = g.split("-");
@@ -216,8 +216,13 @@ function dataOra(iso: string | null | undefined): string {
 }
 
 export default function ControlloAvm() {
+  /* le vetture dell'azienda nel canale (tappa 6.5): la regola è un dato dell'azienda; senza cifre non ci
+     sono consorziate, e la scelta «solo …» non ha senso */
+  const azienda = useAzienda();
+  const cifre = azienda.avmMatricolaCifre;
+  const conConsorziate = cifre !== null;
   const [lunedi, setLunedi] = useState<string | null>(null);
-  const [soloConerobus, setSoloConerobus] = useState(true);
+  const [soloAzienda, setSoloAzienda] = useState(true);
   const [soloParcoOfficina, setSoloParcoOfficina] = useState(true);
   const [filtro, setFiltro] = useState<Categoria | null>(null);
   const [cerca, setCerca] = useState("");
@@ -239,9 +244,9 @@ export default function ControlloAvm() {
      contano quello che si sta guardando, come nel diario. */
   const perimetro = useMemo(
     () => (d?.vetture ?? []).filter(v =>
-      (!soloConerobus || isConerobus(v.vehicleRef))
+      (!soloAzienda || eDellAzienda(v.vehicleRef, cifre))
       && (!officinaAttiva || !soloParcoOfficina || !v.esclusa)),
-    [d, soloConerobus, soloParcoOfficina, officinaAttiva],
+    [d, soloAzienda, cifre, soloParcoOfficina, officinaAttiva],
   );
   const conteggi = useMemo(() => {
     const c = Object.fromEntries(ORDINE.map(k => [k, 0])) as Record<Categoria, number>;
@@ -313,7 +318,7 @@ export default function ControlloAvm() {
   const settimanaMostrata = d.settimana.lunedi;
   const prossima = spostaGiorni(settimanaMostrata, 7);
   const parametri = new URLSearchParams({ settimana: settimanaMostrata });
-  if (soloConerobus) parametri.set("perimetro", "conerobus");
+  if (soloAzienda && conConsorziate) parametri.set("perimetro", "azienda");
   if (officinaAttiva && soloParcoOfficina) parametri.set("officina", "1");
   const maxAndamento = Math.max(1, ...andamento.map(a => a.F + a.P + a.M + a.A));
 
@@ -349,11 +354,13 @@ export default function ControlloAvm() {
         <span className="text-[10px] text-muted-foreground">
           {d.archiviato ? `archiviata il ${dataOra(d.generatoIl)}` : `calcolata il ${dataOra(d.generatoIl)}`}
         </span>
+        {conConsorziate && (
         <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none">
-          <input type="checkbox" id="controllo-solo-conerobus" checked={soloConerobus}
-            onChange={e => setSoloConerobus(e.target.checked)} />
-          solo Conerobus
+          <input type="checkbox" id="controllo-solo-azienda" checked={soloAzienda}
+            onChange={e => setSoloAzienda(e.target.checked)} />
+          solo {azienda.nome}
         </label>
+        )}
         {officinaAttiva && (
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none"
             title="Toglie le vetture che il parco dell'officina non ha più o dà per dismesse">
@@ -657,8 +664,8 @@ export default function ControlloAvm() {
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {archivio.data!.settimane.map(s => {
-              /* le pastiglie contano il perimetro di base (solo Conerobus, parco officina) */
-              const n = s.conteggiConerobus ?? s.conteggi;
+              /* le pastiglie contano il perimetro di base (solo le vetture dell'azienda, parco officina) */
+              const n = s.conteggiAzienda ?? s.conteggi;
               return (
               <button
                 key={s.lunedi}
@@ -667,7 +674,7 @@ export default function ControlloAvm() {
                 className={`px-2.5 py-1 rounded-lg text-[11px] border transition-colors ${s.lunedi === settimanaMostrata
                   ? "bg-white/10 border-border text-foreground"
                   : "bg-white/[0.02] border-border/40 text-muted-foreground hover:bg-white/5"}`}
-                title={`archiviato il ${dataOra(s.generatoIl)} · Conerobus del parco: `
+                title={`archiviato il ${dataOra(s.generatoIl)} · ${azienda.nome}, del parco: `
                   + `${n.fermata ?? 0} si sono fermate, ${n.ripresa ?? 0} hanno ripreso`}
               >
                 <span className="tabular-nums">{ddmm(s.lunedi)}</span>

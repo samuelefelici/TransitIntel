@@ -16,6 +16,11 @@ import {
 import { giornateDelPeriodo } from "../lib/fleet-trend";
 import type { RigaDiario } from "../lib/avm-diario";
 import type { MezzoOfficina } from "../lib/officina";
+import { impostaRegolaVetture } from "../lib/vetture-azienda";
+
+/* i test provano un'azienda col suo canale AVM condiviso con le consorziate: la regola è un dato
+ * dell'azienda (tappa 6.5, lib/vetture-azienda.ts), e qui la si dichiara */
+impostaRegolaVetture({ cifre: 4, nome: "Conerobus" });
 
 const LUNEDI = "2026-10-05";
 const OGGI = "2026-10-12";

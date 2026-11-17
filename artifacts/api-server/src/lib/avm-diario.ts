@@ -41,6 +41,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { identitaVettura } from "./parco-anagrafica";
+import { eDellAzienda } from "./vetture-azienda";
 import type { MezzoOfficina } from "./officina";
 
 /**
@@ -69,9 +70,9 @@ function dataBreve(iso: string | null): string {
 }
 
 /**
- * Che cosa dice l'officina di una vettura che l'AVM giudica. Solo le
- * Conerobus: FleetCare oggi tiene il parco Conerobus, e una consorziata
- * assente dal parco non vuol dire niente.
+ * Che cosa dice l'officina di una vettura che l'AVM giudica. Solo quelle
+ * dell'azienda (lib/vetture-azienda.ts): l'officina tiene il suo parco, e una
+ * consorziata assente dal parco non vuol dire niente.
  *
  * L'ordine conta. Una vettura che l'officina non ha più non si ripara, si
  * toglie dall'anagrafica di Mizar, qualunque cosa faccia l'apparato. Una
@@ -82,7 +83,7 @@ function dataBreve(iso: string | null): string {
 export function esclusioneOfficina(
   vehicleRef: string, esito: EsitoSettimana, mezzo: MezzoOfficina | undefined,
 ): Esclusione | null {
-  if (!/^\d{1,4}$/.test(vehicleRef)) return null;
+  if (!eDellAzienda(vehicleRef)) return null;
   if (!mezzo) {
     return {
       motivo: "fuori_parco",
@@ -206,7 +207,7 @@ export interface VetturaSettimana {
   vehicleRef: string;
   /** codice FlashNet (CJ096 per 11096); null se il prefisso non è abbinato */
   codice: string | null;
-  /** "Conerobus", sigla della consorziata, o perché non si sa */
+  /** il nome dell'azienda, la sigla della consorziata, o perché non si sa */
   azienda: string;
   /** il mezzo come lo descrive FlashNet; null se non è in anagrafica */
   mezzo: string | null;

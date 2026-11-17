@@ -25,6 +25,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { siriDaCodice } from "./parco-anagrafica.js";
+import { eDellAzienda, nomeAzienda } from "./vetture-azienda.js";
 import type { InterventoAvm } from "./avm-controllo.js";
 
 /** Lo stato del mezzo per l'officina, nel vocabolario dell'AVM. */
@@ -170,7 +171,7 @@ export function mezziSenzaAvm(parco: ParcoOfficina, matricoleSiri: Iterable<stri
 }
 
 /**
- * Quota minima delle matricole Conerobus di SIRI che il parco dell'officina
+ * Quota minima delle matricole dell'azienda in SIRI che il parco dell'officina
  * deve contenere per essere creduto. Sul confronto del 6/10/2026 era 228 su
  * 277, l'82%.
  */
@@ -182,21 +183,21 @@ export const QUOTA_PARCO_CREDIBILE = 0.5;
  * Il rischio è silenzioso: un tenant sbagliato, o un FleetCare con i dati di
  * prova, farebbe risultare «fuori parco» quasi tutte le vetture vere, e le
  * toglierebbe dalle segnalazioni senza che nessuno se ne accorga. Sotto
- * metà delle matricole Conerobus riconosciute, il parco risulta non
+ * metà delle matricole dell'azienda riconosciute, il parco risulta non
  * disponibile e la pagina dice perché.
  */
 export function parcoCredibile(parco: ParcoOfficina, matricoleSiri: Iterable<string>): ParcoOfficina {
   if (!parco.disponibile) return parco;
-  const conerobus = [...new Set(matricoleSiri)].filter(m => /^\d{1,4}$/.test(m));
-  if (conerobus.length === 0) return parco;
+  const proprie = [...new Set(matricoleSiri)].filter(m => eDellAzienda(m));
+  if (proprie.length === 0) return parco;
   const nelParco = new Set(parco.mezzi.map(m => m.matricola));
-  const trovate = conerobus.filter(m => nelParco.has(m)).length;
-  if (trovate / conerobus.length >= QUOTA_PARCO_CREDIBILE) return parco;
+  const trovate = proprie.filter(m => nelParco.has(m)).length;
+  if (trovate / proprie.length >= QUOTA_PARCO_CREDIBILE) return parco;
   return {
     ...parco,
     disponibile: false,
     motivo: `Il parco FleetCare${parco.tenant ? ` («${parco.tenant}»)` : ""} contiene solo ${trovate} delle `
-      + `${conerobus.length} matricole Conerobus che vede l'AVM: non sembra lo stesso parco. `
+      + `${proprie.length} matricole ${nomeAzienda()} che vede l'AVM: non sembra lo stesso parco. `
       + "Controllare FLEETCARE_TENANT o i mezzi caricati in FleetCare.",
     mezzi: [],
   };

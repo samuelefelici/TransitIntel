@@ -27,6 +27,11 @@ export interface Azienda {
   netexCodiceLocale: string | null;
   /** il fornitore in fondo agli identificativi NeTEx, se la Regione lo chiede */
   netexFornitore: string | null;
+  /**
+   * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
+   * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5)
+   */
+  avmMatricolaCifre: number | null;
   /** false finché l'amministratore non ha compilato la pagina */
   compilata: boolean;
 }
@@ -44,10 +49,13 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   provinciaIstat: null,
   netexCodiceLocale: null,
   netexFornitore: null,
+  avmMatricolaCifre: null,
   compilata: false,
 });
 
 const testo = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+/** Le cifre della matricola nell'AVM: un intero da 1 a 9, altrimenti null. */
+const cifreValide = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 9 ? v : null);
 const numero = (v: unknown, min: number, max: number): number | null =>
   (typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : null);
 
@@ -69,6 +77,7 @@ export function aziendaValida(x: unknown): Azienda {
     provinciaIstat: typeof d.provinciaIstat === "string" && /^[0-9]{3}$/.test(d.provinciaIstat) ? d.provinciaIstat : null,
     netexCodiceLocale: typeof d.netexCodiceLocale === "string" && /^[A-Z]{2}[A-Z0-9]{0,3}$/.test(d.netexCodiceLocale) ? d.netexCodiceLocale : null,
     netexFornitore: typeof d.netexFornitore === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(d.netexFornitore) ? d.netexFornitore : null,
+    avmMatricolaCifre: cifreValide(d.avmMatricolaCifre),
     compilata: d.compilata !== false,
   };
 }
@@ -95,7 +104,7 @@ export function intestazioneDocumenti(a: Pick<Azienda, "nome" | "compilata">): s
 export interface ModuloAzienda {
   ragioneSociale: string; nome: string; sito: string; telefono: string; gtfsAgencyId: string;
   citta: string; regione: string; centroLat: string; centroLng: string; zoom: string; provinciaIstat: string;
-  netexCodiceLocale: string; netexFornitore: string;
+  netexCodiceLocale: string; netexFornitore: string; avmMatricolaCifre: string;
 }
 export type CampoAzienda = keyof ModuloAzienda;
 
@@ -108,6 +117,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     centroLat: String(a.centro.lat), centroLng: String(a.centro.lng), zoom: String(a.centro.zoom),
     provinciaIstat: scritto(a.provinciaIstat),
     netexCodiceLocale: scritto(a.netexCodiceLocale), netexFornitore: scritto(a.netexFornitore),
+    avmMatricolaCifre: a.compilata && a.avmMatricolaCifre != null ? String(a.avmMatricolaCifre) : "",
   };
 }
 
@@ -139,6 +149,7 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (m.provinciaIstat.trim() && !/^[0-9]{3}$/.test(m.provinciaIstat.trim())) e.provinciaIstat = "Tre cifre, come 042";
   if (m.netexCodiceLocale.trim() && !/^[A-Z]{2}[A-Z0-9]{0,3}$/.test(m.netexCodiceLocale.trim())) e.netexCodiceLocale = "Un codice NUTS in maiuscolo, come ITI3";
   if (m.netexFornitore.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexFornitore.trim())) e.netexFornitore = "Lettere, cifre, - e _ (al più 40)";
+  if (m.avmMatricolaCifre.trim() && !/^[1-9]$/.test(m.avmMatricolaCifre.trim())) e.avmMatricolaCifre = "Un numero da 1 a 9, oppure vuoto";
   return e;
 }
 
@@ -151,7 +162,22 @@ export function datiDaSalvare(m: ModuloAzienda) {
     centroLat: decimale(m.centroLat), centroLng: decimale(m.centroLng), zoom: decimale(m.zoom),
     provinciaIstat: facoltativo(m.provinciaIstat),
     netexCodiceLocale: facoltativo(m.netexCodiceLocale), netexFornitore: facoltativo(m.netexFornitore),
+    avmMatricolaCifre: m.avmMatricolaCifre.trim() ? Number(m.avmMatricolaCifre.trim()) : null,
   };
+}
+
+/* ── Le vetture dell'azienda nel canale dell'AVM (tappa 6.5) ───────────────── */
+
+/**
+ * Se la matricola (come la pubblica il canale dell'AVM) è di una vettura
+ * dell'azienda: numerica, con al più `cifre` cifre. Senza cifre, tutte le
+ * vetture del canale sono dell'azienda. È la stessa regola dell'API
+ * (lib/vetture-azienda.ts), dallo stesso dato.
+ */
+export function eDellAzienda(ref: string | null | undefined, cifre: number | null): boolean {
+  if (cifre === null) return true;
+  const r = String(ref ?? "").trim();
+  return /^\d+$/.test(r) && r.length <= cifre;
 }
 
 /** Il modulo è diverso da quello salvato? */

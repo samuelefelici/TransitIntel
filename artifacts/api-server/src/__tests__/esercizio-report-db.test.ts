@@ -15,6 +15,7 @@ import { sql } from "drizzle-orm";
 import esercizioRouter from "../routes/esercizio";
 import { reportDelMese, reportXlsx, dettaglioCsv } from "../lib/esercizio-report";
 import { aziendaDaSiri } from "../lib/parco-anagrafica";
+import { dimenticaAzienda, leggiAzienda } from "../lib/azienda";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const u = (n: number) => `d4700000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -34,8 +35,17 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il report mensile, sul database
     await db.execute(sql`DELETE FROM users WHERE id = ${UTENTE}::uuid`);
   };
 
+  let aziendaDiPrima: unknown[] = [];
   beforeAll(async () => {
     await pulisci();
+    /* il vettore di una vettura è l'azienda o una consorziata: la regola e il nome sono dati
+     * dell'azienda (tappa 6.5), e il test li mette */
+    aziendaDiPrima = (await db.execute<any>(sql`SELECT to_jsonb(a) AS riga FROM azienda a`)).rows.map((r) => r.riga);
+    await db.execute(sql`DELETE FROM azienda`);
+    await db.execute(sql`INSERT INTO azienda (ragione_sociale, nome, gtfs_agency_id, citta, centro_lat, centro_lng, zoom, avm_matricola_cifre)
+                         VALUES ('Conerobus S.p.A.', 'Conerobus', 'conerobus', 'Ancona', 43.6, 13.5, 10, 4)`);
+    dimenticaAzienda();
+    await leggiAzienda();
     await db.execute(sql`INSERT INTO users (id, email, password_hash, role) VALUES (${UTENTE}::uuid, 'report@prova.local', 'x', 'user')`);
     await db.execute(sql`INSERT INTO ps_projects (id, owner_user_id, name) VALUES (${P}::uuid, ${UTENTE}::uuid, 'Programma report 4.7')`);
     await db.execute(sql`INSERT INTO ps_routes (id, project_id, short_name, service_type, contract_id) VALUES
@@ -61,7 +71,14 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il report mensile, sul database
       (${G2}::date, 'agg:r-f', 'agg', '1', NULL, NULL, '13:00:00', 'aggiunta', 'bis', 'effettuata', NULL, 3, NULL, NULL, NULL, now()),
       (${G3}::date, 'r-g', '6', '1', ${R1}, 'S1', '07:00:00', 'programmata', NULL, 'effettuata', 2, 2, NULL, '301', NULL, now())`);
   });
-  afterAll(pulisci);
+  afterAll(async () => {
+    await pulisci();
+    await db.execute(sql`DELETE FROM azienda`);
+    for (const riga of aziendaDiPrima) {
+      await db.execute(sql`INSERT INTO azienda SELECT * FROM jsonb_populate_record(NULL::azienda, ${JSON.stringify(riga)}::jsonb)`);
+    }
+    dimenticaAzienda();
+  });
 
   it("totali e indicatori sulle sole giornate chiuse", async () => {
     const r = await reportDelMese(MESE);

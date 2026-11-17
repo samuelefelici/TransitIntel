@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { impostaRegolaVetture, REGOLA_NEUTRA } from "./vetture-azienda";
 
 export interface Azienda {
   /** il nome per esteso: «Conerobus S.p.A.» */
@@ -41,6 +42,11 @@ export interface Azienda {
   netexCodiceLocale: string | null;
   /** il fornitore in fondo agli identificativi NeTEx, se la Regione lo chiede */
   netexFornitore: string | null;
+  /**
+   * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
+   * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5, lib/vetture-azienda.ts)
+   */
+  avmMatricolaCifre: number | null;
   /** false finché la tabella è vuota: l'amministratore non ha ancora compilato la pagina */
   compilata: boolean;
 }
@@ -58,6 +64,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   provinciaIstat: null,
   netexCodiceLocale: null,
   netexFornitore: null,
+  avmMatricolaCifre: null,
   compilata: false,
 });
 
@@ -89,6 +96,7 @@ export const DatiAzienda = z.object({
   provinciaIstat: facoltativo(z.string().trim().regex(/^[0-9]{3}$/, "tre cifre, come «042»")),
   netexCodiceLocale: facoltativo(z.string().trim().regex(/^[A-Z]{2}[A-Z0-9]{0,3}$/, "un codice NUTS, come «ITI3»")),
   netexFornitore: facoltativo(z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/, "lettere, cifre, - e _ (al più 40)")),
+  avmMatricolaCifre: facoltativo(z.number().int("un numero intero da 1 a 9").min(1, "da 1 a 9").max(9, "da 1 a 9")),
 }).strict();
 export type DatiAzienda = z.infer<typeof DatiAzienda>;
 
@@ -97,6 +105,7 @@ const NOMI_CAMPI: Readonly<Record<string, string>> = {
   ragioneSociale: "Ragione sociale", nome: "Nome", sito: "Sito", telefono: "Telefono", gtfsAgencyId: "Identificativo GTFS",
   citta: "Città", regione: "Regione", centroLat: "Latitudine", centroLng: "Longitudine", zoom: "Zoom",
   provinciaIstat: "Provincia ISTAT", netexCodiceLocale: "Codice locale NeTEx", netexFornitore: "Fornitore NeTEx",
+  avmMatricolaCifre: "Cifre della matricola nell'AVM",
   /* i comuni e i luoghi del territorio (lib/territorio.ts) */
   codiceIstat: "Codice ISTAT", soppresso: "Soppresso", lat: "Latitudine", lng: "Longitudine", areaKm2: "Superficie",
   popolazione: "Popolazione", uso: "Uso", raggioM: "Raggio", ordine: "Ordine",
@@ -128,6 +137,7 @@ function daRiga(r: any): Azienda {
     provinciaIstat: r.provincia_istat ?? null,
     netexCodiceLocale: r.netex_codice_locale ?? null,
     netexFornitore: r.netex_fornitore ?? null,
+    avmMatricolaCifre: r.avm_matricola_cifre == null ? null : Number(r.avm_matricola_cifre),
     compilata: true,
   };
 }
@@ -142,10 +152,14 @@ export async function leggiAzienda(): Promise<Azienda> {
   try {
     const r = await db.execute<any>(sql`
       SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom,
-             provincia_istat, netex_codice_locale, netex_fornitore
+             provincia_istat, netex_codice_locale, netex_fornitore, avm_matricola_cifre
         FROM azienda WHERE unica`);
     const riga = r.rows?.[0];
     inMemoria = { azienda: riga ? daRiga(riga) : AZIENDA_DA_COMPILARE, lettaIl: Date.now() };
+    /* la regola delle vetture dell'azienda nell'AVM segue la riga (lib/vetture-azienda.ts) */
+    impostaRegolaVetture(riga
+      ? { cifre: inMemoria.azienda.avmMatricolaCifre, nome: inMemoria.azienda.nome }
+      : REGOLA_NEUTRA);
     return inMemoria.azienda;
   } catch (e) {
     if (inMemoria) return inMemoria.azienda;
@@ -162,7 +176,39 @@ export async function aziendaOppureNeutra(): Promise<Azienda> {
 }
 
 /** Fa rileggere la riga alla prossima richiesta (dopo un salvataggio, e nei test). */
-export function dimenticaAzienda(): void { inMemoria = null; }
+export function dimenticaAzienda(): void { inMemoria = null; primaLettura = null; }
+
+let primaLettura: Promise<void> | null = null;
+
+/**
+ * Aspetta che l'azienda sia stata letta almeno una volta in questo processo.
+ * Serve a chi usa quello che la lettura mette in memoria — la regola delle
+ * vetture dell'azienda nell'AVM (lib/vetture-azienda.ts) — da funzioni che non
+ * leggono il database. Non fallisce mai: se il database non risponde resta la
+ * regola di prima, e si riprova alla prossima chiamata.
+ */
+export function aziendaLetta(): Promise<void> {
+  primaLettura ??= leggiAzienda().then(() => undefined, () => { primaLettura = null; });
+  return primaLettura;
+}
+
+/**
+ * Rilegge l'azienda a intervalli, in un processo che vive a lungo (l'API, il
+ * lavoratore): così quello che la lettura mette in memoria segue la riga
+ * anche dove nessuna richiesta la legge (i timer, i giri del lavoratore), con
+ * al più un minuto di ritardo. Restituisce lo stop.
+ */
+export function tieniAggiornataAzienda(ogniMs = DURATA_MS): () => void {
+  const giro = () => {
+    /* si rilegge anche se la lettura in memoria è recente; se il database non risponde resta quella */
+    if (inMemoria) inMemoria.lettaIl = 0;
+    leggiAzienda().catch(() => {});
+  };
+  giro();
+  const ciclo = setInterval(giro, ogniMs);
+  ciclo.unref();
+  return () => clearInterval(ciclo);
+}
 
 /* ── La pagina dell'amministratore ────────────────────────────────────────── */
 
@@ -172,7 +218,8 @@ export interface DettaglioAzienda { azienda: Azienda; aggiornataIl: string | nul
 export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
   const r = await db.execute<any>(sql`
     SELECT a.ragione_sociale, a.nome, a.sito, a.telefono, a.gtfs_agency_id, a.citta, a.regione,
-           a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.netex_codice_locale, a.netex_fornitore, a.aggiornata_il,
+           a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.netex_codice_locale, a.netex_fornitore, a.avm_matricola_cifre,
+           a.aggiornata_il,
            coalesce(nullif(btrim(u.full_name), ''), u.email) AS aggiornata_da
       FROM azienda a LEFT JOIN users u ON u.id = a.aggiornata_da
      WHERE a.unica`);
@@ -189,15 +236,18 @@ export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
 export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Promise<DettaglioAzienda> {
   await db.execute(sql`
     INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione,
-                         centro_lat, centro_lng, zoom, provincia_istat, netex_codice_locale, netex_fornitore, aggiornata_il, aggiornata_da)
+                         centro_lat, centro_lng, zoom, provincia_istat, netex_codice_locale, netex_fornitore, avm_matricola_cifre,
+                         aggiornata_il, aggiornata_da)
     VALUES (true, ${d.ragioneSociale}, ${d.nome}, ${d.sito}, ${d.telefono}, ${d.gtfsAgencyId}, ${d.citta}, ${d.regione},
-            ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, ${d.netexCodiceLocale}, ${d.netexFornitore}, now(), ${utenteId}::uuid)
+            ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, ${d.netexCodiceLocale}, ${d.netexFornitore},
+            ${d.avmMatricolaCifre}, now(), ${utenteId}::uuid)
     ON CONFLICT (unica) DO UPDATE SET
       ragione_sociale = EXCLUDED.ragione_sociale, nome = EXCLUDED.nome, sito = EXCLUDED.sito,
       telefono = EXCLUDED.telefono, gtfs_agency_id = EXCLUDED.gtfs_agency_id, citta = EXCLUDED.citta,
       regione = EXCLUDED.regione, centro_lat = EXCLUDED.centro_lat, centro_lng = EXCLUDED.centro_lng,
       zoom = EXCLUDED.zoom, provincia_istat = EXCLUDED.provincia_istat,
       netex_codice_locale = EXCLUDED.netex_codice_locale, netex_fornitore = EXCLUDED.netex_fornitore,
+      avm_matricola_cifre = EXCLUDED.avm_matricola_cifre,
       aggiornata_il = EXCLUDED.aggiornata_il, aggiornata_da = EXCLUDED.aggiornata_da`);
   dimenticaAzienda();
   return dettaglioAzienda();

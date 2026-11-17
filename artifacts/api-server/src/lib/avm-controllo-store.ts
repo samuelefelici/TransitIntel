@@ -15,6 +15,7 @@
  */
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { espressioneVetture } from "./vetture-azienda";
 import type { ControlloSettimanale, Categoria } from "./avm-controllo.js";
 
 let ultimoErrore: string | null = null;
@@ -71,24 +72,26 @@ export interface VoceArchivio {
   versione: number;
   /** su tutto il flusso */
   conteggi: Partial<Record<Categoria, number>>;
-  /** solo Conerobus, escluse fuori parco e dismesse: il perimetro di base della pagina */
-  conteggiConerobus: Partial<Record<Categoria, number>>;
+  /** solo le vetture dell'azienda, escluse fuori parco e dismesse: il perimetro di base della pagina */
+  conteggiAzienda: Partial<Record<Categoria, number>>;
 }
 
 /** Le settimane archiviate, dalla più recente. */
 export async function elencoControlli(limite = 26): Promise<VoceArchivio[]> {
   try {
+    /* la regola delle vetture dell'azienda, come parametro; null: tutte le vetture sono sue */
+    const regola = espressioneVetture();
     const r = await db.execute<any>(sql`
       SELECT to_char(settimana, 'YYYY-MM-DD') AS lunedi, generato_il, versione,
              dati -> 'conteggi' AS conteggi,
              /* gli stessi conteggi sul perimetro che la pagina mostra di base:
-                solo Conerobus (matricola di 1-4 cifre) e non escluse dall'officina */
+                solo le vetture dell'azienda (lib/vetture-azienda.ts) e non escluse dall'officina */
              (SELECT coalesce(jsonb_object_agg(cat, n), '{}'::jsonb) FROM (
                 SELECT v ->> 'categoria' AS cat, count(*) AS n
                   FROM jsonb_array_elements(dati -> 'vetture') v
-                 WHERE v ->> 'vehicleRef' ~ '^[0-9]{1,4}$'
+                 WHERE (${regola}::text IS NULL OR v ->> 'vehicleRef' ~ ${regola}::text)
                    AND jsonb_typeof(coalesce(v -> 'esclusa', 'null'::jsonb)) = 'null'
-                 GROUP BY 1) x) AS conteggi_conerobus
+                 GROUP BY 1) x) AS conteggi_azienda
         FROM caronte.avm_controllo_settimanale
        ORDER BY settimana DESC
        LIMIT ${limite}`);
@@ -97,8 +100,8 @@ export async function elencoControlli(limite = 26): Promise<VoceArchivio[]> {
       generatoIl: new Date(x.generato_il).toISOString(),
       versione: Number(x.versione),
       conteggi: (typeof x.conteggi === "string" ? JSON.parse(x.conteggi) : x.conteggi) ?? {},
-      conteggiConerobus: Object.fromEntries(Object.entries(
-        (typeof x.conteggi_conerobus === "string" ? JSON.parse(x.conteggi_conerobus) : x.conteggi_conerobus) ?? {})
+      conteggiAzienda: Object.fromEntries(Object.entries(
+        (typeof x.conteggi_azienda === "string" ? JSON.parse(x.conteggi_azienda) : x.conteggi_azienda) ?? {})
         .map(([k, n]) => [k, Number(n)])),
     }));
   } catch (e: any) {
