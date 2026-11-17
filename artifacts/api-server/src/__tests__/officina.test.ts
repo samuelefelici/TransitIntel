@@ -14,6 +14,11 @@ import {
 import {
   analizzaDiario, esclusioneOfficina, type RigaDiario,
 } from "../lib/avm-diario";
+import { impostaRegolaVetture } from "../lib/vetture-azienda";
+
+/* i test provano un'azienda col suo canale AVM condiviso con le consorziate: la regola è un dato
+ * dell'azienda (tappa 6.5, lib/vetture-azienda.ts), e qui la si dichiara */
+impostaRegolaVetture({ cifre: 4, nome: "Conerobus" });
 
 function riga(p: Partial<RigaParcoAvm> & { fleet_number: string }): RigaParcoAvm {
   return {

@@ -27,6 +27,8 @@ import {
   AlertTriangle, TrendingUp, TrendingDown, Search,
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
+import { useAzienda } from "@/hooks/use-azienda";
+import { eDellAzienda } from "@/lib/azienda";
 
 type Esito = "funziona" | "senza_corsa" | "senza_posizione" | "non_attivata" | "muta";
 type EsitoGiorno = "in_servizio" | "traccia" | "collegata" | "muta";
@@ -145,11 +147,6 @@ const AVVISI: Record<Avviso, { colore: string; fondo: string; bordo: string }> =
   intermittente: { colore: "#fde68a", fondo: "rgba(251,191,36,0.14)",  bordo: "rgba(251,191,36,0.45)" },
 };
 
-/* Nel flusso SIRI le consorziate hanno matricole a cinque cifre (11096 è la
-   CJ096); le Conerobus a tre o quattro. È una regola letta dai dati, non
-   dichiarata da nessuno: per questo è un filtro che si può togliere. */
-const isConerobus = (ref: string) => /^\d{1,4}$/.test(ref);
-
 /* Che cosa dice l'officina: grigio per chi non c'è più, ambra per chi è
    fermo, azzurro per chi è già stato segnalato. Non sono anelli rotti. */
 const ESCLUSIONI: Record<MotivoEsclusione, { breve: string; colore: string }> = {
@@ -170,10 +167,15 @@ function giornoBreve(g: string): string {
 }
 
 export default function DiarioAvm() {
+  /* le vetture dell'azienda nel canale (tappa 6.5): la regola è un dato dell'azienda; senza cifre non ci
+     sono consorziate, e la scelta «solo …» non ha senso */
+  const azienda = useAzienda();
+  const cifre = azienda.avmMatricolaCifre;
+  const conConsorziate = cifre !== null;
   const [giorni, setGiorni] = useState(7);
   const [filtro, setFiltro] = useState<Esito | null>(null);
   const [filtroAvviso, setFiltroAvviso] = useState<Avviso | null>(null);
-  const [soloConerobus, setSoloConerobus] = useState(true);
+  const [soloAzienda, setSoloAzienda] = useState(true);
   const [soloParcoOfficina, setSoloParcoOfficina] = useState(true);
   const [cerca, setCerca] = useState("");
   const [copiato, setCopiato] = useState<string | null>(null);
@@ -185,7 +187,7 @@ export default function DiarioAvm() {
   });
   const d = q.data;
 
-  /* Il perimetro (solo Conerobus o tutto il flusso) si applica PRIMA dei
+  /* Il perimetro (solo le vetture dell'azienda o tutto il flusso) si applica PRIMA dei
      contatori, così i numeri sui pulsanti e negli avvisi sono del perimetro
      che si sta guardando, non di tutto il parco. */
   /* Con il parco dell'officina, le vetture che l'officina non ha più
@@ -194,10 +196,10 @@ export default function DiarioAvm() {
   const officinaAttiva = !!d?.officina?.disponibile;
   const perimetro = useMemo(
     () => (d?.vetture ?? []).filter(v =>
-      (!soloConerobus || isConerobus(v.vehicleRef))
+      (!soloAzienda || eDellAzienda(v.vehicleRef, cifre))
       && (!officinaAttiva || !soloParcoOfficina
         || (v.esclusa?.motivo !== "fuori_parco" && v.esclusa?.motivo !== "dismesso"))),
-    [d, soloConerobus, soloParcoOfficina, officinaAttiva],
+    [d, soloAzienda, cifre, soloParcoOfficina, officinaAttiva],
   );
   const perEsito = useMemo(() => {
     const m = new Map<Esito, number>();
@@ -207,9 +209,9 @@ export default function DiarioAvm() {
   }, [perimetro]);
   const avvisi = useMemo(
     () => (d?.avvisi ?? []).map(a => ({
-      ...a, matricole: a.matricole.filter(m => !soloConerobus || isConerobus(m)),
+      ...a, matricole: a.matricole.filter(m => !soloAzienda || eDellAzienda(m, cifre)),
     })).filter(a => a.matricole.length > 0),
-    [d, soloConerobus],
+    [d, soloAzienda, cifre],
   );
   const visibili = useMemo(() => {
     const term = cerca.trim().toLowerCase();
@@ -272,11 +274,13 @@ export default function DiarioAvm() {
             </button>
           ))}
         </div>
+        {conConsorziate && (
         <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none">
-          <input type="checkbox" id="diario-solo-conerobus" checked={soloConerobus}
-            onChange={e => setSoloConerobus(e.target.checked)} />
-          solo Conerobus (matricola a 3–4 cifre)
+          <input type="checkbox" id="diario-solo-azienda" checked={soloAzienda}
+            onChange={e => setSoloAzienda(e.target.checked)} />
+          solo {azienda.nome} (matricola fino a {cifre} cifre)
         </label>
+        )}
         {officinaAttiva && (
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none"
             title="Toglie le vetture che il parco dell'officina non ha più o dà per dismesse">
@@ -289,7 +293,7 @@ export default function DiarioAvm() {
             marchio, i colori della pagina e la striscia giorno per giorno.
             Esporta il perimetro che si sta guardando. */}
         <a
-          href={`${getApiBase()}/api/siri/parco/settimana?giorni=${giorni}&formato=xlsx${soloConerobus ? "&perimetro=conerobus" : ""}`}
+          href={`${getApiBase()}/api/siri/parco/settimana?giorni=${giorni}&formato=xlsx${soloAzienda && conConsorziate ? "&perimetro=azienda" : ""}`}
           className="ml-auto flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] bg-sky-500/15 hover:bg-sky-500/25 border border-sky-500/40 text-sky-200 transition-colors"
         >
           <Download className="w-3 h-3" /> Foglio da allegare (Excel)

@@ -40,6 +40,8 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 
+import { eDellAzienda, nomeAzienda } from "./vetture-azienda";
+
 /** Prefisso SIRI (due cifre) → sigle aziendali possibili nei codici FlashNet. */
 export const AZIENDE_SIRI: Readonly<Record<string, readonly string[]>> = {
   "10": ["SA", "BV"], // SA001–016 e BV023–040: progressivi disgiunti
@@ -81,9 +83,9 @@ export type Ambito = "urbano" | "interurbano";
 export interface SchedaVettura {
   /** matricola come la pubblica SIRI */
   siriRef: string;
-  /** codice FlashNet / aziendale: uguale alla matricola per le Conerobus */
+  /** codice FlashNet / aziendale: uguale alla matricola per le vetture dell'azienda */
   codice: string;
-  /** "Conerobus" oppure la sigla della consorziata */
+  /** il nome dell'azienda, oppure la sigla della consorziata */
   azienda: string;
   /** la descrizione FlashNet così com'è */
   descrizione: string;
@@ -106,7 +108,7 @@ export interface SchedaVettura {
  */
 export function codiceDaSiri(siriRef: string): string | null {
   const ref = siriRef.trim();
-  if (/^\d{1,4}$/.test(ref)) return ref;
+  if (eDellAzienda(ref)) return ref;
   const eccezione = ECCEZIONI_SIRI[ref];
   if (eccezione) return eccezione;
   if (!/^\d{5}$/.test(ref)) return null;
@@ -121,7 +123,7 @@ export function codiceDaSiri(siriRef: string): string | null {
 /** Da codice FlashNet a matricola SIRI. `null` se la sigla non ha una regola. */
 export function siriDaCodice(codice: string): string | null {
   const c = codice.trim().toUpperCase();
-  if (/^\d{1,4}$/.test(c)) return c;
+  if (eDellAzienda(c)) return c;
   const eccezione = ECCEZIONI_INVERSE.get(c);
   if (eccezione) return eccezione;
   const m = c.match(/^([A-Z]+)(\d{3})$/);
@@ -131,12 +133,12 @@ export function siriDaCodice(codice: string): string | null {
 }
 
 /**
- * "Conerobus", la sigla della consorziata, le sigle possibili ("AF/SAP") se
+ * Il nome dell'azienda, la sigla della consorziata, le sigle possibili ("AF/SAP") se
  * il prefisso è noto ma la vettura no, oppure `null` se il prefisso è ignoto.
  */
 export function aziendaDaSiri(siriRef: string): string | null {
   const ref = siriRef.trim();
-  if (/^\d{1,4}$/.test(ref)) return "Conerobus";
+  if (eDellAzienda(ref)) return nomeAzienda();
   const codice = codiceDaSiri(ref);
   if (codice) return codice.match(/^[A-Z]+/)?.[0] ?? null;
   if (/^\d{5}$/.test(ref)) return AZIENDE_SIRI[ref.slice(0, 2)]?.join("/") ?? null;
@@ -593,7 +595,7 @@ export function schedaVettura(siriRef: string): SchedaVettura | null {
 export interface IdentitaVettura {
   /** codice FlashNet, o null se il prefisso SIRI non è ancora abbinato */
   codice: string | null;
-  /** "Conerobus", sigla della consorziata, o la spiegazione di perché non si sa */
+  /** il nome dell'azienda, la sigla della consorziata, o la spiegazione di perché non si sa */
   azienda: string;
   /** descrizione FlashNet del mezzo, o null se la vettura non è in anagrafica */
   mezzo: string | null;

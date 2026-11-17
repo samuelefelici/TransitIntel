@@ -1476,6 +1476,49 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Le vetture dell'azienda nell'AVM (tappa 6.5)
+
+Nel canale dell'AVM passano anche le vetture delle aziende consorziate. Le
+pagine dell'AVM (Diario, Controllo settimanale, Andamento) guardano di base
+solo quelle dell'azienda, e solo quelle si confrontano con il parco
+dell'officina. Per riconoscerle il codice aveva una regola scritta in tredici
+punti, tre dei quali nella web e uno in una query: «matricola di 1-4 cifre =
+vettura Conerobus». Da questo rilascio la regola è un dato dell'azienda.
+
+- **Dove**: Amministrazione → Azienda, scheda «AVM: le vetture dell'azienda»,
+  casella «Cifre della matricola» (colonna `azienda.avm_matricola_cifre`,
+  migrazione `0039`). Una vettura è dell'azienda se la sua matricola nel canale
+  è un numero con al più quelle cifre.
+- **Casella vuota**: tutte le vetture del canale sono dell'azienda. Le pagine
+  dell'AVM non mostrano più la scelta «solo …», perché non c'è niente da
+  togliere.
+- **Conerobus**: entra 4, quindi non cambia niente.
+- **Un punto solo nel codice**: `lib/vetture-azienda.ts` nell'API,
+  `eDellAzienda` in `lib/azienda.ts` nella web. Lo leggono l'identità di una
+  vettura, il confronto col parco dell'officina, i filtri delle tre pagine, le
+  esportazioni e la query dell'archivio del controllo settimanale.
+- **Il nome dell'azienda nei testi**: «solo Conerobus» nelle pagine, «AVM
+  Conerobus —» negli oggetti delle email al centro, il vettore nel report
+  mensile e il suffisso dei file scaricati (`-conerobus.xlsx`) ora vengono dal
+  nome scritto nella pagina Azienda. Per Conerobus sono gli stessi di prima.
+- **Link già salvati**: `perimetro=conerobus` continua a valere; quello nuovo
+  è `perimetro=azienda`.
+- **Quando entra in vigore**: l'API e il lavoratore rileggono l'azienda ogni
+  minuto. Dopo un salvataggio la regola vale subito sull'istanza che ha
+  salvato, entro un minuto sulle altre.
+- **Fuori da qui**: la tabella dei prefissi delle consorziate e l'anagrafica
+  del parco scritta a mano (`lib/parco-anagrafica.ts`) restano del consorzio.
+
+**Dopo il deploy**
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify la riga nuova
+   `artifacts/api-server/src/lib/vetture-azienda.ts` (blocco «Watch Paths» più
+   sopra), poi ridistribuisci il lavoratore.
+2. In Amministrazione → Azienda la casella «Cifre della matricola» mostra 4.
+3. Nella pagina AVM le tre viste mostrano «solo Conerobus» come prima, con gli
+   stessi numeri.
+
+**Rollback**: immagine precedente. La colonna resta, senza effetti.
+
 ### I depositi dell'azienda (tappa 6.4)
 
 I sette depositi di Conerobus erano scritti nel codice, e l'API li inseriva
@@ -2787,6 +2830,7 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/gtfs-verifica.ts
    artifacts/api-server/src/lib/netex*.ts
    artifacts/api-server/src/lib/azienda.ts
+   artifacts/api-server/src/lib/vetture-azienda.ts
    artifacts/api-server/assets/**
    artifacts/api-server/build.ts
    artifacts/api-server/package.json

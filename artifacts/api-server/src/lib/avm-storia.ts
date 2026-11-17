@@ -39,6 +39,7 @@ import {
 } from "./avm-controllo.js";
 import { giornateDelPeriodo } from "./fleet-trend.js";
 import { identitaVettura } from "./parco-anagrafica.js";
+import { eDellAzienda, nomeAzienda } from "./vetture-azienda.js";
 import type { MezzoOfficina, ParcoOfficina } from "./officina.js";
 
 /* ── Le soglie ─────────────────────────────────────────────────────────── */
@@ -270,8 +271,6 @@ function settimane(n: number): string {
   return `${n} ${n === 1 ? "settimana" : "settimane"}`;
 }
 
-const CONEROBUS = /^\d{1,4}$/;
-export const eConerobus = (ref: string) => CONEROBUS.test(ref);
 
 /* ── Le richieste a Mizar ──────────────────────────────────────────────── */
 
@@ -349,12 +348,12 @@ export interface TestoMizar {
 export function richiestaTogliere(matricole: string[]): TestoMizar {
   const una = matricole.length === 1;
   return {
-    oggetto: `AVM Conerobus — vetture da togliere dall'anagrafica del centro (${matricole.length})`,
+    oggetto: `AVM ${nomeAzienda()} — vetture da togliere dall'anagrafica del centro (${matricole.length})`,
     testo: una
-      ? "Nel canale SIRI compare 1 matricola Conerobus che il parco dell'officina non ha più, o che dà "
+      ? `Nel canale SIRI compare 1 matricola ${nomeAzienda()} che il parco dell'officina non ha più, o che dà `
         + "per dismessa. Non è un apparato da riparare: chiediamo di toglierla dall'anagrafica del centro, "
         + `così che non risulti come vettura muta.\n\nMatricola: ${matricole[0]}.`
-      : `Nel canale SIRI compaiono ${matricole.length} matricole Conerobus che il parco `
+      : `Nel canale SIRI compaiono ${matricole.length} matricole ${nomeAzienda()} che il parco `
         + "dell'officina non ha più, o che dà per dismesse. Non sono apparati da riparare: "
         + "chiediamo di toglierle dall'anagrafica del centro, così che non risultino come "
         + `vetture mute.\n\nMatricole: ${matricole.join(", ")}.`,
@@ -365,11 +364,11 @@ export function richiestaTogliere(matricole: string[]): TestoMizar {
 /** La richiesta di censire vetture del parco che il centro non conosce (stesse parole del diario). */
 export function richiestaAggiungere(mezzi: MezzoOfficina[], periodo: string): TestoMizar {
   return {
-    oggetto: `AVM Conerobus — vetture del parco che il centro non conosce (${mezzi.length})`,
+    oggetto: `AVM ${nomeAzienda()} — vetture del parco che il centro non conosce (${mezzi.length})`,
     testo: (mezzi.length === 1
-      ? `1 vettura del parco Conerobus non è mai comparsa nel canale SIRI ${periodo}. Chiediamo di `
+      ? `1 vettura del parco ${nomeAzienda()} non è mai comparsa nel canale SIRI ${periodo}. Chiediamo di `
         + "verificare se ha l'apparato a bordo e se è censita nell'anagrafica del centro.\n\n"
-      : `${mezzi.length} vetture del parco Conerobus non sono mai comparse nel canale SIRI `
+      : `${mezzi.length} vetture del parco ${nomeAzienda()} non sono mai comparse nel canale SIRI `
         + `${periodo}. Chiediamo di verificare se hanno l'apparato a bordo e se sono censite `
         + "nell'anagrafica del centro.\n\n")
       + mezzi.map(m => `${m.matricola} (${m.targa}${m.modello ? `, ${m.modello}` : ""}`
@@ -641,7 +640,7 @@ function scriviPerche(
         ? `${v.esclusa.motivo === "fuori_parco" ? "Non è più nel parco dell'officina" : "Dismessa per l'officina"}, `
           + `e il flusso SIRI non la elenca più dal ${d(v.ultimoGiorno)}.`
         : `Il flusso SIRI non la elenca più dal ${d(v.ultimoGiorno)} (${settimane(v.settimaneSilenzio)} di assenza)`
-          + `${eConerobus(v.vehicleRef) ? "" : "; è di un'azienda consorziata, che il parco dell'officina non tiene"}.`);
+          + `${eDellAzienda(v.vehicleRef) ? "" : "; è di un'azienda consorziata, che il parco dell'officina non tiene"}.`);
       break;
     case "da_aggiungere_a_siri": {
       const m = v.officina!;

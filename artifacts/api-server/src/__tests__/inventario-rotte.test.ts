@@ -17,7 +17,7 @@ vi.mock("@workspace/db", () => ({
   pool: { query: vi.fn(async () => ({ rows: [] })), on: vi.fn() },
 }));
 
-import router from "../routes";
+import router, { aspettaAzienda } from "../routes";
 import { requireAdmin, requireAuth, requirePermissionByPath } from "../lib/auth";
 import { CALCOLANO_SENZA_SCRIVERE, dirittoPerPercorso, SOLO_ADMIN } from "../lib/permessi-rotte";
 import { ensureTenantMiddleware } from "../lib/tenant";
@@ -90,7 +90,8 @@ describe("inventario delle rotte", () => {
 
   it("prima del login solo i router pubblici voluti", () => {
     const attesi = [
-      healthRouter, authRouter, accountRouter, contestoCron, cronRouter, argosWatchCronRouter, weatherCronRouter,
+      /* aspettaAzienda non è un router: lascia passare quando l'azienda è stata letta una volta (tappa 6.5) */
+      healthRouter, aspettaAzienda, authRouter, accountRouter, contestoCron, cronRouter, argosWatchCronRouter, weatherCronRouter,
       caronteRouter, gtfsRtRouter, datiApertiRouter, networkShareRouter, timetableMapShareRouter,
     ];
     const prima = pila.slice(0, posAuth).map((s) => s.handle);

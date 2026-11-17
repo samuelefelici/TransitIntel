@@ -1,7 +1,7 @@
 /**
  * L'andamento dell'AVM e le richieste a Mizar (pagina AVM, scheda «Andamento»).
  *
- *   GET  /api/siri/parco/storia?settimane=4..52 &formato=xlsx &perimetro=conerobus &officina=1
+ *   GET  /api/siri/parco/storia?settimane=4..52 &formato=xlsx &perimetro=azienda &officina=1
  *   POST /api/siri/parco/richieste          { tipo, matricole[], richiestaIl?, nota? }
  *   POST /api/siri/parco/richieste/chiudi   { ids[], esito: "annullata" | "fatta" }
  *
@@ -15,13 +15,14 @@ import { giornataOggi } from "../lib/service-day";
 import { spostaGiorni, ultimaSettimanaChiusa } from "../lib/avm-controllo";
 import {
   GIORNI_RICHIESTE_CHIUSE, MESI_CONSERVAZIONE_RICHIESTE, SETTIMANE_MASSIME, SOGLIE,
-  calcolaStoria, giornateComplete, testiMizar, verificaRichieste, eConerobus,
+  calcolaStoria, giornateComplete, testiMizar, verificaRichieste,
 } from "../lib/avm-storia";
 import {
   chiudiRichieste, creaRichieste, leggiRichieste, leggiStoriaDiario, pulisciRichieste, registraVerifiche,
 } from "../lib/avm-storia-store";
 import { esportaStoriaXlsx } from "../lib/avm-storia-xlsx";
 import { leggiInterventiAvm, leggiParcoOfficina, parcoCredibile } from "../lib/officina";
+import { eDellAzienda, nomeAzienda, perimetroAzienda, siglaAzienda } from "../lib/vetture-azienda";
 import { CAMPIONI_MINIMI_GIORNATA } from "../lib/avm-diario";
 
 const router: IRouter = Router();
@@ -43,13 +44,13 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
       res.status(503).json({ error: "Il diario dell'AVM non si legge in questo momento: riprova fra poco." });
       return;
     }
-    /* il parco si confronta solo se il diario ha vetture Conerobus: con nessuna, parcoCredibile non ha
+    /* il parco si confronta solo se il diario ha vetture dell'azienda: con nessuna, parcoCredibile non ha
        niente da misurare e ogni mezzo sembrerebbe mai comparso nel flusso */
     const letto = await leggiParcoOfficina();
-    const parco = diario.vetture.some(v => eConerobus(v.vehicleRef))
+    const parco = diario.vetture.some(v => eDellAzienda(v.vehicleRef))
       ? parcoCredibile(letto, diario.vetture.map(v => v.vehicleRef))
       : { ...letto, disponibile: false, mezzi: [],
-          motivo: "Il diario dell'AVM non ha vetture Conerobus nel periodo: il parco dell'officina non si può confrontare." };
+          motivo: `Il diario dell'AVM non ha vetture ${nomeAzienda()} nel periodo: il parco dell'officina non si può confrontare.` };
     const interventi = await leggiInterventiAvm(inizio, parco);
     const chiuseDal = spostaGiorni(oggi, -GIORNI_RICHIESTE_CHIUSE);
     let { richieste, errore: erroreRichieste } = await leggiRichieste(chiuseDal);
@@ -91,18 +92,18 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
     };
 
     if (String(req.query.formato ?? "") === "xlsx") {
-      /* come la pagina: «solo Conerobus» vale per tutto il foglio, «senza fuori parco e dismesse» solo per
+      /* come la pagina: «solo le vetture dell'azienda» vale per tutto il foglio, «senza fuori parco e dismesse» solo per
          l'andamento (le vetture da togliere da SIRI sono proprio quelle) */
-      const soloConerobus = String(req.query.perimetro ?? "") === "conerobus";
+      const soloAzienda = perimetroAzienda(req.query.perimetro);
       const soloParco = req.query.officina === "1";
-      const vetture = storia.vetture.filter(v => !soloConerobus || eConerobus(v.vehicleRef));
+      const vetture = storia.vetture.filter(v => !soloAzienda || eDellAzienda(v.vehicleRef));
       const perAndamento = soloParco ? vetture.filter(v => !v.esclusa) : vetture;
-      const perimetro = [soloConerobus ? "solo Conerobus" : null, soloParco ? "andamento senza fuori parco e dismesse" : null]
+      const perimetro = [soloAzienda ? `solo ${nomeAzienda()}` : null, soloParco ? "andamento senza fuori parco e dismesse" : null]
         .filter(Boolean).join(", ");
       const xlsx = esportaStoriaXlsx(storia, vetture, { perimetro, officina, andamento: perAndamento });
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition",
-        `attachment; filename="Cerbero-andamento-AVM-${oggi}${soloConerobus ? "-conerobus" : ""}.xlsx"`);
+        `attachment; filename="Cerbero-andamento-AVM-${oggi}${soloAzienda ? `-${siglaAzienda()}` : ""}.xlsx"`);
       res.send(xlsx);
       return;
     }

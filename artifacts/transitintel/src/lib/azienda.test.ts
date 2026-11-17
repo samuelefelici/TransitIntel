@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda,
-  moduloCambiato, moduloDa, vistaIniziale, type Azienda,
+  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda,
 } from "./azienda";
 
 const CONEROBUS: Azienda = {
   ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
   gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
-  provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null, compilata: true,
+  provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null, avmMatricolaCifre: 4, compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -52,7 +52,7 @@ describe("il modulo dell'amministratore", () => {
     expect(moduloDa(CONEROBUS)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
-      provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "",
+      provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "", avmMatricolaCifre: "4",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -63,7 +63,7 @@ describe("il modulo dell'amministratore", () => {
     expect(datiDaSalvare(m)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: null, telefono: null, gtfsAgencyId: "conerobus",
       citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
-      netexCodiceLocale: "ITI3", netexFornitore: null,
+      netexCodiceLocale: "ITI3", netexFornitore: null, avmMatricolaCifre: 4,
     });
     expect(erroriDelModulo({ ...m, netexCodiceLocale: "iti3" })).toEqual({ netexCodiceLocale: "Un codice NUTS in maiuscolo, come ITI3" });
     expect(erroriDelModulo({ ...m, netexFornitore: "A T" })).toEqual({ netexFornitore: "Lettere, cifre, - e _ (al più 40)" });
@@ -71,6 +71,21 @@ describe("il modulo dell'amministratore", () => {
     expect(datiDaSalvare({ ...m, provinciaIstat: " " }).provinciaIstat).toBeNull();
     expect(erroriDelModulo({ ...m, provinciaIstat: "42" })).toEqual({ provinciaIstat: "Tre cifre, come 042" });
     expect(aziendaValida({ ...CONEROBUS, provinciaIstat: "4x2" }).provinciaIstat).toBeNull();
+    // le cifre della matricola nell'AVM: facoltative (vuoto = tutte le vetture sono dell'azienda), da 1 a 9
+    expect(datiDaSalvare({ ...m, avmMatricolaCifre: " " }).avmMatricolaCifre).toBeNull();
+    for (const v of ["0", "10", "4,5", "quattro"]) {
+      expect(erroriDelModulo({ ...m, avmMatricolaCifre: v }), v).toEqual({ avmMatricolaCifre: "Un numero da 1 a 9, oppure vuoto" });
+    }
+    for (const v of [0, 10, 4.5, "4", null, undefined]) expect(aziendaValida({ ...CONEROBUS, avmMatricolaCifre: v as any }).avmMatricolaCifre, String(v)).toBeNull();
+    expect(moduloDa({ ...CONEROBUS, avmMatricolaCifre: null }).avmMatricolaCifre).toBe("");
+  });
+
+  it("le vetture dell'azienda nel canale dell'AVM: la stessa regola dell'API, dallo stesso dato", () => {
+    for (const ref of ["5", "305", "1372", " 305 "]) expect(eDellAzienda(ref, 4), ref).toBe(true);
+    for (const ref of ["11096", "AB12", "30S", "", null, undefined]) expect(eDellAzienda(ref, 4), String(ref)).toBe(false);
+    expect(eDellAzienda("110960", 6)).toBe(true);
+    // senza cifre non ci sono consorziate: tutte le vetture sono dell'azienda
+    for (const ref of ["305", "11096", "AB12", ""]) expect(eDellAzienda(ref, null), ref).toBe(true);
   });
 
   it("dice accanto a quale casella c'è l'errore", () => {

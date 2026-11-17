@@ -21,9 +21,11 @@ import {
   CheckSquare, X, Send,
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
+import { useAzienda } from "@/hooks/use-azienda";
+import { eDellAzienda } from "@/lib/azienda";
 import { Quadratino, SETTIMANA } from "@/components/avm/strisce";
 import {
-  andamentoPerimetro, conteggiAzioni, ddmm, ddmmyyyy, eConerobus, fraseAndamento, oggiDiEsercizio, selezionabile,
+  andamentoPerimetro, conteggiAzioni, ddmm, ddmmyyyy, fraseAndamento, oggiDiEsercizio, selezionabile,
   spostaGiorni, tipoDellaSelezione, type Azione, type SettimanaStoria,
 } from "@/lib/storia-avm";
 
@@ -150,8 +152,13 @@ function statoRichiesta(r: Richiesta): { testo: string; colore: string } {
 }
 
 export default function StoriaAvm() {
+  /* le vetture dell'azienda nel canale (tappa 6.5): la regola è un dato dell'azienda; senza cifre non ci
+     sono consorziate, e la scelta «solo …» non ha senso */
+  const azienda = useAzienda();
+  const cifre = azienda.avmMatricolaCifre;
+  const conConsorziate = cifre !== null;
   const qc = useQueryClient();
-  const [soloConerobus, setSoloConerobus] = useState(true);
+  const [soloAzienda, setSoloAzienda] = useState(true);
   const [senzaAlienate, setSenzaAlienate] = useState(true);
   const [filtro, setFiltro] = useState<Azione | null>(null);
   const [cerca, setCerca] = useState("");
@@ -169,18 +176,18 @@ export default function StoriaAvm() {
   const d = q.data;
   const officinaAttiva = !!d?.officina.disponibile;
 
-  /* Il perimetro: solo Conerobus vale per tutta la pagina; senza fuori parco e dismesse solo per l'andamento,
+  /* Il perimetro: solo le vetture dell'azienda vale per tutta la pagina; senza fuori parco e dismesse solo per l'andamento,
      perché le vetture da togliere da SIRI sono proprio quelle. */
   const perimetro = useMemo(
-    () => (d?.vetture ?? []).filter(v => !soloConerobus || eConerobus(v.vehicleRef)),
-    [d, soloConerobus],
+    () => (d?.vetture ?? []).filter(v => !soloAzienda || eDellAzienda(v.vehicleRef, cifre)),
+    [d, soloAzienda, cifre],
   );
   const andamento = useMemo(() => andamentoPerimetro(d?.settimane ?? [],
     perimetro.filter(v => !(officinaAttiva && senzaAlienate && v.esclusa))), [d, perimetro, officinaAttiva, senzaAlienate]);
   const conteggi = useMemo(() => conteggiAzioni(perimetro), [perimetro]);
   const richieste = useMemo(
-    () => (d?.richieste ?? []).filter(r => !soloConerobus || eConerobus(r.vehicleRef)),
-    [d, soloConerobus],
+    () => (d?.richieste ?? []).filter(r => !soloAzienda || eDellAzienda(r.vehicleRef, cifre)),
+    [d, soloAzienda, cifre],
   );
   const aperte = richieste.filter(r => r.esito == null);
   const giaChieste = (a: Azione) => perimetro.filter(v => v.azione === a && v.richiesta != null && v.richiesta.esito == null).length;
@@ -261,7 +268,7 @@ export default function StoriaAvm() {
   }
 
   const parametri = new URLSearchParams({ formato: "xlsx" });
-  if (soloConerobus) parametri.set("perimetro", "conerobus");
+  if (soloAzienda && conConsorziate) parametri.set("perimetro", "azienda");
   if (officinaAttiva && senzaAlienate) parametri.set("officina", "1");
   const maxAndamento = Math.max(1, ...andamento.map(a => a.F + a.P + a.M + a.A));
   const daRiparareLunghe = perimetro.filter(v => v.azione === "da_riparare" && v.officina?.stato !== "in_officina"
@@ -280,11 +287,13 @@ export default function StoriaAvm() {
           Dal {ddmmyyyy(d.settimane[0]?.lunedi ?? d.inizio)} · {d.settimane.length} settimane
         </span>
         <span className="text-[10px] text-muted-foreground">calcolato il {dataOra(d.generatoIl)}</span>
+        {conConsorziate && (
         <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none">
-          <input type="checkbox" id="storia-solo-conerobus" checked={soloConerobus}
-            onChange={e => { setSoloConerobus(e.target.checked); setSelezione(new Set()); }} />
-          solo Conerobus
+          <input type="checkbox" id="storia-solo-azienda" checked={soloAzienda}
+            onChange={e => { setSoloAzienda(e.target.checked); setSelezione(new Set()); }} />
+          solo {azienda.nome}
         </label>
+        )}
         {officinaAttiva && (
           <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer select-none"
             title="Nell'andamento non contano le vetture che l'officina oggi non ha più o dà dismesse">

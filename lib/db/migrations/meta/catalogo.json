@@ -640,6 +640,7 @@
   "public.azienda": {
    "aggiornata_da": "uuid | null |  |  | ",
    "aggiornata_il": "timestamp with time zone | not null | now() |  | ",
+   "avm_matricola_cifre": "smallint | null |  |  | ",
    "centro_lat": "double precision | not null |  |  | ",
    "centro_lng": "double precision | not null |  |  | ",
    "citta": "text | not null |  |  | ",
@@ -2328,6 +2329,7 @@
   "public.accessi_tentativi.accessi_tentativi_pkey": "PRIMARY KEY (chiave, ip)",
   "public.agent_optimize_jobs.agent_optimize_jobs_pkey": "PRIMARY KEY (id)",
   "public.app_settings.app_settings_pkey": "PRIMARY KEY (key)",
+  "public.azienda.azienda_avm_matricola_cifre": "CHECK (((avm_matricola_cifre >= 1) AND (avm_matricola_cifre <= 9)))",
   "public.azienda.azienda_centro_lat": "CHECK (((centro_lat >= ('-90'::integer)::double precision) AND (centro_lat <= (90)::double precision)))",
   "public.azienda.azienda_centro_lng": "CHECK (((centro_lng >= ('-180'::integer)::double precision) AND (centro_lng <= (180)::double precision)))",
   "public.azienda.azienda_citta": "CHECK (((char_length(btrim(citta)) >= 1) AND (char_length(btrim(citta)) <= 60)))",

@@ -4,6 +4,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import request from "supertest";
 import { inflateRawSync } from "node:zlib";
+import { impostaRegolaVetture } from "../lib/vetture-azienda";
+
+/* i test provano un'azienda col suo canale AVM condiviso con le consorziate: la regola è un dato
+ * dell'azienda (tappa 6.5, lib/vetture-azienda.ts), e qui la si dichiara */
+impostaRegolaVetture({ cifre: 4, nome: "Conerobus" });
 
 const stato = vi.hoisted(() => ({
   campioni: new Map<string, number>(),

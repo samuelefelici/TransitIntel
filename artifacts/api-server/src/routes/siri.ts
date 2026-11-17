@@ -60,6 +60,7 @@ import { leggiControllo, elencoControlli, erroreArchivioControlli } from "../lib
 import { calcolaControlloDellaSettimana, statoArchivioAutomatico } from "../lib/avm-controllo-servizio";
 import { esportaControlloXlsx, esportaControlloCsv } from "../lib/avm-controllo-xlsx";
 import { richiestaAggiungere, richiestaTogliere } from "../lib/avm-storia";
+import { eDellAzienda, nomeAzienda, perimetroAzienda, siglaAzienda } from "../lib/vetture-azienda";
 import {
   leggiParcoOfficina, mezziSenzaAvm, parcoCredibile, ETICHETTE_STATO_OFFICINA,
   type MezzoOfficina, type ParcoOfficina,
@@ -74,7 +75,7 @@ function mappaOfficina(parco: ParcoOfficina): Map<string, MezzoOfficina> | null 
 function officinaPerParco(
   ref: string, mappa: Map<string, MezzoOfficina> | null,
 ): { stato: string; etichetta: string; targa?: string; deposito?: string | null; fermoDal?: string | null; fermoMotivo?: string | null } | null {
-  if (!mappa || !/^\d{1,4}$/.test(ref)) return null;
+  if (!mappa || !eDellAzienda(ref)) return null;
   const m = mappa.get(ref);
   if (!m) return { stato: "fuori_parco", etichetta: "non è nel parco dell'officina" };
   return {
@@ -1371,19 +1372,19 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
     const senzaAvm = mezziSenzaAvm(parcoOfficina, diario.vetture.map(v => v.vehicleRef));
     const testi = testoSegnalazioni(diario, inizio, oggi, senzaAvm);
 
-    /* Il perimetro: nel flusso SIRI le consorziate hanno matricole a cinque
-     * cifre (11096 è la CJ096), le Conerobus a tre o quattro. È la stessa
-     * regola della pagina, letta dai dati e non dichiarata da nessuno. */
-    const perimetro = String(req.query.perimetro ?? "");
-    const vettureEsportate = perimetro === "conerobus"
-      ? diario.vetture.filter(v => /^\d{1,4}$/.test(v.vehicleRef))
+    /* Il perimetro: solo le vetture dell'azienda, con la stessa regola della
+     * pagina (lib/vetture-azienda.ts: nel flusso SIRI le consorziate hanno
+     * matricole più lunghe, 11096 è la CJ096). */
+    const soloAzienda = perimetroAzienda(req.query.perimetro);
+    const vettureEsportate = soloAzienda
+      ? diario.vetture.filter(v => eDellAzienda(v.vehicleRef))
       : diario.vetture;
 
     if (String(req.query.formato ?? "") === "xlsx") {
       const xlsx = esportaDiarioXlsx(diario, { da: inizio, a: oggi }, testi, vettureEsportate);
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition",
-        `attachment; filename="Cerbero-diario-AVM-${inizio}_${oggi}${perimetro === "conerobus" ? "-conerobus" : ""}.xlsx"`);
+        `attachment; filename="Cerbero-diario-AVM-${inizio}_${oggi}${soloAzienda ? `-${siglaAzienda()}` : ""}.xlsx"`);
       res.send(xlsx);
       return;
     }
@@ -1450,7 +1451,7 @@ router.get("/siri/parco/settimana", async (req, res): Promise<void> => {
  *
  *   GET /api/siri/parco/controllo                       — l'ultima settimana chiusa
  *   GET /api/siri/parco/controllo?settimana=2026-10-05   — una settimana (il lunedì)
- *       &formato=xlsx|csv  &perimetro=conerobus  &officina=1  &ricalcola=1
+ *       &formato=xlsx|csv  &perimetro=azienda  &officina=1  &ricalcola=1
  *   GET /api/siri/parco/controllo/archivio              — le settimane archiviate */
 router.get("/siri/parco/controllo", async (req, res): Promise<void> => {
   try {
@@ -1476,11 +1477,11 @@ router.get("/siri/parco/controllo", async (req, res): Promise<void> => {
     const controllo: ControlloSettimanale = archiviato ?? await calcolaControlloDellaSettimana(lunedi);
 
     /* Il perimetro dell'esportazione: quello che si stava guardando. */
-    const soloConerobus = String(req.query.perimetro ?? "") === "conerobus";
+    const soloAzienda = perimetroAzienda(req.query.perimetro);
     const soloParco = req.query.officina === "1";
     const vetture: VetturaControllo[] = controllo.vetture.filter(v =>
-      (!soloConerobus || /^\d{1,4}$/.test(v.vehicleRef)) && (!soloParco || !v.esclusa));
-    const perimetro = [soloConerobus ? "solo Conerobus" : null, soloParco ? "solo parco officina" : null]
+      (!soloAzienda || eDellAzienda(v.vehicleRef)) && (!soloParco || !v.esclusa));
+    const perimetro = [soloAzienda ? `solo ${nomeAzienda()}` : null, soloParco ? "solo parco officina" : null]
       .filter(Boolean).join(", ");
 
     const formato = String(req.query.formato ?? "");
@@ -1488,7 +1489,7 @@ router.get("/siri/parco/controllo", async (req, res): Promise<void> => {
       const xlsx = esportaControlloXlsx(controllo, vetture, { archiviato: !!archiviato, perimetro });
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition",
-        `attachment; filename="Cerbero-controllo-AVM-settimana-${lunedi}${soloConerobus ? "-conerobus" : ""}.xlsx"`);
+        `attachment; filename="Cerbero-controllo-AVM-settimana-${lunedi}${soloAzienda ? `-${siglaAzienda()}` : ""}.xlsx"`);
       res.send(xlsx);
       return;
     }
@@ -1556,7 +1557,7 @@ function testoSegnalazioni(d: DiarioSettimana, da: string, a: string, senzaAvm: 
       : "";
     return {
       destinatario: s.destinatario,
-      oggetto: `AVM Conerobus — ${ETICHETTE_ESITO[s.esito].toLowerCase()} `
+      oggetto: `AVM ${nomeAzienda()} — ${ETICHETTE_ESITO[s.esito].toLowerCase()} `
         + `(${s.matricole.length} vetture, ${periodo})`,
       testo: `Osservazione continua del canale SIRI ${periodo}, `
         + `${d.giornateOsservate} giornate di rilevamento.\n\n`
