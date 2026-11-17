@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════
 // TAB TELEMACO — Auto-assegnazione fermate ai Nodi Tariffari
-// Pipeline 4 layer + catalogo ufficiale ATMA + audit override
+// Pipeline 4 layer + catalogo ufficiale dei nodi + audit override
 // ═══════════════════════════════════════════════════════════
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { fonteDelNodo } from "@/lib/elenchi-tariffe";
 import {
   ShieldCheck, Loader2, CheckCircle2, AlertTriangle, Layers, Database,
   Search, Trash2, Plus, MoveRight, FileWarning, History, Download, Upload, Play,
@@ -76,7 +77,7 @@ interface OverrideRow {
 }
 
 const LAYER_META: Record<string, { label: string; color: string }> = {
-  official_catalog: { label: "Catalogo ATMA", color: "emerald" },
+  official_catalog: { label: "Catalogo nodi", color: "emerald" },
   exact_name:       { label: "Nome esatto",   color: "sky" },
   token_proximity:  { label: "Token + dist",  color: "violet" },
   dbscan:           { label: "DBSCAN geo",    color: "amber" },
@@ -390,18 +391,22 @@ function CatalogView({ toast }: { toast: ReturnType<typeof useToast>["toast"] })
 
   const refresh = useCallback(async () => {
     try {
-      const res = await apiFetch<{ nodes: OfficialNode[] }>("/api/fares/official-nodes");
-      setNodes(res.nodes ?? []);
+      /* l'API risponde con l'elenco: la pagina cercava un campo «nodes» e restava sempre vuota */
+      const res = await apiFetch<OfficialNode[] | { nodes?: OfficialNode[] }>("/api/fares/official-nodes");
+      setNodes(Array.isArray(res) ? res : res.nodes ?? []);
     } catch { setNodes([]); }
   }, []);
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const importAtma = async () => {
+  /* copia nel feed i nodi dell'elenco dell'azienda (Amministrazione › Azienda) */
+  const importaDallAzienda = async () => {
     setBusy(true);
     try {
-      const res = await apiFetch<any>("/api/fares/official-nodes/import-atma-2013", { method: "POST" });
-      toast({ title: "Catalogo ATMA 2013 importato", description: `${res.inserted}/${res.totalNodes} nodi` });
+      const res = await apiFetch<{ totalNodes: number; inserted: number }>("/api/fares/official-nodes/import-catalog", { method: "POST" });
+      toast(res.totalNodes === 0
+        ? { title: "L'azienda non ha un elenco di nodi", description: "Lo scrive l'amministratore in Amministrazione › Azienda." }
+        : { title: "Nodi dell'azienda copiati", description: res.inserted === 0 ? "C'erano già tutti." : `${res.inserted} aggiunti su ${res.totalNodes}` });
       await refresh();
     } catch (e: any) {
       toast({ title: "Errore import", description: e.message, variant: "destructive" });
@@ -465,9 +470,9 @@ function CatalogView({ toast }: { toast: ReturnType<typeof useToast>["toast"] })
             <Badge variant="outline" className="text-[10px]">{nodes.length}</Badge>
           </span>
           <div className="flex gap-1.5">
-            <Button size="sm" variant="outline" onClick={importAtma} disabled={busy}>
+            <Button size="sm" variant="outline" onClick={importaDallAzienda} disabled={busy} title="Copia in questo feed i nodi dell'elenco dell'azienda: quelli che ci sono già restano come sono">
               {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-              <span className="ml-1.5">Import ATMA 2013</span>
+              <span className="ml-1.5">Nodi dell'azienda</span>
             </Button>
             <Button size="sm" onClick={() => setShowAdd(s => !s)}>
               <Plus className="w-3 h-3" /> <span className="ml-1.5">Nuovo nodo</span>
@@ -533,7 +538,7 @@ function CatalogView({ toast }: { toast: ReturnType<typeof useToast>["toast"] })
                     {(n.aliases ?? []).join(", ") || "—"}
                   </td>
                   <td className="py-1.5 px-2">
-                    <Badge variant="outline" className="text-[10px]">{n.source ?? "—"}</Badge>
+                    <Badge variant="outline" className="text-[10px]">{fonteDelNodo(n.source)}</Badge>
                   </td>
                   <td className="py-1.5 px-2 text-right">
                     <Button size="sm" variant="ghost" onClick={() => deleteNode(n.id)}>
@@ -546,7 +551,7 @@ function CatalogView({ toast }: { toast: ReturnType<typeof useToast>["toast"] })
                 <tr>
                   <td colSpan={6} className="py-4 text-center text-muted-foreground">
                     {nodes.length === 0
-                      ? "Catalogo vuoto. Importa ATMA 2013 o aggiungi manualmente."
+                      ? "Catalogo vuoto. Copia i nodi dell'azienda o aggiungili a mano."
                       : "Nessun risultato per la ricerca."}
                   </td>
                 </tr>

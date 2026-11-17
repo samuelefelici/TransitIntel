@@ -1,0 +1,37 @@
+{
+  "categorie": [
+    {"categoria": "ordinario", "nome": "Tariffa Ordinaria", "predefinita": true, "url": null},
+    {"categoria": "studente", "nome": "Studente (14+ anni)", "predefinita": false, "url": "https://www.atmaancona.it/abbonamenti-studenti"},
+    {"categoria": "studente_under14", "nome": "Studente under 14", "predefinita": false, "url": "https://www.atmaancona.it/abbonamenti-studenti"},
+    {"categoria": "studente_agevolato", "nome": "Studente ISEE < €18.000", "predefinita": false, "url": null},
+    {"categoria": "studente_univpm", "nome": "Studente UNIVPM (quota studente)", "predefinita": false, "url": "https://www.atmaancona.it/abbonamenti-universitari"},
+    {"categoria": "anziano", "nome": "Over 65 / Argento (fascia morbida)", "predefinita": false, "url": null},
+    {"categoria": "agevolato", "nome": "ISEE < €18.000 (tariffa agevolata)", "predefinita": false, "url": null}
+  ],
+  "supporti": [
+    {"supporto": "contanti", "nome": "Pagamento a bordo (contanti/bancomat)", "tipo": 0},
+    {"supporto": "biglietto_cartaceo", "nome": "Biglietto Cartaceo", "tipo": 1},
+    {"supporto": "tessera_regionale", "nome": "Tessera Regionale (€5,00 primo abb.)", "tipo": 1},
+    {"supporto": "tessera_agevolati", "nome": "Tessera Agevolati (€2,10 / anno)", "tipo": 1},
+    {"supporto": "carta_contactless", "nome": "Carta Trasporto Contactless", "tipo": 2},
+    {"supporto": "cemv", "nome": "Carta Bancaria Contactless (cEMV)", "tipo": 3},
+    {"supporto": "app_mobile", "nome": "App Mobile", "tipo": 4}
+  ],
+  "nodi": [
+    {"codice": "ANCONA", "nome": "Ancona", "lat": 43.6158, "lon": 13.5189, "alias": ["ANCONA STAZIONE", "ANCONA CENTRO"]},
+    {"codice": "FALCONARA_M", "nome": "Falconara M.", "lat": 43.6261, "lon": 13.4041, "alias": ["FALCONARA MARITTIMA", "FALCONARA"]},
+    {"codice": "JESI", "nome": "Jesi", "lat": 43.5217, "lon": 13.2434, "alias": ["JESI AUTOSTAZIONE", "JESI CENTRO"]},
+    {"codice": "SENIGALLIA", "nome": "Senigallia", "lat": 43.7156, "lon": 13.2147, "alias": []},
+    {"codice": "OSIMO", "nome": "Osimo", "lat": 43.4869, "lon": 13.4839, "alias": []},
+    {"codice": "LORETO", "nome": "Loreto Capolinea", "lat": 43.4406, "lon": 13.6111, "alias": ["LORETO"]},
+    {"codice": "RECANATI", "nome": "Recanati", "lat": 43.4022, "lon": 13.5511, "alias": []},
+    {"codice": "CASTELFIDARDO", "nome": "Castelfidardo", "lat": 43.4639, "lon": 13.5469, "alias": []},
+    {"codice": "AGUGLIANO", "nome": "Agugliano", "lat": 43.5611, "lon": 13.3897, "alias": []},
+    {"codice": "AEROPORTO", "nome": "Aeroporto", "lat": 43.6164, "lon": 13.3625, "alias": ["AEROPORTO ANCONA", "RAFFAELLO SANZIO"]},
+    {"codice": "ASPIO_TERME", "nome": "Aspio Terme", "lat": 43.545, "lon": 13.5483, "alias": []},
+    {"codice": "ASPIO_VECCHIO", "nome": "Aspio Vecchio", "lat": 43.5489, "lon": 13.5414, "alias": []},
+    {"codice": "ABADIA", "nome": "Abadia", "lat": 43.4969, "lon": 13.0631, "alias": ["ABBADIA"]},
+    {"codice": "ARCHI_LORETO", "nome": "Archi di Loreto", "lat": 43.4489, "lon": 13.6042, "alias": []}
+  ],
+  "agencyTxt": "agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email\n\"ATMA\",\"Atma Scpa\",\"https://www.atmaancona.it\",\"Europe/Rome\",\"it\",\"0712837468\",\"https://www.atmaancona.it/tariffe/tariffe-generale/\",\"info@atmaancona.it\"\n"
+}

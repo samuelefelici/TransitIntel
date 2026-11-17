@@ -1018,7 +1018,7 @@ export const gtfsFareOfficialNodes = pgTable("gtfs_fare_official_nodes", {
   centroidLat:    doublePrecision("centroid_lat"),
   centroidLon:    doublePrecision("centroid_lon"),
   aliases:        jsonb("aliases").$type<string[]>().default([]),
-  source:         text("source").notNull().default("manual"),   // 'manual' | 'atma_2013' | 'regione_marche'
+  source:         text("source").notNull().default("manual"),   // 'manual' | 'catalogo' (dall'elenco dell'azienda) | …
   notes:          text("notes"),
   createdAt:      timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

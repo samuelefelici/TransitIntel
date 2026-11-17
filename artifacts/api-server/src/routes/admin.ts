@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { requireAdmin } from "../lib/auth";
 import { GIORNI_MAX, Parametri, leggiRegistro, statoRegistro } from "../lib/registro-modifiche";
-import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, salvaAzienda } from "../lib/azienda";
+import { DatiAzienda, dettaglioAzienda, erroriDiValidazione, leggiAzienda, salvaAzienda } from "../lib/azienda";
 import { cancellaVoce, creaVoce, elencoVoci, ModificaVoce, modificaVoce, NuovaVoce, RifiutoVoci } from "../lib/roster-voci";
 import {
   cancellaComune, cancellaLuogo, creaLuogo, DatiComune, DatiLuogo, elencoTerritorio, modificaLuogo, RifiutoTerritorio, salvaComune,
@@ -10,6 +10,10 @@ import { impostaAttivi, preparaDatiAperti, statoDatiAperti } from "../lib/dati-a
 import { cancellaDeposito, creaDeposito, elencoDepositi, ModificaDeposito, modificaDeposito, NuovoDeposito, RifiutoDepositi } from "../lib/depositi";
 import { anteprimaRegole, cancellaRete, creaRete, elencoReti, ModificaRete, modificaRete, NuovaRete, Regole, RifiutoReti, salvaRegole } from "../lib/reti";
 import { elencoFasce, Fasce, RifiutoFasce, salvaFasce } from "../lib/fasce-km-store";
+import {
+  Agenzia, Categorie, elenchiTariffe, erroreElenco, RifiutoElenchi, salvaAgenzia, salvaCategorie, salvaSupporti, Supporti, togliAgenzia,
+} from "../lib/elenchi-tariffe-store";
+import { agenziaNelGtfs, TIPI_SUPPORTO } from "../lib/elenchi-tariffe";
 import { cancellaTitolo, creaTitolo, elencoTitoli, ModificaTitolo, modificaTitolo, NuovoTitolo, RifiutoTitoli } from "../lib/titoli-catalogo";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
@@ -658,6 +662,57 @@ router.delete("/admin/titoli/:titolo", async (req, res): Promise<void> => {
   if (!ID_TITOLO.test(titolo)) { res.status(404).json({ error: "Titolo non trovato" }); return; }
   try { await cancellaTitolo(titolo); res.json({ ok: true }); }
   catch (e) { rifiutoTitoli(req, res, e, "titolo non tolto"); }
+});
+
+/**
+ * Gli elenchi di partenza delle tariffe e l'agenzia dei GTFS (tappa 6.10,
+ * lib/elenchi-tariffe.ts): le categorie di passeggero e i supporti con cui
+ * la pagina Tariffe riempie un feed, e chi figura come agenzia nel GTFS
+ * delle tariffe. GET tutto insieme; ogni PUT salva un elenco intero; DELETE
+ * dell'agenzia rimette l'azienda. Solo admin, mai un token di Argos
+ * (requireAdmin).
+ */
+const rifiutoElenchi = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoElenchi) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  if (codice === "23505") { res.status(409).json({ error: "Un identificativo compare due volte" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/elenchi-tariffe", requireAdmin);
+router.get("/admin/elenchi-tariffe", async (req, res): Promise<void> => {
+  try {
+    const [elenchi, azienda] = await Promise.all([elenchiTariffe(), leggiAzienda()]);
+    /* quello che si scrive oggi in agency.txt: l'agenzia a parte, o l'azienda */
+    res.json({ ...elenchi, inVigore: agenziaNelGtfs(azienda, elenchi.agenzia), tipiSupporto: TIPI_SUPPORTO });
+  } catch (e) { rifiutoElenchi(req, res, e, "elenchi non leggibili"); }
+});
+router.put("/admin/elenchi-tariffe/categorie", async (req, res): Promise<void> => {
+  const p = Categorie.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroreElenco(p.error) }); return; }
+  try { res.json({ categorie: await salvaCategorie(p.data) }); }
+  catch (e) { rifiutoElenchi(req, res, e, "categorie non salvate"); }
+});
+router.put("/admin/elenchi-tariffe/supporti", async (req, res): Promise<void> => {
+  const p = Supporti.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroreElenco(p.error) }); return; }
+  try { res.json({ supporti: await salvaSupporti(p.data) }); }
+  catch (e) { rifiutoElenchi(req, res, e, "supporti non salvati"); }
+});
+router.put("/admin/elenchi-tariffe/agenzia", async (req, res): Promise<void> => {
+  const p = Agenzia.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroreElenco(p.error) }); return; }
+  try {
+    const agenzia = await salvaAgenzia(p.data);
+    res.json({ agenzia, inVigore: agenziaNelGtfs(await leggiAzienda(), agenzia) });
+  } catch (e) { rifiutoElenchi(req, res, e, "agenzia non salvata"); }
+});
+router.delete("/admin/elenchi-tariffe/agenzia", async (req, res): Promise<void> => {
+  try {
+    await togliAgenzia();
+    res.json({ agenzia: null, inVigore: agenziaNelGtfs(await leggiAzienda(), null) });
+  } catch (e) { rifiutoElenchi(req, res, e, "agenzia non tolta"); }
 });
 
 export default router;

@@ -23,6 +23,7 @@ import { apiFetch } from "@/lib/api";
 import { useReti } from "@/hooks/use-reti";
 import { opzioniReti } from "@/lib/reti";
 import { domandaAllinea, riassuntoConfronto, type ConfrontoColCatalogo } from "@/lib/titoli-catalogo";
+import { partenzaFeedInfo, type AgenziaNelGtfs, type PartenzaFeedInfo } from "@/lib/elenchi-tariffe";
 import { notaFermateTolte, riassuntoZoneGenerate, type ZoneGenerate } from "@/lib/zone-tariffarie";
 import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink, exportPolimetricheClustersToPrint, createPolimetricheClustersShareLink } from "./fares-polimetriche-export";
 import FaresTelemacoTab from "./fares-telemaco-tab";
@@ -1044,7 +1045,7 @@ function RiderCategoriesTab() {
                   eligibility_url
                 </label>
                 <input className="w-full px-3 py-2 text-sm rounded border border-border bg-background/50"
-                  placeholder="https://www.atmaancona.it/tariffe/..."
+                  placeholder="https://… (la pagina dei requisiti)"
                   value={newForm.eligibilityUrl}
                   onChange={e => setNewForm(p => ({ ...p, eligibilityUrl: e.target.value }))} />
               </div>
@@ -7238,22 +7239,30 @@ function FeedInfoTab() {
   const { toast } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  /* chi pubblica: in un feed che non lo dice ancora si propone l'agenzia dei GTFS (o l'azienda) */
+  const [partenza, setPartenza] = useState<PartenzaFeedInfo>(partenzaFeedInfo(null));
   const [form, setForm] = useState({
-    feedPublisherName: "ATMA Scpa",
-    feedPublisherUrl: "https://www.atmaancona.it",
+    feedPublisherName: "",
+    feedPublisherUrl: "",
     feedLang: "it",
     defaultLang: "",
     feedStartDate: "",
     feedEndDate: "",
     feedVersion: "",
-    feedContactEmail: "info@atmaancona.it",
-    feedContactUrl: "https://www.atmaancona.it",
+    feedContactEmail: "",
+    feedContactUrl: "",
   });
 
   useEffect(() => {
     (async () => {
       try {
-        const data = await apiFetch<any>("/api/fares/feed-info");
+        const [data, agenzia] = await Promise.all([
+          apiFetch<any>("/api/fares/feed-info"),
+          apiFetch<AgenziaNelGtfs>("/api/fares/agency").catch(() => null),
+        ]);
+        const p = partenzaFeedInfo(agenzia);
+        setPartenza(p);
+        if (!data) setForm((f) => ({ ...f, ...p }));
         if (data) {
           setForm({
             feedPublisherName: data.feedPublisherName || "",
@@ -7290,15 +7299,15 @@ function FeedInfoTab() {
   if (loading) return <LoadingSpinner />;
 
   const fields: { key: keyof typeof form; label: string; placeholder: string; required?: boolean }[] = [
-    { key: "feedPublisherName", label: "Publisher Name", placeholder: "ATMA Scpa", required: true },
-    { key: "feedPublisherUrl", label: "Publisher URL", placeholder: "https://www.atmaancona.it", required: true },
+    { key: "feedPublisherName", label: "Publisher Name", placeholder: partenza.feedPublisherName || "Chi pubblica il feed", required: true },
+    { key: "feedPublisherUrl", label: "Publisher URL", placeholder: partenza.feedPublisherUrl || "https://…", required: true },
     { key: "feedLang", label: "Lingua (BCP-47)", placeholder: "it", required: true },
     { key: "defaultLang", label: "Default Lang", placeholder: "it" },
     { key: "feedStartDate", label: "Data inizio (YYYYMMDD)", placeholder: "20260101" },
     { key: "feedEndDate", label: "Data fine (YYYYMMDD)", placeholder: "20261231" },
     { key: "feedVersion", label: "Versione feed", placeholder: "1.0.0" },
-    { key: "feedContactEmail", label: "Email contatto", placeholder: "info@atmaancona.it" },
-    { key: "feedContactUrl", label: "URL contatto", placeholder: "https://www.atmaancona.it" },
+    { key: "feedContactEmail", label: "Email contatto", placeholder: partenza.feedContactEmail || "info@…" },
+    { key: "feedContactUrl", label: "URL contatto", placeholder: partenza.feedContactUrl || "https://…" },
   ];
 
   return (

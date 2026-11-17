@@ -9,8 +9,10 @@
  * (tappa 6.3): gli indirizzi per il NAP (components/azienda/DatiAperti.tsx),
  * i depositi del personale (tappa 6.4, components/azienda/DepositiAzienda.tsx),
  * le reti con le regole delle linee (tappa 6.7, components/azienda/RetiAzienda.tsx),
- * le fasce chilometriche dell'extraurbano (tappa 6.8, components/azienda/FasceKm.tsx)
- * e il catalogo dei titoli di viaggio (tappa 6.9, components/azienda/TitoliCatalogo.tsx).
+ * le fasce chilometriche dell'extraurbano (tappa 6.8, components/azienda/FasceKm.tsx),
+ * il catalogo dei titoli di viaggio (tappa 6.9, components/azienda/TitoliCatalogo.tsx)
+ * e l'agenzia dei GTFS con gli elenchi di partenza delle tariffe (tappa 6.10,
+ * components/azienda/ElenchiTariffe.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
 import { Building2, FileCode2, MapPin, Radio, Save } from "lucide-react";
@@ -27,6 +29,7 @@ import DepositiAzienda from "@/components/azienda/DepositiAzienda";
 import RetiAzienda from "@/components/azienda/RetiAzienda";
 import FasceKm from "@/components/azienda/FasceKm";
 import TitoliCatalogo from "@/components/azienda/TitoliCatalogo";
+import ElenchiTariffe from "@/components/azienda/ElenchiTariffe";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
@@ -240,6 +243,9 @@ export default function AdminAziendaPage() {
 
       {/* il catalogo dei titoli di viaggio (tappa 6.9): i biglietti e gli abbonamenti con cui si riempie un feed */}
       <TitoliCatalogo />
+
+      {/* l'agenzia dei GTFS e gli elenchi di partenza delle tariffe (tappa 6.10): categorie, supporti e nodi */}
+      <ElenchiTariffe />
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}
       <TerritorioAzienda />
