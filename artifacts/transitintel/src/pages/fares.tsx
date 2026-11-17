@@ -22,6 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { useReti } from "@/hooks/use-reti";
 import { opzioniReti } from "@/lib/reti";
+import { domandaAllinea, riassuntoConfronto, type ConfrontoColCatalogo } from "@/lib/titoli-catalogo";
 import { notaFermateTolte, riassuntoZoneGenerate, type ZoneGenerate } from "@/lib/zone-tariffarie";
 import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink, exportPolimetricheClustersToPrint, createPolimetricheClustersShareLink } from "./fares-polimetriche-export";
 import FaresTelemacoTab from "./fares-telemaco-tab";
@@ -536,12 +537,29 @@ function ProductsTab() {
       await apiFetch("/api/fares/media/seed", { method: "POST" });
       await apiFetch("/api/fares/rider-categories/seed", { method: "POST" });
       await apiFetch("/api/fares/products/seed", { method: "POST" });
-      toast({ title: "Inizializzazione completata", description: "Reti, supporti, categorie e prodotti creati" });
+      toast({ title: "Inizializzazione completata", description: "Reti, supporti, categorie e biglietti del catalogo: aggiunti quelli che mancavano" });
       await load();
     } catch (e: any) {
       toast({ title: "Errore", description: e.message, variant: "destructive" });
     }
     setLoading(false);
+  };
+
+  /* porta i titoli del feed ai nomi e ai prezzi del catalogo dell'azienda e delle fasce: prima dice che cosa cambia */
+  const [allineando, setAllineando] = useState(false);
+  const allineaAlCatalogo = async () => {
+    setAllineando(true);
+    try {
+      const confronto = await apiFetch<ConfrontoColCatalogo>("/api/fares/products/catalog-diff");
+      const domanda = domandaAllinea(confronto);
+      if (!domanda) { toast({ title: "Niente da allineare", description: riassuntoConfronto(confronto) }); return; }
+      if (!window.confirm(domanda)) return;
+      const r = await apiFetch<{ allineati: number }>("/api/fares/products/align-catalog", { method: "POST" });
+      toast({ title: "Titoli allineati", description: `${r.allineati === 1 ? "Un titolo portato" : `${r.allineati} titoli portati`} ai nomi e ai prezzi del catalogo` });
+      await load();
+    } catch (e: any) {
+      toast({ title: "Errore", description: e.message, variant: "destructive" });
+    } finally { setAllineando(false); }
   };
 
   const toggleMedia = async (fareMediaId: string, isActive: boolean) => {
@@ -580,12 +598,29 @@ function ProductsTab() {
             <Sparkles className="w-8 h-8 text-primary mx-auto" />
             <p className="font-medium">Nessun prodotto tariffario configurato</p>
             <p className="text-sm text-muted-foreground">
-              Inizializza le reti, i supporti e i prodotti con i valori di default ATMA.
+              Inizializza le reti, i supporti e i biglietti dal catalogo dell'azienda (Amministrazione › Azienda).
             </p>
             <Button onClick={seedAll} className="mt-2">
               <Sparkles className="w-4 h-4 mr-2" />
               Inizializza Tutto
             </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* il feed rispetto al catalogo dell'azienda: aggiunge i titoli che mancano, o allinea quelli diversi */}
+      {products.length > 0 && (
+        <Card className="bg-card/50">
+          <CardContent className="p-3 flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" disabled={loading} onClick={seedAll}>
+              <Sparkles className="w-3.5 h-3.5 mr-1.5" /> Aggiungi dal catalogo
+            </Button>
+            <Button size="sm" variant="outline" disabled={allineando} onClick={allineaAlCatalogo}>
+              {allineando ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 mr-1.5" />} Allinea al catalogo
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              «Aggiungi» copia dal catalogo dell'azienda i biglietti che mancano, senza toccare gli altri. «Allinea» porta i titoli già presenti ai nomi e ai prezzi del catalogo e delle fasce chilometriche, e prima dice che cosa cambia.
+            </p>
           </CardContent>
         </Card>
       )}
@@ -5052,6 +5087,25 @@ function GenerateTab() {
           >
             {deduplicating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
             Deduplica Stop-Areas
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={deduplicating}
+            onClick={async () => {
+              setDeduplicating(true);
+              try {
+                const res = await apiFetch<{ deleted: number; remaining: number }>("/api/fares/products/deduplicate", { method: "POST" });
+                toast({
+                  title: res.deleted > 0 ? "Doppioni tolti" : "Nessun doppione",
+                  description: res.deleted > 0 ? `${res.deleted === 1 ? "Un doppione tolto" : `${res.deleted} doppioni tolti`}: restano ${res.remaining} titoli` : `I ${res.remaining} titoli del feed sono tutti diversi`,
+                });
+              } catch (e: any) { toast({ title: "Errore", description: e.message, variant: "destructive" }); }
+              setDeduplicating(false);
+            }}
+          >
+            {deduplicating ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+            Togli i doppioni dei titoli
           </Button>
         </CardContent>
       </Card>

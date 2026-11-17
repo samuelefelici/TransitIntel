@@ -18,8 +18,8 @@
  *   luogo, nome, sigla, colore, ordine   si cambiano.
  * L'extraurbana c'è sempre ed è una sola: non si crea e non si toglie.
  *
- * Una rete in uso (linee assegnate, titoli di viaggio, zone, regole
- * tariffarie) non si toglie: prima si sposta chi la usa. Con la rete se ne
+ * Una rete in uso (linee assegnate, titoli di viaggio nei feed o nel
+ * catalogo, zone, regole tariffarie) non si toglie: prima si sposta chi la usa. Con la rete se ne
  * vanno le sue regole delle linee: le linee che le seguivano tornano
  * extraurbane.
  */
@@ -149,8 +149,10 @@ export function regolePulite(regole: readonly z.infer<typeof RegolaDaSalvare>[],
 export interface UsoRete {
   /** le linee assegnate alla rete nella pagina Tariffe, in tutti i feed */
   linee: number;
-  /** i titoli di viaggio della rete */
+  /** i titoli di viaggio della rete, nei feed */
   titoli: number;
+  /** i titoli di viaggio della rete nel catalogo dell'azienda */
+  catalogo: number;
   /** le zone tariffarie della rete */
   zone: number;
   /** le regole tariffarie della rete */
@@ -161,7 +163,7 @@ export interface UsoRete {
 export interface ReteConUso extends Rete { uso: UsoRete; aggiornatoIl: string | null }
 
 /** Vero se qualcosa usa la rete e quindi non si può togliere (le regole delle linee non contano: se ne vanno con lei). */
-export const reteInUso = (u: UsoRete): boolean => u.linee + u.titoli + u.zone + u.regoleTariffarie > 0;
+export const reteInUso = (u: UsoRete): boolean => u.linee + u.titoli + u.catalogo + u.zone + u.regoleTariffarie > 0;
 
 export interface ElencoReti { reti: ReteConUso[]; regole: RegolaLinea[]; massimoRetiUrbane: number; massimoRegole: number }
 
@@ -171,6 +173,7 @@ export async function elencoReti(ex: Ex = db): Promise<ElencoReti> {
     SELECT r.rete, r.aggiornato_il,
            (SELECT count(*) FROM gtfs_route_networks x WHERE x.network_id = r.rete)::int AS linee,
            (SELECT count(*) FROM gtfs_fare_products x WHERE x.network_id = r.rete)::int AS titoli,
+           (SELECT count(*) FROM titoli_catalogo x WHERE x.rete = r.rete)::int AS catalogo,
            (SELECT count(*) FROM gtfs_fare_areas x WHERE x.network_id = r.rete)::int AS zone,
            (SELECT count(*) FROM gtfs_fare_leg_rules x WHERE x.network_id = r.rete)::int AS regole_tariffarie,
            (SELECT count(*) FROM reti_regole x WHERE x.rete = r.rete)::int AS regole
@@ -181,7 +184,7 @@ export async function elencoReti(ex: Ex = db): Promise<ElencoReti> {
       return {
         ...r,
         uso: {
-          linee: Number(u.linee ?? 0), titoli: Number(u.titoli ?? 0), zone: Number(u.zone ?? 0),
+          linee: Number(u.linee ?? 0), titoli: Number(u.titoli ?? 0), catalogo: Number(u.catalogo ?? 0), zone: Number(u.zone ?? 0),
           regoleTariffarie: Number(u.regole_tariffarie ?? 0), regole: Number(u.regole ?? 0),
         },
         aggiornatoIl: u.aggiornato_il ? new Date(u.aggiornato_il).toISOString() : null,
@@ -277,10 +280,11 @@ export async function cancellaRete(rete: string): Promise<{ regoleTolte: number 
       const chi = [
         r.uso.linee ? `${r.uso.linee} ${r.uso.linee === 1 ? "linea assegnata" : "linee assegnate"}` : "",
         r.uso.titoli ? `${r.uso.titoli} ${r.uso.titoli === 1 ? "titolo di viaggio" : "titoli di viaggio"}` : "",
+        r.uso.catalogo ? `${r.uso.catalogo} ${r.uso.catalogo === 1 ? "titolo nel catalogo" : "titoli nel catalogo"}` : "",
         r.uso.zone ? `${r.uso.zone} ${r.uso.zone === 1 ? "zona" : "zone"}` : "",
         r.uso.regoleTariffarie ? `${r.uso.regoleTariffarie} ${r.uso.regoleTariffarie === 1 ? "regola tariffaria" : "regole tariffarie"}` : "",
       ].filter(Boolean).join(", ");
-      throw new RifiutoReti(409, `La rete «${r.nome}» è in uso (${chi}): prima sposta o togli chi la usa, dalla pagina Tariffe`);
+      throw new RifiutoReti(409, `La rete «${r.nome}» è in uso (${chi}): prima sposta o togli chi la usa, dalla pagina Tariffe e dal catalogo dei titoli`);
     }
     /* la sua voce negli elenchi delle reti dei feed (networks.txt) è una copia di questa riga: se ne va con lei */
     await tx.execute(sql`DELETE FROM gtfs_fare_networks WHERE network_id = ${rete}`);

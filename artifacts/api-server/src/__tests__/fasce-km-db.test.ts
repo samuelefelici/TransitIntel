@@ -68,10 +68,14 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le fasce chilometriche, sul dat
   });
 
   it("senza fasce, una rotta delle tariffe che ne ha bisogno risponde 409 e dice dove scriverle", async () => {
-    const r = await tariffe.post(`/api/fares/products/seed?feedId=${F}`).send({});
-    expect(r.status, JSON.stringify(r.body)).toBe(409);
-    expect(r.body.error).toBe("Mancano le fasce chilometriche dell'extraurbano: le scrive l'amministratore in Amministrazione › Azienda, scheda «Fasce chilometriche»");
-    expect(await prodottiExtra()).toEqual([]);
+    /* un catalogo con un abbonamento extraurbano per fascia: senza le fasce non si può copiare in un feed */
+    await db.execute(sql`INSERT INTO titoli_catalogo (titolo, nome, rete, tipo, prezzo, fascia) VALUES ('prova_fascia_1', 'Abbonamento di prova', 'extraurbano', 'abbonamento_mensile', 30, 1)`);
+    try {
+      const r = await tariffe.post(`/api/fares/products/seed-abbonamenti?feedId=${F}`).send({});
+      expect(r.status, JSON.stringify(r.body)).toBe(409);
+      expect(r.body.error).toBe("Mancano le fasce chilometriche dell'extraurbano: le scrive l'amministratore in Amministrazione › Azienda, scheda «Fasce chilometriche»");
+      expect(await prodottiExtra()).toEqual([]);
+    } finally { await db.execute(sql`DELETE FROM titoli_catalogo WHERE titolo = 'prova_fascia_1'`); }
     /* una rotta che non ne ha bisogno risponde come sempre */
     expect((await tariffe.get(`/api/fares/products?feedId=${F}`)).status).toBe(200);
   });

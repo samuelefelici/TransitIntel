@@ -69,8 +69,9 @@ import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helper
 import { haversineKm } from "../lib/geo-utils";
 import { classifyRoute, CODICE_URBANO_MAX, CODICE_URBANO_MIN, idRetiUrbane, reteUrbana, retiInVigore, retiUrbane, SCARTO_CODICE_MISTO } from "../lib/reti-linee";
 import { assegnaZoneUrbane } from "../lib/zone-urbane";
-import { fasceObbligate, fasciaNumero, fasciaPerDistanza, primaFascia, ultimaFascia } from "../lib/fasce-km";
+import { fasciaNumero, fasciaPerDistanza, primaFascia, ultimaFascia } from "../lib/fasce-km";
 import { conLeFasce, erroreTariffe } from "./fares-comuni";
+import { allineaAlCatalogo, bigliettiDiRiferimento, confrontoColCatalogo, contaDoppioni, copiaDalCatalogo, regoleUrbane, togliDoppioni } from "../lib/titoli-catalogo";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
@@ -952,274 +953,62 @@ router.get("/fares/products", async (req, res): Promise<void> => {
   } catch (e: any) { erroreTariffe(res, e); }
 });
 
+// I titoli di un feed vengono dal catalogo dell'azienda (lib/titoli-catalogo.ts, tappa 6.9):
+// si copiano quelli che nel feed mancano, senza toccare e senza raddoppiare quelli che ci sono.
+
+// POST /api/fares/products/seed — i biglietti: quelli del catalogo e uno per fascia chilometrica
 router.post("/fares/products/seed", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-
-    // isUrbanHourly = true → biglietto ORARIO di riferimento della rete (§6.2, ramo A §4)
-    const urbanProducts = [
-      { fareProductId: "ancona_60min", fareProductName: "Biglietto Urbano Ancona 60 min", networkId: "urbano_ancona", amount: 1.35, durationMinutes: 60, fareType: "single" as const, isUrbanHourly: true },
-      { fareProductId: "ancona_100min", fareProductName: "Biglietto Urbano Ancona 100 min", networkId: "urbano_ancona", amount: 1.50, durationMinutes: 100, fareType: "single" as const, isUrbanHourly: false },
-      { fareProductId: "jesi_60min", fareProductName: "Biglietto Urbano Jesi 60 min", networkId: "urbano_jesi", amount: 1.35, durationMinutes: 60, fareType: "single" as const, isUrbanHourly: true },
-      { fareProductId: "jesi_ar", fareProductName: "Biglietto Urbano Jesi A/R", networkId: "urbano_jesi", amount: 2.20, durationMinutes: 60, fareType: "return" as const, isUrbanHourly: false },
-      { fareProductId: "falconara_60min", fareProductName: "Biglietto Urbano Falconara 60 min", networkId: "urbano_falconara", amount: 1.35, durationMinutes: 60, fareType: "single" as const, isUrbanHourly: true },
-      { fareProductId: "falconara_ar", fareProductName: "Biglietto Urbano Falconara A/R", networkId: "urbano_falconara", amount: 2.00, durationMinutes: 60, fareType: "return" as const, isUrbanHourly: false },
-    ];
-
-    const extraProducts = fasceObbligate().map(b => ({
-      fareProductId: `extra_fascia_${b.fascia}`,
-      fareProductName: `Extraurbano ${b.kmFrom}-${b.kmTo} km`,
-      networkId: "extraurbano",
-      amount: b.price,
-      durationMinutes: null as number | null,
-      fareType: "zone" as const,
-      isUrbanHourly: false,
-    }));
-
-    const all = [...urbanProducts, ...extraProducts];
-    for (const p of all) {
-      await db.insert(gtfsFareProducts).values({
-        feedId,
-        fareProductId: p.fareProductId,
-        fareProductName: p.fareProductName,
-        networkId: p.networkId,
-        amount: p.amount,
-        durationMinutes: p.durationMinutes,
-        fareType: p.fareType,
-        isUrbanHourly: p.isUrbanHourly,
-        riderCategoryId: "ordinario",
-        fareMediaId: null, // null = any media (spec: empty fare_media_id means "all media accepted")
-      }).onConflictDoNothing();
-    }
-
+    const esito = await copiaDalCatalogo(feedId, "biglietti");
     const rows = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
-    await logAudit(feedId, "seed_products", `Seed prodotti: ${rows.length} prodotti inseriti/aggiornati`);
+    await logAudit(feedId, "seed_products", `Biglietti dal catalogo: ${esito.aggiunti} aggiunti, ${esito.presenti} c'erano già (${rows.length} titoli nel feed)`);
     res.json(rows);
   } catch (e: any) { erroreTariffe(res, e); }
 });
 
-// ─── Tariffe ATMA ufficiali (DGR Marche n. 1036 del 08/08/2022, in vigore dal 01/09/2022) ────
-// Fonte: sito ATMA, rilevazione aprile 2026
-const EXTRA_SETT_ORD  = [11.30,16.20,19.80,23.40,26.10,28.40,30.60,34.70,36.90,37.80,42.30,46.35];
-const EXTRA_MENS_ORD  = [30.00,43.20,52.80,62.40,69.60,75.60,81.60,92.40,98.40,100.80,112.80,123.60];
-const EXTRA_ANN_ORD   = [300.00,432.00,528.00,624.00,696.00,756.00,816.00,924.00,984.00,1008.00,1128.00,1236.00];
-// Mensile ordinario integrato extraurbano + urbano Ancona
-const EXTRA_MENS_INT_ORD = [52.50,64.20,71.20,78.00,84.00,89.70,95.40,105.70,111.40,113.70,125.10,135.30];
-// Annuale studenti (7,5 mensilità, 01/09–31/08)
-const EXTRA_ANN_ST    = [225.00,324.00,396.00,468.00,522.00,567.00,612.00,693.00,738.00,756.00,846.00,927.00];
-// Mensile integrato studenti (extraurbano + urbano Ancona)
-const EXTRA_MENS_INT_ST  = [37.50,50.70,60.30,69.60,77.10,83.10,89.10,99.90,105.90,108.30,120.30,131.10];
-// Annuale integrato studenti (extraurbano + urbano Ancona)
-const EXTRA_ANN_INT_ST   = [281.25,380.25,452.25,524.25,578.25,623.25,688.25,749.25,794.25,812.25,902.25,983.25];
-
-// Biglietti singoli urbani e A/R (da seed separato, ma disponibili come costante)
-const URBAN_TICKETS = [
-  // Ancona
-  { id: "ancona_60min",        name: "Biglietto Urbano Ancona 60 min",                  net: "urbano_ancona",    price: 1.35, type: "single" },
-  { id: "ancona_100min",       name: "Biglietto Urbano Ancona 100 min",                 net: "urbano_ancona",    price: 1.50, type: "single" },
-  { id: "ancona_ar",           name: "Biglietto Urbano Ancona A/R (240 min)",           net: "urbano_ancona",    price: 2.50, type: "return" },
-  { id: "ancona_24h",          name: "Biglietto Urbano Ancona 24 ore",                  net: "urbano_ancona",    price: 4.00, type: "single" },
-  { id: "ancona_7gg",          name: "Biglietto Urbano Ancona 7 giorni",                net: "urbano_ancona",    price: 12.00, type: "single" },
-  { id: "ancona_bordo",        name: "Biglietto Urbano Ancona emesso a bordo",          net: "urbano_ancona",    price: 3.00, type: "single" },
-  { id: "ancona_bordo_100min", name: "Biglietto Urbano Ancona 100 min (emettitrice)",   net: "urbano_ancona",    price: 2.00, type: "single" },
-  { id: "ancona_bordo_ar",     name: "Biglietto Urbano Ancona A/R (emettitrice)",       net: "urbano_ancona",    price: 4.00, type: "return" },
-  { id: "ancona_bordo_24h",    name: "Biglietto Urbano Ancona 24h (emettitrice)",       net: "urbano_ancona",    price: 5.00, type: "single" },
-  { id: "ancona_ascensore",    name: "Biglietto Ascensore Passetto Ancona",             net: "urbano_ancona",    price: 1.00, type: "single" },
-  // Jesi
-  { id: "jesi_60min",          name: "Biglietto Urbano Jesi 60 min",                    net: "urbano_jesi",      price: 1.35, type: "single" },
-  { id: "jesi_ar",             name: "Biglietto Urbano Jesi A/R",                       net: "urbano_jesi",      price: 2.20, type: "return" },
-  { id: "jesi_giorn",          name: "Biglietto Urbano Jesi Giornaliero",               net: "urbano_jesi",      price: 3.50, type: "single" },
-  { id: "jesi_bordo",          name: "Biglietto Urbano Jesi emesso a bordo",            net: "urbano_jesi",      price: 2.00, type: "single" },
-  // Falconara
-  { id: "falc_60min",          name: "Biglietto Urbano Falconara 60 min",               net: "urbano_falconara", price: 1.35, type: "single" },
-  { id: "falc_ar",             name: "Biglietto Urbano Falconara A/R",                  net: "urbano_falconara", price: 2.00, type: "return" },
-  { id: "falc_giorn",          name: "Biglietto Urbano Falconara Giornaliero",          net: "urbano_falconara", price: 3.30, type: "single" },
-  // Castelfidardo
-  { id: "cfd_60min",           name: "Biglietto Urbano Castelfidardo 60 min",           net: "urbano_castelfidardo", price: 1.35, type: "single" },
-  // Sassoferrato
-  { id: "sasso_60min",         name: "Biglietto Urbano Sassoferrato 60 min",            net: "urbano_sassoferrato",  price: 1.35, type: "single" },
-  // Senigallia (pagina in manutenzione — tariffe analoghe alle altre città, €1.35 confermato DGR)
-  { id: "senigallia_60min",    name: "Biglietto Urbano Senigallia 60 min",              net: "urbano_senigallia",    price: 1.35, type: "single" },
-] as const;
-
-// POST /api/fares/products/seed-abbonamenti — seed abbonamenti per tutte le reti
+// POST /api/fares/products/seed-abbonamenti — tutto il catalogo: abbonamenti e biglietti
 router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-
-    const abbonamenti: Array<{
-      fareProductId: string;
-      fareProductName: string;
-      networkId: string;
-      amount: number;
-      durationMinutes: number | null;
-      fareType: string;
-      riderCategoryId: string;
-    }> = [
-      // ── URBANO ANCONA ──────────────────────────────────────────────────────
-      { fareProductId: "ancona_mens_ord",     fareProductName: "Abbonamento Urbano Ancona Mensile Ordinario",        networkId: "urbano_ancona", amount: 35.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "ordinario" },
-      { fareProductId: "ancona_mens_argento", fareProductName: "Abbonamento Urbano Ancona Mensile Argento (over 65)", networkId: "urbano_ancona", amount: 20.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "anziano" },
-      { fareProductId: "ancona_mens_rosa",    fareProductName: "Abbonamento Urbano Ancona Mensile Rosa",             networkId: "urbano_ancona", amount: 27.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "ordinario" },
-      { fareProductId: "ancona_mens_isee",    fareProductName: "Abbonamento Urbano Ancona Mensile ISEE < 18.000",    networkId: "urbano_ancona", amount: 25.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "agevolato" },
-      { fareProductId: "ancona_ann_ord",      fareProductName: "Abbonamento Urbano Ancona Annuale Ordinario",        networkId: "urbano_ancona", amount: 300.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale",     riderCategoryId: "ordinario" },
-      { fareProductId: "ancona_ann_web",      fareProductName: "Abbonamento Urbano Ancona Annuale Web",              networkId: "urbano_ancona", amount: 291.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale",     riderCategoryId: "ordinario" },
-      { fareProductId: "ancona_ann_arg_isee_low",  fareProductName: "Abbonamento Urbano Ancona Annuale Argento ISEE < 18.000", networkId: "urbano_ancona", amount: 210.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "agevolato" },
-      { fareProductId: "ancona_ann_arg_isee_high", fareProductName: "Abbonamento Urbano Ancona Annuale Argento ISEE > 18.000", networkId: "urbano_ancona", amount: 240.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "anziano" },
-      { fareProductId: "ancona_family_mens",  fareProductName: "Abbonamento Family Urbano Ancona Mensile",           networkId: "urbano_ancona", amount: 40.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "ordinario" },
-      { fareProductId: "ancona_mens_st_14p",  fareProductName: "Abbonamento Urbano Ancona Mensile Studente over 14", networkId: "urbano_ancona", amount: 30.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "studente" },
-      { fareProductId: "ancona_mens_st_14m",  fareProductName: "Abbonamento Urbano Ancona Mensile Studente under 14",networkId: "urbano_ancona", amount: 20.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "studente_under14" },
-      { fareProductId: "ancona_mens_st_isee", fareProductName: "Abbonamento Urbano Ancona Mensile Studente ISEE < 18.000", networkId: "urbano_ancona", amount: 20.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "studente_agevolato" },
-      { fareProductId: "ancona_ann_st_14p",   fareProductName: "Abbonamento Urbano Ancona Annuale Studente over 14 (1 set–31 ago)",  networkId: "urbano_ancona", amount: 225.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "studente" },
-      { fareProductId: "ancona_ann_st_14p_web",fareProductName: "Abbonamento Urbano Ancona Annuale Studente Web",    networkId: "urbano_ancona", amount: 219.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale",     riderCategoryId: "studente" },
-      { fareProductId: "ancona_ann_st_14m",   fareProductName: "Abbonamento Urbano Ancona Annuale Studente under 14",networkId: "urbano_ancona", amount: 150.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale",     riderCategoryId: "studente_under14" },
-      // ── URBANO JESI ────────────────────────────────────────────────────────
-      { fareProductId: "jesi_mens_ord",       fareProductName: "Abbonamento Urbano Jesi Mensile Ordinario",          networkId: "urbano_jesi",   amount: 35.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "ordinario" },
-      { fareProductId: "jesi_ann_ord",        fareProductName: "Abbonamento Urbano Jesi Annuale Ordinario",          networkId: "urbano_jesi",   amount: 320.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale",     riderCategoryId: "ordinario" },
-      { fareProductId: "jesi_mens_anziani",   fareProductName: "Abbonamento Urbano Jesi Mensile Anziani (over 65)",  networkId: "urbano_jesi",   amount: 35.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "anziano" },
-      { fareProductId: "jesi_mens_st",        fareProductName: "Abbonamento Urbano Jesi Mensile Studente",           networkId: "urbano_jesi",   amount: 32.00,  durationMinutes: 60*24*30,  fareType: "abbonamento_mensile",     riderCategoryId: "studente" },
-      { fareProductId: "jesi_ann_st",         fareProductName: "Abbonamento Urbano Jesi Annuale Studente (1 set–31 ago)", networkId: "urbano_jesi", amount: 225.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale",  riderCategoryId: "studente" },
-      // ── URBANO FALCONARA ───────────────────────────────────────────────────
-      { fareProductId: "falc_sett_ord",       fareProductName: "Abbonamento Urbano Falconara Settimanale Ordinario", networkId: "urbano_falconara", amount: 11.30, durationMinutes: 60*24*7,  fareType: "abbonamento_settimanale", riderCategoryId: "ordinario" },
-      { fareProductId: "falc_mens_ord",       fareProductName: "Abbonamento Urbano Falconara Mensile Ordinario",     networkId: "urbano_falconara", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile",     riderCategoryId: "ordinario" },
-      { fareProductId: "falc_mens_argento",   fareProductName: "Abbonamento Urbano Falconara Mensile Argento (over 65)", networkId: "urbano_falconara", amount: 20.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "anziano" },
-      { fareProductId: "falc_ann_ord",        fareProductName: "Abbonamento Urbano Falconara Annuale Ordinario",     networkId: "urbano_falconara", amount: 300.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale",  riderCategoryId: "ordinario" },
-      { fareProductId: "falc_mens_st",        fareProductName: "Abbonamento Urbano Falconara Mensile Studente",      networkId: "urbano_falconara", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile",     riderCategoryId: "studente" },
-      { fareProductId: "falc_mens_st_14m",    fareProductName: "Abbonamento Urbano Falconara Mensile Studente under 14", networkId: "urbano_falconara", amount: 20.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "studente_under14" },
-      { fareProductId: "falc_ann_st",         fareProductName: "Abbonamento Urbano Falconara Annuale Studente (1 set–31 ago)", networkId: "urbano_falconara", amount: 225.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "studente" },
-      // ── URBANO CASTELFIDARDO ───────────────────────────────────────────────
-      { fareProductId: "cfd_mens_ord",        fareProductName: "Abbonamento Urbano Castelfidardo Mensile Ordinario", networkId: "urbano_castelfidardo", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "ordinario" },
-      { fareProductId: "cfd_mens_st",         fareProductName: "Abbonamento Urbano Castelfidardo Mensile Studente",  networkId: "urbano_castelfidardo", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "studente" },
-      { fareProductId: "cfd_ann_st",          fareProductName: "Abbonamento Urbano Castelfidardo Annuale Studente (1 set–31 ago)", networkId: "urbano_castelfidardo", amount: 225.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "studente" },
-      // ── URBANO SASSOFERRATO ────────────────────────────────────────────────
-      { fareProductId: "sasso_mens_ord",      fareProductName: "Abbonamento Urbano Sassoferrato Mensile Ordinario",  networkId: "urbano_sassoferrato", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "ordinario" },
-      { fareProductId: "sasso_sett_ord",      fareProductName: "Abbonamento Urbano Sassoferrato Settimanale Ordinario", networkId: "urbano_sassoferrato", amount: 11.30, durationMinutes: 60*24*7, fareType: "abbonamento_settimanale", riderCategoryId: "ordinario" },
-      { fareProductId: "sasso_sett_st",       fareProductName: "Abbonamento Urbano Sassoferrato Settimanale Studente", networkId: "urbano_sassoferrato", amount: 11.30, durationMinutes: 60*24*7, fareType: "abbonamento_settimanale", riderCategoryId: "studente" },
-      { fareProductId: "sasso_mens_st",       fareProductName: "Abbonamento Urbano Sassoferrato Mensile Studente",   networkId: "urbano_sassoferrato", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "studente" },
-      { fareProductId: "sasso_ann_st",        fareProductName: "Abbonamento Urbano Sassoferrato Annuale Studente (1 set–31 ago)", networkId: "urbano_sassoferrato", amount: 225.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "studente" },
-      // ── URBANO SENIGALLIA (tariffe in manutenzione sul sito — DGR di riferimento) ──
-      { fareProductId: "senigallia_sett_ord", fareProductName: "Abbonamento Urbano Senigallia Settimanale Ordinario", networkId: "urbano_senigallia", amount: 11.30, durationMinutes: 60*24*7, fareType: "abbonamento_settimanale", riderCategoryId: "ordinario" },
-      { fareProductId: "senigallia_mens_ord", fareProductName: "Abbonamento Urbano Senigallia Mensile Ordinario",    networkId: "urbano_senigallia", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "ordinario" },
-      { fareProductId: "senigallia_mens_st",  fareProductName: "Abbonamento Urbano Senigallia Mensile Studente",     networkId: "urbano_senigallia", amount: 30.00, durationMinutes: 60*24*30, fareType: "abbonamento_mensile", riderCategoryId: "studente" },
-      { fareProductId: "senigallia_ann_st",   fareProductName: "Abbonamento Urbano Senigallia Annuale Studente (1 set–31 ago)", networkId: "urbano_senigallia", amount: 225.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "studente" },
-      // ── UNIVPM 2025/2026 ───────────────────────────────────────────────────
-      { fareProductId: "univpm_alpha",   fareProductName: "UNIVPM Alpha — Urbano Ancona 9 mesi (ott–giu), quota studente",  networkId: "urbano_ancona", amount: 130.00, durationMinutes: 60*24*270, fareType: "abbonamento_annuale", riderCategoryId: "studente_univpm" },
-      { fareProductId: "univpm_beta",    fareProductName: "UNIVPM Beta — Urbano Ancona 12 mesi, quota studente",             networkId: "urbano_ancona", amount: 150.00, durationMinutes: 60*24*365, fareType: "abbonamento_annuale", riderCategoryId: "studente_univpm" },
-      { fareProductId: "univpm_gamma",   fareProductName: "UNIVPM Gamma — Integrato extraurbano ≤18 km + urbano, quota studente", networkId: "extraurbano", amount: 250.00, durationMinutes: 60*24*270, fareType: "abbonamento_annuale", riderCategoryId: "studente_univpm" },
-      { fareProductId: "univpm_delta",   fareProductName: "UNIVPM Delta — Integrato extraurbano ≤36 km + urbano, quota studente", networkId: "extraurbano", amount: 300.00, durationMinutes: 60*24*270, fareType: "abbonamento_annuale", riderCategoryId: "studente_univpm" },
-      // ── EXTRAURBANO — Settimanale ordinario (fasce 1–12) ──────────────────
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_sett_ord_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Settimanale Ordinario — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_SETT_ORD[i],
-        durationMinutes: 60 * 24 * 7 as number | null,
-        fareType: "abbonamento_settimanale",
-        riderCategoryId: "ordinario",
-      })),
-      // ── EXTRAURBANO — Mensile ordinario (fasce 1–12) ──────────────────────
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_mens_ord_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Mensile Ordinario — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_MENS_ORD[i],
-        durationMinutes: 60 * 24 * 30 as number | null,
-        fareType: "abbonamento_mensile",
-        riderCategoryId: "ordinario",
-      })),
-      // ── EXTRAURBANO — Mensile studenti = stessa tariffa ordinaria (fasce 1–12)
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_mens_st_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Mensile Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_MENS_ORD[i],
-        durationMinutes: 60 * 24 * 30 as number | null,
-        fareType: "abbonamento_mensile",
-        riderCategoryId: "studente",
-      })),
-      // ── EXTRAURBANO — Annuale ordinario (fasce 1–12) ──────────────────────
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_ann_ord_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Annuale Ordinario — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_ANN_ORD[i],
-        durationMinutes: 60 * 24 * 365 as number | null,
-        fareType: "abbonamento_annuale",
-        riderCategoryId: "ordinario",
-      })),
-      // ── EXTRAURBANO — Annuale studenti 7,5 mensilità (fasce 1–12) ─────────
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_ann_st_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Annuale Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_ANN_ST[i],
-        durationMinutes: 60 * 24 * 365 as number | null,
-        fareType: "abbonamento_annuale",
-        riderCategoryId: "studente",
-      })),
-      // ── EXTRAURBANO — Mensile integrato (extra + urbano Ancona), ordinario ─
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_mens_int_ord_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Mensile Integrato Ancona — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_MENS_INT_ORD[i],
-        durationMinutes: 60 * 24 * 30 as number | null,
-        fareType: "abbonamento_mensile",
-        riderCategoryId: "ordinario",
-      })),
-      // ── EXTRAURBANO — Mensile integrato studenti (extra + urbano Ancona) ──
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_mens_int_st_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Mensile Integrato Ancona Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_MENS_INT_ST[i],
-        durationMinutes: 60 * 24 * 30 as number | null,
-        fareType: "abbonamento_mensile",
-        riderCategoryId: "studente",
-      })),
-      // ── EXTRAURBANO — Annuale integrato studenti (extra + urbano Ancona) ──
-      ...fasceObbligate().slice(0, 12).map((b, i) => ({
-        fareProductId: `extra_ann_int_st_fascia_${b.fascia}`,
-        fareProductName: `Extraurbano Annuale Integrato Ancona Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
-        networkId: "extraurbano",
-        amount: EXTRA_ANN_INT_ST[i],
-        durationMinutes: 60 * 24 * 365 as number | null,
-        fareType: "abbonamento_annuale",
-        riderCategoryId: "studente",
-      })),
-      // ── BIGLIETTI SINGOLI URBANI ──────────────────────────────────────────
-      ...URBAN_TICKETS.map(t => ({
-        fareProductId: t.id,
-        fareProductName: t.name,
-        networkId: t.net,
-        amount: t.price,
-        durationMinutes: null as number | null,
-        fareType: t.type,
-        riderCategoryId: "ordinario",
-      })),
-    ];
-
-    let inserted = 0;
-    for (const p of abbonamenti) {
-      const result = await db.insert(gtfsFareProducts).values({
-        feedId,
-        fareProductId: p.fareProductId,
-        fareProductName: p.fareProductName,
-        networkId: p.networkId,
-        amount: p.amount,
-        durationMinutes: p.durationMinutes,
-        fareType: p.fareType,
-        riderCategoryId: p.riderCategoryId,
-        fareMediaId: null,
-      }).onConflictDoNothing().returning();
-      if (result.length > 0) inserted++;
-    }
-
+    const esito = await copiaDalCatalogo(feedId, "catalogo");
     const rows = await db.select().from(gtfsFareProducts)
       .where(and(eq(gtfsFareProducts.feedId, feedId), sql`fare_type LIKE 'abbonamento%'`));
-    await logAudit(feedId, "seed_products", `Seed abbonamenti: ${inserted} nuovi prodotti inseriti (${rows.length} totali)`);
-    res.json({ inserted, total: rows.length, rows });
+    await logAudit(feedId, "seed_products", `Titoli dal catalogo: ${esito.aggiunti} aggiunti, ${esito.presenti} c'erano già (${rows.length} abbonamenti nel feed)`);
+    res.json({ inserted: esito.aggiunti, total: rows.length, rows });
+  } catch (e: any) { erroreTariffe(res, e); }
+});
+
+// GET /api/fares/products/catalog-diff — che cosa ha il feed di diverso dal catalogo e dalle fasce (non scrive)
+router.get("/fares/products/catalog-diff", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId(req);
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    res.json({ ...(await confrontoColCatalogo(feedId)), doppioni: await contaDoppioni(feedId) });
+  } catch (e: any) { erroreTariffe(res, e); }
+});
+
+// POST /api/fares/products/align-catalog — porta i titoli del feed ai nomi, ai prezzi e alle durate del catalogo e delle fasce
+router.post("/fares/products/align-catalog", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId(req);
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const esito = await allineaAlCatalogo(feedId);
+    await logAudit(feedId, "update_product", `Titoli allineati al catalogo: ${esito.allineati}`);
+    res.json(esito);
+  } catch (e: any) { erroreTariffe(res, e); }
+});
+
+// POST /api/fares/products/deduplicate — toglie i doppioni dei titoli del feed
+router.post("/fares/products/deduplicate", async (req, res): Promise<void> => {
+  try {
+    const feedId = await getLatestFeedId(req);
+    if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const esito = await togliDoppioni(feedId);
+    await logAudit(feedId, "update_product", `Doppioni dei titoli tolti: ${esito.tolti} (restano ${esito.restano} titoli)`);
+    res.json({ deleted: esito.tolti, remaining: esito.restano });
   } catch (e: any) { erroreTariffe(res, e); }
 });
 
@@ -1626,15 +1415,10 @@ router.post("/fares/leg-rules/generate", async (req, res): Promise<void> => {
     // Delete existing leg rules
     await db.delete(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
 
-    // 1) Urban flat rules (no area constraints)
-    const urbanRules = [
-      { legGroupId: "lg_ancona_60", networkId: "urbano_ancona", fareProductId: "ancona_60min" },
-      { legGroupId: "lg_ancona_100", networkId: "urbano_ancona", fareProductId: "ancona_100min" },
-      { legGroupId: "lg_jesi_60", networkId: "urbano_jesi", fareProductId: "jesi_60min" },
-      { legGroupId: "lg_jesi_ar", networkId: "urbano_jesi", fareProductId: "jesi_ar" },
-      { legGroupId: "lg_falconara_60", networkId: "urbano_falconara", fareProductId: "falconara_60min" },
-      { legGroupId: "lg_falconara_ar", networkId: "urbano_falconara", fareProductId: "falconara_ar" },
-    ];
+    // 1) Le regole delle reti urbane, senza zone: una per ogni biglietto con una durata
+    //    che c'è nel feed, per tutte le reti urbane dell'azienda (lib/titoli-catalogo.ts)
+    const prodotti = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
+    const urbanRules = regoleUrbane(prodotti, retiUrbane());
 
     for (const r of urbanRules) {
       await db.insert(gtfsFareLegRules).values({ feedId, ...r, rulePriority: 10 });
@@ -2943,7 +2727,7 @@ router.post("/fares/stops-classification/persist", async (req, res): Promise<voi
 // POST /api/fares/products/mark-urban-hourly — marca (idempotente) il biglietto ORARIO
 // di riferimento per ogni rete urbana (§6.2). Default: il prodotto single con la durata
 // minima > 0 e prezzo minimo per ciascuna rete urbano_*. Sovrascrivibile passando
-// { products: { "urbano_ancona": "ancona_60min", ... } }.
+// { products: { "<rete urbana>": "<titolo>", ... } }.
 router.post("/fares/products/mark-urban-hourly", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
@@ -3729,6 +3513,10 @@ router.get("/fares/validate", async (req, res): Promise<void> => {
     const uniq = Number(saUnique.rows[0]?.cnt ?? 0);
     checks.push({ id: "stop_areas_no_dups", label: "Stop-areas senza duplicati", ok: tot === uniq, detail: tot !== uniq ? `${tot - uniq} duplicati` : `${tot} assegnazioni` });
 
+    // 6b. I titoli di viaggio senza doppioni (lo stesso titolo, la stessa categoria e lo stesso supporto su più righe)
+    const doppioni = await contaDoppioni(feedId);
+    checks.push({ id: "products_no_dups", label: "Titoli di viaggio senza doppioni", ok: doppioni === 0, detail: doppioni > 0 ? `${doppioni} doppioni: toglili da «Genera & Esporta»` : "OK" });
+
     // 7. Leg rules exist
     const lrCount = await db.select({ count: sql<number>`count(*)` }).from(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
     const lrc = Number(lrCount[0]?.count ?? 0);
@@ -4204,19 +3992,13 @@ router.get("/fares/simulator/trip-stops", async (req, res): Promise<void> => {
 //   da extraurbana (fasce DGR). Restituisce shape (geojson) per ogni alt.
 // ──────────────────────────────────────────────────────────────────────
 
-// Mappa network → biglietto urbano singola corsa di riferimento
-const URBAN_FLAT_FARE: Record<string, { id: string; name: string; price: number; durationMin: number }> = {
-  urbano_ancona:        { id: "ancona_60min",     name: "Biglietto Urbano Ancona 60 min",     price: 1.35, durationMin: 60 },
-  urbano_jesi:          { id: "jesi_60min",       name: "Biglietto Urbano Jesi 60 min",       price: 1.35, durationMin: 60 },
-  urbano_falconara:     { id: "falconara_60min",  name: "Biglietto Urbano Falconara 60 min",  price: 1.35, durationMin: 60 },
-  urbano_senigallia:    { id: "senigallia_60min", name: "Biglietto Urbano Senigallia 60 min", price: 1.35, durationMin: 60 },
-  urbano_castelfidardo: { id: "castelfidardo_60min", name: "Biglietto Urbano Castelfidardo 60 min", price: 1.35, durationMin: 60 },
-};
-
+// Il biglietto con cui si dà il prezzo di una corsa urbana: quello di riferimento della rete,
+// dai titoli del feed e, dove mancano, dal catalogo dell'azienda (lib/titoli-catalogo.ts).
 router.post("/fares/journey-plan", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const riferimenti = await bigliettiDiRiferimento(feedId);
 
     const { from, to, date, time = "00:00", maxWalkM = 900, maxAlternatives = 6, allowTransfers = true } = req.body ?? {};
     if (!from?.lat || !from?.lon || !to?.lat || !to?.lon) {
@@ -4397,7 +4179,8 @@ router.post("/fares/journey-plan", async (req, res): Promise<void> => {
       const isUrban = network !== "extraurbano";
       let amount: number, fareName: string, fareId: string, fascia: number | null = null, bandRange: string | null = null;
       if (isUrban) {
-        const flat = URBAN_FLAT_FARE[network] ?? URBAN_FLAT_FARE.urbano_ancona;
+        /* una rete urbana senza nessun biglietto di corsa semplice, né nel feed né nel catalogo: il prezzo non c'è */
+        const flat = riferimenti.get(network) ?? { id: "", name: "Biglietto urbano (prezzo non definito nel catalogo)", price: 0 };
         amount = flat.price; fareName = flat.name; fareId = flat.id;
       } else {
         const band = getBandForDistance(distKm) ?? primaFascia();

@@ -113,7 +113,7 @@ export function classiFermate(reti: readonly Rete[]): ClasseFermata[] {
 
 /* ── La pagina dell'amministratore ─────────────────────────────────────── */
 
-export interface UsoRete { linee: number; titoli: number; zone: number; regoleTariffarie: number; regole: number }
+export interface UsoRete { linee: number; titoli: number; catalogo: number; zone: number; regoleTariffarie: number; regole: number }
 
 /** Una rete come la dà /api/admin/reti: con la zona, il codice e chi la usa. */
 export interface ReteConUso extends Rete {
@@ -154,6 +154,7 @@ export function usoDellaRete(u: UsoRete): string[] {
   const voce = (n: number, una: string, tante: string) => (n > 0 ? `${n.toLocaleString("it-IT")} ${n === 1 ? una : tante}` : "");
   return [
     voce(u.linee, "linea", "linee"), voce(u.titoli, "titolo di viaggio", "titoli di viaggio"),
+    voce(u.catalogo, "titolo nel catalogo", "titoli nel catalogo"),
     voce(u.zone, "zona", "zone"), voce(u.regoleTariffarie, "regola tariffaria", "regole tariffarie"),
   ].filter(Boolean);
 }

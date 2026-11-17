@@ -36,6 +36,32 @@ export const RETI_DI_PROVA: RetiAzienda = {
   ] satisfies RegolaLinea[],
 };
 
+/**
+ * Mette le reti di prova nel database (tabella `reti`, senza le regole) e in
+ * vigore in questo processo; rende la funzione che rimette le reti di prima.
+ * Serve a chi prova qualcosa che punta alle reti con una chiave esterna.
+ */
+export async function retiDiProvaNelDatabase(): Promise<() => Promise<void>> {
+  const { db } = await import("@workspace/db");
+  const { sql } = await import("drizzle-orm");
+  const diPrima = (await db.execute<any>(sql`SELECT to_jsonb(r) AS riga FROM reti r`)).rows.map((r) => r.riga);
+  const regoleDiPrima = (await db.execute<any>(sql`SELECT to_jsonb(g) AS riga FROM reti_regole g`)).rows.map((r) => r.riga);
+  await db.execute(sql`DELETE FROM reti_regole`);
+  await db.execute(sql`DELETE FROM reti`);
+  for (const r of RETI_DI_PROVA.reti) {
+    await db.execute(sql`INSERT INTO reti (rete, tipo, nome, luogo, sigla, zona, codice, colore, ordine)
+                         VALUES (${r.rete}, ${r.tipo}, ${r.nome}, ${r.luogo}, ${r.sigla}, ${r.zona}, ${r.codice}, ${r.colore}, ${r.ordine})`);
+  }
+  impostaReti(RETI_DI_PROVA);
+  return async () => {
+    await db.execute(sql`DELETE FROM reti_regole`);
+    await db.execute(sql`DELETE FROM reti`);
+    for (const riga of diPrima) await db.execute(sql`INSERT INTO reti SELECT * FROM jsonb_populate_record(NULL::reti, ${JSON.stringify(riga)}::jsonb)`);
+    for (const riga of regoleDiPrima) await db.execute(sql`INSERT INTO reti_regole SELECT * FROM jsonb_populate_record(NULL::reti_regole, ${JSON.stringify(riga)}::jsonb)`);
+    impostaReti(RETI_NEUTRE);
+  };
+}
+
 /** Mette in vigore le reti di prova in questo processo. */
 export function conLeRetiDiProva(): void { impostaReti(RETI_DI_PROVA); }
 

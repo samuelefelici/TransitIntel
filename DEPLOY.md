@@ -1476,6 +1476,68 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il catalogo dei titoli di viaggio (tappa 6.9)
+
+I biglietti e gli abbonamenti con cui si riempie un feed erano tre elenchi nel
+codice, con i nomi e i prezzi di una sola azienda. Da questo rilascio sono un
+catalogo dell'azienda (tabella `titoli_catalogo`, migrazione `0042`), e ogni
+modifica resta nel registro.
+
+- **Dove**: Amministrazione → Azienda, scheda «Titoli di viaggio», raggruppati
+  per rete. Di un titolo si cambia tutto tranne l'identificativo, che è quello
+  del GTFS.
+- **Che cosa c'è dentro**: biglietti di corsa semplice e di andata e ritorno,
+  abbonamenti settimanali, mensili e annuali. Un titolo extraurbano può avere
+  un prezzo per fascia chilometrica: nel feed il suo nome prende la fascia e i
+  suoi chilometri. I biglietti extraurbani di corsa semplice non stanno nel
+  catalogo: sono uno per fascia, col prezzo della fascia.
+- **Il biglietto di riferimento**: ogni rete urbana ne ha al più uno. Con
+  quello si dà il prezzo di una corsa urbana (simulatore, viaggi).
+- **Riempire un feed** (pagina Tariffe): si copiano dal catalogo i titoli che
+  nel feed mancano. Quelli che ci sono già non si toccano.
+- **Niente più doppioni**: prima i due pulsanti non controllavano se un titolo
+  c'era già, e ogni pressione raddoppiava tutti i titoli del feed (29
+  diventavano 58). Ora no. I doppioni che ci sono già si tolgono da Tariffe →
+  «Genera & Esporta» → «Togli i doppioni dei titoli»; la validazione del feed
+  ha un controllo in più che li segnala.
+- **Allineare un feed al catalogo**: Tariffe → «Prodotti & Supporti» →
+  «Allinea al catalogo». Dice quali titoli del feed hanno nome, prezzo o durata
+  diversi dal catalogo e dalle fasce chilometriche, e dopo la conferma li
+  allinea. È il modo di portare in un feed un prezzo cambiato nel catalogo o
+  nelle fasce.
+- **Le regole delle reti urbane** ora vengono dai titoli che ci sono nel feed:
+  una regola per ogni biglietto urbano che ha una durata, per tutte le reti
+  urbane dell'azienda. Prima erano sei regole scritte a mano per Ancona, Jesi
+  e Falconara, e quelle di Falconara puntavano a un identificativo
+  (`falconara_60min`) che nei feed riempiti dall'elenco grande non c'era.
+- **Conerobus**: la migrazione carica i 159 titoli che erano nel codice. Un
+  test confronta quello che scrivono i pulsanti con quello che scrivevano
+  prima, titolo per titolo. Tre differenze volute:
+  - Falconara ha un identificativo solo (`falc_60min`, `falc_ar`), quello
+    dell'elenco grande. I feed che hanno già `falconara_60min` lo tengono;
+  - nove biglietti urbani hanno ora la durata (60 o 100 minuti) anche se
+    arrivano dall'elenco grande, che prima li scriveva senza;
+  - Senigallia, Castelfidardo e Sassoferrato hanno il loro biglietto di
+    riferimento, e quindi la loro regola di tratta.
+- **Un'installazione nuova** parte col catalogo vuoto: un feed si riempie dei
+  soli biglietti per fascia, se le fasce ci sono.
+- **Una rete coi titoli nel catalogo è in uso**: non si toglie finché non si
+  spostano o si tolgono.
+- **Fuori da qui**: le categorie di passeggero e i supporti di partenza (pochi
+  valori, ancora nel codice) e le categorie dell'analisi di Planning Studio.
+
+**Dopo il deploy**
+1. In Amministrazione → Azienda la scheda «Titoli di viaggio» mostra 159
+   titoli: 20 biglietti e 139 abbonamenti.
+2. Nella pagina Tariffe, «Genera & Esporta» → «Valida Feed»: se la riga
+   «Titoli di viaggio senza doppioni» è rossa, premi «Togli i doppioni dei
+   titoli».
+3. Poi «Genera Anteprima Tariffe», per rigenerare le regole delle reti urbane.
+4. Nessuna variabile nuova e nessuna Watch Path da aggiungere.
+
+**Rollback**: immagine precedente. La tabella resta, senza effetti: il codice
+di prima ha i suoi elenchi scritti dentro.
+
 ### Le fasce chilometriche dell'extraurbano (tappa 6.8)
 
 Il prezzo di una corsa extraurbana viene dalla distanza: a ogni fascia di
