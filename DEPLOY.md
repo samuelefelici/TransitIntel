@@ -1476,6 +1476,48 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### I depositi dell'azienda (tappa 6.4)
+
+I sette depositi di Conerobus erano scritti nel codice, e l'API li inseriva
+**a ogni avvio** se mancavano: una seconda azienda se li sarebbe trovati senza
+averli chiesti, e non c'era modo di crearne o toglierne uno. Da questo
+rilascio i depositi sono dati dell'azienda.
+
+- **Dove**: Amministrazione → Azienda, scheda «Depositi». Solo
+  l'amministratore. Ogni modifica resta nel registro delle modifiche, coi
+  valori (`roster_depositi` è fra le tabelle sorvegliate: ora sono 37).
+- **Che cosa si scrive**: il nome, il gruppo (fermo o in servizio la domenica
+  e nei festivi), i periodi dei turni (due al mese o ogni settimana), gli
+  altri nomi con cui il deposito arriva da un file, l'ordine.
+- **Il codice non cambia**: lo usano i gruppi turni e i depositi degli utenti.
+  In un deposito nuovo si ricava dal nome («Jesi Urbano» → `jesi-urbano`), o
+  si scrive a mano.
+- **Un nome cambiato** resta fra gli altri nomi: i conducenti portano il
+  deposito per nome, e così lo ritrovano. Chi ha lo storico prende subito il
+  nome nuovo.
+- **Le protezioni**:
+  - un nome, un codice o un altro nome non può essere di due depositi;
+  - un altro nome che qualche conducente usa non si toglie: resterebbe senza
+    deposito;
+  - un deposito in uso (conducenti, cambi di deposito programmati, gruppi
+    turni, utenti) non si toglie: prima si sposta chi lo usa.
+- **Conerobus**: non cambia niente, i sette depositi ci sono già. La
+  migrazione `0038` li inserisce solo dove mancano e solo nell'installazione
+  di Conerobus (la riga di azienda con `gtfs_agency_id` «conerobus»).
+- **Un'installazione nuova** parte senza depositi: la scheda lo dice, e
+  l'amministratore aggiunge i suoi. Senza depositi a un conducente non si può
+  dare il deposito.
+- **Le installazioni di prova** (`CERBERO_DATI_PROVA`): se non ci sono
+  depositi, «conducenti di prova» crea anche sette depositi di esempio.
+- L'API: `GET` e `POST /api/admin/depositi`, `PUT` e `DELETE
+  /api/admin/depositi/:codice`.
+
+**Dopo il deploy**: in Amministrazione → Azienda la scheda «Depositi» mostra i
+sette depositi con chi li usa. Riavviando l'API non cambia niente.
+
+**Rollback**: immagine precedente. I depositi restano com'erano; quelli tolti
+di proposito tornerebbero al riavvio, come prima.
+
 ### Dati aperti a un indirizzo stabile (tappa 6.3)
 
 Il NAP non riceve file a mano: scarica ogni giorno da un indirizzo che non

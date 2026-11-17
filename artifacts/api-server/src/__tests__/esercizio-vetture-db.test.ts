@@ -12,6 +12,7 @@ import { sql } from "drizzle-orm";
 import rosterRouter from "../routes/roster";
 import { registraEvento } from "../lib/esercizio-giornale";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+import { depositiDiProva } from "./helpers/depositi-di-prova";
 
 const u = (n: number) => `e5400000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [ADMIN, CAPO, VSS] = [u(1), u(2), u(3)];
@@ -37,8 +38,11 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le vetture sui turni macchina, 
     await db.execute(sql`DELETE FROM esercizio_giornate WHERE giorno IN (${G}::date, ${CHIUSA}::date)`);
     await db.execute(sql`DELETE FROM users WHERE id IN (${ADMIN}::uuid, ${CAPO}::uuid)`);
   };
+  let togliDepositi = async () => {};
   beforeAll(async () => {
     await pulisci();
+    /* i depositi sono dati dell'azienda (tappa 6.4): il test mette i suoi */
+    togliDepositi = await depositiDiProva();
     await db.execute(sql`INSERT INTO users (id, email, password_hash, role, full_name) VALUES
       (${ADMIN}::uuid, 'vetture-admin@prova.local', 'x', 'admin', 'Amministrazione di prova'),
       (${CAPO}::uuid, 'vetture-capo@prova.local', 'x', 'user', 'Capo deposito di prova')`);
@@ -56,7 +60,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le vetture sui turni macchina, 
       (${G}::date, 'v54-3', '3', ${VSS}::uuid, 'M3', 8, 'non_rilevata', '{"vetture": []}'::jsonb),
       (${G}::date, 'v54-4', '4', ${VSS}::uuid, 'M2', 6, 'non_rilevata', '{"vetture": []}'::jsonb)`);
   });
-  afterAll(pulisci);
+  afterAll(async () => { await pulisci(); await togliDepositi(); });
 
   it("assegna, cambia e toglie; chi ha assegnato si vede; l'AVM che ha visto un'altra vettura dà un avviso", async () => {
     expect((await metti(admin, "M1", " 301 ")).body).toEqual({ vettura: "301" });

@@ -16,6 +16,7 @@ import anagraficaRouter from "../routes/anagrafica";
 import rosterRouter from "../routes/roster";
 import rotazioniRouter from "../lib/roster-rotazioni";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+import { depositiDiProva } from "./helpers/depositi-di-prova";
 
 const u = (n: number) => `e1400000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [CAPO, LIBERO, ADMIN, JESI, ANCONA, SENZA, DSS] = Array.from({ length: 7 }, (_, i) => u(i + 1));
@@ -41,8 +42,10 @@ async function pulisci() {
 }
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("il limite per deposito sul roster (database vero)", () => {
+  let togliDepositi = async () => {};
   beforeAll(async () => {
-    /* la prima richiesta prepara l'anagrafica (catalogo dei depositi compreso) */
+    /* i depositi sono dati dell'azienda (tappa 6.4): il test mette i suoi; la prima richiesta prepara l'anagrafica */
+    togliDepositi = await depositiDiProva();
     const dep = await libero.get("/api/roster/depositi");
     expect(dep.status).toBe(200);
     await pulisci();
@@ -52,7 +55,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il limite per deposito sul rost
         (${ANCONA}::uuid, 'Prova214c Ancona', true, true, 'Ancona', 0, now()),
         (${SENZA}::uuid, 'Prova214c Senza', true, true, NULL, 0, now())`);
   });
-  afterAll(async () => { await pulisci(); await pool.end(); });
+  afterAll(async () => { await pulisci(); await togliDepositi(); await pool.end(); });
 
   const voce = (chi: typeof capo, driverId: string, code = "ASS") =>
     chi.post("/api/roster/entries").send({ driverId, day: GIORNO, category: "assenza", code });
