@@ -164,7 +164,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
     voci: [
       { href: "/admin/users", etichetta: "Utenti e accessi", icona: Users, descrizione: "Permessi, sblocchi, registro", soloAdmin: true },
       { href: "/admin/ruoli", etichetta: "Ruoli", icona: ShieldCheck, descrizione: "Che cosa può fare ogni ruolo", soloAdmin: true },
-      { href: "/admin/azienda", etichetta: "Azienda", icona: Building2, descrizione: "Nome, sito, centro delle mappe", soloAdmin: true },
+      { href: "/admin/azienda", etichetta: "Azienda", icona: Building2, descrizione: "Nome, sito, territorio", soloAdmin: true },
       { href: "/admin/voci-roster", etichetta: "Voci del roster", icona: ListChecks, descrizione: "Assenze e presenze, con le loro regole", soloAdmin: true },
       { href: "/admin/parametri", etichetta: "Parametri di esercizio", icona: Settings2, descrizione: "Autovetture aziendali", soloAdmin: true },
       { href: "/admin/registro", etichetta: "Registro delle modifiche", icona: History, descrizione: "Chi ha cambiato che cosa", soloAdmin: true },

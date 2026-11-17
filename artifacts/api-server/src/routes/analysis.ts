@@ -3,6 +3,7 @@ import { db } from "@workspace/db";
 import { busStops, censusSections, pointsOfInterest, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, gtfsShapes, isochroneCache } from "@workspace/db/schema";
 import { sql, count, inArray, and, eq } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
+import { leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
 
 const router: IRouter = Router();
 
@@ -1000,25 +1001,9 @@ router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (
       : 0;
 
     // Build per-municipality breakdown
-    // Municipality name lookup — ISTAT codes for Province of Ancona (42)
-    const MUNI_NAMES: Record<string, string> = {
-      "420010": "Agugliano", "420020": "Ancona", "420030": "Arcevia", "420040": "Barbara",
-      "420050": "Belvedere Ostrense", "420060": "Camerano", "420070": "Camerata Picena",
-      "420080": "Castel Colonna", "420100": "Castelfidardo", "420110": "Castelleone di Suasa",
-      "420120": "Castelplanio", "420130": "Cerreto d'Esi", "420140": "Chiaravalle",
-      "420150": "Corinaldo", "420160": "Cupramontana", "420170": "Fabriano",
-      "420180": "Falconara Marittima", "420190": "Filottrano", "420200": "Genga",
-      "420210": "Jesi", "420220": "Loreto", "420230": "Maiolati Spontini",
-      "420240": "Mergo", "420250": "Monsano", "420260": "Monte Roberto",
-      "420270": "Monte San Vito", "420280": "Montecarotto", "420290": "Montemarciano",
-      "420300": "Numana", "420310": "Offagna", "420320": "Osimo",
-      "420330": "Ostra", "420340": "Senigallia", "420350": "Serra de' Conti",
-      "420360": "Serra San Quirico", "420370": "Staffolo", "420380": "Santa Maria Nuova",
-      "420400": "Poggio San Marcello", "420410": "Polverigi", "420420": "Rosora",
-      "420430": "San Marcello", "420440": "San Paolo di Jesi", "420450": "Osimo",
-      "420460": "Trecastelli", "420470": "Sassoferrato", "420480": "Castelbellino",
-      "420490": "Morro d'Alba", "420500": "Sirolo",
-    };
+    /* i nomi dal territorio dell'azienda (tappa 6.1): la copia che c'era qui aveva
+       i nomi sfasati sui codici (420260 «Monte Roberto», che è Montecarotto) */
+    const nomi = await nomiComuni();
 
     const muniBreakdown: { code: string; name: string; totalPop: number; coveredPop: number; percent: number }[] = [];
     if (relevantMuniCodes) {
@@ -1033,7 +1018,7 @@ router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (
         }
         muniBreakdown.push({
           code,
-          name: MUNI_NAMES[code] || `Comune ${code}`,
+          name: nomeOppure(code, nomi),
           totalPop: muniTotal,
           coveredPop: muniCovered,
           percent: muniTotal > 0 ? Math.round((muniCovered / muniTotal) * 1000) / 10 : 0,
@@ -1139,24 +1124,10 @@ router.get("/analysis/service-quality", cache({ ttlSeconds: 60 }), async (req, r
     const officePoi = allPoi.filter(p => p.category === "office");
     const shoppingPoi = allPoi.filter(p => p.category === "shopping" && isRelevantShopping(p));
 
-    // Known industrial/commercial zones in Provincia di Ancona
-    // These are synthetic POI representing major employment/commercial hubs
-    const INDUSTRIAL_ZONES: Array<{ name: string; lat: number; lng: number; category: string; properties: any }> = [
-      { name: "Zona Industriale Baraccola (Ikea, MediaWorld, negozi)", lat: 43.5580, lng: 13.4990, category: "industrial", properties: {} },
-      { name: "Centro Comm. Emisfero / Conero (Baraccola)", lat: 43.5757, lng: 13.5041, category: "industrial", properties: {} },
-      { name: "Angelini Pharma — Stabilimento Ancona", lat: 43.5850, lng: 13.4780, category: "industrial", properties: {} },
-      { name: "Fincantieri — Cantiere Navale Ancona", lat: 43.6250, lng: 13.5080, category: "industrial", properties: {} },
-      { name: "Zona Industriale Castelferretti / Falconara", lat: 43.6300, lng: 13.3800, category: "industrial", properties: {} },
-      { name: "Fileni — Stabilimento Cingoli/Jesi", lat: 43.5240, lng: 13.2410, category: "industrial", properties: {} },
-      { name: "Zona Industriale Osimo — Recanati", lat: 43.4700, lng: 13.5100, category: "industrial", properties: {} },
-      { name: "Interporto Marche — Jesi", lat: 43.5100, lng: 13.2600, category: "industrial", properties: {} },
-      { name: "Zona Produttiva Fabriano (Elica, Indesit)", lat: 43.3380, lng: 12.9060, category: "industrial", properties: {} },
-      { name: "Centro Commerciale Vallemiano — Ancona", lat: 43.6050, lng: 13.5000, category: "industrial", properties: {} },
-      { name: "Polo Commerciale Torrette (Auchan/CC Torrette 2000)", lat: 43.6080, lng: 13.4546, category: "industrial", properties: {} },
-      { name: "Centro Commerciale Il Maestrale — Senigallia", lat: 43.7150, lng: 13.2200, category: "industrial", properties: {} },
-      { name: "Zona Ind. Sentino — Sassoferrato/Fabriano", lat: 43.4310, lng: 12.8550, category: "industrial", properties: {} },
-      { name: "Corso Garibaldi — Centro Commerciale Naturale Ancona", lat: 43.6178, lng: 13.5138, category: "industrial", properties: {} },
-    ];
+    /* i poli di lavoro e commercio noti (luoghi del territorio con uso «polo_lavoro», tappa 6.1):
+       POI sintetici per i grandi bacini d'impiego che le mappe non hanno */
+    const INDUSTRIAL_ZONES = (await leggiLuoghi("polo_lavoro"))
+      .map(l => ({ name: l.nome, lat: l.lat, lng: l.lng, category: "industrial", properties: {} as any }));
 
     // Merge all into one "workplaces" array
     const workplaces = [

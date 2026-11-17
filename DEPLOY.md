@@ -1476,6 +1476,62 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il territorio dell'azienda (tappa 6.1)
+
+Primo passo per installare Cerbero presso un secondo cliente. Il territorio di
+Conerobus era scritto nel codice; ora sta in tabella (migrazione `0035`) e
+l'amministratore lo cambia dalla pagina **Amministrazione → Azienda**, sotto i
+dati dell'azienda.
+- **Provincia ISTAT** (`azienda.provincia_istat`, tre cifre, per Conerobus
+  «042»). La usano l'import della popolazione e quello del pendolarismo. Senza
+  provincia l'import del pendolarismo si ferma col messaggio.
+- **Comuni del territorio** (`territorio_comuni`): codice ISTAT a sei cifre,
+  nome, soppresso. Ci sono anche centroide, superficie e popolazione di
+  riferimento per l'import della popolazione. Prima i nomi stavano in **sei
+  copie**:
+  - quella dell'analisi della rete aveva i **nomi sfasati sui codici**
+    (420260 «Monte Roberto», che è Montecarotto): ora i nomi sono giusti;
+  - quella dell'import della popolazione aveva i **codici ISTAT scambiati**
+    («042001» chiamato Ancona, che è Agugliano), e la popolazione letta
+    dall'ISTAT finiva sul comune sbagliato. Ora si abbina per codice, e l'URL
+    dell'ISTAT non chiede più i codici soppressi né salta i comuni 045-050.
+  - Restano i tre comuni soppressi (Castel Colonna, Monterado, Ripe), che i
+    dati del 2011 (sezioni, pendolarismo) nominano ancora.
+- **Luoghi di riferimento** (`territorio_luoghi`), per uso:
+  - dove si cercano i punti d'interesse (Google), col raggio. Senza luoghi la
+    ricerca si ferma **prima** di cancellare i punti d'interesse che ci sono;
+  - i punti del meteo;
+  - i poli di lavoro e commercio dell'analisi della rete.
+- **I valori di Conerobus** entrano solo nell'installazione di Conerobus (la
+  riga di `azienda` con identificativo GTFS «conerobus»): 47 comuni più 3
+  soppressi, 34 luoghi. Un'installazione nuova parte vuota.
+- Nel registro delle modifiche, coi valori. Solo l'amministratore
+  (`/api/admin/territorio`, mai un token di Argos).
+
+**Cosa cambia per Conerobus**: i nomi dei comuni nell'analisi della rete
+(prima sfasati) e la popolazione delle righe di comune che l'import settimanale
+tiene in `census_sections` (prima presa dal comune sbagliato). Il resto è
+uguale.
+
+**Fuori, per dopo** (scritti ancora nel codice):
+- la regola «matricola di 1-4 cifre = vettura dell'azienda» e le
+  transcodifiche verso le consorziate: sono l'integrazione con il centro AVM
+  di Conerobus, da rifare insieme per l'AVM di un altro cliente;
+- il riquadro della ricerca OSM dei punti d'interesse e i punti stradali del
+  traffico (cambiarli cambierebbe i dati raccolti);
+- gli orari dei treni nei nodi intermodali (dovrebbero arrivare dal GTFS
+  ferroviario) e il motore tariffario regionale.
+
+**Dopo il deploy**:
+1. In Amministrazione → Azienda la provincia è «042», sotto ci sono 47 comuni
+   (più 3 soppressi) e 34 luoghi.
+2. La definizione di fatto: nell'analisi della copertura della rete i comuni
+   hanno il nome giusto; lunedì, dopo l'import della popolazione, le righe di
+   comune hanno la popolazione del loro comune.
+
+**Rollback**: immagine precedente. Le tabelle e la colonna restano; il codice
+di prima non le legge.
+
 ### Il catalogo delle voci del roster (tappa 5.5)
 
 Le voci di assenza e di presenza del roster (R, ASS, MA3, MA, I, PAD, STRA,

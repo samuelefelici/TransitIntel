@@ -4,6 +4,7 @@ import { weatherSnapshots, trafficSnapshots } from "@workspace/db/schema";
 import { sql, desc, and, gte, lte } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
 import { cronDeiDati } from "../lib/segreto-cron";
+import { leggiLuoghi } from "../lib/territorio";
 
 const router: IRouter = Router();
 /** Solo la cron: va montato prima del login (routes/index.ts), si protegge col segreto. */
@@ -12,14 +13,10 @@ export const weatherCronRouter: IRouter = Router();
 const OWM_KEY = process.env.OPENWEATHER_API_KEY || "";
 const OWM_BASE = "https://api.openweathermap.org/data/2.5";
 
-// Province di Ancona — grid di punti rappresentativi
-const WEATHER_LOCATIONS = [
-  { name: "Ancona",      lat: 43.6158, lng: 13.5189 },
-  { name: "Jesi",        lat: 43.5222, lng: 13.2436 },
-  { name: "Senigallia",  lat: 43.7151, lng: 13.2175 },
-  { name: "Fabriano",    lat: 43.3368, lng: 12.9078 },
-  { name: "Falconara M.", lat: 43.6280, lng: 13.3940 },
-];
+/* I punti del meteo: i luoghi del territorio con uso «meteo» (lib/territorio.ts, tappa 6.1). */
+async function puntiMeteo(): Promise<Array<{ name: string; lat: number; lng: number }>> {
+  return (await leggiLuoghi("meteo")).map(l => ({ name: l.nome, lat: l.lat, lng: l.lng }));
+}
 
 // ─── Cron: fetch weather snapshots ─────────────────────────────
 
@@ -42,6 +39,7 @@ weatherCronRouter.post("/cron/weather", async (req, res) => {
 
   try {
     const results: any[] = [];
+    const WEATHER_LOCATIONS = await puntiMeteo();
 
     for (const loc of WEATHER_LOCATIONS) {
       const url = `${OWM_BASE}/weather?lat=${loc.lat}&lon=${loc.lng}&appid=${OWM_KEY}&units=metric&lang=it`;
@@ -90,7 +88,7 @@ weatherCronRouter.post("/cron/weather", async (req, res) => {
 async function fetchLiveWeather(): Promise<any[]> {
   if (!OWM_KEY) return [];
   const results: any[] = [];
-  for (const loc of WEATHER_LOCATIONS) {
+  for (const loc of await puntiMeteo()) {
     try {
       const url = `${OWM_BASE}/weather?lat=${loc.lat}&lon=${loc.lng}&appid=${OWM_KEY}&units=metric&lang=it`;
       const resp = await fetch(url);

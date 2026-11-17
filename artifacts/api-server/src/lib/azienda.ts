@@ -12,6 +12,8 @@
  *   neutri di AZIENDA_DA_COMPILARE, mai quelli di un'altra azienda.
  * - Chi legge passa da qui (leggiAzienda): la riga cambia di rado, quindi
  *   resta in memoria per un minuto. Chi salva la fa rileggere subito.
+ * - Dalla tappa 6.1 (migrazione 0035) anche la provincia ISTAT; il
+ *   territorio (comuni, luoghi) sta in lib/territorio.ts.
  * - Sono dati dell'azienda, non di persone: li legge chiunque sia entrato
  *   (arrivano con /api/auth/me), li scrive solo l'amministratore.
  */
@@ -33,6 +35,8 @@ export interface Azienda {
   regione: string | null;
   /** dove si aprono le mappe di tutta la rete */
   centro: { lat: number; lng: number; zoom: number };
+  /** la provincia degli import ISTAT, tre cifre («042»); null finché non la si dice (tappa 6.1) */
+  provinciaIstat: string | null;
   /** false finché la tabella è vuota: l'amministratore non ha ancora compilato la pagina */
   compilata: boolean;
 }
@@ -47,6 +51,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   citta: null,
   regione: null,
   centro: Object.freeze({ lat: 42.5, lng: 12.5, zoom: 5.5 }),
+  provinciaIstat: null,
   compilata: false,
 });
 
@@ -75,6 +80,7 @@ export const DatiAzienda = z.object({
   centroLat: z.number().min(-90).max(90),
   centroLng: z.number().min(-180).max(180),
   zoom: z.number().min(3).max(18),
+  provinciaIstat: facoltativo(z.string().trim().regex(/^[0-9]{3}$/, "tre cifre, come «042»")),
 }).strict();
 export type DatiAzienda = z.infer<typeof DatiAzienda>;
 
@@ -82,6 +88,10 @@ export type DatiAzienda = z.infer<typeof DatiAzienda>;
 const NOMI_CAMPI: Readonly<Record<string, string>> = {
   ragioneSociale: "Ragione sociale", nome: "Nome", sito: "Sito", telefono: "Telefono", gtfsAgencyId: "Identificativo GTFS",
   citta: "Città", regione: "Regione", centroLat: "Latitudine", centroLng: "Longitudine", zoom: "Zoom",
+  provinciaIstat: "Provincia ISTAT",
+  /* i comuni e i luoghi del territorio (lib/territorio.ts) */
+  codiceIstat: "Codice ISTAT", soppresso: "Soppresso", lat: "Latitudine", lng: "Longitudine", areaKm2: "Superficie",
+  popolazione: "Popolazione", uso: "Uso", raggioM: "Raggio", ordine: "Ordine",
 };
 export function erroriDiValidazione(e: z.ZodError): string {
   const estranei = e.issues.filter(i => i.code === "unrecognized_keys").flatMap((i: any) => (i.keys as string[]).map(k => String(k).slice(0, 40)));
@@ -107,6 +117,7 @@ function daRiga(r: any): Azienda {
     citta: r.citta ?? null,
     regione: r.regione ?? null,
     centro: { lat: Number(r.centro_lat), lng: Number(r.centro_lng), zoom: Number(r.zoom) },
+    provinciaIstat: r.provincia_istat ?? null,
     compilata: true,
   };
 }
@@ -120,7 +131,8 @@ export async function leggiAzienda(): Promise<Azienda> {
   if (inMemoria && Date.now() - inMemoria.lettaIl < DURATA_MS) return inMemoria.azienda;
   try {
     const r = await db.execute<any>(sql`
-      SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom
+      SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom,
+             provincia_istat
         FROM azienda WHERE unica`);
     const riga = r.rows?.[0];
     inMemoria = { azienda: riga ? daRiga(riga) : AZIENDA_DA_COMPILARE, lettaIl: Date.now() };
@@ -150,7 +162,7 @@ export interface DettaglioAzienda { azienda: Azienda; aggiornataIl: string | nul
 export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
   const r = await db.execute<any>(sql`
     SELECT a.ragione_sociale, a.nome, a.sito, a.telefono, a.gtfs_agency_id, a.citta, a.regione,
-           a.centro_lat, a.centro_lng, a.zoom, a.aggiornata_il,
+           a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.aggiornata_il,
            coalesce(nullif(btrim(u.full_name), ''), u.email) AS aggiornata_da
       FROM azienda a LEFT JOIN users u ON u.id = a.aggiornata_da
      WHERE a.unica`);
@@ -167,14 +179,15 @@ export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
 export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Promise<DettaglioAzienda> {
   await db.execute(sql`
     INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione,
-                         centro_lat, centro_lng, zoom, aggiornata_il, aggiornata_da)
+                         centro_lat, centro_lng, zoom, provincia_istat, aggiornata_il, aggiornata_da)
     VALUES (true, ${d.ragioneSociale}, ${d.nome}, ${d.sito}, ${d.telefono}, ${d.gtfsAgencyId}, ${d.citta}, ${d.regione},
-            ${d.centroLat}, ${d.centroLng}, ${d.zoom}, now(), ${utenteId}::uuid)
+            ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, now(), ${utenteId}::uuid)
     ON CONFLICT (unica) DO UPDATE SET
       ragione_sociale = EXCLUDED.ragione_sociale, nome = EXCLUDED.nome, sito = EXCLUDED.sito,
       telefono = EXCLUDED.telefono, gtfs_agency_id = EXCLUDED.gtfs_agency_id, citta = EXCLUDED.citta,
       regione = EXCLUDED.regione, centro_lat = EXCLUDED.centro_lat, centro_lng = EXCLUDED.centro_lng,
-      zoom = EXCLUDED.zoom, aggiornata_il = EXCLUDED.aggiornata_il, aggiornata_da = EXCLUDED.aggiornata_da`);
+      zoom = EXCLUDED.zoom, provincia_istat = EXCLUDED.provincia_istat,
+      aggiornata_il = EXCLUDED.aggiornata_il, aggiornata_da = EXCLUDED.aggiornata_da`);
   dimenticaAzienda();
   return dettaglioAzienda();
 }

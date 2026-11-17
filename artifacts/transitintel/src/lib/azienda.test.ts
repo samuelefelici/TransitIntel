@@ -6,7 +6,8 @@ import {
 
 const CONEROBUS: Azienda = {
   ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
-  gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 }, compilata: true,
+  gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
+  provinciaIstat: "042", compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -51,6 +52,7 @@ describe("il modulo dell'amministratore", () => {
     expect(moduloDa(CONEROBUS)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
+      provinciaIstat: "042",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -60,8 +62,12 @@ describe("il modulo dell'amministratore", () => {
     expect(erroriDelModulo(m)).toEqual({});
     expect(datiDaSalvare(m)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: null, telefono: null, gtfsAgencyId: "conerobus",
-      citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11,
+      citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
     });
+    // la provincia è facoltativa, ma se c'è sono tre cifre
+    expect(datiDaSalvare({ ...m, provinciaIstat: " " }).provinciaIstat).toBeNull();
+    expect(erroriDelModulo({ ...m, provinciaIstat: "42" })).toEqual({ provinciaIstat: "Tre cifre, come 042" });
+    expect(aziendaValida({ ...CONEROBUS, provinciaIstat: "4x2" }).provinciaIstat).toBeNull();
   });
 
   it("dice accanto a quale casella c'è l'errore", () => {

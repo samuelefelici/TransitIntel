@@ -10,6 +10,8 @@ import { spawnSync } from "node:child_process";
 import * as readline from "node:readline";
 import { syncAllRailwaySchedules } from "./intermodal";
 import { cronDeiDati } from "../lib/segreto-cron";
+import { leggiAzienda } from "../lib/azienda";
+import { leggiComuni, leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
 
 const router: IRouter = Router();
 
@@ -38,24 +40,11 @@ const GOOGLE_PLACES_CATEGORIES: Array<{
   { category: "tourism",    types: ["museum", "tourist_attraction", "lodging", "art_gallery"] },
 ];
 
-// Province centro + surrounding towns to search around (lat, lng, radius metres)
-const SEARCH_LOCATIONS = [
-  { name: "Ancona centro",    lat: 43.6166, lng: 13.5185, radius: 5000 },
-  { name: "Ancona Torrette",  lat: 43.5980, lng: 13.4520, radius: 3000 },
-  { name: "Ancona Baraccola", lat: 43.5590, lng: 13.4860, radius: 3000 },
-  { name: "Jesi",             lat: 43.5222, lng: 13.2436, radius: 4000 },
-  { name: "Senigallia",       lat: 43.7151, lng: 13.2175, radius: 4000 },
-  { name: "Fabriano",         lat: 43.3368, lng: 12.9078, radius: 4000 },
-  { name: "Osimo",            lat: 43.4834, lng: 13.4810, radius: 3000 },
-  { name: "Falconara",        lat: 43.6280, lng: 13.3940, radius: 3000 },
-  { name: "Chiaravalle",      lat: 43.5998, lng: 13.3222, radius: 2500 },
-  { name: "Castelfidardo",    lat: 43.4616, lng: 13.5492, radius: 2500 },
-  { name: "Loreto",           lat: 43.4413, lng: 13.6075, radius: 2500 },
-  { name: "Camerano",         lat: 43.5280, lng: 13.5350, radius: 2000 },
-  { name: "Montemarciano",    lat: 43.6430, lng: 13.3410, radius: 2000 },
-  { name: "Filottrano",       lat: 43.4380, lng: 13.3520, radius: 2000 },
-  { name: "Sassoferrato",     lat: 43.4360, lng: 12.8570, radius: 2500 },
-];
+/* Dove cercare i punti d'interesse: i luoghi del territorio con uso
+   «punti_interesse» e il loro raggio (lib/territorio.ts, tappa 6.1). */
+async function luoghiDiRicerca(): Promise<Array<{ name: string; lat: number; lng: number; radius: number }>> {
+  return (await leggiLuoghi("punti_interesse")).map(l => ({ name: l.nome, lat: l.lat, lng: l.lng, radius: l.raggioM ?? 3000 }));
+}
 
 async function googleNearbySearch(
   apiKey: string,
@@ -91,6 +80,11 @@ export async function syncPoiFromGoogle(): Promise<{
 }> {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) throw new Error("GOOGLE_PLACES_API_KEY non configurata");
+  /* prima di cancellare i punti d'interesse che ci sono: senza luoghi non si cerca niente */
+  const SEARCH_LOCATIONS = await luoghiDiRicerca();
+  if (!SEARCH_LOCATIONS.length) {
+    throw new Error("Nessun luogo dove cercare i punti d'interesse: aggiungili in Amministrazione › Azienda › Territorio");
+  }
 
   // Clear all existing POI (both OSM and old manual data) for a clean import
   await db.execute(sql`DELETE FROM points_of_interest`);
@@ -467,7 +461,7 @@ export async function syncTrafficFromTomTom(): Promise<{ inserted: number; faile
  *
  * Strategy (hybrid):
  * 1. Try fetching **population by municipality** from ISTAT SDMX REST API
- *    (dati.istat.it – dataset DCIS_POPRES1, latest year, province of Ancona = "042").
+ *    (dati.istat.it – dataset DCIS_POPRES1, latest year, la provincia e i comuni del territorio).
  *    This gives fresh demographic numbers.
  * 2. Geographic boundaries (centroid, area) come from the static reference table
  *    below – municipality boundaries change only after decennial census or mergers,
@@ -479,76 +473,26 @@ export async function syncTrafficFromTomTom(): Promise<{ inserted: number; faile
  * municipality, respecting the existing `census_sections` table schema.
  */
 
-// ── Static reference: geographic data (OSM/Nominatim) for Provincia di Ancona ──
-const ANCONA_COMUNI: Array<{
-  /** internal code matching istat_code column */
-  code: string;
-  /** ISTAT 6-digit municipal code (e.g. "042001" for Ancona) used in SDMX */
-  istatProCode: string;
-  name: string;
-  lng: number;
-  lat: number;
-  /** fallback population (ISTAT 2023 estimates) */
-  fallbackPop: number;
-  areaKm2: number;
-}> = [
-  { code: "AN001", istatProCode: "042001", name: "Ancona",             lng: 13.5185, lat: 43.6166, fallbackPop: 99470, areaKm2: 124.2 },
-  { code: "AN002", istatProCode: "042002", name: "Agugliano",           lng: 13.3750, lat: 43.5450, fallbackPop: 5070,  areaKm2: 16.1  },
-  { code: "AN003", istatProCode: "042003", name: "Barbara",             lng: 13.0280, lat: 43.5800, fallbackPop: 1360,  areaKm2: 13.5  },
-  { code: "AN004", istatProCode: "042004", name: "Belvedere Ostrense",  lng: 13.1630, lat: 43.5640, fallbackPop: 2370,  areaKm2: 18.2  },
-  { code: "AN005", istatProCode: "042005", name: "Camerano",            lng: 13.5350, lat: 43.5280, fallbackPop: 7490,  areaKm2: 17.0  },
-  { code: "AN006", istatProCode: "042006", name: "Camerata Picena",     lng: 13.3210, lat: 43.5660, fallbackPop: 2810,  areaKm2: 15.0  },
-  { code: "AN007", istatProCode: "042007", name: "Castelbellino",       lng: 13.1830, lat: 43.5160, fallbackPop: 3310,  areaKm2: 8.6   },
-  { code: "AN008", istatProCode: "042008", name: "Castelfidardo",       lng: 13.5492, lat: 43.4616, fallbackPop: 19100, areaKm2: 29.4  },
-  { code: "AN009", istatProCode: "042009", name: "Castelleone di Suasa",lng: 12.9830, lat: 43.6020, fallbackPop: 1620,  areaKm2: 22.0  },
-  { code: "AN010", istatProCode: "042010", name: "Castelplanio",        lng: 13.1350, lat: 43.5270, fallbackPop: 3230,  areaKm2: 18.5  },
-  { code: "AN011", istatProCode: "042011", name: "Cerreto d'Esi",       lng: 13.0520, lat: 43.3390, fallbackPop: 3870,  areaKm2: 29.1  },
-  { code: "AN012", istatProCode: "042012", name: "Chiaravalle",         lng: 13.3222, lat: 43.5998, fallbackPop: 15200, areaKm2: 24.7  },
-  { code: "AN013", istatProCode: "042013", name: "Corinaldo",           lng: 13.0480, lat: 43.6490, fallbackPop: 5180,  areaKm2: 47.5  },
-  { code: "AN014", istatProCode: "042014", name: "Cupramontana",        lng: 13.1190, lat: 43.4440, fallbackPop: 4590,  areaKm2: 29.9  },
-  { code: "AN015", istatProCode: "042015", name: "Fabriano",            lng: 12.9078, lat: 43.3368, fallbackPop: 29900, areaKm2: 272.2 },
-  { code: "AN016", istatProCode: "042016", name: "Falconara Marittima", lng: 13.3940, lat: 43.6280, fallbackPop: 27600, areaKm2: 27.0  },
-  { code: "AN017", istatProCode: "042017", name: "Filottrano",          lng: 13.3520, lat: 43.4380, fallbackPop: 9220,  areaKm2: 51.1  },
-  { code: "AN018", istatProCode: "042018", name: "Genga",               lng: 12.9410, lat: 43.4280, fallbackPop: 1720,  areaKm2: 79.8  },
-  { code: "AN019", istatProCode: "042019", name: "Jesi",                lng: 13.2436, lat: 43.5222, fallbackPop: 39600, areaKm2: 114.0 },
-  { code: "AN020", istatProCode: "042020", name: "Loreto",              lng: 13.6075, lat: 43.4413, fallbackPop: 11000, areaKm2: 18.2  },
-  { code: "AN021", istatProCode: "042021", name: "Maiolati Spontini",   lng: 13.1510, lat: 43.4940, fallbackPop: 7230,  areaKm2: 27.9  },
-  { code: "AN022", istatProCode: "042022", name: "Mergo",               lng: 13.0660, lat: 43.4610, fallbackPop: 1050,  areaKm2: 8.8   },
-  { code: "AN023", istatProCode: "042023", name: "Monsano",             lng: 13.2080, lat: 43.5610, fallbackPop: 3670,  areaKm2: 9.5   },
-  { code: "AN024", istatProCode: "042024", name: "Montecarotto",        lng: 13.0680, lat: 43.5040, fallbackPop: 1930,  areaKm2: 20.4  },
-  { code: "AN025", istatProCode: "042025", name: "Montemarciano",       lng: 13.3410, lat: 43.6430, fallbackPop: 11100, areaKm2: 22.4  },
-  { code: "AN026", istatProCode: "042026", name: "Monte Roberto",       lng: 13.1760, lat: 43.5040, fallbackPop: 3460,  areaKm2: 12.2  },
-  { code: "AN027", istatProCode: "042027", name: "Monte San Vito",      lng: 13.3260, lat: 43.6180, fallbackPop: 7060,  areaKm2: 21.8  },
-  { code: "AN028", istatProCode: "042028", name: "Morro d'Alba",        lng: 13.1960, lat: 43.5800, fallbackPop: 3320,  areaKm2: 16.9  },
-  { code: "AN029", istatProCode: "042029", name: "Numana",              lng: 13.6260, lat: 43.5080, fallbackPop: 3870,  areaKm2: 9.6   },
-  { code: "AN030", istatProCode: "042030", name: "Offagna",             lng: 13.4130, lat: 43.5200, fallbackPop: 1980,  areaKm2: 8.7   },
-  { code: "AN031", istatProCode: "042031", name: "Osimo",               lng: 13.4810, lat: 43.4834, fallbackPop: 34200, areaKm2: 101.2 },
-  { code: "AN032", istatProCode: "042032", name: "Ostra",               lng: 13.1550, lat: 43.6190, fallbackPop: 7480,  areaKm2: 38.3  },
-  { code: "AN033", istatProCode: "042033", name: "Ostra Vetere",        lng: 13.1020, lat: 43.6000, fallbackPop: 3220,  areaKm2: 28.4  },
-  { code: "AN034", istatProCode: "042034", name: "Polverigi",           lng: 13.3960, lat: 43.5570, fallbackPop: 4440,  areaKm2: 15.8  },
-  { code: "AN035", istatProCode: "042035", name: "Ripe",                lng: 13.1980, lat: 43.5980, fallbackPop: 3170,  areaKm2: 9.4   },
-  { code: "AN036", istatProCode: "042036", name: "Rosora",              lng: 13.0870, lat: 43.4770, fallbackPop: 1810,  areaKm2: 16.3  },
-  { code: "AN037", istatProCode: "042037", name: "San Marcello",        lng: 13.2070, lat: 43.5390, fallbackPop: 2260,  areaKm2: 8.6   },
-  { code: "AN038", istatProCode: "042038", name: "Santa Maria Nuova",   lng: 13.3220, lat: 43.4950, fallbackPop: 4330,  areaKm2: 21.3  },
-  { code: "AN039", istatProCode: "042039", name: "Sassoferrato",        lng: 12.8570, lat: 43.4360, fallbackPop: 7380,  areaKm2: 180.3 },
-  { code: "AN040", istatProCode: "042040", name: "Senigallia",          lng: 13.2175, lat: 43.7151, fallbackPop: 44400, areaKm2: 119.0 },
-  { code: "AN041", istatProCode: "042041", name: "Serra de' Conti",     lng: 13.0460, lat: 43.5420, fallbackPop: 3340,  areaKm2: 34.5  },
-  { code: "AN042", istatProCode: "042042", name: "Serra San Quirico",   lng: 13.0780, lat: 43.4500, fallbackPop: 2960,  areaKm2: 29.4  },
-  { code: "AN043", istatProCode: "042043", name: "Sirolo",              lng: 13.6175, lat: 43.5360, fallbackPop: 3890,  areaKm2: 10.6  },
-  { code: "AN044", istatProCode: "042044", name: "Staffolo",            lng: 13.1760, lat: 43.4180, fallbackPop: 2290,  areaKm2: 24.4  },
-];
+/* I comuni, il loro centroide, la superficie, la popolazione di riferimento e
+   la riga che tengono in census_sections vengono dal territorio dell'azienda
+   (territorio_comuni, tappa 6.1). Prima stavano qui, con i codici ISTAT
+   sfasati sui nomi («042001» chiamato Ancona, che è Agugliano): la
+   popolazione letta dall'ISTAT finiva sul comune sbagliato. */
 
 /**
  * Attempt to fetch live population data from ISTAT SDMX REST API.
  * Dataset: DCIS_POPRES1 (Popolazione residente – bilancio demografico).
  * Returns a Map<istatProCode, population> or null on failure.
  */
-async function fetchIstatPopulation(): Promise<Map<string, number> | null> {
+async function fetchIstatPopulation(provincia: string | null, codici: string[]): Promise<Map<string, number> | null> {
+  /* solo codici di cifre (lo dice anche il vincolo della tabella): finiscono in un URL */
+  const territori = [...(provincia ? [provincia] : []), ...codici].filter(c => /^[0-9]{3}$|^[0-9]{6}$/.test(c));
+  if (!codici.length) return null;
   try {
     // SDMX REST v2 – JSON format
-    // Filter: Province 042 (Ancona), latest period, total sex (9), total age (TOTAL)
+    // Filter: la provincia e i comuni del territorio, latest period, total sex (9), total age (TOTAL)
     const url =
-      "https://esploradati.istat.it/SDMXWS/rest/data/22_315/A.042+042001+042002+042003+042004+042005+042006+042007+042008+042009+042010+042011+042012+042013+042014+042015+042016+042017+042018+042019+042020+042021+042022+042023+042024+042025+042026+042027+042028+042029+042030+042031+042032+042033+042034+042035+042036+042037+042038+042039+042040+042041+042042+042043+042044.9.99.TOTAL/?format=jsondata&lastNObservations=1";
+      `https://esploradati.istat.it/SDMXWS/rest/data/22_315/A.${territori.join("+")}.9.99.TOTAL/?format=jsondata&lastNObservations=1`;
 
     const resp = await fetch(url, {
       headers: { Accept: "application/vnd.sdmx.data+json;version=1.0.0-wd" },
@@ -605,17 +549,24 @@ async function fetchIstatPopulation(): Promise<Map<string, number> | null> {
 }
 
 export async function syncCensusFromIstat(): Promise<{ inserted: number; source: string }> {
+  /* i comuni attuali con centroide e superficie; la riga del censimento è quella che il
+     comune tiene (per Conerobus «AN0xx», come prima), o «C» e il codice */
+  const comuni = (await leggiComuni()).filter(c => !c.soppresso && c.lat != null && c.lng != null && c.areaKm2 != null);
+  const { provinciaIstat } = await leggiAzienda();
   // Try live ISTAT data first
-  const livePopulation = await fetchIstatPopulation();
+  const livePopulation = await fetchIstatPopulation(provinciaIstat, comuni.map(c => c.codiceIstat));
   const source = livePopulation ? "istat-api" : "static-fallback";
 
   let inserted = 0;
-  for (const c of ANCONA_COMUNI) {
-    const pop = livePopulation?.get(c.istatProCode) ?? c.fallbackPop;
-    const density = c.areaKm2 > 0 ? pop / c.areaKm2 : 0;
+  for (const c of comuni) {
+    const pop = livePopulation?.get(c.codiceIstat) ?? c.popolazione;
+    if (pop == null) continue;
+    const area = c.areaKm2!;
+    const density = area > 0 ? pop / area : 0;
+    const sezione = c.sezioneCensimento ?? `C${c.codiceIstat}`;
     await db.execute(sql`
       INSERT INTO census_sections (istat_code, centroid_lng, centroid_lat, population, area_km2, density)
-      VALUES (${c.code}, ${c.lng}, ${c.lat}, ${pop}, ${c.areaKm2}, ${density})
+      VALUES (${sezione}, ${c.lng}, ${c.lat}, ${pop}, ${area}, ${density})
       ON CONFLICT (istat_code) DO UPDATE SET
         centroid_lng = EXCLUDED.centroid_lng,
         centroid_lat = EXCLUDED.centroid_lat,
@@ -711,63 +662,6 @@ const ISTAT_PENDOLO_URL =
 const ISTAT_PENDOLO_TXT_NAME = "MATRICE PENDOLARISMO 2011/matrix_pendo2011_10112014.txt";
 
 /**
- * Lista ufficiale comuni provincia di Ancona (042) al 1 gennaio 2011 —
- * estratta dal file `Codici Comuni italiani` allegato alla matrice.
- * Chiave = codice 6-cifre PRO_COM_T, valore = denominazione ufficiale.
- */
-const ANCONA_COMUNI_2011_NAMES: Record<string, string> = {
-  "042001": "Agugliano",
-  "042002": "Ancona",
-  "042003": "Arcevia",
-  "042004": "Barbara",
-  "042005": "Belvedere Ostrense",
-  "042006": "Camerano",
-  "042007": "Camerata Picena",
-  "042008": "Castelbellino",
-  "042009": "Castel Colonna",
-  "042010": "Castelfidardo",
-  "042011": "Castelleone di Suasa",
-  "042012": "Castelplanio",
-  "042013": "Cerreto d'Esi",
-  "042014": "Chiaravalle",
-  "042015": "Corinaldo",
-  "042016": "Cupramontana",
-  "042017": "Fabriano",
-  "042018": "Falconara Marittima",
-  "042019": "Filottrano",
-  "042020": "Genga",
-  "042021": "Jesi",
-  "042022": "Loreto",
-  "042023": "Maiolati Spontini",
-  "042024": "Mergo",
-  "042025": "Monsano",
-  "042026": "Montecarotto",
-  "042027": "Montemarciano",
-  "042028": "Monterado",
-  "042029": "Monte Roberto",
-  "042030": "Monte San Vito",
-  "042031": "Morro d'Alba",
-  "042032": "Numana",
-  "042033": "Offagna",
-  "042034": "Osimo",
-  "042035": "Ostra",
-  "042036": "Ostra Vetere",
-  "042037": "Poggio San Marcello",
-  "042038": "Polverigi",
-  "042039": "Ripe",
-  "042040": "Rosora",
-  "042041": "San Marcello",
-  "042042": "San Paolo di Jesi",
-  "042043": "Santa Maria Nuova",
-  "042044": "Sassoferrato",
-  "042045": "Senigallia",
-  "042046": "Serra de' Conti",
-  "042047": "Serra San Quirico",
-  "042048": "Sirolo",
-  "042049": "Staffolo",
-};
-
-/**
  * Calcola il centroide geografico di ogni comune aggregando le sezioni
  * censuarie (table `census_sections`). Restituisce mappa codice6 → coords.
  * Il `census_sections.istat_code` è 12 caratteri: PRO_COM (5 senza zero
@@ -811,16 +705,20 @@ export async function syncCommutingOdFromIstat(opts?: {
   provinceCode?: string;
   url?: string;
 }): Promise<{ inserted: number; source: string; parsed: number; kept: number }> {
-  const province = opts?.provinceCode ?? "042";
+  /* la provincia: quella chiesta, o quella dell'azienda (tappa 6.1) */
+  const province = opts?.provinceCode ?? (await leggiAzienda()).provinciaIstat;
+  if (!province || !/^[0-9]{3}$/.test(province)) {
+    throw new Error("Provincia ISTAT non impostata: indicala in Amministrazione › Azienda (tre cifre, come «042»)");
+  }
   const url = opts?.url ?? ISTAT_PENDOLO_URL;
 
-  // Risolvi coordinate dai centroidi census + nomi dalla lista ufficiale
+  // Risolvi coordinate dai centroidi census + nomi dal territorio dell'azienda (anche i comuni soppressi del 2011)
   const coords = await buildMunicipalityCentroidsFromCensus(province);
-  const nameMap: Record<string, string> = ANCONA_COMUNI_2011_NAMES; // estendibile per altre province
+  const nomi = await nomiComuni();
   const muniInfo = new Map<string, { name: string; lat: number; lng: number }>();
   for (const [code, c] of coords.entries()) {
     muniInfo.set(code, {
-      name: nameMap[code] ?? `Comune ${code}`,
+      name: nomeOppure(code, nomi),
       lat: c.lat,
       lng: c.lng,
     });
@@ -942,8 +840,10 @@ export async function syncCommutingOdFromIstat(opts?: {
 router.post("/cron/commuting", async (req, res) => {
   if (!verifyCronSecret(req, res)) return;
   try {
-    const province = (req.query.province as string | undefined) ?? "042";
-    const result = await syncCommutingOdFromIstat({ provinceCode: province });
+    const chiesta = req.query.province === undefined ? undefined : String(req.query.province);
+    if (chiesta !== undefined && !/^[0-9]{3}$/.test(chiesta)) { res.status(400).json({ success: false, message: "province: tre cifre, come 042" }); return; }
+    const result = await syncCommutingOdFromIstat({ provinceCode: chiesta });
+    const province = chiesta ?? (await leggiAzienda()).provinciaIstat;
     res.json({
       success: true,
       ...result,

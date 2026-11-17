@@ -4,6 +4,7 @@ import { gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsShapes, pointsOfIn
 import { sql, inArray, eq, and } from "drizzle-orm";
 import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-utils";
 import { getLatestFeedId } from "./gtfs-helpers";
+import { nomeComune, nomeOppure, nomiComuni } from "../lib/territorio";
 import {
   resolveSource, loadShapes, loadStops, loadActiveTrips, loadPassages, loadRoutes,
   parseDayKind, projectBbox, type DayKind,
@@ -1007,25 +1008,9 @@ router.get("/intermodal/municipalities", async (_req, res) => {
     const rows = await db.select({ istatCode: censusSections.istatCode }).from(censusSections);
     const set = new Set<string>();
     for (const r of rows) if (r.istatCode) set.add(r.istatCode.slice(0, 6));
-    const COMUNE_NAMES: Record<string, string> = {
-      "420010": "Agugliano", "420020": "Ancona", "420030": "Arcevia", "420040": "Barbara",
-      "420050": "Belvedere Ostrense", "420060": "Camerano", "420070": "Camerata Picena",
-      "420100": "Castelfidardo", "420110": "Castelleone di Suasa", "420120": "Castelplanio",
-      "420130": "Cerreto d'Esi", "420140": "Chiaravalle", "420150": "Corinaldo",
-      "420160": "Cupramontana", "420170": "Fabriano", "420180": "Falconara Marittima",
-      "420190": "Filottrano", "420200": "Genga", "420210": "Jesi", "420220": "Loreto",
-      "420230": "Maiolati Spontini", "420240": "Mergo", "420250": "Monsano",
-      "420260": "Montecarotto", "420270": "Montemarciano", "420290": "Monte Roberto",
-      "420300": "Monte San Vito", "420310": "Morro d'Alba", "420320": "Numana",
-      "420330": "Offagna", "420340": "Osimo", "420350": "Ostra", "420360": "Ostra Vetere",
-      "420370": "Poggio San Marcello", "420380": "Polverigi", "420400": "Rosora",
-      "420410": "San Marcello", "420420": "San Paolo di Jesi", "420430": "Santa Maria Nuova",
-      "420440": "Sassoferrato", "420450": "Senigallia", "420460": "Serra de' Conti",
-      "420470": "Serra San Quirico", "420480": "Sirolo", "420490": "Staffolo",
-      "420500": "Trecastelli",
-    };
+    const nomi = await nomiComuni();
     const out = [...set]
-      .map(code => ({ code, name: COMUNE_NAMES[code] || `Comune ${code}` }))
+      .map(code => ({ code, name: nomeOppure(code, nomi) }))
       .sort((a, b) => a.name.localeCompare(b.name));
     res.json(out);
   } catch (err) {
@@ -2042,24 +2027,8 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
     // Mappa codice ISTAT → nome comune (per hint a ViaggiaTreno)
     let municipalityName: string | null = null;
     if (municipality) {
-      const COMUNE_NAMES: Record<string, string> = {
-        "420010": "Agugliano", "420020": "Ancona", "420030": "Arcevia", "420040": "Barbara",
-        "420050": "Belvedere Ostrense", "420060": "Camerano", "420070": "Camerata Picena",
-        "420100": "Castelfidardo", "420110": "Castelleone di Suasa", "420120": "Castelplanio",
-        "420130": "Cerreto d'Esi", "420140": "Chiaravalle", "420150": "Corinaldo",
-        "420160": "Cupramontana", "420170": "Fabriano", "420180": "Falconara Marittima",
-        "420190": "Filottrano", "420200": "Genga", "420210": "Jesi", "420220": "Loreto",
-        "420230": "Maiolati Spontini", "420240": "Mergo", "420250": "Monsano",
-        "420260": "Montecarotto", "420270": "Montemarciano", "420290": "Monte Roberto",
-        "420300": "Monte San Vito", "420310": "Morro d'Alba", "420320": "Numana",
-        "420330": "Offagna", "420340": "Osimo", "420350": "Ostra", "420360": "Ostra Vetere",
-        "420370": "Poggio San Marcello", "420380": "Polverigi", "420400": "Rosora",
-        "420410": "San Marcello", "420420": "San Paolo di Jesi", "420430": "Santa Maria Nuova",
-        "420440": "Sassoferrato", "420450": "Senigallia", "420460": "Serra de' Conti",
-        "420470": "Serra San Quirico", "420480": "Sirolo", "420490": "Staffolo",
-        "420500": "Trecastelli",
-      };
-      municipalityName = COMUNE_NAMES[municipality.slice(0, 6)] || COMUNE_NAMES[municipality.slice(0, 5) + "0"] || null;
+      const nomi = await nomiComuni();
+      municipalityName = nomeComune(municipality, nomi);
     }
 
     // ─── Sync per hub railway discovered (ViaggiaTreno) ─────────────

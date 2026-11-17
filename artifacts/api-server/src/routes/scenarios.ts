@@ -8,6 +8,7 @@ import { haversineKm, lineLength, pointToLineDistance } from "../lib/geo-utils";
 import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "../lib/isochrones";
 import { legaContesto } from "../lib/contesto-http";
 import { leggiAzienda, type Azienda } from "../lib/azienda";
+import { nomeOppure, nomiComuni, type NomiComuni } from "../lib/territorio";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -230,32 +231,12 @@ function pointInPolygon(px: number, py: number, ring: number[][]): boolean {
   return inside;
 }
 
-// ─── ISTAT commune code → name mapping (Province of Ancona, cod. 42) ──
-const COMUNE_NAMES: Record<string, string> = {
-  "42001": "Agugliano", "42002": "Ancona", "42003": "Arcevia", "42004": "Barbara",
-  "42005": "Belvedere Ostrense", "42006": "Camerano", "42007": "Camerata Picena",
-  "42008": "Castelbellino", "42010": "Castelfidardo", "42011": "Castelleone di Suasa",
-  "42012": "Castelplanio", "42013": "Cerreto d'Esi", "42014": "Chiaravalle",
-  "42015": "Corinaldo", "42016": "Cupramontana", "42017": "Fabriano",
-  "42018": "Falconara Marittima", "42019": "Filottrano", "42020": "Genga",
-  "42021": "Jesi", "42022": "Loreto", "42023": "Maiolati Spontini",
-  "42024": "Mergo", "42025": "Monsano", "42026": "Montecarotto",
-  "42027": "Montemarciano", "42029": "Monte Roberto", "42030": "Monte San Vito",
-  "42031": "Morro d'Alba", "42032": "Numana", "42033": "Offagna",
-  "42034": "Osimo", "42035": "Ostra", "42036": "Ostra Vetere",
-  "42037": "Poggio San Marcello", "42038": "Polverigi", "42040": "Rosora",
-  "42041": "San Marcello", "42042": "San Paolo di Jesi", "42043": "Santa Maria Nuova",
-  "42044": "Sassoferrato", "42045": "Senigallia", "42046": "Serra de' Conti",
-  "42047": "Serra San Quirico", "42048": "Sirolo", "42049": "Staffolo",
-  "42050": "Trecastelli",
-};
-
+// I nomi dei comuni vengono dal territorio dell'azienda (lib/territorio.ts, tappa 6.1)
 function getComuneCode(istatCode: string): string {
   return istatCode.substring(0, 5);
 }
-function getComuneName(istatCode: string): string {
-  const code = getComuneCode(istatCode);
-  return COMUNE_NAMES[code] || `Comune ${code}`;
+function getComuneName(istatCode: string, nomi: NomiComuni): string {
+  return nomeOppure(getComuneCode(istatCode), nomi);
 }
 
 // ─── Scenario analysis helpers ─────────────────────────────────────────
@@ -319,6 +300,7 @@ async function analyzeScenario(
   censusRows: { istatCode: string | null; population: number; centroidLng: number; centroidLat: number; geojson: any }[],
   radiusKm: number = 0.5,
 ): Promise<ScenarioAnalysis> {
+  const nomi = await nomiComuni();
   // Filter out rows without istatCode
   const validCensus = censusRows.filter(cs => cs.istatCode != null) as { istatCode: string; population: number; centroidLng: number; centroidLat: number; geojson: any }[];
   // ── Extract lines and stops from the scenario ──
@@ -594,7 +576,7 @@ async function analyzeScenario(
   const comuniDetails: ComuneStats[] = Array.from(comuneAggregates.entries())
     .map(([code, agg]) => ({
       code,
-      name: COMUNE_NAMES[code] || `Comune ${code}`,
+      name: nomeOppure(code, nomi),
       totalPop: agg.totalPop,
       coveredPop: agg.coveredPop,
       percent: agg.totalPop > 0 ? Math.round((agg.coveredPop / agg.totalPop) * 100) : 0,
@@ -771,6 +753,7 @@ router.get("/scenarios/compare", async (req, res) => {
     const ids = ((req.query.ids as string) || "").split(",").filter(Boolean);
     if (ids.length < 2) { res.status(400).json({ error: "Servono almeno 2 scenari (ids=id1,id2)" }); return; }
     const radius = Number(req.query.radius) || 0.5;
+    const nomi = await nomiComuni();
 
     const scenarioRows = await db.select().from(scenarios).where(sql`${scenarios.id} IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})`);
     if (scenarioRows.length < 2) { res.status(404).json({ error: "Uno o più scenari non trovati" }); return; }
@@ -970,7 +953,7 @@ router.get("/scenarios/compare", async (req, res) => {
         totalPop: unifiedTotalPop,
         comuniCount: allTouchedComuni.size,
         comuni: Array.from(unifiedComuniPop.entries()).map(([code, pop]) => ({
-          code, name: COMUNE_NAMES[code] || `Comune ${code}`, totalPop: pop,
+          code, name: nomeOppure(code, nomi), totalPop: pop,
         })).sort((a, b) => b.totalPop - a.totalPop),
       },
     });
@@ -1632,6 +1615,7 @@ function computeStopsEnriched(
   poiRows: Array<{ category: string; lng: number; lat: number }>,
   census: Array<{ istatCode: string | null; population: number; centroidLng: number; centroidLat: number }>,
   radiusKm: number,
+  nomi: NomiComuni,
 ): any[] {
   const spine = (lines.slice().sort((a, b) => b.length - a.length)[0]) || [];
   const cum = spine.length > 1 ? polyCum(spine) : [0];
@@ -1647,7 +1631,7 @@ function computeStopsEnriched(
     let comune: string | null = null, cd = Infinity;
     for (const c of census) {
       const d = haversineKm(s.lat, s.lng, c.centroidLat, c.centroidLng);
-      if (d < cd) { cd = d; comune = c.istatCode ? getComuneName(c.istatCode) : null; }
+      if (d < cd) { cd = d; comune = c.istatCode ? getComuneName(c.istatCode, nomi) : null; }
     }
     return { name: s.name, lng: s.lng, lat: s.lat, cumKm: Math.round(proj.along * 100) / 100, poiNear, poiByCat, comune };
   });
@@ -1696,7 +1680,7 @@ router.get("/scenarios/:id/deep", async (req, res) => {
     const demand = await computeDemand((analysis.comuniDetails || []).map((c: any) => c.name));
     const routeLines = (analysis.routes || []).map((r: any) => r.coordinates).filter((c: any) => Array.isArray(c) && c.length > 1);
     const corridorTraffic = await computeCorridorTraffic(routeLines, analysis.totalLengthKm || 0);
-    const stopsEnriched = computeStopsEnriched(routeLines, analysis.stops as any, poiRows as any, censusRows as any, radius);
+    const stopsEnriched = computeStopsEnriched(routeLines, analysis.stops as any, poiRows as any, censusRows as any, radius, await nomiComuni());
     const coverageCurve = computeCoverageCurve(routeLines, analysis.stops as any, censusRows as any, analysis.populationCoverage?.totalPop || 0);
     const accessibilityIso = iso
       ? await computeIsochroneAccessibility(analysis.stops as any, poiRows as any, censusRows as any, minutes.length ? minutes : [5, 10, 15], 20_000)
