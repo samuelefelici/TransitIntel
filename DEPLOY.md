@@ -1476,6 +1476,66 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### NeTEx con il profilo italiano (tappa 6.2)
+
+Il programma in NeTEx, **profilo italiano livello 1**, per il NAP. Il livello 1
+coincide con il profilo europeo per l'informazione ai passeggeri, EPIP
+(UNI CEN/TS 16614-4:2021). Riferimenti:
+- le «Linee guida per la compilazione del profilo italiano del NeTEx»
+  v4.0.1 (11 marzo 2024);
+- lo schema EPIP pubblicato con il profilo italiano (repository GitHub
+  `5Tsrl/netex-italian-profile`), copiato in `artifacts/api-server/assets/netex-epip/`.
+
+- **Da dove**: lo stesso **GTFS consegnabile** della 3.4: la stessa versione
+  (in esercizio, se c'è), la stessa azienda, gli stessi codici stabili, lo
+  stesso controllo. Il NeTEx non ha una seconda lettura del programma.
+- **Cosa c'è**, in un `CompositeFrame` `EU_PI_NETWORK_OFFER`:
+  - l'operatore (`ResourceFrame`);
+  - le fermate, una `StopPlace` con una `Quay` ciascuna (`SiteFrame`);
+  - rete, linee, punti di fermata, assegnazioni e sequenze di fermate
+    (`ServiceFrame`);
+  - un tipo di giorno per servizio, con i suoi giorni (`ServiceCalendarFrame`);
+  - le corse con gli orari, con il giorno dopo per quelle oltre la mezzanotte
+    (`TimetableFrame`).
+- **Identificativi**: `IT:[codice locale]:[Tipo]:[codice]`, più
+  `:[fornitore]` se c'è (linee guida, 4.2.1). Il codice è quello stabile della
+  3.1. Se contiene caratteri non ammessi (per esempio «/» o «:»), questi
+  diventano «_» e in coda va un'impronta del codice originale: «46» e «46/»
+  restano due linee diverse, e l'identificativo non cambia da un export
+  all'altro.
+- **Configurazione**, in Amministrazione → Azienda, scheda «NeTEx per il NAP»:
+  - il **codice locale** (NUTS): per Conerobus entra «ITI3», cioè le Marche;
+  - il **fornitore**, facoltativo: resta vuoto finché la Regione o ATMA non
+    dicono quale.
+
+  Senza codice locale l'export si ferma con il messaggio. **I codici vanno
+  confermati con la Regione prima di consegnare il file.**
+- **Controllo**: `xmllint` con lo schema EPIP, nell'immagine dell'API
+  (`libxml2-utils` nel `Dockerfile.api`) e in CI, dove è obbligatorio.
+  - Con errori nel GTFS di partenza o nello schema, l'export si ferma (422) e
+    dice quali, a meno di «Esporta comunque».
+  - Senza `xmllint` il controllo non si fa, e il server lo dice.
+- **Dove**: in Planning Studio, il pulsante «Esporta NeTEx» accanto a quello
+  del GTFS. Il file è `.xml.gz`. Sul programma vero di prova (3.502 corse,
+  88.682 orari) pesa 39,8 MB, 1,8 MB compresso, e si fa in circa 30 secondi.
+- L'API: `GET /api/planning-studio/projects/:id/export-netex?versione=&forza=1`
+  per il file, `…/export-netex/verifica` per conteggi e controlli.
+
+**Fuori, per la 6.3**: l'URL pubblico e stabile che il NAP scarica ogni giorno.
+Restano fuori anche i livelli successivi del profilo (2: contratti; 3: tariffe;
+5: accessibilità).
+
+**Dopo il deploy**:
+1. Il redeploy ricostruisce l'immagine con `libxml2-utils`.
+2. In Amministrazione → Azienda, scheda «NeTEx per il NAP»: il codice locale
+   è «ITI3». Il fornitore va chiesto alla Regione.
+3. La definizione di fatto: da Planning Studio si scarica il NeTEx del
+   programma in esercizio, e il messaggio dice «Passa lo schema EPIP del
+   profilo italiano».
+
+**Rollback**: immagine precedente. Le due colonne restano; il codice di prima
+non le legge.
+
 ### Il territorio dell'azienda (tappa 6.1)
 
 Primo passo per installare Cerbero presso un secondo cliente. Il territorio di
