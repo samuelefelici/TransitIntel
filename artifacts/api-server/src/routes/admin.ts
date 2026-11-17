@@ -6,6 +6,7 @@ import { cancellaVoce, creaVoce, elencoVoci, ModificaVoce, modificaVoce, NuovaVo
 import {
   cancellaComune, cancellaLuogo, creaLuogo, DatiComune, DatiLuogo, elencoTerritorio, modificaLuogo, RifiutoTerritorio, salvaComune,
 } from "../lib/territorio";
+import { impostaAttivi, preparaDatiAperti, statoDatiAperti } from "../lib/dati-aperti";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
@@ -438,6 +439,51 @@ router.put("/admin/ruoli/:ruolo", async (req, res): Promise<void> => {
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, ruolo }, "diritti del ruolo non salvati");
     res.status(500).json({ error: "Diritti del ruolo non salvati" });
+  }
+});
+
+/**
+ * I dati aperti (tappa 6.3, lib/dati-aperti.ts): il GTFS e il NeTEx pubblicati
+ * a un indirizzo stabile (routes/dati-aperti.ts). GET lo stato (l'interruttore,
+ * la versione in esercizio, i due file e l'ultimo tentativo); PUT accende o
+ * spegne; POST /prepara rifà i file subito, senza aspettare il giro del
+ * lavoratore (mezzo minuto su un programma vero). Solo admin, mai un token di
+ * Argos (requireAdmin).
+ */
+router.use("/admin/dati-aperti", requireAdmin);
+router.get("/admin/dati-aperti", async (req, res): Promise<void> => {
+  try { res.json(await statoDatiAperti()); }
+  catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "dati aperti: stato non leggibile");
+    res.status(500).json({ error: "Stato dei dati aperti non leggibile" });
+  }
+});
+router.put("/admin/dati-aperti", async (req, res): Promise<void> => {
+  const attivi = (req.body ?? {}).attivi;
+  if (typeof attivi !== "boolean") { res.status(400).json({ error: "attivi: true o false" }); return; }
+  try {
+    if ((await impostaAttivi(attivi)) === "senza_azienda") {
+      res.status(409).json({ error: "Prima compila i dati dell'azienda: i file pubblicati portano il suo nome" });
+      return;
+    }
+    res.json(await statoDatiAperti());
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "dati aperti: interruttore non salvato");
+    res.status(500).json({ error: "Pubblicazione non cambiata" });
+  }
+});
+router.post("/admin/dati-aperti/prepara", async (req, res): Promise<void> => {
+  try {
+    const esito = await preparaDatiAperti({
+      forza: true,
+      suGuasto: (err: any, tipo) => req.log?.error?.({ err: err?.message, tipo }, "dati aperti: preparazione non riuscita"),
+    });
+    if (esito.stato === "spenti") { res.status(409).json({ error: "La pubblicazione è spenta: accendila, poi prepara i file" }); return; }
+    if (esito.stato === "occupato") { res.status(409).json({ error: "I file si stanno già preparando: riprova fra un minuto" }); return; }
+    res.json({ preparazione: esito.file, ...(await statoDatiAperti()) });
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "dati aperti: preparazione non riuscita");
+    res.status(500).json({ error: "Preparazione dei file non riuscita" });
   }
 });
 

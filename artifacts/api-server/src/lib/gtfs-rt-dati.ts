@@ -4,7 +4,7 @@
  *
  * Gli aggregatori abbinano il tempo reale all'orario che hanno ricevuto: il
  * GTFS esportato da Planning Studio, dove corse, linee e fermate hanno il loro
- * CODICE stabile (lib/planning-studio-export.ts: `codice ?? id`). L'AVM invece
+ * CODICE stabile (lib/gtfs-consegnabile.ts: `codice ?? id`). L'AVM invece
  * scrive gli identificativi del feed in esercizio, che per un programma di
  * Planning Studio sono gli id interni. Qui si traducono con le stesse regole
  * dell'export:

@@ -35,5 +35,6 @@
   "0033_vetture_sui_turni_macchina": "493b007c9c9c03ad8f0551c979a349d33402ac409307df562858567e232c60ef",
   "0034_voci_del_roster": "eb4f0bea583b11e8d26bcdf64440dede027ae24d23818e0344320c43efc58869",
   "0035_territorio_dell_azienda": "17e2db9edbafb485ceec4ed1bb1b745d276b802a3cb0592377b84c88236e3727",
-  "0036_netex_dell_azienda": "f09c178e24421e6c62c9223eebbe7324fc35ee482dd68eb9da249006dd7d6809"
+  "0036_netex_dell_azienda": "f09c178e24421e6c62c9223eebbe7324fc35ee482dd68eb9da249006dd7d6809",
+  "0037_dati_aperti": "460009ae8f96bf522943bd93c696b351a9187e0c621ec6c34099a1fefdb6af5d"
 }

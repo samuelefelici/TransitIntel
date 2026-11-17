@@ -7,7 +7,7 @@
  * (11 marzo 2024) e lo schema EPIP pubblicato con il profilo italiano
  * (assets/netex-epip/, dal repository 5Tsrl/netex-italian-profile).
  *
- * Si costruisce dal GTFS consegnabile (lib/planning-studio-export.ts): la
+ * Si costruisce dal GTFS consegnabile (lib/gtfs-consegnabile.ts): la
  * stessa versione del programma, la stessa azienda, gli stessi codici stabili,
  * lo stesso controllo. Qui solo la traduzione, pura: niente database.
  *
