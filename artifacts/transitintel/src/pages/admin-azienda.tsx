@@ -8,8 +8,9 @@
  * salvato da sé (components/azienda/TerritorioAzienda.tsx), e i dati aperti
  * (tappa 6.3): gli indirizzi per il NAP (components/azienda/DatiAperti.tsx),
  * i depositi del personale (tappa 6.4, components/azienda/DepositiAzienda.tsx),
- * le reti con le regole delle linee (tappa 6.7, components/azienda/RetiAzienda.tsx)
- * e le fasce chilometriche dell'extraurbano (tappa 6.8, components/azienda/FasceKm.tsx).
+ * le reti con le regole delle linee (tappa 6.7, components/azienda/RetiAzienda.tsx),
+ * le fasce chilometriche dell'extraurbano (tappa 6.8, components/azienda/FasceKm.tsx)
+ * e il catalogo dei titoli di viaggio (tappa 6.9, components/azienda/TitoliCatalogo.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
 import { Building2, FileCode2, MapPin, Radio, Save } from "lucide-react";
@@ -25,6 +26,7 @@ import DatiAperti from "@/components/azienda/DatiAperti";
 import DepositiAzienda from "@/components/azienda/DepositiAzienda";
 import RetiAzienda from "@/components/azienda/RetiAzienda";
 import FasceKm from "@/components/azienda/FasceKm";
+import TitoliCatalogo from "@/components/azienda/TitoliCatalogo";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
@@ -235,6 +237,9 @@ export default function AdminAziendaPage() {
 
       {/* le fasce chilometriche dell'extraurbano (tappa 6.8): a ogni fascia di chilometri il suo prezzo */}
       <FasceKm />
+
+      {/* il catalogo dei titoli di viaggio (tappa 6.9): i biglietti e gli abbonamenti con cui si riempie un feed */}
+      <TitoliCatalogo />
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}
       <TerritorioAzienda />

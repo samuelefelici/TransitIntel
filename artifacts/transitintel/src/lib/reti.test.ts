@@ -114,12 +114,14 @@ describe("il modulo di una rete", () => {
   });
 
   it("chi usa una rete, a parole; le regole delle linee non contano", () => {
-    expect(usoDellaRete({ linee: 36, titoli: 1, zone: 0, regoleTariffarie: 12345, regole: 2 })).toEqual(["36 linee", "1 titolo di viaggio", "12.345 regole tariffarie"]);
-    expect([reteInUso({ linee: 0, titoli: 0, zone: 0, regoleTariffarie: 0, regole: 3 }), reteInUso({ linee: 1, titoli: 0, zone: 0, regoleTariffarie: 0, regole: 0 })]).toEqual([false, true]);
+    expect(usoDellaRete({ linee: 36, titoli: 1, catalogo: 27, zone: 0, regoleTariffarie: 12345, regole: 2 }))
+      .toEqual(["36 linee", "1 titolo di viaggio", "27 titoli nel catalogo", "12.345 regole tariffarie"]);
+    const nessuno = { linee: 0, titoli: 0, catalogo: 0, zone: 0, regoleTariffarie: 0, regole: 0 };
+    expect([reteInUso({ ...nessuno, regole: 3 }), reteInUso({ ...nessuno, linee: 1 }), reteInUso({ ...nessuno, catalogo: 1 })]).toEqual([false, true, true]);
   });
 
   it("la domanda prima di togliere dice che cosa se ne va con la rete", () => {
-    const uso = { linee: 0, titoli: 0, zone: 0, regoleTariffarie: 0, regole: 0 };
+    const uso = { linee: 0, titoli: 0, catalogo: 0, zone: 0, regoleTariffarie: 0, regole: 0 };
     expect(domandaTogliRete({ nome: "Urbano di Fano", uso })).toBe("Tolgo la rete «Urbano di Fano»? Se servirà di nuovo va ricreata.");
     expect(domandaTogliRete({ nome: "Urbano di Fano", uso: { ...uso, regole: 1 } }))
       .toBe("Tolgo la rete «Urbano di Fano»? Con lei tolgo la sua regola: le linee che la seguivano tornano extraurbane. Se servirà di nuovo va ricreata.");

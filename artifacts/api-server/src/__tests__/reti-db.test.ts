@@ -214,9 +214,9 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le reti dell'azienda, sul datab
     await db.execute(sql`INSERT INTO gtfs_route_networks (feed_id, route_id, network_id) VALUES (${F}::uuid, 'L1', 'urbano_pesaro'), (${F}::uuid, 'L2', 'urbano_pesaro')`);
     await db.execute(sql`INSERT INTO gtfs_fare_networks (feed_id, network_id, network_name) VALUES (${F}::uuid, 'urbano_fano_citta', 'Urbano di Fano')`);
     const elenco = await admin.get("/api/admin/reti");
-    expect(elenco.body.reti.find((x: any) => x.rete === "urbano_pesaro").uso).toEqual({ linee: 2, titoli: 0, zone: 0, regoleTariffarie: 0, regole: 1 });
+    expect(elenco.body.reti.find((x: any) => x.rete === "urbano_pesaro").uso).toEqual({ linee: 2, titoli: 0, catalogo: 0, zone: 0, regoleTariffarie: 0, regole: 1 });
     const r = await admin.delete("/api/admin/reti/urbano_pesaro");
-    expect([r.status, r.body.error]).toEqual([409, "La rete «Urbano di Pesaro» è in uso (2 linee assegnate): prima sposta o togli chi la usa, dalla pagina Tariffe"]);
+    expect([r.status, r.body.error]).toEqual([409, "La rete «Urbano di Pesaro» è in uso (2 linee assegnate): prima sposta o togli chi la usa, dalla pagina Tariffe e dal catalogo dei titoli"]);
     expect(reteUrbana("urbano_pesaro")).not.toBeNull();
   });
 

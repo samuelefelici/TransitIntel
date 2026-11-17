@@ -10,6 +10,7 @@ import { impostaAttivi, preparaDatiAperti, statoDatiAperti } from "../lib/dati-a
 import { cancellaDeposito, creaDeposito, elencoDepositi, ModificaDeposito, modificaDeposito, NuovoDeposito, RifiutoDepositi } from "../lib/depositi";
 import { anteprimaRegole, cancellaRete, creaRete, elencoReti, ModificaRete, modificaRete, NuovaRete, Regole, RifiutoReti, salvaRegole } from "../lib/reti";
 import { elencoFasce, Fasce, RifiutoFasce, salvaFasce } from "../lib/fasce-km-store";
+import { cancellaTitolo, creaTitolo, elencoTitoli, ModificaTitolo, modificaTitolo, NuovoTitolo, RifiutoTitoli } from "../lib/titoli-catalogo";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
@@ -614,6 +615,49 @@ router.put("/admin/fasce-km", async (req, res): Promise<void> => {
   if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
   try { res.json({ fasce: await salvaFasce(p.data) }); }
   catch (e) { rifiutoFasce(req, res, e, "fasce non salvate"); }
+});
+
+/**
+ * Il catalogo dei titoli di viaggio (tappa 6.9, lib/titoli-catalogo.ts): i
+ * biglietti e gli abbonamenti con cui si riempie un feed. GET tutti, in
+ * ordine; POST ne crea uno; PUT /:titolo cambia tutto tranne
+ * l'identificativo; DELETE lo toglie (i feed che l'hanno già copiato lo
+ * tengono). Solo admin, mai un token di Argos (requireAdmin).
+ */
+const ID_TITOLO = /^[a-z][a-z0-9_]{1,59}$/;
+const rifiutoTitoli = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoTitoli) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  if (codice === "23503") { res.status(400).json({ error: "La rete non c'è più: ricarica la pagina" }); return; }
+  if (codice === "23505") { res.status(409).json({ error: "C'è già un titolo con questo identificativo" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/titoli", requireAdmin);
+router.get("/admin/titoli", async (req, res): Promise<void> => {
+  try { res.json(await elencoTitoli()); }
+  catch (e) { rifiutoTitoli(req, res, e, "catalogo non leggibile"); }
+});
+router.post("/admin/titoli", async (req, res): Promise<void> => {
+  const p = NuovoTitolo.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.status(201).json({ titolo: await creaTitolo(p.data) }); }
+  catch (e) { rifiutoTitoli(req, res, e, "titolo non creato"); }
+});
+router.put("/admin/titoli/:titolo", async (req, res): Promise<void> => {
+  const titolo = String(req.params.titolo ?? "");
+  if (!ID_TITOLO.test(titolo)) { res.status(404).json({ error: "Titolo non trovato" }); return; }
+  const p = ModificaTitolo.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ titolo: await modificaTitolo(titolo, p.data) }); }
+  catch (e) { rifiutoTitoli(req, res, e, "titolo non salvato"); }
+});
+router.delete("/admin/titoli/:titolo", async (req, res): Promise<void> => {
+  const titolo = String(req.params.titolo ?? "");
+  if (!ID_TITOLO.test(titolo)) { res.status(404).json({ error: "Titolo non trovato" }); return; }
+  try { await cancellaTitolo(titolo); res.json({ ok: true }); }
+  catch (e) { rifiutoTitoli(req, res, e, "titolo non tolto"); }
 });
 
 export default router;

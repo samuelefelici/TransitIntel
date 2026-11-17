@@ -295,6 +295,13 @@
       "when": 1796300000000,
       "tag": "0041_le_fasce_chilometriche",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1796400000000,
+      "tag": "0042_il_catalogo_dei_titoli",
+      "breakpoints": true
     }
   ]
 }
