@@ -10,7 +10,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
-  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy, Download, Search, X,
+  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy, Download, FileCode2, Search, X,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import {
@@ -155,6 +155,51 @@ export default function PlanningStudioListPage() {
     }
   }
 
+  /* Tappa 6.2: lo stesso programma in NeTEx, profilo italiano livello 1, per
+   * il NAP. Nasce dal GTFS consegnabile e passa lo schema EPIP: con errori il
+   * server si ferma e dice quali. Il file è grande: ci vuole qualche decina di
+   * secondi. */
+  async function handleExportNetex(p: PsProject, forza = false) {
+    const tid = toast.loading(`Genero il NeTEx di "${p.name}"…`, { description: "Programma, controllo dello schema e compressione: può volerci mezzo minuto." });
+    try {
+      const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${p.id}/export-netex${forza ? "?forza=1" : ""}`, { credentials: "include" });
+      if (resp.status === 422 || resp.status === 409) {
+        const r = await resp.json().catch(() => ({}));
+        const righe: string[] = [
+          ...(Array.isArray(r.gtfs?.errori) ? r.gtfs.errori.slice(0, 3).map((e: any) => `• ${e.messaggio}${e.quante > 1 ? ` (${e.quante})` : ""}`) : []),
+          ...(Array.isArray(r.validazione?.errori) ? r.validazione.errori.slice(0, 3).map((e: string) => `• ${e.replace(/^netex\.xml:/, "riga ").slice(0, 220)}`) : []),
+        ];
+        toast.error(r.error || "NeTEx non esportato", {
+          id: tid, duration: 30000, description: righe.join("\n") || undefined,
+          ...(resp.status === 422 ? { action: { label: "Esporta comunque", onClick: () => { void handleExportNetex(p, true); } } } : {}),
+        });
+        return;
+      }
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      const versione = resp.headers.get("X-Netex-Versione");
+      const validazione = resp.headers.get("X-Netex-Validazione");
+      const corse = resp.headers.get("X-Netex-Corse");
+      const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = nomeDalServer ?? `netex_${p.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.xml.gz`;
+      a.click();
+      URL.revokeObjectURL(url);
+      const da = versione === "esercizio" ? "Dalla versione in esercizio" : versione === "programmata" ? "Dalla versione programmata" : "Dalla bozza (il programma non ha una versione in esercizio)";
+      const controllo = validazione === "valido" ? "Passa lo schema EPIP del profilo italiano."
+        : validazione === "senza_xmllint" ? "Lo schema non è stato controllato su questo server."
+        : "Esportato nonostante gli errori.";
+      toast.success("NeTEx esportato", { id: tid, duration: validazione === "valido" ? 6000 : 15000, description: `${da}, ${corse ?? "?"} corse. ${controllo}` });
+    } catch (e: any) {
+      toast.error("Export NeTEx fallito", { id: tid, description: e?.message });
+    }
+  }
+
   // Invocata dal dialog di attivazione: effTrim vuoto = subito, altrimenti
   // decorrenza futura (snapshot materializzato ora, switch automatico quel giorno).
   async function doActivate(p: PsProject, effTrim: string) {
@@ -276,6 +321,7 @@ export default function PlanningStudioListPage() {
                 onActivate={() => setActivateTarget(p)}
                 onDuplicate={() => setDupTarget(p)}
                 onExportGtfs={() => handleExportGtfs(p)}
+                onExportNetex={() => handleExportNetex(p)}
               />
             ))}
           </div>
@@ -382,8 +428,8 @@ function StatCard({ label, value, icon: Icon, accent }: { label: string; value: 
 }
 
 function ProjectCard({
-  project: p, onOpen, onDelete, onShare, onActivate, onDuplicate, onExportGtfs,
-}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void; onDuplicate: () => void; onExportGtfs: () => void }) {
+  project: p, onOpen, onDelete, onShare, onActivate, onDuplicate, onExportGtfs, onExportNetex,
+}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void; onDuplicate: () => void; onExportGtfs: () => void; onExportNetex: () => void }) {
   const isOwner = p.myRole === "owner";
   // Eliminazione a DUE CLICK: il primo arma (cestino rosso "Confermi?"),
   // il secondo elimina. Si disarma da solo dopo 4 secondi.
@@ -492,8 +538,17 @@ function ProjectCard({
               onClick={(e) => { e.stopPropagation(); onExportGtfs(); }}
               className="p-1 rounded hover:bg-teal-500/10 text-slate-500 hover:text-teal-400 transition"
               title="Esporta GTFS (zip per Regione/open data/AVM)"
+              aria-label="Esporta GTFS"
             >
               <Download className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onExportNetex(); }}
+              className="p-1 rounded hover:bg-teal-500/10 text-slate-500 hover:text-teal-400 transition"
+              title="Esporta NeTEx (profilo italiano livello 1, per il NAP)"
+              aria-label="Esporta NeTEx"
+            >
+              <FileCode2 className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onShare(); }}

@@ -40,8 +40,15 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Librerie del workspace
         run: pnpm run typecheck:libs
+      # Tappa 6.2: il NeTEx si controlla con lo schema EPIP del profilo
+      # italiano via xmllint, come nell'immagine dell'API. Qui è obbligatorio:
+      # senza, il test del NeTEx fallisce invece di saltare il controllo.
+      - name: xmllint per il NeTEx
+        run: command -v xmllint || (sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils)
       - name: Test dell'API (vitest, senza database)
         run: pnpm --filter @workspace/api-server run test
+        env:
+          NETEX_SCHEMA_OBBLIGATORIO: "1"
 
   build-web:
     runs-on: ubuntu-latest

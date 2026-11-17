@@ -7,7 +7,7 @@ import {
 const CONEROBUS: Azienda = {
   ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
   gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
-  provinciaIstat: "042", compilata: true,
+  provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null, compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -52,7 +52,7 @@ describe("il modulo dell'amministratore", () => {
     expect(moduloDa(CONEROBUS)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
-      provinciaIstat: "042",
+      provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -63,7 +63,10 @@ describe("il modulo dell'amministratore", () => {
     expect(datiDaSalvare(m)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: null, telefono: null, gtfsAgencyId: "conerobus",
       citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
+      netexCodiceLocale: "ITI3", netexFornitore: null,
     });
+    expect(erroriDelModulo({ ...m, netexCodiceLocale: "iti3" })).toEqual({ netexCodiceLocale: "Un codice NUTS in maiuscolo, come ITI3" });
+    expect(erroriDelModulo({ ...m, netexFornitore: "A T" })).toEqual({ netexFornitore: "Lettere, cifre, - e _ (al più 40)" });
     // la provincia è facoltativa, ma se c'è sono tre cifre
     expect(datiDaSalvare({ ...m, provinciaIstat: " " }).provinciaIstat).toBeNull();
     expect(erroriDelModulo({ ...m, provinciaIstat: "42" })).toEqual({ provinciaIstat: "Tre cifre, come 042" });

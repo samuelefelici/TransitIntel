@@ -8,7 +8,7 @@
  * salvato da sé (components/azienda/TerritorioAzienda.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
-import { Building2, MapPin, Save } from "lucide-react";
+import { Building2, FileCode2, MapPin, Save } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -160,6 +160,25 @@ export default function AdminAziendaPage() {
               Dove si aprono le mappe di tutta la rete: la mappa della pagina iniziale, la Mappa live e gli Scenari.
             </p>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <FileCode2 className="w-4 h-4 text-primary" aria-hidden /> NeTEx per il NAP
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-4 sm:grid-cols-2">
+            {casella("netexCodiceLocale", "Codice locale", { facoltativo: true, esempio: "ITI3",
+              aiuto: "Il codice NUTS degli identificativi NeTEx del profilo italiano: per le Marche ITI3. Senza, il NeTEx non si esporta." })}
+            {casella("netexFornitore", "Fornitore", { facoltativo: true, esempio: "ATMA",
+              aiuto: "In fondo a ogni identificativo, se la Regione lo chiede per distinguere i dati di più aziende. Cambiarlo cambia tutti gli identificativi." })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Gli identificativi hanno la forma IT:codice locale:Tipo:codice. I codici li decide la Regione: chiedili prima di consegnare il file.
+          </p>
         </CardContent>
       </Card>
 

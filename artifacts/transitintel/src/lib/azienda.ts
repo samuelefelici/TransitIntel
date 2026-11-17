@@ -23,6 +23,10 @@ export interface Azienda {
   centro: { lat: number; lng: number; zoom: number };
   /** la provincia degli import ISTAT, tre cifre («042»), o null (tappa 6.1) */
   provinciaIstat: string | null;
+  /** il codice locale (NUTS) degli identificativi NeTEx, per le Marche «ITI3» (tappa 6.2) */
+  netexCodiceLocale: string | null;
+  /** il fornitore in fondo agli identificativi NeTEx, se la Regione lo chiede */
+  netexFornitore: string | null;
   /** false finché l'amministratore non ha compilato la pagina */
   compilata: boolean;
 }
@@ -38,6 +42,8 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   regione: null,
   centro: Object.freeze({ lat: 42.5, lng: 12.5, zoom: 5.5 }),
   provinciaIstat: null,
+  netexCodiceLocale: null,
+  netexFornitore: null,
   compilata: false,
 });
 
@@ -61,6 +67,8 @@ export function aziendaValida(x: unknown): Azienda {
     sito: testo(d.sito), telefono: testo(d.telefono), citta: testo(d.citta), regione: testo(d.regione),
     centro: { lat, lng, zoom },
     provinciaIstat: typeof d.provinciaIstat === "string" && /^[0-9]{3}$/.test(d.provinciaIstat) ? d.provinciaIstat : null,
+    netexCodiceLocale: typeof d.netexCodiceLocale === "string" && /^[A-Z]{2}[A-Z0-9]{0,3}$/.test(d.netexCodiceLocale) ? d.netexCodiceLocale : null,
+    netexFornitore: typeof d.netexFornitore === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(d.netexFornitore) ? d.netexFornitore : null,
     compilata: d.compilata !== false,
   };
 }
@@ -87,6 +95,7 @@ export function intestazioneDocumenti(a: Pick<Azienda, "nome" | "compilata">): s
 export interface ModuloAzienda {
   ragioneSociale: string; nome: string; sito: string; telefono: string; gtfsAgencyId: string;
   citta: string; regione: string; centroLat: string; centroLng: string; zoom: string; provinciaIstat: string;
+  netexCodiceLocale: string; netexFornitore: string;
 }
 export type CampoAzienda = keyof ModuloAzienda;
 
@@ -98,6 +107,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     gtfsAgencyId: scritto(a.gtfsAgencyId), citta: scritto(a.citta), regione: scritto(a.regione),
     centroLat: String(a.centro.lat), centroLng: String(a.centro.lng), zoom: String(a.centro.zoom),
     provinciaIstat: scritto(a.provinciaIstat),
+    netexCodiceLocale: scritto(a.netexCodiceLocale), netexFornitore: scritto(a.netexFornitore),
   };
 }
 
@@ -127,6 +137,8 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (!(lng >= -180 && lng <= 180)) e.centroLng = "Un numero fra -180 e 180";
   if (!(zoom >= 3 && zoom <= 18)) e.zoom = "Un numero fra 3 e 18";
   if (m.provinciaIstat.trim() && !/^[0-9]{3}$/.test(m.provinciaIstat.trim())) e.provinciaIstat = "Tre cifre, come 042";
+  if (m.netexCodiceLocale.trim() && !/^[A-Z]{2}[A-Z0-9]{0,3}$/.test(m.netexCodiceLocale.trim())) e.netexCodiceLocale = "Un codice NUTS in maiuscolo, come ITI3";
+  if (m.netexFornitore.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexFornitore.trim())) e.netexFornitore = "Lettere, cifre, - e _ (al più 40)";
   return e;
 }
 
@@ -138,6 +150,7 @@ export function datiDaSalvare(m: ModuloAzienda) {
     gtfsAgencyId: m.gtfsAgencyId.trim(), citta: m.citta.trim(), regione: facoltativo(m.regione),
     centroLat: decimale(m.centroLat), centroLng: decimale(m.centroLng), zoom: decimale(m.zoom),
     provinciaIstat: facoltativo(m.provinciaIstat),
+    netexCodiceLocale: facoltativo(m.netexCodiceLocale), netexFornitore: facoltativo(m.netexFornitore),
   };
 }
 

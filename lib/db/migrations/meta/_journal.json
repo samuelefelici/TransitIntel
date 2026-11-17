@@ -253,6 +253,13 @@
       "when": 1795700000000,
       "tag": "0035_territorio_dell_azienda",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1795800000000,
+      "tag": "0036_netex_dell_azienda",
+      "breakpoints": true
     }
   ]
 }
