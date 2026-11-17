@@ -13,6 +13,7 @@ import { apiFetch } from "@/lib/api";
 import { puo as haLivello, type Interruttore, type InterruttoreDiPrima, type RuoloAziendale } from "@workspace/permessi";
 import { dirittiDellUtente, type Area, type Diritti, type Livello } from "@/lib/diritti";
 import { AZIENDA_DA_COMPILARE, aziendaValida, type Azienda } from "@/lib/azienda";
+import { impostaReti, retiValide, type Rete } from "@/lib/reti";
 
 /** Gli interruttori di prima dei ruoli: restano nella vista `permissions` che l'API
  *  manda (un interruttore = almeno la lettura sulla sua area). I diritti veri sono in `diritti`. */
@@ -84,6 +85,8 @@ interface AuthCtx {
   datiProva: boolean;
   /** l'azienda di questa installazione: nome, città, centro delle mappe (lib/azienda.ts) */
   azienda: Azienda;
+  /** le reti dell'azienda: etichette, sigle e colori delle pagine (lib/reti.ts) */
+  reti: readonly Rete[];
   /** il server ha risposto almeno una volta a /me: i permessi in cache possono essere vecchi */
   verificato: boolean;
 }
@@ -132,6 +135,13 @@ const loadCachedAzienda = (): Azienda | null => {
   const a = loadCached<unknown>(AZIENDA_CACHE_KEY);
   return a ? aziendaValida(a) : null;
 };
+/* e le sue reti: etichette e colori servono al primo disegno delle pagine delle tariffe */
+const RETI_CACHE_KEY = "transitintel.reti.v1";
+const loadCachedReti = (): readonly Rete[] => {
+  const reti = retiValide(loadCached<unknown>(RETI_CACHE_KEY));
+  impostaReti(reti);
+  return reti;
+};
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<CurrentUser | null>(() => loadCachedUser());
@@ -140,6 +150,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [verificato, setVerificato] = useState(false);
   const [accesso, setAccessoState] = useState<Accesso | null>(() => (loadCachedUser() ? loadCached<Accesso>(ACCESSO_CACHE_KEY) : null));
   const [azienda, setAziendaState] = useState<Azienda>(() => loadCachedAzienda() ?? AZIENDA_DA_COMPILARE);
+  const [reti, setRetiState] = useState<readonly Rete[]>(() => loadCachedReti());
   // Se abbiamo cache, possiamo già mostrare l'app: niente loading screen iniziale.
   // Serve anche l'azienda: senza, la prima mappa si aprirebbe sul centro neutro.
   const [loading, setLoading] = useState<boolean>(() => loadCachedUser() === null || loadCachedAzienda() === null);
@@ -176,13 +187,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     saveCached(AZIENDA_CACHE_KEY, a);
   }, []);
 
+  /* le reti arrivano insieme all'azienda. Un server non ancora aggiornato non le manda: restano quelle che c'erano */
+  const accogliReti = useCallback((x: unknown) => {
+    if (x === undefined) return;
+    const valide = retiValide(x);
+    impostaReti(valide);
+    setRetiState(valide);
+    saveCached(RETI_CACHE_KEY, valide);
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
-      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; azienda?: unknown }>("/api/auth/me");
+      const r = await apiFetch<{ user: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; azienda?: unknown; reti?: unknown }>("/api/auth/me");
       setUser(r.user);
       setDatiProva(!!r.datiProva);
       setAccesso(r.accesso ?? null);
       accogliAzienda(r.azienda);
+      accogliReti(r.reti);
     } catch (e: any) {
       // Sloggiamo SOLO se il backend ha risposto con un 401 esplicito
       // ("Non autenticato" / "Sessione non valida"). In tutti gli altri
@@ -200,7 +221,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       setVerificato(true);
     }
-  }, [setUser, setAccesso, accogliAzienda]);
+  }, [setUser, setAccesso, accogliAzienda, accogliReti]);
 
   useEffect(() => {
     void refresh();
@@ -233,14 +254,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [refresh]);
 
-  type RispostaLogin = { user?: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; azienda?: unknown; mfaRichiesta?: boolean; biglietto?: string };
+  type RispostaLogin = { user?: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; azienda?: unknown; reti?: unknown; mfaRichiesta?: boolean; biglietto?: string };
   const entra = useCallback((r: RispostaLogin) => {
-    /* prima l'azienda: la prima pagina che si disegna dopo l'accesso ha già nome e centro delle mappe */
+    /* prima l'azienda e le sue reti: la prima pagina che si disegna dopo l'accesso ha già nome, centro delle mappe e colori delle reti */
     accogliAzienda(r.azienda);
+    accogliReti(r.reti);
     setUser(r.user!);
     setDatiProva(!!r.datiProva);
     setAccesso(r.accesso ?? null);
-  }, [setUser, setAccesso, accogliAzienda]);
+  }, [setUser, setAccesso, accogliAzienda, accogliReti]);
 
   const login = useCallback(async (email: string, password: string): Promise<EsitoLogin> => {
     try {
@@ -308,6 +330,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     puo,
     datiProva,
     azienda,
+    reti,
     verificato,
   };
 

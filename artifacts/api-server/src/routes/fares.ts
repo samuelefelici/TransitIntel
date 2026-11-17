@@ -67,7 +67,7 @@ import {
 import { eq, and, sql, inArray, desc } from "drizzle-orm";
 import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
-import { classifyRoute, ID_RETI_URBANE, nomeReteUrbana, RETE_EXTRAURBANA, RETI_URBANE } from "../lib/reti-linee";
+import { classifyRoute, CODICE_URBANO_MAX, CODICE_URBANO_MIN, idRetiUrbane, reteUrbana, retiInVigore, retiUrbane, SCARTO_CODICE_MISTO } from "../lib/reti-linee";
 import { assegnaZoneUrbane } from "../lib/zone-urbane";
 import AdmZip from "adm-zip";
 
@@ -563,11 +563,8 @@ function computeKmAlongShape(
 // NETWORKS
 // ═══════════════════════════════════════════════════════════
 
-// Le reti di partenza: le urbane dell'elenco (lib/reti-linee.ts) e l'extraurbano.
-const DEFAULT_NETWORKS = [
-  ...RETI_URBANE.map((r) => ({ networkId: r.rete, networkName: nomeReteUrbana(r) })),
-  { networkId: RETE_EXTRAURBANA, networkName: "Extraurbano Provincia di Ancona" },
-];
+// Le reti di partenza di un feed: quelle dell'azienda (lib/reti-linee.ts), nell'ordine in cui si mostrano.
+const retiDiPartenza = () => retiInVigore().reti.map((r) => ({ networkId: r.rete, networkName: r.nome }));
 
 // GET /api/fares/networks
 router.get("/fares/networks", async (req, res): Promise<void> => {
@@ -585,7 +582,7 @@ router.post("/fares/networks/seed", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed found" }); return; }
 
-    for (const n of DEFAULT_NETWORKS) {
+    for (const n of retiDiPartenza()) {
       await db.insert(gtfsFareNetworks)
         .values({ feedId, networkId: n.networkId, networkName: n.networkName })
         .onConflictDoUpdate({
@@ -2694,10 +2691,11 @@ function csvEscape(s: string): string {
 //   GET /api/fares/stops-classification/export   → stops.txt con colonne classificazione
 // ═══════════════════════════════════════════════════════════
 
-// I codici vengono dall'elenco delle reti urbane (lib/reti-linee.ts).
-const URBAN_CODES: Record<string, { pure: number; mixed: number; label: string; short: string }> = Object.fromEntries(
-  RETI_URBANE.map((r) => [r.rete, { pure: r.codice, mixed: r.codiceMisto, label: r.luogo, short: r.sigla }]),
-);
+// I codici vengono dall'elenco delle reti urbane dell'azienda (lib/reti-linee.ts).
+function urbanCode(rete: string): { pure: number; mixed: number; label: string; short: string } | null {
+  const r = reteUrbana(rete);
+  return r ? { pure: r.codice, mixed: r.codiceMisto, label: r.luogo, short: r.sigla } : null;
+}
 
 // Ramo del calcolo tariffario (§4) per ciascun codice di classificazione.
 // È la chiave che il validatore usa per scegliere il ramo A (oraria) o B (O/D):
@@ -2708,18 +2706,15 @@ export type FareKind = "urbana" | "mista_urbana" | "extraurbana" | "non_servita"
 function classificationToFareKind(classification: number): FareKind {
   if (classification === 0) return "non_servita";
   if (classification === 1) return "extraurbana";
-  if (classification >= 2 && classification <= 7) return "urbana";
-  if (classification >= 12 && classification <= 17) return "mista_urbana";
+  if (classification >= CODICE_URBANO_MIN && classification <= CODICE_URBANO_MAX) return "urbana";
+  if (classification >= CODICE_URBANO_MIN + SCARTO_CODICE_MISTO && classification <= CODICE_URBANO_MAX + SCARTO_CODICE_MISTO) return "mista_urbana";
   return "altro";
 }
 
 // Codice di classificazione → network_id urbano (per il ramo A dell'oracolo).
-// Si appoggia a URBAN_CODES (sotto): pure 2-7, mixed 12-17.
+// Dall'elenco delle reti urbane: il codice della rete, o lo stesso più 10 con l'extraurbano.
 function classificationToUrbanNetwork(classification: number): string | null {
-  for (const [networkId, c] of Object.entries(URBAN_CODES)) {
-    if (c.pure === classification || c.mixed === classification) return networkId;
-  }
-  return null;
+  return retiUrbane().find((r) => r.codice === classification || r.codiceMisto === classification)?.rete ?? null;
 }
 
 interface StopClassification {
@@ -2748,7 +2743,7 @@ function deriveClassification(networks: Set<string>): StopClassification {
 
   // 2–7 — un solo urbano, nessun extraurbano
   if (!hasExtra && urbanNets.length === 1) {
-    const u = URBAN_CODES[urbanNets[0]];
+    const u = urbanCode(urbanNets[0]);
     if (u) return withKind({
       classification: u.pure,
       classLabel: `Urbano ${u.label}`,
@@ -2758,7 +2753,7 @@ function deriveClassification(networks: Set<string>): StopClassification {
 
   // 12–17 — un solo urbano + extraurbano
   if (hasExtra && urbanNets.length === 1) {
-    const u = URBAN_CODES[urbanNets[0]];
+    const u = urbanCode(urbanNets[0]);
     if (u) return withKind({
       classification: u.mixed,
       classLabel: `Mista Extraurbano + Urbano ${u.label}`,
@@ -3762,11 +3757,13 @@ router.get("/fares/validate", async (req, res): Promise<void> => {
     checks.push({ id: "leg_rules", label: "Regole di tratta (leg rules)", ok: lrc > 0, detail: `${lrc} regole` });
 
     // 8. Urban rules have priority > 0
-    const urbanP0 = await db.execute<any>(sql`
+    const urbane = idRetiUrbane();
+    /* senza reti urbane non c'è niente da controllare (e un IN vuoto non è SQL) */
+    const urbanP0 = urbane.length === 0 ? null : await db.execute<any>(sql`
       SELECT count(*) AS cnt FROM gtfs_fare_leg_rules
-      WHERE feed_id = ${feedId} AND network_id IN (${sql.join(ID_RETI_URBANE.map((rete) => sql`${rete}`), sql`, `)}) AND rule_priority = 0
+      WHERE feed_id = ${feedId} AND network_id IN (${sql.join(urbane.map((rete) => sql`${rete}`), sql`, `)}) AND rule_priority = 0
     `);
-    const up0 = Number(urbanP0.rows[0]?.cnt ?? 0);
+    const up0 = Number(urbanP0?.rows[0]?.cnt ?? 0);
     checks.push({ id: "urban_priority", label: "Priorità regole urbane > 0", ok: up0 === 0, detail: up0 > 0 ? `${up0} regole urbane con priority=0` : "OK" });
 
     // 9. Calendar entries

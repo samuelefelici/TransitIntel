@@ -100,6 +100,7 @@
  */
 
 import { apiFetch } from "@/lib/api";
+import { etichettaDi, retiInVigore } from "@/lib/reti";
 
 /* ──────────────────────────────────────────────────────────
  * Tipi
@@ -400,16 +401,6 @@ async function fetchRouteSheet(route: RouteNetworkRow, model: PriceModel): Promi
  * Rendering HTML
  * ──────────────────────────────────────────────────────── */
 
-const NETWORK_LABEL: Record<string, string> = {
-  urbano_ancona: "Urbano Ancona",
-  urbano_jesi: "Urbano Jesi",
-  urbano_senigallia: "Urbano Senigallia",
-  urbano_fabriano: "Urbano Fabriano",
-  urbano_osimo: "Urbano Osimo",
-  urbano_castelfidardo: "Urbano Castelfidardo",
-  urbano_sassoferrato: "Urbano Sassoferrato",
-  extraurbano: "Extraurbano",
-};
 
 const ZONING_LABEL: Record<string, string> = {
   shape: "Proiezione su Shape",
@@ -816,7 +807,7 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
 }
 
 function renderRoutePage(sheet: RouteSheet, model: PriceModel, idx: number, total: number): string {
-  const networkLabel = sheet.networkId ? (NETWORK_LABEL[sheet.networkId] || sheet.networkId) : "—";
+  const networkLabel = etichettaDi(retiInVigore(), sheet.networkId);
   const lineColor = normalizeLineColor(sheet.routeColor);
   const stopCount = sheet.stops.length;
   const zoneCount = sheet.routeAreas.length;
@@ -1166,7 +1157,7 @@ function renderZoneMatrix(sheet: RouteSheet, model: PriceModel, tariffs: TariffM
 }
 
 function renderRoutePageZones(sheet: RouteSheet, model: PriceModel, tariffs: TariffMap, idx: number, total: number): string {
-  const networkLabel = sheet.networkId ? (NETWORK_LABEL[sheet.networkId] || sheet.networkId) : "—";
+  const networkLabel = etichettaDi(retiInVigore(), sheet.networkId);
   const lineColor = normalizeLineColor(sheet.routeColor);
   const zoneCount = sheet.routeAreas.length;
   const stopCount = sheet.stops.length;

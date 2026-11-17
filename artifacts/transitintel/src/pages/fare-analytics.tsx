@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { useReti } from "@/hooks/use-reti";
+import { etichettaDi, opzioniReti } from "@/lib/reti";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -78,12 +80,7 @@ const FARE_TYPE_COLORS: Record<string, string> = {
   abbonamento_annuale: "bg-teal-100 text-teal-800",
 };
 
-const NETWORK_LABELS: Record<string, string> = {
-  urbano_ancona: "Urbano Ancona",
-  urbano_jesi: "Urbano Jesi",
-  urbano_falconara: "Urbano Falconara",
-  extraurbano: "Extraurbano",
-};
+// Le etichette delle reti vengono dalle reti dell'azienda (lib/reti.ts), lette in ogni scheda con useReti().
 
 const ACTION_LABELS: Record<string, { label: string; color: string }> = {
   generate_gtfs:          { label: "Generazione GTFS", color: "bg-blue-100 text-blue-800" },
@@ -162,6 +159,7 @@ export default function FareAnalyticsPage() {
 // ═══════════════════════════════════════════════════════════
 
 function KpiTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
+  const reti = useReti();
   const [kpi, setKpi] = useState<KpiData | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -283,7 +281,7 @@ function KpiTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
               {kpi.avgPriceByNetwork.map((row) => (
                 <div key={row.network_id} className="flex items-center gap-3">
                   <div className="text-sm font-medium w-44 shrink-0">
-                    {NETWORK_LABELS[row.network_id] ?? row.network_id}
+                    {etichettaDi(reti, row.network_id)}
                   </div>
                   <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
                     <div
@@ -397,6 +395,7 @@ function KpiCard({
 // ═══════════════════════════════════════════════════════════
 
 function AbbonamentiTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
+  const reti = useReti();
   const [products, setProducts] = useState<FareProduct[]>([]);
   const [loading, setLoading] = useState(false);
   const [seedingAbb, setSeedingAbb] = useState(false);
@@ -568,8 +567,8 @@ function AbbonamentiTab({ toast }: { toast: ReturnType<typeof useToast>["toast"]
                     value={newProduct.networkId}
                     onChange={(e) => setNewProduct((p) => ({ ...p, networkId: e.target.value }))}
                   >
-                    {Object.entries(NETWORK_LABELS).map(([k, v]) => (
-                      <option key={k} value={k}>{v}</option>
+                    {opzioniReti(reti).map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
                     ))}
                   </select>
                 </div>
@@ -702,6 +701,7 @@ function ProductTable({
   onNameChange: (v: string) => void;
   onDelete: (id: string, name: string) => void;
 }) {
+  const reti = useReti();
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
@@ -732,7 +732,7 @@ function ProductTable({
                 )}
               </td>
               <td className="py-2 pr-3 text-xs text-muted-foreground">
-                {NETWORK_LABELS[p.networkId ?? ""] ?? p.networkId ?? "—"}
+                {etichettaDi(reti, p.networkId)}
               </td>
               <td className="py-2 pr-3">
                 <Badge className={`text-xs ${FARE_TYPE_COLORS[p.fareType] ?? "bg-gray-100 text-gray-700"}`}>

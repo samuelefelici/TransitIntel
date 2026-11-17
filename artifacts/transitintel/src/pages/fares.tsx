@@ -20,6 +20,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
+import { useReti } from "@/hooks/use-reti";
+import { opzioniReti } from "@/lib/reti";
 import { notaFermateTolte, riassuntoZoneGenerate, type ZoneGenerate } from "@/lib/zone-tariffarie";
 import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink, exportPolimetricheClustersToPrint, createPolimetricheClustersShareLink } from "./fares-polimetriche-export";
 import FaresTelemacoTab from "./fares-telemaco-tab";
@@ -196,15 +198,7 @@ interface CalendarDateEntry {
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════
 
-const NETWORK_OPTIONS = [
-  { value: "urbano_ancona",        label: "Urbano Ancona",        color: "#3b82f6" },
-  { value: "urbano_jesi",          label: "Urbano Jesi",          color: "#8b5cf6" },
-  { value: "urbano_falconara",     label: "Urbano Falconara",     color: "#06b6d4" },
-  { value: "urbano_senigallia",    label: "Urbano Senigallia",    color: "#10b981" },
-  { value: "urbano_castelfidardo", label: "Urbano Castelfidardo", color: "#f97316" },
-  { value: "urbano_sassoferrato",  label: "Urbano Sassoferrato",  color: "#ec4899" },
-  { value: "extraurbano",          label: "Extraurbano",          color: "#f59e0b" },
-];
+// Le reti nei menu: quelle dell'azienda (lib/reti.ts), lette in ogni scheda con useReti().
 
 type Tab = "classify" | "stops" | "products" | "riders" | "zones" | "timeframes" | "calendar" | "editor" | "generate" | "simulate" | "feedinfo";
 
@@ -304,6 +298,7 @@ const UTILITY_TABS: {
 
 function ClassifyTab() {
   const { toast } = useToast();
+  const NETWORK_OPTIONS = opzioniReti(useReti());
   const [routes, setRoutes] = useState<RouteNetwork[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -494,6 +489,7 @@ function ClassifyTab() {
 
 function ProductsTab() {
   const { toast } = useToast();
+  const NETWORK_OPTIONS = opzioniReti(useReti());
   const [products, setProducts] = useState<FareProduct[]>([]);
   const [media, setMedia] = useState<FareMedia[]>([]);
   const [categories, setCategories] = useState<RiderCategory[]>([]);
@@ -5652,6 +5648,7 @@ function simConvexHull(points: [number, number][]): [number, number][] {
 
 function SimulateTab() {
   const { toast } = useToast();
+  const NETWORK_OPTIONS = opzioniReti(useReti());
   const mapRef = useRef<MapRef>(null);
 
   // ── Sim mode ──

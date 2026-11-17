@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   chiaveTurno, durata, intervalloDaSnapshot, intervalloTurno, istante, minutiDa, quando,
   riposoMinimo, violazioniDelConducente, violazioniDeiTurni, perIlClient, type TurnoNelTempo,
@@ -6,6 +6,7 @@ import {
 import { propostaServizio } from "../lib/udp-servizio";
 import { servizioDellaLinea } from "../lib/reti-linee";
 import type { Servizio } from "../lib/udp-servizio";
+import { conLeRetiDiProva, senzaReti } from "./helpers/reti-di-prova";
 
 /** Un turno di prova: giorno, «HH:MM» di inizio e fine (anche oltre le 24), tipo di servizio. */
 function turno(codice: string, giorno: string, dalle: string, alle: string, servizio: Servizio | null = "urbano", conducenteId = "c1"): TurnoNelTempo {
@@ -193,7 +194,11 @@ describe("violazioni fra i turni di un conducente", () => {
 });
 
 describe("urbana o extraurbana dalle linee", () => {
-  it("le reti urbane delle Marche sono urbane, il resto extraurbano", () => {
+  /* le reti e le regole sono dati dell'azienda (tappa 6.7): qui quelle dell'azienda di prova */
+  beforeAll(conLeRetiDiProva);
+  afterAll(senzaReti);
+
+  it("le reti urbane dell'azienda sono urbane, il resto extraurbano", () => {
     for (const l of ["1", "41", "JE1", "Y", "BUS5", "BUSS2", "CIRCA", "C.D."]) expect(servizioDellaLinea(l)).toBe("urbano");
     for (const l of ["A", "B12", "CIRCX", "", null]) expect(servizioDellaLinea(l)).toBe("extraurbano");
   });

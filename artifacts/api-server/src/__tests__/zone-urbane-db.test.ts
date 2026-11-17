@@ -13,7 +13,8 @@ import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import faresRouter from "../routes/fares";
 import { assegnaZoneUrbane } from "../lib/zone-urbane";
-import { RETI_URBANE } from "../lib/reti-linee";
+import { retiUrbane } from "../lib/reti-linee";
+import { conLeRetiDiProva, senzaReti } from "./helpers/reti-di-prova";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const F = "e6600000-0000-4000-8000-0000000000f1";      // il feed di prova
@@ -74,6 +75,8 @@ async function comePrima() {
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("le zone urbane, sul database", () => {
   beforeAll(async () => {
+    /* le reti dell'azienda di prova: sei urbane, ognuna con la sua zona */
+    conLeRetiDiProva();
     await pulisci();
     for (const feed of [F, ALTRO]) {
       await db.execute(sql`INSERT INTO gtfs_feeds (id, filename, is_active) VALUES (${feed}::uuid, ${`zone-6.6-${feed.slice(-2)}.synthetic`}, false)`);
@@ -96,6 +99,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le zone urbane, sul database", 
   });
 
   afterAll(async () => {
+    senzaReti();
     await pulisci();
     await pool.end();
   });
@@ -118,7 +122,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le zone urbane, sul database", 
   it("le sei zone esistono, ognuna con il nome e la rete dell'elenco", async () => {
     const aree = (await db.execute<any>(sql`
       SELECT area_id, area_name, network_id FROM gtfs_fare_areas WHERE feed_id = ${F}::uuid AND network_id <> 'extraurbano' ORDER BY area_id`)).rows;
-    expect(aree).toEqual([...RETI_URBANE]
+    expect(aree).toEqual([...retiUrbane()]
       .sort((a, b) => a.zona.localeCompare(b.zona))
       .map((r) => ({ area_id: r.zona, area_name: `Zona Urbana ${r.luogo}`, network_id: r.rete })));
   });
@@ -142,6 +146,17 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le zone urbane, sul database", 
     expect(dopo.jesi_urban).toEqual(["C1"]);
     expect(dopo.castelfidardo_urban).toBeUndefined();
     await db.execute(sql`UPDATE gtfs_route_networks SET network_id = 'urbano_castelfidardo' WHERE feed_id = ${F}::uuid AND route_id = 'L_CF'`);
+    await assegnaZoneUrbane(F);
+    expect(await zone()).toEqual(GIUSTE);
+  });
+
+  it("un'azienda senza reti urbane non ha zone urbane: non crea e non toglie niente", async () => {
+    await comePrima();
+    senzaReti();
+    try {
+      expect(await assegnaZoneUrbane(F)).toEqual({ zone: 0, fermate: {}, aggiunte: 0, tolte: 0 });
+      expect((await zone()).falconara_urban).toEqual(["C1", "F1", "S1", "S2", "X1"]);
+    } finally { conLeRetiDiProva(); }
     await assegnaZoneUrbane(F);
     expect(await zone()).toEqual(GIUSTE);
   });
