@@ -302,6 +302,13 @@
       "when": 1796400000000,
       "tag": "0042_il_catalogo_dei_titoli",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1796500000000,
+      "tag": "0043_gli_elenchi_delle_tariffe",
+      "breakpoints": true
     }
   ]
 }

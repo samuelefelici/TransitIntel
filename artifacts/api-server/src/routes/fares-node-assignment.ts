@@ -35,7 +35,7 @@
  *   GET    /api/fares/official-nodes
  *   POST   /api/fares/official-nodes
  *   POST   /api/fares/official-nodes/import-csv
- *   POST   /api/fares/official-nodes/import-atma-2013
+ *   POST   /api/fares/official-nodes/import-catalog
  *   DELETE /api/fares/official-nodes/:id
  *
  *   POST   /api/fares/stop-assignment/bulk-move
@@ -59,6 +59,7 @@ import { eq, and, sql, inArray } from "drizzle-orm";
 import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
 import { classifyRoute, eReteUrbana, reteUrbana } from "../lib/reti-linee";
+import { nodiCatalogo } from "../lib/elenchi-tariffe-store";
 
 const router: IRouter = Router();
 
@@ -186,15 +187,8 @@ async function loadStopUrbanWeights(feedId: string): Promise<Map<string, Map<str
 // Genera colori distinti e ripetibili in modo deterministico a partire
 // dal clusterId, così che lo stesso cluster mantenga sempre lo stesso colore
 // fra run diversi. Usata per visualizzare la mappa zone senza confusione.
-// I cluster ufficiali e i nodi urban_* hanno colori dedicati di alto contrasto.
+// I cluster ufficiali hanno un colore loro; i nodi urban_* quello della loro rete.
 // ════════════════════════════════════════════════════════════
-const URBAN_HUB_COLORS: Record<string, string> = {
-  ancona:        "#dc2626",  // rosso
-  jesi:          "#7c3aed",  // viola
-  falconara:     "#0891b2",  // ciano
-  senigallia:    "#ea580c",  // arancio
-  castelfidardo: "#16a34a",  // verde
-};
 const CLUSTER_PALETTE = [
   "#3b82f6", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6",
   "#f97316", "#06b6d4", "#a855f7", "#84cc16", "#ef4444",
@@ -210,8 +204,8 @@ function hashString(s: string): number {
 
 function colorForCluster(clusterId: string, isOfficial: boolean): string {
   if (clusterId.startsWith("urban_")) {
-    const city = clusterId.slice("urban_".length);
-    return URBAN_HUB_COLORS[city] ?? "#dc2626";
+    /* il cluster di una rete urbana prende il colore della rete (dati dell'azienda) */
+    return reteUrbana(`urbano_${clusterId.slice("urban_".length)}`)?.colore ?? "#dc2626";
   }
   if (isOfficial) return "#10b981";  // verde catalogo ufficiale
   return CLUSTER_PALETTE[hashString(clusterId) % CLUSTER_PALETTE.length];
@@ -954,26 +948,6 @@ async function recalcCentroid(feedId: string, clusterId: string) {
 }
 
 // ════════════════════════════════════════════════════════════
-// Lista preconfigurata ATMA 2013 (parziale — completare dall'indice PDF)
-// ════════════════════════════════════════════════════════════
-const ATMA_2013_NODES: ReadonlyArray<{ code: string; name: string; lat?: number; lon?: number; aliases?: readonly string[] }> = [
-  { code: "ANCONA",        name: "Ancona",            lat: 43.6158, lon: 13.5189, aliases: ["ANCONA STAZIONE", "ANCONA CENTRO"] },
-  { code: "FALCONARA_M",   name: "Falconara M.",      lat: 43.6261, lon: 13.4041, aliases: ["FALCONARA MARITTIMA", "FALCONARA"] },
-  { code: "JESI",          name: "Jesi",              lat: 43.5217, lon: 13.2434, aliases: ["JESI AUTOSTAZIONE", "JESI CENTRO"] },
-  { code: "SENIGALLIA",    name: "Senigallia",        lat: 43.7156, lon: 13.2147 },
-  { code: "OSIMO",         name: "Osimo",             lat: 43.4869, lon: 13.4839 },
-  { code: "LORETO",        name: "Loreto Capolinea",  lat: 43.4406, lon: 13.6111, aliases: ["LORETO"] },
-  { code: "RECANATI",      name: "Recanati",          lat: 43.4022, lon: 13.5511 },
-  { code: "CASTELFIDARDO", name: "Castelfidardo",     lat: 43.4639, lon: 13.5469 },
-  { code: "AGUGLIANO",     name: "Agugliano",         lat: 43.5611, lon: 13.3897 },
-  { code: "AEROPORTO",     name: "Aeroporto",         lat: 43.6164, lon: 13.3625, aliases: ["AEROPORTO ANCONA", "RAFFAELLO SANZIO"] },
-  { code: "ASPIO_TERME",   name: "Aspio Terme",       lat: 43.5450, lon: 13.5483 },
-  { code: "ASPIO_VECCHIO", name: "Aspio Vecchio",     lat: 43.5489, lon: 13.5414 },
-  { code: "ABADIA",        name: "Abadia",            lat: 43.4969, lon: 13.0631, aliases: ["ABBADIA"] },
-  { code: "ARCHI_LORETO",  name: "Archi di Loreto",   lat: 43.4489, lon: 13.6042 },
-];
-
-// ════════════════════════════════════════════════════════════
 // Endpoints
 // ════════════════════════════════════════════════════════════
 
@@ -1193,22 +1167,24 @@ router.post("/fares/official-nodes/import-csv", async (req, res): Promise<void> 
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 
-router.post("/fares/official-nodes/import-atma-2013", async (req, res): Promise<void> => {
+/** Copia nel feed i nodi dell'elenco dell'azienda (tabella nodi_catalogo): quelli che il feed ha già restano come sono. */
+router.post("/fares/official-nodes/import-catalog", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
+    const nodi = await nodiCatalogo();
     let inserted = 0;
-    for (const node of ATMA_2013_NODES) {
-      await db.insert(gtfsFareOfficialNodes).values({
-        feedId, officialCode: node.code, officialName: node.name,
-        nameNormalized: normalizeStopName(node.name),
-        centroidLat: node.lat ?? null, centroidLon: node.lon ?? null,
-        aliases: node.aliases ? [...node.aliases] : [],
-        source: "atma_2013",
-      }).onConflictDoNothing();
-      inserted++;
+    for (const node of nodi) {
+      const r = await db.insert(gtfsFareOfficialNodes).values({
+        feedId, officialCode: node.codice, officialName: node.nome,
+        nameNormalized: normalizeStopName(node.nome),
+        centroidLat: node.lat, centroidLon: node.lon,
+        aliases: node.alias,
+        source: "catalogo",
+      }).onConflictDoNothing().returning({ id: gtfsFareOfficialNodes.id });
+      inserted += r.length;
     }
-    res.json({ totalNodes: ATMA_2013_NODES.length, inserted });
+    res.json({ totalNodes: nodi.length, inserted });
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });
 

@@ -72,6 +72,9 @@ import { assegnaZoneUrbane } from "../lib/zone-urbane";
 import { fasciaNumero, fasciaPerDistanza, primaFascia, ultimaFascia } from "../lib/fasce-km";
 import { conLeFasce, erroreTariffe } from "./fares-comuni";
 import { allineaAlCatalogo, bigliettiDiRiferimento, confrontoColCatalogo, contaDoppioni, copiaDalCatalogo, regoleUrbane, togliDoppioni } from "../lib/titoli-catalogo";
+import { agencyTxt, agenziaNelGtfs, campoCsv } from "../lib/elenchi-tariffe";
+import { agenziaGtfs, copiaCategorie, copiaSupporti } from "../lib/elenchi-tariffe-store";
+import { leggiAzienda } from "../lib/azienda";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
@@ -678,20 +681,7 @@ router.post("/fares/route-networks/bulk", async (req, res): Promise<void> => {
 // FARE MEDIA
 // ═══════════════════════════════════════════════════════════
 
-const DEFAULT_MEDIA = [
-  // Tipo 0 = nessun supporto fisico (pagamento a bordo / contanti)
-  { fareMediaId: "contanti",             fareMediaName: "Pagamento a bordo (contanti/bancomat)", fareMediaType: 0 },
-  // Tipo 1 = biglietto fisico / tessera cartacea
-  { fareMediaId: "biglietto_cartaceo",   fareMediaName: "Biglietto Cartaceo",                    fareMediaType: 1 },
-  { fareMediaId: "tessera_regionale",    fareMediaName: "Tessera Regionale (€5,00 primo abb.)",  fareMediaType: 1 },
-  { fareMediaId: "tessera_agevolati",    fareMediaName: "Tessera Agevolati (€2,10 / anno)",      fareMediaType: 1 },
-  // Tipo 2 = smart card / carta trasporto
-  { fareMediaId: "carta_contactless",    fareMediaName: "Carta Trasporto Contactless",            fareMediaType: 2 },
-  // Tipo 3 = carta bancaria cEMV
-  { fareMediaId: "cemv",                 fareMediaName: "Carta Bancaria Contactless (cEMV)",      fareMediaType: 3 },
-  // Tipo 4 = app mobile
-  { fareMediaId: "app_mobile",           fareMediaName: "App Mobile",                             fareMediaType: 4 },
-];
+/* I supporti di partenza sono un elenco dell'azienda (tabella supporti_catalogo, tappa 6.10). */
 
 router.get("/fares/media", async (req, res): Promise<void> => {
   try {
@@ -706,14 +696,7 @@ router.post("/fares/media/seed", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
-    for (const m of DEFAULT_MEDIA) {
-      await db.insert(gtfsFareMedia)
-        .values({ feedId, ...m })
-        .onConflictDoUpdate({
-          target: [gtfsFareMedia.feedId, gtfsFareMedia.fareMediaId],
-          set: { fareMediaName: m.fareMediaName, fareMediaType: m.fareMediaType, updatedAt: sql`now()` },
-        });
-    }
+    await copiaSupporti(feedId);
     const rows = await db.select().from(gtfsFareMedia).where(eq(gtfsFareMedia.feedId, feedId));
     res.json(rows);
   } catch (e: any) { erroreTariffe(res, e); }
@@ -753,25 +736,8 @@ router.post("/fares/rider-categories/seed", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
-    // Tutte le categorie passeggero ATMA (DGR Marche + convenzioni locali)
-    const categories = [
-      { id: "ordinario",           name: "Tariffa Ordinaria",                         isDefault: true,  url: null },
-      { id: "studente",            name: "Studente (14+ anni)",                       isDefault: false, url: "https://www.atmaancona.it/abbonamenti-studenti" },
-      { id: "studente_under14",    name: "Studente under 14",                         isDefault: false, url: "https://www.atmaancona.it/abbonamenti-studenti" },
-      { id: "studente_agevolato",  name: "Studente ISEE < €18.000",                   isDefault: false, url: null },
-      { id: "studente_univpm",     name: "Studente UNIVPM (quota studente)",           isDefault: false, url: "https://www.atmaancona.it/abbonamenti-universitari" },
-      { id: "anziano",             name: "Over 65 / Argento (fascia morbida)",         isDefault: false, url: null },
-      { id: "agevolato",           name: "ISEE < €18.000 (tariffa agevolata)",        isDefault: false, url: null },
-    ];
-
-    for (const c of categories) {
-      await db.insert(gtfsRiderCategories)
-        .values({ feedId, riderCategoryId: c.id, riderCategoryName: c.name, isDefault: c.isDefault, eligibilityUrl: c.url })
-        .onConflictDoUpdate({
-          target: [gtfsRiderCategories.feedId, gtfsRiderCategories.riderCategoryId],
-          set: { riderCategoryName: c.name, isDefault: c.isDefault, eligibilityUrl: c.url, updatedAt: sql`now()` },
-        });
-    }
+    /* le categorie dell'azienda (tabella categorie_catalogo, tappa 6.10) */
+    await copiaCategorie(feedId);
     const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     res.json(rows);
   } catch (e: any) { erroreTariffe(res, e); }
@@ -1892,13 +1858,13 @@ router.post("/fares/generate-gtfs", async (req, res): Promise<void> => {
     const media = await db.select().from(gtfsFareMedia)
       .where(and(eq(gtfsFareMedia.feedId, feedId), eq(gtfsFareMedia.isActive, true)));
     let mediaCsv = "fare_media_id,fare_media_name,fare_media_type\n";
-    for (const m of media) mediaCsv += `${m.fareMediaId},${m.fareMediaName},${m.fareMediaType}\n`;
+    for (const m of media) mediaCsv += `${m.fareMediaId},${campoCsv(m.fareMediaName)},${m.fareMediaType}\n`;
 
     // --- rider_categories.txt ---
     const cats = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     let catCsv = "rider_category_id,rider_category_name,is_default_fare_category,eligibility_url\n";
     for (const c of cats) {
-      catCsv += `${c.riderCategoryId},${c.riderCategoryName},${c.isDefault ? 1 : 0},${c.eligibilityUrl || ""}\n`;
+      catCsv += `${c.riderCategoryId},${campoCsv(c.riderCategoryName)},${c.isDefault ? 1 : 0},${campoCsv(c.eligibilityUrl || "")}\n`;
     }
 
     // --- fare_products.txt ---
@@ -2239,6 +2205,9 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
+    /* prima di cominciare a scrivere la risposta: se non si legge, si risponde con un errore */
+    const agenzia = agenziaNelGtfs(await leggiAzienda(), await agenziaGtfs());
+
     // Dynamically import archiver
     const archiver = (await import("archiver")).default;
     const archive = archiver("zip", { zlib: { level: 9 } });
@@ -2247,12 +2216,8 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     res.setHeader("Content-Disposition", "attachment; filename=gtfs_export.zip");
     archive.pipe(res);
 
-    // --- agency.txt (hardcoded from original GTFS) ---
-    archive.append(
-      'agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email\n' +
-      '"ATMA","Atma Scpa","https://www.atmaancona.it","Europe/Rome","it","0712837468","https://www.atmaancona.it/tariffe/tariffe-generale/","info@atmaancona.it"\n',
-      { name: "agency.txt" }
-    );
+    // --- agency.txt: l'agenzia dei dati dell'azienda (il consorzio, se c'è), altrimenti l'azienda ---
+    archive.append(agencyTxt(agenzia), { name: "agency.txt" });
 
     // --- stops.txt ---
     const stops = await db.select().from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
@@ -2266,7 +2231,8 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     const routes = await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
     let routesCsv = "route_id,agency_id,route_short_name,route_long_name,route_type,route_url,route_color,route_text_color\n";
     for (const r of routes) {
-      routesCsv += `${r.routeId},${r.agencyId || "ATMA"},${csvEscape(r.routeShortName || "")},${csvEscape(r.routeLongName || "")},${r.routeType || 3},${r.routeUrl || "https://www.atmaancona.it"},${r.routeColor || ""},${r.routeTextColor || ""}\n`;
+      /* agency.txt ha una sola agenzia: ogni linea è sua */
+      routesCsv += `${r.routeId},${campoCsv(agenzia.agency_id)},${csvEscape(r.routeShortName || "")},${csvEscape(r.routeLongName || "")},${r.routeType || 3},${r.routeUrl || agenzia.agency_url},${r.routeColor || ""},${r.routeTextColor || ""}\n`;
     }
     archive.append(routesCsv, { name: "routes.txt" });
 
@@ -2352,14 +2318,14 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
       .where(and(eq(gtfsFareMedia.feedId, feedId), eq(gtfsFareMedia.isActive, true)));
     if (media.length > 0) {
       let csv = "fare_media_id,fare_media_name,fare_media_type\n";
-      for (const m of media) csv += `${m.fareMediaId},${m.fareMediaName},${m.fareMediaType}\n`;
+      for (const m of media) csv += `${m.fareMediaId},${campoCsv(m.fareMediaName)},${m.fareMediaType}\n`;
       archive.append(csv, { name: "fare_media.txt" });
     }
 
     const cats = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     if (cats.length > 0) {
       let csv = "rider_category_id,rider_category_name,is_default_fare_category,eligibility_url\n";
-      for (const c of cats) csv += `${c.riderCategoryId},${c.riderCategoryName},${c.isDefault ? 1 : 0},${c.eligibilityUrl || ""}\n`;
+      for (const c of cats) csv += `${c.riderCategoryId},${campoCsv(c.riderCategoryName)},${c.isDefault ? 1 : 0},${campoCsv(c.eligibilityUrl || "")}\n`;
       archive.append(csv, { name: "rider_categories.txt" });
     }
 
@@ -3434,6 +3400,12 @@ router.post("/fares/products/fix-media", async (req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 // FEED INFO — CRUD
 // ═══════════════════════════════════════════════════════════
+/** L'agenzia che il GTFS delle tariffe scrive in agency.txt: la pagina ne prende i valori di partenza. */
+router.get("/fares/agency", async (_req, res): Promise<void> => {
+  try { res.json(agenziaNelGtfs(await leggiAzienda(), await agenziaGtfs())); }
+  catch (e: any) { erroreTariffe(res, e); }
+});
+
 router.get("/fares/feed-info", async (req, res): Promise<void> => {
   try {
     const feedId = await getLatestFeedId(req);
@@ -3448,12 +3420,14 @@ router.post("/fares/feed-info", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { feedPublisherName, feedPublisherUrl, feedLang, defaultLang, feedStartDate, feedEndDate, feedVersion, feedContactEmail, feedContactUrl } = req.body;
+    /* chi pubblica, se la richiesta non lo dice: l'agenzia dei GTFS (o l'azienda) */
+    const agenzia = agenziaNelGtfs(await leggiAzienda(), await agenziaGtfs());
     // Upsert: delete existing + insert
     await db.delete(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
     const [row] = await db.insert(gtfsFeedInfo).values({
       feedId,
-      feedPublisherName: feedPublisherName || "ATMA Scpa",
-      feedPublisherUrl: feedPublisherUrl || "https://www.atmaancona.it",
+      feedPublisherName: feedPublisherName || agenzia.agency_name,
+      feedPublisherUrl: feedPublisherUrl || agenzia.agency_url,
       feedLang: feedLang || "it",
       defaultLang: defaultLang || null,
       feedStartDate: feedStartDate || null,

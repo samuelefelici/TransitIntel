@@ -1476,6 +1476,62 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Gli elenchi delle tariffe e l'agenzia dei GTFS (tappa 6.10)
+
+Nella pagina Tariffe restavano nel codice quattro cose di una sola azienda: le
+categorie di passeggero, i supporti, i nodi del tariffario e la riga di
+`agency.txt`. Da questo rilascio sono dati dell'azienda (migrazione `0043`,
+tabelle `categorie_catalogo`, `supporti_catalogo`, `nodi_catalogo` e
+`agenzia_gtfs`), e ogni modifica resta nel registro.
+
+- **Dove**: Amministrazione → Azienda, scheda «Tariffe: agenzia ed elenchi di
+  partenza», dopo «Titoli di viaggio».
+- **L'agenzia del GTFS**: chi figura in `agency.txt` nel GTFS che si scarica
+  dalla pagina Tariffe. Se l'azienda ha un'agenzia a parte (il consorzio di
+  cui fa parte) si scrive quella; altrimenti figura l'azienda, con i dati di
+  Amministrazione → Azienda. In `routes.txt` ogni linea è dell'agenzia: il
+  file ne ha una sola.
+- **Chi pubblica il feed** (`feed_info.txt`): resta quello scritto nel modulo
+  «Feed Info» di ogni feed. In un feed che non lo ha ancora il modulo propone
+  l'agenzia, invece di un nome scritto nel codice.
+- **Categorie e supporti**: sono gli elenchi da cui la pagina Tariffe riempie
+  un feed. Ognuno si salva tutto insieme. La categoria predefinita è una sola.
+  Una categoria usata da un titolo del catalogo non si toglie. Cambiare un
+  elenco non tocca i feed già riempiti: lì si ripreme il pulsante della pagina
+  Tariffe, che riporta nomi e tipi a quelli dell'elenco.
+- **Un difetto corretto**: nel GTFS i nomi con la virgola non erano fra
+  virgolette. Due supporti di Conerobus («Tessera Regionale (€5,00 primo
+  abb.)» e «Tessera Agevolati (€2,10 / anno)») davano in `fare_media.txt` una
+  riga con un campo in più. Sul programma vero, dei dieci file del GTFS nove
+  escono uguali a prima byte per byte e cambia solo questo, in quelle due
+  righe.
+- **I nodi tariffari**: la scheda dei nodi nella pagina Tariffe è spenta (il
+  pulsante è commentato nel codice), quindi oggi l'elenco non lo usa nessuno
+  dalla pagina. I quattordici nodi del 2013 sono comunque passati dal codice
+  alla tabella, e la rotta che li copia in un feed legge da lì
+  (`import-catalog` al posto di `import-atma-2013`). Non c'è una sezione per
+  cambiarli: arriverà con la scheda, se si riaccende. In quella scheda è
+  corretto anche l'elenco dei nodi di un feed, che restava sempre vuoto perché
+  la pagina cercava i nodi in un campo che la risposta non ha.
+- **I colori dei cluster urbani** sono quelli delle reti dell'azienda (prima
+  cinque colori scritti nel codice, per cinque città): sulla mappa dei cluster
+  una rete urbana ha lo stesso colore che ha nel resto della pagina.
+- **Conerobus**: la migrazione carica le sette categorie, i sette supporti e i
+  quattordici nodi che erano nel codice, e come agenzia ATMA, con la riga di
+  `agency.txt` di prima. Un test confronta il file byte per byte.
+- **Un'installazione nuova** parte con la sola categoria «ordinario», senza
+  supporti né nodi, e come agenzia l'azienda.
+- **Non cambia**: il GTFS consegnabile di Planning Studio, che scrive come
+  agenzia l'azienda (tappa 3.4).
+
+**Dopo il deploy**
+1. In Amministrazione → Azienda la scheda nuova dice «Nel GTFS delle tariffe
+   l'agenzia è Atma Scpa (ATMA), non l'azienda», con 7 categorie e 7 supporti.
+2. Nessuna variabile nuova e nessuna Watch Path da aggiungere.
+
+**Rollback**: immagine precedente. Le tabelle restano, senza effetti: il
+codice di prima ha i suoi elenchi scritti dentro.
+
 ### Il catalogo dei titoli di viaggio (tappa 6.9)
 
 I biglietti e gli abbonamenti con cui si riempie un feed erano tre elenchi nel
@@ -1523,8 +1579,9 @@ modifica resta nel registro.
   soli biglietti per fascia, se le fasce ci sono.
 - **Una rete coi titoli nel catalogo è in uso**: non si toglie finché non si
   spostano o si tolgono.
-- **Fuori da qui**: le categorie di passeggero e i supporti di partenza (pochi
-  valori, ancora nel codice) e le categorie dell'analisi di Planning Studio.
+- **Fuori da qui**: le categorie dell'analisi di Planning Studio. Le categorie
+  di passeggero e i supporti di partenza sono diventati elenchi dell'azienda
+  con la tappa 6.10 (qui sopra).
 
 **Dopo il deploy**
 1. In Amministrazione → Azienda la scheda «Titoli di viaggio» mostra 159
