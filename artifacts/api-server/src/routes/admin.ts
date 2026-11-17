@@ -9,6 +9,7 @@ import {
 import { impostaAttivi, preparaDatiAperti, statoDatiAperti } from "../lib/dati-aperti";
 import { cancellaDeposito, creaDeposito, elencoDepositi, ModificaDeposito, modificaDeposito, NuovoDeposito, RifiutoDepositi } from "../lib/depositi";
 import { anteprimaRegole, cancellaRete, creaRete, elencoReti, ModificaRete, modificaRete, NuovaRete, Regole, RifiutoReti, salvaRegole } from "../lib/reti";
+import { elencoFasce, Fasce, RifiutoFasce, salvaFasce } from "../lib/fasce-km-store";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
@@ -588,6 +589,31 @@ router.delete("/admin/reti/:rete", async (req, res): Promise<void> => {
   if (!ID_RETE.test(rete)) { res.status(404).json({ error: "Rete non trovata" }); return; }
   try { res.json({ ok: true, ...(await cancellaRete(rete)) }); }
   catch (e) { rifiutoReti(req, res, e, "rete non tolta"); }
+});
+
+/**
+ * Le fasce chilometriche dell'extraurbano (tappa 6.8, lib/fasce-km.ts): a
+ * ogni fascia di chilometri il suo prezzo. GET tutte, in ordine; PUT salva
+ * l'elenco intero (numerate da 1, la prima da 0 km, senza buchi né
+ * sovrapposizioni). Solo admin, mai un token di Argos (requireAdmin).
+ */
+const rifiutoFasce = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoFasce) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/fasce-km", requireAdmin);
+router.get("/admin/fasce-km", async (req, res): Promise<void> => {
+  try { res.json(await elencoFasce()); }
+  catch (e) { rifiutoFasce(req, res, e, "fasce non leggibili"); }
+});
+router.put("/admin/fasce-km", async (req, res): Promise<void> => {
+  const p = Fasce.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ fasce: await salvaFasce(p.data) }); }
+  catch (e) { rifiutoFasce(req, res, e, "fasce non salvate"); }
 });
 
 export default router;

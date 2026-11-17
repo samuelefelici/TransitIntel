@@ -35,44 +35,17 @@ import { eq, and, sql, desc, inArray } from "drizzle-orm";
 import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helpers";
 import { haversineKm } from "../lib/geo-utils";
 import { classifyRoute, RETE_EXTRAURBANA } from "../lib/reti-linee";
+import { fasciaPerDistanza, primaFascia } from "../lib/fasce-km";
+import { conLeFasce, erroreTariffe } from "./fares-comuni";
 
 const router: IRouter = Router();
 
 // ════════════════════════════════════════════════════════════
-// Costanti tariffarie (duplicate dal router fares.ts — non si
-// importa per non introdurre dipendenze fra router).
+// Le fasce chilometriche dell'extraurbano: un dato dell'azienda
+// (lib/fasce-km.ts, tappa 6.8), le stesse delle tariffe a zone. Si
+// rileggono quando si apre una rotta delle tariffe.
 // ════════════════════════════════════════════════════════════
-const EXTRA_BANDS_MIN_OD: { fascia: number; kmFrom: number; kmTo: number; price: number }[] = [
-  { fascia: 1, kmFrom: 0, kmTo: 6, price: 1.35 },
-  { fascia: 2, kmFrom: 6, kmTo: 12, price: 1.85 },
-  { fascia: 3, kmFrom: 12, kmTo: 18, price: 2.35 },
-  { fascia: 4, kmFrom: 18, kmTo: 24, price: 2.85 },
-  { fascia: 5, kmFrom: 24, kmTo: 30, price: 3.20 },
-  { fascia: 6, kmFrom: 30, kmTo: 36, price: 3.55 },
-  { fascia: 7, kmFrom: 36, kmTo: 42, price: 3.90 },
-  { fascia: 8, kmFrom: 42, kmTo: 50, price: 4.25 },
-  { fascia: 9, kmFrom: 50, kmTo: 60, price: 4.55 },
-  { fascia: 10, kmFrom: 60, kmTo: 70, price: 4.85 },
-  { fascia: 11, kmFrom: 70, kmTo: 80, price: 5.15 },
-  { fascia: 12, kmFrom: 80, kmTo: 90, price: 5.45 },
-  { fascia: 13, kmFrom: 90, kmTo: 100, price: 5.75 },
-  { fascia: 14, kmFrom: 100, kmTo: 110, price: 6.05 },
-  { fascia: 15, kmFrom: 110, kmTo: 120, price: 6.35 },
-  { fascia: 16, kmFrom: 120, kmTo: 130, price: 6.65 },
-  { fascia: 17, kmFrom: 130, kmTo: 140, price: 6.95 },
-  { fascia: 18, kmFrom: 140, kmTo: 150, price: 7.25 },
-  { fascia: 19, kmFrom: 150, kmTo: 160, price: 7.55 },
-  { fascia: 20, kmFrom: 160, kmTo: 170, price: 7.85 },
-  { fascia: 21, kmFrom: 170, kmTo: 180, price: 8.15 },
-  { fascia: 22, kmFrom: 180, kmTo: 190, price: 8.45 },
-  { fascia: 23, kmFrom: 190, kmTo: 200, price: 8.75 },
-];
-
-function getBandForDistanceMinOd(distKm: number) {
-  if (distKm <= 0) return undefined;
-  return EXTRA_BANDS_MIN_OD.find(b => distKm > b.kmFrom && distKm <= b.kmTo)
-    ?? EXTRA_BANDS_MIN_OD[EXTRA_BANDS_MIN_OD.length - 1];
-}
+router.use(conLeFasce);
 
 // ════════════════════════════════════════════════════════════
 // Le tabelle (gtfs_fare_network_edges, gtfs_fare_od_matrix,
@@ -400,8 +373,8 @@ async function computeOdMatrix(feedId: string): Promise<ComputeResult> {
       pathRoutes.reverse();
 
       const km = Math.round(d * 100) / 100;
-      const band = getBandForDistanceMinOd(km);
-      const prezzo = band ? band.price : EXTRA_BANDS_MIN_OD[0].price;
+      const band = fasciaPerDistanza(km);
+      const prezzo = band ? band.price : primaFascia().price;
 
       buffer.push({
         feedId,
@@ -444,7 +417,7 @@ router.post("/fares/min-od/build-graph", async (req, res) => {
     return res.json({ feedId, ...result });
   } catch (err: any) {
     console.error("[min-od/build-graph]", err);
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -482,7 +455,7 @@ router.post("/fares/min-od/compute-matrix", async (req, res) => {
     }
   } catch (err: any) {
     console.error("[min-od/compute-matrix]", err);
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -502,7 +475,7 @@ router.get("/fares/min-od/simulate", async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: "coppia non trovata: rilancia compute-matrix" });
     return res.json(rows[0]);
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -519,7 +492,7 @@ router.get("/fares/min-od/matrix", async (req, res) => {
     const total = await db.execute<any>(sql`SELECT COUNT(*)::int AS n FROM gtfs_fare_od_matrix WHERE feed_id = ${feedId}`);
     return res.json({ feedId, total: total.rows[0]?.n ?? 0, limit, offset, rows });
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -532,7 +505,7 @@ router.get("/fares/min-od/edges", async (req, res) => {
       .where(eq(gtfsFareNetworkEdges.feedId, feedId));
     return res.json({ feedId, count: rows.length, edges: rows });
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -547,7 +520,7 @@ router.get("/fares/min-od/runs", async (req, res) => {
       .limit(50);
     return res.json({ feedId, runs: rows });
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -569,7 +542,7 @@ router.post("/fares/min-od/edges", async (req, res) => {
     }).returning();
     return res.json(inserted[0]);
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -581,7 +554,7 @@ router.delete("/fares/min-od/edges/:id", async (req, res) => {
     if (!via.length) return res.status(404).json(NON_NEL_FEED);
     return res.json({ ok: true, id: sc.id });
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -593,7 +566,7 @@ router.delete("/fares/min-od/matrix", async (req, res) => {
     const result = await db.delete(gtfsFareOdMatrix).where(eq(gtfsFareOdMatrix.feedId, feedId));
     return res.json({ ok: true, feedId, deleted: (result as any).rowCount ?? null });
   } catch (err: any) {
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -824,7 +797,7 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
       // Diagonale: stesso cluster → 1ª fascia
       for (let i = 0; i < N; i++) {
         if (matrix[i][i] === null) {
-          matrix[i][i] = EXTRA_BANDS_MIN_OD[0].price;
+          matrix[i][i] = primaFascia().price;
           kmMatrix[i][i] = 0;
           fasciaMatrix[i][i] = 1;
         }
@@ -855,7 +828,7 @@ router.get("/fares/min-od/route-polimetrica/:routeId", async (req, res) => {
     });
   } catch (err: any) {
     console.error("[min-od/route-polimetrica]", err);
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 
@@ -1031,7 +1004,7 @@ router.get("/fares/min-od/route-variants/:routeId", async (req, res) => {
     });
   } catch (err: any) {
     console.error("[min-od/route-variants]", err);
-    return res.status(500).json({ error: err?.message ?? String(err) });
+    return erroreTariffe(res, err);
   }
 });
 

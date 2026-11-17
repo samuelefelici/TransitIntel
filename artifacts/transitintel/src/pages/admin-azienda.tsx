@@ -7,8 +7,9 @@
  * Sotto, il territorio (tappa 6.1): comuni e luoghi di riferimento, ognuno
  * salvato da sé (components/azienda/TerritorioAzienda.tsx), e i dati aperti
  * (tappa 6.3): gli indirizzi per il NAP (components/azienda/DatiAperti.tsx),
- * i depositi del personale (tappa 6.4, components/azienda/DepositiAzienda.tsx)
- * e le reti con le regole delle linee (tappa 6.7, components/azienda/RetiAzienda.tsx).
+ * i depositi del personale (tappa 6.4, components/azienda/DepositiAzienda.tsx),
+ * le reti con le regole delle linee (tappa 6.7, components/azienda/RetiAzienda.tsx)
+ * e le fasce chilometriche dell'extraurbano (tappa 6.8, components/azienda/FasceKm.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
 import { Building2, FileCode2, MapPin, Radio, Save } from "lucide-react";
@@ -23,6 +24,7 @@ import TerritorioAzienda from "@/components/azienda/TerritorioAzienda";
 import DatiAperti from "@/components/azienda/DatiAperti";
 import DepositiAzienda from "@/components/azienda/DepositiAzienda";
 import RetiAzienda from "@/components/azienda/RetiAzienda";
+import FasceKm from "@/components/azienda/FasceKm";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
@@ -230,6 +232,9 @@ export default function AdminAziendaPage() {
 
       {/* le reti e le regole delle linee (tappa 6.7): urbano o extraurbano, per le tariffe e per il Roster */}
       <RetiAzienda />
+
+      {/* le fasce chilometriche dell'extraurbano (tappa 6.8): a ogni fascia di chilometri il suo prezzo */}
+      <FasceKm />
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}
       <TerritorioAzienda />

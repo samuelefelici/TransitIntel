@@ -69,6 +69,8 @@ import { getLatestFeedId, idNelFeed, nelFeed, NON_NEL_FEED } from "./gtfs-helper
 import { haversineKm } from "../lib/geo-utils";
 import { classifyRoute, CODICE_URBANO_MAX, CODICE_URBANO_MIN, idRetiUrbane, reteUrbana, retiInVigore, retiUrbane, SCARTO_CODICE_MISTO } from "../lib/reti-linee";
 import { assegnaZoneUrbane } from "../lib/zone-urbane";
+import { fasceObbligate, fasciaNumero, fasciaPerDistanza, primaFascia, ultimaFascia } from "../lib/fasce-km";
+import { conLeFasce, erroreTariffe } from "./fares-comuni";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
@@ -76,38 +78,14 @@ const router: IRouter = Router();
 // La rete di default di una linea: lib/reti-linee.ts (la usano anche le UDP).
 
 // ═══════════════════════════════════════════════════════════
-// The 23 extraurban fare bands (DGR Regione Marche)
+// Le fasce chilometriche dell'extraurbano: un dato dell'azienda
+// (lib/fasce-km.ts, tappa 6.8). Si rileggono quando si apre una rotta
+// delle tariffe; se l'azienda non le ha scritte, chi ne chiede una riceve
+// SenzaFasce e la rotta risponde 409 (routes/fares-comuni.ts).
 // ═══════════════════════════════════════════════════════════
-const EXTRA_BANDS: { fascia: number; kmFrom: number; kmTo: number; price: number }[] = [
-  { fascia: 1, kmFrom: 0, kmTo: 6, price: 1.35 },
-  { fascia: 2, kmFrom: 6, kmTo: 12, price: 1.85 },
-  { fascia: 3, kmFrom: 12, kmTo: 18, price: 2.35 },
-  { fascia: 4, kmFrom: 18, kmTo: 24, price: 2.85 },
-  { fascia: 5, kmFrom: 24, kmTo: 30, price: 3.20 },
-  { fascia: 6, kmFrom: 30, kmTo: 36, price: 3.55 },
-  { fascia: 7, kmFrom: 36, kmTo: 42, price: 3.90 },
-  { fascia: 8, kmFrom: 42, kmTo: 50, price: 4.25 },
-  { fascia: 9, kmFrom: 50, kmTo: 60, price: 4.55 },
-  { fascia: 10, kmFrom: 60, kmTo: 70, price: 4.85 },
-  { fascia: 11, kmFrom: 70, kmTo: 80, price: 5.15 },
-  { fascia: 12, kmFrom: 80, kmTo: 90, price: 5.45 },
-  { fascia: 13, kmFrom: 90, kmTo: 100, price: 5.75 },
-  { fascia: 14, kmFrom: 100, kmTo: 110, price: 6.05 },
-  { fascia: 15, kmFrom: 110, kmTo: 120, price: 6.35 },
-  { fascia: 16, kmFrom: 120, kmTo: 130, price: 6.65 },
-  { fascia: 17, kmFrom: 130, kmTo: 140, price: 6.95 },
-  { fascia: 18, kmFrom: 140, kmTo: 150, price: 7.25 },
-  { fascia: 19, kmFrom: 150, kmTo: 160, price: 7.55 },
-  { fascia: 20, kmFrom: 160, kmTo: 170, price: 7.85 },
-  { fascia: 21, kmFrom: 170, kmTo: 180, price: 8.15 },
-  { fascia: 22, kmFrom: 180, kmTo: 190, price: 8.45 },
-  { fascia: 23, kmFrom: 190, kmTo: 200, price: 8.75 },
-];
+const getBandForDistance = fasciaPerDistanza;
 
-function getBandForDistance(distKm: number): typeof EXTRA_BANDS[0] | undefined {
-  return EXTRA_BANDS.find(b => distKm > b.kmFrom && distKm <= b.kmTo)
-    ?? (distKm <= 0 ? undefined : EXTRA_BANDS[EXTRA_BANDS.length - 1]);
-}
+router.use(conLeFasce);
 
 // ═══════════════════════════════════════════════════════════
 // HELPER: Percorsi distinti per linea (DGR 1036/2022 art. 2.d)
@@ -573,7 +551,7 @@ router.get("/fares/networks", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/networks/seed
@@ -592,7 +570,7 @@ router.post("/fares/networks/seed", async (req, res): Promise<void> => {
     }
     const rows = await db.select().from(gtfsFareNetworks).where(eq(gtfsFareNetworks.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -626,7 +604,7 @@ router.get("/fares/route-networks", async (req, res): Promise<void> => {
     }));
 
     res.json(result);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/route-networks/auto-classify — apply default classification to all unassigned
@@ -652,7 +630,7 @@ router.post("/fares/route-networks/auto-classify", async (req, res): Promise<voi
       count++;
     }
     res.json({ classified: count });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // PUT /api/fares/route-networks/:routeId — manual reassign
@@ -670,7 +648,7 @@ router.put("/fares/route-networks/:routeId", async (req, res): Promise<void> => 
         set: { networkId },
       });
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/route-networks/bulk — save all assignments at once
@@ -692,7 +670,7 @@ router.post("/fares/route-networks/bulk", async (req, res): Promise<void> => {
       count++;
     }
     res.json({ saved: count });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -720,7 +698,7 @@ router.get("/fares/media", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareMedia).where(eq(gtfsFareMedia.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/media/seed", async (req, res): Promise<void> => {
@@ -737,7 +715,7 @@ router.post("/fares/media/seed", async (req, res): Promise<void> => {
     }
     const rows = await db.select().from(gtfsFareMedia).where(eq(gtfsFareMedia.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.put("/fares/media/:fareMediaId", async (req, res): Promise<void> => {
@@ -753,7 +731,7 @@ router.put("/fares/media/:fareMediaId", async (req, res): Promise<void> => {
       .set(update)
       .where(and(eq(gtfsFareMedia.feedId, feedId), eq(gtfsFareMedia.fareMediaId, req.params.fareMediaId)));
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -766,7 +744,7 @@ router.get("/fares/rider-categories", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/rider-categories/seed", async (req, res): Promise<void> => {
@@ -795,7 +773,7 @@ router.post("/fares/rider-categories/seed", async (req, res): Promise<void> => {
     }
     const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/rider-categories", async (req, res): Promise<void> => {
@@ -812,7 +790,7 @@ router.post("/fares/rider-categories", async (req, res): Promise<void> => {
       });
     const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.delete("/fares/rider-categories/:id", async (req, res) => {
@@ -821,7 +799,7 @@ router.delete("/fares/rider-categories/:id", async (req, res) => {
     const via = await db.delete(gtfsRiderCategories).where(nelFeed(gtfsRiderCategories, s)).returning({ id: gtfsRiderCategories.id });
     if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.put("/fares/rider-categories/:id", async (req, res): Promise<void> => {
@@ -836,7 +814,7 @@ router.put("/fares/rider-categories/:id", async (req, res): Promise<void> => {
     if (!cambiate.length) { res.status(404).json(NON_NEL_FEED); return; }
     const rows = await db.select().from(gtfsRiderCategories).where(eq(gtfsRiderCategories.feedId, s.feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -849,7 +827,7 @@ router.get("/fares/calendar", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // Seed default service patterns: Feriale, Sabato, Festivo
@@ -875,7 +853,7 @@ router.post("/fares/calendar/seed", async (req, res): Promise<void> => {
     }
     const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/calendar", async (req, res): Promise<void> => {
@@ -892,7 +870,7 @@ router.post("/fares/calendar", async (req, res): Promise<void> => {
       });
     const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.put("/fares/calendar/:id", async (req, res): Promise<void> => {
@@ -915,7 +893,7 @@ router.put("/fares/calendar/:id", async (req, res): Promise<void> => {
     }
     const rows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, s.feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.delete("/fares/calendar/:id", async (req, res) => {
@@ -924,7 +902,7 @@ router.delete("/fares/calendar/:id", async (req, res) => {
     const via = await db.delete(gtfsCalendar).where(nelFeed(gtfsCalendar, s)).returning({ id: gtfsCalendar.id });
     if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -937,7 +915,7 @@ router.get("/fares/calendar-dates", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsCalendarDates).where(eq(gtfsCalendarDates.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/calendar-dates", async (req, res): Promise<void> => {
@@ -949,7 +927,7 @@ router.post("/fares/calendar-dates", async (req, res): Promise<void> => {
     await db.insert(gtfsCalendarDates).values({ feedId, serviceId, date, exceptionType });
     const rows = await db.select().from(gtfsCalendarDates).where(eq(gtfsCalendarDates.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.delete("/fares/calendar-dates/:id", async (req, res) => {
@@ -958,7 +936,7 @@ router.delete("/fares/calendar-dates/:id", async (req, res) => {
     const via = await db.delete(gtfsCalendarDates).where(nelFeed(gtfsCalendarDates, s)).returning({ id: gtfsCalendarDates.id });
     if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -971,7 +949,7 @@ router.get("/fares/products", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/products/seed", async (req, res): Promise<void> => {
@@ -989,7 +967,7 @@ router.post("/fares/products/seed", async (req, res): Promise<void> => {
       { fareProductId: "falconara_ar", fareProductName: "Biglietto Urbano Falconara A/R", networkId: "urbano_falconara", amount: 2.00, durationMinutes: 60, fareType: "return" as const, isUrbanHourly: false },
     ];
 
-    const extraProducts = EXTRA_BANDS.map(b => ({
+    const extraProducts = fasceObbligate().map(b => ({
       fareProductId: `extra_fascia_${b.fascia}`,
       fareProductName: `Extraurbano ${b.kmFrom}-${b.kmTo} km`,
       networkId: "extraurbano",
@@ -1018,7 +996,7 @@ router.post("/fares/products/seed", async (req, res): Promise<void> => {
     const rows = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
     await logAudit(feedId, "seed_products", `Seed prodotti: ${rows.length} prodotti inseriti/aggiornati`);
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ─── Tariffe ATMA ufficiali (DGR Marche n. 1036 del 08/08/2022, in vigore dal 01/09/2022) ────
@@ -1131,7 +1109,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
       { fareProductId: "univpm_gamma",   fareProductName: "UNIVPM Gamma — Integrato extraurbano ≤18 km + urbano, quota studente", networkId: "extraurbano", amount: 250.00, durationMinutes: 60*24*270, fareType: "abbonamento_annuale", riderCategoryId: "studente_univpm" },
       { fareProductId: "univpm_delta",   fareProductName: "UNIVPM Delta — Integrato extraurbano ≤36 km + urbano, quota studente", networkId: "extraurbano", amount: 300.00, durationMinutes: 60*24*270, fareType: "abbonamento_annuale", riderCategoryId: "studente_univpm" },
       // ── EXTRAURBANO — Settimanale ordinario (fasce 1–12) ──────────────────
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_sett_ord_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Settimanale Ordinario — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1141,7 +1119,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
         riderCategoryId: "ordinario",
       })),
       // ── EXTRAURBANO — Mensile ordinario (fasce 1–12) ──────────────────────
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_mens_ord_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Mensile Ordinario — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1151,7 +1129,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
         riderCategoryId: "ordinario",
       })),
       // ── EXTRAURBANO — Mensile studenti = stessa tariffa ordinaria (fasce 1–12)
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_mens_st_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Mensile Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1161,7 +1139,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
         riderCategoryId: "studente",
       })),
       // ── EXTRAURBANO — Annuale ordinario (fasce 1–12) ──────────────────────
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_ann_ord_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Annuale Ordinario — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1171,7 +1149,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
         riderCategoryId: "ordinario",
       })),
       // ── EXTRAURBANO — Annuale studenti 7,5 mensilità (fasce 1–12) ─────────
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_ann_st_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Annuale Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1181,7 +1159,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
         riderCategoryId: "studente",
       })),
       // ── EXTRAURBANO — Mensile integrato (extra + urbano Ancona), ordinario ─
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_mens_int_ord_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Mensile Integrato Ancona — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1191,7 +1169,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
         riderCategoryId: "ordinario",
       })),
       // ── EXTRAURBANO — Mensile integrato studenti (extra + urbano Ancona) ──
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_mens_int_st_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Mensile Integrato Ancona Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1201,7 +1179,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
         riderCategoryId: "studente",
       })),
       // ── EXTRAURBANO — Annuale integrato studenti (extra + urbano Ancona) ──
-      ...EXTRA_BANDS.slice(0, 12).map((b, i) => ({
+      ...fasceObbligate().slice(0, 12).map((b, i) => ({
         fareProductId: `extra_ann_int_st_fascia_${b.fascia}`,
         fareProductName: `Extraurbano Annuale Integrato Ancona Studente — Fascia ${b.fascia} (${b.kmFrom}–${b.kmTo} km)`,
         networkId: "extraurbano",
@@ -1242,7 +1220,7 @@ router.post("/fares/products/seed-abbonamenti", async (req, res): Promise<void> 
       .where(and(eq(gtfsFareProducts.feedId, feedId), sql`fare_type LIKE 'abbonamento%'`));
     await logAudit(feedId, "seed_products", `Seed abbonamenti: ${inserted} nuovi prodotti inseriti (${rows.length} totali)`);
     res.json({ inserted, total: rows.length, rows });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/products — crea un nuovo prodotto tariffario
@@ -1267,7 +1245,7 @@ router.post("/fares/products", async (req, res): Promise<void> => {
     }).returning();
     await logAudit(feedId, "update_product", `Nuovo prodotto creato: ${fareProductId} — €${amount} (${fareType})`);
     res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // DELETE /api/fares/products/:id — elimina prodotto
@@ -1278,7 +1256,7 @@ router.delete("/fares/products/:id", async (req, res): Promise<void> => {
     if (!deleted) { res.status(404).json(NON_NEL_FEED); return; }
     await logAudit(s.feedId, "update_product", `Prodotto eliminato: ${deleted.fareProductId} — €${deleted.amount}`);
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.put("/fares/products/:id", async (req, res) => {
@@ -1293,7 +1271,7 @@ router.put("/fares/products/:id", async (req, res) => {
     if (!updated) { res.status(404).json(NON_NEL_FEED); return; }
     await logAudit(s.feedId, "update_price", `Prodotto aggiornato: ${updated.fareProductId} → €${updated.amount}${fareProductName ? ` — nome: "${fareProductName}"` : ""}`);
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -1306,7 +1284,7 @@ router.get("/fares/areas", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareAreas).where(eq(gtfsFareAreas.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.get("/fares/stop-areas", async (req, res): Promise<void> => {
@@ -1315,7 +1293,7 @@ router.get("/fares/stop-areas", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsStopAreas).where(eq(gtfsStopAreas.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/zones/generate/:routeId — build zones for one extraurban route
@@ -1327,7 +1305,7 @@ router.post("/fares/zones/generate/:routeId", async (req, res): Promise<void> =>
 
     const result = await generateZonesForRoute(feedId, routeId);
     res.json(result);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/zones/generate-all — build zones for ALL extraurban routes + urban areas
@@ -1355,7 +1333,7 @@ router.post("/fares/zones/generate-all", async (req, res): Promise<void> => {
     }
 
     res.json({ urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/zones/generate-all-direct — build zones for ALL extraurban routes using haversine (Km per Linea)
@@ -1384,7 +1362,7 @@ router.post("/fares/zones/generate-all-direct", async (req, res): Promise<void> 
     }
 
     res.json({ method: "direct", urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/zones/generate-all-dominant — build zones using Percorso Dominante method
@@ -1412,7 +1390,7 @@ router.post("/fares/zones/generate-all-dominant", async (req, res): Promise<void
     }
 
     res.json({ method: "dominant", urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 /**
@@ -1448,7 +1426,7 @@ async function generateZonesForRouteDirect(feedId: string, routeId: string) {
   // Create areas and assign stops
   const createdZones: string[] = [];
   for (const fascia of Array.from(usedBands).sort((a, b) => a - b)) {
-    const band = EXTRA_BANDS[fascia - 1];
+    const band = fasciaNumero(fascia);
     const areaId = `${routeId}_zona_${fascia}`;
     await db.insert(gtfsFareAreas).values({
       feedId, areaId,
@@ -1465,7 +1443,7 @@ async function generateZonesForRouteDirect(feedId: string, routeId: string) {
   let stopsAssigned = 0;
   for (const [stopId, info] of stopFinalKm) {
     let band = getBandForDistance(info.km);
-    if (!band && info.km === 0) band = EXTRA_BANDS[0];
+    if (!band && info.km === 0) band = primaFascia();
     if (!band) continue;
     await db.insert(gtfsStopAreas)
       .values({ feedId, areaId: `${routeId}_zona_${band.fascia}`, stopId })
@@ -1529,7 +1507,7 @@ async function generateZonesForRoute(feedId: string, routeId: string) {
   // Crea aree e assegna fermate
   const createdZones: string[] = [];
   for (const fascia of Array.from(usedBands).sort((a, b) => a - b)) {
-    const band = EXTRA_BANDS[fascia - 1];
+    const band = fasciaNumero(fascia);
     const areaId = `${routeId}_zona_${fascia}`;
     await db.insert(gtfsFareAreas).values({
       feedId, areaId,
@@ -1546,7 +1524,7 @@ async function generateZonesForRoute(feedId: string, routeId: string) {
   let stopsAssigned = 0;
   for (const [stopId, info] of stopFinalKm) {
     let band = getBandForDistance(info.km);
-    if (!band && info.km === 0) band = EXTRA_BANDS[0];
+    if (!band && info.km === 0) band = primaFascia();
     if (!band) continue;
     await db.insert(gtfsStopAreas)
       .values({ feedId, areaId: `${routeId}_zona_${band.fascia}`, stopId })
@@ -1589,7 +1567,7 @@ async function generateZonesForRouteDominant(feedId: string, routeId: string) {
 
   const createdZones: string[] = [];
   for (const fascia of Array.from(usedBands).sort((a, b) => a - b)) {
-    const band = EXTRA_BANDS[fascia - 1];
+    const band = fasciaNumero(fascia);
     const areaId = `${routeId}_zona_${fascia}`;
     await db.insert(gtfsFareAreas).values({
       feedId, areaId,
@@ -1606,7 +1584,7 @@ async function generateZonesForRouteDominant(feedId: string, routeId: string) {
   let stopsAssigned = 0;
   for (const [stopId, info] of stopFinalKm) {
     let band = getBandForDistance(info.km);
-    if (!band && info.km === 0) band = EXTRA_BANDS[0];
+    if (!band && info.km === 0) band = primaFascia();
     if (!band) continue;
     await db.insert(gtfsStopAreas)
       .values({ feedId, areaId: `${routeId}_zona_${band.fascia}`, stopId })
@@ -1636,7 +1614,7 @@ router.get("/fares/leg-rules", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/leg-rules/generate — generate from current areas & products
@@ -1708,7 +1686,7 @@ router.post("/fares/leg-rules/generate", async (req, res): Promise<void> => {
     }
 
     res.json({ urbanRules: urbanRules.length, odRules: odCount, total: urbanRules.length + odCount });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -1725,7 +1703,7 @@ router.get("/fares/timeframes", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const rows = await db.select().from(gtfsTimeframes).where(eq(gtfsTimeframes.feedId, feedId));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/timeframes", async (req, res): Promise<void> => {
@@ -1738,7 +1716,7 @@ router.post("/fares/timeframes", async (req, res): Promise<void> => {
       feedId, timeframeGroupId, startTime, endTime, serviceId,
     }).returning();
     res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.delete("/fares/timeframes/:id", async (req, res): Promise<void> => {
@@ -1747,7 +1725,7 @@ router.delete("/fares/timeframes/:id", async (req, res): Promise<void> => {
     const via = await db.delete(gtfsTimeframes).where(nelFeed(gtfsTimeframes, s)).returning({ id: gtfsTimeframes.id });
     if (!via.length) { res.status(404).json(NON_NEL_FEED); return; }
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -1825,7 +1803,7 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
       (odDistances.reduce((a, b) => a + b.km * b.tripCount, 0) / totalWeight) * 100
     ) / 100;
 
-    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? EXTRA_BANDS[0] : undefined);
+    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? primaFascia() : undefined);
     if (!band) { res.status(404).json({ error: `No fare band for distance ${distKm.toFixed(1)} km` }); return; }
 
     res.json({
@@ -1842,7 +1820,7 @@ router.post("/fares/simulate", async (req, res): Promise<void> => {
       amount: band.price, currency: "EUR", bandRange: `${band.kmFrom}-${band.kmTo} km`,
       intermediateStops: bestIntermediateStops,
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -1894,7 +1872,7 @@ router.post("/fares/simulate-dominant", async (req, res): Promise<void> => {
         return { shapeId: p.shapeId, tripCount: p.tripCount, km: Math.round(Math.abs(at.km - af.km) * 100) / 100 };
       }).filter(Boolean);
 
-      const band = getBandForDistance(distKm) ?? EXTRA_BANDS[0];
+      const band = getBandForDistance(distKm) ?? primaFascia();
       res.json({
         ruleApplied: "regola1",
         routeId, fromStopId, toStopId,
@@ -1955,7 +1933,7 @@ router.post("/fares/simulate-dominant", async (req, res): Promise<void> => {
       const distKm = totalTrips > 0
         ? Math.round((lineResults.reduce((s, r) => s + r.km * r.dominantTripCount, 0) / totalTrips) * 100) / 100
         : lineResults[0].km;
-      const band = getBandForDistance(distKm) ?? EXTRA_BANDS[0];
+      const band = getBandForDistance(distKm) ?? primaFascia();
 
       res.json({
         ruleApplied: "regola2",
@@ -1973,7 +1951,7 @@ router.post("/fares/simulate-dominant", async (req, res): Promise<void> => {
     // Regola 1 fallback: singola linea migliore
     const only = applicable.routes[0];
     const distKm = only.km;
-    const band = getBandForDistance(distKm) ?? EXTRA_BANDS[0];
+    const band = getBandForDistance(distKm) ?? primaFascia();
     res.json({
       ruleApplied: "regola1",
       routeId: only.routeId,
@@ -1989,7 +1967,7 @@ router.post("/fares/simulate-dominant", async (req, res): Promise<void> => {
       intermediateStops: only.intermediateStops,
       lineResults,
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -2023,7 +2001,7 @@ router.post("/fares/simulate-cluster", async (req, res): Promise<void> => {
     const distKm = fromCluster.clusterId === toCluster.clusterId
       ? 0
       : haversineKm(fromCluster.centroidLat!, fromCluster.centroidLon!, toCluster.centroidLat!, toCluster.centroidLon!);
-    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? EXTRA_BANDS[0] : undefined);
+    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? primaFascia() : undefined);
 
     // Get all stops for both clusters (for hull rendering)
     const fromClusterStops = allClusterStops.filter(s => s.clusterId === fromCS.clusterId)
@@ -2062,7 +2040,7 @@ router.post("/fares/simulate-cluster", async (req, res): Promise<void> => {
       currency: "EUR",
       bandRange: band ? `${band.kmFrom}-${band.kmTo} km` : null,
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -2092,7 +2070,7 @@ router.post("/fares/simulate-direct", async (req, res): Promise<void> => {
       haversineKm(fromStop.lat, fromStop.lon, toStop.lat, toStop.lon) * 100
     ) / 100;
 
-    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? EXTRA_BANDS[0] : undefined);
+    const band = getBandForDistance(distKm) ?? (distKm <= 6 ? primaFascia() : undefined);
 
     res.json({
       type: "direct",
@@ -2104,7 +2082,7 @@ router.post("/fares/simulate-direct", async (req, res): Promise<void> => {
       currency: "EUR",
       bandRange: band ? `${band.kmFrom}-${band.kmTo} km` : null,
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -2228,7 +2206,7 @@ router.post("/fares/generate-gtfs", async (req, res): Promise<void> => {
       },
     });
     await logAudit(feedId, "generate_gtfs", `Generazione GTFS Fares V2: ${products.length} prodotti, ${legRules.length} leg rules, ${stopAreas.length} stop-areas${missingRoutes.length > 0 ? ` — ${missingRoutes.length} linee non classificate` : ""}`);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/route-stops/:routeId — get ordered stops with progressive km (for zone editor)
@@ -2285,7 +2263,7 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
       const km = Math.round(avgKm * 100) / 100;
       const kmMin = Math.round(Math.min(...data.weightedKmValues.map(v => v.km)) * 100) / 100;
       const kmMax = Math.round(Math.max(...data.weightedKmValues.map(v => v.km)) * 100) / 100;
-      const band = getBandForDistance(km) || (km === 0 ? EXTRA_BANDS[0] : null);
+      const band = getBandForDistance(km) || (km === 0 ? primaFascia() : null);
       const existing = areaMap.get(stopId);
 
       result.push({
@@ -2312,7 +2290,7 @@ router.get("/fares/route-stops/:routeId", async (req, res): Promise<void> => {
     result.sort((a, b) => a.progressiveKm - b.progressiveKm);
 
     res.json(result);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/route-stops-dominant/:routeId — same but uses dominant percorso
@@ -2347,7 +2325,7 @@ router.get("/fares/route-stops-dominant/:routeId", async (req, res): Promise<voi
     const result = dominant.stops.map((s) => {
       const info = kmMap.get(s.stop_id)!;
       const km = Math.round(info.km * 100) / 100;
-      const band = getBandForDistance(km) || (km === 0 ? EXTRA_BANDS[0] : null);
+      const band = getBandForDistance(km) || (km === 0 ? primaFascia() : null);
       const existing = areaMap.get(s.stop_id);
 
       const altInfo = altKmMaps
@@ -2382,7 +2360,7 @@ router.get("/fares/route-stops-dominant/:routeId", async (req, res): Promise<voi
     const shapePoints: [number, number][] = dominant.shapeCoords ?? [];
 
     res.json({ stops: result, shapePoints, dominantShapeId: dominant.shapeId });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -2432,7 +2410,7 @@ router.get("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
       pickupType: r.pickup_type ?? 0,
       dropOffType: r.drop_off_type ?? 0,
     })));
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // PUT bulk update pickup_type / drop_off_type for ALL trips of a route at a given stop
@@ -2465,7 +2443,7 @@ router.put("/fares/stop-times/:routeId", async (req, res): Promise<void> => {
     }
 
     res.json({ ok: true, updated });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -2653,7 +2631,7 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     }
 
     await archive.finalize();
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 /** Escape a string for CSV (wraps in quotes if it contains commas, quotes, or newlines) */
@@ -2840,7 +2818,7 @@ router.get("/fares/stops-classification", async (req, res): Promise<void> => {
     if (!feedId) { res.json([]); return; }
     const result = await computeStopsClassification(feedId);
     res.json(result);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/stops-classification/summary — conteggio per ogni codice
@@ -2872,7 +2850,7 @@ router.get("/fares/stops-classification/summary", async (req, res): Promise<void
       }));
 
     res.json({ total, summary });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/stops-classification/export — stops.txt con colonne classificazione
@@ -2895,7 +2873,7 @@ router.get("/fares/stops-classification/export", async (req, res): Promise<void>
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Content-Disposition", 'attachment; filename="stops.txt"');
     res.send(csv);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/stops-classification/persist — calcola e SCRIVE la classificazione
@@ -2959,7 +2937,7 @@ router.post("/fares/stops-classification/persist", async (req, res): Promise<voi
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const out = await persistStopsClassification(feedId);
     res.json({ ok: true, ...out });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/products/mark-urban-hourly — marca (idempotente) il biglietto ORARIO
@@ -2972,7 +2950,7 @@ router.post("/fares/products/mark-urban-hourly", async (req, res): Promise<void>
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const out = await markUrbanHourly(feedId, req.body?.products ?? {});
     res.json({ ok: true, ...out });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/quote?stopIn=&stopOut=  — ORACOLO TARIFFARIO (§4)
@@ -3091,7 +3069,7 @@ router.get("/fares/quote", async (req, res): Promise<void> => {
     const stopOut = String(req.query.stopOut ?? "");
     const q = await computeFareQuote(feedId, stopIn, stopOut);
     res.status(q.httpStatus).json(q.body);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3114,7 +3092,7 @@ router.get("/fares/zone-clusters", async (req, res): Promise<void> => {
     const countMap = new Map<string, number>();
     for (const r of stopCounts.rows) countMap.set(r.cluster_id, r.cnt);
     res.json(clusters.map(c => ({ ...c, stopCount: countMap.get(c.clusterId) || 0 })));
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/zone-clusters/full — clusters with full stops array
@@ -3139,7 +3117,7 @@ router.get("/fares/zone-clusters/full", async (req, res): Promise<void> => {
         stopLon: s.stopLon,
       })),
     })));
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/zone-clusters — create or update a cluster
@@ -3169,7 +3147,7 @@ router.post("/fares/zone-clusters", async (req, res): Promise<void> => {
       set: { clusterName, polygon: polygon || null, centroidLat, centroidLon, color: color || "#3b82f6", updatedAt: sql`now()` },
     }).returning();
     res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // PUT /api/fares/zone-clusters/:id — update cluster
@@ -3190,7 +3168,7 @@ router.put("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
       .returning();
     if (!row) { res.status(404).json(NON_NEL_FEED); return; }
     res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // DELETE /api/fares/zone-clusters — reset ALL clusters of latest feed (cluster + assegnazioni auto)
@@ -3206,7 +3184,7 @@ router.delete("/fares/zone-clusters", async (req, res): Promise<void> => {
     await db.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
     await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
     res.json({ ok: true, deletedClusters: before });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // DELETE /api/fares/zone-clusters/:id — delete cluster + its stops
@@ -3221,7 +3199,7 @@ router.delete("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
     );
     await db.delete(gtfsFareZoneClusters).where(nelFeed(gtfsFareZoneClusters, s));
     res.json({ ok: true });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/zone-clusters/:clusterId/stops — get stops for a cluster
@@ -3232,7 +3210,7 @@ router.get("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<vo
     const rows = await db.select().from(gtfsFareZoneClusterStops)
       .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, req.params.clusterId)));
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/zone-clusters/:clusterId/stops — set stops for a cluster (replace all)
@@ -3278,7 +3256,7 @@ router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<v
         .where(and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, clusterId)));
     }
     res.json({ ok: true, stopsSet: stops.length });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/zone-clusters/distance-matrix — centroid distance matrix between clusters
@@ -3298,7 +3276,7 @@ router.get("/fares/zone-clusters/distance-matrix", async (req, res): Promise<voi
       }
     }
     res.json({ clusters: valid.map(c => ({ id: c.clusterId, name: c.clusterName, color: c.color })), matrix });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // POST /api/fares/zone-clusters/generate-zones — generate areas + stop_areas + leg_rules from clusters
@@ -3378,7 +3356,7 @@ router.post("/fares/zone-clusters/generate-zones", async (req, res): Promise<voi
     }
 
     res.json({ areasCreated, stopsAssigned, odRules, totalClusters: clusters.length, urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3582,7 +3560,7 @@ router.post("/fares/zone-clusters/auto-generate", async (req, res): Promise<void
       const rings = new Map<number, typeof stopsWithDist>();
       for (const s of stopsWithDist) {
         const band = getBandForDistance(s.distKm);
-        const fascia = band ? band.fascia : (s.distKm === 0 ? 1 : EXTRA_BANDS[EXTRA_BANDS.length - 1].fascia);
+        const fascia = band ? band.fascia : (s.distKm === 0 ? 1 : ultimaFascia().fascia);
         if (!rings.has(fascia)) rings.set(fascia, []);
         rings.get(fascia)!.push(s);
       }
@@ -3590,7 +3568,7 @@ router.post("/fares/zone-clusters/auto-generate", async (req, res): Promise<void
       const sortedFasce = Array.from(rings.keys()).sort((a, b) => a - b);
 
       const clusterDefs = sortedFasce.filter(f => (rings.get(f)?.length || 0) > 0).map((fascia, idx) => {
-        const band = EXTRA_BANDS[fascia - 1];
+        const band = fasciaNumero(fascia);
         return {
           clusterId: `zona_${fascia}`,
           clusterName: `Zona ${fascia} (${band.kmFrom}-${band.kmTo} km)`,
@@ -3606,11 +3584,11 @@ router.post("/fares/zone-clusters/auto-generate", async (req, res): Promise<void
         clustersCreated, totalStopsAssigned, totalExtraStops: stops.length,
         center: { lat: centerLat, lon: centerLon },
         rings: sortedFasce.map(f => ({
-          fascia: f, kmFrom: EXTRA_BANDS[f - 1].kmFrom, kmTo: EXTRA_BANDS[f - 1].kmTo, stops: rings.get(f)!.length,
+          fascia: f, kmFrom: fasciaNumero(f).kmFrom, kmTo: fasciaNumero(f).kmTo, stops: rings.get(f)!.length,
         })),
       });
     }
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/extraurban-stops — all stops served by extraurban routes (for cluster assignment)
@@ -3628,7 +3606,7 @@ router.get("/fares/extraurban-stops", async (req, res): Promise<void> => {
       ORDER BY s.stop_name
     `);
     res.json(rows.rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3650,7 +3628,7 @@ router.post("/fares/stop-areas/deduplicate", async (req, res): Promise<void> => 
     const deleted = result.rowCount ?? 0;
     const remaining = await db.select({ count: sql<number>`count(*)` }).from(gtfsStopAreas).where(eq(gtfsStopAreas.feedId, feedId));
     res.json({ deleted, remaining: Number(remaining[0]?.count ?? 0) });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3666,7 +3644,7 @@ router.post("/fares/products/fix-media", async (req, res): Promise<void> => {
       WHERE feed_id = ${feedId} AND fare_media_id IS NOT NULL
     `);
     res.json({ updated: result.rowCount ?? 0 });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3678,7 +3656,7 @@ router.get("/fares/feed-info", async (req, res): Promise<void> => {
     if (!feedId) { res.json(null); return; }
     const rows = await db.select().from(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
     res.json(rows[0] ?? null);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/feed-info", async (req, res): Promise<void> => {
@@ -3701,7 +3679,7 @@ router.post("/fares/feed-info", async (req, res): Promise<void> => {
       feedContactUrl: feedContactUrl || null,
     }).returning();
     res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3778,7 +3756,7 @@ router.get("/fares/validate", async (req, res): Promise<void> => {
 
     const allOk = checks.every(c => c.ok);
     res.json({ ok: allOk, checks });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3813,7 +3791,7 @@ router.get("/fares/audit", async (req, res): Promise<void> => {
           .limit(200)
       : [];
     res.json(rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 router.post("/fares/audit", async (req, res): Promise<void> => {
@@ -3831,7 +3809,7 @@ router.post("/fares/audit", async (req, res): Promise<void> => {
       metadata: metadata ?? {},
     }).returning();
     res.json(row);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -3951,7 +3929,7 @@ router.get("/fares/kpi", async (req, res): Promise<void> => {
       fasciaDistribution: (fasciaDistribution as any).rows ?? [],
       recentAudit,
     });
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -4062,7 +4040,7 @@ Compatibile con GTFS Fares V2 spec (MobilityData).
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.setHeader("Content-Length", zipBuffer.length);
     res.send(zipBuffer);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ═══════════════════════════════════════════════════════════
@@ -4083,7 +4061,7 @@ router.get("/fares/simulator/routes", async (req, res): Promise<void> => {
       ORDER BY r.route_short_name
     `);
     res.json(rows.rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/simulator/dates — date servite (con conteggio trip totale)
@@ -4139,7 +4117,7 @@ router.get("/fares/simulator/dates", async (req, res): Promise<void> => {
       ORDER BY f.service_date
     `);
     res.json(rows.rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/simulator/trips?routeId=X[&date=YYYYMMDD] — trips con orari per una linea
@@ -4195,7 +4173,7 @@ router.get("/fares/simulator/trips", async (req, res): Promise<void> => {
       LIMIT 200
     `);
     res.json(rows.rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // GET /api/fares/simulator/trip-stops?tripId=X — fermate ordinate di un trip
@@ -4215,7 +4193,7 @@ router.get("/fares/simulator/trip-stops", async (req, res): Promise<void> => {
       ORDER BY st.stop_sequence
     `);
     res.json(rows.rows);
-  } catch (e: any) { res.status(500).json({ error: e.message }); }
+  } catch (e: any) { erroreTariffe(res, e); }
 });
 
 // ──────────────────────────────────────────────────────────────────────
@@ -4422,7 +4400,7 @@ router.post("/fares/journey-plan", async (req, res): Promise<void> => {
         const flat = URBAN_FLAT_FARE[network] ?? URBAN_FLAT_FARE.urbano_ancona;
         amount = flat.price; fareName = flat.name; fareId = flat.id;
       } else {
-        const band = getBandForDistance(distKm) ?? EXTRA_BANDS[0];
+        const band = getBandForDistance(distKm) ?? primaFascia();
         amount = band.price;
         fareName = `Biglietto Extraurbano · fascia ${band.fascia}`;
         fareId = `extra_fascia_${band.fascia}`;
