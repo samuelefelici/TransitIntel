@@ -36,6 +36,7 @@ import siriRouter from "./siri";
 import avmStoriaRouter from "./avm-storia";
 import timetablesRouter from "./timetables";
 import networkShareRouter from "./network-share";
+import datiApertiRouter from "./dati-aperti";
 import timetableMapShareRouter from "./timetable-map-share";
 import planningStudioTimetablesRouter from "./planning-studio-timetables";
 import planningStudioEstimateRouter from "./planning-studio-estimate";
@@ -88,6 +89,7 @@ router.use(argosWatchCronRouter); // pubblico (x-cron-secret): tick sorveglianza
 router.use(weatherCronRouter); // pubblico (x-cron-secret): istantanee meteo
 router.use("/caronte", caronteRouter); // pubblico, prefisso /caronte: auth via Bearer CERBERO_API_KEY (validatore)
 router.use("/gtfs-rt", gtfsRtRouter); // pubblico (aggregatori infomobilità): key opzionale GTFS_RT_API_KEY
+router.use(datiApertiRouter); // pubblico: GTFS e NeTEx a un indirizzo stabile, per il NAP (tappa 6.3)
 router.use(networkShareRouter); // pubblico: mappa di rete condivisa via link
 router.use(timetableMapShareRouter); // pubblico: MAPPA ORARI condivisa via link (/o/:token)
 

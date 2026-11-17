@@ -30,6 +30,7 @@ import { weatherCronRouter } from "../routes/weather";
 import caronteRouter from "../routes/caronte";
 import gtfsRtRouter from "../routes/gtfs-rt";
 import networkShareRouter from "../routes/network-share";
+import datiApertiRouter from "../routes/dati-aperti";
 import timetableMapShareRouter from "../routes/timetable-map-share";
 import { contestoCron } from "../lib/contesto-http";
 
@@ -73,6 +74,8 @@ const PRIMA_DEL_LOGIN = [
   // condivisioni col token nel link
   "GET /network-share/:token", "GET /timetable-map/:token", "GET /timetable-map/:token/route/:routeId",
   "GET /timetable-map/:token/stop/:stopId",
+  // dati aperti (tappa 6.3): il GTFS e il NeTEx che l'azienda pubblica, a un indirizzo stabile
+  "GET /dati-aperti", "GET /dati-aperti/gtfs.zip", "GET /dati-aperti/netex.xml.gz",
 ].sort();
 
 const pila = strati(router);
@@ -88,7 +91,7 @@ describe("inventario delle rotte", () => {
   it("prima del login solo i router pubblici voluti", () => {
     const attesi = [
       healthRouter, authRouter, accountRouter, contestoCron, cronRouter, argosWatchCronRouter, weatherCronRouter,
-      caronteRouter, gtfsRtRouter, networkShareRouter, timetableMapShareRouter,
+      caronteRouter, gtfsRtRouter, datiApertiRouter, networkShareRouter, timetableMapShareRouter,
     ];
     const prima = pila.slice(0, posAuth).map((s) => s.handle);
     expect(prima).toHaveLength(attesi.length);

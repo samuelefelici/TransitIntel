@@ -1476,6 +1476,80 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Dati aperti a un indirizzo stabile (tappa 6.3)
+
+Il NAP non riceve file a mano: scarica ogni giorno da un indirizzo che non
+cambia. Da questo rilascio Cerbero pubblica il **GTFS consegnabile** (3.4) e il
+**NeTEx del profilo italiano** (6.2) a due indirizzi fissi, senza login:
+
+```
+https://<dominio dell'API>/api/dati-aperti/gtfs.zip
+https://<dominio dell'API>/api/dati-aperti/netex.xml.gz
+https://<dominio dell'API>/api/dati-aperti          (che cosa c'è in linea, in JSON)
+```
+
+- **Nasce spento.** Lo accende l'amministratore in Amministrazione → Azienda,
+  scheda «Dati aperti: gli indirizzi per il NAP», che mostra i due indirizzi
+  da copiare. Da spento gli indirizzi rispondono 404. L'accensione e lo
+  spegnimento restano nel registro delle modifiche (la colonna è
+  `azienda.dati_aperti_attivi`).
+- **Solo la versione in esercizio**, mai una bozza: la copia congelata (3.3)
+  del feed acceso. Senza un programma in esercizio, o se quello in esercizio
+  non ha una versione di Planning Studio (un file caricato a mano, o un
+  programma in esercizio da prima della 3.3), i file si tolgono e la scheda
+  dice perché: basta rimetterlo in esercizio da Planning Studio.
+- **File già pronti.** Li prepara il **lavoratore**, che guarda ogni 10
+  minuti, e li tiene nella tabella `dati_aperti` (migrazione `0037`). Chi
+  scarica riceve i byte così come sono: sul programma vero di prova 4,1 MB di
+  GTFS e 1,8 MB di NeTEx, in pochi centesimi di secondo.
+- **Si rifanno solo quando serve**: quando cambia la versione in esercizio, o
+  un dato dell'azienda che finisce nel file (ragione sociale, sito, telefono,
+  identificativo GTFS, codici NeTEx). Altrimenti il giro fa due letture e
+  basta. Sul programma vero la preparazione dura circa mezzo minuto.
+- **Solo se validi.** Un GTFS con errori, un NeTEx che non passa lo schema, o
+  che non si è potuto controllare (manca `xmllint`), non vanno in linea:
+  **resta l'ultimo file buono**, e la scheda mostra il motivo accanto al file.
+  Con gli stessi dati non si riprova (darebbe lo stesso esito); dopo un guasto
+  si riprova da solo dopo un'ora. «Prepara adesso» rifà subito.
+- **Scarico giornaliero leggero.** L'impronta SHA-256 del file è la sua
+  `ETag`: chi lo ha già (`If-None-Match`, o `If-Modified-Since`) riceve 304
+  senza che i byte si leggano. Lo stesso GTFS rifatto dà gli stessi byte.
+- **Limite**: 30 richieste al minuto per indirizzo IP su questi tre percorsi.
+- **Senza il lavoratore** (i calcoli dentro l'API, `CERBERO_LAVORATORE_INTERNO=1`)
+  i file non si rifanno da soli: dopo una messa in esercizio va premuto
+  «Prepara adesso».
+- L'API dell'amministratore: `GET` e `PUT /api/admin/dati-aperti`
+  (`{ "attivi": true }`), `POST /api/admin/dati-aperti/prepara`.
+
+**Da sapere prima di registrare gli indirizzi al NAP**
+- L'indirizzo comincia col dominio dell'API: se il dominio cambia, cambia
+  l'indirizzo. Si registra quello definitivo.
+- I codici NeTEx (`ITI3`, fornitore) vanno confermati con la Regione prima:
+  cambiarli dopo cambia tutti gli identificativi del file.
+- La licenza dei dati si dichiara nella registrazione al NAP: non è nel file.
+- Un sito che scarica **dal browser** di un altro dominio è fermato dal CORS
+  dell'API; il NAP e i validatori scaricano da un server, e passano.
+
+**Dopo il deploy**
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify le righe nuove del
+   blocco «Watch Paths» più sopra (`dati-aperti.ts`, `gtfs-consegnabile.ts`,
+   `gtfs-verifica.ts`, `netex*.ts`, `azienda.ts`, `assets/**`), poi
+   ridistribuisci il lavoratore.
+2. In Amministrazione → Azienda premi «Accendi la pubblicazione»: i file si
+   preparano subito (mezzo minuto) e la scheda mostra «In linea» per tutti e
+   due.
+3. Apri i due indirizzi da un browser non collegato a Cerbero: si scaricano.
+   Da riga di comando, la seconda richiesta con l'impronta dà 304:
+   ```
+   curl -sI https://<dominio>/api/dati-aperti/gtfs.zip | grep -i etag
+   curl -s -o /dev/null -w '%{http_code}\n' -H 'If-None-Match: "<impronta>"' https://<dominio>/api/dati-aperti/gtfs.zip
+   ```
+4. Alla prossima messa in esercizio, entro 10 minuti nel log del lavoratore
+   compare «dati aperti: file pubblicati».
+
+**Rollback**: «Spegni la pubblicazione» ferma subito gli indirizzi. Per il
+codice, immagine precedente: la tabella e la colonna restano, ferme.
+
 ### NeTEx con il profilo italiano (tappa 6.2)
 
 Il programma in NeTEx, **profilo italiano livello 1**, per il NAP. Il livello 1
@@ -1521,7 +1595,7 @@ coincide con il profilo europeo per l'informazione ai passeggeri, EPIP
 - L'API: `GET /api/planning-studio/projects/:id/export-netex?versione=&forza=1`
   per il file, `…/export-netex/verifica` per conteggi e controlli.
 
-**Fuori, per la 6.3**: l'URL pubblico e stabile che il NAP scarica ogni giorno.
+L'indirizzo pubblico e stabile che il NAP scarica ogni giorno è arrivato con la 6.3 (qui sopra).
 Restano fuori anche i livelli successivi del profilo (2: contratti; 3: tariffe;
 5: accessibilità).
 
@@ -2666,6 +2740,12 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/km-programmati.ts
    artifacts/api-server/src/lib/siri-vm.ts
    artifacts/api-server/src/lib/parco-anagrafica.ts
+   artifacts/api-server/src/lib/dati-aperti.ts
+   artifacts/api-server/src/lib/gtfs-consegnabile.ts
+   artifacts/api-server/src/lib/gtfs-verifica.ts
+   artifacts/api-server/src/lib/netex*.ts
+   artifacts/api-server/src/lib/azienda.ts
+   artifacts/api-server/assets/**
    artifacts/api-server/build.ts
    artifacts/api-server/package.json
    pnpm-lock.yaml

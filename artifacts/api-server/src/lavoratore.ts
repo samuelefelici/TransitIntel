@@ -35,6 +35,7 @@ import { chiSono, slotDaAmbiente } from "./lib/lavori/ambiente";
 import { avviaPulizie } from "./lib/lavori/pulizie";
 import { avviaRegistro } from "./lib/lavori/registro";
 import { avviaGiornate } from "./lib/lavori/giornate";
+import { avviaDatiAperti } from "./lib/lavori/dati-aperti";
 import { controllaIdentita } from "./lib/identita-db";
 
 const porta = Number(process.env.PORT || 3001);
@@ -57,6 +58,8 @@ const fermaPulizie = avviaPulizie(logger, () => statoDelloSchema() === "ok");
 const fermaRegistro = avviaRegistro(logger, () => statoDelloSchema() === "ok");
 /* le giornate di esercizio: domani preparata, oggi congelata (tappa 4.2) */
 const fermaGiornate = avviaGiornate(logger, () => statoDelloSchema() === "ok");
+/* i dati aperti: il GTFS e il NeTEx in linea seguono la versione in esercizio (tappa 6.3) */
+const fermaDatiAperti = avviaDatiAperti(logger, () => statoDelloSchema() === "ok");
 
 const server = http.createServer(async (req, res) => {
   const percorso = (req.url ?? "").split("?")[0];
@@ -84,6 +87,7 @@ async function arresta(segnale: string): Promise<void> {
   fermaPulizie();
   fermaRegistro();
   fermaGiornate();
+  fermaDatiAperti();
   try { await esecutore.ferma(ATTESA_ARRESTO_MS); }
   catch (err) { logger.error({ err }, "arresto del lavoratore: errore fermando i lavori"); }
   server.close();

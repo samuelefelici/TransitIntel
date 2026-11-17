@@ -75,7 +75,7 @@ describe("le istruzioni che scrivono corse, fermate e linee", () => {
     expect(testo).toMatch(/column_name NOT IN \('id','created_at','codice'\)/);
   });
   it("l'export consegna i codici, non gli id interni", () => {
-    const testo = sorgente("planning-studio-export.ts");
+    const testo = sorgente("gtfs-consegnabile.ts");
     expect(testo).toContain("s.codice ?? s.id");
     expect(testo).toContain("r.codice ?? r.id");
     expect(testo).toContain("t.codice ?? t.id");
