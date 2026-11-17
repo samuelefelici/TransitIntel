@@ -37,6 +37,10 @@ export interface Azienda {
   centro: { lat: number; lng: number; zoom: number };
   /** la provincia degli import ISTAT, tre cifre («042»); null finché non la si dice (tappa 6.1) */
   provinciaIstat: string | null;
+  /** il codice locale (NUTS) degli identificativi NeTEx, per le Marche «ITI3» (tappa 6.2) */
+  netexCodiceLocale: string | null;
+  /** il fornitore in fondo agli identificativi NeTEx, se la Regione lo chiede */
+  netexFornitore: string | null;
   /** false finché la tabella è vuota: l'amministratore non ha ancora compilato la pagina */
   compilata: boolean;
 }
@@ -52,6 +56,8 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   regione: null,
   centro: Object.freeze({ lat: 42.5, lng: 12.5, zoom: 5.5 }),
   provinciaIstat: null,
+  netexCodiceLocale: null,
+  netexFornitore: null,
   compilata: false,
 });
 
@@ -81,6 +87,8 @@ export const DatiAzienda = z.object({
   centroLng: z.number().min(-180).max(180),
   zoom: z.number().min(3).max(18),
   provinciaIstat: facoltativo(z.string().trim().regex(/^[0-9]{3}$/, "tre cifre, come «042»")),
+  netexCodiceLocale: facoltativo(z.string().trim().regex(/^[A-Z]{2}[A-Z0-9]{0,3}$/, "un codice NUTS, come «ITI3»")),
+  netexFornitore: facoltativo(z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/, "lettere, cifre, - e _ (al più 40)")),
 }).strict();
 export type DatiAzienda = z.infer<typeof DatiAzienda>;
 
@@ -88,7 +96,7 @@ export type DatiAzienda = z.infer<typeof DatiAzienda>;
 const NOMI_CAMPI: Readonly<Record<string, string>> = {
   ragioneSociale: "Ragione sociale", nome: "Nome", sito: "Sito", telefono: "Telefono", gtfsAgencyId: "Identificativo GTFS",
   citta: "Città", regione: "Regione", centroLat: "Latitudine", centroLng: "Longitudine", zoom: "Zoom",
-  provinciaIstat: "Provincia ISTAT",
+  provinciaIstat: "Provincia ISTAT", netexCodiceLocale: "Codice locale NeTEx", netexFornitore: "Fornitore NeTEx",
   /* i comuni e i luoghi del territorio (lib/territorio.ts) */
   codiceIstat: "Codice ISTAT", soppresso: "Soppresso", lat: "Latitudine", lng: "Longitudine", areaKm2: "Superficie",
   popolazione: "Popolazione", uso: "Uso", raggioM: "Raggio", ordine: "Ordine",
@@ -118,6 +126,8 @@ function daRiga(r: any): Azienda {
     regione: r.regione ?? null,
     centro: { lat: Number(r.centro_lat), lng: Number(r.centro_lng), zoom: Number(r.zoom) },
     provinciaIstat: r.provincia_istat ?? null,
+    netexCodiceLocale: r.netex_codice_locale ?? null,
+    netexFornitore: r.netex_fornitore ?? null,
     compilata: true,
   };
 }
@@ -132,7 +142,7 @@ export async function leggiAzienda(): Promise<Azienda> {
   try {
     const r = await db.execute<any>(sql`
       SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom,
-             provincia_istat
+             provincia_istat, netex_codice_locale, netex_fornitore
         FROM azienda WHERE unica`);
     const riga = r.rows?.[0];
     inMemoria = { azienda: riga ? daRiga(riga) : AZIENDA_DA_COMPILARE, lettaIl: Date.now() };
@@ -162,7 +172,7 @@ export interface DettaglioAzienda { azienda: Azienda; aggiornataIl: string | nul
 export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
   const r = await db.execute<any>(sql`
     SELECT a.ragione_sociale, a.nome, a.sito, a.telefono, a.gtfs_agency_id, a.citta, a.regione,
-           a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.aggiornata_il,
+           a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.netex_codice_locale, a.netex_fornitore, a.aggiornata_il,
            coalesce(nullif(btrim(u.full_name), ''), u.email) AS aggiornata_da
       FROM azienda a LEFT JOIN users u ON u.id = a.aggiornata_da
      WHERE a.unica`);
@@ -179,14 +189,15 @@ export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
 export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Promise<DettaglioAzienda> {
   await db.execute(sql`
     INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione,
-                         centro_lat, centro_lng, zoom, provincia_istat, aggiornata_il, aggiornata_da)
+                         centro_lat, centro_lng, zoom, provincia_istat, netex_codice_locale, netex_fornitore, aggiornata_il, aggiornata_da)
     VALUES (true, ${d.ragioneSociale}, ${d.nome}, ${d.sito}, ${d.telefono}, ${d.gtfsAgencyId}, ${d.citta}, ${d.regione},
-            ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, now(), ${utenteId}::uuid)
+            ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, ${d.netexCodiceLocale}, ${d.netexFornitore}, now(), ${utenteId}::uuid)
     ON CONFLICT (unica) DO UPDATE SET
       ragione_sociale = EXCLUDED.ragione_sociale, nome = EXCLUDED.nome, sito = EXCLUDED.sito,
       telefono = EXCLUDED.telefono, gtfs_agency_id = EXCLUDED.gtfs_agency_id, citta = EXCLUDED.citta,
       regione = EXCLUDED.regione, centro_lat = EXCLUDED.centro_lat, centro_lng = EXCLUDED.centro_lng,
       zoom = EXCLUDED.zoom, provincia_istat = EXCLUDED.provincia_istat,
+      netex_codice_locale = EXCLUDED.netex_codice_locale, netex_fornitore = EXCLUDED.netex_fornitore,
       aggiornata_il = EXCLUDED.aggiornata_il, aggiornata_da = EXCLUDED.aggiornata_da`);
   dimenticaAzienda();
   return dettaglioAzienda();

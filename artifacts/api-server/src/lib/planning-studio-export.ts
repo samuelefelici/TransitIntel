@@ -5,7 +5,13 @@
  *       lo zip GTFS: stops, routes, trips, stop_times, calendar,
  *       calendar_dates, shapes, agency, feed_info;
  *   GET /api/planning-studio/projects/:id/export-gtfs/verifica?versione=
- *       il controllo dello stesso file, senza lo zip.
+ *       il controllo dello stesso file, senza lo zip;
+ *   GET /api/planning-studio/projects/:id/export-netex?versione=&forza=1
+ *       lo stesso programma in NeTEx, profilo italiano livello 1 (EPIP), in
+ *       .xml.gz (tappa 6.2, lib/netex.ts): si costruisce da questo GTFS e passa
+ *       lo schema EPIP (lib/netex-validazione.ts);
+ *   GET /api/planning-studio/projects/:id/export-netex/verifica?versione=
+ *       i conteggi e i due controlli, senza il file.
  *
  * È il deliverable che l'ufficio programmazione consegna a Regione/osservatorio,
  * open data (NAP), fornitori AVM/bigliettazione. Dalla PR 3.4 è «consegnabile»:
@@ -47,6 +53,9 @@ import { projectHasTripValidity, computeActiveDatesByTrip } from "./planning-stu
 import { leggiAzienda, type Azienda } from "./azienda";
 import { versioniDelProgetto, type Versione } from "./versioni-pubblicate";
 import { verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
+import { gzipSync } from "node:zlib";
+import { netexDaGtfs, type ConteggiNetex } from "./netex";
+import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -407,6 +416,73 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     req.log?.error?.({ err: e?.message, projectId: req.params.id }, "export GTFS fallito");
     res.status(500).json({ error: "Errore durante l'export GTFS" });
   }
+});
+
+/* ── NeTEx, profilo italiano livello 1 (tappa 6.2) ─────────────────────── */
+
+class SenzaCodiceNetex extends Error {}
+
+async function costruisciNetex(progetto: any, fonte: Versione): Promise<{
+  xml: string; conteggi: ConteggiNetex; verifica: EsitoVerifica; validazione: EsitoValidazione;
+}> {
+  const azienda = await leggiAzienda();
+  if (!azienda.netexCodiceLocale) {
+    throw new SenzaCodiceNetex("Manca il codice locale NeTEx (per le Marche «ITI3»): indicalo in Amministrazione › Azienda");
+  }
+  const { gtfs, verifica } = await costruisciEVerifica(progetto, fonte);
+  const { xml, conteggi } = netexDaGtfs(gtfs, {
+    codiceLocale: azienda.netexCodiceLocale, fornitore: azienda.netexFornitore, partecipante: azienda.gtfsAgencyId,
+    azienda: { ragioneSociale: azienda.ragioneSociale, nome: azienda.nome, sito: azienda.sito, telefono: azienda.telefono, codice: azienda.gtfsAgencyId },
+    adesso: new Date(),
+  });
+  return { xml, conteggi, verifica, validazione: await validaNetex(xml) };
+}
+
+const rispondiNetex = (req: Request, res: Response, e: any, cosa: string) => {
+  if (e instanceof SenzaCodiceNetex) { res.status(409).json({ error: e.message }); return; }
+  req.log?.error?.({ err: e?.message, projectId: req.params.id }, cosa);
+  res.status(500).json({ error: "Errore durante l'export NeTEx" });
+};
+
+/* GET …/export-netex/verifica — conteggi e controlli del NeTEx che si esporterebbe */
+router.get("/planning-studio/projects/:id/export-netex/verifica", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pv = await programmaEVersione(req, res);
+    if (!pv) return;
+    const { conteggi, verifica, validazione } = await costruisciNetex(pv.progetto, pv.fonte);
+    res.json({ versione: pv.fonte, conteggi, gtfs: verifica, validazione });
+  } catch (e: any) { rispondiNetex(req, res, e, "verifica NeTEx fallita"); }
+});
+
+/*
+ * GET …/export-netex — il file .xml.gz. Si ferma (422) se il GTFS da cui nasce
+ * ha errori o se il NeTEx non passa lo schema EPIP, a meno di forza=1; senza
+ * xmllint il controllo dello schema non si fa e l'intestazione lo dice.
+ */
+router.get("/planning-studio/projects/:id/export-netex", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pv = await programmaEVersione(req, res);
+    if (!pv) return;
+    const { xml, conteggi, verifica, validazione } = await costruisciNetex(pv.progetto, pv.fonte);
+    const forza = req.query.forza === "1";
+    if (!forza && verifica.errori.length > 0) {
+      res.status(422).json({ error: "Il GTFS da cui nasce il NeTEx ha errori: correggili, oppure esporta forzando", versione: pv.fonte, gtfs: verifica });
+      return;
+    }
+    if (!forza && validazione.stato === "non_valido") {
+      res.status(422).json({ error: "Il NeTEx non passa lo schema EPIP del profilo italiano", versione: pv.fonte, validazione });
+      return;
+    }
+    const safeName = String(pv.progetto.name || "programma").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    res.setHeader("Content-Type", "application/gzip");
+    res.setHeader("Content-Disposition", `attachment; filename="netex_${safeName}_${pv.fonte.quale}_${dateStr}.xml.gz"`);
+    res.setHeader("X-Netex-Versione", pv.fonte.quale);
+    res.setHeader("X-Netex-Validazione", validazione.stato);
+    res.setHeader("X-Netex-Corse", String(conteggi.corse));
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse");
+    res.send(gzipSync(Buffer.from(xml, "utf8")));
+  } catch (e: any) { rispondiNetex(req, res, e, "export NeTEx fallito"); }
 });
 
 export default router;
