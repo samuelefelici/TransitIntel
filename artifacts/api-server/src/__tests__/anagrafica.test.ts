@@ -7,10 +7,11 @@
 import { describe, it, expect } from "vitest";
 import { inflateRawSync } from "node:zlib";
 import {
-  CAMPI_OPERATIVI, DEPOSITI_INIZIALI, classificaTelefoni, componiIndirizzo, dataDaSeriale, leggiData,
+  CAMPI_OPERATIVI, classificaTelefoni, componiIndirizzo, dataDaSeriale, leggiData,
   leggiEsitoVisita, leggiOrario, leggiParametro, mascheraConducente, matricolaCanonica, normalizzaScaglioneFerie,
   rigaRotazione, scadenzeDi, statoPeggiore, statoScadenza, trovaDeposito, type Conducente,
 } from "../lib/anagrafica-campi";
+import { DEPOSITI_DI_PROVA as DEPOSITI_INIZIALI } from "../lib/anagrafica-prova";
 import { leggiCorpoScheda } from "../lib/anagrafica-scheda";
 import { analizza, dividiNominativo, leggiTabella, mappaColonne } from "../lib/anagrafica-import";
 import { cellaSicura, colonneDi, esportaAnagraficaCsv, esportaAnagraficaXlsx } from "../lib/anagrafica-export";

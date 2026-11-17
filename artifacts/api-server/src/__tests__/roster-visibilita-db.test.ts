@@ -20,6 +20,7 @@ import anagraficaRouter from "../routes/anagrafica";
 import rosterRouter from "../routes/roster";
 import rotazioniRouter from "../lib/roster-rotazioni";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+import { depositiDiProva } from "./helpers/depositi-di-prova";
 
 const u = (n: number) => `e14d0000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [CAPO, LETTORE, HR, LIBERO, ADMIN, JESI, ANCONA, OSIMO, SENZA, DSS] = Array.from({ length: 10 }, (_, i) => u(i + 1));
@@ -46,8 +47,10 @@ async function pulisci() {
 }
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("i depositi che una persona vede (database vero)", () => {
+  let togliDepositi = async () => {};
   beforeAll(async () => {
-    /* la prima richiesta prepara l'anagrafica (catalogo dei depositi compreso) */
+    /* i depositi sono dati dell'azienda (tappa 6.4): il test mette i suoi; la prima richiesta prepara l'anagrafica */
+    togliDepositi = await depositiDiProva();
     expect((await libero.get("/api/roster/depositi")).status).toBe(200);
     await pulisci();
     await db.execute(sql`
@@ -63,7 +66,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i depositi che una persona vede
       INSERT INTO roster_entries (driver_id, day, category, code) VALUES
         (${ANCONA}::uuid, ${GIORNO}::date, 'assenza', 'ASS'), (${OSIMO}::uuid, ${GIORNO}::date, 'assenza', 'ASS')`);
   });
-  afterAll(async () => { await pulisci(); await pool.end(); });
+  afterAll(async () => { await pulisci(); await togliDepositi(); await pool.end(); });
 
   it("l'elenco dei conducenti: solo quelli dei depositi che vede", async () => {
     expect(nomi(await capo.get("/api/roster/drivers"))).toEqual(["Prova214d Ancona", "Prova214d Jesi"]);

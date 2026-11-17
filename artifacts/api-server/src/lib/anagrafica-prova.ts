@@ -21,7 +21,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { sql } from "drizzle-orm";
-import { DEPOSITI_INIZIALI, formattaOrario, lunediDi, rigaRotazione, type Deposito } from "./anagrafica-campi";
+import { formattaOrario, lunediDi, rigaRotazione, type Deposito } from "./anagrafica-campi";
 import { righe, sincronizzaCorrenti, TIPI_STORICO, type Ex } from "./anagrafica-store";
 import { ritrattoDataUri } from "./ritratto-fittizio";
 
@@ -36,6 +36,23 @@ const NOMI_M = ["Marco", "Luca", "Andrea", "Francesco", "Alessandro", "Matteo", 
 const NOMI_F = ["Giulia", "Sara", "Martina", "Chiara", "Francesca", "Valentina", "Federica", "Elena", "Silvia", "Laura", "Monica", "Barbara"];
 const VIE = ["Via Roma", "Via Garibaldi", "Via Mazzini", "Corso Matteotti", "Via XXV Aprile", "Via Leopardi", "Via Marconi",
   "Via della Repubblica", "Via Cavour", "Via Verdi", "Via San Francesco", "Via Gramsci"];
+
+/**
+ * Sette depositi di esempio, per le installazioni di prova e per i test: se il
+ * catalogo dei depositi è vuoto, i conducenti di prova li creano. Gruppo A:
+ * niente servizio la domenica e nei festivi; gruppo B: servizio anche la
+ * domenica. I depositi veri di un'azienda li crea l'amministratore
+ * (lib/depositi.ts); il codice non ne inserisce nessuno da sé (tappa 6.4).
+ */
+export const DEPOSITI_DI_PROVA: Deposito[] = [
+  { codice: "ancona", nome: "Ancona", gruppo: "B", cadenzaTurni: "semimensile", alias: ["polverigi"], ordine: 1 },
+  { codice: "marina", nome: "Marina", gruppo: "B", cadenzaTurni: "semimensile", alias: ["belvedere", "belvedere ostrense", "ostra", "marina di montemarciano"], ordine: 2 },
+  { codice: "osimo", nome: "Osimo", gruppo: "B", cadenzaTurni: "semimensile", alias: [], ordine: 3 },
+  { codice: "jesi", nome: "Jesi", gruppo: "A", cadenzaTurni: "semimensile", alias: [], ordine: 4 },
+  { codice: "jesi-urbano", nome: "Jesi Urbano", gruppo: "A", cadenzaTurni: "settimanale", alias: ["moie", "jesi u", "jesi urb"], ordine: 5 },
+  { codice: "castelfidardo", nome: "Castelfidardo", gruppo: "A", cadenzaTurni: "semimensile", alias: [], ordine: 6 },
+  { codice: "filottrano", nome: "Filottrano", gruppo: "A", cadenzaTurni: "semimensile", alias: [], ordine: 7 },
+];
 
 /** Comuni (con CAP) da cui si va a lavorare in ciascun deposito. */
 const COMUNI: Record<string, Array<[string, string]>> = {
@@ -107,7 +124,16 @@ export async function creaConducentiDiProva(ex: Ex, quanti: number, oggi: string
   const lunedi = lunediDi(oggi);
   const depositi: Deposito[] = (righe(await ex.execute(sql`SELECT codice, nome, gruppo FROM roster_depositi ORDER BY ordine`)) as any[])
     .map(d => ({ codice: d.codice, nome: d.nome, gruppo: d.gruppo, cadenzaTurni: "semimensile", alias: [], ordine: 0 }));
-  const elenco = depositi.length ? depositi : DEPOSITI_INIZIALI;
+  /* un'installazione di prova senza depositi: nascono quelli di esempio, insieme ai conducenti */
+  if (depositi.length === 0) {
+    for (const d of DEPOSITI_DI_PROVA) {
+      await ex.execute(sql`
+        INSERT INTO roster_depositi (codice, nome, gruppo, cadenza_turni, alias, ordine)
+        VALUES (${d.codice}, ${d.nome}, ${d.gruppo}, ${d.cadenzaTurni}, ${`{${d.alias.map(a => `"${a}"`).join(",")}}`}::text[], ${d.ordine})
+        ON CONFLICT DO NOTHING`);
+    }
+  }
+  const elenco = depositi.length ? depositi : DEPOSITI_DI_PROVA;
   /* la sequenza dei depositi rispetta i pesi, mescolata */
   const sequenza: Deposito[] = [];
   while (sequenza.length < quanti) {

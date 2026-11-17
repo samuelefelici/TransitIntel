@@ -38,7 +38,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { haDiritto, richiedeDiritto, scriveDatiPersonali, vedeDatiPersonali } from "../lib/auth";
 import {
-  DEPOSITI_INIZIALI, ESITI_VISITA, formattaOrario, leggiData, leggiEsitoVisita, leggiOrario,
+  ESITI_VISITA, formattaOrario, leggiData, leggiEsitoVisita, leggiOrario,
   mascheraConducente, pulisciTesto, trovaDeposito, type Conducente,
 } from "../lib/anagrafica-campi";
 import {

@@ -6,7 +6,8 @@
  * API: GET e PUT /api/admin/azienda. La logica del modulo è in lib/azienda.ts.
  * Sotto, il territorio (tappa 6.1): comuni e luoghi di riferimento, ognuno
  * salvato da sé (components/azienda/TerritorioAzienda.tsx), e i dati aperti
- * (tappa 6.3): gli indirizzi per il NAP (components/azienda/DatiAperti.tsx).
+ * (tappa 6.3): gli indirizzi per il NAP (components/azienda/DatiAperti.tsx),
+ * e i depositi del personale (tappa 6.4, components/azienda/DepositiAzienda.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
 import { Building2, FileCode2, MapPin, Save } from "lucide-react";
@@ -19,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import TerritorioAzienda from "@/components/azienda/TerritorioAzienda";
 import DatiAperti from "@/components/azienda/DatiAperti";
+import DepositiAzienda from "@/components/azienda/DepositiAzienda";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
@@ -202,6 +204,9 @@ export default function AdminAziendaPage() {
 
       {/* i dati aperti (tappa 6.3): il GTFS e il NeTEx a un indirizzo stabile; si accende e si spegne da sé */}
       <DatiAperti />
+
+      {/* i depositi del personale (tappa 6.4): li crea e li cambia l'amministratore, ogni riga si salva da sé */}
+      <DepositiAzienda />
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}
       <TerritorioAzienda />

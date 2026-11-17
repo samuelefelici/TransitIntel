@@ -7,6 +7,7 @@ import {
   cancellaComune, cancellaLuogo, creaLuogo, DatiComune, DatiLuogo, elencoTerritorio, modificaLuogo, RifiutoTerritorio, salvaComune,
 } from "../lib/territorio";
 import { impostaAttivi, preparaDatiAperti, statoDatiAperti } from "../lib/dati-aperti";
+import { cancellaDeposito, creaDeposito, elencoDepositi, ModificaDeposito, modificaDeposito, NuovoDeposito, RifiutoDepositi } from "../lib/depositi";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
 import { diagnosiDelGiorno } from "../lib/esercizio-diagnosi";
@@ -485,6 +486,49 @@ router.post("/admin/dati-aperti/prepara", async (req, res): Promise<void> => {
     req.log?.error?.({ err: e?.message }, "dati aperti: preparazione non riuscita");
     res.status(500).json({ error: "Preparazione dei file non riuscita" });
   }
+});
+
+/**
+ * I depositi dell'azienda (tappa 6.4, lib/depositi.ts): il catalogo dei
+ * depositi del personale. GET tutti, con quanto sono usati; POST ne crea uno
+ * (il codice si ricava dal nome, se manca); PUT /:codice cambia nome, gruppo,
+ * periodi dei turni, altri nomi e ordine (il codice no); DELETE lo toglie, se
+ * nessuno lo usa. Solo admin, mai un token di Argos (requireAdmin).
+ */
+const CODICE_DEPOSITO = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const rifiutoDepositi = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoDepositi) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  if (codice === "23503") { res.status(409).json({ error: "Il deposito è in uso: prima sposta chi lo usa" }); return; }
+  if (codice === "23505") { res.status(409).json({ error: "C'è già un deposito con questo codice" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/depositi", requireAdmin);
+router.get("/admin/depositi", async (req, res): Promise<void> => {
+  try { res.json({ depositi: await elencoDepositi() }); }
+  catch (e) { rifiutoDepositi(req, res, e, "depositi non leggibili"); }
+});
+router.post("/admin/depositi", async (req, res): Promise<void> => {
+  const p = NuovoDeposito.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.status(201).json({ deposito: await creaDeposito(p.data) }); }
+  catch (e) { rifiutoDepositi(req, res, e, "deposito non creato"); }
+});
+router.put("/admin/depositi/:codice", async (req, res): Promise<void> => {
+  const codice = String(req.params.codice ?? "");
+  if (!CODICE_DEPOSITO.test(codice)) { res.status(404).json({ error: "Deposito non trovato" }); return; }
+  const p = ModificaDeposito.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ deposito: await modificaDeposito(codice, p.data) }); }
+  catch (e) { rifiutoDepositi(req, res, e, "deposito non salvato"); }
+});
+router.delete("/admin/depositi/:codice", async (req, res): Promise<void> => {
+  const codice = String(req.params.codice ?? "");
+  if (!CODICE_DEPOSITO.test(codice)) { res.status(404).json({ error: "Deposito non trovato" }); return; }
+  try { await cancellaDeposito(codice); res.json({ ok: true }); }
+  catch (e) { rifiutoDepositi(req, res, e, "deposito non tolto"); }
 });
 
 export default router;

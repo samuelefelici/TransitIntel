@@ -24,7 +24,7 @@
 import { db } from "@workspace/db";
 import { sql, type SQL } from "drizzle-orm";
 import {
-  DEPOSITI_INIZIALI, ESITI_VISITA, formattaOrario, leggiEsitoVisita, leggiOrario, matricolaCanonica, rigaRotazione, lunediDi,
+  ESITI_VISITA, formattaOrario, leggiEsitoVisita, leggiOrario, matricolaCanonica, rigaRotazione, lunediDi,
   type Conducente, type EsitoVisita, type Deposito, type UnitaFerie,
 } from "./anagrafica-campi";
 import { inSistema } from "@workspace/db/contesto";
@@ -89,13 +89,9 @@ async function passiSuiDati(ex: Ex): Promise<void> {
   await ex.execute(sql`SELECT pg_advisory_xact_lock(${LOCK_BOOTSTRAP})`);
   const oggi = oggiRoma();
 
-  /* cataloghi: non si sovrascrive quello che qualcuno ha già cambiato */
-  for (const d of DEPOSITI_INIZIALI) {
-    await ex.execute(sql`
-      INSERT INTO roster_depositi (codice, nome, gruppo, cadenza_turni, alias, ordine)
-      VALUES (${d.codice}, ${d.nome}, ${d.gruppo}, ${d.cadenzaTurni}, ${`{${d.alias.map(a => `"${a}"`).join(",")}}`}::text[], ${d.ordine})
-      ON CONFLICT DO NOTHING`);
-  }
+  /* cataloghi: non si sovrascrive quello che qualcuno ha già cambiato. I
+   * depositi non si toccano: sono dati dell'azienda, li crea l'amministratore
+   * (lib/depositi.ts, tappa 6.4). Prima i sette di Conerobus tornavano a ogni avvio. */
   await ex.execute(sql`
     INSERT INTO roster_categorie (codice, nome)
     SELECT DISTINCT ON (lower(btrim(v))) regexp_replace(lower(btrim(v)), '[^a-z0-9]+', '-', 'g'), btrim(v)

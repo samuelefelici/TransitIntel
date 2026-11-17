@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { DEPOSITI_INIZIALI } from "../lib/anagrafica-campi";
+import { DEPOSITI_DI_PROVA as DEPOSITI_INIZIALI } from "../lib/anagrafica-prova";
 import { abbinaColori, depositoDelNome, nomeEssenziale, TAVOLOZZA_DEPOSITI } from "../lib/roster-colori-depositi";
 
 const cat = DEPOSITI_INIZIALI;

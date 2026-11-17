@@ -61,21 +61,6 @@ export interface Deposito {
   ordine: number;
 }
 
-/**
- * I sette depositi con rotazione. Gruppo A: niente servizio la domenica e nei
- * festivi; gruppo B: servizio anche la domenica. I microdepositi assorbiti
- * sono alias del deposito che li ha assorbiti.
- */
-export const DEPOSITI_INIZIALI: Deposito[] = [
-  { codice: "ancona", nome: "Ancona", gruppo: "B", cadenzaTurni: "semimensile", alias: ["polverigi"], ordine: 1 },
-  { codice: "marina", nome: "Marina", gruppo: "B", cadenzaTurni: "semimensile", alias: ["belvedere", "belvedere ostrense", "ostra", "marina di montemarciano"], ordine: 2 },
-  { codice: "osimo", nome: "Osimo", gruppo: "B", cadenzaTurni: "semimensile", alias: [], ordine: 3 },
-  { codice: "jesi", nome: "Jesi", gruppo: "A", cadenzaTurni: "semimensile", alias: [], ordine: 4 },
-  { codice: "jesi-urbano", nome: "Jesi Urbano", gruppo: "A", cadenzaTurni: "settimanale", alias: ["moie", "jesi u", "jesi urb"], ordine: 5 },
-  { codice: "castelfidardo", nome: "Castelfidardo", gruppo: "A", cadenzaTurni: "semimensile", alias: [], ordine: 6 },
-  { codice: "filottrano", nome: "Filottrano", gruppo: "A", cadenzaTurni: "semimensile", alias: [], ordine: 7 },
-];
-
 /** Testo confrontabile: minuscole, senza accenti, spazi e punteggiatura ridotti a uno spazio. */
 export function chiaveTesto(s: string): string {
   return s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase()
@@ -83,7 +68,7 @@ export function chiaveTesto(s: string): string {
 }
 
 /** Un codice tutto cifre si confronta senza zeri iniziali («01» = «1»). */
-function chiaveCodice(s: string): string {
+export function chiaveCodice(s: string): string {
   const k = chiaveTesto(s);
   return /^\d+$/.test(k) ? (k.replace(/^0+/, "") || "0") : k;
 }
