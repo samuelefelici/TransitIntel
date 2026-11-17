@@ -65,6 +65,7 @@
   "public.esercizio_variazioni_pkey": "CREATE UNIQUE INDEX esercizio_variazioni_pkey ON public.esercizio_variazioni USING btree (id)",
   "public.esercizio_vetture_pkey": "CREATE UNIQUE INDEX esercizio_vetture_pkey ON public.esercizio_vetture USING btree (giorno, vss_id, turno_macchina)",
   "public.fares_polimetriche_snapshots_pkey": "CREATE UNIQUE INDEX fares_polimetriche_snapshots_pkey ON public.fares_polimetriche_snapshots USING btree (id)",
+  "public.fasce_km_pkey": "CREATE UNIQUE INDEX fasce_km_pkey ON public.fasce_km USING btree (fascia)",
   "public.gtfs_calendar_dates_pkey": "CREATE UNIQUE INDEX gtfs_calendar_dates_pkey ON public.gtfs_calendar_dates USING btree (id)",
   "public.gtfs_calendar_pkey": "CREATE UNIQUE INDEX gtfs_calendar_pkey ON public.gtfs_calendar USING btree (id)",
   "public.gtfs_fare_areas_pkey": "CREATE UNIQUE INDEX gtfs_fare_areas_pkey ON public.gtfs_fare_areas USING btree (id)",
@@ -955,6 +956,12 @@
    "route_count": "integer | null |  |  | ",
    "title": "text | null |  |  | ",
    "zoning_method": "text | null |  |  | "
+  },
+  "public.fasce_km": {
+   "fascia": "smallint | not null |  |  | ",
+   "km_a": "numeric(6,1) | not null |  |  | ",
+   "km_da": "numeric(6,1) | not null |  |  | ",
+   "prezzo": "numeric(6,2) | not null |  |  | "
   },
   "public.gtfs_calendar": {
    "end_date": "text | not null |  |  | ",
@@ -2452,6 +2459,12 @@
   "public.esercizio_vetture.esercizio_vetture_pkey": "PRIMARY KEY (giorno, vss_id, turno_macchina)",
   "public.esercizio_vetture.esercizio_vetture_vettura": "CHECK (((char_length(vettura) >= 1) AND (char_length(vettura) <= 40)))",
   "public.fares_polimetriche_snapshots.fares_polimetriche_snapshots_pkey": "PRIMARY KEY (id)",
+  "public.fasce_km.fasce_km_a": "CHECK ((km_a <= (2000)::numeric))",
+  "public.fasce_km.fasce_km_da": "CHECK ((km_da >= (0)::numeric))",
+  "public.fasce_km.fasce_km_fascia": "CHECK (((fascia >= 1) AND (fascia <= 60)))",
+  "public.fasce_km.fasce_km_intervallo": "CHECK ((km_a > km_da))",
+  "public.fasce_km.fasce_km_pkey": "PRIMARY KEY (fascia)",
+  "public.fasce_km.fasce_km_prezzo": "CHECK (((prezzo > (0)::numeric) AND (prezzo <= 999.99)))",
   "public.gtfs_calendar.gtfs_calendar_feed_id_gtfs_feeds_id_fk": "FOREIGN KEY (feed_id) REFERENCES gtfs_feeds(id) ON DELETE CASCADE",
   "public.gtfs_calendar.gtfs_calendar_pkey": "PRIMARY KEY (id)",
   "public.gtfs_calendar_dates.gtfs_calendar_dates_feed_id_gtfs_feeds_id_fk": "FOREIGN KEY (feed_id) REFERENCES gtfs_feeds(id) ON DELETE CASCADE",

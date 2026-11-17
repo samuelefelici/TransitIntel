@@ -1476,6 +1476,49 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Le fasce chilometriche dell'extraurbano (tappa 6.8)
+
+Il prezzo di una corsa extraurbana viene dalla distanza: a ogni fascia di
+chilometri il suo prezzo. La tabella delle fasce era scritta due volte nel
+codice (tariffe a zone e tariffe minime), uguale, con i prezzi di una sola
+azienda. Da questo rilascio è un dato dell'azienda (tabella `fasce_km`,
+migrazione `0041`), e ogni modifica resta nel registro.
+
+- **Dove**: Amministrazione → Azienda, scheda «Fasce chilometriche».
+- **Come si scrivono**: di ogni fascia si scrive dove finisce e quanto costa;
+  comincia dove finisce quella prima (la prima da 0 km), quindi buchi e
+  sovrapposizioni non si possono scrivere. Una distanza sta in una fascia se
+  è più di «da» e al più «a»; oltre l'ultima fascia vale l'ultima. Si salvano
+  tutte insieme.
+- **Avviso, non divieto**: se una fascia più lunga costa meno di quella
+  prima la scheda lo dice, ma lascia salvare.
+- **Conerobus**: la migrazione carica le 23 fasce che erano nel codice (da
+  0–6 km a 1,35 € fino a 190–200 km a 8,75 €). I prezzi calcolati non
+  cambiano: un test confronta la fascia di ogni decimo di chilometro da −5 a
+  260 con quella di prima.
+- **Un'installazione nuova** parte senza fasce. Una rotta delle tariffe che
+  ne ha bisogno risponde 409 e dice dove scriverle; niente prezzi inventati.
+  Un'azienda che fa solo servizio urbano non ne ha bisogno.
+- **Che cosa cambia quando cambi un prezzo**: i prezzi calcolati da lì in
+  avanti (simulatore, viaggi, zone e tariffe minime generate dopo). I titoli
+  di viaggio già creati in un feed tengono il loro prezzo, che si cambia
+  dalla pagina Tariffe; le zone già generate restano come sono finché non si
+  rigenerano.
+- **Quando entra in vigore**: subito sull'istanza che ha salvato, entro un
+  minuto sulle altre. Le fasce le usano solo le rotte delle tariffe: il
+  lavoratore non le legge, e non ci sono Watch Paths da aggiungere.
+- **Nel codice**: `lib/fasce-km.ts` (le regole e le fasce in vigore) e
+  `lib/fasce-km-store.ts` (il database). Le rotte delle tariffe rispondono
+  agli errori da un punto solo (`routes/fares-comuni.ts`).
+
+**Dopo il deploy**
+1. In Amministrazione → Azienda la scheda «Fasce chilometriche» mostra 23
+   fasce fino a 200 km, da 1,35 € a 8,75 €.
+2. Nessuna variabile nuova.
+
+**Rollback**: immagine precedente. La tabella resta, senza effetti: il codice
+di prima ha le sue fasce scritte dentro.
+
 ### Le reti dell'azienda e le regole delle linee (tappa 6.7)
 
 Le reti (l'extraurbana e le urbane) e le regole che dal nome breve di una
