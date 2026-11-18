@@ -35,6 +35,7 @@ import {
   getPsVariant, type PsVariantStop,
   listPsTripExceptions, addPsTripException, deletePsTripException, type PsTripException,
 } from "@/lib/planning-studio-api";
+import { conPiuGestori, righeKmPerGestore } from "@/lib/gestori";
 import { listPsDayTypes, postPsValidityBulk, getPsTripValidity, getPsTripsValidityBulk, type PsDayType } from "@/lib/planning-studio-validity-api";
 import { listPsValidityCategories, type PsValidityCategory } from "@/lib/planning-studio-validity-units-api";
 import CategoryChips from "@/components/planning-studio/CategoryChips";
@@ -272,6 +273,18 @@ function buildCorseListHtml(p: {
       <tbody>${progRows}
       <tr class="sum"><td class="l">Totale programmato</td>${cats.map(c => `<td>${fmtKm(km.totalsByCategory[c.code])}</td>`).join("")}<td class="tot">${fmtKm(km.grandTotal)}</td></tr>
       ${odRows}</tbody></table></div>`;
+    // km per gestore (tappa 6.13): solo se i gestori con km sono più d'uno
+    let gestoriTable = "";
+    if (conPiuGestori(km.gestori)) {
+      const { righe, totale } = righeKmPerGestore(km.gestori, cats, rate);
+      const fmtPct = (v: number | null) => (v == null ? `<span class="muted">—</span>` : `${v.toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`);
+      const riga = (g: (typeof righe)[number], cls = "") =>
+        `<tr class="${cls}"><td class="l">${esc(g.nome)} <span class="muted">· ${esc(g.linee)}</span></td>${g.perCategoria.map(v => `<td>${fmtKm(v)}</td>`).join("")}<td class="tot">${fmtKm(g.totale)}</td><td>${fmtPct(g.quota)}</td>`
+        + `${km.hasOnDemand ? `<td>${fmtKm(g.aChiamata)}</td>` : ""}${rate > 0 ? `<td>${fmtEur(g.corrispettivo ?? 0)}</td>` : ""}</tr>`;
+      gestoriTable = `<h3 class="eurh">Km/anno per gestore</h3>
+        <div class="scroll"><table class="km"><thead><tr><th class="l">Gestore</th>${catHead}<th class="tot">Totale</th><th>Quota</th>${km.hasOnDemand ? "<th>A chiamata</th>" : ""}${rate > 0 ? "<th>Corrispettivo</th>" : ""}</tr></thead>
+        <tbody>${righe.map(g => riga(g)).join("")}${riga(totale, "sum")}</tbody></table></div>`;
+    }
     // ricavi: km × corrispettivo €/km, per categoria e totale
     let eurTable = "";
     if (rate > 0) {
@@ -297,6 +310,7 @@ function buildCorseListHtml(p: {
     kmSection = `<section class="kmsum"><h2>Riepilogo km/anno${period}</h2>
       ${avvisoUnGiorno}
       ${kmTable}
+      ${gestoriTable}
       ${eurTable}
       <p class="note">Km/anno stimati dal calendario aziendale${period}, contando i giorni in cui ogni corsa circola davvero: validità, eccezioni e «Periodo» della corsa, come nel GTFS in esercizio e nelle UDP (esclusi i prototipi). La lunghezza è quella del percorso disegnato.${km.hasOnDemand ? " I km a chiamata sono <strong>potenziali</strong>: conteggiati in tutti i giorni in cui la corsa circola, ma erogati solo su richiesta." : ""}${rate > 0 ? " Il corrispettivo applica la tariffa €/km indicata sull'intero chilometraggio." : ""}</p>
     </section>`;

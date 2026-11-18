@@ -704,6 +704,7 @@ export async function splitPsTripByCategories(
   );
 }
 
+import type { KmDelGestore } from "./gestori";
 /* ─── KM annui per linea e categoria (stampa elenco corse) ─── */
 export interface PsCorseKm {
   from: string | null; to: string | null; hasCalendar: boolean; hasOnDemand: boolean;
@@ -714,7 +715,11 @@ export interface PsCorseKm {
     routeId: string; shortName: string; longName: string | null; color: string | null;
     kmByCategory: Record<string, number>; kmTotal: number;
     onDemandByCategory: Record<string, number>; onDemandTotal: number;
+    /** il gestore della linea (tappa 6.13): null se l'azienda non ha gestori */
+    gestore?: string | null;
   }[];
+  /** i km per gestore, nell'ordine dell'elenco: vuoto se l'azienda non ha gestori (lib/gestori.ts) */
+  gestori?: KmDelGestore[];
   totalsByCategory: Record<string, number>;
   grandTotal: number;
   onDemandTotalsByCategory: Record<string, number>;

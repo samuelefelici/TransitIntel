@@ -120,6 +120,25 @@ export function agencyTxt(agenzie: readonly AgenziaNelGtfs[]): string {
   return `${COLONNE_AGENZIA.join(",")}\n${agenzie.map((a) => COLONNE_AGENZIA.map((c) => tra(a[c])).join(",")).join("\n")}\n`;
 }
 
+/**
+ * Delle righe (linee, corse, somme) raggruppate per gestore: `detto` è quello
+ * che la riga dice (agency_id). I gruppi sono nell'ordine dell'elenco, solo
+ * per i gestori che hanno righe; una riga che non dice un gestore dell'elenco
+ * va al predefinito. Senza gestori non c'è niente da ripartire.
+ */
+export function raggruppaPerGestore<T>(
+  righe: readonly T[], gestori: readonly Gestore[], detto: (r: T) => string | null | undefined,
+): Array<{ gestore: Gestore; righe: T[] }> {
+  const gruppi = new Map<string, T[]>();
+  for (const r of righe) {
+    const g = gestoreDellaLinea(detto(r), gestori);
+    if (!g) return [];
+    const mio = gruppi.get(g.gestore.gestore);
+    if (mio) mio.push(r); else gruppi.set(g.gestore.gestore, [r]);
+  }
+  return gestori.filter((g) => gruppi.has(g.gestore)).map((g) => ({ gestore: g, righe: gruppi.get(g.gestore)! }));
+}
+
 /* ── L'elenco: che cosa non va ────────────────────────────────────────────── */
 
 /** Con almeno un gestore, il predefinito è uno solo. Vuoto se va bene. */

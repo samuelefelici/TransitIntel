@@ -164,3 +164,65 @@ export function esitoAssegnazione(cambiate: number, scelte: number, nome: string
   const altre = scelte - cambiate;
   return `${cambiate === 1 ? "Una linea assegnata" : `${cambiate} linee assegnate`} ${a}${altre > 0 ? `; ${altre === 1 ? "una lo era già" : `${altre} lo erano già`}` : ""}.`;
 }
+
+/* ── I chilometri per gestore (tappa 6.13) ────────────────────────────────── */
+
+/** I km/anno delle linee di un gestore, per categoria di validità (GET …/corse-km). */
+export interface KmDelGestore {
+  gestore: string;
+  nome: string;
+  predefinito: boolean;
+  /** quante linee con km ha */
+  linee: number;
+  kmByCategory: Record<string, number>;
+  kmTotal: number;
+  onDemandByCategory: Record<string, number>;
+  onDemandTotal: number;
+}
+
+/** La ripartizione per gestore dice qualcosa solo se i gestori con km sono più d'uno. */
+export const conPiuGestori = (gestori: readonly KmDelGestore[] | null | undefined): gestori is KmDelGestore[] => (gestori?.length ?? 0) > 1;
+
+export interface RigaKmGestore {
+  nome: string;
+  /** «una linea», «12 linee» */
+  linee: string;
+  /** i km di ogni categoria, nell'ordine delle categorie */
+  perCategoria: number[];
+  totale: number;
+  aChiamata: number;
+  /** km programmati × corrispettivo; null se il corrispettivo non è stato scritto */
+  corrispettivo: number | null;
+  /** la quota sul totale programmato, in percento con un decimale; null se il totale è zero */
+  quota: number | null;
+}
+
+/**
+ * Le righe della tabella «km per gestore» e la riga del totale. Il
+ * corrispettivo è sui km programmati, come nella tabella dei ricavi: i km a
+ * chiamata sono potenziali e stanno a parte.
+ */
+export function righeKmPerGestore(
+  gestori: readonly KmDelGestore[], categorie: ReadonlyArray<{ code: string }>, corrispettivoAlKm: number,
+): { righe: RigaKmGestore[]; totale: RigaKmGestore } {
+  const conPrezzo = corrispettivoAlKm > 0;
+  const euro = (km: number) => (conPrezzo ? Math.round(km * corrispettivoAlKm * 100) / 100 : null);
+  const km1 = (x: number) => Math.round(x * 10) / 10;
+  const tutto = km1(gestori.reduce((s, g) => s + g.kmTotal, 0));
+  const righe = gestori.map((g) => ({
+    nome: g.nome, linee: g.linee === 1 ? "una linea" : `${g.linee} linee`,
+    perCategoria: categorie.map((c) => g.kmByCategory[c.code] ?? 0), totale: g.kmTotal, aChiamata: g.onDemandTotal,
+    corrispettivo: euro(g.kmTotal), quota: tutto > 0 ? Math.round((g.kmTotal / tutto) * 1000) / 10 : null,
+  }));
+  const quante = gestori.reduce((s, g) => s + g.linee, 0);
+  return {
+    righe,
+    totale: {
+      nome: "Totale", linee: quante === 1 ? "una linea" : `${quante} linee`,
+      perCategoria: categorie.map((c) => km1(gestori.reduce((s, g) => s + (g.kmByCategory[c.code] ?? 0), 0))),
+      totale: tutto, aChiamata: km1(gestori.reduce((s, g) => s + g.onDemandTotal, 0)),
+      corrispettivo: euro(tutto), quota: tutto > 0 ? 100 : null,
+    },
+  };
+}
+

@@ -17,6 +17,8 @@ import { reportDelMese, reportXlsx, dettaglioCsv } from "../lib/esercizio-report
 import { aziendaDaSiri } from "../lib/parco-anagrafica";
 import { dimenticaAzienda, leggiAzienda } from "../lib/azienda";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+import AdmZip from "adm-zip";
+import { CONSORZIATI, gestoriDiProvaNelDatabase } from "./helpers/gestori-di-prova";
 
 const u = (n: number) => `d4700000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const UTENTE = u(1), P = u(2), R1 = u(3), R2 = u(4), F = u(5);
@@ -139,6 +141,51 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il report mensile, sul database
     const d = righe.find((r) => r.includes(";4;"))!;
     expect(d).toContain(";parziale;GUASTO_MEZZO;si;2;1;");
     expect(d).toContain(";6,7;"); // 400 secondi di ritardo, in minuti con la virgola
+  });
+
+  describe("per gestore (tappa 6.13)", () => {
+    const fogli = (x: Buffer) => [...new AdmZip(x).getEntry("xl/workbook.xml")!.getData().toString("utf8").matchAll(/<sheet [^>]*name="([^"]+)"/g)].map((m) => m[1]);
+    const dettaglio = async () => { let csv = ""; await dettaglioCsv(MESE, (p) => { csv += p; }); return csv.replace(/^\ufeff/, "").trim().split("\r\n"); };
+
+    it("senza gestori non c'è niente da ripartire: né la voce, né il foglio; la colonna del CSV resta vuota", async () => {
+      const rimetti = await gestoriDiProvaNelDatabase([]);
+      try {
+        const r = await reportDelMese(MESE);
+        expect(r.perGestore).toEqual([]);
+        expect(fogli(reportXlsx(r, "Azienda di prova"))).not.toContain("Per gestore");
+        const righe = await dettaglio();
+        expect(righe[0]!.endsWith(";nota;gestore")).toBe(true);
+        expect(righe.slice(1).every((x) => x.endsWith(";"))).toBe(true);
+      } finally { await rimetti(); }
+    });
+
+    it("coi gestori: ogni corsa va al gestore della sua linea, e la somma è il totale", async () => {
+      const rimetti = await gestoriDiProvaNelDatabase(CONSORZIATI);
+      /* la linea 1 è di DUE; la 2 dice un'agenzia che non è fra i gestori, e la corsa aggiunta non ha una linea: sono del predefinito */
+      await db.execute(sql`UPDATE ps_routes SET agency_id = 'DUE' WHERE id = ${R1}::uuid`);
+      await db.execute(sql`UPDATE ps_routes SET agency_id = 'ALTRA' WHERE id = ${R2}::uuid`);
+      try {
+        const r = await reportDelMese(MESE);
+        expect(r.perGestore.map((g: any) => [g.gestore, g.codice, g.programmate, g.aggiunte, g.soppresse, g.kmProgrammati, g.kmEffettivi, g.kmAggiunti])).toEqual([
+          ["Autolinee Uno S.p.A.", "UNO", 2, 1, 0, 4, 3, 3],
+          ["Due, Bus & Co.", "DUE", 3, 0, 1, 6, 4, 0],
+        ]);
+        for (const campo of ["programmate", "aggiunte", "kmProgrammati", "kmEffettivi", "kmPersi"] as const) {
+          expect(r.perGestore.reduce((t: number, g: any) => t + g[campo], 0), campo).toBe((r.totali as any)[campo]);
+        }
+        /* le altre ripartizioni non cambiano */
+        expect(Object.fromEntries(r.perLinea.map((x: any) => [String(x.linea), x.programmate]))).toEqual({ 1: 3, 2: 2 });
+        expect(fogli(reportXlsx(r, "Azienda di prova")).slice(-2)).toEqual(["Per vettore", "Per gestore"]);
+        const righe = await dettaglio();
+        const fine = (numero: string) => righe.find((x) => x.split(";")[2] === numero)!.split(";").at(-1);
+        expect([fine("1"), fine("4"), fine("agg")]).toEqual(["Due, Bus & Co.", "Autolinee Uno S.p.A.", "Autolinee Uno S.p.A."]);
+        /* le colonne di prima restano dove erano */
+        expect(righe[0]!.split(";").slice(0, 23).join(";")).toMatch(/^giorno;linea;numero;codice;partenza.*;proposta_avm;ritardo_partenza_min;nota$/);
+      } finally {
+        await db.execute(sql`UPDATE ps_routes SET agency_id = NULL WHERE project_id = ${P}::uuid`);
+        await rimetti();
+      }
+    });
   });
 
   it("dall'API: report, XLSX e CSV; un mese sbagliato è un 400", async () => {

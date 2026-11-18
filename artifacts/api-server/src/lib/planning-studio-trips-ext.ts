@@ -18,6 +18,8 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { lunghezzePercorsi, corseConKm, corseConPeriodoDiUnGiorno } from "./km-programmati";
+import { gestoreDellaLinea, raggruppaPerGestore } from "./gestori";
+import { gestoriDalDatabase } from "./gestori-store";
 import { withVia } from "./agent-context";
 import { conContesto } from "@workspace/db/contesto";
 
@@ -174,8 +176,10 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
   //    delle UDP). Ogni giorno va alla categoria che il calendario gli dà.
   const corse = dmin && dmax ? await corseConKm({ progettoId: projId, dal: dmin, al: dmax, linee: routeIdsParam }) : [];
   const lineeR = await db.execute<any>(sql`
-    SELECT id, short_name, long_name, color FROM ps_routes WHERE project_id = ${projId}::uuid`);
+    SELECT id, short_name, long_name, color, agency_id FROM ps_routes WHERE project_id = ${projId}::uuid`);
   const lineaDi = new Map<string, any>((lineeR.rows ?? []).map((r: any) => [r.id, r]));
+  /* i gestori (tappa 6.13): i km di ogni linea vanno anche al suo gestore, lo stesso dei GTFS */
+  const gestori = await gestoriDalDatabase();
 
   // 3) aggrega — km "programmati" e km "potenziali a chiamata" (onDemand) separati
   const allCats = [...catMeta.keys()];
@@ -224,6 +228,21 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
       onDemandByCategory: roundMap(l.odByCat), onDemandTotal: round(l.odTotal),
     })).sort((a, b) => a.shortName.localeCompare(b.shortName, "it", { numeric: true }));
 
+  /* per gestore: le somme delle sue linee, prima degli arrotondamenti. Nell'ordine dell'elenco;
+   * vuoto se l'azienda non ha gestori. La somma dei gestori è il totale, come quella delle linee. */
+  const conKm = [...lineMap.values()].filter(l => l.kmTotal > 0 || l.odTotal > 0);
+  const somma = (righe: LineAgg[], campo: "kmByCat" | "odByCat") => {
+    const out: Record<string, number> = {};
+    for (const l of righe) for (const [k, v] of Object.entries(l[campo])) out[k] = (out[k] || 0) + v;
+    return out;
+  };
+  const perGestore = raggruppaPerGestore(conKm, gestori, l => lineaDi.get(l.routeId)?.agency_id).map(({ gestore: g, righe }) => ({
+    gestore: g.gestore, nome: g.nome, predefinito: g.predefinito, linee: righe.length,
+    kmByCategory: roundMap(somma(righe, "kmByCat")), kmTotal: round(righe.reduce((s, l) => s + l.kmTotal, 0)),
+    onDemandByCategory: roundMap(somma(righe, "odByCat")), onDemandTotal: round(righe.reduce((s, l) => s + l.odTotal, 0)),
+  }));
+  const gestoreDi = new Map(lines.map(l => [l.routeId, gestoreDellaLinea(lineaDi.get(l.routeId)?.agency_id, gestori)?.gestore.gestore ?? null]));
+
   const periodoCorto = await corseConPeriodoDiUnGiorno(projId);
   res.json({
     from: dmin, to: dmax,
@@ -232,7 +251,9 @@ router.get("/planning-studio/projects/:id/corse-km", async (req: Request, res: R
     periodoDiUnGiorno: periodoCorto,
     hasOnDemand: odGrandTotal > 0,
     categories,
-    lines,
+    lines: lines.map(l => ({ ...l, gestore: gestoreDi.get(l.routeId) ?? null })),
+    /* i km per gestore (tappa 6.13): vuoto se l'azienda non ha gestori */
+    gestori: perGestore,
     totalsByCategory: roundMap(totalsByCat),
     grandTotal: round(grandTotal),
     onDemandTotalsByCategory: roundMap(odTotalsByCat),
