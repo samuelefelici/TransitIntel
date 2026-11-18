@@ -18,6 +18,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { Router, type IRouter } from "express";
+import { coordinateDellaLinea } from "../lib/geometria-linea";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
@@ -1676,21 +1677,13 @@ router.get("/operations/trips/:tripId/runtime-detail", async (req, res): Promise
  * la mappa su cui lo si verifica. Se fossero due letture diverse, la mappa
  * potrebbe assolvere ciò che il registro accusa. */
 
-/** Le coordinate di una geometria GeoJSON, comunque il feed l'abbia scritta. */
-export function coordinateDaGeojson(g: any): Array<{ lat: number; lon: number }> | null {
-  const geom = g?.type === "Feature" ? g.geometry : g;
-  if (!geom) return null;
-  const pezzi: number[][][] =
-    geom.type === "LineString" && Array.isArray(geom.coordinates) ? [geom.coordinates]
-    : geom.type === "MultiLineString" && Array.isArray(geom.coordinates) ? geom.coordinates
-    : [];
-  /* GeoJSON scrive [lon, lat]: invertirli manda il percorso in Somalia, e il
-   * confronto con le posizioni non se ne accorgerebbe — direbbe solo che ogni
-   * mezzo è fuori percorso. */
-  const punti = pezzi.flat()
-    .filter(c => Array.isArray(c) && c.length >= 2
-      && Number.isFinite(Number(c[0])) && Number.isFinite(Number(c[1])))
-    .map(c => ({ lat: Number(c[1]), lon: Number(c[0]) }));
+/** Le coordinate di una geometria GeoJSON, comunque il feed l'abbia scritta
+ *  (la lettura è quella unica di lib/geometria-linea.ts). GeoJSON scrive
+ *  [lon, lat]: invertirli manda il percorso in Somalia, e il confronto con le
+ *  posizioni non se ne accorgerebbe — direbbe solo che ogni mezzo è fuori
+ *  percorso. */
+export function coordinateDaGeojson(g: unknown): Array<{ lat: number; lon: number }> | null {
+  const punti = coordinateDellaLinea(g).map(([lon, lat]) => ({ lat, lon }));
   return punti.length >= 2 ? punti : null;
 }
 

@@ -20,6 +20,7 @@
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
+import { trattiDellaLinea } from "../lib/geometria-linea";
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -543,11 +544,14 @@ export async function loadShapes(
      WHERE sh.feed_id = ${src.feedId}::uuid`);
   for (const r of ((rows as any).rows ?? [])) {
     if (routeFilter && (!r.route_id || !routeFilter.has(String(r.route_id)))) continue;
-    if (!r.geojson) continue;
-    const g = r.geojson;
+    /* Feature (import di un GTFS) o LineString nuda (feed di Planning Studio) */
+    const tratti = trattiDellaLinea(r.geojson);
+    if (tratti.length === 0) continue;
     features.push({
       type: "Feature",
-      geometry: g.geometry ?? g,
+      geometry: tratti.length === 1
+        ? { type: "LineString", coordinates: tratti[0] }
+        : { type: "MultiLineString", coordinates: tratti },
       properties: {
         routeId: r.route_id ? String(r.route_id) : null,
         routeShortName: r.route_short_name ?? null,

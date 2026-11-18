@@ -17,6 +17,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { analyzeFeed, getOrCreateEconomicParams, DEFAULT_ECON } from "../lib/planning/feed-analyzer";
+import { coordinateDellaLinea } from "../lib/geometria-linea";
 
 const router: IRouter = Router();
 
@@ -117,12 +118,8 @@ router.get("/planning/feeds/:id/shapes", async (req: Request, res: Response) => 
     const features: any[] = [];
     for (const s of shapes) {
       if (!wantedShapeIds.has(s.shapeId)) continue;
-      const g: any = s.geojson;
-      let coords: number[][] | null = null;
-      if (g?.type === "LineString") coords = g.coordinates;
-      else if (g?.type === "Feature" && g.geometry?.type === "LineString") coords = g.geometry.coordinates;
-      else if (g?.type === "FeatureCollection" && g.features?.[0]?.geometry?.coordinates) coords = g.features[0].geometry.coordinates;
-      if (!coords) continue;
+      const coords = coordinateDellaLinea(s.geojson);
+      if (coords.length < 2) continue;
       features.push({
         type: "Feature",
         properties: {

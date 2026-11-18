@@ -17,6 +17,7 @@ import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import { getLatestFeedId, feedDellaLettura, modelCongestion } from "./gtfs-helpers";
 import { cache, chiavePerUtente } from "../middlewares/cache";
 import { centriUrbani } from "../lib/territorio";
+import { trattiDellaLinea } from "../lib/geometria-linea";
 
 const router: IRouter = Router();
 
@@ -168,11 +169,11 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
 
     const features: any[] = [];
 
-    for (const row of rows) {
-      const geoj = row.geojson as any;
-      const coords: [number, number][] = geoj?.geometry?.coordinates || [];
-      if (coords.length < 2) continue;
-
+    /* Una linea può arrivare come Feature (import di un GTFS) o come
+     * LineString nuda (feed nato da Planning Studio): trattiDellaLinea le
+     * legge tutte e due. Prima si leggeva solo il Feature, e la mappa dei feed
+     * di Planning Studio restava vuota. */
+    for (const row of rows) for (const coords of trattiDellaLinea(row.geojson)) {
       const routeProps = {
         shapeId: row.shapeId,
         routeId: row.routeId ?? null,
@@ -226,7 +227,7 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
         const avgCongestion = samples > 0 ? Math.round(total / samples * 100) / 100 : null;
         features.push({
           type: "Feature",
-          geometry: geoj?.geometry,
+          geometry: { type: "LineString", coordinates: coords },
           properties: { ...routeProps, congestion: avgCongestion, speedReduction: null, dataSource: hasReal ? "tomtom" : "model" },
         });
       }

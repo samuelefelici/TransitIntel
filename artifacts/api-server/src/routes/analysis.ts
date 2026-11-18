@@ -4,6 +4,7 @@ import { busStops, censusSections, pointsOfInterest, gtfsStops, gtfsTrips, gtfsS
 import { sql, count, inArray, and, eq } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
 import { leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
+import { coordinateDellaLinea } from "../lib/geometria-linea";
 
 const router: IRouter = Router();
 
@@ -1502,17 +1503,7 @@ router.get("/analysis/route-shapes", cache({ ttlSeconds: 60 }), async (req, res)
       if (!sh.routeId || seen.has(sh.routeId)) continue;
       seen.set(sh.routeId, true);
 
-      const geo = typeof sh.geojson === "string" ? JSON.parse(sh.geojson as string) : sh.geojson;
-      let coords: number[][] = [];
-      if (geo?.type === "FeatureCollection") {
-        for (const f of (geo as any).features ?? []) {
-          if (f.geometry?.type === "LineString") coords.push(...f.geometry.coordinates);
-        }
-      } else if (geo?.type === "Feature" && (geo as any).geometry?.type === "LineString") {
-        coords = (geo as any).geometry.coordinates;
-      } else if (geo?.type === "LineString") {
-        coords = (geo as any).coordinates;
-      }
+      const coords: number[][] = coordinateDellaLinea(sh.geojson);
 
       results.push({
         routeId: sh.routeId,

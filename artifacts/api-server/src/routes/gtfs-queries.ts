@@ -21,6 +21,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
+import { coordinateDellaLinea } from "../lib/geometria-linea";
 import { getLatestFeedId, FEED_NON_TROVATO } from "./gtfs-helpers";
 import { feedVisibile, feedVisibiliSql } from "../lib/tenant";
 import { cache, chiavePerUtente } from "../middlewares/cache";
@@ -212,14 +213,8 @@ router.get("/gtfs/summary", cache({ ttlSeconds: 60 }), async (req, res) => {
       `);
 
       for (const row of shapesResult.rows) {
-        let geojson = row.geojson;
-        if (typeof geojson === "string") geojson = JSON.parse(geojson);
-        const coords: number[][] =
-          geojson?.type === "LineString" ? geojson.coordinates :
-          geojson?.type === "Feature" ? geojson.geometry?.coordinates :
-          geojson?.type === "FeatureCollection" ? geojson.features?.[0]?.geometry?.coordinates :
-          [];
-        if (!coords || coords.length < 2) { shapeLengthKm[row.shape_id] = 0; continue; }
+        const coords = coordinateDellaLinea(row.geojson);
+        if (coords.length < 2) { shapeLengthKm[row.shape_id] = 0; continue; }
         let len = 0;
         for (let i = 1; i < coords.length; i++) {
           len += haversineKm(coords[i - 1][1], coords[i - 1][0], coords[i][1], coords[i][0]);
