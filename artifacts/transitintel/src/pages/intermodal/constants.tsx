@@ -4,6 +4,7 @@ import {
   Briefcase, Palmtree, GraduationCap, HeartPulse,
   ShoppingBag, Factory, Ship, TrainFront, Plane, Bus,
 } from "lucide-react";
+import { nomeCortoDelNodo } from "@/lib/nodi-intermodali";
 
 /* ═══════════════════════════════════════════════════════════════
  *  Intermodal – Constants & utilities
@@ -63,14 +64,8 @@ export function walkCircle(lat: number, lng: number, radiusKm: number, steps = 6
   return { type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [coords] } };
 }
 
-export function shortHubName(name: string) {
-  return name
-    .replace("Stazione FS ", "")
-    .replace("Stazione di Ancona ", "")
-    .replace("Stazione ", "")
-    .replace("Porto di Ancona (Terminal Passeggeri)", "Porto Ancona")
-    .replace("Aeroporto Raffaello Sanzio (Falconara)", "Aeroporto");
-}
+/** Il nome corto di un nodo: la regola sta in lib/nodi-intermodali.ts. */
+export const shortHubName = nomeCortoDelNodo;
 
 export function hubIcon(type: string, className = "w-5 h-5") {
   if (type === "airport") return <Plane className={className} />;

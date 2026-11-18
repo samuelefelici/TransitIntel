@@ -653,16 +653,16 @@ export default function Traffic() {
       <div className="rounded-xl border border-border/30 bg-muted/10 px-4 py-3 text-[11px] text-muted-foreground/70 space-y-2">
         <p className="font-semibold text-muted-foreground/90">Note metodologiche</p>
         <p>
-          I dati rilevati provengono dalla raccolta automatica di velocità e tempi di percorrenza del <strong>traffico stradale</strong> nell'area 
-          metropolitana di Ancona (ultimi 90 giorni). Il modello teorico è basato su curve di domanda di mobilità italiane 
+          I dati rilevati provengono dalla raccolta automatica di velocità e tempi di percorrenza del <strong>traffico stradale</strong>{azienda.citta ? ` nell'area di ${azienda.citta}` : ""}{" "}
+          (ultimi 90 giorni). Il modello teorico è basato su curve di domanda di mobilità italiane 
           (fonte ISFORT/CNR) adattate al contesto locale.
         </p>
         <p>
           <strong>Velocità commerciale stimata:</strong> la velocità del traffico stradale <strong>non</strong> coincide con quella degli autobus.
           La velocità commerciale TPL tiene conto di fermate, salita/discesa passeggeri, semafori, percorsi obbligati e accelerazioni/decelerazioni.
           I fattori di conversione usati (urbano ×{TPL_FACTOR_URBANO}, extraurbano ×{TPL_FACTOR_EXTRA}) sono derivati dai valori medi
-          nazionali ISFORT e dai dati operativi Conerobus, producendo stime coerenti con il range tipico
-          di <strong>15–22 km/h</strong> (linee urbane numerate) e <strong>25–35 km/h</strong> (linee extraurbane con lettera).
+          nazionali ISFORT e dai dati operativi dell'azienda, producendo stime coerenti con il range tipico
+          di <strong>15–22 km/h</strong> (linee urbane) e <strong>25–35 km/h</strong> (linee extraurbane).
         </p>
         <p>
           <strong>Rallentamento (%):</strong> indica quanto il traffico riduce la velocità rispetto al flusso libero.

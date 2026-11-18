@@ -5,6 +5,8 @@ import {
   ChevronLeft, ChevronRight, Info, Layers,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
+import { useAzienda } from "@/hooks/use-azienda";
+import { luogoDellAzienda } from "@/lib/azienda";
 
 // ─── Types ────────────────────────────────────────────────────
 interface StopItem {
@@ -49,6 +51,8 @@ const PAGE_SIZE = 50;
 
 // ─── Main Page ────────────────────────────────────────────────
 export default function Stops() {
+  // «Ancona / Marche»: la città e la regione scritte in Amministrazione › Azienda, se ci sono
+  const luogo = luogoDellAzienda(useAzienda());
   const [stops, setStops] = useState<StopItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -119,7 +123,7 @@ export default function Stops() {
           <MapPin className="w-4 h-4 text-primary" />
           <h1 className="text-base font-display font-bold">Fermate &amp; Linee</h1>
           <span className="text-[10px] text-muted-foreground">
-            · {gtfsSummary ? `${gtfsSummary.totalStops.toLocaleString("it-IT")} fermate · ${gtfsSummary.totalRoutes} linee` : `${total.toLocaleString("it-IT")} fermate`} · rete Ancona/Marche
+            · {gtfsSummary ? `${gtfsSummary.totalStops.toLocaleString("it-IT")} fermate · ${gtfsSummary.totalRoutes} linee` : `${total.toLocaleString("it-IT")} fermate`}{luogo ? ` · rete ${luogo}` : ""}
           </span>
         </div>
 
@@ -141,7 +145,7 @@ export default function Stops() {
           <input
             value={searchInput}
             onChange={e => setSearchInput(e.target.value)}
-            placeholder="Cerca fermata per nome… (es. Piazza Cavour, Ospedale, Stazione)"
+            placeholder="Cerca fermata per nome… (es. Ospedale, Stazione)"
             className="w-full pl-8 pr-3 py-1.5 text-xs bg-muted/40 border border-border/40 rounded-xl focus:outline-none focus:ring-1 focus:ring-primary"
           />
           {searchInput && (
@@ -241,8 +245,8 @@ export default function Stops() {
                   </p>
                 </div>
                 <div className="grid grid-cols-2 gap-3 max-w-sm w-full">
-                  <InfoCard icon="🚌" title="Fermata più servita" value="Piazza Cavour" sub="Clicca per esplorare" />
-                  <InfoCard icon="📍" title="Fermate totali" value={gtfsSummary ? gtfsSummary.totalStops.toLocaleString("it-IT") : String(total)} sub="nella rete Ancona/Marche" />
+                  <InfoCard icon="🚌" title="Linee" value={gtfsSummary ? String(gtfsSummary.totalRoutes) : "—"} sub="nel feed in uso" />
+                  <InfoCard icon="📍" title="Fermate totali" value={gtfsSummary ? gtfsSummary.totalStops.toLocaleString("it-IT") : String(total)} sub={luogo ? `nella rete ${luogo}` : "nella rete"} />
                   <InfoCard icon="🔄" title="Corse giornaliere" value={gtfsSummary ? gtfsSummary.totalTrips.toLocaleString("it-IT") : "—"} sub="trip programmati" />
                   <InfoCard icon="�" title="Prima / Ultima corsa" value={gtfsSummary?.firstDeparture?.slice(0, 5) ?? "—"} sub={`→ ${gtfsSummary?.lastArrival?.slice(0, 5) ?? "—"}`} />
                 </div>

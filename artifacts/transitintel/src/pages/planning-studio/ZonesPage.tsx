@@ -30,6 +30,7 @@ import {
   type CalendarKm, type WeekdayKm, type CalendarDef, type CategoryKm,
 } from "./zonizzazione-export";
 import { useAzienda } from "@/hooks/use-azienda";
+import { confiniInclusi } from "@/lib/territorio";
 
 /* ─── Tipi API ─── */
 interface Zone {
@@ -101,6 +102,8 @@ const fmtKm = (v: number) =>
 
 export default function PlanningStudioZonesPage() {
   const azienda = useAzienda();
+  // i confini comunali inclusi nell'app per la provincia dell'azienda, se ci sono (lib/territorio.ts)
+  const inclusi = confiniInclusi(azienda.provinciaIstat);
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const qc = useQueryClient();
@@ -143,11 +146,12 @@ export default function PlanningStudioZonesPage() {
     onError: (e: any) => toast.error(e?.message || "Errore import confini"),
   });
 
-  // Import one-click dei 47 comuni della provincia di Ancona: il GeoJSON
-  // (fonte openpolis/geojson-italy, confini ISTAT) è incluso negli asset.
-  const anconaMut = useMutation({
+  // Import in un passo dei comuni della provincia dell'azienda, quando il loro
+  // GeoJSON (fonte openpolis/geojson-italy, confini ISTAT) è incluso negli asset.
+  const inclusiMut = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`${import.meta.env.BASE_URL}data/comuni-provincia-ancona.geojson`);
+      if (!inclusi) throw new Error("Per la provincia dell'azienda non ci sono confini inclusi nell'app");
+      const res = await fetch(`${import.meta.env.BASE_URL}data/${inclusi.file}`);
       if (!res.ok) throw new Error("GeoJSON comuni non trovato negli asset");
       const json = await res.json();
       return apiFetch<{ ok: boolean; inserted: number; updated: number; skipped: number }>(
@@ -156,10 +160,10 @@ export default function PlanningStudioZonesPage() {
       );
     },
     onSuccess: (r) => {
-      toast.success(`Comuni provincia di Ancona importati: ${r.inserted} nuovi, ${r.updated} aggiornati`);
+      toast.success(`Comuni della provincia importati: ${r.inserted} nuovi, ${r.updated} aggiornati`);
       qc.invalidateQueries({ queryKey: ["zones"] });
     },
-    onError: (e: any) => toast.error(e?.message || "Errore import comuni Ancona"),
+    onError: (e: any) => toast.error(e?.message || "Errore nell'import dei comuni"),
   });
 
   const clearMut = useMutation({
@@ -329,15 +333,17 @@ export default function PlanningStudioZonesPage() {
             e.target.value = "";
           }}
         />
-        <button
-          onClick={() => anconaMut.mutate()}
-          disabled={anconaMut.isPending}
-          title="Importa i 47 comuni della provincia di Ancona (confini ISTAT, inclusi nell'app)"
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600/90 hover:bg-amber-600 text-xs text-white font-medium"
-        >
-          {anconaMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Landmark className="w-3.5 h-3.5" />}
-          Comuni prov. Ancona
-        </button>
+        {inclusi && (
+          <button
+            onClick={() => inclusiMut.mutate()}
+            disabled={inclusiMut.isPending}
+            title={`Importa i ${inclusi.comuni} comuni della provincia di ${inclusi.provincia} (confini ISTAT, inclusi nell'app)`}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600/90 hover:bg-amber-600 text-xs text-white font-medium"
+          >
+            {inclusiMut.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Landmark className="w-3.5 h-3.5" />}
+            Comuni prov. {inclusi.provincia}
+          </button>
+        )}
         <button
           onClick={() => fileRef.current?.click()}
           disabled={importMut.isPending}
@@ -555,23 +561,29 @@ export default function PlanningStudioZonesPage() {
                 <Landmark className="w-10 h-10 mx-auto mb-3 text-amber-400" />
                 <p className="text-sm font-semibold text-slate-100 mb-1">Nessun confine caricato</p>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">
-                  Per calcolare i km sviluppati per comune servono i confini amministrativi.
-                  I 47 comuni della provincia di Ancona sono già inclusi nell'app: un click e via.
+                  Per calcolare i km sviluppati per comune servono i confini amministrativi.{" "}
+                  {inclusi
+                    ? `I ${inclusi.comuni} comuni della provincia di ${inclusi.provincia} sono già inclusi nell'app: un click e via.`
+                    : "Caricali da un file GeoJSON dei confini comunali."}
                 </p>
                 <div className="flex items-center justify-center gap-2">
-                  <button
-                    onClick={() => anconaMut.mutate()}
-                    disabled={anconaMut.isPending}
-                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-sm font-bold text-black"
-                  >
-                    {anconaMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Landmark className="w-4 h-4" />}
-                    Carica comuni provincia di Ancona
-                  </button>
+                  {inclusi && (
+                    <button
+                      onClick={() => inclusiMut.mutate()}
+                      disabled={inclusiMut.isPending}
+                      className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-sm font-bold text-black"
+                    >
+                      {inclusiMut.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Landmark className="w-4 h-4" />}
+                      Carica comuni provincia di {inclusi.provincia}
+                    </button>
+                  )}
                   <button
                     onClick={() => fileRef.current?.click()}
-                    className="px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700"
+                    className={inclusi
+                      ? "px-3 py-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700"
+                      : "px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-sm font-bold text-black"}
                   >
-                    Altro GeoJSON…
+                    {inclusi ? "Altro GeoJSON…" : "Carica un GeoJSON…"}
                   </button>
                 </div>
               </div>

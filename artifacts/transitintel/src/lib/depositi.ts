@@ -60,7 +60,7 @@ export function erroriDeposito(m: ModuloDeposito, nuovo: boolean): string[] {
   else if (nome.length > 60) e.push("Nome: al più 60 caratteri");
   if (nuovo) {
     const codice = m.codice.trim() || codiceDaNome(nome);
-    if (nome && !CODICE.test(codice)) e.push("Codice: lettere minuscole, cifre e trattini, come jesi-urbano");
+    if (nome && !CODICE.test(codice)) e.push("Codice: lettere minuscole, cifre e trattini, come deposito-nord");
     else if (codice.length > 40) e.push("Codice: al più 40 caratteri");
   }
   const alias = aliasDaTesto(m.alias);

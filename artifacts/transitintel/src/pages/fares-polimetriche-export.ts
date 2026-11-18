@@ -102,6 +102,9 @@
 import { apiFetch } from "@/lib/api";
 import { etichettaDi, retiInVigore } from "@/lib/reti";
 
+/** Il nome sulle stampe quando chi le chiede non ne passa uno: la pagina Tariffe passa quello dell'azienda. */
+const SENZA_NOME = "Trasporto Pubblico Locale";
+
 /* ──────────────────────────────────────────────────────────
  * Tipi
  * ──────────────────────────────────────────────────────── */
@@ -448,7 +451,7 @@ function renderCoverPage(opts: {
         </div>
         <div class="cm-row">
           <span class="cm-label">Standard</span>
-          <span class="cm-value">GTFS Fares V2 · DGR Marche n. 1036/2022</span>
+          <span class="cm-value">GTFS Fares V2 · fasce chilometriche regionali</span>
         </div>
       </div>
 
@@ -761,7 +764,7 @@ function renderStopMatrix(sheet: RouteSheet, model: PriceModel): string {
           <div class="bands-block">
             <div class="bb-head">
               <span class="bb-title">Tariffe extraurbane a fasce km</span>
-              <span class="bb-sub">DGR Marche 1036/2022 · prezzo = f(distanza tra le fermate)</span>
+              <span class="bb-sub">Fasce chilometriche regionali · prezzo = f(distanza tra le fermate)</span>
             </div>
             <div class="bb-cards">${cards}</div>
           </div>`;
@@ -1813,7 +1816,7 @@ export async function buildPolimetricheHtml(
   input: PolimetricheInput,
   mode: "stops" | "zones" = "stops",
 ): Promise<PolimetricheBuildResult> {
-  const agencyName = input.agencyName || "Conerobus · Trasporto Pubblico Locale";
+  const agencyName = input.agencyName || SENZA_NOME;
   const date = input.date || new Date().toLocaleDateString("it-IT");
 
   // 1) Costruisci modello prezzi dai CSV
@@ -2018,8 +2021,8 @@ interface MinOdRoutePolimetrica {
 
 /* ───────────────────────────────────────────────────────────────────────
    VARIANTI DI PERCORSO (nuovo modello)
-   Una linea può avere N varianti di percorso (es. linea B = Ancona↔Marina,
-   Ancona↔Montemarciano, ecc.). A↔B viene unificata in una sola variante.
+   Una linea può avere N varianti di percorso (es. linea B = centro↔mare,
+   centro↔collina, ecc.). A↔B viene unificata in una sola variante.
    Per ogni variante stampiamo una polimetrica fermata × fermata con barra
    colore laterale = nodo tariffario.
    ─────────────────────────────────────────────────────────────────────── */
@@ -2074,7 +2077,7 @@ function renderMinOdRoutePage(p: MinOdRoutePolimetrica, agencyName: string, date
   const legend = `<p class="legend">
     <strong>Metodo Min-OD:</strong> per ogni coppia di nodi della linea, il prezzo è il <em>cammino minimo in km</em>
     nella rete tariffaria intera (Dijkstra sui cluster). Se un'altra linea collega gli stessi nodi con percorso più
-    corto, viene applicata la sua fascia DGR Marche. Replica logica polimetriche storiche ATMA/Conerobus 2013.
+    corto, viene applicata la sua fascia chilometrica.
   </p>`;
 
   // ── Modalità "zones" (NODI) — solo polimetrica grande, no elenco fermate ──
@@ -2243,7 +2246,7 @@ async function loadRouteVariants(): Promise<RouteVariantsResp[]> {
  * NON richiede CSV generati — interroga direttamente la matrice OD del backend.
  */
 export async function exportPolimetricheMinOdToPrint(opts?: { agencyName?: string; date?: string; mode?: "stops" | "zones" }): Promise<void> {
-  const agencyName = opts?.agencyName ?? "Conerobus";
+  const agencyName = opts?.agencyName ?? SENZA_NOME;
   const date = opts?.date ?? new Date().toLocaleDateString("it-IT");
   const mode = opts?.mode ?? "stops";
   const routes = await loadMinOdRoutes();
@@ -2272,7 +2275,7 @@ export async function createPolimetricheMinOdShareLink(opts?: { agencyName?: str
   url: string;
   routeCount: number;
 }> {
-  const agencyName = opts?.agencyName ?? "Conerobus";
+  const agencyName = opts?.agencyName ?? SENZA_NOME;
   const date = opts?.date ?? new Date().toLocaleDateString("it-IT");
   const mode = opts?.mode ?? "stops";
   const routes = await loadMinOdRoutes();
@@ -2472,7 +2475,7 @@ function renderClusterCoverPage(opts: {
         <div class="cm-row"><span class="cm-label">Agenzia</span><span class="cm-value">${escape(opts.agencyName)}</span></div>
         <div class="cm-row"><span class="cm-label">Data emissione</span><span class="cm-value">${escape(opts.date)}</span></div>
         <div class="cm-row"><span class="cm-label">Metodo zonizzazione</span><span class="cm-value">Pipeline Telemaco v2 (DBSCAN → k-means + assorbimento Hub)</span></div>
-        <div class="cm-row"><span class="cm-label">Standard</span><span class="cm-value">GTFS Fares V2 · DGR Marche n. 1036/2022 · Min-OD via Dijkstra</span></div>
+        <div class="cm-row"><span class="cm-label">Standard</span><span class="cm-value">GTFS Fares V2 · fasce chilometriche regionali · Min-OD via Dijkstra</span></div>
       </div>
 
       <div class="cover-kpis">
@@ -2484,12 +2487,12 @@ function renderClusterCoverPage(opts: {
 
       <h2 class="cover-h2">Come abbiamo ottenuto questi dati</h2>
       <ol class="cover-method">
-        <li><strong>Classificazione fermate</strong> — distinzione fra urbane (Hub Ancona, Jesi, Falconara, Senigallia, Osimo) ed extraurbane in base ai network GTFS.</li>
+        <li><strong>Classificazione fermate</strong> — distinzione fra urbane (un hub per ogni rete urbana) ed extraurbane in base ai network GTFS.</li>
         <li><strong>Step 1 · DBSCAN</strong> — raggruppamento iniziale per prossimità geografica (eps configurabile, min_samples per evitare cluster troppo piccoli).</li>
         <li><strong>Step 1.5 · Assorbimento Hub urbani</strong> — fermate extraurbane che ricadono dentro un hub urbano vengono fuse al cluster urbano (evita doppi conteggi al capolinea).</li>
         <li><strong>Step 2 · k-means refinement</strong> — separazione di cluster troppo eterogenei mantenendo coesione spaziale.</li>
         <li><strong>Naming</strong> — ogni cluster eredita il nome del comune dominante (o della frazione più popolosa) toccato dalle proprie fermate.</li>
-        <li><strong>Matrice OD min-cost</strong> — Dijkstra all-pairs sui centroidi dei cluster usando la rete GTFS reale; il prezzo di ogni coppia è la tariffa DGR Marche corrispondente alla fascia chilometrica più breve disponibile fra qualsiasi linea che le collega.</li>
+        <li><strong>Matrice OD min-cost</strong> — Dijkstra all-pairs sui centroidi dei cluster usando la rete GTFS reale; il prezzo di ogni coppia è la tariffa della fascia chilometrica più breve disponibile fra qualsiasi linea che le collega.</li>
         <li><strong>Polimetrica per linea</strong> — viene proiettata la sequenza dei cluster toccati lungo il percorso dominante; la matrice riportata è quella effettivamente applicabile dal SBE.</li>
       </ol>
 
@@ -3346,7 +3349,7 @@ async function buildClustersHtml(opts: ClustersExportOpts): Promise<{
   routeCount: number;
   clusterCount: number;
 }> {
-  const agencyName = opts.agencyName ?? "Conerobus · Trasporto Pubblico Locale";
+  const agencyName = opts.agencyName ?? SENZA_NOME;
   const date = opts.date ?? new Date().toLocaleDateString("it-IT");
 
   const [clusters, routesVariantsAll, hopBands] = await Promise.all([

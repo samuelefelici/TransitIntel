@@ -711,6 +711,7 @@ export default function Dashboard() {
         gtfsSummary={gtfsSummary}
         dayFilter={dayFilter}
         avgCongestion={statsData?.avgCongestion as number | null | undefined}
+        luogo={azienda.citta}
       />
 
       {/* ── Layers & Legend panels ────────────────────────────── */}

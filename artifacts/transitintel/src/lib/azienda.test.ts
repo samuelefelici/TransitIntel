@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda,
+  AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda, nomeNeiDocumenti,
   moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda,
 } from "./azienda";
 
@@ -44,6 +44,11 @@ describe("le etichette e le mappe", () => {
   it("l'intestazione dei documenti porta il nome solo se l'azienda è compilata", () => {
     expect(intestazioneDocumenti(CONEROBUS)).toBe("Conerobus · Trasporto Pubblico Locale");
     expect(intestazioneDocumenti(AZIENDA_DA_COMPILARE)).toBe("Trasporto Pubblico Locale");
+  });
+
+  it("il nome corto sulle stampe è quello dell'azienda; da compilare, nessun nome", () => {
+    expect(nomeNeiDocumenti(CONEROBUS)).toBe("Conerobus");
+    expect(nomeNeiDocumenti(AZIENDA_DA_COMPILARE)).toBe("Trasporto Pubblico Locale");
   });
 });
 

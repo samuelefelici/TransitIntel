@@ -33,6 +33,8 @@ import { Map as MapGL, Source, Layer, Marker } from "react-map-gl/mapbox";
 import type { MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { usePlanningFilters } from "./PlanningFiltersContext";
+import { useReti } from "@/hooks/use-reti";
+import { categoriaDi, categorieDelleLinee, siglaDi, type CategoriaLinea } from "@/lib/reti";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -165,18 +167,6 @@ const DAY_LABELS: Record<DayType, string> = {
   weekday: "Feriale", saturday: "Sabato", sunday: "Festivo", all: "Tutti",
 };
 
-const DEFAULT_CATEGORIES = [
-  { id: "urbano-ancona", label: "Urbano Ancona", fareType: "urban" as const, color: "#2563eb" },
-  { id: "urbano-falconara", label: "Urbano Falconara", fareType: "urban" as const, color: "#06b6d4" },
-  { id: "urbano-jesi", label: "Urbano Jesi", fareType: "urban" as const, color: "#10b981" },
-  { id: "extraurbano", label: "Extraurbano", fareType: "suburban" as const, color: "#f59e0b" },
-  { id: "notturno", label: "Notturno", fareType: "night" as const, color: "#8b5cf6" },
-  { id: "altro", label: "Altro", fareType: null, color: "#6b7280" },
-];
-const CATEGORY_COLOR: Record<string, string> = Object.fromEntries(
-  DEFAULT_CATEGORIES.map((c) => [c.id, c.color])
-);
-
 const POI_CATALOG_META: Record<string, { label: string; Icon: LucideIcon; color: string }> = {
   hospital:   { label: "Ospedali / Sanità",     Icon: Hospital,       color: "#ef4444" },
   school:     { label: "Scuole / Università",   Icon: GraduationCap,  color: "#3b82f6" },
@@ -242,6 +232,9 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
   const [shapes, setShapes] = useState<any | null>(null);
   const [calendarDays, setCalendarDays] = useState<CalendarDay[]>([]);
   const [classifications, setClassifications] = useState<RouteClassification[]>([]);
+  // le categorie con cui si classificano le linee: una per rete dell'azienda (lib/reti.ts)
+  const reti = useReti();
+  const categorie = useMemo(() => categorieDelleLinee(reti), [reti]);
 
   // POI catalog (Google Places)
   const [catalogCategories, setCatalogCategories] = useState<{ category: string; count: number }[]>([]);
@@ -686,11 +679,11 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
         <FilterStep
           n={2}
           title="Tipo di servizio"
-          help="Filtra per categoria assegnata in fase di classificazione (Urbano Ancona/Falconara/Jesi, Extraurbano, Notturno). La categoria determina anche il corrispettivo €/km applicato per il calcolo dei ricavi. Se vuoto = tutte le categorie."
+          help="Filtra per categoria assegnata in fase di classificazione (una per rete dell'azienda, poi Notturno e Altro). La categoria determina anche il corrispettivo €/km applicato per il calcolo dei ricavi. Se vuoto = tutte le categorie."
           badge={`${selectedCategories.size === 0 ? "tutte" : selectedCategories.size} cat. → ${routesAfterCategory.length} linee`}
         >
           <div className="flex items-center gap-2 flex-wrap">
-            {DEFAULT_CATEGORIES.map((c) => {
+            {categorie.map((c) => {
               const on = selectedCategories.has(c.id);
               const count = classifications.filter((cl) => cl.category === c.id).length;
               if (count === 0 && !on) return null;
@@ -754,7 +747,7 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
                     <span className="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: lineColor }} />
                     <span className="font-medium shrink-0">{r.shortName || r.routeId}</span>
                     <span className="text-muted-foreground truncate">{r.longName}</span>
-                    {cat && <span className="text-[9px] px-1 rounded shrink-0" style={{ background: (CATEGORY_COLOR[cat]||"#888")+"22", color: CATEGORY_COLOR[cat]||"#888" }}>{cat.split("-")[0]}</span>}
+                    {cat && <span className="text-[9px] px-1 rounded shrink-0" style={{ background: (categoriaDi(categorie, cat)?.color||"#888")+"22", color: categoriaDi(categorie, cat)?.color||"#888" }}>{siglaDi(reti, cat)}</span>}
                   </label>
                 );
               })}
@@ -879,10 +872,10 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
               <h3 className="font-semibold text-sm flex items-center gap-2 mb-3"><Tags className="w-4 h-4" /> Ripartizione per categoria</h3>
               <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
                 {analysis.categories.map((c) => {
-                  const color = CATEGORY_COLOR[c.category] || "#6b7280";
+                  const color = categoriaDi(categorie, c.category)?.color || "#6b7280";
                   return (
                     <div key={c.category} className="rounded-lg p-3 border" style={{ borderColor: color + "60", background: color + "12" }}>
-                      <div className="text-xs font-semibold" style={{ color }}>{DEFAULT_CATEGORIES.find((x) => x.id === c.category)?.label || c.category}</div>
+                      <div className="text-xs font-semibold" style={{ color }}>{categoriaDi(categorie, c.category)?.label || c.category}</div>
                       <div className="text-xs text-muted-foreground mt-1">{c.routeCount} linee · {fmtNum(c.kmDay)} km/g</div>
                       <div className="text-sm font-bold mt-1 tabular-nums">{fmtEur(c.revenueDay)}</div>
                     </div>
@@ -1220,7 +1213,7 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
                 </thead>
                 <tbody>
                   {analysis.perRoute.slice(0, 100).map((r) => {
-                    const catColor = r.category ? CATEGORY_COLOR[r.category] : null;
+                    const catColor = categoriaDi(categorie, r.category)?.color ?? null;
                     const lineColor = colorForRoute(r.routeId, r.color);
                     return (
                       <tr key={r.routeId} className="border-t border-border/20 hover:bg-muted/20">
@@ -1234,7 +1227,7 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
                         <td className="px-3 py-2">
                           {r.category ? (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ background: (catColor||"#888")+"22", color: catColor||"#888" }}>
-                              {DEFAULT_CATEGORIES.find((x) => x.id === r.category)?.label || r.category}
+                              {categoriaDi(categorie, r.category)?.label || r.category}
                             </span>
                           ) : <span className="text-muted-foreground italic text-[10px]">—</span>}
                         </td>
@@ -1273,6 +1266,7 @@ export default function PlanningAnalysisTab({ feedId }: { feedId: string | null 
         <ClassifierModal
           routes={routes}
           classifications={classifications}
+          categorie={categorie}
           onClose={() => setShowClassifier(false)}
           onSave={async (items) => { await bulkUpdateClassifications(items); }}
         />
@@ -1483,10 +1477,11 @@ function HourlyMatrix({ hourly }: { hourly: { hours: number[]; routes: HourlyRou
 /* ──────────────────────────── Classifier modal ──────────────────────────── */
 
 function ClassifierModal({
-  routes, classifications, onClose, onSave,
+  routes, classifications, categorie, onClose, onSave,
 }: {
   routes: RouteOpt[];
   classifications: RouteClassification[];
+  categorie: CategoriaLinea[];
   onClose: () => void;
   onSave: (items: { routeId: string; category: string; fareType: string | null }[]) => Promise<void>;
 }) {
@@ -1494,7 +1489,7 @@ function ClassifierModal({
     new Map(classifications.map((c) => [c.routeId, c.category]))
   );
   const [search, setSearch] = useState("");
-  const [bulkCat, setBulkCat] = useState<string>("urbano-ancona");
+  const [bulkCat, setBulkCat] = useState<string>(() => categorie[0].id);
   const [saving, setSaving] = useState(false);
 
   const filtered = useMemo(() => {
@@ -1511,7 +1506,7 @@ function ClassifierModal({
     setSaving(true);
     try {
       const items = Array.from(local.entries()).map(([routeId, category]) => {
-        const fareType = DEFAULT_CATEGORIES.find((c) => c.id === category)?.fareType ?? null;
+        const fareType = categoriaDi(categorie, category)?.fareType ?? null;
         return { routeId, category, fareType };
       });
       await onSave(items);
@@ -1537,7 +1532,7 @@ function ClassifierModal({
             <input type="text" placeholder="Cerca linea…" value={search} onChange={(e) => setSearch(e.target.value)}
               className="flex-1 min-w-[200px] px-3 py-1.5 text-sm border border-border rounded bg-background" />
             <select value={bulkCat} onChange={(e) => setBulkCat(e.target.value)} className="px-2 py-1.5 text-xs border border-border rounded bg-background">
-              {DEFAULT_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              {categorie.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
             </select>
             <button onClick={setBulkFiltered} className="px-3 py-1.5 text-xs rounded border border-border hover:bg-muted">
               Applica a {filtered.length} linee filtrate
@@ -1551,7 +1546,7 @@ function ClassifierModal({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {filtered.map((r) => {
               const cat = local.get(r.routeId) || "";
-              const color = cat ? CATEGORY_COLOR[cat] : null;
+              const color = categoriaDi(categorie, cat)?.color ?? null;
               return (
                 <div key={r.routeId} className="flex items-center gap-2 p-2 rounded border border-border/40 text-xs">
                   {color && <span className="w-2 h-8 rounded-sm shrink-0" style={{ background: color }} />}
@@ -1565,7 +1560,7 @@ function ClassifierModal({
                     setLocal(n);
                   }} className="px-2 py-1 text-xs border border-border rounded bg-background">
                     <option value="">—</option>
-                    {DEFAULT_CATEGORIES.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+                    {categorie.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
                   </select>
                 </div>
               );

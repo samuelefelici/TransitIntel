@@ -93,6 +93,11 @@ export function vistaIniziale(a: Pick<Azienda, "centro">): { longitude: number; 
   return { longitude: a.centro.lng, latitude: a.centro.lat, zoom: a.centro.zoom };
 }
 
+/** Il nome sui documenti stampati che ne vogliono uno corto: quello dell'azienda, se è compilata. */
+export function nomeNeiDocumenti(a: Pick<Azienda, "nome" | "compilata">): string {
+  return a.compilata ? a.nome : "Trasporto Pubblico Locale";
+}
+
 /** L'intestazione dei documenti stampati: «Conerobus · Trasporto Pubblico Locale». */
 export function intestazioneDocumenti(a: Pick<Azienda, "nome" | "compilata">): string {
   return a.compilata ? `${a.nome} · Trasporto Pubblico Locale` : "Trasporto Pubblico Locale";

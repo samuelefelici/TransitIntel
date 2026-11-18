@@ -896,7 +896,7 @@ function AuditTab({ toast }: { toast: ReturnType<typeof useToast>["toast"] }) {
           <div className="flex gap-2 flex-col sm:flex-row">
             <input
               className="flex-1 border rounded px-3 py-2 text-sm bg-background"
-              placeholder="Es. Tariffe approvate con delibera n. XXX del 16/04/2026 — DGR Marche"
+              placeholder="Es. Tariffe approvate con delibera n. XXX del 16/04/2026"
               value={noteText}
               onChange={(e) => setNoteText(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) addNote(); }}
