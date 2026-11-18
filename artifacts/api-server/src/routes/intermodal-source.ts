@@ -21,6 +21,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { trattiDellaLinea } from "../lib/geometria-linea";
+import { KM_PER_GRADO_LAT, kmPerGradoLng } from "../lib/geo-utils";
 
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
@@ -84,8 +85,8 @@ export async function projectBbox(src: Source, padKm = 1.5): Promise<Bbox | null
       FROM ps_stops WHERE project_id = ${src.psProjectId}::uuid`);
   const b = (r as any).rows?.[0];
   if (b?.min_lat == null) return null;
-  const padLat = padKm / 111;                    // ~111 km per grado di latitudine
-  const padLng = padKm / 85;                     // ~85 km per grado a lat. 43° (Marche)
+  const padLat = padKm / KM_PER_GRADO_LAT;
+  const padLng = padKm / kmPerGradoLng((Number(b.min_lat) + Number(b.max_lat)) / 2);
   return {
     minLat: Number(b.min_lat) - padLat, maxLat: Number(b.max_lat) + padLat,
     minLng: Number(b.min_lng) - padLng, maxLng: Number(b.max_lng) + padLng,

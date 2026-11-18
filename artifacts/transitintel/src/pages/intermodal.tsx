@@ -1,3 +1,5 @@
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Map, { Source, Layer, Marker, Popup, MapRef } from "react-map-gl/mapbox";
 import { motion, AnimatePresence } from "framer-motion";
@@ -81,6 +83,7 @@ function TrustChip({ trust, fetchedAt }: { trust?: "reale" | "stima" | "assente"
 }
 
 export default function IntermodalPage(props: IntermodalPageProps = {}) {
+  const azienda = useAzienda();
   const { routeIds, embedded = false, onApplyProposals, poiRadiusKm = 3 } = props;
   const routeIdsKey = routeIds && routeIds.length > 0 ? routeIds.join(",") : "";
   // Sezione del progetto Planner Studio: l'analisi gira sulla RETE di questo
@@ -808,7 +811,7 @@ export default function IntermodalPage(props: IntermodalPageProps = {}) {
       {/* ── Map ───────────────────────────────────────────── */}
       <Map
         ref={mapRef}
-        initialViewState={{ longitude: 13.46, latitude: 43.615, zoom: 12, pitch: 45, bearing: -15 }}
+        initialViewState={{ ...vistaIniziale(azienda), pitch: 45, bearing: -15 }}
         mapStyle={MAP_STYLES[viewMode]}
         mapboxAccessToken={MAPBOX_TOKEN}
         style={{ width: "100%", height: "100%" }}

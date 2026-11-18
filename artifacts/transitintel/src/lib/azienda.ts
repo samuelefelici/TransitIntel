@@ -103,6 +103,23 @@ export function vistaIniziale(a: Pick<Azienda, "centro">): { longitude: number; 
   return { longitude: a.centro.lng, latitude: a.centro.lat, zoom: a.centro.zoom };
 }
 
+/** Il centro delle mappe come «lng,lat», come lo vuole il parametro `proximity` delle ricerche di indirizzi. */
+export function vicinoAlCentro(a: Pick<Azienda, "centro">): string {
+  return `${a.centro.lng.toFixed(4)},${a.centro.lat.toFixed(4)}`;
+}
+
+/**
+ * Il riquadro attorno al centro delle mappe, `km` chilometri per parte, come
+ * «ovest,sud,est,nord» (il parametro `bbox` delle ricerche di indirizzi): dove
+ * cercare prima, se non si sa altro del territorio.
+ */
+export function dintorniDelCentro(a: Pick<Azienda, "centro">, km = 80): string {
+  const dLat = km / 111.32;
+  const dLng = km / (111.32 * Math.max(Math.cos((a.centro.lat * Math.PI) / 180), 0.01));
+  const t = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v)).toFixed(2);
+  return [t(a.centro.lng - dLng, -180, 180), t(a.centro.lat - dLat, -90, 90), t(a.centro.lng + dLng, -180, 180), t(a.centro.lat + dLat, -90, 90)].join(",");
+}
+
 /** Il nome sui documenti stampati che ne vogliono uno corto: quello dell'azienda, se è compilata. */
 export function nomeNeiDocumenti(a: Pick<Azienda, "nome" | "compilata">): string {
   return a.compilata ? a.nome : "Trasporto Pubblico Locale";

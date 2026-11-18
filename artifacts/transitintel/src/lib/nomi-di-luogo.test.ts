@@ -84,3 +84,42 @@ describe("nessun nome dell'azienda o dei suoi luoghi nei sorgenti della web", ()
     expect(NOMI.test(senzaCommenti('const d = ["heatmap", "flatMap", "marchetta"];'))).toBe(false);
   });
 });
+
+/**
+ * Né i suoi luoghi scritti come coordinate (tappa 6.22): le mappe si aprono sul
+ * centro scritto in Amministrazione › Azienda (`vistaIniziale`), e le ricerche
+ * di indirizzi cercano attorno a quello (`vicinoAlCentro`, `dintorniDelCentro`).
+ * Resta solo il centro dell'Italia di un'installazione ancora da compilare.
+ */
+const COORDINATE = /\b(longitude|latitude|lat|lng|lon)\s*:\s*-?\d{1,3}\.\d+|\b(proximity|bbox)=-?\d|\bcenter\s*:\s*\[\s*-?\d/;
+const COORDINATE_AMMESSE: Record<string, { righe: number; perche: string }> = {
+  "lib/azienda.ts": { righe: 1, perche: "il centro dell'Italia, per un'installazione che non ha ancora scritto il suo" },
+};
+
+describe("nessuna coordinata scritta a mano nei sorgenti della web", () => {
+  const trovate = new Map<string, string[]>();
+  for (const f of sorgenti("")) {
+    const righe = senzaCommenti(readFileSync(join(SRC, f), "utf8")).split("\n")
+      .map((riga, i) => ({ riga, n: i + 1 })).filter((x) => COORDINATE.test(x.riga)).map((x) => `${f}:${x.n}: ${x.riga.trim().slice(0, 140)}`);
+    if (righe.length) trovate.set(f, righe);
+  }
+
+  it("fuori dai posti ammessi non ce n'è nessuna", () => {
+    expect([...trovate].filter(([f]) => !(f in COORDINATE_AMMESSE)).flatMap(([, righe]) => righe)).toEqual([]);
+  });
+
+  it("nei posti ammessi le righe sono quelle contate", () => {
+    for (const [f, { righe, perche }] of Object.entries(COORDINATE_AMMESSE)) {
+      expect(trovate.get(f) ?? [], `${f} (${perche})`).toHaveLength(righe);
+    }
+  });
+
+  it("la ricerca trova davvero: una vista, un riquadro, un centro", () => {
+    expect(COORDINATE.test("initialViewState={{ longitude: 13.46, latitude: 43.615, zoom: 12 }}")).toBe(true);
+    expect(COORDINATE.test("if (n === 0) return { lat: 43.55, lng: 13.35 };")).toBe(true);
+    expect(COORDINATE.test("+ `&proximity=13.51,43.61`")).toBe(true);
+    expect(COORDINATE.test("map.flyTo({ center: [13.5, 43.6] })")).toBe(true);
+    expect(COORDINATE.test("initialViewState={{ ...vistaIniziale(azienda), pitch: 45 }}")).toBe(false);
+    expect(COORDINATE.test("{ lat: s.lat, lng: s.lng, zoom: 12 }")).toBe(false);
+  });
+});

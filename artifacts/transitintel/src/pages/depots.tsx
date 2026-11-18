@@ -9,6 +9,7 @@
  * del progetto aperto, e i nuovi depositi nascono di default legati al progetto
  * (scope ps_project_id). Senza :id nell'URL resta la vecchia vista globale.
  */
+import { useAzienda } from "@/hooks/use-azienda";
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "wouter";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
@@ -548,6 +549,7 @@ function DepotCard({
 
 /* ── Pagina principale ─────────────────────────────────────── */
 export default function DepotsPage() {
+  const azienda = useAzienda();
   const params = useParams<{ id?: string }>();
   const projectId = params?.id ?? "";
   const [depots, setDepots] = useState<Depot[]>([]);
@@ -632,7 +634,7 @@ export default function DepotsPage() {
         longitude: mappableDepots.reduce((s, d) => s + d.lon!, 0) / mappableDepots.length,
         latitude:  mappableDepots.reduce((s, d) => s + d.lat!, 0) / mappableDepots.length,
       }
-    : { longitude: 12.4964, latitude: 41.9028 }; // default: Roma
+    : { longitude: azienda.centro.lng, latitude: azienda.centro.lat };
 
   const projectDepots = depots.filter(d => d.psProjectId);
 
@@ -674,7 +676,7 @@ export default function DepotsPage() {
               mapboxAccessToken={MAPBOX_TOKEN}
               initialViewState={{
                 ...mapCenter,
-                zoom: mappableDepots.length > 0 ? 11 : 6,
+                zoom: mappableDepots.length > 0 ? 11 : azienda.centro.zoom,
               }}
               style={{ width: "100%", height: "100%" }}
               mapStyle={mapStyle}

@@ -6,7 +6,7 @@
 import { db } from "@workspace/db";
 import { gtfsTrips, gtfsRoutes, gtfsStops, gtfsStopTimes, depots } from "@workspace/db/schema";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { timeToMinutes, haversineKm } from "../geo-utils";
+import { timeToMinutes, haversineKm, centroDeiPunti } from "../geo-utils";
 import { buildDeadheadKmMatrix, dhKey, type DHNode } from "../deadhead-matrix";
 import {
   enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
@@ -570,6 +570,8 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       name: gtfsStops.stopName,
     }).from(gtfsStops).where(eq(gtfsStops.feedId!, feedId));
     const stopCoords = new Map(stopRows.map(s => [s.stopId, { lat: s.lat, lon: s.lon, name: s.name || s.stopId }]));
+    /* una fermata senza coordinate: il centro delle altre, non un luogo scritto nel codice */
+    const ripiego = centroDeiPunti(stopCoords.values()) ?? { lat: 0, lon: 0 };
 
     // 4c. Flessibilità DICHIARATA IN PIANIFICAZIONE (cervello P↔TM↔TG):
     // flexMin per linea (default) e per corsa (override) dal progetto PS.
@@ -630,10 +632,10 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
         stopCount: sts.length,
         firstStopId: sts[0].stop_id,
         lastStopId: sts[sts.length - 1].stop_id,
-        firstStopLat: firstStop?.lat ?? 43.6,
-        firstStopLon: firstStop?.lon ?? 13.5,
-        lastStopLat: lastStop?.lat ?? 43.6,
-        lastStopLon: lastStop?.lon ?? 13.5,
+        firstStopLat: firstStop?.lat ?? ripiego.lat,
+        firstStopLon: firstStop?.lon ?? ripiego.lon,
+        lastStopLat: lastStop?.lat ?? ripiego.lat,
+        lastStopLon: lastStop?.lon ?? ripiego.lon,
         firstStopName: firstStop?.name || sts[0].stop_id,
         lastStopName: lastStop?.name || sts[sts.length - 1].stop_id,
         requiredVehicle: (body.tripVehicleOverrides?.[t.tripId] as VehicleType) ?? (routeVehicleMap[t.routeId] || "12m"),

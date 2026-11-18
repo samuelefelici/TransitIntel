@@ -1476,6 +1476,35 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Le mappe partono dal centro dell'azienda (tappa 6.22)
+
+Sedici mappe della web si aprivano su coordinate scritte nel codice: su Ancona
+(tariffe, quattro mappe; coincidenze, intermodale, mappa degli orari, fuori
+linea, mappa 3D della rete, scuole, pianificatore di viaggio), su Roma (editor e
+cluster di Planning Studio, depositi, depositi della Fucina) o sull'Italia
+(zone di Planning Studio). Da questo rilascio partono
+tutte dal **centro delle mappe** scritto in Amministrazione → Azienda →
+Territorio; quelle che si adattano ai dati lo fanno come prima, appena arrivano.
+- Il pianificatore di viaggio cerca gli indirizzi prima a 80 km dal centro
+  dell'azienda (prima: dentro un riquadro delle Marche), poi ovunque in Italia.
+- Due calcoli davano per buona la latitudine delle Marche: la griglia delle
+  fermate nell'analisi dei segmenti di domanda e il margine attorno al
+  progetto nell'analisi intermodale. Ora contano i gradi alla latitudine delle
+  fermate.
+- Nell'ottimizzazione dei mezzi, una fermata senza coordinate prende il centro
+  delle altre invece di un punto vicino ad Ancona.
+- Un test della web fallisce se in una pagina tornano coordinate scritte a mano.
+
+Per Conerobus non cambia niente: la latitudine media delle 3.901 fermate è
+43,55° contro i 43,6° del codice (0,08% sui gradi di longitudine), nessuna
+fermata è senza coordinate, e il centro dell'azienda è quello su cui si
+aprivano già le altre mappe.
+
+**Dopo il deploy**: niente da fare. Nessuna migrazione, nessuna variabile e
+nessuna Watch Path nuova (`geo-utils.ts` è già fra quelle del lavoratore).
+
+**Rollback**: immagine precedente.
+
 ### Il parco nel canale dell'AVM come dato dell'azienda (tappa 6.21)
 
 Nel canale dell'AVM le vetture delle consorziate hanno una matricola di
@@ -1667,7 +1696,7 @@ per voce, e porta alla sezione dove si scrivono
 
 | Voce | Dove | Se manca |
 |---|---|---|
-| Nome, città, centro delle mappe | Azienda → Identità, Territorio | pagine e stampe senza nome, mappe sull'Italia, GTFS con l'agenzia «azienda» |
+| Nome, città, centro delle mappe | Azienda → Identità, Territorio | pagine e stampe senza nome, mappe sull'Italia e indirizzi del pianificatore cercati prima attorno al centro d'Italia, GTFS con l'agenzia «azienda» |
 | Reti urbane e regole delle linee | Azienda → Reti e linee | tutte le linee extraurbane: tariffe urbane e riposi del Roster sbagliati (va bene solo per un servizio tutto extraurbano) |
 | Depositi | Azienda → Depositi | Anagrafica e Roster senza depositi |
 | Fasce chilometriche | Azienda → Fasce chilometriche | tariffe extraurbane senza prezzi |

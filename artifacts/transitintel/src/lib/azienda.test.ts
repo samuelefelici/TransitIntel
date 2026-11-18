@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda, nomeNeiDocumenti,
-  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex,
+  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex, vicinoAlCentro, dintorniDelCentro,
 } from "./azienda";
 
 const CONEROBUS: Azienda = {
@@ -40,6 +40,17 @@ describe("le etichette e le mappe", () => {
 
   it("la vista iniziale delle mappe di rete è il centro dell'azienda", () => {
     expect(vistaIniziale(CONEROBUS)).toEqual({ longitude: 13.45, latitude: 43.58, zoom: 10 });
+  });
+
+  it("le ricerche di indirizzi partono dal centro dell'azienda (tappa 6.22)", () => {
+    expect(vicinoAlCentro(CONEROBUS)).toBe("13.4500,43.5800");
+    /* 80 km per parte: in latitudine 0,72 gradi, in longitudine di più, perché a 43° un grado è più corto */
+    expect(dintorniDelCentro(CONEROBUS)).toBe("12.46,42.86,14.44,44.30");
+    expect(dintorniDelCentro({ centro: { lat: 46.5, lng: 11.35, zoom: 10 } }, 20)).toBe("11.09,46.32,11.61,46.68");
+    /* un'installazione da compilare cerca attorno al centro d'Italia */
+    expect(dintorniDelCentro(AZIENDA_DA_COMPILARE)).toBe("11.53,41.78,13.47,43.22");
+    /* vicino al polo il riquadro resta dentro i limiti */
+    expect(dintorniDelCentro({ centro: { lat: 89.9, lng: 0, zoom: 3 } })).toBe("-71.86,89.18,71.86,90.00");
   });
 
   it("l'intestazione dei documenti porta il nome solo se l'azienda è compilata", () => {

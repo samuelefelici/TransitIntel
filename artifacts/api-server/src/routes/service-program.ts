@@ -18,7 +18,7 @@ import {
 } from "@workspace/db/schema";
 import { randomUUID } from "node:crypto";
 import { eq, sql, and } from "drizzle-orm";
-import { timeToMinutes, minToTime, haversineKm } from "../lib/geo-utils";
+import { timeToMinutes, minToTime, haversineKm, centroDeiPunti } from "../lib/geo-utils";
 import { buildDeadheadKmMatrix, dhKey, type DHNode } from "../lib/deadhead-matrix";
 import {
   enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
@@ -886,6 +886,8 @@ router.post("/service-program", async (req, res) => {
       name: gtfsStops.stopName,
     }).from(gtfsStops).where(eq(gtfsStops.feedId!, feedId));
     const stopCoords = new Map(stopRows.map(s => [s.stopId, { lat: s.lat, lon: s.lon, name: s.name || s.stopId }]));
+    /* una fermata senza coordinate: il centro delle altre, non un luogo scritto nel codice */
+    const ripiego = centroDeiPunti(stopCoords.values()) ?? { lat: 0, lon: 0 };
 
     // 6. Build trip blocks
     const tripBlocks: TripBlock[] = [];
@@ -914,10 +916,10 @@ router.post("/service-program", async (req, res) => {
         stopCount: sts.length,
         firstStopId: sts[0].stop_id,
         lastStopId: sts[sts.length - 1].stop_id,
-        firstStopLat: firstStop?.lat ?? 43.6,
-        firstStopLon: firstStop?.lon ?? 13.5,
-        lastStopLat: lastStop?.lat ?? 43.6,
-        lastStopLon: lastStop?.lon ?? 13.5,
+        firstStopLat: firstStop?.lat ?? ripiego.lat,
+        firstStopLon: firstStop?.lon ?? ripiego.lon,
+        lastStopLat: lastStop?.lat ?? ripiego.lat,
+        lastStopLon: lastStop?.lon ?? ripiego.lon,
         firstStopName: firstStop?.name || sts[0].stop_id,
         lastStopName: lastStop?.name || sts[sts.length - 1].stop_id,
         requiredVehicle: (body.tripVehicleOverrides?.[t.tripId] as VehicleType) ?? (routeVehicleMap[t.routeId] || "12m"),

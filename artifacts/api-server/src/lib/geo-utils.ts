@@ -14,6 +14,31 @@ export function haversineKm(lat1: number, lon1: number, lat2: number, lon2: numb
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+/** Chilometri in un grado di latitudine: quasi lo stesso ovunque. */
+export const KM_PER_GRADO_LAT = 111.32;
+
+/**
+ * Chilometri in un grado di longitudine alla latitudine data: si accorciano
+ * andando verso nord (circa 89 km in Sicilia, 77 in Alto Adige). Mai zero,
+ * così chi divide non si ritrova un infinito vicino ai poli.
+ */
+export function kmPerGradoLng(lat: number): number {
+  return KM_PER_GRADO_LAT * Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
+}
+
+/**
+ * Il punto medio di un insieme di punti: il ripiego per una fermata senza
+ * coordinate, invece di un luogo scritto nel codice. Senza punti, null.
+ */
+export function centroDeiPunti(punti: Iterable<{ lat: number; lon: number }>): { lat: number; lon: number } | null {
+  let n = 0, lat = 0, lon = 0;
+  for (const p of punti) {
+    if (!Number.isFinite(p.lat) || !Number.isFinite(p.lon)) continue;
+    n++; lat += p.lat; lon += p.lon;
+  }
+  return n ? { lat: lat / n, lon: lon / n } : null;
+}
+
 /** Total length of a coordinate array [[lng,lat], …] in km. */
 export function lineLength(coords: number[][]): number {
   let len = 0;

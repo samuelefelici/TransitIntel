@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   haversineKm, lineLength, pointToLineDistance,
-  timeToMinutes, minToTime, walkMinutes,
+  timeToMinutes, minToTime, walkMinutes, kmPerGradoLng, centroDeiPunti, KM_PER_GRADO_LAT,
 } from "../lib/geo-utils";
 
 describe("geo-utils", () => {
@@ -121,5 +121,34 @@ describe("geo-utils", () => {
       // 0.1km at 4.5km/h = 1.33min → ceil = 2
       expect(walkMinutes(0.1)).toBe(2);
     });
+  });
+});
+
+/* Tappa 6.22: niente più latitudine delle Marche scritta nei calcoli. */
+describe("i gradi di longitudine alla latitudine giusta", () => {
+  it("all'equatore un grado è quello di latitudine; più a nord si accorcia", () => {
+    expect(kmPerGradoLng(0)).toBeCloseTo(KM_PER_GRADO_LAT, 6);
+    expect(kmPerGradoLng(43.6)).toBeCloseTo(80.61, 2);
+    expect(kmPerGradoLng(37.5)).toBeCloseTo(88.32, 2);
+    expect(kmPerGradoLng(46.5)).toBeCloseTo(76.63, 2);
+    /* d'accordo con la distanza vera: 0,1 gradi di longitudine a 45° */
+    expect(kmPerGradoLng(45) * 0.1).toBeCloseTo(haversineKm(45, 10, 45, 10.1), 1);
+  });
+
+  it("al polo non è mai zero", () => {
+    expect(kmPerGradoLng(90)).toBeGreaterThan(1);
+    expect(kmPerGradoLng(-90)).toBeGreaterThan(1);
+  });
+});
+
+describe("il centro di un insieme di punti", () => {
+  it("è la media; i punti senza coordinate non contano", () => {
+    expect(centroDeiPunti([{ lat: 40, lon: 10 }, { lat: 42, lon: 12 }, { lat: Number.NaN, lon: 99 }])).toEqual({ lat: 41, lon: 11 });
+    expect(centroDeiPunti(new Map([["a", { lat: 37.5, lon: 15.1 }]]).values())).toEqual({ lat: 37.5, lon: 15.1 });
+  });
+
+  it("senza punti non c'è", () => {
+    expect(centroDeiPunti([])).toBeNull();
+    expect(centroDeiPunti([{ lat: Number.NaN, lon: Number.NaN }])).toBeNull();
   });
 });

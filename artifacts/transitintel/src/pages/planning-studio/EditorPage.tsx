@@ -11,6 +11,8 @@
  *                       aggiunge waypoint snap-ato via OSRM, drag waypoint per
  *                       spostare, toggle modalità manuale per tratti fuori rete)
  */
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import Map, {
@@ -52,7 +54,6 @@ import {
 } from "@/lib/planning-studio-api";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
-const DEFAULT_VIEW = { longitude: 12.4964, latitude: 41.9028, zoom: 11 }; // Roma
 
 type Tool = "select" | "addStop" | "editVariant";
 type DataPanel = "stops" | "routes" | "calendars" | "clusters" | "ne-clusters" | "ne-depots" | null;
@@ -455,6 +456,7 @@ interface ShapeEditState {
 }
 
 export default function PlanningStudioEditorPage() {
+  const azienda = useAzienda();
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const [, navigate] = useLocation();
@@ -2876,7 +2878,7 @@ export default function PlanningStudioEditorPage() {
         <Map
           ref={mapRef}
           mapboxAccessToken={MAPBOX_TOKEN}
-          initialViewState={DEFAULT_VIEW}
+          initialViewState={vistaIniziale(azienda)}
           mapStyle="mapbox://styles/mapbox/standard"
           onClick={handleMapClick}
           onDblClick={(e) => {

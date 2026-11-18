@@ -12,6 +12,8 @@
  *
  * Backend: POST /api/fares/journey-plan
  */
+import { useAzienda } from "@/hooks/use-azienda";
+import { dintorniDelCentro, vicinoAlCentro, vistaIniziale } from "@/lib/azienda";
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Map, {
   Marker, Source, Layer, NavigationControl, type MapRef,
@@ -95,6 +97,7 @@ const busLegs = (a: JourneyAlt): BusLeg[] => a.legs.filter((l): l is BusLeg => l
 
 /* ── Pagina ───────────────────────────────────────────────── */
 export default function TripPlanner() {
+  const azienda = useAzienda();
   const mapRef = useRef<MapRef | null>(null);
 
   const [origin, setOrigin] = useState<LatLon | null>(null);
@@ -206,7 +209,7 @@ export default function TripPlanner() {
         <Map
           ref={mapRef}
           mapboxAccessToken={MAPBOX_TOKEN}
-          initialViewState={{ longitude: 13.5, latitude: 43.6, zoom: 9 }}
+          initialViewState={vistaIniziale(azienda)}
           style={{ width: "100%", height: "100%" }}
           mapStyle="mapbox://styles/mapbox/dark-v11"
           onClick={handleMapClick}
@@ -547,6 +550,7 @@ function PointRow({
   onPick: (p: LatLon) => void;
   accent: "emerald" | "rose";
 }) {
+  const azienda = useAzienda();
   const colors = accent === "emerald"
     ? { bg: "bg-emerald-500/15", border: "border-emerald-400/60", text: "text-emerald-300", focus: "focus-within:border-emerald-400" }
     : { bg: "bg-rose-500/15", border: "border-rose-400/60", text: "text-rose-300", focus: "focus-within:border-rose-400" };
@@ -567,15 +571,15 @@ function PointRow({
     if (!MAPBOX_TOKEN || q.trim().length < 2) { setResults([]); return; }
     setLoadingGeo(true);
     try {
-      // Bbox Marche allargato: lon 12.18–13.92, lat 42.69–43.97
+      // prima vicino al centro delle mappe dell'azienda (80 km per parte), poi ovunque
       const baseUrl = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(q)}.json`
         + `?access_token=${MAPBOX_TOKEN}&country=it&language=it&autocomplete=true&limit=8`
-        + `&proximity=13.51,43.61`;
-      // 1) Try restricted (Marche bbox + tipi indirizzo/poi)
-      const url1 = baseUrl + `&bbox=12.18,42.69,13.92,43.97&types=address,poi,place,locality,neighborhood,postcode`;
+        + `&proximity=${vicinoAlCentro(azienda)}`;
+      // 1) nei dintorni, solo indirizzi, luoghi e codici postali
+      const url1 = baseUrl + `&bbox=${dintorniDelCentro(azienda)}&types=address,poi,place,locality,neighborhood,postcode`;
       let r = await fetch(url1).then(x => x.json()).catch(() => ({ features: [] }));
       let feats: any[] = r.features || [];
-      // 2) Fallback senza bbox (per indirizzi fuori regione o nomi ambigui)
+      // 2) senza riquadro (indirizzi più lontani o nomi ambigui)
       if (feats.length < 3) {
         const url2 = baseUrl + `&types=address,poi,place,locality,neighborhood,postcode`;
         const r2 = await fetch(url2).then(x => x.json()).catch(() => ({ features: [] }));
@@ -597,7 +601,7 @@ function PointRow({
     } finally {
       setLoadingGeo(false);
     }
-  }, []);
+  }, [azienda]);
 
   const onChange = (v: string) => {
     setQuery(v);
