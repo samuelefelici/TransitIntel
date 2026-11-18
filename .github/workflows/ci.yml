@@ -1170,13 +1170,19 @@ jobs:
       - name: Il catalogo dei titoli di viaggio
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/titoli-catalogo-db.test.ts
       # Tappa 6.10: le categorie di passeggero, i supporti e i nodi tariffari
-      # con cui si riempie un feed sono elenchi dell'azienda, e l'agenzia del
-      # GTFS delle tariffe è un suo dato (il consorzio, se c'è; altrimenti
-      # l'azienda). Riempire un feed dà le stesse righe di prima; agency.txt è
-      # la riga che era nel codice; i nomi con la virgola stanno fra
+      # con cui si riempie un feed sono elenchi dell'azienda. Riempire un feed
+      # dà le stesse righe di prima; i nomi con la virgola stanno fra
       # virgolette (prima due righe di fare_media.txt avevano un campo in più).
-      - name: Gli elenchi delle tariffe e l'agenzia dei GTFS
+      - name: Gli elenchi delle tariffe
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/elenchi-tariffe-db.test.ts
+      # Tappa 6.11: i gestori. L'amministratore tiene l'elenco (il primo è il
+      # predefinito, che si toglie per ultimo); chi lavora su un programma
+      # assegna a ogni linea il suo, anche a molte insieme; i due GTFS
+      # scrivono un'agenzia per gestore che ha linee e a ogni linea la sua.
+      # Con un gestore solo agency.txt è la riga di prima, byte per byte;
+      # senza gestori l'agenzia è l'azienda.
+      - name: I gestori delle linee e le agenzie dei GTFS
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/gestori-db.test.ts
       # PR 2.15b: una categoria di validità usata da corse o da unità di
       # progettazione non si cancella. Prima lasciava sulle corse una riga che
       # punta a una categoria che non c'è più, e una corsa che aveva solo quella

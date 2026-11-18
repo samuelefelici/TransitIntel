@@ -27,6 +27,8 @@ import { gzipSync } from "node:zlib";
 import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { dimenticaAzienda, leggiAzienda, type Azienda } from "./azienda";
+import type { Gestore } from "./gestori";
+import { gestoriDalDatabase } from "./gestori-store";
 import { verificaGtfs } from "./gtfs-verifica";
 import { costruisciGtfs, netexDelGtfs, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
@@ -56,10 +58,14 @@ const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() 
  * La firma di un file: da che cosa nasce. Cambia se cambia la versione in
  * esercizio, un dato dell'azienda che finisce nel file, o il formato.
  */
-export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string }, a: Azienda): string {
+export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string }, a: Azienda, gestori: readonly Gestore[] = []): string {
   const diTutti = [FORMATO, tipo, v.versioneId, v.feedId, a.compilata, a.gtfsAgencyId, a.ragioneSociale, a.sito, a.telefono];
   const delNetex = tipo === "netex" ? [a.nome, a.netexCodiceLocale, a.netexFornitore] : [];
-  return sha256(JSON.stringify([...diTutti, ...delNetex]));
+  /* i gestori finiscono in agency.txt e in routes.txt del GTFS (tappa 6.11); il NeTEx ha ancora l'azienda come solo operatore.
+   * Senza gestori la firma è quella di prima: i file già pubblicati non si rifanno. */
+  const deiGestori = tipo === "gtfs" && gestori.length > 0
+    ? [gestori.map((g) => [g.gestore, g.nome, g.sito, g.telefono, g.predefinito])] : [];
+  return sha256(JSON.stringify([...diTutti, ...delNetex, ...deiGestori]));
 }
 
 /**
@@ -211,7 +217,8 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
 
     dimenticaAzienda();
     const azienda = await leggiAzienda();
-    const firme = { gtfs: firmaDi("gtfs", v, azienda), netex: firmaDi("netex", v, azienda) };
+    const gestori = await gestoriDalDatabase();
+    const firme = { gtfs: firmaDi("gtfs", v, azienda, gestori), netex: firmaDi("netex", v, azienda, gestori) };
     const daFare = TIPI.filter((t) => deveProvare(prima.get(t), firme[t], adesso, o.forza));
     const fatto: Record<TipoFile, EsitoFile | "invariato"> = { gtfs: "invariato", netex: "invariato" };
     if (daFare.length === 0) return { stato: "fatto", file: fatto };
@@ -226,7 +233,7 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
     try {
       const versione = righe(await db.execute(sql`SELECT * FROM ps_projects WHERE id = ${v.versioneId}::uuid`))[0];
       if (!versione) throw new Error("la versione in esercizio non c'è più");
-      gtfs = await costruisciGtfs(v.versioneId, versione, azienda, "esercizio");
+      gtfs = await costruisciGtfs(v.versioneId, versione, azienda, "esercizio", gestori);
     } catch (err) {
       for (const tipo of daFare) { o.suGuasto?.(err, tipo); await chiudi(tipo, "errore", GUASTO); }
       return { stato: "fatto", file: fatto };

@@ -1476,6 +1476,70 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### I gestori: più agenzie nei GTFS, una per linea (tappa 6.11)
+
+Chi programma il servizio può farlo per più aziende: un consorzio per i suoi
+consorziati. Nei GTFS ogni azienda è un'agenzia (`agency.txt`) e ogni linea è
+di una di loro (`routes.txt`). Fin qui l'agenzia era una sola. Da questo
+rilascio c'è l'elenco dei gestori (tabella `gestori`, migrazione `0044`), e
+ogni modifica resta nel registro.
+
+- **Dove si scrivono**: Amministrazione → Azienda, scheda «Gestori», dopo
+  «Reti e linee». Di ogni gestore: identificativo (quello del GTFS, non si
+  cambia), nome, sito, e se si vuole telefono, posta e pagina delle tariffe.
+- **Il predefinito**: il primo gestore che si aggiunge. È il gestore delle
+  linee che non ne hanno uno loro. Si cambia col pulsante «Predefinito» su un
+  altro gestore.
+- **Dove si assegnano le linee**: Planning Studio → pagina della rete →
+  «Gestori delle linee» (il pulsante c'è se l'azienda ha almeno un gestore).
+  Si filtrano le linee per gestore o per nome, se ne scelgono quante si vuole
+  e si assegnano insieme. Nel dettaglio di una linea c'è la tendina per
+  cambiare il suo.
+- **Che cosa c'è già sulle linee**: ogni linea porta l'identificativo
+  dell'agenzia che aveva nel GTFS importato. Se quell'identificativo non è fra
+  i gestori, la linea vale come «senza un gestore suo» e prende il
+  predefinito.
+- **Nei GTFS** (quello della pagina Tariffe e quello consegnabile di Planning
+  Studio, dati aperti compresi): `agency.txt` elenca i gestori che hanno
+  almeno una linea, nell'ordine dell'elenco, e in `routes.txt` ogni linea
+  porta il suo. Chi pubblica (`feed_info.txt`) resta l'azienda nel
+  consegnabile, e quello scritto in «Feed Info» nel GTFS delle tariffe.
+- **Il feed delle tariffe** eredita i gestori dal programma quando il
+  programma va in esercizio, come le linee.
+- **Togliere un gestore** non tocca le sue linee: passano al predefinito, e
+  tornano sue se lo si rimette. Il predefinito si toglie per ultimo.
+- **Senza gestori** l'agenzia è l'azienda dell'installazione, per tutte le
+  linee, come prima della 6.10.
+- **I dati aperti**: se cambia l'elenco dei gestori il GTFS pubblicato si
+  rifà. Con l'elenco vuoto non si rifà niente.
+- **Conerobus**: la migrazione porta nell'elenco l'agenzia che c'era (ATMA)
+  come primo gestore, predefinito, e tutte le linee dicono già «ATMA».
+  Misurato sulla copia con i dati veri:
+  - il GTFS della pagina Tariffe esce uguale a prima, in tutti i suoi file;
+  - **il GTFS consegnabile di Planning Studio cambia subito**: l'agenzia
+    passa da Conerobus S.p.A. (`conerobus`) ad Atma Scpa (`ATMA`) in
+    `agency.txt` e nelle 128 linee di `routes.txt`. Gli altri file sono
+    uguali, e chi pubblica (`feed_info.txt`) resta Conerobus. Vale anche per
+    il GTFS dei dati aperti, che si rifà al primo giro del lavoratore.
+- **La tabella `agenzia_gtfs`** della 6.10 resta, non più letta: serve a chi
+  torna all'immagine precedente. Si potrà togliere più avanti.
+- **Non cambia**: il NeTEx, che ha ancora l'azienda come solo operatore.
+
+**Dopo il deploy**
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify la riga nuova
+   `artifacts/api-server/src/lib/gestori*.ts` (blocco «Watch Paths» più
+   sopra), poi ridistribuisci il lavoratore.
+2. In Amministrazione → Azienda la scheda «Gestori» dice «Un gestore: Atma
+   Scpa (ATMA). Nei GTFS è l'agenzia di tutte le linee.»
+3. Per passare ai consorziati: aggiungi i gestori, apri il programma in
+   Planning Studio → rete → «Gestori delle linee», assegna le linee, poi togli
+   ATMA se non deve più figurare.
+
+**Rollback**: immagine precedente. Il codice di prima legge `agenzia_gtfs`,
+che è rimasta com'era; la tabella `gestori` resta, senza effetti. I gestori
+assegnati alle linee restano scritti sulle linee: il codice di prima li
+ignora e scrive un'agenzia sola.
+
 ### Gli elenchi delle tariffe e l'agenzia dei GTFS (tappa 6.10)
 
 Nella pagina Tariffe restavano nel codice quattro cose di una sola azienda: le
@@ -1486,11 +1550,9 @@ tabelle `categorie_catalogo`, `supporti_catalogo`, `nodi_catalogo` e
 
 - **Dove**: Amministrazione → Azienda, scheda «Tariffe: agenzia ed elenchi di
   partenza», dopo «Titoli di viaggio».
-- **L'agenzia del GTFS**: chi figura in `agency.txt` nel GTFS che si scarica
-  dalla pagina Tariffe. Se l'azienda ha un'agenzia a parte (il consorzio di
-  cui fa parte) si scrive quella; altrimenti figura l'azienda, con i dati di
-  Amministrazione → Azienda. In `routes.txt` ogni linea è dell'agenzia: il
-  file ne ha una sola.
+- **L'agenzia del GTFS**: con questa tappa era una sola, a parte dall'azienda
+  (il consorzio). Con la tappa 6.11 (qui sopra) è diventata l'elenco dei
+  gestori: la sua riga è il primo gestore.
 - **Chi pubblica il feed** (`feed_info.txt`): resta quello scritto nel modulo
   «Feed Info» di ogni feed. In un feed che non lo ha ancora il modulo propone
   l'agenzia, invece di un nome scritto nel codice.
@@ -3093,6 +3155,7 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/vetture-azienda.ts
    artifacts/api-server/src/lib/reti-linee.ts
    artifacts/api-server/src/lib/reti-lettura.ts
+   artifacts/api-server/src/lib/gestori*.ts
    artifacts/api-server/assets/**
    artifacts/api-server/build.ts
    artifacts/api-server/package.json

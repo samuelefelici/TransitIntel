@@ -1,11 +1,9 @@
 /**
- * Gli elenchi di partenza delle tariffe e l'agenzia dei GTFS (tappa 6.10),
- * nella pagina Amministrazione › Azienda:
- *   - chi figura come agenzia nel GTFS delle tariffe (l'azienda, o
- *     un'agenzia a parte: per esempio il consorzio di cui fa parte);
- *   - le categorie di passeggero e i supporti da cui la pagina Tariffe
- *     riempie un feed.
- * Ogni elenco si scrive in bozza e si salva tutto insieme.
+ * Gli elenchi di partenza delle tariffe (tappa 6.10), nella pagina
+ * Amministrazione › Azienda: le categorie di passeggero e i supporti da cui
+ * la pagina Tariffe riempie un feed. Ogni elenco si scrive in bozza e si
+ * salva tutto insieme. Chi figura come agenzia nei GTFS sta nella scheda dei
+ * gestori (components/azienda/Gestori.tsx, tappa 6.11).
  * API: /api/admin/elenchi-tariffe. I conti in lib/elenchi-tariffe.ts.
  */
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -17,10 +15,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  bozzaCategorie, bozzaSupporti, cambiato, categoriaNuova, corpoAgenzia, corpoCategorie, corpoSupporti,
-  erroriAgenzia, erroriCategorie, erroriSupporti, fraseAgenzia, moduloAgenzia, supportoNuovo,
-  type AgenziaGtfs, type AgenziaNelGtfs, type CategoriaCatalogo, type ElenchiTariffe as Elenchi, type ModuloAgenzia,
-  type RigaCategoria, type RigaSupporto, type SupportoCatalogo,
+  bozzaCategorie, bozzaSupporti, cambiato, categoriaNuova, corpoCategorie, corpoSupporti, erroriCategorie, erroriSupporti, supportoNuovo,
+  type CategoriaCatalogo, type ElenchiTariffe as Elenchi, type RigaCategoria, type RigaSupporto, type SupportoCatalogo,
 } from "@/lib/elenchi-tariffe";
 
 const quanti = (n: number, uno: string, tanti: string) => (n === 1 ? `${uno}` : `${n} ${tanti}`);
@@ -69,7 +65,6 @@ export default function ElenchiTariffe() {
   const [busy, setBusy] = useState(false);
   const [categorie, setCategorie] = useState<RigaCategoria[]>([]);
   const [supporti, setSupporti] = useState<RigaSupporto[]>([]);
-  const [agenzia, setAgenzia] = useState<ModuloAgenzia | null>(null);
   const [provato, setProvato] = useState<Record<string, boolean>>({});
 
   const carica = useCallback(async () => {
@@ -77,7 +72,7 @@ export default function ElenchiTariffe() {
       const e = await apiFetch<Elenchi>("/api/admin/elenchi-tariffe");
       setElenchi(e);
       setCategorie(bozzaCategorie(e.categorie)); setSupporti(bozzaSupporti(e.supporti));
-      setAgenzia(e.agenzia ? moduloAgenzia(e.agenzia) : null); setProvato({});
+      setProvato({});
     } catch (e: any) { toast({ title: "Elenchi non letti", description: e?.message, variant: "destructive" }); }
   }, [toast]);
   useEffect(() => { void carica(); }, [carica]);
@@ -94,81 +89,26 @@ export default function ElenchiTariffe() {
     } catch (e: any) { toast({ title: "Non riuscito", description: e?.message, variant: "destructive" }); }
     finally { setBusy(false); }
   };
-  const manda = <T,>(parte: string, metodo: "PUT" | "DELETE", corpo?: unknown) =>
-    apiFetch<T>(`/api/admin/elenchi-tariffe/${parte}`, { method: metodo, ...(corpo === undefined ? {} : { body: JSON.stringify(corpo) }) });
+  const manda = <T,>(parte: string, corpo: unknown) =>
+    apiFetch<T>(`/api/admin/elenchi-tariffe/${parte}`, { method: "PUT", body: JSON.stringify(corpo) });
 
   if (!elenchi) {
     return (
-      <Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ListChecks className="w-4 h-4 text-primary" aria-hidden /> Tariffe: agenzia ed elenchi di partenza</CardTitle></CardHeader>
+      <Card><CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><ListChecks className="w-4 h-4 text-primary" aria-hidden /> Tariffe: elenchi di partenza</CardTitle></CardHeader>
         <CardContent><div className="text-sm text-muted-foreground">Carico gli elenchi…</div></CardContent></Card>
     );
   }
 
   const eCategorie = erroriCategorie(categorie), eSupporti = erroriSupporti(supporti);
-  const eAgenzia = agenzia ? erroriAgenzia(agenzia) : [];
-  const agenziaCambiata = agenzia !== null && cambiato(agenzia, moduloAgenzia(elenchi.agenzia));
-  const casella = (campo: keyof ModuloAgenzia, etichetta: string, esempio: string, largo = false) => (
-    <div className={largo ? "sm:col-span-2" : ""}>
-      <Label htmlFor={`agenzia-${campo}`} className="text-xs">{etichetta}</Label>
-      <Input id={`agenzia-${campo}`} value={agenzia?.[campo] ?? ""} placeholder={esempio} className="h-8" maxLength={200}
-        onChange={(e) => setAgenzia((a) => (a ? { ...a, [campo]: e.target.value } : a))} />
-    </div>
-  );
-
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base flex items-center gap-2"><ListChecks className="w-4 h-4 text-primary" aria-hidden /> Tariffe: agenzia ed elenchi di partenza</CardTitle>
+        <CardTitle className="text-base flex items-center gap-2"><ListChecks className="w-4 h-4 text-primary" aria-hidden /> Tariffe: elenchi di partenza</CardTitle>
         <p className="text-xs text-muted-foreground">
-          Chi figura come agenzia nel GTFS della pagina Tariffe, e gli elenchi da cui quella pagina riempie un feed nuovo. Cambiarli qui non tocca i feed già riempiti.
+          Gli elenchi da cui la pagina Tariffe riempie un feed nuovo. Cambiarli qui non tocca i feed già riempiti.
         </p>
       </CardHeader>
       <CardContent className="space-y-3">
-        {/* ── L'agenzia ── */}
-        <div className="space-y-2 rounded-md border border-border/50 px-3 py-3">
-          <p className="text-sm font-medium">Agenzia del GTFS</p>
-          <p className="text-sm">{fraseAgenzia(elenchi.inVigore)}</p>
-          {agenzia === null ? (
-            <>
-              <p className="text-xs text-muted-foreground">Se i GTFS li pubblica un altro soggetto, per esempio il consorzio di cui l'azienda fa parte, scrivi qui i suoi dati.</p>
-              <Button type="button" variant="outline" size="sm" disabled={busy} onClick={() => setAgenzia(moduloAgenzia(null))}>
-                <Plus className="w-4 h-4 mr-1.5" />Imposta un'agenzia diversa dall'azienda
-              </Button>
-            </>
-          ) : (
-            <>
-              <div className="grid gap-2 sm:grid-cols-2">
-                {casella("agencyId", "Identificativo (agency_id)", "CONSORZIO")}
-                {casella("nome", "Nome", "Consorzio dei trasporti")}
-                {casella("sito", "Sito", "https://www.esempio.it")}
-                {casella("telefono", "Telefono (facoltativo)", "071 000000")}
-                {casella("email", "Posta (facoltativa)", "info@esempio.it")}
-                {casella("tariffeUrl", "Pagina delle tariffe (facoltativa)", "https://www.esempio.it/tariffe")}
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" disabled={busy || !agenziaCambiata}
-                  onClick={() => void salva("agenzia", eAgenzia, () => manda<{ agenzia: AgenziaGtfs; inVigore: AgenziaNelGtfs }>("agenzia", "PUT", corpoAgenzia(agenzia)),
-                    (r) => { setElenchi((e) => (e ? { ...e, agenzia: r.agenzia, inVigore: r.inVigore } : e)); setAgenzia(moduloAgenzia(r.agenzia)); }, "Agenzia salvata")}>
-                  <Save className="w-3.5 h-3.5 mr-1" />Salva l'agenzia
-                </Button>
-                {agenziaCambiata && (
-                  <Button type="button" variant="ghost" size="sm" disabled={busy}
-                    onClick={() => { setAgenzia(elenchi.agenzia ? moduloAgenzia(elenchi.agenzia) : null); setProvato((p) => ({ ...p, agenzia: false })); }}>Annulla le modifiche</Button>
-                )}
-                {elenchi.agenzia && (
-                  <Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={busy}
-                    onClick={() => {
-                      if (!window.confirm("Tolgo l'agenzia a parte? Da qui nel GTFS delle tariffe figura l'azienda.")) return;
-                      void salva("agenzia", [], () => manda<{ inVigore: AgenziaNelGtfs }>("agenzia", "DELETE"),
-                        (r) => { setElenchi((e) => (e ? { ...e, agenzia: null, inVigore: r.inVigore } : e)); setAgenzia(null); }, "Da qui l'agenzia è l'azienda");
-                    }}>Togli: l'agenzia è l'azienda</Button>
-                )}
-              </div>
-              {provato.agenzia && eAgenzia.length > 0 && <ul className="text-xs text-destructive">{eAgenzia.map((x) => <li key={x}>{x}</li>)}</ul>}
-            </>
-          )}
-        </div>
-
         {/* ── Le categorie ── */}
         <Elenco titolo="Categorie di passeggero" conta={quanti(elenchi.categorie.length, "una categoria", "categorie")}
           spiegazione="Ordinario, studente, anziano… La predefinita vale per i titoli che non ne dicono un'altra. Una categoria che il catalogo dei titoli usa non si può togliere.">
@@ -211,7 +151,7 @@ export default function ElenchiTariffe() {
             cambiato={cambiato(categorie, bozzaCategorie(elenchi.categorie))}
             onAggiungi={() => setCategorie((b) => [...b, categoriaNuova(b)])}
             onAnnulla={() => { setCategorie(bozzaCategorie(elenchi.categorie)); setProvato((p) => ({ ...p, categorie: false })); }}
-            onSalva={() => void salva("categorie", eCategorie, () => manda<{ categorie: CategoriaCatalogo[] }>("categorie", "PUT", corpoCategorie(categorie)),
+            onSalva={() => void salva("categorie", eCategorie, () => manda<{ categorie: CategoriaCatalogo[] }>("categorie", corpoCategorie(categorie)),
               (r) => { setElenchi((e) => (e ? { ...e, categorie: r.categorie } : e)); setCategorie(bozzaCategorie(r.categorie)); }, "Categorie salvate")} />
         </Elenco>
 
@@ -255,7 +195,7 @@ export default function ElenchiTariffe() {
             cambiato={cambiato(supporti, bozzaSupporti(elenchi.supporti))}
             onAggiungi={() => setSupporti((b) => [...b, supportoNuovo()])}
             onAnnulla={() => { setSupporti(bozzaSupporti(elenchi.supporti)); setProvato((p) => ({ ...p, supporti: false })); }}
-            onSalva={() => void salva("supporti", eSupporti, () => manda<{ supporti: SupportoCatalogo[] }>("supporti", "PUT", corpoSupporti(supporti)),
+            onSalva={() => void salva("supporti", eSupporti, () => manda<{ supporti: SupportoCatalogo[] }>("supporti", corpoSupporti(supporti)),
               (r) => { setElenchi((e) => (e ? { ...e, supporti: r.supporti } : e)); setSupporti(bozzaSupporti(r.supporti)); }, "Supporti salvati")} />
         </Elenco>
       </CardContent>

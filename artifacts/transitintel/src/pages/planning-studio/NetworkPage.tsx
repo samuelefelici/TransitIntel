@@ -18,6 +18,7 @@ import {
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import GestoriDelleLinee, { GestoreDellaLinea, useGestoriDelProgramma } from "@/components/planning-studio/GestoriDelleLinee";
 import {
   getPsProject,
   listPsRoutes, type PsRoute,
@@ -75,6 +76,9 @@ export default function PlanningStudioNetworkPage() {
   const [search, setSearch] = useState("");
   const [selection, setSelection] = useState<Selection>(null);
   const [drill, setDrill] = useState<Drill>(null);
+  /* i gestori delle linee (tappa 6.11): il pulsante c'è solo se l'azienda ne ha */
+  const gestoriQ = useGestoriDelProgramma(projectId);
+  const [gestoriAperti, setGestoriAperti] = useState(false);
 
   // reset drill quando cambia selection
   useEffect(() => { setDrill(null); }, [selection?.kind, (selection as any)?.id]);
@@ -119,8 +123,16 @@ export default function PlanningStudioNetworkPage() {
             {project.name}
           </span>
         )}
+        {(gestoriQ.data?.gestori.length ?? 0) > 0 && (
+          <button type="button" onClick={() => setGestoriAperti(true)}
+            className="ml-auto inline-flex items-center gap-1.5 rounded border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800"
+            title="Di quale gestore è ogni linea: nei GTFS è la sua agenzia">
+            <Building2 className="w-3.5 h-3.5 text-violet-400" aria-hidden />Gestori delle linee
+          </button>
+        )}
       </div>
       <PsProjectNav projectId={projectId} active="network" />
+      {gestoriAperti && <GestoriDelleLinee projectId={projectId} onClose={() => setGestoriAperti(false)} />}
 
       {/* 3 colonne */}
       <div className="flex-1 flex overflow-hidden">
@@ -421,6 +433,8 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
     queryFn: () => getPsRouteDetail(projectId, routeId),
   });
   const queryClient = useQueryClient();
+  /* con i gestori (tappa 6.11) chi esercisce la linea lo dice la sezione «Gestore», non il nome scritto nel programma */
+  const conGestori = (useGestoriDelProgramma(projectId).data?.gestori.length ?? 0) > 0;
   // Editor inline nome+verso del percorso (variante)
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -491,14 +505,17 @@ function RouteDetailPanel({ projectId, routeId, onDrillVariant, onDrillStop, act
           tone={d.activeCount === d.tripCount ? "ok" : "warn"} />
       </div>
 
-      {/* Agency */}
-      <Section title="Azienda esercente" icon={<Building2 className="w-3.5 h-3.5" />}>
+      {/* Agency: il nome scritto nel programma, solo finché l'azienda non ha gestori */}
+      {!conGestori && <Section title="Azienda esercente" icon={<Building2 className="w-3.5 h-3.5" />}>
         <div className="text-xs text-slate-300">
           {d.agency.name || <span className="text-slate-600">Non specificata</span>}
         </div>
         {d.agency.url && <div className="text-[10px] text-slate-500 mt-0.5">{d.agency.url}</div>}
         {d.agency.timezone && <div className="text-[10px] text-slate-500">Fuso: {d.agency.timezone}</div>}
-      </Section>
+      </Section>}
+
+      {/* Il gestore della linea (tappa 6.11): nei GTFS è la sua agenzia. Non c'è se l'azienda non ha gestori. */}
+      <SezioneGestore projectId={projectId} routeId={routeId} />
 
       {/* Tipologia di vettura: dichiarazione di pianificazione */}
       <Section title="Tipologia di vettura" icon={<Bus className="w-3.5 h-3.5" />}>
@@ -1052,6 +1069,17 @@ function FlexEditor({ projectId, routeId, current }: {
 }
 
 /* ─── Atomi UI ─── */
+/** La sezione «Gestore» del dettaglio di una linea: compare solo se l'azienda ha dei gestori. */
+function SezioneGestore({ projectId, routeId }: { projectId: string; routeId: string }) {
+  const q = useGestoriDelProgramma(projectId);
+  if (!q.data || q.data.gestori.length === 0) return null;
+  return (
+    <Section title="Gestore" icon={<Building2 className="w-3.5 h-3.5" />}>
+      <GestoreDellaLinea projectId={projectId} routeId={routeId} />
+    </Section>
+  );
+}
+
 function Section({ title, icon, children }: {
   title: string; icon?: React.ReactNode; children: React.ReactNode;
 }) {

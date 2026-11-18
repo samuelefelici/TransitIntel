@@ -37,6 +37,7 @@ import { gzipSync } from "node:zlib";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { leggiAzienda } from "./azienda";
+import { gestoriDalDatabase } from "./gestori-store";
 import { versioniDelProgetto, type Versione } from "./versioni-pubblicate";
 import { verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
 import type { ConteggiNetex } from "./netex";
@@ -89,7 +90,7 @@ async function programmaEVersione(req: Request, res: Response): Promise<{ proget
 
 async function costruisciEVerifica(progetto: any, fonte: Versione): Promise<{ gtfs: Gtfs; verifica: EsitoVerifica }> {
   const azienda = await leggiAzienda();
-  const gtfs = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale);
+  const gtfs = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale, await gestoriDalDatabase());
   return { gtfs, verifica: verificaGtfs(gtfs) };
 }
 
@@ -150,7 +151,7 @@ async function costruisciNetex(progetto: any, fonte: Versione): Promise<{
 }> {
   const azienda = await leggiAzienda();
   if (!azienda.netexCodiceLocale) throw new SenzaCodiceNetex();
-  const gtfs = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale);
+  const gtfs = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale, await gestoriDalDatabase());
   const { xml, conteggi } = netexDelGtfs(gtfs, azienda);
   return { xml, conteggi, verifica: verificaGtfs(gtfs), validazione: await validaNetex(xml) };
 }

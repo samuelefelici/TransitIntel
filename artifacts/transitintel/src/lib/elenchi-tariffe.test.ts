@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  bozzaCategorie, bozzaSupporti, cambiato, categoriaNuova, corpoAgenzia, corpoCategorie, corpoSupporti,
-  erroriAgenzia, erroriCategorie, erroriSupporti, fonteDelNodo, fraseAgenzia, moduloAgenzia, partenzaFeedInfo,
-  supportoNuovo, type AgenziaGtfs, type AgenziaNelGtfs, type CategoriaCatalogo, type SupportoCatalogo,
+  bozzaCategorie, bozzaSupporti, cambiato, categoriaNuova, corpoCategorie, corpoSupporti, erroriCategorie, erroriSupporti, fonteDelNodo,
+  partenzaFeedInfo, supportoNuovo, type AgenziaNelGtfs, type CategoriaCatalogo, type SupportoCatalogo,
 } from "./elenchi-tariffe";
 
 const CATEGORIE: CategoriaCatalogo[] = [
@@ -13,7 +12,6 @@ const SUPPORTI: SupportoCatalogo[] = [
   { supporto: "contanti", nome: "Pagamento a bordo (contanti/bancomat)", tipo: 0 },
   { supporto: "tessera_regionale", nome: "Tessera Regionale (€5,00 primo abb.)", tipo: 1 },
 ];
-const CONSORZIO: AgenziaGtfs = { agencyId: "CONS", nome: "Consorzio di prova", sito: "https://cons.example", telefono: null, email: "info@cons.example", tariffeUrl: null };
 const IN_VIGORE: AgenziaNelGtfs = {
   agency_id: "CONS", agency_name: "Consorzio di prova", agency_url: "https://cons.example", agency_timezone: "Europe/Rome", agency_lang: "it",
   agency_phone: "", agency_fare_url: "", agency_email: "info@cons.example", daAzienda: false,
@@ -23,7 +21,6 @@ describe("le bozze degli elenchi", () => {
   it("andata e ritorno: quello che è salvato torna uguale", () => {
     expect(corpoCategorie(bozzaCategorie(CATEGORIE))).toEqual({ categorie: CATEGORIE });
     expect(corpoSupporti(bozzaSupporti(SUPPORTI))).toEqual({ supporti: SUPPORTI });
-    expect(corpoAgenzia(moduloAgenzia(CONSORZIO))).toEqual(CONSORZIO);
   });
 
   it("le righe nuove: la prima categoria è la predefinita, e si vede che sono nuove", () => {
@@ -46,7 +43,6 @@ describe("che cosa non va, prima di salvare", () => {
   it("gli elenchi buoni non hanno errori, nemmeno con «<», «€» e la virgola nei nomi", () => {
     expect(erroriCategorie(bozzaCategorie([...CATEGORIE, { categoria: "agevolato", nome: "ISEE < €18.000 (tariffa agevolata)", predefinita: false, url: null }]))).toEqual([]);
     expect(erroriSupporti(bozzaSupporti(SUPPORTI))).toEqual([]);
-    expect(erroriAgenzia(moduloAgenzia(CONSORZIO))).toEqual([]);
     expect([erroriCategorie([]), erroriSupporti([])]).toEqual([[], []]);
   });
 
@@ -64,25 +60,9 @@ describe("che cosa non va, prima di salvare", () => {
     expect(erroriSupporti([{ supporto: "app", nome: 'App "nuova"', tipo: "9" }])).toEqual(["Riga 1: il nome non può contenere virgolette.", "Riga 1: scegli il tipo."]);
     expect(erroriSupporti([{ supporto: "app", nome: "App", tipo: "4" }, { supporto: "app", nome: "App 2", tipo: "4" }])).toEqual(["Il supporto «app» compare due volte."]);
   });
-
-  it("l'agenzia: identificativo, nome e sito ci vogliono; il resto è facoltativo", () => {
-    expect(erroriAgenzia(moduloAgenzia(null)).length).toBe(3);
-    const m = moduloAgenzia(CONSORZIO);
-    expect(erroriAgenzia({ ...m, sito: "cons.example" })).toEqual(["Il sito comincia con http:// o https://."]);
-    expect(erroriAgenzia({ ...m, email: "info" })).toEqual(["L'indirizzo di posta non è valido."]);
-    expect(erroriAgenzia({ ...m, telefono: "zero71" })).toEqual(["Il telefono ha solo cifre, spazi e + ( ) . / -."]);
-    expect(erroriAgenzia({ ...m, tariffeUrl: "tariffe" })).toEqual(["La pagina delle tariffe comincia con http:// o https://."]);
-    expect(corpoAgenzia({ ...m, telefono: " ", email: "" })).toEqual({ ...CONSORZIO, telefono: null, email: null });
-  });
 });
 
 describe("le frasi", () => {
-  it("chi figura come agenzia", () => {
-    expect(fraseAgenzia(IN_VIGORE)).toBe("Nel GTFS delle tariffe l'agenzia è Consorzio di prova (CONS), non l'azienda.");
-    expect(fraseAgenzia({ ...IN_VIGORE, agency_id: "azienda", agency_name: "Azienda S.p.A.", daAzienda: true }))
-      .toBe("Nel GTFS delle tariffe l'agenzia è l'azienda: Azienda S.p.A. (azienda).");
-  });
-
   it("i valori di partenza di «Feed Info»: quelli dell'agenzia, vuoti se non si sa", () => {
     expect(partenzaFeedInfo(IN_VIGORE)).toEqual({
       feedPublisherName: "Consorzio di prova", feedPublisherUrl: "https://cons.example", feedContactEmail: "info@cons.example", feedContactUrl: "https://cons.example",

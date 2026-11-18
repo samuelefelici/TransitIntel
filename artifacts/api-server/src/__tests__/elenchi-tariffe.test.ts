@@ -1,43 +1,15 @@
 /**
- * Gli elenchi di partenza delle tariffe e l'agenzia dei GTFS (tappa 6.10):
- * categorie, supporti, nodi e agenzia sono dati dell'azienda. Prima erano
- * tre elenchi e una riga di agency.txt nel codice.
+ * Gli elenchi di partenza delle tariffe (tappa 6.10): categorie, supporti e
+ * nodi sono dati dell'azienda. Prima erano tre elenchi nel codice. Chi figura
+ * come agenzia nei GTFS ha i suoi test in gestori.test.ts (tappa 6.11).
  */
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { agencyTxt, agenziaNelGtfs, aliasDaTesto, campoCsv, erroriCategorie, erroriSupporti, type CategoriaCatalogo } from "../lib/elenchi-tariffe";
-import { Agenzia, Categorie, erroreElenco, Supporti } from "../lib/elenchi-tariffe-store";
-import { AGENZIA_DI_PROVA, ELENCHI_DI_PRIMA } from "./helpers/elenchi-di-prova";
-
-const AZIENDA = { gtfsAgencyId: "conerobus", ragioneSociale: "Conerobus S.p.A.", sito: "https://www.conerobus.it", telefono: "+39 071 2837411" };
-
-describe("l'agenzia nel GTFS delle tariffe", () => {
-  it("con il consorzio nei dati dell'azienda, agency.txt è la riga che era nel codice, byte per byte", () => {
-    expect(agencyTxt(agenziaNelGtfs(AZIENDA, AGENZIA_DI_PROVA))).toBe(ELENCHI_DI_PRIMA.agencyTxt);
-  });
-
-  it("senza un'agenzia a parte figura l'azienda, e quello che non si sa resta vuoto", () => {
-    const a = agenziaNelGtfs(AZIENDA, null);
-    expect(a).toEqual({
-      agency_id: "conerobus", agency_name: "Conerobus S.p.A.", agency_url: "https://www.conerobus.it", agency_timezone: "Europe/Rome",
-      agency_lang: "it", agency_phone: "+39 071 2837411", agency_fare_url: "", agency_email: "", daAzienda: true,
-    });
-    expect(agencyTxt(a).split("\n")[1]).toBe('"conerobus","Conerobus S.p.A.","https://www.conerobus.it","Europe/Rome","it","+39 071 2837411","",""');
-  });
-
-  it("un'azienda non ancora compilata: niente sito né telefono inventati", () => {
-    const a = agenziaNelGtfs({ gtfsAgencyId: "azienda", ragioneSociale: "Azienda di trasporto", sito: null, telefono: null }, null);
-    expect([a.agency_url, a.agency_phone, a.agency_fare_url, a.agency_email]).toEqual(["", "", "", ""]);
-  });
-
-  it("un'agenzia senza telefono, posta e pagina delle tariffe", () => {
-    const a = agenziaNelGtfs(AZIENDA, { agencyId: "CONS", nome: 'Consorzio "Uno"', sito: "https://cons.example", telefono: null, email: null, tariffeUrl: null });
-    expect([a.agency_id, a.agency_phone, a.agency_fare_url, a.agency_email, a.daAzienda]).toEqual(["CONS", "", "", "", false]);
-    /* le virgolette nel nome si raddoppiano */
-    expect(agencyTxt(a).split("\n")[1]).toContain('"CONS","Consorzio ""Uno""","https://cons.example"');
-  });
-});
+import { aliasDaTesto, campoCsv, erroriCategorie, erroriSupporti, type CategoriaCatalogo } from "../lib/elenchi-tariffe";
+import { Categorie, erroreElenco, Supporti } from "../lib/elenchi-tariffe-store";
+import { ELENCHI_DI_PRIMA } from "./helpers/elenchi-di-prova";
+import { GESTORE_DI_PRIMA } from "./helpers/gestori-di-prova";
 
 describe("un campo di un CSV", () => {
   it("fra virgolette solo se ha una virgola, una virgoletta o un a capo", () => {
@@ -84,12 +56,9 @@ describe("quello che l'amministratore può salvare", () => {
   it("gli elenchi di Conerobus passano, con i loro nomi con «<», «€» e la virgola", () => {
     expect(Categorie.safeParse({ categorie: ELENCHI_DI_PRIMA.categorie }).success).toBe(true);
     expect(Supporti.safeParse({ supporti: ELENCHI_DI_PRIMA.supporti }).success).toBe(true);
-    expect(Agenzia.safeParse(AGENZIA_DI_PROVA).success).toBe(true);
   });
 
   it("i campi facoltativi vuoti diventano «nessuno»", () => {
-    const a = Agenzia.parse({ agencyId: "CONS", nome: " Consorzio ", sito: "https://cons.example", telefono: " ", email: "", tariffeUrl: null });
-    expect(a).toEqual({ agencyId: "CONS", nome: "Consorzio", sito: "https://cons.example", telefono: null, email: null, tariffeUrl: null });
     expect(Categorie.parse({ categorie: [{ categoria: "ordinario", nome: "Ordinario", predefinita: true, url: "" }] }).categorie[0]!.url).toBeNull();
   });
 
@@ -99,9 +68,6 @@ describe("quello che l'amministratore può salvare", () => {
       .toMatch(/^Riga 2: identificativo della categoria/);
     expect(messaggio(Supporti, { supporti: [{ supporto: "app", nome: "App", tipo: 7 }] })).toBe("Riga 1: il tipo va da 0 a 4");
     expect(messaggio(Supporti, { supporti: [{ supporto: "app", nome: 'App "nuova"', tipo: 4 }] })).toMatch(/virgolette/);
-    expect(messaggio(Agenzia, { ...AGENZIA_DI_PROVA, sito: "atmaancona.it" })).toMatch(/http/);
-    expect(messaggio(Agenzia, { ...AGENZIA_DI_PROVA, email: "info" })).toMatch(/posta/);
-    expect(messaggio(Agenzia, { ...AGENZIA_DI_PROVA, altro: 1 })).toBe("Campo non previsto: altro");
     expect(messaggio(Categorie, { categorie: [], altro: 1 })).toBe("Campo non previsto: altro");
   });
 });
@@ -125,8 +91,8 @@ describe("la migrazione 0043 carica nell'installazione di Conerobus gli elenchi 
   });
 
   it("l'agenzia è il consorzio, con i dati della riga di prima", () => {
-    const a = AGENZIA_DI_PROVA;
-    expect(sqlMigrazione).toContain(`SELECT '${a.agencyId}', '${a.nome}', '${a.sito}', '${a.telefono}', '${a.email}',\n       '${a.tariffeUrl}'`);
+    const a = GESTORE_DI_PRIMA;
+    expect(sqlMigrazione).toContain(`SELECT '${a.gestore}', '${a.nome}', '${a.sito}', '${a.telefono}', '${a.email}',\n       '${a.tariffeUrl}'`);
   });
 
   it("solo dove l'azienda è Conerobus e solo se l'elenco è vuoto; altrove la sola categoria «ordinario»", () => {
