@@ -15,6 +15,7 @@ import { TIPI_SUPPORTO } from "../lib/elenchi-tariffe";
 import { cancellaGestore, creaGestore, elencoGestori, erroreGestore, ModificaGestore, modificaGestore, NuovoGestore, RifiutoGestori } from "../lib/gestori-store";
 import { agenziaDellAzienda } from "../lib/gestori";
 import { cancellaNodo, creaNodo, DatiNodo, elencoNodi, IDENTIFICATIVO_NODO, modificaNodo, NuovoNodo, RifiutoNodi } from "../lib/nodi-scambio-store";
+import { DatiConsorziate, erroriConsorziate, esportaAnagrafica, importaAnagrafica, leggiExportParco, salvaConsorziate, statoParco } from "../lib/parco-store";
 import { statoDellInstallazione } from "../lib/installazione";
 import { cancellaTitolo, creaTitolo, elencoTitoli, ModificaTitolo, modificaTitolo, NuovoTitolo, RifiutoTitoli } from "../lib/titoli-catalogo";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
@@ -794,6 +795,49 @@ router.delete("/admin/nodi-scambio/:nodo", async (req, res): Promise<void> => {
   if (!IDENTIFICATIVO_NODO.test(nodo)) { res.status(404).json({ error: "Nodo non trovato" }); return; }
   try { await cancellaNodo(nodo); res.json({ ok: true }); }
   catch (e) { rifiutoNodi(req, res, e, "nodo non tolto"); }
+});
+
+/*
+ * Il parco dell'azienda nel canale dell'AVM (tappa 6.21, lib/parco-store.ts):
+ * l'anagrafica dei mezzi dall'export dell'officina, i prefissi SIRI delle
+ * consorziate e le eccezioni. Solo l'amministratore.
+ *
+ *   GET /api/admin/parco                 lo stato: vetture, import, prefissi, eccezioni
+ *   PUT /api/admin/parco/vetture         { testo }: sostituisce l'anagrafica (o tutta o niente)
+ *   GET /api/admin/parco/vetture.tsv     l'anagrafica com'è, nello stesso formato
+ *   PUT /api/admin/parco/consorziate     { consorziate, eccezioni }: li sostituisce insieme
+ */
+router.use("/admin/parco", requireAdmin);
+router.get("/admin/parco", async (req, res): Promise<void> => {
+  try { res.json(await statoParco()); }
+  catch (e) { req.log.error({ err: e }, "parco non leggibile"); res.status(500).json({ error: "parco non leggibile" }); }
+});
+router.put("/admin/parco/vetture", async (req, res): Promise<void> => {
+  const testo = typeof req.body?.testo === "string" ? req.body.testo : null;
+  if (!testo) { res.status(400).json({ error: "manca l'export: il corpo è { testo: \"codice<TAB>descrizione…\" }" }); return; }
+  const l = leggiExportParco(testo);
+  if (l.errori.length) { res.status(400).json({ error: `L'export non va: ${l.errori.join("; ")}` }); return; }
+  try {
+    const vetture = await importaAnagrafica(l.vetture, req.user?.id ?? null);
+    req.log.info({ vetture, doppie: l.doppie, da: req.user?.id }, "anagrafica del parco importata");
+    res.json({ importate: vetture, doppie: l.doppie, ...(await statoParco()) });
+  } catch (e) {
+    req.log.error({ err: e }, "import dell'anagrafica del parco non riuscito");
+    res.status(500).json({ error: "import non riuscito: l'anagrafica è quella di prima" });
+  }
+});
+router.get("/admin/parco/vetture.tsv", async (req, res): Promise<void> => {
+  try {
+    res.type("text/tab-separated-values; charset=utf-8")
+      .setHeader("Content-Disposition", `attachment; filename="parco-${new Date().toISOString().slice(0, 10)}.tsv"`)
+      .send(await esportaAnagrafica());
+  } catch (e) { req.log.error({ err: e }, "anagrafica non esportata"); res.status(500).json({ error: "anagrafica non esportata" }); }
+});
+router.put("/admin/parco/consorziate", async (req, res): Promise<void> => {
+  const p = DatiConsorziate.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriConsorziate(p.error) }); return; }
+  try { await salvaConsorziate(p.data); res.json(await statoParco()); }
+  catch (e) { req.log.error({ err: e }, "consorziate non salvate"); res.status(500).json({ error: "consorziate non salvate: restano quelle di prima" }); }
 });
 
 export default router;

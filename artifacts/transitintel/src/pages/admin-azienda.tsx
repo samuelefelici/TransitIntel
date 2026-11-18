@@ -32,6 +32,7 @@ import TitoliCatalogo from "@/components/azienda/TitoliCatalogo";
 import ElenchiTariffe from "@/components/azienda/ElenchiTariffe";
 import Gestori from "@/components/azienda/Gestori";
 import NodiDiScambio from "@/components/azienda/NodiDiScambio";
+import ParcoAvm from "@/components/azienda/ParcoAvm";
 import StatoInstallazione from "@/components/azienda/StatoInstallazione";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, esempioIdNetex, moduloCambiato, moduloDa,
@@ -268,6 +269,7 @@ export default function AdminAziendaPage() {
 
       {/* i nodi di scambio (tappa 6.16): stazioni, porti, aeroporti e parcheggi scambiatori, con gli orari stimati */}
       <section id="azienda-nodi" className="scroll-mt-4"><NodiDiScambio /></section>
+      <section id="azienda-parco" className="scroll-mt-4"><ParcoAvm /></section>
     </div>
   );
 }

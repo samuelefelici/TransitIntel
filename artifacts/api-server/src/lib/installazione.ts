@@ -33,6 +33,9 @@ export interface Conteggi {
   autoAziendali: number | null;
   /** le paline della transcodifica dell'AVM (tappa 6.20) */
   paline: number;
+  /** l'anagrafica dei mezzi e i prefissi delle consorziate nel canale dell'AVM (tappa 6.21) */
+  parcoVetture: number;
+  consorziate: number;
 }
 
 export type StatoVoce = "compilata" | "da_compilare" | "facoltativa";
@@ -179,6 +182,12 @@ export function vociDellInstallazione(c: Conteggi): Voce[] {
       dove: inAzienda("azienda-avm", "AVM: le vetture dell'azienda"),
     }),
     voce({
+      voce: "parco", titolo: "Anagrafica dei mezzi e consorziate nell'AVM", compilata: c.parcoVetture > 0, necessaria: false,
+      dettaglio: `${nr(c.parcoVetture, "mezzo", "mezzi")}, ${nr(c.consorziate, "prefisso di consorziata", "prefissi di consorziate")}`,
+      seManca: "Le matricole del canale AVM si vedono senza la descrizione del mezzo, e quelle delle consorziate non si attribuiscono a nessuna azienda.",
+      dove: inAzienda("azienda-parco", "AVM: consorziate e mezzi"),
+    }),
+    voce({
       voce: "paline", titolo: "Transcodifica delle paline dell'AVM", compilata: c.paline > 0, necessaria: false,
       dettaglio: c.paline > 0 ? nr(c.paline, "palina", "paline") : "non importata",
       seManca: "Le fermate dell'AVM si agganciano al feed solo per codice o per nome: dove le due numerazioni si sovrappongono, la fermata è sbagliata. Va bene se l'AVM usa gli stessi codici del feed.",
@@ -214,7 +223,9 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
       (SELECT count(*) FROM stop_clusters c
         WHERE NOT EXISTS (SELECT 1 FROM stop_cluster_stops s WHERE s.cluster_id = c.id))::int AS punti_senza_fermate,
       (SELECT value FROM app_settings WHERE key = 'company_cars') AS auto,
-      (SELECT count(*) FROM transcodifica_paline)::int AS paline`)).rows[0] ?? {};
+      (SELECT count(*) FROM transcodifica_paline)::int AS paline,
+      (SELECT count(*) FROM parco_vetture)::int AS parco_vetture,
+      (SELECT count(*) FROM parco_consorziate)::int AS consorziate`)).rows[0] ?? {};
   const luoghi = (r.luoghi ?? {}) as Record<string, number>;
   const auto = r.auto == null ? null : Number(r.auto);
   return {
@@ -233,6 +244,7 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
     puntiDiCambio: Number(r.punti ?? 0), puntiSenzaFermate: Number(r.punti_senza_fermate ?? 0),
     autoAziendali: auto != null && Number.isFinite(auto) ? auto : null,
     paline: Number(r.paline ?? 0),
+    parcoVetture: Number(r.parco_vetture ?? 0), consorziate: Number(r.consorziate ?? 0),
   };
 }
 

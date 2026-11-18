@@ -1149,6 +1149,11 @@ jobs:
       # correzioni dell'operatore restano sopra.
       - name: La transcodifica delle paline
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/transcodifica-db.test.ts
+      # Tappa 6.21: prefissi delle consorziate, eccezioni e anagrafica dei
+      # mezzi sono tabelle dell'azienda; solo l'amministratore le scrive, e le
+      # regole in memoria seguono subito.
+      - name: Il parco nel canale dell'AVM
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/parco-db.test.ts
       # Tappa 6.3: i dati aperti a un indirizzo stabile. Nasce spento; acceso,
       # il GTFS e il NeTEx nascono dalla versione in esercizio (mai dalla
       # bozza), si rifanno solo quando cambia quello da cui nascono, e vanno

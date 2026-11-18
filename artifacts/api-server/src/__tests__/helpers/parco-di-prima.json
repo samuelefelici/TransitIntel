@@ -1,0 +1,1526 @@
+{
+ "nota": "Il parco del primo cliente com'era scritto in lib/parco-anagrafica.ts fino alla tappa 6.21 (export dell'officina di ottobre 2026, confronto del 6/10/2026). Lo stesso che la migrazione 0049 mette nelle tabelle.",
+ "consorziate": [
+  {
+   "prefisso": "10",
+   "sigle": [
+    "SA",
+    "BV"
+   ],
+   "aProgressivo": true
+  },
+  {
+   "prefisso": "11",
+   "sigle": [
+    "CJ"
+   ],
+   "aProgressivo": true
+  },
+  {
+   "prefisso": "12",
+   "sigle": [
+    "BU"
+   ],
+   "aProgressivo": true
+  },
+  {
+   "prefisso": "13",
+   "sigle": [
+    "RE"
+   ],
+   "aProgressivo": true
+  },
+  {
+   "prefisso": "15",
+   "sigle": [
+    "AF",
+    "SAP"
+   ],
+   "aProgressivo": false
+  }
+ ],
+ "eccezioni": [
+  {
+   "siriRef": "15004",
+   "codice": "SAP052",
+   "nota": "orario di ultimo contatto identico al secondo (confronto del 6/10/2026)"
+  },
+  {
+   "siriRef": "15005",
+   "codice": "SAP051",
+   "nota": "orario di ultimo contatto identico al secondo (confronto del 6/10/2026)"
+  },
+  {
+   "siriRef": "15006",
+   "codice": "AF006",
+   "nota": "per esclusione, con otto minuti di differenza sull'ultimo contatto: da riconfermare"
+  },
+  {
+   "siriRef": "15007",
+   "codice": "SAP053",
+   "nota": "orario di ultimo contatto identico al secondo (confronto del 6/10/2026)"
+  }
+ ],
+ "vetture": [
+  {
+   "codice": "10",
+   "descrizione": "Urbano Snodato 18m - Solaris Trollino T18AC"
+  },
+  {
+   "codice": "11",
+   "descrizione": "Urbano Snodato 18m - Solaris Trollino T18AC"
+  },
+  {
+   "codice": "12",
+   "descrizione": "Urbano Snodato 18m - Solaris Trollino T18AC"
+  },
+  {
+   "codice": "13",
+   "descrizione": "Urbano =11<15m Ansaldo Breda F22"
+  },
+  {
+   "codice": "14",
+   "descrizione": "Urbano =11<15m Ansaldo Breda F22"
+  },
+  {
+   "codice": "15",
+   "descrizione": "Urbano =11<15m Ansaldo Breda F22"
+  },
+  {
+   "codice": "16",
+   "descrizione": "Urbano =11<15m Ansaldo Breda F22"
+  },
+  {
+   "codice": "17",
+   "descrizione": "Urbano =11<15m Ansaldo Breda F22"
+  },
+  {
+   "codice": "18",
+   "descrizione": "Urbano =11<15m Ansaldo Breda F22"
+  },
+  {
+   "codice": "218",
+   "descrizione": "Urbano =9<11m Vanhool A300 De Simon"
+  },
+  {
+   "codice": "227",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 LU"
+  },
+  {
+   "codice": "228",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 LU"
+  },
+  {
+   "codice": "229",
+   "descrizione": "Interurbano =7,5<9m CAM Ale T 154/3"
+  },
+  {
+   "codice": "243",
+   "descrizione": "Urbano =11<15m Irisbus 491 E12.29 Cityclass"
+  },
+  {
+   "codice": "244",
+   "descrizione": "Urbano =11<15m Irisbus 491 E12.29 Cityclass"
+  },
+  {
+   "codice": "245",
+   "descrizione": "Urbano =11<15m Irisbus 491 E12.29 Cityclass"
+  },
+  {
+   "codice": "246",
+   "descrizione": "Urbano =11<15m Irisbus 491 E12.29 Cityclass"
+  },
+  {
+   "codice": "248",
+   "descrizione": "Urbano =11<15m Irisbus 491 E12.29 Cityclass"
+  },
+  {
+   "codice": "249",
+   "descrizione": "Urbano =11<15m Irisbus 491 E12.29 Cityclass"
+  },
+  {
+   "codice": "250",
+   "descrizione": "Urbano =11<15m Irisbus 491 E12.29 Cityclass"
+  },
+  {
+   "codice": "251",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "252",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "253",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "254",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "255",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "256",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "257",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "258",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "259",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "260",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 Cityclass"
+  },
+  {
+   "codice": "261",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 GNC"
+  },
+  {
+   "codice": "263",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 GNC"
+  },
+  {
+   "codice": "264",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 GNC"
+  },
+  {
+   "codice": "265",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 GNC"
+  },
+  {
+   "codice": "266",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 GNC"
+  },
+  {
+   "codice": "267",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 GNC"
+  },
+  {
+   "codice": "268",
+   "descrizione": "Urbano =11<15m BredaMenarinibus M240 GNC"
+  },
+  {
+   "codice": "269",
+   "descrizione": "Urbano <7,5m Iveco 50C11 CNG Sitcar Citytour"
+  },
+  {
+   "codice": "270",
+   "descrizione": "Urbano <7,5m Iveco 50C11 CNG Sitcar Citytour"
+  },
+  {
+   "codice": "271",
+   "descrizione": "Urbano <7,5m Iveco 50C11 CNG Sitcar Citytour"
+  },
+  {
+   "codice": "272",
+   "descrizione": "Urbano <7,5m Iveco 50C11 CNG Sitcar Citytour"
+  },
+  {
+   "codice": "273",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "274",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "275",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "276",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "277",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "278",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "279",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "280",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "281",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "282",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "283",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "284",
+   "descrizione": "Urbano =11<15m Irisbus 491 E10.27 CNG Cityclass"
+  },
+  {
+   "codice": "285",
+   "descrizione": "Urbano snodato 18M Irisbus 491 E18.31 CNG"
+  },
+  {
+   "codice": "286",
+   "descrizione": "Urbano snodato 18M Irisbus 491 E18.31 CNG"
+  },
+  {
+   "codice": "287",
+   "descrizione": "Urbano snodato 18M Irisbus 491 E18.31 CNG"
+  },
+  {
+   "codice": "288",
+   "descrizione": "Urbano snodato 18M Irisbus 491 E18.31 CNG"
+  },
+  {
+   "codice": "289",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "290",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "291",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "292",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "293",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "294",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "295",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "296",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "297",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "298",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "299",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "300",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "400",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "401",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "402",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "403",
+   "descrizione": "Urbano =9<11m Irisbus Citelis 10M CNG PS09D5/80"
+  },
+  {
+   "codice": "404",
+   "descrizione": "Urbano =9<11m BredaMenarinibus M240 GNC NU"
+  },
+  {
+   "codice": "405",
+   "descrizione": "Urbano =7,5<9m Iveco 65C17/E4 Sitcar CT.14"
+  },
+  {
+   "codice": "406",
+   "descrizione": "Urbano =7,5<9m Iveco 65C17/E4 Sitcar CT.14"
+  },
+  {
+   "codice": "407",
+   "descrizione": "Urbano <7,5m Iveco 50C11 CNG Sitcar Citytour"
+  },
+  {
+   "codice": "408",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "409",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "410",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "411",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "412",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "413",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "414",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "415",
+   "descrizione": "Urbano =11<15m Avancity Plus CNG JDV LU/3P 100"
+  },
+  {
+   "codice": "416",
+   "descrizione": "Urbano =11<15m Solaris Urbino 12m-W24"
+  },
+  {
+   "codice": "417",
+   "descrizione": "Urbano =11<15m Solaris Urbino 12m-W24"
+  },
+  {
+   "codice": "418",
+   "descrizione": "Urbano =11<15m Irisbus Citelis 12M PS09D1/B/100"
+  },
+  {
+   "codice": "419",
+   "descrizione": "Urbano =11<15m Irisbus Citelis 12M PS09D1/B/100"
+  },
+  {
+   "codice": "420",
+   "descrizione": "Urbano =11<15m Irisbus Citelis 12M PS09D1/B/100"
+  },
+  {
+   "codice": "421",
+   "descrizione": "Urbano =11<15m Irisbus Citelis 12M PS09D1/B/100"
+  },
+  {
+   "codice": "422",
+   "descrizione": "Urbano =11<15m Irisbus Citelis 12M PS09D1/B/100"
+  },
+  {
+   "codice": "423",
+   "descrizione": "Urbano =11<15m Irisbus Citelis 12M PS09D1/B/100"
+  },
+  {
+   "codice": "424",
+   "descrizione": "Urbano =9<11m Solaris Urbino 10m"
+  },
+  {
+   "codice": "425",
+   "descrizione": "Urbano =9<11m Solaris Urbino 10m"
+  },
+  {
+   "codice": "426",
+   "descrizione": "Urbano =9<11m Citymood 10 CNG"
+  },
+  {
+   "codice": "427",
+   "descrizione": "Urbano =9<11m Citymood 10 CNG"
+  },
+  {
+   "codice": "428",
+   "descrizione": "Urbano =9<11m Citymood 10 CNG"
+  },
+  {
+   "codice": "429",
+   "descrizione": "Urbano =9<11m Citymood 10 CNG"
+  },
+  {
+   "codice": "430",
+   "descrizione": "Urbano =9<11m Citymood 10 CNG"
+  },
+  {
+   "codice": "431",
+   "descrizione": "Urbano =9<11m Citymood 10 CNG"
+  },
+  {
+   "codice": "432",
+   "descrizione": "Urbano =9<11m Citymood 10 CNG"
+  },
+  {
+   "codice": "433",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "434",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "435",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "436",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "437",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "438",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "439",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "440",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "441",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG"
+  },
+  {
+   "codice": "442",
+   "descrizione": "Urbano <7,5m Fiat Ducato City 21A"
+  },
+  {
+   "codice": "443",
+   "descrizione": "Urbano <7,5m Fiat Ducato City 21A"
+  },
+  {
+   "codice": "444",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG CONSIP"
+  },
+  {
+   "codice": "445",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG CONSIP"
+  },
+  {
+   "codice": "446",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG CONSIP"
+  },
+  {
+   "codice": "447",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG CONSIP"
+  },
+  {
+   "codice": "448",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG CONSIP"
+  },
+  {
+   "codice": "449",
+   "descrizione": "Urbano =11<15m Citymood 12 CNG CONSIP"
+  },
+  {
+   "codice": "450",
+   "descrizione": "Urbano =7,5<9m Heuliez GX 127"
+  },
+  {
+   "codice": "451",
+   "descrizione": "Urbano =7,5<9m Heuliez GX 127"
+  },
+  {
+   "codice": "452",
+   "descrizione": "Urbano =7,5<9m Heuliez GX 127"
+  },
+  {
+   "codice": "453",
+   "descrizione": "Urbano =11<15m Irisbus Citelis 12M PS09D1/B/100"
+  },
+  {
+   "codice": "454",
+   "descrizione": "Urbano <7,5m Irisbus Citelis 12m PS09D1/B/100"
+  },
+  {
+   "codice": "455",
+   "descrizione": "12m - Urbano lungo (=11<12mt)"
+  },
+  {
+   "codice": "456",
+   "descrizione": "12m - Urbano lungo (=11<12mt)"
+  },
+  {
+   "codice": "457",
+   "descrizione": "12m - Urbano lungo (=11<12mt)"
+  },
+  {
+   "codice": "458",
+   "descrizione": "12m - Urbano lungo (=11<12mt)"
+  },
+  {
+   "codice": "459",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "460",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "461",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "462",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "463",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "464",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "465",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "466",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "611",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 CNG Cityclass"
+  },
+  {
+   "codice": "612",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 CNG Cityclass"
+  },
+  {
+   "codice": "613",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 CNG Cityclass"
+  },
+  {
+   "codice": "614",
+   "descrizione": "Urbano =9<11m Irisbus 491 E10.24 CNG Cityclass"
+  },
+  {
+   "codice": "615",
+   "descrizione": "Urbano <7,5m Iveco 50C11 CNG Sitcar Citytour"
+  },
+  {
+   "codice": "618",
+   "descrizione": "Urbano <7,5m Iveco 50C11 CNG Sitcar Citytour"
+  },
+  {
+   "codice": "619",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "620",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "621",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "622",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "800",
+   "descrizione": "Urbano =7,5<9m Iveco City Tour"
+  },
+  {
+   "codice": "801",
+   "descrizione": "Urbano =7,5<9m Iveco City Tour"
+  },
+  {
+   "codice": "1228",
+   "descrizione": "Interurbano =11<15m - De Simon IL1E12 Scania"
+  },
+  {
+   "codice": "1229",
+   "descrizione": "Interurbano =11<15m - De Simon IL1E12 Scania"
+  },
+  {
+   "codice": "1231",
+   "descrizione": "Interurbano =11<15m - De Simon IL1E12 Scania"
+  },
+  {
+   "codice": "1234",
+   "descrizione": "Interurbano =11<15m De Simon IL3.311LC2 Scania"
+  },
+  {
+   "codice": "1236",
+   "descrizione": "Interurbano =11<15m De Simon IL3.311LC2 Scania"
+  },
+  {
+   "codice": "1237",
+   "descrizione": "Interurbano =11<15m De Simon IL3.311LC2 Scania"
+  },
+  {
+   "codice": "1239",
+   "descrizione": "Interurbano =11<15m De Simon IL3.311LC2 Scania"
+  },
+  {
+   "codice": "1243",
+   "descrizione": "Interurbano snodato 18m Evobus o530GNU/L Citaro"
+  },
+  {
+   "codice": "1246",
+   "descrizione": "Interurbano =7,5<9m Cacciamali TC1800/840"
+  },
+  {
+   "codice": "1247",
+   "descrizione": "Urbano =7,5<9m Irisbus 203 E9.27 CNG Europolis"
+  },
+  {
+   "codice": "1249",
+   "descrizione": "Urbano =7,5<9m Irisbus 203 E9.27 CNG Europolis"
+  },
+  {
+   "codice": "1250",
+   "descrizione": "Interurbano =11<15m Evobus MB O550U Integro"
+  },
+  {
+   "codice": "1251",
+   "descrizione": "Interurbano =11<15m Evobus MB O550U Integro"
+  },
+  {
+   "codice": "1252",
+   "descrizione": "Interurbano =11<15m Evobus MB O550U Integro"
+  },
+  {
+   "codice": "1253",
+   "descrizione": "Interurbano =11<15m Evobus MB O550U Integro"
+  },
+  {
+   "codice": "1254",
+   "descrizione": "Interurbano =11<15m Evobus MB O550U Integro"
+  },
+  {
+   "codice": "1255",
+   "descrizione": "Interurbano =11<15m Evobus MB O550U Integro"
+  },
+  {
+   "codice": "1257",
+   "descrizione": "Interurbano =11<15m Evobus MB O550U Integro"
+  },
+  {
+   "codice": "1261",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "1262",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "1263",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "1264",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "1265",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "1266",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "1272",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "1273",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "1274",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "1275",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "1277",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "1278",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "1279",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "1280",
+   "descrizione": "Interurbano snodato 18m Irisbus Citelis CNG"
+  },
+  {
+   "codice": "1281",
+   "descrizione": "Interurbano =11<15m Irisbus Agora CNG"
+  },
+  {
+   "codice": "1290",
+   "descrizione": "Interurbano snodato 18m Irisbus 491 E18.31 CNG"
+  },
+  {
+   "codice": "1293",
+   "descrizione": "Interurbano =11<15m Irisbus Citelis CNG"
+  },
+  {
+   "codice": "1294",
+   "descrizione": "Interurbano =11<15m Irisbus Citelis CNG"
+  },
+  {
+   "codice": "1296",
+   "descrizione": "Interurbano =7,5<9m Iveco 65C14 CNG Caccia. Thesi"
+  },
+  {
+   "codice": "1297",
+   "descrizione": "Interurbano =7,5<9m Iveco 65C14 CNG Caccia. Thesi"
+  },
+  {
+   "codice": "1300",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "1301",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "1311",
+   "descrizione": "Interurbano snodato 18m Vanhool C21"
+  },
+  {
+   "codice": "1313",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1314",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1315",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1316",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1317",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1318",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1319",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1320",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1321",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1322",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1323",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1324",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1325",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1326",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1327",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1328",
+   "descrizione": "Interurbano =11<15m Irisbus Crossway 12m EEV"
+  },
+  {
+   "codice": "1329",
+   "descrizione": "Interurbano =11<15m Iveco France SFR160"
+  },
+  {
+   "codice": "1330",
+   "descrizione": "Interurbano snodato 18m Irisbus 491 E18.35/S/3P"
+  },
+  {
+   "codice": "1331",
+   "descrizione": "Interurbano =11<15m Man Lion's City C (NL363 A36)"
+  },
+  {
+   "codice": "1332",
+   "descrizione": "Interurbano =11<15m Man Lion's City C (NL363 A36)"
+  },
+  {
+   "codice": "1333",
+   "descrizione": "Interurbano =11<15m Man Lion's City C (NL363 A36)"
+  },
+  {
+   "codice": "1334",
+   "descrizione": "Interurbano =11<15m Man Lion's City C (NL363 A36)"
+  },
+  {
+   "codice": "1335",
+   "descrizione": "Interurbano snodato 18m Man NG313 A23"
+  },
+  {
+   "codice": "1336",
+   "descrizione": "Interurbano =7,5<9m Man A76"
+  },
+  {
+   "codice": "1337",
+   "descrizione": "Interurbano =7,5<9m Man A76"
+  },
+  {
+   "codice": "1338",
+   "descrizione": "Interurbano snodato 18m Man A23 Lions City G"
+  },
+  {
+   "codice": "1339",
+   "descrizione": "Interurbano snodato 18m Man A23 Lions City G"
+  },
+  {
+   "codice": "1340",
+   "descrizione": "Interurbano snodato 18m Man A23 Lions City G"
+  },
+  {
+   "codice": "1341",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1342",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1343",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1344",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1345",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1346",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1347",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1348",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1349",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1350",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1351",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1352",
+   "descrizione": "Urbano =7,5<9m Solaris Urbino 8,9m"
+  },
+  {
+   "codice": "1353",
+   "descrizione": "Urbano =7,5<9m Solaris Urbino 8,9m"
+  },
+  {
+   "codice": "1354",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1355",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1356",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1357",
+   "descrizione": "Interurbano =7,5<9m Solaris Urbino 8,9m"
+  },
+  {
+   "codice": "1358",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1359",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1360",
+   "descrizione": "Interurbano =7,5<9m Heuliez GX 127"
+  },
+  {
+   "codice": "1361",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "1362",
+   "descrizione": "Interurbano snodato 18m Man A23 Lions City G"
+  },
+  {
+   "codice": "1363",
+   "descrizione": "Interurbano snodato 18m Man A23 Lions City G"
+  },
+  {
+   "codice": "1364",
+   "descrizione": "Interurbano snodato 18m Man A23 Lions City G"
+  },
+  {
+   "codice": "1365",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1366",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1367",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1368",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1369",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1370",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1371",
+   "descrizione": "X30p - Interurbano 29+1 posti"
+  },
+  {
+   "codice": "1372",
+   "descrizione": "X30p - Interurbano 29+1 posti"
+  },
+  {
+   "codice": "1373",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "1374",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "1375",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "1376",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "1377",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "1378",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "1379",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1380",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1381",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1382",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1383",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1384",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1385",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1386",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1387",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1388",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1389",
+   "descrizione": "IVECO Crossway"
+  },
+  {
+   "codice": "1390",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1391",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1392",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry 3assi"
+  },
+  {
+   "codice": "1393",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1394",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1395",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1396",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1397",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1398",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1399",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "1400",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "AF002",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "AF003",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "AF006",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "BU002",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU012",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "BU025",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU027",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU029",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU031",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU042",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU043",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU044",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU045",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "BU046",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "BU048",
+   "descrizione": "Interurbano snodato 18m Setra SG 321 UL"
+  },
+  {
+   "codice": "BU052",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU053",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU054",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU055",
+   "descrizione": "Interurbano =11<15m Iveco Citelys"
+  },
+  {
+   "codice": "BU056",
+   "descrizione": "Interurbano =11<15m Iveco Citelys"
+  },
+  {
+   "codice": "BU057",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "BU058",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "BU059",
+   "descrizione": "Interurbano =7,5<9m Iveco Indcar"
+  },
+  {
+   "codice": "BU060",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "BU061",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "BU062",
+   "descrizione": "Interurbano =7,5<9m Iveco Indcar"
+  },
+  {
+   "codice": "BU063",
+   "descrizione": "Urbano =7,5<9m Iveco City Tour"
+  },
+  {
+   "codice": "BU064",
+   "descrizione": "Interurbano =7,5<9m Iveco A65/C"
+  },
+  {
+   "codice": "BU065",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU066",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "BU067",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "BU068",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "BU069",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU070",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU071",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU072",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU073",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BU074",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "BV023",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BV031",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BV034",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "BV040",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "CJ012",
+   "descrizione": "Interurbano =11<15m Noge Touring HD"
+  },
+  {
+   "codice": "CJ016",
+   "descrizione": "Interurbano <7,5m Iveco Daily A50CT-19"
+  },
+  {
+   "codice": "CJ061",
+   "descrizione": "Interurbano snodato 18m Evobus SG320 UL"
+  },
+  {
+   "codice": "CJ062",
+   "descrizione": "Interurbano snodato 18m Evobus SG320 UL"
+  },
+  {
+   "codice": "CJ063",
+   "descrizione": "Interurbano =11<15m Setra S 317 UL"
+  },
+  {
+   "codice": "CJ064",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "CJ065",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "CJ066",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "CJ067",
+   "descrizione": "Interurbano =11<15m Iveco France SFR160"
+  },
+  {
+   "codice": "CJ086",
+   "descrizione": "Interurbano snodato 18m Evobus o530GNU/L Citaro"
+  },
+  {
+   "codice": "CJ096",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "CJ103",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "CJ104",
+   "descrizione": "Interurbano =11<15m Iveco Crossway Low Entry"
+  },
+  {
+   "codice": "CJ105",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "CJ106",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "CJ107",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "CJ108",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "RE145",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "RE152",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "RE155",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "RE156",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "RE157",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "RE159",
+   "descrizione": "Interurbano =11<15m Setra 633 04"
+  },
+  {
+   "codice": "RE160",
+   "descrizione": "Interurbano =11<15m Setra 633 04"
+  },
+  {
+   "codice": "RE161",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "RE162",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "RE163",
+   "descrizione": "Interurbano =11<15m Iveco Crossway"
+  },
+  {
+   "codice": "SA001",
+   "descrizione": "Interurbano =11<15m Setra S 418 LE"
+  },
+  {
+   "codice": "SA002",
+   "descrizione": "Interurbano =11<15m Setra S 416 LE"
+  },
+  {
+   "codice": "SA003",
+   "descrizione": "Interurbano =11<15m Setra S 418 LE"
+  },
+  {
+   "codice": "SA004",
+   "descrizione": "Interurbano =11<15m Setra S 418 LE"
+  },
+  {
+   "codice": "SA005",
+   "descrizione": "Interurbano =11<15m Setra S 315 UL"
+  },
+  {
+   "codice": "SA006",
+   "descrizione": "Interurbano =11<15m Setra S 419 UL"
+  },
+  {
+   "codice": "SA007",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "SA008",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "SA009",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "SA010",
+   "descrizione": "Interurbano =11<15m Setra S 416 LE"
+  },
+  {
+   "codice": "SA011",
+   "descrizione": "Interurbano =11<15m Setra S 416 LE"
+  },
+  {
+   "codice": "SA012",
+   "descrizione": "Interurbano =11<15m Setra S 415 UL"
+  },
+  {
+   "codice": "SA013",
+   "descrizione": "Interurbano =11<15m Setra S 418 LE"
+  },
+  {
+   "codice": "SA015",
+   "descrizione": "Interurbano =7,5<9m Iveco 65/E4 Wing"
+  },
+  {
+   "codice": "SA016",
+   "descrizione": "Interurbano =11<15m Setra S 417 UL"
+  },
+  {
+   "codice": "SAP051",
+   "descrizione": "E3 - Interurbano medio (=7,5<9mt)"
+  },
+  {
+   "codice": "SAP052",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "SAP053",
+   "descrizione": "10m - Urbano normale (=9<11mt)"
+  },
+  {
+   "codice": "SAP062",
+   "descrizione": "E4 - Interurbano corto (<7,5mt)"
+  }
+ ]
+}

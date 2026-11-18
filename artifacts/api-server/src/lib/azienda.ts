@@ -23,6 +23,7 @@ import { sql } from "drizzle-orm";
 import { impostaRegolaVetture, REGOLA_NEUTRA } from "./vetture-azienda";
 import { impostaReti } from "./reti-linee";
 import { retiDalDatabase } from "./reti-lettura";
+import { impostaParco, parcoDalDatabase } from "./parco-anagrafica";
 
 export interface Azienda {
   /** il nome per esteso: «Conerobus S.p.A.» */
@@ -178,12 +179,15 @@ export async function leggiAzienda(): Promise<Azienda> {
     const riga = r.rows?.[0];
     /* le reti e le regole delle linee sono dati dell'azienda come la riga: si leggono insieme (lib/reti-linee.ts) */
     const reti = await retiDalDatabase();
+    /* e così il parco nel canale dell'AVM: prefissi delle consorziate, eccezioni, anagrafica (lib/parco-anagrafica.ts, tappa 6.21) */
+    const parco = await parcoDalDatabase();
     inMemoria = { azienda: riga ? daRiga(riga) : AZIENDA_DA_COMPILARE, lettaIl: Date.now() };
     /* la regola delle vetture dell'azienda nell'AVM segue la riga (lib/vetture-azienda.ts) */
     impostaRegolaVetture(riga
       ? { cifre: inMemoria.azienda.avmMatricolaCifre, nome: inMemoria.azienda.nome }
       : REGOLA_NEUTRA);
     impostaReti(reti);
+    impostaParco(parco);
     return inMemoria.azienda;
   } catch (e) {
     if (inMemoria) return inMemoria.azienda;
