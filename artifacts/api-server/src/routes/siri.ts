@@ -41,7 +41,10 @@ import { studiaCodici } from "../lib/journey-code-study";
 import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
 import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, leggiFermataFeed, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
-import { transcodificaEffettiva, verificaTranscodifica, classificaAbbinamenti, suggerimentiPerNome } from "../lib/stop-aliases";
+import {
+  transcodificaEffettiva, verificaTranscodifica, classificaAbbinamenti, suggerimentiPerNome,
+  fermataDelCodice, codiceDellaFermata, type FeedTranscodifica,
+} from "../lib/stop-aliases";
 import { leggiCsvTranscodifica, importaTranscodifica } from "../lib/transcodifica-paline";
 import { salvaOverride, rimuoviOverride, erroreOverrides } from "../lib/stop-alias-overrides";
 import { deduciFermata } from "../lib/stop-deduction";
@@ -855,7 +858,7 @@ router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
     return;
   }
 
-  const verifica = index ? verificaTranscodifica(t.righe, index.stops) : null;
+  const verifica = index ? verificaTranscodifica(t.righe, index) : null;
   res.json({
     importataIl: t.importataIl,
     importataDa: t.importataDa,
@@ -918,8 +921,8 @@ router.put("/siri/fermate/transcodifica", requireAdmin, async (req, res): Promis
 router.get("/siri/fermate/abbinamenti", async (req, res): Promise<void> => {
   const t = await transcodificaEffettiva();
   const index = await loadGtfsIndex().catch(() => null);
-  const feed = index
-    ? { stops: index.stops, stopNames: index.stopNames }
+  const feed: FeedTranscodifica = index
+    ? { stops: index.stops, stopNames: index.stopNames, stopByCodice: index.stopByCodice, codiceOfStop: index.codiceOfStop }
     : { stops: new Set<string>(), stopNames: new Map<string, string>() };
   const flusso = ultimoGiro?.fermate
     ? { refs: [...ultimoGiro.fermate.nonAgganciate, ...ultimoGiro.fermate.conflitti.map(c => c.split(":")[0])] }
@@ -942,7 +945,11 @@ router.get("/siri/fermate/abbinamenti", async (req, res): Promise<void> => {
    * richiesta a Mizar per fermata. */
   const righe = a.righe.map(r => ({
     ...r,
-    suggerimenti: r.stato === "abbinata" ? [] : suggerimentiPerNome(r.nomeMizar, feed, r.stopId),
+    /* i suggerimenti col codice della fermata, quello che si salva (in un feed di
+     * Planning Studio lo stop_id è un identificativo interno) */
+    suggerimenti: r.stato === "abbinata" ? []
+      : suggerimentiPerNome(r.nomeMizar, feed, r.stopId ? fermataDelCodice(r.stopId, feed) : null)
+        .map(x => ({ ...x, stopId: codiceDellaFermata(x.stopId, feed) })),
   }));
 
   res.json({
@@ -965,16 +972,21 @@ router.get("/siri/fermate/cerca", async (req, res): Promise<void> => {
   const feedId = process.env.GTFS_FEED_ID || (await getLatestFeedId());
   if (!feedId) { res.json({ fermate: [], nota: "nessun feed GTFS caricato" }); return; }
   try {
+    /* in un feed di Planning Studio la fermata si cerca e si restituisce col
+     * suo codice stabile, quello che la transcodifica usa (tappa 6.20b) */
     const r = await db.execute<any>(sql`
-      SELECT stop_id, stop_code, stop_name, stop_lat, stop_lon
-        FROM gtfs_stops
-       WHERE feed_id = ${feedId}::uuid
-         AND (stop_id = ${q} OR stop_code = ${q} OR stop_name ILIKE ${"%" + q + "%"})
-       ORDER BY (stop_id = ${q}) DESC, (stop_code = ${q}) DESC, stop_name
+      SELECT g.stop_id, g.stop_code, g.stop_name, g.stop_lat, g.stop_lon, s.codice
+        FROM gtfs_stops g
+        LEFT JOIN ps_stops s
+          ON s.id = CASE WHEN g.stop_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+                         THEN g.stop_id::uuid END
+       WHERE g.feed_id = ${feedId}::uuid
+         AND (g.stop_id = ${q} OR s.codice = ${q} OR g.stop_code = ${q} OR g.stop_name ILIKE ${"%" + q + "%"})
+       ORDER BY (g.stop_id = ${q} OR s.codice = ${q}) DESC, (g.stop_code = ${q}) DESC, g.stop_name
        LIMIT 20`);
     res.json({
       fermate: ((r as any).rows ?? []).map((x: any) => ({
-        stopId: String(x.stop_id), stopCode: x.stop_code ?? null, nome: x.stop_name ?? null,
+        stopId: String(x.codice ?? x.stop_id), stopCode: x.stop_code ?? null, nome: x.stop_name ?? null,
         lat: x.stop_lat != null ? Number(x.stop_lat) : null, lon: x.stop_lon != null ? Number(x.stop_lon) : null,
       })),
     });
@@ -1026,9 +1038,11 @@ router.post("/siri/fermate/suggerisci/:ref", async (req, res): Promise<void> => 
     const d = deduciFermata(sm.visite, index.tripByCode, orari, index.timeZone);
     res.json({
       ref, passaggi: sm.visite.length, corseAgganciate: tripIds.length,
+      /* col codice della fermata, quello che si salva (tappa 6.20b) */
       deduzione: {
         ...d,
-        candidati: d.candidati.map(c => ({ ...c, nome: index.stopNames.get(c.stopId) ?? null })),
+        suggerito: d.suggerito ? codiceDellaFermata(d.suggerito, index) : null,
+        candidati: d.candidati.map(c => ({ ...c, stopId: codiceDellaFermata(c.stopId, index), nome: index.stopNames.get(c.stopId) ?? null })),
       },
     });
   } catch (e: any) {
@@ -1049,17 +1063,25 @@ router.put("/siri/fermate/abbinamenti/:ref", requireAdmin, async (req, res): Pro
   const stopId = req.body?.stopId == null || String(req.body.stopId).trim() === "" ? null : String(req.body.stopId).trim();
   const nota = req.body?.nota != null ? String(req.body.nota).trim().slice(0, 500) || null : null;
   const nome = req.body?.nome != null ? String(req.body.nome).trim().slice(0, 200) || null : null;
+  /* Si salva il codice della fermata, quello della tabella: in un feed di
+   * Planning Studio lo stop_id è un identificativo interno che con la
+   * versione dopo cambia (tappa 6.20b). */
+  let codice = stopId;
   if (stopId) {
     const index = await loadGtfsIndex().catch(() => null);
-    if (index && !index.stops.has(stopId)) {
-      res.status(400).json({ error: `lo stop_id ${stopId} non esiste nel feed in uso` });
-      return;
+    if (index) {
+      const fermata = fermataDelCodice(stopId, index);
+      if (!fermata) {
+        res.status(400).json({ error: `la fermata ${stopId} non esiste nel feed in uso` });
+        return;
+      }
+      codice = codiceDellaFermata(fermata, index);
     }
   }
-  const ok = await salvaOverride({ mizarRef: ref, stopId, nome, nota, utente: req.user?.email ?? null });
+  const ok = await salvaOverride({ mizarRef: ref, stopId: codice, nome, nota, utente: req.user?.email ?? null });
   if (!ok) { res.status(500).json({ error: erroreOverrides() ?? "correzione non salvata" }); return; }
   await loadGtfsIndex(true).catch(() => null);
-  res.json({ ok: true, mizarRef: ref, stopId, nota, utente: req.user?.email ?? null });
+  res.json({ ok: true, mizarRef: ref, stopId: codice, nota, utente: req.user?.email ?? null });
 });
 
 router.delete("/siri/fermate/abbinamenti/:ref", requireAdmin, async (req, res): Promise<void> => {

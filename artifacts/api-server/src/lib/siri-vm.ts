@@ -1017,6 +1017,12 @@ export interface GtfsIndex {
    *  due numerazioni si sovrappongono e un numero uguale è spesso un'altra
    *  fermata. Contiene solo gli stop_id presenti nel feed. */
   stopByAlias?: Map<string, string>;
+  /** Feed nato da Planning Studio: lo stop_id è l'identificativo della
+   *  fermata nel progetto, e il codice a cui punta la transcodifica è il suo
+   *  codice stabile. codice → stop_id, e il contrario; vuoti per un feed
+   *  caricato da file (tappa 6.20b). */
+  stopByCodice?: Map<string, string>;
+  codiceOfStop?: Map<string, string>;
   loadedAt: number;
 }
 
