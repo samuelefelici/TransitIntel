@@ -1476,6 +1476,54 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### I chilometri per gestore (tappa 6.13)
+
+Per rendicontare ai consorziati servono i chilometri di ogni gestore. Da
+questo rilascio i due report che contano i chilometri li ripartiscono anche
+per gestore: il gestore è quello della linea, lo stesso dei GTFS (tappa 6.11).
+
+- **Planning Studio → Elenco corse → «Stampa elenco»**: nel riepilogo dei km
+  all'anno c'è la tabella «Km/anno per gestore», fra quella delle linee e
+  quella del corrispettivo. Per ogni gestore: quante linee, i km per categoria
+  di validità, il totale, la quota sul totale e, se è scritto il corrispettivo
+  al chilometro, l'importo. I km a chiamata stanno in una colonna a parte e
+  non entrano nel corrispettivo, come nella tabella dei ricavi. La somma dei
+  gestori è il totale delle linee.
+- **Esercizio → Consuntivo → «Report del mese»**: la tabella «Per gestore»
+  nella pagina, il foglio «Per gestore» nell'XLSX (in fondo, dopo «Per
+  vettore») e la colonna `gestore` nel CSV del dettaglio (l'ultima: le colonne
+  di prima restano dove erano). Corse e km programmati, effettivi, persi e
+  aggiunti, con la regolarità.
+- **Quando compaiono**: nella stampa e nella pagina solo se i gestori con
+  chilometri sono più d'uno; il foglio dell'XLSX se l'azienda ha almeno un
+  gestore. Senza gestori non cambia niente.
+- **Quale gestore, nel report del mese**: quello che la linea aveva nel
+  programma in esercizio quel giorno, come già il tipo di servizio e il
+  contratto. Assegnare oggi una linea a un altro gestore **non cambia i mesi
+  già congelati**: vale dalle giornate che nascono dopo aver rimesso in
+  esercizio il programma. È voluto: se una linea passa di mano a marzo, il
+  report di gennaio deve dire ancora chi la gestiva a gennaio.
+- **«Per vettore» resta**: è un'altra cosa. Il vettore viene dalla vettura
+  che ha fatto la corsa (dall'AVM), il gestore dalla linea.
+- **Una corsa senza linea** (per esempio una corsa aggiunta) e una linea che
+  dice un gestore fuori elenco sono del predefinito.
+- **Misurato sulla copia con i dati veri**, con due gestori di prova (102 e 26
+  linee): nei km programmati 33.802,4 e 10.152,3 km, che sommati danno il
+  totale (43.954,7); nel report del mese 2.637 e 865 corse, che sommate danno
+  le 3.502 del totale, con gli stessi km.
+
+**Dopo il deploy**
+1. Niente da fare a mano: nessuna migrazione, nessuna variabile, nessuna Watch
+   Path nuova.
+2. Con un gestore solo (oggi ATMA) nella pagina e nella stampa non compare
+   niente di nuovo; nell'XLSX del mese c'è il foglio «Per gestore» con una
+   riga, uguale ai totali.
+3. Per vedere la ripartizione nel report del mese: aggiungi i gestori, assegna
+   le linee in Planning Studio e rimetti in esercizio il programma. Le
+   giornate che nascono da lì in poi portano i gestori.
+
+**Rollback**: immagine precedente. I report tornano senza la ripartizione.
+
 ### Il NeTEx con un operatore per gestore (tappa 6.12)
 
 Con la 6.11 il GTFS ha un'agenzia per gestore; il NeTEx del profilo italiano

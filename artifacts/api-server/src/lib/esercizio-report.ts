@@ -22,7 +22,11 @@
  * Studio, dove impostati), comune (il ritaglio dei percorsi sui confini della
  * zonizzazione, lib/geo-zones.ts), causale, giorno, vettore (dalla vettura:
  * Conerobus o la consorziata, lib/parco-anagrafica.ts; decisione aperta 8:
- * nel report dell'azienda, con la ripartizione).
+ * nel report dell'azienda, con la ripartizione) e gestore (tappa 6.13: dalla
+ * linea, lo stesso dei GTFS, lib/gestori.ts). Il gestore, come il servizio e
+ * il contratto, è quello della linea nel programma che era in esercizio quel
+ * giorno: assegnare oggi una linea a un altro gestore non cambia i mesi
+ * già congelati.
  */
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
@@ -31,6 +35,8 @@ import { lunghezzaDellaGeometria } from "./km-programmati";
 import { aziendaDaSiri } from "./parco-anagrafica";
 import { giorniDelMese } from "./esercizio-chiusura";
 import { Stili, scriviXlsx, type Foglio, type Valore } from "./xlsx-mini";
+import { gestoreDellaLinea, raggruppaPerGestore, type Gestore } from "./gestori";
+import { gestoriDalDatabase } from "./gestori-store";
 
 const righe = (r: any): any[] => r?.rows ?? r ?? [];
 const n = (x: unknown) => Number(x ?? 0) || 0;
@@ -208,6 +214,14 @@ export async function reportDelMese(mese: string) {
     perVettoreMappa.set(vettore, s);
   }
   const perVettore = [...perVettoreMappa].map(([vettore, r]) => voce({ vettore }, r)).sort((a, b) => b.programmate + b.aggiunte - (a.programmate + a.aggiunte));
+  /* il gestore dalla linea: prima per quello che la linea dice, poi si somma per gestore. Vuoto se l'azienda non ha gestori. */
+  const gestori = await gestoriDalDatabase();
+  const perDetto = gestori.length ? righe(await db.execute(sql`SELECT to_jsonb(pr)->>'agency_id' AS chiave, ${CONTA} ${DA(mese)} GROUP BY 1`)) : [];
+  const perGestore = raggruppaPerGestore(perDetto, gestori, (r) => r.chiave).map(({ gestore: g, righe: sue }) => {
+    const s: Record<string, number> = {};
+    for (const r of sue) for (const [k, v] of Object.entries(r)) if (k !== "chiave") s[k] = n(s[k]) + n(v);
+    return voce({ gestore: g.nome, codice: g.gestore }, s);
+  });
   const comuni = await perComune(mese);
   const c = conteggiDi(totale);
   return {
@@ -224,7 +238,7 @@ export async function reportDelMese(mese: string) {
     perServizio: await raggruppa(sql`to_jsonb(pr)->>'service_type'`, "servizio"),
     perContratto: await raggruppa(sql`to_jsonb(pr)->>'contract_id'`, "contratto"),
     perGiorno: await raggruppa(sql`c.giorno::text`, "giorno"),
-    perCausale, perVettore,
+    perCausale, perVettore, perGestore,
     perComune: comuni.comuni, notaComuni: comuni.nota,
   };
 }
@@ -303,6 +317,8 @@ export function reportXlsx(r: Report, azienda: string | null): Buffer {
     causali,
     tabella("Per giorno", [["giorno", "Giorno"]], r.perGiorno),
     tabella("Per vettore", [["vettore", "Vettore"]], r.perVettore),
+    /* il foglio dei gestori c'è solo se l'azienda ne ha */
+    ...(r.perGestore.length ? [tabella("Per gestore", [["gestore", "Gestore"], ["codice", "Codice"]], r.perGestore)] : []),
   ], st);
 }
 
@@ -310,6 +326,8 @@ const INTESTAZIONE_CSV = [
   "giorno", "linea", "numero", "codice", "partenza", "arrivo", "da", "a", "origine", "tipo_aggiunta", "esito", "causale",
   "imputabile", "km_programmati", "km_effettivi", "vettura", "vettore", "turno_macchina", "turno_guida", "deposito",
   "proposta_avm", "ritardo_partenza_min", "nota",
+  /* in fondo, per non spostare le colonne di prima (tappa 6.13): vuoto se l'azienda non ha gestori */
+  "gestore",
 ];
 const csv = (v: unknown) => {
   if (v == null) return "";
@@ -323,6 +341,7 @@ const csv = (v: unknown) => {
  */
 export async function dettaglioCsv(mese: string, scrivi: (pezzo: string) => void): Promise<number> {
   scrivi("﻿" + INTESTAZIONE_CSV.join(";") + "\r\n");
+  const gestori: Gestore[] = await gestoriDalDatabase();
   const chiuse = righe(await db.execute(sql`
     SELECT giorno::text AS g FROM esercizio_giornate
      WHERE stato = 'chiusa' AND giorno >= ${`${mese}-01`}::date AND giorno < ${`${mese}-01`}::date + interval '1 month' ORDER BY giorno`));
@@ -331,8 +350,10 @@ export async function dettaglioCsv(mese: string, scrivi: (pezzo: string) => void
     const rr = righe(await db.execute(sql`
       SELECT c.giorno::text AS giorno, c.linea, c.numero, c.codice, c.partenza, c.arrivo, c.fermata_da, c.fermata_a, c.origine, c.tipo_aggiunta,
              c.esito, c.causale, k.imputabile_azienda, c.km_prog::float AS km_prog, c.km_eff::float AS km_eff, c.vettura,
-             c.turno_macchina, c.turno_guida, c.deposito, c.proposta, c.prove->>'ritardoPartenza' AS ritardo, c.nota
+             c.turno_macchina, c.turno_guida, c.deposito, c.proposta, c.prove->>'ritardoPartenza' AS ritardo, c.nota,
+             to_jsonb(pr)->>'agency_id' AS detto
         FROM esercizio_corse c LEFT JOIN esercizio_causali k ON k.codice = c.causale
+        LEFT JOIN ps_routes pr ON pr.id::text = c.route_id
        WHERE c.giorno = ${g}::date ORDER BY c.partenza NULLS LAST, c.linea, c.numero`));
     let pezzo = "";
     for (const c of rr) {
@@ -341,7 +362,7 @@ export async function dettaglioCsv(mese: string, scrivi: (pezzo: string) => void
         String(c.giorno).slice(0, 10), c.linea, c.numero, c.codice, c.partenza, c.arrivo, c.fermata_da, c.fermata_a, c.origine, c.tipo_aggiunta,
         c.esito, c.causale, c.imputabile_azienda == null ? "" : c.imputabile_azienda ? "si" : "no",
         c.km_prog, c.km_eff, c.vettura, c.vettura ? aziendaDaSiri(String(c.vettura)) ?? "" : "", c.turno_macchina, c.turno_guida, c.deposito,
-        c.proposta, rit, c.nota,
+        c.proposta, rit, c.nota, gestoreDellaLinea(c.detto, gestori)?.gestore.nome ?? "",
       ].map(csv).join(";") + "\r\n";
     }
     totale += rr.length;

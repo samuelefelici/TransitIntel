@@ -7,7 +7,8 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  agencyTxt, agenziaDelGestore, agenziaDellAzienda, agenzieDelGtfs, erroriGestori, gestoreDellaLinea, gestorePredefinito, type Gestore,
+  agencyTxt, agenziaDelGestore, agenziaDellAzienda, agenzieDelGtfs, erroriGestori, gestoreDellaLinea, gestorePredefinito, raggruppaPerGestore,
+  type Gestore,
 } from "../lib/gestori";
 import { AssegnaGestore, erroreGestore, ModificaGestore, NuovoGestore } from "../lib/gestori-store";
 import { firmaDi } from "../lib/dati-aperti";
@@ -81,6 +82,26 @@ describe("le agenzie di un GTFS", () => {
       '"DUE","Due, Bus & Co.","https://due.example","Europe/Rome","it","","https://due.example/tariffe",""',
       "",
     ]);
+  });
+});
+
+describe("raggruppare per gestore (tappa 6.13)", () => {
+  const linee = [{ id: "a", detto: "DUE" }, { id: "b", detto: "UNO" }, { id: "c", detto: "ATMA" }, { id: "d", detto: null }, { id: "e", detto: "DUE" }];
+  const gruppi = (g: readonly Gestore[]) => raggruppaPerGestore(linee, g, (l) => l.detto).map((x) => [x.gestore.gestore, x.righe.map((l) => l.id).join("")]);
+
+  it("nell'ordine dell'elenco, solo chi ha righe; chi non dice un gestore dell'elenco va al predefinito", () => {
+    expect(gruppi(CONSORZIATI)).toEqual([["UNO", "bcd"], ["DUE", "ae"]]);
+    expect(gruppi([{ ...UNO, predefinito: false }, { ...DUE, predefinito: true }, TRE])).toEqual([["UNO", "b"], ["DUE", "acde"]]);
+  });
+
+  it("nessuna riga si perde e nessuna si conta due volte", () => {
+    const tutte = raggruppaPerGestore(linee, CONSORZIATI, (l) => l.detto).flatMap((x) => x.righe.map((l) => l.id)).sort();
+    expect(tutte).toEqual(["a", "b", "c", "d", "e"]);
+  });
+
+  it("senza gestori, o senza righe, niente", () => {
+    expect(gruppi([])).toEqual([]);
+    expect(raggruppaPerGestore([], CONSORZIATI, () => "UNO")).toEqual([]);
   });
 });
 

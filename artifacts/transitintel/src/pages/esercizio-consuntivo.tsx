@@ -472,7 +472,7 @@ interface StatoMese {
 }
 
 interface VoceReport {
-  linea?: string | null; vettore?: string; programmate: number; effettuate: number; presunte: number; parziali: number; soppresse: number;
+  linea?: string | null; vettore?: string; gestore?: string; programmate: number; effettuate: number; presunte: number; parziali: number; soppresse: number;
   aggiunte: number; kmProgrammati: number; kmEffettivi: number; regolaritaCorse: number | null; regolaritaKm: number | null;
 }
 interface Report {
@@ -483,7 +483,10 @@ interface Report {
     regolaritaCorse: { lorda: number | null; netta: number | null }; regolaritaKm: { lorda: number | null; netta: number | null };
     quotaProvata: number | null; puntualita: { campione: number; inOrario: number; quota: number | null; copertura: number | null };
   };
-  perLinea: VoceReport[]; perVettore: VoceReport[]; perComune: Array<{ comune: string; kmProgrammati: number; kmEffettivi: number }>; notaComuni: string | null;
+  perLinea: VoceReport[]; perVettore: VoceReport[];
+  /** per gestore della linea (tappa 6.13): vuoto se l'azienda non ha gestori */
+  perGestore?: VoceReport[];
+  perComune: Array<{ comune: string; kmProgrammati: number; kmEffettivi: number }>; notaComuni: string | null;
 }
 const perc = (x: number | null | undefined) => (x == null ? "—" : `${x.toLocaleString("it-IT", { maximumFractionDigits: 1 })}%`);
 
@@ -531,6 +534,29 @@ function ReportMese({ mese, versione }: { mese: string; versione: string }) {
             <div><span className="text-muted-foreground">Km: </span>{km(r.totali.kmEffettivi)} su {km(r.totali.kmProgrammati)} <span className="text-muted-foreground">(persi {km(r.totali.kmPersi)}, aggiunti {km(r.totali.kmAggiunti)})</span></div>
             <div><span className="text-muted-foreground">Vettori: </span>{r.perVettore.map((v) => `${v.vettore} ${(v.programmate + v.aggiunte).toLocaleString("it-IT")}`).join(" · ")}</div>
           </div>
+          {(r.perGestore?.length ?? 0) > 1 && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs tabular-nums">
+                <caption className="text-left py-1 text-muted-foreground">Per gestore della linea, com'era nel programma in esercizio quel giorno</caption>
+                <thead className="text-muted-foreground"><tr className="text-left">
+                  <th className="px-2 py-1">Gestore</th><th className="px-2 py-1 text-right">Programmate</th><th className="px-2 py-1 text-right">Soppresse</th>
+                  <th className="px-2 py-1 text-right">Km programmati</th><th className="px-2 py-1 text-right">Km effettivi</th><th className="px-2 py-1 text-right">Regolarità km</th>
+                </tr></thead>
+                <tbody>
+                  {r.perGestore!.map((g) => (
+                    <tr key={String(g.gestore)} className="border-t border-border/40">
+                      <td className="px-2 py-1">{g.gestore}</td>
+                      <td className="px-2 py-1 text-right">{g.programmate.toLocaleString("it-IT")}</td>
+                      <td className="px-2 py-1 text-right">{g.soppresse.toLocaleString("it-IT")}</td>
+                      <td className="px-2 py-1 text-right">{km(g.kmProgrammati)}</td>
+                      <td className="px-2 py-1 text-right">{km(g.kmEffettivi)}</td>
+                      <td className="px-2 py-1 text-right">{perc(g.regolaritaKm)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           {linee.length === 0 && r.perLinea.length > 0 && <div className="text-sm text-muted-foreground">Tutte le linee al 100% di regolarità km.</div>}
           {linee.length > 0 && (
             <div className="overflow-x-auto">

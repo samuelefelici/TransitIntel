@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  avvisoSenzaGestore, conteggi, corpoModificaGestore, corpoNuovoGestore, domandaTogli, erroriGestore, esitoAssegnazione, lineeFiltrate,
-  moduloDa, moduloVuoto, nomeDelGestore, riassuntoGestori, type GestoreConLinee, type GestoriDelProgramma, type LineaColGestore,
+  avvisoSenzaGestore, conPiuGestori, conteggi, corpoModificaGestore, corpoNuovoGestore, domandaTogli, erroriGestore, esitoAssegnazione, lineeFiltrate,
+  moduloDa, moduloVuoto, nomeDelGestore, riassuntoGestori, righeKmPerGestore, type GestoreConLinee, type GestoriDelProgramma, type KmDelGestore,
+  type LineaColGestore,
 } from "./gestori";
 import type { AgenziaNelGtfs } from "./elenchi-tariffe";
 
@@ -115,5 +116,44 @@ describe("le linee di un programma", () => {
     expect(esitoAssegnazione(4, 5, null)).toBe("4 linee assegnate al predefinito; una lo era già.");
     expect(esitoAssegnazione(0, 1, "Due Bus")).toBe("La linea era già assegnata a Due Bus.");
     expect(esitoAssegnazione(0, 4, null)).toBe("Le 4 linee erano già assegnate al predefinito.");
+  });
+});
+
+describe("i chilometri per gestore (tappa 6.13)", () => {
+  const CATEGORIE = [{ code: "scol" }, { code: "non_scol" }, { code: "fest" }];
+  const kmDi = (gestore: string, nome: string, linee: number, perCat: Record<string, number>, aChiamata = 0): KmDelGestore => ({
+    gestore, nome, predefinito: gestore === "UNO", linee, kmByCategory: perCat,
+    kmTotal: Math.round(Object.values(perCat).reduce((a, b) => a + b, 0) * 10) / 10,
+    onDemandByCategory: aChiamata ? { scol: aChiamata } : {}, onDemandTotal: aChiamata,
+  });
+  const UNO_KM = kmDi("UNO", "Autolinee Uno S.p.A.", 12, { scol: 600_000.5, non_scol: 150_000, fest: 50_000 }, 1200);
+  const DUE_KM = kmDi("DUE", "Due Bus", 1, { scol: 150_000, non_scol: 49_999.5 });
+
+  it("la ripartizione si mostra solo se i gestori con km sono più d'uno", () => {
+    expect([conPiuGestori(undefined), conPiuGestori([]), conPiuGestori([UNO_KM]), conPiuGestori([UNO_KM, DUE_KM])]).toEqual([false, false, false, true]);
+  });
+
+  it("una riga per gestore, coi km di ogni categoria nell'ordine delle categorie, la quota e i km a chiamata a parte", () => {
+    const { righe } = righeKmPerGestore([UNO_KM, DUE_KM], CATEGORIE, 0);
+    expect(righe).toEqual([
+      { nome: "Autolinee Uno S.p.A.", linee: "12 linee", perCategoria: [600_000.5, 150_000, 50_000], totale: 800_000.5, aChiamata: 1200, corrispettivo: null, quota: 80 },
+      { nome: "Due Bus", linee: "una linea", perCategoria: [150_000, 49_999.5, 0], totale: 199_999.5, aChiamata: 0, corrispettivo: null, quota: 20 },
+    ]);
+  });
+
+  it("il totale è la somma dei gestori, categoria per categoria", () => {
+    const { totale } = righeKmPerGestore([UNO_KM, DUE_KM], CATEGORIE, 0);
+    expect(totale).toEqual({ nome: "Totale", linee: "13 linee", perCategoria: [750_000.5, 199_999.5, 50_000], totale: 1_000_000, aChiamata: 1200, corrispettivo: null, quota: 100 });
+  });
+
+  it("il corrispettivo è sui km programmati, non su quelli a chiamata", () => {
+    const { righe, totale } = righeKmPerGestore([UNO_KM, DUE_KM], CATEGORIE, 2.5);
+    expect(righe.map((r) => r.corrispettivo)).toEqual([2_000_001.25, 499_998.75]);
+    expect(totale.corrispettivo).toBe(2_500_000);
+  });
+
+  it("senza km la quota non si calcola", () => {
+    const { righe, totale } = righeKmPerGestore([kmDi("UNO", "Uno", 0, {}), kmDi("DUE", "Due", 0, {})], CATEGORIE, 1);
+    expect([righe[0]!.quota, totale.quota, totale.totale, totale.linee]).toEqual([null, null, 0, "0 linee"]);
   });
 });

@@ -28,6 +28,7 @@ import { cancellaProgetto } from "../lib/progetto-copie";
 import { ensureValiditySeed } from "../lib/planning-studio-validity";
 import type { Gtfs } from "../lib/gtfs-verifica";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+import { CONSORZIATI, gestoriDiProvaNelDatabase } from "./helpers/gestori-di-prova";
 
 const u = (n: number) => `d3500000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const PIAN = u(1);
@@ -199,6 +200,32 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i km programmati, sul database"
     expect(r.body.lines).toHaveLength(1);
     expect(r.body.lines[0].kmTotal).toBe(km(10));
     expect(r.body.periodoDiUnGiorno).toEqual({ quante: 1, giorno: "2026-09-15" });
+  });
+
+  it("i km per gestore: le somme delle sue linee, e senza gestori niente (tappa 6.13)", async () => {
+    const senza = await request(pian).get(`/api/planning-studio/projects/${M}/corse-km`);
+    expect([senza.body.gestori, senza.body.lines[0].gestore]).toEqual([[], null]);
+    const rimetti = await gestoriDiProvaNelDatabase(CONSORZIATI);
+    try {
+      /* la linea non dice un gestore: è del predefinito */
+      const predefinito = await request(pian).get(`/api/planning-studio/projects/${M}/corse-km`);
+      expect(predefinito.body.lines[0].gestore).toBe("UNO");
+      expect(predefinito.body.gestori).toEqual([{
+        gestore: "UNO", nome: "Autolinee Uno S.p.A.", predefinito: true, linee: 1,
+        kmByCategory: { prova_km_a: km(5), prova_km_b: km(5) }, kmTotal: km(10),
+        onDemandByCategory: predefinito.body.onDemandTotalsByCategory, onDemandTotal: km(10),
+      }]);
+      /* assegnata a un altro: i km passano a lui, e il totale non cambia */
+      await db.execute(sql`UPDATE ps_routes SET agency_id = 'DUE' WHERE id = ${LINEA}::uuid`);
+      const assegnata = await request(pian).get(`/api/planning-studio/projects/${M}/corse-km`);
+      expect(assegnata.body.lines[0].gestore).toBe("DUE");
+      expect(assegnata.body.gestori.map((g: any) => [g.gestore, g.linee, g.kmTotal, g.onDemandTotal])).toEqual([["DUE", 1, km(10), km(10)]]);
+      expect(assegnata.body.gestori.reduce((t: number, g: any) => t + g.kmTotal, 0)).toBe(assegnata.body.grandTotal);
+      expect([assegnata.body.grandTotal, assegnata.body.totalsByCategory]).toEqual([predefinito.body.grandTotal, predefinito.body.totalsByCategory]);
+    } finally {
+      await db.execute(sql`UPDATE ps_routes SET agency_id = NULL WHERE id = ${LINEA}::uuid`);
+      await rimetti();
+    }
   });
 
   it("il contatore usa la stessa lunghezza", async () => {
