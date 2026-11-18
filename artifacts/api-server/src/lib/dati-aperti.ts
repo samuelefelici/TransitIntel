@@ -39,6 +39,12 @@ export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza
 
 /** Cambia quando cambia il modo di costruire i file: fa rifare quelli in linea. */
 export const FORMATO = 1;
+/**
+ * Come FORMATO, solo per il NeTEx: 2 dalla tappa 6.19c, quando negli
+ * identificativi restano «/» e «.» e arrivano i prefissi della Regione. Il
+ * GTFS non cambia e non si rifà.
+ */
+export const FORMATO_NETEX = 2;
 /** Un tentativo andato male per un guasto (non per i dati) si riprova dopo un'ora. */
 const RIPROVA_DOPO_MS = 60 * 60 * 1000;
 
@@ -60,7 +66,8 @@ const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() 
  */
 export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string }, a: Azienda, gestori: readonly Gestore[] = []): string {
   const diTutti = [FORMATO, tipo, v.versioneId, v.feedId, a.compilata, a.gtfsAgencyId, a.ragioneSociale, a.sito, a.telefono];
-  const delNetex = tipo === "netex" ? [a.nome, a.netexCodiceLocale, a.netexFornitore] : [];
+  const delNetex = tipo === "netex"
+    ? [a.nome, a.netexCodiceLocale, a.netexFornitore, FORMATO_NETEX, a.netexPrefisso, a.netexPrefissoCodici, a.netexCodiceRete] : [];
   /* i gestori finiscono in agency.txt e in routes.txt del GTFS (tappa 6.11) e sono gli operatori del NeTEx (6.12).
    * Senza gestori la firma è quella di prima: i file già pubblicati non si rifanno. */
   const deiGestori = gestori.length > 0

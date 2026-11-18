@@ -339,6 +339,8 @@ export function netexDelGtfs(gtfs: Gtfs, azienda: Azienda, gestori: readonly Ges
   if (!azienda.netexCodiceLocale) throw new SenzaCodiceNetex();
   return netexDaGtfs(gtfs, {
     codiceLocale: azienda.netexCodiceLocale, fornitore: azienda.netexFornitore, partecipante: azienda.gtfsAgencyId,
+    /* gli identificativi come quelli della Regione, se l'azienda li indica (tappa 6.19c) */
+    prefisso: azienda.netexPrefisso, prefissoCodici: azienda.netexPrefissoCodici, codiceRete: azienda.netexCodiceRete,
     azienda: { ragioneSociale: azienda.ragioneSociale, nome: azienda.nome, sito: azienda.sito, telefono: azienda.telefono, codice: azienda.gtfsAgencyId },
     operatori: gestori.map((g) => ({ codice: g.gestore, nome: g.nome, sito: g.sito, telefono: g.telefono, email: g.email })),
     operatorePrincipale: gestorePredefinito(gestori)?.gestore,

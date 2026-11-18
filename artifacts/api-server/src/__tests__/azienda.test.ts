@@ -16,7 +16,9 @@ const F = vi.hoisted(() => {
   const CONEROBUS = {
     ragione_sociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
     gtfs_agency_id: "conerobus", citta: "Ancona", regione: "Marche", centro_lat: 43.58, centro_lng: 13.45, zoom: 10,
-    provincia_istat: "042", netex_codice_locale: "ITI3", netex_fornitore: null, avm_matricola_cifre: 4, aggiornata_il: "2026-11-13T08:00:00.000Z", aggiornata_da: "Ada Admin",
+    provincia_istat: "042", netex_codice_locale: "ITI3", netex_fornitore: null,
+    netex_prefisso: "epd", netex_prefisso_codici: "ATMA", netex_codice_rete: "RETE_TPL_ATMA",
+    avm_matricola_cifre: 4, aggiornata_il: "2026-11-13T08:00:00.000Z", aggiornata_da: "Ada Admin",
   };
   const s = { riga: null as any, chieste: [] as Array<{ testo: string; valori: unknown[] }>, errore: null as any };
   const client = {
@@ -28,7 +30,8 @@ const F = vi.hoisted(() => {
       if (testo.includes("insert into azienda")) {
         s.riga = {
           ragione_sociale: v[0], nome: v[1], sito: v[2], telefono: v[3], gtfs_agency_id: v[4], citta: v[5], regione: v[6],
-          centro_lat: v[7], centro_lng: v[8], zoom: v[9], provincia_istat: v[10], netex_codice_locale: v[11], netex_fornitore: v[12], avm_matricola_cifre: v[13], aggiornata_il: "2026-11-13T09:00:00.000Z", aggiornata_da: "Ada Admin",
+          centro_lat: v[7], centro_lng: v[8], zoom: v[9], provincia_istat: v[10], netex_codice_locale: v[11], netex_fornitore: v[12],
+          netex_prefisso: v[13], netex_prefisso_codici: v[14], netex_codice_rete: v[15], avm_matricola_cifre: v[16], aggiornata_il: "2026-11-13T09:00:00.000Z", aggiornata_da: "Ada Admin",
         };
         return { rows: [], rowCount: 1, fields: [] };
       }
@@ -73,7 +76,8 @@ describe("leggiAzienda", () => {
     expect(a).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
-      provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null, avmMatricolaCifre: 4, compilata: true,
+      provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null,
+      netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA", avmMatricolaCifre: 4, compilata: true,
     });
     await leggiAzienda(); await leggiAzienda();
     expect(letture()).toHaveLength(1);
@@ -192,7 +196,7 @@ describe("GET e PUT /api/admin/azienda", () => {
     expect(r.body.azienda).toMatchObject({ ragioneSociale: "Trasporti Esempio S.r.l.", nome: "Esempio", citta: "Pesaro", centro: { lat: 43.91, lng: 12.91, zoom: 11 } });
     const scrittura = F.s.chieste.find(c => c.testo.includes("insert into azienda"))!;
     expect(scrittura.testo).toContain("on conflict (unica) do update");
-    expect(scrittura.valori).toEqual(["Trasporti Esempio S.r.l.", "Esempio", "https://www.esempio.it", "+39 0721 000000", "esempio", "Pesaro", "Marche", 43.91, 12.91, 11, null, null, null, null, ada.id]);
+    expect(scrittura.valori).toEqual(["Trasporti Esempio S.r.l.", "Esempio", "https://www.esempio.it", "+39 0721 000000", "esempio", "Pesaro", "Marche", 43.91, 12.91, 11, null, null, null, null, null, null, null, ada.id]);
     // senza aspettare il minuto: la prossima lettura è già quella nuova
     expect((await leggiAzienda()).nome).toBe("Esempio");
   });
@@ -202,6 +206,10 @@ describe("GET e PUT /api/admin/azienda", () => {
     expect(r.status).toBe(400);
     expect(r.body.error).toMatch(/Sito: .*Zoom: /);
     expect((await request(admin()).put("/api/admin/azienda").send({ ...BUONI, ruolo: "admin" })).body.error).toBe("Campo non previsto: ruolo");
+    /* i pezzi degli identificativi NeTEx (tappa 6.19c): niente «:» né spazi, che romperebbero gli identificativi */
+    const netex = await request(admin()).put("/api/admin/azienda").send({ ...BUONI, netexPrefisso: "ep:d", netexPrefissoCodici: "AT MA", netexCodiceRete: "RETE/TPL" });
+    expect(netex.status).toBe(400);
+    expect(netex.body.error).toMatch(/Prefisso degli identificativi NeTEx: .*Prefisso dei codici NeTEx: .*Codice della rete NeTEx: /);
     expect((await request(admin()).put("/api/admin/azienda").send([])).status).toBe(400);
     expect(F.s.chieste.filter(c => c.testo.includes("insert into azienda"))).toHaveLength(0);
   });

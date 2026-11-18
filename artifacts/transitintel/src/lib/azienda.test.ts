@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda, nomeNeiDocumenti,
-  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda,
+  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex,
 } from "./azienda";
 
 const CONEROBUS: Azienda = {
   ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
   gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
-  provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null, avmMatricolaCifre: 4, compilata: true,
+  provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null,
+  netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA", avmMatricolaCifre: 4, compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -57,7 +58,8 @@ describe("il modulo dell'amministratore", () => {
     expect(moduloDa(CONEROBUS)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
-      provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "", avmMatricolaCifre: "4",
+      provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "",
+      netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA", avmMatricolaCifre: "4",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -68,10 +70,21 @@ describe("il modulo dell'amministratore", () => {
     expect(datiDaSalvare(m)).toEqual({
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: null, telefono: null, gtfsAgencyId: "conerobus",
       citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
-      netexCodiceLocale: "ITI3", netexFornitore: null, avmMatricolaCifre: 4,
+      netexCodiceLocale: "ITI3", netexFornitore: null,
+      netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA", avmMatricolaCifre: 4,
     });
     expect(erroriDelModulo({ ...m, netexCodiceLocale: "iti3" })).toEqual({ netexCodiceLocale: "Un codice NUTS in maiuscolo, come ITI3" });
     expect(erroriDelModulo({ ...m, netexFornitore: "A T" })).toEqual({ netexFornitore: "Lettere, cifre, - e _ (al più 40)" });
+    // gli identificativi come quelli della Regione (tappa 6.19c): niente «:», spazi o «/» nei pezzi
+    expect(erroriDelModulo({ ...m, netexPrefisso: "ep:d", netexPrefissoCodici: "AT MA", netexCodiceRete: "RETE/TPL" })).toEqual({
+      netexPrefisso: "Una lettera e poi lettere o cifre (al più 10), come epd",
+      netexPrefissoCodici: "Lettere, cifre e - (al più 20), come ABC",
+      netexCodiceRete: "Lettere, cifre, - e _ (al più 40)",
+    });
+    expect(datiDaSalvare({ ...m, netexPrefisso: " ", netexPrefissoCodici: "", netexCodiceRete: " " }))
+      .toMatchObject({ netexPrefisso: null, netexPrefissoCodici: null, netexCodiceRete: null });
+    expect(aziendaValida({ ...CONEROBUS, netexPrefisso: "e:p", netexPrefissoCodici: "A B", netexCodiceRete: "R/T" }))
+      .toMatchObject({ netexPrefisso: null, netexPrefissoCodici: null, netexCodiceRete: null });
     // la provincia è facoltativa, ma se c'è sono tre cifre
     expect(datiDaSalvare({ ...m, provinciaIstat: " " }).provinciaIstat).toBeNull();
     expect(erroriDelModulo({ ...m, provinciaIstat: "42" })).toEqual({ provinciaIstat: "Tre cifre, come 042" });
@@ -111,5 +124,15 @@ describe("il modulo dell'amministratore", () => {
     const a = moduloDa(CONEROBUS);
     expect(moduloCambiato(a, { ...a, nome: " Conerobus " })).toBe(false);
     expect(moduloCambiato(a, { ...a, zoom: "11" })).toBe(true);
+  });
+});
+
+describe("l'anteprima dell'identificativo NeTEx (tappa 6.19c)", () => {
+  it("come nei file della Regione, e senza i pezzi facoltativi", () => {
+    const m = moduloDa(CONEROBUS);
+    expect(esempioIdNetex(m)).toBe("epd:IT:ITI3:Line:ATMA_1/3");
+    expect(esempioIdNetex({ ...m, netexFornitore: "RM" })).toBe("epd:IT:ITI3:Line:ATMA_1/3:RM");
+    expect(esempioIdNetex({ ...m, netexPrefisso: "", netexPrefissoCodici: "" })).toBe("IT:ITI3:Line:1/3");
+    expect(esempioIdNetex({ ...m, netexCodiceLocale: " " })).toBeNull();
   });
 });
