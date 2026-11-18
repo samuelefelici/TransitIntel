@@ -885,9 +885,9 @@ export const istatCommutingOd = pgTable("istat_commuting_od", {
 export type IstatCommutingOd = typeof istatCommutingOd.$inferSelect;
 
 /* ── PlannerStudio v2: classificazione linee + POI ──────────────────────────
- * route_classifications: l'utente assegna una categoria custom a ogni linea
- *   (es. "urbano-ancona", "urbano-falconara", "urbano-jesi", "extraurbano",
- *   "notturno"). Influenza il calcolo del corrispettivo €/km.
+ * route_classifications: l'utente assegna una categoria a ogni linea: una
+ *   rete dell'azienda (il suo identificativo), "notturno" o "altro".
+ *   Influenza il calcolo del corrispettivo €/km.
  * pois: punti di interesse della zona (scuole, ospedali, stazioni, mall, …)
  *   usati nel modello di stima passeggeri.
  * ─────────────────────────────────────────────────────────────────────────── */
@@ -895,7 +895,7 @@ export const planningRouteClassifications = pgTable("planning_route_classificati
   id:        uuid("id").primaryKey().defaultRandom(),
   feedId:    uuid("feed_id").notNull().references(() => gtfsFeeds.id, { onDelete: "cascade" }),
   routeId:   text("route_id").notNull(),
-  category:  text("category").notNull(),  // libera: "urbano-ancona", "urbano-falconara", "urbano-jesi", "extraurbano", "notturno", "altro"
+  category:  text("category").notNull(),  // l'identificativo di una rete dell'azienda, "notturno" o "altro"
   fareType:  text("fare_type"),           // "urban" | "suburban" | "night" — derivato/forzabile
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
 }, (t) => [

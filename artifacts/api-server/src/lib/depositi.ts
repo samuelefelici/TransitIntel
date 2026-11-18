@@ -34,7 +34,7 @@ export class RifiutoDepositi extends Error {
 
 const NOME = z.string().trim().min(1, "nome: almeno un carattere").max(60, "nome: al più 60 caratteri");
 const CODICE = z.string().trim().max(40, "codice: al più 40 caratteri")
-  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "codice: lettere minuscole, cifre e trattini, come «jesi-urbano»");
+  .regex(/^[a-z0-9]+(-[a-z0-9]+)*$/, "codice: lettere minuscole, cifre e trattini, come «deposito-nord»");
 const ALIAS = z.array(z.string().trim().min(1, "un altro nome non può essere vuoto").max(60, "un altro nome: al più 60 caratteri"))
   .max(30, "al più 30 altri nomi");
 const ORDINE = z.number().int().min(0).max(9999);

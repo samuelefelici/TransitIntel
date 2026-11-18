@@ -86,6 +86,28 @@ export function siglaDi(reti: readonly Rete[], rete: string): string {
 export const opzioniReti = (reti: readonly Rete[]): { value: string; label: string; color: string }[] =>
   reti.map((r) => ({ value: r.rete, label: etichettaRete(r), color: r.colore }));
 
+/* ── Le categorie delle linee nell'analisi di un feed ──────────────────── */
+
+/** Una categoria con cui l'analisi di un feed classifica le linee; il tipo decide il corrispettivo €/km. */
+export interface CategoriaLinea { id: string; label: string; fareType: "urban" | "suburban" | "night" | null; color: string }
+
+/**
+ * Le categorie che l'analisi propone: una per rete dell'azienda, poi
+ * «Notturno» e «Altro». L'identificativo è quello della rete.
+ */
+export function categorieDelleLinee(reti: readonly Rete[]): CategoriaLinea[] {
+  return [
+    ...reti.map((r): CategoriaLinea => ({ id: r.rete, label: etichettaRete(r), fareType: r.tipo === "urbano" ? "urban" : "suburban", color: r.colore })),
+    { id: "notturno", label: "Notturno", fareType: "night", color: "#8b5cf6" },
+    { id: "altro", label: "Altro", fareType: null, color: "#6b7280" },
+  ];
+}
+
+/** La categoria salvata su una linea, o null se non è fra quelle di oggi (una rete tolta). */
+export function categoriaDi(categorie: readonly CategoriaLinea[], id: string | null | undefined): CategoriaLinea | null {
+  return (id && categorie.find((c) => c.id === id)) || null;
+}
+
 /* ── Le classi delle fermate ───────────────────────────────────────────── */
 
 export type TipoClasse = "none" | "extra" | "urban" | "mixed" | "other";

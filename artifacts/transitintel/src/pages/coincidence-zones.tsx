@@ -888,7 +888,7 @@ export default function CoincidenceZonesPage() {
 
                 <div className="space-y-1">
                   <Label className="text-xs">Nome</Label>
-                  <Input value={zoneName} onChange={e => setZoneName(e.target.value)} className="h-8 text-sm" placeholder="Es: Coincidenza Staz. FS Ancona" />
+                  <Input value={zoneName} onChange={e => setZoneName(e.target.value)} className="h-8 text-sm" placeholder="Es: Coincidenza alla stazione" />
                 </div>
                 <div className="space-y-1">
                   <Label className="text-xs">Note</Label>

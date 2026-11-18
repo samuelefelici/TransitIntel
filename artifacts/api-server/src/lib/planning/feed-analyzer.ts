@@ -371,7 +371,7 @@ export interface AnalyzeOptions {
   dayType?: DayType;
   routeIds?: string[] | null;       // null/undefined = tutte
   serviceDate?: string | null;      // YYYYMMDD: bypassa dayType
-  categoryFilter?: string[] | null; // filtra per categoria classification (es. ["urbano-ancona"])
+  categoryFilter?: string[] | null; // filtra per categoria della classificazione: gli identificativi delle reti, "notturno", "altro"
 }
 
 /** Mapping categoria → tipo tariffa */

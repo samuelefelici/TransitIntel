@@ -36,12 +36,12 @@ describe("depositi: gli errori del modulo", () => {
   const m = { ...MODULO_DEPOSITO_VUOTO, nome: "Nord" };
   it("un modulo a posto non ha errori; il codice può restare vuoto, se dal nome se ne ricava uno", () => {
     expect(erroriDeposito(m, true)).toEqual([]);
-    expect(erroriDeposito({ ...m, nome: "—" }, true)).toEqual(["Codice: lettere minuscole, cifre e trattini, come jesi-urbano"]);
+    expect(erroriDeposito({ ...m, nome: "—" }, true)).toEqual(["Codice: lettere minuscole, cifre e trattini, come deposito-nord"]);
   });
   it("il nome, il codice, l'ordine e gli altri nomi hanno i limiti dell'API", () => {
     expect(erroriDeposito({ ...m, nome: " " }, true)).toEqual(["Il nome va scritto"]);
     expect(erroriDeposito({ ...m, nome: "x".repeat(61) }, false)).toEqual(["Nome: al più 60 caratteri"]);
-    expect(erroriDeposito({ ...m, codice: "Nord 1" }, true)).toEqual(["Codice: lettere minuscole, cifre e trattini, come jesi-urbano"]);
+    expect(erroriDeposito({ ...m, codice: "Nord 1" }, true)).toEqual(["Codice: lettere minuscole, cifre e trattini, come deposito-nord"]);
     expect(erroriDeposito({ ...m, ordine: "dodici" }, true)).toEqual(["Ordine: un numero intero fra 0 e 9999"]);
     expect(erroriDeposito({ ...m, alias: Array.from({ length: 31 }, (_, i) => `n${i}`).join(",") }, true)).toEqual(["Al più 30 altri nomi"]);
   });

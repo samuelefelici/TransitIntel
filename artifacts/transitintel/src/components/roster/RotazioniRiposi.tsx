@@ -117,7 +117,7 @@ export function RotazioneRiposiCreateDialog({ onClose }: { onClose: () => void }
 
           <div className="flex flex-wrap items-end gap-3">
             <label className="block flex-1 min-w-[200px]"><span className={LBL}>Nome rotazione</span>
-              <input className={`${TEXT} w-full`} value={name} onChange={(e) => setName(e.target.value)} placeholder="es. Rotazione Conerobus 4 settimane" />
+              <input className={`${TEXT} w-full`} value={name} onChange={(e) => setName(e.target.value)} placeholder="es. Rotazione su 4 settimane" />
             </label>
             <label className="block"><span className={LBL}>Settimane (righe)</span>
               <div className="flex items-center gap-1">

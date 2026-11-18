@@ -21,6 +21,8 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { useReti } from "@/hooks/use-reti";
+import { useAzienda } from "@/hooks/use-azienda";
+import { intestazioneDocumenti, nomeNeiDocumenti } from "@/lib/azienda";
 import { opzioniReti } from "@/lib/reti";
 import { domandaAllinea, riassuntoConfronto, type ConfrontoColCatalogo } from "@/lib/titoli-catalogo";
 import { partenzaFeedInfo, type AgenziaNelGtfs, type PartenzaFeedInfo } from "@/lib/elenchi-tariffe";
@@ -217,7 +219,7 @@ const GUIDED_STEPS: {
     id: "classify",
     label: "Classificazione Linee",
     icon: <Tag className="w-3.5 h-3.5" />,
-    info: "Associa ogni linea GTFS a una rete tariffaria (urbano Ancona, Jesi, Falconara, extraurbano). Questo determina quali regole tariffarie verranno generate per ciascuna linea.",
+    info: "Associa ogni linea GTFS a una rete tariffaria: una delle urbane dell'azienda, o l'extraurbano. Questo determina quali regole tariffarie verranno generate per ciascuna linea.",
   },
   {
     step: 2,
@@ -231,7 +233,7 @@ const GUIDED_STEPS: {
     id: "products",
     label: "Prodotti & Supporti",
     icon: <Euro className="w-3.5 h-3.5" />,
-    info: "Configura i supporti tariffari (biglietto cartaceo, tessera elettronica, app mobile) e definisci i prodotti con i relativi prezzi. I prodotti urbani hanno prezzo fisso, quelli extraurbani seguono le fasce chilometriche DGR Marche.",
+    info: "Configura i supporti tariffari (biglietto cartaceo, tessera elettronica, app mobile) e definisci i prodotti con i relativi prezzi. I prodotti urbani hanno prezzo fisso, quelli extraurbani seguono le fasce chilometriche.",
   },
   {
     step: 4,
@@ -749,7 +751,7 @@ function ProductsTab() {
           <CardHeader className="pb-3">
             <CardTitle className="text-base flex items-center gap-2">
               <ArrowRightLeft className="w-4 h-4 text-primary" />
-              Fasce Chilometriche Extraurbane (DGR Marche)
+              Fasce Chilometriche Extraurbane
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -2502,9 +2504,9 @@ function ZonesMinOdTab() {
               <p className="text-xs text-muted-foreground leading-relaxed">
                 Costruisce un grafo della rete tariffaria sui cluster già definiti (ogni linea extraurbana porta un arco
                 tra cluster consecutivi sul percorso dominante) ed esegue Dijkstra all-pairs per scegliere il cammino
-                <strong className="text-emerald-300"> minimo in km</strong> tra ogni coppia OD. Se Ancona↔Falconara è
-                servito da Linea B (19.8 km), Linea D (11.85 km) e Linea F (10.95 km), il sistema applica la tariffa di
-                Linea F (€1.85, fascia 2) — replica logica polimetriche storiche ATMA/Conerobus 2013.
+                <strong className="text-emerald-300"> minimo in km</strong> tra ogni coppia OD. Se due località sono
+                servite da tre linee (19,8 km, 11,85 km e 10,95 km), il sistema applica la tariffa della più corta:
+                la fascia dei 10,95 km.
               </p>
               <p className="text-[11px] text-muted-foreground/80 italic pt-1">
                 Modalità additiva: non altera Cluster / Shape / Dominante. Riusa i cluster del primo tab.
@@ -3712,7 +3714,7 @@ function ClustersTab() {
                       Telemaco (Urban + Addensamenti)
                     </p>
                     <p className="text-[10px] text-muted-foreground leading-relaxed">
-                      Step 1: 1 nodo per servizio urbano (Ancona, Jesi…). Step 2: addensamenti k-means sulle extraurbane
+                      Step 1: 1 nodo per ogni servizio urbano. Step 2: addensamenti k-means sulle extraurbane
                     </p>
                   </button>
                 </div>
@@ -3736,7 +3738,7 @@ function ClustersTab() {
                   ) : (
                     <>
                       <p>Pipeline a 2 step pensata per la conformità <strong>Telemaco</strong> (sistema regionale tariffario integrato):</p>
-                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 1 — Urban Hub:</strong> tutte le fermate servite da almeno una linea urbana confluiscono in un unico nodo per città (urban_ancona, urban_jesi, urban_falconara, urban_senigallia, urban_castelfidardo)</p>
+                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 1 — Urban Hub:</strong> tutte le fermate servite da almeno una linea urbana confluiscono in un unico nodo per città: uno per ogni rete urbana</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 2 — Addensamenti:</strong> sulle fermate puramente extraurbane k-means identifica i centri abitati extra-rete urbana</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 3 — Manuale:</strong> le fermate residue isolate restano orfane per assegnazione manuale</p>
                     </>
@@ -4896,6 +4898,9 @@ function StopTimesEditorTab() {
 // ═══════════════════════════════════════════════════════════
 
 function GenerateTab() {
+  // il nome sulle stampe: quello scritto in Amministrazione › Azienda
+  const azienda = useAzienda();
+  const intestazione = intestazioneDocumenti(azienda), nomeAzienda = nomeNeiDocumenti(azienda);
   const { toast } = useToast();
   const [result, setResult] = useState<GenerateResult | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -5130,7 +5135,7 @@ function GenerateTab() {
               onClick={async () => {
                 if (!result) { toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" }); return; }
                 try {
-                  await exportPolimetricheToPrint({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                  await exportPolimetricheToPrint({ files: result.files, zoningMethod, agencyName: intestazione, date: new Date().toLocaleDateString("it-IT") });
                 } catch (e: any) { toast({ title: "Errore polimetriche", description: e?.message || String(e), variant: "destructive" }); }
               }}
               size="sm"
@@ -5146,7 +5151,7 @@ function GenerateTab() {
                 setSharingPolimetriche("stops");
                 setShareLinkCopied(false);
                 try {
-                  const link = await createPolimetricheShareLink({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                  const link = await createPolimetricheShareLink({ files: result.files, zoningMethod, agencyName: intestazione, date: new Date().toLocaleDateString("it-IT") });
                   setShareLink({ ...link, mode: "stops" });
                   toast({ title: "Link condivisibile (fermate) generato", description: `${link.routeCount} linee · pronto da condividere` });
                 } catch (e: any) { toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
@@ -5167,7 +5172,7 @@ function GenerateTab() {
               onClick={async () => {
                 if (!result) { toast({ title: "Genera prima le tariffe", description: "Clicca 'Genera Anteprima Tariffe' per costruire le polimetriche.", variant: "destructive" }); return; }
                 try {
-                  await exportPolimetricheZonesToPrint({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                  await exportPolimetricheZonesToPrint({ files: result.files, zoningMethod, agencyName: intestazione, date: new Date().toLocaleDateString("it-IT") });
                 } catch (e: any) { toast({ title: "Errore polimetriche zone", description: e?.message || String(e), variant: "destructive" }); }
               }}
               size="sm"
@@ -5183,7 +5188,7 @@ function GenerateTab() {
                 setSharingPolimetriche("zones");
                 setShareLinkCopied(false);
                 try {
-                  const link = await createPolimetricheZonesShareLink({ files: result.files, zoningMethod, date: new Date().toLocaleDateString("it-IT") });
+                  const link = await createPolimetricheZonesShareLink({ files: result.files, zoningMethod, agencyName: intestazione, date: new Date().toLocaleDateString("it-IT") });
                   setShareLink({ ...link, mode: "zones" });
                   toast({ title: "Link condivisibile (nodi) generato", description: `${link.routeCount} linee · pronto da condividere` });
                 } catch (e: any) { toast({ title: "Errore generazione link", description: e?.message || String(e), variant: "destructive" });
@@ -5211,7 +5216,7 @@ function GenerateTab() {
             <Badge className="ml-1 bg-indigo-600 text-white text-[10px]">NEW</Badge>
           </CardTitle>
           <CardDescription className="text-xs">
-            Tariffa minima via Dijkstra all-pairs sui cluster (replica logica ATMA/Conerobus 2013). Richiedono
+            Tariffa minima via Dijkstra all-pairs sui cluster. Richiedono
             <strong> "Costruisci grafo"</strong> + <strong>"Calcola matrice OD"</strong> nel tab <em>Zone Extraurbane</em>.
             Non dipende dai CSV di anteprima.
           </CardDescription>
@@ -5221,7 +5226,7 @@ function GenerateTab() {
             <span className="text-[11px] font-semibold text-indigo-700 w-20">Per fermate</span>
             <Button
               onClick={async () => {
-                try { await exportPolimetricheMinOdToPrint({ date: new Date().toLocaleDateString("it-IT") }); }
+                try { await exportPolimetricheMinOdToPrint({ agencyName: nomeAzienda, date: new Date().toLocaleDateString("it-IT") }); }
                 catch (e: any) { toast({ title: "Errore polimetriche Min-OD", description: e?.message || String(e), variant: "destructive" }); }
               }}
               size="sm"
@@ -5236,7 +5241,7 @@ function GenerateTab() {
                 setSharingPolimetriche("min-od-stops");
                 setShareLinkCopied(false);
                 try {
-                  const link = await createPolimetricheMinOdShareLink({ date: new Date().toLocaleDateString("it-IT") });
+                  const link = await createPolimetricheMinOdShareLink({ agencyName: nomeAzienda, date: new Date().toLocaleDateString("it-IT") });
                   setShareLink({ ...link, mode: "stops" });
                   toast({ title: "Link Min-OD (fermate) generato", description: `${link.routeCount} linee · pronto da condividere` });
                 } catch (e: any) { toast({ title: "Errore generazione link Min-OD", description: e?.message || String(e), variant: "destructive" });
@@ -5255,7 +5260,7 @@ function GenerateTab() {
             <span className="text-[11px] font-semibold text-violet-700 w-20">Per nodi</span>
             <Button
               onClick={async () => {
-                try { await exportPolimetricheMinOdNodesToPrint({ date: new Date().toLocaleDateString("it-IT") }); }
+                try { await exportPolimetricheMinOdNodesToPrint({ agencyName: nomeAzienda, date: new Date().toLocaleDateString("it-IT") }); }
                 catch (e: any) { toast({ title: "Errore polimetriche Min-OD nodi", description: e?.message || String(e), variant: "destructive" }); }
               }}
               size="sm"
@@ -5270,7 +5275,7 @@ function GenerateTab() {
                 setSharingPolimetriche("min-od-zones");
                 setShareLinkCopied(false);
                 try {
-                  const link = await createPolimetricheMinOdNodesShareLink({ date: new Date().toLocaleDateString("it-IT") });
+                  const link = await createPolimetricheMinOdNodesShareLink({ agencyName: nomeAzienda, date: new Date().toLocaleDateString("it-IT") });
                   setShareLink({ ...link, mode: "zones" });
                   toast({ title: "Link Min-OD (nodi) generato", description: `${link.routeCount} linee · pronto da condividere` });
                 } catch (e: any) { toast({ title: "Errore generazione link Min-OD nodi", description: e?.message || String(e), variant: "destructive" });
@@ -5383,7 +5388,7 @@ function GenerateTab() {
                   toast({ title: "Nessun percorso selezionato", description: "Seleziona almeno un percorso prima dell'export PDF.", variant: "destructive" });
                   return;
                 }
-                try { await exportPolimetricheClustersToPrint({ date: new Date().toLocaleDateString("it-IT"), routeIds: selectedClusterRouteIds }); }
+                try { await exportPolimetricheClustersToPrint({ agencyName: intestazione, date: new Date().toLocaleDateString("it-IT"), routeIds: selectedClusterRouteIds }); }
                 catch (e: any) { toast({ title: "Errore polimetriche cluster", description: e?.message || String(e), variant: "destructive" }); }
               }}
               size="sm"
@@ -5399,7 +5404,7 @@ function GenerateTab() {
                 setSharingPolimetriche("clusters");
                 setShareLinkCopied(false);
                 try {
-                  const link = await createPolimetricheClustersShareLink({ date: new Date().toLocaleDateString("it-IT") });
+                  const link = await createPolimetricheClustersShareLink({ agencyName: intestazione, date: new Date().toLocaleDateString("it-IT") });
                   setShareLink({ id: link.id, url: link.url, routeCount: link.routeCount, mode: "zones" });
                   toast({ title: "Link Polimetriche Cluster generato", description: `${link.routeCount} linee · ${link.clusterCount} cluster` });
                 } catch (e: any) { toast({ title: "Errore generazione link cluster", description: e?.message || String(e), variant: "destructive" });

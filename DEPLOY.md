@@ -1476,6 +1476,80 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### I testi della web senza il nome del primo cliente (tappa 6.14)
+
+Nelle pagine restavano una sessantina di righe che nominavano Ancona, ATMA,
+le Marche o le altre città: etichette, aiuti, esempi, intestazioni delle
+stampe. Da questo rilascio quello che si vede viene dai dati scritti in
+Amministrazione → Azienda, o è un testo che vale per qualunque azienda.
+
+- **Dai dati dell'azienda**
+  - *Linee e fermate*: accanto ai conteggi c'è «rete» con città e regione
+    («rete Ancona / Marche»); senza la città non c'è niente.
+  - *Mappa del territorio*: accanto a «Stato Rete» c'è la città (prima c'era
+    scritto «ATMA · Ancona»).
+  - *Traffico*, nelle note: «nell'area di» più la città.
+  - *Tariffe → Genera & Esporta*: le stampe delle polimetriche portano il nome
+    dell'azienda. Prima era scritto nel codice; la pagina non lo passava mai.
+  - *GTFS → Importa GTFS → Pianificazione & Costi*: le categorie con cui si
+    classificano le linee sono le reti dell'azienda (Azienda → «Reti e
+    linee»), più «Notturno» e «Altro». Prima erano sei scritte nel codice, con
+    tre sole reti urbane. L'identificativo salvato è quello della rete
+    (`urbano_ancona`; prima `urbano-ancona`, col trattino).
+  - *Planning Studio → Zone*: il pulsante «Comuni prov. …» c'è solo se per la
+    provincia dell'azienda (Azienda → «Provincia ISTAT») l'app ha il file dei
+    confini. Oggi c'è quello della provincia 042. Per le altre resta «Carica
+    un GeoJSON…».
+- **Testi resi neutri**: gli aiuti di Tariffe, «Territorio e domanda»,
+  «Sincronizza Dati», «Percorso e tariffa», e gli esempi nelle caselle
+  (rotazioni dei riposi, zone di coincidenza, validità, depositi).
+- **Tolto perché non era vero**: in *Linee e fermate* il riquadro «Fermata più
+  servita: Piazza Cavour» era scritto a mano. Al suo posto c'è il numero delle
+  linee del feed.
+- **Sulle stampe delle polimetriche non c'è più «DGR Marche n. 1036/2022»**:
+  c'è «fasce chilometriche regionali». Le fasce dalla 6.8 si modificano in
+  Azienda → «Fasce chilometriche», e il numero della delibera nel codice
+  sarebbe rimasto quello vecchio. Se sulle stampe serve la delibera, va
+  aggiunta come dato dell'azienda: non è in questo rilascio.
+- **Che cosa resta, e perché**: gli esempi nel modulo dell'azienda (sono esempi
+  nelle caselle dove si scrivono proprio quei dati), il nome della provincia
+  del file dei confini, e le zone della pagina Traffico con le loro
+  coordinate. Queste ultime vanno in tabella insieme ai punti stradali, e con
+  loro il centro da cui il modello del traffico misura la distanza
+  (`ANCONA_CENTER` nell'API). **Il centro non è stato cambiato in questo
+  rilascio**: quello delle mappe dell'azienda (43,58 / 13,45) è a circa 6 km
+  dal centro di Ancona che il modello usa (43,616 / 13,516), e metterlo al suo
+  posto avrebbe spostato le fasce del modello per Conerobus.
+- **Un test fa la guardia** (`artifacts/transitintel/src/lib/nomi-di-luogo.test.ts`):
+  legge i sorgenti della web senza i commenti e fallisce se compare un nome
+  dell'azienda o dei suoi luoghi fuori dai posti elencati sopra. L'API ha
+  ancora i nomi nei blocchi del traffico e dell'intermodale: la sua guardia
+  arriva quando sono in tabella.
+- **Verificato nel browser sulla copia con i dati veri**: Linee e fermate
+  («rete Ancona / Marche», 128 linee), Zone («Comuni prov. Ancona» con i 47
+  comuni), Traffico, Territorio, e la classificazione delle linee: il menu ha
+  le sei reti urbane, Extraurbano, Notturno e Altro; quattro linee classificate
+  e salvate hanno preso il tipo di tariffa giusto. **Non visti nel browser**:
+  il riquadro «Stato Rete» (in locale manca il token delle mappe) e le stampe
+  delle polimetriche (la copia non ha tariffe generate); li coprono il
+  controllo dei tipi e un test sul codice.
+
+**Dopo il deploy**
+1. Niente da fare a mano: nessuna migrazione, nessuna variabile, nessuna Watch
+   Path nuova.
+2. Le linee classificate nell'analisi dei feed: nella copia dei dati veri la
+   tabella è vuota. Per controllare in produzione:
+   `SELECT category, count(*) FROM planning_route_classifications GROUP BY 1;`
+   Se ci sono righe con il trattino (`urbano-ancona`), si allineano con:
+   `UPDATE planning_route_classifications SET category = replace(category, '-', '_') WHERE category LIKE 'urbano-%';`
+   Senza, quelle linee restano classificate e il loro tipo di tariffa vale
+   ancora; ma nella pagina compaiono col loro identificativo, in grigio, e non
+   entrano nel filtro per categoria.
+
+**Rollback**: immagine precedente. Tornano i testi di prima; le linee
+classificate con gli identificativi nuovi restano valide (l'API ricava il tipo
+di tariffa dall'inizio dell'identificativo, che non cambia).
+
 ### I chilometri per gestore (tappa 6.13)
 
 Per rendicontare ai consorziati servono i chilometri di ogni gestore. Da

@@ -48,7 +48,7 @@ const SOURCES = [
     apiUrl: "https://developers.google.com/maps/documentation/places/web-service",
     keyNeeded: "GOOGLE_PLACES_API_KEY",
     detail:
-      "Interroga l'endpoint nearbysearch per ogni categoria (ospedale, scuola, ecc.) attorno ai 15 centri abitati principali della provincia di Ancona. Deduplica per place_id e filtra per bounding box. Sostituisce tutti i POI esistenti con dati verificati da Google.",
+      "Interroga l'endpoint nearbysearch per ogni categoria (ospedale, scuola, ecc.) attorno ai luoghi indicati per i punti di interesse in Amministrazione › Azienda. Deduplica per place_id e filtra per bounding box. Sostituisce tutti i POI esistenti con dati verificati da Google.",
   },
   {
     key: "traffic",
@@ -56,7 +56,7 @@ const SOURCES = [
     badge: "API Key",
     badgeColor: "bg-amber-500/20 text-amber-400 border-amber-500/30",
     description:
-      "Velocità e congestione real-time su 40 arterie principali (SS16, A14, SS76, strade urbane Ancona).",
+      "Velocità e congestione in tempo reale sulle arterie principali della rete.",
     icon: RefreshCw,
     color: "text-amber-400",
     bg: "bg-amber-500/10",
@@ -73,7 +73,7 @@ const SOURCES = [
     badge: "Gratuita",
     badgeColor: "bg-blue-500/20 text-blue-400 border-blue-500/30",
     description:
-      "Popolazione residente e densità per tutti i 44 comuni della provincia di Ancona (stime ISTAT 2023).",
+      "Popolazione residente e densità per i comuni del territorio dell'azienda (stime ISTAT 2023).",
     icon: Users,
     color: "text-blue-400",
     bg: "bg-blue-500/10",
@@ -326,7 +326,7 @@ export default function SyncPage() {
             <div className="space-y-2 text-xs text-muted-foreground">
               <div className="flex items-start gap-2">
                 <span className="text-primary font-mono shrink-0">GTFS</span>
-                <span>Feed ufficiale ATMA/Marche — importa da <em>Import GTFS</em> per fermate e percorsi reali</span>
+                <span>Il feed GTFS dell'azienda — importa da <em>Import GTFS</em> per fermate e percorsi reali</span>
               </div>
               <div className="flex items-start gap-2">
                 <span className="text-primary font-mono shrink-0">ISTAT</span>

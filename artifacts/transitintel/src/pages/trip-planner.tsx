@@ -1023,9 +1023,9 @@ function DetailModal({
                 <p><strong className="text-emerald-200">4. Trasferimenti.</strong> Si cercano coppie di trip <em>(bus 1, bus 2)</em> che condividono una fermata di interscambio (hub), con linee differenti, attesa hub tra 4 e 30 minuti, hub diverso dalla fermata di destinazione.</p>
               )}
               <p><strong className="text-emerald-200">{buses.length > 1 ? "5" : "4"}. Distanze.</strong> Calcolo per somma di Haversine tra fermate consecutive del tratto percorso ({totalKm.toFixed(2)} km totali).</p>
-              <p><strong className="text-emerald-200">{buses.length > 1 ? "6" : "5"}. Tariffa.</strong> Classificazione automatica della linea: <em>Urbano</em> → tariffa flat di rete (€1,35 / 60'); <em>Extraurbano</em> → fasce DGR Marche basate sui km. Per percorsi multi-bus l'importo è la somma delle tariffe per leg.</p>
+              <p><strong className="text-emerald-200">{buses.length > 1 ? "6" : "5"}. Tariffa.</strong> Classificazione automatica della linea: <em>Urbano</em> → tariffa fissa della rete; <em>Extraurbano</em> → fasce chilometriche. Per percorsi multi-bus l'importo è la somma delle tariffe per leg.</p>
               <p><strong className="text-emerald-200">{buses.length > 1 ? "7" : "6"}. Tempi a piedi.</strong> Velocità media 4,8 km/h (≈80 m/min).</p>
-              <p className="pt-1 text-[11px] italic text-zinc-500">Source: GTFS RAM/AMTAB Marche · DGR Marche fasce extraurbane · Mapbox Geocoding (lookup indirizzi).</p>
+              <p className="pt-1 text-[11px] italic text-zinc-500">Fonti: il GTFS in uso · le fasce chilometriche extraurbane · Mapbox Geocoding (ricerca degli indirizzi).</p>
             </div>
           </div>
 

@@ -200,7 +200,7 @@ export default function Territory() {
               Analisi Territorio e Popolazione
             </h1>
             <p className="text-muted-foreground mt-2 text-sm max-w-2xl">
-              Radiografia completa della provincia di Ancona: {data.stats.totalSections.toLocaleString("it-IT")} sezioni censuarie ISTAT,{" "}
+              Radiografia completa del territorio servito: {data.stats.totalSections.toLocaleString("it-IT")} sezioni censuarie ISTAT,{" "}
               {data.stats.totalPoi.toLocaleString("it-IT")} punti di interesse e{" "}
               {(data.stats.totalPop / 1000).toFixed(0)}k abitanti analizzati in relazione alla rete TPL.
             </p>
@@ -879,7 +879,7 @@ export default function Territory() {
         <p className="font-semibold text-muted-foreground/90">Fonti e metodologia</p>
         <p>
           Dati censuari: <strong>ISTAT Censimento 2021</strong> · Sezioni censuarie con popolazione, area e densità.
-          POI: <strong>OpenStreetMap</strong>. Fermate: <strong>GTFS Conerobus/Adriabus</strong>.
+          POI: <strong>OpenStreetMap</strong>. Fermate: <strong>il GTFS in uso</strong>.
           Distanze calcolate dal centroide della sezione censuaria alla fermata più vicina (euclidea).
           Standard copertura: <strong>UITP</strong> (Union Internationale des Transports Publics).
         </p>

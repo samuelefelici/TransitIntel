@@ -79,3 +79,18 @@ export const corpoLuogo = (m: ModuloLuogo) => ({
 
 /** «43.6166, 13.5185», o «—». */
 export const coordinate = (lat: number | null, lng: number | null) => (lat == null || lng == null ? "—" : `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+
+/* ── I confini dei comuni inclusi nell'app ─────────────────────────────── */
+
+/** Un file di confini comunali incluso nell'app (cartella public/data): vale per una provincia. */
+export interface ConfiniInclusi { provinciaIstat: string; provincia: string; comuni: number; file: string }
+
+/** I file che ci sono. Per le altre province i confini si caricano da un file GeoJSON. */
+export const CONFINI_INCLUSI: readonly ConfiniInclusi[] = [
+  { provinciaIstat: "042", provincia: "Ancona", comuni: 47, file: "comuni-provincia-ancona.geojson" },
+];
+
+/** I confini inclusi per la provincia dell'azienda (Amministrazione › Azienda), o null. */
+export function confiniInclusi(provinciaIstat: string | null | undefined): ConfiniInclusi | null {
+  return CONFINI_INCLUSI.find((c) => c.provinciaIstat === provinciaIstat) ?? null;
+}

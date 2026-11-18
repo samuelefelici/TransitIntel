@@ -1,6 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import {
-  coordinate, corpoComune, corpoLuogo, erroriComune, erroriLuogo, MODULO_COMUNE_VUOTO, moduloComuneDa, moduloLuogoDa, moduloLuogoVuoto, numeroScritto,
+  CONFINI_INCLUSI, confiniInclusi, coordinate, corpoComune, corpoLuogo, erroriComune, erroriLuogo, MODULO_COMUNE_VUOTO, moduloComuneDa, moduloLuogoDa, moduloLuogoVuoto, numeroScritto,
 } from "./territorio";
 
 describe("il territorio nella pagina Azienda", () => {
@@ -35,5 +36,23 @@ describe("il territorio nella pagina Azienda", () => {
   it("le coordinate in breve", () => {
     expect(coordinate(43.61661, 13.5185)).toBe("43.6166, 13.5185");
     expect(coordinate(null, null)).toBe("—");
+  });
+});
+
+describe("i confini dei comuni inclusi nell'app", () => {
+  it("ci sono solo per la provincia che ha il suo file", () => {
+    expect(confiniInclusi("042")).toMatchObject({ provincia: "Ancona", comuni: 47 });
+    expect([confiniInclusi("041"), confiniInclusi(null), confiniInclusi(undefined), confiniInclusi("")]).toEqual([null, null, null, null]);
+  });
+
+  it("ogni file c'è, è di quella provincia e ha quel numero di comuni", () => {
+    for (const c of CONFINI_INCLUSI) {
+      const geo = JSON.parse(readFileSync(new URL(`../../public/data/${c.file}`, import.meta.url), "utf8")) as
+        { features: Array<{ properties: { prov_istat_code: string; prov_name: string } }> };
+      expect(geo.features.length, c.file).toBe(c.comuni);
+      expect(new Set(geo.features.map((f) => f.properties.prov_istat_code)), c.file).toEqual(new Set([c.provinciaIstat]));
+      expect(new Set(geo.features.map((f) => f.properties.prov_name)), c.file).toEqual(new Set([c.provincia]));
+    }
+    expect(new Set(CONFINI_INCLUSI.map((c) => c.provinciaIstat)).size).toBe(CONFINI_INCLUSI.length);
   });
 });

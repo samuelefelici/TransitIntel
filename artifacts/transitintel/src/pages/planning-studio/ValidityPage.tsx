@@ -2209,8 +2209,8 @@ function ComputeUnitsDialog(props: {
             <input
               value={namePrefix}
               onChange={(e) => setNamePrefix(e.target.value)}
-              placeholder="es. Jesi"
-              title="Prefisso aggiunto all'inizio del nome di ogni unità salvata (es. «Jesi · Scuole Aperte · Feriale»)"
+              placeholder="es. Urbano"
+              title="Prefisso aggiunto all'inizio del nome di ogni unità salvata (es. «Urbano · Scuole Aperte · Feriale»)"
               className="block mt-1 px-2.5 py-1.5 text-sm bg-slate-950 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:border-indigo-500 w-32"
             />
           </label>

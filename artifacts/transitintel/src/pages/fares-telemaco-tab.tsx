@@ -484,9 +484,9 @@ function CatalogView({ toast }: { toast: ReturnType<typeof useToast>["toast"] })
         {showAdd && (
           <div className="p-3 rounded-lg bg-muted/30 border border-border/30 space-y-2">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-              <Input placeholder="Codice (es. JESI)" value={newNode.officialCode}
+              <Input placeholder="Codice (es. CENTRO)" value={newNode.officialCode}
                 onChange={e => setNewNode(n => ({ ...n, officialCode: e.target.value }))} className="h-8 text-xs" />
-              <Input placeholder="Nome (es. Jesi)" value={newNode.officialName}
+              <Input placeholder="Nome (es. Centro)" value={newNode.officialName}
                 onChange={e => setNewNode(n => ({ ...n, officialName: e.target.value }))} className="h-8 text-xs" />
               <Input placeholder="Lat" value={newNode.lat}
                 onChange={e => setNewNode(n => ({ ...n, lat: e.target.value }))} className="h-8 text-xs" />

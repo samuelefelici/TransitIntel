@@ -11,9 +11,11 @@ interface StatsCardProps {
   gtfsSummary: GtfsSummary | null;
   dayFilter: DayFilter;
   avgCongestion?: number | null;
+  /** la città dell'azienda, accanto al titolo; niente se non è scritta */
+  luogo?: string | null;
 }
 
-export function StatsCard({ collapsed, onToggle, gtfsSummary, dayFilter, avgCongestion }: StatsCardProps) {
+export function StatsCard({ collapsed, onToggle, gtfsSummary, dayFilter, avgCongestion, luogo }: StatsCardProps) {
   const dayRows = [
     ...(dayFilter === "tutti" || dayFilter === "feriale" ? [{
       label: "Feriale",
@@ -53,7 +55,7 @@ export function StatsCard({ collapsed, onToggle, gtfsSummary, dayFilter, avgCong
               <span className="flex items-center gap-2">
                 <Activity className="w-4 h-4 text-primary" />
                 <span className="text-sm font-bold">Stato Rete</span>
-                <span className="text-[10px] text-muted-foreground">ATMA · Ancona</span>
+                {luogo && <span className="text-[10px] text-muted-foreground">{luogo}</span>}
               </span>
               {collapsed
                 ? <ChevronDown className="w-4 h-4 text-muted-foreground" />

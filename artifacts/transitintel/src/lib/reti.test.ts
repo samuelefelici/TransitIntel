@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  bozzaDa, classiFermate, coloreDi, corpoModificaRete, corpoNuovaRete, corpoRegole, domandaTogliRete, erroriRegole, erroriRete, etichettaDi,
+  bozzaDa, categoriaDi, categorieDelleLinee, classiFermate, coloreDi, corpoModificaRete, corpoNuovaRete, corpoRegole, domandaTogliRete, erroriRegole, erroriRete, etichettaDi,
   etichettaRete, MODULO_RETE_VUOTO, opzioniReti, regoleCambiate, reteInUso, RETI_NEUTRE, retiValide, riassuntoAnteprima, siglaDaLuogo, siglaDi,
   spostaRegola, testoRegola, usoDellaRete, type AnteprimaRegole, type RegolaInBozza, type RegolaLinea, type Rete,
 } from "./reti";
@@ -202,5 +202,37 @@ describe("l'anteprima in una frase", () => {
       .toBe("Su 128 linee del programma in esercizio, 2 cambiano rete. Una passa da urbana a extraurbana o viceversa: nel Roster cambia il riposo minimo fra due turni.");
     expect(riassuntoAnteprima({ ...base, cambiano: [c("1", true), c("2", true), c("3", false)] }))
       .toBe("Su 128 linee del programma in esercizio, 3 cambiano rete. 2 passano da urbane a extraurbane o viceversa: nel Roster cambia il riposo minimo fra due turni.");
+  });
+});
+
+describe("le categorie delle linee nell'analisi di un feed", () => {
+  it("una per rete dell'azienda, con il suo colore; poi «Notturno» e «Altro»", () => {
+    expect(categorieDelleLinee(RETI)).toEqual([
+      { id: "urbano_ancona", label: "Urbano Ancona", fareType: "urban", color: "#3b82f6" },
+      { id: "urbano_jesi", label: "Urbano Jesi", fareType: "urban", color: "#8b5cf6" },
+      { id: "extraurbano", label: "Extraurbano", fareType: "suburban", color: "#f59e0b" },
+      { id: "notturno", label: "Notturno", fareType: "night", color: "#8b5cf6" },
+      { id: "altro", label: "Altro", fareType: null, color: "#6b7280" },
+    ]);
+  });
+
+  it("un'installazione che non ha detto le sue reti ha l'extraurbano e le due fisse, e nessun nome di luogo", () => {
+    const neutre = categorieDelleLinee(RETI_NEUTRE);
+    expect(neutre.map((c) => c.id)).toEqual(["extraurbano", "notturno", "altro"]);
+    expect(JSON.stringify(neutre)).not.toMatch(/ancona|jesi|falconara/i);
+  });
+
+  it("l'API ricava il tipo di tariffa dall'inizio dell'identificativo: quelli delle reti cominciano come si aspetta", () => {
+    /* lib/planning/feed-analyzer.ts: «urban…» è urbano, «extra…» extraurbano, «nott…» notturno */
+    for (const c of categorieDelleLinee(RETI)) {
+      const inizio = c.fareType === "urban" ? /^urban/ : c.fareType === "suburban" ? /^extra/ : c.fareType === "night" ? /^nott/ : /^altro$/;
+      expect(c.id, c.id).toMatch(inizio);
+    }
+  });
+
+  it("la categoria salvata su una linea: quella di oggi, o niente se la rete non c'è più", () => {
+    const categorie = categorieDelleLinee(RETI);
+    expect(categoriaDi(categorie, "urbano_jesi")?.label).toBe("Urbano Jesi");
+    expect([categoriaDi(categorie, "urbano_osimo"), categoriaDi(categorie, ""), categoriaDi(categorie, null), categoriaDi(categorie, undefined)]).toEqual([null, null, null, null]);
   });
 });
