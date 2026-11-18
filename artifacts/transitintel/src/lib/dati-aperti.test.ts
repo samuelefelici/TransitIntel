@@ -55,6 +55,14 @@ describe("dati aperti: che cosa c'è nel file", () => {
     const f = file({ tipo: "netex", inLinea: inLinea({ conteggi: { corse: 1, fermate: 2, linee: 1, corseSenzaGiorni: 1 } }) });
     expect(contenuto(f)).toEqual(["1 corsa", "2 fermate", "1 linea", "1 corsa lasciata fuori (senza giorni di servizio)"]);
   });
+  it("i gestori: le agenzie del GTFS e gli operatori del NeTEx, solo se sono più d'uno", () => {
+    const gtfs = (agenzie: number) => file({ inLinea: inLinea({ conteggi: { righe: { "trips.txt": 10, "stops.txt": 5, "routes.txt": 2, "agency.txt": agenzie } } }) });
+    expect(contenuto(gtfs(1))).toEqual(["10 corse", "5 fermate", "2 linee"]);
+    expect(contenuto(gtfs(3))).toEqual(["10 corse", "5 fermate", "2 linee", "3 agenzie"]);
+    const netex = (operatori: number) => file({ tipo: "netex", inLinea: inLinea({ conteggi: { corse: 10, fermate: 5, linee: 2, corseSenzaGiorni: 0, operatori } }) });
+    expect(contenuto(netex(1))).toEqual(["10 corse", "5 fermate", "2 linee"]);
+    expect(contenuto(netex(3))).toEqual(["10 corse", "5 fermate", "2 linee", "3 operatori"]);
+  });
   it("senza conteggi, niente", () => {
     expect(contenuto(file({}))).toEqual([]);
     expect(contenuto(file({ inLinea: inLinea() }))).toEqual([]);

@@ -1476,6 +1476,40 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il NeTEx con un operatore per gestore (tappa 6.12)
+
+Con la 6.11 il GTFS ha un'agenzia per gestore; il NeTEx del profilo italiano
+aveva ancora l'azienda come solo operatore, e i due file dei dati aperti non
+dicevano la stessa cosa. Da questo rilascio gli operatori del NeTEx sono i
+gestori.
+
+- **Che cosa cambia nel file**: nel `ResourceFrame` c'è un `Operator` per ogni
+  gestore che ha almeno una linea, nell'ordine dell'elenco, con nome, sito,
+  telefono e posta. Ogni linea e ogni corsa portano il loro (`OperatorRef`).
+  Una linea che dice un gestore fuori elenco, o niente, è del predefinito.
+- **Che cosa non cambia**: chi trasmette il file (`ParticipantRef`), i
+  contenitori e il nome della rete restano dell'azienda. Senza gestori il file
+  esce uguale a prima, byte per byte.
+- **Validazione**: il file con più operatori passa lo schema EPIP del profilo
+  italiano; lo prova un test, obbligatorio in CI.
+- **Dati aperti**: il NeTEx pubblicato si rifà se cambia l'elenco dei gestori
+  (anche solo la posta di uno). Nella scheda dei dati aperti, quando sono più
+  d'uno, compaiono «N agenzie» per il GTFS e «N operatori» per il NeTEx.
+- **Conerobus**: l'elenco ha un gestore solo, ATMA. Misurato sulla copia con i
+  dati veri: nel NeTEx **l'operatore passa da Conerobus S.p.A. ad Atma Scpa**
+  sulle 128 linee e sulle 3.502 corse; nient'altro cambia, e il file resta
+  valido. Con due gestori di prova (102 e 26 linee) il file ha due operatori
+  ed è valido.
+
+**Dopo il deploy**
+1. Niente da fare a mano: nessuna migrazione, nessuna variabile, nessuna Watch
+   Path nuova (i file dei gestori ci sono già dalla 6.11).
+2. Al primo giro del lavoratore il NeTEx dei dati aperti si rifà con ATMA come
+   operatore.
+
+**Rollback**: immagine precedente. Il NeTEx torna con l'azienda come solo
+operatore.
+
 ### I gestori: più agenzie nei GTFS, una per linea (tappa 6.11)
 
 Chi programma il servizio può farlo per più aziende: un consorzio per i suoi
@@ -1523,7 +1557,8 @@ ogni modifica resta nel registro.
     il GTFS dei dati aperti, che si rifà al primo giro del lavoratore.
 - **La tabella `agenzia_gtfs`** della 6.10 resta, non più letta: serve a chi
   torna all'immagine precedente. Si potrà togliere più avanti.
-- **Non cambia**: il NeTEx, che ha ancora l'azienda come solo operatore.
+- **Il NeTEx** con questa tappa aveva ancora l'azienda come solo operatore:
+  dalla 6.12 (qui sopra) ha un operatore per gestore.
 
 **Dopo il deploy**
 1. Aggiungi alle **Watch Paths del lavoratore** in Coolify la riga nuova

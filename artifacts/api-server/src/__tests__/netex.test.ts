@@ -91,7 +91,7 @@ describe("NeTEx: il file", () => {
   const { xml, conteggi } = netexDaGtfs(GTFS_DI_PROVA, OPZIONI);
 
   it("conta quello che c'è; le corse senza giorni restano fuori, e si dicono", () => {
-    expect(conteggi).toEqual({ fermate: 3, linee: 2, sequenze: 3, corse: 4, orari: 10, tipiDiGiorno: 2, giorni: 5, corseSenzaGiorni: 1 });
+    expect(conteggi).toEqual({ fermate: 3, linee: 2, sequenze: 3, corse: 4, orari: 10, tipiDiGiorno: 2, giorni: 5, corseSenzaGiorni: 1, operatori: 1 });
     expect(xml).not.toContain("Fermata non usata");
   });
 
@@ -121,5 +121,70 @@ describe("NeTEx: il file", () => {
     if (esito.stato === "senza_xmllint") return;
     expect(esito.stato).toBe("non_valido");
     expect(esito.errori[0]).toMatch(/Sconosciuto/);
+  });
+});
+
+/* ── Tappa 6.12: un operatore per gestore ─────────────────────────────────── */
+
+describe("NeTEx: gli operatori", () => {
+  const UNO = { codice: "UNO", nome: "Autolinee Uno S.p.A.", sito: "https://uno.example", telefono: "071 000001", email: "info@uno.example" };
+  const DUE = { codice: "DUE", nome: "Due, Bus & Co.", sito: "https://due.example", telefono: null, email: null };
+  const TRE = { codice: "TRE", nome: "Tre Trasporti", sito: "https://tre.example", telefono: null, email: null };
+  /** Lo stesso GTFS, con il gestore scritto su ogni linea. */
+  const conGestori = (perLinea: Record<string, string | undefined>): Gtfs => ({
+    ...GTFS_DI_PROVA,
+    "routes.txt": file(["route_id", "agency_id", "route_short_name", "route_long_name", "route_type"],
+      GTFS_DI_PROVA["routes.txt"]!.righe.map((r) => ({ ...r, agency_id: perLinea[String(r.route_id)] ?? "" }) as Record<string, string | number>)),
+  });
+  const operatori = (xml: string) => [...xml.matchAll(/<Operator id="([^"]+)"/g)].map((m) => m[1]);
+  const diLinea = (xml: string) => Object.fromEntries([...xml.matchAll(/<Line id="IT:ITI3:Line:([^"]+)"[^>]*>.*?<OperatorRef ref="([^"]+)"/g)].map((m) => [m[1]!.replace(/-[0-9a-f]{8}$/, ""), m[2]]));
+  const diCorsa = (xml: string) => Object.fromEntries([...xml.matchAll(/<ServiceJourney id="IT:ITI3:ServiceJourney:([^"]+)"[^>]*>.*?<OperatorRef ref="([^"]+)"/g)].map((m) => [m[1], m[2]]));
+
+  it("senza gestori il file è quello di prima, byte per byte: un operatore, l'azienda", () => {
+    const prima = netexDaGtfs(GTFS_DI_PROVA, OPZIONI).xml;
+    expect(netexDaGtfs(GTFS_DI_PROVA, { ...OPZIONI, operatori: [] }).xml).toBe(prima);
+    expect(netexDaGtfs(conGestori({ L1: "UNO", "L2 bis": "DUE" }), OPZIONI).xml).toBe(prima);
+    expect(operatori(prima)).toEqual(["IT:ITI3:Operator:conerobus"]);
+    expect(prima).toContain('<Operator id="IT:ITI3:Operator:conerobus" version="1"><PublicCode>conerobus</PublicCode><Name>Conerobus</Name><LegalName>Conerobus S.p.A.</LegalName>'
+      + "<ContactDetails><Phone>+39 071 2837411</Phone><Url>https://www.conerobus.it</Url></ContactDetails><OrganisationType>operator</OrganisationType></Operator>");
+  });
+
+  it("coi gestori: un operatore per ognuno che ha linee, e ogni linea e ogni corsa col suo", () => {
+    const { xml, conteggi } = netexDaGtfs(conGestori({ L1: "DUE", "L2 bis": "UNO" }), { ...OPZIONI, operatori: [UNO, DUE, TRE], operatorePrincipale: "UNO" });
+    /* nell'ordine dell'elenco, e senza quello che non ha linee */
+    expect(operatori(xml)).toEqual(["IT:ITI3:Operator:UNO", "IT:ITI3:Operator:DUE"]);
+    expect(conteggi.operatori).toBe(2);
+    expect(diLinea(xml)).toEqual({ L1: "IT:ITI3:Operator:DUE", L2_bis: "IT:ITI3:Operator:UNO" });
+    expect(diCorsa(xml)).toEqual({ T1: "IT:ITI3:Operator:DUE", T2: "IT:ITI3:Operator:DUE", T3: "IT:ITI3:Operator:DUE", T4: "IT:ITI3:Operator:UNO" });
+    /* i contatti del gestore: la posta, il telefono, il sito; i nomi scappati */
+    expect(xml).toContain('<Operator id="IT:ITI3:Operator:UNO" version="1"><PublicCode>UNO</PublicCode><Name>Autolinee Uno S.p.A.</Name><LegalName>Autolinee Uno S.p.A.</LegalName>'
+      + "<ContactDetails><Email>info@uno.example</Email><Phone>071 000001</Phone><Url>https://uno.example</Url></ContactDetails><OrganisationType>operator</OrganisationType></Operator>");
+    expect(xml).toContain("<Name>Due, Bus &amp; Co.</Name>");
+    /* chi trasmette e i contenitori restano dell'azienda */
+    expect(xml).toContain("<ParticipantRef>conerobus</ParticipantRef>");
+    expect(xml).toContain('id="epd:IT:ITI3:ResourceFrame-EU_PI_COMMON:conerobus"');
+    expect(xml).not.toContain("IT:ITI3:Operator:conerobus");
+  });
+
+  it("una linea che non dice un gestore dell'elenco è del principale", () => {
+    const { xml } = netexDaGtfs(conGestori({ L1: "ATMA", "L2 bis": undefined }), { ...OPZIONI, operatori: [UNO, DUE], operatorePrincipale: "DUE" });
+    expect(operatori(xml)).toEqual(["IT:ITI3:Operator:DUE"]);
+    expect(diLinea(xml)).toEqual({ L1: "IT:ITI3:Operator:DUE", L2_bis: "IT:ITI3:Operator:DUE" });
+    /* senza dire chi è il principale vale il primo dell'elenco */
+    expect(operatori(netexDaGtfs(conGestori({}), { ...OPZIONI, operatori: [UNO, DUE] }).xml)).toEqual(["IT:ITI3:Operator:UNO"]);
+  });
+
+  it("un gestore solo: è lui l'operatore di tutto, al posto dell'azienda", () => {
+    const { xml, conteggi } = netexDaGtfs(conGestori({ L1: "UNO", "L2 bis": "UNO" }), { ...OPZIONI, operatori: [UNO], operatorePrincipale: "UNO" });
+    expect(operatori(xml)).toEqual(["IT:ITI3:Operator:UNO"]);
+    expect(conteggi.operatori).toBe(1);
+    expect(new Set(Object.values(diCorsa(xml)))).toEqual(new Set(["IT:ITI3:Operator:UNO"]));
+  });
+
+  it("con più operatori passa lo schema EPIP del profilo italiano (in CI xmllint è obbligatorio)", async () => {
+    const { xml } = netexDaGtfs(conGestori({ L1: "DUE", "L2 bis": "UNO" }), { ...OPZIONI, operatori: [UNO, DUE, TRE], operatorePrincipale: "UNO" });
+    const esito = await validaNetex(xml);
+    if (esito.stato === "senza_xmllint" && !process.env.NETEX_SCHEMA_OBBLIGATORIO) return;
+    expect(esito).toEqual({ stato: "valido", errori: [] });
   });
 });

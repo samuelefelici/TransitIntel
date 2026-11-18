@@ -11,6 +11,8 @@ import {
 } from "../lib/gestori";
 import { AssegnaGestore, erroreGestore, ModificaGestore, NuovoGestore } from "../lib/gestori-store";
 import { firmaDi } from "../lib/dati-aperti";
+import { netexDelGtfs } from "../lib/gtfs-consegnabile";
+import type { Gtfs } from "../lib/gtfs-verifica";
 import { AZIENDA_DA_COMPILARE, type Azienda } from "../lib/azienda";
 import { ELENCHI_DI_PRIMA } from "./helpers/elenchi-di-prova";
 import { CONSORZIATI, GESTORE_DI_PRIMA } from "./helpers/gestori-di-prova";
@@ -138,14 +140,69 @@ describe("i dati aperti: quando il GTFS pubblicato si rifà", () => {
     expect(firmaDi("netex", V, A, [])).toBe(firmaDi("netex", V, A));
   });
 
-  it("i gestori cambiano il GTFS; il NeTEx, che ha ancora un operatore solo, no", () => {
-    const base = firmaDi("gtfs", V, A, CONSORZIATI);
-    expect(base).not.toBe(firmaDi("gtfs", V, A, []));
-    expect(firmaDi("gtfs", V, A, [{ ...UNO, nome: "Uno" }, DUE, TRE])).not.toBe(base);
-    expect(firmaDi("gtfs", V, A, [UNO, DUE])).not.toBe(base);
-    expect(firmaDi("gtfs", V, A, [{ ...UNO, predefinito: false }, { ...DUE, predefinito: true }, TRE])).not.toBe(base);
-    expect(firmaDi("gtfs", V, A, CONSORZIATI.map((g) => ({ ...g })))).toBe(base);
-    expect(firmaDi("netex", V, A, CONSORZIATI)).toBe(firmaDi("netex", V, A, []));
+  it("i gestori cambiano il GTFS e il NeTEx: sono le agenzie dell'uno e gli operatori dell'altro", () => {
+    for (const tipo of ["gtfs", "netex"] as const) {
+      const base = firmaDi(tipo, V, A, CONSORZIATI);
+      expect(base, tipo).not.toBe(firmaDi(tipo, V, A, []));
+      expect(firmaDi(tipo, V, A, [{ ...UNO, nome: "Uno" }, DUE, TRE]), tipo).not.toBe(base);
+      expect(firmaDi(tipo, V, A, [UNO, DUE]), tipo).not.toBe(base);
+      expect(firmaDi(tipo, V, A, [{ ...UNO, predefinito: false }, { ...DUE, predefinito: true }, TRE]), tipo).not.toBe(base);
+      expect(firmaDi(tipo, V, A, CONSORZIATI.map((g) => ({ ...g }))), tipo).toBe(base);
+    }
+  });
+
+  it("la posta di un gestore finisce solo nel NeTEx: il GTFS consegnabile non si rifà", () => {
+    const conAltraPosta = [{ ...UNO, email: "altra@uno.example" }, DUE, TRE];
+    expect(firmaDi("gtfs", V, A, conAltraPosta)).toBe(firmaDi("gtfs", V, A, CONSORZIATI));
+    expect(firmaDi("netex", V, A, conAltraPosta)).not.toBe(firmaDi("netex", V, A, CONSORZIATI));
+  });
+});
+
+describe("il NeTEx del consegnabile (tappa 6.12): gli operatori sono i gestori", () => {
+  const A: Azienda = { ...AZIENDA_DA_COMPILARE, ...AZIENDA, nome: "Conerobus", compilata: true, netexCodiceLocale: "ITI3" };
+  const file = (colonne: string[], righe: Array<Record<string, string | number>>) => ({ colonne, righe });
+  /** Due linee con una corsa ciascuna: una dice un gestore dell'elenco, l'altra uno che non c'è. */
+  const GTFS: Gtfs = {
+    "agency.txt": file(["agency_id"], [{ agency_id: "UNO" }, { agency_id: "DUE" }]),
+    "stops.txt": file(["stop_id", "stop_name", "stop_lat", "stop_lon"], [
+      { stop_id: "S1", stop_name: "Stazione", stop_lat: 43.6, stop_lon: 13.5 }, { stop_id: "S2", stop_name: "Centro", stop_lat: 43.61, stop_lon: 13.51 }]),
+    "routes.txt": file(["route_id", "agency_id", "route_short_name", "route_long_name", "route_type"], [
+      { route_id: "L1", agency_id: "DUE", route_short_name: "1", route_long_name: "Stazione - Centro", route_type: 3 },
+      { route_id: "L2", agency_id: "ATMA", route_short_name: "2", route_long_name: "Centro - Stazione", route_type: 3 }]),
+    "trips.txt": file(["route_id", "service_id", "trip_id", "trip_headsign", "direction_id"], [
+      { route_id: "L1", service_id: "FER", trip_id: "T1", trip_headsign: "Centro", direction_id: 0 },
+      { route_id: "L2", service_id: "FER", trip_id: "T2", trip_headsign: "Stazione", direction_id: 0 }]),
+    "stop_times.txt": file(["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"], [
+      { trip_id: "T1", arrival_time: "07:00:00", departure_time: "07:00:00", stop_id: "S1", stop_sequence: 1 },
+      { trip_id: "T1", arrival_time: "07:10:00", departure_time: "07:10:00", stop_id: "S2", stop_sequence: 2 },
+      { trip_id: "T2", arrival_time: "08:00:00", departure_time: "08:00:00", stop_id: "S2", stop_sequence: 1 },
+      { trip_id: "T2", arrival_time: "08:10:00", departure_time: "08:10:00", stop_id: "S1", stop_sequence: 2 }]),
+    "calendar.txt": file(["service_id", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "start_date", "end_date"], [
+      { service_id: "FER", monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1, saturday: 0, sunday: 0, start_date: "20261102", end_date: "20261106" }]),
+    "calendar_dates.txt": file(["service_id", "date", "exception_type"], []),
+  };
+  const adesso = new Date("2026-11-18T08:00:00Z");
+  const operatori = (xml: string) => [...xml.matchAll(/<Operator id="IT:ITI3:Operator:([^"]+)"/g)].map((m) => m[1]);
+  const delleLinee = (xml: string) => [...xml.matchAll(/<Line id="IT:ITI3:Line:([^"]+)"[^>]*>.*?<OperatorRef ref="IT:ITI3:Operator:([^"]+)"/g)].map((m) => [m[1], m[2]]);
+
+  it("senza gestori l'operatore è l'azienda", () => {
+    const { xml, conteggi } = netexDelGtfs(GTFS, A, [], adesso);
+    expect([operatori(xml), conteggi.operatori]).toEqual([["conerobus"], 1]);
+    expect(delleLinee(xml)).toEqual([["L1", "conerobus"], ["L2", "conerobus"]]);
+  });
+
+  it("coi gestori ogni linea porta il suo; quella che ne dice uno fuori elenco è del predefinito", () => {
+    const { xml, conteggi } = netexDelGtfs(GTFS, A, CONSORZIATI, adesso);
+    expect([operatori(xml), conteggi.operatori]).toEqual([["UNO", "DUE"], 2]);
+    expect(delleLinee(xml)).toEqual([["L1", "DUE"], ["L2", "UNO"]]);
+    /* chi trasmette resta l'azienda */
+    expect(xml).toContain("<ParticipantRef>conerobus</ParticipantRef>");
+  });
+
+  it("il predefinito è quello segnato, non il primo dell'elenco", () => {
+    const { xml } = netexDelGtfs(GTFS, A, [{ ...UNO, predefinito: false }, DUE, { ...TRE, predefinito: true }], adesso);
+    expect(delleLinee(xml)).toEqual([["L1", "DUE"], ["L2", "TRE"]]);
+    expect(operatori(xml)).toEqual(["DUE", "TRE"]);
   });
 });
 

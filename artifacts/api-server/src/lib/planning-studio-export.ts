@@ -151,8 +151,10 @@ async function costruisciNetex(progetto: any, fonte: Versione): Promise<{
 }> {
   const azienda = await leggiAzienda();
   if (!azienda.netexCodiceLocale) throw new SenzaCodiceNetex();
-  const gtfs = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale, await gestoriDalDatabase());
-  const { xml, conteggi } = netexDelGtfs(gtfs, azienda);
+  /* gli stessi gestori per il GTFS e per il NeTEx che ne nasce: gli operatori sono le agenzie */
+  const gestori = await gestoriDalDatabase();
+  const gtfs = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale, gestori);
+  const { xml, conteggi } = netexDelGtfs(gtfs, azienda, gestori);
   return { xml, conteggi, verifica: verificaGtfs(gtfs), validazione: await validaNetex(xml) };
 }
 
