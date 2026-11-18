@@ -160,7 +160,7 @@ export async function catalogoTitoli(ex: Ex = db): Promise<TitoloCatalogo[]> {
       FROM titoli_catalogo ORDER BY ordine, titolo`)).map(titoloDa);
 }
 
-const TITOLO = z.string().trim().regex(/^[a-z][a-z0-9_]{1,59}$/, "identificativo: lettere minuscole, cifre e trattini bassi, come «ancona_60min»");
+const TITOLO = z.string().trim().regex(/^[a-z][a-z0-9_]{1,59}$/, "identificativo: lettere minuscole, cifre e trattini bassi, come «urbano_60min»");
 const NOME = z.string().trim().min(1, "nome: almeno un carattere").max(120, "nome: al più 120 caratteri")
   .regex(/^[^"\p{Cc}]+$/u, "nome: niente virgolette doppie né a capo (finisce nei file del GTFS)");
 const RETE = z.string().trim().regex(/^[a-z][a-z0-9_]{1,39}$/, "rete: scegli una rete dell'elenco");

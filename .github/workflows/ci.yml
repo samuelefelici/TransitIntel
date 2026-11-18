@@ -1130,6 +1130,11 @@ jobs:
       # porti e aeroporti; una zona senza orari suoi prende quelli del nodo.
       - name: I nodi di scambio dell'azienda
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/nodi-scambio-db.test.ts
+      # Tappa 6.17: i punti di cambio dei turni guida sono quelli
+      # dell'azienda, con i nomi delle loro fermate; senza punti, nessuno
+      # (prima valevano sei punti di Ancona scritti nel codice).
+      - name: I punti di cambio dei turni guida
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/punti-di-cambio-db.test.ts
       # Tappa 6.3: i dati aperti a un indirizzo stabile. Nasce spento; acceso,
       # il GTFS e il NeTEx nascono dalla versione in esercizio (mai dalla
       # bozza), si rifanno solo quando cambia quello da cui nascono, e vanno

@@ -26,6 +26,7 @@ from optimizer_common import (
     RD131Config,
     Cluster,
     DEFAULT_CLUSTERS,
+    parse_clusters_from_config,
     SHIFT_RULES,
     VEHICLE_SIZE,
     MAX_DOWNSIZE_LEVELS,
@@ -136,70 +137,70 @@ class TestCanVehicleServe:
 #  CLUSTER MATCHING
 # ═══════════════════════════════════════════════════════════════
 
+# Punti di cambio di prova, come li manda l'API (o con le parole chiave di un config)
+PUNTI = [
+    Cluster(id="centro", name="Piazza Centrale", keywords=["PIAZZA CENTRALE"], transfer_from_depot_min=10,
+            stop_ids=["C1"], stop_names=["Piazza Centrale A", "Piazza Centrale B"]),
+    Cluster(id="stazione", name="Stazione", keywords=["STAZIONE F"], transfer_from_depot_min=10),
+    Cluster(id="ospedale", name="Ospedale", keywords=[], transfer_from_depot_min=15,
+            stop_ids=["H1"], stop_names=["Ospedale Civile"]),
+]
+
+
 class TestMatchCluster:
-    def test_keyword_match_stazione(self):
-        cid = match_cluster("Stazione FS Ancona")
-        assert cid is not None
-        assert "stazione" in cid or "station" in cid.lower()
+    def test_nome_della_fermata(self):
+        assert match_cluster("Piazza Centrale B", PUNTI) == "centro"
+        assert match_cluster("OSPEDALE CIVILE", PUNTI) == "ospedale"
 
-    def test_keyword_match_cavour(self):
-        cid = match_cluster("Piazza Cavour")
-        assert cid == "cavour"
-
-    def test_keyword_match_tavernelle(self):
-        cid = match_cluster("TAVERNELLE capolinea")
-        assert cid == "tavernelle"
-
-    def test_keyword_match_ugo_bassi(self):
-        cid = match_cluster("Via Ugo Bassi 5")
-        assert cid is not None
+    def test_parola_chiave(self):
+        assert match_cluster("Stazione FS di Prova", PUNTI) == "stazione"
 
     def test_no_match(self):
-        assert match_cluster("Via Roma 123") is None
+        assert match_cluster("Via Roma 123", PUNTI) is None
 
     def test_none_input(self):
-        assert match_cluster(None) is None
+        assert match_cluster(None, PUNTI) is None
 
     def test_empty_string(self):
-        assert match_cluster("") is None
+        assert match_cluster("", PUNTI) is None
 
     def test_match_by_stop_id(self):
-        """Test match by stop_id with custom clusters."""
-        clusters = [
-            Cluster(
-                id="test_cl", name="Test", keywords=[],
-                transfer_from_depot_min=10,
-                stop_ids=["STOP_42"], stop_names=[], color="#000",
-            ),
-        ]
-        assert match_cluster("Unknown stop", clusters, stop_id="STOP_42") == "test_cl"
+        assert match_cluster("Unknown stop", PUNTI, stop_id="H1") == "ospedale"
+
+    def test_senza_punti_nessun_punto(self):
+        """Tappa 6.17: senza punti dell'azienda non valgono punti di nessuna città."""
+        assert DEFAULT_CLUSTERS == []
+        for nome in ("Stazione FS Ancona", "Piazza Cavour", "TAVERNELLE capolinea", "Via Ugo Bassi 5", "Ospedale Regionale Torrette"):
+            assert match_cluster(nome) is None
+            assert match_cluster(nome, []) is None
+        assert parse_clusters_from_config({}) == []
+        assert parse_clusters_from_config({"clusters": []}) == []
 
 
 class TestClusterById:
     def test_existing_cluster(self):
-        c = cluster_by_id("cavour")
+        c = cluster_by_id("centro", PUNTI)
         assert c is not None
-        assert c.name == "Piazza Cavour"
+        assert c.name == "Piazza Centrale"
 
     def test_non_existing(self):
-        assert cluster_by_id("non_existent") is None
+        assert cluster_by_id("non_existent", PUNTI) is None
+        assert cluster_by_id("cavour") is None
 
 
 class TestDepotTransferMin:
     def test_central_cluster(self):
-        """Cluster centrali → 10 min."""
-        mins = depot_transfer_min("Piazza Cavour")
-        assert mins == DEPOT_TRANSFER_CENTRAL
+        assert depot_transfer_min("Piazza Centrale A", PUNTI) == 10
 
     def test_outer_cluster(self):
-        """Ospedale Torrette → 15 min."""
-        mins = depot_transfer_min("Ospedale Regionale Torrette")
-        assert mins == 15
+        assert depot_transfer_min("Ospedale Civile", PUNTI) == 15
 
     def test_unknown_stop(self):
         """Fermata sconosciuta → DEPOT_TRANSFER_OUTER (15)."""
-        mins = depot_transfer_min("Fermata Ignota Lontana")
-        assert mins == DEPOT_TRANSFER_OUTER
+        assert depot_transfer_min("Fermata Ignota Lontana", PUNTI) == DEPOT_TRANSFER_OUTER
+
+    def test_senza_punti(self):
+        assert depot_transfer_min("Piazza Cavour") == DEPOT_TRANSFER_OUTER
 
 
 class TestBuildClusterStopLookup:

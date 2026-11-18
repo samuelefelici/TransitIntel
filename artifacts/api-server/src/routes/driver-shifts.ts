@@ -52,7 +52,7 @@ const UUID_DSS = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
 import { strictLimiter } from "../middlewares/rate-limit";
 import { eseguiPython, jsonDallUscita } from "../lib/lavori/python";
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
-import { CLUSTERS, COMPANY_CARS, type Cluster, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario } from "../lib/dati-solver";
+import { loadClustersForPython, loadCompanyCars, loadRestPointsForScenario, puntoDellaFermata, puntiDiCambio, type PuntoDiCambio } from "../lib/dati-solver";
 
 const router: IRouter = Router();
 
@@ -94,24 +94,16 @@ const DEPOT_TRANSFER_OUTER   = 15;
  *  database stanno in lib/dati-solver.ts: li usa anche il lavoratore)
  * ═══════════════════════════════════════════════════════════════ */
 
-function matchCluster(stopName: string | undefined | null): string | null {
-  if (!stopName) return null;
-  const up = stopName.toUpperCase();
-  for (const c of CLUSTERS) {
-    for (const kw of c.keywords) {
-      if (up.includes(kw)) return c.id;
-    }
-  }
-  return null;
+/* I punti di cambio sono quelli dell'azienda (lib/dati-solver.ts, puntiDiCambio): si passano a ogni calcolo. */
+const matchCluster = (stopName: string | undefined | null, punti: readonly PuntoDiCambio[]): string | null => puntoDellaFermata(stopName, punti);
+
+function clusterById(id: string, punti: readonly PuntoDiCambio[]): PuntoDiCambio | undefined {
+  return punti.find(c => c.id === id);
 }
 
-function clusterById(id: string): Cluster | undefined {
-  return CLUSTERS.find(c => c.id === id);
-}
-
-function depotTransfer(stopName: string | undefined | null): number {
-  const cl = matchCluster(stopName);
-  return cl ? (clusterById(cl)?.transferFromDepotMin ?? DEPOT_TRANSFER_CENTRAL) : DEPOT_TRANSFER_OUTER;
+function depotTransfer(stopName: string | undefined | null, punti: readonly PuntoDiCambio[]): number {
+  const cl = matchCluster(stopName, punti);
+  return cl ? (clusterById(cl, punti)?.transferFromDepotMin ?? DEPOT_TRANSFER_CENTRAL) : DEPOT_TRANSFER_OUTER;
 }
 
 
@@ -248,7 +240,7 @@ function tripDriving(trips: VTrip[]): number {
  *  STEP 1 — Build atomic Segments from vehicle shifts
  * ═══════════════════════════════════════════════════════════════ */
 
-function makeSegment(idx: number, vehicleId: string, vehicleType: string, trips: VTrip[]): Segment {
+function makeSegment(idx: number, vehicleId: string, vehicleType: string, trips: VTrip[], punti: readonly PuntoDiCambio[]): Segment {
   const first = trips[0];
   const last = trips[trips.length - 1];
   const firstStop = first.firstStopName || "?";
@@ -260,12 +252,12 @@ function makeSegment(idx: number, vehicleId: string, vehicleType: string, trips:
     durationMin: last.arrivalMin - first.departureMin,
     drivingMin: tripDriving(trips),
     firstStop, lastStop,
-    firstCluster: matchCluster(firstStop),
-    lastCluster: matchCluster(lastStop),
+    firstCluster: matchCluster(firstStop, punti),
+    lastCluster: matchCluster(lastStop, punti),
   };
 }
 
-function buildSegments(vehicleShifts: VehicleShift[]): Segment[] {
+function buildSegments(vehicleShifts: VehicleShift[], punti: readonly PuntoDiCambio[]): Segment[] {
   const segments: Segment[] = [];
   let idx = 0;
 
@@ -284,13 +276,13 @@ function buildSegments(vehicleShifts: VehicleShift[]): Segment[] {
       const curr = trips[i];
       const gap = curr.departureMin - prev.arrivalMin;
 
-      const prevLastCluster = matchCluster(prev.lastStopName);
-      const currFirstCluster = matchCluster(curr.firstStopName);
+      const prevLastCluster = matchCluster(prev.lastStopName, punti);
+      const currFirstCluster = matchCluster(curr.firstStopName, punti);
 
       // Split when gap is large enough for a real cambio (≥5 min at cluster) or big gap otherwise
       const atCluster = prevLastCluster !== null || currFirstCluster !== null;
       if ((atCluster && gap >= 5) || gap >= 20) {
-        segments.push(makeSegment(idx++, shift.vehicleId, shift.vehicleType, currentTrips));
+        segments.push(makeSegment(idx++, shift.vehicleId, shift.vehicleType, currentTrips, punti));
         currentTrips = [curr];
       } else {
         currentTrips.push(curr);
@@ -298,7 +290,7 @@ function buildSegments(vehicleShifts: VehicleShift[]): Segment[] {
     }
 
     if (currentTrips.length > 0) {
-      segments.push(makeSegment(idx++, shift.vehicleId, shift.vehicleType, currentTrips));
+      segments.push(makeSegment(idx++, shift.vehicleId, shift.vehicleType, currentTrips, punti));
     }
   }
 
@@ -311,12 +303,12 @@ function buildSegments(vehicleShifts: VehicleShift[]): Segment[] {
 
 const CAMBIO_TIME_MIN = 3;
 
-function buildDriverShifts(vehicleShifts: VehicleShift[]): {
+export function buildDriverShifts(vehicleShifts: VehicleShift[], punti: readonly PuntoDiCambio[], autoAziendali: number): {
   driverShifts: DriverShift[];
   summary: Summary;
   unassignedSegments: Segment[];
 } {
-  const allSegments = buildSegments(vehicleShifts);
+  const allSegments = buildSegments(vehicleShifts, punti);
   allSegments.sort((a, b) => a.startMin - b.startMin);
 
   const used = new Set<number>();
@@ -357,7 +349,7 @@ function buildDriverShifts(vehicleShifts: VehicleShift[]): {
 
   function mkRipresa(blocks: RBlock[]): Ripresa {
     const firstStop = blocks[0].segment.firstStop;
-    const transfer = depotTransfer(firstStop);
+    const transfer = depotTransfer(firstStop, punti);
     const start = blocks[0].segment.startMin - PRE_SHIFT_MIN - transfer;
     const end = blocks[blocks.length - 1].segment.endMin;
     return {
@@ -375,7 +367,7 @@ function buildDriverShifts(vehicleShifts: VehicleShift[]): {
     if (used.has(allSegments[i].idx)) continue;
 
     const firstSeg = allSegments[i];
-    const transfer = depotTransfer(firstSeg.firstStop);
+    const transfer = depotTransfer(firstSeg.firstStop, punti);
     const nastroStartCand = firstSeg.startMin - PRE_SHIFT_MIN - transfer;
 
     const blocks: RBlock[] = [{ segment: firstSeg }];
@@ -428,7 +420,7 @@ function buildDriverShifts(vehicleShifts: VehicleShift[]): {
         const nextSeg = allSegments[bestJ];
         const block: RBlock = { segment: nextSeg };
         if (bestChain.cambio && bestChain.cluster) {
-          const cl = clusterById(bestChain.cluster);
+          const cl = clusterById(bestChain.cluster, punti);
           block.cambio = {
             cluster: bestChain.cluster,
             clusterName: cl?.name || bestChain.cluster,
@@ -483,13 +475,13 @@ function buildDriverShifts(vehicleShifts: VehicleShift[]): {
         if (!chain.ok) continue;
         const bl: RBlock = { segment: c };
         if (chain.cambio && chain.cluster) {
-          const cl = clusterById(chain.cluster);
+          const cl = clusterById(chain.cluster, punti);
           bl.cambio = { cluster: chain.cluster, clusterName: cl?.name || chain.cluster, fromVehicle: blocks[blocks.length - 1].segment.vehicleId, toVehicle: c.vehicleId };
         }
         blocks.push(bl);
         idxs.push(c.idx);
         groupUsed.add(c.idx);
-        const w = ripresaWork(blocks, depotTransfer(blocks[0].segment.firstStop));
+        const w = ripresaWork(blocks, depotTransfer(blocks[0].segment.firstStop, punti));
         if (w > TARGET_WORK_HIGH) break;
       }
       groups.push({ blocks, idxs });
@@ -567,7 +559,7 @@ function buildDriverShifts(vehicleShifts: VehicleShift[]): {
       if (!chain.ok) continue;
       const bl: RBlock = { segment: c };
       if (chain.cambio && chain.cluster) {
-        const cl = clusterById(chain.cluster);
+        const cl = clusterById(chain.cluster, punti);
         bl.cambio = { cluster: chain.cluster, clusterName: cl?.name || chain.cluster, fromVehicle: blocks[blocks.length - 1].segment.vehicleId, toVehicle: c.vehicleId };
       }
       blocks.push(bl);
@@ -595,7 +587,7 @@ function buildDriverShifts(vehicleShifts: VehicleShift[]): {
       for (let c = 0; c < allTrips.length; c += chunkSize) {
         const chunk = allTrips.slice(c, c + chunkSize);
         if (chunk.length === 0) continue;
-        const mini = makeSegment(allSegments.length + c, blocks[0].segment.vehicleId, blocks[0].segment.vehicleType, chunk);
+        const mini = makeSegment(allSegments.length + c, blocks[0].segment.vehicleId, blocks[0].segment.vehicleType, chunk, punti);
         const miniRip = mkRipresa([{ segment: mini }]);
         const mn = miniRip.endMin - miniRip.startMin;
         driverN++;
@@ -616,7 +608,7 @@ function buildDriverShifts(vehicleShifts: VehicleShift[]): {
   const totalWork = shifts.reduce((s, d) => s + d.workMin, 0);
   const totalNastro = shifts.reduce((s, d) => s + d.nastroMin, 0);
   const totalCambi = shifts.reduce((s, d) => s + d.cambiCount, 0);
-  const companyCarsUsed = Math.min(COMPANY_CARS, Math.ceil(totalDrivers / 10));
+  const companyCarsUsed = Math.min(autoAziendali, Math.ceil(totalDrivers / 10));
 
   return {
     driverShifts: shifts,
@@ -709,7 +701,9 @@ async function loadAndGenerate(scenarioId: string) {
   if (!vehicleShifts || vehicleShifts.length === 0)
     return { error: "Lo scenario non contiene turni macchina", status: 400 };
 
-  const { driverShifts, summary, unassignedSegments } = buildDriverShifts(vehicleShifts);
+  /* i punti di cambio e le auto aziendali dell'azienda: gli stessi che riceve il calcolo CP-SAT */
+  const [punti, autoAziendali] = await Promise.all([puntiDiCambio(), loadCompanyCars()]);
+  const { driverShifts, summary, unassignedSegments } = buildDriverShifts(vehicleShifts, punti, autoAziendali);
 
   return {
     data: {
@@ -719,8 +713,8 @@ async function loadAndGenerate(scenarioId: string) {
       driverShifts: serializeShifts(driverShifts),
       summary,
       unassignedBlocks: unassignedSegments.length,
-      clusters: CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
-      companyCars: COMPANY_CARS,
+      clusters: punti.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
+      companyCars: autoAziendali,
     },
   };
 }
@@ -921,8 +915,9 @@ function datiDi(l: RigaLavoro): any {
     driverShifts: r.driverShifts || [],
     summary: r.summary || {},
     unassignedBlocks: r.metrics?.uncoverableTasks ?? 0,
-    clusters: r.clusters || CLUSTERS.map(c => ({ id: c.id, name: c.name, transferMin: c.transferFromDepotMin })),
-    companyCars: r.companyCars || COMPANY_CARS,
+    /* quello che il calcolo ha usato: senza, niente (prima valevano sei punti di Ancona e cinque auto scritti nel codice) */
+    clusters: r.clusters ?? [],
+    companyCars: r.companyCars ?? null,
     solverMetrics: r.metrics || {},
     optimizationAnalysis: r.optimizationAnalysis ?? null,
     // risultato parziale: lo script fermato dal tempo massimo (lib/lavori/gestori.ts)

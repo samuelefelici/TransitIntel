@@ -30,7 +30,10 @@ const T = new Date("2026-11-02T10:00:00Z");
 const riga = (id: string, utente: string | null, stato = "completato", extra: Record<string, any> = {}) => ({
   id, utente_id: utente, stato, oggetto_id: "s", tipo: "python", versione: 1,
   metadati: { ambito: "turni-guida", scenarioId: "s", scenarioName: "Feriale", date: "20261102" },
-  avanzamento: null, risultato: stato === "completato" ? { driverShifts: [{ id: 1 }], summary: { totalDriverShifts: 1 }, metrics: { x: 1 } } : null,
+  avanzamento: null,
+  risultato: stato === "completato"
+    ? { driverShifts: [{ id: 1 }], summary: { totalDriverShifts: 1 }, metrics: { x: 1 }, clusters: [{ id: "c1", name: "Piazza", transferMin: 10 }], companyCars: 8 }
+    : null,
   errore: null, errore_tipo: null, creato_il: T, iniziato_il: T, finito_il: stato === "completato" ? T : null, aggiornato_il: T, ...extra,
 });
 
@@ -51,6 +54,13 @@ describe("i lavori dei turni guida: li vede e li ferma solo chi li ha lanciati",
     expect(annullati).toEqual([]);
   });
 
+  it("un risultato che non dice punti e auto: nessun punto e nessuna auto (prima: sei punti di Ancona e cinque auto scritti nel codice)", async () => {
+    righe.set("senza-dati", riga("senza-dati", A.id, "completato", { risultato: { driverShifts: [], summary: {}, metrics: {} } }));
+    const r = await request(appDiProva(router, A)).get("/api/driver-shifts/jobs/senza-dati");
+    expect(r.status).toBe(200);
+    expect(r.body.data).toMatchObject({ clusters: [], companyCars: null });
+  });
+
   it("A e l'admin lo vedono, con la forma di sempre; lo stream di un lavoro finito manda il risultato", async () => {
     for (const u of [A, ADMIN]) {
       const app = appDiProva(router, u);
@@ -63,7 +73,8 @@ describe("i lavori dei turni guida: li vede e li ferma solo chi li ha lanciati",
         data: {
           solver: "cpsat", scenarioId: "s", scenarioName: "Feriale", date: "20261102",
           driverShifts: [{ id: 1 }], summary: { totalDriverShifts: 1 }, unassignedBlocks: 0,
-          clusters: expect.any(Array), companyCars: expect.anything(), solverMetrics: { x: 1 }, optimizationAnalysis: null,
+          /* i punti e le auto che il calcolo ha usato, com'erano nel risultato */
+          clusters: [{ id: "c1", name: "Piazza", transferMin: 10 }], companyCars: 8, solverMetrics: { x: 1 }, optimizationAnalysis: null,
           avviso: null,
         },
       });

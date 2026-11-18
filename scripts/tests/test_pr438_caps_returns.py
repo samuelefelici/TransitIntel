@@ -134,3 +134,16 @@ def test_service_return_proposal_after_empty_return():
         assert p["nextTripId"] == f"t{k}"
     finally:
         set_deadhead_matrix(None); set_deadhead_min_matrix(None)
+
+
+def test_run_reports_the_company_cars_it_worked_with():
+    """Tappa 6.17: il risultato dice le auto aziendali del calcolo (maxCompanyCars),
+    non il 5 di riserva; e senza punti di cambio nell'ingresso non ne vale nessuno."""
+    old = v4.MAX_COMPANY_CARS
+    try:
+        cfg = {"bds": {"shiftRules": {"intero": {"maxNastro": 435}}, "optimizer": {"maxCompanyCars": 8}}, "companyCars": 8}
+        out = v4.run({"vehicleShifts": [_block_with_deadhead_and_depot()], "config": cfg}, time_limit_sec=10)
+        assert out["companyCars"] == 8
+        assert out["clusters"] == []
+    finally:
+        v4.MAX_COMPANY_CARS = old

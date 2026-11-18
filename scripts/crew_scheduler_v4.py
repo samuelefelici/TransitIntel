@@ -5100,7 +5100,9 @@ def serialize_output(
             {"id": c.id, "name": c.name, "transferMin": c.transfer_from_depot_min}
             for c in clusters
         ],
-        "companyCars": COMPANY_CARS,
+        # le auto con cui il calcolo ha lavorato (maxCompanyCars dell'azienda): prima
+        # qui c'era COMPANY_CARS, il 5 di riserva, qualunque fosse il tetto vero
+        "companyCars": MAX_COMPANY_CARS,
         "optimizerParams": {
             "minWorkPerDuty": MIN_WORK_PER_DUTY,
             "maxCompanyCars": MAX_COMPANY_CARS,
