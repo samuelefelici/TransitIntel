@@ -9,7 +9,7 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { describe, it, expect } from "vitest";
-import { indiceTranscodifica, verificaTranscodifica, classificaAbbinamenti } from "../lib/stop-aliases";
+import { indiceTranscodifica, verificaTranscodifica, classificaAbbinamenti, fermataDelCodice, codiceDellaFermata, aliasNelFeed } from "../lib/stop-aliases";
 import { leggiCsvTranscodifica, righeDellaBase, stopIdValido } from "../lib/transcodifica-paline";
 import { resolveStop, namesCompatible, type GtfsIndex } from "../lib/siri-vm";
 
@@ -94,7 +94,7 @@ describe("resolveStop con la transcodifica", () => {
 
 describe("verificaTranscodifica", () => {
   it("conta presenze, assenze, fermate senza codice e collisioni", () => {
-    const v = verificaTranscodifica(parseTranscodifica(CSV), new Set(["20001", "200", "20045", "77"]));
+    const v = verificaTranscodifica(parseTranscodifica(CSV), { stops: new Set(["20001", "200", "20045", "77"]) });
     expect(v).toMatchObject({
       righe: 4, nelFeed: 3, nonNelFeed: ["20928"], feedSenzaCodice: 1,
       stopConPiuCodici: [],
@@ -130,5 +130,63 @@ describe("classificaAbbinamenti: ogni palina con il suo stato", () => {
     const a = classificaAbbinamenti(valide, [], { stops: new Set(), stopNames: new Map() });
     expect(a.riepilogo.fermateAssenti).toBe(4);
     expect(a.feedSenzaCodice).toEqual([]);
+  });
+});
+
+/* ── Tappa 6.20b: un feed nato da Planning Studio ─────────────────────────────
+ * Lo stop_id è l'identificativo della fermata nel progetto; il codice a cui
+ * punta la tabella è il suo codice stabile. Lo stop_code non conta: in un
+ * GTFS dell'azienda può essere il numero dell'AVM. */
+describe("la transcodifica su un feed nato da Planning Studio", () => {
+  const ID = { cavour: "a0000000-0000-4000-8000-000000020001", conero: "a0000000-0000-4000-8000-000000000200",
+    gas: "a0000000-0000-4000-8000-000000020045", orfana: "a0000000-0000-4000-8000-000000000077" };
+  const codici: Array<[string, string]> = [["20001", ID.cavour], ["200", ID.conero], ["20045", ID.gas], ["77", ID.orfana]];
+  const feed = {
+    stops: new Set(Object.values(ID)),
+    stopNames: new Map([[ID.cavour, "PIAZZA CAVOUR (CONEROBUS LINEE NORD)"], [ID.conero, "VIA DEL CONERO - CASACCIA"], [ID.gas, "OSIMO STAZIONE"], [ID.orfana, "Fermata orfana"]]),
+    stopByCodice: new Map(codici),
+    codiceOfStop: new Map(codici.map(([c, id]) => [id, c] as [string, string])),
+  };
+  const { righe: valide, scartate } = righeDellaBase(leggiCsvTranscodifica(CSV).righe);
+
+  it("il codice porta alla fermata per stop_id o per codice stabile; dalla fermata si torna al codice", () => {
+    expect(fermataDelCodice("20001", feed)).toBe(ID.cavour);
+    expect(fermataDelCodice(ID.cavour, feed)).toBe(ID.cavour);   // una correzione vecchia salvata con lo stop_id
+    expect(fermataDelCodice("20928", feed)).toBeNull();
+    expect(codiceDellaFermata(ID.cavour, feed)).toBe("20001");
+    expect(codiceDellaFermata("20001", { stops: new Set(["20001"]) } as any)).toBe("20001");   // feed da file: lo stop_id
+    expect(fermataDelCodice("20001", { stops: new Set(["20001"]) })).toBe("20001");
+  });
+
+  it("l'indice delle paline: prima nessuna trovava la fermata, ora la trova", () => {
+    const indice = indiceTranscodifica(valide);
+    expect([...indice].filter(([, s]) => feed.stops.has(s))).toEqual([]);   // la regola di prima
+    expect(aliasNelFeed(indice, feed)).toEqual(new Map([["1122", ID.gas], ["200", ID.cavour], ["199", ID.conero]]));
+  });
+
+  it("resolveStop prende la fermata giusta, non quella col numero uguale", () => {
+    const index: GtfsIndex = {
+      feedId: "f", trips: new Set(), routes: new Set(), stops: feed.stops,
+      tripRoute: new Map(), routeByCode: new Map(), routeLongNames: [],
+      stopNames: feed.stopNames, stopByName: new Map(), stopByCodice: feed.stopByCodice, codiceOfStop: feed.codiceOfStop,
+      stopByAlias: aliasNelFeed(indiceTranscodifica(valide), feed),
+      timeZone: "Europe/Rome", loadedAt: 0,
+    };
+    expect(resolveStop("200", "Piazza Cavour (Conerobus Linee Nord)", index)).toEqual({ stopId: ID.cavour, how: "alias", conflict: null });
+    expect(resolveStop("200", null, index)).toEqual({ stopId: ID.cavour, how: "alias", conflict: null });
+  });
+
+  it("la pagina: stati, collisioni e fermate senza codice come per un feed da file, coi codici", () => {
+    const a = classificaAbbinamenti(valide, scartate, feed, { refs: [] }, namesCompatible);
+    const per = Object.fromEntries(a.righe.map(r => [r.mizarRef, r]));
+    expect(per["200"]).toMatchObject({ stato: "abbinata", stopId: "20001", collisione: "200 = VIA DEL CONERO - CASACCIA" });
+    expect(per["1122"]).toMatchObject({ stato: "sospetta", nomeFeed: "OSIMO STAZIONE" });
+    expect(per["461"]).toMatchObject({ stato: "fermata_assente", stopId: "20928" });
+    expect(per["199"]).toMatchObject({ stato: "abbinata", stopId: "200", collisione: null });
+    expect(a.feedSenzaCodice).toEqual([{ stopId: "77", nome: "Fermata orfana" }]);
+    expect(verificaTranscodifica(valide, feed)).toMatchObject({
+      righe: 4, nelFeed: 3, nonNelFeed: ["20928"], feedSenzaCodice: 1, stopConPiuCodici: [],
+      collisioni: [{ mizarRef: "200", stopIdGiusto: "20001", stopIdOmonimo: "200" }],
+    });
   });
 });

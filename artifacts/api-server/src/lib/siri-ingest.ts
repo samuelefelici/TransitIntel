@@ -27,7 +27,7 @@ import {
   stopsAtPosition, emptyFunnel, explainFunnel, positionUsable, fixAgeSeconds,
   localHHMM, indiceCodiciCorsaDelGiorno,
 } from "./siri-vm";
-import { transcodificaEffettiva } from "./stop-aliases";
+import { transcodificaEffettiva, aliasNelFeed } from "./stop-aliases";
 import {
   type TripStop, type TransitFunnel,
   type GtfsIndex, type MappingReport, type SiriVehicle, type TripStartIndex,
@@ -56,8 +56,16 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   const [tripsR, stopsR, routesR] = await Promise.all([
     db.execute<any>(sql`
       SELECT trip_id, route_id FROM gtfs_trips WHERE feed_id = ${feedId}::uuid`),
+    /* il codice stabile della fermata nel progetto di Planning Studio, se il
+     * feed nasce da lì (lo stop_id è allora l'identificativo della fermata
+     * nel progetto): è il codice a cui punta la transcodifica (tappa 6.20b) */
     db.execute<any>(sql`
-      SELECT stop_id, stop_code, stop_name FROM gtfs_stops WHERE feed_id = ${feedId}::uuid`),
+      SELECT g.stop_id, g.stop_code, g.stop_name, s.codice
+        FROM gtfs_stops g
+        LEFT JOIN ps_stops s
+          ON s.id = CASE WHEN g.stop_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+                         THEN g.stop_id::uuid END
+       WHERE g.feed_id = ${feedId}::uuid`),
     db.execute<any>(sql`
       SELECT route_id, route_short_name, route_long_name FROM gtfs_routes WHERE feed_id = ${feedId}::uuid`),
   ]);
@@ -89,9 +97,16 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   const stopNames = new Map<string, string>();
   const stopByName = new Map<string, string>();
   const stopByCode = new Map<string, string>();
+  const stopByCodice = new Map<string, string>();
+  const codiceOfStop = new Map<string, string>();
   for (const r of ((stopsR as any).rows ?? [])) {
     const id = String(r.stop_id);
     stops.add(id);
+    const codice = r.codice != null ? String(r.codice).trim() : "";
+    if (codice) {
+      codiceOfStop.set(id, codice);
+      if (!stopByCodice.has(codice)) stopByCodice.set(codice, id);
+    }
     /* Il codice aziendale della fermata, quello che l'AVM usa (1122 ↔ stop_id
      * 20045). Primo vincitore, come per i nomi: un codice ripetuto su due
      * banchine non deve scegliere l'ultima letta. */
@@ -110,9 +125,10 @@ export async function loadGtfsIndex(force = false): Promise<GtfsIndex | null> {
   const transcodifica = await transcodificaEffettiva(force);
   cachedIndex = {
     feedId, trips, routes, stops, tripRoute, routeByCode, routeLongNames, stopNames, stopByName, stopByCode,
+    stopByCodice, codiceOfStop,
     /* Solo le coppie il cui stop_id esiste in QUESTO feed: una palina nuova
      * o un feed vecchio non devono produrre agganci verso il nulla. */
-    stopByAlias: new Map([...transcodifica.indice].filter(([, stopId]) => stops.has(stopId))),
+    stopByAlias: aliasNelFeed(transcodifica.indice, { stops, stopByCodice }),
     tripStarts,
     /* Il numero di corsa in coda al trip_id: la chiave con cui Mizar chiama
      * la corsa in CourseOfJourneyRef. Agganciare per numero, prima che per

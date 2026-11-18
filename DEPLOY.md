@@ -1476,6 +1476,48 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### La transcodifica trova le fermate dei feed di Planning Studio (tappa 6.20b)
+
+La transcodifica delle paline punta al codice della fermata nel GTFS
+dell'azienda («20045»). Un feed nato da Planning Studio però ha come
+`stop_id` l'identificativo interno della fermata nel progetto, e il codice
+sta nel suo «codice» stabile (tappa 3.1). Cerbero cercava il codice solo
+fra gli `stop_id`: con un feed di Planning Studio in uso nessuna palina
+trovava la sua fermata, e l'aggancio delle fermate dell'AVM ripiegava sul
+numero e sul nome.
+
+Da questo rilascio il codice della tabella porta alla fermata per `stop_id`
+o, nei feed di Planning Studio, per codice stabile. Lo `stop_code` no: in un
+GTFS dell'azienda può essere il numero dell'AVM. Vale per l'aggancio del
+flusso SIRI, per le richieste di StopMonitoring, per la pagina Paline Mizar
+(stati, collisioni, fermate senza codice), per i suggerimenti, la ricerca e
+la deduzione dai dati. Una correzione si salva col codice della fermata, non
+con l'identificativo interno, che cambia con la versione successiva del
+programma.
+
+Sulla copia dei dati veri, palina per palina (4.392 con una fermata nella
+tabella), l'aggancio che farebbe il flusso SIRI col nome di Mizar:
+
+| | Prima | Dopo |
+|---|---|---|
+| fermata giusta | 2.219 (per nome) | 3.892 (dalla tabella) |
+| fermata sbagliata | 928 | 0 |
+| nessuna fermata | 1.187 | 442 |
+| la fermata della tabella non c'è nel feed | 58 | 58 |
+
+Nella pagina: 3.892 paline abbinate (prima 0) e 500 «fermata assente», cioè
+codici che il programma in esercizio non ha più. Si correggono dalla pagina
+o con un import nuovo della tabella.
+
+**Dopo il deploy**
+1. Niente da fare a mano: nessuna migrazione, nessuna variabile, nessuna
+   Watch Path nuova.
+2. Entro dieci minuti l'indice del flusso SIRI si rilegge da solo.
+3. In Paline Mizar il numero di paline «Abbinata» sale; le «Fermata
+   assente» rimaste sono da guardare una per una.
+
+**Rollback**: immagine precedente. L'aggancio torna a numero e nome.
+
 ### La transcodifica delle paline come dato dell'azienda (tappa 6.20)
 
 La tabella che dice quale fermata del feed corrisponde a ogni codice palina

@@ -85,6 +85,45 @@ export function spezzaCsv(riga: string): string[] {
   return out;
 }
 
+/* ── Il codice della tabella e la fermata del feed (tappa 6.20b) ──────────────
+ * La tabella punta al codice della fermata nel GTFS dell'azienda («20045»).
+ * In un feed caricato da file quel codice è lo stop_id. In un feed nato da
+ * Planning Studio no: lo stop_id è l'identificativo interno della fermata nel
+ * progetto, e il codice è il suo «codice» stabile (tappa 3.1). Lo stop_code
+ * non serve: in un GTFS dell'azienda può essere il numero dell'AVM.
+ * Prima si cercava solo lo stop_id, e con un feed di Planning Studio nessuna
+ * palina trovava la sua fermata. */
+
+/** Le fermate del feed che servono alla transcodifica. */
+export interface FeedTranscodifica {
+  stops: Set<string>;
+  stopNames: Map<string, string>;
+  /** feed di Planning Studio: codice stabile → stop_id, e il contrario; vuoti per un feed da file */
+  stopByCodice?: Map<string, string>;
+  codiceOfStop?: Map<string, string>;
+}
+
+/** La fermata del feed a cui porta un codice della tabella: lo stop_id stesso, o la fermata con quel codice stabile. */
+export function fermataDelCodice(codice: string, feed: Pick<FeedTranscodifica, "stops" | "stopByCodice">): string | null {
+  if (feed.stops.has(codice)) return codice;
+  return feed.stopByCodice?.get(codice) ?? null;
+}
+
+/** Il codice con cui la tabella chiama una fermata del feed: il codice stabile, se il feed ne ha uno; altrimenti lo stop_id. */
+export function codiceDellaFermata(stopId: string, feed: Pick<FeedTranscodifica, "codiceOfStop">): string {
+  return feed.codiceOfStop?.get(stopId) ?? stopId;
+}
+
+/** codice palina → stop_id del feed, solo per le paline la cui fermata c'è in questo feed. */
+export function aliasNelFeed(indice: Map<string, string>, feed: Pick<FeedTranscodifica, "stops" | "stopByCodice">): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [ref, codice] of indice) {
+    const s = fermataDelCodice(codice, feed);
+    if (s) out.set(ref, s);
+  }
+  return out;
+}
+
 /** mizar_ref → stop_id. Il primo vince, come per i nomi. */
 export function indiceTranscodifica(righe: RigaTranscodifica[]): Map<string, string> {
   const m = new Map<string, string>();
@@ -148,41 +187,48 @@ export interface Abbinamenti {
 
 export function classificaAbbinamenti(
   righe: RigaTranscodifica[], scartate: RigaScartata[],
-  feed: { stops: Set<string>; stopNames: Map<string, string> },
+  feed: FeedTranscodifica,
   flusso: { refs: string[] } = { refs: [] },
   nomiCompatibili: (a: string | null, b: string | null) => boolean = (a, b) => !a || !b || a.trim().toUpperCase() === b.trim().toUpperCase(),
 ): Abbinamenti {
+  /* le paline per fermata del feed (quella a cui porta il codice; se non c'è, il codice stesso) */
+  const fermataDi = new Map(righe.map(r => [r.mizarRef, fermataDelCodice(r.stopId, feed)]));
+  const chiave = (r: RigaTranscodifica) => fermataDi.get(r.mizarRef) ?? `codice:${r.stopId}`;
   const perStop = new Map<string, number>();
-  for (const r of righe) perStop.set(r.stopId, (perStop.get(r.stopId) ?? 0) + 1);
+  for (const r of righe) perStop.set(chiave(r), (perStop.get(chiave(r)) ?? 0) + 1);
   const visti = new Set(flusso.refs.map(x => x.trim()));
   const trascodificati = new Set(righe.map(r => r.mizarRef));
+  /* un codice dell'AVM uguale al codice di un'ALTRA fermata del feed: è la fermata che l'aggancio per numero prenderebbe */
+  const omonima = (mizarRef: string, fermata: string | null) => {
+    const o = fermataDelCodice(mizarRef, feed);
+    return o && o !== fermata ? `${mizarRef} = ${feed.stopNames.get(o) ?? "?"}` : null;
+  };
 
   const out: Abbinamento[] = righe.map(r => {
-    const nelFeed = feed.stops.has(r.stopId);
-    const nomeFeed = nelFeed ? (feed.stopNames.get(r.stopId) ?? null) : null;
-    const stato: StatoAbbinamento = !nelFeed ? "fermata_assente"
+    const fermata = fermataDi.get(r.mizarRef) ?? null;
+    const nomeFeed = fermata ? (feed.stopNames.get(fermata) ?? null) : null;
+    const stato: StatoAbbinamento = !fermata ? "fermata_assente"
       : nomiCompatibili(r.nome, nomeFeed) ? "abbinata" : "sospetta";
-    const collisione = feed.stops.has(r.mizarRef) && r.mizarRef !== r.stopId
-      ? `${r.mizarRef} = ${feed.stopNames.get(r.mizarRef) ?? "?"}` : null;
     return {
-      mizarRef: r.mizarRef, stopId: r.stopId, nomeMizar: r.nome, nomeFeed, stato, collisione,
+      mizarRef: r.mizarRef, stopId: r.stopId, nomeMizar: r.nome, nomeFeed, stato, collisione: omonima(r.mizarRef, fermata),
       fonte: r.fonte ?? "azienda", nota: r.nota ?? null, utente: r.utente ?? null,
-      condivisaCon: (perStop.get(r.stopId) ?? 1) - 1,
+      condivisaCon: (perStop.get(chiave(r)) ?? 1) - 1,
       vistaNelFlusso: visti.has(r.mizarRef),
     };
   });
   for (const s of scartate) {
     out.push({
       mizarRef: s.mizarRef, stopId: null, nomeMizar: s.nome, nomeFeed: null, stato: "senza_codice",
-      collisione: feed.stops.has(s.mizarRef) ? `${s.mizarRef} = ${feed.stopNames.get(s.mizarRef) ?? "?"}` : null,
+      collisione: omonima(s.mizarRef, null),
       fonte: s.fonte ?? "azienda", nota: s.nota ?? null, utente: s.utente ?? null,
       condivisaCon: 0, vistaNelFlusso: visti.has(s.mizarRef),
     });
   }
 
   const feedSenzaCodice: FermataSenzaCodice[] = [...feed.stops]
-    .filter(s => !perStop.has(s)).sort()
-    .map(s => ({ stopId: s, nome: feed.stopNames.get(s) ?? null }));
+    .filter(s => !perStop.has(s))
+    .map(s => ({ stopId: codiceDellaFermata(s, feed), nome: feed.stopNames.get(s) ?? null }))
+    .sort((a, b) => a.stopId.localeCompare(b.stopId));
   const flussoNonTrascodificato = [...visti].filter(x => x && !trascodificati.has(x)).sort();
 
   const conta = (st: StatoAbbinamento) => out.filter(x => x.stato === st).length;
@@ -270,24 +316,28 @@ export interface VerificaTranscodifica {
 }
 
 export function verificaTranscodifica(
-  righe: RigaTranscodifica[], stopsFeed: Set<string>,
+  righe: RigaTranscodifica[], feed: Pick<FeedTranscodifica, "stops" | "stopByCodice" | "codiceOfStop">,
 ): VerificaTranscodifica {
   const nonNelFeed: string[] = [];
   const perStop = new Map<string, string[]>();
   const collisioni: VerificaTranscodifica["collisioni"] = [];
   let nelFeed = 0;
   for (const r of righe) {
-    if (stopsFeed.has(r.stopId)) nelFeed++; else nonNelFeed.push(r.stopId);
-    const arr = perStop.get(r.stopId) ?? [];
-    arr.push(r.mizarRef); perStop.set(r.stopId, arr);
-    if (stopsFeed.has(r.mizarRef) && r.mizarRef !== r.stopId) {
-      collisioni.push({ mizarRef: r.mizarRef, stopIdGiusto: r.stopId, stopIdOmonimo: r.mizarRef });
+    const fermata = fermataDelCodice(r.stopId, feed);
+    if (fermata) nelFeed++; else nonNelFeed.push(r.stopId);
+    const k = fermata ?? `codice:${r.stopId}`;
+    const arr = perStop.get(k) ?? [];
+    arr.push(r.mizarRef); perStop.set(k, arr);
+    const omonima = fermataDelCodice(r.mizarRef, feed);
+    if (omonima && omonima !== fermata) {
+      collisioni.push({ mizarRef: r.mizarRef, stopIdGiusto: r.stopId, stopIdOmonimo: codiceDellaFermata(omonima, feed) });
     }
   }
   return {
     righe: righe.length, nelFeed, nonNelFeed,
-    feedSenzaCodice: [...stopsFeed].filter(s => !perStop.has(s)).length,
-    stopConPiuCodici: [...perStop.entries()].filter(([, v]) => v.length > 1).map(([stopId, mizarRefs]) => ({ stopId, mizarRefs })),
+    feedSenzaCodice: [...feed.stops].filter(s => !perStop.has(s)).length,
+    stopConPiuCodici: [...perStop.entries()].filter(([, v]) => v.length > 1)
+      .map(([k, mizarRefs]) => ({ stopId: k.startsWith("codice:") ? k.slice(7) : codiceDellaFermata(k, feed), mizarRefs })),
     collisioni,
   };
 }
