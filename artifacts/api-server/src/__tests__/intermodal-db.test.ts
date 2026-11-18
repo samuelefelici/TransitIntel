@@ -26,6 +26,7 @@ import { sql } from "drizzle-orm";
 import router from "../routes/intermodal";
 import routerOttimizzatore from "../routes/intermodal-optimizer";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
+import { dimenticaNodi } from "../lib/nodi-scambio-store";
 
 const UTENTE = "c1000000-0000-0000-0000-000000000001";
 const UTENTE_SEMPLICE = "c1000000-0000-0000-0000-000000000002";
@@ -49,8 +50,11 @@ const POI_UFFICI = "c1000000-0000-0000-0000-0000000000b1";
 const POI_PARCO = "c1000000-0000-0000-0000-0000000000b2";
 const POI_STAZIONE = "c1000000-0000-0000-0000-0000000000b3";
 const POI_UFFICI_PROGETTO = "c1000000-0000-0000-0000-0000000000b4";
-/* un comune che non esiste: il suo riquadro tiene fuori gli hub cablati di Ancona */
+/* un comune che non esiste: il suo riquadro tiene fuori i nodi di scambio dell'azienda */
 const COMUNE = "999990";
+/* un nodo di scambio dell'azienda (tappa 6.16) con la fermata GTFS "13" scritta sul nodo,
+ * dove prima c'era la stazione cablata nel codice */
+const NODO = "prova-nodo-cablato";
 
 /* le rotte dell'Intermodale e l'analisi intermodale dei turni, come nell'app vera */
 const rotte = Router();
@@ -78,14 +82,20 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
     await db.execute(sql`DELETE FROM points_of_interest
                           WHERE id IN (${POI_UFFICI}::uuid, ${POI_PARCO}::uuid, ${POI_STAZIONE}::uuid, ${POI_UFFICI_PROGETTO}::uuid)`);
     await db.execute(sql`DELETE FROM census_sections WHERE istat_code = ${COMUNE + "000001"}`);
+    await db.execute(sql`DELETE FROM nodi_scambio WHERE nodo = ${NODO}`);
+    dimenticaNodi();
   };
 
   beforeAll(async () => {
     await pulisci();
 
     /* ── Un feed GTFS: una stazione (dal nome), una fermata a 110 m, una lontana.
-     * La quarta ha l'id "13", lo stesso di una fermata cablata dell'hub curato
-     * rail-ancona: è da lì che le linee di un feed altrui potevano uscire ── */
+     * La quarta ha l'id "13", lo stesso della fermata scritta sul nodo di
+     * scambio dell'azienda: è da lì che le linee di un feed altrui potevano uscire ── */
+    await db.execute(sql`
+      INSERT INTO nodi_scambio (nodo, nome, tipo, lat, lng, fermate_gtfs, minuti_a_piedi, descrizione)
+      VALUES (${NODO}, 'Stazione del nodo di prova', 'railway', 43.607348, 13.49776447, ARRAY['13']::text[], 3, '')`);
+    dimenticaNodi();
     await db.execute(sql`INSERT INTO gtfs_feeds (id, filename) VALUES (${FEED}::uuid, 'intermodale-prova.zip')`);
     await db.execute(sql`
       INSERT INTO gtfs_stops (feed_id, stop_id, stop_name, stop_lat, stop_lon)
@@ -385,11 +395,11 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
       expect(r.status, JSON.stringify(r.body)).toBe(404);
     });
 
-    it("hub/:id/routes, a chi non vede feed: un hub cablato risponde, ma senza le linee che in un feed altrui passano alle sue fermate", async () => {
-      /* rail-ancona ha la fermata "13" cablata: nel feed di prova ci passa la linea 7 */
-      const r = await getSemplice("hub/rail-ancona/routes");
+    it("hub/:id/routes, a chi non vede feed: un nodo dell'azienda risponde, ma senza le linee che in un feed altrui passano alle sue fermate", async () => {
+      /* il nodo ha la fermata "13": nel feed di prova ci passa la linea 7 */
+      const r = await getSemplice(`hub/${NODO}/routes`);
       expect(r.status, JSON.stringify(r.body)).toBe(200);
-      expect(r.body.hub.id).toBe("rail-ancona");
+      expect(r.body.hub.id).toBe(NODO);
       expect(r.body.nearbyStops).toEqual([]);
       expect(r.body.routes).toEqual([]);
     });
@@ -402,7 +412,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("l'Intermodale, sul database", (
       expect((r.body.nearbyStops as any[]).map(s => s.stopId).sort()).toEqual(["S-STAZ", "S-VIC"]);
       expect(r.body.routes).toEqual(linea7);
 
-      const cablato = await get(`hub/rail-ancona/routes?feedId=${FEED}`);
+      const cablato = await get(`hub/${NODO}/routes?feedId=${FEED}`);
       expect(cablato.status, JSON.stringify(cablato.body)).toBe(200);
       expect(cablato.body.routes).toEqual(linea7);
     });

@@ -27,7 +27,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { haversineKm } from "./geo-utils";
-import { INTERMODAL_HUBS } from "../routes/coincidence-zones";
+import { hubDeiNodi } from "./nodi-scambio-store";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -117,7 +117,8 @@ const EMPTY_PLANNING: PlanningMetrics = {
   routes: 0, trips: 0, stops: 0, networkKm: 0,
   population: 0, coveredPopulation: 0, coveragePct: 0, comuniServed: 0,
   trafficStopsMeasured: 0, avgCongestion: 0, stopsInCongestionPct: 0,
-  intermodalHubsServed: 0, intermodalHubsTotal: INTERMODAL_HUBS.length,
+  /* i nodi di scambio dell'azienda: li conta chi costruisce le metriche */
+  intermodalHubsServed: 0, intermodalHubsTotal: 0,
   populationIntermodalAccess: 0, interchangeStops: 0,
 };
 
@@ -206,7 +207,9 @@ async function computePlanning(feedId: string): Promise<PlanningMetrics> {
   /* zone di coincidenza + intermodale */
   let hubsServed = 0;
   const servedHubs: Pt[] = [];
-  for (const hub of INTERMODAL_HUBS) {
+  const nodi = await hubDeiNodi();
+  m.intermodalHubsTotal = nodi.length;
+  for (const hub of nodi) {
     if (hasWithin(stopGrid, hub.lat, hub.lng, HUB_STOP_RADIUS_KM)) {
       hubsServed++;
       servedHubs.push({ lat: hub.lat, lng: hub.lng });
@@ -374,7 +377,7 @@ router.get("/planning/compare", async (req: Request, res: Response): Promise<voi
       name: p.name,
       materialized: !!p.feedId,
       materializedAt: p.materializedAt,
-      planning: p.feedId ? await computePlanning(p.feedId) : { ...EMPTY_PLANNING },
+      planning: p.feedId ? await computePlanning(p.feedId) : { ...EMPTY_PLANNING, intermodalHubsTotal: (await hubDeiNodi()).length },
       scheduling: await computeScheduling(p.id),
     });
 
