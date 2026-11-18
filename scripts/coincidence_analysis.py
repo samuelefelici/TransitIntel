@@ -5,9 +5,9 @@ Tre domande, una risposta sola:
 1. QUALI COINCIDENZE CI SONO — le relazioni fra linee che l'orario realizza
    davvero, capolinea o transito che siano (vcsp_probe.detect_coincidences).
 2. QUALI SI PERDONO PER POCO — due linee che si sfiorano a un nodo con
-   un'attesa appena fuori soglia. Sono le occasioni: nel festivo di Ancona la 3
-   e la 21/33 si incontrano a Posatora con 12 e 20 minuti, e nessuno se n'era
-   accorto perche' nessuno le contava.
+   un'attesa appena fuori soglia. Sono le occasioni: in un festivo vero due
+   linee si incontravano allo stesso nodo con 12 e 20 minuti, e nessuno se
+   n'era accorto perche' nessuno le contava.
 3. COSA COSTA PRENDERLE — traslando una linea intera di δ minuti (la cadenza
    resta identica: tutte le corse si spostano insieme) quante coincidenze si
    creano e quante se ne rompono altrove. E' il conto che dice se lo

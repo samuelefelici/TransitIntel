@@ -676,7 +676,7 @@ def find_probe_candidates(vsp_out: dict, trips_by_id: dict[str, dict],
 CREW_TARGET_GAP_MIN = 45   # stacco a cui mirare fra i due pezzi (→ intero composto)
 # Disturbo all'orario pubblicato: ogni corsa·minuto spostato costa questo in
 # fase di accettazione (vcsp.shiftPenaltyEur). Senza, la sonda accettava di
-# muovere 86 corse di 10′ per togliere una violazione da 1′ (Giro K, Ancona).
+# muovere 86 corse di 10′ per togliere una violazione da 1′ (su un giro vero).
 SHIFT_PENALTY_EUR_PER_TRIP_MIN = 1.0
 CREW_SHIFT_SCOPES = ("trip", "line")
 # Diagnostica dell'ultima scansione dei turni (perché la sonda non propone

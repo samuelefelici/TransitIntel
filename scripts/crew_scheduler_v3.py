@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 crew_scheduler_v3.py — Vehicle-Shift-First (VSF) Crew Scheduler
-Conerobus S.p.A. / TransitIntel
+Cerbero
 
 APPROCCIO:
   Non decomponiamo i turni macchina in task atomici.
@@ -71,7 +71,7 @@ CUT_SCORE_CLUSTER_BONUS = 3.0     # fermata in un cluster
 CUT_SCORE_BALANCE_MAX = 5.0       # massimo bonus bilanciamento
 CUT_NASTRO_PENALTY_PER_MIN = 0.05 # penalità se nastro risultante > max
 CUT_SAME_ROUTE_PENALTY = 15.0     # FORTE penalità se corse adiacenti sono sulla stessa linea
-                                   # (es. 43 Ancona→Varano, 43 Varano→Ancona → non tagliare!)
+                                   # (es. 43 Centro→Periferia, 43 Periferia→Centro → non tagliare!)
 CUT_NO_CLUSTER_PENALTY = 8.0      # penalità se la fermata NON è in un cluster definito
 
 # Gap minimo per un taglio valido (min)
@@ -200,7 +200,7 @@ def analyze_vehicle_block(block: VehicleBlock, clusters: list[Cluster]) -> None:
         else:
             # Forte penalità: tagliare fuori cluster = capolinea PERIFERICO
             # Il conducente non può essere raggiunto/sostituito facilmente.
-            # Le linee Conerobus sono radiali: centro→periferia→centro.
+            # Le linee urbane sono spesso radiali: centro→periferia→centro.
             # Al capolinea periferico il bus fa solo inversione (sosta corta),
             # quindi il taglio lì è sempre sbagliato.
             score -= CUT_NO_CLUSTER_PENALTY
@@ -218,7 +218,7 @@ def analyze_vehicle_block(block: VehicleBlock, clusters: list[Cluster]) -> None:
         trip_after = trips[i + 1]
         
         # Caso 1: stessa linea, direzione diversa → inversione al capolinea periferico
-        # Es: Linea 43 dir 0 (Ancona→Varano), poi Linea 43 dir 1 (Varano→Ancona)
+        # Es: Linea 43 dir 0 (Centro→Periferia), poi Linea 43 dir 1 (Periferia→Centro)
         # MAI tagliare qui: il bus sta solo invertendo la marcia
         same_route = (trip_before.route_id and trip_after.route_id 
                       and trip_before.route_id == trip_after.route_id)
@@ -229,7 +229,7 @@ def analyze_vehicle_block(block: VehicleBlock, clusters: list[Cluster]) -> None:
             score -= CUT_SAME_ROUTE_PENALTY * 1.5
         elif same_route:
             # Stessa linea, stessa direzione — il bus ripete la stessa corsa
-            # (es. 43 Ancona→Varano, poi di nuovo 43 Ancona→Varano)
+            # (es. 43 Centro→Periferia, poi di nuovo 43 Centro→Periferia)
             # Questo può succedere se il bus torna al centro (non registrato)
             # e riparte. Il gap potrebbe essere significativo.
             if not cid:

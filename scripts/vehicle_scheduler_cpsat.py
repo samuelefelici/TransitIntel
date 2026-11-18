@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 vehicle_scheduler_cpsat.py - CP-SAT Vehicle Scheduling Problem v3
-Conerobus S.p.A. / TransitIntel / Cerbero - Level 1 Optimisation
+Cerbero - Level 1 Optimisation
 
 CHANGELOG v3 (rispetto a v2):
   FIX-1  Warm-start strategy: primi N/2 scenari partono da perturbazioni del
@@ -66,7 +66,7 @@ class VSPConfig:
     """Parametri utente per il portfolio multi-scenario.
 
     Defaults scelti per bilanciamento qualità/tempo su istanze tipiche
-    Conerobus (200-400 corse/giorno, ~15k archi)."""
+    di una rete urbana media (200-400 corse/giorno, ~15k archi)."""
     # --- PORTFOLIO ---
     intensity: str = "deep"                      # fast | normal | deep | extreme
     strategies_enabled: list[str] = field(default_factory=lambda: [

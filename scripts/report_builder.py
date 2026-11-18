@@ -511,9 +511,9 @@ def render_territorio(d: dict) -> str:
 def render_nodi(net: dict) -> str:
     """2.2 — I NODI DI INTERSCAMBIO: quali sono, e che cosa raggruppano.
 
-    Qui finivano i cluster di tutta la rete aziendale: su un piano urbano di
-    Ancona comparivano Jesi, Osimo, Chiaravalle e Castelferretti, che nessuna
-    di queste linee tocca, e lo stesso nodo era ripetuto otto volte. Ora ci
+    Qui finivano i cluster di tutta la rete aziendale: su un piano urbano
+    comparivano i nodi di altre quattro città, che nessuna di queste linee
+    tocca, e lo stesso nodo era ripetuto otto volte. Ora ci
     sono solo i nodi attraversati davvero, ognuno con le fermate che tiene
     insieme — perche' «Piazza Cavour» per un cambio vettura non e' un punto,
     e' un gruppo di banchine."""
@@ -1254,8 +1254,8 @@ def render_nodi_coincidenza(esistenti: list) -> str:
     """8.1 — CHI SI INCONTRA, E DOVE.
 
     Un elenco di relazioni riga per riga non fa vedere la struttura. Chi
-    conosce la rete la descrive per NODO — «la 1/4 e la 44 a Piazza Cavour e a
-    Tavernelle», «la 2/6 con la 21/33 al Pinocchio» — perche' il nodo e' il
+    conosce la rete la descrive per NODO — «la 1/4 e la 44 in piazza e al
+    capolinea nord», «la 2/6 con la 21/33 all'ospedale» — perche' il nodo e' il
     posto dove uno cambia e le linee sono quello che ci trova. Questo quadro
     e' organizzato cosi'."""
     per_nodo: dict = {}

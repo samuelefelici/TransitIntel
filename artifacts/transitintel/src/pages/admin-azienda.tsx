@@ -32,6 +32,7 @@ import TitoliCatalogo from "@/components/azienda/TitoliCatalogo";
 import ElenchiTariffe from "@/components/azienda/ElenchiTariffe";
 import Gestori from "@/components/azienda/Gestori";
 import NodiDiScambio from "@/components/azienda/NodiDiScambio";
+import StatoInstallazione from "@/components/azienda/StatoInstallazione";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
@@ -136,7 +137,10 @@ export default function AdminAziendaPage() {
         </div>
       )}
 
-      <Card>
+      {/* che cosa c'è da compilare (tappa 6.18): ogni voce porta alla sua sezione, qui sotto o in un'altra pagina */}
+      <StatoInstallazione />
+
+      <Card id="azienda-identita" className="scroll-mt-4">
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <Building2 className="w-4 h-4 text-primary" aria-hidden /> Identità
@@ -151,7 +155,7 @@ export default function AdminAziendaPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="azienda-luogo" className="scroll-mt-4">
         <CardHeader>
           <CardTitle className="text-base flex items-center gap-2">
             <MapPin className="w-4 h-4 text-primary" aria-hidden /> Territorio
@@ -178,7 +182,7 @@ export default function AdminAziendaPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="azienda-netex" className="scroll-mt-4">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <FileCode2 className="w-4 h-4 text-primary" aria-hidden /> NeTEx per il NAP
@@ -197,7 +201,7 @@ export default function AdminAziendaPage() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="azienda-avm" className="scroll-mt-4">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
             <Radio className="w-4 h-4 text-primary" aria-hidden /> AVM: le vetture dell'azienda
@@ -235,28 +239,28 @@ export default function AdminAziendaPage() {
       <DatiAperti />
 
       {/* i depositi del personale (tappa 6.4): li crea e li cambia l'amministratore, ogni riga si salva da sé */}
-      <DepositiAzienda />
+      <section id="azienda-depositi" className="scroll-mt-4"><DepositiAzienda /></section>
 
       {/* le reti e le regole delle linee (tappa 6.7): urbano o extraurbano, per le tariffe e per il Roster */}
-      <RetiAzienda />
+      <section id="azienda-reti" className="scroll-mt-4"><RetiAzienda /></section>
 
       {/* i gestori (tappa 6.11): le aziende che gestiscono le linee, ognuna un'agenzia nei GTFS */}
-      <Gestori />
+      <section id="azienda-gestori" className="scroll-mt-4"><Gestori /></section>
 
       {/* le fasce chilometriche dell'extraurbano (tappa 6.8): a ogni fascia di chilometri il suo prezzo */}
-      <FasceKm />
+      <section id="azienda-fasce" className="scroll-mt-4"><FasceKm /></section>
 
       {/* il catalogo dei titoli di viaggio (tappa 6.9): i biglietti e gli abbonamenti con cui si riempie un feed */}
-      <TitoliCatalogo />
+      <section id="azienda-titoli" className="scroll-mt-4"><TitoliCatalogo /></section>
 
       {/* gli elenchi di partenza delle tariffe (tappa 6.10): categorie di passeggero e supporti */}
-      <ElenchiTariffe />
+      <section id="azienda-elenchi" className="scroll-mt-4"><ElenchiTariffe /></section>
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}
-      <TerritorioAzienda />
+      <section id="azienda-territorio" className="scroll-mt-4"><TerritorioAzienda /></section>
 
       {/* i nodi di scambio (tappa 6.16): stazioni, porti, aeroporti e parcheggi scambiatori, con gli orari stimati */}
-      <NodiDiScambio />
+      <section id="azienda-nodi" className="scroll-mt-4"><NodiDiScambio /></section>
     </div>
   );
 }

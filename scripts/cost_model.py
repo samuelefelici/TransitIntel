@@ -1,6 +1,6 @@
 """
 cost_model.py — Modello di costo granulare per turni guida
-Conerobus S.p.A. / TransitIntel
+Cerbero
 
 Ogni duty candidato viene valutato in euro.
 La funzione obiettivo del solver minimizza direttamente il costo totale.
