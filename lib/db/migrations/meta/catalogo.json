@@ -286,6 +286,9 @@
   "public.nodi_catalogo_pkey": "CREATE UNIQUE INDEX nodi_catalogo_pkey ON public.nodi_catalogo USING btree (codice)",
   "public.nodi_scambio_pkey": "CREATE UNIQUE INDEX nodi_scambio_pkey ON public.nodi_scambio USING btree (nodo)",
   "public.optimizer_rule_profiles_pkey": "CREATE UNIQUE INDEX optimizer_rule_profiles_pkey ON public.optimizer_rule_profiles USING btree (id)",
+  "public.parco_consorziate_pkey": "CREATE UNIQUE INDEX parco_consorziate_pkey ON public.parco_consorziate USING btree (prefisso)",
+  "public.parco_eccezioni_pkey": "CREATE UNIQUE INDEX parco_eccezioni_pkey ON public.parco_eccezioni USING btree (siri_ref)",
+  "public.parco_vetture_pkey": "CREATE UNIQUE INDEX parco_vetture_pkey ON public.parco_vetture USING btree (codice)",
   "public.planning_analysis_results_pkey": "CREATE UNIQUE INDEX planning_analysis_results_pkey ON public.planning_analysis_results USING btree (id)",
   "public.planning_pois_pkey": "CREATE UNIQUE INDEX planning_pois_pkey ON public.planning_pois USING btree (id)",
   "public.planning_route_classifications_pkey": "CREATE UNIQUE INDEX planning_route_classifications_pkey ON public.planning_route_classifications USING btree (id)",
@@ -1462,6 +1465,26 @@
    "scope": "text | not null | 'company'::text |  | ",
    "service_type": "text | null |  |  | ",
    "updated_at": "timestamp with time zone | not null | now() |  | "
+  },
+  "public.parco_consorziate": {
+   "a_progressivo": "boolean | not null | true |  | ",
+   "aggiornata_il": "timestamp with time zone | not null | now() |  | ",
+   "ordine": "integer | not null | 0 |  | ",
+   "prefisso": "text | not null |  |  | ",
+   "sigle": "text[] | not null |  |  | "
+  },
+  "public.parco_eccezioni": {
+   "aggiornata_il": "timestamp with time zone | not null | now() |  | ",
+   "codice": "text | not null |  |  | ",
+   "nota": "text | not null | ''::text |  | ",
+   "siri_ref": "text | not null |  |  | "
+  },
+  "public.parco_vetture": {
+   "codice": "text | not null |  |  | ",
+   "descrizione": "text | not null |  |  | ",
+   "importata_da": "uuid | null |  |  | ",
+   "importata_il": "timestamp with time zone | not null | now() |  | ",
+   "ordine": "integer | not null |  |  | "
   },
   "public.planning_analysis_results": {
    "computed_at": "timestamp with time zone | null | now() |  | ",
@@ -2672,6 +2695,18 @@
   "public.optimizer_rule_profiles.ck_orp_project_scope": "CHECK ((NOT ((scope = 'project'::text) AND (project_id IS NULL))))",
   "public.optimizer_rule_profiles.optimizer_rule_profiles_owner_user_id_fkey": "FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE",
   "public.optimizer_rule_profiles.optimizer_rule_profiles_pkey": "PRIMARY KEY (id)",
+  "public.parco_consorziate.parco_consorziate_ordine": "CHECK (((ordine >= 0) AND (ordine <= 999)))",
+  "public.parco_consorziate.parco_consorziate_pkey": "PRIMARY KEY (prefisso)",
+  "public.parco_consorziate.parco_consorziate_prefisso": "CHECK ((prefisso ~ '^[0-9]{2}$'::text))",
+  "public.parco_eccezioni.parco_eccezioni_codice": "CHECK ((codice ~ '^[A-Z0-9_.-]{1,20}$'::text))",
+  "public.parco_eccezioni.parco_eccezioni_nota": "CHECK (((char_length(nota) <= 300) AND (nota !~ '[[:cntrl:]]'::text)))",
+  "public.parco_eccezioni.parco_eccezioni_pkey": "PRIMARY KEY (siri_ref)",
+  "public.parco_eccezioni.parco_eccezioni_siri_ref": "CHECK ((siri_ref ~ '^[0-9]{1,10}$'::text))",
+  "public.parco_vetture.parco_vetture_codice": "CHECK ((codice ~ '^[A-Z0-9_.-]{1,20}$'::text))",
+  "public.parco_vetture.parco_vetture_descrizione": "CHECK (((char_length(descrizione) <= 200) AND (descrizione !~ '[[:cntrl:]]'::text)))",
+  "public.parco_vetture.parco_vetture_importata_da_fkey": "FOREIGN KEY (importata_da) REFERENCES users(id) ON DELETE SET NULL",
+  "public.parco_vetture.parco_vetture_ordine": "CHECK (((ordine >= 1) AND (ordine <= 100000)))",
+  "public.parco_vetture.parco_vetture_pkey": "PRIMARY KEY (codice)",
   "public.planning_analysis_results.planning_analysis_results_pkey": "PRIMARY KEY (id)",
   "public.planning_analysis_results.planning_analysis_results_scenario_id_planning_scenarios_id_fk": "FOREIGN KEY (scenario_id) REFERENCES planning_scenarios(id) ON DELETE CASCADE",
   "public.planning_pois.planning_pois_feed_id_fkey": "FOREIGN KEY (feed_id) REFERENCES gtfs_feeds(id) ON DELETE CASCADE",

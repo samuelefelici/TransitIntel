@@ -344,6 +344,13 @@
       "when": 1797000000000,
       "tag": "0048_transcodifica_paline",
       "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1797100000000,
+      "tag": "0049_il_parco_dell_azienda",
+      "breakpoints": true
     }
   ]
 }

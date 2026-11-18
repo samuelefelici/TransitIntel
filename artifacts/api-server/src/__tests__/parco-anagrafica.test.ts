@@ -6,13 +6,16 @@
 import { describe, it, expect } from "vitest";
 import {
   codiceDaSiri, siriDaCodice, aziendaDaSiri, etichettaAzienda, schedaVettura,
-  identitaVettura, interpretaDescrizione, anagraficaParco, AZIENDE_SIRI, ECCEZIONI_SIRI,
+  identitaVettura, interpretaDescrizione, anagraficaParco, impostaParco, parcoInVigore, PARCO_NEUTRO,
 } from "../lib/parco-anagrafica";
 import { impostaRegolaVetture } from "../lib/vetture-azienda";
+import { PARCO_DI_PRIMA } from "./helpers/parco-di-prima";
 
 /* i test provano un'azienda col suo canale AVM condiviso con le consorziate: la regola è un dato
  * dell'azienda (tappa 6.5, lib/vetture-azienda.ts), e qui la si dichiara */
 impostaRegolaVetture({ cifre: 4, nome: "Conerobus" });
+/* e i prefissi, le eccezioni e l'anagrafica sono dati dell'azienda (tappa 6.21): quelli che erano nel codice */
+impostaParco(PARCO_DI_PRIMA);
 
 describe("da matricola SIRI a codice FlashNet", () => {
   it("le Conerobus sono la matricola così com'è", () => {
@@ -66,7 +69,7 @@ describe("da matricola SIRI a codice FlashNet", () => {
     expect(siriDaCodice("SAP052")).toBe("15004");
     expect(siriDaCodice("AF002")).toBeNull();
     expect(siriDaCodice("263")).toBe("263");
-    for (const [siri, codice] of Object.entries(ECCEZIONI_SIRI)) {
+    for (const { siriRef: siri, codice } of parcoInVigore().eccezioni) {
       expect(siriDaCodice(codice)).toBe(siri);
       expect(codiceDaSiri(siri)).toBe(codice);
     }
@@ -78,7 +81,7 @@ describe("l'anagrafica FlashNet", () => {
     const voci = anagraficaParco();
     expect(voci.length).toBeGreaterThan(340);
     const sigle = new Set(voci.map(v => v.codice.match(/^[A-Z]+/)?.[0]).filter(Boolean));
-    const note = new Set(Object.values(AZIENDE_SIRI).flat());
+    const note = new Set(parcoInVigore().consorziate.flatMap(c => c.sigle));
     for (const s of sigle) expect(note.has(s!), s).toBe(true);
   });
 
@@ -132,5 +135,41 @@ describe("la lettura delle descrizioni", () => {
     const senzaAmbito = anagraficaParco().filter(v => interpretaDescrizione(v.descrizione).ambito == null);
     expect(senzaAmbito.every(v => v.descrizione === "IVECO Crossway")).toBe(true);
     expect(senzaAmbito.length).toBe(11);
+  });
+});
+
+/* ── Tappa 6.21: i dati dell'azienda, non più il codice ───────────────────── */
+
+describe("senza i dati dell'azienda", () => {
+  it("nessuna consorziata e nessuna descrizione: le matricole lunghe non si attribuiscono", () => {
+    impostaParco(PARCO_NEUTRO);
+    try {
+      expect(codiceDaSiri("11096")).toBeNull();
+      expect(aziendaDaSiri("11096")).toBeNull();
+      expect(etichettaAzienda("11096")).toBe("consorziata, prefisso 11");
+      expect(schedaVettura("1372")).toBeNull();
+      expect(identitaVettura("1372")).toEqual({ codice: "1372", azienda: "Conerobus", mezzo: null });
+      expect(anagraficaParco()).toEqual([]);
+    } finally {
+      impostaParco(PARCO_DI_PRIMA);
+    }
+  });
+
+  it("un'altra azienda con le sue regole: un prefisso, un'eccezione, la sua anagrafica", () => {
+    impostaParco({
+      consorziate: [{ prefisso: "21", sigle: ["XY"], aProgressivo: true }],
+      eccezioni: [{ siriRef: "21999", codice: "XY001", nota: "" }],
+      vetture: [{ codice: "XY007", descrizione: "Urbano =9<11m Esempio" }, { codice: "XY001", descrizione: "Interurbano <7,5m Altro" }],
+    });
+    try {
+      expect(codiceDaSiri("21007")).toBe("XY007");
+      expect(codiceDaSiri("21999")).toBe("XY001");
+      expect(siriDaCodice("XY007")).toBe("21007");
+      expect(siriDaCodice("XY001")).toBe("21999");
+      expect(codiceDaSiri("11096")).toBeNull();
+      expect(schedaVettura("21007")).toMatchObject({ codice: "XY007", azienda: "XY", ambito: "urbano", classe: "9–11 m" });
+    } finally {
+      impostaParco(PARCO_DI_PRIMA);
+    }
   });
 });

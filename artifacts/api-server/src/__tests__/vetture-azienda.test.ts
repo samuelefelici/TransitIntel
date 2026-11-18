@@ -7,7 +7,11 @@ import { describe, it, expect, afterEach } from "vitest";
 import {
   eDellAzienda, espressioneVetture, impostaRegolaVetture, nomeAzienda, perimetroAzienda, REGOLA_NEUTRA, regolaVetture, siglaAzienda,
 } from "../lib/vetture-azienda";
-import { aziendaDaSiri, codiceDaSiri, siriDaCodice } from "../lib/parco-anagrafica";
+import { aziendaDaSiri, codiceDaSiri, siriDaCodice, impostaParco } from "../lib/parco-anagrafica";
+import { PARCO_DI_PRIMA } from "./helpers/parco-di-prima";
+
+/* i prefissi delle consorziate sono dati dell'azienda (tappa 6.21): quelli del primo cliente */
+impostaParco(PARCO_DI_PRIMA);
 import { parcoCredibile, type ParcoOfficina } from "../lib/officina";
 import { esclusioneOfficina } from "../lib/avm-diario";
 import { richiestaTogliere } from "../lib/avm-storia";

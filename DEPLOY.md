@@ -1476,6 +1476,39 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il parco nel canale dell'AVM come dato dell'azienda (tappa 6.21)
+
+Nel canale dell'AVM le vetture delle consorziate hanno una matricola di
+cinque cifre: le prime due dicono l'azienda, le altre tre il progressivo del
+codice del mezzo (11096 → CJ096). I prefissi, le eccezioni (le matricole che
+non seguono la regola) e l'anagrafica dei mezzi con la descrizione (l'export
+dell'officina, 365 righe) erano scritti nel codice
+(`lib/parco-anagrafica.ts`). Da questo rilascio sono tre tabelle dell'azienda:
+- la migrazione `0049` le crea e, per Conerobus, mette i valori che erano
+  nel codice: 5 prefissi, 4 eccezioni, 365 mezzi;
+- in Amministrazione → Azienda, riquadro **AVM: le consorziate e l'anagrafica
+  dei mezzi**: prefissi ed eccezioni si scrivono e si salvano insieme;
+  l'anagrafica si importa dall'export dell'officina (codice e descrizione
+  separati da una tabulazione, o un CSV) e si scarica nello stesso formato;
+- le pagine dell'AVM (diario, stato del parco, fogli per l'officina) e il
+  report di esercizio li leggono come prima, insieme agli altri dati
+  dell'azienda: un salvataggio vale subito nell'API e entro un minuto nel
+  lavoratore;
+- lo stato dell'installazione ha una voce in più.
+
+Sulla copia dei dati veri il modulo nuovo risponde come quello di prima per
+tutte le matricole del canale, da 1 a 15999 (16.003 casi: codice, azienda,
+scheda e identità), e per tutti i 369 codici dell'anagrafica.
+
+**Dopo il deploy**
+1. La migrazione `0049` crea le tabelle e mette i dati: niente da fare a
+   mano. Nessuna variabile e nessuna Watch Path nuova (`parco-anagrafica.ts`
+   e `azienda.ts` sono già fra quelle del lavoratore).
+2. Quando l'officina ha un export nuovo del parco, si importa dal riquadro.
+
+**Rollback**: immagine precedente. Il codice di prima torna ai suoi valori;
+le tabelle restano e non danno fastidio.
+
 ### La transcodifica trova le fermate dei feed di Planning Studio (tappa 6.20b)
 
 La transcodifica delle paline punta al codice della fermata nel GTFS
@@ -1659,6 +1692,7 @@ per voce, e porta alla sezione dove si scrivono
 | Le vetture dell'azienda nell'AVM | Azienda → AVM | tutte le vetture del canale contano come dell'azienda |
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
 | Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
+| Consorziate e anagrafica dei mezzi nell'AVM (6.21) | Azienda → AVM: le consorziate e l'anagrafica dei mezzi | le matricole delle consorziate non si attribuiscono, e nessun mezzo ha la descrizione |
 | Transcodifica delle paline dell'AVM (6.20) | Dati e integrazioni → Paline Mizar → Importa | le fermate dell'AVM si agganciano solo per codice o per nome |
 
 Il riquadro segnala anche i **punti di cambio senza fermate**, che nessuno dei
