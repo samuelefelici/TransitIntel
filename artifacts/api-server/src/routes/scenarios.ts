@@ -2153,7 +2153,7 @@ async function fetchCoincidenceZoneData(zoneIds: string[]): Promise<CoincidenceZ
     let hubDepartures: { destination: string; times: string[] }[] = [];
 
     // Try to get schedules from hub config (stored in metadata)
-    // Since the INTERMODAL_HUBS are defined in coincidence-zones.ts, we fetch via internal API
+    // Gli orari della zona vengono dalla sua rotta (custom, poi quelli stimati del nodo di scambio)
     // Alternative: import from coincidence-zones or fetch from DB directly
     // For now, let's query via fetch to our own schedules endpoint
     try {

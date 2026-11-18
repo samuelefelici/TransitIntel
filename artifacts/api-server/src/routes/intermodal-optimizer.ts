@@ -37,7 +37,8 @@ import {
   dynamicHubSchedules,
   type DiscoveredHub,
 } from "./intermodal";
-import { INTERMODAL_HUBS, zoneScopeWhere } from "./coincidence-zones";
+import { zoneScopeWhere } from "./coincidence-zones";
+import { hubDeiNodi } from "../lib/nodi-scambio-store";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import { db } from "@workspace/db";
@@ -533,6 +534,8 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
           ? await db.select().from(coincidenceZoneStops).where(inArray(coincidenceZoneStops.zoneId, zoneIds))
           : [];
 
+        /* gli orari di riserva: quelli stimati del nodo di scambio della zona (dati dell'azienda) */
+        const nodi = zones.length > 0 ? await hubDeiNodi() : [];
         for (const z of zones) {
           // Mappiamo park-ride → bus_terminal (compatibilità tipi)
           const hubType: DiscoveredHub["type"] =
@@ -540,8 +543,8 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
               ? z.hubType
               : "bus_terminal";
 
-          // ORARI: priorità a quelli salvati sulla zona (z.schedules), fallback al preset INTERMODAL_HUBS
-          const preset = INTERMODAL_HUBS.find(h => h.id === z.hubId);
+          // ORARI: priorità a quelli salvati sulla zona (z.schedules), poi quelli stimati del suo nodo
+          const preset = nodi.find(h => h.id === z.hubId);
           const customSched = (z as any).schedules as
             | { arrivals?: { label: string; times: string[] }[]; departures?: { label: string; times: string[] }[] }
             | null

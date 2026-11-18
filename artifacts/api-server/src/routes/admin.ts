@@ -14,6 +14,7 @@ import { Categorie, elenchiTariffe, erroreElenco, RifiutoElenchi, salvaCategorie
 import { TIPI_SUPPORTO } from "../lib/elenchi-tariffe";
 import { cancellaGestore, creaGestore, elencoGestori, erroreGestore, ModificaGestore, modificaGestore, NuovoGestore, RifiutoGestori } from "../lib/gestori-store";
 import { agenziaDellAzienda } from "../lib/gestori";
+import { cancellaNodo, creaNodo, DatiNodo, elencoNodi, IDENTIFICATIVO_NODO, modificaNodo, NuovoNodo, RifiutoNodi } from "../lib/nodi-scambio-store";
 import { cancellaTitolo, creaTitolo, elencoTitoli, ModificaTitolo, modificaTitolo, NuovoTitolo, RifiutoTitoli } from "../lib/titoli-catalogo";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
@@ -740,6 +741,45 @@ router.delete("/admin/gestori/:gestore", async (req, res): Promise<void> => {
   if (!ID_GESTORE.test(gestore)) { res.status(404).json({ error: "Gestore non trovato" }); return; }
   try { res.json({ ok: true, ...(await cancellaGestore(gestore)) }); }
   catch (e) { rifiutoGestori(req, res, e, "gestore non tolto"); }
+});
+
+/**
+ * I nodi di scambio dell'azienda (tappa 6.16, lib/nodi-scambio-store.ts):
+ * stazioni, porti, aeroporti e parcheggi scambiatori, con gli orari stimati.
+ * Li usano l'analisi intermodale, le zone di coincidenza, l'ottimizzatore e
+ * il confronto fra programmi. Solo l'amministratore.
+ */
+const rifiutoNodi = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoNodi) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/nodi-scambio", requireAdmin);
+router.get("/admin/nodi-scambio", async (req, res): Promise<void> => {
+  try { res.json(await elencoNodi()); }
+  catch (e) { rifiutoNodi(req, res, e, "nodi di scambio non leggibili"); }
+});
+router.post("/admin/nodi-scambio", async (req, res): Promise<void> => {
+  const p = NuovoNodo.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.status(201).json({ nodo: await creaNodo(p.data) }); }
+  catch (e) { rifiutoNodi(req, res, e, "nodo non creato"); }
+});
+router.put("/admin/nodi-scambio/:nodo", async (req, res): Promise<void> => {
+  const nodo = String(req.params.nodo ?? "");
+  if (!IDENTIFICATIVO_NODO.test(nodo)) { res.status(404).json({ error: "Nodo non trovato" }); return; }
+  const p = DatiNodo.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ nodo: await modificaNodo(nodo, p.data) }); }
+  catch (e) { rifiutoNodi(req, res, e, "nodo non salvato"); }
+});
+router.delete("/admin/nodi-scambio/:nodo", async (req, res): Promise<void> => {
+  const nodo = String(req.params.nodo ?? "");
+  if (!IDENTIFICATIVO_NODO.test(nodo)) { res.status(404).json({ error: "Nodo non trovato" }); return; }
+  try { await cancellaNodo(nodo); res.json({ ok: true }); }
+  catch (e) { rifiutoNodi(req, res, e, "nodo non tolto"); }
 });
 
 export default router;

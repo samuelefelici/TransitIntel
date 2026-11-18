@@ -31,6 +31,7 @@ import FasceKm from "@/components/azienda/FasceKm";
 import TitoliCatalogo from "@/components/azienda/TitoliCatalogo";
 import ElenchiTariffe from "@/components/azienda/ElenchiTariffe";
 import Gestori from "@/components/azienda/Gestori";
+import NodiDiScambio from "@/components/azienda/NodiDiScambio";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
@@ -253,6 +254,9 @@ export default function AdminAziendaPage() {
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}
       <TerritorioAzienda />
+
+      {/* i nodi di scambio (tappa 6.16): stazioni, porti, aeroporti e parcheggi scambiatori, con gli orari stimati */}
+      <NodiDiScambio />
     </div>
   );
 }

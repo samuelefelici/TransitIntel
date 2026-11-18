@@ -1476,6 +1476,75 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### I nodi di scambio come dato dell'azienda (tappa 6.16)
+
+Stazioni, porti, aeroporti e parcheggi scambiatori erano scritti nel codice in
+**due copie che non coincidevano**:
+- sei nodi per l'analisi intermodale, con le fermate GTFS;
+- otto per le zone di coincidenza: senza l'aeroporto, con tre parcheggi
+  scambiatori.
+
+Da questo rilascio sono una tabella sola, dato dell'azienda, in
+Amministrazione → Azienda → «Nodi di scambio».
+
+- **Che cosa c'è di un nodo**: identificativo, nome, tipo (stazione, porto,
+  aeroporto, parcheggio scambiatore), coordinate, fermate GTFS, minuti a piedi
+  fino alla fermata, descrizione, e gli orari stimati di arrivi e partenze.
+  - L'**identificativo** non cambia: è quello che le zone di coincidenza
+    ricordano.
+  - Gli **orari** si scrivono come testo, una riga per luogo:
+    `Roma (FR): 06:10 07:35`. Si mettono in ordine da soli.
+  - Al più 100 nodi.
+- **Chi li usa**:
+  - l'analisi intermodale: solo stazioni, porti e aeroporti, come prima. Per le
+    stazioni l'orario vero scaricato da ViaggiaTreno vale sempre più della
+    stima;
+  - le zone di coincidenza: tutti, compresi i parcheggi;
+  - l'ottimizzatore delle coincidenze e le zone senza orari loro: gli orari
+    stimati del nodo;
+  - il confronto fra programmi: «nodi intermodali serviti su N».
+- **Togliere un nodo** non tocca le zone che lo ricordano: restano com'erano e
+  perdono solo gli orari stimati, se non ne hanno di loro. L'elenco dice
+  quante zone ricordano ogni nodo.
+- **Un'installazione nuova parte senza nodi.** Le restano le stazioni che
+  l'analisi trova da sola dai nomi delle fermate.
+
+**Per Conerobus**: la migrazione `0046` mette i nove nodi delle due copie. Dove
+differivano vale la versione dell'analisi. Misurato sulla copia con i dati
+veri, prima e dopo:
+- **identici, byte per byte**: l'analisi intermodale (elenco dei nodi e
+  analisi, fuori e dentro un progetto), gli orari dei nove nodi, lo stato
+  della sincronizzazione;
+- **cambiano, come deciso**:
+  - nelle zone di coincidenza c'è anche l'aeroporto (9 nodi invece di 8);
+  - le descrizioni delle cinque stazioni e del porto sono quelle più lunghe;
+  - due compagnie del porto hanno il nome intero («Patrasso (GR) -
+    Minoan/Anek», «Durazzo (AL) - Adria Ferries»);
+  - nel confronto fra programmi il totale dei nodi passa da 8 a 9; i nodi
+    serviti restano gli stessi.
+- Nella copia non ci sono zone di coincidenza; in produzione quelle già create
+  restano com'erano. Una nuova creazione automatica delle zone crea anche
+  quella dell'aeroporto.
+
+**Visto nel browser**:
+- in Azienda i nove nodi con tipo, posizione e corse stimate;
+- modificate le partenze del porto: una riga scritta male viene rifiutata con
+  il suo messaggio, una giusta si salva;
+- aggiunto e tolto un nodo.
+
+La pagina delle zone di coincidenza in locale non si apre (manca il token
+delle mappe): l'ho controllata dall'API.
+
+**Dopo il deploy**
+1. La migrazione `0046` crea la tabella e mette i nove nodi: niente da fare a
+   mano. Nessuna variabile e nessuna Watch Path nuova.
+2. Gli orari stimati sono quelli che c'erano nel codice: conviene
+   ricontrollarli, soprattutto porto e aeroporto, che non hanno un orario
+   vero da scaricare.
+
+**Rollback**: immagine precedente. Il codice di prima torna alle sue due
+copie; la tabella resta e non dà fastidio.
+
 ### Il traffico come dato dell'azienda (tappa 6.15)
 
 Tre cose del traffico erano scritte nel codice per la provincia di Ancona. Da

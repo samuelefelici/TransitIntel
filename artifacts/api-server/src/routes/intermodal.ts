@@ -5,6 +5,7 @@ import { sql, inArray, eq, and } from "drizzle-orm";
 import { haversineKm, timeToMinutes, minToTime, walkMinutes } from "../lib/geo-utils";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { nomeComune, nomeOppure, nomiComuni } from "../lib/territorio";
+import { hubDellAnalisiIntermodale } from "../lib/nodi-scambio-store";
 import {
   resolveSource, loadShapes, loadStops, loadActiveTrips, loadPassages, loadRoutes,
   parseDayKind, projectBbox, type DayKind,
@@ -69,149 +70,9 @@ export async function municipalityBbox(
 // INTERMODAL — Analyze bus ↔ rail / ferry connections (GTFS-based)
 // ═══════════════════════════════════════════════════════════════════════
 
-// Known intermodal hubs (Province of Ancona)
-// Now includes ARRIVALS (incoming trains/ferries) — the key use case:
-// passenger arrives by train/ferry → walks to bus stop → catches bus to destination
-/** Sorgente unica di posizione/fermate degli hub curati (vedi coincidence-zones). */
-export const INTERMODAL_HUBS: {
-  id: string; name: string; type: "railway" | "port" | "airport";
-  lat: number; lng: number;
-  gtfsStopIds: string[];
-  // Departures FROM this hub (treno/nave parte)
-  typicalDepartures: { destination: string; times: string[] }[];
-  // Arrivals TO this hub (treno/nave arriva — passeggero scende)
-  typicalArrivals: { origin: string; times: string[] }[];
-  // Vista settimanale opzionale (popolata da sync-schedules per hub auto)
-  weeklyDepartures?: { destination: string; times: string[] }[][];
-  weeklyArrivals?: { origin: string; times: string[] }[][];
-  weekStart?: string;
-  description: string;
-  // Walk time from platform to nearest bus stop area (minutes)
-  platformWalkMinutes: number;
-}[] = [
-  {
-    id: "rail-ancona",
-    name: "Stazione FS Ancona",
-    type: "railway",
-    lat: 43.607348, lng: 13.49776447,
-    gtfsStopIds: ["13", "18", "153", "20006", "20044"],
-    description: "Stazione centrale di Ancona — hub ferroviario principale (IC, FR, Regionali)",
-    platformWalkMinutes: 3, // stazione grande, dal binario all'uscita
-    typicalDepartures: [
-      { destination: "Roma (IC/FR)", times: ["06:10","07:35","08:55","10:35","12:10","14:10","16:10","17:35","18:55","20:10"] },
-      { destination: "Milano (IC/FR)", times: ["05:50","06:50","08:50","10:50","12:50","14:50","16:25","17:50","19:50"] },
-      { destination: "Pesaro/Rimini (R)", times: ["05:30","06:00","06:30","07:00","07:30","08:00","08:30","09:30","10:30","11:30","12:30","13:30","14:30","15:30","16:00","16:30","17:00","17:30","18:00","18:30","19:30","20:30","21:30"] },
-      { destination: "Foligno/Fabriano (R)", times: ["06:20","07:20","08:20","10:20","12:20","14:20","16:20","18:20","20:20"] },
-    ],
-    typicalArrivals: [
-      { origin: "Roma (IC/FR)", times: ["08:45","10:15","11:50","13:45","15:50","17:45","19:10","20:45","22:10"] },
-      { origin: "Milano (IC/FR)", times: ["07:10","09:10","11:10","13:10","15:10","17:10","18:35","20:10","22:10"] },
-      { origin: "Pesaro/Rimini (R)", times: ["06:25","06:55","07:25","07:55","08:25","08:55","09:55","10:55","11:55","12:55","13:55","14:55","15:55","16:25","16:55","17:25","17:55","18:25","18:55","19:55","20:55","21:55"] },
-      { origin: "Foligno/Fabriano (R)", times: ["07:40","08:40","09:40","11:40","13:40","15:40","17:40","19:40","21:40"] },
-    ],
-  },
-  {
-    id: "rail-falconara",
-    name: "Stazione FS Falconara Marittima",
-    type: "railway",
-    lat: 43.6301852, lng: 13.39739496,
-    gtfsStopIds: ["20026", "20027"],
-    description: "Stazione di Falconara — nodo ferrovia Adriatica / linea per Roma",
-    platformWalkMinutes: 2,
-    typicalDepartures: [
-      { destination: "Ancona (R)", times: ["06:10","06:40","07:10","07:40","08:10","08:40","09:40","10:40","11:40","12:40","13:40","14:40","15:40","16:10","16:40","17:10","17:40","18:10","18:40","19:40","20:40"] },
-      { destination: "Roma (via Orte)", times: ["06:35","10:05","14:05","17:35"] },
-      { destination: "Pesaro/Rimini (R)", times: ["06:15","07:15","08:15","09:15","11:15","13:15","15:15","17:15","19:15","21:15"] },
-    ],
-    typicalArrivals: [
-      { origin: "Ancona (R)", times: ["06:30","07:00","07:30","08:00","08:30","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","16:30","17:00","17:30","18:00","18:30","19:00","20:00","21:00"] },
-      { origin: "Roma (via Orte)", times: ["10:30","14:30","18:30","21:30"] },
-      { origin: "Pesaro/Rimini (R)", times: ["06:50","07:50","08:50","09:50","11:50","13:50","15:50","17:50","19:50","21:50"] },
-    ],
-  },
-  {
-    id: "rail-palombina",
-    name: "Stazione Palombina Nuova",
-    type: "railway",
-    lat: 43.61802912, lng: 13.42590525,
-    gtfsStopIds: ["20020", "20034"],
-    description: "Fermata ferroviaria Palombina — collegamento costiero",
-    platformWalkMinutes: 1,
-    typicalDepartures: [
-      { destination: "Ancona (R)", times: ["06:20","07:20","08:20","09:20","12:20","14:20","16:20","17:20","18:20","19:20"] },
-      { destination: "Falconara (R)", times: ["06:45","07:45","08:45","10:45","13:45","15:45","17:45","19:45"] },
-    ],
-    typicalArrivals: [
-      { origin: "Ancona (R)", times: ["06:55","07:55","08:55","10:55","13:55","15:55","17:55","19:55"] },
-      { origin: "Falconara (R)", times: ["06:35","07:35","08:35","09:35","12:35","14:35","16:35","17:35","18:35","19:35"] },
-    ],
-  },
-  {
-    id: "port-ancona",
-    name: "Porto di Ancona (Terminal Passeggeri)",
-    type: "port",
-    lat: 43.61864036, lng: 13.50938321,
-    gtfsStopIds: ["20003", "20047"],
-    description: "Terminal traghetti — linee per Croazia, Grecia, Albania",
-    platformWalkMinutes: 8, // sbarco nave → uscita terminal → fermata
-    typicalDepartures: [
-      { destination: "Spalato (HR) - Jadrolinija", times: ["19:00"] },
-      { destination: "Spalato (HR) - SNAV", times: ["17:30"] },
-      { destination: "Patrasso (GR) - Minoan/Anek", times: ["13:30","17:00"] },
-      { destination: "Durazzo (AL) - Adria Ferries", times: ["21:00"] },
-      { destination: "Igoumenitsa (GR)", times: ["13:30","17:00"] },
-    ],
-    typicalArrivals: [
-      { origin: "Spalato (HR) - Jadrolinija", times: ["07:00"] },
-      { origin: "Spalato (HR) - SNAV", times: ["09:00"] },
-      { origin: "Patrasso (GR) - Minoan/Anek", times: ["08:00","15:00"] },
-      { origin: "Durazzo (AL) - Adria Ferries", times: ["07:30"] },
-      { origin: "Igoumenitsa (GR)", times: ["08:00","15:00"] },
-    ],
-  },
-  {
-    id: "airport-falconara",
-    name: "Aeroporto Raffaello Sanzio (Falconara)",
-    type: "airport",
-    lat: 43.61632, lng: 13.36244,
-    gtfsStopIds: ["20159", "20184", "20158", "20185", "20160", "20183"],
-    description: "Aeroporto delle Marche — voli nazionali e internazionali",
-    platformWalkMinutes: 5, // uscita terminal → fermata bus più vicina (Castelferretti)
-    typicalDepartures: [
-      { destination: "Roma Fiumicino (Ryanair)", times: ["06:30","13:15","19:00"] },
-      { destination: "Milano Bergamo (Ryanair)", times: ["07:00","17:30"] },
-      { destination: "Londra Stansted (Ryanair)", times: ["12:45"] },
-      { destination: "Bruxelles Charleroi", times: ["14:30"] },
-      { destination: "Düsseldorf", times: ["10:00"] },
-      { destination: "Tirana (Albania)", times: ["09:00","18:00"] },
-    ],
-    typicalArrivals: [
-      { origin: "Roma Fiumicino (Ryanair)", times: ["10:30","16:15","22:00"] },
-      { origin: "Milano Bergamo (Ryanair)", times: ["09:45","20:15"] },
-      { origin: "Londra Stansted (Ryanair)", times: ["12:00"] },
-      { origin: "Bruxelles Charleroi", times: ["14:00"] },
-      { origin: "Düsseldorf", times: ["09:30"] },
-      { origin: "Tirana (Albania)", times: ["08:30","17:30"] },
-    ],
-  },
-  {
-    id: "rail-torrette",
-    name: "Stazione di Ancona Torrette",
-    type: "railway",
-    lat: 43.60393, lng: 13.45299,
-    gtfsStopIds: ["20335", "20466", "20011", "20039", "20370", "20467"],
-    description: "Fermata ferroviaria Torrette — adiacente Ospedale Regionale Ospedali Riuniti",
-    platformWalkMinutes: 2, // fermata piccola, accesso diretto
-    typicalDepartures: [
-      { destination: "Ancona (R)", times: ["06:25","07:25","08:25","09:25","12:25","14:25","16:25","17:25","18:25","19:25"] },
-      { destination: "Falconara (R)", times: ["06:50","07:50","08:50","10:50","13:50","15:50","17:50","19:50"] },
-    ],
-    typicalArrivals: [
-      { origin: "Ancona (R)", times: ["06:50","07:50","08:50","10:50","13:50","15:50","17:50","19:50"] },
-      { origin: "Falconara (R)", times: ["06:30","07:30","08:30","09:30","12:30","14:30","16:30","17:30","18:30","19:30"] },
-    ],
-  },
-];
+// I nodi di scambio dell'azienda (stazioni, porti, aeroporti) sono dati
+// dell'azienda: tabella nodi_scambio, lib/nodi-scambio-store.ts (tappa 6.16).
+// Prima erano scritti qui, per la provincia di Ancona.
 
 // Alias for backward-compat: intermodal code used timeToMin / minToTime
 const timeToMin = timeToMinutes;
@@ -727,7 +588,7 @@ async function liveGoogleStations(
 /**
  * Discovery principale: dati i filtri (bbox / municipality / routeIds)
  * restituisce la lista di hub da considerare, unione di:
- *   1) hub curati (INTERMODAL_HUBS) interni al bbox
+ *   1) i nodi di scambio dell'azienda (lib/nodi-scambio-store.ts) interni al bbox
  *   2) hub rilevati automaticamente dalle fermate GTFS
  *   3) stazioni ferroviarie dai POI Google (sorgente reale, non dedotta)
  */
@@ -771,7 +632,7 @@ export async function discoverHubs(opts: {
 
   // 1. Hub curati filtrati per bbox
   if (includeCurated) {
-    const curated: DiscoveredHub[] = INTERMODAL_HUBS.map(h => ({
+    const curated: DiscoveredHub[] = (await hubDellAnalisiIntermodale()).map(h => ({
       id: h.id, name: h.name, type: h.type as HubType, lat: h.lat, lng: h.lng,
       gtfsStopIds: [...h.gtfsStopIds],
       description: h.description,
@@ -779,13 +640,13 @@ export async function discoverHubs(opts: {
       typicalDepartures: h.typicalDepartures,
       typicalArrivals: h.typicalArrivals,
       source: "curated",
-      // Gli orari cablati nel codice sono una STIMA indicativa, non un orario
+      // Gli orari scritti dall'azienda sono una STIMA indicativa, non un orario
       // ufficiale: va dichiarato, altrimenti l'analisi sembra fondata su dati
       // reali. Il sync ViaggiaTreno li sostituisce (→ "live").
       scheduleSource: ((h.typicalArrivals.length || h.typicalDepartures.length) ? "stima" : "assente") as "stima" | "assente",
     }));
-    /* Gli hub curati sono cablati su un territorio preciso (provincia di
-     * Ancona). Dentro un progetto di un'altra area comparivano comunque,
+    /* I nodi dell'azienda stanno su un territorio preciso. Dentro un
+     * progetto di un'altra area comparivano comunque,
      * come poli fantasma sempre "non serviti": dati che col progetto non
      * c'entrano nulla. Si tengono solo se cadono nell'area effettivamente
      * coperta dalle fermate del progetto. */
@@ -794,7 +655,7 @@ export async function discoverHubs(opts: {
     for (const h of curated) {
       if (!inBox(h, bbox)) continue;
       if (!inBox(h, projectBox)) continue;
-      // Le fermate GTFS cablate appartengono a un altro feed: dentro un
+      // Le fermate GTFS scritte sul nodo appartengono a un altro feed: dentro un
       // progetto non identificano nulla e vanno lasciate fuori.
       if (psProjectId) h.gtfsStopIds = [];
       out.push(h);
@@ -2137,7 +1998,7 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
 router.get("/intermodal/sync-status", async (_req, res) => {
   res.json({
     lastSyncedAt: lastSyncTimestamp,
-    curatedHubCount: INTERMODAL_HUBS.length,
+    curatedHubCount: (await hubDellAnalisiIntermodale()).length,
     dynamicHubCount: dynamicHubSchedules.size,
   });
 });
@@ -2199,7 +2060,7 @@ router.get("/intermodal/hub-schedule/:hubId", async (req, res) => {
     return;
   }
   // 2) Solo in fallback: la tabella curata, dichiarata come STIMA.
-  const curated = INTERMODAL_HUBS.find(h => h.id === hubId);
+  const curated = (await hubDellAnalisiIntermodale()).find(h => h.id === hubId);
   if (curated) {
     const hasTimes = curated.typicalArrivals.length || curated.typicalDepartures.length;
     res.json({

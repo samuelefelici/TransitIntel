@@ -22,7 +22,7 @@ import { coincidenceZones, coincidenceZoneStops, gtfsStops, gtfsStopTimes, gtfsT
 import { and, eq, sql } from "drizzle-orm";
 import { asyncHandler } from "../middlewares/error-handler";
 import { haversineKm, walkMinutes as calcWalkMin } from "../lib/geo-utils";
-import { INTERMODAL_HUBS as CORE_HUBS } from "./intermodal";
+import { hubDeiNodi } from "../lib/nodi-scambio-store";
 import { hasProjectAccess } from "./argos-context";
 
 const router: IRouter = Router();
@@ -63,120 +63,9 @@ function zoneVisibiliWhere(req: Request) {
 const DEFAULT_RADIUS_KM = 0.1;
 
 
-// ─── Hub intermodali — NO AIRPORT ──────────────────────────
-export interface IntermodalHub {
-  id: string; name: string; type: "railway" | "port" | "park-ride";
-  lat: number; lng: number; gtfsStopIds: string[];
-  description: string; platformWalkMinutes: number;
-  typicalArrivals: { origin: string; times: string[] }[];
-  typicalDepartures: { destination: string; times: string[] }[];
-}
-
-/* Geometria canonica degli hub condivisi: viveva duplicata qui e in
- * intermodal.ts, e i due elenchi erano DIVERSI — "rail-torrette" stava a
- * ~700 m di distanza nei due file e solo uno aveva le fermate GTFS
- * associate. Risultato: la pagina Intermodale e l'ottimizzatore (che
- * importa questa lista) analizzavano nodi diversi con lo stesso id.
- * Ora posizione e fermate arrivano da un'unica sorgente; qui restano solo
- * le voci in più (park & ride) e gli orari indicativi. */
-const CANONICAL_HUBS: IntermodalHub[] = [
-  {
-    id: "rail-ancona", name: "Stazione FS Ancona", type: "railway",
-    lat: 43.607348, lng: 13.49776447, gtfsStopIds: ["13","18","153","20006","20044"],
-    description: "Stazione centrale — hub ferroviario principale", platformWalkMinutes: 3,
-    typicalArrivals: [
-      { origin: "Roma (IC/FR)", times: ["08:45","10:15","11:50","13:45","15:50","17:45","19:10","20:45","22:10"] },
-      { origin: "Milano (IC/FR)", times: ["07:10","09:10","11:10","13:10","15:10","17:10","18:35","20:10","22:10"] },
-      { origin: "Pesaro/Rimini (R)", times: ["06:25","06:55","07:25","07:55","08:25","08:55","09:55","10:55","11:55","12:55","13:55","14:55","15:55","16:25","16:55","17:25","17:55","18:25","18:55","19:55","20:55","21:55"] },
-      { origin: "Foligno/Fabriano (R)", times: ["07:40","08:40","09:40","11:40","13:40","15:40","17:40","19:40","21:40"] },
-    ],
-    typicalDepartures: [
-      { destination: "Roma (IC/FR)", times: ["06:10","07:35","08:55","10:35","12:10","14:10","16:10","17:35","18:55","20:10"] },
-      { destination: "Milano (IC/FR)", times: ["05:50","06:50","08:50","10:50","12:50","14:50","16:25","17:50","19:50"] },
-      { destination: "Pesaro/Rimini (R)", times: ["05:30","06:00","06:30","07:00","07:30","08:00","08:30","09:30","10:30","11:30","12:30","13:30","14:30","15:30","16:00","16:30","17:00","17:30","18:00","18:30","19:30","20:30","21:30"] },
-      { destination: "Foligno/Fabriano (R)", times: ["06:20","07:20","08:20","10:20","12:20","14:20","16:20","18:20","20:20"] },
-    ],
-  },
-  {
-    id: "rail-falconara", name: "Stazione FS Falconara Marittima", type: "railway",
-    lat: 43.6301852, lng: 13.39739496, gtfsStopIds: ["20026","20027"],
-    description: "Nodo Adriatica / linea per Roma", platformWalkMinutes: 2,
-    typicalArrivals: [
-      { origin: "Ancona (R)", times: ["06:30","07:00","07:30","08:00","08:30","09:00","10:00","11:00","12:00","13:00","14:00","15:00","16:00","16:30","17:00","17:30","18:00","18:30","19:00","20:00","21:00"] },
-      { origin: "Roma (via Orte)", times: ["10:30","14:30","18:30","21:30"] },
-      { origin: "Pesaro/Rimini (R)", times: ["06:50","07:50","08:50","09:50","11:50","13:50","15:50","17:50","19:50","21:50"] },
-    ],
-    typicalDepartures: [
-      { destination: "Ancona (R)", times: ["06:10","06:40","07:10","07:40","08:10","08:40","09:40","10:40","11:40","12:40","13:40","14:40","15:40","16:10","16:40","17:10","17:40","18:10","18:40","19:40","20:40"] },
-      { destination: "Roma (via Orte)", times: ["06:35","10:05","14:05","17:35"] },
-      { destination: "Pesaro/Rimini (R)", times: ["06:15","07:15","08:15","09:15","11:15","13:15","15:15","17:15","19:15","21:15"] },
-    ],
-  },
-  {
-    id: "rail-palombina", name: "Stazione Palombina Nuova", type: "railway",
-    lat: 43.61802912, lng: 13.42590525, gtfsStopIds: ["20020","20034"],
-    description: "Fermata Palombina — collegamento costiero", platformWalkMinutes: 1,
-    typicalArrivals: [
-      { origin: "Ancona (R)", times: ["06:55","07:55","08:55","10:55","13:55","15:55","17:55","19:55"] },
-      { origin: "Falconara (R)", times: ["06:35","07:35","08:35","09:35","12:35","14:35","16:35","17:35","18:35","19:35"] },
-    ],
-    typicalDepartures: [
-      { destination: "Ancona (R)", times: ["06:20","07:20","08:20","09:20","12:20","14:20","16:20","17:20","18:20","19:20"] },
-      { destination: "Falconara (R)", times: ["06:45","07:45","08:45","10:45","13:45","15:45","17:45","19:45"] },
-    ],
-  },
-  {
-    id: "port-ancona", name: "Porto di Ancona (Terminal Passeggeri)", type: "port",
-    lat: 43.61864036, lng: 13.50938321, gtfsStopIds: ["20003","20047"],
-    description: "Terminal traghetti — Croazia, Grecia, Albania", platformWalkMinutes: 8,
-    typicalArrivals: [
-      { origin: "Spalato (HR) - Jadrolinija", times: ["07:00"] },
-      { origin: "Spalato (HR) - SNAV", times: ["09:00"] },
-      { origin: "Patrasso (GR)", times: ["08:00","15:00"] },
-      { origin: "Durazzo (AL)", times: ["07:30"] },
-      { origin: "Igoumenitsa (GR)", times: ["08:00","15:00"] },
-    ],
-    typicalDepartures: [
-      { destination: "Spalato (HR) - Jadrolinija", times: ["19:00"] },
-      { destination: "Spalato (HR) - SNAV", times: ["17:30"] },
-      { destination: "Patrasso (GR)", times: ["13:30","17:00"] },
-      { destination: "Durazzo (AL)", times: ["21:00"] },
-      { destination: "Igoumenitsa (GR)", times: ["13:30","17:00"] },
-    ],
-  },
-  {
-    id: "rail-torrette", name: "Stazione di Ancona Torrette", type: "railway",
-    lat: 43.609894, lng: 13.455588, gtfsStopIds: [],
-    description: "Stazione ferroviaria Ancona Torrette", platformWalkMinutes: 2,
-    typicalArrivals: [
-      { origin: "Ancona (R)", times: ["06:50","07:50","08:50","10:50","13:50","15:50","17:50","19:50"] },
-      { origin: "Falconara (R)", times: ["06:30","07:30","08:30","09:30","12:30","14:30","16:30","17:30","18:30","19:30"] },
-    ],
-    typicalDepartures: [
-      { destination: "Ancona (R)", times: ["06:25","07:25","08:25","09:25","12:25","14:25","16:25","17:25","18:25","19:25"] },
-      { destination: "Falconara (R)", times: ["06:50","07:50","08:50","10:50","13:50","15:50","17:50","19:50"] },
-    ],
-  },
-  // ─── PARCHEGGI SCAMBIATORI ──
-  {
-    id: "pr-tavernelle", name: "P+R Tavernelle (Stadio del Conero)", type: "park-ride",
-    lat: 43.58046, lng: 13.51847, gtfsStopIds: [],
-    description: "Parcheggio scambiatore Tavernelle — navetta per centro", platformWalkMinutes: 2,
-    typicalArrivals: [], typicalDepartures: [],
-  },
-  {
-    id: "pr-baraccola", name: "P+R Baraccola (Centro Comm.le)", type: "park-ride",
-    lat: 43.58597, lng: 13.48261, gtfsStopIds: [],
-    description: "Parcheggio scambiatore Baraccola — zona commerciale", platformWalkMinutes: 2,
-    typicalArrivals: [], typicalDepartures: [],
-  },
-  {
-    id: "pr-posatora", name: "P+R Posatora", type: "park-ride",
-    lat: 43.60128, lng: 13.48701, gtfsStopIds: [],
-    description: "Parcheggio scambiatore Posatora — ingresso ovest", platformWalkMinutes: 1,
-    typicalArrivals: [], typicalDepartures: [],
-  },
-];
+// I nodi di scambio (stazioni, porto, aeroporto, parcheggi scambiatori) sono
+// dati dell'azienda: tabella nodi_scambio, lib/nodi-scambio-store.ts (tappa
+// 6.16). Prima ce n'erano due copie nel codice, qui e in intermodal.ts.
 
 const ZONE_COLORS = ["#06b6d4","#8b5cf6","#f59e0b","#22c55e","#ef4444","#ec4899","#3b82f6","#14b8a6","#f97316","#6366f1"];
 
@@ -214,7 +103,7 @@ router.get("/coincidence-zones/hubs", asyncHandler(async (req, res) => {
     lat: gtfsStops.stopLat, lng: gtfsStops.stopLon,
   }).from(gtfsStops);
 
-  const hubs = INTERMODAL_HUBS.map(hub => {
+  const hubs = (await hubDeiNodi()).map(hub => {
     const nearby = findNearbyStops(hub.lat, hub.lng, allStops, radiusKm, hub.platformWalkMinutes);
     return {
       id: hub.id, name: hub.name, type: hub.type,
@@ -346,7 +235,7 @@ router.post("/coincidence-zones/auto-create", asyncHandler(async (req, res) => {
   let colorIdx = existing.length;
 
   // ──────── Phase 1: hub intermodali + parcheggi scambiatori ────────
-  for (const hub of INTERMODAL_HUBS) {
+  for (const hub of await hubDeiNodi()) {
     if (existingHubIds.has(hub.id)) continue;
     const nearby = findNearbyStops(hub.lat, hub.lng, allStops, radiusKm, hub.platformWalkMinutes);
     const [zone] = await db.insert(coincidenceZones).values({
@@ -371,21 +260,13 @@ router.post("/coincidence-zones/auto-create", asyncHandler(async (req, res) => {
     }))});
   }
 
-  console.log(`[CoincidenceZones] Created ${created.length} hub zones (railway/port/park-ride)`);
+  console.log(`[CoincidenceZones] Created ${created.length} hub zones`);
   res.json({ created: created.length, zones: created });
 }));
 
 // ═══════════════════════════════════════════════════════════════
 // GET /api/coincidence-zones/:id/schedules
-/** Elenco effettivo: geometria da intermodal.ts dove l'id coincide. */
-export const INTERMODAL_HUBS: IntermodalHub[] = CANONICAL_HUBS.map(h => {
-  const canon = CORE_HUBS.find(c => c.id === h.id);
-  return canon
-    ? { ...h, lat: canon.lat, lng: canon.lng, gtfsStopIds: [...canon.gtfsStopIds] }
-    : h;
-});
-
-// Restituisce gli orari della zona: prima i custom (zone.schedules), poi fallback al preset INTERMODAL_HUBS
+// Restituisce gli orari della zona: prima i custom (zone.schedules), poi quelli stimati del suo nodo di scambio
 // ═══════════════════════════════════════════════════════════════
 router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {
   const [zone] = await db.select().from(coincidenceZones).where(eq(coincidenceZones.id, req.params.id as string));
@@ -394,7 +275,7 @@ router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => 
     | { arrivals?: { label: string; times: string[] }[]; departures?: { label: string; times: string[] }[] }
     | null
     | undefined;
-  const hub = INTERMODAL_HUBS.find(h => h.id === zone.hubId);
+  const hub = (await hubDeiNodi()).find(h => h.id === zone.hubId);
   // Mappa preset (origin/destination) → label
   const presetArrivals = (hub?.typicalArrivals ?? []).map(a => ({ label: a.origin, times: a.times }));
   const presetDepartures = (hub?.typicalDepartures ?? []).map(a => ({ label: a.destination, times: a.times }));
