@@ -13,7 +13,8 @@
  *
  *   PublicationDelivery
  *     CompositeFrame  EU_PI_NETWORK_OFFER, con il Codespace e la validità
- *       ResourceFrame        EU_PI_COMMON    l'operatore
+ *       ResourceFrame        EU_PI_COMMON    gli operatori: l'azienda, o i
+ *                                            gestori che hanno linee (6.12)
  *       SiteFrame            EU_PI_STOP      le fermate (StopPlace con una Quay)
  *       ServiceFrame         EU_PI_NETWORK   rete, linee, punti di fermata,
  *                                            assegnazioni, sequenze di fermate
@@ -37,18 +38,37 @@ export interface OpzioniNetex {
   fornitore: string | null;
   /** chi trasmette il file (ParticipantRef) */
   partecipante: string;
-  /** il nome dell'azienda e i suoi contatti, per l'operatore */
+  /** il nome dell'azienda e i suoi contatti: è l'operatore, se non ci sono gestori, e dà il nome ai contenitori del file */
   azienda: { ragioneSociale: string; nome: string; sito: string | null; telefono: string | null; codice: string };
+  /**
+   * I gestori delle linee (tappa 6.12), se l'azienda ne ha: ognuno è un
+   * operatore, e ogni linea porta il suo (quello che dice agency_id in
+   * routes.txt). Vuoto o assente: un operatore solo, l'azienda, come prima.
+   */
+  operatori?: readonly OperatoreNetex[];
+  /** il codice dell'operatore delle linee che non ne dicono uno dell'elenco: il gestore predefinito */
+  operatorePrincipale?: string;
   /** quando è stato fatto il file */
   adesso: Date;
   /** una descrizione per chi lo riceve */
   descrizione?: string;
 }
 
+/** Un operatore del NeTEx: un gestore, coi suoi contatti. */
+export interface OperatoreNetex {
+  codice: string;
+  nome: string;
+  sito: string | null;
+  telefono: string | null;
+  email: string | null;
+}
+
 export interface ConteggiNetex {
   fermate: number; linee: number; sequenze: number; corse: number; orari: number; tipiDiGiorno: number; giorni: number;
   /** le corse senza giorni di servizio, lasciate fuori */
   corseSenzaGiorni: number;
+  /** gli operatori scritti nel file: uno, se non ci sono gestori */
+  operatori: number;
 }
 
 /* ── Piccoli attrezzi ────────────────────────────────────────────────────── */
@@ -152,7 +172,22 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   const linee = righe("routes.txt").filter((r) => lineeUsate.has(testo(r.route_id)));
   const modoDellaLinea = new Map(linee.map((r) => [testo(r.route_id), modoDi(r.route_type)]));
 
-  const operatore = id("Operator", o.azienda.codice);
+  /* Gli operatori. Senza gestori è uno, l'azienda. Coi gestori: quelli che
+   * hanno almeno una linea nel file, nell'ordine dell'elenco; una linea che
+   * non dice un gestore dell'elenco è del principale. */
+  const gestori = o.operatori?.length ? o.operatori : null;
+  const principale = gestori ? (gestori.find((x) => x.codice === o.operatorePrincipale) ?? gestori[0]!) : null;
+  const gestoreDi = new Map((gestori ?? []).map((x) => [x.codice, x]));
+  const gestoreDellaLinea = (r: Riga): OperatoreNetex | null => (gestori ? gestoreDi.get(testo(r.agency_id)) ?? principale : null);
+  const operatoreDellaLinea = new Map(linee.map((r) => [testo(r.route_id), id("Operator", gestoreDellaLinea(r)?.codice ?? o.azienda.codice)]));
+  const operatori: Array<{ codice: string; nome: string; ragioneSociale: string; sito: string | null; telefono: string | null; email: string | null }> = gestori
+    ? (() => {
+      const usati = new Set(linee.map((r) => gestoreDellaLinea(r)!.codice));
+      const scritti = gestori.filter((x) => usati.has(x.codice));
+      return (scritti.length ? scritti : [principale!]).map((x) => ({ ...x, ragioneSociale: x.nome }));
+    })()
+    : [{ ...o.azienda, email: null }];
+  const operatore = id("Operator", operatori[0]!.codice);
   const out: string[] = [];
   const p = (s: string) => out.push(s);
   const posizione = (lat: unknown, lon: unknown) =>
@@ -171,13 +206,17 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p(`<FrameDefaults><DefaultCodespaceRef ref="${xml(loc.toLowerCase())}"/><DefaultLocale><TimeZone>Europe/Rome</TimeZone><DefaultLanguage>it</DefaultLanguage></DefaultLocale></FrameDefaults>`);
   p("<frames>");
 
-  /* l'operatore */
+  /* gli operatori */
   p(`<ResourceFrame id="epd:IT:${loc}:ResourceFrame-EU_PI_COMMON:${pezzoId(o.azienda.codice)}" ${v}>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_COMMON" versionRef="1.0"/>');
   p("<organisations>");
-  p(`<Operator id="${operatore}" ${v}><PublicCode>${xml(o.azienda.codice)}</PublicCode><Name>${xml(o.azienda.nome)}</Name><LegalName>${xml(o.azienda.ragioneSociale)}</LegalName>`
-    + (o.azienda.sito || o.azienda.telefono ? `<ContactDetails>${o.azienda.telefono ? `<Phone>${xml(o.azienda.telefono)}</Phone>` : ""}${o.azienda.sito ? `<Url>${xml(o.azienda.sito)}</Url>` : ""}</ContactDetails>` : "")
-    + "<OrganisationType>operator</OrganisationType></Operator>");
+  for (const x of operatori) {
+    p(`<Operator id="${id("Operator", x.codice)}" ${v}><PublicCode>${xml(x.codice)}</PublicCode><Name>${xml(x.nome)}</Name><LegalName>${xml(x.ragioneSociale)}</LegalName>`
+      + (x.sito || x.telefono || x.email
+        ? `<ContactDetails>${x.email ? `<Email>${xml(x.email)}</Email>` : ""}${x.telefono ? `<Phone>${xml(x.telefono)}</Phone>` : ""}${x.sito ? `<Url>${xml(x.sito)}</Url>` : ""}</ContactDetails>`
+        : "")
+      + "<OrganisationType>operator</OrganisationType></Operator>");
+  }
   p("</organisations>");
   p("</ResourceFrame>");
 
@@ -208,7 +247,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
       + (testo(r.route_short_name) ? `<ShortName>${xml(r.route_short_name)}</ShortName>` : "")
       + `<TransportMode>${modoDellaLinea.get(testo(r.route_id))}</TransportMode>`
       + `<PublicCode>${xml(testo(r.route_short_name) || testo(r.route_id))}</PublicCode>`
-      + `<OperatorRef ref="${operatore}" ${v}/></Line>`);
+      + `<OperatorRef ref="${operatoreDellaLinea.get(testo(r.route_id)) ?? operatore}" ${v}/></Line>`);
   }
   p("</lines>");
   p("<scheduledStopPoints>");
@@ -277,7 +316,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
       + (partenza.giorni ? `<DepartureDayOffset>${partenza.giorni}</DepartureDayOffset>` : "")
       + `<dayTypes><DayTypeRef ref="${id("DayType", t.service_id)}" ${v}/></dayTypes>`
       + `<ServiceJourneyPatternRef ref="${id("ServiceJourneyPattern", q.id)}" ${v}/>`
-      + `<OperatorRef ref="${operatore}" ${v}/>`
+      + `<OperatorRef ref="${operatoreDellaLinea.get(q.linea) ?? operatore}" ${v}/>`
       + "<passingTimes>"
       + st.map((x, i) => {
         orari++;
@@ -303,6 +342,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
     conteggi: {
       fermate: fermate.length, linee: linee.length, sequenze: sequenze.size, corse: corseConSequenza.length, orari,
       tipiDiGiorno: servizi.length, giorni: n, corseSenzaGiorni: corseTutte.length - corse.length,
+      operatori: operatori.length,
     },
   };
 }

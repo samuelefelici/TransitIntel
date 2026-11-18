@@ -61,10 +61,10 @@ const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() 
 export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string }, a: Azienda, gestori: readonly Gestore[] = []): string {
   const diTutti = [FORMATO, tipo, v.versioneId, v.feedId, a.compilata, a.gtfsAgencyId, a.ragioneSociale, a.sito, a.telefono];
   const delNetex = tipo === "netex" ? [a.nome, a.netexCodiceLocale, a.netexFornitore] : [];
-  /* i gestori finiscono in agency.txt e in routes.txt del GTFS (tappa 6.11); il NeTEx ha ancora l'azienda come solo operatore.
+  /* i gestori finiscono in agency.txt e in routes.txt del GTFS (tappa 6.11) e sono gli operatori del NeTEx (6.12).
    * Senza gestori la firma è quella di prima: i file già pubblicati non si rifanno. */
-  const deiGestori = tipo === "gtfs" && gestori.length > 0
-    ? [gestori.map((g) => [g.gestore, g.nome, g.sito, g.telefono, g.predefinito])] : [];
+  const deiGestori = gestori.length > 0
+    ? [gestori.map((g) => [g.gestore, g.nome, g.sito, g.telefono, g.predefinito, ...(tipo === "netex" ? [g.email] : [])])] : [];
   return sha256(JSON.stringify([...diTutti, ...delNetex, ...deiGestori]));
 }
 
@@ -257,7 +257,7 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
           fatto.gtfs = "pubblicato";
           continue;
         }
-        const { xml, conteggi } = netexDelGtfs(gtfs, azienda, adesso);
+        const { xml, conteggi } = netexDelGtfs(gtfs, azienda, gestori, adesso);
         const esito = await valida(xml);
         if (esito.stato === "non_valido") {
           await chiudi("netex", "non_valido", "Il NeTEx non passa lo schema del profilo italiano", { errori: esito.errori.slice(0, 20) });

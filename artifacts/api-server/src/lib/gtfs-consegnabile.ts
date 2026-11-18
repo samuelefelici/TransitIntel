@@ -27,7 +27,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { projectHasTripValidity, computeActiveDatesByTrip } from "./planning-studio-validity-eval";
 import type { Azienda } from "./azienda";
-import { agenzieDelGtfs, type Gestore } from "./gestori";
+import { agenzieDelGtfs, gestorePredefinito, type Gestore } from "./gestori";
 import type { Gtfs } from "./gtfs-verifica";
 import { netexDaGtfs, type ConteggiNetex } from "./netex";
 
@@ -329,12 +329,19 @@ export class SenzaCodiceNetex extends Error {
   constructor() { super("Manca il codice locale NeTEx (per le Marche «ITI3»): indicalo in Amministrazione › Azienda"); }
 }
 
-/** Il NeTEx del profilo italiano (livello 1) dallo stesso GTFS, coi codici dell'azienda. */
-export function netexDelGtfs(gtfs: Gtfs, azienda: Azienda, adesso: Date = new Date()): { xml: string; conteggi: ConteggiNetex } {
+/**
+ * Il NeTEx del profilo italiano (livello 1) dallo stesso GTFS, coi codici
+ * dell'azienda. `gestori` è lo stesso elenco con cui è stato fatto il GTFS
+ * (tappa 6.12): ognuno che ha linee è un operatore, e ogni linea porta il
+ * suo. Vuoto: un operatore solo, l'azienda. Chi trasmette resta l'azienda.
+ */
+export function netexDelGtfs(gtfs: Gtfs, azienda: Azienda, gestori: readonly Gestore[], adesso: Date = new Date()): { xml: string; conteggi: ConteggiNetex } {
   if (!azienda.netexCodiceLocale) throw new SenzaCodiceNetex();
   return netexDaGtfs(gtfs, {
     codiceLocale: azienda.netexCodiceLocale, fornitore: azienda.netexFornitore, partecipante: azienda.gtfsAgencyId,
     azienda: { ragioneSociale: azienda.ragioneSociale, nome: azienda.nome, sito: azienda.sito, telefono: azienda.telefono, codice: azienda.gtfsAgencyId },
+    operatori: gestori.map((g) => ({ codice: g.gestore, nome: g.nome, sito: g.sito, telefono: g.telefono, email: g.email })),
+    operatorePrincipale: gestorePredefinito(gestori)?.gestore,
     adesso,
   });
 }

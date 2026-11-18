@@ -78,6 +78,9 @@ export function contenuto(f: StatoFile): string[] {
     ? [[c.righe?.["trips.txt"], "corsa", "corse"], [c.righe?.["stops.txt"], "fermata", "fermate"], [c.righe?.["routes.txt"], "linea", "linee"]]
     : [[c.corse, "corsa", "corse"], [c.fermate, "fermata", "fermate"], [c.linee, "linea", "linee"]];
   const out = voci.filter(([v]) => n(v) !== null).map(([v, uno, tanti]) => `${n(v)} ${v === 1 ? uno : tanti}`);
+  /* i gestori (tappe 6.11 e 6.12): le agenzie del GTFS, gli operatori del NeTEx. Si dicono solo se sono più d'uno. */
+  const gestori = f.tipo === "gtfs" ? c.righe?.["agency.txt"] : c.operatori;
+  if (typeof gestori === "number" && gestori > 1) out.push(`${n(gestori)} ${f.tipo === "gtfs" ? "agenzie" : "operatori"}`);
   if (f.tipo === "gtfs" && typeof c.avvisi === "number" && c.avvisi > 0) out.push(`${n(c.avvisi)} ${c.avvisi === 1 ? "avviso" : "avvisi"} del controllo`);
   if (f.tipo === "netex" && typeof c.corseSenzaGiorni === "number" && c.corseSenzaGiorni > 0) {
     out.push(`${n(c.corseSenzaGiorni)} ${c.corseSenzaGiorni === 1 ? "corsa lasciata fuori" : "corse lasciate fuori"} (senza giorni di servizio)`);
