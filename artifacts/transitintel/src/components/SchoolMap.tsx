@@ -2,6 +2,7 @@ import React, { useMemo, useState, useCallback, useRef } from "react";
 import Map, { Source, Layer, Popup, MapRef } from "react-map-gl/mapbox";
 import type { LayerProps } from "react-map-gl/mapbox";
 import { GraduationCap, MapPin, Bus } from "lucide-react";
+import { useAzienda } from "@/hooks/use-azienda";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -43,14 +44,15 @@ export default function SchoolMap({ items, routeShapes }: Props) {
   const mapRef = useRef<MapRef>(null);
   const [selected, setSelected] = useState<SchoolMapItem | null>(null);
   const [hoveredRoute, setHoveredRoute] = useState<string | null>(null);
+  const azienda = useAzienda();
 
   /* Compute map center from data */
   const center = useMemo(() => {
-    if (items.length === 0) return { lat: 43.55, lng: 13.35 };
+    if (items.length === 0) return { lat: azienda.centro.lat, lng: azienda.centro.lng };
     const lat = items.reduce((s, i) => s + i.lat, 0) / items.length;
     const lng = items.reduce((s, i) => s + i.lng, 0) / items.length;
     return { lat, lng };
-  }, [items]);
+  }, [items, azienda.centro.lat, azienda.centro.lng]);
 
   /* ── GeoJSON: school markers ──────────────────────── */
   const schoolPoints = useMemo((): GeoJSON.FeatureCollection => ({

@@ -5,6 +5,7 @@
  * Questa informazione sarà usata per il calcolo dei "fuori linea"
  * (tragitti deposito → prima fermata e ultima fermata → deposito).
  */
+import { useAzienda } from "@/hooks/use-azienda";
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Map, { Marker, Popup, NavigationControl, type MapRef } from "react-map-gl/mapbox";
@@ -57,6 +58,7 @@ interface Props {
 }
 
 export default function DepotStep({ initial, psProjectId, onBack, onComplete }: Props) {
+  const azienda = useAzienda();
   const [depots, setDepots] = useState<Depot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -97,7 +99,7 @@ export default function DepotStep({ initial, psProjectId, onBack, onComplete }: 
         longitude: mappable.reduce((s, d) => s + d.lon!, 0) / mappable.length,
         latitude:  mappable.reduce((s, d) => s + d.lat!, 0) / mappable.length,
       }
-    : { longitude: 12.4964, latitude: 41.9028 };
+    : { longitude: azienda.centro.lng, latitude: azienda.centro.lat };
 
   const flyTo = (d: Depot) => {
     if (d.lat == null || d.lon == null) return;
@@ -183,7 +185,7 @@ export default function DepotStep({ initial, psProjectId, onBack, onComplete }: 
             <Map
               ref={mapRef}
               mapboxAccessToken={MAPBOX_TOKEN}
-              initialViewState={{ ...mapCenter, zoom: mappable.length > 0 ? 10 : 5 }}
+              initialViewState={{ ...mapCenter, zoom: mappable.length > 0 ? 10 : azienda.centro.zoom }}
               style={{ width: "100%", height: "100%" }}
               mapStyle="mapbox://styles/mapbox/dark-v11"
             >

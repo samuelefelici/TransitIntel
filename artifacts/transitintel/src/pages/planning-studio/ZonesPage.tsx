@@ -30,6 +30,7 @@ import {
   type CalendarKm, type WeekdayKm, type CalendarDef, type CategoryKm,
 } from "./zonizzazione-export";
 import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 import { confiniInclusi } from "@/lib/territorio";
 
 /* ─── Tipi API ─── */
@@ -490,7 +491,7 @@ export default function PlanningStudioZonesPage() {
             <Map
               ref={mapRef}
               mapboxAccessToken={MAPBOX_TOKEN}
-              initialViewState={{ longitude: 12.5, latitude: 42.0, zoom: 5 }}
+              initialViewState={vistaIniziale(azienda)}
               mapStyle={MAP_STYLES.dark}
               onLoad={fitAllZones}
               onClick={(e) => {

@@ -5,6 +5,7 @@ import { sql, count, inArray, and, eq } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
 import { leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
+import { centroDeiPunti, kmPerGradoLng } from "../lib/geo-utils";
 
 const router: IRouter = Router();
 
@@ -696,7 +697,7 @@ function pointInPolygon(lng: number, lat: number, ring: number[][]): boolean {
 }
 
 // ──────────────────────────────────────────────────────────────
-// GET /api/analysis/isochrone?lat=43.6&lng=13.5&minutes=5,10,15
+// GET /api/analysis/isochrone?lat=…&lng=…&minutes=5,10,15
 // Returns GeoJSON FeatureCollection of walking isochrone polygons
 // for a single point. Used when user clicks a stop on the map.
 // ──────────────────────────────────────────────────────────────
@@ -1620,9 +1621,9 @@ router.get("/analysis/segments", cache({ ttlSeconds: 60 }), async (req, res) => 
       if (!stopGrid.has(key)) stopGrid.set(key, []);
       stopGrid.get(key)!.push(s);
     }
-    const COS_LAT = Math.cos((43.6 * Math.PI) / 180);
+    /* i metri di un grado di longitudine si contano alla latitudine media delle fermate */
     const M_PER_DEG_LAT = 111_000;
-    const M_PER_DEG_LNG = 111_000 * COS_LAT;
+    const M_PER_DEG_LNG = kmPerGradoLng(centroDeiPunti(stopsArr.map((s) => ({ lat: Number(s.lat), lon: Number(s.lng) })))?.lat ?? 0) * 1000;
 
     function nearbyStops(lat: number, lng: number, maxM: number) {
       const cellsR = Math.ceil(maxM / (GRID_DEG * M_PER_DEG_LAT)) + 1;

@@ -22,7 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { useReti } from "@/hooks/use-reti";
 import { useAzienda } from "@/hooks/use-azienda";
-import { intestazioneDocumenti, nomeNeiDocumenti } from "@/lib/azienda";
+import { intestazioneDocumenti, nomeNeiDocumenti, vistaIniziale } from "@/lib/azienda";
 import { opzioniReti } from "@/lib/reti";
 import { domandaAllinea, riassuntoConfronto, type ConfrontoColCatalogo } from "@/lib/titoli-catalogo";
 import { partenzaFeedInfo, type AgenziaNelGtfs, type PartenzaFeedInfo } from "@/lib/elenchi-tariffe";
@@ -2784,6 +2784,7 @@ function pointInPolygon(lon: number, lat: number, polygon: [number, number][]): 
 }
 
 function ClustersTab() {
+  const azienda = useAzienda();
   const { toast } = useToast();
   const mapRef = useRef<MapRef>(null);
 
@@ -4189,7 +4190,7 @@ function ClustersTab() {
                 <Map
                   ref={mapRef}
                   mapboxAccessToken={CLUSTER_MAPBOX_TOKEN}
-                  initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 9.5 }}
+                  initialViewState={vistaIniziale(azienda)}
                   mapStyle="mapbox://styles/mapbox/navigation-night-v1"
                   style={{ width: "100%", height: "100%" }}
                   interactiveLayerIds={interactiveLayerIds}
@@ -5707,6 +5708,7 @@ function simConvexHull(points: [number, number][]): [number, number][] {
 }
 
 function SimulateTab() {
+  const azienda = useAzienda();
   const { toast } = useToast();
   const NETWORK_OPTIONS = opzioniReti(useReti());
   const mapRef = useRef<MapRef>(null);
@@ -6302,7 +6304,7 @@ function SimulateTab() {
               <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
                 <div className="relative w-full h-[400px] lg:h-[500px]">
                   <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
-                    initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
+                    initialViewState={vistaIniziale(azienda)}
                     style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/dark-v11" attributionControl={false}>
                     {routeLineGeoJson && (
                       <Source id="route-line" type="geojson" data={routeLineGeoJson}>
@@ -6571,7 +6573,7 @@ function SimulateTab() {
               <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
                 <div className="relative w-full h-[400px] lg:h-[500px]">
                   <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
-                    initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
+                    initialViewState={vistaIniziale(azienda)}
                     style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/navigation-night-v1" attributionControl={false}>
 
                     {/* Route line (dashed, as background) */}
@@ -6901,7 +6903,7 @@ function SimulateTab() {
               <Card className="bg-card/50 lg:col-span-3 overflow-hidden">
                 <div className="relative w-full h-[400px] lg:h-[500px]">
                   <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
-                    initialViewState={{ longitude: 13.35, latitude: 43.55, zoom: 10 }}
+                    initialViewState={vistaIniziale(azienda)}
                     style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/dark-v11" attributionControl={false}>
 
                     {/* ── Regola 1: singola linea selezionata ── */}

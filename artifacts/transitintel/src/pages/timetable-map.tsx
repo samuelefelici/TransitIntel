@@ -18,6 +18,8 @@
  * Riprova), mai pagina muta. I colori dei percorsi sono quelli scelti
  * dall'operatore nell'app (attributes.color per percorso → colore linea).
  */
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRoute } from "wouter";
 import { useQuery } from "@tanstack/react-query";
@@ -74,6 +76,7 @@ function geomCoords(geom: any): Array<[number, number]> {
 }
 
 export default function TimetableMapPage() {
+  const azienda = useAzienda();
   const [, params] = useRoute("/o/:token");
   const token = params?.token ?? "";
   const mapRef = useRef<MapRef | null>(null);
@@ -364,7 +367,7 @@ export default function TimetableMapPage() {
           <MapGL
             ref={mapRef}
             mapboxAccessToken={MAPBOX_TOKEN}
-            initialViewState={{ longitude: 13.51, latitude: 43.61, zoom: 10 }}
+            initialViewState={vistaIniziale(azienda)}
             mapStyle="mapbox://styles/mapbox/streets-v12"
             interactiveLayerIds={routeId ? ["tm-stops"] : []}
             onClick={(e) => {

@@ -11,6 +11,7 @@ import type { MapRef } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
 import { Camera, Loader2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useAzienda } from "@/hooks/use-azienda";
 
 const MAPBOX_TOKEN: string = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -48,6 +49,7 @@ export default function NetworkMap3D({
   height?: string;
 }) {
   const mapRef = useRef<MapRef>(null);
+  const azienda = useAzienda();
   const q = useQuery({
     queryKey: ["timetables", "net3d", projectId, [...routeIds].sort().join(",")],
     queryFn: () => apiFetch<NData>(
@@ -111,7 +113,7 @@ export default function NetworkMap3D({
 
   const center = bbox
     ? { longitude: (bbox[0] + bbox[2]) / 2, latitude: (bbox[1] + bbox[3]) / 2 }
-    : { longitude: 13.5, latitude: 43.6 };
+    : { longitude: azienda.centro.lng, latitude: azienda.centro.lat };
 
   function exportPng() {
     const ref: any = mapRef.current;

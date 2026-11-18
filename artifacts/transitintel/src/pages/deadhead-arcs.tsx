@@ -10,6 +10,8 @@
  *  NB: per ora lo scheduling usa ancora il calcolo attuale in fase di
  *  ottimizzazione — questa sezione è l'archivio, non l'override attivo.
  * ═══════════════════════════════════════════════════════════════ */
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Map, { Marker, Source, Layer, NavigationControl, type MapRef, type MapMouseEvent } from "react-map-gl/mapbox";
 import "mapbox-gl/dist/mapbox-gl.css";
@@ -52,6 +54,7 @@ interface Arc {
 }
 
 export default function DeadheadArcsPage() {
+  const azienda = useAzienda();
   const base = getApiBase();
   // Dentro un progetto PS lo scope è FISSO su quel progetto (niente selettore):
   // la pagina mostra gli archi globali + quelli del progetto aperto.
@@ -495,7 +498,7 @@ export default function DeadheadArcsPage() {
             <Map
               ref={mapRef}
               mapboxAccessToken={MAPBOX_TOKEN}
-              initialViewState={{ longitude: 13.51, latitude: 43.6, zoom: 10 }}
+              initialViewState={vistaIniziale(azienda)}
               style={{ width: "100%", height: "100%" }}
               mapStyle="mapbox://styles/mapbox/dark-v11"
               onClick={onMapClick}

@@ -8,6 +8,8 @@
  *
  * Permette anche il "Suggerisci cluster" (greedy raggio configurabile).
  */
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useLocation, useParams, Link } from "wouter";
 import Map, { Marker, Source, Layer, NavigationControl, type MapRef } from "react-map-gl/mapbox";
@@ -30,7 +32,6 @@ import {
 } from "@/lib/planning-studio-api";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
-const DEFAULT_VIEW = { longitude: 12.4964, latitude: 41.9028, zoom: 11 };
 
 const KIND_LABEL: Record<PsClusterKind, string> = {
   interchange: "Punto di cambio",
@@ -49,6 +50,7 @@ const KIND_DESC: Record<PsClusterKind, string> = {
 };
 
 export default function PlanningStudioClustersPage() {
+  const azienda = useAzienda();
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
   const [, navigate] = useLocation();
@@ -85,7 +87,7 @@ export default function PlanningStudioClustersPage() {
 
   /* ─── Centro mappa ─── */
   const initialView = useMemo(() => {
-    if (stops.length === 0) return DEFAULT_VIEW;
+    if (stops.length === 0) return vistaIniziale(azienda);
     const lats = stops.map(s => Number(s.lat));
     const lons = stops.map(s => Number(s.lon));
     return {
@@ -93,7 +95,7 @@ export default function PlanningStudioClustersPage() {
       latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
       zoom: 12,
     };
-  }, [stops.length]);
+  }, [stops.length, azienda]);
 
   /* ─── Mutations ─── */
   const createMut = useMutation({

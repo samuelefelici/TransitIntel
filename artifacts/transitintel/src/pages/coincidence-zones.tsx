@@ -11,6 +11,8 @@
  * Creazione manuale: seleziona tipo (icona), posiziona centro sulla mappa,
  * seleziona fermate (con colore del tipo), salva.
  */
+import { useAzienda } from "@/hooks/use-azienda";
+import { vistaIniziale } from "@/lib/azienda";
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import MapGL, { Source, Layer, Marker, MapRef } from "react-map-gl/mapbox";
 import { motion, AnimatePresence } from "framer-motion";
@@ -167,6 +169,7 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 
 // ─── Component ──────────────────────────────────────────────
 export default function CoincidenceZonesPage() {
+  const azienda = useAzienda();
   const mapRef = useRef<MapRef>(null);
 
   // Data
@@ -964,7 +967,7 @@ export default function CoincidenceZonesPage() {
       <div className="flex-1 relative">
         <MapGL
           ref={mapRef}
-          initialViewState={{ longitude: 13.46, latitude: 43.615, zoom: 12.5, pitch: 0, bearing: 0 }}
+          initialViewState={{ ...vistaIniziale(azienda), pitch: 0, bearing: 0 }}
           mapStyle="mapbox://styles/mapbox/dark-v11"
           mapboxAccessToken={MAPBOX_TOKEN}
           style={{ width: "100%", height: "100%" }}
