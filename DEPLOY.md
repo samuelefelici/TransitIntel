@@ -1476,6 +1476,29 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Le risposte dell'API compresse (tappa 6.19b)
+
+Dalla tappa 6.19a la mappa delle linee si vede anche per i feed nati da
+Planning Studio, e con un feed vero la dashboard chiede 18 MB di JSON (tutte
+le linee, a tratti). L'API non comprimeva niente. Da questo rilascio le
+risposte di testo (JSON, CSV, XML, testo) sopra i 16 KB partono compresse,
+se il browser lo accetta: brotli, altrimenti gzip. Quella mappa diventa di
+0,9 MB.
+
+- Mai le risposte di `/api/auth` (login, sessione, MFA): lì un segreto e un
+  testo scelto da chi chiede starebbero nella stessa risposta compressa.
+- Mai i file binari (ZIP, XLSX, PDF, GTFS-RT) né le risposte che arrivano a
+  pezzi (la chat di Argos): non cambiano.
+- Se davanti all'API c'è un proxy che comprime anche lui (Coolify può farlo),
+  non comprime una seconda volta: vede la risposta già compressa e la lascia.
+
+**Dopo il deploy**: niente da fare a mano. Nessuna migrazione, nessuna
+variabile, nessuna Watch Path nuova. Per vedere che funziona, dal browser
+(strumenti per sviluppatori → Rete) la richiesta
+`gtfs/shapes/geojson` della dashboard ha `content-encoding: br`.
+
+**Rollback**: immagine precedente. Le risposte tornano in chiaro.
+
 ### Una nuova azienda: che cosa scrivere e dove (tappa 6.18)
 
 Dalla Fase 6 quello che era scritto nel codice per il primo cliente è un dato

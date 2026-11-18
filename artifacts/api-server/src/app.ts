@@ -8,6 +8,7 @@ import { errorHandler } from "./middlewares/error-handler";
 import { globalLimiter } from "./middlewares/rate-limit";
 import { agentAttribution } from "./lib/agent-context";
 import { contestoRichiesta } from "./lib/contesto-http";
+import { comprimiRisposte } from "./middlewares/comprimi";
 
 const app: Express = express();
 
@@ -111,6 +112,10 @@ app.use(agentAttribution);
 // parte come «api» col suo id; requireAuth aggiunge l'utente, le cron e
 // Caronte il loro canale (lib/contesto-http.ts).
 app.use(contestoRichiesta);
+
+// Le risposte di testo grandi, compresse se il client lo accetta (tappa
+// 6.19b): la mappa delle linee passa da 18 MB a meno di 1 MB. Mai /api/auth.
+app.use(comprimiRisposte);
 
 app.use("/api", router);
 
