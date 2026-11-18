@@ -10,9 +10,9 @@
  * i depositi del personale (tappa 6.4, components/azienda/DepositiAzienda.tsx),
  * le reti con le regole delle linee (tappa 6.7, components/azienda/RetiAzienda.tsx),
  * le fasce chilometriche dell'extraurbano (tappa 6.8, components/azienda/FasceKm.tsx),
- * il catalogo dei titoli di viaggio (tappa 6.9, components/azienda/TitoliCatalogo.tsx)
- * e l'agenzia dei GTFS con gli elenchi di partenza delle tariffe (tappa 6.10,
- * components/azienda/ElenchiTariffe.tsx).
+ * il catalogo dei titoli di viaggio (tappa 6.9, components/azienda/TitoliCatalogo.tsx),
+ * gli elenchi di partenza delle tariffe (tappa 6.10, components/azienda/ElenchiTariffe.tsx)
+ * e i gestori delle linee, le agenzie dei GTFS (tappa 6.11, components/azienda/Gestori.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
 import { Building2, FileCode2, MapPin, Radio, Save } from "lucide-react";
@@ -30,6 +30,7 @@ import RetiAzienda from "@/components/azienda/RetiAzienda";
 import FasceKm from "@/components/azienda/FasceKm";
 import TitoliCatalogo from "@/components/azienda/TitoliCatalogo";
 import ElenchiTariffe from "@/components/azienda/ElenchiTariffe";
+import Gestori from "@/components/azienda/Gestori";
 import {
   aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
@@ -238,13 +239,16 @@ export default function AdminAziendaPage() {
       {/* le reti e le regole delle linee (tappa 6.7): urbano o extraurbano, per le tariffe e per il Roster */}
       <RetiAzienda />
 
+      {/* i gestori (tappa 6.11): le aziende che gestiscono le linee, ognuna un'agenzia nei GTFS */}
+      <Gestori />
+
       {/* le fasce chilometriche dell'extraurbano (tappa 6.8): a ogni fascia di chilometri il suo prezzo */}
       <FasceKm />
 
       {/* il catalogo dei titoli di viaggio (tappa 6.9): i biglietti e gli abbonamenti con cui si riempie un feed */}
       <TitoliCatalogo />
 
-      {/* l'agenzia dei GTFS e gli elenchi di partenza delle tariffe (tappa 6.10): categorie, supporti e nodi */}
+      {/* gli elenchi di partenza delle tariffe (tappa 6.10): categorie di passeggero e supporti */}
       <ElenchiTariffe />
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}

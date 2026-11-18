@@ -75,7 +75,7 @@ function giorniDelGtfs(g: Gtfs, dal: string, al: string): Map<string, string[]> 
 /** Il GTFS e la funzione dei km danno gli stessi giorni a ogni corsa. */
 async function stessiGiorniDelGtfs(progetto: string, dal: string, al: string) {
   const p = (await db.execute<any>(sql`SELECT * FROM ps_projects WHERE id = ${progetto}::uuid`)).rows[0];
-  const g = await costruisciGtfs(progetto, p, await leggiAzienda(), "bozza");
+  const g = await costruisciGtfs(progetto, p, await leggiAzienda(), "bozza", []);
   const codici = new Map<string, string>((await db.execute<any>(sql`SELECT id, codice FROM ps_trips WHERE project_id = ${progetto}::uuid`)).rows.map((r: any) => [r.codice, r.id]));
   const dalGtfs = new Map([...giorniDelGtfs(g, dal, al)].map(([codice, gg]) => [codici.get(codice)!, gg]));
   const nostri = await giorniDiCircolazione({ progettoId: progetto, dal, al });

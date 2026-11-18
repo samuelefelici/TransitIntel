@@ -1,15 +1,14 @@
 /**
- * Gli elenchi di partenza delle tariffe e l'agenzia dei GTFS nel database
- * (migrazione 0043): leggerli, salvarli (rotte /api/admin/elenchi-tariffe) e
- * copiarli in un feed dalla pagina Tariffe. Le regole stanno in
- * lib/elenchi-tariffe.ts.
+ * Gli elenchi di partenza delle tariffe nel database (migrazione 0043):
+ * leggerli, salvarli (rotte /api/admin/elenchi-tariffe) e copiarli in un feed
+ * dalla pagina Tariffe. Le regole stanno in lib/elenchi-tariffe.ts.
  */
 import { db } from "@workspace/db";
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import {
   aliasDaTesto, erroriCategorie, erroriSupporti, MASSIMO_CATEGORIE, MASSIMO_SUPPORTI,
-  type AgenziaGtfs, type CategoriaCatalogo, type NodoCatalogo, type SupportoCatalogo,
+  type CategoriaCatalogo, type NodoCatalogo, type SupportoCatalogo,
 } from "./elenchi-tariffe";
 
 export class RifiutoElenchi extends Error {
@@ -40,26 +39,14 @@ export async function nodiCatalogo(ex: Ex = db): Promise<NodoCatalogo[]> {
   }));
 }
 
-/** L'agenzia dei GTFS, se l'azienda ne ha una a parte. */
-export async function agenziaGtfs(ex: Ex = db): Promise<AgenziaGtfs | null> {
-  const r = await ex.execute<any>(sql`SELECT agency_id, nome, sito, telefono, email, tariffe_url FROM agenzia_gtfs LIMIT 1`);
-  const x = r.rows[0];
-  if (!x) return null;
-  return {
-    agencyId: String(x.agency_id), nome: String(x.nome), sito: String(x.sito),
-    telefono: x.telefono ?? null, email: x.email ?? null, tariffeUrl: x.tariffe_url ?? null,
-  };
-}
-
 export interface ElenchiTariffe {
   categorie: CategoriaCatalogo[];
   supporti: SupportoCatalogo[];
-  agenzia: AgenziaGtfs | null;
 }
 
 export async function elenchiTariffe(): Promise<ElenchiTariffe> {
-  const [categorie, supporti, agenzia] = await Promise.all([categorieCatalogo(), supportiCatalogo(), agenziaGtfs()]);
-  return { categorie, supporti, agenzia };
+  const [categorie, supporti] = await Promise.all([categorieCatalogo(), supportiCatalogo()]);
+  return { categorie, supporti };
 }
 
 /* ── Quello che l'amministratore può salvare ──────────────────────────────── */
@@ -87,15 +74,6 @@ export const Supporti = z.object({
     nome: NOME,
     tipo: z.number().int().min(0, "il tipo va da 0 a 4").max(4, "il tipo va da 0 a 4"),
   }).strict()).max(MASSIMO_SUPPORTI, `al più ${MASSIMO_SUPPORTI} supporti`),
-}).strict();
-
-export const Agenzia = z.object({
-  agencyId: z.string().trim().regex(/^[A-Za-z0-9_.-]{1,40}$/, "identificativo: solo lettere, cifre e . _ - (al più 40)"),
-  nome: NOME,
-  sito: URL_HTTP,
-  telefono: facoltativo(z.string().trim().regex(/^[0-9+() ./-]{3,40}$/, "telefono: solo cifre, spazi e + ( ) . / -")),
-  email: facoltativo(z.string().trim().regex(/^[^\s",<>@]{1,64}@[^\s",<>@]{1,190}$/, "l'indirizzo di posta non è valido")),
-  tariffeUrl: facoltativo(URL_HTTP),
 }).strict();
 
 /** Il primo messaggio di una validazione fallita, con la riga dell'elenco se c'è. */
@@ -165,23 +143,6 @@ export async function salvaSupporti(d: z.infer<typeof Supporti>): Promise<Suppor
     }
   });
   return lista;
-}
-
-export async function salvaAgenzia(d: z.infer<typeof Agenzia>): Promise<AgenziaGtfs> {
-  const a: AgenziaGtfs = { agencyId: d.agencyId, nome: d.nome, sito: d.sito, telefono: d.telefono ?? null, email: d.email ?? null, tariffeUrl: d.tariffeUrl ?? null };
-  await db.execute(sql`
-    INSERT INTO agenzia_gtfs (unica, agency_id, nome, sito, telefono, email, tariffe_url)
-    VALUES (true, ${a.agencyId}, ${a.nome}, ${a.sito}, ${a.telefono}, ${a.email}, ${a.tariffeUrl})
-    ON CONFLICT (unica) DO UPDATE SET agency_id = excluded.agency_id, nome = excluded.nome, sito = excluded.sito,
-      telefono = excluded.telefono, email = excluded.email, tariffe_url = excluded.tariffe_url, aggiornata_il = now()
-     WHERE (agenzia_gtfs.agency_id, agenzia_gtfs.nome, agenzia_gtfs.sito, agenzia_gtfs.telefono, agenzia_gtfs.email, agenzia_gtfs.tariffe_url)
-           IS DISTINCT FROM (excluded.agency_id, excluded.nome, excluded.sito, excluded.telefono, excluded.email, excluded.tariffe_url)`);
-  return a;
-}
-
-/** Toglie l'agenzia a parte: da qui nei GTFS delle tariffe figura l'azienda. */
-export async function togliAgenzia(): Promise<void> {
-  await db.execute(sql`DELETE FROM agenzia_gtfs`);
 }
 
 /* ── Copia in un feed, dalla pagina Tariffe ───────────────────────────────── */

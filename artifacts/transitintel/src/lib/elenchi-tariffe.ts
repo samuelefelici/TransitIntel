@@ -1,28 +1,25 @@
 /**
- * Gli elenchi di partenza delle tariffe e l'agenzia dei GTFS (tappa 6.10):
- * i tipi dell'API /api/admin/elenchi-tariffe, le bozze della scheda in
- * Amministrazione › Azienda (agenzia, categorie e supporti) e i valori di
- * partenza del modulo «Feed Info».
+ * Gli elenchi di partenza delle tariffe (tappa 6.10): i tipi dell'API
+ * /api/admin/elenchi-tariffe, le bozze della scheda in Amministrazione ›
+ * Azienda (categorie e supporti) e i valori di partenza del modulo «Feed
+ * Info». Chi figura come agenzia nei GTFS sta in lib/gestori.ts (tappa 6.11).
  * Senza React: si prova da solo.
  */
 
 export interface CategoriaCatalogo { categoria: string; nome: string; predefinita: boolean; url: string | null }
 export interface SupportoCatalogo { supporto: string; nome: string; tipo: number }
-export interface AgenziaGtfs { agencyId: string; nome: string; sito: string; telefono: string | null; email: string | null; tariffeUrl: string | null }
 
-/** Quello che il GTFS delle tariffe scrive in agency.txt (GET /api/fares/agency). */
+/** Un'agenzia come sta in agency.txt. GET /api/fares/agency dà quella di chi non ne dice una: il gestore predefinito, o l'azienda. */
 export interface AgenziaNelGtfs {
   agency_id: string; agency_name: string; agency_url: string; agency_timezone: string; agency_lang: string;
   agency_phone: string; agency_fare_url: string; agency_email: string;
-  /** true se non c'è un'agenzia a parte: è l'azienda dell'installazione */
+  /** true se non è un gestore dell'elenco: è l'azienda dell'installazione */
   daAzienda: boolean;
 }
 
 export interface ElenchiTariffe {
   categorie: CategoriaCatalogo[];
   supporti: SupportoCatalogo[];
-  agenzia: AgenziaGtfs | null;
-  inVigore: AgenziaNelGtfs;
   tipiSupporto: { tipo: number; nome: string }[];
 }
 
@@ -31,15 +28,11 @@ export interface ElenchiTariffe {
 /* `nuova`: la riga è stata aggiunta ora, e solo di queste si scrive l'identificativo (quello di una riga salvata non cambia) */
 export interface RigaCategoria { categoria: string; nome: string; predefinita: boolean; url: string; nuova?: boolean }
 export interface RigaSupporto { supporto: string; nome: string; tipo: string; nuova?: boolean }
-export interface ModuloAgenzia { agencyId: string; nome: string; sito: string; telefono: string; email: string; tariffeUrl: string }
 
 export const bozzaCategorie = (l: readonly CategoriaCatalogo[]): RigaCategoria[] =>
   l.map((c) => ({ categoria: c.categoria, nome: c.nome, predefinita: c.predefinita, url: c.url ?? "" }));
 export const bozzaSupporti = (l: readonly SupportoCatalogo[]): RigaSupporto[] =>
   l.map((s) => ({ supporto: s.supporto, nome: s.nome, tipo: String(s.tipo) }));
-export const moduloAgenzia = (a: AgenziaGtfs | null): ModuloAgenzia => ({
-  agencyId: a?.agencyId ?? "", nome: a?.nome ?? "", sito: a?.sito ?? "", telefono: a?.telefono ?? "", email: a?.email ?? "", tariffeUrl: a?.tariffeUrl ?? "",
-});
 
 /** La prima categoria di un elenco vuoto è la predefinita. */
 export const categoriaNuova = (b: readonly RigaCategoria[]): RigaCategoria => ({ categoria: "", nome: "", predefinita: b.length === 0, url: "", nuova: true });
@@ -47,8 +40,6 @@ export const supportoNuovo = (): RigaSupporto => ({ supporto: "", nome: "", tipo
 
 const ID = /^[a-z][a-z0-9_]{1,39}$/;
 const INDIRIZZO = /^https?:\/\/[^\s",<>]{1,200}$/;
-const POSTA = /^[^\s",<>@]{1,64}@[^\s",<>@]{1,190}$/;
-const TELEFONO = /^[0-9+() ./-]{3,40}$/;
 
 const doppione = (valori: readonly string[]): string | null => {
   const visti = new Set<string>();
@@ -93,17 +84,6 @@ export function erroriSupporti(b: readonly RigaSupporto[]): string[] {
   return e;
 }
 
-export function erroriAgenzia(m: ModuloAgenzia): string[] {
-  const e: string[] = [];
-  if (!/^[A-Za-z0-9_.-]{1,40}$/.test(m.agencyId.trim())) e.push("L'identificativo ha solo lettere, cifre e . _ - (al più 40).");
-  const n = nomeNonVa(m.nome); if (n) e.push(`Nome: ${n}.`);
-  if (!INDIRIZZO.test(m.sito.trim())) e.push("Il sito comincia con http:// o https://.");
-  if (m.telefono.trim() && !TELEFONO.test(m.telefono.trim())) e.push("Il telefono ha solo cifre, spazi e + ( ) . / -.");
-  if (m.email.trim() && !POSTA.test(m.email.trim())) e.push("L'indirizzo di posta non è valido.");
-  if (m.tariffeUrl.trim() && !INDIRIZZO.test(m.tariffeUrl.trim())) e.push("La pagina delle tariffe comincia con http:// o https://.");
-  return e;
-}
-
 /* ── Quello che si manda all'API ──────────────────────────────────────────── */
 
 const oNiente = (s: string): string | null => (s.trim() === "" ? null : s.trim());
@@ -114,23 +94,11 @@ export const corpoCategorie = (b: readonly RigaCategoria[]): { categorie: Catego
 export const corpoSupporti = (b: readonly RigaSupporto[]): { supporti: SupportoCatalogo[] } => ({
   supporti: b.map((r) => ({ supporto: r.supporto.trim(), nome: r.nome.trim(), tipo: Number(r.tipo) })),
 });
-export const corpoAgenzia = (m: ModuloAgenzia): AgenziaGtfs => ({
-  agencyId: m.agencyId.trim(), nome: m.nome.trim(), sito: m.sito.trim(),
-  telefono: oNiente(m.telefono), email: oNiente(m.email), tariffeUrl: oNiente(m.tariffeUrl),
-});
 
 /** Vero se la bozza dice una cosa diversa da quello che è salvato. */
 export const cambiato = (bozza: unknown, salvato: unknown): boolean => JSON.stringify(bozza) !== JSON.stringify(salvato);
 
 /* ── Frasi ────────────────────────────────────────────────────────────────── */
-
-/** Chi figura oggi come agenzia, in una riga. */
-export function fraseAgenzia(a: AgenziaNelGtfs): string {
-  const chi = `${a.agency_name} (${a.agency_id})`;
-  return a.daAzienda
-    ? `Nel GTFS delle tariffe l'agenzia è l'azienda: ${chi}.`
-    : `Nel GTFS delle tariffe l'agenzia è ${chi}, non l'azienda.`;
-}
 
 /** I valori che il modulo «Feed Info» propone in un feed che non li ha ancora. */
 export interface PartenzaFeedInfo { feedPublisherName: string; feedPublisherUrl: string; feedContactEmail: string; feedContactUrl: string }

@@ -21,6 +21,7 @@ import { lunghezzaDellaGeometria } from "./km-programmati";
 import { Router, type IRouter } from "express";
 import { createHash } from "node:crypto";
 import { db } from "@workspace/db";
+import { AssegnaGestore, assegnaGestore, erroreGestore, gestoriDelProgramma, RifiutoGestori } from "./gestori-store";
 import { conContesto, contestoDb, inSistema } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
 import { withVia, viaDelGiro } from "./agent-context";
@@ -912,6 +913,35 @@ router.get("/planning-studio/projects/:id/routes", async (req, res): Promise<voi
   `);
   const rows: any[] = (r as any).rows ?? (r as any) ?? [];
   res.json({ routes: rows.map(rowToRoute) });
+});
+
+/* I gestori delle linee (tappa 6.11, lib/gestori.ts): ogni linea è di un
+ * gestore, che nei GTFS è la sua agenzia. GET: le linee del programma col
+ * gestore che vale (il loro, o il predefinito) e l'elenco per la tendina.
+ * PUT: assegna un gestore a una o più linee insieme; `gestore: null` le
+ * rimette senza un gestore loro. */
+router.get("/planning-studio/projects/:id/gestori", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  try { res.json({ ...(await gestoriDelProgramma(proj.id)), puoScrivere: canWrite(proj) }); }
+  catch (e: any) { req.log?.error?.({ err: e?.message }, "gestori del programma non letti"); res.status(500).json({ error: "Gestori non leggibili" }); }
+});
+
+router.put("/planning-studio/projects/:id/gestori", async (req, res): Promise<void> => {
+  const proj = await requireProject(req, res); if (!proj) return;
+  if (!canWrite(proj)) { res.status(403).json({ error: "Permessi insufficienti" }); return; }
+  const p = AssegnaGestore.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroreGestore(p.error) }); return; }
+  try {
+    const esito = await assegnaGestore(proj.id, p.data);
+    if (esito.cambiate > 0) {
+      await logActivity(proj.id, req.user!.id, "ps.route.gestore", { payload: { gestore: esito.gestore, linee: esito.cambiate } });
+    }
+    res.json(esito);
+  } catch (e: any) {
+    if (e instanceof RifiutoGestori) { res.status(e.status).json({ error: e.message }); return; }
+    req.log?.error?.({ err: e?.message }, "gestore non assegnato");
+    res.status(500).json({ error: "Gestore non assegnato" });
+  }
 });
 
 router.post("/planning-studio/projects/:id/routes", async (req, res): Promise<void> => {

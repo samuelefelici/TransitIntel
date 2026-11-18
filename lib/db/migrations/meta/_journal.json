@@ -309,6 +309,13 @@
       "when": 1796500000000,
       "tag": "0043_gli_elenchi_delle_tariffe",
       "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1796600000000,
+      "tag": "0044_i_gestori",
+      "breakpoints": true
     }
   ]
 }

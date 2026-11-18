@@ -72,8 +72,10 @@ import { assegnaZoneUrbane } from "../lib/zone-urbane";
 import { fasciaNumero, fasciaPerDistanza, primaFascia, ultimaFascia } from "../lib/fasce-km";
 import { conLeFasce, erroreTariffe } from "./fares-comuni";
 import { allineaAlCatalogo, bigliettiDiRiferimento, confrontoColCatalogo, contaDoppioni, copiaDalCatalogo, regoleUrbane, togliDoppioni } from "../lib/titoli-catalogo";
-import { agencyTxt, agenziaNelGtfs, campoCsv } from "../lib/elenchi-tariffe";
-import { agenziaGtfs, copiaCategorie, copiaSupporti } from "../lib/elenchi-tariffe-store";
+import { campoCsv } from "../lib/elenchi-tariffe";
+import { copiaCategorie, copiaSupporti } from "../lib/elenchi-tariffe-store";
+import { agencyTxt, agenzieDelGtfs } from "../lib/gestori";
+import { gestoriDalDatabase } from "../lib/gestori-store";
 import { leggiAzienda } from "../lib/azienda";
 import AdmZip from "adm-zip";
 
@@ -2205,8 +2207,10 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
-    /* prima di cominciare a scrivere la risposta: se non si legge, si risponde con un errore */
-    const agenzia = agenziaNelGtfs(await leggiAzienda(), await agenziaGtfs());
+    /* prima di cominciare a scrivere la risposta: se non si legge, si risponde con un errore.
+     * Le agenzie sono i gestori delle linee del feed (tappa 6.11): ogni linea dice il suo. */
+    const routes = await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
+    const agenzie = agenzieDelGtfs(await leggiAzienda(), await gestoriDalDatabase(), routes.map((r) => r.agencyId));
 
     // Dynamically import archiver
     const archiver = (await import("archiver")).default;
@@ -2216,8 +2220,8 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     res.setHeader("Content-Disposition", "attachment; filename=gtfs_export.zip");
     archive.pipe(res);
 
-    // --- agency.txt: l'agenzia dei dati dell'azienda (il consorzio, se c'è), altrimenti l'azienda ---
-    archive.append(agencyTxt(agenzia), { name: "agency.txt" });
+    // --- agency.txt: i gestori che hanno almeno una linea; senza gestori, l'azienda ---
+    archive.append(agencyTxt(agenzie.agenzie), { name: "agency.txt" });
 
     // --- stops.txt ---
     const stops = await db.select().from(gtfsStops).where(eq(gtfsStops.feedId, feedId));
@@ -2228,10 +2232,10 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     archive.append(stopsCsv, { name: "stops.txt" });
 
     // --- routes.txt ---
-    const routes = await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
     let routesCsv = "route_id,agency_id,route_short_name,route_long_name,route_type,route_url,route_color,route_text_color\n";
     for (const r of routes) {
-      /* agency.txt ha una sola agenzia: ogni linea è sua */
+      /* il gestore della linea: il suo se è nell'elenco, altrimenti il predefinito */
+      const agenzia = agenzie.dellaLinea(r.agencyId);
       routesCsv += `${r.routeId},${campoCsv(agenzia.agency_id)},${csvEscape(r.routeShortName || "")},${csvEscape(r.routeLongName || "")},${r.routeType || 3},${r.routeUrl || agenzia.agency_url},${r.routeColor || ""},${r.routeTextColor || ""}\n`;
     }
     archive.append(routesCsv, { name: "routes.txt" });
@@ -3400,9 +3404,9 @@ router.post("/fares/products/fix-media", async (req, res): Promise<void> => {
 // ═══════════════════════════════════════════════════════════
 // FEED INFO — CRUD
 // ═══════════════════════════════════════════════════════════
-/** L'agenzia che il GTFS delle tariffe scrive in agency.txt: la pagina ne prende i valori di partenza. */
+/** L'agenzia di chi non ne dice una (il gestore predefinito, o l'azienda): la pagina ne prende i valori di partenza di «Feed Info». */
 router.get("/fares/agency", async (_req, res): Promise<void> => {
-  try { res.json(agenziaNelGtfs(await leggiAzienda(), await agenziaGtfs())); }
+  try { res.json(agenzieDelGtfs(await leggiAzienda(), await gestoriDalDatabase(), []).principale); }
   catch (e: any) { erroreTariffe(res, e); }
 });
 
@@ -3420,8 +3424,8 @@ router.post("/fares/feed-info", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { feedPublisherName, feedPublisherUrl, feedLang, defaultLang, feedStartDate, feedEndDate, feedVersion, feedContactEmail, feedContactUrl } = req.body;
-    /* chi pubblica, se la richiesta non lo dice: l'agenzia dei GTFS (o l'azienda) */
-    const agenzia = agenziaNelGtfs(await leggiAzienda(), await agenziaGtfs());
+    /* chi pubblica, se la richiesta non lo dice: il gestore predefinito (o l'azienda) */
+    const agenzia = agenzieDelGtfs(await leggiAzienda(), await gestoriDalDatabase(), []).principale;
     // Upsert: delete existing + insert
     await db.delete(gtfsFeedInfo).where(eq(gtfsFeedInfo.feedId, feedId));
     const [row] = await db.insert(gtfsFeedInfo).values({

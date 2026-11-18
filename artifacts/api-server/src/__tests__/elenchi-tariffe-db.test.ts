@@ -1,12 +1,12 @@
 /**
- * Gli elenchi di partenza delle tariffe e l'agenzia dei GTFS (tappa 6.10,
- * migrazione 0043), su un database vero (TEST_DATABASE_URL; in CI come
+ * Gli elenchi di partenza delle tariffe (tappa 6.10, migrazione 0043), su un
+ * database vero (TEST_DATABASE_URL; in CI come
  * cerbero_app).
  *
  * Riempire un feed dà le stesse categorie e gli stessi supporti di prima,
- * presi dai dati dell'azienda; il GTFS delle tariffe scrive in agency.txt
- * l'agenzia di quei dati (o l'azienda, se non ce n'è una a parte). Gli
- * elenchi li gestisce l'amministratore.
+ * presi dai dati dell'azienda; nel GTFS i nomi con la virgola stanno fra
+ * virgolette. Gli elenchi li gestisce l'amministratore. Le agenzie del GTFS
+ * (i gestori) hanno i loro test in gestori-db.test.ts (tappa 6.11).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -16,10 +16,8 @@ import { sql } from "drizzle-orm";
 import adminRouter from "../routes/admin";
 import faresRouter from "../routes/fares";
 import nodiRouter from "../routes/fares-node-assignment";
-import { leggiAzienda } from "../lib/azienda";
-import { agencyTxt, agenziaNelGtfs } from "../lib/elenchi-tariffe";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
-import { AGENZIA_DI_PROVA, ELENCHI_DI_PRIMA, elenchiDiProvaNelDatabase } from "./helpers/elenchi-di-prova";
+import { ELENCHI_DI_PRIMA, elenchiDiProvaNelDatabase } from "./helpers/elenchi-di-prova";
 
 const ADMIN = utenteDiProva("e6a00000-0000-4000-8000-000000000001", [], "admin");
 const admin = request(appDiProva(adminRouter, ADMIN));
@@ -65,7 +63,7 @@ const campi = (riga: string): string[] => {
   return out;
 };
 
-describe.runIf(!!process.env.TEST_DATABASE_URL)("gli elenchi delle tariffe e l'agenzia dei GTFS, sul database", () => {
+describe.runIf(!!process.env.TEST_DATABASE_URL)("gli elenchi delle tariffe, sul database", () => {
   let rimetti: () => Promise<void>;
 
   beforeAll(async () => {
@@ -140,15 +138,6 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("gli elenchi delle tariffe e l'a
   });
 
   describe("il GTFS delle tariffe", () => {
-    it("agency.txt è la riga di prima, e ogni linea è dell'agenzia", async () => {
-      const g = await gtfs();
-      expect(g["agency.txt"]).toBe(ELENCHI_DI_PRIMA.agencyTxt);
-      const linee = g["routes.txt"]!.trim().split("\n").slice(1).map(campi);
-      expect(linee.map((l) => [l[0], l[1]])).toEqual([["L1", "ATMA"], ["L2", "ATMA"]]);
-      /* l'indirizzo della linea se c'è, altrimenti il sito dell'agenzia */
-      expect(linee.map((l) => l[5])).toEqual(["https://linee.example/1", "https://www.atmaancona.it"]);
-    });
-
     it("i nomi con la virgola stanno fra virgolette: ogni riga dei supporti ha tre campi, delle categorie quattro", async () => {
       const g = await gtfs();
       const supporti = g["fare_media.txt"]!.trim().split("\n").slice(1).map(campi);
@@ -161,15 +150,6 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("gli elenchi delle tariffe e l'a
       expect(categorie.length).toBe(7);
       expect(categorie.every((c) => c.length === 4), JSON.stringify(categorie)).toBe(true);
     });
-
-    it("chi pubblica il feed, se il modulo non lo dice: l'agenzia; quello che si scrive nel modulo resta", async () => {
-      const a = await tariffe.get("/api/fares/agency");
-      expect([a.status, a.body.agency_id, a.body.agency_name, a.body.daAzienda]).toEqual([200, "ATMA", "Atma Scpa", false]);
-      const vuoto = await tariffe.post(`/api/fares/feed-info?feedId=${F}`).send({});
-      expect([vuoto.status, vuoto.body.feedPublisherName, vuoto.body.feedPublisherUrl]).toEqual([200, "Atma Scpa", "https://www.atmaancona.it"]);
-      const scritto = await tariffe.post(`/api/fares/feed-info?feedId=${F}`).send({ feedPublisherName: "Regione", feedPublisherUrl: "https://regione.example" });
-      expect([scritto.body.feedPublisherName, scritto.body.feedPublisherUrl]).toEqual(["Regione", "https://regione.example"]);
-    });
   });
 
   describe("l'amministratore", () => {
@@ -181,11 +161,11 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("gli elenchi delle tariffe e l'a
       /* i nodi non stanno qui: la loro scheda nella pagina Tariffe è spenta, e non hanno ancora una pagina per cambiarli */
       expect(r.body.nodi).toBeUndefined();
       expect((await admin.put("/api/admin/elenchi-tariffe/nodi").send({ nodi: [] })).status).toBe(404);
-      expect(r.body.agenzia).toEqual(AGENZIA_DI_PROVA);
-      expect([r.body.inVigore.agency_id, r.body.inVigore.daAzienda, r.body.tipiSupporto.length]).toEqual(["ATMA", false, 5]);
+      /* l'agenzia non sta più qui: i gestori hanno le loro rotte (tappa 6.11) */
+      expect([r.body.agenzia, r.body.inVigore, r.body.tipiSupporto.length]).toEqual([undefined, undefined, 5]);
+      expect((await admin.put("/api/admin/elenchi-tariffe/agenzia").send({})).status).toBe(404);
       expect((await utente.get("/api/admin/elenchi-tariffe")).status).toBe(403);
       expect((await utente.put("/api/admin/elenchi-tariffe/supporti").send({ supporti: [] })).status).toBe(403);
-      expect((await utente.delete("/api/admin/elenchi-tariffe/agenzia")).status).toBe(403);
     });
 
     it("le categorie: si rinomina, si aggiunge, si sposta la predefinita e l'ordine è quello dell'elenco", async () => {
@@ -234,25 +214,6 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("gli elenchi delle tariffe e l'a
       const doppio = await admin.put("/api/admin/elenchi-tariffe/supporti").send({ supporti: [supporti[0], supporti[0]] });
       expect([doppio.status, doppio.body.error]).toEqual([400, "Il supporto «app_mobile» compare due volte."]);
       expect((await admin.get("/api/admin/elenchi-tariffe")).body.supporti).toEqual(supporti);
-    });
-
-    it("l'agenzia: si cambia, e tolta figura l'azienda, anche nel GTFS", async () => {
-      const altra = { agencyId: "CONS", nome: "Consorzio di prova", sito: "https://cons.example", telefono: "", email: null, tariffeUrl: "" };
-      const r = await admin.put("/api/admin/elenchi-tariffe/agenzia").send(altra);
-      expect(r.status, JSON.stringify(r.body)).toBe(200);
-      expect(r.body.agenzia).toEqual({ agencyId: "CONS", nome: "Consorzio di prova", sito: "https://cons.example", telefono: null, email: null, tariffeUrl: null });
-      expect([r.body.inVigore.agency_id, r.body.inVigore.daAzienda]).toEqual(["CONS", false]);
-      expect((await gtfs())["agency.txt"]!.split("\n")[1]).toBe('"CONS","Consorzio di prova","https://cons.example","Europe/Rome","it","","",""');
-      expect((await admin.put("/api/admin/elenchi-tariffe/agenzia").send({ ...altra, sito: "cons.example" })).status).toBe(400);
-
-      const tolta = await admin.delete("/api/admin/elenchi-tariffe/agenzia");
-      expect([tolta.status, tolta.body.agenzia, tolta.body.inVigore.daAzienda]).toEqual([200, null, true]);
-      expect((await db.execute<any>(sql`SELECT count(*)::int AS n FROM agenzia_gtfs`)).rows[0].n).toBe(0);
-      const azienda = agenziaNelGtfs(await leggiAzienda(), null);
-      const g = await gtfs();
-      expect(g["agency.txt"]).toBe(agencyTxt(azienda));
-      expect(g["routes.txt"]!.trim().split("\n").slice(1).map((l) => campi(l)[1])).toEqual([azienda.agency_id, azienda.agency_id]);
-      expect((await tariffe.get("/api/fares/agency")).body).toEqual(azienda);
     });
   });
 });

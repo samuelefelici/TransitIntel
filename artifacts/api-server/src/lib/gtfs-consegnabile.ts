@@ -27,6 +27,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { projectHasTripValidity, computeActiveDatesByTrip } from "./planning-studio-validity-eval";
 import type { Azienda } from "./azienda";
+import { agenzieDelGtfs, type Gestore } from "./gestori";
 import type { Gtfs } from "./gtfs-verifica";
 import { netexDaGtfs, type ConteggiNetex } from "./netex";
 
@@ -84,10 +85,13 @@ export function aziendaDelGtfs(azienda: Azienda, progetto: { name?: string | nul
 /**
  * Costruisce il GTFS di un programma, dalle righe di `fonteId` (il progetto o
  * una sua versione pubblicata). `progetto` è la riga del programma (per il
- * nome, il fuso orario e il sito di riserva).
+ * nome, il fuso orario e il sito di riserva). `gestori` è l'elenco dei
+ * gestori (tappa 6.11): se non è vuoto, agency.txt elenca quelli che hanno
+ * almeno una linea e ogni linea porta il suo; se è vuoto l'agenzia è una,
+ * come prima. Chi pubblica (feed_info.txt) resta l'azienda.
  */
 export async function costruisciGtfs(
-  fonteId: string, progetto: any, azienda: Azienda, etichetta: string,
+  fonteId: string, progetto: any, azienda: Azienda, etichetta: string, gestori: readonly Gestore[],
 ): Promise<Gtfs> {
   /* ── range date feed dai calendari (fallback: anno corrente) ── */
   const drR = await rows(sql`
@@ -136,9 +140,24 @@ export async function costruisciGtfs(
   const agenzia = aziendaDelGtfs(azienda, progetto);
   const g: Gtfs = {};
 
+  /* ── le linee: servono subito, per sapere di quali gestori sono ── */
+  const routes = await rows(sql`
+    SELECT id, codice, code, short_name, long_name, description, route_type, color, text_color, sort_order, agency_id
+      FROM ps_routes WHERE project_id = ${fonteId}::uuid
+     ORDER BY sort_order NULLS LAST, short_name
+  `);
+  const conGestori = gestori.length > 0 ? agenzieDelGtfs(azienda, gestori, routes.map(r => r.agency_id)) : null;
+  /** L'agency_id di una linea: quello del suo gestore; senza gestori, l'agenzia sola. */
+  const agenziaDellaLinea = (r: any): string => (conGestori ? conGestori.dellaLinea(r.agency_id).agency_id : agenzia.agency_id);
+
   g["agency.txt"] = {
     colonne: ["agency_id", "agency_name", "agency_url", "agency_timezone", "agency_lang", "agency_phone"],
-    righe: [agenzia],
+    righe: conGestori
+      ? conGestori.agenzie.map(a => ({
+        agency_id: a.agency_id, agency_name: a.agency_name, agency_url: a.agency_url,
+        agency_timezone: agenzia.agency_timezone, agency_lang: a.agency_lang, agency_phone: a.agency_phone,
+      }))
+      : [agenzia],
   };
   g["feed_info.txt"] = {
     colonne: ["feed_publisher_name", "feed_publisher_url", "feed_lang", "feed_start_date", "feed_end_date", "feed_version"],
@@ -168,16 +187,11 @@ export async function costruisciGtfs(
   };
 
   /* ── routes.txt ── */
-  const routes = await rows(sql`
-    SELECT id, codice, code, short_name, long_name, description, route_type, color, text_color, sort_order
-      FROM ps_routes WHERE project_id = ${fonteId}::uuid
-     ORDER BY sort_order NULLS LAST, short_name
-  `);
   const codiceLinea = new Map<string, string>(routes.map(r => [r.id, r.codice]));
   g["routes.txt"] = {
     colonne: ["route_id", "agency_id", "route_short_name", "route_long_name", "route_desc", "route_type", "route_color", "route_text_color", "route_sort_order"],
     righe: routes.map(r => ({
-      route_id: r.codice ?? r.id, agency_id: agenzia.agency_id,
+      route_id: r.codice ?? r.id, agency_id: agenziaDellaLinea(r),
       route_short_name: r.short_name || r.code || "", route_long_name: r.long_name ?? "", route_desc: r.description ?? "",
       route_type: r.route_type ?? 3,
       route_color: (r.color ?? "").replace(/^#/, ""), route_text_color: (r.text_color ?? "").replace(/^#/, ""),
