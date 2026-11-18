@@ -15,6 +15,7 @@ import { TIPI_SUPPORTO } from "../lib/elenchi-tariffe";
 import { cancellaGestore, creaGestore, elencoGestori, erroreGestore, ModificaGestore, modificaGestore, NuovoGestore, RifiutoGestori } from "../lib/gestori-store";
 import { agenziaDellAzienda } from "../lib/gestori";
 import { cancellaNodo, creaNodo, DatiNodo, elencoNodi, IDENTIFICATIVO_NODO, modificaNodo, NuovoNodo, RifiutoNodi } from "../lib/nodi-scambio-store";
+import { statoDellInstallazione } from "../lib/installazione";
 import { cancellaTitolo, creaTitolo, elencoTitoli, ModificaTitolo, modificaTitolo, NuovoTitolo, RifiutoTitoli } from "../lib/titoli-catalogo";
 import { RUOLI, rigaChiesta, type RuoloAziendale } from "@workspace/permessi";
 import { salvaDirittiDelRuolo, statoDeiRuoli } from "../lib/matrice-ruoli";
@@ -756,6 +757,19 @@ const rifiutoNodi = (req: any, res: any, e: any, cosa: string) => {
   req.log?.error?.({ err: e?.message }, cosa);
   res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
 };
+/**
+ * Che cosa ha scritto l'azienda e che cosa le manca (tappa 6.18,
+ * lib/installazione.ts): voce per voce, dove si scrive e che cosa succede
+ * finché manca. Solo l'amministratore.
+ */
+router.get("/admin/installazione", requireAdmin, async (req, res): Promise<void> => {
+  try { res.json(await statoDellInstallazione()); }
+  catch (e: any) {
+    req.log?.error?.({ err: e?.message }, "stato dell'installazione non leggibile");
+    res.status(500).json({ error: "Stato dell'installazione non leggibile" });
+  }
+});
+
 router.use("/admin/nodi-scambio", requireAdmin);
 router.get("/admin/nodi-scambio", async (req, res): Promise<void> => {
   try { res.json(await elencoNodi()); }

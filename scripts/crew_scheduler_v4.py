@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 crew_scheduler_v4.py — Crew Scheduler Multi-Scenario (RD 131/1938)
-Conerobus S.p.A. / TransitIntel
+Cerbero
 
 APPROCCIO VSF (Vehicle-Shift-First) con normativa RD 131/1938:
   - Regio Decreto 131/1938 per autoservizi pubblici di trasporto
@@ -959,7 +959,7 @@ RESIDENZA_BY_VEHICLE: dict[str, dict] = {}
 # li combina (es. U001 / E001 anziché due D001).
 DUTY_CODE_PREFIX = "D"
 # Codifica aziendale dei turni guida: lettera del deposito di residenza
-# (A = Ancona) + tre cifre — 001-099 turni mattinali, 100-199 pomeridiani,
+# (la prima lettera del suo nome) + tre cifre — 001-099 turni mattinali, 100-199 pomeridiani,
 # in ordine di inizio nastro. La lettera del tipo di servizio (U/E/M) resta
 # il ripiego quando il deposito non è noto.
 DUTY_CODE_AFTERNOON_FROM_MIN = 12 * 60

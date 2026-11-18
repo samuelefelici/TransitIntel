@@ -734,7 +734,8 @@ class Cluster:
 
 # I punti di cambio sono quelli dell'azienda: li manda l'API (stop_clusters).
 # Senza, nessun punto di cambio (tappa 6.17): prima qui c'erano sei punti di
-# Ancona, che valevano per qualunque rete quando l'elenco arrivava vuoto.
+# cambio del primo cliente, che valevano per qualunque rete quando l'elenco
+# arrivava vuoto.
 DEFAULT_CLUSTERS: list[Cluster] = []
 
 

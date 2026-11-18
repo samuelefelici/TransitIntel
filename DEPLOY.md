@@ -1476,6 +1476,60 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Una nuova azienda: che cosa scrivere e dove (tappa 6.18)
+
+Dalla Fase 6 quello che era scritto nel codice per il primo cliente è un dato
+dell'azienda. Un'installazione nuova parte vuota: queste sono le voci da
+compilare, nell'ordine in cui conviene farlo. In cima ad Amministrazione →
+Azienda il riquadro **«Che cosa c'è da compilare»** le conta dai dati, voce
+per voce, e porta alla sezione dove si scrivono
+(`GET /api/admin/installazione`, solo per l'amministratore).
+
+**Servono** (senza, una parte dell'applicazione lavora male):
+
+| Voce | Dove | Se manca |
+|---|---|---|
+| Nome, città, centro delle mappe | Azienda → Identità, Territorio | pagine e stampe senza nome, mappe sull'Italia, GTFS con l'agenzia «azienda» |
+| Reti urbane e regole delle linee | Azienda → Reti e linee | tutte le linee extraurbane: tariffe urbane e riposi del Roster sbagliati (va bene solo per un servizio tutto extraurbano) |
+| Depositi | Azienda → Depositi | Anagrafica e Roster senza depositi |
+| Fasce chilometriche | Azienda → Fasce chilometriche | tariffe extraurbane senza prezzi |
+| Catalogo dei titoli | Azienda → Catalogo dei titoli | un feed nuovo delle tariffe senza biglietti né abbonamenti |
+| Categorie e supporti | Azienda → Tariffe: elenchi di partenza | un feed nuovo senza categorie di passeggero o senza supporti |
+| Provincia ISTAT | Azienda → Territorio | l'import del pendolarismo si ferma |
+| Comuni | Azienda → Comuni | l'import della popolazione non ha comuni; nell'analisi «Comune 042002» invece del nome |
+| Dove cercare i punti d'interesse | Azienda → Luoghi di riferimento | la ricerca di scuole, ospedali e negozi si ferma |
+| Punti di cambio | Planning Studio → editor della rete → Nodi di cambio | i turni guida non danno il cambio in linea |
+
+**Facoltative** (senza, si lavora con meno dettaglio):
+
+| Voce | Dove | Se manca |
+|---|---|---|
+| Gestori | Azienda → Gestori | nei GTFS e nel NeTEx l'agenzia è l'azienda |
+| Punti del meteo | Azienda → Luoghi di riferimento | niente meteo |
+| Poli di lavoro | Azienda → Luoghi di riferimento | l'analisi di uffici e zone industriali usa solo le mappe |
+| Punti stradali del traffico | Azienda → Luoghi di riferimento | niente traffico rilevato, solo il modello |
+| Centri urbani del traffico | Azienda → Luoghi di riferimento | il modello misura dal centro delle mappe |
+| Nodi di scambio | Azienda → Nodi di scambio | l'analisi intermodale trova da sola solo le stazioni dai nomi delle fermate |
+| Auto aziendali | Amministrazione → Parametri di esercizio | i turni guida contano 5 auto |
+| Le vetture dell'azienda nell'AVM | Azienda → AVM | tutte le vetture del canale contano come dell'azienda |
+| Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
+
+Il riquadro segnala anche i **punti di cambio senza fermate**, che nessuno dei
+due calcoli dei turni guida riconosce.
+
+Nella stessa tappa:
+- un test di guardia per gli script Python, come quelli della web e dell'API;
+- le intestazioni e gli esempi nei commenti degli script senza il nome del
+  primo cliente.
+
+**Per Conerobus**: sulla copia dei dati veri tutte le voci sono compilate.
+Resta un avviso: il punto di cambio «Tavernelle» non ha fermate (tappa 6.17).
+
+**Dopo il deploy**: niente da fare a mano. Nessuna migrazione, nessuna
+variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. Il riquadro sparisce.
+
 ### I punti di cambio dei turni guida dai dati dell'azienda (tappa 6.17)
 
 I punti dove un conducente dà il cambio a un altro in linea si scrivono nella
