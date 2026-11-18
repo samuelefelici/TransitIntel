@@ -326,7 +326,7 @@ export function zipDelGtfs(g: Gtfs, dataDeiFile?: Date): Buffer {
 
 /** Il NeTEx non si può fare: all'azienda manca il codice locale. */
 export class SenzaCodiceNetex extends Error {
-  constructor() { super("Manca il codice locale NeTEx (per le Marche «ITI3»): indicalo in Amministrazione › Azienda"); }
+  constructor() { super("Manca il codice locale NeTEx (il codice NUTS della regione, come «ITI3»): indicalo in Amministrazione › Azienda"); }
 }
 
 /**

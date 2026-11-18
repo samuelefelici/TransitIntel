@@ -346,7 +346,8 @@ export interface DriverShiftsResult {
    *  tornano nel pool invece di sparire dal piano. */
   unassignedTrips?: RipresaTrip[];
   clusters: ClusterInfo[];
-  companyCars: number;
+  /** le auto aziendali con cui il calcolo ha lavorato; null in un risultato che non lo dice */
+  companyCars: number | null;
   /* v2 cost fields */
   costAnalysis?: Record<string, any>;
   costRates?: Record<string, number>;

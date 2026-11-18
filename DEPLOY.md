@@ -1476,6 +1476,71 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### I punti di cambio dei turni guida dai dati dell'azienda (tappa 6.17)
+
+I punti dove un conducente dà il cambio a un altro in linea si scrivono nella
+pagina dei punti di cambio, con le loro fermate. Le auto aziendali si
+scrivono in Amministrazione → Parametri. Fino a questo rilascio però nel
+codice c'erano anche sei punti di Ancona e cinque auto, e venivano usati in
+tre casi:
+
+- il **calcolo rapido** dei turni guida (il pulsante «greedy» della pagina dei
+  turni guida) usava **sempre** i sei punti e le cinque auto del codice,
+  qualunque cosa l'azienda avesse scritto;
+- il **calcolo CP-SAT** usava i punti dell'azienda, ma senza punti scritti
+  ripiegava sui sei di Ancona (nell'API e nel solver Python);
+- le risposte dei calcoli già fatti, senza punti o auto salvati, mostravano i
+  sei punti e le cinque auto.
+
+Da questo rilascio:
+
+- il calcolo rapido usa i punti dell'azienda e le auto scritte nelle
+  impostazioni, come il CP-SAT;
+- un punto si riconosce dal **nome intero** di una sua fermata, come nel
+  CP-SAT. Prima il calcolo rapido cercava pezzi di nome («STAZIONE F»,
+  «CAVOUR», «STAMIRA»…), e una fermata valeva come punto di cambio anche se
+  l'azienda non l'aveva messa in nessun punto;
+- **senza punti scritti non c'è nessun punto di cambio**, per tutti e due i
+  calcoli;
+- se manca il parametro delle auto aziendali vale 5, come già nella pagina
+  dei parametri e nel CP-SAT.
+- il risultato del CP-SAT dice le auto con cui ha davvero lavorato. Prima
+  diceva sempre 5, anche quando il tetto era un altro: nella lettura del
+  risultato si leggeva «5 auto aziendali disponibili» con 8 auto.
+
+**Per Conerobus cambia il risultato del calcolo rapido.** Il CP-SAT no.
+Misurato sulla copia con i dati veri, prima e dopo, sullo scenario
+«Urbano 5/12»:
+
+| | prima | dopo |
+|---|---:|---:|
+| punti di cambio | 6 del codice | 4 dell'azienda |
+| auto aziendali | 5 | 8 |
+| corse coperte (nessuna doppia) | 1.439 | 1.439 |
+| ore di guida | 553,0 | 553,0 |
+| turni (con i supplementi) | 223 | 183 |
+| cambi in linea | 512 | 112 |
+| ore di lavoro | 1.165,3 | 808,3 |
+| ore di nastro | 1.244,2 | 935,8 |
+
+Le corse e la guida sono le stesse. Cambia come il calcolo le spezza fra i
+conducenti, perché ci sono meno fermate dove si può dare il cambio.
+
+**Da guardare nella copia (e forse in produzione)**: il punto «Tavernelle»
+dell'azienda non ha fermate, quindi non viene mai riconosciuto, né dal calcolo
+rapido né dal CP-SAT. Per i cambi a Tavernelle vanno aggiunte le sue fermate
+nella pagina dei punti di cambio.
+
+**Dopo il deploy**
+1. Niente da fare a mano: nessuna migrazione, nessuna variabile, nessuna Watch
+   Path nuova.
+2. Controllare che ogni punto di cambio abbia le sue fermate:
+   `SELECT c.name, count(s.*) FROM stop_clusters c LEFT JOIN stop_cluster_stops s ON s.cluster_id = c.id GROUP BY c.name;`
+   Un punto con zero fermate non serve a niente.
+
+**Rollback**: immagine precedente. Il calcolo rapido torna ai sei punti e alle
+cinque auto del codice.
+
 ### I nodi di scambio come dato dell'azienda (tappa 6.16)
 
 Stazioni, porti, aeroporti e parcheggi scambiatori erano scritti nel codice in

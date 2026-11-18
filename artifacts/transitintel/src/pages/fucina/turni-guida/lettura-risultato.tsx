@@ -139,10 +139,12 @@ export function ClusterDelRisultato({ result }: { result: DriverShiftsResult }) 
                     </div>
                   ))}
                 </div>
-                <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-                  <Car className="w-3.5 h-3.5" />
-                  <span>{result.companyCars} auto aziendali disponibili per trasferimenti deposito ↔ cluster</span>
-                </div>
+                {result.companyCars != null && (
+                  <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                    <Car className="w-3.5 h-3.5" />
+                    <span>{result.companyCars} auto aziendali disponibili per trasferimenti deposito ↔ cluster</span>
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}

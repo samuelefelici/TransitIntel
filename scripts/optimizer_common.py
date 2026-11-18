@@ -732,14 +732,10 @@ class Cluster:
     stop_coords: list[tuple] = field(default_factory=list)  # (lat, lon) per ogni stop
     color: str = "#3b82f6"
 
-DEFAULT_CLUSTERS = [
-    Cluster("ugo_bassi",  "Piazza Ugo Bassi",   ["UGO BASSI", "U.BASSI"], 10),
-    Cluster("stazione",   "Stazione FS",         ["STAZIONE F", "STAZIONE FS", "TRAIN STATION"], 10),
-    Cluster("cavour",     "Piazza Cavour",       ["CAVOUR", "STAMIRA", "VECCHINI"], 10),
-    Cluster("4_novembre", "Piazza IV Novembre",  ["IV NOVEMBRE", "4 NOVEMBRE"], 10),
-    Cluster("tavernelle", "Tavernelle",          ["TAVERNELLE"], 10),
-    Cluster("torrette",   "Ospedale Torrette",   ["OSPEDALE REGIONALE", "TORRETTE"], 15),
-]
+# I punti di cambio sono quelli dell'azienda: li manda l'API (stop_clusters).
+# Senza, nessun punto di cambio (tappa 6.17): prima qui c'erano sei punti di
+# Ancona, che valevano per qualunque rete quando l'elenco arrivava vuoto.
+DEFAULT_CLUSTERS: list[Cluster] = []
 
 
 def match_cluster(stop_name: str | None, clusters: list[Cluster] | None = None,
@@ -1535,10 +1531,10 @@ class DriverDutyV3:
 # ═══════════════════════════════════════════════════════════════
 
 def parse_clusters_from_config(config: dict) -> list[Cluster]:
-    """Parsa cluster dal JSON di config, oppure usa i default."""
+    """I punti di cambio dal JSON di config; senza, nessuno."""
     raw = config.get("clusters")
     if not raw:
-        return DEFAULT_CLUSTERS
+        return []
     return [
         Cluster(
             id=c["id"],

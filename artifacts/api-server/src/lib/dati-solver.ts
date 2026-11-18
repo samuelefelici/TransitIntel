@@ -8,82 +8,65 @@ import { db } from "@workspace/db";
 import { stopClusters, stopClusterStops, appSettings, gtfsStopTimes } from "@workspace/db/schema";
 import { eq, inArray, sql } from "drizzle-orm";
 
-/** Autovetture aziendali se il parametro manca (app_settings.company_cars). */
+/** Autovetture aziendali se il parametro manca (app_settings.company_cars): lo stesso valore di GET /settings/company-cars. */
 export const COMPANY_CARS = 5;
 
 /** Un turno macchina, per quanto serve qui: le sue corse. */
 type TurnoConCorse = { trips: Array<{ type: string; tripId: string }> };
 
 /* ═══════════════════════════════════════════════════════════════
- *  CLUSTER DI CAMBIO IN LINEA (predefiniti, se il DB non ne ha)
+ *  PUNTI DI CAMBIO IN LINEA (stop_clusters): quelli dell'azienda
+ *  Prima, senza punti nel database, valevano sei punti di Ancona scritti
+ *  qui (tappa 6.17): ora senza punti non c'è nessun punto di cambio.
  * ═══════════════════════════════════════════════════════════════ */
 
-export interface Cluster {
+/**
+ * Un punto di cambio dell'azienda per il calcolo rapido dei turni guida: si
+ * riconosce dai nomi delle sue fermate, come nel calcolo CP-SAT
+ * (scripts/optimizer_common.py, match_cluster).
+ */
+export interface PuntoDiCambio {
   id: string;
   name: string;
-  keywords: string[];
   transferFromDepotMin: number;
+  stopNames: string[];
 }
 
-export const CLUSTERS: Cluster[] = [
-  { id: "ugo_bassi",   name: "Piazza Ugo Bassi",    keywords: ["UGO BASSI", "U.BASSI"],                   transferFromDepotMin: 10 },
-  { id: "stazione",    name: "Stazione FS",          keywords: ["STAZIONE F", "STAZIONE FS", "TRAIN STATION"], transferFromDepotMin: 10 },
-  { id: "cavour",      name: "Piazza Cavour",        keywords: ["CAVOUR", "STAMIRA", "VECCHINI"],           transferFromDepotMin: 10 },
-  { id: "4_novembre",  name: "Piazza IV Novembre",   keywords: ["IV NOVEMBRE", "4 NOVEMBRE"],               transferFromDepotMin: 10 },
-  { id: "tavernelle",  name: "Tavernelle",           keywords: ["TAVERNELLE"],                               transferFromDepotMin: 10 },
-  { id: "torrette",    name: "Ospedale Torrette",    keywords: ["OSPEDALE REGIONALE", "TORRETTE"],           transferFromDepotMin: 15 },
-];
-
-/**
- * Carica i cluster dal DB. Se non ce ne sono, restituisce i cluster hardcoded
- * (CLUSTERS) convertiti nel formato Python-compatibile.
- */
+/** I punti di cambio dell'azienda nel formato del solver Python. Senza punti, nessuno. */
 export async function loadClustersForPython(): Promise<any[]> {
-  try {
-    const dbClusters = await db.select().from(stopClusters).orderBy(stopClusters.name);
-    if (dbClusters.length === 0) {
-      // Fallback ai cluster hardcoded
-      return CLUSTERS.map(c => ({
-        id: c.id,
-        name: c.name,
-        keywords: c.keywords,
-        transferFromDepotMin: c.transferFromDepotMin,
-        stopIds: [],
-        stopNames: [],
-        stopLats: [],
-        stopLons: [],
-        color: "#3b82f6",
-      }));
-    }
-    const allStops = await db.select().from(stopClusterStops);
-    return dbClusters.map(c => {
-      const cStops = allStops.filter(s => s.clusterId === c.id);
-      return {
-        id: c.id,
-        name: c.name,
-        keywords: [],  // Non servono: il Python matcha per stop_id
-        transferFromDepotMin: c.transferFromDepotMin,
-        stopIds: cStops.map(s => s.gtfsStopId),
-        stopNames: cStops.map(s => s.stopName),
-        stopLats: cStops.map(s => s.stopLat),
-        stopLons: cStops.map(s => s.stopLon),
-        color: c.color || "#3b82f6",
-      };
-    });
-  } catch (err) {
-    console.error("Error loading clusters from DB, using defaults:", err);
-    return CLUSTERS.map(c => ({
+  const dbClusters = await db.select().from(stopClusters).orderBy(stopClusters.name);
+  if (dbClusters.length === 0) return [];
+  const allStops = await db.select().from(stopClusterStops);
+  return dbClusters.map(c => {
+    const cStops = allStops.filter(s => s.clusterId === c.id);
+    return {
       id: c.id,
       name: c.name,
-      keywords: c.keywords,
+      keywords: [],  // Non servono: il Python matcha per stop_id e per nome
       transferFromDepotMin: c.transferFromDepotMin,
-      stopIds: [],
-      stopNames: [],
-      stopLats: [],
-      stopLons: [],
-      color: "#3b82f6",
-    }));
-  }
+      stopIds: cStops.map(s => s.gtfsStopId),
+      stopNames: cStops.map(s => s.stopName),
+      stopLats: cStops.map(s => s.stopLat),
+      stopLons: cStops.map(s => s.stopLon),
+      color: c.color || "#3b82f6",
+    };
+  });
+}
+
+/** I punti di cambio dell'azienda per il calcolo rapido: gli stessi che riceve il solver Python. */
+export async function puntiDiCambio(): Promise<PuntoDiCambio[]> {
+  return (await loadClustersForPython()).map((c) => ({
+    id: String(c.id), name: String(c.name), transferFromDepotMin: Number(c.transferFromDepotMin),
+    stopNames: (c.stopNames as unknown[]).filter((n): n is string => typeof n === "string" && n.trim() !== ""),
+  }));
+}
+
+/** Il punto di cambio di una fermata, dal nome: lo stesso confronto del solver Python (maiuscole, nome intero). */
+export function puntoDellaFermata(nome: string | null | undefined, punti: readonly PuntoDiCambio[]): string | null {
+  if (!nome) return null;
+  const n = nome.trim().toUpperCase();
+  if (!n) return null;
+  return punti.find((p) => p.stopNames.some((s) => s.trim().toUpperCase() === n))?.id ?? null;
 }
 
 /**
