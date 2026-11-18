@@ -16,6 +16,7 @@ import { sql } from "drizzle-orm";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import { creaEsecutore } from "../lib/lavori/esecutore";
 import { GESTORI } from "../lib/lavori/gestori";
+import { conLeRetiDiProva, senzaReti } from "./helpers/reti-di-prova";
 
 /* niente rete: OSRM non risponde e la matrice fuorilinea ricade su Haversine × circuità */
 vi.hoisted(() => { process.env.OSRM_URL = "http://127.0.0.1:1"; });
@@ -142,6 +143,9 @@ async function databaseDiProvaVuoto(): Promise<void> {
 }
 
 async function semina(): Promise<void> {
+  /* urbana o extraurbana la dicono le reti dell'azienda (tappa 6.23): quelle di prova
+   * fanno urbana la linea «1» (comincia con una cifra) ed extraurbana la «C» */
+  conLeRetiDiProva();
   await databaseDiProvaVuoto();
   await pulisci();
   await db.execute(sql`INSERT INTO gtfs_feeds (id, filename, is_active, owner_user_id, uploaded_at)
@@ -493,3 +497,4 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP in coda, 
   });
 });
 
+afterAll(senzaReti);
