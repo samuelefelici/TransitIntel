@@ -33,6 +33,7 @@ import {
   planningPois,
 } from "@workspace/db/schema";
 import { eq, and, sql } from "drizzle-orm";
+import { coordinateDellaLinea } from "../geometria-linea";
 
 /** Default parametri economici (€/€/€) */
 export const DEFAULT_ECON = {
@@ -347,23 +348,6 @@ function buildRouteShapeKm(
   return out;
 }
 
-/**
- * Estrae le coords da un GeoJSON LineString o Feature{LineString}.
- */
-function extractCoords(geojson: any): number[][] | null {
-  if (!geojson) return null;
-  if (geojson.type === "LineString" && Array.isArray(geojson.coordinates)) {
-    return geojson.coordinates;
-  }
-  if (geojson.type === "Feature" && geojson.geometry?.type === "LineString") {
-    return geojson.geometry.coordinates;
-  }
-  if (geojson.type === "FeatureCollection" && geojson.features?.[0]?.geometry?.coordinates) {
-    return geojson.features[0].geometry.coordinates;
-  }
-  return null;
-}
-
 /* ──────────────────── main analyze ──────────────────── */
 
 export interface AnalyzeOptions {
@@ -461,8 +445,8 @@ export async function analyzeFeed(
   const shapes = await db.select().from(gtfsShapes).where(eq(gtfsShapes.feedId, feedId));
   const shapeKmById = new Map<string, number>();
   for (const s of shapes) {
-    const coords = extractCoords(s.geojson);
-    if (coords && coords.length >= 2) {
+    const coords = coordinateDellaLinea(s.geojson);
+    if (coords.length >= 2) {
       shapeKmById.set(s.shapeId, lineStringKm(coords));
     }
   }

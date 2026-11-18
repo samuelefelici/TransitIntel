@@ -77,6 +77,7 @@ import { copiaCategorie, copiaSupporti } from "../lib/elenchi-tariffe-store";
 import { agencyTxt, agenzieDelGtfs } from "../lib/gestori";
 import { gestoriDalDatabase } from "../lib/gestori-store";
 import { leggiAzienda } from "../lib/azienda";
+import { coordinateDellaLinea } from "../lib/geometria-linea";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
@@ -215,12 +216,8 @@ async function getRoutePercorsi(feedId: string, routeId: string): Promise<Percor
       WHERE feed_id = ${feedId} AND shape_id IN (${shapeIdParams})
     `);
     for (const row of shapeRows.rows) {
-      const geo = row.geojson;
-      const coords: [number, number][] | null =
-        geo?.geometry?.coordinates ??
-        geo?.coordinates ??
-        (geo?.type === "LineString" ? geo.coordinates : null);
-      shapeCache.set(row.shape_id, coords ?? null);
+      const coords = coordinateDellaLinea(row.geojson);
+      shapeCache.set(row.shape_id, coords.length >= 2 ? coords : null);
     }
   }
 
@@ -2289,10 +2286,9 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     const shapes = await db.select().from(gtfsShapes).where(eq(gtfsShapes.feedId, feedId));
     let shapesCsv = "shape_id,shape_pt_lat,shape_pt_lon,shape_pt_sequence\n";
     for (const sh of shapes) {
-      const geo = sh.geojson as any;
-      // Handle both Feature and bare LineString formats
-      const coords = geo?.geometry?.coordinates ?? geo?.coordinates ?? (geo?.type === "LineString" ? geo.coordinates : null);
-      if (coords && Array.isArray(coords)) {
+      /* Feature (import di un GTFS) o LineString nuda (feed di Planning Studio) */
+      const coords = coordinateDellaLinea(sh.geojson);
+      if (coords.length >= 2) {
         for (let i = 0; i < coords.length; i++) {
           const [lon, lat] = coords[i];
           shapesCsv += `${sh.shapeId},${lat},${lon},${i}\n`;
@@ -4109,11 +4105,8 @@ router.post("/fares/journey-plan", async (req, res): Promise<void> => {
         WHERE feed_id = ${feedId} AND shape_id IN (${sql.join(missing.map(id => sql`${id}`), sql`, `)})
       `);
       for (const sr of rows.rows as any[]) {
-        const geo = sr.geojson;
-        const coords: [number, number][] | null =
-          geo?.geometry?.coordinates ?? geo?.coordinates ??
-          (geo?.type === "LineString" ? geo.coordinates : null);
-        if (coords && Array.isArray(coords)) shapeCache.set(sr.shape_id, coords);
+        const coords = coordinateDellaLinea(sr.geojson);
+        if (coords.length >= 2) shapeCache.set(sr.shape_id, coords);
       }
     }
     async function buildBusLeg(tripId: string, oSeq: number, dSeq: number, shapeId: string | null) {
