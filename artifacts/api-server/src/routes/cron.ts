@@ -190,68 +190,9 @@ function elementCoords(el: any): { lat: number; lng: number } | null {
 
 // ─── TomTom Traffic helpers ───────────────────────────────────────────────────
 
-// Strategic road points across the province (major arteries only)
-// SS16 Adriatica, A14, SS76, SS3 Flaminia, urban Ancona, secondary roads
-const STRATEGIC_ROAD_POINTS: Array<{ id: string; lat: number; lng: number }> = [
-  // A14 - Autostrada Adriatica
-  { id: "A14-AnconaNo-N", lat: 43.6420, lng: 13.4350 },
-  { id: "A14-AnconaNo-S", lat: 43.6200, lng: 13.4410 },
-  { id: "A14-AnconaSud",  lat: 43.5350, lng: 13.4480 },
-  { id: "A14-Falconara",  lat: 43.6180, lng: 13.4110 },
-  { id: "A14-Senigallia", lat: 43.6950, lng: 13.2650 },
-  { id: "A14-Loreto",     lat: 43.4400, lng: 13.5900 },
-
-  // SS16 Adriatica (coast road)
-  { id: "SS16-Senigallia-N",  lat: 43.7250, lng: 13.2120 },
-  { id: "SS16-Senigallia-S",  lat: 43.7020, lng: 13.2200 },
-  { id: "SS16-Falconara",     lat: 43.6300, lng: 13.3980 },
-  { id: "SS16-Palombina",     lat: 43.6560, lng: 13.4180 },
-  { id: "SS16-AncCentro-N",   lat: 43.6320, lng: 13.4700 },
-  { id: "SS16-AncCentro",     lat: 43.6120, lng: 13.4900 },
-  { id: "SS16-AncSud",        lat: 43.5800, lng: 13.4950 },
-  { id: "SS16-Osimo",         lat: 43.4850, lng: 13.4810 },
-  { id: "SS16-Loreto-N",      lat: 43.4600, lng: 13.5620 },
-  { id: "SS16-PortoRecanati", lat: 43.4300, lng: 13.6050 },
-
-  // SS76 Jesi-Ancona
-  { id: "SS76-Jesi-E",    lat: 43.5230, lng: 13.2520 },
-  { id: "SS76-Jesi-W",    lat: 43.5180, lng: 13.2050 },
-  { id: "SS76-Mid",       lat: 43.5640, lng: 13.3550 },
-  { id: "SS76-AncW",      lat: 43.5760, lng: 13.4350 },
-  { id: "SS76-Torrette",  lat: 43.5980, lng: 13.4520 },
-
-  // SS3 Flaminia (Fossombrone-Fano area but also used in province)
-  { id: "SS3-Fabriano-N", lat: 43.3450, lng: 12.9080 },
-  { id: "SS3-Fabriano-S", lat: 43.3250, lng: 12.8970 },
-
-  // Tangenziale Ancona / urban roads
-  { id: "Tangenzia-N",    lat: 43.6180, lng: 13.4820 },
-  { id: "Tangenzia-E",    lat: 43.6000, lng: 13.5100 },
-  { id: "ViaFlaminiaAnc", lat: 43.6050, lng: 13.5060 },
-  { id: "ViaRossi-Anc",   lat: 43.6070, lng: 13.5250 },
-
-  // SS361 Osimo-Jesi
-  { id: "SS361-Osimo-N",  lat: 43.4950, lng: 13.4750 },
-  { id: "SS361-Castelf",  lat: 43.4620, lng: 13.5470 },
-
-  // SP Ancona-Sirolo (Conero)
-  { id: "SP-Sirolo",      lat: 43.5620, lng: 13.5380 },
-
-  // Jesi urban
-  { id: "Jesi-Centro",    lat: 43.5220, lng: 13.2430 },
-  { id: "Jesi-Ring",      lat: 43.5150, lng: 13.2610 },
-
-  // Chiaravalle
-  { id: "Chiaravalle",    lat: 43.5980, lng: 13.3230 },
-
-  // Senigallia urban
-  { id: "Senigallia-Ctr", lat: 43.7150, lng: 13.2180 },
-  { id: "Senigallia-SS",  lat: 43.7080, lng: 13.2250 },
-
-  // Porto di Ancona area
-  { id: "Porto-Anc",      lat: 43.6260, lng: 13.4950 },
-  { id: "ViaXXSett",      lat: 43.6190, lng: 13.5130 },
-];
+// I punti stradali di cui si legge il traffico sono luoghi del territorio
+// dell'azienda (uso «traffico», lib/territorio.ts): il nome è l'identificativo
+// delle rilevazioni di un punto.
 
 // ─── Internal sync functions ──────────────────────────────────────────────────
 
@@ -416,7 +357,7 @@ export async function syncTrafficFromTomTom(): Promise<{ inserted: number; faile
   const toInsert: any[] = [];
   let failed = 0;
 
-  for (const point of STRATEGIC_ROAD_POINTS) {
+  for (const point of await leggiLuoghi("traffico")) {
     try {
       const url =
         `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json` +
@@ -432,7 +373,7 @@ export async function syncTrafficFromTomTom(): Promise<{ inserted: number; faile
       const congestion = freeflow > 0 ? Math.max(0, 1 - speed / freeflow) : 0;
 
       toInsert.push({
-        segmentId: point.id,
+        segmentId: point.nome,
         lng: point.lng,
         lat: point.lat,
         speed,

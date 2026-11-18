@@ -8,7 +8,10 @@
  *                      l'import della popolazione;
  *   territorio_luoghi  i luoghi per uso: dove cercare i punti d'interesse
  *                      (con un raggio), i punti del meteo, i poli di lavoro
- *                      dell'analisi della rete.
+ *                      dell'analisi della rete; dalla tappa 6.15 (migrazione
+ *                      0045) anche i punti stradali di cui si legge il
+ *                      traffico, ognuno con la sua zona, e i centri urbani da
+ *                      cui il modello del traffico misura la distanza.
  *
  * Il codice ISTAT arriva in più forme, e qui le si riconosce tutte:
  *   - ufficiale, 6 cifre con la provincia a tre: «042002»;
@@ -22,6 +25,7 @@
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
+import { aziendaOppureNeutra } from "./azienda";
 
 export interface Comune {
   codiceIstat: string;
@@ -35,10 +39,20 @@ export interface Comune {
   sezioneCensimento: string | null;
 }
 
-export const USI_LUOGO = ["punti_interesse", "meteo", "polo_lavoro"] as const;
+export const USI_LUOGO = ["punti_interesse", "meteo", "polo_lavoro", "traffico", "centro_urbano"] as const;
 export type UsoLuogo = (typeof USI_LUOGO)[number];
 
-export interface Luogo { id: string; nome: string; uso: UsoLuogo; lat: number; lng: number; raggioM: number | null; ordine: number }
+export interface Luogo {
+  id: string; nome: string; uso: UsoLuogo; lat: number; lng: number; raggioM: number | null; ordine: number;
+  /** solo dei punti stradali (uso «traffico»): la zona con cui la pagina Traffico li raggruppa */
+  zona: string | null;
+}
+
+/**
+ * Quanti punti stradali al più. Ogni punto è una richiesta al fornitore del
+ * traffico a ogni giro (ogni mezz'ora: 48 al giorno).
+ */
+export const MASSIMO_PUNTI_TRAFFICO = 100;
 
 const righe = (r: any): any[] => r?.rows ?? r ?? [];
 const numero = (x: any) => (x == null ? null : Number(x));
@@ -50,7 +64,7 @@ const comuneDa = (r: any): Comune => ({
 });
 const luogoDa = (r: any): Luogo => ({
   id: String(r.id), nome: String(r.nome), uso: r.uso as UsoLuogo, lat: Number(r.lat), lng: Number(r.lng),
-  raggioM: numero(r.raggio_m), ordine: Number(r.ordine ?? 0),
+  raggioM: numero(r.raggio_m), ordine: Number(r.ordine ?? 0), zona: r.zona ?? null,
 });
 
 /* ── Lettura, con la memoria di un minuto ─────────────────────────────────── */
@@ -65,7 +79,7 @@ async function territorio() {
       SELECT codice_istat, nome, soppresso, lat, lng, area_km2, popolazione, sezione_censimento
         FROM territorio_comuni ORDER BY nome`)).map(comuneDa);
     const luoghi = righe(await db.execute(sql`
-      SELECT id, nome, uso, lat, lng, raggio_m, ordine FROM territorio_luoghi ORDER BY ordine, nome`)).map(luogoDa);
+      SELECT id, nome, uso, lat, lng, raggio_m, ordine, zona FROM territorio_luoghi ORDER BY ordine, nome`)).map(luogoDa);
     inMemoria = { comuni, luoghi, lettoIl: Date.now() };
     return inMemoria;
   } catch (e) {
@@ -81,6 +95,18 @@ export async function leggiComuni(): Promise<Comune[]> { return (await territori
 export async function leggiLuoghi(uso?: UsoLuogo): Promise<Luogo[]> {
   const l = (await territorio()).luoghi;
   return uso ? l.filter((x) => x.uso === uso) : l;
+}
+
+/**
+ * I centri da cui il modello del traffico misura la distanza: i luoghi con
+ * l'uso «centro_urbano». Senza, il centro delle mappe dell'azienda: così ce
+ * n'è sempre almeno uno.
+ */
+export async function centriUrbani(): Promise<Array<{ lat: number; lng: number }>> {
+  const centri = await leggiLuoghi("centro_urbano");
+  if (centri.length) return centri.map((c) => ({ lat: c.lat, lng: c.lng }));
+  const { centro } = await aziendaOppureNeutra();
+  return [{ lat: centro.lat, lng: centro.lng }];
 }
 
 /* ── I nomi dei comuni, da qualunque forma del codice ─────────────────────── */
@@ -142,6 +168,7 @@ export const DatiLuogo = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
   raggioM: facoltativo(z.number().int().min(100).max(50_000)),
+  zona: facoltativo(NOME(60)),
   ordine: z.number().int().min(0).max(99_999).default(0),
 }).strict();
 
@@ -170,26 +197,65 @@ export async function cancellaComune(codice: string): Promise<void> {
   dimenticaTerritorio();
 }
 
-export async function creaLuogo(l: z.infer<typeof DatiLuogo>): Promise<Luogo> {
+/** Quello che vale per un solo uso: il raggio per la ricerca dei punti d'interesse, la zona per i punti stradali. */
+function controllaLuogo(l: z.infer<typeof DatiLuogo>): void {
   if (l.uso !== "punti_interesse" && l.raggioM != null) throw new RifiutoTerritorio(400, "Il raggio vale solo per la ricerca dei punti d'interesse");
-  const r = righe(await db.execute(sql`
-    INSERT INTO territorio_luoghi (nome, uso, lat, lng, raggio_m, ordine)
-    VALUES (${l.nome}, ${l.uso}, ${l.lat}, ${l.lng}, ${l.uso === "punti_interesse" ? l.raggioM ?? 3000 : null}, ${l.ordine})
-    RETURNING id, nome, uso, lat, lng, raggio_m, ordine`));
-  dimenticaTerritorio();
-  return luogoDa(r[0]);
+  if (l.uso !== "traffico" && l.zona != null) throw new RifiutoTerritorio(400, "La zona vale solo per i punti stradali del traffico");
 }
 
+/** L'indice unico dei punti stradali: due con lo stesso nome confonderebbero le loro rilevazioni. */
+const DOPPIONE_PUNTO = "territorio_luoghi_punto_di_traffico";
+function rifiutoDiScrittura(e: unknown, nome: string): unknown {
+  const pg = (e as any)?.cause ?? e;
+  if (pg?.code === "23505" && pg?.constraint === DOPPIONE_PUNTO) {
+    return new RifiutoTerritorio(409, `C'è già un punto stradale che si chiama «${nome}»: il nome distingue le sue rilevazioni`);
+  }
+  return e;
+}
+
+export async function creaLuogo(l: z.infer<typeof DatiLuogo>): Promise<Luogo> {
+  controllaLuogo(l);
+  try {
+    const r = righe(await db.execute(sql`
+      INSERT INTO territorio_luoghi (nome, uso, lat, lng, raggio_m, zona, ordine)
+      SELECT ${l.nome}::text, ${l.uso}::text, ${l.lat}::float8, ${l.lng}::float8,
+             ${l.uso === "punti_interesse" ? l.raggioM ?? 3000 : null}::integer, ${l.zona}::text, ${l.ordine}::integer
+       WHERE ${l.uso}::text <> 'traffico' OR (SELECT count(*) FROM territorio_luoghi WHERE uso = 'traffico') < ${MASSIMO_PUNTI_TRAFFICO}::integer
+      RETURNING id, nome, uso, lat, lng, raggio_m, ordine, zona`));
+    if (!r.length) throw new RifiutoTerritorio(409, `I punti stradali sono già ${MASSIMO_PUNTI_TRAFFICO}, il massimo: ognuno è una richiesta al fornitore del traffico ogni mezz'ora`);
+    dimenticaTerritorio();
+    return luogoDa(r[0]);
+  } catch (e) { throw rifiutoDiScrittura(e, l.nome); }
+}
+
+/**
+ * Cambia un luogo. Un punto stradale che cambia nome porta con sé le sue
+ * rilevazioni (traffic_snapshots.segment_id è il suo nome): la storia resta
+ * sua, e resta nella sua zona.
+ */
 export async function modificaLuogo(id: string, l: z.infer<typeof DatiLuogo>): Promise<Luogo> {
-  if (l.uso !== "punti_interesse" && l.raggioM != null) throw new RifiutoTerritorio(400, "Il raggio vale solo per la ricerca dei punti d'interesse");
-  const r = righe(await db.execute(sql`
-    UPDATE territorio_luoghi SET nome = ${l.nome}, uso = ${l.uso}, lat = ${l.lat}, lng = ${l.lng},
-           raggio_m = ${l.uso === "punti_interesse" ? l.raggioM ?? 3000 : null}, ordine = ${l.ordine}, aggiornato_il = now()
-     WHERE id = ${id}::uuid
-    RETURNING id, nome, uso, lat, lng, raggio_m, ordine`));
-  if (!r.length) throw new RifiutoTerritorio(404, "Luogo non trovato");
-  dimenticaTerritorio();
-  return luogoDa(r[0]);
+  controllaLuogo(l);
+  try {
+    const fatto = await db.transaction(async (tx) => {
+      const prima = righe(await tx.execute(sql`SELECT nome, uso FROM territorio_luoghi WHERE id = ${id}::uuid FOR UPDATE`))[0];
+      if (!prima) throw new RifiutoTerritorio(404, "Luogo non trovato");
+      if (l.uso === "traffico" && prima.uso !== "traffico") {
+        const quanti = Number(righe(await tx.execute(sql`SELECT count(*) AS n FROM territorio_luoghi WHERE uso = 'traffico'`))[0]?.n ?? 0);
+        if (quanti >= MASSIMO_PUNTI_TRAFFICO) throw new RifiutoTerritorio(409, `I punti stradali sono già ${MASSIMO_PUNTI_TRAFFICO}, il massimo`);
+      }
+      const r = righe(await tx.execute(sql`
+        UPDATE territorio_luoghi SET nome = ${l.nome}, uso = ${l.uso}, lat = ${l.lat}, lng = ${l.lng},
+               raggio_m = ${l.uso === "punti_interesse" ? l.raggioM ?? 3000 : null}, zona = ${l.zona}, ordine = ${l.ordine}, aggiornato_il = now()
+         WHERE id = ${id}::uuid
+        RETURNING id, nome, uso, lat, lng, raggio_m, ordine, zona`));
+      if (prima.uso === "traffico" && l.uso === "traffico" && prima.nome !== l.nome) {
+        await tx.execute(sql`UPDATE traffic_snapshots SET segment_id = ${l.nome} WHERE segment_id = ${String(prima.nome)}`);
+      }
+      return r[0];
+    });
+    dimenticaTerritorio();
+    return luogoDa(fatto);
+  } catch (e) { throw rifiutoDiScrittura(e, l.nome); }
 }
 
 export async function cancellaLuogo(id: string): Promise<void> {

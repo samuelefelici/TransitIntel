@@ -381,6 +381,7 @@
   "public.territorio_comuni_pkey": "CREATE UNIQUE INDEX territorio_comuni_pkey ON public.territorio_comuni USING btree (codice_istat)",
   "public.territorio_comuni_sezione_unica": "CREATE UNIQUE INDEX territorio_comuni_sezione_unica ON public.territorio_comuni USING btree (sezione_censimento)",
   "public.territorio_luoghi_pkey": "CREATE UNIQUE INDEX territorio_luoghi_pkey ON public.territorio_luoghi USING btree (id)",
+  "public.territorio_luoghi_punto_di_traffico": "CREATE UNIQUE INDEX territorio_luoghi_punto_di_traffico ON public.territorio_luoghi USING btree (nome) WHERE (uso = 'traffico'::text)",
   "public.titoli_catalogo_pkey": "CREATE UNIQUE INDEX titoli_catalogo_pkey ON public.titoli_catalogo USING btree (titolo)",
   "public.titoli_catalogo_rete": "CREATE INDEX titoli_catalogo_rete ON public.titoli_catalogo USING btree (rete, ordine)",
   "public.titoli_catalogo_un_riferimento": "CREATE UNIQUE INDEX titoli_catalogo_un_riferimento ON public.titoli_catalogo USING btree (rete) WHERE di_riferimento",
@@ -2308,7 +2309,8 @@
    "nome": "text | not null |  |  | ",
    "ordine": "integer | not null | 0 |  | ",
    "raggio_m": "integer | null |  |  | ",
-   "uso": "text | not null |  |  | "
+   "uso": "text | not null |  |  | ",
+   "zona": "text | null |  |  | "
   },
   "public.titoli_catalogo": {
    "aggiornato_il": "timestamp with time zone | not null | now() |  | ",
@@ -2847,7 +2849,9 @@
   "public.territorio_luoghi.territorio_luoghi_ordine": "CHECK (((ordine >= 0) AND (ordine <= 99999)))",
   "public.territorio_luoghi.territorio_luoghi_pkey": "PRIMARY KEY (id)",
   "public.territorio_luoghi.territorio_luoghi_raggio": "CHECK (((raggio_m >= 100) AND (raggio_m <= 50000)))",
-  "public.territorio_luoghi.territorio_luoghi_uso": "CHECK ((uso = ANY (ARRAY['punti_interesse'::text, 'meteo'::text, 'polo_lavoro'::text])))",
+  "public.territorio_luoghi.territorio_luoghi_uso": "CHECK ((uso = ANY (ARRAY['punti_interesse'::text, 'meteo'::text, 'polo_lavoro'::text, 'traffico'::text, 'centro_urbano'::text])))",
+  "public.territorio_luoghi.territorio_luoghi_zona": "CHECK (((char_length(btrim(zona)) >= 1) AND (char_length(btrim(zona)) <= 60)))",
+  "public.territorio_luoghi.territorio_luoghi_zona_del_traffico": "CHECK (((zona IS NULL) OR (uso = 'traffico'::text)))",
   "public.titoli_catalogo.titoli_catalogo_categoria": "CHECK ((categoria ~ '^[a-z][a-z0-9_]{1,39}$'::text))",
   "public.titoli_catalogo.titoli_catalogo_durata": "CHECK (((durata_minuti >= 1) AND (durata_minuti <= 5256000)))",
   "public.titoli_catalogo.titoli_catalogo_fascia": "CHECK (((fascia >= 1) AND (fascia <= 60)))",

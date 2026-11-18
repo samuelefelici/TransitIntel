@@ -69,7 +69,7 @@ describe("comuni e luoghi, la validazione", () => {
 
   it("un luogo: uso fra quelli previsti, coordinate, raggio fra 100 m e 50 km", () => {
     expect(DatiLuogo.safeParse({ nome: "Jesi", uso: "meteo", lat: 43.52, lng: 13.24 }).data).toMatchObject({ raggioM: null, ordine: 0 });
-    expect(DatiLuogo.safeParse({ nome: "Jesi", uso: "traffico", lat: 43.52, lng: 13.24 }).success).toBe(false);
+    expect(DatiLuogo.safeParse({ nome: "Jesi", uso: "altro", lat: 43.52, lng: 13.24 }).success).toBe(false);
     expect(DatiLuogo.safeParse({ nome: "Jesi", uso: "punti_interesse", lat: 43.52, lng: 13.24, raggioM: 50 }).success).toBe(false);
     expect(DatiLuogo.safeParse({ nome: "Jesi", uso: "punti_interesse", lat: 91, lng: 13.24 }).success).toBe(false);
   });

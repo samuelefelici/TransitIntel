@@ -238,12 +238,15 @@ export const HOURLY_MODEL: Record<number, number> = {
   24: 0.06, 25: 0.05, 26: 0.04,
 };
 
-export const ANCONA_CENTER = { lng: 13.516, lat: 43.616 };
-
-export function modelCongestion(hour: number, lng: number, lat: number): number {
+/**
+ * La congestione teorica in un punto a una certa ora: la curva oraria, per un
+ * fattore che cala con la distanza dal centro urbano più vicino. I centri
+ * sono dati dell'azienda (lib/territorio.ts, centriUrbani): almeno uno.
+ */
+export function modelCongestion(hour: number, lng: number, lat: number, centri: ReadonlyArray<{ lat: number; lng: number }>): number {
   const h = Math.max(0, Math.min(26, Math.round(hour)));
   const base = HOURLY_MODEL[h] ?? 0.05;
-  const dist = Math.sqrt((lng - ANCONA_CENTER.lng) ** 2 + (lat - ANCONA_CENTER.lat) ** 2);
+  const dist = Math.min(...centri.map((c) => Math.sqrt((lng - c.lng) ** 2 + (lat - c.lat) ** 2)));
   const zoneFactor = dist < 0.04 ? 1.30
     : dist < 0.08 ? 1.10
     : dist < 0.16 ? 1.00
