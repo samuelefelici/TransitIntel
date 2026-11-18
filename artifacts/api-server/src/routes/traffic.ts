@@ -6,6 +6,7 @@ import { z } from "zod";
 import { asyncHandler } from "../middlewares/error-handler";
 import { validateQuery } from "../middlewares/validate";
 import { cache } from "../middlewares/cache";
+import { trafficoPerZona } from "../lib/traffico";
 
 const router: IRouter = Router();
 
@@ -122,41 +123,8 @@ router.get("/traffic/stats", cache({ ttlSeconds: 60 }), asyncHandler(async (req,
     });
   }
 
-  // Speed impact by zone (aggregate by geographic area name)
-  const byZone = await db.execute(sql`
-    WITH zone_map AS (
-      SELECT *,
-        CASE
-          WHEN lat BETWEEN 43.59 AND 43.62 AND lng BETWEEN 13.50 AND 13.52 THEN 'Centro storico'
-          WHEN lat BETWEEN 43.60 AND 43.63 AND lng BETWEEN 13.52 AND 13.57 THEN 'Porto / Lido'
-          WHEN lat BETWEEN 43.60 AND 43.65 AND lng BETWEEN 13.42 AND 13.50 THEN 'Zona Ovest'
-          WHEN lat BETWEEN 43.62 AND 43.69 AND lng BETWEEN 13.38 AND 13.52 THEN 'Nord / Falconara'
-          ELSE 'Entroterra'
-        END as zone_name
-      FROM traffic_snapshots
-      WHERE captured_at > NOW() - INTERVAL '30 days'
-    )
-    SELECT
-      zone_name,
-      AVG(congestion_level) as avg_congestion,
-      AVG(speed) as avg_speed,
-      AVG(freeflow_speed) as avg_freeflow,
-      COUNT(*)::int as samples
-    FROM zone_map
-    GROUP BY zone_name
-    ORDER BY avg_congestion DESC
-  `);
-
-  const zoneStats = (byZone.rows as any[]).map(r => ({
-    zone: r.zone_name,
-    avgCongestion: parseFloat(r.avg_congestion) || 0,
-    avgSpeed: parseFloat(r.avg_speed) || 0,
-    avgFreeflow: parseFloat(r.avg_freeflow) || 0,
-    samples: parseInt(r.samples) || 0,
-    speedReduction: parseFloat(r.avg_freeflow) > 0
-      ? Math.round((1 - parseFloat(r.avg_speed) / parseFloat(r.avg_freeflow)) * 100)
-      : 0,
-  }));
+  // Per zona: la zona è un attributo del punto stradale (lib/traffico.ts)
+  const zoneStats = await trafficoPerZona();
 
   // Overall speed stats
   const speedResult = await db.execute(sql`

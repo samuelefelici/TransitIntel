@@ -30,7 +30,6 @@ const AMMESSI: Record<string, { righe: number; perche: string }> = {
   "pages/admin-azienda.tsx": { righe: 4, perche: "gli esempi nelle caselle del modulo dove l'azienda scrive i suoi dati" },
   "lib/territorio.ts": { righe: 1, perche: "il file dei confini comunali incluso nell'app: dice di che provincia è" },
   "lib/elenchi-tariffe.ts": { righe: 1, perche: "«atma_2013»: il valore che i nodi copiati prima della 6.10 hanno nel database" },
-  "pages/traffic.tsx": { righe: 2, perche: "le zone del traffico, con le loro coordinate: vanno in tabella con i punti stradali" },
 };
 
 /** Il sorgente senza commenti: quelli a blocco (anche dentro il JSX) e quelli a fine riga. Le righe restano dove sono. */

@@ -1476,6 +1476,72 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il traffico come dato dell'azienda (tappa 6.15)
+
+Tre cose del traffico erano scritte nel codice per la provincia di Ancona. Da
+questo rilascio sono luoghi del territorio dell'azienda, in Amministrazione →
+Azienda → «Luoghi di riferimento», dove stanno già i punti del meteo.
+
+- **Punti stradali del traffico** (uso nuovo): i punti di cui il giro del
+  traffico legge velocità e congestione ogni mezz'ora. Erano 37 nel codice.
+  - Il **nome** di un punto è l'identificativo delle sue rilevazioni: è unico
+    fra i punti. Cambiando nome a un punto, le sue rilevazioni lo seguono.
+  - La **zona** è un attributo del punto, un nome libero: i punti con la
+    stessa zona stanno insieme nella pagina Traffico. Scrivendola, la casella
+    propone le zone che ci sono già. Un punto senza zona, e le rilevazioni di
+    un punto tolto, stanno in «Senza zona» finché scadono (90 giorni).
+  - Al più **100 punti**. Ogni punto è una richiesta a TomTom a ogni giro: la
+    pagina dice quante richieste al giorno fanno i punti scritti (37 punti:
+    1.776).
+  - Senza punti il giro non chiede niente.
+- **Centri urbani del modello del traffico** (uso nuovo): il traffico teorico
+  cala con la distanza dal centro **più vicino** fra quelli scritti. Senza
+  centri vale il centro delle mappe dell'azienda. Chi ha più città può
+  scriverne più d'una.
+- **Le zone non sono più rettangoli di coordinate**. Prima erano cinque,
+  scritte due volte (nell'API e nella pagina) e con regole diverse fra loro.
+  Ora la pagina mostra quello che dice l'API, e basta.
+- **Per Conerobus non cambia niente**: la migrazione `0045` mette i 37 punti di
+  prima, ognuno con la zona in cui lo metteva la regola di prima, e come
+  centro urbano quello di prima (43,616 / 13,516). I colori delle zone nella
+  pagina restano gli stessi: seguono l'ordine dei punti.
+- **Le zone di prima erano grossolane**, e ora si correggono a mano. Per
+  esempio il punto «Porto-Anc» è in «Zona Ovest» e «A14-Falconara» in
+  «Entroterra», perché così li metteva il rettangolo. Dei 37 punti, 25 sono
+  in «Entroterra», che era «tutto il resto».
+- **Misurato**:
+  - sulla copia con i dati veri, il modello sui punti delle linee: 1.012
+    forme, 856.320 valori confrontati con quelli di prima, nessuno diverso;
+  - i 37 punti e le zone nel database sono quelli di prima;
+  - la copia non ha rilevazioni del traffico, quindi il traffico per zona è
+    provato con rilevazioni di prova sui 37 punti: stesse zone, stessi numeri
+    e stessa classifica della regola di prima (test sul database, anche in
+    CI);
+  - nel browser: i 37 punti con le zone e il centro in Azienda, una zona
+    cambiata dalla pagina, un doppione rifiutato, e la pagina Traffico con le
+    cinque zone e i colori di prima.
+- **Trovato e non toccato**: la mappa delle linee con il traffico
+  (`GET /api/gtfs/shapes/geojson`) non restituisce le linee di un feed nato da
+  Planning Studio, perché ne legge le forme in un formato diverso da quello in
+  cui vengono scritte. C'era già: è fuori da questa tappa.
+
+**Dopo il deploy**
+1. La migrazione `0045` aggiunge i due usi e la colonna della zona, e per
+   Conerobus i 37 punti e il centro: niente da fare a mano. Nessuna variabile
+   e nessuna Watch Path nuova.
+2. In Amministrazione → Azienda → «Luoghi di riferimento» ci sono due sezioni
+   in più: «Punti stradali del traffico · 37» e «Centri urbani del modello del
+   traffico · 1».
+3. Se in produzione ci sono rilevazioni di punti che non sono fra i 37 (non
+   dovrebbero: l'elenco nel codice non è cambiato negli ultimi 90 giorni),
+   compaiono in «Senza zona». Per controllare:
+   `SELECT segment_id, count(*) FROM traffic_snapshots WHERE segment_id NOT IN (SELECT nome FROM territorio_luoghi WHERE uso = 'traffico') GROUP BY 1;`
+
+**Rollback**: immagine precedente. Il codice di prima torna a usare i suoi 37
+punti e i suoi rettangoli; i luoghi nuovi e la colonna della zona restano e
+non danno fastidio. Le rilevazioni raccolte nel frattempo da punti aggiunti a
+mano finiscono, col codice di prima, nella zona del loro rettangolo.
+
 ### I testi della web senza il nome del primo cliente (tappa 6.14)
 
 Nelle pagine restavano una sessantina di righe che nominavano Ancona, ATMA,

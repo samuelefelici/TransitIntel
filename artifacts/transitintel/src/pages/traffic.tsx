@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { useGetTrafficStats, useGetTrafficHeatmap, useGetWeatherCorrelation, useGetWeatherCurrent } from "@/hooks/use-analisi-queries";
+import { useGetTrafficStats, useGetWeatherCorrelation, useGetWeatherCurrent } from "@/hooks/use-analisi-queries";
 import {
   Activity, Clock, MapPin, AlertCircle, TrendingDown,
   Calendar, ShieldCheck, Timer, Bus, Cloud, Droplets, Wind,
@@ -11,6 +11,7 @@ import {
   BarChart, Bar, Cell, ReferenceLine, Legend,
 } from "recharts";
 import { useAzienda } from "@/hooks/use-azienda";
+import { COLORE_SENZA_ZONA, coloriDelleZone, type ZonaDelTraffico } from "@/lib/traffico";
 
 /* ────────────────────────────── CONSTANTS ────────────────────────────── */
 
@@ -21,14 +22,6 @@ const DAY_TYPE_OPTIONS: { value: DayType; label: string; icon: string }[] = [
   { value: "sabato", label: "Sabato", icon: "🛒" },
   { value: "festivo", label: "Domenica / Festivo", icon: "☀️" },
 ];
-
-const ZONE_COLORS: Record<string, string> = {
-  "Centro storico": "#ef4444",
-  "Porto / Lido": "#f97316",
-  "Zona Ovest": "#eab308",
-  "Nord / Falconara": "#22c55e",
-  "Entroterra": "#6b7280",
-};
 
 const HOUR_BANDS: Record<string, string> = {
   "6": "Prima mattina", "7": "Prima mattina",
@@ -125,15 +118,11 @@ const ProfileTooltip = ({ active, payload, label }: any) => {
 export default function Traffic() {
   const azienda = useAzienda();
   const { data: stats, isLoading } = useGetTrafficStats();
-  const { data: heatmap } = useGetTrafficHeatmap();
   const [dayType, setDayType] = useState<DayType>("feriale");
 
   const extStats = stats as any;
   const congestionByDayType = extStats?.congestionByDayType as Record<string, any[]> | undefined;
-  const zoneStats = extStats?.zoneStats as {
-    zone: string; avgCongestion: number; avgSpeed: number;
-    avgFreeflow: number; samples: number; speedReduction: number;
-  }[] | undefined;
+  const zoneStats = extStats?.zoneStats as ZonaDelTraffico[] | undefined;
 
   /* ── Profilo orario con tipo giorno ── */
   const hourlyData = useMemo(() => {
@@ -153,25 +142,9 @@ export default function Traffic() {
     }));
   }, [stats, congestionByDayType, dayType]);
 
-  /* ── Zone data ── */
-  const zoneData = useMemo(() => {
-    if (zoneStats && zoneStats.length > 0) return zoneStats;
-    if (!heatmap?.data) return [];
-    const ZONE_DEFS = [
-      { zone: "Centro storico", lat: [43.59, 43.62], lon: [13.50, 13.52] },
-      { zone: "Porto / Lido", lat: [43.60, 43.63], lon: [13.52, 13.57] },
-      { zone: "Zona Ovest", lat: [43.60, 43.65], lon: [13.42, 13.50] },
-      { zone: "Nord / Falconara", lat: [43.62, 43.69], lon: [13.38, 13.52] },
-      { zone: "Entroterra", lat: [43.40, 43.60], lon: [12.70, 13.42] },
-    ];
-    return ZONE_DEFS.map(z => {
-      const pts = (heatmap.data ?? []).filter(h =>
-        (h.lat ?? 0) >= z.lat[0] && (h.lat ?? 0) < z.lat[1] && (h.lng ?? 0) >= z.lon[0] && (h.lng ?? 0) < z.lon[1]
-      );
-      const avgCong = pts.length > 0 ? pts.reduce((s, p) => s + (p.avgCongestion ?? 0), 0) / pts.length : 0;
-      return { zone: z.zone, avgCongestion: avgCong, avgSpeed: 0, avgFreeflow: 0, samples: pts.length, speedReduction: Math.round(avgCong * 60) };
-    }).filter(z => z.samples > 0).sort((a, b) => b.avgCongestion - a.avgCongestion);
-  }, [zoneStats, heatmap]);
+  /* ── Le zone: un attributo dei punti stradali, scritti in Amministrazione › Azienda ── */
+  const zoneData = useMemo(() => zoneStats ?? [], [zoneStats]);
+  const coloriZone = useMemo(() => coloriDelleZone(zoneData), [zoneData]);
 
   /* ── KPI ── */
   const avgSpeed = extStats?.avgSpeed ?? 0;
@@ -400,12 +373,13 @@ export default function Traffic() {
               <div className="flex flex-col items-center justify-center py-10 gap-3 text-muted-foreground">
                 <MapPin className="w-8 h-8 opacity-20" />
                 <p className="text-sm">Dati di zona non ancora disponibili</p>
+                <p className="text-xs max-w-xs text-center">I punti stradali e le loro zone si scrivono in Amministrazione › Azienda, fra i luoghi di riferimento.</p>
               </div>
             ) : (
               <div className="space-y-4">
                 {zoneData.map((z) => {
                   const badge = speedReductionBadge(z.speedReduction);
-                  const zoneColor = ZONE_COLORS[z.zone] ?? "#6b7280";
+                  const zoneColor = coloriZone[z.zone] ?? COLORE_SENZA_ZONA;
                   return (
                     <div key={z.zone} className="space-y-2">
                       <div className="flex items-center justify-between">
@@ -515,7 +489,7 @@ export default function Traffic() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
               {zoneData.map((z, i) => {
                 const badge = speedReductionBadge(z.speedReduction);
-                const zoneColor = ZONE_COLORS[z.zone] ?? "#6b7280";
+                const zoneColor = coloriZone[z.zone] ?? COLORE_SENZA_ZONA;
                 return (
                   <div key={z.zone}
                     className="relative p-4 rounded-xl bg-background/40 border border-border/30 hover:border-border/60 transition-colors">

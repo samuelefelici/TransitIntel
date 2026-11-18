@@ -16,6 +16,7 @@ import { eq, sql } from "drizzle-orm";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import { getLatestFeedId, feedDellaLettura, modelCongestion } from "./gtfs-helpers";
 import { cache, chiavePerUtente } from "../middlewares/cache";
+import { centriUrbani } from "../lib/territorio";
 
 const router: IRouter = Router();
 
@@ -101,6 +102,8 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
     /* nessun feed: niente forme (prima arrivavano quelle di tutti i feed) */
     if (!feed.feedId) { res.json({ type: "FeatureCollection", features: [] }); return; }
     const resolvedFeedId = feed.feedId;
+    /* i centri da cui il modello misura la distanza: dati dell'azienda (lib/territorio.ts) */
+    const centri = await centriUrbani();
 
     const whereCondition = routeIds.length > 0
       ? sql`${gtfsShapes.feedId} = ${resolvedFeedId} AND ${gtfsShapes.routeId} IN (${sql.join(routeIds.map(r => sql`${r}`), sql`, `)})`
@@ -199,7 +202,7 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
             speedReduction = freeflow > 0 ? Math.round((1 - (speed ?? 0) / freeflow) * 100) : null;
           } else {
             const h = hourParam !== null ? hourParam : 12;
-            congestion = Math.round(modelCongestion(h, mid[0], mid[1]) * 100) / 100;
+            congestion = Math.round(modelCongestion(h, mid[0], mid[1], centri) * 100) / 100;
           }
 
           features.push({
@@ -216,7 +219,7 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
           const r = nearestRealCongestion(coords[i][0], coords[i][1]);
           if (r) { total += r.congestion; samples++; hasReal = true; }
           else if (!hasReal && hourParam !== null) {
-            total += modelCongestion(hourParam, coords[i][0], coords[i][1]);
+            total += modelCongestion(hourParam, coords[i][0], coords[i][1], centri);
             samples++;
           }
         }

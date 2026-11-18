@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  coordinate, corpoComune, corpoLuogo, erroriComune, erroriLuogo, MODULO_COMUNE_VUOTO, moduloComuneDa, moduloLuogoDa, moduloLuogoVuoto, USI,
+  coordinate, corpoComune, corpoLuogo, erroriComune, erroriLuogo, MODULO_COMUNE_VUOTO, moduloComuneDa, moduloLuogoDa, moduloLuogoVuoto, richiesteDelTraffico, USI, zoneDeiPunti,
   type Comune, type Luogo, type ModuloComune, type ModuloLuogo, type UsoLuogo,
 } from "@/lib/territorio";
 
@@ -160,6 +160,7 @@ function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
 }) {
   const [aperto, setAperto] = useState<string | null>(null);
   const [nuovo, setNuovo] = useState<UsoLuogo | null>(null);
+  const zone = zoneDeiPunti(luoghi);
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -173,6 +174,7 @@ function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
               <div>
                 <h3 className="text-sm font-medium">{titolo} <span className="text-muted-foreground font-normal">· {di.length}</span></h3>
                 <p className="text-xs text-muted-foreground">{spiega}</p>
+                {uso === "traffico" && richiesteDelTraffico(di.length) && <p className="text-xs text-muted-foreground">{richiesteDelTraffico(di.length)}.</p>}
               </div>
               {di.length > 0 && (
                 <div className="overflow-x-auto rounded-md border border-border/50">
@@ -180,14 +182,14 @@ function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
                     <tbody>
                       {di.map((l) => aperto === l.id ? (
                         <tr key={l.id} className="bg-muted/30"><td colSpan={4} className="px-3 py-2">
-                          <ModuloLuogoForm iniziale={moduloLuogoDa(l)} chiave={l.id} busy={busy}
+                          <ModuloLuogoForm iniziale={moduloLuogoDa(l)} chiave={l.id} busy={busy} zone={zone}
                             onSalva={async (m) => { if (await onSalva(l.id, m)) setAperto(null); }} onAnnulla={() => setAperto(null)} />
                         </td></tr>
                       ) : (
                         <tr key={l.id} className="border-t border-border/40 first:border-t-0">
                           <td className="px-3 py-1.5">{l.nome}</td>
                           <td className="px-3 py-1.5 tabular-nums text-xs">{coordinate(l.lat, l.lng)}</td>
-                          <td className="px-3 py-1.5 tabular-nums text-xs text-muted-foreground">{l.raggioM != null ? `raggio ${nf(l.raggioM / 1000, 1)} km` : ""}</td>
+                          <td className="px-3 py-1.5 tabular-nums text-xs text-muted-foreground">{l.raggioM != null ? `raggio ${nf(l.raggioM / 1000, 1)} km` : l.uso === "traffico" ? l.zona ?? "senza zona" : ""}</td>
                           <td className="px-3 py-1.5 text-right whitespace-nowrap">
                             <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => setAperto(l.id)}>Modifica</Button>
                             <Button size="sm" variant="ghost" className="h-7 text-destructive" disabled={busy} onClick={() => onTogli(l)} aria-label={`Togli ${l.nome}`}>
@@ -201,7 +203,7 @@ function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
                 </div>
               )}
               {nuovo === uso ? (
-                <ModuloLuogoForm iniziale={moduloLuogoVuoto(uso)} chiave={`nuovo-${uso}`} busy={busy}
+                <ModuloLuogoForm iniziale={moduloLuogoVuoto(uso)} chiave={`nuovo-${uso}`} busy={busy} zone={zone}
                   onSalva={async (m) => { if (await onCrea(m)) setNuovo(null); }} onAnnulla={() => setNuovo(null)} />
               ) : (
                 <Button variant="outline" size="sm" onClick={() => setNuovo(uso)} disabled={busy}><Plus className="w-4 h-4 mr-1.5" />Aggiungi</Button>
@@ -214,8 +216,8 @@ function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
   );
 }
 
-function ModuloLuogoForm({ iniziale, chiave, busy, onSalva, onAnnulla }: {
-  iniziale: ModuloLuogo; chiave: string; busy: boolean; onSalva: (m: ModuloLuogo) => void; onAnnulla: () => void;
+function ModuloLuogoForm({ iniziale, chiave, busy, zone, onSalva, onAnnulla }: {
+  iniziale: ModuloLuogo; chiave: string; busy: boolean; zone: string[]; onSalva: (m: ModuloLuogo) => void; onAnnulla: () => void;
 }) {
   const [m, setM] = useState(iniziale);
   const [provato, setProvato] = useState(false);
@@ -234,13 +236,15 @@ function ModuloLuogoForm({ iniziale, chiave, busy, onSalva, onAnnulla }: {
         <div className="space-y-1">
           <Label htmlFor={id("uso")} className="text-xs">Uso</Label>
           <select id={id("uso")} className="h-8 rounded-md border border-input bg-background px-2 text-sm block" value={m.uso}
-            onChange={(e) => { const uso = e.target.value as UsoLuogo; setM({ ...m, uso, raggioM: uso === "punti_interesse" ? m.raggioM || "3000" : "" }); }}>
+            onChange={(e) => { const uso = e.target.value as UsoLuogo; setM({ ...m, uso, raggioM: uso === "punti_interesse" ? m.raggioM || "3000" : "", zona: uso === "traffico" ? m.zona : "" }); }}>
             {USI.map(([u, t]) => <option key={u} value={u}>{t}</option>)}
           </select>
         </div>
         {casella("lat", "Latitudine", "w-28", { inputMode: "decimal" })}
         {casella("lng", "Longitudine", "w-28", { inputMode: "decimal" })}
         {m.uso === "punti_interesse" && casella("raggioM", "Raggio (m)", "w-24", { inputMode: "numeric" })}
+        {m.uso === "traffico" && casella("zona", "Zona (facoltativa)", "w-44", { maxLength: 60, list: id("zone") })}
+        {m.uso === "traffico" && <datalist id={id("zone")}>{zone.map((z) => <option key={z} value={z} />)}</datalist>}
         {casella("ordine", "Ordine", "w-20", { inputMode: "numeric" })}
         <Button type="submit" size="sm" className="h-8" disabled={busy}><Save className="w-3.5 h-3.5 mr-1" />Salva</Button>
         <Button type="button" size="sm" variant="ghost" className="h-8" onClick={onAnnulla}>Annulla</Button>
