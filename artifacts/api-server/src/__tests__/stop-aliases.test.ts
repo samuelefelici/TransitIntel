@@ -9,12 +9,11 @@
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { describe, it, expect } from "vitest";
-import fs from "node:fs";
-import path from "node:path";
-import { parseTranscodifica, leggiTranscodificaCompleta, indiceTranscodifica, verificaTranscodifica, caricaTranscodifica, resetTranscodifica, classificaAbbinamenti } from "../lib/stop-aliases";
+import { indiceTranscodifica, verificaTranscodifica, classificaAbbinamenti } from "../lib/stop-aliases";
+import { leggiCsvTranscodifica, righeDellaBase, stopIdValido } from "../lib/transcodifica-paline";
 import { resolveStop, namesCompatible, type GtfsIndex } from "../lib/siri-vm";
 
-const CSV = `﻿mizar_ref,stop_id,nome
+const CSV = `\uFEFFmizar_ref,stop_id,nome
 1122,20045,ANCONA (Via Marconi Gas)
 200,20001,"Piazza Cavour (Conerobus Linee Nord)"
 461,20928,OSIMO (Capolinea)
@@ -22,33 +21,48 @@ const CSV = `﻿mizar_ref,stop_id,nome
 5102,new_CT,"FABRIANO (Via Dante, 39)"
 
 `;
+const parseTranscodifica = (testo: string) => righeDellaBase(leggiCsvTranscodifica(testo).righe).righe.map(({ fonte: _f, ...r }) => r);
 
-describe("parseTranscodifica", () => {
-  it("legge il CSV con BOM, virgolette e righe vuote; salta le paline senza codice", () => {
-    const r = parseTranscodifica(CSV);
-    expect(r).toEqual([
-      { mizarRef: "1122", stopId: "20045", nome: "ANCONA (Via Marconi Gas)" },
-      { mizarRef: "200", stopId: "20001", nome: "Piazza Cavour (Conerobus Linee Nord)" },
-      { mizarRef: "461", stopId: "20928", nome: "OSIMO (Capolinea)" },
-      { mizarRef: "199", stopId: "200", nome: "VIA DEL CONERO - CASACCIA" },
+describe("il CSV della transcodifica (tappa 6.20: si importa nella tabella dell'azienda)", () => {
+  it("legge il CSV con BOM, virgolette e righe vuote; le paline senza codice restano a parte", () => {
+    const l = leggiCsvTranscodifica(CSV);
+    expect(l.errori).toEqual([]);
+    expect(l.righe).toEqual([
+      { palina: "1122", stopId: "20045", codiceFile: null, nome: "ANCONA (Via Marconi Gas)" },
+      { palina: "200", stopId: "20001", codiceFile: null, nome: "Piazza Cavour (Conerobus Linee Nord)" },
+      { palina: "461", stopId: "20928", codiceFile: null, nome: "OSIMO (Capolinea)" },
+      { palina: "199", stopId: "200", codiceFile: null, nome: "VIA DEL CONERO - CASACCIA" },
+      { palina: "5102", stopId: null, codiceFile: "new_CT", nome: "FABRIANO (Via Dante, 39)" },
     ]);
+    const r = parseTranscodifica(CSV);
+    expect(r).toHaveLength(4);
     expect(indiceTranscodifica(r).get("200")).toBe("20001");
+    expect(indiceTranscodifica(r).has("5102")).toBe(false);
   });
-  it("il file vero nel repository si legge ed è grande", () => {
-    const p = path.resolve(__dirname, "..", "..", "data", "transcodifica-paline-mizar.csv");
-    const r = parseTranscodifica(fs.readFileSync(p, "utf8"));
-    expect(r.length).toBeGreaterThan(4000);
-    const idx = indiceTranscodifica(r);
-    expect(idx.get("1122")).toBe("20045");
-    expect(idx.get("200")).toBe("20001");
-    expect(idx.get("461")).toBe("20928");
-    expect(idx.has("5102")).toBe(false);   // new_CT
+  it("senza intestazione si legge lo stesso; un codice palina doppio: vale il primo", () => {
+    const l = leggiCsvTranscodifica("200,20001,A\n200,30001,B\n7,8,C");
+    expect(l.righe.map((x) => [x.palina, x.stopId])).toEqual([["200", "20001"], ["7", "8"]]);
+    expect(l.doppie).toBe(1);
   });
-  it("caricaTranscodifica trova il file dal percorso del sorgente", () => {
-    resetTranscodifica();
-    const t = caricaTranscodifica(true);
-    expect(t.errore).toBeNull();
-    expect(t.indice.get("1122")).toBe("20045");
+  it("un codice palina che non va ferma l'import, con il numero di riga", () => {
+    const l = leggiCsvTranscodifica("mizar_ref,stop_id,nome\n1,2,A\nuno due,3,B\n");
+    expect(l.errori).toEqual(["riga 3: il codice palina «uno due» non va (lettere, cifre e . _ : -, al più 40)"]);
+    expect(leggiCsvTranscodifica("mizar_ref,stop_id,nome\n\n").errori).toEqual(["il file non ha nessuna riga con un codice palina"]);
+    expect(leggiCsvTranscodifica("").errori).toHaveLength(1);
+  });
+  it("i nomi senza caratteri di controllo e al più 200 caratteri; lo stop_id «new_…» non vale", () => {
+    const l = leggiCsvTranscodifica(`1,2,"A\u0007B"\n2,NEW_x,${"n".repeat(300)}`);
+    expect(l.righe[0]!.nome).toBe("AB");
+    expect(l.righe[1]).toMatchObject({ stopId: null, codiceFile: "NEW_x" });
+    expect(l.righe[1]!.nome).toHaveLength(200);
+    expect(stopIdValido("20045")).toBe(true);
+    expect(stopIdValido("new_CT")).toBe(false);
+    expect(stopIdValido("a b")).toBe(false);
+  });
+  it("l'esportazione con le colonne in più (fonte, nota, utente) si reimporta", () => {
+    const l = leggiCsvTranscodifica('mizar_ref,stop_id,nome,fonte,nota,utente\r\n"200","20001","Piazza Cavour","manuale","spostata","a@b.it"\r\n');
+    expect(l.errori).toEqual([]);
+    expect(l.righe).toEqual([{ palina: "200", stopId: "20001", codiceFile: null, nome: "Piazza Cavour" }]);
   });
 });
 
@@ -90,7 +104,7 @@ describe("verificaTranscodifica", () => {
 });
 
 describe("classificaAbbinamenti: ogni palina con il suo stato", () => {
-  const { valide, scartate } = leggiTranscodificaCompleta(CSV);
+  const { righe: valide, scartate } = righeDellaBase(leggiCsvTranscodifica(CSV).righe);
   const feed = {
     stops: new Set(["20001", "200", "20045", "77"]),
     stopNames: new Map([["20001", "PIAZZA CAVOUR (CONEROBUS LINEE NORD)"], ["200", "VIA DEL CONERO - CASACCIA"], ["20045", "OSIMO STAZIONE"], ["77", "Fermata orfana"]]),

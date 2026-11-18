@@ -10,10 +10,12 @@
  * fermate del feed che nessun codice raggiunge, e i codici che il flusso
  * SIRI usa e la tabella non ha.
  *
+ * La tabella è un dato dell'azienda (tappa 6.20): l'amministratore la
+ * sostituisce per intero importando un CSV (mizar_ref,stop_id,nome).
  * Le correzioni si fanno qui, riga per riga, e restano tracciate: chi,
- * quando, perché. Il file dell'azienda non si tocca; la tabella effettiva
- * (file + correzioni) si esporta nello stesso formato, con la colonna che
- * dice da dove viene ogni riga. Chi corregge ha tre aiuti, in ordine di
+ * quando, perché; un import non le tocca. La tabella effettiva (tabella
+ * dell'azienda + correzioni) si esporta nello stesso formato, con la colonna
+ * che dice da dove viene ogni riga. Chi corregge ha tre aiuti, in ordine di
  * forza: il nome (un suggerimento), i dati di Mizar (una dimostrazione:
  * le corse che passano dalla palina passano da quello stop_id allo stesso
  * orario), e la ricerca libera nel feed.
@@ -23,12 +25,13 @@
  * fidarsi.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Download, RefreshCw, Search, MapPin, AlertTriangle, CircleOff, HelpCircle, Check,
-  Pencil, Undo2, Sparkles, X,
+  Pencil, Undo2, Sparkles, X, Upload,
 } from "lucide-react";
+import { toast } from "sonner";
 import { apiFetch, getApiBase } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -37,13 +40,15 @@ type Stato = "abbinata" | "sospetta" | "fermata_assente" | "senza_codice";
 interface Suggerimento { stopId: string; nome: string | null; motivo: "stesso_nome" | "nome_contenuto" }
 interface Riga {
   mizarRef: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null;
-  stato: Stato; fonte: "file" | "manuale"; nota: string | null; utente: string | null;
+  stato: Stato; fonte: "azienda" | "manuale"; nota: string | null; utente: string | null;
   collisione: string | null; condivisaCon: number; vistaNelFlusso: boolean;
   /** assente se l'API in esecuzione è più vecchia della pagina */
   suggerimenti?: Suggerimento[];
 }
 interface Resp {
-  file: string | null; errore: string | null; feed: string | null;
+  /** quando la tabella dell'azienda è stata importata l'ultima volta, e da chi */
+  importataIl?: string | null; importataDa?: string | null;
+  errore: string | null; feed: string | null;
   correzioni?: number; erroreCorrezioni?: string | null;
   /** assente se l'API in esecuzione è più vecchia della pagina */
   puoCorreggere?: boolean;
@@ -98,7 +103,7 @@ function Contatore({ n, etichetta, colore, fondo, attivo, onClick, icona: Icona 
 /* ── L'editor di una riga ─────────────────────────────────────────────────
  * Tre fonti di candidati e una decisione. La deduzione dai dati costa una
  * richiesta a Mizar: si chiede solo premendo il pulsante. */
-function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string; nomeMizar: string | null; stopId: null; suggerimenti?: Suggerimento[]; fonte: "file"; nota: null }; onChiudi: () => void }) {
+function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string; nomeMizar: string | null; stopId: null; suggerimenti?: Suggerimento[]; fonte: "azienda"; nota: null }; onChiudi: () => void }) {
   /* Un'API più vecchia della pagina non manda i suggerimenti: la lista
      resta vuota, il resto dell'editor funziona. */
   const suggerimenti = riga.suggerimenti ?? [];
@@ -232,9 +237,9 @@ function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string
               onClick={() => ripristina.mutate()}
               disabled={ripristina.isPending}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded border border-border/50 hover:bg-muted/40"
-              title="Toglie la correzione e torna alla riga del file"
+              title="Toglie la correzione e torna alla riga della tabella dell'azienda"
             >
-              <Undo2 className="w-3.5 h-3.5" /> Ripristina dal file
+              <Undo2 className="w-3.5 h-3.5" /> Ripristina la riga dell'azienda
             </button>
           )}
           <button type="button" onClick={onChiudi} className="flex items-center gap-1 px-2 py-1 rounded hover:bg-muted/40 text-muted-foreground">
@@ -248,6 +253,61 @@ function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string
     </tr>
   );
 }
+
+/** Quanto può essere grande il CSV: il corpo delle richieste all'API arriva al più a 4 MB. */
+const MASSIMO_BYTE = 3_500_000;
+
+/**
+ * L'import della tabella dell'azienda: un CSV mizar_ref,stop_id,nome (anche
+ * quello scaricato da «Transcodifica corretta»). Sostituisce tutte le righe;
+ * le correzioni fatte da qui restano. Solo l'amministratore.
+ */
+function ImportaTranscodifica({ righe }: { righe: number }) {
+  const qc = useQueryClient();
+  const scelta = useRef<HTMLInputElement>(null);
+  const importa = useMutation({
+    mutationFn: (csv: string) => apiFetch<{ righe: number; conFermata: number; senzaFermata: number; doppie: number; nelFeed: number | null }>(
+      "/api/siri/fermate/transcodifica", { method: "PUT", body: JSON.stringify({ csv }) }),
+    onSuccess: (e) => {
+      toast.success(`Transcodifica importata: ${e.righe} paline`, {
+        description: [
+          `${e.conFermata} con la fermata${e.nelFeed != null ? ` (${e.nelFeed} nel feed in uso)` : ""}, ${e.senzaFermata} senza.`,
+          e.doppie ? `${e.doppie} righe con un codice già visto: è valsa la prima.` : "",
+        ].filter(Boolean).join(" "),
+      });
+      qc.invalidateQueries({ queryKey: ["fermate-abbinamenti"] });
+    },
+    onError: (e: any) => toast.error("Import non riuscito", { description: String(e?.message ?? e) }),
+  });
+  const leggi = async (f: File | undefined) => {
+    if (!f) return;
+    if (f.size > MASSIMO_BYTE) { toast.error("Il file è troppo grande", { description: "Al più 3,5 MB." }); return; }
+    const testo = await f.text();
+    const domanda = righe > 0
+      ? `Sostituire le ${righe} paline della tabella con quelle di «${f.name}»? Le correzioni fatte da qui restano.`
+      : `Importare la transcodifica da «${f.name}»?`;
+    if (window.confirm(domanda)) importa.mutate(testo);
+  };
+  return (
+    <>
+      <input
+        ref={scelta} id="transcodifica-file" type="file" accept=".csv,text/csv" className="hidden"
+        onChange={(e) => { void leggi(e.target.files?.[0]); e.target.value = ""; }}
+      />
+      <button
+        type="button" disabled={importa.isPending} onClick={() => scelta.current?.click()}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border/50 text-[11px] hover:bg-muted/40 disabled:opacity-60"
+        title="Un CSV con le colonne mizar_ref,stop_id,nome: sostituisce la tabella dell'azienda, le correzioni restano"
+      >
+        <Upload className="w-3.5 h-3.5" /> {importa.isPending ? "Importo…" : "Importa la transcodifica (CSV)"}
+      </button>
+    </>
+  );
+}
+
+const quando = (iso: string | null | undefined) => iso
+  ? new Date(iso).toLocaleString("it-IT", { timeZone: "Europe/Rome", day: "numeric", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit" })
+  : null;
 
 export default function FermateMizar() {
   const { user, isAdmin } = useAuth();
@@ -291,8 +351,11 @@ export default function FermateMizar() {
   if (!d) return <div className="p-8 text-center text-xs text-muted-foreground">Leggo la tabella di transcodifica…</div>;
   if (d.errore && !d.righe.length) {
     return (
-      <div className="p-8 text-center text-xs text-muted-foreground max-w-md mx-auto leading-relaxed">
-        Nessuna tabella di transcodifica caricata: {d.errore}
+      <div className="p-8 text-center text-xs text-muted-foreground max-w-md mx-auto leading-relaxed space-y-3">
+        <p>Nessuna tabella di transcodifica: {d.errore}</p>
+        {isAdmin
+          ? <div className="flex justify-center"><ImportaTranscodifica righe={0} /></div>
+          : <p>La importa un amministratore.</p>}
       </div>
     );
   }
@@ -340,10 +403,11 @@ export default function FermateMizar() {
           <button onClick={() => q.refetch()} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border/50 text-[11px] hover:bg-muted/40" title="Rileggi">
             <RefreshCw className={`w-3.5 h-3.5 ${q.isFetching ? "animate-spin" : ""}`} /> Aggiorna
           </button>
+          {puoCorreggere && <ImportaTranscodifica righe={d.righe.filter(x => x.fonte === "azienda").length} />}
           <a href={`${getApiBase()}/api/siri/fermate/abbinamenti?formato=csv`} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border/50 text-[11px] hover:bg-muted/40" title="Tutte le righe con lo stato">
             <Download className="w-3.5 h-3.5" /> Stati (CSV)
           </a>
-          <a href={`${getApiBase()}/api/siri/fermate/transcodifica?formato=csv`} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-primary/40 text-[11px] hover:bg-muted/40" title="La transcodifica con le correzioni, nello stesso formato del file dell'azienda">
+          <a href={`${getApiBase()}/api/siri/fermate/transcodifica?formato=csv`} className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-primary/40 text-[11px] hover:bg-muted/40" title="La transcodifica con le correzioni, nello stesso formato dell'import">
             <Download className="w-3.5 h-3.5" /> Transcodifica corretta (CSV)
           </a>
         </div>
@@ -393,7 +457,7 @@ export default function FermateMizar() {
           {inModifica?.startsWith("nuovo:") && (
             <table className="w-full"><tbody>
               <EditorAbbinamento
-                riga={{ mizarRef: inModifica.slice(6), nomeMizar: null, stopId: null, suggerimenti: [], fonte: "file", nota: null }}
+                riga={{ mizarRef: inModifica.slice(6), nomeMizar: null, stopId: null, suggerimenti: [], fonte: "azienda", nota: null }}
                 onChiudi={() => setInModifica(null)}
               />
             </tbody></table>
@@ -488,7 +552,7 @@ export default function FermateMizar() {
       )}
 
       <p className="text-[10px] text-muted-foreground">
-        Tabella: {d.file ?? "—"} · feed {d.feed ?? "nessuno"} · {d.correzioni ?? 0} correzioni salvate. {d.nota ?? ""}
+        Tabella dell'azienda{quando(d.importataIl) ? `, importata il ${quando(d.importataIl)}${d.importataDa ? ` da ${d.importataDa}` : ""}` : ""} · feed {d.feed ?? "nessuno"} · {d.correzioni ?? 0} correzioni salvate. {d.nota ?? ""}
         {perchéNoCorrezioni && ` Correzioni non disponibili: ${perchéNoCorrezioni}.`}
         {puoCorreggere && apiVecchia && " L'API in esecuzione è precedente alle correzioni: il pulsante «correggi» c'è, ma il salvataggio funzionerà solo dopo il redeploy dell'API."}
       </p>

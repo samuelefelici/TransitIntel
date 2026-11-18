@@ -31,6 +31,8 @@ export interface Conteggi {
   puntiDiCambio: number;
   puntiSenzaFermate: number;
   autoAziendali: number | null;
+  /** le paline della transcodifica dell'AVM (tappa 6.20) */
+  paline: number;
 }
 
 export type StatoVoce = "compilata" | "da_compilare" | "facoltativa";
@@ -177,6 +179,12 @@ export function vociDellInstallazione(c: Conteggi): Voce[] {
       dove: inAzienda("azienda-avm", "AVM: le vetture dell'azienda"),
     }),
     voce({
+      voce: "paline", titolo: "Transcodifica delle paline dell'AVM", compilata: c.paline > 0, necessaria: false,
+      dettaglio: c.paline > 0 ? nr(c.paline, "palina", "paline") : "non importata",
+      seManca: "Le fermate dell'AVM si agganciano al feed solo per codice o per nome: dove le due numerazioni si sovrappongono, la fermata è sbagliata. Va bene se l'AVM usa gli stessi codici del feed.",
+      dove: { pagina: "/data", sezione: null, etichetta: "Dati & GTFS › Paline Mizar" },
+    }),
+    voce({
       voce: "netex", titolo: "Codice locale NeTEx", compilata: c.netexCodiceLocale, necessaria: false,
       dettaglio: c.netexCodiceLocale ? "scritto" : "non scritto",
       seManca: "Il NeTEx per il NAP non si esporta. Serve solo se la Regione lo chiede.",
@@ -205,7 +213,8 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
       (SELECT count(*) FROM stop_clusters)::int AS punti,
       (SELECT count(*) FROM stop_clusters c
         WHERE NOT EXISTS (SELECT 1 FROM stop_cluster_stops s WHERE s.cluster_id = c.id))::int AS punti_senza_fermate,
-      (SELECT value FROM app_settings WHERE key = 'company_cars') AS auto`)).rows[0] ?? {};
+      (SELECT value FROM app_settings WHERE key = 'company_cars') AS auto,
+      (SELECT count(*) FROM transcodifica_paline)::int AS paline`)).rows[0] ?? {};
   const luoghi = (r.luoghi ?? {}) as Record<string, number>;
   const auto = r.auto == null ? null : Number(r.auto);
   return {
@@ -223,6 +232,7 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
     nodiScambio: Number(r.nodi ?? 0), depositi: Number(r.depositi ?? 0),
     puntiDiCambio: Number(r.punti ?? 0), puntiSenzaFermate: Number(r.punti_senza_fermate ?? 0),
     autoAziendali: auto != null && Number.isFinite(auto) ? auto : null,
+    paline: Number(r.paline ?? 0),
   };
 }
 
