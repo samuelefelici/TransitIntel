@@ -1476,6 +1476,45 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### La transcodifica delle paline come dato dell'azienda (tappa 6.20)
+
+La tabella che dice quale fermata del feed corrisponde a ogni codice palina
+dell'AVM (4.400 righe di Conerobus, aprile 2026) era un file dentro il codice:
+`artifacts/api-server/data/transcodifica-paline-mizar.csv`. Da questo
+rilascio è la tabella `transcodifica_paline`, un dato dell'azienda:
+- la migrazione `0048` la crea e, per Conerobus, la riempie con le righe del
+  file, nello stesso ordine. Il file esce dal repository, e con lui la
+  variabile `SIRI_STOP_ALIAS_FILE`;
+- l'amministratore la sostituisce per intero da Dati e integrazioni →
+  Paline Mizar → **Importa la transcodifica (CSV)**, con un file
+  `mizar_ref,stop_id,nome`. Va bene anche quello scaricato da «Transcodifica
+  corretta (CSV)». O entrano tutte le righe o nessuna: un codice palina che
+  non va ferma l'import e dice la riga;
+- le correzioni fatte a mano dalla stessa pagina restano dove sono e valgono
+  sopra la tabella, anche dopo un import;
+- lo stato dell'installazione (Amministrazione → Azienda) ha una voce in più.
+
+Gli abbinamenti non cambiano: sulla copia dei dati veri sono identici prima
+e dopo, palina per palina.
+
+**Un difetto che c'era già, e che questa tappa non tocca.** Un feed nato da
+Planning Studio mette nello `stop_id` l'identificativo interno della fermata
+e il codice (`20045`) nello `stop_code`; la transcodifica punta al codice.
+Così, con un feed di Planning Studio in uso, nessuna coppia trova la sua
+fermata (sulla copia: 0 su 4.392, «fermata assente») e le fermate dell'AVM si
+agganciano solo per codice o per nome. Si sistema nella tappa successiva.
+
+**Dopo il deploy**
+1. La migrazione `0048` crea la tabella e mette le righe: niente da fare a
+   mano. Nessuna variabile nuova; se in Coolify c'era `SIRI_STOP_ALIAS_FILE`,
+   si può togliere. Nessuna Watch Path nuova: il lavoratore non legge la
+   transcodifica.
+2. In Paline Mizar, in fondo alla pagina, la riga dice «Tabella dell'azienda,
+   importata il …».
+
+**Rollback**: immagine precedente. Il codice di prima torna al file, che è
+nell'immagine di prima; la tabella resta e non dà fastidio.
+
 ### Il NeTEx con gli identificativi della Regione (tappa 6.19c)
 
 La Regione Marche pubblica il NeTEx della rete ATMA con identificativi come
@@ -1578,6 +1617,7 @@ per voce, e porta alla sezione dove si scrivono
 | Le vetture dell'azienda nell'AVM | Azienda → AVM | tutte le vetture del canale contano come dell'azienda |
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
 | Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
+| Transcodifica delle paline dell'AVM (6.20) | Dati e integrazioni → Paline Mizar → Importa | le fermate dell'AVM si agganciano solo per codice o per nome |
 
 Il riquadro segnala anche i **punti di cambio senza fermate**, che nessuno dei
 due calcoli dei turni guida riconosce.

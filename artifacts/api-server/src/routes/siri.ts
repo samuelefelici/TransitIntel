@@ -42,6 +42,7 @@ import { inizioGiornata, giornataDi, giornataOggi } from "../lib/service-day";
 import { eseguiSonda, endpointGemelli, buildStopMonitoringRequest, type RisultatoSonda } from "../lib/siri-sonda";
 import { parseStopMonitoringResponse, confrontaFermata, leggiDiagnosi, leggiFermataFeed, type RigaOrario, type DiagnosiCorse } from "../lib/siri-fermata";
 import { transcodificaEffettiva, verificaTranscodifica, classificaAbbinamenti, suggerimentiPerNome } from "../lib/stop-aliases";
+import { leggiCsvTranscodifica, importaTranscodifica } from "../lib/transcodifica-paline";
 import { salvaOverride, rimuoviOverride, erroreOverrides } from "../lib/stop-alias-overrides";
 import { deduciFermata } from "../lib/stop-deduction";
 import { fermataVuota } from "../lib/siri-fermata";
@@ -821,29 +822,32 @@ router.get("/siri/sonda", async (req, res): Promise<void> => {
 });
 
 /* ── La transcodifica delle paline, verificata contro il feed ─────────────
- * Il file dell'azienda (data/transcodifica-paline-mizar.csv) dice quale
+ * La tabella dell'azienda (transcodifica_paline, tappa 6.20) dice quale
  * stop_id del feed corrisponde a ogni codice palina di Mizar. Qui si vede
- * che cosa è stato caricato e quanto combacia con il feed in uso: paline
- * senza fermata nel feed, fermate senza codice, e le collisioni — i codici
- * Mizar uguali allo stop_id di un'ALTRA fermata, cioè gli agganci per
- * numero che sarebbero stati sbagliati.
+ * che cosa c'è e quanto combacia con il feed in uso: paline senza fermata nel
+ * feed, fermate senza codice, e le collisioni — i codici Mizar uguali allo
+ * stop_id di un'ALTRA fermata, cioè gli agganci per numero che sarebbero
+ * stati sbagliati.
  *
  *   GET /api/siri/fermate/transcodifica
- *   GET /api/siri/fermate/transcodifica?ricarica=1   — rilegge il file
+ *   GET /api/siri/fermate/transcodifica?ricarica=1   — rilegge la tabella
+ *   GET /api/siri/fermate/transcodifica?formato=csv  — la tabella con le correzioni
+ *   PUT /api/siri/fermate/transcodifica  { csv }     — l'amministratore la sostituisce
  */
 router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
   const ricarica = req.query.ricarica === "1";
   const t = await transcodificaEffettiva(ricarica);
   const index = await loadGtfsIndex(ricarica).catch(() => null);
 
-  /* La tabella effettiva nello stesso formato del file dell'azienda, più la
-   * colonna che dice da dove viene ogni riga: è il file da rimandare a chi
-   * tiene la transcodifica, con le correzioni fatte da qui. */
+  /* La tabella effettiva nello stesso formato dell'import, più la colonna
+   * che dice da dove viene ogni riga: è il file da rimandare a chi tiene la
+   * transcodifica, con le correzioni fatte da qui. Si può reimportare così
+   * com'è: le colonne in più non contano. */
   if (String(req.query.formato ?? "") === "csv") {
     const q = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const righe = [
-      ...t.righe.map(r => [r.mizarRef, r.stopId, r.nome, r.fonte ?? "file", r.nota, r.utente].map(q).join(",")),
-      ...t.scartate.map(s => [s.mizarRef, s.stopIdGrezzo || "", s.nome, s.fonte ?? "file", s.nota, s.utente].map(q).join(",")),
+      ...t.righe.map(r => [r.mizarRef, r.stopId, r.nome, r.fonte ?? "azienda", r.nota, r.utente].map(q).join(",")),
+      ...t.scartate.map(s => [s.mizarRef, s.stopIdGrezzo || "", s.nome, s.fonte ?? "azienda", s.nota, s.utente].map(q).join(",")),
     ];
     res.type("text/csv; charset=utf-8")
       .setHeader("Content-Disposition", `attachment; filename="transcodifica-paline-mizar-${new Date().toISOString().slice(0, 10)}.csv"`)
@@ -853,7 +857,8 @@ router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
 
   const verifica = index ? verificaTranscodifica(t.righe, index.stops) : null;
   res.json({
-    file: t.percorso,
+    importataIl: t.importataIl,
+    importataDa: t.importataDa,
     errore: t.errore,
     righe: t.righe.length,
     correzioni: t.correzioni,
@@ -864,7 +869,7 @@ router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
       nonNelFeedTotale: verifica.nonNelFeed.length,
     },
     lettura: !t.righe.length
-      ? [`Nessuna transcodifica caricata: ${t.errore ?? "file vuoto"}. Le fermate di Mizar si agganciano solo per stop_id, stop_code o nome.`]
+      ? [`Nessuna transcodifica: ${t.errore ?? "tabella vuota"}. Le fermate di Mizar si agganciano solo per stop_id, stop_code o nome.`]
       : !verifica
         ? [`${t.righe.length} paline nella transcodifica; nessun feed caricato per la verifica.`]
         : [
@@ -877,6 +882,28 @@ router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
         ],
     esempi: t.righe.slice(0, 5),
   });
+});
+
+/* La tabella dell'azienda si sostituisce per intero con un CSV nello stesso
+ * formato (mizar_ref,stop_id,nome), anche quello scaricato qui sopra. Le
+ * correzioni dell'operatore restano e valgono sopra la tabella nuova. O tutte
+ * le righe o nessuna: un codice palina che non va ferma l'import. */
+router.put("/siri/fermate/transcodifica", requireAdmin, async (req, res): Promise<void> => {
+  const csv = typeof req.body?.csv === "string" ? req.body.csv : null;
+  if (!csv) { res.status(400).json({ error: "manca il file: il corpo è { csv: \"mizar_ref,stop_id,nome…\" }" }); return; }
+  const letto = leggiCsvTranscodifica(csv);
+  if (letto.errori.length) { res.status(400).json({ error: `Il file non va: ${letto.errori.join("; ")}` }); return; }
+  try {
+    const esito = await importaTranscodifica(letto.righe, letto.doppie, req.user?.id ?? null);
+    req.log.info({ ...esito, da: req.user?.id }, "transcodifica delle paline importata");
+    /* l'indice del feed rilegge la tabella: gli agganci nuovi valgono dal giro dopo */
+    const index = await loadGtfsIndex(true).catch(() => null);
+    const nelFeed = index ? letto.righe.filter(r => r.stopId && index.stops.has(r.stopId)).length : null;
+    res.json({ ...esito, nelFeed, feed: index?.feedId ?? null });
+  } catch (e: any) {
+    req.log.error({ err: e }, "import della transcodifica delle paline non riuscito");
+    res.status(500).json({ error: "import non riuscito: la tabella è quella di prima" });
+  }
 });
 
 /* ── Gli abbinamenti palina per palina ───────────────────────────────────
@@ -919,7 +946,7 @@ router.get("/siri/fermate/abbinamenti", async (req, res): Promise<void> => {
   }));
 
   res.json({
-    file: t.percorso, errore: t.errore, feed: index?.feedId ?? null,
+    importataIl: t.importataIl, importataDa: t.importataDa, errore: t.errore, feed: index?.feedId ?? null,
     correzioni: t.correzioni,
     erroreCorrezioni: erroreOverrides(),
     puoCorreggere: req.user?.role === "admin",
@@ -1015,7 +1042,7 @@ router.post("/siri/fermate/suggerisci/:ref", async (req, res): Promise<void> => 
  * ciclo StopMonitoring usano la correzione dal giro successivo.
  *
  *   PUT    /api/siri/fermate/abbinamenti/1122   { stopId, nome?, nota? }
- *   DELETE /api/siri/fermate/abbinamenti/1122   — torna alla riga del file */
+ *   DELETE /api/siri/fermate/abbinamenti/1122   — torna alla riga della tabella dell'azienda */
 router.put("/siri/fermate/abbinamenti/:ref", requireAdmin, async (req, res): Promise<void> => {
   const ref = String(req.params.ref ?? "").trim();
   if (!ref) { res.status(400).json({ error: "codice palina mancante" }); return; }

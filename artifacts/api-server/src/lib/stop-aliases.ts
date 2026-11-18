@@ -1,47 +1,43 @@
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * Transcodifica delle paline — il codice di Mizar ↔ lo stop_id del feed
+ * Transcodifica delle paline — il codice dell'AVM ↔ lo stop_id del feed
  * ───────────────────────────────────────────────────────────────────────────
- * Le fermate hanno due numerazioni. Mizar (l'AVM, e quindi il flusso SIRI)
- * chiama «1122» la fermata che il feed GTFS chiama «20045»; e le due
- * numerazioni si sovrappongono: nel feed esiste anche uno stop_id 200, ed è
- * un'altra fermata rispetto alla 200 di Mizar. Agganciare per numero senza
- * tabella non produce assenze: produce fermate sbagliate.
+ * Le fermate hanno due numerazioni. L'AVM (e quindi il flusso SIRI) chiama
+ * «1122» la fermata che il feed GTFS chiama «20045»; e le due numerazioni si
+ * sovrappongono: nel feed esiste anche uno stop_id 200, ed è un'altra fermata
+ * rispetto alla 200 dell'AVM. Agganciare per numero senza tabella non produce
+ * assenze: produce fermate sbagliate.
  *
- * La tabella esiste — la transcodifica delle paline di Conerobus (codici della pianificazione contro SWI), 4 400
- * righe, 13 aprile 2026 — e sta in data/transcodifica-paline-mizar.csv:
+ * La tabella è un dato dell'azienda (tappa 6.20, lib/transcodifica-paline.ts):
+ * la importa l'amministratore, nel formato
  *   mizar_ref,stop_id,nome
- * Si carica una volta per processo. Un'altra copia si può indicare con
- * SIRI_STOP_ALIAS_FILE. Le righe con uno stop_id non numerico ("new_CT":
- * palina non ancora codificata) si ignorano.
+ * Le righe senza uno stop_id valido ("new_CT": palina non ancora codificata)
+ * restano fra le paline senza fermata. Sopra la tabella valgono le
+ * correzioni dell'operatore (lib/stop-alias-overrides.ts).
  *
- * Verificata sui dati il 14 settembre 2026: 1122→20045, 200→20001,
- * 461→20928, esattamente le coppie che il confronto per orario aveva
- * dimostrato passando dal nome.
+ * Qui le regole, pure: si collaudano senza database.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import fs from "node:fs";
-import path from "node:path";
 
 export interface RigaTranscodifica {
   mizarRef: string;
   stopId: string;
   nome: string | null;
-  /** da dove viene la riga: il file dell'azienda o una correzione dell'operatore */
-  fonte?: "file" | "manuale";
+  /** da dove viene la riga: la tabella dell'azienda o una correzione dell'operatore */
+  fonte?: "azienda" | "manuale";
   nota?: string | null;
   utente?: string | null;
 }
 
-/** Una palina del file senza un codice del feed ("new_CT"): esiste per
- *  Mizar, non ancora per l'esportazione. */
-export interface RigaScartata { mizarRef: string; nome: string | null; stopIdGrezzo: string; fonte?: "file" | "manuale"; nota?: string | null; utente?: string | null }
+/** Una palina della tabella senza un codice del feed ("new_CT"): esiste per
+ *  l'AVM, non ancora per l'esportazione. */
+export interface RigaScartata { mizarRef: string; nome: string | null; stopIdGrezzo: string; fonte?: "azienda" | "manuale"; nota?: string | null; utente?: string | null }
 
 /**
- * La tabella effettiva: il file più le correzioni dell'operatore. Una
- * correzione sostituisce la riga del file con lo stesso codice, o ne aggiunge
- * una nuova; una correzione con stop_id vuoto toglie l'abbinamento e sposta
- * la palina fra quelle «senza fermata». Pura: si collauda senza database.
+ * La tabella effettiva: quella dell'azienda più le correzioni dell'operatore.
+ * Una correzione sostituisce la riga con lo stesso codice, o ne aggiunge una
+ * nuova; una correzione con stop_id vuoto toglie l'abbinamento e sposta la
+ * palina fra quelle «senza fermata». Pura: si collauda senza database.
  */
 export function applicaOverrides(
   valide: RigaTranscodifica[], scartate: RigaScartata[],
@@ -52,57 +48,27 @@ export function applicaOverrides(
   const outValide: RigaTranscodifica[] = [];
   const outScartate: RigaScartata[] = [];
   const viste = new Set<string>();
-  const applica = (mizarRef: string, nomeFile: string | null) => {
+  const applica = (mizarRef: string, nomeTabella: string | null) => {
     const o = per.get(mizarRef)!;
     viste.add(mizarRef);
-    if (o.stopId) outValide.push({ mizarRef, stopId: o.stopId, nome: o.nome ?? nomeFile, fonte: "manuale", nota: o.nota, utente: o.utente });
-    else outScartate.push({ mizarRef, nome: o.nome ?? nomeFile, stopIdGrezzo: "", fonte: "manuale", nota: o.nota, utente: o.utente });
+    if (o.stopId) outValide.push({ mizarRef, stopId: o.stopId, nome: o.nome ?? nomeTabella, fonte: "manuale", nota: o.nota, utente: o.utente });
+    else outScartate.push({ mizarRef, nome: o.nome ?? nomeTabella, stopIdGrezzo: "", fonte: "manuale", nota: o.nota, utente: o.utente });
   };
   for (const r of valide) {
     if (per.has(r.mizarRef)) applica(r.mizarRef, r.nome);
-    else outValide.push({ ...r, fonte: r.fonte ?? "file" });
+    else outValide.push({ ...r, fonte: r.fonte ?? "azienda" });
   }
   for (const s of scartate) {
     if (per.has(s.mizarRef)) applica(s.mizarRef, s.nome);
-    else outScartate.push({ ...s, fonte: s.fonte ?? "file" });
+    else outScartate.push({ ...s, fonte: s.fonte ?? "azienda" });
   }
-  /* Correzioni su codici che il file non ha: paline nuove viste nel flusso. */
+  /* Correzioni su codici che la tabella non ha: paline nuove viste nel flusso. */
   for (const o of overrides) if (!viste.has(o.mizarRef)) applica(o.mizarRef, null);
   return { valide: outValide, scartate: outScartate };
 }
 
-/** Legge il CSV per intero: le righe valide e quelle senza codice, separate. */
-export function leggiTranscodificaCompleta(testo: string): { valide: RigaTranscodifica[]; scartate: RigaScartata[] } {
-  const righe = testo.replace(/^﻿/, "").split(/\r?\n/);
-  const valide: RigaTranscodifica[] = [];
-  const scartate: RigaScartata[] = [];
-  let prima = true;
-  for (const riga of righe) {
-    if (!riga.trim()) continue;
-    const campi = spezzaCsv(riga);
-    if (prima) {
-      prima = false;
-      if (/mizar/i.test(campi[0] ?? "")) continue;   // intestazione
-    }
-    const mizarRef = (campi[0] ?? "").trim();
-    const stopId = (campi[1] ?? "").trim();
-    const nome = (campi[2] ?? "").trim() || null;
-    if (!mizarRef) continue;
-    if (!stopId || !/^[0-9A-Za-z_.:-]+$/.test(stopId) || /^new_/i.test(stopId)) {
-      scartate.push({ mizarRef, nome, stopIdGrezzo: stopId });
-      continue;
-    }
-    valide.push({ mizarRef, stopId, nome });
-  }
-  return { valide, scartate };
-}
-
-/** Legge il CSV; tollera BOM, righe vuote e virgolette. Solo le righe valide. */
-export function parseTranscodifica(testo: string): RigaTranscodifica[] {
-  return leggiTranscodificaCompleta(testo).valide;
-}
-
-function spezzaCsv(riga: string): string[] {
+/** Una riga CSV in campi: virgolette e virgolette raddoppiate tollerate. */
+export function spezzaCsv(riga: string): string[] {
   const out: string[] = [];
   let cur = "", inQ = false;
   for (let i = 0; i < riga.length; i++) {
@@ -126,51 +92,11 @@ export function indiceTranscodifica(righe: RigaTranscodifica[]): Map<string, str
   return m;
 }
 
-/* ── Il file ─────────────────────────────────────────────────────────────── */
-
-const NOME_FILE = "transcodifica-paline-mizar.csv";
-
-/** Dove cercare il file, nell'ordine: variabile d'ambiente, poi le
- *  posizioni relative al processo (sorgenti con tsx, dist con esbuild,
- *  radice del repo nel container). */
-export function percorsiCandidati(): string[] {
-  const out: string[] = [];
-  if (process.env.SIRI_STOP_ALIAS_FILE) out.push(process.env.SIRI_STOP_ALIAS_FILE);
-  const qui = typeof __dirname === "string" ? __dirname : process.cwd();
-  out.push(
-    path.resolve(qui, "..", "data", NOME_FILE),          // src/lib → data
-    path.resolve(qui, "..", "..", "data", NOME_FILE),    // dist → data
-    path.resolve(process.cwd(), "artifacts", "api-server", "data", NOME_FILE),
-    path.resolve(process.cwd(), "data", NOME_FILE),
-  );
-  return [...new Set(out)];
-}
-
 interface Transcodifica {
-  percorso: string | null;
   righe: RigaTranscodifica[];
   scartate: RigaScartata[];
   indice: Map<string, string>;
   errore: string | null;
-}
-let cache: Transcodifica | null = null;
-
-/** La transcodifica caricata una volta per processo. Senza file: vuota, con il motivo. */
-export function caricaTranscodifica(force = false): Transcodifica {
-  if (cache && !force) return cache;
-  for (const p of percorsiCandidati()) {
-    try {
-      if (!fs.existsSync(p)) continue;
-      const { valide, scartate } = leggiTranscodificaCompleta(fs.readFileSync(p, "utf8"));
-      cache = { percorso: p, righe: valide, scartate, indice: indiceTranscodifica(valide), errore: null };
-      return cache;
-    } catch (e: any) {
-      cache = { percorso: p, righe: [], scartate: [], indice: new Map(), errore: e?.message ?? String(e) };
-      return cache;
-    }
-  }
-  cache = { percorso: null, righe: [], scartate: [], indice: new Map(), errore: `file ${NOME_FILE} non trovato (SIRI_STOP_ALIAS_FILE per indicarlo)` };
-  return cache;
 }
 
 /* ── Gli abbinamenti, uno per uno ───────────────────────────────────────────
@@ -192,8 +118,8 @@ export interface Abbinamento {
   nomeMizar: string | null;
   nomeFeed: string | null;
   stato: StatoAbbinamento;
-  /** file dell'azienda, o correzione dell'operatore (con nota e autore) */
-  fonte: "file" | "manuale";
+  /** tabella dell'azienda, o correzione dell'operatore (con nota e autore) */
+  fonte: "azienda" | "manuale";
   nota: string | null;
   utente: string | null;
   /** il codice Mizar coincide con lo stop_id di un'ALTRA fermata del feed */
@@ -240,7 +166,7 @@ export function classificaAbbinamenti(
       ? `${r.mizarRef} = ${feed.stopNames.get(r.mizarRef) ?? "?"}` : null;
     return {
       mizarRef: r.mizarRef, stopId: r.stopId, nomeMizar: r.nome, nomeFeed, stato, collisione,
-      fonte: r.fonte ?? "file", nota: r.nota ?? null, utente: r.utente ?? null,
+      fonte: r.fonte ?? "azienda", nota: r.nota ?? null, utente: r.utente ?? null,
       condivisaCon: (perStop.get(r.stopId) ?? 1) - 1,
       vistaNelFlusso: visti.has(r.mizarRef),
     };
@@ -249,7 +175,7 @@ export function classificaAbbinamenti(
     out.push({
       mizarRef: s.mizarRef, stopId: null, nomeMizar: s.nome, nomeFeed: null, stato: "senza_codice",
       collisione: feed.stops.has(s.mizarRef) ? `${s.mizarRef} = ${feed.stopNames.get(s.mizarRef) ?? "?"}` : null,
-      fonte: s.fonte ?? "file", nota: s.nota ?? null, utente: s.utente ?? null,
+      fonte: s.fonte ?? "azienda", nota: s.nota ?? null, utente: s.utente ?? null,
       condivisaCon: 0, vistaNelFlusso: visti.has(s.mizarRef),
     });
   }
@@ -280,19 +206,22 @@ export function classificaAbbinamenti(
   return { righe: out, feedSenzaCodice, flussoNonTrascodificato, riepilogo, lettura };
 }
 
-/** Per i collaudi. */
-export function resetTranscodifica(): void { cache = null; }
-
 /**
- * La tabella effettiva: file + correzioni dal database. È questa che
- * l'indice del feed, il ciclo StopMonitoring e la scheda usano.
+ * La tabella effettiva: quella dell'azienda + le correzioni dal database. È
+ * questa che l'indice del feed, il ciclo StopMonitoring e la scheda usano.
  */
-export async function transcodificaEffettiva(force = false): Promise<Transcodifica & { correzioni: number }> {
-  const t = caricaTranscodifica(force);
+export async function transcodificaEffettiva(force = false): Promise<Transcodifica & {
+  correzioni: number; importataIl: string | null; importataDa: string | null;
+}> {
+  const { leggiBaseTranscodifica } = await import("./transcodifica-paline");
   const { leggiOverrides } = await import("./stop-alias-overrides");
+  const base = await leggiBaseTranscodifica(force);
   const overrides = await leggiOverrides(force);
-  const { valide, scartate } = applicaOverrides(t.righe, t.scartate, overrides);
-  return { percorso: t.percorso, errore: t.errore, righe: valide, scartate, indice: indiceTranscodifica(valide), correzioni: overrides.length };
+  const { valide, scartate } = applicaOverrides(base.righe, base.scartate, overrides);
+  return {
+    errore: base.errore, righe: valide, scartate, indice: indiceTranscodifica(valide), correzioni: overrides.length,
+    importataIl: base.importataIl, importataDa: base.importataDa,
+  };
 }
 
 /**

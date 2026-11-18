@@ -387,6 +387,7 @@
   "public.titoli_catalogo_rete": "CREATE INDEX titoli_catalogo_rete ON public.titoli_catalogo USING btree (rete, ordine)",
   "public.titoli_catalogo_un_riferimento": "CREATE UNIQUE INDEX titoli_catalogo_un_riferimento ON public.titoli_catalogo USING btree (rete) WHERE di_riferimento",
   "public.traffic_snapshots_pkey": "CREATE UNIQUE INDEX traffic_snapshots_pkey ON public.traffic_snapshots USING btree (id)",
+  "public.transcodifica_paline_pkey": "CREATE UNIQUE INDEX transcodifica_paline_pkey ON public.transcodifica_paline USING btree (palina)",
   "public.uq_deadhead_arcs_pair_scope": "CREATE UNIQUE INDEX uq_deadhead_arcs_pair_scope ON public.deadhead_arcs USING btree (from_key, to_key, COALESCE(ps_project_id, '00000000-0000-0000-0000-000000000000'::uuid))",
   "public.uq_esercizio_eventi_annullato": "CREATE UNIQUE INDEX uq_esercizio_eventi_annullato ON public.esercizio_eventi USING btree (annulla) WHERE (annulla IS NOT NULL)",
   "public.uq_ps_day_calendar_global": "CREATE UNIQUE INDEX uq_ps_day_calendar_global ON public.ps_day_calendar USING btree (date) WHERE (project_id IS NULL)",
@@ -2353,6 +2354,15 @@
    "segment_id": "text | not null |  |  | ",
    "speed": "double precision | not null |  |  | "
   },
+  "public.transcodifica_paline": {
+   "codice_file": "text | null |  |  | ",
+   "importata_da": "uuid | null |  |  | ",
+   "importata_il": "timestamp with time zone | not null | now() |  | ",
+   "nome": "text | null |  |  | ",
+   "ordine": "integer | not null |  |  | ",
+   "palina": "text | not null |  |  | ",
+   "stop_id": "text | null |  |  | "
+  },
   "public.users": {
    "accesso_di_prima": "jsonb | not null | '{}'::jsonb |  | ",
    "active": "boolean | not null | true |  | ",
@@ -2895,6 +2905,14 @@
   "public.titoli_catalogo.titoli_catalogo_tipo": "CHECK ((tipo = ANY (ARRAY['single'::text, 'return'::text, 'abbonamento_settimanale'::text, 'abbonamento_mensile'::text, 'abbonamento_annuale'::text])))",
   "public.titoli_catalogo.titoli_catalogo_titolo": "CHECK ((titolo ~ '^[a-z][a-z0-9_]{1,59}$'::text))",
   "public.traffic_snapshots.traffic_snapshots_pkey": "PRIMARY KEY (id)",
+  "public.transcodifica_paline.transcodifica_paline_codice": "CHECK (((stop_id IS NULL) OR (codice_file IS NULL)))",
+  "public.transcodifica_paline.transcodifica_paline_codice_file": "CHECK (((char_length(codice_file) <= 64) AND (codice_file !~ '[[:cntrl:]]'::text)))",
+  "public.transcodifica_paline.transcodifica_paline_importata_da_fkey": "FOREIGN KEY (importata_da) REFERENCES users(id) ON DELETE SET NULL",
+  "public.transcodifica_paline.transcodifica_paline_nome": "CHECK (((char_length(nome) <= 200) AND (nome !~ '[[:cntrl:]]'::text)))",
+  "public.transcodifica_paline.transcodifica_paline_ordine": "CHECK (((ordine >= 1) AND (ordine <= 1000000)))",
+  "public.transcodifica_paline.transcodifica_paline_palina": "CHECK ((palina ~ '^[0-9A-Za-z_.:-]{1,40}$'::text))",
+  "public.transcodifica_paline.transcodifica_paline_pkey": "PRIMARY KEY (palina)",
+  "public.transcodifica_paline.transcodifica_paline_stop_id": "CHECK (((stop_id ~ '^[0-9A-Za-z_.:-]{1,64}$'::text) AND (stop_id !~ '^[Nn][Ee][Ww]_'::text)))",
   "public.users.users_accesso_di_prima_oggetto": "CHECK ((accesso_di_prima @> '{}'::jsonb))",
   "public.users.users_email_key": "UNIQUE (email)",
   "public.users.users_pkey": "PRIMARY KEY (id)",

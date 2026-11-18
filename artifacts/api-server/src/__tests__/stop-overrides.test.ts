@@ -2,14 +2,15 @@
  * ═══════════════════════════════════════════════════════════════════════════
  * Correzioni alla transcodifica e deduzione dai dati — collaudo
  * ───────────────────────────────────────────────────────────────────────────
- * Tre cose pure: come le correzioni si sovrappongono al file, i suggerimenti
+ * Tre cose pure: come le correzioni si sovrappongono alla tabella dell'azienda, i suggerimenti
  * per nome, e la fermata dedotta dai passaggi dello StopMonitoring senza
  * guardare nessun nome. Il caso vero: 1122 ↔ 20045, con le corse C e CR3
  * del 14 settembre 2026.
  * ═══════════════════════════════════════════════════════════════════════════
  */
 import { describe, it, expect } from "vitest";
-import { applicaOverrides, suggerimentiPerNome, leggiTranscodificaCompleta, classificaAbbinamenti } from "../lib/stop-aliases";
+import { applicaOverrides, suggerimentiPerNome, classificaAbbinamenti } from "../lib/stop-aliases";
+import { leggiCsvTranscodifica, righeDellaBase } from "../lib/transcodifica-paline";
 import { deduciFermata } from "../lib/stop-deduction";
 import { parseStopMonitoringResponse, type RigaOrario } from "../lib/siri-fermata";
 import { namesCompatible } from "../lib/siri-vm";
@@ -22,7 +23,7 @@ const CSV = `mizar_ref,stop_id,nome
 `;
 
 describe("applicaOverrides", () => {
-  const { valide, scartate } = leggiTranscodificaCompleta(CSV);
+  const { righe: valide, scartate } = righeDellaBase(leggiCsvTranscodifica(CSV).righe);
   it("sostituisce, toglie, aggiunge; e marca la fonte", () => {
     const r = applicaOverrides(valide, scartate, [
       { mizarRef: "461", stopId: "20999", nome: null, nota: "banchina spostata", utente: "s@x.it" },   // sostituisce
@@ -32,20 +33,20 @@ describe("applicaOverrides", () => {
     ]);
     const v = Object.fromEntries(r.valide.map(x => [x.mizarRef, x]));
     expect(v["461"]).toMatchObject({ stopId: "20999", nome: "OSIMO (Capolinea)", fonte: "manuale", nota: "banchina spostata", utente: "s@x.it" });
-    expect(v["200"]).toMatchObject({ stopId: "20001", fonte: "file" });
+    expect(v["200"]).toMatchObject({ stopId: "20001", fonte: "azienda" });
     expect(v["5102"]).toMatchObject({ stopId: "20777", nome: "FABRIANO (Via Dante, 39)", fonte: "manuale" });
     expect(v["9999"]).toMatchObject({ stopId: "20555", nome: "Nuova palina", fonte: "manuale" });
     expect(v["1122"]).toBeUndefined();
     expect(r.scartate).toEqual([{ mizarRef: "1122", nome: "ANCONA (Via Marconi Gas)", stopIdGrezzo: "", fonte: "manuale", nota: "palina dismessa", utente: "s@x.it" }]);
   });
-  it("senza correzioni restituisce il file com'è", () => {
+  it("senza correzioni restituisce la tabella com'è", () => {
     expect(applicaOverrides(valide, scartate, [])).toEqual({ valide, scartate });
   });
   it("la classificazione porta fonte e nota fino alla riga", () => {
     const r = applicaOverrides(valide, scartate, [{ mizarRef: "461", stopId: "20999", nome: null, nota: "spostata", utente: "s@x.it" }]);
     const a = classificaAbbinamenti(r.valide, r.scartate, { stops: new Set(["20999", "20045", "20001"]), stopNames: new Map([["20999", "OSIMO (CAPOLINEA)"]]) }, { refs: [] }, namesCompatible);
     expect(a.righe.find(x => x.mizarRef === "461")).toMatchObject({ stato: "abbinata", fonte: "manuale", nota: "spostata", utente: "s@x.it" });
-    expect(a.righe.find(x => x.mizarRef === "200")).toMatchObject({ fonte: "file", nota: null });
+    expect(a.righe.find(x => x.mizarRef === "200")).toMatchObject({ fonte: "azienda", nota: null });
   });
 });
 
