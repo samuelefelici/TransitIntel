@@ -71,12 +71,15 @@ describe("NeTEx: i pezzi", () => {
   it("i pezzi degli identificativi: un codice pulito resta com'è; gli altri si puliscono e prendono un'impronta", () => {
     expect(pezzoId("T1")).toBe("T1");
     expect(pezzoId("L2 bis")).toMatch(/^L2_bis-[0-9a-f]{8}$/);
-    // «46» e «46/» restano diversi; «:» non entra mai
+    // «/» e «.» restano, come nei file della Regione (tappa 6.19c): «46» e «46/» restano diversi
     expect(pezzoId("46")).toBe("46");
-    expect(pezzoId("46/")).toMatch(/^46_-[0-9a-f]{8}$/);
+    expect(pezzoId("46/")).toBe("46/");
+    expect(pezzoId("1/3")).toBe("1/3");
+    expect(pezzoId("C.D.")).toBe("C.D.");
+    // «:» non entra mai: separa le parti dell'identificativo
     expect(pezzoId("623_CodUdp:D1318_364081")).toMatch(/^623_CodUdp_D1318_364081-[0-9a-f]{8}$/);
     expect(pezzoId("àè")).toMatch(/^_-[0-9a-f]{8}$/);
-    expect(pezzoId("46/")).toBe(pezzoId("46/"));
+    expect(pezzoId("L2 bis")).toBe(pezzoId("L2 bis"));
   });
 
   it("i giorni di servizio: calendar con le eccezioni di calendar_dates", () => {
@@ -98,7 +101,10 @@ describe("NeTEx: il file", () => {
   it("gli identificativi del profilo: IT:codice locale:Tipo:codice, stabili", () => {
     expect(xml).toMatch(/<Line id="IT:ITI3:Line:L2_bis-[0-9a-f]{8}" version="1">/);
     expect(xml).toContain('<ServiceJourney id="IT:ITI3:ServiceJourney:T1" version="1">');
-    expect(xml).toContain('id="epd:IT:ITI3:CompositeFrame-EU_PI_NETWORK_OFFER:conerobus"');
+    // senza prefisso, nemmeno i contenitori ne hanno uno (prima avevano sempre «epd:»)
+    expect(xml).toContain('id="IT:ITI3:CompositeFrame-EU_PI_NETWORK_OFFER:conerobus"');
+    expect(xml).not.toContain("epd:");
+    expect(xml).toContain('<Network id="IT:ITI3:Network:conerobus" version="1">');
     expect(netexDaGtfs(GTFS_DI_PROVA, OPZIONI).xml).toBe(xml);
     // con il fornitore, in fondo
     expect(netexDaGtfs(GTFS_DI_PROVA, { ...OPZIONI, fornitore: "ATMA" }).xml).toMatch(/<Line id="IT:ITI3:Line:L2_bis-[0-9a-f]{8}:ATMA" version="1">/);
@@ -162,7 +168,7 @@ describe("NeTEx: gli operatori", () => {
     expect(xml).toContain("<Name>Due, Bus &amp; Co.</Name>");
     /* chi trasmette e i contenitori restano dell'azienda */
     expect(xml).toContain("<ParticipantRef>conerobus</ParticipantRef>");
-    expect(xml).toContain('id="epd:IT:ITI3:ResourceFrame-EU_PI_COMMON:conerobus"');
+    expect(xml).toContain('id="IT:ITI3:ResourceFrame-EU_PI_COMMON:conerobus"');
     expect(xml).not.toContain("IT:ITI3:Operator:conerobus");
   });
 
@@ -183,6 +189,62 @@ describe("NeTEx: gli operatori", () => {
 
   it("con più operatori passa lo schema EPIP del profilo italiano (in CI xmllint è obbligatorio)", async () => {
     const { xml } = netexDaGtfs(conGestori({ L1: "DUE", "L2 bis": "UNO" }), { ...OPZIONI, operatori: [UNO, DUE, TRE], operatorePrincipale: "UNO" });
+    const esito = await validaNetex(xml);
+    if (esito.stato === "senza_xmllint" && !process.env.NETEX_SCHEMA_OBBLIGATORIO) return;
+    expect(esito).toEqual({ stato: "valido", errori: [] });
+  });
+});
+
+/* ── Tappa 6.19c: gli identificativi come quelli della Regione ───────────── */
+
+describe("NeTEx: gli identificativi come quelli della Regione", () => {
+  /** Lo stesso GTFS con i codici di linea della Regione Marche: «1/3» e «C.D.». */
+  const COME_LA_REGIONE: Gtfs = {
+    ...GTFS_DI_PROVA,
+    "routes.txt": file(["route_id", "agency_id", "route_short_name", "route_long_name", "route_type"], [
+      { route_id: "1/3", agency_id: "ATMA", route_short_name: "1/3", route_long_name: "Piazza IV Novembre - Posatora", route_type: 3 },
+      { route_id: "C.D.", agency_id: "ATMA", route_short_name: "C.D.", route_long_name: "", route_type: 3 },
+    ]),
+    "trips.txt": file(["route_id", "service_id", "trip_id", "trip_headsign", "direction_id"],
+      GTFS_DI_PROVA["trips.txt"]!.righe.map((t) => ({ ...t, route_id: t.route_id === "L1" ? "1/3" : "C.D." }) as Record<string, string | number>)),
+  };
+  const ATMA = { codice: "ATMA", nome: "Atma Scpa", sito: null, telefono: null, email: null };
+  const REGIONE = { ...OPZIONI, prefisso: "epd", prefissoCodici: "ATMA", codiceRete: "RETE_TPL_ATMA", operatori: [ATMA], operatorePrincipale: "ATMA" };
+  const { xml } = netexDaGtfs(COME_LA_REGIONE, REGIONE);
+  const ids = [...xml.matchAll(/ id="([^"]+)"/g)].map((m) => m[1]!).filter((i) => i !== "iti3");
+  const refs = [...xml.matchAll(/ ref="([^"]+)"/g)].map((m) => m[1]!).filter((r) => !r.startsWith("epip:") && r !== "iti3");
+
+  it("le linee e le fermate come nei file della Regione: epd:IT:ITI3:Tipo:ATMA_codice", () => {
+    expect(xml).toContain('<Line id="epd:IT:ITI3:Line:ATMA_1/3" version="1">');
+    expect(xml).toContain('<Line id="epd:IT:ITI3:Line:ATMA_C.D." version="1">');
+    expect(xml).toContain('<ScheduledStopPoint id="epd:IT:ITI3:ScheduledStopPoint:ATMA_S1" version="1">');
+    expect(xml).toContain('<StopPlace id="epd:IT:ITI3:StopPlace:ATMA_S1" version="1">');
+    expect(xml).toContain('<PassengerStopAssignment id="epd:IT:ITI3:PassengerStopAssignment:ATMA_S1" version="1"');
+  });
+
+  it("l'operatore col codice del gestore e la rete col suo codice, senza il prefisso dei codici", () => {
+    expect(xml).toContain('<Operator id="epd:IT:ITI3:Operator:ATMA" version="1">');
+    expect(xml).toContain('<Network id="epd:IT:ITI3:Network:RETE_TPL_ATMA" version="1">');
+    expect(xml).toContain('<OperatorRef ref="epd:IT:ITI3:Operator:ATMA" version="1"/>');
+  });
+
+  it("il prefisso davanti a tutti gli identificativi, contenitori compresi", () => {
+    expect(ids.length).toBeGreaterThan(50);
+    expect(ids.filter((i) => !i.startsWith("epd:IT:ITI3:"))).toEqual([]);
+    expect(xml).toContain('id="epd:IT:ITI3:CompositeFrame-EU_PI_NETWORK_OFFER:conerobus"');
+  });
+
+  it("ogni riferimento porta a un oggetto del file, e nessun identificativo si ripete", () => {
+    const definiti = new Set(ids);
+    expect(definiti.size).toBe(ids.length);
+    expect(refs.filter((r) => !definiti.has(r))).toEqual([]);
+  });
+
+  it("col fornitore, il fornitore resta in fondo", () => {
+    expect(netexDaGtfs(COME_LA_REGIONE, { ...REGIONE, fornitore: "RM" }).xml).toContain('<Line id="epd:IT:ITI3:Line:ATMA_1/3:RM" version="1">');
+  });
+
+  it("passa lo schema EPIP anche con la «/», il «.» e i prefissi", async () => {
     const esito = await validaNetex(xml);
     if (esito.stato === "senza_xmllint" && !process.env.NETEX_SCHEMA_OBBLIGATORIO) return;
     expect(esito).toEqual({ stato: "valido", errori: [] });

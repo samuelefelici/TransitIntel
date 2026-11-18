@@ -27,6 +27,13 @@
  * stare nei caratteri ammessi (pezzoId): resta lo stesso da un export
  * all'altro. Le sequenze di fermate prendono il nome dalla linea,
  * dalla direzione e da un'impronta della sequenza, così sono stabili anche loro.
+ *
+ * Come quelli della Regione (tappa 6.19c), se l'azienda li indica:
+ *   [prefisso]:IT:[codice locale]:[Tipo]:[prefisso dei codici]_[codice]
+ * per esempio epd:IT:ITI3:Line:ABC_1/3. Il prefisso va davanti a tutti gli
+ * identificativi, contenitori compresi; quello dei codici davanti a ogni
+ * codice tranne gli operatori (il codice del gestore) e la rete, che ha il
+ * suo codice. Senza: IT:ITI3:Line:1/3, e la rete col codice dell'azienda.
  */
 import { createHash } from "node:crypto";
 import type { Gtfs, Riga } from "./gtfs-verifica";
@@ -36,6 +43,12 @@ export interface OpzioniNetex {
   codiceLocale: string;
   /** il fornitore dei dati in fondo agli identificativi (facoltativo) */
   fornitore: string | null;
+  /** il prefisso davanti a ogni identificativo, come «epd» della Regione (facoltativo, tappa 6.19c) */
+  prefisso?: string | null;
+  /** il prefisso davanti a ogni codice, come «ABC» (→ «ABC_1/3»), tranne operatori e rete */
+  prefissoCodici?: string | null;
+  /** il codice della rete, come «RETE_TPL_ABC»; senza, quello dell'azienda */
+  codiceRete?: string | null;
   /** chi trasmette il file (ParticipantRef) */
   partecipante: string;
   /** il nome dell'azienda e i suoi contatti: è l'operatore, se non ci sono gestori, e dà il nome ai contenitori del file */
@@ -78,16 +91,18 @@ const xml = (v: unknown) => String(v ?? "")
   .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const testo = (v: unknown) => (v == null ? "" : String(v).trim());
 /**
- * Un pezzo di identificativo: solo lettere, cifre, «-» e «_» (e mai «:», che
- * negli identificativi NeTEx separa le parti). Un codice già pulito resta
- * com'è; uno con altri caratteri li perde e prende in coda un'impronta del
- * codice originale, così «46» e «46/» restano due identificativi diversi, e
- * sempre gli stessi da un export all'altro.
+ * Un pezzo di identificativo: solo lettere, cifre, «-», «_», «.» e «/» (e
+ * mai «:», che negli identificativi NeTEx separa le parti). Il punto e la
+ * barra restano, come nei file della Regione («1/3», «C.D.», «46/»): lo
+ * schema li ammette (gli id sono xsd:normalizedString). Un codice già pulito
+ * resta com'è; uno con altri caratteri li perde e prende in coda un'impronta
+ * del codice originale, così due codici diversi restano due identificativi
+ * diversi, e sempre gli stessi da un export all'altro.
  */
 export function pezzoId(v: unknown): string {
   const t = testo(v);
-  if (/^[A-Za-z0-9_-]+$/.test(t)) return t;
-  return `${t.replace(/[^A-Za-z0-9_-]+/g, "_") || "x"}-${createHash("sha256").update(t).digest("hex").slice(0, 8)}`;
+  if (/^[A-Za-z0-9_./-]+$/.test(t)) return t;
+  return `${t.replace(/[^A-Za-z0-9_./-]+/g, "_") || "x"}-${createHash("sha256").update(t).digest("hex").slice(0, 8)}`;
 }
 
 /** «HH:MM:SS» di un orario GTFS che può passare le 24, e il giorno dopo. */
@@ -130,7 +145,13 @@ const modoDi = (routeType: unknown) => MODI[testo(routeType)] ?? (Number(routeTy
 export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; conteggi: ConteggiNetex } {
   const loc = pezzoId(o.codiceLocale);
   const fine = o.fornitore ? `:${pezzoId(o.fornitore)}` : "";
-  const id = (tipo: string, codice: unknown) => `IT:${loc}:${tipo}:${pezzoId(codice)}${fine}`;
+  /* [prefisso]:IT:[codice locale]: davanti a tutto, contenitori compresi */
+  const it = `${o.prefisso ? `${pezzoId(o.prefisso)}:` : ""}IT:${loc}`;
+  const davantiAiCodici = o.prefissoCodici ? `${pezzoId(o.prefissoCodici)}_` : "";
+  /* gli oggetti della rete e degli orari: col prefisso dei codici */
+  const id = (tipo: string, codice: unknown) => `${it}:${tipo}:${davantiAiCodici}${pezzoId(codice)}${fine}`;
+  /* operatori e rete: il loro codice com'è */
+  const idProprio = (tipo: string, codice: unknown) => `${it}:${tipo}:${pezzoId(codice)}${fine}`;
   const v = 'version="1"';
   const righe = (f: string): Riga[] => gtfs[f]?.righe ?? [];
 
@@ -179,7 +200,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   const principale = gestori ? (gestori.find((x) => x.codice === o.operatorePrincipale) ?? gestori[0]!) : null;
   const gestoreDi = new Map((gestori ?? []).map((x) => [x.codice, x]));
   const gestoreDellaLinea = (r: Riga): OperatoreNetex | null => (gestori ? gestoreDi.get(testo(r.agency_id)) ?? principale : null);
-  const operatoreDellaLinea = new Map(linee.map((r) => [testo(r.route_id), id("Operator", gestoreDellaLinea(r)?.codice ?? o.azienda.codice)]));
+  const operatoreDellaLinea = new Map(linee.map((r) => [testo(r.route_id), idProprio("Operator", gestoreDellaLinea(r)?.codice ?? o.azienda.codice)]));
   const operatori: Array<{ codice: string; nome: string; ragioneSociale: string; sito: string | null; telefono: string | null; email: string | null }> = gestori
     ? (() => {
       const usati = new Set(linee.map((r) => gestoreDellaLinea(r)!.codice));
@@ -187,7 +208,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
       return (scritti.length ? scritti : [principale!]).map((x) => ({ ...x, ragioneSociale: x.nome }));
     })()
     : [{ ...o.azienda, email: null }];
-  const operatore = id("Operator", operatori[0]!.codice);
+  const operatore = idProprio("Operator", operatori[0]!.codice);
   const out: string[] = [];
   const p = (s: string) => out.push(s);
   const posizione = (lat: unknown, lon: unknown) =>
@@ -199,7 +220,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p(`<ParticipantRef>${xml(o.partecipante)}</ParticipantRef>`);
   p(`<Description>${xml(o.descrizione ?? `Rete e orari di ${o.azienda.nome}, profilo italiano NeTEx livello 1 (EPIP)`)}</Description>`);
   p("<dataObjects>");
-  p(`<CompositeFrame id="epd:IT:${loc}:CompositeFrame-EU_PI_NETWORK_OFFER:${pezzoId(o.azienda.codice)}" ${v}>`);
+  p(`<CompositeFrame id="${it}:CompositeFrame-EU_PI_NETWORK_OFFER:${pezzoId(o.azienda.codice)}" ${v}>`);
   p(`<ValidBetween><FromDate>${dal}T00:00:00</FromDate><ToDate>${al}T23:59:59</ToDate></ValidBetween>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_NETWORK_OFFER" versionRef="1.0"/>');
   p(`<codespaces><Codespace id="${xml(loc.toLowerCase())}"><Xmlns>${xml(loc)}</Xmlns><XmlnsUrl>${xml(o.azienda.sito ?? "")}</XmlnsUrl><Description>Profilo italiano NeTEx</Description></Codespace></codespaces>`);
@@ -207,21 +228,22 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p("<frames>");
 
   /* gli operatori */
-  p(`<ResourceFrame id="epd:IT:${loc}:ResourceFrame-EU_PI_COMMON:${pezzoId(o.azienda.codice)}" ${v}>`);
+  p(`<ResourceFrame id="${it}:ResourceFrame-EU_PI_COMMON:${pezzoId(o.azienda.codice)}" ${v}>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_COMMON" versionRef="1.0"/>');
   p("<organisations>");
   for (const x of operatori) {
-    p(`<Operator id="${id("Operator", x.codice)}" ${v}><PublicCode>${xml(x.codice)}</PublicCode><Name>${xml(x.nome)}</Name><LegalName>${xml(x.ragioneSociale)}</LegalName>`
-      + (x.sito || x.telefono || x.email
-        ? `<ContactDetails>${x.email ? `<Email>${xml(x.email)}</Email>` : ""}${x.telefono ? `<Phone>${xml(x.telefono)}</Phone>` : ""}${x.sito ? `<Url>${xml(x.sito)}</Url>` : ""}</ContactDetails>`
-        : "")
+    /* ContactDetails c'è sempre, anche vuoto: per lo schema EPIP viene prima di
+     * OrganisationType e non si può saltare (un gestore senza contatti dava un
+     * file non valido) */
+    p(`<Operator id="${idProprio("Operator", x.codice)}" ${v}><PublicCode>${xml(x.codice)}</PublicCode><Name>${xml(x.nome)}</Name><LegalName>${xml(x.ragioneSociale)}</LegalName>`
+      + `<ContactDetails>${x.email ? `<Email>${xml(x.email)}</Email>` : ""}${x.telefono ? `<Phone>${xml(x.telefono)}</Phone>` : ""}${x.sito ? `<Url>${xml(x.sito)}</Url>` : ""}</ContactDetails>`
       + "<OrganisationType>operator</OrganisationType></Operator>");
   }
   p("</organisations>");
   p("</ResourceFrame>");
 
   /* le fermate: una StopPlace con una Quay per fermata del GTFS */
-  p(`<SiteFrame id="epd:IT:${loc}:SiteFrame-EU_PI_STOP:${pezzoId(o.azienda.codice)}" ${v}>`);
+  p(`<SiteFrame id="${it}:SiteFrame-EU_PI_STOP:${pezzoId(o.azienda.codice)}" ${v}>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_STOP" versionRef="1.0"/>');
   p("<stopPlaces>");
   for (const s of fermate) {
@@ -237,9 +259,9 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p("</SiteFrame>");
 
   /* la rete */
-  p(`<ServiceFrame id="epd:IT:${loc}:ServiceFrame-EU_PI_NETWORK:${pezzoId(o.azienda.codice)}" ${v}>`);
+  p(`<ServiceFrame id="${it}:ServiceFrame-EU_PI_NETWORK:${pezzoId(o.azienda.codice)}" ${v}>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_NETWORK" versionRef="1.0"/>');
-  p(`<Network id="${id("Network", o.azienda.codice)}" ${v}><Name>${xml(`Rete ${o.azienda.nome}`)}</Name></Network>`);
+  p(`<Network id="${idProprio("Network", o.codiceRete || o.azienda.codice)}" ${v}><Name>${xml(`Rete ${o.azienda.nome}`)}</Name></Network>`);
   p("<lines>");
   for (const r of linee) {
     const nome = testo(r.route_long_name) || testo(r.route_short_name) || testo(r.route_id);
@@ -279,7 +301,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p("</ServiceFrame>");
 
   /* i calendari: un tipo di giorno per servizio, e i suoi giorni */
-  p(`<ServiceCalendarFrame id="epd:IT:${loc}:ServiceCalendarFrame-EU_PI_CALENDAR:${pezzoId(o.azienda.codice)}" ${v}>`);
+  p(`<ServiceCalendarFrame id="${it}:ServiceCalendarFrame-EU_PI_CALENDAR:${pezzoId(o.azienda.codice)}" ${v}>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_CALENDAR" versionRef="1.0"/>');
   p(`<ServiceCalendar id="${id("ServiceCalendar", o.azienda.codice)}" ${v}><FromDate>${dal}</FromDate><ToDate>${al}</ToDate>`);
   p("<dayTypes>");
@@ -298,7 +320,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p("</ServiceCalendarFrame>");
 
   /* le corse, con gli orari */
-  p(`<TimetableFrame id="epd:IT:${loc}:TimetableFrame-EU_PI_TIMETABLE:${pezzoId(o.azienda.codice)}" ${v}>`);
+  p(`<TimetableFrame id="${it}:TimetableFrame-EU_PI_TIMETABLE:${pezzoId(o.azienda.codice)}" ${v}>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_TIMETABLE" versionRef="1.0"/>');
   p("<vehicleJourneys>");
   let orari = 0;

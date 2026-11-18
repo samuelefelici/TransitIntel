@@ -34,7 +34,7 @@ import Gestori from "@/components/azienda/Gestori";
 import NodiDiScambio from "@/components/azienda/NodiDiScambio";
 import StatoInstallazione from "@/components/azienda/StatoInstallazione";
 import {
-  aziendaValida, datiDaSalvare, erroriDelModulo, moduloCambiato, moduloDa,
+  aziendaValida, datiDaSalvare, erroriDelModulo, esempioIdNetex, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
 } from "@/lib/azienda";
 
@@ -194,9 +194,16 @@ export default function AdminAziendaPage() {
               aiuto: "Il codice NUTS degli identificativi NeTEx del profilo italiano: per le Marche ITI3. Senza, il NeTEx non si esporta." })}
             {casella("netexFornitore", "Fornitore", { facoltativo: true, esempio: "ATMA",
               aiuto: "In fondo a ogni identificativo, se la Regione lo chiede per distinguere i dati di più aziende. Cambiarlo cambia tutti gli identificativi." })}
+            {casella("netexPrefisso", "Prefisso degli identificativi", { facoltativo: true, esempio: "epd",
+              aiuto: "Davanti a ogni identificativo, come nei file della Regione (epd:IT:ITI3:…)." })}
+            {casella("netexPrefissoCodici", "Prefisso dei codici", { facoltativo: true, esempio: "ABC",
+              aiuto: "Davanti al codice di linee, fermate e corse, con un trattino basso (ABC_1/3). Non va davanti a operatori e rete." })}
+            {casella("netexCodiceRete", "Codice della rete", { facoltativo: true, esempio: "RETE_TPL_ABC",
+              aiuto: "L'identificativo della rete. Senza, quello dell'azienda (l'identificativo GTFS)." })}
           </div>
           <p className="text-xs text-muted-foreground">
-            Gli identificativi hanno la forma IT:codice locale:Tipo:codice. I codici li decide la Regione: chiedili prima di consegnare il file.
+            I codici li decide la Regione: usa quelli dei suoi file, così linee e fermate tengono lo stesso identificativo.
+            {modulo && esempioIdNetex(modulo) && <> Una linea uscirà come <code className="font-mono">{esempioIdNetex(modulo)}</code>.</>}
           </p>
         </CardContent>
       </Card>

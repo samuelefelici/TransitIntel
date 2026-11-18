@@ -33,6 +33,11 @@ describe("dati aperti: la firma di un file", () => {
     const conFornitore = { ...AZIENDA, netexFornitore: "ATMA" };
     expect(firmaDi("gtfs", V, conFornitore)).toBe(firmaDi("gtfs", V, AZIENDA));
     expect(firmaDi("netex", V, conFornitore)).not.toBe(firmaDi("netex", V, AZIENDA));
+    /* gli identificativi come quelli della Regione (tappa 6.19c): solo il NeTEx */
+    for (const cambio of [{ netexPrefisso: "epd" }, { netexPrefissoCodici: "ATMA" }, { netexCodiceRete: "RETE_TPL_ATMA" }]) {
+      expect(firmaDi("gtfs", V, { ...AZIENDA, ...cambio }), JSON.stringify(cambio)).toBe(firmaDi("gtfs", V, AZIENDA));
+      expect(firmaDi("netex", V, { ...AZIENDA, ...cambio }), JSON.stringify(cambio)).not.toBe(firmaDi("netex", V, AZIENDA));
+    }
     const altrove = { ...AZIENDA, citta: "Jesi", centro: { lat: 43.5, lng: 13.2, zoom: 11 } };
     expect(firmaDi("gtfs", V, altrove)).toBe(firmaDi("gtfs", V, AZIENDA));
     expect(firmaDi("netex", V, altrove)).toBe(firmaDi("netex", V, AZIENDA));

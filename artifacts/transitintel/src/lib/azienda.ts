@@ -27,6 +27,10 @@ export interface Azienda {
   netexCodiceLocale: string | null;
   /** il fornitore in fondo agli identificativi NeTEx, se la Regione lo chiede */
   netexFornitore: string | null;
+  /** gli identificativi NeTEx come quelli della Regione (tappa 6.19c): prefisso («epd»), prefisso dei codici, codice della rete */
+  netexPrefisso: string | null;
+  netexPrefissoCodici: string | null;
+  netexCodiceRete: string | null;
   /**
    * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
    * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5)
@@ -49,6 +53,9 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   provinciaIstat: null,
   netexCodiceLocale: null,
   netexFornitore: null,
+  netexPrefisso: null,
+  netexPrefissoCodici: null,
+  netexCodiceRete: null,
   avmMatricolaCifre: null,
   compilata: false,
 });
@@ -77,6 +84,9 @@ export function aziendaValida(x: unknown): Azienda {
     provinciaIstat: typeof d.provinciaIstat === "string" && /^[0-9]{3}$/.test(d.provinciaIstat) ? d.provinciaIstat : null,
     netexCodiceLocale: typeof d.netexCodiceLocale === "string" && /^[A-Z]{2}[A-Z0-9]{0,3}$/.test(d.netexCodiceLocale) ? d.netexCodiceLocale : null,
     netexFornitore: typeof d.netexFornitore === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(d.netexFornitore) ? d.netexFornitore : null,
+    netexPrefisso: typeof d.netexPrefisso === "string" && PREFISSO_NETEX.test(d.netexPrefisso) ? d.netexPrefisso : null,
+    netexPrefissoCodici: typeof d.netexPrefissoCodici === "string" && PREFISSO_CODICI_NETEX.test(d.netexPrefissoCodici) ? d.netexPrefissoCodici : null,
+    netexCodiceRete: typeof d.netexCodiceRete === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(d.netexCodiceRete) ? d.netexCodiceRete : null,
     avmMatricolaCifre: cifreValide(d.avmMatricolaCifre),
     compilata: d.compilata !== false,
   };
@@ -103,13 +113,34 @@ export function intestazioneDocumenti(a: Pick<Azienda, "nome" | "compilata">): s
   return a.compilata ? `${a.nome} · Trasporto Pubblico Locale` : "Trasporto Pubblico Locale";
 }
 
+/* ── Gli identificativi NeTEx (tappe 6.2 e 6.19c) ─────────────────────────── */
+
+const PREFISSO_NETEX = /^[A-Za-z][A-Za-z0-9]{0,9}$/;
+const PREFISSO_CODICI_NETEX = /^[A-Za-z0-9-]{1,20}$/;
+
+/**
+ * Come esce l'identificativo di una linea con i codici scritti nel modulo:
+ * [prefisso]:IT:[codice locale]:Line:[prefisso dei codici]_[codice](:[fornitore]).
+ * Serve a vederlo accanto alle caselle; null senza codice locale.
+ */
+export function esempioIdNetex(m: Pick<ModuloAzienda, "netexCodiceLocale" | "netexFornitore" | "netexPrefisso" | "netexPrefissoCodici">, codice = "1/3"): string | null {
+  const loc = m.netexCodiceLocale.trim();
+  if (!loc) return null;
+  const pre = m.netexPrefisso.trim() ? `${m.netexPrefisso.trim()}:` : "";
+  const pc = m.netexPrefissoCodici.trim() ? `${m.netexPrefissoCodici.trim()}_` : "";
+  const fine = m.netexFornitore.trim() ? `:${m.netexFornitore.trim()}` : "";
+  return `${pre}IT:${loc}:Line:${pc}${codice}${fine}`;
+}
+
 /* ── Il modulo della pagina dell'amministratore ───────────────────────────── */
 
 /** I campi del modulo, come testo: quello che si scrive nelle caselle. */
 export interface ModuloAzienda {
   ragioneSociale: string; nome: string; sito: string; telefono: string; gtfsAgencyId: string;
   citta: string; regione: string; centroLat: string; centroLng: string; zoom: string; provinciaIstat: string;
-  netexCodiceLocale: string; netexFornitore: string; avmMatricolaCifre: string;
+  netexCodiceLocale: string; netexFornitore: string;
+  netexPrefisso: string; netexPrefissoCodici: string; netexCodiceRete: string;
+  avmMatricolaCifre: string;
 }
 export type CampoAzienda = keyof ModuloAzienda;
 
@@ -122,6 +153,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     centroLat: String(a.centro.lat), centroLng: String(a.centro.lng), zoom: String(a.centro.zoom),
     provinciaIstat: scritto(a.provinciaIstat),
     netexCodiceLocale: scritto(a.netexCodiceLocale), netexFornitore: scritto(a.netexFornitore),
+    netexPrefisso: scritto(a.netexPrefisso), netexPrefissoCodici: scritto(a.netexPrefissoCodici), netexCodiceRete: scritto(a.netexCodiceRete),
     avmMatricolaCifre: a.compilata && a.avmMatricolaCifre != null ? String(a.avmMatricolaCifre) : "",
   };
 }
@@ -154,6 +186,9 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (m.provinciaIstat.trim() && !/^[0-9]{3}$/.test(m.provinciaIstat.trim())) e.provinciaIstat = "Tre cifre, come 042";
   if (m.netexCodiceLocale.trim() && !/^[A-Z]{2}[A-Z0-9]{0,3}$/.test(m.netexCodiceLocale.trim())) e.netexCodiceLocale = "Un codice NUTS in maiuscolo, come ITI3";
   if (m.netexFornitore.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexFornitore.trim())) e.netexFornitore = "Lettere, cifre, - e _ (al più 40)";
+  if (m.netexPrefisso.trim() && !PREFISSO_NETEX.test(m.netexPrefisso.trim())) e.netexPrefisso = "Una lettera e poi lettere o cifre (al più 10), come epd";
+  if (m.netexPrefissoCodici.trim() && !PREFISSO_CODICI_NETEX.test(m.netexPrefissoCodici.trim())) e.netexPrefissoCodici = "Lettere, cifre e - (al più 20), come ABC";
+  if (m.netexCodiceRete.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexCodiceRete.trim())) e.netexCodiceRete = "Lettere, cifre, - e _ (al più 40)";
   if (m.avmMatricolaCifre.trim() && !/^[1-9]$/.test(m.avmMatricolaCifre.trim())) e.avmMatricolaCifre = "Un numero da 1 a 9, oppure vuoto";
   return e;
 }
@@ -167,6 +202,8 @@ export function datiDaSalvare(m: ModuloAzienda) {
     centroLat: decimale(m.centroLat), centroLng: decimale(m.centroLng), zoom: decimale(m.zoom),
     provinciaIstat: facoltativo(m.provinciaIstat),
     netexCodiceLocale: facoltativo(m.netexCodiceLocale), netexFornitore: facoltativo(m.netexFornitore),
+    netexPrefisso: facoltativo(m.netexPrefisso), netexPrefissoCodici: facoltativo(m.netexPrefissoCodici),
+    netexCodiceRete: facoltativo(m.netexCodiceRete),
     avmMatricolaCifre: m.avmMatricolaCifre.trim() ? Number(m.avmMatricolaCifre.trim()) : null,
   };
 }

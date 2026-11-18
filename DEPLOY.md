@@ -1476,6 +1476,47 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il NeTEx con gli identificativi della Regione (tappa 6.19c)
+
+La Regione Marche pubblica il NeTEx della rete ATMA con identificativi come
+`epd:IT:ITI3:Line:ATMA_1/3`, `epd:IT:ITI3:ScheduledStopPoint:ATMA_1`,
+`epd:IT:ITI3:Network:RETE_TPL_ATMA`. Cerbero scriveva `IT:ITI3:Line:1_3-…`,
+cioè senza i due prefissi e con la «/» sostituita da un'impronta. Così la
+stessa linea aveva due identificativi diversi, e chi riceve i due file non
+li avrebbe riconosciuti come la stessa cosa.
+
+Da questo rilascio:
+- tre dati nuovi dell'azienda, in Amministrazione → Azienda → NeTEx per il
+  NAP: il **prefisso degli identificativi** (`epd`), il **prefisso dei
+  codici** (`ATMA`, che diventa `ATMA_` davanti al codice di linee, fermate e
+  corse) e il **codice della rete** (`RETE_TPL_ATMA`). La pagina mostra come
+  esce l'identificativo di una linea. Gli operatori restano col codice del
+  gestore (`Operator:ATMA`);
+- negli identificativi la «/» e il «.» restano, come nei file della Regione
+  (`ATMA_1/3`, `ATMA_46/`, `ATMA_C.D.`): lo schema li ammette. I due punti
+  «:» invece no, perché separano le parti dell'identificativo;
+- l'operatore ha sempre il blocco dei contatti, anche vuoto. Senza, con un
+  gestore che non ha né sito né telefono né email, il file non passava lo
+  schema (non era il caso di ATMA, che li ha tutti e tre).
+
+Sulla copia dei dati veri, delle 128 linee e delle 3.901 fermate di Cerbero,
+109 linee e 3.853 fermate hanno lo stesso identificativo del file della
+Regione del 9 luglio 2026. Le altre sono cambiate dopo luglio.
+
+**Dopo il deploy**
+1. La migrazione `0047` aggiunge le tre colonne e, per Conerobus, mette
+   `epd`, `ATMA` e `RETE_TPL_ATMA`: niente da fare a mano. Nessuna variabile
+   e nessuna Watch Path nuova: i file del NeTEx sono già fra quelle del
+   lavoratore (`netex*.ts`, `azienda.ts`, `dati-aperti.ts`), purché il blocco
+   in Coolify sia quello intero di questa guida.
+2. Al primo giro il lavoratore rifà il NeTEx dei dati aperti con gli
+   identificativi nuovi. Il GTFS non cambia e non si rifà.
+3. Chi legge già il NeTEx dall'indirizzo stabile vede cambiare gli
+   identificativi una volta. Da qui in poi restano quelli della Regione.
+
+**Rollback**: immagine precedente. Il NeTEx torna con gli identificativi di
+prima al primo giro; le tre colonne restano e non danno fastidio.
+
 ### Le risposte dell'API compresse (tappa 6.19b)
 
 Dalla tappa 6.19a la mappa delle linee si vede anche per i feed nati da
@@ -1536,6 +1577,7 @@ per voce, e porta alla sezione dove si scrivono
 | Auto aziendali | Amministrazione → Parametri di esercizio | i turni guida contano 5 auto |
 | Le vetture dell'azienda nell'AVM | Azienda → AVM | tutte le vetture del canale contano come dell'azienda |
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
+| Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
 
 Il riquadro segnala anche i **punti di cambio senza fermate**, che nessuno dei
 due calcoli dei turni guida riconosce.
