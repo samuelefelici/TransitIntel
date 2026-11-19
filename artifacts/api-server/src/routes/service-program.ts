@@ -40,7 +40,7 @@ import {
   getServiceCategory, getActiveServiceIds, calculateCosts, calculateScore, generateAdvisories,
 } from "../lib/ottimizza-veicoli/modello";
 import {
-  buildPyTrips, loadTerminalTransits, spawnPythonJson, runCPSATVehicleScheduler, runVcspOrchestrator,
+  arrayDiTesto, buildPyTrips, loadTerminalTransits, spawnPythonJson, runCPSATVehicleScheduler, runVcspOrchestrator,
   loadDepotPoints, assignResidenzaToShifts, parseDepotSelection, depotCapacityAdvisory,
 } from "../lib/ottimizza-veicoli/esegui";
 import {
@@ -860,7 +860,7 @@ router.post("/service-program", async (req, res) => {
       SELECT trip_id, stop_id, stop_sequence, departure_time, arrival_time
       FROM gtfs_stop_times
       WHERE feed_id = ${feedId}
-        AND trip_id IN ${sql.raw(`(${tripIds.map(id => `'${id.replace(/'/g, "''")}'`).join(",")})`)}
+        AND trip_id = ANY(${arrayDiTesto(tripIds)}::text[])
       ORDER BY trip_id, stop_sequence
     `);
 

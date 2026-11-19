@@ -18,6 +18,16 @@ import {
   VEHICLE_SIZE, getServiceCategory, getActiveServiceIds, calculateCosts, calculateScore, generateAdvisories,
 } from "./modello";
 
+/**
+ * Una lista di testi come array di Postgres, da passare come un parametro solo
+ * (`= ANY(${arrayDiTesto(ids)}::text[])`): niente SQL scritto a mano con gli
+ * apici raddoppiati, e niente limite al numero dei parametri con migliaia di
+ * corse. Dentro le virgolette si proteggono la barra e le virgolette.
+ */
+export function arrayDiTesto(valori: readonly string[]): string {
+  return `{${valori.map((v) => `"${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(",")}}`;
+}
+
 export function buildPyTrips(tripBlocks: TripBlock[]) {
   return tripBlocks.map(t => ({
     tripId: t.tripId,
@@ -546,7 +556,7 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       SELECT trip_id, stop_id, stop_sequence, departure_time, arrival_time
       FROM gtfs_stop_times
       WHERE feed_id = ${feedId}
-        AND trip_id IN ${sql.raw(`(${tripIds.map(id => `'${id.replace(/'/g, "''")}'`).join(",")})`)}
+        AND trip_id = ANY(${arrayDiTesto(tripIds)}::text[])
       ORDER BY trip_id, stop_sequence
     `);
 
