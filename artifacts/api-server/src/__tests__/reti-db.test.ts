@@ -12,7 +12,7 @@ import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import adminRouter from "../routes/admin";
 import { dimenticaAzienda, leggiAzienda } from "../lib/azienda";
-import { classifyRoute, idRetiUrbane, impostaReti, RETI_NEUTRE, retiInVigore, reteUrbana, servizioDellaLinea } from "../lib/reti-linee";
+import { classifyRoute, corrispettivoSuiVuoti, idRetiUrbane, impostaReti, RETI_NEUTRE, retiInVigore, reteUrbana, servizioDellaLinea } from "../lib/reti-linee";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const admin = request(appDiProva(adminRouter, utenteDiProva("e6700000-0000-4000-8000-000000000001", [], "admin")));
@@ -39,7 +39,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le reti dell'azienda, sul datab
     await pulisciProve();
     /* si parte come un'installazione nuova: il solo extraurbano, nessuna regola */
     await db.execute(sql`DELETE FROM reti WHERE rete <> 'extraurbano'`);
-    await db.execute(sql`UPDATE reti SET nome = 'Extraurbano', colore = '#f59e0b', ordine = 1 WHERE rete = 'extraurbano'`);
+    await db.execute(sql`UPDATE reti SET nome = 'Extraurbano', colore = '#f59e0b', ordine = 1, corrispettivo_km = NULL, corrispettivo_su_vuoti = false
+                          WHERE rete = 'extraurbano'`);
     dimenticaAzienda();
   });
 
@@ -126,9 +127,36 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le reti dell'azienda, sul datab
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(retiInVigore().reti.at(-1)).toMatchObject({ rete: "extraurbano", nome: "Extraurbano Provincia di Pesaro e Urbino" });
     const no = await admin.put("/api/admin/reti/extraurbano").send({ sigla: "EX" });
-    expect([no.status, no.body.error]).toEqual([400, "L'extraurbano non ha un luogo né una sigla: si cambiano il nome, il colore e l'ordine"]);
+    expect([no.status, no.body.error]).toEqual([400, "L'extraurbano non ha un luogo né una sigla: si cambiano il nome, il colore, l'ordine e il corrispettivo"]);
     const via = await admin.delete("/api/admin/reti/extraurbano");
     expect([via.status, via.body.error]).toEqual([409, "L'extraurbano c'è sempre: non si toglie"]);
+  });
+
+  it("il corrispettivo €/km e la spunta dei km a vuoto (tappa 6.29): si salvano, vanno in vigore, null li toglie", async () => {
+    expect(retiInVigore().reti.find((r) => r.rete === "extraurbano")).toMatchObject({ corrispettivoKm: null, corrispettivoSuVuoti: false });
+    expect(corrispettivoSuiVuoti("A")).toBe(0);
+    const r = await admin.put("/api/admin/reti/extraurbano").send({ corrispettivoKm: 1.84, corrispettivoSuVuoti: true });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.rete).toMatchObject({ corrispettivoKm: 1.84, corrispettivoSuVuoti: true });
+    expect(corrispettivoSuiVuoti("A")).toBe(1.84);
+    /* una modifica che non parla del corrispettivo lo lascia com'è */
+    expect((await admin.put("/api/admin/reti/extraurbano").send({ ordine: 8 })).body.rete).toMatchObject({ corrispettivoKm: 1.84, corrispettivoSuVuoti: true });
+    /* senza la spunta, sui vuoti non si incassa: costano per intero */
+    await admin.put("/api/admin/reti/extraurbano").send({ corrispettivoSuVuoti: false });
+    expect(corrispettivoSuiVuoti("A")).toBe(0);
+    const fano = await admin.put("/api/admin/reti/urbano_fano_citta").send({ corrispettivoKm: 1.69 });
+    expect(fano.body.rete).toMatchObject({ corrispettivoKm: 1.69, corrispettivoSuVuoti: false });
+    const [riga] = (await db.execute<any>(sql`SELECT corrispettivo_km::text AS km, corrispettivo_su_vuoti AS vuoti FROM reti WHERE rete = 'urbano_fano_citta'`)).rows;
+    expect(riga).toEqual({ km: "1.69", vuoti: false });
+    for (const no of [1.234, -1, 100, "2,6"]) {
+      const x = await admin.put("/api/admin/reti/urbano_fano_citta").send({ corrispettivoKm: no });
+      expect(x.status, String(no)).toBe(400);
+    }
+    expect((await admin.put("/api/admin/reti/urbano_fano_citta").send({ corrispettivoKm: null })).body.rete).toMatchObject({ corrispettivoKm: null });
+    /* anche il database rifiuta un valore fuori misura */
+    const err = await db.execute(sql`UPDATE reti SET corrispettivo_km = 100 WHERE rete = 'extraurbano'`).then(() => null, (e: any) => String(e?.code ?? e?.cause?.code));
+    expect(err).toBe("23514");
+    await admin.put("/api/admin/reti/extraurbano").send({ corrispettivoKm: null });
   });
 
   const REGOLE = [

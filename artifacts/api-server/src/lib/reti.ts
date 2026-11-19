@@ -15,7 +15,10 @@
  *   zona     la zona tariffaria, «<luogo>_urban»: non cambia;
  *   codice   il codice con cui si classificano le sue fermate (da 2 a 9, il
  *            primo libero): non cambia. Quindi le reti urbane sono al più otto;
- *   luogo, nome, sigla, colore, ordine   si cambiano.
+ *   luogo, nome, sigla, colore, ordine   si cambiano;
+ *   corrispettivo €/km e se lo si incassa anche sui km a vuoto (tappa 6.29):
+ *            li usa il calcolo dei turni macchina, si cambiano anche
+ *            dell'extraurbano.
  * L'extraurbana c'è sempre ed è una sola: non si crea e non si toglie.
  *
  * Una rete in uso (linee assegnate, titoli di viaggio nei feed o nel
@@ -54,6 +57,9 @@ const LUOGO = z.string().trim().min(1, "luogo: almeno un carattere").max(40, "lu
 const SIGLA = z.string().trim().toUpperCase().regex(/^[A-Z0-9]{1,4}$/, "sigla: da una a quattro lettere o cifre, come «AN»");
 const COLORE = z.string().trim().toLowerCase().regex(/^#[0-9a-f]{6}$/, "colore: sei cifre esadecimali, come «#3b82f6»");
 const ORDINE = z.number().int().min(0).max(9999);
+/* €/km al netto dell'IVA, due decimali come nella delibera; null: non indicato */
+const CORRISPETTIVO = z.number().min(0, "corrispettivo: da 0 in su").max(99.99, "corrispettivo: al più 99,99 €/km")
+  .refine((v) => Math.abs(v * 100 - Math.round(v * 100)) < 1e-6, "corrispettivo: al più due decimali").nullable();
 
 export const NuovaRete = z.object({
   luogo: LUOGO,
@@ -63,6 +69,8 @@ export const NuovaRete = z.object({
   /** se manca: il prossimo di COLORI_RETI */
   colore: COLORE.optional(),
   ordine: ORDINE.optional(),
+  corrispettivoKm: CORRISPETTIVO.optional(),
+  corrispettivoSuVuoti: z.boolean().optional(),
 }).strict();
 
 export const ModificaRete = z.object({
@@ -71,6 +79,8 @@ export const ModificaRete = z.object({
   sigla: SIGLA.optional(),
   colore: COLORE.optional(),
   ordine: ORDINE.optional(),
+  corrispettivoKm: CORRISPETTIVO.optional(),
+  corrispettivoSuVuoti: z.boolean().optional(),
 }).strict();
 
 const VALORE = z.string().trim().toUpperCase().regex(/^[A-Z0-9./ -]{1,12}$/, "valore: al più 12 fra lettere, cifre, punto, barra, trattino e spazio");
@@ -228,17 +238,19 @@ export async function creaRete(d: z.infer<typeof NuovaRete>): Promise<Rete> {
       rete, tipo: "urbano", nome: d.nome ?? `Urbano di ${d.luogo}`, luogo: d.luogo, sigla: d.sigla, zona, codice,
       colore: d.colore ?? coloreLibero(reti),
       ordine: d.ordine ?? Math.min(9999, reti.reduce((m, r) => Math.max(m, r.ordine), 0) + 1),
+      corrispettivoKm: d.corrispettivoKm ?? null, corrispettivoSuVuoti: d.corrispettivoSuVuoti ?? false,
     };
     await tx.execute(sql`
-      INSERT INTO reti (rete, tipo, nome, luogo, sigla, zona, codice, colore, ordine)
-      VALUES (${nuova.rete}, 'urbano', ${nuova.nome}, ${nuova.luogo}, ${nuova.sigla}, ${nuova.zona}, ${nuova.codice}, ${nuova.colore}, ${nuova.ordine})`);
+      INSERT INTO reti (rete, tipo, nome, luogo, sigla, zona, codice, colore, ordine, corrispettivo_km, corrispettivo_su_vuoti)
+      VALUES (${nuova.rete}, 'urbano', ${nuova.nome}, ${nuova.luogo}, ${nuova.sigla}, ${nuova.zona}, ${nuova.codice}, ${nuova.colore}, ${nuova.ordine},
+              ${nuova.corrispettivoKm}, ${nuova.corrispettivoSuVuoti})`);
     return nuova;
   });
   await rimettiInVigore();
   return creata;
 }
 
-/** Cambia nome, luogo, sigla, colore o ordine. Dell'extraurbana solo nome, colore e ordine. */
+/** Cambia nome, luogo, sigla, colore, ordine e corrispettivo. Dell'extraurbana non il luogo né la sigla. */
 export async function modificaRete(rete: string, m: z.infer<typeof ModificaRete>): Promise<Rete> {
   const cambiata = await db.transaction(async (tx) => {
     await blocca(tx);
@@ -246,7 +258,7 @@ export async function modificaRete(rete: string, m: z.infer<typeof ModificaRete>
     const prima = reti.find((r) => r.rete === rete);
     if (!prima) throw new RifiutoReti(404, "Rete non trovata");
     if (prima.tipo === "extraurbano" && (m.luogo !== undefined || m.sigla !== undefined)) {
-      throw new RifiutoReti(400, "L'extraurbano non ha un luogo né una sigla: si cambiano il nome, il colore e l'ordine");
+      throw new RifiutoReti(400, "L'extraurbano non ha un luogo né una sigla: si cambiano il nome, il colore, l'ordine e il corrispettivo");
     }
     if (m.sigla !== undefined) {
       const conSigla = reti.find((r) => r.sigla === m.sigla && r.rete !== rete);
@@ -256,12 +268,18 @@ export async function modificaRete(rete: string, m: z.infer<typeof ModificaRete>
       ...prima,
       nome: m.nome ?? prima.nome, luogo: m.luogo ?? prima.luogo, sigla: m.sigla ?? prima.sigla,
       colore: m.colore ?? prima.colore, ordine: m.ordine ?? prima.ordine,
+      /* il corrispettivo: assente resta com'è, null lo toglie */
+      corrispettivoKm: m.corrispettivoKm !== undefined ? m.corrispettivoKm : prima.corrispettivoKm,
+      corrispettivoSuVuoti: m.corrispettivoSuVuoti ?? prima.corrispettivoSuVuoti,
     };
     await tx.execute(sql`
       UPDATE reti SET nome = ${dopo.nome}, luogo = ${dopo.luogo}, sigla = ${dopo.sigla}, colore = ${dopo.colore}, ordine = ${dopo.ordine},
+                      corrispettivo_km = ${dopo.corrispettivoKm}, corrispettivo_su_vuoti = ${dopo.corrispettivoSuVuoti},
                       aggiornato_il = now()
        WHERE rete = ${rete}
-         AND (nome, luogo, sigla, colore, ordine) IS DISTINCT FROM (${dopo.nome}, ${dopo.luogo}::text, ${dopo.sigla}::text, ${dopo.colore}, ${dopo.ordine}::smallint)`);
+         AND (nome, luogo, sigla, colore, ordine, corrispettivo_km, corrispettivo_su_vuoti)
+             IS DISTINCT FROM (${dopo.nome}, ${dopo.luogo}::text, ${dopo.sigla}::text, ${dopo.colore}, ${dopo.ordine}::smallint,
+                               ${dopo.corrispettivoKm}::numeric, ${dopo.corrispettivoSuVuoti}::boolean)`);
     return dopo;
   });
   await rimettiInVigore();

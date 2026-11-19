@@ -102,14 +102,16 @@ class VehicleCostRates:
     # riposizionamento vietato dall'archivio, o sosta oltre le 4 ore).
     depot_alternative_min_gap: int = 30      # minuti
 
-    # Corrispettivo chilometrico: l'azienda incassa 2,60 EUR/km su TUTTI i km,
-    # di linea E di fuorilinea. Un km a vuoto non e' quindi una perdita: e'
-    # compensato. Quello che costa davvero e' il TEMPO che impegna il
-    # conducente. Prezzare i vuoti solo a km faceva fuggire il motore dai
-    # rientri in deposito — che sono pero' la mossa con cui il conducente
-    # cambia mezzo SENZA autovettura, ed e' cosi' che in esercizio 5 auto
-    # bastano per 140 turni.
-    corrispettivo_per_km: float = 2.60
+    # Corrispettivo chilometrico sui km a vuoto. Dove la rete lo paga anche
+    # sui km di fuorilinea, un km a vuoto non e' una perdita: e' compensato, e
+    # quello che costa davvero e' il TEMPO che impegna il conducente. Prezzare
+    # quei vuoti solo a km faceva fuggire il motore dai rientri in deposito —
+    # che sono pero' la mossa con cui il conducente cambia mezzo SENZA
+    # autovettura. Il valore vero arriva corsa per corsa (Trip.corrispettivo_vuoti:
+    # quello della rete della corsa, 0 se la rete non lo paga sui vuoti; tappa
+    # 6.29); questo vale solo per una corsa che non lo porta: 0, i vuoti costano
+    # per intero.
+    corrispettivo_per_km: float = 0.0
     driver_cost_per_min: float = 0.45     # 27 EUR/ora
 
     # E. Costo per rientro deposito: sola manovra (ingresso, controlli,
@@ -820,6 +822,10 @@ class Trip:
     duration_min: int = 0
     on_demand: bool = False       # corsa a chiamata (DRT)
     variant_code: str = ""        # codice percorso (ps_route_variants.code, es. "1/4")
+    # €/km incassati sui km a vuoto per servire questa corsa: il corrispettivo
+    # della sua rete se lo paga anche sui vuoti, altrimenti 0 (tappa 6.29).
+    # None: la corsa non lo dice, vale VehicleCostRates.corrispettivo_per_km.
+    corrispettivo_vuoti: float | None = None
 
 
 @dataclass
@@ -1348,7 +1354,22 @@ def trip_from_dict(d: dict, idx: int) -> Trip:
         duration_min=max(1, arr_min - dep_min),
         on_demand=bool(d.get("onDemand", False)),
         variant_code=str(d.get("variantCode", "") or ""),
+        corrispettivo_vuoti=_euro_o_none(d.get("corrispettivoVuoti")),
     )
+
+
+def _euro_o_none(v) -> float | None:
+    """Un importo €/km da 0 in su, o None se manca o non e' un numero."""
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x >= 0 and x == x else None
+
+
+def corrispettivo_vuoti(trip: "Trip", rates: "VehicleCostRates") -> float:
+    """I €/km incassati sui km a vuoto per servire la corsa (tappa 6.29)."""
+    return rates.corrispettivo_per_km if trip.corrispettivo_vuoti is None else trip.corrispettivo_vuoti
 
 
 def vshift_trip_to_dict(t: VShiftTrip) -> dict:

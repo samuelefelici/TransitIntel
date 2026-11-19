@@ -41,7 +41,7 @@ from ortools.sat.python import cp_model
 
 from optimizer_common import (
     Trip, Arc, VShiftTrip, VehicleShift, VehicleCostRates, VehicleShiftCost,
-    trip_from_dict, vehicle_shift_to_dict,
+    trip_from_dict, vehicle_shift_to_dict, corrispettivo_vuoti,
     VEHICLE_SIZE, VEHICLE_TYPES, MAX_DOWNSIZE_LEVELS,
     MAX_DEADHEAD_KM, MIN_LAYOVER, DEADHEAD_BUFFER,
     AVG_SERVICE_SPEED, DEADHEAD_SPEED,
@@ -619,12 +619,14 @@ def terminal_wait_cost(gap_min: int, dh_min: int, rates: VehicleCostRates) -> fl
     return cost + presidiata * rates.driver_cost_per_min
 
 
-def via_depot_cost(legs: dict, vtype: str, rates: VehicleCostRates) -> float:
+def via_depot_cost(legs: dict, vtype: str, rates: VehicleCostRates, corrispettivo: float | None = None) -> float:
     """Costo di mandare il bus in deposito e rifarlo uscire: i km al netto del
-    corrispettivo, il tempo del conducente sulle due tratte e la voce fissa del
-    rientro. Le ore passate IN deposito non si pagano: il mezzo e' a casa e non
-    c'e' nessuno da tenere li' ad aspettarlo."""
-    km_netto = max(0.0, rates.per_deadhead_km.get(vtype, 0.80) - rates.corrispettivo_per_km)
+    corrispettivo sui vuoti (quello della corsa che si va a servire), il tempo
+    del conducente sulle due tratte e la voce fissa del rientro. Le ore passate
+    IN deposito non si pagano: il mezzo e' a casa e non c'e' nessuno da tenere
+    li' ad aspettarlo."""
+    corr = rates.corrispettivo_per_km if corrispettivo is None else corrispettivo
+    km_netto = max(0.0, rates.per_deadhead_km.get(vtype, 0.80) - corr)
     return (float(legs["km"]) * km_netto
             + float(legs["min"]) * rates.driver_cost_per_min
             + rates.per_depot_return)
@@ -995,7 +997,7 @@ def build_compatible_arcs_fast(
                 _alt = _via_depot_legs(ti, tj, depots)
                 _gap = tj.departure_min - ti.arrival_min
                 if _alt is not None and _alt["min"] <= _gap and (
-                        via_depot_cost(_alt, ti.required_vehicle, rates)
+                        via_depot_cost(_alt, ti.required_vehicle, rates, corrispettivo_vuoti(tj, rates))
                         < terminal_wait_cost(_gap, dh_min, rates)):
                     legs = _alt
                     dh_km, dh_min = legs["km"], legs["min"]
@@ -1126,11 +1128,12 @@ def precompute_arc_costs(
 
         cost_euro = 0.0
 
-        # Deadhead: km al NETTO del corrispettivo (2,60 EUR/km incassati anche
-        # sui vuoti) piu' il tempo del conducente, che e' il costo vero.
+        # Deadhead: km al NETTO del corrispettivo sui vuoti (quello della rete
+        # della corsa che si va a servire, se lo paga sui vuoti; tappa 6.29)
+        # piu' il tempo del conducente, che e' il costo vero.
         if a.dh_km > rates.min_deadhead_km:
             km_netto_arc = max(0.0, rates.per_deadhead_km.get(vtype, 0.80)
-                               - rates.corrispettivo_per_km)
+                               - corrispettivo_vuoti(tj, rates))
             cost_euro += (a.dh_km * km_netto_arc
                           + max(0.0, float(a.dh_min or 0)) * rates.driver_cost_per_min) * mul_dh
 
@@ -2361,15 +2364,20 @@ def chain_cost_detailed(
     service_km = sum(_estimate_trip_km(trips[i], rates) for i in chain)
 
     deadhead_km = 0.0
+    deadhead_km_netto_eur = 0.0
     deadhead_min = 0.0
     idle_minutes = 0.0
     attesa_presidiata = 0.0
     depot_returns = 0
     vcsp_pen = 0.0
+    costo_km_vuoto = rates.per_deadhead_km.get(vtype, 0.80)
     for k in range(len(chain) - 1):
         arc = arcs_lookup.get((chain[k], chain[k + 1]))
         if arc:
             deadhead_km += arc.dh_km
+            # ogni vuoto al netto del corrispettivo della corsa che va a servire
+            deadhead_km_netto_eur += arc.dh_km * max(
+                0.0, costo_km_vuoto - corrispettivo_vuoti(trips[chain[k + 1]], rates))
             deadhead_min += max(0.0, float(arc.dh_min or 0))
             idle_minutes += _arc_idle_min(arc)
             if arc.depot_return:
@@ -2388,11 +2396,10 @@ def chain_cost_detailed(
     cost = VehicleShiftCost()
     cost.fixed_daily = rates.fixed_daily.get(vtype, 42.0)
     cost.service_km_cost = service_km * rates.per_service_km.get(vtype, 0.95)
-    # Il km a vuoto e' compensato dal corrispettivo: resta l'eventuale quota
-    # non coperta, piu' il TEMPO che impegna il conducente. E' il tempo, non la
-    # distanza, la cosa che si spende davvero.
-    km_netto = max(0.0, rates.per_deadhead_km.get(vtype, 0.80) - rates.corrispettivo_per_km)
-    cost.deadhead_km_cost = (deadhead_km * km_netto
+    # Il km a vuoto e' compensato dal corrispettivo, dove la rete lo paga sui
+    # vuoti: resta l'eventuale quota non coperta, piu' il TEMPO che impegna il
+    # conducente. E' il tempo, non la distanza, la cosa che si spende davvero.
+    cost.deadhead_km_cost = (deadhead_km_netto_eur
                              + deadhead_min * rates.driver_cost_per_min)
 
     idle_cost = idle_minutes * rates.idle_per_min

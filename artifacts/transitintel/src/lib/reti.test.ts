@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  bozzaDa, categoriaDi, categorieDelleLinee, classiFermate, coloreDi, corpoModificaRete, corpoNuovaRete, corpoRegole, domandaTogliRete, erroriRegole, erroriRete, etichettaDi,
+  bozzaDa, categoriaDi, categorieDelleLinee, classiFermate, coloreDi, corpoModificaRete, corpoNuovaRete, corrispettivoDaTesto, moduloReteDa, testoCorrispettivo, corpoRegole, domandaTogliRete, erroriRegole, erroriRete, etichettaDi,
   etichettaRete, MODULO_RETE_VUOTO, opzioniReti, regoleCambiate, reteInUso, RETI_NEUTRE, retiValide, riassuntoAnteprima, siglaDaLuogo, siglaDi,
   spostaRegola, testoRegola, usoDellaRete, type AnteprimaRegole, type RegolaInBozza, type RegolaLinea, type Rete,
 } from "./reti";
@@ -81,15 +81,16 @@ describe("il modulo di una rete", () => {
     ]);
     const m = { ...MODULO_RETE_VUOTO, luogo: " Pesaro ", sigla: "ps" };
     expect(erroriRete(m, true, true)).toEqual([]);
-    expect(corpoNuovaRete(m)).toEqual({ luogo: "Pesaro", sigla: "PS" });
-    expect(corpoNuovaRete({ luogo: "Pesaro", sigla: "PS", nome: "Rete di Pesaro", colore: "#AABBCC", ordine: "4" }))
-      .toEqual({ luogo: "Pesaro", sigla: "PS", nome: "Rete di Pesaro", colore: "#aabbcc", ordine: 4 });
+    expect(corpoNuovaRete(m)).toEqual({ luogo: "Pesaro", sigla: "PS", corrispettivoSuVuoti: false });
+    expect(corpoNuovaRete({ ...MODULO_RETE_VUOTO, luogo: "Pesaro", sigla: "PS", nome: "Rete di Pesaro", colore: "#AABBCC", ordine: "4", corrispettivo: "1,93", suVuoti: true }))
+      .toEqual({ luogo: "Pesaro", sigla: "PS", nome: "Rete di Pesaro", colore: "#aabbcc", ordine: 4, corrispettivoKm: 1.93, corrispettivoSuVuoti: true });
   });
 
   it("dice che cosa non va, campo per campo", () => {
-    expect(erroriRete({ luogo: "...", nome: "x".repeat(61), sigla: "TROPPA", colore: "rosso", ordine: "-1" }, true, true)).toEqual([
+    expect(erroriRete({ ...MODULO_RETE_VUOTO, luogo: "...", nome: "x".repeat(61), sigla: "TROPPA", colore: "rosso", ordine: "-1", corrispettivo: "1,666" }, true, true)).toEqual([
       "Nel luogo servono lettere o cifre.", "La sigla ha da una a quattro lettere o cifre, per esempio «PS».",
       "Il nome è troppo lungo: al più 60 caratteri.", "Il colore è di sei cifre esadecimali, per esempio «#3b82f6».", "L'ordine è un numero da 0 a 9999.",
+      "Il corrispettivo è in €/km, con al più due decimali: per esempio «1,66».",
     ]);
     expect(erroriRete({ ...MODULO_RETE_VUOTO, luogo: "Pesaro", sigla: "PS" }, true, false)).toEqual(["Scrivi il nome della rete."]);
   });
@@ -101,12 +102,21 @@ describe("il modulo di una rete", () => {
     expect(erroriRete({ ...MODULO_RETE_VUOTO, luogo: "Porto Sant'Elpidio", sigla: "PE", nome: "Urbano di Porto Sant’Elpidio (mare)" }, true, true)).toEqual([]);
   });
 
-  it("dell'extraurbano partono solo nome, colore e ordine", () => {
-    const m = { luogo: "", nome: " Extraurbano ", sigla: "", colore: "#F59E0B", ordine: "9" };
+  it("dell'extraurbano partono nome, colore, ordine e corrispettivo, non luogo e sigla", () => {
+    const m = { ...MODULO_RETE_VUOTO, nome: " Extraurbano ", colore: "#F59E0B", ordine: "9", corrispettivo: " 1.66 ", suVuoti: true };
     expect(erroriRete(m, false, false)).toEqual([]);
-    expect(corpoModificaRete(m, false)).toEqual({ nome: "Extraurbano", colore: "#f59e0b", ordine: 9 });
-    expect(corpoModificaRete({ luogo: "Fano", nome: "Urbano di Fano", sigla: "fn", colore: "", ordine: "" }, true))
-      .toEqual({ nome: "Urbano di Fano", luogo: "Fano", sigla: "FN" });
+    expect(corpoModificaRete(m, false)).toEqual({ nome: "Extraurbano", colore: "#f59e0b", ordine: 9, corrispettivoKm: 1.66, corrispettivoSuVuoti: true });
+    /* il corrispettivo lasciato vuoto lo toglie */
+    expect(corpoModificaRete({ ...MODULO_RETE_VUOTO, luogo: "Fano", nome: "Urbano di Fano", sigla: "fn" }, true))
+      .toEqual({ nome: "Urbano di Fano", luogo: "Fano", sigla: "FN", corrispettivoKm: null, corrispettivoSuVuoti: false });
+  });
+
+  it("il corrispettivo €/km (tappa 6.29): si scrive con la virgola o col punto, al più due decimali", () => {
+    expect(["1,66", "2.6", " 12 ", "", "1,666", "100", "-1", "uno"].map(corrispettivoDaTesto)).toEqual([1.66, 2.6, 12, null, NaN, NaN, NaN, NaN]);
+    const r = { corrispettivoKm: 2.6, corrispettivoSuVuoti: true } as any;
+    expect(moduloReteDa({ ...r, luogo: "Ancona", nome: "Urbano di Ancona", sigla: "AN", colore: "#3b82f6", ordine: 1 })).toMatchObject({ corrispettivo: "2,60", suVuoti: true });
+    expect(testoCorrispettivo(r)).toBe("2,60 €/km");
+    expect(testoCorrispettivo({ corrispettivoKm: null })).toBeNull();
   });
 
   it("la sigla proposta sono le prime due lettere del luogo", () => {

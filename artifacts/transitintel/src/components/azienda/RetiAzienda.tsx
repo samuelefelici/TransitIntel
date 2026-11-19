@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   bozzaDa, corpoModificaRete, corpoNuovaRete, corpoRegole, domandaTogliRete, erroriRegole, erroriRete, etichettaDi, etichettaRete, MODULO_RETE_VUOTO,
   moduloReteDa, NOME_TIPO, regolaVuoleValore, regoleCambiate, RETE_EXTRAURBANA, reteInUso, riassuntoAnteprima, siglaDaLuogo, spostaRegola, TIPI_REGOLA,
-  usoDellaRete, type AnteprimaRegole, type ElencoReti, type ModuloRete, type RegolaInBozza, type ReteConUso, type TipoRegola,
+  testoCorrispettivo, usoDellaRete, type AnteprimaRegole, type ElencoReti, type ModuloRete, type RegolaInBozza, type ReteConUso, type TipoRegola,
 } from "@/lib/reti";
 
 const SELECT = "block h-8 rounded-md border border-input bg-background px-2 text-sm";
@@ -91,8 +91,9 @@ export default function RetiAzienda() {
       <CardHeader className="pb-2">
         <CardTitle className="text-base flex items-center gap-2"><Network className="w-4 h-4 text-primary" aria-hidden /> Reti e linee</CardTitle>
         <p className="text-xs text-muted-foreground">
-          Le reti del servizio: l'extraurbana, che c'è sempre, e le urbane. Le usano le tariffe (ogni rete urbana ha la sua zona a tariffa unica)
-          e il Roster: fra due turni il riposo minimo è di 8 ore su linee urbane, di 9 su linee extraurbane.
+          Le reti del servizio: l'extraurbana, che c'è sempre, e le urbane. Le usano le tariffe (ogni rete urbana ha la sua zona a tariffa unica),
+          il Roster (fra due turni il riposo minimo è di 8 ore su linee urbane, di 9 su linee extraurbane) e il calcolo dei turni macchina,
+          col corrispettivo €/km di ogni rete.
         </p>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -100,14 +101,14 @@ export default function RetiAzienda() {
           <>
             <section aria-label="Reti" className="space-y-3">
               <div className="overflow-x-auto rounded-md border border-border/50">
-                <table className="w-full min-w-[540px] text-sm">
+                <table className="w-full min-w-[640px] text-sm">
                   <thead className="text-xs text-muted-foreground bg-card"><tr className="text-left">
                     <th className="px-3 py-1.5">Rete</th><th className="px-2 py-1.5">Sigla</th>
-                    <th className="px-2 py-1.5">Zona tariffaria</th><th className="px-2 py-1.5">Chi la usa</th><th className="px-2 py-1.5" />
+                    <th className="px-2 py-1.5">Zona tariffaria</th><th className="px-2 py-1.5">Corrispettivo</th><th className="px-2 py-1.5">Chi la usa</th><th className="px-2 py-1.5" />
                   </tr></thead>
                   <tbody>
                     {reti.map((r) => aperta === r.rete ? (
-                      <tr key={r.rete} className="bg-muted/30"><td colSpan={5} className="px-3 py-2">
+                      <tr key={r.rete} className="bg-muted/30"><td colSpan={6} className="px-3 py-2">
                         <ModuloReteForm iniziale={moduloReteDa(r)} urbana={r.tipo === "urbano"} chiave={r.rete} busy={busy} onAnnulla={() => setAperta(null)}
                           onSalva={async (m) => {
                             const ok = await esegui(`${m.nome.trim()} salvata`, () =>
@@ -127,6 +128,12 @@ export default function RetiAzienda() {
                         </td>
                         <td className="px-2 py-1.5 font-mono text-xs">{r.sigla ?? "—"}</td>
                         <td className="px-2 py-1.5 font-mono text-xs">{r.zona ?? <span className="font-sans text-muted-foreground">per chilometri</span>}</td>
+                        <td className="px-2 py-1.5 text-xs whitespace-nowrap">
+                          {testoCorrispettivo(r) ?? <span className="text-muted-foreground">non indicato</span>}
+                          {r.corrispettivoKm != null && (
+                            <span className="block text-muted-foreground">{r.corrispettivoSuVuoti ? "anche sui km a vuoto" : "solo sui km di servizio"}</span>
+                          )}
+                        </td>
                         <td className="px-2 py-1.5 text-xs">{reteInUso(r.uso) ? usoDellaRete(r.uso).join(", ") : <span className="text-muted-foreground">nessuno</span>}</td>
                         <td className="px-2 py-1.5 text-right whitespace-nowrap">
                           <Button size="sm" variant="outline" className="h-7" disabled={busy} onClick={() => { setNuova(false); setAperta(r.rete); }}>Modifica</Button>
@@ -296,9 +303,22 @@ function ModuloReteForm({ iniziale, urbana, nuova = false, chiave, busy, onSalva
           <Input id={id("ordine")} value={m.ordine} className="h-8 w-20" inputMode="numeric" maxLength={4}
             placeholder={nuova ? "in fondo" : undefined} onChange={(e) => setM({ ...m, ordine: e.target.value })} />
         </div>
+        <div className="space-y-1">
+          <Label htmlFor={id("corrispettivo")} className="text-xs">Corrispettivo €/km</Label>
+          <Input id={id("corrispettivo")} value={m.corrispettivo} className="h-8 w-24" inputMode="decimal" maxLength={5} placeholder="1,66"
+            onChange={(e) => setM({ ...m, corrispettivo: e.target.value })} />
+        </div>
+        <label htmlFor={id("vuoti")} className="flex h-8 items-center gap-1.5 text-xs">
+          <input id={id("vuoti")} type="checkbox" checked={m.suVuoti} onChange={(e) => setM({ ...m, suVuoti: e.target.checked })} />
+          anche sui km a vuoto
+        </label>
       </div>
       <p className="text-xs text-muted-foreground">
-        {!urbana ? "L'extraurbano c'è sempre: si cambiano il nome, il colore e l'ordine."
+        Il corrispettivo €/km, al netto dell'IVA, lo fissa la Regione (per gli urbani, comune per comune). Con la spunta il calcolo dei turni macchina
+        considera compensati i km a vuoto di questa rete (uscite, rientri, trasferimenti); senza, li conta a costo pieno.
+      </p>
+      <p className="text-xs text-muted-foreground">
+        {!urbana ? "L'extraurbano c'è sempre: si cambiano il nome, il colore, l'ordine e il corrispettivo."
           : nuova ? "L'identificativo, la zona tariffaria e il codice delle fermate li ricava il programma dal luogo, e non cambiano più. Se non scegli il colore lo sceglie lui."
             : "L'identificativo, la zona tariffaria e il codice delle fermate restano quelli, anche se cambi il luogo."}
       </p>

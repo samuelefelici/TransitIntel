@@ -379,6 +379,13 @@
       "when": 1797500000000,
       "tag": "0053_sistema_bigliettazione",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1797600000000,
+      "tag": "0054_corrispettivo_delle_reti",
+      "breakpoints": true
     }
   ]
 }

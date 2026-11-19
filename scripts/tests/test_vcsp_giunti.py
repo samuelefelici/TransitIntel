@@ -242,18 +242,24 @@ from optimizer_common import VehicleCostRates  # noqa: E402
 
 
 class TestCostoDeiVuoti:
-    """Il corrispettivo è 2,60 €/km su TUTTI i km, di linea e di fuorilinea:
-    un km a vuoto non è una perdita, è compensato. Quello che costa davvero è
-    il tempo che impegna il conducente. Prezzare i vuoti solo a km faceva
-    fuggire il motore dai rientri in deposito — che sono però la mossa con cui
-    il conducente cambia mezzo senza autovettura."""
+    """Dove la rete paga il corrispettivo anche sui km di fuorilinea, un km a
+    vuoto non è una perdita, è compensato: quello che costa davvero è il tempo
+    che impegna il conducente. Prezzare i vuoti solo a km faceva fuggire il
+    motore dai rientri in deposito — che sono però la mossa con cui il
+    conducente cambia mezzo senza autovettura. Il corrispettivo arriva corsa per
+    corsa, quello della sua rete (tappa 6.29)."""
 
     def test_il_km_a_vuoto_e_compensato(self):
         r = VehicleCostRates()
+        # il corrispettivo più basso fra le reti di prova (DGR Marche 456/2026)
+        r.corrispettivo_per_km = 1.66
         for tipo, costo in r.per_deadhead_km.items():
             assert costo < r.corrispettivo_per_km, (
                 f"{tipo}: un km a vuoto costa {costo} e ne rende "
                 f"{r.corrispettivo_per_km}, quindi al netto non costa nulla")
+
+    def test_senza_corrispettivo_il_vuoto_costa_per_intero(self):
+        assert VehicleCostRates().corrispettivo_per_km == 0.0
 
     def test_il_tempo_del_conducente_e_il_costo_vero(self):
         r = VehicleCostRates()

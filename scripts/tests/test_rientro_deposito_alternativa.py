@@ -51,9 +51,12 @@ def test_il_deposito_non_paga_le_ore_in_cui_il_bus_e_a_casa():
     costo e' solo andata e ritorno, e non cresce con la durata della sosta."""
     r = VehicleCostRates()
     legs = {"km": 10.0, "min": 30, "kmIn": 5.0, "minIn": 15, "kmOut": 5.0, "minOut": 15}
-    costo = vsp.via_depot_cost(legs, "12m", r)
-    # km compensati dal corrispettivo (2,60 > 0,80): resta il tempo, piu' la voce fissa
+    # una rete che paga il corrispettivo anche sui vuoti (1,66 > 0,80): i km sono
+    # compensati, resta il tempo, piu' la voce fissa
+    costo = vsp.via_depot_cost(legs, "12m", r, 1.66)
     assert abs(costo - (30 * r.driver_cost_per_min + r.per_depot_return)) < 1e-9
+    # una rete che sui vuoti non lo paga (tappa 6.29): i 10 km costano per intero
+    assert abs(vsp.via_depot_cost(legs, "12m", r, 0.0) - (costo + 10 * r.per_deadhead_km["12m"])) < 1e-9
     # una sosta di 30' non lo giustifica, una di 90' si': il punto di pareggio
     # non e' fissato a mano, esce dalla distanza del deposito
     assert vsp.terminal_wait_cost(30, 0, r) < costo

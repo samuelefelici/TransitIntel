@@ -46,6 +46,10 @@ export interface Rete {
   /** Il colore nelle pagine: «#3b82f6». */
   colore: string;
   ordine: number;
+  /** Il corrispettivo €/km della rete, al netto dell'IVA (lo fissa la Regione); null: non indicato (tappa 6.29). */
+  corrispettivoKm: number | null;
+  /** Vero se il corrispettivo si incassa anche sui km a vuoto (uscite, rientri, trasferimenti). */
+  corrispettivoSuVuoti: boolean;
 }
 
 /** Una rete urbana, con tutto quello che porta con sé. */
@@ -97,6 +101,7 @@ export const SCARTO_CODICE_MISTO = 10;
 /** L'extraurbano di un'installazione che non ha ancora detto niente. */
 export const EXTRAURBANO_NEUTRO: Rete = Object.freeze({
   rete: RETE_EXTRAURBANA, tipo: "extraurbano", nome: "Extraurbano", luogo: null, sigla: null, zona: null, codice: null, colore: "#f59e0b", ordine: 1,
+  corrispettivoKm: null, corrispettivoSuVuoti: false,
 });
 
 /** L'elenco di un'installazione che non ha ancora detto niente: il solo extraurbano, nessuna regola. */
@@ -197,6 +202,17 @@ export function reteDalleRegole(shortName: string | null | undefined, regole: re
  */
 export function classifyRoute(shortName: string | null | undefined): string {
   return reteDalleRegole(shortName, inVigore.regole);
+}
+
+/**
+ * Il corrispettivo €/km che l'azienda incassa sui km a vuoto per servire una
+ * linea (tappa 6.29): quello della rete della linea, se la rete lo paga anche
+ * sui vuoti; altrimenti 0, e i km a vuoto costano per intero. Lo riceve il
+ * calcolo dei turni macchina corsa per corsa.
+ */
+export function corrispettivoSuiVuoti(shortName: string | null | undefined): number {
+  const r = inVigore.reti.find((x) => x.rete === classifyRoute(shortName));
+  return r && r.corrispettivoSuVuoti && r.corrispettivoKm != null ? r.corrispettivoKm : 0;
 }
 
 /** Urbano o extraurbano: le linee di una rete urbana dell'elenco sono urbane, tutte le altre no. */
