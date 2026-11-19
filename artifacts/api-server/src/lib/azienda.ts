@@ -20,7 +20,7 @@
 import { z } from "zod";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { impostaRegolaVetture, REGOLA_NEUTRA } from "./vetture-azienda";
+import { impostaFornitoreAvm, impostaRegolaVetture, REGOLA_NEUTRA } from "./vetture-azienda";
 import { impostaReti } from "./reti-linee";
 import { retiDalDatabase } from "./reti-lettura";
 import { impostaParco, parcoDalDatabase } from "./parco-anagrafica";
@@ -64,6 +64,8 @@ export interface Azienda {
    * (numerato da 100; quelli del mattino da 001). null: una sola numerazione da 001.
    */
   turniGuidaPomeriggioDa: number | null;
+  /** il nome del fornitore dell'AVM nei testi («Richiesta a …»); null: «il fornitore dell'AVM» (tappa 6.27) */
+  avmFornitore: string | null;
   /**
    * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
    * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5, lib/vetture-azienda.ts)
@@ -91,6 +93,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexCodiceRete: null,
   tariffeRiferimento: null,
   turniGuidaPomeriggioDa: null,
+  avmFornitore: null,
   avmMatricolaCifre: null,
   compilata: false,
 });
@@ -128,6 +131,7 @@ export const DatiAzienda = z.object({
   netexCodiceRete: facoltativo(z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/, "lettere, cifre, - e _ (al più 40)")),
   tariffeRiferimento: facoltativo(riga(200)),
   turniGuidaPomeriggioDa: facoltativo(z.number().int("un orario in minuti interi").min(1, "fra 00:01 e 23:59").max(1439, "fra 00:01 e 23:59")),
+  avmFornitore: facoltativo(riga(40)),
   avmMatricolaCifre: facoltativo(z.number().int("un numero intero da 1 a 9").min(1, "da 1 a 9").max(9, "da 1 a 9")),
 }).strict();
 export type DatiAzienda = z.infer<typeof DatiAzienda>;
@@ -140,6 +144,7 @@ const NOMI_CAMPI: Readonly<Record<string, string>> = {
   netexPrefisso: "Prefisso degli identificativi NeTEx", netexPrefissoCodici: "Prefisso dei codici NeTEx", netexCodiceRete: "Codice della rete NeTEx",
   tariffeRiferimento: "Riferimento della regola regionale",
   turniGuidaPomeriggioDa: "Inizio dei turni del pomeriggio",
+  avmFornitore: "Fornitore dell'AVM",
   avmMatricolaCifre: "Cifre della matricola nell'AVM",
   /* i comuni e i luoghi del territorio (lib/territorio.ts) */
   codiceIstat: "Codice ISTAT", soppresso: "Soppresso", lat: "Latitudine", lng: "Longitudine", areaKm2: "Superficie",
@@ -177,6 +182,7 @@ function daRiga(r: any): Azienda {
     netexCodiceRete: r.netex_codice_rete ?? null,
     tariffeRiferimento: r.tariffe_riferimento ?? null,
     turniGuidaPomeriggioDa: r.turni_guida_pomeriggio_da == null ? null : Number(r.turni_guida_pomeriggio_da),
+    avmFornitore: r.avm_fornitore ?? null,
     avmMatricolaCifre: r.avm_matricola_cifre == null ? null : Number(r.avm_matricola_cifre),
     compilata: true,
   };
@@ -193,7 +199,7 @@ export async function leggiAzienda(): Promise<Azienda> {
     const r = await db.execute<any>(sql`
       SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom,
              provincia_istat, netex_codice_locale, netex_fornitore, netex_prefisso, netex_prefisso_codici, netex_codice_rete,
-             tariffe_riferimento, turni_guida_pomeriggio_da, avm_matricola_cifre
+             tariffe_riferimento, turni_guida_pomeriggio_da, avm_fornitore, avm_matricola_cifre
         FROM azienda WHERE unica`);
     const riga = r.rows?.[0];
     /* le reti e le regole delle linee sono dati dell'azienda come la riga: si leggono insieme (lib/reti-linee.ts) */
@@ -205,6 +211,8 @@ export async function leggiAzienda(): Promise<Azienda> {
     impostaRegolaVetture(riga
       ? { cifre: inMemoria.azienda.avmMatricolaCifre, nome: inMemoria.azienda.nome }
       : REGOLA_NEUTRA);
+    /* e il nome del fornitore dell'AVM nei testi (tappa 6.27) */
+    impostaFornitoreAvm(riga ? inMemoria.azienda.avmFornitore : null);
     impostaReti(reti);
     impostaParco(parco);
     return inMemoria.azienda;
@@ -266,7 +274,7 @@ export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
   const r = await db.execute<any>(sql`
     SELECT a.ragione_sociale, a.nome, a.sito, a.telefono, a.gtfs_agency_id, a.citta, a.regione,
            a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.netex_codice_locale, a.netex_fornitore,
-           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.tariffe_riferimento, a.turni_guida_pomeriggio_da, a.avm_matricola_cifre,
+           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.tariffe_riferimento, a.turni_guida_pomeriggio_da, a.avm_fornitore, a.avm_matricola_cifre,
            a.aggiornata_il,
            coalesce(nullif(btrim(u.full_name), ''), u.email) AS aggiornata_da
       FROM azienda a LEFT JOIN users u ON u.id = a.aggiornata_da
@@ -285,11 +293,11 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
   await db.execute(sql`
     INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione,
                          centro_lat, centro_lng, zoom, provincia_istat, netex_codice_locale, netex_fornitore,
-                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, tariffe_riferimento, turni_guida_pomeriggio_da, avm_matricola_cifre,
+                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, tariffe_riferimento, turni_guida_pomeriggio_da, avm_fornitore, avm_matricola_cifre,
                          aggiornata_il, aggiornata_da)
     VALUES (true, ${d.ragioneSociale}, ${d.nome}, ${d.sito}, ${d.telefono}, ${d.gtfsAgencyId}, ${d.citta}, ${d.regione},
             ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, ${d.netexCodiceLocale}, ${d.netexFornitore},
-            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete}, ${d.tariffeRiferimento}, ${d.turniGuidaPomeriggioDa},
+            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete}, ${d.tariffeRiferimento}, ${d.turniGuidaPomeriggioDa}, ${d.avmFornitore},
             ${d.avmMatricolaCifre}, now(), ${utenteId}::uuid)
     ON CONFLICT (unica) DO UPDATE SET
       ragione_sociale = EXCLUDED.ragione_sociale, nome = EXCLUDED.nome, sito = EXCLUDED.sito,
@@ -301,6 +309,7 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
       netex_codice_rete = EXCLUDED.netex_codice_rete,
       tariffe_riferimento = EXCLUDED.tariffe_riferimento,
       turni_guida_pomeriggio_da = EXCLUDED.turni_guida_pomeriggio_da,
+      avm_fornitore = EXCLUDED.avm_fornitore,
       avm_matricola_cifre = EXCLUDED.avm_matricola_cifre,
       aggiornata_il = EXCLUDED.aggiornata_il, aggiornata_da = EXCLUDED.aggiornata_da`);
   dimenticaAzienda();

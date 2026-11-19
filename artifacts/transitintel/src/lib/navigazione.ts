@@ -170,7 +170,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/admin/registro", etichetta: "Registro delle modifiche", icona: History, descrizione: "Chi ha cambiato che cosa", soloAdmin: true },
       { href: "/admin/esercizio", etichetta: "Diagnosi dell'esercizio", icona: Stethoscope, descrizione: "Programma, AVM e turni di un giorno", soloAdmin: true },
       { href: "/admin/giornate", etichetta: "Giornate di esercizio", icona: CalendarDays, descrizione: "Il programmato congelato di ogni giorno", soloAdmin: true },
-      { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline Mizar", aree: AREE_PAGINA["/data"] },
+      { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline dell'AVM", aree: AREE_PAGINA["/data"] },
       { href: "/account", etichetta: "Sicurezza dell'account", icona: Shield, descrizione: "Password e verifica" },
     ],
   },

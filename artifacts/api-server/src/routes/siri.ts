@@ -19,6 +19,7 @@
  * senza sporcare le tabelle di esercizio con dati mal agganciati.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "../lib/vetture-azienda";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
@@ -817,7 +818,7 @@ router.get("/siri/sonda", async (req, res): Promise<void> => {
       ...senzaGrezzi,
       grezziDisponibili: Object.keys(grezzi),
       nota: "Per la risposta intera di una prova: /api/siri/sonda?grezzo=<operazione>. "
-        + "Questo riassunto e i grezzi sono ciò che serve a Mizar per rispondere.",
+        + `Questo riassunto e i grezzi sono ciò che serve ${fornitoreAvm().a} per rispondere.`,
     });
   } catch (e: any) {
     res.status(502).json({ configured: true, error: e?.message ?? "sonda fallita" });
@@ -872,16 +873,16 @@ router.get("/siri/fermate/transcodifica", async (req, res): Promise<void> => {
       nonNelFeedTotale: verifica.nonNelFeed.length,
     },
     lettura: !t.righe.length
-      ? [`Nessuna transcodifica: ${t.errore ?? "tabella vuota"}. Le fermate di Mizar si agganciano solo per stop_id, stop_code o nome.`]
+      ? [`Nessuna transcodifica: ${t.errore ?? "tabella vuota"}. Le fermate ${fornitoreAvm().di} si agganciano solo per stop_id, stop_code o nome.`]
       : !verifica
         ? [`${t.righe.length} paline nella transcodifica; nessun feed caricato per la verifica.`]
         : [
           `${t.righe.length} paline nella transcodifica: ${verifica.nelFeed} hanno la loro fermata nel feed in uso, ${verifica.nonNelFeed.length} no.`,
-          `${verifica.feedSenzaCodice} fermate del feed non hanno nessun codice Mizar: da lì non arriverà mai un passaggio dichiarato.`,
+          `${verifica.feedSenzaCodice} fermate del feed non hanno nessun codice ${fornitoreAvm().breve}: da lì non arriverà mai un passaggio dichiarato.`,
           verifica.collisioni.length
-            ? `${verifica.collisioni.length} codici Mizar coincidono con lo stop_id di un'altra fermata del feed: senza la transcodifica quegli agganci sarebbero fermate sbagliate.`
-            : `Nessun codice Mizar coincide con lo stop_id di un'altra fermata.`,
-          ...(verifica.stopConPiuCodici.length ? [`${verifica.stopConPiuCodici.length} fermate del feed sono raggiunte da più codici Mizar (banchine unite nel feed).`] : []),
+            ? `${verifica.collisioni.length} codici ${fornitoreAvm().breve} coincidono con lo stop_id di un'altra fermata del feed: senza la transcodifica quegli agganci sarebbero fermate sbagliate.`
+            : `Nessun codice ${fornitoreAvm().breve} coincide con lo stop_id di un'altra fermata.`,
+          ...(verifica.stopConPiuCodici.length ? [`${verifica.stopConPiuCodici.length} fermate del feed sono raggiunte da più codici ${fornitoreAvm().breve} (banchine unite nel feed).`] : []),
         ],
     esempi: t.righe.slice(0, 5),
   });
@@ -1232,7 +1233,7 @@ router.get("/siri/fermata/:ref", async (req, res): Promise<void> => {
       corseDelGiornoNellIndice: index.tripStarts?.calendarFiltered ? index.tripStarts.tripIds.size : null,
       fermataNelFeed,
       diagnosi,
-      nota: "Scarti in secondi, Mizar meno feed: positivo = Mizar più tardi. ?grezzo=1 per la risposta SOAP intera.",
+      nota: `Scarti in secondi, ${fornitoreAvm().breve} meno feed: positivo = ${fornitoreAvm().breve} più tardi. ?grezzo=1 per la risposta SOAP intera.`,
     });
   } catch (e: any) {
     res.status(502).json({ configured: true, endpoint: smUrl, error: e?.message ?? "richiesta fallita" });
@@ -1591,11 +1592,11 @@ function testoSegnalazioni(d: DiarioSettimana, da: string, a: string, senzaAvm: 
   const daTogliere = d.vetture.filter(v => v.esclusa?.motivo === "fuori_parco" || v.esclusa?.motivo === "dismesso");
   if (daTogliere.length) {
     const t = richiestaTogliere(daTogliere.map(v => v.vehicleRef));
-    anagrafica.push({ destinatario: "Mizar", oggetto: t.oggetto, testo: t.testo, matricole: t.matricole.length });
+    anagrafica.push({ destinatario: "AVM", oggetto: t.oggetto, testo: t.testo, matricole: t.matricole.length });
   }
   if (senzaAvm.length) {
     const t = richiestaAggiungere(senzaAvm, periodo);
-    anagrafica.push({ destinatario: "Mizar", oggetto: t.oggetto, testo: t.testo, matricole: t.matricole.length });
+    anagrafica.push({ destinatario: "AVM", oggetto: t.oggetto, testo: t.testo, matricole: t.matricole.length });
   }
   return [...d.segnalazioni.map(s => {
     const elenco = s.matricole.join(", ");

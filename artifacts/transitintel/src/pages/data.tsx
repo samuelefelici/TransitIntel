@@ -1,4 +1,6 @@
 import React, { useState, lazy, Suspense } from "react";
+import { fornitoreAvm } from "@/lib/azienda";
+import { useAzienda } from "@/hooks/use-azienda";
 import { motion, AnimatePresence } from "framer-motion";
 import { Database, FileArchive, RefreshCw, MapPin } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
@@ -13,7 +15,7 @@ type Tab = "gtfs" | "sync" | "paline";
 const TABS: { id: Tab; label: string; icon: React.ReactNode }[] = [
   { id: "gtfs", label: "Importa GTFS", icon: <FileArchive className="w-3.5 h-3.5" /> },
   { id: "sync", label: "Sincronizza Dati", icon: <RefreshCw className="w-3.5 h-3.5" /> },
-  { id: "paline", label: "Paline Mizar", icon: <MapPin className="w-3.5 h-3.5" /> },
+  { id: "paline", label: "Paline AVM", icon: <MapPin className="w-3.5 h-3.5" /> },
 ];
 
 function TabLoader() {
@@ -32,6 +34,7 @@ export function schedeVisibili(ha: { analisi: boolean; admin: boolean }): Tab[] 
 
 export default function DataPage() {
   const { isAdmin, hasPermission } = useAuth();
+  const azienda = useAzienda();
   const schede = schedeVisibili({ analisi: hasPermission("analytics"), admin: isAdmin });
   const [scelta, setTab] = useState<Tab>(schede[0]!);
   /* i permessi in cache possono cambiare dopo la risposta del server: mai una scheda che non si vede */
@@ -48,7 +51,7 @@ export default function DataPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Dati e integrazioni</h1>
             <p className="text-sm text-muted-foreground">
-              Feed GTFS, sorgenti esterne e paline Mizar
+              Feed GTFS, sorgenti esterne e paline {fornitoreAvm(azienda).breve}
             </p>
           </div>
         </div>
@@ -78,7 +81,7 @@ export default function DataPage() {
             )}
             <span className="relative z-10 flex items-center gap-2">
               {t.icon}
-              {t.label}
+              {t.id === "paline" ? `Paline ${fornitoreAvm(azienda).breve}` : t.label}
             </span>
           </button>
         ))}

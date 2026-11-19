@@ -16,6 +16,7 @@
  * fra le paline «senza fermata».
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { spezzaCsv, type RigaScartata, type RigaTranscodifica } from "./stop-aliases";
@@ -147,7 +148,7 @@ export async function leggiBaseTranscodifica(force = false): Promise<BaseTransco
       righe, scartate,
       importataIl: ultima ? new Date(ultima.importata_il).toISOString() : null,
       importataDa: ultima?.importata_da ?? null,
-      errore: tutte.length ? null : "la tabella della transcodifica delle paline è vuota: si importa dalla pagina «Paline Mizar»",
+      errore: tutte.length ? null : `la tabella della transcodifica delle paline è vuota: si importa dalla pagina «Paline ${fornitoreAvm().breve}»`,
     };
     inMemoria = { base, lettaIl: Date.now() };
     return base;

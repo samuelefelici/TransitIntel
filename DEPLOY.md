@@ -1476,6 +1476,41 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il fornitore dell'AVM come dato dell'azienda (tappa 6.27)
+
+Le pagine e i testi dell'AVM nominavano il fornitore del primo cliente:
+- «Paline Mizar» nel menu e in Dati e integrazioni;
+- «Codice Mizar» nella pagina delle paline;
+- la colonna «Mizar» nel dettaglio di una corsa;
+- «Richieste a Mizar» e «Incollalo nella mail a Mizar» nell'andamento;
+- le spiegazioni del diario e della sonda SIRI;
+- i fogli Excel.
+
+Da questo rilascio il nome è un dato dell'azienda, in Amministrazione →
+Azienda, scheda AVM, casella **Fornitore dell'AVM**. La migrazione `0052`
+aggiunge `azienda.avm_fornitore` e per Conerobus mette «Mizar»: le pagine
+restano come prima.
+
+Senza nome:
+- i testi dicono «al fornitore dell'AVM», «del fornitore dell'AVM»;
+- le etichette corte dicono «AVM» («Paline AVM», «Codice AVM»).
+
+Dove il testo parla del sistema centrale («anagrafica del centro Mizar») ora
+dice «centro AVM» per tutti. Il destinatario «Mizar» del diario diventa il
+valore interno «AVM» e la pagina lo mostra col nome del fornitore.
+L'etichetta sulla mappa della previsione del fornitore è la sua iniziale
+(«M» per Mizar).
+
+Due residui di «FlashNet» nel diario diventano «codice dell'officina». Un
+test dell'API e uno della web falliscono se un nome di fornitore torna nei
+testi.
+
+**Dopo il deploy**: niente da fare. Nessuna variabile e nessuna Watch Path
+nuova (`vetture-azienda.ts` e `azienda.ts` sono già fra quelle del
+lavoratore).
+
+**Rollback**: immagine precedente. La colonna resta e non dà fastidio.
+
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
 Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito
@@ -1813,6 +1848,7 @@ per voce, e porta alla sezione dove si scrivono
 | Le vetture dell'azienda nell'AVM | Azienda → AVM | tutte le vetture del canale contano come dell'azienda |
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
 | Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
+| Fornitore dell'AVM (6.27) | Azienda → AVM | i testi dicono «il fornitore dell'AVM» e «Paline AVM» |
 | Codici dei turni guida (6.25) | Azienda → Turni guida: i codici; la sigla in Planning Studio → Depositi | una sola numerazione da 001, e l'iniziale del nome del deposito |
 | Riferimento della regola regionale delle tariffe (6.24) | Azienda → Tariffe extraurbane: la regola regionale | il calcolo dei km si vede senza la norma da cui viene |
 | Consorziate e anagrafica dei mezzi nell'AVM (6.21) | Azienda → AVM: le consorziate e l'anagrafica dei mezzi | le matricole delle consorziate non si attribuiscono, e nessun mezzo ha la descrizione |

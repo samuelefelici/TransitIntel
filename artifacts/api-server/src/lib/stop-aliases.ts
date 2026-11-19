@@ -18,6 +18,7 @@
  * Qui le regole, pure: si collaudano senza database.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 
 export interface RigaTranscodifica {
   mizarRef: string;
@@ -246,8 +247,8 @@ export function classificaAbbinamenti(
   if (riepilogo.sospette) lettura.push(`${riepilogo.sospette} sospette: la fermata esiste nel feed ma il nome è un altro; da controllare una per una.`);
   if (riepilogo.fermateAssenti) lettura.push(`${riepilogo.fermateAssenti} puntano a uno stop_id che il feed in uso non ha: paline nuove, o feed vecchio.`);
   if (riepilogo.senzaCodice) lettura.push(`${riepilogo.senzaCodice} paline senza codice del feed («new_CT»): da codificare nel software aziendale.`);
-  if (riepilogo.feedSenzaCodice) lettura.push(`${riepilogo.feedSenzaCodice} fermate del feed non hanno nessun codice Mizar: da lì non arriverà mai un passaggio dichiarato dall'AVM.`);
-  if (riepilogo.collisioni) lettura.push(`${riepilogo.collisioni} codici Mizar coincidono con lo stop_id di un'altra fermata: senza la tabella sarebbero fermate sbagliate.`);
+  if (riepilogo.feedSenzaCodice) lettura.push(`${riepilogo.feedSenzaCodice} fermate del feed non hanno nessun codice ${fornitoreAvm().breve}: da lì non arriverà mai un passaggio dichiarato dall'AVM.`);
+  if (riepilogo.collisioni) lettura.push(`${riepilogo.collisioni} codici ${fornitoreAvm().breve} coincidono con lo stop_id di un'altra fermata: senza la tabella sarebbero fermate sbagliate.`);
   if (riepilogo.flussoNonTrascodificato) lettura.push(`${riepilogo.flussoNonTrascodificato} codici visti nel flusso SIRI dell'ultimo giro mancano dalla tabella.`);
   return { righe: out, feedSenzaCodice, flussoNonTrascodificato, riepilogo, lettura };
 }

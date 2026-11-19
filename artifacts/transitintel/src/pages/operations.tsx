@@ -11,6 +11,7 @@
  * (stessa filosofia del resto dell'app: niente websocket, refetch interval).
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "@/lib/azienda";
 import { useMemo, useRef, useState, type ReactNode } from "react";
 import Map, { Marker, Popup, Source, Layer, type MapRef } from "react-map-gl/mapbox";
 import { useQuery } from "@tanstack/react-query";
@@ -301,6 +302,7 @@ export default function OperationsPage() {
 
   /* Le fermate della corsa, con lo stesso colore del ritardo. Sono il punto
      in cui il ritardo si misura: senza, l'arco cambia colore nel nulla. */
+  const segnoFornitore = fornitoreAvm(azienda).breve.charAt(0).toUpperCase();
   const fermateGeojson = useMemo(() => {
     const fermate = (transitsQ.data?.stops ?? []).filter(
       (s) => s.lat != null && s.lon != null,
@@ -312,12 +314,13 @@ export default function OperationsPage() {
         /* L'ora prevista alle fermate da raggiungere, scritta accanto al
            pallino: la previsione di Mizar se c'è, altrimenti la nostra stima
            (che prolunga lo scarto corrente). Il segno davanti dice quale
-           delle due: «M» Mizar, «~» nostra. Alle fermate già passate niente
+           delle due: l'iniziale del fornitore dell'AVM («M» per un nome che
+           comincia per M, «A» senza nome), «~» nostra. Alle fermate già passate niente
            etichetta: il colore dice già tutto. */
         const daVenire = s.raggiunta === false;
         const pm = s.previsioneMizar;
         const etichetta = !daVenire ? ""
-          : pm ? `M ${fmtTime(pm.expectedTs).slice(0, 5)}`
+          : pm ? `${segnoFornitore} ${fmtTime(pm.expectedTs).slice(0, 5)}`
           : s.actualTs ? `~ ${fmtTime(s.actualTs).slice(0, 5)}`
           : "";
         const coloreEtichetta = pm ? colore(pm.tinta) : s.actualTs ? colore(s.tinta) : "#94a3b8";
@@ -335,7 +338,7 @@ export default function OperationsPage() {
         };
       }),
     };
-  }, [transitsQ.data]);
+  }, [transitsQ.data, segnoFornitore]);
 
   const legenda = transitsQ.data?.legenda ?? liveQ.data?.legenda ?? null;
 
@@ -1006,13 +1009,13 @@ export default function OperationsPage() {
               </div>
             )}
             {transitsQ.data && (
-              <TabellaFermate fermate={transitsQ.data.stops} previsioni={transitsQ.data.previsioniMizar} />
+              <TabellaFermate fermate={transitsQ.data.stops} previsioni={transitsQ.data.previsioniMizar} fornitore={fornitoreAvm(azienda)} />
             )}
             {/* La colonna Mizar va spiegata dove compare: è una previsione
                 dell'AVM, non una misura, e non entra nei tempi di percorrenza. */}
             {transitsQ.data?.previsioniMizar && transitsQ.data.previsioniMizar.fermate > 0 && (
               <p className="px-1.5 pt-2 text-[10px] text-muted-foreground leading-snug">
-                Mizar: orario previsto dall'AVM alle prossime fermate
+                {fornitoreAvm(azienda).breve}: orario previsto dall'AVM alle prossime fermate
                 {transitsQ.data.previsioniMizar.aggiornateAlle
                   ? `, aggiornato alle ${fmtTime(transitsQ.data.previsioniMizar.aggiornateAlle).slice(0, 5)}`
                   : ""}. Non è un passaggio osservato e non entra nei tempi di percorrenza.

@@ -19,6 +19,7 @@
  * Il trasporto è iniettabile: la classificazione si collauda senza rete.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import { buildGetCapabilitiesRequest, parseCapabilities, type SiriEndpointConfig } from "./siri-vm";
 
 const SIRI_NS = "http://www.siri.org.uk/siri";
@@ -415,9 +416,9 @@ export function leggiSonda(r: {
   if (piena("GetEstimatedTimetable", "EstimatedVehicleJourney")) {
     out.push("EstimatedTimetable risponde con corse: è la fonte degli orari di passaggio stimati, da usare al posto della ricostruzione dalle posizioni.");
   } else if (p("GetEstimatedTimetable")?.esito === "valida") {
-    out.push("EstimatedTimetable esiste ma risponde vuoto: il servizio c'è, va chiesto a Mizar perché non lo alimenta.");
+    out.push(`EstimatedTimetable esiste ma risponde vuoto: il servizio c'è, va chiesto ${fornitoreAvm().a} perché non lo alimenta.`);
   } else if (p("GetEstimatedTimetable")) {
-    out.push(`EstimatedTimetable non disponibile (${p("GetEstimatedTimetable")!.dettaglio}): va chiesto a Mizar se è attivabile.`);
+    out.push(`EstimatedTimetable non disponibile (${p("GetEstimatedTimetable")!.dettaglio}): va chiesto ${fornitoreAvm().a} se è attivabile.`);
   }
 
   if (piena("GetStopMonitoring", "MonitoredStopVisit")) {
@@ -438,8 +439,8 @@ export function leggiSonda(r: {
     && !r.wsdl.operazioni.some(o => /EstimatedTimetable|StopMonitoring|ProductionTimetable/.test(o));
   if ((soloVm || wsdlSoloVm) && !trovati.length) {
     out.push(r.gemelli?.length
-      ? "Questo endpoint espone il solo VehicleMonitoring e nessun indirizzo gemello risponde: gli altri servizi vanno chiesti a Mizar."
-      : "Il server dichiara il solo VehicleMonitoring: gli altri servizi non sono un'opzione da configurare da parte nostra, vanno chiesti a Mizar.");
+      ? `Questo endpoint espone il solo VehicleMonitoring e nessun indirizzo gemello risponde: gli altri servizi vanno chiesti ${fornitoreAvm().a}.`
+      : `Il server dichiara il solo VehicleMonitoring: gli altri servizi non sono un'opzione da configurare da parte nostra, vanno chiesti ${fornitoreAvm().a}.`);
   }
   if (r.wsdl.operazioni.includes("Subscribe")) {
     out.push("Il server accetta sottoscrizioni (Subscribe/DeleteSubscription): può spingerci gli aggiornamenti invece di rispondere a un poll ogni 30 secondi.");

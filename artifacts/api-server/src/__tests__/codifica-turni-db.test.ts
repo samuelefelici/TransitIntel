@@ -21,7 +21,7 @@ const AZIENDA = {
   ragioneSociale: "Trasporti Esempio S.r.l.", nome: "Esempio", sito: null, telefono: null, gtfsAgencyId: "esempio",
   citta: "Pesaro", regione: null, centroLat: 43.91, centroLng: 12.91, zoom: 11, provinciaIstat: null,
   netexCodiceLocale: null, netexFornitore: null, netexPrefisso: null, netexPrefissoCodici: null, netexCodiceRete: null,
-  tariffeRiferimento: null, turniGuidaPomeriggioDa: 840, avmMatricolaCifre: null,
+  tariffeRiferimento: null, turniGuidaPomeriggioDa: 840, avmFornitore: null, avmMatricolaCifre: null,
 };
 
 describe("la sigla di un deposito", () => {

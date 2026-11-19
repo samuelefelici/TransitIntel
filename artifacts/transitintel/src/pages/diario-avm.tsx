@@ -28,11 +28,12 @@ import {
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
 import { useAzienda } from "@/hooks/use-azienda";
-import { eDellAzienda } from "@/lib/azienda";
+import { eDellAzienda, fornitoreAvm } from "@/lib/azienda";
 
 type Esito = "funziona" | "senza_corsa" | "senza_posizione" | "non_attivata" | "muta";
 type EsitoGiorno = "in_servizio" | "traccia" | "collegata" | "muta";
-type Destinatario = "Mizar" | "Officina" | "Esercizio" | "Gestore SIM" | "nessuno";
+/** «AVM» è il fornitore dell'AVM: si mostra col suo nome (fornitoreAvm, tappa 6.27) */
+type Destinatario = "AVM" | "Officina" | "Esercizio" | "Gestore SIM" | "nessuno";
 type Avviso = "smessa" | "antenna" | "da_attivare" | "intermittente";
 type MotivoEsclusione = "fuori_parco" | "dismesso" | "in_officina" | "gia_segnalata";
 type StatoOfficina = "in_servizio" | "riserva" | "in_officina" | "dismesso";
@@ -157,7 +158,7 @@ const ESCLUSIONI: Record<MotivoEsclusione, { breve: string; colore: string }> = 
 };
 
 const DESTINATARI: Record<Destinatario, string> = {
-  Mizar: "#c084fc", Officina: "#fb923c", Esercizio: "#7dd3fc",
+  AVM: "#c084fc", Officina: "#fb923c", Esercizio: "#7dd3fc",
   "Gestore SIM": "#f87171", nessuno: "#34d399",
 };
 
@@ -170,6 +171,9 @@ export default function DiarioAvm() {
   /* le vetture dell'azienda nel canale (tappa 6.5): la regola è un dato dell'azienda; senza cifre non ci
      sono consorziate, e la scelta «solo …» non ha senso */
   const azienda = useAzienda();
+  const fav = fornitoreAvm(azienda);
+  /** il destinatario come si legge: il fornitore dell'AVM col suo nome */
+  const destinatario = (d: string) => (d === "AVM" ? fav.breve : d);
   const cifre = azienda.avmMatricolaCifre;
   const conConsorziate = cifre !== null;
   const [giorni, setGiorni] = useState(7);
@@ -418,7 +422,7 @@ export default function DiarioAvm() {
               <p className="text-[11px]">
                 <span className="font-medium text-violet-300">{d.officina.senzaAvm.length} mezzi del parco</span>
                 <span className="text-muted-foreground"> non sono mai comparsi nel canale SIRI nel periodo: da far
-                  censire o attrezzare a Mizar.</span>
+                  censire o attrezzare {fav.a}.</span>
               </p>
               <div className="flex flex-wrap gap-1.5">
                 {d.officina.senzaAvm.map(m => (
@@ -536,7 +540,7 @@ export default function DiarioAvm() {
                       color: DESTINATARI[s.destinatario as Destinatario] ?? "#94a3b8",
                       background: `${DESTINATARI[s.destinatario as Destinatario] ?? "#94a3b8"}1f`,
                     }}>
-                    {s.destinatario}
+                    {destinatario(s.destinatario)}
                   </span>
                   <span className="text-[11px] font-mono text-muted-foreground">
                     {s.matricole} vetture
@@ -622,7 +626,7 @@ export default function DiarioAvm() {
                     <td className="px-3 py-1.5 font-mono whitespace-nowrap">
                       {v.vehicleRef}
                       {v.codice && v.codice !== v.vehicleRef && (
-                        <span className="ml-1.5 text-[10px] text-muted-foreground" title="codice FlashNet">{v.codice}</span>
+                        <span className="ml-1.5 text-[10px] text-muted-foreground" title="codice dell'officina">{v.codice}</span>
                       )}
                       {v.intermittente && (
                         <span className="ml-1.5 text-[9px] text-amber-400" title="parla a sprazzi">⌁</span>
@@ -697,7 +701,7 @@ export default function DiarioAvm() {
                         ? <span className="text-muted-foreground" title={v.esclusa.testo}>spiegata dall'officina</span>
                         : v.destinatario === "nessuno"
                           ? <span className="text-muted-foreground">—</span>
-                          : <span style={{ color: DESTINATARI[v.destinatario] }}>{v.destinatario}</span>}
+                          : <span style={{ color: DESTINATARI[v.destinatario] }}>{destinatario(v.destinatario)}</span>}
                     </td>
                   </tr>
                 );

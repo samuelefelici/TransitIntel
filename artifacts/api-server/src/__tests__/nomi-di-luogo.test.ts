@@ -68,3 +68,24 @@ describe("nessun nome dell'azienda o dei suoi luoghi nei sorgenti dell'API", () 
     expect(NOMI.test(senzaCommenti('const d = ["heatmap", "flatMap", "marchetta"];'))).toBe(false);
   });
 });
+
+/**
+ * Né i nomi dei fornitori del primo cliente (tappa 6.27): il fornitore
+ * dell'AVM è un dato dell'azienda (fornitoreAvm, lib/vetture-azienda.ts),
+ * l'officina si chiama «officina». Maiuscole e confini di parola: i nomi
+ * interni come mizarRef o nomeMizar restano, sono codice e non testo.
+ */
+const FORNITORI = /\b(Mizar|FlashNet|Flashnet)\b/;
+
+describe("nessun nome dei fornitori del primo cliente nei testi dell'API", () => {
+  it("fuori dai commenti non ce n'è nessuno", () => {
+    const trovati = sorgenti("").flatMap((f) => senzaCommenti(readFileSync(join(SRC, f), "utf8")).split("\n")
+      .map((riga, i) => ({ riga, n: i + 1 })).filter((x) => FORNITORI.test(x.riga)).map((x) => `${f}:${x.n}: ${x.riga.trim().slice(0, 140)}`));
+    expect(trovati).toEqual([]);
+  });
+
+  it("la ricerca trova davvero il nome, non gli identificativi", () => {
+    expect(FORNITORI.test('out.push("va chiesto a Mizar")')).toBe(true);
+    expect(FORNITORI.test("const { mizarRef, nomeMizar } = x;")).toBe(false);
+  });
+});

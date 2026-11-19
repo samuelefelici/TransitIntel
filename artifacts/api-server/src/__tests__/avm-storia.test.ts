@@ -1,7 +1,8 @@
 /* L'andamento dell'AVM (lib/avm-storia.ts): stessa regola del controllo
  * settimanale (parità), le azioni con i confini delle soglie, le richieste a
  * Mizar che si chiudono da sole, i testi. */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { impostaFornitoreAvm } from "../lib/vetture-azienda";
 import {
   calcolaStoria, verificaRichieste, testiMizar, richiestaTogliere, andamentoStoria, fraseAndamento,
   vediRichiesta, giornateComplete, richiestaCopre, SETTIMANE_SILENZIO_ALIENATA,
@@ -12,6 +13,10 @@ import type { RigaDiario } from "../lib/avm-diario";
 import type { MezzoOfficina, ParcoOfficina } from "../lib/officina";
 import { impostaRegolaVetture } from "../lib/vetture-azienda";
 
+
+/* il fornitore dell'AVM dell'azienda di prova (tappa 6.27): i testi lo nominano */
+beforeAll(() => impostaFornitoreAvm("Mizar"));
+afterAll(() => impostaFornitoreAvm(null));
 /* i test provano un'azienda col suo canale AVM condiviso con le consorziate: la regola è un dato
  * dell'azienda (tappa 6.5, lib/vetture-azienda.ts), e qui la si dichiara */
 impostaRegolaVetture({ cifre: 4, nome: "Conerobus" });

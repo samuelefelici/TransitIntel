@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda, nomeNeiDocumenti,
   moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex, conRiferimento,
-  orarioDaMinuti, minutiDaOrario, esempioCodiciTurni, vicinoAlCentro, dintorniDelCentro,
+  orarioDaMinuti, minutiDaOrario, esempioCodiciTurni, fornitoreAvm, vicinoAlCentro, dintorniDelCentro,
 } from "./azienda";
 
 const CONEROBUS: Azienda = {
@@ -10,7 +10,7 @@ const CONEROBUS: Azienda = {
   gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
   provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null,
   netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-  tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmMatricolaCifre: 4, compilata: true,
+  tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4, compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -30,6 +30,24 @@ describe("aziendaValida", () => {
   it("i valori neutri non hanno il nome di nessuna azienda", () => {
     expect(JSON.stringify(AZIENDA_DA_COMPILARE).toLowerCase()).not.toMatch(/conerobus|ancona/);
     expect(AZIENDA_DA_COMPILARE.compilata).toBe(false);
+  });
+});
+
+describe("il fornitore dell'AVM nei testi (tappa 6.27)", () => {
+  it("col nome: il nome in tutte le forme; senza: «il fornitore dell'AVM»", () => {
+    expect(fornitoreAvm(CONEROBUS)).toEqual({ breve: "Mizar", nome: "Mizar", Nome: "Mizar", a: "a Mizar", di: "di Mizar", da: "da Mizar" });
+    expect(fornitoreAvm(AZIENDA_DA_COMPILARE)).toEqual({
+      breve: "AVM", nome: "il fornitore dell'AVM", Nome: "Il fornitore dell'AVM",
+      a: "al fornitore dell'AVM", di: "del fornitore dell'AVM", da: "dal fornitore dell'AVM",
+    });
+    expect(fornitoreAvm({ avmFornitore: "  " }).breve).toBe("AVM");
+  });
+
+  it("dal server una riga di al più 40 caratteri; nel modulo è facoltativo", () => {
+    expect(aziendaValida({ ...CONEROBUS, avmFornitore: "x".repeat(41) }).avmFornitore).toBeNull();
+    const m = moduloDa(CONEROBUS);
+    expect(datiDaSalvare({ ...m, avmFornitore: " " }).avmFornitore).toBeNull();
+    expect(erroriDelModulo({ ...m, avmFornitore: "x".repeat(41) })).toEqual({ avmFornitore: "Al più 40 caratteri" });
   });
 });
 
@@ -114,7 +132,7 @@ describe("il modulo dell'amministratore", () => {
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
       provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "",
       netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: "12:00", avmMatricolaCifre: "4",
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: "12:00", avmFornitore: "Mizar", avmMatricolaCifre: "4",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -127,7 +145,7 @@ describe("il modulo dell'amministratore", () => {
       citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
       netexCodiceLocale: "ITI3", netexFornitore: null,
       netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmMatricolaCifre: 4,
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4,
     });
     expect(erroriDelModulo({ ...m, netexCodiceLocale: "iti3" })).toEqual({ netexCodiceLocale: "Un codice NUTS in maiuscolo, come ITI3" });
     expect(erroriDelModulo({ ...m, netexFornitore: "A T" })).toEqual({ netexFornitore: "Lettere, cifre, - e _ (al più 40)" });

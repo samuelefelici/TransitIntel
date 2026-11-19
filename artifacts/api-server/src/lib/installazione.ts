@@ -7,6 +7,7 @@
  * succede se manca. Lo legge l'amministratore (GET /api/admin/installazione):
  * niente tabelle nuove, solo conteggi.
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { leggiAzienda } from "./azienda";
@@ -191,7 +192,7 @@ export function vociDellInstallazione(c: Conteggi): Voce[] {
       voce: "paline", titolo: "Transcodifica delle paline dell'AVM", compilata: c.paline > 0, necessaria: false,
       dettaglio: c.paline > 0 ? nr(c.paline, "palina", "paline") : "non importata",
       seManca: "Le fermate dell'AVM si agganciano al feed solo per codice o per nome: dove le due numerazioni si sovrappongono, la fermata è sbagliata. Va bene se l'AVM usa gli stessi codici del feed.",
-      dove: { pagina: "/data", sezione: null, etichetta: "Dati & GTFS › Paline Mizar" },
+      dove: { pagina: "/data", sezione: null, etichetta: `Dati & GTFS › Paline ${fornitoreAvm().breve}` },
     }),
     voce({
       voce: "netex", titolo: "Codice locale NeTEx", compilata: c.netexCodiceLocale, necessaria: false,

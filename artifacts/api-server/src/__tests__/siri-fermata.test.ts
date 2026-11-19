@@ -10,13 +10,18 @@
  * linea diversa, circolare che passa due volte.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { impostaFornitoreAvm } from "../lib/vetture-azienda";
 import {
   parseStopMonitoringResponse, confrontaFermata, secondiLocali, secondiGtfs, scartoCircolare, leggiConfronto,
   leggiDiagnosi, leggiFermataFeed, unisciVisite, fuoriServizio, type RigaOrario,
 } from "../lib/siri-fermata";
 import { indiceCodiciCorsaDelGiorno, type GtfsIndex } from "../lib/siri-vm";
 
+
+/* il fornitore dell'AVM dell'azienda di prova (tappa 6.27): i testi lo nominano */
+beforeAll(() => impostaFornitoreAvm("Mizar"));
+afterAll(() => impostaFornitoreAvm(null));
 const visita = (o: {
   line: string; corsa: string; partenza: string; arrivoCapolinea: string; aimed: string;
   monitored?: boolean; recorded?: string; expected?: string; stato?: string; display?: string;

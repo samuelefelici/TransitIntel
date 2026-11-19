@@ -8,11 +8,16 @@
  * Senza la transcodifica l'aggancio per numero prendeva quella.
  * ═══════════════════════════════════════════════════════════════════════════
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { impostaFornitoreAvm } from "../lib/vetture-azienda";
 import { indiceTranscodifica, verificaTranscodifica, classificaAbbinamenti, fermataDelCodice, codiceDellaFermata, aliasNelFeed } from "../lib/stop-aliases";
 import { leggiCsvTranscodifica, righeDellaBase, stopIdValido } from "../lib/transcodifica-paline";
 import { resolveStop, namesCompatible, type GtfsIndex } from "../lib/siri-vm";
 
+
+/* il fornitore dell'AVM dell'azienda di prova (tappa 6.27): i testi lo nominano */
+beforeAll(() => impostaFornitoreAvm("Mizar"));
+afterAll(() => impostaFornitoreAvm(null));
 const CSV = `\uFEFFmizar_ref,stop_id,nome
 1122,20045,ANCONA (Via Marconi Gas)
 200,20001,"Piazza Cavour (Conerobus Linee Nord)"

@@ -151,7 +151,12 @@ export function LegendaRitardo({ l }: { l: Legenda }) {
 
 /* ── Le fermate ───────────────────────────────────────────────────────────── */
 
-export function TabellaFermate({ fermate, previsioni }: { fermate: FermataCorsa[]; previsioni?: PrevisioniMizarInfo | null }) {
+/** Come la pagina chiama il fornitore dell'AVM (fornitoreAvm in lib/azienda.ts, tappa 6.27): qui solo le forme che servono. */
+export interface NomeFornitoreAvm { breve: string; da: string; di: string }
+const FORNITORE_NEUTRO: NomeFornitoreAvm = { breve: "AVM", da: "dal fornitore dell'AVM", di: "del fornitore dell'AVM" };
+
+export function TabellaFermate({ fermate, previsioni, fornitore = FORNITORE_NEUTRO }: { fermate: FermataCorsa[]; previsioni?: PrevisioniMizarInfo | null; fornitore?: NomeFornitoreAvm }) {
+  const fav = fornitore;
   if (fermate.length === 0) return null;
   /* La colonna di Mizar compare solo se c'è almeno una previsione: una
      colonna sempre vuota insegna a non guardarla. */
@@ -165,8 +170,8 @@ export function TabellaFermate({ fermate, previsioni }: { fermate: FermataCorsa[
           <th className="px-1.5 py-1 font-medium text-right">Reale</th>
           <th className="px-1.5 py-1 font-medium text-right">Δ</th>
           {conMizar && (
-            <th className="px-1.5 py-1 font-medium text-right" title={previsioni?.nota ?? "orario previsto da Mizar (StopMonitoring)"}>
-              Mizar
+            <th className="px-1.5 py-1 font-medium text-right" title={previsioni?.nota ?? `orario previsto ${fav.da} (StopMonitoring)`}>
+              {fav.breve}
             </th>
           )}
         </tr>
@@ -237,9 +242,9 @@ export function TabellaFermate({ fermate, previsioni }: { fermate: FermataCorsa[
                 <td
                   className={`px-1.5 py-1 text-right font-mono whitespace-nowrap ${daVenire || !transitato ? "" : "opacity-60"}`}
                   title={pm
-                    ? `previsto da Mizar${pm.stato ? ` (${pm.stato})` : ""}, aggiornato alle ${fmtTime(pm.aggiornataAlle).slice(0, 5)}`
+                    ? `previsto ${fav.da}${pm.stato ? ` (${pm.stato})` : ""}, aggiornato alle ${fmtTime(pm.aggiornataAlle).slice(0, 5)}`
                       + (pm.primaPrevisioneTs !== pm.expectedTs ? `; prima previsione ${fmtTime(pm.primaPrevisioneTs).slice(0, 5)}` : "")
-                    : "nessuna previsione di Mizar per questa fermata"}
+                    : `nessuna previsione ${fav.di} per questa fermata`}
                 >
                   {pm ? (
                     <>

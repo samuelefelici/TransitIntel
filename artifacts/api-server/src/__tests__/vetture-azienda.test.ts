@@ -4,9 +4,7 @@
  * ripeteva la legge da lì.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import {
-  eDellAzienda, espressioneVetture, impostaRegolaVetture, nomeAzienda, perimetroAzienda, REGOLA_NEUTRA, regolaVetture, siglaAzienda,
-} from "../lib/vetture-azienda";
+import { eDellAzienda, espressioneVetture, impostaRegolaVetture, nomeAzienda, perimetroAzienda, REGOLA_NEUTRA, regolaVetture, siglaAzienda, formeFornitoreAvm, fornitoreAvm, impostaFornitoreAvm } from "../lib/vetture-azienda";
 import { aziendaDaSiri, codiceDaSiri, siriDaCodice, impostaParco } from "../lib/parco-anagrafica";
 import { PARCO_DI_PRIMA } from "./helpers/parco-di-prima";
 
@@ -104,5 +102,28 @@ describe("chi la usa la legge da lì", () => {
     const r = richiestaTogliere(["305"]);
     expect(r.oggetto).toBe("AVM Autolinee Prova — vetture da togliere dall'anagrafica del centro (1)");
     expect(r.testo).toContain("1 matricola Autolinee Prova che il parco dell'officina non ha più");
+  });
+});
+
+describe("il fornitore dell'AVM nei testi (tappa 6.27)", () => {
+  it("col nome: il nome in tutte le forme; senza: «il fornitore dell'AVM»", () => {
+    expect(formeFornitoreAvm("Mizar")).toEqual({ breve: "Mizar", nome: "Mizar", Nome: "Mizar", a: "a Mizar", di: "di Mizar", da: "da Mizar" });
+    expect(formeFornitoreAvm(null)).toEqual({
+      breve: "AVM", nome: "il fornitore dell'AVM", Nome: "Il fornitore dell'AVM",
+      a: "al fornitore dell'AVM", di: "del fornitore dell'AVM", da: "dal fornitore dell'AVM",
+    });
+    expect(formeFornitoreAvm("  ").breve).toBe("AVM");
+  });
+
+  it("le frasi seguono il fornitore in vigore", async () => {
+    const { ETICHETTE_AZIONE } = await import("../lib/avm-storia");
+    impostaFornitoreAvm(null);
+    expect(fornitoreAvm().a).toBe("al fornitore dell'AVM");
+    expect(ETICHETTE_AZIONE.da_aggiungere_a_siri.perche).toMatch(/va censito al fornitore dell'AVM,/);
+    impostaFornitoreAvm("Altro AVM");
+    expect(ETICHETTE_AZIONE.da_aggiungere_a_siri.perche).toMatch(/va censito a Altro AVM,/);
+    /* anche quando la tabella va in JSON a una pagina */
+    expect(JSON.stringify(ETICHETTE_AZIONE.da_aggiungere_a_siri)).toMatch(/a Altro AVM/);
+    impostaFornitoreAvm(null);
   });
 });
