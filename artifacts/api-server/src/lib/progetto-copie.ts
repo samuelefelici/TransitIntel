@@ -206,49 +206,60 @@ async function copyDayValidity(tx: Esecutore, src: string, mappe: any): Promise<
 
 
 /**
- * Cancella un progetto con tutte le sue righe, in `tx`. La sola cascata da
- * ps_projects NON basta: tre FK sono ON DELETE RESTRICT (ps_variant_stops.stop_id,
- * ps_trips.variant_id, ps_stop_times.stop_id) e Postgres le verifica subito
- * durante la cascata. Cancellazione ORDINATA: prima chi blocca, poi il
- * progetto (che porta via il resto: linee, fermate, calendari, membri, log…).
- * Le righe con una chiave SET NULL verso il progetto restano (lo storico del
- * programma in esercizio, le versioni pubblicate).
+ * Cancella un progetto (o una versione pubblicata) con tutte le sue righe, in
+ * `tx`: chi chiama apre la transazione.
+ *
+ * Le tabelle con i dati di un progetto e una chiave verso ps_projects l'hanno
+ * ON DELETE CASCADE (lib/db/migrations/meta/catalogo.json): le porta via la
+ * DELETE del progetto. Da sola però non basta. Gli orari (ps_stop_times) e le
+ * fermate dei percorsi (ps_variant_stops) non hanno una chiave verso il
+ * progetto: se ne vanno con la corsa e con il percorso, e intanto puntano alle
+ * fermate con ON DELETE RESTRICT. Nella cascata Postgres toglie le fermate e
+ * controlla quel vincolo quando loro possono esserci ancora (dipende
+ * dall'ordine in cui sono nati i vincoli): 23503.
+ *
+ * Quindi un ordine FISSO: orari e corse; poi fermate dei percorsi e percorsi
+ * (dopo le corse: ps_trips.variant_id è ON DELETE RESTRICT); poi le tre
+ * tabelle senza chiave verso il progetto, che la cascata non vede; poi il
+ * progetto. Nessun nome di tabella letto dal catalogo e nessun tentativo: dopo
+ * un'istruzione fallita la transazione è annullata, e ogni altra risponde
+ * «current transaction is aborted» fino al ROLLBACK. Un 23503 esce da qui
+ * com'è, e annulla la transazione di chi chiama.
+ *
+ * Le righe con una chiave ON DELETE SET NULL verso il progetto restano, senza
+ * progetto: lo storico del programma in esercizio (ps_activation_log, 0019),
+ * le versioni pubblicate (ps_projects.versione_di, 0021), le giornate di
+ * esercizio. Lo fa la chiave: qui non si toccano.
+ *
+ * ps_day_calendar.day_type_id → ps_day_types è RESTRICT anche lei, ma non
+ * chiede un passo: giorni del calendario e tipi di giorno sono tutti e due
+ * figli diretti del progetto, e la cascata controlla i vincoli dopo averli
+ * tolti entrambi, in qualunque ordine.
+ *
+ * Una tabella nuova di Planning Studio nasce da una migrazione: se porta dati
+ * di un progetto entra in elimina-progetto-db.test.ts (che altrimenti fallisce)
+ * e, se la cascata non basta, qui.
  */
 export async function cancellaProgetto(tx: Esecutore, id: string): Promise<void> {
-    await tx.execute(sql`
-      DELETE FROM ps_stop_times
-       WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${id}::uuid)
-    `);
-    await tx.execute(sql`DELETE FROM ps_trips WHERE project_id = ${id}::uuid`);
-    await tx.execute(sql`
-      DELETE FROM ps_variant_stops
-       WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${id}::uuid)
-    `);
-    await tx.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${id}::uuid`);
-    // Passata DINAMICA: sui DB storici possono esistere tabelle figlie
-    // fuori dal codice attuale. Trova ogni FK diretta verso ps_projects e
-    // svuota le righe del progetto (2 passate per dipendenze tra figlie).
-    const rFks = await tx.execute<any>(sql`
-      SELECT c.conrelid::regclass::text AS child_table,
-             a.attname AS child_col
-        FROM pg_constraint c
-        JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = ANY (c.conkey)
-       WHERE c.contype = 'f' AND c.confrelid = 'ps_projects'::regclass
-         -- le righe che restano senza progetto (lo storico del programma in esercizio, 0019) non si cancellano
-         AND c.confdeltype <> 'n'
-    `);
-    const fkRows: any[] = (rFks as any).rows ?? [];
-    for (let pass = 0; pass < 2; pass++) {
-      for (const fk of fkRows) {
-        try {
-          await tx.execute(sql.raw(
-            `DELETE FROM ${fk.child_table} WHERE ${fk.child_col} = '${id}'`,
-          ));
-        } catch (e: any) {
-          if ((e?.cause ?? e)?.code !== "23503" || pass === 1) throw e;
-          // prima passata: una figlia con RESTRICT verso un'altra figlia — riprova dopo
-        }
-      }
-    }
-    await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${id}::uuid`);
+  // 1. orari e corse
+  await tx.execute(sql`
+    DELETE FROM ps_stop_times
+     WHERE trip_id IN (SELECT id FROM ps_trips WHERE project_id = ${id}::uuid)
+  `);
+  await tx.execute(sql`DELETE FROM ps_trips WHERE project_id = ${id}::uuid`);
+  // 2. fermate dei percorsi e percorsi
+  await tx.execute(sql`
+    DELETE FROM ps_variant_stops
+     WHERE variant_id IN (SELECT id FROM ps_route_variants WHERE project_id = ${id}::uuid)
+  `);
+  await tx.execute(sql`DELETE FROM ps_route_variants WHERE project_id = ${id}::uuid`);
+  // 3. senza chiave verso ps_projects: la sorveglianza di Argos (il cron
+  //    continuerebbe a girare su un progetto che non c'è) e i link pubblici.
+  //    Sono del progetto, mai di una sua versione: cancellando una versione
+  //    qui non c'è niente da togliere.
+  await tx.execute(sql`DELETE FROM ps_argos_watches WHERE project_id = ${id}::uuid`);
+  await tx.execute(sql`DELETE FROM ps_network_shares WHERE project_id = ${id}::uuid`);
+  await tx.execute(sql`DELETE FROM ps_timetable_map_shares WHERE project_id = ${id}::uuid`);
+  // 4. il progetto, e a cascata tutto il resto
+  await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${id}::uuid`);
 }

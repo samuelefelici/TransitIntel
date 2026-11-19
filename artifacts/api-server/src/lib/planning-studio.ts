@@ -663,16 +663,13 @@ router.delete("/planning-studio/projects/:id", async (req, res): Promise<void> =
     }
     req.log?.warn({ projectId: proj.id }, "progetto ORFANO (owner inesistente): eliminazione consentita");
   }
-  // La sola cascata da ps_projects NON basta: tre FK sono ON DELETE RESTRICT
-  // (ps_variant_stops.stop_id, ps_trips.variant_id, ps_stop_times.stop_id) e
-  // Postgres le verifica subito durante la cascata → la DELETE nuda dava 500.
-  // Cancellazione ORDINATA in transazione: prima chi blocca, poi il progetto
-  // (che cascata il resto: routes, stops, calendars, membri, log, ecc.).
   try {
     await db.transaction((tx) => cancellaProgetto(tx, proj.id));
   } catch (e: any) {
-    // FK violation (23503): di' QUALE tabella blocca invece del 500 muto —
-    // sui DB storici possono esistere referenze fuori dal codice attuale.
+    // FK violation (23503): di' QUALE tabella blocca invece del 500 muto. Con
+    // l'ordine di cancellaProgetto può bloccare solo una riga che NON è di
+    // questo progetto e punta a una sua fermata, a un suo percorso o a un suo
+    // tipo di giorno. La transazione è annullata: non si è cancellato niente.
     const cause = e?.cause ?? e;
     if (cause?.code === "23503") {
       req.log?.error({ constraint: cause.constraint, table: cause.table, detail: cause.detail },

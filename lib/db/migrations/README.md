@@ -80,6 +80,18 @@ su main non si tocca più.
   prima del conteggio): mentre il deploy migra il container di prima serve
   ancora, e una riga scritta fra il conteggio e l'`ALTER` farebbe fallire la
   migrazione (`lib/db/tests/chiave-categoria-in-gara.sh`).
+- **Una tabella nuova di Planning Studio** (`ps_*`) con i dati di un progetto
+  ha la chiave verso `ps_projects` con `ON DELETE CASCADE`, e una riga nel seme
+  di `artifacts/api-server/src/__tests__/elimina-progetto-db.test.ts`: la prova
+  controlla che cancellando il progetto non ne resti nessuna, e fallisce finché
+  la tabella non è in uno dei suoi due elenchi. L'ordine della cancellazione è
+  scritto nel codice (`cancellaProgetto`, in
+  `artifacts/api-server/src/lib/progetto-copie.ts`): l'app non cerca più nel
+  catalogo le tabelle da svuotare. Se la tabella nuova punta a un'altra del
+  progetto con `ON DELETE RESTRICT`, o non ha la chiave verso il progetto,
+  quell'ordine va rivisto nella stessa PR. Una riga che deve restare quando il
+  progetto si cancella (lo storico del programma in esercizio, 0019) ha la
+  chiave `ON DELETE SET NULL`, e la prova lo dice in `RESTA`.
 - **Mai modificare una migrazione rilasciata**: il migratore si ferma e la CI
   fallisce. Se serve correggere, una migrazione nuova.
 - **Chi possiede cosa (PR 2.8).** Le tabelle, le viste e le sequenze di
