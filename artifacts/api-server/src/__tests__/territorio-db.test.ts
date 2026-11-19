@@ -4,14 +4,14 @@
  * toglie comuni e luoghi; chi legge vede i nomi; senza provincia e senza
  * luoghi gli import si fermano con un messaggio, prima di toccare i dati.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import request from "supertest";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import adminRouter from "../routes/admin";
 import { dimenticaAzienda, leggiAzienda } from "../lib/azienda";
 import { dimenticaTerritorio, leggiLuoghi, nomeComune, nomiComuni } from "../lib/territorio";
-import { syncCommutingOdFromIstat, syncPoiFromGoogle } from "../routes/cron";
+import { riquadroDiRicerca, riquadroPerOverpass, syncCommutingOdFromIstat, syncPoiFromGoogle, syncPoiFromOsm } from "../routes/cron";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
 const ADMIN = "e6100000-0000-4000-8000-000000000001";
@@ -114,5 +114,40 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il territorio dell'azienda, sul
       if (chiave === undefined) delete process.env.GOOGLE_PLACES_API_KEY; else process.env.GOOGLE_PLACES_API_KEY = chiave;
     }
     expect(Number((await righe(sql`SELECT count(*)::int AS n FROM points_of_interest`))[0].n)).toBe(prima);
+    /* e così l'import da OpenStreetMap (tappa 6.32): senza luoghi non c'è un riquadro dove cercare */
+    await expect(syncPoiFromOsm()).rejects.toThrow(/Nessun luogo dove cercare/);
+    expect(Number((await righe(sql`SELECT count(*)::int AS n FROM points_of_interest`))[0].n)).toBe(prima);
+  });
+
+  it("l'import da OpenStreetMap cerca nel riquadro dei luoghi dell'azienda, non in uno scritto nel codice (tappa 6.32)", async () => {
+    if ((await leggiLuoghi("punti_interesse")).length) return;
+    const poiPrima = (await righe(sql`SELECT to_jsonb(p) AS riga FROM points_of_interest p`)).map((r: any) => r.riga);
+    const nuovo = await admin.post("/api/admin/territorio/luoghi").send({ nome: "Prova 6.1 ricerca", uso: "punti_interesse", lat: 45.0, lng: 10.0, raggioM: 4000 });
+    expect(nuovo.status, JSON.stringify(nuovo.body)).toBe(201);
+    dimenticaTerritorio();
+    const atteso = riquadroPerOverpass(riquadroDiRicerca([{ lat: 45.0, lng: 10.0, radius: 4000 }])!);
+    /* 4 km di raggio più 5 di margine: circa 0,081 gradi di latitudine per parte */
+    expect(atteso).toBe("44.9192,9.8857,45.0808,10.1143");
+    const chieste: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: any) => {
+      chieste.push(String(init?.body ?? ""));
+      return new Response(JSON.stringify({ elements: chieste.length === 1 ? [
+        { type: "node", id: 630001, lat: 45.01, lon: 10.02, tags: { name: "Ospedale di prova 6.32", amenity: "hospital" } },
+      ] : [] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    try {
+      const r = await syncPoiFromOsm();
+      expect(r.inserted).toBeGreaterThanOrEqual(1);
+      expect(chieste.length).toBeGreaterThan(5);
+      for (const q of chieste) {
+        const riquadri = [...q.matchAll(/\]\(([^)]*)\)/g)].map((m) => m[1]);
+        expect(riquadri.length).toBeGreaterThan(0);
+        expect(new Set(riquadri)).toEqual(new Set([atteso]));
+      }
+    } finally {
+      vi.unstubAllGlobals();
+      await db.execute(sql`DELETE FROM points_of_interest`);
+      for (const riga of poiPrima) await db.execute(sql`INSERT INTO points_of_interest SELECT * FROM jsonb_populate_record(NULL::points_of_interest, ${JSON.stringify(riga)}::jsonb)`);
+    }
   });
 });

@@ -1325,9 +1325,38 @@ def weights_to_solver_params(weights: dict[str, float]) -> dict[str, int]:
 #  CONVERSIONE DICTS ↔ DATACLASS
 # ═══════════════════════════════════════════════════════════════
 
-def trip_from_dict(d: dict, idx: int) -> Trip:
+def _numero(v) -> float | None:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v else None
+
+
+def centro_delle_corse(corse: list[dict]) -> tuple[float, float] | None:
+    """La media delle coordinate note dei capolinea delle corse: dove mettere
+    una corsa che arriva senza le sue (tappa 6.32). Senza nessuna, None."""
+    n, lat, lon = 0, 0.0, 0.0
+    for d in corse:
+        for a, b in (("firstStopLat", "firstStopLon"), ("lastStopLat", "lastStopLon")):
+            x, y = _numero(d.get(a)), _numero(d.get(b))
+            if x is not None and y is not None:
+                n += 1
+                lat += x
+                lon += y
+    return (lat / n, lon / n) if n else None
+
+
+def _capolinea(d: dict, chiave_lat: str, chiave_lon: str, ripiego: tuple[float, float] | None) -> tuple[float, float]:
+    """Le coordinate di un capolinea; se ne manca una, il ripiego (il centro
+    delle altre corse) per tutte e due. Prima era un punto del primo cliente."""
+    x, y = _numero(d.get(chiave_lat)), _numero(d.get(chiave_lon))
+    if x is not None and y is not None:
+        return x, y
+    return ripiego if ripiego else (0.0, 0.0)
+
+
+def trip_from_dict(d: dict, idx: int, ripiego: tuple[float, float] | None = None) -> Trip:
     dep_min = d["departureMin"]
     arr_min = d["arrivalMin"]
+    first_lat, first_lon = _capolinea(d, "firstStopLat", "firstStopLon", ripiego)
+    last_lat, last_lon = _capolinea(d, "lastStopLat", "lastStopLon", ripiego)
     return Trip(
         idx=idx,
         trip_id=d["tripId"],
@@ -1341,10 +1370,10 @@ def trip_from_dict(d: dict, idx: int) -> Trip:
         arrival_min=arr_min,
         first_stop_id=d.get("firstStopId", ""),
         last_stop_id=d.get("lastStopId", ""),
-        first_stop_lat=d.get("firstStopLat", 43.6),
-        first_stop_lon=d.get("firstStopLon", 13.5),
-        last_stop_lat=d.get("lastStopLat", 43.6),
-        last_stop_lon=d.get("lastStopLon", 13.5),
+        first_stop_lat=first_lat,
+        first_stop_lon=first_lon,
+        last_stop_lat=last_lat,
+        last_stop_lon=last_lon,
         first_stop_name=d.get("firstStopName", ""),
         last_stop_name=d.get("lastStopName", ""),
         stop_count=d.get("stopCount", 0),
