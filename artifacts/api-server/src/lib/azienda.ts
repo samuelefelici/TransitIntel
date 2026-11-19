@@ -54,6 +54,12 @@ export interface Azienda {
   netexPrefissoCodici: string | null;
   netexCodiceRete: string | null;
   /**
+   * Il riferimento della regola regionale con cui le pagine delle tariffe misurano la distanza
+   * extraurbana (percorso più servito; media sulle linee con gli stessi capolinea), mostrato
+   * accanto al calcolo: «DGR … art. …». null: non compare (tappa 6.24)
+   */
+  tariffeRiferimento: string | null;
+  /**
    * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
    * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5, lib/vetture-azienda.ts)
    */
@@ -78,6 +84,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexPrefisso: null,
   netexPrefissoCodici: null,
   netexCodiceRete: null,
+  tariffeRiferimento: null,
   avmMatricolaCifre: null,
   compilata: false,
 });
@@ -113,6 +120,7 @@ export const DatiAzienda = z.object({
   netexPrefisso: facoltativo(z.string().trim().regex(/^[A-Za-z][A-Za-z0-9]{0,9}$/, "una lettera e poi lettere o cifre (al più 10), come «epd»")),
   netexPrefissoCodici: facoltativo(z.string().trim().regex(/^[A-Za-z0-9-]{1,20}$/, "lettere, cifre e - (al più 20), come «ABC»")),
   netexCodiceRete: facoltativo(z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/, "lettere, cifre, - e _ (al più 40)")),
+  tariffeRiferimento: facoltativo(riga(200)),
   avmMatricolaCifre: facoltativo(z.number().int("un numero intero da 1 a 9").min(1, "da 1 a 9").max(9, "da 1 a 9")),
 }).strict();
 export type DatiAzienda = z.infer<typeof DatiAzienda>;
@@ -123,6 +131,7 @@ const NOMI_CAMPI: Readonly<Record<string, string>> = {
   citta: "Città", regione: "Regione", centroLat: "Latitudine", centroLng: "Longitudine", zoom: "Zoom",
   provinciaIstat: "Provincia ISTAT", netexCodiceLocale: "Codice locale NeTEx", netexFornitore: "Fornitore NeTEx",
   netexPrefisso: "Prefisso degli identificativi NeTEx", netexPrefissoCodici: "Prefisso dei codici NeTEx", netexCodiceRete: "Codice della rete NeTEx",
+  tariffeRiferimento: "Riferimento della regola regionale",
   avmMatricolaCifre: "Cifre della matricola nell'AVM",
   /* i comuni e i luoghi del territorio (lib/territorio.ts) */
   codiceIstat: "Codice ISTAT", soppresso: "Soppresso", lat: "Latitudine", lng: "Longitudine", areaKm2: "Superficie",
@@ -158,6 +167,7 @@ function daRiga(r: any): Azienda {
     netexPrefisso: r.netex_prefisso ?? null,
     netexPrefissoCodici: r.netex_prefisso_codici ?? null,
     netexCodiceRete: r.netex_codice_rete ?? null,
+    tariffeRiferimento: r.tariffe_riferimento ?? null,
     avmMatricolaCifre: r.avm_matricola_cifre == null ? null : Number(r.avm_matricola_cifre),
     compilata: true,
   };
@@ -174,7 +184,7 @@ export async function leggiAzienda(): Promise<Azienda> {
     const r = await db.execute<any>(sql`
       SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom,
              provincia_istat, netex_codice_locale, netex_fornitore, netex_prefisso, netex_prefisso_codici, netex_codice_rete,
-             avm_matricola_cifre
+             tariffe_riferimento, avm_matricola_cifre
         FROM azienda WHERE unica`);
     const riga = r.rows?.[0];
     /* le reti e le regole delle linee sono dati dell'azienda come la riga: si leggono insieme (lib/reti-linee.ts) */
@@ -247,7 +257,7 @@ export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
   const r = await db.execute<any>(sql`
     SELECT a.ragione_sociale, a.nome, a.sito, a.telefono, a.gtfs_agency_id, a.citta, a.regione,
            a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.netex_codice_locale, a.netex_fornitore,
-           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.avm_matricola_cifre,
+           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.tariffe_riferimento, a.avm_matricola_cifre,
            a.aggiornata_il,
            coalesce(nullif(btrim(u.full_name), ''), u.email) AS aggiornata_da
       FROM azienda a LEFT JOIN users u ON u.id = a.aggiornata_da
@@ -266,11 +276,11 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
   await db.execute(sql`
     INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione,
                          centro_lat, centro_lng, zoom, provincia_istat, netex_codice_locale, netex_fornitore,
-                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, avm_matricola_cifre,
+                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, tariffe_riferimento, avm_matricola_cifre,
                          aggiornata_il, aggiornata_da)
     VALUES (true, ${d.ragioneSociale}, ${d.nome}, ${d.sito}, ${d.telefono}, ${d.gtfsAgencyId}, ${d.citta}, ${d.regione},
             ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, ${d.netexCodiceLocale}, ${d.netexFornitore},
-            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete},
+            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete}, ${d.tariffeRiferimento},
             ${d.avmMatricolaCifre}, now(), ${utenteId}::uuid)
     ON CONFLICT (unica) DO UPDATE SET
       ragione_sociale = EXCLUDED.ragione_sociale, nome = EXCLUDED.nome, sito = EXCLUDED.sito,
@@ -280,6 +290,7 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
       netex_codice_locale = EXCLUDED.netex_codice_locale, netex_fornitore = EXCLUDED.netex_fornitore,
       netex_prefisso = EXCLUDED.netex_prefisso, netex_prefisso_codici = EXCLUDED.netex_prefisso_codici,
       netex_codice_rete = EXCLUDED.netex_codice_rete,
+      tariffe_riferimento = EXCLUDED.tariffe_riferimento,
       avm_matricola_cifre = EXCLUDED.avm_matricola_cifre,
       aggiornata_il = EXCLUDED.aggiornata_il, aggiornata_da = EXCLUDED.aggiornata_da`);
   dimenticaAzienda();

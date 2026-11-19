@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda, nomeNeiDocumenti,
-  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex, vicinoAlCentro, dintorniDelCentro,
+  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex, conRiferimento, vicinoAlCentro, dintorniDelCentro,
 } from "./azienda";
 
 const CONEROBUS: Azienda = {
   ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
   gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
   provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null,
-  netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA", avmMatricolaCifre: 4, compilata: true,
+  netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
+  tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", avmMatricolaCifre: 4, compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -28,6 +29,26 @@ describe("aziendaValida", () => {
   it("i valori neutri non hanno il nome di nessuna azienda", () => {
     expect(JSON.stringify(AZIENDA_DA_COMPILARE).toLowerCase()).not.toMatch(/conerobus|ancona/);
     expect(AZIENDA_DA_COMPILARE.compilata).toBe(false);
+  });
+});
+
+describe("il riferimento della regola regionale delle tariffe (tappa 6.24)", () => {
+  it("si scrive dopo il testo del calcolo, se l'azienda l'ha scritto", () => {
+    expect(conRiferimento(CONEROBUS)).toBe(" — DGR Marche n. 1036/2022, art. 2.d");
+    expect(conRiferimento(AZIENDA_DA_COMPILARE)).toBe("");
+  });
+
+  it("dal server arriva una riga di testo di al più 200 caratteri, altrimenti niente", () => {
+    expect(aziendaValida({ ...CONEROBUS, tariffeRiferimento: "  DGR 1/2020  " }).tariffeRiferimento).toBe("DGR 1/2020");
+    expect(aziendaValida({ ...CONEROBUS, tariffeRiferimento: "x".repeat(201) }).tariffeRiferimento).toBeNull();
+    expect(aziendaValida({ ...CONEROBUS, tariffeRiferimento: "DGR\n1" }).tariffeRiferimento).toBeNull();
+    expect(aziendaValida({ ...CONEROBUS, tariffeRiferimento: 3 }).tariffeRiferimento).toBeNull();
+  });
+
+  it("nel modulo è facoltativo: vuoto si salva come null, troppo lungo si dice accanto alla casella", () => {
+    const m = moduloDa(CONEROBUS);
+    expect(datiDaSalvare({ ...m, tariffeRiferimento: "  " }).tariffeRiferimento).toBeNull();
+    expect(erroriDelModulo({ ...m, tariffeRiferimento: "x".repeat(201) })).toEqual({ tariffeRiferimento: "Al più 200 caratteri" });
   });
 });
 
@@ -70,7 +91,8 @@ describe("il modulo dell'amministratore", () => {
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: "https://www.conerobus.it", telefono: "+39 071 2837411",
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
       provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "",
-      netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA", avmMatricolaCifre: "4",
+      netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", avmMatricolaCifre: "4",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -82,7 +104,8 @@ describe("il modulo dell'amministratore", () => {
       ragioneSociale: "Conerobus S.p.A.", nome: "Conerobus", sito: null, telefono: null, gtfsAgencyId: "conerobus",
       citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
       netexCodiceLocale: "ITI3", netexFornitore: null,
-      netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA", avmMatricolaCifre: 4,
+      netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", avmMatricolaCifre: 4,
     });
     expect(erroriDelModulo({ ...m, netexCodiceLocale: "iti3" })).toEqual({ netexCodiceLocale: "Un codice NUTS in maiuscolo, come ITI3" });
     expect(erroriDelModulo({ ...m, netexFornitore: "A T" })).toEqual({ netexFornitore: "Lettere, cifre, - e _ (al più 40)" });

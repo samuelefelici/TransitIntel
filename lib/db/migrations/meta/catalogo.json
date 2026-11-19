@@ -689,6 +689,7 @@
    "ragione_sociale": "text | not null |  |  | ",
    "regione": "text | null |  |  | ",
    "sito": "text | null |  |  | ",
+   "tariffe_riferimento": "text | null |  |  | ",
    "telefono": "text | null |  |  | ",
    "unica": "boolean | not null | true |  | ",
    "zoom": "real | not null |  |  | "
@@ -2502,6 +2503,7 @@
   "public.azienda.azienda_ragione_sociale": "CHECK (((char_length(btrim(ragione_sociale)) >= 1) AND (char_length(btrim(ragione_sociale)) <= 120)))",
   "public.azienda.azienda_regione": "CHECK (((char_length(btrim(regione)) >= 1) AND (char_length(btrim(regione)) <= 60)))",
   "public.azienda.azienda_sito": "CHECK ((sito ~ '^https?://[^[:space:]\",<>]{1,200}$'::text))",
+  "public.azienda.azienda_tariffe_riferimento": "CHECK (((char_length(tariffe_riferimento) >= 1) AND (char_length(tariffe_riferimento) <= 200)))",
   "public.azienda.azienda_telefono": "CHECK ((telefono ~ '^[0-9+() ./-]{3,40}$'::text))",
   "public.azienda.azienda_una_riga": "CHECK (unica)",
   "public.azienda.azienda_zoom": "CHECK (((zoom >= (3)::double precision) AND (zoom <= (18)::double precision)))",

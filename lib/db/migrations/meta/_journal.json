@@ -351,6 +351,13 @@
       "when": 1797100000000,
       "tag": "0049_il_parco_dell_azienda",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1797200000000,
+      "tag": "0050_riferimento_tariffe",
+      "breakpoints": true
     }
   ]
 }

@@ -31,6 +31,8 @@ export interface Azienda {
   netexPrefisso: string | null;
   netexPrefissoCodici: string | null;
   netexCodiceRete: string | null;
+  /** il riferimento della regola regionale delle tariffe extraurbane, mostrato accanto al calcolo; null: non compare (tappa 6.24) */
+  tariffeRiferimento: string | null;
   /**
    * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
    * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5)
@@ -56,11 +58,17 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexPrefisso: null,
   netexPrefissoCodici: null,
   netexCodiceRete: null,
+  tariffeRiferimento: null,
   avmMatricolaCifre: null,
   compilata: false,
 });
 
 const testo = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+/** Un testo di una riga, senza caratteri di controllo e al più `max` caratteri, altrimenti null. */
+const rigaDiTesto = (v: unknown, max: number): string | null => {
+  const t = testo(v);
+  return t && t.length <= max && !/[\u0000-\u001f\u007f]/.test(t) ? t : null;
+};
 /** Le cifre della matricola nell'AVM: un intero da 1 a 9, altrimenti null. */
 const cifreValide = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 9 ? v : null);
 const numero = (v: unknown, min: number, max: number): number | null =>
@@ -87,6 +95,7 @@ export function aziendaValida(x: unknown): Azienda {
     netexPrefisso: typeof d.netexPrefisso === "string" && PREFISSO_NETEX.test(d.netexPrefisso) ? d.netexPrefisso : null,
     netexPrefissoCodici: typeof d.netexPrefissoCodici === "string" && PREFISSO_CODICI_NETEX.test(d.netexPrefissoCodici) ? d.netexPrefissoCodici : null,
     netexCodiceRete: typeof d.netexCodiceRete === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(d.netexCodiceRete) ? d.netexCodiceRete : null,
+    tariffeRiferimento: rigaDiTesto(d.tariffeRiferimento, 200),
     avmMatricolaCifre: cifreValide(d.avmMatricolaCifre),
     compilata: d.compilata !== false,
   };
@@ -118,6 +127,14 @@ export function dintorniDelCentro(a: Pick<Azienda, "centro">, km = 80): string {
   const dLng = km / (111.32 * Math.max(Math.cos((a.centro.lat * Math.PI) / 180), 0.01));
   const t = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v)).toFixed(2);
   return [t(a.centro.lng - dLng, -180, 180), t(a.centro.lat - dLat, -90, 90), t(a.centro.lng + dLng, -180, 180), t(a.centro.lat + dLat, -90, 90)].join(",");
+}
+
+/**
+ * Il riferimento della regola regionale da scrivere dopo un testo del calcolo
+ * delle tariffe: « — DGR … art. …», o niente se l'azienda non l'ha scritto.
+ */
+export function conRiferimento(a: Pick<Azienda, "tariffeRiferimento">): string {
+  return a.tariffeRiferimento ? ` — ${a.tariffeRiferimento}` : "";
 }
 
 /** Il nome sui documenti stampati che ne vogliono uno corto: quello dell'azienda, se è compilata. */
@@ -157,6 +174,7 @@ export interface ModuloAzienda {
   citta: string; regione: string; centroLat: string; centroLng: string; zoom: string; provinciaIstat: string;
   netexCodiceLocale: string; netexFornitore: string;
   netexPrefisso: string; netexPrefissoCodici: string; netexCodiceRete: string;
+  tariffeRiferimento: string;
   avmMatricolaCifre: string;
 }
 export type CampoAzienda = keyof ModuloAzienda;
@@ -171,6 +189,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     provinciaIstat: scritto(a.provinciaIstat),
     netexCodiceLocale: scritto(a.netexCodiceLocale), netexFornitore: scritto(a.netexFornitore),
     netexPrefisso: scritto(a.netexPrefisso), netexPrefissoCodici: scritto(a.netexPrefissoCodici), netexCodiceRete: scritto(a.netexCodiceRete),
+    tariffeRiferimento: scritto(a.tariffeRiferimento),
     avmMatricolaCifre: a.compilata && a.avmMatricolaCifre != null ? String(a.avmMatricolaCifre) : "",
   };
 }
@@ -206,6 +225,7 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (m.netexPrefisso.trim() && !PREFISSO_NETEX.test(m.netexPrefisso.trim())) e.netexPrefisso = "Una lettera e poi lettere o cifre (al più 10), come epd";
   if (m.netexPrefissoCodici.trim() && !PREFISSO_CODICI_NETEX.test(m.netexPrefissoCodici.trim())) e.netexPrefissoCodici = "Lettere, cifre e - (al più 20), come ABC";
   if (m.netexCodiceRete.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexCodiceRete.trim())) e.netexCodiceRete = "Lettere, cifre, - e _ (al più 40)";
+  if (m.tariffeRiferimento.trim().length > 200) e.tariffeRiferimento = "Al più 200 caratteri";
   if (m.avmMatricolaCifre.trim() && !/^[1-9]$/.test(m.avmMatricolaCifre.trim())) e.avmMatricolaCifre = "Un numero da 1 a 9, oppure vuoto";
   return e;
 }
@@ -221,6 +241,7 @@ export function datiDaSalvare(m: ModuloAzienda) {
     netexCodiceLocale: facoltativo(m.netexCodiceLocale), netexFornitore: facoltativo(m.netexFornitore),
     netexPrefisso: facoltativo(m.netexPrefisso), netexPrefissoCodici: facoltativo(m.netexPrefissoCodici),
     netexCodiceRete: facoltativo(m.netexCodiceRete),
+    tariffeRiferimento: facoltativo(m.tariffeRiferimento),
     avmMatricolaCifre: m.avmMatricolaCifre.trim() ? Number(m.avmMatricolaCifre.trim()) : null,
   };
 }
