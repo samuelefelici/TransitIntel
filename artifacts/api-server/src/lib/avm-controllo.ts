@@ -742,7 +742,7 @@ function scriviNota(
           : s.conErroreGps
             ? `Parla col centro in ${giornate(s.conContatto)} ma non si localizza, con errore GPS: antenna.`
             : `Parla col centro in ${giornate(s.conContatto)} ma non si è mai localizzata, senza errori dichiarati: `
-              + "attivazione al centro Mizar.");
+              + "attivazione al centro AVM.");
       } else {
         pezzi.push("Nessun contatto col centro: apparato spento, SIM, o mezzo fermo.");
       }

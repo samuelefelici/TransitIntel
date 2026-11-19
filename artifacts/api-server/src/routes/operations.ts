@@ -17,6 +17,7 @@
  * caronteAvailable=false (la UI mostra le istruzioni), mai 500.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "../lib/vetture-azienda";
 import { Router, type IRouter } from "express";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
 import { db } from "@workspace/db";
@@ -1256,13 +1257,13 @@ router.get("/operations/trips/:tripId/transits", async (req, res): Promise<void>
         nota: completato.nota ?? undefined,
       },
       previsioniMizar: {
-        fonte: "StopMonitoring Mizar",
+        fonte: `StopMonitoring ${fornitoreAvm().breve}`,
         fermate: previsioni.size,
         aggiornateAlle: [...previsioni.values()].reduce<string | null>(
           (m, p) => (!m || p.aggiornataAlle > m ? p.aggiornataAlle : m), null),
         nota: previsioni.size
-          ? "Orario previsto da Mizar alle prossime fermate del mezzo seguito; non è un passaggio osservato e non entra nei tempi di percorrenza."
-          : "Nessuna previsione di Mizar per questa corsa: il mezzo non è seguito dall'AVM, o il ciclo StopMonitoring non ha ancora girato.",
+          ? `Orario previsto ${fornitoreAvm().da} alle prossime fermate del mezzo seguito; non è un passaggio osservato e non entra nei tempi di percorrenza.`
+          : `Nessuna previsione ${fornitoreAvm().di} per questa corsa: il mezzo non è seguito dall'AVM, o il ciclo StopMonitoring non ha ancora girato.`,
       },
       trip: tripInfo && {
         tripId: tripInfo.trip_id,

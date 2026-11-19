@@ -12,6 +12,7 @@
  * da Cerbero, e per sapere a che punto è una richiesta il nome non serve.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import {
   ETICHETTE_AZIONE, ORDINE_AZIONI, andamentoStoria, contaAzioni, fraseAndamento, testiMizar,
   type Azione, type RichiestaVista, type StoriaAvm, type VetturaStoria,
@@ -156,7 +157,7 @@ export function esportaStoriaXlsx(s: StoriaAvm, vetture: VetturaStoria[] = s.vet
   }
   R.push([]);
 
-  R.push([{ v: "Da mandare a Mizar", s: S.h2 }]);
+  R.push([{ v: `Da mandare ${fornitoreAvm().a}`, s: S.h2 }]);
   for (const t of [testi.togliere, testi.aggiungere]) {
     if (!t) continue;
     R.push([{ v: t.oggetto, s: S.testo }]);
@@ -191,7 +192,7 @@ export function esportaStoriaXlsx(s: StoriaAvm, vetture: VetturaStoria[] = s.vet
 
   /* ── I fogli delle vetture ───────────────────────────────────────────── */
   const fisse = ["Matricola", "Codice", "Mezzo", "Officina", "Azione", "Senza posizione (sett.)",
-    "Ultima posizione", "Ultimo contatto", "Ultimo intervento", "Richiesta a Mizar"];
+    "Ultima posizione", "Ultimo contatto", "Ultimo intervento", `Richiesta ${fornitoreAvm().a}`];
   const testata: Valore[] = [
     ...fisse.map((t, i) => ({ v: t, s: i >= 5 && i <= 7 ? S.intestazioneCentro : S.intestazione })),
     ...s.settimane.map(w => ({ v: ddmm(w.lunedi), s: S.intestazioneSettimana })),
@@ -244,9 +245,9 @@ export function esportaStoriaXlsx(s: StoriaAvm, vetture: VetturaStoria[] = s.vet
       { v: r.nota ?? "", s: S.cella },
     ]);
   }
-  if (!richieste.length) Q.push([{ v: "Nessuna richiesta a Mizar segnata per le vetture esportate.", s: S.cella }]);
+  if (!richieste.length) Q.push([{ v: `Nessuna richiesta ${fornitoreAvm().a} segnata per le vetture esportate.`, s: S.cella }]);
   const richiesteFoglio: Foglio = {
-    nome: "Richieste a Mizar",
+    nome: `Richieste ${fornitoreAvm().a}`.slice(0, 31),
     righe: Q,
     larghezze: [11, 20, 12, 10, 50, 50],
     altezze: { 1: 32 },

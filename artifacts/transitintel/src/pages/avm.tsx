@@ -15,6 +15,8 @@
  * Mappa. La vista si può aprire direttamente con ?vista=settimanale o ?vista=andamento.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "@/lib/azienda";
+import { useAzienda } from "@/hooks/use-azienda";
 import React, { Suspense, lazy, useState } from "react";
 import { motion } from "framer-motion";
 import { SatelliteDish, NotebookText, CalendarCheck, TrendingUp } from "lucide-react";
@@ -41,6 +43,7 @@ function vistaIniziale(): Vista {
 }
 
 export default function AvmPage() {
+  const fav = fornitoreAvm(useAzienda());
   const [vista, setVista] = useState<Vista>(vistaIniziale);
 
   const scegli = (v: Vista) => {
@@ -67,7 +70,7 @@ export default function AvmPage() {
             Il diario dice che cosa ha fatto ogni apparato giornata per giornata e a chi
             segnalarlo; il controllo settimanale dice chi ha ripreso a localizzarsi e chi
             ha smesso rispetto alla settimana prima; l'andamento mostra come va il parco
-            dall'inizio e che cosa chiedere a Mizar.
+            dall'inizio e che cosa chiedere {fav.a}.
           </p>
         </div>
       </header>

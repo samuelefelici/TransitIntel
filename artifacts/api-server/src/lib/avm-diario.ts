@@ -40,6 +40,7 @@
  * Funzioni pure: niente database, niente rete (vedi __tests__/avm-diario.test.ts).
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import { identitaVettura } from "./parco-anagrafica";
 import { eDellAzienda } from "./vetture-azienda";
 import type { MezzoOfficina } from "./officina";
@@ -88,13 +89,13 @@ export function esclusioneOfficina(
     return {
       motivo: "fuori_parco",
       testo: "Non è nel parco dell'officina: con ogni probabilità venduta o demolita. "
-        + "Va tolta dall'anagrafica del centro Mizar, non riparata.",
+        + "Va tolta dall'anagrafica del centro AVM, non riparata.",
     };
   }
   if (mezzo.stato === "dismesso") {
     return {
       motivo: "dismesso",
-      testo: "L'officina la dà dismessa: va tolta dall'anagrafica del centro Mizar, non riparata.",
+      testo: "L'officina la dà dismessa: va tolta dall'anagrafica del centro AVM, non riparata.",
     };
   }
   if (esito === "funziona") return null;
@@ -184,7 +185,8 @@ export type EsitoSettimana =
   /** non ha mai parlato col centro in tutto il periodo */
   | "muta";
 
-export type Destinatario = "Mizar" | "Officina" | "Esercizio" | "Gestore SIM" | "nessuno";
+/** «AVM»: il fornitore dell'AVM; la pagina lo mostra col suo nome (fornitoreAvm, tappa 6.27). */
+export type Destinatario = "AVM" | "Officina" | "Esercizio" | "Gestore SIM" | "nessuno";
 
 /**
  * L'avviso è diverso dal verdetto. Il verdetto dice che cosa la vettura ha
@@ -341,10 +343,12 @@ const AZIONI: Record<EsitoSettimana, { destinatario: Destinatario; azione: strin
   },
   senza_corsa: {
     destinatario: "Esercizio",
-    azione: "La vettura si localizza ma non dichiara mai una corsa: verificare che "
-      + "l'autista si qualifichi a bordo e che il turno del giorno sia caricato "
-      + "sull'apparato. Se la qualifica c'è, è il grafo di linea a non coprire "
-      + "quel percorso e la domanda passa a Mizar.",
+    get azione() {
+      return "La vettura si localizza ma non dichiara mai una corsa: verificare che "
+        + "l'autista si qualifichi a bordo e che il turno del giorno sia caricato "
+        + "sull'apparato. Se la qualifica c'è, è il grafo di linea a non coprire "
+        + `quel percorso e la domanda passa ${fornitoreAvm().a}.`;
+    },
   },
   senza_posizione: {
     destinatario: "Officina",
@@ -353,17 +357,19 @@ const AZIONI: Record<EsitoSettimana, { destinatario: Destinatario; azione: strin
       + "dell'apparato.",
   },
   non_attivata: {
-    destinatario: "Mizar",
+    destinatario: "AVM",
     azione: "L'apparato parla col centro senza errori a bordo, ma il centro non "
       + "produce mai una posizione: manca l'attivazione (grafo di linea, modo "
       + "di localizzazione). È l'intervento più rapido, si fa dal centro.",
   },
   muta: {
     destinatario: "Gestore SIM",
-    azione: "Nessun contatto in tutto il periodo: chiedere al gestore il traffico "
-      + "dati della SIM. Zero byte significa apparato spento o SIM senza piano, "
-      + "e allora è una verifica a bordo; traffico presente significa che il "
-      + "dato si ferma prima del centro, e allora è di nuovo Mizar.",
+    get azione() {
+      return "Nessun contatto in tutto il periodo: chiedere al gestore il traffico "
+        + "dati della SIM. Zero byte significa apparato spento o SIM senza piano, "
+        + "e allora è una verifica a bordo; traffico presente significa che il "
+        + `dato si ferma prima del centro, e allora tocca di nuovo ${fornitoreAvm().a}.`;
+    },
   },
 };
 
@@ -408,8 +414,10 @@ export const ETICHETTE_AVVISO: Record<Avviso, { titolo: string; perche: string }
   },
   da_attivare: {
     titolo: "Parla ma non è attivata",
-    perche: "Contatto regolare, nessun errore a bordo, nessuna posizione dal "
-      + "centro: manca l'attivazione. Un elenco per Mizar, nessuna officina.",
+    get perche() {
+      return "Contatto regolare, nessun errore a bordo, nessuna posizione dal "
+        + `centro: manca l'attivazione. Un elenco per ${fornitoreAvm().nome}, nessuna officina.`;
+    },
   },
   intermittente: {
     titolo: "Parla a sprazzi",

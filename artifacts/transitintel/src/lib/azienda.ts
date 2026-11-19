@@ -35,6 +35,8 @@ export interface Azienda {
   tariffeRiferimento: string | null;
   /** da che minuto del giorno un turno guida è pomeridiano (codici da 100); null: una sola numerazione (tappa 6.25) */
   turniGuidaPomeriggioDa: number | null;
+  /** il nome del fornitore dell'AVM nei testi; null: «il fornitore dell'AVM» (tappa 6.27) */
+  avmFornitore: string | null;
   /**
    * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
    * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5)
@@ -62,6 +64,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexCodiceRete: null,
   tariffeRiferimento: null,
   turniGuidaPomeriggioDa: null,
+  avmFornitore: null,
   avmMatricolaCifre: null,
   compilata: false,
 });
@@ -101,6 +104,7 @@ export function aziendaValida(x: unknown): Azienda {
     tariffeRiferimento: rigaDiTesto(d.tariffeRiferimento, 200),
     turniGuidaPomeriggioDa: typeof d.turniGuidaPomeriggioDa === "number" && Number.isInteger(d.turniGuidaPomeriggioDa)
       && d.turniGuidaPomeriggioDa >= 1 && d.turniGuidaPomeriggioDa <= 1439 ? d.turniGuidaPomeriggioDa : null,
+    avmFornitore: rigaDiTesto(d.avmFornitore, 40),
     avmMatricolaCifre: cifreValide(d.avmMatricolaCifre),
     compilata: d.compilata !== false,
   };
@@ -132,6 +136,36 @@ export function dintorniDelCentro(a: Pick<Azienda, "centro">, km = 80): string {
   const dLng = km / (111.32 * Math.max(Math.cos((a.centro.lat * Math.PI) / 180), 0.01));
   const t = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v)).toFixed(2);
   return [t(a.centro.lng - dLng, -180, 180), t(a.centro.lat - dLat, -90, 90), t(a.centro.lng + dLng, -180, 180), t(a.centro.lat + dLat, -90, 90)].join(",");
+}
+
+/* ── Il fornitore dell'AVM nei testi (tappa 6.27) ── */
+
+/** Le forme del nome del fornitore dell'AVM, come nell'API (lib/vetture-azienda.ts). */
+export interface FornitoreAvm {
+  /** nelle etichette corte: «Mizar», o «AVM» */
+  breve: string;
+  /** dentro la frase: il nome, o «il fornitore dell'AVM» */
+  nome: string;
+  /** a inizio frase */
+  Nome: string;
+  /** «a …», o «al fornitore dell'AVM» */
+  a: string;
+  /** «di …», o «del fornitore dell'AVM» */
+  di: string;
+  /** «da …», o «dal fornitore dell'AVM» */
+  da: string;
+}
+
+/** Le forme per il fornitore dell'azienda; senza nome, quelle che non nominano nessuno. */
+export function fornitoreAvm(a: Pick<Azienda, "avmFornitore">): FornitoreAvm {
+  const n = (a.avmFornitore ?? "").trim();
+  if (!n) {
+    return {
+      breve: "AVM", nome: "il fornitore dell'AVM", Nome: "Il fornitore dell'AVM",
+      a: "al fornitore dell'AVM", di: "del fornitore dell'AVM", da: "dal fornitore dell'AVM",
+    };
+  }
+  return { breve: n, nome: n, Nome: n, a: `a ${n}`, di: `di ${n}`, da: `da ${n}` };
 }
 
 /** 720 → «12:00». */
@@ -207,6 +241,7 @@ export interface ModuloAzienda {
   tariffeRiferimento: string;
   /** «12:00», o vuoto */
   turniGuidaPomeriggioDa: string;
+  avmFornitore: string;
   avmMatricolaCifre: string;
 }
 export type CampoAzienda = keyof ModuloAzienda;
@@ -223,6 +258,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     netexPrefisso: scritto(a.netexPrefisso), netexPrefissoCodici: scritto(a.netexPrefissoCodici), netexCodiceRete: scritto(a.netexCodiceRete),
     tariffeRiferimento: scritto(a.tariffeRiferimento),
     turniGuidaPomeriggioDa: a.compilata && a.turniGuidaPomeriggioDa != null ? orarioDaMinuti(a.turniGuidaPomeriggioDa) : "",
+    avmFornitore: scritto(a.avmFornitore),
     avmMatricolaCifre: a.compilata && a.avmMatricolaCifre != null ? String(a.avmMatricolaCifre) : "",
   };
 }
@@ -260,6 +296,7 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (m.netexCodiceRete.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexCodiceRete.trim())) e.netexCodiceRete = "Lettere, cifre, - e _ (al più 40)";
   if (m.tariffeRiferimento.trim().length > 200) e.tariffeRiferimento = "Al più 200 caratteri";
   if (m.turniGuidaPomeriggioDa.trim() && minutiDaOrario(m.turniGuidaPomeriggioDa) === null) e.turniGuidaPomeriggioDa = "Un orario fra 00:01 e 23:59, come 12:00";
+  if (m.avmFornitore.trim().length > 40) e.avmFornitore = "Al più 40 caratteri";
   if (m.avmMatricolaCifre.trim() && !/^[1-9]$/.test(m.avmMatricolaCifre.trim())) e.avmMatricolaCifre = "Un numero da 1 a 9, oppure vuoto";
   return e;
 }
@@ -277,6 +314,7 @@ export function datiDaSalvare(m: ModuloAzienda) {
     netexCodiceRete: facoltativo(m.netexCodiceRete),
     tariffeRiferimento: facoltativo(m.tariffeRiferimento),
     turniGuidaPomeriggioDa: m.turniGuidaPomeriggioDa.trim() ? minutiDaOrario(m.turniGuidaPomeriggioDa) : null,
+    avmFornitore: facoltativo(m.avmFornitore),
     avmMatricolaCifre: m.avmMatricolaCifre.trim() ? Number(m.avmMatricolaCifre.trim()) : null,
   };
 }

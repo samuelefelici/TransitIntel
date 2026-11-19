@@ -20,6 +20,7 @@
  * database; la rotta fa solo le due letture e le mette insieme.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import {
   parseXml, findAll, findFirst, directText, parseDate, parseIsoDuration,
   resolveRef, resolveStop, normalizeLineCode, codiceCorsaDi,
@@ -435,8 +436,8 @@ export function leggiFermataFeed(
 ): string[] {
   if (!f || come !== "name") return [];
   return [f.stopCode
-    ? `Nel feed la fermata ${f.stopId} ha stop_code «${f.stopCode}», non ${ref}: i codici fermata di Mizar e del feed sono due numerazioni diverse, e l'aggancio per nome resta l'unico possibile.`
-    : `Nel feed la fermata ${f.stopId} non ha stop_code: il feed non porta il codice con cui Mizar chiama le fermate, e l'aggancio per nome resta l'unico possibile.`];
+    ? `Nel feed la fermata ${f.stopId} ha stop_code «${f.stopCode}», non ${ref}: i codici fermata ${fornitoreAvm().di} e del feed sono due numerazioni diverse, e l'aggancio per nome resta l'unico possibile.`
+    : `Nel feed la fermata ${f.stopId} non ha stop_code: il feed non porta il codice con cui ${fornitoreAvm().nome} chiama le fermate, e l'aggancio per nome resta l'unico possibile.`];
 }
 
 export function leggiDiagnosi(d: DiagnosiCorse, nonTrovate: string[]): string[] {
@@ -469,7 +470,7 @@ export function leggiDiagnosi(d: DiagnosiCorse, nonTrovate: string[]): string[] 
     const senzaLinea = linee.filter(([, v]) => v == null).map(([k]) => k);
     const conLinea = linee.filter(([, v]) => v != null).map(([k, v]) => `${k} (${v!.corse} corse)`);
     if (senzaLinea.length) out.push(`Le linee ${senzaLinea.join(", ")} nel feed non esistono: le loro corse non sono nell'esportazione.`);
-    if (conLinea.length) out.push(`Le linee ${conLinea.join(", ")} nel feed ci sono, ma ${assenti.length} numeri di corsa non compaiono in nessun trip_id: l'orario di Mizar e il feed non sono la stessa versione per queste corse.`);
+    if (conLinea.length) out.push(`Le linee ${conLinea.join(", ")} nel feed ci sono, ma ${assenti.length} numeri di corsa non compaiono in nessun trip_id: l'orario ${fornitoreAvm().di} e il feed non sono la stessa versione per queste corse.`);
     if (!linee.length) out.push(`${assenti.length} numeri non compaiono in nessun trip_id del feed.`);
   }
   return out;
@@ -481,14 +482,14 @@ export function leggiConfronto(
   f: { ref: string; stopId: string | null; nomeMizar: string | null; nomeFeed: string | null; come?: "alias" | "id" | "code" | "name" | null },
 ): string[] {
   const out: string[] = [];
-  if (!r.visite) { out.push(`Mizar non dà passaggi per la fermata ${f.ref} nell'intervallo chiesto.`); return out; }
+  if (!r.visite) { out.push(`${fornitoreAvm().Nome} non dà passaggi per la fermata ${f.ref} nell'intervallo chiesto.`); return out; }
   if (!f.stopId) {
-    out.push(`La fermata ${f.ref} («${f.nomeMizar ?? "?"}») non esiste nel feed né per codice né per nome: i codici fermata di Mizar e del GTFS non sono gli stessi.`);
+    out.push(`La fermata ${f.ref} («${f.nomeMizar ?? "?"}») non esiste nel feed né per codice né per nome: i codici fermata ${fornitoreAvm().di} e del GTFS non sono gli stessi.`);
   } else {
     const come = f.come === "alias" ? "transcodifica delle paline"
       : f.come === "id" ? "stesso stop_id" : f.come === "code" ? `stop_code ${f.ref}`
-      : "solo per nome: il codice di Mizar non è né stop_id né stop_code del feed, e manca nella transcodifica";
-    out.push(`Fermata ${f.ref}: Mizar la chiama «${f.nomeMizar ?? "?"}», il feed «${f.nomeFeed ?? "?"}» (stop_id ${f.stopId}, agganciata per ${come}).`);
+      : `solo per nome: il codice ${fornitoreAvm().di} non è né stop_id né stop_code del feed, e manca nella transcodifica`;
+    out.push(`Fermata ${f.ref}: ${fornitoreAvm().nome} la chiama «${f.nomeMizar ?? "?"}», il feed «${f.nomeFeed ?? "?"}» (stop_id ${f.stopId}, agganciata per ${come}).`);
   }
   if (r.visiteGrezze !== r.visite || r.fuoriServizio) {
     const pezzi: string[] = [];
@@ -498,9 +499,9 @@ export function leggiConfronto(
   }
   const diLinea = r.visite - r.fuoriServizio;
   if (diLinea > 0 && r.corseNelFeed === diLinea) {
-    out.push(`Tutte le ${diLinea} corse di linea hanno il loro trip_id nel feed: il numero di corsa di Mizar è la chiave giusta.`);
+    out.push(`Tutte le ${diLinea} corse di linea hanno il loro trip_id nel feed: il numero di corsa ${fornitoreAvm().di} è la chiave giusta.`);
   } else if (diLinea > 0) {
-    out.push(`${r.corseNelFeed} corse di linea su ${diLinea} hanno il trip_id nel feed; mancano ${r.corseNonTrovate.length} numeri (${r.corseNonTrovate.slice(0, 5).join(", ")}${r.corseNonTrovate.length > 5 ? "…" : ""}): orario di Mizar e feed non sono la stessa versione, oppure sono corse fuori dall'esportazione.`);
+    out.push(`${r.corseNelFeed} corse di linea su ${diLinea} hanno il trip_id nel feed; mancano ${r.corseNonTrovate.length} numeri (${r.corseNonTrovate.slice(0, 5).join(", ")}${r.corseNonTrovate.length > 5 ? "…" : ""}): orario ${fornitoreAvm().di} e feed non sono la stessa versione, oppure sono corse fuori dall'esportazione.`);
   }
   if (r.sosteAlCapolinea) {
     out.push(`${r.sosteAlCapolinea} passaggi portano anche l'arrivo in sosta al capolinea prima della partenza: il feed non lo ha, il confronto usa la partenza.`);
@@ -520,7 +521,7 @@ export function leggiConfronto(
     }
   }
   if (r.lineeDiverse > 0) {
-    out.push(`${r.lineeDiverse} corse hanno nel feed una linea diversa da quella che dice Mizar.`);
+    out.push(`${r.lineeDiverse} corse hanno nel feed una linea diversa da quella che dice ${fornitoreAvm().nome}.`);
   }
   out.push(r.seguite
     ? `${r.seguite} passaggi su ${r.visite} vengono da mezzi seguiti dall'AVM, ${r.conPrevisione} con un orario previsto; gli altri sono orario puro.`

@@ -256,6 +256,8 @@ export default function AdminAziendaPage() {
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid gap-4 sm:grid-cols-2">
+            {casella("avmFornitore", "Fornitore dell'AVM", { facoltativo: true, esempio: "Nome del fornitore",
+              aiuto: "Il nome con cui le pagine dell'AVM chiamano il fornitore: «Richieste a …», «Paline …», «Incollalo nella mail a …». Vuoto: «il fornitore dell'AVM»." })}
             {casella("avmMatricolaCifre", "Cifre della matricola", { facoltativo: true, tipo: "decimale", esempio: "4",
               aiuto: "Nel canale dell'AVM, una vettura è dell'azienda se la sua matricola è un numero con al più queste cifre. Vuoto: tutte le vetture del canale sono dell'azienda." })}
           </div>

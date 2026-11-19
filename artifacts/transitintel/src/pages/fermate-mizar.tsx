@@ -25,6 +25,8 @@
  * fidarsi.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "@/lib/azienda";
+import { useAzienda } from "@/hooks/use-azienda";
 import React, { useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -80,7 +82,7 @@ const SEGNO: Record<Stato, { etichetta: string; icona: typeof Check; colore: str
   abbinata:        { etichetta: "Abbinata",        icona: Check,         colore: "#34d399", fondo: "rgba(52,211,153,0.12)",  spiegazione: "la fermata esiste nel feed e il nome combacia" },
   sospetta:        { etichetta: "Sospetta",        icona: AlertTriangle, colore: "#fbbf24", fondo: "rgba(251,191,36,0.12)",  spiegazione: "la fermata esiste nel feed, ma con un altro nome: da controllare" },
   fermata_assente: { etichetta: "Fermata assente", icona: CircleOff,     colore: "#f87171", fondo: "rgba(248,113,113,0.12)", spiegazione: "lo stop_id della tabella non esiste nel feed in uso" },
-  senza_codice:    { etichetta: "Senza codice",    icona: HelpCircle,    colore: "#94a3b8", fondo: "rgba(148,163,184,0.12)", spiegazione: "palina di Mizar senza una fermata nel feed" },
+  senza_codice:    { etichetta: "Senza codice",    icona: HelpCircle,    colore: "#94a3b8", fondo: "rgba(148,163,184,0.12)", spiegazione: "palina dell'AVM senza una fermata nel feed" },
 };
 
 function Contatore({ n, etichetta, colore, fondo, attivo, onClick, icona: Icona }: {
@@ -107,6 +109,7 @@ function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string
   /* Un'API più vecchia della pagina non manda i suggerimenti: la lista
      resta vuota, il resto dell'editor funziona. */
   const suggerimenti = riga.suggerimenti ?? [];
+  const fav = fornitoreAvm(useAzienda());
   const qc = useQueryClient();
   const [scelta, setScelta] = useState<string | null>(riga.stopId);
   const [nessuna, setNessuna] = useState(false);
@@ -163,17 +166,17 @@ function EditorAbbinamento({ riga, onChiudi }: { riga: Riga | { mizarRef: string
           </div>
 
           <div className="space-y-1.5">
-            <div className="font-medium flex items-center gap-1.5">Dai dati di Mizar
+            <div className="font-medium flex items-center gap-1.5">Dai dati {fav.di}
               <span className="text-muted-foreground font-normal">· una dimostrazione</span></div>
             <button
               type="button"
               onClick={() => deduzione.mutate()}
               disabled={deduzione.isPending}
               className="flex items-center gap-1.5 px-2 py-1 rounded border border-border/50 hover:bg-muted/40 disabled:opacity-50"
-              title="Chiede a Mizar i passaggi di questa palina e cerca nel feed la fermata che le corse servono allo stesso orario"
+              title={`Chiede ${fav.a} i passaggi di questa palina e cerca nel feed la fermata che le corse servono allo stesso orario`}
             >
               <Sparkles className={`w-3.5 h-3.5 ${deduzione.isPending ? "animate-pulse" : ""}`} />
-              {deduzione.isPending ? "Interrogo Mizar…" : "Verifica dai passaggi"}
+              {deduzione.isPending ? `Interrogo ${fav.nome}…` : "Verifica dai passaggi"}
             </button>
             {deduzione.isError && <div className="text-red-300">{String((deduzione.error as any)?.message ?? deduzione.error)}</div>}
             {deduzione.data && (
@@ -310,6 +313,7 @@ const quando = (iso: string | null | undefined) => iso
   : null;
 
 export default function FermateMizar() {
+  const fav = fornitoreAvm(useAzienda());
   const { user, isAdmin } = useAuth();
   const [filtro, setFiltro] = useState<Filtro>(null);
   const [cerca, setCerca] = useState("");
@@ -379,7 +383,7 @@ export default function FermateMizar() {
         <div>
           <div className="flex items-center gap-2">
             <MapPin className="w-4 h-4 text-primary" />
-            <span className="text-sm font-semibold">Paline Mizar ↔ fermate del feed</span>
+            <span className="text-sm font-semibold">Paline {fav.breve} ↔ fermate del feed</span>
           </div>
           <p className="text-[11px] text-muted-foreground mt-1 max-w-2xl leading-relaxed">
             {d.lettura.join(" ")}
@@ -438,7 +442,7 @@ export default function FermateMizar() {
           id="cerca-palina"
           value={cerca}
           onChange={e => setCerca(e.target.value)}
-          placeholder="Codice Mizar, stop_id o nome…"
+          placeholder={`Codice ${fav.breve}, stop_id o nome…`}
           className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-border/50 bg-background text-xs"
         />
       </div>
@@ -483,7 +487,7 @@ export default function FermateMizar() {
           {feedSenza.length > MOSTRA && <div className="px-2 py-1.5 text-[11px] text-muted-foreground">Mostrate {MOSTRA} su {feedSenza.length}: restringi con la ricerca o scarica il CSV.</div>}
           {feedSenza.length === 0 && <div className="px-2 py-3 text-[11px] text-muted-foreground">Nessuna fermata del feed senza codice.</div>}
           <p className="px-2 py-1.5 text-[10px] text-muted-foreground">
-            Una fermata del feed senza codice Mizar non si può abbinare da qui: il codice lo assegna Mizar. Quando comparirà nel flusso SIRI, la troverai fra le «viste nel flusso, non in tabella».
+            Una fermata del feed senza codice {fav.breve} non si può abbinare da qui: il codice lo assegna {fav.nome}. Quando comparirà nel flusso SIRI, la troverai fra le «viste nel flusso, non in tabella».
           </p>
         </div>
       ) : (
@@ -492,8 +496,8 @@ export default function FermateMizar() {
             <thead className="text-left text-muted-foreground border-b border-border/40">
               <tr>
                 <th className="px-2 py-1.5 font-medium">Stato</th>
-                <th className="px-2 py-1.5 font-medium">Codice Mizar</th>
-                <th className="px-2 py-1.5 font-medium">Nome per Mizar</th>
+                <th className="px-2 py-1.5 font-medium">Codice {fav.breve}</th>
+                <th className="px-2 py-1.5 font-medium">Nome nell'AVM</th>
                 <th className="px-2 py-1.5 font-medium">stop_id feed</th>
                 <th className="px-2 py-1.5 font-medium">Nome nel feed</th>
                 <th className="px-2 py-1.5 font-medium">Note</th>

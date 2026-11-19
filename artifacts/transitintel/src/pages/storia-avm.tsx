@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import { apiFetch, getApiBase } from "@/lib/api";
 import { useAzienda } from "@/hooks/use-azienda";
-import { eDellAzienda } from "@/lib/azienda";
+import { eDellAzienda, fornitoreAvm } from "@/lib/azienda";
 import { Quadratino, SETTIMANA } from "@/components/avm/strisce";
 import {
   andamentoPerimetro, conteggiAzioni, ddmm, ddmmyyyy, fraseAndamento, oggiDiEsercizio, selezionabile,
@@ -155,6 +155,7 @@ export default function StoriaAvm() {
   /* le vetture dell'azienda nel canale (tappa 6.5): la regola è un dato dell'azienda; senza cifre non ci
      sono consorziate, e la scelta «solo …» non ha senso */
   const azienda = useAzienda();
+  const fav = fornitoreAvm(azienda);
   const cifre = azienda.avmMatricolaCifre;
   const conConsorziate = cifre !== null;
   const qc = useQueryClient();
@@ -239,7 +240,7 @@ export default function StoriaAvm() {
   const copia = async (t: TestoMizar) => {
     try {
       await navigator.clipboard.writeText(`${t.oggetto}\n\n${t.testo}`);
-      toast.success("Testo copiato", { description: "Incollalo nella mail a Mizar." });
+      toast.success("Testo copiato", { description: `Incollalo nella mail ${fav.a}.` });
     } catch {
       toast.error("Copia non riuscita", { description: "Seleziona il testo e copialo a mano." });
     }
@@ -340,7 +341,7 @@ export default function StoriaAvm() {
               || "non si localizzano nell'ultima settimana")
             : a === "da_verificare_alienata"
               ? "l'apparato e FleetCare non tornano: guasta, alienata o mancante in FleetCare?"
-              : giaChieste(a) === 1 ? "1 già chiesta a Mizar" : `${giaChieste(a)} già chieste a Mizar`;
+              : giaChieste(a) === 1 ? `1 già chiesta ${fav.a}` : `${giaChieste(a)} già chieste ${fav.a}`;
           return (
             <button
               key={a}
@@ -361,7 +362,7 @@ export default function StoriaAvm() {
         <a href="#richieste-mizar" className="rounded-xl p-3 space-y-1 border border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] transition-colors">
           <div className="flex items-center gap-1.5">
             <Hourglass className="w-3.5 h-3.5 text-sky-300" />
-            <span className="text-[11px] font-medium text-sky-300">In attesa da Mizar</span>
+            <span className="text-[11px] font-medium text-sky-300">In attesa {fav.da}</span>
           </div>
           <div className="font-mono text-xl tabular-nums text-sky-300">{aperte.length}</div>
           <p className={`text-[10px] leading-snug ${piuVecchia > d.soglie.giorniSollecitoMizar ? "text-red-300" : "text-muted-foreground"}`}>
@@ -476,7 +477,7 @@ export default function StoriaAvm() {
       {/* ── Le richieste a Mizar ─────────────────────────────────────── */}
       <section id="richieste-mizar" className="space-y-3 scroll-mt-4">
         <h3 className="text-[12px] font-medium flex items-center gap-1.5">
-          <Send className="w-3.5 h-3.5 text-sky-300" /> Richieste a Mizar
+          <Send className="w-3.5 h-3.5 text-sky-300" /> Richieste {fav.a}
           <span className="text-[10px] font-normal text-muted-foreground">
             togliere le vetture che l'officina non ha più, aggiungere quelle nuove; si chiudono da sole quando il flusso SIRI cambia
           </span>
@@ -541,13 +542,13 @@ export default function StoriaAvm() {
                           <span className="inline-flex gap-1">
                             <button
                               onClick={() => {
-                                if (window.confirm(`Segnare fatta la richiesta per la vettura ${r.vehicleRef}? Cerbero non la proporrà più a Mizar.`)) {
+                                if (window.confirm(`Segnare fatta la richiesta per la vettura ${r.vehicleRef}? Cerbero non la proporrà più ${fav.a}.`)) {
                                   chiudi.mutate({ ids: [r.id], esito: "fatta" });
                                 }
                               }}
                               disabled={chiudi.isPending}
                               className="px-2 py-0.5 rounded-md text-[10px] border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-40"
-                              title="Mizar l'ha fatta ma Cerbero non lo vede (per esempio ha cambiato numero alla vettura)"
+                              title={`${fav.Nome} l'ha fatta ma Cerbero non lo vede (per esempio ha cambiato numero alla vettura)`}
                             >
                               Segna fatta
                             </button>
@@ -690,7 +691,7 @@ export default function StoriaAvm() {
                       {v.officina?.segnalazioneAvm && <span className="block mt-1 text-[10px] text-muted-foreground">segnalata {v.officina.segnalazioneAvm.numero}</span>}
                       {v.richiesta && (
                         <span className="block mt-1 text-[10px]" style={{ color: statoRichiesta(v.richiesta).colore }}>
-                          Mizar: {statoRichiesta(v.richiesta).testo}
+                          {fav.breve}: {statoRichiesta(v.richiesta).testo}
                         </span>
                       )}
                     </td>

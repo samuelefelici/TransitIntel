@@ -71,7 +71,7 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
           ? { ...r, esito: "fatta" as const, chiusaIl: giorno.get(r.id)!, chiusaDa: null, automatica: true }
           : r);
       } catch (e: any) {
-        req.log.warn({ err: e }, "richieste a Mizar: chiusura automatica non scritta");
+        req.log.warn({ err: e }, "richieste al fornitore dell'AVM: chiusura automatica non scritta");
       }
     }
     if (Date.now() - ultimaPulizia > PULIZIA_MS) {
@@ -79,7 +79,7 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
       const limite = new Date(`${oggi}T00:00:00Z`);
       limite.setUTCMonth(limite.getUTCMonth() - MESI_CONSERVAZIONE_RICHIESTE);
       pulisciRichieste(limite.toISOString().slice(0, 10))
-        .catch((e) => req.log.warn({ err: e }, "richieste a Mizar: pulizia non riuscita"));
+        .catch((e) => req.log.warn({ err: e }, "richieste al fornitore dell'AVM: pulizia non riuscita"));
     }
 
     const storia = calcolaStoria({
@@ -165,7 +165,7 @@ router.post("/siri/parco/richieste", async (req, res): Promise<void> => {
     });
     res.status(201).json(esito);
   } catch (e: any) {
-    req.log.error({ err: e }, "richieste a Mizar non salvate");
+    req.log.error({ err: e }, "richieste al fornitore dell'AVM non salvate");
     res.status(500).json({ error: "Richieste non salvate: riprova fra poco." });
   }
 });
@@ -179,7 +179,7 @@ router.post("/siri/parco/richieste/chiudi", async (req, res): Promise<void> => {
       giornataOggi(new Date()));
     res.json({ chiuse });
   } catch (e: any) {
-    req.log.error({ err: e }, "richieste a Mizar non chiuse");
+    req.log.error({ err: e }, "richieste al fornitore dell'AVM non chiuse");
     res.status(500).json({ error: "Richieste non chiuse: riprova fra poco." });
   }
 });

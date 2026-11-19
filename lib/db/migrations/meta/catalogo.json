@@ -673,6 +673,7 @@
   "public.azienda": {
    "aggiornata_da": "uuid | null |  |  | ",
    "aggiornata_il": "timestamp with time zone | not null | now() |  | ",
+   "avm_fornitore": "text | null |  |  | ",
    "avm_matricola_cifre": "smallint | null |  |  | ",
    "centro_lat": "double precision | not null |  |  | ",
    "centro_lng": "double precision | not null |  |  | ",
@@ -2489,6 +2490,7 @@
   "public.agenzia_gtfs.agenzia_gtfs_telefono": "CHECK ((telefono ~ '^[0-9+() ./-]{3,40}$'::text))",
   "public.agenzia_gtfs.agenzia_gtfs_una_riga": "CHECK (unica)",
   "public.app_settings.app_settings_pkey": "PRIMARY KEY (key)",
+  "public.azienda.azienda_avm_fornitore": "CHECK (((char_length(avm_fornitore) >= 1) AND (char_length(avm_fornitore) <= 40)))",
   "public.azienda.azienda_avm_matricola_cifre": "CHECK (((avm_matricola_cifre >= 1) AND (avm_matricola_cifre <= 9)))",
   "public.azienda.azienda_centro_lat": "CHECK (((centro_lat >= ('-90'::integer)::double precision) AND (centro_lat <= (90)::double precision)))",
   "public.azienda.azienda_centro_lng": "CHECK (((centro_lng >= ('-180'::integer)::double precision) AND (centro_lng <= (180)::double precision)))",

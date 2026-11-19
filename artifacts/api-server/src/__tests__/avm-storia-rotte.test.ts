@@ -1,7 +1,8 @@
 /* Le rotte dell'andamento AVM (routes/avm-storia.ts) con lo store e
  * FleetCare finti: la forma del JSON, le chiusure automatiche scritte,
  * FleetCare che manca, l'Excel senza nomi, la validazione delle richieste. */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from "vitest";
+import { impostaFornitoreAvm } from "../lib/vetture-azienda";
 import request from "supertest";
 import { inflateRawSync } from "node:zlib";
 import { impostaRegolaVetture } from "../lib/vetture-azienda";
@@ -42,6 +43,10 @@ import router from "../routes/avm-storia";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import { spostaGiorni } from "../lib/avm-controllo";
 
+
+/* il fornitore dell'AVM dell'azienda di prova (tappa 6.27): i testi lo nominano */
+beforeAll(() => impostaFornitoreAvm("Mizar"));
+afterAll(() => impostaFornitoreAvm(null));
 const U = utenteDiProva("10000000-0000-0000-0000-00000000000c", ["centrale"]);
 const app = () => appDiProva(router, U);
 

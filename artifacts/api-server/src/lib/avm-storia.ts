@@ -32,6 +32,7 @@
  * Funzioni pure: niente database, niente rete (vedi __tests__/avm-storia.test.ts).
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import { CAMPIONI_MINIMI_GIORNATA, GIORNATE_MINIME, esclusioneOfficina, type Esclusione } from "./avm-diario.js";
 import {
   ETICHETTE_ESITO_INTERVENTO, fermoInOfficina, giudicaIntervento, lunediDi, notaOfficina, spostaGiorni, statoSettimana,
@@ -101,12 +102,14 @@ export const ETICHETTE_AZIONE: Record<Azione, { titolo: string; breve: string; p
   da_togliere_da_siri: {
     titolo: "Da togliere da SIRI", breve: "Da togliere",
     perche: "L'officina non ha più il mezzo, o lo dà dismesso, ma il flusso SIRI lo elenca ancora: "
-      + "va tolto dall'anagrafica del centro Mizar, non riparato.",
+      + "va tolto dall'anagrafica del centro AVM, non riparato.",
   },
   da_aggiungere_a_siri: {
     titolo: "Da aggiungere a SIRI", breve: "Da aggiungere",
-    perche: "Il mezzo è nel parco dell'officina ma non è mai comparso nel flusso SIRI: "
-      + "va censito a Mizar, o manca l'apparato a bordo.",
+    get perche() {
+      return "Il mezzo è nel parco dell'officina ma non è mai comparso nel flusso SIRI: "
+        + `va censito ${fornitoreAvm().a}, o manca l'apparato a bordo.`;
+    },
   },
   da_verificare_alienata: {
     titolo: "Da verificare", breve: "Da verificare",
@@ -645,7 +648,7 @@ function scriviPerche(
     case "da_aggiungere_a_siri": {
       const m = v.officina!;
       pezzi.push(`Nel parco dell'officina (${[m.targa, m.deposito, m.modello].filter(Boolean).join(", ")}) ma mai `
-        + `comparsa nel flusso SIRI dal ${d(inizioDati)}: va censita a Mizar, o manca l'apparato a bordo.`);
+        + `comparsa nel flusso SIRI dal ${d(inizioDati)}: va censita ${fornitoreAvm().a}, o manca l'apparato a bordo.`);
       break;
     }
     case "da_verificare_alienata":
@@ -669,7 +672,7 @@ function scriviPerche(
         : ultimoStato === "P"
           ? (v.ultimaPosizione
             ? "Parla col centro ma non si localizza: antenna o apparato."
-            : "Parla col centro ma non si è mai localizzata: attivazione al centro Mizar, o antenna.")
+            : "Parla col centro ma non si è mai localizzata: attivazione al centro AVM, o antenna.")
           : ultimoStato === "M"
             ? "Elencata ma muta: apparato spento, SIM, o mezzo fermo in rimessa."
             : "Il flusso SIRI non la elenca nell'ultima settimana.");
@@ -707,12 +710,12 @@ function scriviPerche(
     const r = v.richiesta;
     const cosa = r.tipo === "togliere" ? "togliere" : "aggiungere";
     pezzi.push(r.esito == null
-      ? `Richiesta a Mizar di ${cosa} inviata il ${d(r.richiestaIl)}, `
+      ? `Richiesta ${fornitoreAvm().a} di ${cosa} inviata il ${d(r.richiestaIl)}, `
         + `${r.giorniAttesa === 0 ? "in attesa" : `in attesa da ${r.giorniAttesa} ${r.giorniAttesa === 1 ? "giorno" : "giorni"}`}.`
       : r.esito === "fatta"
-        ? `Richiesta a Mizar di ${cosa} fatta il ${d(r.chiusaIl)}${r.automatica ? "" : " (segnata a mano)"}`
+        ? `Richiesta ${fornitoreAvm().a} di ${cosa} fatta il ${d(r.chiusaIl)}${r.automatica ? "" : " (segnata a mano)"}`
           + `${r.ricomparsaIl ? `, ma è ricomparsa il ${d(r.ricomparsaIl)}` : ""}.`
-        : `Richiesta a Mizar di ${cosa} annullata il ${d(r.chiusaIl)}.`);
+        : `Richiesta ${fornitoreAvm().a} di ${cosa} annullata il ${d(r.chiusaIl)}.`);
   }
   return pezzi.join(" ");
 }

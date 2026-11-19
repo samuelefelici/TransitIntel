@@ -21,6 +21,7 @@
  * Ciclo minimo dichiarato dal server: un minuto. Qui non si scende sotto.
  * ═══════════════════════════════════════════════════════════════════════════
  */
+import { fornitoreAvm } from "./vetture-azienda";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { postSoap, type SiriEndpointConfig, type GtfsIndex } from "./siri-vm";
@@ -189,7 +190,7 @@ export async function aggiornaPrevisioni(
     }
     const daChiedere = [...refs].slice(0, MAX_FERMATE_PER_GIRO);
     esito.fermateChieste = daChiedere.length;
-    if (!daChiedere.length) { esito.saltato = "nessuna prossima fermata con codice Mizar"; ultimoEsito = esito; return esito; }
+    if (!daChiedere.length) { esito.saltato = `nessuna prossima fermata con codice ${fornitoreAvm().breve}`; ultimoEsito = esito; return esito; }
 
     const smCfg = { ...cfg, url: smUrl };
     let visite: VisitaFermata[] = [];

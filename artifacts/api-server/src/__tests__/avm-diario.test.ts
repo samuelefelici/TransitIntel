@@ -1,4 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { impostaFornitoreAvm } from "../lib/vetture-azienda";
+
+/* il fornitore dell'AVM dell'azienda di prova (tappa 6.27): i testi lo nominano */
+beforeAll(() => impostaFornitoreAvm("Mizar"));
+afterAll(() => impostaFornitoreAvm(null));
 import {
   esitoGiorno, classificaVettura, analizzaDiario, GIORNATE_MINIME, GIORNI_SMESSA,
   type RigaDiario,
@@ -77,7 +82,7 @@ describe("classificaVettura — ci si ferma al primo anello rotto", () => {
       lettureFresche: 4,
     })), SETTIMANA);
     expect(v.esito).toBe("non_attivata");
-    expect(v.destinatario).toBe("Mizar");
+    expect(v.destinatario).toBe("AVM");
     expect(v.avviso).toBe("da_attivare");
   });
 

@@ -123,3 +123,25 @@ describe("nessuna coordinata scritta a mano nei sorgenti della web", () => {
     expect(COORDINATE.test("{ lat: s.lat, lng: s.lng, zoom: 12 }")).toBe(false);
   });
 });
+
+/**
+ * Né i nomi dei fornitori del primo cliente (tappa 6.27): il fornitore
+ * dell'AVM è un dato dell'azienda (fornitoreAvm), l'officina si chiama
+ * «officina». Maiuscole e confini di parola: i nomi interni come mizarRef,
+ * previsioniMizar o la pagina fermate-mizar restano, sono codice e non testo.
+ */
+const FORNITORI = /\b(Mizar|FlashNet|Flashnet)\b/;
+
+describe("nessun nome dei fornitori del primo cliente nei testi della web", () => {
+  it("fuori dai commenti non ce n'è nessuno", () => {
+    const trovati = sorgenti("").flatMap((f) => senzaCommenti(readFileSync(join(SRC, f), "utf8")).split("\n")
+      .map((riga, i) => ({ riga, n: i + 1 })).filter((x) => FORNITORI.test(x.riga)).map((x) => `${f}:${x.n}: ${x.riga.trim().slice(0, 140)}`));
+    expect(trovati).toEqual([]);
+  });
+
+  it("la ricerca trova il nome, non gli identificativi", () => {
+    expect(FORNITORI.test('<span>Paline Mizar</span>')).toBe(true);
+    expect(FORNITORI.test("const { mizarRef, previsioniMizar } = d; import X from \"@/pages/fermate-mizar\";")).toBe(false);
+  });
+});
+

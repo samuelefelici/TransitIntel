@@ -74,5 +74,45 @@ export function espressioneVetture(): string | null {
   return inVigore.cifre === null ? null : `^[0-9]{1,${inVigore.cifre}}$`;
 }
 
+/* ── Il fornitore dell'AVM nei testi (tappa 6.27) ───────────────────────── */
+
+/** Le forme del nome del fornitore dell'AVM, per scriverlo dentro una frase. */
+export interface FornitoreAvm {
+  /** nelle etichette corte: «Mizar», o «AVM» («Paline AVM», «Codice AVM») */
+  breve: string;
+  /** dentro la frase: «Mizar», o «il fornitore dell'AVM» */
+  nome: string;
+  /** a inizio frase: «Mizar», o «Il fornitore dell'AVM» */
+  Nome: string;
+  /** «a Mizar», o «al fornitore dell'AVM» */
+  a: string;
+  /** «di Mizar», o «del fornitore dell'AVM» */
+  di: string;
+  /** «da Mizar», o «dal fornitore dell'AVM» */
+  da: string;
+}
+
+/** Le forme per un nome; senza nome, quelle che non nominano nessuno. */
+export function formeFornitoreAvm(nome: string | null | undefined): FornitoreAvm {
+  const n = String(nome ?? "").trim();
+  if (!n) {
+    return Object.freeze({
+      breve: "AVM", nome: "il fornitore dell'AVM", Nome: "Il fornitore dell'AVM",
+      a: "al fornitore dell'AVM", di: "del fornitore dell'AVM", da: "dal fornitore dell'AVM",
+    });
+  }
+  return Object.freeze({ breve: n, nome: n, Nome: n, a: `a ${n}`, di: `di ${n}`, da: `da ${n}` });
+}
+
+let fornitore: FornitoreAvm = formeFornitoreAvm(null);
+
+/** Mette in vigore il nome del fornitore (la chiama `leggiAzienda()`; nei test, chi prova un'azienda col suo fornitore). */
+export function impostaFornitoreAvm(nome: string | null | undefined): void {
+  fornitore = formeFornitoreAvm(nome);
+}
+
+/** Le forme del nome del fornitore dell'AVM in vigore in questo processo. */
+export const fornitoreAvm = (): FornitoreAvm => fornitore;
+
 /** «solo le vetture dell'azienda»: il perimetro chiesto da una pagina o da un link. «conerobus» è il nome di prima, nei link già salvati. */
 export const perimetroAzienda = (v: unknown): boolean => v === "azienda" || v === "conerobus";
