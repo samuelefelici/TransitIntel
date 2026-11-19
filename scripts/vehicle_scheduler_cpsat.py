@@ -41,7 +41,7 @@ from ortools.sat.python import cp_model
 
 from optimizer_common import (
     Trip, Arc, VShiftTrip, VehicleShift, VehicleCostRates, VehicleShiftCost,
-    trip_from_dict, vehicle_shift_to_dict, corrispettivo_vuoti,
+    trip_from_dict, vehicle_shift_to_dict, corrispettivo_vuoti, centro_delle_corse,
     VEHICLE_SIZE, VEHICLE_TYPES, MAX_DOWNSIZE_LEVELS,
     MAX_DEADHEAD_KM, MIN_LAYOVER, DEADHEAD_BUFFER,
     AVG_SERVICE_SPEED, DEADHEAD_SPEED,
@@ -4125,7 +4125,9 @@ def run(data: dict) -> dict:
         return {"vehicleShifts": [], "metrics": _empty_metrics(),
                 "costBreakdown": {"perShift": [], "aggregated": {}, "numVehicles": 0}}
 
-    trips: list[Trip] = [trip_from_dict(td, i) for i, td in enumerate(trips_data)]
+    # una corsa senza le coordinate dei capolinea va al centro delle altre
+    ripiego = centro_delle_corse(trips_data)
+    trips: list[Trip] = [trip_from_dict(td, i, ripiego) for i, td in enumerate(trips_data)]
     trips.sort(key=lambda t: (t.departure_min, t.arrival_min))
     for i, t in enumerate(trips):
         t.idx = i

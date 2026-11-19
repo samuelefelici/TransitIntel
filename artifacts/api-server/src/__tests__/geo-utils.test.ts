@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   haversineKm, lineLength, pointToLineDistance,
-  timeToMinutes, minToTime, walkMinutes, kmPerGradoLng, centroDeiPunti, KM_PER_GRADO_LAT,
+  timeToMinutes, minToTime, walkMinutes, kmPerGradoLng, centroDeiPunti, KM_PER_GRADO_LAT, riquadroDeiCerchi,
 } from "../lib/geo-utils";
 
 describe("geo-utils", () => {
@@ -150,5 +150,32 @@ describe("il centro di un insieme di punti", () => {
   it("senza punti non c'è", () => {
     expect(centroDeiPunti([])).toBeNull();
     expect(centroDeiPunti([{ lat: Number.NaN, lon: Number.NaN }])).toBeNull();
+  });
+});
+
+describe("riquadroDeiCerchi (tappa 6.32)", () => {
+  it("contiene ogni cerchio, col suo raggio", () => {
+    const r = riquadroDeiCerchi([{ lat: 45, lng: 10, raggioM: 11132 }, { lat: 45.5, lng: 10.8, raggioM: 0 }])!;
+    expect(r.sud).toBeCloseTo(44.9, 6);
+    expect(r.nord).toBeCloseTo(45.5, 6);
+    expect(r.ovest).toBeCloseTo(10 - 11.132 / kmPerGradoLng(45), 6);
+    expect(r.est).toBeCloseTo(10.8, 6);
+  });
+
+  it("il margine allarga ogni lato; in longitudine di più andando a nord", () => {
+    const senza = riquadroDeiCerchi([{ lat: 45, lng: 10, raggioM: 5000 }])!;
+    const con = riquadroDeiCerchi([{ lat: 45, lng: 10, raggioM: 5000 }], 5)!;
+    expect(con.nord - senza.nord).toBeCloseTo(5 / KM_PER_GRADO_LAT, 6);
+    expect(senza.sud - con.sud).toBeCloseTo(5 / KM_PER_GRADO_LAT, 6);
+    expect(con.est - senza.est).toBeCloseTo(5 / kmPerGradoLng(45), 6);
+    expect(con.est - senza.est).toBeGreaterThan(con.nord - senza.nord);
+  });
+
+  it("senza cerchi, o con soli cerchi senza centro, non c'è riquadro; non esce dal mondo", () => {
+    expect(riquadroDeiCerchi([])).toBeNull();
+    expect(riquadroDeiCerchi([{ lat: NaN, lng: 10, raggioM: 100 }])).toBeNull();
+    expect(riquadroDeiCerchi([{ lat: 89.99, lng: 179.99, raggioM: 50_000 }])).toMatchObject({ nord: 90, est: 180 });
+    /* un raggio storto vale zero: resta il punto, col margine */
+    expect(riquadroDeiCerchi([{ lat: 45, lng: 10, raggioM: NaN }])).toEqual({ sud: 45, nord: 45, ovest: 10, est: 10 });
   });
 });

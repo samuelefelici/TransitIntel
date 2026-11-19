@@ -1665,6 +1665,45 @@ minuti invece di coprire tutta la sosta.
 **Dopo il deploy**: niente da fare. Nessuna migrazione, variabile o Watch Path
 nuova.
 
+### Niente coordinate e riquadri del primo cliente nei calcoli (tappa 6.32)
+
+Due resti trovati dopo l'inventario della 6.26.
+
+**L'area dei punti d'interesse.** L'import da Google Places scartava i
+risultati fuori da un riquadro scritto nel codice, e quello da OpenStreetMap
+cercava dentro lo stesso riquadro: la provincia del primo cliente (43,20–43,95
+N, 12,70–13,65 E). Ora il riquadro è quello che contiene i **cerchi di
+ricerca** dell'azienda (Amministrazione › Azienda › Territorio, luoghi con uso
+«punti d'interesse», ognuno col suo raggio), più 5 km di margine. Senza luoghi
+anche l'import da OpenStreetMap si ferma con un messaggio, prima di cancellare
+i punti d'interesse che ci sono (quello da Google lo faceva già).
+
+Per Conerobus, coi 15 luoghi di oggi, il riquadro diventa 43,256–43,796 N,
+12,764–13,700 E. Rispetto a prima:
+- Google: la ricerca è già attorno ai cerchi, e il riquadro li contiene tutti
+  con 5 km di margine: in pratica non cambia (si scarta solo un risultato che
+  Google desse a più di 5 km fuori dai cerchi, a nord o a sud);
+- OpenStreetMap: restano fuori la fascia a nord di 43,80 (nell'entroterra è la
+  provincia di Pesaro e Urbino, per esempio Fano) e quella a sud di 43,256
+  (provincia di Macerata), che non sono territorio servito. Per allargare
+  l'area si aggiunge un luogo di ricerca, o se ne allarga il raggio.
+
+Sulle copie locali non ci sono punti d'interesse salvati: quanti ne cambiano
+si vede al prossimo import da OpenStreetMap in produzione.
+
+**Una corsa senza coordinate.** Il calcolo dei turni macchina, se una corsa
+gli arrivava senza le coordinate dei capolinea, la metteva in un punto del
+primo cliente (43,6 N 13,5 E). Ora la mette al centro delle altre corse, come
+fa già l'API per una fermata senza coordinate. L'API manda sempre le
+coordinate: i turni macchina non cambiano (gli snapshot del calcolo sono
+identici).
+
+Un test dell'API e uno degli script Python falliscono se una coordinata
+scritta a mano torna nel codice (nella web c'era già dalla 6.22).
+
+**Dopo il deploy**: niente da fare. Nessuna migrazione, variabile o Watch Path
+nuova (`geo-utils.ts` è già fra quelle del lavoratore).
+
 **Rollback**: immagine precedente. La colonna resta e non dà fastidio.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
@@ -2968,7 +3007,8 @@ uguale.
   transcodifiche verso le consorziate: sono l'integrazione con il centro AVM
   di Conerobus, da rifare insieme per l'AVM di un altro cliente;
 - il riquadro della ricerca OSM dei punti d'interesse e i punti stradali del
-  traffico (cambiarli cambierebbe i dati raccolti);
+  traffico (cambiarli cambierebbe i dati raccolti): fatti nelle tappe 6.15
+  (punti stradali) e 6.32 (riquadro);
 - gli orari dei treni nei nodi intermodali (dovrebbero arrivare dal GTFS
   ferroviario) e il motore tariffario regionale.
 

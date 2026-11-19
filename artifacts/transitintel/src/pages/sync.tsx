@@ -39,7 +39,7 @@ const SOURCES = [
     badge: "Raccomandato",
     badgeColor: "bg-green-500/20 text-green-400 border-green-500/30",
     description:
-      "Ospedali, scuole, stazioni, centri commerciali, uffici pubblici con coordinate precise da Google Maps. Ricerca per 15 zone della provincia.",
+      "Ospedali, scuole, stazioni, centri commerciali, uffici pubblici con coordinate precise da Google Maps. Cerca attorno ai luoghi scritti in Amministrazione › Azienda.",
     icon: Map,
     color: "text-green-400",
     bg: "bg-green-500/10",
@@ -90,7 +90,7 @@ const SOURCES = [
     badge: "Alternativa",
     badgeColor: "bg-slate-500/20 text-slate-400 border-slate-500/30",
     description:
-      "POI da Overpass API (OSM). Meno preciso di Google ma completamente gratuito e open source.",
+      "POI da Overpass API (OSM), nell'area dei luoghi scritti in Amministrazione › Azienda. Meno preciso di Google ma completamente gratuito e open source.",
     icon: Map,
     color: "text-slate-400",
     bg: "bg-slate-500/10",
@@ -272,7 +272,7 @@ export default function SyncPage() {
                         <p className="text-xs text-muted-foreground">
                           <strong className="text-foreground">{result.inserted}</strong> POI inseriti
                           {result.skipped != null && result.skipped > 0 && (
-                            <span> · {result.skipped} scartati (fuori bbox o senza nome)</span>
+                            <span> · {result.skipped} scartati (fuori dall'area dei luoghi di ricerca o senza nome)</span>
                           )}
                           {result.failed != null && result.failed > 0 && (
                             <span className="text-amber-400"> · {result.failed} punti non raggiungibili</span>

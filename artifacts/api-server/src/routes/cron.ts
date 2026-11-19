@@ -12,6 +12,7 @@ import { syncAllRailwaySchedules } from "./intermodal";
 import { cronDeiDati } from "../lib/segreto-cron";
 import { leggiAzienda } from "../lib/azienda";
 import { leggiComuni, leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
+import { riquadroDeiCerchi, type Riquadro } from "../lib/geo-utils";
 
 const router: IRouter = Router();
 
@@ -45,6 +46,22 @@ const GOOGLE_PLACES_CATEGORIES: Array<{
 async function luoghiDiRicerca(): Promise<Array<{ name: string; lat: number; lng: number; radius: number }>> {
   return (await leggiLuoghi("punti_interesse")).map(l => ({ name: l.nome, lat: l.lat, lng: l.lng, radius: l.raggioM ?? 3000 }));
 }
+
+/** Quanto oltre i cerchi di ricerca un punto d'interesse è ancora del territorio. */
+const MARGINE_RICERCA_KM = 5;
+const SENZA_LUOGHI = "Nessun luogo dove cercare i punti d'interesse: aggiungili in Amministrazione › Azienda › Territorio";
+
+/**
+ * Il riquadro dove stanno i punti d'interesse dell'azienda: quello che contiene
+ * i suoi cerchi di ricerca, con un margine (tappa 6.32). Prima era il riquadro
+ * della provincia del primo cliente, scritto qui. Senza luoghi, null.
+ */
+export function riquadroDiRicerca(luoghi: ReadonlyArray<{ lat: number; lng: number; radius: number }>): Riquadro | null {
+  return riquadroDeiCerchi(luoghi.map(l => ({ lat: l.lat, lng: l.lng, raggioM: l.radius })), MARGINE_RICERCA_KM);
+}
+
+/** Il riquadro come lo vuole Overpass: «sud,ovest,nord,est». */
+export const riquadroPerOverpass = (r: Riquadro): string => [r.sud, r.ovest, r.nord, r.est].map(v => v.toFixed(4)).join(",");
 
 async function googleNearbySearch(
   apiKey: string,
@@ -82,9 +99,8 @@ export async function syncPoiFromGoogle(): Promise<{
   if (!apiKey) throw new Error("GOOGLE_PLACES_API_KEY non configurata");
   /* prima di cancellare i punti d'interesse che ci sono: senza luoghi non si cerca niente */
   const SEARCH_LOCATIONS = await luoghiDiRicerca();
-  if (!SEARCH_LOCATIONS.length) {
-    throw new Error("Nessun luogo dove cercare i punti d'interesse: aggiungili in Amministrazione › Azienda › Territorio");
-  }
+  const riquadro = riquadroDiRicerca(SEARCH_LOCATIONS);
+  if (!SEARCH_LOCATIONS.length || !riquadro) throw new Error(SENZA_LUOGHI);
 
   // Clear all existing POI (both OSM and old manual data) for a clean import
   await db.execute(sql`DELETE FROM points_of_interest`);
@@ -124,8 +140,8 @@ export async function syncPoiFromGoogle(): Promise<{
             const lng: number = place.geometry?.location?.lng;
             if (!lat || !lng) continue;
 
-            // Ensure within province bounding box (rough check)
-            if (lng < 12.7 || lng > 13.65 || lat < 43.2 || lat > 43.95) {
+            // dentro il riquadro dei cerchi di ricerca dell'azienda (controllo largo)
+            if (lng < riquadro.ovest || lng > riquadro.est || lat < riquadro.sud || lat > riquadro.nord) {
               skipped++;
               continue;
             }
@@ -167,8 +183,6 @@ export async function syncPoiFromGoogle(): Promise<{
 
 // ─── OSM Overpass helpers ─────────────────────────────────────────────────────
 
-const BBOX_OVERPASS = "43.2,12.8,43.95,13.65"; // lat_min,lng_min,lat_max,lng_max
-
 async function overpassQuery(overpassQL: string): Promise<any[]> {
   const body = `[out:json][timeout:30];(${overpassQL});out center;`;
   const resp = await fetch("https://overpass-api.de/api/interpreter", {
@@ -197,6 +211,12 @@ function elementCoords(el: any): { lat: number; lng: number } | null {
 // ─── Internal sync functions ──────────────────────────────────────────────────
 
 export async function syncPoiFromOsm(): Promise<{ inserted: number; categories: Record<string, number> }> {
+  /* dove cercare: il riquadro dei cerchi di ricerca dell'azienda. Prima di cancellare i punti
+     d'interesse che ci sono: senza luoghi non si cerca niente */
+  const riquadro = riquadroDiRicerca(await luoghiDiRicerca());
+  if (!riquadro) throw new Error(SENZA_LUOGHI);
+  const BBOX_OVERPASS = riquadroPerOverpass(riquadro); // sud,ovest,nord,est
+
   // Remove manually-seeded POIs (osm_id IS NULL) before inserting real OSM data
   await db.execute(sql`DELETE FROM points_of_interest WHERE osm_id IS NULL`);
 

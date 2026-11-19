@@ -26,6 +26,30 @@ export function kmPerGradoLng(lat: number): number {
   return KM_PER_GRADO_LAT * Math.max(Math.cos((lat * Math.PI) / 180), 0.01);
 }
 
+/** Un riquadro geografico: i suoi quattro lati, in gradi. */
+export interface Riquadro { sud: number; ovest: number; nord: number; est: number }
+
+/**
+ * Il riquadro che contiene tutti i cerchi dati (centro e raggio in metri), con
+ * un margine in chilometri attorno a ognuno: l'area di un'azienda ricavata dai
+ * luoghi che ha scritto, invece di un riquadro scritto nel codice. Senza
+ * cerchi, null.
+ */
+export function riquadroDeiCerchi(
+  cerchi: Iterable<{ lat: number; lng: number; raggioM: number }>, margineKm = 0,
+): Riquadro | null {
+  let r: Riquadro | null = null;
+  for (const c of cerchi) {
+    if (!Number.isFinite(c.lat) || !Number.isFinite(c.lng)) continue;
+    const km = Math.max(0, Number.isFinite(c.raggioM) ? c.raggioM / 1000 : 0) + Math.max(0, margineKm);
+    const dLat = km / KM_PER_GRADO_LAT, dLng = km / kmPerGradoLng(c.lat);
+    const q = { sud: c.lat - dLat, nord: c.lat + dLat, ovest: c.lng - dLng, est: c.lng + dLng };
+    r = r ? { sud: Math.min(r.sud, q.sud), nord: Math.max(r.nord, q.nord), ovest: Math.min(r.ovest, q.ovest), est: Math.max(r.est, q.est) } : q;
+  }
+  if (!r) return null;
+  return { sud: Math.max(-90, r.sud), nord: Math.min(90, r.nord), ovest: Math.max(-180, r.ovest), est: Math.min(180, r.est) };
+}
+
 /**
  * Il punto medio di un insieme di punti: il ripiego per una fermata senza
  * coordinate, invece di un luogo scritto nel codice. Senza punti, null.
