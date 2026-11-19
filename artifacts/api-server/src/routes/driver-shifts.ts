@@ -51,6 +51,7 @@ import {
 const UUID_DSS = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 import { strictLimiter } from "../middlewares/rate-limit";
 import { eseguiPython, jsonDallUscita } from "../lib/lavori/python";
+import { codificaTurniGuida } from "../lib/azienda";
 import { messaggioUsi, usiNelRoster } from "../lib/roster-pubblicazione-db";
 import { loadClustersForPython, loadCompanyCars, loadRestPointsForScenario, puntoDellaFermata, puntiDiCambio, type PuntoDiCambio } from "../lib/dati-solver";
 
@@ -971,6 +972,8 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     }
 
     const scenarioId = req.params.scenarioId as string;
+    /* i codici dei turni guida dell'azienda (tappa 6.25): sigle dei depositi e ora del pomeriggio */
+    const codiciTurni = await codificaTurniGuida();
     // project_id non è nello schema drizzle di service_program_scenarios (colonna nata a runtime)
     const progettoDelloScenario: string | null = (await db.execute<any>(sql`
       SELECT project_id::text AS p FROM service_program_scenarios WHERE id = ${scenarioId}::uuid`)).rows?.[0]?.p ?? null;
@@ -1002,6 +1005,7 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
             clusters: dbClusters,
             companyCars: companyCarsEffective,
             restPoints,
+            codiciTurni,
           },
         },
       },

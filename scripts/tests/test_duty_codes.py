@@ -41,3 +41,43 @@ def test_codes_fallback_to_service_letter(monkeypatch):
     duties = [_duty(0, "V1", 6 * 60, 13 * 60), _duty(1, "V1", 15 * 60, 22 * 60)]
     v4.assign_duty_codes(duties)
     assert [d.driver_id for d in duties] == ["U001", "U100"]
+
+
+# ── Tappa 6.25: la codifica è un dato dell'azienda (config.codiciTurni) ──
+
+def test_sigla_del_deposito_scritta_vince_sull_iniziale(monkeypatch):
+    monkeypatch.setattr(v4, "RESIDENZA_BY_VEHICLE", {"V1": {"id": "d1", "name": "Nord"}, "V2": {"id": "d2", "name": "Nuovo"}})
+    v4.imposta_codifica_turni({"sigle": {"d1": "N", "d2": "NV"}, "pomeriggioDaMin": 720})
+    try:
+        duties = [_duty(0, "V1", 6 * 60, 13 * 60), _duty(1, "V2", 6 * 60, 13 * 60), _duty(2, "V2", 14 * 60, 21 * 60)]
+        v4.assign_duty_codes(duties)
+        # due depositi con la stessa iniziale non si dividono più la lettera
+        assert [d.driver_id for d in duties] == ["N001", "NV001", "NV100"]
+    finally:
+        v4.imposta_codifica_turni(None)
+
+
+def test_ora_del_pomeriggio_e_numerazione_unica(monkeypatch):
+    monkeypatch.setattr(v4, "RESIDENZA_BY_VEHICLE", {"V1": {"id": "d1", "name": "Ovest"}})
+    duties = lambda: [_duty(0, "V1", 6 * 60, 13 * 60), _duty(1, "V1", 13 * 60 + 30, 20 * 60), _duty(2, "V1", 14 * 60, 21 * 60)]
+    try:
+        v4.imposta_codifica_turni({"pomeriggioDaMin": 14 * 60})
+        ds = duties(); v4.assign_duty_codes(ds)
+        assert [d.driver_id for d in ds] == ["O001", "O002", "O100"]
+        # None: una sola numerazione, in ordine di inizio nastro
+        v4.imposta_codifica_turni({"pomeriggioDaMin": None})
+        ds = duties(); v4.assign_duty_codes(ds)
+        assert [d.driver_id for d in ds] == ["O001", "O002", "O003"]
+    finally:
+        v4.imposta_codifica_turni(None)
+
+
+def test_senza_codifica_vale_quella_di_sempre():
+    v4.imposta_codifica_turni(None)
+    assert v4.DUTY_CODE_AFTERNOON == 12 * 60 and v4.SIGLE_DEPOSITI == {}
+    # sigle che non vanno (minuscole, troppo lunghe) si ignorano; un'ora fuori dalla giornata vale «nessuna»
+    v4.imposta_codifica_turni({"sigle": {"a": "ab", "b": "ABCD", "c": "C1"}, "pomeriggioDaMin": 9999})
+    try:
+        assert v4.SIGLE_DEPOSITI == {"c": "C1"} and v4.DUTY_CODE_AFTERNOON is None
+    finally:
+        v4.imposta_codifica_turni(None)

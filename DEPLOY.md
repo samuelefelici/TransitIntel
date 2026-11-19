@@ -1476,6 +1476,34 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
+
+Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito
+di residenza e tre cifre, da 001 per i turni del mattino e da 100 per quelli
+del pomeriggio, divisi a mezzogiorno. Era la codifica del primo cliente,
+scritta nel solver, con la lettera presa dall'iniziale del nome del deposito:
+due depositi con la stessa iniziale si dividevano la lettera. Da questo
+rilascio:
+- **la sigla è del deposito**: nella pagina Depositi di Planning Studio si
+  scrive da 1 a 3 lettere o cifre («A», «AN», «N2»). Vuota, vale l'iniziale
+  del nome come prima. La migrazione `0051` aggiunge la colonna `depots.sigla`;
+- **l'ora del pomeriggio è dell'azienda**: in Amministrazione → Azienda,
+  scheda **Turni guida: i codici**. La migrazione aggiunge
+  `azienda.turni_guida_pomeriggio_da` e per Conerobus mette le 12:00. Vuota,
+  una sola numerazione da 001 in ordine di inizio;
+- il solver riceve tutte e due in `config.codiciTurni`, dai turni guida della
+  Fucina e dal VCSP. Senza, vale la regola di sempre.
+
+Sulla copia dei dati veri la codifica nuova dà gli stessi codici della vecchia
+su tutti i 7 scenari di turni guida salvati: 222 codici su 222.
+
+**Dopo il deploy**: niente da fare. Una sigla si scrive solo se due depositi
+cominciano con la stessa lettera, o se l'azienda ne usa una sua. Nessuna
+variabile e nessuna Watch Path nuova (`azienda.ts` è già fra quelle del
+lavoratore).
+
+**Rollback**: immagine precedente. Le colonne restano e non danno fastidio.
+
 ### Il riferimento della regola regionale delle tariffe (tappa 6.24)
 
 Le pagine delle tariffe misurano la distanza di un viaggio extraurbano sul
@@ -1785,6 +1813,7 @@ per voce, e porta alla sezione dove si scrivono
 | Le vetture dell'azienda nell'AVM | Azienda → AVM | tutte le vetture del canale contano come dell'azienda |
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
 | Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
+| Codici dei turni guida (6.25) | Azienda → Turni guida: i codici; la sigla in Planning Studio → Depositi | una sola numerazione da 001, e l'iniziale del nome del deposito |
 | Riferimento della regola regionale delle tariffe (6.24) | Azienda → Tariffe extraurbane: la regola regionale | il calcolo dei km si vede senza la norma da cui viene |
 | Consorziate e anagrafica dei mezzi nell'AVM (6.21) | Azienda → AVM: le consorziate e l'anagrafica dei mezzi | le matricole delle consorziate non si attribuiscono, e nessun mezzo ha la descrizione |
 | Transcodifica delle paline dell'AVM (6.20) | Dati e integrazioni → Paline Mizar → Importa | le fermate dell'AVM si agganciano solo per codice o per nome |

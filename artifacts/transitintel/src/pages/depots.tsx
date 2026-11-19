@@ -43,6 +43,8 @@ interface Depot {
   cngPoints: number;
   color: string;
   notes: string | null;
+  /** la sigla nei codici dei turni guida; null = l'iniziale del nome (tappa 6.25) */
+  sigla?: string | null;
   /** null = deposito globale; valorizzato = solo per quel progetto PS */
   psProjectId?: string | null;
   createdAt: string;
@@ -70,6 +72,7 @@ const emptyForm = (): Partial<Depot> => ({
   cngPoints: 0,
   color: "#f97316",
   notes: "",
+  sigla: "",
 });
 
 /* ── Componente form ──────────────────────────────────────── */
@@ -317,6 +320,25 @@ function DepotForm({
             )}
           </motion.div>
         )}
+      </div>
+
+      {/* Sigla nei codici dei turni guida (tappa 6.25) */}
+      <div>
+        <label htmlFor="deposito-sigla" className="text-[10px] text-muted-foreground uppercase tracking-widest block mb-1.5">
+          Sigla nei codici dei turni guida <span className="normal-case tracking-normal">(facoltativa)</span>
+        </label>
+        <input
+          id="deposito-sigla"
+          value={form.sigla ?? ""}
+          maxLength={3}
+          onChange={e => set("sigla", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+          placeholder={(form.name ?? "").trim().match(/\p{L}/u)?.[0]?.toUpperCase() ?? "A"}
+          className="w-24 bg-muted/30 border border-border/40 rounded-lg px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-orange-500/60"
+        />
+        <p className="text-[11px] text-muted-foreground mt-1">
+          Da 1 a 3 lettere o cifre: i turni guida con residenza qui avranno codici come {(form.sigla || (form.name ?? "").trim().match(/\p{L}/u)?.[0]?.toUpperCase() || "A")}001.
+          Vuota: l'iniziale del nome. Serve quando due depositi cominciano con la stessa lettera.
+        </p>
       </div>
 
       {/* Note */}

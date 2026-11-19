@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda, nomeNeiDocumenti,
-  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex, conRiferimento, vicinoAlCentro, dintorniDelCentro,
+  moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex, conRiferimento,
+  orarioDaMinuti, minutiDaOrario, esempioCodiciTurni, vicinoAlCentro, dintorniDelCentro,
 } from "./azienda";
 
 const CONEROBUS: Azienda = {
@@ -9,7 +10,7 @@ const CONEROBUS: Azienda = {
   gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
   provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null,
   netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-  tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", avmMatricolaCifre: 4, compilata: true,
+  tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmMatricolaCifre: 4, compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -29,6 +30,27 @@ describe("aziendaValida", () => {
   it("i valori neutri non hanno il nome di nessuna azienda", () => {
     expect(JSON.stringify(AZIENDA_DA_COMPILARE).toLowerCase()).not.toMatch(/conerobus|ancona/);
     expect(AZIENDA_DA_COMPILARE.compilata).toBe(false);
+  });
+});
+
+describe("i codici dei turni guida (tappa 6.25)", () => {
+  it("l'inizio del pomeriggio si scrive come orario e si salva in minuti", () => {
+    expect(orarioDaMinuti(720)).toBe("12:00");
+    expect(orarioDaMinuti(845)).toBe("14:05");
+    expect(minutiDaOrario("12:00")).toBe(720);
+    expect(minutiDaOrario(" 9.30 ")).toBe(570);
+    for (const no of ["24:00", "12:60", "00:00", "mezzogiorno", "12"]) expect(minutiDaOrario(no), no).toBeNull();
+    const m = moduloDa(CONEROBUS);
+    expect(datiDaSalvare({ ...m, turniGuidaPomeriggioDa: "13:30" }).turniGuidaPomeriggioDa).toBe(810);
+    expect(datiDaSalvare({ ...m, turniGuidaPomeriggioDa: " " }).turniGuidaPomeriggioDa).toBeNull();
+    expect(erroriDelModulo({ ...m, turniGuidaPomeriggioDa: "25:00" })).toEqual({ turniGuidaPomeriggioDa: "Un orario fra 00:01 e 23:59, come 12:00" });
+    expect(aziendaValida({ ...CONEROBUS, turniGuidaPomeriggioDa: 1440 }).turniGuidaPomeriggioDa).toBeNull();
+  });
+
+  it("l'esempio accanto alla casella", () => {
+    expect(esempioCodiciTurni("12:00")).toBe("A001… al mattino, A100… dalle 12:00");
+    expect(esempioCodiciTurni("")).toBe("A001, A002… in ordine di inizio");
+    expect(esempioCodiciTurni("no")).toBe("");
   });
 });
 
@@ -92,7 +114,7 @@ describe("il modulo dell'amministratore", () => {
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
       provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "",
       netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", avmMatricolaCifre: "4",
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: "12:00", avmMatricolaCifre: "4",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -105,7 +127,7 @@ describe("il modulo dell'amministratore", () => {
       citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
       netexCodiceLocale: "ITI3", netexFornitore: null,
       netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", avmMatricolaCifre: 4,
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmMatricolaCifre: 4,
     });
     expect(erroriDelModulo({ ...m, netexCodiceLocale: "iti3" })).toEqual({ netexCodiceLocale: "Un codice NUTS in maiuscolo, come ITI3" });
     expect(erroriDelModulo({ ...m, netexFornitore: "A T" })).toEqual({ netexFornitore: "Lettere, cifre, - e _ (al più 40)" });

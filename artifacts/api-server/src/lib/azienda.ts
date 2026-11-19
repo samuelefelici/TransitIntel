@@ -60,6 +60,11 @@ export interface Azienda {
    */
   tariffeRiferimento: string | null;
   /**
+   * I codici dei turni guida (tappa 6.25): da che minuto del giorno un turno è pomeridiano
+   * (numerato da 100; quelli del mattino da 001). null: una sola numerazione da 001.
+   */
+  turniGuidaPomeriggioDa: number | null;
+  /**
    * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
    * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5, lib/vetture-azienda.ts)
    */
@@ -85,6 +90,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexPrefissoCodici: null,
   netexCodiceRete: null,
   tariffeRiferimento: null,
+  turniGuidaPomeriggioDa: null,
   avmMatricolaCifre: null,
   compilata: false,
 });
@@ -121,6 +127,7 @@ export const DatiAzienda = z.object({
   netexPrefissoCodici: facoltativo(z.string().trim().regex(/^[A-Za-z0-9-]{1,20}$/, "lettere, cifre e - (al più 20), come «ABC»")),
   netexCodiceRete: facoltativo(z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/, "lettere, cifre, - e _ (al più 40)")),
   tariffeRiferimento: facoltativo(riga(200)),
+  turniGuidaPomeriggioDa: facoltativo(z.number().int("un orario in minuti interi").min(1, "fra 00:01 e 23:59").max(1439, "fra 00:01 e 23:59")),
   avmMatricolaCifre: facoltativo(z.number().int("un numero intero da 1 a 9").min(1, "da 1 a 9").max(9, "da 1 a 9")),
 }).strict();
 export type DatiAzienda = z.infer<typeof DatiAzienda>;
@@ -132,6 +139,7 @@ const NOMI_CAMPI: Readonly<Record<string, string>> = {
   provinciaIstat: "Provincia ISTAT", netexCodiceLocale: "Codice locale NeTEx", netexFornitore: "Fornitore NeTEx",
   netexPrefisso: "Prefisso degli identificativi NeTEx", netexPrefissoCodici: "Prefisso dei codici NeTEx", netexCodiceRete: "Codice della rete NeTEx",
   tariffeRiferimento: "Riferimento della regola regionale",
+  turniGuidaPomeriggioDa: "Inizio dei turni del pomeriggio",
   avmMatricolaCifre: "Cifre della matricola nell'AVM",
   /* i comuni e i luoghi del territorio (lib/territorio.ts) */
   codiceIstat: "Codice ISTAT", soppresso: "Soppresso", lat: "Latitudine", lng: "Longitudine", areaKm2: "Superficie",
@@ -168,6 +176,7 @@ function daRiga(r: any): Azienda {
     netexPrefissoCodici: r.netex_prefisso_codici ?? null,
     netexCodiceRete: r.netex_codice_rete ?? null,
     tariffeRiferimento: r.tariffe_riferimento ?? null,
+    turniGuidaPomeriggioDa: r.turni_guida_pomeriggio_da == null ? null : Number(r.turni_guida_pomeriggio_da),
     avmMatricolaCifre: r.avm_matricola_cifre == null ? null : Number(r.avm_matricola_cifre),
     compilata: true,
   };
@@ -184,7 +193,7 @@ export async function leggiAzienda(): Promise<Azienda> {
     const r = await db.execute<any>(sql`
       SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom,
              provincia_istat, netex_codice_locale, netex_fornitore, netex_prefisso, netex_prefisso_codici, netex_codice_rete,
-             tariffe_riferimento, avm_matricola_cifre
+             tariffe_riferimento, turni_guida_pomeriggio_da, avm_matricola_cifre
         FROM azienda WHERE unica`);
     const riga = r.rows?.[0];
     /* le reti e le regole delle linee sono dati dell'azienda come la riga: si leggono insieme (lib/reti-linee.ts) */
@@ -257,7 +266,7 @@ export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
   const r = await db.execute<any>(sql`
     SELECT a.ragione_sociale, a.nome, a.sito, a.telefono, a.gtfs_agency_id, a.citta, a.regione,
            a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.netex_codice_locale, a.netex_fornitore,
-           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.tariffe_riferimento, a.avm_matricola_cifre,
+           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.tariffe_riferimento, a.turni_guida_pomeriggio_da, a.avm_matricola_cifre,
            a.aggiornata_il,
            coalesce(nullif(btrim(u.full_name), ''), u.email) AS aggiornata_da
       FROM azienda a LEFT JOIN users u ON u.id = a.aggiornata_da
@@ -276,11 +285,11 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
   await db.execute(sql`
     INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione,
                          centro_lat, centro_lng, zoom, provincia_istat, netex_codice_locale, netex_fornitore,
-                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, tariffe_riferimento, avm_matricola_cifre,
+                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, tariffe_riferimento, turni_guida_pomeriggio_da, avm_matricola_cifre,
                          aggiornata_il, aggiornata_da)
     VALUES (true, ${d.ragioneSociale}, ${d.nome}, ${d.sito}, ${d.telefono}, ${d.gtfsAgencyId}, ${d.citta}, ${d.regione},
             ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, ${d.netexCodiceLocale}, ${d.netexFornitore},
-            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete}, ${d.tariffeRiferimento},
+            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete}, ${d.tariffeRiferimento}, ${d.turniGuidaPomeriggioDa},
             ${d.avmMatricolaCifre}, now(), ${utenteId}::uuid)
     ON CONFLICT (unica) DO UPDATE SET
       ragione_sociale = EXCLUDED.ragione_sociale, nome = EXCLUDED.nome, sito = EXCLUDED.sito,
@@ -291,6 +300,7 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
       netex_prefisso = EXCLUDED.netex_prefisso, netex_prefisso_codici = EXCLUDED.netex_prefisso_codici,
       netex_codice_rete = EXCLUDED.netex_codice_rete,
       tariffe_riferimento = EXCLUDED.tariffe_riferimento,
+      turni_guida_pomeriggio_da = EXCLUDED.turni_guida_pomeriggio_da,
       avm_matricola_cifre = EXCLUDED.avm_matricola_cifre,
       aggiornata_il = EXCLUDED.aggiornata_il, aggiornata_da = EXCLUDED.aggiornata_da`);
   dimenticaAzienda();
@@ -298,6 +308,27 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
 }
 
 /* ── Quello che ne ricavano gli altri pezzi ───────────────────────────────── */
+
+/** La codifica dei turni guida che il solver riceve in config.codiciTurni (crew_scheduler_v4.py). */
+export interface CodificaTurniGuida {
+  /** da che minuto un turno è pomeridiano; null: una sola numerazione */
+  pomeriggioDaMin: number | null;
+  /** la sigla di ogni deposito che ne ha una (id del deposito → «A», «AN»…); gli altri usano l'iniziale del nome */
+  sigle: Record<string, string>;
+}
+
+/**
+ * La codifica dei turni guida di questa azienda (tappa 6.25): l'ora del
+ * pomeriggio dalla riga dell'azienda, le sigle dai depositi. Prima era
+ * scritta nel solver.
+ */
+export async function codificaTurniGuida(): Promise<CodificaTurniGuida> {
+  const a = await leggiAzienda();
+  const r = await db.execute<any>(sql`SELECT id::text AS id, sigla FROM depots WHERE sigla IS NOT NULL`);
+  const sigle: Record<string, string> = {};
+  for (const x of r.rows ?? []) sigle[String(x.id)] = String(x.sigla);
+  return { pomeriggioDaMin: a.turniGuidaPomeriggioDa, sigle };
+}
 
 const compatta = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
 

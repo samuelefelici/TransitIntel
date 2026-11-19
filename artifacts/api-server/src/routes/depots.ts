@@ -20,6 +20,20 @@ import { asyncHandler } from "../middlewares/error-handler";
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
 
+/**
+ * La sigla del deposito nei codici dei turni guida (tappa 6.25): da 1 a 3
+ * lettere o cifre, in maiuscolo; vuota = l'iniziale del nome. undefined se il
+ * valore non va (la rotta risponde 400).
+ */
+export function siglaDeposito(v: unknown): string | null | undefined {
+  if (v == null) return null;
+  if (typeof v !== "string") return undefined;
+  const s = v.trim().toUpperCase();
+  if (!s) return null;
+  return /^[A-Z0-9]{1,3}$/.test(s) ? s : undefined;
+}
+const SIGLA_NON_VA = "sigla: da 1 a 3 lettere o cifre, come «A» o «AN»";
+
 /* SCOPING PER PROGETTO (colonna additiva fuori dallo schema drizzle):
  * ps_project_id NULL = deposito GLOBALE (visibile ovunque, comportamento
  * storico); valorizzato = deposito del solo progetto Planner Studio indicato.
@@ -64,6 +78,8 @@ router.post("/depots", asyncHandler(async (req, res) => {
     res.status(400).json({ error: "name is required" });
     return;
   }
+  const sigla = siglaDeposito(req.body?.sigla);
+  if (sigla === undefined) { res.status(400).json({ error: SIGLA_NON_VA }); return; }
 
   const [depot] = await db.insert(depots).values({
     name: name.trim(),
@@ -80,6 +96,7 @@ router.post("/depots", asyncHandler(async (req, res) => {
     cngPoints: cngPoints != null ? Number(cngPoints) : 0,
     color: color ?? "#3b82f6",
     notes: notes ?? null,
+    sigla,
   }).returning();
 
   // Scope per progetto (raw: colonna fuori dallo schema drizzle)
@@ -123,6 +140,11 @@ router.put("/depots/:id", asyncHandler(async (req, res) => {
   if (cngPoints !== undefined)           patch.cngPoints           = numOrNaN(cngPoints);
   if (color !== undefined)               patch.color               = color == null ? null : String(color);
   if (notes !== undefined)               patch.notes               = notes == null ? null : String(notes);
+  if (req.body && "sigla" in req.body) {
+    const sigla = siglaDeposito(req.body.sigla);
+    if (sigla === undefined) { res.status(400).json({ error: SIGLA_NON_VA }); return; }
+    patch.sigla = sigla;
+  }
   // Rifiuta 400 se una coercizione numerica è fallita (evita NaN → pg 500).
   for (const [k, v] of Object.entries(patch)) {
     if (typeof v === "number" && Number.isNaN(v)) { res.status(400).json({ error: `${k} non valido` }); return; }

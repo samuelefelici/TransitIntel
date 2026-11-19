@@ -12,6 +12,7 @@ import {
   enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
 } from "../dati-solver";
 import { eseguiPython, jsonDallUscita, descriviUscita, type Progresso, type ScriptConsentito } from "../lavori/python";
+import { codificaTurniGuida } from "../azienda";
 import {
   type Advisory, type TripBlock, type VehicleShift, type VehicleType,
   VEHICLE_SIZE, getServiceCategory, getActiveServiceIds, calculateCosts, calculateScore, generateAdvisories,
@@ -1103,6 +1104,8 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
         clusters: crewDbClusters,
         companyCars: crewCompanyCars,
         restPoints: crewRestPoints,
+        /* i codici dei turni guida dell'azienda (tappa 6.25): dopo la config dell'operatore, vale il dato */
+        codiciTurni: await codificaTurniGuida(),
       };
       // Passaggi sui capolinea altrui: senza questi la sonda vede solo le
       // coincidenze fatte da fermo e puo' rompere quelle fatte in transito.

@@ -15,7 +15,7 @@
  * e i gestori delle linee, le agenzie dei GTFS (tappa 6.11, components/azienda/Gestori.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
-import { Building2, FileCode2, MapPin, Radio, Save, Scale } from "lucide-react";
+import { Building2, FileCode2, MapPin, Radio, Save, Scale, IdCard } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -35,7 +35,7 @@ import NodiDiScambio from "@/components/azienda/NodiDiScambio";
 import ParcoAvm from "@/components/azienda/ParcoAvm";
 import StatoInstallazione from "@/components/azienda/StatoInstallazione";
 import {
-  aziendaValida, datiDaSalvare, erroriDelModulo, esempioIdNetex, moduloCambiato, moduloDa,
+  aziendaValida, datiDaSalvare, erroriDelModulo, esempioCodiciTurni, esempioIdNetex, moduloCambiato, moduloDa,
   type Azienda, type CampoAzienda, type ModuloAzienda,
 } from "@/lib/azienda";
 
@@ -225,6 +225,25 @@ export default function AdminAziendaPage() {
             Le pagine delle tariffe misurano la distanza fra due fermate sul percorso con più corse della linea; se più linee
             hanno gli stessi capolinea, con la media dei loro chilometri pesata sulle corse. Il calcolo è lo stesso per tutte le aziende:
             qui si scrive solo da quale norma viene.
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card id="azienda-codici-turni" className="scroll-mt-4">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <IdCard className="w-4 h-4 text-primary" aria-hidden /> Turni guida: i codici
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-4 sm:grid-cols-2">
+            {casella("turniGuidaPomeriggioDa", "Inizio dei turni del pomeriggio", { facoltativo: true, esempio: "12:00",
+              aiuto: "Un turno che comincia da quest'ora ha il codice da 100 in su; quelli del mattino da 001. Vuoto: una sola numerazione da 001." })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Il codice di un turno guida è la sigla del deposito di residenza seguita da tre cifre
+            {modulo && esempioCodiciTurni(modulo.turniGuidaPomeriggioDa) && <>: <code className="font-mono">{esempioCodiciTurni(modulo.turniGuidaPomeriggioDa)}</code></>}.
+            La sigla di ogni deposito si scrive nella pagina Depositi; senza, vale l'iniziale del nome.
           </p>
         </CardContent>
       </Card>
