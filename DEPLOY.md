@@ -1476,6 +1476,46 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Urbano o extraurbano nei turni macchina, dalle reti dell'azienda (tappa 6.23)
+
+L'ottimizzazione dei mezzi (Fucina: calcolo semplice, CP-SAT e VCSP; il
+programma di esercizio) decideva se una linea è urbana o extraurbana dalla
+prima lettera del nome: lettera → extraurbana. È la convenzione dei nomi del
+primo cliente. Le urbane con un nome di lettere (Jesi JE…, Senigallia BUS…,
+Castelfidardo CIRCA/CIRCB, Falconara Y, Ancona C.D. e C.S.) finivano fra le
+extraurbane, e il solver le metteva sugli stessi mezzi delle extraurbane vere.
+Da questo rilascio la categoria la dicono le **reti dell'azienda**
+(Amministrazione → Azienda → Reti), come già per il Roster e le tariffe.
+
+Le flotte restano separate, come oggi: un turno macchina è tutto urbano o
+tutto extraurbano. La regola dell'esercizio è che un mezzo urbano fa solo
+urbano, mentre un mezzo extraurbano o da noleggio fa anche le urbane. Lasciata
+libera, però, il solver mette quasi tutto su mezzi extraurbani: sulla copia
+dei dati veri 259 su 272, perché non sa quanti mezzi di ogni tipo ci sono.
+Arriverà con i numeri del parco per tipo.
+
+Sulla copia dei dati veri (5 dicembre, 3.502 corse, CP-SAT a 30 s, due giri
+per regola):
+
+| | regola della lettera | reti dell'azienda |
+|---|---|---|
+| linee classificate diversamente | — | 30 su 128 (452 corse) |
+| mezzi | 283–286 | 295–297 |
+| di cui fanno solo corse urbane (per le reti) | 76–77 | 107 |
+| mezzi che mescolano urbane ed extraurbane | 136–137 | 0 |
+| km a vuoto | 6.174–6.246 | 6.309–6.550 |
+
+I mezzi in più sono quelli che prima mescolavano le due flotte, cosa che
+l'esercizio non può fare con un mezzo urbano. I turni macchina di quelle linee
+passano dal prefisso «E» al prefisso «U».
+
+**Dopo il deploy**: niente da fare. Le reti dell'azienda sono già scritte
+(tappa 6.7). Nessuna migrazione, variabile o Watch Path nuova (`reti-linee.ts`
+è già fra quelle del lavoratore). Un'azienda senza regole delle reti ha tutte le
+linee extraurbane, come nel Roster.
+
+**Rollback**: immagine precedente.
+
 ### Le mappe partono dal centro dell'azienda (tappa 6.22)
 
 Sedici mappe della web si aprivano su coordinate scritte nel codice: su Ancona

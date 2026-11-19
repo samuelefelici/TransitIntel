@@ -6,6 +6,7 @@
 import { db } from "@workspace/db";
 import { gtfsCalendar, gtfsCalendarDates } from "@workspace/db/schema";
 import { and, eq, sql } from "drizzle-orm";
+import { servizioDellaLinea } from "../reti-linee";
 
 /* ═══════════════════════════════════════════════════════════════
  *  VEHICLE TYPES & HIERARCHY
@@ -120,10 +121,17 @@ export const COST_PER_DEPOT_RETURN = 15;
 /** Costo orario tempo inattivo veicolo (costo opportunità, usura statica) */
 export const COST_PER_IDLE_HOUR = 5;
 
+/**
+ * Urbana o extraurbana: lo dicono le reti dell'azienda (Amministrazione ›
+ * Azienda), come per il Roster e le tariffe (tappa 6.23). Prima lo diceva la
+ * prima lettera del nome della linea, che vale solo per i nomi del primo
+ * cliente: le urbane con un nome di lettere (JE1, BUS3, CIRCA…) finivano fra
+ * le extraurbane, e un mezzo poteva mescolarle con le extraurbane vere.
+ * Le flotte restano separate: un turno macchina è tutto urbano o tutto
+ * extraurbano (vehicle_scheduler_cpsat.py, trips_vehicle_compatible).
+ */
 export function getServiceCategory(routeName: string): ServiceCategory {
-  const firstChar = routeName.trim().charAt(0);
-  if (/[a-zA-Z]/.test(firstChar)) return "extraurbano";
-  return "urbano";
+  return servizioDellaLinea(routeName);
 }
 
 /* ═══════════════════════════════════════════════════════════════
