@@ -32,6 +32,7 @@ Pipeline:
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 import math
@@ -965,10 +966,39 @@ DUTY_CODE_PREFIX = "D"
 DUTY_CODE_AFTERNOON_FROM_MIN = 12 * 60
 
 
+# Codifica dei turni guida come dato dell'azienda (tappa 6.25), da
+# config.codiciTurni: la sigla di ogni deposito (id → «A», «AN»…) e l'ora da
+# cui un turno è pomeridiano (minuti; None = una sola numerazione). Senza
+# config.codiciTurni vale la regola di sempre: iniziale del nome, mattino e
+# pomeriggio divisi a mezzogiorno.
+SIGLE_DEPOSITI: dict[str, str] = {}
+DUTY_CODE_AFTERNOON: int | None = DUTY_CODE_AFTERNOON_FROM_MIN
+_SIGLA_VALIDA = re.compile(r"^[A-Z0-9]{1,3}$")
+
+
+def imposta_codifica_turni(cfg: dict | None) -> None:
+    """Legge config.codiciTurni (dall'API: lib/azienda.ts, codificaTurniGuida)."""
+    global SIGLE_DEPOSITI, DUTY_CODE_AFTERNOON
+    SIGLE_DEPOSITI = {}
+    DUTY_CODE_AFTERNOON = DUTY_CODE_AFTERNOON_FROM_MIN
+    if not isinstance(cfg, dict):
+        return
+    sigle = cfg.get("sigle")
+    if isinstance(sigle, dict):
+        SIGLE_DEPOSITI = {str(k): str(v) for k, v in sigle.items() if isinstance(v, str) and _SIGLA_VALIDA.match(v)}
+    if "pomeriggioDaMin" in cfg:
+        v = cfg.get("pomeriggioDaMin")
+        DUTY_CODE_AFTERNOON = int(v) if isinstance(v, (int, float)) and 0 < int(v) < 24 * 60 else None
+
+
 def _duty_depot_letter(d: "DriverDutyV3") -> str:
-    """Prima lettera del deposito di residenza della vettura del primo pezzo."""
+    """La sigla del deposito di residenza della vettura del primo pezzo: quella
+    scritta per il deposito, altrimenti la prima lettera del suo nome."""
     for seg in d.segments:
         res = RESIDENZA_BY_VEHICLE.get(getattr(seg, "vehicle_id", "") or "")
+        sigla = SIGLE_DEPOSITI.get(str((res or {}).get("id") or ""))
+        if sigla:
+            return sigla
         name = str((res or {}).get("name") or "").strip()
         if name:
             for ch in name:
@@ -977,19 +1007,29 @@ def _duty_depot_letter(d: "DriverDutyV3") -> str:
     return DUTY_CODE_PREFIX
 
 
-def assign_duty_codes(duties: list["DriverDutyV3"], afternoon_from_min: int = DUTY_CODE_AFTERNOON_FROM_MIN) -> None:
+_DEFAULT = object()
+
+
+def assign_duty_codes(duties: list["DriverDutyV3"], afternoon_from_min: "int | None | object" = _DEFAULT) -> None:
     """Assegna i codici A001… per deposito: mattinali (inizio nastro prima di
     afternoon_from_min) da 001, pomeridiani da 100, in ordine di inizio nastro.
     Oltre 99 turni per fascia si prosegue da 200 (mattina) e 300 (pomeriggio)
-    senza collidere."""
+    senza collidere. Con afternoon_from_min None, una sola numerazione da 001
+    in ordine di inizio nastro. Senza argomento vale quella dell'azienda
+    (imposta_codifica_turni)."""
+    if afternoon_from_min is _DEFAULT:
+        afternoon_from_min = DUTY_CODE_AFTERNOON
     groups: dict[tuple[str, bool], list] = {}
     for d in duties:
-        key = (_duty_depot_letter(d), int(d.nastro_start) >= int(afternoon_from_min))
+        pomeriggio = afternoon_from_min is not None and int(d.nastro_start) >= int(afternoon_from_min)
+        key = (_duty_depot_letter(d), pomeriggio)
         groups.setdefault(key, []).append(d)
     for (letter, afternoon), ds in groups.items():
         ds.sort(key=lambda d: (int(d.nastro_start), int(d.nastro_end), d.idx))
         for n, d in enumerate(ds, start=1):
-            if afternoon:
+            if afternoon_from_min is None:
+                num = n
+            elif afternoon:
                 num = 100 + n - 1 if n <= 100 else 300 + (n - 101)
             else:
                 num = n if n <= 99 else 200 + (n - 100)
@@ -5160,6 +5200,9 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     global DUTY_CODE_PREFIX
     _stype = (user_config.get("bds", {}) or {}).get("serviceType")
     DUTY_CODE_PREFIX = {"urbano": "U", "extraurbano": "E", "misto": "M"}.get(_stype, "D")
+
+    # Codifica dei turni guida dell'azienda (sigle dei depositi, ora del pomeriggio)
+    imposta_codifica_turni(user_config.get("codiciTurni"))
 
     # Residenza di servizio per veicolo (dal turno macchina) → ereditata dai turni guida
     global RESIDENZA_BY_VEHICLE

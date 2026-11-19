@@ -12,10 +12,21 @@ import {
   enrichTripsWithClusterStops, loadClustersForPython, loadCompanyCars, loadRestPointsForScenario,
 } from "../dati-solver";
 import { eseguiPython, jsonDallUscita, descriviUscita, type Progresso, type ScriptConsentito } from "../lavori/python";
+import { codificaTurniGuida } from "../azienda";
 import {
   type Advisory, type TripBlock, type VehicleShift, type VehicleType,
   VEHICLE_SIZE, getServiceCategory, getActiveServiceIds, calculateCosts, calculateScore, generateAdvisories,
 } from "./modello";
+
+/**
+ * Una lista di testi come array di Postgres, da passare come un parametro solo
+ * (`= ANY(${arrayDiTesto(ids)}::text[])`): niente SQL scritto a mano con gli
+ * apici raddoppiati, e niente limite al numero dei parametri con migliaia di
+ * corse. Dentro le virgolette si proteggono la barra e le virgolette.
+ */
+export function arrayDiTesto(valori: readonly string[]): string {
+  return `{${valori.map((v) => `"${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(",")}}`;
+}
 
 export function buildPyTrips(tripBlocks: TripBlock[]) {
   return tripBlocks.map(t => ({
@@ -545,7 +556,7 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       SELECT trip_id, stop_id, stop_sequence, departure_time, arrival_time
       FROM gtfs_stop_times
       WHERE feed_id = ${feedId}
-        AND trip_id IN ${sql.raw(`(${tripIds.map(id => `'${id.replace(/'/g, "''")}'`).join(",")})`)}
+        AND trip_id = ANY(${arrayDiTesto(tripIds)}::text[])
       ORDER BY trip_id, stop_sequence
     `);
 
@@ -1103,6 +1114,8 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
         clusters: crewDbClusters,
         companyCars: crewCompanyCars,
         restPoints: crewRestPoints,
+        /* i codici dei turni guida dell'azienda (tappa 6.25): dopo la config dell'operatore, vale il dato */
+        codiciTurni: await codificaTurniGuida(),
       };
       // Passaggi sui capolinea altrui: senza questi la sonda vede solo le
       // coincidenze fatte da fermo e puo' rompere quelle fatte in transito.

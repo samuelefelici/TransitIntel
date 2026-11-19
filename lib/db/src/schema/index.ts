@@ -738,6 +738,8 @@ export const depots = pgTable("depots", {
   // Presentazione
   color:               text("color").default("#3b82f6"),
   notes:               text("notes"),
+  // Sigla nei codici dei turni guida (tappa 6.25, migrazione 0051): vuota, l'iniziale del nome
+  sigla:               text("sigla"),
   // Audit
   createdAt:           timestamp("created_at", { withTimezone: true }).defaultNow(),
   updatedAt:           timestamp("updated_at", { withTimezone: true }).defaultNow(),

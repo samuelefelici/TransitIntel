@@ -33,6 +33,8 @@ export interface Azienda {
   netexCodiceRete: string | null;
   /** il riferimento della regola regionale delle tariffe extraurbane, mostrato accanto al calcolo; null: non compare (tappa 6.24) */
   tariffeRiferimento: string | null;
+  /** da che minuto del giorno un turno guida è pomeridiano (codici da 100); null: una sola numerazione (tappa 6.25) */
+  turniGuidaPomeriggioDa: number | null;
   /**
    * Nel canale dell'AVM, al più quante cifre ha la matricola di una vettura dell'azienda (le altre sono
    * delle consorziate); null: tutte le vetture del canale sono sue (tappa 6.5)
@@ -59,6 +61,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexPrefissoCodici: null,
   netexCodiceRete: null,
   tariffeRiferimento: null,
+  turniGuidaPomeriggioDa: null,
   avmMatricolaCifre: null,
   compilata: false,
 });
@@ -96,6 +99,8 @@ export function aziendaValida(x: unknown): Azienda {
     netexPrefissoCodici: typeof d.netexPrefissoCodici === "string" && PREFISSO_CODICI_NETEX.test(d.netexPrefissoCodici) ? d.netexPrefissoCodici : null,
     netexCodiceRete: typeof d.netexCodiceRete === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(d.netexCodiceRete) ? d.netexCodiceRete : null,
     tariffeRiferimento: rigaDiTesto(d.tariffeRiferimento, 200),
+    turniGuidaPomeriggioDa: typeof d.turniGuidaPomeriggioDa === "number" && Number.isInteger(d.turniGuidaPomeriggioDa)
+      && d.turniGuidaPomeriggioDa >= 1 && d.turniGuidaPomeriggioDa <= 1439 ? d.turniGuidaPomeriggioDa : null,
     avmMatricolaCifre: cifreValide(d.avmMatricolaCifre),
     compilata: d.compilata !== false,
   };
@@ -127,6 +132,31 @@ export function dintorniDelCentro(a: Pick<Azienda, "centro">, km = 80): string {
   const dLng = km / (111.32 * Math.max(Math.cos((a.centro.lat * Math.PI) / 180), 0.01));
   const t = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v)).toFixed(2);
   return [t(a.centro.lng - dLng, -180, 180), t(a.centro.lat - dLat, -90, 90), t(a.centro.lng + dLng, -180, 180), t(a.centro.lat + dLat, -90, 90)].join(",");
+}
+
+/** 720 → «12:00». */
+export function orarioDaMinuti(min: number): string {
+  return `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+}
+
+/** «12:00» o «9.30» → minuti del giorno, fra 1 e 1439; altrimenti null. */
+export function minutiDaOrario(s: string): number | null {
+  const m = /^(\d{1,2})[:.](\d{2})$/.exec(s.trim());
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h > 23 || mi > 59) return null;
+  const tot = h * 60 + mi;
+  return tot >= 1 ? tot : null;
+}
+
+/**
+ * Due codici d'esempio dei turni guida, per la sigla data: «A001 (mattino),
+ * A100 (dalle 12:00)», o «A001, A002…» con una sola numerazione.
+ */
+export function esempioCodiciTurni(pomeriggio: string, sigla = "A"): string {
+  const min = pomeriggio.trim() ? minutiDaOrario(pomeriggio) : null;
+  if (pomeriggio.trim() && min === null) return "";
+  return min === null ? `${sigla}001, ${sigla}002… in ordine di inizio` : `${sigla}001… al mattino, ${sigla}100… dalle ${orarioDaMinuti(min)}`;
 }
 
 /**
@@ -175,6 +205,8 @@ export interface ModuloAzienda {
   netexCodiceLocale: string; netexFornitore: string;
   netexPrefisso: string; netexPrefissoCodici: string; netexCodiceRete: string;
   tariffeRiferimento: string;
+  /** «12:00», o vuoto */
+  turniGuidaPomeriggioDa: string;
   avmMatricolaCifre: string;
 }
 export type CampoAzienda = keyof ModuloAzienda;
@@ -190,6 +222,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     netexCodiceLocale: scritto(a.netexCodiceLocale), netexFornitore: scritto(a.netexFornitore),
     netexPrefisso: scritto(a.netexPrefisso), netexPrefissoCodici: scritto(a.netexPrefissoCodici), netexCodiceRete: scritto(a.netexCodiceRete),
     tariffeRiferimento: scritto(a.tariffeRiferimento),
+    turniGuidaPomeriggioDa: a.compilata && a.turniGuidaPomeriggioDa != null ? orarioDaMinuti(a.turniGuidaPomeriggioDa) : "",
     avmMatricolaCifre: a.compilata && a.avmMatricolaCifre != null ? String(a.avmMatricolaCifre) : "",
   };
 }
@@ -226,6 +259,7 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (m.netexPrefissoCodici.trim() && !PREFISSO_CODICI_NETEX.test(m.netexPrefissoCodici.trim())) e.netexPrefissoCodici = "Lettere, cifre e - (al più 20), come ABC";
   if (m.netexCodiceRete.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexCodiceRete.trim())) e.netexCodiceRete = "Lettere, cifre, - e _ (al più 40)";
   if (m.tariffeRiferimento.trim().length > 200) e.tariffeRiferimento = "Al più 200 caratteri";
+  if (m.turniGuidaPomeriggioDa.trim() && minutiDaOrario(m.turniGuidaPomeriggioDa) === null) e.turniGuidaPomeriggioDa = "Un orario fra 00:01 e 23:59, come 12:00";
   if (m.avmMatricolaCifre.trim() && !/^[1-9]$/.test(m.avmMatricolaCifre.trim())) e.avmMatricolaCifre = "Un numero da 1 a 9, oppure vuoto";
   return e;
 }
@@ -242,6 +276,7 @@ export function datiDaSalvare(m: ModuloAzienda) {
     netexPrefisso: facoltativo(m.netexPrefisso), netexPrefissoCodici: facoltativo(m.netexPrefissoCodici),
     netexCodiceRete: facoltativo(m.netexCodiceRete),
     tariffeRiferimento: facoltativo(m.tariffeRiferimento),
+    turniGuidaPomeriggioDa: m.turniGuidaPomeriggioDa.trim() ? minutiDaOrario(m.turniGuidaPomeriggioDa) : null,
     avmMatricolaCifre: m.avmMatricolaCifre.trim() ? Number(m.avmMatricolaCifre.trim()) : null,
   };
 }

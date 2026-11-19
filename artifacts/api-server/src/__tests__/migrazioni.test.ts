@@ -1250,7 +1250,7 @@ describe("0006: il registro delle modifiche", () => {
   it("tabelle coi valori: le colonne di testo sono tutte decise", () => {
     const decise: Record<string, string[]> = {
       app_settings: ["key"],
-      depots: ["address", "color", "name", "notes", "operating_hours_end", "operating_hours_start"],
+      depots: ["address", "color", "name", "notes", "operating_hours_end", "operating_hours_start", "sigla"],
       driver_shift_scenarios: ["description", "name"],
       gtfs_fare_products: ["currency", "fare_media_id", "fare_product_id", "fare_product_name", "fare_type", "network_id", "rider_category_id"],
       gtfs_feeds: ["agency_name", "feed_end_date", "feed_start_date", "filename"],

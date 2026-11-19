@@ -358,6 +358,13 @@
       "when": 1797200000000,
       "tag": "0050_riferimento_tariffe",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1797300000000,
+      "tag": "0051_codifica_turni_guida",
+      "breakpoints": true
     }
   ]
 }

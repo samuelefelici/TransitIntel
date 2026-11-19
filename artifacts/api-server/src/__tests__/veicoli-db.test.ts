@@ -17,6 +17,7 @@ import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import { creaEsecutore } from "../lib/lavori/esecutore";
 import { GESTORI } from "../lib/lavori/gestori";
 import { conLeRetiDiProva, senzaReti } from "./helpers/reti-di-prova";
+import { arrayDiTesto } from "../lib/ottimizza-veicoli/esegui";
 
 /* niente rete: OSRM non risponde e la matrice fuorilinea ricade su Haversine × circuità */
 vi.hoisted(() => { process.env.OSRM_URL = "http://127.0.0.1:1"; });
@@ -285,6 +286,15 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("turni macchina e VCSP, sul data
       expect(r.python).toMatchSnapshot("python");
     });
   }
+
+  it("gli id delle corse arrivano al database come un parametro solo, qualunque carattere abbiano", async () => {
+    const ids = ["T1", "R'1", 'con "virgolette"', "barra\\finale\\", "a,b", "{graffe}", "spazio finale ", "NULL", ""];
+    const r = await db.execute<any>(sql`SELECT x FROM unnest(${arrayDiTesto(ids)}::text[]) WITH ORDINALITY AS u(x, n) ORDER BY n`);
+    expect(r.rows.map((x: any) => x.x)).toEqual(ids);
+    /* e nella query degli orari si trovano le corse giuste */
+    const st = await db.execute<any>(sql`SELECT DISTINCT trip_id FROM gtfs_stop_times WHERE feed_id = ${FEED} AND trip_id = ANY(${arrayDiTesto(["T1", "T2", "nessuna"])}::text[]) ORDER BY trip_id`);
+    expect(st.rows.map((x: any) => x.trip_id)).toEqual(["T1", "T2"]);
+  });
 
   it("il giro VCSP di Argos fino allo scenario salvato, con i turni guida", async () => {
     const g = await giroCompleto();
