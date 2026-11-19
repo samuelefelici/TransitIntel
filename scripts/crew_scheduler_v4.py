@@ -1086,6 +1086,24 @@ def sosta_inoperosa_coeff(
     return SOSTA_INOP_COEFF_FACILITIES if fac else SOSTA_INOP_COEFF_NO_FACILITIES
 
 
+# Quanto può restare un bus senza conducente a un cambio in linea: il montante
+# lo prende entro questo tempo dall'arrivo dello smontante. È una regola
+# dell'azienda: si scrive nelle regole dei turni guida
+# (config.bds.copertura.busIncustoditoMax, tappa 6.31); senza, 15 minuti.
+_UNATTENDED_BUS_MAX_DEFAULT = UNATTENDED_BUS_MAX
+
+
+def apply_bus_incustodito_config(cfg: dict) -> None:
+    """Legge config.bds.copertura.busIncustoditoMax: minuti interi da 0 a 60.
+    Un valore mancante o fuori misura lascia quello di sempre. Muta il global."""
+    global UNATTENDED_BUS_MAX
+    UNATTENDED_BUS_MAX = _UNATTENDED_BUS_MAX_DEFAULT
+    cop = ((cfg or {}).get("bds", {}) or {}).get("copertura", {}) or {}
+    v = cop.get("busIncustoditoMax")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 60:
+        UNATTENDED_BUS_MAX = int(v)
+
+
 def apply_sosta_inoperosa_config(cfg: dict) -> None:
     """Popola REST_STOP_FACILITIES dai nodi di sosta (config.restPoints, match per
     nome fermata) e applica eventuali override da config.bds.sostaInoperosa
@@ -5235,6 +5253,7 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     bds = BDSConfig.from_config(config)
 
     apply_sosta_inoperosa_config(config)
+    apply_bus_incustodito_config(config)
     rest_points = config.get("restPoints") or []
     log(f"=== Crew Scheduler V4 ===")
     log(f"Input: {len(vehicle_shifts_raw)} turni macchina, timeLimit={time_limit_sec}s")

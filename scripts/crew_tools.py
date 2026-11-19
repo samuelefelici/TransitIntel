@@ -43,6 +43,7 @@ from crew_scheduler_v4 import (
     apply_optimizer_overrides,
     apply_shift_rules_override,
     apply_sosta_inoperosa_config,
+    apply_bus_incustodito_config,
     classify_duty,
     compute_work_bds,
     depot_transfer_min,
@@ -61,6 +62,7 @@ def _setup(config_raw: dict):
     apply_optimizer_overrides(config)
     apply_fase2_overrides(config)
     apply_sosta_inoperosa_config(config)
+    apply_bus_incustodito_config(config)
     clusters = parse_clusters_from_config(config)
     bds = BDSConfig.from_config(config)
     return config, clusters, bds
