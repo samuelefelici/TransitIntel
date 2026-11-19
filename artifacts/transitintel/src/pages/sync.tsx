@@ -69,11 +69,11 @@ const SOURCES = [
   },
   {
     key: "census",
-    label: "Popolazione — ISTAT 2023",
+    label: "Popolazione dei comuni — ISTAT",
     badge: "Gratuita",
     badgeColor: "bg-blue-500/20 text-blue-400 border-blue-500/30",
     description:
-      "Popolazione residente e densità per i comuni del territorio dell'azienda (stime ISTAT 2023).",
+      "Popolazione residente e densità per i comuni del territorio dell'azienda (l'ultimo dato ISTAT).",
     icon: Users,
     color: "text-blue-400",
     bg: "bg-blue-500/10",
@@ -82,7 +82,7 @@ const SOURCES = [
     apiUrl: "https://www.istat.it",
     keyNeeded: null,
     detail:
-      "Inserisce o aggiorna le 44 sezioni censuarie con centroidi verificati e popolazione ISTAT 2023. Usato per calcolo domanda e identificazione zone sottoservite.",
+      "Una riga per ogni comune del territorio (Amministrazione › Azienda), con la popolazione dell'ISTAT o, se l'ISTAT non risponde, quella scritta nel territorio. Se ci sono già le sezioni di censimento (lo script dell'import delle sezioni) non aggiunge niente: la popolazione è già lì, sezione per sezione, e i comuni la conterebbero due volte. Usata per la domanda e le zone sottoservite.",
   },
   {
     key: "poi",
@@ -266,7 +266,9 @@ export default function SyncPage() {
                         <CheckCircle2 className="w-4 h-4" />
                         Completato con successo
                       </div>
-                      {result.inserted !== undefined && (
+                      {result.message ? (
+                        <p className="text-xs text-muted-foreground">{result.message}</p>
+                      ) : result.inserted !== undefined && (
                         <p className="text-xs text-muted-foreground">
                           <strong className="text-foreground">{result.inserted}</strong> POI inseriti
                           {result.skipped != null && result.skipped > 0 && (
