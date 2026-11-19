@@ -18,13 +18,14 @@ function reteDa(r: any): Rete {
     rete: String(r.rete), tipo: r.tipo === "urbano" ? "urbano" : "extraurbano", nome: String(r.nome),
     luogo: r.luogo ?? null, sigla: r.sigla ?? null, zona: r.zona ?? null,
     codice: r.codice == null ? null : Number(r.codice), colore: String(r.colore), ordine: Number(r.ordine),
+    corrispettivoKm: r.corrispettivo_km == null ? null : Number(r.corrispettivo_km), corrispettivoSuVuoti: r.corrispettivo_su_vuoti === true,
   };
 }
 
 /** Le reti (in ordine) e le regole (in ordine) come stanno nel database. */
 export async function retiDalDatabase(ex: Esecutore = db): Promise<RetiAzienda> {
   const reti = await ex.execute<any>(sql`
-    SELECT rete, tipo, nome, luogo, sigla, zona, codice, colore, ordine FROM reti ORDER BY ordine, rete`);
+    SELECT rete, tipo, nome, luogo, sigla, zona, codice, colore, ordine, corrispettivo_km, corrispettivo_su_vuoti FROM reti ORDER BY ordine, rete`);
   const regole = await ex.execute<any>(sql`SELECT tipo, valore, rete FROM reti_regole ORDER BY ordine`);
   return {
     reti: reti.rows.map(reteDa),

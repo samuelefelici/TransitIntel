@@ -7,7 +7,7 @@ import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  classifyRoute, CODICE_URBANO_MAX, CODICE_URBANO_MIN, corrisponde, eReteUrbana, idRetiUrbane, impostaReti, nomeZonaUrbana,
+  classifyRoute, CODICE_URBANO_MAX, CODICE_URBANO_MIN, corrispettivoSuiVuoti, corrisponde, eReteUrbana, idRetiUrbane, impostaReti, nomeZonaUrbana,
   RETE_EXTRAURBANA, reteDalleRegole, reteUrbana, RETI_NEUTRE, retiInVigore, retiUrbane, SCARTO_CODICE_MISTO, servizioDellaLinea,
   TIPI_REGOLA, zonaDellaRete, type RegolaLinea,
 } from "../lib/reti-linee";
@@ -203,6 +203,33 @@ describe("la migrazione 0040 carica nell'installazione di Conerobus le reti e le
   it("solo dove l'azienda è Conerobus; l'extraurbano ovunque", () => {
     expect(sqlMigrazione.match(/WHERE EXISTS \(SELECT 1 FROM public\.azienda a WHERE a\.gtfs_agency_id = 'conerobus'\)/g)?.length).toBe(2);
     expect(sqlMigrazione).toContain("VALUES ('extraurbano', 'extraurbano', 'Extraurbano', '#f59e0b', 1)\nON CONFLICT (rete) DO NOTHING;");
+  });
+});
+
+describe("il corrispettivo €/km di ogni rete (tappa 6.29)", () => {
+  it("la migrazione 0054 dà a Conerobus i valori della DGR 456/2026, gli stessi delle reti di prova", () => {
+    const sqlMigrazione = readFileSync(join(__dirname, "../../../../lib/db/migrations/0054_corrispettivo_delle_reti.sql"), "utf8");
+    const righe = [...sqlMigrazione.matchAll(/\('(\w+)',\s+([\d.]+)\)/g)].map((m) => [m[1], Number(m[2])]);
+    expect(righe).toEqual(RETI_DI_PROVA.reti.map((r) => [r.rete, r.corrispettivoKm]));
+    expect(RETI_DI_PROVA.reti.every((r) => r.corrispettivoSuVuoti)).toBe(true);
+    expect(sqlMigrazione).toContain("AND EXISTS (SELECT 1 FROM public.azienda a WHERE a.gtfs_agency_id = 'conerobus')");
+  });
+
+  it("sui km a vuoto: quello della rete della linea se lo paga anche sui vuoti, altrimenti 0", () => {
+    conLeRetiDiProva();
+    expect(corrispettivoSuiVuoti("1/4")).toBe(2.6);
+    expect(corrispettivoSuiVuoti("JE1")).toBe(1.76);
+    expect(corrispettivoSuiVuoti("BUS3")).toBe(1.84);
+    expect(corrispettivoSuiVuoti("A")).toBe(1.66);
+    impostaReti({ ...RETI_DI_PROVA, reti: RETI_DI_PROVA.reti.map((r) => (r.rete === "urbano_jesi" ? { ...r, corrispettivoSuVuoti: false } : r)) });
+    expect(corrispettivoSuiVuoti("JE1")).toBe(0);
+    expect(corrispettivoSuiVuoti("1/4")).toBe(2.6);
+    impostaReti({ ...RETI_DI_PROVA, reti: RETI_DI_PROVA.reti.map((r) => (r.rete === "extraurbano" ? { ...r, corrispettivoKm: null } : r)) });
+    expect(corrispettivoSuiVuoti("A")).toBe(0);
+    /* un'installazione senza reti né corrispettivi: i vuoti costano per intero */
+    senzaReti();
+    expect(corrispettivoSuiVuoti("A")).toBe(0);
+    expect(corrispettivoSuiVuoti("1/4")).toBe(0);
   });
 });
 

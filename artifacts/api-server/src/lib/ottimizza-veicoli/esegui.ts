@@ -13,6 +13,7 @@ import {
 } from "../dati-solver";
 import { eseguiPython, jsonDallUscita, descriviUscita, type Progresso, type ScriptConsentito } from "../lavori/python";
 import { codificaTurniGuida } from "../azienda";
+import { corrispettivoSuiVuoti } from "../reti-linee";
 import {
   type Advisory, type TripBlock, type VehicleShift, type VehicleType,
   VEHICLE_SIZE, getServiceCategory, getActiveServiceIds, calculateCosts, calculateScore, generateAdvisories,
@@ -51,6 +52,8 @@ export function buildPyTrips(tripBlocks: TripBlock[]) {
     requiredVehicle: t.requiredVehicle,
     variantCode: t.variantCode ?? undefined,
     category: t.category,
+    /* il corrispettivo €/km sui km a vuoto verso questa corsa: quello della sua rete se lo paga sui vuoti, altrimenti 0 (tappa 6.29) */
+    corrispettivoVuoti: corrispettivoSuiVuoti(t.routeName),
     forced: t.forced,
     onDemand: t.onDemand,
     // finestra di flessibilità dichiarata in Planning: la sonda di spostamento

@@ -1592,6 +1592,53 @@ il 26/03/2026): niente da correggere.
 **Dopo il deploy**: niente da fare. Nessuna variabile e nessuna Watch Path
 nuova.
 
+### Il corrispettivo €/km di ogni rete (tappa 6.29)
+
+Il calcolo dei turni macchina pesava i km a vuoto (uscite e rientri in
+deposito, trasferimenti) al netto di un corrispettivo di **2,60 €/km scritto
+nel codice**: quello dell'urbano di Ancona, usato per tutte le reti. Ma il
+corrispettivo lo fissa la Regione rete per rete (per gli urbani comune per
+comune), e non tutti i comuni lo pagano anche sui km a vuoto.
+
+Da questo rilascio ogni rete, in Amministrazione → Azienda → «Reti e linee»,
+ha:
+- il **corrispettivo €/km**, al netto dell'IVA (vuoto: non indicato);
+- la spunta **anche sui km a vuoto**.
+
+Il calcolo dei turni macchina dà ai km a vuoto verso una corsa il corrispettivo
+della rete di quella corsa, se la rete lo paga anche sui vuoti: lì i km sono
+compensati e conta il tempo del conducente, come prima. Senza la spunta (o
+senza corrispettivo) quei km costano per intero (da 0,40 a 1,00 €/km secondo
+il mezzo, nelle regole dei turni macchina). Il valore generale nel codice è
+ora 0: un'installazione nuova non dà per scontato nessun corrispettivo.
+
+La migrazione `0054` aggiunge `reti.corrispettivo_km` e
+`reti.corrispettivo_su_vuoti` e, per Conerobus, mette i valori dal 2026 della
+DGR Marche 456/2026 (Allegato A), con la spunta su tutte le reti, come il
+calcolo le contava finora:
+
+| Rete | €/km |
+|---|---|
+| Urbano di Ancona | 2,60 |
+| Urbano di Jesi | 1,76 |
+| Urbano di Falconara | 1,92 |
+| Urbano di Senigallia | 1,84 |
+| Urbano di Castelfidardo | 1,68 |
+| Urbano di Sassoferrato | 2,79 |
+| Extraurbano | 1,66 |
+
+Osimo (1,92 €/km nella stessa delibera) non ha ancora una rete: quando le sue
+linee entrano nel GTFS, si crea la rete e si scrive lì.
+
+**Per Conerobus i turni macchina non cambiano**: il costo di un km a vuoto
+(al più 1,00 €/km) resta sotto ogni corrispettivo della delibera, quindi con
+la spunta i km a vuoto restano compensati come con il 2,60 di prima. Cambiano
+solo togliendo la spunta a una rete.
+
+**Dopo il deploy**: in «Reti e linee» togliere la spunta alle reti i cui
+comuni non pagano il corrispettivo sui km a vuoto. Nessuna variabile e nessuna
+Watch Path nuova (`reti-linee.ts` è già fra quelle del lavoratore).
+
 **Rollback**: immagine precedente. La colonna resta e non dà fastidio.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
@@ -1932,6 +1979,7 @@ per voce, e porta alla sezione dove si scrivono
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
 | Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
 | Fornitore dell'AVM (6.27) | Azienda → AVM | i testi dicono «il fornitore dell'AVM» e «Paline AVM» |
+| Corrispettivo €/km di ogni rete (6.29) | Azienda → Reti e linee | il calcolo dei turni macchina conta i km a vuoto a costo pieno |
 | Sistema di bigliettazione regionale (6.28) | Azienda → Tariffe extraurbane: la regola regionale | le pagine delle tariffe dicono «sistema regionale», senza il nome |
 | Codici dei turni guida (6.25) | Azienda → Turni guida: i codici; la sigla in Planning Studio → Depositi | una sola numerazione da 001, e l'iniziale del nome del deposito |
 | Riferimento della regola regionale delle tariffe (6.24) | Azienda → Tariffe extraurbane: la regola regionale | il calcolo dei km si vede senza la norma da cui viene |

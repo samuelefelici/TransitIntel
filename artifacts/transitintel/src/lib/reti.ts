@@ -141,6 +141,10 @@ export interface UsoRete { linee: number; titoli: number; catalogo: number; zone
 export interface ReteConUso extends Rete {
   zona: string | null;
   ordine: number;
+  /** €/km al netto dell'IVA; null: non indicato (tappa 6.29) */
+  corrispettivoKm: number | null;
+  /** se si incassa anche sui km a vuoto: allora il calcolo dei turni macchina li considera compensati */
+  corrispettivoSuVuoti: boolean;
   uso: UsoRete;
 }
 
@@ -191,12 +195,31 @@ export function domandaTogliRete(r: Pick<ReteConUso, "nome" | "uso">): string {
   return `Tolgo la rete «${r.nome}»?${regole} Se servirà di nuovo va ricreata.`;
 }
 
-/* il modulo di una rete: tutto testo, come lo scrive chi compila */
-export interface ModuloRete { luogo: string; nome: string; sigla: string; colore: string; ordine: string }
-export const MODULO_RETE_VUOTO: ModuloRete = { luogo: "", nome: "", sigla: "", colore: "", ordine: "" };
+/* il modulo di una rete: tutto testo, come lo scrive chi compila (la spunta dei vuoti a parte) */
+export interface ModuloRete {
+  luogo: string; nome: string; sigla: string; colore: string; ordine: string;
+  /** €/km, come si scrive: «1,66»; vuoto: non indicato */
+  corrispettivo: string;
+  suVuoti: boolean;
+}
+export const MODULO_RETE_VUOTO: ModuloRete = { luogo: "", nome: "", sigla: "", colore: "", ordine: "", corrispettivo: "", suVuoti: false };
 export const moduloReteDa = (r: ReteConUso): ModuloRete => ({
   luogo: r.luogo ?? "", nome: r.nome, sigla: r.sigla ?? "", colore: r.colore, ordine: String(r.ordine),
+  corrispettivo: r.corrispettivoKm == null ? "" : r.corrispettivoKm.toFixed(2).replace(".", ","),
+  suVuoti: r.corrispettivoSuVuoti,
 });
+
+/** Il corrispettivo come lo si legge nell'elenco: «1,66 €/km», o niente se non è indicato. */
+export function testoCorrispettivo(r: Pick<ReteConUso, "corrispettivoKm">): string | null {
+  return r.corrispettivoKm == null ? null : `${r.corrispettivoKm.toLocaleString("it-IT", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €/km`;
+}
+
+/** «1,66» o «1.66» → 1.66; vuoto → null; altrimenti NaN. Al più due decimali, sotto i 100 €/km. */
+export function corrispettivoDaTesto(s: string): number | null {
+  const t = s.trim();
+  if (!t) return null;
+  return /^\d{1,2}([.,]\d{1,2})?$/.test(t) ? Number(t.replace(",", ".")) : NaN;
+}
 
 /** La sigla che si propone per un luogo: le prime due lettere, «Pesaro» → «PE». */
 export function siglaDaLuogo(luogo: string): string {
@@ -223,6 +246,7 @@ export function erroriRete(m: ModuloRete, urbana: boolean, nuova: boolean): stri
   else if (nome && !TESTO_PULITO.test(nome)) e.push("Nel nome vanno solo lettere, cifre, spazi e i segni . ' - / ( ).");
   if (m.colore.trim() && !COLORE.test(m.colore.trim())) e.push("Il colore è di sei cifre esadecimali, per esempio «#3b82f6».");
   if (m.ordine.trim() && !/^\d{1,4}$/.test(m.ordine.trim())) e.push("L'ordine è un numero da 0 a 9999.");
+  if (Number.isNaN(corrispettivoDaTesto(m.corrispettivo))) e.push("Il corrispettivo è in €/km, con al più due decimali: per esempio «1,66».");
   return e;
 }
 
@@ -234,16 +258,20 @@ export function corpoNuovaRete(m: ModuloRete) {
     ...(m.nome.trim() ? { nome: m.nome.trim() } : {}),
     ...(m.colore.trim() ? { colore: m.colore.trim().toLowerCase() } : {}),
     ...(m.ordine.trim() ? { ordine: Number(m.ordine.trim()) } : {}),
+    ...(m.corrispettivo.trim() ? { corrispettivoKm: corrispettivoDaTesto(m.corrispettivo) } : {}),
+    corrispettivoSuVuoti: m.suVuoti,
   };
 }
 
-/** Il corpo di PUT /api/admin/reti/:rete. */
+/** Il corpo di PUT /api/admin/reti/:rete. Il corrispettivo vuoto lo toglie. */
 export function corpoModificaRete(m: ModuloRete, urbana: boolean) {
   return {
     nome: m.nome.trim(),
     ...(urbana ? { luogo: m.luogo.trim(), sigla: m.sigla.trim().toUpperCase() } : {}),
     ...(m.colore.trim() ? { colore: m.colore.trim().toLowerCase() } : {}),
     ...(m.ordine.trim() ? { ordine: Number(m.ordine.trim()) } : {}),
+    corrispettivoKm: corrispettivoDaTesto(m.corrispettivo),
+    corrispettivoSuVuoti: m.suVuoti,
   };
 }
 
