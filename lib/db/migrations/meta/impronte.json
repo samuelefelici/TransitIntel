@@ -51,5 +51,6 @@
   "0049_il_parco_dell_azienda": "a22241c4c4ba964b7b7409c122bf27626c8309d30dd0593691c06813a11ee4ee",
   "0050_riferimento_tariffe": "22c84dd5d26e0f8e5df338c1f6e0eff744a574976a6da8b77e42ae08aa2dbfca",
   "0051_codifica_turni_guida": "f2a827a015ad02f3daa2eb398b23f259270d5886ed6ff506984f7f0cf5ebd6be",
-  "0052_fornitore_avm": "de30064c61eb4ff46346b6897b578eb88acea852d1e5c0993d995afd494c550d"
+  "0052_fornitore_avm": "de30064c61eb4ff46346b6897b578eb88acea852d1e5c0993d995afd494c550d",
+  "0053_sistema_bigliettazione": "edf5332976744e88bff3a4e45e964234fb7740013cf16d8cff557048aada6fbc"
 }

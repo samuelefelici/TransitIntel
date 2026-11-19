@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════
-// TAB TELEMACO — Auto-assegnazione fermate ai Nodi Tariffari
+// TAB NODI REGIONALI — Auto-assegnazione fermate ai Nodi Tariffari
 // Pipeline 4 layer + catalogo ufficiale dei nodi + audit override
 // ═══════════════════════════════════════════════════════════
 
@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { fonteDelNodo } from "@/lib/elenchi-tariffe";
+import { sistemaRegionale } from "@/lib/azienda";
+import { useAzienda } from "@/hooks/use-azienda";
 import {
   ShieldCheck, Loader2, CheckCircle2, AlertTriangle, Layers, Database,
   Search, Trash2, Plus, MoveRight, FileWarning, History, Download, Upload, Play,
@@ -51,7 +53,7 @@ interface ReportData {
   lowConfidence: number;
   byLayer: Array<{ assignment_layer: string | null; cnt: number }>;
   bySource: Array<{ assignment_source: string | null; cnt: number }>;
-  readyForTelemaco: boolean;
+  readyForRegionalSystem: boolean;
 }
 
 interface AssignmentRow {
@@ -87,8 +89,9 @@ const LAYER_META: Record<string, { label: string; color: string }> = {
 
 // ───────────── componente principale ─────────────
 
-export default function FaresTelemacoTab() {
+export default function FaresNodiRegionaliTab() {
   const { toast } = useToast();
+  const azienda = useAzienda();
   const [view, setView] = useState<"dashboard" | "catalog" | "review" | "audit">("dashboard");
 
   return (
@@ -100,12 +103,12 @@ export default function FaresTelemacoTab() {
             <ShieldCheck className="w-5 h-5 mt-0.5 text-fuchsia-400 shrink-0" />
             <div className="space-y-1.5">
               <h3 className="text-sm font-semibold flex items-center gap-2">
-                Telemaco Compliance — Auto-assegnazione fermate ai Nodi Tariffari
+                Nodi tariffari regionali — Auto-assegnazione fermate ai Nodi Tariffari
                 <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 border-fuchsia-500/40 text-fuchsia-300">NEW</Badge>
               </h3>
               <p className="text-xs text-muted-foreground leading-relaxed">
                 Garantisce che <strong className="text-fuchsia-300">ogni fermata fisica</strong> sia associata a un nodo
-                tariffario, requisito di conformità Telemaco. Pipeline a 4 layer con confidence decrescente:
+                tariffario, requisito di conformità al {sistemaRegionale(azienda)}. Pipeline a 4 layer con confidence decrescente:
                 Catalogo Ufficiale → Match Esatto → Token+Prossimità → DBSCAN → Singleton (fallback).
               </p>
               <p className="text-[11px] text-muted-foreground/80 italic pt-1">
@@ -198,7 +201,7 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
         }),
       });
       toast({
-        title: "Pipeline Telemaco completata",
+        title: "Pipeline dei nodi regionali completata",
         description: `${res.totalStops ?? "?"} fermate · ${res.clustersAfter ?? "?"} cluster · ${res.durationMs ?? "?"} ms`,
       });
       await refresh();
@@ -219,7 +222,7 @@ function DashboardView({ toast }: { toast: ReturnType<typeof useToast>["toast"] 
       <Card>
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2">
-            <Play className="w-4 h-4" /> Esegui Pipeline Telemaco
+            <Play className="w-4 h-4" /> Esegui la pipeline dei nodi regionali
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">

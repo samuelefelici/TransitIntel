@@ -60,7 +60,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati dell'azienda (database v
     expect(r.body.azienda).toEqual({
       ragioneSociale: "Trasporti Esempio S.r.l.", nome: "Esempio", sito: "https://www.esempio.it", telefono: "+39 0721 000000",
       gtfsAgencyId: "esempio", citta: "Pesaro", regione: "Marche", centro: { lat: 43.91, lng: 12.91, zoom: 11 }, provinciaIstat: null, netexCodiceLocale: null, netexFornitore: null,
-      netexPrefisso: null, netexPrefissoCodici: null, netexCodiceRete: null, tariffeRiferimento: null, turniGuidaPomeriggioDa: null, avmFornitore: null, avmMatricolaCifre: null, compilata: true,
+      netexPrefisso: null, netexPrefissoCodici: null, netexCodiceRete: null, tariffeRiferimento: null, bigliettazioneSistema: null, turniGuidaPomeriggioDa: null, avmFornitore: null, avmMatricolaCifre: null, compilata: true,
     });
     expect(r.body.aggiornataIl).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     const [riga] = await righe(sql`SELECT unica, aggiornata_da::text AS da FROM azienda`);

@@ -72,10 +72,11 @@ describe("nessun nome dell'azienda o dei suoi luoghi nei sorgenti dell'API", () 
 /**
  * Né i nomi dei fornitori del primo cliente (tappa 6.27): il fornitore
  * dell'AVM è un dato dell'azienda (fornitoreAvm, lib/vetture-azienda.ts),
- * l'officina si chiama «officina». Maiuscole e confini di parola: i nomi
+ * l'officina si chiama «officina»; e così il sistema di bigliettazione della
+ * regione (tappa 6.28, azienda.bigliettazioneSistema). Maiuscole e confini di parola: i nomi
  * interni come mizarRef o nomeMizar restano, sono codice e non testo.
  */
-const FORNITORI = /\b(Mizar|FlashNet|Flashnet)\b/;
+const FORNITORI = /\b(Mizar|FlashNet|Flashnet|Telemaco)\b/;
 
 describe("nessun nome dei fornitori del primo cliente nei testi dell'API", () => {
   it("fuori dai commenti non ce n'è nessuno", () => {
@@ -86,6 +87,7 @@ describe("nessun nome dei fornitori del primo cliente nei testi dell'API", () =>
 
   it("la ricerca trova davvero il nome, non gli identificativi", () => {
     expect(FORNITORI.test('out.push("va chiesto a Mizar")')).toBe(true);
+    expect(FORNITORI.test('error: "nodo assente nel catalogo Telemaco"')).toBe(true);
     expect(FORNITORI.test("const { mizarRef, nomeMizar } = x;")).toBe(false);
   });
 });

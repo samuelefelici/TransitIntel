@@ -18,7 +18,7 @@ const F = vi.hoisted(() => {
     gtfs_agency_id: "conerobus", citta: "Ancona", regione: "Marche", centro_lat: 43.58, centro_lng: 13.45, zoom: 10,
     provincia_istat: "042", netex_codice_locale: "ITI3", netex_fornitore: null,
     netex_prefisso: "epd", netex_prefisso_codici: "ATMA", netex_codice_rete: "RETE_TPL_ATMA",
-    tariffe_riferimento: "DGR Marche n. 1036/2022, art. 2.d", turni_guida_pomeriggio_da: 720, avm_fornitore: "Mizar",
+    tariffe_riferimento: "DGR Marche n. 1036/2022, art. 2.d", bigliettazione_sistema: "Telemaco", turni_guida_pomeriggio_da: 720, avm_fornitore: "Mizar",
     avm_matricola_cifre: 4, aggiornata_il: "2026-11-13T08:00:00.000Z", aggiornata_da: "Ada Admin",
   };
   const s = { riga: null as any, chieste: [] as Array<{ testo: string; valori: unknown[] }>, errore: null as any };
@@ -32,7 +32,7 @@ const F = vi.hoisted(() => {
         s.riga = {
           ragione_sociale: v[0], nome: v[1], sito: v[2], telefono: v[3], gtfs_agency_id: v[4], citta: v[5], regione: v[6],
           centro_lat: v[7], centro_lng: v[8], zoom: v[9], provincia_istat: v[10], netex_codice_locale: v[11], netex_fornitore: v[12],
-          netex_prefisso: v[13], netex_prefisso_codici: v[14], netex_codice_rete: v[15], tariffe_riferimento: v[16], turni_guida_pomeriggio_da: v[17], avm_fornitore: v[18], avm_matricola_cifre: v[19], aggiornata_il: "2026-11-13T09:00:00.000Z", aggiornata_da: "Ada Admin",
+          netex_prefisso: v[13], netex_prefisso_codici: v[14], netex_codice_rete: v[15], tariffe_riferimento: v[16], bigliettazione_sistema: v[17], turni_guida_pomeriggio_da: v[18], avm_fornitore: v[19], avm_matricola_cifre: v[20], aggiornata_il: "2026-11-13T09:00:00.000Z", aggiornata_da: "Ada Admin",
         };
         return { rows: [], rowCount: 1, fields: [] };
       }
@@ -79,7 +79,7 @@ describe("leggiAzienda", () => {
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
       provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null,
       netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4, compilata: true,
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", bigliettazioneSistema: "Telemaco", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4, compilata: true,
     });
     await leggiAzienda(); await leggiAzienda();
     expect(letture()).toHaveLength(1);
@@ -198,7 +198,7 @@ describe("GET e PUT /api/admin/azienda", () => {
     expect(r.body.azienda).toMatchObject({ ragioneSociale: "Trasporti Esempio S.r.l.", nome: "Esempio", citta: "Pesaro", centro: { lat: 43.91, lng: 12.91, zoom: 11 } });
     const scrittura = F.s.chieste.find(c => c.testo.includes("insert into azienda"))!;
     expect(scrittura.testo).toContain("on conflict (unica) do update");
-    expect(scrittura.valori).toEqual(["Trasporti Esempio S.r.l.", "Esempio", "https://www.esempio.it", "+39 0721 000000", "esempio", "Pesaro", "Marche", 43.91, 12.91, 11, null, null, null, null, null, null, null, null, null, null, ada.id]);
+    expect(scrittura.valori).toEqual(["Trasporti Esempio S.r.l.", "Esempio", "https://www.esempio.it", "+39 0721 000000", "esempio", "Pesaro", "Marche", 43.91, 12.91, 11, null, null, null, null, null, null, null, null, null, null, null, ada.id]);
     // senza aspettare il minuto: la prossima lettura è già quella nuova
     expect((await leggiAzienda()).nome).toBe("Esempio");
   });
@@ -217,6 +217,11 @@ describe("GET e PUT /api/admin/azienda", () => {
     expect(rif.status).toBe(400);
     expect(rif.body.error).toMatch(/Riferimento della regola regionale: al più 200 caratteri/);
     expect((await request(admin()).put("/api/admin/azienda").send({ ...BUONI, tariffeRiferimento: "DGR\n1036" })).status).toBe(400);
+    /* il nome del sistema di bigliettazione regionale (tappa 6.28): una riga di testo, al più 60 caratteri */
+    const sis = await request(admin()).put("/api/admin/azienda").send({ ...BUONI, bigliettazioneSistema: "x".repeat(61) });
+    expect(sis.status).toBe(400);
+    expect(sis.body.error).toMatch(/Sistema di bigliettazione regionale: al più 60 caratteri/);
+    expect((await request(admin()).put("/api/admin/azienda").send({ ...BUONI, bigliettazioneSistema: "Nome\tdel sistema" })).status).toBe(400);
     /* l'inizio dei turni del pomeriggio (tappa 6.25): minuti interi del giorno */
     const pom = await request(admin()).put("/api/admin/azienda").send({ ...BUONI, turniGuidaPomeriggioDa: 1440 });
     expect(pom.status).toBe(400);

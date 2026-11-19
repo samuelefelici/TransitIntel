@@ -3,7 +3,7 @@
  *
  * Import GTFS ISOLATO (non tocca il feed di Bigliettazione): lo ZIP viene
  * parsato in memoria, si estraggono i percorsi univoci delle SOLE linee
- * extraurbane (codice linea che inizia con una lettera) e si salva una
+ * extraurbane (secondo le reti dell'azienda, lib/reti-linee.ts) e si salva una
  * struttura compatta in `polim_imports.payload` (jsonb).
  *
  * Per ogni linea si raggruppano i trip per signature canonica
@@ -27,6 +27,7 @@ import AdmZip from "adm-zip";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { haversineKm } from "../lib/geo-utils";
+import { servizioDellaLinea } from "../lib/reti-linee";
 import { parseCsv } from "./gtfs-helpers";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { legaContesto } from "../lib/contesto-http";
@@ -120,7 +121,30 @@ const shortHash = (s: string): string => {
   for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
   return Math.abs(h).toString(36).slice(0, 7);
 };
-const isExtraurban = (code: string): boolean => /^[A-Za-z]/.test((code || "").trim());
+
+/**
+ * Le linee extraurbane di un GTFS, raggruppate per codice (route_short_name, o
+ * route_id se manca): una linea può avere più route_id. Urbana o extraurbana
+ * lo dicono le reti dell'azienda (tappa 6.28); prima valeva «il codice comincia
+ * con una lettera», e le urbane con un nome di lettere finivano fra le extraurbane.
+ */
+export function lineeExtraurbane(routesRaw: readonly Record<string, string>[]): {
+  routeMeta: Map<string, { lineCode: string; lineName: string }>;
+  lineRouteIds: Map<string, Set<string>>;
+} {
+  const routeMeta = new Map<string, { lineCode: string; lineName: string }>();
+  const lineRouteIds = new Map<string, Set<string>>(); // lineCode → route_id[]
+  for (const r of routesRaw) {
+    const rid = r["route_id"];
+    if (!rid) continue;
+    const code = (r["route_short_name"] || rid).trim();
+    if (servizioDellaLinea(code) !== "extraurbano") continue;
+    routeMeta.set(rid, { lineCode: code, lineName: r["route_long_name"] || "" });
+    if (!lineRouteIds.has(code)) lineRouteIds.set(code, new Set());
+    lineRouteIds.get(code)!.add(rid);
+  }
+  return { routeMeta, lineRouteIds };
+}
 
 /* ─────────────────────────────────────────────────────────────
  *  Tipi del payload compatto
@@ -203,21 +227,10 @@ router.post("/fares/polimetriche/import", strictLimiter, legaContesto(upload.sin
       }
     }
 
-    // ── routes extraurbane (codice che inizia con lettera) ──
-    // raggruppa per CODICE LINEA (route_short_name) → una linea può avere più route_id
-    const routeMeta = new Map<string, { lineCode: string; lineName: string }>();
-    const lineRouteIds = new Map<string, Set<string>>(); // lineCode → route_id[]
-    for (const r of routesRaw) {
-      const rid = r["route_id"];
-      if (!rid) continue;
-      const code = (r["route_short_name"] || rid).trim();
-      if (!isExtraurban(code)) continue;
-      routeMeta.set(rid, { lineCode: code, lineName: r["route_long_name"] || "" });
-      if (!lineRouteIds.has(code)) lineRouteIds.set(code, new Set());
-      lineRouteIds.get(code)!.add(rid);
-    }
+    // ── le linee extraurbane secondo le reti dell'azienda ──
+    const { routeMeta, lineRouteIds } = lineeExtraurbane(routesRaw);
     if (routeMeta.size === 0) {
-      res.status(400).json({ error: "Nessuna linea extraurbana trovata (codici che iniziano con una lettera)." });
+      res.status(400).json({ error: "Nessuna linea extraurbana trovata: urbana o extraurbana la dicono le reti dell'azienda (Amministrazione → Azienda, «Reti e linee»)." });
       return;
     }
 

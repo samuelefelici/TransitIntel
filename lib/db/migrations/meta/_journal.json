@@ -372,6 +372,13 @@
       "when": 1797400000000,
       "tag": "0052_fornitore_avm",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1797500000000,
+      "tag": "0053_sistema_bigliettazione",
+      "breakpoints": true
     }
   ]
 }

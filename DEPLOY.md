@@ -1509,6 +1509,47 @@ testi.
 nuova (`vetture-azienda.ts` e `azienda.ts` sono già fra quelle del
 lavoratore).
 
+### Il sistema di bigliettazione regionale come dato dell'azienda (tappa 6.28)
+
+Le pagine delle tariffe nominavano il sistema di bigliettazione della regione
+del primo cliente:
+- nella scheda Cluster, il metodo «… (Urban + Addensamenti)» e la «conformità
+  …» nella sua spiegazione;
+- l'export PDF delle polimetriche per cluster (copertina e intestazione di
+  ogni pagina);
+- la scheda già disattivata dell'assegnazione delle fermate ai nodi.
+
+Da questo rilascio quelle etichette dicono **nodi tariffari regionali**, e il
+nome del sistema è un dato dell'azienda: Amministrazione → Azienda, scheda
+Tariffe extraurbane, casella **Sistema di bigliettazione regionale**. Compare
+accanto («conformità ai nodi tariffari del sistema regionale …»); vuoto, si
+legge «sistema regionale». La migrazione `0053` aggiunge
+`azienda.bigliettazione_sistema` e per Conerobus mette il nome di prima.
+
+Cambiano anche due nomi interni: il campo `readyForTelemaco` del report
+dell'assegnazione ai nodi (`GET /api/fares/node-assignment/report`) diventa
+`readyForRegionalSystem` (lo leggeva solo la scheda disattivata), e i link
+condivisi delle polimetriche per cluster si salvano col metodo
+`clusters_nodi_regionali` (i link già creati restano come sono). Il test sui
+nomi dei fornitori, dell'API e della web, fallisce se il nome torna nei testi.
+
+**Le linee extraurbane delle polimetriche.** L'import della pagina
+Polimetriche teneva le linee il cui codice comincia con una lettera: le urbane
+con un nome di lettere (JE1, BUS3, CIRCA, Y, C.D.…) finivano fra le
+extraurbane. Ora urbana o extraurbana la dicono le reti dell'azienda, come per
+l'ottimizzazione dei mezzi dalla 6.23. Vale per gli import nuovi; quelli già
+fatti restano come sono: per toglierne le urbane, si rifà l'import dello
+stesso GTFS.
+
+**Resta da decidere** (non cambiato qui): la pagina Polimetriche divide i
+percorsi in tratte fisse da 6 km e usa il numero di tratte come fascia, mentre
+le fasce chilometriche dell'azienda (6.8) sono larghe 6 km fino a 42 km e poi
+8 e 10. Oltre i 42 km le due non coincidono.
+
+**Dopo il deploy**: niente da fare. Nessuna variabile e nessuna Watch Path
+nuova (`azienda.ts` è già fra quelle del lavoratore; `fares-polimetriche.ts`
+non ci entra).
+
 **Rollback**: immagine precedente. La colonna resta e non dà fastidio.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
@@ -1849,6 +1890,7 @@ per voce, e porta alla sezione dove si scrivono
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
 | Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
 | Fornitore dell'AVM (6.27) | Azienda → AVM | i testi dicono «il fornitore dell'AVM» e «Paline AVM» |
+| Sistema di bigliettazione regionale (6.28) | Azienda → Tariffe extraurbane: la regola regionale | le pagine delle tariffe dicono «sistema regionale», senza il nome |
 | Codici dei turni guida (6.25) | Azienda → Turni guida: i codici; la sigla in Planning Studio → Depositi | una sola numerazione da 001, e l'iniziale del nome del deposito |
 | Riferimento della regola regionale delle tariffe (6.24) | Azienda → Tariffe extraurbane: la regola regionale | il calcolo dei km si vede senza la norma da cui viene |
 | Consorziate e anagrafica dei mezzi nell'AVM (6.21) | Azienda → AVM: le consorziate e l'anagrafica dei mezzi | le matricole delle consorziate non si attribuiscono, e nessun mezzo ha la descrizione |

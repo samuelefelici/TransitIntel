@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AZIENDA_DA_COMPILARE, aziendaValida, datiDaSalvare, erroriDelModulo, intestazioneDocumenti, luogoDellAzienda, nomeNeiDocumenti,
   moduloCambiato, moduloDa, vistaIniziale, type Azienda, eDellAzienda, esempioIdNetex, conRiferimento,
-  orarioDaMinuti, minutiDaOrario, esempioCodiciTurni, fornitoreAvm, vicinoAlCentro, dintorniDelCentro,
+  orarioDaMinuti, minutiDaOrario, esempioCodiciTurni, fornitoreAvm, vicinoAlCentro, dintorniDelCentro, sistemaRegionale,
 } from "./azienda";
 
 const CONEROBUS: Azienda = {
@@ -10,7 +10,7 @@ const CONEROBUS: Azienda = {
   gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centro: { lat: 43.58, lng: 13.45, zoom: 10 },
   provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: null,
   netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-  tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4, compilata: true,
+  tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", bigliettazioneSistema: "Telemaco", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4, compilata: true,
 };
 
 describe("aziendaValida", () => {
@@ -92,6 +92,23 @@ describe("il riferimento della regola regionale delle tariffe (tappa 6.24)", () 
   });
 });
 
+describe("il sistema di bigliettazione regionale (tappa 6.28)", () => {
+  it("nei testi delle tariffe: col nome, o solo «sistema regionale»", () => {
+    expect(sistemaRegionale(CONEROBUS)).toBe("sistema regionale Telemaco");
+    expect(sistemaRegionale(AZIENDA_DA_COMPILARE)).toBe("sistema regionale");
+    expect(sistemaRegionale({ bigliettazioneSistema: "  " })).toBe("sistema regionale");
+  });
+
+  it("dal server una riga di al più 60 caratteri; nel modulo è facoltativo", () => {
+    expect(aziendaValida({ ...CONEROBUS, bigliettazioneSistema: "  Nome  " }).bigliettazioneSistema).toBe("Nome");
+    expect(aziendaValida({ ...CONEROBUS, bigliettazioneSistema: "x".repeat(61) }).bigliettazioneSistema).toBeNull();
+    expect(aziendaValida({ ...CONEROBUS, bigliettazioneSistema: "a\tb" }).bigliettazioneSistema).toBeNull();
+    const m = moduloDa(CONEROBUS);
+    expect(datiDaSalvare({ ...m, bigliettazioneSistema: " " }).bigliettazioneSistema).toBeNull();
+    expect(erroriDelModulo({ ...m, bigliettazioneSistema: "x".repeat(61) })).toEqual({ bigliettazioneSistema: "Al più 60 caratteri" });
+  });
+});
+
 describe("le etichette e le mappe", () => {
   it("il luogo: città e regione, solo la città, o niente", () => {
     expect(luogoDellAzienda(CONEROBUS)).toBe("Ancona / Marche");
@@ -132,7 +149,7 @@ describe("il modulo dell'amministratore", () => {
       gtfsAgencyId: "conerobus", citta: "Ancona", regione: "Marche", centroLat: "43.58", centroLng: "13.45", zoom: "10",
       provinciaIstat: "042", netexCodiceLocale: "ITI3", netexFornitore: "",
       netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: "12:00", avmFornitore: "Mizar", avmMatricolaCifre: "4",
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", bigliettazioneSistema: "Telemaco", turniGuidaPomeriggioDa: "12:00", avmFornitore: "Mizar", avmMatricolaCifre: "4",
     });
     expect(moduloDa(AZIENDA_DA_COMPILARE)).toMatchObject({ ragioneSociale: "", nome: "", gtfsAgencyId: "", citta: "", centroLat: "42.5", zoom: "5.5" });
   });
@@ -145,7 +162,7 @@ describe("il modulo dell'amministratore", () => {
       citta: "Ancona", regione: null, centroLat: 43.6, centroLng: 13.45, zoom: 11, provinciaIstat: "042",
       netexCodiceLocale: "ITI3", netexFornitore: null,
       netexPrefisso: "epd", netexPrefissoCodici: "ATMA", netexCodiceRete: "RETE_TPL_ATMA",
-      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4,
+      tariffeRiferimento: "DGR Marche n. 1036/2022, art. 2.d", bigliettazioneSistema: "Telemaco", turniGuidaPomeriggioDa: 720, avmFornitore: "Mizar", avmMatricolaCifre: 4,
     });
     expect(erroriDelModulo({ ...m, netexCodiceLocale: "iti3" })).toEqual({ netexCodiceLocale: "Un codice NUTS in maiuscolo, come ITI3" });
     expect(erroriDelModulo({ ...m, netexFornitore: "A T" })).toEqual({ netexFornitore: "Lettere, cifre, - e _ (al più 40)" });

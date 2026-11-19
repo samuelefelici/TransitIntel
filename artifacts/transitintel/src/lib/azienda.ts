@@ -33,6 +33,8 @@ export interface Azienda {
   netexCodiceRete: string | null;
   /** il riferimento della regola regionale delle tariffe extraurbane, mostrato accanto al calcolo; null: non compare (tappa 6.24) */
   tariffeRiferimento: string | null;
+  /** il nome del sistema di bigliettazione regionale a cui si conformano i nodi tariffari; null: «sistema regionale» (tappa 6.28) */
+  bigliettazioneSistema: string | null;
   /** da che minuto del giorno un turno guida è pomeridiano (codici da 100); null: una sola numerazione (tappa 6.25) */
   turniGuidaPomeriggioDa: number | null;
   /** il nome del fornitore dell'AVM nei testi; null: «il fornitore dell'AVM» (tappa 6.27) */
@@ -63,6 +65,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexPrefissoCodici: null,
   netexCodiceRete: null,
   tariffeRiferimento: null,
+  bigliettazioneSistema: null,
   turniGuidaPomeriggioDa: null,
   avmFornitore: null,
   avmMatricolaCifre: null,
@@ -102,6 +105,7 @@ export function aziendaValida(x: unknown): Azienda {
     netexPrefissoCodici: typeof d.netexPrefissoCodici === "string" && PREFISSO_CODICI_NETEX.test(d.netexPrefissoCodici) ? d.netexPrefissoCodici : null,
     netexCodiceRete: typeof d.netexCodiceRete === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(d.netexCodiceRete) ? d.netexCodiceRete : null,
     tariffeRiferimento: rigaDiTesto(d.tariffeRiferimento, 200),
+    bigliettazioneSistema: rigaDiTesto(d.bigliettazioneSistema, 60),
     turniGuidaPomeriggioDa: typeof d.turniGuidaPomeriggioDa === "number" && Number.isInteger(d.turniGuidaPomeriggioDa)
       && d.turniGuidaPomeriggioDa >= 1 && d.turniGuidaPomeriggioDa <= 1439 ? d.turniGuidaPomeriggioDa : null,
     avmFornitore: rigaDiTesto(d.avmFornitore, 40),
@@ -201,6 +205,16 @@ export function conRiferimento(a: Pick<Azienda, "tariffeRiferimento">): string {
   return a.tariffeRiferimento ? ` — ${a.tariffeRiferimento}` : "";
 }
 
+/**
+ * Il sistema di bigliettazione regionale nei testi delle tariffe, senza
+ * articolo: «sistema regionale» seguito dal nome, o solo «sistema regionale» se l'azienda
+ * non l'ha scritto (tappa 6.28).
+ */
+export function sistemaRegionale(a: Pick<Azienda, "bigliettazioneSistema">): string {
+  const n = (a.bigliettazioneSistema ?? "").trim();
+  return n ? `sistema regionale ${n}` : "sistema regionale";
+}
+
 /** Il nome sui documenti stampati che ne vogliono uno corto: quello dell'azienda, se è compilata. */
 export function nomeNeiDocumenti(a: Pick<Azienda, "nome" | "compilata">): string {
   return a.compilata ? a.nome : "Trasporto Pubblico Locale";
@@ -239,6 +253,7 @@ export interface ModuloAzienda {
   netexCodiceLocale: string; netexFornitore: string;
   netexPrefisso: string; netexPrefissoCodici: string; netexCodiceRete: string;
   tariffeRiferimento: string;
+  bigliettazioneSistema: string;
   /** «12:00», o vuoto */
   turniGuidaPomeriggioDa: string;
   avmFornitore: string;
@@ -257,6 +272,7 @@ export function moduloDa(a: Azienda): ModuloAzienda {
     netexCodiceLocale: scritto(a.netexCodiceLocale), netexFornitore: scritto(a.netexFornitore),
     netexPrefisso: scritto(a.netexPrefisso), netexPrefissoCodici: scritto(a.netexPrefissoCodici), netexCodiceRete: scritto(a.netexCodiceRete),
     tariffeRiferimento: scritto(a.tariffeRiferimento),
+    bigliettazioneSistema: scritto(a.bigliettazioneSistema),
     turniGuidaPomeriggioDa: a.compilata && a.turniGuidaPomeriggioDa != null ? orarioDaMinuti(a.turniGuidaPomeriggioDa) : "",
     avmFornitore: scritto(a.avmFornitore),
     avmMatricolaCifre: a.compilata && a.avmMatricolaCifre != null ? String(a.avmMatricolaCifre) : "",
@@ -295,6 +311,7 @@ export function erroriDelModulo(m: ModuloAzienda): Partial<Record<CampoAzienda, 
   if (m.netexPrefissoCodici.trim() && !PREFISSO_CODICI_NETEX.test(m.netexPrefissoCodici.trim())) e.netexPrefissoCodici = "Lettere, cifre e - (al più 20), come ABC";
   if (m.netexCodiceRete.trim() && !/^[A-Za-z0-9_-]{1,40}$/.test(m.netexCodiceRete.trim())) e.netexCodiceRete = "Lettere, cifre, - e _ (al più 40)";
   if (m.tariffeRiferimento.trim().length > 200) e.tariffeRiferimento = "Al più 200 caratteri";
+  if (m.bigliettazioneSistema.trim().length > 60) e.bigliettazioneSistema = "Al più 60 caratteri";
   if (m.turniGuidaPomeriggioDa.trim() && minutiDaOrario(m.turniGuidaPomeriggioDa) === null) e.turniGuidaPomeriggioDa = "Un orario fra 00:01 e 23:59, come 12:00";
   if (m.avmFornitore.trim().length > 40) e.avmFornitore = "Al più 40 caratteri";
   if (m.avmMatricolaCifre.trim() && !/^[1-9]$/.test(m.avmMatricolaCifre.trim())) e.avmMatricolaCifre = "Un numero da 1 a 9, oppure vuoto";
@@ -313,6 +330,7 @@ export function datiDaSalvare(m: ModuloAzienda) {
     netexPrefisso: facoltativo(m.netexPrefisso), netexPrefissoCodici: facoltativo(m.netexPrefissoCodici),
     netexCodiceRete: facoltativo(m.netexCodiceRete),
     tariffeRiferimento: facoltativo(m.tariffeRiferimento),
+    bigliettazioneSistema: facoltativo(m.bigliettazioneSistema),
     turniGuidaPomeriggioDa: m.turniGuidaPomeriggioDa.trim() ? minutiDaOrario(m.turniGuidaPomeriggioDa) : null,
     avmFornitore: facoltativo(m.avmFornitore),
     avmMatricolaCifre: m.avmMatricolaCifre.trim() ? Number(m.avmMatricolaCifre.trim()) : null,

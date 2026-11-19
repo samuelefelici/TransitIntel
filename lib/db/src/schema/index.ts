@@ -603,7 +603,7 @@ export const gtfsFareZoneClusters = pgTable("gtfs_fare_zone_clusters", {
   centroidLat: doublePrecision("centroid_lat"),
   centroidLon: doublePrecision("centroid_lon"),
   color: text("color").notNull().default("#3b82f6"),
-  // ── Telemaco compliance (additivo) ──
+  // ── Nodi tariffari regionali (additivo) ──
   isOfficial: boolean("is_official").notNull().default(false),
   officialCode: text("official_code"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
@@ -621,7 +621,7 @@ export const gtfsFareZoneClusterStops = pgTable("gtfs_fare_zone_cluster_stops", 
   stopName: text("stop_name").notNull(),
   stopLat: doublePrecision("stop_lat").notNull(),
   stopLon: doublePrecision("stop_lon").notNull(),
-  // ── Telemaco compliance (additivo) ──
+  // ── Nodi tariffari regionali (additivo) ──
   assignmentLayer: text("assignment_layer"),                          // 'official' | 'exact' | 'token' | 'geo' | 'singleton' | 'manual'
   assignmentConfidence: integer("assignment_confidence").default(0),  // 0-100
   assignmentSource: text("assignment_source"),                        // 'auto' | 'manual' | 'import'
@@ -1000,7 +1000,7 @@ export type GtfsFareOdMatrixEntry = typeof gtfsFareOdMatrix.$inferSelect;
 export type GtfsFareOdMatrixRun = typeof gtfsFareOdMatrixRuns.$inferSelect;
 
 // ════════════════════════════════════════════════════════════
-// TELEMACO COMPLIANCE — Auto-assegnazione fermate ai nodi tariffari
+// NODI TARIFFARI REGIONALI — Auto-assegnazione fermate ai nodi tariffari
 // Modalità ADDITIVA: pipeline a 4 layer + catalogo ufficiale + audit
 // override manuali. Le tabelle gtfs_fare_zone_clusters e
 // gtfs_fare_zone_cluster_stops hanno colonne aggiuntive (vedi sopra).

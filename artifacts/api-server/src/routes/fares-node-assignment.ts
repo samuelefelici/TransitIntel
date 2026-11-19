@@ -1,5 +1,5 @@
 /**
- * GTFS Fares — Telemaco Compliance: auto-assegnazione fermate ai nodi tariffari.
+ * GTFS Fares — Nodi tariffari regionali: auto-assegnazione fermate ai nodi tariffari.
  *
  * INTERVENTO ADDITIVO: questo router NON modifica nessuna logica esistente
  * di fares.ts o fares-min-od.ts. Aggiunge una pipeline a 2 step (modello v2)
@@ -9,8 +9,7 @@
  * Pipeline v2 (primo match vince, ogni cluster è una partizione):
  *   Step 1  Urban Hub      — fermate servite da almeno 1 route urbana
  *                            confluiscono in un unico nodo per città
- *                            (urban_ancona, urban_jesi, urban_falconara,
- *                             urban_senigallia, urban_castelfidardo)
+ *                            (uno per ogni rete urbana dell'azienda)
  *   Step 2  K-Means geo    — sulle fermate NON-urbane: addensamento
  *                            geografico via k-means++ (stessa logica
  *                            del bottone "auto-generate spatial" in
@@ -20,7 +19,7 @@
  *                            l'utente le assegna a mano via UI
  *
  * Layer dormienti (riattivabili via flag):
- *   useOfficialCatalog (catalogo Telemaco), useExactName (omonimi),
+ *   useOfficialCatalog (catalogo ufficiale dei nodi), useExactName (omonimi),
  *   useToken (token+prossimità), useDbscan (DBSCAN legacy v1),
  *   useSingleton (1 fermata = 1 cluster)
  *
@@ -183,7 +182,7 @@ async function loadStopUrbanWeights(feedId: string): Promise<Map<string, Map<str
 }
 
 // ════════════════════════════════════════════════════════════
-// Palette colori cluster (Telemaco)
+// Palette colori cluster (nodi regionali)
 // Genera colori distinti e ripetibili in modo deterministico a partire
 // dal clusterId, così che lo stesso cluster mantenga sempre lo stesso colore
 // fra run diversi. Usata per visualizzare la mappa zone senza confusione.
@@ -826,7 +825,7 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
 
     // Step 2 — K-MEANS GEOGRAFICO sulle fermate NON-urbane.
     // Stessa logica del bottone "auto-generate spatial" già usata
-    // dal team — riusato qui come Step 2 della pipeline Telemaco
+    // dal team — riusato qui come Step 2 della pipeline dei nodi regionali
     // così l'UX è coerente fra i due punti d'ingresso.
     remaining = stops.filter(s => !finalAssignments.has(s.stopId));
     if (params.useKmeans) {
@@ -1012,7 +1011,7 @@ router.get("/fares/node-assignment/report", async (req, res): Promise<void> => {
       lowConfidence,
       byLayer: (byLayer as any).rows ?? byLayer,
       bySource: (bySource as any).rows ?? bySource,
-      readyForTelemaco: orphans === 0 && lowConfidence < totalStops * 0.05,
+      readyForRegionalSystem: orphans === 0 && lowConfidence < totalStops * 0.05,
     });
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
 });

@@ -22,13 +22,13 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { useReti } from "@/hooks/use-reti";
 import { useAzienda } from "@/hooks/use-azienda";
-import { conRiferimento, intestazioneDocumenti, nomeNeiDocumenti, vistaIniziale } from "@/lib/azienda";
+import { conRiferimento, intestazioneDocumenti, nomeNeiDocumenti, sistemaRegionale, vistaIniziale } from "@/lib/azienda";
 import { opzioniReti } from "@/lib/reti";
 import { domandaAllinea, riassuntoConfronto, type ConfrontoColCatalogo } from "@/lib/titoli-catalogo";
 import { partenzaFeedInfo, type AgenziaNelGtfs, type PartenzaFeedInfo } from "@/lib/elenchi-tariffe";
 import { notaFermateTolte, riassuntoZoneGenerate, type ZoneGenerate } from "@/lib/zone-tariffarie";
 import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink, exportPolimetricheClustersToPrint, createPolimetricheClustersShareLink } from "./fares-polimetriche-export";
-import FaresTelemacoTab from "./fares-telemaco-tab";
+import FaresNodiRegionaliTab from "./fares-nodi-regionali-tab";
 import StopsClassificationPage from "./stops-classification";
 
 // ═══════════════════════════════════════════════════════════
@@ -226,7 +226,7 @@ const GUIDED_STEPS: {
     id: "stops",
     label: "Classificazione Fermate",
     icon: <MapPin className="w-3.5 h-3.5" />,
-    info: "Classifica ogni fermata fisica del feed in funzione delle linee che vi transitano: solo extraurbano, solo urbano, o misto. Base per i passi successivi (zone tariffarie e nodi Telemaco).",
+    info: "Classifica ogni fermata fisica del feed in funzione delle linee che vi transitano: solo extraurbano, solo urbano, o misto. Base per i passi successivi (zone tariffarie e nodi tariffari regionali).",
   },
   {
     step: 3,
@@ -247,7 +247,7 @@ const GUIDED_STEPS: {
     id: "zones",
     label: "Zone Extraurbane",
     icon: <MapPin className="w-3.5 h-3.5" />,
-    info: "Genera le zone tariffarie extraurbane. Tre approcci attivi: Cluster (partizione geografica), Telemaco (nodi tariffari conformi al sistema regionale), Min-OD (grafo + Dijkstra per le tariffe minime sistema-wide).",
+    info: "Genera le zone tariffarie extraurbane. Tre approcci attivi: Cluster (partizione geografica), Nodi regionali (nodi tariffari conformi al sistema di bigliettazione della Regione), Min-OD (grafo + Dijkstra per le tariffe minime sistema-wide).",
   },
 ];
 
@@ -2282,18 +2282,18 @@ function ZonesDominantTab() {
 // linea). Per riattivarle basta rimuovere i commenti qui sotto e nel
 // type del subTab.
 //
-// La sotto-sezione "Telemaco" (<FaresTelemacoTab/>) è anch'essa COMMENTATA:
-// la pipeline Telemaco (Urban Hub + addensamenti k-means) è stata SPOSTATA
+// La sotto-sezione "Nodi regionali" (<FaresNodiRegionaliTab/>) è anch'essa COMMENTATA:
+// la pipeline dei nodi regionali (Urban Hub + addensamenti k-means) è stata SPOSTATA
 // dentro il modale "Genera Automaticamente Cluster" come terzo metodo,
 // accanto a "Addensamenti" e "Anelli Concentrici", in modo da unificare
 // tutti i punti d'ingresso per la generazione cluster. L'import di
-// FaresTelemacoTab e la branch nel render restano per riattivazione futura.
+// FaresNodiRegionaliTab e la branch nel render restano per riattivazione futura.
 // ═══════════════════════════════════════════════════════════
 
 function ZonesContainerTab() {
-  // NOTE: i valori "shape", "dominant" e "telemaco" restano nell'union per
+  // NOTE: i valori "shape", "dominant" e "nodi-regionali" restano nell'union per
   // compatibilità futura ma non sono raggiungibili via UI (bottoni commentati).
-  const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant" | "min-od" | "telemaco">("cluster");
+  const [subTab, setSubTab] = useState<"cluster" | "shape" | "dominant" | "min-od" | "nodi-regionali">("cluster");
   return (
     <div className="space-y-4">
       {/* Sub-tab switcher */}
@@ -2340,16 +2340,16 @@ function ZonesContainerTab() {
           <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-1 border-emerald-500/40 text-emerald-300">NEW</Badge>
         </button>
         {/*
-          DISATTIVATO — Telemaco: la pipeline è stata spostata dentro il
+          DISATTIVATO — Nodi regionali: la pipeline è stata spostata dentro il
           modale "Genera Automaticamente Cluster" della sezione Cluster
           come terzo metodo. Tenere commentato per riattivazione futura.
         <button
-          onClick={() => setSubTab("telemaco")}
+          onClick={() => setSubTab("nodi-regionali")}
           className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-            subTab === "telemaco" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+            subTab === "nodi-regionali" ? "text-foreground bg-background/80 border border-border/50 shadow-sm" : "text-muted-foreground hover:text-foreground hover:bg-white/5"
           }`}
         >
-          <ShieldCheck className="w-3.5 h-3.5" /> Telemaco
+          <ShieldCheck className="w-3.5 h-3.5" /> Nodi regionali
           <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 ml-1 border-fuchsia-500/40 text-fuchsia-300">NEW</Badge>
         </button>
         */}
@@ -2361,7 +2361,7 @@ function ZonesContainerTab() {
             : subTab === "shape" ? <ZonesTab />          /* DISATTIVATO ma renderizzabile */
             : subTab === "dominant" ? <ZonesDominantTab /> /* DISATTIVATO ma renderizzabile */
             : subTab === "min-od" ? <ZonesMinOdTab />
-            : <FaresTelemacoTab />}
+            : <FaresNodiRegionaliTab />}
         </motion.div>
       </AnimatePresence>
     </div>
@@ -3255,18 +3255,18 @@ function ClustersTab() {
   // Tre metodi disponibili (vedi modale "Genera Automaticamente Cluster"):
   //   - "spatial":   k-means addensamenti su tutte le fermate extraurbane
   //   - "concentric": anelli concentrici dal baricentro (fasce km regionali)
-  //   - "telemaco":  pipeline v2 a 2 step (Urban Hub + addensamenti k-means
+  //   - "regionale": pipeline v2 a 2 step (Urban Hub + addensamenti k-means
   //                  sulle fermate non-urbane). Endpoint diverso:
   //                  /api/fares/node-assignment/run
-  const [autoMode, setAutoMode] = useState<"concentric" | "spatial" | "telemaco">("spatial");
+  const [autoMode, setAutoMode] = useState<"concentric" | "spatial" | "regionale">("spatial");
 
   const autoGenerateClusters = async () => {
     setShowAutoConfirm(false);
     setAutoGenerating(true);
     try {
       let result: any;
-      if (autoMode === "telemaco") {
-        // Pipeline Telemaco: Urban Hub + addensamenti k-means sulle non-urbane.
+      if (autoMode === "regionale") {
+        // Pipeline dei nodi regionali: Urban Hub + addensamenti k-means sulle non-urbane.
         // Tutti i layer dormienti (catalog/exact/token/dbscan/singleton) restano
         // OFF — vedi fares-node-assignment.ts per dettagli.
         result = await apiFetch<any>("/api/fares/node-assignment/run", {
@@ -3294,7 +3294,7 @@ function ClustersTab() {
       setPendingStops(new Set());
       setDirty(false);
       await loadAll();
-      const desc = autoMode === "telemaco"
+      const desc = autoMode === "regionale"
         ? `${result.clustersAfter ?? "?"} cluster · ${result.totalStops ?? "?"} fermate · urban ${result.assignedByLayer?.urban ?? 0} · addensamenti ${result.assignedByLayer?.geo ?? 0}`
         : `${result.clustersCreated} cluster creati, ${result.totalStopsAssigned} fermate assegnate su ${result.totalExtraStops}`;
       toast({
@@ -3442,7 +3442,7 @@ function ClustersTab() {
   }, [extraStops, pendingStops, searchTerm]);
 
   // ── Statistiche cluster ──
-  // La pipeline Telemaco assegna sia fermate URBANE (Step 1+1.5) sia
+  // La pipeline dei nodi regionali assegna sia fermate URBANE (Step 1+1.5) sia
   // EXTRAURBANE (Step 2). `extraStops` però carica solo le extraurbane.
   // Per evitare numeri negativi (urbane assegnate > extraStops.length)
   // separiamo nettamente le metriche per categoria.
@@ -3604,7 +3604,7 @@ function ClustersTab() {
                 <div className="flex items-start gap-2 p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
                   <AlertTriangle className="w-4 h-4 text-yellow-400 mt-0.5 shrink-0" />
                   <p className="text-xs text-yellow-200/80">
-                    Per ricostruire i cluster usa <strong>Genera Automaticamente</strong> oppure la pipeline <strong>Telemaco</strong>.
+                    Per ricostruire i cluster usa <strong>Genera Automaticamente</strong> oppure la pipeline dei <strong>nodi tariffari regionali</strong>.
                   </p>
                 </div>
               </div>
@@ -3696,25 +3696,25 @@ function ClustersTab() {
                     </p>
                   </button>
 
-                  {/* Telemaco mode */}
-                  <button onClick={() => setAutoMode("telemaco")}
+                  {/* Nodi regionali */}
+                  <button onClick={() => setAutoMode("regionale")}
                     className={`relative text-left rounded-xl border-2 p-3.5 transition-all ${
-                      autoMode === "telemaco"
+                      autoMode === "regionale"
                         ? "border-fuchsia-500 bg-fuchsia-500/10 shadow-lg shadow-fuchsia-500/10"
                         : "border-border/30 bg-muted/10 hover:border-border/60 hover:bg-muted/20"
                     }`}>
-                    {autoMode === "telemaco" && (
+                    {autoMode === "regionale" && (
                       <div className="absolute top-2 right-2">
                         <CheckCircle2 className="w-4 h-4 text-fuchsia-400" />
                       </div>
                     )}
                     <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-2 ${
-                      autoMode === "telemaco" ? "bg-fuchsia-500/20" : "bg-muted/30"
+                      autoMode === "regionale" ? "bg-fuchsia-500/20" : "bg-muted/30"
                     }`}>
-                      <ShieldCheck className={`w-4 h-4 ${autoMode === "telemaco" ? "text-fuchsia-400" : "text-muted-foreground"}`} />
+                      <ShieldCheck className={`w-4 h-4 ${autoMode === "regionale" ? "text-fuchsia-400" : "text-muted-foreground"}`} />
                     </div>
-                    <p className={`text-sm font-semibold mb-0.5 ${autoMode === "telemaco" ? "text-fuchsia-300" : "text-foreground"}`}>
-                      Telemaco (Urban + Addensamenti)
+                    <p className={`text-sm font-semibold mb-0.5 ${autoMode === "regionale" ? "text-fuchsia-300" : "text-foreground"}`}>
+                      Nodi regionali (Urban + Addensamenti)
                     </p>
                     <p className="text-[10px] text-muted-foreground leading-relaxed">
                       Step 1: 1 nodo per ogni servizio urbano. Step 2: addensamenti k-means sulle extraurbane
@@ -3733,14 +3733,14 @@ function ClustersTab() {
                     </>
                   ) : autoMode === "concentric" ? (
                     <>
-                      <p>L'algoritmo crea <strong>anelli concentrici</strong> attorno al baricentro delle fermate, seguendo le fasce tariffarie regionali (~6 km per fascia).</p>
-                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Distanze allineate alle fasce km regionali</p>
-                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Fasce: 0-6, 6-12, 12-18 km…</p>
+                      <p>L'algoritmo crea <strong>anelli concentrici</strong> attorno al baricentro delle fermate, seguendo le fasce chilometriche dell'azienda.</p>
+                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Distanze allineate alle fasce chilometriche</p>
+                      <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Un anello per fascia, come nella tabella delle fasce (Amministrazione → Azienda)</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-blue-400 shrink-0" /> Centroide = baricentro di tutte le fermate</p>
                     </>
                   ) : (
                     <>
-                      <p>Pipeline a 2 step pensata per la conformità <strong>Telemaco</strong> (sistema regionale tariffario integrato):</p>
+                      <p>Pipeline a 2 step pensata per la conformità ai nodi tariffari del <strong>{sistemaRegionale(azienda)}</strong>:</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 1 — Urban Hub:</strong> tutte le fermate servite da almeno una linea urbana confluiscono in un unico nodo per città: uno per ogni rete urbana</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 2 — Addensamenti:</strong> sulle fermate puramente extraurbane k-means identifica i centri abitati extra-rete urbana</p>
                       <p className="flex items-center gap-1.5"><CheckCircle2 className="w-3 h-3 text-fuchsia-400 shrink-0" /> <strong>Step 3 — Manuale:</strong> le fermate residue isolate restano orfane per assegnazione manuale</p>
@@ -3766,12 +3766,12 @@ function ClustersTab() {
                   className={
                     autoMode === "spatial"
                       ? "bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white"
-                      : autoMode === "telemaco"
+                      : autoMode === "regionale"
                       ? "bg-gradient-to-r from-fuchsia-600 to-pink-600 hover:from-fuchsia-700 hover:to-pink-700 text-white"
                       : "bg-gradient-to-r from-violet-600 to-blue-600 hover:from-violet-700 hover:to-blue-700 text-white"
                   }>
                   <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                  {autoMode === "spatial" ? "Genera per Addensamenti" : "Genera Anelli"}
+                  {autoMode === "spatial" ? "Genera per Addensamenti" : autoMode === "regionale" ? "Genera i nodi regionali" : "Genera Anelli"}
                 </Button>
               </div>
             </motion.div>
@@ -5296,7 +5296,7 @@ function GenerateTab() {
         </CardContent>
       </Card>
 
-      {/* ── Sezione 4: Polimetriche per Cluster (pipeline Telemaco) ── */}
+      {/* ── Sezione 4: Polimetriche per Cluster (pipeline dei nodi regionali) ── */}
       <Card className="border-pink-500/30 bg-gradient-to-br from-pink-50/50 via-white to-indigo-50/40">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm flex items-center gap-2 text-pink-700">
@@ -5391,7 +5391,7 @@ function GenerateTab() {
                   toast({ title: "Nessun percorso selezionato", description: "Seleziona almeno un percorso prima dell'export PDF.", variant: "destructive" });
                   return;
                 }
-                try { await exportPolimetricheClustersToPrint({ agencyName: intestazione, date: new Date().toLocaleDateString("it-IT"), routeIds: selectedClusterRouteIds }); }
+                try { await exportPolimetricheClustersToPrint({ agencyName: intestazione, sistema: sistemaRegionale(azienda), date: new Date().toLocaleDateString("it-IT"), routeIds: selectedClusterRouteIds }); }
                 catch (e: any) { toast({ title: "Errore polimetriche cluster", description: e?.message || String(e), variant: "destructive" }); }
               }}
               size="sm"
@@ -5407,7 +5407,7 @@ function GenerateTab() {
                 setSharingPolimetriche("clusters");
                 setShareLinkCopied(false);
                 try {
-                  const link = await createPolimetricheClustersShareLink({ agencyName: intestazione, date: new Date().toLocaleDateString("it-IT") });
+                  const link = await createPolimetricheClustersShareLink({ agencyName: intestazione, sistema: sistemaRegionale(azienda), date: new Date().toLocaleDateString("it-IT") });
                   setShareLink({ id: link.id, url: link.url, routeCount: link.routeCount, mode: "zones" });
                   toast({ title: "Link Polimetriche Cluster generato", description: `${link.routeCount} linee · ${link.clusterCount} cluster` });
                 } catch (e: any) { toast({ title: "Errore generazione link cluster", description: e?.message || String(e), variant: "destructive" });
