@@ -489,10 +489,42 @@ async function fetchIstatPopulation(provincia: string | null, codici: string[]):
   }
 }
 
-export async function syncCensusFromIstat(): Promise<{ inserted: number; source: string }> {
+/**
+ * Il codice di una sezione di censimento caricata dallo script delle sezioni
+ * (scripts/src/import-census-sections.ts): SEZ21_ID dell'ISTAT, 12 cifre.
+ * Le righe dei comuni hanno un codice diverso («AN0xx», «C042002»).
+ */
+export const CODICE_SEZIONE = "^[0-9]{12}$";
+
+/** La riga che un comune tiene in census_sections: quella scritta nel territorio, o «C» e il codice ISTAT. */
+const rigaDelComune = (c: { sezioneCensimento: string | null; codiceIstat: string }) => c.sezioneCensimento ?? `C${c.codiceIstat}`;
+
+export async function syncCensusFromIstat(): Promise<{ inserted: number; source: string; message: string; sezioni?: number; comuniTolti?: number }> {
+  const tutti = await leggiComuni();
+  /* Le sezioni di censimento e le righe dei comuni stanno nella stessa tabella, e chi somma la
+     popolazione le somma tutte: con le une e le altre, gli abitanti si contano due volte.
+     Se ci sono le sezioni, la popolazione è già lì, sezione per sezione: i comuni non si
+     aggiungono, e quelli rimasti da un import di prima si tolgono (tappa 6.30). */
+  const sezioni = Number((await db.execute<any>(sql`
+    SELECT count(*)::int AS n FROM census_sections WHERE istat_code ~ ${CODICE_SEZIONE}`)).rows?.[0]?.n ?? 0);
+  if (sezioni > 0) {
+    const righe = tutti.map(rigaDelComune).filter(r => !new RegExp(CODICE_SEZIONE).test(r));
+    const comuniTolti = righe.length
+      ? (await db.execute(sql`
+          DELETE FROM census_sections
+           WHERE istat_code IN (${sql.join(righe.map(r => sql`${r}`), sql`, `)})
+             AND istat_code !~ ${CODICE_SEZIONE}`)).rowCount ?? 0
+      : 0;
+    return {
+      inserted: 0, source: "sezioni", sezioni, comuniTolti,
+      message: `Ci sono già ${sezioni.toLocaleString("it-IT")} sezioni di censimento con la popolazione: i comuni non si aggiungono`
+        + (comuniTolti ? ` (tolte ${comuniTolti} righe di comuni rimaste da un import di prima)` : ""),
+    };
+  }
+
   /* i comuni attuali con centroide e superficie; la riga del censimento è quella che il
      comune tiene (per Conerobus «AN0xx», come prima), o «C» e il codice */
-  const comuni = (await leggiComuni()).filter(c => !c.soppresso && c.lat != null && c.lng != null && c.areaKm2 != null);
+  const comuni = tutti.filter(c => !c.soppresso && c.lat != null && c.lng != null && c.areaKm2 != null);
   const { provinciaIstat } = await leggiAzienda();
   // Try live ISTAT data first
   const livePopulation = await fetchIstatPopulation(provinciaIstat, comuni.map(c => c.codiceIstat));
@@ -504,7 +536,7 @@ export async function syncCensusFromIstat(): Promise<{ inserted: number; source:
     if (pop == null) continue;
     const area = c.areaKm2!;
     const density = area > 0 ? pop / area : 0;
-    const sezione = c.sezioneCensimento ?? `C${c.codiceIstat}`;
+    const sezione = rigaDelComune(c);
     await db.execute(sql`
       INSERT INTO census_sections (istat_code, centroid_lng, centroid_lat, population, area_km2, density)
       VALUES (${sezione}, ${c.lng}, ${c.lat}, ${pop}, ${area}, ${density})
@@ -518,7 +550,7 @@ export async function syncCensusFromIstat(): Promise<{ inserted: number; source:
     `);
     inserted++;
   }
-  return { inserted, source };
+  return { inserted, source, message: `${inserted} comuni aggiornati (${source === "istat-api" ? "popolazione dall'ISTAT" : "popolazione del territorio: l'ISTAT non ha risposto"})` };
 }
 
 // ─── Cron routes (protected by CRON_SECRET) ───────────────────────────────────
@@ -579,11 +611,7 @@ router.post("/cron/population", async (req, res) => {
   if (!verifyCronSecret(req, res)) return;
   try {
     const result = await syncCensusFromIstat();
-    res.json({
-      success: true,
-      ...result,
-      message: `Upserted ${result.inserted} comuni (source: ${result.source})`,
-    });
+    res.json({ success: true, ...result });
   } catch (err: any) {
     req.log.error(err, "Error in population cron");
     res.status(500).json({ success: false, message: err.message ?? "Internal error" });

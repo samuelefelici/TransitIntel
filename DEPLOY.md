@@ -1550,6 +1550,48 @@ le fasce chilometriche dell'azienda (6.8) sono larghe 6 km fino a 42 km e poi
 nuova (`azienda.ts` è già fra quelle del lavoratore; `fares-polimetriche.ts`
 non ci entra).
 
+### Le sezioni di censimento per ogni azienda, e la popolazione contata una volta (tappa 6.30)
+
+**Lo script delle sezioni di censimento** (`scripts/src/import-census-sections.ts`)
+leggeva solo il file delle Marche, con il percorso scritto nel codice, teneva
+solo la provincia 42 e scartava le sezioni fuori da un riquadro attorno alle
+Marche. Ora:
+- il file della regione si passa come argomento: sono le basi territoriali
+  2021 dell'ISTAT, uno per regione
+  (`https://www.istat.it/storage/cartografia/basi_territoriali/2021/R<regione>_21.zip`,
+  dentro `R<regione>_21_WGS84.shp` col suo `.dbf`);
+- la provincia è quella di Amministrazione → Azienda (Provincia ISTAT), oppure
+  una o più con `--province 042,041`;
+- si scartano solo i centroidi fuori dall'Italia;
+- la tabella si svuota e si riempie in una transazione sola, e solo se nel
+  file ci sono sezioni della provincia: con il file sbagliato resta com'è.
+
+Si lancia, con `DATABASE_URL`:
+
+    pnpm --filter @workspace/scripts run import-census -- /percorso/R11_21_WGS84.shp [--province 042]
+
+(il comando gira nella cartella `scripts`: meglio il percorso completo del file).
+
+`test-shp.ts`, uno script di prova che contava le sezioni della provincia di
+Ancona, non c'è più.
+
+**La popolazione contata una volta.** In `census_sections` scrivono lo script
+delle sezioni (codici di 12 cifre) e l'import della popolazione dei comuni
+(pulsante «Popolazione dei comuni» in Sincronizzazione, `/cron/population`),
+una riga per comune. Chi somma la popolazione somma tutte le righe: dopo lo
+script, una pressione del pulsante faceva contare gli abitanti due volte
+(circa 920.000 invece di 461.000 sulla rete di Conerobus). Ora, se ci sono le
+sezioni, l'import dei comuni non aggiunge niente, toglie le righe dei comuni
+rimaste e lo dice nel risultato. Senza sezioni fa come prima. Il testo della
+scheda in Sincronizzazione dice cosa fa (prima parlava di «44 sezioni
+censuarie»).
+
+In produzione oggi ci sono solo le 5.545 sezioni (461.687 abitanti, caricate
+il 26/03/2026): niente da correggere.
+
+**Dopo il deploy**: niente da fare. Nessuna variabile e nessuna Watch Path
+nuova.
+
 **Rollback**: immagine precedente. La colonna resta e non dà fastidio.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
