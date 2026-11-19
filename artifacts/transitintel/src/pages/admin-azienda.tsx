@@ -15,7 +15,7 @@
  * e i gestori delle linee, le agenzie dei GTFS (tappa 6.11, components/azienda/Gestori.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
-import { Building2, FileCode2, MapPin, Radio, Save } from "lucide-react";
+import { Building2, FileCode2, MapPin, Radio, Save, Scale } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
@@ -205,6 +205,26 @@ export default function AdminAziendaPage() {
           <p className="text-xs text-muted-foreground">
             I codici li decide la Regione: usa quelli dei suoi file, così linee e fermate tengono lo stesso identificativo.
             {modulo && esempioIdNetex(modulo) && <> Una linea uscirà come <code className="font-mono">{esempioIdNetex(modulo)}</code>.</>}
+          </p>
+        </CardContent>
+      </Card>
+
+      <Card id="azienda-regola-tariffe" className="scroll-mt-4">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Scale className="w-4 h-4 text-primary" aria-hidden /> Tariffe extraurbane: la regola regionale
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-4 sm:grid-cols-2">
+            {casella("tariffeRiferimento", "Riferimento della regola", { facoltativo: true, larghezza: "sm:col-span-2",
+              esempio: "Delibera di Giunta regionale n. 123/2022, art. 2",
+              aiuto: "La norma della Regione che dice come si misura la distanza di un viaggio extraurbano. Compare nelle pagine delle tariffe accanto al calcolo. Vuoto: non compare." })}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Le pagine delle tariffe misurano la distanza fra due fermate sul percorso con più corse della linea; se più linee
+            hanno gli stessi capolinea, con la media dei loro chilometri pesata sulle corse. Il calcolo è lo stesso per tutte le aziende:
+            qui si scrive solo da quale norma viene.
           </p>
         </CardContent>
       </Card>

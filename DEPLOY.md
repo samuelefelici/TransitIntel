@@ -1476,6 +1476,30 @@ Nel registro delle modifiche, coi valori; chi ha assegnato solo come nome.
 
 **Rollback**: immagine precedente. La tabella resta e non dà fastidio.
 
+### Il riferimento della regola regionale delle tariffe (tappa 6.24)
+
+Le pagine delle tariffe misurano la distanza di un viaggio extraurbano sul
+percorso con più corse della linea. Se più linee hanno gli stessi capolinea,
+usano la media dei loro chilometri pesata sulle corse. La regola viene dalla
+Regione, e le pagine ne scrivevano il riferimento nel codice («DGR 1036/2022
+art. 2.d», che vale solo per le Marche), con le etichette «Regola 1» e
+«Regola 2». Da questo rilascio:
+- il riferimento è un dato dell'azienda: in Amministrazione → Azienda, scheda
+  **Tariffe extraurbane: la regola regionale**. La migrazione `0050` aggiunge
+  la colonna e per Conerobus mette «DGR Marche n. 1036/2022, art. 2.d». Le
+  pagine lo mostrano accanto al calcolo; vuoto, non compare;
+- le etichette dicono cosa fa il calcolo: «percorso con più corse della linea»,
+  «più linee con gli stessi capolinea: media dei km pesata sulle corse»,
+  «ricerca automatica fra le linee».
+
+Il calcolo non cambia, e nemmeno le risposte dell'API (`ruleApplied` resta
+`regola1`/`regola2`).
+
+**Dopo il deploy**: niente da fare. Nessuna variabile e nessuna Watch Path
+nuova.
+
+**Rollback**: immagine precedente. La colonna resta e non dà fastidio.
+
 ### Urbano o extraurbano nei turni macchina, dalle reti dell'azienda (tappa 6.23)
 
 L'ottimizzazione dei mezzi (Fucina: calcolo semplice, CP-SAT e VCSP; il
@@ -1761,6 +1785,7 @@ per voce, e porta alla sezione dove si scrivono
 | Le vetture dell'azienda nell'AVM | Azienda → AVM | tutte le vetture del canale contano come dell'azienda |
 | Codice locale NeTEx | Azienda → NeTEx per il NAP | il NeTEx non si esporta |
 | Prefissi e codice della rete NeTEx (6.19c) | Azienda → NeTEx per il NAP | gli identificativi senza prefissi, diversi da quelli che pubblica la Regione |
+| Riferimento della regola regionale delle tariffe (6.24) | Azienda → Tariffe extraurbane: la regola regionale | il calcolo dei km si vede senza la norma da cui viene |
 | Consorziate e anagrafica dei mezzi nell'AVM (6.21) | Azienda → AVM: le consorziate e l'anagrafica dei mezzi | le matricole delle consorziate non si attribuiscono, e nessun mezzo ha la descrizione |
 | Transcodifica delle paline dell'AVM (6.20) | Dati e integrazioni → Paline Mizar → Importa | le fermate dell'AVM si agganciano solo per codice o per nome |
 

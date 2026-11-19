@@ -22,7 +22,7 @@ import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { useReti } from "@/hooks/use-reti";
 import { useAzienda } from "@/hooks/use-azienda";
-import { intestazioneDocumenti, nomeNeiDocumenti, vistaIniziale } from "@/lib/azienda";
+import { conRiferimento, intestazioneDocumenti, nomeNeiDocumenti, vistaIniziale } from "@/lib/azienda";
 import { opzioniReti } from "@/lib/reti";
 import { domandaAllinea, riassuntoConfronto, type ConfrontoColCatalogo } from "@/lib/titoli-catalogo";
 import { partenzaFeedInfo, type AgenziaNelGtfs, type PartenzaFeedInfo } from "@/lib/elenchi-tariffe";
@@ -1629,6 +1629,7 @@ function CalendarRow({
 // ═══════════════════════════════════════════════════════════
 
 function ZonesTab() {
+  const azienda = useAzienda();
   const { toast } = useToast();
   const [routeNets, setRouteNets] = useState<RouteNetwork[]>([]);
   const [areas, setAreas] = useState<FareArea[]>([]);
@@ -1783,7 +1784,7 @@ function ZonesTab() {
             </CardTitle>
             {routeStops.length > 0 && routeStops[0]?.percorsiCount != null && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Km media ponderata su {routeStops[0].percorsiCount} percorsi ({routeStops[0].totalTrips ?? "?"} corse) — DGR 1036/2022 art. 2.d
+                Km media ponderata su {routeStops[0].percorsiCount} percorsi ({routeStops[0].totalTrips ?? "?"} corse){conRiferimento(azienda)}
               </p>
             )}
           </CardHeader>
@@ -2072,6 +2073,7 @@ function ZonesDirectTab() {
 // ═══════════════════════════════════════════════════════════
 
 function ZonesDominantTab() {
+  const azienda = useAzienda();
   const { toast } = useToast();
   const [routeNets, setRouteNets] = useState<RouteNetwork[]>([]);
   const [areas, setAreas] = useState<FareArea[]>([]);
@@ -2192,7 +2194,7 @@ function ZonesDominantTab() {
             </CardTitle>
             {routeStops.length > 0 && routeStops[0]?.dominantTripCount != null && (
               <p className="text-[11px] text-muted-foreground mt-1">
-                Km da percorso dominante ({routeStops[0].dominantTripCount} corse/giorno su {routeStops[0].totalTripsDay ?? "?"} totali) — DGR 1036/2022 art. 2.d
+                Km dal percorso con più corse ({routeStops[0].dominantTripCount} corse/giorno su {routeStops[0].totalTripsDay ?? "?"} totali){conRiferimento(azienda)}
               </p>
             )}
           </CardHeader>
@@ -6459,7 +6461,7 @@ function SimulateTab() {
                             <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
                               <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
                                 <FileText className="w-3.5 h-3.5" />
-                                Trasparenza calcolo — DGR 1036/2022 art. 2.d (Proiezione su Shape)
+                                Trasparenza calcolo{conRiferimento(azienda)} (proiezione sul percorso)
                               </p>
                               <div className="grid gap-1.5 text-[10px] text-muted-foreground">
                                 <div className="flex items-start gap-2">
@@ -6990,7 +6992,7 @@ function SimulateTab() {
                   <div className="absolute bottom-3 left-3 bg-black/60 backdrop-blur-sm text-white text-[10px] p-2 rounded-lg space-y-1">
                     {domResult?.ruleApplied === "regola2" ? (
                       <>
-                        <div className="text-[9px] text-white/50 uppercase tracking-wider mb-1">Regola 2</div>
+                        <div className="text-[9px] text-white/50 uppercase tracking-wider mb-1">Linee con gli stessi capolinea</div>
                         {domRegola2GeoJsons.map(item => (
                           <div key={item.routeId} className="flex items-center gap-1.5">
                             <span className="w-5 h-1.5 rounded-full" style={{ backgroundColor: item.color }} />
@@ -7076,7 +7078,7 @@ function SimulateTab() {
                             <div className="p-3 rounded-lg bg-amber-500/5 border border-amber-500/20 space-y-3">
                               <p className="text-xs font-semibold text-amber-400 flex items-center gap-1.5">
                                 <Target className="w-3.5 h-3.5" />
-                                Regola 2 — media sulle linee con stesso capolinea
+                                Più linee con gli stessi capolinea: media dei km pesata sulle corse
                               </p>
                               <div className="text-[11px] text-muted-foreground">Capolinea: <strong>{domResult?.capolineaFirst}</strong> → <strong>{domResult?.capolineaLast}</strong></div>
                               <div className="space-y-4">
@@ -7176,7 +7178,7 @@ function SimulateTab() {
                           <div className="p-3 rounded-lg bg-blue-500/5 border border-blue-500/15 space-y-2">
                             <p className="text-[11px] font-semibold text-blue-500 flex items-center gap-1.5">
                               <FileText className="w-3.5 h-3.5" />
-                              Trasparenza calcolo — DGR 1036/2022 art. 2.d (Percorso Dominante)
+                              Trasparenza calcolo{conRiferimento(azienda)} (percorso con più corse)
                             </p>
                             <div className="grid gap-1.5 text-[10px] text-muted-foreground">
                               <div className="flex items-start gap-2">

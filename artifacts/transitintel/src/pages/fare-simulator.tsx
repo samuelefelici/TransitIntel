@@ -559,8 +559,8 @@ export default function FareSimulatorPage() {
                 <div className="space-y-2">
                   {([
                     ["media_ponderata", "Media ponderata percorsi", "Distanza calcolata come media pesata su tutti i percorsi della linea, ponderata per numero di corse. Strumento analitico di confronto — non raccomandato per tariffazione ufficiale.", "⚖️"],
-                    ["regola1", "Regola 1 — Percorso dominante", "Usa il percorso con più corse (percorso dominante) della linea selezionata per misurare la distanza OD", "📏"],
-                    ["regola1_2_auto", "Regola 1/2 — Ricerca automatica", "Cerca tutte le linee extraurbane che servono le due fermate. Se condividono lo stesso capolinea applica la Regola 2 (media tra linee), altrimenti Regola 1", "🔍"],
+                    ["regola1", "Percorso con più corse della linea", "Misura la distanza fra le due fermate sul percorso con più corse della linea selezionata", "📏"],
+                    ["regola1_2_auto", "Ricerca automatica fra le linee", "Cerca le linee extraurbane che servono le due fermate. Se più linee hanno gli stessi capolinea fa la media dei loro km, pesata sulle corse; altrimenti usa il percorso con più corse della linea migliore", "🔍"],
                   ] as [CalcMethod, string, string, string][]).map(([val, label, desc, emoji]) => (
                     <button key={val} onClick={() => setCalcMethod(val)}
                       className={cn(
