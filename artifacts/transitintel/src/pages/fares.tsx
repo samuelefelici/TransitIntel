@@ -3254,7 +3254,7 @@ function ClustersTab() {
   // ── Auto-generate clusters ──
   // Tre metodi disponibili (vedi modale "Genera Automaticamente Cluster"):
   //   - "spatial":   k-means addensamenti su tutte le fermate extraurbane
-  //   - "concentric": anelli concentrici dal baricentro (fasce km regionali)
+  //   - "concentric": anelli concentrici dal baricentro (fasce chilometriche dell'azienda)
   //   - "regionale": pipeline v2 a 2 step (Urban Hub + addensamenti k-means
   //                  sulle fermate non-urbane). Endpoint diverso:
   //                  /api/fares/node-assignment/run
@@ -3692,7 +3692,7 @@ function ClustersTab() {
                       Anelli Concentrici
                     </p>
                     <p className="text-[10px] text-muted-foreground leading-relaxed">
-                      Fasce ad anello dal baricentro, allineate alle fasce km regionali (~6 km)
+                      Fasce ad anello dal baricentro, allineate alle fasce chilometriche dell'azienda
                     </p>
                   </button>
 
