@@ -113,6 +113,8 @@ export const DEFAULT_BDS: Record<string, any> = {
   copertura: {
     minSostaCambioUrbano: 5, minSostaCambioExtra: 10, minSostaDeposito: 0,
     modalitaDefault: "IN_TESTA",
+    /* tappa 6.31: quanto può restare un bus senza conducente a un cambio in linea */
+    busIncustoditoMax: 15,
   },
   collegamento: {
     trasferimenti: "FORFE_E_VETTURA",
@@ -312,6 +314,8 @@ export const RULE_GROUPS: GroupDef[] = [
       { path: "bds.copertura.minSostaCambioExtra", label: "Sosta min cambio extraurbano", type: "int", unit: "min", min: 0, max: 120 },
       { path: "bds.copertura.minSostaDeposito", label: "Sosta min deposito", type: "int", unit: "min", min: 0, max: 120 },
       { path: "bds.copertura.modalitaDefault", label: "Modalità copertura", type: "enum", options: COPERTURA_MODE },
+      { path: "bds.copertura.busIncustoditoMax", label: "Bus senza autista al cambio (max)", type: "int", unit: "min", min: 0, max: 60,
+        help: "A un cambio in linea il conducente che monta prende il bus entro questo tempo dall'arrivo di chi smonta. È la regola dell'azienda: anche il calcolo dei turni macchina ha la sua («Vettura sola al capolinea»)." },
     ],
   },
   {

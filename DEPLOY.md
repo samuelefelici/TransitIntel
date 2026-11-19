@@ -1639,6 +1639,32 @@ solo togliendo la spunta a una rete.
 comuni non pagano il corrispettivo sui km a vuoto. Nessuna variabile e nessuna
 Watch Path nuova (`reti-linee.ts` è già fra quelle del lavoratore).
 
+### Il tempo massimo del bus senza autista come regola dei turni guida (tappa 6.31)
+
+A un cambio in linea il conducente che monta prende il bus entro un tempo
+dall'arrivo di chi smonta: il bus non resta incustodito più di così. Il calcolo
+dei turni guida usava **15 minuti scritti nel codice**; il calcolo dei turni
+macchina aveva già la sua regola modificabile («Vettura sola al capolinea»).
+
+Da questo rilascio è una regola dei turni guida: sezione «Copertura soste
+(punti di cambio)», campo **Bus senza autista al cambio (max)**, da 0 a 60
+minuti, 15 se non lo si tocca. Le regole salvate prima, che non lo hanno,
+valgono 15. La leggono il calcolo (`crew_scheduler_v4.py`) e gli strumenti
+delle correzioni a mano dei turni (`crew_tools.py`).
+
+Sulla copia dei dati veri (scenario urbano del 5/12, 75 turni macchina):
+
+| Regola | Turni guida | Cambi in linea | Attesa massima del bus | Cambi con attesa |
+|---|---|---|---|---|
+| 15 minuti (come prima) | 94 | 62 | 0 | 0 |
+| 10 minuti | 94 | 62 | 10 | 6 |
+
+Con 10 minuti, nelle soste fra 20 e 30 minuti chi monta prende il bus dopo 10
+minuti invece di coprire tutta la sosta.
+
+**Dopo il deploy**: niente da fare. Nessuna migrazione, variabile o Watch Path
+nuova.
+
 **Rollback**: immagine precedente. La colonna resta e non dà fastidio.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
