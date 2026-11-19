@@ -60,6 +60,11 @@ export interface Azienda {
    */
   tariffeRiferimento: string | null;
   /**
+   * Il nome del sistema di bigliettazione regionale a cui si conformano i nodi tariffari, mostrato
+   * accanto a «nodi tariffari regionali» nelle pagine delle tariffe. null: «il sistema regionale» (tappa 6.28)
+   */
+  bigliettazioneSistema: string | null;
+  /**
    * I codici dei turni guida (tappa 6.25): da che minuto del giorno un turno è pomeridiano
    * (numerato da 100; quelli del mattino da 001). null: una sola numerazione da 001.
    */
@@ -92,6 +97,7 @@ export const AZIENDA_DA_COMPILARE: Azienda = Object.freeze({
   netexPrefissoCodici: null,
   netexCodiceRete: null,
   tariffeRiferimento: null,
+  bigliettazioneSistema: null,
   turniGuidaPomeriggioDa: null,
   avmFornitore: null,
   avmMatricolaCifre: null,
@@ -130,6 +136,7 @@ export const DatiAzienda = z.object({
   netexPrefissoCodici: facoltativo(z.string().trim().regex(/^[A-Za-z0-9-]{1,20}$/, "lettere, cifre e - (al più 20), come «ABC»")),
   netexCodiceRete: facoltativo(z.string().trim().regex(/^[A-Za-z0-9_-]{1,40}$/, "lettere, cifre, - e _ (al più 40)")),
   tariffeRiferimento: facoltativo(riga(200)),
+  bigliettazioneSistema: facoltativo(riga(60)),
   turniGuidaPomeriggioDa: facoltativo(z.number().int("un orario in minuti interi").min(1, "fra 00:01 e 23:59").max(1439, "fra 00:01 e 23:59")),
   avmFornitore: facoltativo(riga(40)),
   avmMatricolaCifre: facoltativo(z.number().int("un numero intero da 1 a 9").min(1, "da 1 a 9").max(9, "da 1 a 9")),
@@ -143,6 +150,7 @@ const NOMI_CAMPI: Readonly<Record<string, string>> = {
   provinciaIstat: "Provincia ISTAT", netexCodiceLocale: "Codice locale NeTEx", netexFornitore: "Fornitore NeTEx",
   netexPrefisso: "Prefisso degli identificativi NeTEx", netexPrefissoCodici: "Prefisso dei codici NeTEx", netexCodiceRete: "Codice della rete NeTEx",
   tariffeRiferimento: "Riferimento della regola regionale",
+  bigliettazioneSistema: "Sistema di bigliettazione regionale",
   turniGuidaPomeriggioDa: "Inizio dei turni del pomeriggio",
   avmFornitore: "Fornitore dell'AVM",
   avmMatricolaCifre: "Cifre della matricola nell'AVM",
@@ -181,6 +189,7 @@ function daRiga(r: any): Azienda {
     netexPrefissoCodici: r.netex_prefisso_codici ?? null,
     netexCodiceRete: r.netex_codice_rete ?? null,
     tariffeRiferimento: r.tariffe_riferimento ?? null,
+    bigliettazioneSistema: r.bigliettazione_sistema ?? null,
     turniGuidaPomeriggioDa: r.turni_guida_pomeriggio_da == null ? null : Number(r.turni_guida_pomeriggio_da),
     avmFornitore: r.avm_fornitore ?? null,
     avmMatricolaCifre: r.avm_matricola_cifre == null ? null : Number(r.avm_matricola_cifre),
@@ -199,7 +208,7 @@ export async function leggiAzienda(): Promise<Azienda> {
     const r = await db.execute<any>(sql`
       SELECT ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione, centro_lat, centro_lng, zoom,
              provincia_istat, netex_codice_locale, netex_fornitore, netex_prefisso, netex_prefisso_codici, netex_codice_rete,
-             tariffe_riferimento, turni_guida_pomeriggio_da, avm_fornitore, avm_matricola_cifre
+             tariffe_riferimento, bigliettazione_sistema, turni_guida_pomeriggio_da, avm_fornitore, avm_matricola_cifre
         FROM azienda WHERE unica`);
     const riga = r.rows?.[0];
     /* le reti e le regole delle linee sono dati dell'azienda come la riga: si leggono insieme (lib/reti-linee.ts) */
@@ -274,7 +283,7 @@ export async function dettaglioAzienda(): Promise<DettaglioAzienda> {
   const r = await db.execute<any>(sql`
     SELECT a.ragione_sociale, a.nome, a.sito, a.telefono, a.gtfs_agency_id, a.citta, a.regione,
            a.centro_lat, a.centro_lng, a.zoom, a.provincia_istat, a.netex_codice_locale, a.netex_fornitore,
-           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.tariffe_riferimento, a.turni_guida_pomeriggio_da, a.avm_fornitore, a.avm_matricola_cifre,
+           a.netex_prefisso, a.netex_prefisso_codici, a.netex_codice_rete, a.tariffe_riferimento, a.bigliettazione_sistema, a.turni_guida_pomeriggio_da, a.avm_fornitore, a.avm_matricola_cifre,
            a.aggiornata_il,
            coalesce(nullif(btrim(u.full_name), ''), u.email) AS aggiornata_da
       FROM azienda a LEFT JOIN users u ON u.id = a.aggiornata_da
@@ -293,11 +302,11 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
   await db.execute(sql`
     INSERT INTO azienda (unica, ragione_sociale, nome, sito, telefono, gtfs_agency_id, citta, regione,
                          centro_lat, centro_lng, zoom, provincia_istat, netex_codice_locale, netex_fornitore,
-                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, tariffe_riferimento, turni_guida_pomeriggio_da, avm_fornitore, avm_matricola_cifre,
+                         netex_prefisso, netex_prefisso_codici, netex_codice_rete, tariffe_riferimento, bigliettazione_sistema, turni_guida_pomeriggio_da, avm_fornitore, avm_matricola_cifre,
                          aggiornata_il, aggiornata_da)
     VALUES (true, ${d.ragioneSociale}, ${d.nome}, ${d.sito}, ${d.telefono}, ${d.gtfsAgencyId}, ${d.citta}, ${d.regione},
             ${d.centroLat}, ${d.centroLng}, ${d.zoom}, ${d.provinciaIstat}, ${d.netexCodiceLocale}, ${d.netexFornitore},
-            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete}, ${d.tariffeRiferimento}, ${d.turniGuidaPomeriggioDa}, ${d.avmFornitore},
+            ${d.netexPrefisso}, ${d.netexPrefissoCodici}, ${d.netexCodiceRete}, ${d.tariffeRiferimento}, ${d.bigliettazioneSistema}, ${d.turniGuidaPomeriggioDa}, ${d.avmFornitore},
             ${d.avmMatricolaCifre}, now(), ${utenteId}::uuid)
     ON CONFLICT (unica) DO UPDATE SET
       ragione_sociale = EXCLUDED.ragione_sociale, nome = EXCLUDED.nome, sito = EXCLUDED.sito,
@@ -308,6 +317,7 @@ export async function salvaAzienda(d: DatiAzienda, utenteId: string | null): Pro
       netex_prefisso = EXCLUDED.netex_prefisso, netex_prefisso_codici = EXCLUDED.netex_prefisso_codici,
       netex_codice_rete = EXCLUDED.netex_codice_rete,
       tariffe_riferimento = EXCLUDED.tariffe_riferimento,
+      bigliettazione_sistema = EXCLUDED.bigliettazione_sistema,
       turni_guida_pomeriggio_da = EXCLUDED.turni_guida_pomeriggio_da,
       avm_fornitore = EXCLUDED.avm_fornitore,
       avm_matricola_cifre = EXCLUDED.avm_matricola_cifre,

@@ -220,6 +220,8 @@ export default function AdminAziendaPage() {
             {casella("tariffeRiferimento", "Riferimento della regola", { facoltativo: true, larghezza: "sm:col-span-2",
               esempio: "Delibera di Giunta regionale n. 123/2022, art. 2",
               aiuto: "La norma della Regione che dice come si misura la distanza di un viaggio extraurbano. Compare nelle pagine delle tariffe accanto al calcolo. Vuoto: non compare." })}
+            {casella("bigliettazioneSistema", "Sistema di bigliettazione regionale", { facoltativo: true, esempio: "Nome del sistema",
+              aiuto: "Il sistema della Regione a cui devono corrispondere i nodi tariffari. Compare nelle pagine delle tariffe accanto a «nodi tariffari regionali». Vuoto: «sistema regionale»." })}
           </div>
           <p className="text-xs text-muted-foreground">
             Le pagine delle tariffe misurano la distanza fra due fermate sul percorso con più corse della linea; se più linee

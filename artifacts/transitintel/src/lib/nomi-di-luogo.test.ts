@@ -127,10 +127,11 @@ describe("nessuna coordinata scritta a mano nei sorgenti della web", () => {
 /**
  * Né i nomi dei fornitori del primo cliente (tappa 6.27): il fornitore
  * dell'AVM è un dato dell'azienda (fornitoreAvm), l'officina si chiama
- * «officina». Maiuscole e confini di parola: i nomi interni come mizarRef,
+ * «officina»; e così il sistema di bigliettazione della regione (tappa 6.28,
+ * sistemaRegionale). Maiuscole e confini di parola: i nomi interni come mizarRef,
  * previsioniMizar o la pagina fermate-mizar restano, sono codice e non testo.
  */
-const FORNITORI = /\b(Mizar|FlashNet|Flashnet)\b/;
+const FORNITORI = /\b(Mizar|FlashNet|Flashnet|Telemaco)\b/;
 
 describe("nessun nome dei fornitori del primo cliente nei testi della web", () => {
   it("fuori dai commenti non ce n'è nessuno", () => {
@@ -141,6 +142,7 @@ describe("nessun nome dei fornitori del primo cliente nei testi della web", () =
 
   it("la ricerca trova il nome, non gli identificativi", () => {
     expect(FORNITORI.test('<span>Paline Mizar</span>')).toBe(true);
+    expect(FORNITORI.test('<p>conformità Telemaco</p>')).toBe(true);
     expect(FORNITORI.test("const { mizarRef, previsioniMizar } = d; import X from \"@/pages/fermate-mizar\";")).toBe(false);
   });
 });

@@ -2311,7 +2311,7 @@ export async function createPolimetricheMinOdNodesShareLink(opts?: { agencyName?
 
 /* ══════════════════════════════════════════════════════════════
  * CLUSTER NARRATIVI — Polimetriche basate sui cluster generati
- * dalla pipeline Telemaco (DBSCAN→k-means + assorbimento Step 1.5).
+ * dalla pipeline dei nodi regionali (DBSCAN→k-means + assorbimento Step 1.5).
  *
  * Stesso layout "a scaletta" delle polimetriche storiche:
  *  • cover page con logo Fares Engine + KPI + spiegazione metodologia
@@ -2452,6 +2452,8 @@ async function loadClustersFull(): Promise<ClusterFullForExport[]> {
 function renderClusterCoverPage(opts: {
   agencyName: string;
   date: string;
+  /** il sistema di bigliettazione regionale, senza articolo: «sistema regionale …» */
+  sistema: string;
   routeCount: number;
   clusterCount: number;
   totalStops: number;
@@ -2467,14 +2469,14 @@ function renderClusterCoverPage(opts: {
           <div class="cover-product">Fares Engine</div>
           <div class="cover-kicker">Tariffario TPL · Documento ufficiale</div>
           <h1 class="cover-title">Polimetriche per Cluster</h1>
-          <div class="cover-subtitle">Matrice O/D nodo tariffario × nodo tariffario · una pagina per linea, basata sui cluster Telemaco</div>
+          <div class="cover-subtitle">Matrice O/D nodo tariffario × nodo tariffario · una pagina per linea, basata sui nodi tariffari del ${escape(opts.sistema)}</div>
         </div>
       </div>
 
       <div class="cover-meta">
         <div class="cm-row"><span class="cm-label">Agenzia</span><span class="cm-value">${escape(opts.agencyName)}</span></div>
         <div class="cm-row"><span class="cm-label">Data emissione</span><span class="cm-value">${escape(opts.date)}</span></div>
-        <div class="cm-row"><span class="cm-label">Metodo zonizzazione</span><span class="cm-value">Pipeline Telemaco v2 (DBSCAN → k-means + assorbimento Hub)</span></div>
+        <div class="cm-row"><span class="cm-label">Metodo zonizzazione</span><span class="cm-value">Nodi tariffari regionali v2 (DBSCAN → k-means + assorbimento Hub)</span></div>
         <div class="cm-row"><span class="cm-label">Standard</span><span class="cm-value">GTFS Fares V2 · fasce chilometriche regionali · Min-OD via Dijkstra</span></div>
       </div>
 
@@ -2482,7 +2484,7 @@ function renderClusterCoverPage(opts: {
         <div class="ck-card"><div class="ck-num">${opts.routeCount}</div><div class="ck-lbl">Linee analizzate</div></div>
         <div class="ck-card"><div class="ck-num">${opts.clusterCount}</div><div class="ck-lbl">Cluster generati</div></div>
         <div class="ck-card"><div class="ck-num">${opts.totalStops.toLocaleString("it-IT")}</div><div class="ck-lbl">Fermate aggregate</div></div>
-        <div class="ck-card ck-card-range"><div class="ck-num">Telemaco v2</div><div class="ck-lbl">Pipeline attiva</div></div>
+        <div class="ck-card ck-card-range"><div class="ck-num">Nodi regionali v2</div><div class="ck-lbl">Pipeline attiva</div></div>
       </div>
 
       <h2 class="cover-h2">Come abbiamo ottenuto questi dati</h2>
@@ -2683,7 +2685,7 @@ function renderClusterRoutePage(
         </div>
         <div class="r-head-right">
           <div class="r-head-meta">
-            <div class="r-network">Polimetrica per nodi tariffari · cluster Telemaco</div>
+            <div class="r-network">Polimetrica per nodi tariffari regionali</div>
             <div class="r-pageno">pag. ${idx + 1} / ${total + 1}</div>
           </div>
           <img class="r-brand-logo" src="/faresengine.png" alt="Fares Engine" />
@@ -3305,6 +3307,8 @@ const CLUSTER_EXTRA_STYLES = `
 interface ClustersExportOpts {
   agencyName?: string;
   date?: string;
+  /** il sistema di bigliettazione regionale, senza articolo (lib/azienda.ts, sistemaRegionale); di norma «sistema regionale» */
+  sistema?: string;
   routeIds?: string[];
 }
 
@@ -3382,6 +3386,7 @@ async function buildClustersHtml(opts: ClustersExportOpts): Promise<{
 
   const cover = renderClusterCoverPage({
     agencyName, date,
+    sistema: opts.sistema?.trim() || "sistema regionale",
     routeCount: routesVariants.length,
     clusterCount: clusters.length,
     totalStops,
@@ -3431,7 +3436,7 @@ async function buildClustersHtml(opts: ClustersExportOpts): Promise<{
 }
 
 /**
- * Esporta in PDF (via finestra di stampa) le polimetriche basate sui cluster Telemaco.
+ * Esporta in PDF (via finestra di stampa) le polimetriche basate sui nodi tariffari regionali.
  * Cover con logo Fares Engine + mappa SVG, poi una pagina per linea con la matrice
  * cluster × cluster a scaletta. La diagonale mostra solo le fermate della linea.
  */
@@ -3486,7 +3491,7 @@ export async function createPolimetricheClustersShareLink(opts?: ClustersExportO
         htmlGzipB64,
         title: `Polimetriche Cluster · ${built.agencyName} · ${built.date}`,
         agencyName: built.agencyName,
-        zoningMethod: "clusters_telemaco",
+        zoningMethod: "clusters_nodi_regionali",
         routeCount: built.routeCount,
         productCount: 0,
         areaCount: built.clusterCount,

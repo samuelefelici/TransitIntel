@@ -4,7 +4,7 @@
  * Flusso:
  *   1. Import ZIP GTFS dedicato (isolato dal feed di Bigliettazione).
  *   2. Estrazione percorsi univoci, categorizzati per LINEA extraurbana
- *      (codice che inizia con una lettera).
+ *      (urbana o extraurbana la dicono le reti dell'azienda).
  *   3. Area di lavoro: selezioni linea → percorso → direzione; vedi la
  *      polilinea (fermate + distanze) e la POLIMETRICA generata in automatico
  *      come banda di tratte colorate (ogni 6 km una nuova tratta). L'utente
