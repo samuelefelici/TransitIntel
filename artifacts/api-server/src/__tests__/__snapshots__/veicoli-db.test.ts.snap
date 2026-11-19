@@ -1574,6 +1574,10 @@ exports[`turni macchina e VCSP, sul database > il giro VCSP di Argos fino allo s
             "serviceType": "urbano",
           },
           "clusters": [],
+          "codiciTurni": {
+            "pomeriggioDaMin": null,
+            "sigle": {},
+          },
           "companyCars": 2,
           "restPoints": [],
         },
@@ -2509,6 +2513,10 @@ exports[`turni macchina e VCSP, sul database > vcsp 200, con i turni guida > pyt
             "serviceType": "urbano",
           },
           "clusters": [],
+          "codiciTurni": {
+            "pomeriggioDaMin": null,
+            "sigle": {},
+          },
           "companyCars": 2,
           "restPoints": [],
         },

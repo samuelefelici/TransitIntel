@@ -323,11 +323,16 @@ export interface CodificaTurniGuida {
  * scritta nel solver.
  */
 export async function codificaTurniGuida(): Promise<CodificaTurniGuida> {
-  const a = await leggiAzienda();
-  const r = await db.execute<any>(sql`SELECT id::text AS id, sigla FROM depots WHERE sigla IS NOT NULL`);
+  /* due letture dirette, non leggiAzienda(): quella rimette in memoria anche le reti e il parco,
+   * e un calcolo già cominciato non deve vederli cambiare a metà */
+  const [riga, depositi] = await Promise.all([
+    db.execute<any>(sql`SELECT turni_guida_pomeriggio_da FROM azienda WHERE unica`),
+    db.execute<any>(sql`SELECT id::text AS id, sigla FROM depots WHERE sigla IS NOT NULL`),
+  ]);
+  const pom = riga.rows?.[0]?.turni_guida_pomeriggio_da;
   const sigle: Record<string, string> = {};
-  for (const x of r.rows ?? []) sigle[String(x.id)] = String(x.sigla);
-  return { pomeriggioDaMin: a.turniGuidaPomeriggioDa, sigle };
+  for (const x of depositi.rows ?? []) sigle[String(x.id)] = String(x.sigla);
+  return { pomeriggioDaMin: pom == null ? null : Number(pom), sigle };
 }
 
 const compatta = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/g, "");
