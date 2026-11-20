@@ -9,6 +9,8 @@
  *   GET /api/dati-aperti/gtfs.zip        il GTFS della versione in esercizio
  *   GET /api/dati-aperti/netex.xml.gz    lo stesso programma in NeTEx,
  *                                        profilo italiano livello 1
+ *   GET /api/dati-aperti/netex-l3.xml.gz il NeTEx di livello 3, con le
+ *                                        tariffe (tappa 6.41)
  *
  * I file sono già pronti in tabella (lib/dati-aperti.ts): qui si consegnano i
  * byte. L'impronta del file è la sua ETag: chi lo ha già (If-None-Match, o
@@ -86,6 +88,7 @@ const consegna = (tipo: TipoFile) => async (req: Request, res: Response): Promis
 
 router.get("/dati-aperti/gtfs.zip", limite, consegna("gtfs"));
 router.get("/dati-aperti/netex.xml.gz", limite, consegna("netex"));
+router.get("/dati-aperti/netex-l3.xml.gz", limite, consegna("netex_l3"));
 
 /* GET /api/dati-aperti — che cosa c'è in linea: per chi registra gli indirizzi, o li controlla */
 router.get("/dati-aperti", limite, async (req: Request, res: Response): Promise<void> => {

@@ -2226,6 +2226,54 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Il NeTEx allineato alle linee guida 5.0.1 e al portale regionale (tappa 6.41)
+
+Le linee guida del profilo italiano sono passate dalla 4.0.1 alla 5.0.1. Per
+il livello 1 cambiano poco: strutture nuove facoltative (ingressi, percorsi
+interni, linee flessibili) e un'**Appendice A** su quello che serve a
+OpenTripPlanner (il motore di calcolo dei percorsi usato anche da MaaS4Italy).
+Il documento del portale regionale (RAP) dice come il NAP scarica i file: **un
+file per livello**, con nomi come `IT-ITI3-ABC-NeTEx_L1.xml.gz`.
+
+**Che cosa cambia**
+- **Il calendario come lo vuole OpenTripPlanner.** Per ogni tipo di giorno un
+  periodo di esercizio (`UicOperatingPeriod`: dal, al e un carattere per giorno,
+  `ValidDayBits`) e un'assegnazione che lo richiama (`OperatingPeriodRef`).
+  Prima c'era un'assegnazione per ogni giorno, con la data: valida per lo
+  schema, ma OTP vuole il periodo. I file della Regione fanno lo stesso.
+- **Due NeTEx fra i dati aperti**, uno per livello:
+  - `/api/dati-aperti/netex.xml.gz` è di nuovo di **livello 1** (EPIP), quello
+    che la Regione legge oggi: lo schema EPIP lo accetta;
+  - `/api/dati-aperti/netex-l3.xml.gz`, nuovo, è di **livello 3** con le
+    tariffe. Se l'azienda non ha tariffe non si fa, e la pagina lo dice.
+  La firma del livello 1 non comprende più le tariffe; quella del livello 3 sì.
+- **L'export di Planning Studio** ha due pulsanti: NeTEx di livello 1 e NeTEx
+  con le tariffe (livello 3). Il nome del file è quello del portale regionale,
+  col programma e la data: `IT-ITI3-ABC-NeTEx_L1_esercizio_20261120.xml.gz`
+  (il raggruppamento è il prefisso dei codici della Regione, se c'è, altrimenti
+  il codice dell'azienda). Senza il parametro `livello` l'API dà il livello 1.
+
+Migrazione `0059`: il tipo `netex_l3` e l'esito `senza_tariffe` nei vincoli
+di `dati_aperti`. Nessun dato cambia.
+
+**Che cosa resta come prima**, e perché: i `ServiceLink` (le geometrie fra due
+fermate) e l'`Authority` sono facoltativi per OTP, che senza unisce le fermate
+in linea retta e mette un'autorità di base; le strutture nuove della 5.0.1 sono
+per l'accessibilità e i servizi flessibili, che Cerbero oggi non ha.
+
+**Dopo il deploy**:
+1. Alla preparazione successiva il NeTEx di livello 1 si rifà (cambia il
+   calendario) e nasce quello di livello 3.
+2. In Amministrazione › Azienda › Dati aperti c'è un terzo indirizzo, «NeTEx
+   con le tariffe»: si può registrare al NAP o passare alla Regione quando lo
+   chiede. Quello del livello 1 non cambia.
+
+Nessuna variabile e nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. La riga del livello 3 resta in tabella e
+nessuno la serve; il NeTEx di livello 1 torna come nella 6.40 alla preparazione
+successiva.
+
 ### Il NeTEx con le tariffe, livello 3 (tappa 6.40)
 
 Il **NeTEx** (l'export di Planning Studio e il file dei dati aperti) è ora di
@@ -2256,8 +2304,8 @@ con lo schema EPIP. Riferimento: linee guida v5.0.1, par. 5.2.5.7 e 5.2.7.
 **Le tariffe non fermano il NeTEx**: se le tariffe non si leggono, i dati
 aperti escono di livello 1 come prima e il guasto va nel log.
 
-**Dati aperti**: la firma del NeTEx comprende ora l'impronta delle tariffe.
-Alla preparazione successiva al deploy il NeTEx si rifà, di livello 3.
+**Dati aperti**: dalla 6.41 il NeTEx di livello 3 è un file a sé, accanto a
+quello di livello 1 (vedi la sezione della 6.41).
 
 Sulla copia dei dati veri il NeTEx del programma in esercizio passa lo schema
 del livello 3 al primo colpo: 881 zone (5 reti urbane e 876 nodi), 161 titoli,

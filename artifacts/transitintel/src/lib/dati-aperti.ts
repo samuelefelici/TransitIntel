@@ -5,8 +5,8 @@
  * test.
  */
 
-export type TipoFile = "gtfs" | "netex";
-export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore";
+export type TipoFile = "gtfs" | "netex" | "netex_l3";
+export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore" | "senza_tariffe";
 
 export interface StatoFile {
   tipo: TipoFile;
@@ -27,10 +27,11 @@ export interface StatoDatiAperti {
   file: StatoFile[];
 }
 
-export const NOME_FILE: Record<TipoFile, string> = { gtfs: "GTFS", netex: "NeTEx" };
+export const NOME_FILE: Record<TipoFile, string> = { gtfs: "GTFS", netex: "NeTEx", netex_l3: "NeTEx con le tariffe" };
 export const DETTAGLIO_FILE: Record<TipoFile, string> = {
-  gtfs: "orari, fermate e percorsi nel formato più diffuso",
+  gtfs: "orari, fermate e percorsi nel formato più diffuso, con le tariffe",
   netex: "profilo italiano, livello 1: il formato che chiede il NAP",
+  netex_l3: "profilo italiano, livello 3: rete, orari e tariffe",
 };
 
 /** L'indirizzo intero da registrare: l'origine dell'API e il percorso, che non cambia. */
@@ -82,7 +83,12 @@ export function contenuto(f: StatoFile): string[] {
   const gestori = f.tipo === "gtfs" ? c.righe?.["agency.txt"] : c.operatori;
   if (typeof gestori === "number" && gestori > 1) out.push(`${n(gestori)} ${f.tipo === "gtfs" ? "agenzie" : "operatori"}`);
   if (f.tipo === "gtfs" && typeof c.avvisi === "number" && c.avvisi > 0) out.push(`${n(c.avvisi)} ${c.avvisi === 1 ? "avviso" : "avvisi"} del controllo`);
-  if (f.tipo === "netex" && typeof c.corseSenzaGiorni === "number" && c.corseSenzaGiorni > 0) {
+  /* il NeTEx di livello 3 (tappa 6.41): i titoli e le zone tariffarie */
+  if (c.tariffe && typeof c.tariffe === "object") {
+    if (n(c.tariffe.prodotti)) out.push(`${n(c.tariffe.prodotti)} ${c.tariffe.prodotti === 1 ? "titolo" : "titoli"}`);
+    if (n(c.tariffe.zone)) out.push(`${n(c.tariffe.zone)} ${c.tariffe.zone === 1 ? "zona tariffaria" : "zone tariffarie"}`);
+  }
+  if (f.tipo !== "gtfs" && typeof c.corseSenzaGiorni === "number" && c.corseSenzaGiorni > 0) {
     out.push(`${n(c.corseSenzaGiorni)} ${c.corseSenzaGiorni === 1 ? "corsa lasciata fuori" : "corse lasciate fuori"} (senza giorni di servizio)`);
   }
   return out;

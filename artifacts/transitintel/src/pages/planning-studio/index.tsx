@@ -10,7 +10,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   Map as MapIcon, Plus, Loader2, Calendar, Bus, Route,
-  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy, Download, FileCode2, Search, X,
+  Users, Clock, Trash2, FolderOpen, MapPin, Share2, Power, Copy, Download, FileCode2, Ticket, Search, X,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
 import {
@@ -155,14 +155,15 @@ export default function PlanningStudioListPage() {
     }
   }
 
-  /* Tappa 6.2: lo stesso programma in NeTEx, profilo italiano, per il NAP;
-   * dalla 6.40 di livello 3, con le tariffe del GTFS. Nasce dal GTFS
+  /* Tappa 6.2: lo stesso programma in NeTEx, profilo italiano, per il NAP.
+   * Due livelli (6.41): il livello 1 (EPIP), quello che legge il portale
+   * regionale, e il livello 3 con le tariffe del GTFS (6.40). Nasce dal GTFS
    * consegnabile e passa lo schema del profilo: con errori il server si ferma
    * e dice quali. Il file è grande: ci vuole qualche decina di secondi. */
-  async function handleExportNetex(p: PsProject, forza = false) {
-    const tid = toast.loading(`Genero il NeTEx di "${p.name}"…`, { description: "Programma, controllo dello schema e compressione: può volerci mezzo minuto." });
+  async function handleExportNetex(p: PsProject, livello: 1 | 3, forza = false) {
+    const tid = toast.loading(`Genero il NeTEx${livello === 3 ? " con le tariffe" : ""} di "${p.name}"…`, { description: "Programma, controllo dello schema e compressione: può volerci mezzo minuto." });
     try {
-      const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${p.id}/export-netex${forza ? "?forza=1" : ""}`, { credentials: "include" });
+      const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${p.id}/export-netex?livello=${livello}${forza ? "&forza=1" : ""}`, { credentials: "include" });
       if (resp.status === 422 || resp.status === 409) {
         const r = await resp.json().catch(() => ({}));
         const righe: string[] = [
@@ -171,7 +172,7 @@ export default function PlanningStudioListPage() {
         ];
         toast.error(r.error || "NeTEx non esportato", {
           id: tid, duration: 30000, description: righe.join("\n") || undefined,
-          ...(resp.status === 422 ? { action: { label: "Esporta comunque", onClick: () => { void handleExportNetex(p, true); } } } : {}),
+          ...(resp.status === 422 ? { action: { label: "Esporta comunque", onClick: () => { void handleExportNetex(p, livello, true); } } } : {}),
         });
         return;
       }
@@ -182,18 +183,18 @@ export default function PlanningStudioListPage() {
       const versione = resp.headers.get("X-Netex-Versione");
       const validazione = resp.headers.get("X-Netex-Validazione");
       const corse = resp.headers.get("X-Netex-Corse");
-      const livello = resp.headers.get("X-Netex-Livello");
+      const livelloDelFile = resp.headers.get("X-Netex-Livello");
       const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = nomeDalServer ?? `netex_${p.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.xml.gz`;
+      a.download = nomeDalServer ?? `netex_L${livello}_${p.name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40)}.xml.gz`;
       a.click();
       URL.revokeObjectURL(url);
       const da = versione === "esercizio" ? "Dalla versione in esercizio" : versione === "programmata" ? "Dalla versione programmata" : "Dalla bozza (il programma non ha una versione in esercizio)";
       const controllo = validazione === "valido"
-        ? (livello === "3" ? "Con le tariffe: passa lo schema del livello 3 del profilo italiano." : "Passa lo schema EPIP del profilo italiano.")
+        ? (livelloDelFile === "3" ? "Con le tariffe: passa lo schema del livello 3 del profilo italiano." : "Livello 1: passa lo schema EPIP del profilo italiano.")
         : validazione === "senza_xmllint" ? "Lo schema non è stato controllato su questo server."
         : "Esportato nonostante gli errori.";
       toast.success("NeTEx esportato", { id: tid, duration: validazione === "valido" ? 6000 : 15000, description: `${da}, ${corse ?? "?"} corse. ${controllo}` });
@@ -323,7 +324,7 @@ export default function PlanningStudioListPage() {
                 onActivate={() => setActivateTarget(p)}
                 onDuplicate={() => setDupTarget(p)}
                 onExportGtfs={() => handleExportGtfs(p)}
-                onExportNetex={() => handleExportNetex(p)}
+                onExportNetex={(livello) => handleExportNetex(p, livello)}
               />
             ))}
           </div>
@@ -431,7 +432,7 @@ function StatCard({ label, value, icon: Icon, accent }: { label: string; value: 
 
 function ProjectCard({
   project: p, onOpen, onDelete, onShare, onActivate, onDuplicate, onExportGtfs, onExportNetex,
-}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void; onDuplicate: () => void; onExportGtfs: () => void; onExportNetex: () => void }) {
+}: { project: PsProject; onOpen: () => void; onDelete: () => void; onShare: () => void; onActivate: () => void; onDuplicate: () => void; onExportGtfs: () => void; onExportNetex: (livello: 1 | 3) => void }) {
   const isOwner = p.myRole === "owner";
   // Eliminazione a DUE CLICK: il primo arma (cestino rosso "Confermi?"),
   // il secondo elimina. Si disarma da solo dopo 4 secondi.
@@ -545,12 +546,20 @@ function ProjectCard({
               <Download className="w-3.5 h-3.5" />
             </button>
             <button
-              onClick={(e) => { e.stopPropagation(); onExportNetex(); }}
+              onClick={(e) => { e.stopPropagation(); onExportNetex(1); }}
               className="p-1 rounded hover:bg-teal-500/10 text-slate-500 hover:text-teal-400 transition"
-              title="Esporta NeTEx (profilo italiano livello 1, per il NAP)"
-              aria-label="Esporta NeTEx"
+              title="Esporta NeTEx (profilo italiano livello 1, quello che legge il portale regionale)"
+              aria-label="Esporta NeTEx livello 1"
             >
               <FileCode2 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={(e) => { e.stopPropagation(); onExportNetex(3); }}
+              className="p-1 rounded hover:bg-teal-500/10 text-slate-500 hover:text-teal-400 transition"
+              title="Esporta NeTEx con le tariffe (profilo italiano livello 3)"
+              aria-label="Esporta NeTEx con le tariffe, livello 3"
+            >
+              <Ticket className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={(e) => { e.stopPropagation(); onShare(); }}

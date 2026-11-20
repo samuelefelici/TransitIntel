@@ -55,6 +55,12 @@ describe("dati aperti: che cosa c'è nel file", () => {
     const f = file({ tipo: "netex", inLinea: inLinea({ conteggi: { corse: 1, fermate: 2, linee: 1, corseSenzaGiorni: 1 } }) });
     expect(contenuto(f)).toEqual(["1 corsa", "2 fermate", "1 linea", "1 corsa lasciata fuori (senza giorni di servizio)"]);
   });
+  it("il NeTEx di livello 3: anche i titoli e le zone tariffarie (tappa 6.41)", () => {
+    const f = file({ tipo: "netex_l3", inLinea: inLinea({ conteggi: { corse: 3502, fermate: 3901, linee: 128, corseSenzaGiorni: 0, tariffe: { prodotti: 161, zone: 881 } } }) });
+    expect(contenuto(f)).toEqual(["3502 corse", "3901 fermate", "128 linee", "161 titoli", "881 zone tariffarie"]);
+    const uno = file({ tipo: "netex_l3", inLinea: inLinea({ conteggi: { corse: 1, fermate: 2, linee: 1, tariffe: { prodotti: 1, zone: 1 } } }) });
+    expect(contenuto(uno)).toEqual(["1 corsa", "2 fermate", "1 linea", "1 titolo", "1 zona tariffaria"]);
+  });
   it("i gestori: le agenzie del GTFS e gli operatori del NeTEx, solo se sono più d'uno", () => {
     const gtfs = (agenzie: number) => file({ inLinea: inLinea({ conteggi: { righe: { "trips.txt": 10, "stops.txt": 5, "routes.txt": 2, "agency.txt": agenzie } } }) });
     expect(contenuto(gtfs(1))).toEqual(["10 corse", "5 fermate", "2 linee"]);

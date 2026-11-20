@@ -414,6 +414,13 @@
       "when": 1798000000000,
       "tag": "0058_pagamento_con_carta_a_bordo",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1798100000000,
+      "tag": "0059_netex_livello_3_fra_i_dati_aperti",
+      "breakpoints": true
     }
   ]
 }

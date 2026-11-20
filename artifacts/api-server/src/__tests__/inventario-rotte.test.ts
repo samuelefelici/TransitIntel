@@ -75,7 +75,7 @@ const PRIMA_DEL_LOGIN = [
   "GET /network-share/:token", "GET /timetable-map/:token", "GET /timetable-map/:token/route/:routeId",
   "GET /timetable-map/:token/stop/:stopId",
   // dati aperti (tappa 6.3): il GTFS e il NeTEx che l'azienda pubblica, a un indirizzo stabile
-  "GET /dati-aperti", "GET /dati-aperti/gtfs.zip", "GET /dati-aperti/netex.xml.gz",
+  "GET /dati-aperti", "GET /dati-aperti/gtfs.zip", "GET /dati-aperti/netex.xml.gz", "GET /dati-aperti/netex-l3.xml.gz",
 ].sort();
 
 const pila = strati(router);

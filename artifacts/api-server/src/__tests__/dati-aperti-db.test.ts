@@ -20,7 +20,7 @@ import adminRouter from "../routes/admin";
 import datiAperti from "../routes/dati-aperti";
 import { dimenticaAzienda } from "../lib/azienda";
 import { cancellaProgetto } from "../lib/progetto-copie";
-import { preparaDatiAperti, statoDatiAperti } from "../lib/dati-aperti";
+import { preparaDatiAperti, statoDatiAperti, type TipoFile } from "../lib/dati-aperti";
 import { giroDatiAperti } from "../lib/lavori/dati-aperti";
 import { validaNetex, type EsitoValidazione } from "../lib/netex-validazione";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
@@ -47,7 +47,7 @@ const scarica = (percorso: string) => pubblico.get(percorso).buffer(true).parse(
   res.on("data", (c: Buffer) => pezzi.push(c));
   res.on("end", () => cb(null, Buffer.concat(pezzi)));
 });
-const file = async (tipo: "gtfs" | "netex") => (await statoDatiAperti()).file.find((f) => f.tipo === tipo)!;
+const file = async (tipo: TipoFile) => (await statoDatiAperti()).file.find((f) => f.tipo === tipo)!;
 const muto = { info() {}, warn() {}, error() {} };
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", () => {
@@ -64,10 +64,15 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
   };
 
   let aziendaDiPrima: any = null;
+  /* le tariffe dell'azienda (6.41): il test parte senza, così il NeTEx di livello 3 dice «senza tariffe»; poi una fascia lo fa uscire */
+  const TARIFFE = ["contactless_reti", "contactless_tariffe", "contactless", "titoli_catalogo", "fasce_km"] as const;
+  const tariffeDiPrima: Record<string, unknown[]> = {};
   let conXmllint = false;
   beforeAll(async () => {
     await pulisci();
     aziendaDiPrima = (await db.execute<any>(sql`SELECT * FROM azienda`)).rows[0] ?? null;
+    for (const t of TARIFFE) tariffeDiPrima[t] = (await db.execute<any>(sql`SELECT to_jsonb(x) AS riga FROM ${sql.identifier(t)} x`)).rows.map((r) => r.riga);
+    for (const t of TARIFFE) await db.execute(sql`DELETE FROM ${sql.identifier(t)}`);
     await db.execute(sql`DELETE FROM azienda`);
     dimenticaAzienda();
     const altri = (await db.execute<any>(sql`SELECT count(*)::int AS n FROM gtfs_feeds WHERE is_active`)).rows[0].n;
@@ -92,6 +97,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
   });
   afterAll(async () => {
     await pulisci();
+    for (const t of TARIFFE) await db.execute(sql`DELETE FROM ${sql.identifier(t)}`);
+    for (const t of [...TARIFFE].reverse()) {
+      for (const riga of tariffeDiPrima[t] ?? []) {
+        await db.execute(sql`INSERT INTO ${sql.identifier(t)} SELECT * FROM jsonb_populate_record(NULL::${sql.identifier(t)}, ${JSON.stringify(riga)}::jsonb)`);
+      }
+    }
     await db.execute(sql`DELETE FROM azienda`);
     if (aziendaDiPrima) {
       const a = aziendaDiPrima;
@@ -132,7 +143,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body).toMatchObject({ attivi: true, versione: null });
     expect(r.body.senzaVersione).toMatch(/Nessun programma è in esercizio/);
-    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "senza_versione", netex: "senza_versione" } });
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "senza_versione", netex: "senza_versione", netex_l3: "senza_versione" } });
     expect((await file("gtfs"))).toMatchObject({ inLinea: null, ultimoTentativo: { esito: "senza_versione" } });
     expect((await pubblico.get("/api/dati-aperti/gtfs.zip")).status).toBe(404);
     // un secondo giro non riscrive la stessa cosa
@@ -145,7 +156,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
   it("in esercizio: il GTFS va in linea; il NeTEx aspetta il codice locale", async () => {
     const a = await pian.post(`/api/planning-studio/projects/${P}/activate`).send({});
     expect(a.status, JSON.stringify(a.body)).toBe(200);
-    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "pubblicato", netex: "senza_codice" } });
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "pubblicato", netex: "senza_codice", netex_l3: "senza_codice" } });
     const s = await statoDatiAperti();
     expect(s.versione?.nome).toBe(NOME);
     const g = s.file.find((f) => f.tipo === "gtfs")!;
@@ -197,7 +208,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
   let improntaNetex = "";
   it("col codice locale esce anche il NeTEx; il GTFS, che non cambia, resta quello", async () => {
     await db.execute(sql`UPDATE azienda SET netex_codice_locale = 'ITI3'`);
-    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "pubblicato" } });
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "pubblicato", netex_l3: "senza_tariffe" } });
     expect((await file("gtfs")).inLinea!.impronta).toBe(improntaGtfs);
     const r = await scarica("/api/dati-aperti/netex.xml.gz");
     expect(r.status).toBe(200);
@@ -210,12 +221,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
     if (conXmllint) expect(await validaNetex(xml)).toEqual({ stato: "valido", errori: [] });
     expect((await pubblico.get("/api/dati-aperti")).body.file.map((f: any) => f.tipo)).toEqual(["gtfs", "netex"]);
     // niente da fare: due letture, nessun file riscritto
-    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "invariato" } });
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "invariato", netex_l3: "invariato" } });
   });
 
   it("una modifica di bozza non arriva ai file pubblicati", async () => {
     await db.execute(sql`UPDATE ps_stop_times SET departure_time = '09' || substr(departure_time, 3), arrival_time = '09' || substr(arrival_time, 3) WHERE trip_id = ${CORSA}::uuid`);
-    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "invariato" } });
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "invariato", netex_l3: "invariato" } });
     const r = await scarica("/api/dati-aperti/gtfs.zip");
     expect(sha256(r.body)).toBe(improntaGtfs);
     expect(new AdmZip(r.body).readAsText("stop_times.txt")).not.toContain("09:00:00");
@@ -223,7 +234,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
 
   it("un dato dell'azienda che finisce nei file li fa rifare", async () => {
     await db.execute(sql`UPDATE azienda SET telefono = '+39 071 111111'`);
-    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "pubblicato", netex: "pubblicato" } });
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "pubblicato", netex: "pubblicato", netex_l3: "senza_tariffe" } });
     const nuova = (await file("gtfs")).inLinea!.impronta;
     expect(nuova).not.toBe(improntaGtfs);
     // chi aveva il file di prima riceve quello nuovo
@@ -237,7 +248,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
   it("un NeTEx che non passa lo schema non va in linea: resta l'ultimo buono, col motivo", async () => {
     await db.execute(sql`UPDATE azienda SET netex_fornitore = 'PROVA'`);
     const rotto = async (): Promise<EsitoValidazione> => ({ stato: "non_valido", errori: ["netex.xml:12: element Line: Schemas validity error"] });
-    expect(await preparaDatiAperti({ valida: rotto })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "non_valido" } });
+    expect(await preparaDatiAperti({ valida: rotto })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "non_valido", netex_l3: "senza_tariffe" } });
     const n = await file("netex");
     expect(n.inLinea!.impronta).toBe(improntaNetex);
     expect(n.ultimoTentativo).toMatchObject({ esito: "non_valido", dettagli: { errori: [expect.stringContaining("Schemas validity error")] } });
@@ -245,7 +256,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
     // con gli stessi dati darebbe lo stesso esito: non si riprova da solo
     let chiamate = 0;
     const conta = async (): Promise<EsitoValidazione> => { chiamate++; return { stato: "valido", errori: [] }; };
-    expect(await preparaDatiAperti({ valida: conta })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "invariato" } });
+    expect(await preparaDatiAperti({ valida: conta })).toEqual({ stato: "fatto", file: { gtfs: "invariato", netex: "invariato", netex_l3: "invariato" } });
     expect(chiamate).toBe(0);
     // senza il controllo dello schema non si pubblica; un guasto si riprova dopo un'ora
     const senza = async (): Promise<EsitoValidazione> => ({ stato: "senza_xmllint", errori: [] });
@@ -263,7 +274,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
 
   it("un GTFS con errori non va in linea, e nemmeno il NeTEx che ne nascerebbe", async () => {
     await db.execute(sql`UPDATE azienda SET sito = NULL`);
-    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "gtfs_con_errori", netex: "gtfs_con_errori" } });
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "gtfs_con_errori", netex: "gtfs_con_errori", netex_l3: "gtfs_con_errori" } });
     const g = await file("gtfs");
     expect(g.inLinea!.impronta).toBe(improntaGtfs);
     expect(g.ultimoTentativo!.messaggio).toMatch(/manca il sito dell'azienda/);
@@ -275,7 +286,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
   it("«Prepara adesso» rifà i file; uno alla volta", async () => {
     const r = await admin.post("/api/admin/dati-aperti/prepara");
     expect(r.status, JSON.stringify(r.body)).toBe(200);
-    expect(r.body.preparazione).toEqual({ gtfs: "pubblicato", netex: conXmllint ? "pubblicato" : "senza_xmllint" });
+    expect(r.body.preparazione).toEqual({ gtfs: "pubblicato", netex: conXmllint ? "pubblicato" : "senza_xmllint", netex_l3: "senza_tariffe" });
     expect(r.body.file.find((f: any) => f.tipo === "gtfs").ultimoTentativo.esito).toBe("pubblicato");
     improntaGtfs = (await file("gtfs")).inLinea!.impronta;
     // un altro sta preparando
@@ -288,6 +299,26 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
       await altro.query("SELECT pg_catalog.pg_advisory_unlock(pg_catalog.hashtext('cerbero:dati-aperti'))");
       altro.release();
     }
+  });
+
+  it("con le tariffe esce anche il NeTEx di livello 3, al suo indirizzo; quello di livello 1 non cambia (tappa 6.41)", async () => {
+    const livello1 = (await file("netex")).inLinea!.impronta;
+    expect(await file("netex_l3")).toMatchObject({ inLinea: null, ultimoTentativo: { esito: "senza_tariffe", messaggio: expect.stringMatching(/non ha tariffe/) } });
+    expect((await pubblico.get("/api/dati-aperti/netex-l3.xml.gz")).status).toBe(404);
+    await db.execute(sql`INSERT INTO fasce_km (fascia, km_da, km_a, prezzo) VALUES (1, 0, 50, 1.50)`);
+    expect(await preparaDatiAperti({ valida: valido })).toEqual({ stato: "fatto", file: { gtfs: "pubblicato", netex: "invariato", netex_l3: "pubblicato" } });
+    expect((await file("netex")).inLinea!.impronta).toBe(livello1);
+    const r = await scarica("/api/dati-aperti/netex-l3.xml.gz");
+    expect(r.status).toBe(200);
+    expect(r.headers["content-disposition"]).toBe('attachment; filename="netex-l3.xml.gz"');
+    const xml = gunzipSync(r.body).toString("utf8");
+    expect(xml).toContain("<FareFrame ");
+    expect(xml).toContain("livello 3 (con le tariffe)");
+    expect(xml).toContain("<UicOperatingPeriod ");
+    if (conXmllint) expect(await validaNetex(xml)).toEqual({ stato: "valido", errori: [] });
+    expect((await pubblico.get("/api/dati-aperti")).body.file.map((f: any) => f.tipo)).toEqual(["gtfs", "netex", "netex_l3"]);
+    expect(await file("netex_l3")).toMatchObject({ formato: "NeTEx, profilo italiano livello 3 (con le tariffe)", percorso: "/api/dati-aperti/netex-l3.xml.gz" });
+    improntaGtfs = (await file("gtfs")).inLinea!.impronta;
   });
 
   it("spento: gli indirizzi tacciono; riacceso, i file sono ancora lì", async () => {
@@ -303,8 +334,10 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
       await tx.execute(sql`UPDATE ps_activation_log SET deactivated_at = now() WHERE deactivated_at IS NULL`);
       await tx.execute(sql`UPDATE gtfs_feeds SET is_active = false, is_default = false WHERE is_active`);
     });
-    expect(await giroDatiAperti(muto)).toEqual({ stato: "fatto", file: { gtfs: "senza_versione", netex: "senza_versione" } });
+    expect(await giroDatiAperti(muto)).toEqual({ stato: "fatto", file: { gtfs: "senza_versione", netex: "senza_versione", netex_l3: "senza_versione" } });
     expect(await file("gtfs")).toMatchObject({ inLinea: null, ultimoTentativo: { esito: "senza_versione" } });
     for (const p of ["/api/dati-aperti", "/api/dati-aperti/gtfs.zip", "/api/dati-aperti/netex.xml.gz"]) expect((await pubblico.get(p)).status, p).toBe(404);
+    /* il livello 3 come gli altri (dall'indirizzo si contano le richieste: qui basta lo stato) */
+    expect(await file("netex_l3")).toMatchObject({ inLinea: null, ultimoTentativo: { esito: "senza_versione" } });
   });
 });
