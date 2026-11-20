@@ -328,6 +328,8 @@ export interface VoceRiepilogo {
   percorso: string; direzione: string;
   /** il primo e l'ultimo punto del percorso */
   da: string; a: string;
+  /** quanti punti tariffari ha il percorso: contano anche dove non c'è una proposta */
+  punti: number;
   stato: StatoAbbinamento;
   confronto: Confronto | null;
   numeri: Riassunto | null;
@@ -346,7 +348,7 @@ export function riepilogoLinee(linee: readonly DettaglioLinea[], fasce: readonly
       const primo = p.punti[0], ultimo = p.punti[p.punti.length - 1];
       const base = {
         linea: l.linea, abbinata: l.abbinata, percorso: p.percorso, direzione: p.direzione,
-        da: primo?.nome ?? primo?.codice ?? "", a: ultimo?.nome ?? ultimo?.codice ?? "",
+        da: primo?.nome ?? primo?.codice ?? "", a: ultimo?.nome ?? ultimo?.codice ?? "", punti: p.punti.length,
       };
       const { scelta, salvata } = sceltaIniziale(p);
       const aziendale = scelta ? l.percorsiAzienda.find((x) => x.routeId === scelta.routeId && x.variantId === scelta.variantId) : undefined;
@@ -375,8 +377,10 @@ export function totaliRiepilogo(voci: readonly VoceRiepilogo[]): TotaliRiepilogo
   };
   for (const v of voci) {
     if (v.stato === "salvato") t.salvati++; else if (v.stato === "proposta") t.proposte++; else t.senza++;
+    /* i punti di un percorso senza proposta sono tutti ancora da mettere su una fermata */
+    t.punti += v.punti;
     if (!v.numeri) continue;
-    t.punti += v.numeri.punti; t.abbinati += v.numeri.abbinati;
+    t.abbinati += v.numeri.abbinati;
     t.coppie += v.numeri.coppie; t.cambiano += v.numeri.cambiano; t.spente += v.numeri.spente; t.mancano += v.numeri.mancano;
     if (v.stato === "salvato") t.cambianoNeiSalvati += v.numeri.cambiano;
   }

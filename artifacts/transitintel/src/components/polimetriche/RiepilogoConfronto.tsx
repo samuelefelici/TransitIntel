@@ -171,7 +171,7 @@ export function RiepilogoConfronto({ importId, fasce, onIndietro, onApri }: {
                     <span className="ml-1.5 text-[10px] text-emerald-400/50 whitespace-nowrap">percorso {v.percorso} · direzione {v.direzione}</span>
                   </td>
                   <td className="px-3 py-1.5"><span className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${COLORE_STATO[v.stato]}`}>{ETICHETTE_STATO[v.stato]}</span></td>
-                  <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">{v.numeri ? `${v.numeri.abbinati} su ${v.numeri.punti}` : "—"}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums whitespace-nowrap">{v.numeri?.abbinati ?? 0} su {v.punti}</td>
                   <td className={`px-3 py-1.5 text-right tabular-nums whitespace-nowrap ${v.numeri && v.numeri.scartoMassimo >= 2 ? "text-amber-300" : ""}`}>{v.numeri ? `${km1(v.numeri.scartoMassimo)} km` : "—"}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{v.numeri?.coppie ?? "—"}</td>
                   <td className={`px-3 py-1.5 text-right tabular-nums font-semibold ${v.numeri?.cambiano ? "text-amber-300" : "text-emerald-200/70"}`}>{v.numeri?.cambiano ?? "—"}</td>

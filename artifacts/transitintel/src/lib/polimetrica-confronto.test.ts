@@ -228,19 +228,20 @@ describe("il riepilogo di tutte le linee", () => {
   const voci = riepilogoLinee(LINEE, FASCE);
 
   it("una voce per percorso: salvato, proposto o senza proposta, con gli stessi numeri del confronto di una linea", () => {
-    expect(voci.map((v) => [v.linea, v.abbinata, v.percorso, v.direzione, v.da, v.a, v.stato, v.numeri?.abbinati ?? null, v.numeri?.coppie ?? null, v.numeri?.cambiano ?? null])).toEqual([
-      ["D", "D", "0", "1", "Borgo Alto", "Lago", "salvato", 4, 6, 2],
-      ["D", "D", "0", "2", "Fornace", "Borgo Alto", "proposta", 2, 1, 1],
-      ["V9", "V", "0", "1", "Lago", "Lago", "senza", null, null, null],
+    expect(voci.map((v) => [v.linea, v.abbinata, v.percorso, v.direzione, v.da, v.a, v.stato, v.punti, v.numeri?.abbinati ?? null, v.numeri?.coppie ?? null, v.numeri?.cambiano ?? null])).toEqual([
+      ["D", "D", "0", "1", "Borgo Alto", "Lago", "salvato", 5, 4, 6, 2],
+      ["D", "D", "0", "2", "Fornace", "Borgo Alto", "proposta", 2, 2, 1, 1],
+      ["V9", "V", "0", "1", "Lago", "Lago", "senza", 1, null, null, null],
     ]);
     /* il ritorno: 12,5 km coi km dell'azienda, fascia 3; nella bigliettazione era 2 */
     expect(voci[1]!.confronto!.coppie[0]).toMatchObject({ kmNuovo: 12.5, fasciaUfficiale: 2, fasciaNuova: 3, esito: "cambia" });
   });
 
   it("i totali, e a parte le differenze dei percorsi già salvati", () => {
+    /* il punto del percorso senza proposta è nel totale dei punti: resta da mettere su una fermata */
     expect(totaliRiepilogo(voci)).toEqual({
       linee: 2, percorsi: 3, salvati: 1, proposte: 1, senza: 1,
-      punti: 7, abbinati: 6, coppie: 7, cambiano: 3, cambianoNeiSalvati: 2, spente: 1, mancano: 0,
+      punti: 8, abbinati: 6, coppie: 7, cambiano: 3, cambianoNeiSalvati: 2, spente: 1, mancano: 0,
     });
     expect(totaliRiepilogo([])).toMatchObject({ linee: 0, percorsi: 0, cambiano: 0 });
   });
