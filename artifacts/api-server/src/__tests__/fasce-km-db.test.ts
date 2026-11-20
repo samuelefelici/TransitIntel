@@ -12,8 +12,10 @@ import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import adminRouter from "../routes/admin";
 import faresRouter from "../routes/fares";
+import polimetricheRouter from "../routes/fares-polimetriche";
 import { fasceKm, fasciaPerDistanza, impostaFasce } from "../lib/fasce-km";
 import { dimenticaFasce } from "../lib/fasce-km-store";
+import { decidi } from "../lib/permessi-rotte";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import { FASCE_DI_PROVA } from "./helpers/fasce-di-prova";
 
@@ -21,6 +23,9 @@ const ADMIN = utenteDiProva("e6800000-0000-4000-8000-000000000001", [], "admin")
 const admin = request(appDiProva(adminRouter, ADMIN));
 const utente = request(appDiProva(adminRouter, utenteDiProva("e6800000-0000-4000-8000-000000000002", ["fares"])));
 const tariffe = request(appDiProva(faresRouter, ADMIN));
+/* chi lavora alle tariffe senza essere amministratore (tappa 6.33) */
+const TARIFFISTA = utenteDiProva("e6800000-0000-4000-8000-000000000003", ["fares"]);
+const polimetriche = request(appDiProva(polimetricheRouter, TARIFFISTA));
 const F = "e6800000-0000-4000-8000-0000000000f1";
 
 const TRE = [
@@ -65,6 +70,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le fasce chilometriche, sul dat
     const r = await admin.get("/api/admin/fasce-km");
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body).toEqual({ fasce: [], massimoFasce: 60 });
+    expect((await polimetriche.get("/api/fares/polimetriche/fasce")).body).toEqual({ fasce: [] });
   });
 
   it("senza fasce, una rotta delle tariffe che ne ha bisogno risponde 409 e dice dove scriverle", async () => {
@@ -95,6 +101,18 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le fasce chilometriche, sul dat
     expect((await admin.get("/api/admin/fasce-km")).body.fasce).toEqual(TRE);
     expect((await db.execute<any>(sql`SELECT fascia, km_da::float8 AS da, km_a::float8 AS a, prezzo::float8 AS prezzo FROM fasce_km ORDER BY fascia`)).rows)
       .toEqual(TRE.map((f) => ({ fascia: f.fascia, da: f.kmFrom, a: f.kmTo, prezzo: f.price })));
+  });
+
+  it("chi lavora alle polimetriche le legge senza essere amministratore, e non le scrive", async () => {
+    const r = await polimetriche.get("/api/fares/polimetriche/fasce");
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body).toEqual({ fasce: TRE });
+    const chi = { admin: false, diritti: TARIFFISTA.diritti };
+    expect(decidi(chi, "GET", "/fares/polimetriche/fasce")).toEqual({ passa: true });
+    expect(decidi(chi, "PUT", "/admin/fasce-km").passa).toBe(false);
+    /* chi non ha le tariffe non le legge nemmeno da qui */
+    const altro = utenteDiProva("e6800000-0000-4000-8000-000000000004", ["roster"]);
+    expect(decidi({ admin: false, diritti: altro.diritti }, "GET", "/fares/polimetriche/fasce").passa).toBe(false);
   });
 
   it("le rotte delle tariffe calcolano con le fasce salvate: un titolo extraurbano per fascia, col suo prezzo", async () => {

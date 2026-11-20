@@ -1541,10 +1541,10 @@ l'ottimizzazione dei mezzi dalla 6.23. Vale per gli import nuovi; quelli già
 fatti restano come sono: per toglierne le urbane, si rifà l'import dello
 stesso GTFS.
 
-**Resta da decidere** (non cambiato qui): la pagina Polimetriche divide i
-percorsi in tratte fisse da 6 km e usa il numero di tratte come fascia, mentre
-le fasce chilometriche dell'azienda (6.8) sono larghe 6 km fino a 42 km e poi
-8 e 10. Oltre i 42 km le due non coincidono.
+**Deciso nella 6.33** (più sotto): la pagina Polimetriche divideva i percorsi
+in tratte fisse da 6 km e usava il numero di tratte come fascia, mentre le
+fasce chilometriche dell'azienda (6.8) sono larghe 6 km fino a 42 km e poi 8 e
+10. Ora tratte e matrice vengono dalle fasce dell'azienda.
 
 **Dopo il deploy**: niente da fare. Nessuna variabile e nessuna Watch Path
 nuova (`azienda.ts` è già fra quelle del lavoratore; `fares-polimetriche.ts`
@@ -1705,6 +1705,79 @@ scritta a mano torna nel codice (nella web c'era già dalla 6.22).
 nuova (`geo-utils.ts` è già fra quelle del lavoratore).
 
 **Rollback**: immagine precedente. La colonna resta e non dà fastidio.
+
+### Le polimetriche dalle fasce dell'azienda (tappa 6.33)
+
+La pagina **Polimetriche** aveva i 6 km scritti nel codice, in due punti:
+divideva ogni percorso in tratte da 6 km, e nella matrice a gradoni scriveva,
+fra due nodi, il **numero di tratte attraversate** contate dal capolinea. La
+bigliettazione regionale lavora in un altro modo: ogni nodo ha un punto
+tariffario con il suo km progressivo, la distanza fra due nodi è la differenza
+dei due km, e la tariffa è la **fascia di quella distanza**. Contando le
+tratte, due fermate a 2 km l'una dall'altra ma a cavallo di un multiplo di 6
+pagavano due tratte invece di una; e oltre i 42 km, dove le fasce dell'azienda
+sono larghe 8 e 10 km, il conto saliva ancora (49 km dal capolinea: 9 tratte
+contro la fascia 8).
+
+Da questo rilascio:
+- **la cella della matrice è la fascia dei km fra i punti tariffari dei due
+  nodi**, letta dalle fasce chilometriche dell'azienda (Amministrazione →
+  Azienda, «Fasce chilometriche»). 6 km esatti stanno nella fascia che finisce
+  a 6, come nella bigliettazione;
+- **ogni nodo ha un punto tariffario**: la fermata da cui si misurano i km
+  verso gli altri nodi. È la prima fermata della tratta, finché non se ne
+  sceglie un'altra con la puntina accanto al nome della fermata; un secondo
+  clic la toglie. Nel salvataggio la fermata scelta porta il segno `punto`
+  (dentro `polim_polimetriche.stops`, che è jsonb: nessuna migrazione);
+- **le tratte fatte dal programma seguono le fasce**: una tratta per ogni
+  fascia contata dal capolinea («Rigenera dalle fasce»). Con le fasce di oggi
+  sono ancora da 6 km fino a 42 km; oltre diventano da 8 e da 10. Il numero e
+  il colore di una tratta dicono in che fascia è dal capolinea;
+- la matrice si vede anche **nell'area di lavoro**, sotto l'elenco delle
+  tratte, e cambia mentre si spostano confini e punti. La stampa «Convalida &
+  Esporta PDF» porta in testa le fasce usate e segna con ◆ il punto di ogni
+  nodo;
+- le fasce le legge chi ha l'area Tariffe da `GET /api/fares/polimetriche/fasce`
+  (sola lettura; scriverle resta dell'amministratore);
+- **senza fasce** la pagina lo dice, non divide i percorsi e non stampa:
+  niente numeri inventati.
+
+**Le polimetriche già salvate** tengono i loro confini e i nomi dei nodi; alla
+riapertura e in stampa il numero delle tratte e la matrice si ricalcolano con
+la regola nuova, col punto sulla prima fermata di ogni tratta.
+
+**Che cosa cambia nei numeri.** Sulla copia dei dati veri (64 linee
+extraurbane, 686 percorsi, 27 più lunghi di 42 km), con le tratte fatte dal
+programma:
+- le tratte passano da 2.600 a 2.597: cambiano solo 3 percorsi lunghi;
+- fra le coppie di fermate di nodi diversi fino a 42 km (236.757), il 70% ha
+  la stessa fascia di prima, il 30% una in meno, 39 coppie una in più; oltre i
+  42 km (845 coppie) il 68% è uguale e il 32% scende.
+
+**Quanto è fedele dipende da quanto sono fitti i nodi.** Rispetto alla fascia
+dei km veri fra le due fermate (312.363 coppie):
+
+| Nodi | Nodi per percorso | Stessa fascia | Sopra | Sotto |
+|---|---|---|---|---|
+| contando le tratte da 6 km (prima) | 3,8 | 60,5% | 39,5% | 0% |
+| una tratta per fascia (ora, come li fa il programma) | 3,8 | 65,8% | 25,4% | 8,8% |
+| un nodo ogni 3 km | 6,7 | 84,4% | 10,1% | 5,5% |
+| un nodo ogni 2 km | 9,5 | 90,2% | 6,1% | 3,7% |
+
+Il conto di prima non stava mai sotto i km veri, ma stava sopra in quattro
+coppie su dieci. Quello nuovo, con nodi lunghi una fascia intera, sta più
+vicino ma in 9 coppie su 100 dà una fascia in meno: due fermate lontane fra
+loro i cui nodi hanno i punti vicini. La polimetrica della Regione ha un punto
+tariffario ogni 2 km circa: per seguirla si divide il percorso in **un nodo
+per località** («dividi qui» fra due fermate) e si mette il punto sulla fermata
+giusta.
+
+**Dopo il deploy**: niente da fare. Nessuna migrazione, variabile o Watch Path
+nuova (`fares-polimetriche.ts` non entra nel lavoratore). Chi ha polimetriche
+salvate le riapre e controlla la matrice: i numeri possono essere scesi.
+
+**Rollback**: immagine precedente. Il segno `punto` nei salvataggi nuovi viene
+ignorato dalla versione di prima.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
@@ -2021,7 +2094,7 @@ per voce, e porta alla sezione dove si scrivono
 | Nome, città, centro delle mappe | Azienda → Identità, Territorio | pagine e stampe senza nome, mappe sull'Italia e indirizzi del pianificatore cercati prima attorno al centro d'Italia, GTFS con l'agenzia «azienda» |
 | Reti urbane e regole delle linee | Azienda → Reti e linee | tutte le linee extraurbane: tariffe urbane e riposi del Roster sbagliati (va bene solo per un servizio tutto extraurbano) |
 | Depositi | Azienda → Depositi | Anagrafica e Roster senza depositi |
-| Fasce chilometriche | Azienda → Fasce chilometriche | tariffe extraurbane senza prezzi |
+| Fasce chilometriche | Azienda → Fasce chilometriche | tariffe extraurbane senza prezzi; la pagina Polimetriche non divide i percorsi e non calcola la matrice |
 | Catalogo dei titoli | Azienda → Catalogo dei titoli | un feed nuovo delle tariffe senza biglietti né abbonamenti |
 | Categorie e supporti | Azienda → Tariffe: elenchi di partenza | un feed nuovo senza categorie di passeggero o senza supporti |
 | Provincia ISTAT | Azienda → Territorio | l'import del pendolarismo si ferma |

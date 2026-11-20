@@ -20,6 +20,7 @@
  *   GET    /api/fares/polimetriche/saved?importId=              — polimetriche salvate
  *   POST   /api/fares/polimetriche/saved                        — crea/aggiorna polimetrica
  *   DELETE /api/fares/polimetriche/saved/:id                    — elimina polimetrica
+ *   GET    /api/fares/polimetriche/fasce                        — le fasce chilometriche dell'azienda (sola lettura)
  */
 import { Router, type IRouter } from "express";
 import multer from "multer";
@@ -28,6 +29,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { haversineKm } from "../lib/geo-utils";
 import { servizioDellaLinea } from "../lib/reti-linee";
+import { fasceDalDatabase } from "../lib/fasce-km-store";
 import { parseCsv } from "./gtfs-helpers";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { legaContesto } from "../lib/contesto-http";
@@ -697,6 +699,22 @@ router.delete("/fares/polimetriche/saved/:id", async (req, res): Promise<void> =
   } catch (e: any) {
     console.error("[polimetriche] delete saved", e);
     res.status(500).json({ error: e?.message || "Errore" });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────
+ *  GET /api/fares/polimetriche/fasce
+ *
+ *  Le fasce chilometriche dell'azienda, per chi lavora alle polimetriche
+ *  (tappa 6.33): la pagina ci calcola le tratte e la fascia fra due nodi.
+ *  Le scrive solo l'amministratore (PUT /api/admin/fasce-km); qui si leggono.
+ * ───────────────────────────────────────────────────────────── */
+router.get("/fares/polimetriche/fasce", async (_req, res): Promise<void> => {
+  try {
+    res.json({ fasce: await fasceDalDatabase() });
+  } catch (e) {
+    console.error("[polimetriche] fasce", e);
+    res.status(500).json({ error: "Fasce chilometriche non leggibili" });
   }
 });
 
