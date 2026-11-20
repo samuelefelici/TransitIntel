@@ -1779,6 +1779,99 @@ salvate le riapre e controlla la matrice: i numeri possono essere scesi.
 **Rollback**: immagine precedente. Il segno `punto` nei salvataggi nuovi viene
 ignorato dalla versione di prima.
 
+### La polimetrica della bigliettazione, per confrontarla (tappa 6.34a)
+
+La polimetrica che sta nel sistema di bigliettazione invecchia: le linee
+cambiano e nessuno la riallinea. Il lavoro è in tre passi: l'azienda genera la
+sua nella pagina Polimetriche (6.33), la confronta con quella della
+bigliettazione, e chi tiene la bigliettazione la riallinea a mano. Questo
+rilascio porta il primo pezzo del confronto: **caricare la polimetrica della
+bigliettazione e abbinare le sue linee a quelle dell'azienda**. Il confronto
+punto per punto, con l'elenco delle differenze da ribattere, è il rilascio
+dopo (6.34b).
+
+**Dove**: pagina Polimetriche, aperto un import, pulsante «Confronto con la
+bigliettazione».
+
+**I due file.** La polimetrica entra da due CSV in un formato che non dipende
+dal sistema da cui escono. Con l'intestazione; colonne in qualunque ordine,
+quelle in più si ignorano; separatore virgola o punto e virgola; decimali col
+punto o con la virgola. Solo rete e tariffe: nessun dato di persone.
+
+| File | Colonne | Che cosa c'è |
+|---|---|---|
+| punti tariffari | `linea, percorso, direzione, ordine, codice, nome, nodo, km` | una riga per punto tariffario di ogni linea, nell'ordine, col km progressivo. `nodo` è il nodo tariffario a cui la località fa capo (vuoto: è lei stessa). Un punto senza km resta fuori |
+| polimetrica | `linea, percorso, direzione, da, a, km, tariffario, fascia, forzata` | una riga per coppia di nodi. `forzata` vale vero se la riga è scritta a mano. `percorso` e `direzione` vuoti: la riga vale per tutti |
+
+Un file che non va ferma il caricamento e dice la riga e il motivo; o entrano
+tutti e due o resta quello che c'era. Un caricamento nuovo **sostituisce** il
+vecchio e **lascia gli abbinamenti** delle linee.
+
+Per Conerobus i due file escono dal database della bigliettazione regionale
+con queste due query (le colonne sono quelle degli export del 20/11/2026; le
+query non sono state provate sul database):
+
+```sql
+USE AtmaTelemaco;
+
+-- punti tariffari
+SELECT f.Codice_linea AS linea, f.Identificativo AS percorso, f.Direzione AS direzione,
+       f.Num_fermata AS ordine, f.localita AS codice, l.Nome_loc AS nome,
+       CASE WHEN l.Nodo_Riferimento = f.localita THEN NULL ELSE l.Nodo_Riferimento END AS nodo,
+       f.Km_Progressivo AS km
+  FROM dbo.TM_WFermate f
+  LEFT JOIN dbo.TM_WLocalita l ON l.Cod = f.localita
+ WHERE f.Km_Progressivo IS NOT NULL
+ ORDER BY f.Codice_linea, f.Identificativo, f.Direzione, f.Num_fermata;
+
+-- polimetrica
+SELECT linea, percorso, direzione, locPartenza AS da, locDestinazione AS a, KmTratta AS km,
+       CodTarBase AS tariffario, RigaTarBase AS fascia, ForzaturaUtente AS forzata
+  FROM dbo.PercorsiGlobaleTeste
+ ORDER BY linea, percorso, direzione, locPartenza, locDestinazione;
+```
+
+Si esportano in CSV con l'intestazione, e i valori vuoti come vuoti (non la
+parola `NULL`).
+
+**L'abbinamento delle linee.** Ogni linea della bigliettazione è da abbinare
+a una linea dell'import, oppure esclusa dal confronto (non è più dell'azienda,
+o è un servizio speciale). Cerbero propone:
+- la linea con **lo stesso codice**;
+- altrimenti la linea dove si **ritrovano i punti tariffari**: per codice (la
+  località ha lo stesso numero di una fermata) o per nome (tutte le parole del
+  nome del punto nel nome di una fermata). La propone se ci si ritrovano
+  almeno 7 punti su 10, e almeno 2 più che in ogni altra linea.
+
+Le proposte si accettano tutte insieme o una per una; le altre linee si
+scelgono dalla tendina, che mette in testa le linee dove si ritrovano più
+punti. In fondo alla pagina restano le linee dell'import a cui non è abbinata
+nessuna linea della bigliettazione: sono quelle da creare là.
+
+Sulla copia dei dati veri, con gli export del 20/11:
+- 144 linee, 2.457 punti tariffari e 16.857 righe, caricati in circa un
+  secondo;
+- 49 linee proposte (17 per lo stesso codice, 32 per i punti ritrovati); altre
+  76 hanno almeno una linea candidata in testa alla tendina; 19 non hanno né
+  proposta né candidate (quasi tutte non hanno punti tariffari, solo righe);
+- accettate le 49 proposte, 28 delle 64 linee extraurbane dell'import hanno la
+  loro linea nella bigliettazione e 36 no.
+
+Migrazione `0055`: quattro tabelle (`polim_ufficiale_punti`,
+`polim_ufficiale_righe`, `polim_ufficiale_caricamento`,
+`polim_abbinamenti_linee`), tutte nel registro delle modifiche; punti e righe
+sempre come riepilogo.
+
+**Chi**: legge chi ha l'area Tariffe; carica, toglie e abbina chi può
+scriverla.
+
+**Dopo il deploy**: caricare i due file dalla pagina e abbinare le linee.
+Nessuna variabile e nessuna Watch Path nuova (le rotte nuove non entrano nel
+lavoratore).
+
+**Rollback**: immagine precedente. Le quattro tabelle restano e non danno
+fastidio.
+
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
 Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito
