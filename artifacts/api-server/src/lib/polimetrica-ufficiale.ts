@@ -261,3 +261,154 @@ export function candidateDellaLinea(lineaUfficiale: string, punti: readonly Punt
   }
   return { candidate, proposta: null, motivo: null };
 }
+
+/* ── I punti tariffari sulle fermate (tappa 6.34b) ──────────────────────────
+ * Un percorso di una linea della bigliettazione corrisponde a un percorso
+ * dell'azienda, e ogni suo punto tariffario a una fermata di quel percorso.
+ * Qui la proposta: i punti si ritrovano nell'ordine, per codice e poi per
+ * nome. Chi lavora alle tariffe la conferma o la corregge. */
+
+/** AB: le fermate nell'ordine del percorso; BA: al contrario, coi km contati dall'altro capo. */
+export type Verso = "AB" | "BA";
+
+/** Una fermata di un percorso dell'azienda, col suo km dal capolinea. */
+export interface FermataPercorso { stopId: string; nome: string; km: number }
+
+/** Come si è ritrovato un punto: stesso codice della fermata, o stesso nome. */
+export type Come = "codice" | "nome";
+
+/** Un punto della bigliettazione e la fermata che gli corrisponde (null: nessuna). */
+export interface PuntoAbbinato { ordine: number; fermata: string | null; come: Come | null }
+
+/** Le fermate di un percorso lette nel verso scelto. */
+export function fermateNelVerso(fermate: readonly FermataPercorso[], verso: Verso): FermataPercorso[] {
+  if (verso === "AB") return fermate.map((f) => ({ ...f }));
+  const totale = fermate.length ? fermate[fermate.length - 1]!.km : 0;
+  return [...fermate].reverse().map((f) => ({ ...f, km: Math.round((totale - f.km) * 1000) / 1000 }));
+}
+
+/**
+ * Fra le coppie (punto, fermata) possibili, la catena più lunga in cui
+ * crescono tutti e due: i punti si ritrovano nell'ordine in cui il bus li
+ * incontra, anche se un codice compare due volte nel percorso.
+ */
+function catenaPiuLunga(coppie: readonly (readonly [number, number])[]): [number, number][] {
+  const ord = [...coppie].sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const lunga = ord.map(() => 1), prima = ord.map(() => -1);
+  let fine = -1;
+  for (let i = 0; i < ord.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (ord[j]![0] < ord[i]![0] && ord[j]![1] < ord[i]![1] && lunga[j]! + 1 > lunga[i]!) { lunga[i] = lunga[j]! + 1; prima[i] = j; }
+    }
+    if (fine < 0 || lunga[i]! > lunga[fine]!) fine = i;
+  }
+  const catena: [number, number][] = [];
+  for (let i = fine; i >= 0; i = prima[i]!) catena.unshift([ord[i]![0], ord[i]![1]]);
+  return catena;
+}
+
+/**
+ * Abbina i punti tariffari di un percorso della bigliettazione alle fermate
+ * di un percorso dell'azienda (già nel verso giusto), nell'ordine:
+ * prima per codice; poi, fra un punto abbinato e il successivo, per nome
+ * (tutte le parole del nome del punto nel nome della fermata). Se più
+ * fermate hanno quel nome (una località ne ha tante) e il punto ha il suo km,
+ * vale quella più vicina a dove il punto dovrebbe stare, contando i km della
+ * bigliettazione dal punto abbinato accanto; senza km, la prima.
+ */
+export function abbinaPunti(
+  punti: readonly { ordine: number; codice: string; nome: string | null; km?: number }[], fermate: readonly FermataPercorso[],
+): PuntoAbbinato[] {
+  const codici = fermate.map((f) => normaCodice(f.stopId));
+  const coppie: [number, number][] = [];
+  punti.forEach((p, i) => { const c = normaCodice(p.codice); codici.forEach((x, k) => { if (x === c) coppie.push([i, k]); }); });
+  const esito = new Map<number, { k: number; come: Come }>();
+  for (const [i, k] of catenaPiuLunga(coppie)) esito.set(i, { k, come: "codice" });
+  const usate = new Set([...esito.values()].map((e) => e.k));
+  const nomi = fermate.map((f) => new Set(paroleDelNome(f.nome)));
+  punti.forEach((p, i) => {
+    if (esito.has(i)) return;
+    const parole = paroleDelNome(p.nome);
+    if (!parole.length) return;
+    /* fra la fermata dell'ultimo punto abbinato prima e quella del primo abbinato dopo */
+    let da = -1, a = fermate.length;
+    /* dove il punto dovrebbe stare: i suoi km contati dal punto abbinato prima, o da quello dopo */
+    let atteso: number | null = null;
+    for (let j = i - 1; j >= 0; j--) {
+      const e = esito.get(j);
+      if (e) { da = e.k; if (p.km != null && punti[j]!.km != null) atteso = fermate[e.k]!.km + (p.km - punti[j]!.km!); break; }
+    }
+    for (let j = i + 1; j < punti.length; j++) {
+      const e = esito.get(j);
+      if (e) { a = e.k; if (atteso == null && p.km != null && punti[j]!.km != null) atteso = fermate[e.k]!.km - (punti[j]!.km! - p.km); break; }
+    }
+    let scelta = -1;
+    for (let k = da + 1; k < a; k++) {
+      if (usate.has(k) || !parole.every((w) => nomi[k]!.has(w))) continue;
+      if (atteso == null) { scelta = k; break; }
+      if (scelta < 0 || Math.abs(fermate[k]!.km - atteso) < Math.abs(fermate[scelta]!.km - atteso)) scelta = k;
+    }
+    if (scelta >= 0) { esito.set(i, { k: scelta, come: "nome" }); usate.add(scelta); }
+  });
+  return punti.map((p, i) => {
+    const e = esito.get(i);
+    return { ordine: p.ordine, fermata: e ? fermate[e.k]!.stopId : null, come: e?.come ?? null };
+  });
+}
+
+/** Un percorso dell'azienda: la linea dei GTFS, la variante, quante corse lo fanno e le fermate nell'ordine AB. */
+export interface PercorsoAzienda { routeId: string; variantId: string; corse: number; fermate: readonly FermataPercorso[] }
+
+/** Un percorso dell'azienda candidato per un percorso della bigliettazione, con i punti che ci si ritrovano. */
+export interface PercorsoCandidato {
+  routeId: string; variantId: string; verso: Verso; trovati: number;
+  /** di quanti km, in media, i punti ritrovati si scostano dai km della bigliettazione (contati dal primo punto ritrovato) */
+  scarto: number;
+  punti: PuntoAbbinato[];
+}
+
+/** Lo scarto medio in km fra i punti ritrovati e le loro fermate, contando tutti e due dal primo punto ritrovato. */
+function scartoMedio(punti: readonly { ordine: number; km?: number }[], abbinati: readonly PuntoAbbinato[], fermate: readonly FermataPercorso[]): number {
+  const scarti: number[] = [];
+  let primo: { ufficiale: number; fermata: number } | null = null, dopo = -1;
+  for (const [i, a] of abbinati.entries()) {
+    const km = punti[i]?.km;
+    if (a.fermata == null || km == null) continue;
+    const k = fermate.findIndex((f, n) => n > dopo && f.stopId === a.fermata);
+    if (k < 0) continue;
+    dopo = k;
+    primo ??= { ufficiale: km, fermata: fermate[k]!.km };
+    scarti.push(Math.abs((fermate[k]!.km - primo.fermata) - (km - primo.ufficiale)));
+  }
+  return scarti.length ? Math.round((scarti.reduce((x, y) => x + y, 0) / scarti.length) * 1000) / 1000 : 0;
+}
+
+/**
+ * I percorsi dell'azienda dove si ritrovano i punti di un percorso della
+ * bigliettazione, nei due versi, il migliore per primo:
+ * - prima i percorsi nel loro verso (AB) che ritrovano quasi tutti i punti
+ *   del migliore (almeno 8 su 10): un percorso che va davvero in quella
+ *   direzione vale più dell'altro verso letto al contrario, che ha i codici
+ *   delle fermate di fronte ma non la stessa strada;
+ * - poi chi ritrova più punti; a parità chi ha i km più vicini a quelli
+ *   della bigliettazione, poi chi fa più corse.
+ * Al più `quanti`; quelli senza nessun punto restano fuori.
+ */
+export function percorsiCandidati(
+  punti: readonly { ordine: number; codice: string; nome: string | null; km?: number }[], percorsi: readonly PercorsoAzienda[], quanti = 5,
+): PercorsoCandidato[] {
+  const tutti: (PercorsoCandidato & { corse: number })[] = [];
+  for (const p of percorsi) {
+    for (const verso of ["AB", "BA"] as const) {
+      const fermate = fermateNelVerso(p.fermate, verso);
+      const abbinati = abbinaPunti(punti, fermate);
+      const trovati = abbinati.filter((x) => x.fermata != null).length;
+      if (trovati > 0) tutti.push({ routeId: p.routeId, variantId: p.variantId, verso, trovati, scarto: scartoMedio(punti, abbinati, fermate), punti: abbinati, corse: p.corse });
+    }
+  }
+  const soglia = Math.ceil(Math.max(0, ...tutti.map((c) => c.trovati)) * 0.8);
+  const nelSuoVerso = (c: PercorsoCandidato) => (c.verso === "AB" && c.trovati >= soglia ? 0 : 1);
+  tutti.sort((x, y) => nelSuoVerso(x) - nelSuoVerso(y) || y.trovati - x.trovati || x.scarto - y.scarto || y.corse - x.corse
+    || x.routeId.localeCompare(y.routeId) || x.variantId.localeCompare(y.variantId) || x.verso.localeCompare(y.verso));
+  return tutti.slice(0, quanti).map(({ corse: _corse, ...c }) => c);
+}

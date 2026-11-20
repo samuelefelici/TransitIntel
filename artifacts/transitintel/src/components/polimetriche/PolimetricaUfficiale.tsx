@@ -4,16 +4,18 @@
  * La polimetrica che sta nel sistema di bigliettazione invecchia: qui la si
  * carica (due CSV) e si dice a quale linea dell'import corrisponde ogni sua
  * linea. Cerbero propone, chi lavora alle tariffe conferma, cambia o esclude.
- * Il confronto punto per punto viene dopo.
+ * Di una linea abbinata si apre il confronto punto per punto (ConfrontoLinea).
  *
  * API: /api/fares/polimetriche/ufficiale (routes/fares-polimetriche-ufficiale.ts).
  * I conti in lib/polimetrica-ufficiale.ts.
  */
 import React from "react";
-import { Check, ChevronDown, FileText, Loader2, Search, Trash2, Upload, Wand2 } from "lucide-react";
+import { Check, ChevronDown, FileText, GitCompareArrows, Loader2, Search, Trash2, Upload, Wand2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAzienda } from "@/hooks/use-azienda";
 import { useToast } from "@/hooks/use-toast";
+import type { FasciaKm } from "@/lib/fasce-km";
+import { ConfrontoLinea, type NodiDaApplicare } from "./ConfrontoLinea";
 import {
   conDecisioni, conteggi, decisioniDalleProposte, ETICHETTE_FILTRO, filtrate, riassuntoCaricamento, senzaCorrispondenza,
   statoDellaLinea, testoProposta, vociPerLinea,
@@ -32,7 +34,13 @@ const COLONNE = [
     "Una riga per coppia di nodi. «forzata» vale vero se la riga è stata scritta a mano invece che calcolata dai km."],
 ] as const;
 
-export function PolimetricaUfficiale({ importId }: { importId: string }) {
+export function PolimetricaUfficiale({ importId, fasce, onUsaNodi }: {
+  importId: string;
+  /** le fasce chilometriche dell'azienda: servono al confronto per la fascia nuova */
+  fasce: readonly FasciaKm[];
+  /** porta nell'area di lavoro di un percorso i nodi fatti coi punti della bigliettazione */
+  onUsaNodi: (n: NodiDaApplicare) => void;
+}) {
   const { toast } = useToast();
   const azienda = useAzienda();
   const sistema = (azienda.bigliettazioneSistema ?? "").trim();
@@ -46,6 +54,7 @@ export function PolimetricaUfficiale({ importId }: { importId: string }) {
   const [svuotate, setSvuotate] = React.useState(0); // cambia dopo un caricamento: le due caselle dei file tornano vuote
   const [caricando, setCaricando] = React.useState(false);
   const [salvando, setSalvando] = React.useState(false);
+  const [lineaAperta, setLineaAperta] = React.useState<string | null>(null); // la linea di cui si guarda il confronto
 
   const leggi = React.useCallback(async () => {
     try {
@@ -105,6 +114,9 @@ export function PolimetricaUfficiale({ importId }: { importId: string }) {
     }
   };
 
+  if (lineaAperta) {
+    return <ConfrontoLinea importId={importId} linea={lineaAperta} fasce={fasce} onUsaNodi={onUsaNodi} onIndietro={() => setLineaAperta(null)} />;
+  }
   if (errore) return <p role="alert" className="p-6 text-sm text-red-300">{errore}</p>;
   if (!stato) return <div className="h-full flex items-center justify-center text-emerald-400/50"><Loader2 className="w-6 h-6 animate-spin" /></div>;
 
@@ -200,7 +212,7 @@ export function PolimetricaUfficiale({ importId }: { importId: string }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-emerald-900/30">
-                {visibili.map((l) => <RigaLinea key={l.linea} linea={l} stato={stato} onDecidi={decidi} />)}
+                {visibili.map((l) => <RigaLinea key={l.linea} linea={l} stato={stato} onDecidi={decidi} onConfronta={setLineaAperta} />)}
                 {visibili.length === 0 && (
                   <tr><td colSpan={5} className="px-3 py-4 text-emerald-400/50 italic">Nessuna linea per questo filtro.</td></tr>
                 )}
@@ -240,7 +252,9 @@ function SceltaFile({ id, etichetta, file, onFile }: { id: string; etichetta: st
   );
 }
 
-function RigaLinea({ linea: l, stato, onDecidi }: { linea: LineaUfficiale; stato: StatoUfficiale; onDecidi: (d: Decisione[]) => void }) {
+function RigaLinea({ linea: l, stato, onDecidi, onConfronta }: {
+  linea: LineaUfficiale; stato: StatoUfficiale; onDecidi: (d: Decisione[]) => void; onConfronta: (linea: string) => void;
+}) {
   const s = statoDellaLinea(l);
   const voci = React.useMemo(() => vociPerLinea(l, stato.lineeAzienda), [l, stato.lineeAzienda]);
   const candidate = voci.filter((v) => v.candidata), altre = voci.filter((v) => !v.candidata);
@@ -281,6 +295,13 @@ function RigaLinea({ linea: l, stato, onDecidi }: { linea: LineaUfficiale; stato
               title={`Abbina alla linea ${l.proposta}: ${testoProposta(l)}`}
               className="text-[11px] px-2 py-1 rounded-lg border border-emerald-600/50 text-emerald-200 hover:bg-emerald-500/15 flex items-center gap-1 whitespace-nowrap">
               <Check className="w-3 h-3" /> {l.proposta} <span className="text-emerald-400/60">· {testoProposta(l)}</span>
+            </button>
+          )}
+          {s === "abbinata" && (
+            <button type="button" onClick={() => onConfronta(l.linea)}
+              title={`Confronta la linea ${l.linea} con la linea ${l.abbinata}: i punti sulle fermate, i km e le fasce`}
+              className="text-[11px] px-2 py-1 rounded-lg bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 flex items-center gap-1 whitespace-nowrap">
+              <GitCompareArrows className="w-3 h-3" /> Confronta
             </button>
           )}
         </div>

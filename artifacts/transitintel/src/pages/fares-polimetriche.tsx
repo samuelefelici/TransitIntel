@@ -25,6 +25,7 @@ import {
   conPuntoScelto, confiniDalleFasce, fasciaDeiKm, matriceDelleFasce, nodiSalvati, puntiDelleTratte, trattaDelleFermate,
 } from "@/lib/polimetrica";
 import { PolimetricaUfficiale } from "@/components/polimetriche/PolimetricaUfficiale";
+import type { NodiDaApplicare } from "@/components/polimetriche/ConfrontoLinea";
 import {
   Upload, FileArchive, Trash2, Route as RouteIcon, MapPin, Ruler, Save,
   ChevronRight, ChevronDown, Scissors, ArrowLeftRight, Check, Loader2,
@@ -163,6 +164,13 @@ export default function FaresPolimetrichePage() {
 
   // l'area di lavoro dei percorsi, oppure la polimetrica della bigliettazione da confrontare (tappa 6.34a)
   const [vista, setVista] = React.useState<"lavoro" | "bigliettazione">("lavoro");
+  // i nodi fatti coi punti della bigliettazione, da mettere nel percorso che si apre (tappa 6.34b)
+  const [daApplicare, setDaApplicare] = React.useState<NodiDaApplicare | null>(null);
+  const usaNodi = React.useCallback((n: NodiDaApplicare) => {
+    setDaApplicare(n);
+    setSel({ lineCode: n.lineCode, routeId: n.routeId, variantId: n.variantId });
+    setVista("lavoro");
+  }, []);
 
   // larghezza ridimensionabile della sidebar linee
   const [railWidth, setRailWidth] = React.useState(300);
@@ -384,7 +392,9 @@ export default function FaresPolimetrichePage() {
 
       {vista === "bigliettazione" && (
         <div className="flex-1 min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/20 overflow-hidden">
-          <PolimetricaUfficiale importId={importId} />
+          {fasce
+            ? <PolimetricaUfficiale importId={importId} fasce={fasce} onUsaNodi={usaNodi} />
+            : <div className="h-full flex items-center justify-center text-emerald-400/50"><Loader2 className="w-6 h-6 animate-spin" /></div>}
         </div>
       )}
 
@@ -425,6 +435,8 @@ export default function FaresPolimetrichePage() {
               importId={importId}
               detail={detail}
               fasce={fasce}
+              daApplicare={daApplicare && daApplicare.routeId === detail.routeId && daApplicare.variantId === detail.variantId ? daApplicare : null}
+              onApplicato={() => setDaApplicare(null)}
               savedAB={sel ? (tree?.lines.flatMap(l => l.percorsi).find(p => p.routeId === sel.routeId && p.variantId === sel.variantId)?.savedAB ?? false) : false}
               savedBA={sel ? (tree?.lines.flatMap(l => l.percorsi).find(p => p.routeId === sel.routeId && p.variantId === sel.variantId)?.savedBA ?? false) : false}
               onSaved={() => { if (importId) loadTree(importId); }}
@@ -699,16 +711,22 @@ function LinesRail({ lines, sel, onSelect, onDeletePercorso, onDeleteMany }: {
 /* ════════════════════════════════════════════════════════════════
  *  Workspace di un percorso
  * ════════════════════════════════════════════════════════════════ */
-function Workspace({ importId, detail, fasce, savedAB, savedBA, onSaved, onNext, toast }: {
+function Workspace({ importId, detail, fasce, daApplicare, onApplicato, savedAB, savedBA, onSaved, onNext, toast }: {
   importId: string;
   detail: PercorsoDetail;
   fasce: FasciaKm[];
+  /** i nodi da mettere all'apertura al posto di quelli salvati o fatti dal programma (dal confronto con la bigliettazione) */
+  daApplicare: NodiDaApplicare | null;
+  onApplicato: () => void;
   savedAB: boolean; savedBA: boolean;
   onSaved: () => void;
   onNext: () => void;
   toast: ReturnType<typeof useToast>["toast"];
 }) {
-  const [direction, setDirection] = React.useState<"AB" | "BA">("AB");
+  /* i nodi da applicare si tengono qui dal primo disegno: chi li ha mandati li dimentica subito, e valgono finché non si cambia verso */
+  const applicare = React.useRef(daApplicare);
+  React.useEffect(() => { if (applicare.current) onApplicato(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  const [direction, setDirection] = React.useState<"AB" | "BA">(daApplicare?.direction ?? "AB");
 
   // fermate nell'orientamento corrente (BA = invertito con km ricalcolato dall'altro capo)
   const stops = React.useMemo<PStop[]>(() => {
@@ -733,6 +751,18 @@ function Workspace({ importId, detail, fasce, savedAB, savedBA, onSaved, onNext,
   const [loadedSaved, setLoadedSaved] = React.useState(false);
 
   React.useEffect(() => {
+    // i nodi arrivati dal confronto con la bigliettazione valgono al posto dei salvati, in quel verso
+    const nodi = applicare.current;
+    if (nodi && nodi.direction === direction) {
+      const dentro = (i: number) => Number.isInteger(i) && i >= 0 && i < stops.length;
+      setBoundaries(nodi.boundaries.filter((i) => dentro(i) && i > 0));
+      setScelte(nodi.scelte.filter(dentro));
+      setNodeNames(nodi.nodeNames);
+      setName("");
+      setLoadedSaved(true);
+      return;
+    }
+    applicare.current = null;
     // prova a caricare una polimetrica salvata per questo percorso+direzione
     let cancelled = false;
     setLoadedSaved(false);

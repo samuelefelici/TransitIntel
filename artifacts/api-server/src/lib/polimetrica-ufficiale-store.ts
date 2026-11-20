@@ -183,3 +183,121 @@ export async function salvaAbbinamenti(decisioni: readonly Decisione[], utenteId
     }
   });
 }
+
+/* ── I punti tariffari sulle fermate (tappa 6.34b, migrazione 0056) ───────── */
+
+/** Un percorso di una linea della bigliettazione, coi suoi punti nell'ordine. */
+export interface PercorsoUfficiale { percorso: string; direzione: string; punti: PuntoUfficiale[] }
+
+/** I percorsi di una linea della bigliettazione e le sue righe. Vuoti se la linea non è fra le caricate. */
+export async function dettaglioLinea(linea: string): Promise<{ percorsi: PercorsoUfficiale[]; righe: RigaUfficiale[] }> {
+  const [p, r] = await Promise.all([
+    db.execute<any>(sql`
+      SELECT percorso, direzione, ordine, codice, nome, nodo, km::float8 AS km
+        FROM polim_ufficiale_punti WHERE linea = ${linea} ORDER BY percorso, direzione, ordine`),
+    db.execute<any>(sql`
+      SELECT percorso, direzione, da, a, km::float8 AS km, tariffario, fascia, forzata
+        FROM polim_ufficiale_righe WHERE linea = ${linea} ORDER BY percorso, direzione, da, a`),
+  ]);
+  const percorsi: PercorsoUfficiale[] = [];
+  for (const x of p.rows ?? []) {
+    let ultimo = percorsi[percorsi.length - 1];
+    if (!ultimo || ultimo.percorso !== x.percorso || ultimo.direzione !== x.direzione) {
+      ultimo = { percorso: String(x.percorso), direzione: String(x.direzione), punti: [] };
+      percorsi.push(ultimo);
+    }
+    ultimo.punti.push({ linea, percorso: ultimo.percorso, direzione: ultimo.direzione, ordine: Number(x.ordine), codice: String(x.codice), nome: x.nome ?? null, nodo: x.nodo ?? null, km: Number(x.km) });
+  }
+  const righe: RigaUfficiale[] = (r.rows ?? []).map((x: any) => ({
+    linea, percorso: String(x.percorso), direzione: String(x.direzione), da: String(x.da), a: String(x.a),
+    km: x.km == null ? null : Number(x.km), tariffario: x.tariffario ?? null, fascia: x.fascia == null ? null : Number(x.fascia), forzata: x.forzata === true,
+  }));
+  return { percorsi, righe };
+}
+
+/** La linea dell'azienda a cui è abbinata una linea della bigliettazione; null se non lo è (o è esclusa). */
+export async function lineaAbbinata(lineaUfficiale: string): Promise<string | null> {
+  const r = await db.execute<any>(sql`SELECT linea FROM polim_abbinamenti_linee WHERE linea_ufficiale = ${lineaUfficiale}`);
+  return r.rows?.[0]?.linea ?? null;
+}
+
+/** Un percorso di una linea dell'import, con quello che serve per sceglierlo e le fermate nell'ordine. */
+export interface PercorsoDellImport {
+  routeId: string; variantId: string; direzione: number | null;
+  da: string; a: string; corse: number; km: number;
+  fermate: { stopId: string; nome: string; km: number }[];
+}
+
+/**
+ * I percorsi di una linea di un import della pagina Polimetriche, senza le
+ * geometrie. `null` se l'import non c'è; vuoto se la linea non è nell'import.
+ */
+export async function percorsiDellaLinea(importId: string, linea: string): Promise<PercorsoDellImport[] | null> {
+  const c = await db.execute<any>(sql`SELECT 1 FROM polim_imports WHERE id = ${importId}::uuid`);
+  if (!c.rows?.length) return null;
+  const r = await db.execute<any>(sql`
+    SELECT p.value - 'shape' AS percorso
+      FROM polim_imports i
+      CROSS JOIN LATERAL jsonb_array_elements(i.payload->'lines') l
+      CROSS JOIN LATERAL jsonb_array_elements(l.value->'percorsi') p
+     WHERE i.id = ${importId}::uuid AND l.value->>'lineCode' = ${linea}`);
+  return (r.rows ?? []).map((x: any) => {
+    const p = x.percorso ?? {};
+    const fermate = (Array.isArray(p.stops) ? p.stops : []).map((s: any) => ({ stopId: String(s.stopId ?? ""), nome: String(s.stopName ?? ""), km: Number(s.km) || 0 }));
+    return {
+      routeId: String(p.routeId ?? ""), variantId: String(p.variantId ?? ""), direzione: p.directionId == null ? null : Number(p.directionId),
+      da: String(p.firstStopName ?? fermate[0]?.nome ?? ""), a: String(p.lastStopName ?? fermate[fermate.length - 1]?.nome ?? ""),
+      corse: Number(p.tripCount) || 0, km: Number(p.totalKm) || 0, fermate,
+    };
+  });
+}
+
+/** La decisione su un percorso della bigliettazione: il percorso dell'azienda, il verso e la fermata di ogni punto. */
+export interface DecisionePunti {
+  percorso: string; direzione: string;
+  routeId: string; variantId: string; verso: "AB" | "BA";
+  punti: { ordine: number; fermata: string | null }[];
+}
+
+/** Le decisioni salvate per i percorsi di una linea della bigliettazione. */
+export async function decisioniDeiPunti(lineaUfficiale: string): Promise<DecisionePunti[]> {
+  const [p, q] = await Promise.all([
+    db.execute<any>(sql`
+      SELECT percorso, direzione, route_id, variant_id, verso FROM polim_abbinamenti_percorsi
+       WHERE linea_ufficiale = ${lineaUfficiale} ORDER BY percorso, direzione`),
+    db.execute<any>(sql`
+      SELECT percorso, direzione, ordine, fermata FROM polim_abbinamenti_punti
+       WHERE linea_ufficiale = ${lineaUfficiale} ORDER BY percorso, direzione, ordine`),
+  ]);
+  return (p.rows ?? []).map((x: any) => ({
+    percorso: String(x.percorso), direzione: String(x.direzione), routeId: String(x.route_id), variantId: String(x.variant_id), verso: x.verso === "BA" ? "BA" : "AB",
+    punti: (q.rows ?? []).filter((y: any) => y.percorso === x.percorso && y.direzione === x.direzione).map((y: any) => ({ ordine: Number(y.ordine), fermata: y.fermata ?? null })),
+  }));
+}
+
+/** Salva la decisione su un percorso della bigliettazione, al posto di quella di prima. */
+export async function salvaDecisionePunti(lineaUfficiale: string, d: DecisionePunti, utenteId: string | null): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      INSERT INTO polim_abbinamenti_percorsi (linea_ufficiale, percorso, direzione, route_id, variant_id, verso, deciso_il, deciso_da)
+      VALUES (${lineaUfficiale}, ${d.percorso}, ${d.direzione}, ${d.routeId}, ${d.variantId}, ${d.verso}, now(), ${utenteId}::uuid)
+      ON CONFLICT (linea_ufficiale, percorso, direzione) DO UPDATE SET
+        route_id = EXCLUDED.route_id, variant_id = EXCLUDED.variant_id, verso = EXCLUDED.verso,
+        deciso_il = EXCLUDED.deciso_il, deciso_da = EXCLUDED.deciso_da`);
+    await tx.execute(sql`
+      DELETE FROM polim_abbinamenti_punti
+       WHERE linea_ufficiale = ${lineaUfficiale} AND percorso = ${d.percorso} AND direzione = ${d.direzione}`);
+    if (d.punti.length) {
+      await tx.execute(sql`
+        INSERT INTO polim_abbinamenti_punti (linea_ufficiale, percorso, direzione, ordine, fermata)
+        VALUES ${sql.join(d.punti.map((p) => sql`(${lineaUfficiale}, ${d.percorso}, ${d.direzione}, ${p.ordine}, ${p.fermata})`), sql`, `)}`);
+    }
+  });
+}
+
+/** Toglie la decisione su un percorso della bigliettazione: torna la proposta. */
+export async function togliDecisionePunti(lineaUfficiale: string, percorso: string, direzione: string): Promise<void> {
+  await db.execute(sql`
+    DELETE FROM polim_abbinamenti_percorsi
+     WHERE linea_ufficiale = ${lineaUfficiale} AND percorso = ${percorso} AND direzione = ${direzione}`);
+}

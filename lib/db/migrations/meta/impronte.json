@@ -54,5 +54,6 @@
   "0052_fornitore_avm": "de30064c61eb4ff46346b6897b578eb88acea852d1e5c0993d995afd494c550d",
   "0053_sistema_bigliettazione": "edf5332976744e88bff3a4e45e964234fb7740013cf16d8cff557048aada6fbc",
   "0054_corrispettivo_delle_reti": "07aa3f8c51dd2b667b3db27532372a5fce2bd243a7dbb5557a0d7b8ddedcec9f",
-  "0055_la_polimetrica_della_bigliettazione": "51dd682245122d00fdbe0e2de101b1f381f1e4dd2b5ec0fc39d35ca98719cfe8"
+  "0055_la_polimetrica_della_bigliettazione": "51dd682245122d00fdbe0e2de101b1f381f1e4dd2b5ec0fc39d35ca98719cfe8",
+  "0056_gli_abbinamenti_dei_punti": "bd87bebe8d671ca32c3b2902aaf4a4ba0b270bb0804f5dcfc6135854fb1d8850"
 }

@@ -393,6 +393,13 @@
       "when": 1797700000000,
       "tag": "0055_la_polimetrica_della_bigliettazione",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1797800000000,
+      "tag": "0056_gli_abbinamenti_dei_punti",
+      "breakpoints": true
     }
   ]
 }

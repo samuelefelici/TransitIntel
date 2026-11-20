@@ -6,6 +6,10 @@
  * sostituisce il vecchio e lascia gli abbinamenti. Per ogni linea della
  * bigliettazione l'API propone la linea dell'import a cui corrisponde, e chi
  * lavora alle tariffe la conferma, la cambia o la esclude.
+ *
+ * Poi, linea per linea (tappa 6.34b, migrazione 0056): per ogni percorso
+ * della bigliettazione il percorso dell'azienda dove si ritrovano i suoi
+ * punti, e la decisione su quale fermata corrisponde a ogni punto.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -39,11 +43,16 @@ SPEC,0,1,a,b,0,VUOTA,0,true
 `;
 
 /* un import della pagina Polimetriche con due linee: D (stessi codici dei punti) e V1 (stessi nomi) */
-const fermata = (stopId: string, stopName: string) => ({ stopId, stopName, lat: 0, lon: 0, km: 0, distPrev: 0 });
+const fermata = (stopId: string, stopName: string, km = 0) => ({ stopId, stopName, lat: 0, lon: 0, km, distPrev: 0 });
 const PAYLOAD = {
   agencyName: "Azienda di prova",
   lines: [
-    { lineCode: "D", lineName: "Borgo Alto - Molino", routeIds: ["D"], percorsi: [{ variantId: "a", routeId: "D", stops: [fermata("3001", "Borgo Alto (capolinea)"), fermata("3002", "Ponte Nuovo"), fermata("3003", "Molino (bivio)")] }] },
+    { lineCode: "D", lineName: "Borgo Alto - Molino", routeIds: ["D"], percorsi: [{
+      variantId: "a", routeId: "D", directionId: 0, tripCount: 7, totalKm: 6.4, firstStopName: "Borgo Alto (capolinea)", lastStopName: "Molino (bivio)",
+      stops: [fermata("3001", "Borgo Alto (capolinea)", 0), fermata("3002", "Ponte Nuovo", 5.2), fermata("3003", "Molino (bivio)", 6.4)],
+      /* la geometria non serve a nessuno qui: non deve uscire */
+      shape: [[13.1, 43.5], [13.2, 43.6]],
+    }] },
     { lineCode: "V1", lineName: "Valle", routeIds: ["V1"], percorsi: [{ variantId: "b", routeId: "V1", stops: [fermata("5001", "Fornace"), fermata("5002", "Castello (piazza)"), fermata("5003", "Torre")] }] },
     { lineCode: "K", lineName: "Costa", routeIds: ["K"], percorsi: [{ variantId: "c", routeId: "K", stops: [fermata("6001", "Porto")] }] },
   ],
@@ -56,17 +65,22 @@ const conta = async () => (await db.execute<any>(sql`
          (SELECT count(*) FROM polim_ufficiale_caricamento)::int AS caricamenti, (SELECT count(*) FROM polim_abbinamenti_linee)::int AS abbinamenti`)).rows[0];
 const leggi = async () => (await tariffe.get(`/api/fares/polimetriche/ufficiale?importId=${IMPORT}`)).body;
 const abbina = (abbinamenti: unknown[], importId: string = IMPORT) => tariffe.put("/api/fares/polimetriche/ufficiale/abbinamenti").send({ importId, abbinamenti });
+const lineaD = async () => (await tariffe.get(`/api/fares/polimetriche/ufficiale/linea?codice=d&importId=${IMPORT}`)).body;
+const DECISIONE = { importId: IMPORT, lineaUfficiale: "D", percorso: "0", direzione: "1", routeId: "D", variantId: "a", verso: "AB" };
+const decidiPunti = (cambia: Record<string, unknown>) => tariffe.put("/api/fares/polimetriche/ufficiale/linea/punti").send({ ...DECISIONE, ...cambia });
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("la polimetrica della bigliettazione, sul database", () => {
   const prima: Record<string, unknown[]> = {};
-  const TABELLE = ["polim_ufficiale_punti", "polim_ufficiale_righe", "polim_ufficiale_caricamento", "polim_abbinamenti_linee"] as const;
+  /* nell'ordine in cui si rimettono: i percorsi abbinati prima dei loro punti */
+  const TABELLE = ["polim_ufficiale_punti", "polim_ufficiale_righe", "polim_ufficiale_caricamento", "polim_abbinamenti_linee",
+    "polim_abbinamenti_percorsi", "polim_abbinamenti_punti"] as const;
 
   beforeAll(async () => {
     /* una copia di quello che c'è (vuoto in CI): si rimette alla fine */
     for (const t of TABELLE) {
       prima[t] = (await db.execute<any>(sql`SELECT to_jsonb(x) AS riga FROM ${sql.identifier(t)} x`)).rows.map((r) => r.riga);
-      await db.execute(sql`DELETE FROM ${sql.identifier(t)}`);
     }
+    for (const t of TABELLE) await db.execute(sql`DELETE FROM ${sql.identifier(t)}`);
     await db.execute(sql`INSERT INTO users (id, email, password_hash, role, full_name)
       VALUES (${CHI}::uuid, 'tariffe-6.34@prova.local', 'x', 'user', 'Tea Tariffe') ON CONFLICT (id) DO NOTHING`);
     await db.execute(sql`INSERT INTO polim_imports (id, filename, agency_name, line_count, percorso_count, payload)
@@ -74,8 +88,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la polimetrica della bigliettaz
   });
 
   afterAll(async () => {
+    for (const t of TABELLE) await db.execute(sql`DELETE FROM ${sql.identifier(t)}`);
     for (const t of TABELLE) {
-      await db.execute(sql`DELETE FROM ${sql.identifier(t)}`);
       for (const riga of prima[t] ?? []) {
         await db.execute(sql`INSERT INTO ${sql.identifier(t)} SELECT * FROM jsonb_populate_record(NULL::${sql.identifier(t)}, ${JSON.stringify(riga)}::jsonb)`);
       }
@@ -175,6 +189,77 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la polimetrica della bigliettaz
     expect(await conta()).toEqual(prima);
   });
 
+  it("una linea abbinata: i suoi percorsi coi punti, le righe, e i percorsi dell'azienda dove i punti si ritrovano", async () => {
+    const r = await lineaD();
+    expect([r.linea, r.abbinata]).toEqual(["D", "D"]);
+    expect(r.percorsi.map((p: any) => [p.percorso, p.direzione, p.punti.length, p.deciso])).toEqual([["0", "1", 3, null], ["0", "2", 2, null]]);
+    expect(r.percorsi[0].punti[1]).toEqual({ ordine: 2, codice: "3002", nome: "Ponte Nuovo", nodo: "3900", km: 5.1 });
+    expect(r.righe).toHaveLength(3);
+    expect(r.righe[2]).toEqual({ percorso: "0", direzione: "1", da: "3900", a: "3003", km: 0.9, tariffario: "EXT", fascia: 3, forzata: true });
+    /* il percorso dell'azienda senza la geometria */
+    expect(r.percorsiAzienda).toEqual([{
+      routeId: "D", variantId: "a", direzione: 0, da: "Borgo Alto (capolinea)", a: "Molino (bivio)", corse: 7, km: 6.4,
+      fermate: [{ stopId: "3001", nome: "Borgo Alto (capolinea)", km: 0 }, { stopId: "3002", nome: "Ponte Nuovo", km: 5.2 }, { stopId: "3003", nome: "Molino (bivio)", km: 6.4 }],
+    }]);
+    /* direzione 1: tutti e tre i punti, nel verso AB; direzione 2 (dal Molino al Borgo): nel verso BA */
+    expect(r.percorsi[0].candidati[0]).toEqual({
+      routeId: "D", variantId: "a", verso: "AB", trovati: 3, scarto: 0.167,
+      punti: [{ ordine: 1, fermata: "3001", come: "codice" }, { ordine: 2, fermata: "3002", come: "codice" }, { ordine: 3, fermata: "3003", come: "codice" }],
+    });
+    expect(r.percorsi[1].candidati[0]).toMatchObject({ verso: "BA", trovati: 2, punti: [{ ordine: 1, fermata: "3003", come: "codice" }, { ordine: 2, fermata: "3001", come: "codice" }] });
+    /* una linea non abbinata non ha percorsi dell'azienda né proposte; una che non c'è, 404 */
+    const non = (await tariffe.get(`/api/fares/polimetriche/ufficiale/linea?codice=900&importId=${IMPORT}`)).body;
+    expect([non.abbinata, non.percorsiAzienda, non.percorsi[0].candidati]).toEqual([null, [], []]);
+    expect((await tariffe.get(`/api/fares/polimetriche/ufficiale/linea?codice=NONCE&importId=${IMPORT}`)).status).toBe(404);
+    expect((await tariffe.get("/api/fares/polimetriche/ufficiale/linea?codice=D&importId=x")).status).toBe(400);
+    expect((await tariffe.get(`/api/fares/polimetriche/ufficiale/linea?importId=${IMPORT}`)).status).toBe(400);
+  });
+
+  it("salva la decisione su un percorso: il percorso dell'azienda, il verso e la fermata di ogni punto", async () => {
+    const r = await decidiPunti({ punti: [{ ordine: 1, fermata: "3001" }, { ordine: 2, fermata: null }, { ordine: 3, fermata: "3003" }] });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect((await db.execute<any>(sql`SELECT linea_ufficiale, percorso, direzione, route_id, variant_id, verso, deciso_da::text AS da FROM polim_abbinamenti_percorsi`)).rows)
+      .toEqual([{ linea_ufficiale: "D", percorso: "0", direzione: "1", route_id: "D", variant_id: "a", verso: "AB", da: CHI }]);
+    expect((await db.execute<any>(sql`SELECT ordine, fermata FROM polim_abbinamenti_punti ORDER BY ordine`)).rows)
+      .toEqual([{ ordine: 1, fermata: "3001" }, { ordine: 2, fermata: null }, { ordine: 3, fermata: "3003" }]);
+    const letta = await lineaD();
+    expect(letta.percorsi[0].deciso).toEqual({
+      routeId: "D", variantId: "a", verso: "AB", nellImport: true,
+      punti: [{ ordine: 1, fermata: "3001" }, { ordine: 2, fermata: null }, { ordine: 3, fermata: "3003" }],
+    });
+    expect(letta.percorsi[1].deciso).toBeNull();
+    /* una decisione nuova prende il posto della vecchia */
+    expect((await decidiPunti({ verso: "BA", punti: [{ ordine: 3, fermata: "3002" }] })).status).toBe(200);
+    expect((await lineaD()).percorsi[0].deciso).toMatchObject({ verso: "BA", punti: [{ ordine: 3, fermata: "3002" }] });
+  });
+
+  it("rifiuta una decisione su cose che non esistono, e non cambia niente", async () => {
+    const prima = (await lineaD()).percorsi[0].deciso;
+    for (const [cambia, stato, errore] of [
+      [{ percorso: "9", punti: [] }, 400, "Questo percorso non è nella polimetrica caricata"],
+      [{ punti: [{ ordine: 7, fermata: "3001" }] }, 400, "Il punto 7 non è fra i punti del percorso, o è ripetuto"],
+      [{ punti: [{ ordine: 1, fermata: "3001" }, { ordine: 1, fermata: "3002" }] }, 400, "Il punto 1 non è fra i punti del percorso, o è ripetuto"],
+      [{ punti: [{ ordine: 1, fermata: "6001" }] }, 400, "La fermata «6001» non è su quel percorso"],
+      [{ variantId: "b", punti: [] }, 400, "Il percorso scelto non è fra quelli della linea D nell'import"],
+      [{ lineaUfficiale: "900", punti: [] }, 409, "Prima si abbina la linea a una linea dell'import"],
+      [{ verso: "SU", punti: [] }, 400, "Richiesta non valida: servono la linea, il percorso, la direzione, il percorso dell'azienda col verso e i punti con la loro fermata"],
+      [{ punti: [{ ordine: 1, fermata: "3001", altro: 1 }] }, 400, "Richiesta non valida: servono la linea, il percorso, la direzione, il percorso dell'azienda col verso e i punti con la loro fermata"],
+    ] as [Record<string, unknown>, number, string][]) {
+      const r = await decidiPunti(cambia);
+      expect([r.status, r.body.error], JSON.stringify(cambia)).toEqual([stato, errore]);
+    }
+    expect((await decidiPunti({ importId: "e6340000-0000-4000-8000-0000000000ff", punti: [] })).status).toBe(404);
+    expect((await lineaD()).percorsi[0].deciso).toEqual(prima);
+  });
+
+  it("tolta la decisione torna la proposta; i punti se ne vanno con lei", async () => {
+    expect((await tariffe.delete("/api/fares/polimetriche/ufficiale/linea/punti?codice=D&percorso=0&direzione=1")).status).toBe(200);
+    expect((await db.execute<any>(sql`SELECT (SELECT count(*) FROM polim_abbinamenti_percorsi)::int AS percorsi, (SELECT count(*) FROM polim_abbinamenti_punti)::int AS punti`)).rows[0])
+      .toEqual({ percorsi: 0, punti: 0 });
+    expect((await lineaD()).percorsi[0].deciso).toBeNull();
+    expect((await tariffe.delete("/api/fares/polimetriche/ufficiale/linea/punti?codice=D&percorso=0")).status).toBe(400);
+  });
+
   it("un caricamento nuovo sostituisce il vecchio; gli abbinamenti restano", async () => {
     const r = await carica("linea;percorso;direzione;ordine;codice;nome;nodo;km\nD;0;1;1;3001;Borgo Alto;;0\nD;0;1;2;3003;Molino;;6,5\n",
       "linea;percorso;direzione;da;a;km;tariffario;fascia;forzata\nD;0;1;3001;3003;6,5;EXT;2;0\n");
@@ -199,7 +284,9 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la polimetrica della bigliettaz
     expect(decidi(tariffista, "GET", "/fares/polimetriche/ufficiale")).toEqual({ passa: true });
     expect(decidi(tariffista, "POST", "/fares/polimetriche/ufficiale")).toEqual({ passa: true });
     expect(decidi(tariffista, "PUT", "/fares/polimetriche/ufficiale/abbinamenti")).toEqual({ passa: true });
-    for (const [m, p] of [["GET", "/fares/polimetriche/ufficiale"], ["POST", "/fares/polimetriche/ufficiale"], ["DELETE", "/fares/polimetriche/ufficiale"], ["PUT", "/fares/polimetriche/ufficiale/abbinamenti"]]) {
+    expect(decidi(tariffista, "PUT", "/fares/polimetriche/ufficiale/linea/punti")).toEqual({ passa: true });
+    for (const [m, p] of [["GET", "/fares/polimetriche/ufficiale"], ["POST", "/fares/polimetriche/ufficiale"], ["DELETE", "/fares/polimetriche/ufficiale"], ["PUT", "/fares/polimetriche/ufficiale/abbinamenti"],
+      ["GET", "/fares/polimetriche/ufficiale/linea"], ["PUT", "/fares/polimetriche/ufficiale/linea/punti"], ["DELETE", "/fares/polimetriche/ufficiale/linea/punti"]]) {
       expect(decidi(altro, m!, p!).passa, `${m} ${p}`).toBe(false);
     }
   });
