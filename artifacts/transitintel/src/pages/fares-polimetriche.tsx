@@ -24,6 +24,7 @@ import { km as kmScritti, type FasciaKm } from "@/lib/fasce-km";
 import {
   conPuntoScelto, confiniDalleFasce, fasciaDeiKm, matriceDelleFasce, nodiSalvati, puntiDelleTratte, trattaDelleFermate,
 } from "@/lib/polimetrica";
+import { PolimetricaUfficiale } from "@/components/polimetriche/PolimetricaUfficiale";
 import {
   Upload, FileArchive, Trash2, Route as RouteIcon, MapPin, Ruler, Save,
   ChevronRight, ChevronDown, Scissors, ArrowLeftRight, Check, Loader2,
@@ -159,6 +160,9 @@ export default function FaresPolimetrichePage() {
       .catch(() => { setFasce([]); setFasceNonLette(true); });
   }, []);
   const senzaFasce = fasceNonLette ? "Le fasce chilometriche non si sono caricate: ricarica la pagina" : SENZA_FASCE;
+
+  // l'area di lavoro dei percorsi, oppure la polimetrica della bigliettazione da confrontare (tappa 6.34a)
+  const [vista, setVista] = React.useState<"lavoro" | "bigliettazione">("lavoro");
 
   // larghezza ridimensionabile della sidebar linee
   const [railWidth, setRailWidth] = React.useState(300);
@@ -356,7 +360,15 @@ export default function FaresPolimetrichePage() {
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Convalida & Esporta PDF
           </button>
           <button
-            onClick={() => { setImportId(null); setSel(null); setDetail(null); }}
+            onClick={() => setVista(v => v === "lavoro" ? "bigliettazione" : "lavoro")}
+            aria-pressed={vista === "bigliettazione"}
+            title="La polimetrica che sta nel sistema di bigliettazione: caricarla e abbinare le sue linee a quelle di questo import, per confrontarle."
+            className={`text-[12px] px-3 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 ${vista === "bigliettazione" ? "bg-emerald-500/25 border-emerald-400/50 text-emerald-50" : "border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10"}`}
+          >
+            <ArrowLeftRight className="w-3.5 h-3.5" /> {vista === "bigliettazione" ? "Torna ai percorsi" : "Confronto con la bigliettazione"}
+          </button>
+          <button
+            onClick={() => { setImportId(null); setSel(null); setDetail(null); setVista("lavoro"); }}
             className="text-[12px] px-3 py-1.5 rounded-lg border border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10 transition-colors"
           >
             Cambia import
@@ -370,7 +382,13 @@ export default function FaresPolimetrichePage() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 flex">
+      {vista === "bigliettazione" && (
+        <div className="flex-1 min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/20 overflow-hidden">
+          <PolimetricaUfficiale importId={importId} />
+        </div>
+      )}
+
+      <div className={vista === "lavoro" ? "flex-1 min-h-0 flex" : "hidden"}>
         {/* Rail linee (ridimensionabile) */}
         <div style={{ width: railWidth }} className="shrink-0 min-h-0 rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden flex flex-col">
           <div className="px-3 py-2 border-b border-emerald-900/40 text-[11px] font-semibold uppercase tracking-wider text-emerald-400/60 flex items-center gap-2">
