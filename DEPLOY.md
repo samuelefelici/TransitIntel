@@ -2121,8 +2121,8 @@ avvisi.
 
 **Dati aperti**: la firma del GTFS comprende l'impronta delle tariffe
 (catalogo, categorie, supporti, reti, fasce, polimetriche salvate). Un prezzo
-cambiato o una polimetrica salvata rifanno il file alla preparazione successiva. Il NeTEx di
-livello 1 non cambia: le tariffe saranno il livello 3.
+cambiato o una polimetrica salvata rifanno il file alla preparazione successiva. Dalla
+6.40 le tariffe sono anche nel NeTEx, di livello 3.
 
 Sulla copia dei dati veri il GTFS del programma in esercizio si fa in 2
 secondi, pesa 4,1 MB e non ha errori:
@@ -2225,6 +2225,57 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
+
+### Il NeTEx con le tariffe, livello 3 (tappa 6.40)
+
+Il **NeTEx** (l'export di Planning Studio e il file dei dati aperti) è ora di
+**livello 3** del profilo italiano: accanto a rete e orari porta le tariffe.
+Si fanno dalle stesse tariffe del GTFS (6.37 e 6.38), più quello che il GTFS
+non sa dire: il tipo e la durata di ogni titolo del catalogo, le fasce, e del
+pagamento con carta il secondo e il terzo viaggio e i massimali.
+
+| Dove | Che cosa |
+|---|---|
+| ServiceFrame › `tariffZones` | una zona per rete urbana del file e una per nodo tariffario delle linee extraurbane; ogni punto di fermata dice le sue zone |
+| FareFrame › `tariffs` | le fasce (intervalli in km), le durate, un elemento tariffario per titolo, le coppie di nodi delle polimetriche |
+| FareFrame › `usageParameters` | i periodi di validità (corsa, 60 minuti, mensile…) e un profilo di utente per categoria di passeggero |
+| FareFrame › `fareProducts`, `fareTables` | un titolo per voce del catalogo col suo prezzo; l'extraurbano di corsa semplice col prezzo di ogni coppia di nodi; la carta coi tre viaggi e i massimali |
+| FareFrame › `typesOfTravelDocuments`, `salesOfferPackages` | i supporti; un pacchetto per titolo; per la carta il canale «a bordo» |
+
+Nel GTFS l'extraurbano di corsa semplice è un biglietto per fascia; nel NeTEx
+è un titolo solo, col prezzo della coppia di nodi di salita e discesa.
+
+I profili di utente si leggono dal nome della categoria («Studente under 14»
+→ studente, al più 13 anni): lo schema non ha un nome per il profilo.
+
+**Lo schema**: quello del livello 3 del repository del profilo italiano (che
+comprende EPIP e livello 2), in `assets/netex-epip/` con le impronte nel
+README. Un file con le tariffe si controlla con quello; uno senza, come prima,
+con lo schema EPIP. Riferimento: linee guida v5.0.1, par. 5.2.5.7 e 5.2.7.
+
+**Le tariffe non fermano il NeTEx**: se le tariffe non si leggono, i dati
+aperti escono di livello 1 come prima e il guasto va nel log.
+
+**Dati aperti**: la firma del NeTEx comprende ora l'impronta delle tariffe.
+Alla preparazione successiva al deploy il NeTEx si rifà, di livello 3.
+
+Sulla copia dei dati veri il NeTEx del programma in esercizio passa lo schema
+del livello 3 al primo colpo: 881 zone (5 reti urbane e 876 nodi), 161 titoli,
+7 profili, 7 supporti, 23 fasce, 6.384 coppie di nodi col loro prezzo. Il file
+pesa 48 MB (2 MB compresso, era 1,8 MB); l'export con il controllo dello
+schema dura circa 40 secondi.
+
+**Chi**: come prima, l'export lo fa chi può aprire il programma in Planning
+Studio.
+
+**Il livello 2** (i contratti di servizio) resta da fare: servono i dati dei
+contratti. Il livello 3 non ne ha bisogno.
+
+**Dopo il deploy**: niente da fare. Nessuna migrazione, nessuna variabile,
+nessuna Watch Path nuova (`netex*.ts` e `assets/**` ci sono già).
+
+**Rollback**: immagine precedente. Il NeTEx torna di livello 1 alla
+preparazione successiva.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 

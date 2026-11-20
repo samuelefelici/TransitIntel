@@ -288,12 +288,13 @@ describe("i file delle tariffe", () => {
   });
 });
 
-describe("la firma del GTFS dei dati aperti", () => {
-  it("cambia con le tariffe; quella del NeTEx no", () => {
+describe("la firma dei file dei dati aperti", () => {
+  it("cambia con le tariffe, anche quella del NeTEx (che dalla 6.40 le porta)", () => {
     const v = { versioneId: "v", feedId: "f" };
     const a: any = { compilata: true, gtfsAgencyId: "a", ragioneSociale: "Azienda", sito: null, telefono: null };
     expect(firmaDi("gtfs", v, a, [], "uno")).not.toBe(firmaDi("gtfs", v, a, [], "due"));
     expect(firmaDi("gtfs", v, a, [], null)).toBe(firmaDi("gtfs", v, a));
-    expect(firmaDi("netex", v, a, [], "uno")).toBe(firmaDi("netex", v, a, [], "due"));
+    expect(firmaDi("netex", v, a, [], "uno")).not.toBe(firmaDi("netex", v, a, [], "due"));
+    expect(firmaDi("netex", v, a, [], null)).toBe(firmaDi("netex", v, a));
   });
 });

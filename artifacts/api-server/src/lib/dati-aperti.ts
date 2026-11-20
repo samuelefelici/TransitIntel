@@ -75,7 +75,8 @@ export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string 
    * Senza gestori la firma è quella di prima: i file già pubblicati non si rifanno. */
   const deiGestori = gestori.length > 0
     ? [gestori.map((g) => [g.gestore, g.nome, g.sito, g.telefono, g.predefinito, ...(tipo === "netex" ? [g.email] : [])])] : [];
-  const delleTariffe = tipo === "gtfs" && tariffe ? [tariffe] : [];
+  /* le tariffe sono nel GTFS (tappa 6.37) e nel NeTEx di livello 3 (6.40) */
+  const delleTariffe = tariffe ? [tariffe] : [];
   return sha256(JSON.stringify([...diTutti, ...delNetex, ...deiGestori, ...delleTariffe]));
 }
 
@@ -229,7 +230,8 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
     dimenticaAzienda();
     const azienda = await leggiAzienda();
     const gestori = await gestoriDalDatabase();
-    const firme = { gtfs: firmaDi("gtfs", v, azienda, gestori, await improntaDelleTariffe()), netex: firmaDi("netex", v, azienda, gestori) };
+    const impronta = await improntaDelleTariffe();
+    const firme = { gtfs: firmaDi("gtfs", v, azienda, gestori, impronta), netex: firmaDi("netex", v, azienda, gestori, impronta) };
     const daFare = TIPI.filter((t) => deveProvare(prima.get(t), firme[t], adesso, o.forza));
     const fatto: Record<TipoFile, EsitoFile | "invariato"> = { gtfs: "invariato", netex: "invariato" };
     if (daFare.length === 0) return { stato: "fatto", file: fatto };
@@ -249,13 +251,16 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
       for (const tipo of daFare) { o.suGuasto?.(err, tipo); await chiudi(tipo, "errore", GUASTO); }
       return { stato: "fatto", file: fatto };
     }
-    /* le tariffe nel GTFS (tappa 6.37); il NeTEx di livello 1 non le legge. Un guasto delle tariffe non ferma gli orari */
+    /* le tariffe nel GTFS (tappa 6.37) e nel NeTEx di livello 3 (6.40). Un guasto delle tariffe non ferma gli
+     * orari: tutti e due i file escono senza tariffe (il NeTEx di livello 1) */
     let avvisiTariffe: Awaited<ReturnType<typeof conLeTariffe>>["tariffe"]["avvisi"] = [];
     let gtfsConTariffe = gtfs;
+    let perNetex: Awaited<ReturnType<typeof conLeTariffe>>["tariffe"]["perNetex"] | null = null;
     try {
       const t = await conLeTariffe(v.versioneId, gtfs);
       gtfsConTariffe = t.gtfs;
       avvisiTariffe = t.tariffe.avvisi;
+      perNetex = t.tariffe.perNetex;
     } catch (err) { o.suGuasto?.(err, "gtfs"); }
     const verifica = verificaGtfs(gtfsConTariffe);
     verifica.avvisi.push(...avvisiTariffe);
@@ -277,7 +282,7 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
           fatto.gtfs = "pubblicato";
           continue;
         }
-        const { xml, conteggi } = netexDelGtfs(gtfs, azienda, gestori, adesso);
+        const { xml, conteggi } = netexDelGtfs(gtfsConTariffe, azienda, gestori, adesso, perNetex);
         const esito = await valida(xml);
         if (esito.stato === "non_valido") {
           await chiudi("netex", "non_valido", "Il NeTEx non passa lo schema del profilo italiano", { errori: esito.errori.slice(0, 20) });

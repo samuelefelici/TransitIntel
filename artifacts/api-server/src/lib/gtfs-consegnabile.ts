@@ -30,6 +30,7 @@ import type { Azienda } from "./azienda";
 import { agenzieDelGtfs, gestorePredefinito, type Gestore } from "./gestori";
 import type { Gtfs } from "./gtfs-verifica";
 import { netexDaGtfs, type ConteggiNetex } from "./netex";
+import type { TariffePerNetex } from "./netex-tariffe";
 
 /** Escape CSV RFC4180: quota se contiene virgola, doppio apice o newline. */
 function csv(v: unknown): string {
@@ -330,12 +331,15 @@ export class SenzaCodiceNetex extends Error {
 }
 
 /**
- * Il NeTEx del profilo italiano (livello 1) dallo stesso GTFS, coi codici
- * dell'azienda. `gestori` è lo stesso elenco con cui è stato fatto il GTFS
+ * Il NeTEx del profilo italiano dallo stesso GTFS, coi codici dell'azienda:
+ * di livello 3 se il GTFS porta le tariffe e c'è `tariffe` (tappa 6.40),
+ * altrimenti di livello 1. `gestori` è lo stesso elenco con cui è stato fatto il GTFS
  * (tappa 6.12): ognuno che ha linee è un operatore, e ogni linea porta il
  * suo. Vuoto: un operatore solo, l'azienda. Chi trasmette resta l'azienda.
  */
-export function netexDelGtfs(gtfs: Gtfs, azienda: Azienda, gestori: readonly Gestore[], adesso: Date = new Date()): { xml: string; conteggi: ConteggiNetex } {
+export function netexDelGtfs(
+  gtfs: Gtfs, azienda: Azienda, gestori: readonly Gestore[], adesso: Date = new Date(), tariffe: TariffePerNetex | null = null,
+): { xml: string; conteggi: ConteggiNetex } {
   if (!azienda.netexCodiceLocale) throw new SenzaCodiceNetex();
   return netexDaGtfs(gtfs, {
     codiceLocale: azienda.netexCodiceLocale, fornitore: azienda.netexFornitore, partecipante: azienda.gtfsAgencyId,
@@ -344,6 +348,6 @@ export function netexDelGtfs(gtfs: Gtfs, azienda: Azienda, gestori: readonly Ges
     azienda: { ragioneSociale: azienda.ragioneSociale, nome: azienda.nome, sito: azienda.sito, telefono: azienda.telefono, codice: azienda.gtfsAgencyId },
     operatori: gestori.map((g) => ({ codice: g.gestore, nome: g.nome, sito: g.sito, telefono: g.telefono, email: g.email })),
     operatorePrincipale: gestorePredefinito(gestori)?.gestore,
-    adesso,
+    adesso, tariffe,
   });
 }
