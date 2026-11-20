@@ -1188,6 +1188,12 @@ jobs:
       # non è un UUID dà 400.
       - name: Le polimetriche salvate
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/polimetriche-salvate-db.test.ts
+      # Tappa 6.36: le polimetriche si fanno su una fotografia di un programma
+      # di Planning Studio (una bozza la sceglie solo chi la può aprire). La
+      # fotografia porta le polimetriche salvate sui percorsi con le stesse
+      # fermate; le decisioni del confronto valgono per fermate. Migrazione 0057.
+      - name: Le polimetriche dal programma
+        run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/polimetriche-programma-db.test.ts
       # Tappa 6.3: i dati aperti a un indirizzo stabile. Nasce spento; acceso,
       # il GTFS e il NeTEx nascono dalla versione in esercizio (mai dalla
       # bozza), si rifanno solo quando cambia quello da cui nascono, e vanno

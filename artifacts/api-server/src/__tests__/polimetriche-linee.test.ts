@@ -1,45 +1,45 @@
 /**
- * Le linee extraurbane dell'import delle polimetriche (tappa 6.28): le dicono
- * le reti dell'azienda, non più «il codice comincia con una lettera».
+ * Le linee extraurbane delle polimetriche (tappa 6.28): le dicono le reti
+ * dell'azienda, non più «il codice comincia con una lettera».
  *
  * Con la regola di prima le urbane con un nome di lettere (JE1, BUS3, CIRCA, Y,
  * C.D.) entravano fra le extraurbane, e le loro polimetriche si mescolavano a
  * quelle vere. È lo stesso resto tolto dall'ottimizzazione dei mezzi nella 6.23.
+ *
+ * Dalla 6.36 le linee vengono da un programma di Planning Studio, non più da
+ * un GTFS: la regola è la stessa.
  */
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
-import { lineeExtraurbane } from "../routes/fares-polimetriche";
+import { lineeExtraurbane, type LineaDelProgramma } from "../lib/polimetrica-programma";
 import { impostaReti, RETI_NEUTRE } from "../lib/reti-linee";
 import { conLeRetiDiProva, senzaReti } from "./helpers/reti-di-prova";
 
 beforeEach(conLeRetiDiProva);
 afterAll(senzaReti);
 
-const route = (route_id: string, route_short_name: string, route_long_name = "") => ({ route_id, route_short_name, route_long_name });
+const linea = (id: string, nomeCorto: string, nomeLungo = "", codice = id): LineaDelProgramma => ({ id, codice, nomeCorto, nomeLungo });
+const codici = (m: Map<string, LineaDelProgramma[]>) => [...m.keys()].sort();
 
 describe("le linee extraurbane delle polimetriche", () => {
   it("le urbane con un nome di lettere restano fuori, le extraurbane entrano", () => {
-    const { routeMeta, lineRouteIds } = lineeExtraurbane([
-      route("r1", "JE1"), route("r2", "BUS3"), route("r3", "CIRCA"), route("r4", "Y"), route("r5", "C.D."),
-      route("r6", "1/4"), route("r7", "30"),
-      route("r8", "A", "Capolinea Nord - Capolinea Sud"), route("r9", "BV"), route("r10", "Z"),
+    const m = lineeExtraurbane([
+      linea("r1", "JE1"), linea("r2", "BUS3"), linea("r3", "CIRCA"), linea("r4", "Y"), linea("r5", "C.D."),
+      linea("r6", "1/4"), linea("r7", "30"),
+      linea("r8", "A", "Capolinea Nord - Capolinea Sud"), linea("r9", "BV"), linea("r10", "Z"),
     ]);
-    expect([...lineRouteIds.keys()].sort()).toEqual(["A", "BV", "Z"]);
-    expect(routeMeta.get("r8")).toEqual({ lineCode: "A", lineName: "Capolinea Nord - Capolinea Sud" });
-    for (const urbana of ["r1", "r2", "r3", "r4", "r5", "r6", "r7"]) expect(routeMeta.has(urbana), urbana).toBe(false);
+    expect(codici(m)).toEqual(["A", "BV", "Z"]);
+    expect(m.get("A")).toEqual([linea("r8", "A", "Capolinea Nord - Capolinea Sud")]);
   });
 
-  it("più route_id con lo stesso codice sono una linea; senza codice vale il route_id", () => {
-    const { routeMeta, lineRouteIds } = lineeExtraurbane([
-      route("a1", "A"), route("a2", " A "), { route_id: "X9", route_short_name: "", route_long_name: "" }, { route_id: "", route_short_name: "B", route_long_name: "" },
-    ]);
-    expect([...(lineRouteIds.get("A") ?? [])]).toEqual(["a1", "a2"]);
-    expect(routeMeta.get("X9")?.lineCode).toBe("X9");
-    expect(routeMeta.size).toBe(3);
+  it("più linee col nome uguale sono una linea; senza nome vale il codice", () => {
+    const m = lineeExtraurbane([linea("a1", "A"), linea("a2", " A "), { id: "x", codice: "X9", nomeCorto: null, nomeLungo: null }, { id: "y", codice: "", nomeCorto: "", nomeLungo: null }]);
+    expect(m.get("A")?.map((l) => l.id)).toEqual(["a1", "a2"]);
+    expect(m.get("X9")?.map((l) => l.id)).toEqual(["x"]);
+    expect(m.size).toBe(2);
   });
 
   it("un'azienda senza reti urbane: tutte le linee sono extraurbane", () => {
     impostaReti(RETI_NEUTRE);
-    const { lineRouteIds } = lineeExtraurbane([route("r1", "JE1"), route("r6", "1/4"), route("r8", "A")]);
-    expect([...lineRouteIds.keys()].sort()).toEqual(["1/4", "A", "JE1"]);
+    expect(codici(lineeExtraurbane([linea("r1", "JE1"), linea("r6", "1/4"), linea("r8", "A")]))).toEqual(["1/4", "A", "JE1"]);
   });
 });

@@ -152,7 +152,7 @@ export function ConfrontoLinea({ importId, linea, fasce, onIndietro, onUsaNodi }
 
       {!dettaglio.abbinata && (
         <p role="alert" className="text-[12px] px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200">
-          Questa linea non è abbinata a una linea dell'import: prima si abbina, dall'elenco delle linee.
+          Questa linea non è abbinata a una linea dell'azienda: prima si abbina, dall'elenco delle linee.
         </p>
       )}
 
@@ -189,9 +189,9 @@ export function ConfrontoLinea({ importId, linea, fasce, onIndietro, onUsaNodi }
                 {voci.map((v, i) => <option key={`${v.routeId}-${v.variantId}-${v.verso}`} value={i}>{v.etichetta}</option>)}
               </select>
             </div>
-            {voci.length === 0 && <p className="text-[11px] text-amber-200">La linea {dettaglio.abbinata} non ha percorsi in questo import.</p>}
+            {voci.length === 0 && <p className="text-[11px] text-amber-200">La linea {dettaglio.abbinata} non ha percorsi in questa fotografia del programma.</p>}
             {percorso.deciso && !percorso.deciso.nellImport && (
-              <p className="text-[11px] text-amber-200">L'abbinamento salvato era su un percorso che in questo import non c'è più: qui sotto c'è la proposta.</p>
+              <p className="text-[11px] text-amber-200">L'abbinamento salvato era su un percorso che in questa fotografia del programma non c'è più: qui sotto c'è la proposta.</p>
             )}
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" onClick={salva} disabled={!scelta || salvando || salvate[chiave(percorso)]}

@@ -220,6 +220,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la polimetrica della bigliettaz
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect((await db.execute<any>(sql`SELECT linea_ufficiale, percorso, direzione, route_id, variant_id, verso, deciso_da::text AS da FROM polim_abbinamenti_percorsi`)).rows)
       .toEqual([{ linea_ufficiale: "D", percorso: "0", direzione: "1", route_id: "D", variant_id: "a", verso: "AB", da: CHI }]);
+    /* la decisione ricorda le fermate del percorso scelto: vale anche su un'altra fotografia (tappa 6.36) */
+    expect((await db.execute<any>(sql`SELECT fermate FROM polim_abbinamenti_percorsi`)).rows).toEqual([{ fermate: ["3001", "3002", "3003"] }]);
     expect((await db.execute<any>(sql`SELECT ordine, fermata FROM polim_abbinamenti_punti ORDER BY ordine`)).rows)
       .toEqual([{ ordine: 1, fermata: "3001" }, { ordine: 2, fermata: null }, { ordine: 3, fermata: "3003" }]);
     const letta = await lineaD();

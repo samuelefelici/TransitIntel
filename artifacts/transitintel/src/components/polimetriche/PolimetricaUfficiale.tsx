@@ -136,7 +136,7 @@ export function PolimetricaUfficiale({ importId, fasce, onUsaNodi }: {
         <h2 className="text-base font-bold text-emerald-200">Polimetrica della bigliettazione{sistema ? ` · ${sistema}` : ""}</h2>
         <p className="text-[12px] text-emerald-300/70 max-w-3xl">
           La polimetrica che sta nel sistema di bigliettazione, per confrontarla con quella generata qui. Si carica da due file CSV; poi
-          a ogni sua linea si abbina la linea di questo import a cui corrisponde.
+          a ogni sua linea si abbina la linea del programma a cui corrisponde.
         </p>
       </div>
 
@@ -237,7 +237,7 @@ export function PolimetricaUfficiale({ importId, fasce, onUsaNodi }: {
       {stato.caricamento && stato.senzaUfficiale.length > 0 && (
         <section className="rounded-xl border border-emerald-900/40 bg-emerald-950/20 p-3">
           <p className="text-[12px] text-emerald-100 font-medium">
-            {stato.senzaUfficiale.length} linee di questo import senza una linea della bigliettazione
+            {stato.senzaUfficiale.length} linee del programma senza una linea della bigliettazione
           </p>
           <p className="text-[11px] text-emerald-300/60 mb-2">Finché nessuna linea della bigliettazione è abbinata a loro, sono linee da creare là.</p>
           <div className="flex flex-wrap gap-1.5">
@@ -297,7 +297,7 @@ function RigaLinea({ linea: l, stato, onDecidi, onConfronta }: {
                 {candidate.map((v) => <option key={v.codice} value={DI_LINEA + v.codice}>{v.etichetta}</option>)}
               </optgroup>
             )}
-            <optgroup label={candidate.length > 0 ? "Le altre linee" : "Le linee dell'import"}>
+            <optgroup label={candidate.length > 0 ? "Le altre linee" : "Le linee del programma"}>
               {altre.map((v) => <option key={v.codice} value={DI_LINEA + v.codice}>{v.etichetta}</option>)}
             </optgroup>
           </select>

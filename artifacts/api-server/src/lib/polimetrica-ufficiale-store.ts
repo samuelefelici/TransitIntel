@@ -281,6 +281,12 @@ export async function percorsiDellImport(importId: string): Promise<Map<string, 
 export interface DecisionePunti {
   percorso: string; direzione: string;
   routeId: string; variantId: string; verso: "AB" | "BA";
+  /**
+   * le fermate del percorso dell'azienda scelto, per codice e in ordine
+   * (tappa 6.36): la decisione vale su ogni fotografia dove la linea ha un
+   * percorso con queste fermate, anche se gli identificativi sono cambiati
+   */
+  fermate: string[] | null;
   punti: { ordine: number; fermata: string | null }[];
 }
 
@@ -288,7 +294,7 @@ export interface DecisionePunti {
 export async function decisioniDeiPunti(lineaUfficiale: string): Promise<DecisionePunti[]> {
   const [p, q] = await Promise.all([
     db.execute<any>(sql`
-      SELECT percorso, direzione, route_id, variant_id, verso FROM polim_abbinamenti_percorsi
+      SELECT percorso, direzione, route_id, variant_id, verso, fermate FROM polim_abbinamenti_percorsi
        WHERE linea_ufficiale = ${lineaUfficiale} ORDER BY percorso, direzione`),
     db.execute<any>(sql`
       SELECT percorso, direzione, ordine, fermata FROM polim_abbinamenti_punti
@@ -296,18 +302,23 @@ export async function decisioniDeiPunti(lineaUfficiale: string): Promise<Decisio
   ]);
   return (p.rows ?? []).map((x: any) => ({
     percorso: String(x.percorso), direzione: String(x.direzione), routeId: String(x.route_id), variantId: String(x.variant_id), verso: x.verso === "BA" ? "BA" : "AB",
+    fermate: Array.isArray(x.fermate) ? x.fermate.map(String) : null,
     punti: (q.rows ?? []).filter((y: any) => y.percorso === x.percorso && y.direzione === x.direzione).map((y: any) => ({ ordine: Number(y.ordine), fermata: y.fermata ?? null })),
   }));
 }
 
 /** Salva la decisione su un percorso della bigliettazione, al posto di quella di prima. */
 export async function salvaDecisionePunti(lineaUfficiale: string, d: DecisionePunti, utenteId: string | null): Promise<void> {
+  /* le fermate in JSON: diventano un text[] nel database, nell'ordine (vuote: NULL) */
+  const fermate = d.fermate?.length ? JSON.stringify(d.fermate) : null;
   await db.transaction(async (tx) => {
     await tx.execute(sql`
-      INSERT INTO polim_abbinamenti_percorsi (linea_ufficiale, percorso, direzione, route_id, variant_id, verso, deciso_il, deciso_da)
-      VALUES (${lineaUfficiale}, ${d.percorso}, ${d.direzione}, ${d.routeId}, ${d.variantId}, ${d.verso}, now(), ${utenteId}::uuid)
+      INSERT INTO polim_abbinamenti_percorsi (linea_ufficiale, percorso, direzione, route_id, variant_id, verso, fermate, deciso_il, deciso_da)
+      VALUES (${lineaUfficiale}, ${d.percorso}, ${d.direzione}, ${d.routeId}, ${d.variantId}, ${d.verso},
+              (SELECT array_agg(f ORDER BY n) FROM jsonb_array_elements_text(${fermate}::jsonb) WITH ORDINALITY AS t(f, n)),
+              now(), ${utenteId}::uuid)
       ON CONFLICT (linea_ufficiale, percorso, direzione) DO UPDATE SET
-        route_id = EXCLUDED.route_id, variant_id = EXCLUDED.variant_id, verso = EXCLUDED.verso,
+        route_id = EXCLUDED.route_id, variant_id = EXCLUDED.variant_id, verso = EXCLUDED.verso, fermate = EXCLUDED.fermate,
         deciso_il = EXCLUDED.deciso_il, deciso_da = EXCLUDED.deciso_da`);
     await tx.execute(sql`
       DELETE FROM polim_abbinamenti_punti
@@ -355,7 +366,7 @@ export async function lineeDaConfrontare(): Promise<LineaDaConfrontare[]> {
       SELECT x.linea, x.percorso, x.direzione, x.da, x.a, x.km::float8 AS km, x.tariffario, x.fascia, x.forzata
         FROM polim_ufficiale_righe x JOIN polim_abbinamenti_linee a ON a.linea_ufficiale = x.linea AND a.linea IS NOT NULL
        ORDER BY x.linea, x.percorso, x.direzione, x.da, x.a`),
-    db.execute<any>(sql`SELECT linea_ufficiale, percorso, direzione, route_id, variant_id, verso FROM polim_abbinamenti_percorsi ORDER BY linea_ufficiale, percorso, direzione`),
+    db.execute<any>(sql`SELECT linea_ufficiale, percorso, direzione, route_id, variant_id, verso, fermate FROM polim_abbinamenti_percorsi ORDER BY linea_ufficiale, percorso, direzione`),
     db.execute<any>(sql`SELECT linea_ufficiale, percorso, direzione, ordine, fermata FROM polim_abbinamenti_punti ORDER BY linea_ufficiale, percorso, direzione, ordine`),
   ]);
   const per = new Map<string, LineaDaConfrontare>();
@@ -385,6 +396,7 @@ export async function lineeDaConfrontare(): Promise<LineaDaConfrontare[]> {
   for (const x of dp.rows ?? []) {
     per.get(String(x.linea_ufficiale))?.decise.push({
       percorso: String(x.percorso), direzione: String(x.direzione), routeId: String(x.route_id), variantId: String(x.variant_id), verso: x.verso === "BA" ? "BA" : "AB",
+      fermate: Array.isArray(x.fermate) ? x.fermate.map(String) : null,
       punti: punti.get(`${x.linea_ufficiale}\u0000${x.percorso}\u0000${x.direzione}`) ?? [],
     });
   }

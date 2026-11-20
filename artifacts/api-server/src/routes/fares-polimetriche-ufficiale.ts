@@ -26,7 +26,7 @@ import multer from "multer";
 import { z } from "zod";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { legaContesto } from "../lib/contesto-http";
-import { candidateDellaLinea, leggiCsvPunti, leggiCsvRighe, percorsiCandidati, type LineaAzienda } from "../lib/polimetrica-ufficiale";
+import { candidateDellaLinea, leggiCsvPunti, leggiCsvRighe, percorsiCandidati, percorsoDellaDecisione, type LineaAzienda } from "../lib/polimetrica-ufficiale";
 import {
   caricaUfficiale, caricamento, decisioniDeiPunti, dettaglioLinea, eliminaUfficiale, lineaAbbinata, lineeDaConfrontare, lineeDellImport, lineeUfficiali,
   percorsiDellaLinea, percorsiDellImport, puntiPerLinea, salvaAbbinamenti, salvaDecisionePunti, togliDecisionePunti,
@@ -211,14 +211,16 @@ function lineaPerIlConfronto(
     abbinata,
     percorsi: percorsi.map((p) => {
       const deciso = decise.find((d) => d.percorso === p.percorso && d.direzione === p.direzione) ?? null;
+      /* la decisione vale sul percorso con gli stessi identificativi, o con le stesse fermate (tappa 6.36) */
+      const doveVale = deciso ? percorsoDellaDecisione(deciso, aziendali) : null;
       return {
         percorso: p.percorso, direzione: p.direzione,
         punti: p.punti.map((x) => ({ ordine: x.ordine, codice: x.codice, nome: x.nome, nodo: x.nodo, km: x.km })),
         candidati: percorsiCandidati(p.punti, perCandidati, quanti),
         deciso: deciso && {
-          routeId: deciso.routeId, variantId: deciso.variantId, verso: deciso.verso, punti: deciso.punti,
-          /* il percorso scelto può non esserci più: un import nuovo dello stesso GTFS con un percorso cambiato */
-          nellImport: aziendali.some((x) => x.routeId === deciso.routeId && x.variantId === deciso.variantId),
+          routeId: doveVale?.routeId ?? deciso.routeId, variantId: doveVale?.variantId ?? deciso.variantId, verso: deciso.verso, punti: deciso.punti,
+          /* il percorso scelto può non esserci più: le sue fermate sono cambiate in questa fotografia */
+          nellImport: doveVale !== null,
         },
       };
     }),
@@ -300,7 +302,10 @@ router.put("/fares/polimetriche/ufficiale/linea/punti", async (req, res): Promis
     const fermate = new Set(scelto.fermate.map((f) => f.stopId));
     const fuori = d.punti.find((x) => x.fermata != null && !fermate.has(x.fermata));
     if (fuori) { res.status(400).json({ error: `La fermata «${fuori.fermata}» non è su quel percorso` }); return; }
-    await salvaDecisionePunti(linea, { percorso: d.percorso, direzione: d.direzione, routeId: d.routeId, variantId: d.variantId, verso: d.verso, punti: d.punti }, req.user?.id ?? null);
+    await salvaDecisionePunti(linea, {
+      percorso: d.percorso, direzione: d.direzione, routeId: d.routeId, variantId: d.variantId, verso: d.verso,
+      fermate: scelto.fermate.map((f) => f.stopId), punti: d.punti,
+    }, req.user?.id ?? null);
     res.json({ ok: true });
   } catch (e) {
     req.log.error({ err: e }, "abbinamento dei punti non salvato");
