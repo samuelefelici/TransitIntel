@@ -19,7 +19,7 @@ const fermate = (...km: number[]) => km.map((k) => ({ km: k }));
 
 describe("la fascia di una distanza", () => {
   it("il limite sta nella fascia che finisce lì, un metro oltre nella successiva", () => {
-    expect([0, 2.1, 6, 6.001, 6.05, 12, 37.4, 42, 42.65, 50, 59.6].map((d) => fasciaDeiKm(d, FASCE)))
+    expect([0, 2, 6, 6.001, 6.05, 12, 37.5, 42, 42.5, 50, 59.5].map((d) => fasciaDeiKm(d, FASCE)))
       .toEqual([1, 1, 1, 2, 2, 2, 7, 7, 8, 8, 9]);
   });
 
@@ -86,22 +86,22 @@ describe("il punto tariffario di un nodo", () => {
 });
 
 describe("la matrice a gradoni", () => {
-  /* i km progressivi dei punti tariffari di una linea vera di 37,4 km, e le fasce che la bigliettazione dà alle loro coppie */
-  const linea = [0, 5.1, 6, 8.1, 10.7, 13.2, 15.7, 17.6, 19, 21.8, 24.4, 25.55, 26.45, 28.35, 29.25, 29.9, 31.9, 37.4];
+  /* i km progressivi dei punti tariffari di una linea di 37,5 km: numeri di prova, fitti come in una polimetrica regionale */
+  const linea = [0, 5, 6, 8, 10.5, 13, 16, 17.5, 19, 22, 24.5, 25.5, 26.5, 28.5, 29, 30, 32, 37.5];
 
   it("fra due nodi dà la fascia dei km fra i loro punti, non il numero di tratte attraversate", () => {
     const m = matriceDelleFasce(linea, FASCE);
     expect(m[0]).toEqual([]);
-    expect(m[3]![2]).toBe(1);          // 6,0 → 8,1 km: 2,1 km. A tratte da 6 km contate dal capolinea erano due.
-    expect(m[2]![1]).toBe(1);          // 5,1 → 6,0 km
-    expect(m[16]![11]).toBe(2);        // 25,55 → 31,9 km: 6,35 km
-    expect(m[17]![0]).toBe(7);         // da un capo all'altro: 37,4 km
+    expect(m[3]![2]).toBe(1);          // dal km 6 al km 8: 2 km. A tratte da 6 km contate dal capolinea erano due.
+    expect(m[2]![1]).toBe(1);          // dal km 5 al km 6
+    expect(m[16]![11]).toBe(2);        // dal km 25,5 al km 32: 6,5 km
+    expect(m[17]![0]).toBe(7);         // da un capo all'altro: 37,5 km
     expect(m[17]).toEqual([7, 6, 6, 5, 5, 5, 4, 4, 4, 3, 3, 2, 2, 2, 2, 2, 1]);
   });
 
   it("oltre i 42 km segue le fasce più lunghe", () => {
-    const m = matriceDelleFasce([0, 6, 48.65, 54.1, 59.6], FASCE);
-    expect(m[2]).toEqual([8, 8]);      // 48,65 e 42,65 km; a tratte da 6 km erano 9
+    const m = matriceDelleFasce([0, 6, 48.5, 54, 59.5], FASCE);
+    expect(m[2]).toEqual([8, 8]);      // 48,5 e 42,5 km; a tratte da 6 km erano 9
     expect(m[4]).toEqual([9, 9, 2, 1]);
   });
 
