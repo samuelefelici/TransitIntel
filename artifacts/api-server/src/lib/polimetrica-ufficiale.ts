@@ -412,3 +412,23 @@ export function percorsiCandidati(
     || x.routeId.localeCompare(y.routeId) || x.variantId.localeCompare(y.variantId) || x.verso.localeCompare(y.verso));
   return tutti.slice(0, quanti).map(({ corse: _corse, ...c }) => c);
 }
+
+/**
+ * Il percorso di una fotografia su cui vale una decisione del confronto
+ * (tappa 6.36): quello con gli stessi identificativi; se non c'è, quello con
+ * le stesse fermate (per codice, in ordine), il più servito. Una decisione
+ * presa su un'altra fotografia dello stesso programma, o di quello di prima,
+ * vale così dove il percorso è rimasto uguale. null: in questa fotografia il
+ * percorso non c'è (torna la proposta).
+ */
+export function percorsoDellaDecisione<P extends { routeId: string; variantId: string; corse?: number; fermate: readonly { stopId: string }[] }>(
+  d: { routeId: string; variantId: string; fermate: readonly string[] | null },
+  percorsi: readonly P[],
+): P | null {
+  const uguale = percorsi.find((p) => p.routeId === d.routeId && p.variantId === d.variantId);
+  if (uguale) return uguale;
+  if (!d.fermate?.length) return null;
+  const chiave = d.fermate.join("\u0000");
+  const stessi = percorsi.filter((p) => p.fermate.length === d.fermate!.length && p.fermate.map((f) => f.stopId).join("\u0000") === chiave);
+  return stessi.sort((a, b) => (b.corse ?? 0) - (a.corse ?? 0))[0] ?? null;
+}

@@ -27,7 +27,7 @@ import {
 import { PolimetricaUfficiale } from "@/components/polimetriche/PolimetricaUfficiale";
 import type { NodiDaApplicare } from "@/components/polimetriche/ConfrontoLinea";
 import {
-  Upload, FileArchive, Trash2, Route as RouteIcon, MapPin, Ruler, Save,
+  Camera, CalendarClock, FileArchive, Trash2, Route as RouteIcon, MapPin, Ruler, Save,
   ChevronRight, ChevronDown, Scissors, ArrowLeftRight, Check, Loader2,
   RefreshCw, ArrowRight, ListChecks, X, Milestone, ArrowUp, ArrowDown, Layers,
   Download, GripHorizontal, Filter,
@@ -58,9 +58,20 @@ const trattaColor = (i: number) => TRATTA_PALETTE[i % TRATTA_PALETTE.length];
 const numeroTratta = (km: number, posto: number, fasce: readonly FasciaKm[]): number => fasciaDeiKm(km, fasce) ?? posto + 1;
 
 /* ── Tipi ─────────────────────────────────────────────────────── */
+type StatoProgramma = "in esercizio" | "programmato" | "bozza";
+/** una fotografia di un programma (tappa 6.36), o un GTFS caricato a mano prima */
 interface ImportSummary {
   id: string; filename: string; agencyName: string | null;
   lineCount: number; percorsoCount: number; createdAt: string;
+  fonte: "gtfs" | "programma"; progettoNome: string | null; statoProgramma: StatoProgramma | null; salvate: number;
+}
+/** un programma di Planning Studio da cui si può fare una fotografia */
+interface ProgrammaPerPolimetriche {
+  id: string; nome: string; stato: StatoProgramma; dal: string | null; aggiornato: string | null; ultimaFotografia: string | null;
+}
+interface EsitoFotografia {
+  importId: string; lineCount: number; percorsoCount: number;
+  lavoro: { da: { importId: string; nome: string } | null; polimetriche: number; nonPortate: { linea: string | null; nome: string | null; motivo: string }[]; decisioni: number; decisioniSenzaPercorso: number };
 }
 interface PercorsoMeta {
   variantId: string; routeId: string; directionId: number | null;
@@ -73,6 +84,7 @@ interface LineMeta { lineCode: string; lineName: string; routeIds: string[]; per
 interface ImportTree {
   id: string; filename: string; agencyName: string | null;
   lineCount: number; percorsoCount: number; lines: LineMeta[];
+  createdAt?: string; fonte?: "gtfs" | "programma"; progettoNome?: string | null; statoProgramma?: StatoProgramma | null;
 }
 interface PStop { stopId: string; stopName: string; lat: number; lon: number; km: number; distPrev: number; }
 interface PercorsoDetail {
@@ -330,7 +342,7 @@ export default function FaresPolimetrichePage() {
   /* ── Schermata import ──────────────────────────────────────── */
   if (!importId) {
     return (
-      <ImportScreen
+      <ProgrammaScreen
         imports={imports}
         onImported={(id) => { refetchImports(); setImportId(id); }}
         onSelect={setImportId}
@@ -352,7 +364,9 @@ export default function FaresPolimetrichePage() {
         <div className="min-w-0">
           <h1 className="text-lg font-bold text-emerald-200 leading-tight">Polimetriche — Area di lavoro</h1>
           <p className="text-[11px] text-emerald-400/60 font-mono truncate">
-            {tree?.agencyName ? `${tree.agencyName} · ` : ""}{tree?.filename} · {tree?.lineCount ?? 0} linee · {tree?.percorsoCount ?? 0} percorsi
+            {tree?.agencyName ? `${tree.agencyName} · ` : ""}{tree?.filename}
+            {tree?.fonte === "programma" && tree.createdAt ? ` · fotografia del ${new Date(tree.createdAt).toLocaleDateString("it-IT")}` : ""}
+            {tree?.fonte === "gtfs" ? " · GTFS caricato a mano" : ""} · {tree?.lineCount ?? 0} linee · {tree?.percorsoCount ?? 0} percorsi
           </p>
         </div>
         <div className="ml-auto flex items-center gap-2">
@@ -370,7 +384,7 @@ export default function FaresPolimetrichePage() {
           <button
             onClick={() => setVista(v => v === "lavoro" ? "bigliettazione" : "lavoro")}
             aria-pressed={vista === "bigliettazione"}
-            title="La polimetrica che sta nel sistema di bigliettazione: caricarla e abbinare le sue linee a quelle di questo import, per confrontarle."
+            title="La polimetrica che sta nel sistema di bigliettazione: caricarla e abbinare le sue linee a quelle del programma, per confrontarle."
             className={`text-[12px] px-3 py-1.5 rounded-lg border transition-colors flex items-center gap-1.5 ${vista === "bigliettazione" ? "bg-emerald-500/25 border-emerald-400/50 text-emerald-50" : "border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10"}`}
           >
             <ArrowLeftRight className="w-3.5 h-3.5" /> {vista === "bigliettazione" ? "Torna ai percorsi" : "Confronto con la bigliettazione"}
@@ -379,7 +393,7 @@ export default function FaresPolimetrichePage() {
             onClick={() => { setImportId(null); setSel(null); setDetail(null); setVista("lavoro"); }}
             className="text-[12px] px-3 py-1.5 rounded-lg border border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10 transition-colors"
           >
-            Cambia import
+            Cambia fotografia
           </button>
         </div>
       </div>
@@ -450,108 +464,148 @@ export default function FaresPolimetrichePage() {
   );
 }
 
+const COLORE_STATO: Record<StatoProgramma, string> = {
+  "in esercizio": "bg-emerald-500/20 text-emerald-100 border-emerald-400/40",
+  programmato: "bg-amber-500/10 text-amber-200 border-amber-500/30",
+  bozza: "bg-emerald-950/60 text-emerald-300/70 border-emerald-800/60",
+};
+const dataIt = (s: string | null) => (s ? new Date(s).toLocaleDateString("it-IT") : "");
+const quante = (n: number, una: string, tante: string) => `${n} ${n === 1 ? una : tante}`;
+
+/** Quello che è passato sulla fotografia nuova, in una frase. */
+function testoDelLavoro(l: EsitoFotografia["lavoro"]): string {
+  let t = l.polimetriche ? `Portate ${quante(l.polimetriche, "polimetrica salvata", "polimetriche salvate")} da «${l.da?.nome ?? ""}».` : "Nessuna polimetrica salvata da portare.";
+  if (l.nonPortate.length) t += ` ${quante(l.nonPortate.length, "polimetrica rimasta indietro", "polimetriche rimaste indietro")} (percorso cambiato).`;
+  if (l.decisioni) t += ` ${l.decisioni === 1 ? "1 decisione del confronto vale" : `${l.decisioni} decisioni del confronto valgono`} anche qui.`;
+  if (l.decisioniSenzaPercorso) t += ` ${quante(l.decisioniSenzaPercorso, "decisione", "decisioni")} del confronto senza il percorso: qui torna la proposta.`;
+  return t;
+}
+
 /* ════════════════════════════════════════════════════════════════
- *  Schermata import
+ *  Schermata iniziale: il programma e le sue fotografie (tappa 6.36)
  * ════════════════════════════════════════════════════════════════ */
-function ImportScreen({ imports, onImported, onSelect, onDelete, toast }: {
+function ProgrammaScreen({ imports, onImported, onSelect, onDelete, toast }: {
   imports: ImportSummary[];
   onImported: (id: string) => void;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   toast: ReturnType<typeof useToast>["toast"];
 }) {
-  const [uploading, setUploading] = React.useState(false);
-  const [drag, setDrag] = React.useState(false);
-  const inputRef = React.useRef<HTMLInputElement>(null);
+  const [programmi, setProgrammi] = React.useState<ProgrammaPerPolimetriche[] | null>(null);
+  const [errore, setErrore] = React.useState(false);
+  const [inCorso, setInCorso] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    fetch(`${API()}/api/fares/polimetriche/programmi`)
+      .then(r => r.ok ? r.json() : Promise.reject(r))
+      .then((d) => setProgrammi(Array.isArray(d?.programmi) ? d.programmi : []))
+      .catch(() => { setProgrammi([]); setErrore(true); });
+  }, []);
 
-  const doUpload = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith(".zip")) {
-      toast({ title: "File non valido", description: "Carica uno ZIP GTFS.", variant: "destructive" });
-      return;
-    }
-    setUploading(true);
+  const fotografa = async (p: ProgrammaPerPolimetriche) => {
+    setInCorso(p.id);
     try {
-      const form = new FormData();
-      form.append("file", file);
-      const r = await fetch(`${API()}/api/fares/polimetriche/import`, { method: "POST", body: form });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d?.error || "Import fallito");
-      toast({ title: "Import completato", description: `${d.lineCount} linee extraurbane · ${d.percorsoCount} percorsi` });
-      onImported(d.importId);
+      const r = await fetch(`${API()}/api/fares/polimetriche/programmi/${p.id}/fotografia`, { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d?.error || "Fotografia non riuscita");
+      const e = d as EsitoFotografia;
+      toast({ title: `Fotografia di «${p.nome}»`, description: `${e.lineCount} linee extraurbane · ${e.percorsoCount} percorsi. ${testoDelLavoro(e.lavoro)}` });
+      onImported(e.importId);
     } catch (e: any) {
-      toast({ title: "Errore import", description: e.message, variant: "destructive" });
+      toast({ title: "Fotografia non riuscita", description: e.message, variant: "destructive" });
     } finally {
-      setUploading(false);
+      setInCorso(null);
     }
   };
 
   return (
-    <div className="h-full max-w-3xl mx-auto flex flex-col gap-6 py-4">
+    <div className="h-full max-w-3xl mx-auto flex flex-col gap-6 py-4 overflow-y-auto">
       <div className="text-center">
         <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 mb-3">
           <Milestone className="w-7 h-7 text-emerald-400" />
         </div>
         <h1 className="text-2xl font-black text-emerald-200">Polimetriche</h1>
-        <p className="text-sm text-emerald-300/60 mt-1 max-w-md mx-auto">
-          Area di lavoro per costruire le polimetriche a tratte. Inizia importando uno ZIP GTFS:
-          il sistema estrae tutti i percorsi delle linee extraurbane.
+        <p className="text-sm text-emerald-300/60 mt-1 max-w-xl mx-auto">
+          Le polimetriche si fanno su un programma di esercizio di Planning Studio. Si parte da una fotografia del programma:
+          le linee extraurbane, le loro varianti, le fermate coi km. Il lavoro fatto (polimetriche salvate, confronto con la
+          bigliettazione) passa alla fotografia nuova sui percorsi con le stesse fermate.
         </p>
       </div>
 
-      {/* Dropzone */}
-      <div
-        onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-        onDragLeave={() => setDrag(false)}
-        onDrop={(e) => { e.preventDefault(); setDrag(false); const f = e.dataTransfer.files?.[0]; if (f) doUpload(f); }}
-        onClick={() => inputRef.current?.click()}
-        className={`cursor-pointer rounded-2xl border-2 border-dashed p-10 text-center transition-all ${
-          drag ? "border-emerald-400 bg-emerald-500/10" : "border-emerald-700/50 bg-emerald-950/30 hover:border-emerald-600 hover:bg-emerald-500/5"
-        }`}
-      >
-        <input ref={inputRef} type="file" accept=".zip" className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) doUpload(f); e.target.value = ""; }} />
-        {uploading ? (
-          <div className="flex flex-col items-center gap-2 text-emerald-300">
-            <Loader2 className="w-8 h-8 animate-spin" />
-            <span className="text-sm">Estrazione percorsi in corso…</span>
-          </div>
+      {/* I programmi */}
+      <section className="rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden" aria-label="Programmi">
+        <div className="px-4 py-2.5 border-b border-emerald-900/40 text-[11px] font-semibold uppercase tracking-wider text-emerald-400/60">
+          Programmi di Planning Studio
+        </div>
+        {programmi === null ? (
+          <div className="px-4 py-6 flex justify-center text-emerald-400/50"><Loader2 className="w-5 h-5 animate-spin" /></div>
+        ) : errore ? (
+          <p role="alert" className="px-4 py-4 text-[12px] text-red-300">I programmi non si sono caricati: ricarica la pagina.</p>
+        ) : programmi.length === 0 ? (
+          <p className="px-4 py-4 text-[12px] text-emerald-300/70">
+            Nessun programma: in Planning Studio non c'è un programma in esercizio, e non hai bozze da aprire.
+          </p>
         ) : (
-          <div className="flex flex-col items-center gap-2 text-emerald-300/80">
-            <Upload className="w-8 h-8 text-emerald-400" />
-            <span className="text-sm font-medium">Trascina qui lo ZIP GTFS o clicca per selezionarlo</span>
-            <span className="text-[11px] text-emerald-400/50">Step 1 · max 150 MB · vengono tenute solo le linee extraurbane, secondo le reti dell'azienda</span>
+          <div className="divide-y divide-emerald-900/30">
+            {programmi.map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3">
+                <CalendarClock className="w-4 h-4 text-emerald-500/60 shrink-0" />
+                <div className="flex-1 min-w-[12rem]">
+                  <p className="text-sm text-emerald-100 flex flex-wrap items-center gap-2">
+                    <span className="truncate">{p.nome}</span>
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${COLORE_STATO[p.stato]}`}>
+                      {p.stato}{p.stato === "programmato" && p.dal ? ` dal ${dataIt(p.dal)}` : ""}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-emerald-400/50">
+                    {p.aggiornato ? `aggiornato il ${dataIt(p.aggiornato)} · ` : ""}
+                    {p.ultimaFotografia ? `ultima fotografia il ${dataIt(p.ultimaFotografia)}` : "mai fotografato"}
+                  </p>
+                </div>
+                <button onClick={() => fotografa(p)} disabled={inCorso !== null}
+                  title="Fa una fotografia del programma com'è adesso e la apre. Le polimetriche salvate e le decisioni del confronto passano sui percorsi con le stesse fermate."
+                  className={`text-[12px] px-3 py-1.5 rounded-lg flex items-center gap-1.5 disabled:opacity-40 transition-colors ${p.stato === "in esercizio" ? "bg-emerald-500 text-emerald-950 font-semibold hover:bg-emerald-400" : "bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25"}`}>
+                  {inCorso === p.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />} Fotografa
+                </button>
+              </div>
+            ))}
           </div>
         )}
-      </div>
+      </section>
 
-      {/* Import esistenti */}
+      {/* Le fotografie */}
       {imports.length > 0 && (
-        <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden">
+        <section className="rounded-xl border border-emerald-900/40 bg-emerald-950/30 overflow-hidden" aria-label="Fotografie">
           <div className="px-4 py-2.5 border-b border-emerald-900/40 text-[11px] font-semibold uppercase tracking-wider text-emerald-400/60">
-            Import esistenti
+            Fotografie
           </div>
           <div className="divide-y divide-emerald-900/30">
             {imports.map((im) => (
               <div key={im.id} className="group flex items-center gap-3 px-4 py-3 hover:bg-emerald-500/5 transition-colors">
-                <FileArchive className="w-4 h-4 text-emerald-500/60 shrink-0" />
+                {im.fonte === "programma" ? <Camera className="w-4 h-4 text-emerald-500/60 shrink-0" /> : <FileArchive className="w-4 h-4 text-emerald-500/40 shrink-0" />}
                 <button onClick={() => onSelect(im.id)} className="flex-1 min-w-0 text-left">
-                  <p className="text-sm text-emerald-100 truncate">{im.filename}</p>
+                  <p className="text-sm text-emerald-100 truncate flex items-center gap-2">
+                    <span className="truncate">{im.progettoNome ?? im.filename}</span>
+                    {im.fonte === "programma" && im.statoProgramma
+                      ? <span className={`text-[10px] px-1.5 py-0.5 rounded border whitespace-nowrap ${COLORE_STATO[im.statoProgramma]}`}>{im.statoProgramma}</span>
+                      : <span className="text-[10px] px-1.5 py-0.5 rounded border border-emerald-900/60 text-emerald-400/60 whitespace-nowrap">GTFS caricato a mano</span>}
+                  </p>
                   <p className="text-[11px] text-emerald-400/50 font-mono">
-                    {im.agencyName ? `${im.agencyName} · ` : ""}{im.lineCount} linee · {im.percorsoCount} percorsi · {new Date(im.createdAt).toLocaleString("it-IT")}
+                    {new Date(im.createdAt).toLocaleString("it-IT")} · {im.lineCount} linee · {im.percorsoCount} percorsi · {quante(im.salvate, "polimetrica salvata", "polimetriche salvate")}
                   </p>
                 </button>
                 <button onClick={() => onSelect(im.id)}
                   className="text-[12px] px-3 py-1.5 rounded-lg bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 transition-colors flex items-center gap-1">
                   Apri <ChevronRight className="w-3.5 h-3.5" />
                 </button>
-                <button onClick={() => onDelete(im.id)} title="Elimina import"
-                  className="p-1.5 rounded-lg text-emerald-400/40 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 transition-all">
+                <button onClick={() => onDelete(im.id)} title="Elimina la fotografia e le sue polimetriche salvate"
+                  aria-label={`Elimina la fotografia ${im.progettoNome ?? im.filename}`}
+                  className="p-1.5 rounded-lg text-emerald-400/40 hover:text-red-400 hover:bg-red-500/10 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-all">
                   <Trash2 className="w-4 h-4" />
                 </button>
               </div>
             ))}
           </div>
-        </div>
+        </section>
       )}
     </div>
   );
@@ -701,7 +755,7 @@ function LinesRail({ lines, sel, onSelect, onDeletePercorso, onDeleteMany }: {
       })}
       {filteredLines.length === 0 && (
         <p className="px-3 py-4 text-[12px] text-emerald-400/40 italic">
-          {lines.length === 0 ? "Nessuna linea extraurbana in questo import." : "Nessun percorso per il filtro selezionato."}
+          {lines.length === 0 ? "Nessuna linea extraurbana in questa fotografia." : "Nessun percorso per il filtro selezionato."}
         </p>
       )}
     </div>

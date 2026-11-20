@@ -2020,6 +2020,63 @@ nessuna Watch Path nuova.
 
 **Rollback**: immagine precedente.
 
+### Le polimetriche dal programma di esercizio (tappa 6.36)
+
+Le polimetriche non si fanno più su un GTFS caricato a mano: si fanno su un
+**programma di Planning Studio**. Nella pagina delle polimetriche, al posto
+dello ZIP, c'è l'elenco dei programmi:
+- **quello in esercizio** (la sua versione pubblicata; se è andato in
+  esercizio senza versione, il progetto stesso);
+- **quelli programmati**, con la data da cui vanno in esercizio;
+- **le bozze** che chi lavora alle tariffe può aprire in Planning Studio
+  (proprietario o membro; l'amministratore tutte), per preparare le
+  polimetriche del programma che verrà.
+
+**«Fotografa»** fa una fotografia del programma com'è in quel momento: le
+linee extraurbane (le dicono le reti dell'azienda), le varianti con almeno una
+corsa attiva, le fermate coi km sulla geometria della variante. Si lavora
+sulla fotografia e non sul programma vivo, perché le polimetriche salvate
+puntano alle fermate per posizione e una modifica in Planning Studio le
+sposterebbe senza dirlo.
+
+**Il lavoro fatto viene con sé**, percorso per percorso, dove la linea e la
+sequenza delle fermate (per codice) sono le stesse:
+- le polimetriche salvate della fotografia più recente che ne ha si copiano
+  sulla fotografia nuova, coi km ricalcolati. Quelle di un percorso cambiato
+  restano indietro, e l'avviso dopo la fotografia lo dice;
+- le decisioni del confronto con la bigliettazione ricordano ora le fermate
+  del percorso scelto, e valgono su ogni fotografia dove c'è un percorso con
+  quelle fermate. Quelle di prima le prendono dalla migrazione.
+
+**Le polimetriche sono dell'azienda**: chi ha l'area Tariffe vede tutte le
+fotografie (prima ognuno vedeva solo i suoi import).
+
+Le fotografie di prima, fatte da uno ZIP, restano e si aprono come prima, con
+la scritta «GTFS caricato a mano». Uno ZIP non si carica più: un GTFS che non
+viene da Planning Studio si importa prima in Planning Studio.
+
+Sulla copia dei dati veri la fotografia della versione in esercizio si fa in
+2 secondi: 64 linee e 686 percorsi, gli stessi dello ZIP, con gli stessi km
+fermata per fermata, le stesse corse e lo stesso verso. Le 2 polimetriche
+salvate sono passate, e il confronto con la bigliettazione dà gli stessi
+numeri (98 percorsi, 533 coppie che cambiano fascia).
+
+Migrazione `0057`:
+- `polim_imports` sa da dove viene una fotografia (`fonte`, `progetto_id`,
+  `progetto_nome`, `stato_programma`);
+- `polim_abbinamenti_percorsi.fermate` ricorda le fermate del percorso scelto,
+  riempita per le decisioni di prima dalle fotografie che hanno quel percorso.
+
+**Chi**: legge chi ha l'area Tariffe; fa le fotografie chi può scriverla.
+
+**Dopo il deploy**: aprire le polimetriche e fare la fotografia del programma
+in esercizio: le polimetriche salvate sull'ultimo ZIP passano lì. Nessuna
+variabile e nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. Le colonne nuove restano e non danno
+fastidio; le fotografie fatte dal programma si aprono anche con l'immagine di
+prima.
+
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
 Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito
