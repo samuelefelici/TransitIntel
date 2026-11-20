@@ -79,6 +79,20 @@ export function fasciaPerDistanza(distKm: number): FasciaKm | undefined {
 }
 
 /**
+ * Il numero della fascia di una distanza come la contano le polimetriche
+ * (tappa 6.33, la stessa regola di artifacts/transitintel/src/lib/polimetrica.ts):
+ * i km arrotondati al metro, la fascia in cui la distanza è al più «a» (6 km
+ * esatti stanno nella fascia che finisce a 6), a zero km la prima, oltre
+ * l'ultima l'ultima. `null` senza fasce. Diversa da `fasciaPerDistanza`, che a
+ * zero km non dà nessuna fascia: due fermate dello stesso nodo pagano la prima.
+ */
+export function fasciaDeiKm(distKm: number, fasce: readonly FasciaKm[]): number | null {
+  if (fasce.length === 0 || !Number.isFinite(distKm)) return null;
+  const d = Math.max(0, Math.round(distKm * 1000) / 1000);
+  return (fasce.find((f) => d <= f.kmTo) ?? fasce[fasce.length - 1]!).fascia;
+}
+
+/**
  * Che cosa non va in un elenco di fasce, in parole; vuoto se sta in piedi.
  * Le fasce sono numerate da 1 senza buchi, la prima parte da 0 km, ognuna
  * comincia dove finisce quella prima (né buchi né sovrapposizioni) e finisce

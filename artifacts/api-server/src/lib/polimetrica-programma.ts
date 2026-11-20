@@ -335,6 +335,23 @@ export function percorsiPerChiave(f: Fotografia): Map<string, { linea: Linea; pe
   return per;
 }
 
+/**
+ * Il corpo con cui ricomporre una polimetrica salvata su un percorso con le
+ * stesse fermate (di un'altra fotografia, o del programma stesso): le sue
+ * decisioni (confini, nodi, punti tariffari), gli identificativi del percorso
+ * nuovo. Lo legge `leggiCorpo`, come un salvataggio dalla pagina.
+ */
+export function corpoDallaSalvata(s: any, importId: string, p: Pick<Percorso, "routeId" | "variantId">): unknown {
+  return {
+    importId, routeId: p.routeId, variantId: p.variantId,
+    direction: s.direction, name: s.name, boundaries: Array.isArray(s.boundaries) ? s.boundaries : [],
+    tratte: (Array.isArray(s.tratte) ? s.tratte : []).map((t: any) => ({
+      index: t?.index, number: t?.number, label: t?.label, color: t?.color, nodeName: t?.nodeName,
+    })),
+    stops: (Array.isArray(s.stops) ? s.stops : []).map((f: any) => ({ stopId: f?.stopId, ...(f?.punto === true ? { punto: true } : {}) })),
+  };
+}
+
 export const percorsoPerIlSalvataggio = (linea: Linea, p: Percorso): PercorsoImport => ({
   routeId: p.routeId, variantId: p.variantId, lineCode: linea.lineCode, lineName: linea.lineName, totalKm: p.totalKm, stops: p.stops,
 });
@@ -399,14 +416,7 @@ export async function portaIlLavoro(ex: Esecutore, importId: string, nuova: Foto
       const k = chiaveDi(String(sorgente.id), String(s.route_id), String(s.variant_id));
       const trovato = k ? indice.get(k) : undefined;
       if (!trovato) { nonPortata("il percorso non c'è più, o le sue fermate sono cambiate"); continue; }
-      const letto = leggiCorpo({
-        importId, routeId: trovato.percorso.routeId, variantId: trovato.percorso.variantId,
-        direction: s.direction, name: s.name, boundaries: Array.isArray(s.boundaries) ? s.boundaries : [],
-        tratte: (Array.isArray(s.tratte) ? s.tratte : []).map((t: any) => ({
-          index: t?.index, number: t?.number, label: t?.label, color: t?.color, nodeName: t?.nodeName,
-        })),
-        stops: (Array.isArray(s.stops) ? s.stops : []).map((f: any) => ({ stopId: f?.stopId, ...(f?.punto === true ? { punto: true } : {}) })),
-      });
+      const letto = leggiCorpo(corpoDallaSalvata(s, importId, trovato.percorso));
       if (!letto.ok) { nonPortata(letto.errore); continue; }
       const composta = componiPolimetrica(letto.corpo, percorsoPerIlSalvataggio(trovato.linea, trovato.percorso));
       if (!composta.ok) { nonPortata(composta.errore); continue; }

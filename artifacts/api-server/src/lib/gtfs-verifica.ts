@@ -236,5 +236,51 @@ export function verificaGtfs(g: Gtfs, oggi: string = new Date().toISOString().sl
     else if (fine && fine < oggi) avvisi.aggiungi("file_scaduto", "feed_info.txt", `il periodo del file è già finito (${fine})`);
   }
 
+  verificaTariffe(righe, fermate, linee, errori);
+
   return { errori: errori.elenco(), avvisi: avvisi.elenco() };
+}
+
+
+/**
+ * Le tariffe (GTFS Fares v2, tappa 6.37): ogni riferimento fra i file deve
+ * trovare la riga a cui punta. Senza file tariffari non c'è niente da
+ * controllare. I file li fa Cerbero coerenti: un errore qui è un difetto.
+ */
+function verificaTariffe(righe: (f: string) => Riga[], fermate: Set<string>, linee: Set<string>, errori: Raccolta): void {
+  const ci = (f: string) => righe(f).length > 0;
+  if (!["fare_products.txt", "fare_leg_rules.txt", "networks.txt", "areas.txt"].some(ci)) return;
+  const categorie = doppi(righe("rider_categories.txt"), "rider_category_id", errori, "rider_categories.txt", "una categoria di passeggero");
+  const supporti = doppi(righe("fare_media.txt"), "fare_media_id", errori, "fare_media.txt", "un supporto");
+  const reti = doppi(righe("networks.txt"), "network_id", errori, "networks.txt", "una rete");
+  const aree = doppi(righe("areas.txt"), "area_id", errori, "areas.txt", "un'area");
+  const prodotti = new Set<string>();
+  for (const p of righe("fare_products.txt")) {
+    const id = testo(p.fare_product_id);
+    if (!id) { errori.aggiungi("fare_product_id_vuoto", "fare_products.txt", "un titolo senza fare_product_id"); continue; }
+    prodotti.add(id);
+    const cat = testo(p.rider_category_id), sup = testo(p.fare_media_id);
+    if (cat && !categorie.has(cat)) errori.aggiungi("categoria_inesistente", "fare_products.txt", "un titolo con una categoria di passeggero che non c'è", id);
+    if (sup && !supporti.has(sup)) errori.aggiungi("supporto_inesistente", "fare_products.txt", "un titolo con un supporto che non c'è", id);
+    const prezzo = Number(p.amount);
+    if (!Number.isFinite(prezzo) || prezzo < 0) errori.aggiungi("prezzo_non_valido", "fare_products.txt", "un titolo senza un prezzo valido", id);
+  }
+  const conRete = new Set<string>();
+  for (const r of righe("route_networks.txt")) {
+    const rete = testo(r.network_id), linea = testo(r.route_id);
+    if (!reti.has(rete)) errori.aggiungi("rete_inesistente", "route_networks.txt", "una linea assegnata a una rete che non c'è", linea);
+    if (!linee.has(linea)) errori.aggiungi("linea_inesistente", "route_networks.txt", "una rete con una linea che non c'è", linea);
+    if (conRete.has(linea)) errori.aggiungi("linea_in_due_reti", "route_networks.txt", "una linea in due reti", linea);
+    conRete.add(linea);
+  }
+  for (const a of righe("stop_areas.txt")) {
+    if (!aree.has(testo(a.area_id))) errori.aggiungi("area_inesistente", "stop_areas.txt", "una fermata in un'area che non c'è", testo(a.area_id));
+    if (!fermate.has(testo(a.stop_id))) errori.aggiungi("fermata_inesistente", "stop_areas.txt", "un'area con una fermata che non c'è", testo(a.stop_id));
+  }
+  for (const r of righe("fare_leg_rules.txt")) {
+    const rete = testo(r.network_id), da = testo(r.from_area_id), a = testo(r.to_area_id), p = testo(r.fare_product_id);
+    if (rete && !reti.has(rete)) errori.aggiungi("regola_rete_inesistente", "fare_leg_rules.txt", "una regola su una rete che non c'è", rete);
+    if ((da && !aree.has(da)) || (a && !aree.has(a))) errori.aggiungi("regola_area_inesistente", "fare_leg_rules.txt", "una regola fra aree che non ci sono", `${da} → ${a}`);
+    if (!prodotti.has(p)) errori.aggiungi("regola_titolo_inesistente", "fare_leg_rules.txt", "una regola con un titolo che non c'è", p);
+  }
 }
