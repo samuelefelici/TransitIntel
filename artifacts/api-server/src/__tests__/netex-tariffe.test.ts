@@ -31,9 +31,14 @@ const ORARI: Gtfs = {
     { route_id: "U1", route_short_name: "U1", route_long_name: "Anello del lago", route_type: 3 },
     { route_id: "X1", route_short_name: "X1", route_long_name: "Borgo - Valle", route_type: 3 },
   ]),
-  "trips.txt": file(["route_id", "service_id", "trip_id", "direction_id"], [
-    { route_id: "U1", service_id: "FER", trip_id: "T1", direction_id: 0 },
-    { route_id: "X1", service_id: "FER", trip_id: "T2", direction_id: 0 },
+  "trips.txt": file(["route_id", "service_id", "trip_id", "direction_id", "shape_id"], [
+    { route_id: "U1", service_id: "FER", trip_id: "T1", direction_id: 0, shape_id: "FU1" },
+    { route_id: "X1", service_id: "FER", trip_id: "T2", direction_id: 0, shape_id: "FX1" },
+  ]),
+  /* i tracciati (tappa 6.42): le tratte fra le fermate passano anche lo schema del livello 3 */
+  "shapes.txt": file(["shape_id", "shape_pt_lat", "shape_pt_lon", "shape_pt_sequence"], [
+    ...URBANE.map((_, i) => ({ shape_id: "FU1", shape_pt_lat: LAT + i / 100, shape_pt_lon: LON, shape_pt_sequence: i + 1 })),
+    ...EXTRA.map((_, i) => ({ shape_id: "FX1", shape_pt_lat: LAT, shape_pt_lon: LON + (i + 1) / 10, shape_pt_sequence: i + 1 })),
   ]),
   "stop_times.txt": file(["trip_id", "arrival_time", "departure_time", "stop_id", "stop_sequence"], [
     ...URBANE.map((s, i) => ({ trip_id: "T1", arrival_time: `07:0${i}:00`, departure_time: `07:0${i}:00`, stop_id: s, stop_sequence: i + 1 })),
@@ -214,6 +219,11 @@ describe("NeTEx livello 3: il file", () => {
     const r = netexDaGtfs(GTFS, { ...OPZIONI, tariffe: { ...PER_NETEX, titoli: meno } });
     expect(r.conteggi.tariffe?.fuori).toBe(1);
     expect(r.xml).not.toContain("PreassignedFareProduct:AZ_lago_mens\"");
+  });
+
+  it("le tratte col tracciato ci sono anche nel livello 3", () => {
+    expect(conteggi.tratte).toBe(5);
+    expect(xml).toContain('<ServiceLink id="epd:IT:ITI3:ServiceLink:AZ_E1-AZ_E2" version="1">');
   });
 
   it("ogni riferimento porta a un oggetto del file, e nessun identificativo si ripete", () => {

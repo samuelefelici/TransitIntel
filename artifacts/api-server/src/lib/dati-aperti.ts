@@ -43,10 +43,11 @@ export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza
 export const FORMATO = 1;
 /**
  * Come FORMATO, solo per il NeTEx: 2 dalla tappa 6.19c, quando negli
- * identificativi restano «/» e «.» e arrivano i prefissi della Regione. Il
+ * identificativi restano «/» e «.» e arrivano i prefissi della Regione; 3
+ * dalla 6.42, quando arrivano le tratte col tracciato (ServiceLink). Il
  * GTFS non cambia e non si rifà.
  */
-export const FORMATO_NETEX = 2;
+export const FORMATO_NETEX = 3;
 /** Un tentativo andato male per un guasto (non per i dati) si riprova dopo un'ora. */
 const RIPROVA_DOPO_MS = 60 * 60 * 1000;
 

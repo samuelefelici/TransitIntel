@@ -69,6 +69,14 @@ describe("dati aperti: che cosa c'è nel file", () => {
     expect(contenuto(netex(1))).toEqual(["10 corse", "5 fermate", "2 linee"]);
     expect(contenuto(netex(3))).toEqual(["10 corse", "5 fermate", "2 linee", "3 operatori"]);
   });
+
+  it("il NeTEx: le tratte col tracciato e quelle senza (tappa 6.42)", () => {
+    const f = file({ tipo: "netex", inLinea: inLinea({ conteggi: { corse: 3502, fermate: 3901, linee: 128, tratte: 5486, tratteSenzaTracciato: 14 } }) });
+    expect(contenuto(f)).toEqual(["3502 corse", "3901 fermate", "128 linee", "5486 tratte col tracciato", "14 tratte senza tracciato (in linea retta)"]);
+    const uno = file({ tipo: "netex_l3", inLinea: inLinea({ conteggi: { corse: 1, fermate: 2, linee: 1, tratte: 1, tratteSenzaTracciato: 0 } }) });
+    expect(contenuto(uno)).toEqual(["1 corsa", "2 fermate", "1 linea", "1 tratta col tracciato"]);
+  });
+
   it("senza conteggi, niente", () => {
     expect(contenuto(file({}))).toEqual([]);
     expect(contenuto(file({ inLinea: inLinea() }))).toEqual([]);
