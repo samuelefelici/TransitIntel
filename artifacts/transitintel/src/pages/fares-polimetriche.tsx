@@ -888,7 +888,7 @@ function Workspace({ importId, detail, fasce, daApplicare, onApplicato, savedAB,
           <RefreshCw className="w-3 h-3" /> Rigenera dalle fasce
         </button>
         <input
-          value={name} onChange={(e) => setName(e.target.value)}
+          value={name} onChange={(e) => setName(e.target.value)} maxLength={200}
           placeholder="Nome polimetrica (opzionale)"
           className="text-[12px] px-2.5 py-1.5 rounded-lg bg-emerald-950/50 border border-emerald-800/50 text-emerald-100 placeholder:text-emerald-500/40 focus:outline-none focus:border-emerald-500/60 w-56"
         />
@@ -1121,7 +1121,7 @@ function StripDiagram({ stops, boundaries, trattaOf, groupNumbers, nodeNames, on
                 <span className="text-[10px] px-1.5 py-1 rounded font-bold shrink-0" style={{ background: `${color}22`, color }}>T{tNum}</span>
                 <input
                   value={nodeNames[tIdx] ?? ""}
-                  onChange={(e) => onSetNodeName(tIdx, e.target.value)}
+                  onChange={(e) => onSetNodeName(tIdx, e.target.value)} maxLength={120}
                   placeholder="Nome nodo tariffario…"
                   className="flex-1 min-w-0 text-[12px] px-2 py-1 rounded bg-emerald-950/60 border text-emerald-100 placeholder:text-emerald-500/40 focus:outline-none focus:border-emerald-400/70"
                   style={{ borderColor: `${color}66`, borderLeftWidth: 3, borderLeftColor: color }}

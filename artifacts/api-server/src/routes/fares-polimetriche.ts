@@ -21,6 +21,10 @@
  *   POST   /api/fares/polimetriche/saved                        — crea/aggiorna polimetrica
  *   DELETE /api/fares/polimetriche/saved/:id                    — elimina polimetrica
  *   GET    /api/fares/polimetriche/fasce                        — le fasce chilometriche dell'azienda (sola lettura)
+ *
+ * Gli identificativi (`:id`, `importId`) sono UUID: uno che non lo è dà 400.
+ * Agli errori del server il browser riceve un messaggio fisso; il dettaglio
+ * resta nel log (tappa 6.35).
  */
 import { Router, type IRouter } from "express";
 import multer from "multer";
@@ -33,6 +37,10 @@ import { fasceDalDatabase } from "../lib/fasce-km-store";
 import { parseCsv } from "./gtfs-helpers";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { legaContesto } from "../lib/contesto-http";
+import { z } from "zod";
+import {
+  componiPolimetrica, leggiCorpo, èUuid, LIMITI, type PercorsoImport,
+} from "../lib/polimetrica-salvata";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -41,6 +49,12 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150
 
 const userId = (req: any): string | null => req?.user?.id ?? null;
 const isAdmin = (req: any): boolean => req?.user?.role === "admin";
+
+/* ogni `:id` di queste rotte (un import, o una polimetrica salvata) è un UUID */
+router.param("id", (_req, res, next, id) => {
+  if (!èUuid(id)) { res.status(400).json({ error: "Identificativo non valido" }); return; }
+  next();
+});
 
 /* ─────────────────────────────────────────────────────────────
  *  Geometria — proiezione fermate sulla shape
@@ -176,8 +190,14 @@ router.post("/fares/polimetriche/import", strictLimiter, legaContesto(upload.sin
     res.status(400).json({ error: "Nessun file ricevuto. Invia uno ZIP GTFS come campo 'file'." });
     return;
   }
+  let zip: AdmZip;
   try {
-    const zip = new AdmZip(req.file.buffer);
+    zip = new AdmZip(req.file.buffer);
+  } catch {
+    res.status(400).json({ error: "Il file non si legge come ZIP." });
+    return;
+  }
+  try {
     const getFile = (name: string): string | null => {
       const e = zip.getEntry(name);
       return e ? e.getData().toString("utf8") : null;
@@ -387,7 +407,7 @@ router.post("/fares/polimetriche/import", strictLimiter, legaContesto(upload.sin
     });
   } catch (e: any) {
     console.error("[polimetriche] import", e);
-    res.status(500).json({ error: e?.message || "Errore durante l'import GTFS" });
+    res.status(500).json({ error: "Errore durante l'import GTFS" });
   }
 });
 
@@ -411,7 +431,7 @@ router.get("/fares/polimetriche/imports", async (req, res): Promise<void> => {
     })));
   } catch (e: any) {
     console.error("[polimetriche] list imports", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Import non leggibili" });
   }
 });
 
@@ -459,7 +479,7 @@ router.get("/fares/polimetriche/imports/:id", async (req, res): Promise<void> =>
     });
   } catch (e: any) {
     console.error("[polimetriche] get import", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Import non leggibile" });
   }
 });
 
@@ -489,7 +509,7 @@ router.get("/fares/polimetriche/imports/:id/percorso", async (req, res): Promise
     });
   } catch (e: any) {
     console.error("[polimetriche] get percorso", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Percorso non leggibile" });
   }
 });
 
@@ -524,7 +544,7 @@ router.get("/fares/polimetriche/imports/:id/full", async (req, res): Promise<voi
     });
   } catch (e: any) {
     console.error("[polimetriche] get full", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Import non leggibile" });
   }
 });
 
@@ -537,7 +557,7 @@ router.delete("/fares/polimetriche/imports/:id", async (req, res): Promise<void>
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[polimetriche] delete import", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Import non eliminato" });
   }
 });
 
@@ -568,9 +588,13 @@ router.delete("/fares/polimetriche/imports/:id/percorso", async (req, res): Prom
     res.json({ ok: true, removed, lineCount: payload.lines.length, percorsoCount });
   } catch (e: any) {
     console.error("[polimetriche] delete percorso", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Percorso non eliminato" });
   }
 });
+
+const PercorsiDaEliminare = z.array(z.object({
+  routeId: z.string().min(1).max(LIMITI.testo), variantId: z.string().min(1).max(LIMITI.testo),
+})).max(10_000);
 
 /* ─────────────────────────────────────────────────────────────
  *  POST /api/fares/polimetriche/imports/:id/percorsi/delete
@@ -578,7 +602,9 @@ router.delete("/fares/polimetriche/imports/:id/percorso", async (req, res): Prom
  * ───────────────────────────────────────────────────────────── */
 router.post("/fares/polimetriche/imports/:id/percorsi/delete", async (req, res): Promise<void> => {
   try {
-    const items: { routeId: string; variantId: string }[] = Array.isArray(req.body?.items) ? req.body.items : [];
+    const letti = PercorsiDaEliminare.safeParse(req.body?.items);
+    if (!letti.success) { res.status(400).json({ error: "Elenco dei percorsi da eliminare non valido" }); return; }
+    const items = letti.data;
     if (items.length === 0) { res.status(400).json({ error: "Nessun percorso da eliminare" }); return; }
     const keys = new Set(items.map(i => `${i.routeId}::${i.variantId}`));
     const r = await db.execute<any>(sql`SELECT payload FROM polim_imports WHERE id = ${req.params.id} LIMIT 1`);
@@ -601,7 +627,7 @@ router.post("/fares/polimetriche/imports/:id/percorsi/delete", async (req, res):
     res.json({ ok: true, removed, lineCount: payload.lines.length, percorsoCount });
   } catch (e: any) {
     console.error("[polimetriche] batch delete percorsi", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Percorsi non eliminati" });
   }
 });
 
@@ -610,7 +636,8 @@ router.post("/fares/polimetriche/imports/:id/percorsi/delete", async (req, res):
  * ───────────────────────────────────────────────────────────── */
 router.get("/fares/polimetriche/saved", async (req, res): Promise<void> => {
   try {
-    const importId = req.query.importId as string | undefined;
+    const importId = req.query.importId;
+    if (importId !== undefined && !èUuid(importId)) { res.status(400).json({ error: "import non valido" }); return; }
     const rows = importId
       ? (await db.execute<any>(sql`
           SELECT * FROM polim_polimetriche WHERE import_id = ${importId} ORDER BY line_code, created_at`)).rows
@@ -619,7 +646,7 @@ router.get("/fares/polimetriche/saved", async (req, res): Promise<void> => {
     res.json(rows.map(mapSavedRow));
   } catch (e: any) {
     console.error("[polimetriche] list saved", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Polimetriche non leggibili" });
   }
 });
 
@@ -648,25 +675,24 @@ function mapSavedRow(r: any) {
  *  POST /api/fares/polimetriche/saved   (upsert)
  * ───────────────────────────────────────────────────────────── */
 router.post("/fares/polimetriche/saved", async (req, res): Promise<void> => {
+  const letto = leggiCorpo(req.body);
+  if (!letto.ok) { res.status(400).json({ error: letto.errore }); return; }
+  const c = letto.corpo;
   try {
-    const b = req.body || {};
-    const { importId, routeId, lineCode, lineName, variantId } = b;
-    const direction = b.direction === "BA" ? "BA" : "AB";
-    if (!importId || !routeId || !variantId) {
-      res.status(400).json({ error: "importId, routeId e variantId richiesti" });
-      return;
-    }
-    const tratte = Array.isArray(b.tratte) ? b.tratte : [];
-    const boundaries = Array.isArray(b.boundaries) ? b.boundaries : [];
-    const stops = Array.isArray(b.stops) ? b.stops : [];
+    const percorso = await percorsoDellImport(c.importId, c.routeId, c.variantId);
+    if (percorso === "senza import") { res.status(404).json({ error: "Import non trovato" }); return; }
+    if (percorso === null) { res.status(400).json({ error: "Il percorso non è in questo import" }); return; }
+    const composta = componiPolimetrica(c, percorso);
+    if (!composta.ok) { res.status(400).json({ error: composta.errore }); return; }
+    const p = composta.polimetrica;
     const inserted = await db.execute<any>(sql`
       INSERT INTO polim_polimetriche (
         import_id, route_id, line_code, line_name, variant_id, direction, name,
         total_km, stop_count, tratta_count, boundaries, tratte, stops, created_by, updated_at
       ) VALUES (
-        ${importId}, ${routeId}, ${lineCode ?? null}, ${lineName ?? null}, ${variantId}, ${direction},
-        ${b.name ?? null}, ${b.totalKm ?? null}, ${stops.length}, ${tratte.length},
-        ${JSON.stringify(boundaries)}::jsonb, ${JSON.stringify(tratte)}::jsonb, ${JSON.stringify(stops)}::jsonb,
+        ${p.importId}::uuid, ${p.routeId}, ${p.lineCode}, ${p.lineName}, ${p.variantId}, ${p.direction},
+        ${p.name}, ${p.totalKm}, ${p.stops.length}, ${p.tratte.length},
+        ${JSON.stringify(p.boundaries)}::jsonb, ${JSON.stringify(p.tratte)}::jsonb, ${JSON.stringify(p.stops)}::jsonb,
         ${userId(req)}, now()
       )
       ON CONFLICT (import_id, route_id, variant_id, direction) DO UPDATE SET
@@ -685,20 +711,50 @@ router.post("/fares/polimetriche/saved", async (req, res): Promise<void> => {
     res.json(mapSavedRow(inserted.rows?.[0]));
   } catch (e: any) {
     console.error("[polimetriche] save", e);
-    res.status(500).json({ error: e?.message || "Errore salvataggio" });
+    res.status(500).json({ error: "Polimetrica non salvata" });
   }
 });
+
+/**
+ * Il percorso di un import (senza la geometria), cercato come lo cerca la
+ * pagina: la variante, e la linea GTFS o una delle sue linee sorelle.
+ * «senza import» se l'import non c'è, `null` se il percorso non è nell'import.
+ */
+async function percorsoDellImport(importId: string, routeId: string, variantId: string): Promise<PercorsoImport | "senza import" | null> {
+  const c = await db.execute<any>(sql`SELECT 1 FROM polim_imports WHERE id = ${importId}::uuid`);
+  if (!c.rows?.length) return "senza import";
+  const r = await db.execute<any>(sql`
+    SELECT l.value->>'lineCode' AS line_code, l.value->>'lineName' AS line_name, p.value - 'shape' AS percorso
+      FROM polim_imports i
+      CROSS JOIN LATERAL jsonb_array_elements(i.payload->'lines') WITH ORDINALITY AS l(value, n)
+      CROSS JOIN LATERAL jsonb_array_elements(l.value->'percorsi') WITH ORDINALITY AS p(value, n)
+     WHERE i.id = ${importId}::uuid
+       AND p.value->>'variantId' = ${variantId}
+       AND (p.value->>'routeId' = ${routeId} OR p.value->'routeIds' @> jsonb_build_array(${routeId}::text))
+     ORDER BY l.n, p.n
+     LIMIT 1`);
+  const x = r.rows?.[0];
+  if (!x) return null;
+  const p = x.percorso ?? {};
+  return {
+    routeId: String(p.routeId ?? routeId), variantId: String(p.variantId ?? variantId),
+    lineCode: x.line_code ?? null, lineName: x.line_name ?? null,
+    totalKm: Number(p.totalKm) || 0,
+    stops: Array.isArray(p.stops) ? p.stops : [],
+  };
+}
 
 /* ─────────────────────────────────────────────────────────────
  *  DELETE /api/fares/polimetriche/saved/:id
  * ───────────────────────────────────────────────────────────── */
 router.delete("/fares/polimetriche/saved/:id", async (req, res): Promise<void> => {
   try {
-    await db.execute(sql`DELETE FROM polim_polimetriche WHERE id = ${req.params.id}`);
+    const r = await db.execute<any>(sql`DELETE FROM polim_polimetriche WHERE id = ${req.params.id}::uuid RETURNING id`);
+    if (!r.rows?.length) { res.status(404).json({ error: "Polimetrica non trovata" }); return; }
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[polimetriche] delete saved", e);
-    res.status(500).json({ error: e?.message || "Errore" });
+    res.status(500).json({ error: "Polimetrica non eliminata" });
   }
 });
 

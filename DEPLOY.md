@@ -1985,6 +1985,41 @@ nessuna Watch Path nuova.
 
 **Rollback**: immagine precedente.
 
+### Le polimetriche salvate: il server controlla quello che arriva (tappa 6.35)
+
+Prima il salvataggio di una polimetrica dell'area di lavoro scriveva tratte e
+fermate come arrivavano dal browser, senza guardarle. Ora:
+- **dal browser si prendono solo le decisioni**: i confini delle tratte, il
+  punto tariffario scelto in una tratta, il nome del nodo (al più 120
+  caratteri), numero, etichetta e colore di ogni tratta, il nome della
+  polimetrica (al più 200);
+- **il resto viene dall'import**: la linea, le fermate coi loro nomi e km, e
+  quindi le fermate e i km di ogni tratta. Un km o un nome mandato dal browser
+  non conta;
+- le fermate mandate devono essere **quelle del percorso**, nello stesso
+  ordine (al contrario per il ritorno), e un confine deve stare dentro il
+  percorso. Se no il salvataggio si rifiuta con un messaggio che dice cosa non
+  torna, e non scrive niente;
+- al più un punto tariffario per tratta, e al più 1.000 fermate per percorso
+  (sui dati veri il più lungo ne ha 81).
+
+In tutte le rotte delle polimetriche dell'area di lavoro un identificativo che
+non è un UUID dà 400 (prima un errore 500 con il testo del database), e agli
+errori del server il browser riceve un messaggio fisso: il dettaglio resta nel
+log. Uno ZIP che non si legge dà 400 «Il file non si legge come ZIP.».
+
+Per chi usa la pagina non cambia niente. Sulla copia dei dati veri una
+polimetrica salvata dalla pagina (37 fermate, 4 tratte, andata e ritorno) si
+salva come prima, e ricaricata ha gli stessi nodi, punti tariffari e matrice.
+
+Le polimetriche già salvate restano come sono: si rileggono e si stampano
+come prima, e al prossimo salvataggio passano dal controllo.
+
+**Dopo il deploy**: niente da fare. Nessuna migrazione, nessuna variabile e
+nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
 Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito
