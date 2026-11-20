@@ -1,5 +1,6 @@
 /**
- * NeTEx con il profilo italiano, livello 1 (tappa 6.2).
+ * NeTEx con il profilo italiano, livello 1 (tappa 6.2), e livello 3 con le
+ * tariffe (tappa 6.40, lib/netex-tariffe.ts) quando il GTFS le porta.
  *
  * Il livello 1 del profilo italiano coincide con il profilo europeo per
  * l'informazione ai passeggeri, EPIP (UNI CEN/TS 16614-4:2021). Riferimenti:
@@ -21,6 +22,8 @@
  *       ServiceCalendarFrame EU_PI_CALENDAR  un ServiceCalendar: un DayType per
  *                                            servizio e i suoi giorni
  *       TimetableFrame       EU_PI_TIMETABLE le corse, con gli orari
+ *       FareFrame            EU_PI_FARE      le tariffe (livello 3), e nello
+ *                                            ServiceFrame le zone tariffarie
  *
  * Identificativi (linee guida, 4.2.1): [nazione]:[codice locale]:[Tipo]:[codice]
  * e, se c'è, :[fornitore]. Il codice è quello stabile della 3.1, ripulito per
@@ -37,6 +40,7 @@
  */
 import { createHash } from "node:crypto";
 import type { Gtfs, Riga } from "./gtfs-verifica";
+import { tariffeNetex, type ConteggiTariffeNetex, type TariffePerNetex } from "./netex-tariffe";
 
 export interface OpzioniNetex {
   /** il codice locale (NUTS) dell'identificativo: per le Marche «ITI3» */
@@ -65,6 +69,12 @@ export interface OpzioniNetex {
   adesso: Date;
   /** una descrizione per chi lo riceve */
   descrizione?: string;
+  /**
+   * Quello che il livello 3 vuole oltre ai file tariffari del GTFS (tappa
+   * 6.40). Con questo e coi titoli nel GTFS il file ha le tariffe; senza,
+   * resta di livello 1.
+   */
+  tariffe?: TariffePerNetex | null;
 }
 
 /** Un operatore del NeTEx: un gestore, coi suoi contatti. */
@@ -82,6 +92,8 @@ export interface ConteggiNetex {
   corseSenzaGiorni: number;
   /** gli operatori scritti nel file: uno, se non ci sono gestori */
   operatori: number;
+  /** le tariffe del livello 3; null se il file è di livello 1 */
+  tariffe: ConteggiTariffeNetex | null;
 }
 
 /* ── Piccoli attrezzi ────────────────────────────────────────────────────── */
@@ -209,6 +221,14 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
     })()
     : [{ ...o.azienda, email: null }];
   const operatore = idProprio("Operator", operatori[0]!.codice);
+  /* le tariffe (livello 3): dal GTFS, con le stesse fermate e le stesse linee */
+  const tariffe = o.tariffe ? tariffeNetex(gtfs, o.tariffe, {
+    id: (tipo, codice) => id(tipo, codice),
+    frame: `${it}:FareFrame-EU_PI_FARE:${pezzoId(o.azienda.codice)}`,
+    fermate: new Set(fermate.map((s) => testo(s.stop_id))),
+    linee: lineeUsate,
+  }) : null;
+  const livello = tariffe ? "livello 3 (con le tariffe)" : "livello 1 (EPIP)";
   const out: string[] = [];
   const p = (s: string) => out.push(s);
   const posizione = (lat: unknown, lon: unknown) =>
@@ -218,7 +238,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p('<PublicationDelivery xmlns="http://www.netex.org.uk/netex" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:siri="http://www.siri.org.uk/siri" version="1.1">');
   p(`<PublicationTimestamp>${o.adesso.toISOString()}</PublicationTimestamp>`);
   p(`<ParticipantRef>${xml(o.partecipante)}</ParticipantRef>`);
-  p(`<Description>${xml(o.descrizione ?? `Rete e orari di ${o.azienda.nome}, profilo italiano NeTEx livello 1 (EPIP)`)}</Description>`);
+  p(`<Description>${xml(o.descrizione ?? `Rete e orari di ${o.azienda.nome}, profilo italiano NeTEx ${livello}`)}</Description>`);
   p("<dataObjects>");
   p(`<CompositeFrame id="${it}:CompositeFrame-EU_PI_NETWORK_OFFER:${pezzoId(o.azienda.codice)}" ${v}>`);
   p(`<ValidBetween><FromDate>${dal}T00:00:00</FromDate><ToDate>${al}T23:59:59</ToDate></ValidBetween>`);
@@ -274,9 +294,14 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p("</lines>");
   p("<scheduledStopPoints>");
   for (const s of fermate) {
-    p(`<ScheduledStopPoint id="${id("ScheduledStopPoint", s.stop_id)}" ${v}><Name>${xml(s.stop_name)}</Name>${posizione(s.stop_lat, s.stop_lon)}</ScheduledStopPoint>`);
+    const zone = tariffe?.zoneDellaFermata.get(testo(s.stop_id));
+    p(`<ScheduledStopPoint id="${id("ScheduledStopPoint", s.stop_id)}" ${v}><Name>${xml(s.stop_name)}</Name>${posizione(s.stop_lat, s.stop_lon)}`
+      + (zone?.length ? `<tariffZones>${zone.map((z) => `<TariffZoneRef ref="${z}" ${v}/>`).join("")}</tariffZones>` : "")
+      + "</ScheduledStopPoint>");
   }
   p("</scheduledStopPoints>");
+  /* le zone tariffarie (livello 3): le reti urbane e i nodi delle linee extraurbane */
+  if (tariffe?.zone.length) { p("<tariffZones>"); tariffe.zone.forEach(p); p("</tariffZones>"); }
   p("<stopAssignments>");
   fermate.forEach((s, i) => {
     p(`<PassengerStopAssignment id="${id("PassengerStopAssignment", s.stop_id)}" ${v} order="${i + 1}">`
@@ -354,6 +379,9 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p("</vehicleJourneys>");
   p("</TimetableFrame>");
 
+  /* le tariffe (livello 3) */
+  if (tariffe) tariffe.fareFrame.forEach(p);
+
   p("</frames>");
   p("</CompositeFrame>");
   p("</dataObjects>");
@@ -365,6 +393,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
       fermate: fermate.length, linee: linee.length, sequenze: sequenze.size, corse: corseConSequenza.length, orari,
       tipiDiGiorno: servizi.length, giorni: n, corseSenzaGiorni: corseTutte.length - corse.length,
       operatori: operatori.length,
+      tariffe: tariffe?.conteggi ?? null,
     },
   };
 }

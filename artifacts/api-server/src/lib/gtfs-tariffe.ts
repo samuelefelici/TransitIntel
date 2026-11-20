@@ -67,6 +67,7 @@ import {
 import { componiPolimetrica, leggiCorpo } from "./polimetrica-salvata";
 import { contactlessAttivo, type Contactless, type TipoContactless } from "./contactless";
 import { contactlessDalDatabase } from "./contactless-store";
+import type { TariffePerNetex } from "./netex-tariffe";
 import type { FileGtfs, Gtfs, Problema, Riga } from "./gtfs-verifica";
 
 type Esecutore = { execute: (q: any) => Promise<any> };
@@ -426,6 +427,8 @@ export async function polimetricheSalvate(ex: Esecutore): Promise<Map<string, un
 
 export interface TariffeDelGtfs extends FileDelleTariffe {
   conteggi: { linee: number; percorsi: number; salvati: number; nodi: number; regole: number; contactless: number; trasbordi: number };
+  /** quello che il NeTEx di livello 3 vuole oltre ai file (tappa 6.40), letto nella stessa volta */
+  perNetex: TariffePerNetex;
 }
 
 /**
@@ -457,6 +460,10 @@ export async function tariffeDelGtfs(progettoId: string, gtfs: Gtfs, ex: Esecuto
       regole: fatti.file["fare_leg_rules.txt"]?.righe.length ?? 0,
       contactless: (fatti.file["fare_leg_rules.txt"]?.righe ?? []).filter((r) => String(r.fare_product_id).startsWith("contactless:")).length,
       trasbordi: fatti.file["fare_transfer_rules.txt"]?.righe.length ?? 0,
+    },
+    perNetex: {
+      titoli: new Map(titoli.map((x) => [x.titolo, { tipo: x.tipo, durataMinuti: x.durataMinuti, fascia: x.fascia, rete: x.rete }])),
+      fasce, contactless,
     },
   };
 }

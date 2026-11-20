@@ -155,10 +155,10 @@ export default function PlanningStudioListPage() {
     }
   }
 
-  /* Tappa 6.2: lo stesso programma in NeTEx, profilo italiano livello 1, per
-   * il NAP. Nasce dal GTFS consegnabile e passa lo schema EPIP: con errori il
-   * server si ferma e dice quali. Il file è grande: ci vuole qualche decina di
-   * secondi. */
+  /* Tappa 6.2: lo stesso programma in NeTEx, profilo italiano, per il NAP;
+   * dalla 6.40 di livello 3, con le tariffe del GTFS. Nasce dal GTFS
+   * consegnabile e passa lo schema del profilo: con errori il server si ferma
+   * e dice quali. Il file è grande: ci vuole qualche decina di secondi. */
   async function handleExportNetex(p: PsProject, forza = false) {
     const tid = toast.loading(`Genero il NeTEx di "${p.name}"…`, { description: "Programma, controllo dello schema e compressione: può volerci mezzo minuto." });
     try {
@@ -182,6 +182,7 @@ export default function PlanningStudioListPage() {
       const versione = resp.headers.get("X-Netex-Versione");
       const validazione = resp.headers.get("X-Netex-Validazione");
       const corse = resp.headers.get("X-Netex-Corse");
+      const livello = resp.headers.get("X-Netex-Livello");
       const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -191,7 +192,8 @@ export default function PlanningStudioListPage() {
       a.click();
       URL.revokeObjectURL(url);
       const da = versione === "esercizio" ? "Dalla versione in esercizio" : versione === "programmata" ? "Dalla versione programmata" : "Dalla bozza (il programma non ha una versione in esercizio)";
-      const controllo = validazione === "valido" ? "Passa lo schema EPIP del profilo italiano."
+      const controllo = validazione === "valido"
+        ? (livello === "3" ? "Con le tariffe: passa lo schema del livello 3 del profilo italiano." : "Passa lo schema EPIP del profilo italiano.")
         : validazione === "senza_xmllint" ? "Lo schema non è stato controllato su questo server."
         : "Esportato nonostante gli errori.";
       toast.success("NeTEx esportato", { id: tid, duration: validazione === "valido" ? 6000 : 15000, description: `${da}, ${corse ?? "?"} corse. ${controllo}` });
