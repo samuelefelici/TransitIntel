@@ -7,14 +7,23 @@
  *      (urbana o extraurbana la dicono le reti dell'azienda).
  *   3. Area di lavoro: selezioni linea → percorso → direzione; vedi la
  *      polilinea (fermate + distanze) e la POLIMETRICA generata in automatico
- *      come banda di tratte colorate (ogni 6 km una nuova tratta). L'utente
- *      può allargare/restringere le tratte (partizioni contigue, non
- *      sovrapponibili) spostando i confini sulle fermate.
+ *      come banda di tratte colorate: una tratta per ogni fascia chilometrica
+ *      dell'azienda, contata dal capolinea. L'utente può allargare/restringere
+ *      le tratte (partizioni contigue, non sovrapponibili) spostando i confini
+ *      sulle fermate, e scegliere il punto tariffario di ogni nodo.
  *   4. Salva → DB delle polimetriche; si procede una linea/percorso alla volta.
+ *
+ * La fascia fra due nodi è quella dei km fra i loro punti tariffari, letta
+ * dalle fasce dell'azienda (tappa 6.33, lib/polimetrica.ts): niente più 6 km
+ * scritti qui.
  */
 import React from "react";
 import { getApiBase } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { km as kmScritti, type FasciaKm } from "@/lib/fasce-km";
+import {
+  conPuntoScelto, confiniDalleFasce, fasciaDeiKm, matriceDelleFasce, nodiSalvati, puntiDelleTratte, trattaDelleFermate,
+} from "@/lib/polimetrica";
 import {
   Upload, FileArchive, Trash2, Route as RouteIcon, MapPin, Ruler, Save,
   ChevronRight, ChevronDown, Scissors, ArrowLeftRight, Check, Loader2,
@@ -23,7 +32,6 @@ import {
 } from "lucide-react";
 
 const API = () => getApiBase();
-const SEGMENT_KM = 6; // ogni 6 km → nuova tratta
 
 /* ── Palette tratte (ordine richiesto: 1→9) ──────────────────── */
 const TRATTA_PALETTE = [
@@ -40,12 +48,12 @@ const TRATTA_PALETTE = [
 const trattaColor = (i: number) => TRATTA_PALETTE[i % TRATTA_PALETTE.length];
 
 /**
- * Banda chilometrica (1-based) di una posizione km: ogni 6 km = una tratta.
- * km 0 → 1 ; (0,6] → 1 ; (6,12] → 2 ; … ; (24,30] → 5 ; (36,42] → 7.
- * Serve a far "saltare" il numero di tratta quando tra due fermate ci sono
- * più di 6 km (es. km30 = fine tratta 5, km40 = tratta 7, non 6).
+ * Il numero di una tratta: la fascia, dal capolinea, della sua prima fermata
+ * (con fasce da 6 km: km 0 → 1, fino a 6 → 1, fino a 12 → 2, …). Il numero
+ * salta quando fra due fermate c'è più di una fascia. Senza le fasce
+ * dell'azienda vale il posto della tratta nel percorso.
  */
-const bandOf = (km: number): number => (km <= 1e-6 ? 1 : Math.ceil(km / SEGMENT_KM));
+const numeroTratta = (km: number, posto: number, fasce: readonly FasciaKm[]): number => fasciaDeiKm(km, fasce) ?? posto + 1;
 
 /* ── Tipi ─────────────────────────────────────────────────────── */
 interface ImportSummary {
@@ -80,33 +88,32 @@ interface Tratta {
   fromStopIdx: number; toStopIdx: number;
   fromStopName: string; toStopName: string;
   fromKm: number; toKm: number; km: number; stopCount: number;
+  /** il punto tariffario del nodo: la fermata da cui si misurano i km verso gli altri nodi */
+  puntoStopIdx: number; puntoStopName: string; puntoKm: number;
 }
 
 const fmtKm = (n: number) => (Math.round(n * 100) / 100).toFixed(2);
 
-/* ── Genera confini automatici: nuova tratta quando cambia la banda 6 km ─── */
-function autoBoundaries(stops: PStop[]): number[] {
-  const b: number[] = [];
-  if (stops.length < 2) return b;
-  for (let i = 1; i < stops.length; i++) {
-    // confine alla prima fermata la cui banda 6km differisce dalla precedente
-    if (bandOf(stops[i].km) !== bandOf(stops[i - 1].km)) b.push(i);
-  }
-  return b;
-}
+/* I confini automatici (una tratta per fascia dal capolinea) e la tratta di
+   ogni fermata stanno in lib/polimetrica.ts: confiniDalleFasce, trattaDelleFermate. */
 
 /* ── Costruisce le tratte a partire dai confini ─────────────────── */
-function buildTratte(stops: PStop[], boundaries: number[], nodeNames?: Record<number, string>): Tratta[] {
+function buildTratte(
+  stops: PStop[], boundaries: number[], fasce: readonly FasciaKm[],
+  nodeNames?: Record<number, string>, scelte: readonly number[] = [],
+): Tratta[] {
   const bounds = [...new Set(boundaries)].filter(i => i > 0 && i < stops.length).sort((a, b) => a - b);
   const starts = [0, ...bounds];
+  const punti = puntiDelleTratte(trattaDelleFermate(stops.length, bounds), scelte);
   const tratte: Tratta[] = [];
   for (let k = 0; k < starts.length; k++) {
     const from = starts[k];
     const to = k + 1 < starts.length ? starts[k + 1] : stops.length - 1;
     const fromKm = stops[from].km;
     const toKm = stops[to].km;
-    // numero di tratta = banda 6km della fermata d'inizio (può saltare su gap >6km)
-    const number = bandOf(fromKm);
+    // numero di tratta = fascia dal capolinea della fermata d'inizio (può saltare se fra due fermate c'è più di una fascia)
+    const number = numeroTratta(fromKm, k, fasce);
+    const punto = punti[k] ?? from;
     tratte.push({
       index: k,
       number,
@@ -119,22 +126,14 @@ function buildTratte(stops: PStop[], boundaries: number[], nodeNames?: Record<nu
       toStopName: stops[to].stopName,
       fromKm, toKm, km: Math.round((toKm - fromKm) * 100) / 100,
       stopCount: to - from + 1,
+      puntoStopIdx: punto, puntoStopName: stops[punto].stopName, puntoKm: stops[punto].km,
     });
   }
   return tratte;
 }
 
-/** tratta-index per ogni fermata (la fermata i appartiene alla tratta che la contiene). */
-function stopTrattaMap(stops: PStop[], boundaries: number[]): number[] {
-  const bounds = [...new Set(boundaries)].filter(i => i > 0 && i < stops.length).sort((a, b) => a - b);
-  const map: number[] = [];
-  let t = 0, bi = 0;
-  for (let i = 0; i < stops.length; i++) {
-    if (bi < bounds.length && i === bounds[bi]) { t++; bi++; }
-    map.push(t);
-  }
-  return map;
-}
+/** Il testo quando l'azienda non ha scritto le fasce: lo stesso che dà l'API alle altre rotte delle tariffe. */
+const SENZA_FASCE = "Mancano le fasce chilometriche dell'extraurbano: le scrive l'amministratore in Amministrazione › Azienda, scheda «Fasce chilometriche»";
 
 /* ════════════════════════════════════════════════════════════════
  *  PAGINA
@@ -149,6 +148,17 @@ export default function FaresPolimetrichePage() {
   const [sel, setSel] = React.useState<{ lineCode: string; routeId: string; variantId: string } | null>(null);
   const [detail, setDetail] = React.useState<PercorsoDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = React.useState(false);
+
+  // le fasce chilometriche dell'azienda: null finché non arrivano; vuoto se non le ha scritte
+  const [fasce, setFasce] = React.useState<FasciaKm[] | null>(null);
+  const [fasceNonLette, setFasceNonLette] = React.useState(false); // la lettura è fallita: non è che l'azienda non le abbia
+  React.useEffect(() => {
+    fetch(`${API()}/api/fares/polimetriche/fasce`)
+      .then(r => r.ok ? r.json() : Promise.reject(r))
+      .then((d) => setFasce(Array.isArray(d?.fasce) ? d.fasce : []))
+      .catch(() => { setFasce([]); setFasceNonLette(true); });
+  }, []);
+  const senzaFasce = fasceNonLette ? "Le fasce chilometriche non si sono caricate: ricarica la pagina" : SENZA_FASCE;
 
   // larghezza ridimensionabile della sidebar linee
   const [railWidth, setRailWidth] = React.useState(300);
@@ -247,10 +257,14 @@ export default function FaresPolimetrichePage() {
 
   // Convalida generale: esporta TUTTI i percorsi in PDF (matrice a gradoni).
   // Dove esiste una polimetrica salvata la uso (con nomi nodo), altrimenti
-  // genero le tratte in automatico (regola 6 km), anche senza salvataggio/nomi.
+  // genero le tratte in automatico (una per fascia dal capolinea), anche senza salvataggio/nomi.
   const [exporting, setExporting] = React.useState(false);
   const exportGradoni = React.useCallback(async () => {
-    if (!importId) return;
+    if (!importId || !fasce) return;
+    if (fasce.length === 0) {
+      toast({ title: "Mancano le fasce", description: senzaFasce, variant: "destructive" });
+      return;
+    }
     setExporting(true);
     try {
       const [full, savedRows, logo] = await Promise.all([
@@ -274,12 +288,12 @@ export default function FaresPolimetrichePage() {
           const key = `${p.routeId}::${p.variantId}`;
           const saved = savedMap.get(key);
           if (saved) { items.push(saved); continue; }
-          // auto: tratte ogni 6 km, nessun nome nodo
+          // auto: una tratta per fascia dal capolinea, nessun nome nodo
           const st = (p.stops || []) as PStop[];
           if (st.length < 2) continue;
-          const b = autoBoundaries(st);
-          const tr = buildTratte(st, b);
-          const tof = stopTrattaMap(st, b);
+          const b = confiniDalleFasce(st, fasce);
+          const tr = buildTratte(st, b, fasce);
+          const tof = trattaDelleFermate(st.length, b);
           items.push({
             id: key, routeId: p.routeId, lineCode: line.lineCode, lineName: line.lineName,
             variantId: p.variantId, direction: "AB", name: null,
@@ -293,13 +307,13 @@ export default function FaresPolimetrichePage() {
         toast({ title: "Nessun percorso valido", description: "Niente da esportare.", variant: "destructive" });
         return;
       }
-      openGradoniExport(items, full.agencyName ?? null, full.filename ?? "", logo);
+      openGradoniExport(items, full.agencyName ?? null, full.filename ?? "", logo, fasce);
     } catch {
       toast({ title: "Errore", description: "Export non riuscito", variant: "destructive" });
     } finally {
       setExporting(false);
     }
-  }, [importId, toast]);
+  }, [importId, toast, fasce, senzaFasce]);
 
   /* ── Schermata import ──────────────────────────────────────── */
   if (!importId) {
@@ -335,7 +349,7 @@ export default function FaresPolimetrichePage() {
           </span>
           <button
             onClick={exportGradoni}
-            disabled={exporting || flatPercorsi.length === 0}
+            disabled={exporting || flatPercorsi.length === 0 || !fasce?.length}
             title="Convalida ed esporta TUTTI i percorsi in PDF (matrice a gradoni). Usa le polimetriche salvate dove presenti, altrimenti le genera in automatico."
             className="text-[12px] px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-40 transition-colors flex items-center gap-1.5"
           >
@@ -349,6 +363,12 @@ export default function FaresPolimetrichePage() {
           </button>
         </div>
       </div>
+
+      {fasce && fasce.length === 0 && (
+        <div role="alert" className="mb-3 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/10 text-[12px] text-amber-200">
+          {senzaFasce}. Senza, le tratte e la matrice delle fasce non si possono calcolare.
+        </div>
+      )}
 
       <div className="flex-1 min-h-0 flex">
         {/* Rail linee (ridimensionabile) */}
@@ -379,13 +399,14 @@ export default function FaresPolimetrichePage() {
               <RouteIcon className="w-10 h-10 opacity-40" />
               <p className="text-sm">Seleziona una linea e un percorso a sinistra<br />per generare e modificare la polimetrica.</p>
             </div>
-          ) : loadingDetail || !detail ? (
+          ) : loadingDetail || !detail || !fasce ? (
             <div className="h-full flex items-center justify-center text-emerald-400/50"><Loader2 className="w-6 h-6 animate-spin" /></div>
           ) : (
             <Workspace
               key={`${detail.routeId}:${detail.variantId}`}
               importId={importId}
               detail={detail}
+              fasce={fasce}
               savedAB={sel ? (tree?.lines.flatMap(l => l.percorsi).find(p => p.routeId === sel.routeId && p.variantId === sel.variantId)?.savedAB ?? false) : false}
               savedBA={sel ? (tree?.lines.flatMap(l => l.percorsi).find(p => p.routeId === sel.routeId && p.variantId === sel.variantId)?.savedBA ?? false) : false}
               onSaved={() => { if (importId) loadTree(importId); }}
@@ -468,7 +489,7 @@ function ImportScreen({ imports, onImported, onSelect, onDelete, toast }: {
           <div className="flex flex-col items-center gap-2 text-emerald-300/80">
             <Upload className="w-8 h-8 text-emerald-400" />
             <span className="text-sm font-medium">Trascina qui lo ZIP GTFS o clicca per selezionarlo</span>
-            <span className="text-[11px] text-emerald-400/50">Step 1 · max 150 MB · vengono tenute solo le linee con codice che inizia per lettera</span>
+            <span className="text-[11px] text-emerald-400/50">Step 1 · max 150 MB · vengono tenute solo le linee extraurbane, secondo le reti dell'azienda</span>
           </div>
         )}
       </div>
@@ -660,9 +681,10 @@ function LinesRail({ lines, sel, onSelect, onDeletePercorso, onDeleteMany }: {
 /* ════════════════════════════════════════════════════════════════
  *  Workspace di un percorso
  * ════════════════════════════════════════════════════════════════ */
-function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast }: {
+function Workspace({ importId, detail, fasce, savedAB, savedBA, onSaved, onNext, toast }: {
   importId: string;
   detail: PercorsoDetail;
+  fasce: FasciaKm[];
   savedAB: boolean; savedBA: boolean;
   onSaved: () => void;
   onNext: () => void;
@@ -687,6 +709,7 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
   // boundaries: ricalcola auto al cambio percorso/direzione (carica salvato se presente)
   const [boundaries, setBoundaries] = React.useState<number[]>([]);
   const [nodeNames, setNodeNames] = React.useState<Record<number, string>>({}); // nodo tariffario per tratta (per indice)
+  const [scelte, setScelte] = React.useState<number[]>([]); // fermate scelte come punto tariffario (indici); le altre tratte usano la loro prima fermata
   const [name, setName] = React.useState("");
   const [saving, setSaving] = React.useState(false);
   const [loadedSaved, setLoadedSaved] = React.useState(false);
@@ -707,21 +730,27 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
           const nn: Record<number, string> = {};
           if (Array.isArray(match.tratte)) for (const t of match.tratte) if (t?.nodeName) nn[t.index] = t.nodeName;
           setNodeNames(nn);
+          // i punti tariffari scelti: le fermate salvate col segno «punto»
+          const salvate: unknown[] = Array.isArray(match.stops) ? match.stops : [];
+          setScelte(salvate.flatMap((f: any, i) => (f?.punto === true && i < stops.length ? [i] : [])));
         } else {
-          setBoundaries(autoBoundaries(stops));
+          setBoundaries(confiniDalleFasce(stops, fasce));
           setName("");
           setNodeNames({});
+          setScelte([]);
         }
         setLoadedSaved(true);
       })
-      .catch(() => { if (!cancelled) { setBoundaries(autoBoundaries(stops)); setNodeNames({}); setLoadedSaved(true); } });
+      .catch(() => { if (!cancelled) { setBoundaries(confiniDalleFasce(stops, fasce)); setNodeNames({}); setScelte([]); setLoadedSaved(true); } });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [importId, detail.routeId, detail.variantId, direction]);
 
-  const tratte = React.useMemo(() => buildTratte(stops, boundaries, nodeNames), [stops, boundaries, nodeNames]);
-  const trattaOf = React.useMemo(() => stopTrattaMap(stops, boundaries), [stops, boundaries]);
-  // numero (banda 6km) per indice-gruppo: usato per colore/etichetta delle tratte
+  const tratte = React.useMemo(() => buildTratte(stops, boundaries, fasce, nodeNames, scelte), [stops, boundaries, fasce, nodeNames, scelte]);
+  const trattaOf = React.useMemo(() => trattaDelleFermate(stops.length, boundaries), [stops, boundaries]);
+  // il punto tariffario di ogni tratta (indice di fermata)
+  const punti = React.useMemo(() => tratte.map(t => t.puntoStopIdx), [tratte]);
+  // numero (fascia dal capolinea) per indice-gruppo: usato per colore/etichetta delle tratte
   const groupNumbers = React.useMemo(() => {
     const arr: number[] = [];
     for (const t of tratte) arr[t.index] = t.number;
@@ -740,7 +769,10 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
   const save = async (advance: boolean) => {
     setSaving(true);
     try {
-      const stopsPayload = stops.map((s, i) => ({ ...s, tratta: trattaOf[i] }));
+      // il segno «punto» va solo sulle fermate scelte che valgono: le altre tratte usano la loro prima fermata
+      const stopsPayload = stops.map((s, i) => ({
+        ...s, tratta: trattaOf[i], ...(scelte.includes(i) && punti[trattaOf[i]] === i ? { punto: true } : {}),
+      }));
       const body = {
         importId, routeId: detail.routeId, lineCode: detail.lineCode, lineName: detail.lineName,
         variantId: detail.variantId, direction,
@@ -801,9 +833,11 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
         <span className="text-[11px] text-emerald-400/60 font-semibold uppercase tracking-wider flex items-center gap-1.5">
           <Ruler className="w-3.5 h-3.5" /> Polimetrica · {tratte.length} tratte
         </span>
-        <button onClick={() => { setBoundaries(autoBoundaries(stops)); setNodeNames({}); }}
-          className="text-[11px] px-2 py-1 rounded-lg border border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10 flex items-center gap-1">
-          <RefreshCw className="w-3 h-3" /> Rigenera ogni {SEGMENT_KM} km
+        <button onClick={() => { setBoundaries(confiniDalleFasce(stops, fasce)); setNodeNames({}); setScelte([]); }}
+          disabled={fasce.length === 0}
+          title="Rifà le tratte: una per ogni fascia chilometrica dell'azienda, contata dal capolinea. Toglie i nomi dei nodi e i punti tariffari scelti."
+          className="text-[11px] px-2 py-1 rounded-lg border border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10 disabled:opacity-40 flex items-center gap-1">
+          <RefreshCw className="w-3 h-3" /> Rigenera dalle fasce
         </button>
         <input
           value={name} onChange={(e) => setName(e.target.value)}
@@ -831,7 +865,9 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
           ) : (
             <StripDiagram stops={stops} boundaries={boundaries} trattaOf={trattaOf}
               groupNumbers={groupNumbers} nodeNames={nodeNames} onSetBoundaries={setBoundaries}
-              onSetNodeName={(idx, val) => setNodeNames(prev => ({ ...prev, [idx]: val }))} />
+              onSetNodeName={(idx, val) => setNodeNames(prev => ({ ...prev, [idx]: val }))}
+              punti={punti} scelte={scelte}
+              onPunto={(i) => setScelte(prev => conPuntoScelto(prev, i, trattaOf))} />
           )}
         </div>
 
@@ -849,6 +885,9 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
                       <p className="text-[11px] text-emerald-100 font-medium leading-tight">{t.label}</p>
                       <p className="text-[9px] text-emerald-400/50 font-mono truncate">
                         {fmtKm(t.km)} km · {t.stopCount} ferm · {fmtKm(t.fromKm)}→{fmtKm(t.toKm)}
+                      </p>
+                      <p className="text-[9px] text-emerald-300/60 truncate flex items-center gap-1" title="Punto tariffario: i km fra i nodi si misurano da questa fermata">
+                        <MapPin className="w-2.5 h-2.5 shrink-0" /> {t.puntoStopName} · km {fmtKm(t.puntoKm)}
                       </p>
                     </div>
                     {t.index > 0 && (
@@ -870,6 +909,7 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
               ))}
             </div>
           </div>
+          <MatriceFasce tratte={tratte} fasce={fasce} />
         </div>
       </div>
     </div>
@@ -877,14 +917,57 @@ function Workspace({ importId, detail, savedAB, savedBA, onSaved, onNext, toast 
 }
 
 /* ════════════════════════════════════════════════════════════════
+ *  La matrice a gradoni del percorso aperto: per ogni coppia di nodi la
+ *  fascia dei km fra i loro punti tariffari (lib/polimetrica.ts)
+ * ════════════════════════════════════════════════════════════════ */
+function MatriceFasce({ tratte, fasce }: { tratte: Tratta[]; fasce: readonly FasciaKm[] }) {
+  const matrice = React.useMemo(() => matriceDelleFasce(tratte.map(t => t.puntoKm), fasce), [tratte, fasce]);
+  if (tratte.length < 2) return null;
+  const nome = (t: Tratta) => t.nodeName.trim() || `T${t.number}`;
+  const massimo = Math.max(1, ...matrice.flat().filter((v): v is number => v != null));
+  return (
+    <div>
+      <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400/50 mb-1.5">Matrice delle fasce</p>
+      <div className="overflow-x-auto">
+        <table className="border-collapse text-[10px] font-mono">
+          <tbody>
+            {tratte.map((t, r) => (
+              <tr key={t.index}>
+                {matrice[r].map((v, c) => (
+                  <td key={c}
+                    title={`${nome(tratte[c])} → ${nome(t)}: ${fmtKm(Math.abs(t.puntoKm - tratte[c].puntoKm))} km`}
+                    className="w-[18px] h-[18px] text-center text-emerald-50 border border-emerald-900/60"
+                    style={{ background: `rgba(16,185,129,${v == null ? 0 : 0.12 + 0.5 * (massimo <= 1 ? 0 : (v - 1) / (massimo - 1))})` }}>
+                    {v ?? "—"}
+                  </td>
+                ))}
+                <td className="pl-1.5 text-left whitespace-nowrap" style={{ color: t.color }}>{nome(t)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-1 text-[9px] text-emerald-400/40 leading-snug">
+        La fascia dei km fra i punti tariffari dei due nodi, dalle fasce chilometriche dell'azienda.
+      </p>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════
  *  Strip diagram — elenco fermate con banda tratte e confini editabili
  * ════════════════════════════════════════════════════════════════ */
-function StripDiagram({ stops, boundaries, trattaOf, groupNumbers, nodeNames, onSetBoundaries, onSetNodeName }: {
+function StripDiagram({ stops, boundaries, trattaOf, groupNumbers, nodeNames, onSetBoundaries, onSetNodeName, punti, scelte, onPunto }: {
   stops: PStop[]; boundaries: number[]; trattaOf: number[];
   groupNumbers: number[];
   nodeNames: Record<number, string>;
   onSetBoundaries: (b: number[]) => void;
   onSetNodeName: (idx: number, val: string) => void;
+  /** il punto tariffario di ogni tratta (indice di fermata) */
+  punti: number[];
+  /** le fermate scelte a mano come punto tariffario */
+  scelte: number[];
+  onPunto: (stopIdx: number) => void;
 }) {
   const numOf = (gi: number) => groupNumbers[gi] ?? gi + 1;
   const rowRefs = React.useRef<(HTMLDivElement | null)[]>([]);
@@ -946,6 +1029,8 @@ function StripDiagram({ stops, boundaries, trattaOf, groupNumbers, nodeNames, on
         const color = trattaColor(tNum - 1);
         const isBoundary = boundaries.includes(i);
         const isFirstOfTratta = i === 0 || trattaOf[i - 1] !== tIdx;
+        const isPunto = punti[tIdx] === i;
+        const sceltoAMano = isPunto && scelte.includes(i);
         return (
           <div key={`${s.stopId}-${i}`} ref={(el) => { rowRefs.current[i] = el; }}>
             {/* Confine tra fermata i-1 e i */}
@@ -1003,6 +1088,16 @@ function StripDiagram({ stops, boundaries, trattaOf, groupNumbers, nodeNames, on
                   <span className="w-2.5 h-2.5 rounded-full" style={{ background: color, boxShadow: `0 0 0 2px rgba(0,0,0,0.3)` }} />
                 </span>
                 <span className="text-[10px] text-emerald-500/40 font-mono w-6 text-right shrink-0">{i + 1}</span>
+                <button type="button" onClick={() => onPunto(i)} aria-pressed={isPunto}
+                  aria-label={isPunto ? `Punto tariffario del nodo: ${s.stopName}` : `Usa ${s.stopName} come punto tariffario del nodo`}
+                  title={sceltoAMano
+                    ? "Punto tariffario del nodo: i km fra i nodi si misurano da questa fermata. Clic per tornare alla prima fermata della tratta."
+                    : isPunto ? "Punto tariffario del nodo: i km fra i nodi si misurano da questa fermata (la prima della tratta)."
+                      : "Usa questa fermata come punto tariffario del nodo"}
+                  className={`shrink-0 p-0.5 rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-emerald-400 ${isPunto ? "" : "text-emerald-500/25 hover:text-emerald-300"}`}
+                  style={isPunto ? { color } : undefined}>
+                  <MapPin className="w-3.5 h-3.5" fill={isPunto ? "currentColor" : "none"} fillOpacity={0.35} />
+                </button>
                 <span className="flex-1 min-w-0 text-[13px] text-emerald-100 truncate">{s.stopName}</span>
                 <span className="text-[10px] text-emerald-300/70 font-mono w-16 text-right shrink-0">{fmtKm(s.km)} km</span>
                 <span className="text-[10px] text-emerald-400/40 font-mono w-16 text-right shrink-0">
@@ -1068,48 +1163,62 @@ interface SavedPolimetrica {
   id: string; routeId: string; lineCode: string | null; lineName: string | null;
   variantId: string; direction: string; name: string | null;
   totalKm: number | null; stopCount: number | null; trattaCount: number | null;
-  stops: { stopName: string; km: number; tratta: number }[] | null;
+  stops: { stopName: string; km: number; tratta: number; punto?: boolean }[] | null;
   tratte: { index: number; number?: number; nodeName?: string; label?: string; km?: number; fromStopName?: string; toStopName?: string }[] | null;
 }
 
 const esc = (s: string) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
 
-/** colore cella in base al numero di tratte (più tratte = più scuro). */
+/** colore cella in base alla fascia (più alta = più scuro). */
 function gradoniCellColor(v: number, maxV: number): { bg: string; fg: string } {
   const t = maxV <= 1 ? 0 : (v - 1) / (maxV - 1);
   const L = Math.round(88 - t * 45); // 88% → 43%
   return { bg: `hsl(152,55%,${L}%)`, fg: L < 60 ? "#ffffff" : "#064e3b" };
 }
 
-function renderGradoniTable(p: SavedPolimetrica): string {
+function renderGradoniTable(p: SavedPolimetrica, fasce: readonly FasciaKm[]): string {
   // Matrice triangolare NODO TARIFFARIO × NODO TARIFFARIO (compatta) + colonna
   // laterale con tutte le fermate colorate per tratta (come nell'area di lavoro).
   const tratte = (p.tratte || []).slice().sort((a, b) => a.index - b.index);
   const stops = p.stops || [];
   if (tratte.length < 1) return `<p class="empty">Nessuna tratta definita.</p>`;
   const N = tratte.length;
-  const numberOf = (i: number) => tratte[i].number ?? i + 1;       // numero banda 6km
+  // di ogni nodo: la prima fermata (numero e colore della tratta) e il punto tariffario (i km della matrice).
+  // Si ricalcolano dalle fermate salvate: un salvataggio di prima della 6.33 porta il numero a tratte da 6 km.
+  const nodi = nodiSalvati(stops, N);
+  const kmDi = (i: number | undefined): number | null => (i !== undefined && Number.isFinite(stops[i]?.km) ? stops[i].km : null);
+  const numberOf = (i: number) => {                               // fascia dal capolinea
+    const k = kmDi(nodi[i]?.prima);
+    if (k != null) return numeroTratta(k, i, fasce);
+    // senza km resta il numero salvato, ma solo se è un numero: finisce nell'HTML della stampa
+    const salvato = Number(tratte[i].number);
+    return Number.isInteger(salvato) && salvato > 0 ? salvato : i + 1;
+  };
   const colorOf = (i: number) => trattaColor(numberOf(i) - 1);
   const nodeLabel = (i: number) => (tratte[i].nodeName || "").trim() || `Tratta ${numberOf(i)}`;
-  const maxV = numberOf(N - 1) - numberOf(0) + 1;
+  const kmPunti = nodi.map(n => kmDi(n?.punto));
+  const matrice = matriceDelleFasce(kmPunti, fasce);
+  const maxV = Math.max(1, ...matrice.flat().filter((v): v is number => v != null));
 
   // ── Matrice a gradoni (nodo × nodo) ──
   let rows = "";
   for (let r = 0; r < N; r++) {
     let cells = "";
     for (let c = 0; c < r; c++) {
-      const v = numberOf(r) - numberOf(c) + 1; // n. tratte tra nodo c e nodo r
+      const v = matrice[r][c]; // fascia dei km fra i punti tariffari del nodo c e del nodo r
+      if (v == null) { cells += `<td class="v">—</td>`; continue; }
       const { bg, fg } = gradoniCellColor(v, maxV);
       cells += `<td class="v" style="background:${bg};color:${fg}">${v}</td>`;
     }
-    cells += `<td class="name"><span class="dot" style="background:${colorOf(r)}"></span>T${numberOf(r)} · ${esc(nodeLabel(r))}</td>`;
+    const kmPunto = kmPunti[r];
+    cells += `<td class="name"><span class="dot" style="background:${colorOf(r)}"></span>T${numberOf(r)} · ${esc(nodeLabel(r))}${kmPunto == null ? "" : ` <span class="pk">km ${fmtKm(kmPunto)}</span>`}</td>`;
     rows += `<tr>${cells}</tr>`;
   }
 
   // ── Colonna fermate colorate per tratta ──
   let stopRows = "";
   let prevG = -1;
-  for (const s of stops) {
+  for (const [idx, s] of stops.entries()) {
     const gi = s.tratta;
     if (gi !== prevG) {
       const lbl = gi >= 0 && gi < N ? `T${numberOf(gi)} · ${esc(nodeLabel(gi))}` : `Tratta`;
@@ -1117,7 +1226,8 @@ function renderGradoniTable(p: SavedPolimetrica): string {
       prevG = gi;
     }
     const col = gi >= 0 && gi < N ? colorOf(gi) : "#ccc";
-    stopRows += `<div class="st"><span class="d" style="background:${col}"></span><span class="nm">${esc(s.stopName)}</span><span class="km">${fmtKm(s.km)}</span></div>`;
+    const punto = nodi[gi]?.punto === idx;
+    stopRows += `<div class="st${punto ? " pt" : ""}"><span class="d" style="background:${col}"></span><span class="nm">${punto ? "◆ " : ""}${esc(s.stopName)}</span><span class="km">${fmtKm(s.km)}</span></div>`;
   }
 
   const first = stops[0]?.stopName ?? nodeLabel(0);
@@ -1127,7 +1237,7 @@ function renderGradoniTable(p: SavedPolimetrica): string {
     <section class="poli">
       <h2>${esc(p.lineCode || "")} — ${esc(p.name || `${first} → ${last}`)}</h2>
       <p class="meta"><b>Cod. percorso:</b> ${esc(codice)} · ${fmtKm(p.totalKm ?? 0)} km · ${N} nodi tariffari${stops.length ? ` · ${stops.length} fermate` : ""}
-        <span class="hint">— valore cella = numero di tratte tra i due nodi (fascia).</span></p>
+        <span class="hint">— valore cella = fascia dei km fra i punti tariffari (◆) dei due nodi.</span></p>
       <div class="cols">
         <table class="grad"><tbody>${rows}</tbody></table>
         <div class="stoplist">${stopRows}</div>
@@ -1150,13 +1260,15 @@ async function fetchLogoDataUrl(): Promise<string | null> {
   } catch { return null; }
 }
 
-function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, filename: string, logoDataUrl: string | null) {
+function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, filename: string, logoDataUrl: string | null, fasce: readonly FasciaKm[]) {
   // ordina per linea/codice
   const sorted = [...rows].sort((a, b) =>
     (a.lineCode || "").localeCompare(b.lineCode || "", "it", { numeric: true }) ||
     (a.routeId || "").localeCompare(b.routeId || "") ||
     (a.variantId || "").localeCompare(b.variantId || ""));
-  const body = sorted.map(renderGradoniTable).join("\n");
+  const body = sorted.map((r) => renderGradoniTable(r, fasce)).join("\n");
+  // le fasce con cui sono fatte le matrici: chi convalida le ha sotto gli occhi
+  const elencoFasce = fasce.map((f) => `${f.fascia}: fino a ${kmScritti(f.kmTo)} km`).join(" · ");
   const logoImg = logoDataUrl ? `<img src="${logoDataUrl}" alt="Fares Engine" />` : "";
   const html = `<!doctype html><html lang="it"><head><meta charset="utf-8">
 <title>Polimetriche a gradoni${agencyName ? " — " + esc(agencyName) : ""}</title>
@@ -1185,6 +1297,9 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
   table.grad td.v{font-variant-numeric:tabular-nums;font-weight:700}
   table.grad td.name{text-align:left;white-space:nowrap;padding:0 7px;font-weight:600;background:#fff;border-left:2px solid #cbd5e1}
   .name .dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:middle}
+  .name .pk{font-weight:400;color:#64748b;font-variant-numeric:tabular-nums;margin-left:4px}
+  .fasce{font-size:10px;color:#475569;margin:0 0 12px}
+  .fasce b{color:#065f46}
   /* colonna fermate colorate per tratta (A3 orizzontale → 3 colonne) */
   .stoplist{flex:1 1 auto;min-width:0;columns:3;column-gap:24px;font-size:10px}
   .stoplist .grp{break-inside:avoid;font-weight:700;color:#0f172a;background:#f1f5f9;border-left:3px solid #ccc;padding:2px 6px;margin:4px 0 2px}
@@ -1192,6 +1307,7 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
   .stoplist .st .d{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
   .stoplist .st .nm{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .stoplist .st .km{color:#94a3b8;font-variant-numeric:tabular-nums;flex:0 0 auto}
+  .stoplist .st.pt .nm{font-weight:700;color:#0f172a}
   .empty{color:#94a3b8;font-style:italic}
   /* footer di sponsorizzazione — ripetuto su ogni pagina in stampa */
   .brand-footer{position:fixed;left:0;right:0;bottom:4mm;display:flex;align-items:center;justify-content:center;gap:7px;font-size:9px;color:#64748b}
@@ -1209,6 +1325,7 @@ function openGradoniExport(rows: SavedPolimetrica[], agencyName: string | null, 
       <button class="print" onclick="window.print()">Stampa / Salva PDF</button>
     </div>
   </header>
+  <p class="fasce"><b>Fasce chilometriche</b> — ${esc(elencoFasce)}. In ogni cella la fascia dei km fra i punti tariffari (◆) dei due nodi; il punto di un nodo è la fermata scelta o, se non è stata scelta, la prima della tratta.</p>
   ${body || '<p class="empty">Nessun percorso.</p>'}
   <div class="brand-footer">${logoImg}<span>Powered by <b>Cerbero Fares Engine</b></span></div>
 </body></html>`;
