@@ -31,6 +31,7 @@ import type { Gestore } from "./gestori";
 import { gestoriDalDatabase } from "./gestori-store";
 import { verificaGtfs } from "./gtfs-verifica";
 import { costruisciGtfs, netexDelGtfs, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
+import { conLeTariffe, improntaDelleTariffe } from "./gtfs-tariffe";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 
 export const TIPI = ["gtfs", "netex"] as const;
@@ -62,9 +63,11 @@ const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() 
 
 /**
  * La firma di un file: da che cosa nasce. Cambia se cambia la versione in
- * esercizio, un dato dell'azienda che finisce nel file, o il formato.
+ * esercizio, un dato dell'azienda che finisce nel file, o il formato. Il GTFS
+ * porta anche le tariffe (tappa 6.37): `tariffe` è la loro impronta
+ * (improntaDelleTariffe), e un prezzo o una polimetrica cambiati rifanno il file.
  */
-export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string }, a: Azienda, gestori: readonly Gestore[] = []): string {
+export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string }, a: Azienda, gestori: readonly Gestore[] = [], tariffe: string | null = null): string {
   const diTutti = [FORMATO, tipo, v.versioneId, v.feedId, a.compilata, a.gtfsAgencyId, a.ragioneSociale, a.sito, a.telefono];
   const delNetex = tipo === "netex"
     ? [a.nome, a.netexCodiceLocale, a.netexFornitore, FORMATO_NETEX, a.netexPrefisso, a.netexPrefissoCodici, a.netexCodiceRete] : [];
@@ -72,7 +75,8 @@ export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string 
    * Senza gestori la firma è quella di prima: i file già pubblicati non si rifanno. */
   const deiGestori = gestori.length > 0
     ? [gestori.map((g) => [g.gestore, g.nome, g.sito, g.telefono, g.predefinito, ...(tipo === "netex" ? [g.email] : [])])] : [];
-  return sha256(JSON.stringify([...diTutti, ...delNetex, ...deiGestori]));
+  const delleTariffe = tipo === "gtfs" && tariffe ? [tariffe] : [];
+  return sha256(JSON.stringify([...diTutti, ...delNetex, ...deiGestori, ...delleTariffe]));
 }
 
 /**
@@ -225,7 +229,7 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
     dimenticaAzienda();
     const azienda = await leggiAzienda();
     const gestori = await gestoriDalDatabase();
-    const firme = { gtfs: firmaDi("gtfs", v, azienda, gestori), netex: firmaDi("netex", v, azienda, gestori) };
+    const firme = { gtfs: firmaDi("gtfs", v, azienda, gestori, await improntaDelleTariffe()), netex: firmaDi("netex", v, azienda, gestori) };
     const daFare = TIPI.filter((t) => deveProvare(prima.get(t), firme[t], adesso, o.forza));
     const fatto: Record<TipoFile, EsitoFile | "invariato"> = { gtfs: "invariato", netex: "invariato" };
     if (daFare.length === 0) return { stato: "fatto", file: fatto };
@@ -245,7 +249,16 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
       for (const tipo of daFare) { o.suGuasto?.(err, tipo); await chiudi(tipo, "errore", GUASTO); }
       return { stato: "fatto", file: fatto };
     }
-    const verifica = verificaGtfs(gtfs);
+    /* le tariffe nel GTFS (tappa 6.37); il NeTEx di livello 1 non le legge. Un guasto delle tariffe non ferma gli orari */
+    let avvisiTariffe: Awaited<ReturnType<typeof conLeTariffe>>["tariffe"]["avvisi"] = [];
+    let gtfsConTariffe = gtfs;
+    try {
+      const t = await conLeTariffe(v.versioneId, gtfs);
+      gtfsConTariffe = t.gtfs;
+      avvisiTariffe = t.tariffe.avvisi;
+    } catch (err) { o.suGuasto?.(err, "gtfs"); }
+    const verifica = verificaGtfs(gtfsConTariffe);
+    verifica.avvisi.push(...avvisiTariffe);
     const conErrori = verifica.errori.length > 0;
     const messaggioErrori = conErrori
       ? `Il GTFS della versione in esercizio ha errori che chi lo riceve non accetterebbe: ${verifica.errori.slice(0, 3).map((e) => `${e.messaggio} (${e.quante})`).join("; ")}`
@@ -256,11 +269,11 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
         if (conErrori) { await chiudi(tipo, "gtfs_con_errori", messaggioErrori, { errori: verifica.errori.slice(0, 10) }); continue; }
         if (tipo === "gtfs") {
           const conteggi = {
-            righe: Object.fromEntries(Object.entries(gtfs).map(([f, x]) => [f, x.righe.length])),
+            righe: Object.fromEntries(Object.entries(gtfsConTariffe).map(([f, x]) => [f, x.righe.length])),
             avvisi: verifica.avvisi.reduce((n, a) => n + a.quante, 0),
             avvisiElenco: verifica.avvisi.slice(0, 5).map((a) => `${a.messaggio} (${a.quante})`),
           };
-          await pubblica("gtfs", firme.gtfs, zipDelGtfs(gtfs, v.dal ?? DATA_DEI_FILE), v, conteggi, adesso);
+          await pubblica("gtfs", firme.gtfs, zipDelGtfs(gtfsConTariffe, v.dal ?? DATA_DEI_FILE), v, conteggi, adesso);
           fatto.gtfs = "pubblicato";
           continue;
         }

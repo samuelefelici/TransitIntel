@@ -43,6 +43,7 @@ import { verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
 import type { ConteggiNetex } from "./netex";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 import { costruisciGtfs, netexDelGtfs, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
+import { conLeTariffe, type TariffeDelGtfs } from "./gtfs-tariffe";
 
 export { aziendaDelGtfs, costruisciGtfs, gtfsInCsv } from "./gtfs-consegnabile";
 
@@ -88,10 +89,14 @@ async function programmaEVersione(req: Request, res: Response): Promise<{ proget
   return { progetto, fonte };
 }
 
-async function costruisciEVerifica(progetto: any, fonte: Versione): Promise<{ gtfs: Gtfs; verifica: EsitoVerifica }> {
+/** Il GTFS con le tariffe (tappa 6.37) e la sua verifica, con gli avvisi delle tariffe. */
+async function costruisciEVerifica(progetto: any, fonte: Versione): Promise<{ gtfs: Gtfs; verifica: EsitoVerifica; tariffe: TariffeDelGtfs["conteggi"] }> {
   const azienda = await leggiAzienda();
-  const gtfs = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale, await gestoriDalDatabase());
-  return { gtfs, verifica: verificaGtfs(gtfs) };
+  const orari = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale, await gestoriDalDatabase());
+  const { gtfs, tariffe } = await conLeTariffe(fonte.id, orari);
+  const verifica = verificaGtfs(gtfs);
+  verifica.avvisi.push(...tariffe.avvisi);
+  return { gtfs, verifica, tariffe: tariffe.conteggi };
 }
 
 /* GET …/export-gtfs/verifica — il controllo del file che si esporterebbe */
@@ -99,10 +104,11 @@ router.get("/planning-studio/projects/:id/export-gtfs/verifica", async (req: Req
   try {
     const pv = await programmaEVersione(req, res);
     if (!pv) return;
-    const { gtfs, verifica } = await costruisciEVerifica(pv.progetto, pv.fonte);
+    const { gtfs, verifica, tariffe } = await costruisciEVerifica(pv.progetto, pv.fonte);
     res.json({
       versione: pv.fonte,
       righe: Object.fromEntries(Object.entries(gtfs).map(([f, x]) => [f, x.righe.length])),
+      tariffe,
       ...verifica,
     });
   } catch (e: any) {

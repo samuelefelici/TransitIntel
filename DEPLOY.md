@@ -2077,6 +2077,83 @@ variabile e nessuna Watch Path nuova.
 fastidio; le fotografie fatte dal programma si aprono anche con l'immagine di
 prima.
 
+### Il GTFS con le tariffe (tappa 6.37)
+
+Il **GTFS consegnabile** (l'export di Planning Studio e il file dei dati
+aperti) porta ora, accanto agli orari, le **tariffe** in GTFS Fares v2. Si
+fanno dai dati dell'azienda e dalle polimetriche, non dall'area di lavoro del
+Fares Engine.
+
+| File | Da dove |
+|---|---|
+| `rider_categories.txt` | le categorie di passeggero (Amministrazione › Azienda) |
+| `fare_media.txt` | i supporti |
+| `fare_products.txt` | il catalogo dei titoli, più un biglietto di corsa semplice per fascia chilometrica col suo prezzo |
+| `networks.txt` | le reti urbane, più una rete per ogni linea extraurbana |
+| `route_networks.txt` | la rete di ogni linea del file |
+| `areas.txt`, `stop_areas.txt` | i nodi tariffari delle linee extraurbane e il nodo di ogni fermata |
+| `fare_leg_rules.txt` | urbane: su una rete vale il suo biglietto, ovunque; extraurbane: fra due nodi della stessa linea, il biglietto della fascia dei km fra i loro punti tariffari |
+
+**Le regole extraurbane vengono dalle polimetriche.**
+- Per ogni percorso della linea vale la polimetrica salvata del percorso con
+  le stesse fermate, su qualunque fotografia, ricomposta sui km del programma.
+- Un percorso senza polimetrica salvata prende le tratte fatte dalle fasce,
+  come nella stampa a gradoni. Il punto tariffario di una tratta è una
+  fermata che è già un nodo della linea, se c'è.
+- Una fermata sta in un nodo solo: quello del percorso più servito che la
+  tocca.
+- Fra due nodi vale la fascia più bassa fra quelle dei percorsi che li hanno
+  tutti e due. Dentro lo stesso nodo vale la prima fascia.
+
+Una rete per linea perché nel GTFS una regola non sa su quale linea si
+viaggia: due linee con fermate in comune e nodi diversi darebbero due prezzi
+per lo stesso viaggio.
+
+**Le tariffe non fermano mai il GTFS.** Quello che non torna resta fuori ed è
+un avviso: un titolo con una categoria che non c'è, una fascia che manca. La
+verifica dice anche:
+- le linee con percorsi senza polimetrica salvata;
+- le fermate che i percorsi mettono in nodi diversi;
+- le coppie di nodi su cui i percorsi non sono d'accordo.
+
+Più polimetriche si salvano (allineate alla bigliettazione con la 6.34), meno
+avvisi.
+
+**Dati aperti**: la firma del GTFS comprende l'impronta delle tariffe
+(catalogo, categorie, supporti, reti, fasce, polimetriche salvate). Un prezzo
+cambiato o una polimetrica salvata rifanno il file alla preparazione successiva. Il NeTEx di
+livello 1 non cambia: le tariffe saranno il livello 3.
+
+Sulla copia dei dati veri il GTFS del programma in esercizio si fa in 2
+secondi, pesa 4,1 MB e non ha errori:
+
+| File | Righe |
+|---|---|
+| Titoli | 182 (159 del catalogo e 23 biglietti di fascia) |
+| Reti | 69 (5 urbane e 64 linee extraurbane) |
+| Linee assegnate a una rete | 128 |
+| Nodi | 876 |
+| Fermate assegnate a un nodo | 5.968 |
+| Regole | 6.392 |
+
+Quasi tutti i percorsi sono ancora senza polimetrica salvata: lì i nodi
+vengono dalle fasce.
+
+**Chi**: come prima, l'export lo fa chi può aprire il programma in Planning
+Studio.
+
+**Dopo il deploy**:
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify le righe nuove del
+   blocco «Watch Paths» più sopra: `gtfs-tariffe.ts`, `polimetrica-*.ts`,
+   `titoli-catalogo.ts`, `elenchi-tariffe*.ts`, `fasce-km*.ts`. Il lavoratore
+   prepara i dati aperti e ora legge anche questi file.
+2. Il GTFS dei dati aperti si rifà da solo alla preparazione successiva (la firma è
+   cambiata), con le tariffe.
+
+Nessuna migrazione e nessuna variabile nuova.
+
+**Rollback**: immagine precedente. Il GTFS torna senza tariffe alla preparazione successiva.
+
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
 Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito
@@ -4476,6 +4553,11 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/reti-linee.ts
    artifacts/api-server/src/lib/reti-lettura.ts
    artifacts/api-server/src/lib/gestori*.ts
+   artifacts/api-server/src/lib/gtfs-tariffe.ts
+   artifacts/api-server/src/lib/polimetrica-*.ts
+   artifacts/api-server/src/lib/titoli-catalogo.ts
+   artifacts/api-server/src/lib/elenchi-tariffe*.ts
+   artifacts/api-server/src/lib/fasce-km*.ts
    artifacts/api-server/assets/**
    artifacts/api-server/build.ts
    artifacts/api-server/package.json
