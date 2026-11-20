@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
-import { giorniDiServizio, netexDaGtfs, orarioNetex, pezzoId } from "../lib/netex";
+import { giorniDiServizio, netexDaGtfs, orarioNetex, periodoDiEsercizio, pezzoId } from "../lib/netex";
 import { validaNetex, SCHEMA_EPIP } from "../lib/netex-validazione";
 import type { Gtfs } from "../lib/gtfs-verifica";
 
@@ -82,6 +82,14 @@ describe("NeTEx: i pezzi", () => {
     expect(pezzoId("L2 bis")).toBe(pezzoId("L2 bis"));
   });
 
+  it("il periodo di esercizio: dal primo all'ultimo giorno, un bit per giorno (tappa 6.41)", () => {
+    expect(periodoDiEsercizio(["2026-11-02", "2026-11-03", "2026-11-05", "2026-11-06"])).toEqual({ dal: "2026-11-02", al: "2026-11-06", bit: "11011" });
+    expect(periodoDiEsercizio(["2026-11-08"])).toEqual({ dal: "2026-11-08", al: "2026-11-08", bit: "1" });
+    /* attraverso il cambio dell'ora e la fine del mese */
+    expect(periodoDiEsercizio(["2026-10-24", "2026-10-26", "2026-11-01"])?.bit).toBe("101000001");
+    expect(periodoDiEsercizio([])).toBeNull();
+  });
+
   it("i giorni di servizio: calendar con le eccezioni di calendar_dates", () => {
     const g = giorniDiServizio(GTFS_DI_PROVA);
     expect(g.get("FER")).toEqual(["2026-11-02", "2026-11-03", "2026-11-05", "2026-11-06"]);
@@ -108,6 +116,15 @@ describe("NeTEx: il file", () => {
     expect(netexDaGtfs(GTFS_DI_PROVA, OPZIONI).xml).toBe(xml);
     // con il fornitore, in fondo
     expect(netexDaGtfs(GTFS_DI_PROVA, { ...OPZIONI, fornitore: "ATMA" }).xml).toMatch(/<Line id="IT:ITI3:Line:L2_bis-[0-9a-f]{8}:ATMA" version="1">/);
+  });
+
+  it("il calendario come lo vuole OpenTripPlanner: un periodo di esercizio per tipo di giorno, e l'assegnazione che lo richiama", () => {
+    expect(xml).toContain('<UicOperatingPeriod id="IT:ITI3:UicOperatingPeriod:FER" version="1"><FromDate>2026-11-02T00:00:00</FromDate><ToDate>2026-11-06T23:59:59</ToDate><ValidDayBits>11011</ValidDayBits></UicOperatingPeriod>');
+    expect(xml).toContain('<UicOperatingPeriod id="IT:ITI3:UicOperatingPeriod:FES" version="1"><FromDate>2026-11-08T00:00:00</FromDate><ToDate>2026-11-08T23:59:59</ToDate><ValidDayBits>1</ValidDayBits></UicOperatingPeriod>');
+    expect(xml).toContain('<DayTypeAssignment id="IT:ITI3:DayTypeAssignment:FER" version="1" order="1"><OperatingPeriodRef ref="IT:ITI3:UicOperatingPeriod:FER" version="1"/><DayTypeRef ref="IT:ITI3:DayType:FER" version="1"/></DayTypeAssignment>');
+    expect(xml.match(/<DayTypeAssignment /g)?.length).toBe(2);
+    expect(xml).not.toContain("<Date>");
+    expect(xml.indexOf("<operatingPeriods>")).toBeLessThan(xml.indexOf("<dayTypeAssignments>"));
   });
 
   it("i testi sono scappati, gli orari dopo la mezzanotte hanno il giorno dopo", () => {

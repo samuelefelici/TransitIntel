@@ -42,7 +42,7 @@ import { versioniDelProgetto, type Versione } from "./versioni-pubblicate";
 import { verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
 import type { ConteggiNetex } from "./netex";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
-import { costruisciGtfs, netexDelGtfs, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
+import { costruisciGtfs, netexDelGtfs, nomeFileNetex, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
 import { conLeTariffe, type TariffeDelGtfs } from "./gtfs-tariffe";
 
 export { aziendaDelGtfs, costruisciGtfs, gtfsInCsv } from "./gtfs-consegnabile";
@@ -152,18 +152,23 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
 
 /* ── NeTEx, profilo italiano: livello 1 (tappa 6.2), livello 3 con le tariffe (6.40) ── */
 
-async function costruisciNetex(progetto: any, fonte: Versione): Promise<{
-  xml: string; conteggi: ConteggiNetex; verifica: EsitoVerifica; validazione: EsitoValidazione;
+/** Il livello chiesto: 3 con le tariffe; altrimenti 1, l'EPIP che legge il portale regionale (tappa 6.41). */
+const livelloChiesto = (req: Request): 1 | 3 => (req.query.livello === "3" ? 3 : 1);
+
+async function costruisciNetex(progetto: any, fonte: Versione, livello: 1 | 3): Promise<{
+  xml: string; conteggi: ConteggiNetex; verifica: EsitoVerifica; validazione: EsitoValidazione; nome: string;
 }> {
   const azienda = await leggiAzienda();
   if (!azienda.netexCodiceLocale) throw new SenzaCodiceNetex();
   /* gli stessi gestori per il GTFS e per il NeTEx che ne nasce: gli operatori sono le agenzie */
   const gestori = await gestoriDalDatabase();
   const orari = await costruisciGtfs(fonte.id, progetto, azienda, fonte.quale, gestori);
-  /* le tariffe, come nel GTFS: il NeTEx è di livello 3 (tappa 6.40) */
-  const { gtfs, tariffe } = await conLeTariffe(fonte.id, orari);
-  const { xml, conteggi } = netexDelGtfs(gtfs, azienda, gestori, new Date(), tariffe.perNetex);
-  return { xml, conteggi, verifica: verificaGtfs(gtfs), validazione: await validaNetex(xml) };
+  /* il livello 3 con le tariffe del GTFS (tappa 6.40); il livello 1 con i soli orari */
+  const { gtfs, perNetex } = livello === 3
+    ? await conLeTariffe(fonte.id, orari).then((t) => ({ gtfs: t.gtfs, perNetex: t.tariffe.perNetex }))
+    : { gtfs: orari, perNetex: null };
+  const { xml, conteggi } = netexDelGtfs(gtfs, azienda, gestori, new Date(), perNetex);
+  return { xml, conteggi, verifica: verificaGtfs(gtfs), validazione: await validaNetex(xml), nome: nomeFileNetex(azienda, livello) };
 }
 
 const rispondiNetex = (req: Request, res: Response, e: any, cosa: string) => {
@@ -177,13 +182,16 @@ router.get("/planning-studio/projects/:id/export-netex/verifica", async (req: Re
   try {
     const pv = await programmaEVersione(req, res);
     if (!pv) return;
-    const { conteggi, verifica, validazione } = await costruisciNetex(pv.progetto, pv.fonte);
-    res.json({ versione: pv.fonte, conteggi, gtfs: verifica, validazione });
+    const livello = livelloChiesto(req);
+    const { conteggi, verifica, validazione } = await costruisciNetex(pv.progetto, pv.fonte, livello);
+    res.json({ versione: pv.fonte, livello, conteggi, gtfs: verifica, validazione });
   } catch (e: any) { rispondiNetex(req, res, e, "verifica NeTEx fallita"); }
 });
 
 /*
- * GET …/export-netex — il file .xml.gz. Si ferma (422) se il GTFS da cui nasce
+ * GET …/export-netex — il file .xml.gz; livello=3 con le tariffe, altrimenti il
+ * livello 1. Il nome come al portale regionale, col programma e la data:
+ * IT-ITI3-ABC-NeTEx_L1_esercizio_20261120.xml.gz. Si ferma (422) se il GTFS da cui nasce
  * ha errori o se il NeTEx non passa lo schema del profilo italiano (EPIP, o
  * quello del livello 3 se ha le tariffe), a meno di forza=1; senza xmllint il
  * controllo dello schema non si fa e l'intestazione lo dice.
@@ -192,7 +200,8 @@ router.get("/planning-studio/projects/:id/export-netex", async (req: Request, re
   try {
     const pv = await programmaEVersione(req, res);
     if (!pv) return;
-    const { xml, conteggi, verifica, validazione } = await costruisciNetex(pv.progetto, pv.fonte);
+    const livello = livelloChiesto(req);
+    const { xml, conteggi, verifica, validazione, nome } = await costruisciNetex(pv.progetto, pv.fonte, livello);
     const forza = req.query.forza === "1";
     if (!forza && verifica.errori.length > 0) {
       res.status(422).json({ error: "Il GTFS da cui nasce il NeTEx ha errori: correggili, oppure esporta forzando", versione: pv.fonte, gtfs: verifica });
@@ -202,14 +211,13 @@ router.get("/planning-studio/projects/:id/export-netex", async (req: Request, re
       res.status(422).json({ error: "Il NeTEx non passa lo schema del profilo italiano", versione: pv.fonte, validazione });
       return;
     }
-    const safeName = String(pv.progetto.name || "programma").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
     const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     res.setHeader("Content-Type", "application/gzip");
-    res.setHeader("Content-Disposition", `attachment; filename="netex_${safeName}_${pv.fonte.quale}_${dateStr}.xml.gz"`);
+    res.setHeader("Content-Disposition", `attachment; filename="${nome}_${pv.fonte.quale}_${dateStr}.xml.gz"`);
     res.setHeader("X-Netex-Versione", pv.fonte.quale);
     res.setHeader("X-Netex-Validazione", validazione.stato);
     res.setHeader("X-Netex-Corse", String(conteggi.corse));
-    res.setHeader("X-Netex-Livello", conteggi.tariffe ? "3" : "1");
+    res.setHeader("X-Netex-Livello", String(livello));
     res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse, X-Netex-Livello");
     res.send(gzipSync(Buffer.from(xml, "utf8")));
   } catch (e: any) { rispondiNetex(req, res, e, "export NeTEx fallito"); }

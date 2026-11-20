@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import { deveProvare, firmaDi, FILE } from "../lib/dati-aperti";
 import { AZIENDA_DA_COMPILARE, type Azienda } from "../lib/azienda";
 import { giaCeLHa } from "../routes/dati-aperti";
-import { zipDelGtfs } from "../lib/gtfs-consegnabile";
+import { nomeFileNetex, zipDelGtfs } from "../lib/gtfs-consegnabile";
 import type { Gtfs } from "../lib/gtfs-verifica";
 
 const AZIENDA: Azienda = {
@@ -15,11 +15,20 @@ const AZIENDA: Azienda = {
 };
 const V = { versioneId: "d6300000-0000-4000-8000-000000000001", feedId: "d6300000-0000-4000-8000-000000000002" };
 
+describe("il nome di un file NeTEx, come al portale regionale (tappa 6.41)", () => {
+  it("IT-[codice NUTS]-[raggruppamento]-NeTEx_L[livello]: il prefisso dei codici, o il codice dell'azienda", () => {
+    expect(nomeFileNetex({ ...AZIENDA, netexPrefissoCodici: "ABC" }, 1)).toBe("IT-ITI3-ABC-NeTEx_L1");
+    expect(nomeFileNetex({ ...AZIENDA, netexPrefissoCodici: null }, 3)).toBe("IT-ITI3-prova-NeTEx_L3");
+    expect(nomeFileNetex({ ...AZIENDA, gtfsAgencyId: "a/b c", netexPrefissoCodici: null }, 1)).toBe("IT-ITI3-a_b_c-NeTEx_L1");
+  });
+});
+
 describe("dati aperti: la firma di un file", () => {
-  it("è stabile, ed è diversa per i due file", () => {
+  it("è stabile, ed è diversa per ogni file", () => {
     expect(firmaDi("gtfs", V, AZIENDA)).toMatch(/^[0-9a-f]{64}$/);
     expect(firmaDi("gtfs", V, { ...AZIENDA })).toBe(firmaDi("gtfs", V, AZIENDA));
     expect(firmaDi("netex", V, AZIENDA)).not.toBe(firmaDi("gtfs", V, AZIENDA));
+    expect(firmaDi("netex_l3", V, AZIENDA)).not.toBe(firmaDi("netex", V, AZIENDA));
   });
   it("cambia con la versione in esercizio e con i dati dell'azienda che finiscono nel file", () => {
     const base = firmaDi("gtfs", V, AZIENDA);

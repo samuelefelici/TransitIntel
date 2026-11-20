@@ -325,6 +325,17 @@ export function zipDelGtfs(g: Gtfs, dataDeiFile?: Date): Buffer {
   return zip.toBuffer();
 }
 
+/**
+ * Il nome di un file NeTEx come al portale regionale (tappa 6.41):
+ * [agencyCode]-NeTEx_L[livello], con agencyCode = IT-[codice NUTS]-[raggruppamento],
+ * per esempio «IT-ITI3-ABC-NeTEx_L1». Il raggruppamento è il prefisso dei codici
+ * della Regione, se l'azienda lo indica, altrimenti il suo codice.
+ */
+export function nomeFileNetex(azienda: Pick<Azienda, "netexCodiceLocale" | "netexPrefissoCodici" | "gtfsAgencyId">, livello: 1 | 3): string {
+  const pulito = (v: string) => v.replace(/[^A-Za-z0-9_-]+/g, "_");
+  return `IT-${pulito(azienda.netexCodiceLocale ?? "")}-${pulito(azienda.netexPrefissoCodici || azienda.gtfsAgencyId)}-NeTEx_L${livello}`;
+}
+
 /** Il NeTEx non si può fare: all'azienda manca il codice locale. */
 export class SenzaCodiceNetex extends Error {
   constructor() { super("Manca il codice locale NeTEx (il codice NUTS della regione, come «ITI3»): indicalo in Amministrazione › Azienda"); }

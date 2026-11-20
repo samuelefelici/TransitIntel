@@ -20,7 +20,9 @@
  *       ServiceFrame         EU_PI_NETWORK   rete, linee, punti di fermata,
  *                                            assegnazioni, sequenze di fermate
  *       ServiceCalendarFrame EU_PI_CALENDAR  un ServiceCalendar: un DayType per
- *                                            servizio e i suoi giorni
+ *                                            servizio, il suo periodo di esercizio
+ *                                            (UicOperatingPeriod coi giorni validi)
+ *                                            e l'assegnazione che li lega (6.41)
  *       TimetableFrame       EU_PI_TIMETABLE le corse, con gli orari
  *       FareFrame            EU_PI_FARE      le tariffe (livello 3), e nello
  *                                            ServiceFrame le zone tariffarie
@@ -123,6 +125,23 @@ export function orarioNetex(t: unknown): { ora: string; giorni: number } | null 
   if (!m) return null;
   const h = Number(m[1]);
   return { ora: `${String(h % 24).padStart(2, "0")}:${m[2]}:${m[3] ?? "00"}`, giorni: Math.floor(h / 24) };
+}
+
+/**
+ * Il periodo di esercizio di un servizio (tappa 6.41): dal primo all'ultimo
+ * giorno, e un carattere per giorno, «1» se il servizio c'è e «0» se no
+ * (ValidDayBits). Così lo vogliono le linee guida per OpenTripPlanner
+ * (Appendice A della v5.0.1). Date «YYYY-MM-DD», in ordine.
+ */
+export function periodoDiEsercizio(date: readonly string[]): { dal: string; al: string; bit: string } | null {
+  if (!date.length) return null;
+  const si = new Set(date);
+  const dal = date[0]!, al = date[date.length - 1]!;
+  let bit = "";
+  for (let t = Date.parse(`${dal}T12:00:00Z`), fine = Date.parse(`${al}T12:00:00Z`); t <= fine; t += 86_400_000) {
+    bit += si.has(new Date(t).toISOString().slice(0, 10)) ? "1" : "0";
+  }
+  return { dal, al, bit };
 }
 
 /** I giorni di servizio di ogni service_id, da calendar e calendar_dates (date «YYYY-MM-DD»). */
@@ -325,22 +344,31 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   p("</journeyPatterns>");
   p("</ServiceFrame>");
 
-  /* i calendari: un tipo di giorno per servizio, e i suoi giorni */
+  /* i calendari: un tipo di giorno per servizio, il suo periodo di esercizio coi giorni validi, e
+   * l'assegnazione che li lega. Il periodo e non una data per giorno: OpenTripPlanner vuole
+   * OperatingPeriodRef (linee guida v5.0.1, Appendice A); i file della Regione fanno lo stesso */
   p(`<ServiceCalendarFrame id="${it}:ServiceCalendarFrame-EU_PI_CALENDAR:${pezzoId(o.azienda.codice)}" ${v}>`);
   p('<TypeOfFrameRef ref="epip:EU_PI_CALENDAR" versionRef="1.0"/>');
   p(`<ServiceCalendar id="${id("ServiceCalendar", o.azienda.codice)}" ${v}><FromDate>${dal}</FromDate><ToDate>${al}</ToDate>`);
   p("<dayTypes>");
   for (const s of servizi) p(`<DayType id="${id("DayType", s)}" ${v}><Name>${xml(`Servizio ${s}`)}</Name></DayType>`);
   p("</dayTypes>");
-  p("<dayTypeAssignments>");
-  let n = 0;
-  for (const s of servizi) {
-    for (const g of giorni.get(s) ?? []) {
-      n++;
-      p(`<DayTypeAssignment id="${id("DayTypeAssignment", `${s}-${g}`)}" ${v} order="${n}"><Date>${g}</Date><DayTypeRef ref="${id("DayType", s)}" ${v}/></DayTypeAssignment>`);
-    }
+  const periodi = servizi.map((s) => ({ s, periodo: periodoDiEsercizio(giorni.get(s) ?? []) }));
+  p("<operatingPeriods>");
+  for (const { s, periodo } of periodi) {
+    if (!periodo) continue;
+    p(`<UicOperatingPeriod id="${id("UicOperatingPeriod", s)}" ${v}><FromDate>${periodo.dal}T00:00:00</FromDate>`
+      + `<ToDate>${periodo.al}T23:59:59</ToDate><ValidDayBits>${periodo.bit}</ValidDayBits></UicOperatingPeriod>`);
   }
+  p("</operatingPeriods>");
+  p("<dayTypeAssignments>");
+  periodi.forEach(({ s, periodo }, i) => {
+    if (!periodo) return;
+    p(`<DayTypeAssignment id="${id("DayTypeAssignment", s)}" ${v} order="${i + 1}">`
+      + `<OperatingPeriodRef ref="${id("UicOperatingPeriod", s)}" ${v}/><DayTypeRef ref="${id("DayType", s)}" ${v}/></DayTypeAssignment>`);
+  });
   p("</dayTypeAssignments>");
+  const n = servizi.reduce((t, s) => t + (giorni.get(s)?.length ?? 0), 0);
   p("</ServiceCalendar>");
   p("</ServiceCalendarFrame>");
 

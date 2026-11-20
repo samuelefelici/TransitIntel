@@ -34,9 +34,10 @@ import { costruisciGtfs, netexDelGtfs, zipDelGtfs, SenzaCodiceNetex } from "./gt
 import { conLeTariffe, improntaDelleTariffe } from "./gtfs-tariffe";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 
-export const TIPI = ["gtfs", "netex"] as const;
+/** Il NeTEx in due file, un livello ciascuno, come al portale regionale (tappa 6.41). */
+export const TIPI = ["gtfs", "netex", "netex_l3"] as const;
 export type TipoFile = (typeof TIPI)[number];
-export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore";
+export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore" | "senza_tariffe";
 
 /** Cambia quando cambia il modo di costruire i file: fa rifare quelli in linea. */
 export const FORMATO = 1;
@@ -49,10 +50,11 @@ export const FORMATO_NETEX = 2;
 /** Un tentativo andato male per un guasto (non per i dati) si riprova dopo un'ora. */
 const RIPROVA_DOPO_MS = 60 * 60 * 1000;
 
-/** I due file: il nome con cui si scaricano, il tipo, l'indirizzo che non cambia. */
+/** I file: il nome con cui si scaricano, il tipo, l'indirizzo che non cambia. */
 export const FILE: Record<TipoFile, { nome: string; mime: string; percorso: string; formato: string }> = {
   gtfs: { nome: "gtfs.zip", mime: "application/zip", percorso: "/api/dati-aperti/gtfs.zip", formato: "GTFS" },
   netex: { nome: "netex.xml.gz", mime: "application/gzip", percorso: "/api/dati-aperti/netex.xml.gz", formato: "NeTEx, profilo italiano livello 1 (EPIP)" },
+  netex_l3: { nome: "netex-l3.xml.gz", mime: "application/gzip", percorso: "/api/dati-aperti/netex-l3.xml.gz", formato: "NeTEx, profilo italiano livello 3 (con le tariffe)" },
 };
 
 const righe = (r: any): any[] => r?.rows ?? [];
@@ -69,14 +71,15 @@ const iso = (d: unknown): string | null => (d instanceof Date ? d.toISOString() 
  */
 export function firmaDi(tipo: TipoFile, v: { versioneId: string; feedId: string }, a: Azienda, gestori: readonly Gestore[] = [], tariffe: string | null = null): string {
   const diTutti = [FORMATO, tipo, v.versioneId, v.feedId, a.compilata, a.gtfsAgencyId, a.ragioneSociale, a.sito, a.telefono];
-  const delNetex = tipo === "netex"
+  const eNetex = tipo !== "gtfs";
+  const delNetex = eNetex
     ? [a.nome, a.netexCodiceLocale, a.netexFornitore, FORMATO_NETEX, a.netexPrefisso, a.netexPrefissoCodici, a.netexCodiceRete] : [];
   /* i gestori finiscono in agency.txt e in routes.txt del GTFS (tappa 6.11) e sono gli operatori del NeTEx (6.12).
    * Senza gestori la firma è quella di prima: i file già pubblicati non si rifanno. */
   const deiGestori = gestori.length > 0
-    ? [gestori.map((g) => [g.gestore, g.nome, g.sito, g.telefono, g.predefinito, ...(tipo === "netex" ? [g.email] : [])])] : [];
-  /* le tariffe sono nel GTFS (tappa 6.37) e nel NeTEx di livello 3 (6.40) */
-  const delleTariffe = tariffe ? [tariffe] : [];
+    ? [gestori.map((g) => [g.gestore, g.nome, g.sito, g.telefono, g.predefinito, ...(eNetex ? [g.email] : [])])] : [];
+  /* le tariffe sono nel GTFS (tappa 6.37) e nel NeTEx di livello 3 (6.40); quello di livello 1 non le ha (6.41) */
+  const delleTariffe = tariffe && tipo !== "netex" ? [tariffe] : [];
   return sha256(JSON.stringify([...diTutti, ...delNetex, ...deiGestori, ...delleTariffe]));
 }
 
@@ -224,16 +227,20 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
         const p = prima.get(tipo);
         if (!p || p.inLinea || p.esito !== "senza_versione" || p.messaggio !== v.senza) await togli(tipo, v.senza, adesso);
       }
-      return { stato: "fatto", file: { gtfs: "senza_versione", netex: "senza_versione" } };
+      return { stato: "fatto", file: { gtfs: "senza_versione", netex: "senza_versione", netex_l3: "senza_versione" } };
     }
 
     dimenticaAzienda();
     const azienda = await leggiAzienda();
     const gestori = await gestoriDalDatabase();
     const impronta = await improntaDelleTariffe();
-    const firme = { gtfs: firmaDi("gtfs", v, azienda, gestori, impronta), netex: firmaDi("netex", v, azienda, gestori, impronta) };
+    const firme = {
+      gtfs: firmaDi("gtfs", v, azienda, gestori, impronta),
+      netex: firmaDi("netex", v, azienda, gestori),
+      netex_l3: firmaDi("netex_l3", v, azienda, gestori, impronta),
+    };
     const daFare = TIPI.filter((t) => deveProvare(prima.get(t), firme[t], adesso, o.forza));
-    const fatto: Record<TipoFile, EsitoFile | "invariato"> = { gtfs: "invariato", netex: "invariato" };
+    const fatto: Record<TipoFile, EsitoFile | "invariato"> = { gtfs: "invariato", netex: "invariato", netex_l3: "invariato" };
     if (daFare.length === 0) return { stato: "fatto", file: fatto };
 
     const chiudi = async (tipo: TipoFile, esito: EsitoFile, messaggio: string | null, dettagli: unknown = null) => {
@@ -282,15 +289,24 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
           fatto.gtfs = "pubblicato";
           continue;
         }
-        const { xml, conteggi } = netexDelGtfs(gtfsConTariffe, azienda, gestori, adesso, perNetex);
+        /* il NeTEx: di livello 1 dagli orari; di livello 3 con le tariffe, se si sono lette (altrimenti si riprova fra un'ora) */
+        if (tipo === "netex_l3" && !perNetex) { await chiudi(tipo, "errore", GUASTO); continue; }
+        const { xml, conteggi } = tipo === "netex_l3"
+          ? netexDelGtfs(gtfsConTariffe, azienda, gestori, adesso, perNetex)
+          : netexDelGtfs(gtfs, azienda, gestori, adesso);
+        /* un livello 3 senza tariffe sarebbe un livello 1 con un altro nome: non si fa, e si dice perché */
+        if (tipo === "netex_l3" && !conteggi.tariffe) {
+          await chiudi(tipo, "senza_tariffe", "L'azienda non ha tariffe: il NeTEx di livello 3 non si fa (Amministrazione › Azienda: catalogo dei titoli e fasce chilometriche)");
+          continue;
+        }
         const esito = await valida(xml);
         if (esito.stato === "non_valido") {
-          await chiudi("netex", "non_valido", "Il NeTEx non passa lo schema del profilo italiano", { errori: esito.errori.slice(0, 20) });
+          await chiudi(tipo, "non_valido", "Il NeTEx non passa lo schema del profilo italiano", { errori: esito.errori.slice(0, 20) });
         } else if (esito.stato === "senza_xmllint") {
-          await chiudi("netex", "senza_xmllint", "Su questo server manca il programma che controlla lo schema NeTEx (xmllint): senza controllo il file non si pubblica");
+          await chiudi(tipo, "senza_xmllint", "Su questo server manca il programma che controlla lo schema NeTEx (xmllint): senza controllo il file non si pubblica");
         } else {
-          await pubblica("netex", firme.netex, gzipSync(Buffer.from(xml, "utf8")), v, conteggi, adesso);
-          fatto.netex = "pubblicato";
+          await pubblica(tipo, firme[tipo], gzipSync(Buffer.from(xml, "utf8")), v, conteggi, adesso);
+          fatto[tipo] = "pubblicato";
         }
       } catch (err) {
         if (err instanceof SenzaCodiceNetex) { await chiudi(tipo, "senza_codice", err.message); continue; }

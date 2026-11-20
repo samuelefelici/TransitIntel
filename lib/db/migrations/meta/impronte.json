@@ -57,5 +57,6 @@
   "0055_la_polimetrica_della_bigliettazione": "51dd682245122d00fdbe0e2de101b1f381f1e4dd2b5ec0fc39d35ca98719cfe8",
   "0056_gli_abbinamenti_dei_punti": "bd87bebe8d671ca32c3b2902aaf4a4ba0b270bb0804f5dcfc6135854fb1d8850",
   "0057_polimetriche_dal_programma": "bfd640b719d40701af7cfe60a5c44c0bbfc5ae238e62d60c1aba061eec94b972",
-  "0058_pagamento_con_carta_a_bordo": "c2666e0eb2ffed2b82b054f72352bdc6c8f3aa096aa79ca56d63c9422e551484"
+  "0058_pagamento_con_carta_a_bordo": "c2666e0eb2ffed2b82b054f72352bdc6c8f3aa096aa79ca56d63c9422e551484",
+  "0059_netex_livello_3_fra_i_dati_aperti": "6f0ef052b7af204d00b788d0aee4e57e1f158c1a66c47865e7b1fc00cd9399d8"
 }
