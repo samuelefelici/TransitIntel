@@ -12,6 +12,8 @@ import { anteprimaRegole, cancellaRete, creaRete, elencoReti, ModificaRete, modi
 import { elencoFasce, Fasce, RifiutoFasce, salvaFasce } from "../lib/fasce-km-store";
 import { Categorie, elenchiTariffe, erroreElenco, RifiutoElenchi, salvaCategorie, salvaSupporti, Supporti } from "../lib/elenchi-tariffe-store";
 import { TIPI_SUPPORTO } from "../lib/elenchi-tariffe";
+import { DatiContactless, erroreContactless } from "../lib/contactless";
+import { elencoContactless, RifiutoContactless, salvaContactless } from "../lib/contactless-store";
 import { cancellaGestore, creaGestore, elencoGestori, erroreGestore, ModificaGestore, modificaGestore, NuovoGestore, RifiutoGestori } from "../lib/gestori-store";
 import { agenziaDellAzienda } from "../lib/gestori";
 import { cancellaNodo, creaNodo, DatiNodo, elencoNodi, IDENTIFICATIVO_NODO, modificaNodo, NuovoNodo, RifiutoNodi } from "../lib/nodi-scambio-store";
@@ -698,6 +700,32 @@ router.put("/admin/elenchi-tariffe/supporti", async (req, res): Promise<void> =>
   if (!p.success) { res.status(400).json({ error: erroreElenco(p.error) }); return; }
   try { res.json({ supporti: await salvaSupporti(p.data) }); }
   catch (e) { rifiutoElenchi(req, res, e, "supporti non salvati"); }
+});
+
+/**
+ * Il pagamento con carta a bordo (tappa 6.38, lib/contactless.ts): le tariffe
+ * per tipo di rete, il massimale unico, il supporto e le reti dove vale. GET
+ * tutto, con le reti e i supporti fra cui scegliere; PUT salva tutto insieme.
+ * Solo admin, mai un token di Argos (requireAdmin).
+ */
+const rifiutoContactless = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoContactless) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  if (codice === "23503") { res.status(400).json({ error: "Una rete o il supporto non c'è più: ricarica la pagina" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+};
+router.use("/admin/contactless", requireAdmin);
+router.get("/admin/contactless", async (req, res): Promise<void> => {
+  try { res.json(await elencoContactless()); }
+  catch (e) { rifiutoContactless(req, res, e, "pagamento con carta non leggibile"); }
+});
+router.put("/admin/contactless", async (req, res): Promise<void> => {
+  const p = DatiContactless.safeParse(req.body ?? {});
+  if (!p.success) { res.status(400).json({ error: erroreContactless(p.error) }); return; }
+  try { res.json({ contactless: await salvaContactless(p.data) }); }
+  catch (e) { rifiutoContactless(req, res, e, "pagamento con carta non salvato"); }
 });
 /**
  * I gestori (tappa 6.11, lib/gestori.ts): le aziende che gestiscono le linee,

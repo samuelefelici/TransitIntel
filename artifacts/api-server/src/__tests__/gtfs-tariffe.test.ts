@@ -1,12 +1,14 @@
 /**
  * Le tariffe nel GTFS consegnabile (tappa 6.37): i file di GTFS Fares v2 dai
- * dati dell'azienda e dalle polimetriche. Dati inventati.
+ * dati dell'azienda e dalle polimetriche; il pagamento con carta a bordo e i
+ * trasbordi dentro la durata (tappa 6.38). Dati inventati.
  */
 import { describe, it, expect } from "vitest";
 import {
-  areaDelNodo, confiniDalleFasce, fileDelleTariffe, polimetricaDelPercorso, reteDellaLinea, tariffeDellaLinea, tratteAutomatiche,
+  areaDelNodo, confiniDalleFasce, fileDelleTariffe, idCarta, polimetricaDelPercorso, reteDellaLinea, tariffeDellaLinea, tratteAutomatiche,
   type DatiDelleTariffe,
 } from "../lib/gtfs-tariffe";
+import type { Contactless } from "../lib/contactless";
 import { fasciaDeiKm, type FasciaKm } from "../lib/fasce-km";
 import { verificaGtfs, type Gtfs } from "../lib/gtfs-verifica";
 import { firmaDi } from "../lib/dati-aperti";
@@ -152,7 +154,10 @@ describe("i file delle tariffe", () => {
   it("le regole: sulla rete urbana il suo biglietto ovunque; sulla linea extraurbana, fra due nodi, la fascia", () => {
     const { file } = fileDelleTariffe(dati());
     const regole = file["fare_leg_rules.txt"]!.righe;
-    expect(regole.filter((r) => r.network_id === "urbano_lago")).toEqual([{ leg_group_id: "lg_lago_90", network_id: "urbano_lago", from_area_id: "", to_area_id: "", fare_product_id: "lago_90" }]);
+    expect(regole.filter((r) => r.network_id === "urbano_lago")).toEqual([{ leg_group_id: "lg_lago_90", network_id: "urbano_lago", from_area_id: "", to_area_id: "", fare_product_id: "lago_90", rule_priority: 0 }]);
+    /* con la colonna rule_priority un'area vuota vuol dire «l'area non conta»: la regola urbana vale anche da una fermata in un nodo extraurbano */
+    expect(file["fare_leg_rules.txt"]!.colonne).toContain("rule_priority");
+    expect(regole.every((r) => r.rule_priority === 0)).toBe(true);
     const extra = regole.filter((r) => r.network_id === reteDellaLinea("D"));
     expect(extra).toHaveLength(9); // 3 nodi: 3 a sé, 3 coppie nei due versi
     expect(extra.find((r) => r.from_area_id === areaDelNodo("D", "s1") && r.to_area_id === areaDelNodo("D", "s5"))?.fare_product_id).toBe("extra_fascia_3");
@@ -187,6 +192,99 @@ describe("i file delle tariffe", () => {
     const { file, avvisi } = fileDelleTariffe(dati({ fermate: new Set(["s1", "s2", "s3", "s4"]) }));
     expect(file["stop_areas.txt"]!.righe.map((r) => r.stop_id)).not.toContain("s5");
     expect(avvisi.find((a) => a.codice === "fermata_non_nel_file")?.esempi).toEqual(["s5"]);
+  });
+
+  it("un biglietto urbano a tempo: le corse che cominciano dentro la durata non si pagano; gli abbonamenti non hanno trasbordi", () => {
+    const { file } = fileDelleTariffe(dati());
+    expect(file["fare_transfer_rules.txt"]!.righe).toEqual([
+      { from_leg_group_id: "lg_lago_90", to_leg_group_id: "lg_lago_90", transfer_count: -1, duration_limit: 5400, duration_limit_type: 1, fare_transfer_type: 0, fare_product_id: "" },
+    ]);
+    /* andata e ritorno: due corse, non tutte quelle dentro la durata */
+    const ar = fileDelleTariffe(dati({ titoli: [titolo({ titolo: "lago_ar", rete: "urbano_lago", tipo: "return", durataMinuti: 90 })] }));
+    expect(ar.file["fare_leg_rules.txt"]!.righe.map((r) => r.fare_product_id)).toContain("lago_ar");
+    expect(ar.file["fare_transfer_rules.txt"]).toBeUndefined();
+  });
+
+  describe("il pagamento con carta a bordo", () => {
+    const CARTA: Contactless = {
+      massimaleUnico: 10, finestraOre: 24, supporto: "carta_banca",
+      tariffe: [
+        { tipo: "urbano", primo: 2, secondo: 2, terzo: 1, validitaMinuti: 60, massimale: 5 },
+        { tipo: "extraurbano", primo: 4, secondo: 4, terzo: 2, validitaMinuti: 75, massimale: 10 },
+      ],
+      reti: ["extraurbano", "urbano_lago"],
+    };
+    const SUPPORTI = [{ supporto: "carta", nome: "Biglietto di carta", tipo: 1 }, { supporto: "carta_banca", nome: "Carta bancaria", tipo: 3 }];
+    const conCarta = (c: Partial<Contactless> = {}) => fileDelleTariffe(dati({ supporti: SUPPORTI, contactless: { ...CARTA, ...c } }));
+
+    it("un titolo per tipo di rete, col primo viaggio e il supporto, per ogni categoria; sulle reti dove vale, accanto ai biglietti", () => {
+      const { file, avvisi } = conCarta();
+      const prodotti = file["fare_products.txt"]!.righe.filter((r) => String(r.fare_product_id).startsWith("contactless:"));
+      expect(prodotti).toEqual([
+        { fare_product_id: "contactless:urbano", fare_product_name: "Carta contactless a bordo · urbano", rider_category_id: "", fare_media_id: "carta_banca", amount: "2.00", currency: "EUR" },
+        { fare_product_id: "contactless:extraurbano", fare_product_name: "Carta contactless a bordo · extraurbano", rider_category_id: "", fare_media_id: "carta_banca", amount: "4.00", currency: "EUR" },
+      ]);
+      const regole = file["fare_leg_rules.txt"]!.righe;
+      expect(regole.filter((r) => r.fare_product_id === idCarta("urbano")).map((r) => r.network_id)).toEqual(["urbano_lago"]);
+      /* su tutte le linee extraurbane del file, anche quella senza polimetrica, senza aree: vale ovunque sulla linea */
+      expect(regole.filter((r) => r.fare_product_id === idCarta("extraurbano")).map((r) => [r.network_id, r.from_area_id, r.to_area_id]))
+        .toEqual([[reteDellaLinea("D"), "", ""], [reteDellaLinea("Z"), "", ""]]);
+      /* il biglietto di fascia resta: sulla linea D le 9 regole fra nodi più quella della carta */
+      expect(regole.filter((r) => r.network_id === reteDellaLinea("D"))).toHaveLength(10);
+      expect(avvisi.map((a) => a.codice).filter((c) => c.startsWith("contactless"))).toEqual([]);
+    });
+
+    it("dentro la validità le corse dopo la prima non si pagano; i massimali e i prezzi dal secondo viaggio non entrano nel GTFS", () => {
+      const { file } = conCarta();
+      expect(file["fare_transfer_rules.txt"]!.righe.map((r) => [r.from_leg_group_id, r.to_leg_group_id, r.transfer_count, r.duration_limit, r.duration_limit_type, r.fare_transfer_type, r.fare_product_id])).toEqual([
+        ["lg_lago_90", "lg_lago_90", -1, 5400, 1, 0, ""],
+        ["contactless:urbano", "contactless:urbano", -1, 3600, 1, 0, ""],
+        ["contactless:extraurbano", "contactless:extraurbano", -1, 4500, 1, 0, ""],
+      ]);
+      const testo = JSON.stringify(file);
+      expect(testo).not.toContain("10.00");
+      expect(testo).not.toContain("5.00");
+    });
+
+    it("il GTFS con la carta passa la verifica; un trasbordo rotto è un errore", () => {
+      const { file } = conCarta();
+      const gtfs: Gtfs = { ...GTFS_ORARI, ...file };
+      expect(verificaGtfs(gtfs).errori.filter((e) => /fare|network|area|rider|route_networks/.test(e.file))).toEqual([]);
+      const rotto: Gtfs = {
+        ...gtfs,
+        "fare_transfer_rules.txt": { ...gtfs["fare_transfer_rules.txt"]!, righe: [
+          ...gtfs["fare_transfer_rules.txt"]!.righe,
+          { from_leg_group_id: "nessuno", to_leg_group_id: "contactless:urbano", transfer_count: "", duration_limit: "", duration_limit_type: "", fare_transfer_type: 0, fare_product_id: "" },
+          { from_leg_group_id: "contactless:urbano", to_leg_group_id: "contactless:urbano", transfer_count: "", duration_limit: 60, duration_limit_type: "", fare_transfer_type: 7, fare_product_id: "manca" },
+        ] },
+      };
+      expect(verificaGtfs(rotto).errori.map((e) => e.codice)).toEqual(expect.arrayContaining([
+        "trasbordo_gruppo_inesistente", "trasbordo_senza_conteggio", "trasbordo_durata_senza_tipo", "trasbordo_tipo_non_valido", "trasbordo_titolo_inesistente",
+      ]));
+    });
+
+    it("solo dove vale: senza la rete extraurbana niente carta sulle linee extraurbane; senza reti niente carta", () => {
+      const soloUrbano = conCarta({ reti: ["urbano_lago"] }).file;
+      expect(soloUrbano["fare_products.txt"]!.righe.map((r) => r.fare_product_id)).not.toContain(idCarta("extraurbano"));
+      expect(soloUrbano["fare_leg_rules.txt"]!.righe.filter((r) => r.fare_product_id === idCarta("urbano"))).toHaveLength(1);
+      const spento = conCarta({ reti: [] }).file;
+      expect(JSON.stringify(spento)).not.toContain("contactless");
+      expect(spento["fare_transfer_rules.txt"]!.righe).toHaveLength(1);
+      /* una rete urbana che non ha linee nel file: niente titolo */
+      const senzaLinee = fileDelleTariffe(dati({ supporti: SUPPORTI, contactless: { ...CARTA, reti: ["urbano_lago"] }, linee: [{ route_id: "D", route_short_name: "D" }] }));
+      expect(JSON.stringify(senzaLinee.file)).not.toContain("contactless");
+    });
+
+    it("senza il supporto o senza la tariffa del tipo: un avviso", () => {
+      const senzaSupporto = conCarta({ supporto: null });
+      expect(senzaSupporto.file["fare_products.txt"]!.righe.find((r) => r.fare_product_id === idCarta("urbano"))?.fare_media_id).toBe("");
+      expect(senzaSupporto.avvisi.map((a) => a.codice)).toContain("contactless_senza_supporto");
+      /* un supporto che non c'è più fra quelli dell'azienda vale come nessun supporto */
+      expect(conCarta({ supporto: "tessera_vecchia" }).avvisi.map((a) => a.codice)).toContain("contactless_senza_supporto");
+      const senzaUrbana = conCarta({ tariffe: [CARTA.tariffe[1]!] });
+      expect(senzaUrbana.avvisi.find((a) => a.codice === "contactless_senza_tariffa")?.esempi).toEqual(["urbano_lago"]);
+      expect(senzaUrbana.file["fare_products.txt"]!.righe.map((r) => r.fare_product_id)).not.toContain(idCarta("urbano"));
+    });
   });
 });
 

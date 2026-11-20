@@ -277,10 +277,24 @@ function verificaTariffe(righe: (f: string) => Riga[], fermate: Set<string>, lin
     if (!aree.has(testo(a.area_id))) errori.aggiungi("area_inesistente", "stop_areas.txt", "una fermata in un'area che non c'è", testo(a.area_id));
     if (!fermate.has(testo(a.stop_id))) errori.aggiungi("fermata_inesistente", "stop_areas.txt", "un'area con una fermata che non c'è", testo(a.stop_id));
   }
+  const gruppi = new Set<string>();
   for (const r of righe("fare_leg_rules.txt")) {
     const rete = testo(r.network_id), da = testo(r.from_area_id), a = testo(r.to_area_id), p = testo(r.fare_product_id);
     if (rete && !reti.has(rete)) errori.aggiungi("regola_rete_inesistente", "fare_leg_rules.txt", "una regola su una rete che non c'è", rete);
     if ((da && !aree.has(da)) || (a && !aree.has(a))) errori.aggiungi("regola_area_inesistente", "fare_leg_rules.txt", "una regola fra aree che non ci sono", `${da} → ${a}`);
     if (!prodotti.has(p)) errori.aggiungi("regola_titolo_inesistente", "fare_leg_rules.txt", "una regola con un titolo che non c'è", p);
+    if (testo(r.leg_group_id)) gruppi.add(testo(r.leg_group_id));
+  }
+  /* i trasbordi: gruppi e titoli che ci sono; transfer_count solo (e sempre) dentro lo stesso gruppo; il tipo della durata se c'è una durata */
+  for (const t of righe("fare_transfer_rules.txt")) {
+    const da = testo(t.from_leg_group_id), a = testo(t.to_leg_group_id), p = testo(t.fare_product_id);
+    const chi = `${da} → ${a}`;
+    if ((da && !gruppi.has(da)) || (a && !gruppi.has(a))) errori.aggiungi("trasbordo_gruppo_inesistente", "fare_transfer_rules.txt", "un trasbordo fra gruppi di tratte che non ci sono", chi);
+    if (p && !prodotti.has(p)) errori.aggiungi("trasbordo_titolo_inesistente", "fare_transfer_rules.txt", "un trasbordo con un titolo che non c'è", p);
+    const conteggio = testo(t.transfer_count);
+    if (da === a && da && !/^(-1|[1-9]\d*)$/.test(conteggio)) errori.aggiungi("trasbordo_senza_conteggio", "fare_transfer_rules.txt", "un trasbordo dentro lo stesso gruppo senza transfer_count", chi);
+    if (da !== a && conteggio) errori.aggiungi("trasbordo_conteggio_vietato", "fare_transfer_rules.txt", "un trasbordo fra gruppi diversi con transfer_count", chi);
+    if (testo(t.duration_limit) && !/^[0-3]$/.test(testo(t.duration_limit_type))) errori.aggiungi("trasbordo_durata_senza_tipo", "fare_transfer_rules.txt", "un trasbordo con una durata senza duration_limit_type", chi);
+    if (!/^[0-2]$/.test(testo(t.fare_transfer_type))) errori.aggiungi("trasbordo_tipo_non_valido", "fare_transfer_rules.txt", "un trasbordo senza un fare_transfer_type valido", chi);
   }
 }
