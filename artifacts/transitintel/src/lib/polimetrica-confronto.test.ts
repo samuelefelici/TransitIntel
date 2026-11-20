@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
-  casellaCsv, confronta, corpoDecisione, csvCoppie, csvPunti, fermateNelVerso, nodiDaiPunti, nomeFile, riassunto, sceltaIniziale, sceltaPerPercorso,
-  type Candidato, type FermataPercorso, type PercorsoUfficiale, type RigaUfficiale, type Scelta,
+  casellaCsv, confronta, corpoDecisione, csvCoppie, csvCoppieDiTutte, csvPunti, csvPuntiDiTutte, fermateNelVerso, nodiDaiPunti, nomeFile, percorsiNelFile,
+  riassunto, riepilogoLinee, sceltaIniziale, sceltaPerPercorso, totaliRiepilogo,
+  type Candidato, type DettaglioLinea, type FermataPercorso, type PercorsoUfficiale, type RigaUfficiale, type Scelta,
 } from "./polimetrica-confronto";
 import type { FasciaKm } from "./fasce-km";
 
@@ -174,7 +175,7 @@ describe("i CSV", () => {
   });
 
   it("i punti: una riga per punto, coi decimali con la virgola", () => {
-    const righe = csvPunti(dove, c).replace(/^﻿/, "").trim().split("\r\n");
+    const righe = csvPunti(dove, c).replace(/^\uFEFF/, "").trim().split("\r\n");
     expect(righe[0]).toBe("linea;percorso;direzione;ordine;codice;nome;nodo;km bigliettazione;fermata;nome fermata;km nuovo;differenza km");
     expect(righe.slice(1)).toEqual([
       "D;0;1;1;3001;Borgo Alto;3001;0;3001;Borgo Alto;0;0",
@@ -183,7 +184,7 @@ describe("i CSV", () => {
       "D;0;1;4;4002;Fornace;4002;13;4002;Fornace;12,5;-0,5",
       "D;0;1;5;7777;Lago;7777;15;;;;",
     ]);
-    expect(csvPunti(dove, c).startsWith("﻿")).toBe(true);
+    expect(csvPunti(dove, c).startsWith("\uFEFF")).toBe(true);
   });
 
   it("le coppie: tutte, o solo quelle che non sono uguali", () => {
@@ -200,5 +201,79 @@ describe("i CSV", () => {
 
   it("il nome del file non porta caratteri strani", () => {
     expect(nomeFile({ linea: "R/", percorso: "0", direzione: "1" }, "coppie")).toBe("coppie-R_-0-1.csv");
+  });
+});
+
+describe("il riepilogo di tutte le linee", () => {
+  const azienda = { routeId: "D", variantId: "a", direzione: 0, da: "Deposito", a: "Fornace", corse: 4, km: 13.5, fermate: FERMATE };
+  /* la D: un percorso salvato (con una fermata corretta a mano) e uno solo proposto; la V: un percorso dove non si ritrova niente */
+  const salvato: PercorsoUfficiale = {
+    ...PERCORSO,
+    deciso: { routeId: "D", variantId: "a", verso: "AB", nellImport: true, punti: [{ ordine: 1, fermata: "3001" }, { ordine: 2, fermata: "3002" }, { ordine: 3, fermata: "4000" }, { ordine: 4, fermata: "4002" }, { ordine: 5, fermata: null }] },
+  };
+  const proposto: PercorsoUfficiale = {
+    percorso: "0", direzione: "2",
+    punti: [{ ordine: 1, codice: "4002", nome: "Fornace", nodo: null, km: 0 }, { ordine: 2, codice: "3001", nome: "Borgo Alto", nodo: null, km: 13 }],
+    candidati: [{ routeId: "D", variantId: "a", verso: "BA", trovati: 2, punti: [{ ordine: 1, fermata: "4002", come: "codice" }, { ordine: 2, fermata: "3001", come: "codice" }] }],
+    deciso: null,
+  };
+  const LINEE: DettaglioLinea[] = [
+    /* nella bigliettazione il ritorno da un capo all'altro è in fascia 2 */
+    { linea: "D", abbinata: "D", percorsi: [salvato, proposto], righe: [...RIGHE.filter((r) => r.direzione !== "2"), riga("4002", "3001", 13, 2, { direzione: "2" })], percorsiAzienda: [azienda] },
+    { linea: "V9", abbinata: "V", percorsi: [{ percorso: "0", direzione: "1", punti: [{ ordine: 1, codice: "x", nome: "Lago", nodo: null, km: 0 }], candidati: [], deciso: null }], righe: [], percorsiAzienda: [] },
+    /* una linea che ha solo righe non ha percorsi da confrontare; una non abbinata non entra */
+    { linea: "SPEC", abbinata: "K", percorsi: [], righe: [riga("a", "b", 0, 0)], percorsiAzienda: [] },
+    { linea: "900", abbinata: null, percorsi: [proposto], righe: [], percorsiAzienda: [azienda] },
+  ];
+  const voci = riepilogoLinee(LINEE, FASCE);
+
+  it("una voce per percorso: salvato, proposto o senza proposta, con gli stessi numeri del confronto di una linea", () => {
+    expect(voci.map((v) => [v.linea, v.abbinata, v.percorso, v.direzione, v.da, v.a, v.stato, v.punti, v.numeri?.abbinati ?? null, v.numeri?.coppie ?? null, v.numeri?.cambiano ?? null])).toEqual([
+      ["D", "D", "0", "1", "Borgo Alto", "Lago", "salvato", 5, 4, 6, 2],
+      ["D", "D", "0", "2", "Fornace", "Borgo Alto", "proposta", 2, 2, 1, 1],
+      ["V9", "V", "0", "1", "Lago", "Lago", "senza", 1, null, null, null],
+    ]);
+    /* il ritorno: 12,5 km coi km dell'azienda, fascia 3; nella bigliettazione era 2 */
+    expect(voci[1]!.confronto!.coppie[0]).toMatchObject({ kmNuovo: 12.5, fasciaUfficiale: 2, fasciaNuova: 3, esito: "cambia" });
+  });
+
+  it("i totali, e a parte le differenze dei percorsi già salvati", () => {
+    /* il punto del percorso senza proposta è nel totale dei punti: resta da mettere su una fermata */
+    expect(totaliRiepilogo(voci)).toEqual({
+      linee: 2, percorsi: 3, salvati: 1, proposte: 1, senza: 1,
+      punti: 8, abbinati: 6, coppie: 7, cambiano: 3, cambianoNeiSalvati: 2, spente: 1, mancano: 0,
+    });
+    expect(totaliRiepilogo([])).toMatchObject({ linee: 0, percorsi: 0, cambiano: 0 });
+  });
+
+  it("nel file unico entrano i percorsi salvati; le proposte solo se lo si chiede, e si riconoscono", () => {
+    expect([percorsiNelFile(voci, false), percorsiNelFile(voci, true)]).toEqual([1, 2]);
+    const salvate = csvCoppieDiTutte(voci, { ancheLeProposte: false, soloDifferenze: true }).replace(/^\uFEFF/, "").trim().split("\r\n");
+    expect(salvate[0]).toBe("linea;percorso;direzione;da;nome da;a;nome a;km bigliettazione;km nuovo;tariffario;fascia bigliettazione;fascia nuova;forzata;esito;linea azienda;abbinamento");
+    expect(salvate.slice(1)).toEqual([
+      "D;0;1;3001;Borgo Alto;9000;Molino;6;7,2;EXT;1;2;no;cambia;D;salvato",
+      "D;0;1;3900;Ponte Nuovo;9000;Molino;0,9;1,8;EXT;3;1;sì;cambia;D;salvato",
+      "D;0;1;9000;Molino;4002;Fornace;7;5,3;VUOTA;0;1;sì;senza fascia nella bigliettazione;D;salvato",
+    ]);
+    const tutte = csvCoppieDiTutte(voci, { ancheLeProposte: true, soloDifferenze: true }).trim().split("\r\n");
+    expect(tutte).toHaveLength(5);
+    expect(tutte[4]).toBe("D;0;2;4002;Fornace;3001;Borgo Alto;13;12,5;EXT;2;3;no;cambia;D;proposta da rivedere");
+    /* con anche le coppie uguali */
+    expect(csvCoppieDiTutte(voci, { ancheLeProposte: false, soloDifferenze: false }).trim().split("\r\n")).toHaveLength(7);
+  });
+
+  it("i punti di tutti i percorsi in un file", () => {
+    const righe = csvPuntiDiTutte(voci, true).replace(/^\uFEFF/, "").trim().split("\r\n");
+    expect(righe[0]).toBe("linea;percorso;direzione;ordine;codice;nome;nodo;km bigliettazione;fermata;nome fermata;km nuovo;differenza km;linea azienda;abbinamento");
+    expect(righe).toHaveLength(8);
+    expect(righe[2]).toBe("D;0;1;2;3002;Ponte Nuovo;3900;5,1;3002;Ponte Nuovo;5,4;0,3;D;salvato");
+    expect(righe[7]).toBe("D;0;2;2;3001;Borgo Alto;3001;13;3001;Borgo Alto;12,5;-0,5;D;proposta da rivedere");
+    expect(csvPuntiDiTutte(voci, false).trim().split("\r\n")).toHaveLength(6);
+  });
+
+  it("senza nessun percorso salvato il file ha solo l'intestazione", () => {
+    const soloProposte = riepilogoLinee([{ ...LINEE[0]!, percorsi: [proposto] }], FASCE);
+    expect(csvCoppieDiTutte(soloProposte, { ancheLeProposte: false, soloDifferenze: true }).trim().split("\r\n")).toHaveLength(1);
+    expect(percorsiNelFile(soloProposte, false)).toBe(0);
   });
 });

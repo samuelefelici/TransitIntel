@@ -241,15 +241,40 @@ export async function percorsiDellaLinea(importId: string, linea: string): Promi
       CROSS JOIN LATERAL jsonb_array_elements(i.payload->'lines') l
       CROSS JOIN LATERAL jsonb_array_elements(l.value->'percorsi') p
      WHERE i.id = ${importId}::uuid AND l.value->>'lineCode' = ${linea}`);
-  return (r.rows ?? []).map((x: any) => {
-    const p = x.percorso ?? {};
-    const fermate = (Array.isArray(p.stops) ? p.stops : []).map((s: any) => ({ stopId: String(s.stopId ?? ""), nome: String(s.stopName ?? ""), km: Number(s.km) || 0 }));
-    return {
-      routeId: String(p.routeId ?? ""), variantId: String(p.variantId ?? ""), direzione: p.directionId == null ? null : Number(p.directionId),
-      da: String(p.firstStopName ?? fermate[0]?.nome ?? ""), a: String(p.lastStopName ?? fermate[fermate.length - 1]?.nome ?? ""),
-      corse: Number(p.tripCount) || 0, km: Number(p.totalKm) || 0, fermate,
-    };
-  });
+  return (r.rows ?? []).map((x: any) => percorsoDalPayload(x.percorso));
+}
+
+/** Un percorso com'è nel payload di un import (senza la geometria), come lo usa il confronto. */
+function percorsoDalPayload(grezzo: any): PercorsoDellImport {
+  const p = grezzo ?? {};
+  const fermate = (Array.isArray(p.stops) ? p.stops : []).map((s: any) => ({ stopId: String(s.stopId ?? ""), nome: String(s.stopName ?? ""), km: Number(s.km) || 0 }));
+  return {
+    routeId: String(p.routeId ?? ""), variantId: String(p.variantId ?? ""), direzione: p.directionId == null ? null : Number(p.directionId),
+    da: String(p.firstStopName ?? fermate[0]?.nome ?? ""), a: String(p.lastStopName ?? fermate[fermate.length - 1]?.nome ?? ""),
+    corse: Number(p.tripCount) || 0, km: Number(p.totalKm) || 0, fermate,
+  };
+}
+
+/**
+ * Tutti i percorsi di un import, per linea, senza le geometrie: una lettura
+ * sola, per il riepilogo di tutte le linee. `null` se l'import non c'è.
+ */
+export async function percorsiDellImport(importId: string): Promise<Map<string, PercorsoDellImport[]> | null> {
+  const c = await db.execute<any>(sql`SELECT 1 FROM polim_imports WHERE id = ${importId}::uuid`);
+  if (!c.rows?.length) return null;
+  const r = await db.execute<any>(sql`
+    SELECT l.value->>'lineCode' AS linea, p.value - 'shape' AS percorso
+      FROM polim_imports i
+      CROSS JOIN LATERAL jsonb_array_elements(i.payload->'lines') l
+      CROSS JOIN LATERAL jsonb_array_elements(l.value->'percorsi') p
+     WHERE i.id = ${importId}::uuid`);
+  const per = new Map<string, PercorsoDellImport[]>();
+  for (const x of r.rows ?? []) {
+    const linea = String(x.linea ?? "");
+    if (!per.has(linea)) per.set(linea, []);
+    per.get(linea)!.push(percorsoDalPayload(x.percorso));
+  }
+  return per;
 }
 
 /** La decisione su un percorso della bigliettazione: il percorso dell'azienda, il verso e la fermata di ogni punto. */
@@ -300,4 +325,69 @@ export async function togliDecisionePunti(lineaUfficiale: string, percorso: stri
   await db.execute(sql`
     DELETE FROM polim_abbinamenti_percorsi
      WHERE linea_ufficiale = ${lineaUfficiale} AND percorso = ${percorso} AND direzione = ${direzione}`);
+}
+
+/* ── Il riepilogo di tutte le linee abbinate (tappa 6.34c) ────────────────── */
+
+/** Una linea della bigliettazione abbinata, con tutto quello che serve a confrontarla. */
+export interface LineaDaConfrontare {
+  linea: string;
+  /** la linea dell'azienda a cui è abbinata */
+  abbinata: string;
+  percorsi: PercorsoUfficiale[];
+  righe: RigaUfficiale[];
+  decise: DecisionePunti[];
+}
+
+/**
+ * Le linee della bigliettazione abbinate a una linea dell'azienda, coi loro
+ * punti, le loro righe e le decisioni salvate: cinque letture in tutto,
+ * quante che siano le linee.
+ */
+export async function lineeDaConfrontare(): Promise<LineaDaConfrontare[]> {
+  const [l, p, r, dp, dq] = await Promise.all([
+    db.execute<any>(sql`SELECT linea_ufficiale, linea FROM polim_abbinamenti_linee WHERE linea IS NOT NULL ORDER BY linea_ufficiale`),
+    db.execute<any>(sql`
+      SELECT x.linea, x.percorso, x.direzione, x.ordine, x.codice, x.nome, x.nodo, x.km::float8 AS km
+        FROM polim_ufficiale_punti x JOIN polim_abbinamenti_linee a ON a.linea_ufficiale = x.linea AND a.linea IS NOT NULL
+       ORDER BY x.linea, x.percorso, x.direzione, x.ordine`),
+    db.execute<any>(sql`
+      SELECT x.linea, x.percorso, x.direzione, x.da, x.a, x.km::float8 AS km, x.tariffario, x.fascia, x.forzata
+        FROM polim_ufficiale_righe x JOIN polim_abbinamenti_linee a ON a.linea_ufficiale = x.linea AND a.linea IS NOT NULL
+       ORDER BY x.linea, x.percorso, x.direzione, x.da, x.a`),
+    db.execute<any>(sql`SELECT linea_ufficiale, percorso, direzione, route_id, variant_id, verso FROM polim_abbinamenti_percorsi ORDER BY linea_ufficiale, percorso, direzione`),
+    db.execute<any>(sql`SELECT linea_ufficiale, percorso, direzione, ordine, fermata FROM polim_abbinamenti_punti ORDER BY linea_ufficiale, percorso, direzione, ordine`),
+  ]);
+  const per = new Map<string, LineaDaConfrontare>();
+  for (const x of l.rows ?? []) per.set(String(x.linea_ufficiale), { linea: String(x.linea_ufficiale), abbinata: String(x.linea), percorsi: [], righe: [], decise: [] });
+  for (const x of p.rows ?? []) {
+    const linea = per.get(String(x.linea));
+    if (!linea) continue;
+    let ultimo = linea.percorsi[linea.percorsi.length - 1];
+    if (!ultimo || ultimo.percorso !== x.percorso || ultimo.direzione !== x.direzione) {
+      ultimo = { percorso: String(x.percorso), direzione: String(x.direzione), punti: [] };
+      linea.percorsi.push(ultimo);
+    }
+    ultimo.punti.push({ linea: linea.linea, percorso: ultimo.percorso, direzione: ultimo.direzione, ordine: Number(x.ordine), codice: String(x.codice), nome: x.nome ?? null, nodo: x.nodo ?? null, km: Number(x.km) });
+  }
+  for (const x of r.rows ?? []) {
+    per.get(String(x.linea))?.righe.push({
+      linea: String(x.linea), percorso: String(x.percorso), direzione: String(x.direzione), da: String(x.da), a: String(x.a),
+      km: x.km == null ? null : Number(x.km), tariffario: x.tariffario ?? null, fascia: x.fascia == null ? null : Number(x.fascia), forzata: x.forzata === true,
+    });
+  }
+  const punti = new Map<string, { ordine: number; fermata: string | null }[]>();
+  for (const x of dq.rows ?? []) {
+    const k = `${x.linea_ufficiale}\u0000${x.percorso}\u0000${x.direzione}`;
+    if (!punti.has(k)) punti.set(k, []);
+    punti.get(k)!.push({ ordine: Number(x.ordine), fermata: x.fermata ?? null });
+  }
+  for (const x of dp.rows ?? []) {
+    per.get(String(x.linea_ufficiale))?.decise.push({
+      percorso: String(x.percorso), direzione: String(x.direzione), routeId: String(x.route_id), variantId: String(x.variant_id), verso: x.verso === "BA" ? "BA" : "AB",
+      punti: punti.get(`${x.linea_ufficiale}\u0000${x.percorso}\u0000${x.direzione}`) ?? [],
+    });
+  }
+  /* le linee abbinate che nella polimetrica caricata non ci sono più restano fuori */
+  return [...per.values()].filter((x) => x.percorsi.length > 0 || x.righe.length > 0);
 }

@@ -4,18 +4,20 @@
  * La polimetrica che sta nel sistema di bigliettazione invecchia: qui la si
  * carica (due CSV) e si dice a quale linea dell'import corrisponde ogni sua
  * linea. Cerbero propone, chi lavora alle tariffe conferma, cambia o esclude.
- * Di una linea abbinata si apre il confronto punto per punto (ConfrontoLinea).
+ * Di una linea abbinata si apre il confronto punto per punto (ConfrontoLinea);
+ * il riepilogo di tutte le linee sta in RiepilogoConfronto.
  *
  * API: /api/fares/polimetriche/ufficiale (routes/fares-polimetriche-ufficiale.ts).
  * I conti in lib/polimetrica-ufficiale.ts.
  */
 import React from "react";
-import { Check, ChevronDown, FileText, GitCompareArrows, Loader2, Search, Trash2, Upload, Wand2 } from "lucide-react";
+import { Check, ChevronDown, FileText, GitCompareArrows, ListChecks, Loader2, Search, Trash2, Upload, Wand2 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { useAzienda } from "@/hooks/use-azienda";
 import { useToast } from "@/hooks/use-toast";
 import type { FasciaKm } from "@/lib/fasce-km";
 import { ConfrontoLinea, type NodiDaApplicare } from "./ConfrontoLinea";
+import { RiepilogoConfronto } from "./RiepilogoConfronto";
 import {
   conDecisioni, conteggi, decisioniDalleProposte, ETICHETTE_FILTRO, filtrate, riassuntoCaricamento, senzaCorrispondenza,
   statoDellaLinea, testoProposta, vociPerLinea,
@@ -55,6 +57,7 @@ export function PolimetricaUfficiale({ importId, fasce, onUsaNodi }: {
   const [caricando, setCaricando] = React.useState(false);
   const [salvando, setSalvando] = React.useState(false);
   const [lineaAperta, setLineaAperta] = React.useState<string | null>(null); // la linea di cui si guarda il confronto
+  const [riepilogo, setRiepilogo] = React.useState(false); // il riepilogo di tutte le linee; da lì si apre una linea e ci si torna
 
   const leggi = React.useCallback(async () => {
     try {
@@ -116,6 +119,9 @@ export function PolimetricaUfficiale({ importId, fasce, onUsaNodi }: {
 
   if (lineaAperta) {
     return <ConfrontoLinea importId={importId} linea={lineaAperta} fasce={fasce} onUsaNodi={onUsaNodi} onIndietro={() => setLineaAperta(null)} />;
+  }
+  if (riepilogo) {
+    return <RiepilogoConfronto importId={importId} fasce={fasce} onIndietro={() => setRiepilogo(false)} onApri={setLineaAperta} />;
   }
   if (errore) return <p role="alert" className="p-6 text-sm text-red-300">{errore}</p>;
   if (!stato) return <div className="h-full flex items-center justify-center text-emerald-400/50"><Loader2 className="w-6 h-6 animate-spin" /></div>;
@@ -193,9 +199,14 @@ export function PolimetricaUfficiale({ importId, fasce, onUsaNodi }: {
                 className="bg-transparent text-[12px] text-emerald-100 placeholder:text-emerald-500/40 focus:outline-none w-52" />
             </label>
             {salvando && <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400/60" aria-label="Salvo" />}
+            <button type="button" onClick={() => setRiepilogo(true)} disabled={c.abbinata === 0}
+              title="Tutte le linee abbinate in una tabella: quali percorsi hanno l'abbinamento salvato, quante coppie cambiano fascia, e un solo file con tutte le differenze."
+              className="ml-auto text-[12px] px-3 py-1.5 rounded-lg bg-emerald-500 text-emerald-950 font-semibold hover:bg-emerald-400 disabled:opacity-40 flex items-center gap-1.5">
+              <ListChecks className="w-3.5 h-3.5" /> Riepilogo delle differenze
+            </button>
             <button type="button" onClick={() => decidi(proposte)} disabled={proposte.length === 0 || salvando}
               title="Abbina ogni linea ancora da abbinare alla linea che Cerbero propone. Le altre restano come sono."
-              className="ml-auto text-[12px] px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-40 flex items-center gap-1.5">
+              className="text-[12px] px-3 py-1.5 rounded-lg bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30 disabled:opacity-40 flex items-center gap-1.5">
               <Wand2 className="w-3.5 h-3.5" /> Accetta le {proposte.length} proposte
             </button>
           </div>

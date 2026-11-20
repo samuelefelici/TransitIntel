@@ -1941,6 +1941,50 @@ nuova.
 **Rollback**: immagine precedente. Le due tabelle restano e non danno
 fastidio.
 
+### Il riepilogo del confronto, per tutte le linee (tappa 6.34c)
+
+Il terzo pezzo del confronto. Nel pannello «Confronto con la bigliettazione»
+il pulsante **«Riepilogo delle differenze»** apre una tabella con tutte le
+linee abbinate, un percorso della bigliettazione per riga:
+- **l'abbinamento**: *salvato* (qualcuno l'ha guardato e ha premuto «Salva
+  l'abbinamento»), *proposta da rivedere* (c'è solo la proposta di Cerbero),
+  *nessuna proposta*;
+- i punti tariffari con la loro fermata, lo scarto massimo dei km, le coppie di
+  nodi e quante **cambiano fascia**;
+- «Confronta» apre la linea; «Indietro» riporta al riepilogo.
+
+Sopra la tabella i totali, e i filtri: salvati, da rivedere, senza proposta,
+con differenze.
+
+**Un file per tutte le linee.** Due pulsanti scaricano un solo CSV con le
+coppie (di default solo le differenze) e uno con i punti, con le stesse colonne
+dei file di una linea più la linea dell'azienda e lo stato dell'abbinamento.
+- **Di default entrano solo i percorsi con l'abbinamento salvato**: una
+  proposta non rivista può avere un punto sulla fermata sbagliata, e il file è
+  quello che si ribatte a mano nella bigliettazione.
+- La spunta «anche i percorsi non ancora salvati» aggiunge le proposte: la
+  colonna «abbinamento» dice riga per riga da dove viene il numero.
+- Senza «solo le differenze» il file porta tutte le coppie, anche le uguali.
+
+Il lavoro quindi è: si apre il riepilogo, si rivede un percorso alla volta
+(«Confronta», poi «Salva l'abbinamento»), e alla fine si scarica il file dei
+salvati.
+
+Sulla copia dei dati veri (50 linee abbinate): 98 percorsi di 49 linee, 1 con
+l'abbinamento salvato e 97 con la sola proposta; una linea ha solo righe e
+nessun punto tariffario. Con le proposte il file delle differenze ha 579 righe
+(533 coppie che cambiano fascia e 46 senza fascia nella bigliettazione), quello
+di tutte le coppie 2.812, quello dei punti 1.100. Il riepilogo si apre in meno
+di un secondo.
+
+**Chi**: chi ha l'area Tariffe, anche in sola lettura (il riepilogo non scrive
+niente).
+
+**Dopo il deploy**: niente da fare. Nessuna migrazione, nessuna variabile e
+nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
 Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito

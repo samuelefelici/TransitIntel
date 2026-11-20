@@ -233,6 +233,23 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la polimetrica della bigliettaz
     expect((await lineaD()).percorsi[0].deciso).toMatchObject({ verso: "BA", punti: [{ ordine: 3, fermata: "3002" }] });
   });
 
+  it("il riepilogo: tutte le linee abbinate in una risposta, con la decisione salvata o la proposta migliore", async () => {
+    const r = await tariffe.get(`/api/fares/polimetriche/ufficiale/riepilogo?importId=${IMPORT}`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    /* la D e la SPEC sono abbinate; la 900 no, e non c'è */
+    expect(r.body.linee.map((l: any) => [l.linea, l.abbinata, l.percorsi.length, l.righe.length])).toEqual([["D", "D", 2, 3], ["SPEC", "K", 0, 1]]);
+    const d = r.body.linee[0];
+    /* un solo candidato per percorso: la proposta */
+    expect(d.percorsi.map((p: any) => [p.direzione, p.candidati.length, p.candidati[0].verso, p.candidati[0].trovati])).toEqual([["1", 1, "AB", 3], ["2", 1, "BA", 2]]);
+    expect(d.percorsi[0].deciso).toMatchObject({ routeId: "D", variantId: "a", verso: "BA", nellImport: true, punti: [{ ordine: 3, fermata: "3002" }] });
+    expect(d.percorsi[1].deciso).toBeNull();
+    /* dei percorsi dell'azienda solo quelli che servono, senza geometria */
+    expect(d.percorsiAzienda.map((x: any) => [x.routeId, x.variantId, x.fermate.length, "shape" in x])).toEqual([["D", "a", 3, false]]);
+    expect(r.body.linee[1].percorsiAzienda).toEqual([]);
+    expect((await tariffe.get("/api/fares/polimetriche/ufficiale/riepilogo?importId=x")).status).toBe(400);
+    expect((await tariffe.get("/api/fares/polimetriche/ufficiale/riepilogo?importId=e6340000-0000-4000-8000-0000000000ff")).status).toBe(404);
+  });
+
   it("rifiuta una decisione su cose che non esistono, e non cambia niente", async () => {
     const prima = (await lineaD()).percorsi[0].deciso;
     for (const [cambia, stato, errore] of [
@@ -286,7 +303,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la polimetrica della bigliettaz
     expect(decidi(tariffista, "PUT", "/fares/polimetriche/ufficiale/abbinamenti")).toEqual({ passa: true });
     expect(decidi(tariffista, "PUT", "/fares/polimetriche/ufficiale/linea/punti")).toEqual({ passa: true });
     for (const [m, p] of [["GET", "/fares/polimetriche/ufficiale"], ["POST", "/fares/polimetriche/ufficiale"], ["DELETE", "/fares/polimetriche/ufficiale"], ["PUT", "/fares/polimetriche/ufficiale/abbinamenti"],
-      ["GET", "/fares/polimetriche/ufficiale/linea"], ["PUT", "/fares/polimetriche/ufficiale/linea/punti"], ["DELETE", "/fares/polimetriche/ufficiale/linea/punti"]]) {
+      ["GET", "/fares/polimetriche/ufficiale/linea"], ["PUT", "/fares/polimetriche/ufficiale/linea/punti"], ["DELETE", "/fares/polimetriche/ufficiale/linea/punti"],
+      ["GET", "/fares/polimetriche/ufficiale/riepilogo"]]) {
       expect(decidi(altro, m!, p!).passa, `${m} ${p}`).toBe(false);
     }
   });

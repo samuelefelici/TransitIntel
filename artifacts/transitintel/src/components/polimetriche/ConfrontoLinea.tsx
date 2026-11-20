@@ -128,7 +128,7 @@ export function ConfrontoLinea({ importId, linea, fasce, onIndietro, onUsaNodi }
   if (errore) return (
     <div className="p-6 space-y-3">
       <p role="alert" className="text-sm text-red-300">{errore}</p>
-      <button type="button" onClick={onIndietro} className="text-[12px] text-emerald-300 hover:underline flex items-center gap-1"><ArrowLeft className="w-3.5 h-3.5" /> Torna alle linee</button>
+      <button type="button" onClick={onIndietro} className="text-[12px] text-emerald-300 hover:underline flex items-center gap-1"><ArrowLeft className="w-3.5 h-3.5" /> Indietro</button>
     </div>
   );
   if (!dettaglio) return <div className="h-full flex items-center justify-center text-emerald-400/50"><Loader2 className="w-6 h-6 animate-spin" /></div>;
@@ -142,7 +142,7 @@ export function ConfrontoLinea({ importId, linea, fasce, onIndietro, onUsaNodi }
       <div className="flex flex-wrap items-center gap-3">
         <button type="button" onClick={onIndietro}
           className="text-[12px] px-2.5 py-1.5 rounded-lg border border-emerald-700/50 text-emerald-300/80 hover:bg-emerald-500/10 flex items-center gap-1.5">
-          <ArrowLeft className="w-3.5 h-3.5" /> Le linee
+          <ArrowLeft className="w-3.5 h-3.5" /> Indietro
         </button>
         <h2 className="text-base font-bold text-emerald-200">
           Linea <span className="font-mono">{dettaglio.linea}</span> della bigliettazione

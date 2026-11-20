@@ -270,32 +270,152 @@ const riga = (caselle: string[]) => caselle.join(";");
 /** Chi è: la linea della bigliettazione, il percorso e la direzione, in testa a ogni riga dei CSV. */
 export interface Dove { linea: string; percorso: string; direzione: string }
 
+const COLONNE_PUNTI = ["linea", "percorso", "direzione", "ordine", "codice", "nome", "nodo", "km bigliettazione", "fermata", "nome fermata", "km nuovo", "differenza km"];
+const COLONNE_COPPIE = ["linea", "percorso", "direzione", "da", "nome da", "a", "nome a", "km bigliettazione", "km nuovo", "tariffario", "fascia bigliettazione", "fascia nuova", "forzata", "esito"];
+
+/** Le righe dei punti di un percorso; `inCoda` sono caselle in più, uguali per tutte le righe. */
+function righePunti(dove: Dove, c: Confronto, inCoda: string[] = []): string[] {
+  return c.punti.map((x) => riga([
+    casellaCsv(dove.linea), casellaCsv(dove.percorso), casellaCsv(dove.direzione), String(x.ordine), casellaCsv(x.codice), casellaCsv(x.nome), casellaCsv(x.nodo),
+    numeroCsv(x.kmUfficiale), casellaCsv(x.fermata?.stopId ?? null), casellaCsv(x.fermata?.nome ?? null), numeroCsv(x.kmNuovo), numeroCsv(x.differenza), ...inCoda,
+  ]));
+}
+
+/** Le righe delle coppie di un percorso; `soloDifferenze`: senza quelle uguali. */
+function righeCoppie(dove: Dove, c: Confronto, soloDifferenze: boolean, inCoda: string[] = []): string[] {
+  return c.coppie.filter((x) => !soloDifferenze || x.esito !== "uguale").map((x) => riga([
+    casellaCsv(dove.linea), casellaCsv(dove.percorso), casellaCsv(dove.direzione), casellaCsv(x.da), casellaCsv(x.nomeDa), casellaCsv(x.a), casellaCsv(x.nomeA),
+    numeroCsv(x.kmUfficiale), numeroCsv(x.kmNuovo), casellaCsv(x.tariffario), x.fasciaUfficiale == null ? "" : String(x.fasciaUfficiale),
+    x.fasciaNuova == null ? "" : String(x.fasciaNuova), x.forzata ? "sì" : "no", ETICHETTE_ESITO[x.esito], ...inCoda,
+  ]));
+}
+
+/** Un CSV dalle sue righe: col BOM, perché un foglio di calcolo legga bene le lettere accentate. */
+const comeCsv = (righe: string[]) => `\uFEFF${righe.join("\r\n")}\r\n`;
+
 /** I punti: km della bigliettazione, fermata, km nuovo e differenza. Col BOM, punto e virgola e decimali con la virgola. */
 export function csvPunti(dove: Dove, c: Confronto): string {
-  const righe = [riga(["linea", "percorso", "direzione", "ordine", "codice", "nome", "nodo", "km bigliettazione", "fermata", "nome fermata", "km nuovo", "differenza km"])];
-  for (const x of c.punti) {
-    righe.push(riga([
-      casellaCsv(dove.linea), casellaCsv(dove.percorso), casellaCsv(dove.direzione), String(x.ordine), casellaCsv(x.codice), casellaCsv(x.nome), casellaCsv(x.nodo),
-      numeroCsv(x.kmUfficiale), casellaCsv(x.fermata?.stopId ?? null), casellaCsv(x.fermata?.nome ?? null), numeroCsv(x.kmNuovo), numeroCsv(x.differenza),
-    ]));
-  }
-  return `﻿${righe.join("\r\n")}\r\n`;
+  return comeCsv([riga(COLONNE_PUNTI), ...righePunti(dove, c)]);
 }
 
 /** Le coppie: km e fascia della bigliettazione, km e fascia nuovi, e l'esito. `soloDifferenze`: senza quelle uguali. */
 export function csvCoppie(dove: Dove, c: Confronto, soloDifferenze: boolean): string {
-  const righe = [riga(["linea", "percorso", "direzione", "da", "nome da", "a", "nome a", "km bigliettazione", "km nuovo", "tariffario", "fascia bigliettazione", "fascia nuova", "forzata", "esito"])];
-  for (const x of c.coppie) {
-    if (soloDifferenze && x.esito === "uguale") continue;
-    righe.push(riga([
-      casellaCsv(dove.linea), casellaCsv(dove.percorso), casellaCsv(dove.direzione), casellaCsv(x.da), casellaCsv(x.nomeDa), casellaCsv(x.a), casellaCsv(x.nomeA),
-      numeroCsv(x.kmUfficiale), numeroCsv(x.kmNuovo), casellaCsv(x.tariffario), x.fasciaUfficiale == null ? "" : String(x.fasciaUfficiale),
-      x.fasciaNuova == null ? "" : String(x.fasciaNuova), x.forzata ? "sì" : "no", ETICHETTE_ESITO[x.esito],
-    ]));
-  }
-  return `﻿${righe.join("\r\n")}\r\n`;
+  return comeCsv([riga(COLONNE_COPPIE), ...righeCoppie(dove, c, soloDifferenze)]);
 }
 
 /** Un nome di file senza caratteri che un file system non vuole. */
 export const nomeFile = (dove: Dove, cosa: string): string =>
   `${cosa}-${dove.linea}-${dove.percorso}-${dove.direzione}`.replace(/[^A-Za-z0-9._-]+/g, "_") + ".csv";
+
+/* ── Il riepilogo di tutte le linee (tappa 6.34c) ─────────────────────────── */
+
+/**
+ * Com'è l'abbinamento di un percorso della bigliettazione: salvato da chi
+ * lavora alle tariffe, oppure solo proposto da Cerbero (da rivedere), oppure
+ * senza nemmeno una proposta (nessun punto si ritrova).
+ */
+export type StatoAbbinamento = "salvato" | "proposta" | "senza";
+
+export const ETICHETTE_STATO: Record<StatoAbbinamento, string> = {
+  salvato: "salvato", proposta: "proposta da rivedere", senza: "nessuna proposta",
+};
+
+/** Un percorso della bigliettazione nel riepilogo, col suo confronto. */
+export interface VoceRiepilogo {
+  linea: string;
+  /** la linea dell'azienda a cui è abbinata */
+  abbinata: string;
+  percorso: string; direzione: string;
+  /** il primo e l'ultimo punto del percorso */
+  da: string; a: string;
+  /** quanti punti tariffari ha il percorso: contano anche dove non c'è una proposta */
+  punti: number;
+  stato: StatoAbbinamento;
+  confronto: Confronto | null;
+  numeri: Riassunto | null;
+}
+
+/**
+ * Il confronto di ogni percorso di ogni linea abbinata: con la decisione
+ * salvata dove c'è, altrimenti con la proposta migliore. Sono gli stessi
+ * conti della schermata di una linea.
+ */
+export function riepilogoLinee(linee: readonly DettaglioLinea[], fasce: readonly FasciaKm[]): VoceRiepilogo[] {
+  const voci: VoceRiepilogo[] = [];
+  for (const l of linee) {
+    if (l.abbinata == null) continue;
+    for (const p of l.percorsi) {
+      const primo = p.punti[0], ultimo = p.punti[p.punti.length - 1];
+      const base = {
+        linea: l.linea, abbinata: l.abbinata, percorso: p.percorso, direzione: p.direzione,
+        da: primo?.nome ?? primo?.codice ?? "", a: ultimo?.nome ?? ultimo?.codice ?? "", punti: p.punti.length,
+      };
+      const { scelta, salvata } = sceltaIniziale(p);
+      const aziendale = scelta ? l.percorsiAzienda.find((x) => x.routeId === scelta.routeId && x.variantId === scelta.variantId) : undefined;
+      if (!scelta || !aziendale) { voci.push({ ...base, stato: "senza", confronto: null, numeri: null }); continue; }
+      const confronto = confronta(p, l.righe, fermateNelVerso(aziendale.fermate, scelta.verso), scelta, fasce);
+      voci.push({ ...base, stato: salvata ? "salvato" : "proposta", confronto, numeri: riassunto(confronto) });
+    }
+  }
+  return voci;
+}
+
+/** I numeri di tutto il riepilogo. */
+export interface TotaliRiepilogo {
+  linee: number; percorsi: number; salvati: number; proposte: number; senza: number;
+  punti: number; abbinati: number;
+  coppie: number; cambiano: number;
+  /** le coppie che cambiano fascia nei soli percorsi con l'abbinamento salvato: quelle già riviste */
+  cambianoNeiSalvati: number;
+  spente: number; mancano: number;
+}
+
+export function totaliRiepilogo(voci: readonly VoceRiepilogo[]): TotaliRiepilogo {
+  const t: TotaliRiepilogo = {
+    linee: new Set(voci.map((v) => v.linea)).size, percorsi: voci.length, salvati: 0, proposte: 0, senza: 0,
+    punti: 0, abbinati: 0, coppie: 0, cambiano: 0, cambianoNeiSalvati: 0, spente: 0, mancano: 0,
+  };
+  for (const v of voci) {
+    if (v.stato === "salvato") t.salvati++; else if (v.stato === "proposta") t.proposte++; else t.senza++;
+    /* i punti di un percorso senza proposta sono tutti ancora da mettere su una fermata */
+    t.punti += v.punti;
+    if (!v.numeri) continue;
+    t.abbinati += v.numeri.abbinati;
+    t.coppie += v.numeri.coppie; t.cambiano += v.numeri.cambiano; t.spente += v.numeri.spente; t.mancano += v.numeri.mancano;
+    if (v.stato === "salvato") t.cambianoNeiSalvati += v.numeri.cambiano;
+  }
+  return t;
+}
+
+/** Quali percorsi entrano nei file: i salvati, e le proposte solo se lo si chiede. */
+const nelFile = (v: VoceRiepilogo, ancheLeProposte: boolean): v is VoceRiepilogo & { confronto: Confronto } =>
+  v.confronto != null && (v.stato === "salvato" || (ancheLeProposte && v.stato === "proposta"));
+
+/**
+ * Le coppie di tutti i percorsi in un file solo, con in coda la linea
+ * dell'azienda e com'è l'abbinamento. Di default entrano solo i percorsi con
+ * l'abbinamento salvato: una proposta non rivista può avere un punto sulla
+ * fermata sbagliata, e la sua differenza non è da ribattere.
+ */
+export function csvCoppieDiTutte(voci: readonly VoceRiepilogo[], opzioni: { ancheLeProposte: boolean; soloDifferenze: boolean }): string {
+  const righe = [riga([...COLONNE_COPPIE, "linea azienda", "abbinamento"])];
+  for (const v of voci) {
+    if (!nelFile(v, opzioni.ancheLeProposte)) continue;
+    righe.push(...righeCoppie(v, v.confronto, opzioni.soloDifferenze, [casellaCsv(v.abbinata), ETICHETTE_STATO[v.stato]]));
+  }
+  return comeCsv(righe);
+}
+
+/** I punti di tutti i percorsi in un file solo, con le stesse due colonne in coda. */
+export function csvPuntiDiTutte(voci: readonly VoceRiepilogo[], ancheLeProposte: boolean): string {
+  const righe = [riga([...COLONNE_PUNTI, "linea azienda", "abbinamento"])];
+  for (const v of voci) {
+    if (!nelFile(v, ancheLeProposte)) continue;
+    righe.push(...righePunti(v, v.confronto, [casellaCsv(v.abbinata), ETICHETTE_STATO[v.stato]]));
+  }
+  return comeCsv(righe);
+}
+
+/** Quanti percorsi entrano nei file. */
+export const percorsiNelFile = (voci: readonly VoceRiepilogo[], ancheLeProposte: boolean): number =>
+  voci.filter((v) => nelFile(v, ancheLeProposte)).length;
