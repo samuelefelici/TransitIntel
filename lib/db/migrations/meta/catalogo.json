@@ -52,6 +52,9 @@
   "public.census_sections_pkey": "CREATE UNIQUE INDEX census_sections_pkey ON public.census_sections USING btree (id)",
   "public.coincidence_zone_stops_pkey": "CREATE UNIQUE INDEX coincidence_zone_stops_pkey ON public.coincidence_zone_stops USING btree (id)",
   "public.coincidence_zones_pkey": "CREATE UNIQUE INDEX coincidence_zones_pkey ON public.coincidence_zones USING btree (id)",
+  "public.contactless_pkey": "CREATE UNIQUE INDEX contactless_pkey ON public.contactless USING btree (chiave)",
+  "public.contactless_reti_pkey": "CREATE UNIQUE INDEX contactless_reti_pkey ON public.contactless_reti USING btree (rete)",
+  "public.contactless_tariffe_pkey": "CREATE UNIQUE INDEX contactless_tariffe_pkey ON public.contactless_tariffe USING btree (tipo)",
   "public.dati_aperti_pkey": "CREATE UNIQUE INDEX dati_aperti_pkey ON public.dati_aperti USING btree (tipo)",
   "public.deadhead_arcs_pkey": "CREATE UNIQUE INDEX deadhead_arcs_pkey ON public.deadhead_arcs USING btree (id)",
   "public.depots_pkey": "CREATE UNIQUE INDEX depots_pkey ON public.depots USING btree (id)",
@@ -764,6 +767,24 @@
    "schedules": "jsonb | null |  |  | ",
    "updated_at": "timestamp with time zone | null | now() |  | ",
    "walk_minutes": "integer | not null | 5 |  | "
+  },
+  "public.contactless": {
+   "aggiornato_il": "timestamp with time zone | not null | now() |  | ",
+   "chiave": "text | not null | 'unica'::text |  | ",
+   "finestra_ore": "smallint | not null | 24 |  | ",
+   "massimale_unico": "numeric(6,2) | null |  |  | ",
+   "supporto": "text | null |  |  | "
+  },
+  "public.contactless_reti": {
+   "rete": "text | not null |  |  | "
+  },
+  "public.contactless_tariffe": {
+   "massimale": "numeric(6,2) | not null |  |  | ",
+   "primo": "numeric(6,2) | not null |  |  | ",
+   "secondo": "numeric(6,2) | not null |  |  | ",
+   "terzo": "numeric(6,2) | not null |  |  | ",
+   "tipo": "text | not null |  |  | ",
+   "validita_minuti": "smallint | not null |  |  | "
   },
   "public.dati_aperti": {
    "byte": "integer | null |  |  | ",
@@ -2595,6 +2616,21 @@
   "public.coincidence_zone_stops.coincidence_zone_stops_pkey": "PRIMARY KEY (id)",
   "public.coincidence_zone_stops.coincidence_zone_stops_zone_id_coincidence_zones_id_fk": "FOREIGN KEY (zone_id) REFERENCES coincidence_zones(id) ON DELETE CASCADE",
   "public.coincidence_zones.coincidence_zones_pkey": "PRIMARY KEY (id)",
+  "public.contactless.contactless_finestra": "CHECK (((finestra_ore >= 1) AND (finestra_ore <= 72)))",
+  "public.contactless.contactless_massimale_unico": "CHECK (((massimale_unico > (0)::numeric) AND (massimale_unico <= 999.99)))",
+  "public.contactless.contactless_pkey": "PRIMARY KEY (chiave)",
+  "public.contactless.contactless_supporto_fkey": "FOREIGN KEY (supporto) REFERENCES supporti_catalogo(supporto) ON DELETE SET NULL",
+  "public.contactless.contactless_una_riga": "CHECK ((chiave = 'unica'::text))",
+  "public.contactless_reti.contactless_reti_pkey": "PRIMARY KEY (rete)",
+  "public.contactless_reti.contactless_reti_rete_fkey": "FOREIGN KEY (rete) REFERENCES reti(rete) ON DELETE CASCADE",
+  "public.contactless_tariffe.contactless_tariffe_massimale": "CHECK (((massimale > (0)::numeric) AND (massimale <= 999.99)))",
+  "public.contactless_tariffe.contactless_tariffe_massimale_primo": "CHECK ((massimale >= primo))",
+  "public.contactless_tariffe.contactless_tariffe_pkey": "PRIMARY KEY (tipo)",
+  "public.contactless_tariffe.contactless_tariffe_primo": "CHECK (((primo > (0)::numeric) AND (primo <= 999.99)))",
+  "public.contactless_tariffe.contactless_tariffe_secondo": "CHECK (((secondo >= (0)::numeric) AND (secondo <= 999.99)))",
+  "public.contactless_tariffe.contactless_tariffe_terzo": "CHECK (((terzo >= (0)::numeric) AND (terzo <= 999.99)))",
+  "public.contactless_tariffe.contactless_tariffe_tipo": "CHECK ((tipo = ANY (ARRAY['urbano'::text, 'extraurbano'::text])))",
+  "public.contactless_tariffe.contactless_tariffe_validita": "CHECK (((validita_minuti >= 1) AND (validita_minuti <= 1440)))",
   "public.dati_aperti.dati_aperti_byte": "CHECK (((byte >= 1) AND (byte <= 268435456)))",
   "public.dati_aperti.dati_aperti_esito": "CHECK ((esito = ANY (ARRAY['pubblicato'::text, 'gtfs_con_errori'::text, 'non_valido'::text, 'senza_xmllint'::text, 'senza_codice'::text, 'senza_versione'::text, 'errore'::text])))",
   "public.dati_aperti.dati_aperti_file_intero": "CHECK ((((contenuto IS NULL) = (impronta IS NULL)) AND ((contenuto IS NULL) = (byte IS NULL)) AND ((contenuto IS NULL) = (preparato_il IS NULL))))",

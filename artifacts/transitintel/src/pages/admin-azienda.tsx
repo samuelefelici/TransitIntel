@@ -11,7 +11,8 @@
  * le reti con le regole delle linee (tappa 6.7, components/azienda/RetiAzienda.tsx),
  * le fasce chilometriche dell'extraurbano (tappa 6.8, components/azienda/FasceKm.tsx),
  * il catalogo dei titoli di viaggio (tappa 6.9, components/azienda/TitoliCatalogo.tsx),
- * gli elenchi di partenza delle tariffe (tappa 6.10, components/azienda/ElenchiTariffe.tsx)
+ * gli elenchi di partenza delle tariffe (tappa 6.10, components/azienda/ElenchiTariffe.tsx),
+ * il pagamento con carta a bordo (tappa 6.38, components/azienda/Contactless.tsx)
  * e i gestori delle linee, le agenzie dei GTFS (tappa 6.11, components/azienda/Gestori.tsx).
  */
 import { useEffect, useMemo, useState } from "react";
@@ -30,6 +31,7 @@ import RetiAzienda from "@/components/azienda/RetiAzienda";
 import FasceKm from "@/components/azienda/FasceKm";
 import TitoliCatalogo from "@/components/azienda/TitoliCatalogo";
 import ElenchiTariffe from "@/components/azienda/ElenchiTariffe";
+import Contactless from "@/components/azienda/Contactless";
 import Gestori from "@/components/azienda/Gestori";
 import NodiDiScambio from "@/components/azienda/NodiDiScambio";
 import ParcoAvm from "@/components/azienda/ParcoAvm";
@@ -306,6 +308,9 @@ export default function AdminAziendaPage() {
 
       {/* gli elenchi di partenza delle tariffe (tappa 6.10): categorie di passeggero e supporti */}
       <section id="azienda-elenchi" className="scroll-mt-4"><ElenchiTariffe /></section>
+
+      {/* il pagamento con carta a bordo (tappa 6.38): tariffe, massimali e reti dove vale */}
+      <section id="azienda-carta" className="scroll-mt-4"><Contactless /></section>
 
       {/* il territorio (tappa 6.1): comuni e luoghi, ogni riga si salva da sé */}
       <section id="azienda-territorio" className="scroll-mt-4"><TerritorioAzienda /></section>

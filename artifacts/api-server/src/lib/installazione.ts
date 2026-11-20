@@ -25,6 +25,8 @@ export interface Conteggi {
   titoli: number;
   categorie: number;
   supporti: number;
+  /** le reti dove si paga con la carta a bordo (tappa 6.38) */
+  retiCarta: number;
   comuni: number;
   luoghi: { punti_interesse: number; meteo: number; polo_lavoro: number; traffico: number; centro_urbano: number };
   nodiScambio: number;
@@ -112,6 +114,12 @@ export function vociDellInstallazione(c: Conteggi): Voce[] {
       dettaglio: `${nr(c.categorie, "categoria", "categorie")}, ${nr(c.supporti, "supporto", "supporti")}`,
       seManca: "Un feed nuovo delle tariffe parte senza categorie di passeggero o senza supporti.",
       dove: inAzienda("azienda-elenchi", "Tariffe: elenchi di partenza"),
+    }),
+    voce({
+      voce: "carta", titolo: "Pagamento con carta a bordo", compilata: c.retiCarta > 0, necessaria: false,
+      dettaglio: c.retiCarta > 0 ? `attivo su ${nr(c.retiCarta, "rete", "reti")}` : "non attivo",
+      seManca: "Il GTFS non dice che si può salire pagando con la carta bancaria. Serve solo dove il sistema di bigliettazione lo permette.",
+      dove: inAzienda("azienda-carta", "Pagamento con carta a bordo"),
     }),
     voce({
       voce: "provincia", titolo: "Provincia ISTAT", compilata: c.provinciaIstat, necessaria: true,
@@ -215,6 +223,7 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
       (SELECT count(*) FROM titoli_catalogo)::int AS titoli,
       (SELECT count(*) FROM categorie_catalogo)::int AS categorie,
       (SELECT count(*) FROM supporti_catalogo)::int AS supporti,
+      (SELECT count(*) FROM contactless_reti)::int AS reti_carta,
       (SELECT count(*) FROM territorio_comuni)::int AS comuni,
       (SELECT coalesce(jsonb_object_agg(uso, n), '{}'::jsonb)
          FROM (SELECT uso, count(*)::int AS n FROM territorio_luoghi GROUP BY uso) l) AS luoghi,
@@ -236,6 +245,7 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
     avmRegola: azienda.avmMatricolaCifre != null,
     retiUrbane: Number(r.reti_urbane ?? 0), regoleLinee: Number(r.regole ?? 0), gestori: Number(r.gestori ?? 0),
     fasce: Number(r.fasce ?? 0), titoli: Number(r.titoli ?? 0), categorie: Number(r.categorie ?? 0), supporti: Number(r.supporti ?? 0),
+    retiCarta: Number(r.reti_carta ?? 0),
     comuni: Number(r.comuni ?? 0),
     luoghi: {
       punti_interesse: Number(luoghi.punti_interesse ?? 0), meteo: Number(luoghi.meteo ?? 0), polo_lavoro: Number(luoghi.polo_lavoro ?? 0),

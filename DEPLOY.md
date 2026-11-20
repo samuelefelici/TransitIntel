@@ -2154,6 +2154,78 @@ Nessuna migrazione e nessuna variabile nuova.
 
 **Rollback**: immagine precedente. Il GTFS torna senza tariffe alla preparazione successiva.
 
+### Il pagamento con carta a bordo (tappa 6.38)
+
+Dove il sistema di bigliettazione lo permette si sale avvicinando al
+validatore una carta bancaria contactless, o uno smartphone o un orologio con
+un portafoglio digitale. Il sistema conta i tap e addebita secondo le regole
+di chi fissa le tariffe. Queste regole ora sono un **dato dell'azienda**, in
+Amministrazione › Azienda › **«Pagamento con carta a bordo»**:
+- per tipo di rete (urbano, extraurbano): il prezzo del primo viaggio e per
+  quanti minuti vale, il prezzo del secondo e del terzo, il massimale;
+- il massimale unico, se nella finestra si usano tutti e due i tipi;
+- la finestra in ore dal primo tap;
+- il supporto (fra quelli delle tariffe: la carta bancaria);
+- le reti dove vale. La rete extraurbana vuol dire tutte le linee extraurbane.
+
+Si salva tutto insieme. Quello che non torna non si salva: un massimale più
+basso del primo viaggio, un massimale unico più basso di quello di un tipo,
+una rete senza la tariffa del suo tipo. Ogni modifica resta nel registro.
+
+**Nel GTFS** (export di Planning Studio e dati aperti):
+- un titolo per tipo di rete (`contactless:urbano`, `contactless:extraurbano`),
+  col prezzo del primo viaggio e il supporto, per ogni categoria di
+  passeggero;
+- una regola per ogni rete dove vale: sulle linee extraurbane è
+  un'alternativa al biglietto di fascia;
+- `fare_transfer_rules.txt`: i viaggi che cominciano dentro la validità non
+  si pagano.
+
+Il prezzo dal secondo viaggio e i massimali nel GTFS non si possono scrivere:
+entreranno nel NeTEx delle tariffe (livello 3).
+
+**Due correzioni al GTFS della 6.37**, che servivano anche alla carta:
+- `fare_leg_rules.txt` ha la colonna `rule_priority` (0 per tutte le regole).
+  Con la colonna, un'area vuota vuol dire «l'area non conta». Senza, voleva
+  dire «tutte le aree tranne quelle nominate»: una regola urbana non valeva
+  da una fermata che è anche in un nodo extraurbano.
+- I biglietti urbani di corsa semplice a tempo (60 e 100 minuti) valgono per
+  tutte le corse che cominciano dentro la durata, come in vettura. Prima ogni
+  corsa costava un biglietto nuovo.
+
+La verifica controlla anche i trasbordi: gruppi di tratte e titoli che ci
+sono, `transfer_count` dentro lo stesso gruppo, il tipo della durata.
+
+**Dati aperti**: le regole della carta entrano nell'impronta delle tariffe.
+Una modifica rifà il GTFS alla preparazione successiva.
+
+Migrazione `0058`: le tabelle `contactless` (una riga), `contactless_tariffe`
+e `contactless_reti`, sorvegliate dal registro. Le regole della Regione (urbano
+2,00 € per 60 minuti, poi 2,00 e 1,00, al massimo 5,00 € nelle 24 ore;
+extraurbano 4,00 € per 60 minuti, poi 4,00 e 2,00, al massimo 10,00 €;
+massimale unico 10,00 €, supporto cEMV) entrano solo nell'installazione del
+primo cliente, attive sull'urbano di Ancona come oggi. Una nuova azienda parte
+senza. Il riquadro «Che cosa c'è da compilare» ha la voce facoltativa.
+
+Sulla copia dei dati veri il GTFS del programma in esercizio si fa ancora in
+2 secondi e non ha errori: 183 titoli, 6.393 regole (una della carta),
+7 trasbordi (6 biglietti urbani a tempo e la carta). Con la carta accesa anche
+sull'extraurbano: 65 regole della carta, 8 trasbordi.
+
+**Chi**: solo l'amministratore (mai un token di Argos).
+
+**Dopo il deploy**:
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify la riga nuova del
+   blocco «Watch Paths» più sopra: `contactless*.ts`. Il lavoratore prepara i
+   dati aperti e legge le regole della carta.
+2. Guarda la sezione «Pagamento con carta a bordo»: le regole della Regione
+   ci sono già. Se il sistema regionale estende la carta ad altre reti, si
+   spuntano lì.
+3. Il GTFS dei dati aperti si rifà da solo alla preparazione successiva.
+
+**Rollback**: immagine precedente. Le tabelle nuove restano e non danno
+fastidio; il GTFS torna come nella 6.37.
+
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
 
 Il solver dei turni guida dà a ogni turno un codice: la lettera del deposito
@@ -2482,6 +2554,7 @@ per voce, e porta alla sezione dove si scrivono
 | Voce | Dove | Se manca |
 |---|---|---|
 | Gestori | Azienda → Gestori | nei GTFS e nel NeTEx l'agenzia è l'azienda |
+| Pagamento con carta a bordo (6.38) | Azienda → Pagamento con carta a bordo | il GTFS non dice che si può salire pagando con la carta bancaria (serve solo dove la bigliettazione lo permette) |
 | Punti del meteo | Azienda → Luoghi di riferimento | niente meteo |
 | Poli di lavoro | Azienda → Luoghi di riferimento | l'analisi di uffici e zone industriali usa solo le mappe |
 | Punti stradali del traffico | Azienda → Luoghi di riferimento | niente traffico rilevato, solo il modello |
@@ -4558,6 +4631,7 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/titoli-catalogo.ts
    artifacts/api-server/src/lib/elenchi-tariffe*.ts
    artifacts/api-server/src/lib/fasce-km*.ts
+   artifacts/api-server/src/lib/contactless*.ts
    artifacts/api-server/assets/**
    artifacts/api-server/build.ts
    artifacts/api-server/package.json

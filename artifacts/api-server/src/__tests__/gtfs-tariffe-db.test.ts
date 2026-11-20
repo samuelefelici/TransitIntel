@@ -6,7 +6,9 @@
  * fasce, una categoria, un supporto, un titolo, e una polimetrica salvata su
  * un'altra fotografia dello stesso percorso. Le tariffe del GTFS prendono i
  * nodi dalla polimetrica salvata; l'impronta delle tariffe cambia con un
- * prezzo e con una polimetrica.
+ * prezzo e con una polimetrica. Col pagamento con carta sull'extraurbano
+ * (tappa 6.38) la linea ha anche il titolo della carta e i trasbordi dentro
+ * la validità.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { db, pool } from "@workspace/db";
@@ -34,8 +36,8 @@ const ORARI: Gtfs = {
 
 describe.runIf(!!process.env.TEST_DATABASE_URL)("le tariffe del GTFS, sul database", () => {
   const prima: Record<string, unknown[]> = {};
-  /* le tabelle dell'azienda che il test riempie: si mettono da parte e si rimettono */
-  const TABELLE = ["titoli_catalogo", "fasce_km", "supporti_catalogo", "categorie_catalogo"] as const;
+  /* le tabelle dell'azienda che il test riempie: si mettono da parte e si rimettono (quelle della carta per prime: guardano i supporti) */
+  const TABELLE = ["contactless_reti", "contactless_tariffe", "contactless", "titoli_catalogo", "fasce_km", "supporti_catalogo", "categorie_catalogo"] as const;
 
   beforeAll(async () => {
     for (const t of TABELLE) prima[t] = (await db.execute<any>(sql`SELECT to_jsonb(x) AS riga FROM ${sql.identifier(t)} x`)).rows.map((r) => r.riga);
@@ -111,10 +113,30 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le tariffe del GTFS, sul databa
     expect(await improntaDelleTariffe()).not.toBe(b);
   });
 
+  it("col pagamento con carta sull'extraurbano: il titolo della carta sulla linea, i trasbordi dentro la validità, un'impronta nuova", async () => {
+    const a = await improntaDelleTariffe();
+    await db.execute(sql`INSERT INTO reti (rete, tipo, nome, colore, ordine) VALUES ('extraurbano', 'extraurbano', 'Extraurbano', '#f59e0b', 1) ON CONFLICT (rete) DO NOTHING`);
+    await db.execute(sql`INSERT INTO contactless (chiave, massimale_unico, finestra_ore, supporto) VALUES ('unica', 10, 24, 'carta')`);
+    await db.execute(sql`INSERT INTO contactless_tariffe (tipo, primo, secondo, terzo, validita_minuti, massimale) VALUES ('extraurbano', 4, 4, 2, 60, 10)`);
+    await db.execute(sql`INSERT INTO contactless_reti (rete) VALUES ('extraurbano')`);
+    const b = await improntaDelleTariffe();
+    expect(b).not.toBe(a);
+    const t = await tariffeDelGtfs(PROGETTO, ORARI);
+    expect(t.conteggi).toMatchObject({ contactless: 1, trasbordi: 1 });
+    expect(t.file["fare_products.txt"]!.righe.find((r) => r.fare_product_id === "contactless:extraurbano")).toMatchObject({ amount: "4.00", fare_media_id: "carta" });
+    expect(t.file["fare_leg_rules.txt"]!.righe.filter((r) => r.fare_product_id === "contactless:extraurbano").map((r) => r.network_id)).toEqual(["extraurbano:T37"]);
+    expect(t.file["fare_transfer_rules.txt"]!.righe).toEqual([
+      { from_leg_group_id: "contactless:extraurbano", to_leg_group_id: "contactless:extraurbano", transfer_count: -1, duration_limit: 3600, duration_limit_type: 1, fare_transfer_type: 0, fare_product_id: "" },
+    ]);
+    await db.execute(sql`UPDATE contactless_tariffe SET massimale = 12 WHERE tipo = 'extraurbano'`);
+    expect(await improntaDelleTariffe()).not.toBe(b);
+  });
+
   it("un programma che non c'è: nessuna tariffa extraurbana, i titoli sì", async () => {
     const t = await tariffeDelGtfs("e6370000-0000-4000-8000-0000000000ff", ORARI);
     expect(t.conteggi).toMatchObject({ linee: 0, nodi: 0 });
-    expect(t.file["fare_products.txt"]!.righe.length).toBe(4);
+    /* la carta (dal test di prima) non ha bisogno delle polimetriche: la linea è nel file e la carta vale */
+    expect(t.file["fare_products.txt"]!.righe.map((r) => r.fare_product_id)).toEqual(["extra_mens_2", "extra_fascia_1", "extra_fascia_2", "extra_fascia_3", "contactless:extraurbano"]);
     expect(t.avvisi.map((a) => a.codice)).toContain("linea_senza_polimetrica");
   });
 });

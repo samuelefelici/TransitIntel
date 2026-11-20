@@ -24,7 +24,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("che cosa ha scritto l'azienda, 
   it("le voci e i loro conteggi; un punto di cambio senza fermate si segnala", async () => {
     const prima = await admin.get("/api/admin/installazione");
     expect(prima.status).toBe(200);
-    expect(prima.body.voci).toHaveLength(21);
+    expect(prima.body.voci).toHaveLength(22);
     expect(prima.body.daCompilare).toBe(prima.body.voci.filter((v: any) => v.stato === "da_compilare").length);
     const puntiPrima = prima.body.voci.find((v: any) => v.voce === "punti-cambio");
 

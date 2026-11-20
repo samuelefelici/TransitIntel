@@ -15,7 +15,21 @@
  *   fare_leg_rules.txt    urbane: su una rete vale il suo biglietto, ovunque
  *                         (regoleUrbane, come il Fares Engine); extraurbane:
  *                         fra due nodi della stessa linea, il biglietto della
- *                         fascia dei km fra i loro punti tariffari
+ *                         fascia dei km fra i loro punti tariffari; il
+ *                         pagamento con carta (6.38) sulle reti dove vale
+ *   fare_transfer_rules.txt  dentro la durata di un biglietto urbano a tempo,
+ *                         e dentro la validità del pagamento con carta, le
+ *                         corse dopo la prima non si pagano
+ *
+ * Tutte le regole hanno rule_priority 0: con la colonna, un'area vuota vuol
+ * dire «l'area non conta» (senza, vorrebbe dire «tutte le aree tranne quelle
+ * nominate», e la regola urbana non varrebbe da una fermata che è anche in un
+ * nodo extraurbano). Così sulle linee extraurbane il pagamento con carta è
+ * un'alternativa al biglietto di fascia.
+ *
+ * Del pagamento con carta nel GTFS entrano il prezzo del primo viaggio, il
+ * supporto e la validità. Il prezzo dal secondo viaggio e i massimali nel
+ * GTFS non si possono scrivere.
  *
  * Le regole extraurbane vengono dalle polimetriche. Per ogni percorso della
  * linea, la polimetrica salvata (su una qualunque fotografia) del percorso con
@@ -51,6 +65,8 @@ import {
   type Linea, type Percorso,
 } from "./polimetrica-programma";
 import { componiPolimetrica, leggiCorpo } from "./polimetrica-salvata";
+import { contactlessAttivo, type Contactless, type TipoContactless } from "./contactless";
+import { contactlessDalDatabase } from "./contactless-store";
 import type { FileGtfs, Gtfs, Problema, Riga } from "./gtfs-verifica";
 
 type Esecutore = { execute: (q: any) => Promise<any> };
@@ -199,6 +215,13 @@ export const reteDellaLinea = (linea: string) => `${RETE_EXTRAURBANA}:${linea}`;
 export const areaDelNodo = (linea: string, nodo: string) => `${RETE_EXTRAURBANA}:${linea}:${nodo}`;
 /** il gruppo delle tratte extraurbane (leg_group_id): uno solo, per eventuali trasbordi */
 export const GRUPPO_EXTRAURBANO = "lg_extraurbano";
+/**
+ * Il titolo del pagamento con carta per un tipo di rete, che è anche il suo
+ * gruppo di tratte. I due punti non possono stare negli identificativi del
+ * catalogo: nessun titolo dell'azienda lo può coprire.
+ */
+export const idCarta = (tipo: TipoContactless) => `contactless:${tipo}`;
+const NOME_CARTA: Record<TipoContactless, string> = { urbano: "Carta contactless a bordo · urbano", extraurbano: "Carta contactless a bordo · extraurbano" };
 
 export interface DatiDelleTariffe {
   /** le linee e le fermate del GTFS (routes.txt, stops.txt) */
@@ -211,6 +234,8 @@ export interface DatiDelleTariffe {
   fasce: readonly FasciaKm[];
   /** le linee extraurbane con le loro polimetriche */
   extraurbane: readonly TariffeDellaLinea[];
+  /** il pagamento con carta a bordo (6.38); senza, o senza reti, non c'è */
+  contactless?: Contactless | null;
 }
 
 export interface FileDelleTariffe { file: Gtfs; avvisi: Problema[] }
@@ -260,6 +285,7 @@ export function fileDelleTariffe(d: DatiDelleTariffe): FileDelleTariffe {
   const extra = new Map(d.extraurbane.map((x) => [x.linea, x]));
   const urbane = new Map(d.reti.reti.filter((r) => r.tipo === "urbano").map((r) => [r.rete, r]));
   const reti = new Map<string, string>();
+  const retiExtraurbane = new Set<string>();
   const routeNetworks: Riga[] = [];
   for (const r of d.linee) {
     const routeId = testo(r.route_id);
@@ -272,18 +298,63 @@ export function fileDelleTariffe(d: DatiDelleTariffe): FileDelleTariffe {
     } else {
       const id = reteDellaLinea(nome);
       reti.set(id, `Extraurbano · linea ${nome}`);
+      retiExtraurbane.add(id);
       routeNetworks.push({ network_id: id, route_id: routeId });
       if (!extra.has(nome)) avviso("linea_senza_polimetrica", "fare_leg_rules.txt", "linee extraurbane senza percorsi con corse nel programma: senza tariffe", nome);
     }
   }
 
-  /* le regole urbane: su una rete vale il suo biglietto */
+  /* i trasbordi dentro un gruppo di tratte: le corse che cominciano entro
+     `minuti` dalla prima non si pagano (A + 0, senza limite di corse) */
+  const transferRules: Riga[] = [];
+  const conTrasbordi = new Set<string>();
+  const trasbordiDentro = (gruppo: string, minuti: number) => {
+    if (conTrasbordi.has(gruppo)) return;
+    conTrasbordi.add(gruppo);
+    transferRules.push({ from_leg_group_id: gruppo, to_leg_group_id: gruppo, transfer_count: -1, duration_limit: minuti * 60, duration_limit_type: 1, fare_transfer_type: 0, fare_product_id: "" });
+  };
+
+  /* le regole urbane: su una rete vale il suo biglietto; un biglietto di corsa
+     semplice a tempo vale per tutte le corse che cominciano dentro la durata */
   const legRules: Riga[] = [];
   const prodottiDelFeed = d.titoli
     .filter((t) => idProdotti.has(t.titolo))
     .map((t) => ({ fareProductId: t.titolo, fareProductName: t.nome, networkId: t.rete, fareType: t.tipo, amount: t.prezzo, durationMinutes: t.durataMinuti, isUrbanHourly: t.diRiferimento }));
+  const prodottoDi = new Map(prodottiDelFeed.map((p) => [p.fareProductId, p]));
   for (const u of regoleUrbane(prodottiDelFeed, [...urbane.values()].filter((r) => reti.has(r.rete)))) {
-    legRules.push({ leg_group_id: u.legGroupId, network_id: u.networkId, from_area_id: "", to_area_id: "", fare_product_id: u.fareProductId });
+    legRules.push({ leg_group_id: u.legGroupId, network_id: u.networkId, from_area_id: "", to_area_id: "", fare_product_id: u.fareProductId, rule_priority: 0 });
+    const p = prodottoDi.get(u.fareProductId);
+    if (p?.fareType === "single" && (p.durationMinutes ?? 0) > 0) trasbordiDentro(u.legGroupId, p.durationMinutes!);
+  }
+
+  /* il pagamento con carta: un titolo per tipo di rete, sulle reti dove vale
+     (le urbane scelte, le linee extraurbane se c'è la rete extraurbana) */
+  const carta = contactlessAttivo(d.contactless ?? null) ? d.contactless! : null;
+  if (carta) {
+    const supporto = carta.supporto && d.supporti.some((s) => s.supporto === carta.supporto) ? carta.supporto : "";
+    const attive = new Set(carta.reti);
+    const tipoDi = new Map(d.reti.reti.map((r) => [r.rete, r.tipo]));
+    const conTariffa = new Set(carta.tariffe.map((t) => t.tipo));
+    for (const r of carta.reti) {
+      const tipo = tipoDi.get(r);
+      if (tipo && !conTariffa.has(tipo)) avviso("contactless_senza_tariffa", "fare_leg_rules.txt", "reti col pagamento con carta senza la tariffa del loro tipo: lì la carta non entra nel GTFS", r);
+    }
+    let regole = 0;
+    for (const t of carta.tariffe) {
+      const doveVale = t.tipo === "urbano"
+        ? [...urbane.keys()].filter((r) => attive.has(r) && reti.has(r))
+        : attive.has(RETE_EXTRAURBANA) ? [...retiExtraurbane] : [];
+      if (!doveVale.length) continue;
+      const id = idCarta(t.tipo);
+      idProdotti.add(id);
+      prodotti.push({ fare_product_id: id, fare_product_name: NOME_CARTA[t.tipo], rider_category_id: "", fare_media_id: supporto, amount: t.primo.toFixed(2), currency: "EUR" });
+      for (const rete of doveVale) legRules.push({ leg_group_id: id, network_id: rete, from_area_id: "", to_area_id: "", fare_product_id: id, rule_priority: 0 });
+      trasbordiDentro(id, t.validitaMinuti);
+      regole += doveVale.length;
+    }
+    if (regole && !supporto) {
+      avviso("contactless_senza_supporto", "fare_products.txt", "il pagamento con carta non ha un supporto fra quelli dell'azienda: nel GTFS figura senza fare_media (Amministrazione › Azienda, «Pagamento con carta a bordo»)");
+    }
   }
 
   /* le extraurbane: nodi, fermate, coppie */
@@ -309,8 +380,8 @@ export function fileDelleTariffe(d: DatiDelleTariffe): FileDelleTariffe {
       if (!idProdotti.has(prodotto)) continue;
       const [a, b] = k.split("\u0000") as [string, string];
       const rete = reteDellaLinea(x.linea);
-      legRules.push({ leg_group_id: GRUPPO_EXTRAURBANO, network_id: rete, from_area_id: areaDelNodo(x.linea, a), to_area_id: areaDelNodo(x.linea, b), fare_product_id: prodotto });
-      if (a !== b) legRules.push({ leg_group_id: GRUPPO_EXTRAURBANO, network_id: rete, from_area_id: areaDelNodo(x.linea, b), to_area_id: areaDelNodo(x.linea, a), fare_product_id: prodotto });
+      legRules.push({ leg_group_id: GRUPPO_EXTRAURBANO, network_id: rete, from_area_id: areaDelNodo(x.linea, a), to_area_id: areaDelNodo(x.linea, b), fare_product_id: prodotto, rule_priority: 0 });
+      if (a !== b) legRules.push({ leg_group_id: GRUPPO_EXTRAURBANO, network_id: rete, from_area_id: areaDelNodo(x.linea, b), to_area_id: areaDelNodo(x.linea, a), fare_product_id: prodotto, rule_priority: 0 });
     }
   }
 
@@ -322,7 +393,8 @@ export function fileDelleTariffe(d: DatiDelleTariffe): FileDelleTariffe {
     "route_networks.txt": file(["network_id", "route_id"], routeNetworks),
     "areas.txt": file(["area_id", "area_name"], areas),
     "stop_areas.txt": file(["area_id", "stop_id"], stopAreas),
-    "fare_leg_rules.txt": file(["leg_group_id", "network_id", "from_area_id", "to_area_id", "fare_product_id"], legRules),
+    "fare_leg_rules.txt": file(["leg_group_id", "network_id", "from_area_id", "to_area_id", "fare_product_id", "rule_priority"], legRules),
+    "fare_transfer_rules.txt": file(["from_leg_group_id", "to_leg_group_id", "transfer_count", "duration_limit", "duration_limit_type", "fare_transfer_type", "fare_product_id"], transferRules),
   };
   /* senza titoli non ci sono tariffe: niente file (le reti da sole non dicono un prezzo) */
   const conTariffe = prodotti.length > 0;
@@ -353,7 +425,7 @@ export async function polimetricheSalvate(ex: Esecutore): Promise<Map<string, un
 }
 
 export interface TariffeDelGtfs extends FileDelleTariffe {
-  conteggi: { linee: number; percorsi: number; salvati: number; nodi: number; regole: number };
+  conteggi: { linee: number; percorsi: number; salvati: number; nodi: number; regole: number; contactless: number; trasbordi: number };
 }
 
 /**
@@ -362,9 +434,10 @@ export interface TariffeDelGtfs extends FileDelleTariffe {
  * degli orari (le sue linee e fermate).
  */
 export async function tariffeDelGtfs(progettoId: string, gtfs: Gtfs, ex: Esecutore = db): Promise<TariffeDelGtfs> {
-  const [reti, fasce, titoli, categorie, supporti] = await Promise.all([
+  const [reti, fasce, titoli, categorie, supporti, contactless] = await Promise.all([
     /* rilette e messe in vigore: la fotografia classifica le linee con le reti in vigore, i file con queste */
     rileggiReti(ex as any), fasceDalDatabase(ex as any), catalogoTitoli(ex as any), categorieCatalogo(ex as any), supportiCatalogo(ex as any),
+    contactlessDalDatabase(ex),
   ]);
   const [dati, salvate] = await Promise.all([datiDelProgramma(ex, progettoId), polimetricheSalvate(ex)]);
   const foto = dati ? fotografia(dati) : { agencyName: null, lines: [] as Linea[] };
@@ -372,7 +445,7 @@ export async function tariffeDelGtfs(progettoId: string, gtfs: Gtfs, ex: Esecuto
   const fatti = fileDelleTariffe({
     linee: gtfs["routes.txt"]?.righe ?? [],
     fermate: new Set((gtfs["stops.txt"]?.righe ?? []).map((s) => testo(s.stop_id))),
-    reti, titoli, categorie, supporti, fasce, extraurbane,
+    reti, titoli, categorie, supporti, fasce, extraurbane, contactless,
   });
   return {
     ...fatti,
@@ -382,14 +455,17 @@ export async function tariffeDelGtfs(progettoId: string, gtfs: Gtfs, ex: Esecuto
       salvati: extraurbane.reduce((n, x) => n + x.salvati, 0),
       nodi: fatti.file["areas.txt"]?.righe.length ?? 0,
       regole: fatti.file["fare_leg_rules.txt"]?.righe.length ?? 0,
+      contactless: (fatti.file["fare_leg_rules.txt"]?.righe ?? []).filter((r) => String(r.fare_product_id).startsWith("contactless:")).length,
+      trasbordi: fatti.file["fare_transfer_rules.txt"]?.righe.length ?? 0,
     },
   };
 }
 
 /**
  * L'impronta di tutto quello che finisce nelle tariffe del GTFS: catalogo,
- * categorie, supporti, reti, fasce e polimetriche salvate. Entra nella firma
- * del GTFS dei dati aperti: un prezzo cambiato rifà il file.
+ * categorie, supporti, reti, fasce, polimetriche salvate e pagamento con
+ * carta. Entra nella firma del GTFS dei dati aperti: un prezzo cambiato rifà
+ * il file.
  */
 export async function improntaDelleTariffe(ex: Esecutore = db): Promise<string> {
   const r = righe(await ex.execute(sql`
@@ -400,6 +476,9 @@ export async function improntaDelleTariffe(ex: Esecutore = db): Promise<string> 
       (SELECT string_agg(x::text, '|' ORDER BY x::text) FROM reti x),
       (SELECT string_agg(x::text, '|' ORDER BY x::text) FROM reti_regole x),
       (SELECT string_agg(x::text, '|' ORDER BY x::text) FROM fasce_km x),
+      (SELECT string_agg(concat_ws(',', x.massimale_unico, x.finestra_ore, x.supporto), '|') FROM contactless x),
+      (SELECT string_agg(x::text, '|' ORDER BY x::text) FROM contactless_tariffe x),
+      (SELECT string_agg(x::text, '|' ORDER BY x::text) FROM contactless_reti x),
       (SELECT string_agg(x.id::text || ':' || x.updated_at::text, '|' ORDER BY x.id) FROM polim_polimetriche x)
     ) AS tutto`))[0];
   return createHash("sha256").update(String(r?.tutto ?? "")).digest("hex");
