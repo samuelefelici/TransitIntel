@@ -1178,6 +1178,8 @@ jobs:
       # Tappa 6.34b: di una linea abbinata, il percorso dell'azienda e la
       # fermata di ogni punto tariffario; la decisione si salva solo su
       # percorsi, punti e fermate che esistono.
+      # Tappa 6.34c: il riepilogo porta in una risposta tutte le linee
+      # abbinate, con le proposte e le decisioni salvate.
       - name: La polimetrica della bigliettazione
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/polimetrica-ufficiale-db.test.ts
       # Tappa 6.3: i dati aperti a un indirizzo stabile. Nasce spento; acceso,

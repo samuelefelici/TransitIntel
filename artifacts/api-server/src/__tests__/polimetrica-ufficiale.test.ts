@@ -35,7 +35,7 @@ describe("il file dei punti tariffari", () => {
   });
 
   it("col punto e virgola, i decimali con la virgola, il BOM, le colonne in un altro ordine e una colonna in più", () => {
-    const r = leggiCsvPunti("﻿KM;Linea;Percorso;Direzione;Ordine;Codice;Altro\r\n12,35;a1;0;1;1;051;x\r\n");
+    const r = leggiCsvPunti("\uFEFFKM;Linea;Percorso;Direzione;Ordine;Codice;Altro\r\n12,35;a1;0;1;1;051;x\r\n");
     expect(r.errori).toEqual([]);
     expect(r.righe).toEqual([{ linea: "A1", percorso: "0", direzione: "1", ordine: 1, codice: "051", nome: null, nodo: null, km: 12.35 }]);
   });

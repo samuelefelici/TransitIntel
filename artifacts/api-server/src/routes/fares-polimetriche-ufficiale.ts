@@ -17,6 +17,7 @@
  *   GET    /api/fares/polimetriche/ufficiale/linea?codice=&importId=  — percorsi, punti, righe, proposte e decisioni
  *   PUT    /api/fares/polimetriche/ufficiale/linea/punti              — la decisione su un percorso
  *   DELETE /api/fares/polimetriche/ufficiale/linea/punti?codice=&percorso=&direzione=  — torna la proposta
+ *   GET    /api/fares/polimetriche/ufficiale/riepilogo?importId=       — tutte le linee abbinate, per il riepilogo (6.34c)
  *
  * Sotto /fares: le apre chi ha l'area Tariffe, e le scritture chi può scriverla.
  */
@@ -27,9 +28,11 @@ import { strictLimiter } from "../middlewares/rate-limit";
 import { legaContesto } from "../lib/contesto-http";
 import { candidateDellaLinea, leggiCsvPunti, leggiCsvRighe, percorsiCandidati, type LineaAzienda } from "../lib/polimetrica-ufficiale";
 import {
-  caricaUfficiale, caricamento, decisioniDeiPunti, dettaglioLinea, eliminaUfficiale, lineaAbbinata, lineeDellImport, lineeUfficiali,
-  percorsiDellaLinea, puntiPerLinea, salvaAbbinamenti, salvaDecisionePunti, togliDecisionePunti,
+  caricaUfficiale, caricamento, decisioniDeiPunti, dettaglioLinea, eliminaUfficiale, lineaAbbinata, lineeDaConfrontare, lineeDellImport, lineeUfficiali,
+  percorsiDellaLinea, percorsiDellImport, puntiPerLinea, salvaAbbinamenti, salvaDecisionePunti, togliDecisionePunti,
+  type DecisionePunti, type PercorsoDellImport, type PercorsoUfficiale,
 } from "../lib/polimetrica-ufficiale-store";
+import type { RigaUfficiale } from "../lib/polimetrica-ufficiale";
 
 const router: IRouter = Router();
 
@@ -186,29 +189,69 @@ router.get("/fares/polimetriche/ufficiale/linea", async (req, res): Promise<void
     if (!dettaglio.percorsi.length && !dettaglio.righe.length) { res.status(404).json({ error: "La linea non è nella polimetrica caricata" }); return; }
     const aziendali = abbinata ? await percorsiDellaLinea(importId, abbinata) : await percorsiDellaLinea(importId, "");
     if (aziendali === null) { res.status(404).json({ error: "Import non trovato" }); return; }
-    const perCandidati = aziendali.map((p) => ({ routeId: p.routeId, variantId: p.variantId, corse: p.corse, fermate: p.fermate }));
-    res.json({
-      linea: codice,
-      abbinata,
-      percorsi: dettaglio.percorsi.map((p) => {
-        const deciso = decise.find((d) => d.percorso === p.percorso && d.direzione === p.direzione) ?? null;
-        return {
-          percorso: p.percorso, direzione: p.direzione,
-          punti: p.punti.map((x) => ({ ordine: x.ordine, codice: x.codice, nome: x.nome, nodo: x.nodo, km: x.km })),
-          candidati: percorsiCandidati(p.punti, perCandidati, 200),
-          deciso: deciso && {
-            routeId: deciso.routeId, variantId: deciso.variantId, verso: deciso.verso, punti: deciso.punti,
-            /* il percorso scelto può non esserci più: un import nuovo dello stesso GTFS con un percorso cambiato */
-            nellImport: aziendali.some((x) => x.routeId === deciso.routeId && x.variantId === deciso.variantId),
-          },
-        };
-      }),
-      righe: dettaglio.righe.map((r) => ({ percorso: r.percorso, direzione: r.direzione, da: r.da, a: r.a, km: r.km, tariffario: r.tariffario, fascia: r.fascia, forzata: r.forzata })),
-      percorsiAzienda: aziendali,
-    });
+    res.json(lineaPerIlConfronto(codice, abbinata, dettaglio.percorsi, dettaglio.righe, decise, aziendali, 200));
   } catch (e) {
     req.log.error({ err: e }, "linea della bigliettazione non leggibile");
     res.status(500).json({ error: "Linea non leggibile" });
+  }
+});
+
+/**
+ * Una linea della bigliettazione come la vuole il confronto: i percorsi coi
+ * punti, i candidati (al più `quanti`, il migliore per primo), la decisione
+ * salvata, le righe e i percorsi dell'azienda.
+ */
+function lineaPerIlConfronto(
+  linea: string, abbinata: string | null, percorsi: readonly PercorsoUfficiale[], righe: readonly RigaUfficiale[],
+  decise: readonly DecisionePunti[], aziendali: readonly PercorsoDellImport[], quanti: number,
+) {
+  const perCandidati = aziendali.map((p) => ({ routeId: p.routeId, variantId: p.variantId, corse: p.corse, fermate: p.fermate }));
+  return {
+    linea,
+    abbinata,
+    percorsi: percorsi.map((p) => {
+      const deciso = decise.find((d) => d.percorso === p.percorso && d.direzione === p.direzione) ?? null;
+      return {
+        percorso: p.percorso, direzione: p.direzione,
+        punti: p.punti.map((x) => ({ ordine: x.ordine, codice: x.codice, nome: x.nome, nodo: x.nodo, km: x.km })),
+        candidati: percorsiCandidati(p.punti, perCandidati, quanti),
+        deciso: deciso && {
+          routeId: deciso.routeId, variantId: deciso.variantId, verso: deciso.verso, punti: deciso.punti,
+          /* il percorso scelto può non esserci più: un import nuovo dello stesso GTFS con un percorso cambiato */
+          nellImport: aziendali.some((x) => x.routeId === deciso.routeId && x.variantId === deciso.variantId),
+        },
+      };
+    }),
+    righe: righe.map((r) => ({ percorso: r.percorso, direzione: r.direzione, da: r.da, a: r.a, km: r.km, tariffario: r.tariffario, fascia: r.fascia, forzata: r.forzata })),
+    percorsiAzienda: [...aziendali],
+  };
+}
+
+/* ─────────────────────────────────────────────────────────────
+ *  GET /api/fares/polimetriche/ufficiale/riepilogo?importId=
+ *
+ *  Tutte le linee abbinate in una risposta sola, per il riepilogo: di ogni
+ *  percorso della bigliettazione la decisione salvata e il candidato
+ *  migliore (la proposta), e dei percorsi dell'azienda solo quelli che
+ *  servono a quei due. Chi la legge fa gli stessi conti del confronto di una
+ *  linea, su tutte.
+ * ───────────────────────────────────────────────────────────── */
+router.get("/fares/polimetriche/ufficiale/riepilogo", async (req, res): Promise<void> => {
+  const importId = typeof req.query.importId === "string" ? req.query.importId : "";
+  if (!UUID.test(importId)) { res.status(400).json({ error: "import non valido" }); return; }
+  try {
+    const [linee, delImport] = await Promise.all([lineeDaConfrontare(), percorsiDellImport(importId)]);
+    if (delImport === null) { res.status(404).json({ error: "Import non trovato" }); return; }
+    res.json({
+      linee: linee.map((l) => {
+        const d = lineaPerIlConfronto(l.linea, l.abbinata, l.percorsi, l.righe, l.decise, delImport.get(l.abbinata) ?? [], 1);
+        const servono = new Set(d.percorsi.flatMap((p) => [p.candidati[0], p.deciso].flatMap((x) => (x ? [`${x.routeId}\u0000${x.variantId}`] : []))));
+        return { ...d, percorsiAzienda: d.percorsiAzienda.filter((x) => servono.has(`${x.routeId}\u0000${x.variantId}`)) };
+      }),
+    });
+  } catch (e) {
+    req.log.error({ err: e }, "riepilogo del confronto non leggibile");
+    res.status(500).json({ error: "Riepilogo non leggibile" });
   }
 });
 

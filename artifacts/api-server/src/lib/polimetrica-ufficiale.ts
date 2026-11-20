@@ -65,7 +65,7 @@ const FALSO = new Set(["", "false", "0", "no", "falso", "n"]);
  * Il separatore è quello che compare di più nell'intestazione.
  */
 function righeCsv(testo: string): { colonne: string[]; righe: Record<string, string>[] } | { errore: string } {
-  const senzaBom = testo.replace(/^﻿/, "");
+  const senzaBom = testo.replace(/^\uFEFF/, "");
   const intestazione = senzaBom.split(/\r?\n/, 1)[0] ?? "";
   const separatore = (intestazione.match(/;/g)?.length ?? 0) > (intestazione.match(/,/g)?.length ?? 0) ? ";" : ",";
   let colonne: string[] = [];
