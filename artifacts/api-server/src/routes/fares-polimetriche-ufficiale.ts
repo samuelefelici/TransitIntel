@@ -12,6 +12,12 @@
  *   DELETE /api/fares/polimetriche/ufficiale              — toglie la polimetrica caricata
  *   PUT    /api/fares/polimetriche/ufficiale/abbinamenti  — le decisioni sulle linee
  *
+ * E, per una linea abbinata, i suoi punti tariffari sulle fermate (tappa 6.34b):
+ *
+ *   GET    /api/fares/polimetriche/ufficiale/linea?codice=&importId=  — percorsi, punti, righe, proposte e decisioni
+ *   PUT    /api/fares/polimetriche/ufficiale/linea/punti              — la decisione su un percorso
+ *   DELETE /api/fares/polimetriche/ufficiale/linea/punti?codice=&percorso=&direzione=  — torna la proposta
+ *
  * Sotto /fares: le apre chi ha l'area Tariffe, e le scritture chi può scriverla.
  */
 import { Router, type IRouter } from "express";
@@ -19,9 +25,10 @@ import multer from "multer";
 import { z } from "zod";
 import { strictLimiter } from "../middlewares/rate-limit";
 import { legaContesto } from "../lib/contesto-http";
-import { candidateDellaLinea, leggiCsvPunti, leggiCsvRighe, type LineaAzienda } from "../lib/polimetrica-ufficiale";
+import { candidateDellaLinea, leggiCsvPunti, leggiCsvRighe, percorsiCandidati, type LineaAzienda } from "../lib/polimetrica-ufficiale";
 import {
-  caricaUfficiale, caricamento, eliminaUfficiale, lineeDellImport, lineeUfficiali, puntiPerLinea, salvaAbbinamenti,
+  caricaUfficiale, caricamento, decisioniDeiPunti, dettaglioLinea, eliminaUfficiale, lineaAbbinata, lineeDellImport, lineeUfficiali,
+  percorsiDellaLinea, puntiPerLinea, salvaAbbinamenti, salvaDecisionePunti, togliDecisionePunti,
 } from "../lib/polimetrica-ufficiale-store";
 
 const router: IRouter = Router();
@@ -152,6 +159,126 @@ router.put("/fares/polimetriche/ufficiale/abbinamenti", async (req, res): Promis
   } catch (e) {
     req.log.error({ err: e }, "abbinamenti delle linee non salvati");
     res.status(500).json({ error: "Abbinamenti non salvati" });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────
+ *  GET /api/fares/polimetriche/ufficiale/linea?codice=&importId=
+ *
+ *  Una linea della bigliettazione, per confrontarla: i suoi percorsi coi
+ *  punti tariffari, le sue righe, e i percorsi della linea dell'azienda a
+ *  cui è abbinata. Per ogni percorso della bigliettazione i percorsi
+ *  dell'azienda dove si ritrovano i suoi punti (nei due versi, il migliore
+ *  per primo) e la decisione salvata, se c'è.
+ * ───────────────────────────────────────────────────────────── */
+const codiceDiLinea = (v: unknown): string | null => {
+  const t = typeof v === "string" ? v.trim().toUpperCase() : "";
+  return t && t.length <= 40 && SENZA_CONTROLLI.test(t) ? t : null;
+};
+
+router.get("/fares/polimetriche/ufficiale/linea", async (req, res): Promise<void> => {
+  const codice = codiceDiLinea(req.query.codice);
+  const importId = typeof req.query.importId === "string" ? req.query.importId : "";
+  if (!codice) { res.status(400).json({ error: "manca la linea" }); return; }
+  if (!UUID.test(importId)) { res.status(400).json({ error: "import non valido" }); return; }
+  try {
+    const [dettaglio, abbinata, decise] = await Promise.all([dettaglioLinea(codice), lineaAbbinata(codice), decisioniDeiPunti(codice)]);
+    if (!dettaglio.percorsi.length && !dettaglio.righe.length) { res.status(404).json({ error: "La linea non è nella polimetrica caricata" }); return; }
+    const aziendali = abbinata ? await percorsiDellaLinea(importId, abbinata) : await percorsiDellaLinea(importId, "");
+    if (aziendali === null) { res.status(404).json({ error: "Import non trovato" }); return; }
+    const perCandidati = aziendali.map((p) => ({ routeId: p.routeId, variantId: p.variantId, corse: p.corse, fermate: p.fermate }));
+    res.json({
+      linea: codice,
+      abbinata,
+      percorsi: dettaglio.percorsi.map((p) => {
+        const deciso = decise.find((d) => d.percorso === p.percorso && d.direzione === p.direzione) ?? null;
+        return {
+          percorso: p.percorso, direzione: p.direzione,
+          punti: p.punti.map((x) => ({ ordine: x.ordine, codice: x.codice, nome: x.nome, nodo: x.nodo, km: x.km })),
+          candidati: percorsiCandidati(p.punti, perCandidati, 200),
+          deciso: deciso && {
+            routeId: deciso.routeId, variantId: deciso.variantId, verso: deciso.verso, punti: deciso.punti,
+            /* il percorso scelto può non esserci più: un import nuovo dello stesso GTFS con un percorso cambiato */
+            nellImport: aziendali.some((x) => x.routeId === deciso.routeId && x.variantId === deciso.variantId),
+          },
+        };
+      }),
+      righe: dettaglio.righe.map((r) => ({ percorso: r.percorso, direzione: r.direzione, da: r.da, a: r.a, km: r.km, tariffario: r.tariffario, fascia: r.fascia, forzata: r.forzata })),
+      percorsiAzienda: aziendali,
+    });
+  } catch (e) {
+    req.log.error({ err: e }, "linea della bigliettazione non leggibile");
+    res.status(500).json({ error: "Linea non leggibile" });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────
+ *  PUT /api/fares/polimetriche/ufficiale/linea/punti
+ *
+ *  La decisione su un percorso della bigliettazione: il percorso
+ *  dell'azienda, il verso, e per ogni punto la sua fermata (o nessuna).
+ *  Tutto deve esistere: il percorso e i punti fra quelli caricati, il
+ *  percorso dell'azienda nell'import, sotto la linea abbinata, e ogni
+ *  fermata fra le sue.
+ * ───────────────────────────────────────────────────────────── */
+const DecisioneSuiPunti = z.object({
+  importId: z.string().regex(UUID),
+  lineaUfficiale: z.string().trim().min(1).max(40).regex(SENZA_CONTROLLI),
+  percorso: z.string().min(1).max(40).regex(SENZA_CONTROLLI),
+  direzione: z.string().min(1).max(10).regex(SENZA_CONTROLLI),
+  routeId: z.string().min(1).max(200).regex(SENZA_CONTROLLI),
+  variantId: z.string().min(1).max(64).regex(SENZA_CONTROLLI),
+  verso: z.enum(["AB", "BA"]),
+  punti: z.array(z.object({
+    ordine: z.number().int().min(1).max(100_000),
+    fermata: z.string().min(1).max(200).regex(SENZA_CONTROLLI).nullable(),
+  }).strict()).max(2000),
+}).strict();
+
+router.put("/fares/polimetriche/ufficiale/linea/punti", async (req, res): Promise<void> => {
+  const p = DecisioneSuiPunti.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: "Richiesta non valida: servono la linea, il percorso, la direzione, il percorso dell'azienda col verso e i punti con la loro fermata" }); return; }
+  const d = p.data, linea = d.lineaUfficiale.toUpperCase();
+  try {
+    const [dettaglio, abbinata] = await Promise.all([dettaglioLinea(linea), lineaAbbinata(linea)]);
+    const ufficiale = dettaglio.percorsi.find((x) => x.percorso === d.percorso && x.direzione === d.direzione);
+    if (!ufficiale) { res.status(400).json({ error: "Questo percorso non è nella polimetrica caricata" }); return; }
+    if (!abbinata) { res.status(409).json({ error: "Prima si abbina la linea a una linea dell'import" }); return; }
+    const ordini = new Set(ufficiale.punti.map((x) => x.ordine));
+    const visti = new Set<number>();
+    for (const x of d.punti) {
+      if (!ordini.has(x.ordine) || visti.has(x.ordine)) { res.status(400).json({ error: `Il punto ${x.ordine} non è fra i punti del percorso, o è ripetuto` }); return; }
+      visti.add(x.ordine);
+    }
+    const aziendali = await percorsiDellaLinea(d.importId, abbinata);
+    if (aziendali === null) { res.status(404).json({ error: "Import non trovato" }); return; }
+    const scelto = aziendali.find((x) => x.routeId === d.routeId && x.variantId === d.variantId);
+    if (!scelto) { res.status(400).json({ error: `Il percorso scelto non è fra quelli della linea ${abbinata} nell'import` }); return; }
+    const fermate = new Set(scelto.fermate.map((f) => f.stopId));
+    const fuori = d.punti.find((x) => x.fermata != null && !fermate.has(x.fermata));
+    if (fuori) { res.status(400).json({ error: `La fermata «${fuori.fermata}» non è su quel percorso` }); return; }
+    await salvaDecisionePunti(linea, { percorso: d.percorso, direzione: d.direzione, routeId: d.routeId, variantId: d.variantId, verso: d.verso, punti: d.punti }, req.user?.id ?? null);
+    res.json({ ok: true });
+  } catch (e) {
+    req.log.error({ err: e }, "abbinamento dei punti non salvato");
+    res.status(500).json({ error: "Abbinamento dei punti non salvato" });
+  }
+});
+
+/* ─────────────────────────────────────────────────────────────
+ *  DELETE /api/fares/polimetriche/ufficiale/linea/punti?codice=&percorso=&direzione=
+ * ───────────────────────────────────────────────────────────── */
+router.delete("/fares/polimetriche/ufficiale/linea/punti", async (req, res): Promise<void> => {
+  const codice = codiceDiLinea(req.query.codice);
+  const testo = (v: unknown, max: number) => (typeof v === "string" && v.length >= 1 && v.length <= max && SENZA_CONTROLLI.test(v) ? v : null);
+  const percorso = testo(req.query.percorso, 40), direzione = testo(req.query.direzione, 10);
+  if (!codice || !percorso || !direzione) { res.status(400).json({ error: "servono la linea, il percorso e la direzione" }); return; }
+  try {
+    await togliDecisionePunti(codice, percorso, direzione);
+    res.json({ ok: true });
+  } catch (e) {
+    req.log.error({ err: e }, "abbinamento dei punti non tolto");
+    res.status(500).json({ error: "Non riuscito" });
   }
 });
 

@@ -1788,7 +1788,7 @@ bigliettazione, e chi tiene la bigliettazione la riallinea a mano. Questo
 rilascio porta il primo pezzo del confronto: **caricare la polimetrica della
 bigliettazione e abbinare le sue linee a quelle dell'azienda**. Il confronto
 punto per punto, con l'elenco delle differenze da ribattere, è il rilascio
-dopo (6.34b).
+dopo (6.34b, qui sotto).
 
 **Dove**: pagina Polimetriche, aperto un import, pulsante «Confronto con la
 bigliettazione».
@@ -1870,6 +1870,75 @@ Nessuna variabile e nessuna Watch Path nuova (le rotte nuove non entrano nel
 lavoratore).
 
 **Rollback**: immagine precedente. Le quattro tabelle restano e non danno
+fastidio.
+
+### Il confronto con la bigliettazione, punto per punto (tappa 6.34b)
+
+Il secondo pezzo del confronto. Di una linea abbinata (6.34a) si apre
+«Confronta»: per ogni suo percorso nella bigliettazione si sceglie il percorso
+dell'azienda e la fermata di ogni punto tariffario. Da lì escono i **km nuovi**
+dei punti e, con le fasce chilometriche dell'azienda, la **fascia nuova** di
+ogni coppia di nodi, accanto a quelle della bigliettazione. Le differenze si
+scaricano in CSV: sono l'elenco da ribattere a mano nella bigliettazione.
+
+**Che cosa propone Cerbero**, da confermare o correggere:
+- **il percorso dell'azienda**: quello dove si ritrovano più punti. Un percorso
+  che va davvero in quella direzione vale più dell'altro verso letto al
+  contrario, se ritrova almeno 8 punti su 10 del migliore; a parità vale quello
+  coi km più vicini a quelli della bigliettazione, poi quello con più corse.
+  Gli altri percorsi della linea restano nella tendina, nei due versi;
+- **la fermata di ogni punto**, nell'ordine in cui il bus li incontra: per
+  codice (la località ha lo stesso numero della fermata), poi per nome (tutte
+  le parole del nome del punto nel nome della fermata). Se più fermate hanno
+  quel nome vale quella più vicina a dove il punto dovrebbe stare, contando i
+  km della bigliettazione dal punto abbinato accanto. Un punto può restare
+  senza fermata (non è più servito).
+
+**Come si leggono i numeri.**
+- Il **km nuovo** di un punto è contato dal primo punto abbinato, a cui resta
+  il km che ha nella bigliettazione: i km nuovi stanno sulla stessa scala dei
+  vecchi anche se il percorso dell'azienda comincia prima o dopo.
+- La **fascia nuova** di una coppia è quella dei km fra i due punti, come nella
+  6.33.
+- L'esito di una coppia: **uguale**, **cambia** (fascia diversa), **senza
+  fascia nella bigliettazione** (là la coppia è spenta), **manca nella
+  bigliettazione**. Le righe scritte a mano là sono segnate: se cambiano, si
+  decide caso per caso.
+- I CSV hanno il punto e virgola e i decimali con la virgola, per aprirli in un
+  foglio di calcolo. Una casella che comincia come una formula prende un
+  apostrofo davanti.
+
+**«Usa questi punti come nodi del percorso»** apre il percorso nell'area di
+lavoro con un nodo per ogni punto abbinato: il punto tariffario sulla sua
+fermata e il nome della bigliettazione. Lì si controlla la matrice e si salva
+come ogni altra polimetrica.
+
+L'abbinamento di un percorso si **salva** («Salva l'abbinamento») e resta
+anche a un caricamento nuovo della polimetrica o a un import nuovo dello
+stesso GTFS; se il percorso dell'azienda non c'è più nell'import, torna la
+proposta. Migrazione `0056`: `polim_abbinamenti_percorsi` e
+`polim_abbinamenti_punti`, nel registro delle modifiche.
+
+Sulla copia dei dati veri, con le 50 linee abbinate dopo la 6.34a (98 percorsi
+della bigliettazione, 1.100 punti tariffari):
+- la proposta trova la fermata di 733 punti (207 per codice, 526 per nome); gli
+  altri 367 si scelgono a mano;
+- sulle 2.812 coppie che ne escono, 2.233 hanno la stessa fascia, **533 la
+  cambiano** (10 sono righe scritte a mano) e 46 nella bigliettazione sono
+  senza fascia;
+- sulla linea D, da un capo all'altro: 14 punti su 18 con la loro fermata,
+  scarto massimo 1,1 km, 91 coppie di cui 5 cambiano fascia.
+
+Questi numeri sono delle proposte non ancora riviste: le fermate proposte per
+nome vanno guardate, e dove un punto è sulla fermata sbagliata i km e le fasce
+cambiano di conseguenza.
+
+**Chi**: legge chi ha l'area Tariffe; salva gli abbinamenti chi può scriverla.
+
+**Dopo il deploy**: niente da fare. Nessuna variabile e nessuna Watch Path
+nuova.
+
+**Rollback**: immagine precedente. Le due tabelle restano e non danno
 fastidio.
 
 ### La codifica dei turni guida come dato dell'azienda (tappa 6.25)
