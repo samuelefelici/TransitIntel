@@ -185,6 +185,7 @@ export default function PlanningStudioListPage() {
       const corse = resp.headers.get("X-Netex-Corse");
       const livelloDelFile = resp.headers.get("X-Netex-Livello");
       const senzaTracciato = Number(resp.headers.get("X-Netex-Tratte-Senza-Tracciato") ?? 0);
+      const daGuardare = decodeURIComponent(resp.headers.get("X-Netex-Fermate-Fuori-Tracciato") ?? "");
       const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -198,10 +199,11 @@ export default function PlanningStudioListPage() {
         ? (livelloDelFile === "3" ? "Con le tariffe: passa lo schema del livello 3 del profilo italiano." : "Livello 1: passa lo schema EPIP del profilo italiano.")
         : validazione === "senza_xmllint" ? "Lo schema non è stato controllato su questo server."
         : "Esportato nonostante gli errori.";
-      /* le coppie di fermate senza tracciato (tappa 6.42): chi legge il file le unisce in linea retta */
-      const tracciati = senzaTracciato > 0
+      /* le coppie di fermate senza tracciato (tappa 6.42): chi legge il file le unisce in linea retta;
+       * e le fermate fuori dal tracciato secondo il controllo del GTFS (6.43), da sistemare nel percorso */
+      const tracciati = (senzaTracciato > 0
         ? ` ${senzaTracciato.toLocaleString("it-IT")} ${senzaTracciato === 1 ? "tratta fra due fermate è" : "tratte fra due fermate sono"} senza tracciato: lì le fermate si uniscono in linea retta.`
-        : "";
+        : "") + (daGuardare ? ` Fermate fuori dal tracciato, da guardare: ${daGuardare}.` : "");
       toast.success("NeTEx esportato", { id: tid, duration: validazione === "valido" && !tracciati ? 6000 : 15000, description: `${da}, ${corse ?? "?"} corse. ${controllo}${tracciati}` });
     } catch (e: any) {
       toast.error("Export NeTEx fallito", { id: tid, description: e?.message });

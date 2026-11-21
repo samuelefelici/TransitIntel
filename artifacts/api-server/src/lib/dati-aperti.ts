@@ -29,7 +29,7 @@ import { sql } from "drizzle-orm";
 import { dimenticaAzienda, leggiAzienda, type Azienda } from "./azienda";
 import type { Gestore } from "./gestori";
 import { gestoriDalDatabase } from "./gestori-store";
-import { verificaGtfs } from "./gtfs-verifica";
+import { rigaDelProblema, verificaGtfs } from "./gtfs-verifica";
 import { costruisciGtfs, netexDelGtfs, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
 import { conLeTariffe, improntaDelleTariffe } from "./gtfs-tariffe";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
@@ -44,10 +44,11 @@ export const FORMATO = 1;
 /**
  * Come FORMATO, solo per il NeTEx: 2 dalla tappa 6.19c, quando negli
  * identificativi restano «/» e «.» e arrivano i prefissi della Regione; 3
- * dalla 6.42, quando arrivano le tratte col tracciato (ServiceLink). Il
- * GTFS non cambia e non si rifà.
+ * dalla 6.42, quando arrivano le tratte col tracciato (ServiceLink); 4 dalla
+ * 6.43, quando due paline vicine nell'ordine sbagliato non tolgono più le
+ * tratte. Il GTFS non cambia e non si rifà.
  */
-export const FORMATO_NETEX = 3;
+export const FORMATO_NETEX = 4;
 /** Un tentativo andato male per un guasto (non per i dati) si riprova dopo un'ora. */
 const RIPROVA_DOPO_MS = 60 * 60 * 1000;
 
@@ -284,7 +285,7 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
           const conteggi = {
             righe: Object.fromEntries(Object.entries(gtfsConTariffe).map(([f, x]) => [f, x.righe.length])),
             avvisi: verifica.avvisi.reduce((n, a) => n + a.quante, 0),
-            avvisiElenco: verifica.avvisi.slice(0, 5).map((a) => `${a.messaggio} (${a.quante})`),
+            avvisiElenco: verifica.avvisi.slice(0, 5).map((a) => rigaDelProblema(a)),
           };
           await pubblica("gtfs", firme.gtfs, zipDelGtfs(gtfsConTariffe, v.dal ?? DATA_DEI_FILE), v, conteggi, adesso);
           fatto.gtfs = "pubblicato";

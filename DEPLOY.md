@@ -2226,6 +2226,40 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Le fermate fuori dal tracciato, nel controllo del GTFS (tappa 6.43)
+
+Il controllo del GTFS (export di Planning Studio, dati aperti) segnala le
+fermate che non stanno sul tracciato della loro corsa. Sono avvisi: non
+fermano niente.
+
+- **`fermata_lontana_dal_tracciato`**: una fermata a più di 100 m dal
+  tracciato, come fanno i validatori. Oltre i 300 m, nel NeTEx le tratte che
+  la toccano restano in linea retta. Negli esempi: linea, fermata col nome,
+  metri.
+- **`fermata_fuori_ordine_sul_tracciato`**: una fermata vicina al tracciato,
+  ma che la corsa ha già passato prima della fermata precedente. L'ordine
+  delle fermate o il tracciato non tornano.
+
+**Dove si vedono**
+- Nel messaggio dell'export GTFS, coi primi esempi di ogni avviso (prima c'era
+  solo il numero).
+- Nel messaggio dell'export NeTEx, accanto alle tratte senza tracciato:
+  «Fermate da guardare: …» (intestazione `X-Netex-Fermate-Fuori-Tracciato`).
+
+**Il calcolo delle tratte, corretto**: due paline a pochi metri, con la
+seconda appena prima della prima sul tracciato (fino a 50 m), cadono nello
+stesso punto. Prima la seconda restava senza posizione, e le due tratte che la
+toccavano senza tracciato. Fra due fermate nello stesso punto non c'è tratta, e
+non si conta fra quelle senza tracciato.
+
+`FORMATO_NETEX` passa a 4: alla preparazione successiva i due NeTEx dei dati
+aperti si rifanno. Il GTFS non cambia.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. Gli avvisi spariscono; i NeTEx tornano come
+nella 6.42 alla preparazione successiva.
+
 ### Le geometrie dei percorsi nel NeTEx (tappa 6.42)
 
 Il NeTEx (livello 1 e livello 3, export di Planning Studio e dati aperti) ha
