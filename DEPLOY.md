@@ -2226,6 +2226,44 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### I dati aperti non pubblicano un programma già scaduto (tappa 6.45)
+
+Se tutte le corse del programma in esercizio sono in giorni già passati, chi
+scarica il GTFS o i NeTEx dal NAP li trova scaduti. Succede quando il periodo
+delle corse viene da un GTFS importato che copriva un giorno solo: il controllo
+di salute di Planning Studio lo segnala già. Sulla copia dei dati veri tutte le
+3.502 corse hanno il periodo «dal 5/12/2025 al 5/12/2025», mentre il calendario
+di validità va fino al 31/12/2026.
+
+**Che cosa cambia**
+- **Dati aperti**: se l'ultimo giorno di servizio (dai calendari delle corse)
+  è già passato, il GTFS e i due NeTEx non si pubblicano. L'esito è `scaduto`
+  e in linea resta il file di prima. In Amministrazione › Azienda › Dati aperti
+  la scheda dice fino a quando arrivano le corse e dove si corregge.
+- **Export di Planning Studio** (GTFS e NeTEx): il file esce comunque, ma il
+  messaggio diventa un avviso, «… ma il programma è già scaduto», con la data e
+  la correzione in cima (intestazione `X-Programma-Scaduto` con l'ultimo
+  giorno). Nel messaggio del GTFS l'avviso «il periodo del file è già finito» è
+  il primo dell'elenco.
+- **Dove si corregge**: in Planning Studio, nelle Corse si selezionano e si
+  allarga il «Periodo», poi si rimette in esercizio il programma. La versione in
+  esercizio è una copia congelata: una correzione alla bozza arriva ai dati
+  aperti solo con la messa in esercizio.
+
+Migrazione `0060`: l'esito `scaduto` nel vincolo di `dati_aperti`. Nessun dato
+cambia.
+
+**Dopo il deploy**:
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify la riga nuova del
+   blocco «Watch Paths» più sotto: `periodo-di-servizio.ts`. Il lavoratore
+   prepara i dati aperti.
+2. Guarda in Amministrazione › Azienda › Dati aperti. Se una scheda dice
+   «… corse solo fino al …», allarga il «Periodo» delle corse e rimetti in
+   esercizio il programma.
+
+**Rollback**: immagine precedente. Il vincolo nuovo resta e non dà fastidio;
+i dati aperti tornano a pubblicare anche un programma scaduto.
+
 ### Gli orari impossibili fra due fermate, in un elenco da scaricare (tappa 6.44)
 
 Il controllo del GTFS conta come avviso le tratte in cui la corsa andrebbe a
@@ -4838,6 +4876,7 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/elenchi-tariffe*.ts
    artifacts/api-server/src/lib/fasce-km*.ts
    artifacts/api-server/src/lib/contactless*.ts
+   artifacts/api-server/src/lib/periodo-di-servizio.ts
    artifacts/api-server/assets/**
    artifacts/api-server/build.ts
    artifacts/api-server/package.json

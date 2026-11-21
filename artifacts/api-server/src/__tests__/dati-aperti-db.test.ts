@@ -329,6 +329,24 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i dati aperti, sul database", (
     expect((await pubblico.get("/api/dati-aperti/gtfs.zip").set("If-None-Match", `"${improntaGtfs}"`)).status).toBe(304);
   });
 
+  it("un programma già scaduto non va in linea: restano i file di prima, col motivo (tappa 6.45)", async () => {
+    const prima = { gtfs: (await file("gtfs")).inLinea!.impronta, netex: (await file("netex")).inLinea?.impronta ?? null };
+    /* il feriale finisce giovedì 10/06/2027: il primo luglio è tutto passato */
+    const dopo = new Date("2027-07-01T08:00:00Z");
+    expect(await preparaDatiAperti({ valida: valido, forza: true, adesso: dopo }))
+      .toEqual({ stato: "fatto", file: { gtfs: "scaduto", netex: "scaduto", netex_l3: "scaduto" } });
+    const g = await file("gtfs");
+    expect(g.inLinea!.impronta).toBe(prima.gtfs);
+    expect(g.ultimoTentativo).toMatchObject({ esito: "scaduto", messaggio: expect.stringMatching(/solo fino al 10\/06\/2027.*non si pubblica/) });
+    expect((await file("netex")).inLinea?.impronta ?? null).toBe(prima.netex);
+    /* con la stessa firma non si riprova: i dati sono quelli */
+    expect(await preparaDatiAperti({ valida: valido, adesso: new Date(dopo.getTime() + 2 * 3600_000) }))
+      .toMatchObject({ file: { gtfs: "invariato", netex: "invariato", netex_l3: "invariato" } });
+    /* oggi, col programma ancora valido, «Prepara adesso» lo pubblica di nuovo */
+    expect(await preparaDatiAperti({ valida: valido, forza: true })).toMatchObject({ file: { gtfs: "pubblicato" } });
+    expect((await file("gtfs")).ultimoTentativo!.esito).toBe("pubblicato");
+  });
+
   it("senza più un programma in esercizio i file si tolgono", async () => {
     await db.transaction(async (tx) => {
       await tx.execute(sql`UPDATE ps_activation_log SET deactivated_at = now() WHERE deactivated_at IS NULL`);

@@ -2632,7 +2632,7 @@
   "public.contactless_tariffe.contactless_tariffe_tipo": "CHECK ((tipo = ANY (ARRAY['urbano'::text, 'extraurbano'::text])))",
   "public.contactless_tariffe.contactless_tariffe_validita": "CHECK (((validita_minuti >= 1) AND (validita_minuti <= 1440)))",
   "public.dati_aperti.dati_aperti_byte": "CHECK (((byte >= 1) AND (byte <= 268435456)))",
-  "public.dati_aperti.dati_aperti_esito": "CHECK ((esito = ANY (ARRAY['pubblicato'::text, 'gtfs_con_errori'::text, 'non_valido'::text, 'senza_xmllint'::text, 'senza_codice'::text, 'senza_versione'::text, 'errore'::text, 'senza_tariffe'::text])))",
+  "public.dati_aperti.dati_aperti_esito": "CHECK ((esito = ANY (ARRAY['pubblicato'::text, 'gtfs_con_errori'::text, 'non_valido'::text, 'senza_xmllint'::text, 'senza_codice'::text, 'senza_versione'::text, 'errore'::text, 'senza_tariffe'::text, 'scaduto'::text])))",
   "public.dati_aperti.dati_aperti_file_intero": "CHECK ((((contenuto IS NULL) = (impronta IS NULL)) AND ((contenuto IS NULL) = (byte IS NULL)) AND ((contenuto IS NULL) = (preparato_il IS NULL))))",
   "public.dati_aperti.dati_aperti_firma": "CHECK ((firma ~ '^[0-9a-f]{64}$'::text))",
   "public.dati_aperti.dati_aperti_impronta": "CHECK ((impronta ~ '^[0-9a-f]{64}$'::text))",

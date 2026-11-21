@@ -6,7 +6,7 @@
  */
 
 export type TipoFile = "gtfs" | "netex" | "netex_l3";
-export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore" | "senza_tariffe";
+export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore" | "senza_tariffe" | "scaduto";
 
 export interface StatoFile {
   tipo: TipoFile;

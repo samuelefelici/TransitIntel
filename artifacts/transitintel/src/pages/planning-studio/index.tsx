@@ -114,6 +114,11 @@ export default function PlanningStudioListPage() {
     }
   }
 
+  /* Tappa 6.45: se tutte le corse sono in giorni già passati, chi riceve il file lo trova scaduto: lo si dice in cima. */
+  const avvisoScaduto = (scaduto: string | null): string => scaduto
+    ? `Attenzione: le corse arrivano solo fino al ${scaduto.slice(8, 10)}/${scaduto.slice(5, 7)}/${scaduto.slice(0, 4)}, giorno già passato: chi riceve il file lo trova scaduto. Nelle Corse selezionale e allarga il «Periodo». `
+    : "";
+
   /* PR 3.4: il GTFS esce dalla versione in esercizio (se c'è) con i dati
    * dell'azienda, e passa da un controllo. Con errori il server si ferma e
    * dice quali: si correggono, oppure si esporta comunque, sapendolo. */
@@ -140,6 +145,7 @@ export default function PlanningStudioListPage() {
       const avvisi = Number(resp.headers.get("X-Gtfs-Avvisi") ?? 0);
       const elenco = decodeURIComponent(resp.headers.get("X-Gtfs-Avvisi-Elenco") ?? "");
       const impossibili = Number(resp.headers.get("X-Gtfs-Orari-Impossibili") ?? 0);
+      const scaduto = resp.headers.get("X-Programma-Scaduto") || null;
       const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -150,8 +156,8 @@ export default function PlanningStudioListPage() {
       URL.revokeObjectURL(url);
       const da = versione === "esercizio" ? "Dalla versione in esercizio" : versione === "programmata" ? "Dalla versione programmata" : "Dalla bozza (il programma non ha una versione in esercizio)";
       const sintesi = forza ? "Esportato nonostante gli errori." : avvisi > 0 ? `${avvisi} avvisi: ${elenco}` : "Nessun problema trovato dal controllo.";
-      toast.success("GTFS esportato", {
-        id: tid, duration: avvisi > 0 || forza ? 15000 : 5000, description: `${da}, con i dati dell'azienda. ${sintesi}`,
+      (scaduto ? toast.warning : toast.success)(scaduto ? "GTFS esportato, ma il programma è già scaduto" : "GTFS esportato", {
+        id: tid, duration: scaduto ? 30000 : avvisi > 0 || forza ? 15000 : 5000, description: `${avvisoScaduto(scaduto)}${da}, con i dati dell'azienda. ${sintesi}`,
         /* le tratte con un orario impossibile (tappa 6.44): l'elenco completo, da correggere o da chiedere a chi produce gli orari */
         ...(impossibili > 0 ? { action: { label: "Orari impossibili", onClick: () => { void scaricaOrariImpossibili(p, versione); } } } : {}),
       });
@@ -218,6 +224,7 @@ export default function PlanningStudioListPage() {
       const livelloDelFile = resp.headers.get("X-Netex-Livello");
       const senzaTracciato = Number(resp.headers.get("X-Netex-Tratte-Senza-Tracciato") ?? 0);
       const daGuardare = decodeURIComponent(resp.headers.get("X-Netex-Fermate-Fuori-Tracciato") ?? "");
+      const scaduto = resp.headers.get("X-Programma-Scaduto") || null;
       const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -236,7 +243,10 @@ export default function PlanningStudioListPage() {
       const tracciati = (senzaTracciato > 0
         ? ` ${senzaTracciato.toLocaleString("it-IT")} ${senzaTracciato === 1 ? "tratta fra due fermate è" : "tratte fra due fermate sono"} senza tracciato: lì le fermate si uniscono in linea retta.`
         : "") + (daGuardare ? ` Fermate fuori dal tracciato, da guardare: ${daGuardare}.` : "");
-      toast.success("NeTEx esportato", { id: tid, duration: validazione === "valido" && !tracciati ? 6000 : 15000, description: `${da}, ${corse ?? "?"} corse. ${controllo}${tracciati}` });
+      (scaduto ? toast.warning : toast.success)(scaduto ? "NeTEx esportato, ma il programma è già scaduto" : "NeTEx esportato", {
+        id: tid, duration: scaduto ? 30000 : validazione === "valido" && !tracciati ? 6000 : 15000,
+        description: `${avvisoScaduto(scaduto)}${da}, ${corse ?? "?"} corse. ${controllo}${tracciati}`,
+      });
     } catch (e: any) {
       toast.error("Export NeTEx fallito", { id: tid, description: e?.message });
     }
