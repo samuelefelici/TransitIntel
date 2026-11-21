@@ -139,6 +139,7 @@ export default function PlanningStudioListPage() {
       const versione = resp.headers.get("X-Gtfs-Versione");
       const avvisi = Number(resp.headers.get("X-Gtfs-Avvisi") ?? 0);
       const elenco = decodeURIComponent(resp.headers.get("X-Gtfs-Avvisi-Elenco") ?? "");
+      const impossibili = Number(resp.headers.get("X-Gtfs-Orari-Impossibili") ?? 0);
       const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
@@ -149,9 +150,40 @@ export default function PlanningStudioListPage() {
       URL.revokeObjectURL(url);
       const da = versione === "esercizio" ? "Dalla versione in esercizio" : versione === "programmata" ? "Dalla versione programmata" : "Dalla bozza (il programma non ha una versione in esercizio)";
       const sintesi = forza ? "Esportato nonostante gli errori." : avvisi > 0 ? `${avvisi} avvisi: ${elenco}` : "Nessun problema trovato dal controllo.";
-      toast.success("GTFS esportato", { id: tid, duration: avvisi > 0 || forza ? 15000 : 5000, description: `${da}, con i dati dell'azienda. ${sintesi}` });
+      toast.success("GTFS esportato", {
+        id: tid, duration: avvisi > 0 || forza ? 15000 : 5000, description: `${da}, con i dati dell'azienda. ${sintesi}`,
+        /* le tratte con un orario impossibile (tappa 6.44): l'elenco completo, da correggere o da chiedere a chi produce gli orari */
+        ...(impossibili > 0 ? { action: { label: "Orari impossibili", onClick: () => { void scaricaOrariImpossibili(p, versione); } } } : {}),
+      });
     } catch (e: any) {
       toast.error("Export GTFS fallito", { id: tid, description: e?.message });
+    }
+  }
+
+  /* Tappa 6.44: le tratte con un orario impossibile, in CSV (si apre con Excel), della stessa versione del GTFS. */
+  async function scaricaOrariImpossibili(p: PsProject, versione: string | null) {
+    const tid = toast.loading("Preparo l'elenco degli orari impossibili…");
+    try {
+      const q = versione && ["esercizio", "programmata", "bozza"].includes(versione) ? `?versione=${versione}` : "";
+      const resp = await fetch(`${getApiBase()}/api/planning-studio/projects/${p.id}/export-gtfs/orari-impossibili.csv${q}`, { credentials: "include" });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      const quante = Number(resp.headers.get("X-Orari-Impossibili") ?? 0);
+      const nomeDalServer = /filename="([^"]+)"/.exec(resp.headers.get("Content-Disposition") ?? "")?.[1];
+      const url = URL.createObjectURL(await resp.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = nomeDalServer ?? "orari-impossibili.csv";
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success("Elenco scaricato", {
+        id: tid, duration: 10000,
+        description: `${quante.toLocaleString("it-IT")} ${quante === 1 ? "tratta" : "tratte"} fra due fermate. Dove c'è una corsa di riferimento, in Percorrenze › «Ricalcola esistenti» se ne copiano i tempi tenendo ferma la partenza.`,
+      });
+    } catch (e: any) {
+      toast.error("Elenco non scaricato", { id: tid, description: e?.message });
     }
   }
 

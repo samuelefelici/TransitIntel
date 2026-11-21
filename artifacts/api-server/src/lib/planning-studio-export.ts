@@ -40,6 +40,7 @@ import { leggiAzienda } from "./azienda";
 import { gestoriDalDatabase } from "./gestori-store";
 import { versioniDelProgetto, type Versione } from "./versioni-pubblicate";
 import { rigaDelProblema, verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
+import { csvOrariImpossibili, orariImpossibili } from "./orari-impossibili";
 import type { ConteggiNetex } from "./netex";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 import { costruisciGtfs, netexDelGtfs, nomeFileNetex, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
@@ -139,14 +140,42 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     res.setHeader("X-Gtfs-Versione", pv.fonte.quale);
     res.setHeader("X-Gtfs-Avvisi", String(verifica.avvisi.reduce((n, a) => n + a.quante, 0)));
     res.setHeader("X-Gtfs-Errori", String(verifica.errori.reduce((n, a) => n + a.quante, 0)));
+    /* le tratte con un orario impossibile (tappa 6.44): con più di zero la pagina offre l'elenco da scaricare */
+    res.setHeader("X-Gtfs-Orari-Impossibili", String(verifica.avvisi.find((a) => a.codice === "velocita_impossibile")?.quante ?? 0));
     /* i primi avvisi, per dirli a chi scarica senza rifare il controllo */
     res.setHeader("X-Gtfs-Avvisi-Elenco", encodeURIComponent(
       verifica.avvisi.slice(0, 5).map((a) => rigaDelProblema(a)).join(" · ").slice(0, 1500)));
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Gtfs-Versione, X-Gtfs-Avvisi, X-Gtfs-Errori, X-Gtfs-Avvisi-Elenco");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Gtfs-Versione, X-Gtfs-Avvisi, X-Gtfs-Errori, X-Gtfs-Avvisi-Elenco, X-Gtfs-Orari-Impossibili");
     res.send(zipDelGtfs(gtfs));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, projectId: req.params.id }, "export GTFS fallito");
     res.status(500).json({ error: "Errore durante l'export GTFS" });
+  }
+});
+
+/*
+ * GET …/export-gtfs/orari-impossibili.csv — le tratte con un orario impossibile
+ * del GTFS che si esporterebbe (tappa 6.44, lib/orari-impossibili.ts): linea,
+ * corsa, fermate, orari, secondi, km, km/h e, se c'è, la corsa sana dello stesso
+ * percorso da usare come riferimento in Percorrenze › «Ricalcola esistenti».
+ * Solo lettura.
+ */
+router.get("/planning-studio/projects/:id/export-gtfs/orari-impossibili.csv", async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pv = await programmaEVersione(req, res);
+    if (!pv) return;
+    const gtfs = await costruisciGtfs(pv.fonte.id, pv.progetto, await leggiAzienda(), pv.fonte.quale, await gestoriDalDatabase());
+    const tratte = orariImpossibili(gtfs);
+    const safeName = String(pv.progetto.name || "programma").replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="orari-impossibili_${safeName}_${pv.fonte.quale}_${dateStr}.csv"`);
+    res.setHeader("X-Orari-Impossibili", String(tratte.length));
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Orari-Impossibili");
+    res.send(csvOrariImpossibili(tratte));
+  } catch (e: any) {
+    req.log?.error?.({ err: e?.message, projectId: req.params.id }, "elenco degli orari impossibili non riuscito");
+    res.status(500).json({ error: "Errore durante l'elenco degli orari impossibili" });
   }
 });
 

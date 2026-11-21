@@ -2226,6 +2226,37 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Gli orari impossibili fra due fermate, in un elenco da scaricare (tappa 6.44)
+
+Il controllo del GTFS conta come avviso le tratte in cui la corsa andrebbe a
+più di 120 km/h fra due fermate consecutive. Sui dati veri sono 221 tratte su
+80 corse. L'indagine ha detto che **arrivano già così dalla fonte
+dell'azienda**: il NeTEx della Regione, che non passa da Cerbero, ha gli stessi
+orari. La fonte dà alcune fermate a minuto intero e distribuisce le altre in
+proporzione alla distanza. In queste corse sono già sbagliati gli orari a
+minuto intero (per esempio gli ultimi 7,6 km in 2 minuti).
+
+Correggerli cambia l'orario pubblicato: lo decide chi pianifica, e la
+correzione giusta va fatta nel sistema che produce gli orari. Quindi Cerbero
+**non li corregge**, e dà l'elenco:
+- `GET /api/planning-studio/projects/:id/export-gtfs/orari-impossibili.csv`
+  (stessa versione e stessi permessi dell'export GTFS, solo lettura). Una riga
+  per tratta: linea, corsa e partenza, le due fermate con nome e orario,
+  secondi, km in linea d'aria, km/h. Per Excel in italiano: «;», virgola
+  decimale, nessuna formula.
+- Dove nello stesso percorso c'è una corsa con orari sani, l'elenco la indica
+  come riferimento, con la partenza più vicina. In Planning Studio, Percorrenze
+  › «Ricalcola esistenti» ne copia i tempi tenendo ferma la partenza. Sui dati
+  veri c'è per 20 corse su 80.
+- Dopo l'export GTFS, il messaggio ha il pulsante «Orari impossibili», che
+  scarica l'elenco (intestazione `X-Gtfs-Orari-Impossibili` col numero di
+  tratte).
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova. I file
+consegnati non cambiano.
+
+**Rollback**: immagine precedente. Il pulsante e l'elenco spariscono.
+
 ### Le fermate fuori dal tracciato, nel controllo del GTFS (tappa 6.43)
 
 Il controllo del GTFS (export di Planning Studio, dati aperti) segnala le

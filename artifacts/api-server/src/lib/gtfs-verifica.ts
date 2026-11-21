@@ -40,12 +40,12 @@ const URL_VALIDO = /^https?:\/\/[^\s",<>]+$/;
 /* route_type: i sette di base, filobus e monorotaia, e i tipi estesi (100-1702) */
 const TIPI_DI_LINEA = new Set([0, 1, 2, 3, 4, 5, 6, 7, 11, 12]);
 /* sopra questa velocità fra due fermate consecutive c'è un orario o una posizione sbagliata */
-const KMH_MASSIMI = 120;
+export const KMH_MASSIMI = 120;
 /* oltre questa distanza (km) dal tracciato della sua corsa una fermata si segnala, come fanno i validatori */
 const DISTANTE_KM = 0.1;
 
 const testo = (v: unknown): string => (v === null || v === undefined ? "" : String(v)).trim();
-const secondi = (v: unknown): number | null => {
+export const secondi = (v: unknown): number | null => {
   const m = ORARIO.exec(testo(v));
   return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null;
 };
@@ -58,7 +58,7 @@ function dataValida(v: unknown): boolean {
 function fusoValido(tz: string): boolean {
   try { new Intl.DateTimeFormat("it-IT", { timeZone: tz }); return true; } catch { return false; }
 }
-function km(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
+export function km(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
   const R = 6371, rad = Math.PI / 180;
   const dLat = (b.lat - a.lat) * rad, dLon = (b.lon - a.lon) * rad;
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLon / 2) ** 2;
@@ -213,6 +213,7 @@ export function verificaGtfs(g: Gtfs, oggi: string = new Date().toISOString().sl
           const a = posizione.get(testo(precedente.stop_id)), b = posizione.get(testo(st.stop_id));
           const ore = (qui - prima) / 3600;
           if (a && b && ore > 0 && km(a, b) / ore > KMH_MASSIMI) {
+            /* lo stesso conto fa l'elenco da scaricare, tratta per tratta (lib/orari-impossibili.ts, tappa 6.44) */
             avvisi.aggiungi("velocita_impossibile", "stop_times.txt", `fra due fermate consecutive la corsa andrebbe a più di ${KMH_MASSIMI} km/h`, id);
           }
         }
