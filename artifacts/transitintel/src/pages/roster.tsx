@@ -39,6 +39,7 @@ interface CalendarioRoster {
 import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverEditDialog";
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
+import { CopriScopertiDialog } from "@/components/roster/CopriScopertiDialog";
 import { SeScrive, useSolaLettura } from "@/hooks/use-sola-lettura";
 import { EVENTO_SOLA_LETTURA } from "@/lib/sola-lettura";
 import { limiteDepositi, scriveSulDeposito } from "@workspace/permessi";
@@ -399,7 +400,7 @@ export default function RosterPage() {
   const [tool, setTool] = useState<Strumento>("puntatore");
   const eraser = tool === "gomma";
   const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
-  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | null>(null);
+  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | "copri" | null>(null);
   // Se una cella ha ≥2 attività, la gomma chiede QUALE togliere.
   const [eraseChoice, setEraseChoice] = useState<{ driverId: string; day: string } | null>(null);
   const removeOne = (it: { kind: "duty"; a: RosterAssignment } | { kind: "voce"; en: RosterEntry }) => {
@@ -827,7 +828,12 @@ export default function RosterPage() {
                     </SeScrive>
                     <div className="border-t border-slate-800 my-1" />
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Assegnazione automatica</div>
-                    <button className={menuDisabledCls} disabled>Copri gli scoperti · prossimamente</button>
+                    {/* assegna turni: l'API la apre a chi scrive sul roster (non basta l'anagrafica) */}
+                    <SeScrive area="roster">
+                      <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("copri"); }}>
+                        <Wand2 className="w-3.5 h-3.5" /> Copri gli scoperti
+                      </button>
+                    </SeScrive>
                     <button className={menuDisabledCls} disabled>Bilancia i carichi · prossimamente</button>
                   </>
                 )}
@@ -1332,6 +1338,7 @@ export default function RosterPage() {
       {rotDialog === "list-riposi" && <RotazioniRiposiListDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "assegna" && <AssegnaRotazioniDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "genera-riposi" && <GeneraRiposiDialog onClose={() => setRotDialog(null)} />}
+      {rotDialog === "copri" && <CopriScopertiDialog onClose={() => setRotDialog(null)} />}
 
       {/* Gomma su cella con più attività: scegli quale togliere */}
       {eraseChoice && (() => {

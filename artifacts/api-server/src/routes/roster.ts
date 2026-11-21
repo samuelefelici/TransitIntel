@@ -50,7 +50,8 @@ import { conducentiPer, Rifiuto, rispondiErrore } from "./anagrafica";
 import { abbinaColori, depositiPlanner, depositoDelNome, type DepositoColorato } from "../lib/roster-colori-depositi";
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
-import { fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
+import { controlloDepositi, fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
+import { chiaveTurno, copri, type CandidatoCopertura, type DaCoprire } from "../lib/roster-copertura";
 import { aDisposizione, catalogoPer, esitoScrittura, leggiCatalogo, liberaIlTurno, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
@@ -557,6 +558,108 @@ router.get("/roster/sostituti", async (req, res): Promise<void> => {
 });
 
 /**
+ * «Copri gli scoperti» (7.6): i turni pubblicati di un giorno senza conducente,
+ * o col titolare assente e senza sostituto, proposti ai conducenti dello
+ * stesso deposito liberi o a disposizione, senza violazioni (la scelta è in
+ * lib/roster-copertura.ts). `{ day }` restituisce la proposta; `{ day,
+ * applica: true }` la ricalcola e assegna un turno alla volta con le stesse
+ * regole dell'assegnazione a mano, senza forzare: quello che nel frattempo non
+ * va più resta scoperto, col motivo. Solo i conducenti che chi chiede vede e
+ * su cui scrive.
+ */
+router.post("/roster/copri-scoperti", async (req, res): Promise<void> => {
+  try {
+    const day = String(req.body?.day ?? "");
+    if (!dataVera(day)) { res.status(400).json({ error: "day: una data vera, AAAA-MM-GG" }); return; }
+    const applica = req.body?.applica === true;
+    const ex = db as unknown as Ex;
+    const dssIds = righe(await ex.execute(sql`
+      SELECT DISTINCT dss_id::text AS id FROM roster_turni_pubblicati WHERE sostituita_da IS NULL AND day = ${day}::date`)).map(x => String(x.id));
+    if (!dssIds.length) { res.json({ day, pubblicato: false, coperture: [], scoperti: [] }); return; }
+
+    const riassunti = await riassuntiDei(dssIds);
+    const assegnazioni = righe(await ex.execute(sql`
+      SELECT dss_id::text AS dss, duty_code, driver_id::text AS driver, titolare_id::text AS titolare
+        FROM roster_assignments WHERE day = ${day}::date AND dss_id = ANY(${`{${dssIds.join(",")}}`}::uuid[])`));
+    const perTurno = new Map(assegnazioni.map(a => [chiaveTurno({ dssId: a.dss, codice: a.duty_code }), a]));
+    const assenti = await assentiNelGiorno(ex, assegnazioni.filter(a => !a.titolare).map(a => String(a.driver)), day);
+    const conducenti = await conducentiPer(req, ex);
+    const perId = new Map(conducenti.map(c => [c.id, c]));
+    const nomeDi = (c: Conducente) => [c.cognome, c.nome].filter(Boolean).join(" ") || c.name;
+    const catalogo = await leggiDepositi(ex);
+    const dep = (x: string | null | undefined) => (x && x.trim() ? trovaDeposito(x, catalogo)?.nome ?? x.trim() : null);
+
+    /* i turni da coprire: nessuno assegnato, o il titolare assente e nessun sostituto;
+       chi scrive solo su alcuni depositi vede i turni di quelli (e quelli senza deposito) */
+    const controllo = await controlloDepositi(req, ex);
+    const daCoprire: DaCoprire[] = [];
+    for (const [dssId, r] of riassunti) {
+      for (const t of r.turni) {
+        const a = perTurno.get(chiaveTurno({ dssId, codice: t.code }));
+        if (a && (a.titolare || !assenti.has(String(a.driver)))) continue;
+        const titolare = a ? perId.get(String(a.driver)) ?? null : null;
+        const deposito = dep(titolare?.residenzaServizio) ?? dep(t.residenzaName);
+        if (controllo && deposito && !controllo.scrive(deposito)) continue;
+        daCoprire.push({
+          dssId, codice: t.code, inizio: t.start ?? null, fine: t.end ?? null, deposito,
+          titolare: a ? { id: String(a.driver), nome: titolare ? nomeDi(titolare) : null } : null,
+        });
+      }
+    }
+
+    /* i candidati: visti e scrivibili da chi chiede, attivi, non fittizi, in servizio, senza assenze né turni quel giorno */
+    const attivi = conducenti.filter(c => c.isActive && !c.isFictitious && (!controllo || controllo.scrive(c.residenzaServizio)));
+    const ids = attivi.map(c => c.id);
+    const inServizio = new Set(ids.length ? righe(await ex.execute(sql`
+      SELECT id::text FROM roster_drivers WHERE id = ANY(${`{${ids.join(",")}}`}::uuid[])
+         AND (data_assunzione IS NULL OR data_assunzione <= ${day}::date)
+         AND (data_fine_servizio IS NULL OR data_fine_servizio >= ${day}::date)`)).map(x => String(x.id)) : []);
+    const voci: Voce[] = ids.length ? righe(await ex.execute(sql`
+      SELECT driver_id::text, category, code FROM roster_entries WHERE day = ${day}::date AND driver_id = ANY(${`{${ids.join(",")}}`}::uuid[])`))
+      .map(x => ({ driverId: String(x.driver_id), day, category: String(x.category), code: String(x.code) })) : [];
+    const catalogoVoci = await leggiCatalogo(ex);
+    const conAssenza = new Set(voci.filter(v => v.category === "assenza").map(v => v.driverId));
+    const disposizione = new Set(voci.filter(v => aDisposizione(v, catalogoVoci)).map(v => v.driverId));
+    const conTurno = new Set(ids.length ? righe(await ex.execute(sql`
+      SELECT DISTINCT driver_id::text AS id FROM roster_assignments WHERE day = ${day}::date AND driver_id = ANY(${`{${ids.join(",")}}`}::uuid[])`)).map(x => String(x.id)) : []);
+    const liberi = attivi.filter(c => inServizio.has(c.id) && !conAssenza.has(c.id) && !conTurno.has(c.id));
+    /* il carico: i turni di ognuno nei tre giorni prima e dopo */
+    const carico = new Map(liberi.length ? righe(await ex.execute(sql`
+      SELECT driver_id::text AS id, count(*)::int AS n FROM roster_assignments
+       WHERE driver_id = ANY(${`{${liberi.map(c => c.id).join(",")}}`}::uuid[])
+         AND day BETWEEN ${day}::date - 3 AND ${day}::date + 3
+       GROUP BY driver_id`)).map(x => [String(x.id), Number(x.n)]) : []);
+
+    const preparato = await preparaControllo(liberi.map(c => c.id), [day], daCoprire.map(t => ({ dssId: t.dssId, codice: t.codice })));
+    const candidati = new Map<string, CandidatoCopertura[]>();
+    for (const t of daCoprire) {
+      const delDeposito = liberi.filter(c => !t.deposito || dep(c.residenzaServizio) === t.deposito);
+      const snapshot = snapshotDa(preparato.orari.get(chiaveTurno(t)));
+      if (!snapshot || !delDeposito.length) { candidati.set(chiaveTurno(t), []); continue; }
+      const violazioni = await violazioniPerCandidati({ id: null, day, dssId: t.dssId, dutyCode: t.codice, snapshot }, delDeposito.map(c => c.id), preparato);
+      candidati.set(chiaveTurno(t), delDeposito.filter(c => !(violazioni.get(c.id)?.length)).map(c => ({
+        id: c.id, nome: nomeDi(c), gruppo: disposizione.has(c.id) ? "disposizione" as const : "libero" as const, carico: carico.get(c.id) ?? 0,
+      })));
+    }
+    const { coperture, scoperti } = copri(daCoprire, candidati);
+
+    if (!applica) { res.json({ day, pubblicato: true, coperture, scoperti }); return; }
+    const assegnate: typeof coperture = [];
+    const nonAndate: Array<{ turno: DaCoprire; motivo: string }> = [];
+    for (const c of coperture) {
+      try {
+        await eseguiAssegnazione(req, { driverId: c.driverId, dssId: c.turno.dssId, day, dutyCode: c.turno.codice, forzate: new Set(), sostituisce: null });
+        assegnate.push(c);
+      } catch (e: any) {
+        if (!(e instanceof Rifiuto)) throw e;
+        nonAndate.push({ turno: c.turno, motivo: e.message });
+      }
+    }
+    res.json({ day, pubblicato: true, assegnate, nonAndate, scoperti });
+  } catch (e) { rispondiErrore(res, e, "copri gli scoperti"); }
+});
+
+/**
  * I mezzi per deposito (5.3): quanti ne servono il giorno (i turni macchina
  * della giornata di esercizio) e quanti ce ne sono (l'officina, FleetCare:
  * lo stato di adesso), con il margine. Si legge col Roster; chi vede solo
@@ -656,25 +759,22 @@ router.delete("/roster/vetture", async (req, res): Promise<void> => {
  * lo storico e i controlli sui riposi funzionano anche se il DSS viene
  * versionato o il turno rinumerato.
  */
-router.post("/roster/assignments", async (req, res): Promise<void> => {
-  try {
-    const corpo = req.body ?? {};
-    const driverId = typeof corpo.driverId === "string" ? corpo.driverId.toLowerCase() : "";
-    const dssId = typeof corpo.dssId === "string" ? corpo.dssId.toLowerCase() : "";
-    const day = String(corpo.day ?? "");
-    const dutyCode = typeof corpo.dutyCode === "string" ? corpo.dutyCode.trim() : "";
-    if (!UUID_STRETTO.test(driverId) || !UUID_STRETTO.test(dssId) || !DATE_RE.test(day) || !dutyCode || dutyCode.length > 100) {
-      res.status(400).json({ error: "driverId e dssId (uuid), day (YYYY-MM-DD) e dutyCode richiesti" });
-      return;
-    }
-    const forzate = viste(corpo);
-    const sostituisce = typeof corpo.sostituisce === "string" && UUID_STRETTO.test(corpo.sostituisce.toLowerCase()) ? corpo.sostituisce.toLowerCase() : null;
+/**
+ * Un turno a un conducente, con tutti i controlli: il deposito di chi scrive,
+ * il conducente in servizio quel giorno, il turno pubblicato, i riposi e le
+ * sovrapposizioni (forzabili con `forzate`), la sostituzione per assenza del
+ * titolare. La usano l'assegnazione a mano e «Copri gli scoperti» (7.6).
+ */
+async function eseguiAssegnazione(req: Request, p: {
+  driverId: string; dssId: string; day: string; dutyCode: string; forzate: Set<string>; sostituisce: string | null;
+}): Promise<{ id: string; violazioni: Violazione[] }> {
+  const { driverId, dssId, day, dutyCode, forzate, sostituisce } = p;
     const personale = vedeDatiPersonali(req);
     const chi = utente(req);
     /* fuori dalla transazione, con db: orari e tipi dei turni intorno al giorno e del turno nuovo */
     const preparato = await preparaControllo([driverId], [day], [{ dssId, codice: dutyCode }]);
     const snapshot = snapshotDa(preparato.orari.get(`${dssId}|${dutyCode}`));
-    const esito = await db.transaction(async (tx) => {
+  return db.transaction(async (tx) => {
       const ex = tx as unknown as Ex;
       await iniziaScrittura(ex);
       const [conducente] = await bloccaConducenti(ex, [driverId]);
@@ -730,6 +830,22 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
       }
       return { id: r[0]?.id as string, violazioni };
     });
+}
+
+router.post("/roster/assignments", async (req, res): Promise<void> => {
+  try {
+    const corpo = req.body ?? {};
+    const driverId = typeof corpo.driverId === "string" ? corpo.driverId.toLowerCase() : "";
+    const dssId = typeof corpo.dssId === "string" ? corpo.dssId.toLowerCase() : "";
+    const day = String(corpo.day ?? "");
+    const dutyCode = typeof corpo.dutyCode === "string" ? corpo.dutyCode.trim() : "";
+    if (!UUID_STRETTO.test(driverId) || !UUID_STRETTO.test(dssId) || !DATE_RE.test(day) || !dutyCode || dutyCode.length > 100) {
+      res.status(400).json({ error: "driverId e dssId (uuid), day (YYYY-MM-DD) e dutyCode richiesti" });
+      return;
+    }
+    const forzate = viste(corpo);
+    const sostituisce = typeof corpo.sostituisce === "string" && UUID_STRETTO.test(corpo.sostituisce.toLowerCase()) ? corpo.sostituisce.toLowerCase() : null;
+    const esito = await eseguiAssegnazione(req, { driverId, dssId, day, dutyCode, forzate, sostituisce });
     res.status(201).json({ ok: true, id: esito.id, forzato: esito.violazioni.length > 0 });
   } catch (e: any) { rispondiErrore(res, e, "assegnazione turno"); }
 });
