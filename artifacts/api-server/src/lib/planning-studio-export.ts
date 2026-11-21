@@ -41,6 +41,7 @@ import { gestoriDalDatabase } from "./gestori-store";
 import { versioniDelProgetto, type Versione } from "./versioni-pubblicate";
 import { rigaDelProblema, verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
 import { csvOrariImpossibili, orariImpossibili } from "./orari-impossibili";
+import { oggiDiRoma, scadutoIl } from "./periodo-di-servizio";
 import type { ConteggiNetex } from "./netex";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 import { costruisciGtfs, netexDelGtfs, nomeFileNetex, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
@@ -142,10 +143,13 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     res.setHeader("X-Gtfs-Errori", String(verifica.errori.reduce((n, a) => n + a.quante, 0)));
     /* le tratte con un orario impossibile (tappa 6.44): con più di zero la pagina offre l'elenco da scaricare */
     res.setHeader("X-Gtfs-Orari-Impossibili", String(verifica.avvisi.find((a) => a.codice === "velocita_impossibile")?.quante ?? 0));
-    /* i primi avvisi, per dirli a chi scarica senza rifare il controllo */
+    /* i primi avvisi, per dirli a chi scarica senza rifare il controllo; il periodo già finito per primo (tappa 6.45) */
+    const inCima = [...verifica.avvisi].sort((a, b) => Number(b.codice === "file_scaduto") - Number(a.codice === "file_scaduto"));
     res.setHeader("X-Gtfs-Avvisi-Elenco", encodeURIComponent(
-      verifica.avvisi.slice(0, 5).map((a) => rigaDelProblema(a)).join(" · ").slice(0, 1500)));
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Gtfs-Versione, X-Gtfs-Avvisi, X-Gtfs-Errori, X-Gtfs-Avvisi-Elenco, X-Gtfs-Orari-Impossibili");
+      inCima.slice(0, 5).map((a) => rigaDelProblema(a)).join(" · ").slice(0, 1500)));
+    /* tutte le corse in giorni già passati: la pagina lo dice in cima (tappa 6.45) */
+    res.setHeader("X-Programma-Scaduto", scadutoIl(gtfs, oggiDiRoma()) ?? "");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Gtfs-Versione, X-Gtfs-Avvisi, X-Gtfs-Errori, X-Gtfs-Avvisi-Elenco, X-Gtfs-Orari-Impossibili, X-Programma-Scaduto");
     res.send(zipDelGtfs(gtfs));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, projectId: req.params.id }, "export GTFS fallito");
@@ -185,7 +189,7 @@ router.get("/planning-studio/projects/:id/export-gtfs/orari-impossibili.csv", as
 const livelloChiesto = (req: Request): 1 | 3 => (req.query.livello === "3" ? 3 : 1);
 
 async function costruisciNetex(progetto: any, fonte: Versione, livello: 1 | 3): Promise<{
-  xml: string; conteggi: ConteggiNetex; verifica: EsitoVerifica; validazione: EsitoValidazione; nome: string;
+  xml: string; conteggi: ConteggiNetex; verifica: EsitoVerifica; validazione: EsitoValidazione; nome: string; scaduto: string | null;
 }> {
   const azienda = await leggiAzienda();
   if (!azienda.netexCodiceLocale) throw new SenzaCodiceNetex();
@@ -197,7 +201,10 @@ async function costruisciNetex(progetto: any, fonte: Versione, livello: 1 | 3): 
     ? await conLeTariffe(fonte.id, orari).then((t) => ({ gtfs: t.gtfs, perNetex: t.tariffe.perNetex }))
     : { gtfs: orari, perNetex: null };
   const { xml, conteggi } = netexDelGtfs(gtfs, azienda, gestori, new Date(), perNetex);
-  return { xml, conteggi, verifica: verificaGtfs(gtfs), validazione: await validaNetex(xml), nome: nomeFileNetex(azienda, livello) };
+  return {
+    xml, conteggi, verifica: verificaGtfs(gtfs), validazione: await validaNetex(xml), nome: nomeFileNetex(azienda, livello),
+    scaduto: scadutoIl(gtfs, oggiDiRoma()),
+  };
 }
 
 /** Le fermate fuori dal tracciato secondo il controllo del GTFS (tappa 6.43): al più 5, con la linea. */
@@ -235,7 +242,7 @@ router.get("/planning-studio/projects/:id/export-netex", async (req: Request, re
     const pv = await programmaEVersione(req, res);
     if (!pv) return;
     const livello = livelloChiesto(req);
-    const { xml, conteggi, verifica, validazione, nome } = await costruisciNetex(pv.progetto, pv.fonte, livello);
+    const { xml, conteggi, verifica, validazione, nome, scaduto } = await costruisciNetex(pv.progetto, pv.fonte, livello);
     const forza = req.query.forza === "1";
     if (!forza && verifica.errori.length > 0) {
       res.status(422).json({ error: "Il GTFS da cui nasce il NeTEx ha errori: correggili, oppure esporta forzando", versione: pv.fonte, gtfs: verifica });
@@ -256,7 +263,9 @@ router.get("/planning-studio/projects/:id/export-netex", async (req: Request, re
     res.setHeader("X-Netex-Tratte-Senza-Tracciato", String(conteggi.tratteSenzaTracciato));
     /* e quali fermate guardare (tappa 6.43): gli esempi degli avvisi del controllo sulle fermate fuori dal tracciato */
     res.setHeader("X-Netex-Fermate-Fuori-Tracciato", encodeURIComponent(fermateFuoriTracciato(verifica).join(" · ").slice(0, 1500)));
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse, X-Netex-Livello, X-Netex-Tratte-Senza-Tracciato, X-Netex-Fermate-Fuori-Tracciato");
+    /* tutte le corse in giorni già passati: la pagina lo dice in cima (tappa 6.45) */
+    res.setHeader("X-Programma-Scaduto", scaduto ?? "");
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse, X-Netex-Livello, X-Netex-Tratte-Senza-Tracciato, X-Netex-Fermate-Fuori-Tracciato, X-Programma-Scaduto");
     res.send(gzipSync(Buffer.from(xml, "utf8")));
   } catch (e: any) { rispondiNetex(req, res, e, "export NeTEx fallito"); }
 });

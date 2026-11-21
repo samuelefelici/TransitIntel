@@ -33,11 +33,12 @@ import { rigaDelProblema, verificaGtfs } from "./gtfs-verifica";
 import { costruisciGtfs, netexDelGtfs, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
 import { conLeTariffe, improntaDelleTariffe } from "./gtfs-tariffe";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
+import { motivoScaduto, oggiDiRoma, scadutoIl } from "./periodo-di-servizio";
 
 /** Il NeTEx in due file, un livello ciascuno, come al portale regionale (tappa 6.41). */
 export const TIPI = ["gtfs", "netex", "netex_l3"] as const;
 export type TipoFile = (typeof TIPI)[number];
-export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore" | "senza_tariffe";
+export type EsitoFile = "pubblicato" | "gtfs_con_errori" | "non_valido" | "senza_xmllint" | "senza_codice" | "senza_versione" | "errore" | "senza_tariffe" | "scaduto";
 
 /** Cambia quando cambia il modo di costruire i file: fa rifare quelli in linea. */
 export const FORMATO = 1;
@@ -274,6 +275,9 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
     const verifica = verificaGtfs(gtfsConTariffe);
     verifica.avvisi.push(...avvisiTariffe);
     const conErrori = verifica.errori.length > 0;
+    /* un programma con tutte le corse in giorni già passati non si pubblica (tappa 6.45): il NAP avrebbe un file
+     * scaduto. In linea resta quello di prima; con la stessa firma non si riprova (i dati sono quelli) */
+    const scaduto = scadutoIl(gtfs, oggiDiRoma(adesso));
     const messaggioErrori = conErrori
       ? `Il GTFS della versione in esercizio ha errori che chi lo riceve non accetterebbe: ${verifica.errori.slice(0, 3).map((e) => `${e.messaggio} (${e.quante})`).join("; ")}`
       : null;
@@ -281,6 +285,7 @@ export async function preparaDatiAperti(o: OpzioniPreparazione = {}): Promise<Es
     for (const tipo of daFare) {
       try {
         if (conErrori) { await chiudi(tipo, "gtfs_con_errori", messaggioErrori, { errori: verifica.errori.slice(0, 10) }); continue; }
+        if (scaduto) { await chiudi(tipo, "scaduto", motivoScaduto(scaduto), { ultimoGiorno: scaduto }); continue; }
         if (tipo === "gtfs") {
           const conteggi = {
             righe: Object.fromEntries(Object.entries(gtfsConTariffe).map(([f, x]) => [f, x.righe.length])),

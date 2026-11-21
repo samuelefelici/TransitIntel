@@ -421,6 +421,13 @@
       "when": 1798100000000,
       "tag": "0059_netex_livello_3_fra_i_dati_aperti",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1798200000000,
+      "tag": "0060_dati_aperti_scaduti",
+      "breakpoints": true
     }
   ]
 }
