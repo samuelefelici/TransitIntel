@@ -84,7 +84,9 @@ export default function WorkspaceStep({
     try {
       const base = getApiBase();
       // Ricostruiamo input minimale dai dati disponibili
-      const date = gtfsSelection.date || (resultToSave as any)?.summary?.date || "";
+      // Il giorno dello scenario è quello del calcolo (nel risultato), non
+      // l'inizio del feed: con la matrice di validità il feed parte mesi prima.
+      const date = (resultToSave as any)?.summary?.date || gtfsSelection.date || "";
       const resp = await fetch(`${base}/api/service-program/scenarios`, {
         method: "POST",
         credentials: "include",

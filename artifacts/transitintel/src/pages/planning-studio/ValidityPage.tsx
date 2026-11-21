@@ -910,7 +910,10 @@ export default function PlanningStudioValidityPage() {
           <span className="font-bold">⚠</span>
           <div>
             <div className="font-semibold">
-              Troppe corse nel range selezionato ({matrixErrBody?.tripCount?.toLocaleString("it-IT")} &gt; {matrixErrBody?.maxTripsPerPage?.toLocaleString("it-IT")})
+              Troppe corse nel range selezionato
+              {matrixErrBody?.tripCount != null && matrixErrBody?.maxTripsPerPage != null
+                ? ` (${matrixErrBody.tripCount.toLocaleString("it-IT")}, al massimo ${matrixErrBody.maxTripsPerPage.toLocaleString("it-IT")})`
+                : ""}
             </div>
             <div className="text-amber-300/80">
               Per visualizzare la matrice, scegli una <strong>Linea</strong> nei filtri (oppure restringi il range di date).
@@ -2083,8 +2086,10 @@ function ComputeUnitsDialog(props: {
       setGroups(res.units);
       setCoverage(res.coverage ?? null);
       setExactGroups(res.exactGroups ?? null);
-      const all = new Set<string>(res.units.map((g) => g.validityId));
-      setSelected(all);
+      // Spuntate solo le unità con delle corse: un gruppo di giorni senza corse
+      // (per esempio i sabati di un programma solo feriale) non serve ai turni,
+      // e in Fucina diventerebbe un'unità vuota. Si può sempre spuntare a mano.
+      setSelected(new Set<string>(res.units.filter((g) => g.tripIds.length > 0).map((g) => g.validityId)));
       const n: Record<string, string> = {};
       for (const g of res.units) {
         // nome proposto: foglia del calendario aziendale se disponibile
@@ -2168,7 +2173,7 @@ function ComputeUnitsDialog(props: {
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="px-5 py-3 border-b border-slate-800 bg-slate-950/50 flex items-end gap-3">
+        <div className="px-5 py-3 border-b border-slate-800 bg-slate-950/50 flex flex-wrap items-end gap-3">
           <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
             Dal
             <input

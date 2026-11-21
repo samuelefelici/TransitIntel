@@ -2226,6 +2226,44 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Il programma duplicato arriva fino ai turni (tappa 7.1)
+
+Prova del percorso intero sulla copia dei dati veri, sul programma messo in
+esercizio con la 6.46: unità di progettazione, turni macchina (3.501 corse,
+307 vetture, 7 minuti), turni guida (494 turni, un minuto e mezzo), messa in
+esercizio, pubblicazione nel roster, giornate preparate dal lavoratore. Si
+rompevano quattro cose.
+
+1. **La copia di un programma perdeva i depositi.** Un deposito creato da
+   Planning Studio vale di solito solo per quel progetto, e la duplicazione non
+   lo copiava: dopo «duplica e metti in esercizio» (il passo della 6.45 e della
+   6.46) la pipeline dei turni macchina si fermava a «Nessun deposito
+   configurato». Ora la duplicazione copia i depositi del progetto, i fuori
+   linea (con i riferimenti ai depositi copiati, compresi i tempi messi a mano)
+   e le zone di coincidenza. Quelli che valgono per tutti i progetti restano
+   uno. La cancellazione di un progetto li toglie, così non restano negli
+   elenchi depositi di progetti che non ci sono più. La versione pubblicata di
+   un programma non li copia.
+2. **Lo scenario dei turni macchina si salvava con il giorno sbagliato**: il
+   primo giorno del feed (con la matrice, mesi prima) invece del giorno del
+   calcolo. Ora prende quello del calcolo; anche fuori linea e cluster usano il
+   giorno dell'unità.
+3. **«Calcola Unità» spuntava anche le unità senza corse** (per esempio i
+   sabati di un programma solo feriale): salvate, diventano in Fucina unità
+   vuote. Ora sono proposte ma non spuntate. Nella stessa finestra
+   l'intestazione va a capo invece di uscire dal bordo.
+4. Nella matrice di validità l'avviso «Troppe corse nel range» mostrava
+   parentesi vuote.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Dopo il deploy**: se il programma in esercizio è una copia fatta prima di
+questo rilascio, i suoi depositi vanno ricreati in Planning Studio › Depositi
+(o resi validi per tutti i progetti dalla pagina dei depositi). I programmi
+duplicati da qui in avanti li hanno già.
+
+**Rollback**: immagine precedente. I depositi già copiati restano.
+
 ### La matrice di validità non chiude più le corse in un giorno solo (tappa 6.46)
 
 Sulla copia dei dati veri tutte le 3.502 corse avevano il periodo «dal

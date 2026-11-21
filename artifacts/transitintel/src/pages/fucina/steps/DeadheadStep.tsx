@@ -153,7 +153,8 @@ export default function DeadheadStep({
     setError(null);
     try {
       const routeIds = Array.from(assignment.selectedRoutes.keys());
-      const date = gtfsSelection.date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3");
+      // Il giorno scelto per le corse (quello dell'unità), non l'inizio del feed.
+      const date = assignment.selectedDate || gtfsSelection.date.replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3");
       const res = await fetch(`${getApiBase()}/api/deadheads/compute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
