@@ -2226,6 +2226,30 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Simulatore e «Percorso e tariffa» partono da oggi (tappa 7.3)
+
+Terza parte della prova sui dati veri: bigliettazione (zone, simulatore,
+percorso e tariffa), confronto fra programmi, zone di coincidenza, territorio,
+ipotesi di linea. Si rompeva una cosa: il **Simulatore** e **Percorso e
+tariffa** proponevano come giorni del servizio quelli dal primo giorno del feed
+(sui dati veri dal 5/12/2025, un anno fa), e per arrivare a oggi bisognava
+scorrere. Ora `GET /api/fares/simulator/dates` dà i giorni da oggi (ora di
+Roma) in avanti; se il programma è già finito, tutti.
+
+Il resto è andato:
+- zone extraurbane: 25 cluster generati per addensamenti con tutte le 2.995
+  fermate extraurbane, poi le zone GTFS;
+- tariffa simulata: linea extraurbana B da capolinea a capolinea, 8,4 km,
+  fascia 2, 1,85 €; per le urbane i titoli della rete;
+- confronto fra il programma in esercizio e la sua copia, con gli indicatori di
+  turni e servizio;
+- zone di coincidenza rilevate dai nodi di scambio dell'azienda (9 zone);
+- un percorso del programma importato come ipotesi di linea e analizzato.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### Quadri di palina e doppie coperture (tappa 7.2)
 
 Seconda parte della prova sui dati veri: orari al pubblico, polimetriche,

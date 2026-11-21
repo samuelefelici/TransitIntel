@@ -78,6 +78,7 @@ import { agencyTxt, agenzieDelGtfs } from "../lib/gestori";
 import { gestoriDalDatabase } from "../lib/gestori-store";
 import { leggiAzienda } from "../lib/azienda";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
+import { giorniDaOggi, oggiDiRoma } from "../lib/periodo-di-servizio";
 import AdmZip from "adm-zip";
 
 const router: IRouter = Router();
@@ -3878,7 +3879,7 @@ router.get("/fares/simulator/dates", async (req, res): Promise<void> => {
       GROUP BY f.service_date
       ORDER BY f.service_date
     `);
-    res.json(rows.rows);
+    res.json(giorniDaOggi(rows.rows as Array<{ date: string; trip_count: number }>, oggiDiRoma()));
   } catch (e: any) { erroreTariffe(res, e); }
 });
 
