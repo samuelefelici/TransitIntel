@@ -4,7 +4,7 @@
  * il motivo per cui i dati aperti non lo pubblicano. Dati inventati.
  */
 import { describe, it, expect } from "vitest";
-import { giornoItaliano, motivoScaduto, oggiDiRoma, scadutoIl, ultimoGiornoDiServizio } from "../lib/periodo-di-servizio";
+import { giorniDaOggi, giornoItaliano, motivoScaduto, oggiDiRoma, scadutoIl, ultimoGiornoDiServizio } from "../lib/periodo-di-servizio";
 import type { Gtfs } from "../lib/gtfs-verifica";
 
 const file = (colonne: string[], righe: Array<Record<string, string | number>>) => ({ colonne, righe });
@@ -55,5 +55,12 @@ describe("Il periodo di servizio", () => {
     expect(m).toContain("non si pubblica");
     expect(m).toContain("si duplica quello in esercizio");
     expect(m).toContain("controllo di salute della messa in esercizio");
+  });
+
+  it("i giorni da scegliere partono da oggi; se il programma è finito, tutti", () => {
+    const giorni = [{ date: "20251205", trip_count: 3502 }, { date: "20261120", trip_count: 3501 }, { date: "20261123", trip_count: 3501 }];
+    expect(giorniDaOggi(giorni, "2026-11-21").map((g) => g.date)).toEqual(["20261123"]);
+    expect(giorniDaOggi(giorni, "2026-11-20").map((g) => g.date)).toEqual(["20261120", "20261123"]);
+    expect(giorniDaOggi(giorni, "2027-01-01")).toEqual(giorni);
   });
 });

@@ -14,6 +14,19 @@ import { giorniDiServizio } from "./netex";
 export const oggiDiRoma = (d: Date = new Date()): string =>
   new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Rome" }).format(d);
 
+/**
+ * Dei giorni di servizio (`date` «YYYYMMDD», in ordine) quelli da oggi in
+ * avanti: chi sceglie un giorno (il simulatore della bigliettazione) parte da
+ * oggi, non dal primo giorno del feed, che con la matrice di validità cade
+ * mesi prima. Se il programma è già finito, tutti: un giorno passato si può
+ * ancora simulare.
+ */
+export function giorniDaOggi<T extends { date: string }>(righe: T[], oggi: string): T[] {
+  const o = oggi.replace(/-/g, "");
+  const avanti = righe.filter((r) => String(r.date) >= o);
+  return avanti.length ? avanti : righe;
+}
+
 /** L'ultimo giorno in cui c'è almeno una corsa («YYYY-MM-DD»), dai calendari delle corse; null se nessuna corsa ha giorni. */
 export function ultimoGiornoDiServizio(g: Gtfs): string | null {
   const giorni = giorniDiServizio(g);
