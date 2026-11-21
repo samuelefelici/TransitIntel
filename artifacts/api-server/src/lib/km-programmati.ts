@@ -250,6 +250,24 @@ export async function corseConKm(o: { progettoId: string; dal: string; al: strin
  * nei progetti con la matrice di validità: senza, il periodo della corsa non
  * entra nella circolazione (né nel GTFS).
  */
+/**
+ * Toglie il periodo di un giorno alle corse che l'hanno (tappa 6.46): le stesse
+ * di corseConPeriodoDiUnGiorno. Il periodo vuoto vuol dire «illimitata»: la
+ * corsa circola nei giorni che dicono matrice, eccezioni e calendario
+ * aziendale. Restituisce quante corse ha cambiato.
+ */
+export async function togliPeriodoDiUnGiorno(progettoId: string): Promise<number> {
+  if (!(await projectHasTripValidity(progettoId))) return 0;
+  const r = await db.execute<any>(sql`
+    UPDATE ps_trips SET valid_from = NULL, valid_to = NULL
+     WHERE project_id = ${progettoId}::uuid
+       AND COALESCE(is_active, true) = true
+       AND COALESCE((attributes->>'prototype')::boolean, false) = false
+       AND valid_from IS NOT NULL AND valid_from = valid_to
+    RETURNING id`);
+  return (r.rows ?? []).length;
+}
+
 export async function corseConPeriodoDiUnGiorno(progettoId: string): Promise<{ quante: number; giorno: string | null }> {
   if (!(await projectHasTripValidity(progettoId))) return { quante: 0, giorno: null };
   const r = await db.execute<any>(sql`

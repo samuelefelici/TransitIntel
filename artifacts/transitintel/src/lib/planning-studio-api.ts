@@ -290,6 +290,11 @@ export async function getPsProjectHealth(id: string): Promise<PsProjectHealth> {
   return apiFetch<PsProjectHealth>(`/api/planning-studio/projects/${id}/health`);
 }
 
+/** Tappa 6.46: toglie il periodo di un giorno (dal = al) a tutte le corse che l'hanno; dice quante. */
+export async function togliPeriodoDiUnGiorno(id: string): Promise<{ ok: true; corse: number }> {
+  return apiFetch<{ ok: true; corse: number }>(`/api/planning-studio/projects/${id}/trips/periodo-di-un-giorno/togli`, { method: "POST" });
+}
+
 /* ─── Membri / attività ─── */
 
 export async function listPsMembers(projectId: string): Promise<PsMember[]> {

@@ -39,5 +39,6 @@ export const giornoItaliano = (iso: string): string => `${iso.slice(8, 10)}/${is
 /** Perché un programma scaduto non si pubblica, e dove si corregge. */
 export const motivoScaduto = (ultimo: string): string =>
   `Il programma in esercizio ha corse solo fino al ${giornoItaliano(ultimo)}, giorno già passato: il file non si pubblica, `
-  + "perché chi lo scarica lo troverebbe scaduto. Si corregge in Planning Studio: nelle Corse si selezionano e si allarga il «Periodo», "
-  + "poi si rimette in esercizio il programma";
+  + "perché chi lo scarica lo troverebbe scaduto. Si corregge in Planning Studio mettendo in esercizio un programma con le corse "
+  + "nei giorni giusti (si duplica quello in esercizio): se le corse hanno un periodo di un giorno solo, lo toglie a tutte "
+  + "il controllo di salute della messa in esercizio";

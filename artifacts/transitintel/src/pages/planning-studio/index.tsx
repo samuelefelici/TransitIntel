@@ -15,7 +15,7 @@ import {
 import { getApiBase } from "@/lib/api";
 import {
   listPsProjects, createPsProject, deletePsProject, activatePsProject, duplicatePsProject,
-  getPsProjectHealth, type PsProjectHealth, type PsProject,
+  getPsProjectHealth, togliPeriodoDiUnGiorno, type PsProjectHealth, type PsProject,
 } from "@/lib/planning-studio-api";
 import SharePsProjectDialog from "@/components/planning-studio/SharePsProjectDialog";
 import { SeScrive } from "@/hooks/use-sola-lettura";
@@ -116,7 +116,7 @@ export default function PlanningStudioListPage() {
 
   /* Tappa 6.45: se tutte le corse sono in giorni già passati, chi riceve il file lo trova scaduto: lo si dice in cima. */
   const avvisoScaduto = (scaduto: string | null): string => scaduto
-    ? `Attenzione: le corse arrivano solo fino al ${scaduto.slice(8, 10)}/${scaduto.slice(5, 7)}/${scaduto.slice(0, 4)}, giorno già passato: chi riceve il file lo trova scaduto. Nelle Corse selezionale e allarga il «Periodo». `
+    ? `Attenzione: le corse arrivano solo fino al ${scaduto.slice(8, 10)}/${scaduto.slice(5, 7)}/${scaduto.slice(0, 4)}, giorno già passato: chi riceve il file lo trova scaduto. Se le corse hanno un periodo di un giorno solo, lo toglie a tutte il controllo di salute della messa in esercizio. `
     : "";
 
   /* PR 3.4: il GTFS esce dalla versione in esercizio (se c'è) con i dati
@@ -756,6 +756,20 @@ function ActivateProjectDialog({
   }, [project.id]);
   const failing = (health?.checks ?? []).filter((ch) => ch.count > 0);
   const hasErrors = failing.some((ch) => ch.level === "error");
+  /* Tappa 6.46: le corse col periodo di un giorno solo si liberano da qui, prima di metterle in esercizio */
+  const [togliendo, setTogliendo] = useState(false);
+  const togliPeriodo = async () => {
+    setTogliendo(true);
+    try {
+      const r = await togliPeriodoDiUnGiorno(project.id);
+      toast.success(`Periodo tolto a ${r.corse.toLocaleString("it-IT")} ${r.corse === 1 ? "corsa" : "corse"}`, {
+        description: "Ora circolano nei giorni che dicono la matrice di validità e il calendario aziendale.",
+      });
+      setHealth(await getPsProjectHealth(project.id));
+    } catch (e: any) {
+      toast.error("Periodo non tolto", { description: e?.message });
+    } finally { setTogliendo(false); }
+  };
 
   const canSubmit = !busy && !healthLoading
     && (!hasErrors || overrideErrors)
@@ -819,6 +833,13 @@ function ActivateProjectDialog({
                           <span className="block text-[11px] text-slate-500">
                             es. {ch.samples.join(" · ")}{ch.count > ch.samples.length ? " …" : ""}
                           </span>
+                        )}
+                        {ch.key === "trips_one_day_period" && (
+                          <button type="button" onClick={() => { void togliPeriodo(); }} disabled={togliendo || busy}
+                            className="mt-1 inline-flex items-center gap-1 rounded border border-amber-500/40 px-2 py-0.5 text-[11px] text-amber-200 hover:bg-amber-500/10 disabled:opacity-50">
+                            {togliendo && <Loader2 className="w-3 h-3 animate-spin" />}
+                            Togli il periodo di un giorno a tutte
+                          </button>
                         )}
                       </span>
                     </li>

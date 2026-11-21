@@ -17,7 +17,7 @@ import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
-import { lunghezzePercorsi, corseConKm, corseConPeriodoDiUnGiorno } from "./km-programmati";
+import { lunghezzePercorsi, corseConKm, corseConPeriodoDiUnGiorno, togliPeriodoDiUnGiorno } from "./km-programmati";
 import { gestoreDellaLinea, raggruppaPerGestore } from "./gestori";
 import { gestoriDalDatabase } from "./gestori-store";
 import { withVia } from "./agent-context";
@@ -1043,6 +1043,28 @@ router.post("/planning-studio/projects/:id/trips/set-categories-bulk", async (re
       ...(clearTripWindows ? { clearTripWindows, windowsCleared, masksCleared } : {}) });
   res.json({ ok: true, count: tripIds.length, categories: catIds.length, manual, clearCalendar,
     ...(clearTripWindows ? { clearTripWindows, windowsCleared, masksCleared } : {}) });
+});
+
+/* ─── IL PERIODO DI UN GIORNO (tappa 6.46) ──────────────────────────────────
+ * Le corse col periodo «dal X al X» circolano solo quel giorno: succede quando i
+ * calendari di un GTFS che copriva un giorno solo passano nella matrice di
+ * validità. Qui si toglie quel periodo a tutte in un colpo (lo propone il
+ * controllo di salute). Solo chi modifica il programma; le versioni in
+ * esercizio non si toccano (versioniInSolaLettura). */
+router.post("/planning-studio/projects/:id/trips/periodo-di-un-giorno/togli", async (req, res): Promise<void> => {
+  const userId = getUserId(req);
+  if (!userId) { res.status(401).json({ error: "auth required" }); return; }
+  if (!UUID_RE.test(String(req.params.id))) { res.status(400).json({ error: "projectId non valido" }); return; }
+  const proj = await loadProject(req.params.id, userId, true);
+  if (!proj) { res.status(403).json({ error: "no write access" }); return; }
+  try {
+    const corse = await togliPeriodoDiUnGiorno(req.params.id);
+    await logActivity(req.params.id, userId, "trip.period_one_day_cleared", "project", req.params.id, { count: corse });
+    res.json({ ok: true, corse });
+  } catch (e: any) {
+    console.error("[ps-trips-ext] periodo di un giorno:", e?.message || e);
+    res.status(500).json({ error: "Periodo non tolto" });
+  }
 });
 
 /* ─── RICALCOLA PERCORRENZE (traffico su cadenza ESISTENTE) ────────────────
