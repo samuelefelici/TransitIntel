@@ -2226,6 +2226,47 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### La matrice di validità non chiude più le corse in un giorno solo (tappa 6.46)
+
+Sulla copia dei dati veri tutte le 3.502 corse avevano il periodo «dal
+5/12/2025 al 5/12/2025», e GTFS, NeTEx e dati aperti avevano corse solo quel
+giorno. Le cause erano due.
+
+1. **La conversione dei calendari nella matrice di validità** copiava il
+   periodo di ogni calendario importato sulle sue corse. Un GTFS che era
+   l'esportazione di una giornata ha calendari di un giorno solo, e le corse
+   restavano valide solo quel giorno. Ora un calendario di un giorno non
+   diventa il periodo delle corse; un orario stagionale vero (per esempio dal
+   15/06 al 15/09) sì, come prima.
+2. **Il GTFS consegnabile** prendeva la finestra dei giorni dai calendari
+   importati. La materializzazione del programma in esercizio, con la matrice,
+   la allarga almeno da oggi a fra un anno: il feed in esercizio aveva i giorni
+   giusti, il file consegnato no. Ora fanno lo stesso.
+
+**Per i programmi già convertiti**: nel dialogo «Metti in esercizio» il
+controllo di salute, accanto a «Corse con un periodo di un giorno solo», ha il
+pulsante **«Togli il periodo di un giorno a tutte»**. Il periodo vuoto vuol dire
+che la corsa circola nei giorni della matrice, delle eccezioni e del
+calendario aziendale. Rotta `POST /api/planning-studio/projects/:id/trips/periodo-di-un-giorno/togli`:
+serve la modifica del programma, e una versione in esercizio non si tocca.
+
+**Dopo il deploy**, se il programma in esercizio è in questo stato (la scheda
+dei dati aperti dice «… corse solo fino al …»):
+1. in Planning Studio duplica il programma in esercizio;
+2. sulla copia, «Metti in esercizio»: nel controllo di salute premi «Togli il
+   periodo di un giorno a tutte», poi metti in esercizio;
+3. i dati aperti si rifanno da soli entro dieci minuti.
+
+Sulla copia dei dati veri, così: 3.502 corse liberate, GTFS con 270 giorni (dal
+5/12/2025 al 31/12/2026, la fine del calendario di validità), dati aperti
+pubblicati di nuovo. Sabato e domenica restano senza corse: il file importato
+era un venerdì, e da lì non si sa niente del servizio del fine settimana.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. Le corse a cui il periodo è già stato tolto
+restano senza; la conversione torna a copiare anche i periodi di un giorno.
+
 ### I dati aperti non pubblicano un programma già scaduto (tappa 6.45)
 
 Se tutte le corse del programma in esercizio sono in giorni già passati, chi
@@ -2245,10 +2286,11 @@ di validità va fino al 31/12/2026.
   la correzione in cima (intestazione `X-Programma-Scaduto` con l'ultimo
   giorno). Nel messaggio del GTFS l'avviso «il periodo del file è già finito» è
   il primo dell'elenco.
-- **Dove si corregge**: in Planning Studio, nelle Corse si selezionano e si
-  allarga il «Periodo», poi si rimette in esercizio il programma. La versione in
-  esercizio è una copia congelata: una correzione alla bozza arriva ai dati
-  aperti solo con la messa in esercizio.
+- **Dove si corregge**: in Planning Studio, mettendo in esercizio un programma
+  con le corse nei giorni giusti. Il programma in esercizio non si rimette in
+  esercizio dalla pagina: lo si duplica, e si mette in esercizio la copia. Dalla
+  6.46, se le corse hanno un periodo di un giorno solo, il controllo di salute
+  della messa in esercizio lo toglie a tutte con un pulsante.
 
 Migrazione `0060`: l'esito `scaduto` nel vincolo di `dati_aperti`. Nessun dato
 cambia.
@@ -2258,8 +2300,7 @@ cambia.
    blocco «Watch Paths» più sotto: `periodo-di-servizio.ts`. Il lavoratore
    prepara i dati aperti.
 2. Guarda in Amministrazione › Azienda › Dati aperti. Se una scheda dice
-   «… corse solo fino al …», allarga il «Periodo» delle corse e rimetti in
-   esercizio il programma.
+   «… corse solo fino al …», vedi la sezione della 6.46 qui sopra.
 
 **Rollback**: immagine precedente. Il vincolo nuovo resta e non dà fastidio;
 i dati aperti tornano a pubblicare anche un programma scaduto.

@@ -253,4 +253,23 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("i km programmati, sul database"
     const l = await request(pian).get(`/api/planning-studio/projects/${L}/health`);
     expect(l.body.checks.find((x: any) => x.key === "trips_one_day_period").count).toBe(0);
   });
+
+  it("dal controllo si toglie il periodo di un giorno a tutte; le altre corse restano come sono (tappa 6.46)", async () => {
+    const periodo = async (corsa: string) => (await db.execute<any>(sql`
+      SELECT to_char(valid_from, 'YYYY-MM-DD') AS dal, to_char(valid_to, 'YYYY-MM-DD') AS al FROM ps_trips WHERE id = ${corsa}::uuid`)).rows[0];
+    const dueSettimane = await periodo(T_DUE_SETTIMANE);
+    const r = await request(pian).post(`/api/planning-studio/projects/${M}/trips/periodo-di-un-giorno/togli`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body).toEqual({ ok: true, corse: 1 });
+    expect(await periodo(T_UN_GIORNO)).toEqual({ dal: null, al: null });
+    expect(await periodo(T_DUE_SETTIMANE)).toEqual(dueSettimane);
+    expect(await corseConPeriodoDiUnGiorno(M)).toEqual({ quante: 0, giorno: null });
+    const c = (await request(pian).get(`/api/planning-studio/projects/${M}/health`)).body.checks.find((x: any) => x.key === "trips_one_day_period");
+    expect(c.count).toBe(0);
+    /* senza matrice il periodo non conta, e non si tocca */
+    expect((await request(pian).post(`/api/planning-studio/projects/${L}/trips/periodo-di-un-giorno/togli`)).body).toEqual({ ok: true, corse: 0 });
+    /* chi non può modificare il programma no */
+    const estraneo = appDiProva(tutte, utenteDiProva(u(2), [], "user", { ruoli: ["pianificatore"] }));
+    expect((await request(estraneo).post(`/api/planning-studio/projects/${M}/trips/periodo-di-un-giorno/togli`)).status).toBe(403);
+  });
 });

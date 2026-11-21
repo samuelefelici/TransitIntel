@@ -53,7 +53,7 @@ describe("Il periodo di servizio", () => {
     const m = motivoScaduto("2025-12-05");
     expect(m).toContain("solo fino al 05/12/2025");
     expect(m).toContain("non si pubblica");
-    expect(m).toContain("«Periodo»");
-    expect(m).toContain("rimette in esercizio");
+    expect(m).toContain("si duplica quello in esercizio");
+    expect(m).toContain("controllo di salute della messa in esercizio");
   });
 });

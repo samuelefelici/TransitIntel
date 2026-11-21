@@ -41,6 +41,15 @@ import { loadCalendarProfile } from "./planning-studio-calendar";
 import { classifyDate, italianHolidays as classifierHolidays } from "./day-classifier";
 import { withVia } from "./agent-context";
 
+/**
+ * Se il periodo di un calendario importato diventa il periodo delle sue corse
+ * (tappa 6.46): sì per un periodo vero (un orario stagionale), no per un giorno
+ * solo (dal = al), che è il giorno di un'esportazione, né senza date.
+ */
+export function periodoDaCopiare(dal: string | null | undefined, al: string | null | undefined): boolean {
+  return !!dal && !!al && dal !== al;
+}
+
 const router: IRouter = Router();
 
 /* ════════════════════════════════════════════════════════════
@@ -1228,12 +1237,17 @@ export async function runValidityAutoImportFromCalendars(
           `);
           validityUpserts++;
         }
-        await db.execute(sql`
-          UPDATE ps_trips
-             SET valid_from = COALESCE(valid_from, ${c.start_date}::date),
-                 valid_to   = COALESCE(valid_to,   ${c.end_date}::date)
-           WHERE id = ${tid}::uuid
-        `);
+        /* il periodo del calendario diventa quello della corsa (un orario estivo resta estivo), ma non
+         * quello di un giorno solo (tappa 6.46): è il giorno di un'esportazione, e chiuderebbe la corsa
+         * in quel giorno anche se la matrice vale tutto l'anno */
+        if (periodoDaCopiare(c.start_date, c.end_date)) {
+          await db.execute(sql`
+            UPDATE ps_trips
+               SET valid_from = COALESCE(valid_from, ${c.start_date}::date),
+                   valid_to   = COALESCE(valid_to,   ${c.end_date}::date)
+             WHERE id = ${tid}::uuid
+          `);
+        }
         for (const cd of cdates) {
           const exType = cd.exception_type === 1 ? 1 : 2;
           await db.execute(sql`

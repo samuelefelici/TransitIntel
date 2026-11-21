@@ -113,6 +113,16 @@ export async function costruisciGtfs(
   let effectiveTripSvc: Map<string, string> | null = null;
   let effectiveSigDates: Map<string, string[]> | null = null;
   if (useEffective) {
+    /* La finestra non si ferma ai calendari importati, come nella materializzazione
+     * (lib/materializzazione/feed.ts): copre almeno da oggi a fra un anno. Con i
+     * calendari di un GTFS che copriva un giorno solo, il file consegnato aveva
+     * corse solo quel giorno, mentre il feed in esercizio le aveva tutto l'anno
+     * (tappa 6.46). */
+    const ymd = (d: Date) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+    const fraUnAnno = new Date(today);
+    fraUnAnno.setFullYear(fraUnAnno.getFullYear() + 1);
+    if (feedStart > ymd(today)) feedStart = ymd(today);
+    if (feedEnd < ymd(fraUnAnno)) feedEnd = ymd(fraUnAnno);
     const isoFrom = `${feedStart.slice(0, 4)}-${feedStart.slice(4, 6)}-${feedStart.slice(6, 8)}`;
     let isoTo = `${feedEnd.slice(0, 4)}-${feedEnd.slice(4, 6)}-${feedEnd.slice(6, 8)}`;
     // cap difensivo ~2 anni, come materializzazione e compute UDP
