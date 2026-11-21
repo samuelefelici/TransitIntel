@@ -155,4 +155,15 @@ describe("forzature e doppie coperture", () => {
     ]), corse);
     expect(d).toEqual([{ giorni: ["2026-11-02", "2026-11-03"], dss: ["misto", "u"], corse: 1, esempio: "1|300|330|A|B" }]);
   });
+
+  it("due corse uguali nello stesso DSS (un bis, in due turni) non sono una doppia copertura", () => {
+    const corse = new Map([
+      ["u", [["S|455|480|A|SCUOLA"], ["S|455|480|A|SCUOLA", "S|500|530|SCUOLA|A"]]],
+      ["altro", [["S|500|530|SCUOLA|A"]]],
+    ]);
+    expect(doppieCoperture(new Map([["2026-11-23", ["u"]]]), corse)).toEqual([]);
+    // la corsa che compare anche in un altro DSS pubblicato lo stesso giorno sì
+    expect(doppieCoperture(new Map([["2026-11-23", ["u", "altro"]]]), corse))
+      .toEqual([{ giorni: ["2026-11-23"], dss: ["altro", "u"], corse: 1, esempio: "S|500|530|SCUOLA|A" }]);
+  });
 });

@@ -262,6 +262,13 @@ export interface DoppiaCopertura { giorni: string[]; dss: string[]; corse: numbe
  * Le corse che, nello stesso giorno, stanno in due turni pubblicati (due UDP
  * con corse in comune, un DSS misto pubblicato con quelli da cui viene).
  * Si raggruppano i giorni con lo stesso insieme di DSS.
+ *
+ * Una corsa è riconosciuta da linea, orari e fermate (la firma del turno), non
+ * dall'id. Dentro lo STESSO DSS due corse uguali sono vetture diverse sullo
+ * stesso tragitto (un bis, le corse scolastiche doppie), ognuna nel suo turno:
+ * non sono una doppia copertura. Lo è una corsa che compare in DUE DSS
+ * pubblicati lo stesso giorno (PR 7.2: sui dati veri 55 bis davano un avviso
+ * di «25 corse coperte due volte» con un DSS solo).
  */
 export function doppieCoperture(pubblicati: Map<string, string[]>, corseDiDss: Map<string, string[][]>): DoppiaCopertura[] {
   const perInsieme = new Map<string, string[]>();
@@ -275,9 +282,17 @@ export function doppieCoperture(pubblicati: Map<string, string[]>, corseDiDss: M
   const out: DoppiaCopertura[] = [];
   for (const [chiave, giorni] of perInsieme) {
     const dss = chiave.split(",");
-    const viste = new Map<string, number>();
-    for (const d of dss) for (const turno of corseDiDss.get(d) ?? []) for (const c of turno) viste.set(c, (viste.get(c) ?? 0) + 1);
-    const doppie = [...viste].filter(([, n]) => n > 1);
+    const inQualiDss = new Map<string, Set<string>>();
+    for (const d of dss) {
+      for (const turno of corseDiDss.get(d) ?? []) {
+        for (const c of turno) {
+          const s = inQualiDss.get(c) ?? new Set<string>();
+          s.add(d);
+          inQualiDss.set(c, s);
+        }
+      }
+    }
+    const doppie = [...inQualiDss].filter(([, s]) => s.size > 1);
     if (doppie.length) out.push({ giorni: giorni.sort(), dss, corse: doppie.length, esempio: doppie[0]![0] });
   }
   return out;

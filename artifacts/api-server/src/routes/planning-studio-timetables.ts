@@ -11,6 +11,7 @@
  * stampa filtra le corse per il day-type scelto (es. "Feriale Scuole Aperte").
  *
  *   GET /planning-studio/:projectId/timetables/routes
+ *   GET /planning-studio/:projectId/timetables/route-stops?routeIds=a,b
  *   GET /planning-studio/:projectId/timetables/stops/search?q=
  *   GET /planning-studio/:projectId/timetables/route/:routeId?dayTypeId=&directionId=
  *   GET /planning-studio/:projectId/timetables/stop/:stopId?dayTypeId=
@@ -197,6 +198,30 @@ router.get("/planning-studio/:projectId/timetables/day-types", async (req, res):
     // tabelle validità non ancora create sul progetto → nessun day-type
     res.json({ dayTypes: [] });
   }
+});
+
+// ── GET /timetables/route-stops?routeIds=a,b — fermate uniche delle linee ─────
+// La usano i «Quadri palina» di Orari al pubblico (la chiamata è scritta come
+// `${ptt}/route-stops`: la 2.13b non l'aveva vista e l'aveva tolta).
+router.get("/planning-studio/:projectId/timetables/route-stops", async (req, res): Promise<void> => {
+  try {
+    const projectId = String(req.params.projectId);
+    if (!UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
+    if (!(await requireTimetableRead(projectId, req, res))) return;
+    const ids = String(req.query.routeIds ?? "").split(",").map((s) => s.trim()).filter((s) => UUID_RE.test(s)).slice(0, 500);
+    if (!ids.length) { res.json({ projectId, stops: [] }); return; }
+    const r = await db.execute<any>(sql`
+      SELECT DISTINCT s.id AS stop_id, s.name AS stop_name, s.code AS stop_code
+        FROM ps_variant_stops vs
+        JOIN ps_route_variants v ON v.id = vs.variant_id AND v.project_id = ${projectId}::uuid
+        JOIN ps_stops s ON s.id = vs.stop_id
+       WHERE v.route_id = ANY(${`{${ids.join(",")}}`}::uuid[])
+       ORDER BY s.name`);
+    res.json({
+      projectId,
+      stops: (r.rows as any[]).map((s) => ({ stopId: s.stop_id, stopName: s.stop_name, stopCode: s.stop_code })),
+    });
+  } catch (e: any) { res.status(500).json({ error: e.message }); }
 });
 
 // ── GET /timetables/stops/search?q= — picker fermate ────────────────────────
