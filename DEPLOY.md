@@ -2226,6 +2226,35 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Quadri di palina e doppie coperture (tappa 7.2)
+
+Seconda parte della prova sui dati veri: orari al pubblico, polimetriche,
+giornata feriale con i turni. Si rompevano due cose.
+
+1. **I «Quadri palina» di Orari al pubblico non stampavano**: la finestra si
+   apriva e si chiudeva. La pagina chiama
+   `GET /api/planning-studio/:id/timetables/route-stops`, che la 2.13b aveva
+   tolto fra le rotte «senza chiamanti»: la chiamata è scritta come percorso
+   composto e la ricerca non l'aveva vista. La rotta torna, con i parametri
+   passati al database. Un test nuovo controlla che ogni chiamata della pagina
+   abbia la sua rotta; un controllo su tutta la web non ha trovato altre
+   chiamate senza rotta.
+2. **La pubblicazione nel roster avvisava di corse «coperte due volte» che non
+   lo erano.** Una corsa si riconosce da linea, orari e fermate; due corse
+   uguali nello stesso DSS (un bis, le corse scolastiche doppie) sono due
+   vetture, ognuna nel suo turno. Ora l'avviso conta solo le corse che stanno in
+   due DSS pubblicati lo stesso giorno. Sui dati veri: prima «25 corse
+   coperte due volte» con un DSS solo, ora nessuna.
+
+Il resto della prova è andato: stampa degli orari di linea, fotografia delle
+polimetriche sul programma nuovo (le polimetriche salvate passano), giornata
+feriale preparata con 3.501 corse su 3.501 con turno macchina, turno guida e
+deposito.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### Il programma duplicato arriva fino ai turni (tappa 7.1)
 
 Prova del percorso intero sulla copia dei dati veri, sul programma messo in
