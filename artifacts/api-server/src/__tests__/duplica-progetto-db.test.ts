@@ -19,6 +19,8 @@ const UTENTE = "d1000000-0000-4000-8000-000000000001";
 const SRC = "d1000000-0000-4000-8000-0000000000a0";
 const u = (n: number) => `d1000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [N1, N2, F1, F2, F3, F4, L1, L2, V1, V2, CAL, TG, TG_GLOBALE, C1, C2, CAT] = Array.from({ length: 16 }, (_, i) => u(i + 10));
+// depositi: uno del solo progetto (si copia) e uno di tutti (resta condiviso)
+const [DEP, DEP_TUTTI] = [u(40), u(41)];
 const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const app = appDiProva(router, utenteDiProva(UTENTE));
@@ -79,7 +81,16 @@ async function impronta(p: string): Promise<Record<string, unknown>> {
       'profilo', (SELECT jsonb_agg(jsonb_build_array(closed_periods, summer_period, extra_holidays)) FROM ps_calendar_profiles WHERE project_id = ${p}::uuid),
       'giorni', (SELECT jsonb_agg(jsonb_build_array(x.date, g.code, CASE WHEN g.project_id IS NULL THEN 'globale:' || g.id WHEN g.project_id = x.project_id THEN 'del progetto' ELSE 'di un altro' END, x.source, x.note) ORDER BY x.date)
                    FROM ps_day_calendar x JOIN ps_day_types g ON g.id = x.day_type_id WHERE x.project_id = ${p}::uuid),
-      'giorni_per_categoria', (SELECT jsonb_agg(jsonb_build_array(date, category_id) ORDER BY date) FROM ps_validity_category_calendar WHERE project_id = ${p}::uuid)
+      'giorni_per_categoria', (SELECT jsonb_agg(jsonb_build_array(date, category_id) ORDER BY date) FROM ps_validity_category_calendar WHERE project_id = ${p}::uuid),
+      'depositi', (SELECT jsonb_agg(jsonb_build_array(name, sigla, lat, lon) ORDER BY name) FROM depots WHERE ps_project_id = ${p}::uuid),
+      -- la chiave di un deposito si legge col nome del deposito DELLO STESSO progetto
+      'fuori_linea', (SELECT jsonb_agg(x.r ORDER BY x.r::text) FROM (
+                        SELECT jsonb_build_array(
+                          COALESCE((SELECT 'deposito ' || d.name FROM depots d WHERE a.from_key = 'depot:' || d.id AND d.ps_project_id = a.ps_project_id), a.from_key),
+                          COALESCE((SELECT 'deposito ' || d.name FROM depots d WHERE a.to_key = 'depot:' || d.id AND d.ps_project_id = a.ps_project_id), a.to_key),
+                          a.road_km, a.custom_min) AS r
+                          FROM deadhead_arcs a WHERE a.ps_project_id = ${p}::uuid) x),
+      'zone_di_coincidenza', (SELECT jsonb_agg(jsonb_build_array(name, hub_id, walk_minutes) ORDER BY name) FROM coincidence_zones WHERE ps_project_id = ${p}::uuid)
     ) AS i`);
   return r.rows[0].i;
 }
@@ -91,6 +102,12 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("duplicazione di un progetto di 
     const miei = sql`(SELECT id FROM ps_projects WHERE id = ${SRC}::uuid OR owner_user_id = ${UTENTE}::uuid)`;
     // ps_trip_category_validity non ha chiavi esterne: le sue righe non seguono le corse
     await db.execute(sql`DELETE FROM ps_trip_category_validity WHERE category_id = ${CAT}::uuid`);
+    // depositi, fuori linea e zone non hanno una chiave esterna verso il progetto
+    for (const t of ["deadhead_arcs", "coincidence_zones", "depots"]) {
+      await db.execute(sql`DELETE FROM ${sql.raw(t)} WHERE ps_project_id IN ${miei}`);
+    }
+    await db.execute(sql`DELETE FROM deadhead_arcs WHERE from_key = ${`depot:${DEP_TUTTI}`}`);
+    await db.execute(sql`DELETE FROM depots WHERE id = ${DEP_TUTTI}::uuid`);
     await db.execute(sql`DELETE FROM ps_trips WHERE project_id IN ${miei}`);
     await db.execute(sql`DELETE FROM ps_route_variants WHERE project_id IN ${miei}`);
     await db.execute(sql`DELETE FROM ps_projects WHERE id = ${SRC}::uuid OR owner_user_id = ${UTENTE}::uuid`);
@@ -143,6 +160,16 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("duplicazione di un progetto di 
       await tx.execute(sql`INSERT INTO ps_day_calendar (project_id, date, day_type_id, source, note) VALUES
                            (${SRC}::uuid, '2026-12-01', ${TG}::uuid, 'manuale', 'del progetto'), (${SRC}::uuid, '2026-12-02', ${TG_GLOBALE}::uuid, 'manuale', 'globale')`);
       await tx.execute(sql`INSERT INTO ps_validity_category_calendar (project_id, date, category_id) VALUES (${SRC}::uuid, '2026-12-03', ${CAT}::uuid)`);
+      await tx.execute(sql`INSERT INTO depots (id, name, sigla, lat, lon, ps_project_id) VALUES
+                           (${DEP}::uuid, 'Deposito del progetto', 'DP', 43.6, 13.5, ${SRC}::uuid),
+                           (${DEP_TUTTI}::uuid, 'Deposito di tutti', 'DT', 43.7, 13.6, NULL)`);
+      // due archi del progetto (andata e ritorno dal suo deposito, uno con i minuti a mano) e uno di tutti
+      await tx.execute(sql`INSERT INTO deadhead_arcs (from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, road_km, custom_min, ps_project_id) VALUES
+                           (${`depot:${DEP}`}, 'depot', 43.6, 13.5, 'stop:F3', 'terminus', 43.63, 13.53, 4.2, 11, ${SRC}::uuid),
+                           ('stop:F3', 'terminus', 43.63, 13.53, ${`depot:${DEP}`}, 'depot', 43.6, 13.5, 4.4, NULL, ${SRC}::uuid),
+                           (${`depot:${DEP_TUTTI}`}, 'depot', 43.7, 13.6, 'stop:F3', 'terminus', 43.63, 13.53, 9.1, NULL, NULL)`);
+      await tx.execute(sql`INSERT INTO coincidence_zones (name, hub_id, hub_name, hub_type, hub_lat, hub_lng, walk_minutes, ps_project_id)
+                           VALUES ('Stazione', 'nodo-1', 'Stazione', 'rail', 43.61, 13.51, 5, ${SRC}::uuid)`);
     });
   });
 
@@ -186,6 +213,23 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("duplicazione di un progetto di 
     expect(new Set(ids.map((r: any) => r.id)).size).toBe(ids.length);
     const globale = (await db.execute<any>(sql`SELECT count(*)::int AS n FROM ps_day_types WHERE code = 'CI_DUPLICA'`)).rows[0].n;
     expect(globale).toBe(1);
+  });
+
+  it("i depositi del progetto si copiano, e i fuori linea della copia puntano ai suoi; quelli di tutti restano uno", async () => {
+    const copia = copie[0]!;
+    const dep = (await db.execute<any>(sql`SELECT id::text FROM depots WHERE ps_project_id = ${copia}::uuid`)).rows;
+    expect(dep).toHaveLength(1);
+    expect(dep[0].id).toMatch(V4);
+    expect(dep[0].id).not.toBe(DEP);
+    const chiavi = (await db.execute<any>(sql`SELECT from_key, to_key FROM deadhead_arcs WHERE ps_project_id = ${copia}::uuid ORDER BY road_km`)).rows;
+    expect(chiavi).toEqual([
+      { from_key: `depot:${dep[0].id}`, to_key: "stop:F3" },
+      { from_key: "stop:F3", to_key: `depot:${dep[0].id}` },
+    ]);
+    const tutti = (await db.execute<any>(sql`SELECT
+      (SELECT count(*)::int FROM depots WHERE name = 'Deposito di tutti') AS depositi,
+      (SELECT count(*)::int FROM deadhead_arcs WHERE from_key = ${`depot:${DEP_TUTTI}`}) AS archi`)).rows[0];
+    expect(tutti).toEqual({ depositi: 1, archi: 1 });
   });
 
   it("una seconda copia, e la copia di una copia: uguali anche quelle, con id loro", async () => {

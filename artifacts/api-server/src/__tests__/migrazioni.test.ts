@@ -506,7 +506,7 @@ describe("l'API non cambia lo schema", () => {
  * FROM/JOIN maiuscoli, come si scrive l'SQL in questo codice. */
 describe("ogni tabella letta dal codice esiste nello schema", () => {
   /** Nomi dopo FROM/JOIN che non sono tabelle: tabelle temporanee, alias, lettere dei template. */
-  const NON_TABELLE = new Set(["a", "d", "f", "first_stop", "m_dt", "m_trp"]);
+  const NON_TABELLE = new Set(["a", "d", "f", "first_stop", "m_dep", "m_dt", "m_trp"]);
   const catalogo = JSON.parse(readFileSync(path.join(CARTELLA, "meta/catalogo.json"), "utf8"));
   const schema = new Set([...Object.keys(catalogo.tabelle), ...Object.keys(catalogo.viste)]);
 

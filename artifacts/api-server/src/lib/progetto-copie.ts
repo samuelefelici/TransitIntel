@@ -129,6 +129,7 @@ export async function copiaProgetto(
     await copy("ps_trip_exceptions", { projectCol: null, fks: [{ col: "trip_id", map: "m_trp" }], scope: tripScope });
     await copy("ps_no_go_zones", { genId: true, scope: byProj });
     await copy("ps_service_periods", { genId: true, scope: byProj });
+    if (!o.versioneDelFeed) await copiaDepositiEDintorni(tx, src, dst);
     // profilo calendario aziendale (PK = project_id, niente id). Su uno
     // schema non ancora migrato la tabella può mancare: copiamo solo se
     // esiste, così la transazione non abortisce.
@@ -188,6 +189,51 @@ export async function copiaProgetto(
  */
 export function idDellaCopia(progettoNuovo: string, colonna: string) {
   return sql`(overlay(overlay(substr(encode(sha256(convert_to(${progettoNuovo}::text || ':' || ${sql.raw(colonna)}::text, 'UTF8')), 'hex'), 1, 32) placing '4' from 13) placing '8' from 17))::uuid`;
+}
+
+/**
+ * Depositi, archi di fuori linea e zone di coincidenza del SOLO progetto
+ * (ps_project_id = src; quelli con ps_project_id vuoto valgono per tutti e
+ * restano condivisi). Senza, la copia di un programma non ha depositi: la
+ * pipeline dei turni macchina si ferma al passo «Deposito», e i fuori linea
+ * curati a mano si perdono.
+ *
+ * Gli archi puntano ai depositi con la chiave `depot:<id>`: nella copia
+ * puntano ai depositi copiati. Le altre chiavi (`stop:<codice del feed>`,
+ * `cluster:<id>` dei cluster dell'azienda) non dipendono dal progetto.
+ *
+ * Solo per la duplicazione chiesta dall'utente: la versione pubblicata di un
+ * programma non li copia, altrimenti ogni messa in esercizio aggiungerebbe una
+ * serie di depositi negli elenchi che li mostrano tutti.
+ */
+async function copiaDepositiEDintorni(tx: Esecutore, src: string, dst: string): Promise<void> {
+  const colonne = async (t: string): Promise<string[]> => (await tx.execute<any>(sql`
+    SELECT column_name FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = ${t} ORDER BY ordinal_position`)).rows.map((r: any) => r.column_name);
+  const mappa = sql`m_dep AS MATERIALIZED (
+    SELECT s.id AS old_id, ${idDellaCopia(dst, "s.id")} AS new_id FROM depots s WHERE s.ps_project_id = ${src}::uuid)`;
+  const sel = (cols: string[], id: string) => cols.map((c) => c === "id" ? id : c === "ps_project_id" ? `'${dst}'::uuid` : `s.${c}`).join(", ");
+
+  const dep = await colonne("depots");
+  await tx.execute(sql`
+    WITH ${mappa} INSERT INTO depots (${sql.raw(dep.join(", "))})
+    SELECT ${sql.raw(sel(dep, "m.new_id"))} FROM depots s JOIN m_dep m ON m.old_id = s.id`);
+
+  const archi = await colonne("deadhead_arcs");
+  await tx.execute(sql`
+    INSERT INTO deadhead_arcs (${sql.raw(archi.join(", "))})
+    SELECT ${sql.raw(sel(archi, "gen_random_uuid()"))} FROM deadhead_arcs s WHERE s.ps_project_id = ${src}::uuid`);
+  for (const lato of ["from_key", "to_key"] as const) {
+    await tx.execute(sql`
+      WITH ${mappa} UPDATE deadhead_arcs a SET ${sql.raw(lato)} = 'depot:' || m.new_id::text
+        FROM m_dep m
+       WHERE a.ps_project_id = ${dst}::uuid AND a.${sql.raw(lato)} = 'depot:' || m.old_id::text`);
+  }
+
+  const zone = await colonne("coincidence_zones");
+  await tx.execute(sql`
+    INSERT INTO coincidence_zones (${sql.raw(zone.join(", "))})
+    SELECT ${sql.raw(sel(zone, "gen_random_uuid()"))} FROM coincidence_zones s WHERE s.ps_project_id = ${src}::uuid`);
 }
 
 /** ps_trip_day_validity: rimappa trip_id (sempre) e day_type_id SOLO se è un
@@ -260,6 +306,13 @@ export async function cancellaProgetto(tx: Esecutore, id: string): Promise<void>
   await tx.execute(sql`DELETE FROM ps_argos_watches WHERE project_id = ${id}::uuid`);
   await tx.execute(sql`DELETE FROM ps_network_shares WHERE project_id = ${id}::uuid`);
   await tx.execute(sql`DELETE FROM ps_timetable_map_shares WHERE project_id = ${id}::uuid`);
+  //    E i depositi, i fuori linea e le zone di coincidenza del solo progetto
+  //    (ps_project_id senza chiave esterna): la duplicazione li copia, e senza
+  //    questo resterebbero negli elenchi i depositi di progetti che non ci
+  //    sono più. Quelli con ps_project_id vuoto sono di tutti e restano.
+  await tx.execute(sql`DELETE FROM deadhead_arcs WHERE ps_project_id = ${id}::uuid`);
+  await tx.execute(sql`DELETE FROM coincidence_zones WHERE ps_project_id = ${id}::uuid`);
+  await tx.execute(sql`DELETE FROM depots WHERE ps_project_id = ${id}::uuid`);
   // 4. il progetto, e a cascata tutto il resto
   await tx.execute(sql`DELETE FROM ps_projects WHERE id = ${id}::uuid`);
 }

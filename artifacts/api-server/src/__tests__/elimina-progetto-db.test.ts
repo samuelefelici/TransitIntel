@@ -51,6 +51,10 @@ const DEL_PROGETTO = [
   "ps_timetable_map_shares", "ps_trip_category_validity", "ps_trip_day_validity", "ps_trip_exceptions", "ps_trips",
   "ps_validity_category_calendar", "ps_validity_units", "ps_variant_stops",
 ];
+/* Fuori da ps_*, con i dati di un progetto in ps_project_id (senza chiave
+ * esterna; vuoto = di tutti): la duplicazione li copia, la cancellazione li
+ * toglie (PR 7.1). */
+const DEL_PROGETTO_FUORI = ["coincidence_zones", "deadhead_arcs", "depots"];
 const DI_TUTTI = ["ps_route_snap_cache", "ps_route_snap_multi_cache", "ps_validity_categories"];
 /* Quello che di un progetto cancellato deve restare: il periodo dello storico
  * del programma in esercizio (ps_activation_log.project_id è ON DELETE SET
@@ -112,6 +116,11 @@ async function semina(k: number, nome: string, ex: Esecutore = db): Promise<Retu
   await ex.execute(sql`INSERT INTO ps_argos_watches (project_id, user_id) VALUES (${i.p}::uuid, ${UTENTE}::uuid)`);
   await ex.execute(sql`INSERT INTO ps_network_shares (token, project_id, created_by) VALUES (${`ci-elimina-${k}-rete`}, ${i.p}::uuid, ${UTENTE}::uuid)`);
   await ex.execute(sql`INSERT INTO ps_timetable_map_shares (token, project_id, created_by) VALUES (${`ci-elimina-${k}-orari`}, ${i.p}::uuid, ${UTENTE}::uuid)`);
+  await ex.execute(sql`INSERT INTO depots (name, lat, lon, ps_project_id) VALUES ('Deposito di prova', 43.6, 13.5, ${i.p}::uuid)`);
+  await ex.execute(sql`INSERT INTO deadhead_arcs (from_key, from_type, from_lat, from_lon, to_key, to_type, to_lat, to_lon, ps_project_id)
+                       VALUES ('stop:A', 'terminus', 43.6, 13.5, 'stop:B', 'terminus', 43.7, 13.6, ${i.p}::uuid)`);
+  await ex.execute(sql`INSERT INTO coincidence_zones (name, hub_id, hub_name, hub_type, hub_lat, hub_lng, ps_project_id)
+                       VALUES ('Stazione', 'nodo-1', 'Stazione', 'rail', 43.61, 13.51, ${i.p}::uuid)`);
   return i;
 }
 
@@ -149,6 +158,9 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
     for (const t of ["ps_argos_watches", "ps_network_shares", "ps_timetable_map_shares"]) {
       await db.execute(sql`DELETE FROM ${sql.identifier(t)} WHERE project_id::text LIKE 'e1000000-0000-4000-8000-%'`);
     }
+    for (const t of DEL_PROGETTO_FUORI) {
+      await db.execute(sql`DELETE FROM ${sql.identifier(t)} WHERE ps_project_id IN ${miei} OR ps_project_id::text LIKE 'e1000000-0000-4000-8000-%'`);
+    }
     await db.execute(sql`DELETE FROM ps_projects WHERE ${diProva}`);
     // lo storico resta senza progetto: i periodi di prova si riconoscono dal feed
     await db.execute(sql`DELETE FROM ps_activation_log WHERE feed_id::text LIKE 'e1000000-0000-4000-8000-%'`);
@@ -175,7 +187,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
     const accanto = await semina(2, "Resta");
     const suoi = Object.values(i);
     // prima: il seme ha messo righe in tutte le tabelle di un progetto
-    expect(tabelle(await doveRestano(suoi))).toEqual(DEL_PROGETTO);
+    expect(tabelle(await doveRestano(suoi))).toEqual([...DEL_PROGETTO, ...DEL_PROGETTO_FUORI].sort());
     const accantoPrima = await doveRestano(Object.values(accanto));
 
     const r = await request(app).delete(`/api/planning-studio/projects/${i.p}`);
@@ -279,7 +291,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("cancellazione di un progetto di
         await c.query(`ALTER TABLE public.${t} ADD CONSTRAINT ${t}_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.ps_projects(id) ON DELETE CASCADE`);
       }
       const i = await semina(4, "Ordine sfavorevole", ex);
-      expect(tabelle(await doveRestano(Object.values(i), ex))).toEqual(DEL_PROGETTO);
+      expect(tabelle(await doveRestano(Object.values(i), ex))).toEqual([...DEL_PROGETTO, ...DEL_PROGETTO_FUORI].sort());
       // la sola DELETE del progetto: la ferma una delle due chiavi verso le fermate
       await c.query("SAVEPOINT sola_cascata");
       await expect(c.query("DELETE FROM public.ps_projects WHERE id = $1", [i.p])).rejects.toMatchObject({

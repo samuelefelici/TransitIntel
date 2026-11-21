@@ -644,7 +644,8 @@ export default function FucinaPage() {
   // senso solo dopo aver scelto le route in step 1).
   useEffect(() => {
     const feedId = gtfsSelection?.tempFeedId;
-    const date = gtfsSelection?.date; // YYYYMMDD
+    // il giorno scelto per le corse (quello dell'unità); in mancanza l'inizio del feed
+    const date = vehicleAssignment?.selectedDate?.replace(/-/g, "") || gtfsSelection?.date; // YYYYMMDD
     const routeIds = vehicleAssignment
       ? Array.from(vehicleAssignment.selectedRoutes.keys())
       : [];
