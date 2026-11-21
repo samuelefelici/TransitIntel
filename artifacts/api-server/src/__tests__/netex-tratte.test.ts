@@ -2,16 +2,19 @@
  * Le tratte fra due fermate col loro tracciato, per i ServiceLink del NeTEx
  * (tappa 6.42): la proiezione delle fermate sul tracciato, in ordine, il pezzo
  * di tracciato fra due fermate, le tratte uguali che diventano una, e il file
- * che ne esce passato allo schema EPIP con xmllint (se c'è: in CI sì). Dati
- * inventati.
+ * che ne esce passato allo schema EPIP con xmllint (se c'è: in CI sì). E gli
+ * avvisi del controllo del GTFS sulle fermate fuori dal tracciato (tappa
+ * 6.43). Dati inventati.
  */
 import { describe, it, expect } from "vitest";
 import { netexDaGtfs } from "../lib/netex";
 import {
-  distanzaKm, posizioniSulTracciato, posList, puntoA, stessaStrada, tracciatoDa, trattePercorso, trattoFra, ENTRO_KM,
+  distanzaDalTracciato, distanzaKm, posizioniSulTracciato, posList, puntoA, stessaStrada, tracciatoDa, trattePercorso, trattoFra, ENTRO_KM,
+  type Tratta,
 } from "../lib/netex-tratte";
 import { validaNetex } from "../lib/netex-validazione";
-import type { Gtfs } from "../lib/gtfs-verifica";
+import { rigaDelProblema, verificaGtfs, type Gtfs } from "../lib/gtfs-verifica";
+import { fermateFuoriTracciato } from "../lib/planning-studio-export";
 
 const file = (colonne: string[], righe: Array<Record<string, string | number>>) => ({ colonne, righe });
 const LAT = 45, LON = 9;
@@ -105,10 +108,32 @@ describe("Tratte: le fermate sul tracciato", () => {
     const t = tracciatoDa(forma("F", [qui(0), qui(1), qui(1, 1)]))!;
     const tratte = trattePercorso(t, [qui(0), qui(1, 0.5), qui(5, 5), qui(1, 1)]);
     expect(tratte.length).toBe(3);
-    expect(Math.abs(tratte[0]!.metri - 1500)).toBeLessThanOrEqual(3);
-    expect(tratte[0]!.punti[1]).toEqual(qui(1));
+    const prima = tratte[0] as Tratta;
+    expect(Math.abs(prima.metri - 1500)).toBeLessThanOrEqual(3);
+    expect(prima.punti[1]).toEqual(qui(1));
     expect(tratte[1]).toBeNull();
     expect(tratte[2]).toBeNull();
+  });
+
+  it("due paline vicine, la seconda appena prima della prima: tutte e due nello stesso punto, e fra le due nessuna tratta (tappa 6.43)", () => {
+    const t = tracciatoDa(forma("F", [qui(0), qui(2)]))!;
+    /* la terza fermata è 15 m prima della seconda, sull'altro lato della strada */
+    const fermate = [qui(0), qui(1), qui(0.985, -0.012), qui(2)];
+    const s = posizioniSulTracciato(t, fermate);
+    expect(s.every((x) => x != null)).toBe(true);
+    expect(s[2]).toBe(s[1]);
+    const tratte = trattePercorso(t, fermate);
+    expect(tratte[1]).toBe("stesso_punto");
+    expect(Math.abs((tratte[0] as Tratta).metri - 1000)).toBeLessThanOrEqual(2);
+    expect(Math.abs((tratte[2] as Tratta).metri - 1000)).toBeLessThanOrEqual(2);
+    /* oltre i 50 m all'indietro no: è un altro passaggio, o un ordine che non torna */
+    expect(posizioniSulTracciato(t, [qui(0), qui(1), qui(0.9), qui(2)])[2]).toBeNull();
+  });
+
+  it("la distanza di una fermata dal tracciato, dal punto più vicino", () => {
+    const t = tracciatoDa(forma("F", [qui(0), qui(1), qui(1, 1)]))!;
+    expect(distanzaDalTracciato(t, qui(0.5, 0.2))).toBeCloseTo(0.2, 3);
+    expect(distanzaDalTracciato(t, qui(1.15, 0.5))).toBeCloseTo(0.15, 3);
   });
 
   it("la stessa strada disegnata due volte è una; un'altra strada no", () => {
@@ -235,5 +260,64 @@ describe("Tratte nel NeTEx", () => {
     const esito = await validaNetex(xml);
     if (esito.stato === "senza_xmllint" && !process.env.NETEX_SCHEMA_OBBLIGATORIO) return;
     expect(esito).toEqual({ stato: "valido", errori: [] });
+  });
+});
+
+/* ── Tappa 6.43: le fermate fuori dal tracciato, nel controllo del GTFS ──── */
+
+describe("Le fermate fuori dal tracciato, nel controllo del GTFS", () => {
+  const del = (g: Gtfs, codice: string) => verificaGtfs(g, "20261115").avvisi.find((a) => a.codice === codice);
+  const conRighe = (g: Gtfs, f: string, righe: Array<Record<string, string | number>>): Gtfs => ({ ...g, [f]: { ...g[f]!, righe: [...g[f]!.righe, ...righe] } });
+
+  it("fermate sul loro tracciato: nessun avviso; e senza tracciati nemmeno", () => {
+    expect(del(RETE, "fermata_lontana_dal_tracciato")).toBeUndefined();
+    expect(del(RETE, "fermata_fuori_ordine_sul_tracciato")).toBeUndefined();
+    const { "shapes.txt": _, ...senza } = RETE;
+    const v = verificaGtfs({ ...senza, "trips.txt": { ...RETE["trips.txt"]!, righe: RETE["trips.txt"]!.righe.map((t) => ({ ...t, shape_id: "" })) } }, "20261115");
+    expect(v.avvisi.filter((a) => a.codice.includes("tracciato"))).toEqual([]);
+  });
+
+  it("una fermata a più di 100 m dal tracciato della sua corsa: avviso con la linea, la fermata e i metri", () => {
+    /* D spostata 200 m a est della fine del tracciato di R2 */
+    const g: Gtfs = { ...RETE, "stops.txt": { ...RETE["stops.txt"]!, righe: RETE["stops.txt"]!.righe.map((s) =>
+      (s.stop_id === "D" ? { ...s, stop_lat: qui(1.2, 1)[0], stop_lon: qui(1.2, 1)[1] } : s)) } };
+    const a = del(g, "fermata_lontana_dal_tracciato")!;
+    expect(a.quante).toBe(1);
+    expect(a.esempi).toEqual(["R2 · D «Fermata D»: 200 m"]);
+    expect(a.messaggio).toContain("100 m");
+    expect(rigaDelProblema(a)).toMatch(/^una fermata è a più di 100 m dal tracciato .*\(1\): R2 · D «Fermata D»: 200 m$/);
+    /* entro i 300 m la tratta c'è ancora */
+    expect(netexDaGtfs(g, OPZIONI).conteggi.tratteSenzaTracciato).toBe(1);
+  });
+
+  it("una fermata che il tracciato tocca solo prima della precedente: avviso, una volta per percorso", () => {
+    /* R1 al ritorno sul tracciato dell'andata: da C a B il tracciato va nel verso opposto */
+    let g = conRighe(RETE, "trips.txt", [
+      { route_id: "R1", service_id: "FER", trip_id: "T5", direction_id: 1, shape_id: "F1" },
+      { route_id: "R1", service_id: "FER", trip_id: "T5b", direction_id: 1, shape_id: "F1" },
+    ]);
+    g = conRighe(g, "stop_times.txt", ["T5", "T5b"].flatMap((t) => [
+      { trip_id: t, arrival_time: "08:00:00", departure_time: "08:00:00", stop_id: "C", stop_sequence: 1 },
+      { trip_id: t, arrival_time: "08:05:00", departure_time: "08:05:00", stop_id: "B", stop_sequence: 2 },
+    ]));
+    const a = del(g, "fermata_fuori_ordine_sul_tracciato")!;
+    expect(a.quante).toBe(1);
+    expect(a.esempi).toEqual(["R1 · B «Fermata B»"]);
+    expect(del(g, "fermata_lontana_dal_tracciato")).toBeUndefined();
+    /* l'export del NeTEx dice quali fermate guardare */
+    expect(fermateFuoriTracciato(verificaGtfs(g, "20261115"))).toEqual(["R1 · B «Fermata B»"]);
+  });
+
+  it("due paline vicine nell'ordine sbagliato non sono un avviso, e nel NeTEx non mancano tratte", () => {
+    /* E sta 15 m prima di B, sull'altro lato della strada: R5 fa A, B, E, C sul tracciato di R1 */
+    let g = conRighe(RETE, "stops.txt", [{ stop_id: "E", stop_code: "E1", stop_name: "Fermata E", stop_lat: qui(0.985, -0.012)[0], stop_lon: qui(0.985, -0.012)[1] }]);
+    g = conRighe(g, "routes.txt", [{ route_id: "R5", route_short_name: "R5", route_long_name: "Linea R5", route_type: 3 }]);
+    g = conRighe(g, "trips.txt", [{ route_id: "R5", service_id: "FER", trip_id: "T6", direction_id: 0, shape_id: "F1" }]);
+    g = conRighe(g, "stop_times.txt", [..."ABEC"].map((s, i) => ({ trip_id: "T6", arrival_time: `09:0${i}:00`, departure_time: `09:0${i}:00`, stop_id: s, stop_sequence: i + 1 })));
+    expect(verificaGtfs(g, "20261115").avvisi.filter((a) => a.codice.includes("tracciato"))).toEqual([]);
+    const { xml, conteggi } = netexDaGtfs(g, OPZIONI);
+    expect(conteggi.tratteSenzaTracciato).toBe(1);
+    expect(xml).toContain('<ServiceLink id="epd:IT:ITI3:ServiceLink:AZ_E-AZ_C" version="1">');
+    expect(xml).not.toContain("AZ_B-AZ_E");
   });
 });

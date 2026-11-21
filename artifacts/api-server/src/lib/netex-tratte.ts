@@ -6,6 +6,8 @@
  * percorso si proietta sul tracciato, in ordine: la fermata dopo non può
  * cadere prima di quella prima, così un percorso che ripassa sulla stessa
  * strada (andata e ritorno, anelli) mette ogni fermata sul passaggio giusto.
+ * Due fermate a pochi metri, con la seconda appena prima della prima (due
+ * paline ai lati della strada), cadono nello stesso punto (tappa 6.43).
  * Fra due fermate consecutive la tratta è il pezzo di tracciato fra le due
  * proiezioni: il punto della prima, i vertici in mezzo, il punto della
  * seconda.
@@ -16,7 +18,8 @@
  *
  * Senza tracciato, o con una fermata lontana dal tracciato (più di
  * ENTRO_KM), quella tratta non c'è: chi legge il file unisce le due fermate
- * in linea retta, come prima.
+ * in linea retta, come prima. Lo stesso controllo dà gli avvisi del GTFS
+ * sulle fermate fuori dal tracciato (lib/gtfs-verifica.ts, tappa 6.43).
  *
  * Linee guida del profilo italiano v5.0.1, par. 5.2.5.5 (ServiceLinks), e
  * Appendice A (OpenTripPlanner usa le geometrie degli archi fra le fermate).
@@ -27,6 +30,13 @@ import type { Riga } from "./gtfs-verifica";
 export const ENTRO_KM = 0.3;
 /** Le proiezioni più vicine che si tengono per fermata, fra cui scegliere quella in ordine. */
 const CANDIDATE = 8;
+/**
+ * Quanto una fermata può cadere prima della precedente (km) e restare in
+ * ordine: due paline vicine, la seconda appena prima della prima. Le due
+ * finiscono nello stesso punto. Molto meno della distanza fra due passaggi
+ * sulla stessa strada, che è di centinaia di metri.
+ */
+export const INDIETRO_KM = 0.05;
 
 /** Un tracciato: i punti (lat, lon) in ordine e la distanza percorsa a ogni punto, in km. */
 export interface Tracciato { punti: Array<[number, number]>; km: number[] }
@@ -145,7 +155,7 @@ export function posizioniSulTracciato(
       if (prima >= 0) {
         const cp = candidate[prima]!;
         for (let h = 0; h < cp.length; h++) {
-          if (cp[h]!.s <= c[k]!.s && costo[prima]![h]! < migliore) { migliore = costo[prima]![h]!; quale = h; }
+          if (cp[h]!.s <= c[k]!.s + INDIETRO_KM && costo[prima]![h]! < migliore) { migliore = costo[prima]![h]!; quale = h; }
         }
       }
       qui.push(migliore + c[k]!.d); via.push(quale);
@@ -163,7 +173,19 @@ export function posizioniSulTracciato(
     esito[i] = candidate[i]![k]!.s;
     k = da[i]![k]!;
   }
+  /* la fermata appena prima della precedente va nello stesso punto: le distanze non tornano mai indietro */
+  let fin = -Infinity;
+  for (let i = 0; i < esito.length; i++) {
+    const x = esito[i];
+    if (x == null) continue;
+    if (x < fin) esito[i] = fin; else fin = x;
+  }
   return esito;
+}
+
+/** La distanza (km) di un punto dal tracciato: dal punto più vicino, senza badare all'ordine. */
+export function distanzaDalTracciato(t: Tracciato, p: readonly [number, number]): number {
+  return t.punti.length > 1 ? distanzaDallaLinea(p, t.punti) : distanzaKm(p, t.punti[0]!);
 }
 
 /** Entro questa distanza (km) due tracciati della stessa coppia di fermate fanno la stessa strada. */
@@ -200,15 +222,16 @@ export interface Tratta { punti: Array<[number, number]>; metri: number }
 
 /**
  * Le tratte di un percorso: una per coppia di fermate consecutive (quindi una
- * meno delle fermate), null dove non c'è (fermata fuori dal tracciato, o due
- * fermate che cadono nello stesso punto).
+ * meno delle fermate). Null dove non c'è perché una delle due fermate non sta
+ * sul tracciato; «stesso_punto» dove le due fermate cadono nello stesso punto
+ * del tracciato (non c'è strada fra le due da disegnare).
  */
-export function trattePercorso(t: Tracciato, fermate: ReadonlyArray<readonly [number, number] | null>): Array<Tratta | null> {
+export function trattePercorso(t: Tracciato, fermate: ReadonlyArray<readonly [number, number] | null>): Array<Tratta | "stesso_punto" | null> {
   const s = posizioniSulTracciato(t, fermate);
-  const tratte: Array<Tratta | null> = [];
+  const tratte: Array<Tratta | "stesso_punto" | null> = [];
   for (let i = 0; i < fermate.length - 1; i++) {
     const a = s[i], b = s[i + 1];
-    tratte.push(a == null || b == null ? null : trattoFra(t, a, b));
+    tratte.push(a == null || b == null ? null : trattoFra(t, a, b) ?? "stesso_punto");
   }
   return tratte;
 }

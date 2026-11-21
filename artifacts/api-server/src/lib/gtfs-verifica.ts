@@ -16,6 +16,7 @@
  *
  * Funzioni pure, senza database: le righe sono quelle già pronte per i CSV.
  */
+import { distanzaDalTracciato, ENTRO_KM, posizioniSulTracciato, tracciatoDa, type Tracciato } from "./netex-tratte";
 
 export type Riga = Record<string, string | number | null | undefined>;
 export interface FileGtfs { colonne: string[]; righe: Riga[] }
@@ -40,6 +41,8 @@ const URL_VALIDO = /^https?:\/\/[^\s",<>]+$/;
 const TIPI_DI_LINEA = new Set([0, 1, 2, 3, 4, 5, 6, 7, 11, 12]);
 /* sopra questa velocità fra due fermate consecutive c'è un orario o una posizione sbagliata */
 const KMH_MASSIMI = 120;
+/* oltre questa distanza (km) dal tracciato della sua corsa una fermata si segnala, come fanno i validatori */
+const DISTANTE_KM = 0.1;
 
 const testo = (v: unknown): string => (v === null || v === undefined ? "" : String(v)).trim();
 const secondi = (v: unknown): number | null => {
@@ -219,6 +222,8 @@ export function verificaGtfs(g: Gtfs, oggi: string = new Date().toISOString().sl
     }
   }
 
+  verificaTracciati(righe, perCorsa, posizione, avvisi);
+
   /* quello che non usa nessuno */
   for (const s of righe("stops.txt")) {
     if (!fermateUsate.has(testo(s.stop_id))) avvisi.aggiungi("fermata_non_usata", "stops.txt", "una fermata non è servita da nessuna corsa", testo(s.stop_id));
@@ -241,6 +246,67 @@ export function verificaGtfs(g: Gtfs, oggi: string = new Date().toISOString().sl
   return { errori: errori.elenco(), avvisi: avvisi.elenco() };
 }
 
+
+/**
+ * Le fermate e il tracciato della loro corsa (tappa 6.43). Per ogni percorso
+ * (tracciato e fermate) una volta sola:
+ *  - una fermata a più di 100 m dal tracciato si segnala, come fanno i
+ *    validatori; oltre i 300 m, nel NeTEx le tratte che la toccano restano in
+ *    linea retta (lib/netex-tratte.ts);
+ *  - una fermata vicina al tracciato, ma in un punto che la corsa ha già
+ *    passato prima della fermata precedente, dice che l'ordine delle fermate o
+ *    il tracciato non tornano: anche lì il NeTEx non ha la tratta.
+ * Negli esempi la linea, la fermata col nome e, per le lontane, i metri.
+ */
+function verificaTracciati(
+  righe: (f: string) => Riga[], perCorsa: Map<string, Riga[]>, posizione: Map<string, { lat: number; lon: number }>, avvisi: Raccolta,
+): void {
+  const puntiDi = new Map<string, Riga[]>();
+  for (const r of righe("shapes.txt")) {
+    const k = testo(r.shape_id); const l = puntiDi.get(k); if (l) l.push(r); else puntiDi.set(k, [r]);
+  }
+  if (!puntiDi.size) return;
+  const nomeFermata = new Map(righe("stops.txt").map((s) => [testo(s.stop_id), testo(s.stop_name)]));
+  const nomeLinea = new Map(righe("routes.txt").map((r) => [testo(r.route_id), testo(r.route_short_name) || testo(r.route_id)]));
+  const tracciati = new Map<string, Tracciato | null>();
+  const percorsi = new Set<string>(), lontane = new Set<string>(), fuoriOrdine = new Set<string>();
+  for (const t of righe("trips.txt")) {
+    const forma = testo(t.shape_id), orari = perCorsa.get(testo(t.trip_id));
+    if (!forma || !orari || orari.length < 2) continue;
+    const fermate = orari.map((st) => testo(st.stop_id));
+    const percorso = `${forma}|${fermate.join(">")}`;
+    if (percorsi.has(percorso)) continue;
+    percorsi.add(percorso);
+    let tr = tracciati.get(forma);
+    if (tr === undefined) { const r = puntiDi.get(forma); tr = r ? tracciatoDa(r) : null; tracciati.set(forma, tr); }
+    if (!tr) continue;
+    const pos = fermate.map((f): [number, number] | null => { const p = posizione.get(f); return p ? [p.lat, p.lon] : null; });
+    const linea = nomeLinea.get(testo(t.route_id)) || testo(t.route_id);
+    const dove = (f: string) => `${linea} · ${f}${nomeFermata.get(f) ? ` «${nomeFermata.get(f)}»` : ""}`;
+    const distanze = pos.map((p) => (p ? distanzaDalTracciato(tr!, p) : null));
+    const s = posizioniSulTracciato(tr, pos);
+    fermate.forEach((f, i) => {
+      const d = distanze[i];
+      if (d == null) return;
+      if (d > DISTANTE_KM && !lontane.has(`${forma}|${f}`)) {
+        lontane.add(`${forma}|${f}`);
+        avvisi.aggiungi("fermata_lontana_dal_tracciato", "stop_times.txt",
+          `una fermata è a più di ${DISTANTE_KM * 1000} m dal tracciato della sua corsa (oltre ${ENTRO_KM * 1000} m, nel NeTEx le tratte che la toccano restano in linea retta)`,
+          `${dove(f)}: ${Math.round(d * 1000)} m`);
+      }
+      if (s[i] == null && d <= ENTRO_KM && !fuoriOrdine.has(`${percorso}|${i}`)) {
+        fuoriOrdine.add(`${percorso}|${i}`);
+        avvisi.aggiungi("fermata_fuori_ordine_sul_tracciato", "stop_times.txt",
+          "il tracciato passa da una fermata solo prima della fermata precedente: l'ordine delle fermate o il tracciato della corsa non tornano (nel NeTEx le tratte che la toccano restano in linea retta)",
+          dove(f));
+      }
+    });
+  }
+}
+
+/** Un problema in una riga, con i primi esempi: per le intestazioni dell'export e per i dati aperti. */
+export const rigaDelProblema = (p: Problema, esempi = 2): string =>
+  `${p.messaggio} (${p.quante})${p.esempi.length ? `: ${p.esempi.slice(0, esempi).join(", ")}` : ""}`;
 
 /**
  * Le tariffe (GTFS Fares v2, tappa 6.37): ogni riferimento fra i file deve

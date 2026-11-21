@@ -39,7 +39,7 @@ import { sql } from "drizzle-orm";
 import { leggiAzienda } from "./azienda";
 import { gestoriDalDatabase } from "./gestori-store";
 import { versioniDelProgetto, type Versione } from "./versioni-pubblicate";
-import { verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
+import { rigaDelProblema, verificaGtfs, type Gtfs, type EsitoVerifica } from "./gtfs-verifica";
 import type { ConteggiNetex } from "./netex";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 import { costruisciGtfs, netexDelGtfs, nomeFileNetex, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
@@ -141,7 +141,7 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     res.setHeader("X-Gtfs-Errori", String(verifica.errori.reduce((n, a) => n + a.quante, 0)));
     /* i primi avvisi, per dirli a chi scarica senza rifare il controllo */
     res.setHeader("X-Gtfs-Avvisi-Elenco", encodeURIComponent(
-      verifica.avvisi.slice(0, 5).map((a) => `${a.messaggio} (${a.quante})`).join(" · ").slice(0, 1500)));
+      verifica.avvisi.slice(0, 5).map((a) => rigaDelProblema(a)).join(" · ").slice(0, 1500)));
     res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Gtfs-Versione, X-Gtfs-Avvisi, X-Gtfs-Errori, X-Gtfs-Avvisi-Elenco");
     res.send(zipDelGtfs(gtfs));
   } catch (e: any) {
@@ -170,6 +170,11 @@ async function costruisciNetex(progetto: any, fonte: Versione, livello: 1 | 3): 
   const { xml, conteggi } = netexDelGtfs(gtfs, azienda, gestori, new Date(), perNetex);
   return { xml, conteggi, verifica: verificaGtfs(gtfs), validazione: await validaNetex(xml), nome: nomeFileNetex(azienda, livello) };
 }
+
+/** Le fermate fuori dal tracciato secondo il controllo del GTFS (tappa 6.43): al più 5, con la linea. */
+export const fermateFuoriTracciato = (v: EsitoVerifica): string[] =>
+  v.avvisi.filter((a) => a.codice === "fermata_lontana_dal_tracciato" || a.codice === "fermata_fuori_ordine_sul_tracciato")
+    .flatMap((a) => a.esempi).slice(0, 5);
 
 const rispondiNetex = (req: Request, res: Response, e: any, cosa: string) => {
   if (e instanceof SenzaCodiceNetex) { res.status(409).json({ error: e.message }); return; }
@@ -220,7 +225,9 @@ router.get("/planning-studio/projects/:id/export-netex", async (req: Request, re
     res.setHeader("X-Netex-Livello", String(livello));
     /* le coppie di fermate senza tracciato (tappa 6.42): lì chi legge il file traccia una linea retta */
     res.setHeader("X-Netex-Tratte-Senza-Tracciato", String(conteggi.tratteSenzaTracciato));
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse, X-Netex-Livello, X-Netex-Tratte-Senza-Tracciato");
+    /* e quali fermate guardare (tappa 6.43): gli esempi degli avvisi del controllo sulle fermate fuori dal tracciato */
+    res.setHeader("X-Netex-Fermate-Fuori-Tracciato", encodeURIComponent(fermateFuoriTracciato(verifica).join(" · ").slice(0, 1500)));
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse, X-Netex-Livello, X-Netex-Tratte-Senza-Tracciato, X-Netex-Fermate-Fuori-Tracciato");
     res.send(gzipSync(Buffer.from(xml, "utf8")));
   } catch (e: any) { rispondiNetex(req, res, e, "export NeTEx fallito"); }
 });

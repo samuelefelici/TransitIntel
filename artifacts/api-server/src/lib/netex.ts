@@ -235,7 +235,8 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
    * lib/netex-tratte.ts), dal tracciato della prima corsa di ogni sequenza. Una per
    * coppia di fermate e strada: se due sequenze fanno la stessa strada fra le stesse
    * fermate, la tratta è una; se ne fanno due diverse, la seconda prende «_2». Dove il
-   * tracciato manca, o non passa dalla fermata, la tratta non c'è. */
+   * tracciato manca, o non passa dalla fermata, la tratta non c'è (e si conta); fra due
+   * fermate che cadono nello stesso punto non c'è e non si conta (tappa 6.43). */
   const righeDellaForma = new Map<string, Riga[]>();
   for (const r of righe("shapes.txt")) {
     const k = testo(r.shape_id); const l = righeDellaForma.get(k); if (l) l.push(r); else righeDellaForma.set(k, [r]);
@@ -262,6 +263,8 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
     const ids = q.fermate.map((x) => testo(x.stop_id));
     const pezzi = t ? trattePercorso(t, ids.map((s) => posizioneDi.get(s) ?? null)) : ids.slice(1).map(() => null);
     tratteDellaSequenza.set(k, pezzi.map((x, i) => {
+      /* due fermate nello stesso punto del tracciato: non c'è strada da disegnare, e non manca niente */
+      if (x === "stesso_punto") return null;
       if (!x) { tratteSenzaTracciato++; return null; }
       const coppia = `${ids[i]}>${ids[i + 1]}`;
       const note = perCoppia.get(coppia) ?? [];
