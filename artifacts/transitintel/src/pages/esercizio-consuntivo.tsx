@@ -341,7 +341,7 @@ export default function ConsuntivoPage() {
                           {azione === "parziale" && (
                             <div className="space-y-1">
                               <Label htmlFor="consuntivo-km" className="text-xs">Km fatti</Label>
-                              <Input id="consuntivo-km" inputMode="decimal" className="h-8 w-24" value={kmParziale} onChange={(e) => setKmParziale(e.target.value)} placeholder="da calcolare" />
+                              <Input id="consuntivo-km" inputMode="decimal" className="h-8 w-24" value={kmParziale} onChange={(e) => setKmParziale(e.target.value)} placeholder="dall'AVM" title="Vuoto: i km fino all'ultima fermata vista dall'AVM. Senza prove dell'AVM vanno scritti." />
                             </div>
                           )}
                           <div className="space-y-1">

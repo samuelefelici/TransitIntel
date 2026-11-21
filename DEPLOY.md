@@ -2226,6 +2226,27 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Una giornata di esercizio fino al report: le parziali prendono i km dall'AVM (tappa 7.4)
+
+Prova del consuntivo su una giornata feriale intera della copia dei dati veri
+(3.501 corse), con i passaggi dell'AVM simulati come li scrive Caronte: la
+proposta (2.975 «Effettuata (AVM)», 386 non rilevate, le altre da verificare o
+parziali), la conferma in blocco, una soppressione con causale, una parziale,
+la presunzione delle non rilevate, la chiusura della giornata e il report del
+mese (regolarità corse 99,9%, km 100%, XLSX e CSV).
+
+Si rompeva una cosa: **una corsa segnata parziale senza scrivere i km fatti
+restava senza km**, e la giornata non si chiudeva («1 parziali senza i km
+fatti»), anche se il campo diceva «da calcolare». Ora, se i km non si
+scrivono, si ricavano dalle prove dell'AVM salvate con la proposta: la parte di
+percorso fino all'ultima fermata vista, misurata lungo le fermate della corsa
+nel feed congelato della giornata e applicata ai km programmati. I km scritti
+valgono loro; una corsa senza prove dell'AVM resta da scrivere, come prima.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### Simulatore e «Percorso e tariffa» partono da oggi (tappa 7.3)
 
 Terza parte della prova sui dati veri: bigliettazione (zone, simulatore,
