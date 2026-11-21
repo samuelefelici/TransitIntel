@@ -83,6 +83,11 @@ export function contenuto(f: StatoFile): string[] {
   const gestori = f.tipo === "gtfs" ? c.righe?.["agency.txt"] : c.operatori;
   if (typeof gestori === "number" && gestori > 1) out.push(`${n(gestori)} ${f.tipo === "gtfs" ? "agenzie" : "operatori"}`);
   if (f.tipo === "gtfs" && typeof c.avvisi === "number" && c.avvisi > 0) out.push(`${n(c.avvisi)} ${c.avvisi === 1 ? "avviso" : "avvisi"} del controllo`);
+  /* le tratte fra le fermate col loro tracciato (tappa 6.42), e quelle senza, che chi legge il file traccia in linea retta */
+  if (f.tipo !== "gtfs" && typeof c.tratte === "number" && c.tratte > 0) out.push(`${n(c.tratte)} ${c.tratte === 1 ? "tratta" : "tratte"} col tracciato`);
+  if (f.tipo !== "gtfs" && typeof c.tratteSenzaTracciato === "number" && c.tratteSenzaTracciato > 0) {
+    out.push(`${n(c.tratteSenzaTracciato)} ${c.tratteSenzaTracciato === 1 ? "tratta" : "tratte"} senza tracciato (in linea retta)`);
+  }
   /* il NeTEx di livello 3 (tappa 6.41): i titoli e le zone tariffarie */
   if (c.tariffe && typeof c.tariffe === "object") {
     if (n(c.tariffe.prodotti)) out.push(`${n(c.tariffe.prodotti)} ${c.tariffe.prodotti === 1 ? "titolo" : "titoli"}`);

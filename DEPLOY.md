@@ -2226,6 +2226,48 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Le geometrie dei percorsi nel NeTEx (tappa 6.42)
+
+Il NeTEx (livello 1 e livello 3, export di Planning Studio e dati aperti) ha
+ora le **tratte**: per ogni coppia di fermate consecutive di un percorso, il
+pezzo di tracciato fra le due (`ServiceLink`, linee guida 5.0.1, par.
+5.2.5.5). Senza, chi legge il file (OpenTripPlanner, i navigatori del MaaS)
+unisce le fermate in linea retta.
+
+**Come si fanno** (`lib/netex-tratte.ts`, puro)
+- Il tracciato è quello della prima corsa di ogni sequenza di fermate
+  (`shapes.txt` del GTFS consegnabile).
+- Ogni fermata si proietta sul tracciato, in ordine: la fermata dopo non cade
+  mai prima di quella prima. Così un percorso che ripassa sulla stessa strada
+  (andata e ritorno, anelli) mette ogni fermata sul passaggio giusto.
+- `shape_dist_traveled` non si usa: nei percorsi importati è quello del file
+  d'origine (in km o in metri), in quelli disegnati in Planning Studio manca.
+- Una fermata a più di 300 m dal tracciato non ci sta: le due tratte che la
+  toccano restano senza, e si contano.
+- Una tratta per coppia di fermate e strada. Se due percorsi fanno la stessa
+  strada fra le stesse fermate (tracciati entro 15 m), la tratta è una; se ne
+  fanno due diverse, la seconda prende `_2`.
+- Gli identificativi sono come quelli della Regione:
+  `epd:IT:ITI3:ServiceLink:ABC_1-ABC_10`. Il nome porta i codici delle due
+  fermate, la lunghezza è in metri, la polilinea in WGS84 «lon lat».
+- Ogni fermata dei percorsi rimanda alla tratta che ne parte
+  (`OnwardServiceLinkRef`).
+
+**Dove si vede**
+- In Amministrazione › Azienda › Dati aperti: «N tratte col tracciato» e, se
+  ce ne sono, «N tratte senza tracciato (in linea retta)».
+- Nell'export di Planning Studio il messaggio dice quante tratte sono senza
+  tracciato (intestazione `X-Netex-Tratte-Senza-Tracciato`).
+
+`FORMATO_NETEX` passa a 3: alla preparazione successiva al deploy i due NeTEx
+dei dati aperti si rifanno da soli. Il GTFS non cambia.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova (`netex*.ts`
+c'è già).
+
+**Rollback**: immagine precedente. La firma torna quella di prima, e alla
+preparazione successiva i due NeTEx dei dati aperti tornano senza tratte.
+
 ### Il NeTEx allineato alle linee guida 5.0.1 e al portale regionale (tappa 6.41)
 
 Le linee guida del profilo italiano sono passate dalla 4.0.1 alla 5.0.1. Per
@@ -2257,7 +2299,7 @@ Migrazione `0059`: il tipo `netex_l3` e l'esito `senza_tariffe` nei vincoli
 di `dati_aperti`. Nessun dato cambia.
 
 **Che cosa resta come prima**, e perché: i `ServiceLink` (le geometrie fra due
-fermate) e l'`Authority` sono facoltativi per OTP, che senza unisce le fermate
+fermate, poi fatti nella 6.42) e l'`Authority` sono facoltativi per OTP, che senza unisce le fermate
 in linea retta e mette un'autorità di base; le strutture nuove della 5.0.1 sono
 per l'accessibilità e i servizi flessibili, che Cerbero oggi non ha.
 

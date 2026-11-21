@@ -218,7 +218,9 @@ router.get("/planning-studio/projects/:id/export-netex", async (req: Request, re
     res.setHeader("X-Netex-Validazione", validazione.stato);
     res.setHeader("X-Netex-Corse", String(conteggi.corse));
     res.setHeader("X-Netex-Livello", String(livello));
-    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse, X-Netex-Livello");
+    /* le coppie di fermate senza tracciato (tappa 6.42): lì chi legge il file traccia una linea retta */
+    res.setHeader("X-Netex-Tratte-Senza-Tracciato", String(conteggi.tratteSenzaTracciato));
+    res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, X-Netex-Versione, X-Netex-Validazione, X-Netex-Corse, X-Netex-Livello, X-Netex-Tratte-Senza-Tracciato");
     res.send(gzipSync(Buffer.from(xml, "utf8")));
   } catch (e: any) { rispondiNetex(req, res, e, "export NeTEx fallito"); }
 });

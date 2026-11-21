@@ -102,7 +102,7 @@ describe("NeTEx: il file", () => {
   const { xml, conteggi } = netexDaGtfs(GTFS_DI_PROVA, OPZIONI);
 
   it("conta quello che c'è; le corse senza giorni restano fuori, e si dicono", () => {
-    expect(conteggi).toEqual({ fermate: 3, linee: 2, sequenze: 3, corse: 4, orari: 10, tipiDiGiorno: 2, giorni: 5, corseSenzaGiorni: 1, operatori: 1, tariffe: null });
+    expect(conteggi).toEqual({ fermate: 3, linee: 2, sequenze: 3, corse: 4, orari: 10, tipiDiGiorno: 2, giorni: 5, corseSenzaGiorni: 1, operatori: 1, tratte: 0, tratteSenzaTracciato: 4, tariffe: null });
     expect(xml).not.toContain("Fermata non usata");
   });
 

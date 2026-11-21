@@ -18,7 +18,9 @@
  *                                            gestori che hanno linee (6.12)
  *       SiteFrame            EU_PI_STOP      le fermate (StopPlace con una Quay)
  *       ServiceFrame         EU_PI_NETWORK   rete, linee, punti di fermata,
- *                                            assegnazioni, sequenze di fermate
+ *                                            tratte col tracciato (ServiceLink,
+ *                                            6.42), assegnazioni, sequenze di
+ *                                            fermate
  *       ServiceCalendarFrame EU_PI_CALENDAR  un ServiceCalendar: un DayType per
  *                                            servizio, il suo periodo di esercizio
  *                                            (UicOperatingPeriod coi giorni validi)
@@ -43,6 +45,7 @@
 import { createHash } from "node:crypto";
 import type { Gtfs, Riga } from "./gtfs-verifica";
 import { tariffeNetex, type ConteggiTariffeNetex, type TariffePerNetex } from "./netex-tariffe";
+import { posList, stessaStrada, tracciatoDa, trattePercorso, type Tracciato, type Tratta } from "./netex-tratte";
 
 export interface OpzioniNetex {
   /** il codice locale (NUTS) dell'identificativo: per le Marche «ITI3» */
@@ -94,6 +97,10 @@ export interface ConteggiNetex {
   corseSenzaGiorni: number;
   /** gli operatori scritti nel file: uno, se non ci sono gestori */
   operatori: number;
+  /** le tratte col tracciato (ServiceLink, tappa 6.42) */
+  tratte: number;
+  /** le coppie di fermate consecutive dei percorsi senza tracciato: lì chi legge il file traccia una linea retta */
+  tratteSenzaTracciato: number;
   /** le tariffe del livello 3; null se il file è di livello 1 */
   tariffe: ConteggiTariffeNetex | null;
 }
@@ -203,7 +210,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   for (const l of orariDi.values()) l.sort((a, b) => Number(a.stop_sequence) - Number(b.stop_sequence));
 
   /* le sequenze di fermate: per linea, direzione e fermate, con un'impronta stabile */
-  const sequenze = new Map<string, { id: string; linea: string; direzione: string; fermate: Riga[]; capolinea: string }>();
+  const sequenze = new Map<string, { id: string; linea: string; direzione: string; fermate: Riga[]; capolinea: string; forma: string }>();
   const sequenzaDi = new Map<string, string>();
   for (const t of corse) {
     const st = orariDi.get(testo(t.trip_id)) ?? [];
@@ -213,7 +220,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
     const k = `${linea}|${direzione}|${firma}`;
     if (!sequenze.has(k)) {
       const impronta = createHash("sha256").update(firma).digest("hex").slice(0, 8);
-      sequenze.set(k, { id: `${pezzoId(linea)}-${direzione}-${impronta}`, linea, direzione, fermate: st, capolinea: testo(t.trip_headsign) });
+      sequenze.set(k, { id: `${pezzoId(linea)}-${direzione}-${impronta}`, linea, direzione, fermate: st, capolinea: testo(t.trip_headsign), forma: testo(t.shape_id) });
     }
     sequenzaDi.set(testo(t.trip_id), k);
   }
@@ -223,6 +230,51 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   const lineeUsate = new Set(corseConSequenza.map((t) => testo(t.route_id)));
   const linee = righe("routes.txt").filter((r) => lineeUsate.has(testo(r.route_id)));
   const modoDellaLinea = new Map(linee.map((r) => [testo(r.route_id), modoDi(r.route_type)]));
+
+  /* Le tratte fra due fermate consecutive col loro pezzo di tracciato (tappa 6.42,
+   * lib/netex-tratte.ts), dal tracciato della prima corsa di ogni sequenza. Una per
+   * coppia di fermate e strada: se due sequenze fanno la stessa strada fra le stesse
+   * fermate, la tratta è una; se ne fanno due diverse, la seconda prende «_2». Dove il
+   * tracciato manca, o non passa dalla fermata, la tratta non c'è. */
+  const righeDellaForma = new Map<string, Riga[]>();
+  for (const r of righe("shapes.txt")) {
+    const k = testo(r.shape_id); const l = righeDellaForma.get(k); if (l) l.push(r); else righeDellaForma.set(k, [r]);
+  }
+  const tracciati = new Map<string, Tracciato | null>();
+  const posizioneDi = new Map<string, [number, number]>();
+  for (const s of fermate) {
+    const lat = Number(s.stop_lat), lon = Number(s.stop_lon);
+    if (testo(s.stop_lat) && testo(s.stop_lon) && Number.isFinite(lat) && Number.isFinite(lon)) posizioneDi.set(testo(s.stop_id), [lat, lon]);
+  }
+  const notaDellaFermata = new Map(fermate.map((s) => [testo(s.stop_id), testo(s.stop_code) || testo(s.stop_id)]));
+  const perCoppia = new Map<string, Array<{ codice: string; tratta: Tratta }>>();
+  const tratte: Array<{ codice: string; da: string; a: string; tratta: Tratta }> = [];
+  /* per sequenza, la tratta che parte da ogni fermata (null: nessuna) */
+  const tratteDellaSequenza = new Map<string, Array<string | null>>();
+  let tratteSenzaTracciato = 0;
+  for (const [k, q] of sequenze) {
+    let t = tracciati.get(q.forma);
+    if (t === undefined) {
+      const r = q.forma ? righeDellaForma.get(q.forma) : undefined;
+      t = r ? tracciatoDa(r) : null;
+      tracciati.set(q.forma, t);
+    }
+    const ids = q.fermate.map((x) => testo(x.stop_id));
+    const pezzi = t ? trattePercorso(t, ids.map((s) => posizioneDi.get(s) ?? null)) : ids.slice(1).map(() => null);
+    tratteDellaSequenza.set(k, pezzi.map((x, i) => {
+      if (!x) { tratteSenzaTracciato++; return null; }
+      const coppia = `${ids[i]}>${ids[i + 1]}`;
+      const note = perCoppia.get(coppia) ?? [];
+      const uguale = note.find((y) => stessaStrada(y.tratta, x));
+      if (uguale) return uguale.codice;
+      /* come la Regione: «[codici]_A-[codici]_B» (il prefisso dei codici davanti a A lo mette id()) */
+      const codice = `${pezzoId(ids[i])}-${davantiAiCodici}${pezzoId(ids[i + 1])}${note.length ? `_${note.length + 1}` : ""}`;
+      note.push({ codice, tratta: x });
+      perCoppia.set(coppia, note);
+      tratte.push({ codice, da: ids[i]!, a: ids[i + 1]!, tratta: x });
+      return codice;
+    }));
+  }
 
   /* Gli operatori. Senza gestori è uno, l'azienda. Coi gestori: quelli che
    * hanno almeno una linea nel file, nell'ordine dell'elenco; una linea che
@@ -319,6 +371,16 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
       + "</ScheduledStopPoint>");
   }
   p("</scheduledStopPoints>");
+  /* le tratte col tracciato (linee guida 5.0.1, par. 5.2.5.5): nome coi codici delle due
+   * fermate, lunghezza in metri, la polilinea WGS84 «lon lat» */
+  if (tratte.length) {
+    p("<serviceLinks>");
+    tratte.forEach((x, i) => p(`<ServiceLink id="${id("ServiceLink", x.codice)}" ${v}>`
+      + `<Name>${xml(`${notaDellaFermata.get(x.da)}-${notaDellaFermata.get(x.a)}`)}</Name><Distance>${x.tratta.metri}</Distance>`
+      + `<gml:LineString gml:id="L${i + 1}"><gml:posList>${posList(x.tratta.punti)}</gml:posList></gml:LineString>`
+      + `<FromPointRef ref="${id("ScheduledStopPoint", x.da)}" ${v}/><ToPointRef ref="${id("ScheduledStopPoint", x.a)}" ${v}/></ServiceLink>`));
+    p("</serviceLinks>");
+  }
   /* le zone tariffarie (livello 3): le reti urbane e i nodi delle linee extraurbane */
   if (tariffe?.zone.length) { p("<tariffZones>"); tariffe.zone.forEach(p); p("</tariffZones>"); }
   p("<stopAssignments>");
@@ -329,13 +391,15 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
   });
   p("</stopAssignments>");
   p("<journeyPatterns>");
-  for (const q of sequenze.values()) {
+  for (const [k, q] of sequenze) {
+    const avanti = tratteDellaSequenza.get(k) ?? [];
     p(`<ServiceJourneyPattern id="${id("ServiceJourneyPattern", q.id)}" ${v}>`
       + (q.capolinea ? `<Name>${xml(q.capolinea)}</Name>` : "")
       + `<RouteView><LineRef ref="${id("Line", q.linea)}" ${v}/></RouteView>`
       + "<pointsInSequence>"
       + q.fermate.map((x, i) => `<StopPointInJourneyPattern id="${id("StopPointInJourneyPattern", `${q.id}-${i + 1}`)}" ${v} order="${i + 1}">`
         + `<ScheduledStopPointRef ref="${id("ScheduledStopPoint", x.stop_id)}" ${v}/>`
+        + (avanti[i] ? `<OnwardServiceLinkRef ref="${id("ServiceLink", avanti[i])}" ${v}/>` : "")
         + `<ForAlighting>${i > 0 && String(x.drop_off_type ?? "0") !== "1"}</ForAlighting>`
         + `<ForBoarding>${i < q.fermate.length - 1 && String(x.pickup_type ?? "0") !== "1"}</ForBoarding>`
         + "</StopPointInJourneyPattern>").join("")
@@ -421,6 +485,7 @@ export function netexDaGtfs(gtfs: Gtfs, o: OpzioniNetex): { xml: string; contegg
       fermate: fermate.length, linee: linee.length, sequenze: sequenze.size, corse: corseConSequenza.length, orari,
       tipiDiGiorno: servizi.length, giorni: n, corseSenzaGiorni: corseTutte.length - corse.length,
       operatori: operatori.length,
+      tratte: tratte.length, tratteSenzaTracciato,
       tariffe: tariffe?.conteggi ?? null,
     },
   };
