@@ -132,6 +132,44 @@ export interface ExtraEvento {
  * Registra un evento e aggiorna le corse, nella stessa transazione.
  * Restituisce l'evento, la versione nuova della giornata e quante corse ha toccato.
  */
+/**
+ * I km fatti di una corsa segnata parziale senza i km scritti, dalle prove
+ * dell'AVM salvate con la proposta: la parte di percorso fino all'ultima
+ * fermata vista (`prove.ultima`, da 1), misurata lungo le fermate della corsa
+ * nel feed congelato della giornata, applicata ai km programmati. Una corsa
+ * senza prove resta senza km: si scrivono a mano, e finché mancano la
+ * giornata non si chiude.
+ */
+async function kmParzialiDalleProve(ex: any, giorno: string, chiavi: string[]): Promise<void> {
+  await ex.execute(sql`
+    WITH c AS (
+      SELECT chiave, km_prog, (prove->>'ultima')::int AS ultima
+        FROM esercizio_corse
+       WHERE giorno = ${giorno}::date AND esito = 'parziale' AND km_eff IS NULL AND km_prog > 0
+         AND jsonb_typeof(prove->'ultima') = 'number'
+         AND chiave IN (SELECT jsonb_array_elements_text(${JSON.stringify(chiavi)}::jsonb))),
+    f AS (
+      SELECT c.chiave, s.stop_lat AS lat, s.stop_lon AS lon,
+             row_number() OVER (PARTITION BY c.chiave ORDER BY st.stop_sequence) AS pos
+        FROM c
+        JOIN esercizio_giornate g ON g.giorno = ${giorno}::date
+        JOIN gtfs_stop_times st ON st.feed_id = g.feed_id AND st.trip_id = c.chiave
+        JOIN gtfs_stops s ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id),
+    d AS (
+      SELECT chiave, pos,
+             COALESCE(6371 * 2 * asin(sqrt(
+               power(sin(radians(lat - lag(lat) OVER w) / 2), 2)
+               + cos(radians(lag(lat) OVER w)) * cos(radians(lat)) * power(sin(radians(lon - lag(lon) OVER w) / 2), 2))), 0) AS tratto
+        FROM f WINDOW w AS (PARTITION BY chiave ORDER BY pos)),
+    t AS (
+      SELECT d.chiave, sum(d.tratto) FILTER (WHERE d.pos <= c.ultima) AS fatto, sum(d.tratto) AS tutto
+        FROM d JOIN c USING (chiave) GROUP BY d.chiave)
+    UPDATE esercizio_corse e
+       SET km_eff = round((c.km_prog * least(1, t.fatto / t.tutto))::numeric, 3)
+      FROM t JOIN c USING (chiave)
+     WHERE e.giorno = ${giorno}::date AND e.chiave = t.chiave AND t.tutto > 0`);
+}
+
 export async function registraEvento(giorno: string, r: Richiesta, autore: Autore, extra: ExtraEvento = {}) {
   return db.transaction(async (tx) => {
     const ex = tx as any;
@@ -169,6 +207,7 @@ export async function registraEvento(giorno: string, r: Richiesta, autore: Autor
                nota = COALESCE(${r.nota ?? null}, nota),
                confermata_da = ${autore.id}::uuid, confermata_il = now()
          WHERE giorno = ${giorno}::date AND chiave IN (SELECT jsonb_array_elements_text(${JSON.stringify(toccate)}::jsonb))`);
+      if (r.esito === "parziale" && r.kmEff == null) await kmParzialiDalleProve(ex, giorno, toccate);
       dati = { esito: r.esito, kmEff: r.kmEff ?? null, vettura: r.vettura ?? null, nota: r.nota ?? null, prima };
     } else if (r.tipo === "conferma") {
       /* le non rilevate comprendono le corse senza proposta (giornate senza AVM): la presunzione vale per tutte */
