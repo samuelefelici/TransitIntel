@@ -31,7 +31,7 @@ import { getApiBase } from "@/lib/api";
 import { useCrewOptimization, type OperatorConfig } from "@/hooks/use-crew-optimization";
 import { OperatorConfigPanel } from "@/components/OperatorConfigPanel";
 import { OptimizerRulesPanel } from "@/components/OptimizerRulesPanel";
-import { buildDefaultConfig, deepClone, SERVICE_PROFILES, type ServiceType } from "@/lib/optimizer-rules";
+import { buildDefaultConfig, deepClone, regolePerCategoria, SERVICE_PROFILES, type ServiceType } from "@/lib/optimizer-rules";
 import { resolveRuleProfile } from "@/lib/rule-profiles-api";
 import { OptimizationProgressPanel } from "@/components/OptimizationProgress";
 import InteractiveGantt, { type GanttChange, type GanttBar } from "@/components/InteractiveGantt";
@@ -137,7 +137,11 @@ export default function DriverWorkspace({
     const p = SERVICE_PROFILES[t];
     setOperatorConfig((c) => ({
       ...c,
-      bds: { ...c.bds, serviceType: t, shiftRules: deepClone(p.shiftRules), targetWork: { ...p.targetWork } },
+      bds: {
+        ...c.bds, serviceType: t, shiftRules: deepClone(p.shiftRules), targetWork: { ...p.targetWork },
+        /* misto: ogni turno con le regole della sua categoria (tappa 7.9) */
+        regolePerCategoria: t === "misto" ? regolePerCategoria() : undefined,
+      },
     }));
   }, []);
   const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -1813,9 +1817,12 @@ export default function DriverWorkspace({
                 <p className="text-[10px] text-zinc-600 mt-2">
                   {serviceType === "urbano" && "Unico 7h15 · semiunico interr. 75'–179' · spezzato max 13%."}
                   {serviceType === "extraurbano" && "Unico 8h · semiunico interr. 40'–2h59'/9h · spezzato ≥3h/10h30 (max 9%) · semiunici max 39%."}
-                  {serviceType === "misto" && "Profilo combinato (urbano+extraurbano). Logica mista dettagliata in arrivo."}
+                  {serviceType === "misto" && "Ogni turno con le regole della sua categoria: urbane per le vetture urbane, extraurbane per le extraurbane."}
                 </p>
-                {/* Media oraria giornaliera scelta dall'operatore (per deposito) */}
+                {/* Media oraria giornaliera scelta dall'operatore (per deposito); col misto vale quella di ciascuna categoria */}
+                {serviceType === "misto" ? (
+                  <p className="mt-3 text-[10px] text-zinc-500">Media oraria: quella di ciascuna categoria (urbano 6h52, extraurbano 6h42).</p>
+                ) : (
                 <div className="mt-3 flex items-center gap-2">
                   <span className="text-[11px] text-zinc-400">Media oraria giornaliera</span>
                   <input
@@ -1832,6 +1839,7 @@ export default function DriverWorkspace({
                     min = {Math.floor((operatorConfig.bds?.targetWork?.mid ?? 408) / 60)}h{String((operatorConfig.bds?.targetWork?.mid ?? 408) % 60).padStart(2, "0")}
                   </span>
                 </div>
+                )}
 
                 {/* Intensità ottimizzazione = quanti scenari il portfolio CP-SAT esplora.
                     Più scenari = più esplorazione (non più tempo: l'ottimo per scenario è già dimostrato). */}

@@ -2226,6 +2226,43 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Turni guida col profilo «misto»: ogni turno con le regole della sua categoria (tappa 7.9)
+
+Nella Fucina, il tipo di ottimizzazione **«Misto»** non è più un insieme di
+regole provvisorio («logica mista in arrivo»). Ora **ogni turno guida segue le
+regole della sua categoria**: i turni delle vetture urbane hanno le regole
+urbane (unico 7h15, semiunico 75'–179', spezzato max 13%…), quelli delle
+vetture extraurbane le regole extraurbane (unico 8h, semiunico 40'–2h59' su
+9h, spezzato ≥3h su 10h30 max 9%, semiunici max 39%…).
+
+Come lavora il calcolo (`scripts/crew_scheduler_v4.py`, `_run_misto`):
+- i turni macchina non mescolano urbano ed extraurbano, quindi i turni guida
+  si calcolano in due parti, ognuna con le sue regole e con la sua parte del
+  tempo (in proporzione ai turni macchina);
+- poi, su tutti insieme: i codici dei turni (una sola numerazione), la
+  verifica (ogni turno con le regole della sua categoria, i conteggi per
+  categoria), i cambi in linea e le auto aziendali, che restano una risorsa
+  unica col tetto dell'azienda;
+- ogni turno nel risultato dice con che regole è stato fatto (`regole`:
+  urbano o extraurbano), e il risultato ha il riepilogo `misto.perCategoria`;
+- un turno che unisce corse delle due categorie lo fa il 3° processo
+  («Turni misti»), con le regole extraurbane, come prima.
+
+Le regole di ogni categoria sono quelle dei profili Urbano ed Extraurbano; la
+web le manda in `bds.regolePerCategoria` (se mancano, il solver usa gli stessi
+valori di partenza). Nel pannello «Parametri & Regole», col misto i gruppi
+«per servizio» non si mostrano più, perché non si usano; resta la nota che lo
+spiega. Anche la media oraria è quella di ciascuna categoria.
+
+In più, ogni calcolo riparte dalle regole dei turni di partenza: prima, due
+calcoli nello stesso processo (l'orchestratore) si portavano dietro le regole
+del primo.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova (il
+lavoratore ricostruisce già quando cambia `scripts/`).
+
+**Rollback**: immagine precedente. I turni guida già salvati non cambiano.
+
 ### Roster: «Crea rotazione turni» (tappa 7.8, migrazione 0061)
 
 In Roster › Rotazioni la voce **«Crea rotazione turni»** non è più

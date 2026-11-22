@@ -86,9 +86,10 @@ export function OptimizerRulesPanel({
     [config, serviceType],
   );
 
+  /* col profilo misto le regole dei turni sono quelle di ciascuna categoria: i campi «per servizio» non si usano */
   const visibleGroups = useMemo(
-    () => RULE_GROUPS.filter((g) => showAdvanced || !g.advanced),
-    [showAdvanced],
+    () => RULE_GROUPS.filter((g) => (showAdvanced || !g.advanced) && !(serviceType === "misto" && g.serviceTypeScoped)),
+    [showAdvanced, serviceType],
   );
 
   /* ── Profili ──────────────────────────────────────────────────────────── */
@@ -223,6 +224,13 @@ export function OptimizerRulesPanel({
 
         {/* Gruppi */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+          {serviceType === "misto" && (
+            <p className="rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-[11px] leading-snug text-indigo-100">
+              Profilo misto: ogni turno segue le regole della sua categoria. I turni delle vetture urbane hanno le regole
+              urbane, quelli delle vetture extraurbane le regole extraurbane (i profili Urbano ed Extraurbano). I turni che
+              uniscono le due categorie li fa «Turni misti», con le regole extraurbane.
+            </p>
+          )}
           {visibleGroups.map((g) => {
             const mod = countModified(config, g, serviceType);
             const isOpenGroup = open[g.id] ?? false;

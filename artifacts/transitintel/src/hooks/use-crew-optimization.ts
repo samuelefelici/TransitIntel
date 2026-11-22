@@ -90,6 +90,11 @@ export interface OperatorConfig {
     /** profilo regole per tipo servizio (urbano/extraurbano/misto) */
     shiftRules?: Record<string, { maxNastro?: number; maxLavoro?: number; intMin?: number; intMax?: number; maxPct?: number; sostaMinCapolinea?: number }>;
     targetWork?: { low?: number; high?: number; mid?: number };
+    /** profilo «misto» (tappa 7.9): le regole di ogni categoria; ogni turno usa quelle della sua */
+    regolePerCategoria?: Partial<Record<"urbano" | "extraurbano", {
+      shiftRules?: Record<string, { maxNastro?: number; maxLavoro?: number; intMin?: number; intMax?: number; maxPct?: number; sostaMinCapolinea?: number }>;
+      targetWork?: { low?: number; high?: number; mid?: number };
+    }>>;
     serviceType?: "urbano" | "extraurbano" | "misto";
     prePost?: Record<string, number>;
     /** RD 131/1938 — guida continuativa (Python legge bds.rd131 con fallback cee561) */

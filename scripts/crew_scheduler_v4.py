@@ -147,6 +147,54 @@ SUPPLEMENTO_NASTRO_MAX = 150
 COLLASSA_MIN_GAP = 45  # gap minimo tra tagli per collasso
 
 
+# Le regole dei turni di partenza (optimizer_common) e le costanti derivate:
+# ogni calcolo riparte da qui (run ripetuti nello stesso processo, profilo misto).
+import copy as _copy
+_REGOLE_DI_PARTENZA = _copy.deepcopy(SHIFT_RULES)
+_DERIVATE_DI_PARTENZA = (NASTRO_INTERO_MAX, NASTRO_LUNGO_THRESHOLD, SUPPLEMENTO_NASTRO_MAX,
+                         TARGET_WORK_LOW, TARGET_WORK_HIGH, TARGET_WORK_MID)
+
+
+def _ripristina_regole() -> None:
+    """Rimette SHIFT_RULES (sul posto: è condiviso con optimizer_common) e le
+    costanti derivate ai valori di partenza, prima di applicare la config."""
+    global NASTRO_INTERO_MAX, NASTRO_LUNGO_THRESHOLD, SUPPLEMENTO_NASTRO_MAX
+    global TARGET_WORK_LOW, TARGET_WORK_HIGH, TARGET_WORK_MID
+    for tipo, valori in _copy.deepcopy(_REGOLE_DI_PARTENZA).items():
+        if isinstance(SHIFT_RULES.get(tipo), dict):
+            SHIFT_RULES[tipo].clear()
+            SHIFT_RULES[tipo].update(valori)
+        else:
+            SHIFT_RULES[tipo] = valori
+    (NASTRO_INTERO_MAX, NASTRO_LUNGO_THRESHOLD, SUPPLEMENTO_NASTRO_MAX,
+     TARGET_WORK_LOW, TARGET_WORK_HIGH, TARGET_WORK_MID) = _DERIVATE_DI_PARTENZA
+
+
+# Le regole dei turni per categoria (gli stessi profili di partenza della web,
+# lib/optimizer-rules.ts SERVICE_PROFILES): il profilo «misto» le usa per
+# turno, se la config non porta le sue in bds.regolePerCategoria.
+PROFILI_PER_CATEGORIA: dict[str, dict] = {
+    "urbano": {
+        "shiftRules": {
+            "intero": {"maxNastro": 435, "maxLavoro": 435, "sostaMinCapolinea": 15},
+            "semiunico": {"maxNastro": 555, "maxLavoro": 480, "intMin": 75, "intMax": 179, "maxPct": 12},
+            "spezzato": {"maxNastro": 630, "maxLavoro": 450, "intMin": 180, "intMax": 999, "maxPct": 13},
+            "supplemento": {"maxNastro": 150, "maxLavoro": 150},
+        },
+        "targetWork": {"low": 390, "high": 435, "mid": 412},
+    },
+    "extraurbano": {
+        "shiftRules": {
+            "intero": {"maxNastro": 480, "maxLavoro": 480, "sostaMinCapolinea": 15},
+            "semiunico": {"maxNastro": 540, "maxLavoro": 540, "intMin": 40, "intMax": 179, "maxPct": 39},
+            "spezzato": {"maxNastro": 630, "maxLavoro": 630, "intMin": 180, "intMax": 999, "maxPct": 9},
+            "supplemento": {"maxNastro": 150, "maxLavoro": 150},
+        },
+        "targetWork": {"low": 372, "high": 402, "mid": 402},
+    },
+}
+
+
 def apply_shift_rules_override(cfg: dict) -> None:
     """Permette all'utente di sovrascrivere SHIFT_RULES e costanti correlate
     da config.bds.shiftRules. Modifica le globali IN-PLACE prima di ogni run.
@@ -5199,19 +5247,13 @@ def serialize_output(
 #  MAIN
 # ═══════════════════════════════════════════════════════════════
 
-def run(raw: dict, time_limit_sec: int = 240) -> dict:
-    """Esegue il CSP su un input già parsato e RITORNA l'output (dict).
-
-    Entrypoint riusabile dall'orchestratore VCSP (vcsp_orchestrator.py).
-    main() resta il wrapper argv/stdin→stdout. I global di configurazione
-    vengono riassegnati a ogni chiamata (safe per run ripetuti in-process).
-    """
-    t_start = time.time()
-    # Il budget è una scadenza unica per tutto il calcolo, parsing compreso
-    # (vedi SOLVE_MIN_UTILE): dopo non parte più niente di nuovo.
-    scadenza = time.monotonic() + time_limit_sec
-    vehicle_shifts_raw = raw.get("vehicleShifts", [])
-    user_config = raw.get("config", {})
+def _imposta(user_config: dict, vehicle_shifts_raw: list, time_limit_sec: float,
+             silenzioso: bool = False) -> tuple[dict, list, "BDSConfig"]:
+    """Dalla config dell'utente ai globali del calcolo (regole, pesi, costi,
+    codifica): tutto quello che run() faceva prima del parsing. Le regole
+    ripartono dai valori di partenza; `silenzioso` non scrive nel log (il
+    profilo misto la chiama più volte)."""
+    _ripristina_regole()
     config = merge_config(user_config)
 
     # Codifica turni distinta per categoria (U/E/M) — evita collisioni nel misto
@@ -5255,6 +5297,8 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     apply_sosta_inoperosa_config(config)
     apply_bus_incustodito_config(config)
     rest_points = config.get("restPoints") or []
+    if silenzioso:
+        return config, clusters, bds
     log(f"=== Crew Scheduler V4 ===")
     log(f"Input: {len(vehicle_shifts_raw)} turni macchina, timeLimit={time_limit_sec}s")
     if REST_STOP_FACILITIES:
@@ -5267,6 +5311,14 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
         f"pasto={'ON' if bds.pasto.attivo else 'OFF'}")
     report_progress("init", 5, f"{len(vehicle_shifts_raw)} turni macchina")
 
+    return config, clusters, bds
+
+
+def _turni_dei_blocchi(vehicle_shifts_raw: list, config: dict, clusters: list, bds: "BDSConfig",
+                      scadenza: float) -> tuple[list, list, list]:
+    """Fasi 1-4: parsing, analisi, segmenti e ottimizzazione, con le regole
+    già impostate da _imposta. Restituisce turni (senza codici), blocchi e segmenti."""
+    global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS, SEGMENTATION_RESULT
     # ── Fase 1: Parsing ──
     global MAX_GUIDA_RIPRESA
     MAX_GUIDA_RIPRESA = int(getattr(bds.riprese, "max_guida_per_ripresa", 0) or 0)
@@ -5377,20 +5429,15 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
         SEGMENTATION_RESULT = {"winner": win_label, "variants": results, "skipped": skipped}
         log(f"[V4][PAIR-AWARE] vince: {win_label}")
 
-    # Codici aziendali (A001… mattinali, A100… pomeridiani) PRIMA di cambi e
-    # testi, che citano il codice dell'altro turno
-    assign_duty_codes(duties)
+    return duties, blocks, segments
+
+
+def _concludi(duties: list, blocks: list, segments: list, config: dict, clusters: list,
+              bds: "BDSConfig", validation: dict, t_start: float) -> dict:
+    """Fasi 6-7: cambi in linea, auto aziendali, uscita."""
     n_total = len(duties)
     n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
-    log(f"Fase 4: {n_total} turni guida ({n_total - n_suppl} principali + {n_suppl} supplementi)")
-    report_progress("duties", 70, f"{n_total} turni ({n_suppl} suppl)")
-
-    # ── Fase 5: Verifica normativa completa ──
-    validation = validate_all_bds(duties, bds, clusters)
     n_viol = validation["totalViolations"]
-    log(f"Fase 5: verifica normativa — {n_viol} violazioni su {validation['dutiesWithViolations']} turni")
-    report_progress("validate", 80, f"{n_viol} violazioni normative")
-
     # ── Fase 6: Handover & Car Pool ──
     handovers = compute_handovers(duties, clusters)
     log(f"Fase 6: {len(inline_handovers(handovers))} cambi bus in linea identificati "
@@ -5455,6 +5502,177 @@ def run(raw: dict, time_limit_sec: int = 240) -> dict:
     report_progress("done", 100, f"{n_total} turni, €{output['summary']['totalDailyCost']:.0f}/giorno")
 
     return output
+
+
+
+def run(raw: dict, time_limit_sec: int = 240) -> dict:
+    """Esegue il CSP su un input già parsato e RITORNA l'output (dict).
+
+    Entrypoint riusabile dall'orchestratore VCSP (vcsp_orchestrator.py).
+    main() resta il wrapper argv/stdin→stdout. I global di configurazione
+    vengono riassegnati a ogni chiamata (safe per run ripetuti in-process):
+    le regole dei turni ripartono ogni volta dai valori di partenza.
+
+    Con il profilo «misto» (bds.serviceType = "misto") ogni turno segue le
+    regole della sua categoria: vedi _run_misto.
+    """
+    t_start = time.time()
+    # Il budget è una scadenza unica per tutto il calcolo, parsing compreso
+    # (vedi SOLVE_MIN_UTILE): dopo non parte più niente di nuovo.
+    scadenza = time.monotonic() + time_limit_sec
+    vehicle_shifts_raw = raw.get("vehicleShifts", [])
+    user_config = raw.get("config", {})
+    if str((user_config.get("bds", {}) or {}).get("serviceType") or "").strip().lower() == "misto":
+        return _run_misto(vehicle_shifts_raw, user_config, time_limit_sec, t_start, scadenza)
+    config, clusters, bds = _imposta(user_config, vehicle_shifts_raw, time_limit_sec)
+    duties, blocks, segments = _turni_dei_blocchi(vehicle_shifts_raw, config, clusters, bds, scadenza)
+
+    # Codici aziendali (A001… mattinali, A100… pomeridiani) PRIMA di cambi e
+    # testi, che citano il codice dell'altro turno
+    assign_duty_codes(duties)
+    n_total = len(duties)
+    n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
+    log(f"Fase 4: {n_total} turni guida ({n_total - n_suppl} principali + {n_suppl} supplementi)")
+    report_progress("duties", 70, f"{n_total} turni ({n_suppl} suppl)")
+
+    # ── Fase 5: Verifica normativa completa ──
+    validation = validate_all_bds(duties, bds, clusters)
+    n_viol = validation["totalViolations"]
+    log(f"Fase 5: verifica normativa — {n_viol} violazioni su {validation['dutiesWithViolations']} turni")
+    report_progress("validate", 80, f"{n_viol} violazioni normative")
+
+    return _concludi(duties, blocks, segments, config, clusters, bds, validation, t_start)
+
+
+def _categoria_turno_macchina(vs: dict) -> str:
+    """Urbano o extraurbano: i turni macchina non mescolano le categorie."""
+    return "extraurbano" if str(vs.get("category") or "").strip().lower() == "extraurbano" else "urbano"
+
+
+def _config_della_categoria(user_config: dict, categoria: str) -> dict:
+    """La config dell'utente con le regole dei turni della categoria: i valori
+    di bds.regolePerCategoria[categoria] sopra il profilo di partenza."""
+    cfg = _copy.deepcopy(user_config or {})
+    bds = dict(cfg.get("bds") or {})
+    proprie = ((((user_config or {}).get("bds") or {}).get("regolePerCategoria") or {}).get(categoria) or {})
+    base = PROFILI_PER_CATEGORIA[categoria]
+    bds["serviceType"] = categoria
+    bds["shiftRules"] = {
+        tipo: {**valori, **(((proprie.get("shiftRules") or {}).get(tipo)) or {})}
+        for tipo, valori in base["shiftRules"].items()
+    }
+    bds["targetWork"] = {**base["targetWork"], **(proprie.get("targetWork") or {})}
+    cfg["bds"] = bds
+    return cfg
+
+
+def _unisci_validazioni(parti: list[tuple[str, dict]]) -> dict:
+    """Le verifiche delle due categorie, ognuna con le sue regole, in una."""
+    out: dict = {
+        "totalViolations": 0, "dutiesWithViolations": 0, "details": {}, "globalViolations": [],
+        "pctCaps": {"hard": bool(PCT_CAP_HARD), "toleranceShifts": PCT_CAP_TOLERANCE_SHIFTS, "relaxed": False, "byType": {}},
+        "totalWarnings": 0, "warningDetails": {}, "bdsResults": {}, "perCategoria": {},
+    }
+    for cat, v in parti:
+        out["totalViolations"] += int(v.get("totalViolations") or 0)
+        out["dutiesWithViolations"] += int(v.get("dutiesWithViolations") or 0)
+        out["totalWarnings"] += int(v.get("totalWarnings") or 0)
+        for chiave in ("details", "warningDetails", "bdsResults"):
+            out[chiave].update(v.get(chiave) or {})
+        out["globalViolations"].extend(f"{cat} — {g}" for g in (v.get("globalViolations") or []))
+        caps = v.get("pctCaps") or {}
+        out["pctCaps"]["hard"] = bool(caps.get("hard", out["pctCaps"]["hard"]))
+        out["pctCaps"]["relaxed"] = out["pctCaps"]["relaxed"] or bool(caps.get("relaxed"))
+        for tipo, c in (caps.get("byType") or {}).items():
+            out["pctCaps"]["byType"][f"{tipo} ({cat})"] = c
+        out["perCategoria"][cat] = {"totalViolations": int(v.get("totalViolations") or 0),
+                                    "dutiesWithViolations": int(v.get("dutiesWithViolations") or 0)}
+    return out
+
+
+def _run_misto(vehicle_shifts_raw: list, user_config: dict, time_limit_sec: float,
+               t_start: float, scadenza: float) -> dict:
+    """Profilo «misto»: ogni turno guida segue le regole della sua categoria.
+
+    I turni macchina non mescolano urbano ed extraurbano, quindi i turni guida
+    si calcolano in due parti: quelli dei turni macchina urbani con le regole
+    urbane, quelli degli extraurbani con le regole extraurbane, ognuna con la
+    sua parte del tempo (in proporzione ai turni macchina). Poi, su tutti
+    insieme: i codici dei turni (una sola numerazione, nessun doppione), la
+    verifica (ogni turno con le regole della sua categoria), i cambi in linea e
+    le auto aziendali, che sono una risorsa unica. Un turno che unisce corse
+    delle due categorie lo fa il 3° processo («Turni misti», crew_misto.py),
+    con le regole extraurbane.
+    """
+    global LAST_SCENARIO_RESULTS, LAST_OPTIMIZATION_ANALYSIS, SEGMENTATION_RESULT
+    parti: dict[str, list] = {"urbano": [], "extraurbano": []}
+    for vs in vehicle_shifts_raw:
+        parti[_categoria_turno_macchina(vs)].append(vs)
+    attive = [(cat, vs) for cat, vs in parti.items() if vs] or [("urbano", [])]
+    log(f"=== Profilo misto: {len(parti['urbano'])} turni macchina urbani, "
+        f"{len(parti['extraurbano'])} extraurbani — ogni turno guida con le regole della sua categoria ===")
+
+    risultati: list[dict] = []
+    for i, (cat, vs) in enumerate(attive):
+        rimasto = max(1.0, scadenza - time.monotonic())
+        resto = sum(len(v) for _, v in attive[i:]) or 1
+        quota = rimasto if i == len(attive) - 1 else max(1.0, rimasto * len(vs) / resto)
+        log(f"--- Parte {cat}: {len(vs)} turni macchina, {quota:.0f}s ---")
+        cfg = _config_della_categoria(user_config, cat)
+        config_p, clusters_p, bds_p = _imposta(cfg, vs, quota)
+        duties_p, blocks_p, segments_p = _turni_dei_blocchi(vs, config_p, clusters_p, bds_p, time.monotonic() + quota)
+        for d in duties_p:
+            d.categoria_regole = cat  # type: ignore[attr-defined]
+        risultati.append({
+            "cat": cat, "vs": vs, "cfg": cfg, "duties": duties_p, "blocks": blocks_p, "segments": segments_p,
+            "scenari": [dict(x, categoria=cat) for x in (LAST_SCENARIO_RESULTS or [])],
+            "analisi": dict(LAST_OPTIMIZATION_ANALYSIS or {}), "segmentazione": SEGMENTATION_RESULT,
+        })
+
+    # Tutti i turni insieme: i codici con la residenza di tutti i turni macchina
+    duties = [d for r in risultati for d in r["duties"]]
+    _imposta(user_config, vehicle_shifts_raw, time_limit_sec, silenzioso=True)
+    assign_duty_codes(duties)
+    n_total = len(duties)
+    n_suppl = sum(1 for d in duties if d.duty_type == "supplemento")
+    log(f"Fase 4: {n_total} turni guida ({n_total - n_suppl} principali + {n_suppl} supplementi), "
+        + ", ".join(f"{len(r['duties'])} {r['cat']}" for r in risultati))
+    report_progress("duties", 70, f"{n_total} turni ({n_suppl} suppl)")
+
+    # La verifica: ogni parte con le sue regole
+    verifiche: list[tuple[str, dict]] = []
+    for r in risultati:
+        _, clusters_p, bds_p = _imposta(r["cfg"], r["vs"], time_limit_sec, silenzioso=True)
+        verifiche.append((r["cat"], validate_all_bds(r["duties"], bds_p, clusters_p)))
+    validation = _unisci_validazioni(verifiche)
+    log(f"Fase 5: verifica normativa — {validation['totalViolations']} violazioni su "
+        f"{validation['dutiesWithViolations']} turni (ognuno con le regole della sua categoria)")
+    report_progress("validate", 80, f"{validation['totalViolations']} violazioni normative")
+
+    # Cambi in linea, auto aziendali e uscita su tutto, col tetto di auto dell'azienda
+    config, clusters, bds = _imposta(user_config, vehicle_shifts_raw, time_limit_sec, silenzioso=True)
+    principale = max(risultati, key=lambda r: len(r["vs"]))
+    LAST_SCENARIO_RESULTS = [x for r in risultati for x in r["scenari"]]
+    LAST_OPTIMIZATION_ANALYSIS = dict(principale["analisi"])
+    SEGMENTATION_RESULT = principale["segmentazione"]
+    blocks = [b for r in risultati for b in r["blocks"]]
+    segments = [sg for r in risultati for sg in r["segments"]]
+    out = _concludi(duties, blocks, segments, config, clusters, bds, validation, t_start)
+
+    categoria_di = {d.driver_id: getattr(d, "categoria_regole", None) for d in duties}
+    for s in out.get("driverShifts") or []:
+        s["regole"] = categoria_di.get(s.get("driverId"))
+    out["misto"] = {
+        "regolePerTurno": True,
+        "perCategoria": {
+            r["cat"]: {
+                "turniMacchina": len(r["vs"]), "turni": len(r["duties"]),
+                "violazioni": validation["perCategoria"].get(r["cat"], {}).get("totalViolations", 0),
+                "regole": r["cfg"]["bds"]["shiftRules"], "targetWork": r["cfg"]["bds"]["targetWork"],
+            } for r in risultati
+        },
+    }
+    return out
 
 
 def main() -> None:
