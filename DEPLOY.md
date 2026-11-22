@@ -2226,6 +2226,34 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### pnpm 10: le protezioni sulle dipendenze valgono davvero (tappa 7.16)
+
+Il progetto passa da pnpm 9.15.4 a **pnpm 10.34.9** (`packageManager`, i due
+Dockerfile, la CI che legge `packageManager`). Con pnpm 9 metà di
+`pnpm-workspace.yaml` era ignorata; ora ci sono solo impostazioni che valgono:
+- `minimumReleaseAge: 1440`: una versione nuova di una dipendenza si prende
+  solo se è uscita da almeno un giorno;
+- `onlyBuiltDependencies`: solo esbuild, @swc/core, msw e unrs-resolver
+  eseguono script all'installazione, gli altri pacchetti no;
+- `overrides`: le versioni corrette delle dipendenze indirette (7.12), spostate
+  da `package.json`.
+
+Tolte le impostazioni che non valevano e che avrebbero cambiato il
+comportamento: la rimozione dei binari delle altre piattaforme (avrebbe rotto
+l'installazione su Mac o Windows), esbuild fissato a una versione vecchia,
+`autoInstallPeers: false`.
+
+Il lockfile non cambia di una riga: le dipendenze installate sono le stesse.
+
+**Per chi lavora in locale**: serve pnpm 10 (`corepack enable`, oppure
+`npm i -g pnpm@10.34.9`). Con pnpm 9 l'installazione si ferma perché non
+legge le overrides.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova. L'immagine si
+ricostruisce con pnpm 10.
+
+**Rollback**: immagine precedente.
+
 ### La pagina delle analisi con le fermate vere (tappa 7.15)
 
 La pagina delle analisi (dashboard: fermate, popolazione coperta, aree
@@ -2308,11 +2336,9 @@ libreria vulnerabile non passa.
 - Le dipendenze indirette ferme a versioni vulnerabili sono forzate alla prima
   versione corretta con le `overrides` in `package.json` (sezione `pnpm`).
 
-**Da sapere**: con pnpm 9 (quello del progetto) le impostazioni scritte in
-`pnpm-workspace.yaml` dopo `catalog` (`overrides`, `onlyBuiltDependencies`,
-`minimumReleaseAge`, `autoInstallPeers`) **non valgono**: sono di pnpm 10. Per
-questo le overrides di sicurezza stanno in `package.json`. Passare a pnpm 10 è
-un lavoro a parte.
+**Da sapere**: con pnpm 9 le impostazioni scritte in `pnpm-workspace.yaml` dopo
+`catalog` non valevano; per questo le overrides di sicurezza erano in
+`package.json`. Dalla 7.16 (pnpm 10) stanno in `pnpm-workspace.yaml`.
 
 Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova. L'immagine si
 ricostruisce con il lockfile nuovo (`--frozen-lockfile`).
