@@ -479,7 +479,9 @@ DO $$
 DECLARE st jsonb := registro.stato();
 BEGIN
   ASSERT (st ->> 'attivo')::boolean AND st ->> 'base_giuridica' = 'prova' AND (st ->> 'anonimizza_dopo_mesi')::int = 12
-         AND jsonb_array_length(st -> 'tabelle') = 61, format('stato: %s', st);
+         AND jsonb_array_length(st -> 'tabelle') = 60, format('stato: %s', st);
+  ASSERT NOT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.agenzia_gtfs'),
+    'agenzia_gtfs, tolta dalla 0062, non è più sorvegliata';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.ruoli_diritti' AND (t ->> 'con_valori')::boolean),
     'i diritti dei ruoli (migrazione 0015): con i valori';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.azienda' AND (t ->> 'con_valori')::boolean),

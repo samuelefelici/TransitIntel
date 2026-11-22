@@ -13,7 +13,17 @@
 --   planning_analysis_results  primo modello, mai scritte né lette.
 -- Toglierle cancella i loro dati (vuote, tranne la riga già copiata nei
 -- gestori): la decisione è dell'utente, nella tappa 7.14. Restano nei backup.
+-- agenzia_gtfs era fra le tabelle sorvegliate dal registro delle modifiche
+-- (0043): esce anche da lì, altrimenti la verifica del registro la segnala
+-- come sorvegliata ma assente. Le righe già scritte nel registro restano.
 -- ══════════════════════════════════════════════════════════════════════
+DO $sorvegliate$
+BEGIN
+  IF pg_catalog.to_regclass('registro.sorvegliate') IS NOT NULL THEN
+    DELETE FROM registro.sorvegliate WHERE tabella = 'public.agenzia_gtfs';
+  END IF;
+END $sorvegliate$;
+--> statement-breakpoint
 DROP TABLE IF EXISTS public.agenzia_gtfs;
 --> statement-breakpoint
 DROP TABLE IF EXISTS public.bus_routes;
