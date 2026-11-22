@@ -145,6 +145,8 @@ export const CALCOLANO_SENZA_SCRIVERE: ReadonlyArray<readonly [string, string]> 
   ["POST", "/ai/argos/agent/chat"],
   // un agente della console: in questa fase legge e propone, non scrive su Cerbero
   ["POST", "/ai/argos/console/agenti/:chiave/esegui"],
+  // una domanda alla console col ragionamento in vista (documenti, dati, web)
+  ["POST", "/ai/argos/console/chiedi"],
   // letture di molte corse insieme: sono POST solo perché l'elenco delle corse
   // non sta in un indirizzo. Le usano la tabella Corse, i quadri orari, le
   // percorrenze e la scheda del turno guida: senza, chi legge le vede vuote.

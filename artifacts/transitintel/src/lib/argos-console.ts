@@ -9,6 +9,7 @@
  * distruttivo); ogni esecuzione lascia una traccia di eventi in ordine.
  */
 import { getApiBase } from "@/lib/api";
+import type { ArcoGrafo, NodoGrafo } from "@/lib/argos-grafo";
 
 export const EFFETTI = ["lettura", "esito", "memoria", "scrittura", "distruttivo"] as const;
 export type Effetto = (typeof EFFETTI)[number];
@@ -132,7 +133,7 @@ export const SPIEGA_EFFETTO: Record<Effetto, string> = {
 };
 export const NOMI_MODULO: Record<string, string> = {
   planning: "Planning Studio", scheduling: "Turni", territorio: "Territorio",
-  esercizio: "Esercizio", documenti: "Documenti", argos: "Argos",
+  esercizio: "Esercizio", documenti: "Documenti", argos: "Argos", web: "Web",
 };
 export const NOMI_AUTONOMIA: Record<Autonomia, string> = { osserva: "Osserva", propone: "Propone", applica: "Applica" };
 export const SPIEGA_AUTONOMIA: Record<Autonomia, string> = {
@@ -384,4 +385,149 @@ export async function esegui(
   }
   const { eventi } = spezzaSSE(buffer + "\n\n");
   for (const ev of eventi) suEvento(ev);
+}
+
+// ─── la biblioteca, le mappe, il crawler ────────────────────────────────────
+
+export interface DocumentoBiblioteca { id: number; title: string; category: string | null; created_at: string; chunks: number }
+export interface StatoCostruzione { state: "idle" | "running" | "done" | "error" | string; error?: string | null; [k: string]: unknown }
+export interface Biblioteca {
+  documenti: DocumentoBiblioteca[];
+  categorie: string[];
+  caricamenti: Partial<Record<"queued" | "running" | "done" | "error", number>>;
+  concetti: StatoCostruzione;
+  cervello: StatoCostruzione;
+  /** i conteggi veri dal DB (lo stato dei lavori si azzera a ogni riavvio di Argos); null = non disponibili */
+  totali?: { concetti: number | null; legami: number | null };
+}
+export type StatoCaricamento = "queued" | "running" | "done" | "error";
+export interface Caricamento {
+  id: number; title: string | null; category: string | null; filename: string | null;
+  status: StatoCaricamento; stage: string | null; progress: number;
+  document_id: number | null; total_chunks: number | null; error: string | null;
+  created_at: string; updated_at: string; parser?: string;
+}
+export interface ChunkDocumento { index: number; tokens: number | null; section: string | null; content: string }
+export interface DettaglioDocumento { document: { id: number; title: string; category: string | null }; total_chunks: number; chunks: ChunkDocumento[] }
+export interface MappaDati { nodes: NodoGrafo[]; edges: ArcoGrafo[]; categories: string[]; warning?: string }
+export interface LegamiDocumento {
+  document: { id: number; title: string };
+  links: Array<{ src_section: string | null; dst_document_id: number; dst_title: string; dst_section: string | null; score: number }>;
+}
+
+/** Le fasi di un caricamento, per la barra: dalla coda agli embedding. */
+export const FASI_CARICAMENTO = ["in coda", "conversione", "chunking", "embedding", "scrittura", "completato"] as const;
+
+/** A quale fase della barra corrisponde lo stato di un caricamento. */
+export function faseCaricamento(c: Pick<Caricamento, "status" | "stage" | "progress">): number {
+  if (c.status === "done") return FASI_CARICAMENTO.length - 1;
+  if (c.status === "queued") return 0;
+  const s = (c.stage ?? "").toLowerCase();
+  if (s.startsWith("conversione")) return 1;
+  if (s.startsWith("chunking")) return 2;
+  if (s.startsWith("embedding")) return 3;
+  if (s.startsWith("scrittura")) return 4;
+  if (c.progress >= 98) return 4;
+  if (c.progress >= 10) return 3;
+  return 1;
+}
+
+async function invia<T>(metodo: string, percorso: string, corpo?: unknown): Promise<T> {
+  const r = await fetch(`${getApiBase()}${percorso}`, {
+    method: metodo, credentials: "include",
+    headers: corpo === undefined ? undefined : { "Content-Type": "application/json" },
+    body: corpo === undefined ? undefined : JSON.stringify(corpo),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error((d as any)?.error || `HTTP ${r.status}`);
+  return d as T;
+}
+
+export const biblioteca = {
+  stato: () => leggiJson<Biblioteca>(`${BASE}/biblioteca`),
+  caricamenti: (limit = 30) => leggiJson<{ caricamenti: Caricamento[] }>(`${BASE}/biblioteca/caricamenti?limit=${limit}`),
+  documento: (id: number) => leggiJson<DettaglioDocumento>(`${BASE}/biblioteca/documenti/${id}?limit=60`),
+  rinomina: (id: number, title: string) => invia(`PATCH`, `${BASE}/biblioteca/documenti/${id}`, { title }),
+  categoria: (id: number, category: string | null) => invia(`PATCH`, `${BASE}/biblioteca/documenti/${id}`, { category }),
+  elimina: (id: number) => invia(`DELETE`, `${BASE}/biblioteca/documenti/${id}`),
+  riprova: (id: number) => invia(`POST`, `${BASE}/biblioteca/caricamenti/${id}/riprova`),
+  riprovaErrori: () => invia(`POST`, `${BASE}/biblioteca/caricamenti/riprova-errori`),
+  nuovaCategoria: (name: string) => invia(`POST`, `${BASE}/biblioteca/categorie`, { name }),
+  estraiConcetti: () => invia<StatoCostruzione>(`POST`, `${BASE}/biblioteca/concetti`),
+  costruisciCervello: () => invia<StatoCostruzione>(`POST`, `${BASE}/biblioteca/cervello`),
+};
+
+export const mappe = {
+  documenti: () => leggiJson<MappaDati>(`${BASE}/mappa/documenti`),
+  concetti: (limit = 120) => leggiJson<MappaDati>(`${BASE}/mappa/concetti?limit=${limit}`),
+  documento: (id: number) => leggiJson<LegamiDocumento>(`${BASE}/mappa/documento/${id}`),
+};
+
+export interface OpzioniCaricamento { category?: string; title?: string; parser?: "auto" | "mathpix" | "text" | "markdown"; page_from?: number; page_to?: number; replace?: boolean }
+
+/**
+ * Carica un file nella biblioteca, con l'avanzamento del trasferimento
+ * (fetch non lo dà: si usa XMLHttpRequest). Ritorna l'id del caricamento in coda.
+ */
+export function carica(file: File, o: OpzioniCaricamento, suAvanzamento?: (frazione: number) => void): Promise<{ job_id: number; status: string }> {
+  return new Promise((risolvi, rifiuta) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    if (o.category) form.append("category", o.category);
+    if (o.title) form.append("title", o.title);
+    form.append("parser", o.parser ?? "auto");
+    if (o.page_from) form.append("page_from", String(o.page_from));
+    if (o.page_to) form.append("page_to", String(o.page_to));
+    if (o.replace) form.append("replace", "true");
+    const x = new XMLHttpRequest();
+    x.open("POST", `${getApiBase()}${BASE}/biblioteca/carica`);
+    x.withCredentials = true;
+    x.upload.onprogress = e => { if (e.lengthComputable) suAvanzamento?.(e.loaded / e.total); };
+    x.onload = () => {
+      let d: any = {};
+      try { d = JSON.parse(x.responseText || "{}"); } catch { /* risposta non JSON */ }
+      if (x.status >= 200 && x.status < 300) risolvi(d);
+      else rifiuta(new Error(d?.error || `HTTP ${x.status}`));
+    };
+    x.onerror = () => rifiuta(new Error("Collegamento interrotto durante il caricamento"));
+    x.send(form);
+  });
+}
+
+/** Gli eventi dello stream di una domanda col ragionamento in vista. */
+export type EventoDomanda =
+  | { trace: Record<string, any> }
+  | { t: string }
+  | { reset: true }
+  | { tool: { name: string; args?: Record<string, unknown>; lato?: "server" } }
+  | { note: string }
+  | { error: string }
+  | { done: true; sources?: unknown[]; tokens?: number };
+
+/** Fa una domanda ad Argos col ragionamento in vista (documenti, dati, web). */
+export async function chiedi(domanda: string, deep: boolean, suEvento: (ev: EventoDomanda) => void, segnale?: AbortSignal): Promise<void> {
+  const r = await fetch(`${getApiBase()}${BASE}/chiedi`, {
+    method: "POST", credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ domanda, deep }),
+    signal: segnale,
+  });
+  if (!r.ok || !r.body) {
+    const d = await r.json().catch(() => ({}));
+    suEvento({ error: (d as any)?.error || `HTTP ${r.status}` });
+    return;
+  }
+  const lettore = r.body.getReader();
+  const dec = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await lettore.read();
+    if (done) break;
+    buffer += dec.decode(value, { stream: true });
+    const { eventi, resto } = spezzaSSE(buffer);
+    buffer = resto;
+    for (const ev of eventi) suEvento(ev as unknown as EventoDomanda);
+  }
+  const { eventi } = spezzaSSE(buffer + "\n\n");
+  for (const ev of eventi) suEvento(ev as unknown as EventoDomanda);
 }

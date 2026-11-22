@@ -2072,7 +2072,7 @@ Fatto finora:
   nel contesto funzionano e il guardiano su ogni chiamata, e lascia una traccia
   passo per passo (`agent_run_events`). In questa fase l'autonomia è tagliata a
   «propone»: legge e propone, non scrive su Cerbero.
-- **La console `/argos` (questa PR).** Pagina intera nel menu «Rete e orari»,
+- **#699 — la console `/argos`.** Pagina intera nel menu «Rete e orari»,
   area Rete, tema chiaro o scuro solo per la pagina (ricordato nel browser).
   Schede: Cruscotto (collegamento, numeri, consumo del mese, esecuzioni
   recenti), Squadra (agenti con fascia, autonomia, skill, prompt e strumenti;
@@ -2082,6 +2082,26 @@ Fatto finora:
   `routes/argos-console.ts`: un'esecuzione su un progetto si vede solo da chi
   apre il progetto; il token dell'utente arriva all'agente solo dopo il
   controllo d'accesso. Nessuna variabile d'ambiente nuova.
+
+- **Biblioteca, Mappa e Crawler nella console (questa PR, con argos #75).**
+  Tre schede nuove in `/argos`. *Biblioteca*: numeri (documenti, passaggi,
+  concetti e legami contati nel DB), caricamento a trascinamento con la
+  catena in sei fasi (coda, conversione, chunking, embedding, scrittura,
+  completato) aggiornata ogni 2 secondi mentre lavora, elenco dei documenti
+  con filtri e la striscia dei chunk lunghi quanto il loro testo; caricare,
+  rinominare, spostare ed eliminare solo per l'amministratore (lo controlla
+  anche il proxy). *Mappa*: documenti o concetti come rete (layout a forze
+  scritto a mano, deterministico), colore per categoria con le stesse tinte
+  della biblioteca, legami fra sezioni nel pannello, sempre anche la tabella.
+  *Crawler*: una domanda ad Argos con la traccia messa in scena in sei fasi —
+  le parole si staccano dalla domanda e volano verso i passaggi che le
+  contengono, i deboli escono, i concetti gettano ponti, i passaggi scelti
+  traslocano fra le fonti numerate, ogni frase della risposta si aggancia alla
+  sua fonte; ritmo da presentazione e schermo intero. Tutto dalla traccia vera
+  di Argos, niente inventato per l'effetto. Proxy in `routes/argos-console.ts`
+  (upload con multer avvolto da `legaContesto`, 100 MB, formati e opzioni
+  filtrati); la domanda è in `CALCOLANO_SENZA_SCRIVERE`. Nessuna variabile
+  d'ambiente nuova.
 
 ## In sospeso
 

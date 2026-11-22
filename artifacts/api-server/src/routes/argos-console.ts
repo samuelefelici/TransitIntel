@@ -19,8 +19,10 @@
  * middlewares/errori-interni.ts). I 5xx scritti qui passano da erroreLeggibile.
  */
 import { Router, type IRouter } from "express";
+import multer from "multer";
 import { mintShortLivedUserToken } from "../lib/auth";
 import { logger } from "../lib/logger";
+import { legaContesto } from "../lib/contesto-http";
 import { argosHeaders } from "../lib/argos-proxy";
 import { UUID_RE, accessoAlProgetto, progettiAccessibili, utenteDi } from "../lib/argos-progetto";
 import { erroreLeggibile } from "../middlewares/errori-interni";
@@ -30,6 +32,10 @@ const router: IRouter = Router();
 const ARGOS_URL = (process.env.ARGOS_URL || "").replace(/\/+$/, "");
 const ARGOS_CLIENT_SLUG = process.env.ARGOS_CLIENT_SLUG || "tpl-personale";
 const MAX_COMPITO = 4000;
+const MAX_DOMANDA = 4000;
+/** Un libro in PDF può essere grande; oltre, meglio dividerlo per pagine. */
+export const MAX_FILE = 100 * 1024 * 1024;
+const caricamento = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_FILE, files: 1 } });
 
 /** La chiave di un agente: minuscole, cifre e trattini (come in Argos, agenti.py). */
 export function chiaveValida(chiave: unknown): chiave is string {
@@ -227,6 +233,220 @@ router.post("/ai/argos/console/agenti/:chiave/esegui", async (req, res) => {
       // il testo dell'errore resta nel log: nello stream va un testo fisso (tappa 7.13)
       logger.error({ err: err?.message }, "Argos console: esecuzione interrotta");
       errore("Collegamento con Argos interrotto: l'esecuzione resta nell'ispettore fin dove è arrivata");
+    }
+    res.end();
+  }
+});
+
+// ─── La biblioteca ───────────────────────────────────────────────────────
+// Leggere: chi ha l'area Rete. Caricare, modificare, eliminare, ricostruire:
+// solo l'amministratore (la biblioteca è dell'azienda, non di un progetto).
+
+function soloAdmin(req: any, res: any): boolean {
+  if (req.user?.role === "admin") return true;
+  res.status(403).json({ error: "Solo l'amministratore può modificare la biblioteca di Argos" });
+  return false;
+}
+
+/** Richiesta a Argos con un corpo; risponde lui in caso d'errore e ritorna undefined. */
+async function scrivi(res: any, metodo: string, percorso: string, corpo?: unknown, params: Record<string, string | undefined> = {}): Promise<any | undefined> {
+  if (!ARGOS_URL) {
+    res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" });
+    return undefined;
+  }
+  try {
+    const r = await fetch(`${ARGOS_URL}${percorso}?${qs(params)}`, {
+      method: metodo,
+      headers: argosHeaders(corpo === undefined ? {} : { "content-type": "application/json" }),
+      body: corpo === undefined ? undefined : JSON.stringify(corpo),
+      signal: AbortSignal.timeout(20000),
+    });
+    const data: any = await r.json().catch(() => ({}));
+    if (!r.ok) { rispondiErrore(res, r.status, data?.detail); return undefined; }
+    return data;
+  } catch (err: any) {
+    irraggiungibile(res, err);
+    return undefined;
+  }
+}
+
+router.get("/ai/argos/console/biblioteca", async (_req, res) => {
+  const d = await leggi(res, "/biblioteca");
+  if (d !== undefined) res.json(d);
+});
+
+router.get("/ai/argos/console/biblioteca/caricamenti", async (req, res) => {
+  const stato = req.query.stato === undefined ? undefined : String(req.query.stato);
+  if (stato !== undefined && !["queued", "running", "done", "error"].includes(stato)) { res.status(400).json({ error: "stato non valido" }); return; }
+  const limit = String(Math.max(1, Math.min(Number(req.query.limit) || 30, 200)));
+  const d = await leggi(res, "/biblioteca/caricamenti", { stato, limit });
+  if (d !== undefined) res.json(d);
+});
+
+router.get("/ai/argos/console/biblioteca/documenti/:id", async (req, res) => {
+  if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }
+  const limit = String(Math.max(1, Math.min(Number(req.query.limit) || 30, 100)));
+  const d = await leggi(res, `/biblioteca/documenti/${req.params.id}`, { limit });
+  if (d !== undefined) res.json(d);
+});
+
+// POST /api/ai/argos/console/biblioteca/carica  (multipart: file + opzioni) → in coda su Argos
+router.post("/ai/argos/console/biblioteca/carica", (req, res, next) => {
+  if (!soloAdmin(req, res)) return;
+  legaContesto(caricamento.single("file"))(req, res, (err: any) => {
+    if (err) {
+      const troppo = err?.code === "LIMIT_FILE_SIZE";
+      res.status(troppo ? 413 : 400).json({ error: troppo ? `File oltre ${MAX_FILE / (1024 * 1024)} MB: dividilo per pagine` : "Caricamento non valido" });
+      return;
+    }
+    next();
+  });
+}, async (req: any, res) => {
+  const file = req.file as { originalname: string; buffer: Buffer; mimetype: string } | undefined;
+  if (!file) { res.status(400).json({ error: "file mancante" }); return; }
+  if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
+  const b = req.body ?? {};
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(file.buffer)], { type: file.mimetype || "application/octet-stream" }), file.originalname.slice(0, 250));
+  form.append("client_slug", ARGOS_CLIENT_SLUG);
+  for (const k of ["category", "title"]) {
+    const v = typeof b[k] === "string" ? b[k].trim().slice(0, 300) : "";
+    if (v) form.append(k, v);
+  }
+  for (const k of ["page_from", "page_to"]) {
+    if (b[k] !== undefined && b[k] !== "" && /^\d{1,5}$/.test(String(b[k]))) form.append(k, String(b[k]));
+  }
+  form.append("parser", ["auto", "mathpix", "text", "markdown"].includes(b.parser) ? b.parser : "auto");
+  form.append("replace", b.replace === "true" || b.replace === true ? "true" : "false");
+  try {
+    const r = await fetch(`${ARGOS_URL}/console/biblioteca/carica`, {
+      method: "POST", headers: argosHeaders(), body: form, signal: AbortSignal.timeout(120000),
+    });
+    const d: any = await r.json().catch(() => ({}));
+    if (!r.ok) { rispondiErrore(res, r.status, d?.detail); return; }
+    res.json(d);
+  } catch (err: any) {
+    irraggiungibile(res, err);
+  }
+});
+
+router.post("/ai/argos/console/biblioteca/caricamenti/riprova-errori", async (req, res) => {
+  if (!soloAdmin(req, res)) return;
+  const d = await scrivi(res, "POST", "/console/biblioteca/caricamenti/riprova-errori");
+  if (d !== undefined) res.json(d);
+});
+
+router.post("/ai/argos/console/biblioteca/caricamenti/:id/riprova", async (req, res) => {
+  if (!soloAdmin(req, res)) return;
+  if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }
+  const d = await scrivi(res, "POST", `/console/biblioteca/caricamenti/${req.params.id}/riprova`);
+  if (d !== undefined) res.json(d);
+});
+
+router.patch("/ai/argos/console/biblioteca/documenti/:id", async (req, res) => {
+  if (!soloAdmin(req, res)) return;
+  if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }
+  const b = req.body ?? {};
+  const corpo: Record<string, string | null> = {};
+  if (typeof b.title === "string") corpo.title = b.title.slice(0, 300);
+  if (typeof b.category === "string" || b.category === null) corpo.category = b.category === null ? null : String(b.category).slice(0, 120);
+  if (!Object.keys(corpo).length) { res.status(400).json({ error: "niente da modificare" }); return; }
+  const d = await scrivi(res, "PATCH", `/console/biblioteca/documenti/${req.params.id}`, corpo);
+  if (d !== undefined) res.json(d);
+});
+
+router.delete("/ai/argos/console/biblioteca/documenti/:id", async (req, res) => {
+  if (!soloAdmin(req, res)) return;
+  if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }
+  const d = await scrivi(res, "DELETE", `/console/biblioteca/documenti/${req.params.id}`);
+  if (d !== undefined) res.json(d);
+});
+
+router.post("/ai/argos/console/biblioteca/categorie", async (req, res) => {
+  if (!soloAdmin(req, res)) return;
+  const nome = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  if (!nome || nome.length > 120) { res.status(400).json({ error: "nome della categoria non valido" }); return; }
+  const d = await scrivi(res, "POST", "/console/biblioteca/categorie", { name: nome, client_slug: ARGOS_CLIENT_SLUG });
+  if (d !== undefined) res.json(d);
+});
+
+router.delete("/ai/argos/console/biblioteca/categorie", async (req, res) => {
+  if (!soloAdmin(req, res)) return;
+  const nome = typeof req.query.name === "string" ? req.query.name.trim() : "";
+  if (!nome || nome.length > 120) { res.status(400).json({ error: "nome della categoria non valido" }); return; }
+  const d = await scrivi(res, "DELETE", "/console/biblioteca/categorie", undefined, { name: nome });
+  if (d !== undefined) res.json(d);
+});
+
+for (const [percorso, argos] of [["concetti", "/console/biblioteca/concetti"], ["cervello", "/console/biblioteca/cervello"]] as const) {
+  router.post(`/ai/argos/console/biblioteca/${percorso}`, async (req, res) => {
+    if (!soloAdmin(req, res)) return;
+    const d = await scrivi(res, "POST", argos);
+    if (d !== undefined) res.json(d);
+  });
+}
+
+// ─── Le mappe ────────────────────────────────────────────────────────────
+// Documenti come nodi (affinità fra i loro embedding), il grafo dei concetti,
+// i collegamenti per sezione di un documento. Niente token.
+
+async function mappa(res: any, percorso: string, params: Record<string, string | undefined> = {}): Promise<void> {
+  if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
+  try {
+    const r = await fetch(`${ARGOS_URL}${percorso}?${qs(params)}`, { headers: argosHeaders(), signal: AbortSignal.timeout(30000) });
+    const d: any = await r.json().catch(() => ({}));
+    if (!r.ok) { rispondiErrore(res, r.status, d?.detail); return; }
+    res.json(d);
+  } catch (err: any) {
+    irraggiungibile(res, err);
+  }
+}
+
+router.get("/ai/argos/console/mappa/documenti", async (_req, res) => { await mappa(res, "/graph"); });
+router.get("/ai/argos/console/mappa/concetti", async (req, res) => {
+  await mappa(res, "/graph/concepts", { limit: String(Math.max(10, Math.min(Number(req.query.limit) || 120, 300))) });
+});
+router.get("/ai/argos/console/mappa/documento/:id", async (req, res) => {
+  if (!/^\d{1,12}$/.test(req.params.id)) { res.status(400).json({ error: "id non valido" }); return; }
+  await mappa(res, `/graph/doc/${req.params.id}`, { limit: "40" });
+});
+
+// ─── Il crawler: una domanda con la traccia del ragionamento ─────────────
+// POST /api/ai/argos/console/chiedi { domanda, deep? } → SSE di /chat/stream
+// con trace: retrieval (parole, candidati, scelte, ponti, concetti), testo,
+// verifica delle affermazioni. Fuori da ogni progetto: documenti, dati di
+// Cerbero, web.
+router.post("/ai/argos/console/chiedi", async (req, res) => {
+  const domanda = typeof req.body?.domanda === "string" ? req.body.domanda.trim() : "";
+  if (!domanda || domanda.length > MAX_DOMANDA) { res.status(400).json({ error: `domanda richiesta, al massimo ${MAX_DOMANDA} caratteri` }); return; }
+  if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
+  const errore = (message: string) => res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
+  const ctrl = new AbortController();
+  req.on("close", () => ctrl.abort());
+  try {
+    const upstream = await fetch(`${ARGOS_URL}/chat/stream`, {
+      method: "POST",
+      headers: argosHeaders({ "content-type": "application/json" }),
+      body: JSON.stringify({ client_slug: ARGOS_CLIENT_SLUG, question: domanda, trace: true, deep: req.body?.deep === true, history: [] }),
+      signal: ctrl.signal,
+    });
+    if (!upstream.ok || !upstream.body) {
+      const d: any = await upstream.json().catch(() => ({}));
+      errore(traduci(upstream.status, d?.detail).testo);
+      res.end();
+      return;
+    }
+    for await (const chunk of upstream.body as any) res.write(chunk);
+    res.end();
+  } catch (err: any) {
+    if (err?.name !== "AbortError") {
+      logger.error({ err: err?.message }, "Argos console: domanda interrotta");
+      errore("Collegamento con Argos interrotto");
     }
     res.end();
   }
