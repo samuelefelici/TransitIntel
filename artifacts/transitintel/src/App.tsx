@@ -50,6 +50,7 @@ function lazyWithRetry<T extends { default: React.ComponentType<any> }>(
 // Lazy-loaded pages — each is code-split into its own chunk
 const LoginPage = lazyWithRetry(() => import("@/pages/login"));
 const OggiPage = lazyWithRetry(() => import("@/pages/oggi"));
+const ArgosPage = lazyWithRetry(() => import("@/pages/argos"));
 const Dashboard = lazyWithRetry(() => import("@/pages/dashboard"));
 const OperationsPage = lazyWithRetry(() => import("@/pages/operations"));
 const TimetablesPage = lazyWithRetry(() => import("@/pages/timetables"));
@@ -300,6 +301,9 @@ function Router() {
             </Route>
             {/* Intermodale: sezione di progetto (/planning-studio/:id/intermodal) */}
             <Route path="/intermodal"><Redirect to="/planning-studio" replace /></Route>
+            <Route path="/argos">
+              <Gated perm={AREE_PAGINA["/argos"]}><ArgosPage /></Gated>
+            </Route>
             <Route path="/coincidence-zones">
               <Gated perm={AREE_PAGINA["/coincidence-zones"]}><CoincidenceZonesPage /></Gated>
             </Route>

@@ -9,6 +9,7 @@ import { sql } from "drizzle-orm";
 import { mintShortLivedUserToken } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { argosHeaders, argosProxyConfigured } from "../lib/argos-proxy";
+import { UUID_RE, accessoAlProgetto, utenteDi } from "../lib/argos-progetto";
 
 const router: IRouter = Router();
 
@@ -22,33 +23,9 @@ const router: IRouter = Router();
 // ─────────────────────────────────────────────────────────────
 const ARGOS_URL = (process.env.ARGOS_URL || "").replace(/\/+$/, "");
 const ARGOS_CLIENT_SLUG = process.env.ARGOS_CLIENT_SLUG || "tpl-personale";
-const UUID_RE = /^[0-9a-f-]{36}$/i;
-
-function getUserId(req: any): string | null {
-  return req?.session?.userId ?? req?.user?.id ?? null;
-}
-
-/** Ritorna la riga del progetto se l'utente vi ha accesso (owner/membro o
- *  progetto messo in esercizio), altrimenti null. Stesso criterio delle altre
- *  rotte Planning Studio (vedi planning-studio-network.ts:loadProject). */
-async function loadProjectAccess(projectId: string, userId: string): Promise<any | null> {
-  const r = await db.execute(sql`
-    SELECT p.id
-      FROM ps_projects p
-      LEFT JOIN ps_project_members pm
-             ON pm.project_id = p.id AND pm.user_id = ${userId}::uuid
-     WHERE p.id = ${projectId}::uuid
-       AND (
-         p.owner_user_id = ${userId}::uuid
-         OR pm.user_id IS NOT NULL
-         OR (p.materialized_feed_id IS NOT NULL
-             AND EXISTS (SELECT 1 FROM gtfs_feeds gf
-                          WHERE gf.id = p.materialized_feed_id AND gf.is_active = true))
-       )
-     LIMIT 1
-  `);
-  return (r as any).rows?.[0] ?? null;
-}
+// Accesso ai progetti: lo stesso criterio per il pannello e per la console (lib/argos-progetto.ts).
+const getUserId = utenteDi;
+const loadProjectAccess = accessoAlProgetto;
 
 // ─────────────────────────────────────────────────────────────
 // GET /api/ai/argos/health → configurazione (URL Argos + raggiungibilità)

@@ -2066,6 +2066,22 @@ Fatto finora:
   i sorgenti impedisce di aggiungerne una senza. Ordine di distribuzione in
   DEPLOY.md, «Argos: il segreto del proxy»: segreto in entrambi i servizi,
   prima Cerbero, poi Argos.
+- **argos #70 e #71 — agenti, skill ed esecuzione con traccia.** Gli agenti
+  (Pianificatore, Analista, Sentinella) e 11 skill versionate stanno nel DB di
+  Argos; un agente gira da solo col prompt delle sue skill, gli strumenti che
+  nel contesto funzionano e il guardiano su ogni chiamata, e lascia una traccia
+  passo per passo (`agent_run_events`). In questa fase l'autonomia è tagliata a
+  «propone»: legge e propone, non scrive su Cerbero.
+- **La console `/argos` (questa PR).** Pagina intera nel menu «Rete e orari»,
+  area Rete, tema chiaro o scuro solo per la pagina (ricordato nel browser).
+  Schede: Cruscotto (collegamento, numeri, consumo del mese, esecuzioni
+  recenti), Squadra (agenti con fascia, autonomia, skill, prompt e strumenti;
+  biblioteca delle skill), Lavora (un agente in diretta, con o senza progetto),
+  Ispettore (traccia, tempi per strumento, rifiuti del guardiano, proposte),
+  Capacità (il registro e la regola del guardiano). Proxy
+  `routes/argos-console.ts`: un'esecuzione su un progetto si vede solo da chi
+  apre il progetto; il token dell'utente arriva all'agente solo dopo il
+  controllo d'accesso. Nessuna variabile d'ambiente nuova.
 
 ## In sospeso
 
