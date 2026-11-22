@@ -2226,6 +2226,27 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### La pagina delle analisi con le fermate vere (tappa 7.15)
+
+La pagina delle analisi (dashboard: fermate, popolazione coperta, aree
+scoperte) leggeva le fermate da `bus_stops`, una tabella del primo modello di
+dati sempre vuota: mostrava 0 fermate, copertura 0% e ogni sezione di
+censimento popolosa come «scoperta». Ora usa le fermate del **feed in
+esercizio** (se non ce n'è uno, il più recente), lo stesso per tutti.
+- Sulla copia di produzione: 3.901 fermate invece di 0.
+- La copertura si calcola sulle sezioni di censimento caricate (Territorio): con
+  3.000 sezioni il calcolo prende circa mezzo secondo, e resta in cache 60 s.
+
+La migrazione **0063** toglie `bus_stops`, ma solo se è vuota: se in
+produzione avesse delle righe resta com'è, e il log dell'avvio lo dice («bus_stops
+ha delle righe: resta com'è»).
+
+**Dopo il deploy**: aprire la pagina delle analisi e guardare il numero delle
+fermate e la copertura. Se la copertura è 0, mancano le sezioni di censimento
+(Territorio).
+
+**Rollback**: immagine precedente (la pagina torna a 0 fermate).
+
 ### Le tabelle che non usa più nessuno (tappa 7.14)
 
 Dall'inventario delle 174 tabelle di Cerbero (API, lavoratore, script Python,

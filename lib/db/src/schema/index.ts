@@ -42,16 +42,6 @@ export const pointsOfInterest = pgTable("points_of_interest", {
   index("idx_poi_category").on(t.category),
 ]);
 
-export const busStops = pgTable("bus_stops", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  code: text("code").unique(),
-  name: text("name").notNull(),
-  lng: doublePrecision("lng").notNull(),
-  lat: doublePrecision("lat").notNull(),
-  lines: text("lines").array().default([]),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
-
 export const gtfsFeeds = pgTable("gtfs_feeds", {
   id: uuid("id").primaryKey().defaultRandom(),
   filename: text("filename").notNull(),
@@ -660,7 +650,6 @@ export const gtfsFeedInfo = pgTable("gtfs_feed_info", {
 export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
 export type PointOfInterest = typeof pointsOfInterest.$inferSelect;
-export type BusStop = typeof busStops.$inferSelect;
 export type GtfsFeed = typeof gtfsFeeds.$inferSelect;
 export type GtfsStop = typeof gtfsStops.$inferSelect;
 export type GtfsRoute = typeof gtfsRoutes.$inferSelect;

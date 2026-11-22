@@ -61,5 +61,6 @@
   "0059_netex_livello_3_fra_i_dati_aperti": "6f0ef052b7af204d00b788d0aee4e57e1f158c1a66c47865e7b1fc00cd9399d8",
   "0060_dati_aperti_scaduti": "045e323cbdab4d287a58f87800847d7d5207d31faacd672a11b6644792b0a9c1",
   "0061_rotazione_dei_turni": "8b7ea56246485e0b2b6b823c020ad4923609e7097babeaa320d3684fa3375e0c",
-  "0062_tabelle_non_usate": "8fb52480aaa4d1e2f29e9476895cd4e300dbbf1a04113a48f6211e5275983aa2"
+  "0062_tabelle_non_usate": "8fb52480aaa4d1e2f29e9476895cd4e300dbbf1a04113a48f6211e5275983aa2",
+  "0063_bus_stops_non_usata": "b78aa4b3923fd5c0c55c4cc0e06f6d3a31184f5755c5ce770278f039aad2a69f"
 }
