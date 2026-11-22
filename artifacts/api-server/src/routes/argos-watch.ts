@@ -21,6 +21,7 @@ import { hasProjectAccess } from "./argos-context";
 import { mintTokenServizio } from "../lib/auth";
 import { cronDeiDati, cronDiArgos } from "../lib/segreto-cron";
 import { logger } from "../lib/logger";
+import { argosHeaders } from "../lib/argos-proxy";
 
 const ARGOS_URL = (process.env.ARGOS_URL || "").replace(/\/+$/, "");
 const ARGOS_CLIENT_SLUG = process.env.ARGOS_CLIENT_SLUG || "tpl-personale";
@@ -115,7 +116,7 @@ async function drainSse(path: string, body: any, timeoutMs: number): Promise<Rec
   try {
     const upstream = await fetch(`${ARGOS_URL}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -154,7 +155,7 @@ async function drainSse(path: string, body: any, timeoutMs: number): Promise<Rec
 async function runOldestActiveGoal(projectId: string, userId: string): Promise<{ goal?: any; error?: string } | null> {
   try {
     const r = await fetch(`${ARGOS_URL}/agent/goals?project_id=${encodeURIComponent(projectId)}`,
-                          { signal: AbortSignal.timeout(15000) });
+                          { headers: argosHeaders(), signal: AbortSignal.timeout(15000) });
     const d: any = await r.json().catch(() => ({}));
     const goals: any[] = (d?.goals || []).filter((g: any) => g.status === "active");
     if (goals.length === 0) return null;
