@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { busStops, censusSections, pointsOfInterest, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, gtfsShapes, isochroneCache } from "@workspace/db/schema";
+import { censusSections, pointsOfInterest, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, gtfsShapes, isochroneCache } from "@workspace/db/schema";
 import { sql, count, inArray, and, eq } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
 import { leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
@@ -10,6 +10,19 @@ import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
+/**
+ * Il feed delle analisi: quello in esercizio, o se non ce n'è uno il più
+ * recente (tappa 7.15). Lo stesso per tutti: le risposte di queste rotte
+ * stanno in una cache comune, per indirizzo. Prima le fermate venivano da
+ * bus_stops, una tabella del primo modello di dati sempre vuota: zero fermate,
+ * copertura 0% e ogni sezione popolosa «scoperta».
+ */
+async function feedDelleAnalisi(): Promise<string | null> {
+  const r = await db.execute<{ id: string }>(sql`
+    SELECT id::text AS id FROM gtfs_feeds ORDER BY is_active DESC, uploaded_at DESC NULLS LAST LIMIT 1`);
+  return r.rows[0]?.id ?? null;
+}
+
 // Underserved areas: high demand (census/POI) with no stop nearby
 // Uses real geographic points only — no synthetic grid
 router.get("/analysis/underserved", cache({ ttlSeconds: 3600 }), async (req, res) => {
@@ -18,7 +31,10 @@ router.get("/analysis/underserved", cache({ ttlSeconds: 3600 }), async (req, res
     const minScore = parseFloat((req.query.minScore as string) || "0.25");
     const LOOKUP = 0.025; // ~2.5km
 
-    const stops = await db.select({ lng: busStops.lng, lat: busStops.lat, id: busStops.id }).from(busStops);
+    const feedId = await feedDelleAnalisi();
+    const stops = feedId
+      ? await db.select({ lng: gtfsStops.stopLon, lat: gtfsStops.stopLat, id: gtfsStops.id }).from(gtfsStops).where(eq(gtfsStops.feedId, feedId))
+      : [];
     const pois = await db.select({ lng: pointsOfInterest.lng, lat: pointsOfInterest.lat, category: pointsOfInterest.category }).from(pointsOfInterest);
     const sections = await db.select({
       lng: censusSections.centroidLng,
@@ -93,7 +109,8 @@ router.get("/analysis/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
       FROM traffic_snapshots
     `);
     const poiResult = await db.execute(sql`SELECT COUNT(*)::int as total FROM points_of_interest`);
-    const stopsResult = await db.execute(sql`SELECT COUNT(*)::int as total FROM bus_stops`);
+    const feedId = await feedDelleAnalisi();
+    const stopsResult = await db.execute(sql`SELECT COUNT(*)::int as total FROM gtfs_stops WHERE feed_id = ${feedId}::uuid`);
     const popResult = await db.execute(sql`SELECT COALESCE(SUM(population),0)::int as total FROM census_sections`);
 
     const tRow = (trafficResult.rows as any[])[0] ?? {};
@@ -112,10 +129,10 @@ router.get("/analysis/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
         COUNT(*)::int as total_sections
       FROM census_sections c
       WHERE EXISTS (
-        SELECT 1 FROM bus_stops s
-        WHERE (
-          (s.lng - c.centroid_lng)^2 * (111000 * cos(radians(c.centroid_lat)))^2 +
-          (s.lat - c.centroid_lat)^2 * 111000^2
+        SELECT 1 FROM gtfs_stops s
+        WHERE s.feed_id = ${feedId}::uuid AND (
+          (s.stop_lon - c.centroid_lng)^2 * (111000 * cos(radians(c.centroid_lat)))^2 +
+          (s.stop_lat - c.centroid_lat)^2 * 111000^2
         ) < (600 * 600)
       )
     `);
@@ -128,10 +145,10 @@ router.get("/analysis/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
       SELECT COUNT(*)::int as n FROM census_sections c
       WHERE c.population > 3000
       AND NOT EXISTS (
-        SELECT 1 FROM bus_stops s
-        WHERE (
-          (s.lng - c.centroid_lng)^2 * (111000 * cos(radians(c.centroid_lat)))^2 +
-          (s.lat - c.centroid_lat)^2 * 111000^2
+        SELECT 1 FROM gtfs_stops s
+        WHERE s.feed_id = ${feedId}::uuid AND (
+          (s.stop_lon - c.centroid_lng)^2 * (111000 * cos(radians(c.centroid_lat)))^2 +
+          (s.stop_lat - c.centroid_lat)^2 * 111000^2
         ) < (800 * 800)
       )
     `);

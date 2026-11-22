@@ -442,6 +442,13 @@
       "when": 1798400000000,
       "tag": "0062_tabelle_non_usate",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "7",
+      "when": 1798500000000,
+      "tag": "0063_bus_stops_non_usata",
+      "breakpoints": true
     }
   ]
 }

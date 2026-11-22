@@ -42,8 +42,6 @@
   "public.agent_optimize_jobs_pkey": "CREATE UNIQUE INDEX agent_optimize_jobs_pkey ON public.agent_optimize_jobs USING btree (id)",
   "public.app_settings_pkey": "CREATE UNIQUE INDEX app_settings_pkey ON public.app_settings USING btree (key)",
   "public.azienda_pkey": "CREATE UNIQUE INDEX azienda_pkey ON public.azienda USING btree (unica)",
-  "public.bus_stops_code_unique": "CREATE UNIQUE INDEX bus_stops_code_unique ON public.bus_stops USING btree (code)",
-  "public.bus_stops_pkey": "CREATE UNIQUE INDEX bus_stops_pkey ON public.bus_stops USING btree (id)",
   "public.categorie_catalogo_pkey": "CREATE UNIQUE INDEX categorie_catalogo_pkey ON public.categorie_catalogo USING btree (categoria)",
   "public.categorie_catalogo_una_predefinita": "CREATE UNIQUE INDEX categorie_catalogo_una_predefinita ON public.categorie_catalogo USING btree (predefinita) WHERE predefinita",
   "public.census_sections_istat_code_unique": "CREATE UNIQUE INDEX census_sections_istat_code_unique ON public.census_sections USING btree (istat_code)",
@@ -689,15 +687,6 @@
    "turni_guida_pomeriggio_da": "integer | null |  |  | ",
    "unica": "boolean | not null | true |  | ",
    "zoom": "real | not null |  |  | "
-  },
-  "public.bus_stops": {
-   "code": "text | null |  |  | ",
-   "created_at": "timestamp with time zone | null | now() |  | ",
-   "id": "uuid | not null | gen_random_uuid() |  | ",
-   "lat": "double precision | not null |  |  | ",
-   "lines": "text[] | null | '{}'::text[] |  | ",
-   "lng": "double precision | not null |  |  | ",
-   "name": "text | not null |  |  | "
   },
   "public.categorie_catalogo": {
    "categoria": "text | not null |  |  | ",
@@ -2558,8 +2547,6 @@
   "public.azienda.azienda_turni_guida_pomeriggio_da": "CHECK (((turni_guida_pomeriggio_da >= 1) AND (turni_guida_pomeriggio_da <= 1439)))",
   "public.azienda.azienda_una_riga": "CHECK (unica)",
   "public.azienda.azienda_zoom": "CHECK (((zoom >= (3)::double precision) AND (zoom <= (18)::double precision)))",
-  "public.bus_stops.bus_stops_code_unique": "UNIQUE (code)",
-  "public.bus_stops.bus_stops_pkey": "PRIMARY KEY (id)",
   "public.categorie_catalogo.categorie_catalogo_categoria": "CHECK ((categoria ~ '^[a-z][a-z0-9_]{1,39}$'::text))",
   "public.categorie_catalogo.categorie_catalogo_nome": "CHECK ((((char_length(btrim(nome)) >= 1) AND (char_length(btrim(nome)) <= 120)) AND (nome !~ '[[:cntrl:]\"]'::text)))",
   "public.categorie_catalogo.categorie_catalogo_ordine": "CHECK (((ordine >= 0) AND (ordine <= 99999)))",
