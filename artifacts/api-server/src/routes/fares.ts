@@ -2210,13 +2210,10 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
     const routes = await db.select().from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId));
     const agenzie = agenzieDelGtfs(await leggiAzienda(), await gestoriDalDatabase(), routes.map((r) => r.agencyId));
 
-    // Dynamically import archiver
-    const archiver = (await import("archiver")).default;
-    const archive = archiver("zip", { zlib: { level: 9 } });
-
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", "attachment; filename=gtfs_export.zip");
-    archive.pipe(res);
+    /* lo zip si prepara in memoria (i file sono già testi) e si manda alla fine:
+     * un errore a metà risponde con un errore, non con uno zip troncato (PR 7.12) */
+    const zip = new AdmZip();
+    const archive = { append: (testo: string, voce: { name: string }) => zip.addFile(voce.name, Buffer.from(testo, "utf8")) };
 
     // --- agency.txt: i gestori che hanno almeno una linea; senza gestori, l'azienda ---
     archive.append(agencyTxt(agenzie.agenzie), { name: "agency.txt" });
@@ -2381,7 +2378,10 @@ router.get("/fares/export-zip", async (req, res): Promise<void> => {
       archive.append(fiCsv, { name: "feed_info.txt" });
     }
 
-    await archive.finalize();
+    const corpo = zip.toBuffer();
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", "attachment; filename=gtfs_export.zip");
+    res.send(corpo);
   } catch (e: any) { erroreTariffe(res, e); }
 });
 
