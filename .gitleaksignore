@@ -1,0 +1,15 @@
+# Rilievi di gitleaks già esaminati (PR 7.11). Una riga = un'impronta
+# (commit:file:regola:riga); un segreto nuovo non è mai in questo elenco.
+#
+# Chiavi vere finite nella storia il 24/03/2026 (start-backend.sh, commit
+# 16234c28). Il file di oggi non le ha più; la storia non si riscrive.
+# Vanno revocate e rifatte presso i fornitori (DEPLOY.md, 7.11): qui si
+# mettono da parte solo perché restano nella storia.
+16234c28e0a6046c8310944a9b815a73ca16f58f:start-backend.sh:generic-api-key:5
+16234c28e0a6046c8310944a9b815a73ca16f58f:start-backend.sh:gcp-api-key:6
+16234c28e0a6046c8310944a9b815a73ca16f58f:start-backend.sh:generic-api-key:8
+#
+# Falsi allarmi: testo che somiglia a una chiave ma non lo è (il nome di una
+# chiave della cache del browser, una riga di documentazione).
+bea03ad630f1800cbb4a212fffaa115f135b1dba:artifacts/transitintel/src/hooks/use-auth.tsx:generic-api-key:128
+e1f10384b712d09e23bb4d22cdc33cd39207115a:DEPLOY.md:generic-api-key:1518

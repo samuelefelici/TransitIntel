@@ -10,14 +10,18 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Il token del job legge soltanto (PR 7.11): nessun passo scrive sul repository.
+permissions:
+  contents: read
+
 jobs:
   typecheck:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4 # versione pnpm letta da packageManager
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0, versione pnpm letta da packageManager
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -30,9 +34,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -54,9 +58,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -76,9 +80,9 @@ jobs:
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # 3.11 come python3 di node:22-bookworm-slim in Dockerfile.api
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.11"
           cache: pip
@@ -120,9 +124,9 @@ jobs:
       # crea e la CI le dà una password di prova
       PG_APP: postgresql://cerbero_app:prova@127.0.0.1:5432
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: pnpm
@@ -1279,6 +1283,16 @@ jobs:
       # suo calendario.
       - name: Cancellare una categoria di validità in uso
         run: TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run src/__tests__/categorie-validita-db.test.ts
+      # Test sul database rimasti fuori dalla CI (aggiunti nella 7.11): le
+      # parti di giornata e i km, il periodo di un giorno, il roster (copri gli
+      # scoperti, bilancia i carichi, rotazione dei turni, riposi dei calcoli
+      # misti) e la stima rapida di Planning Studio con l'SQL a parametri. Uno
+      # per volta, come gli altri: alcuni contano righe di tabelle comuni.
+      - name: Roster, stima rapida e giornate di esercizio sul database
+        run: |
+          for t in esercizio-parziale-km periodo-di-un-giorno roster-copri-scoperti roster-bilancia roster-rotazione-turni roster-riposi-misto quick-estimate; do
+            TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run "src/__tests__/$t-db.test.ts"
+          done
       # Il registro delle modifiche (PR 2.10), dall'app: la manutenzione e la
       # verifica sì, anche in parallelo; leggere, cancellare o spegnere no, e
       # nessun DDL (PR 2.16b), tranne la partizione che la manutenzione crea. E

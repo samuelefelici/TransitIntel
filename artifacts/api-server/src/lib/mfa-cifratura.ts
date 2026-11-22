@@ -64,8 +64,12 @@ export function cifra(testo: string, chiave: Buffer = CHIAVE): string {
 export function decifra(cifrato: string, chiave: Buffer = CHIAVE): string {
   const [v, iv, tag, dati] = cifrato.split(":");
   if (v !== "v1" || !iv || !tag || !dati) throw new Error("segreto cifrato non leggibile");
-  const d = createDecipheriv("aes-256-gcm", chiave, Buffer.from(iv, "base64"));
-  d.setAuthTag(Buffer.from(tag, "base64"));
+  /* il tag di autenticazione è sempre di 16 byte (quello di cifra): uno più
+     corto renderebbe più facile falsificare il testo cifrato */
+  const etichetta = Buffer.from(tag, "base64");
+  if (etichetta.length !== 16) throw new Error("segreto cifrato non leggibile");
+  const d = createDecipheriv("aes-256-gcm", chiave, Buffer.from(iv, "base64"), { authTagLength: 16 });
+  d.setAuthTag(etichetta);
   return Buffer.concat([d.update(Buffer.from(dati, "base64")), d.final()]).toString("utf8");
 }
 

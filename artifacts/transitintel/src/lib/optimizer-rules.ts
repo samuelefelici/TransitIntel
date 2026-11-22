@@ -464,6 +464,8 @@ export function getByPath(obj: any, path: string): any {
 /** Ritorna una NUOVA config con il valore impostato al percorso indicato. */
 export function setByPath<T extends object>(obj: T, path: string, value: any): T {
   const keys = path.split(".");
+  /* i percorsi vengono dalle definizioni dei campi; questi nomi non sono mai campi */
+  if (keys.some((k) => k === "__proto__" || k === "constructor" || k === "prototype")) return obj;
   const clone: any = Array.isArray(obj) ? [...obj] : { ...obj };
   let cur = clone;
   for (let i = 0; i < keys.length - 1; i++) {

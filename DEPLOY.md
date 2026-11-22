@@ -2226,6 +2226,42 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Scansioni di sicurezza nella CI (tappa 7.11)
+
+Accanto alla CI c'è il workflow **«Sicurezza»** (`.github/workflows/sicurezza.yml`):
+gira a ogni PR, a ogni merge in main, il lunedì mattina e a mano.
+- **Segreti** (gitleaks): blocca la PR se un commit contiene una chiave, un
+  token o una password. Il lunedì guarda tutta la storia. I rilievi già
+  esaminati sono in `.gitleaksignore`, ognuno col motivo.
+- **Dipendenze** (osv-scanner): per ora **solo segnala**. Oggi in main ci sono
+  vulnerabilità note nelle dipendenze; si tolgono con una PR di aggiornamenti,
+  dopo la quale il passo diventa bloccante.
+- **Analisi statica** (semgrep, regole pubbliche): in una PR blocca solo i
+  rilievi nuovi rispetto a main; su main segnala tutto senza bloccare.
+
+Le azioni di GitHub della CI sono fissate per SHA (non più per etichetta, che
+chi le pubblica può spostare), e il token dei job della CI legge soltanto.
+
+Corretti nel codice:
+- il segreto della verifica in due passaggi si apre solo con un tag di
+  autenticazione di 16 byte (uno accorciato si rifiuta);
+- la stima rapida di Planning Studio passa linee, tipo di giorno e progetto
+  come parametri della query, non più scritti nel testo SQL;
+- le mappe linea → vettura dei turni macchina nascono senza prototipo.
+
+**Da fare, una volta** (non dipende dal deploy): nella storia del repository
+c'è un vecchio `start-backend.sh` (24/03/2026) con **tre chiavi vere**: Google,
+OpenRouteService e TomTom. Il file di oggi non le ha più, ma la storia le
+conserva. Vanno **revocate e rifatte** nelle console dei tre fornitori; le
+chiavi nuove vanno solo nelle variabili d'ambiente di Coolify
+(`GOOGLE_PLACES_API_KEY`, `OPENROUTE_API_KEY`, `TOMTOM_API_KEY`).
+Finché non sono revocate, chiunque abbia letto il repository può usarle a
+spese dell'azienda.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente; il workflow si spegne togliendo il file.
+
 ### Roster: i riposi per turno nei calcoli col profilo misto (tappa 7.10)
 
 Il controllo dei riposi del roster usa il riposo minimo di 8 ore solo fra due

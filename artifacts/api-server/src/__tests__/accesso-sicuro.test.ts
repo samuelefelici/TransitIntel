@@ -69,6 +69,13 @@ describe("il segreto cifrato", () => {
     expect(() => decifra("rotto", k1)).toThrow();
   });
 
+  it("un tag di autenticazione accorciato non apre il segreto (AES-GCM a 16 byte)", () => {
+    const k1 = chiaveDa({ CERBERO_CHIAVE_MFA: "a".repeat(64) });
+    const [v, iv, tag, dati] = cifra("SEGRETOBASE32", k1).split(":");
+    const corto = Buffer.from(tag!, "base64").subarray(0, 4).toString("base64");
+    expect(() => decifra([v, iv, corto, dati].join(":"), k1)).toThrow("segreto cifrato non leggibile");
+  });
+
   it("cambio di chiave: si apre anche con la precedente, e si sa che va ricifrato", () => {
     const vecchia = chiaveDa({ CERBERO_CHIAVE_MFA: "a".repeat(64) });
     const nuova = chiaveDa({ CERBERO_CHIAVE_MFA: "b".repeat(64) });

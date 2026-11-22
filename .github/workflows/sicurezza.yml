@@ -1,0 +1,91 @@
+# Scansioni di sicurezza di Cerbero (PR 7.11), accanto alla CI.
+#
+# - segreti (gitleaks): blocca. Guarda i commit della PR; il lunedì e a mano
+#   tutta la storia. I rilievi già esaminati sono in .gitleaksignore.
+# - dipendenze (osv-scanner): per ora SOLO SEGNALA. In main ci sono
+#   vulnerabilità note nelle dipendenze: si tolgono con una PR di
+#   aggiornamenti, poi il passo diventa bloccante (si toglie continue-on-error).
+# - analisi statica (semgrep, regole pubbliche, senza account): in una PR
+#   blocca solo i rilievi NUOVI rispetto al ramo di destinazione
+#   (--baseline-commit); su main, il lunedì e a mano segnala tutto senza
+#   bloccare.
+#
+# Le action sono fissate per SHA. Per aggiornarle:
+#   git ls-remote --tags https://github.com/<owner>/<repo>
+# e lo SHA della riga del tag (per i tag annotati, quella con ^{}).
+name: Sicurezza
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 5 * * 1" # il lunedì: CVE nuove su dipendenze che non cambiano
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sicurezza-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  segreti:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # l'elenco dei commit della PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # serve la storia
+          persist-credentials: false
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.30.0"
+          # niente commenti sulla PR (il token non scrive) e niente artefatto
+          # col rapporto: il log del job basta, e i segreti vi sono oscurati.
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+  dipendenze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Solo segnalazione fino alla PR degli aggiornamenti (vedi in cima).
+      - uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --recursive
+            ./
+
+  analisi-statica:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # serve il commit di partenza della PR
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Semgrep
+        env:
+          EVENTO: ${{ github.event_name }}
+          PARTENZA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python -m pip install --quiet "semgrep==1.182.1"
+          set -- scan --metrics=off --config p/default --config p/owasp-top-ten
+          if [ "$EVENTO" = "pull_request" ]; then
+            semgrep "$@" --error --baseline-commit "$PARTENZA"
+          else
+            semgrep "$@"
+          fi

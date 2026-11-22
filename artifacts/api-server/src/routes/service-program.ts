@@ -797,8 +797,9 @@ router.post("/service-program", async (req, res) => {
     }
 
     const validTypes = new Set(Object.keys(VEHICLE_SIZE));
-    const routeVehicleMap: Record<string, VehicleType> = {};
-    const routeForcedMap: Record<string, boolean> = {};
+    /* le chiavi arrivano dal client: oggetti senza prototipo («__proto__» resta una chiave come le altre) */
+    const routeVehicleMap: Record<string, VehicleType> = Object.create(null);
+    const routeForcedMap: Record<string, boolean> = Object.create(null);
     for (const r of body.routes) {
       if (!r.routeId || !r.vehicleType || !validTypes.has(r.vehicleType)) {
         res.status(400).json({ error: `Tipo veicolo non valido: "${r.vehicleType}" per linea "${r.routeId}"` });
