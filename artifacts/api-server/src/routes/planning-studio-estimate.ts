@@ -66,23 +66,24 @@ router.post([
       // Prototipi esclusi (corse-zero di lavoro, non servizio). La validità
       // filtra solo se il progetto la usa: altrimenti tutte le attive, con nota
       // — stessa semantica del quadro orario.
-      let valClause = "";
+      let valClause = sql``;
       if (dayTypeId) {
         const hasV = await db.execute<any>(sql`
           SELECT EXISTS(SELECT 1 FROM ps_trip_day_validity v
                           JOIN ps_trips t ON t.id = v.trip_id
                          WHERE t.project_id = ${projectId}::uuid) AS has`);
         if (hasV.rows[0]?.has) {
-          valClause = `AND EXISTS (SELECT 1 FROM ps_trip_day_validity v
-                         WHERE v.trip_id = t.id AND v.day_type_id = '${dayTypeId}' AND v.is_valid = true)`;
+          valClause = sql`AND EXISTS (SELECT 1 FROM ps_trip_day_validity v
+                         WHERE v.trip_id = t.id AND v.day_type_id = ${dayTypeId}::uuid AND v.is_valid = true)`;
         } else {
           validityNote = "Validità per giorno non configurata: contate tutte le corse attive";
         }
       }
+      /* valori sempre come parametri (gli id sono già controllati: uuid) */
       const routeClause = routeIds.length
-        ? `AND t.route_id IN (${routeIds.map((x) => `'${x}'`).join(",")})`
-        : "";
-      const r = await db.execute<any>(sql.raw(`
+        ? sql`AND t.route_id = ANY(${`{${routeIds.join(",")}}`}::uuid[])`
+        : sql``;
+      const r = await db.execute<any>(sql`
         SELECT r.short_name,
                (SELECT COALESCE(st.departure_time, st.arrival_time) FROM ps_stop_times st
                  WHERE st.trip_id = t.id ORDER BY st.stop_seq ASC LIMIT 1) AS start_time,
@@ -90,12 +91,12 @@ router.post([
                  WHERE st.trip_id = t.id ORDER BY st.stop_seq DESC LIMIT 1) AS end_time
           FROM ps_trips t
           JOIN ps_routes r ON r.id = t.route_id
-         WHERE t.project_id = '${projectId}'
+         WHERE t.project_id = ${projectId}::uuid
            AND COALESCE(t.is_active, true) = true
            AND COALESCE((t.attributes->>'prototype')::boolean, false) = false
            ${routeClause}
            ${valClause}
-      `));
+      `);
       for (const row of r.rows as any[]) {
         const start = parseHM(row.start_time);
         const end = parseHM(row.end_time);
