@@ -14,6 +14,10 @@
  *   3. il «Tipo di servizio» scelto in Fucina quando si sono calcolati i
  *      turni («misto» vale extraurbano, come fa già lo scheduler);
  *   4. nessuno: il turno conta come extraurbano, con l'avviso.
+ * Un DSS calcolato col profilo «misto» (tappa 7.9) dice nel risultato con che
+ * regole è fatto ogni turno (driverShifts[].regole): senza un tipo scelto
+ * sull'UDP, ogni turno vale per la sua categoria, prima della proposta delle
+ * linee e del tipo di Fucina (tappa 7.10).
  *
  * Chi assegna dentro una transazione prepara prima, con `db`, quello che gli
  * serve (preparaControllo): orari e tipi dei turni intorno al giorno. Dentro
@@ -78,7 +82,13 @@ async function colonne(leggi: Lettore): Promise<Map<string, Set<string>>> {
 
 /* ── Urbano o extraurbano, per DSS ───────────────────────────────────────── */
 
-export interface ServizioDss { servizio: Servizio | null; da: ServizioDa; udp: string | null }
+export interface ServizioDss {
+  servizio: Servizio | null;
+  da: ServizioDa;
+  udp: string | null;
+  /** DSS col profilo misto: la categoria di ogni turno (codice → servizio), dal risultato */
+  perTurno?: Map<string, Servizio>;
+}
 
 const dichiarato = (v: unknown): Servizio | null =>
   v === "misto" ? "extraurbano" : eServizio(v) ? v : null;
@@ -120,15 +130,46 @@ export async function serviziDeiDss(dssIds: string[], leggi: Lettore = conDb): P
   let udp = new Map<string, ServizioUdp>();
   try { udp = await leggi(ex => serviziDelleUdp(ex, dss.map(x => x.udp_id).filter(Boolean))); }
   catch (e) { if (!manca(e)) throw e; }
+  /* i DSS col profilo misto, se l'UDP non ha un tipo scelto: la categoria di ogni turno */
+  const misti = dss.filter(x => (x.dss_bds ?? x.dss_crew) === "misto" && !(x.udp_id && udp.get(x.udp_id)?.scelto)).map(x => String(x.dss_id));
+  const perTurno = misti.length ? await categorieDeiTurni(misti, leggi) : new Map<string, Map<string, Servizio>>();
   for (const x of dss) {
     const u = x.udp_id ? udp.get(x.udp_id) : undefined;
     const fucina = dichiarato(x.dss_bds) ?? dichiarato(x.dss_crew) ?? dichiarato(x.sps_input) ?? dichiarato(x.sps_config);
-    out.set(x.dss_id,
+    const base: ServizioDss =
       u?.scelto ? { servizio: u.scelto, da: "udp", udp: u.nome }
         : u?.proposto ? { servizio: u.proposto, da: "linee", udp: u.nome }
           : fucina ? { servizio: fucina, da: "fucina", udp: u?.nome ?? null }
-            : { servizio: null, da: null, udp: u?.nome ?? null });
+            : { servizio: null, da: null, udp: u?.nome ?? null };
+    const pt = perTurno.get(String(x.dss_id));
+    out.set(x.dss_id, pt?.size ? { ...base, perTurno: pt } : base);
   }
+  return out;
+}
+
+/**
+ * Dal risultato di DSS calcolati col profilo misto, la categoria con cui è
+ * fatto ogni turno (driverShifts[].regole): dss → codice → servizio. Solo le
+ * due chiavi, mai il risultato intero. Un risultato di prima della 7.9 non
+ * le ha: la mappa resta vuota e vale il tipo del DSS.
+ */
+async function categorieDeiTurni(dssIds: string[], leggi: Lettore): Promise<Map<string, Map<string, Servizio>>> {
+  const out = new Map<string, Map<string, Servizio>>();
+  try {
+    const r = righe(await leggi(ex => ex.execute(sql`
+      SELECT d.id::text AS dss_id, e->>'driverId' AS codice, e->>'regole' AS regole
+        FROM driver_shift_scenarios d
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE WHEN jsonb_typeof(d.result->'driverShifts') = 'array' THEN d.result->'driverShifts' ELSE '[]'::jsonb END) e
+       WHERE d.id IN (${sql.join(dssIds.map(id => sql`${id}::uuid`), sql`, `)})
+         AND e ? 'regole' AND e ? 'driverId'`)));
+    for (const x of r) {
+      if (!eServizio(x.regole) || !x.codice) continue;
+      const m = out.get(x.dss_id) ?? new Map<string, Servizio>();
+      m.set(String(x.codice), x.regole);
+      out.set(x.dss_id, m);
+    }
+  } catch (e) { if (!manca(e)) throw e; }
   return out;
 }
 
@@ -259,8 +300,9 @@ export async function turniNelTempo(righeTurni: RigaTurno[], p: Preparato = nuov
       dssId: r.dss_id,
       inizio: istante(r.day, intervallo.inizio),
       fine: istante(r.day, intervallo.fine),
-      servizio: s?.servizio ?? null,
-      servizioDa: s?.da ?? null,
+      /* profilo misto: la categoria del turno, se il risultato la dice */
+      servizio: s?.perTurno?.get(r.duty_code) ?? s?.servizio ?? null,
+      servizioDa: s?.perTurno?.has(r.duty_code) ? "fucina" : s?.da ?? null,
       coppieForzate: Array.isArray(r.forzatura?.coppie) ? r.forzatura.coppie.filter((x: unknown) => typeof x === "string") : [],
     });
   }

@@ -2226,6 +2226,26 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Roster: i riposi per turno nei calcoli col profilo misto (tappa 7.10)
+
+Il controllo dei riposi del roster usa il riposo minimo di 8 ore solo fra due
+turni urbani, altrimenti 9. Fin qui un calcolo dei turni guida fatto col
+profilo «misto» valeva tutto extraurbano. Dalla 7.9 ogni turno di quel calcolo
+dice con che regole è fatto (`driverShifts[].regole`): ora il roster usa
+quella, turno per turno. Due turni urbani di un calcolo misto, separati da
+8h30, non segnano più una violazione; se uno dei due è extraurbano sì, come
+prima.
+
+L'ordine resta quello di sempre: vince il tipo scelto sull'Unità di
+Progettazione; se non c'è, per un calcolo misto vale la categoria del turno,
+poi la proposta delle linee e il tipo di Fucina. Un calcolo misto salvato
+prima della 7.9, senza la categoria dei turni, resta extraurbano: per avere i
+riposi giusti si ricalcola.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### Turni guida col profilo «misto»: ogni turno con le regole della sua categoria (tappa 7.9)
 
 Nella Fucina, il tipo di ottimizzazione **«Misto»** non è più un insieme di
