@@ -37,6 +37,7 @@ import { z } from "zod";
 import {
   componiPolimetrica, leggiCorpo, èUuid, LIMITI, type PercorsoImport,
 } from "../lib/polimetrica-salvata";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -64,7 +65,7 @@ router.get("/fares/polimetriche/programmi", async (req, res): Promise<void> => {
     res.json({ programmi: await programmiPerLePolimetriche(db, chiE(req)) });
   } catch (e: any) {
     console.error("[polimetriche] programmi", e);
-    res.status(500).json({ error: "Programmi non leggibili" });
+    erroreLeggibile(res, 500, "Programmi non leggibili");
   }
 });
 
@@ -81,7 +82,7 @@ router.post("/fares/polimetriche/programmi/:id/fotografia", strictLimiter, async
   } catch (e: any) {
     if (e instanceof FotografiaRifiutata) { res.status(e.stato).json({ error: e.message }); return; }
     console.error("[polimetriche] fotografia", e);
-    res.status(500).json({ error: "Fotografia non riuscita" });
+    erroreLeggibile(res, 500, "Fotografia non riuscita");
   }
 });
 
@@ -104,7 +105,7 @@ router.get("/fares/polimetriche/imports", async (_req, res): Promise<void> => {
     })));
   } catch (e: any) {
     console.error("[polimetriche] list imports", e);
-    res.status(500).json({ error: "Import non leggibili" });
+    erroreLeggibile(res, 500, "Import non leggibili");
   }
 });
 
@@ -153,7 +154,7 @@ router.get("/fares/polimetriche/imports/:id", async (req, res): Promise<void> =>
     });
   } catch (e: any) {
     console.error("[polimetriche] get import", e);
-    res.status(500).json({ error: "Import non leggibile" });
+    erroreLeggibile(res, 500, "Import non leggibile");
   }
 });
 
@@ -183,7 +184,7 @@ router.get("/fares/polimetriche/imports/:id/percorso", async (req, res): Promise
     });
   } catch (e: any) {
     console.error("[polimetriche] get percorso", e);
-    res.status(500).json({ error: "Percorso non leggibile" });
+    erroreLeggibile(res, 500, "Percorso non leggibile");
   }
 });
 
@@ -218,7 +219,7 @@ router.get("/fares/polimetriche/imports/:id/full", async (req, res): Promise<voi
     });
   } catch (e: any) {
     console.error("[polimetriche] get full", e);
-    res.status(500).json({ error: "Import non leggibile" });
+    erroreLeggibile(res, 500, "Import non leggibile");
   }
 });
 
@@ -231,7 +232,7 @@ router.delete("/fares/polimetriche/imports/:id", async (req, res): Promise<void>
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[polimetriche] delete import", e);
-    res.status(500).json({ error: "Import non eliminato" });
+    erroreLeggibile(res, 500, "Import non eliminato");
   }
 });
 
@@ -262,7 +263,7 @@ router.delete("/fares/polimetriche/imports/:id/percorso", async (req, res): Prom
     res.json({ ok: true, removed, lineCount: payload.lines.length, percorsoCount });
   } catch (e: any) {
     console.error("[polimetriche] delete percorso", e);
-    res.status(500).json({ error: "Percorso non eliminato" });
+    erroreLeggibile(res, 500, "Percorso non eliminato");
   }
 });
 
@@ -301,7 +302,7 @@ router.post("/fares/polimetriche/imports/:id/percorsi/delete", async (req, res):
     res.json({ ok: true, removed, lineCount: payload.lines.length, percorsoCount });
   } catch (e: any) {
     console.error("[polimetriche] batch delete percorsi", e);
-    res.status(500).json({ error: "Percorsi non eliminati" });
+    erroreLeggibile(res, 500, "Percorsi non eliminati");
   }
 });
 
@@ -320,7 +321,7 @@ router.get("/fares/polimetriche/saved", async (req, res): Promise<void> => {
     res.json(rows.map(mapSavedRow));
   } catch (e: any) {
     console.error("[polimetriche] list saved", e);
-    res.status(500).json({ error: "Polimetriche non leggibili" });
+    erroreLeggibile(res, 500, "Polimetriche non leggibili");
   }
 });
 
@@ -385,7 +386,7 @@ router.post("/fares/polimetriche/saved", async (req, res): Promise<void> => {
     res.json(mapSavedRow(inserted.rows?.[0]));
   } catch (e: any) {
     console.error("[polimetriche] save", e);
-    res.status(500).json({ error: "Polimetrica non salvata" });
+    erroreLeggibile(res, 500, "Polimetrica non salvata");
   }
 });
 
@@ -428,7 +429,7 @@ router.delete("/fares/polimetriche/saved/:id", async (req, res): Promise<void> =
     res.json({ ok: true });
   } catch (e: any) {
     console.error("[polimetriche] delete saved", e);
-    res.status(500).json({ error: "Polimetrica non eliminata" });
+    erroreLeggibile(res, 500, "Polimetrica non eliminata");
   }
 });
 
@@ -444,7 +445,7 @@ router.get("/fares/polimetriche/fasce", async (_req, res): Promise<void> => {
     res.json({ fasce: await fasceDalDatabase() });
   } catch (e) {
     console.error("[polimetriche] fasce", e);
-    res.status(500).json({ error: "Fasce chilometriche non leggibili" });
+    erroreLeggibile(res, 500, "Fasce chilometriche non leggibili");
   }
 });
 

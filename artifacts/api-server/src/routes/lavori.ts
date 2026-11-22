@@ -10,6 +10,7 @@ import { Router, type IRouter } from "express";
 import * as coda from "../lib/lavori/coda";
 import { TUTTI_GLI_AMBITI } from "../lib/lavori/ambiti";
 import { STATO_PUBBLICO } from "../lib/facciata-lavori";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -49,7 +50,7 @@ router.get("/lavori", async (req, res) => {
     res.json({ lavori: righe.map(vistaLavoro) });
   } catch (err: any) {
     req.log.error(err, "elenco dei calcoli");
-    res.status(500).json({ error: "Errore nella lettura dei calcoli" });
+    erroreLeggibile(res, 500, "Errore nella lettura dei calcoli");
   }
 });
 
@@ -65,7 +66,7 @@ router.post("/lavori/:jobId/stop", async (req, res) => {
     res.json({ jobId: l.id, status: esito === "fermato" ? "stopped" : "stopping" });
   } catch (err: any) {
     req.log.error(err, "stop del calcolo");
-    res.status(500).json({ error: "Errore nello stop del calcolo" });
+    erroreLeggibile(res, 500, "Errore nello stop del calcolo");
   }
 });
 

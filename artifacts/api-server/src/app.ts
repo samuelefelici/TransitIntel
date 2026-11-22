@@ -9,6 +9,7 @@ import { globalLimiter } from "./middlewares/rate-limit";
 import { agentAttribution } from "./lib/agent-context";
 import { contestoRichiesta } from "./lib/contesto-http";
 import { comprimiRisposte } from "./middlewares/comprimi";
+import { nascondiErroriInterni } from "./middlewares/errori-interni";
 
 const app: Express = express();
 
@@ -116,6 +117,11 @@ app.use(contestoRichiesta);
 // Le risposte di testo grandi, compresse se il client lo accetta (tappa
 // 6.19b): la mappa delle linee passa da 18 MB a meno di 1 MB. Mai /api/auth.
 app.use(comprimiRisposte);
+
+// Le risposte 5xx non mostrano il testo degli errori (tappa 7.13): al client
+// un messaggio generico col codice della richiesta, il dettaglio nel log.
+// Dopo la compressione: il corpo pulito è quello che si comprime.
+app.use(nascondiErroriInterni);
 
 app.use("/api", router);
 

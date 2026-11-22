@@ -34,6 +34,7 @@ import { posizioniRecenti, ritardiRecenti, soppresseDelGiorno } from "../lib/gtf
 import { giornataOggi } from "../lib/service-day";
 
 import { schemaState } from "../lib/caronte-schema";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const { FeedMessage } = GtfsRealtimeBindings.transit_realtime;
@@ -55,7 +56,7 @@ router.use(requireRtKey);
 /* Il feed è pubblico: fuori va un messaggio generico, i dettagli nel log. */
 function erroreInterno(res: any, feed: string, e: any) {
   console.error(`[gtfs-rt] ${feed}:`, e?.cause?.code ?? e?.code ?? e?.name ?? "errore");
-  res.status(500).json({ error: "Feed temporaneamente non disponibile" });
+  erroreLeggibile(res, 500, "Feed temporaneamente non disponibile");
 }
 
 function sendFeed(res: any, payload: object, asJson: boolean, filename: string) {

@@ -33,6 +33,7 @@ import {
   type DecisionePunti, type PercorsoDellImport, type PercorsoUfficiale,
 } from "../lib/polimetrica-ufficiale-store";
 import type { RigaUfficiale } from "../lib/polimetrica-ufficiale";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -78,7 +79,7 @@ router.get("/fares/polimetriche/ufficiale", async (req, res): Promise<void> => {
     });
   } catch (e) {
     req.log.error({ err: e }, "polimetrica della bigliettazione non leggibile");
-    res.status(500).json({ error: "Polimetrica della bigliettazione non leggibile" });
+    erroreLeggibile(res, 500, "Polimetrica della bigliettazione non leggibile");
   }
 });
 
@@ -108,7 +109,7 @@ router.post("/fares/polimetriche/ufficiale", strictLimiter,
       res.json({ punti: punti.righe.length, righe: righe.righe.length, linee, puntiSenzaKm: punti.saltate });
     } catch (e) {
       req.log.error({ err: e }, "caricamento della polimetrica della bigliettazione non riuscito");
-      res.status(500).json({ error: "Caricamento non riuscito: resta la polimetrica di prima" });
+      erroreLeggibile(res, 500, "Caricamento non riuscito: resta la polimetrica di prima");
     }
   });
 
@@ -122,7 +123,7 @@ router.delete("/fares/polimetriche/ufficiale", async (req, res): Promise<void> =
     res.json({ ok: true });
   } catch (e) {
     req.log.error({ err: e }, "polimetrica della bigliettazione non tolta");
-    res.status(500).json({ error: "Non riuscito: la polimetrica è ancora quella di prima" });
+    erroreLeggibile(res, 500, "Non riuscito: la polimetrica è ancora quella di prima");
   }
 });
 
@@ -161,7 +162,7 @@ router.put("/fares/polimetriche/ufficiale/abbinamenti", async (req, res): Promis
     res.json({ ok: true, salvate: p.data.abbinamenti.length });
   } catch (e) {
     req.log.error({ err: e }, "abbinamenti delle linee non salvati");
-    res.status(500).json({ error: "Abbinamenti non salvati" });
+    erroreLeggibile(res, 500, "Abbinamenti non salvati");
   }
 });
 
@@ -192,7 +193,7 @@ router.get("/fares/polimetriche/ufficiale/linea", async (req, res): Promise<void
     res.json(lineaPerIlConfronto(codice, abbinata, dettaglio.percorsi, dettaglio.righe, decise, aziendali, 200));
   } catch (e) {
     req.log.error({ err: e }, "linea della bigliettazione non leggibile");
-    res.status(500).json({ error: "Linea non leggibile" });
+    erroreLeggibile(res, 500, "Linea non leggibile");
   }
 });
 
@@ -253,7 +254,7 @@ router.get("/fares/polimetriche/ufficiale/riepilogo", async (req, res): Promise<
     });
   } catch (e) {
     req.log.error({ err: e }, "riepilogo del confronto non leggibile");
-    res.status(500).json({ error: "Riepilogo non leggibile" });
+    erroreLeggibile(res, 500, "Riepilogo non leggibile");
   }
 });
 
@@ -309,7 +310,7 @@ router.put("/fares/polimetriche/ufficiale/linea/punti", async (req, res): Promis
     res.json({ ok: true });
   } catch (e) {
     req.log.error({ err: e }, "abbinamento dei punti non salvato");
-    res.status(500).json({ error: "Abbinamento dei punti non salvato" });
+    erroreLeggibile(res, 500, "Abbinamento dei punti non salvato");
   }
 });
 
@@ -326,7 +327,7 @@ router.delete("/fares/polimetriche/ufficiale/linea/punti", async (req, res): Pro
     res.json({ ok: true });
   } catch (e) {
     req.log.error({ err: e }, "abbinamento dei punti non tolto");
-    res.status(500).json({ error: "Non riuscito" });
+    erroreLeggibile(res, 500, "Non riuscito");
   }
 });
 

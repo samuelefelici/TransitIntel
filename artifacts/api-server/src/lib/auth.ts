@@ -41,6 +41,7 @@ import {
   provaCodice, pulisciAccessi,
 } from "./accesso-db";
 import { viaPerIlDatabase } from "./agent-context";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /* ────────────────────────────────────────────────────────────
  * Tipi
@@ -1099,7 +1100,7 @@ router.post("/admin/users", requireAuth, requireAdmin, async (req, res): Promise
       res.status(409).json({ error: "Email già registrata" }); return;
     }
     console.error("[admin.users.create] error:", e?.message || e);
-    res.status(500).json({ error: "Errore creazione utente" });
+    erroreLeggibile(res, 500, "Errore creazione utente");
   }
 });
 

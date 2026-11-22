@@ -21,6 +21,7 @@ import { richiedeDiritto } from "./auth";
 import { controlloDepositi, fuoriDaiDepositi, nonVisibili } from "./roster-limite-depositi";
 import type { Ex } from "./anagrafica-store";
 import { leggiCatalogo, problemaRotazione } from "./roster-voci";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /* Chi ha solo «Personale» legge le rotazioni (le sceglie nella scheda del
  * conducente) ma non le crea, non le cancella e non genera i riposi: per
@@ -249,7 +250,7 @@ router.put("/roster/rotazioni-riposi/:id/assegnazioni", soloRoster, async (req, 
     res.json({ ok: true, count: byDriver.size, daRigenerare: esito.daRigenerare, spostati: esito.spostati });
   } catch (e: any) {
     console.error("[rotazioni.assegnazioni]", e?.cause?.code ?? e?.code ?? "errore");
-    res.status(500).json({ error: "Assegnazioni non salvate" });
+    erroreLeggibile(res, 500, "Assegnazioni non salvate");
   }
 });
 

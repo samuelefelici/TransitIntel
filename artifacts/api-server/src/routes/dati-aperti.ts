@@ -27,6 +27,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
 import { leggiAzienda } from "../lib/azienda";
 import { contenutoInLinea, fileInLinea, FILE, TIPI, type FileInLinea, type TipoFile } from "../lib/dati-aperti";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -41,7 +42,7 @@ const limite = rateLimit({
 /* Sono rotte pubbliche: fuori un messaggio generico, i dettagli nel log. */
 function guasto(req: Request, res: Response, e: unknown): void {
   req.log?.error?.({ err: (e as any)?.message }, "dati aperti: richiesta non riuscita");
-  res.status(500).json({ error: "File temporaneamente non disponibile" });
+  erroreLeggibile(res, 500, "File temporaneamente non disponibile");
 }
 
 const NON_PUBBLICATO = { error: "Nessun file pubblicato a questo indirizzo" };

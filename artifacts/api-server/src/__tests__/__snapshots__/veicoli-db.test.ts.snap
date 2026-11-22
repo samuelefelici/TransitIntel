@@ -907,7 +907,7 @@ exports[`turni macchina e VCSP, sul database > cpsat, Python si rompe: 500 > pyt
 exports[`turni macchina e VCSP, sul database > cpsat, Python si rompe: 500 > risposta 1`] = `
 {
   "body": {
-    "error": "Python exit code 1: Traceback (most recent call last): boom",
+    "error": "Errore interno del server",
   },
   "status": 500,
 }

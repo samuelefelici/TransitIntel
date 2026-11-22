@@ -29,6 +29,7 @@ import { elencoCausali, salvaCausale, RifiutoGiornale } from "../lib/esercizio-g
 import { chiudiMese, meseValido, riapriGiornata, riapriMese, RifiutoChiusura } from "../lib/esercizio-chiusura";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -127,7 +128,7 @@ router.get("/admin/esercizio/diagnosi", async (req, res): Promise<void> => {
     res.json(await diagnosiDelGiorno(giorno, feedAvm ?? null));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "diagnosi della giornata non riuscita");
-    res.status(500).json({ error: "Diagnosi non riuscita" });
+    erroreLeggibile(res, 500, "Diagnosi non riuscita");
   }
 });
 
@@ -160,7 +161,7 @@ router.get("/admin/esercizio/giornate", async (req, res): Promise<void> => {
     res.json({ dal, al, giornate: await elencoGiornate(dal, al) });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "giornate di esercizio non leggibili");
-    res.status(500).json({ error: "Giornate non leggibili" });
+    erroreLeggibile(res, 500, "Giornate non leggibili");
   }
 });
 router.get("/admin/esercizio/giornate/:giorno", async (req, res): Promise<void> => {
@@ -172,7 +173,7 @@ router.get("/admin/esercizio/giornate/:giorno", async (req, res): Promise<void> 
     res.json(g);
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "giornata di esercizio non leggibile");
-    res.status(500).json({ error: "Giornata non leggibile" });
+    erroreLeggibile(res, 500, "Giornata non leggibile");
   }
 });
 router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promise<void> => {
@@ -185,14 +186,14 @@ router.post("/admin/esercizio/giornate/:giorno/prepara", async (req, res): Promi
     res.json(e);
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "preparazione della giornata non riuscita");
-    res.status(500).json({ error: "Preparazione non riuscita" });
+    erroreLeggibile(res, 500, "Preparazione non riuscita");
   }
 });
 /* chiusura e blocco (4.6): riaprire una giornata, chiudere e riaprire un mese; sempre col motivo per riaprire */
 const rispostaChiusura = (req: any, res: any, cosa: string) => (e: any) => {
   if (e instanceof RifiutoChiusura) { res.status(e.status).json({ error: e.message }); return; }
   req.log?.error?.({ err: e?.message }, `${cosa} non riuscita`);
-  res.status(500).json({ error: `${cosa.charAt(0).toUpperCase()}${cosa.slice(1)} non riuscita` });
+  erroreLeggibile(res, 500, `${cosa.charAt(0).toUpperCase()}${cosa.slice(1)} non riuscita`);
 };
 router.post("/admin/esercizio/giornate/:giorno/riapertura", async (req, res): Promise<void> => {
   const giorno = String(req.params.giorno);
@@ -215,7 +216,7 @@ router.get("/admin/esercizio/causali", async (req, res): Promise<void> => {
   try { res.json({ causali: await elencoCausali(true) }); }
   catch (e: any) {
     req.log?.error?.({ err: e?.message }, "causali non leggibili");
-    res.status(500).json({ error: "Causali non leggibili" });
+    erroreLeggibile(res, 500, "Causali non leggibili");
   }
 });
 router.put("/admin/esercizio/causali/:codice", async (req, res): Promise<void> => {
@@ -223,7 +224,7 @@ router.put("/admin/esercizio/causali/:codice", async (req, res): Promise<void> =
   catch (e: any) {
     if (e instanceof RifiutoGiornale) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message }, "causale non salvata");
-    res.status(500).json({ error: "Causale non salvata" });
+    erroreLeggibile(res, 500, "Causale non salvata");
   }
 });
 
@@ -236,7 +237,7 @@ router.post("/admin/esercizio/giornate/:giorno/proposta", async (req, res): Prom
   } catch (e: any) {
     if (e instanceof RifiutoProposta) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message, giorno }, "proposta della giornata non riuscita");
-    res.status(500).json({ error: "Proposta non riuscita" });
+    erroreLeggibile(res, 500, "Proposta non riuscita");
   }
 });
 
@@ -282,7 +283,7 @@ router.get("/admin/registro", async (req, res): Promise<void> => {
     // 57014: la lettura ha superato il tempo massimo
     if (codice === "57014") { res.status(400).json({ error: "La ricerca è troppo ampia: scegli una tabella o un periodo più stretto" }); return; }
     req.log?.error?.({ err: e?.message }, "registro delle modifiche non leggibile");
-    res.status(500).json({ error: "Registro non leggibile" });
+    erroreLeggibile(res, 500, "Registro non leggibile");
   }
 });
 
@@ -299,7 +300,7 @@ router.get("/admin/azienda", async (req, res): Promise<void> => {
     res.json(await dettaglioAzienda());
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "dati dell'azienda non leggibili");
-    res.status(500).json({ error: "Dati dell'azienda non leggibili" });
+    erroreLeggibile(res, 500, "Dati dell'azienda non leggibili");
   }
 });
 router.put("/admin/azienda", async (req, res): Promise<void> => {
@@ -312,7 +313,7 @@ router.put("/admin/azienda", async (req, res): Promise<void> => {
     const codice = String(e?.code ?? e?.cause?.code ?? "");
     if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
     req.log?.error?.({ err: e?.message }, "dati dell'azienda non salvati");
-    res.status(500).json({ error: "Dati dell'azienda non salvati" });
+    erroreLeggibile(res, 500, "Dati dell'azienda non salvati");
   }
 });
 
@@ -330,7 +331,7 @@ const rifiutoVoci = (req: any, res: any, e: any, cosa: string) => {
   const codice = String(e?.code ?? e?.cause?.code ?? "");
   if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/voci-roster", requireAdmin);
 router.get("/admin/voci-roster", async (req, res): Promise<void> => {
@@ -372,7 +373,7 @@ const rifiutoTerritorio = (req: any, res: any, e: any, cosa: string) => {
   const codice = String(e?.code ?? e?.cause?.code ?? "");
   if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/territorio", requireAdmin);
 router.get("/admin/territorio", async (req, res): Promise<void> => {
@@ -430,7 +431,7 @@ router.get("/admin/ruoli", async (req, res): Promise<void> => {
     res.json(await statoDeiRuoli());
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "ruoli non leggibili");
-    res.status(500).json({ error: "Ruoli non leggibili" });
+    erroreLeggibile(res, 500, "Ruoli non leggibili");
   }
 });
 router.put("/admin/ruoli/:ruolo", async (req, res): Promise<void> => {
@@ -451,7 +452,7 @@ router.put("/admin/ruoli/:ruolo", async (req, res): Promise<void> => {
     res.json({ ...(await statoDeiRuoli()), esito });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, ruolo }, "diritti del ruolo non salvati");
-    res.status(500).json({ error: "Diritti del ruolo non salvati" });
+    erroreLeggibile(res, 500, "Diritti del ruolo non salvati");
   }
 });
 
@@ -468,7 +469,7 @@ router.get("/admin/dati-aperti", async (req, res): Promise<void> => {
   try { res.json(await statoDatiAperti()); }
   catch (e: any) {
     req.log?.error?.({ err: e?.message }, "dati aperti: stato non leggibile");
-    res.status(500).json({ error: "Stato dei dati aperti non leggibile" });
+    erroreLeggibile(res, 500, "Stato dei dati aperti non leggibile");
   }
 });
 router.put("/admin/dati-aperti", async (req, res): Promise<void> => {
@@ -482,7 +483,7 @@ router.put("/admin/dati-aperti", async (req, res): Promise<void> => {
     res.json(await statoDatiAperti());
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "dati aperti: interruttore non salvato");
-    res.status(500).json({ error: "Pubblicazione non cambiata" });
+    erroreLeggibile(res, 500, "Pubblicazione non cambiata");
   }
 });
 router.post("/admin/dati-aperti/prepara", async (req, res): Promise<void> => {
@@ -496,7 +497,7 @@ router.post("/admin/dati-aperti/prepara", async (req, res): Promise<void> => {
     res.json({ preparazione: esito.file, ...(await statoDatiAperti()) });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "dati aperti: preparazione non riuscita");
-    res.status(500).json({ error: "Preparazione dei file non riuscita" });
+    erroreLeggibile(res, 500, "Preparazione dei file non riuscita");
   }
 });
 
@@ -515,7 +516,7 @@ const rifiutoDepositi = (req: any, res: any, e: any, cosa: string) => {
   if (codice === "23503") { res.status(409).json({ error: "Il deposito è in uso: prima sposta chi lo usa" }); return; }
   if (codice === "23505") { res.status(409).json({ error: "C'è già un deposito con questo codice" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/depositi", requireAdmin);
 router.get("/admin/depositi", async (req, res): Promise<void> => {
@@ -560,7 +561,7 @@ const rifiutoReti = (req: any, res: any, e: any, cosa: string) => {
   if (codice === "23503") { res.status(409).json({ error: "La rete non c'è più: ricarica la pagina" }); return; }
   if (codice === "23505") { res.status(409).json({ error: "C'è già una rete con questo luogo, questa sigla o questo codice" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/reti", requireAdmin);
 router.get("/admin/reti", async (req, res): Promise<void> => {
@@ -612,7 +613,7 @@ const rifiutoFasce = (req: any, res: any, e: any, cosa: string) => {
   const codice = String(e?.code ?? e?.cause?.code ?? "");
   if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/fasce-km", requireAdmin);
 router.get("/admin/fasce-km", async (req, res): Promise<void> => {
@@ -641,7 +642,7 @@ const rifiutoTitoli = (req: any, res: any, e: any, cosa: string) => {
   if (codice === "23503") { res.status(400).json({ error: "La rete non c'è più: ricarica la pagina" }); return; }
   if (codice === "23505") { res.status(409).json({ error: "C'è già un titolo con questo identificativo" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/titoli", requireAdmin);
 router.get("/admin/titoli", async (req, res): Promise<void> => {
@@ -681,7 +682,7 @@ const rifiutoElenchi = (req: any, res: any, e: any, cosa: string) => {
   if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
   if (codice === "23505") { res.status(409).json({ error: "Un identificativo compare due volte" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/elenchi-tariffe", requireAdmin);
 router.get("/admin/elenchi-tariffe", async (req, res): Promise<void> => {
@@ -714,7 +715,7 @@ const rifiutoContactless = (req: any, res: any, e: any, cosa: string) => {
   if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
   if (codice === "23503") { res.status(400).json({ error: "Una rete o il supporto non c'è più: ricarica la pagina" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/contactless", requireAdmin);
 router.get("/admin/contactless", async (req, res): Promise<void> => {
@@ -743,7 +744,7 @@ const rifiutoGestori = (req: any, res: any, e: any, cosa: string) => {
   if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
   if (codice === "23505") { res.status(409).json({ error: "C'è già un gestore con questo identificativo" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 router.use("/admin/gestori", requireAdmin);
 router.get("/admin/gestori", async (req, res): Promise<void> => {
@@ -784,7 +785,7 @@ const rifiutoNodi = (req: any, res: any, e: any, cosa: string) => {
   const codice = String(e?.code ?? e?.cause?.code ?? "");
   if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
   req.log?.error?.({ err: e?.message }, cosa);
-  res.status(500).json({ error: cosa.charAt(0).toUpperCase() + cosa.slice(1) });
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
 };
 /**
  * Che cosa ha scritto l'azienda e che cosa le manca (tappa 6.18,
@@ -795,7 +796,7 @@ router.get("/admin/installazione", requireAdmin, async (req, res): Promise<void>
   try { res.json(await statoDellInstallazione()); }
   catch (e: any) {
     req.log?.error?.({ err: e?.message }, "stato dell'installazione non leggibile");
-    res.status(500).json({ error: "Stato dell'installazione non leggibile" });
+    erroreLeggibile(res, 500, "Stato dell'installazione non leggibile");
   }
 });
 
@@ -838,7 +839,7 @@ router.delete("/admin/nodi-scambio/:nodo", async (req, res): Promise<void> => {
 router.use("/admin/parco", requireAdmin);
 router.get("/admin/parco", async (req, res): Promise<void> => {
   try { res.json(await statoParco()); }
-  catch (e) { req.log.error({ err: e }, "parco non leggibile"); res.status(500).json({ error: "parco non leggibile" }); }
+  catch (e) { req.log.error({ err: e }, "parco non leggibile"); erroreLeggibile(res, 500, "parco non leggibile"); }
 });
 router.put("/admin/parco/vetture", async (req, res): Promise<void> => {
   const testo = typeof req.body?.testo === "string" ? req.body.testo : null;
@@ -851,7 +852,7 @@ router.put("/admin/parco/vetture", async (req, res): Promise<void> => {
     res.json({ importate: vetture, doppie: l.doppie, ...(await statoParco()) });
   } catch (e) {
     req.log.error({ err: e }, "import dell'anagrafica del parco non riuscito");
-    res.status(500).json({ error: "import non riuscito: l'anagrafica è quella di prima" });
+    erroreLeggibile(res, 500, "import non riuscito: l'anagrafica è quella di prima");
   }
 });
 router.get("/admin/parco/vetture.tsv", async (req, res): Promise<void> => {
@@ -859,13 +860,13 @@ router.get("/admin/parco/vetture.tsv", async (req, res): Promise<void> => {
     res.type("text/tab-separated-values; charset=utf-8")
       .setHeader("Content-Disposition", `attachment; filename="parco-${new Date().toISOString().slice(0, 10)}.tsv"`)
       .send(await esportaAnagrafica());
-  } catch (e) { req.log.error({ err: e }, "anagrafica non esportata"); res.status(500).json({ error: "anagrafica non esportata" }); }
+  } catch (e) { req.log.error({ err: e }, "anagrafica non esportata"); erroreLeggibile(res, 500, "anagrafica non esportata"); }
 });
 router.put("/admin/parco/consorziate", async (req, res): Promise<void> => {
   const p = DatiConsorziate.safeParse(req.body);
   if (!p.success) { res.status(400).json({ error: erroriConsorziate(p.error) }); return; }
   try { await salvaConsorziate(p.data); res.json(await statoParco()); }
-  catch (e) { req.log.error({ err: e }, "consorziate non salvate"); res.status(500).json({ error: "consorziate non salvate: restano quelle di prima" }); }
+  catch (e) { req.log.error({ err: e }, "consorziate non salvate"); erroreLeggibile(res, 500, "consorziate non salvate: restano quelle di prima"); }
 });
 
 export default router;

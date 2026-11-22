@@ -9,6 +9,7 @@ import { sql } from "drizzle-orm";
 import { mintShortLivedUserToken } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { argosHeaders, argosProxyConfigured } from "../lib/argos-proxy";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -214,7 +215,8 @@ router.get("/ai/argos/geo", async (req, res) => {
     const data = await upstream.json().catch(() => ({}));
     res.status(upstream.ok ? 200 : 502).json(data);
   } catch (err: any) {
-    res.status(502).json({ error: err?.message || "geometria non disponibile" });
+    req.log?.warn?.({ err: err?.message }, "geometria non disponibile");
+    erroreLeggibile(res, 502, "geometria non disponibile");
   }
 });
 
@@ -323,7 +325,8 @@ async function argosGet(path: string, res: any): Promise<void> {
     const data = await upstream.json().catch(() => ({}));
     res.status(upstream.ok ? 200 : upstream.status).json(data);
   } catch (err: any) {
-    res.status(502).json({ error: err?.message || "Argos irraggiungibile" });
+    res.req?.log?.warn?.({ err: err?.message }, "Argos irraggiungibile");
+    erroreLeggibile(res, 502, "Argos irraggiungibile");
   }
 }
 
@@ -363,7 +366,8 @@ router.post("/ai/argos/agent/goal", async (req, res) => {
     res.json(data);
   } catch (err: any) {
     logger.error({ err: err?.message }, "Argos agent goal proxy error");
-    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+    req.log?.warn?.({ err: err?.message }, "Errore proxy Argos");
+    erroreLeggibile(res, 502, "Errore proxy Argos");
   }
 });
 
@@ -480,7 +484,8 @@ router.post("/ai/argos/agent/goals", async (req, res) => {
     if (!upstream.ok) { res.status(upstream.status).json({ error: (data as any)?.detail || `HTTP ${upstream.status}` }); return; }
     res.json(data);
   } catch (err: any) {
-    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+    req.log?.warn?.({ err: err?.message }, "Errore proxy Argos");
+    erroreLeggibile(res, 502, "Errore proxy Argos");
   }
 });
 
@@ -503,7 +508,8 @@ router.post("/ai/argos/agent/goals/:id/status", async (req, res) => {
     if (!upstream.ok) { res.status(upstream.status).json({ error: (data as any)?.detail || `HTTP ${upstream.status}` }); return; }
     res.json(data);
   } catch (err: any) {
-    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+    req.log?.warn?.({ err: err?.message }, "Errore proxy Argos");
+    erroreLeggibile(res, 502, "Errore proxy Argos");
   }
 });
 
@@ -588,7 +594,8 @@ router.post("/ai/argos/agent/runs/:id/undo", async (req, res) => {
     res.json(data);
   } catch (err: any) {
     logger.error({ err: err?.message }, "Argos agent undo proxy error");
-    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+    req.log?.warn?.({ err: err?.message }, "Errore proxy Argos");
+    erroreLeggibile(res, 502, "Errore proxy Argos");
   }
 });
 
@@ -643,7 +650,8 @@ router.post("/ai/argos/agent/proposals/:id", async (req, res) => {
     }
     res.json(data);
   } catch (err: any) {
-    res.status(502).json({ error: err?.message || "Errore proxy Argos" });
+    req.log?.warn?.({ err: err?.message }, "Errore proxy Argos");
+    erroreLeggibile(res, 502, "Errore proxy Argos");
   }
 });
 

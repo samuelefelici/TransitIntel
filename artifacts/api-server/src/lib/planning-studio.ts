@@ -30,6 +30,7 @@ import { copiaProgetto, cancellaProgetto } from "./progetto-copie";
 import { creaVersione, cancellaVersioneDelFeed } from "./versioni-pubblicate";
 import { richiedeDiritto } from "./auth";
 import { realignStopTimes, type SeqStop, type StopTimeRow } from "./variant-stop-times-sync";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /* ════════════════════════════════════════════════════════════
  *  Helpers
@@ -343,7 +344,7 @@ router.post("/planning-studio/projects/:id/duplicate", async (req, res): Promise
   } catch (e: any) {
     // il testo dell'errore del database (query e parametri) resta nel log, non va a chi chiama
     req.log?.error?.({ err: e?.cause?.message ?? e?.message, src }, "duplicazione progetto fallita");
-    res.status(500).json({ error: "Duplicazione fallita: riprova, e se si ripete avvisa chi gestisce Cerbero" });
+    erroreLeggibile(res, 500, "Duplicazione fallita: riprova, e se si ripete avvisa chi gestisce Cerbero");
   }
 });
 
@@ -499,7 +500,7 @@ router.post("/planning-studio/projects/:id/activate", richiedeDiritto("pubblicaz
     await creaVersione(proj.id, feedId);
   } catch (e: any) {
     req.log?.error?.({ err: e?.cause?.message ?? e?.message, projectId: proj.id }, "versione pubblicata non creata");
-    res.status(500).json({ error: "Messa in esercizio non riuscita: non è stato possibile fissare la versione pubblicata. Il programma di prima resta in esercizio" });
+    erroreLeggibile(res, 500, "Messa in esercizio non riuscita: non è stato possibile fissare la versione pubblicata. Il programma di prima resta in esercizio");
     return;
   }
 
@@ -533,7 +534,7 @@ router.post("/planning-studio/projects/:id/activate", richiedeDiritto("pubblicaz
     await cancellaVersioneDelFeed(feedId).catch(() => undefined);
     if (e instanceof AttivazioneRifiutata) { res.status(e.stato).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.cause?.message ?? e?.message, projectId: proj.id }, "messa in esercizio fallita");
-    res.status(500).json({ error: "Messa in esercizio non riuscita: il programma di prima resta in esercizio. Riprova, e se si ripete avvisa chi gestisce Cerbero" });
+    erroreLeggibile(res, 500, "Messa in esercizio non riuscita: il programma di prima resta in esercizio. Riprova, e se si ripete avvisa chi gestisce Cerbero");
     return;
   }
   await logActivity(proj.id, req.user!.id, "ps.project.activate", {
@@ -920,7 +921,7 @@ router.get("/planning-studio/projects/:id/routes", async (req, res): Promise<voi
 router.get("/planning-studio/projects/:id/gestori", async (req, res): Promise<void> => {
   const proj = await requireProject(req, res); if (!proj) return;
   try { res.json({ ...(await gestoriDelProgramma(proj.id)), puoScrivere: canWrite(proj) }); }
-  catch (e: any) { req.log?.error?.({ err: e?.message }, "gestori del programma non letti"); res.status(500).json({ error: "Gestori non leggibili" }); }
+  catch (e: any) { req.log?.error?.({ err: e?.message }, "gestori del programma non letti"); erroreLeggibile(res, 500, "Gestori non leggibili"); }
 });
 
 router.put("/planning-studio/projects/:id/gestori", async (req, res): Promise<void> => {
@@ -937,7 +938,7 @@ router.put("/planning-studio/projects/:id/gestori", async (req, res): Promise<vo
   } catch (e: any) {
     if (e instanceof RifiutoGestori) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message }, "gestore non assegnato");
-    res.status(500).json({ error: "Gestore non assegnato" });
+    erroreLeggibile(res, 500, "Gestore non assegnato");
   }
 });
 

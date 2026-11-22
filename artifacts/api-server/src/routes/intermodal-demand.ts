@@ -28,6 +28,7 @@ import { pointsOfInterest, censusSections } from "@workspace/db/schema";
 import { inArray } from "drizzle-orm";
 import { haversineKm, minToTime, walkMinutes } from "../lib/geo-utils";
 import { municipalityBbox, discoverHubs } from "./intermodal";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 import {
   resolveSource, parseDayKind, loadStops, loadRoutes, loadActiveTrips, loadPassages,
   loadValidities, loadDayTypes, projectBbox, type DayKind, type Source,
@@ -682,7 +683,8 @@ router.get("/intermodal/demand-coverage", async (req: any, res: any) => {
     });
   } catch (err: any) {
     req.log?.error?.(err, "demand-coverage");
-    res.status(500).json({ error: "Errore nel calcolo della copertura", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Errore nel calcolo della copertura");
+    erroreLeggibile(res, 500, "Errore nel calcolo della copertura");
   }
 });
 
@@ -726,7 +728,8 @@ router.get("/intermodal/lines", async (req: any, res: any) => {
     });
   } catch (err: any) {
     req.log?.error?.(err, "intermodal lines");
-    res.status(500).json({ error: "Errore nel caricamento delle linee", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Errore nel caricamento delle linee");
+    erroreLeggibile(res, 500, "Errore nel caricamento delle linee");
   }
 });
 
@@ -759,7 +762,8 @@ router.get("/intermodal/day-types", async (req: any, res: any) => {
     });
   } catch (err: any) {
     req.log?.error?.(err, "intermodal day-types");
-    res.status(500).json({ error: "Errore nel caricamento dei giorni-tipo", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Errore nel caricamento dei giorni-tipo");
+    erroreLeggibile(res, 500, "Errore nel caricamento dei giorni-tipo");
   }
 });
 
@@ -778,7 +782,8 @@ router.get("/intermodal/validities", async (req: any, res: any) => {
     });
   } catch (err: any) {
     req.log?.error?.(err, "intermodal validities");
-    res.status(500).json({ error: "Errore nel caricamento delle validità", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Errore nel caricamento delle validità");
+    erroreLeggibile(res, 500, "Errore nel caricamento delle validità");
   }
 });
 

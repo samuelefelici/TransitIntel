@@ -6,6 +6,7 @@ import { cache } from "../middlewares/cache";
 import { leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
 import { centroDeiPunti, kmPerGradoLng } from "../lib/geo-utils";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -80,7 +81,7 @@ router.get("/analysis/underserved", cache({ ttlSeconds: 3600 }), async (req, res
     res.json({ data: underserved.slice(0, 50), total: underserved.length });
   } catch (err) {
     req.log.error(err, "Error computing underserved areas");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -148,7 +149,7 @@ router.get("/analysis/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error fetching dashboard stats");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -312,7 +313,7 @@ router.get("/territory/overview", cache({ ttlSeconds: 3600 }), async (req, res) 
     });
   } catch (err) {
     req.log.error(err, "Error in territory overview");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -553,7 +554,7 @@ router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error in territory deep analytics");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -733,7 +734,7 @@ router.get("/analysis/isochrone", cache({ ttlSeconds: 120 }), async (req, res) =
       return void res.status(429).json({ error: "Rate limit ORS raggiunto. Riprova tra 1 minuto." });
     }
     req.log.error(err, "Error fetching isochrone");
-    return void res.status(500).json({ error: "Errore nel calcolo isocrona" });
+    return void erroreLeggibile(res, 500, "Errore nel calcolo isocrona");
   }
 });
 
@@ -1068,7 +1069,7 @@ router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (
     });
   } catch (err) {
     req.log.error(err, "Error in walkability coverage");
-    return void res.status(500).json({ error: "Errore nel calcolo copertura pedonale" });
+    return void erroreLeggibile(res, 500, "Errore nel calcolo copertura pedonale");
   }
 });
 
@@ -1470,7 +1471,7 @@ router.get("/analysis/service-quality", cache({ ttlSeconds: 60 }), async (req, r
     });
   } catch (err) {
     req.log.error(err, "Error in service-quality analysis");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1517,7 +1518,7 @@ router.get("/analysis/route-shapes", cache({ ttlSeconds: 60 }), async (req, res)
     res.json(results);
   } catch (err) {
     req.log.error(err, "Error fetching route shapes");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1880,7 +1881,7 @@ router.get("/analysis/segments", cache({ ttlSeconds: 60 }), async (req, res) => 
     });
   } catch (err) {
     req.log.error(err, "Error in segments analysis");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
