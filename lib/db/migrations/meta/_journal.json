@@ -435,6 +435,13 @@
       "when": 1798300000000,
       "tag": "0061_rotazione_dei_turni",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1798400000000,
+      "tag": "0062_tabelle_non_usate",
+      "breakpoints": true
     }
   ]
 }

@@ -52,14 +52,6 @@ export const busStops = pgTable("bus_stops", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
-export const busRoutes = pgTable("bus_routes", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  lineCode: text("line_code"),
-  name: text("name").notNull(),
-  serviceType: text("service_type").notNull().default("urban"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
-});
-
 export const gtfsFeeds = pgTable("gtfs_feeds", {
   id: uuid("id").primaryKey().defaultRandom(),
   filename: text("filename").notNull(),
@@ -669,7 +661,6 @@ export type TrafficSnapshot = typeof trafficSnapshots.$inferSelect;
 export type CensusSection = typeof censusSections.$inferSelect;
 export type PointOfInterest = typeof pointsOfInterest.$inferSelect;
 export type BusStop = typeof busStops.$inferSelect;
-export type BusRoute = typeof busRoutes.$inferSelect;
 export type GtfsFeed = typeof gtfsFeeds.$inferSelect;
 export type GtfsStop = typeof gtfsStops.$inferSelect;
 export type GtfsRoute = typeof gtfsRoutes.$inferSelect;
@@ -768,37 +759,7 @@ export const planningScenarios = pgTable("planning_scenarios", {
   index("idx_planning_scenarios_status").on(t.status),
 ]);
 
-export const planningScenarioEdits = pgTable("planning_scenario_edits", {
-  id:            uuid("id").primaryKey().defaultRandom(),
-  scenarioId:    uuid("scenario_id").notNull().references(() => planningScenarios.id, { onDelete: "cascade" }),
-  kind:          text("kind").notNull(),          // "route.update" | "route.suspend" | "stop.update" | "stop.delete" | …
-  targetType:    text("target_type"),             // "route" | "stop" | "trip" | "pattern"
-  targetGtfsId:  text("target_gtfs_id"),          // GTFS id (route_id, stop_id, …)
-  payload:       jsonb("payload").notNull(),      // dati dell'edit (campi modificati)
-  undoOfEditId:  uuid("undo_of_edit_id"),         // se è un undo, id dell'edit annullato
-  appliedBy:     text("applied_by"),
-  appliedAt:     timestamp("applied_at", { withTimezone: true }).defaultNow(),
-}, (t) => [
-  index("idx_planning_edits_scenario").on(t.scenarioId),
-  index("idx_planning_edits_scenario_applied").on(t.scenarioId, t.appliedAt),
-]);
-
-export const planningAnalysisResults = pgTable("planning_analysis_results", {
-  id:           uuid("id").primaryKey().defaultRandom(),
-  scenarioId:   uuid("scenario_id").notNull().references(() => planningScenarios.id, { onDelete: "cascade" }),
-  module:       text("module").notNull(),         // "service-coverage" | "demand-supply" | "trip-utility" | "economic"
-  inputParams:  jsonb("input_params"),
-  result:       jsonb("result").notNull(),
-  editsHash:    text("edits_hash"),               // hash della sequenza edit per cache invalidation
-  computedAt:   timestamp("computed_at", { withTimezone: true }).defaultNow(),
-}, (t) => [
-  index("idx_planning_analysis_scenario").on(t.scenarioId),
-  index("idx_planning_analysis_scenario_module").on(t.scenarioId, t.module),
-]);
-
 export type PlanningScenario = typeof planningScenarios.$inferSelect;
-export type PlanningScenarioEdit = typeof planningScenarioEdits.$inferSelect;
-export type PlanningAnalysisResult = typeof planningAnalysisResults.$inferSelect;
 
 /* ── Analisi feed GTFS (Sprint S1) ──────────────────────────────────────────
  * gtfs_feed_analysis: KPI calcolati una volta dopo upload (vetture-km,
