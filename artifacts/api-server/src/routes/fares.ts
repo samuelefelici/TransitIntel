@@ -39,6 +39,7 @@
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
+import { conContesto } from "@workspace/db/contesto";
 import {
   gtfsFeeds,
   gtfsRoutes,
@@ -1059,7 +1060,7 @@ router.post("/fares/zones/generate/:routeId", async (req, res): Promise<void> =>
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     const { routeId } = req.params;
 
-    const result = await generateZonesForRoute(feedId, routeId);
+    const result = await db.transaction((tx) => generateZonesForRoute(tx, feedId, routeId));
     res.json(result);
   } catch (e: any) { erroreTariffe(res, e); }
 });
@@ -1080,13 +1081,13 @@ router.post("/fares/zones/generate-all", async (req, res): Promise<void> => {
       WHERE rn.feed_id = ${feedId} AND rn.network_id = 'extraurbano'
     `);
 
-    let totalZones = 0;
-    const results: { routeId: string; zones: number; stops: number }[] = [];
-    for (const row of extraRoutes.rows) {
-      const r = await generateZonesForRoute(feedId, row.route_id);
-      totalZones += r.zones;
-      results.push(r);
-    }
+    /* tutte le linee in una transazione, nel registro come riepilogo (7.19) */
+    const results: { routeId: string; zones: number; stops: number }[] = await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+      const esiti = [];
+      for (const row of extraRoutes.rows) esiti.push(await generateZonesForRoute(tx, feedId, row.route_id));
+      return esiti;
+    }));
+    const totalZones = results.reduce((somma, r) => somma + r.zones, 0);
 
     res.json({ urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
   } catch (e: any) { erroreTariffe(res, e); }
@@ -1109,13 +1110,13 @@ router.post("/fares/zones/generate-all-direct", async (req, res): Promise<void> 
       WHERE rn.feed_id = ${feedId} AND rn.network_id = 'extraurbano'
     `);
 
-    let totalZones = 0;
-    const results: { routeId: string; zones: number; stops: number }[] = [];
-    for (const row of extraRoutes.rows) {
-      const r = await generateZonesForRouteDirect(feedId, row.route_id);
-      totalZones += r.zones;
-      results.push(r);
-    }
+    /* tutte le linee in una transazione, nel registro come riepilogo (7.19) */
+    const results: { routeId: string; zones: number; stops: number }[] = await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+      const esiti = [];
+      for (const row of extraRoutes.rows) esiti.push(await generateZonesForRouteDirect(tx, feedId, row.route_id));
+      return esiti;
+    }));
+    const totalZones = results.reduce((somma, r) => somma + r.zones, 0);
 
     res.json({ method: "direct", urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
   } catch (e: any) { erroreTariffe(res, e); }
@@ -1137,24 +1138,71 @@ router.post("/fares/zones/generate-all-dominant", async (req, res): Promise<void
       WHERE rn.feed_id = ${feedId} AND rn.network_id = 'extraurbano'
     `);
 
-    let totalZones = 0;
-    const results: any[] = [];
-    for (const row of extraRoutes.rows) {
-      const r = await generateZonesForRouteDominant(feedId, row.route_id);
-      totalZones += r.zones;
-      results.push(r);
-    }
+    /* tutte le linee in una transazione, nel registro come riepilogo (7.19) */
+    const results: any[] = await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+      const esiti = [];
+      for (const row of extraRoutes.rows) esiti.push(await generateZonesForRouteDominant(tx, feedId, row.route_id));
+      return esiti;
+    }));
+    const totalZones = results.reduce((somma, r) => somma + r.zones, 0);
 
     res.json({ method: "dominant", urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte, extraurbanRoutes: extraRoutes.rows.length, totalZones, details: results });
   } catch (e: any) { erroreTariffe(res, e); }
 });
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Le righe a blocchi: un'istruzione con troppi valori supera il limite dei parametri di Postgres. */
+function aBlocchi<T>(righe: T[], quante = 1000): T[][] {
+  const blocchi: T[][] = [];
+  for (let i = 0; i < righe.length; i += quante) blocchi.push(righe.slice(i, i + quante));
+  return blocchi;
+}
+
+/** La fascia di ogni fermata dai suoi km (la prima fascia per il capolinea a km 0). */
+function fermateNelleFasce(km: Map<string, { km: number }>): { stopId: string; fascia: number }[] {
+  const fermate: { stopId: string; fascia: number }[] = [];
+  for (const [stopId, info] of km) {
+    let band = getBandForDistance(info.km);
+    if (!band && info.km === 0) band = primaFascia();
+    if (band) fermate.push({ stopId, fascia: band.fascia });
+  }
+  return fermate;
+}
+
+/**
+ * Le zone di una linea extraurbana e le sue fermate (tappa 7.19): due
+ * istruzioni a insiemi, dentro la transazione di chi genera, invece di una
+ * per zona e una per fermata.
+ */
+async function scriviZoneLinea(tx: Tx, feedId: string, routeId: string, fasce: number[], fermate: { stopId: string; fascia: number }[]) {
+  if (fasce.length > 0) {
+    await tx.insert(gtfsFareAreas).values(fasce.map((fascia) => {
+      const band = fasciaNumero(fascia);
+      return {
+        feedId, areaId: `${routeId}_zona_${fascia}`,
+        areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`,
+        networkId: "extraurbano", routeId,
+        kmFrom: band.kmFrom, kmTo: band.kmTo,
+      };
+    })).onConflictDoUpdate({
+      target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
+      set: { areaName: sql`excluded.area_name`, kmFrom: sql`excluded.km_from`, kmTo: sql`excluded.km_to`, updatedAt: sql`now()` },
+    });
+  }
+  for (const blocco of aBlocchi(fermate)) {
+    await tx.insert(gtfsStopAreas)
+      .values(blocco.map((f) => ({ feedId, areaId: `${routeId}_zona_${f.fascia}`, stopId: f.stopId })))
+      .onConflictDoNothing();
+  }
+}
 
 /**
  * Generate km-based zones for a single extraurban route using DIRECT haversine.
  * Simple method: cumulative haversine between consecutive stops (no shape projection).
  * Uses the longest trip from the reference service_id as representative.
  */
-async function generateZonesForRouteDirect(feedId: string, routeId: string) {
+async function generateZonesForRouteDirect(tx: Tx, feedId: string, routeId: string) {
   const { percorsi: allPercorsi } = await getRoutePercorsi(feedId, routeId);
   if (allPercorsi.length === 0) return { routeId, zones: 0, stops: 0 };
 
@@ -1180,32 +1228,11 @@ async function generateZonesForRouteDirect(feedId: string, routeId: string) {
   }
 
   // Create areas and assign stops
-  const createdZones: string[] = [];
-  for (const fascia of Array.from(usedBands).sort((a, b) => a - b)) {
-    const band = fasciaNumero(fascia);
-    const areaId = `${routeId}_zona_${fascia}`;
-    await db.insert(gtfsFareAreas).values({
-      feedId, areaId,
-      areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`,
-      networkId: "extraurbano", routeId,
-      kmFrom: band.kmFrom, kmTo: band.kmTo,
-    }).onConflictDoUpdate({
-      target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-      set: { areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`, kmFrom: band.kmFrom, kmTo: band.kmTo, updatedAt: sql`now()` },
-    });
-    createdZones.push(areaId);
-  }
-
-  let stopsAssigned = 0;
-  for (const [stopId, info] of stopFinalKm) {
-    let band = getBandForDistance(info.km);
-    if (!band && info.km === 0) band = primaFascia();
-    if (!band) continue;
-    await db.insert(gtfsStopAreas)
-      .values({ feedId, areaId: `${routeId}_zona_${band.fascia}`, stopId })
-      .onConflictDoNothing();
-    stopsAssigned++;
-  }
+  const fasce = Array.from(usedBands).sort((a, b) => a - b);
+  const fermate = fermateNelleFasce(stopFinalKm);
+  await scriviZoneLinea(tx, feedId, routeId, fasce, fermate);
+  const createdZones = fasce;
+  const stopsAssigned = fermate.length;
 
   return { routeId, zones: createdZones.length, stops: stopsAssigned };
 }
@@ -1215,7 +1242,7 @@ async function generateZonesForRouteDirect(feedId: string, routeId: string) {
  * Metodo "Proiezione su Shape": media ponderata per tripCount su tutti i percorsi
  * della famiglia direzionale. (DGR Marche 1036/2022 art. 2.d)
  */
-async function generateZonesForRoute(feedId: string, routeId: string) {
+async function generateZonesForRoute(tx: Tx, feedId: string, routeId: string) {
   const { percorsi: allPercorsi } = await getRoutePercorsi(feedId, routeId);
   if (allPercorsi.length === 0) return { routeId, zones: 0, stops: 0, percorsiAnalizzati: 0, percorsiConShape: 0 };
 
@@ -1261,32 +1288,11 @@ async function generateZonesForRoute(feedId: string, routeId: string) {
   }
 
   // Crea aree e assegna fermate
-  const createdZones: string[] = [];
-  for (const fascia of Array.from(usedBands).sort((a, b) => a - b)) {
-    const band = fasciaNumero(fascia);
-    const areaId = `${routeId}_zona_${fascia}`;
-    await db.insert(gtfsFareAreas).values({
-      feedId, areaId,
-      areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`,
-      networkId: "extraurbano", routeId,
-      kmFrom: band.kmFrom, kmTo: band.kmTo,
-    }).onConflictDoUpdate({
-      target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-      set: { areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`, kmFrom: band.kmFrom, kmTo: band.kmTo, updatedAt: sql`now()` },
-    });
-    createdZones.push(areaId);
-  }
-
-  let stopsAssigned = 0;
-  for (const [stopId, info] of stopFinalKm) {
-    let band = getBandForDistance(info.km);
-    if (!band && info.km === 0) band = primaFascia();
-    if (!band) continue;
-    await db.insert(gtfsStopAreas)
-      .values({ feedId, areaId: `${routeId}_zona_${band.fascia}`, stopId })
-      .onConflictDoNothing();
-    stopsAssigned++;
-  }
+  const fasce = Array.from(usedBands).sort((a, b) => a - b);
+  const fermate = fermateNelleFasce(stopFinalKm);
+  await scriviZoneLinea(tx, feedId, routeId, fasce, fermate);
+  const createdZones = fasce;
+  const stopsAssigned = fermate.length;
 
   return {
     routeId,
@@ -1301,7 +1307,7 @@ async function generateZonesForRoute(feedId: string, routeId: string) {
  * Generate km-based zones for a single extraurban route.
  * Metodo "Percorso Dominante": usa SOLO il percorso con più corse (tripCount max).
  */
-async function generateZonesForRouteDominant(feedId: string, routeId: string) {
+async function generateZonesForRouteDominant(tx: Tx, feedId: string, routeId: string) {
   const { percorsi: allPercorsi, totalTripsDay } = await getRoutePercorsi(feedId, routeId);
   if (allPercorsi.length === 0) return { routeId, zones: 0, stops: 0, percorsiAnalizzati: 0, percorsiConShape: 0 };
 
@@ -1321,32 +1327,11 @@ async function generateZonesForRouteDominant(feedId: string, routeId: string) {
     else if (km === 0) usedBands.add(1);
   }
 
-  const createdZones: string[] = [];
-  for (const fascia of Array.from(usedBands).sort((a, b) => a - b)) {
-    const band = fasciaNumero(fascia);
-    const areaId = `${routeId}_zona_${fascia}`;
-    await db.insert(gtfsFareAreas).values({
-      feedId, areaId,
-      areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`,
-      networkId: "extraurbano", routeId,
-      kmFrom: band.kmFrom, kmTo: band.kmTo,
-    }).onConflictDoUpdate({
-      target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-      set: { areaName: `Linea ${routeId} - Zona km ${band.kmFrom}-${band.kmTo}`, kmFrom: band.kmFrom, kmTo: band.kmTo, updatedAt: sql`now()` },
-    });
-    createdZones.push(areaId);
-  }
-
-  let stopsAssigned = 0;
-  for (const [stopId, info] of stopFinalKm) {
-    let band = getBandForDistance(info.km);
-    if (!band && info.km === 0) band = primaFascia();
-    if (!band) continue;
-    await db.insert(gtfsStopAreas)
-      .values({ feedId, areaId: `${routeId}_zona_${band.fascia}`, stopId })
-      .onConflictDoNothing();
-    stopsAssigned++;
-  }
+  const fasce = Array.from(usedBands).sort((a, b) => a - b);
+  const fermate = fermateNelleFasce(stopFinalKm);
+  await scriviZoneLinea(tx, feedId, routeId, fasce, fermate);
+  const createdZones = fasce;
+  const stopsAssigned = fermate.length;
 
   return {
     routeId,
@@ -1379,62 +1364,63 @@ router.post("/fares/leg-rules/generate", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
 
-    // Delete existing leg rules
-    await db.delete(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
+    /* cancellare e rifare in una transazione, a blocchi; nel registro come riepilogo (7.19) */
+    const { urbanRules, odCount } = await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+      await tx.delete(gtfsFareLegRules).where(eq(gtfsFareLegRules.feedId, feedId));
 
-    // 1) Le regole delle reti urbane, senza zone: una per ogni biglietto con una durata
-    //    che c'è nel feed, per tutte le reti urbane dell'azienda (lib/titoli-catalogo.ts)
-    const prodotti = await db.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
-    const urbanRules = regoleUrbane(prodotti, retiUrbane());
+      // 1) Le regole delle reti urbane, senza zone: una per ogni biglietto con una durata
+      //    che c'è nel feed, per tutte le reti urbane dell'azienda (lib/titoli-catalogo.ts)
+      const prodotti = await tx.select().from(gtfsFareProducts).where(eq(gtfsFareProducts.feedId, feedId));
+      const urbanRules = regoleUrbane(prodotti, retiUrbane());
+      for (const blocco of aBlocchi(urbanRules)) {
+        await tx.insert(gtfsFareLegRules).values(blocco.map((r) => ({ feedId, ...r, rulePriority: 10 })));
+      }
 
-    for (const r of urbanRules) {
-      await db.insert(gtfsFareLegRules).values({ feedId, ...r, rulePriority: 10 });
-    }
+      // 2) Extraurban OD matrix
+      // Group areas by route
+      const areas = await tx.select().from(gtfsFareAreas)
+        .where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
 
-    // 2) Extraurban OD matrix
-    // Group areas by route
-    const areas = await db.select().from(gtfsFareAreas)
-      .where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
+      const byRoute = new Map<string, typeof areas>();
+      for (const a of areas) {
+        if (!a.routeId) continue;
+        const arr = byRoute.get(a.routeId) || [];
+        arr.push(a);
+        byRoute.set(a.routeId, arr);
+      }
 
-    const byRoute = new Map<string, typeof areas>();
-    for (const a of areas) {
-      if (!a.routeId) continue;
-      const arr = byRoute.get(a.routeId) || [];
-      arr.push(a);
-      byRoute.set(a.routeId, arr);
-    }
+      const od: (typeof gtfsFareLegRules.$inferInsert)[] = [];
+      for (const [, routeAreas] of byRoute) {
+        // Sort by kmFrom
+        routeAreas.sort((a, b) => (a.kmFrom || 0) - (b.kmFrom || 0));
 
-    let odCount = 0;
-    for (const [rId, routeAreas] of byRoute) {
-      // Sort by kmFrom
-      routeAreas.sort((a, b) => (a.kmFrom || 0) - (b.kmFrom || 0));
-
-      // For every pair (i,j) where i≠j, compute distance and assign fare band
-      for (let i = 0; i < routeAreas.length; i++) {
-        for (let j = 0; j < routeAreas.length; j++) {
-          if (i === j) continue;
-          const from = routeAreas[i];
-          const to = routeAreas[j];
-          // Distance = midpoint of "to" zone − midpoint of "from" zone
-          const fromMid = ((from.kmFrom || 0) + (from.kmTo || 0)) / 2;
-          const toMid = ((to.kmFrom || 0) + (to.kmTo || 0)) / 2;
-          const dist = Math.abs(toMid - fromMid);
-          const band = getBandForDistance(dist);
-          if (!band) continue;
-
-          await db.insert(gtfsFareLegRules).values({
-            feedId,
-            legGroupId: "lg_extra",
-            networkId: "extraurbano",
-            fromAreaId: from.areaId,
-            toAreaId: to.areaId,
-            fareProductId: `extra_fascia_${band.fascia}`,
-            rulePriority: 0,
-          });
-          odCount++;
+        // For every pair (i,j) where i≠j, compute distance and assign fare band
+        for (let i = 0; i < routeAreas.length; i++) {
+          for (let j = 0; j < routeAreas.length; j++) {
+            if (i === j) continue;
+            const from = routeAreas[i];
+            const to = routeAreas[j];
+            // Distance = midpoint of "to" zone − midpoint of "from" zone
+            const fromMid = ((from.kmFrom || 0) + (from.kmTo || 0)) / 2;
+            const toMid = ((to.kmFrom || 0) + (to.kmTo || 0)) / 2;
+            const dist = Math.abs(toMid - fromMid);
+            const band = getBandForDistance(dist);
+            if (!band) continue;
+            od.push({
+              feedId,
+              legGroupId: "lg_extra",
+              networkId: "extraurbano",
+              fromAreaId: from.areaId,
+              toAreaId: to.areaId,
+              fareProductId: `extra_fascia_${band.fascia}`,
+              rulePriority: 0,
+            });
+          }
         }
       }
-    }
+      for (const blocco of aBlocchi(od)) await tx.insert(gtfsFareLegRules).values(blocco);
+      return { urbanRules, odCount: od.length };
+    }));
 
     res.json({ urbanRules: urbanRules.length, odRules: odCount, total: urbanRules.length + odCount });
   } catch (e: any) { erroreTariffe(res, e); }
@@ -2933,8 +2919,10 @@ router.delete("/fares/zone-clusters", async (req, res): Promise<void> => {
     const beforeRows = await db.select({ c: sql<number>`count(*)::int` })
       .from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
     const before = Number(beforeRows[0]?.c ?? 0);
-    await db.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
-    await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    await db.transaction(async (tx) => {
+      await tx.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+      await tx.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    });
     res.json({ ok: true, deletedClusters: before });
   } catch (e: any) { erroreTariffe(res, e); }
 });
@@ -2946,10 +2934,12 @@ router.delete("/fares/zone-clusters/:id", async (req, res): Promise<void> => {
     // Get the cluster to find its clusterId for stop cleanup
     const [cluster] = await db.select().from(gtfsFareZoneClusters).where(nelFeed(gtfsFareZoneClusters, s));
     if (!cluster) { res.status(404).json(NON_NEL_FEED); return; }
-    await db.delete(gtfsFareZoneClusterStops).where(
-      and(eq(gtfsFareZoneClusterStops.feedId, s.feedId), eq(gtfsFareZoneClusterStops.clusterId, cluster.clusterId))
-    );
-    await db.delete(gtfsFareZoneClusters).where(nelFeed(gtfsFareZoneClusters, s));
+    await db.transaction(async (tx) => {
+      await tx.delete(gtfsFareZoneClusterStops).where(
+        and(eq(gtfsFareZoneClusterStops.feedId, s.feedId), eq(gtfsFareZoneClusterStops.clusterId, cluster.clusterId))
+      );
+      await tx.delete(gtfsFareZoneClusters).where(nelFeed(gtfsFareZoneClusters, s));
+    });
     res.json({ ok: true });
   } catch (e: any) { erroreTariffe(res, e); }
 });
@@ -2975,38 +2965,37 @@ router.post("/fares/zone-clusters/:clusterId/stops", async (req, res): Promise<v
     const { stops } = req.body as { stops: { stopId: string; stopName: string; stopLat: number; stopLon: number }[] };
     if (!Array.isArray(stops)) { res.status(400).json({ error: "stops array required" }); return; }
 
-    // Remove these stops from any other cluster first (enforce partition)
     const stopIds = stops.map(s => s.stopId);
-    if (stopIds.length > 0) {
-      await db.delete(gtfsFareZoneClusterStops).where(
-        and(
-          eq(gtfsFareZoneClusterStops.feedId, feedId),
-          sql`cluster_id != ${clusterId}`,
-          inArray(gtfsFareZoneClusterStops.stopId, stopIds),
-        )
-      );
-    }
-    // Replace all stops for this cluster
-    await db.delete(gtfsFareZoneClusterStops).where(
-      and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, clusterId))
-    );
-    if (stops.length > 0) {
-      const batchSize = 500;
-      for (let b = 0; b < stops.length; b += batchSize) {
-        const batch = stops.slice(b, b + batchSize);
-        await db.insert(gtfsFareZoneClusterStops).values(
-          batch.map(s => ({ feedId, clusterId, stopId: s.stopId, stopName: s.stopName, stopLat: s.stopLat, stopLon: s.stopLon }))
+    /* togliere, rimettere e ricalcolare il centro in una transazione (7.19) */
+    await db.transaction(async (tx) => {
+      // Remove these stops from any other cluster first (enforce partition)
+      if (stopIds.length > 0) {
+        await tx.delete(gtfsFareZoneClusterStops).where(
+          and(
+            eq(gtfsFareZoneClusterStops.feedId, feedId),
+            sql`cluster_id != ${clusterId}`,
+            inArray(gtfsFareZoneClusterStops.stopId, stopIds),
+          )
         );
       }
-    }
-    // Recalculate centroid
-    if (stops.length > 0) {
-      const cLat = stops.reduce((sum, s) => sum + s.stopLat, 0) / stops.length;
-      const cLon = stops.reduce((sum, s) => sum + s.stopLon, 0) / stops.length;
-      await db.update(gtfsFareZoneClusters)
-        .set({ centroidLat: cLat, centroidLon: cLon, updatedAt: sql`now()` })
-        .where(and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, clusterId)));
-    }
+      // Replace all stops for this cluster
+      await tx.delete(gtfsFareZoneClusterStops).where(
+        and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, clusterId))
+      );
+      for (const blocco of aBlocchi(stops, 500)) {
+        await tx.insert(gtfsFareZoneClusterStops).values(
+          blocco.map(s => ({ feedId, clusterId, stopId: s.stopId, stopName: s.stopName, stopLat: s.stopLat, stopLon: s.stopLon }))
+        );
+      }
+      // Recalculate centroid
+      if (stops.length > 0) {
+        const cLat = stops.reduce((sum, s) => sum + s.stopLat, 0) / stops.length;
+        const cLon = stops.reduce((sum, s) => sum + s.stopLon, 0) / stops.length;
+        await tx.update(gtfsFareZoneClusters)
+          .set({ centroidLat: cLat, centroidLon: cLon, updatedAt: sql`now()` })
+          .where(and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, clusterId)));
+      }
+    });
     res.json({ ok: true, stopsSet: stops.length });
   } catch (e: any) { erroreTariffe(res, e); }
 });
@@ -3044,68 +3033,69 @@ router.post("/fares/zone-clusters/generate-zones", async (req, res): Promise<voi
     // a posto (ogni fermata nella zona della sua rete); se non ci sono, non le crea.
     const urbane = await assegnaZoneUrbane(feedId, { soloSeCiSono: true });
 
-    // 1) Delete existing extraurban areas, stop_areas, and leg_rules (only extraurban — keep urban)
-    const existingExtraAreas = await db.select().from(gtfsFareAreas)
-      .where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
-    if (existingExtraAreas.length > 0) {
-      const areaIds = existingExtraAreas.map(a => a.areaId);
-      await db.delete(gtfsStopAreas).where(and(eq(gtfsStopAreas.feedId, feedId), inArray(gtfsStopAreas.areaId, areaIds)));
-      await db.delete(gtfsFareAreas).where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
-    }
-    // Delete existing extraurban leg rules
-    await db.delete(gtfsFareLegRules).where(
-      and(eq(gtfsFareLegRules.feedId, feedId), eq(gtfsFareLegRules.networkId, "extraurbano"))
-    );
-
-    // 2) Create one area per cluster
-    let areasCreated = 0;
-    for (const c of clusters) {
-      await db.insert(gtfsFareAreas).values({
-        feedId,
-        areaId: `cluster_${c.clusterId}`,
-        areaName: c.clusterName,
-        networkId: "extraurbano",
-      }).onConflictDoUpdate({
-        target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
-        set: { areaName: c.clusterName, updatedAt: sql`now()` },
-      });
-      areasCreated++;
-    }
-
-    // 3) Assign cluster stops to areas
-    let stopsAssigned = 0;
-    for (const c of clusters) {
-      const cStops = await db.select().from(gtfsFareZoneClusterStops)
-        .where(and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.clusterId, c.clusterId)));
-      for (const s of cStops) {
-        await db.insert(gtfsStopAreas).values({
-          feedId, areaId: `cluster_${c.clusterId}`, stopId: s.stopId,
-        }).onConflictDoNothing();
-        stopsAssigned++;
+    /* cancellare e rifare aree, fermate e regole extraurbane in una transazione,
+       a insiemi; nel registro come riepilogo (7.19) */
+    const { areasCreated, stopsAssigned, odRules } = await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+      // 1) Delete existing extraurban areas, stop_areas, and leg_rules (only extraurban — keep urban)
+      const existingExtraAreas = await tx.select().from(gtfsFareAreas)
+        .where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
+      if (existingExtraAreas.length > 0) {
+        const areaIds = existingExtraAreas.map(a => a.areaId);
+        await tx.delete(gtfsStopAreas).where(and(eq(gtfsStopAreas.feedId, feedId), inArray(gtfsStopAreas.areaId, areaIds)));
+        await tx.delete(gtfsFareAreas).where(and(eq(gtfsFareAreas.feedId, feedId), eq(gtfsFareAreas.networkId, "extraurbano")));
       }
-    }
+      // Delete existing extraurban leg rules
+      await tx.delete(gtfsFareLegRules).where(
+        and(eq(gtfsFareLegRules.feedId, feedId), eq(gtfsFareLegRules.networkId, "extraurbano"))
+      );
 
-    // 4) Generate OD leg rules based on centroid distances
-    const validClusters = clusters.filter(c => c.centroidLat != null && c.centroidLon != null);
-    let odRules = 0;
-    for (let i = 0; i < validClusters.length; i++) {
-      for (let j = 0; j < validClusters.length; j++) {
-        if (i === j) continue;
-        const dist = haversineKm(validClusters[i].centroidLat!, validClusters[i].centroidLon!, validClusters[j].centroidLat!, validClusters[j].centroidLon!);
-        const band = getBandForDistance(dist);
-        if (!band) continue;
-        await db.insert(gtfsFareLegRules).values({
+      // 2) Create one area per cluster
+      for (const blocco of aBlocchi(clusters)) {
+        await tx.insert(gtfsFareAreas).values(blocco.map((c) => ({
           feedId,
-          legGroupId: "lg_extra_cluster",
+          areaId: `cluster_${c.clusterId}`,
+          areaName: c.clusterName,
           networkId: "extraurbano",
-          fromAreaId: `cluster_${validClusters[i].clusterId}`,
-          toAreaId: `cluster_${validClusters[j].clusterId}`,
-          fareProductId: `extra_fascia_${band.fascia}`,
-          rulePriority: 0,
+        }))).onConflictDoUpdate({
+          target: [gtfsFareAreas.feedId, gtfsFareAreas.areaId],
+          set: { areaName: sql`excluded.area_name`, updatedAt: sql`now()` },
         });
-        odRules++;
       }
-    }
+
+      // 3) Assign cluster stops to areas (one read, then in blocks)
+      const nelCluster = new Set(clusters.map((c) => c.clusterId));
+      const fermateCluster = (await tx.select({ clusterId: gtfsFareZoneClusterStops.clusterId, stopId: gtfsFareZoneClusterStops.stopId })
+        .from(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId)))
+        .filter((r) => nelCluster.has(r.clusterId));
+      for (const blocco of aBlocchi(fermateCluster)) {
+        await tx.insert(gtfsStopAreas)
+          .values(blocco.map((r) => ({ feedId, areaId: `cluster_${r.clusterId}`, stopId: r.stopId })))
+          .onConflictDoNothing();
+      }
+
+      // 4) Generate OD leg rules based on centroid distances
+      const validClusters = clusters.filter(c => c.centroidLat != null && c.centroidLon != null);
+      const od: (typeof gtfsFareLegRules.$inferInsert)[] = [];
+      for (let i = 0; i < validClusters.length; i++) {
+        for (let j = 0; j < validClusters.length; j++) {
+          if (i === j) continue;
+          const dist = haversineKm(validClusters[i].centroidLat!, validClusters[i].centroidLon!, validClusters[j].centroidLat!, validClusters[j].centroidLon!);
+          const band = getBandForDistance(dist);
+          if (!band) continue;
+          od.push({
+            feedId,
+            legGroupId: "lg_extra_cluster",
+            networkId: "extraurbano",
+            fromAreaId: `cluster_${validClusters[i].clusterId}`,
+            toAreaId: `cluster_${validClusters[j].clusterId}`,
+            fareProductId: `extra_fascia_${band.fascia}`,
+            rulePriority: 0,
+          });
+        }
+      }
+      for (const blocco of aBlocchi(od)) await tx.insert(gtfsFareLegRules).values(blocco);
+      return { areasCreated: clusters.length, stopsAssigned: fermateCluster.length, odRules: od.length };
+    }));
 
     res.json({ areasCreated, stopsAssigned, odRules, totalClusters: clusters.length, urbanAreas: urbane.zone, urbanStopsAdded: urbane.aggiunte, urbanStopsRemoved: urbane.tolte });
   } catch (e: any) { erroreTariffe(res, e); }
@@ -3142,36 +3132,29 @@ async function persistClusters(
   feedId: string,
   clusterDefs: { clusterId: string; clusterName: string; color: string; stops: AutoStop[] }[],
 ) {
-  await db.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
-  await db.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
-
-  let clustersCreated = 0;
-  let totalStopsAssigned = 0;
-
-  for (const def of clusterDefs) {
-    if (def.stops.length === 0) continue;
-    const cLat = def.stops.reduce((s, st) => s + st.lat, 0) / def.stops.length;
-    const cLon = def.stops.reduce((s, st) => s + st.lon, 0) / def.stops.length;
-
-    await db.insert(gtfsFareZoneClusters).values({
-      feedId, clusterId: def.clusterId, clusterName: def.clusterName,
-      polygon: null, centroidLat: cLat, centroidLon: cLon, color: def.color,
-    }).onConflictDoUpdate({
-      target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
-      set: { clusterName: def.clusterName, centroidLat: cLat, centroidLon: cLon, color: def.color, updatedAt: sql`now()` },
-    });
-
-    const batchSize = 500;
-    for (let b = 0; b < def.stops.length; b += batchSize) {
-      const batch = def.stops.slice(b, b + batchSize);
-      await db.insert(gtfsFareZoneClusterStops).values(
-        batch.map(s => ({ feedId, clusterId: def.clusterId, stopId: s.stop_id, stopName: s.stop_name, stopLat: s.lat, stopLon: s.lon }))
-      );
+  /* cancellare e rifare cluster e fermate in una transazione, a insiemi;
+     nel registro come riepilogo (7.19) */
+  const pieni = clusterDefs.filter((def) => def.stops.length > 0);
+  await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+    await tx.delete(gtfsFareZoneClusterStops).where(eq(gtfsFareZoneClusterStops.feedId, feedId));
+    await tx.delete(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
+    for (const blocco of aBlocchi(pieni, 500)) {
+      await tx.insert(gtfsFareZoneClusters).values(blocco.map((def) => ({
+        feedId, clusterId: def.clusterId, clusterName: def.clusterName,
+        polygon: null,
+        centroidLat: def.stops.reduce((s, st) => s + st.lat, 0) / def.stops.length,
+        centroidLon: def.stops.reduce((s, st) => s + st.lon, 0) / def.stops.length,
+        color: def.color,
+      }))).onConflictDoUpdate({
+        target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
+        set: { clusterName: sql`excluded.cluster_name`, centroidLat: sql`excluded.centroid_lat`, centroidLon: sql`excluded.centroid_lon`, color: sql`excluded.color`, updatedAt: sql`now()` },
+      });
     }
-
-    clustersCreated++;
-    totalStopsAssigned += def.stops.length;
-  }
+    const fermate = pieni.flatMap((def) => def.stops.map((s) => ({ feedId, clusterId: def.clusterId, stopId: s.stop_id, stopName: s.stop_name, stopLat: s.lat, stopLon: s.lon })));
+    for (const blocco of aBlocchi(fermate, 500)) await tx.insert(gtfsFareZoneClusterStops).values(blocco);
+  }));
+  const clustersCreated = pieni.length;
+  const totalStopsAssigned = pieni.reduce((somma, def) => somma + def.stops.length, 0);
   return { clustersCreated, totalStopsAssigned };
 }
 

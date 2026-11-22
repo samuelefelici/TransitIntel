@@ -88,6 +88,11 @@ const TABELLE: Record<string, string> = {
   "public.ps_day_types": "Giorni-tipo",
   "public.ps_validity_categories": "Categorie di validità",
   "public.ps_calendar_profiles": "Calendario aziendale del programma",
+  "public.gtfs_fare_areas": "Zone tariffarie",
+  "public.gtfs_stop_areas": "Fermate delle zone tariffarie",
+  "public.gtfs_fare_leg_rules": "Regole tariffarie fra zone",
+  "public.gtfs_fare_zone_clusters": "Nodi tariffari",
+  "public.gtfs_fare_zone_cluster_stops": "Fermate dei nodi tariffari",
 };
 
 /** Il nome di una tabella per chi legge; una tabella che qui non c'è ancora resta col suo nome. */

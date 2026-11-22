@@ -43,6 +43,7 @@
  */
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
+import { conContesto } from "@workspace/db/contesto";
 import {
   gtfsStops,
   gtfsRoutes,
@@ -700,38 +701,6 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
       .from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
     const clustersBefore = Number(cBeforeRows[0]?.c ?? 0);
 
-    if (params.clearExistingAuto) {
-      // Cancella TUTTI i cluster non manuali del feed (auto_*, urban_*, official_*).
-      // I cluster `is_official=true` provenienti dal catalogo restano protetti.
-      // Le righe in cluster_stops con assignment_source='manual' restano (override utente).
-      const toDelete = await db.select({ clusterId: gtfsFareZoneClusters.clusterId })
-        .from(gtfsFareZoneClusters)
-        .where(and(
-          eq(gtfsFareZoneClusters.feedId, feedId),
-          eq(gtfsFareZoneClusters.isOfficial, false),
-        ));
-      const ids = toDelete.map(x => x.clusterId);
-      if (ids.length > 0) {
-        // Cancella solo le righe auto-assegnate dei cluster da rimuovere
-        await db.delete(gtfsFareZoneClusterStops).where(and(
-          eq(gtfsFareZoneClusterStops.feedId, feedId),
-          inArray(gtfsFareZoneClusterStops.clusterId, ids),
-          sql`(assignment_source IS NULL OR assignment_source = 'auto')`,
-        ));
-        // Cancella i cluster solo se ora sono completamente vuoti
-        // (alcuni potrebbero contenere ancora stops manuali)
-        await db.execute(sql`
-          DELETE FROM gtfs_fare_zone_clusters c
-          WHERE c.feed_id = ${feedId}
-            AND c.is_official = false
-            AND NOT EXISTS (
-              SELECT 1 FROM gtfs_fare_zone_cluster_stops cs
-              WHERE cs.feed_id = c.feed_id AND cs.cluster_id = c.cluster_id
-            )
-        `);
-      }
-    }
-
     const finalAssignments = new Map<string, {
       clusterId: string; clusterName: string; layer: string; confidence: number; isOfficial: boolean;
     }>();
@@ -866,30 +835,22 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
       }
     }
 
-    // Persisti cluster con centroide
-    for (const [clusterId, meta] of newClusters) {
+    /* Le scritture tutte insieme, in una transazione e a insiemi; nel registro
+       come riepilogo (7.19). Il calcolo qui sopra non legge i cluster: la
+       cancellazione dei cluster automatici può stare qui, con le scritture. */
+    const cluster = Array.from(newClusters).flatMap(([clusterId, meta]) => {
       const stopsInCluster = stops.filter(s => finalAssignments.get(s.stopId)?.clusterId === clusterId);
-      if (stopsInCluster.length === 0) continue;
-      const centroidLat = stopsInCluster.reduce((a, s) => a + s.lat, 0) / stopsInCluster.length;
-      const centroidLon = stopsInCluster.reduce((a, s) => a + s.lon, 0) / stopsInCluster.length;
-      await db.insert(gtfsFareZoneClusters).values({
+      if (stopsInCluster.length === 0) return [];
+      return [{
         feedId, clusterId, clusterName: meta.name,
-        polygon: null, centroidLat, centroidLon,
+        polygon: null,
+        centroidLat: stopsInCluster.reduce((a, s) => a + s.lat, 0) / stopsInCluster.length,
+        centroidLon: stopsInCluster.reduce((a, s) => a + s.lon, 0) / stopsInCluster.length,
         color: colorForCluster(clusterId, meta.isOfficial),
         isOfficial: meta.isOfficial,
         officialCode: meta.officialCode,
-      }).onConflictDoUpdate({
-        target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
-        set: { clusterName: meta.name, centroidLat, centroidLon, color: colorForCluster(clusterId, meta.isOfficial), updatedAt: sql`now()`, isOfficial: meta.isOfficial, officialCode: meta.officialCode },
-      });
-    }
-
-    // Persisti assegnazioni — prima cancella tutte le righe auto del feed (non manuali), poi insert in batch
-    await db.delete(gtfsFareZoneClusterStops).where(and(
-      eq(gtfsFareZoneClusterStops.feedId, feedId),
-      sql`(assignment_source IS NULL OR assignment_source = 'auto')`,
-    ));
-
+      }];
+    });
     const rows = stops.filter(s => finalAssignments.has(s.stopId)).map(s => {
       const a = finalAssignments.get(s.stopId)!;
       return {
@@ -899,9 +860,59 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
       };
     });
     const BATCH = 500;
-    for (let i = 0; i < rows.length; i += BATCH) {
-      await db.insert(gtfsFareZoneClusterStops).values(rows.slice(i, i + BATCH));
-    }
+    await conContesto({ registro: "riepilogo" }, () => db.transaction(async (tx) => {
+      if (params.clearExistingAuto) {
+        // Cancella TUTTI i cluster non manuali del feed (auto_*, urban_*, official_*).
+        // I cluster `is_official=true` provenienti dal catalogo restano protetti.
+        // Le righe in cluster_stops con assignment_source='manual' restano (override utente).
+        const toDelete = await tx.select({ clusterId: gtfsFareZoneClusters.clusterId })
+          .from(gtfsFareZoneClusters)
+          .where(and(
+            eq(gtfsFareZoneClusters.feedId, feedId),
+            eq(gtfsFareZoneClusters.isOfficial, false),
+          ));
+        const ids = toDelete.map(x => x.clusterId);
+        if (ids.length > 0) {
+          // Cancella solo le righe auto-assegnate dei cluster da rimuovere
+          await tx.delete(gtfsFareZoneClusterStops).where(and(
+            eq(gtfsFareZoneClusterStops.feedId, feedId),
+            inArray(gtfsFareZoneClusterStops.clusterId, ids),
+            sql`(assignment_source IS NULL OR assignment_source = 'auto')`,
+          ));
+          // Cancella i cluster solo se ora sono completamente vuoti
+          // (alcuni potrebbero contenere ancora stops manuali)
+          await tx.execute(sql`
+            DELETE FROM gtfs_fare_zone_clusters c
+            WHERE c.feed_id = ${feedId}
+              AND c.is_official = false
+              AND NOT EXISTS (
+                SELECT 1 FROM gtfs_fare_zone_cluster_stops cs
+                WHERE cs.feed_id = c.feed_id AND cs.cluster_id = c.cluster_id
+              )
+          `);
+        }
+      }
+
+      // Persisti cluster con centroide
+      for (let i = 0; i < cluster.length; i += BATCH) {
+        await tx.insert(gtfsFareZoneClusters).values(cluster.slice(i, i + BATCH)).onConflictDoUpdate({
+          target: [gtfsFareZoneClusters.feedId, gtfsFareZoneClusters.clusterId],
+          set: {
+            clusterName: sql`excluded.cluster_name`, centroidLat: sql`excluded.centroid_lat`, centroidLon: sql`excluded.centroid_lon`,
+            color: sql`excluded.color`, updatedAt: sql`now()`, isOfficial: sql`excluded.is_official`, officialCode: sql`excluded.official_code`,
+          },
+        });
+      }
+
+      // Persisti assegnazioni — prima cancella tutte le righe auto del feed (non manuali), poi insert in batch
+      await tx.delete(gtfsFareZoneClusterStops).where(and(
+        eq(gtfsFareZoneClusterStops.feedId, feedId),
+        sql`(assignment_source IS NULL OR assignment_source = 'auto')`,
+      ));
+      for (let i = 0; i < rows.length; i += BATCH) {
+        await tx.insert(gtfsFareZoneClusterStops).values(rows.slice(i, i + BATCH));
+      }
+    }));
 
     const cAfterRows = await db.select({ c: sql<number>`count(*)::int` })
       .from(gtfsFareZoneClusters).where(eq(gtfsFareZoneClusters.feedId, feedId));
@@ -931,8 +942,10 @@ async function runNodeAssignmentPipeline(feedId: string, opts: {
   }
 }
 
-async function recalcCentroid(feedId: string, clusterId: string) {
-  const stops = await db.select({
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+async function recalcCentroid(tx: Tx, feedId: string, clusterId: string) {
+  const stops = await tx.select({
     lat: gtfsFareZoneClusterStops.stopLat,
     lon: gtfsFareZoneClusterStops.stopLon,
   }).from(gtfsFareZoneClusterStops).where(
@@ -941,7 +954,7 @@ async function recalcCentroid(feedId: string, clusterId: string) {
   if (stops.length === 0) return;
   const cLat = stops.reduce((a, s) => a + Number(s.lat), 0) / stops.length;
   const cLon = stops.reduce((a, s) => a + Number(s.lon), 0) / stops.length;
-  await db.update(gtfsFareZoneClusters).set({
+  await tx.update(gtfsFareZoneClusters).set({
     centroidLat: cLat, centroidLon: cLon, updatedAt: sql`now()`,
   }).where(and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, clusterId)));
 }
@@ -1198,29 +1211,30 @@ router.delete("/fares/official-nodes/:id", async (req, res): Promise<void> => {
 
 // ── Move / override ──
 
-async function moveStop(feedId: string, stopId: string, toClusterId: string, reason: string | undefined, actor: string) {
-  const [current] = await db.select().from(gtfsFareZoneClusterStops).where(
+/** Una fermata in un altro cluster: assegnazione, traccia e centri in una transazione (7.19). */
+async function moveStop(tx: Tx, feedId: string, stopId: string, toClusterId: string, reason: string | undefined, actor: string) {
+  const [current] = await tx.select().from(gtfsFareZoneClusterStops).where(
     and(eq(gtfsFareZoneClusterStops.feedId, feedId), eq(gtfsFareZoneClusterStops.stopId, stopId))
   );
 
-  const [targetCluster] = await db.select().from(gtfsFareZoneClusters).where(
+  const [targetCluster] = await tx.select().from(gtfsFareZoneClusters).where(
     and(eq(gtfsFareZoneClusters.feedId, feedId), eq(gtfsFareZoneClusters.clusterId, toClusterId))
   );
   if (!targetCluster) throw new Error(`Cluster target non esiste: ${toClusterId}`);
 
-  const [stopInfo] = await db.select().from(gtfsStops).where(
+  const [stopInfo] = await tx.select().from(gtfsStops).where(
     and(eq(gtfsStops.feedId, feedId), eq(gtfsStops.stopId, stopId))
   );
   if (!stopInfo) throw new Error(`Stop non trovato: ${stopId}`);
 
   if (current) {
-    await db.update(gtfsFareZoneClusterStops).set({
+    await tx.update(gtfsFareZoneClusterStops).set({
       clusterId: toClusterId,
       assignmentLayer: "manual", assignmentConfidence: 100, assignmentSource: "manual",
       assignedAt: sql`now()`,
     }).where(eq(gtfsFareZoneClusterStops.id, current.id));
   } else {
-    await db.insert(gtfsFareZoneClusterStops).values({
+    await tx.insert(gtfsFareZoneClusterStops).values({
       feedId, clusterId: toClusterId, stopId,
       stopName: stopInfo.stopName,
       stopLat: Number(stopInfo.stopLat), stopLon: Number(stopInfo.stopLon),
@@ -1228,15 +1242,15 @@ async function moveStop(feedId: string, stopId: string, toClusterId: string, rea
     });
   }
 
-  await db.insert(gtfsFareStopAssignmentOverrides).values({
+  await tx.insert(gtfsFareStopAssignmentOverrides).values({
     feedId, stopId,
     fromClusterId: current?.clusterId ?? null,
     toClusterId, reason, actor,
   });
 
-  await recalcCentroid(feedId, toClusterId);
+  await recalcCentroid(tx, feedId, toClusterId);
   if (current?.clusterId && current.clusterId !== toClusterId) {
-    await recalcCentroid(feedId, current.clusterId);
+    await recalcCentroid(tx, feedId, current.clusterId);
   }
   return { fromCluster: current?.clusterId ?? null, toCluster: toClusterId };
 }
@@ -1252,7 +1266,7 @@ router.post("/fares/stop-assignment/bulk-move", async (req, res): Promise<void> 
     const results: any[] = [];
     for (const sid of stopIds) {
       try {
-        const r = await moveStop(feedId, sid, toClusterId, reason, actor);
+        const r = await db.transaction((tx) => moveStop(tx, feedId, sid, toClusterId, reason, actor));
         results.push({ stopId: sid, ok: true, ...r });
       } catch (e: any) {
         results.push({ stopId: sid, ok: false, error: e.message });
@@ -1281,26 +1295,29 @@ router.post("/fares/stop-assignment/revert/:overrideId", async (req, res): Promi
     if (!ov) { res.status(404).json({ error: "Override non trovato" }); return; }
     if (!ov.fromClusterId) { res.status(400).json({ error: "Override non reversibile (fermata era orfana)" }); return; }
 
-    await db.update(gtfsFareZoneClusterStops).set({
-      clusterId: ov.fromClusterId,
-      assignmentLayer: "manual_revert",
-      assignmentSource: "manual",
-      assignedAt: sql`now()`,
-    }).where(and(
-      eq(gtfsFareZoneClusterStops.feedId, ov.feedId),
-      eq(gtfsFareZoneClusterStops.stopId, ov.stopId),
-    ));
+    const fromClusterId = ov.fromClusterId;
+    await db.transaction(async (tx) => {
+      await tx.update(gtfsFareZoneClusterStops).set({
+        clusterId: fromClusterId,
+        assignmentLayer: "manual_revert",
+        assignmentSource: "manual",
+        assignedAt: sql`now()`,
+      }).where(and(
+        eq(gtfsFareZoneClusterStops.feedId, ov.feedId),
+        eq(gtfsFareZoneClusterStops.stopId, ov.stopId),
+      ));
 
-    await db.insert(gtfsFareStopAssignmentOverrides).values({
-      feedId: ov.feedId, stopId: ov.stopId,
-      fromClusterId: ov.toClusterId,
-      toClusterId: ov.fromClusterId,
-      reason: `revert of ${ov.id}`,
-      actor: "system",
+      await tx.insert(gtfsFareStopAssignmentOverrides).values({
+        feedId: ov.feedId, stopId: ov.stopId,
+        fromClusterId: ov.toClusterId,
+        toClusterId: fromClusterId,
+        reason: `revert of ${ov.id}`,
+        actor: "system",
+      });
+
+      if (ov.toClusterId) await recalcCentroid(tx, ov.feedId, ov.toClusterId);
+      await recalcCentroid(tx, ov.feedId, fromClusterId);
     });
-
-    if (ov.toClusterId) await recalcCentroid(ov.feedId, ov.toClusterId);
-    await recalcCentroid(ov.feedId, ov.fromClusterId);
 
     res.json({ ok: true });
   } catch (e: any) { res.status(500).json({ error: e.message ?? String(e) }); }
