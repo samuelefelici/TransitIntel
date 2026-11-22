@@ -2226,6 +2226,38 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Registro: le tariffe a zone (tappa 7.19)
+
+Le tariffe a zone entrano nel registro delle modifiche (migrazione **0065**):
+zone, fermate delle zone, regole fra zone, nodi tariffari (cluster) e
+fermate dei nodi. Prima andavano sistemate le rigenerazioni, che scrivevano
+una riga per volta senza transazione: un errore a metà lasciava le zone a
+metà, e col registro acceso sarebbero state migliaia di righe.
+
+Ora ognuna è **una transazione, a insiemi**, e nel registro dà qualche
+riepilogo col nome di chi l'ha lanciata:
+- le zone delle linee (i tre metodi) e le regole OD;
+- le zone, le fermate e le regole dai nodi;
+- i nodi automatici e l'assegnazione delle fermate ai nodi;
+- cancellare i nodi, impostare le fermate di un nodo, spostare una fermata
+  da un nodo a un altro e annullare lo spostamento.
+
+Sulla copia di produzione: assegnazione dei nodi su 3.901 fermate in 4,9 s
+(quasi tutto calcolo), zone dai nodi in 1 s (30 nodi, 3.901 fermate, 870
+regole). Le quattro operazioni danno in tutto 18 righe di registro.
+
+Le fermate delle zone e le regole fra zone, sempre rigenerate, vanno solo in
+riepilogo; le altre tabelle coi valori (il poligono di un nodo solo come
+nome).
+
+Nessuna variabile, nessuna Watch Path nuova. La 0065 crea i trigger sulle 5
+tabelle con un lock breve. Il registro resta come lo hai lasciato (acceso o
+spento).
+
+**Rollback**: immagine precedente. I trigger restano: col codice di prima, a
+registro acceso, una rigenerazione darebbe una riga di registro per ogni
+istruzione.
+
 ### Registro: la validità delle corse (tappa 7.18)
 
 La famiglia della validità entra nel registro delle modifiche (migrazione
@@ -4868,10 +4900,9 @@ Le regole di ogni tabella sono in `registro.sorvegliate`.
 - **La validità delle corse** è entrata nella 7.18 (migrazione 0064), dopo
   aver sistemato le scritture: il ricalcolo aperto da una lettura risulta del
   sistema (via `sistema:categorie`, senza attore).
-- **Resta fuori, con il motivo:** le tariffe a zone (`gtfs_fare_areas`,
-  `gtfs_fare_leg_rules`, i cluster): si rigenerano una riga per volta, fuori
-  da una transazione. Prima va sistemata quella scrittura; poi entrano con
-  una migrazione.
+- **Le tariffe a zone** sono entrate nella 7.19 (migrazione 0065), dopo
+  aver sistemato le rigenerazioni: ognuna è una transazione a insiemi e nel
+  registro dà qualche riepilogo.
 
 **Riepiloghi.** Più di 50 righe in un'istruzione, una cascata (cancellare un
 progetto cancella le sue fermate), un'operazione in blocco (import GTFS e
@@ -4990,8 +5021,7 @@ ogni avvio) dà errore, con la cura, se:
   i suoi limiti) e annullare la transazione per non lasciare la riga in
   `registro.letture`. Non può leggerne le tabelle, né cambiarle;
 - una tabella nuova non è sorvegliata finché una migrazione non chiama
-  `registro.sorveglia` (README delle migrazioni). Le tariffe a zone sono
-  fuori (sopra, «La seconda ondata»).
+  `registro.sorveglia` (README delle migrazioni).
 
 **Rilascio:** deploy normale. La 0006 e la 0007 creano i trigger con un lock
 breve sulle tabelle sorvegliate: le letture continuano, le scritture

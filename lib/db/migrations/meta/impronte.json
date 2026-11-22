@@ -63,5 +63,6 @@
   "0061_rotazione_dei_turni": "8b7ea56246485e0b2b6b823c020ad4923609e7097babeaa320d3684fa3375e0c",
   "0062_tabelle_non_usate": "8fb52480aaa4d1e2f29e9476895cd4e300dbbf1a04113a48f6211e5275983aa2",
   "0063_bus_stops_non_usata": "b78aa4b3923fd5c0c55c4cc0e06f6d3a31184f5755c5ce770278f039aad2a69f",
-  "0064_registro_validita": "ab07c515eb9c711b3fc37f326a0c20baf7e680f252ef0f17d199792279096fed"
+  "0064_registro_validita": "ab07c515eb9c711b3fc37f326a0c20baf7e680f252ef0f17d199792279096fed",
+  "0065_registro_tariffe_zone": "d5e1651d74e91844ec20b9d4ef0f0f05eafe78c69b27da550579077d745c5ec5"
 }
