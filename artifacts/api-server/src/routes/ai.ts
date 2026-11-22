@@ -8,6 +8,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { mintShortLivedUserToken } from "../lib/auth";
 import { logger } from "../lib/logger";
+import { argosHeaders, argosProxyConfigured } from "../lib/argos-proxy";
 
 const router: IRouter = Router();
 
@@ -59,6 +60,7 @@ router.get("/ai/argos/health", async (_req, res) => {
   }
   try {
     const r = await fetch(`${ARGOS_URL}/health`, {
+      headers: argosHeaders(),
       signal: AbortSignal.timeout(5000),
     });
     const d: any = await r.json().catch(() => ({}));
@@ -67,6 +69,10 @@ router.get("/ai/argos/health", async (_req, res) => {
       reachable: r.ok,
       cerbero: !!d?.cerbero_configured, // true ⇒ Argos può leggere i dati ps_*/gtfs_*
       transitintel: !!d?.transitintel_configured, // true ⇒ modalità Agente disponibile
+      // Il cancello d'ingresso di Argos: servono il segreto qui E là, uguale.
+      // Uno dei due false ⇒ ogni chiamata del pannello riceve 401/403/503.
+      proxySecret: argosProxyConfigured(),
+      argosProxy: !!d?.proxy_configured,
     });
   } catch (err: any) {
     res.json({ configured: true, reachable: false, error: err?.message || "unreachable" });
@@ -148,7 +154,7 @@ router.post("/ai/argos/chat", async (req, res) => {
   try {
     const upstream = await fetch(`${ARGOS_URL}/chat/stream`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         client_slug: ARGOS_CLIENT_SLUG,
         question,
@@ -202,6 +208,7 @@ router.get("/ai/argos/geo", async (req, res) => {
   }
   try {
     const upstream = await fetch(`${ARGOS_URL}/geo/routes?${qs.toString()}`, {
+      headers: argosHeaders(),
       signal: AbortSignal.timeout(12000),
     });
     const data = await upstream.json().catch(() => ({}));
@@ -312,7 +319,7 @@ async function argosGet(path: string, res: any): Promise<void> {
     return;
   }
   try {
-    const upstream = await fetch(`${ARGOS_URL}${path}`, { signal: AbortSignal.timeout(15000) });
+    const upstream = await fetch(`${ARGOS_URL}${path}`, { headers: argosHeaders(), signal: AbortSignal.timeout(15000) });
     const data = await upstream.json().catch(() => ({}));
     res.status(upstream.ok ? 200 : upstream.status).json(data);
   } catch (err: any) {
@@ -339,7 +346,7 @@ router.post("/ai/argos/agent/goal", async (req, res) => {
     // La pianificazione è multi-step (più letture + Opus): timeout generoso.
     const upstream = await fetch(`${ARGOS_URL}/agent/goal`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         client_slug: ARGOS_CLIENT_SLUG,
         project_id: projectId,
@@ -406,7 +413,7 @@ router.post("/ai/argos/agent/chat", async (req, res) => {
   try {
     const upstream = await fetch(`${ARGOS_URL}/agent/chat/stream`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         client_slug: ARGOS_CLIENT_SLUG,
         project_id: projectId,
@@ -462,7 +469,7 @@ router.post("/ai/argos/agent/goals", async (req, res) => {
   try {
     const upstream = await fetch(`${ARGOS_URL}/agent/goals`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         client_slug: ARGOS_CLIENT_SLUG, project_id: projectId,
         title, objective, success_criteria: successCriteria || "",
@@ -488,7 +495,7 @@ router.post("/ai/argos/agent/goals/:id/status", async (req, res) => {
   try {
     const upstream = await fetch(`${ARGOS_URL}/agent/goals/${goalId}/status`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ project_id: projectId, status }),
       signal: AbortSignal.timeout(15000),
     });
@@ -521,7 +528,7 @@ router.post("/ai/argos/agent/goals/:id/run", async (req, res) => {
   try {
     const upstream = await fetch(`${ARGOS_URL}/agent/goals/${goalId}/run/stream`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         client_slug: ARGOS_CLIENT_SLUG, project_id: projectId,
         ti_auth_token: mintShortLivedUserToken(userId, req.sessione), note: note || "",
@@ -569,7 +576,7 @@ router.post("/ai/argos/agent/runs/:id/undo", async (req, res) => {
   try {
     const upstream = await fetch(`${ARGOS_URL}/agent/runs/${runId}/undo`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({ project_id: projectId, ti_auth_token: mintShortLivedUserToken(userId, req.sessione) }),
       signal: AbortSignal.timeout(60000),
     });
@@ -624,7 +631,7 @@ router.post("/ai/argos/agent/proposals/:id", async (req, res) => {
   try {
     const upstream = await fetch(`${ARGOS_URL}/agent/proposals/${proposalId}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: argosHeaders({ "content-type": "application/json" }),
       // note (di norma sul rifiuto): diventa una lezione per i turni futuri.
       body: JSON.stringify({ status, project_id: projectId, note: note || undefined }),
       signal: AbortSignal.timeout(15000),

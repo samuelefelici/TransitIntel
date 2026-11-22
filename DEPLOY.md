@@ -6042,6 +6042,37 @@ configurare:
 
 ---
 
+## Argos: il segreto del proxy
+
+Argos non risponde più senza credenziali: prima chiunque conoscesse l'id di un
+progetto ne leggeva lo storico dei piani e poteva scrivere nella memoria
+dell'agente. Ogni chiamata dell'API verso Argos porta ora il segreto
+`ARGOS_PROXY_SECRET` nell'header `X-Argos-Proxy-Secret`; le pagine di Argos
+(chat sui documenti, wiki, mappa, admin) chiedono le credenziali del
+proprietario (`ADMIN_USERNAME`/`ADMIN_PASSWORD` del servizio Argos). Restano
+pubblici solo `/health` e `/mcp` (che ha le sue chiavi).
+
+L'ordine conta, e così non c'è nessun momento in cui il pannello si spegne:
+
+1. genera il segreto in locale (`openssl rand -hex 32`); non incollarlo in
+   chat né nei ticket;
+2. in Coolify, **nell'API** di Cerbero aggiungi `ARGOS_PROXY_SECRET` con quel
+   valore; **in Argos** aggiungi la stessa variabile con lo stesso valore, e
+   controlla che ci sia `ADMIN_PASSWORD`. Non ridistribuire ancora;
+3. distribuisci **prima Cerbero** (la PR che manda il segreto): Argos ignora
+   l'header finché non lo controlla, quindi non cambia niente;
+   controllo: `GET /api/ai/argos/health` risponde con `"proxySecret": true`;
+4. distribuisci **poi Argos** (la PR del cancello d'ingresso);
+   controllo: `GET /api/ai/argos/health` risponde con `"argosProxy": true`, e
+   una domanda nel pannello di Argos in Planning Studio ha risposta.
+
+Se il pannello risponde «Accesso negato» i due valori sono diversi; se dice
+«manca ARGOS_PROXY_SECRET» la variabile non è arrivata ad Argos. All'avvio
+l'API scrive un avviso nel log se `ARGOS_URL` c'è e il segreto no, o se il
+segreto è uguale a un segreto cron. Per ruotarlo: ripeti i passi 2–4 con un
+valore nuovo (per qualche minuto, fra i due deploy, il pannello risponde
+«Accesso negato»).
+
 ## Dev Locale
 
 ```bash

@@ -2039,6 +2039,34 @@ Deciso da me e dichiarato: la cancellazione di una corsa non si puo' contare
 per corsa (non lascia updated_at), quindi il conteggio e' di AZIONI del
 registro, non di corse; una `bulk_delete` di dieci corse vale una modifica.
 
+## Argos simbionte: il piano, il registro e la porta chiusa
+
+Novembre 2026. Argos diventa un sistema multi-agente integrato in tutto
+Cerbero: il cervello resta nel servizio Argos (agenti, skill, capacità,
+regista, memoria, evoluzione, tracce), il volto è una pagina intera di Cerbero
+(`/argos`, chiaro e scuro) più il pannello laterale. Decisioni prese: autonomia
+per agente ma ogni scrittura con anteprima e conferma; dati dei lavoratori agli
+agenti solo pseudonimizzati e in proposta; l'evoluzione tocca solo istruzioni e
+composizione delle skill, con l'approvazione umana dopo il banco di prova;
+«pieno controllo dell'applicativo» modulo per modulo attraverso il registro
+delle capacità. Il piano completo è nel README di Argos.
+
+Fatto finora:
+
+- **argos #69 — registro delle capacità e guardiano.** Ogni strumento ha un
+  modulo e un effetto (lettura, esito, memoria, scrittura, distruttivo);
+  `consenti()`, chiuso per default, gira nei quattro esecutori di Argos.
+- **La porta chiusa (questa coppia di PR).** Argos rispondeva a chiunque: con
+  l'id di un progetto si leggeva lo storico dei piani, si creavano obiettivi, si
+  segnavano proposte come rifiutate (che tornano nel prompt come lezioni) e si
+  scrivevano note nella memoria del progetto. Ora un middleware in Argos chiude
+  tutto tranne `/health` e `/mcp`; passa il proxy di Cerbero col segreto
+  `ARGOS_PROXY_SECRET` o il proprietario con le credenziali admin. In Cerbero
+  tutte le 13 chiamate ad Argos passano da `argosHeaders()` e un test che legge
+  i sorgenti impedisce di aggiungerne una senza. Ordine di distribuzione in
+  DEPLOY.md, «Argos: il segreto del proxy»: segreto in entrambi i servizi,
+  prima Cerbero, poi Argos.
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
