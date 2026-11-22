@@ -2226,6 +2226,36 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Registro: la validità delle corse (tappa 7.18)
+
+La famiglia della validità entra nel registro delle modifiche (migrazione
+**0064**): la matrice corsa × giorno-tipo, le categorie delle corse, le date
+in più e in meno, il calendario delle categorie, giorni-tipo, calendario dei
+giorni-tipo, categorie e calendario aziendale. Prima andavano sistemate le
+scritture, e ora:
+- **l'import dai calendari** scrive a insiemi e in una transazione: tre
+  istruzioni per calendario invece di una per corsa e per giorno-tipo. Sulla
+  copia di produzione (3.502 corse, 143 calendari) dura 1,9 s;
+- **il ricalcolo delle categorie** che parte quando si apre la lista delle
+  corse è del **sistema**: nel registro non ha attore e ha via
+  `sistema:categorie`, con la richiesta che l'ha avviato. Prima sarebbe stato
+  attribuito a chi aveva solo aperto la pagina. Il ricalcolo lanciato apposta
+  (pulsante, import) resta di chi lo lancia;
+- due ricalcoli dello stesso programma non si sovrappongono più (lucchetto
+  per programma).
+
+Il calendario delle categorie (una riga per data) va solo in riepilogo; le
+altre tabelle coi valori. Esclusi `updated_at` e l'orario dell'ultimo
+ricalcolo.
+
+Nessuna variabile, nessuna Watch Path nuova. La 0064 crea i trigger sulle 8
+tabelle con un lock breve. Il registro resta come lo hai lasciato (acceso o
+spento).
+
+**Rollback**: immagine precedente. I trigger restano e registrano anche con
+il codice di prima, ma il ricalcolo aperto dalla lista delle corse
+risulterebbe di chi ha aperto la pagina.
+
 ### mermaid 12 e katex 0.18 (tappa 7.17)
 
 I diagrammi (mermaid) e le formule (katex) nei messaggi di Argos passano a
@@ -4835,16 +4865,13 @@ Le regole di ogni tabella sono in `registro.sorvegliate`.
 - **Coi valori**, come la prima ondata: tracciati (`ps_shapes`, la geometria
   solo come nome), periodi di servizio, nodi di interscambio, zone vietate,
   attivazioni programmate.
-- **Restano fuori, con il motivo:**
-  - le tabelle della validità (`ps_trip_day_validity`,
-    `ps_trip_category_validity`, `ps_validity_category_calendar`,
-    `ps_trip_exceptions`, `ps_day_*`, `ps_calendar_profiles`): una
-    sincronizzazione le riscrive anche quando qualcuno apre soltanto una
-    pagina, e il registro attribuirebbe modifiche a chi ha solo letto;
-  - le tariffe a zone (`gtfs_fare_areas`, `gtfs_fare_leg_rules`, i cluster):
-    si rigenerano una riga per volta, fuori da una transazione.
-
-  Prima vanno sistemate quelle scritture; poi entrano con una migrazione.
+- **La validità delle corse** è entrata nella 7.18 (migrazione 0064), dopo
+  aver sistemato le scritture: il ricalcolo aperto da una lettura risulta del
+  sistema (via `sistema:categorie`, senza attore).
+- **Resta fuori, con il motivo:** le tariffe a zone (`gtfs_fare_areas`,
+  `gtfs_fare_leg_rules`, i cluster): si rigenerano una riga per volta, fuori
+  da una transazione. Prima va sistemata quella scrittura; poi entrano con
+  una migrazione.
 
 **Riepiloghi.** Più di 50 righe in un'istruzione, una cascata (cancellare un
 progetto cancella le sue fermate), un'operazione in blocco (import GTFS e
@@ -4963,8 +4990,8 @@ ogni avvio) dà errore, con la cura, se:
   i suoi limiti) e annullare la transazione per non lasciare la riga in
   `registro.letture`. Non può leggerne le tabelle, né cambiarle;
 - una tabella nuova non è sorvegliata finché una migrazione non chiama
-  `registro.sorveglia` (README delle migrazioni). La validità e le tariffe a
-  zone sono fuori (sopra, «La seconda ondata»).
+  `registro.sorveglia` (README delle migrazioni). Le tariffe a zone sono
+  fuori (sopra, «La seconda ondata»).
 
 **Rilascio:** deploy normale. La 0006 e la 0007 creano i trigger con un lock
 breve sulle tabelle sorvegliate: le letture continuano, le scritture
