@@ -1,2 +1,8 @@
 -r requirements.txt
 pytest==9.1.1
+# le dipendenze di pytest, fissate (PR 7.12): installazioni ripetibili, e
+# osv-scanner controlla le versioni vere invece di sceglierne una lui
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+pygments==2.21.0
