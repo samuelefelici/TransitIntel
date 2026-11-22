@@ -76,8 +76,10 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la validità delle corse e il r
   it("il ricalcolo che parte dalla lista delle corse è del sistema, con la richiesta che l'ha avviato", async () => {
     /* una corsa cambiata dopo l'ultimo ricalcolo: la lista delle corse la ricalcola */
     await db.execute(sql`UPDATE ps_calendar_profiles SET categories_synced_at = now() - interval '1 hour' WHERE project_id = ${P}::uuid`);
-    await contestoDb.run({ attore: UTENTE, via: "api", richiesta: "r-modifica-7-18" },
-      () => db.execute(sql`UPDATE ps_trips SET updated_at = now() WHERE id = ${T1}::uuid`));
+    /* attesa dentro il contesto: la query di drizzle parte solo quando la si attende */
+    await contestoDb.run({ attore: UTENTE, via: "api", richiesta: "r-modifica-7-18" }, async () => {
+      await db.execute(sql`UPDATE ps_trips SET updated_at = now() WHERE id = ${T1}::uuid`);
+    });
     await contestoDb.run({ attore: UTENTE, via: "api", richiesta: "r-lista-7-18" }, () => ensureCategoriesFresh(P));
 
     const categorie = await db.execute<{ n: number }>(sql`SELECT count(*)::int AS n FROM ps_trip_category_validity WHERE trip_id = ${T1}::uuid`);

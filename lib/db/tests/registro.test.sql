@@ -489,8 +489,12 @@ BEGIN
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.ps_activation_log' AND (t ->> 'con_valori')::boolean),
     'lo storico del programma in esercizio (migrazione 0019): con i valori';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.ps_stop_times'
-                    AND (t ->> 'riepilogo_sempre')::boolean AND NOT (t ->> 'con_valori')::boolean AND t ->> 'ambito_tipo' = 'corsa'),
-    'gli orari: sempre in riepilogo, senza valori';
+                    AND (t ->> 'riepilogo_sempre')::boolean AND (t ->> 'con_valori')::boolean AND t ->> 'ambito_tipo' = 'corsa'),
+    'gli orari: sempre in riepilogo, coi valori per il prima e il dopo (migrazione 0066)';
+  ASSERT (SELECT count(*) FROM registro.sorvegliate WHERE confronto) = 3
+         AND (SELECT bool_and(confronto) FROM registro.sorvegliate
+               WHERE tabella IN ('public.ps_stop_times', 'public.ps_variant_stops', 'public.ps_calendar_dates')),
+    'il prima e il dopo a fine transazione: le tre tabelle di dettaglio (migrazione 0066)';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.users' AND (t ->> 'con_valori')::boolean),
     'gli utenti: qualche valore (ruolo e permessi)';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.esercizio_vetture' AND (t ->> 'con_valori')::boolean),

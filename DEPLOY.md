@@ -2226,6 +2226,34 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Registro: gli orari col prima e il dopo, fermata per fermata (tappa 7.20)
+
+Gli orari alle fermate, le fermate delle varianti e le date dei calendari
+l'app li salva cancellando tutto e reinserendo. Finora il registro ne teneva
+solo un riepilogo («riscritte 30 righe»), senza dire che cosa era cambiato.
+Ora (migrazione **0066**) dice anche **il prima e il dopo**:
+- a fine transazione confronta ogni fermata com'era all'inizio con com'è alla
+  fine;
+- scrive una riga per ogni fermata cambiata davvero: per esempio «fermata 3:
+  partenza 08:06 → 08:07», «fermata 10 tolta» coi suoi orari;
+- le fermate reinserite uguali non lasciano niente; il riepilogo resta.
+
+Resta il solo riepilogo, come prima:
+- per una corsa nuova o svuotata (non c'erano orari prima, o non ce ne sono
+  dopo);
+- per le cascate (cancellare una corsa non elenca le sue fermate);
+- oltre 2000 righe per tabella in una transazione (un import, una copia).
+
+**Costo**, sulla copia di produzione col registro acceso: salvare gli orari
+di una corsa (35 fermate) 10 ms come prima; riscrivere 300 corse insieme (7.461
+righe, oltre il tetto) 0,23 s invece di 0,15 s.
+
+Nessuna variabile, nessuna Watch Path nuova. La 0066 cambia la funzione del
+registro e aggiunge una tabella di passaggio (`registro.confronti`, vuota
+fuori dalle transazioni). Il registro resta come lo hai lasciato.
+
+**Rollback**: immagine precedente. La 0066 resta; non dipende dall'app.
+
 ### Registro: le tariffe a zone (tappa 7.19)
 
 Le tariffe a zone entrano nel registro delle modifiche (migrazione **0065**):
@@ -4890,10 +4918,10 @@ Le regole di ogni tabella sono in `registro.sorvegliate`.
   eccezioni dei calendari (`ps_calendar_dates`). L'app li salva cancellando
   tutto e reinserendo una riga per fermata: una riga di registro per fermata
   sarebbe solo rumore. Il registro dice chi, quando, quale corsa (se
-  l'operazione ne tocca una sola), quante righe e quali campi; **non dice
-  l'orario di prima e quello di dopo**. Per averlo fermata per fermata serve
-  un confronto a fine transazione: è lavoro a parte, da fare se serve alla
-  rendicontazione.
+  l'operazione ne tocca una sola), quante righe e quali campi. **Dalla 7.20**
+  (migrazione 0066) dice anche il prima e il dopo, fermata per fermata: al
+  COMMIT confronta ogni riga com'era all'inizio della transazione con com'è
+  alla fine e scrive una riga per ognuna cambiata davvero.
 - **Coi valori**, come la prima ondata: tracciati (`ps_shapes`, la geometria
   solo come nome), periodi di servizio, nodi di interscambio, zone vietate,
   attivazioni programmate.
