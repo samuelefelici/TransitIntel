@@ -10,7 +10,7 @@
  * aree ne basta una; l'amministratore vede tutto.
  */
 import {
-  BarChart3, CalendarDays, ClipboardCheck, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
+  BarChart3, Bot, CalendarDays, ClipboardCheck, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
   Users, UserCheck, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ListChecks, ShieldCheck, Stethoscope, type LucideIcon,
 } from "lucide-react";
@@ -51,6 +51,8 @@ export const AREE_PAGINA = {
   "/planning-studio": ["rete"],
   "/planning": ["rete"],
   "/coincidence-zones": ["rete"],
+  /* la console di Argos: per ora gli agenti lavorano su Planning Studio (fase 6: gli altri moduli) */
+  "/argos": ["rete"],
   "/fucina/esercizio": ["turni"],
   /* i turni misti sono fuori dal menu (PR 2.13b): la pagina resta al suo indirizzo */
   "/misto": ["turni"],
@@ -97,6 +99,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/planning-studio", etichetta: "Planning Studio", icona: Map, descrizione: "Fermate, linee, corse, validità", aree: AREE_PAGINA["/planning-studio"] },
       { href: "/planning", etichetta: "Confronta programmi", icona: Layers, descrizione: "Due programmi a confronto", aree: AREE_PAGINA["/planning"] },
       { href: "/coincidence-zones", etichetta: "Zone di coincidenza", icona: Zap, descrizione: "Hub e trasbordi", aree: AREE_PAGINA["/coincidence-zones"] },
+      { href: "/argos", etichetta: "Argos", icona: Bot, descrizione: "Agenti, esecuzioni, capacità", aree: AREE_PAGINA["/argos"] },
     ],
   },
   {

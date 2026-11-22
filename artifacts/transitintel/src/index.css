@@ -158,6 +158,79 @@
   --chart-2: 84 81% 50%;
 }
 
+/* ── Console di Argos (pagina /argos): tema scuro di Cerbero o tema chiaro ──
+ * Il tema chiaro vale solo dentro la pagina (classe .argos-chiaro sul suo
+ * contenitore, scelta dall'utente e ricordata nel browser): il resto dell'app
+ * resta scuro. Come .fares-zone, ridefinisce le variabili, quindi bg-card,
+ * text-muted-foreground, border-border ecc. cambiano da soli.
+ * Le tinte di stato (--argos-*) hanno una versione per tema con contrasto
+ * sufficiente; si usano con data-tinta e le classi .argos-pill/.argos-punto.
+ */
+.argos-console {
+  --argos-ok: 152 60% 52%;
+  --argos-avviso: 38 92% 58%;
+  --argos-errore: 0 84% 65%;
+  --argos-info: 199 89% 60%;
+  --argos-memoria: 262 83% 72%;
+  --argos-neutro: 215 16% 62%;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+.argos-console.argos-chiaro {
+  --background: 210 33% 98%;
+  --foreground: 222 47% 11%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --card-border: 214 32% 88%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 18%;
+  --popover-border: 214 32% 88%;
+  --primary: 199 89% 36%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 210 40% 94%;
+  --secondary-foreground: 222 47% 15%;
+  --muted: 210 40% 95%;
+  --muted-foreground: 215 19% 36%;
+  --accent: 262 70% 48%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 72% 44%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 214 32% 87%;
+  --input: 214 32% 85%;
+  --ring: 199 89% 36%;
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.06);
+  --shadow: 0 1px 3px 0 rgb(15 23 42 / 0.08), 0 1px 2px -1px rgb(15 23 42 / 0.06);
+  --shadow-md: 0 4px 6px -1px rgb(15 23 42 / 0.08), 0 2px 4px -2px rgb(15 23 42 / 0.06);
+  --button-outline: rgba(15, 23, 42, .12);
+  --badge-outline: rgba(15, 23, 42, .06);
+  --elevate-1: rgba(15, 23, 42, .03);
+  --elevate-2: rgba(15, 23, 42, .06);
+  --argos-ok: 152 76% 26%;
+  --argos-avviso: 30 90% 34%;
+  --argos-errore: 0 72% 40%;
+  --argos-info: 199 89% 30%;
+  --argos-memoria: 262 65% 44%;
+  --argos-neutro: 215 16% 40%;
+  color-scheme: light;
+}
+.argos-console [data-tinta] { --tinta: var(--argos-neutro); }
+.argos-console [data-tinta="ok"] { --tinta: var(--argos-ok); }
+.argos-console [data-tinta="avviso"] { --tinta: var(--argos-avviso); }
+.argos-console [data-tinta="errore"] { --tinta: var(--argos-errore); }
+.argos-console [data-tinta="info"] { --tinta: var(--argos-info); }
+.argos-console [data-tinta="memoria"] { --tinta: var(--argos-memoria); }
+.argos-pill {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  border-radius: 9999px; padding: 0.1rem 0.55rem;
+  font-size: 11px; font-weight: 500; line-height: 1.4; white-space: nowrap;
+  color: hsl(var(--tinta));
+  background: hsl(var(--tinta) / 0.12);
+  border: 1px solid hsl(var(--tinta) / 0.32);
+}
+.argos-punto { display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 9999px; background: hsl(var(--tinta)); flex: none; }
+.argos-barra { background: hsl(var(--tinta)); }
+.argos-tinta { color: hsl(var(--tinta)); }
+
 @layer base {
   * {
     @apply border-border;

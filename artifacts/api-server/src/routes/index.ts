@@ -54,6 +54,7 @@ import argosInsightsRouter from "./argos-insights";
 import argosTerritoryRouter from "./argos-territory";
 import { argosWatchRouter, argosWatchCronRouter } from "./argos-watch";
 import aiRouter from "./ai";
+import argosConsoleRouter from "./argos-console";
 import planningRouter from "./planning";
 import territoryRouter from "./territory";
 import schedulingProjectsRouter from "../lib/scheduling-projects";
@@ -156,6 +157,7 @@ router.use(depotsRouter);
 router.use(deadheadsRouter);
 router.use(deadheadArcsRouter);
 router.use(aiRouter);
+router.use(argosConsoleRouter); // la console di Argos (pagina /argos): squadra, esecuzioni, capacità
 router.use(planningRouter);
 router.use(territoryRouter);
 router.use(schedulingProjectsRouter);
