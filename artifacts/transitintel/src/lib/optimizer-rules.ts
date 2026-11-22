@@ -78,7 +78,9 @@ export const SERVICE_PROFILES: Record<
     },
     targetWork: { low: 372, high: 402, mid: 402 },
   },
-  // Misto: superset permissivo (v1).
+  // Misto (tappa 7.9): nel calcolo ogni turno segue le regole della sua
+  // categoria (urbano o extraurbano, bds.regolePerCategoria): questi valori
+  // restano solo come preset dei campi «per servizio», che col misto non si usano.
   misto: {
     shiftRules: {
       intero: { maxNastro: 480, maxLavoro: 480, sostaMinCapolinea: 15 },
@@ -166,6 +168,14 @@ export function deepClone<T>(obj: T): T {
 }
 
 /** Costruisce la config di default completa per un tipo servizio. */
+/** Col profilo misto, le regole di ciascuna categoria (gli stessi profili di partenza). */
+export function regolePerCategoria(): NonNullable<NonNullable<OperatorConfig["bds"]>["regolePerCategoria"]> {
+  return {
+    urbano: { shiftRules: deepClone(SERVICE_PROFILES.urbano.shiftRules), targetWork: { ...SERVICE_PROFILES.urbano.targetWork } },
+    extraurbano: { shiftRules: deepClone(SERVICE_PROFILES.extraurbano.shiftRules), targetWork: { ...SERVICE_PROFILES.extraurbano.targetWork } },
+  };
+}
+
 export function buildDefaultConfig(serviceType: ServiceType): OperatorConfig {
   const p = SERVICE_PROFILES[serviceType];
   return {
@@ -175,6 +185,7 @@ export function buildDefaultConfig(serviceType: ServiceType): OperatorConfig {
       serviceType,
       shiftRules: deepClone(p.shiftRules),
       targetWork: { ...p.targetWork },
+      ...(serviceType === "misto" ? { regolePerCategoria: regolePerCategoria() } : {}),
       rd131: { ...DEFAULT_BDS.rd131 },
       prePost: { ...DEFAULT_BDS.prePost },
       pasto: { ...DEFAULT_BDS.pasto },
