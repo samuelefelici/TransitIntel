@@ -12,15 +12,18 @@
  * agente che lavora su un progetto riceve il token a breve scadenza
  * dell'utente, come il pannello: legge con i suoi diritti, non con altri.
  *
- * Gli errori di Argos sul segreto (401/403/503) arrivano al browser come 502
- * con la spiegazione: un 401 qui farebbe credere all'app che la sessione di
- * Cerbero sia scaduta.
+ * Gli errori di Argos arrivano al browser con un testo fisso scritto qui
+ * (traduci): quelli sul segreto (401/403/503) come 502 che lo spiega, perché
+ * un 401 farebbe credere all'app che la sessione di Cerbero sia scaduta; gli
+ * errori interni di Argos senza il loro testo, che resta nel log (tappa 7.13,
+ * middlewares/errori-interni.ts). I 5xx scritti qui passano da erroreLeggibile.
  */
 import { Router, type IRouter } from "express";
 import { mintShortLivedUserToken } from "../lib/auth";
 import { logger } from "../lib/logger";
 import { argosHeaders } from "../lib/argos-proxy";
 import { UUID_RE, accessoAlProgetto, progettiAccessibili, utenteDi } from "../lib/argos-progetto";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -33,19 +36,38 @@ export function chiaveValida(chiave: unknown): chiave is string {
   return typeof chiave === "string" && /^[a-z0-9][a-z0-9-]{1,40}$/.test(chiave);
 }
 
-/** Lo stato HTTP per il browser, dato quello di Argos. */
-export function statoPerIlBrowser(argos: number): number {
-  if (argos === 404) return 404;
-  if (argos === 422 || argos === 400) return 400;
-  if (argos === 429) return 429;
-  return 502; // 401/403/503 (segreto), 5xx: il problema è fra Cerbero e Argos
+/**
+ * Lo stato e il testo per il browser, dato lo stato di Argos e il suo detail.
+ * Il testo è sempre fisso, tranne i 404 e 429 che Argos scrive apposta
+ * («Agente inesistente», «Budget mensile esaurito»): mai il testo di un errore
+ * interno di Argos, che può contenere query o tracce.
+ */
+export function traduci(argos: number, dettaglio: unknown): { stato: number; testo: string } {
+  const scritto = typeof dettaglio === "string" && dettaglio.length > 0 && dettaglio.length <= 200 ? dettaglio : null;
+  if (argos === 404) return { stato: 404, testo: scritto ?? "Non trovato in Argos" };
+  if (argos === 429) return { stato: 429, testo: scritto ?? "Budget mensile di Argos esaurito" };
+  if (argos === 400 || argos === 422) return { stato: 400, testo: "Richiesta non valida per Argos" };
+  if (argos === 403 && scritto?.startsWith("Agenti disattivati")) return { stato: 503, testo: "Gli agenti sono spenti in Argos (AGENT_ENABLED)" };
+  if (argos === 401 || argos === 403) return { stato: 502, testo: "Argos rifiuta il proxy di Cerbero: ARGOS_PROXY_SECRET non coincide (DEPLOY.md)" };
+  if (argos === 503) return { stato: 502, testo: "Argos non accetta il proxy: manca ARGOS_PROXY_SECRET su Argos (DEPLOY.md)" };
+  if (argos >= 500) return { stato: 502, testo: "Argos ha avuto un errore: il dettaglio è nel suo log" };
+  return { stato: 502, testo: `Argos ha risposto ${argos}` };
 }
 
-/** Il messaggio per il browser, dato quello di Argos. */
-export function motivoPerIlBrowser(argos: number, dettaglio: string): string {
-  if (argos === 401 || argos === 403) return "Argos rifiuta il proxy di Cerbero: ARGOS_PROXY_SECRET non coincide (DEPLOY.md)";
-  if (argos === 503) return dettaglio || "Argos non è pronto: manca ARGOS_PROXY_SECRET o gli agenti sono spenti";
-  return dettaglio || `Argos ha risposto ${argos}`;
+/** Risponde al browser per un errore di Argos; quello che non si mostra va nel log. */
+function rispondiErrore(res: any, argos: number, dettaglio: unknown): void {
+  const { stato, testo } = traduci(argos, dettaglio);
+  if (argos >= 500 || argos === 401 || argos === 403) {
+    res.req?.log?.warn?.({ argos, dettaglio: String(typeof dettaglio === "string" ? dettaglio : JSON.stringify(dettaglio ?? "")).slice(0, 500) }, "Argos console: errore da Argos");
+  }
+  if (stato >= 500) erroreLeggibile(res, stato, testo);
+  else res.status(stato).json({ error: testo });
+}
+
+/** Argos non risponde (rete, tempo scaduto): testo fisso, l'errore nel log. */
+function irraggiungibile(res: any, err: any): void {
+  res.req?.log?.warn?.({ err: err?.message }, "Argos console: Argos non raggiungibile");
+  erroreLeggibile(res, 502, "Argos non raggiungibile");
 }
 
 /** Le esecuzioni che l'utente può vedere: quelle senza progetto, e quelle dei progetti che apre. */
@@ -72,12 +94,12 @@ async function leggi(res: any, percorso: string, params: Record<string, string |
     });
     const data: any = await r.json().catch(() => ({}));
     if (!r.ok) {
-      res.status(statoPerIlBrowser(r.status)).json({ error: motivoPerIlBrowser(r.status, String(data?.detail ?? "")) });
+      rispondiErrore(res, r.status, data?.detail);
       return undefined;
     }
     return data;
   } catch (err: any) {
-    res.status(502).json({ error: err?.message || "Argos non raggiungibile" });
+    irraggiungibile(res, err);
     return undefined;
   }
 }
@@ -115,7 +137,7 @@ router.get("/ai/argos/console/budget", async (_req, res) => {
       headers: argosHeaders(), signal: AbortSignal.timeout(8000),
     });
     const d: any = await r.json().catch(() => ({}));
-    if (!r.ok) { res.status(statoPerIlBrowser(r.status)).json({ error: motivoPerIlBrowser(r.status, String(d?.detail ?? "")) }); return; }
+    if (!r.ok) { rispondiErrore(res, r.status, d?.detail); return; }
     res.json({ used: Number(d.used) || 0, limit: Number(d.limit) || 0, remaining: Number(d.remaining) || 0 });
   } catch (err: any) {
     res.status(502).json({ error: err?.message || "Argos non raggiungibile" });
@@ -191,7 +213,10 @@ router.post("/ai/argos/console/agenti/:chiave/esegui", async (req, res) => {
     });
     if (!upstream.ok || !upstream.body) {
       const d: any = await upstream.json().catch(() => ({}));
-      errore(motivoPerIlBrowser(upstream.status, typeof d?.detail === "string" ? d.detail : ""));
+      if (upstream.status >= 500 || upstream.status === 401 || upstream.status === 403) {
+        logger.warn({ argos: upstream.status, dettaglio: String(d?.detail ?? "").slice(0, 500) }, "Argos console: esecuzione rifiutata da Argos");
+      }
+      errore(traduci(upstream.status, d?.detail).testo);
       res.end();
       return;
     }
@@ -199,8 +224,9 @@ router.post("/ai/argos/console/agenti/:chiave/esegui", async (req, res) => {
     res.end();
   } catch (err: any) {
     if (err?.name !== "AbortError") {
+      // il testo dell'errore resta nel log: nello stream va un testo fisso (tappa 7.13)
       logger.error({ err: err?.message }, "Argos console: esecuzione interrotta");
-      errore(err?.message || "Errore del proxy verso Argos");
+      errore("Collegamento con Argos interrotto: l'esecuzione resta nell'ispettore fin dove è arrivata");
     }
     res.end();
   }

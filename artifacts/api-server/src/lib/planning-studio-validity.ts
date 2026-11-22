@@ -40,6 +40,7 @@ import { italianHolidays } from "./validity-matrix-shared";
 import { loadCalendarProfile } from "./planning-studio-calendar";
 import { classifyDate, italianHolidays as classifierHolidays } from "./day-classifier";
 import { withVia } from "./agent-context";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /**
  * Se il periodo di un calendario importato diventa il periodo delle sue corse
@@ -274,7 +275,7 @@ router.post("/planning-studio/projects/:id/day-types", async (req, res): Promise
   } catch (e: any) {
     if (e?.code === "23505") { res.status(409).json({ error: "code already exists in this project" }); return; }
     console.error("[ps-validity] day-type create:", e);
-    res.status(500).json({ error: "internal error" });
+    erroreLeggibile(res, 500, "internal error");
   }
 });
 
@@ -1103,7 +1104,7 @@ router.post("/planning-studio/projects/:id/validity/auto-import-from-calendars",
     res.json({ ok: true, dryRun, ...result });
   } catch (e: any) {
     if (e?.code === "SYSTEM_DAY_TYPES_MISSING") {
-      res.status(500).json({ error: "system day-types missing (feriale/sabato/festivo)" });
+      erroreLeggibile(res, 500, "system day-types missing (feriale/sabato/festivo)");
       return;
     }
     console.error("[ps-validity] auto-import error:", e);
@@ -1731,10 +1732,10 @@ router.post("/planning-studio/projects/:id/validity/generate-unit", async (req, 
     row = (r as any).rows?.[0] ?? (r as any)[0];
   } catch (e: any) {
     console.error("[ps-validity] generate-unit insert error:", e?.message || e);
-    res.status(500).json({ error: "Impossibile creare l'unità di progettazione" });
+    erroreLeggibile(res, 500, "Impossibile creare l'unità di progettazione");
     return;
   }
-  if (!row) { res.status(500).json({ error: "Insert fallito" }); return; }
+  if (!row) { erroreLeggibile(res, 500, "Insert fallito"); return; }
 
   // Log activity (sul progetto PS sorgente)
   await logActivity(req.params.id, userId, "validity.generate-unit",

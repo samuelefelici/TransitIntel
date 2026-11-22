@@ -36,6 +36,7 @@ import { parseCsv } from "../routes/gtfs-helpers";
 import { runValidityAutoImportFromCalendars } from "./planning-studio-validity";
 import { legaContesto } from "./contesto-http";
 import { withVia } from "./agent-context";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
@@ -943,7 +944,7 @@ router.post(
         res.json({ ok: true, mode: "merge", merge: mergeCounts, frequenciesExpanded });
       } catch (e: any) {
         console.error("[ps import merge] failed:", e);
-        res.status(500).json({ error: "Errore durante il re-import (merge) del GTFS" });
+        erroreLeggibile(res, 500, "Errore durante il re-import (merge) del GTFS");
       }
       return;
     }
@@ -1391,7 +1392,7 @@ router.post(
     } catch (e: any) {
       // dettaglio solo nei log (poteva leakare schema/constraint DB al client)
       console.error("[ps import] failed:", e);
-      res.status(500).json({ error: "Errore durante l'import del GTFS" });
+      erroreLeggibile(res, 500, "Errore durante l'import del GTFS");
     }
   },
 );

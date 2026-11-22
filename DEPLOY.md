@@ -2226,6 +2226,28 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Gli errori interni non si mostrano più nelle risposte (tappa 7.13)
+
+Più di 150 punti dell'API rispondevano a un errore inatteso col testo
+dell'errore: nomi di tabelle e vincoli, la query e i suoi parametri, i
+messaggi di un servizio esterno. Ora ogni risposta 5xx passa da un filtro unico
+(`middlewares/errori-interni.ts`):
+- chi ha fatto la richiesta legge «Errore interno del server. Se si ripete,
+  comunica il codice …»: il codice è quello della richiesta, lo stesso
+  dell'header `x-request-id` e dei log;
+- il dettaglio resta nel log del server, senza i parametri delle query;
+- i messaggi scritti apposta per l'utente («il programma di prima resta in
+  esercizio», «riprova fra poco», «Argos irraggiungibile») restano come sono;
+- 503 e 504 (servizio occupato, tempo scaduto) restano come sono.
+
+**Per trovare un errore**: il codice che l'utente comunica si cerca nei log
+dell'API in Coolify (campo `requestId`); la riga «risposta di errore interno»
+ha il dettaglio.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### Dipendenze aggiornate, senza vulnerabilità note (tappa 7.12)
 
 Le librerie con vulnerabilità note sono aggiornate: da 97 avvisi (1 critico,

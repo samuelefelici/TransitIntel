@@ -5,6 +5,7 @@ import { sql, desc, and, gte, lte } from "drizzle-orm";
 import { cache } from "../middlewares/cache";
 import { cronDeiDati } from "../lib/segreto-cron";
 import { leggiLuoghi } from "../lib/territorio";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 /** Solo la cron: va montato prima del login (routes/index.ts), si protegge col segreto. */
@@ -33,7 +34,7 @@ weatherCronRouter.post("/cron/weather", async (req, res) => {
   if (!verifyCronSecret(req, res)) return;
 
   if (!OWM_KEY) {
-    res.status(500).json({ error: "OPENWEATHER_API_KEY not configured" });
+    erroreLeggibile(res, 500, "OPENWEATHER_API_KEY not configured");
     return;
   }
 

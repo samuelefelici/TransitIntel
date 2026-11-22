@@ -73,6 +73,7 @@ import { limitiDi } from "../lib/roster-limite-depositi";
 import { scriveSulDeposito, vedeIlDeposito } from "../lib/permessi";
 import { assegnaVettura, RifiutoVetture, togliVettura, vettureDelGiorno } from "../lib/esercizio-vetture";
 import { giornataOggi } from "../lib/service-day";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -222,7 +223,7 @@ router.get("/roster/calendario", async (req, res): Promise<void> => {
     });
   } catch (e: any) {
     console.error("[roster.calendario]", e?.cause?.code ?? e?.code ?? "errore");
-    res.status(500).json({ error: "Calendario non leggibile" });
+    erroreLeggibile(res, 500, "Calendario non leggibile");
   }
 });
 
@@ -375,7 +376,7 @@ router.get("/roster/board", async (req, res): Promise<void> => {
     });
   } catch (e: any) {
     console.error("[roster.board]", e?.cause?.code ?? e?.code ?? e?.message);
-    res.status(500).json({ error: "Tabellone non leggibile" });
+    erroreLeggibile(res, 500, "Tabellone non leggibile");
   }
 });
 
@@ -394,7 +395,7 @@ router.get("/roster/turni/:dssId/:codice", async (req, res): Promise<void> => {
     res.json({ turno: turnoRoster(turno, 0) });
   } catch (e: any) {
     console.error("[roster.turno]", e?.cause?.code ?? e?.code ?? e?.message);
-    res.status(500).json({ error: "Turno non leggibile" });
+    erroreLeggibile(res, 500, "Turno non leggibile");
   }
 });
 

@@ -18,6 +18,7 @@ import { assicuraAnagrafica } from "../lib/anagrafica-store";
 import {
   anteprima, programmi, pubblica, registro, ritira, RifiutoPubblicazione,
 } from "../lib/roster-pubblicazione-db";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -37,7 +38,7 @@ function rispondi(res: Response, e: any, contesto: string): void {
   if (codice === "23503") { res.status(409).json({ error: "Nel frattempo un turni guida è stato cancellato: guarda di nuovo l'anteprima", cambiato: true }); return; }
   if (codice === "22P02" || codice === "22008" || codice === "22007") { res.status(400).json({ error: "Dati della richiesta non validi" }); return; }
   console.error(`[roster.pubblicazione] ${contesto}:`, codice ?? e?.message);
-  res.status(500).json({ error: "Errore interno della pubblicazione" });
+  erroreLeggibile(res, 500, "Errore interno della pubblicazione");
 }
 
 const testo = (v: unknown) => (typeof v === "string" ? v : "");

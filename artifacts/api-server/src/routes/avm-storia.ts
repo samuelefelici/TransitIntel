@@ -24,6 +24,7 @@ import { esportaStoriaXlsx } from "../lib/avm-storia-xlsx";
 import { leggiInterventiAvm, leggiParcoOfficina, parcoCredibile } from "../lib/officina";
 import { eDellAzienda, nomeAzienda, perimetroAzienda, siglaAzienda } from "../lib/vetture-azienda";
 import { CAMPIONI_MINIMI_GIORNATA } from "../lib/avm-diario";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -118,7 +119,7 @@ router.get("/siri/parco/storia", async (req, res): Promise<void> => {
     });
   } catch (e: any) {
     req.log.error({ err: e }, "andamento AVM non calcolato");
-    res.status(500).json({ error: "Andamento AVM non calcolato: riprova fra poco." });
+    erroreLeggibile(res, 500, "Andamento AVM non calcolato: riprova fra poco.");
   }
 });
 
@@ -166,7 +167,7 @@ router.post("/siri/parco/richieste", async (req, res): Promise<void> => {
     res.status(201).json(esito);
   } catch (e: any) {
     req.log.error({ err: e }, "richieste al fornitore dell'AVM non salvate");
-    res.status(500).json({ error: "Richieste non salvate: riprova fra poco." });
+    erroreLeggibile(res, 500, "Richieste non salvate: riprova fra poco.");
   }
 });
 
@@ -180,7 +181,7 @@ router.post("/siri/parco/richieste/chiudi", async (req, res): Promise<void> => {
     res.json({ chiuse });
   } catch (e: any) {
     req.log.error({ err: e }, "richieste al fornitore dell'AVM non chiuse");
-    res.status(500).json({ error: "Richieste non chiuse: riprova fra poco." });
+    erroreLeggibile(res, 500, "Richieste non chiuse: riprova fra poco.");
   }
 });
 

@@ -80,6 +80,7 @@ import { leggiAzienda } from "../lib/azienda";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
 import { giorniDaOggi, oggiDiRoma } from "../lib/periodo-di-servizio";
 import AdmZip from "adm-zip";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -4821,7 +4822,7 @@ router.post("/fares/polimetriche/snapshots", async (req, res): Promise<void> => 
     `);
     const row: any = (inserted as any).rows?.[0] ?? (inserted as any)[0];
     if (!row?.id) {
-      res.status(500).json({ error: "Impossibile creare lo snapshot" });
+      erroreLeggibile(res, 500, "Impossibile creare lo snapshot");
       return;
     }
     const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "https";

@@ -33,6 +33,7 @@ import { nuovoSegreto, uriOtpauth } from "./totp";
 import { cifra } from "./mfa-cifratura";
 import { accessoRecente, chiaveEmail, nuoviCodiciDiRecupero } from "./accesso-regole";
 import { azzeraTentativiPassword, improntePerSalvare, prenotaTentativoPassword, provaCodice, type EsitoCodice } from "./accesso-db";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -129,7 +130,7 @@ router.post("/auth/password", loginLimiter, requireAuth, soloPersona, async (req
     });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "password_cambiata" });
     res.json({ ok: true });
-  } catch (e: any) { console.error("[account] password:", e?.message || e); res.status(500).json({ error: "Password non cambiata" }); }
+  } catch (e: any) { console.error("[account] password:", e?.message || e); erroreLeggibile(res, 500, "Password non cambiata"); }
 });
 
 router.post("/auth/mfa/attiva", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
@@ -149,7 +150,7 @@ router.post("/auth/mfa/attiva", loginLimiter, requireAuth, soloPersona, async (r
     const segreto = nuovoSegreto();
     await db.execute(sql`UPDATE users SET mfa_segreto = ${cifra(segreto)}, mfa_ultimo_passo = NULL WHERE id = ${u.id}::uuid AND NOT mfa_attiva`);
     res.json({ segreto, uri: uriOtpauth(segreto, u.email) });
-  } catch (e: any) { console.error("[account] mfa attiva:", e?.message || e); res.status(500).json({ error: "Verifica non avviata" }); }
+  } catch (e: any) { console.error("[account] mfa attiva:", e?.message || e); erroreLeggibile(res, 500, "Verifica non avviata"); }
 });
 
 router.post("/auth/mfa/conferma", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
@@ -178,7 +179,7 @@ router.post("/auth/mfa/conferma", loginLimiter, requireAuth, soloPersona, async 
     nuovaSessione(req, res, Number(e.dato), { mfa: true, rec: false });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_attivata" });
     res.json({ codiciRecupero: codici });
-  } catch (e: any) { console.error("[account] mfa conferma:", e?.message || e); res.status(500).json({ error: "Verifica non attivata" }); }
+  } catch (e: any) { console.error("[account] mfa conferma:", e?.message || e); erroreLeggibile(res, 500, "Verifica non attivata"); }
 });
 
 router.post("/auth/mfa/disattiva", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
@@ -196,7 +197,7 @@ router.post("/auth/mfa/disattiva", loginLimiter, requireAuth, soloPersona, async
     nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: false, rec: false });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_disattivata" });
     res.json({ ok: true });
-  } catch (e: any) { console.error("[account] mfa disattiva:", e?.message || e); res.status(500).json({ error: "Verifica non disattivata" }); }
+  } catch (e: any) { console.error("[account] mfa disattiva:", e?.message || e); erroreLeggibile(res, 500, "Verifica non disattivata"); }
 });
 
 router.post("/auth/mfa/codici-recupero", loginLimiter, requireAuth, soloPersona, async (req, res): Promise<void> => {
@@ -211,7 +212,7 @@ router.post("/auth/mfa/codici-recupero", loginLimiter, requireAuth, soloPersona,
       UPDATE users SET mfa_recupero = ${salva.impronte}::jsonb, mfa_recupero_chiave = ${salva.chiave} WHERE id = ${u.id}::uuid`);
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "codici_recupero_nuovi" });
     res.json({ codiciRecupero: codici });
-  } catch (e: any) { console.error("[account] codici recupero:", e?.message || e); res.status(500).json({ error: "Codici non rifatti" }); }
+  } catch (e: any) { console.error("[account] codici recupero:", e?.message || e); erroreLeggibile(res, 500, "Codici non rifatti"); }
 });
 
 /**
@@ -233,7 +234,7 @@ router.post("/auth/mfa/reimposta", loginLimiter, requireAuth, soloPersona, async
     nuovaSessione(req, res, Number((r as any).rows[0].sessione_versione), { mfa: false, passwordData: true, rec: false });
     await registraAccesso(req, { userId: u.id, email: u.email, esito: "verifica_reimpostata" });
     res.json({ ok: true });
-  } catch (e: any) { console.error("[account] mfa reimposta:", e?.message || e); res.status(500).json({ error: "Verifica non reimpostata" }); }
+  } catch (e: any) { console.error("[account] mfa reimposta:", e?.message || e); erroreLeggibile(res, 500, "Verifica non reimpostata"); }
 });
 
 router.post("/auth/sessioni/chiudi", requireAuth, soloPersona, async (req, res): Promise<void> => {
@@ -246,7 +247,7 @@ router.post("/auth/sessioni/chiudi", requireAuth, soloPersona, async (req, res):
     });
     await registraAccesso(req, { userId: req.user!.id, email: req.user!.email, esito: "sessioni_chiuse" });
     res.json({ ok: true });
-  } catch (e: any) { console.error("[account] sessioni:", e?.message || e); res.status(500).json({ error: "Sessioni non chiuse" }); }
+  } catch (e: any) { console.error("[account] sessioni:", e?.message || e); erroreLeggibile(res, 500, "Sessioni non chiuse"); }
 });
 
 router.get("/admin/accessi", requireAuth, requireAdmin, async (req, res): Promise<void> => {
@@ -260,7 +261,7 @@ router.get("/admin/accessi", requireAuth, requireAdmin, async (req, res): Promis
     res.json({ accessi: (r as any).rows.map((x: any) => ({
       id: x.id, ts: x.ts, userId: x.user_id, email: x.email, esito: x.esito, ip: x.ip, userAgent: x.user_agent,
     })) });
-  } catch (e: any) { console.error("[account] accessi:", e?.message || e); res.status(500).json({ error: "Registro non leggibile" }); }
+  } catch (e: any) { console.error("[account] accessi:", e?.message || e); erroreLeggibile(res, 500, "Registro non leggibile"); }
 });
 
 export default router;

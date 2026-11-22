@@ -18,6 +18,7 @@
  *    · cosa si raggiunge → isocrone a piedi
  * ═══════════════════════════════════════════════════════════════════════ */
 import { Router, type IRouter } from "express";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const MAPBOX_TOKEN = process.env.MAPBOX_ACCESS_TOKEN || "";
@@ -89,7 +90,8 @@ router.get("/ai/argos/territory/place", async (req: any, res: any) => {
     putCache(key, out);
     res.json(out);
   } catch (err: any) {
-    res.status(502).json({ error: "Territorio non disponibile", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Territorio non disponibile");
+    erroreLeggibile(res, 502, "Territorio non disponibile");
   }
 });
 
@@ -125,7 +127,8 @@ router.get("/ai/argos/territory/search", async (req: any, res: any) => {
     putCache(key, out);
     res.json(out);
   } catch (err: any) {
-    res.status(502).json({ error: "Ricerca non disponibile", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Ricerca non disponibile");
+    erroreLeggibile(res, 502, "Ricerca non disponibile");
   }
 });
 
@@ -193,7 +196,8 @@ router.get("/ai/argos/territory/around", async (req: any, res: any) => {
     putCache(key, out);
     res.json(out);
   } catch (err: any) {
-    res.status(502).json({ error: "Dati sul territorio non disponibili", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Dati sul territorio non disponibili");
+    erroreLeggibile(res, 502, "Dati sul territorio non disponibili");
   }
 });
 
@@ -244,7 +248,8 @@ router.get("/ai/argos/territory/reach", async (req: any, res: any) => {
     putCache(key, out);
     res.json(out);
   } catch (err: any) {
-    res.status(502).json({ error: "Isocrone non disponibili", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Isocrone non disponibili");
+    erroreLeggibile(res, 502, "Isocrone non disponibili");
   }
 });
 

@@ -10,6 +10,7 @@ import {
   resolveSource, loadShapes, loadStops, loadActiveTrips, loadPassages, loadRoutes,
   parseDayKind, projectBbox, type DayKind,
 } from "./intermodal-source";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 /* La forma canonica, non «36 caratteri fra cifre esadecimali e trattini»:
@@ -855,7 +856,7 @@ router.get("/intermodal/hubs", async (req, res) => {
     })));
   } catch (err) {
     req.log.error(err, "Error discovering intermodal hubs");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -875,7 +876,7 @@ router.get("/intermodal/municipalities", async (_req, res) => {
       .sort((a, b) => a.name.localeCompare(b.name));
     res.json(out);
   } catch (err) {
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1634,7 +1635,7 @@ router.get("/intermodal/analyze", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error analyzing intermodal connections");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1712,7 +1713,7 @@ router.get("/intermodal/hub/:hubId/routes", async (req, res) => {
     res.json({ hub, nearbyStops, routes });
   } catch (err) {
     req.log.error(err, "Error fetching hub routes");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1735,7 +1736,7 @@ router.get("/intermodal/shapes", async (req, res) => {
     res.json(fc);
   } catch (err) {
     req.log.error(err, "Error fetching intermodal shapes");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1863,7 +1864,7 @@ router.get("/intermodal/pois", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error fetching intermodal POIs");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1991,7 +1992,7 @@ router.post("/intermodal/sync-schedules", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error syncing schedules");
-    res.status(500).json({ error: "Errore sincronizzazione orari" });
+    erroreLeggibile(res, 500, "Errore sincronizzazione orari");
   }
 });
 

@@ -37,6 +37,7 @@ import { esercizioInBreve } from "../lib/esercizio-oggi";
 import { annullaVariazione, creaVariazione, elencoVariazioni, GIORNI_AVANTI, leggiVariazione, RifiutoVariazione } from "../lib/esercizio-variazioni";
 import { applicaVariazioni } from "../lib/esercizio-variazioni-applica";
 import { giornataOggi } from "../lib/service-day";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -55,7 +56,7 @@ router.get("/esercizio/oggi", async (req, res): Promise<void> => {
     res.json(await esercizioInBreve(giornataOggi()));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "consuntivo: giornata in breve non leggibile");
-    res.status(500).json({ error: "Giornata non leggibile" });
+    erroreLeggibile(res, 500, "Giornata non leggibile");
   }
 });
 
@@ -73,7 +74,7 @@ router.get("/esercizio/variazioni", async (req, res): Promise<void> => {
     res.json({ dal, al, variazioni: await elencoVariazioni(dal, al) });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "consuntivo: variazioni non leggibili");
-    res.status(500).json({ error: "Variazioni non leggibili" });
+    erroreLeggibile(res, 500, "Variazioni non leggibili");
   }
 });
 
@@ -89,7 +90,7 @@ router.post("/esercizio/variazioni", async (req, res): Promise<void> => {
   } catch (e: any) {
     if (e instanceof RifiutoVariazione) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message }, "consuntivo: variazione non scritta");
-    res.status(500).json({ error: "Variazione non scritta" });
+    erroreLeggibile(res, 500, "Variazione non scritta");
   }
 });
 
@@ -102,7 +103,7 @@ router.post("/esercizio/variazioni/:id/annullamento", async (req, res): Promise<
   } catch (e: any) {
     if (e instanceof RifiutoVariazione) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message, id }, "consuntivo: variazione non annullata");
-    res.status(500).json({ error: "Variazione non annullata" });
+    erroreLeggibile(res, 500, "Variazione non annullata");
   }
 });
 
@@ -118,7 +119,7 @@ router.get("/esercizio/giornate", async (req, res): Promise<void> => {
     res.json({ dal, al, giornate: await elencoGiornate(dal, al) });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "consuntivo: giornate non leggibili");
-    res.status(500).json({ error: "Giornate non leggibili" });
+    erroreLeggibile(res, 500, "Giornate non leggibili");
   }
 });
 
@@ -131,7 +132,7 @@ router.get("/esercizio/giornate/:giorno", async (req, res): Promise<void> => {
     res.json({ ...g, giornale: await leggiGiornale(giorno), causali: await elencoCausali(), chiusura: await chiusuraDellaGiornata(giorno) });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, giorno }, "consuntivo: giornata non leggibile");
-    res.status(500).json({ error: "Giornata non leggibile" });
+    erroreLeggibile(res, 500, "Giornata non leggibile");
   }
 });
 
@@ -146,7 +147,7 @@ router.post("/esercizio/giornate/:giorno/eventi", async (req, res): Promise<void
   } catch (e: any) {
     if (e instanceof RifiutoGiornale) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message, giorno }, "consuntivo: evento non registrato");
-    res.status(500).json({ error: "Evento non registrato" });
+    erroreLeggibile(res, 500, "Evento non registrato");
   }
 });
 
@@ -159,7 +160,7 @@ router.post("/esercizio/giornate/:giorno/proposta", async (req, res): Promise<vo
   } catch (e: any) {
     if (e instanceof RifiutoProposta) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message, giorno }, "consuntivo: proposta non riuscita");
-    res.status(500).json({ error: "Proposta non riuscita" });
+    erroreLeggibile(res, 500, "Proposta non riuscita");
   }
 });
 
@@ -178,7 +179,7 @@ router.post("/esercizio/giornate/:giorno/chiusura", async (req, res): Promise<vo
   } catch (e: any) {
     if (e instanceof RifiutoChiusura) { res.status(e.status).json({ error: e.message }); return; }
     req.log?.error?.({ err: e?.message, giorno }, "consuntivo: chiusura non riuscita");
-    res.status(500).json({ error: "Chiusura non riuscita" });
+    erroreLeggibile(res, 500, "Chiusura non riuscita");
   }
 });
 
@@ -189,7 +190,7 @@ router.get("/esercizio/mesi/:mese", async (req, res): Promise<void> => {
     res.json(await statoDelMese(mese));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, mese }, "consuntivo: mese non leggibile");
-    res.status(500).json({ error: "Mese non leggibile" });
+    erroreLeggibile(res, 500, "Mese non leggibile");
   }
 });
 
@@ -200,7 +201,7 @@ router.get("/esercizio/mesi/:mese/report", async (req, res): Promise<void> => {
     res.json(await reportDelMese(mese));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, mese }, "consuntivo: report non riuscito");
-    res.status(500).json({ error: "Report non riuscito" });
+    erroreLeggibile(res, 500, "Report non riuscito");
   }
 });
 
@@ -216,7 +217,7 @@ router.get("/esercizio/mesi/:mese/report.xlsx", async (req, res): Promise<void> 
     res.send(file);
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, mese }, "consuntivo: XLSX non riuscito");
-    if (!res.headersSent) res.status(500).json({ error: "Report non riuscito" });
+    if (!res.headersSent) erroreLeggibile(res, 500, "Report non riuscito");
   }
 });
 
@@ -231,7 +232,7 @@ router.get("/esercizio/mesi/:mese/dettaglio.csv", async (req, res): Promise<void
     res.end();
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, mese }, "consuntivo: CSV non riuscito");
-    if (!res.headersSent) res.status(500).json({ error: "Dettaglio non riuscito" });
+    if (!res.headersSent) erroreLeggibile(res, 500, "Dettaglio non riuscito");
     else res.end();
   }
 });
@@ -241,7 +242,7 @@ router.get("/esercizio/causali", async (req, res): Promise<void> => {
     res.json({ causali: await elencoCausali() });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message }, "consuntivo: causali non leggibili");
-    res.status(500).json({ error: "Causali non leggibili" });
+    erroreLeggibile(res, 500, "Causali non leggibili");
   }
 });
 

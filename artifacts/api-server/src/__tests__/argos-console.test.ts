@@ -30,7 +30,7 @@ vi.mock("../lib/argos-progetto", async (importOriginal) => {
   };
 });
 
-import router, { chiaveValida, soloVisibili, statoPerIlBrowser } from "../routes/argos-console";
+import router, { chiaveValida, soloVisibili, traduci } from "../routes/argos-console";
 import { decidi } from "../lib/permessi-rotte";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 
@@ -69,6 +69,28 @@ describe("le letture", () => {
     const r = await request(app()).get("/api/ai/argos/console/agenti");
     expect(r.status).toBe(502);
     expect(r.body.error).toContain("ARGOS_PROXY_SECRET");
+  });
+
+  it("un errore interno di Argos non mostra il suo testo", async () => {
+    rispondi(500, { detail: "psycopg.errors.UndefinedTable: relation \"agent_runs\" does not exist" });
+    const r = await request(app()).get("/api/ai/argos/console/skill");
+    expect(r.status).toBe(502);
+    expect(r.body.error).toBe("Argos ha avuto un errore: il dettaglio è nel suo log");
+    expect(JSON.stringify(r.body)).not.toContain("agent_runs");
+  });
+
+  it("Argos non raggiungibile: testo fisso, non il messaggio della rete", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("connect ECONNREFUSED 10.0.0.7:8000"); }));
+    const r = await request(app()).get("/api/ai/argos/console/registro");
+    expect(r.status).toBe(502);
+    expect(r.body.error).toBe("Argos non raggiungibile");
+  });
+
+  it("agenti spenti in Argos: 503 che lo dice, non il messaggio sul segreto", async () => {
+    rispondi(403, { detail: "Agenti disattivati (agent_enabled=false)" });
+    const r = await request(app()).post("/api/ai/argos/console/agenti/analista/esegui").send({ compito: "x" });
+    expect(r.text).toContain("Gli agenti sono spenti");
+    expect(r.text).not.toContain("ARGOS_PROXY_SECRET");
   });
 
   it("una chiave malformata non arriva ad Argos", async () => {
@@ -169,9 +191,11 @@ describe("le regole pure", () => {
     expect(chiaveValida("analista")).toBe(true);
     expect(chiaveValida("A")).toBe(false);
     expect(chiaveValida("../x")).toBe(false);
-    expect(statoPerIlBrowser(401)).toBe(502);
-    expect(statoPerIlBrowser(503)).toBe(502);
-    expect(statoPerIlBrowser(422)).toBe(400);
+    expect(traduci(401, "Autenticazione richiesta").stato).toBe(502);
+    expect(traduci(503, "manca").stato).toBe(502);
+    expect(traduci(422, [{ loc: ["body"] }])).toEqual({ stato: 400, testo: "Richiesta non valida per Argos" });
+    expect(traduci(404, "Agente inesistente")).toEqual({ stato: 404, testo: "Agente inesistente" });
+    expect(traduci(500, "Traceback (most recent call last)").testo).not.toContain("Traceback");
     expect(soloVisibili([{ project_id: null }, { project_id: "a" }], new Set())).toHaveLength(1);
   });
 });

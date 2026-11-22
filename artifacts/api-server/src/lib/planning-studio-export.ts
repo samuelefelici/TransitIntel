@@ -46,6 +46,7 @@ import type { ConteggiNetex } from "./netex";
 import { validaNetex, type EsitoValidazione } from "./netex-validazione";
 import { costruisciGtfs, netexDelGtfs, nomeFileNetex, zipDelGtfs, SenzaCodiceNetex } from "./gtfs-consegnabile";
 import { conLeTariffe, type TariffeDelGtfs } from "./gtfs-tariffe";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 export { aziendaDelGtfs, costruisciGtfs, gtfsInCsv } from "./gtfs-consegnabile";
 
@@ -115,7 +116,7 @@ router.get("/planning-studio/projects/:id/export-gtfs/verifica", async (req: Req
     });
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, projectId: req.params.id }, "verifica GTFS fallita");
-    res.status(500).json({ error: "Errore durante la verifica del GTFS" });
+    erroreLeggibile(res, 500, "Errore durante la verifica del GTFS");
   }
 });
 
@@ -153,7 +154,7 @@ router.get("/planning-studio/projects/:id/export-gtfs", async (req: Request, res
     res.send(zipDelGtfs(gtfs));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, projectId: req.params.id }, "export GTFS fallito");
-    res.status(500).json({ error: "Errore durante l'export GTFS" });
+    erroreLeggibile(res, 500, "Errore durante l'export GTFS");
   }
 });
 
@@ -179,7 +180,7 @@ router.get("/planning-studio/projects/:id/export-gtfs/orari-impossibili.csv", as
     res.send(csvOrariImpossibili(tratte));
   } catch (e: any) {
     req.log?.error?.({ err: e?.message, projectId: req.params.id }, "elenco degli orari impossibili non riuscito");
-    res.status(500).json({ error: "Errore durante l'elenco degli orari impossibili" });
+    erroreLeggibile(res, 500, "Errore durante l'elenco degli orari impossibili");
   }
 });
 
@@ -215,7 +216,7 @@ export const fermateFuoriTracciato = (v: EsitoVerifica): string[] =>
 const rispondiNetex = (req: Request, res: Response, e: any, cosa: string) => {
   if (e instanceof SenzaCodiceNetex) { res.status(409).json({ error: e.message }); return; }
   req.log?.error?.({ err: e?.message, projectId: req.params.id }, cosa);
-  res.status(500).json({ error: "Errore durante l'export NeTEx" });
+  erroreLeggibile(res, 500, "Errore durante l'export NeTEx");
 };
 
 /* GET …/export-netex/verifica — conteggi e controlli del NeTEx che si esporterebbe */
