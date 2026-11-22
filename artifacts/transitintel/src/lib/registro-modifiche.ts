@@ -80,6 +80,14 @@ const TABELLE: Record<string, string> = {
   "public.ps_stop_clusters": "Nodi di interscambio",
   "public.ps_no_go_zones": "Zone vietate",
   "public.ps_pending_activations": "Attivazioni programmate",
+  "public.ps_trip_day_validity": "Validità delle corse per giorno-tipo",
+  "public.ps_trip_category_validity": "Categorie di validità delle corse",
+  "public.ps_trip_exceptions": "Date in più e in meno delle corse",
+  "public.ps_validity_category_calendar": "Calendario delle categorie",
+  "public.ps_day_calendar": "Calendario dei giorni-tipo",
+  "public.ps_day_types": "Giorni-tipo",
+  "public.ps_validity_categories": "Categorie di validità",
+  "public.ps_calendar_profiles": "Calendario aziendale del programma",
 };
 
 /** Il nome di una tabella per chi legge; una tabella che qui non c'è ancora resta col suo nome. */

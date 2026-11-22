@@ -449,6 +449,13 @@
       "when": 1798500000000,
       "tag": "0063_bus_stops_non_usata",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "7",
+      "when": 1798600000000,
+      "tag": "0064_registro_validita",
+      "breakpoints": true
     }
   ]
 }

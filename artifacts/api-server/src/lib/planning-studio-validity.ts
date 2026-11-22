@@ -35,6 +35,7 @@
 import type { Request, Response } from "express";
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
+import { conContesto } from "@workspace/db/contesto";
 import { sql } from "drizzle-orm";
 import { italianHolidays } from "./validity-matrix-shared";
 import { loadCalendarProfile } from "./planning-studio-calendar";
@@ -1186,6 +1187,9 @@ export async function runValidityAutoImportFromCalendars(
     return dow === 0 ? dtMap.get("festivo")! : dow === 6 ? dtMap.get("sabato")! : dtMap.get("feriale")!;
   };
 
+  /* tutto l'import in una transazione, a insiemi (tappa 7.18): prima una
+   * riga per volta (corse × giorni-tipo, corse × date), senza transazione */
+  await db.transaction(async (db) => {
   for (const c of cals) {
     const dayTypeIds: string[] = [];
     if (c.monday || c.tuesday || c.wednesday || c.thursday || c.friday) dayTypeIds.push(dtMap.get("feriale")!);
@@ -1227,41 +1231,45 @@ export async function runValidityAutoImportFromCalendars(
       exceptionRowsToWrite: tripIds.length * cdates.length,
     });
 
-    if (!dryRun) {
-      for (const tid of tripIds) {
-        for (const dtId of dayTypeIds) {
-          await db.execute(sql`
-            INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
-            VALUES (${tid}::uuid, ${dtId}::uuid, true, now())
-            ON CONFLICT (trip_id, day_type_id) DO UPDATE
-              SET is_valid = true, updated_at = now()
-          `);
-          validityUpserts++;
-        }
-        /* il periodo del calendario diventa quello della corsa (un orario estivo resta estivo), ma non
-         * quello di un giorno solo (tappa 6.46): è il giorno di un'esportazione, e chiuderebbe la corsa
-         * in quel giorno anche se la matrice vale tutto l'anno */
-        if (periodoDaCopiare(c.start_date, c.end_date)) {
-          await db.execute(sql`
-            UPDATE ps_trips
-               SET valid_from = COALESCE(valid_from, ${c.start_date}::date),
-                   valid_to   = COALESCE(valid_to,   ${c.end_date}::date)
-             WHERE id = ${tid}::uuid
-          `);
-        }
-        for (const cd of cdates) {
-          const exType = cd.exception_type === 1 ? 1 : 2;
-          await db.execute(sql`
-            INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
-            VALUES (${tid}::uuid, ${cd.date}::date, ${exType}, 'auto-import:calendar')
-            ON CONFLICT (trip_id, date) DO UPDATE
-              SET exception_type = EXCLUDED.exception_type, reason = EXCLUDED.reason
-          `);
-          exceptionInserts++;
-        }
+    if (!dryRun && tripIds.length > 0) {
+      const corse = `{${tripIds.join(",")}}`;
+      if (dayTypeIds.length > 0) {
+        await db.execute(sql`
+          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+          SELECT DISTINCT t.id, d.id, true, now()
+            FROM unnest(${corse}::uuid[]) AS t(id) CROSS JOIN unnest(${`{${dayTypeIds.join(",")}}`}::uuid[]) AS d(id)
+          ON CONFLICT (trip_id, day_type_id) DO UPDATE
+            SET is_valid = true, updated_at = now()
+        `);
+        validityUpserts += tripIds.length * dayTypeIds.length;
+      }
+      /* il periodo del calendario diventa quello della corsa (un orario estivo resta estivo), ma non
+       * quello di un giorno solo (tappa 6.46): è il giorno di un'esportazione, e chiuderebbe la corsa
+       * in quel giorno anche se la matrice vale tutto l'anno */
+      if (periodoDaCopiare(c.start_date, c.end_date)) {
+        await db.execute(sql`
+          UPDATE ps_trips
+             SET valid_from = COALESCE(valid_from, ${c.start_date}::date),
+                 valid_to   = COALESCE(valid_to,   ${c.end_date}::date)
+           WHERE id = ANY(${corse}::uuid[])
+        `);
+      }
+      if (cdates.length > 0) {
+        const date = `{${cdates.map((cd) => cd.date).join(",")}}`;
+        const tipi = `{${cdates.map((cd) => (cd.exception_type === 1 ? 1 : 2)).join(",")}}`;
+        await db.execute(sql`
+          INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
+          SELECT t.id, x.giorno, x.tipo, 'auto-import:calendar'
+            FROM unnest(${corse}::uuid[]) AS t(id)
+           CROSS JOIN unnest(${date}::date[], ${tipi}::int[]) AS x(giorno, tipo)
+          ON CONFLICT (trip_id, date) DO UPDATE
+            SET exception_type = EXCLUDED.exception_type, reason = EXCLUDED.reason
+        `);
+        exceptionInserts += tripIds.length * cdates.length;
       }
     }
   }
+  });
 
   // ── Intreccio col Calendario Aziendale ──
   // Deriva il calendario delle categorie (Scuole Aperte/Chiuse/Festività) dal
@@ -1301,10 +1309,45 @@ const SEED_VALIDITY_CATEGORIES = [
   { code: "festivita",     name: "Festività",     color: "#ef4444", sort: 30 },
 ];
 
+type Esecutore = { execute: (q: any) => Promise<any> };
+type EsitoSync = { categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number; from: string | null; to: string | null };
+
+/**
+ * Il sync delle categorie, tutto in una transazione (tappa 7.18): prima ogni
+ * blocco di DELETE e di INSERT era una transazione a sé, e un errore a metà
+ * lasciava corse senza categorie fino al sync dopo. Un lucchetto per progetto:
+ * due liste delle corse aperte insieme non si pestano i piedi.
+ */
 export async function syncValidityCategoriesFromProfile(
   projectId: string,
   opts: { dryRun?: boolean; onlyTripIds?: string[]; includeManual?: boolean } = {},
-): Promise<{ categoryDates: number; tripCategoryUpserts: number; tripsWithCategories: number; from: string | null; to: string | null }> {
+): Promise<EsitoSync> {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`cerbero:validita:${projectId}`}))`);
+    return sincronizzaCategorie(tx, projectId, opts);
+  });
+}
+
+/**
+ * Un passo che può fallire senza fermare il sync: dentro una transazione un
+ * errore la annullerebbe tutta, quindi gira dietro un punto di ritorno.
+ */
+async function conPuntoDiRitorno(ex: Esecutore, cosa: string, passo: () => Promise<unknown>): Promise<void> {
+  await ex.execute(sql`SAVEPOINT passo_tollerato`);
+  try {
+    await passo();
+    await ex.execute(sql`RELEASE SAVEPOINT passo_tollerato`);
+  } catch (e: any) {
+    await ex.execute(sql`ROLLBACK TO SAVEPOINT passo_tollerato`);
+    console.warn(`[validity] ${cosa}:`, e?.code ?? e?.message ?? e);
+  }
+}
+
+async function sincronizzaCategorie(
+  db: Esecutore,
+  projectId: string,
+  opts: { dryRun?: boolean; onlyTripIds?: string[]; includeManual?: boolean },
+): Promise<EsitoSync> {
   const dryRun = !!opts.dryRun;
   const empty = { categoryDates: 0, tripCategoryUpserts: 0, tripsWithCategories: 0, from: null, to: null };
 
@@ -1595,18 +1638,14 @@ export async function syncValidityCategoriesFromProfile(
     // significato senza che nessuno l'abbia deciso. Fino alla migrazione 0010
     // le righe di corse già cancellate tenevano in vita queste categorie per
     // caso; ora che non ci sono più, l'unità va guardata apposta.
-    try {
-      await db.execute(sql`
+    await conPuntoDiRitorno(db, "pulizia categorie-periodo orfane", () => db.execute(sql`
         DELETE FROM ps_validity_categories c
          WHERE c.code LIKE 'scuole_chiuse\\_%'
            AND NOT EXISTS (SELECT 1 FROM ps_validity_category_calendar cc WHERE cc.category_id = c.id)
            AND NOT EXISTS (SELECT 1 FROM ps_trip_category_validity tc WHERE tc.category_id = c.id)
            AND NOT EXISTS (SELECT 1 FROM ps_validity_units u WHERE u.category_id = c.id)
-      `);
-    } catch (e: any) {
-      console.warn("[validity] pulizia categorie-periodo orfane:", e?.message || e);
-    }
-    await touchCategoriesSyncedAt(projectId);
+      `));
+    await conPuntoDiRitorno(db, "marcatore sync categorie", () => touchCategoriesSyncedAt(projectId, db));
   }
 
   return { categoryDates, tripCategoryUpserts, tripsWithCategories, from, to };
@@ -1622,9 +1661,9 @@ export async function syncValidityCategoriesFromProfile(
  *  assegnazioni delle altre corse, incluse le curatele manuali, restano.
  * ════════════════════════════════════════════════════════════ */
 
-async function touchCategoriesSyncedAt(projectId: string): Promise<void> {
+async function touchCategoriesSyncedAt(projectId: string, ex: Esecutore = db): Promise<void> {
   try {
-    await db.execute(sql`
+    await ex.execute(sql`
       INSERT INTO ps_calendar_profiles (project_id, categories_synced_at)
       VALUES (${projectId}::uuid, now())
       ON CONFLICT (project_id) DO UPDATE SET categories_synced_at = now()
@@ -1634,7 +1673,17 @@ async function touchCategoriesSyncedAt(projectId: string): Promise<void> {
   }
 }
 
+/**
+ * Lo chiamano le letture (la lista delle corse): le scritture che fa sono un
+ * ricalcolo automatico, non una modifica di chi ha aperto la pagina. Nel
+ * registro delle modifiche risultano del sistema (tappa 7.18), con la stessa
+ * richiesta che le ha avviate.
+ */
 export async function ensureCategoriesFresh(projectId: string): Promise<void> {
+  return conContesto({ attore: "", via: "sistema:categorie" }, () => aggiornaCategorie(projectId));
+}
+
+async function aggiornaCategorie(projectId: string): Promise<void> {
   const mR = await db.execute<any>(sql`
     SELECT categories_synced_at FROM ps_calendar_profiles
      WHERE project_id = ${projectId}::uuid LIMIT 1
