@@ -9,11 +9,3 @@
 id = "GHSA-g7r4-m6w7-qqqr"
 ignoreUntil = 2027-03-01
 reason = "esbuild usato solo per compilare, mai come server di sviluppo; la falla riguarda il server su Windows"
-
-[[IgnoredVulns]]
-# katex < 0.18.2: con un inquinamento del prototipo già presente si aggirano le
-# restrizioni di fiducia. Gravità bassa; mermaid 11 vuole katex 0.16. Si toglie
-# passando a mermaid 12.
-id = "GHSA-238p-pmpm-9mq7"
-ignoreUntil = 2027-03-01
-reason = "gravita bassa, serve un inquinamento del prototipo gia presente; mermaid 11 richiede katex 0.16"

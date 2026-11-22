@@ -57,3 +57,5 @@ overrides:
   'browserslist@<4.28.7': 4.28.7
   'baseline-browser-mapping@<2.11.0': 2.11.0
   '@babel/core@>=7 <7.29.6': 7.29.6
+  # rehype-katex 7 vuole katex 0.16 (PR 7.17): la 0.18 ha l'API che usa
+  'katex@<0.18.2': 0.18.11
