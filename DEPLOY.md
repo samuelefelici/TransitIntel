@@ -2226,6 +2226,36 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Roster: «Copri gli scoperti» (tappa 7.6)
+
+In Roster › Algoritmi la voce **«Copri gli scoperti»** non è più
+«prossimamente». Si sceglie un giorno e si chiede la proposta: i turni
+pubblicati senza conducente, o col titolare assente e senza sostituto, si
+propongono ai conducenti dello stesso deposito con le regole dei sostituti
+della 5.1:
+- attivi, non fittizi, in servizio quel giorno, senza assenze e senza altri
+  turni quel giorno;
+- senza violazioni di riposo né sovrapposizioni con i giorni intorno;
+- prima i liberi, poi quelli a disposizione; a parità chi ha meno turni nei
+  tre giorni prima e dopo, poi per nome;
+- i turni in ordine di inizio, un turno a testa (due turni nello stesso giorno
+  li decide una persona).
+
+Si guarda la proposta (turno, orario, deposito, conducente, di chi era) e
+quello che resta scoperto, col motivo; poi «Assegna N turni». Ogni
+assegnazione passa dagli stessi controlli di quella a mano (pubblicazione,
+servizio, deposito, violazioni, sostituzione del titolare assente, registro
+dell'anagrafica): se una non va, lo dice e le altre restano. Chi scrive solo
+su alcuni depositi vede e copre solo i turni di quelli.
+
+Rotta nuova `POST /api/roster/copri-scoperti` (`{ day, applica? }`), nell'area
+Roster come le altre scritture; senza `applica` non scrive niente.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. Le assegnazioni fatte restano, come quelle
+a mano.
+
 ### Una giornata di esercizio fino al report: le parziali prendono i km dall'AVM (tappa 7.4)
 
 Prova del consuntivo su una giornata feriale intera della copia dei dati veri
