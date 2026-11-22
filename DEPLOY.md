@@ -2226,6 +2226,19 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### mermaid 12 e katex 0.18 (tappa 7.17)
+
+I diagrammi (mermaid) e le formule (katex) nei messaggi di Argos passano a
+mermaid 12.3 e katex 0.18.11. Era l'ultimo avviso messo da parte in
+`osv-scanner.toml` (katex 0.16, basso): ora resta solo quello di esbuild.
+`rehype-katex` vuole ancora katex 0.16; un'override gli dà la 0.18, che ha la
+stessa interfaccia. Nel browser un diagramma e una formula si disegnano come
+prima.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente.
+
 ### pnpm 10: le protezioni sulle dipendenze valgono davvero (tappa 7.16)
 
 Il progetto passa da pnpm 9.15.4 a **pnpm 10.34.9** (`packageManager`, i due
