@@ -6,6 +6,7 @@
 import express, { type Express, type IRouter } from "express";
 import { dirittiDi, interruttoriCompatibili, type InterruttoreDiPrima, type RuoloAziendale } from "@workspace/permessi";
 import type { AuthUser, Permission } from "../../lib/auth";
+import { nascondiErroriInterni } from "../../middlewares/errori-interni";
 
 /**
  * Un utente di prova. `interruttori` sono gli interruttori di prima dei ruoli:
@@ -44,6 +45,8 @@ export function appDiProva(router: IRouter, utente: AuthUser | null): Express {
     if (utente) req.user = utente;
     next();
   });
+  /* come nell'app vera (tappa 7.13): i 5xx non mostrano il testo degli errori */
+  app.use(nascondiErroriInterni);
   app.use("/api", router);
   return app;
 }

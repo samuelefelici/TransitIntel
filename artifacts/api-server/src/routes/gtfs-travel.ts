@@ -20,6 +20,7 @@ import {
   buildServiceDayMap,
 } from "./gtfs-helpers";
 import { cache } from "../middlewares/cache";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -72,7 +73,7 @@ router.get("/traffic/availability", cache({ ttlSeconds: 120 }), async (_req, res
     });
   } catch (err) {
     _req.log?.error(err, "Error fetching traffic availability");
-    return void res.status(500).json({ error: "Internal server error" });
+    return void erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -264,7 +265,7 @@ router.get("/gtfs/trips/visual", cache({ ttlSeconds: 30 }), async (req, res) => 
     });
   } catch (err) {
     req.log.error(err, "Error building trip visual");
-    return void res.status(500).json({ error: "Internal server error" });
+    return void erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -424,7 +425,7 @@ router.get("/gtfs/trips/schedule", cache({ ttlSeconds: 60 }), async (req, res) =
     return void res.json({ trips, routeColor, routeShortName, total: trips.length, feedId });
   } catch (err) {
     req.log.error(err, "Error fetching trip schedule");
-    return void res.status(500).json({ error: "Internal server error" });
+    return void erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -475,7 +476,7 @@ router.get("/gtfs/stops/directory", cache({ ttlSeconds: 120 }), async (req, res)
     });
   } catch (err) {
     req.log.error(err, "Error in stops/directory");
-    res.status(500).json({ error: "Errore directory fermate" });
+    erroreLeggibile(res, 500, "Errore directory fermate");
   }
 });
 
@@ -531,7 +532,7 @@ router.get("/gtfs/stops/:stopId/detail", cache({ ttlSeconds: 60 }), async (req, 
     });
   } catch (err) {
     req.log.error(err, "Error in stops/:stopId/detail");
-    res.status(500).json({ error: "Errore dettaglio fermata" });
+    erroreLeggibile(res, 500, "Errore dettaglio fermata");
   }
 });
 

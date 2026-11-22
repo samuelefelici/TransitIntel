@@ -24,6 +24,7 @@ import { validitaFeed, oggiYmd } from "../lib/feed-validity";
 import { nomeCaricato } from "../lib/materializzazione/usi-feed";
 import { legaContesto } from "../lib/contesto-http";
 import { mettiInEsercizio, chiudiPeriodoDelFeed, AttivazioneRifiutata } from "../lib/esercizio-porta";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 150 * 1024 * 1024 } });
@@ -331,7 +332,7 @@ router.post("/gtfs/upload", strictLimiter, legaContesto(upload.single("file")), 
     const msg = err instanceof Error ? err.message : String(err);
     req.log.error({ err, message: msg, stack: err instanceof Error ? err.stack : undefined }, "GTFS upload failed — transaction rolled back, no partial data left");
     // dettaglio solo nei log (il msg poteva leakare schema/constraint DB)
-    res.status(500).json({ error: "Errore durante l'importazione GTFS" });
+    erroreLeggibile(res, 500, "Errore durante l'importazione GTFS");
   }
 });
 
@@ -398,7 +399,7 @@ router.get("/gtfs/feeds", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS feeds");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -607,7 +608,7 @@ router.post("/gtfs/feeds/:id/activate", requireAdmin, async (req, res) => {
     res.json({ success: true, id, filename: row.filename, agencyName: row.agency_name });
   } catch (err) {
     req.log.error(err, "Error activating GTFS feed");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 

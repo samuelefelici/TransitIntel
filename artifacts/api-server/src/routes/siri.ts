@@ -70,6 +70,7 @@ import {
   leggiParcoOfficina, mezziSenzaAvm, parcoCredibile, ETICHETTE_STATO_OFFICINA,
   type MezzoOfficina, type ParcoOfficina,
 } from "../lib/officina";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 /** Il parco dell'officina indicizzato per matricola SIRI; null se non disponibile. */
 function mappaOfficina(parco: ParcoOfficina): Map<string, MezzoOfficina> | null {
@@ -906,7 +907,7 @@ router.put("/siri/fermate/transcodifica", requireAdmin, async (req, res): Promis
     res.json({ ...esito, nelFeed, feed: index?.feedId ?? null });
   } catch (e: any) {
     req.log.error({ err: e }, "import della transcodifica delle paline non riuscito");
-    res.status(500).json({ error: "import non riuscito: la tabella è quella di prima" });
+    erroreLeggibile(res, 500, "import non riuscito: la tabella è quella di prima");
   }
 });
 

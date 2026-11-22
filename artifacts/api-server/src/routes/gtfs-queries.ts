@@ -25,6 +25,7 @@ import { coordinateDellaLinea } from "../lib/geometria-linea";
 import { getLatestFeedId, FEED_NON_TROVATO } from "./gtfs-helpers";
 import { feedVisibile, feedVisibiliSql } from "../lib/tenant";
 import { cache, chiavePerUtente } from "../middlewares/cache";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -70,7 +71,7 @@ router.get("/gtfs/stops", cache({ ttlSeconds: 60 }), async (req, res) => {
     return void res.json({ data: stops, total: stops.length });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS stops");
-    return void res.status(500).json({ error: "Internal server error" });
+    return void erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -90,7 +91,7 @@ router.get("/gtfs/routes", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), as
     res.json({ data: routes });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS routes");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -104,7 +105,7 @@ router.get("/gtfs/shapes", cache({ ttlSeconds: 60 }), async (req, res) => {
     res.json({ data: shapes });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS shapes");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -268,7 +269,7 @@ router.get("/gtfs/summary", cache({ ttlSeconds: 60 }), async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS summary");
-    return void res.status(500).json({ error: "Internal server error" });
+    return void erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -476,7 +477,7 @@ router.get("/gtfs/analysis", cache({ ttlSeconds: 60 }), async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error computing GTFS analysis");
-    res.status(500).json({ error: "Errore durante l'analisi del GTFS" });
+    erroreLeggibile(res, 500, "Errore durante l'analisi del GTFS");
   }
 });
 

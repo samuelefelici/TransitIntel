@@ -18,6 +18,7 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { haversineKm } from "../lib/geo-utils";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -367,7 +368,8 @@ router.get("/ai/argos/context", async (req: any, res: any) => {
     res.json(out);
   } catch (err: any) {
     req.log?.error?.(err, "argos context");
-    res.status(500).json({ error: "Errore nel contesto di progetto", detail: err?.message });
+    req.log?.warn?.({ err: err?.message }, "Errore nel contesto di progetto");
+    erroreLeggibile(res, 500, "Errore nel contesto di progetto");
   }
 });
 

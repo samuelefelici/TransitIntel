@@ -28,6 +28,7 @@ import { db } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { haversineKm } from "./geo-utils";
 import { hubDeiNodi } from "./nodi-scambio-store";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -385,7 +386,7 @@ router.get("/planning/compare", async (req: Request, res: Response): Promise<voi
     res.json({ a, b });
   } catch (e: any) {
     console.error("[planning.compare] error:", e?.message || e);
-    res.status(500).json({ error: "Errore nel calcolo del confronto" });
+    erroreLeggibile(res, 500, "Errore nel calcolo del confronto");
   }
 });
 

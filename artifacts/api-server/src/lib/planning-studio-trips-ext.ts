@@ -22,6 +22,7 @@ import { gestoreDellaLinea, raggruppaPerGestore } from "./gestori";
 import { gestoriDalDatabase } from "./gestori-store";
 import { withVia } from "./agent-context";
 import { conContesto } from "@workspace/db/contesto";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -1063,7 +1064,7 @@ router.post("/planning-studio/projects/:id/trips/periodo-di-un-giorno/togli", as
     res.json({ ok: true, corse });
   } catch (e: any) {
     console.error("[ps-trips-ext] periodo di un giorno:", e?.message || e);
-    res.status(500).json({ error: "Periodo non tolto" });
+    erroreLeggibile(res, 500, "Periodo non tolto");
   }
 });
 

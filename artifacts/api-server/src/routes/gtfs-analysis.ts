@@ -18,6 +18,7 @@ import { getLatestFeedId, feedDellaLettura, modelCongestion } from "./gtfs-helpe
 import { cache, chiavePerUtente } from "../middlewares/cache";
 import { centriUrbani } from "../lib/territorio";
 import { trattiDellaLinea } from "../lib/geometria-linea";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 
@@ -82,7 +83,7 @@ router.get("/gtfs/routes/active-by-band", cache({ ttlSeconds: 30 }), async (req,
     return void res.json({ routeIds: result.rows.map(r => r.route_id), count: result.rows.length });
   } catch (err) {
     req.log.error(err, "Error fetching active routes by band");
-    return void res.status(500).json({ error: "Internal server error" });
+    return void erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -236,7 +237,7 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
     res.json({ type: "FeatureCollection", features });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS shapes");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -537,7 +538,7 @@ router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (re
     });
   } catch (err) {
     req.log.error(err, "Error in network-analysis");
-    res.status(500).json({ error: "Errore analisi rete" });
+    erroreLeggibile(res, 500, "Errore analisi rete");
   }
 });
 

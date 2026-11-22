@@ -9,6 +9,7 @@ import { hasIsochroneProvider, fetchIsochronesMulti, pointInIsoGeometry } from "
 import { legaContesto } from "../lib/contesto-http";
 import { leggiAzienda, type Azienda } from "../lib/azienda";
 import { nomeOppure, nomiComuni, type NomiComuni } from "../lib/territorio";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -742,7 +743,7 @@ router.get("/scenarios", async (req, res) => {
     res.json({ data: rows });
   } catch (err) {
     req.log.error(err, "Error listing scenarios");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -959,7 +960,7 @@ router.get("/scenarios/compare", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error comparing scenarios");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1019,7 +1020,7 @@ router.get("/scenarios/importable-variants", async (req, res) => {
     res.json({ projects: groupVariantRows(r.rows) });
   } catch (err: any) {
     req.log.error(err, "Error listing importable variants");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1122,7 +1123,7 @@ router.get("/scenarios/:id", async (req, res) => {
     res.json(row);
   } catch (err) {
     req.log.error(err, "Error fetching scenario");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1253,7 +1254,7 @@ router.delete("/scenarios/:id", async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     req.log.error(err, "Error deleting scenario");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1337,7 +1338,7 @@ router.patch("/scenarios/:id", async (req, res) => {
     res.json(updated);
   } catch (err) {
     req.log.error(err, "Error updating scenario");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1358,7 +1359,7 @@ router.get("/scenarios/:id/analyze", async (req, res) => {
     res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis });
   } catch (err) {
     req.log.error(err, "Error analyzing scenario");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -1689,7 +1690,7 @@ router.get("/scenarios/:id/deep", async (req, res) => {
     res.json({ scenario: { id: row.id, name: row.name, color: row.color }, ...analysis, demand, corridorTraffic, stopsEnriched, coverageCurve, accessibilityIso });
   } catch (err) {
     req.log.error(err, "Error deep-analyzing scenario");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -2898,7 +2899,7 @@ router.get("/scenarios/:id/line-stops", async (req, res) => {
     res.json({ lines: lineResults, avgSpeedKmh: avgSpeed });
   } catch (err) {
     req.log.error(err, "Error getting line stops");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -2994,7 +2995,7 @@ router.get("/scenarios/:id/suggest-km", async (req, res) => {
     });
   } catch (err) {
     req.log.error(err, "Error suggesting km");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3033,7 +3034,7 @@ router.post("/scenarios/:id/generate-program", async (req, res) => {
     res.json({ id: saved.id, ...program });
   } catch (err) {
     req.log.error(err, "Error generating service program");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3051,7 +3052,7 @@ router.get("/scenarios/:id/programs", async (req, res) => {
     res.json({ programs: rows });
   } catch (err) {
     req.log.error(err, "Error listing programs");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3065,7 +3066,7 @@ router.get("/scenarios/:id/programs/:programId", async (req, res) => {
     res.json({ id: row.id, name: row.name, config: row.config, ...row.result as any });
   } catch (err) {
     req.log.error(err, "Error getting program");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3079,7 +3080,7 @@ router.delete("/scenarios/:id/programs/:programId", async (req, res) => {
     res.json({ deleted: true });
   } catch (err) {
     req.log.error(err, "Error deleting program");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3225,7 +3226,7 @@ router.get("/scenarios/:id/programs/:programId/calendars", async (req, res) => {
     res.json({ calendars: result });
   } catch (err) {
     req.log.error(err, "Error listing calendars");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3254,7 +3255,7 @@ router.post("/scenarios/:id/programs/:programId/calendars", async (req, res) => 
     res.json(created);
   } catch (err) {
     req.log.error(err, "Error creating calendar");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3287,7 +3288,7 @@ router.put("/scenarios/:id/programs/:programId/calendars/:calId", async (req, re
     res.json(updated);
   } catch (err) {
     req.log.error(err, "Error updating calendar");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3298,7 +3299,7 @@ router.delete("/scenarios/:id/programs/:programId/calendars/:calId", async (req,
     res.json({ ok: true });
   } catch (err) {
     req.log.error(err, "Error deleting calendar");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3317,7 +3318,7 @@ router.post("/scenarios/:id/programs/:programId/calendars/:calId/exceptions", as
     res.json(created);
   } catch (err) {
     req.log.error(err, "Error creating exception");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3328,7 +3329,7 @@ router.delete("/scenarios/:id/programs/:programId/calendars/:calId/exceptions/:e
     res.json({ ok: true });
   } catch (err) {
     req.log.error(err, "Error deleting exception");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3401,7 +3402,7 @@ router.post("/scenarios/:id/programs/:programId/calendars/from-all-presets", asy
     res.json({ calendars: created, count: created.length });
   } catch (err) {
     req.log.error(err, "Error creating all presets");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3799,7 +3800,7 @@ router.get("/scenarios/:id/programs/:programId/validate-gtfs", async (req, res) 
     res.json(result);
   } catch (err) {
     req.log.error(err, "Error validating GTFS");
-    res.status(500).json({ error: "Internal server error" });
+    erroreLeggibile(res, 500, "Internal server error");
   }
 });
 
@@ -3865,7 +3866,7 @@ router.get("/scenarios/:id/programs/:programId/export-gtfs", async (req, res) =>
     res.send(zipBuffer);
   } catch (err) {
     req.log.error(err, "Error exporting GTFS");
-    res.status(500).json({ error: "Errore durante l'esportazione GTFS" });
+    erroreLeggibile(res, 500, "Errore durante l'esportazione GTFS");
   }
 });
 

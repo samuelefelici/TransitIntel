@@ -59,6 +59,7 @@ import { legaContesto } from "../lib/contesto-http";
 import { controlloDepositi, fuoriDaiDepositi, haLimiteDiVisibilita, limiteDi, limitiDi, soloVisibili, vedeConducente } from "../lib/roster-limite-depositi";
 import { vedeIlDeposito } from "@workspace/permessi";
 import { conContesto } from "@workspace/db/contesto";
+import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
 const UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -91,7 +92,7 @@ export function rispondiErrore(res: Response, e: any, contesto: string): void {
   if (code === "40P01" || code === "55P03") { res.status(409).json({ error: "Qualcun altro sta modificando gli stessi conducenti: riprova" }); return; }
   /* solo codice e vincolo: il messaggio di drizzle contiene i parametri */
   console.error(`[anagrafica] ${contesto}:`, code ?? e?.name ?? "errore", e?.cause?.constraint ?? "");
-  res.status(500).json({ error: "Errore interno dell'anagrafica" });
+  erroreLeggibile(res, 500, "Errore interno dell'anagrafica");
 }
 
 const utente = (req: Request) => ({ userId: req.user?.id ?? null, via: req.authVia ?? null });
