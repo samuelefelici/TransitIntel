@@ -2237,7 +2237,7 @@ libreria vulnerabile non passa.
   7.3.8, vitest 4.1.12, mermaid 11.17.
 - Tolte perché non servivano: `archiver` (lo zip dell'export GTFS delle tariffe
   ora lo fa adm-zip, come gli altri GTFS), `zod` e `drizzle-zod` in `lib/db`,
-  e tre pacchetti di tipi superati.
+  e quattro pacchetti di tipi superati.
 - Le dipendenze indirette ferme a versioni vulnerabili sono forzate alla prima
   versione corretta con le `overrides` in `package.json` (sezione `pnpm`).
 
