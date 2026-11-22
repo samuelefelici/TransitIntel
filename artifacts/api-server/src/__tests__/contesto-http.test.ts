@@ -127,16 +127,16 @@ describe("chi fa la modifica, per le richieste HTTP", () => {
     expect(viaPerIlDatabase("argos")).toBe("argos");
   });
 
-  it("multer perde il contesto (busboy chiama next da un evento del socket): legaContesto lo tiene", async () => {
+  /* multer fino alla 2.1 perdeva il contesto (busboy chiamava next da un evento
+   * del socket); dalla 2.5 (PR 7.12) lo tiene anche da solo. legaContesto resta
+   * come garanzia: il contesto c'è comunque, qualunque cosa faccia multer. */
+  it("con legaContesto il contesto arriva dopo l'upload di multer", async () => {
     const token = sessioneDi(F.UTENTE);
     const up = multer({ storage: multer.memoryStorage() });
     const a = express();
     a.use(contestoRichiesta);
-    a.post("/nudo", requireAuth, up.single("f"), (_req, res) => { res.json(contestoDb.getStore() ?? null); });
     a.post("/legato", requireAuth, legaContesto(up.single("f")), (_req, res) => { res.json(contestoDb.getStore() ?? null); });
     const file = Buffer.alloc(200_000, "x");
-    const nudo = await request(a).post("/nudo").set("Authorization", `Bearer ${token}`).attach("f", file, "a.txt");
-    expect(nudo.body?.attore).toBeUndefined();
     const legato = await request(a).post("/legato").set("Authorization", `Bearer ${token}`).attach("f", file, "a.txt");
     expect(legato.body).toMatchObject({ attore: F.UTENTE, via: "api" });
   });

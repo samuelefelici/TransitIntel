@@ -2,9 +2,9 @@
 #
 # - segreti (gitleaks): blocca. Guarda i commit della PR; il lunedì e a mano
 #   tutta la storia. I rilievi già esaminati sono in .gitleaksignore.
-# - dipendenze (osv-scanner): per ora SOLO SEGNALA. In main ci sono
-#   vulnerabilità note nelle dipendenze: si tolgono con una PR di
-#   aggiornamenti, poi il passo diventa bloccante (si toglie continue-on-error).
+# - dipendenze (osv-scanner): blocca (dalla PR 7.12). Le vulnerabilità note
+#   esaminate e messe da parte sono in osv-scanner.toml, ognuna col motivo e
+#   una scadenza.
 # - analisi statica (semgrep, regole pubbliche, senza account): in una PR
 #   blocca solo i rilievi NUOVI rispetto al ramo di destinazione
 #   (--baseline-commit); su main, il lunedì e a mano segnala tutto senza
@@ -58,9 +58,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Solo segnalazione fino alla PR degli aggiornamenti (vedi in cima).
       - uses: google/osv-scanner-action/osv-scanner-action@b1d267aea5211fa648d9d442fa64b90dbdcbdd36 # v2.7.0
-        continue-on-error: true
         with:
           scan-args: |-
             --recursive

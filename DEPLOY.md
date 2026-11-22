@@ -2226,6 +2226,32 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Dipendenze aggiornate, senza vulnerabilità note (tappa 7.12)
+
+Le librerie con vulnerabilità note sono aggiornate: da 97 avvisi (1 critico,
+38 alti) a 2 bassi, messi da parte con il motivo in `osv-scanner.toml`. Il job
+«dipendenze» del workflow Sicurezza ora **blocca**: una PR che porta una
+libreria vulnerabile non passa.
+- Aggiornate: express 5.3 (con `proxy-addr` corretto, l'avviso critico),
+  drizzle-orm 0.45.4, multer 2.5, adm-zip 0.6.1, csv-parse 7, zod 4.6, vite
+  7.3.8, vitest 4.1.12, mermaid 11.17.
+- Tolte perché non servivano: `archiver` (lo zip dell'export GTFS delle tariffe
+  ora lo fa adm-zip, come gli altri GTFS), `zod` e `drizzle-zod` in `lib/db`,
+  e tre pacchetti di tipi superati.
+- Le dipendenze indirette ferme a versioni vulnerabili sono forzate alla prima
+  versione corretta con le `overrides` in `package.json` (sezione `pnpm`).
+
+**Da sapere**: con pnpm 9 (quello del progetto) le impostazioni scritte in
+`pnpm-workspace.yaml` dopo `catalog` (`overrides`, `onlyBuiltDependencies`,
+`minimumReleaseAge`, `autoInstallPeers`) **non valgono**: sono di pnpm 10. Per
+questo le overrides di sicurezza stanno in `package.json`. Passare a pnpm 10 è
+un lavoro a parte.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova. L'immagine si
+ricostruisce con il lockfile nuovo (`--frozen-lockfile`).
+
+**Rollback**: immagine precedente.
+
 ### Scansioni di sicurezza nella CI (tappa 7.11)
 
 Accanto alla CI c'è il workflow **«Sicurezza»** (`.github/workflows/sicurezza.yml`):
