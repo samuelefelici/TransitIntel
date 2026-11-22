@@ -115,7 +115,7 @@ export async function ensureValiditySeed(): Promise<void> {
              )
         `);
       } catch (e: any) {
-        console.warn(`[ps-validity] cleanup legacy '${legacyCode}' skipped:`, e?.message || e);
+        console.warn("[ps-validity] cleanup legacy '%s' skipped:", legacyCode, e?.message || e);
       }
     }
 
@@ -1339,7 +1339,7 @@ async function conPuntoDiRitorno(ex: Esecutore, cosa: string, passo: () => Promi
     await ex.execute(sql`RELEASE SAVEPOINT passo_tollerato`);
   } catch (e: any) {
     await ex.execute(sql`ROLLBACK TO SAVEPOINT passo_tollerato`);
-    console.warn(`[validity] ${cosa}:`, e?.code ?? e?.message ?? e);
+    console.warn("[validity] %s:", cosa, e?.code ?? e?.message ?? e);
   }
 }
 
