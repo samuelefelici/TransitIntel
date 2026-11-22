@@ -53,6 +53,9 @@ import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
 import { controlloDepositi, fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
 import { chiaveTurno, copri, type CandidatoCopertura, type DaCoprire } from "../lib/roster-copertura";
 import { bilancia, scarto, type ConducenteBilancio, type Mossa, type TurnoBilancio } from "../lib/roster-bilancia";
+import {
+  inizioPeriodo, periodiFra, postoDi, rotazione, type AssegnazioneProposta, type Cadenza, type Posto, type Ricerca, type TipoGiorno,
+} from "../lib/roster-rotazione-turni";
 import { aDisposizione, catalogoPer, esitoScrittura, leggiCatalogo, liberaIlTurno, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
@@ -748,6 +751,197 @@ router.post("/roster/bilancia-carichi", async (req, res): Promise<void> => {
     }
     res.json({ dal, al, fatte, nonAndate });
   } catch (e) { rispondiErrore(res, e, "bilancia i carichi"); }
+});
+
+/* ── Rotazione dei turni (7.8, migrazione 0061) ─────────────────────────── */
+
+const CODICE_POSTO_MAX = 40;
+const POSTI_MAX = 500;
+
+/** Il gruppo di rotazione, se chi chiede ne vede il deposito; altrimenti 404 (non si dice che c'è). */
+async function gruppoRotazione(req: Request, id: string) {
+  if (!UUID_STRETTO.test(id)) throw new Rifiuto(400, "gruppo: un uuid");
+  const ex = db as unknown as Ex;
+  const g = righe(await ex.execute(sql`
+    SELECT id::text, deposito_codice, nome, to_char(data_riferimento, 'YYYY-MM-DD') AS riferimento
+      FROM roster_gruppi_turni WHERE id = ${id}::uuid`))[0];
+  const limiti = limitiDi(req);
+  if (!g || !vedeIlDeposito(limiti.vede, g.deposito_codice)) throw new Rifiuto(404, "Gruppo non trovato");
+  const deposito = (await leggiDepositi(ex)).find(d => d.codice === g.deposito_codice) ?? null;
+  return {
+    id: String(g.id), nome: String(g.nome), depositoCodice: String(g.deposito_codice), depositoNome: deposito?.nome ?? String(g.deposito_codice),
+    cadenza: (deposito?.cadenzaTurni ?? "semimensile") as Cadenza,
+    riferimento: g.riferimento ? String(g.riferimento) : null,
+    scrive: scriveSulDeposito(limiti.scrive, g.deposito_codice),
+  };
+}
+
+async function postiDel(ex: Ex, gruppoId: string): Promise<Posto[]> {
+  return righe(await ex.execute(sql`
+    SELECT feriale, sabato, domenica FROM roster_rotazioni_turni_posti WHERE gruppo_id = ${gruppoId}::uuid ORDER BY posto`))
+    .map(x => ({ feriale: x.feriale ?? null, sabato: x.sabato ?? null, domenica: x.domenica ?? null }));
+}
+
+const nomeConducenteDi = (c: Conducente) => [c.cognome, c.nome].filter(Boolean).join(" ") || c.name;
+
+/**
+ * La rotazione di un gruppo: i posti, la cadenza del deposito, la data di
+ * riferimento, i conducenti del gruppo con il posto di oggi.
+ */
+router.get("/roster/rotazioni-turni/:gruppoId", async (req, res): Promise<void> => {
+  try {
+    const gruppo = await gruppoRotazione(req, String(req.params.gruppoId).toLowerCase());
+    const ex = db as unknown as Ex;
+    const posti = await postiDel(ex, gruppo.id);
+    const oggi = giornataOggi();
+    const riferimento = gruppo.riferimento ?? inizioPeriodo(oggi, gruppo.cadenza);
+    const k = periodiFra(riferimento, oggi, gruppo.cadenza);
+    const membri = (await conducentiPer(req, ex)).filter(c => c.rotazioneTurni?.gruppoId === gruppo.id && c.isActive);
+    res.json({
+      gruppo, posti,
+      periodoDiOggi: inizioPeriodo(oggi, gruppo.cadenza),
+      conducenti: membri.map(c => {
+        const pos = c.rotazioneTurni?.posizione ?? null;
+        return { id: c.id, nome: nomeConducenteDi(c), fittizio: c.isFictitious, posizione: pos,
+          postoDiOggi: pos !== null && posti.length && pos <= posti.length ? postoDi(pos, k, posti.length) : null };
+      }).sort((a, b) => (a.posizione ?? 1e9) - (b.posizione ?? 1e9) || a.nome.localeCompare(b.nome, "it")),
+    });
+  } catch (e) { rispondiErrore(res, e, "rotazione turni"); }
+});
+
+/** Salva la tabella dei posti (l'ordine è il numero del posto) e la data di riferimento. */
+router.put("/roster/rotazioni-turni/:gruppoId", async (req, res): Promise<void> => {
+  try {
+    const gruppo = await gruppoRotazione(req, String(req.params.gruppoId).toLowerCase());
+    if (!gruppo.scrive) throw new Rifiuto(403, "Sola lettura: il gruppo è di un deposito su cui non scrivi", { solaLettura: true });
+    const corpo = req.body ?? {};
+    const rif = corpo.dataRiferimento === undefined || corpo.dataRiferimento === null || corpo.dataRiferimento === ""
+      ? inizioPeriodo(giornataOggi(), gruppo.cadenza) : String(corpo.dataRiferimento);
+    if (!dataVera(rif)) throw new Rifiuto(400, "dataRiferimento: una data vera, AAAA-MM-GG");
+    if (!Array.isArray(corpo.posti) || corpo.posti.length < 1 || corpo.posti.length > POSTI_MAX) throw new Rifiuto(400, `posti: da 1 a ${POSTI_MAX}`);
+    const codice = (v: unknown, dove: string) => {
+      if (v === undefined || v === null) return null;
+      if (typeof v !== "string") throw new Rifiuto(400, `${dove}: un codice di turno`);
+      const t = v.trim();
+      if (t.length > CODICE_POSTO_MAX) throw new Rifiuto(400, `${dove}: al più ${CODICE_POSTO_MAX} caratteri`);
+      return t || null;
+    };
+    const posti: Posto[] = corpo.posti.map((p: any, i: number) => ({
+      feriale: codice(p?.feriale, `posto ${i + 1}, feriale`),
+      sabato: codice(p?.sabato, `posto ${i + 1}, sabato`),
+      domenica: codice(p?.domenica, `posto ${i + 1}, domenica`),
+    }));
+    await db.transaction(async (tx) => {
+      const ex = tx as unknown as Ex;
+      await ex.execute(sql`SET LOCAL lock_timeout = '5s'`);
+      await ex.execute(sql`SELECT 1 FROM roster_gruppi_turni WHERE id = ${gruppo.id}::uuid FOR UPDATE`);
+      await ex.execute(sql`UPDATE roster_gruppi_turni SET data_riferimento = ${rif}::date WHERE id = ${gruppo.id}::uuid`);
+      await ex.execute(sql`DELETE FROM roster_rotazioni_turni_posti WHERE gruppo_id = ${gruppo.id}::uuid`);
+      await ex.execute(sql`
+        INSERT INTO roster_rotazioni_turni_posti (gruppo_id, posto, feriale, sabato, domenica)
+        SELECT ${gruppo.id}::uuid, x.n::smallint, x.e->>'feriale', x.e->>'sabato', x.e->>'domenica'
+          FROM jsonb_array_elements(${JSON.stringify(posti)}::jsonb) WITH ORDINALITY AS x(e, n)`);
+    });
+    res.json({ ok: true, dataRiferimento: rif, posti });
+  } catch (e) { rispondiErrore(res, e, "rotazione turni"); }
+});
+
+/**
+ * La rotazione applicata a un periodo (da domani, al più 31 giorni): senza
+ * `applica` la proposta, con `applica` le assegnazioni, una per volta con i
+ * controlli dell'assegnazione a mano. Si assegna solo a chi quel giorno è
+ * libero (attivo, non fittizio, in servizio, senza voci né turni); quello che
+ * non si può fare si dice col motivo, e i turni rimasti si coprono poi con
+ * «Copri gli scoperti».
+ */
+router.post("/roster/rotazioni-turni/:gruppoId/applica", async (req, res): Promise<void> => {
+  try {
+    const gruppo = await gruppoRotazione(req, String(req.params.gruppoId).toLowerCase());
+    if (!gruppo.scrive) throw new Rifiuto(403, "Sola lettura: il gruppo è di un deposito su cui non scrivi", { solaLettura: true });
+    const dal = String(req.body?.dal ?? ""), al = String(req.body?.al ?? "");
+    if (!dataVera(dal) || !dataVera(al) || al < dal) throw new Rifiuto(400, "dal e al: date vere, AAAA-MM-GG, con al non prima di dal");
+    if (dal < piuGiorni(giornataOggi(), 1)) throw new Rifiuto(400, "La rotazione si applica dai giorni da domani in poi");
+    const giorni: string[] = [];
+    for (let g = dal; g <= al && giorni.length <= PERIODO_MASSIMO_BILANCIO; g = piuGiorni(g, 1)) giorni.push(g);
+    if (giorni.length > PERIODO_MASSIMO_BILANCIO) throw new Rifiuto(400, `Al più ${PERIODO_MASSIMO_BILANCIO} giorni`);
+    const applica = req.body?.applica === true;
+    const ex = db as unknown as Ex;
+    const posti = await postiDel(ex, gruppo.id);
+    if (!posti.length) throw new Rifiuto(409, "Il gruppo non ha ancora la tabella dei posti: creala prima");
+    const riferimento = gruppo.riferimento ?? inizioPeriodo(dal, gruppo.cadenza);
+
+    /* i conducenti del gruppo e i giorni in cui sono liberi */
+    const membri = (await conducentiPer(req, ex)).filter(c => c.rotazioneTurni?.gruppoId === gruppo.id && c.isActive && !c.isFictitious);
+    const ids = membri.map(c => c.id);
+    const lista = `{${ids.join(",")}}`;
+    const servizio = new Map(ids.length ? righe(await ex.execute(sql`
+      SELECT id::text, data_assunzione::text AS dal, data_fine_servizio::text AS al FROM roster_drivers WHERE id = ANY(${lista}::uuid[])`))
+      .map(x => [String(x.id), { dal: x.dal ? String(x.dal).slice(0, 10) : null, al: x.al ? String(x.al).slice(0, 10) : null }]) : []);
+    const occupati = new Set([
+      ...(ids.length ? righe(await ex.execute(sql`
+        SELECT driver_id::text AS id, day::text AS day FROM roster_entries WHERE driver_id = ANY(${lista}::uuid[]) AND day BETWEEN ${dal}::date AND ${al}::date`)) : []),
+      ...(ids.length ? righe(await ex.execute(sql`
+        SELECT driver_id::text AS id, day::text AS day FROM roster_assignments WHERE driver_id = ANY(${lista}::uuid[]) AND day BETWEEN ${dal}::date AND ${al}::date`)) : []),
+    ].map(x => `${x.id}|${String(x.day).slice(0, 10)}`));
+    const inServizio = (id: string, g: string) => {
+      const s = servizio.get(id);
+      return !!s && (!s.dal || s.dal <= g) && (!s.al || s.al >= g);
+    };
+
+    /* i turni pubblicati di ogni giorno e chi li ha già */
+    const pubblicati = righe(await ex.execute(sql`
+      SELECT day::text AS day, dss_id::text AS dss, ps_project_id::text AS progetto FROM roster_turni_pubblicati
+       WHERE sostituita_da IS NULL AND day BETWEEN ${dal}::date AND ${al}::date`)).map(x => ({ day: String(x.day).slice(0, 10), dss: String(x.dss), progetto: x.progetto ? String(x.progetto) : null }));
+    const riassunti = pubblicati.length ? await riassuntiDei([...new Set(pubblicati.map(p => p.dss))]) : new Map();
+    const codiciDel = new Map<string, Set<string>>();
+    for (const [dssId, r] of riassunti) codiciDel.set(dssId, new Set(r.turni.map((t: { code: string }) => t.code)));
+    const dssDel = new Map<string, string[]>();
+    for (const p of pubblicati) { const l = dssDel.get(p.day); if (l) l.push(p.dss); else dssDel.set(p.day, [p.dss]); }
+    const cerca = (g: string, codice: string): Ricerca => {
+      const dove = (dssDel.get(g) ?? []).filter(d => codiciDel.get(d)?.has(codice));
+      if (!dove.length) return "non_pubblicato";
+      if (dove.length > 1) return "ambiguo";
+      return { dssId: dove[0]!, codice };
+    };
+    const diChi = new Map(righe(await ex.execute(sql`
+      SELECT day::text AS day, dss_id::text AS dss, duty_code, driver_id::text AS chi FROM roster_assignments
+       WHERE day BETWEEN ${dal}::date AND ${al}::date`)).map(x => [`${String(x.day).slice(0, 10)}|${x.dss}|${x.duty_code}`, String(x.chi)]));
+
+    /* il tipo di giorno dal calendario del programma pubblicato (domeniche e festivi, patrono compreso) */
+    const progetto = pubblicati.find(p => p.progetto)?.progetto ?? null;
+    let profilo: CalendarProfile = { closedPeriods: [], summerPeriod: null, extraHolidays: [] };
+    if (progetto) { try { profilo = await loadCalendarProfile(progetto); } catch { /* resta il calendario civile */ } }
+    const classi = new Map(classifyRange(dal, al, profilo).days.map(d => [d.date, d]));
+    const tipoDi = (g: string): TipoGiorno => {
+      const d = classi.get(g);
+      if (!d) return "feriale";
+      if (d.level1 === "festivo") return "domenica";
+      return d.weekday === 5 ? "sabato" : "feriale";
+    };
+
+    const { assegnazioni, nonFatte } = rotazione({
+      posti, giorni, riferimento, cadenza: gruppo.cadenza, tipoDi, cerca,
+      occupato: (g, t) => diChi.get(`${g}|${t.dssId}|${t.codice}`) ?? null,
+      membri: membri.map(c => ({
+        id: c.id, nome: nomeConducenteDi(c), posizione: c.rotazioneTurni?.posizione ?? null,
+        liberi: new Set(giorni.filter(g => inServizio(c.id, g) && !occupati.has(`${c.id}|${g}`))),
+      })),
+    });
+    const intestazione = { gruppo: { id: gruppo.id, nome: gruppo.nome, deposito: gruppo.depositoNome, cadenza: gruppo.cadenza, riferimento }, dal, al };
+    if (!applica) { res.json({ ...intestazione, assegnazioni, nonFatte }); return; }
+    const fatte: AssegnazioneProposta[] = [];
+    const nonAndate: Array<{ assegnazione: AssegnazioneProposta; motivo: string }> = [];
+    for (const a of assegnazioni) {
+      try {
+        await eseguiAssegnazione(req, { driverId: a.driverId, dssId: a.dssId, day: a.giorno, dutyCode: a.codice, forzate: new Set(), sostituisce: null });
+        fatte.push(a);
+      } catch (e: any) {
+        if (!(e instanceof Rifiuto)) throw e;
+        nonAndate.push({ assegnazione: a, motivo: e.message });
+      }
+    }
+    res.json({ ...intestazione, fatte, nonFatte, nonAndate });
+  } catch (e) { rispondiErrore(res, e, "rotazione turni"); }
 });
 
 /**

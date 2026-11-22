@@ -378,6 +378,7 @@
   "public.roster_rotazione_assegnazioni_pkey": "CREATE UNIQUE INDEX roster_rotazione_assegnazioni_pkey ON public.roster_rotazione_assegnazioni USING btree (id)",
   "public.roster_rotazione_assegnazioni_rotazione_id_driver_id_key": "CREATE UNIQUE INDEX roster_rotazione_assegnazioni_rotazione_id_driver_id_key ON public.roster_rotazione_assegnazioni USING btree (rotazione_id, driver_id)",
   "public.roster_rotazioni_riposi_pkey": "CREATE UNIQUE INDEX roster_rotazioni_riposi_pkey ON public.roster_rotazioni_riposi USING btree (id)",
+  "public.roster_rotazioni_turni_posti_pkey": "CREATE UNIQUE INDEX roster_rotazioni_turni_posti_pkey ON public.roster_rotazioni_turni_posti USING btree (gruppo_id, posto)",
   "public.roster_turni_dss_pkey": "CREATE UNIQUE INDEX roster_turni_dss_pkey ON public.roster_turni_dss USING btree (dss_id, codice)",
   "public.roster_turni_pubblicati_pkey": "CREATE UNIQUE INDEX roster_turni_pubblicati_pkey ON public.roster_turni_pubblicati USING btree (id)",
   "public.roster_voci_pkey": "CREATE UNIQUE INDEX roster_voci_pkey ON public.roster_voci USING btree (codice)",
@@ -2253,6 +2254,13 @@
    "pattern": "jsonb | not null |  |  | ",
    "weeks": "integer | not null |  |  | "
   },
+  "public.roster_rotazioni_turni_posti": {
+   "domenica": "text | null |  |  | ",
+   "feriale": "text | null |  |  | ",
+   "gruppo_id": "uuid | not null |  |  | ",
+   "posto": "smallint | not null |  |  | ",
+   "sabato": "text | null |  |  | "
+  },
   "public.roster_turni_dss": {
    "codice": "text | not null |  |  | ",
    "corse": "jsonb | not null | '[]'::jsonb |  | ",
@@ -3030,6 +3038,12 @@
   "public.roster_rotazione_assegnazioni.roster_rotazione_assegnazioni_rotazione_id_driver_id_key": "UNIQUE (rotazione_id, driver_id)",
   "public.roster_rotazione_assegnazioni.roster_rotazione_assegnazioni_rotazione_id_fkey": "FOREIGN KEY (rotazione_id) REFERENCES roster_rotazioni_riposi(id) ON DELETE CASCADE",
   "public.roster_rotazioni_riposi.roster_rotazioni_riposi_pkey": "PRIMARY KEY (id)",
+  "public.roster_rotazioni_turni_posti.roster_rotazioni_turni_posti_domenica": "CHECK (((domenica IS NULL) OR ((char_length(domenica) >= 1) AND (char_length(domenica) <= 40))))",
+  "public.roster_rotazioni_turni_posti.roster_rotazioni_turni_posti_feriale": "CHECK (((feriale IS NULL) OR ((char_length(feriale) >= 1) AND (char_length(feriale) <= 40))))",
+  "public.roster_rotazioni_turni_posti.roster_rotazioni_turni_posti_gruppo_id_fkey": "FOREIGN KEY (gruppo_id) REFERENCES roster_gruppi_turni(id) ON DELETE CASCADE",
+  "public.roster_rotazioni_turni_posti.roster_rotazioni_turni_posti_pkey": "PRIMARY KEY (gruppo_id, posto)",
+  "public.roster_rotazioni_turni_posti.roster_rotazioni_turni_posti_posto": "CHECK (((posto >= 1) AND (posto <= 500)))",
+  "public.roster_rotazioni_turni_posti.roster_rotazioni_turni_posti_sabato": "CHECK (((sabato IS NULL) OR ((char_length(sabato) >= 1) AND (char_length(sabato) <= 40))))",
   "public.roster_turni_dss.roster_turni_dss_dss_id_fkey": "FOREIGN KEY (dss_id) REFERENCES driver_shift_scenarios(id) ON DELETE CASCADE",
   "public.roster_turni_dss.roster_turni_dss_pkey": "PRIMARY KEY (dss_id, codice)",
   "public.roster_turni_pubblicati.roster_turni_pubblicati_coppia": "FOREIGN KEY (dss_id, vss_id) REFERENCES driver_shift_scenarios(id, service_program_scenario_id) ON DELETE RESTRICT",

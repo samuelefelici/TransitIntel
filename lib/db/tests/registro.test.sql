@@ -479,7 +479,7 @@ DO $$
 DECLARE st jsonb := registro.stato();
 BEGIN
   ASSERT (st ->> 'attivo')::boolean AND st ->> 'base_giuridica' = 'prova' AND (st ->> 'anonimizza_dopo_mesi')::int = 12
-         AND jsonb_array_length(st -> 'tabelle') = 60, format('stato: %s', st);
+         AND jsonb_array_length(st -> 'tabelle') = 61, format('stato: %s', st);
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.ruoli_diritti' AND (t ->> 'con_valori')::boolean),
     'i diritti dei ruoli (migrazione 0015): con i valori';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.azienda' AND (t ->> 'con_valori')::boolean),
@@ -495,6 +495,8 @@ BEGIN
     'le vetture sui turni macchina (migrazione 0033): con i valori';
   ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.roster_voci' AND (t ->> 'con_valori')::boolean),
     'il catalogo delle voci del roster (migrazione 0034): con i valori';
+  ASSERT EXISTS (SELECT 1 FROM jsonb_array_elements(st -> 'tabelle') t WHERE t ->> 'tabella' = 'public.roster_rotazioni_turni_posti' AND (t ->> 'con_valori')::boolean),
+    'i posti della rotazione dei turni (migrazione 0061): con i valori (solo codici di turno)';
   ASSERT (SELECT count(*) FROM jsonb_array_elements(st -> 'tabelle') t
            WHERE t ->> 'tabella' IN ('public.territorio_comuni', 'public.territorio_luoghi') AND (t ->> 'con_valori')::boolean) = 2,
     'il territorio dell''azienda (migrazione 0035): con i valori';
