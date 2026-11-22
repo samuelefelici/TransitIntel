@@ -22,7 +22,7 @@ import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
-  MousePointer2, ArrowLeftRight, Pin, Send, Lock,
+  MousePointer2, ArrowLeftRight, Pin, Send, Lock, Scale,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { liberaTurno } from "@/lib/voci-roster";
@@ -40,6 +40,7 @@ import DriverEditDialog, { type RosterDriver } from "@/components/roster/DriverE
 import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
 import { CopriScopertiDialog } from "@/components/roster/CopriScopertiDialog";
+import { BilanciaCarichiDialog } from "@/components/roster/BilanciaCarichiDialog";
 import { SeScrive, useSolaLettura } from "@/hooks/use-sola-lettura";
 import { EVENTO_SOLA_LETTURA } from "@/lib/sola-lettura";
 import { limiteDepositi, scriveSulDeposito } from "@workspace/permessi";
@@ -400,7 +401,7 @@ export default function RosterPage() {
   const [tool, setTool] = useState<Strumento>("puntatore");
   const eraser = tool === "gomma";
   const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
-  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | "copri" | null>(null);
+  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | "copri" | "bilancia" | null>(null);
   // Se una cella ha ≥2 attività, la gomma chiede QUALE togliere.
   const [eraseChoice, setEraseChoice] = useState<{ driverId: string; day: string } | null>(null);
   const removeOne = (it: { kind: "duty"; a: RosterAssignment } | { kind: "voce"; en: RosterEntry }) => {
@@ -834,7 +835,11 @@ export default function RosterPage() {
                         <Wand2 className="w-3.5 h-3.5" /> Copri gli scoperti
                       </button>
                     </SeScrive>
-                    <button className={menuDisabledCls} disabled>Bilancia i carichi · prossimamente</button>
+                    <SeScrive area="roster">
+                      <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("bilancia"); }}>
+                        <Scale className="w-3.5 h-3.5" /> Bilancia i carichi
+                      </button>
+                    </SeScrive>
                   </>
                 )}
                 {m === "Stampe" && (
@@ -1339,6 +1344,7 @@ export default function RosterPage() {
       {rotDialog === "assegna" && <AssegnaRotazioniDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "genera-riposi" && <GeneraRiposiDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "copri" && <CopriScopertiDialog onClose={() => setRotDialog(null)} />}
+      {rotDialog === "bilancia" && <BilanciaCarichiDialog onClose={() => setRotDialog(null)} />}
 
       {/* Gomma su cella con più attività: scegli quale togliere */}
       {eraseChoice && (() => {

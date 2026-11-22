@@ -52,11 +52,12 @@ import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
 import { controlloDepositi, fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
 import { chiaveTurno, copri, type CandidatoCopertura, type DaCoprire } from "../lib/roster-copertura";
+import { bilancia, scarto, type ConducenteBilancio, type Mossa, type TurnoBilancio } from "../lib/roster-bilancia";
 import { aDisposizione, catalogoPer, esitoScrittura, leggiCatalogo, liberaIlTurno, mascheraVoce } from "../lib/roster-voci";
 import { perIlClient, type Violazione } from "../lib/roster-normativa";
 import {
-  forzaturaDa, preparaControllo, serviziDeiDss, snapshotDa, turniDelDss, violazioniDeiCambi, violazioniDelTabellone, violazioniPerCandidati,
-  type Lettore,
+  assegnazioniDei, forzaturaDa, piuGiorni, preparaControllo, serviziDeiDss, snapshotDa, turniDelDss, turniNelTempo, violazioniDeiCambi,
+  violazioniDelTabellone, violazioniPerCandidati, type Lettore,
 } from "../lib/roster-normativa-db";
 import { calendarioPredefinito, loadCalendarProfile } from "../lib/planning-studio-calendar";
 import { turnoRoster } from "../lib/roster-turni";
@@ -660,6 +661,96 @@ router.post("/roster/copri-scoperti", async (req, res): Promise<void> => {
 });
 
 /**
+ * «Bilancia i carichi» (7.7): in un periodo (da domani, al più 31 giorni), i
+ * turni già assegnati si spostano o si scambiano fra i conducenti dello stesso
+ * deposito perché le ore di lavoro siano più vicine (lib/roster-bilancia.ts).
+ * Senza `applica` solo la proposta, per deposito; con `applica` le mosse si
+ * fanno una per volta con i controlli dello scambio a mano (eseguiScambio), e
+ * quelle rifiutate si elencano. Si toccano solo conducenti attivi, non
+ * fittizi, dei depositi su cui chi chiede scrive.
+ */
+const PERIODO_MASSIMO_BILANCIO = 31;
+router.post("/roster/bilancia-carichi", async (req, res): Promise<void> => {
+  try {
+    const dal = String(req.body?.dal ?? ""), al = String(req.body?.al ?? "");
+    if (!dataVera(dal) || !dataVera(al) || al < dal) { res.status(400).json({ error: "dal e al: date vere, AAAA-MM-GG, con al non prima di dal" }); return; }
+    const domani = piuGiorni(giornataOggi(), 1);
+    if (dal < domani) { res.status(400).json({ error: "Si bilanciano i giorni da domani in poi" }); return; }
+    const giorni: string[] = [];
+    for (let g = dal; g <= al && giorni.length <= PERIODO_MASSIMO_BILANCIO; g = piuGiorni(g, 1)) giorni.push(g);
+    if (giorni.length > PERIODO_MASSIMO_BILANCIO) { res.status(400).json({ error: `Al più ${PERIODO_MASSIMO_BILANCIO} giorni` }); return; }
+    const applica = req.body?.applica === true;
+    const ex = db as unknown as Ex;
+    const periodo = new Set(giorni);
+
+    /* i conducenti: visti e scrivibili da chi chiede, attivi, non fittizi */
+    const controllo = await controlloDepositi(req, ex);
+    const conducenti = (await conducentiPer(req, ex)).filter(c => c.isActive && !c.isFictitious && (!controllo || controllo.scrive(c.residenzaServizio)));
+    const ids = conducenti.map(c => c.id);
+    const lista = `{${ids.join(",")}}`;
+    const servizio = new Map(ids.length ? righe(await ex.execute(sql`
+      SELECT id::text, data_assunzione::text AS dal, data_fine_servizio::text AS al FROM roster_drivers WHERE id = ANY(${lista}::uuid[])`))
+      .map(x => [String(x.id), { dal: x.dal ? String(x.dal).slice(0, 10) : null, al: x.al ? String(x.al).slice(0, 10) : null }]) : []);
+    const inServizio = (id: string, g: string) => {
+      const s = servizio.get(id);
+      return !!s && (!s.dal || s.dal <= g) && (!s.al || s.al >= g);
+    };
+    const voci = ids.length ? righe(await ex.execute(sql`
+      SELECT driver_id::text AS id, day::text AS day, category FROM roster_entries
+       WHERE driver_id = ANY(${lista}::uuid[]) AND day BETWEEN ${dal}::date AND ${al}::date`)) : [];
+    const conVoce = new Set(voci.map(v => `${v.id}|${String(v.day).slice(0, 10)}`));
+    const assente = new Set(voci.filter(v => v.category === "assenza").map(v => `${v.id}|${String(v.day).slice(0, 10)}`));
+    /* i turni, con i giorni intorno per i riposi; le sostituzioni non si spostano */
+    const righeTurni = await assegnazioniDei(ex, ids, piuGiorni(dal, -2), piuGiorni(al, 2));
+    const sostituzioni = new Set(ids.length ? righe(await ex.execute(sql`
+      SELECT id::text FROM roster_assignments WHERE driver_id = ANY(${lista}::uuid[])
+         AND day BETWEEN ${dal}::date AND ${al}::date AND titolare_id IS NOT NULL`)).map(x => String(x.id)) : []);
+    const forzate = new Set(righeTurni.filter(r => r.forzatura).map(r => String(r.id)));
+    const nelTempo = await turniNelTempo(righeTurni);
+
+    const nomeDi = (c: Conducente) => [c.cognome, c.nome].filter(Boolean).join(" ") || c.name;
+    const catalogo = await leggiDepositi(ex);
+    const dep = (x: string | null | undefined) => (x && x.trim() ? trovaDeposito(x, catalogo)?.nome ?? x.trim() : null);
+    const gruppi = new Map<string, Conducente[]>();
+    for (const c of conducenti) {
+      const d = dep(c.residenzaServizio);
+      if (!d) continue; /* senza deposito non si sa con chi bilanciare */
+      const l = gruppi.get(d);
+      if (l) l.push(c); else gruppi.set(d, [c]);
+    }
+
+    const depositi = [...gruppi.entries()].sort(([a], [b]) => a.localeCompare(b, "it")).map(([deposito, membri]) => {
+      const suoi = new Set(membri.map(c => c.id));
+      const perBilancio: ConducenteBilancio[] = membri.map(c => ({
+        id: c.id, nome: nomeDi(c),
+        liberi: new Set(giorni.filter(g => inServizio(c.id, g) && !conVoce.has(`${c.id}|${g}`))),
+        presente: new Set(giorni.filter(g => inServizio(c.id, g) && !assente.has(`${c.id}|${g}`))),
+      }));
+      const turni: TurnoBilancio[] = nelTempo.filter(t => suoi.has(t.conducenteId)).map(t => ({
+        turno: t,
+        spostabile: !!t.assegnazioneId && periodo.has(t.giorno) && !sostituzioni.has(t.assegnazioneId) && !forzate.has(t.assegnazioneId),
+      }));
+      const { mosse, carichi } = bilancia(perBilancio, turni, periodo);
+      return { deposito, conducenti: membri.length, scartoPrima: scarto(carichi, "prima"), scartoDopo: scarto(carichi, "dopo"), mosse, carichi };
+    }).filter(d => d.conducenti > 1);
+
+    if (!applica) { res.json({ dal, al, depositi }); return; }
+    const fatte: Mossa[] = [];
+    const nonAndate: Array<{ mossa: Mossa; motivo: string }> = [];
+    for (const m of depositi.flatMap(d => d.mosse)) {
+      try {
+        await eseguiScambio(req, { da: m.turno.id, daConducente: m.da.id, a: m.inCambio?.id ?? null, aConducente: m.a.id, dssVisto: null, forzate: new Set() });
+        fatte.push(m);
+      } catch (e: any) {
+        if (!(e instanceof Rifiuto)) throw e;
+        nonAndate.push({ mossa: m, motivo: e.message });
+      }
+    }
+    res.json({ dal, al, fatte, nonAndate });
+  } catch (e) { rispondiErrore(res, e, "bilancia i carichi"); }
+});
+
+/**
  * I mezzi per deposito (5.3): quanti ne servono il giorno (i turni macchina
  * della giornata di esercizio) e quanti ce ne sono (l'officina, FleetCare:
  * lo stato di adesso), con il margine. Si legge col Roster; chi vede solo
@@ -851,6 +942,100 @@ router.post("/roster/assignments", async (req, res): Promise<void> => {
 });
 
 /**
+ * Lo scambio (o la cessione, senza «a») di due turni dello stesso giorno fra
+ * due conducenti, con tutti i controlli: lo usano «Cambio turno» e
+ * «Bilancia i carichi» (7.7). Lancia Rifiuto se non si può.
+ */
+async function eseguiScambio(req: Request, p: {
+  da: string; daConducente: string; a: string | null; aConducente: string; dssVisto: string | null; forzate: Set<string>;
+}) {
+  const { da, daConducente, a, aConducente, dssVisto, forzate } = p;
+  const conA = a !== null;
+  const personale = vedeDatiPersonali(req);
+  const chi = utente(req);
+  /* fuori dalla transazione, con db: i due turni e quelli dei due conducenti intorno al giorno */
+  const dueTurni = righe(await db.execute(sql`
+    SELECT day::text AS day FROM roster_assignments
+     WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)`));
+  /* i due turni stanno già fra le assegnazioni dei due conducenti: si leggono dal DSS solo se lo snapshot non ha i minuti */
+  const preparato = await preparaControllo([daConducente, aConducente], dueTurni.map(t => String(t.day).slice(0, 10)), []);
+  return await db.transaction(async (tx) => {
+    const ex = tx as unknown as Ex;
+    await iniziaScrittura(ex);
+    const conducenti = await bloccaConducenti(ex, [aConducente, daConducente]);
+    /* lo scambio tocca il roster di tutti e due: devono essere tutti e due dei depositi di chi scrive */
+    await richiedeDeposito(req, ex, [aConducente, daConducente]);
+    const r = righe(await ex.execute(sql`
+      SELECT id, driver_id, day::text AS day, dss_id::text, duty_code, snapshot
+        FROM roster_assignments
+       WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)
+       ORDER BY id
+         FOR UPDATE`));
+    const ceduto = r.find(x => x.id === da);
+    const ricevuto = conA ? r.find(x => x.id === a) : null;
+    if (!ceduto || (conA && !ricevuto)) throw new Rifiuto(409, "Uno dei due turni non c'è più: il tabellone si ricarica", { ricarica: true });
+    if (ceduto.driver_id !== daConducente || (ricevuto && ricevuto.driver_id !== aConducente)) {
+      throw new Rifiuto(409, "Nel frattempo uno dei due turni è passato a un altro conducente: il tabellone si ricarica", { ricarica: true });
+    }
+    const giorno = String(ceduto.day).slice(0, 10);
+    if (ricevuto && String(ricevuto.day).slice(0, 10) !== giorno) {
+      throw new Rifiuto(400, "Si scambiano solo turni dello stesso giorno");
+    }
+    /* il canale unico: un turno non più pubblicato quel giorno non passa a un altro, si toglie o si sostituisce */
+    await controllaPubblicato(ex, giorno, ceduto.dss_id, ceduto.duty_code, "sposta");
+    if (ricevuto) await controllaPubblicato(ex, giorno, ricevuto.dss_id, ricevuto.duty_code, "sposta");
+    const quando = giorno.split("-").reverse().join("/");
+    const nomeDi = (id: string) => nomeConducente(conducenti.find(x => x.id === id));
+    /* senza turno in cambio, chi riceve quel giorno non aveva turni, fra quelli
+       che l'utente vedeva: se intanto ne ha ricevuto uno, voleva uno scambio e
+       non un turno in più. Un turno di un altro DSS, che il tabellone per DSS
+       non mostra, non conta: avere più turni nello stesso giorno si può. */
+    if (!ricevuto) {
+      const gia = righe(await ex.execute(sql`
+        SELECT duty_code FROM roster_assignments
+         WHERE driver_id = ${aConducente}::uuid AND day = ${giorno}::date
+           AND (${dssVisto}::uuid IS NULL OR dss_id = ${dssVisto}::uuid)
+         LIMIT 1`));
+      if (gia.length) {
+        throw new Rifiuto(409, `${nomeDi(aConducente)} nel frattempo ha ricevuto ${gia[0].duty_code} il ${quando}: il tabellone si ricarica`, { ricarica: true });
+      }
+    }
+    /* chi riceve un turno dev'essere in servizio quel giorno */
+    for (const id of ricevuto ? [aConducente, daConducente] : [aConducente]) {
+      controllaInServizio(conducenti.find(x => x.id === id), giorno, personale);
+    }
+    /* riposi e sovrapposizioni dopo lo scambio, per tutti e due */
+    const cambi = [
+      { id: da as string, driverId: aConducente as string, day: giorno, dssId: ceduto.dss_id, dutyCode: ceduto.duty_code, snapshot: ceduto.snapshot },
+      ...(ricevuto ? [{ id: a as string, driverId: daConducente as string, day: giorno, dssId: ricevuto.dss_id, dutyCode: ricevuto.duty_code, snapshot: ricevuto.snapshot }] : []),
+    ];
+    const violazioni = await violazioniDeiCambi(ex, cambi, preparato, inSavepoint(tx));
+    controllaForzatura(violazioni, forzate);
+    /* il segno della forzatura va sul turno spostato che viola; gli altri lo perdono, cambiato il conducente */
+    const forzaturaDi = (dssId: string, codice: string) => {
+      const sue = violazioni.filter(v => v.turni.some(t => t.dssId === dssId && t.codice === codice && t.giorno === giorno));
+      return sue.length ? forzaturaDa(chi.userId, sue) : null;
+    };
+    const fCeduto = forzaturaDi(ceduto.dss_id, ceduto.duty_code);
+    await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${aConducente}::uuid,
+      forzatura = ${fCeduto ? JSON.stringify(fCeduto) : null}::jsonb WHERE id = ${da}::uuid`);
+    if (fCeduto) await registra(ex, { ...chi, driverId: aConducente, azione: "turno-forzato", campi: fCeduto.regole, dettaglio: { dutyCode: ceduto.duty_code, day: giorno, dssId: ceduto.dss_id, testi: fCeduto.testi, scambio: true } });
+    if (ricevuto) {
+      const fRicevuto = forzaturaDi(ricevuto.dss_id, ricevuto.duty_code);
+      await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${daConducente}::uuid,
+        forzatura = ${fRicevuto ? JSON.stringify(fRicevuto) : null}::jsonb WHERE id = ${a}::uuid`);
+      if (fRicevuto) await registra(ex, { ...chi, driverId: daConducente, azione: "turno-forzato", campi: fRicevuto.regole, dettaglio: { dutyCode: ricevuto.duty_code, day: giorno, dssId: ricevuto.dss_id, testi: fRicevuto.testi, scambio: true } });
+    }
+    return {
+      forzato: violazioni.length > 0,
+      giorno,
+      ceduto: { id: da, dutyCode: ceduto.duty_code, driverId: aConducente },
+      ricevuto: ricevuto ? { id: a, dutyCode: ricevuto.duty_code, driverId: daConducente } : null,
+    };
+  });
+}
+
+/**
  * Cambio turno: due conducenti si scambiano i turni dello stesso giorno.
  *   { da, daConducente, a?, aConducente, dssVisto? }
  * «da» è l'assegnazione che il primo conducente cede; «a», se c'è, quella che
@@ -883,89 +1068,7 @@ router.post("/roster/assignments/scambia", async (req, res): Promise<void> => {
     if (daConducente === aConducente) { res.status(400).json({ error: "Lo scambio è fra due conducenti diversi" }); return; }
     if (conA && a === da) { res.status(400).json({ error: "Lo scambio è fra due turni diversi" }); return; }
 
-    const personale = vedeDatiPersonali(req);
-    const forzate = viste(corpo);
-    const chi = utente(req);
-    /* fuori dalla transazione, con db: i due turni e quelli dei due conducenti intorno al giorno */
-    const dueTurni = righe(await db.execute(sql`
-      SELECT day::text AS day FROM roster_assignments
-       WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)`));
-    /* i due turni stanno già fra le assegnazioni dei due conducenti: si leggono dal DSS solo se lo snapshot non ha i minuti */
-    const preparato = await preparaControllo([daConducente, aConducente], dueTurni.map(t => String(t.day).slice(0, 10)), []);
-    const esito = await db.transaction(async (tx) => {
-      const ex = tx as unknown as Ex;
-      await iniziaScrittura(ex);
-      const conducenti = await bloccaConducenti(ex, [aConducente, daConducente]);
-      /* lo scambio tocca il roster di tutti e due: devono essere tutti e due dei depositi di chi scrive */
-      await richiedeDeposito(req, ex, [aConducente, daConducente]);
-      const r = righe(await ex.execute(sql`
-        SELECT id, driver_id, day::text AS day, dss_id::text, duty_code, snapshot
-          FROM roster_assignments
-         WHERE id IN (${da}::uuid, ${conA ? a : da}::uuid)
-         ORDER BY id
-           FOR UPDATE`));
-      const ceduto = r.find(x => x.id === da);
-      const ricevuto = conA ? r.find(x => x.id === a) : null;
-      if (!ceduto || (conA && !ricevuto)) throw new Rifiuto(409, "Uno dei due turni non c'è più: il tabellone si ricarica", { ricarica: true });
-      if (ceduto.driver_id !== daConducente || (ricevuto && ricevuto.driver_id !== aConducente)) {
-        throw new Rifiuto(409, "Nel frattempo uno dei due turni è passato a un altro conducente: il tabellone si ricarica", { ricarica: true });
-      }
-      const giorno = String(ceduto.day).slice(0, 10);
-      if (ricevuto && String(ricevuto.day).slice(0, 10) !== giorno) {
-        throw new Rifiuto(400, "Si scambiano solo turni dello stesso giorno");
-      }
-      /* il canale unico: un turno non più pubblicato quel giorno non passa a un altro, si toglie o si sostituisce */
-      await controllaPubblicato(ex, giorno, ceduto.dss_id, ceduto.duty_code, "sposta");
-      if (ricevuto) await controllaPubblicato(ex, giorno, ricevuto.dss_id, ricevuto.duty_code, "sposta");
-      const quando = giorno.split("-").reverse().join("/");
-      const nomeDi = (id: string) => nomeConducente(conducenti.find(x => x.id === id));
-      /* senza turno in cambio, chi riceve quel giorno non aveva turni, fra quelli
-         che l'utente vedeva: se intanto ne ha ricevuto uno, voleva uno scambio e
-         non un turno in più. Un turno di un altro DSS, che il tabellone per DSS
-         non mostra, non conta: avere più turni nello stesso giorno si può. */
-      if (!ricevuto) {
-        const gia = righe(await ex.execute(sql`
-          SELECT duty_code FROM roster_assignments
-           WHERE driver_id = ${aConducente}::uuid AND day = ${giorno}::date
-             AND (${dssVisto}::uuid IS NULL OR dss_id = ${dssVisto}::uuid)
-           LIMIT 1`));
-        if (gia.length) {
-          throw new Rifiuto(409, `${nomeDi(aConducente)} nel frattempo ha ricevuto ${gia[0].duty_code} il ${quando}: il tabellone si ricarica`, { ricarica: true });
-        }
-      }
-      /* chi riceve un turno dev'essere in servizio quel giorno */
-      for (const id of ricevuto ? [aConducente, daConducente] : [aConducente]) {
-        controllaInServizio(conducenti.find(x => x.id === id), giorno, personale);
-      }
-      /* riposi e sovrapposizioni dopo lo scambio, per tutti e due */
-      const cambi = [
-        { id: da as string, driverId: aConducente as string, day: giorno, dssId: ceduto.dss_id, dutyCode: ceduto.duty_code, snapshot: ceduto.snapshot },
-        ...(ricevuto ? [{ id: a as string, driverId: daConducente as string, day: giorno, dssId: ricevuto.dss_id, dutyCode: ricevuto.duty_code, snapshot: ricevuto.snapshot }] : []),
-      ];
-      const violazioni = await violazioniDeiCambi(ex, cambi, preparato, inSavepoint(tx));
-      controllaForzatura(violazioni, forzate);
-      /* il segno della forzatura va sul turno spostato che viola; gli altri lo perdono, cambiato il conducente */
-      const forzaturaDi = (dssId: string, codice: string) => {
-        const sue = violazioni.filter(v => v.turni.some(t => t.dssId === dssId && t.codice === codice && t.giorno === giorno));
-        return sue.length ? forzaturaDa(chi.userId, sue) : null;
-      };
-      const fCeduto = forzaturaDi(ceduto.dss_id, ceduto.duty_code);
-      await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${aConducente}::uuid,
-        forzatura = ${fCeduto ? JSON.stringify(fCeduto) : null}::jsonb WHERE id = ${da}::uuid`);
-      if (fCeduto) await registra(ex, { ...chi, driverId: aConducente, azione: "turno-forzato", campi: fCeduto.regole, dettaglio: { dutyCode: ceduto.duty_code, day: giorno, dssId: ceduto.dss_id, testi: fCeduto.testi, scambio: true } });
-      if (ricevuto) {
-        const fRicevuto = forzaturaDi(ricevuto.dss_id, ricevuto.duty_code);
-        await ex.execute(sql`UPDATE roster_assignments SET driver_id = ${daConducente}::uuid,
-          forzatura = ${fRicevuto ? JSON.stringify(fRicevuto) : null}::jsonb WHERE id = ${a}::uuid`);
-        if (fRicevuto) await registra(ex, { ...chi, driverId: daConducente, azione: "turno-forzato", campi: fRicevuto.regole, dettaglio: { dutyCode: ricevuto.duty_code, day: giorno, dssId: ricevuto.dss_id, testi: fRicevuto.testi, scambio: true } });
-      }
-      return {
-        forzato: violazioni.length > 0,
-        giorno,
-        ceduto: { id: da, dutyCode: ceduto.duty_code, driverId: aConducente },
-        ricevuto: ricevuto ? { id: a, dutyCode: ricevuto.duty_code, driverId: daConducente } : null,
-      };
-    });
+    const esito = await eseguiScambio(req, { da, daConducente, a: conA ? a : null, aConducente, dssVisto, forzate: viste(corpo) });
     res.json({ ok: true, ...esito });
   } catch (e: any) { rispondiErrore(res, e, "scambio turni"); }
 });

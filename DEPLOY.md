@@ -2226,6 +2226,35 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Roster: «Bilancia i carichi» (tappa 7.7)
+
+In Roster › Algoritmi anche **«Bilancia i carichi»** non è più
+«prossimamente». Si sceglie un periodo (da domani, al più 31 giorni) e si
+chiede la proposta: per ogni deposito, i turni già assegnati passano da chi
+lavora più ore a chi ne lavora meno.
+- Il carico è la somma delle durate dei turni nel periodo.
+- Due mosse: un turno passa a chi quel giorno è libero (in servizio, senza
+  turni né voci), oppure due turni dello stesso giorno si scambiano.
+- Ogni mossa avvicina i due conducenti senza rovesciarli; si prende quella
+  che li lascia più vicini, finché non se ne trovano più (al più 200).
+- Non si spostano le sostituzioni di un titolare assente né i turni forzati;
+  non si toccano i conducenti fittizi o inattivi né chi è assente; nessuna
+  mossa crea violazioni di riposo o sovrapposizioni.
+
+Si guarda la proposta (scarto fra il più carico e il meno carico prima e
+dopo, le mosse, le ore per conducente), poi «Applica N spostamenti»: ogni mossa
+passa dai controlli del «Cambio turno» a mano (il corpo della rotta dello
+scambio è diventato una funzione usata da tutte e due); se una non va, lo dice
+e le altre restano. Chi scrive solo su alcuni depositi bilancia solo quelli.
+
+Rotta nuova `POST /api/roster/bilancia-carichi` (`{ dal, al, applica? }`),
+nell'area Roster; senza `applica` non scrive niente.
+
+Nessuna migrazione, nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. Gli spostamenti fatti restano, come quelli
+a mano.
+
 ### Roster: «Copri gli scoperti» (tappa 7.6)
 
 In Roster › Algoritmi la voce **«Copri gli scoperti»** non è più
