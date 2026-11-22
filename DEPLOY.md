@@ -2226,6 +2226,48 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Roster: «Crea rotazione turni» (tappa 7.8, migrazione 0061)
+
+In Roster › Rotazioni la voce **«Crea rotazione turni»** non è più
+«prossimamente». I conducenti di un deposito stanno già in gruppi di
+rotazione con la loro posizione (scheda del conducente, o import
+dell'anagrafica). Ora ogni gruppo ha la sua **tabella dei posti**: per ogni
+posto il codice del turno dei feriali, del sabato e della domenica o festivo
+(per esempio «posto 3: T04 dal lunedì al venerdì, T18 il sabato»).
+
+La regola:
+- il tempo è diviso in periodi secondo la cadenza del deposito: ogni
+  settimana (da lunedì), oppure dal 1° al 15 e dal 16 alla fine del mese;
+- nel periodo della **data di riferimento** del gruppo la posizione 1 è sul
+  posto 1, la 2 sul 2, e così via; a ogni periodo dopo ognuno passa al posto
+  successivo, dall'ultimo si torna al primo;
+- il tipo di giorno viene dal calendario aziendale del programma pubblicato
+  (domeniche e festivi, patrono compreso, usano la colonna della domenica).
+
+Nella finestra si sceglie il gruppo, si compila e si salva la tabella (con la
+data di riferimento: se manca, l'inizio del periodo di oggi), e si vede chi è
+su quale posto oggi. Poi «Applica la rotazione» su un periodo (da domani, al
+più 31 giorni): la proposta assegna il turno del posto solo a chi quel giorno
+è libero (attivo, non fittizio, in servizio, senza voci né altri turni), e
+dice quello che non si può fare e perché (codice non pubblicato quel giorno,
+codice in più turni guida, turno già di un altro, conducente senza posizione o
+con una posizione oltre i posti). «Assegna N turni» passa ogni assegnazione
+dai controlli di quella a mano; quello che resta si copre con «Copri gli
+scoperti».
+
+- Migrazione **0061**: tabella `roster_rotazioni_turni_posti` (gruppo, posto,
+  codici feriale/sabato/domenica), di `cerbero_owner`, nel registro delle
+  modifiche. Si aggiunge e basta: il codice di prima non la legge.
+- Rotte nuove, nell'area Roster: `GET` e `PUT /api/roster/rotazioni-turni/:gruppo`,
+  `POST /api/roster/rotazioni-turni/:gruppo/applica` (`{ dal, al, applica? }`).
+  Chi vede solo alcuni depositi non vede i gruppi degli altri; chi non scrive
+  sul deposito del gruppo la legge e basta.
+
+Nessuna variabile, nessuna Watch Path nuova.
+
+**Rollback**: immagine precedente. La tabella resta e non dà fastidio; le
+assegnazioni fatte restano, come quelle a mano.
+
 ### Roster: «Bilancia i carichi» (tappa 7.7)
 
 In Roster › Algoritmi anche **«Bilancia i carichi»** non è più

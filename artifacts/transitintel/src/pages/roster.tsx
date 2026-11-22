@@ -22,7 +22,7 @@ import {
   AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Loader2,
   UserPlus, Users, Pencil, Scissors, ClipboardPaste, Ban, Clock, ChevronDown,
   Eraser, Check, Maximize2, RotateCcw, Cpu, Printer, Eye, Plus, Wand2, Trash2, X,
-  MousePointer2, ArrowLeftRight, Pin, Send, Lock, Scale,
+  MousePointer2, ArrowLeftRight, Pin, Send, Lock, Scale, RefreshCw,
 } from "lucide-react";
 import { apiFetch } from "@/lib/api";
 import { liberaTurno } from "@/lib/voci-roster";
@@ -41,6 +41,7 @@ import { AbilitazioneBadges } from "@/components/roster/abilitazioni";
 import { RotazioneRiposiCreateDialog, RotazioniRiposiListDialog, AssegnaRotazioniDialog, GeneraRiposiDialog } from "@/components/roster/RotazioniRiposi";
 import { CopriScopertiDialog } from "@/components/roster/CopriScopertiDialog";
 import { BilanciaCarichiDialog } from "@/components/roster/BilanciaCarichiDialog";
+import { RotazioneTurniDialog } from "@/components/roster/RotazioneTurniDialog";
 import { SeScrive, useSolaLettura } from "@/hooks/use-sola-lettura";
 import { EVENTO_SOLA_LETTURA } from "@/lib/sola-lettura";
 import { limiteDepositi, scriveSulDeposito } from "@workspace/permessi";
@@ -401,7 +402,7 @@ export default function RosterPage() {
   const [tool, setTool] = useState<Strumento>("puntatore");
   const eraser = tool === "gomma";
   const [showUncovered, setShowUncovered] = useState(true); // finestra turni scoperti (in basso)
-  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | "copri" | "bilancia" | null>(null);
+  const [rotDialog, setRotDialog] = useState<"create-riposi" | "list-riposi" | "assegna" | "genera-riposi" | "copri" | "bilancia" | "rotazione-turni" | null>(null);
   // Se una cella ha ≥2 attività, la gomma chiede QUALE togliere.
   const [eraseChoice, setEraseChoice] = useState<{ driverId: string; day: string } | null>(null);
   const removeOne = (it: { kind: "duty"; a: RosterAssignment } | { kind: "voce"; en: RosterEntry }) => {
@@ -816,7 +817,9 @@ export default function RosterPage() {
                     </SeScrive>
                     <div className="border-t border-slate-800 my-1" />
                     <div className="px-2.5 py-1 text-[10px] uppercase tracking-wide text-slate-500">Rotazione turni</div>
-                    <button className={menuDisabledCls} disabled>Crea rotazione turni · prossimamente</button>
+                    <button className={menuItemCls} onClick={() => { setOpenTopMenu(null); setRotDialog("rotazione-turni"); }}>
+                      <RefreshCw className="w-3.5 h-3.5" /> Crea rotazione turni
+                    </button>
                   </>
                 )}
                 {m === "Algoritmi" && (
@@ -1345,6 +1348,7 @@ export default function RosterPage() {
       {rotDialog === "genera-riposi" && <GeneraRiposiDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "copri" && <CopriScopertiDialog onClose={() => setRotDialog(null)} />}
       {rotDialog === "bilancia" && <BilanciaCarichiDialog onClose={() => setRotDialog(null)} />}
+      {rotDialog === "rotazione-turni" && <RotazioneTurniDialog onClose={() => setRotDialog(null)} />}
 
       {/* Gomma su cella con più attività: scegli quale togliere */}
       {eraseChoice && (() => {
