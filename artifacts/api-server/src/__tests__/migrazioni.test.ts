@@ -638,12 +638,12 @@ describe("il contratto di lettura di Argos", () => {
   });
 
   it("niente dati personali: né tabelle note (utenti, accessi, anagrafica, roster, passeggeri, audit), né colonne personali", () => {
-    const tabelle = /\.(users|accessi_|roster_|app_users|anagrafica|tap_events|journeys$|journey_|gtfs_fare_audit_log|planning_scenario_edits)/;
+    const tabelle = /\.(users|accessi_|roster_|app_users|anagrafica|tap_events|journeys$|journey_|gtfs_fare_audit_log)/;
     expect(contratto.filter(t => tabelle.test(t))).toEqual([]);
     const personale = /(password|mfa|email|phone|telefono|cellulare|fiscale|^cf$|matricola|cognome|first_name|last_name|user_agent|segret|secret|token|^pin|_pin|^ip$|_ip$|nascita|birth|indirizzo|address|residenza|patente|badge|visita|sanitar|driver|conducente|autista|user|ticket_uid|raw_nfc|^actor$|_by$)/i;
     const personali = (t: string) => Object.keys(catalogo.tabelle[t] ?? {}).filter(c => personale.test(c));
     // la regola vede davvero i dati personali che ci sono nello schema
-    for (const t of ["public.roster_drivers", "caronte.tap_events", "caronte.journeys", "public.gtfs_fare_audit_log", "public.planning_scenario_edits"]) {
+    for (const t of ["public.roster_drivers", "caronte.tap_events", "caronte.journeys", "public.gtfs_fare_audit_log"]) {
       expect(personali(t).length, t).toBeGreaterThan(0);
     }
     // owner_user_id è un uuid, senza nome né email. Argos non lo usa, ma i

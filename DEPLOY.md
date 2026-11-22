@@ -2226,6 +2226,30 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Le tabelle che non usa più nessuno (tappa 7.14)
+
+Dall'inventario delle 174 tabelle di Cerbero (API, lavoratore, script Python,
+contratto di Argos, Caronte), quattro non le legge né le scrive più nessun
+codice. La migrazione **0062** le toglie, su decisione dell'utente:
+- `agenzia_gtfs`: l'agenzia unica dei GTFS. Dalla 6.11 la sua riga è il primo
+  gestore (Amministrazione › Gestori) e il codice non la legge più;
+- `bus_routes`: le linee del primo modello di dati, mai usate;
+- `planning_scenario_edits` e `planning_analysis_results`: le modifiche e le
+  analisi degli scenari del primo modello, mai scritte.
+
+Erano vuote, tranne la riga di `agenzia_gtfs`, già fra i gestori. Nessuna
+chiave esterna e nessuna vista le usava. Nessuna tabella di produzione è fuori
+dal catalogo.
+
+`bus_stops` resta: la legge ancora la pagina delle analisi (è sempre vuota; le
+fermate vere sono quelle dei feed). Va sistemata a parte.
+
+**Dopo il deploy**: niente da fare. Nel log dell'avvio c'è «0062_tabelle_non_usate
+applicata».
+
+**Rollback**: l'immagine precedente parte anche senza le quattro tabelle (non le
+usa). I dati si recuperano solo dal backup.
+
 ### Gli errori interni non si mostrano più nelle risposte (tappa 7.13)
 
 Più di 150 punti dell'API rispondevano a un errore inatteso col testo
