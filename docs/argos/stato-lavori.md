@@ -2182,6 +2182,17 @@ Fatto finora:
   diagrammi della chat prendono il tema della pagina. Nella barra dello studio
   c'è il pulsante del tema (a schermo intero quello della pagina è coperto).
 
+- **La creatura della rete, organica.** Le zampe a due segmenti dritti (da
+  ragno) diventano braccia morbide, come un polpo o i dendriti di un neurone:
+  curve che escono dalla membrana, ondeggiano piano, seguono il moto con un
+  po' di ritardo, si assottigliano con le ventose e si aprono in due rametti
+  in punta; i passi sono più lunghi e il piede si solleva in un arco. Il
+  corpo è un soma con la membrana che respira e si allunga nel verso del
+  moto, i granuli dentro e il nucleo acceso; i filamenti dritti sono ciglia
+  curve che battono; i fili verso i passaggi sono assoni ondulati che si
+  assottigliano. La molla del corpo è più morbida. Stesso passo (~54
+  fotogrammi al secondo nel browser di prova, prima ~50).
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.

@@ -482,6 +482,8 @@ interface Nebulosa {
 interface Zampa {
   a: number; l1: number; l2: number; fx: number; fy: number; ox: number; oy: number; tx: number; ty: number; t: number; timer: number; grp: number; flash: number;
   kx: number; ky: number; hx: number; hy: number; dfx: number; dfy: number;
+  /** fase e ampiezza dell'ondeggiare del braccio (ognuno il suo, come un polpo) */
+  ph: number; sw: number;
 }
 interface Filamento { a: number; len: number; f: number; ph: number; c: number; tx: number; ty: number; dot: boolean }
 interface Rett { x: number; y: number; w: number; h: number }
@@ -1537,19 +1539,23 @@ export class Sciame {
   private initCrawler(): void {
     const k = this.CS(), CR = this.CR;
     CR.R = Math.round(23 * k);
-    const nl = this.ridotto ? 8 : k < 1 ? 12 : 16, L1 = 60 * k, L2 = 78 * k;
+    const nl = this.ridotto ? 8 : k < 1 ? 11 : 14, L1 = 60 * k, L2 = 78 * k;
     CR.reach = (L1 + L2) * 0.7;
     const r = rng(42);
     CR.legs = [];
     for (let i = 0; i < nl; i++) {
       const a = (i / nl) * TAU + (r() - 0.5) * 0.22, fx = CR.x + Math.cos(a) * CR.reach, fy = CR.y + Math.sin(a) * CR.reach;
-      CR.legs.push({ a, l1: L1 * (0.85 + r() * 0.3), l2: L2 * (0.85 + r() * 0.3), fx, fy, ox: fx, oy: fy, tx: fx, ty: fy, t: 1, timer: r() * 2.5, grp: i % 2, flash: 0, kx: fx, ky: fy, hx: fx, hy: fy, dfx: fx, dfy: fy });
+      CR.legs.push({
+        a, l1: L1 * (0.85 + r() * 0.3), l2: L2 * (0.85 + r() * 0.3), fx, fy, ox: fx, oy: fy, tx: fx, ty: fy, t: 1, timer: r() * 2.5, grp: i % 2, flash: 0,
+        kx: fx, ky: fy, hx: fx, hy: fy, dfx: fx, dfy: fy, ph: r() * TAU, sw: 0.6 + r() * 0.8,
+      });
     }
-    const nf = this.ridotto ? 80 : k < 1 ? 150 : 240;
+    // le ciglia attorno alla membrana: poche, curve, che battono
+    const nf = this.ridotto ? 50 : k < 1 ? 90 : 140;
     CR.fil = [];
     for (let i = 0; i < nf; i++) {
-      const lg = r() < 0.18;
-      CR.fil.push({ a: (i / nf) * TAU + (r() - 0.5) * 0.08, len: (lg ? 44 : 14) * k + r() * (lg ? 52 : 40) * k, f: 0.7 + r() * 2.3, ph: r() * TAU, c: i % 4, tx: 0, ty: 0, dot: lg || r() < 0.35 });
+      const lg = r() < 0.2;
+      CR.fil.push({ a: (i / nf) * TAU + (r() - 0.5) * 0.1, len: (lg ? 30 : 9) * k + r() * (lg ? 40 : 24) * k, f: 0.6 + r() * 1.8, ph: r() * TAU, c: i % 4, tx: 0, ty: 0, dot: lg || r() < 0.3 });
     }
   }
   /** Dove va il crawler: la nebulosa con più passaggi in lettura. */
@@ -1594,10 +1600,11 @@ export class Sciame {
       CR.x = tg.x; CR.y = tg.y; CR.vx = CR.vy = 0; CR.snap = false;
       for (const l of CR.legs) { l.fx = l.ox = l.tx = CR.x + Math.cos(l.a) * CR.reach; l.fy = l.oy = l.ty = CR.y + Math.sin(l.a) * CR.reach; l.t = 1; }
     }
-    const k = this.ridotto ? 5 : 9, d = 2 * Math.sqrt(k);
+    // una molla morbida: il corpo galleggia verso il bersaglio, senza scatti
+    const k = this.ridotto ? 4 : 6.5, d = 2 * Math.sqrt(k);
     CR.vx += ((tg.x - CR.x) * k - CR.vx * d) * dt; CR.vy += ((tg.y - CR.y) * k - CR.vy * d) * dt;
     let sp = Math.hypot(CR.vx, CR.vy);
-    const vmax = this.ridotto ? 240 : 560;
+    const vmax = this.ridotto ? 220 : 460;
     if (sp > vmax) { CR.vx *= vmax / sp; CR.vy *= vmax / sp; sp = vmax; }
     CR.x += CR.vx * dt; CR.y += CR.vy * dt;
     if (sp > 8) { let dh = Math.atan2(CR.vy, CR.vx) - CR.head; dh = Math.atan2(Math.sin(dh), Math.cos(dh)); CR.head += dh * Math.min(1, dt * 4); }
@@ -1628,12 +1635,13 @@ export class Sciame {
     const CR = this.CR, F = this.F;
     let stepping = 0;
     for (const l of CR.legs) if (l.t < 1) stepping++;
-    const maxStep = Math.max(2, Math.ceil(CR.legs.length * 0.4)), lead = 0.16, dur = this.ridotto ? 0.32 : 0.15;
+    // passi lunghi e morbidi: il braccio si stacca, fa un arco e si riappoggia
+    const maxStep = Math.max(2, Math.ceil(CR.legs.length * 0.35)), lead = 0.2, dur = this.ridotto ? 0.6 : 0.4;
     CR.gait += dt;
-    if (CR.gait > 0.17) { CR.gait = 0; CR.gg = 1 - CR.gg; }
+    if (CR.gait > 0.26) { CR.gait = 0; CR.gg = 1 - CR.gg; }
     for (const l of CR.legs) {
       const a = l.a + CR.rot, ix = CR.x + Math.cos(a) * CR.reach + CR.vx * lead, iy = CR.y + Math.sin(a) * CR.reach + CR.vy * lead;
-      if (l.t < 1) { l.t = Math.min(1, l.t + dt / dur); const e = easeIO(l.t); l.fx = lerp(l.ox, l.tx, e); l.fy = lerp(l.oy, l.ty, e); if (l.t >= 1) l.flash = 1; continue; }
+      if (l.t < 1) { l.t = Math.min(1, l.t + dt / dur); const e = 0.5 - 0.5 * Math.cos(Math.PI * l.t); l.fx = lerp(l.ox, l.tx, e); l.fy = lerp(l.oy, l.ty, e); if (l.t >= 1) l.flash = 1; continue; }
       l.timer -= dt; l.flash = Math.max(0, l.flash - dt * 3);
       const far = Math.hypot(l.fx - ix, l.fy - iy) > CR.reach * 0.45;
       if (((far && (sp < 30 || l.grp === CR.gg)) || l.timer <= 0) && stepping < maxStep) {
@@ -1912,7 +1920,9 @@ export class Sciame {
           const g = ease((now - t.born) / 300);
           if (g <= 0) return;
           const a = -Math.PI / 2 + (i / n) * TAU + 0.2, x = CR.x + Math.cos(a) * r * g, y = CR.y + Math.sin(a) * r * 0.82 * g;
-          ctx.globalAlpha = 0.7 * fa; ctx.strokeStyle = this.P.tcol.term!; ctx.beginPath(); ctx.moveTo(CR.x, CR.y); ctx.lineTo(x, y); ctx.stroke(); ctx.globalAlpha = 1;
+          const sw = Math.sin(this.RT * 1.4 + i) * 14;
+          ctx.globalAlpha = 0.7 * fa; ctx.strokeStyle = this.P.tcol.term!; ctx.lineCap = "round"; ctx.beginPath(); ctx.moveTo(CR.x, CR.y);
+          ctx.quadraticCurveTo((CR.x + x) / 2 - Math.sin(a) * sw, (CR.y + y) / 2 + Math.cos(a) * sw, x, y); ctx.stroke(); ctx.globalAlpha = 1;
           const s = this.w2s(x, y);
           this.PILLS.push({ key: "q" + i, x: s.x, y: s.y, text: t.w, style: "term", alpha: g * fa, dx: Math.cos(a), dy: Math.sin(a) });
         });
@@ -1927,12 +1937,18 @@ export class Sciame {
       let al = T.die !== Infinity ? clamp((T.die - now) / 300, 0, 1) : 1;
       const x0 = CR.x, y0 = CR.y, dx = p.x - x0, dy = p.y - y0, L = Math.hypot(dx, dy) || 1, nx = -dy / L, ny = dx / L;
       const bend = T.bend * Math.min(L, 260) * 0.22 + Math.sin(this.RT * 1.7 + T.seed) * 4, cx = (x0 + p.x) / 2 + nx * bend, cy = (y0 + p.y) / 2 + ny * bend;
-      const [qx, qy, ex, ey] = this.partialQuad(x0, y0, cx, cy, p.x, p.y, g);
       if (T.hide) al *= 0.5;
-      ctx.globalAlpha = al; ctx.strokeStyle = T.style === "read" && T.alt ? this.P.tcol.read2! : this.P.tcol[T.style] ?? this.P.tcol.read!; ctx.lineWidth = T.style === "dim" || T.hide ? 0.6 : 1;
-      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(qx, qy, ex, ey); ctx.stroke();
+      // un assone: esce dal corpo, ondeggia lungo la strada e si assottiglia verso il passaggio
+      const col = T.style === "read" && T.alt ? this.P.tcol.read2! : this.P.tcol[T.style] ?? this.P.tcol.read!, fine = T.style === "dim" || T.hide;
+      const amp = (fine ? 1.2 : 2.6) * Math.min(1, L / 120), pts: Array<[number, number]> = [];
+      for (let i = 0; i <= 14; i++) {
+        const t = (i / 14) * g, u = 1 - t, w = amp * Math.sin(Math.PI * (i / 14)) * Math.sin((i / 14) * Math.PI * 3 - this.RT * 3.2 + T.seed);
+        pts.push([u * u * x0 + 2 * u * t * cx + t * t * p.x + nx * w, u * u * y0 + 2 * u * t * cy + t * t * p.y + ny * w]);
+      }
+      ctx.globalAlpha = al; ctx.fillStyle = col;
+      this.affusolato(pts, fine ? 1.1 : 2.3, 0.55); ctx.fill();
       if (g >= 1) {
-        ctx.fillStyle = ctx.strokeStyle; ctx.fillRect(p.x - 1.3, p.y - 1.3, 2.6, 2.6);
+        ctx.beginPath(); ctx.arc(p.x, p.y, 1.5, 0, TAU); ctx.fill();
         if (!T.hide && (T.style === "flag" || T.style === "kept" || T.style === "tool")) {
           ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.5 * al;
           ctx.drawImage(this.spr(T.style === "kept" ? this.P.teal : T.style === "flag" ? C.pink : C.rose), p.x - 7, p.y - 7, 14, 14);
@@ -1943,75 +1959,181 @@ export class Sciame {
     }
     ctx.globalAlpha = 1;
   }
-  private drawLegs(): void {
-    const ctx = this.ctx, CR = this.CR;
-    ctx.lineCap = "round";
-    for (const l of CR.legs) {
-      const a = l.a + CR.rot, hx0 = CR.x + Math.cos(a) * CR.R * 0.85, hy0 = CR.y + Math.sin(a) * CR.R * 0.7;
-      let dx = l.fx - hx0, dy = l.fy - hy0, d = Math.hypot(dx, dy) || 1, fx = l.fx, fy = l.fy;
-      const maxD = (l.l1 + l.l2) * 0.985;
-      if (d > maxD) { fx = hx0 + (dx / d) * maxD; fy = hy0 + (dy / d) * maxD; d = maxD; dx = fx - hx0; dy = fy - hy0; }
-      const a0 = Math.atan2(dy, dx), al = Math.acos(clamp((l.l1 * l.l1 + d * d - l.l2 * l.l2) / (2 * l.l1 * d), -1, 1));
-      const k1x = hx0 + Math.cos(a0 + al) * l.l1, k1y = hy0 + Math.sin(a0 + al) * l.l1, k2x = hx0 + Math.cos(a0 - al) * l.l1, k2y = hy0 + Math.sin(a0 - al) * l.l1;
-      const far1 = (k1x - CR.x) ** 2 + (k1y - CR.y) ** 2, far2 = (k2x - CR.x) ** 2 + (k2y - CR.y) ** 2;
-      l.hx = hx0; l.hy = hy0; l.kx = far1 >= far2 ? k1x : k2x; l.ky = far1 >= far2 ? k1y : k2y; l.dfx = fx; l.dfy = fy;
+  /** il raggio della membrana del corpo all'angolo th: respira, ondeggia e si allunga nel verso del moto */
+  private raggioSoma(th: number): number {
+    const CR = this.CR, RT = this.RT;
+    const sp = Math.hypot(CR.vx, CR.vy), st = Math.min(0.22, sp / 1300), h = Math.atan2(CR.vy, CR.vx);
+    return CR.R * (1 + 0.075 * Math.sin(3 * th + RT * 1.3 + 0.5) + 0.045 * Math.sin(5 * th - RT * 0.95) + 0.03 * Math.sin(2 * th + RT * 0.6)
+      + st * Math.cos(th - h) ** 2 - st * 0.35);
+  }
+  /** un contorno chiuso morbido per i punti dati (curve fra i punti medi) */
+  private chiusoMorbido(pts: Array<[number, number]>): void {
+    const ctx = this.ctx, n = pts.length;
+    const m = (a: [number, number], b: [number, number]) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] as const;
+    const s0 = m(pts[n - 1]!, pts[0]!);
+    ctx.beginPath();
+    ctx.moveTo(s0[0], s0[1]);
+    for (let i = 0; i < n; i++) { const p = pts[i]!, q = pts[(i + 1) % n]!, mm = m(p, q); ctx.quadraticCurveTo(p[0], p[1], mm[0], mm[1]); }
+    ctx.closePath();
+  }
+  /**
+   * Un tratto che si assottiglia dalla base alla punta: il contorno di una
+   * linea morbida con lo spessore che cala, e la punta tonda. Prepara il
+   * percorso; chi chiama lo riempie.
+   */
+  private affusolato(pts: Array<[number, number]>, w0: number, w1: number): void {
+    const ctx = this.ctx, n = pts.length;
+    if (n < 2) return;
+    const sx: Array<[number, number]> = [], dx: Array<[number, number]> = [];
+    for (let i = 0; i < n; i++) {
+      const p = pts[i]!, a = pts[Math.max(0, i - 1)]!, b = pts[Math.min(n - 1, i + 1)]!;
+      let ux = b[0] - a[0], uy = b[1] - a[1];
+      const d = Math.hypot(ux, uy) || 1;
+      ux /= d; uy /= d;
+      const w = (w0 + (w1 - w0) * Math.pow(i / (n - 1), 0.8)) / 2;
+      sx.push([p[0] - uy * w, p[1] + ux * w]); dx.push([p[0] + uy * w, p[1] - ux * w]);
     }
-    const s = this.CS();
-    const Z = this.P.zampe;
-    ctx.strokeStyle = Z[0]; ctx.lineWidth = 3 * s; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.hx, l.hy); ctx.lineTo(l.kx, l.ky); } ctx.stroke();
-    ctx.strokeStyle = Z[1]; ctx.lineWidth = 0.9; ctx.stroke();
-    ctx.strokeStyle = Z[2]; ctx.lineWidth = 2.4 * s; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.kx, l.ky); ctx.lineTo(l.dfx, l.dfy); } ctx.stroke();
-    ctx.strokeStyle = Z[3]; ctx.lineWidth = 0.9; ctx.stroke();
-    ctx.strokeStyle = this.P.ginocchia; ctx.lineWidth = 0.8; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.kx + 1.6, l.ky); ctx.arc(l.kx, l.ky, 1.6, 0, TAU); } ctx.stroke();
-    ctx.fillStyle = this.P.piedi;
+    ctx.beginPath();
+    ctx.moveTo(sx[0]![0], sx[0]![1]);
+    for (let i = 1; i < n - 1; i++) { const q = sx[i]!, r = sx[i + 1]!; ctx.quadraticCurveTo(q[0], q[1], (q[0] + r[0]) / 2, (q[1] + r[1]) / 2); }
+    ctx.lineTo(sx[n - 1]![0], sx[n - 1]![1]);
+    const t = pts[n - 1]!, tp = pts[n - 2]!;
+    ctx.quadraticCurveTo(t[0] + (t[0] - tp[0]) * 0.6, t[1] + (t[1] - tp[1]) * 0.6, dx[n - 1]![0], dx[n - 1]![1]);
+    for (let i = n - 2; i > 0; i--) { const q = dx[i]!, r = dx[i - 1]!; ctx.quadraticCurveTo(q[0], q[1], (q[0] + r[0]) / 2, (q[1] + r[1]) / 2); }
+    ctx.lineTo(dx[0]![0], dx[0]![1]);
+    ctx.closePath();
+  }
+
+  /**
+   * Le braccia: tentacoli morbidi, come un polpo o i dendriti di un neurone.
+   * Escono dalla membrana, si curvano e ondeggiano lentamente, seguono il moto
+   * con un po' di ritardo; un'onda le percorre, si assottigliano verso la
+   * punta, che si apre in due rametti. Durante il passo il piede si solleva
+   * in un arco e si riappoggia su una particella.
+   */
+  private drawLegs(): void {
+    const ctx = this.ctx, CR = this.CR, RT = this.RT, P = this.P, s = this.CS(), Z = P.zampe, N = 16;
+    ctx.lineCap = "round"; ctx.lineJoin = "round";
     for (const l of CR.legs) {
-      ctx.globalAlpha = l.t < 1 ? 0.5 : 0.85; ctx.fillRect(l.dfx - 1.3, l.dfy - 1.3, 2.6, 2.6);
-      if (l.flash > 0.05) { ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = l.flash * 0.8; ctx.drawImage(this.spr(C.pink), l.dfx - 8, l.dfy - 8, 16, 16); ctx.globalCompositeOperation = "source-over"; }
+      const a = l.a + CR.rot, rb = this.raggioSoma(a) * 0.9;
+      const bx = CR.x + Math.cos(a) * rb, by = CR.y + Math.sin(a) * rb * 0.9;
+      let fx = l.fx, fy = l.fy;
+      if (l.t < 1) {
+        const ddx = l.tx - l.ox, ddy = l.ty - l.oy, dd = Math.hypot(ddx, ddy) || 1, lift = Math.sin(Math.PI * l.t) * Math.min(16 * s, dd * 0.45);
+        fx += (-ddy / dd) * lift; fy += (ddx / dd) * lift;
+      }
+      const dx = fx - bx, dy = fy - by, L = Math.hypot(dx, dy) || 1, ux = dx / L, uy = dy / L, nx = -uy, ny = ux;
+      const curl = Math.sin(RT * 0.8 + l.ph) * L * 0.18 * l.sw;
+      const lagx = -CR.vx * 0.07, lagy = -CR.vy * 0.07;
+      const c1x = bx + Math.cos(a) * L * 0.45 + lagx, c1y = by + Math.sin(a) * L * 0.45 + lagy;
+      const c2x = fx - ux * L * 0.3 + nx * curl + lagx * 0.5, c2y = fy - uy * L * 0.3 + ny * curl + lagy * 0.5;
+      const amp = 2.8 * s * CR.excite;
+      const pts: Array<[number, number]> = [];
+      for (let i = 0; i <= N; i++) {
+        const t = i / N, u = 1 - t;
+        const w = amp * Math.sin(Math.PI * t) * Math.sin(t * Math.PI * 2.4 - RT * 2.6 + l.ph);
+        pts.push([
+          u * u * u * bx + 3 * u * u * t * c1x + 3 * u * t * t * c2x + t * t * t * fx + nx * w,
+          u * u * u * by + 3 * u * u * t * c1y + 3 * u * t * t * c2y + t * t * t * fy + ny * w,
+        ]);
+      }
+      l.hx = bx; l.hy = by; l.kx = pts[N >> 1]![0]; l.ky = pts[N >> 1]![1]; l.dfx = fx; l.dfy = fy;
+      // l'alone, poi il corpo del braccio, che sfuma dalla base alla punta
+      const g0 = ctx.createLinearGradient(bx, by, fx, fy);
+      g0.addColorStop(0, Z[0]); g0.addColorStop(1, Z[2]);
+      ctx.globalAlpha = 1; ctx.fillStyle = g0; this.affusolato(pts, 8 * s, 1.8 * s); ctx.fill();
+      const g1 = ctx.createLinearGradient(bx, by, fx, fy);
+      g1.addColorStop(0, Z[1]); g1.addColorStop(1, Z[3]);
+      ctx.fillStyle = g1; this.affusolato(pts, 2.8 * s, 0.5 * s); ctx.fill();
+      // le ventose lungo il braccio
+      ctx.fillStyle = P.ginocchia; ctx.globalAlpha = 0.5;
+      for (const [t, r] of [[0.3, 1.3], [0.5, 1.05], [0.68, 0.85], [0.84, 0.65]] as const) {
+        const q = pts[Math.round(t * N)]!;
+        ctx.beginPath(); ctx.arc(q[0], q[1], r * s, 0, TAU); ctx.fill();
+      }
+      // in punta due rametti, come un dendrite
+      const ta = Math.atan2(pts[N]![1] - pts[N - 2]![1], pts[N]![0] - pts[N - 2]![0]), len = 9 * s;
+      ctx.strokeStyle = Z[3]; ctx.lineWidth = 0.75; ctx.globalAlpha = l.t < 1 ? 0.5 : 0.85; ctx.beginPath();
+      for (const sg of [-1, 1]) {
+        const aa = ta + sg * (0.6 + 0.18 * Math.sin(RT * 1.6 + l.ph + sg));
+        ctx.moveTo(fx, fy);
+        ctx.quadraticCurveTo(fx + Math.cos(ta) * len * 0.6, fy + Math.sin(ta) * len * 0.6, fx + Math.cos(aa) * len, fy + Math.sin(aa) * len);
+      }
+      ctx.stroke();
+      // il piede: un punto tondo, con un lampo quando si posa
+      ctx.globalAlpha = l.t < 1 ? 0.55 : 0.9; ctx.fillStyle = P.piedi;
+      ctx.beginPath(); ctx.arc(fx, fy, 1.6 * s + 0.4, 0, TAU); ctx.fill();
+      if (l.flash > 0.05) {
+        ctx.globalCompositeOperation = P.luce; ctx.globalAlpha = l.flash * 0.8;
+        ctx.drawImage(this.spr(C.pink), fx - 8, fy - 8, 16, 16);
+        ctx.globalCompositeOperation = "source-over";
+      }
     }
     ctx.globalAlpha = 1;
   }
   /** L'alone di filamenti radiali, come un soffione. */
   private drawFil(): void {
-    const ctx = this.ctx, CR = this.CR, ex = CR.excite, RT = this.RT;
-    const cols = this.P.filamenti;
-    ctx.lineWidth = 0.65;
+    // le ciglia: curve corte che battono avanti e indietro, alcune con un punto in cima
+    const ctx = this.ctx, CR = this.CR, ex = CR.excite, RT = this.RT, cols = this.P.filamenti;
+    ctx.lineWidth = 0.75; ctx.lineCap = "round";
     for (let c = 0; c < 4; c++) {
       ctx.strokeStyle = cols[c]!; ctx.beginPath();
       for (const f of CR.fil) {
         if (f.c !== c) continue;
-        const a = f.a + CR.rot * 0.6 + 0.05 * Math.sin(RT * f.f + f.ph), L = f.len * ex * (0.74 + 0.26 * Math.sin(RT * f.f * 1.35 + f.ph)), j = this.ridotto ? 0 : (Math.random() - 0.5) * 1.4;
-        const ca = Math.cos(a), sa = Math.sin(a);
-        f.tx = CR.x + ca * (CR.R + L) + j; f.ty = CR.y + sa * (CR.R + L) * 0.86 - j;
-        ctx.moveTo(CR.x + ca * CR.R * 1.04, CR.y + sa * CR.R * 0.76); ctx.lineTo(f.tx, f.ty);
+        const a = f.a + CR.rot * 0.6, rb = this.raggioSoma(a) * 1.02, bx = CR.x + Math.cos(a) * rb, by = CR.y + Math.sin(a) * rb * 0.9;
+        const L = f.len * ex * (0.8 + 0.2 * Math.sin(RT * f.f * 0.9 + f.ph)), beat = Math.sin(RT * f.f + f.ph) * 0.38;
+        const cx = bx + Math.cos(a + beat) * L * 0.55, cy = by + Math.sin(a + beat) * L * 0.55 * 0.9;
+        f.tx = bx + Math.cos(a + beat * 1.9) * L; f.ty = by + Math.sin(a + beat * 1.9) * L * 0.9;
+        ctx.moveTo(bx, by); ctx.quadraticCurveTo(cx, cy, f.tx, f.ty);
       }
       ctx.stroke();
     }
     ctx.fillStyle = this.P.puntiFil;
-    for (const f of CR.fil) { if (!f.dot) continue; const s = Math.sin(RT * f.f * 2 + f.ph); ctx.globalAlpha = 0.35 + 0.6 * s * s; ctx.fillRect(f.tx - 0.9, f.ty - 0.9, 1.8, 1.8); }
+    for (const f of CR.fil) {
+      if (!f.dot) continue;
+      const s = Math.sin(RT * f.f * 2 + f.ph);
+      ctx.globalAlpha = 0.35 + 0.6 * s * s;
+      ctx.beginPath(); ctx.arc(f.tx, f.ty, 0.95, 0, TAU); ctx.fill();
+    }
     ctx.globalAlpha = 1;
   }
+  /** Il corpo: un soma con la membrana che respira, i granuli dentro e il nucleo acceso. */
   private drawCore(): void {
-    const ctx = this.ctx, CR = this.CR, x = CR.x, y = CR.y, R = CR.R, RT = this.RT, pulse = Math.sin(RT * 3.1);
-    ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.42; ctx.drawImage(this.spr(this.P.teal), x - R * 3.8, y - R * 3.8, R * 7.6, R * 7.6);
+    const ctx = this.ctx, CR = this.CR, x = CR.x, y = CR.y, R = CR.R, RT = this.RT, P = this.P, pulse = Math.sin(RT * 3.1);
+    ctx.globalCompositeOperation = P.luce; ctx.globalAlpha = 0.42; ctx.drawImage(this.spr(P.teal), x - R * 3.8, y - R * 3.8, R * 7.6, R * 7.6);
     ctx.globalAlpha = 0.27; ctx.drawImage(this.spr(C.violet), x - R * 8, y - R * 8, R * 16, R * 16);
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
-    ctx.save(); ctx.translate(x, y); ctx.rotate(CR.head); ctx.scale(1, 0.7 + 0.03 * pulse);
-    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fillStyle = this.P.nucleo; ctx.fill();
-    // carapace a rete, ritagliato nell'ellisse
-    ctx.save(); ctx.clip(); ctx.strokeStyle = this.P.nucleoRete; ctx.lineWidth = 0.7; ctx.beginPath();
-    const st = Math.max(3, R / 6);
-    for (let k = -R; k <= R; k += st) { ctx.moveTo(k, -R); ctx.lineTo(k, R); ctx.moveTo(-R, k); ctx.lineTo(R, k); }
-    ctx.stroke(); ctx.restore();
-    ctx.lineWidth = 2; ctx.strokeStyle = this.P.nucleoBordo; ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.stroke();
-    ctx.lineWidth = 0.8; ctx.strokeStyle = this.P.nucleoAnello; ctx.beginPath(); ctx.arc(0, 0, R + 5, 0, TAU); ctx.stroke();
-    ctx.rotate(RT * 0.6); ctx.setLineDash([2, 6]); ctx.lineWidth = 1; ctx.strokeStyle = this.P.nucleoTratteggio; ctx.beginPath(); ctx.arc(0, 0, R + 11, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
-    ctx.restore();
+    const anello = (k: number, sfasa: number) => {
+      const pts: Array<[number, number]> = [];
+      for (let i = 0; i < 36; i++) { const th = (i / 36) * TAU, r = this.raggioSoma(th + sfasa) * k; pts.push([x + Math.cos(th) * r, y + Math.sin(th) * r * 0.9]); }
+      return pts;
+    };
+    // l'alone esterno, che scorre piano
+    this.chiusoMorbido(anello(1.45, 0.7));
+    ctx.setLineDash([2, 6]); ctx.lineDashOffset = -RT * 9; ctx.lineWidth = 1; ctx.strokeStyle = P.nucleoTratteggio; ctx.stroke(); ctx.setLineDash([]);
+    // la membrana
+    this.chiusoMorbido(anello(1, 0));
+    const g = ctx.createRadialGradient(x, y - R * 0.25, R * 0.1, x, y, R * 1.25);
+    g.addColorStop(0, P.nucleoRete); g.addColorStop(1, P.nucleo);
+    ctx.fillStyle = g; ctx.fill();
+    ctx.lineWidth = 1.8; ctx.strokeStyle = P.nucleoBordo; ctx.stroke();
+    // la membrana interna
+    this.chiusoMorbido(anello(0.76, 1.9));
+    ctx.lineWidth = 0.8; ctx.strokeStyle = P.nucleoAnello; ctx.stroke();
+    // i granuli che girano piano dentro il corpo
+    ctx.fillStyle = P.nucleoRete;
+    for (let k = 0; k < 7; k++) {
+      const an = k * 0.9 + RT * (0.18 + 0.04 * k), rr = R * (0.38 + 0.14 * Math.sin(RT * 0.7 + k * 1.3));
+      ctx.globalAlpha = 0.75; ctx.beginPath(); ctx.arc(x + Math.cos(an) * rr, y + Math.sin(an) * rr * 0.9, 1.1 + (k % 3) * 0.35, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // il nucleo
     const hr = R * 0.36 + pulse * 1.2;
-    ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.75; ctx.drawImage(this.spr(C.hot), x - hr * 3.2, y - hr * 3.2, hr * 6.4, hr * 6.4);
+    ctx.globalCompositeOperation = P.luce; ctx.globalAlpha = 0.75; ctx.drawImage(this.spr(C.hot), x - hr * 3.2, y - hr * 3.2, hr * 6.4, hr * 6.4);
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
-    const g = ctx.createRadialGradient(x, y, 0, x, y, hr * 1.6);
-    g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.35, "rgba(255,61,139,0.98)"); g.addColorStop(1, "rgba(255,61,139,0)");
-    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, hr * 1.6, 0, TAU); ctx.fill();
+    const gn = ctx.createRadialGradient(x, y, 0, x, y, hr * 1.6);
+    gn.addColorStop(0, "rgba(255,255,255,1)"); gn.addColorStop(0.35, "rgba(255,61,139,0.98)"); gn.addColorStop(1, "rgba(255,61,139,0)");
+    ctx.fillStyle = gn; ctx.beginPath(); ctx.arc(x, y, hr * 1.6, 0, TAU); ctx.fill();
   }
   /** Le parole della risposta volano dal nucleo verso la chat. */
   private drawWords(): void {
