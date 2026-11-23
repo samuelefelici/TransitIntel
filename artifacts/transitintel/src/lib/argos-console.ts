@@ -531,3 +531,40 @@ export async function chiedi(domanda: string, deep: boolean, suEvento: (ev: Even
   const { eventi } = spezzaSSE(buffer + "\n\n");
   for (const ev of eventi) suEvento(ev as unknown as EventoDomanda);
 }
+
+// ─── le conversazioni ───────────────────────────────────────────────────────
+export type ModoConversazione = "risposta" | "analisi" | "agente";
+export interface Conversazione {
+  id: string; modo: ModoConversazione; agente: string | null; progetto: string | null;
+  titolo: string; turni: number; tokens: number; compattazioni: number;
+  archiviata: boolean; occupata: boolean; creata: string | null; aggiornata: string | null;
+}
+export interface NuovaConversazione { modo: ModoConversazione; agente?: string | null; progetto?: string | null; titolo?: string }
+
+/** I titoli delle conversazioni nate dal vecchio pannello di Planning Studio (routes/argos-console.ts). */
+export const TITOLI_PANNELLO = { agente: "Dal pannello · Pianificatore", chat: "Dal pannello · Chat" } as const;
+
+export const NOMI_MODO: Record<ModoConversazione, string> = { risposta: "Risposta", analisi: "Analisi", agente: "Agente" };
+export const SPIEGA_MODO: Record<ModoConversazione, string> = {
+  risposta: "Documenti, dati di Cerbero e web, in fretta",
+  analisi: "Le stesse fonti, più a fondo: più lenta e più costosa",
+  agente: "Un agente della squadra che lavora per te",
+};
+
+export const conversazioni = {
+  elenco: (progetto?: string | null, archiviate = false) => {
+    const q = new URLSearchParams();
+    if (progetto) q.set("progetto", progetto);
+    if (archiviate) q.set("archiviate", "1");
+    return leggiJson<{ conversazioni: Conversazione[] }>(`${BASE}/conversazioni?${q}`);
+  },
+  una: (id: string) => leggiJson<{ conversazione: Conversazione }>(`${BASE}/conversazioni/${id}`),
+  crea: (c: NuovaConversazione) => invia<{ conversazione: Conversazione }>("POST", `${BASE}/conversazioni`, c),
+  modifica: (id: string, m: { titolo?: string; archiviata?: boolean }) =>
+    invia<{ conversazione: Conversazione }>("PATCH", `${BASE}/conversazioni/${id}`, m),
+  elimina: (id: string) => invia("DELETE", `${BASE}/conversazioni/${id}`),
+  pannello: (projectId: string) => leggiJson<{ chat: number; agente: number }>(`${BASE}/conversazioni/pannello?projectId=${projectId}`),
+  importaPannello: (projectId: string, thread: "chat" | "agente") =>
+    invia<{ conversazione: Conversazione }>("POST", `${BASE}/conversazioni/importa-pannello`, { projectId, thread }),
+};
+

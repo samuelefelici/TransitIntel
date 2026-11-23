@@ -7,7 +7,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { apiFetch } from "@/lib/api";
 import { CASA, paginaDiLavoro, paginaTariffe, sezioniVisibili, voceAttiva, type VoceMenu } from "@/lib/navigazione";
-import ArgosSidebar from "@/components/ArgosSidebar";
+import ArgosLink from "@/components/argos/ArgosLink";
 import logoSidebarImg from "/logosidebar.png";
 import { luogoDellAzienda } from "@/lib/azienda";
 
@@ -61,8 +61,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   /* nelle pagine di lavoro «compresso» vuol dire nascosto del tutto */
   const nascosto = lavoro && collapsed;
   const icone = !lavoro && collapsed;
-  // Planning Studio: qui c'è Argos. Se siamo dentro un progetto specifico ne
-  // estraiamo l'id (uuid) da passare ad Argos come contesto.
+  // Planning Studio: qui c'è il bottone di Argos. Se siamo dentro un progetto
+  // ne estraiamo l'id (uuid): Argos si apre sulle conversazioni di quel progetto.
   const isPlanningStudio = location === "/planning-studio" || location.startsWith("/planning-studio/");
   const planningStudioProjectId = location.match(/^\/planning-studio\/([0-9a-f-]{36})/i)?.[1];
 
@@ -262,8 +262,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </main>
 
-      {/* Argos, dentro Planning Studio: legge i dati del PROGETTO aperto (ps_*) via /api/ai/argos/chat */}
-      {isPlanningStudio && <ArgosSidebar projectId={planningStudioProjectId} />}
+      {/* Argos, da Planning Studio: apre la sua pagina (/argos) sul progetto aperto, in un'altra scheda */}
+      {isPlanningStudio && <ArgosLink projectId={planningStudioProjectId} />}
     </div>
   );
 }

@@ -147,6 +147,12 @@ export const CALCOLANO_SENZA_SCRIVERE: ReadonlyArray<readonly [string, string]> 
   ["POST", "/ai/argos/console/agenti/:chiave/esegui"],
   // una domanda alla console col ragionamento in vista (documenti, dati, web)
   ["POST", "/ai/argos/console/chiedi"],
+  // una conversazione con Argos e i suoi turni: stanno in Argos, sono di chi le
+  // apre, e un turno fa quello che fa con i diritti di chi chiede (il
+  // Pianificatore scrive su Planning Studio col token dell'utente, e lì valgono
+  // i suoi permessi). Rinominare, archiviare, eliminare, importare: scrittura.
+  ["POST", "/ai/argos/console/conversazioni"],
+  ["POST", "/ai/argos/console/conversazioni/:id/messaggi"],
   // letture di molte corse insieme: sono POST solo perché l'elenco delle corse
   // non sta in un indirizzo. Le usano la tabella Corse, i quadri orari, le
   // percorrenze e la scheda del turno guida: senza, chi legge le vede vuote.

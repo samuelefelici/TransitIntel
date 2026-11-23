@@ -68,7 +68,7 @@ function CartaAgente({ a, faiLavorare }: { a: SchedaAgente; faiLavorare: (chiave
         <PillFascia fascia={a.livelloModello} />
         <PillAutonomia autonomia={a.autonomia} />
         {effettiva !== a.autonomia && (
-          <Pill tinta="avviso" title="In questa fase gli agenti della console non scrivono su Cerbero: le scritture restano al Pianificatore del pannello, che sa annullare un turno">
+          <Pill tinta="avviso" title="In questa fase gli agenti della console non scrivono su Cerbero: le scritture restano al Pianificatore nelle conversazioni, che sa annullare un turno">
             ora lavora come «{NOMI_AUTONOMIA[effettiva]}»
           </Pill>
         )}

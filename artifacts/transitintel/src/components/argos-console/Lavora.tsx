@@ -94,7 +94,7 @@ export default function Lavora({ agenteIniziale, apriEsecuzione }: { agenteInizi
           {agente && autonomiaEffettiva(agente.autonomia) !== agente.autonomia && (
             <p className="mt-3 text-[11px] text-muted-foreground">
               In questa fase lavora come «{NOMI_AUTONOMIA[autonomiaEffettiva(agente.autonomia)]}»: legge e propone, non scrive su Cerbero.
-              Per applicare modifiche usa il Pianificatore dal pannello del progetto.
+              Per applicare modifiche apri una conversazione col Pianificatore (scheda Conversazioni).
             </p>
           )}
         </Riquadro>

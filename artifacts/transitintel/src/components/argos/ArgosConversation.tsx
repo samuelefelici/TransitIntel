@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import ArgosMarkdown from "@/components/argos/ArgosMarkdown";
 import { getApiBase } from "@/lib/api";
+import { annunciaScrittura } from "@/lib/argos-live";
 
 /* ══════════════════════ tipi ══════════════════════ */
 
@@ -95,7 +96,7 @@ type Goal = {
   run_id?: number | null;
 };
 
-/** Sorveglianza: il controllo periodico del progetto a pannello chiuso. */
+/** Sorveglianza: il controllo periodico del progetto, anche a conversazione chiusa. */
 type Watch = {
   projectId: string;
   enabled: boolean;
@@ -148,6 +149,8 @@ type Msg = {
   /** Fase muta in corso (es. composizione piano) e note di servizio dal server. */
   phase?: string;
   note?: string;
+  /** Conversazione salvata: il run del piano di questo turno, da rileggere. */
+  pianoRunId?: number;
 };
 
 type ArgosTab = "chat" | "agente";
@@ -789,10 +792,25 @@ function Bubble({ msg, busy, onProposalStatus, onApplyProposal, onUndoRun, undoi
 
 /* ══════════════════════ componente principale ══════════════════════ */
 
-export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true }: {
+/** Una conversazione salvata in Argos (pagina /argos): la storia viene da lì,
+ *  i turni vanno lì, e niente si salva più nel thread di testo del pannello. */
+export type ConversazioneLegata = {
+  id: string;
+  modo: "risposta" | "analisi" | "agente";
+  agente: string | null;
+  progetto: string | null;
+};
+
+export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura }: {
   projectId?: string;
   tiConfigured?: boolean;
   argosReady?: boolean;
+  /** se c'è, il componente lavora su questa conversazione salvata */
+  conversazione?: ConversazioneLegata | null;
+  /** chiamata a fine turno (per aggiornare l'elenco delle conversazioni) */
+  onTurnoFinito?: () => void;
+  /** se c'è, si legge soltanto: il motivo va al posto dell'input (es. conversazione archiviata) */
+  solaLettura?: string;
 }) {
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   const [input, setInput] = React.useState("");
@@ -827,9 +845,16 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   React.useEffect(() => { localStorage.setItem("argos.deep", deep ? "1" : "0"); }, [deep]);
 
   // Senza progetto l'agente non ha dati su cui lavorare: resta solo la Chat.
-  const effectiveTab: ArgosTab = !projectId ? "chat" : tab;
+  // In una conversazione salvata il modo è deciso alla creazione.
+  const effectiveTab: ArgosTab = conversazione
+    ? (conversazione.modo === "agente" ? "agente" : "chat")
+    : (!projectId ? "chat" : tab);
+  // Obiettivi, sorveglianza, modalità e piani approvabili sono del Pianificatore.
+  const pianificatore = !conversazione || conversazione.agente === "pianificatore";
+  const strumentiPianificatore = effectiveTab === "agente" && pianificatore && !!projectId;
+  const profondo = conversazione ? conversazione.modo === "analisi" : deep;
   const tiBlocked = !!projectId && !tiConfigured && effectiveTab === "agente";
-  const blocked = !argosReady || tiBlocked;
+  const blocked = !argosReady || tiBlocked || !!solaLettura;
   const thread = effectiveTab; // thread di storico: 'chat' | 'agente'
 
   // Obiettivi persistenti: il lavoro che l'agente ha in carico sul progetto.
@@ -841,7 +866,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       .then(d => setGoals((d.goals || []) as Goal[]))
       .catch(() => {});
   }, [projectId]);
-  // Sorveglianza del progetto (controllo periodico a pannello chiuso).
+  // Sorveglianza del progetto (controllo periodico, anche a conversazione chiusa).
   const [watch, setWatch] = React.useState<Watch | null>(null);
   const loadWatch = React.useCallback(() => {
     if (!projectId) { setWatch(null); return; }
@@ -851,8 +876,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       .catch(() => {});
   }, [projectId]);
   React.useEffect(() => {
-    if (effectiveTab === "agente") { loadGoals(); loadWatch(); }
-  }, [effectiveTab, loadGoals, loadWatch]);
+    if (strumentiPianificatore) { loadGoals(); loadWatch(); }
+  }, [strumentiPianificatore, loadGoals, loadWatch]);
 
   const updateWatch = async (patch: { enabled?: boolean; workGoals?: boolean }) => {
     if (!projectId) return;
@@ -877,8 +902,55 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     }).catch(() => {});
   };
 
+  // Conversazione salvata: la storia viene da Argos (domande e risposte da
+  // mostrare); i piani del Pianificatore si rileggono dal loro run.
+  React.useEffect(() => {
+    if (!conversazione) return;
+    let cancelled = false;
+    setHistoryLoading(true);
+    fetch(`${getApiBase()}/api/ai/argos/console/conversazioni/${conversazione.id}`)
+      .then(r => r.ok ? r.json() : { messaggi: [] })
+      .then(async d => {
+        if (cancelled) return;
+        const righe: Msg[] = (d.messaggi || []).map((m: any) => {
+          const meta = m.meta || {};
+          let content = String(m.testo || "");
+          if (m.ruolo === "assistant" && meta.piano && !meta.piano_run_id) content += "\n\n" + planToMarkdown(meta.piano as Plan);
+          return {
+            id: `c${m.seq}`, role: m.ruolo === "assistant" ? "assistant" : "user", content,
+            ...(meta.domanda && m.ruolo === "assistant" ? { ask: { ...meta.domanda, answered: [] } } : {}),
+            ...(meta.piano_run_id ? { pianoRunId: Number(meta.piano_run_id) } : {}),
+          } as Msg;
+        });
+        // una domanda già seguita da un messaggio dell'utente è risposta: niente bottoni di nuovo
+        righe.forEach((x, i) => {
+          const dopo = righe[i + 1];
+          if (x.ask && dopo?.role === "user") x.ask = { ...x.ask, answered: [dopo.content] };
+        });
+        setMsgs(righe);
+        // i piani del Pianificatore: si rileggono dal run, con lo stato delle proposte
+        const daLeggere = righe.filter(x => x.pianoRunId && conversazione.progetto);
+        for (const x of daLeggere) {
+          try {
+            const rd = await fetch(`${getApiBase()}/api/ai/argos/agent/runs/${x.pianoRunId}?projectId=${conversazione.progetto}`);
+            const run = rd.ok ? (await rd.json())?.run : null;
+            if (cancelled || !run?.id) continue;
+            const plan: Plan = { id: run.id, status: run.status, summary: run.summary || "", diagnosis: run.diagnosis || "", proposals: run.proposals || [] };
+            setMsgs(prev => prev.map(y => (y.id === x.id ? { ...y, plan } : y)));
+          } catch { /* il testo della risposta resta comunque */ }
+        }
+      })
+      .catch(() => { if (!cancelled) setMsgs([]); })
+      .finally(() => { if (!cancelled) setHistoryLoading(false); });
+    return () => {
+      cancelled = true;
+      abortRef.current?.abort();
+    };
+  }, [conversazione?.id]);
+
   // Storico persistente: un thread per tab (la chat resta chat, l'agente agente).
   React.useEffect(() => {
+    if (conversazione) return;
     if (!projectId) { setMsgs([]); return; }
     let cancelled = false;
     setHistoryLoading(true);
@@ -896,7 +968,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       // continuerebbe a scrivere dentro la history del NUOVO thread.
       abortRef.current?.abort();
     };
-  }, [projectId, thread]);
+  }, [projectId, thread, conversazione]);
 
   // Autoscroll gentile: segue lo stream solo se eri già in fondo.
   const onScroll = () => {
@@ -984,10 +1056,15 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     let turnFailed = false;
     let sawDone = false;
 
-    const endpoint = t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
-    const body = t === "chat"
-      ? { messages: history.slice(-20), projectId, deep }
-      : { messages: history, projectId, mode: m === "auto" ? "agente" : m };
+    // Conversazione salvata: la storia la tiene Argos, si manda solo il messaggio.
+    const endpoint = conversazione
+      ? `/api/ai/argos/console/conversazioni/${conversazione.id}/messaggi`
+      : t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
+    const body = conversazione
+      ? { testo: text, modalita: m === "auto" ? "agente" : m }
+      : t === "chat"
+        ? { messages: history.slice(-20), projectId, deep }
+        : { messages: history, projectId, mode: m === "auto" ? "agente" : m };
 
     try {
       const r = await fetch(`${getApiBase()}${endpoint}`, {
@@ -1059,7 +1136,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             // ArgosLiveBridge/useArgosFresh) e ai contatori vivi del turno.
             const d = payload.tool_done;
             if (d.ok) {
-              window.dispatchEvent(new CustomEvent("argos-live", { detail: d }));
+              annunciaScrittura(projectId ? { ...d, projectId } : d);
               setLiveTurn(prev => {
                 const c = prev ?? { corse: 0, bollini: 0, eliminate: 0, percorsi: 0 };
                 const nuoveCorse = (d.name === "ti_generate_trips" || d.name === "ti_create_trip_prototype")
@@ -1075,6 +1152,12 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           } else if (payload.ask && typeof payload.ask.question === "string") {
             askForSave = payload.ask;
             patchLast(x => ({ ...x, ask: payload.ask, phase: undefined, note: undefined }));
+          } else if (payload.plan && !pianificatore && typeof payload.plan.id !== "number") {
+            // Il piano di un agente della squadra (propone soltanto): si legge
+            // come testo, le proposte stanno nell'ispettore della console.
+            const md = "\n\n" + planToMarkdown(payload.plan as Plan);
+            assistantAccum += md;
+            patchLast(x => ({ ...x, content: x.content + md, phase: undefined, note: undefined }));
           } else if (payload.plan) {
             planForSave = payload.plan;
             patchLast(x => ({ ...x, plan: payload.plan, phase: undefined, note: undefined }));
@@ -1114,7 +1197,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       // Recupero del piano su OGNI fine anomala (stream senza {done}, watchdog,
       // errore di rete, {error} del server): Argos lo persiste NEL momento
       // dell'emissione, quindi può esistere anche se la card non è mai arrivata.
-      if (!sawDone && !ctrl.signal.aborted && t === "agente" && !planForSave && projectId) {
+      if (!sawDone && !ctrl.signal.aborted && t === "agente" && pianificatore && !planForSave && projectId) {
         const recovered = await recoverPlan(turnStartMs);
         if (recovered) {
           planForSave = recovered;
@@ -1137,7 +1220,10 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       if (planForSave) saved += planTrace(planForSave);
       if (askForSave) saved += askToText(askForSave);
       const skipSave = turnFailed && !saved.trim();
-      if (projectId && !skipSave) {
+      if (conversazione) {
+        // Argos ha già salvato il turno (anche se è caduto a metà).
+        onTurnoFinito?.();
+      } else if (projectId && !skipSave) {
         const toSave: { role: string; content: string }[] = [{ role: "user", content: text }];
         if (saved.trim()) toSave.push({ role: "assistant", content: saved });
         fetch(`${getApiBase()}/api/ai/argos/history`, {
@@ -1396,8 +1482,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
 
   return (
     <>
-      {/* ── Tab: la chat è chat, l'agente è agente ── */}
-      <div className="px-3 pt-2 pb-1.5 border-b border-violet-400/20 bg-black/20">
+      {/* ── Tab: la chat è chat, l'agente è agente ── (nelle conversazioni il modo è già deciso) */}
+      {!conversazione && <div className="px-3 pt-2 pb-1.5 border-b border-violet-400/20 bg-black/20">
         <div className="flex items-center gap-1">
           {(Object.keys(TABS) as ArgosTab[]).map(k => {
             const disabled = TABS[k].needsProject && !projectId;
@@ -1450,7 +1536,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           )}
         </div>
         <p className="text-[10px] text-zinc-500 mt-1 px-0.5">{meta.desc}</p>
-      </div>
+      </div>}
 
       {/* ── Messaggi ── */}
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto p-3.5 space-y-3 text-[13px]">
@@ -1476,7 +1562,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
         )}
 
         {/* ── Sorveglianza: novità dall'ultimo controllo automatico ── */}
-        {effectiveTab === "agente" && watch?.unseen && (
+        {strumentiPianificatore && watch?.unseen && (
           <div className="rounded-xl border border-sky-400/40 bg-sky-500/10 p-2.5 space-y-1.5">
             <p className="text-[10px] font-bold text-sky-300 uppercase tracking-wider flex items-center gap-1.5">
               <Eye className="w-3 h-3" /> Dalla sorveglianza
@@ -1509,7 +1595,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
         )}
 
         {/* ── Obiettivi in carico: il lavoro dell'agente oltre il turno ── */}
-        {effectiveTab === "agente" && goals.length > 0 && (
+        {strumentiPianificatore && goals.length > 0 && (
           <div className="rounded-xl border border-violet-400/20 bg-black/20 p-2 space-y-1.5">
             <p className="text-[9.5px] font-bold text-violet-300/80 uppercase tracking-wider px-0.5 flex items-center gap-1.5">
               <Target className="w-3 h-3" /> Obiettivi in carico
@@ -1601,8 +1687,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       {/* ── Input ── */}
       <div className="p-3 border-t border-violet-400/30 bg-black/40">
         {/* Selettore della MODALITÀ dell'agente: sta qui, accanto all'input,
-            come i permission-mode di un CLI agentico. Solo nel tab Agente. */}
-        {effectiveTab === "agente" && (
+            come i permission-mode di un CLI agentico. Solo per il Pianificatore. */}
+        {strumentiPianificatore && (
           <div className="flex items-center gap-1 mb-2">
             {/* Affida come obiettivo: il testo dell'input diventa lavoro IN CARICO
                 all'agente (giri ripetibili, criterio di successo, verdetti). */}
@@ -1696,7 +1782,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
             }}
             rows={1}
-            placeholder={blocked ? "Argos non disponibile…"
+            placeholder={solaLettura ? solaLettura : blocked ? "Argos non disponibile…"
               : effectiveTab === "agente" && agentMode === "piano" ? "Cosa deve progettare Argos? (es. il servizio domenicale)…"
               : meta.placeholder}
             disabled={loading || blocked}
@@ -1723,7 +1809,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           )}
         </form>
         <p className="text-[10px] text-zinc-500 mt-1.5 text-center">
-          {effectiveTab === "chat" && deep && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
+          {effectiveTab === "chat" && profondo && <span className="text-violet-300 font-semibold">🧠 profondo · </span>}
           {effectiveTab === "agente" && agentMode === "auto" && <span className="text-violet-300 font-semibold">🧭 legge i dati davanti a te · </span>}
           {effectiveTab === "agente" && agentMode === "piano" && <span className="text-violet-300 font-semibold">🎯 ogni turno finisce con proposte da approvare · </span>}
           {effectiveTab === "agente" && agentMode === "accetta" && <span className="text-emerald-300 font-semibold">✅ l'agente applica: corse, validità e anche linee nuove · </span>}
