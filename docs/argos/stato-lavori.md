@@ -2170,6 +2170,18 @@ Fatto finora:
   mostra domanda, strumenti e parole. I vecchi link `?scheda=crawler` e
   `?scheda=conversazioni` portano alla scheda unica.
 
+- **Il tema chiaro anche per crawler e chat.** Col tema chiaro della pagina
+  restavano scuri lo studio e la chat. Il disegno su canvas ha ora due
+  tavolozze (`TEMI` in `lib/argos-sciame.ts`: nel chiaro fondo chiaro, tratti
+  più saturi, bagliori che scuriscono invece di illuminare) e segue la classe
+  `.argos-chiaro` della pagina anche quando cambia. La chat e i pannelli,
+  scritti per il fondo scuro, si rimappano in `index.css` solo dentro
+  `.argos-studio`: scala zinc rovesciata, white e black scambiati, tinte
+  100-400 scurite, colori della tipografia del Markdown; Tailwind 4 scrive le
+  classi con queste variabili, quindi i componenti non cambiano. Grafici e
+  diagrammi della chat prendono il tema della pagina. Nella barra dello studio
+  c'è il pulsante del tema (a schermo intero quello della pagina è coperto).
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.

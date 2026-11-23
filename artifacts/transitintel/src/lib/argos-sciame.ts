@@ -105,7 +105,7 @@ const REL_COL: Record<string, string> = { prerequisito: "#FBBF24", generalizza: 
 const CERBERO_COL = "#FB7185";
 const C = { teal: "#2DD4BF", pink: "#F472B6", hot: "#FF3D8B", lilac: "#A78BFA", violet: "#8B5CF6", amber: "#F59E0B", yellow: "#FBBF24", rose: "#FB7185" };
 type StilePillola = "read" | "kept" | "ctx" | "dup" | "dim" | "flag" | "bridge" | "tool" | "term" | "unk";
-const PILL: Record<StilePillola, { br: string; bg: string; tx: string; dash?: boolean }> = {
+const PILL_SCURO: StilePilloleTema = {
   read: { br: "rgba(226,232,240,.6)", bg: "rgba(6,6,9,.88)", tx: "#E5E7EB" },
   kept: { br: "rgba(45,212,191,.9)", bg: "rgba(3,22,20,.88)", tx: "#99F6E4" },
   ctx: { br: "rgba(45,212,191,.95)", bg: "rgba(9,44,41,.94)", tx: "#CCFBF1" },
@@ -117,10 +117,86 @@ const PILL: Record<StilePillola, { br: string; bg: string; tx: string; dash?: bo
   term: { br: "rgba(167,139,250,.9)", bg: "rgba(14,10,30,.88)", tx: "#DDD6FE" },
   unk: { br: "rgba(255,255,255,.3)", bg: "rgba(6,6,9,.86)", tx: "rgba(226,226,234,.72)", dash: true },
 };
-const TCOL: Record<string, string> = {
+const TCOL_SCURO: Record<string, string> = {
   read: "rgba(94,234,212,.55)", read2: "rgba(244,114,182,.5)", kept: "rgba(45,212,191,.85)", ctx: "rgba(45,212,191,.9)", dup: "rgba(245,158,11,.75)",
   dim: "rgba(160,160,175,.22)", flag: "rgba(244,114,182,.9)", tool: "rgba(251,113,133,.85)", term: "rgba(167,139,250,.75)", bridge: "rgba(251,191,36,.7)", unk: "rgba(200,200,210,.35)",
 };
+const PILL_CHIARO: StilePilloleTema = {
+  read: { br: "rgba(51,65,85,.45)", bg: "rgba(255,255,255,.94)", tx: "#1e293b" },
+  kept: { br: "rgba(13,148,136,.85)", bg: "rgba(240,253,250,.95)", tx: "#0f766e" },
+  ctx: { br: "rgba(13,148,136,.95)", bg: "rgba(204,251,241,.96)", tx: "#115e59" },
+  dup: { br: "rgba(217,119,6,.85)", bg: "rgba(255,251,235,.95)", tx: "#92400e" },
+  dim: { br: "rgba(15,23,42,.14)", bg: "rgba(255,255,255,.9)", tx: "rgba(71,85,105,.75)" },
+  flag: { br: "#db2777", bg: "rgba(219,39,119,.92)", tx: "#ffffff" },
+  bridge: { br: "rgba(217,119,6,.8)", bg: "rgba(255,251,235,.95)", tx: "#92400e" },
+  tool: { br: "rgba(225,29,72,.85)", bg: "rgba(255,241,242,.95)", tx: "#9f1239" },
+  term: { br: "rgba(109,40,217,.8)", bg: "rgba(245,243,255,.95)", tx: "#5b21b6" },
+  unk: { br: "rgba(15,23,42,.3)", bg: "rgba(255,255,255,.9)", tx: "rgba(51,65,85,.8)", dash: true },
+};
+const TCOL_CHIARO: Record<string, string> = {
+  read: "rgba(13,148,136,.55)", read2: "rgba(219,39,119,.5)", kept: "rgba(13,148,136,.85)", ctx: "rgba(15,118,110,.9)", dup: "rgba(217,119,6,.75)",
+  dim: "rgba(100,116,139,.3)", flag: "rgba(219,39,119,.9)", tool: "rgba(225,29,72,.85)", term: "rgba(109,40,217,.75)", bridge: "rgba(217,119,6,.7)", unk: "rgba(100,116,139,.45)",
+};
+type StilePilloleTema = Record<StilePillola, { br: string; bg: string; tx: string; dash?: boolean }>;
+/**
+ * I colori del disegno, per tema. Lo scuro è quello della pagina di Argos; il
+ * chiaro segue il tema chiaro della console (classe .argos-chiaro): fondo
+ * chiaro, tratti più saturi e bagliori che scuriscono («multiply») invece di
+ * illuminare, che su bianco non si vedrebbero.
+ */
+interface Tavolozza {
+  chiaro: boolean;
+  luce: GlobalCompositeOperation;
+  fondo: string; velo: (a: number) => string; grana: string; maglia: string; particelle: [string, string]; tinta: (c: string) => string; stelle: string | null;
+  auraMaglia: string; auraDentro: string; auraFuori: string;
+  cerbero: string; cerberoSpento: string; cerberoSotto: string;
+  ponte: (a: number) => string; ponteLuce: (a: number) => string; ponteTagliato: (a: number) => string;
+  concettoFilo: (a: number) => string; concettoPunto: (c: string) => string; concettoNome: (c: string, a: number) => string;
+  letto: string; bagliorLetto: string; teal: string; giallo: string; ambra: string; spento: string; numeroF: string; cella: string;
+  tcol: Record<string, string>; pill: StilePilloleTema;
+  zampe: [string, string, string, string]; ginocchia: string; piedi: string; filamenti: [string, string, string, string]; puntiFil: string;
+  nucleo: string; nucleoRete: string; nucleoBordo: string; nucleoAnello: string; nucleoTratteggio: string;
+  parola: string; nome: (a: number) => string; nomeAttivo: (a: number) => string; nomeSpento: (a: number) => string; sotto: (a: number) => string; sottoAttivo: (a: number) => string;
+  alone: string;
+}
+const TEMI: { scuro: Tavolozza; chiaro: Tavolozza } = {
+  scuro: {
+    chiaro: false, luce: "lighter",
+    fondo: "#050507", velo: a => `rgba(5,5,7,${a})`, grana: "#ffffff", maglia: "rgba(206,210,230,0.14)", particelle: ["#ECECF2", "#8C8C9A"], tinta: c => lighten(c, 0.14), stelle: "#E0E7FF",
+    auraMaglia: "rgba(167,139,250,0.26)", auraDentro: "#EDE9FE", auraFuori: "#A78BFA",
+    cerbero: "#FECDD3", cerberoSpento: "rgba(254,205,211,.45)", cerberoSotto: "rgba(160,160,172,.6)",
+    ponte: a => `rgba(251,191,36,${a})`, ponteLuce: a => `rgba(255,250,235,${a})`, ponteTagliato: a => `rgba(160,160,175,${a})`,
+    concettoFilo: a => `rgba(196,181,253,${a})`, concettoPunto: c => lighten(c, 0.35), concettoNome: (c, a) => lightenA(c, 0.5, a),
+    letto: "#F4F4F5", bagliorLetto: C.lilac, teal: C.teal, giallo: C.yellow, ambra: C.amber, spento: "#6B6B78", numeroF: "rgba(153,246,228,.9)", cella: "#24242c",
+    tcol: TCOL_SCURO, pill: PILL_SCURO,
+    zampe: ["rgba(45,212,191,0.12)", "rgba(204,251,241,0.5)", "rgba(167,139,250,0.12)", "rgba(236,236,246,0.5)"], ginocchia: "rgba(45,212,191,0.85)", piedi: "#F9A8D4",
+    filamenti: ["rgba(139,92,246,0.55)", "rgba(99,102,241,0.5)", "rgba(196,181,253,0.45)", "rgba(236,233,254,0.32)"], puntiFil: "#F5F3FF",
+    nucleo: "rgba(9,62,57,0.86)", nucleoRete: "rgba(45,212,191,0.55)", nucleoBordo: C.teal, nucleoAnello: "rgba(45,212,191,0.4)", nucleoTratteggio: "rgba(153,246,228,0.35)",
+    parola: "#C4B5FD",
+    nome: a => `rgba(236,236,241,${a})`, nomeAttivo: a => withA("#C4B5FD", a), nomeSpento: a => `rgba(232,232,236,${a})`,
+    sotto: a => `rgba(140,140,154,${a})`, sottoAttivo: a => `rgba(196,181,253,${a})`,
+    alone: "rgba(5,5,7,.82)",
+  },
+  chiaro: {
+    chiaro: true, luce: "multiply",
+    fondo: "#f6f7fb", velo: a => `rgba(246,247,251,${a})`, grana: "#0f172a", maglia: "rgba(51,65,85,0.13)", particelle: ["#334155", "#94a3b8"], tinta: c => c, stelle: null,
+    auraMaglia: "rgba(109,40,217,0.22)", auraDentro: "#4c1d95", auraFuori: "#7c3aed",
+    cerbero: "#9f1239", cerberoSpento: "rgba(159,18,57,.5)", cerberoSotto: "rgba(71,85,105,.8)",
+    ponte: a => `rgba(217,119,6,${a})`, ponteLuce: a => `rgba(120,53,15,${a * 0.5})`, ponteTagliato: a => `rgba(100,116,139,${a})`,
+    concettoFilo: a => `rgba(109,40,217,${a})`, concettoPunto: c => c, concettoNome: (c, a) => withA(c, a),
+    letto: "#334155", bagliorLetto: "#7c3aed", teal: "#0d9488", giallo: "#d97706", ambra: "#c2410c", spento: "#a1a8b5", numeroF: "rgba(15,118,110,.95)", cella: "#e7eaf0",
+    tcol: TCOL_CHIARO, pill: PILL_CHIARO,
+    zampe: ["rgba(13,148,136,0.16)", "rgba(15,118,110,0.55)", "rgba(109,40,217,0.14)", "rgba(51,65,85,0.5)"], ginocchia: "rgba(13,148,136,0.9)", piedi: "#db2777",
+    filamenti: ["rgba(109,40,217,0.55)", "rgba(79,70,229,0.5)", "rgba(124,58,237,0.4)", "rgba(51,65,85,0.28)"], puntiFil: "#4c1d95",
+    nucleo: "rgba(204,251,241,0.92)", nucleoRete: "rgba(13,148,136,0.55)", nucleoBordo: "#0d9488", nucleoAnello: "rgba(13,148,136,0.45)", nucleoTratteggio: "rgba(15,118,110,0.45)",
+    parola: "#6d28d9",
+    nome: a => `rgba(15,23,42,${a})`, nomeAttivo: a => withA("#6d28d9", a), nomeSpento: a => `rgba(71,85,105,${a})`,
+    sotto: a => `rgba(100,116,139,${a})`, sottoAttivo: a => `rgba(109,40,217,${a})`,
+    alone: "rgba(246,247,251,.9)",
+  },
+};
+
+
 
 // ─── utilità pure ───────────────────────────────────────────────────────────
 const clamp = (v: number, a: number, b: number) => (v < a ? a : v > b ? b : v);
@@ -463,6 +539,8 @@ export class Sciame {
   /** dove sta la chat che riceve le parole: a destra del palco o sotto */
   private lato: "destra" | "sotto" = "sotto";
   private titoloMisurato: Rett | null = null;
+  /** i colori del disegno (TEMI): scuro o chiaro come la pagina */
+  private P: Tavolozza = TEMI.scuro;
 
   constructor(canvas: HTMLCanvasElement, o: OpzioniSciame = {}) {
     const ctx = canvas.getContext("2d");
@@ -525,6 +603,15 @@ export class Sciame {
     this.TITLE = t;
     this.AVOID = [t];
     this.layoutLabels();
+  }
+
+  /** Il tema della pagina: il campo si ridisegna coi colori chiari o scuri. */
+  impostaTema(chiaro: boolean): void {
+    const P = chiaro ? TEMI.chiaro : TEMI.scuro;
+    if (P === this.P) return;
+    this.P = P;
+    this.F.prev = null;
+    this.buildField();
   }
 
   /** La chat è a destra del palco (schermi larghi) o sotto: le parole volano lì. */
@@ -680,7 +767,7 @@ export class Sciame {
         const st = S.chunk.get(id), c = R?.byId.get(id);
         if (!st || !(st.st === "ctx" || st.st === "bridge") || !c) return "";
         const n = this.occorrenze(c, t);
-        return n > 0 ? withA(this.catColor(c.category), (0.35 + 0.65 * Math.min(1, n / 3)).toFixed(2)) : "#24242c";
+        return n > 0 ? withA(this.catColor(c.category), (0.35 + 0.65 * Math.min(1, n / 3)).toFixed(2)) : this.P.cella;
       }),
     }));
     let ppm: number | null = null;
@@ -952,7 +1039,7 @@ export class Sciame {
     F.ph = Float32Array.from(PH); F.pf = Float32Array.from(FQ); F.st = Uint8Array.from(ST);
     F.inA = new Uint8Array(n); F.aura = new Int32Array(n);
     F.clusters = clusters; F.docs = docMap; F.cer = cer; F.cerG = cerG; F.placeholder = ph;
-    F.gcol = ["#ECECF2", "#8C8C9A", ...clusters.map(cl => lighten(cl.col, 0.14)), CERBERO_COL];
+    F.gcol = [...this.P.particelle, ...clusters.map(cl => this.P.tinta(cl.col)), CERBERO_COL];
     const groups: number[][] = F.gcol.map(() => []);
     for (let i = 0; i < n; i++) groups[GR[i]!]!.push(i);
     F.groups = groups.map(a => Int32Array.from(a));
@@ -1030,13 +1117,13 @@ export class Sciame {
     if (!g) return;
     g.setTransform(DPR, 0, 0, DPR, M * DPR, M * DPR);
     const r = rng(99);
-    g.fillStyle = "#ffffff";
+    g.fillStyle = this.P.grana;
     for (let i = 0; i < (this.mobile() ? 520 : 1300); i++) {
       g.globalAlpha = 0.025 + r() * 0.07;
       const s = r() < 0.1 ? 1.2 : 0.7;
       g.fillRect(-M + r() * (this.CW + 2 * M), -M + r() * (this.CH + 2 * M), s, s);
     }
-    g.globalAlpha = 1; g.globalCompositeOperation = "lighter";
+    g.globalAlpha = 1; g.globalCompositeOperation = this.P.luce;
     for (const cl of F.clusters) {
       const R = cl.r * 1.35, gr = g.createRadialGradient(cl.x, cl.y, 0, cl.x, cl.y, R);
       gr.addColorStop(0, withA(cl.col, 0.05)); gr.addColorStop(0.4, withA(cl.col, 0.022)); gr.addColorStop(1, withA(cl.col, 0));
@@ -1049,7 +1136,7 @@ export class Sciame {
     }
     g.globalCompositeOperation = "source-over";
     const { px, py, mesh } = F;
-    g.lineWidth = 0.55; g.strokeStyle = "rgba(206,210,230,0.14)"; g.beginPath();
+    g.lineWidth = 0.55; g.strokeStyle = this.P.maglia; g.beginPath();
     for (let k = 0; k < mesh.length; k += 2) { const a = mesh[k]!, b = mesh[k + 1]!; g.moveTo(px[a]!, py[a]!); g.lineTo(px[b]!, py[b]!); }
     g.stroke();
     for (let gi = 0; gi < F.groups.length; gi++) {
@@ -1057,9 +1144,11 @@ export class Sciame {
       const idx = F.groups[gi]!, cer = gi === F.cerG;
       for (let k = 0; k < idx.length; k++) { const i = idx[k]!; g.globalAlpha = F.pa[i]! * (cer ? 0.22 : 0.62); const s = F.ps[i]!; g.fillRect(px[i]! - s / 2, py[i]! - s / 2, s, s); }
     }
-    g.globalCompositeOperation = "lighter";
-    const sp = this.spr("#E0E7FF"), idx0 = F.groups[0] ?? new Int32Array(0);
-    for (let k = 0; k < idx0.length; k++) { const i = idx0[k]!; if (!F.st[i]) continue; g.globalAlpha = 0.3; g.drawImage(sp, px[i]! - 6, py[i]! - 6, 12, 12); }
+    if (this.P.stelle) {
+      g.globalCompositeOperation = this.P.luce;
+      const sp = this.spr(this.P.stelle), idx0 = F.groups[0] ?? new Int32Array(0);
+      for (let k = 0; k < idx0.length; k++) { const i = idx0[k]!; if (!F.st[i]) continue; g.globalAlpha = 0.3; g.drawImage(sp, px[i]! - 6, py[i]! - 6, 12, 12); }
+    }
     g.globalCompositeOperation = "source-over"; g.globalAlpha = 1;
     if (F.layer) { F.prev = F.layer; F.prevW = F.layerW; F.prevH = F.layerH; F.prevM = M; F.fade = 0; }
     F.layer = L; F.layerW = this.CW + 2 * M; F.layerH = this.CH + 2 * M;
@@ -1617,7 +1706,7 @@ export class Sciame {
   private render(): void {
     const ctx = this.ctx, F = this.F;
     ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
-    ctx.fillStyle = "#050507"; ctx.fillRect(0, 0, this.cv.width, this.cv.height);
+    ctx.fillStyle = this.P.fondo; ctx.fillRect(0, 0, this.cv.width, this.cv.height);
     if (!F.layer) return;
     this.setWorld();
     if (F.prev && F.fade < 1) { ctx.globalAlpha = 1 - F.fade; ctx.drawImage(F.prev, -F.prevM, -F.prevM, F.prevW, F.prevH); ctx.globalAlpha = F.fade; }
@@ -1631,16 +1720,16 @@ export class Sciame {
     // la chat accanto: le parole ci finiscono dentro, un velo le accoglie
     if (this.lato === "sotto") {
       const g = ctx.createLinearGradient(0, this.CH - 46, 0, this.CH);
-      g.addColorStop(0, "rgba(5,5,7,0)"); g.addColorStop(1, "rgba(5,5,7,0.85)");
+      g.addColorStop(0, this.P.velo(0)); g.addColorStop(1, this.P.velo(0.85));
       ctx.fillStyle = g; ctx.fillRect(0, this.CH - 46, this.CW, 46);
     } else {
       const g = ctx.createLinearGradient(this.CW - 40, 0, this.CW, 0);
-      g.addColorStop(0, "rgba(5,5,7,0)"); g.addColorStop(1, "rgba(5,5,7,0.8)");
+      g.addColorStop(0, this.P.velo(0)); g.addColorStop(1, this.P.velo(0.8));
       ctx.fillStyle = g; ctx.fillRect(this.CW - 40, 0, 40, this.CH);
     }
     // vignettatura, come nella pagina di Argos
     const v = ctx.createRadialGradient(this.CW * 0.46, this.CH / 2, Math.min(this.CW, this.CH) * 0.45, this.CW * 0.46, this.CH / 2, Math.max(this.CW, this.CH) * 0.72);
-    v.addColorStop(0, "rgba(5,5,7,0)"); v.addColorStop(1, "rgba(5,5,7,0.55)");
+    v.addColorStop(0, this.P.velo(0)); v.addColorStop(1, this.P.velo(this.P.chiaro ? 0.45 : 0.55));
     ctx.fillStyle = v; ctx.fillRect(0, 0, this.CW, this.CH);
   }
   private drawField(): void {
@@ -1664,11 +1753,11 @@ export class Sciame {
     }
     if (na) {
       const E = F.mesh;
-      ctx.globalAlpha = 1; ctx.lineWidth = 0.6; ctx.strokeStyle = "rgba(167,139,250,0.26)"; ctx.beginPath();
+      ctx.globalAlpha = 1; ctx.lineWidth = 0.6; ctx.strokeStyle = this.P.auraMaglia; ctx.beginPath();
       for (let k = 0; k < E.length; k += 2) { const a = E[k]!, b = E[k + 1]!; if (inA[a] && inA[b]) { ctx.moveTo(px[a]!, py[a]!); ctx.lineTo(px[b]!, py[b]!); } }
       ctx.stroke();
       for (let pass = 0; pass < 2; pass++) {
-        ctx.fillStyle = pass ? "#EDE9FE" : "#A78BFA";
+        ctx.fillStyle = pass ? this.P.auraDentro : this.P.auraFuori;
         for (let k = 0; k < na; k++) {
           const i = aura[k]!, dx = px[i]! - ax, dy = py[i]! - ay, d = Math.sqrt(dx * dx + dy * dy) / AR;
           if ((d < 0.42) !== !!pass) continue;
@@ -1697,13 +1786,13 @@ export class Sciame {
         const s = F.ps[i]!;
         ctx.fillRect(F.px[i]! - s / 2, F.py[i]! - s / 2, s, s);
       }
-      ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.22 * lit;
+      ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.22 * lit;
       ctx.drawImage(this.spr(CERBERO_COL), c.x - c.r * 1.6, c.y - c.r * 1.6, c.r * 3.2, c.r * 3.2);
       ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
     }
     const p = this.w2s(c.x, c.y - c.r * 0.9 - 12), mob = this.mobile(), x = Math.max(8, p.x - (mob ? 56 : 66));
-    this.LABELS.push({ x, y: p.y, t: "dati reali · cerbero", font: `500 ${Math.max(9, this.LBL().n - 1)}px ` + MONO, col: lit > 0.05 ? "#FECDD3" : "rgba(254,205,211,.45)", align: "left", halo: true, ob: 1 });
-    this.LABELS.push({ x, y: p.y + 13, t: S.tools ? `${S.tools} chiamat${S.tools === 1 ? "a" : "e"} · ${corto(S.lastTool, 18)}` : "in attesa di strumenti", font: "400 9px " + MONO, col: "rgba(160,160,172,.6)", align: "left", halo: true, ob: 1 });
+    this.LABELS.push({ x, y: p.y, t: "dati reali · cerbero", font: `500 ${Math.max(9, this.LBL().n - 1)}px ` + MONO, col: lit > 0.05 ? this.P.cerbero : this.P.cerberoSpento, align: "left", halo: true, ob: 1 });
+    this.LABELS.push({ x, y: p.y + 13, t: S.tools ? `${S.tools} chiamat${S.tools === 1 ? "a" : "e"} · ${corto(S.lastTool, 18)}` : "in attesa di strumenti", font: "400 9px " + MONO, col: this.P.cerberoSotto, align: "left", halo: true, ob: 1 });
   }
   private quadPt(x0: number, y0: number, cx: number, cy: number, x1: number, y1: number, t: number) { const u = 1 - t; return { x: u * u * x0 + 2 * u * t * cx + t * t * x1, y: u * u * y0 + 2 * u * t * cy + t * t * y1 }; }
   private partialQuad(x0: number, y0: number, cx: number, cy: number, x1: number, y1: number, g: number): [number, number, number, number] {
@@ -1724,16 +1813,16 @@ export class Sciame {
       const cx = mx + nx * L * 0.3, cy = my + ny * L * 0.3, g = ease((this.TL.clock - A.born) / 750), fade = (S.stage > 4 ? 0.55 : 1) * (A.cut ? 0.45 : 1);
       const [qx, qy, ex, ey] = this.partialQuad(p1.x, p1.y, cx, cy, p2.x, p2.y, g);
       if (A.cut) ctx.setLineDash([3, 4]);
-      ctx.lineWidth = 1.1; ctx.strokeStyle = A.cut ? `rgba(160,160,175,${0.5 * fade})` : `rgba(251,191,36,${0.5 * fade})`;
+      ctx.lineWidth = 1.1; ctx.strokeStyle = A.cut ? this.P.ponteTagliato(0.5 * fade) : this.P.ponte(0.5 * fade);
       ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.quadraticCurveTo(qx, qy, ex, ey); ctx.stroke();
-      ctx.lineWidth = 0.5; ctx.strokeStyle = `rgba(255,250,235,${0.45 * fade})`; ctx.stroke(); ctx.setLineDash([]);
+      ctx.lineWidth = 0.5; ctx.strokeStyle = this.P.ponteLuce(0.45 * fade); ctx.stroke(); ctx.setLineDash([]);
       const s = this.w2s(p2.x, p2.y);
       if (A.cut && g >= 1) { this.PILLS.push({ key: "arc" + A.to, x: s.x, y: s.y, text: A.text, style: "dim", alpha: 1, dx: dx / L, dy: dy / L }); continue; }
       if (g >= 1) {
         const u = (this.RT * 0.32 + A.seed) % 1, q = this.quadPt(p1.x, p1.y, cx, cy, p2.x, p2.y, u);
-        ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.8 * fade; ctx.drawImage(this.spr(C.yellow), q.x - 6, q.y - 6, 12, 12);
+        ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.8 * fade; ctx.drawImage(this.spr(this.P.giallo), q.x - 6, q.y - 6, 12, 12);
         ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
-        ctx.strokeStyle = `rgba(255,250,235,${0.4 * fade})`; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.moveTo(p2.x, p2.y);
+        ctx.strokeStyle = this.P.ponteLuce(0.4 * fade); ctx.lineWidth = 0.8; ctx.beginPath(); ctx.moveTo(p2.x, p2.y);
         ctx.quadraticCurveTo(p2.x + nx * 16 + (dx / L) * 8, p2.y + ny * 16 + (dy / L) * 8, p2.x + nx * 6 + (dx / L) * 20, p2.y + ny * 6 + (dy / L) * 20); ctx.stroke();
         this.PILLS.push({ key: "arc" + A.to, x: s.x, y: s.y, text: (A.fr ? "F" + A.fr + " · " : "") + A.text, style: "bridge", alpha: S.stage > 4 && S.stage !== 7 ? 0.75 : 1, dx: dx / L, dy: dy / L });
       }
@@ -1749,7 +1838,7 @@ export class Sciame {
     const pos = new Map<Id, { x: number; y: number }>();
     S.concepts.forEach((k, i) => pos.set(k.id, this.conceptPos(k, i)));
     const dim = S.stage > 5 ? 0.55 : 1;
-    ctx.lineWidth = 0.5; ctx.strokeStyle = `rgba(196,181,253,${0.13 * dim})`; ctx.beginPath();
+    ctx.lineWidth = 0.5; ctx.strokeStyle = this.P.concettoFilo(0.13 * dim); ctx.beginPath();
     for (const k of S.concepts) { const p = pos.get(k.id)!; for (const id of k.chunks) { const q = this.chunkXY(id); if (q) { ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); } } }
     ctx.stroke();
     for (const e of S.cedges) {
@@ -1774,12 +1863,12 @@ export class Sciame {
       const p = this.cpos.get(k.id) || this.conceptPos(k, i), g = ease((TL.clock - k.born) / 380);
       if (g <= 0) return;
       const col = this.catColor(k.cat), r = (2 + Math.min(3, k.w * 0.9)) * g;
-      ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.55 * dim; ctx.drawImage(this.spr(col), p.x - r * 4, p.y - r * 4, r * 8, r * 8); ctx.globalCompositeOperation = "source-over";
-      ctx.globalAlpha = dim; ctx.fillStyle = lighten(col, 0.35); ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.55 * dim; ctx.drawImage(this.spr(col), p.x - r * 4, p.y - r * 4, r * 8, r * 8); ctx.globalCompositeOperation = "source-over";
+      ctx.globalAlpha = dim; ctx.fillStyle = this.P.concettoPunto(col); ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
       const la = S.stage >= 6 ? 1 - clamp((TL.clock - (TL.start[6] ?? TL.clock)) / 500, 0, 1) : 1;
       if (la <= 0.02) return;
       const s = this.w2s(p.x, p.y), right = Math.cos(k.ang) >= 0;
-      this.LABELS.push({ x: s.x + (right ? 8 : -8), y: s.y + 3, t: corto(k.name.toLowerCase(), 24), font: (this.CW < 420 ? "500 8.5px " : "500 9.5px ") + MONO, col: lightenA(col, 0.5, 0.92 * g * dim * la), align: right ? "left" : "right", halo: la > 0.5, kind: "k" });
+      this.LABELS.push({ x: s.x + (right ? 8 : -8), y: s.y + 3, t: corto(k.name.toLowerCase(), 24), font: (this.CW < 420 ? "500 8.5px " : "500 9.5px ") + MONO, col: this.P.concettoNome(col, 0.92 * g * dim * la), align: right ? "left" : "right", halo: la > 0.5, kind: "k" });
     });
   }
   /** I passaggi: quadratini colorati per stato, che si accendono quando vengono letti. */
@@ -1790,22 +1879,23 @@ export class Sciame {
       const j = F.chunkP.get(id);
       if (j == null) continue;
       const x = F.px[j]!, y = F.py[j]!;
-      let col = "#F4F4F5", a = 0.95, s = 2.4;
-      if (st.st === "kept" || st.st === "ctx") { col = C.teal; s = 2.8; }
-      else if (st.st === "bridge") { col = C.yellow; s = 2.8; }
-      else if (st.st === "dup") col = C.amber;
-      else if (st.st === "dropped" || st.st === "below") { col = "#6B6B78"; a = 0.5; s = 2; }
+      const P = this.P;
+      let col = P.letto, a = 0.95, s = 2.4;
+      if (st.st === "kept" || st.st === "ctx") { col = P.teal; s = 2.8; }
+      else if (st.st === "bridge") { col = P.giallo; s = 2.8; }
+      else if (st.st === "dup") col = P.ambra;
+      else if (st.st === "dropped" || st.st === "below") { col = P.spento; a = 0.5; s = 2; }
       if (st.glow > 0.02) {
-        ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = st.glow * 0.85;
+        ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = st.glow * 0.85;
         const g = 10 + st.glow * 12;
-        ctx.drawImage(this.spr(col === "#F4F4F5" ? C.lilac : col), x - g, y - g, 2 * g, 2 * g);
+        ctx.drawImage(this.spr(col === P.letto ? P.bagliorLetto : col), x - g, y - g, 2 * g, 2 * g);
         ctx.globalCompositeOperation = "source-over";
       }
       ctx.globalAlpha = a; ctx.fillStyle = col; ctx.fillRect(x - s / 2, y - s / 2, s, s);
       if (st.st === "ctx" || st.st === "bridge") { ctx.globalAlpha = 0.5 + 0.3 * Math.sin(this.RT * 3 + j); ctx.strokeStyle = col; ctx.lineWidth = 0.8; ctx.beginPath(); ctx.arc(x, y, 4.2, 0, TAU); ctx.stroke(); }
       if (showF && st.fr && st.st !== "bridge" && !pilled.has(id)) {
         const p = this.w2s(x, y);
-        this.LABELS.push({ x: p.x + 5, y: p.y - 5, t: "F" + st.fr, font: "600 8.5px " + MONO, col: "rgba(153,246,228,.9)", align: "left", halo: true });
+        this.LABELS.push({ x: p.x + 5, y: p.y - 5, t: "F" + st.fr, font: "600 8.5px " + MONO, col: this.P.numeroF, align: "left", halo: true });
       }
     }
     ctx.globalAlpha = 1;
@@ -1822,7 +1912,7 @@ export class Sciame {
           const g = ease((now - t.born) / 300);
           if (g <= 0) return;
           const a = -Math.PI / 2 + (i / n) * TAU + 0.2, x = CR.x + Math.cos(a) * r * g, y = CR.y + Math.sin(a) * r * 0.82 * g;
-          ctx.globalAlpha = 0.7 * fa; ctx.strokeStyle = TCOL.term!; ctx.beginPath(); ctx.moveTo(CR.x, CR.y); ctx.lineTo(x, y); ctx.stroke(); ctx.globalAlpha = 1;
+          ctx.globalAlpha = 0.7 * fa; ctx.strokeStyle = this.P.tcol.term!; ctx.beginPath(); ctx.moveTo(CR.x, CR.y); ctx.lineTo(x, y); ctx.stroke(); ctx.globalAlpha = 1;
           const s = this.w2s(x, y);
           this.PILLS.push({ key: "q" + i, x: s.x, y: s.y, text: t.w, style: "term", alpha: g * fa, dx: Math.cos(a), dy: Math.sin(a) });
         });
@@ -1839,13 +1929,13 @@ export class Sciame {
       const bend = T.bend * Math.min(L, 260) * 0.22 + Math.sin(this.RT * 1.7 + T.seed) * 4, cx = (x0 + p.x) / 2 + nx * bend, cy = (y0 + p.y) / 2 + ny * bend;
       const [qx, qy, ex, ey] = this.partialQuad(x0, y0, cx, cy, p.x, p.y, g);
       if (T.hide) al *= 0.5;
-      ctx.globalAlpha = al; ctx.strokeStyle = T.style === "read" && T.alt ? TCOL.read2! : TCOL[T.style] ?? TCOL.read!; ctx.lineWidth = T.style === "dim" || T.hide ? 0.6 : 1;
+      ctx.globalAlpha = al; ctx.strokeStyle = T.style === "read" && T.alt ? this.P.tcol.read2! : this.P.tcol[T.style] ?? this.P.tcol.read!; ctx.lineWidth = T.style === "dim" || T.hide ? 0.6 : 1;
       ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(qx, qy, ex, ey); ctx.stroke();
       if (g >= 1) {
         ctx.fillStyle = ctx.strokeStyle; ctx.fillRect(p.x - 1.3, p.y - 1.3, 2.6, 2.6);
         if (!T.hide && (T.style === "flag" || T.style === "kept" || T.style === "tool")) {
-          ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.5 * al;
-          ctx.drawImage(this.spr(T.style === "kept" ? C.teal : T.style === "flag" ? C.pink : C.rose), p.x - 7, p.y - 7, 14, 14);
+          ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.5 * al;
+          ctx.drawImage(this.spr(T.style === "kept" ? this.P.teal : T.style === "flag" ? C.pink : C.rose), p.x - 7, p.y - 7, 14, 14);
           ctx.globalCompositeOperation = "source-over";
         }
         if (T.text && !T.hide) { const s = this.w2s(p.x, p.y); this.PILLS.push({ key: T.key, x: s.x, y: s.y, text: T.text, style: T.style, alpha: al, dx: dx / L, dy: dy / L }); }
@@ -1867,22 +1957,23 @@ export class Sciame {
       l.hx = hx0; l.hy = hy0; l.kx = far1 >= far2 ? k1x : k2x; l.ky = far1 >= far2 ? k1y : k2y; l.dfx = fx; l.dfy = fy;
     }
     const s = this.CS();
-    ctx.strokeStyle = "rgba(45,212,191,0.12)"; ctx.lineWidth = 3 * s; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.hx, l.hy); ctx.lineTo(l.kx, l.ky); } ctx.stroke();
-    ctx.strokeStyle = "rgba(204,251,241,0.5)"; ctx.lineWidth = 0.9; ctx.stroke();
-    ctx.strokeStyle = "rgba(167,139,250,0.12)"; ctx.lineWidth = 2.4 * s; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.kx, l.ky); ctx.lineTo(l.dfx, l.dfy); } ctx.stroke();
-    ctx.strokeStyle = "rgba(236,236,246,0.5)"; ctx.lineWidth = 0.9; ctx.stroke();
-    ctx.strokeStyle = "rgba(45,212,191,0.85)"; ctx.lineWidth = 0.8; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.kx + 1.6, l.ky); ctx.arc(l.kx, l.ky, 1.6, 0, TAU); } ctx.stroke();
-    ctx.fillStyle = "#F9A8D4";
+    const Z = this.P.zampe;
+    ctx.strokeStyle = Z[0]; ctx.lineWidth = 3 * s; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.hx, l.hy); ctx.lineTo(l.kx, l.ky); } ctx.stroke();
+    ctx.strokeStyle = Z[1]; ctx.lineWidth = 0.9; ctx.stroke();
+    ctx.strokeStyle = Z[2]; ctx.lineWidth = 2.4 * s; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.kx, l.ky); ctx.lineTo(l.dfx, l.dfy); } ctx.stroke();
+    ctx.strokeStyle = Z[3]; ctx.lineWidth = 0.9; ctx.stroke();
+    ctx.strokeStyle = this.P.ginocchia; ctx.lineWidth = 0.8; ctx.beginPath(); for (const l of CR.legs) { ctx.moveTo(l.kx + 1.6, l.ky); ctx.arc(l.kx, l.ky, 1.6, 0, TAU); } ctx.stroke();
+    ctx.fillStyle = this.P.piedi;
     for (const l of CR.legs) {
       ctx.globalAlpha = l.t < 1 ? 0.5 : 0.85; ctx.fillRect(l.dfx - 1.3, l.dfy - 1.3, 2.6, 2.6);
-      if (l.flash > 0.05) { ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = l.flash * 0.8; ctx.drawImage(this.spr(C.pink), l.dfx - 8, l.dfy - 8, 16, 16); ctx.globalCompositeOperation = "source-over"; }
+      if (l.flash > 0.05) { ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = l.flash * 0.8; ctx.drawImage(this.spr(C.pink), l.dfx - 8, l.dfy - 8, 16, 16); ctx.globalCompositeOperation = "source-over"; }
     }
     ctx.globalAlpha = 1;
   }
   /** L'alone di filamenti radiali, come un soffione. */
   private drawFil(): void {
     const ctx = this.ctx, CR = this.CR, ex = CR.excite, RT = this.RT;
-    const cols = ["rgba(139,92,246,0.55)", "rgba(99,102,241,0.5)", "rgba(196,181,253,0.45)", "rgba(236,233,254,0.32)"];
+    const cols = this.P.filamenti;
     ctx.lineWidth = 0.65;
     for (let c = 0; c < 4; c++) {
       ctx.strokeStyle = cols[c]!; ctx.beginPath();
@@ -1895,28 +1986,28 @@ export class Sciame {
       }
       ctx.stroke();
     }
-    ctx.fillStyle = "#F5F3FF";
+    ctx.fillStyle = this.P.puntiFil;
     for (const f of CR.fil) { if (!f.dot) continue; const s = Math.sin(RT * f.f * 2 + f.ph); ctx.globalAlpha = 0.35 + 0.6 * s * s; ctx.fillRect(f.tx - 0.9, f.ty - 0.9, 1.8, 1.8); }
     ctx.globalAlpha = 1;
   }
   private drawCore(): void {
     const ctx = this.ctx, CR = this.CR, x = CR.x, y = CR.y, R = CR.R, RT = this.RT, pulse = Math.sin(RT * 3.1);
-    ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.42; ctx.drawImage(this.spr(C.teal), x - R * 3.8, y - R * 3.8, R * 7.6, R * 7.6);
+    ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.42; ctx.drawImage(this.spr(this.P.teal), x - R * 3.8, y - R * 3.8, R * 7.6, R * 7.6);
     ctx.globalAlpha = 0.27; ctx.drawImage(this.spr(C.violet), x - R * 8, y - R * 8, R * 16, R * 16);
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
     ctx.save(); ctx.translate(x, y); ctx.rotate(CR.head); ctx.scale(1, 0.7 + 0.03 * pulse);
-    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fillStyle = "rgba(9,62,57,0.86)"; ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.fillStyle = this.P.nucleo; ctx.fill();
     // carapace a rete, ritagliato nell'ellisse
-    ctx.save(); ctx.clip(); ctx.strokeStyle = "rgba(45,212,191,0.55)"; ctx.lineWidth = 0.7; ctx.beginPath();
+    ctx.save(); ctx.clip(); ctx.strokeStyle = this.P.nucleoRete; ctx.lineWidth = 0.7; ctx.beginPath();
     const st = Math.max(3, R / 6);
     for (let k = -R; k <= R; k += st) { ctx.moveTo(k, -R); ctx.lineTo(k, R); ctx.moveTo(-R, k); ctx.lineTo(R, k); }
     ctx.stroke(); ctx.restore();
-    ctx.lineWidth = 2; ctx.strokeStyle = C.teal; ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.stroke();
-    ctx.lineWidth = 0.8; ctx.strokeStyle = "rgba(45,212,191,0.4)"; ctx.beginPath(); ctx.arc(0, 0, R + 5, 0, TAU); ctx.stroke();
-    ctx.rotate(RT * 0.6); ctx.setLineDash([2, 6]); ctx.lineWidth = 1; ctx.strokeStyle = "rgba(153,246,228,0.35)"; ctx.beginPath(); ctx.arc(0, 0, R + 11, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
+    ctx.lineWidth = 2; ctx.strokeStyle = this.P.nucleoBordo; ctx.beginPath(); ctx.arc(0, 0, R, 0, TAU); ctx.stroke();
+    ctx.lineWidth = 0.8; ctx.strokeStyle = this.P.nucleoAnello; ctx.beginPath(); ctx.arc(0, 0, R + 5, 0, TAU); ctx.stroke();
+    ctx.rotate(RT * 0.6); ctx.setLineDash([2, 6]); ctx.lineWidth = 1; ctx.strokeStyle = this.P.nucleoTratteggio; ctx.beginPath(); ctx.arc(0, 0, R + 11, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
     ctx.restore();
     const hr = R * 0.36 + pulse * 1.2;
-    ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 0.75; ctx.drawImage(this.spr(C.hot), x - hr * 3.2, y - hr * 3.2, hr * 6.4, hr * 6.4);
+    ctx.globalCompositeOperation = this.P.luce; ctx.globalAlpha = 0.75; ctx.drawImage(this.spr(C.hot), x - hr * 3.2, y - hr * 3.2, hr * 6.4, hr * 6.4);
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
     const g = ctx.createRadialGradient(x, y, 0, x, y, hr * 1.6);
     g.addColorStop(0, "rgba(255,255,255,1)"); g.addColorStop(0.35, "rgba(255,61,139,0.98)"); g.addColorStop(1, "rgba(255,61,139,0)");
@@ -1932,7 +2023,7 @@ export class Sciame {
       const w = S.words[i]!, u = (this.RT - w.born) / w.dur;
       if (u >= 1) { S.words.splice(i, 1); continue; }
       const e = easeIO(u), cx = (w.x0 + ap.x) / 2, cy = (w.y0 + ap.y) / 2 + w.bend, p = this.quadPt(w.x0, w.y0, cx, cy, ap.x, ap.y, e), al = Math.sin(u * Math.PI);
-      ctx.globalAlpha = al * 0.55; ctx.fillStyle = "#C4B5FD"; ctx.fillText(w.w, p.x, p.y - 6);
+      ctx.globalAlpha = al * (this.P.chiaro ? 0.8 : 0.55); ctx.fillStyle = this.P.parola; ctx.fillText(w.w, p.x, p.y - 6);
       const q = this.quadPt(w.x0, w.y0, cx, cy, ap.x, ap.y, Math.max(0, e - 0.04));
       ctx.globalAlpha = al * 0.8; ctx.fillStyle = C.pink; ctx.fillRect(q.x - 1, q.y - 1, 2, 2);
     }
@@ -1961,8 +2052,8 @@ export class Sciame {
       else if (S.stage <= 1) sub = `${s.read}/${s.cand} passaggi · ${act ? "in lettura" : s.read >= s.cand ? "fatto" : "in coda"}`;
       else sub = `${s.kept}/${s.cand} tenuti · ${act ? "in lettura" : "fatto"}`;
       const dim = run && (!s || !s.cand);
-      this.LABELS.push({ x, y, t: cl.name, font: (act ? `600 ${T.a}px ` : `500 ${T.n}px `) + MONO, col: act ? withA("#C4B5FD", fa.toFixed(2)) : dim ? `rgba(232,232,236,${(0.5 * fa).toFixed(2)})` : `rgba(236,236,241,${fa.toFixed(2)})`, align: "center", halo: fa > 0.6, ob: fa > 0.6 ? 2 : 0 });
-      if (!mob || !dim) this.LABELS.push({ x, y: y + Math.round(T.n * 1.15), t: sub, font: `400 ${T.s}px ` + MONO, col: act ? `rgba(196,181,253,${(0.8 * fa).toFixed(2)})` : `rgba(140,140,154,${(0.75 * fa).toFixed(2)})`, align: "center", halo: fa > 0.6, ob: fa > 0.6 ? 2 : 0 });
+      this.LABELS.push({ x, y, t: cl.name, font: (act ? `600 ${T.a}px ` : `500 ${T.n}px `) + MONO, col: act ? this.P.nomeAttivo(+fa.toFixed(2)) : dim ? this.P.nomeSpento(+(0.5 * fa).toFixed(2)) : this.P.nome(+fa.toFixed(2)), align: "center", halo: fa > 0.6, ob: fa > 0.6 ? 2 : 0 });
+      if (!mob || !dim) this.LABELS.push({ x, y: y + Math.round(T.n * 1.15), t: sub, font: `400 ${T.s}px ` + MONO, col: act ? this.P.sottoAttivo(+(0.8 * fa).toFixed(2)) : this.P.sotto(+(0.75 * fa).toFixed(2)), align: "center", halo: fa > 0.6, ob: fa > 0.6 ? 2 : 0 });
     }
   }
   private labelRect(l: Etichetta, font: string): Rett {
@@ -2004,7 +2095,7 @@ export class Sciame {
       setF(l.font);
       ctx.textAlign = l.align || "left";
       if (l.ob || l.kind === "k") this.OBST.push(this.labelRect(l, font));
-      if (l.halo) { ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = "rgba(5,5,7,.82)"; ctx.strokeText(l.t, l.x, l.y); }
+      if (l.halo) { ctx.lineJoin = "round"; ctx.lineWidth = 3; ctx.strokeStyle = this.P.alone; ctx.strokeText(l.t, l.x, l.y); }
       ctx.fillStyle = l.col; ctx.fillText(l.t, l.x, l.y);
     }
     ctx.textAlign = "left";
@@ -2045,7 +2136,7 @@ export class Sciame {
       const off = r.y - r.y0, prev = this.PILLOFF.get(k), so = prev == null ? off : lerp(prev, off, 0.22);
       this.PILLOFF.set(k, so);
       let y = clamp(Math.round(r.y0 + so) + 0.5, 4, maxY - H - 2);
-      const x = r.x + 0.5, st = PILL[r.p.style] ?? PILL.read;
+      const x = r.x + 0.5, st = this.P.pill[r.p.style] ?? this.P.pill.read;
       if (x < TITLE.x + TITLE.w && x + r.w > TITLE.x && y < TITLE.y + TITLE.h && y + H > TITLE.y) y = TITLE.y + TITLE.h + 2;
       if (r.p.alpha > 0.3) this.PILLR.push({ x, y, w: r.w, h: H });
       ctx.globalAlpha = r.p.alpha;

@@ -27,14 +27,16 @@ export default function ChartBlock({ config }: { config: any }) {
     loadChart()
       .then((Chart) => {
         if (cancelled || !canvasRef.current) return;
-        // Opzioni di default coerenti col tema scuro del pannello.
+        // Opzioni di default coerenti col tema della pagina di Argos (chiaro o scuro).
+        const chiaro = !!canvasRef.current.closest(".argos-chiaro");
+        const testo = chiaro ? "#1e293b" : "#e5e7eb", tacche = chiaro ? "#475569" : "#a1a1aa";
         const cfg = {
           ...config,
           options: {
             responsive: true,
             maintainAspectRatio: false,
-            plugins: { legend: { labels: { color: "#e5e7eb", font: { size: 10 } } } },
-            scales: { x: { ticks: { color: "#a1a1aa", font: { size: 9 } } }, y: { ticks: { color: "#a1a1aa", font: { size: 9 } } } },
+            plugins: { legend: { labels: { color: testo, font: { size: 10 } } } },
+            scales: { x: { ticks: { color: tacche, font: { size: 9 } } }, y: { ticks: { color: tacche, font: { size: 9 } } } },
             ...(config?.options || {}),
           },
         };

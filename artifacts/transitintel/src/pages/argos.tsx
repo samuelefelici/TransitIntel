@@ -10,7 +10,7 @@
  * ricordato nel browser; la scheda e l'esecuzione aperta stanno nell'indirizzo,
  * così un link porta dritto a una traccia.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { BookOpen, Bot, Gauge, MessagesSquare, Moon, Network, Play, Search, Sun, Wrench } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -22,6 +22,7 @@ import Capacita from "@/components/argos-console/Capacita";
 import Biblioteca from "@/components/argos-console/Biblioteca";
 import Mappa from "@/components/argos-console/Mappa";
 import Conversazioni from "@/components/argos-console/Conversazioni";
+import { TemaArgosContesto } from "@/lib/argos-tema";
 
 const SCHEDE = ["conversazione", "cruscotto", "biblioteca", "mappa", "squadra", "lavora", "ispettore", "capacita"] as const;
 /** i nomi di prima: i link salvati portano alla scheda unica */
@@ -89,8 +90,10 @@ export default function ArgosPage() {
   const apriInMappa = useCallback((id: number) => { setDocumentoInMappa(id); setScheda("mappa"); }, []);
   const apriInBiblioteca = useCallback((id: number) => { setDocumentoInBiblioteca(id); setScheda("biblioteca"); }, []);
   const conversazioneCambiata = useCallback((c: string | null, p: string | null) => { setConversazione(c); setProgetto(p); }, []);
+  const contestoTema = useMemo(() => ({ tema, cambia: () => setTema(t => (t === "chiaro" ? "scuro" : "chiaro")) }), [tema]);
 
   return (
+    <TemaArgosContesto.Provider value={contestoTema}>
     <div className={`argos-console ${tema === "chiaro" ? "argos-chiaro rounded-2xl" : ""} min-h-full`}>
       <div className="mx-auto max-w-[1600px] px-4 py-5 md:px-6">
         <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -132,5 +135,6 @@ export default function ArgosPage() {
         </Tabs>
       </div>
     </div>
+    </TemaArgosContesto.Provider>
   );
 }
