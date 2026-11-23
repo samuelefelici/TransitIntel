@@ -53,7 +53,13 @@ const capoSud = request(appDiProva(router, utenteDiProva(CAPO, [], "user", { ruo
 const righe = async (q: ReturnType<typeof sql>) => (await db.execute<any>(q)).rows;
 const lista = sql.join(CONDUCENTI.map((id) => sql`${id}::uuid`), sql`, `);
 const proposta = (chi = admin) => chi.post("/api/roster/copri-scoperti").send({ day: GIORNO });
-const coppie = (r: any) => (r.body.coperture ?? r.body.assegnate).map((c: any) => [c.turno.codice, c.driverId]);
+/** tutte le stringhe che una risposta porta come valori, a ogni profondità (le chiavi no) */
+const stringhe = (x: unknown): string[] =>
+  typeof x === "string" ? [x]
+  : Array.isArray(x) ? x.flatMap(stringhe)
+  : x && typeof x === "object" ? Object.values(x).flatMap(stringhe)
+  : [];
+const coppie = (r: any) =>(r.body.coperture ?? r.body.assegnate).map((c: any) => [c.turno.codice, c.driverId]);
 
 async function pulisci() {
   await db.execute(sql`DELETE FROM roster_anagrafica_log WHERE driver_id IN (${lista})`);
@@ -146,11 +152,14 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("copri gli scoperti, sul databas
       senzaCandidati: 0, liberi: 4, aDisposizione: 1, assenti: 2, scoperti: [] });
     expect(per[SUD]).toMatchObject({ turni: 1, coperti: 0, daCoprire: 1, senzaConducente: 1, proponibili: 0, senzaCandidati: 1, liberi: 0, assenti: 0 });
     expect(per[SUD].scoperti).toEqual([{ turno: "G3", inizio: "14:00", fine: "20:00", motivo: "nessun_candidato" }]);
-    // nessun nome, nessun id di persona, nessun motivo di assenza
-    const testo = JSON.stringify(r.body);
-    for (const x of ["Titolare", "Scarico", "Carico", "Alba", "Disposizione", "Occupato", "Assente", "Finto", "Prova", '"MA"', '"ASS"', '"D1"', ...CONDUCENTI]) {
-      expect(testo).not.toContain(x);
+    // nessun nome, nessun id di persona, nessun codice di assenza fra i VALORI
+    // (i nomi dei campi, come «aDisposizione» o «titolareAssente», sono fissi
+    // e li controlla roster-quadro-anonimo.test.ts)
+    const valori = stringhe(r.body);
+    for (const x of ["Titolare", "Scarico", "Carico", "Alba", "Disposizione", "Occupato", "Assente", "Finto", "Prova", ...CONDUCENTI]) {
+      expect(valori.filter(v => v.includes(x))).toEqual([]);
     }
+    for (const codice of ["MA", "ASS", "D1"]) expect(valori).not.toContain(codice);
     // il capo deposito del Sud vede solo il suo; il periodo si controlla; non si scrive niente
     const sud = await capoSud.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
     expect(sud.body.giorni[0].depositi.map((d: any) => d.deposito)).toEqual([SUD]);
