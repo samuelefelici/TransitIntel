@@ -17,6 +17,8 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { analyzeFeed, getOrCreateEconomicParams, DEFAULT_ECON } from "../lib/planning/feed-analyzer";
+import { feedVisibile } from "../lib/tenant";
+import { FEED_NON_TROVATO } from "./gtfs-helpers";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
 
 const router: IRouter = Router();
@@ -27,6 +29,17 @@ function bad(res: Response, msg: string, code = 400) {
 }
 
 // ─────────────────── Sprint S1: analisi feed GTFS ───────────────────
+
+/* Ogni rotta di qui lavora su un feed (:id): solo su quelli che chi chiede
+   vede (tappa 7.25). Prima bastava conoscerne l'id per leggerne o
+   ricalcolarne l'analisi, le linee, le forme e i parametri. Un id che non
+   vede vale come un id che non c'è. */
+router.param("id", async (req, res, next, id) => {
+  try {
+    if (!(await feedVisibile(req, id))) { res.status(404).json(FEED_NON_TROVATO); return; }
+    next();
+  } catch (err) { next(err); }
+});
 
 /** GET /api/planning/feeds/:id/analysis — risultato salvato (o null) */
 router.get("/planning/feeds/:id/analysis", async (req: Request, res: Response) => {
@@ -634,7 +647,7 @@ router.get("/planning/feeds/:id/demand-preset", async (req: Request, res: Respon
 router.get("/planning/feeds/:id/hourly-schedule", async (req: Request, res: Response) => {
   try {
     const id = String(req.params.id);
-    // YYYYMMDD validato: interpolato in sql.raw più sotto → mai valore grezzo (no SQLi).
+    // YYYYMMDD validato; nelle query va come parametro (tappa 7.25).
     const serviceDate = /^\d{8}$/.test(String(req.query.serviceDate || "")) ? String(req.query.serviceDate) : null;
     const rawDayType = String(req.query.dayType || "weekday").toLowerCase();
     // Mappa sinonimi italiani/inglesi
@@ -665,12 +678,13 @@ router.get("/planning/feeds/:id/hourly-schedule", async (req: Request, res: Resp
       const dowCol = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"][dow];
 
       // Calendar standard
-      const r1 = await db.execute(sql.raw(`
+      /* valori come parametri e il giorno come nome di colonna da un elenco fisso (tappa 7.25) */
+      const r1 = await db.execute(sql`
         SELECT DISTINCT service_id FROM gtfs_calendar
-        WHERE feed_id = '${id.replace(/'/g, "''")}'
-          AND start_date <= '${serviceDate}' AND end_date >= '${serviceDate}'
-          AND ${dowCol} = 1
-      `));
+        WHERE feed_id = ${id}
+          AND start_date <= ${serviceDate} AND end_date >= ${serviceDate}
+          AND ${sql.identifier(dowCol)} = 1
+      `);
       // Calendar_dates con eccezione "added" sulla data esatta, escludi rimosse
       const r2 = await db.execute(sql`
         SELECT DISTINCT service_id FROM gtfs_calendar_dates
@@ -701,23 +715,23 @@ router.get("/planning/feeds/:id/hourly-schedule", async (req: Request, res: Resp
       const targetDowIdxs = targetDows.map((d) => dowIdx[d]);
 
       // Calendar standard: OR sui flag DOW
-      const dowOrClause = targetDows.map((c) => `${c} = 1`).join(" OR ");
-      const r1 = await db.execute(sql.raw(`
+      const dowOrClause = sql.join(targetDows.map((c) => sql`${sql.identifier(c)} = 1`), sql` OR `);
+      const r1 = await db.execute(sql`
         SELECT DISTINCT service_id FROM gtfs_calendar
-        WHERE feed_id = '${id.replace(/'/g, "''")}'
+        WHERE feed_id = ${id}
           AND (${dowOrClause})
-      `));
+      `);
 
       // Calendar_dates: estrai DOW da `date` (YYYYMMDD → date), filtra sui DOW richiesti.
       // Per evitare di considerare un service "valido" ovunque, basta che esista
       // ALMENO una data del DOW giusto con exception_type=1.
-      const r2 = await db.execute(sql.raw(`
+      const r2 = await db.execute(sql`
         SELECT DISTINCT service_id
         FROM gtfs_calendar_dates
-        WHERE feed_id = '${id.replace(/'/g, "''")}'
+        WHERE feed_id = ${id}
           AND exception_type = 1
-          AND EXTRACT(DOW FROM TO_DATE(date, 'YYYYMMDD')) IN (${targetDowIdxs.join(",")})
-      `));
+          AND EXTRACT(DOW FROM TO_DATE(date, 'YYYYMMDD')) IN (${sql.join(targetDowIdxs.map((n) => sql`${n}`), sql`, `)})
+      `);
 
       const set = new Set<string>();
       for (const x of r1.rows as any[]) set.add(x.service_id);
@@ -726,10 +740,10 @@ router.get("/planning/feeds/:id/hourly-schedule", async (req: Request, res: Resp
     }
     if (serviceIds.length === 0) return res.json({ hours: Array.from({length:24},(_,i)=>i), routes: [] });
 
-    // ── Helper: serializza array string → SQL list (per evitare problemi di
-    //   binding ::text[] di Drizzle quando l'array contiene stringhe non-uuid).
+    // ── Helper: un elenco per IN (…), un parametro per valore (tappa 7.25:
+    //   prima i valori erano incollati nel testo).
     const sqlList = (arr: string[]) =>
-      sql.raw(arr.map((s) => `'${String(s).replace(/'/g, "''")}'`).join(","));
+      sql.join(arr.map((s) => sql`${String(s)}`), sql`, `);
 
     const routesClause = routesFilter.length > 0
       ? sql` AND t.route_id IN (${sqlList(routesFilter)})`

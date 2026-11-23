@@ -88,7 +88,9 @@ export function tenantWhere(req: Request, columnExpr = "owner_user_id"): SQL {
   const u = req.user;
   if (!u) return sql.raw("FALSE");
   if (u.role === "admin") return sql.raw("TRUE");
-  return sql.raw(`${columnExpr} = '${u.id}'::uuid`);
+  /* l'id dell'utente come parametro, mai incollato nel testo (tappa 7.25); il nome della colonna è del codice */
+  if (!/^[a-z_][a-z0-9_.]*$/.test(columnExpr)) throw new Error("tenantWhere: colonna non valida");
+  return sql`${sql.raw(columnExpr)} = ${u.id}::uuid`; // scan-ok: colonna del codice, controllata dalla regex qui sopra
 }
 
 export function currentUserIdOrNull(req: Request): string | null {
@@ -106,28 +108,29 @@ export function feedAccessibleWhere(req: Request): SQL {
   const u = req.user;
   if (!u) return sql.raw("FALSE");
   if (u.role === "admin") return sql.raw("TRUE");
+  /* l'id dell'utente come parametro, mai incollato nel testo (tappa 7.25) */
   const uid = u.id;
-  return sql.raw(`(
-    owner_user_id = '${uid}'::uuid
+  return sql`(
+    owner_user_id = ${uid}::uuid
     OR is_default = true
     OR owner_user_id IN (SELECT id FROM users WHERE role = 'admin')
     OR id IN (
       SELECT sp.feed_id FROM scheduling_projects sp
        WHERE sp.feed_id IS NOT NULL
-         AND (sp.owner_user_id = '${uid}'::uuid
+         AND (sp.owner_user_id = ${uid}::uuid
               OR EXISTS (SELECT 1 FROM project_members pm
                           WHERE pm.project_id = sp.id
-                            AND pm.user_id = '${uid}'::uuid))
+                            AND pm.user_id = ${uid}::uuid))
     )
     OR id IN (
       SELECT pp.materialized_feed_id FROM ps_projects pp
        WHERE pp.materialized_feed_id IS NOT NULL
-         AND (pp.owner_user_id = '${uid}'::uuid
+         AND (pp.owner_user_id = ${uid}::uuid
               OR EXISTS (SELECT 1 FROM ps_project_members ppm
                           WHERE ppm.project_id = pp.id
-                            AND ppm.user_id = '${uid}'::uuid))
+                            AND ppm.user_id = ${uid}::uuid))
     )
-  )`);
+  )`;
 }
 
 /** I feed che l'utente vede, come sottoquery: `feed_id IN ${feedVisibiliSql(req)}`. */

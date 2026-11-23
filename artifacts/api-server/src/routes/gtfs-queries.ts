@@ -22,7 +22,7 @@ import {
 import { eq, sql } from "drizzle-orm";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
-import { getLatestFeedId, FEED_NON_TROVATO } from "./gtfs-helpers";
+import { getLatestFeedId, feedDellaLettura, FEED_NON_TROVATO } from "./gtfs-helpers";
 import { feedVisibile, feedVisibiliSql } from "../lib/tenant";
 import { cache, chiavePerUtente } from "../middlewares/cache";
 import { erroreLeggibile } from "../middlewares/errori-interni";
@@ -30,9 +30,15 @@ import { erroreLeggibile } from "../middlewares/errori-interni";
 const router: IRouter = Router();
 
 // GET /api/gtfs/stops?feedId=&limit=
-router.get("/gtfs/stops", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Sul feed della lettura (tappa 7.25): un ?feedId che chi chiede non vede è un
+// 404, e senza ?feedId le fermate sono del suo feed corrente, non di tutti i
+// feed (prima, senza linee, le prime 5000 righe di gtfs_stops, di qualunque
+// feed). La cache va per utente.
+router.get("/gtfs/stops", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
-    const feedId = req.query["feedId"] as string | undefined;
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId ?? undefined;
     const limit = Math.min(parseInt(req.query["limit"] as string || "2000"), 5000);
     const routeIdsParam = req.query["routeIds"] as string | undefined;
 
@@ -65,9 +71,8 @@ router.get("/gtfs/stops", cache({ ttlSeconds: 60 }), async (req, res) => {
       return res.json({ data: stops.rows, total: stops.rows.length });
     }
 
-    let query = db.select().from(gtfsStops).$dynamic();
-    if (feedId) query = query.where(eq(gtfsStops.feedId, feedId));
-    const stops = await query.limit(limit);
+    if (!feedId) return void res.json({ data: [], total: 0 });
+    const stops = await db.select().from(gtfsStops).where(eq(gtfsStops.feedId, feedId)).limit(limit);
     return void res.json({ data: stops, total: stops.length });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS stops");
@@ -96,12 +101,13 @@ router.get("/gtfs/routes", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), as
 });
 
 // GET /api/gtfs/shapes?feedId=
-router.get("/gtfs/shapes", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Sul feed della lettura (tappa 7.25), come le fermate.
+router.get("/gtfs/shapes", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
-    const feedId = req.query["feedId"] as string | undefined;
-    let query = db.select().from(gtfsShapes).$dynamic();
-    if (feedId) query = query.where(eq(gtfsShapes.feedId, feedId));
-    const shapes = await query.limit(200);
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    if (!feed.feedId) { res.json({ data: [] }); return; }
+    const shapes = await db.select().from(gtfsShapes).where(eq(gtfsShapes.feedId, feed.feedId)).limit(200);
     res.json({ data: shapes });
   } catch (err) {
     req.log.error(err, "Error fetching GTFS shapes");
@@ -110,7 +116,7 @@ router.get("/gtfs/shapes", cache({ ttlSeconds: 60 }), async (req, res) => {
 });
 
 // GET /api/gtfs/summary — real GTFS stats for the dashboard card
-router.get("/gtfs/summary", cache({ ttlSeconds: 60 }), async (req, res) => {
+router.get("/gtfs/summary", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
     const feedId = await getLatestFeedId(req);
     if (!feedId) return res.json({ available: false });
@@ -274,17 +280,15 @@ router.get("/gtfs/summary", cache({ ttlSeconds: 60 }), async (req, res) => {
 });
 
 // GET /api/gtfs/analysis?feedId=
-router.get("/gtfs/analysis", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Sul feed della lettura (tappa 7.25), come le fermate.
+router.get("/gtfs/analysis", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
-    const feedId = req.query["feedId"] as string | undefined;
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId;
 
-    let stopsQuery = db.select().from(gtfsStops).$dynamic();
-    if (feedId) stopsQuery = stopsQuery.where(eq(gtfsStops.feedId, feedId));
-    const stops = await stopsQuery.limit(5000);
-
-    let routesQuery = db.select().from(gtfsRoutes).$dynamic();
-    if (feedId) routesQuery = routesQuery.where(eq(gtfsRoutes.feedId, feedId));
-    const routes = await routesQuery.orderBy(sql`trips_count DESC`);
+    const stops = await db.select().from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedId}`).limit(5000);
+    const routes = await db.select().from(gtfsRoutes).where(sql`${gtfsRoutes.feedId} = ${feedId}`).orderBy(sql`trips_count DESC`);
 
     const pois = await db.select().from(pointsOfInterest).limit(1000);
     const census = await db.select().from(censusSections);

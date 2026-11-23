@@ -10,6 +10,7 @@ import { legaContesto } from "../lib/contesto-http";
 import { leggiAzienda, type Azienda } from "../lib/azienda";
 import { nomeOppure, nomiComuni, type NomiComuni } from "../lib/territorio";
 import { erroreLeggibile } from "../middlewares/errori-interni";
+import { getLatestFeedId } from "./gtfs-helpers";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -2130,7 +2131,7 @@ interface CoincidenceZoneData {
   busLines: { routeId: string; routeShortName: string; times: string[] }[];
 }
 
-async function fetchCoincidenceZoneData(zoneIds: string[]): Promise<CoincidenceZoneData[]> {
+async function fetchCoincidenceZoneData(zoneIds: string[], feedZona: string | null): Promise<CoincidenceZoneData[]> {
   if (!zoneIds || zoneIds.length === 0) return [];
 
   const zones = await db.select().from(coincidenceZones).where(
@@ -2171,6 +2172,7 @@ async function fetchCoincidenceZoneData(zoneIds: string[]): Promise<CoincidenceZ
     let busLines: { routeId: string; routeShortName: string; times: string[] }[] = [];
     if (zoneStops.length > 0) {
       const stopIds = zoneStops.map(s => s.gtfsStopId);
+      /* le linee del feed corrente di chi chiede (tappa 7.25, feedZona): prima orari, corse e linee di tutti i feed */
       const batchSize = 200;
       let allStopTimes: { stopId: string; tripId: string; departureTime: string | null }[] = [];
       for (let i = 0; i < stopIds.length; i += batchSize) {
@@ -2180,7 +2182,7 @@ async function fetchCoincidenceZoneData(zoneIds: string[]): Promise<CoincidenceZ
           tripId: gtfsStopTimes.tripId,
           departureTime: gtfsStopTimes.departureTime,
         }).from(gtfsStopTimes).where(
-          sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(sid => sql`${sid}`), sql`, `)})`
+          sql`${gtfsStopTimes.feedId} = ${feedZona} AND ${gtfsStopTimes.stopId} IN (${sql.join(batch.map(sid => sql`${sid}`), sql`, `)})`
         );
         allStopTimes.push(...rows);
       }
@@ -2191,7 +2193,7 @@ async function fetchCoincidenceZoneData(zoneIds: string[]): Promise<CoincidenceZ
       for (let i = 0; i < tripIds.length; i += batchSize) {
         const batch = tripIds.slice(i, i + batchSize);
         const rows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
-          .from(gtfsTrips).where(sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(tid => sql`${tid}`), sql`, `)})`);
+          .from(gtfsTrips).where(sql`${gtfsTrips.feedId} = ${feedZona} AND ${gtfsTrips.tripId} IN (${sql.join(batch.map(tid => sql`${tid}`), sql`, `)})`);
         for (const r of rows) tripRouteMap[r.tripId] = r.routeId;
       }
 
@@ -2203,7 +2205,7 @@ async function fetchCoincidenceZoneData(zoneIds: string[]): Promise<CoincidenceZ
           routeId: gtfsRoutes.routeId,
           shortName: gtfsRoutes.routeShortName,
         }).from(gtfsRoutes).where(
-          sql`${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(rid => sql`${rid}`), sql`, `)})`
+          sql`${gtfsRoutes.feedId} = ${feedZona} AND ${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(rid => sql`${rid}`), sql`, `)})`
         );
         for (const r of routes) routeNameMap[r.routeId] = r.shortName || r.routeId;
       }
@@ -3019,7 +3021,7 @@ router.post("/scenarios/:id/generate-program", async (req, res) => {
 
     // Phase 17: Fetch coincidence zone data if zone IDs provided
     const coincidenceZoneData = config.coincidenceZoneIds && config.coincidenceZoneIds.length > 0
-      ? await fetchCoincidenceZoneData(config.coincidenceZoneIds)
+      ? await fetchCoincidenceZoneData(config.coincidenceZoneIds, await getLatestFeedId(req))
       : [];
 
     const program = await generateServiceProgram(row.geojson as any, config, poiRows, censusRows, coincidenceZoneData);

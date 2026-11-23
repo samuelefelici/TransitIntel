@@ -43,7 +43,7 @@ import { getLatestFeedId } from "./gtfs-helpers";
 import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import { db } from "@workspace/db";
 import { coincidenceZones, coincidenceZoneStops, gtfsStops, gtfsStopTimes, gtfsTrips, gtfsRoutes, gtfsCalendar, gtfsCalendarDates, pointsOfInterest } from "@workspace/db/schema";
-import { sql, inArray, eq } from "drizzle-orm";
+import { and, sql, inArray, eq } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -237,15 +237,17 @@ async function buildBusHubSchedulesFromGtfs(
   stopIds: string[],
   yyyymmdd: string,
   dowField: string,
+  /** il feed dei turni (tappa 7.25): prima calendari, corse e linee di tutti i feed */
+  feedId: string | null,
 ): Promise<{
   arrivals: { label: string; times: string[] }[];
   departures: { label: string; times: string[] }[];
 }> {
-  if (stopIds.length === 0) return { arrivals: [], departures: [] };
+  if (stopIds.length === 0 || !feedId) return { arrivals: [], departures: [] };
 
   // 1) Service attivi per la data
-  const calRows = await db.select().from(gtfsCalendar);
-  const exRows = await db.select().from(gtfsCalendarDates);
+  const calRows = await db.select().from(gtfsCalendar).where(eq(gtfsCalendar.feedId, feedId));
+  const exRows = await db.select().from(gtfsCalendarDates).where(eq(gtfsCalendarDates.feedId, feedId));
   const exMap = new Map<string, Set<string>>();
   for (const e of exRows) {
     if (e.date !== yyyymmdd) continue;
@@ -271,7 +273,7 @@ async function buildBusHubSchedulesFromGtfs(
       stopId: gtfsStopTimes.stopId,
       arrivalTime: gtfsStopTimes.arrivalTime,
       departureTime: gtfsStopTimes.departureTime,
-    }).from(gtfsStopTimes).where(inArray(gtfsStopTimes.stopId, batch));
+    }).from(gtfsStopTimes).where(and(eq(gtfsStopTimes.feedId, feedId), inArray(gtfsStopTimes.stopId, batch)));
     stRows.push(...rows.map(r => ({
       tripId: r.tripId, stopId: r.stopId,
       arrivalTime: r.arrivalTime || "", departureTime: r.departureTime || "",
@@ -287,7 +289,7 @@ async function buildBusHubSchedulesFromGtfs(
     const rows = await db.select({
       tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId,
       serviceId: gtfsTrips.serviceId, headsign: gtfsTrips.tripHeadsign,
-    }).from(gtfsTrips).where(inArray(gtfsTrips.tripId, batch));
+    }).from(gtfsTrips).where(and(eq(gtfsTrips.feedId, feedId), inArray(gtfsTrips.tripId, batch)));
     for (const r of rows) tripInfo.set(r.tripId, { routeId: r.routeId, serviceId: r.serviceId, headsign: r.headsign });
   }
   const routeIds = [...new Set([...tripInfo.values()].map(t => t.routeId))];
@@ -295,7 +297,7 @@ async function buildBusHubSchedulesFromGtfs(
   if (routeIds.length > 0) {
     const rows = await db.select({
       routeId: gtfsRoutes.routeId, shortName: gtfsRoutes.routeShortName, longName: gtfsRoutes.routeLongName,
-    }).from(gtfsRoutes).where(inArray(gtfsRoutes.routeId, routeIds));
+    }).from(gtfsRoutes).where(and(eq(gtfsRoutes.feedId, feedId), inArray(gtfsRoutes.routeId, routeIds)));
     for (const r of rows) routeInfo.set(r.routeId, { shortName: r.shortName, longName: r.longName });
   }
 
@@ -388,6 +390,10 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
 
     const dateObj = parseDateInput(body.date);
     const dow = dayOfWeekIT(dateObj);
+    /* il feed dei turni, una volta per tutte le letture del GTFS qui sotto
+       (tappa 7.25): quello della richiesta se l'utente lo vede, altrimenti il
+       suo feed corrente. Prima fermate, orari e corse erano di tutti i feed. */
+    const feedTurni = await getLatestFeedId(req);
 
     // 0) RISOLUZIONE COORDINATE — molti caller non passano firstStopLat/Lon perché
     //    nel modello frontend ShiftTripEntry ci sono solo i nomi delle fermate.
@@ -412,7 +418,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
                    (array_agg(stop_id ORDER BY stop_sequence ASC))[1]  AS first_stop_id,
                    (array_agg(stop_id ORDER BY stop_sequence DESC))[1] AS last_stop_id
             FROM gtfs_stop_times
-            WHERE trip_id IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})
+            WHERE feed_id = ${feedTurni} AND trip_id IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})
             GROUP BY trip_id
           `);
           for (const r of (rows as any).rows ?? []) {
@@ -438,7 +444,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
               stopId: gtfsStops.stopId,
               lat: gtfsStops.stopLat,
               lng: gtfsStops.stopLon,
-            }).from(gtfsStops).where(inArray(gtfsStops.stopId, batch));
+            }).from(gtfsStops).where(and(sql`${gtfsStops.feedId} = ${feedTurni}`, inArray(gtfsStops.stopId, batch)));
             for (const r of rows) {
               const la = typeof r.lat === "string" ? parseFloat(r.lat) : (r.lat as number);
               const lo = typeof r.lng === "string" ? parseFloat(r.lng) : (r.lng as number);
@@ -612,7 +618,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
        * macchina sceglie il feed delle corse. Il feed e non il progetto PS: le
        * corse dei turni vengono dal feed, e non tutti i giri hanno un progetto.
        * Chi non vede nessun feed riceve gli hub curati e le stazioni dai POI. */
-      const feedId = await getLatestFeedId(req);
+      const feedId = feedTurni;
       hubsRaw = await discoverHubs({ bbox, includeCurated: true, feedId });
       req.log.info(`[intermodal-opt] no coincidence zones found, auto-discovered ${hubsRaw.length} hubs (feed ${feedId ?? "nessuno"})`);
     }
@@ -700,7 +706,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
             // Costruisci da GTFS usando le fermate già curate sulla zona
             const zoneStopIds = (stopsByHub.get(h.id) ?? []).map(s => s.stopId);
             if (zoneStopIds.length > 0) {
-              const built = await buildBusHubSchedulesFromGtfs(zoneStopIds, yyyymmdd, dowField);
+              const built = await buildBusHubSchedulesFromGtfs(zoneStopIds, yyyymmdd, dowField, feedTurni);
               if (built.arrivals.length > 0 || built.departures.length > 0) {
                 h.typicalArrivals = built.arrivals.map(a => ({ origin: a.label, times: a.times }));
                 h.typicalDepartures = built.departures.map(a => ({ destination: a.label, times: a.times }));
@@ -868,8 +874,8 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
         // JS getDay(): 0=Dom..6=Sab → mappiamo ai field name calendar
         const dowFieldByJs = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
         const dowField = dowFieldByJs[dateObj.getDay()];
-        const calRows = await db.select().from(gtfsCalendar);
-        const exRows = await db.select().from(gtfsCalendarDates);
+        const calRows = await db.select().from(gtfsCalendar).where(sql`${gtfsCalendar.feedId} = ${feedTurni}`);
+        const exRows = await db.select().from(gtfsCalendarDates).where(sql`${gtfsCalendarDates.feedId} = ${feedTurni}`);
         const exMap = new Map<string, Set<string>>(); // serviceId -> Set("1"|"2") (1=add, 2=remove)
         for (const e of exRows) {
           if (e.date !== yyyymmdd) continue;
@@ -898,7 +904,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
           stopName: gtfsStops.stopName,
           lat: gtfsStops.stopLat,
           lng: gtfsStops.stopLon,
-        }).from(gtfsStops);
+        }).from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedTurni}`);
         const stopById = new Map<string, { name: string | null; lat: number; lng: number }>();
         const nearStopsByEndpoint: Array<{ endpoint: [number, number]; stops: Array<{ stopId: string; distM: number; walkMin: number; name: string | null; lat: number; lng: number }> }> = [];
         for (const ep of tripEndpoints) {
@@ -953,7 +959,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
               departureTime: gtfsStopTimes.departureTime,
               arrivalTime: gtfsStopTimes.arrivalTime,
             }).from(gtfsStopTimes)
-              .where(sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+              .where(sql`${gtfsStopTimes.feedId} = ${feedTurni} AND ${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
             stRows.push(...rows.map(r => ({ tripId: r.tripId, stopId: r.stopId, departureTime: r.departureTime || "", arrivalTime: r.arrivalTime || "" })));
           }
 
@@ -964,7 +970,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
             const batch = tripIds.slice(i, i + 500);
             const rows = await db.select({
               tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId, serviceId: gtfsTrips.serviceId, headsign: gtfsTrips.tripHeadsign,
-            }).from(gtfsTrips).where(sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
+            }).from(gtfsTrips).where(sql`${gtfsTrips.feedId} = ${feedTurni} AND ${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
             for (const r of rows) tripInfo.set(r.tripId, { routeId: r.routeId, serviceId: r.serviceId, headsign: r.headsign });
           }
 
@@ -973,7 +979,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
           if (routeIds.length > 0) {
             const rows = await db.select({
               routeId: gtfsRoutes.routeId, shortName: gtfsRoutes.routeShortName, longName: gtfsRoutes.routeLongName,
-            }).from(gtfsRoutes).where(inArray(gtfsRoutes.routeId, routeIds));
+            }).from(gtfsRoutes).where(and(sql`${gtfsRoutes.feedId} = ${feedTurni}`, inArray(gtfsRoutes.routeId, routeIds)));
             for (const r of rows) routeInfo.set(r.routeId, { shortName: r.shortName, longName: r.longName });
           }
 

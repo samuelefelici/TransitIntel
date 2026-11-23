@@ -6,7 +6,7 @@
  */
 import { db } from "@workspace/db";
 import { stopClusters, stopClusterStops, appSettings, gtfsStopTimes } from "@workspace/db/schema";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { puntiRiposoPerIlCalcolo } from "./punti-riposo-store";
 
 /** Autovetture aziendali se il parametro manca (app_settings.company_cars): lo stesso valore di GET /settings/company-cars. */
@@ -151,6 +151,8 @@ export async function loadCompanyCars(): Promise<number> {
 export async function enrichTripsWithClusterStops(
   vehicleShifts: TurnoConCorse[],
   logger?: { info: (...a: any[]) => void },
+  /** il feed delle corse (tappa 7.25): senza, gli orari di tutti i feed con lo stesso codice di corsa */
+  feedId?: string,
 ): Promise<void> {
   // 1. Raccogli tutti i tripId da tutti i turni
   const allTripIds: string[] = [];
@@ -190,7 +192,9 @@ export async function enrichTripsWithClusterStops(
       arrivalTime: gtfsStopTimes.arrivalTime,
       departureTime: gtfsStopTimes.departureTime,
     }).from(gtfsStopTimes)
-      .where(inArray(gtfsStopTimes.tripId, batch));
+      .where(feedId
+        ? and(eq(gtfsStopTimes.feedId, feedId), inArray(gtfsStopTimes.tripId, batch))
+        : inArray(gtfsStopTimes.tripId, batch));
 
     for (const r of rows) {
       if (!clusterStopIds.has(r.stopId)) continue; // solo fermate in cluster

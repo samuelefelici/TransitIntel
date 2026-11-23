@@ -23,7 +23,7 @@ import { erroreLeggibile } from "../middlewares/errori-interni";
 const router: IRouter = Router();
 
 // GET /api/gtfs/routes/active-by-band
-router.get("/gtfs/routes/active-by-band", cache({ ttlSeconds: 30 }), async (req, res) => {
+router.get("/gtfs/routes/active-by-band", cache({ ttlSeconds: 30, keyFn: chiavePerUtente }), async (req, res) => {
   const hourStart = parseInt((req.query.hourStart as string) ?? "0", 10);
   const hourEnd   = parseInt((req.query.hourEnd   as string) ?? "27", 10);
   const dayParam  = (req.query.day as string | undefined)?.toLowerCase() ?? null;

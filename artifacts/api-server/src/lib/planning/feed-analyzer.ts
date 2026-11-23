@@ -290,16 +290,17 @@ async function pickServiceIds(
     dayType === "weekday" ? "BETWEEN 1 AND 5" :
     dayType === "saturday" ? "= 6" :
     "= 7"; // sunday
-  const bestDate = await db.execute(sql.raw(`
+  /* il feed come parametro (tappa 7.25); il filtro sul giorno è testo del codice */
+  const bestDate = await db.execute(sql`
     SELECT date, COUNT(DISTINCT service_id)::int AS n
     FROM gtfs_calendar_dates
-    WHERE feed_id = '${feedId}'
+    WHERE feed_id = ${feedId}
       AND exception_type = 1
-      AND EXTRACT(ISODOW FROM TO_DATE(date, 'YYYYMMDD')) ${dowFilter}
+      AND EXTRACT(ISODOW FROM TO_DATE(date, 'YYYYMMDD')) ${sql.raw(dowFilter)}  -- scan-ok: dowFilter è una delle tre costanti qui sopra
     GROUP BY date
     ORDER BY n DESC, date DESC
     LIMIT 1
-  `));
+  `);
   const pickedDate = (bestDate.rows[0] as any)?.date as string | undefined;
   if (pickedDate) {
     const r = await db

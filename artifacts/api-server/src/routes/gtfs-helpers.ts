@@ -6,7 +6,7 @@ import { db } from "@workspace/db";
 import { gtfsFeeds, gtfsCalendar, gtfsCalendarDates, gtfsTrips } from "@workspace/db/schema";
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import type { AnyPgColumn } from "drizzle-orm/pg-core";
-import { feedVisibile } from "../lib/tenant";
+import { feedAccessibleWhere, feedVisibile } from "../lib/tenant";
 
 // ── CSV / Shape helpers ───────────────────────────────────────
 /* `bom: true` è la riga che conta. Un file salvato da Excel o da un
@@ -82,36 +82,16 @@ export function buildShapeGeojson(shapePoints: Record<string, string>[]): { shap
 export async function getLatestFeedId(req?: any): Promise<string | null> {
   const user = req?.user;
   const isAdmin = user?.role === "admin";
-  const userId: string | undefined = user?.id;
 
   // Filtro tenant: per utenti normali aggiunge AND owner_user_id = uid
   // Estende l'accesso anche ai feed referenziati da scheduling_projects o ps_projects
   // di cui l'utente è owner o membro (condivisione progetti).
   // Include inoltre i feed globalmente "di default" (is_default = true), così
   // tutte le pagine pubbliche hanno sempre un GTFS da mostrare.
-  const tenantSql = (!user || isAdmin)
-    ? sql`TRUE`
-    : sql.raw(`(
-        owner_user_id = '${userId}'::uuid
-        OR is_default = true
-        OR owner_user_id IN (SELECT id FROM users WHERE role = 'admin')
-        OR id IN (
-          SELECT sp.feed_id FROM scheduling_projects sp
-           WHERE sp.feed_id IS NOT NULL
-             AND (sp.owner_user_id = '${userId}'::uuid
-                  OR EXISTS (SELECT 1 FROM project_members pm
-                              WHERE pm.project_id = sp.id
-                                AND pm.user_id = '${userId}'::uuid))
-        )
-        OR id IN (
-          SELECT pp.materialized_feed_id FROM ps_projects pp
-           WHERE pp.materialized_feed_id IS NOT NULL
-             AND (pp.owner_user_id = '${userId}'::uuid
-                  OR EXISTS (SELECT 1 FROM ps_project_members ppm
-                              WHERE ppm.project_id = pp.id
-                                AND ppm.user_id = '${userId}'::uuid))
-        )
-      )`);
+  // La stessa regola di lib/tenant.ts (feedAccessibleWhere), con l'id
+  // dell'utente come parametro (tappa 7.25: prima era incollato nel testo).
+  // Senza utente (lavori di sistema) valgono tutti i feed, come prima.
+  const tenantSql = (!user || isAdmin) ? sql`TRUE` : feedAccessibleWhere(req);
 
   // 1) Feed esplicito da request: ?feedId=… oppure body.feedId
   const explicitId =
