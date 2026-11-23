@@ -2154,15 +2154,21 @@ Fatto finora:
   `ArgosConversation` ha un `osservatore` che riceve la domanda, ogni evento
   dello stream e l'esito; con l'osservatore il turno chiede ad Argos anche la
   traccia (`traccia: true`, che il proxy passa solo se è un sì/no e Argos
-  usa solo in Risposta e Analisi). Mentre Argos lavora il palco
-  (`PalcoNeurale.tsx`) è grande sopra la chat: nebulose dei documenti, nucleo
-  con le zampe, tentacoli verso i passaggi letti, tenuti e scartati, ponti,
-  concetti, strumenti, parole che volano verso la risposta e la verifica
-  frase per frase. A turno finito si richiude in una barra piccola (passaggi
-  letti, fonti, ponti, concetti, strumenti, frasi con fonte, tempo e token)
-  con «Rivedi» e «Apri». Senza traccia (agenti) la scena mostra domanda,
-  strumenti e parole. I vecchi link `?scheda=crawler` e `?scheda=conversazioni`
-  portano alla scheda unica.
+  usa solo in Risposta e Analisi). Lo studio (`StudioNeurale.tsx`) mette
+  crawler e chat insieme, come la pagina di Argos: in alto la barra dello
+  sciame (zampe, tentacoli, passaggi letti, collegamenti, segnalazioni,
+  tempo) e le otto fasi, che a turno finito si cliccano per rivedere una
+  fase sola; il palco con nebulose dei documenti, nucleo con le zampe,
+  tentacoli verso i passaggi letti, tenuti e scartati, ponti, concetti,
+  strumenti, parole che volano verso la chat e la verifica frase per frase;
+  sotto i sei pannelli (crawl log, categorie, copertura col radar, parole
+  dentro le fonti, confidenza, pipeline.py con la riga in corso); a destra
+  la chat. Sugli schermi larghi si apre a schermo intero (copre anche il
+  menu di Cerbero; «Riduci» o Esc, la scelta resta nel browser); l'elenco
+  delle conversazioni si richiude in una striscia; «Solo chat» nasconde la
+  rete e lascia una barra col riepilogo. Senza traccia (agenti) la scena
+  mostra domanda, strumenti e parole. I vecchi link `?scheda=crawler` e
+  `?scheda=conversazioni` portano alla scheda unica.
 
 ## In sospeso
 

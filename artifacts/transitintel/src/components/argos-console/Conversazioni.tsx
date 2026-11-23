@@ -15,7 +15,7 @@
  */
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, ArchiveRestore, Check, Download, Eye, Loader2, MessageSquarePlus, Pencil, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Check, Download, Eye, Loader2, MessageSquarePlus, PanelLeftClose, PanelLeftOpen, Pencil, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { listPsProjects } from "@/lib/planning-studio-api";
 import {
@@ -24,11 +24,16 @@ import {
 } from "@/lib/argos-console";
 import type { OsservatoreTurno } from "@/components/argos/ArgosConversation";
 import { Caricamento, Pill, Problema, Vuoto } from "./comuni";
-import { PalcoNeurale } from "./PalcoNeurale";
+import { StudioNeurale } from "./StudioNeurale";
 
 const ArgosConversation = lazy(() => import("@/components/argos/ArgosConversation"));
 
 const MODI: ModoConversazione[] = ["risposta", "analisi", "agente"];
+const CHIAVE_ELENCO = "argos-elenco-chiuso";
+
+function leggiElencoChiuso(): boolean {
+  try { return localStorage.getItem(CHIAVE_ELENCO) !== "0"; } catch { return true; }
+}
 const CAMPO = "w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 function messaggioDi(err: unknown): string {
@@ -52,6 +57,10 @@ export default function Conversazioni({ progettoIniziale, conversazioneIniziale,
   const [nuova, setNuova] = useState(false);
   const [errore, setErrore] = useState<string | null>(null);
   const [lavoro, setLavoro] = useState<string | null>(null);
+  // l'elenco si richiude in una striscia: lo schermo va allo studio (ricordato nel browser)
+  const [elencoChiuso, setElencoChiuso] = useState(leggiElencoChiuso);
+  useEffect(() => { try { localStorage.setItem(CHIAVE_ELENCO, elencoChiuso ? "1" : "0"); } catch { /* storage spento */ } }, [elencoChiuso]);
+  const chiuso = elencoChiuso && !!aperta && !nuova;
 
   const elenco = useQuery({
     queryKey: ["argos-console", "conversazioni", filtro, archiviate],
@@ -130,13 +139,28 @@ export default function Conversazioni({ progettoIniziale, conversazioneIniziale,
   const argosPronto = !stato.data || (stato.data.configured && stato.data.reachable !== false);
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
-      {/* ── l'elenco ── */}
+    <div className={`grid gap-3 ${chiuso ? "lg:grid-cols-[2.5rem_minmax(0,1fr)]" : "lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]"}`}>
+      {/* ── l'elenco, o la sua striscia ── */}
+      {chiuso ? (
+        <aside className="flex gap-1.5 lg:flex-col" aria-label="Le tue conversazioni">
+          <Button size="icon" variant="outline" className="h-9 w-9" onClick={() => setElencoChiuso(false)} aria-label={`Apri l'elenco delle conversazioni (${righe.length})`} title="Le conversazioni">
+            <PanelLeftOpen className="h-4 w-4" aria-hidden />
+          </Button>
+          <Button size="icon" className="h-9 w-9" onClick={() => { setNuova(true); setErrore(null); }} aria-label="Nuova conversazione" title="Nuova conversazione">
+            <MessageSquarePlus className="h-4 w-4" aria-hidden />
+          </Button>
+        </aside>
+      ) : (
       <aside className="space-y-3" aria-label="Le tue conversazioni">
         <div className="flex items-center gap-2">
           <Button size="sm" className="flex-1 gap-1.5" onClick={() => { setNuova(true); setErrore(null); }}>
             <MessageSquarePlus className="h-4 w-4" aria-hidden />Nuova conversazione
           </Button>
+          {aperta && (
+            <Button size="icon" variant="outline" className="h-9 w-9 shrink-0" onClick={() => setElencoChiuso(true)} aria-label="Richiudi l'elenco: più spazio allo studio" title="Richiudi l'elenco">
+              <PanelLeftClose className="h-4 w-4" aria-hidden />
+            </Button>
+          )}
         </div>
         <div className="space-y-2 rounded-xl border border-border bg-card p-3 shadow-sm">
           <label htmlFor="conv-filtro" className="text-xs font-medium">Progetto</label>
@@ -186,6 +210,7 @@ export default function Conversazioni({ progettoIniziale, conversazioneIniziale,
           </ul>
         )}
       </aside>
+      )}
 
       {/* ── la conversazione aperta, o la nuova ── */}
       <section className="min-w-0" aria-live="polite">
@@ -316,7 +341,7 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
   const [titolo, setTitolo] = useState<string | null>(null);
   const [conferma, setConferma] = useState(false);
   const legata = useMemo(() => ({ id: conv.id, modo: conv.modo, agente: conv.agente, progetto: conv.progetto }), [conv.id, conv.modo, conv.agente, conv.progetto]);
-  // il palco della rete neurale guarda ogni turno mentre si svolge
+  // lo studio della rete neurale guarda ogni turno mentre si svolge
   const palco = useRef<OsservatoreTurno>(null);
   const osservatore = useMemo<OsservatoreTurno>(() => ({
     inizio: q => palco.current?.inizio(q),
@@ -325,7 +350,7 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
   }), []);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <header className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           {titolo === null ? (
@@ -364,9 +389,8 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
           )}
         </div>
       </header>
-      <div className="flex h-[calc(100vh-17rem)] min-h-[560px] flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-gradient-to-b from-zinc-950 via-[#120a1c] to-black shadow-[0_8px_40px_rgba(139,92,246,0.25)]">
-        <PalcoNeurale key={conv.id} ref={palco} />
-        <div className="flex min-h-0 flex-1 flex-col">
+      <StudioNeurale key={conv.id} ref={palco} titolo={conv.titolo || "Conversazione senza titolo"}>
+        <div className="flex min-h-0 flex-1 flex-col bg-gradient-to-b from-zinc-950 via-[#120a1c] to-black">
           <Suspense fallback={<div className="flex flex-1 items-center justify-center text-violet-300"><Eye className="h-6 w-6 animate-pulse" aria-hidden /></div>}>
             <ArgosConversation
               conversazione={legata}
@@ -379,7 +403,7 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
             />
           </Suspense>
         </div>
-      </div>
+      </StudioNeurale>
     </div>
   );
 }
