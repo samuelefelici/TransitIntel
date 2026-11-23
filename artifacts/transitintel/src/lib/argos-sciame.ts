@@ -104,7 +104,7 @@ const UNCAT_COL = "#9CA3AF";
 const REL_COL: Record<string, string> = { prerequisito: "#FBBF24", generalizza: "#A78BFA", applica: "#34D399", contraddice: "#FB7185", correlato: "#96A5C8" };
 const CERBERO_COL = "#FB7185";
 const C = { teal: "#2DD4BF", pink: "#F472B6", hot: "#FF3D8B", lilac: "#A78BFA", violet: "#8B5CF6", amber: "#F59E0B", yellow: "#FBBF24", rose: "#FB7185" };
-type StilePillola = "read" | "kept" | "ctx" | "dup" | "dim" | "flag" | "bridge" | "tool" | "term" | "unk";
+export type StilePillola = "read" | "kept" | "ctx" | "dup" | "dim" | "flag" | "bridge" | "tool" | "term" | "unk";
 const PILL_SCURO: StilePilloleTema = {
   read: { br: "rgba(226,232,240,.6)", bg: "rgba(6,6,9,.88)", tx: "#E5E7EB" },
   kept: { br: "rgba(45,212,191,.9)", bg: "rgba(3,22,20,.88)", tx: "#99F6E4" },
@@ -137,14 +137,14 @@ const TCOL_CHIARO: Record<string, string> = {
   read: "rgba(13,148,136,.55)", read2: "rgba(219,39,119,.5)", kept: "rgba(13,148,136,.85)", ctx: "rgba(15,118,110,.9)", dup: "rgba(217,119,6,.75)",
   dim: "rgba(100,116,139,.3)", flag: "rgba(219,39,119,.9)", tool: "rgba(225,29,72,.85)", term: "rgba(109,40,217,.75)", bridge: "rgba(217,119,6,.7)", unk: "rgba(100,116,139,.45)",
 };
-type StilePilloleTema = Record<StilePillola, { br: string; bg: string; tx: string; dash?: boolean }>;
+export type StilePilloleTema = Record<StilePillola, { br: string; bg: string; tx: string; dash?: boolean }>;
 /**
  * I colori del disegno, per tema. Lo scuro è quello della pagina di Argos; il
  * chiaro segue il tema chiaro della console (classe .argos-chiaro): fondo
  * chiaro, tratti più saturi e bagliori che scuriscono («multiply») invece di
  * illuminare, che su bianco non si vedrebbero.
  */
-interface Tavolozza {
+export interface Tavolozza {
   chiaro: boolean;
   luce: GlobalCompositeOperation;
   fondo: string; velo: (a: number) => string; grana: string; maglia: string; particelle: [string, string]; tinta: (c: string) => string; stelle: string | null;
@@ -448,6 +448,35 @@ export interface DatiPannelli {
   codice: { righe: Array<{ fase: number; parti: Array<[string, string]> }>; corrente: number; cursore: boolean };
 }
 
+/**
+ * Lo stato della scena per la vista 3D (lib/argos-cervello3d.ts): riferimenti
+ * vivi, da leggere e non da cambiare. Le posizioni sono quelle del campo 2D;
+ * la vista 3D le porta su un cervello.
+ */
+export interface Vista3D {
+  /** cambia quando il campo si ricostruisce (mappa, misure, traccia nuova) */
+  versione: number;
+  palco: { cx: number; cy: number; w: number; h: number };
+  n: number;
+  px: Float32Array; py: Float32Array; ps: Float32Array; pa: Float32Array; ph: Float32Array; pf: Float32Array;
+  gruppi: Int32Array[]; colori: string[]; gruppoCerbero: number; maglia: Int32Array;
+  nebulose: Array<{ name: string; cat: string; col: string; x: number; y: number; r: number; s: number; e: number }>;
+  cerbero: { x: number; y: number; r: number; s: number; e: number } | null;
+  passaggioParticella: Map<Id, number>;
+  passaggi: Map<Id, StatoPassaggio>;
+  tentacoli: Tentacolo[]; ponti: Arco[]; concetti: ConcettoScena[]; relazioni: ArcoConcetti[]; parole: Parola[];
+  termini: Array<{ w: string; born: number }>; terminiSfumano: number | null;
+  fuoco: Id[] | null; contesto: Id[];
+  fase: number; finito: boolean; inCorso: boolean; orologio: number; tempo: number; strumenti: number; ultimoStrumento: string; cerberoAcceso: number;
+  eccitazione: number;
+  /** dove sta il titolo della fase sul palco (React lo disegna sopra): da non coprire */
+  titolo: { x: number; y: number; w: number; h: number };
+  /** dove sta la chat che riceve le parole */
+  risposta: "destra" | "sotto";
+  tavolozza: Tavolozza;
+  coloreCategoria: (c: string | null | undefined) => string;
+}
+
 interface OpzioniSciame { onStato?: (s: StatoSciame) => void }
 
 type EsitoCorsa = "running" | "done" | "error" | "aborted";
@@ -456,15 +485,15 @@ interface Corsa {
   status: EsitoCorsa; err: string | null; t0: number; tEnd: number | null; answerDone: boolean; tokens: number | null; sources: unknown[];
   firstTok: number | null; nWords: number; replay: boolean;
 }
-interface StatoPassaggio { st: string; glow: number; fr?: number | null }
-interface Bersaglio { chunk?: Id; cer?: number; rel?: [number, number] }
-interface Tentacolo {
+export interface StatoPassaggio { st: string; glow: number; fr?: number | null }
+export interface Bersaglio { chunk?: Id; cer?: number; rel?: [number, number] }
+export interface Tentacolo {
   tg: Bersaglio; text: string; style: StilePillola; born: number; die: number; seed: number; bend: number; key: string; alt: boolean; hide: boolean;
   vn?: number; vw?: string[]; vc?: boolean; vt?: number;
 }
-interface Arco { from: Id | null | undefined; to: Id; born: number; text: string; seed: number; fr: number | null; cut: boolean }
-interface ConcettoScena { id: Id; name: string; cat: string; w: number; chunks: Id[]; born: number; ang: number; ring: number }
-interface Parola { w: string; born: number; dur: number; x0: number; y0: number; bend: number }
+export interface Arco { from: Id | null | undefined; to: Id; born: number; text: string; seed: number; fr: number | null; cut: boolean }
+export interface ConcettoScena { id: Id; name: string; cat: string; w: number; chunks: Id[]; born: number; ang: number; ring: number }
+export interface Parola { w: string; born: number; dur: number; x0: number; y0: number; bend: number }
 interface StatScena {
   stage: number; terms: Array<{ w: string; born: number }>; termGen: number; termFade: number | null; chunk: Map<Id, StatoPassaggio>;
   tent: Tentacolo[]; arcs: Arco[]; concepts: ConcettoScena[]; cedges: ArcoConcetti[]; words: Parola[];
@@ -538,6 +567,9 @@ export class Sciame {
   private resizeT: ReturnType<typeof setTimeout> | undefined;
   private statoPrec = "";
   private FRAME = 0;
+  private versioneCampo = 0;
+  /** falso con la vista 3D: la regia e la simulazione vanno avanti, il canvas 2D non si disegna */
+  private disegna = true;
   /** dove sta la chat che riceve le parole: a destra del palco o sotto */
   private lato: "destra" | "sotto" = "sotto";
   private titoloMisurato: Rett | null = null;
@@ -828,6 +860,36 @@ export class Sciame {
     return n;
   }
 
+  /** Con la vista 3D il canvas 2D non si disegna: la regia e i pannelli vanno avanti uguali. */
+  impostaDisegno(on: boolean): void {
+    this.disegna = on;
+    if (!on) { const c = this.ctx; c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, this.cv.width, this.cv.height); }
+  }
+
+  /** Lo stato della scena per la vista 3D (riferimenti vivi: solo lettura). */
+  vista3d(): Vista3D {
+    const F = this.F, S = this.S, ST = this.STAGE;
+    return {
+      versione: this.versioneCampo,
+      palco: { cx: ST.cx, cy: ST.cy, w: ST.w, h: ST.h },
+      n: F.n, px: F.px, py: F.py, ps: F.ps, pa: F.pa, ph: F.ph, pf: F.pf,
+      gruppi: F.groups, colori: F.gcol, gruppoCerbero: F.cerG, maglia: F.mesh,
+      nebulose: F.clusters, cerbero: F.cer, passaggioParticella: F.chunkP,
+      passaggi: S.chunk, tentacoli: S.tent, ponti: S.arcs, concetti: S.concepts, relazioni: S.cedges, parole: S.words,
+      termini: S.terms, terminiSfumano: S.termFade, fuoco: S.focusIds, contesto: S.ctxIds,
+      fase: clamp(S.stage, 0, 7), finito: S.finished, inCorso: this.RUN?.status === "running", orologio: this.TL.clock, tempo: this.RT,
+      strumenti: S.tools, ultimoStrumento: S.lastTool, cerberoAcceso: S.cerLit, eccitazione: this.CR.excite,
+      titolo: this.TITLE, risposta: this.lato, tavolozza: this.P, coloreCategoria: c => this.catColor(c),
+    };
+  }
+
+  /** senza disegno, quello che il disegno faceva di passaggio: via i tentacoli finiti e le parole arrivate */
+  private pulisci(): void {
+    const S = this.S, now = this.TL.clock;
+    for (let i = S.tent.length - 1; i >= 0; i--) { const T = S.tent[i]!; if (T.die !== Infinity && now > T.die) S.tent.splice(i, 1); }
+    for (let i = S.words.length - 1; i >= 0; i--) { const w = S.words[i]!; if ((this.RT - w.born) / w.dur >= 1) S.words.splice(i, 1); }
+  }
+
   /** Il palco ha cambiato misura (ResizeObserver): si ricostruisce, con calma. */
   ridimensiona(): void {
     clearTimeout(this.resizeT);
@@ -1074,6 +1136,7 @@ export class Sciame {
     this.layoutLabels();
     this.renderLayer();
     this.assignChunks();
+    this.versioneCampo++;
   }
 
   private layoutLabels(): void {
@@ -1691,7 +1754,7 @@ export class Sciame {
       let n = 0;
       while (this.acc >= STEP && n < 4) { this.simStep(STEP / 1000); this.acc -= STEP; n++; }
       if (n === 4) this.acc = 0;
-      this.render();
+      if (this.disegna) this.render(); else this.pulisci();
       this.FRAME++;
     } catch (e) {
       // un errore di disegno ferma la scena, non la pagina
