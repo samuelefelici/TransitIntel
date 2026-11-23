@@ -13,7 +13,6 @@ function loadMermaid(): Promise<any> {
   if (!_mermaidReady) {
     _mermaidReady = import("mermaid").then((mod) => {
       const mermaid = mod.default;
-      mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
       return mermaid;
     });
   }
@@ -29,7 +28,11 @@ export default function Mermaid({ code }: { code: string }) {
     let cancelled = false;
     setErr(false);
     loadMermaid()
-      .then((mermaid) => mermaid.render(idRef.current, code.trim()))
+      .then((mermaid) => {
+        // il tema della pagina di Argos (chiaro o scuro) al momento del disegno
+        mermaid.initialize({ startOnLoad: false, theme: document.querySelector(".argos-chiaro") ? "default" : "dark", securityLevel: "strict" });
+        return mermaid.render(idRef.current, code.trim());
+      })
       .then(({ svg }: { svg: string }) => { if (!cancelled) setSvg(svg); })
       .catch(() => { if (!cancelled) setErr(true); });
     return () => { cancelled = true; };

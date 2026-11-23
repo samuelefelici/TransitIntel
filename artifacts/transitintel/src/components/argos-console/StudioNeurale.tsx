@@ -16,12 +16,13 @@
  * Il palco riceve gli eventi del turno da ArgosConversation (OsservatoreTurno):
  * niente richieste in più, se non la mappa dei documenti per le nebulose.
  */
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
+import { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Brain, Eye, EyeOff, FileText, Link2, Loader2, Maximize2, Minimize2, RotateCcw, ShieldCheck, Sparkles, Timer, Wrench } from "lucide-react";
+import { BookOpen, Brain, Eye, EyeOff, FileText, Link2, Loader2, Maximize2, Minimize2, Moon, RotateCcw, ShieldCheck, Sparkles, Sun, Timer, Wrench } from "lucide-react";
 import type { OsservatoreTurno } from "@/components/argos/ArgosConversation";
 import { FASI_SCIAME, Sciame, type DatiPannelli, type RiepilogoSciame } from "@/lib/argos-sciame";
 import { durata, mappe, token } from "@/lib/argos-console";
+import { TemaArgosContesto } from "@/lib/argos-tema";
 
 const CHIAVE_SOLO_CHAT = "argos-studio-solo-chat";
 const CHIAVE_INTERO = "argos-studio-schermo-intero";
@@ -46,6 +47,7 @@ function leggiIntero(): boolean {
 export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; children: ReactNode }>(function StudioNeurale({ titolo, children }, ref) {
   const tela = useRef<HTMLCanvasElement>(null);
   const titoloFase = useRef<HTMLDivElement>(null);
+  const radice = useRef<HTMLDivElement>(null);
   const motore = useRef<Sciame | null>(null);
   const [dati, setDati] = useState<DatiPannelli | null>(null);
   const [riepilogo, setRiepilogo] = useState<RiepilogoSciame | null>(null);
@@ -53,6 +55,7 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
   const [intero, setIntero] = useState(leggiIntero);
   const [guasto, setGuasto] = useState(false);
   const inAttesa = useRef<Array<(m: Sciame) => void>>([]);
+  const tema = useContext(TemaArgosContesto);
 
   const mappa = useQuery({ queryKey: ["argos-console", "mappa", "documenti"], queryFn: mappe.documenti, staleTime: 10 * 60_000, retry: false });
 
@@ -82,6 +85,17 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
     return () => { m.distruggi(); motore.current = null; };
   }, [guasto]);
   useEffect(() => { const m = motore.current; if (mappa.data && m) prova(() => m.impostaMappa(mappa.data)); }, [mappa.data, guasto]);
+
+  // il tema della pagina di Argos (classe .argos-chiaro sul suo contenitore): la rete lo segue, anche se cambia
+  useEffect(() => {
+    const pagina = radice.current?.closest(".argos-console");
+    const applica = () => { const m = motore.current; if (m) prova(() => m.impostaTema(!!radice.current?.closest(".argos-chiaro"))); };
+    applica();
+    if (!pagina) return;
+    const mo = new MutationObserver(applica);
+    mo.observe(pagina, { attributes: true, attributeFilter: ["class"] });
+    return () => mo.disconnect();
+  }, [guasto]);
 
   // la chat a destra sugli schermi larghi, sotto sui telefoni: le parole volano lì
   useEffect(() => {
@@ -152,11 +166,11 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
 
   return (
     <div className={intero
-      ? "fixed inset-0 z-50 flex flex-col bg-[#050507] p-1.5"
-      : "flex flex-col lg:h-[calc(100vh-16.5rem)] lg:min-h-[600px]"}>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-[#050507] text-zinc-200 shadow-[0_8px_40px_rgba(139,92,246,0.25)]">
+      ? "argos-studio fixed inset-0 z-50 flex flex-col bg-[var(--studio-fondo)] p-1.5"
+      : "argos-studio flex flex-col lg:h-[calc(100vh-16.5rem)] lg:min-h-[600px]"}>
+      <div ref={radice} className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-[var(--studio-fondo)] text-zinc-200 shadow-[0_8px_40px_rgba(139,92,246,0.25)]">
         {/* ── la barra dello sciame ── */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-white/[0.06] px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.09em] text-zinc-500">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-[var(--studio-bordo)] px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.09em] text-zinc-500">
           {intero && <span className="max-w-[16rem] truncate normal-case tracking-normal text-zinc-200">{titolo}</span>}
           {conRete && dati && (
             <>
@@ -183,6 +197,12 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
                 {soloChat ? "Mostra la rete" : "Solo chat"}
               </button>
             )}
+            {tema && (
+              <button type="button" onClick={tema.cambia} className={BOTTONE} aria-label={tema.tema === "chiaro" ? "Passa al tema scuro" : "Passa al tema chiaro"}
+                title={tema.tema === "chiaro" ? "Tema scuro" : "Tema chiaro"}>
+                {tema.tema === "chiaro" ? <Moon className="h-3.5 w-3.5" aria-hidden /> : <Sun className="h-3.5 w-3.5" aria-hidden />}
+              </button>
+            )}
             <button type="button" onClick={() => cambiaIntero(!intero)} className={BOTTONE} aria-pressed={intero}
               title={intero ? "Esci dallo schermo intero (Esc)" : "Lo studio su tutto lo schermo"}>
               {intero ? <Minimize2 className="h-3.5 w-3.5" aria-hidden /> : <Maximize2 className="h-3.5 w-3.5" aria-hidden />}
@@ -199,7 +219,7 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
               return (
                 <button key={f.k} type="button" role="tab" aria-selected={cur} disabled={!puo} onClick={() => rivedi(i)}
                   title={`${String(i + 1).padStart(2, "0")} ${f.n} — ${f.s}${puo ? " · rivedi questa fase" : ""}`}
-                  className={`h-[19px] truncate rounded-[2px] font-mono text-[10px] tracking-[0.04em] transition-colors ${cur ? "bg-violet-400 font-bold text-[#140d2b]" : fatta ? "bg-[#16161c] text-zinc-300" : "bg-[#0f0f13] text-zinc-600"} ${puo ? "cursor-pointer hover:text-white" : "cursor-default"}`}>
+                  className={`h-[19px] truncate rounded-[2px] font-mono text-[10px] tracking-[0.04em] transition-colors ${cur ? "bg-violet-400 font-bold text-[var(--studio-fase-attiva-testo)]" : fatta ? "bg-[var(--studio-fase-fatta)] text-zinc-300" : "bg-[var(--studio-fase)] text-zinc-600"} ${puo ? "cursor-pointer hover:text-white" : "cursor-default"}`}>
                   {f.k}
                 </button>
               );
@@ -215,12 +235,12 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
                 aria-label={`La rete di Argos: fase ${fase.n.toLowerCase()}, ${fase.s}`} />
               <div ref={titoloFase} className="pointer-events-none absolute left-3 top-2.5 max-w-[20rem] border-l-[3px] border-violet-400 pl-2.5 font-mono">
                 <div className="text-[16px] font-bold leading-tight tracking-wide text-zinc-100 md:text-[19px]">{String((dati?.fase ?? 0) + 1).padStart(2, "0")} {fase.n}</div>
-                <div className="mt-0.5 text-[10.5px] text-[#8f88bd]">{fase.s}</div>
+                <div className="mt-0.5 text-[10.5px] text-[var(--studio-sottotitolo)]">{fase.s}</div>
                 {dati?.meta.map(r => <div key={r} className="mt-1 hidden text-[9.5px] leading-snug text-zinc-500 md:block">{r}</div>)}
               </div>
               {dati?.inCorso && <Loader2 className="absolute right-3 top-3 h-4 w-4 animate-spin text-violet-300" aria-label="Argos sta lavorando" />}
               {dati && !dati.haCorsa && (
-                <div className="pointer-events-none absolute bottom-6 left-1/2 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md bg-black/55 px-3 py-1 text-center font-mono text-[11.5px] leading-relaxed text-zinc-400">
+                <div className="pointer-events-none absolute bottom-6 left-1/2 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md bg-[var(--studio-invito)] px-3 py-1 text-center font-mono text-[11.5px] leading-relaxed text-zinc-400">
                   Fai una domanda nella chat: guarda Argos <b className="font-medium text-violet-300">cercare</b>, <b className="font-medium text-violet-300">scegliere</b> e <b className="font-medium text-violet-300">verificare</b>
                   <div className="text-[9.5px] tracking-wider text-zinc-600">
                     {mappa.data ? `${mappa.data.nodes.length} documenti in ${new Set(mappa.data.nodes.map(n => n.category || "")).size} categorie` : mappa.isError ? "mappa non disponibile: userò le categorie delle fonti" : "carico la mappa della conoscenza…"}
@@ -266,7 +286,7 @@ const CODICE: Record<string, string> = {
 
 function Pannello({ titolo, metrica, tinta = "text-teal-300", children, piede }: { titolo: string; metrica?: ReactNode; tinta?: string; children: ReactNode; piede?: ReactNode }) {
   return (
-    <section className="flex min-w-[148px] flex-1 snap-start flex-col overflow-hidden rounded-md border border-white/[0.08] bg-[#0a0a0d] px-2.5 py-2 font-mono text-[10px] leading-[1.36] text-zinc-400" aria-label={titolo}>
+    <section className="flex min-w-[148px] flex-1 snap-start flex-col overflow-hidden rounded-md border border-[var(--studio-bordo)] bg-[var(--studio-pannello)] px-2.5 py-2 font-mono text-[10px] leading-[1.36] text-zinc-400" aria-label={titolo}>
       <header className="mb-1.5 flex items-baseline justify-between gap-2 whitespace-nowrap text-[10.5px] font-bold uppercase tracking-[0.07em] text-zinc-100">
         <span>{titolo}</span>
         {metrica != null && <span className={`font-semibold normal-case tracking-[0.02em] tabular-nums ${tinta}`}>{metrica}</span>}
@@ -286,7 +306,7 @@ function Pannelli({ d }: { d: DatiPannelli }) {
             <div key={`${i}-${l.tm}-${l.o}`} className="truncate whitespace-nowrap">
               <span className="text-zinc-600">{l.tm}</span>
               <span className={`mx-1 inline-block min-w-[50px] ${VERBI[l.v] ?? "text-zinc-300"}`}>{l.v}</span>
-              <span className="text-[#8f8bb8]">{l.o}</span>
+              <span className="text-[var(--studio-oggetto)]">{l.o}</span>
             </div>
           ))}
         </div>
@@ -300,7 +320,7 @@ function Pannelli({ d }: { d: DatiPannelli }) {
                 <div className="mb-0.5 flex justify-between gap-2 text-zinc-300">
                   <span className="truncate">{r.nome}</span><span className="shrink-0 tabular-nums text-zinc-400">{r.dida}</span>
                 </div>
-                <div className="h-[3px] overflow-hidden rounded-sm bg-[#1b1b21]">
+                <div className="h-[3px] overflow-hidden rounded-sm bg-[var(--studio-traccia)]">
                   <i className="block h-full rounded-sm transition-[width] duration-300" style={{ width: `${r.di ? Math.round((100 * r.valore) / r.di) : 0}%`, background: r.colore }} />
                 </div>
               </div>
@@ -317,7 +337,7 @@ function Pannelli({ d }: { d: DatiPannelli }) {
             {d.copertura.map(c => (
               <span key={c.nome} className="contents">
                 <span>{c.nome}</span>
-                <span className="h-1 overflow-hidden rounded-sm bg-[#1b1b21]"><i className="block h-full bg-teal-400 transition-[width] duration-300" style={{ width: `${Math.min(100, (100 * c.n) / c.max)}%` }} /></span>
+                <span className="h-1 overflow-hidden rounded-sm bg-[var(--studio-traccia)]"><i className="block h-full bg-teal-400 transition-[width] duration-300" style={{ width: `${Math.min(100, (100 * c.n) / c.max)}%` }} /></span>
                 <span className="text-right font-semibold tabular-nums text-zinc-100">{c.n}</span>
               </span>
             ))}
@@ -330,7 +350,7 @@ function Pannelli({ d }: { d: DatiPannelli }) {
           {(d.parole.length ? d.parole : [0, 1, 2].map(i => ({ termine: i ? "" : "—", celle: Array<string | null>(12).fill(null) }))).slice(0, 5).map((r, i) => (
             <div key={`${r.termine}-${i}`} className="flex items-center gap-[2px]">
               <span className="w-8 shrink-0 overflow-hidden text-[9px] text-zinc-500">{r.termine}</span>
-              {r.celle.map((c, j) => <span key={j} className="h-[8px] w-[8px] shrink-0 rounded-[1px] transition-colors duration-300" style={{ background: c || "#1a1a20" }} />)}
+              {r.celle.map((c, j) => <span key={j} className="h-[8px] w-[8px] shrink-0 rounded-[1px] transition-colors duration-300" style={{ background: c || "var(--studio-cella)" }} />)}
             </div>
           ))}
         </div>
@@ -372,13 +392,13 @@ function Radar({ assi }: { assi: Array<{ asse: string; valore: number }> }) {
   const anello = (k: number) => assi.map((_, i) => punto(i, k).join(",")).join(" ");
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="min-h-0 w-full flex-1" preserveAspectRatio="xMidYMid meet" aria-hidden>
-      {[0.33, 0.66, 1].map(k => <polygon key={k} points={anello(k)} fill="none" stroke="rgba(255,255,255,.08)" />)}
-      {assi.map((_, i) => { const [x, y] = punto(i, 1); return <line key={i} x1={cx} y1={cy} x2={x} y2={y} stroke="rgba(255,255,255,.08)" />; })}
-      <polygon points={assi.map((a, i) => punto(i, a.valore).join(",")).join(" ")} fill="rgba(45,212,191,.35)" stroke="rgba(45,212,191,.9)" strokeWidth={1.2} />
+      {[0.33, 0.66, 1].map(k => <polygon key={k} points={anello(k)} fill="none" style={{ stroke: "var(--studio-griglia)" }} />)}
+      {assi.map((_, i) => { const [x, y] = punto(i, 1); return <line key={i} x1={cx} y1={cy} x2={x} y2={y} style={{ stroke: "var(--studio-griglia)" }} />; })}
+      <polygon points={assi.map((a, i) => punto(i, a.valore).join(",")).join(" ")} className="fill-teal-400/35 stroke-teal-400" strokeWidth={1.2} />
       {assi.map((a, i) => {
         const ang = -Math.PI / 2 + (i / n) * Math.PI * 2, x = cx + Math.cos(ang) * (R + 10), y = cy + Math.sin(ang) * (R + 7);
         const ancora = Math.abs(Math.cos(ang)) < 0.3 ? "middle" : Math.cos(ang) > 0 ? "start" : "end";
-        return <text key={i} x={x} y={y} fontSize={7.5} fill="#6b6b78" textAnchor={ancora} dominantBaseline="middle" fontFamily="inherit">{a.asse}</text>;
+        return <text key={i} x={x} y={y} fontSize={7.5} style={{ fill: "var(--studio-etichetta)" }} textAnchor={ancora} dominantBaseline="middle" fontFamily="inherit">{a.asse}</text>;
       })}
     </svg>
   );
@@ -387,13 +407,13 @@ function Radar({ assi }: { assi: Array<{ asse: string; valore: number }> }) {
 /** la linea dei punteggi dei passaggi letti */
 function Linea({ punti }: { punti: number[] }) {
   const W = 160, H = 30;
-  if (punti.length < 2) return <svg viewBox={`0 0 ${W} ${H}`} className="h-[30px] w-full shrink-0" aria-hidden><line x1={0} y1={H - 1.5} x2={W} y2={H - 1.5} stroke="rgba(255,255,255,.05)" /></svg>;
+  if (punti.length < 2) return <svg viewBox={`0 0 ${W} ${H}`} className="h-[30px] w-full shrink-0" aria-hidden><line x1={0} y1={H - 1.5} x2={W} y2={H - 1.5} style={{ stroke: "var(--studio-griglia)" }} /></svg>;
   const mn = Math.min(...punti) - 0.02, mx = Math.max(...punti) + 0.02, n = punti.length;
   const P = punti.map((v, i) => [2 + (i / (n - 1)) * (W - 4), H - 3 - ((v - mn) / (mx - mn || 1)) * (H - 7)] as const);
   let d = `M${P[0]![0]},${P[0]![1]}`;
   for (let i = 1; i < n; i++) { const [x0, y0] = P[i - 1]!, [x1, y1] = P[i]!; d += ` Q${x0},${y0} ${(x0 + x1) / 2},${(y0 + y1) / 2}`; }
   d += ` L${P[n - 1]![0]},${P[n - 1]![1]}`;
-  return <svg viewBox={`0 0 ${W} ${H}`} className="h-[30px] w-full shrink-0" preserveAspectRatio="none" aria-hidden><path d={d} fill="none" stroke="#F5C451" strokeWidth={1.4} strokeLinejoin="round" vectorEffect="non-scaling-stroke" /></svg>;
+  return <svg viewBox={`0 0 ${W} ${H}`} className="h-[30px] w-full shrink-0" preserveAspectRatio="none" aria-hidden><path d={d} fill="none" style={{ stroke: "var(--studio-linea)" }} strokeWidth={1.4} strokeLinejoin="round" vectorEffect="non-scaling-stroke" /></svg>;
 }
 
 /** la lancetta della confidenza */
@@ -407,10 +427,10 @@ function Lancetta({ valore, dida }: { valore: number | null; dida: string }) {
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="min-h-0 w-full flex-1" preserveAspectRatio="xMidYMid meet" role="img" aria-label={`Confidenza ${valore == null ? "non ancora calcolata" : Math.round(valore)}, ${dida}`}>
       <defs><linearGradient id="argos-lancetta" x1="0" x2="1"><stop offset="0" stopColor="#F59E0B" /><stop offset="1" stopColor="#FDE047" /></linearGradient></defs>
-      <path d={arco(a0, a1)} fill="none" stroke="#1d1d24" strokeWidth={5} strokeLinecap="round" />
+      <path d={arco(a0, a1)} fill="none" style={{ stroke: "var(--studio-arco)" }} strokeWidth={5} strokeLinecap="round" />
       {v != null && <path d={arco(a0, a0 + (a1 - a0) * v)} fill="none" stroke="url(#argos-lancetta)" strokeWidth={5} strokeLinecap="round" />}
-      <text x={cx} y={cy} fontSize={17} fontWeight={600} fill="#f4f4f5" textAnchor="middle" dominantBaseline="middle" fontFamily="inherit">{valore == null ? "—" : Math.round(valore)}</text>
-      <text x={cx} y={cy + r * 0.59 + 9} fontSize={7.5} fill="#6b6b78" textAnchor="middle" fontFamily="inherit">{dida}</text>
+      <text x={cx} y={cy} fontSize={17} fontWeight={600} style={{ fill: "var(--studio-numero)" }} textAnchor="middle" dominantBaseline="middle" fontFamily="inherit">{valore == null ? "—" : Math.round(valore)}</text>
+      <text x={cx} y={cy + r * 0.59 + 9} fontSize={7.5} style={{ fill: "var(--studio-etichetta)" }} textAnchor="middle" fontFamily="inherit">{dida}</text>
     </svg>
   );
 }

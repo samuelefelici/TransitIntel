@@ -390,7 +390,7 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
         </div>
       </header>
       <StudioNeurale key={conv.id} ref={palco} titolo={conv.titolo || "Conversazione senza titolo"}>
-        <div className="flex min-h-0 flex-1 flex-col bg-gradient-to-b from-zinc-950 via-[#120a1c] to-black">
+        <div className="flex min-h-0 flex-1 flex-col bg-gradient-to-b from-[var(--studio-chat-in-alto)] via-[var(--studio-chat-in-mezzo)] to-[var(--studio-chat-in-basso)]">
           <Suspense fallback={<div className="flex flex-1 items-center justify-center text-violet-300"><Eye className="h-6 w-6 animate-pulse" aria-hidden /></div>}>
             <ArgosConversation
               conversazione={legata}
