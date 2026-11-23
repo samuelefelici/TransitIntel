@@ -242,12 +242,28 @@ router.get("/gtfs/shapes/geojson", cache({ ttlSeconds: 30, keyFn: chiavePerUtent
 });
 
 // GET /api/gtfs/routes/network-analysis
-router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Sul feed della lettura (tappa 7.24): prima le query univano corse, orari e
+// fermate di tutti i feed solo per codice. Con sei feed che si somigliano ogni
+// riga si moltiplicava per 216 (3,3 s e una tabella temporanea su disco), e le
+// sovrapposizioni mescolavano le linee di programmi diversi. Come le forme, la
+// cache va per utente: il feed corrente è di chi chiede.
+router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   const dayParam  = (req.query.day      as string) || "";
   const dateFrom  = (req.query.dateFrom as string) || "";
   const dateTo    = (req.query.dateTo   as string) || "";
 
   try {
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId;
+    if (!feedId) {
+      res.json({
+        kpis: { scheduleCollisions: 0, routePairsWithCollisions: 0, worstHeadway: 0, irregularRoutes: 0, totalPairs: 0 },
+        overlaps: [], headways: [], routes: [], filters: { day: dayParam, dateFrom, dateTo },
+      });
+      return;
+    }
+
     // ── 1. Route metadata ──
     const routes = await db.select({
       routeId: gtfsRoutes.routeId,
@@ -256,14 +272,15 @@ router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (re
       color: gtfsRoutes.routeColor,
       textColor: gtfsRoutes.routeTextColor,
       tripsCount: gtfsRoutes.tripsCount,
-    }).from(gtfsRoutes).orderBy(sql`trips_count DESC`).limit(200);
+    }).from(gtfsRoutes).where(eq(gtfsRoutes.feedId, feedId)).orderBy(sql`trips_count DESC`).limit(200);
 
     // ── 2. Route → distinct stops ──
     const routeStopRows = await db.execute(sql`
       SELECT DISTINCT t.route_id, st.stop_id, s.stop_name
       FROM gtfs_trips t
-      JOIN gtfs_stop_times st ON st.trip_id = t.trip_id
-      JOIN gtfs_stops s ON s.stop_id = st.stop_id
+      JOIN gtfs_stop_times st ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+      JOIN gtfs_stops s ON s.feed_id = st.feed_id AND s.stop_id = st.stop_id
+      WHERE t.feed_id = ${feedId}
       ORDER BY t.route_id
     `);
 
@@ -323,7 +340,7 @@ router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (re
     // ── 4. Service IDs for day + date-range filter ──
     let serviceIdSet: Set<string> | null = null;
     if (dayParam || dateFrom || dateTo) {
-      let filter = sql`1=1`;
+      let filter = sql`feed_id = ${feedId}`;
       if (dayParam) {
         if (dayParam === "weekday")       filter = sql`${filter} AND EXTRACT(DOW FROM to_date(date::text,'YYYYMMDD')) IN (1,2,3,4,5)`;
         else if (dayParam === "saturday") filter = sql`${filter} AND EXTRACT(DOW FROM to_date(date::text,'YYYYMMDD')) = 6`;
@@ -337,19 +354,24 @@ router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (re
       `);
       serviceIdSet = new Set((cdRows.rows as any[]).map(r => String(r.service_id)));
     }
+    /* un filtro che non trova servizi vuol dire nessuna corsa in quei giorni
+       (prima valeva come «nessun filtro»: il sabato di un feed solo feriale
+       mostrava le corse dei feriali) */
+    const nessunServizio = serviceIdSet !== null && serviceIdSet.size === 0;
 
     // ── 5. Schedule collisions at shared stops ──
     const allSharedStopIds = [...new Set(topPairs.flatMap(p => p._sharedStopIds))];
 
-    if (allSharedStopIds.length > 0) {
+    if (allSharedStopIds.length > 0 && !nessunServizio) {
       let collisionRows: any[];
       if (serviceIdSet && serviceIdSet.size > 0) {
         const sids = [...serviceIdSet];
         const result = await db.execute(sql`
           SELECT DISTINCT t.route_id, st.stop_id, st.departure_time
           FROM gtfs_trips t
-          JOIN gtfs_stop_times st ON st.trip_id = t.trip_id
-          WHERE t.service_id = ANY(ARRAY[${sql.join(sids.map(s => sql`${s}`), sql`, `)}])
+          JOIN gtfs_stop_times st ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+          WHERE t.feed_id = ${feedId}
+          AND t.service_id = ANY(ARRAY[${sql.join(sids.map(s => sql`${s}`), sql`, `)}])
           AND st.stop_id = ANY(ARRAY[${sql.join(allSharedStopIds.map(s => sql`${s}`), sql`, `)}])
         `);
         collisionRows = result.rows as any[];
@@ -357,8 +379,9 @@ router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (re
         const result = await db.execute(sql`
           SELECT DISTINCT t.route_id, st.stop_id, st.departure_time
           FROM gtfs_trips t
-          JOIN gtfs_stop_times st ON st.trip_id = t.trip_id
-          WHERE st.stop_id = ANY(ARRAY[${sql.join(allSharedStopIds.map(s => sql`${s}`), sql`, `)}])
+          JOIN gtfs_stop_times st ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+          WHERE t.feed_id = ${feedId}
+          AND st.stop_id = ANY(ARRAY[${sql.join(allSharedStopIds.map(s => sql`${s}`), sql`, `)}])
         `);
         collisionRows = result.rows as any[];
       }
@@ -418,13 +441,15 @@ router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (re
 
     // ── 6. Per-route headway ──
     let headwayDeptRows: any[];
-    if (serviceIdSet && serviceIdSet.size > 0) {
+    if (nessunServizio) {
+      headwayDeptRows = [];
+    } else if (serviceIdSet && serviceIdSet.size > 0) {
       const sids = [...serviceIdSet];
       const result = await db.execute(sql`
         SELECT t.route_id, st.departure_time
         FROM gtfs_trips t
-        JOIN gtfs_stop_times st ON st.trip_id = t.trip_id
-        WHERE st.stop_sequence = 1
+        JOIN gtfs_stop_times st ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+        WHERE t.feed_id = ${feedId} AND st.stop_sequence = 1
         AND t.service_id = ANY(ARRAY[${sql.join(sids.map(s => sql`${s}`), sql`, `)}])
         ORDER BY t.route_id, st.departure_time
       `);
@@ -433,8 +458,8 @@ router.get("/gtfs/routes/network-analysis", cache({ ttlSeconds: 60 }), async (re
       const result = await db.execute(sql`
         SELECT t.route_id, st.departure_time
         FROM gtfs_trips t
-        JOIN gtfs_stop_times st ON st.trip_id = t.trip_id
-        WHERE st.stop_sequence = 1
+        JOIN gtfs_stop_times st ON st.feed_id = t.feed_id AND st.trip_id = t.trip_id
+        WHERE t.feed_id = ${feedId} AND st.stop_sequence = 1
         ORDER BY t.route_id, st.departure_time
       `);
       headwayDeptRows = result.rows as any[];
