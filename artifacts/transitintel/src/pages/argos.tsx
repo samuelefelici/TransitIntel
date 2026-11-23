@@ -9,15 +9,19 @@
  * così un link porta dritto a una traccia.
  */
 import { useCallback, useEffect, useState } from "react";
-import { Bot, Gauge, Moon, Play, Search, Sun, Wrench } from "lucide-react";
+import { BookOpen, Bot, Gauge, Moon, Network, Play, Search, Sparkles, Sun, Wrench } from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Cruscotto from "@/components/argos-console/Cruscotto";
 import Squadra from "@/components/argos-console/Squadra";
 import Lavora from "@/components/argos-console/Lavora";
 import Ispettore from "@/components/argos-console/Ispettore";
 import Capacita from "@/components/argos-console/Capacita";
+import Biblioteca from "@/components/argos-console/Biblioteca";
+import Mappa from "@/components/argos-console/Mappa";
+import Crawler from "@/components/argos-console/Crawler";
 
-const SCHEDE = ["cruscotto", "squadra", "lavora", "ispettore", "capacita"] as const;
+const SCHEDE = ["cruscotto", "crawler", "biblioteca", "mappa", "squadra", "lavora", "ispettore", "capacita"] as const;
 type Scheda = (typeof SCHEDE)[number];
 const CHIAVE_TEMA = "argos-console-tema";
 
@@ -47,6 +51,9 @@ export default function ArgosPage() {
   const [esecuzione, setEsecuzione] = useState<number | null>(iniziale.esecuzione);
   const [agente, setAgente] = useState<string | null>(iniziale.agente);
   const [tema, setTema] = useState<"chiaro" | "scuro">(temaIniziale);
+  const [documentoInMappa, setDocumentoInMappa] = useState<number | null>(null);
+  const [documentoInBiblioteca, setDocumentoInBiblioteca] = useState<number | null>(null);
+  const { isAdmin } = useAuth();
 
   useEffect(() => {
     try { localStorage.setItem(CHIAVE_TEMA, tema); } catch { /* niente */ }
@@ -64,6 +71,8 @@ export default function ArgosPage() {
 
   const apriEsecuzione = useCallback((id: number) => { setEsecuzione(id); setScheda("ispettore"); }, []);
   const faiLavorare = useCallback((chiave: string) => { setAgente(chiave); setScheda("lavora"); }, []);
+  const apriInMappa = useCallback((id: number) => { setDocumentoInMappa(id); setScheda("mappa"); }, []);
+  const apriInBiblioteca = useCallback((id: number) => { setDocumentoInBiblioteca(id); setScheda("biblioteca"); }, []);
 
   return (
     <div className={`argos-console ${tema === "chiaro" ? "argos-chiaro rounded-2xl" : ""} min-h-full`}>
@@ -71,7 +80,7 @@ export default function ArgosPage() {
         <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="flex items-center gap-2 text-2xl"><Bot className="h-6 w-6 text-primary" aria-hidden />Argos</h1>
-            <p className="text-sm text-muted-foreground">La squadra degli agenti: chi sono, che cosa fanno, che cosa possono toccare.</p>
+            <p className="text-sm text-muted-foreground">Che cosa sa, come ragiona, chi lavora: la biblioteca, il crawler e la squadra degli agenti.</p>
           </div>
           <button type="button" onClick={() => setTema(t => (t === "chiaro" ? "scuro" : "chiaro"))}
             className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium shadow-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -84,12 +93,19 @@ export default function ArgosPage() {
         <Tabs value={scheda} onValueChange={v => setScheda(v as Scheda)}>
           <TabsList className="mb-4 flex h-auto flex-wrap justify-start gap-1 bg-muted p-1">
             <TabsTrigger value="cruscotto" className="gap-1.5"><Gauge className="h-4 w-4" aria-hidden />Cruscotto</TabsTrigger>
+            <TabsTrigger value="crawler" className="gap-1.5"><Sparkles className="h-4 w-4" aria-hidden />Crawler</TabsTrigger>
+            <TabsTrigger value="biblioteca" className="gap-1.5"><BookOpen className="h-4 w-4" aria-hidden />Biblioteca</TabsTrigger>
+            <TabsTrigger value="mappa" className="gap-1.5"><Network className="h-4 w-4" aria-hidden />Mappa</TabsTrigger>
             <TabsTrigger value="squadra" className="gap-1.5"><Bot className="h-4 w-4" aria-hidden />Squadra</TabsTrigger>
             <TabsTrigger value="lavora" className="gap-1.5"><Play className="h-4 w-4" aria-hidden />Lavora</TabsTrigger>
             <TabsTrigger value="ispettore" className="gap-1.5"><Search className="h-4 w-4" aria-hidden />Ispettore</TabsTrigger>
             <TabsTrigger value="capacita" className="gap-1.5"><Wrench className="h-4 w-4" aria-hidden />Capacità</TabsTrigger>
           </TabsList>
           <TabsContent value="cruscotto"><Cruscotto apriEsecuzione={apriEsecuzione} /></TabsContent>
+          {/* montato sempre anche il crawler: una domanda in corso non si perde cambiando scheda */}
+          <div hidden={scheda !== "crawler"}><Crawler /></div>
+          <TabsContent value="biblioteca"><Biblioteca admin={isAdmin} apriInMappa={apriInMappa} documentoIniziale={documentoInBiblioteca} /></TabsContent>
+          <TabsContent value="mappa"><Mappa documentoIniziale={documentoInMappa} apriInBiblioteca={apriInBiblioteca} /></TabsContent>
           <TabsContent value="squadra"><Squadra faiLavorare={faiLavorare} /></TabsContent>
           {/* montata sempre: un'esecuzione in corso non si perde cambiando scheda */}
           <div hidden={scheda !== "lavora"}><Lavora agenteIniziale={agente} apriEsecuzione={apriEsecuzione} /></div>

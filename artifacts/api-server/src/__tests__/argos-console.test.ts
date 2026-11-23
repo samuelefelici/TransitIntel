@@ -171,6 +171,90 @@ describe("far lavorare un agente", () => {
   });
 });
 
+describe("la biblioteca", () => {
+  const ADMIN = utenteDiProva("10000000-0000-0000-0000-0000000000ad", [], "admin");
+  const appAdmin = () => appDiProva(router, ADMIN);
+
+  it("leggere: chi ha l'area Rete; la risposta passa così com'è", async () => {
+    rispondi(200, { documenti: [{ id: 1, title: "Contratto", chunks: 40 }], categorie: ["Norme"] });
+    const r = await request(app()).get("/api/ai/argos/console/biblioteca");
+    expect(r.status).toBe(200);
+    expect(r.body.documenti[0].chunks).toBe(40);
+    expect(stato.chiamate[0]!.url).toBe("http://argos.prova/console/biblioteca?client_slug=tpl-personale");
+  });
+
+  it("uno stato dei caricamenti inventato non arriva ad Argos", async () => {
+    expect((await request(app()).get("/api/ai/argos/console/biblioteca/caricamenti?stato=boh")).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+  });
+
+  it("caricare: chi non è amministratore prende 403 e Argos non viene chiamato", async () => {
+    const r = await request(app()).post("/api/ai/argos/console/biblioteca/carica")
+      .attach("file", Buffer.from("%PDF-1.4"), "contratto.pdf");
+    expect(r.status).toBe(403);
+    expect(stato.chiamate).toHaveLength(0);
+  });
+
+  it("caricare: l'amministratore inoltra file e opzioni, con lo slug del client e il parser di default", async () => {
+    rispondi(200, { job_id: 5, status: "queued" });
+    const r = await request(appAdmin()).post("/api/ai/argos/console/biblioteca/carica")
+      .field("category", "Norme").field("parser", "inventato").field("page_from", "1;DROP")
+      .attach("file", Buffer.from("%PDF-1.4 prova"), "contratto 2026.pdf");
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ job_id: 5, status: "queued" });
+    const c = stato.chiamate[0]!;
+    expect(c.url).toBe("http://argos.prova/console/biblioteca/carica");
+    expect(c.init.headers["x-argos-proxy-secret"]).toBe("segreto-di-prova");
+    const form = c.init.body as FormData;
+    expect((form.get("file") as File).name).toBe("contratto 2026.pdf");
+    expect(form.get("category")).toBe("Norme");
+    expect(form.get("parser")).toBe("auto");
+    expect(form.get("client_slug")).toBe("tpl-personale");
+    expect(form.get("page_from")).toBeNull();
+  });
+
+  it("caricare senza file: 400", async () => {
+    expect((await request(appAdmin()).post("/api/ai/argos/console/biblioteca/carica").field("category", "x")).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+  });
+
+  it("modificare ed eliminare: solo l'amministratore", async () => {
+    expect((await request(app()).patch("/api/ai/argos/console/biblioteca/documenti/3").send({ title: "x" })).status).toBe(403);
+    expect((await request(app()).delete("/api/ai/argos/console/biblioteca/documenti/3")).status).toBe(403);
+    expect((await request(app()).post("/api/ai/argos/console/biblioteca/concetti")).status).toBe(403);
+    expect(stato.chiamate).toHaveLength(0);
+    rispondi(200, { id: 3, title: "Nuovo" });
+    const r = await request(appAdmin()).patch("/api/ai/argos/console/biblioteca/documenti/3").send({ title: "Nuovo", altro: "x" });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(stato.chiamate[0]!.init.body)).toEqual({ title: "Nuovo" });
+  });
+});
+
+describe("le mappe e il crawler", () => {
+  it("le mappe passano dalle rotte di Argos col segreto", async () => {
+    rispondi(200, { nodes: [{ id: 1 }], edges: [], categories: [] });
+    rispondi(200, { nodes: [], edges: [] });
+    expect((await request(app()).get("/api/ai/argos/console/mappa/documenti")).body.nodes).toHaveLength(1);
+    await request(app()).get("/api/ai/argos/console/mappa/concetti?limit=9999");
+    expect(stato.chiamate[0]!.url).toBe("http://argos.prova/graph?client_slug=tpl-personale");
+    expect(stato.chiamate[1]!.url).toContain("/graph/concepts?client_slug=tpl-personale&limit=300");
+  });
+
+  it("una domanda va a /chat/stream con la traccia, senza progetto né cronologia", async () => {
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"trace":{"kind":"retrieval"}}\n\ndata: {"done":true}\n\n' });
+    const r = await request(app()).post("/api/ai/argos/console/chiedi").send({ domanda: "Che cosa dice il contratto?", deep: true });
+    expect(r.text).toContain('"kind":"retrieval"');
+    const c = stato.chiamate[0]!;
+    expect(c.url).toBe("http://argos.prova/chat/stream");
+    expect(JSON.parse(c.init.body)).toEqual({ client_slug: "tpl-personale", question: "Che cosa dice il contratto?", trace: true, deep: true, history: [] });
+  });
+
+  it("una domanda vuota non arriva ad Argos", async () => {
+    expect((await request(app()).post("/api/ai/argos/console/chiedi").send({ domanda: "  " })).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+  });
+});
+
 describe("i permessi", () => {
   const chi = (u: ReturnType<typeof utenteDiProva>) => ({ admin: false, diritti: u.diritti });
   const lettore = utenteDiProva("10000000-0000-0000-0000-0000000000b2", [], "user", { ruoli: [] });
@@ -178,6 +262,7 @@ describe("i permessi", () => {
   it("la console è dell'area Rete: chi la legge la apre e fa lavorare un agente", () => {
     expect(decidi(chi(U), "GET", "/ai/argos/console/esecuzioni").passa).toBe(true);
     expect(decidi(chi(U), "POST", "/ai/argos/console/agenti/analista/esegui").passa).toBe(true);
+    expect(decidi(chi(U), "POST", "/ai/argos/console/chiedi").passa).toBe(true);
   });
 
   it("senza l'area Rete no", () => {
