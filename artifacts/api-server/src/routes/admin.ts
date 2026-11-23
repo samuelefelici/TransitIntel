@@ -18,6 +18,7 @@ import { cancellaGestore, creaGestore, elencoGestori, erroreGestore, ModificaGes
 import { agenziaDellAzienda } from "../lib/gestori";
 import { cancellaNodo, creaNodo, DatiNodo, elencoNodi, IDENTIFICATIVO_NODO, modificaNodo, NuovoNodo, RifiutoNodi } from "../lib/nodi-scambio-store";
 import { cancellaPunto, creaPunto, DatiPunto, elencoPunti, ID_PUNTO, modificaPunto, RifiutoPunti } from "../lib/punti-riposo-store";
+import { chiediCopia, elencoCopie, RifiutoCopie } from "../lib/copie-database";
 import { DatiConsorziate, erroriConsorziate, esportaAnagrafica, importaAnagrafica, leggiExportParco, salvaConsorziate, statoParco } from "../lib/parco-store";
 import { statoDellInstallazione } from "../lib/installazione";
 import { cancellaTitolo, creaTitolo, elencoTitoli, ModificaTitolo, modificaTitolo, NuovoTitolo, RifiutoTitoli } from "../lib/titoli-catalogo";
@@ -863,6 +864,31 @@ router.delete("/admin/punti-riposo/:id", async (req, res): Promise<void> => {
   if (!ID_PUNTO.test(id)) { res.status(404).json({ error: "Punto di riposo non trovato" }); return; }
   try { await cancellaPunto(id); res.json({ ok: true }); }
   catch (e) { rifiutoPunti(req, res, e, "punto di riposo non tolto"); }
+});
+
+/*
+ * Le copie del database fuori dal server (tappa 7.23, lib/copie-database.ts):
+ * le fa il lavoratore ogni notte; qui gli esiti e la richiesta di una copia
+ * adesso. Solo l'amministratore.
+ *
+ *   GET  /api/admin/copie   le ultime 30 e l'ultima riuscita
+ *   POST /api/admin/copie   chiede una copia adesso (202; 409 se ce n'è già una chiesta)
+ */
+router.use("/admin/copie", requireAdmin);
+router.get("/admin/copie", async (req, res): Promise<void> => {
+  try { res.json(await elencoCopie()); }
+  catch (e) { req.log.error({ err: e }, "copie del database non leggibili"); erroreLeggibile(res, 500, "Copie del database non leggibili"); }
+});
+router.post("/admin/copie", async (req, res): Promise<void> => {
+  try {
+    const c = await chiediCopia(req.user?.id ?? null);
+    req.log.info({ id: c.id, da: req.user?.id }, "copia del database chiesta");
+    res.status(202).json(c);
+  } catch (e) {
+    if (e instanceof RifiutoCopie) { res.status(e.stato).json({ error: e.message }); return; }
+    req.log.error({ err: e }, "copia del database non chiesta");
+    erroreLeggibile(res, 500, "Copia non chiesta");
+  }
 });
 
 /*

@@ -2226,6 +2226,155 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Copia del database fuori dal server (tappa 7.23)
+
+Ogni notte il **lavoratore** fa una copia del database e la manda in uno
+storage S3 fuori dal server. Così un guasto del server, o del suo disco, non
+porta via i dati.
+1. **La copia** (`pg_dump`): gli schemi di Cerbero (`public`, `caronte`,
+   `coda`, `registro`, `cerbero_migrazioni`). Niente degli altri programmi:
+   lo schema di FleetCare ha la sua copia.
+2. **La cifratura**: con la **chiave pubblica** dell'azienda. Il server non
+   sa decifrare: chi entrasse nel server o nello storage non legge le copie.
+   La chiave privata resta all'azienda.
+3. **Il caricamento** nello storage.
+4. **La verifica**: la copia si riscarica e deve avere gli stessi byte e lo
+   stesso SHA-256.
+
+L'esito di ogni copia va in `backup_copie` (migrazione **0068**). La pagina
+**Amministrazione › Copie del database** (solo l'amministratore) mostra le
+ultime copie, avvisa se l'ultima riuscita ha più di 36 ore e ha il pulsante
+«Fai una copia adesso».
+
+**Come funziona**
+- La copia della notte parte dopo `BACKUP_ORA`, ora di Roma (di default le
+  3, dopo le giornate di esercizio).
+- Una copia non riuscita si riprova dopo un'ora, al più tre volte per notte.
+- Una copia rimasta «in corso» per più di tre ore (lavoratore fermato)
+  diventa «interrotta».
+- La copia la fa il ruolo **`cerbero_backup`**: legge tutto negli schemi di
+  Cerbero e non scrive niente. Il migratore lo crea a ogni avvio dell'API
+  (NOLOGIN, senza password) e gli ridà la lettura delle tabelle nuove,
+  anche delle partizioni mensili del registro.
+- Il suo indirizzo sta solo nell'ambiente del lavoratore. Il lavoratore
+  rifiuta un indirizzo con un altro utente (né `postgres` né `cerbero_app`).
+- Una tabella che `cerbero_backup` non può leggere (un avanzo fatto a mano da
+  un superutente, che il migratore non tocca) si salta. La riga della copia
+  in pagina e il log la nominano: se serve, la si sposta a `cerbero_owner`
+  o la si toglie (l'avviso di `ruoli.mjs --verifica` dice come).
+- **Il lavoratore non cancella copie.** Quanto tenerle lo decide una regola
+  di scadenza dello storage. Così nemmeno chi entrasse nel server può
+  toglierle.
+- Sul disco del container la copia in chiaro esiste solo mentre si cifra
+  (pochi secondi), in una cartella temporanea che poi si cancella.
+
+**Prima del deploy**: niente. Senza le variabili il lavoratore scrive nel
+log «copia del database fuori dal server: non impostata» e non fa copie.
+
+**Dopo il deploy** (la 0068 parte da sola):
+1. **Lo storage.** Uno storage S3 **nell'Unione europea**: per esempio
+   Hetzner Object Storage, Scaleway o Backblaze B2 con regione UE. Nelle
+   copie ci sono dati di lavoratori: il fornitore entra nell'elenco dei
+   sub-responsabili e nel registro dei trattamenti.
+   - Un **bucket privato** solo per le copie.
+   - Una **regola di scadenza** (lifecycle) a **35 giorni**: le copie più
+     vecchie si cancellano da sole. Così una persona cancellata, o un nome
+     anonimizzato nel registro delle modifiche, escono anche dalle copie
+     entro 35 giorni.
+   - Se il fornitore lo offre: **Object Lock** (o il versioning) per 30
+     giorni. Una copia non si può togliere prima, nemmeno con le chiavi.
+   - Una **chiave d'accesso** per quel bucket, solo con lettura e scrittura
+     degli oggetti; per `elenco` dello script di ripristino serve anche
+     l'elenco.
+2. **Le chiavi**, sul tuo computer (non sul server):
+   ```bash
+   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -aes-256-cbc -out cerbero-copie-privata.pem
+   openssl pkey -in cerbero-copie-privata.pem -pubout -out cerbero-copie-pubblica.pem
+   ```
+   Il primo comando chiede una frase: protegge la chiave privata.
+   - La chiave privata e la frase vanno in **due posti diversi e sicuri**
+     (il gestore delle password dell'azienda, e una copia fuori linea).
+   - **Senza la chiave privata le copie non servono a niente**, e non c'è
+     modo di recuperarle.
+   - Le chiavi RSA devono avere almeno 3072 bit.
+3. **Il ruolo**, dal Terminal del PostgreSQL. Il ruolo lo crea il deploy
+   dell'API:
+   ```sql
+   \password cerbero_backup
+   ALTER ROLE cerbero_backup LOGIN;
+   ```
+4. **Le variabili, sul lavoratore** (non sull'API):
+
+   | Variabile | Valore |
+   |---|---|
+   | `BACKUP_DATABASE_URL` | `postgres://cerbero_backup:<password codificata>@<servizio-db>:5432/<db>` |
+   | `BACKUP_CHIAVE_PUBBLICA` | il testo di `cerbero-copie-pubblica.pem`, oppure in una riga: `base64 -w0 cerbero-copie-pubblica.pem` |
+   | `BACKUP_S3_ENDPOINT` | l'indirizzo del servizio, per esempio `https://fsn1.your-objectstorage.com` |
+   | `BACKUP_S3_REGIONE` | per esempio `fsn1` (Hetzner), `fr-par` (Scaleway), `eu-central-003` (Backblaze) |
+   | `BACKUP_S3_BUCKET` | il nome del bucket |
+   | `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` | la chiave d'accesso (la seconda come segreto) |
+
+   Facoltative:
+   - `BACKUP_S3_PREFISSO`: la cartella nel bucket (default `cerbero/`);
+   - `BACKUP_S3_STILE`: `virtuale` se il servizio vuole il bucket nel nome
+     dell'host (default `percorso`);
+   - `BACKUP_ORA`: da 0 a 23, ora di Roma (default 3).
+
+   Poi redeploy del lavoratore. Nel log: «copia del database fuori dal
+   server: ogni notte dopo l'ora indicata».
+5. **La prima copia**: Amministrazione › Copie del database › «Fai una copia
+   adesso». Entro un minuto la riga diventa «in corso», poi «riuscita». Se
+   non riesce, il motivo è nella riga e nel log del lavoratore.
+   - «non parte»: manca `pg_dump`, cioè l'immagine non è quella nuova.
+   - «server version mismatch»: il server è più nuovo del 17 (vedi sotto).
+   - «403»: chiave d'accesso o regione sbagliate.
+
+**La prova di ripristino**, ogni tre mesi e dopo ogni cambio di chiavi o di
+storage. Si fa sul tuo computer, con Node 20 o più nuovo, Docker e i file
+`lib/db/scripts/ripristina-copia.mjs` e `copia-cifrata.mjs` del repository.
+Le variabili `BACKUP_S3_*` sono le stesse del lavoratore: nel terminale
+(`export …`), non in un file del repository.
+```bash
+node lib/db/scripts/ripristina-copia.mjs elenco
+node lib/db/scripts/ripristina-copia.mjs decifra cerbero/cerbero-<data>.dump.enc copia.dump --chiave cerbero-copie-privata.pem
+docker run -d --name prova-copia -e POSTGRES_PASSWORD=prova -p 127.0.0.1:55432:5432 postgres:17
+docker exec prova-copia createdb -U postgres prova
+node lib/db/scripts/ripristina-copia.mjs ripristina copia.dump
+```
+- `decifra` chiede la frase della chiave e controlla l'integrità: una copia
+  alterata o incompleta non si decifra.
+- `ripristina` chiede l'indirizzo (qui `postgres://postgres:prova@127.0.0.1:55432/prova`).
+  Gli servono `pg_restore` e `psql` 17 sul computer (o il loro percorso in
+  `BACKUP_PG_RESTORE` e `BACKUP_PSQL`). Rifiuta un database che ha già
+  tabelle di Cerbero. Senza gli strumenti, lo stesso ripristino dentro il
+  container:
+  ```bash
+  docker cp copia.dump prova-copia:/tmp/copia.dump
+  docker exec prova-copia sh -c "pg_restore -l /tmp/copia.dump | grep -v ' SCHEMA - public ' > /tmp/elenco \
+    && pg_restore -U postgres -d prova -L /tmp/elenco --no-owner --no-acl --exit-on-error --single-transaction /tmp/copia.dump"
+  ```
+- Alla fine stampa tabelle e righe per schema: si confrontano a occhio con
+  quelle di produzione. Poi `docker rm -f prova-copia` e si cancella
+  `copia.dump` (dati in chiaro).
+
+**Un ripristino vero** (server perso, o dati da riportare indietro):
+- su un database **nuovo e vuoto** dello stesso server (`createdb`), con
+  `ripristina copia.dump --come-originale`: tiene proprietari e diritti, e
+  i ruoli ci sono già. Poi `DATABASE_URL` di API e lavoratore su quel
+  database, e redeploy;
+- su un server nuovo: prima un deploy dell'API su un database vuoto qualsiasi
+  (il migratore crea i ruoli di Cerbero), poi come sopra;
+- in tutti e due i casi valgono le note «Dopo un ripristino» della sezione
+  dei ruoli (password dei ruoli, `caronte_setup.sql`, FleetCare).
+
+**Quando il server passa a una versione nuova di PostgreSQL** (per esempio
+18): in `Dockerfile.api` il numero di `postgresql-client-17` va cambiato
+insieme. Altrimenti la copia della notte non riesce («server version
+mismatch»), e la pagina lo dice.
+
+**Rollback**: immagine precedente. Il lavoratore smette di fare copie. La
+tabella e il ruolo restano e non danno fastidio.
+
 ### Punti di riposo dei turni guida (tappa 7.22)
 
 I luoghi dove il conducente fa la pausa di un turno a due riprese fuori
@@ -6183,6 +6332,7 @@ Riferimento completo in `.env.example`. Sintesi:
 | `LAVORI_SLOT_LUNGA` / `LAVORI_SLOT_VELOCE` | — | calcoli insieme per corsia, nel lavoratore e nell'esecutore interno (default 1 e 1) |
 | `LAVORI_VEICOLI_IN_CODA` | — | `0` riporta turni macchina, VCSP e giri di Argos dentro l'API (rilascio della 2.6 e ritorno indietro); default: in coda, nel lavoratore |
 | `CALCOLI_IN_CODA_MAX` | — | Quanti calcoli pesanti possono aspettare in coda in tutta l'installazione (tappa 7.21); oltre, chi lancia riceve 503 con «riprova fra qualche minuto». Default: 30 |
+| `BACKUP_DATABASE_URL`, `BACKUP_CHIAVE_PUBBLICA`, `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGIONE`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` | — (consigliate) | **Solo sul lavoratore.** La copia cifrata del database fuori dal server, ogni notte (tappa 7.23, «Copia del database fuori dal server»). Senza, nessuna copia. Facoltative: `BACKUP_S3_PREFISSO` (default `cerbero/`), `BACKUP_S3_STILE` (`percorso` o `virtuale`), `BACKUP_ORA` (0-23, ora di Roma, default 3) |
 | `LAVORI_FEED_IN_CODA` | — | `0` riporta la sincronizzazione dei feed da Planning Studio dentro l'API (rilascio della 2.7a e ritorno indietro); default: in coda, nel lavoratore |
 | `OSRM_URL` | — | router per i km dei fuorilinea dei turni macchina (default il router pubblico); dalla 2.6 serve anche al lavoratore |
 | `NODE_ENV` | ✅ | `production` |

@@ -74,10 +74,12 @@ describe("il menu di chi entra", () => {
   it("l'admin vede tutto, compresa Gestione Utenti", () => {
     const m = menu(con(), true);
     expect(Object.keys(m)).toEqual(SEZIONI.map(s => s.titolo));
-    expect(m["Amministrazione"]).toEqual(["Utenti e accessi", "Ruoli", "Azienda", "Voci del roster", "Parametri di esercizio", "Registro delle modifiche", "Diagnosi dell'esercizio", "Giornate di esercizio", "Dati e integrazioni", "Sicurezza dell'account"]);
+    expect(m["Amministrazione"]).toEqual(["Utenti e accessi", "Ruoli", "Azienda", "Voci del roster", "Parametri di esercizio", "Registro delle modifiche", "Copie del database", "Diagnosi dell'esercizio", "Giornate di esercizio", "Dati e integrazioni", "Sicurezza dell'account"]);
     expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Utenti e accessi");
     // il registro delle modifiche lo legge solo l'admin, qualunque permesso abbia l'utente
     expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Registro delle modifiche");
+    // le copie del database (7.23): solo l'admin
+    expect(menu(con(...TUTTI))["Amministrazione"]).not.toContain("Copie del database");
   });
 
   it("in ogni combinazione di permessi: niente sezioni vuote, Oggi e Amministrazione sempre", () => {
@@ -172,7 +174,7 @@ describe("il menu dei ruoli aziendali", () => {
     for (const r of ["pianificatore", "ufficio_turni", "capo_deposito", "centrale_operativa", "officina", "amministrazione"] as const) {
       const m = menu(conRuoli(r));
       expect(m["Analisi"], r).toBeUndefined();
-      for (const voce of ["Utenti e accessi", "Ruoli", "Azienda", "Voci del roster", "Parametri di esercizio", "Registro delle modifiche", "Diagnosi dell'esercizio", "Giornate di esercizio"]) expect(m["Amministrazione"], r).not.toContain(voce);
+      for (const voce of ["Utenti e accessi", "Ruoli", "Azienda", "Voci del roster", "Parametri di esercizio", "Registro delle modifiche", "Copie del database", "Diagnosi dell'esercizio", "Giornate di esercizio"]) expect(m["Amministrazione"], r).not.toContain(voce);
     }
   });
 });

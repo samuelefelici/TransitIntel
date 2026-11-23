@@ -8,8 +8,17 @@ RUN corepack enable && corepack prepare pnpm@10.34.9 --activate
 # Python per OR-Tools; tini come PID 1: inoltra i segnali (durante le
 # migrazioni docker/avvio.sh li passa al migratore, poi l'API è il figlio
 # diretto di tini) e raccoglie i processi figli (i solver); xmllint
-# (libxml2-utils) controlla il NeTEx con lo schema EPIP (tappa 6.2)
+# (libxml2-utils) controlla il NeTEx con lo schema EPIP (tappa 6.2).
+# pg_dump e pg_restore della versione del server (17) per la copia del
+# database fuori dal server (tappa 7.23): Debian bookworm ha solo la 15, che
+# un server 17 rifiuta; vengono dal repository ufficiale di PostgreSQL
+# (PGDG), aggiunto con lo script che sta in postgresql-common. Quando il
+# server passa a una versione nuova, va cambiato anche il numero qui.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-pip tini libxml2-utils \
+      postgresql-common ca-certificates \
+ && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y \
+ && apt-get install -y --no-install-recommends postgresql-client-17 \
+ && pg_dump --version | grep -q " 17\." \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
