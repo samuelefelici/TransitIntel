@@ -51,7 +51,8 @@ import { abbinaColori, depositiPlanner, depositoDelNome, type DepositoColorato }
 import { trovaDeposito, type Conducente } from "../lib/anagrafica-campi";
 import { vedeCodiciSanitari, vedeDatiPersonali } from "../lib/auth";
 import { controlloDepositi, fuoriDaiDepositi, haLimiteDiVisibilita } from "../lib/roster-limite-depositi";
-import { chiaveTurno, copri, type CandidatoCopertura, type DaCoprire } from "../lib/roster-copertura";
+import { chiaveTurno, copri, type CandidatoCopertura, type Copertura, type DaCoprire, type Scoperto } from "../lib/roster-copertura";
+import { GIORNI_MASSIMI_QUADRO, giorniDelPeriodo, quadroDelGiorno } from "../lib/roster-quadro-anonimo";
 import { bilancia, scarto, type ConducenteBilancio, type Mossa, type TurnoBilancio } from "../lib/roster-bilancia";
 import {
   inizioPeriodo, periodiFra, postoDi, rotazione, type AssegnazioneProposta, type Cadenza, type Posto, type Ricerca, type TipoGiorno,
@@ -562,6 +563,136 @@ router.get("/roster/sostituti", async (req, res): Promise<void> => {
   } catch (e) { rispondiErrore(res, e, "sostituti"); }
 });
 
+/** Un turno pubblicato del giorno, per il quadro senza nomi: di che deposito è e se va coperto. */
+interface TurnoDelQuadro { deposito: string | null; daCoprire: boolean; titolareAssente: boolean }
+
+interface CalcoloCopertura {
+  pubblicato: boolean;
+  daCoprire: DaCoprire[];
+  coperture: Copertura[];
+  scoperti: Scoperto[];
+  /* per il quadro senza nomi (lib/roster-quadro-anonimo.ts): solo depositi e conteggi */
+  turni: TurnoDelQuadro[];
+  liberi: Array<{ deposito: string | null; disposizione: boolean }>;
+  assenti: Array<{ deposito: string | null }>;
+}
+
+/**
+ * Il calcolo di «Copri gli scoperti» per un giorno, senza scrivere niente
+ * (la scelta è in lib/roster-copertura.ts). `ambito` dice su quali depositi:
+ * «scrive», quelli su cui chi chiede scrive (la proposta da applicare, come
+ * sempre); «vede», quelli che vede (il quadro senza nomi per Argos).
+ */
+async function calcolaCopertura(req: Request, ex: Ex, day: string, ambito: "scrive" | "vede" = "scrive"): Promise<CalcoloCopertura> {
+  const dssIds = righe(await ex.execute(sql`
+    SELECT DISTINCT dss_id::text AS id FROM roster_turni_pubblicati WHERE sostituita_da IS NULL AND day = ${day}::date`)).map(x => String(x.id));
+  if (!dssIds.length) return { pubblicato: false, daCoprire: [], coperture: [], scoperti: [], turni: [], liberi: [], assenti: [] };
+
+  const riassunti = await riassuntiDei(dssIds);
+  const assegnazioni = righe(await ex.execute(sql`
+    SELECT dss_id::text AS dss, duty_code, driver_id::text AS driver, titolare_id::text AS titolare
+      FROM roster_assignments WHERE day = ${day}::date AND dss_id = ANY(${`{${dssIds.join(",")}}`}::uuid[])`));
+  const perTurno = new Map(assegnazioni.map(a => [chiaveTurno({ dssId: a.dss, codice: a.duty_code }), a]));
+  const assenti = await assentiNelGiorno(ex, assegnazioni.filter(a => !a.titolare).map(a => String(a.driver)), day);
+  const conducenti = await conducentiPer(req, ex);
+  const perId = new Map(conducenti.map(c => [c.id, c]));
+  const nomeDi = (c: Conducente) => [c.cognome, c.nome].filter(Boolean).join(" ") || c.name;
+  const catalogo = await leggiDepositi(ex);
+  const dep = (x: string | null | undefined) => (x && x.trim() ? trovaDeposito(x, catalogo)?.nome ?? x.trim() : null);
+
+  /* i turni da coprire: nessuno assegnato, o il titolare assente e nessun sostituto;
+     chi scrive solo su alcuni depositi vede i turni di quelli (e quelli senza deposito).
+     Per il quadro senza nomi contano i depositi che vede. */
+  const controllo = await controlloDepositi(req, ex);
+  const ammesso = (r: string | null | undefined) => !controllo || (ambito === "vede" ? controllo.vede(r) : controllo.scrive(r));
+  const daCoprire: DaCoprire[] = [];
+  const turni: TurnoDelQuadro[] = [];
+  for (const [dssId, r] of riassunti) {
+    for (const t of r.turni) {
+      const a = perTurno.get(chiaveTurno({ dssId, codice: t.code }));
+      const coperto = !!a && (!!a.titolare || !assenti.has(String(a.driver)));
+      const titolare = a ? perId.get(String(a.driver)) ?? null : null;
+      const deposito = dep(titolare?.residenzaServizio) ?? dep(t.residenzaName);
+      if (controllo && deposito && !ammesso(deposito)) continue;
+      turni.push({ deposito, daCoprire: !coperto, titolareAssente: !coperto && !!a });
+      if (coperto) continue;
+      daCoprire.push({
+        dssId, codice: t.code, inizio: t.start ?? null, fine: t.end ?? null, deposito,
+        titolare: a ? { id: String(a.driver), nome: titolare ? nomeDi(titolare) : null } : null,
+      });
+    }
+  }
+
+  /* i candidati: visti e scrivibili da chi chiede, attivi, non fittizi, in servizio, senza assenze né turni quel giorno */
+  const attivi = conducenti.filter(c => c.isActive && !c.isFictitious && ammesso(c.residenzaServizio));
+  const ids = attivi.map(c => c.id);
+  const inServizio = new Set(ids.length ? righe(await ex.execute(sql`
+    SELECT id::text FROM roster_drivers WHERE id = ANY(${`{${ids.join(",")}}`}::uuid[])
+       AND (data_assunzione IS NULL OR data_assunzione <= ${day}::date)
+       AND (data_fine_servizio IS NULL OR data_fine_servizio >= ${day}::date)`)).map(x => String(x.id)) : []);
+  const voci: Voce[] = ids.length ? righe(await ex.execute(sql`
+    SELECT driver_id::text, category, code FROM roster_entries WHERE day = ${day}::date AND driver_id = ANY(${`{${ids.join(",")}}`}::uuid[])`))
+    .map(x => ({ driverId: String(x.driver_id), day, category: String(x.category), code: String(x.code) })) : [];
+  const catalogoVoci = await leggiCatalogo(ex);
+  const conAssenza = new Set(voci.filter(v => v.category === "assenza").map(v => v.driverId));
+  const disposizione = new Set(voci.filter(v => aDisposizione(v, catalogoVoci)).map(v => v.driverId));
+  const conTurno = new Set(ids.length ? righe(await ex.execute(sql`
+    SELECT DISTINCT driver_id::text AS id FROM roster_assignments WHERE day = ${day}::date AND driver_id = ANY(${`{${ids.join(",")}}`}::uuid[])`)).map(x => String(x.id)) : []);
+  const liberi = attivi.filter(c => inServizio.has(c.id) && !conAssenza.has(c.id) && !conTurno.has(c.id));
+  /* il carico: i turni di ognuno nei tre giorni prima e dopo */
+  const carico = new Map(liberi.length ? righe(await ex.execute(sql`
+    SELECT driver_id::text AS id, count(*)::int AS n FROM roster_assignments
+     WHERE driver_id = ANY(${`{${liberi.map(c => c.id).join(",")}}`}::uuid[])
+       AND day BETWEEN ${day}::date - 3 AND ${day}::date + 3
+     GROUP BY driver_id`)).map(x => [String(x.id), Number(x.n)]) : []);
+
+  const preparato = await preparaControllo(liberi.map(c => c.id), [day], daCoprire.map(t => ({ dssId: t.dssId, codice: t.codice })));
+  const candidati = new Map<string, CandidatoCopertura[]>();
+  for (const t of daCoprire) {
+    const delDeposito = liberi.filter(c => !t.deposito || dep(c.residenzaServizio) === t.deposito);
+    const snapshot = snapshotDa(preparato.orari.get(chiaveTurno(t)));
+    if (!snapshot || !delDeposito.length) { candidati.set(chiaveTurno(t), []); continue; }
+    const violazioni = await violazioniPerCandidati({ id: null, day, dssId: t.dssId, dutyCode: t.codice, snapshot }, delDeposito.map(c => c.id), preparato);
+    candidati.set(chiaveTurno(t), delDeposito.filter(c => !(violazioni.get(c.id)?.length)).map(c => ({
+      id: c.id, nome: nomeDi(c), gruppo: disposizione.has(c.id) ? "disposizione" as const : "libero" as const, carico: carico.get(c.id) ?? 0,
+    })));
+  }
+  const { coperture, scoperti } = copri(daCoprire, candidati);
+  return {
+    pubblicato: true, daCoprire, coperture, scoperti, turni,
+    liberi: liberi.map(c => ({ deposito: dep(c.residenzaServizio), disposizione: disposizione.has(c.id) })),
+    assenti: attivi.filter(c => inServizio.has(c.id) && conAssenza.has(c.id)).map(c => ({ deposito: dep(c.residenzaServizio) })),
+  };
+}
+
+/**
+ * Il quadro della copertura SENZA NOMI, per Argos (il Rosterista): per giorno
+ * e per deposito turni, coperti, da coprire, proponibili, scoperti, liberi,
+ * assenti, dallo stesso calcolo di «Copri gli scoperti» sui depositi che chi
+ * chiede vede. Nessun nome, matricola, motivo di assenza: lo costruisce
+ * lib/roster-quadro-anonimo.ts da una lista chiusa di campi. È una delle sole
+ * letture di /roster aperte ai token di Argos (lib/accesso-regole.ts).
+ *   GET /api/roster/quadro-anonimo?dal=AAAA-MM-GG&al=AAAA-MM-GG&deposito=
+ * Senza date: da oggi per sette giorni; al più 14 giorni per volta.
+ */
+router.get("/roster/quadro-anonimo", async (req, res): Promise<void> => {
+  try {
+    const dal = req.query.dal === undefined || req.query.dal === "" ? giornataOggi() : String(req.query.dal);
+    const al = req.query.al === undefined || req.query.al === "" ? piuGiorni(dal, 6) : String(req.query.al);
+    if (!dataVera(dal) || !dataVera(al)) { res.status(400).json({ error: "dal e al: date vere, AAAA-MM-GG" }); return; }
+    const giorni = giorniDelPeriodo(dal, al, GIORNI_MASSIMI_QUADRO);
+    if (!giorni) { res.status(400).json({ error: `al non prima di dal, e al più ${GIORNI_MASSIMI_QUADRO} giorni` }); return; }
+    const filtro = typeof req.query.deposito === "string" ? req.query.deposito.slice(0, 80) : null;
+    const ex = db as unknown as Ex;
+    const quadro = [];
+    for (const g of giorni) quadro.push(quadroDelGiorno(g, await calcolaCopertura(req, ex, g, "vede"), filtro));
+    res.json({
+      dal, al, giorni: quadro,
+      nota: "Solo conteggi per deposito e codici dei turni: le proposte con i nomi stanno in Cerbero (Roster › Copri gli scoperti).",
+    });
+  } catch (e) { rispondiErrore(res, e, "quadro della copertura"); }
+});
+
 /**
  * «Copri gli scoperti» (7.6): i turni pubblicati di un giorno senza conducente,
  * o col titolare assente e senza sostituto, proposti ai conducenti dello
@@ -578,75 +709,9 @@ router.post("/roster/copri-scoperti", async (req, res): Promise<void> => {
     if (!dataVera(day)) { res.status(400).json({ error: "day: una data vera, AAAA-MM-GG" }); return; }
     const applica = req.body?.applica === true;
     const ex = db as unknown as Ex;
-    const dssIds = righe(await ex.execute(sql`
-      SELECT DISTINCT dss_id::text AS id FROM roster_turni_pubblicati WHERE sostituita_da IS NULL AND day = ${day}::date`)).map(x => String(x.id));
-    if (!dssIds.length) { res.json({ day, pubblicato: false, coperture: [], scoperti: [] }); return; }
-
-    const riassunti = await riassuntiDei(dssIds);
-    const assegnazioni = righe(await ex.execute(sql`
-      SELECT dss_id::text AS dss, duty_code, driver_id::text AS driver, titolare_id::text AS titolare
-        FROM roster_assignments WHERE day = ${day}::date AND dss_id = ANY(${`{${dssIds.join(",")}}`}::uuid[])`));
-    const perTurno = new Map(assegnazioni.map(a => [chiaveTurno({ dssId: a.dss, codice: a.duty_code }), a]));
-    const assenti = await assentiNelGiorno(ex, assegnazioni.filter(a => !a.titolare).map(a => String(a.driver)), day);
-    const conducenti = await conducentiPer(req, ex);
-    const perId = new Map(conducenti.map(c => [c.id, c]));
-    const nomeDi = (c: Conducente) => [c.cognome, c.nome].filter(Boolean).join(" ") || c.name;
-    const catalogo = await leggiDepositi(ex);
-    const dep = (x: string | null | undefined) => (x && x.trim() ? trovaDeposito(x, catalogo)?.nome ?? x.trim() : null);
-
-    /* i turni da coprire: nessuno assegnato, o il titolare assente e nessun sostituto;
-       chi scrive solo su alcuni depositi vede i turni di quelli (e quelli senza deposito) */
-    const controllo = await controlloDepositi(req, ex);
-    const daCoprire: DaCoprire[] = [];
-    for (const [dssId, r] of riassunti) {
-      for (const t of r.turni) {
-        const a = perTurno.get(chiaveTurno({ dssId, codice: t.code }));
-        if (a && (a.titolare || !assenti.has(String(a.driver)))) continue;
-        const titolare = a ? perId.get(String(a.driver)) ?? null : null;
-        const deposito = dep(titolare?.residenzaServizio) ?? dep(t.residenzaName);
-        if (controllo && deposito && !controllo.scrive(deposito)) continue;
-        daCoprire.push({
-          dssId, codice: t.code, inizio: t.start ?? null, fine: t.end ?? null, deposito,
-          titolare: a ? { id: String(a.driver), nome: titolare ? nomeDi(titolare) : null } : null,
-        });
-      }
-    }
-
-    /* i candidati: visti e scrivibili da chi chiede, attivi, non fittizi, in servizio, senza assenze né turni quel giorno */
-    const attivi = conducenti.filter(c => c.isActive && !c.isFictitious && (!controllo || controllo.scrive(c.residenzaServizio)));
-    const ids = attivi.map(c => c.id);
-    const inServizio = new Set(ids.length ? righe(await ex.execute(sql`
-      SELECT id::text FROM roster_drivers WHERE id = ANY(${`{${ids.join(",")}}`}::uuid[])
-         AND (data_assunzione IS NULL OR data_assunzione <= ${day}::date)
-         AND (data_fine_servizio IS NULL OR data_fine_servizio >= ${day}::date)`)).map(x => String(x.id)) : []);
-    const voci: Voce[] = ids.length ? righe(await ex.execute(sql`
-      SELECT driver_id::text, category, code FROM roster_entries WHERE day = ${day}::date AND driver_id = ANY(${`{${ids.join(",")}}`}::uuid[])`))
-      .map(x => ({ driverId: String(x.driver_id), day, category: String(x.category), code: String(x.code) })) : [];
-    const catalogoVoci = await leggiCatalogo(ex);
-    const conAssenza = new Set(voci.filter(v => v.category === "assenza").map(v => v.driverId));
-    const disposizione = new Set(voci.filter(v => aDisposizione(v, catalogoVoci)).map(v => v.driverId));
-    const conTurno = new Set(ids.length ? righe(await ex.execute(sql`
-      SELECT DISTINCT driver_id::text AS id FROM roster_assignments WHERE day = ${day}::date AND driver_id = ANY(${`{${ids.join(",")}}`}::uuid[])`)).map(x => String(x.id)) : []);
-    const liberi = attivi.filter(c => inServizio.has(c.id) && !conAssenza.has(c.id) && !conTurno.has(c.id));
-    /* il carico: i turni di ognuno nei tre giorni prima e dopo */
-    const carico = new Map(liberi.length ? righe(await ex.execute(sql`
-      SELECT driver_id::text AS id, count(*)::int AS n FROM roster_assignments
-       WHERE driver_id = ANY(${`{${liberi.map(c => c.id).join(",")}}`}::uuid[])
-         AND day BETWEEN ${day}::date - 3 AND ${day}::date + 3
-       GROUP BY driver_id`)).map(x => [String(x.id), Number(x.n)]) : []);
-
-    const preparato = await preparaControllo(liberi.map(c => c.id), [day], daCoprire.map(t => ({ dssId: t.dssId, codice: t.codice })));
-    const candidati = new Map<string, CandidatoCopertura[]>();
-    for (const t of daCoprire) {
-      const delDeposito = liberi.filter(c => !t.deposito || dep(c.residenzaServizio) === t.deposito);
-      const snapshot = snapshotDa(preparato.orari.get(chiaveTurno(t)));
-      if (!snapshot || !delDeposito.length) { candidati.set(chiaveTurno(t), []); continue; }
-      const violazioni = await violazioniPerCandidati({ id: null, day, dssId: t.dssId, dutyCode: t.codice, snapshot }, delDeposito.map(c => c.id), preparato);
-      candidati.set(chiaveTurno(t), delDeposito.filter(c => !(violazioni.get(c.id)?.length)).map(c => ({
-        id: c.id, nome: nomeDi(c), gruppo: disposizione.has(c.id) ? "disposizione" as const : "libero" as const, carico: carico.get(c.id) ?? 0,
-      })));
-    }
-    const { coperture, scoperti } = copri(daCoprire, candidati);
+    const calcolo = await calcolaCopertura(req, ex, day);
+    if (!calcolo.pubblicato) { res.json({ day, pubblicato: false, coperture: [], scoperti: [] }); return; }
+    const { coperture, scoperti } = calcolo;
 
     if (!applica) { res.json({ day, pubblicato: true, coperture, scoperti }); return; }
     const assegnate: typeof coperture = [];

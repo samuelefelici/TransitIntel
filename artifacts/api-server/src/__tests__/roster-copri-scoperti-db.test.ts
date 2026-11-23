@@ -17,7 +17,9 @@
  *   OCCUPATO  ha G4                                    → non candidato;
  *   ASSENTE   assente (ASS)                            → non candidato;
  *   FINTO     fittizio                                 → non candidato.
- * Un capo deposito del Sud vede solo G3.
+ * Un capo deposito del Sud vede solo G3. Il quadro senza nomi per Argos
+ * (GET /roster/quadro-anonimo) ripete gli stessi conti, per deposito, sui
+ * depositi che chi chiede vede.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -52,7 +54,13 @@ const capoSud = request(appDiProva(router, utenteDiProva(CAPO, [], "user", { ruo
 const righe = async (q: ReturnType<typeof sql>) => (await db.execute<any>(q)).rows;
 const lista = sql.join(CONDUCENTI.map((id) => sql`${id}::uuid`), sql`, `);
 const proposta = (chi = admin) => chi.post("/api/roster/copri-scoperti").send({ day: GIORNO });
-const coppie = (r: any) => (r.body.coperture ?? r.body.assegnate).map((c: any) => [c.turno.codice, c.driverId]);
+/** tutte le stringhe che una risposta porta come valori, a ogni profondità (le chiavi no) */
+const stringhe = (x: unknown): string[] =>
+  typeof x === "string" ? [x]
+  : Array.isArray(x) ? x.flatMap(stringhe)
+  : x && typeof x === "object" ? Object.values(x).flatMap(stringhe)
+  : [];
+const coppie = (r: any) =>(r.body.coperture ?? r.body.assegnate).map((c: any) => [c.turno.codice, c.driverId]);
 
 async function pulisci() {
   await db.execute(sql`DELETE FROM roster_anagrafica_log WHERE driver_id IN (${lista})`);
@@ -132,6 +140,39 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("copri gli scoperti, sul databas
     expect((await admin.post("/api/roster/copri-scoperti").send({ day: "2032-02-30" })).status).toBe(400);
     const vuoto = await admin.post("/api/roster/copri-scoperti").send({ day: "2032-06-16" });
     expect(vuoto.body).toEqual({ day: "2032-06-16", pubblicato: false, coperture: [], scoperti: [] });
+  });
+
+  it("il quadro senza nomi per Argos: gli stessi conti per deposito, nessuna persona", async () => {
+    const r = await admin.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
+    expect(r.status).toBe(200);
+    expect(r.body.giorni).toHaveLength(1);
+    const g = r.body.giorni[0];
+    expect(g).toMatchObject({ giorno: GIORNO, pubblicato: true });
+    const per = Object.fromEntries(g.depositi.map((d: any) => [d.deposito, d]));
+    expect(per[NORD]).toMatchObject({ turni: 4, coperti: 1, daCoprire: 3, titolareAssente: 1, senzaConducente: 2, proponibili: 3,
+      senzaCandidati: 0, liberi: 4, aDisposizione: 1, assenti: 2, scoperti: [] });
+    expect(per[SUD]).toMatchObject({ turni: 1, coperti: 0, daCoprire: 1, senzaConducente: 1, proponibili: 0, senzaCandidati: 1, liberi: 0, assenti: 0 });
+    expect(per[SUD].scoperti).toEqual([{ turno: "G3", inizio: "14:00", fine: "20:00", motivo: "nessun_candidato" }]);
+    // nessun nome, nessun id di persona, nessun codice di assenza fra i VALORI
+    // (i nomi dei campi, come «aDisposizione» o «titolareAssente», sono fissi
+    // e li controlla roster-quadro-anonimo.test.ts)
+    const valori = stringhe(r.body);
+    for (const x of ["Titolare", "Scarico", "Carico", "Alba", "Disposizione", "Occupato", "Assente", "Finto", "Prova", ...CONDUCENTI]) {
+      expect(valori.filter(v => v.includes(x))).toEqual([]);
+    }
+    for (const codice of ["MA", "ASS", "D1"]) expect(valori).not.toContain(codice);
+    // il quadro segue i depositi che si VEDONO: chi vede solo il Sud ha solo il Sud; il capo
+    // deposito che scrive sul Sud senza un elenco dei visibili li vede tutti (regola della 2.14d)
+    const soloSud = request(appDiProva(router, utenteDiProva(CAPO, [], "user", { ruoli: ["capo_deposito"], depositi: ["s76"], depositiVisibili: ["s76"] })));
+    const sud = await soloSud.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
+    expect(sud.body.giorni[0].depositi.map((d: any) => d.deposito)).toEqual([SUD]);
+    const tutti = await capoSud.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
+    expect(tutti.body.giorni[0].depositi.map((d: any) => d.deposito)).toEqual(expect.arrayContaining([NORD, SUD]));
+    // il periodo si controlla; non si scrive niente
+    expect((await admin.get("/api/roster/quadro-anonimo?dal=2032-06-15&al=2032-06-30")).status).toBe(400);
+    expect((await admin.get("/api/roster/quadro-anonimo?dal=2032-02-30")).status).toBe(400);
+    const n = await righe(sql`SELECT count(*)::int AS n FROM roster_assignments WHERE day = ${GIORNO}::date AND dss_id = ${DSS}::uuid`);
+    expect(n[0].n).toBe(2);
   });
 
   it("«Assegna»: le assegnazioni con i controlli di quella a mano; G1 è una sostituzione; poi resta solo G3", async () => {

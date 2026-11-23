@@ -22,7 +22,9 @@ import {
   console_, conversazioni, NOMI_MODO, quandoFa, SPIEGA_MODO, TITOLI_PANNELLO, token,
   type Conversazione, type ModoConversazione,
 } from "@/lib/argos-console";
+import type { OsservatoreTurno } from "@/components/argos/ArgosConversation";
 import { Caricamento, Pill, Problema, Vuoto } from "./comuni";
+import { PalcoNeurale } from "./PalcoNeurale";
 
 const ArgosConversation = lazy(() => import("@/components/argos/ArgosConversation"));
 
@@ -314,6 +316,13 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
   const [titolo, setTitolo] = useState<string | null>(null);
   const [conferma, setConferma] = useState(false);
   const legata = useMemo(() => ({ id: conv.id, modo: conv.modo, agente: conv.agente, progetto: conv.progetto }), [conv.id, conv.modo, conv.agente, conv.progetto]);
+  // il palco della rete neurale guarda ogni turno mentre si svolge
+  const palco = useRef<OsservatoreTurno>(null);
+  const osservatore = useMemo<OsservatoreTurno>(() => ({
+    inizio: q => palco.current?.inizio(q),
+    evento: p => palco.current?.evento(p),
+    fine: (e, m) => palco.current?.fine(e, m),
+  }), []);
 
   return (
     <div className="space-y-3">
@@ -355,17 +364,21 @@ function ConversazioneAperta({ conv, nomeAgente, nomeProgetto, lavoro, argosPron
           )}
         </div>
       </header>
-      <div className="flex h-[calc(100vh-17rem)] min-h-[520px] flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-gradient-to-b from-zinc-950 via-[#120a1c] to-black shadow-[0_8px_40px_rgba(139,92,246,0.25)]">
-        <Suspense fallback={<div className="flex flex-1 items-center justify-center text-violet-300"><Eye className="h-6 w-6 animate-pulse" aria-hidden /></div>}>
-          <ArgosConversation
-            conversazione={legata}
-            projectId={conv.progetto ?? undefined}
-            argosReady={argosPronto}
-            tiConfigured={tiConfigured}
-            onTurnoFinito={onTurnoFinito}
-            solaLettura={conv.archiviata ? "Archiviata: ripristinala per continuare" : undefined}
-          />
-        </Suspense>
+      <div className="flex h-[calc(100vh-17rem)] min-h-[560px] flex-col overflow-hidden rounded-2xl border border-violet-400/40 bg-gradient-to-b from-zinc-950 via-[#120a1c] to-black shadow-[0_8px_40px_rgba(139,92,246,0.25)]">
+        <PalcoNeurale key={conv.id} ref={palco} />
+        <div className="flex min-h-0 flex-1 flex-col">
+          <Suspense fallback={<div className="flex flex-1 items-center justify-center text-violet-300"><Eye className="h-6 w-6 animate-pulse" aria-hidden /></div>}>
+            <ArgosConversation
+              conversazione={legata}
+              projectId={conv.progetto ?? undefined}
+              argosReady={argosPronto}
+              tiConfigured={tiConfigured}
+              onTurnoFinito={onTurnoFinito}
+              solaLettura={conv.archiviata ? "Archiviata: ripristinala per continuare" : undefined}
+              osservatore={conv.archiviata ? undefined : osservatore}
+            />
+          </Suspense>
+        </div>
       </div>
     </div>
   );

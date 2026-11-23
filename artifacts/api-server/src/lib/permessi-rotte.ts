@@ -145,8 +145,6 @@ export const CALCOLANO_SENZA_SCRIVERE: ReadonlyArray<readonly [string, string]> 
   ["POST", "/ai/argos/agent/chat"],
   // un agente della console: in questa fase legge e propone, non scrive su Cerbero
   ["POST", "/ai/argos/console/agenti/:chiave/esegui"],
-  // una domanda alla console col ragionamento in vista (documenti, dati, web)
-  ["POST", "/ai/argos/console/chiedi"],
   // una conversazione con Argos e i suoi turni: stanno in Argos, sono di chi le
   // apre, e un turno fa quello che fa con i diritti di chi chiede (il
   // Pianificatore scrive su Planning Studio col token dell'utente, e lì valgono

@@ -142,14 +142,28 @@ export function percorsoConsentitoLimitato(percorso: string): boolean {
 }
 
 /**
+ * Le sole letture del roster senza dati delle persone (nomi, matricole,
+ * assenze): i mezzi per deposito e il quadro della copertura per conteggi
+ * (lib/roster-quadro-anonimo.ts). Sono le uniche di /roster che un servizio
+ * come Argos può leggere: il resto del roster porta le persone, e i loro dati
+ * non vanno al fornitore del modello (decisione del titolare).
+ */
+export const ROSTER_SENZA_NOMI: readonly string[] = ["/roster/mezzi", "/roster/quadro-anonimo"];
+
+/**
  * I token dati a un servizio che agisce per conto della persona (Argos) non
  * toccano il suo accesso: niente sicurezza dell'account, accesso a FleetCare
- * o amministrazione. Leggere chi è (/auth/me) sì.
+ * o amministrazione. Leggere chi è (/auth/me) sì. E niente roster con le
+ * persone: di /roster passano solo le letture senza nomi (ROSTER_SENZA_NOMI);
+ * un percorso scritto in un altro modo (barre doppie, caratteri codificati)
+ * non è nell'elenco, quindi resta chiuso.
  */
 export function percorsoVietatoAiServizi(percorso: string): boolean {
   const p = percorso.toLowerCase();
   if (p === "/auth/me") return false;
-  return p === "/auth" || p.startsWith("/auth/") || p === "/admin" || p.startsWith("/admin/");
+  if (p === "/auth" || p.startsWith("/auth/") || p === "/admin" || p.startsWith("/admin/")) return true;
+  if (p === "/roster" || p.startsWith("/roster/")) return !ROSTER_SENZA_NOMI.includes(p.replace(/\/+$/, ""));
+  return false;
 }
 
 /** Accesso recente: la password è stata data da poco, e per attivare la verifica non si richiede. */
