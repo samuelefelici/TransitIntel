@@ -7,6 +7,8 @@ export declare const FUNZIONI_FLEETCARE: readonly string[];
 export declare const DA_LEGGERE: readonly string[];
 export declare const DA_ESEGUIRE: readonly string[];
 export declare const REGISTRO: "cerbero_registro";
+export declare const COPIA: "cerbero_backup";
+export declare const SCHEMI_COPIA: readonly string[];
 export declare const SCHEMA_REGISTRO: "registro";
 export declare const COMANDI_DELL_APP: readonly string[];
 export declare const COMANDI_DEL_REGISTRO: readonly string[];
@@ -44,6 +46,11 @@ export interface StatoRuoli {
   lettura: { voce: string; esiste: boolean; legge: boolean | null }[];
   esecuzione?: { firma: string; esiste: boolean; esegue: boolean | null }[];
   registro?: { diritti: { tipo: string; oggetto: string; a_chi: string; diritto: string }[]; problemi: string[] } | null;
+  /** Chi fa la copia del database (tappa 7.23); null: il ruolo non c'è; assente: lo stato non ne parla. */
+  copia?: {
+    connette: boolean; predefiniti: boolean | null;
+    schemi: { schema: string; uso: boolean; tabelle: number; sequenze: number }[];
+  } | null;
   relazioni: Relazione[];
   fleetcare: { firma: string; esiste: boolean; chiama: boolean | null }[];
   lettori?: { ruolo: string; tabella: string; colonna: string; uso: boolean; legge: boolean }[];

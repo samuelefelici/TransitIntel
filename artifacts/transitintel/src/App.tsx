@@ -106,6 +106,7 @@ const AdminAziendaPage = lazyWithRetry(() => import("@/pages/admin-azienda"));
 const AdminVociRosterPage = lazyWithRetry(() => import("@/pages/admin-voci-roster"));
 const AdminRuoliPage = lazyWithRetry(() => import("@/pages/admin-ruoli"));
 const AdminRegistroPage = lazyWithRetry(() => import("@/pages/admin-registro"));
+const AdminCopiePage = lazyWithRetry(() => import("@/pages/admin-copie"));
 const AdminEsercizioPage = lazyWithRetry(() => import("@/pages/admin-esercizio"));
 const AdminGiornatePage = lazyWithRetry(() => import("@/pages/admin-giornate"));
 const ConsuntivoPage = lazyWithRetry(() => import("@/pages/esercizio-consuntivo"));
@@ -468,6 +469,9 @@ function Router() {
             </Route>
             <Route path="/admin/parametri">
               <AdminOnly><AdminParametriPage /></AdminOnly>
+            </Route>
+            <Route path="/admin/copie">
+              <AdminOnly><AdminCopiePage /></AdminOnly>
             </Route>
             <Route path="/admin/registro">
               <AdminOnly><AdminRegistroPage /></AdminOnly>

@@ -12,7 +12,7 @@
 import {
   BarChart3, Bot, CalendarDays, ClipboardCheck, ClipboardList, Coins, Gamepad2, Layers, Map, MapPinned,
   Milestone, Navigation, Network, Printer, Route, SatelliteDish, Send, Shield, Ticket, Timer,
-  Users, UserCheck, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, Building2, ListChecks, ShieldCheck, Stethoscope, type LucideIcon,
+  Users, UserCheck, IdCard, Activity, Database, Wrench, Zap, Settings2, Cpu, History, DatabaseBackup, Building2, ListChecks, ShieldCheck, Stethoscope, type LucideIcon,
 } from "lucide-react";
 import { NOMI_AREE, type Area } from "@workspace/permessi";
 
@@ -171,6 +171,7 @@ export const SEZIONI: readonly SezioneMenu[] = [
       { href: "/admin/voci-roster", etichetta: "Voci del roster", icona: ListChecks, descrizione: "Assenze e presenze, con le loro regole", soloAdmin: true },
       { href: "/admin/parametri", etichetta: "Parametri di esercizio", icona: Settings2, descrizione: "Autovetture aziendali", soloAdmin: true },
       { href: "/admin/registro", etichetta: "Registro delle modifiche", icona: History, descrizione: "Chi ha cambiato che cosa", soloAdmin: true },
+      { href: "/admin/copie", etichetta: "Copie del database", icona: DatabaseBackup, descrizione: "La copia cifrata di ogni notte, fuori dal server", soloAdmin: true },
       { href: "/admin/esercizio", etichetta: "Diagnosi dell'esercizio", icona: Stethoscope, descrizione: "Programma, AVM e turni di un giorno", soloAdmin: true },
       { href: "/admin/giornate", etichetta: "Giornate di esercizio", icona: CalendarDays, descrizione: "Il programmato congelato di ogni giorno", soloAdmin: true },
       { href: "/data", etichetta: "Dati e integrazioni", icona: Database, descrizione: "Feed GTFS, paline dell'AVM", aree: AREE_PAGINA["/data"] },

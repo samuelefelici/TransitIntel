@@ -36,6 +36,7 @@ import { avviaPulizie } from "./lib/lavori/pulizie";
 import { avviaRegistro } from "./lib/lavori/registro";
 import { avviaGiornate } from "./lib/lavori/giornate";
 import { avviaDatiAperti } from "./lib/lavori/dati-aperti";
+import { avviaCopie } from "./lib/lavori/copia";
 import { tieniAggiornataAzienda } from "./lib/azienda";
 import { controllaIdentita } from "./lib/identita-db";
 
@@ -63,6 +64,8 @@ const fermaGiornate = avviaGiornate(logger, () => statoDelloSchema() === "ok");
 const fermaAzienda = tieniAggiornataAzienda();
 /* i dati aperti: il GTFS e il NeTEx in linea seguono la versione in esercizio (tappa 6.3) */
 const fermaDatiAperti = avviaDatiAperti(logger, () => statoDelloSchema() === "ok");
+/* la copia cifrata del database fuori dal server, ogni notte e quando la chiede l'amministratore (tappa 7.23) */
+const fermaCopie = avviaCopie(logger, () => statoDelloSchema() === "ok");
 
 const server = http.createServer(async (req, res) => {
   const percorso = (req.url ?? "").split("?")[0];
@@ -91,6 +94,7 @@ async function arresta(segnale: string): Promise<void> {
   fermaRegistro();
   fermaGiornate();
   fermaDatiAperti();
+  fermaCopie();
   fermaAzienda();
   try { await esecutore.ferma(ATTESA_ARRESTO_MS); }
   catch (err) { logger.error({ err }, "arresto del lavoratore: errore fermando i lavori"); }

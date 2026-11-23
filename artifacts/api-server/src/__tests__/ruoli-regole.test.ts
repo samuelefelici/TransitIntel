@@ -8,8 +8,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { GIRI_SCRAM, improntaScram, nuovaPassword, urlDellApp } from "../../../../lib/db/scripts/ruoli-password.mjs";
 import {
-  APP, COMANDI_DELL_APP, COMANDI_DEL_REGISTRO, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, allinea, calcolateDaControllare, calcolateDalCatalogo,
-  elencoDalCatalogo, piano, sqlEspressioniVietate,
+  APP, COMANDI_DELL_APP, COMANDI_DEL_REGISTRO, COPIA, CORPO_EVENTO_DDL, DA_ESEGUIRE, DA_LEGGERE, FUNZIONI_AMMESSE, PROPRIETARIO, SCHEMI_COPIA, allinea,
+  calcolateDaControllare, calcolateDalCatalogo, elencoDalCatalogo, piano, sqlEspressioniVietate,
 } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 import type { StatoRuoli, Relazione } from "../../../../lib/db/scripts/ruoli-regole.mjs";
 
@@ -326,6 +326,43 @@ describe("ruoli del database: il piano", () => {
     expect(piano(stato).azioni.map((a) => a.sql)).toEqual(['REVOKE EXECUTE ON FUNCTION registro.somma(xid8) FROM "cerbero_owner"']);
   });
 
+  it("chi fa la copia del database (tappa 7.23): il ruolo, la lettura degli schemi della copia, le partizioni future del registro", () => {
+    expect(SCHEMI_COPIA).toEqual(["public", "caronte", "coda", "registro", "cerbero_migrazioni"]);
+    const copia = (extra: Partial<NonNullable<StatoRuoli["copia"]>> = {}) => ({
+      connette: true, predefiniti: true,
+      schemi: SCHEMI_COPIA.map((schema) => ({ schema, uso: true, tabelle: 0, sequenze: 0 })), ...extra,
+    });
+    const conCopia = (c: StatoRuoli["copia"], ruoli = [...base().ruoli, ruolo(COPIA, { login: true })]) => base({ ruoli, copia: c });
+    // in regola: con LOGIN (la password e l'accesso li dà chi gestisce il database) va bene
+    expect(piano(conCopia(copia()))).toEqual({ azioni: [], attese: [], avvisi: [], errori: [] });
+    // uno stato che non ne parla (scritto a mano): nessuna azione
+    expect(piano(base()).azioni).toEqual([]);
+    // il ruolo manca: si crea senza accesso
+    expect(piano(conCopia(null, base().ruoli)).azioni.map((a) => a.sql)).toEqual([`CREATE ROLE "${COPIA}" NOLOGIN`]);
+    // attributi pericolosi: via
+    expect(piano(conCopia(copia(), [...base().ruoli, ruolo(COPIA, { superutente: true, bypassrls: true })])).azioni.map((a) => a.sql))
+      .toEqual([`ALTER ROLE "${COPIA}" NOSUPERUSER NOBYPASSRLS`]);
+    // un server nuovo, o tabelle nuove: lettura di tutto negli schemi della copia, e delle partizioni future del registro
+    const nuovo = piano(conCopia(copia({
+      connette: false, predefiniti: false,
+      schemi: [{ schema: "public", uso: false, tabelle: 158, sequenze: 8 }, { schema: "registro", uso: true, tabelle: 1, sequenze: 0 }],
+    })));
+    expect(nuovo.azioni.map((a) => a.sql)).toEqual([
+      `GRANT CONNECT ON DATABASE "postgres" TO "${COPIA}"`,
+      `GRANT USAGE ON SCHEMA "public" TO "${COPIA}"`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA "public" TO "${COPIA}"`,
+      `GRANT SELECT ON ALL SEQUENCES IN SCHEMA "public" TO "${COPIA}"`,
+      `GRANT SELECT ON ALL TABLES IN SCHEMA "registro" TO "${COPIA}"`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE "cerbero_registro" IN SCHEMA "registro" GRANT SELECT ON TABLES TO "${COPIA}"`,
+    ]);
+    // mai scrittura: nessuna azione dà altro che USAGE, SELECT e CONNECT
+    expect(nuovo.azioni.every((a) => !/INSERT|UPDATE|DELETE|TRUNCATE|CREATE ON|ALL PRIVILEGES/.test(a.sql))).toBe(true);
+    // membro di un altro ruolo: errore, come per gli altri
+    const membro = piano(base({ ruoli: [...base().ruoli, ruolo(COPIA)], copia: copia(),
+      appartenenze: [...base().appartenenze, { ruolo: "pg_read_all_data", membro: COPIA, admin: false, eredita: true, imposta: true }] }));
+    expect(membro.errori).toEqual([`${COPIA} è membro di pg_read_all_data: non previsto. Se non serve: REVOKE "pg_read_all_data" FROM "${COPIA}";`]);
+  });
+
   it("il registro delle modifiche: diritti di cerbero_owner, nient'altro, il suo ruolo, i problemi come errori", () => {
     const reg = ruolo("cerbero_registro");
     const conRegistro = (extra: Partial<StatoRuoli> = {}) => base({
@@ -532,6 +569,8 @@ describe("ruoli del database: esecuzione", () => {
           return { rows: [] };
         }
         // le letture di leggiStato, dallo stato corrente (le più specifiche prima)
+        if (/AS predefiniti/.test(sql)) return { rows: [{ connette: true, predefiniti: true }] };
+        if (/has_sequence_privilege/.test(sql)) return { rows: [] };
         if (/to_regnamespace\(\$1\) IS NOT NULL AS c/.test(sql)) return { rows: [{ c: !!stato.registro }] };
         if (/aclexplode/.test(sql)) return { rows: stato.registro?.diritti ?? [] };
         if (/to_regprocedure\(\$1\) IS NOT NULL AS c/.test(sql)) return { rows: [{ c: true }] };
@@ -543,7 +582,10 @@ describe("ruoli del database: esecuzione", () => {
         if (/pg_event_trigger/.test(sql)) return { rows: [stato.evento] };
         if (/AS funzione/.test(sql)) return { rows: stato.fughe ?? [] };
         if (/current_user AS utente/.test(sql)) return { rows: [stato.io] };
-        if (/FROM pg_catalog.pg_roles r WHERE rolname/.test(sql)) return { rows: stato.ruoli };
+        // il ruolo della copia (7.23) c'è ed è in regola: questi casi non ne parlano
+        if (/FROM pg_catalog.pg_roles r WHERE rolname/.test(sql)) {
+          return { rows: stato.ruoli.some((r) => r.nome === COPIA) ? stato.ruoli : [...stato.ruoli, ruolo(COPIA)] };
+        }
         if (/pg_auth_members/.test(sql)) return { rows: stato.appartenenze };
         if (/AS connette/.test(sql)) return { rows: [stato.database] };
         if (/pg_namespace n ON n.nspname = s.nome/.test(sql)) return { rows: stato.schemi };
