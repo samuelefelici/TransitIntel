@@ -698,6 +698,7 @@
    "chiesta_da": "uuid | null |  |  | ",
    "creata_il": "timestamp with time zone | not null | now() |  | ",
    "errore": "text | null |  |  | ",
+   "escluse": "text[] | not null | '{}'::text[] |  | ",
    "finita_il": "timestamp with time zone | null |  |  | ",
    "id": "uuid | not null | gen_random_uuid() |  | ",
    "iniziata_il": "timestamp with time zone | null |  |  | ",

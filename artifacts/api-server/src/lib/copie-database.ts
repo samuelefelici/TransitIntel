@@ -19,6 +19,8 @@ export interface Copia {
   sha256: string | null;
   tabelle: number | null;
   versione: string | null;
+  /** le tabelle saltate perché il ruolo della copia non le legge */
+  escluse: string[];
   errore: string | null;
 }
 
@@ -34,11 +36,11 @@ export async function elencoCopie(quante = 30): Promise<{ copie: Copia[]; ultima
     id: r.id, stato: r.stato, chiestaDa: r.chiesta_da_nome ?? null,
     creataIl: ISO(r.creata_il)!, iniziataIl: ISO(r.iniziata_il), finitaIl: ISO(r.finita_il),
     oggetto: r.oggetto ?? null, byte: r.byte == null ? null : Number(r.byte), sha256: r.sha256 ?? null,
-    tabelle: r.tabelle ?? null, versione: r.versione ?? null, errore: r.errore ?? null,
+    tabelle: r.tabelle ?? null, versione: r.versione ?? null, escluse: r.escluse ?? [], errore: r.errore ?? null,
   });
   const scelta = `
     SELECT c.id, c.stato, coalesce(nullif(u.full_name, ''), u.email) AS chiesta_da_nome, c.creata_il, c.iniziata_il,
-           c.finita_il, c.oggetto, c.byte, c.sha256, c.tabelle, c.versione, c.errore
+           c.finita_il, c.oggetto, c.byte, c.sha256, c.tabelle, c.versione, c.escluse, c.errore
       FROM backup_copie c LEFT JOIN users u ON u.id = c.chiesta_da`;
   const { rows } = await pool.query(`${scelta} ORDER BY c.creata_il DESC LIMIT $1`, [quante]);
   const { rows: [ultima] } = await pool.query(`${scelta} WHERE c.stato = 'riuscita' ORDER BY c.finita_il DESC NULLS LAST LIMIT 1`);

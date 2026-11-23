@@ -14,10 +14,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pool } from "@workspace/db";
+import { pool, PoolConContesto } from "@workspace/db";
 import adminRouter from "../routes/admin";
 import { decifraFile } from "../../../../lib/db/scripts/copia-cifrata.mjs";
-import { faiCopia, passaggioCopie, leggiConfig, type ConfigCopia, type EsitoCopia, type StatoConfig } from "../lib/lavori/copia";
+import { faiCopia, nonLeggibili, passaggioCopie, leggiConfig, type ConfigCopia, type EsitoCopia, type StatoConfig } from "../lib/lavori/copia";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
 import { ambienteS3, storageFinto, type StorageFinto } from "./helpers/storage-finto";
 
@@ -33,9 +33,11 @@ const PRONTA = {
   config: { url: "postgres://cerbero_backup@x/y", password: "pw-segreta", chiave: chiave.publicKey, ora: 3, pgDump: "pg_dump", pgRestore: "pg_restore",
     segreti: ["pw-segreta"], s3: { endpoint: "http://127.0.0.1:1", regione: "r", bucket: "b", prefisso: "cerbero/", stile: "percorso", accesso: "a", segreto: "s" } },
 } as StatoConfig;
-const finta = (esito: Partial<EsitoCopia> = {}) => async (_c: ConfigCopia, quando: Date): Promise<EsitoCopia> => ({
-  oggetto: `cerbero/prova-${quando.toISOString()}.dump.enc`, byte: 1234, sha256: "a".repeat(64), voci: 10, tabelle: 4, versione: "pg_dump 17", ...esito,
-});
+const finta = (esito: Partial<EsitoCopia> = {}) =>
+  async (_c: ConfigCopia, quando: Date, saltare: { schema: string; nome: string }[] = []): Promise<EsitoCopia> => ({
+    oggetto: `cerbero/prova-${quando.toISOString()}.dump.enc`, byte: 1234, sha256: "a".repeat(64), voci: 10, tabelle: 4, versione: "pg_dump 17",
+    escluse: saltare.map((r) => `${r.schema}.${r.nome}`), ...esito,
+  });
 const rotta = async (): Promise<EsitoCopia> => { throw new Error("storage non raggiungibile: ECONNREFUSED (segreto pw-segreta)"); };
 const righe = async () => (await pool.query("SELECT stato, chiesta_da, errore, oggetto FROM backup_copie ORDER BY creata_il, iniziata_il")).rows;
 const svuota = () => pool.query("DELETE FROM backup_copie");
@@ -109,6 +111,22 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le copie del database, sul data
     await svuota();
   });
 
+  it.runIf(!!process.env.TEST_DATABASE_MIGRATOR_URL)("una tabella che cerbero_backup non legge (un avanzo di un superutente) si salta, e l'esito lo dice", async () => {
+    const migratore = new PoolConContesto({ connectionString: process.env.TEST_DATABASE_MIGRATOR_URL, max: 1 });
+    try {
+      await migratore.query("DROP TABLE IF EXISTS public.copia_avanzo_723; CREATE TABLE public.copia_avanzo_723 (x int)");
+      expect((await nonLeggibili()).map((r) => `${r.schema}.${r.nome}`)).toContain("public.copia_avanzo_723");
+      await admin.post("/api/admin/copie").send({});
+      expect(await passaggioCopie(log, PRONTA, new Date("2099-04-01T10:00:00Z"), finta())).toBe("riuscita");
+      const r = await admin.get("/api/admin/copie");
+      expect(r.body.copie[0].escluse).toContain("public.copia_avanzo_723");
+    } finally {
+      await migratore.query("DROP TABLE IF EXISTS public.copia_avanzo_723");
+      await migratore.end();
+    }
+    await svuota();
+  });
+
   it("una copia rimasta in corso (lavoratore fermato) diventa interrotta dopo tre ore; due insieme no", async () => {
     await pool.query("INSERT INTO backup_copie (stato, creata_il, iniziata_il) VALUES ('in_corso', '2099-03-01T02:00:00Z', '2099-03-01T02:00:00Z')");
     // un'altra intanto aspetta: l'indice unico ne tiene una in corso alla volta
@@ -150,8 +168,18 @@ describe.runIf(!!(process.env.TEST_DATABASE_URL && process.env.TEST_PG_DUMP && p
       });
       expect(l.stato).toBe("pronta");
       if (l.stato !== "pronta") return;
-      const e = await faiCopia(l.config, new Date());
+      const migratore = process.env.TEST_DATABASE_MIGRATOR_URL
+        ? new PoolConContesto({ connectionString: process.env.TEST_DATABASE_MIGRATOR_URL, max: 1 }) : null;
+      await migratore?.query("DROP TABLE IF EXISTS public.copia_avanzo_723; CREATE TABLE public.copia_avanzo_723 (x int)");
+      let e: EsitoCopia;
+      try {
+        e = await faiCopia(l.config, new Date(), await nonLeggibili());
+      } finally {
+        await migratore?.query("DROP TABLE IF EXISTS public.copia_avanzo_723");
+        await migratore?.end();
+      }
       expect(e.tabelle).toBeGreaterThan(100);
+      if (migratore) expect(e.escluse).toContain("public.copia_avanzo_723");
       await writeFile(path.join(cartella, "c.enc"), s.oggetti.get(e.oggetto)!);
       await decifraFile(path.join(cartella, "c.enc"), path.join(cartella, "c.dump"), chiave.privateKey);
       const elenco = execFileSync(process.env.TEST_PG_RESTORE!, ["--list", path.join(cartella, "c.dump")], { encoding: "utf8" });
@@ -162,5 +190,6 @@ describe.runIf(!!(process.env.TEST_DATABASE_URL && process.env.TEST_PG_DUMP && p
       // solo gli schemi di Cerbero
       const schemi = new Set([...elenco.matchAll(/^\d+; \d+ \d+ SCHEMA - (\S+) /gm)].map((m) => m[1]));
       expect([...schemi].sort()).toEqual(["caronte", "cerbero_migrazioni", "coda", "public", "registro"]);
+      expect(elenco).not.toMatch(/copia_avanzo_723/);
     }, 120_000);
   });

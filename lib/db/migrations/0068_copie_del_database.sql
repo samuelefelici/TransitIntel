@@ -9,7 +9,8 @@
 --                 chi l'ha chiesta (NULL: quella della notte), quando, il nome
 --                 della copia nello storage, byte, SHA-256 del file cifrato,
 --                 quante voci e quante tabelle con dati, la versione di
---                 pg_dump, l'errore.
+--                 pg_dump, le tabelle saltate perché cerbero_backup non le
+--                 legge (un avanzo fatto a mano da un superutente), l'errore.
 -- Una chiesta e una in corso alla volta (indice unico parziale): due
 -- lavoratori, o due clic, non fanno due copie insieme.
 -- Non è sotto registro: è lo stato di un lavoro del sistema, non un dato di
@@ -32,6 +33,7 @@ BEGIN
       voci          integer,
       tabelle       integer,
       versione      text CONSTRAINT backup_copie_versione CHECK (char_length(versione) <= 200),
+      escluse       text[] NOT NULL DEFAULT '{}'::text[],
       errore        text CONSTRAINT backup_copie_errore CHECK (char_length(errore) <= 2000)
     );
     CREATE UNIQUE INDEX backup_copie_una_per_stato ON public.backup_copie (stato) WHERE stato IN ('chiesta', 'in_corso');

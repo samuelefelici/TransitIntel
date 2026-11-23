@@ -2258,6 +2258,10 @@ ultime copie, avvisa se l'ultima riuscita ha più di 36 ore e ha il pulsante
   anche delle partizioni mensili del registro.
 - Il suo indirizzo sta solo nell'ambiente del lavoratore. Il lavoratore
   rifiuta un indirizzo con un altro utente (né `postgres` né `cerbero_app`).
+- Una tabella che `cerbero_backup` non può leggere (un avanzo fatto a mano da
+  un superutente, che il migratore non tocca) si salta. La riga della copia
+  in pagina e il log la nominano: se serve, la si sposta a `cerbero_owner`
+  o la si toglie (l'avviso di `ruoli.mjs --verifica` dice come).
 - **Il lavoratore non cancella copie.** Quanto tenerle lo decide una regola
   di scadenza dello storage. Così nemmeno chi entrasse nel server può
   toglierle.

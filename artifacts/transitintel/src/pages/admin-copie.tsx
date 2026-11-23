@@ -123,6 +123,11 @@ export default function AdminCopiePage() {
                   <span className="min-w-0 break-words">
                     {c.chiestaDa ? `chiesta da ${c.chiestaDa}` : "della notte"}
                     {c.stato === "riuscita" && ` · ${megabyte(c.byte)} · ${c.tabelle ?? "?"} tabelle`}
+                    {c.escluse?.length > 0 && (
+                      <span className="block text-amber-700 dark:text-amber-400">
+                        Non copiate (il ruolo della copia non le legge): {c.escluse.join(", ")}
+                      </span>
+                    )}
                     {c.errore && <span className="block text-destructive">{c.errore}</span>}
                   </span>
                 </li>

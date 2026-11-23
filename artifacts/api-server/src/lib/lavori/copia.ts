@@ -6,7 +6,9 @@
  * di quella della notte (dopo BACKUP_ORA, ora di Roma, se oggi non ce n'è
  * ancora una riuscita). Poi:
  * 1. pg_dump degli schemi di Cerbero (SCHEMI_COPIA: non quelli di altri
- *    programmi), come cerbero_backup, che legge tutto e non scrive niente;
+ *    programmi), come cerbero_backup, che legge tutto e non scrive niente.
+ *    Una tabella che non può leggere (un avanzo fatto a mano da un
+ *    superutente: il migratore non gliela dà) si salta, e l'esito lo dice;
  * 2. pg_restore --list: la copia si legge, e quante tabelle hanno dati;
  * 3. cifratura con la chiave PUBBLICA dell'azienda (lib/db/scripts/
  *    copia-cifrata.mjs): il server non sa decifrare; la copia in chiaro si
@@ -137,7 +139,26 @@ function esegui(programma: string, argomenti: string[], env: Record<string, stri
   });
 }
 
-export interface EsitoCopia { oggetto: string; byte: number; sha256: string; voci: number; tabelle: number; versione: string }
+export interface EsitoCopia {
+  oggetto: string; byte: number; sha256: string; voci: number; tabelle: number; versione: string;
+  /** le relazioni saltate perché cerbero_backup non le legge */
+  escluse: string[];
+}
+
+/** Le relazioni degli schemi della copia che cerbero_backup non legge: pg_dump si fermerebbe. */
+export async function nonLeggibili(): Promise<{ schema: string; nome: string }[]> {
+  const { rows } = await pool.query(`
+    SELECT n.nspname AS schema, c.relname AS nome
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = ANY ($1::text[]) AND c.relkind IN ('r', 'p', 'S') AND c.relpersistence <> 't'
+       AND pg_catalog.to_regrole($2) IS NOT NULL
+       AND NOT pg_catalog.has_table_privilege($2, c.oid, 'SELECT')
+     ORDER BY 1, 2`, [[...SCHEMI_COPIA], COPIA]);
+  return rows;
+}
+
+/** Il nome per --exclude-table: fra virgolette, preso alla lettera. */
+const fraVirgolette = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
 /** Il nome della copia nello storage: prefisso, data e ora UTC. */
 export function nomeCopia(prefisso: string, quando: Date): string {
@@ -145,7 +166,8 @@ export function nomeCopia(prefisso: string, quando: Date): string {
 }
 
 /** Una copia: dump, elenco, cifratura, caricamento, verifica. */
-export async function faiCopia(cfg: ConfigCopia, quando: Date = new Date()): Promise<EsitoCopia> {
+export async function faiCopia(cfg: ConfigCopia, quando: Date = new Date(),
+  saltare: { schema: string; nome: string }[] = []): Promise<EsitoCopia> {
   const envPg = { PGPASSWORD: cfg.password, PGAPPNAME: "cerbero-copia", PGCONNECT_TIMEOUT: "20" };
   const versione = (await esegui(cfg.pgDump, ["--version"], {}, 30_000)).trim().slice(0, 200);
   const cartella = await mkdtemp(path.join(os.tmpdir(), "cerbero-copia-"));
@@ -153,7 +175,9 @@ export async function faiCopia(cfg: ConfigCopia, quando: Date = new Date()): Pro
     const dump = path.join(cartella, "copia.dump");
     await esegui(cfg.pgDump, [
       "--format=custom", "--no-password", "--lock-wait-timeout=120000",
-      ...SCHEMI_COPIA.map((s) => `--schema=${s}`), `--file=${dump}`, `--dbname=${cfg.url}`,
+      ...SCHEMI_COPIA.map((s) => `--schema=${s}`),
+      ...saltare.map((r) => `--exclude-table=${fraVirgolette(r.schema)}.${fraVirgolette(r.nome)}`),
+      `--file=${dump}`, `--dbname=${cfg.url}`,
     ], envPg, DUMP_MAX_MS);
     const elenco = (await esegui(cfg.pgRestore, ["--list", dump], {}, ELENCO_MAX_MS)).split("\n");
     const voci = elenco.filter((r) => r.trim() && !r.startsWith(";")).length;
@@ -174,7 +198,7 @@ export async function faiCopia(cfg: ConfigCopia, quando: Date = new Date()): Pro
     if (r.byte !== byte || r.sha256 !== sha256) {
       throw new Error(`la copia riscaricata non è quella caricata: ${r.byte} byte invece di ${byte}, o SHA-256 diverso`);
     }
-    return { oggetto, byte, sha256, voci, tabelle, versione };
+    return { oggetto, byte, sha256, voci, tabelle, versione, escluse: saltare.map((r) => `${r.schema}.${r.nome}`) };
   } finally {
     await rm(cartella, { recursive: true, force: true });
   }
@@ -207,7 +231,7 @@ export type EsitoPassaggio = "senza tabella" | "spenta" | "incompleta" | "niente
 
 /** Un passaggio. `fai` si sostituisce nei test. */
 export function passaggioCopie(log: Log, letta: StatoConfig = leggiConfig(), adesso: Date = new Date(),
-  fai: (cfg: ConfigCopia, quando: Date) => Promise<EsitoCopia> = faiCopia): Promise<EsitoPassaggio> {
+  fai: (cfg: ConfigCopia, quando: Date, saltare: { schema: string; nome: string }[]) => Promise<EsitoCopia> = faiCopia): Promise<EsitoPassaggio> {
   return inSistema("copia", async () => {
     const { rows: [t] } = await pool.query("SELECT pg_catalog.to_regclass('public.backup_copie') IS NOT NULL AS c");
     if (!t?.c) return "senza tabella";
@@ -250,11 +274,16 @@ export function passaggioCopie(log: Log, letta: StatoConfig = leggiConfig(), ade
     if (!id) return "già in corso";
     log.info({ id, chiesta: !!chiesta }, "copia del database: comincio");
     try {
-      const e = await fai(cfg, adesso);
+      const saltare = await nonLeggibili();
+      if (saltare.length) {
+        log.warn({ id, escluse: saltare.map((r) => `${r.schema}.${r.nome}`) },
+          "copia del database: salto le tabelle che cerbero_backup non legge (non sono di Cerbero, o il migratore non è ancora passato)");
+      }
+      const e = await fai(cfg, adesso, saltare);
       await pool.query(`
         UPDATE backup_copie SET stato = 'riuscita', finita_il = clock_timestamp(), oggetto = $2, byte = $3, sha256 = $4,
-               voci = $5, tabelle = $6, versione = $7
-         WHERE id = $1`, [id, e.oggetto, e.byte, e.sha256, e.voci, e.tabelle, e.versione]);
+               voci = $5, tabelle = $6, versione = $7, escluse = $8
+         WHERE id = $1`, [id, e.oggetto, e.byte, e.sha256, e.voci, e.tabelle, e.versione, e.escluse]);
       log.info({ id, oggetto: e.oggetto, mb: Math.round(e.byte / 1e5) / 10, tabelle: e.tabelle },
         "copia del database: fatta, cifrata, caricata e riscaricata uguale");
       return "riuscita";

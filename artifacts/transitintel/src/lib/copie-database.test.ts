@@ -4,7 +4,7 @@ import { etaCopia, megabyte, statoCopie, type Copia } from "./copie-database";
 const adesso = new Date("2026-11-23T12:00:00Z");
 const copia = (finitaIl: string): Copia => ({
   id: "x", stato: "riuscita", chiestaDa: null, creataIl: finitaIl, iniziataIl: finitaIl, finitaIl,
-  oggetto: "cerbero/x.dump.enc", byte: 74_748_084, sha256: "a".repeat(64), tabelle: 181, versione: "17", errore: null,
+  oggetto: "cerbero/x.dump.enc", byte: 74_748_084, sha256: "a".repeat(64), tabelle: 181, versione: "17", escluse: [], errore: null,
 });
 
 describe("le copie del database nella pagina dell'amministratore (tappa 7.23)", () => {

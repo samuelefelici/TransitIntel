@@ -16,6 +16,8 @@ export interface Copia {
   sha256: string | null;
   tabelle: number | null;
   versione: string | null;
+  /** le tabelle saltate perché il ruolo della copia non le legge */
+  escluse: string[];
   errore: string | null;
 }
 
