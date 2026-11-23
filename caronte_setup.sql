@@ -108,6 +108,27 @@ BEGIN
   END LOOP;
 END$$;
 
+-- La copia del database fuori dal server (Cerbero, tappa 7.23): il ruolo che
+-- la fa, cerbero_backup, legge anche le tabelle di Caronte, e quelle che
+-- Caronte si crea dopo (i diritti predefiniti di caronte_app). Solo lettura.
+-- Se il ruolo non c'è ancora (Cerbero prima della 7.23), niente.
+DO $$
+DECLARE r record;
+BEGIN
+  IF to_regrole('cerbero_backup') IS NOT NULL THEN
+    FOR r IN
+      SELECT c.oid::regclass AS nome, c.relkind
+        FROM pg_catalog.pg_class c
+        JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'caronte' AND c.relowner = 'caronte_app'::regrole AND c.relkind IN ('r', 'p', 'S')
+    LOOP
+      EXECUTE format('GRANT SELECT ON %s %s TO cerbero_backup', CASE WHEN r.relkind = 'S' THEN 'SEQUENCE' ELSE 'TABLE' END, r.nome);
+    END LOOP;
+    ALTER DEFAULT PRIVILEGES FOR ROLE caronte_app IN SCHEMA caronte GRANT SELECT ON TABLES TO cerbero_backup;
+    ALTER DEFAULT PRIVILEGES FOR ROLE caronte_app IN SCHEMA caronte GRANT SELECT ON SEQUENCES TO cerbero_backup;
+  END IF;
+END$$;
+
 -- Da togliere quando Caronte non crea più la sua tabella a ogni login (vedi in testa)
 GRANT CREATE ON SCHEMA caronte TO caronte_app;
 
