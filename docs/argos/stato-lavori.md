@@ -2103,6 +2103,24 @@ Fatto finora:
   filtrati); la domanda è in `CALCOLANO_SENZA_SCRIVERE`. Nessuna variabile
   d'ambiente nuova.
 
+- **Argos esce da Planning Studio: le conversazioni (questa PR, con argos #77).**
+  Il pannello laterale non c'è più. Il bottone di Argos in Planning Studio
+  (stesso aspetto) apre `/argos` in un'altra scheda, sulla scheda nuova
+  *Conversazioni* filtrata sul progetto aperto. Una conversazione nasce con un
+  modo che non cambia più (Risposta, Analisi, Agente con un agente della
+  squadra), resta legata al suo progetto e si riprende dove si era lasciata:
+  la memoria sta in Argos (`conversations`, `conversation_messages`), Cerbero
+  filtra per utente e per progetto accessibile. Il Pianificatore in
+  conversazione ha tutto quello del pannello: Agente · Piano · Accetta,
+  obiettivi, sorveglianza, piani da approvare, annullo. Le chat del vecchio
+  pannello (`ps_argos_messages`) si importano per progetto in una
+  conversazione «Dal pannello · …»: non si perdono. Le scritture del
+  Pianificatore aggiornano Planning Studio anche nell'altra scheda
+  (`lib/argos-live.ts`, BroadcastChannel; l'editor ignora gli annunci di un
+  altro progetto). Rinominare, archiviare, eliminare e importare chiedono la
+  scrittura sull'area Rete; creare e parlare bastano con la lettura.
+  Nessuna variabile d'ambiente nuova.
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.

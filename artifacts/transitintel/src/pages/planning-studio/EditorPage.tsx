@@ -1235,8 +1235,9 @@ export default function PlanningStudioEditorPage() {
     }
   }
 
-  // REGIA IN DIRETTA: quando l'agente Argos crea rete (evento "argos-live"
-  // dal pannello, emesso a scrittura riuscita), la mappa si aggiorna da sola:
+  // REGIA IN DIRETTA: quando l'agente Argos crea rete (evento "argos-live",
+  // emesso a scrittura riuscita anche dalla pagina /argos in un'altra scheda:
+  // lib/argos-live.ts), la mappa si aggiorna da sola:
   // fermate e linee ricaricate, cache varianti azzerata così i percorsi nuovi
   // compaiono senza ricaricare la pagina. L'ANTEPRIMA FANTASMA (tool
   // preview_route) disegna invece il percorso PROPOSTO, tratteggiato, prima
@@ -1255,6 +1256,7 @@ export default function PlanningStudioEditorPage() {
     const onLive = (e: Event) => {
       const d = (e as CustomEvent<any>).detail;
       if (!d?.ok || !projectId) return;
+      if (d.projectId && d.projectId !== projectId) return; // Argos lavora su un altro progetto (altra scheda)
       if (d.ghost?.stopIds?.length >= 2) {
         setArgosGhost({ label: String(d.ghost.label || "percorso proposto"),
                         stopIds: d.ghost.stopIds.map(String), snapping: true });

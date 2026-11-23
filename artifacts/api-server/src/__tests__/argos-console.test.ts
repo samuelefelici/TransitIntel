@@ -17,8 +17,15 @@ const stato = vi.hoisted(() => {
     accessibili: new Set<string>(),
     chiamate: [] as Array<{ url: string; init: any }>,
     risposte: [] as Array<{ status: number; body: any; sse?: string }>,
+    righeDb: [] as any[],
   };
 });
+
+/* le chat del vecchio pannello (ps_argos_messages): righe finte */
+vi.mock("@workspace/db", () => ({
+  db: { execute: vi.fn(async () => ({ rows: stato.righeDb })) },
+  pool: { query: vi.fn(async () => ({ rows: [] })), on: vi.fn() },
+}));
 
 vi.mock("../lib/auth", () => ({ mintShortLivedUserToken: vi.fn(() => "jwt-prova") }));
 vi.mock("../lib/argos-progetto", async (importOriginal) => {
@@ -45,6 +52,7 @@ beforeEach(() => {
   stato.accessibili = new Set([MIO]);
   stato.chiamate = [];
   stato.risposte = [];
+  stato.righeDb = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: any) => {
     stato.chiamate.push({ url: String(url), init });
     const r = stato.risposte.shift() ?? { status: 200, body: {} };
@@ -284,3 +292,112 @@ describe("le regole pure", () => {
     expect(soloVisibili([{ project_id: null }, { project_id: "a" }], new Set())).toHaveLength(1);
   });
 });
+
+
+describe("le conversazioni", () => {
+  const CONV = "33333333-3333-4333-8333-333333333333";
+  const soloLettura = { admin: false, diritti: { rete: "L" } as any };
+  const io = "10000000-0000-0000-0000-0000000000a1";
+  const corpo = (i = 0) => JSON.parse(stato.chiamate[i]!.init.body);
+
+  it("l'elenco è dell'utente della sessione e nasconde i progetti che non apre più", async () => {
+    rispondi(200, { conversazioni: [{ id: "a", progetto: null }, { id: "b", progetto: MIO }, { id: "c", progetto: ALTRUI }] });
+    const r = await request(app()).get("/api/ai/argos/console/conversazioni?autore=qualcun-altro");
+    expect(r.status).toBe(200);
+    expect(r.body.conversazioni.map((c: any) => c.id)).toEqual(["a", "b"]);
+    expect(stato.chiamate[0]!.url).toContain(`autore=${io}`);
+    expect(stato.chiamate[0]!.url).not.toContain("qualcun-altro");
+  });
+
+  it("filtrare su un progetto altrui: 404, Argos non viene chiamato", async () => {
+    const r = await request(app()).get(`/api/ai/argos/console/conversazioni?progetto=${ALTRUI}`);
+    expect(r.status).toBe(404);
+    expect(stato.chiamate).toHaveLength(0);
+  });
+
+  it("creare: modo e agente validati, autore dalla sessione, Pianificatore solo su un progetto", async () => {
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni").send({ modo: "boh" })).status).toBe(400);
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni").send({ modo: "agente" })).status).toBe(400);
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni").send({ modo: "risposta", agente: "analista" })).status).toBe(400);
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni").send({ modo: "agente", agente: "pianificatore" })).status).toBe(400);
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni").send({ modo: "risposta", progetto: ALTRUI })).status).toBe(404);
+    expect(stato.chiamate).toHaveLength(0);
+    rispondi(201, { conversazione: { id: CONV } });
+    const r = await request(app()).post("/api/ai/argos/console/conversazioni")
+      .send({ modo: "agente", agente: "pianificatore", progetto: MIO, autore: "intruso", titolo: "  Linea 1  " });
+    expect(r.status).toBe(201);
+    expect(corpo()).toMatchObject({ autore: io, modo: "agente", agente: "pianificatore", progetto: MIO, titolo: "Linea 1" });
+  });
+
+  it("aprire una conversazione su un progetto che non si apre più: 404", async () => {
+    rispondi(200, { conversazione: { id: CONV, progetto: ALTRUI }, messaggi: [] });
+    const r = await request(app()).get(`/api/ai/argos/console/conversazioni/${CONV}`);
+    expect(r.status).toBe(404);
+    expect(stato.chiamate[0]!.url).toContain(`/console/conversazioni/${CONV}?`);
+    expect(stato.chiamate[0]!.url).toContain(`autore=${io}`);
+  });
+
+  it("un id malformato non arriva ad Argos", async () => {
+    const r = await request(app()).get("/api/ai/argos/console/conversazioni/non-un-uuid");
+    expect(r.status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+  });
+
+  it("un turno: modalità validata, token solo sul progetto, autore dalla sessione", async () => {
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "" })).status).toBe(400);
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "ciao", modalita: "distruggi" })).status).toBe(400);
+    rispondi(200, { conversazione: { id: CONV, progetto: MIO }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"t":"ok"}\n\ndata: {"done":true}\n\n' });
+    const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`)
+      .send({ testo: "Rinforza la linea 1", modalita: "accetta", autore: "intruso" });
+    expect(r.status).toBe(200);
+    expect(r.text).toContain('"done":true');
+    expect(stato.chiamate[1]!.url).toBe(`http://argos.prova/console/conversazioni/${CONV}/messaggi`);
+    expect(corpo(1)).toMatchObject({ autore: io, testo: "Rinforza la linea 1", modalita: "accetta", ti_auth_token: "jwt-prova" });
+  });
+
+  it("un turno senza progetto non porta il token dell'utente", async () => {
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Quante linee?" });
+    expect(corpo(1).ti_auth_token).toBeNull();
+  });
+
+  it("un turno già in corso: lo stream lo dice", async () => {
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    rispondi(409, { detail: "C'è già un turno in corso in questa conversazione" });
+    const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "ciao" });
+    expect(r.text).toContain("già un turno in corso");
+  });
+
+  it("importare le chat del pannello: si legge il thread dell'utente e diventa una conversazione", async () => {
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni/importa-pannello").send({ projectId: MIO, thread: "boh" })).status).toBe(400);
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni/importa-pannello").send({ projectId: ALTRUI, thread: "chat" })).status).toBe(404);
+    expect((await request(app()).post("/api/ai/argos/console/conversazioni/importa-pannello").send({ projectId: MIO, thread: "chat" })).status).toBe(404);
+    stato.righeDb = [{ role: "user", content: "Come va?" }, { role: "assistant", content: "Bene." }];
+    rispondi(201, { conversazione: { id: CONV } });
+    const r = await request(app()).post("/api/ai/argos/console/conversazioni/importa-pannello").send({ projectId: MIO, thread: "agente" });
+    expect(r.status).toBe(201);
+    expect(stato.chiamate[0]!.url).toContain("/console/conversazioni/importa");
+    expect(corpo()).toMatchObject({ autore: io, progetto: MIO, modo: "agente", agente: "pianificatore",
+      messaggi: [{ role: "user", content: "Come va?" }, { role: "assistant", content: "Bene." }] });
+  });
+
+  it("modificare ed eliminare passano dal controllo di visibilità", async () => {
+    expect((await request(app()).patch(`/api/ai/argos/console/conversazioni/${CONV}`).send({})).status).toBe(400);
+    rispondi(200, { conversazione: { id: CONV, progetto: ALTRUI }, messaggi: [] });
+    expect((await request(app()).delete(`/api/ai/argos/console/conversazioni/${CONV}`)).status).toBe(404);
+    expect(stato.chiamate.filter((c) => c.init?.method === "DELETE")).toHaveLength(0);
+  });
+
+  it("con la sola lettura sulla rete si conversa; rinominare, archiviare, eliminare, importare chiedono la scrittura", () => {
+    for (const [m, p] of [["POST", "/ai/argos/console/conversazioni"], ["POST", `/ai/argos/console/conversazioni/${CONV}/messaggi`]] as const) {
+      expect(decidi(soloLettura, m, p).passa, `${m} ${p}`).toBe(true);
+    }
+    for (const [m, p] of [["PATCH", `/ai/argos/console/conversazioni/${CONV}`], ["DELETE", `/ai/argos/console/conversazioni/${CONV}`],
+      ["POST", "/ai/argos/console/conversazioni/importa-pannello"], ["POST", "/ai/argos/console/inventata"]] as const) {
+      expect(decidi(soloLettura, m, p).passa, `${m} ${p}`).toBe(false);
+    }
+  });
+});
+

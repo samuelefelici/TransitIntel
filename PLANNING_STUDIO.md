@@ -159,14 +159,20 @@ esattamente ciò che verrà scritto.
 
 ## 8. Argos dentro Planning Studio
 
-L'agente vive in un pannello laterale (`components/ArgosSidebar.tsx`,
-`components/argos/*`) e parla con il servizio Argos via proxy.
+L'agente vive nella sua pagina, `/argos`, scheda *Conversazioni*
+(`components/argos-console/Conversazioni.tsx`, `components/argos/*`), e parla
+con il servizio Argos via proxy. In Planning Studio resta il bottone
+(`components/argos/ArgosLink.tsx`), che apre quella pagina in un'altra scheda
+sul progetto aperto. Le conversazioni si riprendono; quelle del vecchio
+pannello laterale si importano per progetto.
 
 - Tre posture: **agente** (indaga), **piano** (chiude sempre con card
   approvabili), **accetta** (applica). Senza `accetta` non si scrive nulla.
 - **Regia in diretta**: mentre l'agente lavora, `ArgosLiveBridge` apre la
   schermata pertinente — la mappa sulla variante che sta modificando, l'elenco
-  corse su quelle che ha appena generato.
+  corse su quelle che ha appena generato. Gli annunci passano anche fra schede
+  del browser (`lib/argos-live.ts`, BroadcastChannel), col progetto: ogni
+  scheda guarda il suo.
 - **Anteprima fantasma**: un percorso proposto si vede tratteggiato e agganciato
   alla strada (OSRM) **prima** di confermare.
 - **Annullo del turno**: disfa le scritture di un run e ripristina i bollini di

@@ -7,14 +7,19 @@
  * QueryClientProvider — lo ascolta e invalida i dati di Planning Studio:
  * le pagine aperte (corse, validità, quadri, nodi) si rifetchano da sole
  * mentre l'agente lavora, senza ricaricare nulla a mano. Le evidenziazioni
- * puntuali le fanno le pagine con useArgosFresh.
+ * puntuali le fanno le pagine con useArgosFresh. Le scritture fatte da Argos
+ * in un'altra scheda (la pagina /argos) arrivano qui dal BroadcastChannel
+ * (lib/argos-live.ts) e diventano eventi di questa finestra.
  */
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { ascoltaAltreSchede } from "@/lib/argos-live";
 
 export type ArgosLiveDetail = {
   name: string;
   ok: boolean;
+  /** il progetto su cui ha scritto Argos: con più schede aperte, ognuna guarda il suo */
+  projectId?: string;
   count?: number;
   tripIds?: string[];
   deletedTripIds?: string[];
@@ -41,7 +46,8 @@ export default function ArgosLiveBridge() {
       qc.invalidateQueries({ queryKey: ["ps"] });
     };
     window.addEventListener("argos-live", onLive);
-    return () => window.removeEventListener("argos-live", onLive);
+    const smetti = ascoltaAltreSchede();
+    return () => { window.removeEventListener("argos-live", onLive); smetti(); };
   }, [qc]);
   return null;
 }
