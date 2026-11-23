@@ -133,7 +133,7 @@ export const SPIEGA_EFFETTO: Record<Effetto, string> = {
 };
 export const NOMI_MODULO: Record<string, string> = {
   planning: "Planning Studio", scheduling: "Turni", territorio: "Territorio",
-  esercizio: "Esercizio", documenti: "Documenti", argos: "Argos", web: "Web",
+  esercizio: "Esercizio", roster: "Roster (senza nomi)", documenti: "Documenti", argos: "Argos", web: "Web",
 };
 export const NOMI_AUTONOMIA: Record<Autonomia, string> = { osserva: "Osserva", propone: "Propone", applica: "Applica" };
 export const SPIEGA_AUTONOMIA: Record<Autonomia, string> = {

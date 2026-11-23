@@ -143,6 +143,17 @@ describe("le regole dell'accesso", () => {
     for (const p of ["/auth/me", "/planning-studio/projects", "/authors", "/administration-x"]) expect(percorsoVietatoAiServizi(p)).toBe(false);
   });
 
+  it("i token dati ad Argos non leggono il roster con le persone: solo i mezzi e il quadro senza nomi", () => {
+    for (const p of ["/roster", "/roster/", "/roster/drivers", "/roster/anagrafica", "/roster/anagrafica/export", "/roster/history",
+      "/roster/copri-scoperti", "/roster/sostituti", "/roster/entries", "/ROSTER/Drivers", "/roster//drivers",
+      "/roster/mezzi/altro", "/roster/%6dezzi", "/roster/quadro-anonimo-esteso"]) {
+      expect(percorsoVietatoAiServizi(p), p).toBe(true);
+    }
+    for (const p of ["/roster/mezzi", "/roster/quadro-anonimo", "/roster/quadro-anonimo/", "/ROSTER/MEZZI", "/rosterx", "/driver-shifts/x"]) {
+      expect(percorsoVietatoAiServizi(p), p).toBe(false);
+    }
+  });
+
   it("accesso recente: la password data da meno di 10 minuti", () => {
     const ora = 1_700_000_000_000;
     expect(accessoRecente(ora / 1000 - 60, ora)).toBe(true);

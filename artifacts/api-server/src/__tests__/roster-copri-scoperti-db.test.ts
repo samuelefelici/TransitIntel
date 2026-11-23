@@ -17,7 +17,8 @@
  *   OCCUPATO  ha G4                                    → non candidato;
  *   ASSENTE   assente (ASS)                            → non candidato;
  *   FINTO     fittizio                                 → non candidato.
- * Un capo deposito del Sud vede solo G3.
+ * Un capo deposito del Sud vede solo G3. Il quadro senza nomi per Argos
+ * (GET /roster/quadro-anonimo) ripete gli stessi conti, per deposito.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -132,6 +133,31 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("copri gli scoperti, sul databas
     expect((await admin.post("/api/roster/copri-scoperti").send({ day: "2032-02-30" })).status).toBe(400);
     const vuoto = await admin.post("/api/roster/copri-scoperti").send({ day: "2032-06-16" });
     expect(vuoto.body).toEqual({ day: "2032-06-16", pubblicato: false, coperture: [], scoperti: [] });
+  });
+
+  it("il quadro senza nomi per Argos: gli stessi conti per deposito, nessuna persona", async () => {
+    const r = await admin.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
+    expect(r.status).toBe(200);
+    expect(r.body.giorni).toHaveLength(1);
+    const g = r.body.giorni[0];
+    expect(g).toMatchObject({ giorno: GIORNO, pubblicato: true });
+    const per = Object.fromEntries(g.depositi.map((d: any) => [d.deposito, d]));
+    expect(per[NORD]).toMatchObject({ turni: 4, coperti: 1, daCoprire: 3, titolareAssente: 1, senzaConducente: 2, proponibili: 3,
+      senzaCandidati: 0, liberi: 4, aDisposizione: 1, assenti: 2, scoperti: [] });
+    expect(per[SUD]).toMatchObject({ turni: 1, coperti: 0, daCoprire: 1, senzaConducente: 1, proponibili: 0, senzaCandidati: 1, liberi: 0, assenti: 0 });
+    expect(per[SUD].scoperti).toEqual([{ turno: "G3", inizio: "14:00", fine: "20:00", motivo: "nessun_candidato" }]);
+    // nessun nome, nessun id di persona, nessun motivo di assenza
+    const testo = JSON.stringify(r.body);
+    for (const x of ["Titolare", "Scarico", "Carico", "Alba", "Disposizione", "Occupato", "Assente", "Finto", "Prova", '"MA"', '"ASS"', '"D1"', ...CONDUCENTI]) {
+      expect(testo).not.toContain(x);
+    }
+    // il capo deposito del Sud vede solo il suo; il periodo si controlla; non si scrive niente
+    const sud = await capoSud.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
+    expect(sud.body.giorni[0].depositi.map((d: any) => d.deposito)).toEqual([SUD]);
+    expect((await admin.get("/api/roster/quadro-anonimo?dal=2032-06-15&al=2032-06-30")).status).toBe(400);
+    expect((await admin.get("/api/roster/quadro-anonimo?dal=2032-02-30")).status).toBe(400);
+    const n = await righe(sql`SELECT count(*)::int AS n FROM roster_assignments WHERE day = ${GIORNO}::date AND dss_id = ${DSS}::uuid`);
+    expect(n[0].n).toBe(2);
   });
 
   it("«Assegna»: le assegnazioni con i controlli di quella a mano; G1 è una sostituzione; poi resta solo G3", async () => {

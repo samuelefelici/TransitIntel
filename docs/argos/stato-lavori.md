@@ -2133,6 +2133,19 @@ Fatto finora:
   Analisi senza progetto restano senza token. I permessi sugli scenari sono
   quelli di Cerbero, controllati sul token come nell'interfaccia.
 
+- **Il Rosterista vede il roster solo per conteggi (questa PR, con argos #80).**
+  Decisione del titolare: nomi, matricole, assenze e loro motivi non vanno al
+  fornitore del modello; Groq è tolto, resta solo Anthropic. In Cerbero il
+  calcolo di «Copri gli scoperti» è estratto in `calcolaCopertura` (la rotta
+  fa le stesse cose) e alimenta `GET /roster/quadro-anonimo`: per giorno e
+  deposito turni, coperti, da coprire, proponibili, senza candidati, liberi,
+  a disposizione, assenti e i turni scoperti col codice, costruito da una
+  lista chiusa (`lib/roster-quadro-anonimo.ts`). I token di Argos leggono di
+  `/roster` solo `/roster/mezzi` e `/roster/quadro-anonimo`
+  (`ROSTER_SENZA_NOMI` in `lib/accesso-regole.ts`): il resto risponde 403.
+  Le proposte con i nomi restano in Cerbero e le decide una persona.
+  L'informativa ai lavoratori è in bozza, da far vedere ai legali.
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
