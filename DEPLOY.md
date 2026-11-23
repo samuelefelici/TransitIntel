@@ -2226,6 +2226,35 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Punti di riposo dei turni guida (tappa 7.22)
+
+I luoghi dove il conducente fa la pausa di un turno a due riprese fuori
+residenza (la **sosta inoperosa** dell'extraurbano) diventano un dato
+dell'azienda: tabella `punti_riposo` (migrazione **0067**), sezione **«Punti
+di riposo dei turni guida»** in Amministrazione › Azienda, solo per
+l'amministratore. Per ogni luogo: il nome, se ha servizi (bagno, sala
+d'attesa), i nomi delle fermate (come nel GTFS) e una nota.
+
+Il calcolo dei turni guida (e il VCSP) conta retribuita una parte della sosta
+in questi luoghi: di più dove non ci sono servizi. Li riconosce dai nomi delle
+fermate, come prima i nodi di sosta. La pagina segnala le fermate che il feed
+in esercizio non conosce: un nome scritto male non lo trova nessun calcolo.
+
+Finora valevano solo i **nodi di sosta** di un progetto di Planning Studio, e
+solo se il progetto dei turni era collegato a quel progetto. I nodi di sosta
+restano e valgono in più; per una fermata che sta in tutti e due, vale quello
+del progetto. La lista «Che cosa compilare» ha la voce nuova (facoltativa).
+
+**Dopo il deploy**:
+1. Aggiungi alle **Watch Paths del lavoratore** in Coolify la riga nuova del
+   blocco «Watch Paths» più sotto: `punti-riposo-store.ts`. Il lavoratore
+   legge i punti per i calcoli.
+2. In Amministrazione › Azienda scrivi i luoghi della sosta fuori residenza
+   (per esempio i capolinea extraurbani con o senza servizi).
+
+**Rollback**: immagine precedente. La tabella resta e non dà fastidio; i
+calcoli tornano ai soli nodi di sosta dei progetti.
+
 ### Quanti calcoli pesanti insieme (tappa 7.21)
 
 Chi può lanciare i calcoli (turni macchina, VCSP, turni guida, ottimizzazioni
@@ -5435,6 +5464,7 @@ migrazione `0004_coda_dei_lavori`):
    artifacts/api-server/src/lib/materializzazione/**
    artifacts/api-server/src/lib/planning-studio-validity-eval.ts
    artifacts/api-server/src/lib/dati-solver.ts
+   artifacts/api-server/src/lib/punti-riposo-store.ts
    artifacts/api-server/src/lib/deadhead-matrix.ts
    artifacts/api-server/src/lib/geo-utils.ts
    artifacts/api-server/src/lib/scripts-dir.ts

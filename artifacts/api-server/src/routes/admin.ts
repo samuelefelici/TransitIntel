@@ -17,6 +17,7 @@ import { elencoContactless, RifiutoContactless, salvaContactless } from "../lib/
 import { cancellaGestore, creaGestore, elencoGestori, erroreGestore, ModificaGestore, modificaGestore, NuovoGestore, RifiutoGestori } from "../lib/gestori-store";
 import { agenziaDellAzienda } from "../lib/gestori";
 import { cancellaNodo, creaNodo, DatiNodo, elencoNodi, IDENTIFICATIVO_NODO, modificaNodo, NuovoNodo, RifiutoNodi } from "../lib/nodi-scambio-store";
+import { cancellaPunto, creaPunto, DatiPunto, elencoPunti, ID_PUNTO, modificaPunto, RifiutoPunti } from "../lib/punti-riposo-store";
 import { DatiConsorziate, erroriConsorziate, esportaAnagrafica, importaAnagrafica, leggiExportParco, salvaConsorziate, statoParco } from "../lib/parco-store";
 import { statoDellInstallazione } from "../lib/installazione";
 import { cancellaTitolo, creaTitolo, elencoTitoli, ModificaTitolo, modificaTitolo, NuovoTitolo, RifiutoTitoli } from "../lib/titoli-catalogo";
@@ -824,6 +825,44 @@ router.delete("/admin/nodi-scambio/:nodo", async (req, res): Promise<void> => {
   if (!IDENTIFICATIVO_NODO.test(nodo)) { res.status(404).json({ error: "Nodo non trovato" }); return; }
   try { await cancellaNodo(nodo); res.json({ ok: true }); }
   catch (e) { rifiutoNodi(req, res, e, "nodo non tolto"); }
+});
+
+/*
+ * I punti di riposo dei turni guida (tappa 7.22, lib/punti-riposo-store.ts):
+ * dove il conducente fa la pausa fuori residenza, con o senza servizi. Li usa
+ * il calcolo dei turni guida (sosta inoperosa). Solo l'amministratore.
+ */
+const rifiutoPunti = (req: any, res: any, e: any, cosa: string) => {
+  if (e instanceof RifiutoPunti) { res.status(e.status).json({ error: e.message }); return; }
+  const codice = String(e?.code ?? e?.cause?.code ?? "");
+  if (codice === "23514") { res.status(400).json({ error: "Uno dei valori non è ammesso" }); return; }
+  req.log?.error?.({ err: e?.message }, cosa);
+  erroreLeggibile(res, 500, cosa.charAt(0).toUpperCase() + cosa.slice(1));
+};
+router.use("/admin/punti-riposo", requireAdmin);
+router.get("/admin/punti-riposo", async (req, res): Promise<void> => {
+  try { res.json(await elencoPunti()); }
+  catch (e) { rifiutoPunti(req, res, e, "punti di riposo non leggibili"); }
+});
+router.post("/admin/punti-riposo", async (req, res): Promise<void> => {
+  const p = DatiPunto.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.status(201).json({ punto: await creaPunto(p.data) }); }
+  catch (e) { rifiutoPunti(req, res, e, "punto di riposo non creato"); }
+});
+router.put("/admin/punti-riposo/:id", async (req, res): Promise<void> => {
+  const id = String(req.params.id ?? "");
+  if (!ID_PUNTO.test(id)) { res.status(404).json({ error: "Punto di riposo non trovato" }); return; }
+  const p = DatiPunto.safeParse(req.body);
+  if (!p.success) { res.status(400).json({ error: erroriDiValidazione(p.error) }); return; }
+  try { res.json({ punto: await modificaPunto(id, p.data) }); }
+  catch (e) { rifiutoPunti(req, res, e, "punto di riposo non salvato"); }
+});
+router.delete("/admin/punti-riposo/:id", async (req, res): Promise<void> => {
+  const id = String(req.params.id ?? "");
+  if (!ID_PUNTO.test(id)) { res.status(404).json({ error: "Punto di riposo non trovato" }); return; }
+  try { await cancellaPunto(id); res.json({ ok: true }); }
+  catch (e) { rifiutoPunti(req, res, e, "punto di riposo non tolto"); }
 });
 
 /*

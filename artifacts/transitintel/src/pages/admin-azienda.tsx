@@ -34,6 +34,7 @@ import ElenchiTariffe from "@/components/azienda/ElenchiTariffe";
 import Contactless from "@/components/azienda/Contactless";
 import Gestori from "@/components/azienda/Gestori";
 import NodiDiScambio from "@/components/azienda/NodiDiScambio";
+import PuntiRiposo from "@/components/azienda/PuntiRiposo";
 import ParcoAvm from "@/components/azienda/ParcoAvm";
 import StatoInstallazione from "@/components/azienda/StatoInstallazione";
 import {
@@ -317,6 +318,9 @@ export default function AdminAziendaPage() {
 
       {/* i nodi di scambio (tappa 6.16): stazioni, porti, aeroporti e parcheggi scambiatori, con gli orari stimati */}
       <section id="azienda-nodi" className="scroll-mt-4"><NodiDiScambio /></section>
+
+      {/* i punti di riposo dei turni guida (tappa 7.22): dove il conducente fa la pausa fuori residenza */}
+      <section id="azienda-riposo" className="scroll-mt-4"><PuntiRiposo /></section>
       <section id="azienda-parco" className="scroll-mt-4"><ParcoAvm /></section>
     </div>
   );

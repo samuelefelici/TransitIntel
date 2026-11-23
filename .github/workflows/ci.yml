@@ -1289,11 +1289,12 @@ jobs:
       # misti), la stima rapida di Planning Studio con l'SQL a parametri e la
       # pagina delle analisi con le fermate del feed in esercizio (7.15), la
       # validità delle corse, le tariffe a zone e gli orari col prima e il
-      # dopo nel registro (7.18, 7.19, 7.20).
+      # dopo nel registro (7.18, 7.19, 7.20), i punti di riposo dei turni guida
+      # (7.22).
       # Uno per volta, come gli altri: alcuni contano righe di tabelle comuni.
       - name: Roster, stima rapida e giornate di esercizio sul database
         run: |
-          for t in esercizio-parziale-km periodo-di-un-giorno roster-copri-scoperti roster-bilancia roster-rotazione-turni roster-riposi-misto quick-estimate analysis validita-registro tariffe-zone-registro orari-registro; do
+          for t in esercizio-parziale-km periodo-di-un-giorno roster-copri-scoperti roster-bilancia roster-rotazione-turni roster-riposi-misto quick-estimate analysis validita-registro tariffe-zone-registro orari-registro punti-riposo; do
             TEST_DATABASE_URL=$PG_APP/vuoto pnpm --filter @workspace/api-server exec vitest run "src/__tests__/$t-db.test.ts"
           done
       # Il registro delle modifiche (PR 2.10), dall'app: la manutenzione e la

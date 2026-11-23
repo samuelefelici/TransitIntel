@@ -343,6 +343,8 @@
   "public.ps_validity_categories_pkey": "CREATE UNIQUE INDEX ps_validity_categories_pkey ON public.ps_validity_categories USING btree (id)",
   "public.ps_validity_units_pkey": "CREATE UNIQUE INDEX ps_validity_units_pkey ON public.ps_validity_units USING btree (id)",
   "public.ps_variant_stops_pkey": "CREATE UNIQUE INDEX ps_variant_stops_pkey ON public.ps_variant_stops USING btree (variant_id, seq)",
+  "public.punti_riposo_nome_unico": "CREATE UNIQUE INDEX punti_riposo_nome_unico ON public.punti_riposo USING btree (nome)",
+  "public.punti_riposo_pkey": "CREATE UNIQUE INDEX punti_riposo_pkey ON public.punti_riposo USING btree (id)",
   "public.reti_codice_unico": "CREATE UNIQUE INDEX reti_codice_unico ON public.reti USING btree (codice)",
   "public.reti_pkey": "CREATE UNIQUE INDEX reti_pkey ON public.reti USING btree (rete)",
   "public.reti_regole_pkey": "CREATE UNIQUE INDEX reti_regole_pkey ON public.reti_regole USING btree (ordine)",
@@ -2025,6 +2027,14 @@
    "timepoint": "smallint | not null | 1 |  | ",
    "variant_id": "uuid | not null |  |  | "
   },
+  "public.punti_riposo": {
+   "aggiornato_il": "timestamp with time zone | not null | now() |  | ",
+   "con_servizi": "boolean | not null | false |  | ",
+   "fermate": "text[] | not null | '{}'::text[] |  | ",
+   "id": "uuid | not null | gen_random_uuid() |  | ",
+   "nome": "text | not null |  |  | ",
+   "nota": "text | not null | ''::text |  | "
+  },
   "public.reti": {
    "aggiornato_il": "timestamp with time zone | not null | now() |  | ",
    "codice": "smallint | null |  |  | ",
@@ -2912,6 +2922,11 @@
   "public.ps_variant_stops.ps_variant_stops_pkey": "PRIMARY KEY (variant_id, seq)",
   "public.ps_variant_stops.ps_variant_stops_stop_id_fkey": "FOREIGN KEY (stop_id) REFERENCES ps_stops(id) ON DELETE RESTRICT",
   "public.ps_variant_stops.ps_variant_stops_variant_id_fkey": "FOREIGN KEY (variant_id) REFERENCES ps_route_variants(id) ON DELETE CASCADE",
+  "public.punti_riposo.punti_riposo_fermate": "CHECK ((fermate[51] IS NULL))",
+  "public.punti_riposo.punti_riposo_nome": "CHECK ((((char_length(btrim(nome)) >= 1) AND (char_length(btrim(nome)) <= 120)) AND (nome !~ '[[:cntrl:]]'::text)))",
+  "public.punti_riposo.punti_riposo_nome_unico": "UNIQUE (nome)",
+  "public.punti_riposo.punti_riposo_nota": "CHECK (((char_length(nota) <= 300) AND (nota !~ '[[:cntrl:]]'::text)))",
+  "public.punti_riposo.punti_riposo_pkey": "PRIMARY KEY (id)",
   "public.reti.reti_codice": "CHECK (((codice >= 2) AND (codice <= 9)))",
   "public.reti.reti_colore": "CHECK ((colore ~ '^#[0-9a-f]{6}$'::text))",
   "public.reti.reti_corrispettivo_km": "CHECK (((corrispettivo_km >= (0)::numeric) AND (corrispettivo_km < (100)::numeric)))",

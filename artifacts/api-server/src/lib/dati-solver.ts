@@ -7,6 +7,7 @@
 import { db } from "@workspace/db";
 import { stopClusters, stopClusterStops, appSettings, gtfsStopTimes } from "@workspace/db/schema";
 import { eq, inArray, sql } from "drizzle-orm";
+import { puntiRiposoPerIlCalcolo } from "./punti-riposo-store";
 
 /** Autovetture aziendali se il parametro manca (app_settings.company_cars): lo stesso valore di GET /settings/company-cars. */
 export const COMPANY_CARS = 5;
@@ -70,8 +71,12 @@ export function puntoDellaFermata(nome: string | null | undefined, punti: readon
 }
 
 /**
- * Carica i nodi di sosta (kind='rest') del progetto Planning Studio collegato
- * allo scenario, per piazzare le soste inoperose extraurbane.
+ * I luoghi della sosta inoperosa extraurbana per il calcolo dei turni guida:
+ * prima i punti di riposo dell'azienda (tappa 7.22, tabella punti_riposo),
+ * che valgono per tutti i calcoli; poi i nodi di sosta (kind='rest') del
+ * progetto Planning Studio collegato allo scenario. Il calcolo li confronta
+ * per nome di fermata e l'ultimo vince: per una fermata che sta in tutti e
+ * due, vale il nodo del progetto.
  *
  * Catena: service_program_scenarios.project_id → scheduling_projects
  *         → planning_studio_project_id → ps_stop_clusters (kind='rest').
@@ -80,6 +85,15 @@ export function puntoDellaFermata(nome: string | null | undefined, punti: readon
  * della sosta all'orario (12% con strutture, 25% senza).
  */
 export async function loadRestPointsForScenario(scenarioProjectId: string | null | undefined): Promise<any[]> {
+  const aziendali = await puntiRiposoPerIlCalcolo().catch((err: any) => {
+    console.warn("[driver-shifts] punti di riposo dell'azienda non leggibili:", err?.message || err);
+    return [];
+  });
+  return [...aziendali, ...(await nodiDiSostaDelProgetto(scenarioProjectId))];
+}
+
+/** I nodi di sosta del progetto Planning Studio collegato allo scenario. */
+async function nodiDiSostaDelProgetto(scenarioProjectId: string | null | undefined): Promise<any[]> {
   if (!scenarioProjectId) return [];
   try {
     const r = await db.execute(sql`
