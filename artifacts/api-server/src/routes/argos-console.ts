@@ -193,16 +193,17 @@ router.post("/ai/argos/console/agenti/:chiave/esegui", async (req, res) => {
   const userId = utenteDi(req);
   if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
 
-  // Su un progetto: prima l'accesso, poi il token a breve scadenza dell'utente.
+  // Su un progetto: prima l'accesso. Poi il token a breve scadenza dell'utente, anche
+  // senza progetto: serve agli strumenti con permessi propri (i turni salvati della
+  // Fucina), che Cerbero controlla su quel token come nell'interfaccia dell'utente.
   let progetto: string | null = null;
-  let token: string | null = null;
   if (projectId !== undefined && projectId !== null && projectId !== "") {
     if (typeof projectId !== "string" || !UUID_RE.test(projectId)) { res.status(400).json({ error: "projectId non valido" }); return; }
     const ok = await accessoAlProgetto(projectId, userId).catch(() => null);
     if (!ok) { res.status(404).json({ error: "Progetto non trovato o accesso negato" }); return; }
     progetto = projectId;
-    token = mintShortLivedUserToken(userId, (req as any).sessione);
   }
+  const token = mintShortLivedUserToken(userId, (req as any).sessione);
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -606,8 +607,11 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
   }
   const d = await conversazioneVisibile(res, userId, req.params.id);
   if (d === undefined) return;
-  // Su un progetto: il token a breve scadenza dell'utente (l'accesso è appena stato controllato).
-  const token = d.conversazione?.progetto ? mintShortLivedUserToken(userId, (req as any).sessione) : null;
+  // Il token a breve scadenza dell'utente: su un progetto (l'accesso è appena stato
+  // controllato) e con un agente anche senza progetto, per gli strumenti con permessi
+  // propri (i turni salvati). Risposta e Analisi senza progetto non lo usano: niente token.
+  const conProgetto = !!d.conversazione?.progetto;
+  const token = conProgetto || d.conversazione?.modo === "agente" ? mintShortLivedUserToken(userId, (req as any).sessione) : null;
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");

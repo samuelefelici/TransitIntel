@@ -2121,6 +2121,18 @@ Fatto finora:
   scrittura sull'area Rete; creare e parlare bastano con la lettura.
   Nessuna variabile d'ambiente nuova.
 
+- **Il Turnista legge i turni salvati (questa PR, con argos #78).** Tre
+  strumenti nuovi in Argos, in sola lettura, skill «Turni guida salvati» al
+  Turnista e all'Analista: gli scenari dei turni macchina della Fucina con i
+  turni guida appesi, un turno guida a sezioni (riepilogo, un turno per riga,
+  un turno corsa per corsa, solo quelli che non tornano) e la verifica
+  normativa rifatta oggi con `crew_tools.py`, senza salvare niente. Non
+  dipendono da un progetto di Planning Studio: per questo il proxy della
+  console ora passa il token a breve scadenza dell'utente anche alle
+  esecuzioni e alle conversazioni con un agente senza progetto. Risposta e
+  Analisi senza progetto restano senza token. I permessi sugli scenari sono
+  quelli di Cerbero, controllati sul token come nell'interfaccia.
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
