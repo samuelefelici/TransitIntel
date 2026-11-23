@@ -2226,6 +2226,27 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Quanti calcoli pesanti insieme (tappa 7.21)
+
+Chi può lanciare i calcoli (turni macchina, VCSP, turni guida, ottimizzazioni
+iterative lanciate anche da Argos) lo dicono già i diritti: la scrittura sull'area dei turni.
+Leggere o fermare un calcolo resta di chi l'ha lanciato (e dell'admin sulle
+rotte del suo tipo). Ora c'è anche il **quanti**:
+- **per persona**, in coda o in corso: 3 calcoli dei turni macchina, 3 dei
+  turni guida (come prima) e, nuovo, **2 ottimizzazioni iterative**. Oltre:
+  «Hai già … in coda o in corso: aspetta che finiscano o fermane uno» (429);
+- **per tutta l'installazione**, in attesa: **30** calcoli (variabile
+  `CALCOLI_IN_CODA_MAX`). Oltre: «La coda dei calcoli è piena: riprova fra
+  qualche minuto» (503, con `Retry-After`);
+- **l'ordine**: il lavoratore prende prima i calcoli di chi non ne ha già in
+  corso, poi in ordine di arrivo. Chi ne lancia tre non fa più aspettare gli
+  altri finché i suoi non finiscono.
+
+I tetti stanno in un posto solo (`lib/lavori/tetti.ts`). Nessuna migrazione,
+nessuna Watch Path nuova. La variabile è facoltativa: senza, vale 30.
+
+**Rollback**: immagine precedente.
+
 ### Registro: gli orari col prima e il dopo, fermata per fermata (tappa 7.20)
 
 Gli orari alle fermate, le fermate delle varianti e le date dei calendari
@@ -6131,6 +6152,7 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CERBERO_LAVORATORE_INTERNO` | — | `0` spegne l'esecutore dei calcoli dentro l'API, quando c'è il lavoratore (default: acceso) |
 | `LAVORI_SLOT_LUNGA` / `LAVORI_SLOT_VELOCE` | — | calcoli insieme per corsia, nel lavoratore e nell'esecutore interno (default 1 e 1) |
 | `LAVORI_VEICOLI_IN_CODA` | — | `0` riporta turni macchina, VCSP e giri di Argos dentro l'API (rilascio della 2.6 e ritorno indietro); default: in coda, nel lavoratore |
+| `CALCOLI_IN_CODA_MAX` | — | Quanti calcoli pesanti possono aspettare in coda in tutta l'installazione (tappa 7.21); oltre, chi lancia riceve 503 con «riprova fra qualche minuto». Default: 30 |
 | `LAVORI_FEED_IN_CODA` | — | `0` riporta la sincronizzazione dei feed da Planning Studio dentro l'API (rilascio della 2.7a e ritorno indietro); default: in coda, nel lavoratore |
 | `OSRM_URL` | — | router per i km dei fuorilinea dei turni macchina (default il router pubblico); dalla 2.6 serve anche al lavoratore |
 | `NODE_ENV` | ✅ | `production` |

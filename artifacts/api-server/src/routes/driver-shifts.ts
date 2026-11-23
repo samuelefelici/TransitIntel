@@ -36,6 +36,7 @@ import { db } from "@workspace/db";
 import { serviceProgramScenarios, driverShiftScenarios, depots, gtfsStops } from "@workspace/db/schema";
 import { eq, and, desc, sql } from "drizzle-orm";
 import * as coda from "../lib/lavori/coda";
+import { controllaTetti, rispondiRifiuto, TETTI_PER_PERSONA } from "../lib/lavori/tetti";
 import type { StatoLavoro } from "../lib/lavori/coda";
 import { AMBITI } from "../lib/lavori/ambiti";
 import { arresto } from "../lib/arresto";
@@ -881,7 +882,7 @@ export function tempoMassimoTurniGuida(budgetSec: number): number {
 }
 
 /** Lavori dei turni guida vivi (in coda o in corso) per utente: oltre, 429. */
-export const VIVI_PER_UTENTE = 3;
+export const VIVI_PER_UTENTE = TETTI_PER_PERSONA[AMBITI.turniGuida];
 
 /** Il lavoro dei turni guida, se chi chiede lo può vedere: il suo, o qualunque per l'admin. */
 async function lavoroTurniGuida(req: any): Promise<RigaLavoro | null> {
@@ -963,13 +964,9 @@ router.post("/driver-shifts/:scenarioId/cpsat/async", strictLimiter, async (req,
     const companyCarsEffective = typeof operatorConfig?.companyCars === "number" ? operatorConfig.companyCars : dbCompanyCars;
     const { selectedClusterIds: _sci, companyCars: _cc, ...restOperatorConfig } = operatorConfig || {};
 
-    // un tetto ai calcoli vivi per utente: la coda è persistente e non si svuota più a ogni riavvio
-    if (await coda.viviDi(req.user!.id, AMBITO_TURNI_GUIDA) >= VIVI_PER_UTENTE) {
-      res.status(429).json({
-        error: `Hai già ${VIVI_PER_UTENTE} calcoli dei turni guida in coda o in corso: aspetta che finiscano o fermane uno.`,
-      });
-      return;
-    }
+    // i tetti (lib/lavori/tetti.ts): per persona, e la coda di tutta l'installazione
+    const rifiuto = await controllaTetti(req.user!.id, AMBITO_TURNI_GUIDA);
+    if (rifiuto) { rispondiRifiuto(res, rifiuto); return; }
 
     const scenarioId = req.params.scenarioId as string;
     /* i codici dei turni guida dell'azienda (tappa 6.25): sigle dei depositi e ora del pomeriggio */
