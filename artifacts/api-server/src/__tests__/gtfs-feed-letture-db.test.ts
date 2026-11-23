@@ -15,7 +15,7 @@ import gtfsAnalysisRouter from "../routes/gtfs-analysis";
 import gtfsTravelRouter from "../routes/gtfs-travel";
 import analysisRouter from "../routes/analysis";
 import gtfsQueriesRouter from "../routes/gtfs-queries";
-import coincidenceZonesRouter from "../routes/coincidence-zones";
+import coincidenceZonesRouter, { orariDellaZona } from "../routes/coincidence-zones";
 import planningRouter from "../routes/planning";
 import { tenantWhere } from "../lib/tenant";
 import { appDiProva, utenteDiProva } from "./helpers/app-di-prova";
@@ -151,6 +151,17 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("le analisi del GTFS leggono un 
     expect(l1.times).toEqual(["07:00:00", "08:00:00"]);
     const b = await admin.get(`/api/coincidence-zones/${ZONA}/bus-lines?feedId=${B}`);
     expect(b.body.busLines.map((x: any) => x.routeShortName).sort()).toEqual(["B-1", "B-2", "solo-B"]);
+  });
+
+  it("orari di una zona: la rotta e il programma generato leggono gli stessi (7.25)", async () => {
+    const orari = { arrivals: [{ label: "dal nord", times: ["07:42"] }], departures: [{ label: "verso sud", times: ["08:10"] }] };
+    await db.execute(sql`UPDATE coincidence_zones SET schedules = ${JSON.stringify(orari)}::jsonb WHERE id = ${ZONA}::uuid`);
+    const r = await admin.get(`/api/coincidence-zones/${ZONA}/schedules`);
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ ...orari, source: "custom", hubType: "railway", platformWalkMinutes: 5 });
+    // prima il programma li chiedeva alla rotta via HTTP senza credenziali, e non li riceveva mai
+    const [zona] = (await db.execute(sql`SELECT id, hub_id AS "hubId", schedules FROM coincidence_zones WHERE id = ${ZONA}::uuid`)).rows as any[];
+    expect(await orariDellaZona(zona)).toEqual({ ...orari, source: "custom" });
   });
 
   it("Planning Studio sui feed: un feed che chi chiede non vede è un 404 (7.25)", async () => {

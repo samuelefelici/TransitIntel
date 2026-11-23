@@ -11,6 +11,7 @@ import { leggiAzienda, type Azienda } from "../lib/azienda";
 import { nomeOppure, nomiComuni, type NomiComuni } from "../lib/territorio";
 import { erroreLeggibile } from "../middlewares/errori-interni";
 import { getLatestFeedId } from "./gtfs-helpers";
+import { orariDellaZona } from "./coincidence-zones";
 
 const router: IRouter = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -2149,24 +2150,12 @@ async function fetchCoincidenceZoneData(zoneIds: string[], feedZona: string | nu
       stopLon: coincidenceZoneStops.stopLon,
     }).from(coincidenceZoneStops).where(eq(coincidenceZoneStops.zoneId, zone.id));
 
-    // For railway/port hubs: get the hub schedules from the hub data
-    // We make a request to our own API or query it inline
-    let hubArrivals: { origin: string; times: string[] }[] = [];
-    let hubDepartures: { destination: string; times: string[] }[] = [];
-
-    // Try to get schedules from hub config (stored in metadata)
-    // Gli orari della zona vengono dalla sua rotta (custom, poi quelli stimati del nodo di scambio)
-    // Alternative: import from coincidence-zones or fetch from DB directly
-    // For now, let's query via fetch to our own schedules endpoint
-    try {
-      // We fetch from our internal route
-      const schedResp = await fetch(`http://localhost:${process.env.PORT || 3000}/api/coincidence-zones/${zone.id}/schedules`);
-      if (schedResp.ok) {
-        const schedData = await schedResp.json() as any;
-        hubArrivals = schedData.arrivals || [];
-        hubDepartures = schedData.departures || [];
-      }
-    } catch { /* ignore — no schedule available */ }
+    // Gli orari del nodo della zona (i suoi, poi quelli stimati del nodo di
+    // scambio), letti direttamente: prima una chiamata HTTP all'API stessa,
+    // senza credenziali, che riceveva sempre un rifiuto (tappa 7.25).
+    const orari = await orariDellaZona(zone);
+    const hubArrivals = orari.arrivals.map(a => ({ origin: a.label, times: a.times }));
+    const hubDepartures = orari.departures.map(d => ({ destination: d.label, times: d.times }));
 
     // Fetch bus lines serving this zone's stops
     let busLines: { routeId: string; routeShortName: string; times: string[] }[] = [];

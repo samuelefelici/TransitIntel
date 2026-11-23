@@ -278,9 +278,11 @@ router.post("/coincidence-zones/auto-create", asyncHandler(async (req, res) => {
 // GET /api/coincidence-zones/:id/schedules
 // Restituisce gli orari della zona: prima i custom (zone.schedules), poi quelli stimati del suo nodo di scambio
 // ═══════════════════════════════════════════════════════════════
-router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {
-  const [zone] = await db.select().from(coincidenceZones).where(eq(coincidenceZones.id, req.params.id as string));
-  if (!zone) { res.status(404).json({ error: "Not found" }); return; }
+/** Gli orari di una zona: prima i suoi (zone.schedules), poi quelli stimati del
+ *  nodo di scambio. Li usano la rotta qui sotto e il programma generato da uno
+ *  scenario (tappa 7.25: prima la chiedeva alla rotta via HTTP, senza credenziali,
+ *  e riceveva sempre un rifiuto). */
+export async function orariDellaZona(zone: typeof coincidenceZones.$inferSelect) {
   const custom = (zone as any).schedules as
     | { arrivals?: { label: string; times: string[] }[]; departures?: { label: string; times: string[] }[] }
     | null
@@ -291,10 +293,18 @@ router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => 
   const presetDepartures = (hub?.typicalDepartures ?? []).map(a => ({ label: a.destination, times: a.times }));
   const arrivals = (custom?.arrivals && custom.arrivals.length > 0) ? custom.arrivals : presetArrivals;
   const departures = (custom?.departures && custom.departures.length > 0) ? custom.departures : presetDepartures;
-  res.json({
+  return {
     arrivals,
     departures,
-    source: (custom?.arrivals?.length || custom?.departures?.length) ? "custom" : (hub ? "preset" : "empty"),
+    source: ((custom?.arrivals?.length || custom?.departures?.length) ? "custom" : (hub ? "preset" : "empty")) as "custom" | "preset" | "empty",
+  };
+}
+
+router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {
+  const [zone] = await db.select().from(coincidenceZones).where(eq(coincidenceZones.id, req.params.id as string));
+  if (!zone) { res.status(404).json({ error: "Not found" }); return; }
+  res.json({
+    ...(await orariDellaZona(zone)),
     hubType: zone.hubType,
     platformWalkMinutes: zone.walkMinutes,
   });
