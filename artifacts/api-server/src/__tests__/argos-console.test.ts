@@ -4,7 +4,8 @@
  * Il proxy porta il segreto e lo slug del client; non lascia passare chiavi o
  * id malformati; un'esecuzione fatta su un progetto si vede solo da chi apre
  * quel progetto (l'elenco filtra, il dettaglio dice 404); un agente su un
- * progetto riceve il token dell'utente solo dopo il controllo d'accesso; gli
+ * progetto riceve il token dell'utente solo dopo il controllo d'accesso (senza
+ * progetto lo riceve un agente, per i turni salvati che hanno permessi propri); gli
  * errori di Argos sul segreto non diventano un 401 che farebbe uscire l'utente.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -142,13 +143,13 @@ describe("le esecuzioni si vedono solo con il progetto", () => {
 });
 
 describe("far lavorare un agente", () => {
-  it("senza progetto: niente token, e lo stream passa così com'è", async () => {
+  it("senza progetto: il token dell'utente per i turni salvati, e lo stream passa così com'è", async () => {
     stato.risposte.push({ status: 200, body: null, sse: 'data: {"run_id":7}\n\ndata: {"done":{"run_id":7}}\n\n' });
-    const r = await request(app()).post("/api/ai/argos/console/agenti/analista/esegui").send({ compito: "Come va la rete?" });
+    const r = await request(app()).post("/api/ai/argos/console/agenti/turnista/esegui").send({ compito: "Come sono i turni festivi?" });
     expect(r.status).toBe(200);
     expect(r.text).toContain('"run_id":7');
     const corpo = JSON.parse(stato.chiamate[0]!.init.body);
-    expect(corpo).toEqual({ compito: "Come va la rete?", client_slug: "tpl-personale", project_id: null, ti_auth_token: null });
+    expect(corpo).toEqual({ compito: "Come sono i turni festivi?", client_slug: "tpl-personale", project_id: null, ti_auth_token: "jwt-prova" });
   });
 
   it("sul proprio progetto: il token dell'utente", async () => {
@@ -356,11 +357,18 @@ describe("le conversazioni", () => {
     expect(corpo(1)).toMatchObject({ autore: io, testo: "Rinforza la linea 1", modalita: "accetta", ti_auth_token: "jwt-prova" });
   });
 
-  it("un turno senza progetto non porta il token dell'utente", async () => {
-    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+  it("un turno di Risposta senza progetto non porta il token dell'utente", async () => {
+    rispondi(200, { conversazione: { id: CONV, modo: "risposta", progetto: null }, messaggi: [] });
     stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
     await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Quante linee?" });
     expect(corpo(1).ti_auth_token).toBeNull();
+  });
+
+  it("un turno con un agente senza progetto porta il token, per i turni salvati", async () => {
+    rispondi(200, { conversazione: { id: CONV, modo: "agente", agente: "turnista", progetto: null }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "I turni festivi passano la verifica?" });
+    expect(corpo(1).ti_auth_token).toBe("jwt-prova");
   });
 
   it("un turno già in corso: lo stream lo dice", async () => {
