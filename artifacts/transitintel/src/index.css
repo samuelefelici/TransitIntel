@@ -279,6 +279,59 @@
 .argos-palco:fullscreen { overflow: auto; padding: 1.5rem; }
 .argos-parola-mini { padding: 0.1rem 0.45rem; font-size: 11px; background: color-mix(in srgb, var(--cat) 24%, hsl(var(--card))); }
 .argos-parola-tratteggio { border-style: dashed; }
+
+/* ── Lo studio della rete (crawler e chat di Argos) ──
+ * I componenti sono scritti per il fondo scuro (scala zinc, white/black, tinte
+ * chiare come violet-300 per il testo). Nel tema chiaro della pagina la scala
+ * si rimappa qui, solo dentro .argos-studio: zinc rovesciata, white e black
+ * scambiati, le tinte 100-400 scurite perché si leggano su bianco. Tailwind 4
+ * scrive le classi con queste variabili, quindi i componenti non cambiano.
+ * Le --studio-* sono i colori propri dello studio (fondo, pannelli, griglie).
+ * Il disegno su canvas ha la sua tavolozza (lib/argos-sciame.ts, TEMI). */
+.argos-studio {
+  --studio-fondo: #050507; --studio-pannello: #0a0a0d; --studio-bordo: rgba(255, 255, 255, .08);
+  --studio-fase: #0f0f13; --studio-fase-fatta: #16161c; --studio-fase-attiva-testo: #140d2b;
+  --studio-traccia: #1b1b21; --studio-cella: #1a1a20; --studio-sottotitolo: #8f88bd; --studio-oggetto: #8f8bb8;
+  --studio-griglia: rgba(255, 255, 255, .08); --studio-etichetta: #6b6b78; --studio-numero: #f4f4f5;
+  --studio-arco: #1d1d24; --studio-linea: #f5c451; --studio-chat-in-alto: #09090b; --studio-chat-in-mezzo: #120a1c; --studio-chat-in-basso: #000000;
+  --studio-invito: rgba(0, 0, 0, .55);
+}
+.argos-chiaro .argos-studio {
+  --studio-fondo: #f6f7fb; --studio-pannello: #ffffff; --studio-bordo: rgba(15, 23, 42, .1);
+  --studio-fase: #eef1f6; --studio-fase-fatta: #dfe4ee; --studio-fase-attiva-testo: #ffffff;
+  --studio-traccia: #e5e8ef; --studio-cella: #eceff4; --studio-sottotitolo: #5b4fa8; --studio-oggetto: #4c4f8a;
+  --studio-griglia: rgba(15, 23, 42, .12); --studio-etichetta: #64748b; --studio-numero: #0f172a;
+  --studio-arco: #e2e8f0; --studio-linea: #d97706; --studio-chat-in-alto: #fbfbfe; --studio-chat-in-mezzo: #f5f2fc; --studio-chat-in-basso: #f6f7fb;
+  --studio-invito: rgba(255, 255, 255, .8);
+  --color-zinc-50: #0b1120; --color-zinc-100: #111827; --color-zinc-200: #1f2937; --color-zinc-300: #334155; --color-zinc-400: #475569;
+  --color-zinc-500: #5f6b80; --color-zinc-600: #8a95a8; --color-zinc-700: #c7cfdb; --color-zinc-800: #e2e7ef; --color-zinc-900: #eef1f6; --color-zinc-950: #f8fafc;
+  --color-white: #0f172a; --color-black: #ffffff;
+  --color-violet-100: #3b0d8c; --color-violet-200: #4c1d95; --color-violet-300: #5b21b6; --color-violet-400: #6d28d9;
+  --color-purple-100: #3b0764; --color-purple-200: #581c87; --color-purple-300: #6b21a8; --color-purple-400: #7e22ce;
+  --color-fuchsia-100: #4a044e; --color-fuchsia-200: #701a75; --color-fuchsia-300: #86198f; --color-fuchsia-400: #a21caf;
+  --color-pink-100: #831843; --color-pink-200: #9d174d; --color-pink-300: #be185d; --color-pink-400: #db2777;
+  --color-rose-100: #881337; --color-rose-200: #9f1239; --color-rose-300: #be123c; --color-rose-400: #e11d48;
+  --color-red-100: #7f1d1d; --color-red-200: #991b1b; --color-red-300: #b91c1c; --color-red-400: #dc2626;
+  --color-amber-100: #78350f; --color-amber-200: #92400e; --color-amber-300: #b45309; --color-amber-400: #d97706;
+  --color-yellow-100: #713f12; --color-yellow-200: #854d0e; --color-yellow-300: #a16207; --color-yellow-400: #ca8a04;
+  --color-lime-100: #365314; --color-lime-200: #3f6212; --color-lime-300: #4d7c0f; --color-lime-400: #65a30d;
+  --color-emerald-100: #064e3b; --color-emerald-200: #065f46; --color-emerald-300: #047857; --color-emerald-400: #059669;
+  --color-green-100: #14532d; --color-green-200: #166534; --color-green-300: #15803d; --color-green-400: #16a34a;
+  --color-teal-100: #134e4a; --color-teal-200: #115e59; --color-teal-300: #0f766e; --color-teal-400: #0d9488;
+  --color-cyan-100: #164e63; --color-cyan-200: #155e75; --color-cyan-300: #0e7490; --color-cyan-400: #0891b2;
+  --color-sky-100: #0c4a6e; --color-sky-200: #075985; --color-sky-300: #0369a1; --color-sky-400: #0284c7;
+  --color-indigo-100: #312e81; --color-indigo-200: #3730a3; --color-indigo-300: #4338ca; --color-indigo-400: #4f46e5;
+  color-scheme: light;
+}
+/* il testo delle risposte (Markdown con prose-invert, che ha colori suoi) */
+.argos-chiaro .argos-studio .prose {
+  --tw-prose-invert-body: #1f2937; --tw-prose-invert-headings: #4c1d95; --tw-prose-invert-lead: #334155;
+  --tw-prose-invert-links: #5b21b6; --tw-prose-invert-bold: #111827; --tw-prose-invert-counters: #64748b;
+  --tw-prose-invert-bullets: #94a3b8; --tw-prose-invert-hr: #e2e8f0; --tw-prose-invert-quotes: #334155;
+  --tw-prose-invert-quote-borders: #cbd5e1; --tw-prose-invert-captions: #64748b; --tw-prose-invert-kbd: #111827;
+  --tw-prose-invert-code: #86198f; --tw-prose-invert-pre-code: #1f2937; --tw-prose-invert-pre-bg: rgba(15, 23, 42, .05);
+  --tw-prose-invert-th-borders: #cbd5e1; --tw-prose-invert-td-borders: #e2e8f0;
+}
 .argos-cat-punto.argos-mini { width: 0.5rem; height: 0.5rem; }
 
 @layer base {

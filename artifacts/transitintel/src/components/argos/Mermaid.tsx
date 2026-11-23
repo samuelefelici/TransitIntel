@@ -20,11 +20,9 @@ let _counter = 0;
 function caricaMotore(): Promise<Motore> {
   if (!_motore) {
     // Anche la sanificazione è lazy: DOMPurify arriva insieme a mermaid.
-    _motore = Promise.all([import("mermaid"), import("@/lib/sanifica-svg")]).then(([mod, { creaSanificatoreSvg }]) => {
-      const mermaid = mod.default;
-      mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
-      return { mermaid, sanifica: creaSanificatoreSvg(window) };
-    });
+    _motore = Promise.all([import("mermaid"), import("@/lib/sanifica-svg")]).then(([mod, { creaSanificatoreSvg }]) => (
+      { mermaid: mod.default, sanifica: creaSanificatoreSvg(window) }
+    ));
   }
   return _motore;
 }
@@ -38,7 +36,11 @@ export default function Mermaid({ code }: { code: string }) {
     let cancelled = false;
     setErr(false);
     caricaMotore()
-      .then(async ({ mermaid, sanifica }) => sanifica((await mermaid.render(idRef.current, code.trim())).svg))
+      .then(async ({ mermaid, sanifica }) => {
+        // il tema della pagina di Argos (chiaro o scuro) al momento del disegno
+        mermaid.initialize({ startOnLoad: false, theme: document.querySelector(".argos-chiaro") ? "default" : "dark", securityLevel: "strict" });
+        return sanifica((await mermaid.render(idRef.current, code.trim())).svg);
+      })
       .then((pulito) => {
         if (cancelled) return;
         if (pulito) setSvgPulito(pulito);
