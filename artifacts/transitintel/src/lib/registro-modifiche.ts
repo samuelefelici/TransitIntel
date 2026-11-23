@@ -93,6 +93,7 @@ const TABELLE: Record<string, string> = {
   "public.gtfs_fare_leg_rules": "Regole tariffarie fra zone",
   "public.gtfs_fare_zone_clusters": "Nodi tariffari",
   "public.gtfs_fare_zone_cluster_stops": "Fermate dei nodi tariffari",
+  "public.punti_riposo": "Punti di riposo dei turni guida",
 };
 
 /** Il nome di una tabella per chi legge; una tabella che qui non c'è ancora resta col suo nome. */

@@ -171,7 +171,7 @@ const SENZA_SCRIVERE: ReadonlyArray<readonly [string, RegExp]> = CALCOLANO_SENZA
  * senza la riga di log della voce dimenticata. Le rotte si proteggono anche da
  * sé (requireAdmin in routes/admin.ts).
  */
-export const SOLO_ADMIN: readonly string[] = ["/admin/sync", "/admin/registro", "/admin/azienda", "/admin/ruoli", "/admin/esercizio", "/admin/voci-roster", "/admin/territorio", "/admin/dati-aperti", "/admin/depositi", "/admin/reti", "/admin/fasce-km", "/admin/titoli", "/admin/elenchi-tariffe", "/admin/contactless", "/admin/gestori", "/admin/nodi-scambio", "/admin/installazione", "/admin/parco"];
+export const SOLO_ADMIN: readonly string[] = ["/admin/sync", "/admin/registro", "/admin/azienda", "/admin/ruoli", "/admin/esercizio", "/admin/voci-roster", "/admin/territorio", "/admin/dati-aperti", "/admin/depositi", "/admin/reti", "/admin/fasce-km", "/admin/titoli", "/admin/elenchi-tariffe", "/admin/contactless", "/admin/gestori", "/admin/nodi-scambio", "/admin/punti-riposo", "/admin/installazione", "/admin/parco"];
 
 const sotto = (p: string, prefix: string) => p === prefix || p.startsWith(prefix + "/");
 

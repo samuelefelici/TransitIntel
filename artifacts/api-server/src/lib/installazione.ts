@@ -30,6 +30,8 @@ export interface Conteggi {
   comuni: number;
   luoghi: { punti_interesse: number; meteo: number; polo_lavoro: number; traffico: number; centro_urbano: number };
   nodiScambio: number;
+  /** i punti di riposo dei turni guida (tappa 7.22) */
+  puntiRiposo: number;
   depositi: number;
   puntiDiCambio: number;
   puntiSenzaFermate: number;
@@ -179,6 +181,12 @@ export function vociDellInstallazione(c: Conteggi): Voce[] {
       dove: { pagina: "/planning-studio", sezione: null, etichetta: "Planning Studio › editor della rete › Nodi di cambio" },
     }),
     voce({
+      voce: "punti-riposo", titolo: "Punti di riposo dei turni guida", compilata: c.puntiRiposo > 0, necessaria: false,
+      dettaglio: nr(c.puntiRiposo, "punto", "punti"),
+      seManca: "I turni guida contano la sosta inoperosa fuori residenza solo ai nodi di sosta dei progetti di Planning Studio collegati.",
+      dove: inAzienda("azienda-riposo", "Punti di riposo dei turni guida"),
+    }),
+    voce({
       voce: "auto-aziendali", titolo: "Auto aziendali", compilata: c.autoAziendali != null, necessaria: false,
       dettaglio: c.autoAziendali != null ? nr(c.autoAziendali, "auto", "auto") : "non scritte",
       seManca: "I turni guida contano 5 auto per portare i conducenti fra deposito e punti di cambio.",
@@ -228,6 +236,7 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
       (SELECT coalesce(jsonb_object_agg(uso, n), '{}'::jsonb)
          FROM (SELECT uso, count(*)::int AS n FROM territorio_luoghi GROUP BY uso) l) AS luoghi,
       (SELECT count(*) FROM nodi_scambio)::int AS nodi,
+      (SELECT count(*) FROM punti_riposo)::int AS punti_riposo,
       (SELECT count(*) FROM roster_depositi)::int AS depositi,
       (SELECT count(*) FROM stop_clusters)::int AS punti,
       (SELECT count(*) FROM stop_clusters c
@@ -251,7 +260,7 @@ export async function conteggiDellInstallazione(): Promise<Conteggi> {
       punti_interesse: Number(luoghi.punti_interesse ?? 0), meteo: Number(luoghi.meteo ?? 0), polo_lavoro: Number(luoghi.polo_lavoro ?? 0),
       traffico: Number(luoghi.traffico ?? 0), centro_urbano: Number(luoghi.centro_urbano ?? 0),
     },
-    nodiScambio: Number(r.nodi ?? 0), depositi: Number(r.depositi ?? 0),
+    nodiScambio: Number(r.nodi ?? 0), puntiRiposo: Number(r.punti_riposo ?? 0), depositi: Number(r.depositi ?? 0),
     puntiDiCambio: Number(r.punti ?? 0), puntiSenzaFermate: Number(r.punti_senza_fermate ?? 0),
     autoAziendali: auto != null && Number.isFinite(auto) ? auto : null,
     paline: Number(r.paline ?? 0),

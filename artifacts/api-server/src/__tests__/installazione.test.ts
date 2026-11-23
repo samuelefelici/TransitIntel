@@ -11,14 +11,14 @@ const VUOTA: Conteggi = {
   aziendaCompilata: false, provinciaIstat: false, netexCodiceLocale: false, avmRegola: false,
   retiUrbane: 0, regoleLinee: 0, gestori: 0, fasce: 0, titoli: 0, categorie: 1, supporti: 0, retiCarta: 0, comuni: 0,
   luoghi: { punti_interesse: 0, meteo: 0, polo_lavoro: 0, traffico: 0, centro_urbano: 0 },
-  nodiScambio: 0, depositi: 0, puntiDiCambio: 0, puntiSenzaFermate: 0, autoAziendali: null, paline: 0, parcoVetture: 0, consorziate: 0,
+  nodiScambio: 0, puntiRiposo: 0, depositi: 0, puntiDiCambio: 0, puntiSenzaFermate: 0, autoAziendali: null, paline: 0, parcoVetture: 0, consorziate: 0,
 };
 /* come la copia dei dati veri di Conerobus */
 const CONEROBUS: Conteggi = {
   aziendaCompilata: true, provinciaIstat: true, netexCodiceLocale: true, avmRegola: true,
   retiUrbane: 6, regoleLinee: 8, gestori: 1, fasce: 23, titoli: 159, categorie: 7, supporti: 7, retiCarta: 1, comuni: 50,
   luoghi: { punti_interesse: 15, meteo: 5, polo_lavoro: 14, traffico: 37, centro_urbano: 1 },
-  nodiScambio: 9, depositi: 7, puntiDiCambio: 4, puntiSenzaFermate: 1, autoAziendali: 8, paline: 4400, parcoVetture: 365, consorziate: 5,
+  nodiScambio: 9, puntiRiposo: 3, depositi: 7, puntiDiCambio: 4, puntiSenzaFermate: 1, autoAziendali: 8, paline: 4400, parcoVetture: 365, consorziate: 5,
 };
 
 describe("le voci di un'installazione", () => {
@@ -30,7 +30,7 @@ describe("le voci di un'installazione", () => {
       "azienda", "reti", "depositi", "fasce", "titoli", "elenchi", "provincia", "comuni", "punti-interesse", "punti-cambio",
     ]);
     expect(per("facoltativa")).toEqual([
-      "gestori", "carta", "meteo", "poli-lavoro", "traffico", "centri-urbani", "nodi-scambio", "auto-aziendali", "avm", "parco", "paline", "netex",
+      "gestori", "carta", "meteo", "poli-lavoro", "traffico", "centri-urbani", "nodi-scambio", "punti-riposo", "auto-aziendali", "avm", "parco", "paline", "netex",
     ]);
   });
 
@@ -66,7 +66,7 @@ describe("le voci di un'installazione", () => {
       expect(v.dove.etichetta, v.voce).not.toBe("");
       if (v.dove.pagina === "/admin/azienda") expect(v.dove.sezione, v.voce).toMatch(/^azienda-[a-z]+$/);
     }
-    expect(new Set(vociDellInstallazione(VUOTA).map((v) => v.voce)).size).toBe(22);
+    expect(new Set(vociDellInstallazione(VUOTA).map((v) => v.voce)).size).toBe(23);
   });
 });
 
