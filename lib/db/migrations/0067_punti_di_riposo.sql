@@ -24,8 +24,9 @@ BEGIN
       nome          text NOT NULL CONSTRAINT punti_riposo_nome
                       CHECK (char_length(btrim(nome)) BETWEEN 1 AND 120 AND nome !~ '[[:cntrl:]]'),
       con_servizi   boolean NOT NULL DEFAULT false,
-      -- i nomi delle fermate del luogo, come li scrive il GTFS (il calcolo li confronta in maiuscolo)
-      fermate       text[] NOT NULL DEFAULT '{}'::text[] CONSTRAINT punti_riposo_fermate CHECK (cardinality(fermate) <= 50),
+      -- i nomi delle fermate del luogo, come li scrive il GTFS (il calcolo li confronta in maiuscolo);
+      -- al più 50: senza funzioni nel vincolo (ruoli-regole.mjs, FUNZIONI_AMMESSE)
+      fermate       text[] NOT NULL DEFAULT '{}'::text[] CONSTRAINT punti_riposo_fermate CHECK (fermate[51] IS NULL),
       nota          text NOT NULL DEFAULT '' CONSTRAINT punti_riposo_nota CHECK (char_length(nota) <= 300 AND nota !~ '[[:cntrl:]]'),
       aggiornato_il timestamptz NOT NULL DEFAULT now(),
       CONSTRAINT punti_riposo_nome_unico UNIQUE (nome)

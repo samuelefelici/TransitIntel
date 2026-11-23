@@ -2922,7 +2922,7 @@
   "public.ps_variant_stops.ps_variant_stops_pkey": "PRIMARY KEY (variant_id, seq)",
   "public.ps_variant_stops.ps_variant_stops_stop_id_fkey": "FOREIGN KEY (stop_id) REFERENCES ps_stops(id) ON DELETE RESTRICT",
   "public.ps_variant_stops.ps_variant_stops_variant_id_fkey": "FOREIGN KEY (variant_id) REFERENCES ps_route_variants(id) ON DELETE CASCADE",
-  "public.punti_riposo.punti_riposo_fermate": "CHECK ((cardinality(fermate) <= 50))",
+  "public.punti_riposo.punti_riposo_fermate": "CHECK ((fermate[51] IS NULL))",
   "public.punti_riposo.punti_riposo_nome": "CHECK ((((char_length(btrim(nome)) >= 1) AND (char_length(btrim(nome)) <= 120)) AND (nome !~ '[[:cntrl:]]'::text)))",
   "public.punti_riposo.punti_riposo_nome_unico": "UNIQUE (nome)",
   "public.punti_riposo.punti_riposo_nota": "CHECK (((char_length(nota) <= 300) AND (nota !~ '[[:cntrl:]]'::text)))",
