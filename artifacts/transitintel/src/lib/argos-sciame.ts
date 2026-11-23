@@ -80,6 +80,7 @@ export interface Ricerca {
   memory: boolean;
   timings: Record<string, number>;
   categories: string[];
+  settings: Record<string, unknown>;
 }
 
 // ─── fasi, colori ───────────────────────────────────────────────────────────
@@ -177,6 +178,23 @@ export function terminiDomanda(q: string): string[] {
   }
   return out;
 }
+/** la radice di una parola, per contare le occorrenze di un termine in un passaggio */
+const wkey = (w: string) => {
+  const x = fold(String(w).toLowerCase());
+  if (/^\d+$/.test(x)) return x;
+  let k = x.replace(/[aeiou]+$/, "");
+  if (k.length < 3) k = x.slice(0, 3);
+  return k.slice(0, 6);
+};
+/** la sigla di una categoria per il radar («Trasporto Pubblico Locale» → TPL, «Normativa» → NORM) */
+export function sigla(c: string | null | undefined): string {
+  const ws = nomeCategoria(c).split(/[\s&,\-–/]+/).map(w => w.replace(/[^A-Za-zÀ-ÿ0-9]/g, ""))
+    .filter(w => w && !/^(di|e|ed|del|dello|della|dei|degli|delle|la|il|lo|le|gli|per|a|al|alla|ai|da|in|nel|nella|su|sul|sulla|con|tra|fra)$/i.test(w));
+  if (ws.length >= 2) return ws.slice(0, 4).map(w => w[0]).join("").toUpperCase();
+  return (ws[0] || "?").slice(0, 4).toUpperCase();
+}
+const siglaTermine = (t: string) => fold(String(t)).slice(0, 4).toUpperCase();
+const hhmm = () => { const d = new Date(); return [d.getHours(), d.getMinutes()].map(v => String(v).padStart(2, "0")).join(":"); };
 export const parole = (s: string): string[] => String(s || "").match(/[A-Za-zÀ-ÿ0-9][A-Za-zÀ-ÿ0-9'’-]*/g) || [];
 
 const numero = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : Number(v) || 0);
@@ -208,6 +226,7 @@ export function preparaRicerca(tr: TracciaRetrieval, domanda: string): Ricerca {
     pool, bridges, byId, brIds, ctx, terms, concepts, cedges,
     synthetic: !!tr.synthetic, memory: !!tr.memory, timings: tr.timings_ms || {},
     categories: Array.isArray(tr.categories) ? tr.categories.map(String) : [],
+    settings: tr.settings && typeof tr.settings === "object" ? tr.settings : {},
   };
 }
 
@@ -328,12 +347,38 @@ export interface StatoSciame {
   puoRivedere: boolean;
 }
 
+/** Una riga del diario della rete (il «crawl log»). */
+export interface RigaDiario { tm: string; v: string; o: string }
+/** Che cosa mostrano la barra in alto e i sei pannelli, letto dal motore ~8 volte al secondo. */
+export interface DatiPannelli {
+  fase: number;
+  finito: boolean;
+  inCorso: boolean;
+  haCorsa: boolean;
+  puoRivedere: boolean;
+  meta: string[];
+  barra: { zampe: number; tentacoli: number; letti: number; totale: number; collegamenti: number; segnalazioni: number; secondi: number; fotogrammi: number };
+  diario: RigaDiario[];
+  eventiAlSecondo: number;
+  lineeAlSecondo: number;
+  categorie: { righe: Array<{ nome: string; colore: string; valore: number; di: number; dida: string }>; inGioco: boolean; quante: number; caricoMappa: boolean };
+  radar: Array<{ asse: string; valore: number }>;
+  copertura: Array<{ nome: string; n: number; max: number }>;
+  /** termini × fonti: null = nessuna fonte in quella colonna, "" = non ancora letta, altrimenti il colore */
+  parole: Array<{ termine: string; celle: Array<string | null> }>;
+  parolePerMinuto: number | null;
+  conteggi: { lette: number; collegate: number; segnalate: number; ipotizzate: number };
+  confidenza: { valore: number | null; dida: string; punteggi: number[]; senzaFonte: number };
+  codice: { righe: Array<{ fase: number; parti: Array<[string, string]> }>; corrente: number; cursore: boolean };
+}
+
 interface OpzioniSciame { onStato?: (s: StatoSciame) => void }
 
 type EsitoCorsa = "running" | "done" | "error" | "aborted";
 interface Corsa {
   q: string; answer: string; wordQ: string[]; tools: string[]; R: Ricerca | null; verify: TracciaVerifica | null;
   status: EsitoCorsa; err: string | null; t0: number; tEnd: number | null; answerDone: boolean; tokens: number | null; sources: unknown[];
+  firstTok: number | null; nWords: number; replay: boolean;
 }
 interface StatoPassaggio { st: string; glow: number; fr?: number | null }
 interface Bersaglio { chunk?: Id; cer?: number; rel?: [number, number] }
@@ -350,6 +395,8 @@ interface StatScena {
   cat: Map<string, { cand: number; read: number; kept: number }>; focusIds: Id[] | null; focusBias: Id | null; activeCat: string | null;
   ctxIds: Id[]; claims: number; traced: number; unk: number; noSrc: number; cerLit: number; tools: number; lastTool: string; finished: boolean;
   flowAcc: number; memory: boolean; verifyNA: boolean; vSrc: Map<number, Tentacolo>; vFlags: Tentacolo[]; vAgg: Tentacolo | null;
+  log: RigaDiario[]; logT: number[]; execT: number[]; read: number; total: number; links: number; flags: number; dups: number; scores: number[];
+  conf: number | null; confShow: number | null; confFinal: boolean; tFin: number | null; tFinClock: number | null;
 }
 interface Ammasso { doc: DocumentoMappa; cl: Nebulosa; x: number; y: number; sig: number; s: number; e: number; big: boolean }
 interface Nebulosa {
@@ -412,6 +459,10 @@ export class Sciame {
   private morto = false;
   private resizeT: ReturnType<typeof setTimeout> | undefined;
   private statoPrec = "";
+  private FRAME = 0;
+  /** dove sta la chat che riceve le parole: a destra del palco o sotto */
+  private lato: "destra" | "sotto" = "sotto";
+  private titoloMisurato: Rett | null = null;
 
   constructor(canvas: HTMLCanvasElement, o: OpzioniSciame = {}) {
     const ctx = canvas.getContext("2d");
@@ -430,12 +481,27 @@ export class Sciame {
     this.notifica(true);
   }
 
-  private static scenaVuota(termGen: number): StatScena {
+  private static scenaVuota(termGen: number, log: RigaDiario[] = []): StatScena {
     return {
       stage: 0, terms: [], termGen, termFade: null, chunk: new Map(), tent: [], arcs: [], concepts: [], cedges: [], words: [],
       cat: new Map(), focusIds: null, focusBias: null, activeCat: null, ctxIds: [], claims: 0, traced: 0, unk: 0, noSrc: 0, cerLit: 0, tools: 0,
       lastTool: "", finished: false, flowAcc: 0, memory: false, verifyNA: false, vSrc: new Map(), vFlags: [], vAgg: null,
+      log, logT: [], execT: [], read: 0, total: 0, links: 0, flags: 0, dups: 0, scores: [],
+      conf: null, confShow: null, confFinal: false, tFin: null, tFinClock: null,
     };
+  }
+  /** una riga del diario (resta fra un turno e l'altro, le ultime 40) */
+  private logL(v: string, o: string): void {
+    const S = this.S;
+    S.log.push({ tm: hhmm(), v, o: String(o || "") });
+    if (S.log.length > 40) S.log.shift();
+    S.logT.push(performance.now());
+  }
+  /** una «linea» della pipeline eseguita (il ritmo del pannello pipeline.py) */
+  private exec(): void { this.S.execT.push(performance.now()); }
+  private fineScena(): void {
+    const S = this.S;
+    S.finished = true; S.tFin = performance.now(); S.tFinClock = this.TL.clock;
   }
 
   // ─── API ─────────────────────────────────────────────────────────────────
@@ -443,12 +509,33 @@ export class Sciame {
   impostaMappa(m: Mappa | null): void {
     this.mappa = m && Array.isArray(m.nodes) ? m : null;
     if (this.mappa?.categories) this.assignColors(this.mappa.categories.map(nomeCategoria));
+    if (this.mappa) this.logL("pronto", `mappa · ${this.mappa.nodes.length} documenti`);
     this.buildField();
   }
 
+  /**
+   * Il riquadro del titolo della fase, misurato sulla pagina (coordinate del
+   * palco): etichette e pillole non ci vanno sotto.
+   */
+  impostaTitolo(r: { x: number; y: number; w: number; h: number }): void {
+    const t = { x: Math.round(r.x - 6), y: Math.round(r.y - 4), w: Math.round(r.w + 12), h: Math.round(r.h + 10) };
+    const T = this.TITLE;
+    if (Math.abs(T.x - t.x) < 2 && Math.abs(T.y - t.y) < 2 && Math.abs(T.w - t.w) < 2 && Math.abs(T.h - t.h) < 2) return;
+    this.titoloMisurato = t;
+    this.TITLE = t;
+    this.AVOID = [t];
+    this.layoutLabels();
+  }
+
+  /** La chat è a destra del palco (schermi larghi) o sotto: le parole volano lì. */
+  impostaRisposta(lato: "destra" | "sotto"): void { this.lato = lato; }
+
   /** Un turno parte: la domanda entra in scena. */
   avvia(domanda: string): void {
-    this.RUN = { q: domanda, answer: "", wordQ: [], tools: [], R: null, verify: null, status: "running", err: null, t0: performance.now(), tEnd: null, answerDone: false, tokens: null, sources: [] };
+    this.RUN = {
+      q: domanda, answer: "", wordQ: [], tools: [], R: null, verify: null, status: "running", err: null, t0: performance.now(), tEnd: null,
+      answerDone: false, tokens: null, sources: [], firstTok: null, nWords: 0, replay: false,
+    };
     this.resetScene();
     this.tlReset(true);
     this.schedDomanda(0, terminiDomanda(domanda));
@@ -495,8 +582,12 @@ export class Sciame {
     else if (st === "error" && RUN.R && !RUN.R.synthetic && TL.rispAt != null && TL.clock < TL.rispAt) {
       // errore a metà risposta con la traccia intera: lo sciame finisce il recupero e si ferma su RISPOSTA
       TL.hold = TL.rispAt;
-      this.ev(TL.rispAt, () => { S.finished = true; this.notifica(true); });
-    } else { TL.hold = TL.clock; S.finished = true; }
+      this.ev(TL.rispAt, () => { this.fineScena(); this.logL("segnalo", "errore · " + corto(RUN.err, 26)); this.notifica(true); });
+    } else {
+      TL.hold = TL.clock;
+      this.fineScena();
+      this.logL(st === "aborted" ? "scarto" : "segnalo", st === "aborted" ? "corsa interrotta" : "errore · " + corto(RUN.err, 26));
+    }
     this.notifica(true);
   }
 
@@ -508,12 +599,144 @@ export class Sciame {
     return true;
   }
 
+  /** Rifà la scena dalla fase k (0..7) e si ferma alla fine di quella fase. */
+  rivediFase(k: number): boolean {
+    if (!this.puoRivedere()) return false;
+    this.buildReplay();
+    const TL = this.TL, t0 = TL.start[k];
+    if (t0 == null) { this.notifica(true); return true; }
+    while (TL.i < TL.ev.length && TL.ev[TL.i]!.t < t0) { try { TL.ev[TL.i++]!.fn(false); } catch { /* una fase rotta non ferma le altre */ } }
+    TL.clock = t0;
+    this.S.termFade = k >= 1 ? -1e9 : null;
+    if (k !== 6 && this.RUN) this.RUN.wordQ = [];
+    const nx = k < 7 ? TL.start[k + 1] : null;
+    TL.hold = nx != null ? nx - 1 : Infinity;
+    this.notifica(true);
+    return true;
+  }
+
   /** Il riepilogo dell'ultimo turno, per la dashboard. */
   riepilogo(): RiepilogoSciame | null {
     const RUN = this.RUN;
     if (!RUN) return null;
     const ms = RUN.tEnd != null ? RUN.tEnd - RUN.t0 : null;
     return riepilogoDi(RUN.R, RUN.verify, RUN.tools, c => this.catColor(c), { secondi: ms != null ? ms / 1000 : null, tokens: RUN.tokens });
+  }
+
+  /**
+   * I dati della barra in alto e dei sei pannelli (crawl log, categorie,
+   * copertura, parole, confidenza, pipeline.py), come li calcolava la pagina
+   * di Argos. Va chiesto a intervalli (~8 al secondo): la confidenza mostrata
+   * si avvicina al valore vero un passo alla volta.
+   */
+  pannelli(): DatiPannelli {
+    const S = this.S, RUN = this.RUN, R = RUN?.R ?? null, F = this.F, TL = this.TL;
+    const ora = performance.now();
+    const ritmo = (arr: number[]) => { while (arr.length && ora - arr[0]! > 1000) arr.shift(); return arr.length; };
+    // la barra
+    let zampe = 0;
+    for (const l of this.CR.legs) if (l.t >= 1) zampe++;
+    const tEnd = RUN && (RUN.status === "running" ? null : S.finished ? S.tFin ?? RUN.tEnd : null);
+    const secondi = !RUN ? 0 : RUN.replay ? (S.finished && S.tFinClock != null ? S.tFinClock : TL.clock) / 1000 : ((tEnd ?? ora) - RUN.t0) / 1000;
+    // le categorie in gioco: prima quelle con più passaggi tenuti
+    const ordine = F.clusters.map(c => c.cat);
+    const inGioco = R && S.cat.size
+      ? [...S.cat.keys()].sort((a, b) => { const ia = ordine.indexOf(a), ib = ordine.indexOf(b); return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib); })
+      : [];
+    let righe: DatiPannelli["categorie"]["righe"];
+    if (inGioco.length) {
+      righe = inGioco.slice().sort((a, b) => {
+        const p = S.cat.get(a)!, q = S.cat.get(b)!;
+        return q.kept - p.kept || q.cand - p.cand || inGioco.indexOf(a) - inGioco.indexOf(b);
+      }).map(c => {
+        const x = S.cat.get(c)!, v = S.stage >= 2 ? x.kept : x.read;
+        return { nome: c.toLowerCase(), colore: this.catColor(c), valore: v, di: x.cand, dida: `${v}/${x.cand}` };
+      });
+    } else {
+      const top = F.clusters.filter(c => c.name).slice().sort((a, b) => b.chunks - a.chunks), mx = top.length ? top[0]!.chunks : 1;
+      righe = top.map(cl => ({ nome: cl.name, colore: cl.col, valore: cl.chunks, di: mx, dida: `${cl.ndocs} doc` }));
+    }
+    // la copertura: il radar sulle categorie in gioco (almeno tre assi), le barrette
+    const assi = inGioco.slice(0, 8);
+    for (const c of F.clusters.filter(k => k.name).slice().sort((a, b) => b.chunks - a.chunks).map(k => k.cat)) { if (assi.length >= 3) break; if (!assi.includes(c)) assi.push(c); }
+    while (assi.length < 3) assi.push("·" + assi.length);
+    const inCorsa = !!(R && S.cat.size);
+    const grezzi = assi.map(c => {
+      if (inCorsa) { const x = S.cat.get(c); return x ? x.kept + 0.35 * x.read : 0; }
+      const cl = F.clusters.find(k => k.cat === c);
+      return cl ? Math.sqrt(cl.chunks) : 0;
+    });
+    const mxR = Math.max(...grezzi, 0.0001);
+    const radar = assi.map((c, i) => ({ asse: c.startsWith("·") ? "" : sigla(c), valore: grezzi[i]! > 0 ? Math.max(0.12, grezzi[i]! / mxR) : 0.06 }));
+    const nF = R ? R.ctx.filter(id => id != null && ["ctx", "bridge"].includes(S.chunk.get(id)?.st ?? "")).length + (S.memory ? 1 : 0) : 0;
+    // le parole: i termini della domanda dentro le fonti date al modello
+    const termini = R ? R.terms.slice(0, 7) : RUN ? terminiDomanda(RUN.q).slice(0, 7) : [];
+    const colonne = R ? R.ctx.filter((id): id is Id => id != null).slice(0, 12) : [];
+    const paroleRighe = termini.map(t => ({
+      termine: siglaTermine(t),
+      celle: Array.from({ length: 12 }, (_, i): string | null => {
+        const id = colonne[i];
+        if (id == null) return null;
+        const st = S.chunk.get(id), c = R?.byId.get(id);
+        if (!st || !(st.st === "ctx" || st.st === "bridge") || !c) return "";
+        const n = this.occorrenze(c, t);
+        return n > 0 ? withA(this.catColor(c.category), (0.35 + 0.65 * Math.min(1, n / 3)).toFixed(2)) : "#24242c";
+      }),
+    }));
+    let ppm: number | null = null;
+    if (RUN && RUN.firstTok != null && RUN.nWords > 3) { const min = ((RUN.tEnd ?? ora) - RUN.firstTok) / 60000; if (min > 0.015) ppm = Math.round(RUN.nWords / min); }
+    // la confidenza: le frasi con fonte a verifica finita, prima una stima dai punteggi
+    let valore: number | null = null, dida = "in attesa";
+    if (S.confFinal && S.conf != null) { valore = S.conf; dida = "fonti tracciate"; }
+    else if (S.stage >= 7 && S.conf != null) { valore = S.conf; dida = "verifico…"; }
+    else if (R && S.ctxIds.length) {
+      const sc = S.ctxIds.map(id => R.byId.get(id)).filter((c): c is Passaggio => !!c).map(c => +c.score || 0);
+      if (sc.length) { valore = (100 * sc.reduce((a, b) => a + b, 0)) / sc.length; dida = "provvisoria"; }
+    } else if (S.scores.length) {
+      const top = S.scores.slice().sort((a, b) => b - a).slice(0, 10);
+      valore = (100 * top.reduce((a, b) => a + b, 0)) / top.length; dida = "provvisoria";
+    }
+    if ((S.verifyNA || (RUN?.status === "error" && S.finished)) && valore != null) dida = "non verificata";
+    S.confShow = valore == null ? null : S.confShow == null ? valore : lerp(S.confShow, valore, 0.25);
+    // la pipeline: la riga della fase in corso
+    const st = R?.settings ?? {}, tt = R ? R.terms.slice(0, 2).join(" ") : RUN ? terminiDomanda(RUN.q).slice(0, 2).join(" ") : "…";
+    const num = (v: unknown, d: number) => String(typeof v === "number" ? v : d);
+    const codice: DatiPannelli["codice"]["righe"] = [
+      { fase: -1, parti: [["cm", "# pipeline.py · come risponde argos"]] },
+      { fase: 0, parti: [["id", "q"], ["op", " = "], ["fn", "embed"], ["op", "("], ["sg", '"' + corto(tt, 15) + '"'], ["op", ")"]] },
+      { fase: 1, parti: [["id", "pool"], ["op", " = "], ["fn", "hnsw.search"], ["op", "(q, k="], ["nu", String(R ? R.pool.length : 60)], ["op", ")"]] },
+      { fase: 2, parti: [["id", "top"], ["op", " = "], ["fn", "rerank"], ["op", "(pool, "], ["nu", num(st.top_k, 10)], ["op", ")"]] },
+      { fase: 3, parti: [["id", "ctx"], ["op", " = "], ["fn", "soglia"], ["op", "(top, "], ["nu", num(st.min_score, 0.25)], ["op", ")"]] },
+      { fase: 4, parti: [["id", "ctx"], ["op", " += "], ["fn", "ponti"], ["op", "(ctx, "], ["nu", num(st.seeds, 4)], ["op", ")"]] },
+      { fase: 5, parti: [["id", "idee"], ["op", " = "], ["fn", "concetti"], ["op", "(ctx)"]] },
+      { fase: 6, parti: [["kw", "for"], ["id", " tok "], ["kw", "in"], ["op", " "], ["fn", st.deep ? "llm.deep" : "llm.stream"], ["op", "(ctx):"]] },
+      { fase: 6, parti: [["op", "    "], ["fn", "scrivi"], ["op", "(tok)"]] },
+      { fase: 7, parti: [["fn", "verifica"], ["op", "(risposta, ctx)"]] },
+    ];
+    let corrente = -1;
+    codice.forEach((l, i) => { if (l.fase === S.stage) corrente = i; });
+    return {
+      fase: clamp(S.stage, 0, 7), finito: S.finished, inCorso: RUN?.status === "running", haCorsa: !!RUN, puoRivedere: this.puoRivedere(),
+      meta: this.righeMeta(),
+      barra: { zampe, tentacoli: S.tent.length + (S.termFade == null ? S.terms.length : 0), letti: S.read, totale: S.total, collegamenti: S.links, segnalazioni: S.flags, secondi, fotogrammi: this.FRAME },
+      diario: S.log.slice(-15), eventiAlSecondo: ritmo(S.logT), lineeAlSecondo: ritmo(S.execT),
+      categorie: { righe, inGioco: inGioco.length > 0, quante: inGioco.length || F.clusters.filter(c => c.name).length, caricoMappa: !this.mappa && !F.clusters.some(c => c.name) },
+      radar,
+      copertura: [{ nome: "fonti", n: nF, max: 12 }, { nome: "ponti", n: S.arcs.length, max: 4 }, { nome: "concetti", n: S.concepts.length, max: 12 }],
+      parole: paroleRighe,
+      parolePerMinuto: ppm,
+      conteggi: { lette: S.read, collegate: S.links, segnalate: S.flags, ipotizzate: S.noSrc },
+      confidenza: { valore: S.confShow, dida, punteggi: S.scores.slice(-60), senzaFonte: S.noSrc },
+      codice: { righe: codice, corrente, cursore: !RUN || !S.finished },
+    };
+  }
+  /** quante volte un termine compare in un passaggio (dai conteggi della traccia, o dal testo) */
+  private occorrenze(c: Passaggio, t: string): number {
+    if (c.hits && c.hits[t] != null) return +c.hits[t] || 0;
+    const k = wkey(t);
+    let n = 0;
+    for (const w of parole(c.snippet || "")) if (wkey(w) === k) n++;
+    return n;
   }
 
   /** Il palco ha cambiato misura (ResizeObserver): si ricostruisce, con calma. */
@@ -545,6 +768,16 @@ export class Sciame {
 
   private notifica(forza = false): void {
     if (!this.onStato) return;
+    const S = this.S, RUN = this.RUN;
+    const st: StatoSciame = { fase: clamp(S.stage, 0, 7), finito: S.finished, inCorso: RUN?.status === "running", meta: this.righeMeta(), puoRivedere: this.puoRivedere() };
+    const k = JSON.stringify(st);
+    if (!forza && k === this.statoPrec) return;
+    this.statoPrec = k;
+    try { this.onStato(st); } catch (e) { console.warn("sciame: onStato", e); }
+  }
+
+  /** le righe brevi sotto il titolo della fase */
+  private righeMeta(): string[] {
     const S = this.S, RUN = this.RUN, R = RUN?.R ?? null;
     const meta: string[] = [];
     if (R && R.synthetic && !R.pool.length && !R.bridges.length) {
@@ -562,11 +795,8 @@ export class Sciame {
       else if (S.verifyNA) meta.push("verifica non disponibile");
       else if (S.finished && S.claims - S.unk > 0) meta.push(`${S.traced}/${S.claims - S.unk} affermazioni con fonte`);
     } else if (RUN?.tools.length) meta.push(`${RUN.tools.length} strument${RUN.tools.length === 1 ? "o" : "i"} · ${corto(RUN.tools[RUN.tools.length - 1], 28)}`);
-    const st: StatoSciame = { fase: clamp(S.stage, 0, 7), finito: S.finished, inCorso: RUN?.status === "running", meta, puoRivedere: this.puoRivedere() };
-    const k = JSON.stringify(st);
-    if (!forza && k === this.statoPrec) return;
-    this.statoPrec = k;
-    try { this.onStato(st); } catch (e) { console.warn("sciame: onStato", e); }
+    else if (!this.mappa && !RUN) meta.push("carico la mappa della conoscenza…");
+    return meta;
   }
 
   // ─── colori ──────────────────────────────────────────────────────────────
@@ -614,7 +844,7 @@ export class Sciame {
     const y0 = mob ? 54 : 70, y1 = this.CH - 14;
     Object.assign(this.STAGE, { x0: 0, y0, x1: this.CW, y1, w: this.CW, h: Math.max(120, y1 - y0), cx: this.CW / 2, cy: (y0 + y1) / 2 });
     // il titolo della fase con le sue righe (PalcoNeurale.tsx): le etichette non ci vanno sotto
-    this.TITLE = { x: 4, y: 4, w: mob ? 230 : 330, h: mob ? 52 : 88 };
+    this.TITLE = this.titoloMisurato ?? { x: 4, y: 4, w: mob ? 230 : 330, h: mob ? 52 : 88 };
     this.AVOID = [this.TITLE];
   }
 
@@ -884,7 +1114,7 @@ export class Sciame {
   }
 
   // ─── la regia: la traccia arriva in un evento, qui diventa una sequenza ─
-  private resetScene(): void { this.S = Sciame.scenaVuota(this.S.termGen + 1); this.PILLOFF.clear(); }
+  private resetScene(): void { this.S = Sciame.scenaVuota(this.S.termGen + 1, this.S.log); this.PILLOFF.clear(); }
   private tlReset(live: boolean): void {
     Object.assign(this.TL, { ev: [], i: 0, clock: 0, live, hold: Infinity, start: Array<number | null>(8).fill(null), rispAt: null, verAt: null });
   }
@@ -917,13 +1147,14 @@ export class Sciame {
       s.cand++;
       S.cat.set(n, s);
     }
+    S.total = seen.size;
   }
 
   private schedDomanda(t0: number, terms: string[]): void {
     this.TL.start[0] = t0;
     const gen = this.S.termGen;
-    this.ev(t0, () => this.enterStage(0));
-    terms.slice(0, 8).forEach((w, i) => this.ev(t0 + 180 + i * 110, a => { if (gen !== this.S.termGen) return; this.S.terms.push({ w, born: a ? this.TL.clock : -1e9 }); }));
+    this.ev(t0, () => { this.enterStage(0); this.logL("leggo", "domanda «" + corto(this.RUN?.q, 30) + "»"); this.exec(); });
+    terms.slice(0, 8).forEach((w, i) => this.ev(t0 + 180 + i * 110, a => { if (gen !== this.S.termGen) return; this.S.terms.push({ w, born: a ? this.TL.clock : -1e9 }); this.exec(); }));
   }
 
   /** Ricerca, rerank, contesto, ponti, concetti. Ritorna l'inizio di RISPOSTA. */
@@ -938,20 +1169,30 @@ export class Sciame {
       .sort((a, b) => (a.final_rank ?? 999) - (b.final_rank ?? 999) || (b.rerank ?? -99) - (a.rerank ?? -99) || (b.score || 0) - (a.score || 0));
     const d2 = judged.length ? Math.min(130, 1150 / judged.length) : 0;
     judged.forEach((c, i) => this.ev(t + 150 + i * d2, a => this.vJudge(c, a)));
+    if (!judged.length) this.ev(t + 150, () => this.logL("scarto", "nessun passaggio sopra soglia"));
     t += 150 + Math.max(judged.length * d2, 300) + 260;
     TL.start[3] = t; this.ev(t, () => this.enterStage(3));
     const base = R.ctx.map((id, i) => [id, i] as const).filter(([id]) => id == null || !R.brIds.has(id));
     const d3 = base.length ? Math.min(140, 900 / base.length) : 0;
     base.forEach(([id, i], k) => this.ev(t + 120 + k * d3, a => this.vCtx(id, i, a)));
+    if (!R.ctx.length) this.ev(t + 150, () => { this.logL("scarto", "nessuna fonte: rispondo senza documenti"); this.exec(); });
     t += 120 + Math.max(base.length * d3, 300) + 220;
     TL.start[4] = t; this.ev(t, () => this.enterStage(4));
     const br = R.bridges, d4 = br.length ? Math.min(380, 1000 / br.length) : 0;
     br.forEach((b, i) => this.ev(t + 150 + i * d4, a => this.vBridge(b, a)));
+    if (!br.length) this.ev(t + 150, () => { this.logL("collego", "nessun ponte tra documenti"); this.exec(); });
     t += 150 + Math.max(br.length * d4, 350) + 300;
     TL.start[5] = t; this.ev(t, () => this.enterStage(5));
     const cs = R.concepts, d5 = cs.length ? Math.min(150, 900 / cs.length) : 0;
     cs.forEach((k, i) => this.ev(t + 120 + i * d5, a => this.vConcept(k, i, a)));
-    this.ev(t + 120 + cs.length * d5 + 80, () => { this.S.cedges = R.cedges.slice(); });
+    this.ev(t + 120 + cs.length * d5 + 80, () => {
+      const S = this.S;
+      S.cedges = R.cedges.slice();
+      S.links += S.cedges.length;
+      if (S.cedges.length) this.logL("collego", S.cedges.length + " relazioni tra concetti");
+      this.exec();
+    });
+    if (!cs.length) this.ev(t + 150, () => { this.logL("concetto", R.ctx.some(id => id != null) ? "nessun concetto · cervello da costruire" : "nessun concetto · contesto vuoto"); this.exec(); });
     t += 120 + Math.max(cs.length * d5, 350) + 320;
     TL.start[6] = t; this.ev(t, () => this.enterStage(6));
     return t;
@@ -969,8 +1210,12 @@ export class Sciame {
 
   private vSearch(c: Passaggio, i: number, a: boolean): void {
     const S = this.S, n = nomeCategoria(c.category), cs = S.cat.get(n);
+    S.read++; S.scores.push(+c.score || 0);
     if (cs) cs.read++;
     S.activeCat = n;
+    if (c.status === "dup") { S.dups++; S.flags++; this.logL("doppio", corto(c.title, 20) + " " + this.scoreOf(c)); }
+    else if (c.status === "below") this.logL("scarto", corto(c.title, 16) + " " + this.scoreOf(c) + " sotto soglia");
+    else this.logL("leggo", corto(c.title, 20) + " " + this.scoreOf(c));
     S.chunk.set(c.id, { st: c.status === "dup" ? "dup" : c.status === "below" ? "below" : "seen", glow: a ? 1 : 0 });
     if (a) {
       if (c.status === "dup") this.tent({ chunk: c.id }, "doppio · " + this.secLabel(c), "dup", 1000);
@@ -979,49 +1224,66 @@ export class Sciame {
     }
     S.focusIds = this.RUN!.R!.pool.slice(i, i + 8).map(x => x.id);
     S.focusBias = c.id;
+    this.exec();
   }
   private vJudge(c: Passaggio, a: boolean): void {
     const S = this.S, st = S.chunk.get(c.id) ?? { st: "seen", glow: 0 }, cs = S.cat.get(nomeCategoria(c.category));
     const sc = c.rerank != null ? (+c.rerank).toFixed(2) : this.scoreOf(c);
     if (c.status === "kept") {
       st.st = "kept"; if (a) st.glow = 1; if (cs) cs.kept++;
+      this.logL("tengo", corto(c.title, 18) + " " + sc);
       if (a) this.tent({ chunk: c.id }, "tengo" + (c.final_rank ? " · F" + c.final_rank : "") + " · " + sc, "kept", 900);
-    } else { st.st = "dropped"; if (a) this.tent({ chunk: c.id }, "scarto · " + sc, "dim", 520); }
+    } else {
+      st.st = "dropped";
+      this.logL("scarto", corto(c.title, 20) + (c.rerank != null ? " " + sc : ""));
+      if (a) this.tent({ chunk: c.id }, "scarto · " + sc, "dim", 520);
+    }
     S.chunk.set(c.id, st);
     S.focusIds = this.RUN!.R!.pool.filter(x => x.status === "kept").map(x => x.id);
     S.focusBias = c.id;
     S.activeCat = nomeCategoria(c.category);
+    this.exec();
   }
   private vCtx(id: Id | null, idx: number, a: boolean): void {
     const S = this.S, n = idx + 1;
     if (id == null) {
       S.memory = true;
+      this.logL("leggo", "F" + n + " memoria · risposta simile");
       if (a) this.tent({ rel: [-Math.PI / 2 + 0.5, 112 * this.CS()] }, "F" + n + " · memoria", "ctx", 1200);
+      this.exec();
       return;
     }
     const c = this.RUN!.R!.byId.get(id), st = S.chunk.get(id) ?? { st: "ctx", glow: 0 };
     st.st = "ctx"; st.fr = n; if (a) st.glow = 1;
     S.chunk.set(id, st);
     S.ctxIds.push(id);
+    this.logL("leggo", "F" + n + " " + corto(c ? c.title : "", 22));
     if (a) this.tent({ chunk: id }, "F" + n + " · " + this.secLabel(c), "ctx", 1200);
     S.focusIds = S.ctxIds.slice(); S.focusBias = id;
     if (c) S.activeCat = nomeCategoria(c.category);
+    this.exec();
   }
   private vBridge(b: Passaggio, a: boolean): void {
     const S = this.S, R = this.RUN!.R!;
     const n = R.ctx.indexOf(b.id) + 1 || null, cut = !n, again = S.chunk.has(b.id);
     const cs = S.cat.get(nomeCategoria(b.category));
+    S.links++;
+    if (!again) S.read++;
     if (cs) { if (!again) cs.read++; if (!cut) cs.kept++; }
+    this.logL(cut ? "scarto" : "collego", corto(b.title, 18) + (cut ? " · fuori budget" : b.via === "concept" ? " · concetto" : " · " + this.scoreOf(b)));
     S.chunk.set(b.id, { st: cut ? "dropped" : "bridge", fr: n, glow: a && !cut ? 1 : 0 });
     if (!cut) S.ctxIds.push(b.id);
     S.arcs.push({ from: b.from_id, to: b.id, born: a ? this.TL.clock : -1e9, text: (cut ? "ponte escluso · " : "ponte · ") + "«" + corto(b.title, 20) + "»", seed: Math.random(), fr: n, cut });
     if (b.from_id != null && this.F.chunkP.has(b.from_id)) { S.focusIds = [b.from_id]; S.focusBias = b.from_id; }
+    this.exec();
   }
   private vConcept(k: ConcettoTraccia, i: number, a: boolean): void {
     const cat = nomeCategoria(k.category), cl = this.F.clusters.find(x => x.cat === cat), CR = this.CR;
     let ang = cl ? Math.atan2(cl.y - CR.y, cl.x - CR.x) : i * 2.39996;
     if (cl && Math.hypot(cl.x - CR.x, cl.y - CR.y) < cl.r * 0.5) ang = i * 2.39996;
     this.S.concepts.push({ id: k.id, name: String(k.name || ""), cat, w: +k.weight || 1, chunks: (Array.isArray(k.chunk_ids) ? k.chunk_ids : []).slice(0, 4), born: a ? this.TL.clock : -1e9, ang, ring: i % 2 });
+    this.logL("concetto", corto(k.name, 26));
+    this.exec();
     const L = this.S.concepts.slice().sort((p, q) => p.ang - q.ang), n = L.length;
     if (n < 2) return;
     const gap = Math.min(0.5, (TAU / n) * 0.92);
@@ -1035,6 +1297,8 @@ export class Sciame {
   private toolHit(name: string, a: boolean): void {
     const S = this.S, F = this.F;
     S.tools++; S.cerLit = 1; S.lastTool = String(name || "strumento");
+    this.logL("strumento", corto(S.lastTool, 26));
+    this.exec();
     if (a && F.cer) { const j = F.cer.s + Math.floor(Math.random() * (F.cer.e - F.cer.s)); this.tent({ cer: j }, "strumento · " + corto(S.lastTool, 22), "tool", 2600); }
     this.notifica();
   }
@@ -1048,10 +1312,22 @@ export class Sciame {
     const claims = na ? citazioniEsplicite(RUN.answer).filter(c => c.cited) : RUN.verify!.claims!.slice(0, 40);
     // senza documenti non c'era niente da verificare: nessun avviso
     const senzaDocumenti = !!RUN.R && RUN.R.synthetic && !RUN.R.pool.length && !RUN.R.bridges.length;
-    if (na && !senzaDocumenti) this.ev(t + 120, a => { this.S.verifyNA = true; if (a) this.tent({ rel: [-Math.PI / 2 - 0.5, this.mobile() ? 78 : 118] }, "verifica non disponibile", "unk", Infinity); });
+    if (na && !senzaDocumenti) this.ev(t + 120, a => {
+      this.S.verifyNA = true;
+      this.logL("segnalo", "verifica non disponibile");
+      if (a) this.tent({ rel: [-Math.PI / 2 - 0.5, this.mobile() ? 78 : 118] }, "verifica non disponibile", "unk", Infinity);
+      this.exec();
+    });
     const d = claims.length > 20 ? 2800 / claims.length : 140;
     claims.forEach((cl, i) => this.ev(t + 260 + i * d, a => this.vClaim(cl, i, claims.length, a)));
-    this.ev(t + 260 + claims.length * d + 260, () => { this.S.finished = true; this.notifica(true); });
+    this.ev(t + 260 + claims.length * d + 260, () => {
+      const S = this.S, den = S.claims - S.unk;
+      this.fineScena();
+      S.confFinal = !S.verifyNA && den > 0;
+      if (S.verifyNA) this.logL("segnalo", `verifica non disponibile · ${S.traced} citazion${S.traced === 1 ? "e" : "i"} esplicit${S.traced === 1 ? "a" : "e"}`);
+      else this.logL("traccio", den > 0 ? `${S.traced}/${den} affermazioni con fonte` : "nessuna affermazione da verificare");
+      this.notifica(true);
+    });
   }
   private vClaim(cl: Affermazione, i: number, n: number, a: boolean): void {
     const S = this.S, R = this.RUN!.R!;
@@ -1061,6 +1337,7 @@ export class Sciame {
     const mob = this.mobile(), ang = -Math.PI / 2 + i * (TAU / Math.max(6, n)) + 0.3, rr = (mob ? 64 : 100) + (i % 3) * (mob ? 10 : 16);
     if (cl.traced) {
       S.traced++;
+      this.logL("traccio", (src ? "F" + src + " " : "") + (ws.slice(0, 2).join(" · ") || corto(cl.text, 18)));
       if (a) {
         let T = S.vSrc.get(src);
         if (!T) {
@@ -1081,9 +1358,11 @@ export class Sciame {
       if (st && a) st.glow = 1;
     } else if (cl.unk) {
       S.unk++;
+      this.logL("traccio", "? " + corto(cl.text, 22));
       if (a) { const T = this.tent({ rel: [ang, rr] }, "non verificata", "unk", Infinity); if (T) { T.vt = this.TL.clock; S.vFlags.push(T); } this.vPills(); }
     } else {
-      S.noSrc++;
+      S.noSrc++; S.flags++;
+      this.logL("segnalo", corto(cl.text, 24));
       if (a) {
         const kw = parole(cl.text).filter(w => w.length > 3 && !STOP.has(fold(w.toLowerCase()))).slice(0, 1).map(w => corto(w.toLowerCase(), 14));
         const T = this.tent({ rel: [ang, rr] }, "senza fonte" + (kw.length ? " · " + kw[0] : ""), "flag", Infinity);
@@ -1091,6 +1370,9 @@ export class Sciame {
         this.vPills();
       }
     }
+    const den = S.claims - S.unk;
+    if (!S.verifyNA) S.conf = den > 0 ? (100 * S.traced) / den : S.conf;
+    this.exec();
   }
   /** Le pillole della verifica: le più recenti per fonte, poche «senza fonte», il resto riassunto. */
   private vPills(): void {
@@ -1109,8 +1391,12 @@ export class Sciame {
     const RUN = this.RUN!;
     // un agente non manda la traccia: col primo testo la scena va avanti lo stesso
     if (!RUN.R) this.daFonti();
+    if (RUN.firstTok == null) RUN.firstTok = performance.now();
     RUN.answer += t;
-    for (const w of parole(t)) RUN.wordQ.push(w);
+    const ws = parole(t);
+    RUN.nWords += ws.length;
+    for (const w of ws) RUN.wordQ.push(w);
+    this.exec();
     if (RUN.wordQ.length > 240) RUN.wordQ.splice(0, RUN.wordQ.length - 240);
   }
   private onTrace(tr: TracciaRetrieval): void {
@@ -1146,6 +1432,7 @@ export class Sciame {
   private buildReplay(): void {
     const RUN = this.RUN!, R = RUN.R!;
     this.resetScene(); this.tlReset(false);
+    RUN.replay = true;
     this.initCatStats(R);
     this.schedDomanda(0, R.terms);
     const r = this.schedRetrieval(1200);
@@ -1153,7 +1440,7 @@ export class Sciame {
     RUN.tools.forEach((n, i) => this.ev(r + 250 + i * 450, a => this.toolHit(n, a)));
     this.ev(r, () => { RUN.wordQ = ws.slice(0, 220); });
     if (RUN.status === "done") this.schedVerify(r + rd);
-    else this.ev(r + rd, () => { this.S.finished = true; this.notifica(true); });
+    else this.ev(r + rd, () => { this.fineScena(); this.notifica(true); });
     this.TL.rispAt = r;
   }
 
@@ -1197,7 +1484,9 @@ export class Sciame {
     return { x, y };
   }
   /** Le parole vanno verso la chat, sotto il palco. */
-  private answerPoint(): { x: number; y: number } { return this.s2w(this.STAGE.cx, this.CH + 6); }
+  private answerPoint(): { x: number; y: number } {
+    return this.lato === "destra" ? this.s2w(this.CW + 10, this.CH * 0.42) : this.s2w(this.STAGE.cx, this.CH + 6);
+  }
   private crawlerTarget(): { x: number; y: number } {
     const S = this.S, STAGE = this.STAGE, CR = this.CR;
     let p: { x: number; y: number } | null = null;
@@ -1306,6 +1595,7 @@ export class Sciame {
       while (this.acc >= STEP && n < 4) { this.simStep(STEP / 1000); this.acc -= STEP; n++; }
       if (n === 4) this.acc = 0;
       this.render();
+      this.FRAME++;
     } catch (e) {
       // un errore di disegno ferma la scena, non la pagina
       console.warn("sciame: fermo", e);
@@ -1338,10 +1628,20 @@ export class Sciame {
     this.drawLegs(); this.drawFil(); this.drawCore(); this.drawConcepts(); this.drawWords();
     ctx.setTransform(this.DPR, 0, 0, this.DPR, 0, 0); ctx.globalAlpha = 1;
     this.drawClusterLabels(); this.drawLabels(); this.flushPills();
-    // la chat sotto: le parole ci finiscono dentro, un velo le accoglie
-    const g = ctx.createLinearGradient(0, this.CH - 46, 0, this.CH);
-    g.addColorStop(0, "rgba(5,5,7,0)"); g.addColorStop(1, "rgba(5,5,7,0.85)");
-    ctx.fillStyle = g; ctx.fillRect(0, this.CH - 46, this.CW, 46);
+    // la chat accanto: le parole ci finiscono dentro, un velo le accoglie
+    if (this.lato === "sotto") {
+      const g = ctx.createLinearGradient(0, this.CH - 46, 0, this.CH);
+      g.addColorStop(0, "rgba(5,5,7,0)"); g.addColorStop(1, "rgba(5,5,7,0.85)");
+      ctx.fillStyle = g; ctx.fillRect(0, this.CH - 46, this.CW, 46);
+    } else {
+      const g = ctx.createLinearGradient(this.CW - 40, 0, this.CW, 0);
+      g.addColorStop(0, "rgba(5,5,7,0)"); g.addColorStop(1, "rgba(5,5,7,0.8)");
+      ctx.fillStyle = g; ctx.fillRect(this.CW - 40, 0, 40, this.CH);
+    }
+    // vignettatura, come nella pagina di Argos
+    const v = ctx.createRadialGradient(this.CW * 0.46, this.CH / 2, Math.min(this.CW, this.CH) * 0.45, this.CW * 0.46, this.CH / 2, Math.max(this.CW, this.CH) * 0.72);
+    v.addColorStop(0, "rgba(5,5,7,0)"); v.addColorStop(1, "rgba(5,5,7,0.55)");
+    ctx.fillStyle = v; ctx.fillRect(0, 0, this.CW, this.CH);
   }
   private drawField(): void {
     const ctx = this.ctx, F = this.F, CR = this.CR, RT = this.RT;

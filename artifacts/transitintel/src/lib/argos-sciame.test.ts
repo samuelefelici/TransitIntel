@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  citazioniEsplicite, corto, preparaRicerca, riepilogoDi, terminiDomanda, tracciaDalleFonti,
+  citazioniEsplicite, corto, preparaRicerca, riepilogoDi, sigla, terminiDomanda, tracciaDalleFonti,
   type Passaggio, type TracciaRetrieval, type TracciaVerifica,
 } from "./argos-sciame";
 
@@ -133,6 +133,16 @@ describe("il riepilogo per la dashboard", () => {
   it("senza traccia né verifica: tutto a zero, la verifica non disponibile", () => {
     const r = riepilogoDi(null, null, ["tpl_live_operations"], colore);
     expect(r).toMatchObject({ candidati: 0, fonti: 0, verificaDisponibile: false, strumenti: ["tpl_live_operations"], secondi: null, tokens: null });
+  });
+});
+
+describe("le sigle del radar", () => {
+  it("le iniziali delle parole che contano, o le prime lettere", () => {
+    expect(sigla("Trasporto Pubblico Locale")).toBe("TPL");
+    expect(sigla("Accordi Sindacali")).toBe("AS");
+    expect(sigla("Normativa")).toBe("NORM");
+    expect(sigla("Matematica & Algoritmi")).toBe("MA");
+    expect(sigla(null)).toBe("SC"); // «Senza categoria»
   });
 });
 
