@@ -801,7 +801,19 @@ export type ConversazioneLegata = {
   progetto: string | null;
 };
 
-export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura }: {
+/**
+ * Chi guarda un turno mentre si svolge (la scena della scheda Conversazione):
+ * riceve la domanda, ogni evento dello stream così come arriva, e l'esito.
+ * Con un osservatore, il turno di una conversazione salvata chiede ad Argos
+ * anche la traccia del ragionamento.
+ */
+export interface OsservatoreTurno {
+  inizio(domanda: string): void;
+  evento(payload: unknown): void;
+  fine(esito: "done" | "error" | "aborted", messaggio?: string | null): void;
+}
+
+export default function ArgosConversation({ projectId, tiConfigured = true, argosReady = true, conversazione = null, onTurnoFinito, solaLettura, osservatore }: {
   projectId?: string;
   tiConfigured?: boolean;
   argosReady?: boolean;
@@ -811,6 +823,8 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
   onTurnoFinito?: () => void;
   /** se c'è, si legge soltanto: il motivo va al posto dell'input (es. conversazione archiviata) */
   solaLettura?: string;
+  /** se c'è, vede il turno mentre si svolge (l'animazione della scheda Conversazione) */
+  osservatore?: OsservatoreTurno;
 }) {
   const [msgs, setMsgs] = React.useState<Msg[]>([]);
   const [input, setInput] = React.useState("");
@@ -1055,13 +1069,17 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     let askForSave: Ask | null = null;
     let turnFailed = false;
     let sawDone = false;
+    let erroreTurno: string | null = null;
+    // l'osservatore non deve mai rompere la chat: i suoi errori restano suoi
+    const osserva = (f: (o: OsservatoreTurno) => void) => { if (!osservatore) return; try { f(osservatore); } catch (e) { console.warn("osservatore del turno:", e); } };
+    osserva(o => o.inizio(text));
 
     // Conversazione salvata: la storia la tiene Argos, si manda solo il messaggio.
     const endpoint = conversazione
       ? `/api/ai/argos/console/conversazioni/${conversazione.id}/messaggi`
       : t === "chat" ? "/api/ai/argos/chat" : "/api/ai/argos/agent/chat";
     const body = conversazione
-      ? { testo: text, modalita: m === "auto" ? "agente" : m }
+      ? { testo: text, modalita: m === "auto" ? "agente" : m, ...(osservatore ? { traccia: true } : {}) }
       : t === "chat"
         ? { messages: history.slice(-20), projectId, deep }
         : { messages: history, projectId, mode: m === "auto" ? "agente" : m };
@@ -1114,6 +1132,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
           if (!data) continue;
           let payload: any;
           try { payload = JSON.parse(data); } catch { continue; }
+          osserva(o => o.evento(payload));
 
           if (typeof payload.t === "string") {
             assistantAccum += payload.t;
@@ -1167,6 +1186,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
             patchLast(x => ({ ...x, audit: payload.audit }));
           } else if (payload.error) {
             turnFailed = true;
+            erroreTurno = String(payload.error);
             patchLast(x => ({ ...x, error: String(payload.error), streaming: false, phase: undefined, note: undefined }));
           } else if (payload.done) {
             sawDone = true;
@@ -1182,6 +1202,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       // (vale per OGNI fine anomala, watchdog ed errori di rete compresi).
       if (!sawDone && !ctrl.signal.aborted && !turnFailed) {
         turnFailed = true;
+        erroreTurno = "connessione interrotta";
         patchLast(x => ({
           ...x, streaming: false, phase: undefined, note: undefined,
           error: "La connessione si è interrotta prima della fine della risposta (il testo può essere troncato).",
@@ -1190,6 +1211,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         turnFailed = true;
+        erroreTurno = String(err?.message || err);
         patchLast(x => ({ ...x, error: String(err?.message || err), streaming: false, phase: undefined, note: undefined }));
       }
       try { ctrl.abort(); } catch { /* connessione già chiusa */ }
@@ -1212,6 +1234,7 @@ export default function ArgosConversation({ projectId, tiConfigured = true, argo
       patchLast(x => ({ ...x, streaming: false, phase: undefined, note: undefined }));
       setLoading(false);
       abortRef.current = null;
+      osserva(o => o.fine(turnFailed ? "error" : sawDone || planForSave ? "done" : "aborted", erroreTurno));
       // Piano e domanda vivono nelle rispettive tabelle/carte; nello storico
       // testuale ne resta una traccia leggibile per i turni successivi.
       // Un turno FALLITO senza alcuna risposta non si salva: altrimenti ogni

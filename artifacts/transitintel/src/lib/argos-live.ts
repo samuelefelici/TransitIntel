@@ -44,9 +44,9 @@ export function ascoltaAltreSchede(): () => void {
   return () => c.close();
 }
 
-/** La pagina di Argos sulle conversazioni, facoltativamente filtrate su un progetto. */
+/** La pagina di Argos sulla scheda Conversazione, facoltativamente filtrata su un progetto. */
 export function indirizzoArgos(projectId?: string, base: string = import.meta.env.BASE_URL ?? "/"): string {
-  const q = new URLSearchParams({ scheda: "conversazioni" });
+  const q = new URLSearchParams({ scheda: "conversazione" });
   if (projectId) q.set("progetto", projectId);
   return `${base.replace(/\/$/, "")}/argos?${q}`;
 }

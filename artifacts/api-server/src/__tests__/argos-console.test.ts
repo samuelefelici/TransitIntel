@@ -239,7 +239,7 @@ describe("la biblioteca", () => {
   });
 });
 
-describe("le mappe e il crawler", () => {
+describe("le mappe", () => {
   it("le mappe passano dalle rotte di Argos col segreto", async () => {
     rispondi(200, { nodes: [{ id: 1 }], edges: [], categories: [] });
     rispondi(200, { nodes: [], edges: [] });
@@ -247,20 +247,6 @@ describe("le mappe e il crawler", () => {
     await request(app()).get("/api/ai/argos/console/mappa/concetti?limit=9999");
     expect(stato.chiamate[0]!.url).toBe("http://argos.prova/graph?client_slug=tpl-personale");
     expect(stato.chiamate[1]!.url).toContain("/graph/concepts?client_slug=tpl-personale&limit=300");
-  });
-
-  it("una domanda va a /chat/stream con la traccia, senza progetto né cronologia", async () => {
-    stato.risposte.push({ status: 200, body: null, sse: 'data: {"trace":{"kind":"retrieval"}}\n\ndata: {"done":true}\n\n' });
-    const r = await request(app()).post("/api/ai/argos/console/chiedi").send({ domanda: "Che cosa dice il contratto?", deep: true });
-    expect(r.text).toContain('"kind":"retrieval"');
-    const c = stato.chiamate[0]!;
-    expect(c.url).toBe("http://argos.prova/chat/stream");
-    expect(JSON.parse(c.init.body)).toEqual({ client_slug: "tpl-personale", question: "Che cosa dice il contratto?", trace: true, deep: true, history: [] });
-  });
-
-  it("una domanda vuota non arriva ad Argos", async () => {
-    expect((await request(app()).post("/api/ai/argos/console/chiedi").send({ domanda: "  " })).status).toBe(400);
-    expect(stato.chiamate).toHaveLength(0);
   });
 });
 
@@ -271,7 +257,6 @@ describe("i permessi", () => {
   it("la console è dell'area Rete: chi la legge la apre e fa lavorare un agente", () => {
     expect(decidi(chi(U), "GET", "/ai/argos/console/esecuzioni").passa).toBe(true);
     expect(decidi(chi(U), "POST", "/ai/argos/console/agenti/analista/esegui").passa).toBe(true);
-    expect(decidi(chi(U), "POST", "/ai/argos/console/chiedi").passa).toBe(true);
   });
 
   it("senza l'area Rete no", () => {
@@ -355,6 +340,20 @@ describe("le conversazioni", () => {
     expect(r.text).toContain('"done":true');
     expect(stato.chiamate[1]!.url).toBe(`http://argos.prova/console/conversazioni/${CONV}/messaggi`);
     expect(corpo(1)).toMatchObject({ autore: io, testo: "Rinforza la linea 1", modalita: "accetta", ti_auth_token: "jwt-prova" });
+  });
+
+  it("la traccia per l'animazione: ad Argos solo se chiesta, e solo sì o no", async () => {
+    rispondi(200, { conversazione: { id: CONV, modo: "risposta", progetto: null }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"trace":{"kind":"retrieval"}}\n\ndata: {"done":true}\n\n' });
+    const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Quante linee?", traccia: true });
+    expect(r.text).toContain('"kind":"retrieval"');
+    expect(corpo(1).traccia).toBe(true);
+    rispondi(200, { conversazione: { id: CONV, modo: "risposta", progetto: null }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Quante linee?" });
+    expect(corpo(3).traccia).toBe(false);
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "x", traccia: "sì" })).status).toBe(400);
+    expect(stato.chiamate).toHaveLength(4);
   });
 
   it("un turno di Risposta senza progetto non porta il token dell'utente", async () => {

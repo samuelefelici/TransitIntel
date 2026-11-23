@@ -34,7 +34,6 @@ const router: IRouter = Router();
 const ARGOS_URL = (process.env.ARGOS_URL || "").replace(/\/+$/, "");
 const ARGOS_CLIENT_SLUG = process.env.ARGOS_CLIENT_SLUG || "tpl-personale";
 const MAX_COMPITO = 4000;
-const MAX_DOMANDA = 4000;
 const MAX_MESSAGGIO = 8000;
 /** Un libro in PDF può essere grande; oltre, meglio dividerlo per pagine. */
 export const MAX_FILE = 100 * 1024 * 1024;
@@ -415,48 +414,6 @@ router.get("/ai/argos/console/mappa/documento/:id", async (req, res) => {
   await mappa(res, `/graph/doc/${req.params.id}`, { limit: "40" });
 });
 
-// ─── Il crawler: una domanda con la traccia del ragionamento ─────────────
-// POST /api/ai/argos/console/chiedi { domanda, deep? } → SSE di /chat/stream
-// con trace: retrieval (parole, candidati, scelte, ponti, concetti), testo,
-// verifica delle affermazioni. Fuori da ogni progetto: documenti, dati di
-// Cerbero, web.
-router.post("/ai/argos/console/chiedi", async (req, res) => {
-  const domanda = typeof req.body?.domanda === "string" ? req.body.domanda.trim() : "";
-  if (!domanda || domanda.length > MAX_DOMANDA) { res.status(400).json({ error: `domanda richiesta, al massimo ${MAX_DOMANDA} caratteri` }); return; }
-  if (!ARGOS_URL) { res.status(503).json({ error: "Argos non configurato (ARGOS_URL mancante)" }); return; }
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders();
-  const errore = (message: string) => res.write(`data: ${JSON.stringify({ error: message })}\n\n`);
-  const ctrl = new AbortController();
-  req.on("close", () => ctrl.abort());
-  try {
-    const upstream = await fetch(`${ARGOS_URL}/chat/stream`, {
-      method: "POST",
-      headers: argosHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ client_slug: ARGOS_CLIENT_SLUG, question: domanda, trace: true, deep: req.body?.deep === true, history: [] }),
-      signal: ctrl.signal,
-    });
-    if (!upstream.ok || !upstream.body) {
-      const d: any = await upstream.json().catch(() => ({}));
-      errore(traduci(upstream.status, d?.detail).testo);
-      res.end();
-      return;
-    }
-    for await (const chunk of upstream.body as any) res.write(chunk);
-    res.end();
-  } catch (err: any) {
-    if (err?.name !== "AbortError") {
-      logger.error({ err: err?.message }, "Argos console: domanda interrotta");
-      errore("Collegamento con Argos interrotto");
-    }
-    res.end();
-  }
-});
-
-
 // ─── Le conversazioni ────────────────────────────────────────────────────
 // Si salvano in Argos, intere (gli strumenti compresi): niente si perde e il
 // modello non rifà ciò che ha già fatto. Sono dell'utente che le crea:
@@ -594,7 +551,10 @@ router.delete("/ai/argos/console/conversazioni/:id", async (req, res) => {
   if (d !== undefined) res.json(d);
 });
 
-// POST /api/ai/argos/console/conversazioni/:id/messaggi { testo, modalita? } → SSE
+// POST /api/ai/argos/console/conversazioni/:id/messaggi { testo, modalita?, traccia? } → SSE
+// traccia: true chiede ad Argos anche la traccia del ragionamento (retrieval e
+// verifica delle frasi) per l'animazione della scheda Conversazione: la vede
+// solo chi fa il turno, come le fonti della risposta.
 router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => {
   const userId = utenteDi(req);
   if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
@@ -605,6 +565,8 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
   if (typeof modalita !== "string" || !(MODALITA as readonly string[]).includes(modalita)) {
     res.status(400).json({ error: "modalità non valida (agente, piano, accetta)" }); return;
   }
+  if (b.traccia !== undefined && typeof b.traccia !== "boolean") { res.status(400).json({ error: "traccia: sì o no" }); return; }
+  const traccia = b.traccia === true;
   const d = await conversazioneVisibile(res, userId, req.params.id);
   if (d === undefined) return;
   // Il token a breve scadenza dell'utente: su un progetto (l'accesso è appena stato
@@ -625,7 +587,7 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
     const upstream = await fetch(`${ARGOS_URL}/console/conversazioni/${req.params.id}/messaggi`, {
       method: "POST",
       headers: argosHeaders({ "content-type": "application/json" }),
-      body: JSON.stringify({ autore: userId, testo, modalita, ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
+      body: JSON.stringify({ autore: userId, testo, modalita, traccia, ti_auth_token: token, client_slug: ARGOS_CLIENT_SLUG }),
       signal: ctrl.signal,
     });
     if (!upstream.ok || !upstream.body) {

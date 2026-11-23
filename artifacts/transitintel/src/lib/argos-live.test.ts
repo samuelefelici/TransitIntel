@@ -47,8 +47,8 @@ describe("la regia in diretta fra schede", () => {
 
 describe("il bottone di Planning Studio", () => {
   it("apre le conversazioni, sul progetto se c'è", () => {
-    expect(indirizzoArgos(undefined, "/")).toBe("/argos?scheda=conversazioni");
+    expect(indirizzoArgos(undefined, "/")).toBe("/argos?scheda=conversazione");
     expect(indirizzoArgos("11111111-2222-3333-4444-555555555555", "/cerbero/"))
-      .toBe("/cerbero/argos?scheda=conversazioni&progetto=11111111-2222-3333-4444-555555555555");
+      .toBe("/cerbero/argos?scheda=conversazione&progetto=11111111-2222-3333-4444-555555555555");
   });
 });

@@ -494,44 +494,6 @@ export function carica(file: File, o: OpzioniCaricamento, suAvanzamento?: (frazi
   });
 }
 
-/** Gli eventi dello stream di una domanda col ragionamento in vista. */
-export type EventoDomanda =
-  | { trace: Record<string, any> }
-  | { t: string }
-  | { reset: true }
-  | { tool: { name: string; args?: Record<string, unknown>; lato?: "server" } }
-  | { note: string }
-  | { error: string }
-  | { done: true; sources?: unknown[]; tokens?: number };
-
-/** Fa una domanda ad Argos col ragionamento in vista (documenti, dati, web). */
-export async function chiedi(domanda: string, deep: boolean, suEvento: (ev: EventoDomanda) => void, segnale?: AbortSignal): Promise<void> {
-  const r = await fetch(`${getApiBase()}${BASE}/chiedi`, {
-    method: "POST", credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ domanda, deep }),
-    signal: segnale,
-  });
-  if (!r.ok || !r.body) {
-    const d = await r.json().catch(() => ({}));
-    suEvento({ error: (d as any)?.error || `HTTP ${r.status}` });
-    return;
-  }
-  const lettore = r.body.getReader();
-  const dec = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await lettore.read();
-    if (done) break;
-    buffer += dec.decode(value, { stream: true });
-    const { eventi, resto } = spezzaSSE(buffer);
-    buffer = resto;
-    for (const ev of eventi) suEvento(ev as unknown as EventoDomanda);
-  }
-  const { eventi } = spezzaSSE(buffer + "\n\n");
-  for (const ev of eventi) suEvento(ev as unknown as EventoDomanda);
-}
-
 // ─── le conversazioni ───────────────────────────────────────────────────────
 export type ModoConversazione = "risposta" | "analisi" | "agente";
 export interface Conversazione {

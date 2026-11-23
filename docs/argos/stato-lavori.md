@@ -2146,6 +2146,24 @@ Fatto finora:
   Le proposte con i nomi restano in Cerbero e le decide una persona.
   L'informativa ai lavoratori è in bozza, da far vedere ai legali.
 
+- **Una sola scheda, «Conversazione», con la rete neurale in scena (questa PR,
+  con argos #81).** Il crawler a quattro colonne non c'è più, e con lui la
+  rotta `/console/chiedi`. Lo sciame della vecchia pagina di Argos
+  (`frontend/crawler.html`) è portato in TypeScript (`lib/argos-sciame.ts`,
+  canvas, nessuna libreria nuova) e guarda i turni della conversazione:
+  `ArgosConversation` ha un `osservatore` che riceve la domanda, ogni evento
+  dello stream e l'esito; con l'osservatore il turno chiede ad Argos anche la
+  traccia (`traccia: true`, che il proxy passa solo se è un sì/no e Argos
+  usa solo in Risposta e Analisi). Mentre Argos lavora il palco
+  (`PalcoNeurale.tsx`) è grande sopra la chat: nebulose dei documenti, nucleo
+  con le zampe, tentacoli verso i passaggi letti, tenuti e scartati, ponti,
+  concetti, strumenti, parole che volano verso la risposta e la verifica
+  frase per frase. A turno finito si richiude in una barra piccola (passaggi
+  letti, fonti, ponti, concetti, strumenti, frasi con fonte, tempo e token)
+  con «Rivedi» e «Apri». Senza traccia (agenti) la scena mostra domanda,
+  strumenti e parole. I vecchi link `?scheda=crawler` e `?scheda=conversazioni`
+  portano alla scheda unica.
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
