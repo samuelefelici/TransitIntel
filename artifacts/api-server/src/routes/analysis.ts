@@ -2,7 +2,8 @@ import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { censusSections, pointsOfInterest, gtfsStops, gtfsTrips, gtfsStopTimes, gtfsRoutes, gtfsShapes, isochroneCache } from "@workspace/db/schema";
 import { sql, count, inArray, and, eq } from "drizzle-orm";
-import { cache } from "../middlewares/cache";
+import { cache, chiavePerUtente } from "../middlewares/cache";
+import { feedDellaLettura } from "./gtfs-helpers";
 import { leggiLuoghi, nomeOppure, nomiComuni } from "../lib/territorio";
 import { coordinateDellaLinea } from "../lib/geometria-linea";
 import { centroDeiPunti, kmPerGradoLng } from "../lib/geo-utils";
@@ -1095,8 +1096,15 @@ router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (
 // Analisi qualità servizio: copertura POI (scuole, uffici, ospedali)
 // con valutazione oraria, coincidenze inter-comunali ai nodi di scambio
 // ──────────────────────────────────────────────────────────────
-router.get("/analysis/service-quality", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Sul feed della lettura, come le altre analisi del GTFS (tappa 7.24): prima
+// fermate, orari e linee erano di tutti i feed insieme (3,4 s con sei feed, e
+// le partenze di programmi diversi sommate). La cache va per utente.
+router.get("/analysis/service-quality", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    /* senza feed le letture qui sotto non trovano niente */
+    const feedId = feed.feedId;
     /* ── helpers ──────────────────────────────────────────────── */
     const dist = (lat1: number, lng1: number, lat2: number, lng2: number) => {
       const dLat = (lat2 - lat1) * 111_000;
@@ -1165,14 +1173,14 @@ router.get("/analysis/service-quality", cache({ ttlSeconds: 60 }), async (req, r
       name: gtfsStops.stopName,
       lat: gtfsStops.stopLat,
       lng: gtfsStops.stopLon,
-    }).from(gtfsStops);
+    }).from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedId}`);
 
     /* ── 3. All stop_times (departure_time per stop) ─────────── */
     const stRows = await db.execute(sql`
       SELECT st.stop_id, st.departure_time, t.route_id
       FROM gtfs_stop_times st
-      JOIN gtfs_trips t ON t.trip_id = st.trip_id
-      WHERE st.departure_time IS NOT NULL
+      JOIN gtfs_trips t ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+      WHERE st.feed_id = ${feedId} AND st.departure_time IS NOT NULL
     `);
     // Map<stopId, { min: number; routeId: string }[]>
     const stopDeps = new Map<string, { min: number; routeId: string }[]>();
@@ -1188,7 +1196,7 @@ router.get("/analysis/service-quality", cache({ ttlSeconds: 60 }), async (req, r
       shortName: gtfsRoutes.routeShortName,
       longName: gtfsRoutes.routeLongName,
       color: gtfsRoutes.routeColor,
-    }).from(gtfsRoutes);
+    }).from(gtfsRoutes).where(sql`${gtfsRoutes.feedId} = ${feedId}`);
     const routeMap = new Map(routeRows.map(r => [r.routeId, r]));
 
     /* ── helper: analyse POI group ──────────────────────────── */
@@ -1494,18 +1502,21 @@ router.get("/analysis/service-quality", cache({ ttlSeconds: 60 }), async (req, r
 
 // ── Route shapes by route IDs (for school map) ────────────────
 // GET /api/analysis/route-shapes?routeIds=R1,R2,...
-router.get("/analysis/route-shapes", cache({ ttlSeconds: 60 }), async (req, res) => {
+router.get("/analysis/route-shapes", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
     const idsParam = (req.query.routeIds as string) ?? "";
     const routeIds = idsParam.split(",").map(s => s.trim()).filter(Boolean);
     if (routeIds.length === 0) { res.json([]); return; }
+    /* le forme delle linee del feed della lettura (tappa 7.24): prima la prima trovata in un feed qualunque */
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
 
     const rows = await db.select({
       routeId: gtfsShapes.routeId,
       routeShortName: gtfsShapes.routeShortName,
       routeColor: gtfsShapes.routeColor,
       geojson: gtfsShapes.geojson,
-    }).from(gtfsShapes).where(inArray(gtfsShapes.routeId, routeIds));
+    }).from(gtfsShapes).where(and(sql`${gtfsShapes.feedId} = ${feed.feedId}`, inArray(gtfsShapes.routeId, routeIds)));
 
     // Deduplicate by routeId, simplify coordinates
     const seen = new Map<string, boolean>();
@@ -1544,8 +1555,12 @@ router.get("/analysis/route-shapes", cache({ ttlSeconds: 60 }), async (req, res)
 // Analisi gap domanda/offerta per 4 segmenti utenza:
 //   studenti medie/superiori, universitari, anziani, lavoratori
 // ──────────────────────────────────────────────────────────────
-router.get("/analysis/segments", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Sul feed della lettura (tappa 7.24), come la qualità del servizio.
+router.get("/analysis/segments", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId;
     const t0 = Date.now();
     const hhmm = (t: string) => {
       const p = t.split(":");
@@ -1572,7 +1587,7 @@ router.get("/analysis/segments", cache({ ttlSeconds: 60 }), async (req, res) => 
         name: gtfsStops.stopName,
         lat: gtfsStops.stopLat,
         lng: gtfsStops.stopLon,
-      }).from(gtfsStops),
+      }).from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedId}`),
 
       // Pre-aggregate: per stop, per 30-min slot → count departures + distinct routes
       db.execute(sql`
@@ -1583,8 +1598,9 @@ router.get("/analysis/segments", cache({ ttlSeconds: 60 }), async (req, res) => 
             (SPLIT_PART(st.departure_time, ':', 1)::int * 60 +
              SPLIT_PART(st.departure_time, ':', 2)::int) AS dep_min
           FROM gtfs_stop_times st
-          JOIN gtfs_trips t ON t.trip_id = st.trip_id
-          WHERE st.departure_time IS NOT NULL
+          JOIN gtfs_trips t ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+          WHERE st.feed_id = ${feedId}
+            AND st.departure_time IS NOT NULL
             AND st.departure_time <> ''
         )
         SELECT
@@ -1601,7 +1617,7 @@ router.get("/analysis/segments", cache({ ttlSeconds: 60 }), async (req, res) => 
       db.execute(sql`
         SELECT COUNT(*)::int AS total
         FROM gtfs_stop_times
-        WHERE departure_time IS NOT NULL
+        WHERE feed_id = ${feedId} AND departure_time IS NOT NULL
       `),
     ]);
 

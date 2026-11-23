@@ -18,8 +18,9 @@ import { haversineKm, timeToMinutes } from "../lib/geo-utils";
 import {
   getLatestFeedId,
   buildServiceDayMap,
+  feedDellaLettura,
 } from "./gtfs-helpers";
-import { cache } from "../middlewares/cache";
+import { cache, chiavePerUtente } from "../middlewares/cache";
 import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
@@ -432,12 +433,17 @@ router.get("/gtfs/trips/schedule", cache({ ttlSeconds: 60 }), async (req, res) =
 // ──────────────────────────────────────────────────────────────
 // GET /api/gtfs/stops/directory
 // ──────────────────────────────────────────────────────────────
-router.get("/gtfs/stops/directory", cache({ ttlSeconds: 120 }), async (req, res) => {
+// Sul feed della lettura (tappa 7.24): prima fermate, orari e corse di tutti i
+// feed, unite solo per codice (6,5 s con sei feed). La cache va per utente.
+router.get("/gtfs/stops/directory", cache({ ttlSeconds: 120, keyFn: chiavePerUtente }), async (req, res) => {
   const q         = ((req.query.q as string) ?? "").toLowerCase().trim();
   const routeId   = (req.query.route as string) ?? "";
   const page      = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit     = Math.min(100, parseInt(req.query.limit as string) || 50);
   try {
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId;
     const rows = await db.execute(sql`
       SELECT
         s.stop_id, s.stop_name,
@@ -445,9 +451,10 @@ router.get("/gtfs/stops/directory", cache({ ttlSeconds: 120 }), async (req, res)
         ARRAY_AGG(DISTINCT t.route_id ORDER BY t.route_id) AS route_ids,
         COUNT(DISTINCT t.route_id)::int                    AS route_count
       FROM gtfs_stops s
-      JOIN gtfs_stop_times st ON st.stop_id = s.stop_id
-      JOIN gtfs_trips       t  ON t.trip_id = st.trip_id
-      ${q       ? sql`WHERE s.stop_name ILIKE ${"%" + q + "%"}` : sql``}
+      JOIN gtfs_stop_times st ON st.feed_id = s.feed_id AND st.stop_id = s.stop_id
+      JOIN gtfs_trips       t  ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+      WHERE s.feed_id = ${feedId}
+      ${q       ? sql`AND s.stop_name ILIKE ${"%" + q + "%"}` : sql``}
       GROUP BY s.stop_id, s.stop_name, s.stop_lat, s.stop_lon
       ${routeId ? sql`HAVING ARRAY_AGG(DISTINCT t.route_id) @> ARRAY[${routeId}]` : sql``}
       ORDER BY route_count DESC, s.stop_name
@@ -457,9 +464,10 @@ router.get("/gtfs/stops/directory", cache({ ttlSeconds: 120 }), async (req, res)
     const countRow = await db.execute(sql`
       SELECT COUNT(DISTINCT s.stop_id)::int AS total
       FROM gtfs_stops s
-      JOIN gtfs_stop_times st ON st.stop_id = s.stop_id
-      JOIN gtfs_trips       t  ON t.trip_id = st.trip_id
-      ${q ? sql`WHERE s.stop_name ILIKE ${"%" + q + "%"}` : sql``}
+      JOIN gtfs_stop_times st ON st.feed_id = s.feed_id AND st.stop_id = s.stop_id
+      JOIN gtfs_trips       t  ON t.feed_id = st.feed_id AND t.trip_id = st.trip_id
+      WHERE s.feed_id = ${feedId}
+      ${q ? sql`AND s.stop_name ILIKE ${"%" + q + "%"}` : sql``}
     `);
     const total = (countRow.rows as any[])[0]?.total ?? 0;
 
@@ -483,12 +491,16 @@ router.get("/gtfs/stops/directory", cache({ ttlSeconds: 120 }), async (req, res)
 // ──────────────────────────────────────────────────────────────
 // GET /api/gtfs/stops/:stopId/detail
 // ──────────────────────────────────────────────────────────────
-router.get("/gtfs/stops/:stopId/detail", cache({ ttlSeconds: 60 }), async (req, res) => {
+// Sul feed della lettura (tappa 7.24), come l'elenco.
+router.get("/gtfs/stops/:stopId/detail", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   const { stopId } = req.params;
   try {
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId;
     const stopRow = await db.execute(sql`
       SELECT stop_id, stop_name, stop_lat::float AS lat, stop_lon::float AS lon
-      FROM gtfs_stops WHERE stop_id = ${stopId}
+      FROM gtfs_stops WHERE feed_id = ${feedId} AND stop_id = ${stopId}
     `);
     const stop = (stopRow.rows as any[])[0];
     if (!stop) { res.status(404).json({ error: "Stop non trovata" }); return; }
@@ -500,9 +512,9 @@ router.get("/gtfs/stops/:stopId/detail", cache({ ttlSeconds: 60 }), async (req, 
         r.route_color, r.route_text_color,
         st.departure_time
       FROM gtfs_stop_times st
-      JOIN gtfs_trips  t ON t.trip_id  = st.trip_id
-      JOIN gtfs_routes r ON r.route_id = t.route_id
-      WHERE st.stop_id = ${stopId}
+      JOIN gtfs_trips  t ON t.feed_id = st.feed_id AND t.trip_id  = st.trip_id
+      JOIN gtfs_routes r ON r.feed_id = t.feed_id AND r.route_id = t.route_id
+      WHERE st.feed_id = ${feedId} AND st.stop_id = ${stopId}
       ORDER BY t.route_id, st.departure_time
     `);
 

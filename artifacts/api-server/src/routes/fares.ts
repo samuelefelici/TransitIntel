@@ -3817,7 +3817,10 @@ router.get("/fares/simulator/dates", async (req, res): Promise<void> => {
     const feedId = await getLatestFeedId(req);
     if (!feedId) { res.status(400).json({ error: "No GTFS feed" }); return; }
     // Estrae per ogni service_id l'intervallo + esclusioni/aggiunte di calendar_dates,
-    // poi enumera le date e conta i trip totali per data.
+    // poi enumera le date e conta i trip totali per data. Le corse si contano una
+    // volta per servizio e si sommano per data (tappa 7.24): prima ogni data si
+    // univa a tutte le sue corse, quasi un milione di righe per un anno di
+    // servizio. Il trip_id è unico nel feed, quindi la somma è lo stesso numero.
     const rows = await db.execute<any>(sql`
       WITH service_days AS (
         -- Espansione calendar (start→end + bitmap giorni)
@@ -3855,11 +3858,17 @@ router.get("/fares/simulator/dates", async (req, res): Promise<void> => {
             AND cd.exception_type = 2
             AND to_date(cd.date, 'YYYYMMDD') = with_dates.service_date
         )
+      ),
+      corse AS (
+        SELECT service_id, COUNT(DISTINCT trip_id) AS n
+        FROM gtfs_trips
+        WHERE feed_id = ${feedId}
+        GROUP BY service_id
       )
       SELECT to_char(f.service_date, 'YYYYMMDD') AS date,
-             COUNT(DISTINCT t.trip_id) AS trip_count
+             SUM(c.n)::bigint AS trip_count
       FROM filtered f
-      JOIN gtfs_trips t ON t.feed_id = ${feedId} AND t.service_id = f.service_id
+      JOIN corse c ON c.service_id = f.service_id
       GROUP BY f.service_date
       ORDER BY f.service_date
     `);
