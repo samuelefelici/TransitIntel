@@ -18,7 +18,8 @@
  *   ASSENTE   assente (ASS)                            → non candidato;
  *   FINTO     fittizio                                 → non candidato.
  * Un capo deposito del Sud vede solo G3. Il quadro senza nomi per Argos
- * (GET /roster/quadro-anonimo) ripete gli stessi conti, per deposito.
+ * (GET /roster/quadro-anonimo) ripete gli stessi conti, per deposito, sui
+ * depositi che chi chiede vede.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -160,9 +161,14 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("copri gli scoperti, sul databas
       expect(valori.filter(v => v.includes(x))).toEqual([]);
     }
     for (const codice of ["MA", "ASS", "D1"]) expect(valori).not.toContain(codice);
-    // il capo deposito del Sud vede solo il suo; il periodo si controlla; non si scrive niente
-    const sud = await capoSud.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
+    // il quadro segue i depositi che si VEDONO: chi vede solo il Sud ha solo il Sud; il capo
+    // deposito che scrive sul Sud senza un elenco dei visibili li vede tutti (regola della 2.14d)
+    const soloSud = request(appDiProva(router, utenteDiProva(CAPO, [], "user", { ruoli: ["capo_deposito"], depositi: ["s76"], depositiVisibili: ["s76"] })));
+    const sud = await soloSud.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
     expect(sud.body.giorni[0].depositi.map((d: any) => d.deposito)).toEqual([SUD]);
+    const tutti = await capoSud.get(`/api/roster/quadro-anonimo?dal=${GIORNO}&al=${GIORNO}`);
+    expect(tutti.body.giorni[0].depositi.map((d: any) => d.deposito)).toEqual(expect.arrayContaining([NORD, SUD]));
+    // il periodo si controlla; non si scrive niente
     expect((await admin.get("/api/roster/quadro-anonimo?dal=2032-06-15&al=2032-06-30")).status).toBe(400);
     expect((await admin.get("/api/roster/quadro-anonimo?dal=2032-02-30")).status).toBe(400);
     const n = await righe(sql`SELECT count(*)::int AS n FROM roster_assignments WHERE day = ${GIORNO}::date AND dss_id = ${DSS}::uuid`);
