@@ -201,7 +201,11 @@ su main non si tocca più.
   non contano), `solo_nome` (colonne di cui va solo il nome) e, dalla 0007,
   `riepilogo_sempre` (true per le tabelle che l'app riscrive una riga per
   volta, come gli orari alle fermate: un riepilogo per transazione, mai una
-  riga per record).
+  riga per record). Dalla 0066 una tabella in riepilogo può avere anche
+  `confronto` (colonna di `registro.sorvegliate`, si imposta con un UPDATE in
+  migrazione): al COMMIT il registro scrive una riga per chiave cambiata
+  davvero, col prima e il dopo (fino a 2000 righe per tabella in una
+  transazione, non per le cascate).
   - **Prima di sorvegliare una tabella si guarda come l'app la scrive.** Se
     la riscrive durante le letture (le tabelle della validità), il registro
     attribuirebbe modifiche a chi ha solo aperto una pagina: prima si sistema

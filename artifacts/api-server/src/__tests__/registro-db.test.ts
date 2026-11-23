@@ -75,7 +75,8 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il registro delle modifiche, da
   it("lo legge con leggi() e ne chiede lo stato; i filtri per persona li rifiuta anche il database", async () => {
     const stato = await statoRegistro();
     expect(stato.tabelle.length).toBeGreaterThanOrEqual(29);
-    expect(stato.tabelle.find((t) => t.tabella === "public.ps_stop_times")).toMatchObject({ riepilogoSempre: true, conValori: false });
+    /* gli orari: sempre in riepilogo, coi valori per il prima e il dopo a fine transazione (0066) */
+    expect(stato.tabelle.find((t) => t.tabella === "public.ps_stop_times")).toMatchObject({ riepilogoSempre: true, conValori: true });
     const pagina = await leggiRegistro(Parametri.parse({ limite: "5" }));
     expect("errore" in pagina).toBe(false);
     await expect(pool.query(`SELECT * FROM registro.leggi('{"attore": "x"}', 5)`)).rejects.toThrow(/non si legge per persona/);

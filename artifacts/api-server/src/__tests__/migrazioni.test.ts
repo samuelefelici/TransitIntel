@@ -1620,3 +1620,37 @@ describe("0029: chiusura e blocco", () => {
     expect(v["public.esercizio_mesi.esercizio_mesi_chiuso_da_fkey"]).toMatch(/REFERENCES users\(id\) ON DELETE SET NULL$/);
   });
 });
+
+/* La 0066 (tappa 7.20): il prima e il dopo degli orari di dettaglio. cattura()
+ * è quella della 0007 con in più la parte del confronto, e nient'altro. */
+describe("0066: il prima e il dopo degli orari di dettaglio", () => {
+  const sql66 = readFileSync(path.join(CARTELLA, "0066_registro_prima_dopo_orari.sql"), "utf8");
+  const sql07 = readFileSync(path.join(CARTELLA, "0007_registro_lettura_e_seconda_ondata.sql"), "utf8");
+  const cattura = (testo: string) => {
+    const m = /CREATE OR REPLACE FUNCTION registro\.cattura\(\)[\s\S]*?\$cattura\$;/.exec(testo);
+    expect(m).toBeTruthy();
+    return m![0];
+  };
+
+  it("cattura() è quella della 0007 più il confronto", () => {
+    const nuova = cattura(sql66);
+    const inizio = nuova.indexOf("  -- il prima e il dopo a fine transazione (0066)");
+    const fine = nuova.indexOf("  -- una riga per record: fino a 50 righe");
+    expect(inizio).toBeGreaterThan(0);
+    expect(fine).toBeGreaterThan(inizio);
+    const senza = (nuova.slice(0, inizio) + nuova.slice(fine))
+      .replace("  col_conf    text[];\n  conf_gia    bigint;\n  conf_primo  boolean;\n", "");
+    expect(senza).toBe(cattura(sql07));
+  });
+
+  it("il confronto: le tre tabelle di dettaglio, una tabella di passaggio del registro, un trigger differito", () => {
+    expect(sql66).toMatch(/UPDATE registro\.sorvegliate SET confronto = true, con_valori = true\s+WHERE tabella IN \('public\.ps_stop_times', 'public\.ps_variant_stops', 'public\.ps_calendar_dates'\);/);
+    expect(sql66).toMatch(/CREATE UNLOGGED TABLE IF NOT EXISTS registro\.confronti \(/);
+    expect(sql66).toMatch(/ALTER TABLE registro\.confronti OWNER TO cerbero_registro;/);
+    expect(sql66).toMatch(/CREATE CONSTRAINT TRIGGER registro_confronta AFTER INSERT ON registro\.confronti\s+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN \(NEW\.primo\) EXECUTE FUNCTION registro\.confronta_al_commit\(\);/);
+    expect(sql66).toMatch(/ALTER TABLE registro\.confronti ENABLE ALWAYS TRIGGER registro_confronta;/);
+    for (const f of ["confronta(xid8)", "confronta_al_commit()", "cattura()"]) {
+      expect(sql66).toContain(`REVOKE ALL ON FUNCTION registro.${f} FROM PUBLIC;`);
+    }
+  });
+});
