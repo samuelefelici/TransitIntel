@@ -18,6 +18,7 @@ vi.mock("../lib/lavori/coda", () => ({
   }),
   accoda: vi.fn(async () => "nuovo"),
   viviDi: vi.fn(async () => 0),
+  contaVivi: vi.fn(async () => ({ miei: 0, inCoda: 0 })),
 }));
 
 import router, { tempoDelCalcolo, tempoMassimoTurniGuida } from "../routes/driver-shifts";

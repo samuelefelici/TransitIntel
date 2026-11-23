@@ -135,6 +135,18 @@ export async function viviDi(utenteId: string, ambito: string): Promise<number> 
 }
 
 /**
+ * Per i tetti (lib/lavori/tetti.ts), in una lettura: i lavori vivi di un utente
+ * in un ambito, e quanti lavori aspettano in coda in tutta l'installazione.
+ */
+export async function contaVivi(utenteId: string, ambito: string): Promise<{ miei: number; inCoda: number }> {
+  const r = await q(
+    `SELECT count(*) FILTER (WHERE utente_id = $1 AND metadati->>'ambito' = $2)::int AS miei,
+            count(*) FILTER (WHERE stato = 'in_coda')::int AS in_coda
+       FROM coda.lavori WHERE stato IN ('in_coda', 'in_corso')`, [utenteId, ambito]);
+  return { miei: r.rows[0]?.miei ?? 0, inCoda: r.rows[0]?.in_coda ?? 0 };
+}
+
+/**
  * Il lavoro vivo (in coda o in corso) con questa chiave di unicità, se c'è: al
  * più uno, per l'indice unico parziale lavori_unici_vivi. Serve a rispondere
  * 409 prima di un lavoro preliminare costoso; la garanzia resta l'indice
@@ -223,7 +235,10 @@ export async function richiestaDi(id: string): Promise<Record<string, any> | nul
 /** Il codice di Postgres per una chiave di unicità già viva (lavori_unici_vivi). */
 export const CHIAVE_GIA_VIVA = "23505";
 
-/** Prende il lavoro più vecchio di una corsia fra i tipi e le versioni che chi esegue conosce. */
+/**
+ * Prende un lavoro di una corsia fra i tipi e le versioni che chi esegue
+ * conosce: di chi ha meno calcoli in corso, a parità il più vecchio.
+ */
 export async function prendi(corsia: Corsia, chi: string, noti: ReadonlyArray<{ tipo: string; versione: number }>): Promise<Lavoro | null> {
   if (!noti.length) return null;
   const r = await q(
@@ -232,11 +247,13 @@ export async function prendi(corsia: Corsia, chi: string, noti: ReadonlyArray<{ 
             iniziato_il = coalesce(iniziato_il, now()), battito_il = now(),
             scade_il = now() + make_interval(secs => $3), aggiornato_il = now()
       WHERE id = (
-        SELECT id FROM coda.lavori
-         WHERE stato = 'in_coda' AND corsia = $1 AND disponibile_dal <= now()
-           AND (tipo, versione) IN (SELECT t, v FROM unnest($4::text[], $5::smallint[]) AS n(t, v))
-         ORDER BY creato_il
-         FOR UPDATE SKIP LOCKED
+        SELECT l.id FROM coda.lavori l
+         WHERE l.stato = 'in_coda' AND l.corsia = $1 AND l.disponibile_dal <= now()
+           AND (l.tipo, l.versione) IN (SELECT t, v FROM unnest($4::text[], $5::smallint[]) AS n(t, v))
+         -- prima chi ha meno calcoli in corso (tappa 7.21): chi ne lancia tre non
+         -- ferma gli altri; a parità, l'ordine di arrivo
+         ORDER BY (SELECT count(*) FROM coda.lavori c WHERE c.stato = 'in_corso' AND c.utente_id = l.utente_id), l.creato_il
+         FOR UPDATE OF l SKIP LOCKED
          LIMIT 1)
      RETURNING *`,
     [corsia, chi, LEASE_SEC, noti.map(n => n.tipo), noti.map(n => n.versione)]);

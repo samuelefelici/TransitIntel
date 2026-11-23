@@ -52,6 +52,7 @@ import {
 } from "../lib/ottimizza-veicoli/esegui";
 import type { Progresso } from "../lib/lavori/python";
 import * as coda from "../lib/lavori/coda";
+import { controllaTetti, rispondiRifiuto, TETTI_PER_PERSONA } from "../lib/lavori/tetti";
 import { AMBITI } from "../lib/lavori/ambiti";
 import { arresto } from "../lib/arresto";
 import { attendiEsito, rispostaDi, FINITI, STATO_PUBBLICO, MESSAGGIO_RIAVVIO, type RigaLavoro } from "../lib/facciata-lavori";
@@ -1113,8 +1114,8 @@ function rejectWithoutPsProject(req: any, res: any): boolean {
  * restano qui: nessun lavoro per una richiesta sbagliata, nessun DDL nel
  * lavoratore. */
 const AMBITO_VEICOLI = AMBITI.turniMacchina;
-/** Calcoli dei turni macchina vivi (in coda o in corso) per utente: oltre, 429. */
-export const VIVI_PER_UTENTE_VEICOLI = 3;
+/** Calcoli dei turni macchina vivi (in coda o in corso) per utente: oltre, 429 (lib/lavori/tetti.ts). */
+export const VIVI_PER_UTENTE_VEICOLI = TETTI_PER_PERSONA[AMBITI.turniMacchina];
 
 /** Il calcolo va in coda salvo LAVORI_VEICOLI_IN_CODA=0. */
 export function veicoliInCoda(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -1135,13 +1136,9 @@ async function handleVehicleOptimize(req: any, res: any, mode: ModoVeicoli): Pro
     if (arresto.signal.aborted) { res.status(503).json({ error: MESSAGGIO_RIAVVIO }); return; }
     const utenteId: string | undefined = req.user?.id;
     if (!utenteId) { res.status(401).json({ error: "Non autenticato" }); return; }
-    // un tetto ai calcoli vivi per utente: la coda è persistente e non si svuota a ogni riavvio
-    if (await coda.viviDi(utenteId, AMBITO_VEICOLI) >= VIVI_PER_UTENTE_VEICOLI) {
-      res.status(429).json({
-        error: `Hai già ${VIVI_PER_UTENTE_VEICOLI} calcoli dei turni macchina in coda o in corso: aspetta che finiscano o fermane uno.`,
-      });
-      return;
-    }
+    // i tetti (lib/lavori/tetti.ts): per persona, e la coda di tutta l'installazione
+    const rifiuto = await controllaTetti(utenteId, AMBITO_VEICOLI);
+    if (rifiuto) { rispondiRifiuto(res, rifiuto); return; }
     const budgetSec = budgetVsp(req.body);
     const corsia = corsiaVeicoli(mode, budgetSec);
     const psProjectId = String(req.body.psProjectId);
@@ -1379,6 +1376,11 @@ router.post("/service-program/agent-optimize", async (req, res) => {
     // anche col flag a 0 (ritorno indietro) un giro ancora in coda nel lavoratore conta
     const vivo = await coda.vivoConChiave(chiaveGiro(psProjectId));
     if (vivo) { res.status(409).json({ error: GIRO_GIA_IN_CORSO, jobId: vivo.id }); return; }
+    // i tetti (tappa 7.21): al più due ottimizzazioni iterative vive per persona, e la coda di tutta l'installazione
+    if (inCoda) {
+      const rifiuto = await controllaTetti(userId, AMBITO_GIRO);
+      if (rifiuto) { rispondiRifiuto(res, rifiuto); return; }
+    }
     if (!inCoda) {
       for (const j of agentJobs.values()) {
         if (j.status === "running" && j.psProjectId === psProjectId) {

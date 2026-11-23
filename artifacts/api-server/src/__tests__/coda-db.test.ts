@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterAll } from "vitest";
 import { pool } from "@workspace/db";
 import {
-  accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci, viviDi, vivoConChiave,
+  accoda, leggi, prendi, battito, chiudi, chiediAnnullamento, rimettiInCoda, recuperaScaduti, pulisci, viviDi, vivoConChiave, contaVivi,
   segnaAttesa, fermaAbbandonati, lavoriDi, ultimoDi,
 } from "../lib/lavori/coda";
 
@@ -101,6 +101,32 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("la coda dei lavori, sul databas
     await chiediAnnullamento(finito);
     expect(await viviDi(u, "turni-guida")).toBe(2);
     expect(await viviDi("10000000-0000-0000-0000-00000000000b", "turni-guida")).toBe(0);
+  });
+
+  it("i tetti in una lettura: i miei vivi nell'ambito e quanti aspettano in coda in tutta l'installazione (7.21)", async () => {
+    const u = "10000000-0000-0000-0000-00000000000a", altro = "10000000-0000-0000-0000-00000000000b";
+    const m = { ambito: "turni-macchina" };
+    await nuovo("lunga", { utenteId: u, metadati: m });
+    const preso = await nuovo("veloce", { utenteId: u, metadati: m });
+    await pool.query("UPDATE coda.lavori SET stato = 'in_corso' WHERE id = $1", [preso]);
+    await nuovo("lunga", { utenteId: altro, metadati: m });
+    await nuovo("lunga", { utenteId: u, metadati: { ambito: "turni-guida" } });
+    const finito = await nuovo("lunga", { utenteId: u, metadati: m });
+    await chiediAnnullamento(finito);
+    /* miei: uno in coda e uno in corso; in coda: tre (non quello in corso, non quello fermato) */
+    expect(await contaVivi(u, "turni-macchina")).toEqual({ miei: 2, inCoda: 3 });
+  });
+
+  it("prima chi non ha calcoli in corso: chi ne lancia tanti non ferma gli altri (7.21)", async () => {
+    const tanti = "10000000-0000-0000-0000-00000000000a", altro = "10000000-0000-0000-0000-00000000000b";
+    const primo = await nuovo("lunga", { utenteId: tanti });
+    const secondo = await nuovo("lunga", { utenteId: tanti });
+    const dopo = await nuovo("lunga", { utenteId: altro });
+    await pool.query("UPDATE coda.lavori SET creato_il = now() - interval '1 minute' WHERE id IN ($1, $2)", [primo, secondo]);
+    expect((await prendi("lunga", "p1", NOTI))?.id).toBe(primo);
+    /* chi ne ha già uno in corso passa dopo chi non ne ha, anche se è arrivato prima */
+    expect((await prendi("lunga", "p2", NOTI))?.id).toBe(dopo);
+    expect((await prendi("lunga", "p3", NOTI))?.id).toBe(secondo);
   });
 
   it("i miei calcoli: solo i miei, negli ambiti chiesti, i più recenti prima, senza risultato; l'errore anche dalla risposta", async () => {
