@@ -569,7 +569,11 @@ function AuthGate() {
 
   // Se l'utente è autenticato MA siamo nel finestra di animazione post-login,
   // continuiamo a mostrare LoginPage (che ha gia' accessGranted=true e sta animando).
-  const showApp = isAuthenticated && !waitingSequence;
+  /* il primo disegno dopo un accesso: l'effetto qui sopra non ha ancora messo
+   * waitingSequence, ma l'app non va mostrata nemmeno per un fotogramma, altrimenti
+   * il login si smonta e la sua conferma (pages/login.tsx) ricomincia da capo (tappa 7.33) */
+  const appenaEntrato = isAuthenticated && !prevAuth.current;
+  const showApp = isAuthenticated && !waitingSequence && !appenaEntrato;
 
   return (
     <Suspense fallback={<PageLoader />}>

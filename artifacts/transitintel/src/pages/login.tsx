@@ -1,656 +1,342 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { Shield, Lock, Eye, EyeOff, AlertTriangle, ShieldCheck } from "lucide-react";
+/**
+ * La pagina di accesso (tappa 7.33).
+ *
+ * A sinistra che cos'è Cerbero: il ciclo del lavoro dell'azienda, dal
+ * programma al consuntivo del mese (lib/accesso.ts), e quello che gli sta
+ * accanto. A destra l'accesso: email e password, poi, se è attiva, la
+ * verifica in due passaggi con il codice dell'app o un codice di recupero.
+ *
+ * La logica è quella di prima (hooks/use-auth.tsx): dopo un accesso riuscito
+ * la pagina mostra una conferma breve e poi avvisa l'app con l'evento
+ * «auth:login-sequence-done», che smonta il login e apre la pagina chiesta.
+ * Il fondo è una griglia in prospettiva in WebGL; i colori seguono il tema
+ * chiaro o scuro (styles/accesso.css).
+ */
+import { useCallback, useEffect, useState } from "react";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
+import { AlertTriangle, Eye, EyeOff, KeyRound, LockKeyhole } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
-import logoImg from "/logo.png";
+import { useTema } from "@/hooks/use-tema";
+import { SceltaTemaCompatta } from "@/components/layout/SceltaTema";
+import GrigliaProspettica from "@/components/accesso/GrigliaProspettica";
+import { ACCANTO, CICLO, codiceCompleto, nomeDiBenvenuto, saluto } from "@/lib/accesso";
+import logoImg from "/logosidebar.png";
+import "@/styles/accesso.css";
 
-/* ─── MATRIX RAIN on <canvas>  (SLOWER) ─── */
-function useMatrixRain(canvasRef: React.RefObject<HTMLCanvasElement | null>) {
+const CARATTERI = "https://fonts.googleapis.com/css2?family=Mona+Sans:wght@300..800&family=Reddit+Mono:wght@400..600&display=swap";
+
+/** I caratteri della pagina, solo quando la pagina c'è. */
+function useCaratteri() {
   useEffect(() => {
-    const cvs = canvasRef.current;
-    if (!cvs) return;
-    const ctx = cvs.getContext("2d")!;
-    let animId: number;
-    let cols: number[] = [];
-
-    const CHARS = "01アイウエオカキクケコサシスセソタチツテトナニヌネノ⌐░▒▓█ABCDEF";
-    const FONT_SIZE = 14;
-    const w = () => cvs!.width;
-    const h = () => cvs!.height;
-
-    function resize() {
-      cvs!.width = window.innerWidth;
-      cvs!.height = window.innerHeight;
-      const c = Math.floor(w() / FONT_SIZE);
-      cols = Array.from({ length: c }, () => Math.random() * h() / FONT_SIZE);
-    }
-    resize();
-    window.addEventListener("resize", resize);
-
-    function draw() {
-      // Slightly more aggressive fade → chars linger but still disappear
-      ctx.fillStyle = "rgba(3, 7, 18, 0.04)";
-      ctx.fillRect(0, 0, w(), h());
-
-      for (let i = 0; i < cols.length; i++) {
-        const ch = CHARS[Math.floor(Math.random() * CHARS.length)];
-        const x = i * FONT_SIZE;
-        const y = cols[i] * FONT_SIZE;
-
-        const hue = Math.random() > 0.5 ? 199 : 220;
-        const light = 40 + Math.random() * 35;
-        const alpha = 0.5 + Math.random() * 0.35;
-        ctx.fillStyle = `hsla(${hue}, 89%, ${light}%, ${alpha})`;
-        ctx.font = `${FONT_SIZE}px monospace`;
-        ctx.fillText(ch, x, y);
-
-        if (Math.random() > 0.97) {
-          ctx.fillStyle = `hsla(199, 100%, 75%, 0.85)`;
-          ctx.fillText(ch, x, y);
-        }
-
-        if (y > h() && Math.random() > 0.98) {
-          cols[i] = 0;
-        }
-        // ▸▸▸ MUCH SLOWER: was 0.6 + rand*0.4, now 0.15 + rand*0.2 ◂◂◂
-        cols[i] += 0.15 + Math.random() * 0.20;
-      }
-      animId = requestAnimationFrame(draw);
-    }
-    draw();
-
-    return () => {
-      cancelAnimationFrame(animId);
-      window.removeEventListener("resize", resize);
-    };
-  }, [canvasRef]);
+    if (document.querySelector(`link[data-caratteri="accesso"]`)) return;
+    const l = document.createElement("link");
+    l.rel = "stylesheet";
+    l.href = CARATTERI;
+    l.dataset.caratteri = "accesso";
+    document.head.appendChild(l);
+  }, []);
 }
 
-/* ─── SCANNING LINE EFFECT ─── */
-function ScanLine() {
-  return (
-    <motion.div
-      className="absolute left-0 right-0 h-px bg-gradient-to-r from-transparent via-cyan-400/30 to-transparent pointer-events-none"
-      animate={{ top: ["0%", "100%"] }}
-      transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
-    />
-  );
-}
-
-/* ─── MAIN LOGIN PAGE ─── */
 export default function LoginPage() {
   const { login, loginMfa, user } = useAuth();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [username, setUsername] = useState("");
+  const { tema } = useTema();
+  const fermo = useReducedMotion() ?? false;
+  useCaratteri();
+
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [showPass, setShowPass] = useState(false);
+  const [mostra, setMostra] = useState(false);
   /* il messaggio del server: credenziali, blocco dopo troppi tentativi, codice sbagliato */
-  const [error, setError] = useState<string | null>(null);
+  const [errore, setErrore] = useState<string | null>(null);
   /* password giusta e verifica attiva: il biglietto per il secondo passo */
   const [biglietto, setBiglietto] = useState<string | null>(null);
   const [codice, setCodice] = useState("");
   const [usaRecupero, setUsaRecupero] = useState(false);
-  const [shake, setShake] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [accessGranted, setAccessGranted] = useState(false);
-  const [phase, setPhase] = useState<"idle" | "scanning" | "granted" | "entering">("idle");
-
-  // Identità dell'agente — disponibile dopo l'auth (durante scanning/granted/entering).
-  // Fallback sull'username inserito nel form se per qualche micro-istante l'utente non è ancora pronto.
-  // Identità dell'agente — disponibile dopo l'auth (durante scanning/granted/entering).
-  // Estrae un "codename" decente sia da fullName ("Mario Rossi" -> ROSSI? no -> MARIO)
-  // sia da email ("f.beccacece@cerbero.it" -> BECCACECE) per qualsiasi utente.
-  function deriveCodename(): string {
-    if (user?.fullName) {
-      // primo token alfabetico, niente parentesi tipo "Samuele (admin)"
-      const tok = user.fullName.replace(/\([^)]*\)/g, "").trim().split(/\s+/)[0];
-      if (tok) return tok.toUpperCase();
-    }
-    const email = user?.email || username || "";
-    if (email.includes("@")) {
-      const local = email.split("@")[0];
-      // f.beccacece -> beccacece ; mario.rossi -> rossi ; samuele -> samuele
-      const parts = local.split(/[.\-_]+/).filter(Boolean);
-      const candidate = parts.sort((a, b) => b.length - a.length)[0] || local;
-      return candidate.toUpperCase();
-    }
-    return (email || "agent").toUpperCase();
-  }
-  const fullName = user?.fullName || user?.email || username || "AGENT";
-  const codename = deriveCodename();
-  const clearance = user?.role === "admin" ? "ALPHA-1" : "BRAVO";
-  const opId = (user?.id || "00000000-0000-0000-0000-000000000000")
-    .replace(/-/g, "").slice(0, 10).toUpperCase();
-
-  useMatrixRain(canvasRef);
+  const [attesa, setAttesa] = useState(false);
+  const [entrato, setEntrato] = useState(false);
+  const [scossa, setScossa] = useState(0);
 
   const sbagliato = useCallback((messaggio: string) => {
-    setLoading(false);
-    setError(messaggio);
-    setShake(true);
-    setTimeout(() => setShake(false), 600);
+    setAttesa(false);
+    setErrore(messaggio);
+    setScossa((n) => n + 1);
   }, []);
 
-  const avviaSequenza = useCallback(() => {
-    // Login OK: AuthProvider gia' aggiornato. Animazione poi App.tsx renderizza l'app.
-    setLoading(false);
-    setAccessGranted(true);
-    setPhase("scanning");
-    // Timing: scanning 2.2s -> granted 2.6s -> entering 2.0s -> done.
-    // Totale ~6.8s, abbastanza per leggere ogni schermata e gustarsi il codename.
-    setTimeout(() => setPhase("granted"), 2200);
-    setTimeout(() => setPhase("entering"), 4800);
-    // Notifica AuthGate di smontare LoginPage SOLO a fine sequenza cinematica
-    setTimeout(() => {
+  /* accesso riuscito: una conferma breve, poi l'app (che aspetta questo evento per smontare il login).
+   * Il timer non si annulla: anche se la pagina sparisse prima, l'app deve ricevere l'evento. */
+  const conferma = useCallback(() => {
+    setAttesa(false);
+    setEntrato(true);
+    window.setTimeout(() => {
       window.dispatchEvent(new Event("auth:login-sequence-done"));
-    }, 6800);
-  }, []);
+    }, fermo ? 350 : 1500);
+  }, [fermo]);
 
-  const handleSubmit = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      setError(null);
-      setLoading(true);
-
-      const result = await login(username, password);
-      if (!result.ok) {
-        if ("mfaBiglietto" in result) {
-          setLoading(false);
-          setBiglietto(result.mfaBiglietto);
-          setCodice("");
-          setUsaRecupero(false);
-          return;
-        }
-        sbagliato(result.error);
+  const accedi = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrore(null);
+    setAttesa(true);
+    const r = await login(email, password);
+    if (!r.ok) {
+      if ("mfaBiglietto" in r) {
+        setAttesa(false);
+        setBiglietto(r.mfaBiglietto);
+        setCodice("");
+        setUsaRecupero(false);
         return;
       }
-      avviaSequenza();
-    },
-    [login, username, password, sbagliato, avviaSequenza],
-  );
+      sbagliato(r.error);
+      return;
+    }
+    conferma();
+  }, [login, email, password, sbagliato, conferma]);
 
-  const handleCodice = useCallback(
-    async (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!biglietto) return;
-      setError(null);
-      setLoading(true);
-      const r = await loginMfa(biglietto, usaRecupero ? { recupero: codice } : { codice });
-      if (!r.ok) {
-        /* biglietto scaduto (5 minuti): si torna a email e password */
-        if (/scaduto/i.test(r.error ?? "")) setBiglietto(null);
-        sbagliato(r.error ?? "Codice non valido");
-        return;
-      }
-      avviaSequenza();
-    },
-    [biglietto, codice, usaRecupero, loginMfa, sbagliato, avviaSequenza],
-  );
+  const verifica = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!biglietto) return;
+    setErrore(null);
+    setAttesa(true);
+    const prova = usaRecupero ? { recupero: codice.trim() } : { codice: codice.replace(/\s+/g, "") };
+    const r = await loginMfa(biglietto, prova);
+    if (!r.ok) {
+      /* biglietto scaduto (5 minuti): si torna a email e password */
+      if (/scaduto/i.test(r.error ?? "")) setBiglietto(null);
+      sbagliato(r.error ?? "Codice non valido");
+      return;
+    }
+    conferma();
+  }, [biglietto, codice, usaRecupero, loginMfa, sbagliato, conferma]);
+
+  const entra = (ritardo: number) => fermo
+    ? { initial: false as const }
+    : { initial: { opacity: 0, y: 14 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.6, delay: ritardo, ease: [0.2, 0.7, 0.2, 1] as const } };
+
+  const anno = new Date().getFullYear();
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-[hsl(224,71%,4%)]">
-      {/* Layer 1 — Matrix rain canvas */}
-      <canvas ref={canvasRef} className="absolute inset-0 z-[1]" />
+    <div className="accesso">
+      <div className="accesso-fondo" aria-hidden />
+      <GrigliaProspettica tema={tema} />
 
-      {/* Layer 2 — Scan line */}
-      <ScanLine />
+      <div className="relative z-10 mx-auto flex min-h-[100dvh] max-w-[1440px] flex-col px-4 sm:px-8 lg:px-14">
+        <header className="flex items-center justify-between py-6">
+          <div className="flex items-center gap-3">
+            <img src={logoImg} alt="" className="h-9 w-auto" />
+            <div className="leading-tight">
+              <div className="text-[15px] font-semibold tracking-[0.18em]">CERBERO</div>
+              <div className="accesso-etichetta" style={{ fontSize: 10, letterSpacing: "1.4px" }}>Transportation management</div>
+            </div>
+          </div>
+          <SceltaTemaCompatta />
+        </header>
 
-      {/* Layer 3 — Vignette */}
-      <div className="absolute inset-0 z-10 pointer-events-none bg-radial-[ellipse_at_center] from-transparent via-transparent to-[hsl(224,71%,4%)]" />
+        <main className="grid flex-1 items-start gap-12 pb-12 pt-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,430px)] lg:gap-16 lg:pt-10">
+          {/* ── Che cos'è Cerbero ─────────────────────────────────────────── */}
+          <section className="order-2 min-w-0 lg:order-1" aria-labelledby="accesso-titolo">
+            <motion.p {...entra(0.05)} className="accesso-etichetta">Piattaforma per il trasporto pubblico locale</motion.p>
+            <motion.h1 {...entra(0.12)} id="accesso-titolo" className="accesso-titolo mt-5">
+              Il servizio,<br />dal piano <em>alla strada</em>
+            </motion.h1>
+            <motion.p {...entra(0.22)} className="accesso-tesi mt-6">
+              Rete, turni, personale ed esercizio in un unico sistema: quello che si programma è quello che si pubblica,
+              si assegna, si guida e si rendiconta a fine mese.
+            </motion.p>
 
-      {/* ═══ CINEMATIC ACCESS SEQUENCE ═══ */}
-      <AnimatePresence>
-        {accessGranted && (
-          <motion.div
-            className="absolute inset-0 z-50 flex items-center justify-center bg-[hsl(224,71%,4%)]"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.4 }}
-          >
-            {/* Phase 1: SCANNING — identity verification bars */}
-            {phase === "scanning" && (
+            <motion.div {...entra(0.32)} className="mt-12">
+              <div className="mb-3 flex items-baseline justify-between gap-4">
+                <h2 className="accesso-etichetta">Il ciclo del lavoro</h2>
+                <span className="accesso-etichetta hidden sm:inline" style={{ color: "var(--a-testo-3)" }}>dal programma al consuntivo</span>
+              </div>
+              <ol className="accesso-ciclo">
+                {CICLO.map((t) => (
+                  <li key={t.numero} className="accesso-tappa">
+                    <span className="accesso-tappa-numero">{t.numero}</span>
+                    <h3>{t.titolo}</h3>
+                    <p>{t.testo}</p>
+                  </li>
+                ))}
+              </ol>
+            </motion.div>
+
+            <motion.div {...entra(0.42)} className="mt-10">
+              <h2 className="accesso-etichetta mb-4">Accanto, tutto l'anno</h2>
+              <dl className="accesso-accanto">
+                {ACCANTO.map((a) => (
+                  <div key={a.titolo}>
+                    <dt>{a.titolo}</dt>
+                    <dd>{a.testo}</dd>
+                  </div>
+                ))}
+              </dl>
+            </motion.div>
+          </section>
+
+          {/* ── L'accesso ─────────────────────────────────────────────────── */}
+          <section className="order-1 lg:sticky lg:top-10 lg:order-2" aria-label="Accesso">
+            <motion.div {...entra(0.18)}>
               <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="text-center"
+                key={scossa}
+                animate={scossa && !fermo ? { x: [0, -8, 8, -6, 6, 0] } : undefined}
+                transition={{ duration: 0.45 }}
+                className="accesso-guscio"
               >
-                <motion.div
-                  className="w-16 h-16 mx-auto mb-6 rounded-full border border-cyan-500/40 flex items-center justify-center"
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
-                >
-                  <div className="w-12 h-12 rounded-full border-2 border-transparent border-t-cyan-400 border-r-cyan-400/30" />
-                </motion.div>
-                <p className="font-mono text-sm text-cyan-400/80 tracking-[0.3em] uppercase">
-                  Verifica Identità
-                </p>
-                <div className="mt-4 flex items-center justify-center gap-1">
-                  {[0, 1, 2, 3, 4].map((j) => (
-                    <motion.div
-                      key={j}
-                      className="w-8 h-1 rounded-full bg-cyan-500/30"
-                      animate={{ backgroundColor: ["hsla(199,89%,48%,0.2)", "hsla(199,89%,48%,0.8)", "hsla(199,89%,48%,0.2)"] }}
-                      transition={{ duration: 0.8, repeat: Infinity, delay: j * 0.15 }}
-                    />
-                  ))}
+                <div className="accesso-carta">
+                  {biglietto ? (
+                    <form onSubmit={verifica} className="space-y-5" aria-describedby="accesso-codice-aiuto" noValidate>
+                      <div>
+                        <p className="accesso-etichetta flex items-center gap-2"><KeyRound className="h-3.5 w-3.5" aria-hidden />Secondo passaggio</p>
+                        <h2 className="mt-3 text-[26px] font-semibold tracking-[-0.02em]">Verifica in due passaggi</h2>
+                        <p id="accesso-codice-aiuto" className="mt-2 text-[14px] leading-relaxed" style={{ color: "var(--a-testo-2)" }}>
+                          {usaRecupero
+                            ? "Scrivi uno dei codici di recupero che hai salvato quando hai attivato la verifica. Ognuno vale una volta."
+                            : "Scrivi il codice a sei cifre che vedi adesso nell'app di autenticazione sul telefono."}
+                        </p>
+                      </div>
+                      <div>
+                        <label htmlFor="accesso-codice" className="accesso-etichetta mb-2 block">{usaRecupero ? "Codice di recupero" : "Codice"}</label>
+                        <input
+                          id="accesso-codice"
+                          value={codice}
+                          onChange={(e) => setCodice(e.target.value)}
+                          inputMode={usaRecupero ? "text" : "numeric"}
+                          autoComplete="one-time-code"
+                          autoFocus
+                          maxLength={usaRecupero ? 12 : 7}
+                          placeholder={usaRecupero ? "XXXXX-XXXXX" : "000000"}
+                          className="accesso-campo accesso-campo-codice"
+                          required
+                        />
+                      </div>
+                      <Errore testo={errore} />
+                      <button type="submit" className="accesso-bottone" disabled={attesa || (!usaRecupero && !codiceCompleto(codice)) || (usaRecupero && codice.trim().length < 6)}>
+                        {attesa ? <><span className="accesso-girandola" aria-hidden />Verifico</> : "Verifica e accedi"}
+                      </button>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <button type="button" className="accesso-link" onClick={() => { setUsaRecupero(!usaRecupero); setCodice(""); setErrore(null); }}>
+                          {usaRecupero ? "Usa il codice dell'app" : "Ho perso il telefono: codice di recupero"}
+                        </button>
+                        <button type="button" className="accesso-link" onClick={() => { setBiglietto(null); setErrore(null); }}>
+                          Indietro
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <form onSubmit={accedi} className="space-y-5">
+                      <div>
+                        <p className="accesso-etichetta flex items-center gap-2"><LockKeyhole className="h-3.5 w-3.5" aria-hidden />Area riservata</p>
+                        <h2 className="mt-3 text-[26px] font-semibold tracking-[-0.02em]">Accedi a Cerbero</h2>
+                        <p className="mt-2 text-[14px] leading-relaxed" style={{ color: "var(--a-testo-2)" }}>
+                          Con le credenziali che ti ha dato l'amministratore della tua azienda.
+                        </p>
+                      </div>
+                      <div>
+                        <label htmlFor="accesso-email" className="accesso-etichetta mb-2 block">Email</label>
+                        <input
+                          id="accesso-email"
+                          type="email"
+                          value={email}
+                          onChange={(e) => setEmail(e.target.value)}
+                          autoComplete="username"
+                          autoFocus
+                          placeholder="nome@azienda.it"
+                          className="accesso-campo"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="accesso-password" className="accesso-etichetta mb-2 block">Password</label>
+                        <div className="relative">
+                          <input
+                            id="accesso-password"
+                            type={mostra ? "text" : "password"}
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            autoComplete="current-password"
+                            className="accesso-campo pr-12"
+                            required
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setMostra(!mostra)}
+                            className="accesso-icona absolute right-1 top-1/2 -translate-y-1/2"
+                            aria-label={mostra ? "Nascondi la password" : "Mostra la password"}
+                            aria-pressed={mostra}
+                          >
+                            {mostra ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
+                          </button>
+                        </div>
+                      </div>
+                      <Errore testo={errore} />
+                      <button type="submit" className="accesso-bottone" disabled={attesa}>
+                        {attesa ? <><span className="accesso-girandola" aria-hidden />Verifico</> : "Accedi"}
+                      </button>
+                    </form>
+                  )}
+
+                  <div className="accesso-filo mt-7" />
+                  <ul className="mt-4 space-y-1.5 text-[12.5px]" style={{ color: "var(--a-testo-3)" }}>
+                    <li>Connessione cifrata e sessione legata a questo browser.</li>
+                    <li>Verifica in due passaggi per i ruoli che la richiedono.</li>
+                  </ul>
                 </div>
-                <p className="font-mono text-[10px] text-cyan-700 mt-3 tracking-wider">
-                  Analisi credenziali in corso...
-                </p>
-                <motion.p
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.4 }}
-                  className="font-mono text-[10px] text-cyan-500/80 mt-5 tracking-[0.25em] uppercase"
-                >
-                  Soggetto: <span className="text-cyan-300">{codename}</span>
-                </motion.p>
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.7 }}
-                  className="font-mono text-[9px] text-cyan-700 mt-1 tracking-widest"
-                >
-                  ID-OP: {opId}
-                </motion.p>
               </motion.div>
-            )}
+            </motion.div>
+          </section>
+        </main>
 
-            {/* Phase 2: GRANTED — big checkmark + authorized */}
-            {phase === "granted" && (
-              <motion.div
-                initial={{ scale: 0.5, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                transition={{ type: "spring", stiffness: 200, damping: 20 }}
-                className="text-center"
-              >
-                <motion.div
-                  className="w-24 h-24 mx-auto mb-5 rounded-full border-2 border-emerald-400/60 flex items-center justify-center"
-                  animate={{
-                    boxShadow: [
-                      "0 0 0px hsla(160,60%,50%,0)",
-                      "0 0 50px hsla(160,60%,50%,0.3)",
-                      "0 0 0px hsla(160,60%,50%,0)",
-                    ],
-                  }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                >
-                  <motion.svg
-                    width="48" height="48" viewBox="0 0 48 48"
-                    initial={{ pathLength: 0 }}
-                    animate={{ pathLength: 1 }}
-                  >
-                    <motion.path
-                      d="M12 24 L20 32 L36 16"
-                      fill="none"
-                      stroke="hsl(160,60%,55%)"
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      initial={{ pathLength: 0 }}
-                      animate={{ pathLength: 1 }}
-                      transition={{ duration: 0.6, ease: "easeOut" }}
-                    />
-                  </motion.svg>
-                </motion.div>
+        <footer className="flex flex-wrap items-center justify-between gap-2 border-t py-5" style={{ borderColor: "var(--a-bordo-tenue)" }}>
+          <span className="accesso-etichetta" style={{ color: "var(--a-testo-3)" }}>© {anno} Cerbero</span>
+          <span className="accesso-etichetta" style={{ color: "var(--a-testo-3)" }}>Accesso riservato al personale autorizzato</span>
+        </footer>
+      </div>
 
-                <motion.p
-                  initial={{ y: 10, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  transition={{ delay: 0.3 }}
-                  className="font-mono text-xl text-emerald-400 tracking-[0.3em] uppercase"
-                >
-                  Accesso Autorizzato
-                </motion.p>
-                <motion.p
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.5 }}
-                  className="font-mono text-sm text-emerald-200/90 mt-4 tracking-[0.25em] uppercase"
-                >
-                  Operativo: <span className="text-white">{fullName}</span>
-                </motion.p>
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.6 }}
-                  className="font-mono text-xs text-cyan-500/60 mt-2 tracking-wider"
-                >
-                  Livello di sicurezza: CLASSIFICATO · CLEARANCE {clearance}
-                </motion.p>
-              </motion.div>
-            )}
-
-            {/* Phase 3: ENTERING — logo zoom + system boot */}
-            {phase === "entering" && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.3 }}
-                className="text-center"
-              >
-                <motion.img
-                  src={logoImg}
-                  alt="TransitIntel"
-                  className="mx-auto h-24 w-auto object-contain"
-                  initial={{ scale: 0.8, opacity: 0 }}
-                  animate={{ scale: [0.8, 1.1, 1], opacity: 1 }}
-                  transition={{ duration: 0.6, ease: "easeOut" }}
+      <AnimatePresence>
+        {entrato && (
+          <motion.div
+            className="accesso-conferma"
+            role="status"
+            aria-live="polite"
+            initial={fermo ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.35 }}
+          >
+            <div className="text-center">
+              <svg width="56" height="56" viewBox="0 0 56 56" className="mx-auto" aria-hidden>
+                <circle cx="28" cy="28" r="26" fill="none" stroke="var(--a-bordo)" strokeWidth="1" />
+                <motion.path
+                  d="M17 29 L25 37 L40 20"
+                  fill="none"
+                  stroke="var(--a-menta)"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  initial={fermo ? false : { pathLength: 0 }}
+                  animate={{ pathLength: 1 }}
+                  transition={{ duration: 0.5, delay: 0.15, ease: "easeOut" }}
                 />
-                <motion.p
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: 0.3 }}
-                  className="font-mono text-xs text-cyan-400/70 mt-4 tracking-[0.2em] uppercase"
-                >
-                  Inizializzazione sistema...
-                </motion.p>
-                <motion.p
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.55 }}
-                  className="font-mono text-sm text-cyan-200 mt-3 tracking-[0.2em] uppercase"
-                >
-                  Benvenuto, <span className="text-white">{codename}</span>
-                </motion.p>
-                <motion.div
-                  className="mt-3 mx-auto h-0.5 rounded-full bg-cyan-900/50 overflow-hidden"
-                  style={{ width: 200 }}
-                >
-                  <motion.div
-                    className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full"
-                    initial={{ width: "0%" }}
-                    animate={{ width: "100%" }}
-                    transition={{ duration: 1, ease: "easeInOut" }}
-                  />
-                </motion.div>
-              </motion.div>
-            )}
+              </svg>
+              <p className="accesso-etichetta mt-6">Accesso confermato</p>
+              <p className="mt-3 text-[34px] font-semibold tracking-[-0.02em]">
+                {saluto(nomeDiBenvenuto(user?.fullName, user?.email ?? email))}
+              </p>
+              <div className="accesso-conferma-barra mx-auto mt-6"><span /></div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
 
-      {/* MAIN CONTENT */}
-      <div className="relative z-20 flex flex-col items-center justify-center h-full px-4">
-        {/* Top classified banner */}
-        <motion.div
-          initial={{ y: -40, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.2, duration: 0.8 }}
-          className="absolute top-0 left-0 right-0 bg-cyan-500/10 border-b border-cyan-500/20 py-2 text-center"
-        >
-          <p className="font-mono text-[10px] text-cyan-400/70 tracking-[0.4em] uppercase">
-            ▸ Sistema Classificato — Solo Personale Autorizzato ▸
-          </p>
-        </motion.div>
-
-        {/* Logo section — image with aura glow + floating particles */}
-        <motion.div
-          initial={{ y: -30, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.5, duration: 0.8 }}
-          className="text-center mb-3"
-        >
-          <div className="relative mx-auto w-full max-w-sm flex items-center justify-center">
-            {/* Aura glow behind logo */}
-            <div className="absolute inset-0 bg-cyan-500/15 blur-2xl rounded-full scale-110 pointer-events-none" />
-
-            {/* Floating luminous particles around the logo */}
-            {Array.from({ length: 12 }).map((_, i) => {
-              const angle0 = (i / 12) * Math.PI * 2;
-              const rx = 140 + (i % 3) * 22;
-              const ry = 50 + (i % 2) * 18;
-              const dur = 6 + (i % 4) * 1.5;
-              const size = 2 + (i % 3);
-              const delay = i * 0.4;
-              return (
-                <motion.div
-                  key={`p-${i}`}
-                  className="absolute rounded-full pointer-events-none"
-                  style={{
-                    width: size,
-                    height: size,
-                    background: i % 3 === 0
-                      ? "hsl(199,89%,65%)"
-                      : i % 3 === 1
-                        ? "hsl(210,80%,60%)"
-                        : "hsl(185,70%,55%)",
-                    boxShadow: `0 0 ${size * 3}px ${
-                      i % 3 === 0
-                        ? "hsla(199,89%,65%,0.6)"
-                        : i % 3 === 1
-                          ? "hsla(210,80%,60%,0.5)"
-                          : "hsla(185,70%,55%,0.5)"
-                    }`,
-                    top: "50%",
-                    left: "50%",
-                  }}
-                  animate={{
-                    x: [
-                      Math.cos(angle0) * rx,
-                      Math.cos(angle0 + Math.PI * 0.5) * rx * 0.9,
-                      Math.cos(angle0 + Math.PI) * rx,
-                      Math.cos(angle0 + Math.PI * 1.5) * rx * 0.9,
-                      Math.cos(angle0) * rx,
-                    ],
-                    y: [
-                      Math.sin(angle0) * ry,
-                      Math.sin(angle0 + Math.PI * 0.5) * ry * 1.1,
-                      Math.sin(angle0 + Math.PI) * ry,
-                      Math.sin(angle0 + Math.PI * 1.5) * ry * 1.1,
-                      Math.sin(angle0) * ry,
-                    ],
-                    opacity: [0.3, 0.7, 0.4, 0.8, 0.3],
-                  }}
-                  transition={{
-                    duration: dur,
-                    repeat: Infinity,
-                    ease: "linear",
-                    delay,
-                  }}
-                />
-              );
-            })}
-
-            {/* Logo image — same width as the card (max-w-sm = 384px) */}
-            <img
-              src={logoImg}
-              alt="TransitIntel"
-              className="relative z-10 h-auto w-full max-w-sm object-contain drop-shadow-[0_0_25px_hsla(199,89%,48%,0.4)]"
-            />
-          </div>
-
-          <p className="font-mono text-xs text-cyan-500/70 mt-1 tracking-[0.25em] uppercase">
-            Intelligence & Analytics Platform
-          </p>
-        </motion.div>
-
-        {/* Login card */}
-        <motion.div
-          initial={{ y: 30, opacity: 0 }}
-          animate={shake ? { x: [0, -10, 10, -10, 10, 0], y: 0, opacity: 1 } : { y: 0, opacity: 1 }}
-          transition={shake ? { duration: 0.5 } : { delay: 0.8, duration: 0.8 }}
-          className="w-full max-w-sm"
-        >
-          <div className="relative rounded-xl border border-cyan-500/20 bg-[hsl(224,71%,4%)]/80 backdrop-blur-xl p-6 shadow-[0_0_60px_-15px_hsl(199,89%,48%,0.15)]">
-            {/* Corner decorations */}
-            <div className="absolute top-0 left-0 w-4 h-4 border-t-2 border-l-2 border-cyan-500/40 rounded-tl-xl" />
-            <div className="absolute top-0 right-0 w-4 h-4 border-t-2 border-r-2 border-cyan-500/40 rounded-tr-xl" />
-            <div className="absolute bottom-0 left-0 w-4 h-4 border-b-2 border-l-2 border-cyan-500/40 rounded-bl-xl" />
-            <div className="absolute bottom-0 right-0 w-4 h-4 border-b-2 border-r-2 border-cyan-500/40 rounded-br-xl" />
-
-            {/* Card header */}
-            <div className="flex items-center gap-2 mb-6 pb-4 border-b border-cyan-500/10">
-              <Lock className="w-4 h-4 text-cyan-500/60" />
-              <span className="font-mono text-xs text-cyan-500/60 tracking-wider uppercase">
-                Autenticazione Richiesta
-              </span>
-            </div>
-
-            {biglietto ? (
-              <form onSubmit={handleCodice} className="space-y-4" aria-describedby="login-codice-aiuto">
-                <p id="login-codice-aiuto" className="font-mono text-[11px] text-cyan-300/80 leading-relaxed">
-                  {usaRecupero
-                    ? "Inserisci uno dei codici di recupero che hai salvato quando hai attivato la verifica (ognuno vale una volta)."
-                    : "Verifica in due passaggi: inserisci il codice a 6 cifre che vedi nell'app sul telefono."}
-                </p>
-                <div>
-                  <label htmlFor="login-codice" className="block font-mono text-[11px] text-cyan-600 mb-1.5 tracking-wider uppercase">
-                    {usaRecupero ? "Codice di recupero" : "Codice"}
-                  </label>
-                  <input
-                    id="login-codice"
-                    value={codice}
-                    onChange={(e) => setCodice(e.target.value)}
-                    inputMode={usaRecupero ? "text" : "numeric"}
-                    autoComplete="one-time-code"
-                    autoFocus
-                    maxLength={usaRecupero ? 12 : 7}
-                    className="w-full bg-[hsl(224,71%,8%)] border border-cyan-500/15 rounded-lg px-4 py-2.5 font-mono text-lg tracking-[0.3em] text-center text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
-                    placeholder={usaRecupero ? "XXXXX-XXXXX" : "000000"}
-                    required
-                  />
-                </div>
-                {error && (
-                  <div role="alert" className="flex items-center gap-2 text-red-400 font-mono text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    <span>{error}</span>
-                  </div>
-                )}
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="relative w-full py-2.5 rounded-lg font-mono text-sm tracking-wider uppercase overflow-hidden transition-all
-                    bg-gradient-to-r from-cyan-600/80 to-blue-600/80 hover:from-cyan-500/90 hover:to-blue-500/90
-                    text-white border border-cyan-400/20 hover:border-cyan-400/40 disabled:opacity-60"
-                >
-                  <span className="flex items-center justify-center gap-2"><Shield className="w-4 h-4" />{loading ? "Verifica in corso..." : "Verifica"}</span>
-                </button>
-                <div className="flex justify-between font-mono text-[11px]">
-                  <button type="button" className="text-cyan-500 hover:text-cyan-300 underline" onClick={() => { setUsaRecupero(!usaRecupero); setCodice(""); setError(null); }}>
-                    {usaRecupero ? "Usa il codice dell'app" : "Ho perso il telefono: codice di recupero"}
-                  </button>
-                  <button type="button" className="text-cyan-700 hover:text-cyan-400" onClick={() => { setBiglietto(null); setError(null); }}>
-                    Indietro
-                  </button>
-                </div>
-              </form>
-            ) : (
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Email */}
-              <div>
-                <label className="block font-mono text-[11px] text-cyan-600 mb-1.5 tracking-wider uppercase">
-                  Email
-                </label>
-                <input
-                  type="email"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  className="w-full bg-[hsl(224,71%,8%)] border border-cyan-500/15 rounded-lg px-4 py-2.5 font-mono text-sm text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
-                  placeholder="email@dominio"
-                  autoComplete="email"
-                  required
-                />
-              </div>
-
-              {/* Password */}
-              <div>
-                <label className="block font-mono text-[11px] text-cyan-600 mb-1.5 tracking-wider uppercase">
-                  Password
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPass ? "text" : "password"}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="w-full bg-[hsl(224,71%,8%)] border border-cyan-500/15 rounded-lg px-4 py-2.5 pr-10 font-mono text-sm text-cyan-100 placeholder:text-cyan-800 focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/20 transition-all"
-                    placeholder="••••••••"
-                    autoComplete="current-password"
-                    required
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPass(!showPass)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-cyan-600 hover:text-cyan-400 transition-colors"
-                    tabIndex={-1}
-                  >
-                    {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* Error */}
-              <AnimatePresence>
-                {error && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: "auto" }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="flex items-center gap-2 text-red-400 font-mono text-xs bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2"
-                  >
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    <span role="alert">{error}</span>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              {/* Submit */}
-              <button
-                type="submit"
-                disabled={loading}
-                className="relative w-full py-2.5 rounded-lg font-mono text-sm tracking-wider uppercase overflow-hidden transition-all
-                  bg-gradient-to-r from-cyan-600/80 to-blue-600/80 hover:from-cyan-500/90 hover:to-blue-500/90
-                  text-white border border-cyan-400/20 hover:border-cyan-400/40 disabled:opacity-60"
-              >
-                {loading ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <motion.span
-                      className="inline-block w-4 h-4 border-2 border-white/40 border-t-white rounded-full"
-                      animate={{ rotate: 360 }}
-                      transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
-                    />
-                    Verifica in corso...
-                  </span>
-                ) : (
-                  <span className="flex items-center justify-center gap-2">
-                    <Shield className="w-4 h-4" />
-                    Accedi al Sistema
-                  </span>
-                )}
-              </button>
-            </form>
-            )}
-          </div>
-
-          {/* Security badge — centered to match login card width */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 1.5 }}
-            className="mt-4 w-full flex justify-center"
-          >
-            <div className="inline-flex items-center gap-2.5 bg-emerald-500/10 border border-emerald-500/25 rounded-full px-5 py-2 whitespace-nowrap">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span className="font-mono text-[10px] text-emerald-300/90 tracking-wider">
-                CONNESSIONE PROTETTA · CRITTOGRAFIA END-TO-END · v4.2.1
-              </span>
-            </div>
-          </motion.div>
-        </motion.div>
-
-        {/* Bottom banner */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 2 }}
-          className="absolute bottom-0 left-0 right-0 bg-slate-800/40 border-t border-slate-600/30 py-2.5 text-center backdrop-blur-sm"
-        >
-          <p className="font-mono text-[10px] text-slate-400 tracking-widest uppercase">
-            © {new Date().getFullYear()} TransitIntel — Sistema Riservato — Tutti i diritti riservati
-          </p>
-        </motion.div>
-      </div>
+function Errore({ testo }: { testo: string | null }) {
+  return (
+    <div aria-live="assertive">
+      {testo && (
+        <div role="alert" className="accesso-errore">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+          <span>{testo}</span>
+        </div>
+      )}
     </div>
   );
 }
