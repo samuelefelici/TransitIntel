@@ -907,7 +907,16 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
         }).from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedTurni}`);
         const stopById = new Map<string, { name: string | null; lat: number; lng: number }>();
         const nearStopsByEndpoint: Array<{ endpoint: [number, number]; stops: Array<{ stopId: string; distM: number; walkMin: number; name: string | null; lat: number; lng: number }> }> = [];
+        /* Tappa 7.27: un capolinea si calcola una volta sola (tripEndpoints ne ha
+           uno per corsa, quindi gli stessi punti molte volte) e si ritrova per
+           coordinate con una mappa, invece di una ricerca lineare per ogni corsa. */
+        const chiavePunto = (la: number, lo: number) => `${la},${lo}`;
+        const endpointVisti = new Set<string>();
+        const nearByPunto = new Map<string, (typeof nearStopsByEndpoint)[number]>();
         for (const ep of tripEndpoints) {
+          const kp = chiavePunto(ep[0], ep[1]);
+          if (endpointVisti.has(kp)) continue;
+          endpointVisti.add(kp);
           const closeMap = new Map<string, { stopId: string; distM: number; walkMin: number; name: string | null; lat: number; lng: number }>();
           // (a) fermate vicine (raggio diretto)
           for (const s of allStopsRaw) {
@@ -940,38 +949,56 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
             }
           }
           const close = [...closeMap.values()];
-          if (close.length > 0) nearStopsByEndpoint.push({ endpoint: ep, stops: close });
+          if (close.length > 0) {
+            const voce = { endpoint: ep, stops: close };
+            nearStopsByEndpoint.push(voce);
+            nearByPunto.set(kp, voce);
+          }
         }
+        const trovaCapolinea = (la: number, lo: number) =>
+          nearByPunto.get(chiavePunto(la, lo))
+          ?? nearStopsByEndpoint.find(x => Math.abs(x.endpoint[0] - la) < 1e-6 && Math.abs(x.endpoint[1] - lo) < 1e-6);
         const allCandidateStopIds = new Set<string>();
         for (const ep of nearStopsByEndpoint) for (const s of ep.stops) allCandidateStopIds.add(s.stopId);
         req.log.info(`[intermodal-opt] bus-extra candidate stops: ${allCandidateStopIds.size} (across ${nearStopsByEndpoint.length} trip endpoints)`);
 
         if (allCandidateStopIds.size > 0) {
-          // 3. stop_times di queste fermate, raggruppate per (tripId, stopId)
+          // 3-4. Orari di queste fermate e le loro corse, in una query sola (tappa
+          // 7.27: prima gli orari a blocchi e poi le corse a blocchi da 500, una
+          // sessantina di query sulla copia di produzione). L'ordine delle righe
+          // resta quello degli orari.
           const candidateArr = [...allCandidateStopIds];
           type StRow = { tripId: string; stopId: string; departureTime: string; arrivalTime: string };
           const stRows: StRow[] = [];
-          for (let i = 0; i < candidateArr.length; i += 500) {
-            const batch = candidateArr.slice(i, i + 500);
-            const rows = await db.select({
-              tripId: gtfsStopTimes.tripId,
-              stopId: gtfsStopTimes.stopId,
-              departureTime: gtfsStopTimes.departureTime,
-              arrivalTime: gtfsStopTimes.arrivalTime,
-            }).from(gtfsStopTimes)
-              .where(sql`${gtfsStopTimes.feedId} = ${feedTurni} AND ${gtfsStopTimes.stopId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
-            stRows.push(...rows.map(r => ({ tripId: r.tripId, stopId: r.stopId, departureTime: r.departureTime || "", arrivalTime: r.arrivalTime || "" })));
-          }
-
-          // 4. Trip metadata + route info
-          const tripIds = [...new Set(stRows.map(r => r.tripId))];
           const tripInfo = new Map<string, { routeId: string; serviceId: string; headsign: string | null }>();
-          for (let i = 0; i < tripIds.length; i += 500) {
-            const batch = tripIds.slice(i, i + 500);
-            const rows = await db.select({
-              tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId, serviceId: gtfsTrips.serviceId, headsign: gtfsTrips.tripHeadsign,
-            }).from(gtfsTrips).where(sql`${gtfsTrips.feedId} = ${feedTurni} AND ${gtfsTrips.tripId} IN (${sql.join(batch.map(id => sql`${id}`), sql`, `)})`);
-            for (const r of rows) tripInfo.set(r.tripId, { routeId: r.routeId, serviceId: r.serviceId, headsign: r.headsign });
+          const orariCorse = await db.execute<{
+            trip_id: string; stop_id: string; departure_time: string | null; arrival_time: string | null;
+            route_id: string | null; service_id: string | null; trip_headsign: string | null;
+          }>(sql`
+            SELECT st.trip_id, st.stop_id, st.departure_time, st.arrival_time,
+                   t.route_id, t.service_id, t.trip_headsign
+              FROM gtfs_stop_times st
+              LEFT JOIN LATERAL (
+                SELECT route_id, service_id, trip_headsign FROM gtfs_trips c
+                 WHERE c.feed_id = st.feed_id AND c.trip_id = st.trip_id LIMIT 1
+              ) t ON true
+             WHERE st.feed_id = ${feedTurni}
+               AND st.stop_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(candidateArr)}::jsonb))
+          `);
+          for (const r of orariCorse.rows) {
+            stRows.push({ tripId: r.trip_id, stopId: r.stop_id, departureTime: r.departure_time || "", arrivalTime: r.arrival_time || "" });
+            if (r.route_id !== null && !tripInfo.has(r.trip_id)) {
+              tripInfo.set(r.trip_id, { routeId: r.route_id, serviceId: r.service_id ?? "", headsign: r.trip_headsign });
+            }
+          }
+          /* gli orari per fermata, nell'ordine di stRows (tappa 7.27): prima ogni
+             corsa e ogni fermata vicina scorrevano tutti gli orari di tutte le
+             fermate candidate */
+          const stPerFermata = new Map<string, StRow[]>();
+          for (const st of stRows) {
+            let l = stPerFermata.get(st.stopId);
+            if (!l) { l = []; stPerFermata.set(st.stopId, l); }
+            l.push(st);
           }
 
           const routeIds = [...new Set([...tripInfo.values()].map(t => t.routeId))];
@@ -990,13 +1017,12 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
 
               // ── A) BUS NOSTRO ARRIVA → l'utente prende altro bus che parte
               if (typeof e.lastStopLat === "number" && typeof e.lastStopLon === "number") {
-                const ep = nearStopsByEndpoint.find(x => Math.abs(x.endpoint[0] - e.lastStopLat!) < 1e-6 && Math.abs(x.endpoint[1] - e.lastStopLon!) < 1e-6);
+                const ep = trovaCapolinea(e.lastStopLat, e.lastStopLon);
                 if (ep) {
                   const earliestBoardMin = e.arrivalMin;
                   for (const stp of ep.stops) {
                     const boardAt = earliestBoardMin + stp.walkMin;
-                    for (const st of stRows) {
-                      if (st.stopId !== stp.stopId) continue;
+                    for (const st of stPerFermata.get(stp.stopId) ?? []) {
                       const ti = tripInfo.get(st.tripId);
                       if (!ti) continue;
                       if (analyzedRoutes.has(ti.routeId)) continue;
@@ -1035,11 +1061,10 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
 
               // ── B) BUS NOSTRO PARTE → l'utente è arrivato con altro bus
               if (typeof e.firstStopLat === "number" && typeof e.firstStopLon === "number") {
-                const ep = nearStopsByEndpoint.find(x => Math.abs(x.endpoint[0] - e.firstStopLat!) < 1e-6 && Math.abs(x.endpoint[1] - e.firstStopLon!) < 1e-6);
+                const ep = trovaCapolinea(e.firstStopLat, e.firstStopLon);
                 if (ep) {
                   for (const stp of ep.stops) {
-                    for (const st of stRows) {
-                      if (st.stopId !== stp.stopId) continue;
+                    for (const st of stPerFermata.get(stp.stopId) ?? []) {
                       const ti = tripInfo.get(st.tripId);
                       if (!ti) continue;
                       if (analyzedRoutes.has(ti.routeId)) continue;
@@ -1269,11 +1294,16 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
       if (!longByGroup.has(k)) longByGroup.set(k, []);
       longByGroup.get(k)!.push(c);
     }
+    /* i gruppi con una coincidenza ottima, calcolati una volta (tappa 7.27):
+       prima ogni gruppo scorreva di nuovo tutte le coincidenze */
+    const gruppiConOttima = new Set<string>();
+    for (const c of coincidences) {
+      if (c.status === "optimal") gruppiConOttima.add(`${c.hubId}|${c.shiftId}|${c.tripId}|${c.mode}`);
+    }
     for (const [, list] of longByGroup) {
       const sample = list[0];
       const sameKey = `${sample.hubId}|${sample.shiftId}|${sample.tripId}|${sample.mode}`;
-      const hasOptimal = coincidences.some(c => c.status === "optimal" &&
-        `${c.hubId}|${c.shiftId}|${c.tripId}|${c.mode}` === sameKey);
+      const hasOptimal = gruppiConOttima.has(sameKey);
       if (hasOptimal) continue;
       const best = list.sort((a, b) => Math.abs(a.bufferMin) - Math.abs(b.bufferMin))[0];
       const reduction = Math.max(0, Math.round(best.bufferMin - 5));
