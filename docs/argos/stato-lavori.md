@@ -2215,7 +2215,45 @@ Fatto finora:
   fatto dal processore, senza scheda video) a schermo intero torna al
   piano; sul telefono regge.
 
+- **Verifica di connettori e strumenti (24/11).** Il registro di Argos ha 87
+  capacità (66 letture, 12 scritture, 1 distruttiva, 8 interne). Verificato:
+  le 74 chiamate HTTP di Argos verso Cerbero hanno tutte la rotta (metodo e
+  forma del percorso); le 39 query degli strumenti sul database (`tpl_*`,
+  `ps_*`) citano 23 tabelle e 114 colonne qualificate che esistono nello
+  schema di produzione; il token di Argos non tocca `/admin`, `/auth` né il
+  roster con le persone, e nessuno strumento li chiede; i 19 smoke test di
+  Argos passano (uno vuole un Postgres usa e getta). Il buco trovato e
+  chiuso: la chat dei modi Risposta e Analisi non offriva mai turni guida,
+  parco dell'officina e roster per conteggi (li avevano solo gli agenti) e,
+  senza progetto, Cerbero non le mandava il token. Ora li offre col token
+  dell'utente, con o senza progetto (argos `chat_strumenti.py`, Cerbero
+  `routes/argos-console.ts`: il token in ogni turno, dopo il controllo
+  d'accesso alla conversazione).
+
 ## In sospeso
+
+- **Argos: gli strumenti che mancano**, dalla verifica del 24/11, in ordine di
+  valore:
+  1. il **Consuntivo** (`/api/esercizio/*`): Cerbero lo prevede già per Argos
+     («i token di servizio leggono ma non scrivono»), ma nessuno strumento lo
+     legge. Giornate, esiti delle corse, causali, report del mese; senza gli
+     autori del giornale.
+  2. i **flussi dei passeggeri** (`caronte.tap_events`, `caronte.journeys`):
+     salite e discese per linea, fermata e fascia, incassi; solo conteggi.
+  3. **Sala Operativa**: anomalie e puntualità (`/api/operations/*`), oggi
+     solo in parte (`tpl_live_operations`, `tpl_travel_times`).
+  4. **meteo e servizio** (`/api/weather/*`), **tariffe** (preventivo e
+     simulazione, `/api/fares/quote`, `/api/fares/simulator`), **depositi e
+     trasferimenti** (`/api/depots`, `/api/deadhead-arcs`).
+  5. il **connettore MCP** espone solo Planning Studio (più 4 di Argos): niente
+     documenti, esercizio, turni, parco. Agisce per conto del proprietario del
+     progetto: da decidere che cosa aprire a chi ha la chiave.
+- **Argos: l'utente `argos_ro` legge tutto lo schema `public`** (comprese le
+  tabelle con le persone e gli utenti, e le future): gli strumenti usano 23
+  tabelle di rete, territorio, tariffe, traffico e AVM. Da restringere a
+  quelle, con un REVOKE in produzione (decisione e intervento del titolare).
+- **Argos: i `ps_*`** (Planning Studio letto dal database) servono solo se
+  manca il collegamento HTTP a Cerbero: in produzione non si usano.
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
 

@@ -329,7 +329,7 @@ describe("le conversazioni", () => {
     expect(stato.chiamate).toHaveLength(0);
   });
 
-  it("un turno: modalità validata, token solo sul progetto, autore dalla sessione", async () => {
+  it("un turno: modalità validata, token dell'utente, autore dalla sessione", async () => {
     expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "" })).status).toBe(400);
     expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "ciao", modalita: "distruggi" })).status).toBe(400);
     rispondi(200, { conversazione: { id: CONV, progetto: MIO }, messaggi: [] });
@@ -356,11 +356,20 @@ describe("le conversazioni", () => {
     expect(stato.chiamate).toHaveLength(4);
   });
 
-  it("un turno di Risposta senza progetto non porta il token dell'utente", async () => {
-    rispondi(200, { conversazione: { id: CONV, modo: "risposta", progetto: null }, messaggi: [] });
-    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
-    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Quante linee?" });
-    expect(corpo(1).ti_auth_token).toBeNull();
+  it("un turno di Risposta o Analisi senza progetto porta il token: turni guida, parco e roster per conteggi", async () => {
+    for (const [modo, i] of [["risposta", 1], ["analisi", 3]] as const) {
+      rispondi(200, { conversazione: { id: CONV, modo, progetto: null }, messaggi: [] });
+      stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+      await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Quanti mezzi fermi in officina?" });
+      expect(corpo(i).ti_auth_token).toBe("jwt-prova");
+    }
+  });
+
+  it("una conversazione che non è dell'utente: niente token, niente turno", async () => {
+    rispondi(404, { detail: "Conversazione inesistente" });
+    const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Quanti mezzi?" });
+    expect(r.status).toBe(404);
+    expect(stato.chiamate).toHaveLength(1);
   });
 
   it("un turno con un agente senza progetto porta il token, per i turni salvati", async () => {
