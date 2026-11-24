@@ -4,14 +4,16 @@
  * CI come cerbero_app). La tappa 7.27 ha riscritto il modo di cercarle (orari
  * per fermata, capolinea per coordinate, una query sola per orari e corse,
  * gruppi con una coincidenza ottima calcolati una volta): sulla copia di
- * produzione da 160 s a meno di 5, con le stesse coincidenze. Qui si fissano
- * le regole su un feed piccolo.
+ * produzione da 160 s a meno di 5, con le stesse coincidenze. La 7.28 tiene,
+ * per ogni corsa, verso e altra linea, solo la coincidenza migliore. Qui si
+ * fissano le regole su un feed piccolo.
  *
  * Il turno T1 ha due corse della linea LN:
  * - N1 arriva al capolinea P1 alle 07:30;
  * - N2 riparte da P1 alle 08:20.
  * A P2, a circa 140 m da P1, passa la linea LA: A1 alle 07:40, A2 alle 07:55,
- * e A3 alle 07:45, ma solo il sabato. La richiesta è per un martedì.
+ * A4 alle 07:31, e A3 alle 07:45, ma solo il sabato. Passa anche la linea LB,
+ * con B1 alle 07:31. La richiesta è per un martedì.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import request from "supertest";
@@ -56,39 +58,49 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("analisi intermodale: le coincid
       (${F}::uuid, 'Q', 'Capolinea lontano', 41 + 100 / 1000.0, 12 + 1 / 1000.0),
       (${F}::uuid, 'R', 'Altro lontano', 41 + 1 / 1000.0, 12 + 200 / 1000.0)`);
     await db.execute(sql`INSERT INTO gtfs_routes (feed_id, route_id, route_short_name) VALUES
-      (${F}::uuid, 'LN', 'N'), (${F}::uuid, 'LA', 'A')`);
+      (${F}::uuid, 'LN', 'N'), (${F}::uuid, 'LA', 'A'), (${F}::uuid, 'LB', 'B')`);
     await db.execute(sql`INSERT INTO gtfs_calendar (feed_id, service_id, monday, tuesday, wednesday, thursday, friday, saturday, sunday, start_date, end_date) VALUES
       (${F}::uuid, 'FER', 1, 1, 1, 1, 1, 0, 0, '20010101', '20011231'),
       (${F}::uuid, 'SAB', 0, 0, 0, 0, 0, 1, 0, '20010101', '20011231')`);
     await db.execute(sql`INSERT INTO gtfs_trips (feed_id, trip_id, route_id, service_id, trip_headsign) VALUES
       (${F}::uuid, 'N1', 'LN', 'FER', 'Uno'), (${F}::uuid, 'N2', 'LN', 'FER', 'Lontano'),
       (${F}::uuid, 'A1', 'LA', 'FER', 'Altro'), (${F}::uuid, 'A2', 'LA', 'FER', 'Altro'),
-      (${F}::uuid, 'A3', 'LA', 'SAB', 'Altro')`);
+      (${F}::uuid, 'A3', 'LA', 'SAB', 'Altro'), (${F}::uuid, 'A4', 'LA', 'FER', 'Altro'),
+      (${F}::uuid, 'B1', 'LB', 'FER', 'Bi')`);
     await db.execute(sql`INSERT INTO gtfs_stop_times (feed_id, trip_id, stop_id, stop_sequence, arrival_time, departure_time) VALUES
       (${F}::uuid, 'N1', 'Q', 1, '07:00:00', '07:00:00'), (${F}::uuid, 'N1', 'P1', 2, '07:30:00', '07:30:00'),
       (${F}::uuid, 'N2', 'P1', 1, '08:20:00', '08:20:00'), (${F}::uuid, 'N2', 'Q', 2, '08:50:00', '08:50:00'),
       (${F}::uuid, 'A1', 'P2', 1, '07:40:00', '07:40:00'), (${F}::uuid, 'A1', 'R', 2, '08:10:00', '08:10:00'),
       (${F}::uuid, 'A2', 'P2', 1, '07:55:00', '07:55:00'), (${F}::uuid, 'A2', 'R', 2, '08:25:00', '08:25:00'),
-      (${F}::uuid, 'A3', 'P2', 1, '07:45:00', '07:45:00'), (${F}::uuid, 'A3', 'R', 2, '08:15:00', '08:15:00')`);
+      (${F}::uuid, 'A3', 'P2', 1, '07:45:00', '07:45:00'), (${F}::uuid, 'A3', 'R', 2, '08:15:00', '08:15:00'),
+      (${F}::uuid, 'A4', 'P2', 1, '07:31:00', '07:31:00'), (${F}::uuid, 'A4', 'R', 2, '08:01:00', '08:01:00'),
+      (${F}::uuid, 'B1', 'P2', 1, '07:31:00', '07:31:00'), (${F}::uuid, 'B1', 'R', 2, '08:01:00', '08:01:00')`);
   });
   afterAll(pulisci);
 
-  it("le altre linee alla fermata vicina: in arrivo e in partenza, solo i servizi del giorno", async () => {
+  it("le altre linee alla fermata vicina: per corsa, verso e linea la migliore, solo i servizi del giorno", async () => {
     const r = await request(app).post("/api/intermodal-optimizer/analyze").send(corpo);
     expect(r.status, JSON.stringify(r.body).slice(0, 500)).toBe(200);
     const altre = (r.body.coincidences as any[]).filter(c => c.hubType === "bus_other");
     const viste = altre.map(c => `${c.tripId} ${c.mode} ${c.trainTime} ${c.status}`).sort();
-    // N1 arriva alle 07:30 e a piedi servono circa 2 minuti: A1 alle 07:40 è ottima, A2 alle 07:55 lunga.
-    // N2 parte alle 08:20: chi scende da A1 aspetta 38 minuti, da A2 23, tutte e due lunghe.
+    // N1 arriva alle 07:30 e a piedi servono circa 2 minuti.
+    // - Linea LA: A1 alle 07:40 è ottima e si tiene; A2 alle 07:55 (lunga) e A4 alle 07:31 (persa) no.
+    // - Linea LB: B1 alle 07:31 si perde, ma è l'unica della linea: si tiene, persa.
+    // N2 parte alle 08:20: da A1 si aspettano 38 minuti, da A2 23: si tiene A2.
     // A3 è solo del sabato; la linea LN, quella dei turni, non conta mai.
     expect(viste).toEqual([
+      "N1 arrive_at_hub 07:31 missed",
       "N1 arrive_at_hub 07:40 optimal",
-      "N1 arrive_at_hub 07:55 long",
-      "N2 depart_from_hub 07:40 long",
       "N2 depart_from_hub 07:55 long",
     ]);
     for (const c of altre) expect(c.hubId).toBe("bus:P2");
-    expect(r.body.metrics.busExtraConnections).toBe(4);
+    expect(r.body.metrics.busExtraConnections).toBe(3);
+    // trovate: per N1 A1, A2, A4 e B1; per N2 A1 e A2
+    expect(r.body.metrics.busExtraFound).toBe(6);
+    // la modifica proposta per la coincidenza persa dice da che tipo di nodo viene
+    const perse = (r.body.proposedChanges as any[]).filter(p => p.tripId === "N1" && p.severity === "critical");
+    expect(perse).toHaveLength(1);
+    expect(perse[0].priorityClass).toBe("bus_other");
   });
 
   it("l'attesa lunga si segnala solo se la corsa non ha anche una coincidenza ottima allo stesso posto", async () => {
