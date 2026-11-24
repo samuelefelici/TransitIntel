@@ -5,9 +5,10 @@
  * in lib/planning-studio-materialize.ts.
  */
 import { createHash } from "crypto";
-import { db } from "@workspace/db";
+import { db, pool } from "@workspace/db";
 import { sql } from "drizzle-orm";
 import { computeActiveDatesByTrip, projectHasTripValidity } from "../planning-studio-validity-eval";
+import { contaServizioFermate } from "./servizio-fermate";
 
 /** 'YYYYMMDD' → 'YYYY-MM-DD'. */
 function ymdToIso(ymd: string): string {
@@ -420,6 +421,12 @@ export async function materializePsToFeed(
          AND COALESCE(t.is_active, true) = true
          AND COALESCE((t.attributes->>'prototype')::boolean, false) = false ${fT} ${fEffStopTimes}
     `);
+
+    controlla();
+    // 4f-bis. Il servizio di ogni fermata (corse, punte, punteggio), come al
+    // caricamento di un GTFS: senza, la pagina GTFS e le analisi mostravano
+    // zero corse a ogni fermata di un feed nato qui (tappa 7.26).
+    await contaServizioFermate(pool, feedId);
 
     controlla();
     // 4g. gtfs_shapes (geometry jsonb → geojson jsonb diretto, niente JSON.stringify)

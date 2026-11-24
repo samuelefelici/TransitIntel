@@ -18,6 +18,10 @@
  *    dell'utente sopra (tariffe, POI, classificazioni delle linee), non letti
  *    da un calcolo vivo in coda; e solo se c'è un feed in esercizio. Al più 5
  *    a giro, uno per riga nel log.
+ * 3. Il servizio delle fermate dei feed nati da Planning Studio prima della
+ *    tappa 7.26 (corse, punte, punteggio a zero): si calcola, al più 20 feed
+ *    per volta (lib/materializzazione/servizio-fermate.ts, la stessa
+ *    istruzione della materializzazione). Dopo la prima volta non ce ne sono più.
  *
  * I giri di Argos (agent_optimize_jobs) rimasti «running» non si toccano: il
  * loro stato vero lo calcola già vistaGiro dalla coda, e per un giro
@@ -26,6 +30,7 @@
 import { pool } from "@workspace/db";
 import { inSistema } from "@workspace/db/contesto";
 import { SINTETICO_FUORI_ESERCIZIO, nonInUso } from "../materializzazione/usi-feed";
+import { contaServizioFermate, feedSenzaServizio } from "../materializzazione/servizio-fermate";
 
 export { USI_DEL_FEED, RIGHE_DEL_FEED } from "../materializzazione/usi-feed";
 
@@ -34,6 +39,8 @@ const PRIMO_GIRO_MS = 2 * 60 * 1000;
 export const ORE_RUN_APPESO = 24;
 export const GIORNI_FEED_ORFANO = 2;
 export const FEED_PER_GIRO = 5;
+/** il servizio delle fermate costa 0,5–2 s per feed (copia di produzione, 3.901 fermate) */
+export const FEED_SERVIZIO_PER_VOLTA = 20;
 const MESSAGGIO_RUN = "Calcolo interrotto (riavvio del server): rilancialo";
 
 type Log = { info: (...a: any[]) => void; warn: (...a: any[]) => void; error: (...a: any[]) => void };
@@ -107,8 +114,19 @@ export async function cancellaFeedOrfani(c: Client, log: Log, giorni = GIORNI_FE
   return cancellati;
 }
 
+/** Il servizio delle fermate dei feed che non l'hanno; restituisce i feed sistemati. */
+export async function recuperaServizioFermate(c: Client, log: Log, limite = FEED_SERVIZIO_PER_VOLTA, ambito: Ambito = {}): Promise<string[]> {
+  const fatti: string[] = [];
+  for (const id of await feedSenzaServizio(c, limite, ambito)) {
+    const fermate = await contaServizioFermate(c, id);
+    log.info({ feedId: id, fermate }, "pulizie: servizio delle fermate calcolato per un feed che non l'aveva");
+    fatti.push(id);
+  }
+  return fatti;
+}
+
 /** Un giro di pulizie, se nessun altro lo sta facendo. */
-export async function eseguiPulizie(log: Log, ambito: Ambito = {}): Promise<{ saltato: boolean; runChiusi?: { odMinima: number; assegnazioneNodi: number }; feedCancellati?: string[] }> {
+export async function eseguiPulizie(log: Log, ambito: Ambito = {}): Promise<{ saltato: boolean; runChiusi?: { odMinima: number; assegnazioneNodi: number }; feedCancellati?: string[]; servizioFermate?: string[] }> {
   // il client lo prende il sistema (cerbero.via = pulizie, PR 2.9)
   const c = await inSistema("pulizie", () => pool.connect());
   let preso = false;
@@ -118,7 +136,8 @@ export async function eseguiPulizie(log: Log, ambito: Ambito = {}): Promise<{ sa
     const runChiusi = await chiudiRunAppesi(c, ORE_RUN_APPESO, ambito);
     if (runChiusi.odMinima || runChiusi.assegnazioneNodi) log.info(runChiusi, "pulizie: calcoli delle tariffe rimasti «running» chiusi come interrotti");
     const feedCancellati = await cancellaFeedOrfani(c, log, GIORNI_FEED_ORFANO, FEED_PER_GIRO, ambito);
-    return { saltato: false, runChiusi, feedCancellati };
+    const servizioFermate = await recuperaServizioFermate(c, log, FEED_SERVIZIO_PER_VOLTA, ambito);
+    return { saltato: false, runChiusi, feedCancellati, servizioFermate };
   } finally {
     if (preso) await c.query("SELECT pg_advisory_unlock(hashtextextended('cerbero:pulizie', 0))").catch(() => undefined);
     c.release();

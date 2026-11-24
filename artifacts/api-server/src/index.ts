@@ -57,28 +57,10 @@ const server = app.listen(port, () => {
   controllaSegretiCron();
   controllaSegretoArgosProxy();
 
-  // ─── Warm-up cache: precarica gli endpoint pesanti ──────────────
-  // territory/deep impiega ~27s a freddo per le subquery nearest-stop su ~4000 fermate.
-  // Lo precarichiamo subito così il primo utente non aspetta mai.
-  const WARMUP_PATHS = [
-    "/api/territory/overview",
-    "/api/territory/deep",
-    "/api/analysis/underserved?minScore=3",
-    "/api/analysis/stats",
-  ];
-  setTimeout(async () => {
-    logger.info({ paths: WARMUP_PATHS.length }, "Warm-up cache: avvio precaricamento endpoint pesanti");
-    for (const path of WARMUP_PATHS) {
-      const t0 = Date.now();
-      try {
-        const r = await fetch(`http://127.0.0.1:${port}${path}`);
-        logger.info({ path, ms: Date.now() - t0, status: r.status }, "Warm-up: ok");
-      } catch (err) {
-        logger.warn({ path, err: String(err) }, "Warm-up: fallito (non critico)");
-      }
-    }
-    logger.info("Warm-up cache: completato");
-  }, 2_000);
+  // (tappa 7.26) Qui c'era un precaricamento della cache all'avvio: chiamava
+  // territorio e analisi via HTTP senza credenziali, riceveva sempre 401 e non
+  // precaricava niente. Tolto: niente cambia per chi usa le pagine, la prima
+  // chiamata dopo un riavvio calcola come già faceva.
 
   // ─── Auto-scheduler: TomTom traffic sync ────────────────────────
   const TRAFFIC_INTERVAL_MS = 30 * 60 * 1000; // 30 minuti
