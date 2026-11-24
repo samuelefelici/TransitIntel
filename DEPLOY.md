@@ -2226,6 +2226,36 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Correzioni dal collaudo: Fermate & Linee e punti di riposo (tappa 7.31)
+
+**Fermate & Linee** (Rete › Elenco Fermate). Due numeri erano sbagliati:
+- **«Corse/giorno»** era il numero di tutte le corse del feed. Con più
+  calendari (invernale, estivo, scolastico) sono molte di più di quelle di un
+  giorno. Ora è **«Corse in un feriale»**: per ogni giorno del periodo del feed
+  si contano le corse che girano (calendar con le sue eccezioni, più le date di
+  calendar_dates), e fra i feriali si prende la mediana. Un festivo
+  infrasettimanale o uno sciopero non la spostano. Il riquadro sotto dice anche
+  quante corse ci sono in tutto il feed.
+- **«Linee per fermata (media)»** era la media delle 50 fermate della prima
+  pagina, che sono quelle con più linee: veniva 14. Ora è la media di tutte le
+  fermate servite del feed (sulla copia: 2,3).
+
+`GET /api/gtfs/summary` restituisce in più `corseGiornoTipo` (`feriale`,
+`sabato`, `festivo`) e `lineePerFermata`, e accetta `?feedId=` come le altre
+letture del GTFS (404 per un feed che chi chiede non vede).
+
+**Punti di riposo** (Amministrazione › Azienda). Le fermate del luogo non si
+scrivono più a mano: si cercano per nome nell'elenco del feed in esercizio (lo
+stesso con cui il server le controlla) e si aggiungono con un clic o con
+Invio. Le fermate con lo stesso nome (i due lati della strada) compaiono una
+volta sola, perché il calcolo le riconosce dal nome. Se una fermata non c'è
+nell'elenco si può ancora aggiungere così com'è; resta l'avviso «Non nel feed
+in esercizio».
+
+**Dopo il deploy**: nessuna migrazione, nessuna variabile, nessuna Watch Path.
+
+**Rollback**: immagine precedente.
+
 ### Il traffico dentro la quota mensile di TomTom (tappa 7.30)
 
 **Il problema.** L'API leggeva tutti i punti stradali ogni 30 minuti, più una

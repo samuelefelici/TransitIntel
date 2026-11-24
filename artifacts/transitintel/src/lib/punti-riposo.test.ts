@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { corpoPunto, erroriPunto, fermateDelModulo, MODULO_PUNTO_VUOTO, moduloPuntoDa, serviziInBreve } from "./punti-riposo";
+import { aggiungiFermata, corpoPunto, erroriPunto, fermateDelModulo, MODULO_PUNTO_VUOTO, moduloPuntoDa, nomiDelleFermate, serviziInBreve, togliFermata } from "./punti-riposo";
 
 describe("i punti di riposo nel modulo", () => {
   it("le fermate: una per riga o col punto e virgola, senza vuoti né doppioni (anche con maiuscole diverse)", () => {
@@ -25,5 +25,21 @@ describe("i punti di riposo nel modulo", () => {
   it("in breve", () => {
     expect(serviziInBreve({ conServizi: true })).toBe("con servizi");
     expect(serviziInBreve({ conServizi: false })).toBe("senza servizi");
+  });
+
+  it("le fermate scelte dall'elenco: si aggiungono in fondo una volta sola, si tolgono", () => {
+    expect(aggiungiFermata("", "Capolinea Monte")).toBe("Capolinea Monte");
+    expect(aggiungiFermata("Capolinea Monte", "Piazza Alta")).toBe("Capolinea Monte\nPiazza Alta");
+    expect(aggiungiFermata("Capolinea Monte\nPiazza Alta", "piazza alta ")).toBe("Capolinea Monte\nPiazza Alta");
+    expect(aggiungiFermata("Capolinea Monte", "  ")).toBe("Capolinea Monte");
+    expect(togliFermata("Capolinea Monte\nPiazza Alta", "capolinea monte")).toBe("Piazza Alta");
+    expect(togliFermata("Piazza Alta", "Altra")).toBe("Piazza Alta");
+  });
+
+  it("i nomi delle fermate trovate: una volta sola, con le linee della più servita", () => {
+    expect(nomiDelleFermate([
+      { name: "Piazza Alta", routeCount: 5 }, { name: "Capolinea Monte", routeCount: 3 },
+      { name: "PIAZZA ALTA ", routeCount: 7 }, { name: " ", routeCount: 9 },
+    ])).toEqual([{ nome: "Piazza Alta", linee: 7 }, { nome: "Capolinea Monte", linee: 3 }]);
   });
 });
