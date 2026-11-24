@@ -569,11 +569,13 @@ router.post("/ai/argos/console/conversazioni/:id/messaggi", async (req, res) => 
   const traccia = b.traccia === true;
   const d = await conversazioneVisibile(res, userId, req.params.id);
   if (d === undefined) return;
-  // Il token a breve scadenza dell'utente: su un progetto (l'accesso è appena stato
-  // controllato) e con un agente anche senza progetto, per gli strumenti con permessi
-  // propri (i turni salvati). Risposta e Analisi senza progetto non lo usano: niente token.
-  const conProgetto = !!d.conversazione?.progetto;
-  const token = conProgetto || d.conversazione?.modo === "agente" ? mintShortLivedUserToken(userId, (req as any).sessione) : null;
+  // Il token a breve scadenza dell'utente, in ogni turno: sul progetto (l'accesso è
+  // appena stato controllato) per gli strumenti di Planning Studio; con o senza progetto,
+  // in Risposta e Analisi come con gli agenti, per le letture con permessi propri (turni
+  // guida salvati, parco dell'officina, roster per soli conteggi). Resta fra Argos e
+  // Cerbero: al modello arrivano i risultati delle letture, mai il token. Col token di
+  // Argos /admin, /auth e il roster con le persone restano chiusi (percorsoVietatoAiServizi).
+  const token = mintShortLivedUserToken(userId, (req as any).sessione);
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache, no-transform");
