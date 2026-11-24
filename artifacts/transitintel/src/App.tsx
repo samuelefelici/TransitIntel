@@ -7,6 +7,7 @@ import { toast as toastSonner } from "sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Layout from "@/components/layout/Layout";
 import { AuthProvider, useAuth, type Area } from "@/hooks/use-auth";
+import { TemaProvider } from "@/hooks/use-tema";
 import { CASA, NOMI_AREE, AREE_PAGINA } from "@/lib/navigazione";
 import { apiFetch } from "@/lib/api";
 import { ELENCO_PROGETTI, eUuid, paginaTurniGuida, salvataggioDelLink } from "@/lib/turni-guida-indirizzo";
@@ -597,6 +598,7 @@ function AuthGate() {
 function App() {
   return (
     <ErrorBoundary context="App">
+      <TemaProvider>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <AuthProvider>
@@ -612,6 +614,7 @@ function App() {
           </AuthProvider>
         </TooltipProvider>
       </QueryClientProvider>
+      </TemaProvider>
     </ErrorBoundary>
   );
 }

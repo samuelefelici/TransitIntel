@@ -29,6 +29,8 @@ import { useQuery } from "@tanstack/react-query";
 import { Map as MapGL, Source, Layer } from "react-map-gl/mapbox";
 import { Loader2, MapPin, Route, TriangleAlert } from "lucide-react";
 import { apiFetch } from "@/lib/api";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -60,6 +62,8 @@ const COLORE_FUORI = "#f87171";
 export default function ProvaPercorso(
   { tripId, giorno }: { tripId: string; giorno?: string },
 ) {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   /* La giornata dell'anomalia, non l'ultima disponibile: aprire la prova su
      un altro giorno mostrerebbe una corsa regolare e farebbe archiviare un
      caso vero. */
@@ -186,7 +190,7 @@ export default function ProvaPercorso(
               zoom: 12,
             }}
             style={{ width: "100%", height: "100%" }}
-            mapStyle="mapbox://styles/mapbox/dark-v11"
+            mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
             attributionControl={false}>
 
             {teorico.length >= 2 && (

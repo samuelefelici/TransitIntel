@@ -30,6 +30,8 @@ import { notaFermateTolte, riassuntoZoneGenerate, type ZoneGenerate } from "@/li
 import { exportPolimetricheToPrint, createPolimetricheShareLink, exportPolimetricheZonesToPrint, createPolimetricheZonesShareLink, exportPolimetricheMinOdToPrint, exportPolimetricheMinOdNodesToPrint, createPolimetricheMinOdShareLink, createPolimetricheMinOdNodesShareLink, exportPolimetricheClustersToPrint, createPolimetricheClustersShareLink } from "./fares-polimetriche-export";
 import FaresNodiRegionaliTab from "./fares-nodi-regionali-tab";
 import StopsClassificationPage from "./stops-classification";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 // ═══════════════════════════════════════════════════════════
 // TYPES
@@ -2786,6 +2788,8 @@ function pointInPolygon(lon: number, lat: number, polygon: [number, number][]): 
 }
 
 function ClustersTab() {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const azienda = useAzienda();
   const { toast } = useToast();
   const mapRef = useRef<MapRef>(null);
@@ -4193,7 +4197,7 @@ function ClustersTab() {
                   ref={mapRef}
                   mapboxAccessToken={CLUSTER_MAPBOX_TOKEN}
                   initialViewState={vistaIniziale(azienda)}
-                  mapStyle="mapbox://styles/mapbox/navigation-night-v1"
+                  mapStyle={stileMappa("mapbox://styles/mapbox/navigation-night-v1", temaMappa)}
                   style={{ width: "100%", height: "100%" }}
                   interactiveLayerIds={interactiveLayerIds}
                   doubleClickZoom={!drawMode}
@@ -5457,7 +5461,7 @@ function GenerateTab() {
               Chiunque abbia questo link può aprire l'anteprima HTML/PDF delle polimetriche
               (snapshot fisso, indipendente dai dati attuali).
             </p>
-            <div className="flex items-center gap-2 bg-white border rounded-md p-2">
+            <div className="flex items-center gap-2 bg-muted/40 border rounded-md p-2">
               <input
                 readOnly
                 value={shareLink.url}
@@ -5710,6 +5714,8 @@ function simConvexHull(points: [number, number][]): [number, number][] {
 }
 
 function SimulateTab() {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const azienda = useAzienda();
   const { toast } = useToast();
   const NETWORK_OPTIONS = opzioniReti(useReti());
@@ -6307,7 +6313,7 @@ function SimulateTab() {
                 <div className="relative w-full h-[400px] lg:h-[500px]">
                   <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
                     initialViewState={vistaIniziale(azienda)}
-                    style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/dark-v11" attributionControl={false}>
+                    style={{ width: "100%", height: "100%" }} mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)} attributionControl={false}>
                     {routeLineGeoJson && (
                       <Source id="route-line" type="geojson" data={routeLineGeoJson}>
                         <Layer id="route-line-layer" type="line" paint={{ "line-color": "#6b7280", "line-width": 3, "line-opacity": 0.5, "line-dasharray": [2, 2] }} />
@@ -6576,7 +6582,7 @@ function SimulateTab() {
                 <div className="relative w-full h-[400px] lg:h-[500px]">
                   <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
                     initialViewState={vistaIniziale(azienda)}
-                    style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/navigation-night-v1" attributionControl={false}>
+                    style={{ width: "100%", height: "100%" }} mapStyle={stileMappa("mapbox://styles/mapbox/navigation-night-v1", temaMappa)} attributionControl={false}>
 
                     {/* Route line (dashed, as background) */}
                     {clRouteLineGeoJson && (
@@ -6906,7 +6912,7 @@ function SimulateTab() {
                 <div className="relative w-full h-[400px] lg:h-[500px]">
                   <Map ref={mapRef} mapboxAccessToken={MAPBOX_TOKEN}
                     initialViewState={vistaIniziale(azienda)}
-                    style={{ width: "100%", height: "100%" }} mapStyle="mapbox://styles/mapbox/dark-v11" attributionControl={false}>
+                    style={{ width: "100%", height: "100%" }} mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)} attributionControl={false}>
 
                     {/* ── Regola 1: singola linea selezionata ── */}
                     {domResult?.ruleApplied !== "regola2" && (

@@ -24,6 +24,8 @@ import { toast } from "sonner";
 import { getApiBase } from "@/lib/api";
 import { useParams } from "wouter";
 import PsProjectNav from "@/components/planning-studio/PsProjectNav";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
 
@@ -54,6 +56,8 @@ interface Arc {
 }
 
 export default function DeadheadArcsPage() {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const azienda = useAzienda();
   const base = getApiBase();
   // Dentro un progetto PS lo scope è FISSO su quel progetto (niente selettore):
@@ -500,7 +504,7 @@ export default function DeadheadArcsPage() {
               mapboxAccessToken={MAPBOX_TOKEN}
               initialViewState={vistaIniziale(azienda)}
               style={{ width: "100%", height: "100%" }}
-              mapStyle="mapbox://styles/mapbox/dark-v11"
+              mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
               onClick={onMapClick}
               cursor={editingPath || (drawMode && drawFrom && drawTo) ? "crosshair" : "grab"}
             >

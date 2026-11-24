@@ -26,6 +26,8 @@ import {
   Sparkles, Target, Flag, Search, Repeat, MapPin,
 } from "lucide-react";
 import { getApiBase } from "@/lib/api";
+import { useTema } from "@/hooks/use-tema";
+import { stileMappa } from "@/lib/tema";
 
 const BASE = () => getApiBase();
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN || "";
@@ -97,6 +99,8 @@ const busLegs = (a: JourneyAlt): BusLeg[] => a.legs.filter((l): l is BusLeg => l
 
 /* ── Pagina ───────────────────────────────────────────────── */
 export default function TripPlanner() {
+  /* il fondo della mappa segue il tema chiaro o scuro (tappa 7.32) */
+  const { tema: temaMappa } = useTema();
   const azienda = useAzienda();
   const mapRef = useRef<MapRef | null>(null);
 
@@ -200,7 +204,7 @@ export default function TripPlanner() {
   }, [selected]);
 
   return (
-    <div className="relative h-[calc(100vh-1px)] w-full overflow-hidden bg-[#0a1410]">
+    <div className="relative h-[calc(100vh-1px)] w-full overflow-hidden bg-slate-950">
       {/* Tinta verde ambient */}
       <div className="pointer-events-none absolute inset-0 z-[5] bg-gradient-to-br from-emerald-500/5 via-transparent to-lime-500/5 mix-blend-screen" />
 
@@ -211,7 +215,7 @@ export default function TripPlanner() {
           mapboxAccessToken={MAPBOX_TOKEN}
           initialViewState={vistaIniziale(azienda)}
           style={{ width: "100%", height: "100%" }}
-          mapStyle="mapbox://styles/mapbox/dark-v11"
+          mapStyle={stileMappa("mapbox://styles/mapbox/dark-v11", temaMappa)}
           onClick={handleMapClick}
           onLoad={(e) => {
             const m = e.target;

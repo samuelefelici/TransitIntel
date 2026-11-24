@@ -4,6 +4,10 @@ import "./index.css";
 // Patch globale fetch: forza credentials:'include' su tutte le chiamate /api
 // (necessario per cookie ti_auth cross-site Vercel ↔ Render).
 import "./lib/fetch-credentials-patch";
+import { applicaTemaSalvato } from "./hooks/use-tema";
+
+// Il tema chiaro o scuro scelto (tappa 7.32), prima di disegnare: niente lampo dello scuro.
+applicaTemaSalvato();
 
 // Recovery automatico da chunk obsoleti: dopo un deploy i vecchi hash non
 // esistono più e i dynamic import falliscono (es. "Invalid mapLib" sulla

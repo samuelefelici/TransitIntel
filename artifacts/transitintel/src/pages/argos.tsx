@@ -6,8 +6,9 @@
  * esecuzioni, la biblioteca. Planning Studio non ha più il pannello laterale: il suo bottone
  * apre questa pagina, in un'altra scheda, sul progetto aperto.
  *
- * Tema chiaro o scuro solo per questa pagina (index.css, .argos-chiaro),
- * ricordato nel browser; la scheda e l'esecuzione aperta stanno nell'indirizzo,
+ * Il tema chiaro o scuro è quello dell'app (tappa 7.32, hooks/use-tema.tsx):
+ * la pagina mette .argos-chiaro (index.css) quando è chiaro, e il suo pulsante
+ * cambia il tema di tutta l'app. La scheda e l'esecuzione aperta stanno nell'indirizzo,
  * così un link porta dritto a una traccia.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -23,20 +24,12 @@ import Biblioteca from "@/components/argos-console/Biblioteca";
 import Mappa from "@/components/argos-console/Mappa";
 import Conversazioni from "@/components/argos-console/Conversazioni";
 import { TemaArgosContesto } from "@/lib/argos-tema";
+import { useTema } from "@/hooks/use-tema";
 
 const SCHEDE = ["conversazione", "cruscotto", "biblioteca", "mappa", "squadra", "lavora", "ispettore", "capacita"] as const;
 /** i nomi di prima: i link salvati portano alla scheda unica */
 const ALIAS: Record<string, Scheda> = { conversazioni: "conversazione", crawler: "conversazione" };
 type Scheda = (typeof SCHEDE)[number];
-const CHIAVE_TEMA = "argos-console-tema";
-
-function temaIniziale(): "chiaro" | "scuro" {
-  try {
-    const s = localStorage.getItem(CHIAVE_TEMA);
-    if (s === "chiaro" || s === "scuro") return s;
-  } catch { /* storage spento: si va col sistema */ }
-  return typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: light)").matches ? "chiaro" : "scuro";
-}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -64,14 +57,11 @@ export default function ArgosPage() {
   const [agente, setAgente] = useState<string | null>(iniziale.agente);
   const [conversazione, setConversazione] = useState<string | null>(iniziale.conversazione);
   const [progetto, setProgetto] = useState<string | null>(iniziale.progetto);
-  const [tema, setTema] = useState<"chiaro" | "scuro">(temaIniziale);
+  /* il tema è quello dell'app (tappa 7.32): il pulsante qui lo cambia per tutta l'app */
+  const { tema, scegli } = useTema();
   const [documentoInMappa, setDocumentoInMappa] = useState<number | null>(null);
   const [documentoInBiblioteca, setDocumentoInBiblioteca] = useState<number | null>(null);
   const { isAdmin } = useAuth();
-
-  useEffect(() => {
-    try { localStorage.setItem(CHIAVE_TEMA, tema); } catch { /* niente */ }
-  }, [tema]);
 
   useEffect(() => {
     const q = new URLSearchParams();
@@ -90,7 +80,7 @@ export default function ArgosPage() {
   const apriInMappa = useCallback((id: number) => { setDocumentoInMappa(id); setScheda("mappa"); }, []);
   const apriInBiblioteca = useCallback((id: number) => { setDocumentoInBiblioteca(id); setScheda("biblioteca"); }, []);
   const conversazioneCambiata = useCallback((c: string | null, p: string | null) => { setConversazione(c); setProgetto(p); }, []);
-  const contestoTema = useMemo(() => ({ tema, cambia: () => setTema(t => (t === "chiaro" ? "scuro" : "chiaro")) }), [tema]);
+  const contestoTema = useMemo(() => ({ tema, cambia: () => scegli(tema === "chiaro" ? "scuro" : "chiaro") }), [tema, scegli]);
 
   return (
     <TemaArgosContesto.Provider value={contestoTema}>
@@ -101,7 +91,7 @@ export default function ArgosPage() {
             <h1 className="flex items-center gap-2 text-2xl"><Bot className="h-6 w-6 text-primary" aria-hidden />Argos</h1>
             <p className="text-sm text-muted-foreground">Le conversazioni, con la rete che ragiona sotto gli occhi; che cosa sa, chi lavora: la biblioteca e la squadra degli agenti.</p>
           </div>
-          <button type="button" onClick={() => setTema(t => (t === "chiaro" ? "scuro" : "chiaro"))}
+          <button type="button" onClick={contestoTema.cambia}
             className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium shadow-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={tema === "chiaro" ? "Passa al tema scuro" : "Passa al tema chiaro"}>
             {tema === "chiaro" ? <Moon className="h-3.5 w-3.5" aria-hidden /> : <Sun className="h-3.5 w-3.5" aria-hidden />}

@@ -207,14 +207,14 @@ export default function TimetableMapPage() {
 
   if (metaQ.isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-100 text-slate-700">
+      <div className="colori-originali min-h-screen flex items-center justify-center bg-slate-100 text-slate-700">
         <Loader2 className="w-6 h-6 animate-spin mr-2 text-cyan-600" /> Carico la mappa orari…
       </div>
     );
   }
   if (metaQ.isError || !metaQ.data) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-100 text-slate-800 gap-3 px-6 text-center">
+      <div className="colori-originali min-h-screen flex flex-col items-center justify-center bg-slate-100 text-slate-800 gap-3 px-6 text-center">
         <div className="w-14 h-14 rounded-2xl bg-white shadow flex items-center justify-center">
           <MapPinned className="w-7 h-7 text-slate-400" />
         </div>
@@ -274,7 +274,7 @@ export default function TimetableMapPage() {
   );
 
   return (
-    <div className="h-screen w-screen flex bg-slate-100 text-slate-900 overflow-hidden">
+    <div className="colori-originali h-screen w-screen flex bg-slate-100 text-slate-900 overflow-hidden">
       {/* ═══ PANNELLO DESKTOP ═══ */}
       <aside className="hidden md:flex flex-col w-96 shrink-0 bg-slate-50 border-r border-slate-200">
         <div className="px-5 pt-5 pb-4 bg-white border-b border-slate-200">

@@ -49,11 +49,11 @@ export default function NetworkSharePage() {
   }
 
   if (q.isLoading) {
-    return <div className="min-h-screen flex items-center justify-center bg-slate-950 text-white"><Loader2 className="w-6 h-6 animate-spin mr-2" /> Carico la mappa…</div>;
+    return <div className="colori-originali min-h-screen flex items-center justify-center bg-slate-950 text-white"><Loader2 className="w-6 h-6 animate-spin mr-2" /> Carico la mappa…</div>;
   }
   if (q.isError || !data) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white gap-2">
+      <div className="colori-originali min-h-screen flex flex-col items-center justify-center bg-slate-950 text-white gap-2">
         <MapPinned className="w-8 h-8 text-slate-500" />
         <p className="text-lg font-semibold">Link non valido o scaduto</p>
         <p className="text-sm text-slate-400">Controlla l'indirizzo o richiedi un nuovo link.</p>
@@ -62,7 +62,7 @@ export default function NetworkSharePage() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-950 text-white">
+    <div className="colori-originali min-h-screen flex flex-col bg-slate-950 text-white">
       {/* Header brandizzato */}
       <header className="flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-slate-900 to-slate-800 border-b border-white/10">
         <img src="/logo.png" alt="Cerbero Analytics" className="h-9 w-auto drop-shadow" />
