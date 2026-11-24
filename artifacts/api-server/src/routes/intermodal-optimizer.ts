@@ -126,6 +126,8 @@ interface ProposedChange {
   proposedTime: string;
   reason: string;
   severity: "info" | "warning" | "critical";
+  /** il tipo del nodo della coincidenza (tappa 7.28): lo scenario sceglie una modifica per corsa */
+  priorityClass?: CoincidenceMatch["priorityClass"];
 }
 
 interface AnalyzeResponse {
@@ -148,7 +150,10 @@ interface AnalyzeResponse {
     tightConnections: number;
     longWaits: number;
     missedConnections: number;
+    /** coincidenze con le altre linee tenute: la migliore per corsa, verso e linea (tappa 7.28) */
     busExtraConnections: number;
+    /** tutte quelle trovate, prima di tenere la migliore per linea */
+    busExtraFound: number;
     poisReached: number;
   };
 }
@@ -863,6 +868,23 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
     // 4bis) BUS-TO-BUS — coincidenze con ALTRE linee GTFS (non incluse nei turni in analisi)
     //       L'utenza che scende dai nostri bus può prendere altre linee per andare altrove.
     let busExtraConnections = 0;
+    let busExtraFound = 0;
+    /* Tappa 7.28: per ogni nostra corsa, verso (arrivo o partenza) e altra linea
+       si tiene solo la coincidenza migliore: l'attesa più corta fra quelle che
+       si riescono a prendere; se nessuna si riesce a prendere, quella persa di
+       meno. Prima si tenevano tutte (114.789 sulla copia di produzione), e da
+       ognuna nascevano suggerimenti e modifiche proposte. */
+    const miglioriAltreLinee = new Map<string, CoincidenceMatch>();
+    const tieniLaMigliore = (chiave: string, c: CoincidenceMatch) => {
+      busExtraFound++;
+      const prima = miglioriAltreLinee.get(chiave);
+      if (!prima) { miglioriAltreLinee.set(chiave, c); return; }
+      const presa = (x: CoincidenceMatch) => x.bufferMin >= 0;
+      const meglio = presa(c) !== presa(prima)
+        ? presa(c)
+        : (presa(c) ? c.bufferMin < prima.bufferMin : c.bufferMin > prima.bufferMin);
+      if (meglio) miglioriAltreLinee.set(chiave, c);
+    };
     if (includeOtherBusRoutes && bbox && tripEndpoints.length > 0) {
       try {
         // Set di route in analisi (esclusi)
@@ -1033,7 +1055,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
                       if (buffer < -2 || buffer > winBeforeDep) continue;
                       const ri = routeInfo.get(ti.routeId);
                       const routeLabel = (ri?.shortName || ri?.longName || ti.routeId).slice(0, 40);
-                      coincidences.push({
+                      tieniLaMigliore(`${sh.vehicleId}|${e.tripId}|arrive_at_hub|${ti.routeId}`, {
                         shiftId: sh.vehicleId,
                         vehicleType: sh.vehicleType,
                         tripId: e.tripId,
@@ -1053,7 +1075,6 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
                         bufferMin: +buffer.toFixed(1),
                         status: classifyBuffer(buffer),
                       });
-                      busExtraConnections++;
                     }
                   }
                 }
@@ -1075,7 +1096,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
                       if (buffer < -2 || buffer > winAfterArr) continue;
                       const ri = routeInfo.get(ti.routeId);
                       const routeLabel = (ri?.shortName || ri?.longName || ti.routeId).slice(0, 40);
-                      coincidences.push({
+                      tieniLaMigliore(`${sh.vehicleId}|${e.tripId}|depart_from_hub|${ti.routeId}`, {
                         shiftId: sh.vehicleId,
                         vehicleType: sh.vehicleType,
                         tripId: e.tripId,
@@ -1095,7 +1116,6 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
                         bufferMin: +buffer.toFixed(1),
                         status: classifyBuffer(buffer),
                       });
-                      busExtraConnections++;
                     }
                   }
                 }
@@ -1107,7 +1127,9 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
         req.log.warn(`[intermodal-opt] bus-extra failed: ${(e as Error).message}`);
       }
     }
-    req.log.info(`[intermodal-opt] busExtraConnections=${busExtraConnections}`);
+    for (const c of miglioriAltreLinee.values()) coincidences.push(c);
+    busExtraConnections = miglioriAltreLinee.size;
+    req.log.info(`[intermodal-opt] busExtraConnections=${busExtraConnections} (trovate ${busExtraFound}, tenuta la migliore per corsa, verso e linea)`);
 
     // 4ter) POIs per hub — dove vanno le persone dopo lo scambio modale
     let poisReached = 0;
@@ -1179,6 +1201,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
             proposedTime,
           });
           proposedChanges.push({
+            priorityClass: c.priorityClass,
             shiftId: c.shiftId,
             tripId: c.tripId,
             routeName: c.routeName,
@@ -1209,6 +1232,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
             proposedTime,
           });
           proposedChanges.push({
+            priorityClass: c.priorityClass,
             shiftId: c.shiftId,
             tripId: c.tripId,
             routeName: c.routeName,
@@ -1248,6 +1272,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
           proposedTime,
         });
         proposedChanges.push({
+          priorityClass: c.priorityClass,
           shiftId: c.shiftId,
           tripId: c.tripId,
           routeName: c.routeName,
@@ -1332,6 +1357,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
       });
       if (reduction > 0) {
         proposedChanges.push({
+          priorityClass: best.priorityClass,
           shiftId: best.shiftId,
           tripId: best.tripId,
           routeName: best.routeName,
@@ -1372,6 +1398,7 @@ router.post("/intermodal-optimizer/analyze", async (req, res) => {
         longWaits: long,
         missedConnections: missed,
         busExtraConnections,
+        busExtraFound,
         poisReached,
       },
     };

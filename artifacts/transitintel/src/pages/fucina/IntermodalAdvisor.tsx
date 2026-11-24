@@ -6,7 +6,7 @@
  * Mostra in un dialog: hub scoperti, coincidenze treno/nave/aereo + bus
  * (con tempo a piedi), e consigli operativi.
  */
-import React, { useState, useCallback, useMemo } from "react";
+import React, { useState, useCallback, useMemo, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   Train, Ship, Plane, Bus, Footprints, Loader2, RefreshCw,
@@ -24,6 +24,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getApiBase } from "@/lib/api";
 import type { VehicleShift } from "@/pages/optimizer-route/types";
+import { modificaPerCorsa } from "@/lib/intermodale-scenario";
 
 /* ─── Types from backend ─── */
 type HubType = "railway" | "port" | "airport" | "bus_terminal";
@@ -102,6 +103,7 @@ interface ProposedChange {
   proposedTime: string;
   reason: string;
   severity: "info" | "warning" | "critical";
+  priorityClass?: "rail" | "air" | "port" | "bus_terminal" | "bus_other";
 }
 
 interface AnalyzeResponse {
@@ -124,6 +126,8 @@ interface AnalyzeResponse {
     longWaits: number;
     missedConnections: number;
     busExtraConnections?: number;
+    /** tutte le coincidenze con le altre linee trovate, prima di tenere la migliore per linea (tappa 7.28) */
+    busExtraFound?: number;
     poisReached?: number;
   };
 }
@@ -294,12 +298,10 @@ export default function IntermodalAdvisor({
 
   /** Applica i proposedChanges agli shifts originali producendo uno scenario alternativo */
   const buildScenarioShifts = useCallback((origShifts: VehicleShift[], changes: ProposedChange[]): VehicleShift[] => {
-    // Mappa tripId -> delta minuti totale (sommiamo se più change colpiscono stessa corsa)
+    // Una modifica per corsa (tappa 7.28, lib/intermodale-scenario.ts): prima si
+    // sommavano tutte quelle della stessa corsa, fino a decine di minuti.
     const deltaByTrip = new Map<string, number>();
-    for (const ch of changes) {
-      if (ch.changeType === "add_trip") continue; // non implementato lato client
-      deltaByTrip.set(ch.tripId, (deltaByTrip.get(ch.tripId) ?? 0) + ch.shiftMin);
-    }
+    for (const [tripId, ch] of modificaPerCorsa(changes)) deltaByTrip.set(tripId, ch.shiftMin);
     if (deltaByTrip.size === 0) return origShifts;
 
     return origShifts.map(sh => {
@@ -373,6 +375,33 @@ export default function IntermodalAdvisor({
     });
     setOpen(false);
   }, [scenarioShifts, onApplyScenario]);
+
+  /* Elenchi a pagine (tappa 7.28): con i dati veri sono decine di migliaia di
+     righe, e disegnarle tutte bloccava il browser. */
+  const PAGINA = 200;
+  const [mostrate, setMostrate] = useState({ coincidenze: PAGINA, avvisi: PAGINA, modifiche: PAGINA });
+  useEffect(() => { setMostrate({ coincidenze: PAGINA, avvisi: PAGINA, modifiche: PAGINA }); }, [data]);
+
+  const coincidenzeOrdinate = useMemo(() => {
+    if (!data) return [] as CoincidenceMatch[];
+    // Priorità modale prima (treno > aereo > nave > bus terminal > altri bus), poi gravità
+    const prioOrder: Record<string, number> = { rail: 0, air: 1, port: 2, bus_terminal: 3, bus_other: 4 };
+    const order = { missed: 0, tight: 1, optimal: 2, long: 3 };
+    return [...data.coincidences].sort((a, b) => {
+      const pa = prioOrder[a.priorityClass ?? "bus_other"] ?? 9;
+      const pb = prioOrder[b.priorityClass ?? "bus_other"] ?? 9;
+      if (pa !== pb) return pa - pb;
+      return order[a.status] - order[b.status];
+    });
+  }, [data]);
+
+  const modificheOrdinate = useMemo(() => {
+    if (!data) return [] as ProposedChange[];
+    const ord = { critical: 0, warning: 1, info: 2 };
+    return [...data.proposedChanges].sort((a, b) => ord[a.severity] - ord[b.severity]);
+  }, [data]);
+
+  const corseDaModificare = useMemo(() => (data ? modificaPerCorsa(data.proposedChanges).size : 0), [data]);
 
   const advisoriesBySeverity = useMemo(() => {
     if (!data) return { critical: [] as Advisory[], warning: [] as Advisory[], info: [] as Advisory[] };
@@ -562,7 +591,13 @@ export default function IntermodalAdvisor({
                 <MetricCard label="Coincidenze ottimali" value={data.metrics.optimalConnections} color="#34d399" icon={<CheckCircle2 className="w-3 h-3" />} />
                 <MetricCard label="Strette" value={data.metrics.tightConnections} color="#f59e0b" icon={<Clock className="w-3 h-3" />} />
                 <MetricCard label="Perse" value={data.metrics.missedConnections} color="#fb7185" icon={<AlertTriangle className="w-3 h-3" />} />
-                <MetricCard label="Bus extra (altre linee)" value={data.metrics.busExtraConnections ?? 0} color="#60a5fa" icon={<Bus className="w-3 h-3" />} />
+                <MetricCard
+                  label="Bus extra (altre linee)"
+                  value={data.metrics.busExtraConnections ?? 0}
+                  sub={data.metrics.busExtraFound != null ? `la migliore per corsa e linea, su ${data.metrics.busExtraFound.toLocaleString("it-IT")}` : undefined}
+                  color="#60a5fa"
+                  icon={<Bus className="w-3 h-3" />}
+                />
               </div>
 
               {/* breakdown coincidenze treno vs altri */}
@@ -683,17 +718,8 @@ export default function IntermodalAdvisor({
                 </p>
               ) : (
                 <div className="space-y-1">
-                  {data.coincidences
-                    .sort((a, b) => {
-                      // Priorità modale prima (treno > aereo > nave > bus terminal > altri bus)
-                      const prioOrder: Record<string, number> = { rail: 0, air: 1, port: 2, bus_terminal: 3, bus_other: 4 };
-                      const pa = prioOrder[a.priorityClass ?? "bus_other"] ?? 9;
-                      const pb = prioOrder[b.priorityClass ?? "bus_other"] ?? 9;
-                      if (pa !== pb) return pa - pb;
-                      // Poi per gravità: missed > tight > optimal > long
-                      const order = { missed: 0, tight: 1, optimal: 2, long: 3 };
-                      return order[a.status] - order[b.status];
-                    })
+                  {coincidenzeOrdinate
+                    .slice(0, mostrate.coincidenze)
                     .map((c, i) => (
                       <motion.div
                         key={i}
@@ -740,6 +766,12 @@ export default function IntermodalAdvisor({
                         <span className="text-[9px] opacity-50 truncate max-w-[100px]">{c.routeName ?? c.routeId}</span>
                       </motion.div>
                     ))}
+                  <AltreRighe
+                    mostrate={mostrate.coincidenze}
+                    totale={coincidenzeOrdinate.length}
+                    pagina={PAGINA}
+                    onAltre={() => setMostrate(m => ({ ...m, coincidenze: m.coincidenze + PAGINA }))}
+                  />
                 </div>
               )}
             </TabsContent>
@@ -753,8 +785,10 @@ export default function IntermodalAdvisor({
                 </div>
               ) : (
                 <>
-                  {(["critical", "warning", "info"] as const).map(sev => {
-                    const list = advisoriesBySeverity[sev];
+                  {(["critical", "warning", "info"] as const).map((sev, k, tutte) => {
+                    // le prime `mostrate.avvisi` righe, nell'ordine delle gravità
+                    const giaMostrate = tutte.slice(0, k).reduce((s, g) => s + advisoriesBySeverity[g].length, 0);
+                    const list = advisoriesBySeverity[sev].slice(0, Math.max(0, mostrate.avvisi - giaMostrate));
                     if (list.length === 0) return null;
                     return (
                       <div key={sev} className="space-y-1.5">
@@ -781,6 +815,12 @@ export default function IntermodalAdvisor({
                       </div>
                     );
                   })}
+                  <AltreRighe
+                    mostrate={mostrate.avvisi}
+                    totale={data.advisories.length}
+                    pagina={PAGINA}
+                    onAltre={() => setMostrate(m => ({ ...m, avvisi: m.avvisi + PAGINA }))}
+                  />
                 </>
               )}
             </TabsContent>
@@ -797,8 +837,8 @@ export default function IntermodalAdvisor({
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2 p-2 rounded border border-amber-500/30 bg-amber-500/5">
                     <div className="text-[11px] text-amber-200">
-                      <strong>{data.proposedChanges.length} modifich{data.proposedChanges.length === 1 ? "a" : "e"} suggerit{data.proposedChanges.length === 1 ? "a" : "e"}.</strong>{" "}
-                      Le modifiche NON sono applicate. Genera lo scenario alternativo per vedere pro/contro, oppure esporta il CSV.
+                      <strong>{data.proposedChanges.length} modifich{data.proposedChanges.length === 1 ? "a" : "e"} suggerit{data.proposedChanges.length === 1 ? "a" : "e"} su {corseDaModificare} cors{corseDaModificare === 1 ? "a" : "e"}.</strong>{" "}
+                      Le modifiche NON sono applicate. Lo scenario alternativo ne applica una per corsa: la più grave; a parità, quella di treni, aerei e navi prima degli autobus, poi lo spostamento più piccolo. Oppure esporta il CSV.
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <Button
@@ -839,11 +879,8 @@ export default function IntermodalAdvisor({
                         </tr>
                       </thead>
                       <tbody>
-                        {data.proposedChanges
-                          .sort((a, b) => {
-                            const ord = { critical: 0, warning: 1, info: 2 };
-                            return ord[a.severity] - ord[b.severity];
-                          })
+                        {modificheOrdinate
+                          .slice(0, mostrate.modifiche)
                           .map((ch, i) => (
                             <tr key={i} className="border-t border-border/20 hover:bg-muted/10">
                               <td className="px-2 py-1.5">
@@ -881,6 +918,12 @@ export default function IntermodalAdvisor({
                       </tbody>
                     </table>
                   </div>
+                  <AltreRighe
+                    mostrate={mostrate.modifiche}
+                    totale={modificheOrdinate.length}
+                    pagina={PAGINA}
+                    onAltre={() => setMostrate(m => ({ ...m, modifiche: m.modifiche + PAGINA }))}
+                  />
                 </div>
               )}
             </TabsContent>
@@ -921,6 +964,22 @@ export default function IntermodalAdvisor({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** «Mostra altre N»: le righe di un elenco a pagine (tappa 7.28). */
+function AltreRighe({ mostrate, totale, pagina, onAltre }: {
+  mostrate: number; totale: number; pagina: number; onAltre: () => void;
+}) {
+  if (mostrate >= totale) return null;
+  const restano = totale - mostrate;
+  return (
+    <div className="flex items-center justify-center gap-3 py-2 text-[11px] text-muted-foreground">
+      <span>{mostrate.toLocaleString("it-IT")} di {totale.toLocaleString("it-IT")}</span>
+      <Button size="sm" variant="outline" onClick={onAltre}>
+        Mostra altre {Math.min(pagina, restano).toLocaleString("it-IT")}
+      </Button>
+    </div>
   );
 }
 
