@@ -50,7 +50,7 @@ export interface Luogo {
 
 /**
  * Quanti punti stradali al più. Ogni punto è una richiesta al fornitore del
- * traffico a ogni giro (ogni mezz'ora: 48 al giorno).
+ * traffico a ogni lettura; più punti, letture più rade (lib/traffico-quota.ts).
  */
 export const MASSIMO_PUNTI_TRAFFICO = 100;
 
@@ -222,7 +222,7 @@ export async function creaLuogo(l: z.infer<typeof DatiLuogo>): Promise<Luogo> {
              ${l.uso === "punti_interesse" ? l.raggioM ?? 3000 : null}::integer, ${l.zona}::text, ${l.ordine}::integer
        WHERE ${l.uso}::text <> 'traffico' OR (SELECT count(*) FROM territorio_luoghi WHERE uso = 'traffico') < ${MASSIMO_PUNTI_TRAFFICO}::integer
       RETURNING id, nome, uso, lat, lng, raggio_m, ordine, zona`));
-    if (!r.length) throw new RifiutoTerritorio(409, `I punti stradali sono già ${MASSIMO_PUNTI_TRAFFICO}, il massimo: ognuno è una richiesta al fornitore del traffico ogni mezz'ora`);
+    if (!r.length) throw new RifiutoTerritorio(409, `I punti stradali sono già ${MASSIMO_PUNTI_TRAFFICO}, il massimo: ognuno è una richiesta al fornitore del traffico a ogni lettura`);
     dimenticaTerritorio();
     return luogoDa(r[0]);
   } catch (e) { throw rifiutoDiScrittura(e, l.nome); }

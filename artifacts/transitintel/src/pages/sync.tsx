@@ -65,7 +65,7 @@ const SOURCES = [
     apiUrl: "https://developer.tomtom.com/traffic-api",
     keyNeeded: "TOMTOM_API_KEY",
     detail:
-      "Interroga flowSegmentData per ogni punto stradale scritto in Amministrazione › Azienda. Calcola congestione = 1 − (velocità attuale / flusso libero). Conserva i dati per 90 giorni.",
+      "Interroga flowSegmentData per ogni punto stradale scritto in Amministrazione › Azienda. Calcola congestione = 1 − (velocità attuale / flusso libero). Conserva i dati per 90 giorni. L'API legge da sola, dentro la quota mensile di TomTom: ogni lettura a mano usa una richiesta per punto della stessa quota.",
   },
   {
     key: "census",

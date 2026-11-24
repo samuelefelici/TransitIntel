@@ -2226,6 +2226,64 @@ sull'extraurbano: 65 regole della carta, 8 trasbordi.
 **Rollback**: immagine precedente. Le tabelle nuove restano e non danno
 fastidio; il GTFS torna come nella 6.37.
 
+### Il traffico dentro la quota mensile di TomTom (tappa 7.30)
+
+**Il problema.** L'API leggeva tutti i punti stradali ogni 30 minuti, più una
+volta a ogni avvio: con 37 punti circa 1.776 richieste al giorno, 54.000 in un
+mese. Il piano gratuito di TomTom ne concede circa 20.000 (dalla statistica
+della Dashboard di TomTom: dal 1° all'11 novembre tutte buone, dal 12 tutte
+rifiutate con 403). Così dal 12 del mese al 1° del mese dopo il traffico non
+si aggiornava più, e il log diceva solo `inserted 0 failed 37`.
+
+**Cosa cambia**
+- **Ogni quanto si legge** viene dal numero dei punti e dalla quota del mese:
+  i punti per le letture di un mese di 31 giorni stanno nella quota. Con 37
+  punti e la quota predefinita di 19.000: una lettura ogni **87 minuti**,
+  16-17 al giorno, circa 18.981 richieste al mese. Mai meno di 30 minuti, come
+  prima. Più punti, letture più rade (100 punti: ogni 235 minuti).
+- **La quota** si scrive in `TRAFFICO_RICHIESTE_MESE`, solo sull'API. Senza, o
+  con un valore storto, vale 19.000: un po' sotto le 20.000 del piano
+  gratuito, per lasciare spazio alle letture a mano dalla pagina
+  Sincronizzazione. Con un piano a pagamento si scrive la quota del piano.
+- **Un riavvio non consuma richieste in più**: la prima lettura arriva un
+  intervallo dopo l'ultima registrata nel database (almeno 10 secondi dopo
+  l'avvio). Prima ogni deploy ne spendeva 37.
+- **Il log dice il perché dei rifiuti**: quanti per codice (`400`, `403`,
+  `rete` se la richiesta non è arrivata, `vuota` se mancano i dati), i nomi dei
+  punti rifiutati (al più 10) e l'inizio della prima risposta di TomTom. La
+  chiave non compare mai: nel testo diventa `***`.
+- **La pagina Amministrazione › Azienda › «Luoghi di riferimento»** dice ogni
+  quanto si leggono i punti e quante richieste fanno in un mese, con la quota.
+  Prima diceva «1.776 richieste al giorno».
+
+**Le righe del log dell'API** (Coolify › API › Logs)
+- All'avvio: `Traffic auto-sync: ogni 87 min (37 punti, ~18981 richieste in
+  un mese di 31 giorni, quota 19000)`.
+- A ogni lettura: `Traffic auto-sync: done` con `inserted`, `failed`,
+  `rifiuti`, `puntiRifiutati`, `motivo` e `prossimaTraMin`.
+- Se TomTom rifiuta tutto con 403: `Traffico: TomTom rifiuta le richieste
+  (403)…`. Di solito è la quota del mese finita (si azzera il 1° del mese) o
+  la chiave non valida.
+
+**Il punto rifiutato con 400.** La statistica di TomTom mostra circa 48 errori
+400 al giorno, cioè un punto a ogni lettura: TomTom risponde 400 quando il
+punto è troppo lontano da una strada che conosce. Dopo il deploy il log dice
+quale (`puntiRifiutati` con `rifiuti: {"400": 1}`). Si corregge in
+Amministrazione › Azienda › «Luoghi di riferimento» › «Punti stradali del
+traffico»: si spostano le coordinate sopra la strada, oppure si toglie il
+punto.
+
+**Dopo il deploy**
+1. Nessuna migrazione e nessuna Watch Path. La variabile
+   `TRAFFICO_RICHIESTE_MESE` è facoltativa: se si scrive, solo sull'API, con
+   «Runtime» acceso e «Build» spento.
+2. Nel log dell'API c'è la riga `Traffic auto-sync: ogni … min`.
+3. Fino a fine mese, se la quota di questo mese è già finita, le letture
+   restano rifiutate (403) e il log lo dice. Dal 1° del mese dopo ripartono
+   e stanno nella quota.
+
+**Rollback**: immagine precedente; si torna a leggere ogni 30 minuti.
+
 ### Copia del database fuori dal server (tappa 7.23)
 
 Ogni notte il **lavoratore** fa una copia del database e la manda in uno
@@ -3740,17 +3798,17 @@ Tre cose del traffico erano scritte nel codice per la provincia di Ancona. Da
 questo rilascio sono luoghi del territorio dell'azienda, in Amministrazione →
 Azienda → «Luoghi di riferimento», dove stanno già i punti del meteo.
 
-- **Punti stradali del traffico** (uso nuovo): i punti di cui il giro del
-  traffico legge velocità e congestione ogni mezz'ora. Erano 37 nel codice.
+- **Punti stradali del traffico** (uso nuovo): i punti di cui l'API legge
+  velocità e congestione (dalla tappa 7.30 dentro la quota mensile di TomTom:
+  vedi «Il traffico dentro la quota mensile di TomTom»). Erano 37 nel codice.
   - Il **nome** di un punto è l'identificativo delle sue rilevazioni: è unico
     fra i punti. Cambiando nome a un punto, le sue rilevazioni lo seguono.
   - La **zona** è un attributo del punto, un nome libero: i punti con la
     stessa zona stanno insieme nella pagina Traffico. Scrivendola, la casella
     propone le zone che ci sono già. Un punto senza zona, e le rilevazioni di
     un punto tolto, stanno in «Senza zona» finché scadono (90 giorni).
-  - Al più **100 punti**. Ogni punto è una richiesta a TomTom a ogni giro: la
-    pagina dice quante richieste al giorno fanno i punti scritti (37 punti:
-    1.776).
+  - Al più **100 punti**. Ogni punto è una richiesta a TomTom a ogni lettura:
+    la pagina dice ogni quanto si leggono e quante richieste fanno in un mese.
   - Senza punti il giro non chiede niente.
 - **Centri urbani del modello del traffico** (uso nuovo): il traffico teorico
   cala con la distanza dal centro **più vicino** fra quelli scritti. Senza
@@ -6350,6 +6408,7 @@ Riferimento completo in `.env.example`. Sintesi:
 | `CERBERO_DATI_PROVA` | — | `1` solo sulle installazioni di prova o demo: abilita i conducenti fittizi («+30 fittizi»). In produzione lasciala vuota |
 | `FRONTEND_URL` | ✅ | dominio del Web (CORS) |
 | `TOMTOM_API_KEY` | — | traffico |
+| `TRAFFICO_RICHIESTE_MESE` | — | **Solo sull'API.** Le richieste al mese del piano di TomTom (default 19.000, sotto le circa 20.000 del piano gratuito): da qui ogni quanto si legge il traffico (tappa 7.30, «Il traffico dentro la quota mensile di TomTom») |
 | `MAPBOX_TOKEN` | — | usi server-side mappe |
 | `GOOGLE_PLACES_API_KEY` | — | sync POI |
 | `OPENROUTE_API_KEY` | — | isocrone pedonali |

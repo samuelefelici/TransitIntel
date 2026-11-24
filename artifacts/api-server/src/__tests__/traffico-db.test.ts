@@ -138,7 +138,7 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il traffico dell'azienda, sul d
     const chiave = process.env.TOMTOM_API_KEY;
     process.env.TOMTOM_API_KEY = "chiave-di-prova";
     try {
-      expect(await syncTrafficFromTomTom()).toEqual({ inserted: tutti, failed: 0 });
+      expect(await syncTrafficFromTomTom()).toEqual({ inserted: tutti, failed: 0, rifiuti: {}, puntiRifiutati: [] });
     } finally {
       vi.unstubAllGlobals();
       if (chiave === undefined) delete process.env.TOMTOM_API_KEY; else process.env.TOMTOM_API_KEY = chiave;
@@ -150,6 +150,34 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il traffico dell'azienda, sul d
       { segment_id: `${P}due`, lat: 43.5678, lng: 13.8765, speed: 30, freeflow_speed: 40, congestion_level: 0.25 },
       { segment_id: `${P}uno`, lat: 43.1234, lng: 13.4321, speed: 30, freeflow_speed: 40, congestion_level: 0.25 },
     ]);
+  });
+
+  it("i rifiuti di TomTom: quanti per codice, quali punti e il perché, senza la chiave", async () => {
+    for (const i of [1, 2, 3, 4]) await crea({ nome: `${P}rifiuto ${i}`, uso: "traffico", lat: 43 + i / 10, lng: 13 + i / 10 });
+    const nomi = (await leggiLuoghi("traffico")).map((l) => l.nome);
+    expect(nomi.length).toBeGreaterThanOrEqual(4);
+    let n = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      n++;
+      if (n === 1) return { ok: false, status: 400, text: async () => `<error>Point too far from nearest existing segment. ${new URL(url).searchParams.get("key")}</error>` } as any;
+      if (n === 2) throw new Error("rete giù");
+      if (n === 3) return { ok: true, json: async () => ({}) } as any;
+      return { ok: true, json: async () => ({ flowSegmentData: { currentSpeed: 30, freeFlowSpeed: 40 } }) } as any;
+    }));
+    const chiave = process.env.TOMTOM_API_KEY;
+    process.env.TOMTOM_API_KEY = "chiave-di-prova";
+    try {
+      const r = await syncTrafficFromTomTom();
+      expect(r.inserted).toBe(nomi.length - 3);
+      expect(r.failed).toBe(3);
+      expect(r.rifiuti).toEqual({ 400: 1, rete: 1, vuota: 1 });
+      expect(r.puntiRifiutati).toEqual(nomi.slice(0, 3));
+      expect(r.motivo).toBe("400: Point too far from nearest existing segment. ***");
+      expect(JSON.stringify(r)).not.toContain("chiave-di-prova");
+    } finally {
+      vi.unstubAllGlobals();
+      if (chiave === undefined) delete process.env.TOMTOM_API_KEY; else process.env.TOMTOM_API_KEY = chiave;
+    }
   });
 
   it("al più cento punti stradali", async () => {

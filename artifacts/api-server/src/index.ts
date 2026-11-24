@@ -1,6 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
-import { syncTrafficFromTomTom } from "./routes/cron";
+import { avviaTraffico } from "./lib/traffico-quota";
 import { MAX_GAP_SEC as SIRI_MAX_POLL_SECONDS, effectivePollSeconds } from "./lib/siri-vm";
 import { avviaControlloArgos } from "./lib/controllo-argos";
 import { controllaSegretiCron } from "./lib/segreto-cron";
@@ -62,31 +62,11 @@ const server = app.listen(port, () => {
   // precaricava niente. Tolto: niente cambia per chi usa le pagine, la prima
   // chiamata dopo un riavvio calcola come già faceva.
 
-  // ─── Auto-scheduler: TomTom traffic sync ────────────────────────
-  const TRAFFIC_INTERVAL_MS = 30 * 60 * 1000; // 30 minuti
-
+  // ─── Letture del traffico da TomTom, dentro la quota mensile (tappa 7.30) ──
+  // L'intervallo viene dai punti stradali e da TRAFFICO_RICHIESTE_MESE; la prima
+  // lettura arriva un intervallo dopo l'ultima registrata (lib/traffico-quota.ts).
   if (process.env.TOMTOM_API_KEY) {
-    // Primo sync 10 secondi dopo l'avvio
-    setTimeout(async () => {
-      try {
-        const result = await inSistema("timer:traffico", () => syncTrafficFromTomTom());
-        logger.info(result, "Traffic auto-sync (startup): done");
-      } catch (err) {
-        logger.error(err, "Traffic auto-sync (startup): failed");
-      }
-    }, 10_000);
-
-    // Poi ogni 30 minuti
-    setInterval(async () => {
-      try {
-        const result = await inSistema("timer:traffico", () => syncTrafficFromTomTom());
-        logger.info(result, "Traffic auto-sync (scheduled): done");
-      } catch (err) {
-        logger.error(err, "Traffic auto-sync (scheduled): failed");
-      }
-    }, TRAFFIC_INTERVAL_MS);
-
-    logger.info("Traffic auto-sync enabled: every 30 min (50 road points × 48/day = ~2400 req/day)");
+    avviaTraffico(logger).catch((err) => logger.error(err, "Traffic auto-sync: non avviato"));
   } else {
     logger.warn("TOMTOM_API_KEY not set — traffic auto-sync disabled");
   }
