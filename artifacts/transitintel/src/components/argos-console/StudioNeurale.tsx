@@ -12,20 +12,25 @@
  *   - a destra la chat, sempre in vista: le parole della risposta volano lì.
  * «Schermo intero» copre anche il menu di Cerbero; «Solo chat» nasconde la
  * rete e lascia una barra col riepilogo di che cosa ha fatto.
+ * «Vista 3D» porta la stessa scena dentro un cervello-nebulosa
+ * (lib/argos-cervello3d.ts, three.js caricato solo allora): il motore 2D
+ * continua a fare la regia senza disegnare, la vista 3D la legge.
  *
  * Il palco riceve gli eventi del turno da ArgosConversation (OsservatoreTurno):
  * niente richieste in più, se non la mappa dei documenti per le nebulose.
  */
 import { forwardRef, useCallback, useContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { BookOpen, Brain, Eye, EyeOff, FileText, Link2, Loader2, Maximize2, Minimize2, Moon, RotateCcw, ShieldCheck, Sparkles, Sun, Timer, Wrench } from "lucide-react";
+import { BookOpen, Box, Brain, Eye, EyeOff, FileText, Link2, Loader2, Maximize2, Minimize2, Moon, RotateCcw, ShieldCheck, Sparkles, Sun, Timer, Wrench } from "lucide-react";
 import type { OsservatoreTurno } from "@/components/argos/ArgosConversation";
 import { FASI_SCIAME, Sciame, type DatiPannelli, type RiepilogoSciame } from "@/lib/argos-sciame";
+import type { Cervello3D } from "@/lib/argos-cervello3d";
 import { durata, mappe, token } from "@/lib/argos-console";
 import { TemaArgosContesto } from "@/lib/argos-tema";
 
 const CHIAVE_SOLO_CHAT = "argos-studio-solo-chat";
 const CHIAVE_INTERO = "argos-studio-schermo-intero";
+const CHIAVE_VISTA = "argos-studio-vista";
 /** ogni quanto si rileggono i pannelli: abbastanza per vederli vivi, poco per React */
 const PASSO_PANNELLI_MS = 125;
 
@@ -44,6 +49,15 @@ function leggiIntero(): boolean {
   try { const v = localStorage.getItem(CHIAVE_INTERO); return v == null ? largo : v === "1" && largo; } catch { return largo; }
 }
 
+type Vista = "2d" | "3d";
+/** la vista 3D di partenza sugli schermi larghi, se non si chiede meno movimento; poi quella scelta (ricordata nel browser) */
+function leggiVista(): Vista {
+  const largo = typeof window !== "undefined" && !!window.matchMedia?.("(min-width: 1024px)").matches;
+  const calmo = typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  try { const v = localStorage.getItem(CHIAVE_VISTA); if (v === "2d" || v === "3d") return v; } catch { /* storage spento */ }
+  return largo && !calmo ? "3d" : "2d";
+}
+
 export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; children: ReactNode }>(function StudioNeurale({ titolo, children }, ref) {
   const tela = useRef<HTMLCanvasElement>(null);
   const titoloFase = useRef<HTMLDivElement>(null);
@@ -54,6 +68,13 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
   const [soloChat, setSoloChat] = useState(leggiSoloChat);
   const [intero, setIntero] = useState(leggiIntero);
   const [guasto, setGuasto] = useState(false);
+  const [vista, setVista] = useState<Vista>(leggiVista);
+  /** niente WebGL, o la vista 3D si è rotta: resta il 2D e il pulsante sparisce */
+  const [senza3d, setSenza3d] = useState(false);
+  /** la vista 3D è tornata al piano da sola perché lenta: lo si dice, per qualche secondo */
+  const [lento3d, setLento3d] = useState(false);
+  const palco3d = useRef<HTMLDivElement>(null);
+  const cervello = useRef<Cervello3D | null>(null);
   const inAttesa = useRef<Array<(m: Sciame) => void>>([]);
   const tema = useContext(TemaArgosContesto);
 
@@ -89,7 +110,12 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
   // il tema della pagina di Argos (classe .argos-chiaro sul suo contenitore): la rete lo segue, anche se cambia
   useEffect(() => {
     const pagina = radice.current?.closest(".argos-console");
-    const applica = () => { const m = motore.current; if (m) prova(() => m.impostaTema(!!radice.current?.closest(".argos-chiaro"))); };
+    const applica = () => {
+      const m = motore.current, chiaro = !!radice.current?.closest(".argos-chiaro");
+      if (m) prova(() => m.impostaTema(chiaro));
+      const c = cervello.current;
+      if (c) prova(() => c.impostaTema(chiaro));
+    };
     applica();
     if (!pagina) return;
     const mo = new MutationObserver(applica);
@@ -117,6 +143,8 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
       if (r.width < 4 || r.height < 4) { m.pausa(true); return; }
       m.pausa(false);
       m.ridimensiona();
+      const c3 = cervello.current;
+      if (c3) prova(() => c3.ridimensiona());
     });
     ro.observe(c);
     return () => ro.disconnect();
@@ -146,6 +174,48 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
     }, soloChat ? 1000 : PASSO_PANNELLI_MS);
     return () => clearInterval(t);
   }, [soloChat]);
+
+  // la vista 3D: si carica solo quando serve, il motore 2D smette di disegnare e le passa la scena
+  const con3d = vista === "3d" && !senza3d && !soloChat && !guasto;
+  useEffect(() => {
+    if (!con3d) return;
+    const m = motore.current, box = palco3d.current;
+    if (!m || !box) return;
+    let finito = false, c: Cervello3D | null = null;
+    const torna2d = (perche: "errore" | "lento" = "errore") => {
+      if (finito) return;
+      if (perche === "lento") {
+        // ricordato: la prossima volta si parte dal piano (il pulsante resta, per riprovare)
+        setVista("2d"); setLento3d(true);
+        try { localStorage.setItem(CHIAVE_VISTA, "2d"); } catch { /* storage spento */ }
+      } else setSenza3d(true);
+    };
+    import("@/lib/argos-cervello3d").then(mod => {
+      if (finito) return;
+      if (!mod.webglDisponibile()) { torna2d(); return; }
+      const nuovo = new mod.Cervello3D(box, m, { chiaro: !!radice.current?.closest(".argos-chiaro"), onGuasto: torna2d });
+      c = nuovo;
+      cervello.current = nuovo;
+      m.impostaDisegno(false);
+    }).catch(e => { console.warn("vista 3D non disponibile:", e); torna2d(); });
+    return () => {
+      finito = true;
+      cervello.current = null;
+      if (c) prova(() => c!.distruggi());
+      prova(() => m.impostaDisegno(true));
+    };
+  }, [con3d]);
+  useEffect(() => {
+    if (!lento3d) return;
+    const t = setTimeout(() => setLento3d(false), 6000);
+    return () => clearTimeout(t);
+  }, [lento3d]);
+  const cambiaVista = () => {
+    const v: Vista = vista === "3d" ? "2d" : "3d";
+    setVista(v);
+    setLento3d(false);
+    try { localStorage.setItem(CHIAVE_VISTA, v); } catch { /* storage spento */ }
+  };
 
   useEffect(() => { try { localStorage.setItem(CHIAVE_SOLO_CHAT, soloChat ? "1" : "0"); } catch { /* storage spento */ } }, [soloChat]);
   const cambiaIntero = (v: boolean) => { setIntero(v); try { localStorage.setItem(CHIAVE_INTERO, v ? "1" : "0"); } catch { /* storage spento */ } };
@@ -184,11 +254,18 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
               <span className="hidden xl:inline-flex"><Cifra nome="frame" valore={dati.barra.fotogrammi} /></span>
             </>
           )}
+          {conRete && lento3d && <span role="status" className="normal-case tracking-normal text-amber-300">3D lento su questo computer: rete in piano</span>}
           {!conRete && <span className="inline-flex items-center gap-1.5 normal-case tracking-normal text-violet-200"><Sparkles className="h-3.5 w-3.5" aria-hidden />Connessione neurale</span>}
           <span className="ml-auto flex items-center gap-1 normal-case tracking-normal">
             {conRete && dati?.puoRivedere && (
               <button type="button" onClick={() => rivedi()} className={BOTTONE} title="Rigioca tutta la corsa, senza una nuova richiesta">
                 <RotateCcw className="h-3.5 w-3.5" aria-hidden />Rivedi
+              </button>
+            )}
+            {conRete && !senza3d && (
+              <button type="button" onClick={cambiaVista} className={BOTTONE} aria-pressed={vista === "3d"}
+                title={vista === "3d" ? "Torna alla rete in piano" : "La rete dentro un cervello-nebulosa, in 3D"}>
+                <Box className="h-3.5 w-3.5" aria-hidden />{vista === "3d" ? "Vista 2D" : "Vista 3D"}
               </button>
             )}
             {!guasto && (
@@ -233,6 +310,8 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
             <div className="relative h-[46vh] min-h-[300px] lg:h-auto lg:min-h-0 lg:flex-1">
               <canvas ref={tela} className="absolute inset-0 block h-full w-full" role="img"
                 aria-label={`La rete di Argos: fase ${fase.n.toLowerCase()}, ${fase.s}`} />
+              {/* la vista 3D si monta qui sopra (WebGL e la sua sovrimpressione); col mouse si gira il cervello */}
+              <div ref={palco3d} className={`absolute inset-0 overflow-hidden ${con3d ? "cursor-grab active:cursor-grabbing" : "pointer-events-none"}`} />
               <div ref={titoloFase} className="pointer-events-none absolute left-3 top-2.5 max-w-[20rem] border-l-[3px] border-violet-400 pl-2.5 font-mono">
                 <div className="text-[16px] font-bold leading-tight tracking-wide text-zinc-100 md:text-[19px]">{String((dati?.fase ?? 0) + 1).padStart(2, "0")} {fase.n}</div>
                 <div className="mt-0.5 text-[10.5px] text-[var(--studio-sottotitolo)]">{fase.s}</div>
@@ -242,6 +321,7 @@ export const StudioNeurale = forwardRef<OsservatoreTurno, { titolo: string; chil
               {dati && !dati.haCorsa && (
                 <div className="pointer-events-none absolute bottom-6 left-1/2 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md bg-[var(--studio-invito)] px-3 py-1 text-center font-mono text-[11.5px] leading-relaxed text-zinc-400">
                   Fai una domanda nella chat: guarda Argos <b className="font-medium text-violet-300">cercare</b>, <b className="font-medium text-violet-300">scegliere</b> e <b className="font-medium text-violet-300">verificare</b>
+                  {con3d && <div className="text-[9.5px] tracking-wider text-zinc-500">trascina per girare il cervello · rotella per entrarci</div>}
                   <div className="text-[9.5px] tracking-wider text-zinc-600">
                     {mappa.data ? `${mappa.data.nodes.length} documenti in ${new Set(mappa.data.nodes.map(n => n.category || "")).size} categorie` : mappa.isError ? "mappa non disponibile: userò le categorie delle fonti" : "carico la mappa della conoscenza…"}
                   </div>

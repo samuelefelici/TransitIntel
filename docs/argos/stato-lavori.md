@@ -2193,6 +2193,28 @@ Fatto finora:
   assottigliano. La molla del corpo è più morbida. Stesso passo (~54
   fotogrammi al secondo nel browser di prova, prima ~50).
 
+- **La vista 3D: un cervello-nebulosa.** Nello studio il pulsante «Vista
+  3D» porta la stessa scena dentro un cervello (lib/argos-cervello3d.ts,
+  three.js già nell'app, caricato solo allora in un pezzo a parte). Il
+  motore 2D continua a fare la regia senza disegnare e passa la scena
+  (`Sciame.vista3d()`); la vista 3D la legge a ogni fotogramma. Le particelle
+  del campo diventano due emisferi con la scissura, le categorie sono zone
+  con la loro nube colorata, i documenti ammassi di luce; una corteccia di
+  punti con le circonvoluzioni e il cervelletto dà la sagoma; gli strumenti
+  stanno nel tronco. La rete è un nucleo con le sue fibre che si sposta dove
+  legge; fasci con impulsi verso i passaggi, ponti che attraversano il
+  cervello, concetti attorno. Nomi delle zone, pillole e parole in
+  sovrimpressione (evitano il titolo della fase). Mentre lavora la
+  telecamera entra nella nebulosa e segue la zona attiva; a riposo gira
+  attorno al cervello; col mouse lo si gira (rotella per entrarci). Parte in
+  3D sugli schermi larghi (non se il sistema chiede meno movimento), la
+  scelta resta nel browser. Qualità adattiva: se i fotogrammi calano scende
+  di risoluzione (fino a metà); se resta sotto i 12 al secondo torna da sola
+  alla rete in piano con un avviso, e lo ricorda. Senza WebGL o con un
+  errore la vista 3D sparisce e resta il 2D. Nel browser di prova (WebGL
+  fatto dal processore, senza scheda video) a schermo intero torna al
+  piano; sul telefono regge.
+
 ## In sospeso
 
 - **Il lucchetto sui turni guida** (driver-workspace) e sulla ri-ottimizzazione intermodale, che oggi non passa i turni bloccati.
