@@ -54,5 +54,35 @@ export function erroriPunto(m: ModuloPunto): string[] {
   return errori;
 }
 
+/** Una fermata in più nel modulo (tappa 7.31, scelta dall'elenco): in fondo, se non c'è già. */
+export function aggiungiFermata(testo: string, nome: string): string {
+  const n = nome.trim();
+  const ci = fermateDelModulo(testo);
+  if (!n || ci.some((f) => f.toUpperCase() === n.toUpperCase())) return ci.join("\n");
+  return [...ci, n].join("\n");
+}
+
+/** Una fermata in meno nel modulo. */
+export const togliFermata = (testo: string, nome: string): string =>
+  fermateDelModulo(testo).filter((f) => f.toUpperCase() !== nome.trim().toUpperCase()).join("\n");
+
+/**
+ * I nomi delle fermate trovate nel feed, una volta sola: due fermate con lo
+ * stesso nome (i due lati della strada) sono lo stesso luogo per il calcolo,
+ * che le riconosce dal nome. Nell'ordine dell'elenco: prima le più servite.
+ */
+export function nomiDelleFermate(fermate: ReadonlyArray<{ name: string; routeCount?: number }>): Array<{ nome: string; linee: number }> {
+  const visti = new Map<string, { nome: string; linee: number }>();
+  for (const f of fermate) {
+    const nome = (f.name ?? "").trim();
+    if (!nome) continue;
+    const k = nome.toUpperCase();
+    const gia = visti.get(k);
+    if (gia) gia.linee = Math.max(gia.linee, f.routeCount ?? 0);
+    else visti.set(k, { nome, linee: f.routeCount ?? 0 });
+  }
+  return [...visti.values()];
+}
+
 /** In breve, per la tabella: «con servizi» o «senza servizi». */
 export const serviziInBreve = (p: Pick<PuntoDiRiposo, "conServizi">) => (p.conServizi ? "con servizi" : "senza servizi");

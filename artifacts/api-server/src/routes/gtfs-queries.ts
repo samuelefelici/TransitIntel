@@ -26,6 +26,7 @@ import { getLatestFeedId, feedDellaLettura, FEED_NON_TROVATO } from "./gtfs-help
 import { feedVisibile, feedVisibiliSql } from "../lib/tenant";
 import { cache, chiavePerUtente } from "../middlewares/cache";
 import { erroreLeggibile } from "../middlewares/errori-interni";
+import { corseNelGiornoTipo, lineePerFermata } from "../lib/gtfs-giorno-tipo";
 
 const router: IRouter = Router();
 
@@ -118,10 +119,13 @@ router.get("/gtfs/shapes", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), as
 // GET /api/gtfs/summary — real GTFS stats for the dashboard card
 router.get("/gtfs/summary", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   try {
-    const feedId = await getLatestFeedId(req);
+    // il feed corrente di chi chiede, o quello chiesto se lo può vedere (tappa 7.31)
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId;
     if (!feedId) return res.json({ available: false });
 
-    const [routeCount, stopCount, tripCount, calDows, hoursRow] = await Promise.all([
+    const [routeCount, stopCount, tripCount, calDows, hoursRow, giornoTipo] = await Promise.all([
       db.execute(sql`SELECT COUNT(DISTINCT route_id)::int AS n FROM gtfs_routes WHERE feed_id = ${feedId}`),
       db.execute(sql`SELECT COUNT(*)::int AS n FROM gtfs_stops WHERE feed_id = ${feedId}`),
       db.execute(sql`SELECT COUNT(*)::int AS n FROM gtfs_trips WHERE feed_id = ${feedId}`),
@@ -138,6 +142,7 @@ router.get("/gtfs/summary", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), a
         SELECT MIN(departure_time) AS first_dep, MAX(arrival_time) AS last_arr
         FROM gtfs_stop_times WHERE feed_id = ${feedId}
       `),
+      corseNelGiornoTipo(feedId),
     ]);
 
     const svcMap: Record<string, { weekday: boolean; saturday: boolean; sunday: boolean }> = {};
@@ -203,6 +208,7 @@ router.get("/gtfs/summary", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), a
     const weekdayStopIds = new Set<string>();
     const satStopIds     = new Set<string>();
     const sunStopIds     = new Set<string>();
+    const lineaDellaCorsa = new Map(allTrips.rows.map((t) => [t.trip_id, t.route_id] as const));
     for (const st of stopTimesResult.rows) {
       if (weekdayTripIds.has(st.trip_id)) weekdayStopIds.add(st.stop_id);
       if (satTripIds.has(st.trip_id))     satStopIds.add(st.stop_id);
@@ -270,6 +276,9 @@ router.get("/gtfs/summary", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), a
       saturdayKm,
       sundayKm,
       topRoutes: topRoutes.rows,
+      /* tappa 7.31: le corse di un giorno tipo (mediana dei giorni del calendario) e le linee per fermata di tutto il feed */
+      corseGiornoTipo: giornoTipo,
+      lineePerFermata: lineePerFermata(stopTimesResult.rows, lineaDellaCorsa),
       firstDeparture: hrs.first_dep,
       lastArrival: hrs.last_arr,
     });

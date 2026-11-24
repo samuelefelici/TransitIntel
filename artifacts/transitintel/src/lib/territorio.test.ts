@@ -57,13 +57,15 @@ describe("i punti stradali del traffico e i centri urbani", () => {
     expect(moduloLuogoDa({ id: "x", nome: "A14 nord", uso: "traffico", lat: 43.64, lng: 13.43, raggioM: null, zona: "Tangenziale", ordine: 1000 }).zona).toBe("Tangenziale");
   });
 
-  it("quante richieste al giorno costano i punti: una per punto ogni mezz'ora", () => {
+  it("quante richieste costano i punti: le letture dell'API dentro la quota del mese", () => {
     /* i numeri come nel resto delle pagine: in italiano il punto delle migliaia comincia da 10.000 */
-    expect(richiesteDelTraffico(37)).toBe("37 punti: 1776 richieste al giorno al fornitore del traffico");
-    expect(richiesteDelTraffico(100)).toBe("100 punti: 4800 richieste al giorno al fornitore del traffico");
-    expect(richiesteDelTraffico(250)).toBe("250 punti: 12.000 richieste al giorno al fornitore del traffico");
-    expect(richiesteDelTraffico(1)).toBe("1 punto: 48 richieste al giorno al fornitore del traffico");
-    expect(richiesteDelTraffico(0)).toBeNull();
+    const letture = { quotaMese: 19_000, ogniMin: 87, attivo: true };
+    expect(richiesteDelTraffico(37, letture)).toBe("37 punti: una lettura ogni 87 minuti, circa 18.981 richieste in un mese al fornitore del traffico (quota 19.000)");
+    expect(richiesteDelTraffico(1, { quotaMese: 19_000, ogniMin: 30, attivo: true })).toBe("1 punto: una lettura ogni 30 minuti, circa 1488 richieste in un mese al fornitore del traffico (quota 19.000)");
+    expect(richiesteDelTraffico(37, { ...letture, attivo: false })).toBe("37 punti: le letture sono spente, manca la chiave del fornitore del traffico");
+    /* un'API che non dice ancora ogni quanto legge */
+    expect(richiesteDelTraffico(37)).toBe("37 punti: ogni lettura è una richiesta per punto al fornitore del traffico");
+    expect(richiesteDelTraffico(0, letture)).toBeNull();
   });
 
   it("le zone già scritte, una volta sola e in ordine: si propongono a chi ne scrive una", () => {

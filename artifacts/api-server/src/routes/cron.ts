@@ -370,12 +370,39 @@ export async function syncPoiFromOsm(): Promise<{ inserted: number; categories: 
   return { inserted, categories };
 }
 
-export async function syncTrafficFromTomTom(): Promise<{ inserted: number; failed: number }> {
+/** Esito di una lettura del traffico (tappa 7.30: anche il perché dei rifiuti). */
+export interface EsitoTraffico {
+  inserted: number;
+  failed: number;
+  /** quanti rifiuti per codice HTTP («rete» se la richiesta non è arrivata, «vuota» se mancano i dati) */
+  rifiuti: Record<string, number>;
+  /** i nomi dei punti rifiutati (al più 10) */
+  puntiRifiutati: string[];
+  /** l'inizio della prima risposta di errore di TomTom, senza la chiave */
+  motivo?: string;
+}
+
+/** Il testo di una risposta d'errore, corto, senza tag e senza la chiave. */
+export function motivoRifiuto(stato: number, testo: string, chiave: string): string {
+  let t = testo.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  if (chiave) t = t.split(chiave).join("***");
+  return `${stato}: ${t.slice(0, 160)}`;
+}
+
+export async function syncTrafficFromTomTom(): Promise<EsitoTraffico> {
   const apiKey = process.env.TOMTOM_API_KEY;
   if (!apiKey) throw new Error("TOMTOM_API_KEY not set");
 
   const toInsert: any[] = [];
   let failed = 0;
+  const rifiuti: Record<string, number> = {};
+  const puntiRifiutati: string[] = [];
+  let motivo: string | undefined;
+  const rifiuta = (punto: string, codice: string) => {
+    failed++;
+    rifiuti[codice] = (rifiuti[codice] ?? 0) + 1;
+    if (puntiRifiutati.length < 10) puntiRifiutati.push(punto);
+  };
 
   for (const point of await leggiLuoghi("traffico")) {
     try {
@@ -383,10 +410,14 @@ export async function syncTrafficFromTomTom(): Promise<{ inserted: number; faile
         `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json` +
         `?point=${point.lat},${point.lng}&unit=KMPH&key=${apiKey}`;
       const resp = await fetch(url, { signal: AbortSignal.timeout(8000) });
-      if (!resp.ok) { failed++; continue; }
+      if (!resp.ok) {
+        rifiuta(point.nome, String(resp.status));
+        if (!motivo) motivo = motivoRifiuto(resp.status, await resp.text().catch(() => ""), apiKey);
+        continue;
+      }
       const data = await resp.json() as any;
       const fd = data.flowSegmentData;
-      if (!fd) { failed++; continue; }
+      if (!fd) { rifiuta(point.nome, "vuota"); continue; }
 
       const speed = fd.currentSpeed ?? 0;
       const freeflow = fd.freeFlowSpeed ?? speed;
@@ -401,7 +432,7 @@ export async function syncTrafficFromTomTom(): Promise<{ inserted: number; faile
         congestionLevel: congestion,
       });
     } catch {
-      failed++;
+      rifiuta(point.nome, "rete");
     }
   }
 
@@ -414,7 +445,7 @@ export async function syncTrafficFromTomTom(): Promise<{ inserted: number; faile
     DELETE FROM traffic_snapshots WHERE captured_at < NOW() - INTERVAL '90 days'
   `);
 
-  return { inserted: toInsert.length, failed };
+  return { inserted: toInsert.length, failed, rifiuti, puntiRifiutati, ...(motivo ? { motivo } : {}) };
 }
 
 /**

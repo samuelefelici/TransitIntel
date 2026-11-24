@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  coordinate, corpoComune, corpoLuogo, erroriComune, erroriLuogo, MODULO_COMUNE_VUOTO, moduloComuneDa, moduloLuogoDa, moduloLuogoVuoto, richiesteDelTraffico, USI, zoneDeiPunti,
+  coordinate, corpoComune, corpoLuogo, erroriComune, erroriLuogo, MODULO_COMUNE_VUOTO, moduloComuneDa, moduloLuogoDa, moduloLuogoVuoto, richiesteDelTraffico, USI, zoneDeiPunti, type LettureTraffico,
   type Comune, type Luogo, type ModuloComune, type ModuloLuogo, type UsoLuogo,
 } from "@/lib/territorio";
 
@@ -21,10 +21,10 @@ const nf = (n: number | null, cifre = 0) => (n == null ? "—" : n.toLocaleStrin
 
 export default function TerritorioAzienda() {
   const { toast } = useToast();
-  const [dati, setDati] = useState<{ comuni: Comune[]; luoghi: Luogo[] } | null>(null);
+  const [dati, setDati] = useState<{ comuni: Comune[]; luoghi: Luogo[]; traffico?: LettureTraffico } | null>(null);
   const [busy, setBusy] = useState(false);
   const carica = useCallback(async () => {
-    try { setDati(await apiFetch<{ comuni: Comune[]; luoghi: Luogo[] }>("/api/admin/territorio")); }
+    try { setDati(await apiFetch<{ comuni: Comune[]; luoghi: Luogo[]; traffico?: LettureTraffico }>("/api/admin/territorio")); }
     catch (e: any) { toast({ title: "Territorio non letto", description: e?.message, variant: "destructive" }); }
   }, [toast]);
   useEffect(() => { void carica(); }, [carica]);
@@ -46,7 +46,7 @@ export default function TerritorioAzienda() {
           if (!window.confirm(`Tolgo ${c.nome} (${c.codiceIstat}) dal territorio? Le analisi lo chiameranno «Comune ${c.codiceIstat}».`)) return;
           void esegui(`${c.nome} tolto`, () => apiFetch(`/api/admin/territorio/comuni/${c.codiceIstat}`, { method: "DELETE" }));
         }} />
-      <Luoghi luoghi={dati.luoghi} busy={busy}
+      <Luoghi luoghi={dati.luoghi} letture={dati.traffico ?? null} busy={busy}
         onCrea={(m) => esegui(`${m.nome.trim()} aggiunto`, () => apiFetch("/api/admin/territorio/luoghi", { method: "POST", body: JSON.stringify(corpoLuogo(m)) }))}
         onSalva={(id, m) => esegui(`${m.nome.trim()} salvato`, () => apiFetch(`/api/admin/territorio/luoghi/${id}`, { method: "PUT", body: JSON.stringify(corpoLuogo(m)) }))}
         onTogli={(l) => {
@@ -154,8 +154,8 @@ function ModuloComuneForm({ iniziale, codiceFisso = false, busy, onSalva, onAnnu
 
 /* ── I luoghi ─────────────────────────────────────────────────────────────── */
 
-function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
-  luoghi: Luogo[]; busy: boolean;
+function Luoghi({ luoghi, letture, busy, onCrea, onSalva, onTogli }: {
+  luoghi: Luogo[]; letture: LettureTraffico | null; busy: boolean;
   onCrea: (m: ModuloLuogo) => Promise<boolean>; onSalva: (id: string, m: ModuloLuogo) => Promise<boolean>; onTogli: (l: Luogo) => void;
 }) {
   const [aperto, setAperto] = useState<string | null>(null);
@@ -174,7 +174,7 @@ function Luoghi({ luoghi, busy, onCrea, onSalva, onTogli }: {
               <div>
                 <h3 className="text-sm font-medium">{titolo} <span className="text-muted-foreground font-normal">· {di.length}</span></h3>
                 <p className="text-xs text-muted-foreground">{spiega}</p>
-                {uso === "traffico" && richiesteDelTraffico(di.length) && <p className="text-xs text-muted-foreground">{richiesteDelTraffico(di.length)}.</p>}
+                {uso === "traffico" && richiesteDelTraffico(di.length, letture) && <p className="text-xs text-muted-foreground">{richiesteDelTraffico(di.length, letture)}.</p>}
               </div>
               {di.length > 0 && (
                 <div className="overflow-x-auto rounded-md border border-border/50">

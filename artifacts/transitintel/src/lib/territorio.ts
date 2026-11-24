@@ -20,16 +20,24 @@ export const USI: Array<[UsoLuogo, string, string]> = [
   ["punti_interesse", "Ricerca dei punti d'interesse", "Dove si cercano scuole, ospedali, negozi e uffici, ognuno col suo raggio."],
   ["meteo", "Meteo", "I punti di cui si legge il meteo."],
   ["polo_lavoro", "Poli di lavoro e commercio", "Zone industriali e centri commerciali che le mappe non hanno, per l'analisi della rete."],
-  ["traffico", "Punti stradali del traffico", "I punti di cui si legge il traffico ogni mezz'ora. Il nome distingue le rilevazioni di un punto; la zona li raggruppa nella pagina Traffico."],
+  ["traffico", "Punti stradali del traffico", "I punti di cui si legge il traffico, tante volte quante ne stanno nella quota mensile del fornitore. Il nome distingue le rilevazioni di un punto; la zona li raggruppa nella pagina Traffico."],
   ["centro_urbano", "Centri urbani del modello del traffico", "Il traffico teorico cala con la distanza dal centro più vicino. Senza centri vale il centro delle mappe."],
 ];
 
-/** Ogni punto stradale è una richiesta al fornitore del traffico a ogni giro: uno ogni mezz'ora. */
-export const GIRI_DEL_TRAFFICO_AL_GIORNO = 48;
-/** «37 punti: 1776 richieste al giorno al fornitore del traffico», o niente se non ci sono punti. */
-export function richiesteDelTraffico(punti: number): string | null {
+/**
+ * Ogni quanto l'API legge i punti stradali (tappa 7.30): l'intervallo viene dal
+ * numero dei punti e dalla quota mensile del fornitore (TRAFFICO_RICHIESTE_MESE).
+ */
+export interface LettureTraffico { quotaMese: number; ogniMin: number; attivo: boolean }
+const MINUTI_MESE = 31 * 24 * 60;
+/** «37 punti: una lettura ogni 87 minuti, circa 18.981 richieste in un mese (quota 19.000)», o niente senza punti. */
+export function richiesteDelTraffico(punti: number, letture?: LettureTraffico | null): string | null {
   if (punti <= 0) return null;
-  return `${punti === 1 ? "1 punto" : `${punti} punti`}: ${(punti * GIRI_DEL_TRAFFICO_AL_GIORNO).toLocaleString("it-IT")} richieste al giorno al fornitore del traffico`;
+  const quanti = punti === 1 ? "1 punto" : `${punti} punti`;
+  if (!letture) return `${quanti}: ogni lettura è una richiesta per punto al fornitore del traffico`;
+  if (!letture.attivo) return `${quanti}: le letture sono spente, manca la chiave del fornitore del traffico`;
+  const alMese = punti * Math.round(MINUTI_MESE / letture.ogniMin);
+  return `${quanti}: una lettura ogni ${letture.ogniMin} minuti, circa ${alMese.toLocaleString("it-IT")} richieste in un mese al fornitore del traffico (quota ${letture.quotaMese.toLocaleString("it-IT")})`;
 }
 /** Le zone già scritte sui punti stradali, in ordine alfabetico: si propongono a chi ne scrive una. */
 export function zoneDeiPunti(luoghi: readonly Pick<Luogo, "uso" | "zona">[]): string[] {

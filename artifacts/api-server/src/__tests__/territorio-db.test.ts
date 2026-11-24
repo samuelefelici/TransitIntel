@@ -43,6 +43,18 @@ describe.runIf(!!process.env.TEST_DATABASE_URL)("il territorio dell'azienda, sul
     expect((await persona.post("/api/admin/territorio/luoghi").send({ nome: "x", uso: "meteo", lat: 1, lng: 1 })).status).toBe(403);
   });
 
+  it("dice ogni quanto si leggono i punti stradali, dentro la quota del mese (tappa 7.30)", async () => {
+    const quota = process.env.TRAFFICO_RICHIESTE_MESE;
+    process.env.TRAFFICO_RICHIESTE_MESE = "9000";
+    try {
+      const r = (await admin.get("/api/admin/territorio")).body;
+      const punti = r.luoghi.filter((l: any) => l.uso === "traffico").length;
+      expect(r.traffico).toEqual({ quotaMese: 9000, ogniMin: punti ? Math.max(30, Math.ceil((punti * 31 * 24 * 60) / 9000)) : 60, attivo: !!process.env.TOMTOM_API_KEY });
+    } finally {
+      if (quota === undefined) delete process.env.TRAFFICO_RICHIESTE_MESE; else process.env.TRAFFICO_RICHIESTE_MESE = quota;
+    }
+  });
+
   it("un comune: si salva, si legge per nome da ogni forma del codice, si cambia, si toglie", async () => {
     const r = await admin.put(`/api/admin/territorio/comuni/${CODICE}`).send({ nome: "Prova 6.1", lat: 44.1, lng: 12.1, areaKm2: 10.5, popolazione: 1234 });
     expect(r.status).toBe(200);

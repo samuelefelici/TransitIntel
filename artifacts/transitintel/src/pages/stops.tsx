@@ -65,6 +65,10 @@ export default function Stops() {
   // Dynamic KPI from GTFS summary
   const [gtfsSummary, setGtfsSummary] = useState<{
     totalStops: number; totalRoutes: number; totalTrips: number;
+    /** tappa 7.31: mediana delle corse dei giorni feriali, del sabato e della domenica del calendario del feed */
+    corseGiornoTipo?: { feriale: number | null; sabato: number | null; festivo: number | null };
+    /** tappa 7.31: media delle linee per fermata su tutto il feed */
+    lineePerFermata?: number | null;
     firstDeparture?: string; lastArrival?: string;
   } | null>(null);
 
@@ -110,9 +114,13 @@ export default function Stops() {
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
-  const kpiAvgRoutes = stops.length > 0
-    ? (stops.reduce((s, x) => s + x.routeCount, 0) / stops.length).toFixed(1)
+  /* su tutto il feed: la media dei 50 della pagina, ordinati per numero di linee, valeva solo per i nodi più grandi */
+  const kpiAvgRoutes = gtfsSummary?.lineePerFermata != null
+    ? gtfsSummary.lineePerFermata.toLocaleString("it-IT", { minimumFractionDigits: 1, maximumFractionDigits: 1 })
     : "—";
+  /* le corse di un feriale tipo, non tutte le corse del feed (che con più calendari sono molte di più) */
+  const corseFeriale = gtfsSummary?.corseGiornoTipo?.feriale;
+  const kpiCorseFeriale = corseFeriale != null ? corseFeriale.toLocaleString("it-IT") : "—";
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -134,7 +142,7 @@ export default function Stops() {
           <KpiChip icon={<Bus className="w-3.5 h-3.5 text-green-400" />}
             label="Linee attive" value={gtfsSummary ? String(gtfsSummary.totalRoutes) : "—"} color="text-green-400" />
           <KpiChip icon={<Layers className="w-3.5 h-3.5 text-orange-400" />}
-            label="Corse/giorno" value={gtfsSummary ? gtfsSummary.totalTrips.toLocaleString("it-IT") : "—"} color="text-orange-400" />
+            label="Corse in un feriale" value={kpiCorseFeriale} color="text-orange-400" />
           <KpiChip icon={<Route className="w-3.5 h-3.5 text-purple-400" />}
             label="Linee per fermata (media)" value={kpiAvgRoutes} color="text-purple-400" />
         </div>
@@ -247,7 +255,7 @@ export default function Stops() {
                 <div className="grid grid-cols-2 gap-3 max-w-sm w-full">
                   <InfoCard icon="🚌" title="Linee" value={gtfsSummary ? String(gtfsSummary.totalRoutes) : "—"} sub="nel feed in uso" />
                   <InfoCard icon="📍" title="Fermate totali" value={gtfsSummary ? gtfsSummary.totalStops.toLocaleString("it-IT") : String(total)} sub={luogo ? `nella rete ${luogo}` : "nella rete"} />
-                  <InfoCard icon="🔄" title="Corse giornaliere" value={gtfsSummary ? gtfsSummary.totalTrips.toLocaleString("it-IT") : "—"} sub="trip programmati" />
+                  <InfoCard icon="🔄" title="Corse in un feriale" value={kpiCorseFeriale} sub={gtfsSummary ? `${gtfsSummary.totalTrips.toLocaleString("it-IT")} in tutto il feed` : "nel feed in uso"} />
                   <InfoCard icon="�" title="Prima / Ultima corsa" value={gtfsSummary?.firstDeparture?.slice(0, 5) ?? "—"} sub={`→ ${gtfsSummary?.lastArrival?.slice(0, 5) ?? "—"}`} />
                 </div>
               </motion.div>

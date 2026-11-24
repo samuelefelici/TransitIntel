@@ -31,6 +31,7 @@ import { elencoCausali, salvaCausale, RifiutoGiornale } from "../lib/esercizio-g
 import { chiudiMese, meseValido, riapriGiornata, riapriMese, RifiutoChiusura } from "../lib/esercizio-chiusura";
 import { getLatestFeedId } from "./gtfs-helpers";
 import { syncPoiFromOsm, syncPoiFromGoogle, syncTrafficFromTomTom, syncCensusFromIstat, syncCommutingOdFromIstat } from "./cron.js";
+import { intervalloTrafficoMin, richiesteMese } from "../lib/traffico-quota";
 import { erroreLeggibile } from "../middlewares/errori-interni";
 
 const router: IRouter = Router();
@@ -379,7 +380,13 @@ const rifiutoTerritorio = (req: any, res: any, e: any, cosa: string) => {
 };
 router.use("/admin/territorio", requireAdmin);
 router.get("/admin/territorio", async (req, res): Promise<void> => {
-  try { res.json(await elencoTerritorio()); }
+  try {
+    const t = await elencoTerritorio();
+    /* ogni quanto si leggono i punti stradali, dentro la quota del mese (tappa 7.30) */
+    const quotaMese = richiesteMese();
+    const ogniMin = intervalloTrafficoMin(t.luoghi.filter((l) => l.uso === "traffico").length, quotaMese);
+    res.json({ ...t, traffico: { quotaMese, ogniMin, attivo: !!process.env.TOMTOM_API_KEY } });
+  }
   catch (e) { rifiutoTerritorio(req, res, e, "territorio non leggibile"); }
 });
 router.put("/admin/territorio/comuni/:codice", async (req, res): Promise<void> => {
