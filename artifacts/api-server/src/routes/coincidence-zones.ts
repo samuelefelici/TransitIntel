@@ -24,6 +24,14 @@ import { asyncHandler } from "../middlewares/error-handler";
 import { haversineKm, walkMinutes as calcWalkMin } from "../lib/geo-utils";
 import { hubDeiNodi } from "../lib/nodi-scambio-store";
 import { hasProjectAccess } from "./argos-context";
+import { getLatestFeedId } from "./gtfs-helpers";
+
+/* Le fermate, gli orari e le linee del feed corrente di chi chiede (tappa
+   7.25): prima di tutti i feed insieme, unite solo per codice. Senza feed
+   (installazione vuota) le letture non trovano niente. */
+async function feedDelleZone(req: Request): Promise<string | null> {
+  return getLatestFeedId(req);
+}
 
 const router: IRouter = Router();
 const ZONE_UUID_RE = /^[0-9a-f-]{36}$/i;
@@ -98,10 +106,11 @@ function findNearbyStops(
 // ═══════════════════════════════════════════════════════════════
 router.get("/coincidence-zones/hubs", asyncHandler(async (req, res) => {
   const radiusKm = parseFloat(req.query.radius as string) || DEFAULT_RADIUS_KM;
+  const feedId = await feedDelleZone(req);
   const allStops = await db.select({
     stopId: gtfsStops.stopId, stopName: gtfsStops.stopName,
     lat: gtfsStops.stopLat, lng: gtfsStops.stopLon,
-  }).from(gtfsStops);
+  }).from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedId}`);
 
   const hubs = (await hubDeiNodi()).map(hub => {
     const nearby = findNearbyStops(hub.lat, hub.lng, allStops, radiusKm, hub.platformWalkMinutes);
@@ -226,10 +235,11 @@ router.post("/coincidence-zones/auto-create", asyncHandler(async (req, res) => {
   const existing = await db.select({ hubId: coincidenceZones.hubId }).from(coincidenceZones);
   const existingHubIds = new Set(existing.map(e => e.hubId));
 
+  const feedId = await feedDelleZone(req);
   const allStops = await db.select({
     stopId: gtfsStops.stopId, stopName: gtfsStops.stopName,
     lat: gtfsStops.stopLat, lng: gtfsStops.stopLon,
-  }).from(gtfsStops);
+  }).from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedId}`);
 
   const created: any[] = [];
   let colorIdx = existing.length;
@@ -268,9 +278,11 @@ router.post("/coincidence-zones/auto-create", asyncHandler(async (req, res) => {
 // GET /api/coincidence-zones/:id/schedules
 // Restituisce gli orari della zona: prima i custom (zone.schedules), poi quelli stimati del suo nodo di scambio
 // ═══════════════════════════════════════════════════════════════
-router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {
-  const [zone] = await db.select().from(coincidenceZones).where(eq(coincidenceZones.id, req.params.id as string));
-  if (!zone) { res.status(404).json({ error: "Not found" }); return; }
+/** Gli orari di una zona: prima i suoi (zone.schedules), poi quelli stimati del
+ *  nodo di scambio. Li usano la rotta qui sotto e il programma generato da uno
+ *  scenario (tappa 7.25: prima la chiedeva alla rotta via HTTP, senza credenziali,
+ *  e riceveva sempre un rifiuto). */
+export async function orariDellaZona(zone: typeof coincidenceZones.$inferSelect) {
   const custom = (zone as any).schedules as
     | { arrivals?: { label: string; times: string[] }[]; departures?: { label: string; times: string[] }[] }
     | null
@@ -281,10 +293,18 @@ router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => 
   const presetDepartures = (hub?.typicalDepartures ?? []).map(a => ({ label: a.destination, times: a.times }));
   const arrivals = (custom?.arrivals && custom.arrivals.length > 0) ? custom.arrivals : presetArrivals;
   const departures = (custom?.departures && custom.departures.length > 0) ? custom.departures : presetDepartures;
-  res.json({
+  return {
     arrivals,
     departures,
-    source: (custom?.arrivals?.length || custom?.departures?.length) ? "custom" : (hub ? "preset" : "empty"),
+    source: ((custom?.arrivals?.length || custom?.departures?.length) ? "custom" : (hub ? "preset" : "empty")) as "custom" | "preset" | "empty",
+  };
+}
+
+router.get("/coincidence-zones/:id/schedules", asyncHandler(async (req, res) => {
+  const [zone] = await db.select().from(coincidenceZones).where(eq(coincidenceZones.id, req.params.id as string));
+  if (!zone) { res.status(404).json({ error: "Not found" }); return; }
+  res.json({
+    ...(await orariDellaZona(zone)),
     hubType: zone.hubType,
     platformWalkMinutes: zone.walkMinutes,
   });
@@ -322,12 +342,13 @@ router.get("/coincidence-zones/:id/bus-lines", asyncHandler(async (req, res) => 
   const zoneStops = await db.select().from(coincidenceZoneStops).where(eq(coincidenceZoneStops.zoneId, req.params.id as string));
   if (zoneStops.length === 0) { res.json({ busLines: [] }); return; }
   const stopIds = zoneStops.map(s => s.gtfsStopId);
+  const feedId = await feedDelleZone(req);
   const batchSize = 200;
   let stopTimes: { stopId: string; tripId: string; departureTime: string | null }[] = [];
   for (let i = 0; i < stopIds.length; i += batchSize) {
     const batch = stopIds.slice(i, i + batchSize);
     const rows = await db.select({ stopId: gtfsStopTimes.stopId, tripId: gtfsStopTimes.tripId, departureTime: gtfsStopTimes.departureTime })
-      .from(gtfsStopTimes).where(sql`${gtfsStopTimes.stopId} IN (${sql.join(batch.map(sid => sql`${sid}`), sql`, `)})`);
+      .from(gtfsStopTimes).where(sql`${gtfsStopTimes.feedId} = ${feedId} AND ${gtfsStopTimes.stopId} IN (${sql.join(batch.map(sid => sql`${sid}`), sql`, `)})`);
     stopTimes.push(...rows);
   }
   const tripIds = [...new Set(stopTimes.map(st => st.tripId))];
@@ -335,7 +356,7 @@ router.get("/coincidence-zones/:id/bus-lines", asyncHandler(async (req, res) => 
   for (let i = 0; i < tripIds.length; i += batchSize) {
     const batch = tripIds.slice(i, i + batchSize);
     const rows = await db.select({ tripId: gtfsTrips.tripId, routeId: gtfsTrips.routeId })
-      .from(gtfsTrips).where(sql`${gtfsTrips.tripId} IN (${sql.join(batch.map(tid => sql`${tid}`), sql`, `)})`);
+      .from(gtfsTrips).where(sql`${gtfsTrips.feedId} = ${feedId} AND ${gtfsTrips.tripId} IN (${sql.join(batch.map(tid => sql`${tid}`), sql`, `)})`);
     for (const r of rows) tripRouteMap[r.tripId] = r.routeId;
   }
   const routeIds = [...new Set(Object.values(tripRouteMap))];
@@ -343,7 +364,7 @@ router.get("/coincidence-zones/:id/bus-lines", asyncHandler(async (req, res) => 
   if (routeIds.length > 0) {
     const routes = await db.select({ routeId: gtfsRoutes.routeId, shortName: gtfsRoutes.routeShortName,
       longName: gtfsRoutes.routeLongName, color: gtfsRoutes.routeColor }).from(gtfsRoutes)
-      .where(sql`${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(rid => sql`${rid}`), sql`, `)})`);
+      .where(sql`${gtfsRoutes.feedId} = ${feedId} AND ${gtfsRoutes.routeId} IN (${sql.join(routeIds.map(rid => sql`${rid}`), sql`, `)})`);
     for (const r of routes) routeMap[r.routeId] = { shortName: r.shortName, longName: r.longName, color: r.color };
   }
   const byRoute: Record<string, { times: Set<string>; trips: number }> = {};

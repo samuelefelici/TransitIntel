@@ -26,12 +26,12 @@ const F = vi.hoisted(() => {
     /* feedVisibile: l'admin ha "AND TRUE", gli altri vedono solo il proprio */
     if (t.startsWith("select 1 from gtfs_feeds where id = $1")) {
       const id = valori[0];
-      const visto = t.includes("and true limit") || Object.entries(feedDi).some(([u, f]) => f === id && t.includes(u));
+      const visto = t.includes("and true limit") || Object.entries(feedDi).some(([u, f]) => f === id && valori.includes(u));
       return visto ? [{ uno: 1 }] : [];
     }
-    /* getLatestFeedId: il feed corrente di chi chiede (l'id è nel testo) */
+    /* getLatestFeedId: il feed corrente di chi chiede (l'id è fra i parametri, dalla tappa 7.25) */
     if (t.startsWith("select id from gtfs_feeds where is_active = true")) {
-      const chi = Object.keys(feedDi).find(u => t.includes(u));
+      const chi = Object.keys(feedDi).find(u => valori.includes(u));
       return chi ? [{ id: feedDi[chi] }] : [];
     }
     /* hasProjectAccess: A è membro solo di PROGETTO_A */
@@ -111,7 +111,10 @@ describe("Tariffe senza Analisi: le linee", () => {
   it("senza feedId: solo le linee dei feed che l'utente vede", async () => {
     expect((await request(app).get("/api/gtfs/routes")).status).toBe(200);
     const [q] = su("gtfs_routes");
-    expect(piatto(q.testo)).toMatch(/"feed_id" IN \(SELECT id FROM gtfs_feeds WHERE \( owner_user_id = 'a0000000-0000-4000-8000-00000000000a'::uuid/);
+    // l'id dell'utente come parametro, non nel testo (tappa 7.25)
+    expect(piatto(q.testo)).toMatch(/"feed_id" IN \(SELECT id FROM gtfs_feeds WHERE \( owner_user_id = \$\d+::uuid/);
+    expect(q.testo).not.toContain(F.UTENTE_A);
+    expect(q.valori).toContain(F.UTENTE_A);
   });
 
   it("l'admin vede tutti i feed", async () => {
@@ -132,14 +135,16 @@ describe("Tariffe e Turni: fermate e fermate per linea", () => {
     const turni = appDiProva(clusters, utenteDiProva(F.UTENTE_A, ["scheduling"]));
     expect((await request(turni).get("/api/gtfs/stops/all")).status).toBe(200);
     const [q] = su("gtfs_stops");
-    expect(piatto(q.testo)).toContain(`WHERE feed_id IN (SELECT id FROM gtfs_feeds WHERE ( owner_user_id = '${F.UTENTE_A}'::uuid`);
+    expect(piatto(q.testo)).toMatch(/WHERE feed_id IN \(SELECT id FROM gtfs_feeds WHERE \( owner_user_id = \$\d+::uuid/);
+    expect(q.valori).toContain(F.UTENTE_A);
   });
 
   it("le fermate per linea della mappa delle Tariffe: solo i feed visibili", async () => {
     const app = appDiProva(clusters, tariffeA);
     expect((await request(app).get("/api/gtfs/route-stop-ids?routeIds=1,2")).status).toBe(200);
     const [q] = su("gtfs_trips");
-    expect(piatto(q.testo)).toContain(`AND t.feed_id IN (SELECT id FROM gtfs_feeds WHERE ( owner_user_id = '${F.UTENTE_A}'::uuid`);
+    expect(piatto(q.testo)).toMatch(/AND t\.feed_id IN \(SELECT id FROM gtfs_feeds WHERE \( owner_user_id = \$\d+::uuid/);
+    expect(q.valori).toContain(F.UTENTE_A);
   });
 });
 

@@ -81,7 +81,7 @@ router.get("/traffic/availability", cache({ ttlSeconds: 120 }), async (_req, res
 // ──────────────────────────────────────────────────────────────
 // GET /api/gtfs/trips/visual
 // ──────────────────────────────────────────────────────────────
-router.get("/gtfs/trips/visual", cache({ ttlSeconds: 30 }), async (req, res) => {
+router.get("/gtfs/trips/visual", cache({ ttlSeconds: 30, keyFn: chiavePerUtente }), async (req, res) => {
   const tripId = req.query.tripId as string | undefined;
   if (!tripId) return res.status(400).json({ error: "tripId required" });
 
@@ -273,7 +273,7 @@ router.get("/gtfs/trips/visual", cache({ ttlSeconds: 30 }), async (req, res) => 
 // ──────────────────────────────────────────────────────────────
 // GET /api/gtfs/trips/schedule
 // ──────────────────────────────────────────────────────────────
-router.get("/gtfs/trips/schedule", cache({ ttlSeconds: 60 }), async (req, res) => {
+router.get("/gtfs/trips/schedule", cache({ ttlSeconds: 60, keyFn: chiavePerUtente }), async (req, res) => {
   const routeId = req.query.routeId as string | undefined;
   const day = ((req.query.day as string) || "weekday").toLowerCase();
   const directionIdParam = req.query.directionId !== undefined && req.query.directionId !== ""

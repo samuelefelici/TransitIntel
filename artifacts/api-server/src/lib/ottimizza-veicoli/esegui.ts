@@ -1075,7 +1075,7 @@ export async function eseguiOttimizzazione(corpo: unknown, o: OpzioniOttimizzazi
       // UNA volta: l'orchestratore li riattacca ai blocchi di ogni round prima
       // di lanciare il CSP.
       const pseudoShifts: any[] = [{ trips: solverBlocks.map(tb => ({ type: "trip", tripId: tb.tripId })) }];
-      try { await enrichTripsWithClusterStops(pseudoShifts as any, log); } catch { /* senza cluster il CSP taglia solo ai capolinea */ }
+      try { await enrichTripsWithClusterStops(pseudoShifts as any, log, feedId); } catch { /* senza cluster il CSP taglia solo ai capolinea */ }
       const tripClusterStops: Record<string, any[]> = {};
       for (const t of pseudoShifts[0].trips as any[]) {
         if (Array.isArray(t.clusterStops) && t.clusterStops.length > 0) tripClusterStops[t.tripId] = t.clusterStops;

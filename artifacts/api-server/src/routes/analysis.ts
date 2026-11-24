@@ -174,6 +174,9 @@ router.get("/analysis/stats", cache({ ttlSeconds: 60 }), async (req, res) => {
 // ── Territory overview ────────────────────────────────────────────────────
 router.get("/territory/overview", cache({ ttlSeconds: 3600 }), async (req, res) => {
   try {
+    /* le distanze dalla fermata più vicina, sulle fermate del feed delle analisi (tappa 7.25):
+       prima su quelle di tutti i feed, anche dei programmi vecchi */
+    const feedId = await feedDelleAnalisi();
     // 1. Global stats
     const globalStats = await db.execute(sql`
       SELECT
@@ -243,7 +246,7 @@ router.get("/territory/overview", cache({ ttlSeconds: 3600 }), async (req, res) 
               + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
             )
           )::int
-          FROM gtfs_stops gs
+          FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid
         ) AS nearest_stop_m,
         (
           SELECT COUNT(*)::int
@@ -287,7 +290,7 @@ router.get("/territory/overview", cache({ ttlSeconds: 3600 }), async (req, res) 
               POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
               + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
             )
-          ) FROM gtfs_stops gs)
+          ) FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid)
         ))::int AS avg_nearest_m,
         COUNT(*)::int AS section_count
       FROM census_sections c
@@ -338,6 +341,8 @@ router.get("/territory/overview", cache({ ttlSeconds: 3600 }), async (req, res) 
 // ── Territory deep analytics ──────────────────────────────────────────────
 router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
   try {
+    /* come la panoramica: le fermate del feed delle analisi (tappa 7.25) */
+    const feedId = await feedDelleAnalisi();
     // 1. Population coverage curve: % of population within X meters of a stop
     const coverageCurve = await db.execute(sql`
       WITH section_dist AS (
@@ -348,7 +353,7 @@ router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
               POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
               + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
             )
-          )::int FROM gtfs_stops gs) AS nearest_m
+          )::int FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid) AS nearest_m
         FROM census_sections c
         WHERE c.population > 0
       )
@@ -373,7 +378,7 @@ router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
               POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
               + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
             )
-          )::int FROM gtfs_stops gs) AS nearest_m
+          )::int FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid) AS nearest_m
         FROM census_sections c
         WHERE c.population > 0
       ),
@@ -422,7 +427,7 @@ router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
             POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
             + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
           )
-        )::int FROM gtfs_stops gs) AS nearest_m
+        )::int FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid) AS nearest_m
       FROM census_sections c
       WHERE c.population > 0
       ORDER BY c.population DESC
@@ -443,7 +448,7 @@ router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
               POWER((gs.stop_lon::float - c.centroid_lng) * 111000 * COS(RADIANS(c.centroid_lat)), 2)
               + POWER((gs.stop_lat::float - c.centroid_lat) * 111000, 2)
             )
-          )::int FROM gtfs_stops gs) AS nearest_m,
+          )::int FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid) AS nearest_m,
           (SELECT COUNT(*)::int FROM points_of_interest p
            WHERE ABS(p.lng - c.centroid_lng) < 0.03 AND ABS(p.lat - c.centroid_lat) < 0.03
           ) AS poi_count
@@ -506,14 +511,14 @@ router.get("/territory/deep", cache({ ttlSeconds: 3600 }), async (req, res) => {
               POWER((gs.stop_lon::float - p.lng) * 111000 * COS(RADIANS(p.lat)), 2)
               + POWER((gs.stop_lat::float - p.lat) * 111000, 2)
             )
-          ) FROM gtfs_stops gs) < 400 THEN 1 ELSE 0 END)::int AS near_stop,
+          ) FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid) < 400 THEN 1 ELSE 0 END)::int AS near_stop,
         SUM(CASE WHEN (
           SELECT MIN(
             SQRT(
               POWER((gs.stop_lon::float - p.lng) * 111000 * COS(RADIANS(p.lat)), 2)
               + POWER((gs.stop_lat::float - p.lat) * 111000, 2)
             )
-          ) FROM gtfs_stops gs) >= 400 THEN 1 ELSE 0 END)::int AS far_from_stop
+          ) FROM gtfs_stops gs WHERE gs.feed_id = ${feedId}::uuid) >= 400 THEN 1 ELSE 0 END)::int AS far_from_stop
       FROM points_of_interest p
       GROUP BY p.category
       ORDER BY total DESC
@@ -766,12 +771,16 @@ router.get("/analysis/isochrone", cache({ ttlSeconds: 120 }), async (req, res) =
 // NOTE: To stay within ORS free tier (2000/day), this endpoint
 // samples up to 200 stops spread across the territory.
 // ──────────────────────────────────────────────────────────────
-router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (req, res) => {
+router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120, keyFn: chiavePerUtente }), async (req, res) => {
   try {
     if (!ORS_KEY) return res.status(503).json({ error: "OpenRouteService API key non configurata" });
 
     const minutes = Math.min(parseInt((req.query.minutes as string) || "10"), 20);
-    const feedId = req.query.feedId as string | undefined;
+    /* il feed della lettura (tappa 7.25): un ?feedId che chi chiede non vede è
+       un 404, e senza ?feedId non si prendono più le fermate di tutti i feed */
+    const feed = await feedDellaLettura(req, res);
+    if (!feed) return;
+    const feedId = feed.feedId;
     const routeIdsParam = (req.query.routeIds as string || "").split(",").map(s => s.trim()).filter(Boolean);
     const rangeSeconds = [minutes * 60];
 
@@ -784,7 +793,7 @@ router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (
         .selectDistinct({ stopId: gtfsStopTimes.stopId })
         .from(gtfsStopTimes)
         .innerJoin(gtfsTrips, sql`${gtfsStopTimes.tripId} = ${gtfsTrips.tripId} AND ${gtfsStopTimes.feedId} = ${gtfsTrips.feedId}`)
-        .where(inArray(gtfsTrips.routeId, routeIdsParam));
+        .where(and(sql`${gtfsTrips.feedId} = ${feedId}`, inArray(gtfsTrips.routeId, routeIdsParam)));
 
       const stopIdSet = new Set(stopIdsRows.map(r => r.stopId));
 
@@ -804,7 +813,7 @@ router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (
         lat: gtfsStops.stopLat,
         lng: gtfsStops.stopLon,
         serviceScore: gtfsStops.serviceScore,
-      }).from(gtfsStops);
+      }).from(gtfsStops).where(sql`${gtfsStops.feedId} = ${feedId}`);
 
       allStops = allStopsRaw.filter(s => stopIdSet.has(s.stopId));
     } else {
@@ -816,9 +825,7 @@ router.get("/analysis/walkability-coverage", cache({ ttlSeconds: 120 }), async (
         serviceScore: gtfsStops.serviceScore,
       }).from(gtfsStops).$dynamic();
 
-      if (feedId) {
-        stopsQuery = stopsQuery.where(sql`feed_id = ${feedId}`);
-      }
+      stopsQuery = stopsQuery.where(sql`feed_id = ${feedId}`);
       allStops = await stopsQuery;
     }
 
