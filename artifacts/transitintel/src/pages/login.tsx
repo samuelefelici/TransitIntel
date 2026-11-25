@@ -4,9 +4,9 @@
  * Chi non è entrato vede che cos'è Cerbero, in italiano o in inglese:
  * - la Terra a punti che gira (components/accesso/Globo.tsx), accanto al
  *   titolo e non sotto (tappa 7.36);
- * - Argos, il nucleo: un RAG multiagente, che lavora davanti a chi guarda
- *   con lo stesso crawler 3D della console, su una domanda d'esempio
- *   (components/accesso/ArgosInDiretta.tsx);
+ * - Argos, il nucleo: un RAG multiagente; il suo cervello 3D, lo stesso
+ *   della console, è lo sfondo animato della sezione e segue il mouse
+ *   (components/accesso/ArgosSfondo.tsx, tappa 7.37);
  * - il ciclo del lavoro, gli otto moduli con le loro piccole animazioni
  *   (components/accesso/Visivi.tsx), la sicurezza.
  * I testi sono in lib/accesso.ts: dicono solo quello che l'app fa davvero,
@@ -37,7 +37,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useTema } from "@/hooks/use-tema";
 import { SceltaTemaCompatta } from "@/components/layout/SceltaTema";
 import Globo from "@/components/accesso/Globo";
-import ArgosInDiretta from "@/components/accesso/ArgosInDiretta";
+import ArgosSfondo from "@/components/accesso/ArgosSfondo";
 import VisivoModulo from "@/components/accesso/Visivi";
 import {
   LINGUE, TESTI, codiceCompleto, erroreInLingua, linguaIniziale, nomeDiBenvenuto, saluto,
@@ -374,13 +374,14 @@ function Testata({ id, occhiello, titolo, testo, fermo, centrata }: {
 function Argos({ t, lingua, tema, fermo }: { t: TestiLanding; lingua: Lingua; tema: "scuro" | "chiaro"; fermo: boolean }) {
   const a = t.argos;
   return (
-    <section id="argos" className="landing-sezione landing-argos scroll-mt-16" aria-labelledby="landing-argos">
-      <div className="relative mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
-        <div className="grid items-end gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-16">
-          <div>
-            <Testata id="landing-argos" occhiello={a.occhiello} titolo={a.titolo} testo={a.testo} fermo={fermo} />
-          </div>
-          <div className="landing-pilastri">
+    <section id="argos" className="landing-argos scroll-mt-16" aria-labelledby="landing-argos">
+      {/* il cervello 3D di Argos, a tutta sezione: lo sfondo */}
+      <ArgosSfondo lingua={lingua} tema={tema} fermo={fermo} />
+      <div className="landing-argos-velo" aria-hidden />
+      <div className="landing-argos-contenuto mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
+        <div className="max-w-[600px]">
+          <Testata id="landing-argos" occhiello={a.occhiello} titolo={a.titolo} testo={a.testo} fermo={fermo} />
+          <div className="landing-pilastri mt-12">
             {a.pilastri.map((p, i) => {
               const Icona = ICONE_PILASTRI[p.chiave];
               return (
@@ -393,9 +394,6 @@ function Argos({ t, lingua, tema, fermo }: { t: TestiLanding; lingua: Lingua; te
             })}
           </div>
         </div>
-        <Rivela fermo={fermo} ritardo={0.1} sposta={40} className="mt-14">
-          <ArgosInDiretta lingua={lingua} tema={tema} fermo={fermo} />
-        </Rivela>
       </div>
     </section>
   );

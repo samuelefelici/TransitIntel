@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { caso, corteccia, rgba, suCervello, suTronco } from "./argos-cervello3d";
+import { caso, corteccia, rgba, ruotaSguardo, suCervello, suTronco } from "./argos-cervello3d";
 
 describe("il campo 2D sul cervello", () => {
   const griglia: Array<[number, number, number, number]> = [];
@@ -84,5 +84,26 @@ describe("i colori della tavolozza per WebGL", () => {
   });
   it("un colore che non conosce diventa bianco, senza errori", () => {
     expect(rgba("violetto")).toEqual([1, 1, 1, 1]);
+  });
+});
+
+describe("lo sguardo che segue il puntatore", () => {
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0]! - b[0]!, a[1]! - b[1]!, a[2]! - b[2]!);
+  it("a sguardo fermo la telecamera non si sposta", () => {
+    expect(ruotaSguardo([0, 0.6, 3], [0, 0, 0], 0, 0)).toEqual([0, 0.6, 3]);
+  });
+  it("gira attorno al bersaglio senza avvicinarsi né allontanarsi", () => {
+    const tgt: [number, number, number] = [0.2, 0.1, -0.3];
+    const pos: [number, number, number] = [0.2, 0.7, 2.7];
+    for (const [x, y] of [[1, 0], [-1, 0], [0, 1], [0.5, -0.7]] as const) {
+      const p = ruotaSguardo(pos, tgt, x, y);
+      expect(dist(p, tgt)).toBeCloseTo(dist(pos, tgt), 6);
+      expect(dist(p, pos)).toBeGreaterThan(0.05);
+    }
+  });
+  it("destra e sinistra vanno in versi opposti; i valori fuori scala si fermano a 1", () => {
+    const a = ruotaSguardo([0, 0, 3], [0, 0, 0], 1, 0), b = ruotaSguardo([0, 0, 3], [0, 0, 0], -1, 0);
+    expect(Math.sign(a[0])).toBe(-Math.sign(b[0]));
+    expect(ruotaSguardo([0, 0, 3], [0, 0, 0], 5, 0)).toEqual(a);
   });
 });
