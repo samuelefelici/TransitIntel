@@ -1,0 +1,738 @@
+/*
+ * La pagina di accesso come pagina di presentazione (tappa 7.34).
+ *
+ * I colori di Cerbero: il ciano, il blu e l'indaco del logo su un blu notte;
+ * nel tema chiaro le stesse tinte, scurite, su un bianco azzurrato. Mona Sans
+ * (larga) per i titoli, Reddit Mono per le etichette. Il globo è
+ * components/accesso/Globo.tsx, le piccole animazioni dei moduli
+ * components/accesso/Visivi.tsx. Con «riduci il movimento» tutto si ferma.
+ */
+
+.landing {
+  --l-fondo: #030712;
+  --l-fondo-2: #06102a;
+  --l-piena: #0a1530;
+  --l-vetro: rgba(10, 21, 48, 0.58);
+  --l-bordo: #1c2d50;
+  --l-bordo-tenue: #12203d;
+  --l-testo: #e8f1ff;
+  --l-testo-2: #a5b7d6;
+  --l-testo-3: #7488ab;
+  --l-ciano: #38bdf8;
+  --l-ciano-2: #22d3ee;
+  --l-blu: #3b82f6;
+  --l-indaco: #6366f1;
+  --l-viola: #8b5cf6;
+  --l-bottone: #e8f1ff;
+  --l-bottone-testo: #030712;
+  --l-errore: #fca5a5;
+  --l-errore-fondo: rgba(239, 68, 68, 0.12);
+  --l-campo: rgba(3, 7, 18, 0.62);
+  --l-ombra: 0 40px 90px -40px rgba(0, 0, 0, 0.7);
+
+  position: relative;
+  min-height: 100dvh;
+  overflow-x: clip;
+  background: var(--l-fondo);
+  color: var(--l-testo);
+  font-family: "Mona Sans", "DM Sans", system-ui, sans-serif;
+  font-weight: 380;
+  -webkit-font-smoothing: antialiased;
+}
+html.tema-chiaro .landing {
+  --l-fondo: #f3f7fc;
+  --l-fondo-2: #e7effa;
+  --l-piena: #ffffff;
+  --l-vetro: rgba(255, 255, 255, 0.72);
+  --l-bordo: #cddaeb;
+  --l-bordo-tenue: #dce5f1;
+  --l-testo: #07142c;
+  --l-testo-2: #3a4c6e;
+  --l-testo-3: #55688b;
+  --l-ciano: #0369a1;
+  --l-ciano-2: #0284c7;
+  --l-blu: #1d4ed8;
+  --l-indaco: #4338ca;
+  --l-viola: #6d28d9;
+  --l-bottone: #07142c;
+  --l-bottone-testo: #f3f7fc;
+  --l-errore: #b91c1c;
+  --l-errore-fondo: rgba(239, 68, 68, 0.08);
+  --l-campo: rgba(255, 255, 255, 0.9);
+  --l-ombra: 0 40px 80px -44px rgba(7, 20, 44, 0.35);
+}
+
+/* una grana leggerissima, per togliere il piatto */
+.landing::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='g'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='160' height='160' filter='url(%23g)'/></svg>");
+}
+
+.landing-contenuto { position: relative; z-index: 1; }
+
+.landing-mono {
+  font-family: "Reddit Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+/* ── la barra in alto ─────────────────────────────────────────────────────── */
+.landing-barra {
+  position: fixed;
+  inset: 0 0 auto 0;
+  z-index: 40;
+  transition: background-color 400ms ease, border-color 400ms ease, backdrop-filter 400ms ease;
+  border-bottom: 1px solid transparent;
+}
+.landing-barra[data-scorsa="1"] {
+  background: color-mix(in srgb, var(--l-fondo) 72%, transparent);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  border-bottom-color: var(--l-bordo-tenue);
+}
+.landing-voce {
+  position: relative;
+  color: var(--l-testo-2);
+  transition: color 200ms ease;
+}
+.landing-voce::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: -6px;
+  height: 1px;
+  background: var(--l-ciano);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 300ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.landing-voce:hover { color: var(--l-testo); }
+.landing-voce:hover::after { transform: scaleX(1); }
+
+/* ── i pulsanti ───────────────────────────────────────────────────────────── */
+.landing-bottone,
+.landing-bottone-vuoto {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 56px;
+  padding: 0 34px;
+  font-family: "Reddit Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  overflow: hidden;
+  isolation: isolate;
+  transition: transform 200ms ease, box-shadow 400ms ease, border-color 300ms ease, color 300ms ease;
+}
+.landing-bottone {
+  background: var(--l-bottone);
+  color: var(--l-bottone-testo);
+}
+.landing-bottone::before {
+  /* un riflesso che passa */
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(110deg, transparent 30%, color-mix(in srgb, var(--l-ciano) 35%, transparent) 50%, transparent 70%);
+  transform: translateX(-120%);
+  animation: landing-riflesso 4.5s ease-in-out infinite;
+}
+.landing-bottone:hover { box-shadow: 0 0 0 1px var(--l-ciano), 0 0 34px -4px var(--l-ciano); transform: translateY(-1px); }
+.landing-bottone-vuoto {
+  color: var(--l-testo);
+  border: 1px solid var(--l-bordo);
+  background: color-mix(in srgb, var(--l-fondo) 40%, transparent);
+  backdrop-filter: blur(6px);
+}
+.landing-bottone-vuoto:hover { border-color: var(--l-ciano); color: var(--l-ciano); transform: translateY(-1px); }
+.landing-bottone:focus-visible, .landing-bottone-vuoto:focus-visible,
+.landing-voce:focus-visible, .landing-icona:focus-visible, .landing-link:focus-visible {
+  outline: 2px solid var(--l-ciano);
+  outline-offset: 4px;
+}
+@keyframes landing-riflesso { 0%, 55% { transform: translateX(-120%); } 85%, 100% { transform: translateX(120%); } }
+
+.landing-icona {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px;
+  border: 1px solid var(--l-bordo);
+  color: var(--l-testo-2);
+  transition: color 200ms ease, border-color 200ms ease, transform 200ms ease;
+}
+.landing-icona:hover { color: var(--l-ciano); border-color: var(--l-ciano); }
+.landing-icona-nuda, .landing-icona-nuda:hover { border-color: transparent; }
+.landing-bottone:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; transform: none; }
+.landing-bottone:disabled::before { animation: none; }
+
+/* ── la prima schermata ───────────────────────────────────────────────────── */
+.landing-eroe {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 120px 16px 120px;
+  text-align: center;
+}
+.landing-eroe::after {
+  /* il globo sfuma nel resto della pagina */
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 32%;
+  background: linear-gradient(to bottom, transparent, var(--l-fondo));
+  pointer-events: none;
+  z-index: 1;
+}
+
+.landing-globo {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+.landing-globo-tela { position: absolute; inset: 0; opacity: 0; transition: opacity 1600ms ease; }
+.landing-globo-pronto .landing-globo-tela { opacity: 1; }
+.landing-globo-tela canvas { display: block; }
+.landing-globo-alone {
+  position: absolute;
+  left: 50%; top: 56%;
+  width: min(120vh, 130vw); aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 9999px;
+  background:
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--l-blu) 16%, transparent) 0%, transparent 58%),
+    radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--l-indaco) 10%, transparent) 30%, transparent 70%);
+  animation: landing-respiro 9s ease-in-out infinite;
+}
+@keyframes landing-respiro { 0%, 100% { opacity: 0.75; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.04); } }
+
+/* il mirino sul nodo */
+.landing-mirino {
+  position: absolute;
+  left: 0; top: 0;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 600ms ease;
+  will-change: transform;
+}
+.landing-mirino-angoli {
+  position: absolute;
+  left: -22px; top: -22px;
+  width: 44px; height: 44px;
+  --c: var(--l-ciano-2);
+  background:
+    linear-gradient(var(--c), var(--c)) top left / 10px 1.5px no-repeat,
+    linear-gradient(var(--c), var(--c)) top left / 1.5px 10px no-repeat,
+    linear-gradient(var(--c), var(--c)) top right / 10px 1.5px no-repeat,
+    linear-gradient(var(--c), var(--c)) top right / 1.5px 10px no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom left / 10px 1.5px no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom left / 1.5px 10px no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom right / 10px 1.5px no-repeat,
+    linear-gradient(var(--c), var(--c)) bottom right / 1.5px 10px no-repeat;
+  animation: landing-mira 3.6s ease-in-out infinite;
+}
+@keyframes landing-mira { 0%, 100% { transform: scale(1); } 12% { transform: scale(1.35); } 24% { transform: scale(1); } }
+.landing-mirino-anello {
+  position: absolute;
+  left: -15px; top: -15px;
+  width: 30px; height: 30px;
+  border-radius: 9999px;
+  border: 1.5px solid var(--l-indaco);
+  border-top-color: transparent;
+  animation: landing-gira 2.4s linear infinite;
+}
+.landing-mirino-etichetta {
+  position: absolute;
+  left: 40px; top: -58px;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in srgb, var(--l-ciano) 55%, transparent);
+  background: color-mix(in srgb, var(--l-fondo) 70%, transparent);
+  backdrop-filter: blur(6px);
+  font-family: "Reddit Mono", ui-monospace, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+  color: var(--l-testo);
+  text-align: left;
+}
+.landing-mirino-etichetta b { color: var(--l-ciano-2); font-weight: 600; }
+.landing-mirino-etichetta::before {
+  content: "";
+  position: absolute;
+  left: -26px; top: 100%;
+  width: 34px; height: 1px;
+  background: color-mix(in srgb, var(--l-ciano) 70%, transparent);
+  transform-origin: right;
+  transform: rotate(-36deg);
+}
+@keyframes landing-gira { to { transform: rotate(360deg); } }
+@media (max-width: 640px) { .landing-mirino-etichetta { display: none; } }
+
+.landing-eroe-testo { position: relative; z-index: 3; max-width: 1400px; }
+
+.landing-occhiello {
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  color: var(--l-testo-2);
+}
+.landing-occhiello::before, .landing-occhiello::after {
+  content: "";
+  width: 64px; height: 1px;
+  background: linear-gradient(90deg, transparent, var(--l-testo-3));
+  transform-origin: right;
+  animation: landing-filo 1.2s 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.landing-occhiello::after { transform-origin: left; background: linear-gradient(90deg, var(--l-testo-3), transparent); }
+@keyframes landing-filo { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@media (max-width: 640px) { .landing-occhiello::before, .landing-occhiello::after { width: 24px; } }
+
+.landing-titolo {
+  font-family: "Mona Sans", "DM Sans", system-ui, sans-serif;
+  font-stretch: 118%;
+  font-variation-settings: "wdth" 118;
+  font-weight: 600;
+  font-size: clamp(44px, 9vw, 150px);
+  line-height: 0.92;
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+}
+.landing-titolo-1 { display: block; color: var(--l-testo); text-shadow: 0 2px 30px color-mix(in srgb, var(--l-fondo) 70%, transparent); }
+.landing-titolo-2 {
+  font-weight: 250;
+  background: linear-gradient(100deg, var(--l-ciano-2) 0%, var(--l-blu) 35%, var(--l-indaco) 55%, var(--l-ciano-2) 80%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: landing-scorre 9s linear infinite;
+}
+@keyframes landing-scorre { to { background-position: -220% 0; } }
+.landing-parola { display: inline-block; white-space: nowrap; }
+.landing-lettera { display: inline-block; will-change: transform; }
+
+.landing-sotto {
+  max-width: 44rem;
+  margin-inline: auto;
+  font-size: clamp(16px, 1.5vw, 20px);
+  line-height: 1.6;
+  color: var(--l-testo-2);
+  text-wrap: balance;
+}
+
+.landing-ora {
+  position: absolute;
+  z-index: 3;
+  right: clamp(16px, 4vw, 56px);
+  top: 96px;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  padding: 8px 12px;
+  border: 1px solid var(--l-bordo);
+  background: color-mix(in srgb, var(--l-fondo) 55%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--l-testo-2);
+}
+.landing-ora b { color: var(--l-testo); font-weight: 600; letter-spacing: 0.12em; font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) { .landing-ora { display: none; } }
+
+.landing-scorri {
+  position: absolute;
+  z-index: 3;
+  bottom: 28px; left: 0; right: 0;
+  width: max-content;
+  margin-inline: auto;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  color: var(--l-testo-3);
+}
+.landing-scorri span:last-child {
+  width: 1px; height: 46px;
+  background: linear-gradient(var(--l-ciano), transparent);
+  transform-origin: top;
+  animation: landing-goccia 2.2s ease-in-out infinite;
+}
+@keyframes landing-goccia { 0% { transform: scaleY(0); opacity: 1; } 60% { transform: scaleY(1); opacity: 1; } 100% { transform: scaleY(1); opacity: 0; } }
+
+/* ── il nastro ────────────────────────────────────────────────────────────── */
+.landing-nastro {
+  position: relative;
+  overflow: hidden;
+  border-block: 1px solid var(--l-bordo-tenue);
+  background: color-mix(in srgb, var(--l-fondo-2) 70%, transparent);
+  padding: 22px 0;
+  mask-image: linear-gradient(90deg, transparent, #000 10%, #000 90%, transparent);
+}
+.landing-nastro-traccia {
+  display: flex;
+  width: max-content;
+  gap: 48px;
+  animation: landing-nastro 48s linear infinite;
+}
+.landing-nastro-traccia-2 { animation-direction: reverse; animation-duration: 60s; margin-top: 14px; opacity: 0.55; }
+.landing-nastro-voce { display: inline-flex; align-items: center; gap: 48px; color: var(--l-testo-2); white-space: nowrap; }
+.landing-nastro-voce::after { content: "◆"; color: var(--l-ciano); font-size: 8px; }
+@keyframes landing-nastro { to { transform: translateX(-50%); } }
+
+/* ── le sezioni ───────────────────────────────────────────────────────────── */
+.landing-sezione { position: relative; padding: clamp(80px, 12vw, 160px) 0; }
+.landing-titolo-sezione {
+  font-family: "Mona Sans", "DM Sans", system-ui, sans-serif;
+  font-stretch: 112%;
+  font-variation-settings: "wdth" 112;
+  font-weight: 560;
+  font-size: clamp(34px, 5vw, 72px);
+  line-height: 0.98;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+.landing-titolo-sezione em {
+  font-style: normal;
+  font-weight: 260;
+  color: var(--l-ciano-2);
+}
+.landing-paragrafo { font-size: 17px; line-height: 1.65; color: var(--l-testo-2); max-width: 36rem; text-wrap: pretty; }
+
+/* il ciclo */
+.landing-ciclo-binario {
+  position: absolute;
+  left: 27px; top: 28px; bottom: 28px;
+  width: 1px;
+  background: var(--l-bordo);
+}
+.landing-ciclo-binario > div {
+  position: absolute; inset: 0;
+  background: linear-gradient(var(--l-ciano-2), var(--l-indaco));
+  transform-origin: top;
+  box-shadow: 0 0 12px var(--l-ciano);
+}
+.landing-tappa {
+  position: relative;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  gap: 24px;
+  padding: 22px 0;
+}
+.landing-tappa-icona {
+  position: relative;
+  z-index: 1;
+  display: flex; align-items: center; justify-content: center;
+  width: 56px; height: 56px;
+  border-radius: 9999px;
+  border: 1px solid var(--l-bordo);
+  background: var(--l-fondo);
+  color: var(--l-testo-3);
+  transition: color 500ms ease, border-color 500ms ease, box-shadow 500ms ease;
+}
+.landing-tappa[data-acceso="1"] .landing-tappa-icona {
+  color: var(--l-ciano-2);
+  border-color: var(--l-ciano);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--l-ciano) 10%, transparent), 0 0 30px -4px var(--l-ciano);
+}
+.landing-tappa-numero { color: var(--l-ciano); }
+.landing-tappa h3 {
+  margin-top: 6px;
+  font-size: clamp(22px, 2.4vw, 30px);
+  font-weight: 560;
+  letter-spacing: -0.02em;
+}
+.landing-tappa p { margin-top: 8px; font-size: 16px; line-height: 1.6; color: var(--l-testo-2); max-width: 34rem; }
+
+/* i moduli */
+.landing-moduli {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+@media (max-width: 1100px) { .landing-moduli { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .landing-moduli { grid-template-columns: minmax(0, 1fr); } }
+.landing-modulo {
+  --mx: 50%; --my: 0%;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 330px;
+  padding: 1px;
+  border-radius: 18px;
+  background:
+    radial-gradient(420px circle at var(--mx) var(--my), color-mix(in srgb, var(--l-ciano) 65%, transparent), transparent 40%),
+    var(--l-bordo-tenue);
+  transition: transform 400ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.landing-modulo-dentro {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border-radius: 17px;
+  padding: 22px 22px 24px;
+  background:
+    radial-gradient(600px circle at var(--mx) var(--my), color-mix(in srgb, var(--l-ciano) 8%, transparent), transparent 45%),
+    color-mix(in srgb, var(--l-piena) 92%, transparent);
+  overflow: hidden;
+}
+.landing-modulo-sotto { color: var(--l-testo-3); }
+.landing-modulo h3 { margin-top: 10px; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+.landing-modulo p { margin-top: 8px; font-size: 14.5px; line-height: 1.55; color: var(--l-testo-2); }
+.landing-modulo-visivo {
+  height: 120px;
+  margin: -4px -6px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--l-bordo-tenue);
+  background:
+    linear-gradient(color-mix(in srgb, var(--l-bordo-tenue) 60%, transparent) 1px, transparent 1px) 0 0 / 100% 16px,
+    linear-gradient(90deg, color-mix(in srgb, var(--l-bordo-tenue) 60%, transparent) 1px, transparent 1px) 0 0 / 16px 100%,
+    color-mix(in srgb, var(--l-fondo) 55%, transparent);
+  display: flex; align-items: center; justify-content: center;
+}
+.landing-visivo { width: 100%; height: 100%; padding: 8px; overflow: visible; }
+
+/* la sicurezza */
+.landing-sicurezza {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-top: 1px solid var(--l-bordo-tenue);
+  border-left: 1px solid var(--l-bordo-tenue);
+}
+@media (max-width: 1100px) { .landing-sicurezza { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .landing-sicurezza { grid-template-columns: minmax(0, 1fr); } }
+.landing-sicurezza > div {
+  padding: 32px 26px;
+  border-right: 1px solid var(--l-bordo-tenue);
+  border-bottom: 1px solid var(--l-bordo-tenue);
+  transition: background-color 400ms ease;
+}
+.landing-sicurezza > div:hover { background: color-mix(in srgb, var(--l-ciano) 5%, transparent); }
+.landing-sicurezza h3 { margin-top: 22px; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+.landing-sicurezza p { margin-top: 8px; font-size: 14.5px; line-height: 1.55; color: var(--l-testo-2); }
+.landing-sigillo {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  width: 64px; height: 64px;
+  color: var(--l-ciano-2);
+}
+.landing-sigillo::before {
+  content: "";
+  position: absolute; inset: 0;
+  border-radius: 9999px;
+  border: 1px dashed color-mix(in srgb, var(--l-ciano) 60%, transparent);
+  animation: landing-gira 14s linear infinite;
+}
+.landing-sigillo::after {
+  content: "";
+  position: absolute; inset: 8px;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--l-indaco) 55%, transparent);
+  animation: landing-pulsa 2.8s ease-in-out infinite;
+}
+@keyframes landing-pulsa { 0%, 100% { transform: scale(1); opacity: 0.9; } 50% { transform: scale(1.12); opacity: 0.35; } }
+
+/* l'invito finale */
+.landing-invito {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--l-bordo-tenue);
+  border-radius: 28px;
+  padding: clamp(56px, 8vw, 112px) clamp(20px, 5vw, 80px);
+  text-align: center;
+  isolation: isolate;
+}
+.landing-aurora {
+  position: absolute; inset: -40%;
+  z-index: -1;
+  background:
+    radial-gradient(closest-side at 30% 40%, color-mix(in srgb, var(--l-ciano) 32%, transparent), transparent),
+    radial-gradient(closest-side at 70% 60%, color-mix(in srgb, var(--l-indaco) 34%, transparent), transparent),
+    radial-gradient(closest-side at 50% 20%, color-mix(in srgb, var(--l-viola) 22%, transparent), transparent);
+  filter: blur(40px);
+  animation: landing-aurora 18s ease-in-out infinite alternate;
+}
+@keyframes landing-aurora { 0% { transform: rotate(0deg) scale(1); } 100% { transform: rotate(40deg) scale(1.15); } }
+.landing-invito-griglia {
+  position: absolute; inset: 0; z-index: -1;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--l-testo) 6%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--l-testo) 6%, transparent) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse at center, #000 20%, transparent 75%);
+  animation: landing-griglia 20s linear infinite;
+}
+@keyframes landing-griglia { to { background-position: 48px 48px; } }
+
+/* ── il riquadro dell'accesso ─────────────────────────────────────────────── */
+.landing-velo {
+  position: fixed; inset: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--l-fondo) 55%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.landing-cassetto {
+  position: fixed;
+  z-index: 51;
+  top: 0; right: 0; bottom: 0;
+  width: min(480px, 100vw);
+  display: flex; flex-direction: column;
+  border-left: 1px solid var(--l-bordo);
+  background: color-mix(in srgb, var(--l-piena) 94%, transparent);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow: var(--l-ombra);
+  overflow-y: auto;
+}
+.landing-cassetto::before {
+  content: "";
+  position: absolute; left: -1px; top: 0; bottom: 0; width: 1px;
+  background: linear-gradient(transparent, var(--l-ciano-2), var(--l-indaco), transparent);
+  background-size: 100% 300%;
+  animation: landing-filo-luce 5s ease-in-out infinite;
+}
+@keyframes landing-filo-luce { 0% { background-position: 0 100%; } 100% { background-position: 0 -100%; } }
+.landing-etichetta {
+  display: block;
+  margin-bottom: 8px;
+  font-family: "Reddit Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--l-testo-2);
+}
+.landing-campo {
+  display: block;
+  width: 100%;
+  height: 50px;
+  border: 1px solid var(--l-bordo);
+  background: var(--l-campo);
+  padding: 0 16px;
+  color: var(--l-testo);
+  font: inherit;
+  font-size: 15.5px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+.landing-campo::placeholder { color: var(--l-testo-3); }
+.landing-campo:focus-visible {
+  outline: none;
+  border-color: var(--l-ciano);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--l-ciano) 22%, transparent);
+}
+.landing-campo-codice { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 24px; letter-spacing: 0.4em; text-align: center; }
+.landing-link {
+  font-size: 13.5px;
+  color: var(--l-testo-2);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--l-testo-2) 40%, transparent);
+  text-underline-offset: 3px;
+}
+.landing-link:hover { color: var(--l-testo); }
+.landing-errore {
+  display: flex; gap: 10px; align-items: flex-start;
+  border: 1px solid color-mix(in srgb, var(--l-errore) 40%, transparent);
+  background: var(--l-errore-fondo);
+  color: var(--l-errore);
+  padding: 11px 13px;
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.landing-girandola {
+  width: 16px; height: 16px;
+  border-radius: 9999px;
+  border: 2px solid color-mix(in srgb, var(--l-bottone-testo) 30%, transparent);
+  border-top-color: var(--l-bottone-testo);
+  animation: landing-gira 800ms linear infinite;
+}
+
+/* la conferma */
+.landing-conferma {
+  position: fixed; inset: 0;
+  z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(80% 60% at 50% 40%, var(--l-fondo-2), var(--l-fondo));
+}
+.landing-conferma-barra { height: 1px; width: 240px; background: var(--l-bordo); overflow: hidden; }
+.landing-conferma-barra > span {
+  display: block; height: 100%;
+  background: linear-gradient(90deg, var(--l-ciano-2), var(--l-indaco));
+  transform-origin: left;
+  animation: landing-carica 1.1s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+@keyframes landing-carica { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+/* ── le piccole animazioni dei moduli ─────────────────────────────────────── */
+.landing-visivo { color: var(--l-ciano-2); }
+.lv-traccia { fill: none; stroke: var(--l-bordo); stroke-width: 2; }
+.lv-disegno { fill: none; stroke: var(--l-ciano-2); stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: lv-disegna 5.5s ease-in-out infinite; }
+@keyframes lv-disegna { 0% { stroke-dashoffset: 1; } 45%, 75% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -1; } }
+.lv-fermata { fill: var(--l-piena); stroke: var(--l-ciano); stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: lv-pulsa 2.8s ease-in-out infinite; }
+.lv-mezzo { fill: var(--l-indaco); filter: drop-shadow(0 0 5px var(--l-indaco)); }
+@keyframes lv-pulsa { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.35); } }
+
+.lv-asse { fill: var(--l-bordo-tenue); }
+.lv-barra { transform-box: fill-box; transform-origin: left center; animation: lv-cresce 4.5s cubic-bezier(0.2, 0.7, 0.2, 1) infinite; }
+.lv-barra-0 { fill: color-mix(in srgb, var(--l-ciano) 75%, transparent); }
+.lv-barra-1 { fill: color-mix(in srgb, var(--l-blu) 75%, transparent); }
+.lv-barra-2 { fill: color-mix(in srgb, var(--l-indaco) 75%, transparent); }
+@keyframes lv-cresce { 0% { transform: scaleX(0); opacity: 0; } 18%, 80% { transform: scaleX(1); opacity: 1; } 100% { transform: scaleX(1); opacity: 0; } }
+.lv-adesso { fill: var(--l-ciano-2); animation: lv-scorre 4.5s linear infinite; }
+@keyframes lv-scorre { from { transform: translateX(0); } to { transform: translateX(198px); } }
+
+.lv-cella { fill: var(--l-bordo-tenue); animation: lv-accendi 3.2s ease-in-out infinite; }
+.lv-cella-1 { --t: var(--l-ciano); }
+.lv-cella-2 { --t: var(--l-blu); }
+.lv-cella-3 { --t: var(--l-indaco); }
+.lv-cella-0 { --t: var(--l-bordo); }
+@keyframes lv-accendi { 0%, 100% { fill: var(--l-bordo-tenue); } 40%, 60% { fill: var(--t, var(--l-ciano)); } }
+
+.lv-linea { stroke: var(--l-bordo); stroke-width: 3; stroke-linecap: round; }
+.lv-palina { fill: var(--l-piena); stroke: var(--l-testo-3); stroke-width: 1.6; }
+.lv-veicolo { fill: var(--l-ciano-2); }
+.lv-veicolo-onda { fill: none; stroke: var(--l-ciano-2); stroke-width: 1.5; transform-box: fill-box; transform-origin: center; animation: lv-onda 1.6s ease-out infinite; }
+@keyframes lv-onda { from { transform: scale(1); opacity: 0.9; } to { transform: scale(2.6); opacity: 0; } }
+.lv-etichetta { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 9px; letter-spacing: 0.2em; fill: var(--l-testo-3); }
+.lv-vivo { fill: #22c55e; animation: lv-lampeggia 1.4s ease-in-out infinite; }
+@keyframes lv-lampeggia { 50% { opacity: 0.2; } }
+
+.lv-asse-forte { stroke: var(--l-bordo); stroke-width: 1.5; }
+.lv-colonna { fill: url(#none); fill: color-mix(in srgb, var(--l-blu) 80%, transparent); transform-box: fill-box; transform-origin: bottom; animation: lv-sale 4s cubic-bezier(0.2, 0.7, 0.2, 1) infinite; }
+.lv-colonna:nth-child(odd) { fill: color-mix(in srgb, var(--l-ciano) 80%, transparent); }
+@keyframes lv-sale { 0% { transform: scaleY(0); } 25%, 85% { transform: scaleY(1); } 100% { transform: scaleY(0); } }
+.lv-spunta { fill: none; stroke: #22c55e; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: lv-spunta 4s ease-in-out infinite; }
+@keyframes lv-spunta { 0%, 30% { stroke-dashoffset: 1; } 50%, 90% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: 1; } }
+
+.lv-polimetrica { fill: var(--l-bordo-tenue); animation: lv-onda-tariffe 3s ease-in-out infinite; }
+@keyframes lv-onda-tariffe { 0%, 100% { fill: var(--l-bordo-tenue); } 35% { fill: color-mix(in srgb, var(--l-ciano) 70%, transparent); } 55% { fill: color-mix(in srgb, var(--l-indaco) 60%, transparent); } }
+
+.lv-scatola { fill: color-mix(in srgb, var(--l-blu) 22%, transparent); stroke: var(--l-blu); stroke-width: 1.5; }
+.lv-scatola-bordo { fill: none; stroke: var(--l-blu); stroke-width: 1.5; }
+.lv-file { animation: lv-vola 3.6s ease-in-out infinite; opacity: 0; }
+@keyframes lv-vola { 0% { transform: translateY(30px); opacity: 0; } 25% { opacity: 1; } 70% { opacity: 1; } 100% { transform: translateY(-34px); opacity: 0; } }
+.lv-file-fondo { fill: var(--l-piena); stroke: var(--l-ciano); stroke-width: 1.4; }
+.lv-file-testo { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 9px; font-weight: 600; letter-spacing: 0.06em; fill: var(--l-ciano-2); }
+
+.lv-sinapsi { stroke: var(--l-bordo); stroke-width: 1.5; stroke-dasharray: 4 6; animation: lv-impulso 1.8s linear infinite; }
+@keyframes lv-impulso { 0% { stroke: var(--l-bordo); stroke-dashoffset: 20; } 50% { stroke: var(--l-viola); } 100% { stroke: var(--l-bordo); stroke-dashoffset: 0; } }
+.lv-neurone { fill: var(--l-piena); stroke: var(--l-viola); stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: lv-pulsa 2.2s ease-in-out infinite; }
+
+/* ── movimento ridotto: tutto fermo ───────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .landing *, .landing *::before, .landing *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+  }
+  .lv-disegno, .lv-spunta { stroke-dashoffset: 0; }
+  .lv-file { opacity: 1; transform: none; }
+}
