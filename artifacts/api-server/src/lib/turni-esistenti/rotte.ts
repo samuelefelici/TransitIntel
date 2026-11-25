@@ -28,6 +28,8 @@ import { loadProjectAccessible, logActivity } from "../scheduling-projects";
 import { FileTurniNonValido, giorniDelFile, leggiFileTurni, testoDelFile, tipiDiGiorno, turniDelGiorno, type FileTurni } from "./file";
 import { abbinaCorse, corseDelFile, type CorsaGtfs } from "./abbina";
 import { costruisciTurni, residenzaAiTurniGuida } from "./costruisci";
+import { abbinaPerValidita, giorniDa, periodoDelFile, validitaDalFile } from "./validita";
+import { computeActiveDatesByTrip, giorniTipoDelProgetto } from "../planning-studio-validity-eval";
 
 const router: IRouter = Router();
 const MAX_BYTE = 25 * 1024 * 1024;
@@ -277,5 +279,204 @@ router.post("/scheduling/projects/:id/turni-esistenti", limiteImport, soloDallAp
       res.status(500).json({ error: "Errore nell'import dei turni" });
     }
   });
+
+/* ════════════════════════════════════════════════════════════
+ *  Le validità delle corse di Planning Studio dal file (tappa 7.39)
+ *
+ *   POST /api/planning-studio/projects/:id/validita-da-file/anteprima
+ *   POST /api/planning-studio/projects/:id/validita-da-file
+ *
+ * Per ogni corsa del progetto riconosciuta nel file, la validità diventa
+ * quella del file (lib/turni-esistenti/validita.ts): periodo, giorni tipo e
+ * date spente. Le corse del progetto che il file non ha restano come sono.
+ * Dopo la scrittura una verifica rilegge le date di circolazione con la
+ * stessa valutazione del feed (computeActiveDatesByTrip) e le confronta col
+ * file; poi si risincronizzano i progetti di Fucina nati da questo progetto.
+ * Permessi: scrittura sulla Rete (/planning-studio → rete) e un ruolo da
+ * proprietario o editor nel progetto; una versione pubblicata si ferma prima
+ * (versioniInSolaLettura).
+ * ════════════════════════════════════════════════════════════ */
+
+async function progettoPsScrivibile(req: Request, res: Response): Promise<{ id: string; name: string } | null> {
+  const id = String(req.params.id ?? "");
+  if (!UUID_RE.test(id)) { res.status(400).json({ error: "ID non valido" }); return null; }
+  const r = await db.execute<any>(sql`
+    SELECT p.id, p.name,
+           CASE WHEN p.owner_user_id = ${req.user!.id}::uuid THEN 'owner' ELSE pm.role END AS my_role
+      FROM ps_projects p
+      LEFT JOIN ps_project_members pm ON pm.project_id = p.id AND pm.user_id = ${req.user!.id}::uuid
+     WHERE p.id = ${id}::uuid AND (p.owner_user_id = ${req.user!.id}::uuid OR pm.user_id IS NOT NULL)
+     LIMIT 1`);
+  const p = r.rows[0];
+  if (!p) { res.status(404).json({ error: "Progetto non trovato" }); return null; }
+  if (p.my_role !== "owner" && p.my_role !== "editor") { res.status(403).json({ error: "Permesso insufficiente: il progetto è in sola lettura per te" }); return null; }
+  return { id: p.id, name: p.name };
+}
+
+/** Le corse del progetto che possono girare (attive, non prototipi), col codice originale, la linea e gli orari. */
+async function corseDelProgettoPs(psId: string): Promise<{ corse: CorsaGtfs[]; spente: number }> {
+  const r = await db.execute<{ id: string; codice: string | null; linea: string; attiva: boolean; prototipo: boolean; dep: string | null; arr: string | null }>(sql`
+    SELECT t.id::text AS id, COALESCE(NULLIF(t.codice, ''), t.gtfs_id) AS codice,
+           COALESCE(NULLIF(r.short_name, ''), r.code, '') AS linea,
+           t.is_active AS attiva, COALESCE((t.attributes->>'prototype')::boolean, false) AS prototipo,
+           f.departure_time AS dep, l.arrival_time AS arr
+      FROM ps_trips t
+      JOIN ps_routes r ON r.id = t.route_id
+      LEFT JOIN LATERAL (SELECT COALESCE(departure_time, arrival_time) AS departure_time FROM ps_stop_times
+                          WHERE trip_id = t.id ORDER BY stop_seq LIMIT 1) f ON true
+      LEFT JOIN LATERAL (SELECT COALESCE(arrival_time, departure_time) AS arrival_time FROM ps_stop_times
+                          WHERE trip_id = t.id ORDER BY stop_seq DESC LIMIT 1) l ON true
+     WHERE t.project_id = ${psId}::uuid`);
+  const corse: CorsaGtfs[] = [];
+  let spente = 0;
+  for (const t of r.rows) {
+    if (!t.attiva || t.prototipo) { if (!t.attiva) spente++; continue; }
+    corse.push({
+      tripId: t.id, codice: t.codice, linea: t.linea,
+      partenza: t.dep ? timeToMinutes(t.dep) : -1, arrivo: t.arr ? timeToMinutes(t.arr) : -1,
+    });
+  }
+  return { corse, spente };
+}
+
+async function preparaValidita(file: FileTurni, psId: string) {
+  const periodo = periodoDelFile(file);
+  if (!periodo) return null;
+  const turni = file.superlivelli.flatMap((s) => s.turni);
+  const corseFile = corseDelFile(turni);
+  const progetto = await corseDelProgettoPs(psId);
+  const abbinamento = abbinaPerValidita(corseFile, progetto.corse);
+  const tipi = await giorniTipoDelProgetto(psId, giorniDa(periodo.dal, periodo.al));
+  const validita = validitaDalFile(file, abbinamento.corsePerTrip, (d) => tipi.get(d) ?? null, periodo);
+  return { periodo, corseFile, progetto, abbinamento, validita };
+}
+
+function resocontoValidita(file: FileTurni, v: NonNullable<Awaited<ReturnType<typeof preparaValidita>>>) {
+  return {
+    periodo: v.periodo,
+    corseNelFile: v.corseFile.length,
+    riconosciutePerNumero: v.abbinamento.perNumero,
+    riconosciutePerOrario: v.abbinamento.perOrario,
+    nonTrovate: v.abbinamento.nonTrovate.length,
+    incerte: v.abbinamento.incerte.length,
+    corseDelProgetto: v.progetto.corse.length,
+    corseSpenteNelProgetto: v.progetto.spente,
+    corseDaAggiornare: v.validita.length,
+    corseDelProgettoFuoriDalFile: Math.max(0, v.progetto.corse.length - v.validita.length),
+    dateSpente: v.validita.reduce((s, c) => s + c.spente.length, 0),
+    /* prima le incerte (da guardare), poi le non trovate */
+    elencoNonTrovate: [
+      ...v.abbinamento.incerte.map((c) => ({ c, incerta: true })),
+      ...v.abbinamento.nonTrovate.map((c) => ({ c, incerta: false })),
+    ].slice(0, MAX_NON_TROVATE).map(({ c, incerta }) => ({
+      linea: c.linea, partenza: hhmm(c.partenza), arrivo: hhmm(c.arrivo),
+      da: file.nodi.get(c.da) || c.da, a: file.nodi.get(c.a) || c.a,
+      turnoGuida: c.turnoGuida, turnoMacchina: c.turnoMacchina, incerta,
+    })),
+  };
+}
+
+const lista = (v: string[]) => `{${v.join(",")}}`;
+const BLOCCO = 20_000;
+
+router.post("/planning-studio/projects/:id/validita-da-file/anteprima", limiteImport, soloDallApp, conFile, async (req, res) => {
+  try {
+    const p = await progettoPsScrivibile(req, res);
+    if (!p) return;
+    const file = fileDallaRichiesta(req, res);
+    if (!file) return;
+    const v = await preparaValidita(file, p.id);
+    if (!v) { res.status(422).json({ error: "Il file non ha un periodo né date nel calendario" }); return; }
+    res.json(resocontoValidita(file, v));
+  } catch (e: any) {
+    req.log.error({ err: e?.message }, "anteprima validità dal file");
+    res.status(500).json({ error: "Errore nella lettura del file dei turni" });
+  }
+});
+
+router.post("/planning-studio/projects/:id/validita-da-file", limiteImport, soloDallApp, conFile, async (req, res) => {
+  try {
+    const p = await progettoPsScrivibile(req, res);
+    if (!p) return;
+    const file = fileDallaRichiesta(req, res);
+    if (!file) return;
+    const v = await preparaValidita(file, p.id);
+    if (!v) { res.status(422).json({ error: "Il file non ha un periodo né date nel calendario" }); return; }
+    if (v.validita.length === 0) { res.status(409).json({ error: "Nessuna corsa del progetto si ritrova nel file: niente da aggiornare" }); return; }
+    const { dal, al } = v.periodo;
+    const ids = v.validita.map((c) => c.tripId);
+    const coppieTipo = v.validita.flatMap((c) => c.giorniTipo.map((t) => [c.tripId, t] as const));
+    const coppieSpente = v.validita.flatMap((c) => c.spente.map((d) => [c.tripId, d] as const));
+    const resoconto = resocontoValidita(file, v);
+
+    /* tutto in una transazione, a insiemi, col lucchetto delle validità del progetto
+     * (lo stesso del sync delle categorie, lib/planning-studio-validity.ts) */
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`cerbero:validita:${p.id}`}))`);
+      for (let i = 0; i < ids.length; i += BLOCCO) {
+        const parte = lista(ids.slice(i, i + BLOCCO));
+        await tx.execute(sql`DELETE FROM ps_trip_day_validity WHERE trip_id = ANY(${parte}::uuid[])`);
+        await tx.execute(sql`DELETE FROM ps_trip_exceptions WHERE trip_id = ANY(${parte}::uuid[])`);
+        await tx.execute(sql`DELETE FROM ps_trip_category_validity WHERE trip_id = ANY(${parte}::uuid[])`);
+        /* periodo del file; niente maschera dei giorni della settimana; le categorie non si
+         * ricalcolano più da sole (categoriesManual): la validità è quella del file */
+        await tx.execute(sql`
+          UPDATE ps_trips
+             SET valid_from = ${dal}::date, valid_to = ${al}::date, updated_at = now(),
+                 attributes = (COALESCE(attributes, '{}'::jsonb) - 'weekdays')
+                              || jsonb_build_object('categoriesManual', true,
+                                                    'validitaDalFile', jsonb_build_object('dal', ${dal}::text, 'al', ${al}::text))
+           WHERE project_id = ${p.id}::uuid AND id = ANY(${parte}::uuid[])`);
+      }
+      for (let i = 0; i < coppieTipo.length; i += BLOCCO) {
+        const parte = coppieTipo.slice(i, i + BLOCCO);
+        await tx.execute(sql`
+          INSERT INTO ps_trip_day_validity (trip_id, day_type_id, is_valid, updated_at)
+          SELECT x.t, x.d, true, now()
+            FROM unnest(${lista(parte.map((c) => c[0]))}::uuid[], ${lista(parte.map((c) => c[1]))}::uuid[]) AS x(t, d)
+          ON CONFLICT (trip_id, day_type_id) DO UPDATE SET is_valid = true, updated_at = now()`);
+      }
+      for (let i = 0; i < coppieSpente.length; i += BLOCCO) {
+        const parte = coppieSpente.slice(i, i + BLOCCO);
+        await tx.execute(sql`
+          INSERT INTO ps_trip_exceptions (trip_id, date, exception_type, reason)
+          SELECT x.t, x.d, 2, 'file-turni'
+            FROM unnest(${lista(parte.map((c) => c[0]))}::uuid[], ${lista(parte.map((c) => c[1]))}::date[]) AS x(t, d)
+          ON CONFLICT (trip_id, date) DO UPDATE SET exception_type = 2, reason = 'file-turni'`);
+      }
+      await tx.execute(sql`
+        INSERT INTO ps_project_activity_log (project_id, user_id, action, target_type, target_id, payload)
+        VALUES (${p.id}::uuid, ${req.user!.id}::uuid, 'validity.file-turni', NULL, NULL,
+                ${JSON.stringify({ dal, al, corse: ids.length, dateSpente: coppieSpente.length, nonTrovate: resoconto.nonTrovate })}::jsonb)`);
+    });
+
+    /* la verifica: le date di circolazione rilette con la valutazione del feed, confrontate col file */
+    const lette = await computeActiveDatesByTrip({ projectId: p.id, from: dal, to: al, tripIds: ids });
+    let esatte = 0;
+    const diverse: { tripId: string; inPiu: number; inMeno: number }[] = [];
+    for (const c of v.validita) {
+      const date = new Set((lette.get(c.tripId) ?? []).map((d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`));
+      const attese = new Set(c.date);
+      const inMeno = c.date.filter((d) => !date.has(d)).length;
+      const inPiu = [...date].filter((d) => !attese.has(d)).length;
+      if (inMeno === 0 && inPiu === 0) esatte++; else diverse.push({ tripId: c.tripId, inPiu, inMeno });
+    }
+
+    /* i progetti di Fucina nati da questo progetto rifanno il loro feed con le validità nuove */
+    let sincronizzati = 0;
+    /* caricata qui, come in lib/scheduling-projects.ts: la materializzazione si porta dietro la coda dei lavori */
+    const { avviaSincronizzazione } = await import("../planning-studio-materialize");
+    const sp = await db.execute<{ id: string }>(sql`SELECT id FROM scheduling_projects WHERE planning_studio_project_id = ${p.id}::uuid`);
+    for (const r of sp.rows) {
+      try { await avviaSincronizzazione(r.id, p.id, req.user!.id, req.log, (req as any).authVia ?? null); sincronizzati++; }
+      catch (e: any) { req.log.warn({ err: e?.message, progetto: r.id }, "validità dal file: sincronizzazione non avviata"); }
+    }
+
+    res.json({ ...resoconto, verifica: { esatte, diverse: diverse.length, esempi: diverse.slice(0, 20) }, progettiFucinaSincronizzati: sincronizzati });
+  } catch (e: any) {
+    req.log.error({ err: e?.message }, "validità dal file");
+    res.status(500).json({ error: "Errore nella scrittura delle validità" });
+  }
+});
 
 export default router;
