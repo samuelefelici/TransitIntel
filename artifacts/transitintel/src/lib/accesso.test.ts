@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   CICLO, LINGUE, TESTI, codiceCompleto, erroreInLingua, linguaIniziale, nomeDiBenvenuto, saluto,
-  type Citazione,
+  type Titolo,
 } from "./accesso";
 import { SEZIONI } from "./navigazione";
 
@@ -32,16 +32,26 @@ describe("la pagina di accesso, in italiano e in inglese", () => {
     }
   });
 
-  it("le citazioni hanno autore e opera, e finiscono col punto", () => {
+  it("i titoli delle sezioni sono corti: niente citazioni lunghe sopra le animazioni", () => {
     for (const l of LINGUE) {
       const t = TESTI[l];
-      const citazioni: Citazione[] = [t.eroe.citazione, t.argos.citazione, t.ciclo.citazione, t.moduli.citazione, t.sicurezza.citazione, t.invito.citazione];
-      for (const c of citazioni) {
-        expect(c.autore.length).toBeGreaterThan(3);
-        expect(c.fonte).toMatch(/\d{2,4}/);
-        expect(c.evidenza.endsWith(".")).toBe(true);
+      const titoli: Titolo[] = [t.argos.titolo, t.ciclo.titolo, t.moduli.titolo, t.sicurezza.titolo, t.invito.titolo];
+      for (const x of titoli) {
+        expect(`${x.prima} ${x.evidenza}`.length).toBeLessThanOrEqual(48);
+        expect(x.evidenza.endsWith(".")).toBe(true);
       }
+      expect(t.eroe.testo.length).toBeLessThanOrEqual(170);
     }
+  });
+
+  it("i nomi dei sistemi sono in inglese, uguali nelle due lingue", () => {
+    const nomi = (l: "it" | "en") => {
+      const t = TESTI[l];
+      return [t.eroe.sottotitolo, ...t.nastro, ...t.ciclo.tappe.map((x) => x.titolo), ...t.moduli.elenco.flatMap((m) => [m.titolo, m.sotto]),
+        ...t.argos.pilastri.map((p) => p.titolo), ...t.sicurezza.elenco.map((v) => v.titolo)];
+    };
+    expect(nomi("it")).toEqual(nomi("en"));
+    expect(TESTI.it.moduli.elenco.map((m) => m.titolo)).toContain("Operations");
   });
 
   it("i testi brevi restano brevi e finiscono col punto", () => {
@@ -55,7 +65,6 @@ describe("la pagina di accesso, in italiano e in inglese", () => {
       expect(t.moduli.elenco).toHaveLength(8);
       expect(t.sicurezza.elenco).toHaveLength(4);
       expect(t.argos.pilastri).toHaveLength(4);
-      expect(t.argos.fonti).toHaveLength(6);
       expect(new Set(t.nastro).size).toBe(t.nastro.length);
     }
   });
@@ -66,10 +75,10 @@ describe("la pagina di accesso, in italiano e in inglese", () => {
 
   it("le tappe del ciclo sono le sezioni del menu, nello stesso ordine", () => {
     const sezioni = SEZIONI.map((s) => s.titolo.toLowerCase());
-    const posizioni = ["rete e orari", "turni", "pubblicazione", "personale", "esercizio"].map((t) => sezioni.indexOf(t));
+    const posizioni = CICLO.slice(0, 5).map((t) => sezioni.indexOf(t.menu.toLowerCase()));
     expect(posizioni.every((p) => p >= 0)).toBe(true);
     expect([...posizioni].sort((a, b) => a - b)).toEqual(posizioni);
-    expect(CICLO.slice(0, 5).map((t) => t.titolo.toLowerCase())).toEqual(["rete e orari", "turni", "pubblicazione", "personale", "esercizio"]);
+    for (const l of LINGUE) expect(TESTI[l].ciclo.tappe.map((t) => t.menu)).toEqual(CICLO.map((t) => t.menu));
   });
 });
 

@@ -2,13 +2,15 @@
  * La pagina di accesso, come pagina di presentazione (tappe 7.34 e 7.35).
  *
  * Chi non è entrato vede che cos'è Cerbero, in italiano o in inglese:
- * - la Terra a punti che gira (components/accesso/Globo.tsx);
- * - Argos, il nucleo: un sistema RAG multiagente, col suo disegno
- *   (components/accesso/NucleoArgos.tsx);
+ * - la Terra a punti che gira (components/accesso/Globo.tsx), accanto al
+ *   titolo e non sotto (tappa 7.36);
+ * - Argos, il nucleo: un RAG multiagente, che lavora davanti a chi guarda
+ *   con lo stesso crawler 3D della console, su una domanda d'esempio
+ *   (components/accesso/ArgosInDiretta.tsx);
  * - il ciclo del lavoro, gli otto moduli con le loro piccole animazioni
  *   (components/accesso/Visivi.tsx), la sicurezza.
- * I testi sono in lib/accesso.ts: dicono solo quello che l'app fa davvero, e
- * i titoli sono citazioni vere, con autore e opera.
+ * I testi sono in lib/accesso.ts: dicono solo quello che l'app fa davvero,
+ * con titoli corti e i nomi dei sistemi in inglese anche in italiano.
  *
  * L'accesso sta in un riquadro che entra da destra: email e password, poi,
  * se è attiva, la verifica in due passaggi col codice dell'app o un codice di
@@ -35,11 +37,11 @@ import { useAuth } from "@/hooks/use-auth";
 import { useTema } from "@/hooks/use-tema";
 import { SceltaTemaCompatta } from "@/components/layout/SceltaTema";
 import Globo from "@/components/accesso/Globo";
-import NucleoArgos from "@/components/accesso/NucleoArgos";
+import ArgosInDiretta from "@/components/accesso/ArgosInDiretta";
 import VisivoModulo from "@/components/accesso/Visivi";
 import {
   LINGUE, TESTI, codiceCompleto, erroreInLingua, linguaIniziale, nomeDiBenvenuto, saluto,
-  type Citazione, type Lingua, type Pilastro, type TestiLanding,
+  type Lingua, type Pilastro, type TestiLanding, type Titolo,
 } from "@/lib/accesso";
 import logoImg from "/logosidebar.png";
 import "@/styles/landing.css";
@@ -119,7 +121,7 @@ export default function LoginPage() {
         <main>
           <Eroe t={t} lingua={lingua} tema={tema} fermo={fermo} onAccedi={apri} />
           <Nastro voci={t.nastro} />
-          <Argos t={t} fermo={fermo} />
+          <Argos t={t} lingua={lingua} tema={tema} fermo={fermo} />
           <Ciclo t={t} fermo={fermo} />
           <Moduli t={t} fermo={fermo} />
           <Sicurezza t={t} fermo={fermo} />
@@ -234,28 +236,22 @@ function Barra({ t, lingua, cambiaLingua, fermo, onAccedi }: {
   );
 }
 
-/* ── le parole che entrano una per una ────────────────────────────────────── */
-function Parole({ testo, ritardo, passo, fermo, className }: { testo: string; ritardo: number; passo: number; fermo: boolean; className?: string }) {
-  const parole = testo.split(" ");
+/* ── le lettere del titolo, che entrano una per una ───────────────────────── */
+function Lettere({ testo, ritardo, fermo }: { testo: string; ritardo: number; fermo: boolean }) {
   return (
     <>
-      {parole.map((p, i) => (
-        <Fragment key={i}>
-          {i > 0 && " "}
-          <motion.span
-            className={`inline-block ${className ?? ""}`}
-            initial={fermo ? false : { opacity: 0, y: "0.45em", filter: "blur(6px)" }}
-            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-            transition={{ duration: 0.8, delay: ritardo + i * passo, ease: MORBIDO }}
-          >{p}</motion.span>
-        </Fragment>
+      {[...testo].map((c, i) => (
+        <motion.span
+          key={i}
+          className="inline-block"
+          initial={fermo ? false : { opacity: 0, y: "0.4em", rotateX: -80 }}
+          animate={{ opacity: 1, y: 0, rotateX: 0 }}
+          transition={{ duration: 0.8, delay: ritardo + i * 0.05, ease: MORBIDO }}
+          style={{ transformPerspective: 600 }}
+        >{c}</motion.span>
       ))}
     </>
   );
-}
-
-function Fonte({ c, className, entrata }: { c: Citazione; className?: string; entrata?: Record<string, unknown> }) {
-  return <motion.figcaption {...entrata} className={`landing-fonte ${className ?? ""}`}><span>{c.autore}</span><cite>{c.fonte}</cite></motion.figcaption>;
 }
 
 function Orologio({ lingua, etichetta }: { lingua: Lingua; etichetta: string }) {
@@ -277,53 +273,47 @@ function Orologio({ lingua, etichetta }: { lingua: Lingua; etichetta: string }) 
 /* ── la prima schermata ───────────────────────────────────────────────────── */
 function Eroe({ t, lingua, tema, fermo, onAccedi }: { t: TestiLanding; lingua: Lingua; tema: "scuro" | "chiaro"; fermo: boolean; onAccedi: () => void }) {
   const { scrollY } = useScroll();
-  const testoY = useTransform(scrollY, [0, 700], [0, -140]);
-  const testoO = useTransform(scrollY, [0, 520], [1, 0]);
-  const globoS = useTransform(scrollY, [0, 900], [1, 1.18]);
-  const globoO = useTransform(scrollY, [0, 900], [1, 0.25]);
+  const testoY = useTransform(scrollY, [0, 700], [0, -120]);
+  const testoO = useTransform(scrollY, [0, 560], [1, 0]);
+  const globoS = useTransform(scrollY, [0, 900], [1, 1.12]);
+  const globoO = useTransform(scrollY, [0, 900], [1, 0.3]);
   const entra = (ritardo: number) => fermo
     ? { initial: false as const }
     : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.8, delay: ritardo, ease: MORBIDO } };
-  const c = t.eroe.citazione;
-  const primaParole = c.prima.split(" ").length;
 
   return (
     <section id="inizio" className="landing-eroe" aria-labelledby="landing-titolo">
-      <motion.div className="absolute inset-0" style={fermo ? undefined : { scale: globoS, opacity: globoO }}>
+      {/* il globo sta a destra (sul telefono in alto): il testo non ci va sopra */}
+      <motion.div className="landing-eroe-globo" style={fermo ? undefined : { scale: globoS, opacity: globoO }}>
         <Globo tema={tema} lingua={lingua} />
       </motion.div>
       <Orologio lingua={lingua} etichetta={t.eroe.ora} />
 
-      <motion.div className="landing-eroe-testo" style={fermo ? undefined : { y: testoY, opacity: testoO }}>
-        <motion.h1 {...entra(0.3)} id="landing-titolo" className="landing-occhiello landing-mono">{t.eroe.occhiello}</motion.h1>
-        <figure key={lingua} className="mt-6">
-          <motion.span {...entra(0.4)} className="landing-virgolette" aria-hidden>“</motion.span>
-          <blockquote className="landing-citazione-eroe">
-            <p>
-              <Parole testo={c.prima} ritardo={0.5} passo={0.06} fermo={fermo} />
-              {" "}
-              <Parole testo={c.evidenza} ritardo={0.5 + primaParole * 0.06} passo={0.06} fermo={fermo} className="landing-titolo-2" />
-            </p>
-          </blockquote>
-          <Fonte c={c} className="mt-7" entrata={entra(1.3)} />
-        </figure>
-        <motion.p {...entra(1.5)} className="landing-sotto mt-8">{t.eroe.testo}</motion.p>
-        <motion.div {...entra(1.7)} className="mt-10 flex flex-wrap items-center justify-center gap-4">
-          <button type="button" className="landing-bottone" onClick={onAccedi}>
-            {t.eroe.accedi}<ArrowRight className="h-4 w-4" aria-hidden />
-          </button>
-          <button type="button" className="landing-bottone-vuoto" onClick={() => scorriA("argos", fermo)}>
-            {t.eroe.scopri}
-          </button>
+      <div className="landing-eroe-griglia">
+        <motion.div className="landing-eroe-testo" style={fermo ? undefined : { y: testoY, opacity: testoO }}>
+          <motion.p {...entra(0.3)} className="landing-occhiello landing-mono" style={{ justifyContent: "flex-start" }}>{t.eroe.occhiello}</motion.p>
+          <h1 id="landing-titolo" className="landing-titolo mt-6">
+            <span className="landing-titolo-1"><Lettere testo="CERBERO" ritardo={0.45} fermo={fermo} /></span>
+            <motion.span {...entra(0.95)} className="landing-titolo-2 landing-titolo-piccolo">{t.eroe.sottotitolo}</motion.span>
+          </h1>
+          <motion.p {...entra(1.2)} className="landing-sotto mt-7">{t.eroe.testo}</motion.p>
+          <motion.div {...entra(1.4)} className="mt-10 flex flex-wrap items-center gap-4">
+            <button type="button" className="landing-bottone" onClick={onAccedi}>
+              {t.eroe.accedi}<ArrowRight className="h-4 w-4" aria-hidden />
+            </button>
+            <button type="button" className="landing-bottone-vuoto" onClick={() => scorriA("argos", fermo)}>
+              {t.eroe.scopri}
+            </button>
+          </motion.div>
         </motion.div>
-      </motion.div>
+      </div>
 
       <motion.button
         type="button"
         className="landing-scorri landing-mono"
         onClick={() => scorriA("argos", fermo)}
         aria-label={t.eroe.scorriEtichetta}
-        {...entra(2.1)}
+        {...entra(1.9)}
       >
         <span className="flex items-center gap-2">{t.eroe.scorri}<ArrowDown className="h-3 w-3" aria-hidden /></span>
         <span aria-hidden />
@@ -347,7 +337,7 @@ function Nastro({ voci }: { voci: readonly string[] }) {
   );
 }
 
-/* ── le testate delle sezioni: l'occhiello, la citazione, il testo ────────── */
+/* ── le testate delle sezioni: l'occhiello, il titolo, il testo ─────────────── */
 function Rivela({ children, fermo, ritardo = 0, className, sposta = 28 }: {
   children: React.ReactNode; fermo: boolean; ritardo?: number; className?: string; sposta?: number;
 }) {
@@ -364,34 +354,33 @@ function Rivela({ children, fermo, ritardo = 0, className, sposta = 28 }: {
   );
 }
 
-function Testata({ id, occhiello, citazione, testo, fermo, centrata }: {
-  id: string; occhiello: string; citazione: Citazione; testo: string; fermo: boolean; centrata?: boolean;
+function Testata({ id, occhiello, titolo, testo, fermo, centrata }: {
+  id: string; occhiello: string; titolo: Titolo; testo: string; fermo: boolean; centrata?: boolean;
 }) {
   return (
     <>
       <Rivela fermo={fermo}>
-        <h2 id={id} className="landing-occhiello landing-mono" style={centrata ? undefined : { justifyContent: "flex-start" }}>{occhiello}</h2>
+        <p className="landing-occhiello landing-mono" style={centrata ? undefined : { justifyContent: "flex-start" }}>{occhiello}</p>
       </Rivela>
       <Rivela fermo={fermo} ritardo={0.08}>
-        <figure className="mt-7">
-          <blockquote className="landing-citazione"><p>{citazione.prima} <em>{citazione.evidenza}</em></p></blockquote>
-          <Fonte c={citazione} className="mt-6" />
-        </figure>
+        <h2 id={id} className="landing-titolo-sezione mt-6">{titolo.prima} <em>{titolo.evidenza}</em></h2>
       </Rivela>
-      <Rivela fermo={fermo} ritardo={0.16}><p className={`landing-paragrafo mt-8 ${centrata ? "mx-auto" : ""}`}>{testo}</p></Rivela>
+      <Rivela fermo={fermo} ritardo={0.16}><p className={`landing-paragrafo mt-6 ${centrata ? "mx-auto" : ""}`}>{testo}</p></Rivela>
     </>
   );
 }
 
 /* ── Argos, il nucleo ─────────────────────────────────────────────────────── */
-function Argos({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
+function Argos({ t, lingua, tema, fermo }: { t: TestiLanding; lingua: Lingua; tema: "scuro" | "chiaro"; fermo: boolean }) {
   const a = t.argos;
   return (
     <section id="argos" className="landing-sezione landing-argos scroll-mt-16" aria-labelledby="landing-argos">
-      <div className="relative mx-auto grid max-w-[1440px] items-start gap-14 px-4 sm:px-8 lg:grid-cols-[minmax(0,6fr)_minmax(0,5fr)] lg:gap-16 lg:px-14">
-        <div>
-          <Testata id="landing-argos" occhiello={a.occhiello} citazione={a.citazione} testo={a.testo} fermo={fermo} />
-          <div className="landing-pilastri mt-12">
+      <div className="relative mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
+        <div className="grid items-end gap-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-16">
+          <div>
+            <Testata id="landing-argos" occhiello={a.occhiello} titolo={a.titolo} testo={a.testo} fermo={fermo} />
+          </div>
+          <div className="landing-pilastri">
             {a.pilastri.map((p, i) => {
               const Icona = ICONE_PILASTRI[p.chiave];
               return (
@@ -404,8 +393,8 @@ function Argos({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
             })}
           </div>
         </div>
-        <Rivela fermo={fermo} ritardo={0.2} sposta={40} className="lg:sticky lg:top-24 lg:self-start">
-          <NucleoArgos fonti={a.fonti} nucleo={a.nucleo} agenti={a.agenti} />
+        <Rivela fermo={fermo} ritardo={0.1} sposta={40} className="mt-14">
+          <ArgosInDiretta lingua={lingua} tema={tema} fermo={fermo} />
         </Rivela>
       </div>
     </section>
@@ -446,7 +435,7 @@ function Ciclo({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
     <section id="ciclo" className="landing-sezione scroll-mt-16" aria-labelledby="landing-ciclo">
       <div className="mx-auto grid max-w-[1440px] gap-14 px-4 sm:px-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-24 lg:px-14">
         <div className="lg:sticky lg:top-32 lg:self-start">
-          <Testata id="landing-ciclo" occhiello={t.ciclo.occhiello} citazione={t.ciclo.citazione} testo={t.ciclo.testo} fermo={fermo} />
+          <Testata id="landing-ciclo" occhiello={t.ciclo.occhiello} titolo={t.ciclo.titolo} testo={t.ciclo.testo} fermo={fermo} />
         </div>
         <div ref={elenco} className="relative">
           <div className="landing-ciclo-binario" aria-hidden>
@@ -477,7 +466,7 @@ function Moduli({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
     <section id="moduli" className="landing-sezione scroll-mt-16" aria-labelledby="landing-moduli" style={{ paddingTop: 0 }}>
       <div className="mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
         <div className="max-w-3xl">
-          <Testata id="landing-moduli" occhiello={t.moduli.occhiello} citazione={t.moduli.citazione} testo={t.moduli.testo} fermo={fermo} />
+          <Testata id="landing-moduli" occhiello={t.moduli.occhiello} titolo={t.moduli.titolo} testo={t.moduli.testo} fermo={fermo} />
         </div>
         <div className="landing-moduli mt-14">
           {t.moduli.elenco.map((m, i) => (
@@ -511,7 +500,7 @@ function Sicurezza({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
     <section id="sicurezza" className="landing-sezione scroll-mt-16" aria-labelledby="landing-sicurezza" style={{ paddingTop: 0 }}>
       <div className="mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
         <div className="max-w-3xl">
-          <Testata id="landing-sicurezza" occhiello={t.sicurezza.occhiello} citazione={t.sicurezza.citazione} testo={t.sicurezza.testo} fermo={fermo} />
+          <Testata id="landing-sicurezza" occhiello={t.sicurezza.occhiello} titolo={t.sicurezza.titolo} testo={t.sicurezza.testo} fermo={fermo} />
         </div>
         <div className="landing-sicurezza mt-14">
           {t.sicurezza.elenco.map((s, i) => {
@@ -539,7 +528,7 @@ function Invito({ t, fermo, onAccedi }: { t: TestiLanding; fermo: boolean; onAcc
           <div className="landing-aurora" aria-hidden />
           <div className="landing-invito-griglia" aria-hidden />
           <div className="mx-auto max-w-4xl">
-            <Testata id="landing-invito" occhiello={t.invito.occhiello} citazione={t.invito.citazione} testo={t.invito.testo} fermo={fermo} centrata />
+            <Testata id="landing-invito" occhiello={t.invito.occhiello} titolo={t.invito.titolo} testo={t.invito.testo} fermo={fermo} centrata />
           </div>
           <div className="mt-10 flex justify-center">
             <button type="button" className="landing-bottone" onClick={onAccedi}>
