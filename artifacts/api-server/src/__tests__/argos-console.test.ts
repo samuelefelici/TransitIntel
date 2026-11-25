@@ -415,5 +415,78 @@ describe("le conversazioni", () => {
       expect(decidi(soloLettura, m, p).passa, `${m} ${p}`).toBe(false);
     }
   });
-});
 
+  it("allegare: la conversazione dev'essere dell'utente; Argos riceve file, autore e client", async () => {
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    rispondi(200, { id: "a1", nome: "ordine 3.docx", caratteri: 1200 });
+    const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati`)
+      .field("autore", "intruso").attach("file", Buffer.from("PK finto"), "ordine 3.docx");
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ id: "a1", nome: "ordine 3.docx", caratteri: 1200 });
+    expect(stato.chiamate[0]!.url).toContain(`/conversazioni/${CONV}?`);
+    const c = stato.chiamate[1]!;
+    expect(c.url).toBe(`http://argos.prova/console/conversazioni/${CONV}/allegati`);
+    const form = c.init.body as FormData;
+    expect((form.get("file") as File).name).toBe("ordine 3.docx");
+    expect(form.get("autore")).toBe(io);
+    expect(form.get("client_slug")).toBe("tpl-personale");
+  });
+
+  it("allegare: formati fuori elenco, file mancante e conversazioni altrui non arrivano ad Argos", async () => {
+    let r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati`).attach("file", Buffer.from("MZ"), "virus.exe");
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain(".xlsx");
+    r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati`).field("x", "y");
+    expect(r.status).toBe(400);
+    expect(stato.chiamate).toHaveLength(0);
+    rispondi(200, { conversazione: { id: CONV, progetto: ALTRUI }, messaggi: [] });
+    r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati`).attach("file", Buffer.from("ciao"), "nota.txt");
+    expect(r.status).toBe(404);
+    expect(stato.chiamate).toHaveLength(1);
+    r = await request(app()).post("/api/ai/argos/console/conversazioni/non-un-id/allegati").attach("file", Buffer.from("ciao"), "nota.txt");
+    expect(r.status).toBe(400);
+  });
+
+  it("allegare: il rifiuto di Argos (dati di persone) arriva all'utente così com'è", async () => {
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    rispondi(400, { detail: "turni.xlsx contiene dati di persone (codice fiscale): per decisione dell'azienda non li mando al modello." });
+    const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati`).attach("file", Buffer.from("PK"), "turni.xlsx");
+    expect(r.status).toBe(400);
+    expect(r.body.error).toContain("dati di persone");
+  });
+
+  it("elenco e rimozione degli allegati, per l'autore della sessione", async () => {
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    rispondi(200, { allegati: [{ id: "a1" }] });
+    let r = await request(app()).get(`/api/ai/argos/console/conversazioni/${CONV}/allegati?autore=altro`);
+    expect(r.status).toBe(200);
+    expect(stato.chiamate[1]!.url).toContain(`/conversazioni/${CONV}/allegati?`);
+    expect(stato.chiamate[1]!.url).toContain(`autore=${io}`);
+    const AL = "44444444-4444-4444-8444-444444444444";
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    rispondi(200, { ok: true });
+    r = await request(app()).delete(`/api/ai/argos/console/conversazioni/${CONV}/allegati/${AL}`);
+    expect(r.status).toBe(200);
+    expect(stato.chiamate[3]!.init.method).toBe("DELETE");
+    expect(stato.chiamate[3]!.url).toContain(`/allegati/${AL}?`);
+    expect((await request(app()).delete(`/api/ai/argos/console/conversazioni/${CONV}/allegati/boh`)).status).toBe(400);
+  });
+
+  it("un turno con allegati: al più cinque id validi, inoltrati ad Argos", async () => {
+    const A = ["55555555-5555-4555-8555-555555555551", "55555555-5555-4555-8555-555555555552"];
+    rispondi(200, { conversazione: { id: CONV, modo: "risposta", progetto: null }, messaggi: [] });
+    stato.risposte.push({ status: 200, body: null, sse: 'data: {"done":true}\n\n' });
+    await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "Riassumi", allegati: [A[0], A[1], A[0]] });
+    expect(corpo(1).allegati).toEqual(A);
+    for (const male of [["boh"], "x", Array.from({ length: 6 }, (_, i) => `55555555-5555-4555-8555-55555555555${i}`)]) {
+      const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/messaggi`).send({ testo: "x", allegati: male });
+      expect(r.status).toBe(400);
+    }
+    expect(stato.chiamate).toHaveLength(2);
+  });
+
+  it("con la sola lettura sulla rete si allega e si toglie un allegato (fa parte del messaggio)", () => {
+    expect(decidi(soloLettura, "POST", `/ai/argos/console/conversazioni/${CONV}/allegati`).passa).toBe(true);
+    expect(decidi(soloLettura, "DELETE", `/ai/argos/console/conversazioni/${CONV}/allegati/44444444-4444-4444-8444-444444444444`).passa).toBe(true);
+  });
+});

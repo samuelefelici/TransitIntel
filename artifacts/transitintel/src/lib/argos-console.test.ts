@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  DIRETTA_VUOTA, applica, autonomiaEffettiva, durata, quandoFa, riepilogo, sintesiEvento, spezzaSSE, token,
+  DIRETTA_VUOTA, FORMATI_ARGOS, MAX_ALLEGATO_MB, applica, autonomiaEffettiva, durata, estensioneDi, peso, perchéNonAllegabile,
+  quandoFa, riepilogo, sintesiEvento, spezzaSSE, token,
   type EventoTraccia, type EventoStream,
 } from "./argos-console";
 
@@ -98,5 +99,35 @@ describe("formati e regole", () => {
     expect(autonomiaEffettiva("applica")).toBe("propone");
     expect(autonomiaEffettiva("propone")).toBe("propone");
     expect(autonomiaEffettiva("osserva")).toBe("osserva");
+  });
+});
+
+describe("gli allegati della chat", () => {
+  it("l'estensione, senza maiuscole; un nome che comincia col punto non ne ha", () => {
+    expect(estensioneDi("Quadro Orario.XLSX")).toBe(".xlsx");
+    expect(estensioneDi("archivio.tar.gz")).toBe(".gz");
+    expect(estensioneDi(".bashrc")).toBe("");
+    expect(estensioneDi("senza")).toBe("");
+  });
+
+  it("si allegano i formati che Argos legge, entro la dimensione; il perché quando no", () => {
+    for (const n of ["accordo.docx", "turni.xlsx", "slide.pptx", "km.ods", "fermate.csv", "palina.JPG", "norma.pdf"]) {
+      expect(perchéNonAllegabile(n, 1000), n).toBeNull();
+    }
+    expect(perchéNonAllegabile("vecchio.doc", 1000)).toContain(".docx");
+    expect(perchéNonAllegabile("vecchio.xls", 1000)).toContain(".xlsx");
+    expect(perchéNonAllegabile("virus.exe", 1000)).toContain("non supportato");
+    expect(perchéNonAllegabile("vuoto.txt", 0)).toContain("vuoto");
+    expect(perchéNonAllegabile("grande.pdf", MAX_ALLEGATO_MB * 1024 * 1024 + 1)).toContain("MB");
+    expect(FORMATI_ARGOS).toContain(".xlsx");
+    expect(new Set(FORMATI_ARGOS).size).toBe(FORMATI_ARGOS.length);
+  });
+
+  it("il peso, all'italiana", () => {
+    expect(peso(512)).toBe("512 B");
+    expect(peso(1536)).toBe("1,5 kB");
+    expect(peso(200 * 1024)).toBe("200 kB");
+    expect(peso(3.2 * 1024 * 1024)).toBe("3,2 MB");
+    expect(peso(24 * 1024 * 1024)).toBe("24 MB");
   });
 });
