@@ -546,6 +546,23 @@ export function caricaAllegato(conversazione: string, file: File, suAvanzamento?
   });
 }
 
+/** I documenti che di partenza entrano nella Biblioteca (📚): testi da tenere, non dati del giorno né immagini. */
+const DOCUMENTI_DA_IMPARARE = new Set([".pdf", ".docx", ".docm", ".odt", ".pptx", ".pptm", ".odp", ".md", ".markdown",
+  ".mmd", ".txt", ".text", ".epub", ".html", ".htm"]);
+export function imparaDiPartenza(nome: string): boolean {
+  return DOCUMENTI_DA_IMPARARE.has(estensioneDi(nome));
+}
+
+/** 📚 Biblioteca: chi ha caricato il documento lo mette nella Biblioteca di Argos (o dice perché no). */
+export async function imparaAllegato(conversazione: string, allegato: string): Promise<{ titolo: string; categoria: string }> {
+  const r = await fetch(`${getApiBase()}${BASE}/conversazioni/${encodeURIComponent(conversazione)}/allegati/${encodeURIComponent(allegato)}/impara`, {
+    method: "POST", credentials: "include", headers: { "content-type": "application/json" }, body: "{}",
+  });
+  const d: any = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(r.status === 403 ? "serve il permesso di scrittura per arricchire la Biblioteca" : d?.error || `HTTP ${r.status}`);
+  return d;
+}
+
 export async function togliAllegato(conversazione: string, allegato: string): Promise<void> {
   const r = await fetch(`${getApiBase()}${BASE}/conversazioni/${encodeURIComponent(conversazione)}/allegati/${encodeURIComponent(allegato)}`,
     { method: "DELETE", credentials: "include" });

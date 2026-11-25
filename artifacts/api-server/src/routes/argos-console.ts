@@ -627,6 +627,36 @@ router.get("/ai/argos/console/conversazioni/:id/allegati", async (req, res) => {
   if (d !== undefined) res.json(d);
 });
 
+// POST /api/ai/argos/console/conversazioni/:id/allegati/:allegato/impara { titolo?, categoria? }
+// L'interruttore «📚 Biblioteca»: chi ha caricato il documento lo mette nella
+// Biblioteca di Argos, che da lì si alimenta (concetti e cervello). È scrivere
+// nella memoria comune di Argos: chiede la scrittura sull'area, come ogni POST
+// che non sta fra quelle che calcolano soltanto.
+router.post("/ai/argos/console/conversazioni/:id/allegati/:allegato/impara", async (req, res) => {
+  const userId = utenteDi(req);
+  if (!userId) { res.status(401).json({ error: "Non autenticato" }); return; }
+  if (!UUID_RE.test(req.params.allegato)) { res.status(400).json({ error: "allegato non valido" }); return; }
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const corpo: Record<string, string> = { autore: userId, client_slug: ARGOS_CLIENT_SLUG };
+  for (const [k, max] of [["titolo", 200], ["categoria", 120]] as const) {
+    if (typeof b[k] === "string" && b[k].trim()) corpo[k] = b[k].trim().slice(0, max);
+  }
+  if ((await conversazioneVisibile(res, userId, req.params.id)) === undefined) return;
+  try {
+    const r = await fetch(`${ARGOS_URL}/console/conversazioni/${req.params.id}/allegati/${req.params.allegato}/impara`, {
+      method: "POST", headers: argosHeaders({ "content-type": "application/json" }), body: JSON.stringify(corpo),
+      signal: AbortSignal.timeout(30000),
+    });
+    const d: any = await r.json().catch(() => ({}));
+    // il perché di un rifiuto (dati di persone, troppo poco testo, già dentro, tetto) è scritto per chi carica
+    if (r.status === 400 && typeof d?.detail === "string" && d.detail.length <= 400) { res.status(400).json({ error: d.detail }); return; }
+    if (!r.ok) { rispondiErrore(res, r.status, d?.detail); return; }
+    res.json(d);
+  } catch (err: any) {
+    irraggiungibile(res, err);
+  }
+});
+
 // DELETE /api/ai/argos/console/conversazioni/:id/allegati/:allegato
 router.delete("/ai/argos/console/conversazioni/:id/allegati/:allegato", async (req, res) => {
   const userId = utenteDi(req);

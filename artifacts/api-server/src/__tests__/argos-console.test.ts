@@ -489,4 +489,31 @@ describe("le conversazioni", () => {
     expect(decidi(soloLettura, "POST", `/ai/argos/console/conversazioni/${CONV}/allegati`).passa).toBe(true);
     expect(decidi(soloLettura, "DELETE", `/ai/argos/console/conversazioni/${CONV}/allegati/44444444-4444-4444-8444-444444444444`).passa).toBe(true);
   });
+
+  it("📚 Biblioteca: chi ha caricato il documento lo mette nella Biblioteca di Argos", async () => {
+    const AL = "66666666-6666-4666-8666-666666666666";
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    rispondi(200, { ok: true, job_id: 12, titolo: "Accordo", categoria: "Caricati in chat" });
+    const r = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati/${AL}/impara`)
+      .send({ titolo: "  Accordo  ", autore: "intruso", altro: "x" });
+    expect(r.status).toBe(200);
+    expect(r.body.categoria).toBe("Caricati in chat");
+    expect(stato.chiamate[1]!.url).toBe(`http://argos.prova/console/conversazioni/${CONV}/allegati/${AL}/impara`);
+    expect(JSON.parse(stato.chiamate[1]!.init.body)).toEqual({ autore: io, client_slug: "tpl-personale", titolo: "Accordo" });
+    // il perché di un rifiuto arriva a chi carica
+    rispondi(200, { conversazione: { id: CONV, progetto: null }, messaggi: [] });
+    rispondi(400, { detail: "turni.pdf contiene dati di persone (codice fiscale): non entra nella Biblioteca" });
+    const r2 = await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati/${AL}/impara`).send({});
+    expect(r2.status).toBe(400);
+    expect(r2.body.error).toContain("dati di persone");
+    // un allegato non valido, o una conversazione non sua: Argos non lo fa
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati/boh/impara`).send({})).status).toBe(400);
+    rispondi(200, { conversazione: { id: CONV, progetto: ALTRUI }, messaggi: [] });
+    expect((await request(app()).post(`/api/ai/argos/console/conversazioni/${CONV}/allegati/${AL}/impara`).send({})).status).toBe(404);
+    expect(stato.chiamate.filter((c) => c.url.endsWith("/impara"))).toHaveLength(2);
+  });
+
+  it("📚 Biblioteca: con la sola lettura no, è scrivere nella memoria comune di Argos", () => {
+    expect(decidi(soloLettura, "POST", `/ai/argos/console/conversazioni/${CONV}/allegati/66666666-6666-4666-8666-666666666666/impara`).passa).toBe(false);
+  });
 });
