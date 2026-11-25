@@ -2360,6 +2360,40 @@ nessuna Watch Path.
 
 **Rollback**: immagine precedente della web.
 
+### Fucina: importa i turni esistenti dal file dell'azienda (tappa 7.38)
+
+- **Nuovo pulsante «Importa turni esistenti»** in Fucina › progetto › Scenari
+  vetture. Si carica l'esportazione dei turni in vigore (file di testo BDROP:
+  turni guida con i pezzi, turni macchina col tipo di mezzo, calendario dei
+  tipi di giorno, nodi), si sceglie il giorno e Cerbero crea **uno scenario di
+  turni macchina e uno di turni guida**, agganciati alle corse del GTFS del
+  progetto. Si aprono, si modificano e si pubblicano come quelli calcolati.
+- **Aggancio delle corse**: prima col numero della corsa (lo stesso che chiude
+  il codice della corsa nel GTFS caricato; nei feed nati da Planning Studio è
+  il `codice` della corsa del progetto), poi con linea, partenza e arrivo
+  (±3 minuti). Prima di salvare la finestra dice quante corse si riconoscono e
+  quali no: le corse non trovate restano fuori dai turni; le corse del GTFS
+  senza turno restano scoperte. Se l'aggancio è basso, di solito il GTFS del
+  progetto è di un altro periodo rispetto al file.
+- Il file dà i tempi ma non i km dei fuori linea: si stimano dalla durata
+  (20 km/h in città, 40 fuori), come nel calcolo dei turni macchina. I turni
+  guida arrivano «da verificare»: la verifica delle regole si chiede dall'area
+  di lavoro.
+- **Il file non si conserva**: si legge in memoria e restano solo i turni.
+  Serve la scrittura sui Turni e un ruolo da editor nel progetto; al massimo
+  25 MB, 30 richieste al minuto per persona.
+- Corretti due difetti visti nella prova:
+  - aprendo Cerbero in una scheda nuova con la sessione ancora valida si
+    restava sulla pagina di accesso (difetto della 7.33): ora l'app si apre;
+  - nell'area di lavoro dei turni macchina l'efficienza appariva cento volte
+    più grande («7810%»).
+
+**Dopo il deploy**: deploy di API e web. Nessuna migrazione, nessuna
+variabile, nessuna Watch Path.
+
+**Rollback**: immagini precedenti di API e web. Gli scenari importati restano
+come scenari normali; si cancellano dall'elenco se non servono.
+
 ### Correzioni dal collaudo: Fermate & Linee e punti di riposo (tappa 7.31)
 
 **Fermate & Linee** (Rete › Elenco Fermate). Due numeri erano sbagliati:

@@ -73,6 +73,9 @@ interface AuthCtx {
   loginMfa: (biglietto: string, prova: { codice: string } | { recupero: string }) => Promise<{ ok: boolean; error?: string }>;
   /** null finché il server non ha risposto */
   accesso: Accesso | null;
+  /** l'accesso di questa pagina è venuto dal modulo (email e password), non da una sessione
+   *  ripresa: solo allora la pagina di accesso mostra la sua conferma prima dell'app */
+  entratoDalModulo: boolean;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   /** può almeno LEGGERE il modulo di questo interruttore (la vista di prima dei ruoli) */
@@ -145,6 +148,8 @@ const loadCachedReti = (): readonly Rete[] => {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<CurrentUser | null>(() => loadCachedUser());
+  /* vero dopo un accesso dal modulo; torna falso all'uscita (vedi AuthCtx) */
+  const [entratoDalModulo, setEntratoDalModulo] = useState(false);
   /* non in cache: finché /me non risponde, niente dati di prova */
   const [datiProva, setDatiProva] = useState(false);
   const [verificato, setVerificato] = useState(false);
@@ -158,7 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const setUser = useCallback((u: CurrentUser | null) => {
     setUserState(u);
     saveCached(AUTH_CACHE_KEY, u);
-    if (!u) { setAccessoState(null); saveCached(ACCESSO_CACHE_KEY, null); }
+    if (!u) { setAccessoState(null); saveCached(ACCESSO_CACHE_KEY, null); setEntratoDalModulo(false); }
   }, []);
   const setAccesso = useCallback((a: Accesso | null) => {
     setAccessoState(a);
@@ -256,6 +261,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   type RispostaLogin = { user?: CurrentUser; datiProva?: boolean; accesso?: Accesso | null; azienda?: unknown; reti?: unknown; mfaRichiesta?: boolean; biglietto?: string };
   const entra = useCallback((r: RispostaLogin) => {
+    setEntratoDalModulo(true);
     /* prima l'azienda e le sue reti: la prima pagina che si disegna dopo l'accesso ha già nome, centro delle mappe e colori delle reti */
     accogliAzienda(r.azienda);
     accogliReti(r.reti);
@@ -323,6 +329,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     loginMfa,
     accesso,
+    entratoDalModulo,
     logout,
     refresh,
     hasPermission,

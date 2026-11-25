@@ -12,7 +12,7 @@ import { motion } from "framer-motion";
 import { toast } from "sonner";
 import {
   ArrowLeft, Truck, Plus, Loader2, Calendar, FolderOpen, ChevronRight,
-  Share2, Users as UsersIcon, Lock, Power, Trash2, X, AlertTriangle, Boxes,
+  Share2, Users as UsersIcon, Lock, Power, Trash2, X, AlertTriangle, Boxes, FileUp,
 } from "lucide-react";
 import ConfirmDialog, { type ConfirmRequest } from "@/components/planning-studio/ConfirmDialog";
 import {
@@ -26,6 +26,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import ShareScheduleDialog from "@/components/scheduling/ShareScheduleDialog";
+import ImportaTurniDialog from "@/components/scheduling/ImportaTurniDialog";
 import QuadroSuperatoBadge from "@/components/scheduling/QuadroSuperatoBadge";
 import { SeScrive } from "@/hooks/use-sola-lettura";
 
@@ -40,6 +41,7 @@ export default function VehicleScenariosPage() {
   const [shares, setShares] = useState<VehicleScheduleProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAttach, setShowAttach] = useState(false);
+  const [showImporta, setShowImporta] = useState(false);
   const [shareDialog, setShareDialog] = useState<{ id: string; name: string; canManage: boolean } | null>(null);
   // Eliminazione con doppia conferma (modale + checkbox obbligatoria)
   const [deleteTarget, setDeleteTarget] = useState<ProjectVehicleScenario | null>(null);
@@ -158,6 +160,14 @@ export default function VehicleScenariosPage() {
                 + Aggancia esistente
               </button>
             </SeScrive>
+            <SeScrive>
+              <button onClick={() => setShowImporta(true)}
+                className="inline-flex items-center gap-1.5 text-[11px] text-orange-200 border border-orange-500/30 px-2.5 py-1.5 rounded-lg hover:bg-orange-500/10 transition-colors"
+                title="Crea turni macchina e turni guida dal file dei turni in vigore dell'azienda"
+              >
+                <FileUp className="w-3.5 h-3.5" /> Importa turni esistenti
+              </button>
+            </SeScrive>
             <button onClick={() => navigate(`/fucina/${projectId}/pipeline`)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-orange-400 to-amber-400 hover:shadow-[0_0_20px_rgba(251,146,60,0.4)] transition-shadow"
             >
@@ -186,6 +196,7 @@ export default function VehicleScenariosPage() {
             </button>
             <p className="text-[10px] text-zinc-600 mt-4 italic">
               Hai uno scenario salvato in passato? Aggancialo al progetto via "+ Aggancia esistente" in alto.
+              Hai i turni in vigore dell'azienda? Caricali con "Importa turni esistenti".
             </p>
           </div>
         ) : (
@@ -389,6 +400,14 @@ export default function VehicleScenariosPage() {
           projectId={projectId}
           onClose={() => setShowAttach(false)}
           onAttached={() => { setShowAttach(false); void reload(); }}
+        />
+      )}
+
+      {showImporta && (
+        <ImportaTurniDialog
+          projectId={projectId}
+          onClose={() => setShowImporta(false)}
+          onImportato={(id) => { setShowImporta(false); navigate(`/fucina/${projectId}/vehicles/${id}`); }}
         />
       )}
 
