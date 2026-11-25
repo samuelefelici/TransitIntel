@@ -2317,6 +2317,30 @@ nessuna Watch Path.
 
 **Rollback**: immagine precedente della web.
 
+### Pagina di accesso: il crawler 3D di Argos, i sistemi in inglese, senza citazioni (tappa 7.36)
+
+- **Argos al lavoro**: nella sezione di Argos gira lo stesso crawler della
+  console (`lib/argos-sciame.ts`) e, dove il computer lo regge, la stessa
+  vista 3D a cervello (`lib/argos-cervello3d.ts`). Lavora su due domande
+  d'esempio e una biblioteca d'esempio (`lib/argos-dimostrazione.ts`), una
+  dopo l'altra, con accanto la chat che scrive la risposta e le fonti. Non
+  chiama il server e non usa dati dell'azienda; la pagina dice che è un
+  esempio. Parte solo quando la sezione si vede, il 3D si costruisce solo
+  allora; senza scheda video resta il crawler in piano.
+- **I nomi dei sistemi in inglese** anche nella pagina italiana: i moduli
+  (Operations, Service Reporting, Fares, Open Data, Passenger Information…),
+  le tappe del ciclo, il nastro, i punti di Argos e della sicurezza. Le
+  descrizioni restano nella lingua della pagina.
+- **Via le citazioni**: i titoli sono corti e dicono che cosa c'è nella
+  sezione. Nella prima schermata il globo sta a destra (sul telefono in alto)
+  e il titolo «CERBERO» a sinistra: niente testo sopra le animazioni.
+- Tolto il disegno SVG del nucleo della 7.35 (`NucleoArgos.tsx`).
+
+**Dopo il deploy**: deploy della web. Nessuna migrazione, nessuna variabile,
+nessuna Watch Path.
+
+**Rollback**: immagine precedente della web.
+
 ### Correzioni dal collaudo: Fermate & Linee e punti di riposo (tappa 7.31)
 
 **Fermate & Linee** (Rete › Elenco Fermate). Due numeri erano sbagliati:
