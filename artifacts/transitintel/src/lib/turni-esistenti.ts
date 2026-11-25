@@ -150,18 +150,12 @@ export interface AnteprimaValidita {
   corseDaAggiornare: number;
   corseDelProgettoFuoriDalFile: number;
   dateSpente: number;
-  /** le unità di progettazione del file: una per tipo di giorno con corse del progetto */
-  unita: number;
-  /** solo nell'anteprima: le unità già salvate nel progetto, e quante il file aggiornerebbe */
-  unitaNelProgetto?: number;
-  unitaDaAggiornare?: number;
   elencoNonTrovate: CorsaDaGuardare[];
 }
 
 export interface EsitoValidita extends AnteprimaValidita {
   verifica: { esatte: number; diverse: number; esempi: { tripId: string; inPiu: number; inMeno: number }[] };
   progettiFucinaSincronizzati: number;
-  unitaSalvate: number;
 }
 
 export function anteprimaValidita(psProjectId: string, file: File): Promise<AnteprimaValidita> {
@@ -170,8 +164,8 @@ export function anteprimaValidita(psProjectId: string, file: File): Promise<Ante
   });
 }
 
-export function applicaValidita(psProjectId: string, file: File, conUnita = true): Promise<EsitoValidita> {
+export function applicaValidita(psProjectId: string, file: File): Promise<EsitoValidita> {
   return apiFetch<EsitoValidita>(`/api/planning-studio/projects/${psProjectId}/validita-da-file`, {
-    method: "POST", body: modulo(file, { unita: conUnita ? "si" : "no" }), headers: INTESTAZIONI,
+    method: "POST", body: modulo(file, {}), headers: INTESTAZIONI,
   });
 }

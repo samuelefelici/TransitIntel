@@ -15,7 +15,7 @@ import {
   FileTurniNonValido, dataIso, giorniDelFile, leggiFileTurni, testoDelFile, tipiDiGiorno, turniDelGiorno,
 } from "../lib/turni-esistenti/file";
 import { abbinaCorse, corseDelFile, numeroDellaCorsa, type CorsaDelFile, type CorsaGtfs } from "../lib/turni-esistenti/abbina";
-import { abbinaPerValidita, dateDelleCorse, giorniDa, idUnita, nomeUnita, periodoDelFile, unitaDalFile, validitaDalFile } from "../lib/turni-esistenti/validita";
+import { abbinaPerValidita, dateDelleCorse, giorniDa, periodoDelFile, validitaDalFile } from "../lib/turni-esistenti/validita";
 import { costruisciTurni, kmStimati, residenzaAiTurniGuida, tipoDelMezzo, tipoDelTurno } from "../lib/turni-esistenti/costruisci";
 import type { TripBlock } from "../lib/ottimizza-veicoli/modello";
 
@@ -278,28 +278,5 @@ describe("validità delle corse dal file (7.39)", () => {
 
   it("una corsa senza date nel periodo non si tocca", () => {
     expect(validitaDalFile(f, new Map([["p1", ["999999"]]]), tipo, { dal: "2026-12-01", al: "2026-12-31" })).toEqual([]);
-  });
-});
-
-describe("unità di progettazione dal file (7.40)", () => {
-  const f = leggiFileTurni(FILE);
-
-  it("una unità per tipo di giorno con corse del progetto, con le sue date e le sue corse", () => {
-    const u = unitaDalFile(f, new Map([["p1", ["700001"]], ["p2", ["700004"]]]));
-    expect(u).toHaveLength(1); // il festivo di prova non ha corse
-    expect(u[0]).toMatchObject({ nome: "Feriale di prova", insiemi: ["Feriale di prova"], date: ["2026-12-01", "2026-12-02"], tripIds: ["p1", "p2"] });
-    expect(u[0]!.validityId).toBe(idUnita("900"));
-  });
-
-  it("l'id è stabile e riconoscibile; il nome lungo si accorcia", () => {
-    expect(idUnita("900+901")).toBe(idUnita("900+901"));
-    expect(idUnita("900+901")).not.toBe(idUnita("900"));
-    expect(idUnita("900")).toMatch(/^file-[0-9a-f]{27}$/);
-    expect(nomeUnita(["A", "B"])).toBe("A + B");
-    expect(nomeUnita(["x".repeat(300)])).toHaveLength(240);
-  });
-
-  it("senza corse del progetto, nessuna unità", () => {
-    expect(unitaDalFile(f, new Map())).toEqual([]);
   });
 });

@@ -2360,6 +2360,24 @@ nessuna Watch Path.
 
 **Rollback**: immagine precedente della web.
 
+### Unità di progettazione: si torna alla logica di Cerbero (tappa 7.41)
+
+- La creazione delle unità dal file dei turni (7.40) è tolta: le unità di
+  progettazione le calcola Cerbero con la sua logica (categoria del
+  calendario, giorno tipo e corse attive), con «Calcola Unità». Il file dei
+  turni scrive solo le validità (7.39); alla fine la finestra porta di nuovo
+  a «Calcola Unità».
+- Resta dalla 7.40: nel progetto di Fucina di un'unità, «Importa turni
+  esistenti» propone il tipo di giorno del file che contiene le date
+  dell'unità (vale anche per le unità calcolate).
+- Le unità eventualmente già create dal file (id che comincia con `file-`)
+  restano finché non si cancellano da «Unità salvate».
+
+**Dopo il deploy**: deploy di API e web. Nessuna migrazione, nessuna
+variabile, nessuna Watch Path.
+
+**Rollback**: immagini precedenti di API e web.
+
 ### Planning Studio: le unità di progettazione dal file dei turni (tappa 7.40)
 
 - **I tipi di giorno del file sono le unità di progettazione.** Con «Dal file
