@@ -300,7 +300,7 @@ html.tema-chiaro .landing {
 @keyframes landing-gira { to { transform: rotate(360deg); } }
 @media (max-width: 640px) { .landing-mirino-etichetta { display: none; } }
 
-.landing-eroe-testo { position: relative; max-width: 620px; }
+.landing-eroe-testo { position: relative; max-width: 660px; }
 .landing-eroe .landing-sotto { margin-inline: 0; max-width: 34rem; }
 
 .landing-titolo {
@@ -310,10 +310,12 @@ html.tema-chiaro .landing {
 }
 .landing-titolo-1 {
   display: block;
+  /* il nome sta su una riga sola, a ogni larghezza */
+  white-space: nowrap;
   font-stretch: 125%;
   font-variation-settings: "wdth" 125;
   font-weight: 700;
-  font-size: clamp(54px, 7.3vw, 118px);
+  font-size: clamp(46px, 6.6vw, 108px);
   letter-spacing: -0.02em;
   color: var(--l-testo);
 }
@@ -803,101 +805,59 @@ html.tema-chiaro .landing .landing-pilastro-icona { color: var(--l-indaco); }
 .landing-pilastro h3 { margin-top: 14px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
 .landing-pilastro p { margin-top: 6px; font-size: 14.5px; line-height: 1.55; color: var(--l-testo-2); }
 
-/* il crawler di Argos, come nella console */
-.landing-argos-studio {
-  --st-fondo: #050507; --st-pannello: #0a0a0d; --st-bordo: rgba(255, 255, 255, 0.08);
-  --st-testo: #e4e4e7; --st-testo-2: #a1a1aa; --st-testo-3: #71717a; --st-viola: #a78bfa; --st-fase: rgba(255, 255, 255, 0.05);
+/* il cervello 3D di Argos come sfondo della sua sezione (tappa 7.37) */
+.landing-argos {
   position: relative;
-  overflow: hidden;
-  border-radius: 20px;
-  border: 1px solid color-mix(in srgb, var(--l-viola) 45%, transparent);
-  background: var(--st-fondo);
-  color: var(--st-testo);
-  box-shadow: 0 10px 60px -10px color-mix(in srgb, var(--l-viola) 35%, transparent);
+  /* clip e non hidden: hidden farebbe della sezione un contenitore di scorrimento e lo sfondo non resterebbe agganciato */
+  overflow: clip;
+  min-height: 100svh;
+  display: flex;
+  align-items: center;
+  background: #050507;
 }
-html.tema-chiaro .landing .landing-argos-studio {
-  --st-fondo: #f6f7fb; --st-pannello: #ffffff; --st-bordo: rgba(15, 23, 42, 0.1);
-  --st-testo: #0f172a; --st-testo-2: #475569; --st-testo-3: #64748b; --st-viola: #6d28d9; --st-fase: rgba(15, 23, 42, 0.05);
+html.tema-chiaro .landing .landing-argos { background: #f6f7fb; }
+.landing-argos::before { display: none; }
+.landing-argos-sfondo { position: absolute; inset: 0; }
+.landing-argos-fisso { position: sticky; top: 0; height: 100svh; overflow: hidden; }
+.landing-argos-piano { position: absolute; inset: 0; display: block; width: 100%; height: 100%; transition: transform 600ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+.landing-argos-3d { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+/* le etichette del cervello restano, ma un passo indietro: è uno sfondo */
+.landing-argos-3d canvas + canvas { opacity: 0.7; }
+.landing-argos-velo {
+  position: absolute; inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    linear-gradient(to bottom, var(--l-fondo) 0%, transparent 12%, transparent 88%, var(--l-fondo) 100%),
+    color-mix(in srgb, var(--l-fondo) 40%, transparent);
 }
-.landing-argos-barra {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+@media (min-width: 1024px) {
+  .landing-argos-velo {
+    background:
+      linear-gradient(to bottom, var(--l-fondo) 0%, transparent 14%, transparent 86%, var(--l-fondo) 100%),
+      linear-gradient(90deg, color-mix(in srgb, var(--l-fondo) 92%, transparent) 0%, color-mix(in srgb, var(--l-fondo) 70%, transparent) 34%, transparent 62%);
+  }
+}
+.landing-argos-contenuto { position: relative; z-index: 2; width: 100%; padding-block: clamp(96px, 12vw, 150px); }
+.landing-argos-didascalia {
+  position: absolute;
+  z-index: 3;
+  right: clamp(16px, 4vw, 56px);
+  top: clamp(96px, 13vh, 136px);
+  max-width: min(440px, calc(100% - 32px));
+  display: flex; flex-direction: column; gap: 6px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--st-bordo);
-  font-family: "Reddit Mono", ui-monospace, monospace;
-  font-size: 10.5px;
-  letter-spacing: 0.1em;
-}
-.landing-argos-marchio { display: inline-flex; align-items: center; gap: 6px; color: var(--st-viola); font-weight: 600; }
-.landing-argos-fasi { display: flex; flex-wrap: wrap; gap: 3px; flex: 1; min-width: 0; }
-.landing-argos-fasi li {
-  padding: 3px 7px;
-  border-radius: 3px;
-  background: var(--st-fase);
-  color: var(--st-testo-3);
-  transition: background-color 300ms ease, color 300ms ease;
-}
-.landing-argos-fasi li[data-stato="fatta"] { color: var(--st-testo-2); background: color-mix(in srgb, var(--st-viola) 14%, transparent); }
-.landing-argos-fasi li[data-stato="ora"] { color: #120b24; background: var(--st-viola); font-weight: 700; }
-html.tema-chiaro .landing .landing-argos-fasi li[data-stato="ora"] { color: #fff; }
-.landing-argos-vista {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--st-bordo);
-  border-radius: 6px;
-  color: var(--st-testo-2);
-}
-.landing-argos-vista:hover { color: var(--st-testo); border-color: var(--st-viola); }
-.landing-argos-vista:focus-visible { outline: 2px solid var(--st-viola); outline-offset: 2px; }
-.landing-argos-corpo { display: grid; grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 1024px) { .landing-argos-corpo { grid-template-columns: minmax(0, 1fr) 360px; } }
-.landing-argos-palco { position: relative; height: clamp(360px, 58vh, 620px); }
-.landing-argos-titolo {
-  position: absolute; left: 14px; top: 12px;
-  max-width: 20rem;
-  padding-left: 10px;
-  border-left: 3px solid var(--st-viola);
-  font-family: "Reddit Mono", ui-monospace, monospace;
+  border: 1px solid color-mix(in srgb, var(--l-viola) 40%, transparent);
+  /* niente sfocatura dietro: sopra un disegno che cambia a ogni fotogramma costa troppo */
+  background: color-mix(in srgb, var(--l-fondo) 82%, transparent);
   pointer-events: none;
 }
-.landing-argos-titolo b { display: block; font-size: 17px; letter-spacing: 0.06em; color: var(--st-testo); }
-.landing-argos-titolo span { display: block; margin-top: 2px; font-size: 11px; color: var(--st-testo-2); }
-.landing-argos-aiuto { position: absolute; right: 12px; bottom: 10px; font-size: 9.5px; color: var(--st-testo-3); pointer-events: none; }
-.landing-argos-chat {
-  display: flex; flex-direction: column;
-  border-top: 1px solid var(--st-bordo);
-  background: var(--st-pannello);
-  min-height: 260px;
-}
-@media (min-width: 1024px) { .landing-argos-chat { border-top: 0; border-left: 1px solid var(--st-bordo); } }
-.landing-argos-chat-testa {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--st-bordo);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  color: var(--st-testo-3);
-}
+.landing-argos-fase { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.12em; color: var(--l-viola); }
+html.tema-chiaro .landing .landing-argos-fase { color: var(--l-indaco); }
+.landing-argos-domanda { font-size: 11px; letter-spacing: 0.04em; line-height: 1.5; color: var(--l-testo-2); text-transform: none; }
 .landing-argos-vivo { width: 7px; height: 7px; border-radius: 9999px; background: #22c55e; box-shadow: 0 0 8px #22c55e; animation: lv-lampeggia 1.6s ease-in-out infinite; }
-.landing-argos-chat-corpo { display: flex; flex-direction: column; gap: 14px; padding: 16px 14px; font-size: 14px; line-height: 1.55; }
-.landing-argos-msg { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: start; }
-.landing-argos-msg p { color: var(--st-testo); }
-.landing-argos-msg-io p { color: var(--st-testo-2); }
-.landing-argos-avatar {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px; border-radius: 9999px;
-  border: 1px solid var(--st-bordo);
-  color: var(--st-testo-2);
-}
-.landing-argos-avatar-argos { border-color: color-mix(in srgb, var(--st-viola) 60%, transparent); color: var(--st-viola); background: color-mix(in srgb, var(--st-viola) 12%, transparent); }
-.landing-argos-msg sup { margin-left: 1px; font-family: "Reddit Mono", ui-monospace, monospace; font-size: 9.5px; color: var(--st-viola); }
-.landing-argos-cursore { display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: -2px; background: var(--st-viola); animation: lv-lampeggia 0.9s steps(1) infinite; }
-.landing-argos-attesa { display: inline-flex; gap: 4px; padding-top: 8px; }
-.landing-argos-attesa span { width: 6px; height: 6px; border-radius: 9999px; background: var(--st-testo-3); animation: lv-pulsa 1.2s ease-in-out infinite; }
-.landing-argos-attesa span:nth-child(2) { animation-delay: 0.2s; }
-.landing-argos-attesa span:nth-child(3) { animation-delay: 0.4s; }
-.landing-argos-fonti { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--st-bordo); }
-.landing-argos-fonti > span { font-size: 9.5px; letter-spacing: 0.14em; color: var(--st-testo-3); }
-.landing-argos-fonti ol { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--st-testo-2); }
+/* sul telefono la didascalia finirebbe sopra il testo */
+@media (max-width: 640px) { .landing-argos-didascalia { display: none; } }
 
 /* ── movimento ridotto: tutto fermo ───────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

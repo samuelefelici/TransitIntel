@@ -124,7 +124,7 @@ const IT: TestiLanding = {
   argos: {
     occhiello: "Argos · AI core",
     titolo: { prima: "Un RAG multiagente", evidenza: "per il trasporto pubblico." },
-    testo: "Argos recupera quello che serve dalla biblioteca dell'azienda e dai dati di Cerbero, ci ragiona con una squadra di agenti e verifica che ogni affermazione abbia una fonte. Qui sotto lo vedi lavorare su una domanda d'esempio.",
+    testo: "Argos recupera quello che serve dalla biblioteca dell'azienda e dai dati di Cerbero, ci ragiona con una squadra di agenti e verifica che ogni affermazione abbia una fonte. Sullo sfondo lo vedi lavorare su una domanda d'esempio.",
     pilastri: pilastri({
       squadra: "Più agenti, ognuno con il suo modello, le sue skill e i suoi strumenti, al lavoro sullo stesso compito.",
       biblioteca: "Documenti e procedure dell'azienda, divisi in passaggi e indicizzati per significato: la memoria da cui Argos recupera.",
@@ -223,7 +223,7 @@ const EN: TestiLanding = {
   argos: {
     occhiello: "Argos · AI core",
     titolo: { prima: "A multi-agent RAG", evidenza: "for public transport." },
-    testo: "Argos retrieves what it needs from the company's library and from Cerbero's data, reasons over it with a team of agents and checks that every claim has a source. Below, you can watch it work on a sample question.",
+    testo: "Argos retrieves what it needs from the company's library and from Cerbero's data, reasons over it with a team of agents and checks that every claim has a source. In the background, you can watch it work on a sample question.",
     pilastri: pilastri({
       squadra: "Several agents, each with its own model, skills and tools, working on the same task.",
       biblioteca: "Company documents and procedures, split into passages and indexed by meaning: the memory Argos retrieves from.",

@@ -236,6 +236,21 @@ const quad = (p0: V3, c: V3, p1: V3, t: number): V3 => {
   return [u * u * p0[0] + 2 * u * t * c[0] + t * t * p1[0], u * u * p0[1] + 2 * u * t * c[1] + t * t * p1[1], u * u * p0[2] + 2 * u * t * c[2] + t * t * p1[2]];
 };
 
+/**
+ * Lo sguardo di chi guarda (tappa 7.37, la pagina di accesso): la telecamera
+ * gira attorno al suo bersaglio di sx (−1…1, verso destra) in orizzontale e
+ * sale o scende di sy (−1…1, verso il basso). A sguardo fermo (0, 0) la
+ * posizione non cambia: la console non se ne accorge.
+ */
+export function ruotaSguardo(pos: V3, tgt: V3, sx: number, sy: number): V3 {
+  const d = sub(pos, tgt), l = len(d);
+  if (l < 1e-6 || (sx === 0 && sy === 0)) return pos;
+  const a = clamp(sx, -1, 1) * 0.55, c = Math.cos(a), s = Math.sin(a);
+  const r: V3 = [d[0] * c + d[2] * s, d[1], -d[0] * s + d[2] * c];
+  r[1] += clamp(sy, -1, 1) * -0.35 * l;
+  return add(tgt, mul(norm(r), l));
+}
+
 export interface OpzioniCervello {
   chiaro: boolean;
   /** la vista 3D si è fermata da sola: un errore nel disegno, o troppo lenta su questa macchina. Si torna al 2D. */
@@ -281,6 +296,9 @@ export class Cervello3D {
    */
   private qualita = 1;
   private nFoto = 0; private sFoto = 0; private lenti = 0;
+  /** lo sguardo voluto (dal puntatore) e quello di adesso, che lo segue piano */
+  private sguardo = { x: 0, y: 0 };
+  private sguardoOra = { x: 0, y: 0 };
 
   private readonly onGuasto: OpzioniCervello["onGuasto"];
 
@@ -314,6 +332,11 @@ export class Cervello3D {
     this.impostaTema(o.chiaro, true);
     this.ridimensiona();
     this.raf = requestAnimationFrame(this.frame);
+  }
+
+  /** La telecamera segue di poco il puntatore: x e y fra −1 e 1 (0, 0 = ferma). */
+  impostaSguardo(x: number, y: number): void {
+    this.sguardo = { x: clamp(x, -1, 1), y: clamp(y, -1, 1) };
   }
 
   impostaTema(chiaro: boolean, forza = false): void {
@@ -514,6 +537,10 @@ export class Cervello3D {
         pos = [Math.sin(this.giro) * 3.05, 0.6 + 0.3 * Math.sin(this.giro * 0.6), Math.cos(this.giro) * 3.05];
         tgt = [0, -0.05, 0];
       }
+      const sg = 1 - Math.exp(-dt * (this.ridotto ? 0.6 : 2.2));
+      this.sguardoOra.x += (this.sguardo.x - this.sguardoOra.x) * sg;
+      this.sguardoOra.y += (this.sguardo.y - this.sguardoOra.y) * sg;
+      pos = ruotaSguardo(pos, tgt, this.sguardoOra.x, this.sguardoOra.y);
       const sc = 1 - Math.exp(-dt * (lavora ? 0.9 : 0.6));
       this.camPos = add(this.camPos, mul(sub(pos, this.camPos), sc));
       this.camTarget = add(this.camTarget, mul(sub(tgt, this.camTarget), sc));

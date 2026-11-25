@@ -2341,6 +2341,25 @@ nessuna Watch Path.
 
 **Rollback**: immagine precedente della web.
 
+### Pagina di accesso: il cervello di Argos come sfondo, il nome su una riga (tappa 7.37)
+
+- **Il cervello 3D di Argos è lo sfondo della sua sezione**, a tutto schermo
+  (`components/accesso/ArgosSfondo.tsx`): la telecamera segue di poco il mouse
+  (`ruotaSguardo` in `lib/argos-cervello3d.ts`; a mouse fermo la console non
+  cambia) e lo sfondo resta agganciato allo schermo mentre si scorre la
+  sezione. Tolta la chat d'esempio della 7.36: resta, in un angolo, solo la
+  fase e la domanda d'esempio.
+- Il 3D è per gli schermi larghi, come nella console; sul telefono gira il
+  crawler in piano. Se un computer è troppo lento per il 3D, lo sfondo resta
+  fermo invece di passare al crawler in piano, che a tutto schermo sarebbe
+  ancora più pesante.
+- **«CERBERO» non va più a capo** nella prima schermata, a ogni larghezza.
+
+**Dopo il deploy**: deploy della web. Nessuna migrazione, nessuna variabile,
+nessuna Watch Path.
+
+**Rollback**: immagine precedente della web.
+
 ### Correzioni dal collaudo: Fermate & Linee e punti di riposo (tappa 7.31)
 
 **Fermate & Linee** (Rete › Elenco Fermate). Due numeri erano sbagliati:
