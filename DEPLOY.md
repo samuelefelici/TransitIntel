@@ -2360,6 +2360,31 @@ nessuna Watch Path.
 
 **Rollback**: immagine precedente della web.
 
+### Planning Studio: le unità di progettazione dal file dei turni (tappa 7.40)
+
+- **I tipi di giorno del file sono le unità di progettazione.** Con «Dal file
+  dei turni» (pagina Validità), insieme alle validità si salva un'unità per
+  ogni tipo di giorno del file (le date con gli stessi insiemi di turni):
+  - nome: gli insiemi di turni del file;
+  - date: quelle del tipo di giorno;
+  - corse: quelle del progetto abbinate alle corse dei suoi insiemi;
+  - giorno tipo e categoria: i più frequenti fra le sue date.
+- Una spunta, accesa di partenza, permette di non crearle. L'id delle unità
+  nate dal file comincia con `file-` ed è stabile: ricaricando il file le
+  stesse unità si aggiornano, non si duplicano. Le altre unità del progetto
+  restano come sono.
+- Si scrivono nella stessa transazione delle validità, col lucchetto del
+  salvataggio delle unità.
+- A fine import la finestra porta a **Progetti di esercizio**: da lì si avvia
+  il progetto di Fucina di un'unità, e nel progetto «Importa turni
+  esistenti» (7.38) propone da solo il tipo di giorno di quell'unità.
+
+**Dopo il deploy**: deploy di API e web. Nessuna migrazione, nessuna
+variabile, nessuna Watch Path.
+
+**Rollback**: immagini precedenti di API e web. Le unità create restano; si
+cancellano da «Unità salvate».
+
 ### Planning Studio: le validità delle corse dal file dei turni (tappa 7.39)
 
 - **Nuovo pulsante «Dal file dei turni»** in Planning Studio › progetto ›

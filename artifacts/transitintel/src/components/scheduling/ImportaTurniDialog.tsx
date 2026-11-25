@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, FileUp, Loader2, X } from "lucide-react";
 import {
-  anteprimaTurni, importaTurni, dataLeggibile, etichettaTipo, primaDataUtile, nomeProposto,
+  anteprimaTurni, importaTurni, dataLeggibile, etichettaTipo, primaDataUtile, nomeProposto, tipoProposto,
   riconosciute, percentuale, giudizio, type Anteprima,
 } from "@/lib/turni-esistenti";
 
@@ -46,8 +46,9 @@ export default function ImportaTurniDialog({ projectId, onClose, onImportato }: 
     try {
       const a = await anteprimaTurni(projectId, f);
       setBase(a);
-      const primo = a.tipiDiGiorno[0];
-      if (primo) { setTipo(primo.chiave); setData(primaDataUtile(primo.date, oggi()) ?? ""); }
+      /* nel progetto di un'unità di progettazione si propone il suo tipo di giorno */
+      const proposto = tipoProposto(a.tipiDiGiorno, a.dateDellUnita, oggi());
+      if (proposto) { setTipo(proposto.tipo.chiave); setData(proposto.data); }
     } catch (e: any) {
       setErrore(e?.message ?? "Il file non si legge");
     } finally { setLeggo(false); }

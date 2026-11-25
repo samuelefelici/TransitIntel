@@ -11,7 +11,8 @@
  * Funzioni pure: il giorno tipo di ogni data lo passa chi chiama, con la
  * stessa regola della valutazione della validità (lib/planning-studio-validity-eval.ts).
  */
-import { PEZZO, type FileTurni } from "./file";
+import { createHash } from "node:crypto";
+import { PEZZO, giorniDelFile, tipiDiGiorno, type FileTurni } from "./file";
 import { lineaNormale, numeroDellaCorsa, type CorsaDelFile, type CorsaGtfs } from "./abbina";
 
 /** Le date (AAAA-MM-GG) in cui gira ogni corsa del file, dal calendario degli insiemi di turni. */
@@ -155,6 +156,67 @@ export function validitaDalFile(
     for (const d of date) { const t = giornoTipo(d); if (t) tipi.add(t); }
     const spente = giorni.filter((d) => !quando.has(d) && tipi.has(giornoTipo(d) ?? ""));
     out.push({ tripId, date, giorniTipo: [...tipi].sort(), spente });
+  }
+  return out;
+}
+
+/* ─── Le unità di progettazione dal file (tappa 7.40) ───────────────── */
+
+export interface UnitaDelFile {
+  /** id stabile dell'unità: lo stesso tipo di giorno, ricaricato, aggiorna la stessa unità */
+  validityId: string;
+  nome: string;
+  /** gli insiemi di turni del file, uno per riga */
+  insiemi: string[];
+  date: string[];
+  tripIds: string[];
+}
+
+const MAX_NOME = 240;
+
+/** Il nome di un'unità: gli insiemi di turni del file, uniti; accorciato se troppo lungo. */
+export function nomeUnita(nomi: string[]): string {
+  const t = nomi.join(" + ");
+  return t.length > MAX_NOME ? `${t.slice(0, MAX_NOME - 1)}…` : t;
+}
+
+/** L'id dell'unità di un tipo di giorno del file: dal prefisso si riconoscono le unità nate dal file. */
+export function idUnita(chiave: string): string {
+  return `file-${createHash("sha256").update(`file-turni|${chiave}`).digest("hex").slice(0, 27)}`;
+}
+
+/**
+ * Un'unità di progettazione per ogni tipo di giorno del file (le date con gli
+ * stessi insiemi di turni): le sue date e le corse del progetto che in quei
+ * giorni girano, cioè quelle abbinate alle corse dei suoi insiemi. Un tipo
+ * di giorno senza nessuna corsa del progetto non dà un'unità.
+ */
+export function unitaDalFile(f: FileTurni, corsePerTrip: Map<string, string[]>): UnitaDelFile[] {
+  const corsePerInsieme = new Map<string, Set<string>>();
+  for (const s of f.superlivelli) {
+    const v = new Set<string>();
+    for (const t of s.turni) for (const p of t.pezzi) if (p.tipo === PEZZO.inLinea && p.corsa) v.add(p.corsa);
+    corsePerInsieme.set(s.id, v);
+  }
+  const tripPerCorsa = new Map<string, string>();
+  for (const [tripId, corse] of corsePerTrip) for (const c of corse) tripPerCorsa.set(c, tripId);
+  const out: UnitaDelFile[] = [];
+  for (const tipo of tipiDiGiorno(giorniDelFile(f))) {
+    const trips = new Set<string>();
+    for (const id of tipo.chiave.split("+")) {
+      for (const c of corsePerInsieme.get(id) ?? []) {
+        const t = tripPerCorsa.get(c);
+        if (t) trips.add(t);
+      }
+    }
+    if (trips.size === 0) continue;
+    out.push({
+      validityId: idUnita(tipo.chiave),
+      nome: nomeUnita(tipo.nomi),
+      insiemi: tipo.nomi,
+      date: [...tipo.date].sort(),
+      tripIds: [...trips].sort(),
+    });
   }
   return out;
 }

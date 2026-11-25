@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { dataLeggibile, etichettaTipo, giudizio, nomeProposto, percentuale, primaDataUtile, riconosciute, type Resoconto } from "./turni-esistenti";
+import { dataLeggibile, etichettaTipo, giudizio, nomeProposto, percentuale, primaDataUtile, riconosciute, tipoProposto, type Resoconto, type TipoDiGiorno } from "./turni-esistenti";
 
 const r = (numero: number, orario: number, totale: number): Resoconto => ({
   turniGuida: 1, turniMacchina: 1, corseNelFile: totale, riconosciutePerNumero: numero, riconosciutePerOrario: orario,
@@ -33,5 +33,14 @@ describe("import dei turni esistenti: testi", () => {
     expect(giudizio(r(90, 6, 100))).toBe("bene");
     expect(giudizio(r(60, 10, 100))).toBe("attenzione");
     expect(giudizio(r(40, 10, 100))).toBe("grave");
+  });
+
+  it("il tipo di giorno proposto: quello dell'unità del progetto, altrimenti il primo", () => {
+    const t = (chiave: string, date: string[]): TipoDiGiorno => ({ chiave, nomi: [chiave], date, turniGuida: 1, turniMacchina: 1 });
+    const tipi = [t("feriale", ["2026-12-01", "2026-12-02", "2026-12-03"]), t("sabato", ["2026-12-05", "2026-12-12"])];
+    expect(tipoProposto(tipi, ["2026-12-05", "2026-12-12"], "2026-12-06")).toEqual({ tipo: tipi[1], data: "2026-12-12" });
+    expect(tipoProposto(tipi, undefined, "2026-12-02")).toEqual({ tipo: tipi[0], data: "2026-12-02" });
+    expect(tipoProposto(tipi, ["2027-03-01"], "2026-12-01")).toEqual({ tipo: tipi[0], data: "2026-12-01" });
+    expect(tipoProposto([], undefined, "2026-12-01")).toBeNull();
   });
 });
