@@ -2267,6 +2267,35 @@ nessuna Watch Path. Il primo accesso dopo il deploy mostra la pagina nuova.
 
 **Rollback**: immagine precedente della web.
 
+### La pagina di accesso come pagina di presentazione (tappa 7.34)
+
+La pagina di accesso della 7.33 diventa una pagina di presentazione animata,
+con i colori del logo (ciano, blu e indaco sul blu notte; le stesse tinte,
+scurite, nel tema chiaro).
+- **In alto** la Terra a punti che gira, con i paralleli, l'atmosfera, tre
+  anelli in orbita, i nodi che pulsano e la luce che corre sugli archi; un
+  mirino passa da un nodo all'altro e ne dice le coordinate. Il globo è
+  disegnato con `three`, che c'era già fra le dipendenze e si scarica solo
+  quando la pagina si apre. Le terre emerse sono una griglia di un grado in
+  `src/lib/terra.ts`, ricavata una volta da Natural Earth (pubblico dominio)
+  con `scripts/genera-terra.mjs`.
+- **Scorrendo**: il nastro coi nomi delle funzioni, il ciclo del lavoro con
+  la linea che si accende, gli otto moduli con una piccola animazione
+  ciascuno, la sicurezza e l'invito finale.
+- **L'accesso** sta in un riquadro che entra da destra, con la stessa logica
+  di prima (email e password, poi la verifica in due passaggi). Si apre dai
+  pulsanti «Accedi», e da solo quando si arriva su una pagina interna (un
+  segnalibro, un link da FleetCare, la sessione scaduta). Esc o un clic fuori
+  lo chiudono.
+- Con «riduci il movimento» del sistema tutto è fermo e il globo è un'immagine
+  sola. Il globo si ferma anche quando non si vede o la scheda è nascosta.
+- Tolti `GrigliaProspettica.tsx` e `styles/accesso.css` della 7.33.
+
+**Dopo il deploy**: deploy della web. Nessuna migrazione, nessuna variabile,
+nessuna Watch Path.
+
+**Rollback**: immagine precedente della web.
+
 ### Correzioni dal collaudo: Fermate & Linee e punti di riposo (tappa 7.31)
 
 **Fermate & Linee** (Rete › Elenco Fermate). Due numeri erano sbagliati:

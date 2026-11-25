@@ -1,6 +1,6 @@
 /**
- * La pagina di accesso (tappa 7.33): che cosa racconta di Cerbero a chi entra,
- * e il nome con cui lo saluta. Funzioni pure, coi loro test.
+ * La pagina di accesso (tappe 7.33 e 7.34): che cosa racconta di Cerbero a chi
+ * entra, e il nome con cui lo saluta. Funzioni pure, coi loro test.
  *
  * Il ciclo segue il menu (lib/navigazione.ts), che è nell'ordine del lavoro
  * dell'azienda: per questo le tappe hanno un numero. Le affermazioni devono
@@ -23,12 +23,36 @@ export const CICLO: readonly TappaDelCiclo[] = [
   { numero: "06", titolo: "Consuntivo", testo: "La giornata congelata, l'esito di ogni corsa, la chiusura del mese." },
 ];
 
-/** Quello che sta accanto al ciclo, per tutto l'anno. */
-export const ACCANTO: readonly { titolo: string; testo: string }[] = [
-  { titolo: "Tariffe", testo: "Polimetriche, zone e prodotti, con il confronto con la bigliettazione." },
-  { titolo: "Dati aperti", testo: "GTFS completo di tariffe e NeTEx con il profilo italiano." },
-  { titolo: "Argos", testo: "L'assistente che legge e lavora su Planning Studio, con la tua conferma." },
-  { titolo: "Sicurezza", testo: "Verifica in due passaggi, ruoli per area, copie cifrate del database." },
+/** I moduli di Cerbero, per la griglia «Dentro Cerbero» (tappa 7.34). */
+export interface Modulo {
+  chiave: "rete" | "turni" | "roster" | "esercizio" | "consuntivo" | "tariffe" | "dati" | "argos";
+  titolo: string;
+  sotto: string;
+  testo: string;
+}
+export const MODULI: readonly Modulo[] = [
+  { chiave: "rete", titolo: "Planning Studio", sotto: "Rete e orari", testo: "Linee, percorsi, fermate, corse e calendari, con la matrice di validità e il controllo del GTFS." },
+  { chiave: "turni", titolo: "Fucina", sotto: "Turni macchina e turni guida", testo: "Ottimizzati con le regole del contratto, ritoccati a mano, pubblicati insieme." },
+  { chiave: "roster", titolo: "Roster", sotto: "Personale", testo: "Il tabellone dei conducenti, le assenze col sostituto suggerito, le rotazioni." },
+  { chiave: "esercizio", titolo: "Esercizio", sotto: "AVM e sala operativa", testo: "I mezzi in linea sulla mappa, i passaggi alle fermate, la diagnosi della giornata." },
+  { chiave: "consuntivo", titolo: "Consuntivo", sotto: "Il mese chiuso", testo: "La giornata congelata, l'esito di ogni corsa, la chiusura del mese e il report." },
+  { chiave: "tariffe", titolo: "Tariffe", sotto: "Polimetriche e zone", testo: "Fasce chilometriche, zone e prodotti, confrontati con la bigliettazione." },
+  { chiave: "dati", titolo: "Dati aperti", sotto: "GTFS e NeTEx", testo: "GTFS completo di tariffe e NeTEx col profilo italiano, a indirizzi stabili." },
+  { chiave: "argos", titolo: "Argos", sotto: "L'assistente", testo: "Legge e lavora su Planning Studio; ogni modifica aspetta la tua conferma." },
+];
+
+/** La sicurezza, detta com'è (tappa 7.34). */
+export const SICUREZZA: readonly { titolo: string; testo: string }[] = [
+  { titolo: "Verifica in due passaggi", testo: "Il codice dell'app sul telefono, con i codici di recupero. Obbligatoria per i ruoli che la richiedono." },
+  { titolo: "Ruoli per area", testo: "Ognuno legge e scrive solo dove il suo ruolo lo permette, anche deposito per deposito." },
+  { titolo: "Registro delle modifiche", testo: "Chi ha cambiato che cosa, e quando, nel database stesso. Si accende quando l'azienda lo decide." },
+  { titolo: "Copie cifrate", testo: "Ogni notte una copia cifrata del database, fuori dal server, con la prova di ripristino." },
+];
+
+/** Il nastro che scorre sotto la prima schermata. */
+export const NASTRO: readonly string[] = [
+  "Planning Studio", "Matrice di validità", "Turni macchina", "Turni guida", "Roster", "Vestizione",
+  "AVM", "Consuntivo", "Polimetriche", "GTFS", "NeTEx", "Argos", "Registro delle modifiche",
 ];
 
 /** Il nome per il saluto: il nome di battesimo, o la parte più lunga dell'email; vuoto se non c'è niente. */
