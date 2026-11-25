@@ -58,6 +58,7 @@ import argosConsoleRouter from "./argos-console";
 import planningRouter from "./planning";
 import territoryRouter from "./territory";
 import schedulingProjectsRouter from "../lib/scheduling-projects";
+import turniEsistentiRouter from "../lib/turni-esistenti/rotte";
 import scheduleSharesRouter from "../lib/schedule-shares";
 import planningStudioRouter from "../lib/planning-studio";
 import { versioniInSolaLettura } from "../lib/versioni-pubblicate";
@@ -161,6 +162,7 @@ router.use(argosConsoleRouter); // la console di Argos (pagina /argos): squadra,
 router.use(planningRouter);
 router.use(territoryRouter);
 router.use(schedulingProjectsRouter);
+router.use(turniEsistentiRouter); // Fucina: import dei turni esistenti dal file dell'azienda (7.38)
 router.use(scheduleSharesRouter);
 router.use(planningStudioRouter);
 router.use(planningStudioImportRouter);

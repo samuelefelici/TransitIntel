@@ -497,7 +497,7 @@ function Router() {
 }
 
 function AuthGate() {
-  const { isAuthenticated, loading, user, accesso } = useAuth();
+  const { isAuthenticated, loading, user, accesso, entratoDalModulo } = useAuth();
   const [location, navigate] = useLocation();
   const prevAuth = useRef(isAuthenticated);
   /* entrato con un codice di recupero: si parte dalla pagina per rifare la verifica */
@@ -535,8 +535,10 @@ function AuthGate() {
 
   useEffect(() => {
     if (!prevAuth.current && isAuthenticated) {
-      // Login fresco -> tieni montato LoginPage finché la sequenza non emette l'evento
-      setWaitingSequence(true);
+      // Login fresco dal modulo -> tieni montato LoginPage finché la conferma non emette l'evento.
+      // Una sessione ripresa (scheda nuova, cookie ancora valido) non ha conferma: niente attesa,
+      // altrimenti si resterebbe sulla pagina di accesso con la sessione buona (tappa 7.38).
+      if (entratoDalModulo) setWaitingSequence(true);
       /* replace: la pagina del login non resta nella cronologia (da FleetCare, Indietro
        * non deve riportare a /fleetcare e far ripartire un biglietto) */
       /* si torna alla pagina chiesta prima dell'accesso (un segnalibro, un link), con la sua
@@ -554,7 +556,7 @@ function AuthGate() {
       }
     }
     prevAuth.current = isAuthenticated;
-  }, [isAuthenticated, navigate]);
+  }, [isAuthenticated, navigate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rotta PUBBLICA della Mappa di Rete condivisa: nessuna autenticazione.
   if (location.startsWith("/m/")) {
@@ -572,7 +574,7 @@ function AuthGate() {
   /* il primo disegno dopo un accesso: l'effetto qui sopra non ha ancora messo
    * waitingSequence, ma l'app non va mostrata nemmeno per un fotogramma, altrimenti
    * il login si smonta e la sua conferma (pages/login.tsx) ricomincia da capo (tappa 7.33) */
-  const appenaEntrato = isAuthenticated && !prevAuth.current;
+  const appenaEntrato = isAuthenticated && !prevAuth.current && entratoDalModulo;
   const showApp = isAuthenticated && !waitingSequence && !appenaEntrato;
 
   return (

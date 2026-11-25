@@ -111,7 +111,7 @@ async function loadProjectOwned(id: string, userId: string): Promise<any | null>
  *  collaboratore del progetto Planner Studio collegato (i membri PS restano
  *  abilitati per TUTTO il processo, fino allo Scheduling Engine).
  *  Aggiunge a row il campo `my_role` ('owner' | 'editor' | 'viewer'). */
-async function loadProjectAccessible(id: string, userId: string): Promise<any | null> {
+export async function loadProjectAccessible(id: string, userId: string): Promise<any | null> {
   const r = await db.execute(sql`
     SELECT p.*,
            CASE WHEN p.owner_user_id = ${userId}::uuid THEN 'owner'
@@ -152,7 +152,7 @@ function isOwner(projectRow: any, userId: string): boolean {
 }
 
 /** Inserisce una riga nel log attività. Best-effort: errori non interrompono la richiesta. */
-async function logActivity(
+export async function logActivity(
   projectId: string,
   userId: string,
   action: string,

@@ -2374,7 +2374,7 @@ export default function VehicleWorkspace({
               icon={<Fuel className="w-3 h-3" />}
               label="Km vuoto"
               value={summary?.totalDeadheadKm?.toFixed(0) ?? "—"}
-              sub={summary?.efficiency ? `Eff. ${(summary.efficiency * 100).toFixed(0)}%` : undefined}
+              sub={summary?.efficiency ? `Eff. ${(summary.efficiency > 1 ? summary.efficiency : summary.efficiency * 100).toFixed(0)}%` : undefined /* il server la dà in percento, il ricalcolo dopo una modifica come frazione */}
               color="#ef4444"
             />
           </div>
