@@ -43,11 +43,12 @@ function vettore(THREE: typeof T, nord: number, est: number, raggio = 1): T.Vect
   return new THREE.Vector3(Math.cos(f) * Math.sin(l), Math.sin(f), Math.cos(f) * Math.cos(l)).multiplyScalar(raggio);
 }
 
-function testoCoordinate([n, e]: readonly [number, number]): string {
-  return `${Math.abs(n).toFixed(2)} ${n >= 0 ? "N" : "S"} · ${Math.abs(e).toFixed(2)} ${e >= 0 ? "E" : "O"}`;
+function testoCoordinate([n, e]: readonly [number, number], lingua: "it" | "en"): string {
+  const ovest = lingua === "en" ? "W" : "O";
+  return `${Math.abs(n).toFixed(2)} ${n >= 0 ? "N" : "S"} · ${Math.abs(e).toFixed(2)} ${e >= 0 ? "E" : ovest}`;
 }
 
-export default function Globo({ tema }: { tema: Tema }) {
+export default function Globo({ tema, lingua = "it" }: { tema: Tema; lingua?: "it" | "en" }) {
   const contenitore = useRef<HTMLDivElement>(null);
   const mirino = useRef<HTMLDivElement>(null);
   const temaRef = useRef<Tema>(tema);
@@ -75,8 +76,8 @@ export default function Globo({ tema }: { tema: Tema }) {
         <span className="landing-mirino-angoli" />
         <span className="landing-mirino-anello" />
         <span className="landing-mirino-etichetta">
-          <b>NODO {String(nodo + 1).padStart(2, "0")}</b>
-          <span>{testoCoordinate(NODI[nodo]!)}</span>
+          <b>{lingua === "en" ? "NODE" : "NODO"} {String(nodo + 1).padStart(2, "0")}</b>
+          <span>{testoCoordinate(NODI[nodo]!, lingua)}</span>
         </span>
       </div>
     </div>

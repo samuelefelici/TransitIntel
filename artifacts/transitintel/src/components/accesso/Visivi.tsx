@@ -8,17 +8,19 @@ import type { Modulo } from "@/lib/accesso";
 
 const PERCORSO = "M8 82 C 40 20, 78 104, 112 48 S 168 70, 192 26";
 
-export default function VisivoModulo({ chiave, fermo }: { chiave: Modulo["chiave"]; fermo: boolean }) {
+export default function VisivoModulo({ chiave, fermo, etichette }: {
+  chiave: Modulo["chiave"]; fermo: boolean; etichette: { inLinea: string; tariffe: string };
+}) {
   return (
     <svg viewBox="0 0 200 110" className={`landing-visivo landing-visivo-${chiave}`} aria-hidden focusable="false">
       {chiave === "rete" && <Rete fermo={fermo} />}
       {chiave === "turni" && <Turni />}
       {chiave === "roster" && <Roster />}
-      {chiave === "esercizio" && <Esercizio fermo={fermo} />}
+      {chiave === "esercizio" && <Esercizio fermo={fermo} inLinea={etichette.inLinea} />}
       {chiave === "consuntivo" && <Consuntivo />}
       {chiave === "tariffe" && <Tariffe />}
-      {chiave === "dati" && <Dati />}
-      {chiave === "argos" && <Argos />}
+      {chiave === "dati" && <Dati tariffe={etichette.tariffe} />}
+      {chiave === "pubblico" && <Pubblico />}
     </svg>
   );
 }
@@ -71,7 +73,7 @@ function Roster() {
   return <>{celle}</>;
 }
 
-function Esercizio({ fermo }: { fermo: boolean }) {
+function Esercizio({ fermo, inLinea }: { fermo: boolean; inLinea: string }) {
   const fermate = [12, 48, 84, 120, 156, 188];
   return (
     <>
@@ -87,8 +89,8 @@ function Esercizio({ fermo }: { fermo: boolean }) {
           </circle>
         </g>
       ))}
-      <text x={10} y={92} className="lv-etichetta">IN LINEA</text>
-      <circle cx={64} cy={89} r={3} className="lv-vivo" />
+      <text x={10} y={92} className="lv-etichetta">{inLinea}</text>
+      <circle cx={16 + inLinea.length * 7.3} cy={89} r={3} className="lv-vivo" />
     </>
   );
 }
@@ -116,12 +118,12 @@ function Tariffe() {
   return <>{celle}</>;
 }
 
-function Dati() {
+function Dati({ tariffe }: { tariffe: string }) {
   return (
     <>
       <rect x={60} y={74} width={80} height={26} rx={6} className="lv-scatola" />
       <path d="M60 80 L100 92 L140 80" className="lv-scatola-bordo" />
-      {["GTFS", "NeTEx", "Tariffe"].map((t, i) => (
+      {["GTFS", "NeTEx", tariffe].map((t, i) => (
         <g key={t} className="lv-file" style={{ animationDelay: `${i * 1.2}s` }}>
           <rect x={64 + i * 26 - 14} y={44} width={44} height={20} rx={4} className="lv-file-fondo" />
           <text x={64 + i * 26 + 8} y={58} textAnchor="middle" className="lv-file-testo">{t}</text>
@@ -131,15 +133,27 @@ function Dati() {
   );
 }
 
-function Argos() {
-  const nodi: Array<[number, number]> = [[30, 30], [30, 80], [84, 18], [84, 55], [84, 92], [140, 36], [140, 76], [182, 55]];
-  const lati: Array<[number, number]> = [[0, 2], [0, 3], [1, 3], [1, 4], [2, 5], [3, 5], [3, 6], [4, 6], [5, 7], [6, 7]];
+/** gli orari al pubblico: la palina con i prossimi passaggi e il codice da inquadrare */
+const QR = [
+  "111111101", "100000100", "101110111", "101110010", "101110101", "100000110", "111111101", "000000011", "110101111",
+];
+function Pubblico() {
+  const righe: Array<[string, string]> = [["1", "07:42"], ["7", "07:49"], ["12", "07:55"], ["3", "08:02"]];
   return (
     <>
-      {lati.map(([a, b], i) => (
-        <line key={i} x1={nodi[a]![0]} y1={nodi[a]![1]} x2={nodi[b]![0]} y2={nodi[b]![1]} className="lv-sinapsi" style={{ animationDelay: `${i * 0.22}s` }} />
+      <rect x={14} y={8} width={98} height={94} rx={6} className="lv-tabellone" />
+      {righe.map(([linea, ora], i) => (
+        <g key={linea} transform={`translate(22 ${18 + i * 21})`}>
+          <rect x={0} y={0} width={22} height={14} rx={3} className={`lv-linea-badge lv-linea-badge-${i % 3}`} />
+          <text x={11} y={10.5} textAnchor="middle" className="lv-linea-numero">{linea}</text>
+          <text x={74} y={11} textAnchor="end" className="lv-orario" style={{ animationDelay: `${i * 0.5}s` }}>{ora}</text>
+        </g>
       ))}
-      {nodi.map(([x, y], i) => <circle key={i} cx={x} cy={y} r={5} className="lv-neurone" style={{ animationDelay: `${i * 0.2}s` }} />)}
+      <g transform="translate(128 18)">
+        {QR.map((riga, r) => [...riga].map((b, c) => (b === "1"
+          ? <rect key={`${r}-${c}`} x={c * 7.6} y={r * 7.6} width={6.8} height={6.8} rx={1} className="lv-qr" style={{ animationDelay: `${(r + c) * 0.07}s` }} />
+          : null)))}
+      </g>
     </>
   );
 }

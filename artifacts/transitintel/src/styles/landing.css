@@ -301,17 +301,6 @@ html.tema-chiaro .landing {
 @keyframes landing-filo { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @media (max-width: 640px) { .landing-occhiello::before, .landing-occhiello::after { width: 24px; } }
 
-.landing-titolo {
-  font-family: "Mona Sans", "DM Sans", system-ui, sans-serif;
-  font-stretch: 118%;
-  font-variation-settings: "wdth" 118;
-  font-weight: 600;
-  font-size: clamp(44px, 9vw, 150px);
-  line-height: 0.92;
-  letter-spacing: -0.035em;
-  text-transform: uppercase;
-}
-.landing-titolo-1 { display: block; color: var(--l-testo); text-shadow: 0 2px 30px color-mix(in srgb, var(--l-fondo) 70%, transparent); }
 .landing-titolo-2 {
   font-weight: 250;
   background: linear-gradient(100deg, var(--l-ciano-2) 0%, var(--l-blu) 35%, var(--l-indaco) 55%, var(--l-ciano-2) 80%);
@@ -322,8 +311,6 @@ html.tema-chiaro .landing {
   animation: landing-scorre 9s linear infinite;
 }
 @keyframes landing-scorre { to { background-position: -220% 0; } }
-.landing-parola { display: inline-block; white-space: nowrap; }
-.landing-lettera { display: inline-block; will-change: transform; }
 
 .landing-sotto {
   max-width: 44rem;
@@ -721,9 +708,141 @@ html.tema-chiaro .landing {
 .lv-file-fondo { fill: var(--l-piena); stroke: var(--l-ciano); stroke-width: 1.4; }
 .lv-file-testo { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 9px; font-weight: 600; letter-spacing: 0.06em; fill: var(--l-ciano-2); }
 
-.lv-sinapsi { stroke: var(--l-bordo); stroke-width: 1.5; stroke-dasharray: 4 6; animation: lv-impulso 1.8s linear infinite; }
-@keyframes lv-impulso { 0% { stroke: var(--l-bordo); stroke-dashoffset: 20; } 50% { stroke: var(--l-viola); } 100% { stroke: var(--l-bordo); stroke-dashoffset: 0; } }
-.lv-neurone { fill: var(--l-piena); stroke: var(--l-viola); stroke-width: 2; transform-box: fill-box; transform-origin: center; animation: lv-pulsa 2.2s ease-in-out infinite; }
+/* gli orari al pubblico */
+.lv-tabellone { fill: color-mix(in srgb, var(--l-fondo) 70%, transparent); stroke: var(--l-bordo); stroke-width: 1.2; }
+.lv-linea-badge-0 { fill: var(--l-ciano); }
+.lv-linea-badge-1 { fill: var(--l-blu); }
+.lv-linea-badge-2 { fill: var(--l-indaco); }
+.lv-linea-numero { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 9px; font-weight: 700; fill: #fff; }
+.lv-orario { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 10.5px; font-weight: 600; fill: var(--l-testo-2); animation: lv-orario 3s steps(1) infinite; }
+@keyframes lv-orario { 0%, 70% { fill: var(--l-testo-2); } 72%, 84% { fill: var(--l-ciano-2); opacity: 0.25; } 86%, 100% { fill: var(--l-ciano-2); opacity: 1; } }
+.lv-qr { fill: var(--l-testo-2); animation: lv-qr 4.2s ease-in-out infinite; }
+@keyframes lv-qr { 0%, 100% { fill: var(--l-testo-3); opacity: 0.55; } 40%, 60% { fill: var(--l-ciano-2); opacity: 1; } }
+
+/* ── la scelta della lingua ───────────────────────────────────────────────── */
+.landing-lingua { display: inline-flex; border: 1px solid var(--l-bordo); height: 38px; }
+.landing-lingua button {
+  width: 38px;
+  color: var(--l-testo-3);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  transition: color 200ms ease, background-color 200ms ease;
+}
+.landing-lingua button + button { border-left: 1px solid var(--l-bordo); }
+.landing-lingua button:hover { color: var(--l-testo); }
+.landing-lingua button[aria-pressed="true"] { color: var(--l-ciano-2); background: color-mix(in srgb, var(--l-ciano) 12%, transparent); }
+.landing-lingua button:focus-visible { outline: 2px solid var(--l-ciano); outline-offset: 2px; }
+
+/* ── le citazioni ─────────────────────────────────────────────────────────── */
+.landing-virgolette {
+  display: block;
+  height: 0.5em;
+  font-family: "Mona Sans", "DM Sans", serif;
+  font-size: clamp(90px, 10vw, 150px);
+  font-weight: 700;
+  line-height: 0.8;
+  color: var(--l-ciano);
+  opacity: 0.55;
+}
+.landing-citazione-eroe {
+  max-width: 22em;
+  margin-inline: auto;
+  font-family: "Mona Sans", "DM Sans", system-ui, sans-serif;
+  font-stretch: 108%;
+  font-variation-settings: "wdth" 108;
+  font-size: clamp(30px, 4.3vw, 68px);
+  font-weight: 420;
+  line-height: 1.08;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+  color: var(--l-testo);
+  text-shadow: 0 2px 30px color-mix(in srgb, var(--l-fondo) 80%, transparent);
+}
+.landing-citazione-eroe .landing-titolo-2 { font-weight: 300; text-shadow: none; }
+.landing-citazione {
+  font-family: "Mona Sans", "DM Sans", system-ui, sans-serif;
+  font-stretch: 106%;
+  font-variation-settings: "wdth" 106;
+  font-size: clamp(28px, 3.3vw, 50px);
+  font-weight: 460;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  text-wrap: balance;
+}
+.landing-citazione em { font-style: normal; font-weight: 280; color: var(--l-ciano-2); }
+.landing-fonte {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-family: "Reddit Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--l-testo-3);
+}
+.landing-fonte::before { content: ""; width: 28px; height: 1px; background: var(--l-ciano); }
+.landing-fonte cite { font-style: normal; color: var(--l-testo-2); text-transform: none; letter-spacing: 0.04em; }
+
+/* ── Argos, il nucleo ─────────────────────────────────────────────────────── */
+.landing-argos { overflow: hidden; }
+.landing-argos::before {
+  content: "";
+  position: absolute;
+  right: -10%; top: 10%;
+  width: min(900px, 90vw); aspect-ratio: 1;
+  border-radius: 9999px;
+  background: radial-gradient(closest-side, color-mix(in srgb, var(--l-indaco) 18%, transparent), color-mix(in srgb, var(--l-viola) 6%, transparent) 55%, transparent);
+  pointer-events: none;
+  animation: landing-respiro-argos 10s ease-in-out infinite;
+}
+@keyframes landing-respiro-argos { 0%, 100% { opacity: 0.7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.06); } }
+.landing-pilastri { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px 32px; }
+@media (max-width: 640px) { .landing-pilastri { grid-template-columns: minmax(0, 1fr); } }
+.landing-pilastro { border-top: 1px solid var(--l-bordo); padding-top: 18px; }
+.landing-pilastro-icona {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
+  border: 1px solid color-mix(in srgb, var(--l-viola) 55%, transparent);
+  background: color-mix(in srgb, var(--l-viola) 10%, transparent);
+  color: var(--l-viola);
+}
+html.tema-chiaro .landing .landing-pilastro-icona { color: var(--l-indaco); }
+.landing-pilastro h3 { margin-top: 14px; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+.landing-pilastro p { margin-top: 6px; font-size: 14.5px; line-height: 1.55; color: var(--l-testo-2); }
+
+.landing-nucleo { width: 100%; max-width: 640px; margin-inline: auto; display: block; overflow: visible; }
+.na-anello-agenti { fill: none; stroke: color-mix(in srgb, var(--l-indaco) 45%, transparent); stroke-width: 1; stroke-dasharray: 3 7; transform-origin: 300px 280px; animation: landing-gira 60s linear infinite; }
+.na-anello-fonti { fill: none; stroke: var(--l-bordo-tenue); stroke-width: 1; }
+.na-filo { stroke: var(--l-bordo); stroke-width: 1.1; }
+.na-filo-forte { stroke: color-mix(in srgb, var(--l-indaco) 45%, var(--l-bordo)); }
+.na-impulso {
+  fill: none;
+  stroke: var(--l-ciano-2);
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-dasharray: 9 91;
+  stroke-dashoffset: 100;
+  opacity: 0;
+  animation: na-corre 3s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.na-impulso-dentro { stroke: var(--l-blu); }
+.na-impulso-fuori { stroke: var(--l-viola); }
+@keyframes na-corre { 0% { stroke-dashoffset: 100; opacity: 0; } 10% { opacity: 1; } 85% { opacity: 1; } 100% { stroke-dashoffset: 0; opacity: 0; } }
+.na-fonte { fill: var(--l-piena); stroke: var(--l-ciano); stroke-width: 1.4; }
+.na-fonte-cuore { fill: var(--l-ciano-2); transform-box: fill-box; transform-origin: center; animation: lv-pulsa 2.6s ease-in-out infinite; }
+.na-agente { fill: var(--l-fondo); stroke: var(--l-indaco); stroke-width: 1.6; transform-box: fill-box; transform-origin: center; animation: na-agente 3.2s ease-in-out infinite; }
+@keyframes na-agente { 0%, 100% { stroke: var(--l-indaco); } 50% { stroke: var(--l-ciano-2); } }
+.na-agente-volto { fill: none; stroke: var(--l-testo-2); stroke-width: 1.1; }
+.na-agente-occhio { fill: var(--l-ciano-2); }
+.na-didascalia { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; fill: var(--l-testo-3); }
+.na-etichetta { font-family: "Mona Sans", "DM Sans", system-ui, sans-serif; font-size: 16px; font-weight: 500; fill: var(--l-testo); }
+.na-orbita { fill: none; stroke: color-mix(in srgb, var(--l-ciano) 55%, transparent); stroke-width: 1.2; stroke-dasharray: 2 10; transform-origin: 300px 280px; animation: landing-gira 18s linear infinite; }
+.na-orbita-2 { stroke: color-mix(in srgb, var(--l-viola) 45%, transparent); stroke-dasharray: 40 18 4 18; animation-duration: 30s; animation-direction: reverse; }
+.na-nucleo { filter: drop-shadow(0 0 24px color-mix(in srgb, var(--l-indaco) 70%, transparent)); transform-origin: 300px 280px; animation: na-battito 4s ease-in-out infinite; }
+@keyframes na-battito { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+.na-nome { font-family: "Mona Sans", "DM Sans", system-ui, sans-serif; font-size: 19px; font-weight: 700; letter-spacing: 0.24em; fill: #fff; }
+.na-nome-sotto { font-family: "Reddit Mono", ui-monospace, monospace; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; fill: rgba(255, 255, 255, 0.85); }
+.na-alone { animation: landing-respiro-argos 6s ease-in-out infinite; transform-origin: 300px 280px; }
 
 /* ── movimento ridotto: tutto fermo ───────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
@@ -734,5 +853,6 @@ html.tema-chiaro .landing {
     transition-duration: 1ms !important;
   }
   .lv-disegno, .lv-spunta { stroke-dashoffset: 0; }
+  .na-impulso { opacity: 0; }
   .lv-file { opacity: 1; transform: none; }
 }

@@ -1,10 +1,14 @@
 /**
- * La pagina di accesso, come pagina di presentazione (tappa 7.34).
+ * La pagina di accesso, come pagina di presentazione (tappe 7.34 e 7.35).
  *
- * Chi non è entrato vede che cos'è Cerbero: la Terra a punti che gira
- * (components/accesso/Globo.tsx), il ciclo del lavoro, gli otto moduli con
- * le loro piccole animazioni (components/accesso/Visivi.tsx) e la sicurezza.
- * I testi sono in lib/accesso.ts e dicono solo quello che l'app fa davvero.
+ * Chi non è entrato vede che cos'è Cerbero, in italiano o in inglese:
+ * - la Terra a punti che gira (components/accesso/Globo.tsx);
+ * - Argos, il nucleo: un sistema RAG multiagente, col suo disegno
+ *   (components/accesso/NucleoArgos.tsx);
+ * - il ciclo del lavoro, gli otto moduli con le loro piccole animazioni
+ *   (components/accesso/Visivi.tsx), la sicurezza.
+ * I testi sono in lib/accesso.ts: dicono solo quello che l'app fa davvero, e
+ * i titoli sono citazioni vere, con autore e opera.
  *
  * L'accesso sta in un riquadro che entra da destra: email e password, poi,
  * se è attiva, la verifica in due passaggi col codice dell'app o un codice di
@@ -14,7 +18,9 @@
  * La logica è quella di prima (hooks/use-auth.tsx): dopo un accesso riuscito
  * la pagina mostra una conferma breve e poi avvisa l'app con l'evento
  * «auth:login-sequence-done», che smonta il login e apre la pagina chiesta.
- * Con «riduci il movimento» del sistema le animazioni sono ferme.
+ * La lingua scelta resta nel browser («cerbero-lingua»); l'app dopo
+ * l'accesso resta in italiano. Con «riduci il movimento» del sistema le
+ * animazioni sono ferme.
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -22,15 +28,19 @@ import {
 } from "framer-motion";
 import { useLocation } from "wouter";
 import {
-  AlertTriangle, ArrowDown, ArrowRight, CalendarClock, ClipboardCheck, DatabaseBackup, Eye, EyeOff,
-  Fingerprint, History, KeyRound, LockKeyhole, LogIn, Radio, Route, Send, UserCog, Users, X,
+  AlertTriangle, ArrowDown, ArrowRight, Bot, CalendarClock, ClipboardCheck, Database, DatabaseBackup, Eye, EyeOff,
+  Fingerprint, History, KeyRound, Library, LockKeyhole, LogIn, Radio, Route, Send, ShieldCheck, UserCog, Users, X,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { useTema } from "@/hooks/use-tema";
 import { SceltaTemaCompatta } from "@/components/layout/SceltaTema";
 import Globo from "@/components/accesso/Globo";
+import NucleoArgos from "@/components/accesso/NucleoArgos";
 import VisivoModulo from "@/components/accesso/Visivi";
-import { CICLO, MODULI, NASTRO, SICUREZZA, codiceCompleto, nomeDiBenvenuto, saluto } from "@/lib/accesso";
+import {
+  LINGUE, TESTI, codiceCompleto, erroreInLingua, linguaIniziale, nomeDiBenvenuto, saluto,
+  type Citazione, type Lingua, type Pilastro, type TestiLanding,
+} from "@/lib/accesso";
 import logoImg from "/logosidebar.png";
 import "@/styles/landing.css";
 
@@ -38,6 +48,8 @@ const CARATTERI = "https://fonts.googleapis.com/css2?family=Mona+Sans:wdth,wght@
 const MORBIDO = [0.2, 0.7, 0.2, 1] as const;
 const ICONE_CICLO = [Route, CalendarClock, Send, Users, Radio, ClipboardCheck];
 const ICONE_SICUREZZA = [Fingerprint, UserCog, History, DatabaseBackup];
+const ICONE_PILASTRI: Record<Pilastro["chiave"], typeof Bot> = { squadra: Bot, biblioteca: Library, dati: Database, guardiano: ShieldCheck };
+const CHIAVE_LINGUA = "cerbero-lingua";
 
 /** I caratteri della pagina, solo quando la pagina c'è. */
 function useCaratteri() {
@@ -51,6 +63,19 @@ function useCaratteri() {
   }, []);
 }
 
+function useLingua(): [Lingua, (l: Lingua) => void] {
+  const [lingua, setLingua] = useState<Lingua>(() => {
+    let salvata: string | null = null;
+    try { salvata = window.localStorage.getItem(CHIAVE_LINGUA); } catch { /* niente archivio: si usa il browser */ }
+    return linguaIniziale(salvata, typeof navigator !== "undefined" ? navigator.language : null);
+  });
+  const cambia = useCallback((l: Lingua) => {
+    setLingua(l);
+    try { window.localStorage.setItem(CHIAVE_LINGUA, l); } catch { /* resta per questa visita */ }
+  }, []);
+  return [lingua, cambia];
+}
+
 function scorriA(id: string, fermo: boolean) {
   document.getElementById(id)?.scrollIntoView({ behavior: fermo ? "auto" : "smooth", block: "start" });
 }
@@ -60,6 +85,8 @@ export default function LoginPage() {
   const { tema } = useTema();
   const [location] = useLocation();
   const fermo = useReducedMotion() ?? false;
+  const [lingua, cambiaLingua] = useLingua();
+  const t = TESTI[lingua];
   useCaratteri();
 
   /* arrivati su una pagina interna: si vuole entrare, il riquadro è già aperto */
@@ -86,22 +113,23 @@ export default function LoginPage() {
   }, [fermo]);
 
   return (
-    <div className="landing">
+    <div className="landing" lang={lingua}>
       <div className="landing-contenuto" aria-hidden={aperto || undefined} inert={aperto || undefined}>
-        <Barra fermo={fermo} onAccedi={apri} />
+        <Barra t={t} lingua={lingua} cambiaLingua={cambiaLingua} fermo={fermo} onAccedi={apri} />
         <main>
-          <Eroe tema={tema} fermo={fermo} onAccedi={apri} />
-          <Nastro />
-          <Ciclo fermo={fermo} />
-          <Moduli fermo={fermo} />
-          <Sicurezza fermo={fermo} />
-          <Invito fermo={fermo} onAccedi={apri} />
+          <Eroe t={t} lingua={lingua} tema={tema} fermo={fermo} onAccedi={apri} />
+          <Nastro voci={t.nastro} />
+          <Argos t={t} fermo={fermo} />
+          <Ciclo t={t} fermo={fermo} />
+          <Moduli t={t} fermo={fermo} />
+          <Sicurezza t={t} fermo={fermo} />
+          <Invito t={t} fermo={fermo} onAccedi={apri} />
         </main>
-        <Piede />
+        <Piede t={t} />
       </div>
 
       <AnimatePresence>
-        {aperto && <Cassetto fermo={fermo} onChiudi={chiudi} onEntrato={conferma} />}
+        {aperto && <Cassetto t={t} lingua={lingua} fermo={fermo} onChiudi={chiudi} onEntrato={conferma} />}
       </AnimatePresence>
 
       <AnimatePresence>
@@ -140,9 +168,9 @@ export default function LoginPage() {
                   transition={{ duration: 0.5, delay: 0.15, ease: "easeOut" }}
                 />
               </svg>
-              <p className="landing-mono mt-7" style={{ color: "var(--l-testo-2)" }}>Accesso confermato</p>
+              <p className="landing-mono mt-7" style={{ color: "var(--l-testo-2)" }}>{t.accesso.confermato}</p>
               <p className="landing-titolo-sezione mt-3" style={{ fontSize: "clamp(30px, 4vw, 48px)" }}>
-                {saluto(nomeDiBenvenuto(user?.fullName, user?.email ?? entrato))}
+                {saluto(nomeDiBenvenuto(user?.fullName, user?.email ?? entrato), lingua)}
               </p>
               <div className="landing-conferma-barra mx-auto mt-7"><span /></div>
             </div>
@@ -154,11 +182,25 @@ export default function LoginPage() {
 }
 
 /* ── la barra in alto ─────────────────────────────────────────────────────── */
-function Barra({ fermo, onAccedi }: { fermo: boolean; onAccedi: () => void }) {
+function SceltaLingua({ lingua, cambia, etichetta }: { lingua: Lingua; cambia: (l: Lingua) => void; etichetta: string }) {
+  return (
+    <div role="group" aria-label={etichetta} className="landing-lingua landing-mono">
+      {LINGUE.map((l) => (
+        <button key={l} type="button" lang={l} aria-pressed={lingua === l} onClick={() => cambia(l)}>
+          {l.toUpperCase()}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Barra({ t, lingua, cambiaLingua, fermo, onAccedi }: {
+  t: TestiLanding; lingua: Lingua; cambiaLingua: (l: Lingua) => void; fermo: boolean; onAccedi: () => void;
+}) {
   const { scrollY } = useScroll();
   const [scorsa, setScorsa] = useState(false);
   useMotionValueEvent(scrollY, "change", (v) => setScorsa(v > 24));
-  const voci: Array<[string, string]> = [["ciclo", "Il ciclo"], ["moduli", "Moduli"], ["sicurezza", "Sicurezza"]];
+  const voci: Array<[string, string]> = [["argos", t.barra.argos], ["ciclo", t.barra.ciclo], ["moduli", t.barra.moduli], ["sicurezza", t.barra.sicurezza]];
   return (
     <motion.header
       className="landing-barra"
@@ -167,23 +209,24 @@ function Barra({ fermo, onAccedi }: { fermo: boolean; onAccedi: () => void }) {
       animate={{ y: 0, opacity: 1 }}
       transition={{ duration: 0.7, delay: 0.2, ease: MORBIDO }}
     >
-      <div className="mx-auto flex h-[72px] max-w-[1440px] items-center justify-between gap-4 px-4 sm:px-8 lg:px-14">
-        <a href="#inizio" onClick={(e) => { e.preventDefault(); scorriA("inizio", fermo); }} className="flex items-center gap-3" aria-label="Cerbero, torna all'inizio">
+      <div className="mx-auto flex h-[72px] max-w-[1440px] items-center justify-between gap-3 px-4 sm:px-8 lg:px-14">
+        <a href="#inizio" onClick={(e) => { e.preventDefault(); scorriA("inizio", fermo); }} className="flex min-w-0 items-center gap-3" aria-label={t.barra.torna}>
           <img src={logoImg} alt="" className="h-9 w-auto" />
-          <span className="leading-tight">
+          <span className="hidden leading-tight min-[420px]:block">
             <span className="block text-[15px] font-semibold tracking-[0.2em]">CERBERO</span>
             <span className="landing-mono block" style={{ fontSize: 9.5, letterSpacing: "0.18em", color: "var(--l-testo-3)" }}>Transportation management</span>
           </span>
         </a>
-        <nav className="hidden items-center gap-9 md:flex" aria-label="Sezioni">
+        <nav className="hidden items-center gap-8 lg:flex" aria-label={t.barra.sezioni}>
           {voci.map(([id, testo]) => (
             <a key={id} href={`#${id}`} className="landing-voce landing-mono" onClick={(e) => { e.preventDefault(); scorriA(id, fermo); }}>{testo}</a>
           ))}
         </nav>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <SceltaLingua lingua={lingua} cambia={cambiaLingua} etichetta={t.barra.lingua} />
           <SceltaTemaCompatta />
-          <button type="button" onClick={onAccedi} className="landing-bottone" style={{ height: 40, padding: "0 18px", fontSize: 11.5 }}>
-            <LogIn className="h-4 w-4" aria-hidden />Accedi
+          <button type="button" onClick={onAccedi} className="landing-bottone" style={{ height: 40, padding: "0 16px", fontSize: 11.5 }}>
+            <LogIn className="h-4 w-4" aria-hidden />{t.barra.accedi}
           </button>
         </div>
       </div>
@@ -191,71 +234,48 @@ function Barra({ fermo, onAccedi }: { fermo: boolean; onAccedi: () => void }) {
   );
 }
 
-/* ── la prima schermata ───────────────────────────────────────────────────── */
-function Lettere({ testo, ritardo, fermo }: { testo: string; ritardo: number; fermo: boolean }) {
+/* ── le parole che entrano una per una ────────────────────────────────────── */
+function Parole({ testo, ritardo, passo, fermo, className }: { testo: string; ritardo: number; passo: number; fermo: boolean; className?: string }) {
   const parole = testo.split(" ");
-  let n = 0;
   return (
     <>
       {parole.map((p, i) => (
         <Fragment key={i}>
-        {i > 0 && " "}
-        <span className="landing-parola">
-          {[...p].map((c) => {
-            const k = n++;
-            return (
-              <motion.span
-                key={k}
-                className="landing-lettera"
-                initial={fermo ? false : { opacity: 0, y: "0.45em", rotateX: -80 }}
-                animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                transition={{ duration: 0.8, delay: ritardo + k * 0.028, ease: MORBIDO }}
-                style={{ transformPerspective: 600 }}
-              >{c}</motion.span>
-            );
-          })}
-        </span>
+          {i > 0 && " "}
+          <motion.span
+            className={`inline-block ${className ?? ""}`}
+            initial={fermo ? false : { opacity: 0, y: "0.45em", filter: "blur(6px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ duration: 0.8, delay: ritardo + i * passo, ease: MORBIDO }}
+          >{p}</motion.span>
         </Fragment>
       ))}
     </>
   );
 }
 
-function Parole({ testo, ritardo, fermo, className }: { testo: string; ritardo: number; fermo: boolean; className: string }) {
-  const parole = testo.split(" ");
-  return (
-    <>
-      {parole.map((p, i) => (
-        <span key={i} className="inline-block overflow-hidden align-top" style={{ paddingBottom: "0.06em" }}>
-          <motion.span
-            className={`inline-block ${className}`}
-            initial={fermo ? false : { y: "105%" }}
-            animate={{ y: 0 }}
-            transition={{ duration: 0.95, delay: ritardo + i * 0.09, ease: MORBIDO }}
-          >{p}</motion.span>
-          {i < parole.length - 1 && <span className="inline-block">&nbsp;</span>}
-        </span>
-      ))}
-    </>
-  );
+function Fonte({ c, className, entrata }: { c: Citazione; className?: string; entrata?: Record<string, unknown> }) {
+  return <motion.figcaption {...entrata} className={`landing-fonte ${className ?? ""}`}><span>{c.autore}</span><cite>{c.fonte}</cite></motion.figcaption>;
 }
 
-function Orologio() {
+function Orologio({ lingua, etichetta }: { lingua: Lingua; etichetta: string }) {
   const [ora, setOra] = useState(() => new Date());
   useEffect(() => {
-    const t = window.setInterval(() => setOra(new Date()), 1000);
-    return () => window.clearInterval(t);
+    const id = window.setInterval(() => setOra(new Date()), 1000);
+    return () => window.clearInterval(id);
   }, []);
-  const giorno = ora.toLocaleDateString("it-IT", { weekday: "short", day: "2-digit", month: "short" });
+  const locale = lingua === "en" ? "en-GB" : "it-IT";
+  const giorno = ora.toLocaleDateString(locale, { weekday: "short", day: "2-digit", month: "short" });
   return (
     <div className="landing-ora landing-mono" aria-hidden>
-      <span>Ora locale · {giorno}</span>
-      <b>{ora.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</b>
+      <span>{etichetta} · {giorno}</span>
+      <b>{ora.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</b>
     </div>
   );
 }
 
-function Eroe({ tema, fermo, onAccedi }: { tema: "scuro" | "chiaro"; fermo: boolean; onAccedi: () => void }) {
+/* ── la prima schermata ───────────────────────────────────────────────────── */
+function Eroe({ t, lingua, tema, fermo, onAccedi }: { t: TestiLanding; lingua: Lingua; tema: "scuro" | "chiaro"; fermo: boolean; onAccedi: () => void }) {
   const { scrollY } = useScroll();
   const testoY = useTransform(scrollY, [0, 700], [0, -140]);
   const testoO = useTransform(scrollY, [0, 520], [1, 0]);
@@ -264,31 +284,36 @@ function Eroe({ tema, fermo, onAccedi }: { tema: "scuro" | "chiaro"; fermo: bool
   const entra = (ritardo: number) => fermo
     ? { initial: false as const }
     : { initial: { opacity: 0, y: 18 }, animate: { opacity: 1, y: 0 }, transition: { duration: 0.8, delay: ritardo, ease: MORBIDO } };
+  const c = t.eroe.citazione;
+  const primaParole = c.prima.split(" ").length;
 
   return (
     <section id="inizio" className="landing-eroe" aria-labelledby="landing-titolo">
       <motion.div className="absolute inset-0" style={fermo ? undefined : { scale: globoS, opacity: globoO }}>
-        <Globo tema={tema} />
+        <Globo tema={tema} lingua={lingua} />
       </motion.div>
-      <Orologio />
+      <Orologio lingua={lingua} etichetta={t.eroe.ora} />
 
       <motion.div className="landing-eroe-testo" style={fermo ? undefined : { y: testoY, opacity: testoO }}>
-        <motion.p {...entra(0.3)} className="landing-occhiello landing-mono">Piattaforma per il trasporto pubblico locale</motion.p>
-        <h1 id="landing-titolo" className="landing-titolo mt-7">
-          <span className="landing-titolo-1"><Lettere testo="Il servizio," ritardo={0.45} fermo={fermo} /></span>
-          <span className="block"><Parole testo="dal piano" ritardo={0.85} fermo={fermo} className="landing-titolo-2" /></span>
-          <span className="block"><Parole testo="alla strada" ritardo={1.05} fermo={fermo} className="landing-titolo-2" /></span>
-        </h1>
-        <motion.p {...entra(1.35)} className="landing-sotto mt-8">
-          Rete, turni, personale ed esercizio in un unico sistema: quello che si programma è quello che si pubblica,
-          si assegna, si guida e si rendiconta a fine mese.
-        </motion.p>
-        <motion.div {...entra(1.55)} className="mt-10 flex flex-wrap items-center justify-center gap-4">
+        <motion.h1 {...entra(0.3)} id="landing-titolo" className="landing-occhiello landing-mono">{t.eroe.occhiello}</motion.h1>
+        <figure key={lingua} className="mt-6">
+          <motion.span {...entra(0.4)} className="landing-virgolette" aria-hidden>“</motion.span>
+          <blockquote className="landing-citazione-eroe">
+            <p>
+              <Parole testo={c.prima} ritardo={0.5} passo={0.06} fermo={fermo} />
+              {" "}
+              <Parole testo={c.evidenza} ritardo={0.5 + primaParole * 0.06} passo={0.06} fermo={fermo} className="landing-titolo-2" />
+            </p>
+          </blockquote>
+          <Fonte c={c} className="mt-7" entrata={entra(1.3)} />
+        </figure>
+        <motion.p {...entra(1.5)} className="landing-sotto mt-8">{t.eroe.testo}</motion.p>
+        <motion.div {...entra(1.7)} className="mt-10 flex flex-wrap items-center justify-center gap-4">
           <button type="button" className="landing-bottone" onClick={onAccedi}>
-            Accedi<ArrowRight className="h-4 w-4" aria-hidden />
+            {t.eroe.accedi}<ArrowRight className="h-4 w-4" aria-hidden />
           </button>
-          <button type="button" className="landing-bottone-vuoto" onClick={() => scorriA("ciclo", fermo)}>
-            Scopri Cerbero
+          <button type="button" className="landing-bottone-vuoto" onClick={() => scorriA("argos", fermo)}>
+            {t.eroe.scopri}
           </button>
         </motion.div>
       </motion.div>
@@ -296,11 +321,11 @@ function Eroe({ tema, fermo, onAccedi }: { tema: "scuro" | "chiaro"; fermo: bool
       <motion.button
         type="button"
         className="landing-scorri landing-mono"
-        onClick={() => scorriA("ciclo", fermo)}
-        aria-label="Scorri al ciclo del lavoro"
-        {...entra(2)}
+        onClick={() => scorriA("argos", fermo)}
+        aria-label={t.eroe.scorriEtichetta}
+        {...entra(2.1)}
       >
-        <span className="flex items-center gap-2">Scorri<ArrowDown className="h-3 w-3" aria-hidden /></span>
+        <span className="flex items-center gap-2">{t.eroe.scorri}<ArrowDown className="h-3 w-3" aria-hidden /></span>
         <span aria-hidden />
       </motion.button>
     </section>
@@ -308,13 +333,12 @@ function Eroe({ tema, fermo, onAccedi }: { tema: "scuro" | "chiaro"; fermo: bool
 }
 
 /* ── il nastro ────────────────────────────────────────────────────────────── */
-function Nastro() {
-  const voci = [...NASTRO, ...NASTRO];
-  const rovescio = [...NASTRO].reverse();
+function Nastro({ voci }: { voci: readonly string[] }) {
+  const rovescio = [...voci].reverse();
   return (
     <div className="landing-nastro landing-mono" aria-hidden>
       <div className="landing-nastro-traccia">
-        {voci.map((v, i) => <span key={i} className="landing-nastro-voce">{v}</span>)}
+        {[...voci, ...voci].map((v, i) => <span key={i} className="landing-nastro-voce">{v}</span>)}
       </div>
       <div className="landing-nastro-traccia landing-nastro-traccia-2">
         {[...rovescio, ...rovescio].map((v, i) => <span key={i} className="landing-nastro-voce">{v}</span>)}
@@ -323,7 +347,7 @@ function Nastro() {
   );
 }
 
-/* ── i titoli delle sezioni ───────────────────────────────────────────────── */
+/* ── le testate delle sezioni: l'occhiello, la citazione, il testo ────────── */
 function Rivela({ children, fermo, ritardo = 0, className, sposta = 28 }: {
   children: React.ReactNode; fermo: boolean; ritardo?: number; className?: string; sposta?: number;
 }) {
@@ -340,23 +364,57 @@ function Rivela({ children, fermo, ritardo = 0, className, sposta = 28 }: {
   );
 }
 
-function Testata({ occhiello, titolo, evidenza, testo, fermo }: {
-  occhiello: string; titolo: string; evidenza: string; testo: string; fermo: boolean;
+function Testata({ id, occhiello, citazione, testo, fermo, centrata }: {
+  id: string; occhiello: string; citazione: Citazione; testo: string; fermo: boolean; centrata?: boolean;
 }) {
   return (
     <>
-      <Rivela fermo={fermo}><p className="landing-occhiello landing-mono" style={{ justifyContent: "flex-start" }}>{occhiello}</p></Rivela>
-      <Rivela fermo={fermo} ritardo={0.08}>
-        <h2 className="landing-titolo-sezione mt-6">{titolo} <em>{evidenza}</em></h2>
+      <Rivela fermo={fermo}>
+        <h2 id={id} className="landing-occhiello landing-mono" style={centrata ? undefined : { justifyContent: "flex-start" }}>{occhiello}</h2>
       </Rivela>
-      <Rivela fermo={fermo} ritardo={0.16}><p className="landing-paragrafo mt-6">{testo}</p></Rivela>
+      <Rivela fermo={fermo} ritardo={0.08}>
+        <figure className="mt-7">
+          <blockquote className="landing-citazione"><p>{citazione.prima} <em>{citazione.evidenza}</em></p></blockquote>
+          <Fonte c={citazione} className="mt-6" />
+        </figure>
+      </Rivela>
+      <Rivela fermo={fermo} ritardo={0.16}><p className={`landing-paragrafo mt-8 ${centrata ? "mx-auto" : ""}`}>{testo}</p></Rivela>
     </>
   );
 }
 
+/* ── Argos, il nucleo ─────────────────────────────────────────────────────── */
+function Argos({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
+  const a = t.argos;
+  return (
+    <section id="argos" className="landing-sezione landing-argos scroll-mt-16" aria-labelledby="landing-argos">
+      <div className="relative mx-auto grid max-w-[1440px] items-start gap-14 px-4 sm:px-8 lg:grid-cols-[minmax(0,6fr)_minmax(0,5fr)] lg:gap-16 lg:px-14">
+        <div>
+          <Testata id="landing-argos" occhiello={a.occhiello} citazione={a.citazione} testo={a.testo} fermo={fermo} />
+          <div className="landing-pilastri mt-12">
+            {a.pilastri.map((p, i) => {
+              const Icona = ICONE_PILASTRI[p.chiave];
+              return (
+                <Rivela key={p.chiave} fermo={fermo} ritardo={i * 0.08} className="landing-pilastro">
+                  <span className="landing-pilastro-icona"><Icona className="h-4 w-4" aria-hidden /></span>
+                  <h3>{p.titolo}</h3>
+                  <p>{p.testo}</p>
+                </Rivela>
+              );
+            })}
+          </div>
+        </div>
+        <Rivela fermo={fermo} ritardo={0.2} sposta={40} className="lg:sticky lg:top-24 lg:self-start">
+          <NucleoArgos fonti={a.fonti} nucleo={a.nucleo} agenti={a.agenti} />
+        </Rivela>
+      </div>
+    </section>
+  );
+}
+
 /* ── il ciclo del lavoro ──────────────────────────────────────────────────── */
-function Tappa({ indice, fermo }: { indice: number; fermo: boolean }) {
-  const t = CICLO[indice]!;
+function Tappa({ t, indice, fermo }: { t: TestiLanding; indice: number; fermo: boolean }) {
+  const tappa = t.ciclo.tappe[indice]!;
   const Icona = ICONE_CICLO[indice] ?? Route;
   const ref = useRef<HTMLLIElement>(null);
   const acceso = useInView(ref, { margin: "-35% 0px -45% 0px" });
@@ -372,36 +430,30 @@ function Tappa({ indice, fermo }: { indice: number; fermo: boolean }) {
     >
       <span className="landing-tappa-icona"><Icona className="h-5 w-5" aria-hidden /></span>
       <div>
-        <span className="landing-tappa-numero landing-mono">Tappa {t.numero}</span>
-        <h3>{t.titolo}</h3>
-        <p>{t.testo}</p>
+        <span className="landing-tappa-numero landing-mono">{t.ciclo.tappa} {tappa.numero}</span>
+        <h3>{tappa.titolo}</h3>
+        <p>{tappa.testo}</p>
       </div>
     </motion.li>
   );
 }
 
-function Ciclo({ fermo }: { fermo: boolean }) {
+function Ciclo({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
   const elenco = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({ target: elenco, offset: ["start 65%", "end 55%"] });
   const avanzamento = useSpring(scrollYProgress, { stiffness: 120, damping: 28, mass: 0.4 });
   return (
     <section id="ciclo" className="landing-sezione scroll-mt-16" aria-labelledby="landing-ciclo">
       <div className="mx-auto grid max-w-[1440px] gap-14 px-4 sm:px-8 lg:grid-cols-[minmax(0,5fr)_minmax(0,6fr)] lg:gap-24 lg:px-14">
-        <div className="lg:sticky lg:top-32 lg:self-start" id="landing-ciclo">
-          <Testata
-            fermo={fermo}
-            occhiello="Il ciclo del lavoro"
-            titolo="Dal programma"
-            evidenza="al consuntivo del mese."
-            testo="Sei tappe, nell'ordine del menu e del lavoro dell'azienda. Quello che esce da una tappa è quello che entra nella successiva: niente copie, niente fogli a parte."
-          />
+        <div className="lg:sticky lg:top-32 lg:self-start">
+          <Testata id="landing-ciclo" occhiello={t.ciclo.occhiello} citazione={t.ciclo.citazione} testo={t.ciclo.testo} fermo={fermo} />
         </div>
         <div ref={elenco} className="relative">
           <div className="landing-ciclo-binario" aria-hidden>
             <motion.div style={{ scaleY: fermo ? 1 : avanzamento }} />
           </div>
           <ol>
-            {CICLO.map((t, i) => <Tappa key={t.numero} indice={i} fermo={fermo} />)}
+            {t.ciclo.tappe.map((tp, i) => <Tappa key={tp.numero} t={t} indice={i} fermo={fermo} />)}
           </ol>
         </div>
       </div>
@@ -410,7 +462,7 @@ function Ciclo({ fermo }: { fermo: boolean }) {
 }
 
 /* ── i moduli ─────────────────────────────────────────────────────────────── */
-function Moduli({ fermo }: { fermo: boolean }) {
+function Moduli({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
   /* la luce segue il puntatore e la scheda si inclina appena: niente stato, solo stile */
   const muovi = (e: React.PointerEvent<HTMLElement>) => {
     const el = e.currentTarget;
@@ -424,17 +476,11 @@ function Moduli({ fermo }: { fermo: boolean }) {
   return (
     <section id="moduli" className="landing-sezione scroll-mt-16" aria-labelledby="landing-moduli" style={{ paddingTop: 0 }}>
       <div className="mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
-        <div className="max-w-3xl" id="landing-moduli">
-          <Testata
-            fermo={fermo}
-            occhiello="Dentro Cerbero"
-            titolo="Otto moduli,"
-            evidenza="gli stessi dati."
-            testo="Una corsa cambiata in Planning Studio è la stessa che arriva ai turni, al roster, all'esercizio e al consuntivo. Ogni modulo lavora sul programma in vigore."
-          />
+        <div className="max-w-3xl">
+          <Testata id="landing-moduli" occhiello={t.moduli.occhiello} citazione={t.moduli.citazione} testo={t.moduli.testo} fermo={fermo} />
         </div>
         <div className="landing-moduli mt-14">
-          {MODULI.map((m, i) => (
+          {t.moduli.elenco.map((m, i) => (
             <motion.div
               key={m.chiave}
               className="flex"
@@ -445,7 +491,7 @@ function Moduli({ fermo }: { fermo: boolean }) {
             >
               <article className="landing-modulo w-full" onPointerMove={muovi} onPointerLeave={esci}>
                 <div className="landing-modulo-dentro">
-                  <div className="landing-modulo-visivo"><VisivoModulo chiave={m.chiave} fermo={fermo} /></div>
+                  <div className="landing-modulo-visivo"><VisivoModulo chiave={m.chiave} fermo={fermo} etichette={t.visivi} /></div>
                   <span className="landing-modulo-sotto landing-mono">{m.sotto}</span>
                   <h3>{m.titolo}</h3>
                   <p>{m.testo}</p>
@@ -460,21 +506,15 @@ function Moduli({ fermo }: { fermo: boolean }) {
 }
 
 /* ── la sicurezza ─────────────────────────────────────────────────────────── */
-function Sicurezza({ fermo }: { fermo: boolean }) {
+function Sicurezza({ t, fermo }: { t: TestiLanding; fermo: boolean }) {
   return (
     <section id="sicurezza" className="landing-sezione scroll-mt-16" aria-labelledby="landing-sicurezza" style={{ paddingTop: 0 }}>
       <div className="mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
-        <div className="max-w-3xl" id="landing-sicurezza">
-          <Testata
-            fermo={fermo}
-            occhiello="Sicurezza"
-            titolo="Chi entra,"
-            evidenza="e che cosa può fare."
-            testo="I dati di un'azienda di trasporto sono anche i dati di chi ci lavora. Cerbero li tratta così."
-          />
+        <div className="max-w-3xl">
+          <Testata id="landing-sicurezza" occhiello={t.sicurezza.occhiello} citazione={t.sicurezza.citazione} testo={t.sicurezza.testo} fermo={fermo} />
         </div>
         <div className="landing-sicurezza mt-14">
-          {SICUREZZA.map((s, i) => {
+          {t.sicurezza.elenco.map((s, i) => {
             const Icona = ICONE_SICUREZZA[i] ?? Fingerprint;
             return (
               <Rivela key={s.titolo} fermo={fermo} ritardo={i * 0.1}>
@@ -491,23 +531,19 @@ function Sicurezza({ fermo }: { fermo: boolean }) {
 }
 
 /* ── l'invito finale ──────────────────────────────────────────────────────── */
-function Invito({ fermo, onAccedi }: { fermo: boolean; onAccedi: () => void }) {
+function Invito({ t, fermo, onAccedi }: { t: TestiLanding; fermo: boolean; onAccedi: () => void }) {
   return (
     <section className="landing-sezione" style={{ paddingTop: 0 }} aria-labelledby="landing-invito">
       <div className="mx-auto max-w-[1440px] px-4 sm:px-8 lg:px-14">
         <Rivela fermo={fermo} className="landing-invito" sposta={40}>
           <div className="landing-aurora" aria-hidden />
           <div className="landing-invito-griglia" aria-hidden />
-          <p className="landing-occhiello landing-mono">Area riservata</p>
-          <h2 id="landing-invito" className="landing-titolo-sezione mx-auto mt-6 max-w-4xl">
-            Il servizio di domani <em>si prepara oggi.</em>
-          </h2>
-          <p className="landing-paragrafo mx-auto mt-6">
-            Entra con le credenziali che ti ha dato l'amministratore della tua azienda.
-          </p>
+          <div className="mx-auto max-w-4xl">
+            <Testata id="landing-invito" occhiello={t.invito.occhiello} citazione={t.invito.citazione} testo={t.invito.testo} fermo={fermo} centrata />
+          </div>
           <div className="mt-10 flex justify-center">
             <button type="button" className="landing-bottone" onClick={onAccedi}>
-              Accedi a Cerbero<ArrowRight className="h-4 w-4" aria-hidden />
+              {t.invito.bottone}<ArrowRight className="h-4 w-4" aria-hidden />
             </button>
           </div>
         </Rivela>
@@ -516,7 +552,7 @@ function Invito({ fermo, onAccedi }: { fermo: boolean; onAccedi: () => void }) {
   );
 }
 
-function Piede() {
+function Piede({ t }: { t: TestiLanding }) {
   const anno = new Date().getFullYear();
   return (
     <footer className="mx-auto flex max-w-[1440px] flex-wrap items-center justify-between gap-4 border-t px-4 py-8 sm:px-8 lg:px-14" style={{ borderColor: "var(--l-bordo-tenue)" }}>
@@ -524,15 +560,18 @@ function Piede() {
         <img src={logoImg} alt="" className="h-7 w-auto opacity-80" />
         <span className="landing-mono" style={{ color: "var(--l-testo-3)" }}>© {anno} Cerbero</span>
       </span>
-      <span className="landing-mono" style={{ color: "var(--l-testo-3)" }}>Accesso riservato al personale autorizzato</span>
+      <span className="landing-mono" style={{ color: "var(--l-testo-3)" }}>{t.piede.riservato}</span>
     </footer>
   );
 }
 
 /* ── il riquadro dell'accesso ─────────────────────────────────────────────── */
-function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: () => void; onEntrato: (email: string) => void }) {
+function Cassetto({ t, lingua, fermo, onChiudi, onEntrato }: {
+  t: TestiLanding; lingua: Lingua; fermo: boolean; onChiudi: () => void; onEntrato: (email: string) => void;
+}) {
   const { login, loginMfa } = useAuth();
   const riquadro = useRef<HTMLElement>(null);
+  const a = t.accesso;
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -563,9 +602,9 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
 
   const sbagliato = useCallback((messaggio: string) => {
     setAttesa(false);
-    setErrore(messaggio);
+    setErrore(erroreInLingua(messaggio, lingua));
     setScossa((n) => n + 1);
-  }, []);
+  }, [lingua]);
 
   const accedi = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
@@ -631,7 +670,7 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
             <img src={logoImg} alt="" className="h-8 w-auto" />
             <span className="text-[14px] font-semibold tracking-[0.2em]">CERBERO</span>
           </span>
-          <button type="button" className="landing-icona" onClick={onChiudi} aria-label="Chiudi l'accesso">
+          <button type="button" className="landing-icona" onClick={onChiudi} aria-label={a.chiudi}>
             <X className="h-4 w-4" aria-hidden />
           </button>
         </div>
@@ -650,16 +689,14 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
             {biglietto ? (
               <form onSubmit={verifica} className="space-y-6" aria-describedby="accesso-codice-aiuto" noValidate>
                 <div>
-                  <p className="landing-mono flex items-center gap-2" style={{ color: "var(--l-ciano)" }}><KeyRound className="h-3.5 w-3.5" aria-hidden />Secondo passaggio</p>
-                  <h2 id="landing-accesso-titolo" className="landing-titolo-sezione mt-4" style={{ fontSize: 34 }}>Verifica in due passaggi</h2>
+                  <p className="landing-mono flex items-center gap-2" style={{ color: "var(--l-ciano)" }}><KeyRound className="h-3.5 w-3.5" aria-hidden />{a.secondo}</p>
+                  <h2 id="landing-accesso-titolo" className="landing-titolo-sezione mt-4" style={{ fontSize: 34 }}>{a.titoloMfa}</h2>
                   <p id="accesso-codice-aiuto" className="mt-3 text-[15px] leading-relaxed" style={{ color: "var(--l-testo-2)" }}>
-                    {usaRecupero
-                      ? "Scrivi uno dei codici di recupero che hai salvato quando hai attivato la verifica. Ognuno vale una volta."
-                      : "Scrivi il codice a sei cifre che vedi adesso nell'app di autenticazione sul telefono."}
+                    {usaRecupero ? a.aiutoRecupero : a.aiutoCodice}
                   </p>
                 </div>
                 <div>
-                  <label htmlFor="accesso-codice" className="landing-etichetta">{usaRecupero ? "Codice di recupero" : "Codice"}</label>
+                  <label htmlFor="accesso-codice" className="landing-etichetta">{usaRecupero ? a.codiceRecupero : a.codice}</label>
                   <input
                     id="accesso-codice"
                     value={codice}
@@ -675,28 +712,26 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
                 </div>
                 <Errore testo={errore} />
                 <button type="submit" className="landing-bottone w-full" disabled={attesa || (!usaRecupero && !codiceCompleto(codice)) || (usaRecupero && codice.trim().length < 6)}>
-                  {attesa ? <><span className="landing-girandola" aria-hidden />Verifico</> : "Verifica e accedi"}
+                  {attesa ? <><span className="landing-girandola" aria-hidden />{a.verifico}</> : a.verifica}
                 </button>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <button type="button" className="landing-link" onClick={() => { setUsaRecupero(!usaRecupero); setCodice(""); setErrore(null); }}>
-                    {usaRecupero ? "Usa il codice dell'app" : "Ho perso il telefono: codice di recupero"}
+                    {usaRecupero ? a.usaApp : a.persoTelefono}
                   </button>
                   <button type="button" className="landing-link" onClick={() => { setBiglietto(null); setErrore(null); }}>
-                    Indietro
+                    {a.indietro}
                   </button>
                 </div>
               </form>
             ) : (
               <form onSubmit={accedi} className="space-y-6">
                 <div>
-                  <p className="landing-mono flex items-center gap-2" style={{ color: "var(--l-ciano)" }}><LockKeyhole className="h-3.5 w-3.5" aria-hidden />Area riservata</p>
-                  <h2 id="landing-accesso-titolo" className="landing-titolo-sezione mt-4" style={{ fontSize: 34 }}>Accedi a Cerbero</h2>
-                  <p className="mt-3 text-[15px] leading-relaxed" style={{ color: "var(--l-testo-2)" }}>
-                    Con le credenziali che ti ha dato l'amministratore della tua azienda.
-                  </p>
+                  <p className="landing-mono flex items-center gap-2" style={{ color: "var(--l-ciano)" }}><LockKeyhole className="h-3.5 w-3.5" aria-hidden />{a.area}</p>
+                  <h2 id="landing-accesso-titolo" className="landing-titolo-sezione mt-4" style={{ fontSize: 34 }}>{a.titolo}</h2>
+                  <p className="mt-3 text-[15px] leading-relaxed" style={{ color: "var(--l-testo-2)" }}>{a.sotto}</p>
                 </div>
                 <div>
-                  <label htmlFor="accesso-email" className="landing-etichetta">Email</label>
+                  <label htmlFor="accesso-email" className="landing-etichetta">{a.email}</label>
                   <input
                     id="accesso-email"
                     type="email"
@@ -704,13 +739,13 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
                     onChange={(e) => setEmail(e.target.value)}
                     autoComplete="username"
                     autoFocus
-                    placeholder="nome@azienda.it"
+                    placeholder={a.segnaposto}
                     className="landing-campo"
                     required
                   />
                 </div>
                 <div>
-                  <label htmlFor="accesso-password" className="landing-etichetta">Password</label>
+                  <label htmlFor="accesso-password" className="landing-etichetta">{a.password}</label>
                   <div className="relative">
                     <input
                       id="accesso-password"
@@ -725,7 +760,7 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
                       type="button"
                       onClick={() => setMostra(!mostra)}
                       className="landing-icona landing-icona-nuda absolute right-1.5 top-1/2 -translate-y-1/2"
-                      aria-label={mostra ? "Nascondi la password" : "Mostra la password"}
+                      aria-label={mostra ? a.nascondi : a.mostra}
                       aria-pressed={mostra}
                     >
                       {mostra ? <EyeOff className="h-4 w-4" aria-hidden /> : <Eye className="h-4 w-4" aria-hidden />}
@@ -734,7 +769,7 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
                 </div>
                 <Errore testo={errore} />
                 <button type="submit" className="landing-bottone w-full" disabled={attesa}>
-                  {attesa ? <><span className="landing-girandola" aria-hidden />Verifico</> : "Accedi"}
+                  {attesa ? <><span className="landing-girandola" aria-hidden />{a.verifico}</> : a.accedi}
                 </button>
               </form>
             )}
@@ -742,8 +777,7 @@ function Cassetto({ fermo, onChiudi, onEntrato }: { fermo: boolean; onChiudi: ()
         </motion.div>
 
         <ul className="space-y-1.5 border-t px-6 py-6 text-[12.5px] sm:px-10" style={{ borderColor: "var(--l-bordo-tenue)", color: "var(--l-testo-3)" }}>
-          <li>Connessione cifrata e sessione legata a questo browser.</li>
-          <li>Verifica in due passaggi per i ruoli che la richiedono.</li>
+          {a.note.map((n) => <li key={n}>{n}</li>)}
         </ul>
       </motion.aside>
     </>
